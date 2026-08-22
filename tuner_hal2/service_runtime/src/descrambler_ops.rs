@@ -1,5 +1,5 @@
 use crate::boot::TunerServiceRuntime;
-use crate::object_method_txn::ObjectMethodExecutionToken;
+use crate::object_method_use_case::ObjectMethodExecutionToken;
 use crate::registry::{DescramblerRegistryEntry, RegistryCommitError};
 use maleicacid_tuner_hal2_common::HalError;
 

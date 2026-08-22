@@ -399,6 +399,49 @@ fn frontend_scan_end_delivery_failure_composition_is_owned_by_service_runtime() 
 }
 
 #[test]
+fn frontend_event_delivery_failure_marks_registered_callback_unhealthy() {
+    use crate::boot::{CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport};
+    use maleicacid_tuner_hal2_domain_request::AidlApi;
+
+    let mut runtime = TunerServiceRuntime::new();
+    let owner_id = AidlObjectId(94_008);
+    let owner_generation = AidlObjectGeneration(1);
+    record_runtime_callback_registration(
+        &mut runtime,
+        AidlObjectKind::Frontend,
+        owner_id,
+        owner_generation,
+        AidlApi::FrontendSetCallback,
+    );
+    let primary = HalError::callback_failed("IFrontendCallback.onEvent", "binder failure");
+    let result = runtime.finish_callback_delivery_failure_use_case(
+        CallbackDeliveryFailureReport::frontend_event(
+            owner_id,
+            owner_generation,
+            94_008,
+            7,
+            CallbackDeliveryFailurePhase::BinderDelivery,
+            primary,
+        ),
+    );
+
+    let Err(error) = result else {
+        panic!("expected frontend event delivery failure");
+    };
+    assert!(matches!(
+        error.primary_error(),
+        HalError::CallbackFailed { .. }
+    ));
+    assert!(error.cleanup_error().is_none());
+    let diagnostics = runtime.frontend_callback_delivery_diagnostics();
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(
+        diagnostics[0].phase(),
+        crate::FrontendCallbackDeliveryDiagnosticPhase::FrontendEventDelivery
+    );
+}
+
+#[test]
 fn frontend_scan_end_artifact_lookup_failure_records_lookup_diagnostic_only() {
     use crate::boot::{CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport};
     use maleicacid_tuner_hal2_domain_request::AidlApi;

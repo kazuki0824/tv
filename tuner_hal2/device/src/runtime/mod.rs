@@ -12,10 +12,12 @@ pub(crate) mod thread_result_owner;
 pub(crate) mod tune_txn;
 
 pub use backend_worker::{
-    apply_frontend_backend_lnb_voltage, run_frontend_backend_tune_worker,
-    run_frontend_backend_tune_worker_with_previous, FrontendBackendLnbApplyPlan,
-    FrontendBackendSession, FrontendBackendSessionKind, FrontendBackendTunePlan,
-    FrontendLnbVoltage,
+    apply_frontend_backend_lnb_voltage, apply_frontend_backend_lnb_voltage_classified,
+    run_frontend_backend_tune_worker, run_frontend_backend_tune_worker_with_previous,
+    FrontendBackendLnbApplyOutcome, FrontendBackendLnbApplyPlan, FrontendBackendSession,
+    FrontendBackendSessionKind, FrontendBackendSubmitFailure, FrontendBackendSubmitTicket,
+    FrontendBackendSubmitWait, FrontendBackendTunePlan, FrontendLnbVoltage,
+    FrontendTmccPartialReceptionObservation,
 };
 pub use frontend_runtime::{
     FrontendRuntime, FrontendRuntimeSnapshot, FrontendRuntimeState, FrontendSignalState,
@@ -24,7 +26,7 @@ pub use frontend_runtime::{
 pub use frontend_worker::{
     FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerDetachedJoin,
     FrontendWorkerKind, FrontendWorkerRegistry, FrontendWorkerStartError,
-    FrontendWorkerStopOutcome, FrontendWorkerStopTicket,
+    FrontendWorkerStopOutcome, FrontendWorkerStopPoll, FrontendWorkerStopTicket,
 };
 pub use live_pump::{
     run_frontend_live_pump, run_frontend_live_pump_limited, FrontendLivePacketSink,

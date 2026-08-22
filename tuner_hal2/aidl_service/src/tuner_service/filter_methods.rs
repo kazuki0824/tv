@@ -1,3 +1,6 @@
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::MetadataExt;
+
 use super::support::local_filter_handle_from_strong;
 use super::{
     build_filter_av_stream_type_request, build_filter_delay_hint_request,
@@ -6,11 +9,12 @@ use super::{
     execute_object_runtime_use_case_with_request_builder, plan_unavailable_object_method_use_case,
     status_from_hal_error, status_unknown_error, tuner_queue_desc_from_snapshot, AidlMethodCall,
     AvStreamType, BinderResult, DemuxFilterSettings, FilterAidlObject, FilterDelayHint,
-    FilterReleaseAvHandleRequest, FilterSetDataSourceRequest, IFilter, ObjectQueryRequest,
-    ObjectQueryResponse, ParcelFileDescriptor, Strong, TunerNativeHandle, TunerQueueDesc,
+    FilterSetDataSourceRequest, IFilter, ObjectQueryRequest, ObjectQueryResponse,
+    ParcelFileDescriptor, Strong, TunerNativeHandle, TunerQueueDesc,
 };
 use maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest;
-use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
+use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidArgumentKind};
+use maleicacid_tuner_hal2_demux::{AvFileIdentity, AvHandleReleaseDescriptor};
 
 impl FilterAidlObject {
     pub(crate) fn set_data_source_nullable_for_aidl(
@@ -272,20 +276,65 @@ impl IFilter for FilterAidlObject {
     }
 
     fn releaseAvHandle(&self, av_memory: &TunerNativeHandle, av_data_id: i64) -> BinderResult<()> {
-        execute_object_runtime_use_case(
-            &self.runtime(),
-            self.handle(),
-            AidlMethodCall::FilterReleaseAvHandle(FilterReleaseAvHandleRequest { av_data_id }),
-            |runtime, handle, dispatch_proof| {
-                runtime.release_filter_av_handle_for_object(
-                    handle.object_id(),
-                    handle.generation(),
-                    !av_memory.fds.is_empty(),
-                    av_data_id,
-                    dispatch_proof,
+        // 表1-C-AVHの優先順をAIDL境界でも維持する。負値はhandle形状や
+        // lifecycleを調べる前に拒否し、Quarantinedは形状判定より先に確認する。
+        if av_data_id < 0 {
+            return Err(status_from_hal_error(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "AV data id must not be negative",
+            )));
+        }
+        let runtime = self.runtime();
+        {
+            let runtime = runtime
+                .lock()
+                .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
+            runtime
+                .preflight_filter_av_handle_release_for_any_lifecycle(
+                    self.handle().object_id(),
+                    self.handle().generation(),
                 )
-            },
-        )
+                .map_err(status_from_hal_error)?;
+        }
+        let descriptor = match (av_memory.fds.as_slice(), av_memory.ints.as_slice()) {
+            ([], []) => AvHandleReleaseDescriptor::Empty,
+            ([file], [0]) => {
+                let metadata = std::fs::metadata(format!(
+                    "/proc/self/fd/{}",
+                    file.as_raw_fd()
+                ))
+                .map_err(|_| {
+                    status_from_hal_error(HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "AV release handle identity could not be classified safely",
+                    ))
+                })?;
+                AvHandleReleaseDescriptor::File(AvFileIdentity::new(
+                    metadata.dev(),
+                    metadata.ino(),
+                    metadata.size(),
+                ))
+            }
+            _ => {
+                return Err(status_from_hal_error(HalError::invalid_argument(
+                    HalInvalidArgumentKind::NumericRange,
+                    "AV handle shape is neither empty nor a single exported allocation handle",
+                )))
+            }
+        };
+        // fd同一性の取得中はservice runtime lockを保持しない。再取得後のrelease側で
+        // object identityとQuarantinedを再検証し、preflight後の競合を閉じる。
+        let mut runtime = runtime
+            .lock()
+            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
+        runtime
+            .release_filter_av_handle_for_any_lifecycle(
+                self.handle().object_id(),
+                self.handle().generation(),
+                descriptor,
+                av_data_id,
+            )
+            .map_err(status_from_hal_error)
     }
 
     fn setDataSource(&self, filter: &Strong<dyn IFilter>) -> BinderResult<()> {

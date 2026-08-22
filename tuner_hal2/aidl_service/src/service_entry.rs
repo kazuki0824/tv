@@ -6,14 +6,17 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::ITuner::BnTun
 use binder::BinderFeatures;
 use maleicacid_tuner_hal2_common::os_abi::{ioctl, last_errno};
 use maleicacid_tuner_hal2_common::{
-    FrontendBackendKind, FrontendSystem, HalError, HalErrorDetail, TUNER_SERVICE_NAME,
+    japan_isdbt_frequency_contract_range_hz, FrontendBackendKind, FrontendSystem, HalError,
+    HalErrorDetail, TUNER_SERVICE_NAME,
 };
 use maleicacid_tuner_hal2_device::dvb::{
     DtvProperties, DtvProperty, DtvPropertyBuffer, DtvPropertyUnion, DvbFrontendInfo,
     DTV_ENUM_DELSYS, FE_GET_INFO, FE_GET_PROPERTY, SYS_ISDBS, SYS_ISDBT,
 };
 use maleicacid_tuner_hal2_service_runtime::{
-    FrontendProbeOutcome, FrontendRuntimeId, LnbRegistryProfile, TunerServiceRuntime,
+    CapabilitySuppressionReason, FrontendCapabilitySnapshot, FrontendProbeOutcome,
+    FrontendRuntimeId, FrontendScalarCapability, IsdbtSegmentCapability, LnbRegistryProfile,
+    SatellitePowerTopology, TunerServiceRuntime,
 };
 
 use crate::tuner_service::TunerAidlService;
@@ -95,10 +98,153 @@ fn probe_lnb_profile_for_frontend(
     })
 }
 
+fn probe_satellite_power_topology(
+    system: FrontendSystem,
+    profile: Option<LnbRegistryProfile>,
+) -> SatellitePowerTopology {
+    if system != FrontendSystem::IsdbS {
+        return SatellitePowerTopology::UnknownOrDisabled;
+    }
+    match profile {
+        Some(LnbRegistryProfile::Px4Device15VOnly | LnbRegistryProfile::EarthPt1FixedLnb) => {
+            SatellitePowerTopology::InternalFixed15V
+        }
+        Some(LnbRegistryProfile::NoPower) => SatellitePowerTopology::ExternalOrShared,
+        None => SatellitePowerTopology::UnknownOrDisabled,
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DvbProbeVariant {
     id: i32,
     system: FrontendSystem,
+    capability: Option<FrontendCapabilitySnapshot>,
+}
+
+const JAPAN_BS_FIRST_IF_HZ: i64 = 1_049_480_000;
+const JAPAN_CS110_LAST_IF_HZ: i64 = 2_053_000_000;
+const ISDBS_SYMBOL_RATE: i32 = 28_860_000;
+const PX4_PHYSICAL_GROUP_TAG: i32 = 0x1000_0000;
+const DVB_SHARED_PHYSICAL_GROUP_ID: i32 = 0x2000_0000;
+
+fn px4_capability(
+    unit: i32,
+    device_name: &str,
+    system: FrontendSystem,
+) -> Option<FrontendCapabilitySnapshot> {
+    let family = px4_device_family_code(device_name);
+    if unit < 0 || family <= 0 || unit > 0x3fff || family > 0x03ff {
+        return None;
+    }
+    let group_payload = family.checked_shl(14)?.checked_add(unit)?;
+    let exclusive_group_id = PX4_PHYSICAL_GROUP_TAG.checked_add(group_payload)?;
+    let (scalar, isdbt_segment) = match system {
+        FrontendSystem::IsdbT => {
+            let (min_frequency_hz, max_frequency_hz, _) =
+                japan_isdbt_frequency_contract_range_hz();
+            (
+                FrontendScalarCapability {
+                    min_frequency_hz: i64::try_from(min_frequency_hz).ok()?,
+                    max_frequency_hz: i64::try_from(max_frequency_hz).ok()?,
+                    min_symbol_rate: 0,
+                    max_symbol_rate: 0,
+                    acquire_range_hz: 0,
+                },
+                Some(IsdbtSegmentCapability {
+                    // px4系の固定product profileはsegment数を指定せずに
+                    // ISDB-T選局する。
+                    is_segment_auto: true,
+                    is_full_segment: true,
+                }),
+            )
+        }
+        FrontendSystem::IsdbS => (
+            FrontendScalarCapability {
+                min_frequency_hz: JAPAN_BS_FIRST_IF_HZ,
+                max_frequency_hz: JAPAN_CS110_LAST_IF_HZ,
+                min_symbol_rate: ISDBS_SYMBOL_RATE,
+                max_symbol_rate: ISDBS_SYMBOL_RATE,
+                acquire_range_hz: 0,
+            },
+            None,
+        ),
+        FrontendSystem::IsdbS3 | FrontendSystem::DvbS => return None,
+    };
+    Some(FrontendCapabilitySnapshot {
+        scalar,
+        exclusive_group_id,
+        isdbt_segment,
+    })
+}
+
+fn dvb_capability(
+    info: &DvbFrontendInfo,
+    system: FrontendSystem,
+) -> Option<FrontendCapabilitySnapshot> {
+    let frequency_scale = if matches!(system, FrontendSystem::IsdbS) {
+        1_000_i64
+    } else {
+        1_i64
+    };
+    let probed_min = i64::from(info.frequency_min).checked_mul(frequency_scale)?;
+    let probed_max = i64::from(info.frequency_max).checked_mul(frequency_scale)?;
+    let (scalar, isdbt_segment) = match system {
+        FrontendSystem::IsdbT => {
+            let (contract_min, contract_max, _) = japan_isdbt_frequency_contract_range_hz();
+            let contract_min = i64::try_from(contract_min).ok()?;
+            let contract_max = i64::try_from(contract_max).ok()?;
+            if probed_min > contract_min || probed_max < contract_max {
+                return None;
+            }
+            (
+                FrontendScalarCapability {
+                    min_frequency_hz: contract_min,
+                    max_frequency_hz: contract_max,
+                    min_symbol_rate: 0,
+                    max_symbol_rate: 0,
+                    acquire_range_hz: 0,
+                },
+                Some(IsdbtSegmentCapability {
+                    // earth-pt1 profileはsegment数を指定しない
+                    // 固定ISDB-T選局経路を持つ。
+                    is_segment_auto: true,
+                    is_full_segment: true,
+                }),
+            )
+        }
+        FrontendSystem::IsdbS => {
+            if probed_min > JAPAN_BS_FIRST_IF_HZ
+                || probed_max < JAPAN_CS110_LAST_IF_HZ
+                || info.symbol_rate_min == 0
+                || info.symbol_rate_min > info.symbol_rate_max
+            {
+                return None;
+            }
+            let min_symbol_rate = i32::try_from(info.symbol_rate_min).ok()?;
+            let max_symbol_rate = i32::try_from(info.symbol_rate_max).ok()?;
+            if min_symbol_rate > ISDBS_SYMBOL_RATE || max_symbol_rate < ISDBS_SYMBOL_RATE {
+                return None;
+            }
+            (
+                FrontendScalarCapability {
+                    min_frequency_hz: JAPAN_BS_FIRST_IF_HZ,
+                    max_frequency_hz: JAPAN_CS110_LAST_IF_HZ,
+                    min_symbol_rate,
+                    max_symbol_rate,
+                    acquire_range_hz: 0,
+                },
+                None,
+            )
+        }
+        FrontendSystem::IsdbS3 | FrontendSystem::DvbS => return None,
+    };
+    Some(FrontendCapabilitySnapshot {
+        scalar,
+        // earth-pt1の独立RF経路を識別するprobe証跡がないため、
+        // 保守的に共有groupとする。
+        exclusive_group_id: DVB_SHARED_PHYSICAL_GROUP_ID,
+        isdbt_segment,
+    })
 }
 
 fn dvb_export_frontend_id(
@@ -118,6 +264,16 @@ fn dvb_export_frontend_id(
         .checked_add(adapter.checked_shl(12)?)
         .and_then(|base| base.checked_add(frontend_index.checked_shl(4)?))
         .and_then(|base| base.checked_add(variant))
+}
+
+fn dvb_driver_basename(adapter: i32, frontend_index: i32) -> Option<String> {
+    let link = PathBuf::from(format!(
+        "/sys/class/dvb/dvb{adapter}.frontend{frontend_index}/device/driver"
+    ));
+    std::fs::read_link(link).ok().and_then(|path| {
+        path.file_name()
+            .map(|name| name.to_string_lossy().to_string())
+    })
 }
 
 fn systems_from_dvb_delsys_buffer(buffer: DtvPropertyBuffer) -> Vec<FrontendSystem> {
@@ -143,7 +299,9 @@ fn systems_from_dvb_delsys_buffer(buffer: DtvPropertyBuffer) -> Vec<FrontendSyst
     systems
 }
 
-fn probe_dvb_delivery_systems(path: &PathBuf) -> Result<Vec<FrontendSystem>, HalError> {
+fn probe_dvb_delivery_systems(
+    path: &PathBuf,
+) -> Result<(Vec<FrontendSystem>, DvbFrontendInfo), HalError> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -207,7 +365,10 @@ fn probe_dvb_delivery_systems(path: &PathBuf) -> Result<Vec<FrontendSystem>, Hal
             errno: last_errno(),
         });
     }
-    Ok(systems_from_dvb_delsys_buffer(prop.read_buffer_unaligned()))
+    Ok((
+        systems_from_dvb_delsys_buffer(prop.read_buffer_unaligned()),
+        info,
+    ))
 }
 
 fn dvb_probe_variants(
@@ -215,11 +376,15 @@ fn dvb_probe_variants(
     frontend_index: i32,
     path: &PathBuf,
 ) -> Result<Vec<DvbProbeVariant>, HalError> {
-    let systems = probe_dvb_delivery_systems(path)?;
+    let (systems, info) = probe_dvb_delivery_systems(path)?;
     let mut variants = Vec::new();
     for system in systems {
         if let Some(id) = dvb_export_frontend_id(adapter, frontend_index, system) {
-            variants.push(DvbProbeVariant { id, system });
+            variants.push(DvbProbeVariant {
+                id,
+                system,
+                capability: dvb_capability(&info, system),
+            });
         }
     }
     Ok(variants)
@@ -255,30 +420,58 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
         let Some(base_id) = px4_export_frontend_base_id(unit, &name) else {
             continue;
         };
+        let Some(isdbt_capability) = px4_capability(unit, &name, FrontendSystem::IsdbT) else {
+            outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
+                backend: FrontendBackendKind::Px4CharDevice,
+                path,
+                reason: CapabilitySuppressionReason::InvalidCapabilityProfile,
+            });
+            continue;
+        };
+        let lnb_profile = probe_lnb_profile_for_frontend(
+            FrontendBackendKind::Px4CharDevice,
+            FrontendSystem::IsdbT,
+            &path,
+            Some(&name),
+        );
         outcomes.push(FrontendProbeOutcome::Available {
             id: FrontendRuntimeId(base_id),
             backend: FrontendBackendKind::Px4CharDevice,
             system: FrontendSystem::IsdbT,
             path: path.clone(),
-            lnb_profile: probe_lnb_profile_for_frontend(
-                FrontendBackendKind::Px4CharDevice,
+            lnb_profile,
+            satellite_power_topology: probe_satellite_power_topology(
                 FrontendSystem::IsdbT,
-                &path,
-                Some(&name),
+                lnb_profile,
             ),
+            capability: isdbt_capability,
         });
         if let Some(isdbs_id) = base_id.checked_add(1) {
+            let Some(isdbs_capability) = px4_capability(unit, &name, FrontendSystem::IsdbS) else {
+                outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
+                    backend: FrontendBackendKind::Px4CharDevice,
+                    path: path.clone(),
+                    reason: CapabilitySuppressionReason::InvalidCapabilityProfile,
+                });
+                continue;
+            };
+            let lnb_profile = probe_lnb_profile_for_frontend(
+                FrontendBackendKind::Px4CharDevice,
+                FrontendSystem::IsdbS,
+                &path,
+                Some(&name),
+            );
             outcomes.push(FrontendProbeOutcome::Available {
                 id: FrontendRuntimeId(isdbs_id),
                 backend: FrontendBackendKind::Px4CharDevice,
                 system: FrontendSystem::IsdbS,
                 path: path.clone(),
-                lnb_profile: probe_lnb_profile_for_frontend(
-                    FrontendBackendKind::Px4CharDevice,
+                lnb_profile,
+                satellite_power_topology: probe_satellite_power_topology(
                     FrontendSystem::IsdbS,
-                    &path,
-                    Some(&name),
+                    lnb_profile,
                 ),
+                capability: isdbs_capability,
             });
         }
     }
@@ -291,27 +484,49 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
             if !path.exists() {
                 continue;
             }
+            if dvb_driver_basename(adapter, frontend_index).as_deref() != Some("earth-pt1") {
+                outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
+                    backend: FrontendBackendKind::LinuxDvb,
+                    path,
+                    reason: CapabilitySuppressionReason::DeviceFamilyDisabled,
+                });
+                continue;
+            }
             match dvb_probe_variants(adapter, frontend_index, &path) {
                 Ok(variants) => {
                     if variants.is_empty() {
                         outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
                             backend: FrontendBackendKind::LinuxDvb,
                             path,
-                            reason: maleicacid_tuner_hal2_service_runtime::CapabilitySuppressionReason::UnsupportedDeliverySystem,
+                            reason: CapabilitySuppressionReason::UnsupportedDeliverySystem,
                         });
                     } else {
                         for variant in variants {
+                            let Some(capability) = variant.capability else {
+                                outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
+                                    backend: FrontendBackendKind::LinuxDvb,
+                                    path: path.clone(),
+                                    reason: CapabilitySuppressionReason::InvalidCapabilityProfile,
+                                });
+                                continue;
+                            };
+                            let lnb_profile = probe_lnb_profile_for_frontend(
+                                FrontendBackendKind::LinuxDvb,
+                                variant.system,
+                                &path,
+                                None,
+                            );
                             outcomes.push(FrontendProbeOutcome::Available {
                                 id: FrontendRuntimeId(variant.id),
                                 backend: FrontendBackendKind::LinuxDvb,
                                 system: variant.system,
                                 path: path.clone(),
-                                lnb_profile: probe_lnb_profile_for_frontend(
-                                    FrontendBackendKind::LinuxDvb,
+                                lnb_profile,
+                                satellite_power_topology: probe_satellite_power_topology(
                                     variant.system,
-                                    &path,
-                                    None,
+                                    lnb_profile,
                                 ),
+                                capability,
                             });
                         }
                     }
@@ -330,7 +545,11 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
 
 pub fn run_service() {
     binder::ProcessState::start_thread_pool();
-    let context = crate::service_context::AidlServiceContext::shared(TunerServiceRuntime::new());
+    let runtime = match TunerServiceRuntime::try_new() {
+        Ok(runtime) => runtime,
+        Err(_) => std::process::exit(1),
+    };
+    let context = crate::service_context::AidlServiceContext::shared(runtime);
     if context
         .reset_runtime_from_probe_results(probe_frontends())
         .is_err()

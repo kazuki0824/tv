@@ -422,7 +422,7 @@ impl FrontendBackendKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum FrontendSystem {
     IsdbT,
     IsdbS,
@@ -505,6 +505,12 @@ impl FrontendDevicePath {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrontendIsdbtPartialReceptionRequirement {
+    Unspecified,
+    Required(bool),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrontendTuneRequest {
     pub system: FrontendSystem,
@@ -514,6 +520,15 @@ pub struct FrontendTuneRequest {
     pub stream_id_kind: Option<FrontendStreamIdKind>,
     pub bandwidth_hz: Option<u32>,
     pub symbol_rate: Option<u32>,
+    pub partial_reception: FrontendIsdbtPartialReceptionRequirement,
+}
+
+impl FrontendTuneRequest {
+    /// tune と non-blind scan では endFrequency を選局条件に含めない。
+    pub fn normalized_for_non_blind_operation(mut self) -> Self {
+        self.end_frequency = None;
+        self
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -586,6 +601,10 @@ pub enum HalError {
         detail: HalErrorDetail,
     },
     CleanupFailed {
+        resource: &'static str,
+        detail: HalErrorDetail,
+    },
+    OutOfMemory {
         resource: &'static str,
         detail: HalErrorDetail,
     },
@@ -665,6 +684,13 @@ impl HalError {
 
     pub fn cleanup_failed(resource: &'static str, detail: impl Into<String>) -> Self {
         Self::CleanupFailed {
+            resource,
+            detail: HalErrorDetail::new(detail),
+        }
+    }
+
+    pub fn out_of_memory(resource: &'static str, detail: impl Into<String>) -> Self {
+        Self::OutOfMemory {
             resource,
             detail: HalErrorDetail::new(detail),
         }
@@ -787,6 +813,11 @@ impl fmt::Display for HalError {
             HalError::CleanupFailed { resource, detail } => write!(
                 f,
                 "cleanup failed: resource={} detail={}",
+                resource, detail.detail
+            ),
+            HalError::OutOfMemory { resource, detail } => write!(
+                f,
+                "out of memory: resource={} detail={}",
                 resource, detail.detail
             ),
             HalError::ComposedFailure {

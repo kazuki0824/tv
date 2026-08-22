@@ -1,6 +1,8 @@
+use std::collections::BTreeMap;
+
 use maleicacid_tuner_hal2_binder_adapter::{AidlMethodAdapter, AidlMethodCall};
 use maleicacid_tuner_hal2_common::{
-    compose_primary_cleanup_failure, FirstErrorCollector, HalError,
+    compose_primary_cleanup_failure, FirstErrorCollector, HalError, HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_domain_request::{
     AidlApi, AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan,
@@ -533,8 +535,66 @@ impl ObjectCleanupDiagnosticRecord {
     }
 }
 
+#[must_use = "dropping this value leaves the cleanup obligation pending and reissuable"]
+#[derive(Debug, Eq, PartialEq)]
+pub struct CloseCleanupAuthority {
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+    key: CloseCleanupAuthorityKey,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CloseCleanupObligation {
+    generation: AidlObjectGeneration,
+    obligation_id: u64,
+    active_attempt: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CloseCleanupAuthorityKey {
+    pub(crate) obligation_id: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CloseCleanupAttemptKey {
+    pub(crate) obligation_id: u64,
+    pub(crate) attempt_id: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CloseCleanupAttemptOutcome {
+    Complete,
+    Pending { step: CleanupStep },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ObjectCloseTxnStateError {
+    InvalidAuthority,
+    IdentifierExhausted,
+}
+
+#[must_use = "a started cleanup attempt must be finished against its generation fence"]
+#[derive(Debug, Eq, PartialEq)]
+pub struct CloseCleanupAttemptCompletion {
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+    key: CloseCleanupAttemptKey,
+}
+
+#[must_use = "the cleanup attempt owns the only authority to perform these side effects"]
+#[derive(Debug, Eq, PartialEq)]
+pub struct ObjectCloseCleanupAttempt {
+    completion: CloseCleanupAttemptCompletion,
+    cascade_entries: Vec<RuntimeObjectEntry>,
+    domain_cleanup_step: CleanupStep,
+    artifact_cleanup_commands: Vec<ObjectCloseArtifactCleanupCommand>,
+    domain_cleanup_commands: Vec<ObjectDomainCleanupCommand>,
+}
+
+#[must_use = "begin_cleanup_attempt must be called immediately before external cleanup"]
 #[derive(Debug, Eq, PartialEq)]
 pub struct ObjectCloseUseCasePlan {
+    authority: CloseCleanupAuthority,
     cascade_entries: Vec<RuntimeObjectEntry>,
     domain_cleanup_step: CleanupStep,
     artifact_cleanup_commands: Vec<ObjectCloseArtifactCleanupCommand>,
@@ -542,18 +602,53 @@ pub struct ObjectCloseUseCasePlan {
 }
 
 impl ObjectCloseUseCasePlan {
+    pub fn begin_cleanup_attempt(
+        self,
+        runtime: &mut TunerServiceRuntime,
+    ) -> Result<ObjectCloseCleanupAttempt, HalError> {
+        let Self {
+            authority,
+            cascade_entries,
+            domain_cleanup_step,
+            artifact_cleanup_commands,
+            domain_cleanup_commands,
+        } = self;
+        let key = runtime
+            .object_table_mut()
+            .begin_close_cleanup_attempt(
+                authority.object_id,
+                authority.generation,
+                authority.key,
+            )
+            .map_err(object_table_error_to_hal)?;
+        Ok(ObjectCloseCleanupAttempt {
+            completion: CloseCleanupAttemptCompletion {
+                object_id: authority.object_id,
+                generation: authority.generation,
+                key,
+            },
+            cascade_entries,
+            domain_cleanup_step,
+            artifact_cleanup_commands,
+            domain_cleanup_commands,
+        })
+    }
+}
+
+impl ObjectCloseCleanupAttempt {
     pub fn execute_cleanup_report_with_executor<R, D, A>(
         self,
         runtime_executor: &mut R,
         domain_executor: &mut D,
         artifact_executor: &mut A,
-    ) -> ObjectCleanupExecutionReport
+    ) -> (CloseCleanupAttemptCompletion, ObjectCleanupExecutionReport)
     where
         R: ObjectCloseRuntimeExecutor,
         D: ObjectDomainCleanupExecutor,
         A: ObjectArtifactCleanupExecutor,
     {
         let Self {
+            completion,
             cascade_entries,
             domain_cleanup_step,
             artifact_cleanup_commands,
@@ -594,7 +689,7 @@ impl ObjectCloseUseCasePlan {
             )
             .execute_outcome_with(runtime_executor),
         );
-        report
+        (completion, report)
     }
 }
 
@@ -867,6 +962,176 @@ fn unregister_public_runtime_entries_for_drop_leak(
         .map_err(|error| ObjectCloseCleanupFailure::new(CleanupStep::UnregisterRuntime, error))
 }
 
+/// Canonical persistent owner for close-cleanup obligations and attempt
+/// fences. `RuntimeObjectTable` owns this value as a private sub-owner and
+/// delegates every obligation mutation through these entries.
+#[derive(Debug)]
+pub struct ObjectCloseTxn {
+    obligations: BTreeMap<AidlObjectId, CloseCleanupObligation>,
+    next_obligation_id: u64,
+    next_attempt_id: u64,
+}
+
+impl ObjectCloseTxn {
+    pub(crate) fn new() -> Self {
+        Self {
+            obligations: BTreeMap::new(),
+            next_obligation_id: 0,
+            next_attempt_id: 0,
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.obligations.clear();
+        self.next_obligation_id = 0;
+        self.next_attempt_id = 0;
+    }
+
+    pub(crate) fn clear_obligation(&mut self, object_id: AidlObjectId) {
+        self.obligations.remove(&object_id);
+    }
+
+    pub(crate) fn issue_cleanup_authority(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<CloseCleanupAuthorityKey, ObjectCloseTxnStateError> {
+        if let Some(obligation) = self.obligations.get(&object_id) {
+            if obligation.generation != generation || obligation.active_attempt.is_some() {
+                return Err(ObjectCloseTxnStateError::InvalidAuthority);
+            }
+            return Ok(CloseCleanupAuthorityKey {
+                obligation_id: obligation.obligation_id,
+            });
+        }
+
+        let obligation_id = self
+            .next_obligation_id
+            .checked_add(1)
+            .filter(|id| *id != 0)
+            .ok_or(ObjectCloseTxnStateError::IdentifierExhausted)?;
+        self.next_obligation_id = obligation_id;
+        self.obligations.insert(
+            object_id,
+            CloseCleanupObligation {
+                generation,
+                obligation_id,
+                active_attempt: None,
+            },
+        );
+        Ok(CloseCleanupAuthorityKey { obligation_id })
+    }
+
+    pub(crate) fn begin_cleanup_attempt(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        authority: CloseCleanupAuthorityKey,
+    ) -> Result<CloseCleanupAttemptKey, ObjectCloseTxnStateError> {
+        let obligation = self
+            .obligations
+            .get(&object_id)
+            .copied()
+            .ok_or(ObjectCloseTxnStateError::InvalidAuthority)?;
+        if obligation.generation != generation
+            || obligation.obligation_id != authority.obligation_id
+            || obligation.active_attempt.is_some()
+        {
+            return Err(ObjectCloseTxnStateError::InvalidAuthority);
+        }
+        let attempt_id = self
+            .next_attempt_id
+            .checked_add(1)
+            .filter(|id| *id != 0)
+            .ok_or(ObjectCloseTxnStateError::IdentifierExhausted)?;
+        self.next_attempt_id = attempt_id;
+        let obligation = self
+            .obligations
+            .get_mut(&object_id)
+            .ok_or(ObjectCloseTxnStateError::InvalidAuthority)?;
+        obligation.active_attempt = Some(attempt_id);
+        Ok(CloseCleanupAttemptKey {
+            obligation_id: authority.obligation_id,
+            attempt_id,
+        })
+    }
+
+    pub(crate) fn attempt_is_current(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        attempt: CloseCleanupAttemptKey,
+    ) -> bool {
+        self.obligations.get(&object_id).is_some_and(|obligation| {
+            obligation.generation == generation
+                && obligation.obligation_id == attempt.obligation_id
+                && obligation.active_attempt == Some(attempt.attempt_id)
+        })
+    }
+
+    pub(crate) fn finish_cleanup_attempt(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        attempt: CloseCleanupAttemptKey,
+        complete: bool,
+    ) -> Result<(), ObjectCloseTxnStateError> {
+        if !self.attempt_is_current(object_id, generation, attempt) {
+            return Err(ObjectCloseTxnStateError::InvalidAuthority);
+        }
+        if complete {
+            self.obligations.remove(&object_id);
+        } else {
+            let obligation = self
+                .obligations
+                .get_mut(&object_id)
+                .ok_or(ObjectCloseTxnStateError::InvalidAuthority)?;
+            obligation.active_attempt = None;
+        }
+        Ok(())
+    }
+
+    pub fn is_idempotent_complete(
+        runtime: &TunerServiceRuntime,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        object_kind: AidlObjectKind,
+    ) -> Result<bool, HalError> {
+        let entry = runtime.object_table().entry(object_id).ok_or_else(|| {
+            HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "AIDL object is missing during close preflight",
+            )
+        })?;
+        if entry.generation != generation || entry.object_kind != object_kind {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "AIDL object identity changed during close preflight",
+            ));
+        }
+        Ok(entry.lifecycle == crate::RuntimeObjectLifecycle::Closed
+            && matches!(object_kind, AidlObjectKind::Frontend | AidlObjectKind::Lnb))
+    }
+
+    pub fn begin(
+        runtime: &mut TunerServiceRuntime,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        object_kind: AidlObjectKind,
+        method: AidlMethodCall,
+    ) -> Result<ObjectCloseUseCasePlan, HalError> {
+        begin_object_close_txn(runtime, object_id, generation, object_kind, method)
+    }
+
+    pub fn finish(
+        runtime: &mut TunerServiceRuntime,
+        completion: CloseCleanupAttemptCompletion,
+        cleanup_result: Result<(), ObjectCloseCleanupFailure>,
+    ) -> Result<(), HalError> {
+        finish_object_close_txn(runtime, completion, cleanup_result)
+    }
+}
+
 pub fn close_object_use_case(
     runtime: &mut TunerServiceRuntime,
     object_id: AidlObjectId,
@@ -874,16 +1139,24 @@ pub fn close_object_use_case(
     object_kind: AidlObjectKind,
     method: AidlMethodCall,
 ) -> Result<ObjectCloseUseCasePlan, HalError> {
-    match plan_and_begin_object_close_method_call_dispatch(
+    ObjectCloseTxn::begin(runtime, object_id, generation, object_kind, method)
+}
+
+fn begin_object_close_txn(
+    runtime: &mut TunerServiceRuntime,
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+    object_kind: AidlObjectKind,
+    method: AidlMethodCall,
+) -> Result<ObjectCloseUseCasePlan, HalError> {
+    let authority = plan_and_begin_object_close_method_call_dispatch(
         runtime,
         object_id,
         generation,
         object_kind,
         method,
         CleanupStep::ReleaseBackend,
-    )? {
-        AidlObjectCloseability::BeginClose => {}
-    }
+    )?;
 
     let cascade_entries = match object_close_cascade_entries(runtime, object_id, generation) {
         Ok(entries) => entries,
@@ -939,6 +1212,7 @@ pub fn close_object_use_case(
         .collect();
 
     Ok(ObjectCloseUseCasePlan {
+        authority,
         cascade_entries,
         domain_cleanup_step: CleanupStep::ReleaseBackend,
         artifact_cleanup_commands,
@@ -948,19 +1222,29 @@ pub fn close_object_use_case(
 
 pub fn finish_object_close_use_case(
     runtime: &mut TunerServiceRuntime,
-    object_id: AidlObjectId,
-    generation: AidlObjectGeneration,
+    completion: CloseCleanupAttemptCompletion,
     cleanup_result: Result<(), ObjectCloseCleanupFailure>,
 ) -> Result<(), HalError> {
+    ObjectCloseTxn::finish(runtime, completion, cleanup_result)
+}
+
+fn finish_object_close_txn(
+    runtime: &mut TunerServiceRuntime,
+    completion: CloseCleanupAttemptCompletion,
+    cleanup_result: Result<(), ObjectCloseCleanupFailure>,
+) -> Result<(), HalError> {
+    let object_id = completion.object_id;
+    let generation = completion.generation;
     if let Err(cleanup_failure) = cleanup_result {
-        match mark_object_close_cleanup_failed_cascade(
-            runtime,
+        match runtime.object_table_mut().finish_close_cleanup_attempt(
             object_id,
             generation,
-            cleanup_failure.step(),
-            "object close cleanup failure could not be recorded",
-        ) {
-            Ok(()) => return Err(cleanup_failure.into_error()),
+            completion.key,
+            CloseCleanupAttemptOutcome::Pending {
+                step: cleanup_failure.step(),
+            },
+        ).map_err(object_table_error_to_hal) {
+            Ok(_) => return Err(cleanup_failure.into_error()),
             Err(mark_error) => {
                 return Err(compose_primary_cleanup_failure(
                     "object close cleanup failed and cleanup-failed marking failed",
@@ -971,43 +1255,16 @@ pub fn finish_object_close_use_case(
         }
     }
 
-    if let Err(cleanup_error) = object_close_cascade_entries(runtime, object_id, generation) {
-        return match mark_object_close_cleanup_failed_cascade(
-            runtime,
+    runtime
+        .object_table_mut()
+        .finish_close_cleanup_attempt(
             object_id,
             generation,
-            CleanupStep::ReleaseLedger,
-            "object close finalization failure could not be recorded",
-        ) {
-            Ok(()) => Err(cleanup_error),
-            Err(mark_error) => Err(compose_primary_cleanup_failure(
-                "object close finalization failed and cleanup-failed marking failed",
-                cleanup_error,
-                mark_error,
-            )),
-        };
-    }
-
-    if let Err(cleanup_error) =
-        commit_object_close_cascade(runtime, object_id, generation).map(|_| ())
-    {
-        return match mark_object_close_cleanup_failed_cascade(
-            runtime,
-            object_id,
-            generation,
-            CleanupStep::ReleaseLedger,
-            "object close commit failure could not be recorded",
-        ) {
-            Ok(()) => Err(cleanup_error),
-            Err(mark_error) => Err(compose_primary_cleanup_failure(
-                "object close commit failed and cleanup-failed marking failed",
-                cleanup_error,
-                mark_error,
-            )),
-        };
-    }
-
-    Ok(())
+            completion.key,
+            CloseCleanupAttemptOutcome::Complete,
+        )
+        .map(|_| ())
+        .map_err(object_table_error_to_hal)
 }
 
 pub(crate) fn plan_object_close_method_dispatch(
@@ -1029,7 +1286,7 @@ pub(crate) fn plan_and_begin_object_close_method_call_dispatch(
     object_kind: AidlObjectKind,
     method: AidlMethodCall,
     step: CleanupStep,
-) -> Result<AidlObjectCloseability, HalError> {
+) -> Result<CloseCleanupAuthority, HalError> {
     let method_plan = AidlMethodAdapter::plan(method)?;
     plan_and_begin_object_close_command_dispatch(
         runtime,
@@ -1050,7 +1307,7 @@ pub(crate) fn plan_and_begin_object_close_command_dispatch(
     command_plan: CommandPlan,
     executable_request: Option<RuntimeExecutableRequest>,
     step: CleanupStep,
-) -> Result<AidlObjectCloseability, HalError> {
+) -> Result<CloseCleanupAuthority, HalError> {
     match plan_object_close_method_dispatch(
         runtime,
         object_id,
@@ -1060,8 +1317,15 @@ pub(crate) fn plan_and_begin_object_close_command_dispatch(
         executable_request,
     )? {
         AidlObjectCloseability::BeginClose => {
-            begin_object_close_cascade(runtime, object_id, generation, step)?;
-            Ok(AidlObjectCloseability::BeginClose)
+            let (_, key) = runtime
+                .object_table_mut()
+                .begin_close_cascade_with_cleanup_authority(object_id, generation, step)
+                .map_err(object_table_error_to_hal)?;
+            Ok(CloseCleanupAuthority {
+                object_id,
+                generation,
+                key,
+            })
         }
     }
 }
@@ -1251,36 +1515,107 @@ mod tests {
         );
     }
 
-    #[test]
-    fn finish_close_use_case_commits_after_successful_cleanup_report() {
+    fn runtime_with_filter_for_close_attempt(object_id: i64) -> TunerServiceRuntime {
         let mut runtime = TunerServiceRuntime::new();
         runtime
             .object_table_mut()
             .insert(RuntimeObjectEntry {
                 object_kind: AidlObjectKind::Filter,
-                object_id: AidlObjectId(4),
+                object_id: AidlObjectId(object_id),
                 generation: AidlObjectGeneration(1),
-                ledger_id: LedgerId(4),
+                ledger_id: LedgerId(object_id),
                 ledger_generation: LedgerGeneration(1),
                 owner: RuntimeOwnerRelation::Root,
                 lifecycle: crate::RuntimeObjectLifecycle::Live,
             })
             .expect("insert succeeds");
-        begin_object_close_cascade(
-            &mut runtime,
-            AidlObjectId(4),
-            AidlObjectGeneration(1),
-            CleanupStep::ReleaseBackend,
-        )
-        .expect("begin close succeeds");
+        runtime
+    }
 
-        finish_object_close_use_case(
-            &mut runtime,
-            AidlObjectId(4),
+    fn begin_filter_close_plan(
+        runtime: &mut TunerServiceRuntime,
+        object_id: i64,
+    ) -> ObjectCloseUseCasePlan {
+        close_object_use_case(
+            runtime,
+            AidlObjectId(object_id),
             AidlObjectGeneration(1),
-            Ok(()),
+            AidlObjectKind::Filter,
+            AidlMethodCall::FilterClose,
         )
-        .expect("finish succeeds");
+        .expect("filter close plan begins")
+    }
+
+    #[test]
+    fn close_cleanup_authority_can_cross_the_reaper_thread_boundary() {
+        fn assert_send<T: Send>() {}
+
+        assert_send::<CloseCleanupAuthority>();
+    }
+
+    #[test]
+    fn dropped_cleanup_authority_is_reissued_before_side_effects_start() {
+        let mut runtime = runtime_with_filter_for_close_attempt(3);
+        let first = begin_filter_close_plan(&mut runtime, 3);
+        drop(first);
+
+        let retry = begin_filter_close_plan(&mut runtime, 3);
+        retry
+            .begin_cleanup_attempt(&mut runtime)
+            .expect("dropped authority leaves the obligation reissuable");
+    }
+
+    #[test]
+    fn cleanup_attempt_fence_allows_only_one_side_effect_executor() {
+        let mut runtime = runtime_with_filter_for_close_attempt(30);
+        let first = begin_filter_close_plan(&mut runtime, 30);
+        let competing = begin_filter_close_plan(&mut runtime, 30);
+
+        first
+            .begin_cleanup_attempt(&mut runtime)
+            .expect("first cleanup attempt starts");
+        assert!(competing.begin_cleanup_attempt(&mut runtime).is_err());
+    }
+
+    #[test]
+    fn stale_cleanup_completion_cannot_finish_a_retried_attempt() {
+        let mut runtime = runtime_with_filter_for_close_attempt(31);
+        let first = begin_filter_close_plan(&mut runtime, 31)
+            .begin_cleanup_attempt(&mut runtime)
+            .expect("first cleanup attempt starts");
+        let stale_completion = CloseCleanupAttemptCompletion {
+            object_id: first.completion.object_id,
+            generation: first.completion.generation,
+            key: first.completion.key,
+        };
+        let first_result = finish_object_close_use_case(
+            &mut runtime,
+            first.completion,
+            Err(ObjectCloseCleanupFailure::new(
+                CleanupStep::ReleaseBackend,
+                HalError::cleanup_failed("first cleanup attempt", "injected cleanup failure"),
+            )),
+        );
+        assert!(first_result.is_err());
+
+        let retry = begin_filter_close_plan(&mut runtime, 31)
+            .begin_cleanup_attempt(&mut runtime)
+            .expect("retry cleanup attempt starts");
+        assert!(finish_object_close_use_case(&mut runtime, stale_completion, Ok(())).is_err());
+        finish_object_close_use_case(&mut runtime, retry.completion, Ok(()))
+            .expect("current cleanup attempt can finish");
+    }
+
+    #[test]
+    fn finish_close_use_case_commits_after_successful_cleanup_report() {
+        let mut runtime = runtime_with_filter_for_close_attempt(4);
+        let close_plan = begin_filter_close_plan(&mut runtime, 4);
+        let cleanup_attempt = close_plan
+            .begin_cleanup_attempt(&mut runtime)
+            .expect("cleanup attempt begins");
+        let completion = cleanup_attempt.completion;
+
+        finish_object_close_use_case(&mut runtime, completion, Ok(())).expect("finish succeeds");
 
         assert_eq!(
             runtime
@@ -1294,31 +1629,16 @@ mod tests {
 
     #[test]
     fn finish_close_use_case_marks_cleanup_failed_after_cleanup_failure() {
-        let mut runtime = TunerServiceRuntime::new();
-        runtime
-            .object_table_mut()
-            .insert(RuntimeObjectEntry {
-                object_kind: AidlObjectKind::Filter,
-                object_id: AidlObjectId(5),
-                generation: AidlObjectGeneration(1),
-                ledger_id: LedgerId(5),
-                ledger_generation: LedgerGeneration(1),
-                owner: RuntimeOwnerRelation::Root,
-                lifecycle: crate::RuntimeObjectLifecycle::Live,
-            })
-            .expect("insert succeeds");
-        begin_object_close_cascade(
-            &mut runtime,
-            AidlObjectId(5),
-            AidlObjectGeneration(1),
-            CleanupStep::ReleaseBackend,
-        )
-        .expect("begin close succeeds");
+        let mut runtime = runtime_with_filter_for_close_attempt(5);
+        let close_plan = begin_filter_close_plan(&mut runtime, 5);
+        let cleanup_attempt = close_plan
+            .begin_cleanup_attempt(&mut runtime)
+            .expect("cleanup attempt begins");
+        let completion = cleanup_attempt.completion;
 
         let result = finish_object_close_use_case(
             &mut runtime,
-            AidlObjectId(5),
-            AidlObjectGeneration(1),
+            completion,
             Err(ObjectCloseCleanupFailure::new(
                 CleanupStep::ReleaseBackend,
                 HalError::cleanup_failed(
@@ -1335,7 +1655,7 @@ mod tests {
                 .entry(AidlObjectId(5))
                 .expect("object remains tracked")
                 .lifecycle,
-            crate::RuntimeObjectLifecycle::CleanupFailed {
+            crate::RuntimeObjectLifecycle::CleanupPending {
                 step: CleanupStep::ReleaseBackend
             }
         );

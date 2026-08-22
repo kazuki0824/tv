@@ -1,114 +1,171 @@
-use maleicacid_tuner_hal2_common::FrontendDevicePath;
+use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendDevicePath};
 use maleicacid_tuner_hal2_device::{
-    apply_frontend_backend_lnb_voltage, FrontendBackendLnbApplyPlan, FrontendLnbVoltage,
+    apply_frontend_backend_lnb_voltage_classified, FrontendBackendLnbApplyOutcome,
+    FrontendBackendLnbApplyPlan, FrontendLnbVoltage,
 };
 use maleicacid_tuner_hal2_lnb::{
-    LnbBackendOps, LnbDiseqcMessage, LnbElectricalState, LnbFailureKind, LnbTone, LnbVoltage,
+    LnbBackendApplyOutcome, LnbBackendOps, LnbDiseqcMessage, LnbElectricalState, LnbFailureKind,
+    LnbTone, LnbVoltage,
 };
 
-use crate::registry::{FrontendRuntimeId, LnbRegistryProfile, LnbRuntimeId, RuntimeRegistry};
+use crate::registry::{
+    FrontendRuntimeId, LnbPhysicalIoPermit, LnbRegistryProfile, LnbRuntimeId, RuntimeRegistry,
+};
 
-pub(crate) struct ServiceRuntimeLnbProfileAdapter<'a> {
-    registry: &'a RuntimeRegistry,
-    target_lnb_id: LnbRuntimeId,
-    pending_frontend_id: Option<FrontendRuntimeId>,
+#[derive(Debug)]
+struct LnbFrontendIoSnapshot {
+    frontend_id: FrontendRuntimeId,
+    backend: FrontendBackendKind,
+    device_path: std::path::PathBuf,
 }
 
-impl<'a> ServiceRuntimeLnbProfileAdapter<'a> {
-    pub(crate) fn new(registry: &'a RuntimeRegistry, target_lnb_id: LnbRuntimeId) -> Self {
-        Self {
-            registry,
-            target_lnb_id,
-            pending_frontend_id: None,
-        }
+#[derive(Debug)]
+pub(crate) struct ServiceRuntimeLnbBackendSnapshot {
+    target_lnb_id: LnbRuntimeId,
+    profile: LnbRegistryProfile,
+    frontends: Vec<LnbFrontendIoSnapshot>,
+}
+
+impl ServiceRuntimeLnbBackendSnapshot {
+    pub(crate) fn new(
+        registry: &RuntimeRegistry,
+        target_lnb_id: LnbRuntimeId,
+    ) -> Result<Self, LnbFailureKind> {
+        Self::new_with_optional_pending_frontend(registry, target_lnb_id, None)
     }
 
     pub(crate) fn new_with_pending_frontend(
-        registry: &'a RuntimeRegistry,
+        registry: &RuntimeRegistry,
         target_lnb_id: LnbRuntimeId,
         pending_frontend_id: FrontendRuntimeId,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, LnbFailureKind> {
+        Self::new_with_optional_pending_frontend(
             registry,
             target_lnb_id,
-            pending_frontend_id: Some(pending_frontend_id),
-        }
+            Some(pending_frontend_id),
+        )
     }
 
-    fn target_frontend_ids(&self) -> Vec<FrontendRuntimeId> {
-        let mut frontend_ids = self.registry.selected_frontends_for_lnb(self.target_lnb_id);
-        if let Some(frontend_id) = self.pending_frontend_id {
+    fn new_with_optional_pending_frontend(
+        registry: &RuntimeRegistry,
+        target_lnb_id: LnbRuntimeId,
+        pending_frontend_id: Option<FrontendRuntimeId>,
+    ) -> Result<Self, LnbFailureKind> {
+        let entry = registry
+            .lnb(target_lnb_id)
+            .ok_or(LnbFailureKind::BackendApplyFailed)?;
+        let mut frontend_ids = registry.selected_frontends_for_lnb(target_lnb_id);
+        if !frontend_ids.contains(&entry.owner_frontend_id) {
+            frontend_ids.push(entry.owner_frontend_id);
+        }
+        if let Some(frontend_id) = pending_frontend_id {
             if !frontend_ids.contains(&frontend_id) {
                 frontend_ids.push(frontend_id);
             }
         }
-        frontend_ids
-    }
-}
-
-impl LnbBackendOps for ServiceRuntimeLnbProfileAdapter<'_> {
-    fn apply_lnb_state(
-        &mut self,
-        lnb_id: i32,
-        state: LnbElectricalState,
-    ) -> Result<(), LnbFailureKind> {
-        if lnb_id != self.target_lnb_id.0 {
-            return Err(LnbFailureKind::BackendApplyFailed);
-        }
-        let Some(entry) = self.registry.lnb(self.target_lnb_id) else {
-            return Err(LnbFailureKind::BackendApplyFailed);
-        };
-        let profile = entry.profile;
-        if !profile_accepts_state(profile, state) {
-            return Err(LnbFailureKind::BackendApplyFailed);
-        }
-        for frontend_id in self.target_frontend_ids() {
-            match self.registry.selected_lnb_for_frontend(frontend_id) {
-                Some(frontend_lnb) if frontend_lnb != self.target_lnb_id => {
+        let mut frontends = Vec::with_capacity(frontend_ids.len());
+        for frontend_id in frontend_ids {
+            match registry.selected_lnb_for_frontend(frontend_id) {
+                Some(frontend_lnb) if frontend_lnb != target_lnb_id => {
                     return Err(LnbFailureKind::BackendApplyFailed);
                 }
                 Some(_) => {}
-                None if self.pending_frontend_id != Some(frontend_id) => {
+                None
+                    if pending_frontend_id != Some(frontend_id)
+                        && frontend_id != entry.owner_frontend_id =>
+                {
                     return Err(LnbFailureKind::BackendApplyFailed);
                 }
                 None => {}
             }
-            let Some(frontend_entry) = self.registry.frontend(frontend_id) else {
-                return Err(LnbFailureKind::BackendApplyFailed);
-            };
-            if entry.owner_frontend_id != frontend_id {
+            let frontend_entry = registry
+                .frontend(frontend_id)
+                .ok_or(LnbFailureKind::BackendApplyFailed)?;
+            if entry.owner_frontend_id != frontend_id
+                || frontend_entry.lnb_profile != Some(entry.profile)
+            {
                 return Err(LnbFailureKind::BackendApplyFailed);
             }
-            if frontend_entry.lnb_profile != Some(profile) {
-                return Err(LnbFailureKind::BackendApplyFailed);
-            }
+            frontends.push(LnbFrontendIoSnapshot {
+                frontend_id,
+                backend: frontend_entry.backend,
+                device_path: frontend_entry.device_path.clone(),
+            });
+        }
+        Ok(Self {
+            target_lnb_id,
+            profile: entry.profile,
+            frontends,
+        })
+    }
+}
+
+pub(crate) struct ServiceRuntimeLnbProfileAdapter<'permit, 'gate> {
+    snapshot: ServiceRuntimeLnbBackendSnapshot,
+    _permit: &'permit LnbPhysicalIoPermit<'gate>,
+}
+
+impl<'permit, 'gate> ServiceRuntimeLnbProfileAdapter<'permit, 'gate> {
+    pub(crate) fn new(
+        snapshot: ServiceRuntimeLnbBackendSnapshot,
+        permit: &'permit LnbPhysicalIoPermit<'gate>,
+    ) -> Self {
+        Self {
+            snapshot,
+            _permit: permit,
+        }
+    }
+}
+
+impl LnbBackendOps for ServiceRuntimeLnbProfileAdapter<'_, '_> {
+    fn apply_lnb_state(
+        &mut self,
+        lnb_id: i32,
+        state: LnbElectricalState,
+    ) -> LnbBackendApplyOutcome {
+        if lnb_id != self.snapshot.target_lnb_id.0 {
+            return LnbBackendApplyOutcome::Rejected(LnbFailureKind::BackendApplyFailed);
+        }
+        let profile = self.snapshot.profile;
+        if !profile_accepts_state(profile, state) {
+            return LnbBackendApplyOutcome::Rejected(LnbFailureKind::BackendApplyFailed);
+        }
+        for frontend in &self.snapshot.frontends {
             if profile == LnbRegistryProfile::NoPower {
                 continue;
             }
             let plan = FrontendBackendLnbApplyPlan::new(
-                frontend_id.0,
-                frontend_entry.backend,
-                FrontendDevicePath::new(frontend_entry.device_path.clone()),
+                frontend.frontend_id.0,
+                frontend.backend,
+                FrontendDevicePath::new(frontend.device_path.clone()),
                 device_voltage(state.voltage),
             );
-            apply_frontend_backend_lnb_voltage(&plan)
-                .map_err(|_| LnbFailureKind::BackendApplyFailed)?;
+            match apply_frontend_backend_lnb_voltage_classified(&plan) {
+                FrontendBackendLnbApplyOutcome::Applied => {}
+                FrontendBackendLnbApplyOutcome::Rejected(_) => {
+                    return LnbBackendApplyOutcome::Rejected(
+                        LnbFailureKind::BackendApplyFailed,
+                    );
+                }
+                FrontendBackendLnbApplyOutcome::Indeterminate(_) => {
+                    return LnbBackendApplyOutcome::Indeterminate(
+                        LnbFailureKind::BackendApplyFailed,
+                    );
+                }
+            }
         }
-        Ok(())
+        LnbBackendApplyOutcome::Applied
     }
 
     fn send_diseqc_message(
         &mut self,
         lnb_id: i32,
         _message: &LnbDiseqcMessage,
-    ) -> Result<(), LnbFailureKind> {
-        if lnb_id != self.target_lnb_id.0 {
-            return Err(LnbFailureKind::BackendApplyFailed);
+    ) -> LnbBackendApplyOutcome {
+        if lnb_id != self.snapshot.target_lnb_id.0 {
+            return LnbBackendApplyOutcome::Rejected(LnbFailureKind::BackendApplyFailed);
         }
-        if self.registry.lnb(self.target_lnb_id).is_none() {
-            return Err(LnbFailureKind::BackendApplyFailed);
-        }
-        Err(LnbFailureKind::DiseqcUnsupported)
+        LnbBackendApplyOutcome::Rejected(LnbFailureKind::DiseqcUnsupported)
     }
 }
 

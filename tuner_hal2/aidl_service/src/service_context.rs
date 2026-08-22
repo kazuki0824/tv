@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -7,9 +6,9 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     IFrontendCallback::IFrontendCallback, ILnbCallback::ILnbCallback,
 };
 use binder::{Status, Strong};
-#[cfg(test)]
-use maleicacid_tuner_hal2_binder_adapter::AidlApi;
-use maleicacid_tuner_hal2_binder_adapter::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
+use maleicacid_tuner_hal2_binder_adapter::{
+    AidlApi, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
+};
 use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, HalError, HalInternalKind};
 #[cfg(test)]
 use maleicacid_tuner_hal2_service_runtime::DiagnosticSnapshot;
@@ -24,8 +23,13 @@ use maleicacid_tuner_hal2_service_runtime::{
     SharedObjectCleanupDiagnostics, TunerServiceRuntime,
 };
 
-use crate::callback_store::{AidlCallbackStoreError, CallbackStore};
-use crate::dvr_callback_delivery::{DvrStatusNotifier, DvrStatusNotifierKey};
+use crate::callback_store::{
+    AidlCallbackStoreError, CallbackStore, PreparedCallbackArtifactToken,
+};
+use crate::cleanup_reaper::{start_cleanup_reaper, CleanupReaperQueue};
+use crate::dvr_callback_delivery::{
+    start_dvr_status_notifier_reaper, DvrStatusNotifierSupervisor,
+};
 use crate::object_handle::AidlObjectHandle;
 
 const MAX_DROP_LEAK_ERROR_RECORDS: usize = 64;
@@ -72,7 +76,7 @@ pub type SharedAidlServiceContext = Arc<AidlServiceContext>;
 pub struct AidlServiceContext {
     runtime: SharedTunerRuntime,
     callback_store: Mutex<CallbackStore>,
-    dvr_status_notifiers: Mutex<BTreeMap<DvrStatusNotifierKey, DvrStatusNotifier>>,
+    dvr_status_notifier_supervisor: Arc<DvrStatusNotifierSupervisor>,
     drop_leak_error_records: Mutex<BoundedDiagnosticStore<DropLeakErrorRecord>>,
     drop_leak_error_record_failures: AtomicUsize,
     callback_artifact_runtime_split_diagnostics: SharedCallbackArtifactRuntimeSplitDiagnostics,
@@ -85,10 +89,12 @@ pub struct AidlServiceContext {
         Mutex<BoundedDiagnosticStore<FrontendCallbackDeliveryDiagnosticRecord>>,
     filter_callback_delivery_fallback_record_failures: AtomicUsize,
     frontend_callback_delivery_fallback_record_failures: AtomicUsize,
+    cleanup_reaper_queue: Arc<CleanupReaperQueue>,
 }
 
 impl AidlServiceContext {
     pub fn new(runtime: TunerServiceRuntime) -> Self {
+        let capability_snapshot = runtime.capability_snapshot();
         let callback_artifact_runtime_split_diagnostics =
             runtime.callback_artifact_runtime_split_diagnostic_sink();
         let dvr_post_commit_notification_diagnostics =
@@ -99,7 +105,9 @@ impl AidlServiceContext {
         Self {
             runtime: Arc::new(Mutex::new(runtime)),
             callback_store: Mutex::new(CallbackStore::default()),
-            dvr_status_notifiers: Mutex::new(BTreeMap::new()),
+            dvr_status_notifier_supervisor: Arc::new(
+                DvrStatusNotifierSupervisor::from_snapshot(capability_snapshot),
+            ),
             drop_leak_error_records: Mutex::new(BoundedDiagnosticStore::new(
                 MAX_DROP_LEAK_ERROR_RECORDS,
             )),
@@ -116,11 +124,35 @@ impl AidlServiceContext {
             ),
             filter_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
             frontend_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
+            cleanup_reaper_queue: Arc::new(CleanupReaperQueue::from_snapshot(
+                capability_snapshot,
+            )),
         }
     }
 
     pub fn shared(runtime: TunerServiceRuntime) -> SharedAidlServiceContext {
-        Arc::new(Self::new(runtime))
+        let context = Arc::new(Self::new(runtime));
+        if start_cleanup_reaper(
+            Arc::downgrade(&context),
+            Arc::clone(&context.cleanup_reaper_queue),
+        )
+        .is_err()
+        {
+            if let Ok(mut runtime) = context.runtime.lock() {
+                runtime.mark_service_critical();
+            }
+        }
+        if start_dvr_status_notifier_reaper(
+            Arc::downgrade(&context),
+            Arc::clone(&context.dvr_status_notifier_supervisor),
+        )
+        .is_err()
+        {
+            if let Ok(mut runtime) = context.runtime.lock() {
+                runtime.mark_service_critical();
+            }
+        }
+        context
     }
 
     #[cfg(test)]
@@ -132,6 +164,7 @@ impl AidlServiceContext {
             dvr_post_commit_notification_diagnostics,
             dvr_status_notifier_cleanup_diagnostics,
             object_cleanup_diagnostics,
+            capability_snapshot,
         ) = {
             let runtime_guard = runtime
                 .lock()
@@ -141,12 +174,15 @@ impl AidlServiceContext {
                 runtime_guard.dvr_post_commit_notification_diagnostic_sink(),
                 runtime_guard.dvr_status_notifier_cleanup_diagnostic_sink(),
                 runtime_guard.object_cleanup_diagnostic_sink(),
+                runtime_guard.capability_snapshot(),
             )
         };
-        Arc::new(Self {
+        let context = Arc::new(Self {
             runtime,
             callback_store: Mutex::new(CallbackStore::default()),
-            dvr_status_notifiers: Mutex::new(BTreeMap::new()),
+            dvr_status_notifier_supervisor: Arc::new(
+                DvrStatusNotifierSupervisor::from_snapshot(capability_snapshot),
+            ),
             drop_leak_error_records: Mutex::new(BoundedDiagnosticStore::new(
                 MAX_DROP_LEAK_ERROR_RECORDS,
             )),
@@ -163,7 +199,79 @@ impl AidlServiceContext {
             ),
             filter_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
             frontend_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
-        })
+            cleanup_reaper_queue: Arc::new(CleanupReaperQueue::from_snapshot(
+                capability_snapshot,
+            )),
+        });
+        if start_cleanup_reaper(
+            Arc::downgrade(&context),
+            Arc::clone(&context.cleanup_reaper_queue),
+        )
+        .is_err()
+        {
+            if let Ok(mut runtime) = context.runtime.lock() {
+                runtime.mark_service_critical();
+            }
+        }
+        if start_dvr_status_notifier_reaper(
+            Arc::downgrade(&context),
+            Arc::clone(&context.dvr_status_notifier_supervisor),
+        )
+        .is_err()
+        {
+            if let Ok(mut runtime) = context.runtime.lock() {
+                runtime.mark_service_critical();
+            }
+        }
+        context
+    }
+
+    pub(crate) fn cleanup_dependency_for_handle(
+        &self,
+        handle: AidlObjectHandle,
+    ) -> Result<maleicacid_tuner_hal2_resource_ledger::CleanupStep, HalError> {
+        let runtime = self.runtime.lock().map_err(|_| {
+            HalError::internal(
+                maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                "service runtime lock poisoned while resolving cleanup dependency",
+            )
+        })?;
+        maleicacid_tuner_hal2_service_runtime::aidl_object_cleanup_dependency(
+            &runtime,
+            handle.object_id(),
+            handle.generation(),
+            handle.object_kind(),
+        )
+    }
+
+    pub(crate) fn cleanup_is_terminal_for_handle(
+        &self,
+        handle: AidlObjectHandle,
+    ) -> Result<bool, HalError> {
+        let runtime = self.runtime.lock().map_err(|_| {
+            HalError::internal(
+                maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                "service runtime lock poisoned while checking cleanup terminal state",
+            )
+        })?;
+        maleicacid_tuner_hal2_service_runtime::aidl_object_cleanup_is_terminal(
+            &runtime,
+            handle.object_id(),
+            handle.generation(),
+            handle.object_kind(),
+        )
+    }
+
+    pub(crate) fn enqueue_cleanup_retry(&self, handle: AidlObjectHandle) -> Result<(), HalError> {
+        let result = self
+            .cleanup_dependency_for_handle(handle)
+            .and_then(|dependency| self.cleanup_reaper_queue.enqueue(handle, dependency));
+        if result.is_err() {
+            if let Ok(mut runtime) = self.runtime.lock() {
+                runtime.mark_service_critical();
+            }
+        }
+        result
     }
 
     pub fn reset_runtime_from_probe_results<I>(
@@ -457,36 +565,10 @@ impl AidlServiceContext {
             .map_err(|_| AidlCallbackStoreError::Poisoned)
     }
 
-    pub(crate) fn dvr_status_notifiers_lock(
+    pub(crate) fn dvr_status_notifier_supervisor(
         &self,
-    ) -> Result<MutexGuard<'_, BTreeMap<DvrStatusNotifierKey, DvrStatusNotifier>>, HalError> {
-        self.dvr_status_notifiers.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "DVR status notifier store lock poisoned",
-            )
-        })
-    }
-
-    pub(crate) fn take_dvr_status_notifiers_for_reset(
-        &self,
-    ) -> (
-        BTreeMap<DvrStatusNotifierKey, DvrStatusNotifier>,
-        Result<(), HalError>,
-    ) {
-        match self.dvr_status_notifiers.lock() {
-            Ok(mut store) => (std::mem::take(&mut *store), Ok(())),
-            Err(poisoned) => {
-                let mut store = poisoned.into_inner();
-                (
-                    std::mem::take(&mut *store),
-                    Err(HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "DVR status notifier store lock poisoned while taking notifiers for reset",
-                    )),
-                )
-            }
-        }
+    ) -> Arc<DvrStatusNotifierSupervisor> {
+        Arc::clone(&self.dvr_status_notifier_supervisor)
     }
 
     pub(crate) fn record_drop_leak_error(&self, handle: AidlObjectHandle, status: &Status) {
@@ -551,24 +633,44 @@ impl AidlServiceContext {
         self.drop_leak_error_record_failures.load(Ordering::Relaxed)
     }
 
-    pub(crate) fn retain_frontend_callback(
+    pub(crate) fn prepare_frontend_callback(
         &self,
         handle: AidlObjectHandle,
         callback: &Strong<dyn IFrontendCallback>,
-    ) -> Result<(), AidlCallbackStoreError> {
+    ) -> Result<PreparedCallbackArtifactToken, AidlCallbackStoreError> {
         self.callback_store_lock()?
-            .retain_frontend_callback(handle, callback);
-        Ok(())
+            .prepare_frontend_callback(handle, callback)
     }
 
-    pub(crate) fn retain_lnb_callback(
+    pub(crate) fn prepare_lnb_callback(
         &self,
         handle: AidlObjectHandle,
         callback: &Strong<dyn ILnbCallback>,
-    ) -> Result<(), AidlCallbackStoreError> {
+    ) -> Result<PreparedCallbackArtifactToken, AidlCallbackStoreError> {
         self.callback_store_lock()?
-            .retain_lnb_callback(handle, callback);
-        Ok(())
+            .prepare_lnb_callback(handle, callback)
+    }
+
+    pub(crate) fn commit_prepared_callback(
+        &self,
+        handle: AidlObjectHandle,
+        registration_api: AidlApi,
+        token: PreparedCallbackArtifactToken,
+    ) -> Result<bool, AidlCallbackStoreError> {
+        Ok(self
+            .callback_store_lock()?
+            .commit_prepared_callback(handle, registration_api, token))
+    }
+
+    pub(crate) fn abort_prepared_callback(
+        &self,
+        handle: AidlObjectHandle,
+        registration_api: AidlApi,
+        token: PreparedCallbackArtifactToken,
+    ) -> Result<bool, AidlCallbackStoreError> {
+        Ok(self
+            .callback_store_lock()?
+            .abort_prepared_callback(handle, registration_api, token))
     }
 
     pub(crate) fn retain_filter_callback(

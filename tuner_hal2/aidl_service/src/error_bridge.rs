@@ -23,6 +23,7 @@ pub(crate) fn status_from_tuner_status(status: TunerStatusCode, message: &str) -
         TunerStatusCode::InvalidArgument => service_error(TunerResult::INVALID_ARGUMENT.0, message),
         TunerStatusCode::InvalidState => service_error(TunerResult::INVALID_STATE.0, message),
         TunerStatusCode::Unavailable => service_error(TunerResult::UNAVAILABLE.0, message),
+        TunerStatusCode::OutOfMemory => service_error(TunerResult::OUT_OF_MEMORY.0, message),
         TunerStatusCode::UnknownError => service_error(TunerResult::UNKNOWN_ERROR.0, message),
     }
 }

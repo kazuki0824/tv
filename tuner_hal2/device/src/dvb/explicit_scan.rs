@@ -15,13 +15,9 @@ pub fn dvb_scan_requests(
             "DVB backend does not provide BLIND_SCAN; TIS owns the Japanese scan SSOT",
         ));
     }
-    if base.end_frequency.unwrap_or(base.frequency) != base.frequency {
-        return Err(HalError::Unsupported(
-            "DVB backend does not expand Japanese scan ranges; TIS must submit explicit tune candidates",
-        ));
-    }
+    let candidate = base.clone().normalized_for_non_blind_operation();
     match base.system {
-        FrontendSystem::IsdbT | FrontendSystem::IsdbS => Ok(vec![base.clone()]),
+        FrontendSystem::IsdbT | FrontendSystem::IsdbS => Ok(vec![candidate]),
         FrontendSystem::IsdbS3 | FrontendSystem::DvbS => Err(HalError::Unsupported(
             "systems outside Japanese ISDB-T/ISDB-S are outside r51 scope",
         )),
@@ -34,7 +30,7 @@ mod tests {
     use maleicacid_tuner_hal2_common::{FrontendStreamIdKind, FrontendSystem};
 
     #[test]
-    fn scan_does_not_expand_ranges() {
+    fn non_blind_scan_ignores_range_terminus() {
         let base = FrontendTuneRequest {
             system: FrontendSystem::IsdbT,
             frequency: 473_142_857,
@@ -43,8 +39,12 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: None,
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
-        assert!(dvb_scan_requests(&base, FrontendScanMode::Auto).is_err());
+        let candidates = dvb_scan_requests(&base, FrontendScanMode::Auto).unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].end_frequency, None);
     }
 
     #[test]
@@ -57,6 +57,8 @@ mod tests {
             stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId),
             bandwidth_hz: None,
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         assert_eq!(
             dvb_scan_requests(&base, FrontendScanMode::Auto).unwrap(),

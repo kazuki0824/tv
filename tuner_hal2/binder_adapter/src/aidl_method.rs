@@ -9,11 +9,11 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
 };
 use maleicacid_tuner_hal2_common::{FrontendTuneRequest, HalError, HalInvalidArgumentKind};
 use maleicacid_tuner_hal2_domain_request::{
-    DemuxSetFrontendDataSourceRequest, DvrConfigureKind, DvrConfigureRequest, DvrFilterLinkRequest,
-    DvrOpenKind, FilterAvStreamKind, FilterAvStreamTypeRequest, FilterDelayHintKind,
-    FilterDelayHintRequest, FilterReleaseAvHandleRequest, FilterSetDataSourceRequest,
-    LnbSetSatellitePositionRequest, LnbToneRequest, LnbVoltageRequest, OpenDvrRequest,
-    RuntimeExecutableRequest,
+    DemuxSetFrontendDataSourceRequest, DvrConfigureKind, DvrConfigureRequest, DvrDataFormat,
+    DvrFilterLinkRequest, DvrOpenKind, FilterAvStreamKind, FilterAvStreamTypeRequest,
+    FilterDelayHintKind, FilterDelayHintRequest, FilterReleaseAvHandleRequest,
+    FilterSetDataSourceRequest, LnbSetSatellitePositionRequest, LnbToneRequest,
+    LnbVoltageRequest, OpenDvrRequest, RuntimeExecutableRequest,
 };
 
 use crate::demux::DemuxCommand;
@@ -316,6 +316,8 @@ pub fn build_dvr_configure_request(
                 status_mask: record.statusMask,
                 low_threshold_bytes: record.lowThreshold,
                 high_threshold_bytes: record.highThreshold,
+                data_format: DvrDataFormat::Ts,
+                packet_size: record.packetSize,
             })
         }
         DvrSettings::Playback(playback) => {
@@ -325,17 +327,33 @@ pub fn build_dvr_configure_request(
                 status_mask: playback.statusMask,
                 low_threshold_bytes: playback.lowThreshold,
                 high_threshold_bytes: playback.highThreshold,
+                data_format: DvrDataFormat::Ts,
+                packet_size: playback.packetSize,
             })
         }
     }
 }
 
 fn validate_dvr_ts_188(data_format: DataFormat, packet_size: i64) -> Result<(), HalError> {
-    if data_format != DataFormat::TS {
-        return Err(invalid("DVR dataFormat must be TS"));
+    match data_format {
+        DataFormat::TS => {}
+        DataFormat::PES | DataFormat::ES | DataFormat::SHV_TLV => {
+            return Err(HalError::unsupported_detail(
+                "dvr.dataFormat",
+                "known non-TS DVR dataFormat is unavailable in this product profile",
+            ));
+        }
+        DataFormat::UNDEFINED => return Err(invalid("DVR dataFormat must not be UNDEFINED")),
+        _ => return Err(invalid("DVR dataFormat contains a reserved enum value")),
+    }
+    if packet_size <= 0 {
+        return Err(invalid("DVR packetSize must be positive"));
     }
     if packet_size != DVR_PACKET_SIZE_TS_188 {
-        return Err(invalid("DVR packetSize must be 188"));
+        return Err(HalError::unsupported_detail(
+            "dvr.packetSize",
+            "positive DVR packetSize other than 188 is unavailable for TS",
+        ));
     }
     Ok(())
 }
@@ -481,6 +499,8 @@ mod tests {
                 status_mask: 0,
                 low_threshold_bytes: 0,
                 high_threshold_bytes: 0,
+                data_format: DvrDataFormat::Ts,
+                packet_size: DVR_PACKET_SIZE_TS_188,
             }),
             AidlMethodCall::DvrAttachFilter(DvrFilterLinkRequest {
                 filter_id: 2,
@@ -518,6 +538,8 @@ mod tests {
             stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId),
             bandwidth_hz: Some(6_000_000),
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         }
     }
 
@@ -538,6 +560,8 @@ mod tests {
                 status_mask: supported_record_status_mask(),
                 low_threshold_bytes: 188,
                 high_threshold_bytes: 376,
+                data_format: DvrDataFormat::Ts,
+                packet_size: 188,
             }
         );
     }
@@ -553,6 +577,32 @@ mod tests {
         }))
         .unwrap_err();
         assert!(matches!(error, HalError::InvalidArgument { .. }));
+    }
+
+    #[test]
+    fn build_dvr_configure_request_reports_known_non_ts_format_unavailable() {
+        let error = build_dvr_configure_request(&DvrSettings::Playback(PlaybackSettings {
+            statusMask: 0,
+            lowThreshold: 0,
+            highThreshold: 0,
+            dataFormat: DataFormat::PES,
+            packetSize: 188,
+        }))
+        .unwrap_err();
+        assert!(matches!(error, HalError::UnsupportedDetail { .. }));
+    }
+
+    #[test]
+    fn build_dvr_configure_request_reports_positive_non_188_packet_unavailable() {
+        let error = build_dvr_configure_request(&DvrSettings::Record(RecordSettings {
+            statusMask: 0,
+            lowThreshold: 0,
+            highThreshold: 0,
+            dataFormat: DataFormat::TS,
+            packetSize: 192,
+        }))
+        .unwrap_err();
+        assert!(matches!(error, HalError::UnsupportedDetail { .. }));
     }
 
     #[test]

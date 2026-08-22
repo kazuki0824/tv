@@ -10,6 +10,7 @@ use super::FrontendWorkerCancelReason;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrontendScanPhase {
     Running,
+    LockedReported,
     Completed,
     Cancelled,
     FailedBackend,
@@ -139,6 +140,13 @@ impl FrontendScanSession {
         self.terminal_reason = Some(reason.into());
     }
 
+    pub fn mark_locked_reported(&mut self) -> Result<(), HalError> {
+        self.ensure_running()?;
+        self.phase = FrontendScanPhase::LockedReported;
+        self.terminal_reason = None;
+        Ok(())
+    }
+
     pub fn fail_backend(&mut self) {
         self.phase = FrontendScanPhase::FailedBackend;
         self.terminal_reason = Some(FrontendScanTerminalReason::BackendFailure);
@@ -187,6 +195,8 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: Some(6_000_000),
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         }
     }
 
@@ -242,5 +252,16 @@ mod tests {
             session.terminal_reason(),
             Some(FrontendScanTerminalReason::BackendFailure)
         );
+    }
+
+
+    #[test]
+    fn locked_reported_waits_for_a_new_scan_continuation() {
+        let mut session =
+            FrontendScanSession::start(7, "locked", vec![request(473_142_857)]).unwrap();
+        session.mark_locked_reported().unwrap();
+        assert_eq!(session.phase(), FrontendScanPhase::LockedReported);
+        assert_eq!(session.terminal_reason(), None);
+        assert!(session.current_candidate().is_none());
     }
 }

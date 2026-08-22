@@ -1,8 +1,9 @@
-use crate::registry::FrontendRegistryEntry;
+use crate::registry::{FrontendRegistryEntry, SatellitePowerTopology};
 use crate::TunerServiceRuntime;
 use maleicacid_tuner_hal2_common::{
     is_japan_bs_if_frequency_hz, is_japan_cs110_if_frequency_hz,
-    is_japan_isdbt_frequency_contract_hz, FrontendBackendKind, FrontendScanMode, FrontendSystem,
+    is_japan_isdbt_frequency_contract_hz, FrontendBackendKind,
+    FrontendIsdbtPartialReceptionRequirement, FrontendScanMode, FrontendSystem,
     FrontendTuneRequest, HalError, HalInternalKind, HalInvalidArgumentKind,
 };
 
@@ -23,21 +24,21 @@ fn validate_frontend_request_against_entry(
 
     match request.system {
         FrontendSystem::IsdbT => {
+            if matches!(
+                request.partial_reception,
+                FrontendIsdbtPartialReceptionRequirement::Required(_)
+            ) && entry.backend == FrontendBackendKind::LinuxDvb
+            {
+                return Err(HalError::unsupported_detail(
+                    "isdbt.partialReceptionFlag",
+                    "earth_pt1 does not expose current TMCC partial reception readback",
+                ));
+            }
             if !is_japan_isdbt_frequency_contract_hz(request.frequency) {
                 return Err(HalError::invalid_argument(
                     HalInvalidArgumentKind::UnsupportedFrequency,
                     "ISDB-T frequency is outside Japan CATV C13..UHF62 contract range",
                 ));
-            }
-            if let Some(end_frequency) = request.end_frequency {
-                if end_frequency < request.frequency
-                    || !is_japan_isdbt_frequency_contract_hz(end_frequency)
-                {
-                    return Err(HalError::invalid_argument(
-                        HalInvalidArgumentKind::UnsupportedScanRange,
-                        "ISDB-T endFrequency must be >= frequency and inside Japan contract range",
-                    ));
-                }
             }
             if request.stream_id.is_some() || request.stream_id_kind.is_some() {
                 return Err(HalError::invalid_argument(
@@ -47,6 +48,12 @@ fn validate_frontend_request_against_entry(
             }
         }
         FrontendSystem::IsdbS => {
+            if request.partial_reception != FrontendIsdbtPartialReceptionRequirement::Unspecified {
+                return Err(HalError::invalid_argument(
+                    HalInvalidArgumentKind::NumericRange,
+                    "ISDB-S tune must not carry an ISDB-T partial reception requirement",
+                ));
+            }
             let is_bs = is_japan_bs_if_frequency_hz(request.frequency);
             let is_cs110 = is_japan_cs110_if_frequency_hz(request.frequency);
             if !is_bs && !is_cs110 {
@@ -54,22 +61,6 @@ fn validate_frontend_request_against_entry(
                     HalInvalidArgumentKind::UnsupportedFrequency,
                     "ISDB-S frequency must be a Japan BS/CS110 IF center frequency",
                 ));
-            }
-            if let Some(end_frequency) = request.end_frequency {
-                if end_frequency < request.frequency {
-                    return Err(HalError::invalid_argument(
-                        HalInvalidArgumentKind::UnsupportedScanRange,
-                        "ISDB-S endFrequency must be >= frequency",
-                    ));
-                }
-                if !(is_japan_bs_if_frequency_hz(end_frequency)
-                    || is_japan_cs110_if_frequency_hz(end_frequency))
-                {
-                    return Err(HalError::invalid_argument(
-                        HalInvalidArgumentKind::UnsupportedScanRange,
-                        "ISDB-S endFrequency must be a Japan BS/CS110 IF center frequency",
-                    ));
-                }
             }
             if is_cs110 && (request.stream_id.is_some() || request.stream_id_kind.is_some()) {
                 return Err(HalError::invalid_argument(
@@ -94,6 +85,14 @@ fn validate_frontend_lnb_candidate(
 ) -> Result<(), HalError> {
     if !matches!(request.system, FrontendSystem::IsdbS) {
         return Ok(());
+    }
+    if entry.satellite_power_topology == SatellitePowerTopology::ExternalOrShared {
+        return Ok(());
+    }
+    if entry.satellite_power_topology != SatellitePowerTopology::InternalFixed15V {
+        return Err(HalError::Unsupported(
+            "ISDB-S frontend does not have a verified power topology",
+        ));
     }
     let lnb = runtime.query().lnb_for_frontend_id(entry.id.0);
     match (entry.lnb_profile, lnb) {

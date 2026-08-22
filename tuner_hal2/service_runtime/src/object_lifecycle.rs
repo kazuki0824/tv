@@ -4,6 +4,7 @@ use crate::{
 };
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidStateKind};
 use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
+use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AidlObjectCloseability {
@@ -57,16 +58,83 @@ pub fn aidl_object_closeable(
         ));
     }
     match entry.lifecycle {
-        RuntimeObjectLifecycle::Live | RuntimeObjectLifecycle::CleanupFailed { .. } => {
+        RuntimeObjectLifecycle::Live
+        | RuntimeObjectLifecycle::Closing { .. }
+        | RuntimeObjectLifecycle::CleanupPending { .. } => {
             Ok(AidlObjectCloseability::BeginClose)
         }
         RuntimeObjectLifecycle::Closed
-        | RuntimeObjectLifecycle::Closing { .. }
         | RuntimeObjectLifecycle::Quarantined => Err(HalError::invalid_state(
             HalInvalidStateKind::InvalidLifecycle,
             "AIDL object is not closeable",
         )),
     }
+}
+
+pub fn aidl_object_cleanup_dependency(
+    runtime: &TunerServiceRuntime,
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+    expected_kind: AidlObjectKind,
+) -> Result<CleanupStep, HalError> {
+    let entry = runtime.object_table().entry(object_id).ok_or_else(|| {
+        HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
+            "AIDL object is missing while resolving cleanup dependency",
+        )
+    })?;
+    if entry.generation != generation {
+        return Err(HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
+            "AIDL object generation mismatch while resolving cleanup dependency",
+        ));
+    }
+    if entry.object_kind != expected_kind {
+        return Err(HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
+            "AIDL object kind mismatch while resolving cleanup dependency",
+        ));
+    }
+    match entry.lifecycle {
+        RuntimeObjectLifecycle::Closing { step }
+        | RuntimeObjectLifecycle::CleanupPending { step } => Ok(step),
+        RuntimeObjectLifecycle::Live
+        | RuntimeObjectLifecycle::Closed
+        | RuntimeObjectLifecycle::Quarantined => Err(HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
+            "AIDL object has no pending cleanup dependency",
+        )),
+    }
+}
+
+pub fn aidl_object_cleanup_is_terminal(
+    runtime: &TunerServiceRuntime,
+    object_id: AidlObjectId,
+    generation: AidlObjectGeneration,
+    expected_kind: AidlObjectKind,
+) -> Result<bool, HalError> {
+    let entry = runtime.object_table().entry(object_id).ok_or_else(|| {
+        HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
+            "AIDL object is missing while checking cleanup terminal state",
+        )
+    })?;
+    if entry.generation != generation {
+        return Err(HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
+            "AIDL object generation mismatch while checking cleanup terminal state",
+        ));
+    }
+    if entry.object_kind != expected_kind {
+        return Err(HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
+            "AIDL object kind mismatch while checking cleanup terminal state",
+        ));
+    }
+    Ok(matches!(
+        entry.lifecycle,
+        RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined
+    ))
 }
 
 pub fn lnb_public_id_for_live_object_result(
@@ -110,7 +178,7 @@ pub fn aidl_object_entry_for_close_cleanup(
     match entry.lifecycle {
         RuntimeObjectLifecycle::Live
         | RuntimeObjectLifecycle::Closing { .. }
-        | RuntimeObjectLifecycle::CleanupFailed { .. } => Ok(entry.clone()),
+        | RuntimeObjectLifecycle::CleanupPending { .. } => Ok(entry.clone()),
         RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined => {
             Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
@@ -226,7 +294,7 @@ mod closeable_lifecycle_tests {
     }
 
     #[test]
-    fn aidl_object_closeable_rejects_closing_and_quarantined() {
+    fn aidl_object_closeable_accepts_closing_but_rejects_quarantined() {
         let mut closing = runtime_with_filter();
         closing
             .object_table_mut()
@@ -236,13 +304,16 @@ mod closeable_lifecycle_tests {
                 CleanupStep::UnregisterRuntime,
             )
             .expect("begin close succeeds");
-        assert!(aidl_object_closeable(
-            &closing,
-            AidlObjectId(501),
-            AidlObjectGeneration(1),
-            AidlObjectKind::Filter,
-        )
-        .is_err());
+        assert_eq!(
+            aidl_object_closeable(
+                &closing,
+                AidlObjectId(501),
+                AidlObjectGeneration(1),
+                AidlObjectKind::Filter,
+            )
+            .expect("closing object remains closeable when cleanup authority was dropped"),
+            AidlObjectCloseability::BeginClose
+        );
 
         let mut quarantined = runtime_with_filter();
         quarantined

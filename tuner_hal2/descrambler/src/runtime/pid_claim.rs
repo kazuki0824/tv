@@ -4,8 +4,8 @@ use maleicacid_tuner_hal2_common::TransportStreamPid;
 pub struct DescramblerPid(TransportStreamPid);
 
 impl DescramblerPid {
-    pub(crate) fn from_validated_pid_for_descrambler_core(pid: u16) -> Self {
-        Self(TransportStreamPid::validate_u16(pid).expect("validated descrambler PID"))
+    pub(crate) fn from_validated_pid_for_descrambler_core(pid: u16) -> Option<Self> {
+        TransportStreamPid::validate_u16(pid).ok().map(Self)
     }
 
     pub const fn to_transport_stream_pid_for_packet_pid_bridge(self) -> TransportStreamPid {

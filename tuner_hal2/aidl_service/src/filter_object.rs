@@ -4,7 +4,6 @@ use crate::object_handle::{AidlObjectHandle, AidlObjectHandleError, AidlObjectKi
 use crate::object_runtime::drop_leak_object_from_drop;
 use crate::service_context::{SharedAidlServiceContext, SharedTunerRuntime};
 
-#[derive(Clone)]
 pub struct FilterAidlObject {
     handle: AidlObjectHandle,
     context: SharedAidlServiceContext,

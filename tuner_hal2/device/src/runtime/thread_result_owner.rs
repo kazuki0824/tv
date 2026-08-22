@@ -1,12 +1,12 @@
-//! Shared worker thread result ownership.
+//! 共有worker threadの結果所有。
 //!
-//! This module owns only the low-level thread-result cell and JoinHandle
-//! contract. Cancel signals and domain-specific worker exit meanings stay with
-//! the caller.
+//! このmoduleは低レベルの結果cell、完了通知、JoinHandle契約だけを所有する。
+//! 取消signalとdomain固有の終了意味は呼び出し元が所有する。
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::Instant;
 
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
 
@@ -15,6 +15,7 @@ enum ThreadResultFailure {
     ThreadPanic,
     JoinFailure,
     ResultLockPoison,
+    CompletionLockPoison,
     MissingReport,
     ResultAlreadyCollected,
 }
@@ -25,6 +26,9 @@ impl ThreadResultFailure {
             ThreadResultFailure::ThreadPanic => "thread panicked",
             ThreadResultFailure::JoinFailure => "thread join failed",
             ThreadResultFailure::ResultLockPoison => "thread result lock poisoned",
+            ThreadResultFailure::CompletionLockPoison => {
+                "thread completion lock poisoned"
+            }
             ThreadResultFailure::MissingReport => "finished without report",
             ThreadResultFailure::ResultAlreadyCollected => "thread result already collected",
         };
@@ -43,16 +47,19 @@ pub(crate) enum ThreadResultPoll<T> {
 struct ThreadResultProducer<T> {
     result: Arc<Mutex<Option<Result<T, HalError>>>>,
     producer_failure: Arc<Mutex<Option<HalError>>>,
+    completion: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl<T> ThreadResultProducer<T> {
     fn new(
         result: Arc<Mutex<Option<Result<T, HalError>>>>,
         producer_failure: Arc<Mutex<Option<HalError>>>,
+        completion: Arc<(Mutex<bool>, Condvar)>,
     ) -> Self {
         Self {
             result,
             producer_failure,
+            completion,
         }
     }
 
@@ -68,12 +75,27 @@ impl<T> ThreadResultProducer<T> {
                 }
             }
         }
+        let (completed, wake) = &*self.completion;
+        match completed.lock() {
+            Ok(mut completed) => {
+                *completed = true;
+                wake.notify_all();
+            }
+            Err(_) => {
+                let error = ThreadResultFailure::CompletionLockPoison.into_hal_error(name);
+                if let Ok(mut guard) = self.producer_failure.lock() {
+                    *guard = Some(error);
+                }
+                wake.notify_all();
+            }
+        }
     }
 }
 
 pub(crate) struct ThreadResultOwner<T> {
     result: Arc<Mutex<Option<Result<T, HalError>>>>,
     producer_failure: Arc<Mutex<Option<HalError>>>,
+    completion: Arc<(Mutex<bool>, Condvar)>,
     join: Option<JoinHandle<()>>,
     name: &'static str,
     join_failure: Option<HalError>,
@@ -99,8 +121,12 @@ where
     ) -> Result<Self, HalError> {
         let result = Arc::new(Mutex::new(None));
         let producer_failure = Arc::new(Mutex::new(None));
-        let producer =
-            ThreadResultProducer::new(Arc::clone(&result), Arc::clone(&producer_failure));
+        let completion = Arc::new((Mutex::new(false), Condvar::new()));
+        let producer = ThreadResultProducer::new(
+            Arc::clone(&result),
+            Arc::clone(&producer_failure),
+            Arc::clone(&completion),
+        );
         let join = thread::Builder::new()
             .name(name.to_string())
             .spawn(move || {
@@ -119,6 +145,7 @@ where
         Ok(Self {
             result,
             producer_failure,
+            completion,
             join: Some(join),
             name,
             join_failure: None,
@@ -207,6 +234,43 @@ where
             .unwrap_or(false)
     }
 
+    pub(crate) fn wait_until_finished(
+        &self,
+        deadline: Option<Instant>,
+    ) -> Result<bool, HalError> {
+        let (completed, wake) = &*self.completion;
+        let mut completed = completed.lock().map_err(|_| {
+            ThreadResultFailure::CompletionLockPoison.into_hal_error(self.name)
+        })?;
+        loop {
+            if *completed {
+                return Ok(true);
+            }
+            match deadline {
+                Some(deadline) => {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        return Ok(false);
+                    }
+                    let (next, timeout) = wake
+                        .wait_timeout(completed, deadline.saturating_duration_since(now))
+                        .map_err(|_| {
+                            ThreadResultFailure::CompletionLockPoison.into_hal_error(self.name)
+                        })?;
+                    completed = next;
+                    if timeout.timed_out() && !*completed {
+                        return Ok(false);
+                    }
+                }
+                None => {
+                    completed = wake.wait(completed).map_err(|_| {
+                        ThreadResultFailure::CompletionLockPoison.into_hal_error(self.name)
+                    })?;
+                }
+            }
+        }
+    }
+
     fn join_if_finished(&mut self) {
         if self.is_thread_finished() {
             if let Some(handle) = self.join.take() {
@@ -227,6 +291,7 @@ where
         Self {
             result,
             producer_failure: Arc::new(Mutex::new(None)),
+            completion: Arc::new((Mutex::new(true), Condvar::new())),
             join,
             name,
             join_failure: None,
@@ -251,6 +316,7 @@ mod tests {
         let owner = ThreadResultOwner::<u32> {
             result: Arc::new(Mutex::new(Some(Ok(1)))),
             producer_failure: Arc::new(Mutex::new(None)),
+            completion: Arc::new((Mutex::new(true), Condvar::new())),
             join: None,
             name: "recorded_join_failure",
             join_failure: Some(
@@ -317,6 +383,7 @@ mod tests {
         let owner = ThreadResultOwner::<u32> {
             result,
             producer_failure: Arc::new(Mutex::new(None)),
+            completion: Arc::new((Mutex::new(true), Condvar::new())),
             join: Some(join),
             name: "missing",
             join_failure: None,
@@ -333,6 +400,7 @@ mod tests {
             producer_failure: Arc::new(Mutex::new(Some(
                 ThreadResultFailure::ResultLockPoison.into_hal_error("producer_failure"),
             ))),
+            completion: Arc::new((Mutex::new(true), Condvar::new())),
             join: Some(join),
             name: "producer_failure",
             join_failure: None,

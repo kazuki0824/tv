@@ -5,11 +5,12 @@ use super::{
     HalInvalidStateKind, LnbRuntimeId, RuntimeObjectTable, RuntimeObjectTableError,
     RuntimeOwnerRelation, RuntimeRegistry, TunerServiceRuntime,
 };
-use crate::object_method_txn::ObjectFrontendStatusSnapshot;
+use crate::object_method_use_case::ObjectFrontendStatusSnapshot;
 use maleicacid_tuner_hal2_demux::{
-    DemuxRuntimeRollbackTokenPrepareRequest, DvrRuntimeState, DvrStatusEvent,
-    QueueDescriptorExportPlan as DemuxQueueDescriptorExportPlan, QueueDescriptorExportTarget,
-    QueueDescriptorQueryError, QueueDescriptorSnapshot, QueueRuntimeError,
+    DemuxRuntimeRollbackTokenPrepareRequest, DvrKind, DvrRuntimeState, DvrStatusEvent,
+    FilterRuntimeState, QueueDescriptorExportPlan as DemuxQueueDescriptorExportPlan,
+    QueueDescriptorExportTarget, QueueDescriptorQueryError, QueueDescriptorSnapshot,
+    QueueRuntimeError,
 };
 
 #[derive(Debug)]
@@ -204,6 +205,7 @@ pub struct DvrStatusPollSnapshot {
     pub callback_present: bool,
     pub callback_unhealthy: bool,
     pub status_reporting_enabled: bool,
+    pub is_playback: bool,
 }
 
 pub(crate) struct RuntimeQuery<'a> {
@@ -292,6 +294,15 @@ impl TunerServiceRuntime {
     ) -> Result<DvrStatusPollSnapshot, HalError> {
         self.query()
             .dvr_status_poll_snapshot_for_aidl_object(object_id, generation)
+    }
+
+    pub fn dvr_status_metadata_snapshot_for_aidl_object(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<DvrStatusPollSnapshot, HalError> {
+        self.query()
+            .dvr_status_metadata_snapshot_for_aidl_object(object_id, generation)
     }
 
     pub(crate) fn public_entry_for_aidl_object(
@@ -447,6 +458,23 @@ impl<'a> RuntimeQuery<'a> {
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
     ) -> Result<DvrStatusPollSnapshot, HalError> {
+        self.dvr_status_snapshot_for_aidl_object(object_id, generation, true)
+    }
+
+    pub(crate) fn dvr_status_metadata_snapshot_for_aidl_object(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<DvrStatusPollSnapshot, HalError> {
+        self.dvr_status_snapshot_for_aidl_object(object_id, generation, false)
+    }
+
+    fn dvr_status_snapshot_for_aidl_object(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        consume_event: bool,
+    ) -> Result<DvrStatusPollSnapshot, HalError> {
         let dvr_id = self
             .public_runtime_id_for_aidl_object(object_id, generation, AidlObjectKind::Dvr)
             .map_err(RuntimeObjectQueryError::into_hal_for_object_method)?;
@@ -477,7 +505,7 @@ impl<'a> RuntimeQuery<'a> {
         })?;
         let started = matches!(dvr.state, DvrRuntimeState::Started);
         let callback_unhealthy = dvr.callback_unhealthy;
-        let event = if started && !callback_unhealthy {
+        let event = if consume_event && started && !callback_unhealthy {
             demux.dvr_status_event(dvr_id).map_err(|_| {
                 HalError::invalid_state(
                     HalInvalidStateKind::InvalidLifecycle,
@@ -494,6 +522,7 @@ impl<'a> RuntimeQuery<'a> {
             callback_present: dvr.callback_present,
             callback_unhealthy,
             status_reporting_enabled: dvr.status_mask != 0,
+            is_playback: dvr.kind == DvrKind::Playback,
         })
     }
 
@@ -590,6 +619,7 @@ impl<'a> RuntimeQuery<'a> {
             })?;
         let snapshot = runtime.snapshot();
         Ok(ObjectFrontendStatusSnapshot {
+            backend: entry.backend,
             lnb_profile: entry.lnb_profile,
             runtime_state: snapshot.state,
             signal_state: snapshot.signal_state,
@@ -713,16 +743,6 @@ impl<'a> RuntimeQuery<'a> {
             .ok()
     }
 
-    pub(crate) fn first_pcr_filter_id_for_demux_object(
-        &self,
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-    ) -> Result<Option<i32>, HalError> {
-        let demux_id =
-            self.public_runtime_id_for_object_method(object_id, generation, AidlObjectKind::Demux)?;
-        Ok(self.first_pcr_filter_id_for_demux(demux_id))
-    }
-
     pub(crate) fn ensure_media_filter_for_demux_object(
         &self,
         demux_object_id: AidlObjectId,
@@ -780,21 +800,28 @@ impl<'a> RuntimeQuery<'a> {
         Ok(self.is_live_pcr_filter_for_demux(demux_id, filter_id))
     }
 
-    pub(crate) fn first_pcr_filter_id_for_demux(&self, demux_id: i32) -> Option<i32> {
-        let demux = self.registry.demux_runtime(DemuxRuntimeId(demux_id))?;
+    pub(crate) fn pcr_filter_id_for_av_sync_hw_id_for_demux_object(
+        &self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        av_sync_hw_id: i32,
+    ) -> Result<Option<i32>, HalError> {
+        let demux_id =
+            self.public_runtime_id_for_object_method(object_id, generation, AidlObjectKind::Demux)?;
+        Ok(self
+            .registry
+            .demux_runtime(DemuxRuntimeId(demux_id))
+            .and_then(|demux| demux.pcr_filter_id_for_av_sync_hw_id(av_sync_hw_id)))
+    }
+
+    pub(crate) fn av_sync_hw_id_for_media_filter(
+        &self,
+        demux_id: i32,
+        filter_id: i32,
+    ) -> Option<i32> {
         self.registry
-            .filters_for_demux(demux_id)
-            .into_iter()
-            .map(|entry| entry.id.0)
-            .find(|filter_id| {
-                demux
-                    .filter_snapshot(*filter_id)
-                    .map(|snapshot| {
-                        snapshot.open_type == FilterOpenType::TsPcr
-                            && !snapshot.state.is_closed_or_failed()
-                    })
-                    .unwrap_or(false)
-            })
+            .demux_runtime(DemuxRuntimeId(demux_id))?
+            .av_sync_hw_id_for_media_filter(filter_id)
     }
 
     pub(crate) fn is_live_pcr_filter_for_demux(&self, demux_id: i32, filter_id: i32) -> bool {
@@ -810,9 +837,19 @@ impl<'a> RuntimeQuery<'a> {
         demux
             .filter_snapshot(filter_id)
             .map(|snapshot| {
-                snapshot.open_type == FilterOpenType::TsPcr && !snapshot.state.is_closed_or_failed()
+                snapshot.open_type == FilterOpenType::TsPcr && snapshot.state.is_started()
             })
             .unwrap_or(false)
+    }
+
+    pub(crate) fn pcr_clock_time_90khz_for_demux(
+        &self,
+        demux_id: i32,
+        filter_id: i32,
+    ) -> Option<u64> {
+        self.registry
+            .demux_runtime(DemuxRuntimeId(demux_id))?
+            .pcr_clock_time_90khz(filter_id)
     }
 
     pub(crate) fn ensure_frontend_demux_sink_ready(

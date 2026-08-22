@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::Read;
 use std::path::PathBuf;
@@ -16,9 +17,10 @@ use maleicacid_tuner_hal2_demux::config::{
 };
 use maleicacid_tuner_hal2_demux::OpenFilterRequest;
 use maleicacid_tuner_hal2_demux::{
-    AvMediaEventDescriptor, DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeRollbackToken,
-    DemuxRuntimeState, DvrKind, DvrRuntimeState, GenerationBoundaryReport, PipelineBoundaryReason,
-    PipelineDiagnostic, PipelineReport, PipelineResetReport, TsInputOrigin,
+    AvDataId, AvMediaEventDescriptor, AvSharedBacking, DemuxRuntimeError, DemuxRuntimeErrorKind,
+    DemuxRuntimeRollbackToken, DemuxRuntimeState, DvrKind, DvrRuntimeState,
+    StreamBoundaryReport, PipelineBoundaryReason, PipelineDiagnostic, PipelineReport,
+    PipelineResetReport, TsInputOrigin,
     TsPacketValidationError, ValidatedTsPacket,
 };
 #[cfg(test)]
@@ -41,6 +43,7 @@ use maleicacid_tuner_hal2_domain_request::{
 };
 
 use crate::callback_registry::{CallbackRegistryUpdate, RuntimeCallbackRegistry};
+use crate::capability_snapshot::{CapacityLedger, CapabilitySnapshot};
 use crate::command_dispatch::{
     RuntimeCommandDispatchError, RuntimeCommandDispatchPlan, RuntimeCommandDispatcher,
 };
@@ -76,7 +79,7 @@ use crate::object_close_txn::{
     ObjectCleanupDiagnosticRecord, ObjectCleanupDiagnosticSnapshot, SharedObjectCleanupDiagnostics,
 };
 use crate::object_lifecycle::aidl_object_live;
-use crate::object_method_txn::ObjectMethodExecutionToken;
+use crate::object_method_use_case::ObjectMethodExecutionToken;
 use crate::object_table::{
     RuntimeObjectEntry, RuntimeObjectLifecycle, RuntimeObjectTable, RuntimeObjectTableError,
     RuntimeOwnerRelation,
@@ -84,7 +87,7 @@ use crate::object_table::{
 use crate::registry::{
     DemuxRuntimeId, DescramblerRuntimeId, DvrRuntimeId, FilterRuntimeId, FrontendRegistryEntry,
     FrontendRuntimeId, LnbRegistryEntry, LnbRegistryProfile, LnbRuntimeId, RegistryCommitError,
-    RuntimeRegistry,
+    RuntimeRegistry, SatellitePowerTopology,
 };
 use crate::ServiceState;
 use maleicacid_tuner_hal2_resource_ledger::{LedgerGeneration, LedgerId};
@@ -96,11 +99,18 @@ pub use query_api::DvrStatusPollSnapshot;
 pub(crate) use query_api::{
     map_queue_descriptor_query_error, QueueDescriptorExportPlan, RuntimeQuery,
 };
-mod demux_filter_dvr_txn;
+mod child_open_context;
+pub(crate) use child_open_context::ChildOpenContext;
+#[path = "demux_filter_dvr_ops.rs"]
+mod demux_filter_dvr_ops;
+pub use demux_filter_dvr_ops::ChildOpenTxn;
 mod descrambler_txn;
+mod frontend_tune_scan_context;
 mod frontend_txn;
-mod lnb_txn;
-mod packet_txn;
+pub(crate) use frontend_tune_scan_context::FrontendTuneScanContext;
+pub(crate) mod lnb_txn;
+#[path = "packet_ops.rs"]
+mod packet_ops;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FilterChildRuntimeOpen {
@@ -122,6 +132,8 @@ pub enum FrontendProbeOutcome {
         system: FrontendSystem,
         path: PathBuf,
         lnb_profile: Option<LnbRegistryProfile>,
+        satellite_power_topology: SatellitePowerTopology,
+        capability: crate::registry::FrontendCapabilitySnapshot,
     },
     DeviceMissing {
         backend: FrontendBackendKind,
@@ -143,6 +155,37 @@ pub enum FrontendProbeOutcome {
 pub enum ServiceBootOutcome {
     Ready,
     Degraded,
+}
+
+fn frontend_capability_is_consistent(
+    backend: FrontendBackendKind,
+    system: FrontendSystem,
+    capability: crate::registry::FrontendCapabilitySnapshot,
+) -> bool {
+    let scalar = capability.scalar;
+    let expected_tag = match backend {
+        FrontendBackendKind::Px4CharDevice => 0x1000_0000,
+        FrontendBackendKind::LinuxDvb => 0x2000_0000,
+    };
+    if capability.exclusive_group_id < 0
+        || (capability.exclusive_group_id & 0x7000_0000) != expected_tag
+        || scalar.min_frequency_hz <= 0
+        || scalar.max_frequency_hz < scalar.min_frequency_hz
+        || scalar.min_symbol_rate < 0
+        || scalar.max_symbol_rate < scalar.min_symbol_rate
+        || scalar.acquire_range_hz < 0
+    {
+        return false;
+    }
+    match system {
+        FrontendSystem::IsdbT => capability
+            .isdbt_segment
+            .is_some_and(|segment| segment.is_segment_auto),
+        FrontendSystem::IsdbS => {
+            capability.isdbt_segment.is_none() && scalar.max_symbol_rate > 0
+        }
+        FrontendSystem::IsdbS3 | FrontendSystem::DvbS => false,
+    }
 }
 
 fn dvb_dvr_path_for_frontend_path(path: &std::path::Path) -> Option<PathBuf> {
@@ -179,7 +222,14 @@ fn live_reader_descriptor_for_frontend_entry(
 }
 
 fn default_lnb_entry_for_frontend(entry: &FrontendRegistryEntry) -> Option<LnbRegistryEntry> {
-    let profile = entry.lnb_profile?;
+    let profile = match entry.lnb_profile? {
+        // ExternalOrShared is product wiring evidence for keeping the
+        // satellite frontend powered.  It is not evidence for any
+        // caller-controllable ILnb operation, so it must not create a public
+        // LNB endpoint.
+        LnbRegistryProfile::NoPower => return None,
+        profile => profile,
+    };
     let id = LnbRuntimeId(entry.id.0.checked_add(10_000)?);
     let name = match entry.backend {
         FrontendBackendKind::Px4CharDevice => {
@@ -212,18 +262,20 @@ pub struct FrontendDemuxPacketSink {
     dispatcher: Arc<dyn FilterEventDispatcher>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FilterEventDeliverySnapshot {
     pub object_id: AidlObjectId,
     pub generation: AidlObjectGeneration,
     pub event: FilterEventDelivery,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FilterEventDelivery {
+    Status(maleicacid_tuner_hal2_demux::FilterStatusEvent),
     Media(AvMediaEventDescriptor),
     Section { data_length: usize },
     Pes { stream_id: i32, data_length: usize },
+    RecordIndex(maleicacid_tuner_hal2_demux::TsRecordEventData),
 }
 
 pub trait FilterEventDispatcher: Send + Sync {
@@ -351,10 +403,19 @@ pub(super) fn demux_runtime_error_to_hal(
                 "demux source/sink PID mismatch",
             )
         }
-        maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::PipelineFailed => HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "demux runtime pipeline operation failed",
-        ),
+        maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SelfReference => {
+            HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "a filter cannot use itself as its data source",
+            )
+        }
+        maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::PipelineFailed
+        | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::RelationCommitUnknown => {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "demux runtime pipeline or relation operation failed",
+            )
+        }
         maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SourceBoundaryRollbackFailed => {
             HalError::cleanup_failed(
                 "demux source boundary rollback",
@@ -380,6 +441,14 @@ fn descrambler_session_failure_to_hal(kind: DescramblerSessionFailureKind) -> Ha
         DescramblerSessionFailureKind::DemuxNotBound => HalError::invalid_state(
             HalInvalidStateKind::InvalidLifecycle,
             "descrambler demux source is not bound",
+        ),
+        DescramblerSessionFailureKind::DemuxAlreadyBound => HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
+            "descrambler demux source is already bound",
+        ),
+        DescramblerSessionFailureKind::PidSourceConflict => HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
+            "descrambler PID is already registered with a different source",
         ),
         DescramblerSessionFailureKind::ClearKeyPlanMismatch => HalError::internal(
             HalInternalKind::InvariantViolation,
@@ -462,6 +531,12 @@ pub fn start_frontend_demux_live_pump_from_reader(
 #[derive(Debug)]
 pub struct TunerServiceRuntime {
     state: ServiceState,
+    capability_snapshot: CapabilitySnapshot,
+    capacity_ledger: CapacityLedger,
+    release_only_filter_av_backings: BTreeMap<i32, AvSharedBacking>,
+    release_only_filter_types: BTreeMap<i32, FilterOpenType>,
+    released_filter_av_shared_handle_leases:
+        BTreeMap<i32, maleicacid_tuner_hal2_demux::AvFileIdentity>,
     registry: RuntimeRegistry,
     object_table: RuntimeObjectTable,
     diagnostics: BoundedDiagnosticStore<StartupDiagnosticRecord>,
@@ -479,10 +554,15 @@ pub struct TunerServiceRuntime {
     object_cleanup_diagnostics: SharedObjectCleanupDiagnostics,
     frontend_worker_cleanup_diagnostics: SharedFrontendWorkerCleanupDiagnostics,
     next_demux_transaction_diagnostic_id: u64,
+    demux_transaction_diagnostic_id_saturation_reported: bool,
     callback_artifact_runtime_split_diagnostics: SharedCallbackArtifactRuntimeSplitDiagnostics,
     filter_event_dispatcher: Option<FilterEventDispatcherHandle>,
     callback_registry: RuntimeCallbackRegistry,
     frontend_workers: FrontendWorkerRegistry,
+    playback_consume_txns: BTreeMap<i32, crate::playback_consume_txn::PlaybackConsumeTxn>,
+    frontend_worker_reaper:
+        Option<crate::frontend_worker_txn::FrontendWorkerReaperHandle>,
+    frontend_current_max: BTreeMap<FrontendSystem, i32>,
     next_aidl_generation: u64,
     next_aidl_object_id: i64,
 }
@@ -541,6 +621,7 @@ pub struct CallbackRegistrationArtifactOutcome {
     registration_api: AidlApi,
     rollback_command: Option<OwnerCallbackCleanupArtifactCommand>,
     primary_result: Result<(), HalError>,
+    prepared_artifact: bool,
 }
 
 impl CallbackRegistrationArtifactOutcome {
@@ -551,6 +632,7 @@ impl CallbackRegistrationArtifactOutcome {
         registration_api: AidlApi,
         rollback_command: Option<OwnerCallbackCleanupArtifactCommand>,
         primary_result: Result<(), HalError>,
+        prepared_artifact: bool,
     ) -> Self {
         Self {
             owner_kind,
@@ -559,7 +641,28 @@ impl CallbackRegistrationArtifactOutcome {
             registration_api,
             rollback_command,
             primary_result,
+            prepared_artifact,
         }
+    }
+
+    pub fn artifact_key(
+        &self,
+    ) -> (
+        AidlObjectKind,
+        AidlObjectId,
+        AidlObjectGeneration,
+        AidlApi,
+    ) {
+        (
+            self.owner_kind,
+            self.owner_id,
+            self.owner_generation,
+            self.registration_api,
+        )
+    }
+
+    pub const fn uses_prepared_artifact(&self) -> bool {
+        self.prepared_artifact
     }
 
     pub fn rollback_command(&self) -> Option<&OwnerCallbackCleanupArtifactCommand> {
@@ -632,6 +735,14 @@ pub enum CallbackDeliveryFailureReport {
         dvr_post_commit_phase: DvrPostCommitNotificationPhase,
         primary: HalError,
     },
+    FrontendEvent {
+        owner_id: AidlObjectId,
+        owner_generation: AidlObjectGeneration,
+        frontend_id: i32,
+        frontend_generation: u64,
+        phase: CallbackDeliveryFailurePhase,
+        primary: HalError,
+    },
     FrontendScanEnd {
         owner_id: AidlObjectId,
         owner_generation: AidlObjectGeneration,
@@ -691,16 +802,35 @@ impl CallbackDeliveryFailureReport {
         }
     }
 
+    pub fn frontend_event(
+        owner_id: AidlObjectId,
+        owner_generation: AidlObjectGeneration,
+        frontend_id: i32,
+        frontend_generation: u64,
+        phase: CallbackDeliveryFailurePhase,
+        primary: HalError,
+    ) -> Self {
+        Self::FrontendEvent {
+            owner_id,
+            owner_generation,
+            frontend_id,
+            frontend_generation,
+            phase,
+            primary,
+        }
+    }
+
     pub fn phase(&self) -> CallbackDeliveryFailurePhase {
         match self {
             Self::Filter { phase, .. }
             | Self::Dvr { phase, .. }
+            | Self::FrontendEvent { phase, .. }
             | Self::FrontendScanEnd { phase, .. } => *phase,
         }
     }
 }
 
-fn filter_callback_failure_diagnostic_phase(
+pub(crate) fn filter_callback_failure_diagnostic_phase(
     phase: CallbackDeliveryFailurePhase,
 ) -> FilterCallbackDeliveryDiagnosticPhase {
     match phase {
@@ -720,7 +850,7 @@ fn filter_callback_failure_diagnostic_phase(
     }
 }
 
-fn frontend_callback_failure_diagnostic_phase(
+pub(crate) fn frontend_callback_failure_diagnostic_phase(
     phase: CallbackDeliveryFailurePhase,
 ) -> FrontendCallbackDeliveryDiagnosticPhase {
     match phase {
@@ -740,7 +870,7 @@ fn frontend_callback_failure_diagnostic_phase(
     }
 }
 
-fn dvr_post_commit_notification_failure_kind(
+pub(crate) fn dvr_post_commit_notification_failure_kind(
     phase: CallbackDeliveryFailurePhase,
 ) -> DvrPostCommitNotificationFailureKind {
     match phase {
@@ -852,10 +982,13 @@ impl TunerServiceRuntime {
             .filter_map(|event| {
                 use maleicacid_tuner_hal2_demux::PipelineGeneratedEvent;
                 let (filter_id, event) = match event {
+                    PipelineGeneratedEvent::FilterStatus { filter_id, status } => {
+                        (*filter_id, FilterEventDelivery::Status(*status))
+                    }
                     PipelineGeneratedEvent::AvMedia {
                         filter_id,
                         descriptor,
-                    } => (*filter_id, FilterEventDelivery::Media(*descriptor)),
+                    } => (*filter_id, FilterEventDelivery::Media(descriptor.clone())),
                     PipelineGeneratedEvent::SectionPayloadReady {
                         filter_id, bytes, ..
                     } => (
@@ -866,16 +999,18 @@ impl TunerServiceRuntime {
                     ),
                     PipelineGeneratedEvent::PesPacketReady {
                         filter_id,
-                        pid,
                         packet,
                         ..
                     } => (
                         *filter_id,
                         FilterEventDelivery::Pes {
-                            stream_id: pid.to_i32_for_aidl_boundary(),
+                            stream_id: i32::from(packet.stream_id),
                             data_length: packet.raw_bytes.len(),
                         },
                     ),
+                    PipelineGeneratedEvent::RecordIndex { filter_id, data } => {
+                        (*filter_id, FilterEventDelivery::RecordIndex(*data))
+                    }
                     _ => return None,
                 };
                 let entry = self.object_table.live_entry_for_runtime(
@@ -899,10 +1034,100 @@ impl Default for TunerServiceRuntime {
 }
 
 impl TunerServiceRuntime {
+    pub(crate) fn default_max_number_of_frontends(&self, system: FrontendSystem) -> i32 {
+        match i32::try_from(
+            self.registry
+                .frontend_ids()
+                .into_iter()
+                .filter(|id| {
+                    self.registry
+                        .frontend(*id)
+                        .is_some_and(|entry| entry.system == system)
+                })
+                .count(),
+        ) {
+            Ok(count) => count,
+            Err(_) => i32::MAX,
+        }
+    }
+
+    pub(crate) fn current_max_number_of_frontends(&self, system: FrontendSystem) -> i32 {
+        match self.frontend_current_max.get(&system) {
+            Some(max_number) => *max_number,
+            None => self.default_max_number_of_frontends(system),
+        }
+    }
+
+    pub(crate) fn set_current_max_number_of_frontends(
+        &mut self,
+        system: FrontendSystem,
+        max_number: i32,
+    ) {
+        self.frontend_current_max.insert(system, max_number);
+    }
+
+    pub(crate) fn active_frontend_lease_count(&self, system: FrontendSystem) -> i32 {
+        match i32::try_from(
+            self.object_table
+                .active_public_runtime_ids(AidlObjectKind::Frontend)
+                .into_iter()
+                .filter_map(|id| i32::try_from(id.0).ok())
+                .filter(|id| {
+                    self.registry
+                        .frontend(FrontendRuntimeId(*id))
+                        .is_some_and(|entry| entry.system == system)
+                })
+                .count(),
+        ) {
+            Ok(count) => count,
+            Err(_) => i32::MAX,
+        }
+    }
+
+    pub(crate) fn has_active_frontend_lease(&self, frontend_id: i32) -> bool {
+        self.object_table
+            .active_public_runtime_ids(AidlObjectKind::Frontend)
+            .contains(&LedgerId(i64::from(frontend_id)))
+    }
+
+    pub(crate) fn has_active_frontend_group_lease(&self, exclusive_group_id: i32) -> bool {
+        self.object_table
+            .active_public_runtime_ids(AidlObjectKind::Frontend)
+            .into_iter()
+            .filter_map(|id| i32::try_from(id.0).ok())
+            .any(|id| {
+                self.registry
+                    .frontend(FrontendRuntimeId(id))
+                    .is_some_and(|entry| {
+                        entry.capability.exclusive_group_id == exclusive_group_id
+                    })
+            })
+    }
+
     pub fn new() -> Self {
+        Self::from_capability_snapshot(CapabilitySnapshot::product_default())
+    }
+
+    pub fn try_new() -> Result<Self, HalError> {
+        let capability_snapshot = CapabilitySnapshot::product_default();
+        capability_snapshot.validate_dependency_closures()?;
+        Ok(Self::from_capability_snapshot(capability_snapshot))
+    }
+
+    fn from_capability_snapshot(capability_snapshot: CapabilitySnapshot) -> Self {
         Self {
             state: ServiceState::Booting,
-            registry: RuntimeRegistry::default(),
+            capability_snapshot,
+            capacity_ledger: CapacityLedger::default(),
+            release_only_filter_av_backings: BTreeMap::new(),
+            release_only_filter_types: BTreeMap::new(),
+            released_filter_av_shared_handle_leases: BTreeMap::new(),
+            registry: RuntimeRegistry::with_av_runtime_limits(
+                capability_snapshot.av_max_event_bytes,
+                capability_snapshot.av_max_outstanding_events_per_filter,
+                capability_snapshot.av_per_filter_live_bytes,
+                capability_snapshot.av_runtime_budget_bytes,
+            ),
             object_table: RuntimeObjectTable::default(),
             diagnostics: BoundedDiagnosticStore::default(),
             descrambler_diagnostics: BoundedDiagnosticStore::default(),
@@ -918,25 +1143,99 @@ impl TunerServiceRuntime {
             object_cleanup_diagnostics: SharedObjectCleanupDiagnostics::default(),
             frontend_worker_cleanup_diagnostics: SharedFrontendWorkerCleanupDiagnostics::default(),
             next_demux_transaction_diagnostic_id: 1,
+            demux_transaction_diagnostic_id_saturation_reported: false,
             callback_artifact_runtime_split_diagnostics:
                 SharedCallbackArtifactRuntimeSplitDiagnostics::default(),
             filter_event_dispatcher: None,
             callback_registry: RuntimeCallbackRegistry::default(),
             frontend_workers: FrontendWorkerRegistry::default(),
+            playback_consume_txns: BTreeMap::new(),
+            frontend_worker_reaper: None,
+            frontend_current_max: BTreeMap::new(),
             next_aidl_generation: 0,
             next_aidl_object_id: 0,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_capability_snapshot_for_test(
+        capability_snapshot: CapabilitySnapshot,
+    ) -> Self {
+        Self::from_capability_snapshot(capability_snapshot)
     }
 
     pub fn state(&self) -> ServiceState {
         self.state
     }
 
+    pub(crate) fn frontend_worker_reaper_handle(
+        &self,
+    ) -> Option<crate::frontend_worker_txn::FrontendWorkerReaperHandle> {
+        self.frontend_worker_reaper.clone()
+    }
+
+    pub(crate) fn install_frontend_worker_reaper_handle(
+        &mut self,
+        handle: crate::frontend_worker_txn::FrontendWorkerReaperHandle,
+    ) {
+        self.frontend_worker_reaper = Some(handle);
+    }
+
+    pub(crate) fn frontend_worker_reaper_capacity(&self) -> usize {
+        self.registry.frontend_count().max(1).saturating_mul(2)
+    }
+
+    pub fn mark_service_critical(&mut self) {
+        self.state = ServiceState::ServiceCritical;
+    }
+
+    pub const fn capability_snapshot(&self) -> CapabilitySnapshot {
+        self.capability_snapshot
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reserve_filter_capacity_for_test(
+        &mut self,
+        filter_id: i32,
+        open_type: FilterOpenType,
+        buffer_size: i32,
+    ) -> Result<(), HalError> {
+        self.capacity_ledger.reserve_filter(
+            self.capability_snapshot,
+            filter_id,
+            open_type,
+            buffer_size,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn release_filter_capacity_for_test(
+        &mut self,
+        filter_id: i32,
+    ) -> Result<(), HalError> {
+        self.capacity_ledger.release_filter(filter_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reserve_dvr_capacity_for_test(
+        &mut self,
+        dvr_id: i32,
+        buffer_size: i32,
+    ) -> Result<(), HalError> {
+        self.capacity_ledger
+            .reserve_dvr(self.capability_snapshot, dvr_id, buffer_size)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn release_dvr_capacity_for_test(&mut self, dvr_id: i32) -> Result<(), HalError> {
+        self.capacity_ledger.release_dvr(dvr_id)
+    }
+
     pub(crate) fn registry(&self) -> &RuntimeRegistry {
         &self.registry
     }
 
-    fn registry_mut(&mut self) -> &mut RuntimeRegistry {
+    pub(crate) fn registry_mut(&mut self) -> &mut RuntimeRegistry {
         &mut self.registry
     }
 
@@ -1142,10 +1441,14 @@ impl TunerServiceRuntime {
         &mut self,
     ) -> DemuxTransactionDiagnosticId {
         let id = DemuxTransactionDiagnosticId(self.next_demux_transaction_diagnostic_id);
-        self.next_demux_transaction_diagnostic_id = self
-            .next_demux_transaction_diagnostic_id
-            .saturating_add(1)
-            .max(1);
+        if let Some(next) = self.next_demux_transaction_diagnostic_id.checked_add(1) {
+            self.next_demux_transaction_diagnostic_id = next;
+        } else if !self.demux_transaction_diagnostic_id_saturation_reported {
+            self.demux_transaction_diagnostic_id_saturation_reported = true;
+            eprintln!(
+                "maleicacid-tuner-hal2-diagnostic: diagnostic_counter_saturated counter=demux_transaction_diagnostic_id owner=service_runtime"
+            );
+        }
         id
     }
 
@@ -1214,7 +1517,10 @@ impl TunerServiceRuntime {
         filter_id: i32,
         primary_error: HalError,
     ) -> Result<(), HalError> {
-        match self.rollback_filter_child_open_after_aidl_failure(object_id, generation, filter_id) {
+        match self
+            .child_open_txn()
+            .rollback_filter_child_open_after_aidl_failure(object_id, generation, filter_id)
+        {
             Ok(()) => Err(primary_error),
             Err(cleanup_error) => Err(compose_primary_cleanup_failure(
                 "filter child callback retain failure rollback failed",
@@ -1231,7 +1537,10 @@ impl TunerServiceRuntime {
         dvr_id: i32,
         primary_error: HalError,
     ) -> Result<(), HalError> {
-        match self.rollback_dvr_child_open_after_aidl_failure(object_id, generation, dvr_id) {
+        match self
+            .child_open_txn()
+            .rollback_dvr_child_open_after_aidl_failure(object_id, generation, dvr_id)
+        {
             Ok(()) => Err(primary_error),
             Err(cleanup_error) => Err(compose_primary_cleanup_failure(
                 "DVR child callback retain failure rollback failed",
@@ -1277,7 +1586,7 @@ impl TunerServiceRuntime {
         owner_generation: AidlObjectGeneration,
         filter_id: i32,
     ) -> OwnerCallbackCleanupUseCaseOutcome<()> {
-        let primary_result = self.rollback_filter_child_open_after_aidl_failure(
+        let primary_result = self.child_open_txn().rollback_filter_child_open_after_aidl_failure(
             owner_id,
             owner_generation,
             filter_id,
@@ -1298,8 +1607,13 @@ impl TunerServiceRuntime {
         owner_generation: AidlObjectGeneration,
         dvr_id: i32,
     ) -> OwnerCallbackCleanupUseCaseOutcome<()> {
-        let primary_result =
-            self.rollback_dvr_child_open_after_aidl_failure(owner_id, owner_generation, dvr_id);
+        let primary_result = self
+            .child_open_txn()
+            .rollback_dvr_child_open_after_aidl_failure(
+                owner_id,
+                owner_generation,
+                dvr_id,
+            );
         let command = OwnerCallbackCleanupArtifactCommand::new(
             AidlObjectKind::Dvr,
             owner_id,
@@ -1358,7 +1672,7 @@ impl TunerServiceRuntime {
         let primary_result = match artifact_retain_result {
             Err(error) => Err(error),
             Ok(()) => {
-                self.record_callback_registration_for_object(
+                let prepared = crate::callback_registry::CallbackRegistrationUseCase::prepare(
                     owner_kind,
                     owner_id,
                     owner_generation,
@@ -1385,7 +1699,12 @@ impl TunerServiceRuntime {
                         ),
                     )),
                 };
-                if commit_result.is_err() {
+                if commit_result.is_ok() {
+                    crate::callback_registry::CallbackRegistrationUseCase::commit(
+                        &mut self.callback_registry,
+                        prepared,
+                    );
+                } else {
                     rollback_command = Some(self.plan_owner_callback_cleanup_artifact_command(
                         owner_kind,
                         owner_id,
@@ -1404,6 +1723,7 @@ impl TunerServiceRuntime {
             registration_api,
             rollback_command,
             primary_result,
+            true,
         )
     }
 
@@ -1419,13 +1739,17 @@ impl TunerServiceRuntime {
         let primary_result = match artifact_retain_result {
             Err(error) => Err(error),
             Ok(()) => {
-                let record_result = aidl_object_live(self, owner_id, owner_generation, owner_kind)
-                    .map(|_| {
-                        self.record_callback_registration_for_object(
-                            owner_kind,
-                            owner_id,
-                            owner_generation,
-                            registration_api,
+                let prepared = crate::callback_registry::CallbackRegistrationUseCase::prepare(
+                    owner_kind,
+                    owner_id,
+                    owner_generation,
+                    registration_api,
+                );
+                let record_result =
+                    aidl_object_live(self, owner_id, owner_generation, owner_kind).map(|_| {
+                        crate::callback_registry::CallbackRegistrationUseCase::commit(
+                            &mut self.callback_registry,
+                            prepared,
                         );
                     });
                 if record_result.is_err() {
@@ -1447,6 +1771,7 @@ impl TunerServiceRuntime {
             registration_api,
             rollback_command,
             primary_result,
+            false,
         )
     }
 
@@ -1506,21 +1831,6 @@ impl TunerServiceRuntime {
                 )),
             },
         }
-    }
-
-    fn record_callback_registration_for_object(
-        &mut self,
-        owner_kind: AidlObjectKind,
-        owner_id: AidlObjectId,
-        owner_generation: AidlObjectGeneration,
-        registration_api: AidlApi,
-    ) {
-        self.callback_registry.record_registration(
-            owner_kind,
-            owner_id,
-            owner_generation,
-            registration_api,
-        );
     }
 
     fn mark_callback_registration_unhealthy(
@@ -1649,6 +1959,17 @@ impl TunerServiceRuntime {
         &mut self,
         report: CallbackDeliveryFailureReport,
     ) -> Result<(), HalError> {
+        let classified =
+            crate::worker_failure_classifier::WorkerFailureClassifier::classify_callback(report);
+        crate::post_commit_callback_failure_txn::PostCommitCallbackFailureTxn::new(self)
+            .execute(classified)
+    }
+
+    pub(crate) fn commit_post_callback_failure_effects(
+        &mut self,
+        report: CallbackDeliveryFailureReport,
+        health_effect: crate::post_commit_callback_failure_txn::CallbackHealthEffect,
+    ) -> Result<(), HalError> {
         let mut failures = FirstErrorCollector::new();
         match report {
             CallbackDeliveryFailureReport::Filter {
@@ -1665,7 +1986,9 @@ impl TunerServiceRuntime {
                         primary.clone(),
                     ),
                 );
-                if phase != CallbackDeliveryFailurePhase::CallbackArtifactLookup {
+                if health_effect
+                    == crate::post_commit_callback_failure_txn::CallbackHealthEffect::MarkUnhealthy
+                {
                     if let Err(error) = self
                         .mark_filter_callback_delivery_failed_use_case(owner_id, owner_generation)
                     {
@@ -1697,13 +2020,9 @@ impl TunerServiceRuntime {
                         primary.clone(),
                     ),
                 );
-                if !matches!(
-                    phase,
-                    CallbackDeliveryFailurePhase::CallbackArtifactLookup
-                        | CallbackDeliveryFailurePhase::RuntimePolicySkip
-                        | CallbackDeliveryFailurePhase::NotifierCleanup
-                        | CallbackDeliveryFailurePhase::NotifierPreflight
-                ) {
+                if health_effect
+                    == crate::post_commit_callback_failure_txn::CallbackHealthEffect::MarkUnhealthy
+                {
                     if let Err(error) = self.mark_dvr_callback_delivery_failed_use_case(
                         owner_id,
                         owner_generation,
@@ -1714,6 +2033,57 @@ impl TunerServiceRuntime {
                 }
                 match failures.into_result() {
                     Ok(()) => Ok(()),
+                    Err(cleanup) => Err(compose_primary_cleanup_failure(
+                        "callback delivery failure accounting failed",
+                        primary,
+                        cleanup,
+                    )),
+                }
+            }
+            CallbackDeliveryFailureReport::FrontendEvent {
+                owner_id,
+                owner_generation,
+                frontend_id,
+                frontend_generation,
+                phase,
+                primary,
+            } => {
+                let record = if phase == CallbackDeliveryFailurePhase::CallbackArtifactLookup {
+                    FrontendCallbackDeliveryDiagnosticRecord::callback_artifact_lookup(
+                        owner_id,
+                        owner_generation,
+                        primary.clone(),
+                    )
+                } else {
+                    FrontendCallbackDeliveryDiagnosticRecord::frontend_event_delivery(
+                        owner_id,
+                        owner_generation,
+                        frontend_id,
+                        frontend_generation,
+                        primary.clone(),
+                    )
+                };
+                self.record_frontend_callback_delivery_diagnostic(record);
+                if health_effect
+                    == crate::post_commit_callback_failure_txn::CallbackHealthEffect::MarkUnhealthy
+                {
+                    if let Err(error) = self
+                        .mark_frontend_callback_delivery_failed_use_case(owner_id, owner_generation)
+                    {
+                        self.record_frontend_callback_delivery_diagnostic(
+                            FrontendCallbackDeliveryDiagnosticRecord::callback_registry_accounting(
+                                owner_id,
+                                owner_generation,
+                                frontend_id,
+                                frontend_generation,
+                                error.clone(),
+                            ),
+                        );
+                        failures.push_error(error);
+                    }
+                }
+                match failures.into_result() {
+                    Ok(()) => Err(primary),
                     Err(cleanup) => Err(compose_primary_cleanup_failure(
                         "callback delivery failure accounting failed",
                         primary,
@@ -1735,6 +2105,15 @@ impl TunerServiceRuntime {
                             FrontendCallbackDeliveryDiagnosticRecord::callback_artifact_lookup(
                                 owner_id,
                                 owner_generation,
+                                primary.clone(),
+                            )
+                        }
+                        FrontendCallbackDeliveryDiagnosticPhase::FrontendEventDelivery => {
+                            FrontendCallbackDeliveryDiagnosticRecord::frontend_event_delivery(
+                                owner_id,
+                                owner_generation,
+                                frontend_id,
+                                scan_generation,
                                 primary.clone(),
                             )
                         }
@@ -1767,21 +2146,23 @@ impl TunerServiceRuntime {
                         }
                     },
                 );
-                if phase != CallbackDeliveryFailurePhase::CallbackArtifactLookup {
-                    if let Err(error) = self
-                        .mark_frontend_scan_session_callback_failed(frontend_id, scan_generation)
-                    {
-                        self.record_frontend_callback_delivery_diagnostic(
-                            FrontendCallbackDeliveryDiagnosticRecord::scan_session_accounting(
-                                owner_id,
-                                owner_generation,
-                                frontend_id,
-                                scan_generation,
-                                error.clone(),
-                            ),
-                        );
-                        failures.push_error(error);
-                    }
+                if let Err(error) = self
+                    .mark_frontend_scan_session_callback_failed(frontend_id, scan_generation)
+                {
+                    self.record_frontend_callback_delivery_diagnostic(
+                        FrontendCallbackDeliveryDiagnosticRecord::scan_session_accounting(
+                            owner_id,
+                            owner_generation,
+                            frontend_id,
+                            scan_generation,
+                            error.clone(),
+                        ),
+                    );
+                    failures.push_error(error);
+                }
+                if health_effect
+                    == crate::post_commit_callback_failure_txn::CallbackHealthEffect::MarkUnhealthy
+                {
                     if let Err(error) = self
                         .mark_frontend_callback_delivery_failed_use_case(owner_id, owner_generation)
                     {
@@ -2117,6 +2498,10 @@ impl TunerServiceRuntime {
         self.registry.clear_lnbs();
         self.registry.clear_transient_objects();
         self.object_table.clear();
+        self.capacity_ledger.clear();
+        self.release_only_filter_av_backings.clear();
+        self.release_only_filter_types.clear();
+        self.released_filter_av_shared_handle_leases.clear();
         self.diagnostics.clear();
         self.descrambler_diagnostics.clear();
         self.child_open_rollback_diagnostics.clear();
@@ -2166,6 +2551,7 @@ impl TunerServiceRuntime {
         let diagnostic_clear_result = diagnostic_clear_failures.into_result();
         self.callback_registry = RuntimeCallbackRegistry::default();
         self.frontend_workers = FrontendWorkerRegistry::default();
+        self.frontend_current_max.clear();
         self.next_aidl_generation = 0;
         self.next_aidl_object_id = 0;
 
@@ -2174,6 +2560,9 @@ impl TunerServiceRuntime {
                 .push(StartupDiagnosticRecord::runtime_dispatch_missing());
         }
 
+        let mut physical_group_by_path: BTreeMap<PathBuf, (FrontendBackendKind, i32)> =
+            BTreeMap::new();
+        let mut px4_path_by_group: BTreeMap<i32, PathBuf> = BTreeMap::new();
         for result in results {
             match result {
                 FrontendProbeOutcome::Available {
@@ -2182,16 +2571,60 @@ impl TunerServiceRuntime {
                     system,
                     path,
                     lnb_profile,
+                    satellite_power_topology,
+                    capability,
                 } => {
+                    let path_group_mismatch = physical_group_by_path
+                        .get(&path)
+                        .is_some_and(|(known_backend, known_group)| {
+                            *known_backend != backend
+                                || *known_group != capability.exclusive_group_id
+                        });
+                    let px4_group_collision = backend == FrontendBackendKind::Px4CharDevice
+                        && px4_path_by_group
+                            .get(&capability.exclusive_group_id)
+                            .is_some_and(|known_path| known_path != &path);
+                    let satellite_power_is_consistent = match system {
+                        FrontendSystem::IsdbS => satellite_power_topology
+                            != SatellitePowerTopology::UnknownOrDisabled,
+                        FrontendSystem::IsdbT => {
+                            satellite_power_topology
+                                == SatellitePowerTopology::UnknownOrDisabled
+                        }
+                        FrontendSystem::IsdbS3 | FrontendSystem::DvbS => false,
+                    };
+                    if !frontend_capability_is_consistent(backend, system, capability)
+                        || !satellite_power_is_consistent
+                        || path_group_mismatch
+                        || px4_group_collision
+                    {
+                        self.diagnostics
+                            .push(StartupDiagnosticRecord::capability_suppressed(
+                                backend,
+                                path,
+                                CapabilitySuppressionReason::InvalidCapabilityProfile,
+                            ));
+                        continue;
+                    }
                     let entry = FrontendRegistryEntry {
                         id,
                         backend,
                         system,
                         device_path: path.clone(),
                         lnb_profile,
+                        satellite_power_topology,
+                        capability,
                     };
                     match self.registry.register_frontend(entry.clone()) {
                         Ok(()) => {
+                            physical_group_by_path.insert(
+                                path.clone(),
+                                (backend, capability.exclusive_group_id),
+                            );
+                            if backend == FrontendBackendKind::Px4CharDevice {
+                                px4_path_by_group
+                                    .insert(capability.exclusive_group_id, path.clone());
+                            }
                             if let Some(lnb_entry) = default_lnb_entry_for_frontend(&entry) {
                                 if let Err(RegistryCommitError::DuplicateLnbId { .. }) =
                                     self.registry.register_lnb(lnb_entry)
@@ -2244,6 +2677,16 @@ impl TunerServiceRuntime {
                         ));
                 }
             }
+        }
+
+        for system in [
+            FrontendSystem::IsdbT,
+            FrontendSystem::IsdbS,
+            FrontendSystem::IsdbS3,
+            FrontendSystem::DvbS,
+        ] {
+            let count = self.default_max_number_of_frontends(system);
+            self.frontend_current_max.insert(system, count);
         }
 
         if self.registry.frontend_count() > 0 && self.diagnostics.is_empty() {
@@ -2484,6 +2927,9 @@ impl TunerServiceRuntime {
         command_plan: CommandPlan,
         executable_request: Option<RuntimeExecutableRequest>,
     ) -> Result<RuntimeCommandDispatchPlan, RuntimeCommandDispatchError> {
+        if self.state == ServiceState::ServiceCritical {
+            return Err(RuntimeCommandDispatchError::ServiceCritical);
+        }
         let plan = RuntimeCommandDispatcher::plan(command_plan, executable_request);
         if plan.is_err() {
             self.diagnostics

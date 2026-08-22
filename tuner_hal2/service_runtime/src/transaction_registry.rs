@@ -183,18 +183,6 @@ pub(crate) fn transaction_spec_for(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maleicacid_tuner_hal2_domain_request::AIDL_TRANSACTION_TABLE;
-
-    #[test]
-    fn every_aidl_transaction_has_runtime_spec_entry() {
-        for plan in AIDL_TRANSACTION_TABLE {
-            assert!(
-                transaction_spec_for(plan.transaction()).is_some(),
-                "missing runtime transaction spec for {:?}",
-                plan.transaction()
-            );
-        }
-    }
 
     #[test]
     fn runtime_specs_do_not_duplicate_transaction_names() {

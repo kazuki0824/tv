@@ -2,6 +2,7 @@ use crate::boot::TunerServiceRuntime;
 use crate::error_mapping::{object_table_error_to_hal, registry_commit_error_to_hal};
 use crate::method_dispatch::plan_object_method_dispatch;
 use crate::open_rollback::finish_open_rollback;
+use crate::root_method_txn::{is_public_demux_id, published_demux_ids};
 use crate::{RuntimeObjectEntry, RuntimeOwnerRelation};
 use maleicacid_tuner_hal2_binder_adapter::{AidlMethodAdapter, AidlMethodCall};
 use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, HalError};
@@ -74,32 +75,84 @@ fn preflight_root_method_dispatch(
     )
 }
 
+/// Call-local owner for every public root-object open transaction.
+///
+/// Persistent resource, runtime, and object-table state remains in their
+/// canonical owners; this value only sequences one open or rollback call.
+pub struct RootOpenTxn<'a> {
+    runtime: &'a mut TunerServiceRuntime,
+}
+
 impl TunerServiceRuntime {
+    pub fn root_open_txn(&mut self) -> RootOpenTxn<'_> {
+        RootOpenTxn { runtime: self }
+    }
+}
+
+impl RootOpenTxn<'_> {
     pub fn open_frontend_root_object_for_id(
         &mut self,
         frontend_id: i32,
         method: AidlMethodCall,
     ) -> Result<RuntimeObjectEntry, HalError> {
-        preflight_root_method_dispatch(self, method)?;
-        if !self.has_frontend_id(frontend_id) {
-            return Err(HalError::Unsupported("frontend id is not available"));
+        preflight_root_method_dispatch(self.runtime, method)?;
+        let Some(frontend) = self.runtime.frontend_entry(frontend_id) else {
+            return Err(HalError::invalid_argument(
+                maleicacid_tuner_hal2_common::HalInvalidArgumentKind::NumericRange,
+                "frontend id is not published by the capability snapshot",
+            ));
+        };
+        if self.runtime.has_active_frontend_lease(frontend_id) {
+            return Err(HalError::Unsupported(
+                "frontend id is already leased by a live object",
+            ));
         }
-        register_root_object(self, AidlObjectKind::Frontend, i64::from(frontend_id))
+        if self.runtime.has_active_frontend_group_lease(frontend.capability.exclusive_group_id) {
+            return Err(HalError::Unsupported(
+                "frontend physical group is already leased by a live object",
+            ));
+        }
+        if self.runtime.active_frontend_lease_count(frontend.system)
+            >= self.runtime.current_max_number_of_frontends(frontend.system)
+        {
+            return Err(HalError::Unsupported(
+                "frontend lease limit is reached for this frontend type",
+            ));
+        }
+        register_root_object(
+            self.runtime,
+            AidlObjectKind::Frontend,
+            i64::from(frontend_id),
+        )
     }
 
     pub fn open_demux_root_object(
         &mut self,
         method: AidlMethodCall,
     ) -> Result<RuntimeObjectEntry, HalError> {
-        preflight_root_method_dispatch(self, method)?;
-        let entry = self.allocate_demux_runtime().map_err(|error| {
-            registry_commit_error_to_hal(error, "demux runtime allocation failed")
-        })?;
-        match register_root_object(self, AidlObjectKind::Demux, i64::from(entry.id.0)) {
+        preflight_root_method_dispatch(self.runtime, method)?;
+        let demux_id = published_demux_ids(self.runtime.capability_snapshot())?
+            .iter()
+            .copied()
+            .find(|demux_id| !self.runtime.has_demux_id(*demux_id))
+            .ok_or(HalError::Unsupported(
+                "no published demux lease is available",
+            ))?;
+        let entry = self
+            .runtime
+            .allocate_demux_runtime_for_public_id(demux_id)
+            .map_err(|error| {
+                registry_commit_error_to_hal(error, "demux runtime allocation failed")
+            })?;
+        match register_root_object(
+            self.runtime,
+            AidlObjectKind::Demux,
+            i64::from(entry.id.0),
+        ) {
             Ok(object_entry) => Ok(object_entry),
             Err(error) => {
                 match unregister_demux_runtime_for_open_rollback(
-                    self,
+                    self.runtime,
                     entry.id.0,
                     "demux root object rollback after AIDL registration failure",
                 ) {
@@ -119,26 +172,58 @@ impl TunerServiceRuntime {
         demux_id: i32,
         method: AidlMethodCall,
     ) -> Result<RuntimeObjectEntry, HalError> {
-        preflight_root_method_dispatch(self, method)?;
-        if !self.has_demux_id(demux_id) {
-            return Err(HalError::Unsupported("demux id is not available"));
+        preflight_root_method_dispatch(self.runtime, method)?;
+        if !is_public_demux_id(self.runtime.capability_snapshot(), demux_id)? {
+            return Err(HalError::invalid_argument(
+                maleicacid_tuner_hal2_common::HalInvalidArgumentKind::NumericRange,
+                "demux id is not published by the capability snapshot",
+            ));
         }
-        register_root_object(self, AidlObjectKind::Demux, i64::from(demux_id))
+        if self.runtime.has_demux_id(demux_id) {
+            return Err(HalError::Unsupported(
+                "published demux id is already leased",
+            ));
+        }
+        let entry = self
+            .runtime
+            .allocate_demux_runtime_for_public_id(demux_id)
+            .map_err(|error| {
+                registry_commit_error_to_hal(error, "demux runtime allocation failed")
+            })?;
+        match register_root_object(self.runtime, AidlObjectKind::Demux, i64::from(demux_id)) {
+            Ok(object_entry) => Ok(object_entry),
+            Err(error) => match unregister_demux_runtime_for_open_rollback(
+                self.runtime,
+                entry.id.0,
+                "demux root object rollback after AIDL registration failure",
+            ) {
+                Ok(()) => Err(error),
+                Err(cleanup_error) => Err(compose_primary_cleanup_failure(
+                    "demux root object registration failure",
+                    error,
+                    cleanup_error,
+                )),
+            },
+        }
     }
 
     pub fn open_descrambler_root_object(
         &mut self,
         method: AidlMethodCall,
     ) -> Result<RuntimeObjectEntry, HalError> {
-        preflight_root_method_dispatch(self, method)?;
-        let entry = self.allocate_descrambler_runtime().map_err(|error| {
+        preflight_root_method_dispatch(self.runtime, method)?;
+        let entry = self.runtime.allocate_descrambler_runtime().map_err(|error| {
             registry_commit_error_to_hal(error, "descrambler runtime allocation failed")
         })?;
-        match register_root_object(self, AidlObjectKind::Descrambler, i64::from(entry.id.0)) {
+        match register_root_object(
+            self.runtime,
+            AidlObjectKind::Descrambler,
+            i64::from(entry.id.0),
+        ) {
             Ok(object_entry) => Ok(object_entry),
             Err(error) => {
                 match unregister_descrambler_runtime_for_open_rollback(
-                    self,
+                    self.runtime,
                     entry.id.0,
                     "descrambler root object rollback after AIDL registration failure",
                 ) {
@@ -158,15 +243,41 @@ impl TunerServiceRuntime {
         lnb_id: i32,
         method: AidlMethodCall,
     ) -> Result<RuntimeObjectEntry, HalError> {
-        preflight_root_method_dispatch(self, method)?;
-        if !self.has_lnb_id(lnb_id) {
-            return Err(HalError::Unsupported("LNB id is not available"));
+        preflight_root_method_dispatch(self.runtime, method)?;
+        let lnb_key = crate::registry::LnbRuntimeId(lnb_id);
+        if !self.runtime.has_lnb_id(lnb_id) {
+            return Err(HalError::invalid_argument(
+                maleicacid_tuner_hal2_common::HalInvalidArgumentKind::NumericRange,
+                "LNB id is not published by the capability snapshot",
+            ));
         }
-        let object_entry = register_root_object(self, AidlObjectKind::Lnb, i64::from(lnb_id))?;
-        if let Err(error) = self.open_lnb_for_public_id(lnb_id) {
+        if self
+            .runtime
+            .object_table()
+            .active_public_runtime_ids(AidlObjectKind::Lnb)
+            .contains(&maleicacid_tuner_hal2_resource_ledger::LedgerId(i64::from(lnb_id)))
+            || !self
+                .runtime
+                .registry()
+                .lnb_runtime(lnb_key)
+                .is_some_and(|runtime| {
+                    matches!(
+                        runtime.state(),
+                        maleicacid_tuner_hal2_lnb::LnbRuntimeState::Open
+                            | maleicacid_tuner_hal2_lnb::LnbRuntimeState::Closed
+                    )
+                })
+        {
+            return Err(HalError::Unsupported(
+                "published LNB endpoint is not currently available",
+            ));
+        }
+        let object_entry =
+            register_root_object(self.runtime, AidlObjectKind::Lnb, i64::from(lnb_id))?;
+        if let Err(error) = self.runtime.open_lnb_for_public_id(lnb_id) {
             let rollback = finish_open_rollback(
                 rollback_root_object_registration(
-                    self,
+                    self.runtime,
                     object_entry.object_id,
                     object_entry.generation,
                 ),
@@ -190,52 +301,39 @@ impl TunerServiceRuntime {
         lnb_name: &str,
         method: AidlMethodCall,
     ) -> Result<(i32, RuntimeObjectEntry), HalError> {
-        preflight_root_method_dispatch(self, method)?;
-        let Some(lnb_id) = self.lnb_id_by_name(lnb_name) else {
-            return Err(HalError::Unsupported("LNB name is not available"));
-        };
-        let object_entry = register_root_object(self, AidlObjectKind::Lnb, i64::from(lnb_id))?;
-        if let Err(error) = self.open_lnb_for_public_id(lnb_id) {
-            let rollback = finish_open_rollback(
-                rollback_root_object_registration(
-                    self,
-                    object_entry.object_id,
-                    object_entry.generation,
-                ),
-                || Ok(()),
-                "LNB root object open rollback after runtime open failure",
-            );
-            return match rollback {
-                Ok(()) => Err(error),
-                Err(rollback_error) => Err(compose_primary_cleanup_failure(
-                    "LNB root object open failure",
-                    error,
-                    rollback_error,
-                )),
-            };
+        preflight_root_method_dispatch(self.runtime, method)?;
+        if lnb_name.is_empty() {
+            return Err(HalError::invalid_argument(
+                maleicacid_tuner_hal2_common::HalInvalidArgumentKind::NumericRange,
+                "LNB name must not be empty",
+            ));
         }
-        Ok((lnb_id, object_entry))
+        Err(HalError::Unsupported(
+            "named external LNB endpoints are not available",
+        ))
     }
 
     pub fn rollback_root_object_entry_after_aidl_failure(
         &mut self,
         entry: RuntimeObjectEntry,
         unregister_runtime: bool,
-    ) -> Result<(), HalError> {
+    ) -> Result<Option<i32>, HalError> {
+        let lnb_cleanup_id = if entry.object_kind == AidlObjectKind::Lnb {
+            Some(i32::try_from(entry.ledger_id.0).map_err(|_| {
+                HalError::internal(
+                    maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                    "LNB runtime id is outside i32 range during root object rollback",
+                )
+            })?)
+        } else {
+            None
+        };
         let object_registration_rollback =
-            rollback_root_object_registration(self, entry.object_id, entry.generation);
+            rollback_root_object_registration(self.runtime, entry.object_id, entry.generation);
         finish_open_rollback(
             object_registration_rollback,
             || match entry.object_kind {
-                AidlObjectKind::Lnb => {
-                    let public_runtime_id = i32::try_from(entry.ledger_id.0).map_err(|_| {
-                        HalError::internal(
-                            maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                            "LNB runtime id is outside i32 range during root object rollback",
-                        )
-                    })?;
-                    self.close_lnb_explicit(public_runtime_id)
-                }
+                AidlObjectKind::Lnb => Ok(()),
                 AidlObjectKind::Demux if unregister_runtime => {
                     let public_runtime_id = i32::try_from(entry.ledger_id.0).map_err(|_| {
                         HalError::internal(
@@ -244,7 +342,7 @@ impl TunerServiceRuntime {
                         )
                     })?;
                     unregister_demux_runtime_for_open_rollback(
-                        self,
+                        self.runtime,
                         public_runtime_id,
                         "demux root object open rollback",
                     )
@@ -257,7 +355,7 @@ impl TunerServiceRuntime {
                         )
                     })?;
                     unregister_descrambler_runtime_for_open_rollback(
-                        self,
+                        self.runtime,
                         public_runtime_id,
                         "descrambler root object open rollback",
                     )
@@ -265,6 +363,7 @@ impl TunerServiceRuntime {
                 _ => Ok(()),
             },
             "root object open rollback",
-        )
+        )?;
+        Ok(lnb_cleanup_id)
     }
 }

@@ -25,6 +25,8 @@ extern "C" {
     ) -> i32;
     #[link_name = "tuner_fmq_queue_read"]
     fn native_queue_read(queue: *mut TunerFmqQueue, data: *mut u8, size: usize) -> usize;
+    #[link_name = "tuner_fmq_queue_read_exact"]
+    fn native_queue_read_exact(queue: *mut TunerFmqQueue, data: *mut u8, size: usize) -> i32;
     #[link_name = "tuner_fmq_queue_wake"]
     fn native_queue_wake(queue: *mut TunerFmqQueue, bits: u32) -> i32;
     #[link_name = "tuner_fmq_queue_quantum"]
@@ -107,6 +109,18 @@ impl NativeFmqQueue {
         }
     }
 
+    fn read_exact(&self, data: &mut [u8]) -> Result<(), i32> {
+        if data.is_empty() {
+            return Ok(());
+        }
+        let status = unsafe { native_queue_read_exact(self.queue, data.as_mut_ptr(), data.len()) };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(status)
+        }
+    }
+
     pub(crate) fn wake(&self, bits: u32) -> i32 {
         unsafe { native_queue_wake(self.queue, bits) }
     }
@@ -170,6 +184,8 @@ pub enum FmqQueueError {
     NativeWriteInvalidArgument,
     NativeWriteFailed,
     NativeReadZero,
+    NativeClearBufferAllocationFailed,
+    NativeClearReadFailed,
     NativeWakeFailed,
     DescriptorGrantorUnavailable,
     DescriptorFdDupFailed,
@@ -204,13 +220,18 @@ impl FmqQueue {
             })
     }
     pub fn clear(&self) -> Result<(), FmqQueueError> {
-        let mut scratch = vec![0u8; 4096];
-        while self.native.available_to_read() > 0 {
-            let read = self.native.read(&mut scratch);
-            if read == 0 {
-                return Err(FmqQueueError::NativeReadZero);
-            }
+        let available = self.native.available_to_read();
+        if available == 0 {
+            return Ok(());
         }
+        let mut scratch = Vec::new();
+        scratch
+            .try_reserve_exact(available)
+            .map_err(|_| FmqQueueError::NativeClearBufferAllocationFailed)?;
+        scratch.resize(available, 0);
+        self.native
+            .read_exact(&mut scratch)
+            .map_err(|_| FmqQueueError::NativeClearReadFailed)?;
         Ok(())
     }
     pub fn current_fill(&self) -> Result<usize, FmqQueueError> {
@@ -269,26 +290,26 @@ impl FmqQueue {
 mod fmq_clear_tests {
     use super::*;
 
-    fn clear_probe_for_test(mut available: usize, reads: &[usize]) -> Result<(), FmqQueueError> {
-        let mut pos = 0usize;
-        while available > 0 {
-            let read = reads.get(pos).copied().unwrap_or(0);
-            pos += 1;
-            if read == 0 {
-                return Err(FmqQueueError::NativeReadZero);
-            }
-            available = available.saturating_sub(read);
+    fn clear_probe_for_test(available: usize, read: usize) -> Result<(), FmqQueueError> {
+        if available == 0 || read == available {
+            Ok(())
+        } else {
+            Err(FmqQueueError::NativeClearReadFailed)
         }
-        Ok(())
     }
 
     #[test]
-    fn native_read_zero_is_not_reported_as_cleared() {
+    fn native_clear_requires_one_complete_read() {
         assert_eq!(
-            clear_probe_for_test(188, &[0]),
-            Err(FmqQueueError::NativeReadZero)
+            clear_probe_for_test(188, 0),
+            Err(FmqQueueError::NativeClearReadFailed)
         );
-        assert_eq!(clear_probe_for_test(188, &[188]), Ok(()));
+        assert_eq!(
+            clear_probe_for_test(188, 94),
+            Err(FmqQueueError::NativeClearReadFailed)
+        );
+        assert_eq!(clear_probe_for_test(188, 188), Ok(()));
+        assert_eq!(clear_probe_for_test(0, 0), Ok(()));
     }
 }
 
@@ -312,6 +333,8 @@ mod fmq_error_classification_tests {
                 FmqQueueError::NativeWriteInvalidArgument
                     | FmqQueueError::NativeWriteFailed
                     | FmqQueueError::NativeReadZero
+                    | FmqQueueError::NativeClearBufferAllocationFailed
+                    | FmqQueueError::NativeClearReadFailed
                     | FmqQueueError::NativeWakeFailed
             )
         }
@@ -327,6 +350,8 @@ mod fmq_error_classification_tests {
         assert!(FmqQueueError::NativeWriteFailed.is_data_path_failure());
         assert!(FmqQueueError::NativeWriteInvalidArgument.is_data_path_failure());
         assert!(FmqQueueError::NativeReadZero.is_data_path_failure());
+        assert!(FmqQueueError::NativeClearBufferAllocationFailed.is_data_path_failure());
+        assert!(FmqQueueError::NativeClearReadFailed.is_data_path_failure());
         assert!(FmqQueueError::NativeWakeFailed.is_data_path_failure());
         assert!(!FmqQueueError::NativeWakeFailed.is_transient_descriptor_export_error());
     }

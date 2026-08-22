@@ -6,11 +6,12 @@ use super::{
     execute_object_query_use_case, execute_object_query_use_case_with_aidl_input_conversion,
     execute_object_runtime_use_case, open_dvr_child_for_owner_object_with_request_builder,
     open_filter_child_for_owner_object_with_request_builder,
-    plan_unavailable_object_method_use_case, status_unknown_error, AidlApi, AidlMethodCall,
-    AidlObjectKind, BinderResult, DemuxAidlObject, DemuxFilterType, DvrType, IDemux, IDvr,
-    IDvrCallback, IFilter, IFilterCallback, ITimeFilter, ObjectQueryRequest, ObjectQueryResponse,
-    Strong,
+    plan_unavailable_object_method_use_case, status_from_hal_error, status_unknown_error, AidlApi,
+    AidlMethodCall, AidlObjectKind, BinderResult, DemuxAidlObject, DemuxFilterType, DvrType, IDemux,
+    IDvr, IDvrCallback, IFilter, IFilterCallback, ITimeFilter, ObjectQueryRequest,
+    ObjectQueryResponse, Strong,
 };
+use maleicacid_tuner_hal2_common::{HalError, HalInvalidArgumentKind};
 
 impl IDemux for DemuxAidlObject {
     fn setFrontendDataSource(&self, frontend_id: i32) -> BinderResult<()> {
@@ -109,11 +110,17 @@ impl IDemux for DemuxAidlObject {
             cb,
         )
     }
-    fn connectCiCam(&self, _ci_cam_id: i32) -> BinderResult<()> {
+    fn connectCiCam(&self, ci_cam_id: i32) -> BinderResult<()> {
         plan_unavailable_object_method_use_case(
             &self.runtime(),
             self.handle(),
             || {
+                if ci_cam_id < 0 {
+                    return Err(status_from_hal_error(HalError::invalid_argument(
+                        HalInvalidArgumentKind::NumericRange,
+                        "CI CAM id must be non-negative",
+                    )));
+                }
                 Ok(unsupported_public_api_call(
                     AidlObjectKind::Demux,
                     AidlApi::DemuxConnectCiCam,

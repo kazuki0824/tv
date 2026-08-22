@@ -8,6 +8,7 @@ pub enum TunerStatusCode {
     InvalidArgument,
     InvalidState,
     Unavailable,
+    OutOfMemory,
     UnknownError,
 }
 
@@ -126,6 +127,7 @@ impl AidlStatusMapper {
             | HalError::OpenFailed { .. }
             | HalError::PermissionDenied { .. }
             | HalError::Busy { .. } => TunerStatusCode::Unavailable,
+            HalError::OutOfMemory { .. } => TunerStatusCode::OutOfMemory,
             HalError::Internal { .. }
             | HalError::Io { .. }
             | HalError::IoctlFailed { .. }

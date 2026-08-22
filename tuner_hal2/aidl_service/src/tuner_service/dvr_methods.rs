@@ -2,8 +2,9 @@ use super::support::local_filter_handle_from_strong;
 use super::{
     build_dvr_configure_request, close_object_after_close_preflight, deliver_started_dvr_status,
     execute_object_query_use_case, execute_object_runtime_use_case,
-    execute_object_runtime_use_case_with_request_builder, start_dvr_status_notifier,
-    status_from_hal_error, status_unknown_error, stop_dvr_status_notifier,
+    execute_object_runtime_use_case_with_request_builder, is_playback_dvr,
+    start_dvr_status_notifier, status_from_hal_error, status_unknown_error,
+    stop_dvr_status_notifier,
     tuner_queue_desc_from_snapshot, AidlMethodCall, AidlObjectGeneration, AidlObjectId,
     BinderResult, DvrAidlObject, DvrFilterLinkRequest, DvrSettings, IDvr, IFilter,
     ObjectQueryRequest, ObjectQueryResponse, Strong, TunerQueueDesc,
@@ -116,12 +117,27 @@ impl IDvr for DvrAidlObject {
             DvrPostCommitNotificationPhase::InitialStatusDelivery,
             deliver_started_dvr_status(&self.context(), self.handle()),
         );
+        let playback_kind = is_playback_dvr(&self.context(), self.handle());
+        let worker_start_result = start_dvr_status_notifier(&self.context(), self.handle());
+        let notifier_outcome = playback_kind
+            .as_ref()
+            .map(|_| ())
+            .map_err(|error| error.clone())
+            .and(worker_start_result.clone());
         record_dvr_post_commit_notification_outcome(
             &self.context(),
             self.handle(),
             DvrPostCommitNotificationPhase::StatusNotifierStart,
-            start_dvr_status_notifier(&self.context(), self.handle()),
+            notifier_outcome,
         );
+        if playback_kind.is_err()
+            || matches!(playback_kind, Ok(true)) && worker_start_result.is_err()
+        {
+            let shared_runtime = self.runtime();
+            if let Ok(mut runtime) = shared_runtime.lock() {
+                runtime.mark_service_critical();
+            }
+        }
         Ok(())
     }
     fn stop(&self) -> BinderResult<()> {

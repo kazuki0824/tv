@@ -17,6 +17,7 @@ pub enum RuntimeCommandDispatchError {
     MissingCommandPlan,
     MissingDispatchTarget { transaction: RuntimeTransactionName },
     RuntimeLockPoison { transaction: RuntimeTransactionName },
+    ServiceCritical,
 }
 
 impl RuntimeCommandDispatchError {
@@ -33,6 +34,10 @@ impl RuntimeCommandDispatchError {
             Self::RuntimeLockPoison { .. } => HalError::internal(
                 HalInternalKind::InvariantViolation,
                 "service runtime lock poisoned while planning method dispatch",
+            ),
+            Self::ServiceCritical => HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "service runtime is terminal after an unfenced cleanup failure",
             ),
         }
     }

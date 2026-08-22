@@ -2,10 +2,19 @@ use std::sync::{Arc, Mutex, Weak};
 
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     DemuxFilterEvent::DemuxFilterEvent, DemuxFilterMediaEvent::DemuxFilterMediaEvent,
-    DemuxFilterPesEvent::DemuxFilterPesEvent, DemuxFilterSectionEvent::DemuxFilterSectionEvent,
+    DemuxFilterPesEvent::DemuxFilterPesEvent, DemuxFilterScIndexMask::DemuxFilterScIndexMask,
+    DemuxFilterSectionEvent::DemuxFilterSectionEvent,
+    DemuxFilterStatus::DemuxFilterStatus,
+    DemuxFilterTsRecordEvent::DemuxFilterTsRecordEvent, DemuxPid::DemuxPid,
 };
+use android_hardware_common::aidl::android::hardware::common::NativeHandle::NativeHandle;
+use binder::ParcelFileDescriptor;
 use maleicacid_tuner_hal2_binder_adapter::AidlObjectKind;
 use maleicacid_tuner_hal2_common::{FirstErrorCollector, HalError, HalInternalKind};
+use maleicacid_tuner_hal2_demux::{
+    FilterStatusEvent, TsRecordEventData, RECORD_SC_TYPE_SC, RECORD_SC_TYPE_SC_AVC,
+    RECORD_SC_TYPE_SC_HEVC, RECORD_SC_TYPE_SC_VVC,
+};
 use maleicacid_tuner_hal2_service_runtime::{
     CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport,
     FilterCallbackDeliveryDiagnosticPhase, FilterCallbackDeliveryDiagnosticRecord,
@@ -19,6 +28,20 @@ pub struct AidlFilterEventDispatcher {
     context: Weak<AidlServiceContext>,
 }
 
+enum AidlFilterCallbackDelivery {
+    Event(DemuxFilterEvent),
+    Status(DemuxFilterStatus),
+}
+
+impl AidlFilterCallbackDelivery {
+    const fn operation_name(&self) -> &'static str {
+        match self {
+            Self::Event(_) => "IFilterCallback.onFilterEvent",
+            Self::Status(_) => "IFilterCallback.onFilterStatus",
+        }
+    }
+}
+
 impl AidlFilterEventDispatcher {
     pub fn new(context: &SharedAidlServiceContext) -> Self {
         Self {
@@ -29,8 +52,16 @@ impl AidlFilterEventDispatcher {
 
 fn event_from_snapshot(
     snapshot: FilterEventDeliverySnapshot,
-) -> Result<DemuxFilterEvent, HalError> {
+) -> Result<AidlFilterCallbackDelivery, HalError> {
     match snapshot.event {
+        FilterEventDelivery::Status(status) => Ok(AidlFilterCallbackDelivery::Status(
+            match status {
+                FilterStatusEvent::DataReady => DemuxFilterStatus::DATA_READY,
+                FilterStatusEvent::LowWater => DemuxFilterStatus::LOW_WATER,
+                FilterStatusEvent::HighWater => DemuxFilterStatus::HIGH_WATER,
+                FilterStatusEvent::Overflow => DemuxFilterStatus::OVERFLOW,
+            },
+        )),
         FilterEventDelivery::Media(event) => {
             let data_length = i64::try_from(event.data_length).map_err(|_| {
                 HalError::internal(
@@ -44,12 +75,25 @@ fn event_from_snapshot(
                     "filter media event offset does not fit i64",
                 )
             })?;
-            Ok(DemuxFilterEvent::Media(DemuxFilterMediaEvent {
+            let av_memory = match event.event_local_file {
+                Some(file) => NativeHandle {
+                    fds: vec![ParcelFileDescriptor::new(file.try_clone().map_err(|_| {
+                        HalError::internal(
+                            HalInternalKind::InvariantViolation,
+                            "event-local AV handle duplication failed",
+                        )
+                    })?)],
+                    ints: vec![0],
+                },
+                None => Default::default(),
+            };
+            Ok(AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Media(DemuxFilterMediaEvent {
                 dataLength: data_length,
                 offset,
                 avDataId: event.data_id.0,
+                avMemory: av_memory,
                 ..Default::default()
-            }))
+            })))
         }
         FilterEventDelivery::Section { data_length } => {
             let data_length = i64::try_from(data_length).map_err(|_| {
@@ -58,10 +102,10 @@ fn event_from_snapshot(
                     "filter section event length does not fit i64",
                 )
             })?;
-            Ok(DemuxFilterEvent::Section(DemuxFilterSectionEvent {
+            Ok(AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Section(DemuxFilterSectionEvent {
                 dataLength: data_length,
                 ..Default::default()
-            }))
+            })))
         }
         FilterEventDelivery::Pes {
             stream_id,
@@ -73,12 +117,32 @@ fn event_from_snapshot(
                     "filter PES event length does not fit i32",
                 )
             })?;
-            Ok(DemuxFilterEvent::Pes(DemuxFilterPesEvent {
+            Ok(AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Pes(DemuxFilterPesEvent {
                 streamId: stream_id,
                 dataLength: data_length,
                 ..Default::default()
-            }))
+            })))
         }
+        FilterEventDelivery::RecordIndex(event) => Ok(AidlFilterCallbackDelivery::Event(
+            DemuxFilterEvent::TsRecord(DemuxFilterTsRecordEvent {
+                pid: DemuxPid::TPid(event.pid.to_i32_for_aidl_boundary()),
+                tsIndexMask: event.ts_index_mask,
+                scIndexMask: aidl_sc_index_mask_from_record_event(event),
+                byteNumber: event.byte_number,
+                pts: event.pts,
+                firstMbInSlice: event.first_mb_in_slice,
+            }),
+        )),
+    }
+}
+
+fn aidl_sc_index_mask_from_record_event(event: TsRecordEventData) -> DemuxFilterScIndexMask {
+    match event.sc_index_type {
+        RECORD_SC_TYPE_SC => DemuxFilterScIndexMask::ScIndex(event.sc_index_mask_bits),
+        RECORD_SC_TYPE_SC_AVC => DemuxFilterScIndexMask::ScAvc(event.sc_index_mask_bits),
+        RECORD_SC_TYPE_SC_HEVC => DemuxFilterScIndexMask::ScHevc(event.sc_index_mask_bits),
+        RECORD_SC_TYPE_SC_VVC => DemuxFilterScIndexMask::ScVvc(event.sc_index_mask_bits),
+        _ => DemuxFilterScIndexMask::ScIndex(0),
     }
 }
 
@@ -190,8 +254,8 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
                     continue;
                 }
             };
-            let event = match event_from_snapshot(snapshot) {
-                Ok(event) => event,
+            let delivery = match event_from_snapshot(snapshot) {
+                Ok(delivery) => delivery,
                 Err(primary) => {
                     failures.push_result(finish_filter_callback_delivery_failure(
                         &context,
@@ -203,9 +267,14 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
                     continue;
                 }
             };
-            if let Err(error) = callback.onFilterEvent(&[event]) {
+            let operation = delivery.operation_name();
+            let delivery_result = match delivery {
+                AidlFilterCallbackDelivery::Event(event) => callback.onFilterEvent(&[event]),
+                AidlFilterCallbackDelivery::Status(status) => callback.onFilterStatus(status),
+            };
+            if let Err(error) = delivery_result {
                 let primary = HalError::callback_failed(
-                    "IFilterCallback.onFilterEvent",
+                    operation,
                     format!("binder failure: {error:?}"),
                 );
                 failures.push_result(finish_filter_callback_delivery_failure(
@@ -244,17 +313,18 @@ mod tests {
                 slot_id: AvSlotId(0),
                 offset: 12,
                 data_length: 188,
+                event_local_file: None,
             },
         )))
         .unwrap();
         assert!(matches!(
             media,
-            DemuxFilterEvent::Media(DemuxFilterMediaEvent {
+            AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Media(DemuxFilterMediaEvent {
                 avDataId: 7,
                 offset: 12,
                 dataLength: 188,
                 ..
-            })
+            }))
         ));
 
         let section =
@@ -262,7 +332,9 @@ mod tests {
                 .unwrap();
         assert!(matches!(
             section,
-            DemuxFilterEvent::Section(DemuxFilterSectionEvent { dataLength: 64, .. })
+            AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Section(
+                DemuxFilterSectionEvent { dataLength: 64, .. }
+            ))
         ));
 
         let pes = event_from_snapshot(snapshot(FilterEventDelivery::Pes {
@@ -272,11 +344,28 @@ mod tests {
         .unwrap();
         assert!(matches!(
             pes,
-            DemuxFilterEvent::Pes(DemuxFilterPesEvent {
+            AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Pes(DemuxFilterPesEvent {
                 streamId: 256,
                 dataLength: 1024,
                 ..
-            })
+            }))
         ));
+    }
+
+    #[test]
+    fn filter_status_snapshots_map_to_aidl_status_callbacks() {
+        for (status, expected) in [
+            (FilterStatusEvent::DataReady, DemuxFilterStatus::DATA_READY),
+            (FilterStatusEvent::LowWater, DemuxFilterStatus::LOW_WATER),
+            (FilterStatusEvent::HighWater, DemuxFilterStatus::HIGH_WATER),
+            (FilterStatusEvent::Overflow, DemuxFilterStatus::OVERFLOW),
+        ] {
+            let delivery = event_from_snapshot(snapshot(FilterEventDelivery::Status(status)))
+                .unwrap();
+            assert!(matches!(
+                delivery,
+                AidlFilterCallbackDelivery::Status(actual) if actual == expected
+            ));
+        }
     }
 }

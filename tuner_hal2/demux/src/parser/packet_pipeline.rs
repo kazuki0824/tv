@@ -34,6 +34,7 @@ pub(crate) struct TsPacketView<'a> {
     discontinuity_indicator: bool,
     random_access_indicator: bool,
     pcr_flag: bool,
+    pcr_base_90khz: Option<u64>,
     opcr_flag: bool,
     splicing_point_flag: bool,
     private_data_flag: bool,
@@ -62,6 +63,9 @@ impl<'a> TsPacketView<'a> {
     }
     pub const fn pcr_flag(&self) -> bool {
         self.pcr_flag
+    }
+    pub const fn pcr_base_90khz(&self) -> Option<u64> {
+        self.pcr_base_90khz
     }
     pub const fn opcr_flag(&self) -> bool {
         self.opcr_flag
@@ -183,6 +187,7 @@ impl<'a> TsPacketView<'a> {
         let mut discontinuity_indicator = false;
         let mut random_access_indicator = false;
         let mut pcr_flag = false;
+        let mut pcr_base_90khz = None;
         let mut opcr_flag = false;
         let mut splicing_point_flag = false;
         let mut private_data_flag = false;
@@ -209,6 +214,13 @@ impl<'a> TsPacketView<'a> {
                         return Err(TsPacketValidationError::InvalidAdaptationLength);
                     }
                     pcr_flag = true;
+                    pcr_base_90khz = Some(
+                        (u64::from(packet[cursor]) << 25)
+                            | (u64::from(packet[cursor + 1]) << 17)
+                            | (u64::from(packet[cursor + 2]) << 9)
+                            | (u64::from(packet[cursor + 3]) << 1)
+                            | (u64::from(packet[cursor + 4]) >> 7),
+                    );
                     cursor += 6;
                 }
                 if (flags & 0x08) != 0 {
@@ -261,6 +273,7 @@ impl<'a> TsPacketView<'a> {
                     discontinuity_indicator,
                     random_access_indicator,
                     pcr_flag,
+                    pcr_base_90khz,
                     opcr_flag,
                     splicing_point_flag,
                     private_data_flag,
@@ -279,6 +292,7 @@ impl<'a> TsPacketView<'a> {
             discontinuity_indicator,
             random_access_indicator,
             pcr_flag,
+            pcr_base_90khz,
             opcr_flag,
             splicing_point_flag,
             private_data_flag,
@@ -337,8 +351,10 @@ impl PipelineContinuityState {
         pid: PacketPid,
         continuity_counter: u8,
         has_payload: bool,
+        packet: &[u8; TS_PACKET_SIZE],
     ) -> crate::ts_core::ContinuityOutcome {
-        self.inner.observe(pid, continuity_counter, has_payload)
+        self.inner
+            .observe(pid, continuity_counter, has_payload, packet)
     }
 
     pub fn reset_pid(&mut self, pid: PacketPid) {
@@ -377,12 +393,19 @@ pub struct PacketPipeline {
     pub(crate) record_event_states: BTreeMap<i32, RecordEventState>,
     pub(crate) record_index_settings: BTreeMap<i32, RecordIndexSettings>,
     pub(crate) resync: PipelineResyncState,
+    diagnostic_counters: PipelineDiagnosticCounters,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum PipelineInputKind {
-    Live,
-    Playback,
+    Frontend {
+        frontend_generation: u64,
+    },
+    PlaybackDvr {
+        dvr_id: i32,
+        queue_identity: u64,
+        queue_epoch: u64,
+    },
     SourceFilter {
         source_filter_id: i32,
         source_filter_generation: u64,
@@ -401,6 +424,60 @@ pub struct PipelineReport {
     pub diagnostics: Vec<PipelineDiagnostic>,
 }
 
+#[derive(Debug, Default, Clone, Copy, Eq, PartialEq)]
+pub struct PipelineDiagnosticCounters {
+    pub malformed_ts_packets: u64,
+    pub tei_packets_observed: u64,
+    pub duplicate_packets_observed: u64,
+    pub continuity_discontinuities_observed: u64,
+    pub counter_saturated: bool,
+}
+
+impl PipelineDiagnosticCounters {
+    fn increment(value: &mut u64, saturated: &mut bool) {
+        match value.checked_add(1) {
+            Some(next) => {
+                *value = next;
+                if next == u64::MAX {
+                    *saturated = true;
+                }
+            }
+            None => {
+                *value = u64::MAX;
+                *saturated = true;
+            }
+        }
+    }
+
+    fn note_malformed_ts(&mut self) {
+        Self::increment(
+            &mut self.malformed_ts_packets,
+            &mut self.counter_saturated,
+        );
+    }
+
+    fn note_tei(&mut self) {
+        Self::increment(
+            &mut self.tei_packets_observed,
+            &mut self.counter_saturated,
+        );
+    }
+
+    fn note_duplicate(&mut self) {
+        Self::increment(
+            &mut self.duplicate_packets_observed,
+            &mut self.counter_saturated,
+        );
+    }
+
+    fn note_continuity_discontinuity(&mut self) {
+        Self::increment(
+            &mut self.continuity_discontinuities_observed,
+            &mut self.counter_saturated,
+        );
+    }
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum PipelineDropReason {
     MalformedPacket,
@@ -415,6 +492,7 @@ pub enum PipelineDropReason {
 pub enum PipelineAssemblySuppressionReason {
     TransportErrorIndicator,
     DuplicatePacket,
+    ContinuityCounterCollision,
     NoPayload,
     KeylessScrambledWithoutDescrambler,
 }
@@ -431,6 +509,10 @@ pub enum PipelineDeliveryAction {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum PipelineGeneratedEvent {
+    FilterStatus {
+        filter_id: i32,
+        status: crate::runtime::FilterStatusEvent,
+    },
     AvMedia {
         filter_id: i32,
         descriptor: crate::av::AvMediaEventDescriptor,
@@ -469,12 +551,22 @@ pub enum PipelineGeneratedEvent {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PipelineDiagnostic {
-    MalformedTsPacket,
+    MalformedTsPacket {
+        reason: TsPacketValidationError,
+    },
     TeiAssemblySuppressed {
         pid: PacketPid,
     },
     DuplicatePacketAssemblySuppressed {
         pid: PacketPid,
+    },
+    ContinuityCounterCollisionAssemblySuppressed {
+        pid: PacketPid,
+        origin: crate::TsInputOrigin,
+    },
+    ContinuityDiscontinuityAssemblyReset {
+        pid: PacketPid,
+        origin: crate::TsInputOrigin,
     },
     NoPayloadAssemblySuppressed {
         pid: PacketPid,
@@ -541,6 +633,10 @@ pub enum PipelineDiagnostic {
         pid: PacketPid,
         filter_id: i32,
     },
+    AvPayloadEmpty {
+        pid: PacketPid,
+        filter_id: i32,
+    },
     AvPayloadOversized {
         pid: PacketPid,
         filter_id: i32,
@@ -580,11 +676,14 @@ impl PipelineDiagnostic {
             | Self::AvSharedBackingMissing { pid, .. }
             | Self::AvSharedHandleNotExported { pid, .. }
             | Self::AvClientHandleReleased { pid, .. }
+            | Self::AvPayloadEmpty { pid, .. }
             | Self::AvPayloadOversized { pid, .. }
             | Self::AvNoFreeSlot { pid, .. }
             | Self::AvDataIdExhausted { pid, .. }
             | Self::TeiAssemblySuppressed { pid }
             | Self::DuplicatePacketAssemblySuppressed { pid }
+            | Self::ContinuityCounterCollisionAssemblySuppressed { pid, .. }
+            | Self::ContinuityDiscontinuityAssemblyReset { pid, .. }
             | Self::NoPayloadAssemblySuppressed { pid }
             | Self::KeylessScrambledAssemblySuppressed { pid }
             | Self::SectionAssemblyDrop { pid }
@@ -595,7 +694,7 @@ impl PipelineDiagnostic {
             | Self::SourceFilterDescramblePolicyFailure { pid, .. } => {
                 PipelineDiagnosticPidContext::Present(*pid)
             }
-            Self::MalformedTsPacket | Self::ResidualBytesDrop => {
+            Self::MalformedTsPacket { .. } | Self::ResidualBytesDrop => {
                 PipelineDiagnosticPidContext::NotApplicable
             }
         }
@@ -683,6 +782,10 @@ impl PipelineDiagnostic {
         Self::AvClientHandleReleased { pid, filter_id }
     }
 
+    pub fn av_payload_empty(pid: PacketPid, filter_id: i32) -> Self {
+        Self::AvPayloadEmpty { pid, filter_id }
+    }
+
     pub fn av_payload_oversized(pid: PacketPid, filter_id: i32) -> Self {
         Self::AvPayloadOversized { pid, filter_id }
     }
@@ -699,6 +802,7 @@ impl PipelineDiagnostic {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum PipelineOpenKind {
     Raw,
+    Pcr,
     Record,
     Section,
     Pes,
@@ -719,14 +823,17 @@ pub struct PipelineFilterView {
 }
 
 impl PipelineFilterView {
-    fn accepts_packet_pid_from_origin(self, pid: PacketPid, origin: crate::TsInputOrigin) -> bool {
+    pub(crate) fn accepts_packet_pid_from_origin(
+        self,
+        pid: PacketPid,
+        origin: crate::TsInputOrigin,
+    ) -> bool {
         if !self.started || !pid.matches_config_tpid(self.tpid) {
             return false;
         }
         match origin {
-            crate::TsInputOrigin::Frontend | crate::TsInputOrigin::Playback => {
-                self.source_filter.is_none()
-            }
+            crate::TsInputOrigin::Frontend { .. }
+            | crate::TsInputOrigin::PlaybackDvr { .. } => self.source_filter.is_none(),
             crate::TsInputOrigin::SourceFilter {
                 source_filter_id,
                 source_filter_generation,
@@ -754,8 +861,9 @@ pub enum PipelineBoundaryReason {
 }
 
 impl PacketPipeline {
-    #[cfg(test)]
-    pub fn malformed_ts_packet_report() -> PipelineReport {
+    pub(crate) fn malformed_ts_packet_report(
+        reason: TsPacketValidationError,
+    ) -> PipelineReport {
         let mut report = PipelineReport::default();
         report.dropped_packets += 1;
         report.malformed_packets += 1;
@@ -764,8 +872,16 @@ impl PacketPipeline {
             .push(PipelineDropReason::MalformedPacket);
         report
             .diagnostics
-            .push(PipelineDiagnostic::MalformedTsPacket);
+            .push(PipelineDiagnostic::MalformedTsPacket { reason });
         report
+    }
+
+    pub(crate) fn note_malformed_ts_packet(&mut self) {
+        self.diagnostic_counters.note_malformed_ts();
+    }
+
+    pub const fn diagnostic_counters(&self) -> PipelineDiagnosticCounters {
+        self.diagnostic_counters
     }
 
     #[cfg(test)]
@@ -781,8 +897,9 @@ impl PacketPipeline {
     ) -> PipelineReport {
         let validated = match Self::validate_packet(packet) {
             Ok(packet) => packet,
-            Err(_) => {
-                return Self::malformed_ts_packet_report();
+            Err(reason) => {
+                self.note_malformed_ts_packet();
+                return Self::malformed_ts_packet_report(reason);
             }
         };
         self.accept_validated_ts_packet(&validated, kind)
@@ -803,8 +920,20 @@ impl PacketPipeline {
     ) -> PipelineReport {
         let mut report = PipelineReport::default();
         let origin = match kind {
-            PipelineInputKind::Live => crate::TsInputOrigin::Frontend,
-            PipelineInputKind::Playback => crate::TsInputOrigin::Playback,
+            PipelineInputKind::Frontend {
+                frontend_generation,
+            } => crate::TsInputOrigin::Frontend {
+                frontend_generation,
+            },
+            PipelineInputKind::PlaybackDvr {
+                dvr_id,
+                queue_identity,
+                queue_epoch,
+            } => crate::TsInputOrigin::PlaybackDvr {
+                dvr_id,
+                queue_identity,
+                queue_epoch,
+            },
             PipelineInputKind::SourceFilter {
                 source_filter_id,
                 source_filter_generation,
@@ -816,6 +945,7 @@ impl PacketPipeline {
         let view = validated.view();
         let pid = validated.pid();
         if view.transport_error_indicator {
+            self.diagnostic_counters.note_tei();
             report
                 .assembly_suppression_reasons
                 .push(PipelineAssemblySuppressionReason::TransportErrorIndicator);
@@ -824,12 +954,23 @@ impl PacketPipeline {
                 .push(PipelineDiagnostic::TeiAssemblySuppressed { pid });
         }
         if view.discontinuity_indicator {
+            self.diagnostic_counters
+                .note_continuity_discontinuity();
+            report.diagnostics.push(
+                PipelineDiagnostic::ContinuityDiscontinuityAssemblyReset { pid, origin },
+            );
             self.reset_continuity_pid(origin, pid);
             self.reset_assembly_for_origin_pid(origin, pid);
         }
-        let continuity =
-            self.check_continuity(origin, pid, view.continuity_counter, view.payload.is_some());
+        let continuity = self.check_continuity(
+            origin,
+            pid,
+            view.continuity_counter,
+            view.payload.is_some(),
+            validated.packet_bytes(),
+        );
         if matches!(continuity, crate::ts_core::ContinuityOutcome::Duplicate) {
+            self.diagnostic_counters.note_duplicate();
             report
                 .assembly_suppression_reasons
                 .push(PipelineAssemblySuppressionReason::DuplicatePacket);
@@ -837,7 +978,31 @@ impl PacketPipeline {
                 .diagnostics
                 .push(PipelineDiagnostic::DuplicatePacketAssemblySuppressed { pid });
         }
+        if matches!(
+            continuity,
+            crate::ts_core::ContinuityOutcome::CounterCollision
+        ) {
+            self.diagnostic_counters
+                .note_continuity_discontinuity();
+            report
+                .assembly_suppression_reasons
+                .push(PipelineAssemblySuppressionReason::ContinuityCounterCollision);
+            report.diagnostics.push(
+                PipelineDiagnostic::ContinuityCounterCollisionAssemblySuppressed { pid, origin },
+            );
+        }
         if matches!(continuity, crate::ts_core::ContinuityOutcome::Discontinuity) {
+            self.diagnostic_counters
+                .note_continuity_discontinuity();
+            report.diagnostics.push(
+                PipelineDiagnostic::ContinuityDiscontinuityAssemblyReset { pid, origin },
+            );
+        }
+        if matches!(
+            continuity,
+            crate::ts_core::ContinuityOutcome::CounterCollision
+                | crate::ts_core::ContinuityOutcome::Discontinuity
+        ) {
             self.reset_assembly_for_origin_pid(origin, pid);
         }
         if view.payload.is_none() {
@@ -874,11 +1039,9 @@ impl PacketPipeline {
                     filter_id: filter.filter_id,
                 }),
                 PipelineOpenKind::Record => {
-                    if origin.allows_record_mirror() {
-                        actions.push(PipelineDeliveryAction::DvrMirror {
-                            dvr_id: filter.filter_id,
-                        });
-                    }
+                    actions.push(PipelineDeliveryAction::DvrMirror {
+                        dvr_id: filter.filter_id,
+                    });
                     if filter.wants_record_index {
                         actions.push(PipelineDeliveryAction::RecordPacket {
                             filter_id: filter.filter_id,
@@ -1031,11 +1194,17 @@ impl PacketPipeline {
         let preflight_duplicate = preflight_suppression_reasons
             .iter()
             .any(|reason| matches!(reason, PipelineAssemblySuppressionReason::DuplicatePacket));
+        let preflight_counter_collision = preflight_suppression_reasons.iter().any(|reason| {
+            matches!(
+                reason,
+                PipelineAssemblySuppressionReason::ContinuityCounterCollision
+            )
+        });
         if view.transport_error_indicator || preflight_tei {
             self.reset_assembly_for_origin_pid(origin, pid);
             return report;
         }
-        if preflight_duplicate {
+        if preflight_duplicate || preflight_counter_collision {
             report.delivery_actions.retain(|action| {
                 matches!(
                     action,
@@ -1064,39 +1233,6 @@ impl PacketPipeline {
                 self.reset_assembly_for_origin_pid(origin, pid);
             }
             return report;
-        }
-
-        let record_filter_ids: Vec<i32> = report
-            .delivery_actions
-            .iter()
-            .filter_map(|action| match action {
-                PipelineDeliveryAction::RecordPacket { filter_id } => Some(*filter_id),
-                _ => None,
-            })
-            .collect();
-        for filter_id in record_filter_ids {
-            let Some(settings) = self.record_index_settings.get(&filter_id) else {
-                continue;
-            };
-            let parser = self
-                .record_index_parsers
-                .entry(filter_id)
-                .or_insert_with(RecordIndexParser::new);
-            let byte_number = parser
-                .processed_packets()
-                .saturating_mul(TS_PACKET_SIZE as u64);
-            if let Some(data) = parser.push_validated_ts_packet(
-                packet,
-                byte_number,
-                settings.ts_index_mask,
-                settings.sc_index_type,
-                settings.sc_index_mask,
-                self.record_event_states.entry(filter_id).or_default(),
-            ) {
-                report
-                    .generated_events
-                    .push(PipelineGeneratedEvent::RecordIndex { filter_id, data });
-            }
         }
 
         let has_section_action = report
@@ -1268,7 +1404,9 @@ impl PacketPipeline {
     pub fn start_filter(&mut self, _filter_id: i32) -> Result<(), PipelineError> {
         Ok(())
     }
-    pub fn stop_filter(&mut self, _filter_id: i32) -> Result<(), PipelineError> {
+    pub fn stop_filter(&mut self, filter_id: i32) -> Result<(), PipelineError> {
+        self.clear_filter_state(filter_id);
+        self.reset_record_index_state(filter_id);
         Ok(())
     }
     pub fn remove_filter(&mut self, filter_id: i32) -> Result<(), PipelineError> {
@@ -1287,6 +1425,72 @@ impl PacketPipeline {
             .retain(|(_, id, _), _| *id != filter_id);
         self.filter_pes_flush_generations
             .retain(|(_, id, _), _| *id != filter_id);
+    }
+
+    pub(crate) fn record_index_event_after_record_commit(
+        &mut self,
+        filter_id: i32,
+        packet: &ValidatedTsPacket<'_>,
+        byte_number: u64,
+    ) -> Option<PipelineGeneratedEvent> {
+        let settings = self.record_index_settings.get(&filter_id)?.clone();
+        let data = self
+            .record_index_parsers
+            .entry(filter_id)
+            .or_insert_with(RecordIndexParser::new)
+            .push_validated_ts_packet(
+                packet,
+                byte_number,
+                settings.ts_index_mask,
+                settings.sc_index_type,
+                settings.sc_index_mask,
+                self.record_event_states.entry(filter_id).or_default(),
+            );
+        data.map(|data| PipelineGeneratedEvent::RecordIndex { filter_id, data })
+    }
+
+    pub(crate) fn reset_record_index_without_parsing(
+        &mut self,
+        filter_id: i32,
+        reset_partial_state: bool,
+    ) {
+        if !self.record_index_settings.contains_key(&filter_id) {
+            return;
+        }
+        if reset_partial_state {
+            self.reset_record_index_partial_state(filter_id);
+        }
+    }
+
+    pub(crate) fn reset_record_index_partial_state(&mut self, filter_id: i32) {
+        if self.record_index_settings.contains_key(&filter_id) {
+            self.record_index_parsers
+                .insert(filter_id, RecordIndexParser::new());
+            self.record_event_states
+                .insert(filter_id, RecordEventState::default());
+        }
+    }
+
+    pub(crate) fn reset_record_index_state(&mut self, filter_id: i32) {
+        if self.record_index_settings.contains_key(&filter_id) {
+            self.reset_record_index_partial_state(filter_id);
+        }
+    }
+
+    pub(crate) fn reset_origin(&mut self, origin: crate::TsInputOrigin) {
+        self.section_assemblers
+            .retain(|(stored_origin, _, _), _| *stored_origin != origin);
+        self.pes_assemblers
+            .retain(|(stored_origin, _, _), _| *stored_origin != origin);
+        self.section_assembler_generations
+            .retain(|(stored_origin, _), _| *stored_origin != origin);
+        self.pes_assembler_generations
+            .retain(|(stored_origin, _), _| *stored_origin != origin);
+        self.filter_section_flush_generations
+            .retain(|(stored_origin, _, _), _| *stored_origin != origin);
+        self.filter_pes_flush_generations
+            .retain(|(stored_origin, _, _), _| *stored_origin != origin);
+        self.continuity_trackers.remove(&origin);
     }
 
     pub(crate) fn reset_assembly_for_origin_pid(
@@ -1335,11 +1539,13 @@ impl PacketPipeline {
         pid: PacketPid,
         continuity_counter: u8,
         has_payload: bool,
+        packet: &[u8; TS_PACKET_SIZE],
     ) -> crate::ts_core::ContinuityOutcome {
         self.continuity_trackers.entry(origin).or_default().observe(
             pid,
             continuity_counter,
             has_payload,
+            packet,
         )
     }
 
@@ -1504,6 +1710,7 @@ impl PacketPipeline {
 
     pub(crate) fn clear_filter_state_after_flush(&mut self, filter_id: i32) {
         self.clear_filter_state(filter_id);
+        self.reset_record_index_state(filter_id);
     }
 
     pub(crate) fn reset_boundary(&mut self) -> PipelineResetReport {
@@ -1515,9 +1722,10 @@ impl PacketPipeline {
         self.filter_section_flush_generations.clear();
         self.filter_pes_flush_generations.clear();
         self.continuity_trackers.clear();
-        self.record_index_parsers.clear();
-        self.record_event_states.clear();
-        self.record_index_settings.clear();
+        let record_filter_ids = self.record_index_settings.keys().copied().collect::<Vec<_>>();
+        for filter_id in record_filter_ids {
+            self.reset_record_index_partial_state(filter_id);
+        }
         self.resync = PipelineResyncState::default();
         PipelineResetReport {
             cleared: true,
@@ -1801,7 +2009,7 @@ mod tests {
         ];
         let report = PacketPipeline::default().plan_ts_packet_report(
             &view,
-            crate::TsInputOrigin::Frontend,
+            crate::TsInputOrigin::frontend(1),
             &filters,
         );
         assert!(report
@@ -1902,7 +2110,7 @@ mod tests {
         ];
         let report = PacketPipeline::default().plan_ts_packet_report(
             &view,
-            crate::TsInputOrigin::Frontend,
+            crate::TsInputOrigin::frontend(1),
             &filters,
         );
         assert!(report
@@ -1941,7 +2149,7 @@ mod adaptation_payload_boundary_tests {
 
     #[test]
     fn discontinuity_resets_only_target_pid_section() {
-        let origin = crate::TsInputOrigin::Frontend;
+        let origin = crate::TsInputOrigin::frontend(1);
         let pid = 0x0100u16;
         let other_pid = 0x0101i32;
         let pid_key = PacketPid::from_validated_pid(pid as i32);
@@ -1951,7 +2159,12 @@ mod adaptation_payload_boundary_tests {
         pipeline.test_seed_section_for_pid(origin, other_pid_key, 12);
 
         let packet = packet_with_discontinuity(pid, 0);
-        let report = pipeline.push_ts_packet(&packet, PipelineInputKind::Live);
+        let report = pipeline.push_ts_packet(
+            &packet,
+            PipelineInputKind::Frontend {
+                frontend_generation: 1,
+            },
+        );
 
         assert_eq!(report.accepted_packets, 1);
         assert!(!pipeline
@@ -1964,7 +2177,7 @@ mod adaptation_payload_boundary_tests {
 
     #[test]
     fn discontinuity_resets_only_target_pid_pes() {
-        let origin = crate::TsInputOrigin::Frontend;
+        let origin = crate::TsInputOrigin::frontend(1);
         let pid = 0x0100u16;
         let other_pid = 0x0101i32;
         let pid_key = PacketPid::from_validated_pid(pid as i32);
@@ -1974,7 +2187,12 @@ mod adaptation_payload_boundary_tests {
         pipeline.test_seed_pes_for_pid(origin, other_pid_key, 13);
 
         let packet = packet_with_discontinuity(pid, 0);
-        let report = pipeline.push_ts_packet(&packet, PipelineInputKind::Live);
+        let report = pipeline.push_ts_packet(
+            &packet,
+            PipelineInputKind::Frontend {
+                frontend_generation: 1,
+            },
+        );
 
         assert_eq!(report.accepted_packets, 1);
         assert!(!pipeline.pes_assemblers.contains_key(&(origin, pid_key, 11)));
@@ -1985,7 +2203,7 @@ mod adaptation_payload_boundary_tests {
 
     #[test]
     fn discontinuity_resets_only_target_pid_assemblers() {
-        let origin = crate::TsInputOrigin::Frontend;
+        let origin = crate::TsInputOrigin::frontend(1);
         let pid = 0x0100u16;
         let other_pid = 0x0101i32;
         let pid_key = PacketPid::from_validated_pid(pid as i32);
@@ -1997,7 +2215,12 @@ mod adaptation_payload_boundary_tests {
         pipeline.test_seed_pes_for_pid(origin, other_pid_key, 13);
 
         let packet = packet_with_discontinuity(pid, 0);
-        let report = pipeline.push_ts_packet(&packet, PipelineInputKind::Live);
+        let report = pipeline.push_ts_packet(
+            &packet,
+            PipelineInputKind::Frontend {
+                frontend_generation: 1,
+            },
+        );
 
         assert_eq!(report.accepted_packets, 1);
         assert!(!pipeline
@@ -2043,7 +2266,8 @@ mod continuity_duplicate_tests {
     fn source_filter_packets_use_pipeline_drop_and_continuity_rules() {
         let mut tei = payload_packet(0x0100, 0);
         tei[1] |= 0x80;
-        let tei_report = PacketPipeline::default().push_ts_packet(
+        let mut tei_pipeline = PacketPipeline::default();
+        let tei_report = tei_pipeline.push_ts_packet(
             &tei,
             PipelineInputKind::SourceFilter {
                 source_filter_id: -1,
@@ -2055,6 +2279,7 @@ mod continuity_duplicate_tests {
         assert!(tei_report
             .assembly_suppression_reasons
             .contains(&PipelineAssemblySuppressionReason::TransportErrorIndicator));
+        assert_eq!(tei_pipeline.diagnostic_counters().tei_packets_observed, 1);
 
         let mut pipeline = PacketPipeline::default();
         let first = payload_packet(0x0100, 1);
@@ -2093,6 +2318,127 @@ mod continuity_duplicate_tests {
             .assembly_suppression_reasons
             .contains(&PipelineAssemblySuppressionReason::NoPayload));
     }
+
+    #[test]
+    fn counter_collision_keeps_raw_and_record_but_suppresses_semantic_delivery() {
+        let origin = crate::TsInputOrigin::frontend(7);
+        let first = payload_packet(0x0100, 4);
+        let mut changed = first;
+        changed[20] ^= 0x01;
+        let mut pipeline = PacketPipeline::default();
+        pipeline.push_ts_packet(
+            &first,
+            PipelineInputKind::Frontend {
+                frontend_generation: 7,
+            },
+        );
+        let preflight = pipeline.push_ts_packet(
+            &changed,
+            PipelineInputKind::Frontend {
+                frontend_generation: 7,
+            },
+        );
+
+        assert!(preflight
+            .assembly_suppression_reasons
+            .contains(&PipelineAssemblySuppressionReason::ContinuityCounterCollision));
+        assert!(preflight.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            PipelineDiagnostic::ContinuityCounterCollisionAssemblySuppressed {
+                pid,
+                origin: diagnostic_origin,
+            } if pid.to_i32_for_aidl_boundary() == 0x0100 && *diagnostic_origin == origin
+        )));
+        let validated = ValidatedTsPacket::validate(&changed).unwrap();
+        let filters = [
+            PipelineFilterView {
+                filter_id: 1,
+                tpid: Some(0x0100),
+                started: true,
+                source_filter: None,
+                open_kind: PipelineOpenKind::Raw,
+                section_raw: false,
+                pes_raw: false,
+                wants_record_index: false,
+            },
+            PipelineFilterView {
+                filter_id: 2,
+                tpid: Some(0x0100),
+                started: true,
+                source_filter: None,
+                open_kind: PipelineOpenKind::Record,
+                section_raw: false,
+                pes_raw: false,
+                wants_record_index: false,
+            },
+            PipelineFilterView {
+                filter_id: 3,
+                tpid: Some(0x0100),
+                started: true,
+                source_filter: None,
+                open_kind: PipelineOpenKind::Section,
+                section_raw: false,
+                pes_raw: false,
+                wants_record_index: false,
+            },
+        ];
+        let report = pipeline.plan_and_assemble_ts_packet_report_after_preflight(
+            &validated,
+            origin,
+            &filters,
+            &preflight.assembly_suppression_reasons,
+        );
+
+        assert!(report
+            .delivery_actions
+            .contains(&PipelineDeliveryAction::RawPacket { filter_id: 1 }));
+        assert!(report
+            .delivery_actions
+            .contains(&PipelineDeliveryAction::DvrMirror { dvr_id: 2 }));
+        assert!(!report.delivery_actions.iter().any(|action| matches!(
+            action,
+            PipelineDeliveryAction::SectionPayload { .. }
+                | PipelineDeliveryAction::PesPayload { .. }
+                | PipelineDeliveryAction::AvPayload { .. }
+        )));
+        assert_eq!(
+            pipeline
+                .diagnostic_counters()
+                .continuity_discontinuities_observed,
+            1
+        );
+    }
+
+    #[test]
+    fn continuity_gap_diagnostic_carries_origin_generation() {
+        let origin = crate::TsInputOrigin::playback_dvr(9, 11, 0);
+        let mut pipeline = PacketPipeline::default();
+        pipeline.push_ts_packet(
+            &payload_packet(0x0101, 0),
+            PipelineInputKind::PlaybackDvr {
+                dvr_id: 9,
+                queue_identity: 11,
+                queue_epoch: 0,
+            },
+        );
+
+        let report = pipeline.push_ts_packet(
+            &payload_packet(0x0101, 2),
+            PipelineInputKind::PlaybackDvr {
+                dvr_id: 9,
+                queue_identity: 11,
+                queue_epoch: 0,
+            },
+        );
+
+        assert!(report.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            PipelineDiagnostic::ContinuityDiscontinuityAssemblyReset {
+                pid,
+                origin: diagnostic_origin,
+            } if pid.to_i32_for_aidl_boundary() == 0x0101 && *diagnostic_origin == origin
+        )));
+    }
 }
 
 #[cfg(test)]
@@ -2103,8 +2449,12 @@ mod malformed_adaptation_tests {
     #[test]
     fn pipeline_report_carries_drop_reasons_and_diagnostics() {
         let wrong_len = [0u8; 3];
-        let malformed =
-            PacketPipeline::default().push_ts_packet(&wrong_len, PipelineInputKind::Live);
+        let malformed = PacketPipeline::default().push_ts_packet(
+            &wrong_len,
+            PipelineInputKind::Frontend {
+                frontend_generation: 1,
+            },
+        );
         assert_eq!(malformed.accepted_packets, 0);
         assert_eq!(malformed.dropped_packets, 1);
         assert_eq!(malformed.malformed_packets, 1);
@@ -2114,14 +2464,24 @@ mod malformed_adaptation_tests {
         assert!(malformed
             .diagnostics
             .iter()
-            .any(|diag| matches!(diag, PipelineDiagnostic::MalformedTsPacket)));
+            .any(|diag| matches!(
+                diag,
+                PipelineDiagnostic::MalformedTsPacket {
+                    reason: TsPacketValidationError::WrongLength,
+                }
+            )));
 
         let mut tei = [0xffu8; TS_PACKET_SIZE];
         tei[0] = 0x47;
         tei[1] = 0x80;
         tei[2] = 0x10;
         tei[3] = 0x10;
-        let report = PacketPipeline::default().push_ts_packet(&tei, PipelineInputKind::Live);
+        let report = PacketPipeline::default().push_ts_packet(
+            &tei,
+            PipelineInputKind::Frontend {
+                frontend_generation: 1,
+            },
+        );
         assert!(report
             .assembly_suppression_reasons
             .contains(&PipelineAssemblySuppressionReason::TransportErrorIndicator));
@@ -2179,7 +2539,7 @@ mod discontinuity_generation_tests {
         let first_view = PacketPipeline::validate_packet(&first).unwrap();
         let first_report = pipeline.plan_and_assemble_ts_packet_report_after_preflight(
             &first_view,
-            crate::TsInputOrigin::Frontend,
+            crate::TsInputOrigin::frontend(1),
             &[filter],
             &[],
         );
@@ -2191,7 +2551,7 @@ mod discontinuity_generation_tests {
         let second_view = PacketPipeline::validate_packet(&second).unwrap();
         let second_report = pipeline.plan_and_assemble_ts_packet_report_after_preflight(
             &second_view,
-            crate::TsInputOrigin::Frontend,
+            crate::TsInputOrigin::frontend(1),
             &[filter],
             &[],
         );
@@ -2217,9 +2577,64 @@ mod resync_boundary_tests {
     use super::*;
 
     #[test]
+    fn frontend_and_playback_generations_have_independent_continuity_namespaces() {
+        let mut packet = [0xffu8; TS_PACKET_SIZE];
+        packet[0] = 0x47;
+        packet[1] = 0x41;
+        packet[2] = 0x00;
+        packet[3] = 0x10;
+        let mut pipeline = PacketPipeline::default();
+
+        let first_frontend = pipeline.push_ts_packet(
+            &packet,
+            PipelineInputKind::Frontend {
+                frontend_generation: 1,
+            },
+        );
+        let next_frontend_generation = pipeline.push_ts_packet(
+            &packet,
+            PipelineInputKind::Frontend {
+                frontend_generation: 2,
+            },
+        );
+        let duplicate_frontend = pipeline.push_ts_packet(
+            &packet,
+            PipelineInputKind::Frontend {
+                frontend_generation: 2,
+            },
+        );
+        let first_playback = pipeline.push_ts_packet(
+            &packet,
+            PipelineInputKind::PlaybackDvr {
+                dvr_id: 10,
+                queue_identity: 1,
+                queue_epoch: 0,
+            },
+        );
+        let other_playback_dvr = pipeline.push_ts_packet(
+            &packet,
+            PipelineInputKind::PlaybackDvr {
+                dvr_id: 11,
+                queue_identity: 1,
+                queue_epoch: 0,
+            },
+        );
+
+        assert!(first_frontend.assembly_suppression_reasons.is_empty());
+        assert!(next_frontend_generation
+            .assembly_suppression_reasons
+            .is_empty());
+        assert!(duplicate_frontend
+            .assembly_suppression_reasons
+            .contains(&PipelineAssemblySuppressionReason::DuplicatePacket));
+        assert!(first_playback.assembly_suppression_reasons.is_empty());
+        assert!(other_playback_dvr.assembly_suppression_reasons.is_empty());
+    }
+
+    #[test]
     fn origin_aware_filter_prune_does_not_remove_other_origin_assemblers() {
         let mut pipeline = PacketPipeline::default();
-        let frontend = crate::TsInputOrigin::Frontend;
+        let frontend = crate::TsInputOrigin::frontend(1);
         let source = crate::TsInputOrigin::SourceFilter {
             source_filter_id: 42,
             source_filter_generation: 3,
@@ -2265,7 +2680,7 @@ mod resync_boundary_tests {
     #[test]
     fn source_filter_origin_keeps_generation_and_assembler_state_separate_from_frontend() {
         let mut pipeline = PacketPipeline::default();
-        let frontend = crate::TsInputOrigin::Frontend;
+        let frontend = crate::TsInputOrigin::frontend(1);
         let source = crate::TsInputOrigin::SourceFilter {
             source_filter_id: 42,
             source_filter_generation: 0,
@@ -2385,7 +2800,12 @@ mod record_raw_passthrough_policy_tests {
     fn adaptation_only_packet_passes_raw_record_but_not_assembly_path() {
         let packet = adaptation_only_packet(0x0100, 0);
         let mut pipeline = PacketPipeline::default();
-        let preflight = pipeline.push_ts_packet(&packet, PipelineInputKind::Live);
+        let preflight = pipeline.push_ts_packet(
+            &packet,
+            PipelineInputKind::Frontend {
+                frontend_generation: 1,
+            },
+        );
         assert_eq!(preflight.accepted_packets, 1);
         assert!(preflight
             .assembly_suppression_reasons
@@ -2397,7 +2817,7 @@ mod record_raw_passthrough_policy_tests {
         assert!(validated.view().payload().is_none());
         let report = pipeline.plan_and_assemble_ts_packet_report_after_preflight(
             &validated,
-            crate::TsInputOrigin::Frontend,
+            crate::TsInputOrigin::frontend(1),
             &[raw_filter(3), record_filter(1), section_filter(2)],
             &preflight.assembly_suppression_reasons,
         );
@@ -2425,7 +2845,12 @@ mod record_raw_passthrough_policy_tests {
         let mut packet = payload_packet(0x0100, 0);
         packet[1] |= 0x80;
         let mut pipeline = PacketPipeline::default();
-        let preflight = pipeline.push_ts_packet(&packet, PipelineInputKind::Live);
+        let preflight = pipeline.push_ts_packet(
+            &packet,
+            PipelineInputKind::Frontend {
+                frontend_generation: 1,
+            },
+        );
         assert_eq!(preflight.accepted_packets, 1);
         assert!(preflight
             .assembly_suppression_reasons
@@ -2436,7 +2861,7 @@ mod record_raw_passthrough_policy_tests {
         };
         let report = pipeline.plan_and_assemble_ts_packet_report_after_preflight(
             &validated,
-            crate::TsInputOrigin::Frontend,
+            crate::TsInputOrigin::frontend(1),
             &[record_filter(1), section_filter(2)],
             &preflight.assembly_suppression_reasons,
         );
@@ -2455,11 +2880,21 @@ mod record_raw_passthrough_policy_tests {
         let mut pipeline = PacketPipeline::default();
         assert_eq!(
             pipeline
-                .push_ts_packet(&packet, PipelineInputKind::Live)
+                .push_ts_packet(
+                    &packet,
+                    PipelineInputKind::Frontend {
+                        frontend_generation: 1,
+                    },
+                )
                 .accepted_packets,
             1
         );
-        let preflight = pipeline.push_ts_packet(&packet, PipelineInputKind::Live);
+        let preflight = pipeline.push_ts_packet(
+            &packet,
+            PipelineInputKind::Frontend {
+                frontend_generation: 1,
+            },
+        );
         assert_eq!(preflight.accepted_packets, 1);
         assert!(preflight
             .assembly_suppression_reasons
@@ -2470,11 +2905,55 @@ mod record_raw_passthrough_policy_tests {
         };
         let report = pipeline.plan_and_assemble_ts_packet_report_after_preflight(
             &validated,
-            crate::TsInputOrigin::Frontend,
+            crate::TsInputOrigin::frontend(1),
             &[record_filter(1), section_filter(2)],
             &preflight.assembly_suppression_reasons,
         );
 
+        assert!(report
+            .delivery_actions
+            .contains(&PipelineDeliveryAction::RecordPacket { filter_id: 1 }));
+        assert!(!report
+            .delivery_actions
+            .contains(&PipelineDeliveryAction::SectionPayload { filter_id: 2 }));
+    }
+
+    #[test]
+    fn same_counter_changed_packet_is_not_duplicate_and_skips_assembly() {
+        let first = payload_packet(0x0100, 0);
+        let mut changed = first;
+        changed[20] ^= 0x01;
+        let mut pipeline = PacketPipeline::default();
+        pipeline.push_ts_packet(
+            &first,
+            PipelineInputKind::Frontend {
+                frontend_generation: 1,
+            },
+        );
+
+        let preflight = pipeline.push_ts_packet(
+            &changed,
+            PipelineInputKind::Frontend {
+                frontend_generation: 1,
+            },
+        );
+        assert!(preflight
+            .assembly_suppression_reasons
+            .contains(&PipelineAssemblySuppressionReason::ContinuityCounterCollision));
+        assert!(!preflight
+            .assembly_suppression_reasons
+            .contains(&PipelineAssemblySuppressionReason::DuplicatePacket));
+        let validated = pipeline.inspect_ts_packet(&changed).unwrap();
+        let report = pipeline.plan_and_assemble_ts_packet_report_after_preflight(
+            &validated,
+            crate::TsInputOrigin::frontend(1),
+            &[raw_filter(3), record_filter(1), section_filter(2)],
+            &preflight.assembly_suppression_reasons,
+        );
+
+        assert!(report
+            .delivery_actions
+            .contains(&PipelineDeliveryAction::RawPacket { filter_id: 3 }));
         assert!(report
             .delivery_actions
             .contains(&PipelineDeliveryAction::RecordPacket { filter_id: 1 }));
@@ -2535,7 +3014,7 @@ mod keyless_scrambled_policy_tests {
         let mut pipeline = PacketPipeline::default();
         let report = pipeline.plan_and_assemble_ts_packet_report_after_preflight(
             &validated,
-            crate::TsInputOrigin::Frontend,
+            crate::TsInputOrigin::frontend(1),
             &filters,
             &[],
         );
@@ -2563,7 +3042,7 @@ mod keyless_scrambled_policy_tests {
     }
 
     #[test]
-    fn record_filter_configuration_generates_record_index_event() {
+    fn record_filter_generates_index_only_after_record_commit() {
         let packet = payload_packet(0x0100, 0);
         let validated = PacketPipeline::validate_packet(&packet).unwrap();
         let mut pipeline = PacketPipeline::default();
@@ -2585,18 +3064,23 @@ mod keyless_scrambled_policy_tests {
 
         let report = pipeline.plan_and_assemble_ts_packet_report_after_preflight(
             &validated,
-            crate::TsInputOrigin::Frontend,
+            crate::TsInputOrigin::frontend(1),
             &[filter(1, PipelineOpenKind::Record)],
             &[],
         );
 
-        assert!(report.generated_events.iter().any(|event| matches!(
+        assert!(report.generated_events.iter().all(|event| !matches!(
             event,
-            PipelineGeneratedEvent::RecordIndex { filter_id: 1, data }
+            PipelineGeneratedEvent::RecordIndex { .. }
+        )));
+        let event = pipeline.record_index_event_after_record_commit(1, &validated, 0);
+        assert!(matches!(
+            event,
+            Some(PipelineGeneratedEvent::RecordIndex { filter_id: 1, data })
                 if data.ts_index_mask
                     == (DEMUX_TS_INDEX_FIRST_PACKET | DEMUX_TS_INDEX_PAYLOAD_UNIT_START)
                     && data.pid.to_i32_for_aidl_boundary() == 0x0100
-        )));
+        ));
     }
 
     #[test]
@@ -2612,7 +3096,7 @@ mod keyless_scrambled_policy_tests {
             filter(2, PipelineOpenKind::Section),
             filter(3, PipelineOpenKind::Pes),
         ];
-        let origin = crate::TsInputOrigin::Frontend;
+        let origin = crate::TsInputOrigin::frontend(1);
         let mut pipeline = PacketPipeline::default();
         pipeline.test_seed_section_for_pid(origin, PacketPid::from_validated_pid(0x0100), 2);
         pipeline.test_seed_pes_for_pid(origin, PacketPid::from_validated_pid(0x0100), 3);
@@ -2684,9 +3168,19 @@ mod validated_packet_boundary_additional_tests {
     fn duplicate_packet_diagnostic_carries_validated_packet_pid() {
         let packet = payload_packet(0x0124, 2);
         let mut pipeline = PacketPipeline::default();
-        pipeline.push_ts_packet(&packet, PipelineInputKind::Live);
+        pipeline.push_ts_packet(
+            &packet,
+            PipelineInputKind::Frontend {
+                frontend_generation: 1,
+            },
+        );
 
-        let report = pipeline.push_ts_packet(&packet, PipelineInputKind::Live);
+        let report = pipeline.push_ts_packet(
+            &packet,
+            PipelineInputKind::Frontend {
+                frontend_generation: 1,
+            },
+        );
 
         assert!(report.diagnostics.iter().any(|diag| matches!(
             diag,

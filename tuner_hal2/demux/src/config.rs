@@ -24,9 +24,14 @@ impl FilterOpenType {
         }
     }
 
+    pub const fn supports_normal_fmq_queue(self) -> bool {
+        matches!(self, Self::TsRaw | Self::TsSection | Self::TsPes)
+    }
+
     pub const fn pipeline_open_kind(self) -> PipelineOpenKind {
         match self {
-            Self::TsRaw | Self::TsPcr => PipelineOpenKind::Raw,
+            Self::TsRaw => PipelineOpenKind::Raw,
+            Self::TsPcr => PipelineOpenKind::Pcr,
             Self::TsAudio | Self::TsVideo => PipelineOpenKind::Av,
             Self::TsSection => PipelineOpenKind::Section,
             Self::TsPes => PipelineOpenKind::Pes,
@@ -37,6 +42,7 @@ impl FilterOpenType {
     pub const fn from_pipeline_open_kind(open_kind: PipelineOpenKind) -> Option<Self> {
         match open_kind {
             PipelineOpenKind::Raw => Some(Self::TsRaw),
+            PipelineOpenKind::Pcr => Some(Self::TsPcr),
             PipelineOpenKind::Av => None,
             PipelineOpenKind::Section => Some(Self::TsSection),
             PipelineOpenKind::Pes => Some(Self::TsPes),
@@ -74,6 +80,8 @@ pub struct PesSettings {
     pub stream_id: i32,
     pub raw: bool,
 }
+
+pub const PES_STREAM_ID_WILDCARD: i32 = 0xffff;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AvSettings {

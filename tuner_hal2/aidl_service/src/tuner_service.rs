@@ -60,17 +60,19 @@ use maleicacid_tuner_hal2_binder_adapter::{
     FilterReleaseAvHandleRequest, FilterSetDataSourceRequest,
 };
 use maleicacid_tuner_hal2_common::{
-    fail_after_cleanup, japan_isdbt_frequency_contract_range_hz, FrontendBackendKind,
-    FrontendSystem, HalError, HalInternalKind,
+    fail_after_cleanup, FrontendBackendKind, FrontendSystem, HalError, HalInternalKind,
+    HalInvalidArgumentKind,
 };
 use maleicacid_tuner_hal2_demux::QueueDescriptorSnapshot;
 use maleicacid_tuner_hal2_service_runtime::{
-    lnb_profile_supports_voltage_status, set_frontend_lnb_object_use_case,
-    start_frontend_scan_use_case, start_frontend_tune_use_case, stop_frontend_scan_use_case,
-    stop_frontend_tune_use_case, ObjectFrontendStatusReadinessValue, ObjectFrontendStatusType,
-    ObjectFrontendStatusValue, ObjectQueryRequest, ObjectQueryResponse, RootCommandRequest,
-    RootDemuxCapabilitiesSnapshot, RootDemuxInfoSnapshot, RootFrontendInfoSnapshot,
-    RootQueryRequest, RootQueryResponse, RuntimeObjectEntry, TunerServiceRuntime,
+    apply_lnb_satellite_position_object_use_case, apply_lnb_tone_object_use_case,
+    apply_lnb_voltage_object_use_case, close_lnb_after_root_open_rollback_use_case,
+    lnb_profile_supports_voltage_status, send_lnb_diseqc_object_use_case,
+    set_frontend_lnb_object_use_case, FrontendTuneScanTxn,
+    ObjectFrontendStatusReadinessValue, ObjectFrontendStatusType, ObjectFrontendStatusValue,
+    ObjectQueryRequest, ObjectQueryResponse, RootCommandRequest, RootDemuxCapabilitiesSnapshot,
+    RootDemuxInfoSnapshot, RootFrontendInfoSnapshot, RootQueryRequest, RootQueryResponse,
+    RuntimeObjectEntry, TunerServiceRuntime,
 };
 
 use crate::child_object_open::{
@@ -80,13 +82,14 @@ use crate::child_object_open::{
 use crate::demux_object::DemuxAidlObject;
 use crate::descrambler_object::DescramblerAidlObject;
 use crate::dvr_callback_delivery::{
-    deliver_started_dvr_status, start_dvr_status_notifier, stop_dvr_status_notifier,
+    deliver_started_dvr_status, is_playback_dvr, start_dvr_status_notifier,
+    stop_dvr_status_notifier,
 };
 use crate::dvr_object::DvrAidlObject;
 use crate::error_bridge::{status_from_hal_error, status_unknown_error};
 use crate::filter_callback_delivery::AidlFilterEventDispatcher;
 use crate::filter_object::FilterAidlObject;
-use crate::frontend_callback_delivery::scan_end_notifier;
+use crate::frontend_callback_delivery::{scan_notifier, tune_notifier};
 use crate::frontend_object::FrontendAidlObject;
 use crate::lnb_object::LnbAidlObject;
 use crate::object_handle::AidlObjectHandle;
@@ -149,8 +152,9 @@ fn frontend_system_from_type(frontend_type: FrontendType) -> Result<FrontendSyst
     match frontend_type {
         FrontendType::ISDBS => Ok(FrontendSystem::IsdbS),
         FrontendType::ISDBT => Ok(FrontendSystem::IsdbT),
-        _ => Err(HalError::Unsupported(
-            "frontend type is unsupported by tuner_hal2",
+        _ => Err(HalError::invalid_argument(
+            HalInvalidArgumentKind::NumericRange,
+            "frontend type is not present in the immutable capability snapshot",
         )),
     }
 }
@@ -224,16 +228,22 @@ impl TunerAidlService {
         entry: RuntimeObjectEntry,
         unregister_runtime: bool,
     ) -> Result<(), HalError> {
-        self.context
-            .runtime()
-            .lock()
-            .map_err(|_| {
+        let runtime = self.context.runtime();
+        let lnb_cleanup_id = {
+            let mut guard = runtime.lock().map_err(|_| {
                 HalError::internal(
                     HalInternalKind::InvariantViolation,
                     "service runtime lock poisoned",
                 )
-            })?
-            .rollback_root_object_entry_after_aidl_failure(entry, unregister_runtime)
+            })?;
+            guard
+                .root_open_txn()
+                .rollback_root_object_entry_after_aidl_failure(entry, unregister_runtime)?
+        };
+        match lnb_cleanup_id {
+            Some(lnb_id) => close_lnb_after_root_open_rollback_use_case(runtime, lnb_id),
+            None => Ok(()),
+        }
     }
 
     fn frontend_object_from_entry(
@@ -347,41 +357,11 @@ impl TunerAidlService {
     }
 }
 
-const JAPAN_BS_FIRST_IF_HZ: i64 = 1_049_480_000;
-const JAPAN_CS110_LAST_IF_HZ: i64 = 2_053_000_000;
-const PX4_FRONTEND_ID_BASE: i32 = 1_000_000;
-const DVB_FRONTEND_ID_BASE: i32 = 2_000_000;
-const PX4_PHYSICAL_GROUP_TAG: i32 = 0x1000_0000;
-const DVB_PHYSICAL_GROUP_TAG: i32 = 0x2000_0000;
-
-fn packed_physical_group_id(tag: i32, major: i32, minor: i32) -> i32 {
-    let major_bits = (major.max(0) & 0x3fff) << 14;
-    let minor_bits = minor.max(0) & 0x3fff;
-    tag | major_bits | minor_bits
-}
-
 fn frontend_type_from_snapshot(snapshot: &RootFrontendInfoSnapshot) -> FrontendType {
     match snapshot.system {
         FrontendSystem::IsdbT => FrontendType::ISDBT,
         FrontendSystem::IsdbS => FrontendType::ISDBS,
         FrontendSystem::IsdbS3 | FrontendSystem::DvbS => FrontendType::ISDBT,
-    }
-}
-
-fn physical_group_id_from_snapshot(snapshot: &RootFrontendInfoSnapshot) -> i32 {
-    match snapshot.backend {
-        FrontendBackendKind::LinuxDvb => {
-            let rel = snapshot.id.saturating_sub(DVB_FRONTEND_ID_BASE);
-            let adapter = (rel >> 12) & 0xff;
-            let frontend_index = (rel >> 4) & 0xff;
-            packed_physical_group_id(DVB_PHYSICAL_GROUP_TAG, adapter, frontend_index)
-        }
-        FrontendBackendKind::Px4CharDevice => {
-            let rel = snapshot.id.saturating_sub(PX4_FRONTEND_ID_BASE);
-            let family = rel.div_euclid(10_000);
-            let unit = rel.rem_euclid(10_000).div_euclid(10);
-            packed_physical_group_id(PX4_PHYSICAL_GROUP_TAG, family, unit)
-        }
     }
 }
 
@@ -398,53 +378,28 @@ fn frontend_status_caps_for_snapshot(
 }
 
 fn isdbt_mode_caps() -> i32 {
-    FrontendIsdbtMode::AUTO.0 | FrontendIsdbtMode::MODE_3.0
+    FrontendIsdbtMode::AUTO.0
 }
 fn isdbt_bandwidth_caps() -> i32 {
     FrontendIsdbtBandwidth::AUTO.0 | FrontendIsdbtBandwidth::BANDWIDTH_6MHZ.0
 }
 fn isdbt_modulation_caps() -> i32 {
     FrontendIsdbtModulation::AUTO.0
-        | FrontendIsdbtModulation::MOD_DQPSK.0
-        | FrontendIsdbtModulation::MOD_QPSK.0
-        | FrontendIsdbtModulation::MOD_16QAM.0
-        | FrontendIsdbtModulation::MOD_64QAM.0
 }
 fn isdbt_coderate_caps() -> i32 {
     FrontendIsdbtCoderate::AUTO.0
-        | FrontendIsdbtCoderate::CODERATE_1_2.0
-        | FrontendIsdbtCoderate::CODERATE_2_3.0
-        | FrontendIsdbtCoderate::CODERATE_3_4.0
-        | FrontendIsdbtCoderate::CODERATE_5_6.0
-        | FrontendIsdbtCoderate::CODERATE_7_8.0
 }
 fn isdbt_guard_interval_caps() -> i32 {
     FrontendIsdbtGuardInterval::AUTO.0
-        | FrontendIsdbtGuardInterval::INTERVAL_1_32.0
-        | FrontendIsdbtGuardInterval::INTERVAL_1_16.0
-        | FrontendIsdbtGuardInterval::INTERVAL_1_8.0
-        | FrontendIsdbtGuardInterval::INTERVAL_1_4.0
 }
 fn isdbt_time_interleave_caps() -> i32 {
     FrontendIsdbtTimeInterleaveMode::AUTO.0
-        | FrontendIsdbtTimeInterleaveMode::INTERLEAVE_3_0.0
-        | FrontendIsdbtTimeInterleaveMode::INTERLEAVE_3_1.0
-        | FrontendIsdbtTimeInterleaveMode::INTERLEAVE_3_2.0
-        | FrontendIsdbtTimeInterleaveMode::INTERLEAVE_3_4.0
 }
 fn isdbs_modulation_caps() -> i32 {
     FrontendIsdbsModulation::AUTO.0
-        | FrontendIsdbsModulation::MOD_BPSK.0
-        | FrontendIsdbsModulation::MOD_QPSK.0
-        | FrontendIsdbsModulation::MOD_TC8PSK.0
 }
 fn isdbs_coderate_caps() -> i32 {
     FrontendIsdbsCoderate::AUTO.0
-        | FrontendIsdbsCoderate::CODERATE_1_2.0
-        | FrontendIsdbsCoderate::CODERATE_2_3.0
-        | FrontendIsdbsCoderate::CODERATE_3_4.0
-        | FrontendIsdbsCoderate::CODERATE_5_6.0
-        | FrontendIsdbsCoderate::CODERATE_7_8.0
 }
 
 fn frontend_caps_for_snapshot(snapshot: &RootFrontendInfoSnapshot) -> FrontendCapabilities {
@@ -456,8 +411,14 @@ fn frontend_caps_for_snapshot(snapshot: &RootFrontendInfoSnapshot) -> FrontendCa
             coderateCap: isdbt_coderate_caps(),
             guardIntervalCap: isdbt_guard_interval_caps(),
             timeInterleaveCap: isdbt_time_interleave_caps(),
-            isSegmentAuto: true,
-            isFullSegment: true,
+            isSegmentAuto: snapshot
+                .capability
+                .isdbt_segment
+                .is_some_and(|capability| capability.is_segment_auto),
+            isFullSegment: snapshot
+                .capability
+                .isdbt_segment
+                .is_some_and(|capability| capability.is_full_segment),
         }),
         FrontendType::ISDBS => FrontendCapabilities::IsdbsCaps(FrontendIsdbsCapabilities {
             modulationCap: isdbs_modulation_caps(),
@@ -467,27 +428,16 @@ fn frontend_caps_for_snapshot(snapshot: &RootFrontendInfoSnapshot) -> FrontendCa
     }
 }
 
-fn frontend_frequency_contract(snapshot: &RootFrontendInfoSnapshot) -> (i64, i64, i64) {
-    match frontend_type_from_snapshot(snapshot) {
-        FrontendType::ISDBT => {
-            let (min_hz, max_hz, tolerance_hz) = japan_isdbt_frequency_contract_range_hz();
-            (min_hz as i64, max_hz as i64, tolerance_hz as i64)
-        }
-        FrontendType::ISDBS => (JAPAN_BS_FIRST_IF_HZ, JAPAN_CS110_LAST_IF_HZ, 0),
-        _ => (0, 0, 0),
-    }
-}
-
 fn frontend_info_from_snapshot(snapshot: &RootFrontendInfoSnapshot) -> FrontendInfo {
-    let (min_freq, max_freq, acquire_range) = frontend_frequency_contract(snapshot);
+    let scalar = snapshot.capability.scalar;
     FrontendInfo {
         r#type: frontend_type_from_snapshot(snapshot),
-        minFrequency: min_freq,
-        maxFrequency: max_freq,
-        minSymbolRate: 0,
-        maxSymbolRate: 0,
-        acquireRange: acquire_range,
-        exclusiveGroupId: physical_group_id_from_snapshot(snapshot),
+        minFrequency: scalar.min_frequency_hz,
+        maxFrequency: scalar.max_frequency_hz,
+        minSymbolRate: scalar.min_symbol_rate,
+        maxSymbolRate: scalar.max_symbol_rate,
+        acquireRange: scalar.acquire_range_hz,
+        exclusiveGroupId: snapshot.capability.exclusive_group_id,
         statusCaps: frontend_status_caps_for_snapshot(snapshot),
         frontendCaps: frontend_caps_for_snapshot(snapshot),
     }
@@ -510,7 +460,7 @@ impl ITuner for TunerAidlService {
     fn openFrontendById(&self, frontend_id: i32) -> BinderResult<Strong<dyn IFrontend>> {
         let entry = self
             .lock_runtime()?
-            .open_frontend_root_object_for_id(
+            .root_open_txn().open_frontend_root_object_for_id(
                 frontend_id,
                 public_api_call(AidlObjectKind::Tuner, AidlApi::TunerOpenFrontendById, None),
             )
@@ -522,7 +472,7 @@ impl ITuner for TunerAidlService {
         demux_id.clear();
         let entry = self
             .lock_runtime()?
-            .open_demux_root_object(public_api_call(
+            .root_open_txn().open_demux_root_object(public_api_call(
                 AidlObjectKind::Tuner,
                 AidlApi::TunerOpenDemux,
                 None,
@@ -551,7 +501,7 @@ impl ITuner for TunerAidlService {
     fn openDescrambler(&self) -> BinderResult<Strong<dyn IDescrambler>> {
         let entry = self
             .lock_runtime()?
-            .open_descrambler_root_object(public_api_call(
+            .root_open_txn().open_descrambler_root_object(public_api_call(
                 AidlObjectKind::Tuner,
                 AidlApi::TunerOpenDescrambler,
                 None,
@@ -589,7 +539,7 @@ impl ITuner for TunerAidlService {
     fn openLnbById(&self, lnb_id: i32) -> BinderResult<Strong<dyn ILnb>> {
         let entry = self
             .lock_runtime()?
-            .open_lnb_root_object_for_id(
+            .root_open_txn().open_lnb_root_object_for_id(
                 lnb_id,
                 public_api_call(AidlObjectKind::Tuner, AidlApi::TunerOpenLnbById, None),
             )
@@ -605,7 +555,7 @@ impl ITuner for TunerAidlService {
         lnb_id.clear();
         let (id, entry) = self
             .lock_runtime()?
-            .open_lnb_root_object_by_name(
+            .root_open_txn().open_lnb_root_object_by_name(
                 lnb_name,
                 public_api_call(AidlObjectKind::Tuner, AidlApi::TunerOpenLnbByName, None),
             )
@@ -680,7 +630,7 @@ impl ITuner for TunerAidlService {
     fn openDemuxById(&self, demux_id: i32) -> BinderResult<Strong<dyn IDemux>> {
         let entry = self
             .lock_runtime()?
-            .open_demux_root_object_by_id(
+            .root_open_txn().open_demux_root_object_by_id(
                 demux_id,
                 public_api_call(AidlObjectKind::Tuner, AidlApi::TunerOpenDemuxById, None),
             )
@@ -710,7 +660,7 @@ mod tests {
     use super::*;
     use maleicacid_tuner_hal2_binder_adapter::{DvrOpenKind, OpenDvrRequest};
     use maleicacid_tuner_hal2_service_runtime::{
-        execute_object_method_call_after_live, RuntimeOwnerRelation,
+        ObjectMethodUseCase, RuntimeOwnerRelation,
     };
 
     #[test]
@@ -775,14 +725,14 @@ mod tests {
         let demux_entry = {
             let mut guard = runtime.lock().unwrap();
             guard
-                .open_demux_root_object(public_api_call(
+                .root_open_txn().open_demux_root_object(public_api_call(
                     AidlObjectKind::Tuner,
                     AidlApi::TunerOpenDemux,
                     None,
                 ))
                 .unwrap()
         };
-        let dvr_open = execute_object_method_call_after_live(
+        let dvr_open = ObjectMethodUseCase::execute_after_live(
             &runtime,
             demux_entry.object_id(),
             demux_entry.generation(),
@@ -795,7 +745,7 @@ mod tests {
                 Ok((AidlMethodCall::DemuxOpenDvr(request.clone()), request))
             },
             |runtime, dispatch, request| {
-                runtime.open_dvr_child_runtime_for_demux_object(
+                runtime.child_open_txn().open_dvr_child_runtime_for_demux_object(
                     demux_entry.object_id(),
                     demux_entry.generation(),
                     request,
@@ -814,5 +764,34 @@ mod tests {
         assert!(dvr.close().is_ok());
         assert!(dvr.close().is_err());
         assert!(dvr.start().is_err());
+    }
+
+    #[test]
+    fn every_published_frontend_advertises_current_demod_lock_readback() {
+        let capability = maleicacid_tuner_hal2_service_runtime::FrontendCapabilitySnapshot {
+            scalar: maleicacid_tuner_hal2_service_runtime::FrontendScalarCapability {
+                min_frequency_hz: 1,
+                max_frequency_hz: 2,
+                min_symbol_rate: 0,
+                max_symbol_rate: 0,
+                acquire_range_hz: 0,
+            },
+            exclusive_group_id: 1,
+            isdbt_segment: None,
+        };
+        let px4 = RootFrontendInfoSnapshot {
+            id: 1,
+            backend: FrontendBackendKind::Px4CharDevice,
+            system: FrontendSystem::IsdbT,
+            lnb_profile: None,
+            capability,
+        };
+        let dvb = RootFrontendInfoSnapshot {
+            backend: FrontendBackendKind::LinuxDvb,
+            ..px4
+        };
+
+        assert!(frontend_status_caps_for_snapshot(&px4).contains(&FrontendStatusType::DEMOD_LOCK));
+        assert!(frontend_status_caps_for_snapshot(&dvb).contains(&FrontendStatusType::DEMOD_LOCK));
     }
 }

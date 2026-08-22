@@ -10,6 +10,15 @@ pub enum LnbRuntimeState {
     Quarantined,
 }
 
+/// Typed result of one backend operation. `Rejected` proves that the
+/// physical state did not change; `Indeterminate` does not.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LnbBackendApplyOutcome {
+    Applied,
+    Rejected(LnbFailureKind),
+    Indeterminate(LnbFailureKind),
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LnbVoltage {
     None,
@@ -75,7 +84,6 @@ pub struct LnbRuntime {
     callback_registered: bool,
     generation: u64,
     last_failure: Option<LnbFailureRecord>,
-    force_next_registry_commit_failure: Option<LnbFailureKind>,
     drop_leak_recorded: bool,
 }
 
@@ -90,7 +98,6 @@ impl LnbRuntime {
             callback_registered: false,
             generation: 0,
             last_failure: None,
-            force_next_registry_commit_failure: None,
             drop_leak_recorded: false,
         }
     }
@@ -145,10 +152,6 @@ impl LnbRuntime {
         }
     }
 
-    pub fn inject_next_registry_commit_failure(&mut self, kind: LnbFailureKind) {
-        self.force_next_registry_commit_failure = Some(kind);
-    }
-
     pub fn checked_next_generation(&self) -> Result<u64, LnbFailureRecord> {
         self.generation.checked_add(1).ok_or(LnbFailureRecord {
             lnb_id: self.lnb_id,
@@ -164,15 +167,39 @@ impl LnbRuntime {
         )
     }
 
-    pub(crate) fn commit_registry_with_generation(
+    /// Completes a backend-confirmed apply without allocation or further I/O.
+    pub(crate) fn commit_successful_apply(
         &mut self,
         state: LnbElectricalState,
         generation: u64,
-        step: LnbFailureStep,
-    ) -> Result<(), LnbFailureRecord> {
-        self.commit_registry(state, step)?;
+    ) {
+        self.backend_committed_state = state;
+        self.registry_state = state;
         self.generation = generation;
-        Ok(())
+        self.state = LnbRuntimeState::Open;
+    }
+
+    pub(crate) fn abort_rejected_apply(
+        &mut self,
+        kind: LnbFailureKind,
+        step: LnbFailureStep,
+    ) -> LnbFailureRecord {
+        self.state = LnbRuntimeState::Open;
+        let record = LnbFailureRecord {
+            lnb_id: self.lnb_id,
+            kind,
+            step,
+        };
+        self.last_failure = Some(record.clone());
+        record
+    }
+
+    pub fn quarantine_indeterminate_backend(
+        &mut self,
+        kind: LnbFailureKind,
+        step: LnbFailureStep,
+    ) -> LnbFailureRecord {
+        self.quarantine(kind, step)
     }
 
     pub(crate) fn begin_apply(&mut self) -> Result<(), LnbFailureRecord> {
@@ -201,32 +228,11 @@ impl LnbRuntime {
         }
     }
 
-    pub(crate) fn note_backend_applied(&mut self, state: LnbElectricalState) {
+    /// Completes a backend-confirmed close without allocation or further I/O.
+    pub(crate) fn commit_successful_close(&mut self, state: LnbElectricalState) {
         self.backend_committed_state = state;
-    }
-
-    pub(crate) fn commit_registry(
-        &mut self,
-        state: LnbElectricalState,
-        step: LnbFailureStep,
-    ) -> Result<(), LnbFailureRecord> {
-        if let Some(kind) = self.force_next_registry_commit_failure.take() {
-            return Err(self.record_failure(kind, step));
-        }
         self.registry_state = state;
-        Ok(())
-    }
-
-    pub(crate) fn commit_open(&mut self) {
-        self.state = LnbRuntimeState::Open;
-    }
-
-    pub(crate) fn commit_closed(&mut self) {
         self.state = LnbRuntimeState::Closed;
-        self.callback_registered = false;
-    }
-
-    pub(crate) fn clear_callback(&mut self) {
         self.callback_registered = false;
     }
 
@@ -275,13 +281,13 @@ pub trait LnbBackendOps {
         &mut self,
         lnb_id: i32,
         state: LnbElectricalState,
-    ) -> Result<(), LnbFailureKind>;
+    ) -> LnbBackendApplyOutcome;
 
     fn send_diseqc_message(
         &mut self,
         lnb_id: i32,
         message: &LnbDiseqcMessage,
-    ) -> Result<(), LnbFailureKind>;
+    ) -> LnbBackendApplyOutcome;
 }
 
 #[cfg(test)]

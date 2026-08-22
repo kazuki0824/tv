@@ -11,8 +11,14 @@ pub(crate) use parser::{packet_pipeline, sections, ts_core};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum TsInputOrigin {
-    Frontend,
-    Playback,
+    Frontend {
+        frontend_generation: u64,
+    },
+    PlaybackDvr {
+        dvr_id: i32,
+        queue_identity: u64,
+        queue_epoch: u64,
+    },
     SourceFilter {
         source_filter_id: i32,
         source_filter_generation: u64,
@@ -20,26 +26,40 @@ pub enum TsInputOrigin {
 }
 
 impl TsInputOrigin {
-    pub const fn allows_record_mirror(self) -> bool {
-        !matches!(self, TsInputOrigin::Playback)
+    pub const fn frontend(frontend_generation: u64) -> Self {
+        Self::Frontend {
+            frontend_generation,
+        }
+    }
+
+    pub const fn playback_dvr(dvr_id: i32, queue_identity: u64, queue_epoch: u64) -> Self {
+        Self::PlaybackDvr {
+            dvr_id,
+            queue_identity,
+            queue_epoch,
+        }
     }
 }
 
 pub use av::{
-    AvDataId, AvHandleReleaseOutcome, AvMediaEventDescriptor, AvPayloadDeliveryOutcome,
-    AvSharedBackingError, AvSharedHandleExport, AvSlotId,
+    AvDataId, AvDataIdAllocator, AvFileIdentity, AvHandleReleaseDescriptor,
+    AvHandleReleaseOutcome, AvMediaEventDescriptor, AvPayloadDeliveryOutcome, AvRuntimeBudget,
+    AvSharedBacking, AvSharedBackingError, AvSharedHandleExport, AvSlotId,
+    DEFAULT_AV_MAX_EVENT_BYTES, DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
+    DEFAULT_AV_PER_FILTER_LIVE_BYTES,
 };
 pub use config::{
     AvSettings, AvStreamKind, AvStreamTypeConfig, FilterConfig, FilterConfigKind, FilterDelayHint,
     FilterDelayHints, FilterDelayReadiness, FilterOpenType, OpenFilterRequest, PesSettings,
-    RecordIndexSettings, SectionCondition, SectionConditionKind,
+    RecordIndexSettings, SectionCondition, SectionConditionKind, PES_STREAM_ID_WILDCARD,
 };
 pub use parser::packet_pipeline::{
     PacketDescramblePolicyFailure, PacketPid, PipelineAssemblySuppressionReason,
     PipelineBoundaryReason, PipelineDeliveryAction, PipelineDiagnostic,
-    PipelineDiagnosticPidContext, PipelineGeneratedEvent, PipelineReport, PipelineResetReport,
-    TsPacketValidationError, ValidatedTsPacket,
+    PipelineDiagnosticCounters, PipelineDiagnosticPidContext, PipelineGeneratedEvent,
+    PipelineReport, PipelineResetReport, TsPacketValidationError, ValidatedTsPacket,
 };
+pub use parser::ts_core::MAX_PES_BUFFER_BYTES;
 pub use parser::record_index::{
     supported_record_sc_index_mask, supported_record_ts_index_mask, AVC_SC_B_SLICE, AVC_SC_I_SLICE,
     AVC_SC_P_SLICE, AVC_SC_SI_SLICE, AVC_SC_SP_SLICE, DEMUX_TS_INDEX_ADAPTATION_EXTENSION,
@@ -50,29 +70,36 @@ pub use parser::record_index::{
     DEMUX_TS_INDEX_RANDOM_ACCESS, DEMUX_TS_INDEX_SPLICING_POINT, HEVC_SC_AUD, HEVC_SC_BLA_N_LP,
     HEVC_SC_BLA_W_LP, HEVC_SC_BLA_W_RADL, HEVC_SC_IDR_N_LP, HEVC_SC_IDR_W_RADL, HEVC_SC_SPS,
     HEVC_SC_TRAIL_CRA, RECORD_SC_TYPE_NONE, RECORD_SC_TYPE_SC, RECORD_SC_TYPE_SC_AVC,
-    RECORD_SC_TYPE_SC_HEVC, RECORD_SC_TYPE_SC_VVC, VVC_SC_AUD, VVC_SC_CRA, VVC_SC_GDR,
-    VVC_SC_IDR_N_LP, VVC_SC_IDR_W_RADL, VVC_SC_SPS, VVC_SC_VPS,
+    RECORD_SC_TYPE_SC_HEVC, RECORD_SC_TYPE_SC_VVC, TsRecordEventData, VVC_SC_AUD, VVC_SC_CRA,
+    VVC_SC_GDR, VVC_SC_IDR_N_LP, VVC_SC_IDR_W_RADL, VVC_SC_SPS, VVC_SC_VPS,
 };
 pub use parser::sections::normalize_length_field_bits;
 pub use runtime::{
-    DemuxGenerationBoundaryRequest, DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind,
+    DemuxStreamBoundaryRequest, DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind,
     DemuxRuntimeQuarantineRequest, DemuxRuntimeRollbackCommitRequest,
     DemuxRuntimeRollbackRestoreRequest, DemuxRuntimeRollbackToken,
     DemuxRuntimeRollbackTokenPrepareRequest, DemuxRuntimeSnapshot, DemuxRuntimeState,
     DemuxStreamGeneration, DvrConfigureOutcome, DvrConfigureReport, DvrConfigureStep,
-    DvrFilterLinkRequest, DvrKind, DvrRuntimeConfigureRequest, DvrRuntimeOperationRequest,
-    DvrRuntimeRegistrationRequest, DvrRuntimeSnapshot, DvrRuntimeState, DvrStatusEvent,
-    DvrStatusIntervalRuntimeRequest, DvrStatusReportingRequest, FilterAvHandleReleaseRequest,
+    DvrDataFormat, DvrFilterLinkRequest, DvrKind, DvrRuntimeConfigureRequest,
+    DvrRuntimeOperationRequest, DvrRuntimeRegistrationRequest, DvrRuntimeSnapshot,
+    DvrRuntimeState, DvrStatusEvent, DvrStatusIntervalRuntimeRequest, DvrStatusReportingRequest,
+    FilterAvHandleReleaseRequest,
     FilterAvStreamTypeRuntimeRequest, FilterConfigureOutcome, FilterConfigureReport,
     FilterConfigureStep, FilterDelayHintRuntimeRequest, FilterRuntimeConfigureRequest,
     FilterRuntimeOperationKind, FilterRuntimeOperationOutcome, FilterRuntimeOperationReport,
     FilterRuntimeOperationRequest, FilterRuntimeOperationSkipReason, FilterRuntimeOperationStep,
     FilterRuntimeOperationStepOutcome, FilterRuntimeRegistrationRequest, FilterRuntimeSnapshot,
     FilterRuntimeState, FilterSourceConnectRequest, FilterSourceDisconnectRequest,
-    GenerationBoundaryReport, PlaybackConsumeReport, QueueDescriptorExportPlan,
-    QueueDescriptorExportTarget, QueueDescriptorQueryError, QueueDescriptorSnapshot,
-    QueueGrantorDescriptorSnapshot, QueueRuntimeError, QueueRuntimeErrorKind,
-    SourceBoundaryOutcome, SourceBoundaryReport, SourceBoundaryStep, ValidatedPacketIngressRequest,
+    StreamBoundaryReport, PlaybackConsumeReport, PlaybackFlushDiagnostic,
+    PlaybackQueueReadTxn, PlaybackStats, PreparedDvrFilterRelation,
+    PreparedStreamBoundary,
+    QueueDescriptorExportPlan, QueueDescriptorExportTarget, QueueDescriptorQueryError,
+    QueueDescriptorSnapshot, QueueGrantorDescriptorSnapshot, QueueRuntimeError,
+    QueueRuntimeErrorKind, RecordDvrFilterRelationState, SourceBoundaryOutcome,
+    SourceBoundaryReport, SourceBoundaryStep,
+    FilterStatusEvent, WatermarkClassifier, WatermarkDecision, WatermarkPolicy,
+    WatermarkQueueSnapshot,
+    ValidatedPacketIngressRequest,
 };
 
 #[cfg(test)]
@@ -108,7 +135,7 @@ mod tests {
         fn release_filter_av_handle(
             &mut self,
             filter_id: i32,
-            has_fd: bool,
+            descriptor: AvHandleReleaseDescriptor,
             av_data_id: i64,
         ) -> Result<AvHandleReleaseOutcome, DemuxRuntimeError>;
         fn set_dvr_status_check_interval(
@@ -168,10 +195,10 @@ mod tests {
         fn release_filter_av_handle(
             &mut self,
             filter_id: i32,
-            has_fd: bool,
+            descriptor: AvHandleReleaseDescriptor,
             av_data_id: i64,
         ) -> Result<AvHandleReleaseOutcome, DemuxRuntimeError> {
-            self.release_filter_av_handle(filter_id, has_fd, av_data_id)
+            self.release_filter_av_handle(filter_id, descriptor, av_data_id)
         }
         fn set_dvr_status_check_interval(
             &mut self,
@@ -246,6 +273,44 @@ mod tests {
         packet
     }
 
+    fn pcr_packet(pid: u16, continuity_counter: u8, pcr_base_90khz: u64) -> [u8; 188] {
+        let mut packet = [0xffu8; 188];
+        packet[0] = 0x47;
+        packet[1] = ((pid >> 8) as u8) & 0x1f;
+        packet[2] = pid as u8;
+        packet[3] = 0x20 | (continuity_counter & 0x0f);
+        packet[4] = 7;
+        packet[5] = 0x10;
+        packet[6] = (pcr_base_90khz >> 25) as u8;
+        packet[7] = (pcr_base_90khz >> 17) as u8;
+        packet[8] = (pcr_base_90khz >> 9) as u8;
+        packet[9] = (pcr_base_90khz >> 1) as u8;
+        packet[10] = ((pcr_base_90khz & 1) as u8) << 7 | 0x7e;
+        packet[11] = 0;
+        packet
+    }
+
+    fn pcr_payload_packet(
+        pid: u16,
+        continuity_counter: u8,
+        pcr_base_90khz: u64,
+    ) -> [u8; 188] {
+        let mut packet = pcr_packet(pid, continuity_counter, pcr_base_90khz);
+        packet[3] = 0x30 | (continuity_counter & 0x0f);
+        packet
+    }
+
+    fn discontinuity_packet_without_pcr(pid: u16, continuity_counter: u8) -> [u8; 188] {
+        let mut packet = [0xffu8; 188];
+        packet[0] = 0x47;
+        packet[1] = ((pid >> 8) as u8) & 0x1f;
+        packet[2] = pid as u8;
+        packet[3] = 0x20 | (continuity_counter & 0x0f);
+        packet[4] = 1;
+        packet[5] = 0x80;
+        packet
+    }
+
     fn open_filter_runtime_with_queue(
         filter_id: i32,
         generation: u64,
@@ -288,6 +353,296 @@ mod tests {
         demux
     }
 
+    #[test]
+    fn pcr_clock_anchor_advances_and_flush_invalidates_it() {
+        let filter_id = 71;
+        let pid = 0x0100;
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(open_filter_runtime_with_queue(
+                filter_id,
+                1,
+                FilterOpenType::TsPcr,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                filter_id,
+                FilterPipelineConfig {
+                    tpid: Some(pid),
+                    raw: false,
+                    record_index: None,
+                },
+            )
+            .unwrap();
+        assert!(!demux.queue_exists(filter_id));
+        demux.start_filter_runtime(filter_id).unwrap();
+
+        let base = 90_000;
+        let report = demux.push_ts_packet_from_origin(
+            &pcr_packet(pid as u16, 0, base),
+            TsInputOrigin::frontend(1),
+        );
+        assert_eq!(report.accepted_packets, 1);
+        assert!(report.generated_events.is_empty());
+        assert!(demux.pcr_clock_time_90khz(filter_id).is_some_and(|value| value >= base));
+
+        demux.flush_filter_runtime(filter_id).unwrap();
+        assert_eq!(demux.pcr_clock_time_90khz(filter_id), None);
+    }
+
+    #[test]
+    fn pcr_discontinuity_requires_a_following_clean_anchor() {
+        let filter_id = 72;
+        let pid = 0x0100;
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(open_filter_runtime_with_queue(
+                filter_id,
+                1,
+                FilterOpenType::TsPcr,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                filter_id,
+                FilterPipelineConfig {
+                    tpid: Some(pid),
+                    raw: false,
+                    record_index: None,
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(filter_id).unwrap();
+
+        demux.push_ts_packet_from_origin(
+            &pcr_packet(pid as u16, 0, 90_000),
+            TsInputOrigin::frontend(1),
+        );
+        assert!(demux.pcr_clock_time_90khz(filter_id).is_some());
+
+        let mut discontinuity = pcr_packet(pid as u16, 1, 180_000);
+        discontinuity[5] |= 0x80;
+        demux.push_ts_packet_from_origin(&discontinuity, TsInputOrigin::frontend(1));
+        assert_eq!(demux.pcr_clock_time_90khz(filter_id), None);
+
+        demux.push_ts_packet_from_origin(
+            &pcr_packet(pid as u16, 2, 270_000),
+            TsInputOrigin::frontend(1),
+        );
+        assert!(demux
+            .pcr_clock_time_90khz(filter_id)
+            .is_some_and(|value| value >= 270_000));
+    }
+
+    #[test]
+    fn pcr_discontinuity_without_pcr_invalidates_anchor() {
+        let filter_id = 75;
+        let pid = 0x0100;
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(open_filter_runtime_with_queue(
+                filter_id,
+                1,
+                FilterOpenType::TsPcr,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                filter_id,
+                FilterPipelineConfig {
+                    tpid: Some(pid),
+                    raw: false,
+                    record_index: None,
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(filter_id).unwrap();
+        demux.push_ts_packet_from_origin(
+            &pcr_packet(pid as u16, 0, 90_000),
+            TsInputOrigin::frontend(1),
+        );
+        assert!(demux.pcr_clock_time_90khz(filter_id).is_some());
+
+        demux.push_ts_packet_from_origin(
+            &discontinuity_packet_without_pcr(pid as u16, 1),
+            TsInputOrigin::frontend(1),
+        );
+
+        assert_eq!(demux.pcr_clock_time_90khz(filter_id), None);
+    }
+
+    #[test]
+    fn duplicate_and_tei_pcr_packets_do_not_replace_clean_anchor() {
+        let filter_id = 76;
+        let pid = 0x0100;
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(open_filter_runtime_with_queue(
+                filter_id,
+                1,
+                FilterOpenType::TsPcr,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                filter_id,
+                FilterPipelineConfig {
+                    tpid: Some(pid),
+                    raw: false,
+                    record_index: None,
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(filter_id).unwrap();
+        let first = pcr_payload_packet(pid as u16, 0, 90_000);
+        demux.push_ts_packet_from_origin(&first, TsInputOrigin::frontend(1));
+        let clean_anchor = demux
+            .pcr_anchor_observation_for_test(filter_id)
+            .unwrap();
+
+        demux.push_ts_packet_from_origin(&first, TsInputOrigin::frontend(1));
+        assert_eq!(
+            demux.pcr_anchor_observation_for_test(filter_id),
+            Some(clean_anchor)
+        );
+        let mut tei = pcr_payload_packet(pid as u16, 1, 1_800_000);
+        tei[1] |= 0x80;
+        demux.push_ts_packet_from_origin(&tei, TsInputOrigin::frontend(1));
+
+        assert_eq!(
+            demux.pcr_anchor_observation_for_test(filter_id),
+            Some(clean_anchor)
+        );
+        assert!(demux
+            .pcr_clock_time_90khz(filter_id)
+            .is_some_and(|value| (90_000..450_000).contains(&value)));
+    }
+
+    #[test]
+    fn playback_dvr_configure_preserves_and_flush_invalidates_pcr_clock_anchor() {
+        let filter_id = 73;
+        let dvr_id = 74;
+        let pid = 0x0100;
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(open_filter_runtime_with_queue(
+                filter_id,
+                1,
+                FilterOpenType::TsPcr,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                filter_id,
+                FilterPipelineConfig {
+                    tpid: Some(pid),
+                    raw: false,
+                    record_index: None,
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(filter_id).unwrap();
+        demux.push_ts_packet_from_origin(
+            &pcr_packet(pid as u16, 0, 90_000),
+            TsInputOrigin::frontend(1),
+        );
+        assert!(demux.pcr_clock_time_90khz(filter_id).is_some());
+
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                dvr_id,
+                1,
+                crate::runtime::DvrKind::Playback,
+                8192,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(dvr_id).unwrap();
+
+        assert!(demux.pcr_clock_time_90khz(filter_id).is_some());
+        demux.flush_dvr_runtime(dvr_id).unwrap();
+        assert_eq!(demux.pcr_clock_time_90khz(filter_id), None);
+    }
+
+    #[test]
+    fn av_sync_id_tables_allow_many_media_filters_and_remove_only_the_target_relation() {
+        let pcr_filter_id = 77;
+        let audio_filter_id = 78;
+        let video_filter_id = 79;
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(open_filter_runtime_with_queue(
+                pcr_filter_id,
+                1,
+                FilterOpenType::TsPcr,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                pcr_filter_id,
+                FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: false,
+                    record_index: None,
+                },
+            )
+            .unwrap();
+        for (filter_id, open_type, tpid) in [
+            (audio_filter_id, FilterOpenType::TsAudio, 0x0101),
+            (video_filter_id, FilterOpenType::TsVideo, 0x0102),
+        ] {
+            demux
+                .register_filter(open_filter_runtime_with_queue(
+                    filter_id,
+                    1,
+                    open_type,
+                    None,
+                ))
+                .unwrap();
+            demux
+                .configure_filter_runtime(
+                    filter_id,
+                    FilterPipelineConfig {
+                        tpid: Some(tpid),
+                        raw: false,
+                        record_index: None,
+                    },
+                )
+                .unwrap();
+        }
+
+        assert_eq!(
+            demux.av_sync_hw_id_for_media_filter(audio_filter_id),
+            Some(pcr_filter_id)
+        );
+        assert_eq!(
+            demux.av_sync_hw_id_for_media_filter(video_filter_id),
+            Some(pcr_filter_id)
+        );
+        assert_eq!(
+            demux.pcr_filter_id_for_av_sync_hw_id(pcr_filter_id),
+            Some(pcr_filter_id)
+        );
+
+        demux.remove_filter(audio_filter_id).unwrap();
+        assert_eq!(demux.av_sync_hw_id_for_media_filter(audio_filter_id), None);
+        assert_eq!(
+            demux.av_sync_hw_id_for_media_filter(video_filter_id),
+            Some(pcr_filter_id)
+        );
+
+        demux.remove_filter(pcr_filter_id).unwrap();
+        assert_eq!(demux.av_sync_hw_id_for_media_filter(video_filter_id), None);
+        assert_eq!(demux.pcr_filter_id_for_av_sync_hw_id(pcr_filter_id), None);
+    }
+
     fn first_fd_identity(snapshot: QueueDescriptorSnapshot) -> (u64, u64) {
         let (_grantors, fds, _ints, _quantum, _flags) = snapshot.into_parts();
         let metadata = fds[0].metadata().unwrap();
@@ -295,14 +650,16 @@ mod tests {
     }
 
     #[test]
-    fn frontend_and_source_filter_origins_allow_record_mirror() {
-        assert!(TsInputOrigin::Frontend.allows_record_mirror());
-        assert!(TsInputOrigin::SourceFilter {
-            source_filter_id: 1,
-            source_filter_generation: 1,
-        }
-        .allows_record_mirror());
-        assert!(!TsInputOrigin::Playback.allows_record_mirror());
+    fn input_origin_generation_keys_are_distinct() {
+        assert_ne!(TsInputOrigin::frontend(1), TsInputOrigin::frontend(2));
+        assert_ne!(
+            TsInputOrigin::playback_dvr(1, 1, 0),
+            TsInputOrigin::playback_dvr(1, 2, 0)
+        );
+        assert_ne!(
+            TsInputOrigin::playback_dvr(1, 1, 0),
+            TsInputOrigin::playback_dvr(2, 1, 0)
+        );
     }
 
     #[test]
@@ -329,7 +686,7 @@ mod tests {
         assert!(!report
             .steps()
             .contains(&SourceBoundaryStep::DisconnectDownstream));
-        assert!(!report.steps().contains(&SourceBoundaryStep::BumpGeneration));
+        assert_eq!(demux.filter(10).unwrap().source_relation_generation(), 1);
         assert!(!demux.queue_exists(10));
     }
 
@@ -352,7 +709,10 @@ mod tests {
                 None,
             ))
             .unwrap();
-        demux.filter_mut(41).unwrap().set_source_filter(40, 1);
+        assert!(demux
+            .filter_mut(41)
+            .unwrap()
+            .set_source_filter_for_test(40, 1));
         assert!(!demux.queue_exists(41));
 
         let (report, result) = apply_filter_source_boundary_change(&mut demux, 41, None);
@@ -378,7 +738,7 @@ mod tests {
     }
 
     #[test]
-    fn set_filter_source_non_null_uses_source_boundary_txn() {
+    fn set_filter_source_non_null_allows_pes_sink_for_ts_linkcap() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
             .register_filter(DemuxRuntime::open_filter_runtime(
@@ -407,14 +767,14 @@ mod tests {
         demux.create_filter_queue(41).unwrap();
         assert!(demux.filter(41).unwrap().snapshot().queue_present);
 
-        let reset = demux.set_filter_source_non_null(41, 40).1.unwrap();
+        let result = demux.set_filter_source_non_null(41, 40).1;
 
-        assert!(reset.cleared);
+        result.unwrap();
         let sink = demux.filter(41).unwrap().snapshot();
-        assert!(!sink.queue_present);
+        assert!(sink.queue_present);
         assert_eq!(
             sink.source,
-            crate::runtime::filter::FilterSource::SourceFilter {
+            FilterSource::SourceFilter {
                 source_filter_id: 40,
                 source_filter_generation: 1,
             }
@@ -501,6 +861,253 @@ mod tests {
             FilterSource::SourceFilter {
                 source_filter_id: 52,
                 source_filter_generation: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn source_filter_runtime_routes_raw_ts_and_preserves_downstream_boundaries() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(open_filter_runtime_with_queue(
+                54,
+                1,
+                FilterOpenType::TsRaw,
+                None,
+            ))
+            .unwrap();
+        demux
+            .register_filter(open_filter_runtime_with_queue(
+                55,
+                1,
+                FilterOpenType::TsRecord,
+                None,
+            ))
+            .unwrap();
+        for filter_id in [54, 55] {
+            demux
+                .configure_filter_runtime(
+                    filter_id,
+                    FilterPipelineConfig {
+                        tpid: Some(0x0100),
+                        raw: filter_id == 54,
+                        record_index: None,
+                    },
+                )
+                .unwrap();
+        }
+        demux.set_filter_source_non_null(55, 54).1.unwrap();
+        demux.start_filter_runtime(54).unwrap();
+        demux.start_filter_runtime(55).unwrap();
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                56,
+                1,
+                DvrKind::Record,
+                8192,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(56).unwrap();
+        demux.attach_dvr_filter(56, 55).unwrap();
+        demux.start_dvr_runtime(56).unwrap();
+
+        let first = raw_ts_packet(0x0100, 0, &[1, 2, 3, 4]);
+        demux.push_ts_packet_from_origin(&first, TsInputOrigin::frontend(1));
+        assert_eq!(
+            demux.snapshot_filter_queue_bytes_for_test(54).unwrap(),
+            first.to_vec()
+        );
+        assert_eq!(
+            demux.read_record_dvr_queue_bytes_for_test(56).unwrap(),
+            first.to_vec()
+        );
+
+        let old_source_generation = demux.filter(54).unwrap().generation();
+        demux.flush_filter_runtime(54).unwrap();
+        let new_source_generation = demux.filter(54).unwrap().generation();
+        assert_eq!(new_source_generation, old_source_generation + 1);
+        assert_eq!(demux.filter(55).unwrap().state(), FilterRuntimeState::Started);
+        assert_eq!(
+            demux.filter(55).unwrap().snapshot().source,
+            FilterSource::SourceFilter {
+                source_filter_id: 54,
+                source_filter_generation: new_source_generation,
+            }
+        );
+
+        let second = raw_ts_packet(0x0100, 1, &[5, 6, 7, 8]);
+        demux.push_ts_packet_from_origin(&second, TsInputOrigin::frontend(1));
+        assert_eq!(
+            demux.snapshot_filter_queue_bytes_for_test(54).unwrap(),
+            second.to_vec()
+        );
+        assert_eq!(
+            demux.read_record_dvr_queue_bytes_for_test(56).unwrap(),
+            [first.to_vec(), second.to_vec()].concat()
+        );
+
+        demux.remove_filter(54).unwrap();
+        assert_eq!(demux.filter(55).unwrap().state(), FilterRuntimeState::Started);
+        assert_eq!(
+            demux.filter(55).unwrap().snapshot().source,
+            FilterSource::DemuxInput
+        );
+        let third = raw_ts_packet(0x0100, 2, &[9, 10, 11, 12]);
+        demux.push_ts_packet_from_origin(&third, TsInputOrigin::frontend(1));
+        assert_eq!(
+            demux.read_record_dvr_queue_bytes_for_test(56).unwrap(),
+            [first.to_vec(), second.to_vec(), third.to_vec()].concat()
+        );
+    }
+
+    #[test]
+    fn source_reconfigure_rejects_incompatible_connected_sink_without_mutation() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        for filter_id in [57, 58] {
+            demux
+                .register_filter(open_filter_runtime_with_queue(
+                    filter_id,
+                    1,
+                    FilterOpenType::TsRaw,
+                    None,
+                ))
+                .unwrap();
+            demux
+                .configure_filter_runtime(
+                    filter_id,
+                    FilterPipelineConfig {
+                        tpid: Some(0x0100),
+                        raw: true,
+                        record_index: None,
+                    },
+                )
+                .unwrap();
+        }
+        demux.set_filter_source_non_null(58, 57).1.unwrap();
+        let source_before = demux.filter_snapshot(57).unwrap();
+        let sink_before = demux.filter_snapshot(58).unwrap();
+
+        let (_, result) = FilterConfigureTxn::new(57).configure(
+            &mut demux,
+            PipelineOpenKind::Raw,
+            FilterPipelineConfig {
+                tpid: Some(0x0101),
+                raw: true,
+                record_index: None,
+            },
+        );
+
+        assert_eq!(result.unwrap_err().kind, DemuxRuntimeErrorKind::PidMismatch);
+        assert_eq!(demux.filter_snapshot(57).unwrap(), source_before);
+        assert_eq!(demux.filter_snapshot(58).unwrap(), sink_before);
+    }
+
+    #[test]
+    fn source_reconfigure_advances_origin_and_keeps_compatible_connection() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        for filter_id in [61, 62] {
+            demux
+                .register_filter(open_filter_runtime_with_queue(
+                    filter_id,
+                    1,
+                    FilterOpenType::TsRaw,
+                    None,
+                ))
+                .unwrap();
+            demux
+                .configure_filter_runtime(
+                    filter_id,
+                    FilterPipelineConfig {
+                        tpid: Some(0x0100),
+                        raw: true,
+                        record_index: None,
+                    },
+                )
+                .unwrap();
+        }
+        demux.set_filter_source_non_null(62, 61).1.unwrap();
+        let old_generation = demux.filter(61).unwrap().generation();
+
+        let (_, result) = FilterConfigureTxn::new(61).configure(
+            &mut demux,
+            PipelineOpenKind::Raw,
+            FilterPipelineConfig {
+                tpid: Some(0x0100),
+                raw: false,
+                record_index: None,
+            },
+        );
+
+        assert!(result.is_ok());
+        let new_generation = demux.filter(61).unwrap().generation();
+        assert_eq!(new_generation, old_generation + 1);
+        assert_eq!(
+            demux.filter(62).unwrap().snapshot().source,
+            FilterSource::SourceFilter {
+                source_filter_id: 61,
+                source_filter_generation: new_generation,
+            }
+        );
+    }
+
+    #[test]
+    fn source_filter_connection_rejects_indirect_cycle() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        for filter_id in [59, 60] {
+            demux
+                .register_filter(open_filter_runtime_with_queue(
+                    filter_id,
+                    1,
+                    FilterOpenType::TsRaw,
+                    Some(FilterPipelineConfig {
+                        tpid: Some(0x0100),
+                        raw: true,
+                        record_index: None,
+                    }),
+                ))
+                .unwrap();
+        }
+        demux.set_filter_source_non_null(60, 59).1.unwrap();
+
+        let error = demux.set_filter_source_non_null(59, 60).1.unwrap_err();
+
+        assert_eq!(error.kind, DemuxRuntimeErrorKind::SelfReference);
+        assert_eq!(demux.filter(59).unwrap().snapshot().source, FilterSource::DemuxInput);
+    }
+
+    #[test]
+    fn source_generation_exhaustion_fails_source_without_failing_downstream() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        for filter_id in [63, 64] {
+            demux
+                .register_filter(open_filter_runtime_with_queue(
+                    filter_id,
+                    u64::MAX,
+                    FilterOpenType::TsRaw,
+                    Some(FilterPipelineConfig {
+                        tpid: Some(0x0100),
+                        raw: true,
+                        record_index: None,
+                    }),
+                ))
+                .unwrap();
+        }
+        demux.set_filter_source_non_null(64, 63).1.unwrap();
+
+        let error = demux.flush_filter_runtime(63).unwrap_err();
+
+        assert_eq!(error.kind, DemuxRuntimeErrorKind::GenerationExhausted);
+        assert_eq!(demux.filter(63).unwrap().state(), FilterRuntimeState::Failed);
+        assert_eq!(
+            demux.filter(64).unwrap().state(),
+            FilterRuntimeState::Configured
+        );
+        assert_eq!(
+            demux.filter(64).unwrap().snapshot().source,
+            FilterSource::SourceFilter {
+                source_filter_id: 63,
+                source_filter_generation: u64::MAX,
             }
         );
     }
@@ -616,7 +1223,7 @@ mod tests {
     }
 
     #[test]
-    fn dvr_queue_desc_requires_configure() {
+    fn dvr_queue_desc_exists_at_open_and_keeps_identity_after_configure() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
             .register_dvr(DemuxRuntime::open_dvr_runtime(
@@ -628,14 +1235,14 @@ mod tests {
             ))
             .unwrap();
 
-        assert!(matches!(
-            demux
-                .dvr_queue_descriptor_export_plan(26)
-                .and_then(|plan| plan
-                    .export_descriptor()
-                    .map_err(QueueDescriptorQueryError::Runtime)),
-            Err(QueueDescriptorQueryError::InvalidState(26))
-        ));
+        let open_snapshot = demux
+            .dvr_queue_descriptor_export_plan(26)
+            .and_then(|plan| {
+                plan.export_descriptor()
+                    .map_err(QueueDescriptorQueryError::Runtime)
+            })
+            .expect("open DVR queue descriptor must exist");
+        let open_identity = first_fd_identity(open_snapshot);
 
         demux.configure_dvr_runtime(26).unwrap();
         let snapshot = demux
@@ -649,6 +1256,28 @@ mod tests {
         assert!(!grantors.is_empty());
         assert!(!fds.is_empty());
         assert!(quantum > 0);
+        let metadata = fds[0].metadata().unwrap();
+        assert_eq!(open_identity, (metadata.dev(), metadata.ino()));
+    }
+
+    #[test]
+    fn unconfigured_playback_flush_checks_lifecycle_before_generation() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                94,
+                u64::MAX,
+                DvrKind::Playback,
+                8192,
+                true,
+            ))
+            .unwrap();
+
+        let error = demux.flush_dvr_runtime(94).unwrap_err();
+
+        assert_eq!(error.kind, DemuxRuntimeErrorKind::InvalidState);
+        assert_eq!(demux.dvr(94).unwrap().state(), DvrRuntimeState::Open);
+        assert_eq!(demux.dvr(94).unwrap().generation(), u64::MAX);
     }
 
     #[test]
@@ -824,7 +1453,7 @@ mod tests {
         );
         assert_eq!(
             demux.read_record_dvr_queue_bytes_for_test(37).unwrap(),
-            Vec::<u8>::new()
+            first_packet.to_vec()
         );
 
         demux.stop_dvr_runtime(35).unwrap();
@@ -845,6 +1474,10 @@ mod tests {
             demux.snapshot_filter_queue_bytes_for_test(34).unwrap(),
             [first_packet.to_vec(), second_packet.to_vec()].concat()
         );
+        assert_eq!(
+            demux.read_record_dvr_queue_bytes_for_test(37).unwrap(),
+            [first_packet.to_vec(), second_packet.to_vec()].concat()
+        );
 
         demux.stop_dvr_runtime(35).unwrap();
         assert_eq!(demux.dvr(35).unwrap().state(), DvrRuntimeState::Stopped);
@@ -860,6 +1493,312 @@ mod tests {
         let after_flush = demux.consume_playback_dvr_queue_for_test(35).unwrap();
         assert_eq!(after_flush.bytes_read, 0);
         assert_eq!(after_flush.completed_packets, 0);
+    }
+
+    #[test]
+    fn playback_dvr_consumes_when_record_is_the_only_started_output() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(open_filter_runtime_with_queue(
+                80,
+                1,
+                FilterOpenType::TsRecord,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                80,
+                FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: false,
+                    record_index: None,
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(80).unwrap();
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                81,
+                1,
+                DvrKind::Record,
+                8192,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(81).unwrap();
+        demux.attach_dvr_filter(81, 80).unwrap();
+        demux.start_dvr_runtime(81).unwrap();
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                82,
+                1,
+                DvrKind::Playback,
+                8192,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(82).unwrap();
+        demux.start_dvr_runtime(82).unwrap();
+
+        let packet = raw_ts_packet(0x0100, 0, &[1, 2, 3, 4]);
+        demux
+            .write_playback_dvr_queue_bytes_for_test(82, &packet)
+            .unwrap();
+        let report = demux.consume_playback_dvr_queue_for_test(82).unwrap();
+
+        assert_eq!(report.completed_packets, 1);
+        assert_eq!(
+            demux.read_record_dvr_queue_bytes_for_test(81).unwrap(),
+            packet.to_vec()
+        );
+    }
+
+    #[test]
+    fn playback_stats_count_injection_and_flush_records_exact_boundary_drop() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(open_filter_runtime_with_queue(
+                83,
+                1,
+                FilterOpenType::TsRaw,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                83,
+                FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: true,
+                    record_index: None,
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(83).unwrap();
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                84,
+                1,
+                DvrKind::Playback,
+                8192,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(84).unwrap();
+        demux.start_dvr_runtime(84).unwrap();
+
+        let valid = raw_ts_packet(0x0100, 0, &[1, 2, 3, 4]);
+        let mut malformed = valid;
+        malformed[3] = 0;
+        let first_input = [valid.to_vec(), malformed.to_vec()].concat();
+        demux
+            .write_playback_dvr_queue_bytes_for_test(84, &first_input)
+            .unwrap();
+        let report = demux.consume_playback_dvr_queue_for_test(84).unwrap();
+
+        assert_eq!(report.completed_packets, 2);
+        assert_eq!(report.malformed_packets, 1);
+        assert_eq!(report.dropped_bytes, 188);
+        assert_eq!(
+            demux.dvr_snapshot(84).unwrap().playback_stats,
+            PlaybackStats {
+                injected_bytes: 188,
+                injected_packets: 1,
+                malformed_packets: 1,
+                dropped_bytes: 188,
+                counter_saturated: false,
+            }
+        );
+
+        demux
+            .write_playback_dvr_queue_bytes_for_test(84, &valid[..100])
+            .unwrap();
+        demux.consume_playback_dvr_queue_for_test(84).unwrap();
+        demux
+            .write_playback_dvr_queue_bytes_for_test(84, &valid[100..120])
+            .unwrap();
+        demux.flush_dvr_runtime(84).unwrap();
+
+        let snapshot = demux.dvr_snapshot(84).unwrap();
+        assert_eq!(snapshot.playback_stats, PlaybackStats::default());
+        assert_eq!(
+            snapshot.playback_flush_diagnostic,
+            PlaybackFlushDiagnostic {
+                flush_count: 1,
+                total_dropped_bytes: 120,
+                last_dropped_bytes: 120,
+                counter_saturated: false,
+            }
+        );
+    }
+
+    #[test]
+    fn playback_reconfigure_preserves_prefill_residual_and_stats() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(open_filter_runtime_with_queue(
+                92,
+                1,
+                FilterOpenType::TsRaw,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                92,
+                FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: true,
+                    record_index: None,
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(92).unwrap();
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                93,
+                1,
+                DvrKind::Playback,
+                8192,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(93).unwrap();
+        demux.start_dvr_runtime(93).unwrap();
+
+        let first = raw_ts_packet(0x0100, 0, &[1, 2, 3, 4]);
+        let second = raw_ts_packet(0x0100, 1, &[5, 6, 7, 8]);
+        demux
+            .write_playback_dvr_queue_bytes_for_test(
+                93,
+                &[first.to_vec(), second[..100].to_vec()].concat(),
+            )
+            .unwrap();
+        assert_eq!(
+            demux
+                .consume_playback_dvr_queue_for_test(93)
+                .unwrap()
+                .completed_packets,
+            1
+        );
+        let before = demux.dvr_snapshot(93).unwrap();
+        assert_eq!(before.playback_stats.injected_packets, 1);
+        demux.stop_dvr_runtime(93).unwrap();
+
+        demux.configure_dvr_runtime(93).unwrap();
+        let reconfigured = demux.dvr_snapshot(93).unwrap();
+        assert_eq!(reconfigured.generation, before.generation + 1);
+        assert_eq!(reconfigured.playback_stats, before.playback_stats);
+        demux.start_dvr_runtime(93).unwrap();
+        demux
+            .write_playback_dvr_queue_bytes_for_test(93, &second[100..])
+            .unwrap();
+        assert_eq!(
+            demux
+                .consume_playback_dvr_queue_for_test(93)
+                .unwrap()
+                .completed_packets,
+            1
+        );
+        assert_eq!(
+            demux.dvr_snapshot(93).unwrap().playback_stats,
+            PlaybackStats {
+                injected_bytes: 376,
+                injected_packets: 2,
+                malformed_packets: 0,
+                dropped_bytes: 0,
+                counter_saturated: false,
+            }
+        );
+        assert_eq!(
+            demux.snapshot_filter_queue_bytes_for_test(92).unwrap(),
+            [first.to_vec(), second.to_vec()].concat()
+        );
+    }
+
+    #[test]
+    fn playback_flush_preserves_record_output_offset_and_record_fmq() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(open_filter_runtime_with_queue(
+                85,
+                1,
+                FilterOpenType::TsRecord,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                85,
+                FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: false,
+                    record_index: Some(RecordIndexSettings {
+                        ts_index_mask: DEMUX_TS_INDEX_FIRST_PACKET,
+                        sc_index_type: RECORD_SC_TYPE_NONE,
+                        sc_index_mask: 0,
+                    }),
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(85).unwrap();
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                86,
+                1,
+                DvrKind::Record,
+                8192,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(86).unwrap();
+        demux.attach_dvr_filter(86, 85).unwrap();
+        demux.start_dvr_runtime(86).unwrap();
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                87,
+                1,
+                DvrKind::Playback,
+                8192,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(87).unwrap();
+        demux.start_dvr_runtime(87).unwrap();
+
+        let first = raw_ts_packet(0x0100, 0, &[1, 2, 3, 4]);
+        demux
+            .write_playback_dvr_queue_bytes_for_test(87, &first)
+            .unwrap();
+        let first_report = demux.consume_playback_dvr_queue_for_test(87).unwrap();
+        assert!(first_report.packet_reports[0]
+            .generated_events
+            .iter()
+            .any(|event| matches!(
+                event,
+                PipelineGeneratedEvent::RecordIndex { filter_id: 85, data }
+                    if data.byte_number == 0
+            )));
+
+        demux.flush_dvr_runtime(87).unwrap();
+        let second = raw_ts_packet(0x0100, 0, &[5, 6, 7, 8]);
+        demux
+            .write_playback_dvr_queue_bytes_for_test(87, &second)
+            .unwrap();
+        let second_report = demux.consume_playback_dvr_queue_for_test(87).unwrap();
+        assert!(second_report.packet_reports[0]
+            .generated_events
+            .iter()
+            .any(|event| matches!(
+                event,
+                PipelineGeneratedEvent::RecordIndex { filter_id: 85, data }
+                    if data.byte_number == 188
+            )));
+        assert_eq!(
+            demux.read_record_dvr_queue_bytes_for_test(86).unwrap(),
+            [first.to_vec(), second.to_vec()].concat()
+        );
     }
 
     #[test]
@@ -900,7 +1839,12 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: Some(0x0100),
                     raw: false,
-                    record_index: None,
+                    record_index: Some(RecordIndexSettings {
+                        ts_index_mask: DEMUX_TS_INDEX_FIRST_PACKET
+                            | DEMUX_TS_INDEX_PAYLOAD_UNIT_START,
+                        sc_index_type: RECORD_SC_TYPE_NONE,
+                        sc_index_mask: 0,
+                    }),
                 },
             )
             .unwrap();
@@ -919,18 +1863,45 @@ mod tests {
         demux.attach_dvr_filter(37, 36).unwrap();
         demux.attach_dvr_filter(37, 36).unwrap();
         assert_eq!(demux.dvr(37).unwrap().attached_record_filters().len(), 1);
+        assert_eq!(
+            demux.dvr(37).unwrap().record_filter_relation_generation(),
+            1
+        );
 
         demux.start_dvr_runtime(37).unwrap();
         assert_eq!(demux.dvr(37).unwrap().state(), DvrRuntimeState::Started);
 
         let packet = raw_ts_packet(0x0100, 0, &[0x01, 0x02, 0x03, 0x04]);
-        let report = demux.push_ts_packet_from_origin(&packet, TsInputOrigin::Frontend);
+        let report = demux.push_ts_packet_from_origin(&packet, TsInputOrigin::frontend(1));
         assert!(report
             .delivery_actions
             .contains(&crate::packet_pipeline::PipelineDeliveryAction::DvrMirror { dvr_id: 36 }));
+        assert!(report.generated_events.iter().any(|event| matches!(
+            event,
+            PipelineGeneratedEvent::RecordIndex { filter_id: 36, data }
+                if data.byte_number == 0
+                    && data.ts_index_mask
+                        == (DEMUX_TS_INDEX_FIRST_PACKET | DEMUX_TS_INDEX_PAYLOAD_UNIT_START)
+        )));
+        assert!(demux.flush_dvr_runtime(37).is_err());
         assert_eq!(
             demux.read_record_dvr_queue_bytes_for_test(37).unwrap(),
             packet.to_vec()
+        );
+        demux.stop_dvr_runtime(37).unwrap();
+        demux.flush_dvr_runtime(37).unwrap();
+        demux.start_dvr_runtime(37).unwrap();
+        let second_packet = raw_ts_packet(0x0100, 1, &[0x05, 0x06, 0x07, 0x08]);
+        let after_flush =
+            demux.push_ts_packet_from_origin(&second_packet, TsInputOrigin::frontend(1));
+        assert!(after_flush.generated_events.iter().any(|event| matches!(
+            event,
+            PipelineGeneratedEvent::RecordIndex { filter_id: 36, data }
+                if data.byte_number == 188
+        )));
+        assert_eq!(
+            demux.read_record_dvr_queue_bytes_for_test(37).unwrap(),
+            second_packet.to_vec()
         );
 
         demux.stop_dvr_runtime(37).unwrap();
@@ -943,6 +1914,329 @@ mod tests {
         demux.detach_dvr_filter(37, 36).unwrap();
         demux.detach_dvr_filter(37, 36).unwrap();
         assert!(demux.dvr(37).unwrap().attached_record_filters().is_empty());
+        assert_eq!(
+            demux.dvr(37).unwrap().record_filter_relation_generation(),
+            2
+        );
+    }
+
+    #[test]
+    fn record_relation_precommit_failure_keeps_old_relation_and_generation() {
+        use crate::runtime::demux::RecordDvrFilterRelationCommitFault;
+
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                136,
+                1,
+                PipelineOpenKind::Record,
+                None,
+            ))
+            .unwrap();
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                137,
+                1,
+                crate::runtime::DvrKind::Record,
+                8192,
+                true,
+            ))
+            .unwrap();
+        demux.inject_next_record_filter_relation_commit_fault(
+            RecordDvrFilterRelationCommitFault::RejectBeforeCommit,
+        );
+
+        let error = demux.attach_dvr_filter(137, 136).unwrap_err();
+        assert_eq!(error.kind, DemuxRuntimeErrorKind::PipelineFailed);
+        let dvr = demux.dvr(137).unwrap();
+        assert!(dvr.attached_record_filters().is_empty());
+        assert_eq!(dvr.record_filter_relation_generation(), 0);
+        assert_eq!(
+            dvr.record_filter_relation_state(),
+            RecordDvrFilterRelationState::Healthy
+        );
+
+        demux.attach_dvr_filter(137, 136).unwrap();
+        assert_eq!(
+            demux.dvr(137).unwrap().record_filter_relation_generation(),
+            1
+        );
+    }
+
+    #[test]
+    fn record_relation_commit_unknown_quarantines_only_the_relation_route() {
+        use crate::runtime::demux::RecordDvrFilterRelationCommitFault;
+
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                138,
+                1,
+                PipelineOpenKind::Record,
+                None,
+            ))
+            .unwrap();
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                139,
+                1,
+                crate::runtime::DvrKind::Record,
+                8192,
+                true,
+            ))
+            .unwrap();
+        demux.inject_next_record_filter_relation_commit_fault(
+            RecordDvrFilterRelationCommitFault::UnknownAfterApply,
+        );
+
+        let error = demux.attach_dvr_filter(139, 138).unwrap_err();
+        assert_eq!(error.kind, DemuxRuntimeErrorKind::RelationCommitUnknown);
+        let dvr = demux.dvr(139).unwrap();
+        assert_eq!(
+            dvr.record_filter_relation_state(),
+            RecordDvrFilterRelationState::Quarantined
+        );
+        assert_eq!(demux.state(), DemuxRuntimeState::Open);
+        assert_eq!(
+            demux.detach_dvr_filter(139, 138).unwrap_err().kind,
+            DemuxRuntimeErrorKind::InvalidState
+        );
+    }
+
+    #[test]
+    fn record_relation_generation_exhaustion_never_reuses_generation() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                140,
+                1,
+                PipelineOpenKind::Record,
+                None,
+            ))
+            .unwrap();
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                141,
+                1,
+                crate::runtime::DvrKind::Record,
+                8192,
+                true,
+            ))
+            .unwrap();
+        let dvr = demux.dvr_mut(141).unwrap();
+        let mut snapshot = dvr.snapshot();
+        snapshot.record_filter_relation_generation = u64::MAX;
+        dvr.restore(snapshot);
+
+        let error = demux.attach_dvr_filter(141, 140).unwrap_err();
+        assert_eq!(error.kind, DemuxRuntimeErrorKind::GenerationExhausted);
+        let dvr = demux.dvr(141).unwrap();
+        assert!(dvr.attached_record_filters().is_empty());
+        assert_eq!(dvr.record_filter_relation_generation(), u64::MAX);
+        assert_eq!(
+            dvr.record_filter_relation_state(),
+            RecordDvrFilterRelationState::Quarantined
+        );
+    }
+
+    #[test]
+    fn record_dvr_writes_union_match_once_and_keeps_per_filter_indexes() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        for filter_id in [38, 39] {
+            demux
+                .register_filter(open_filter_runtime_with_queue(
+                    filter_id,
+                    1,
+                    FilterOpenType::TsRecord,
+                    None,
+                ))
+                .unwrap();
+            demux
+                .configure_filter_runtime(
+                    filter_id,
+                    FilterPipelineConfig {
+                        tpid: Some(0x0100),
+                        raw: false,
+                        record_index: Some(RecordIndexSettings {
+                            ts_index_mask: DEMUX_TS_INDEX_FIRST_PACKET,
+                            sc_index_type: RECORD_SC_TYPE_NONE,
+                            sc_index_mask: 0,
+                        }),
+                    },
+                )
+                .unwrap();
+            demux.start_filter_runtime(filter_id).unwrap();
+        }
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                40,
+                1,
+                crate::runtime::DvrKind::Record,
+                8192,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(40).unwrap();
+        demux.attach_dvr_filter(40, 38).unwrap();
+        demux.attach_dvr_filter(40, 39).unwrap();
+        demux.start_dvr_runtime(40).unwrap();
+
+        let packet = raw_ts_packet(0x0100, 0, &[0x01, 0x02, 0x03, 0x04]);
+        let report = demux.push_ts_packet_from_origin(&packet, TsInputOrigin::frontend(1));
+
+        assert_eq!(
+            demux.read_record_dvr_queue_bytes_for_test(40).unwrap(),
+            packet.to_vec()
+        );
+        for filter_id in [38, 39] {
+            assert!(report.generated_events.iter().any(|event| matches!(
+                event,
+                PipelineGeneratedEvent::RecordIndex {
+                    filter_id: event_filter_id,
+                    data,
+                } if *event_filter_id == filter_id && data.byte_number == 0
+            )));
+        }
+    }
+
+    #[test]
+    fn record_index_skips_counter_collision_but_keeps_committed_byte_position() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(open_filter_runtime_with_queue(
+                88,
+                1,
+                FilterOpenType::TsRecord,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                88,
+                FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: false,
+                    record_index: Some(RecordIndexSettings {
+                        ts_index_mask: DEMUX_TS_INDEX_FIRST_PACKET
+                            | DEMUX_TS_INDEX_PAYLOAD_UNIT_START,
+                        sc_index_type: RECORD_SC_TYPE_NONE,
+                        sc_index_mask: 0,
+                    }),
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(88).unwrap();
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                89,
+                1,
+                DvrKind::Record,
+                8192,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(89).unwrap();
+        demux.attach_dvr_filter(89, 88).unwrap();
+        demux.start_dvr_runtime(89).unwrap();
+
+        let first = raw_ts_packet(0x0100, 0, &[1, 2, 3, 4]);
+        let first_report =
+            demux.push_ts_packet_from_origin(&first, TsInputOrigin::frontend(1));
+        assert!(first_report.generated_events.iter().any(|event| matches!(
+            event,
+            PipelineGeneratedEvent::RecordIndex { filter_id: 88, data }
+                if data.byte_number == 0
+        )));
+
+        let mut collision = first;
+        collision[20] ^= 0x01;
+        let collision_report =
+            demux.push_ts_packet_from_origin(&collision, TsInputOrigin::frontend(1));
+        assert!(collision_report.generated_events.iter().all(|event| !matches!(
+            event,
+            PipelineGeneratedEvent::RecordIndex { filter_id: 88, .. }
+        )));
+
+        let third = raw_ts_packet(0x0100, 1, &[5, 6, 7, 8]);
+        let third_report =
+            demux.push_ts_packet_from_origin(&third, TsInputOrigin::frontend(1));
+        assert!(third_report.generated_events.iter().any(|event| matches!(
+            event,
+            PipelineGeneratedEvent::RecordIndex { filter_id: 88, data }
+                if data.byte_number == 376
+        )));
+        assert_eq!(
+            demux.read_record_dvr_queue_bytes_for_test(89).unwrap(),
+            [first.to_vec(), collision.to_vec(), third.to_vec()].concat()
+        );
+    }
+
+    #[test]
+    fn record_index_parses_adaptation_only_and_keyless_scrambled_commits() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(open_filter_runtime_with_queue(
+                90,
+                1,
+                FilterOpenType::TsRecord,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                90,
+                FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: false,
+                    record_index: Some(RecordIndexSettings {
+                        ts_index_mask: DEMUX_TS_INDEX_PCR
+                            | DEMUX_TS_INDEX_CHANGE_TO_EVEN_SCRAMBLED,
+                        sc_index_type: RECORD_SC_TYPE_NONE,
+                        sc_index_mask: 0,
+                    }),
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(90).unwrap();
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                91,
+                1,
+                DvrKind::Record,
+                8192,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(91).unwrap();
+        demux.attach_dvr_filter(91, 90).unwrap();
+        demux.start_dvr_runtime(91).unwrap();
+
+        let adaptation_only = pcr_packet(0x0100, 0, 90_000);
+        let adaptation_report =
+            demux.push_ts_packet_from_origin(&adaptation_only, TsInputOrigin::frontend(1));
+        assert!(adaptation_report.generated_events.iter().any(|event| matches!(
+            event,
+            PipelineGeneratedEvent::RecordIndex { filter_id: 90, data }
+                if data.byte_number == 0 && data.ts_index_mask == DEMUX_TS_INDEX_PCR
+        )));
+
+        let mut scrambled = raw_ts_packet(0x0100, 0, &[1, 2, 3, 4]);
+        scrambled[3] = 0x90;
+        let scrambled_report =
+            demux.push_ts_packet_from_origin(&scrambled, TsInputOrigin::frontend(1));
+        assert!(scrambled_report
+            .assembly_suppression_reasons
+            .contains(&PipelineAssemblySuppressionReason::KeylessScrambledWithoutDescrambler));
+        assert!(scrambled_report.generated_events.iter().any(|event| matches!(
+            event,
+            PipelineGeneratedEvent::RecordIndex { filter_id: 90, data }
+                if data.byte_number == 188
+                    && data.ts_index_mask == DEMUX_TS_INDEX_CHANGE_TO_EVEN_SCRAMBLED
+        )));
+        assert_eq!(
+            demux.read_record_dvr_queue_bytes_for_test(91).unwrap(),
+            [adaptation_only.to_vec(), scrambled.to_vec()].concat()
+        );
     }
 
     #[test]
@@ -962,7 +2256,11 @@ mod tests {
                 FilterPipelineConfig {
                     tpid: Some(0x0100),
                     raw: false,
-                    record_index: None,
+                    record_index: Some(RecordIndexSettings {
+                        ts_index_mask: DEMUX_TS_INDEX_FIRST_PACKET,
+                        sc_index_type: RECORD_SC_TYPE_NONE,
+                        sc_index_mask: 0,
+                    }),
                 },
             )
             .unwrap();
@@ -981,7 +2279,7 @@ mod tests {
         demux.start_dvr_runtime(37).unwrap();
         let packet = raw_ts_packet(0x0100, 0, &[0x01, 0x02, 0x03, 0x04]);
 
-        let report = demux.push_ts_packet_from_origin(&packet, TsInputOrigin::Frontend);
+        let report = demux.push_ts_packet_from_origin(&packet, TsInputOrigin::frontend(1));
 
         assert!(report.diagnostics.contains(
             &crate::packet_pipeline::PipelineDiagnostic::RecordDvrMirrorOverflow {
@@ -991,6 +2289,13 @@ mod tests {
             }
         ));
         assert!(demux.dvr(37).unwrap().snapshot().pending_overflow);
+        assert!(report.generated_events.iter().all(|event| !matches!(
+            event,
+            PipelineGeneratedEvent::RecordIndex { .. }
+        )));
+        demux.stop_dvr_runtime(37).unwrap();
+        demux.flush_dvr_runtime(37).unwrap();
+        assert!(!demux.dvr(37).unwrap().snapshot().pending_overflow);
     }
 
     #[test]
@@ -998,17 +2303,25 @@ mod tests {
         let mut demux = DemuxRuntime::new(1, 1);
         let malformed = [0xffu8; 187];
 
-        let report = demux.push_ts_packet_from_origin(&malformed, TsInputOrigin::Frontend);
+        let report = demux.push_ts_packet_from_origin(&malformed, TsInputOrigin::frontend(1));
 
         assert_eq!(report.accepted_packets, 0);
         assert_eq!(report.dropped_packets, 1);
         assert_eq!(report.malformed_packets, 1);
+        assert_eq!(
+            demux
+                .pipeline_diagnostic_counters()
+                .malformed_ts_packets,
+            1
+        );
         assert!(report
             .drop_reasons
             .contains(&crate::packet_pipeline::PipelineDropReason::MalformedPacket));
-        assert!(report
-            .diagnostics
-            .contains(&crate::packet_pipeline::PipelineDiagnostic::MalformedTsPacket));
+        assert!(report.diagnostics.contains(
+            &crate::packet_pipeline::PipelineDiagnostic::MalformedTsPacket {
+                reason: TsPacketValidationError::WrongLength,
+            }
+        ));
     }
 
     #[test]
@@ -1138,7 +2451,15 @@ mod tests {
         demux
             .dvr_mut(420)
             .unwrap()
-            .configure_status_reporting(0b1111, 0, 188);
+            .configure_settings(0b1111, 0, 188, DvrDataFormat::Ts, 188);
+        let record_settings = demux.dvr_snapshot(420).unwrap();
+        assert_eq!(record_settings.data_format, Some(DvrDataFormat::Ts));
+        assert_eq!(record_settings.packet_size, Some(188));
+        assert_eq!(demux.dvr_status_event(420).unwrap(), None);
+        demux
+            .dvr_mut(420)
+            .unwrap()
+            .configure_settings(0b1111, 1, 187, DvrDataFormat::Ts, 188);
         assert_eq!(
             demux.dvr_status_event(420).unwrap(),
             Some(crate::runtime::DvrStatusEvent::RecordLowWater)
@@ -1162,10 +2483,13 @@ mod tests {
         demux
             .dvr_mut(421)
             .unwrap()
-            .configure_status_reporting(0b1111, 47, 141);
+            .configure_settings(0b1111, 47, 141, DvrDataFormat::Ts, 188);
+        let playback_settings = demux.dvr_snapshot(421).unwrap();
+        assert_eq!(playback_settings.data_format, Some(DvrDataFormat::Ts));
+        assert_eq!(playback_settings.packet_size, Some(188));
         assert_eq!(
             demux.dvr_status_event(421).unwrap(),
-            Some(crate::runtime::DvrStatusEvent::PlaybackSpaceFull)
+            Some(crate::runtime::DvrStatusEvent::PlaybackSpaceAlmostEmpty)
         );
         assert_eq!(
             demux
@@ -1175,7 +2499,33 @@ mod tests {
         );
         assert_eq!(
             demux.dvr_status_event(421).unwrap(),
-            Some(crate::runtime::DvrStatusEvent::PlaybackSpaceEmpty)
+            Some(crate::runtime::DvrStatusEvent::PlaybackSpaceFull)
+        );
+    }
+
+    #[test]
+    fn masked_record_event_does_not_fall_through_to_watermark_in_same_evaluation() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                422,
+                1,
+                crate::runtime::DvrKind::Record,
+                188,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(422).unwrap();
+        demux
+            .dvr_mut(422)
+            .unwrap()
+            .configure_settings(0b0010, 1, 187, DvrDataFormat::Ts, 188);
+        demux.dvr_mut(422).unwrap().mark_pending_overflow();
+
+        assert_eq!(demux.dvr_status_event(422).unwrap(), None);
+        assert_eq!(
+            demux.dvr_status_event(422).unwrap(),
+            Some(crate::runtime::DvrStatusEvent::RecordLowWater)
         );
     }
 
@@ -1503,6 +2853,87 @@ mod tests {
     }
 
     #[test]
+    fn filter_reconfigure_preserves_compatible_source_binding() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        for filter_id in [60, 61] {
+            demux
+                .register_filter(DemuxRuntime::open_filter_runtime(
+                    filter_id,
+                    1,
+                    PipelineOpenKind::Raw,
+                    Some(FilterPipelineConfig {
+                        tpid: Some(0x0100),
+                        raw: true,
+                        record_index: None,
+                    }),
+                ))
+                .unwrap();
+            demux.create_filter_queue(filter_id).unwrap();
+        }
+        demux.set_filter_source_non_null(61, 60).1.unwrap();
+
+        let (_, result) = FilterConfigureTxn::new(61).configure(
+            &mut demux,
+            PipelineOpenKind::Raw,
+            FilterPipelineConfig {
+                tpid: Some(0x0100),
+                raw: false,
+                record_index: None,
+            },
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(
+            demux.filter(61).unwrap().snapshot().source,
+            FilterSource::SourceFilter {
+                source_filter_id: 60,
+                source_filter_generation: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn filter_reconfigure_rejects_incompatible_source_pid_without_mutation() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        for filter_id in [62, 63] {
+            demux
+                .register_filter(DemuxRuntime::open_filter_runtime(
+                    filter_id,
+                    1,
+                    PipelineOpenKind::Raw,
+                    Some(FilterPipelineConfig {
+                        tpid: Some(0x0100),
+                        raw: true,
+                        record_index: None,
+                    }),
+                ))
+                .unwrap();
+            demux.create_filter_queue(filter_id).unwrap();
+        }
+        demux.set_filter_source_non_null(63, 62).1.unwrap();
+        let before = demux.filter(63).unwrap().snapshot();
+
+        let (txn, result) = FilterConfigureTxn::new(63).configure(
+            &mut demux,
+            PipelineOpenKind::Raw,
+            FilterPipelineConfig {
+                tpid: Some(0x0101),
+                raw: false,
+                record_index: None,
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            txn.outcome(),
+            Some(FilterConfigureOutcome::Failed {
+                failed_step: FilterConfigureStep::ValidateSettings,
+            })
+        );
+        assert_eq!(demux.filter(63).unwrap().snapshot(), before);
+    }
+
+    #[test]
     fn started_filter_rejects_reconfigure_and_preserves_state() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
@@ -1620,7 +3051,7 @@ mod tests {
     }
 
     #[test]
-    fn av_stream_type_hint_is_stored_and_cleared_by_reconfigure() {
+    fn av_stream_type_hint_keeps_delivered_allocation_until_release() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
             .register_filter(DemuxRuntime::open_filter_runtime(
@@ -1740,7 +3171,9 @@ mod tests {
         assert!(demux.filter(19).unwrap().av_backing_present());
         assert!(demux.remove_filter_av_backing_for_test(19));
 
-        let error = demux.release_filter_av_handle(19, false, 0).unwrap_err();
+        let error = demux
+            .release_filter_av_handle(19, AvHandleReleaseDescriptor::Empty, 0)
+            .unwrap_err();
 
         assert_eq!(
             error.kind,
@@ -1749,7 +3182,7 @@ mod tests {
     }
 
     #[test]
-    fn av_configure_stream_type_stales_active_slots_and_keeps_backing_exported() {
+    fn av_configure_stream_type_keeps_delivered_slots_and_backing_exported() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
             .register_filter(DemuxRuntime::open_filter_runtime(
@@ -1788,12 +3221,12 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(demux.filter_av_active_slot_count_for_test(19), Some(0));
+        assert_eq!(demux.filter_av_active_slot_count_for_test(19), Some(1));
         assert_eq!(
             demux
-                .release_filter_av_handle(19, false, data_id.0)
+                .release_filter_av_handle(19, AvHandleReleaseDescriptor::Empty, data_id.0)
                 .unwrap(),
-            AvHandleReleaseOutcome::StaleReleaseAccepted { data_id }
+            AvHandleReleaseOutcome::SlotReleased { data_id }
         );
         assert!(matches!(
             demux.allocate_filter_av_payload_for_test(19, 188).unwrap(),
@@ -1802,7 +3235,7 @@ mod tests {
     }
 
     #[test]
-    fn av_flush_stales_active_slots_without_dropping_shared_handle() {
+    fn av_flush_keeps_delivered_slots_until_explicit_release() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
             .register_filter(DemuxRuntime::open_filter_runtime(
@@ -1832,12 +3265,12 @@ mod tests {
 
         demux.flush_filter_runtime(20).unwrap();
 
-        assert_eq!(demux.filter_av_active_slot_count_for_test(20), Some(0));
+        assert_eq!(demux.filter_av_active_slot_count_for_test(20), Some(1));
         assert_eq!(
             demux
-                .release_filter_av_handle(20, false, data_id.0)
+                .release_filter_av_handle(20, AvHandleReleaseDescriptor::Empty, data_id.0)
                 .unwrap(),
-            AvHandleReleaseOutcome::StaleReleaseAccepted { data_id }
+            AvHandleReleaseOutcome::SlotReleased { data_id }
         );
         assert!(matches!(
             demux.allocate_filter_av_payload_for_test(20, 188).unwrap(),
@@ -1846,7 +3279,7 @@ mod tests {
     }
 
     #[test]
-    fn closed_av_filter_release_rejects_unknown_positive_data_id() {
+    fn closed_av_filter_release_accepts_active_token_once() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
             .register_filter(DemuxRuntime::open_filter_runtime(
@@ -1880,16 +3313,32 @@ mod tests {
         filter.restore(snapshot);
 
         assert_eq!(
-            demux.release_filter_av_handle(21, false, 999).unwrap(),
+            demux
+                .release_filter_av_handle(21, AvHandleReleaseDescriptor::Empty, 999)
+                .unwrap(),
             AvHandleReleaseOutcome::UnknownDataId
         );
         assert_eq!(
             demux
-                .release_filter_av_handle(21, false, stale_data_id.0)
+                .release_filter_av_handle(
+                    21,
+                    AvHandleReleaseDescriptor::Empty,
+                    stale_data_id.0,
+                )
                 .unwrap(),
-            AvHandleReleaseOutcome::StaleReleaseAfterClose {
+            AvHandleReleaseOutcome::SlotReleased {
                 data_id: stale_data_id
             }
+        );
+        assert_eq!(
+            demux
+                .release_filter_av_handle(
+                    21,
+                    AvHandleReleaseDescriptor::Empty,
+                    stale_data_id.0,
+                )
+                .unwrap(),
+            AvHandleReleaseOutcome::UnknownDataId
         );
     }
 
@@ -2073,7 +3522,7 @@ mod tests {
             .unwrap();
 
         let packet = raw_ts_packet(0x0030, 0, &[1, 2, 3, 4]);
-        let report = demux.push_ts_packet_from_origin(&packet, TsInputOrigin::Frontend);
+        let report = demux.push_ts_packet_from_origin(&packet, TsInputOrigin::frontend(1));
 
         assert_eq!(report.accepted_packets, 1);
         assert!(report
@@ -2113,10 +3562,10 @@ mod tests {
         demux.start_filter_runtime(22).unwrap();
 
         let partial_pes = pes_start_packet(0x0100, 0, &[0x00, 0x00, 0x01, 0xe0, 0x00]);
-        let report = demux.push_ts_packet_from_origin(&partial_pes, TsInputOrigin::Frontend);
+        let report = demux.push_ts_packet_from_origin(&partial_pes, TsInputOrigin::frontend(1));
         assert_eq!(report.accepted_packets, 1);
         assert!(demux.pipeline().pes_assemblers.contains_key(&(
-            TsInputOrigin::Frontend,
+            TsInputOrigin::frontend(1),
             packet_pid(0x0100),
             22
         )));
@@ -2130,10 +3579,70 @@ mod tests {
         );
         assert!(demux.queue_exists(22));
         assert!(!demux.pipeline().pes_assemblers.contains_key(&(
-            TsInputOrigin::Frontend,
+            TsInputOrigin::frontend(1),
             packet_pid(0x0100),
             22
         )));
+    }
+
+    #[test]
+    fn explicit_pes_stream_id_drops_other_stream_ids_before_delivery() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime(
+                23,
+                1,
+                PipelineOpenKind::Pes,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime_with_pes_stream_id(
+                23,
+                FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: false,
+                    record_index: None,
+                },
+                Some(0xe1),
+            )
+            .unwrap();
+        demux.start_filter_runtime(23).unwrap();
+
+        let e0_pes = pes_start_packet(
+            0x0100,
+            0,
+            &[0x00, 0x00, 0x01, 0xe0, 0x00, 0x04, 0x80, 0x00, 0x00, 0xde],
+        );
+        let report = demux.push_ts_packet_from_origin(&e0_pes, TsInputOrigin::frontend(1));
+
+        assert!(!report.generated_events.iter().any(|event| matches!(
+            event,
+            packet_pipeline::PipelineGeneratedEvent::PesPacketReady { filter_id: 23, .. }
+        )));
+        assert!(demux
+            .snapshot_filter_queue_bytes_for_test(23)
+            .unwrap()
+            .is_empty());
+
+        let e1_pes = pes_start_packet(
+            0x0100,
+            1,
+            &[0x00, 0x00, 0x01, 0xe1, 0x00, 0x04, 0x80, 0x00, 0x00, 0xad],
+        );
+        let report = demux.push_ts_packet_from_origin(&e1_pes, TsInputOrigin::frontend(1));
+        assert!(report.generated_events.iter().any(|event| matches!(
+            event,
+            packet_pipeline::PipelineGeneratedEvent::PesPacketReady {
+                filter_id: 23,
+                packet,
+                ..
+            } if packet.stream_id == 0xe1
+        )));
+        assert!(!demux
+            .snapshot_filter_queue_bytes_for_test(23)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -2160,10 +3669,10 @@ mod tests {
         demux.start_filter_runtime(23).unwrap();
 
         let partial_pes = pes_start_packet(0x0100, 0, &[0x00, 0x00, 0x01, 0xe0, 0x00]);
-        let report = demux.push_ts_packet_from_origin(&partial_pes, TsInputOrigin::Frontend);
+        let report = demux.push_ts_packet_from_origin(&partial_pes, TsInputOrigin::frontend(1));
         assert_eq!(report.accepted_packets, 1);
         assert!(demux.pipeline().pes_assemblers.contains_key(&(
-            TsInputOrigin::Frontend,
+            TsInputOrigin::frontend(1),
             packet_pid(0x0100),
             23
         )));
@@ -2175,7 +3684,7 @@ mod tests {
         assert!(demux.filter(23).is_none());
         assert!(!demux.queue_exists(23));
         assert!(!demux.pipeline().pes_assemblers.contains_key(&(
-            TsInputOrigin::Frontend,
+            TsInputOrigin::frontend(1),
             packet_pid(0x0100),
             23
         )));
@@ -2273,11 +3782,11 @@ mod tests {
     }
 
     #[test]
-    fn generation_boundary_overflow_marks_demux_failed() {
+    fn generation_boundary_overflow_quarantines_demux() {
         let mut demux = DemuxRuntime::new(1, u64::MAX);
-        let result = demux.apply_generation_boundary(PipelineBoundaryReason::TuneStart);
+        let result = demux.apply_stream_boundary(PipelineBoundaryReason::TuneStart);
         assert!(result.is_err());
-        assert_eq!(demux.state(), DemuxRuntimeState::Failed);
+        assert_eq!(demux.state(), DemuxRuntimeState::Quarantined);
     }
 
     #[test]
@@ -2325,10 +3834,10 @@ mod tests {
         demux
             .pipeline_mut()
             .section_assembler_generations
-            .insert((TsInputOrigin::Frontend, pid), u64::MAX);
+            .insert((TsInputOrigin::frontend(1), pid), u64::MAX);
 
         let packet = raw_ts_packet(0x0100, 0, &[0x00, 0x00, 0x01, 0x02]);
-        let report = demux.push_ts_packet_from_origin(&packet, TsInputOrigin::Frontend);
+        let report = demux.push_ts_packet_from_origin(&packet, TsInputOrigin::frontend(1));
 
         assert!(report.diagnostics.contains(
             &packet_pipeline::PipelineDiagnostic::SectionGenerationOverflow {
@@ -2375,10 +3884,10 @@ mod tests {
         demux
             .pipeline_mut()
             .pes_assembler_generations
-            .insert((TsInputOrigin::Frontend, pid), u64::MAX);
+            .insert((TsInputOrigin::frontend(1), pid), u64::MAX);
 
         let packet = pes_start_packet(0x0100, 0, &[0x00, 0x00, 0x01, 0xe0, 0x00]);
-        let report = demux.push_ts_packet_from_origin(&packet, TsInputOrigin::Frontend);
+        let report = demux.push_ts_packet_from_origin(&packet, TsInputOrigin::frontend(1));
 
         assert!(report.diagnostics.contains(
             &packet_pipeline::PipelineDiagnostic::PesGenerationOverflow {
@@ -2403,7 +3912,7 @@ mod tests {
     fn generation_boundary_resets_pipeline_and_bumps_generation() {
         let mut demux = DemuxRuntime::new(1, 7);
         let report = demux
-            .apply_generation_boundary(PipelineBoundaryReason::TuneStart)
+            .apply_stream_boundary(PipelineBoundaryReason::TuneStart)
             .unwrap();
         assert_eq!(report.next_generation, DemuxStreamGeneration(8));
         assert_eq!(demux.generation(), 8);

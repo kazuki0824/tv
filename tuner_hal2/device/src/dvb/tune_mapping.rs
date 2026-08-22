@@ -10,7 +10,7 @@ use maleicacid_tuner_hal2_common::{
 
 use crate::dvb::abi::{
     DtvProperty, DTV_BANDWIDTH_HZ, DTV_DELIVERY_SYSTEM, DTV_FREQUENCY, DTV_STREAM_ID, DTV_TUNE,
-    SYS_DVBS2, SYS_ISDBS, SYS_ISDBT,
+    NO_STREAM_ID_FILTER, SYS_DVBS2, SYS_ISDBS, SYS_ISDBT,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -117,8 +117,13 @@ pub fn tune_property_pairs(request: &DvbTuneRequest) -> Result<DvbTunePropertyPa
     if let Some(bandwidth_hz) = bandwidth_hz {
         pairs.push((DTV_BANDWIDTH_HZ, bandwidth_hz));
     }
-    if let Some(stream_id) = validate_stream_id(request)? {
-        pairs.push((DTV_STREAM_ID, u32::from(stream_id)));
+    match validate_stream_id(request)? {
+        Some(stream_id) => pairs.push((DTV_STREAM_ID, u32::from(stream_id))),
+        None if matches!(request.system, Some(FrontendSystem::IsdbS)) => {
+            // 前回の selector property を確実に消去する。
+            pairs.push((DTV_STREAM_ID, NO_STREAM_ID_FILTER));
+        }
+        None => {}
     }
     pairs.push((DTV_TUNE, 0));
     Ok(DvbTunePropertyPairs { pairs })
@@ -129,13 +134,9 @@ fn normalize_stream_id_from_common(
 ) -> Result<(Option<u16>, Option<FrontendStreamIdKind>), HalError> {
     let Some(raw_stream_id) = request.stream_id else {
         if matches!(request.system, FrontendSystem::IsdbS) {
-            if is_japan_bs_if_frequency_hz(request.frequency) {
-                return Err(HalError::invalid_argument(
-                    HalInvalidArgumentKind::MissingStreamSelector,
-                    "BS frequency-only tune is rejected",
-                ));
-            }
-            if is_japan_cs110_if_frequency_hz(request.frequency) {
+            if is_japan_bs_if_frequency_hz(request.frequency)
+                || is_japan_cs110_if_frequency_hz(request.frequency)
+            {
                 return Ok((None, None));
             }
             return Err(HalError::invalid_argument(
@@ -287,6 +288,8 @@ mod tests {
             stream_id_kind: Some(FrontendStreamIdKind::RelativeStreamNumber),
             bandwidth_hz: None,
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         assert!(normalized_tune_request_from_common(&common).is_err());
     }
@@ -301,8 +304,39 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: None,
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         let req = normalized_tune_request_from_common(&common).unwrap();
         assert_eq!(req.stream_id, None);
+        assert!(
+            tune_property_pairs(&req)
+                .unwrap()
+                .pairs
+                .contains(&(DTV_STREAM_ID, NO_STREAM_ID_FILTER))
+        );
+    }
+
+    #[test]
+    fn bs_unspecified_selector_clears_dvb_stream_id_filter() {
+        let common = FrontendTuneRequest {
+            system: FrontendSystem::IsdbS,
+            frequency: 1_049_480_000,
+            end_frequency: None,
+            stream_id: None,
+            stream_id_kind: None,
+            bandwidth_hz: None,
+            symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
+        };
+        let req = normalized_tune_request_from_common(&common).unwrap();
+        assert_eq!(req.stream_id, None);
+        assert!(
+            tune_property_pairs(&req)
+                .unwrap()
+                .pairs
+                .contains(&(DTV_STREAM_ID, NO_STREAM_ID_FILTER))
+        );
     }
 }

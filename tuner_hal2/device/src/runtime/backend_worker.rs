@@ -2,16 +2,19 @@ use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use maleicacid_tuner_hal2_common::os_abi::{ioctl, last_errno};
 use maleicacid_tuner_hal2_common::{
-    compose_primary_cleanup_failure, FrontendBackendKind, FrontendDevicePath, FrontendTuneRequest,
-    HalError, HalErrorDetail, HalInternalKind, HalInvalidArgumentKind,
+    compose_primary_cleanup_failure, FrontendBackendKind, FrontendDevicePath,
+    FrontendIsdbtPartialReceptionRequirement, FrontendTuneRequest, HalError, HalErrorDetail,
+    HalInternalKind, HalInvalidArgumentKind,
 };
 
 use super::reader::{FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind};
+use super::thread_result_owner::{ThreadResultOwner, ThreadResultPoll};
 use super::tune_txn::{BackendTuneOps, BackendTuneOutcome, BackendTuneStep, BackendTuneTxn};
 use crate::dvb;
 use crate::dvb::abi::{
@@ -20,8 +23,9 @@ use crate::dvb::abi::{
 };
 use crate::px4;
 use crate::px4::abi::{
-    PtxFreq, ERRNO_EINVAL, ERRNO_ENOSYS, ERRNO_ENOTTY, PTXT_SET_LNB_VOLTAGE, PTX_DISABLE_LNB_POWER,
-    PTX_ENABLE_LNB_POWER, PTX_GET_CNR, PTX_SET_CHANNEL, PTX_SET_SYSTEM_MODE, PTX_START_STREAMING,
+    PtxFreq, ERRNO_EAGAIN, ERRNO_EINVAL, ERRNO_ENOSYS, ERRNO_ENOTTY, PTXT_SET_LNB_VOLTAGE,
+    PTX_DISABLE_LNB_POWER, PTX_ENABLE_LNB_POWER, PTX_GET_LOCK_STATUS,
+    PTX_GET_TMCC_PARTIAL_RECEPTION, PTX_SET_CHANNEL, PTX_SET_SYSTEM_MODE, PTX_START_STREAMING,
     PTX_STOP_STREAMING,
 };
 use crate::runtime::{FrontendSignalState, FrontendWorkerContext};
@@ -72,10 +76,17 @@ pub enum FrontendBackendSessionKind {
     Dvb { frontend_path: FrontendDevicePath },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrontendTmccPartialReceptionObservation {
+    Pending,
+    Available(bool),
+}
+
 pub struct FrontendBackendSession {
     kind: FrontendBackendSessionKind,
     file: File,
     initial_signal_state: FrontendSignalState,
+    partial_reception: FrontendIsdbtPartialReceptionRequirement,
 }
 
 impl core::fmt::Debug for FrontendBackendSession {
@@ -84,6 +95,7 @@ impl core::fmt::Debug for FrontendBackendSession {
             .field("kind", &self.kind)
             .field("fd", &self.file.as_raw_fd())
             .field("initial_signal_state", &self.initial_signal_state)
+            .field("partial_reception", &self.partial_reception)
             .finish()
     }
 }
@@ -149,6 +161,57 @@ impl FrontendBackendSession {
 
     pub fn initial_signal_state(&self) -> FrontendSignalState {
         self.initial_signal_state
+    }
+
+    pub fn partial_reception_requirement(&self) -> FrontendIsdbtPartialReceptionRequirement {
+        self.partial_reception
+    }
+
+    pub fn observe_signal_state(&self) -> Result<FrontendSignalState, HalError> {
+        match &self.kind {
+            FrontendBackendSessionKind::Px4 { control_path } => {
+                px4_signal_state_from_readback(read_px4_boolean(
+                    control_path,
+                    self.file.as_raw_fd(),
+                    PTX_GET_LOCK_STATUS,
+                    "PTX_GET_LOCK_STATUS",
+                ))
+            }
+            FrontendBackendSessionKind::Dvb { frontend_path } => {
+                let mut status: u32 = 0;
+                ioctl_ptr(
+                    "dvb",
+                    Some(frontend_path.as_path().to_path_buf()),
+                    self.file.as_raw_fd(),
+                    FE_READ_STATUS,
+                    &mut status,
+                    "FE_READ_STATUS",
+                )?;
+                if status & FE_HAS_LOCK != 0 {
+                    Ok(FrontendSignalState::Locked)
+                } else if status & FE_HAS_SIGNAL != 0 {
+                    Ok(FrontendSignalState::SignalDetected)
+                } else {
+                    Ok(FrontendSignalState::NoSignal)
+                }
+            }
+        }
+    }
+
+    pub fn observe_tmcc_partial_reception(
+        &self,
+    ) -> Result<FrontendTmccPartialReceptionObservation, HalError> {
+        let FrontendBackendSessionKind::Px4 { control_path } = &self.kind else {
+            return Err(HalError::Unsupported(
+                "TMCC partial reception readback is available only on px4",
+            ));
+        };
+        classify_tmcc_partial_reception_read(read_px4_boolean(
+            control_path,
+            self.file.as_raw_fd(),
+            PTX_GET_TMCC_PARTIAL_RECEPTION,
+            "PTX_GET_TMCC_PARTIAL_RECEPTION",
+        ))
     }
 
     pub fn open_live_reader(
@@ -221,6 +284,10 @@ pub struct FrontendBackendSubmitFailure {
 }
 
 impl FrontendBackendSubmitFailure {
+    pub fn indeterminate(generation: u64, error: HalError) -> Self {
+        frontend_backend_submit_thread_failure(generation, error)
+    }
+
     pub fn into_error(self) -> HalError {
         let Some(step) = self.step else {
             return self.error;
@@ -245,6 +312,349 @@ impl FrontendBackendSubmitFailure {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FrontendBackendSubmitDisposition {
+    Claim,
+    Abort,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum FrontendBackendSubmitReady {
+    Submitted,
+    Failed,
+}
+
+#[derive(Debug)]
+enum FrontendBackendSubmitThreadOutcome {
+    Claimed(FrontendBackendSession),
+    Failed(FrontendBackendSubmitFailure),
+    Aborted(Result<(), HalError>),
+}
+
+#[derive(Debug)]
+pub struct FrontendBackendSubmitTicket {
+    generation: u64,
+    ready: Receiver<FrontendBackendSubmitReady>,
+    disposition: SyncSender<FrontendBackendSubmitDisposition>,
+    owner: Option<ThreadResultOwner<FrontendBackendSubmitThreadOutcome>>,
+}
+
+#[derive(Debug)]
+pub enum FrontendBackendSubmitWait {
+    Completed(Result<FrontendBackendSession, FrontendBackendSubmitFailure>),
+    TimedOut(FrontendBackendSubmitTicket),
+}
+
+impl FrontendBackendSubmitTicket {
+    pub fn start(
+        plan: FrontendBackendTunePlan,
+        previous_request: Option<FrontendTuneRequest>,
+    ) -> Result<Self, HalError> {
+        let generation = plan.generation;
+        Self::start_with(generation, move || {
+            FrontendBackendSession::open_and_submit_with_previous_report(
+                &plan,
+                previous_request,
+            )
+        })
+    }
+
+    fn start_with(
+        generation: u64,
+        submit: impl FnOnce() -> Result<FrontendBackendSession, FrontendBackendSubmitFailure>
+            + Send
+            + 'static,
+    ) -> Result<Self, HalError> {
+        let (ready_sender, ready) = mpsc::sync_channel(1);
+        let (disposition, disposition_receiver) = mpsc::sync_channel(1);
+        let owner = ThreadResultOwner::start("maleicacid-frontend-submit", move || {
+            match submit() {
+                Ok(session) => {
+                    if ready_sender
+                        .send(FrontendBackendSubmitReady::Submitted)
+                        .is_err()
+                    {
+                        return Ok(FrontendBackendSubmitThreadOutcome::Aborted(session.stop()));
+                    }
+                    match disposition_receiver.recv() {
+                        Ok(FrontendBackendSubmitDisposition::Claim) => {
+                            Ok(FrontendBackendSubmitThreadOutcome::Claimed(session))
+                        }
+                        Ok(FrontendBackendSubmitDisposition::Abort) | Err(_) => {
+                            Ok(FrontendBackendSubmitThreadOutcome::Aborted(session.stop()))
+                        }
+                    }
+                }
+                Err(failure) => {
+                    match ready_sender.send(FrontendBackendSubmitReady::Failed) {
+                        Ok(()) => {}
+                        Err(_) => {
+                            // 受信owner消滅後もbackend transactionの型付き結果をthread ownerへ残す。
+                        }
+                    }
+                    Ok(FrontendBackendSubmitThreadOutcome::Failed(failure))
+                }
+            }
+        })?;
+        Ok(Self {
+            generation,
+            ready,
+            disposition,
+            owner: Some(owner),
+        })
+    }
+
+    pub fn wait_until(
+        mut self,
+        deadline: Instant,
+    ) -> Result<FrontendBackendSubmitWait, HalError> {
+        let wait = deadline.saturating_duration_since(Instant::now());
+        match self.ready.recv_timeout(wait) {
+            Ok(FrontendBackendSubmitReady::Submitted) => {
+                if self
+                    .disposition
+                    .send(FrontendBackendSubmitDisposition::Claim)
+                    .is_err()
+                {
+                    // thread終端結果を回収して、backend結果不明として分類する。
+                }
+                let finished = match self.wait_until_cleanup(Some(deadline)) {
+                    Ok(finished) => finished,
+                    Err(_) => return Ok(FrontendBackendSubmitWait::TimedOut(self)),
+                };
+                if !finished {
+                    return Ok(FrontendBackendSubmitWait::TimedOut(self));
+                }
+                let outcome = match self.join_outcome() {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        return Ok(FrontendBackendSubmitWait::Completed(Err(
+                            frontend_backend_submit_thread_failure(self.generation, error),
+                        )))
+                    }
+                };
+                match outcome {
+                    FrontendBackendSubmitThreadOutcome::Claimed(session) => Ok(
+                        FrontendBackendSubmitWait::Completed(Ok(session)),
+                    ),
+                    FrontendBackendSubmitThreadOutcome::Failed(failure) => Ok(
+                        FrontendBackendSubmitWait::Completed(Err(failure)),
+                    ),
+                    FrontendBackendSubmitThreadOutcome::Aborted(stop_result) => {
+                        let error = stop_result.err().unwrap_or_else(|| {
+                            HalError::internal(
+                                HalInternalKind::InvariantViolation,
+                                "frontend backend submit was aborted after claim",
+                            )
+                        });
+                        Ok(FrontendBackendSubmitWait::Completed(Err(
+                            frontend_backend_submit_thread_failure(self.generation, error),
+                        )))
+                    }
+                }
+            }
+            Ok(FrontendBackendSubmitReady::Failed) => {
+                let finished = match self.wait_until_cleanup(Some(deadline)) {
+                    Ok(finished) => finished,
+                    Err(_) => return Ok(FrontendBackendSubmitWait::TimedOut(self)),
+                };
+                if !finished {
+                    return Ok(FrontendBackendSubmitWait::TimedOut(self));
+                }
+                let outcome = match self.join_outcome() {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        return Ok(FrontendBackendSubmitWait::Completed(Err(
+                            frontend_backend_submit_thread_failure(self.generation, error),
+                        )))
+                    }
+                };
+                match outcome {
+                    FrontendBackendSubmitThreadOutcome::Failed(failure) => Ok(
+                        FrontendBackendSubmitWait::Completed(Err(failure)),
+                    ),
+                    FrontendBackendSubmitThreadOutcome::Claimed(session) => {
+                        let stop_result = session.stop();
+                        let error = stop_result.err().unwrap_or_else(|| {
+                            HalError::internal(
+                                HalInternalKind::InvariantViolation,
+                                "frontend backend submit reported failure but returned a session",
+                            )
+                        });
+                        Ok(FrontendBackendSubmitWait::Completed(Err(
+                            frontend_backend_submit_thread_failure(self.generation, error),
+                        )))
+                    }
+                    FrontendBackendSubmitThreadOutcome::Aborted(stop_result) => {
+                        let error = stop_result.err().unwrap_or_else(|| {
+                            HalError::internal(
+                                HalInternalKind::InvariantViolation,
+                                "frontend backend submit failure changed to abort",
+                            )
+                        });
+                        Ok(FrontendBackendSubmitWait::Completed(Err(
+                            frontend_backend_submit_thread_failure(self.generation, error),
+                        )))
+                    }
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                match self
+                    .disposition
+                    .try_send(FrontendBackendSubmitDisposition::Abort)
+                {
+                    Ok(()) | Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {}
+                }
+                Ok(FrontendBackendSubmitWait::TimedOut(self))
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                let finished = match self.wait_until_cleanup(Some(deadline)) {
+                    Ok(finished) => finished,
+                    Err(_) => return Ok(FrontendBackendSubmitWait::TimedOut(self)),
+                };
+                if !finished {
+                    return Ok(FrontendBackendSubmitWait::TimedOut(self));
+                }
+                let outcome = match self.join_outcome() {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        return Ok(FrontendBackendSubmitWait::Completed(Err(
+                            frontend_backend_submit_thread_failure(self.generation, error),
+                        )))
+                    }
+                };
+                match outcome {
+                    FrontendBackendSubmitThreadOutcome::Failed(failure) => Ok(
+                        FrontendBackendSubmitWait::Completed(Err(failure)),
+                    ),
+                    FrontendBackendSubmitThreadOutcome::Claimed(session) => {
+                        let stop_error = session.stop().err().unwrap_or_else(|| {
+                            HalError::internal(
+                                HalInternalKind::InvariantViolation,
+                                "frontend backend submit readiness disconnected after success",
+                            )
+                        });
+                        Ok(FrontendBackendSubmitWait::Completed(Err(
+                            frontend_backend_submit_thread_failure(self.generation, stop_error),
+                        )))
+                    }
+                    FrontendBackendSubmitThreadOutcome::Aborted(stop_result) => {
+                        let error = stop_result.err().unwrap_or_else(|| {
+                            HalError::internal(
+                                HalInternalKind::InvariantViolation,
+                                "frontend backend submit readiness disconnected",
+                            )
+                        });
+                        Ok(FrontendBackendSubmitWait::Completed(Err(
+                            frontend_backend_submit_thread_failure(self.generation, error),
+                        )))
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn wait_until_cleanup(&self, deadline: Option<Instant>) -> Result<bool, HalError> {
+        self.owner
+            .as_ref()
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend backend submit cleanup owner is missing",
+                )
+            })?
+            .wait_until_finished(deadline)
+    }
+
+    pub(crate) fn try_complete_cleanup(&mut self) -> Option<Result<(), HalError>> {
+        let outcome = match self.owner.as_mut()?.collect_if_finished() {
+            ThreadResultPoll::Running => return None,
+            ThreadResultPoll::Completed(outcome) => outcome,
+        };
+        self.owner = None;
+        Some(frontend_backend_submit_cleanup_result(outcome))
+    }
+
+    pub(crate) fn complete_cleanup(mut self) -> Result<(), HalError> {
+        let owner = self.owner.take().ok_or_else(|| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "frontend backend submit cleanup owner is missing",
+            )
+        })?;
+        frontend_backend_submit_cleanup_result(owner.join_after_stop())
+    }
+
+    fn join_outcome(&mut self) -> Result<FrontendBackendSubmitThreadOutcome, HalError> {
+        let owner = self.owner.take().ok_or_else(|| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "frontend backend submit owner is missing",
+            )
+        })?;
+        owner.join_after_stop()
+    }
+}
+
+impl Drop for FrontendBackendSubmitTicket {
+    fn drop(&mut self) {
+        match self
+            .disposition
+            .try_send(FrontendBackendSubmitDisposition::Abort)
+        {
+            Ok(()) | Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {}
+        }
+        if let Some(owner) = self.owner.take() {
+            // 明示claimまたはReaper移管を通らないDropでJoinHandleをdetachしない。
+            // Abort後のendpoint所有権をthreadへ残し、process lifetime中の再利用を防ぐ。
+            core::mem::forget(owner);
+        }
+    }
+}
+
+fn frontend_backend_submit_thread_failure(
+    generation: u64,
+    error: HalError,
+) -> FrontendBackendSubmitFailure {
+    FrontendBackendSubmitFailure {
+        generation,
+        error,
+        rollback_succeeded: false,
+        step: None,
+    }
+}
+
+fn frontend_backend_submit_cleanup_result(
+    outcome: Result<FrontendBackendSubmitThreadOutcome, HalError>,
+) -> Result<(), HalError> {
+    match outcome {
+        Ok(FrontendBackendSubmitThreadOutcome::Aborted(stop_result)) => stop_result,
+        Ok(FrontendBackendSubmitThreadOutcome::Failed(failure)) => {
+            if failure.rollback_succeeded {
+                Ok(())
+            } else {
+                Err(failure.into_error())
+            }
+        }
+        Ok(FrontendBackendSubmitThreadOutcome::Claimed(session)) => {
+            let stop_result = session.stop();
+            let invariant = HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "frontend backend submit cleanup observed a claimed session",
+            );
+            match stop_result {
+                Ok(()) => Err(invariant),
+                Err(stop_error) => Err(compose_primary_cleanup_failure(
+                    "frontend backend submit cleanup",
+                    invariant,
+                    stop_error,
+                )),
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrontendLnbVoltage {
     None,
     Voltage11V,
@@ -257,6 +667,13 @@ pub struct FrontendBackendLnbApplyPlan {
     backend: FrontendBackendKind,
     device_path: FrontendDevicePath,
     voltage: FrontendLnbVoltage,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FrontendBackendLnbApplyOutcome {
+    Applied,
+    Rejected(HalError),
+    Indeterminate(HalError),
 }
 
 impl FrontendBackendLnbApplyPlan {
@@ -324,8 +741,21 @@ impl<'a> Px4LnbApplyOps for RealPx4LnbApplyOps<'a> {
 pub fn apply_frontend_backend_lnb_voltage(
     plan: &FrontendBackendLnbApplyPlan,
 ) -> Result<(), HalError> {
-    let file = open_rw(&plan.device_path)?;
-    match plan.backend {
+    match apply_frontend_backend_lnb_voltage_classified(plan) {
+        FrontendBackendLnbApplyOutcome::Applied => Ok(()),
+        FrontendBackendLnbApplyOutcome::Rejected(error)
+        | FrontendBackendLnbApplyOutcome::Indeterminate(error) => Err(error),
+    }
+}
+
+pub fn apply_frontend_backend_lnb_voltage_classified(
+    plan: &FrontendBackendLnbApplyPlan,
+) -> FrontendBackendLnbApplyOutcome {
+    let file = match open_rw(&plan.device_path) {
+        Ok(file) => file,
+        Err(error) => return FrontendBackendLnbApplyOutcome::Rejected(error),
+    };
+    let result = match plan.backend {
         FrontendBackendKind::Px4CharDevice => {
             let mut ops = RealPx4LnbApplyOps {
                 fd: file.as_raw_fd(),
@@ -334,7 +764,10 @@ pub fn apply_frontend_backend_lnb_voltage(
             apply_px4_lnb_voltage_with_ops(&mut ops, plan.voltage)
         }
         FrontendBackendKind::LinuxDvb => {
-            let mode = dvb_lnb_voltage_mode(plan.voltage)?;
+            let mode = match dvb_lnb_voltage_mode(plan.voltage) {
+                Ok(mode) => mode,
+                Err(error) => return FrontendBackendLnbApplyOutcome::Rejected(error),
+            };
             ioctl_word(
                 "dvb",
                 Some(plan.device_path.as_path().to_path_buf()),
@@ -344,6 +777,10 @@ pub fn apply_frontend_backend_lnb_voltage(
                 "FE_SET_VOLTAGE",
             )
         }
+    };
+    match result {
+        Ok(()) => FrontendBackendLnbApplyOutcome::Applied,
+        Err(error) => FrontendBackendLnbApplyOutcome::Indeterminate(error),
     }
 }
 
@@ -553,23 +990,15 @@ impl FrontendBackendTuneExecutor {
         self.start_streaming_current()
     }
 
-    fn read_signal_state(&self) -> Result<FrontendSignalState, HalError> {
+    fn initial_signal_state_after_submit(&self) -> Result<FrontendSignalState, HalError> {
         match &self.kind {
             FrontendBackendSessionKind::Px4 { control_path } => {
-                let mut cnr: u32 = 0;
-                ioctl_ptr(
-                    "px4",
-                    Some(control_path.as_path().to_path_buf()),
+                px4_signal_state_from_readback(read_px4_boolean(
+                    control_path,
                     self.file_fd()?,
-                    PTX_GET_CNR,
-                    &mut cnr,
-                    "PTX_GET_CNR",
-                )?;
-                if cnr == 0 {
-                    Ok(FrontendSignalState::NoSignal)
-                } else {
-                    Ok(FrontendSignalState::SignalDetected)
-                }
+                    PTX_GET_LOCK_STATUS,
+                    "PTX_GET_LOCK_STATUS",
+                ))
             }
             FrontendBackendSessionKind::Dvb { frontend_path } => {
                 let mut status: u32 = 0;
@@ -603,6 +1032,7 @@ impl FrontendBackendTuneExecutor {
             kind: self.kind,
             file,
             initial_signal_state: self.initial_signal_state,
+            partial_reception: self.plan.request.partial_reception,
         })
     }
 }
@@ -633,8 +1063,10 @@ impl BackendTuneOps for FrontendBackendTuneExecutor {
     }
 
     fn read_initial_status(&mut self) -> Result<(), HalError> {
-        self.initial_signal_state =
-            initial_signal_state_from_observation(self.plan.frontend_id, self.read_signal_state());
+        self.initial_signal_state = initial_signal_state_from_observation(
+            self.plan.frontend_id,
+            self.initial_signal_state_after_submit(),
+        );
         Ok(())
     }
 
@@ -711,6 +1143,66 @@ fn ioctl_ptr<T>(
     Ok(())
 }
 
+fn read_px4_boolean(
+    path: &FrontendDevicePath,
+    fd: i32,
+    request: u64,
+    op: &'static str,
+) -> Result<bool, HalError> {
+    let mut value: u32 = 0;
+    ioctl_ptr(
+        "px4",
+        Some(path.as_path().to_path_buf()),
+        fd,
+        request,
+        &mut value,
+        op,
+    )?;
+    decode_px4_boolean(path, op, value)
+}
+
+fn decode_px4_boolean(
+    path: &FrontendDevicePath,
+    op: &'static str,
+    value: u32,
+) -> Result<bool, HalError> {
+    match value {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(HalError::Io {
+            backend: "px4",
+            operation: op,
+            path: Some(path.as_path().to_path_buf()),
+            errno: None,
+            detail: HalErrorDetail::new(format!("driver returned a non-boolean value: {value}")),
+        }),
+    }
+}
+
+fn classify_tmcc_partial_reception_read(
+    result: Result<bool, HalError>,
+) -> Result<FrontendTmccPartialReceptionObservation, HalError> {
+    match result {
+        Ok(value) => Ok(FrontendTmccPartialReceptionObservation::Available(value)),
+        Err(HalError::IoctlFailed { errno, .. }) if errno == ERRNO_EAGAIN => {
+            Ok(FrontendTmccPartialReceptionObservation::Pending)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn px4_signal_state_from_readback(
+    result: Result<bool, HalError>,
+) -> Result<FrontendSignalState, HalError> {
+    result.map(|locked| {
+        if locked {
+            FrontendSignalState::Locked
+        } else {
+            FrontendSignalState::NoSignal
+        }
+    })
+}
+
 fn ioctl_noarg(
     backend: &'static str,
     path: Option<PathBuf>,
@@ -774,6 +1266,74 @@ mod tests {
     }
 
     #[test]
+    fn px4_boolean_readback_rejects_non_boolean_driver_values() {
+        let path = FrontendDevicePath::new("/dev/px4video0");
+        assert_eq!(decode_px4_boolean(&path, "TEST", 0), Ok(false));
+        assert_eq!(decode_px4_boolean(&path, "TEST", 1), Ok(true));
+        assert!(matches!(
+            decode_px4_boolean(&path, "TEST", 2),
+            Err(HalError::Io {
+                backend: "px4",
+                operation: "TEST",
+                errno: None,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn px4_demod_lock_readback_distinguishes_unlocked_from_io_failure() {
+        assert_eq!(
+            px4_signal_state_from_readback(Ok(false)),
+            Ok(FrontendSignalState::NoSignal)
+        );
+        assert_eq!(
+            px4_signal_state_from_readback(Ok(true)),
+            Ok(FrontendSignalState::Locked)
+        );
+        let failure = px4_signal_state_from_readback(Err(HalError::IoctlFailed {
+            backend: "px4",
+            path: None,
+            op: "PTX_GET_LOCK_STATUS",
+            errno: 5,
+        }));
+        assert!(matches!(
+            failure,
+            Err(HalError::IoctlFailed { errno: 5, .. })
+        ));
+    }
+
+    #[test]
+    fn tmcc_eagain_is_pending_and_other_ioctls_remain_failures() {
+        let pending = classify_tmcc_partial_reception_read(Err(HalError::IoctlFailed {
+            backend: "px4",
+            path: None,
+            op: "PTX_GET_TMCC_PARTIAL_RECEPTION",
+            errno: ERRNO_EAGAIN,
+        }));
+        assert_eq!(
+            pending,
+            Ok(FrontendTmccPartialReceptionObservation::Pending)
+        );
+
+        for errno in [5, ERRNO_ENOTTY] {
+            let failure = classify_tmcc_partial_reception_read(Err(HalError::IoctlFailed {
+                backend: "px4",
+                path: None,
+                op: "PTX_GET_TMCC_PARTIAL_RECEPTION",
+                errno,
+            }));
+            assert!(matches!(
+                failure,
+                Err(HalError::IoctlFailed {
+                    errno: observed,
+                    ..
+                }) if observed == errno
+            ));
+        }
+    }
+
+    #[test]
     fn tune_plan_keeps_backend_path_and_request() {
         let request = FrontendTuneRequest {
             system: FrontendSystem::IsdbT,
@@ -783,6 +1343,8 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: Some(6_000_000),
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         let plan = FrontendBackendTunePlan::new(
             7,
@@ -808,6 +1370,8 @@ mod tests {
             stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId),
             bandwidth_hz: None,
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         let plan = FrontendBackendTunePlan::new(
             8,
@@ -830,6 +1394,8 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: Some(6_000_000),
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         let plan = FrontendBackendTunePlan::new(
             9,
@@ -855,6 +1421,8 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: Some(6_000_000),
             symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         let plan = FrontendBackendTunePlan::new(
             10,
@@ -894,13 +1462,46 @@ mod tests {
     }
 
     #[test]
-    fn initial_status_observation_failure_falls_back_to_unknown_signal() {
+    fn submit_deadline_retains_cleanup_ownership_until_thread_exit() {
+        let generation = 100;
+        let ticket = FrontendBackendSubmitTicket::start_with(generation, move || {
+            thread::sleep(Duration::from_millis(25));
+            Err(FrontendBackendSubmitFailure {
+                generation,
+                error: HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "simulated delayed submit failure",
+                ),
+                rollback_succeeded: true,
+                step: None,
+            })
+        })
+        .unwrap();
+
+        let ticket = match ticket
+            .wait_until(Instant::now() + Duration::from_millis(1))
+            .unwrap()
+        {
+            FrontendBackendSubmitWait::TimedOut(ticket) => ticket,
+            FrontendBackendSubmitWait::Completed(_) => {
+                panic!("delayed backend submit completed before its test deadline")
+            }
+        };
+
+        assert!(ticket
+            .wait_until_cleanup(Some(Instant::now() + Duration::from_secs(1)))
+            .unwrap());
+        assert!(ticket.complete_cleanup().is_ok());
+    }
+
+    #[test]
+    fn dvb_initial_status_observation_failure_falls_back_to_unknown_signal() {
         let state = initial_signal_state_from_observation(
             9,
             Err(HalError::IoctlFailed {
-                backend: "px4",
+                backend: "dvb",
                 path: None,
-                op: "PTX_GET_CNR",
+                op: "FE_READ_STATUS",
                 errno: 5,
             }),
         );

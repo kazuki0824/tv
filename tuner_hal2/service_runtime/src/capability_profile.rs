@@ -14,6 +14,7 @@ pub enum RuntimeFailureDomain {
     Fmq,
     EventFlag,
     Cleanup,
+    ResourceExhausted,
     ClientArgument,
     ObjectState,
     UnsupportedByDesign,
@@ -98,6 +99,7 @@ pub fn failure_domain(error: &HalError) -> RuntimeFailureDomain {
         HalError::FmqFailed { .. } => RuntimeFailureDomain::Fmq,
         HalError::EventFlagFailed { .. } => RuntimeFailureDomain::EventFlag,
         HalError::CleanupFailed { .. } => RuntimeFailureDomain::Cleanup,
+        HalError::OutOfMemory { .. } => RuntimeFailureDomain::ResourceExhausted,
         HalError::InvalidArgument { .. } => RuntimeFailureDomain::ClientArgument,
         HalError::InvalidState { .. } => RuntimeFailureDomain::ObjectState,
         HalError::Unsupported(_) | HalError::UnsupportedDetail { .. } => {

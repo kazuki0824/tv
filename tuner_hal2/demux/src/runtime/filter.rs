@@ -2,8 +2,19 @@ use crate::config::{
     AvStreamTypeConfig, FilterDelayHint, FilterDelayHints, FilterOpenType, OpenFilterRequest,
 };
 use crate::packet_pipeline::{FilterPipelineConfig, PipelineFilterView, PipelineOpenKind};
+use crate::runtime::{
+    WatermarkClassifier, WatermarkDecision, WatermarkPolicy, WatermarkQueueSnapshot,
+};
 use crate::TsInputOrigin;
 use std::time::{Duration, Instant};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FilterStatusEvent {
+    DataReady,
+    LowWater,
+    HighWater,
+    Overflow,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FilterRuntimeState {
@@ -39,16 +50,16 @@ pub enum FilterSource {
 }
 
 impl FilterSource {
-    pub const fn origin(self) -> TsInputOrigin {
+    pub const fn source_filter_origin(self) -> Option<TsInputOrigin> {
         match self {
-            Self::DemuxInput => TsInputOrigin::Frontend,
+            Self::DemuxInput => None,
             Self::SourceFilter {
                 source_filter_id,
                 source_filter_generation,
-            } => TsInputOrigin::SourceFilter {
+            } => Some(TsInputOrigin::SourceFilter {
                 source_filter_id,
                 source_filter_generation,
-            },
+            }),
         }
     }
 }
@@ -61,9 +72,12 @@ pub struct FilterRuntimeSnapshot {
     pub open_kind: PipelineOpenKind,
     pub buffer_size: i32,
     pub callback_present: bool,
+    pub pipeline_config: Option<FilterPipelineConfig>,
     pub tpid: Option<i32>,
+    pub pes_stream_id: Option<i32>,
     pub raw: bool,
     pub source: FilterSource,
+    pub source_relation_generation: u64,
     pub queue_present: bool,
     pub av_backing_present: bool,
     pub av_stream_type_hint: Option<AvStreamTypeConfig>,
@@ -71,6 +85,7 @@ pub struct FilterRuntimeSnapshot {
     pub queued_bytes: usize,
     pub delivery_not_before: Option<Instant>,
     pub callback_unhealthy: bool,
+    pub last_watermark_status: Option<FilterStatusEvent>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -82,9 +97,12 @@ pub struct FilterRuntime {
     open_kind: PipelineOpenKind,
     buffer_size: i32,
     callback_present: bool,
+    pipeline_config: Option<FilterPipelineConfig>,
     tpid: Option<i32>,
+    pes_stream_id: Option<i32>,
     raw: bool,
     source: FilterSource,
+    source_relation_generation: u64,
     queue_present: bool,
     av_backing_present: bool,
     av_stream_type_hint: Option<AvStreamTypeConfig>,
@@ -92,6 +110,7 @@ pub struct FilterRuntime {
     queued_bytes: usize,
     delivery_not_before: Option<Instant>,
     callback_unhealthy: bool,
+    last_watermark_status: Option<FilterStatusEvent>,
 }
 
 impl FilterRuntime {
@@ -99,6 +118,7 @@ impl FilterRuntime {
     pub(crate) fn new(filter_id: i32, generation: u64, open_kind: PipelineOpenKind) -> Self {
         let open_type = match open_kind {
             PipelineOpenKind::Raw => FilterOpenType::TsRaw,
+            PipelineOpenKind::Pcr => FilterOpenType::TsPcr,
             PipelineOpenKind::Av => FilterOpenType::TsVideo,
             PipelineOpenKind::Section => FilterOpenType::TsSection,
             PipelineOpenKind::Pes => FilterOpenType::TsPes,
@@ -113,9 +133,12 @@ impl FilterRuntime {
             open_kind,
             buffer_size: 0,
             callback_present: false,
+            pipeline_config: None,
             tpid: None,
+            pes_stream_id: None,
             raw: false,
             source: FilterSource::DemuxInput,
+            source_relation_generation: 1,
             queue_present: false,
             av_backing_present: false,
             av_stream_type_hint: None,
@@ -123,6 +146,7 @@ impl FilterRuntime {
             queued_bytes: 0,
             delivery_not_before: None,
             callback_unhealthy: false,
+            last_watermark_status: None,
         }
     }
 
@@ -135,9 +159,12 @@ impl FilterRuntime {
             open_kind: open_type.pipeline_open_kind(),
             buffer_size: 0,
             callback_present: false,
+            pipeline_config: None,
             tpid: None,
+            pes_stream_id: None,
             raw: false,
             source: FilterSource::DemuxInput,
+            source_relation_generation: 1,
             queue_present: false,
             av_backing_present: false,
             av_stream_type_hint: None,
@@ -145,6 +172,7 @@ impl FilterRuntime {
             queued_bytes: 0,
             delivery_not_before: None,
             callback_unhealthy: false,
+            last_watermark_status: None,
         }
     }
 
@@ -156,6 +184,7 @@ impl FilterRuntime {
         let mut runtime = Self::new_typed(filter_id, generation, request.open_type);
         runtime.buffer_size = request.buffer_size;
         runtime.callback_present = request.callback_present;
+        runtime.queue_present = runtime.supports_normal_fmq_queue() && request.buffer_size > 0;
         runtime
     }
 
@@ -168,6 +197,9 @@ impl FilterRuntime {
     pub fn generation(&self) -> u64 {
         self.generation
     }
+    pub fn set_generation(&mut self, generation: u64) {
+        self.generation = generation;
+    }
     pub fn open_kind(&self) -> PipelineOpenKind {
         self.open_kind
     }
@@ -178,13 +210,7 @@ impl FilterRuntime {
         self.queue_present
     }
     pub fn supports_normal_fmq_queue(&self) -> bool {
-        matches!(
-            self.open_kind,
-            PipelineOpenKind::Raw
-                | PipelineOpenKind::Record
-                | PipelineOpenKind::Section
-                | PipelineOpenKind::Pes
-        )
+        self.open_type.supports_normal_fmq_queue()
     }
     pub fn allows_queue_desc(&self) -> bool {
         match self.state {
@@ -224,9 +250,12 @@ impl FilterRuntime {
             open_kind: self.open_kind,
             buffer_size: self.buffer_size,
             callback_present: self.callback_present,
+            pipeline_config: self.pipeline_config.clone(),
             tpid: self.tpid,
+            pes_stream_id: self.pes_stream_id,
             raw: self.raw,
             source: self.source,
+            source_relation_generation: self.source_relation_generation,
             queue_present: self.queue_present,
             av_backing_present: self.av_backing_present,
             av_stream_type_hint: self.av_stream_type_hint,
@@ -234,6 +263,7 @@ impl FilterRuntime {
             queued_bytes: self.queued_bytes,
             delivery_not_before: self.delivery_not_before,
             callback_unhealthy: self.callback_unhealthy,
+            last_watermark_status: self.last_watermark_status,
         }
     }
 
@@ -244,9 +274,12 @@ impl FilterRuntime {
         self.open_kind = snapshot.open_kind;
         self.buffer_size = snapshot.buffer_size;
         self.callback_present = snapshot.callback_present;
+        self.pipeline_config = snapshot.pipeline_config;
         self.tpid = snapshot.tpid;
+        self.pes_stream_id = snapshot.pes_stream_id;
         self.raw = snapshot.raw;
         self.source = snapshot.source;
+        self.source_relation_generation = snapshot.source_relation_generation;
         self.queue_present = snapshot.queue_present;
         self.av_backing_present = snapshot.av_backing_present;
         self.av_stream_type_hint = snapshot.av_stream_type_hint;
@@ -254,20 +287,41 @@ impl FilterRuntime {
         self.queued_bytes = snapshot.queued_bytes;
         self.delivery_not_before = snapshot.delivery_not_before;
         self.callback_unhealthy = snapshot.callback_unhealthy;
+        self.last_watermark_status = snapshot.last_watermark_status;
     }
 
-    pub fn configure_with_generation(&mut self, generation: u64, config: FilterPipelineConfig) {
+    pub fn configure_with_generation(
+        &mut self,
+        generation: u64,
+        config: FilterPipelineConfig,
+        pes_stream_id: Option<i32>,
+    ) {
         self.generation = generation;
+        self.pipeline_config = Some(config.clone());
         self.tpid = config.tpid;
+        self.pes_stream_id = pes_stream_id;
         self.raw = config.raw;
-        self.source = FilterSource::DemuxInput;
         self.queue_present = self.supports_normal_fmq_queue();
         self.av_backing_present = matches!(self.open_kind, PipelineOpenKind::Av);
-        self.av_stream_type_hint = None;
         self.queued_bytes = 0;
         self.delivery_not_before = None;
-        self.callback_unhealthy = false;
+        self.last_watermark_status = None;
         self.state = FilterRuntimeState::Configured;
+    }
+
+    pub(crate) fn configured_matches(
+        &self,
+        config: &FilterPipelineConfig,
+        pes_stream_id: Option<i32>,
+    ) -> bool {
+        self.pipeline_config.as_ref() == Some(config) && self.pes_stream_id == pes_stream_id
+    }
+
+    pub(crate) fn accepts_pes_stream_id(&self, stream_id: u8) -> bool {
+        match self.pes_stream_id {
+            None | Some(crate::config::PES_STREAM_ID_WILDCARD) => true,
+            Some(configured) => configured == i32::from(stream_id),
+        }
     }
 
     pub fn set_av_stream_type_hint(&mut self, config: AvStreamTypeConfig) {
@@ -302,17 +356,106 @@ impl FilterRuntime {
     pub fn clear_queued_payload_state(&mut self) {
         self.queued_bytes = 0;
         self.delivery_not_before = None;
+        self.last_watermark_status = None;
     }
 
-    pub fn disconnect_source(&mut self) {
+    pub(crate) fn classify_watermark_transition(
+        &mut self,
+        capacity_bytes: usize,
+        readable_bytes: usize,
+    ) -> Option<FilterStatusEvent> {
+        if capacity_bytes == 0 || readable_bytes > capacity_bytes {
+            return None;
+        }
+
+        let quarter = capacity_bytes / 4;
+        let remainder = capacity_bytes % 4;
+        let policy = WatermarkPolicy::OccupancyBand {
+            low: quarter + usize::from(remainder != 0),
+            high: quarter * 3 + (remainder * 3 + 3) / 4,
+        };
+        let snapshot = WatermarkQueueSnapshot::new(readable_bytes, capacity_bytes - readable_bytes);
+        let status = match WatermarkClassifier::new(policy).classify(snapshot) {
+            WatermarkDecision::Low => FilterStatusEvent::LowWater,
+            WatermarkDecision::High => FilterStatusEvent::HighWater,
+            WatermarkDecision::Empty
+            | WatermarkDecision::Full
+            | WatermarkDecision::NoTransition => return None,
+        };
+        if self.last_watermark_status == Some(status) {
+            return None;
+        }
+        self.last_watermark_status = Some(status);
+        Some(status)
+    }
+
+    pub const fn source_relation_generation(&self) -> u64 {
+        self.source_relation_generation
+    }
+
+    pub(crate) fn prepare_next_source_relation_generation(&self) -> Option<u64> {
+        self.source_relation_generation
+            .checked_add(1)
+            .filter(|generation| *generation != 0)
+    }
+
+    pub(crate) fn disconnect_source(
+        &mut self,
+        expected_generation: u64,
+        next_generation: u64,
+    ) -> bool {
+        if self.source_relation_generation != expected_generation
+            || expected_generation.checked_add(1) != Some(next_generation)
+            || next_generation == 0
+        {
+            return false;
+        }
         self.source = FilterSource::DemuxInput;
+        self.source_relation_generation = next_generation;
+        true
     }
 
-    pub fn set_source_filter(&mut self, source_filter_id: i32, source_filter_generation: u64) {
+    pub(crate) fn set_source_filter(
+        &mut self,
+        expected_generation: u64,
+        next_generation: u64,
+        source_filter_id: i32,
+        source_filter_generation: u64,
+    ) -> bool {
+        if self.source_relation_generation != expected_generation
+            || expected_generation.checked_add(1) != Some(next_generation)
+            || next_generation == 0
+        {
+            return false;
+        }
         self.source = FilterSource::SourceFilter {
             source_filter_id,
             source_filter_generation,
         };
+        self.source_relation_generation = next_generation;
+        true
+    }
+
+    #[cfg(test)]
+    pub fn set_source_filter_for_test(
+        &mut self,
+        source_filter_id: i32,
+        source_filter_generation: u64,
+    ) -> bool {
+        let Some(next_generation) = self.prepare_next_source_relation_generation() else {
+            return false;
+        };
+        self.set_source_filter(
+            self.source_relation_generation,
+            next_generation,
+            source_filter_id,
+            source_filter_generation,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_source_relation_generation_for_test(&mut self, generation: u64) {
+        self.source_relation_generation = generation;
     }
 
     pub fn clear_queue_marker(&mut self) -> bool {
@@ -377,5 +520,43 @@ impl FilterRuntime {
             return;
         };
         self.delivery_not_before = Instant::now().checked_add(Duration::from_millis(delay_ms));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filter_projects_strict_rounded_watermark_decisions() {
+        let mut runtime = FilterRuntime::new(1, 1, PipelineOpenKind::Raw);
+
+        assert_eq!(
+            runtime.classify_watermark_transition(10, 2),
+            Some(FilterStatusEvent::LowWater)
+        );
+        assert_eq!(runtime.classify_watermark_transition(10, 2), None);
+        assert_eq!(runtime.classify_watermark_transition(10, 3), None);
+        assert_eq!(runtime.classify_watermark_transition(10, 8), None);
+        assert_eq!(
+            runtime.classify_watermark_transition(10, 9),
+            Some(FilterStatusEvent::HighWater)
+        );
+    }
+
+    #[test]
+    fn filter_non_divisible_capacity_uses_ceiling_thresholds() {
+        let mut runtime = FilterRuntime::new(1, 1, PipelineOpenKind::Raw);
+
+        assert_eq!(
+            runtime.classify_watermark_transition(5, 1),
+            Some(FilterStatusEvent::LowWater)
+        );
+        assert_eq!(runtime.classify_watermark_transition(5, 2), None);
+        assert_eq!(runtime.classify_watermark_transition(5, 4), None);
+        assert_eq!(
+            runtime.classify_watermark_transition(5, 5),
+            Some(FilterStatusEvent::HighWater)
+        );
     }
 }
