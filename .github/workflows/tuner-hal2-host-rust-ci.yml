@@ -1,0 +1,65 @@
+name: tuner_hal2 host Rust CI
+
+on:
+  pull_request:
+    paths:
+      - "tuner_hal2/common/**"
+      - "tuner_hal2/compile_contract/**"
+      - "tuner_hal2/control/**"
+      - "tuner_hal2/descrambler/**"
+      - "tuner_hal2/device/**"
+      - "tuner_hal2/lnb/**"
+      - "tuner_hal2/resource_ledger/**"
+      - "tuner_hal2/host_ci/**"
+      - ".github/workflows/tuner-hal2-host-rust-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "tuner_hal2/common/**"
+      - "tuner_hal2/compile_contract/**"
+      - "tuner_hal2/control/**"
+      - "tuner_hal2/descrambler/**"
+      - "tuner_hal2/device/**"
+      - "tuner_hal2/lnb/**"
+      - "tuner_hal2/resource_ledger/**"
+      - "tuner_hal2/host_ci/**"
+      - ".github/workflows/tuner-hal2-host-rust-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tuner-hal2-host-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rustfmt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: tuner_hal2/host_ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+  host-rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: tuner_hal2/host_ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Type-check host-compatible crates
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Run host-compatible unit tests
+        run: cargo test --workspace --locked

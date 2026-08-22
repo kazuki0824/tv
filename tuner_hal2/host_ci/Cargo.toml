@@ -1,0 +1,11 @@
+[workspace]
+members = [
+    "common",
+    "compile_contract",
+    "control",
+    "descrambler",
+    "device",
+    "lnb",
+    "resource_ledger",
+]
+resolver = "2"

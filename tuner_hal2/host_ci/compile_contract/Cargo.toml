@@ -1,0 +1,13 @@
+[package]
+name = "maleicacid-tuner-hal2-compile-contract-host-ci"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "maleicacid_tuner_hal2_compile_contract_test"
+path = "../../compile_contract/src/lib.rs"
+
+[dependencies]
+maleicacid_tuner_hal2_device = { package = "maleicacid-tuner-hal2-device-host-ci", path = "../device" }
+static_assertions = "=1.1.0"
