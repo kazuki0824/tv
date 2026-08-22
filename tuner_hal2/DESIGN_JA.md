@@ -104,14 +104,13 @@ A/B/Cの分類と`Txn` / `UseCase` / `Context`の命名判定は別である。B
 
 ##### `WatermarkClassifier` の分類境界
 
-`WatermarkClassifier` は Filter と DVR に共通する閾値比較だけを一意化する分類Cの純粋分類器とする。公開statusの意味、threshold値の由来、queue snapshotの取得、直前statusの保持、callback抑止、`statusMask`、`DATA_READY`、`OVERFLOW`は `../tuner_hal/DESIGN_JA.md` の各Filter/DVR契約を正とし、`WatermarkClassifier`は所有しない。
+`WatermarkClassifier` は Filter / Record DVR / Playback DVR に共通する閾値比較の実装責務だけを一意化する分類Cの純粋分類器とする。公開statusの意味、threshold値の由来、queue snapshotの意味、比較式、判定優先順位、直前statusの保持、callback抑止、`statusMask`、`DATA_READY`、`OVERFLOW`は `../tuner_hal/DESIGN_JA.md` の各Filter/DVR契約だけを正本とし、本書では再定義しない。
 
-`WatermarkClassifier` は初期化時に変更不能な `WatermarkPolicy` を受け取る。`WatermarkPolicy` は公開API種別ではなく比較規則を表す列挙型とし、少なくとも次の二形を区別する。
+`WatermarkPolicy` は公開API種別ではなく比較規則の形だけを表す変更不能な列挙型とし、variant集合を `OccupancyBand { low, high }` と `ReadableWritableBand { low, high }` の2つだけに固定する。`WatermarkDecision` はAIDL非依存の型付き分類結果とし、variant集合を `Empty`、`Low`、`High`、`Full`、`NoTransition` の5つだけに固定する。各variantをどの条件で生成し、どの公開statusへ射影するかは `../tuner_hal/DESIGN_JA.md` の正本契約を参照し、本書へ比較条件を複製しない。
 
-- `OccupancyBand { low, high }`: 一つの占有量snapshotに対し `occupied > high` を `High`、`occupied < low` を `Low`、それ以外を `NoTransition` と分類する。通常FilterとRecord DVRは各正本契約が定めるthresholdをこのpolicyへ変換して使用する。
-- `ReadableWritableBand { low, high }`: 同一queue snapshotの `readable` / `writable` に対し、`writable == 0`を`Full`、それ以外で`readable > high`を`High`、それ以外で`readable < low`を`Low`、それ以外で`readable == 0`を`Empty`、それ以外を`NoTransition`とする。Playback DVRはこのpolicyを使用する。
+各status評価の呼出元は、評価開始時にcommit済みsettings / queue契約から当該正本契約が要求する `WatermarkPolicy` を構成し、`WatermarkClassifier::new(policy)` のようなconstructorで変更不能なpolicyをclassifier instanceへ束縛してから、同一評価のqueue snapshotだけを分類入口へ渡す。分類入口はpolicyを追加引数として受け取らず、classifier instanceのpolicyを評価中に更新しない。threshold変更が正規契約上commitされた後の次回評価では、新しいcommit済みsettingsから新しいpolicyを構成して新しいclassifier instanceを生成する。classifier instanceを呼出し越しの正本状態として保持せず、lock、generation、worker、queue、timer、callback状態を追加しない。
 
-分類結果は `WatermarkDecision::{Empty, Low, High, Full, NoTransition}` のようなAIDL非依存の型付き値とし、Filter / Record DVR / Playback DVRの各domain ownerが正本契約に従って公開statusへ射影する。`WatermarkPolicy`へ `Filter` / `RecordDvr` / `PlaybackDvr` のような公開API種別tagを持たせず、classifier内部でAIDL statusを生成しない。policyは初期化後に可変状態として更新せず、threshold変更が正規契約上commitされた場合は、commit済みsnapshotから新しいpolicy値を構成して分類呼出しへ渡す。classifier自身にlock、generation、worker、queue、timer、callback状態を追加しない。
+`WatermarkPolicy`へ `Filter` / `RecordDvr` / `PlaybackDvr` のような公開API種別tagを持たせず、classifier内部でAIDL statusを生成しない。各domain ownerは `WatermarkDecision` を `../tuner_hal/DESIGN_JA.md` の正本契約に従って公開statusへ射影する。
 
 #### `Txn` / `UseCase` / `Context` の物理名称境界
 
@@ -144,7 +143,7 @@ A/B/Cの分類と`Txn` / `UseCase` / `Context`の命名判定は別である。B
 | `QueueEpochProtocol` | `demux/src/runtime/queue_runtime.rs` | DVR data path、`QueueCleanupUseCase`からのtyped入口 | 公開API/worker/`QueueCleanupUseCase`からのprotocol内部直接変更、`PlaybackQueueBacking` ownerとの統合 |
 | `QueueCleanupUseCase` | `service_runtime/src/queue_cleanup_use_case.rs::QueueCleanupUseCase` | Filter/DVR `flush()` object use-case | 下位protocol内部への直接アクセス、API別orchestrator |
 | `PlaybackConsumeTxn` | `service_runtime/src/playback_consume_txn.rs` | playback workerのtyped consume入口 | worker/FMQ/packet helperによる別consume owner |
-| `WatermarkClassifier` | `demux/src/runtime/watermark_classifier.rs::{WatermarkClassifier, WatermarkPolicy, WatermarkDecision}` | Filter callback status評価、Record DVR status評価、Playback DVR status評価から、commit済みthresholdを反映した変更不能policyと同一queue snapshotを渡す分類入口 | `FilterWatermarkClassifier` / `DvrWatermarkClassifier`等のAPI別分類器、classifier内部のAIDL status生成、statusMask・callback状態・queue所有、domain種別tagによる分岐 |
+| `WatermarkClassifier` | `demux/src/runtime/watermark_classifier.rs::{WatermarkClassifier, WatermarkPolicy, WatermarkDecision}` | Filter / Record DVR / Playback DVRのstatus評価が、commit済み契約値からexactly-oneの変更不能`WatermarkPolicy`を構成してconstructorへ渡し、同一評価のqueue snapshotだけを分類入口へ渡す | `FilterWatermarkClassifier` / `DvrWatermarkClassifier`等のAPI別分類器、分類入口へのpolicy再注入、classifier内部のAIDL status生成、statusMask・callback状態・queue所有、domain種別tagによる分岐 |
 | `FrontendTuneScanTxn` | 正規手順所有者・入口は`FrontendTuneScanTxn`名を持つ。既存アンカーは`service_runtime/src/boot/frontend_tune_scan_context.rs::FrontendTuneScanContext<'a>`、`service_runtime/src/frontend_ops.rs`であり、`FrontendTuneScanContext<'a>`は非公開補助処理または呼出し単位の文脈型としてのみ扱う | `FrontendTuneScanTxn`の有限正規入口集合 `begin_tune` / `begin_scan` / `stop_tune` / `stop_scan` / `accept_operation_event` / `accept_worker_terminal`。AIDL境界は`begin_*` / `stop_*`だけ、ワーカー・下位機器処理の完了通知橋渡しは`accept_*`だけを呼ぶ | ワーカー・機器層・コールバック層によるフロントエンド所有者の迂回、Demux所有者の吸収、`FrontendTuneScanContext<'a>`の第二正規所有者化、有限正規入口集合外での選局・走査進行の再実装 |
 | `AvSyncRegistry` | `demux/src/runtime/av_sync_registry.rs::AvSyncRegistry` | filter configure/unregister/close、demux closeからのtyped relation入口 | API/filter wrapper/`StreamBoundaryTxn`からのregistry直接変更、PCR ownerとの統合 |
 | `PcrClockAnchorStore` | `demux/src/runtime/pcr_clock_anchor.rs::PcrClockAnchorStore` | PCR観測、stream boundary側のtyped invalidation入口 | APIまたは`StreamBoundaryTxn`からのstore内部直接変更、A/V sync ownerとの統合 |
@@ -278,7 +277,7 @@ flowchart LR
 - Record DVR/Filter lifecycle use-caseは`RecordDvrFilterRelationTxn`のtyped入口へ接続する。
 - Frontend LNB assignment use-caseは`FrontendLnbRelationTxn`へ接続し、LNB resource ownerのlease台帳内部を直接変更しない。
 - Filter/DVR `flush()` use-caseは`QueueCleanupUseCase`へ接続し、同ownerからFilter側`FilterProducerDrainGate`またはDVR側`QueueEpochProtocol`のtyped入口を使用する。
-- Filter / Record DVR / Playback DVRのwatermark評価は単一`WatermarkClassifier`へ接続する。各domain ownerは`../tuner_hal/DESIGN_JA.md`の正本thresholdと同一queue snapshotから`WatermarkPolicy`および分類入力を構成し、`WatermarkDecision`を各公開statusへ射影する。classifierに直前status、statusMask、callback配送、DATA_READY/OVERFLOW、queue stateを持たせない。
+- Filter / Record DVR / Playback DVRのwatermark評価は単一`WatermarkClassifier`へ接続する。各domain ownerは評価開始時に`../tuner_hal/DESIGN_JA.md`の正本契約とcommit済みsettingsから変更不能`WatermarkPolicy`を構成してclassifier constructorへ渡し、同一評価のqueue snapshotだけを分類入口へ渡す。`WatermarkDecision`の公開statusへの射影も同書の正本契約に従い、classifierに比較条件の第二正本、直前status、statusMask、callback配送、DATA_READY/OVERFLOW、queue stateを持たせない。
 - filter lifecycle use-caseは`AvSyncRegistry`、stream boundary側は`PcrClockAnchorStore`のtyped invalidation入口へ接続し、各store内部へ直接アクセスしない。
 - post-commit callback failureを受けたdomain completion use-caseは、`WorkerFailureClassifier`で分類済みのtyped callback failureだけを`PostCommitCallbackFailureTxn`へ渡す。callbackを伴わない正常completionまたは別種failureは同Txnへ接続しない。
 - domain worker ownerは`WorkerRuntime`のtyped入口と`WorkerFailureClassifier`を使用し、必要な場合に`WorkerRuntime`が発行・管理する従属`WorkerHandle`を使用する。`WorkerHandle`をgeneric lifecycle ownerとして扱わず、generic runtime/classifierを再実装しない。フロントエンド固有の終了手順は`FrontendWorkerTerminationUseCase`へ接続し、同手順が汎用寿命管理機構を所有しない。
