@@ -163,10 +163,7 @@ mod tests {
             Ok(188),
             Err(FmqFailureKind::EventFlagWakeFailed),
         );
-        assert_eq!(
-            result.action,
-            FmqDeliveryAction::WakePending
-        );
+        assert_eq!(result.action, FmqDeliveryAction::WakePending);
         assert_eq!(result.bytes, 188);
     }
 

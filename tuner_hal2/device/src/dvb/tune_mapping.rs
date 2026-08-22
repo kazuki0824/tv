@@ -309,12 +309,10 @@ mod tests {
         };
         let req = normalized_tune_request_from_common(&common).unwrap();
         assert_eq!(req.stream_id, None);
-        assert!(
-            tune_property_pairs(&req)
-                .unwrap()
-                .pairs
-                .contains(&(DTV_STREAM_ID, NO_STREAM_ID_FILTER))
-        );
+        assert!(tune_property_pairs(&req)
+            .unwrap()
+            .pairs
+            .contains(&(DTV_STREAM_ID, NO_STREAM_ID_FILTER)));
     }
 
     #[test]
@@ -332,11 +330,9 @@ mod tests {
         };
         let req = normalized_tune_request_from_common(&common).unwrap();
         assert_eq!(req.stream_id, None);
-        assert!(
-            tune_property_pairs(&req)
-                .unwrap()
-                .pairs
-                .contains(&(DTV_STREAM_ID, NO_STREAM_ID_FILTER))
-        );
+        assert!(tune_property_pairs(&req)
+            .unwrap()
+            .pairs
+            .contains(&(DTV_STREAM_ID, NO_STREAM_ID_FILTER)));
     }
 }

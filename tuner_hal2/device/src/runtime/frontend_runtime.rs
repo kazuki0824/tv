@@ -778,10 +778,7 @@ impl FrontendRuntime {
         Ok(has_next)
     }
 
-    pub fn mark_scan_session_locked_reported(
-        &mut self,
-        generation: u64,
-    ) -> Result<(), HalError> {
+    pub fn mark_scan_session_locked_reported(&mut self, generation: u64) -> Result<(), HalError> {
         if !self.should_accept_terminal_event(generation) {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
