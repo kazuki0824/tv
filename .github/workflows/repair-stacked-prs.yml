@@ -1,8 +1,6 @@
 name: Repair stacked PRs 53 54 57
 
 on:
-  push:
-    branches: [automation/repair-stacked-prs-53-54-57]
   pull_request:
     branches: [main]
 
@@ -16,100 +14,99 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Repair PR 53 and rebase descendants
+      - name: Repair PR 54 and rebase descendants
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin main fix/tuner-hal2-rustfmt-1.81 agent/implement-tis-arib-si-design-pr53 docs/future-work-design-completion design/r52-contracts
+          git fetch origin fix/tuner-hal2-rustfmt-1.81 agent/implement-tis-arib-si-design-pr53 docs/future-work-design-completion design/r52-contracts
 
-          OLD53=6826a186c8c081c499188d24c7b51b460f651ea3
-          OLD54=1fc3b6665f8ce644942eb69a43b2bc252016bf39
-          OLD55=59ceaf188b6ab22f70201033867aedfd7729c3bf
-          OLD57=6cfa81b6bb3f10c41cca820d60c2eaac836d8b2e
-          test "$(git rev-parse origin/fix/tuner-hal2-rustfmt-1.81)" = "$OLD53"
-          test "$(git rev-parse origin/agent/implement-tis-arib-si-design-pr53)" = "$OLD54"
-          test "$(git rev-parse origin/docs/future-work-design-completion)" = "$OLD55"
-          test "$(git rev-parse origin/design/r52-contracts)" = "$OLD57"
+          CUR53=e2b88445354e7c881d5fccb888f677e8d0508df6
+          CUR54=6510ea834672c84fa0db5b81a37aca9405e6e691
+          CUR55=765f59360191517f2bbacdb6daee725c491ba8a7
+          CUR57=ff64f1c84e15a3c207320fccb29b2890372174b0
+          test "$(git rev-parse origin/fix/tuner-hal2-rustfmt-1.81)" = "$CUR53"
+          test "$(git rev-parse origin/agent/implement-tis-arib-si-design-pr53)" = "$CUR54"
+          test "$(git rev-parse origin/docs/future-work-design-completion)" = "$CUR55"
+          test "$(git rev-parse origin/design/r52-contracts)" = "$CUR57"
 
-          git checkout -B fix/tuner-hal2-rustfmt-1.81 "$OLD53"
+          git checkout -B agent/implement-tis-arib-si-design-pr53 "$CUR54"
           python3 <<'PY'
           from pathlib import Path
 
-          p=Path('tuner_hal2/device/src/px4/abi.rs')
-          s=p.read_text()
-          old='pub const PTX_GET_CNR: u64 = ior::<u32>(PTX_IOCTL_TYPE_BASIC, 0x04);'
-          new='pub const PTX_GET_CNR: u64 = ior::<*mut i32>(PTX_IOCTL_TYPE_BASIC, 0x04);'
-          if s.count(old) != 1: raise SystemExit('PTX_GET_CNR anchor missing or duplicated')
+          def one(path, old, new):
+              p=Path(path); s=p.read_text(); n=s.count(old)
+              if n != 1: raise SystemExit(f'{path}: expected one anchor, got {n}: {old[:100]!r}')
+              p.write_text(s.replace(old,new,1))
+
+          path='tis/src/com/maleicacid/tvinput/tis/PlaybackPipeline.kt'
+          one(path,
+              '    private var activeChannel: TunerController.ResolvedChannel? = null\n',
+              '    private var activeChannel: TunerController.ResolvedChannel? = null\n    private var activeTuner: Tuner? = null\n    private var activeSelection: TunerController.AvStreamSelection? = null\n')
+          one(path,
+              '        UNSUPPORTED_AUDIO_STREAM, AUDIO_UNAVAILABLE, CAS_NO_KEY, UNKNOWN,\n',
+              '        UNSUPPORTED_AUDIO_STREAM, AUDIO_UNAVAILABLE, INVALID_MEDIA_TIMESTAMP, CAS_NO_KEY, UNKNOWN,\n')
+          one(path,
+              '''    private fun setSurfaceOnPlaybackExecutor(newSurface: Surface?) {\n        if (surface !== newSurface && mediaSync != null) stopOnPlaybackExecutor()\n        surface = newSurface\n        if (newSurface == null) emitUnavailable(PlaybackUnavailableReason.SURFACE_DETACHED)\n    }\n''',
+              '''    private fun setSurfaceOnPlaybackExecutor(newSurface: Surface?) {\n        if (surface !== newSurface && mediaSync != null) stopOnPlaybackExecutor()\n        surface = newSurface\n        if (newSurface == null) emitUnavailable(PlaybackUnavailableReason.SURFACE_DETACHED)\n    }\n\n    fun rearmForNonDestructiveTune(channel: TunerController.ResolvedChannel): Boolean =\n        runOnPlaybackExecutorBlocking {\n            if (activeChannel != channel || mediaSyncSurfaceFailed) return@runOnPlaybackExecutorBlocking false\n            val sync = mediaSync ?: return@runOnPlaybackExecutorBlocking false\n            if (videoPathExpected) {\n                if (surface?.isValid != true || videoFilter == null || videoDecoder == null) {\n                    return@runOnPlaybackExecutorBlocking false\n                }\n                armVideoAvailability(sync, playbackGeneration)\n                scheduleFirstFrameTimeout(playbackGeneration)\n            } else if (audioPathExpected && (audioFilter == null || audioDecoder == null)) {\n                return@runOnPlaybackExecutorBlocking false\n            }\n            true\n        }\n''')
+          one(path,
+              '        activeChannel = channel\n        val video = selection.video\n',
+              '        activeChannel = channel\n        activeTuner = tuner\n        activeSelection = selection\n        val video = selection.video\n')
+          one(path,
+              '''            } else {\n                audioDecoder?.close()\n                audioDecoder = null\n                if (audioOnly) {\n''',
+              '''            } else {\n                audioDecoder?.close()\n                audioDecoder = null\n                audioPathExpected = false\n                audioInputQueued = false\n                if (audioOnly) {\n''')
+          one(path,
+              '''    private fun handleAudioFailure(reason: PlaybackUnavailableReason, detail: String, audioOnly: Boolean) {\n        releaseOutstandingAudioOutputs()\n        audioDecoder?.close()\n        audioDecoder = null\n        runCatching { audioTrack?.release() }\n        audioTrack = null\n        audioPathExpected = false\n        audioInputQueued = false\n        if (audioOnly) {\n            emitUnavailable(reason, detail)\n            stopOnPlaybackExecutor()\n        } else {\n            logAudioUnavailable(reason, detail)\n            maybeStartMediaSync()\n        }\n    }\n''',
+              '''    private fun handleAudioFailure(reason: PlaybackUnavailableReason, detail: String, audioOnly: Boolean) {\n        val restartTuner = activeTuner\n        val restartChannel = activeChannel\n        val restartSelection = activeSelection\n        releaseOutstandingAudioOutputs()\n        audioDecoder?.close()\n        audioDecoder = null\n        runCatching { audioTrack?.release() }\n        audioTrack = null\n        audioPathExpected = false\n        audioInputQueued = false\n        if (audioOnly) {\n            emitUnavailable(reason, detail)\n            stopOnPlaybackExecutor()\n            return\n        }\n        logAudioUnavailable(reason, "$detail; recreating MediaSync generation for video-only fallback")\n        if (restartTuner == null || restartChannel == null || restartSelection?.video == null) {\n            emitUnavailable(reason, "$detail; video-only restart context is unavailable")\n            stopOnPlaybackExecutor()\n            return\n        }\n        val restarted = startOnPlaybackExecutor(restartTuner, restartChannel, restartSelection.copy(audio = null))\n        if (restarted.generation < 0L) {\n            emitUnavailable(reason, "$detail; video-only generation restart failed")\n        }\n    }\n''')
+          one(path,
+              '        val rawPts = event.pts.takeIf(::isAuthoritativePtsValid) ?: return null\n',
+              '''        val rawPts = event.pts\n        if (!isAuthoritativePtsValid(rawPts)) {\n            malformedSamplesDropped++\n            val detail = "producer-authoritative MediaEvent PTS is invalid pts90k=$rawPts isAudio=$isAudio"\n            if (isAudio) {\n                Log.e(LogTags.TIS, "$detail; playback profile contract violated")\n            } else {\n                emitUnavailable(PlaybackUnavailableReason.INVALID_MEDIA_TIMESTAMP, detail)\n            }\n            return null\n        }\n''')
+          one(path,
+              '        activeChannel = null\n        ptsEpochCoordinator.reset()\n',
+              '        activeChannel = null\n        activeTuner = null\n        activeSelection = null\n        ptsEpochCoordinator.reset()\n')
+
+          path='tis/src/com/maleicacid/tvinput/tis/TunerController.kt'
+          one(path,
+              '''    private fun tuneForLiveOnController(channelUri: Uri): TuneOutcome {\n        // channel 解決に失敗する場合も既存 ライブ state を先に破棄する。\n        resetBeforeTune()\n        val resolved = resolveChannel(channelUri).getOrElse { e ->\n            Log.w(LogTags.TIS, "channel 解決に失敗しました inputId=$inputId uri=$channelUri", e)\n            return TuneOutcome(false, Tuner.RESULT_INVALID_ARGUMENT, null, tuneGeneration, e.message.orEmpty())\n        }\n        return tuneResolvedChannel(resolved, startPlayback = true)\n    }\n''',
+              '''    private fun tuneForLiveOnController(channelUri: Uri): TuneOutcome {\n        val resolved = resolveChannel(channelUri).getOrElse { e ->\n            // 解決不能要求では従来どおり既存live stateを破棄する。\n            resetBeforeTune()\n            Log.w(LogTags.TIS, "channel 解決に失敗しました inputId=$inputId uri=$channelUri", e)\n            return TuneOutcome(false, Tuner.RESULT_INVALID_ARGUMENT, null, tuneGeneration, e.message.orEmpty())\n        }\n        if (tuneAccepted && currentTune == resolved && playbackPipeline.rearmForNonDestructiveTune(resolved)) {\n            Log.d(LogTags.TIS, "same-channel tune を非破壊再利用します inputId=$inputId generation=$tuneGeneration channel=$resolved")\n            return TuneOutcome(true, Tuner.RESULT_SUCCESS, resolved, tuneGeneration, "NON_DESTRUCTIVE_SAME_CHANNEL_REUSE")\n        }\n        return tuneResolvedChannel(resolved, startPlayback = true)\n    }\n''')
+
+          path='tis/DESIGN_JA.md'
+          p=Path(path); s=p.read_text()
+          old='audio失敗は、audio-videoサービスで同generationのvideo経路が正常ならAudioTrackとaudio decoderを解放してvideo-only継続へ移り、診断に`MEDIASYNC_ERROR_AUDIOTRACK_FAIL`を残す。'
+          new='audio失敗は、audio-videoサービスでvideo経路を継続可能な場合でも旧MediaSyncを再利用せず、旧AudioTrack/audio decoderを含む現playback generationを終了し、MediaSync・video decoder・video filterを新generationとしてvideo-only構成で再生成する。診断に`MEDIASYNC_ERROR_AUDIOTRACK_FAIL`を残す。'
+          if s.count(old) != 1: raise SystemExit(f'tis/DESIGN_JA.md audio failure anchor count={s.count(old)}')
           s=s.replace(old,new,1)
-          needle='        assert_eq!(PTX_START_STREAMING, io(PTX_IOCTL_TYPE_BASIC, 0x02));\n'
-          if s.count(needle) != 1: raise SystemExit('px4 ABI test anchor missing')
-          s=s.replace(needle, needle + '        assert_eq!(PTX_GET_CNR, ior::<*mut i32>(PTX_IOCTL_TYPE_BASIC, 0x04));\n        #[cfg(target_pointer_width = "64")]\n        assert_eq!(PTX_GET_CNR, 0x8008_8d04);\n',1)
-          p.write_text(s)
-
-          p=Path('tuner_hal2/service_runtime/src/descrambler_session.rs')
-          s=p.read_text()
-          old='''    pub(crate) fn add_pid_claim(&mut self, claim: DescramblerPidClaim) {\n        if !self.pid_claims.contains(&claim) {\n            self.pid_claims.push(claim);\n        }\n    }'''
-          new='''    pub(crate) fn add_pid_claim(&mut self, claim: DescramblerPidClaim) {\n        if self.pid_claims.contains(&claim) {\n            return;\n        }\n        self.pid_claims.retain(|stored| stored.pid() != claim.pid());\n        self.pid_claims.push(claim);\n    }'''
-          if s.count(old) != 1: raise SystemExit('add_pid_claim anchor missing')
-          s=s.replace(old,new,1)
-          if s.count('    PidSourceConflict,\n') != 1: raise SystemExit('PidSourceConflict enum anchor missing')
-          s=s.replace('    PidSourceConflict,\n','',1)
-          conflict='''        if session\n            .pid_claims()\n            .iter()\n            .any(|stored| stored.pid() == claim.pid() && *stored != claim)\n        {\n            return Err(DescramblerSessionFailure {\n                step: DescramblerSessionTxnStep::AddPidClaim,\n                kind: DescramblerSessionFailureKind::PidSourceConflict,\n            });\n        }\n'''
-          if s.count(conflict) != 1: raise SystemExit('PidSourceConflict block missing')
-          s=s.replace(conflict,'',1)
-          oldtest='''    fn pid_txn_is_idempotent_only_for_the_exact_source_tuple() {\n        let mut session = DescramblerSession::new();\n        bind_demux_use_case(&mut session, 3, 9).unwrap();\n        let first = DescramblerPidClaim::from_source_filter(0x0100, 20, 4).unwrap();\n        let conflicting = DescramblerPidClaim::from_source_filter(0x0100, 21, 4).unwrap();\n\n        add_pid_claim_use_case(&mut session, first).unwrap();\n        add_pid_claim_use_case(&mut session, first).unwrap();\n        let error = add_pid_claim_use_case(&mut session, conflicting).unwrap_err();\n\n        assert_eq!(error.kind, DescramblerSessionFailureKind::PidSourceConflict);\n        assert_eq!(session.pid_claims(), &[first]);\n    }'''
-          newtest='''    fn pid_txn_is_idempotent_for_same_source_and_replaces_different_source() {\n        let mut session = DescramblerSession::new();\n        bind_demux_use_case(&mut session, 3, 9).unwrap();\n        let first = DescramblerPidClaim::from_source_filter(0x0100, 20, 4).unwrap();\n        let replacement = DescramblerPidClaim::from_source_filter(0x0100, 21, 4).unwrap();\n\n        add_pid_claim_use_case(&mut session, first).unwrap();\n        add_pid_claim_use_case(&mut session, first).unwrap();\n        assert_eq!(session.pid_claims(), &[first]);\n\n        add_pid_claim_use_case(&mut session, replacement).unwrap();\n        assert_eq!(session.pid_claims(), &[replacement]);\n    }'''
-          if s.count(oldtest) != 1: raise SystemExit('PID txn test anchor missing')
-          s=s.replace(oldtest,newtest,1)
-          p.write_text(s)
-
-          p=Path('tuner_hal2/service_runtime/src/boot.rs')
-          s=p.read_text()
-          arm='''        DescramblerSessionFailureKind::PidSourceConflict => HalError::invalid_state(\n            HalInvalidStateKind::InvalidLifecycle,\n            "descrambler PID is already registered with a different source",\n        ),\n'''
-          if s.count(arm) != 1: raise SystemExit('PidSourceConflict mapping anchor missing')
-          p.write_text(s.replace(arm,'',1))
-
-          p=Path('tuner_hal/DESIGN_JA.md')
-          s=p.read_text()
-          bad='`addPid(pid, source)`は完全同一のdemux generation・PID・source filter generation tupleだけ冪等成功とする。sourceが異なる既存登録には`INVALID_STATE`を返し、変更には先行`removePid()`を必須とする。'
-          good='`addPid(pid, source)`はPIDを置換キーとする。同じPID・同じsourceの再指定は冪等成功とし、同じPIDに異なるsourceが既に登録されている場合は、AOSP Framework契約どおり旧sourceを新sourceへ置換する。新sourceのdemux/generation/lifecycleをcommit前に検証し、検証またはprepareに失敗した場合は旧登録を維持する。置換中もPID claimの容量は1件として扱い、`removePid()`を先行させる空白期間を要求しない。'
-          if s.count(bad) != 1: raise SystemExit('addPid design paragraph missing')
-          s=s.replace(bad,good,1)
-          oldmin='NULL復帰、replacement、self-loop、2-node/3-node cycle拒否、wrong demux/owner、closed/generation、source close/unlink cleanup、prepare/commit fault'
-          newmin='初回non-NULL接続、NULL/demux-input経路、self-loop、2-node/3-node cycle拒否、wrong demux/owner、closed/generation、source close/unlink cleanup、prepare/commit fault'
-          if s.count(oldmin) != 1: raise SystemExit('SourceBoundary minimum-test anchor missing')
-          s=s.replace(oldmin,newmin,1)
-          anchor='### Android 14 AIDL filter source 境界契約\n\n'
-          note=('AOSP Frameworkの`Filter.setDataSource()`は、成功済みのnon-NULL sourceを保持している状態から別のnon-NULL sourceへ再設定する標準経路を持たない。したがって本製品の公開成功契約として「任意のnon-NULL→別non-NULL replacement」を要求しない。`SourceBoundaryTxn`は初回source接続、AIDLのNULL/demux-input意味論、cleanupによるunlink、cycle/owner/generation検証を正規責務とし、内部実装がより一般的なrelation mutation primitiveを持つこと自体はimplementation detailとする。\n\n')
-          if s.count(anchor) != 1: raise SystemExit('filter source heading missing')
-          s=s.replace(anchor,anchor+note,1)
-          test_anchor='| T-AOSP-9 | `addPid(pid, sourceFilter)` 成功 | upper stream識別ありPID登録 |\n'
-          test_row='| T-AOSP-9a | 同じPIDへ異なる`sourceFilter`で再`addPid()` | 旧sourceを新sourceへ原子的に置換し、先行`removePid()`を要求しない。新source検証失敗では旧登録を維持 |\n'
-          if s.count(test_anchor) != 1: raise SystemExit('T-AOSP-9 test anchor missing')
-          s=s.replace(test_anchor,test_anchor+test_row,1)
-          p.write_text(s)
+          old2='audio-videoでAudioTrack failure時のvideo-only継続'
+          new2='audio-videoでAudioTrack failure時に旧MediaSync generationを破棄してvideo-only新generationへ再生成'
+          if s.count(old2) != 1: raise SystemExit(f'tis/DESIGN_JA.md minimum-test anchor count={s.count(old2)}')
+          p.write_text(s.replace(old2,new2,1))
           PY
 
-          if grep -R "PidSourceConflict" -n tuner_hal2/service_runtime/src; then exit 1; fi
-          (cd tuner_hal2/host_ci && cargo fmt --all -- --check && cargo check --workspace --all-targets --locked && cargo test --workspace --locked)
+          grep -q 'NON_DESTRUCTIVE_SAME_CHANNEL_REUSE' tis/src/com/maleicacid/tvinput/tis/TunerController.kt
+          grep -q 'INVALID_MEDIA_TIMESTAMP' tis/src/com/maleicacid/tvinput/tis/PlaybackPipeline.kt
           git diff --check
-          git add tuner_hal/DESIGN_JA.md tuner_hal2/device/src/px4/abi.rs tuner_hal2/service_runtime/src/descrambler_session.rs tuner_hal2/service_runtime/src/boot.rs
-          git commit -m "fix(tuner): align descrambler PID and px4 ABI contracts"
-          NEW53=$(git rev-parse HEAD)
-          git push origin HEAD:fix/tuner-hal2-rustfmt-1.81
 
-          git checkout -B agent/implement-tis-arib-si-design-pr53 "$OLD54"
-          git rebase --onto "$NEW53" "$OLD53"
+          tools_dir="$RUNNER_TEMP/tis-kotlin-compile"
+          mkdir -p "$tools_dir"
+          curl -fsSL --retry 3 "https://github.com/JetBrains/kotlin/releases/download/v1.9.22/kotlin-compiler-1.9.22.zip" -o "$tools_dir/kotlin.zip"
+          curl -fsSL --retry 3 "https://repo.maven.apache.org/maven2/org/robolectric/android-all/14-robolectric-10818077/android-all-14-robolectric-10818077.jar" -o "$tools_dir/android-all.jar"
+          unzip -q "$tools_dir/kotlin.zip" -d "$tools_dir/compiler"
+          out="$RUNNER_TEMP/tis-production"
+          mkdir -p "$out"
+          mapfile -d '' -t sources < <(find tis/src tis/host_ci/kotlin/stubs/android -type f -name '*.kt' -print0 | sort -z)
+          "$tools_dir/compiler/kotlinc/bin/kotlinc" -J-Xmx4g -jvm-target 17 -classpath "$tools_dir/android-all.jar" -d "$out" "${sources[@]}"
+
+          git add tis/DESIGN_JA.md tis/src/com/maleicacid/tvinput/tis/PlaybackPipeline.kt tis/src/com/maleicacid/tvinput/tis/TunerController.kt
+          git commit -m "fix(tis): align playback lifecycle and tune reuse"
           NEW54=$(git rev-parse HEAD)
-          git push --force-with-lease=refs/heads/agent/implement-tis-arib-si-design-pr53:$OLD54 origin HEAD:agent/implement-tis-arib-si-design-pr53
+          git push origin HEAD:agent/implement-tis-arib-si-design-pr53
 
-          git checkout -B docs/future-work-design-completion "$OLD55"
-          git rebase --onto "$NEW54" "$OLD54"
+          git checkout -B docs/future-work-design-completion "$CUR55"
+          git rebase --onto "$NEW54" "$CUR54"
           NEW55=$(git rev-parse HEAD)
-          git push --force-with-lease=refs/heads/docs/future-work-design-completion:$OLD55 origin HEAD:docs/future-work-design-completion
+          git push --force-with-lease=refs/heads/docs/future-work-design-completion:$CUR55 origin HEAD:docs/future-work-design-completion
 
-          git checkout -B design/r52-contracts "$OLD57"
-          git rebase --onto "$NEW55" "$OLD55"
-          git push --force-with-lease=refs/heads/design/r52-contracts:$OLD57 origin HEAD:design/r52-contracts
+          git checkout -B design/r52-contracts "$CUR57"
+          git rebase --onto "$NEW55" "$CUR55"
+          git push --force-with-lease=refs/heads/design/r52-contracts:$CUR57 origin HEAD:design/r52-contracts
