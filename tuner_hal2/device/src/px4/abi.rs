@@ -42,7 +42,7 @@ pub struct PtxFreq {
 pub const PTX_SET_CHANNEL: u64 = iow::<PtxFreq>(PTX_IOCTL_TYPE_BASIC, 0x01);
 pub const PTX_START_STREAMING: u64 = io(PTX_IOCTL_TYPE_BASIC, 0x02);
 pub const PTX_STOP_STREAMING: u64 = io(PTX_IOCTL_TYPE_BASIC, 0x03);
-pub const PTX_GET_CNR: u64 = ior::<u32>(PTX_IOCTL_TYPE_BASIC, 0x04);
+pub const PTX_GET_CNR: u64 = ior::<*mut i32>(PTX_IOCTL_TYPE_BASIC, 0x04);
 pub const PTX_ENABLE_LNB_POWER: u64 = iow::<i32>(PTX_IOCTL_TYPE_BASIC, 0x05);
 pub const PTX_DISABLE_LNB_POWER: u64 = io(PTX_IOCTL_TYPE_BASIC, 0x06);
 pub const PTX_SET_SYSTEM_MODE: u64 = iow::<u32>(PTX_IOCTL_TYPE_BASIC, 0x0b);
@@ -67,6 +67,9 @@ mod tests {
     fn px4_ioctl_numbers_are_stable() {
         assert_eq!(PTX_SET_CHANNEL, iow::<PtxFreq>(PTX_IOCTL_TYPE_BASIC, 0x01));
         assert_eq!(PTX_START_STREAMING, io(PTX_IOCTL_TYPE_BASIC, 0x02));
+        assert_eq!(PTX_GET_CNR, ior::<*mut i32>(PTX_IOCTL_TYPE_BASIC, 0x04));
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(PTX_GET_CNR, 0x8008_8d04);
         assert_eq!(PTX_SET_SYSTEM_MODE, iow::<u32>(PTX_IOCTL_TYPE_BASIC, 0x0b));
         assert_eq!(PTX_GET_LOCK_STATUS, ior::<u32>(PTX_IOCTL_TYPE_BASIC, 0x0c));
         assert_eq!(PTX_GET_LOCK_STATUS, 0x8004_8d0c);

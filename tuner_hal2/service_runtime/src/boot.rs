@@ -446,10 +446,6 @@ fn descrambler_session_failure_to_hal(kind: DescramblerSessionFailureKind) -> Ha
             HalInvalidStateKind::InvalidLifecycle,
             "descrambler demux source is already bound",
         ),
-        DescramblerSessionFailureKind::PidSourceConflict => HalError::invalid_state(
-            HalInvalidStateKind::InvalidLifecycle,
-            "descrambler PID is already registered with a different source",
-        ),
         DescramblerSessionFailureKind::ClearKeyPlanMismatch => HalError::internal(
             HalInternalKind::InvariantViolation,
             "descrambler clear-key plan no longer matches session state",
