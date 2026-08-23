@@ -1,0 +1,106 @@
+name: Repair stacked PRs 53 54 57
+
+on:
+  push:
+    branches: [automation/repair-stacked-prs-53-54-57]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Repair PR 53 and rebase descendants
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main fix/tuner-hal2-rustfmt-1.81 agent/implement-tis-arib-si-design-pr53 docs/future-work-design-completion design/r52-contracts
+
+          OLD53=6826a186c8c081c499188d24c7b51b460f651ea3
+          OLD54=1fc3b6665f8ce644942eb69a43b2bc252016bf39
+          OLD55=59ceaf188b6ab22f70201033867aedfd7729c3bf
+          OLD57=6cfa81b6bb3f10c41cca820d60c2eaac836d8b2e
+          test "$(git rev-parse origin/fix/tuner-hal2-rustfmt-1.81)" = "$OLD53"
+          test "$(git rev-parse origin/agent/implement-tis-arib-si-design-pr53)" = "$OLD54"
+          test "$(git rev-parse origin/docs/future-work-design-completion)" = "$OLD55"
+          test "$(git rev-parse origin/design/r52-contracts)" = "$OLD57"
+
+          git checkout -B fix/tuner-hal2-rustfmt-1.81 "$OLD53"
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace(path, old, new, count=1):
+              p=Path(path); s=p.read_text()
+              n=s.count(old)
+              if n != count:
+                  raise SystemExit(f"{path}: expected {count} occurrences, got {n}: {old[:80]!r}")
+              p.write_text(s.replace(old,new))
+
+          p=Path('tuner_hal2/device/src/px4/abi.rs')
+          s=p.read_text()
+          s=s.replace(
+              'pub const PTX_GET_CNR: u64 = ior::<u32>(PTX_IOCTL_TYPE_BASIC, 0x04);',
+              'pub const PTX_GET_CNR: u64 = ior::<*mut i32>(PTX_IOCTL_TYPE_BASIC, 0x04);'
+          )
+          needle='        assert_eq!(PTX_START_STREAMING, io(PTX_IOCTL_TYPE_BASIC, 0x02));\n'
+          if needle not in s: raise SystemExit('px4 ABI test anchor missing')
+          s=s.replace(needle, needle + '        assert_eq!(PTX_GET_CNR, ior::<*mut i32>(PTX_IOCTL_TYPE_BASIC, 0x04));\n        #[cfg(target_pointer_width = "64")]\n        assert_eq!(PTX_GET_CNR, 0x8008_8d04);\n',1)
+          p.write_text(s)
+
+          p=Path('tuner_hal2/service_runtime/src/descrambler_session.rs')
+          s=p.read_text()
+          old='''    pub(crate) fn add_pid_claim(&mut self, claim: DescramblerPidClaim) {\n        if !self.pid_claims.contains(&claim) {\n            self.pid_claims.push(claim);\n        }\n    }'''
+          new='''    pub(crate) fn add_pid_claim(&mut self, claim: DescramblerPidClaim) {\n        if self.pid_claims.contains(&claim) {\n            return;\n        }\n        self.pid_claims.retain(|stored| stored.pid() != claim.pid());\n        self.pid_claims.push(claim);\n    }'''
+          if old not in s: raise SystemExit('add_pid_claim anchor missing')
+          s=s.replace(old,new,1)
+          s=s.replace('    PidSourceConflict,\n','')
+          conflict='''        if session\n            .pid_claims()\n            .iter()\n            .any(|stored| stored.pid() == claim.pid() && *stored != claim)\n        {\n            return Err(DescramblerSessionFailure {\n                step: DescramblerSessionTxnStep::AddPidClaim,\n                kind: DescramblerSessionFailureKind::PidSourceConflict,\n            });\n        }\n'''
+          if conflict not in s: raise SystemExit('PidSourceConflict block missing')
+          s=s.replace(conflict,'',1)
+          oldtest='''    fn pid_txn_is_idempotent_only_for_the_exact_source_tuple() {\n        let mut session = DescramblerSession::new();\n        bind_demux_use_case(&mut session, 3, 9).unwrap();\n        let first = DescramblerPidClaim::from_source_filter(0x0100, 20, 4).unwrap();\n        let conflicting = DescramblerPidClaim::from_source_filter(0x0100, 21, 4).unwrap();\n\n        add_pid_claim_use_case(&mut session, first).unwrap();\n        add_pid_claim_use_case(&mut session, first).unwrap();\n        let error = add_pid_claim_use_case(&mut session, conflicting).unwrap_err();\n\n        assert_eq!(error.kind, DescramblerSessionFailureKind::PidSourceConflict);\n        assert_eq!(session.pid_claims(), &[first]);\n    }'''
+          newtest='''    fn pid_txn_is_idempotent_for_same_source_and_replaces_different_source() {\n        let mut session = DescramblerSession::new();\n        bind_demux_use_case(&mut session, 3, 9).unwrap();\n        let first = DescramblerPidClaim::from_source_filter(0x0100, 20, 4).unwrap();\n        let replacement = DescramblerPidClaim::from_source_filter(0x0100, 21, 4).unwrap();\n\n        add_pid_claim_use_case(&mut session, first).unwrap();\n        add_pid_claim_use_case(&mut session, first).unwrap();\n        assert_eq!(session.pid_claims(), &[first]);\n\n        add_pid_claim_use_case(&mut session, replacement).unwrap();\n        assert_eq!(session.pid_claims(), &[replacement]);\n    }'''
+          if oldtest not in s: raise SystemExit('PID txn test anchor missing')
+          s=s.replace(oldtest,newtest,1)
+          p.write_text(s)
+
+          p=Path('tuner_hal/DESIGN_JA.md')
+          s=p.read_text()
+          bad='`addPid(pid, source)`は完全同一のdemux generation・PID・source filter generation tupleだけ冪等成功とする。sourceが異なる既存登録には`INVALID_STATE`を返し、変更には先行`removePid()`を必須とする。'
+          good='`addPid(pid, source)`はPIDを置換キーとする。同じPID・同じsourceの再指定は冪等成功とし、同じPIDに異なるsourceが既に登録されている場合は、AOSP Framework契約どおり旧sourceを新sourceへ置換する。新sourceのdemux/generation/lifecycleをcommit前に検証し、検証またはprepareに失敗した場合は旧登録を維持する。置換中もPID claimの容量は1件として扱い、`removePid()`を先行させる空白期間を要求しない。'
+          if bad not in s: raise SystemExit('addPid design bad paragraph missing')
+          s=s.replace(bad,good,1)
+          s=s.replace('NULL復帰、replacement、self-loop、2-node/3-node cycle拒否、wrong demux/owner、closed/generation、source close/unlink cleanup、prepare/commit fault', '初回non-NULL接続、NULL/demux-input経路、self-loop、2-node/3-node cycle拒否、wrong demux/owner、closed/generation、source close/unlink cleanup、prepare/commit fault')
+          anchor='### Android 14 AIDL filter source 境界契約\n\n'
+          note=('AOSP Frameworkの`Filter.setDataSource()`は、成功済みのnon-NULL sourceを保持している状態から別のnon-NULL sourceへ再設定する標準経路を持たない。したがって本製品の公開成功契約として「任意のnon-NULL→別non-NULL replacement」を要求しない。`SourceBoundaryTxn`は初回source接続、AIDLのNULL/demux-input意味論、cleanupによるunlink、cycle/owner/generation検証を正規責務とし、内部実装がより一般的なrelation mutation primitiveを持つこと自体はimplementation detailとする。\n\n')
+          if anchor not in s: raise SystemExit('filter source heading missing')
+          s=s.replace(anchor,anchor+note,1)
+          p.write_text(s)
+          PY
+
+          if grep -R "PidSourceConflict" -n tuner_hal2/service_runtime/src; then exit 1; fi
+          (cd tuner_hal2/host_ci && cargo fmt --all -- --check && cargo check --workspace --all-targets --locked && cargo test --workspace --locked)
+          git diff --check
+          git add tuner_hal/DESIGN_JA.md tuner_hal2/device/src/px4/abi.rs tuner_hal2/service_runtime/src/descrambler_session.rs
+          git commit -m "fix(tuner): align descrambler PID and px4 ABI contracts"
+          NEW53=$(git rev-parse HEAD)
+          git push origin HEAD:fix/tuner-hal2-rustfmt-1.81
+
+          git checkout -B agent/implement-tis-arib-si-design-pr53 "$OLD54"
+          git rebase --onto "$NEW53" "$OLD53"
+          NEW54=$(git rev-parse HEAD)
+          git push --force-with-lease=refs/heads/agent/implement-tis-arib-si-design-pr53:$OLD54 origin HEAD:agent/implement-tis-arib-si-design-pr53
+
+          git checkout -B docs/future-work-design-completion "$OLD55"
+          git rebase --onto "$NEW54" "$OLD54"
+          NEW55=$(git rev-parse HEAD)
+          git push --force-with-lease=refs/heads/docs/future-work-design-completion:$OLD55 origin HEAD:docs/future-work-design-completion
+
+          git checkout -B design/r52-contracts "$OLD57"
+          git rebase --onto "$NEW55" "$OLD55"
+          git push --force-with-lease=refs/heads/design/r52-contracts:$OLD57 origin HEAD:design/r52-contracts
