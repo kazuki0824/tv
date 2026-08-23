@@ -65,6 +65,12 @@ jobs:
           s=s.replace(oldtest,newtest,1)
           p.write_text(s)
 
+          p=Path('tuner_hal2/service_runtime/src/boot.rs')
+          s=p.read_text()
+          arm='''        DescramblerSessionFailureKind::PidSourceConflict => HalError::invalid_state(\n            HalInvalidStateKind::InvalidLifecycle,\n            "descrambler PID is already registered with a different source",\n        ),\n'''
+          if s.count(arm) != 1: raise SystemExit('PidSourceConflict mapping anchor missing')
+          p.write_text(s.replace(arm,'',1))
+
           p=Path('tuner_hal/DESIGN_JA.md')
           s=p.read_text()
           bad='`addPid(pid, source)`は完全同一のdemux generation・PID・source filter generation tupleだけ冪等成功とする。sourceが異なる既存登録には`INVALID_STATE`を返し、変更には先行`removePid()`を必須とする。'
@@ -89,7 +95,7 @@ jobs:
           if grep -R "PidSourceConflict" -n tuner_hal2/service_runtime/src; then exit 1; fi
           (cd tuner_hal2/host_ci && cargo fmt --all -- --check && cargo check --workspace --all-targets --locked && cargo test --workspace --locked)
           git diff --check
-          git add tuner_hal/DESIGN_JA.md tuner_hal2/device/src/px4/abi.rs tuner_hal2/service_runtime/src/descrambler_session.rs
+          git add tuner_hal/DESIGN_JA.md tuner_hal2/device/src/px4/abi.rs tuner_hal2/service_runtime/src/descrambler_session.rs tuner_hal2/service_runtime/src/boot.rs
           git commit -m "fix(tuner): align descrambler PID and px4 ABI contracts"
           NEW53=$(git rev-parse HEAD)
           git push origin HEAD:fix/tuner-hal2-rustfmt-1.81
