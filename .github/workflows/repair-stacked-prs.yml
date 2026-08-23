@@ -14,78 +14,150 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Repair PR 54 and rebase descendants
+      - name: Repair PR 57 CAS and HEVC gaps
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin fix/tuner-hal2-rustfmt-1.81 agent/implement-tis-arib-si-design-pr53 docs/future-work-design-completion design/r52-contracts
-
-          CUR53=e2b88445354e7c881d5fccb888f677e8d0508df6
-          CUR54=6510ea834672c84fa0db5b81a37aca9405e6e691
-          CUR55=765f59360191517f2bbacdb6daee725c491ba8a7
-          CUR57=ff64f1c84e15a3c207320fccb29b2890372174b0
-          test "$(git rev-parse origin/fix/tuner-hal2-rustfmt-1.81)" = "$CUR53"
-          test "$(git rev-parse origin/agent/implement-tis-arib-si-design-pr53)" = "$CUR54"
+          git fetch origin docs/future-work-design-completion design/r52-contracts
+          CUR55=e30d2826aa00b20c237cc00fafefa1139fbed610
+          CUR57=e924eca16869e66c98ff21a96be98423f9993997
           test "$(git rev-parse origin/docs/future-work-design-completion)" = "$CUR55"
           test "$(git rev-parse origin/design/r52-contracts)" = "$CUR57"
+          git checkout -B design/r52-contracts "$CUR57"
 
-          git checkout -B agent/implement-tis-arib-si-design-pr53 "$CUR54"
           python3 <<'PY'
           from pathlib import Path
 
           def one(path, old, new):
               p=Path(path); s=p.read_text(); n=s.count(old)
-              if n != 1: raise SystemExit(f'{path}: expected one anchor, got {n}: {old[:100]!r}')
+              if n != 1: raise SystemExit(f'{path}: expected one anchor, got {n}: {old[:110]!r}')
               p.write_text(s.replace(old,new,1))
 
-          path='tis/src/com/maleicacid/tvinput/tis/PlaybackPipeline.kt'
+          # TIS token boundary: reject AOSP VOID token [0x00].
+          path='tis/src/com/maleicacid/tvinput/common/ChannelKeys.kt'
           one(path,
-              '    private var activeChannel: TunerController.ResolvedChannel? = null\n',
-              '    private var activeChannel: TunerController.ResolvedChannel? = null\n    private var activeTuner: Tuner? = null\n    private var activeSelection: TunerController.AvStreamSelection? = null\n')
+              '    init { require(bytes.size in TOKEN_LENGTH_RANGE) { "Tuner key token は 1..16 byte でなければなりません: ${bytes.size}" } }\n',
+              '''    init {\n        require(bytes.size in TOKEN_LENGTH_RANGE) { "Tuner key token は 1..16 byte でなければなりません: ${bytes.size}" }\n        require(!(bytes.size == 1 && bytes[0] == 0.toByte())) { "Tuner key token に VOID [0x00] は使用できません" }\n    }\n''')
           one(path,
-              '        UNSUPPORTED_AUDIO_STREAM, AUDIO_UNAVAILABLE, CAS_NO_KEY, UNKNOWN,\n',
-              '        UNSUPPORTED_AUDIO_STREAM, AUDIO_UNAVAILABLE, INVALID_MEDIA_TIMESTAMP, CAS_NO_KEY, UNKNOWN,\n')
-          one(path,
-              '''    private fun setSurfaceOnPlaybackExecutor(newSurface: Surface?) {\n        if (surface !== newSurface && mediaSync != null) stopOnPlaybackExecutor()\n        surface = newSurface\n        if (newSurface == null) emitUnavailable(PlaybackUnavailableReason.SURFACE_DETACHED)\n    }\n''',
-              '''    private fun setSurfaceOnPlaybackExecutor(newSurface: Surface?) {\n        if (surface !== newSurface && mediaSync != null) stopOnPlaybackExecutor()\n        surface = newSurface\n        if (newSurface == null) emitUnavailable(PlaybackUnavailableReason.SURFACE_DETACHED)\n    }\n\n    fun rearmForNonDestructiveTune(channel: TunerController.ResolvedChannel): Boolean =\n        runOnPlaybackExecutorBlocking {\n            if (activeChannel != channel || mediaSyncSurfaceFailed) return@runOnPlaybackExecutorBlocking false\n            val sync = mediaSync ?: return@runOnPlaybackExecutorBlocking false\n            if (videoPathExpected) {\n                if (surface?.isValid != true || videoFilter == null || videoDecoder == null) {\n                    return@runOnPlaybackExecutorBlocking false\n                }\n                armVideoAvailability(sync, playbackGeneration)\n                scheduleFirstFrameTimeout(playbackGeneration)\n            } else if (audioPathExpected && (audioFilter == null || audioDecoder == null)) {\n                return@runOnPlaybackExecutorBlocking false\n            }\n            true\n        }\n''')
-          one(path,
-              '        activeChannel = channel\n        val video = selection.video\n',
-              '        activeChannel = channel\n        activeTuner = tuner\n        activeSelection = selection\n        val video = selection.video\n')
-          one(path,
-              '''            } else {\n                audioDecoder?.close()\n                audioDecoder = null\n                if (audioOnly) {\n''',
-              '''            } else {\n                audioDecoder?.close()\n                audioDecoder = null\n                audioPathExpected = false\n                audioInputQueued = false\n                if (audioOnly) {\n''')
-          one(path,
-              '''    private fun handleAudioFailure(reason: PlaybackUnavailableReason, detail: String, audioOnly: Boolean) {\n        releaseOutstandingAudioOutputs()\n        audioDecoder?.close()\n        audioDecoder = null\n        runCatching { audioTrack?.release() }\n        audioTrack = null\n        audioPathExpected = false\n        audioInputQueued = false\n        if (audioOnly) {\n            emitUnavailable(reason, detail)\n            stopOnPlaybackExecutor()\n        } else {\n            logAudioUnavailable(reason, detail)\n            maybeStartMediaSync()\n        }\n    }\n''',
-              '''    private fun handleAudioFailure(reason: PlaybackUnavailableReason, detail: String, audioOnly: Boolean) {\n        val restartTuner = activeTuner\n        val restartChannel = activeChannel\n        val restartSelection = activeSelection\n        releaseOutstandingAudioOutputs()\n        audioDecoder?.close()\n        audioDecoder = null\n        runCatching { audioTrack?.release() }\n        audioTrack = null\n        audioPathExpected = false\n        audioInputQueued = false\n        if (audioOnly) {\n            emitUnavailable(reason, detail)\n            stopOnPlaybackExecutor()\n            return\n        }\n        logAudioUnavailable(reason, "$detail; recreating MediaSync generation for video-only fallback")\n        if (restartTuner == null || restartChannel == null || restartSelection?.video == null) {\n            emitUnavailable(reason, "$detail; video-only restart context is unavailable")\n            stopOnPlaybackExecutor()\n            return\n        }\n        val restarted = startOnPlaybackExecutor(restartTuner, restartChannel, restartSelection.copy(audio = null))\n        if (restarted.generation < 0L) {\n            emitUnavailable(reason, "$detail; video-only generation restart failed")\n        }\n    }\n''')
-          one(path,
-              '        val rawPts = event.pts.takeIf(::isAuthoritativePtsValid) ?: return null\n',
-              '''        val rawPts = event.pts\n        if (!isAuthoritativePtsValid(rawPts)) {\n            malformedSamplesDropped++\n            val detail = "producer-authoritative MediaEvent PTS is invalid pts90k=$rawPts isAudio=$isAudio"\n            if (isAudio) {\n                Log.w(LogTags.TIS, "$detail; playback profile contract violated")\n            } else {\n                emitUnavailable(PlaybackUnavailableReason.INVALID_MEDIA_TIMESTAMP, detail)\n            }\n            return null\n        }\n''')
-          one(path,
-              '        activeChannel = null\n        ptsEpochCoordinator.reset()\n',
-              '        activeChannel = null\n        activeTuner = null\n        activeSelection = null\n        ptsEpochCoordinator.reset()\n')
+              '        fun fromOrNull(raw: ByteArray?): TunerKeyToken? = raw?.takeIf { it.size in TOKEN_LENGTH_RANGE }?.let(::TunerKeyToken)\n',
+              '        fun fromOrNull(raw: ByteArray?): TunerKeyToken? = raw?.takeIf { it.size in TOKEN_LENGTH_RANGE && !(it.size == 1 && it[0] == 0.toByte()) }?.let(::TunerKeyToken)\n')
 
-          path='tis/src/com/maleicacid/tvinput/tis/TunerController.kt'
+          # TIS CAS: B1 is ECM-only; production ECM token is exactly MediaCas session ID.
+          path='tis/src/com/maleicacid/tvinput/tis/CasController.kt'
           one(path,
-              '''    private fun tuneForLiveOnController(channelUri: Uri): TuneOutcome {\n        // channel 解決に失敗する場合も既存 ライブ state を先に破棄する。\n        resetBeforeTune()\n        val resolved = resolveChannel(channelUri).getOrElse { e ->\n            Log.w(LogTags.TIS, "channel 解決に失敗しました inputId=$inputId uri=$channelUri", e)\n            return TuneOutcome(false, Tuner.RESULT_INVALID_ARGUMENT, null, tuneGeneration, e.message.orEmpty())\n        }\n        return tuneResolvedChannel(resolved, startPlayback = true)\n    }\n''',
-              '''    private fun tuneForLiveOnController(channelUri: Uri): TuneOutcome {\n        val resolved = resolveChannel(channelUri).getOrElse { e ->\n            // 解決不能要求では従来どおり既存live stateを破棄する。\n            resetBeforeTune()\n            Log.w(LogTags.TIS, "channel 解決に失敗しました inputId=$inputId uri=$channelUri", e)\n            return TuneOutcome(false, Tuner.RESULT_INVALID_ARGUMENT, null, tuneGeneration, e.message.orEmpty())\n        }\n        if (tuneAccepted && currentTune == resolved && playbackPipeline.rearmForNonDestructiveTune(resolved)) {\n            Log.d(LogTags.TIS, "same-channel tune を非破壊再利用します inputId=$inputId generation=$tuneGeneration channel=$resolved")\n            return TuneOutcome(true, Tuner.RESULT_SUCCESS, resolved, tuneGeneration, "NON_DESTRUCTIVE_SAME_CHANNEL_REUSE")\n        }\n        return tuneResolvedChannel(resolved, startPlayback = true)\n    }\n''')
+              '''                CaMetadataSource.CAT -> {\n                    val emmPid = ca.emmPid ?: return@forEach\n                    emmBindings += EmmBinding(ca.caSystemId, emmPid, ca.privateData.copyOf())\n                }\n''',
+              '''                CaMetadataSource.CAT -> {\n                    // STD-B1 is ECM-only in this product. Preserve CAT metadata in SI facts,\n                    // but never promote B1 CAT descriptors into an EMM execution binding.\n                    if (ca.caSystemId != SupportedCasSystemIds.ARIB_STD_B25) return@forEach\n                    val emmPid = ca.emmPid ?: return@forEach\n                    emmBindings += EmmBinding(ca.caSystemId, emmPid, ca.privateData.copyOf())\n                }\n''')
+          one(path,
+              '        val systems = emmPidToSystems[pid].orEmpty()\n',
+              '        val systems = emmPidToSystems[pid].orEmpty().filter { it == SupportedCasSystemIds.ARIB_STD_B25 }\n')
+          one(path,
+              '''                is EcmProcessResult.DiagnosticOnly -> diagnostics += Diagnostic(State.ERROR, ErrorCode.KEY_TOKEN_MISSING, systemId, pid, ecmResult.message)\n                null -> diagnostics += Diagnostic(State.ERROR, ErrorCode.KEY_TOKEN_MISSING, systemId, pid, "MediaCas session から実 key token を取得できません")\n''',
+              '''                is EcmProcessResult.InvalidKeyToken -> diagnostics += Diagnostic(State.ERROR, ErrorCode.INVALID_KEY_TOKEN, systemId, pid, ecmResult.message)\n                is EcmProcessResult.DiagnosticOnly -> diagnostics += Diagnostic(State.ERROR, ErrorCode.KEY_TOKEN_MISSING, systemId, pid, ecmResult.message)\n                null -> diagnostics += Diagnostic(State.ERROR, ErrorCode.KEY_TOKEN_MISSING, systemId, pid, "MediaCas session から実 key token を取得できません")\n''')
+          one(path,
+              '''sealed class EcmProcessResult {\n    data class RealKeyToken(val token: TunerKeyToken) : EcmProcessResult()\n    data class DiagnosticOnly(val message: String) : EcmProcessResult()\n}\n''',
+              '''sealed class EcmProcessResult {\n    data class RealKeyToken(val token: TunerKeyToken) : EcmProcessResult()\n    data class InvalidKeyToken(val message: String) : EcmProcessResult()\n    data class DiagnosticOnly(val message: String) : EcmProcessResult()\n}\n''')
+          one(path,
+              '''    override fun processEcm(section: ByteArray): Result<EcmProcessResult> = runCatching {\n        session.processEcm(section, 0, section.size)\n        EcmProcessResult.DiagnosticOnly("MediaCas 標準 API は ECM 投入完了を返すが、r51 の placeholder CAS では Tuner 用の実 key token を返しません")\n    }\n''',
+              '''    override fun processEcm(section: ByteArray): Result<EcmProcessResult> = runCatching {\n        session.processEcm(section, 0, section.size)\n        val sessionId = session.sessionId\n        val token = TunerKeyToken.fromOrNull(sessionId)\n        if (token == null) {\n            EcmProcessResult.InvalidKeyToken("MediaCas session ID は 1..16 byte かつ VOID [0x00] 以外でなければなりません")\n        } else {\n            EcmProcessResult.RealKeyToken(token)\n        }\n    }\n''')
 
-          path='tis/DESIGN_JA.md'
+          # Rust token boundary mirrors the TIS/session-ID contract.
+          path='tuner_hal2/descrambler/src/runtime/token.rs'
+          one(path,
+              '''pub enum DescramblerKeyTokenError {\n    Empty,\n    InvalidLength { len: usize, min: usize, max: usize },\n}\n''',
+              '''pub enum DescramblerKeyTokenError {\n    Empty,\n    VoidToken,\n    InvalidLength { len: usize, min: usize, max: usize },\n}\n''')
+          one(path,
+              '''        if bytes.len() > DESCRAMBLER_TOKEN_MAX_BYTES {\n''',
+              '''        if bytes.len() == 1 && bytes[0] == 0 {\n            return Err(DescramblerKeyTokenError::VoidToken);\n        }\n        if bytes.len() > DESCRAMBLER_TOKEN_MAX_BYTES {\n''')
+          one(path,
+              '''        assert!(DescramblerKeyToken::try_from_bytes(vec![0x55; 1]).is_ok());\n''',
+              '''        assert!(DescramblerKeyToken::try_from_bytes(vec![0x55; 1]).is_ok());\n        assert_eq!(\n            DescramblerKeyToken::try_from_bytes(vec![0x00]).unwrap_err(),\n            DescramblerKeyTokenError::VoidToken\n        );\n''')
+
+          # Production key-table publish/revoke API, keyed by exact MediaCas session-ID token.
+          path='tuner_hal2/service_runtime/src/descrambler_key_table.rs'
           p=Path(path); s=p.read_text()
-          old='audio失敗は、audio-videoサービスで同generationのvideo経路が正常ならAudioTrackとaudio decoderを解放してvideo-only継続へ移り、診断に`MEDIASYNC_ERROR_AUDIOTRACK_FAIL`を残す。'
-          new='audio失敗は、audio-videoサービスでvideo経路を継続可能な場合でも旧MediaSyncを再利用せず、旧AudioTrack/audio decoderを含む現playback generationを終了し、MediaSync・video decoder・video filterを新generationとしてvideo-only構成で再生成する。診断に`MEDIASYNC_ERROR_AUDIOTRACK_FAIL`を残す。'
-          if s.count(old) != 1: raise SystemExit(f'tis/DESIGN_JA.md audio failure anchor count={s.count(old)}')
+          s=s.replace('#[cfg(test)]\nuse std::collections::BTreeSet;\n','use std::collections::BTreeSet;\n',1)
+          s=s.replace('    #[cfg(test)]\n    expired: BTreeSet<DescramblerKeyToken>,\n','    expired: BTreeSet<DescramblerKeyToken>,\n',1)
+          s=s.replace('            #[cfg(test)]\n            expired: BTreeSet::new(),\n','            expired: BTreeSet::new(),\n',1)
+          old='''        #[cfg(test)]\n        {\n            !self.expired.is_empty()\n        }\n        #[cfg(not(test))]\n        {\n            false\n        }\n'''
+          if s.count(old)!=1: raise SystemExit('key table resolution-state cfg anchor missing')
+          s=s.replace(old,'        !self.expired.is_empty()\n',1)
+          s=s.replace('''        #[cfg(test)]\n        if self.expired.contains(token) {\n            return Err(DescramblerKeyLookupError::ExpiredToken);\n        }\n''','''        if self.expired.contains(token) {\n            return Err(DescramblerKeyLookupError::ExpiredToken);\n        }\n''',1)
+          s=s.replace('''            #[cfg(test)]\n            self.expired.insert(token.clone());\n''','''            self.expired.insert(token.clone());\n''',1)
+          anchor='''    pub fn acquire(\n        &mut self,\n        token: &DescramblerKeyToken,\n    ) -> Result<DescramblerKeySlotId, DescramblerKeyLookupError> {\n'''
+          publish='''    pub fn publish_key_slot(\n        &mut self,\n        token: DescramblerKeyToken,\n        new_slot: DescramblerKeySlotId,\n        key_slot: DescramblerKeySlot,\n    ) -> Result<DescramblerKeySlotId, DescramblerKeyLookupError> {\n        if self.expired.contains(&token) {\n            return Err(DescramblerKeyLookupError::ExpiredToken);\n        }\n        if let Some(state) = self.slots.get_mut(&token) {\n            if state.expired {\n                return Err(DescramblerKeyLookupError::ExpiredToken);\n            }\n            state.key_slot = key_slot;\n            return Ok(state.slot);\n        }\n        self.slots.insert(\n            token,\n            DescramblerKeySlotState {\n                slot: new_slot,\n                key_slot,\n                refcount: 0,\n                expired: false,\n            },\n        );\n        Ok(new_slot)\n    }\n\n    pub fn revoke_key_slot(\n        &mut self,\n        token: &DescramblerKeyToken,\n    ) -> Result<(), DescramblerKeyLookupError> {\n        let remove = {\n            let state = self\n                .slots\n                .get_mut(token)\n                .ok_or(DescramblerKeyLookupError::UnknownToken)?;\n            state.expired = true;\n            state.refcount == 0\n        };\n        if remove {\n            self.slots.remove(token);\n            self.expired.insert(token.clone());\n        }\n        Ok(())\n    }\n\n'''
+          if s.count(anchor)!=1: raise SystemExit('key table acquire anchor missing')
+          s=s.replace(anchor,publish+anchor,1)
+          p.write_text(s)
+
+          # RuntimeRegistry provides a non-test-only consumer endpoint for the vendor CAS bridge.
+          path='tuner_hal2/service_runtime/src/registry.rs'
+          p=Path(path); s=p.read_text()
+          old='use crate::descrambler_key_table::{DescramblerKeyLookupError, DescramblerKeyTable};'
+          new='use crate::descrambler_key_table::{DescramblerKeyLookupError, DescramblerKeySlotId, DescramblerKeyTable};'
+          if s.count(old)!=1: raise SystemExit('registry key-table import anchor missing')
           s=s.replace(old,new,1)
-          old2='audio-videoでAudioTrack failure時のvideo-only継続'
-          new2='audio-videoでAudioTrack failure時に旧MediaSync generationを破棄してvideo-only新generationへ再生成'
-          if s.count(old2) != 1: raise SystemExit(f'tis/DESIGN_JA.md minimum-test anchor count={s.count(old2)}')
-          p.write_text(s.replace(old2,new2,1))
+          old='''    DescrambleFailure, DescrambleOutcome, DescramblerKeySlot, DescramblerKeyToken, DescramblerPid,\n    DescramblerPidClaim, PacketPolicyAction,\n'''
+          new='''    DescrambleFailure, DescrambleOutcome, DescramblerKeySlot, DescramblerKeyToken,\n    DescramblerKeyTokenError, DescramblerPid, DescramblerPidClaim, PacketPolicyAction,\n'''
+          if s.count(old)!=1: raise SystemExit('registry descrambler import anchor missing')
+          s=s.replace(old,new,1)
+          one_field='    next_descrambler_id: i32,\n'
+          if s.count(one_field)!=1: raise SystemExit('registry next descrambler field anchor missing')
+          s=s.replace(one_field,one_field+'    next_descrambler_key_slot_id: u64,\n',1)
+          one_init='            next_descrambler_id: 1,\n'
+          if s.count(one_init)!=1: raise SystemExit('registry default field anchor missing')
+          s=s.replace(one_init,one_init+'            next_descrambler_key_slot_id: 1,\n',1)
+          one_clear='        self.next_descrambler_id = 1;\n'
+          if s.count(one_clear)!=1: raise SystemExit('registry clear field anchor missing')
+          s=s.replace(one_clear,one_clear+'        self.next_descrambler_key_slot_id = 1;\n',1)
+          impl_anchor='''    pub fn register_frontend(\n        &mut self,\n        entry: FrontendRegistryEntry,\n    ) -> Result<(), RegistryCommitError> {\n'''
+          methods='''    pub fn publish_cas_key_resource(\n        &mut self,\n        session_id: Vec<u8>,\n        key_slot: DescramblerKeySlot,\n    ) -> Result<DescramblerKeySlotId, CasKeyRegistryBridgeError> {\n        let token = DescramblerKeyToken::try_from_bytes(session_id)\n            .map_err(CasKeyRegistryBridgeError::InvalidSessionId)?;\n        let candidate = DescramblerKeySlotId(self.next_descrambler_key_slot_id);\n        self.next_descrambler_key_slot_id = self\n            .next_descrambler_key_slot_id\n            .checked_add(1)\n            .ok_or(CasKeyRegistryBridgeError::SlotIdExhausted)?;\n        self.descrambler_key_table\n            .publish_key_slot(token, candidate, key_slot)\n            .map_err(CasKeyRegistryBridgeError::Registry)\n    }\n\n    pub fn revoke_cas_key_resource(\n        &mut self,\n        session_id: Vec<u8>,\n    ) -> Result<(), CasKeyRegistryBridgeError> {\n        let token = DescramblerKeyToken::try_from_bytes(session_id)\n            .map_err(CasKeyRegistryBridgeError::InvalidSessionId)?;\n        self.descrambler_key_table\n            .revoke_key_slot(&token)\n            .map_err(CasKeyRegistryBridgeError::Registry)\n    }\n\n'''
+          if s.count(impl_anchor)!=1: raise SystemExit('RuntimeRegistry method anchor missing')
+          s=s.replace(impl_anchor,methods+impl_anchor,1)
+          enum_anchor='''#[derive(Clone, Debug, Eq, PartialEq)]\npub enum RegistryCommitError {\n'''
+          bridge_enum='''#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub enum CasKeyRegistryBridgeError {\n    InvalidSessionId(DescramblerKeyTokenError),\n    Registry(DescramblerKeyLookupError),\n    SlotIdExhausted,\n}\n\n'''
+          if s.count(enum_anchor)!=1: raise SystemExit('RegistryCommitError anchor missing')
+          s=s.replace(enum_anchor,bridge_enum+enum_anchor,1)
+          p.write_text(s)
+
+          # HEVC/H.265 is an r52 video codec in the existing direct Tuner->MediaCodec path.
+          path='tis/src/com/maleicacid/tvinput/tis/TunerController.kt'
+          p=Path(path); s=p.read_text()
+          old='        private val VIDEO_STREAM_TYPES = setOf(0x02, 0x1b)\n'
+          new='        private val R51_VIDEO_STREAM_TYPES = setOf(0x02, 0x1b)\n        private val VIDEO_STREAM_TYPES = R51_VIDEO_STREAM_TYPES + 0x24\n'
+          if s.count(old)!=1: raise SystemExit('VIDEO_STREAM_TYPES anchor missing')
+          s=s.replace(old,new,1)
+          old='        fun isR51SupportedVideoStreamTypeForTest(streamType: Int): Boolean = streamType in VIDEO_STREAM_TYPES\n'
+          new='        fun isR51SupportedVideoStreamTypeForTest(streamType: Int): Boolean = streamType in R51_VIDEO_STREAM_TYPES\n'
+          if s.count(old)!=1: raise SystemExit('r51 video test helper anchor missing')
+          p.write_text(s)
+
+          path='tis/src/com/maleicacid/tvinput/tis/PlaybackPipeline.kt'
+          p=Path(path); s=p.read_text()
+          s=s.replace('''        MPEG2(0x02, MediaFormat.MIMETYPE_VIDEO_MPEG2),\n        AVC(0x1b, MediaFormat.MIMETYPE_VIDEO_AVC);\n''','''        MPEG2(0x02, MediaFormat.MIMETYPE_VIDEO_MPEG2),\n        AVC(0x1b, MediaFormat.MIMETYPE_VIDEO_AVC),\n        HEVC(0x24, MediaFormat.MIMETYPE_VIDEO_HEVC);\n''',1)
+          s=s.replace('''                VideoCodecKind.MPEG2 -> EsHeaderParser.mpeg2VideoFormat(bytes)\n                VideoCodecKind.AVC -> EsHeaderParser.avcVideoFormat(bytes)\n''','''                VideoCodecKind.MPEG2 -> EsHeaderParser.mpeg2VideoFormat(bytes)\n                VideoCodecKind.AVC -> EsHeaderParser.avcVideoFormat(bytes)\n                VideoCodecKind.HEVC -> EsHeaderParser.hevcVideoFormat(bytes)\n''',1)
+          s=s.replace('''                VideoCodecKind.MPEG2 -> PlaybackBudget(6 * MIB, 256 * KIB, QueueBudget(24L * MIB, 24, 2_000_000L), QueueBudget(36L * MIB, 48, 3_000_000L), 4_000L, 2_000L)\n                VideoCodecKind.AVC -> PlaybackBudget(12 * MIB, 512 * KIB, QueueBudget(48L * MIB, 32, 2_500_000L), QueueBudget(72L * MIB, 64, 3_500_000L), 5_000L, 2_000L)\n''','''                VideoCodecKind.MPEG2 -> PlaybackBudget(6 * MIB, 256 * KIB, QueueBudget(24L * MIB, 24, 2_000_000L), QueueBudget(36L * MIB, 48, 3_000_000L), 4_000L, 2_000L)\n                VideoCodecKind.AVC -> PlaybackBudget(12 * MIB, 512 * KIB, QueueBudget(48L * MIB, 32, 2_500_000L), QueueBudget(72L * MIB, 64, 3_500_000L), 5_000L, 2_000L)\n                VideoCodecKind.HEVC -> PlaybackBudget(16 * MIB, 768 * KIB, QueueBudget(64L * MIB, 32, 2_500_000L), QueueBudget(96L * MIB, 64, 3_500_000L), 5_000L, 2_000L)\n''',1)
+          anchor='''        data class VideoDimensions(val width: Int, val height: Int)\n'''
+          hevc='''        fun hevcVideoFormat(bytes: ByteArray): MediaFormat? {\n            val vps = findHevcNal(bytes, 32) ?: return null\n            val sps = findHevcNal(bytes, 33) ?: return null\n            val pps = findHevcNal(bytes, 34) ?: return null\n            val dimensions = parseHevcSpsDimensions(sps) ?: return null\n            return MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_HEVC, dimensions.width, dimensions.height).apply {\n                setByteBuffer("csd-0", ByteBuffer.wrap(vps + sps + pps))\n            }\n        }\n\n        private fun parseHevcSpsDimensions(spsWithStartCode: ByteArray): VideoDimensions? = runCatching {\n            val rbsp = hevcNalRbspPayload(spsWithStartCode)\n            val bits = BitReader(rbsp)\n            bits.readBits(4)\n            val maxSubLayersMinus1 = bits.readBits(3)\n            bits.readBit()\n            skipHevcProfileTierLevel(bits, maxSubLayersMinus1)\n            bits.readUE()\n            val chromaFormatIdc = bits.readUE()\n            val separateColourPlaneFlag = if (chromaFormatIdc == 3) bits.readBit() else 0\n            val width = bits.readUE()\n            val height = bits.readUE()\n            var left = 0\n            var right = 0\n            var top = 0\n            var bottom = 0\n            if (bits.readBit() == 1) {\n                left = bits.readUE(); right = bits.readUE(); top = bits.readUE(); bottom = bits.readUE()\n            }\n            val subWidthC = if (separateColourPlaneFlag == 1) 1 else if (chromaFormatIdc == 1 || chromaFormatIdc == 2) 2 else 1\n            val subHeightC = if (separateColourPlaneFlag == 1) 1 else if (chromaFormatIdc == 1) 2 else 1\n            VideoDimensions(\n                (width - subWidthC * (left + right)).coerceAtLeast(1),\n                (height - subHeightC * (top + bottom)).coerceAtLeast(1),\n            )\n        }.getOrNull()\n\n        private fun skipHevcProfileTierLevel(bits: BitReader, maxSubLayersMinus1: Int) {\n            bits.skipBits(2 + 1 + 5 + 32 + 4 + 44 + 8)\n            val profilePresent = BooleanArray(maxSubLayersMinus1)\n            val levelPresent = BooleanArray(maxSubLayersMinus1)\n            repeat(maxSubLayersMinus1) { i ->\n                profilePresent[i] = bits.readBit() == 1\n                levelPresent[i] = bits.readBit() == 1\n            }\n            if (maxSubLayersMinus1 > 0) repeat(8 - maxSubLayersMinus1) { bits.skipBits(2) }\n            repeat(maxSubLayersMinus1) { i ->\n                if (profilePresent[i]) bits.skipBits(88)\n                if (levelPresent[i]) bits.skipBits(8)\n            }\n        }\n\n        private fun hevcNalRbspPayload(nalWithStartCode: ByteArray): ByteArray {\n            val prefix = when {\n                nalWithStartCode.size >= 6 && nalWithStartCode[0] == 0.toByte() && nalWithStartCode[1] == 0.toByte() && nalWithStartCode[2] == 0.toByte() && nalWithStartCode[3] == 1.toByte() -> 4\n                nalWithStartCode.size >= 5 && nalWithStartCode[0] == 0.toByte() && nalWithStartCode[1] == 0.toByte() && nalWithStartCode[2] == 1.toByte() -> 3\n                else -> 0\n            }\n            val start = prefix + 2\n            require(start <= nalWithStartCode.size)\n            val out = ArrayList<Byte>(nalWithStartCode.size)\n            var zeros = 0\n            for (i in start until nalWithStartCode.size) {\n                val b = nalWithStartCode[i]\n                if (zeros >= 2 && b == 0x03.toByte()) { zeros = 0; continue }\n                out += b\n                zeros = if (b == 0.toByte()) zeros + 1 else 0\n            }\n            return out.toByteArray()\n        }\n\n'''
+          if s.count(anchor)!=1: raise SystemExit('VideoDimensions anchor missing')
+          s=s.replace(anchor,hevc+anchor,1)
+          bit_anchor='''            fun readBit(): Int = readBits(1)\n'''
+          if s.count(bit_anchor)!=1: raise SystemExit('BitReader anchor missing')
+          s=s.replace(bit_anchor,bit_anchor+'            fun skipBits(count: Int) { repeat(count) { readBit() } }\n',1)
+          find_anchor='''        private fun findNal(bytes: ByteArray, nalType: Int): ByteArray? {\n'''
+          find_hevc='''        private fun findHevcNal(bytes: ByteArray, nalType: Int): ByteArray? {\n            var i = 0\n            while (i < bytes.size - 4) {\n                val prefixLength = when {\n                    i + 4 < bytes.size && bytes[i] == 0.toByte() && bytes[i + 1] == 0.toByte() && bytes[i + 2] == 0.toByte() && bytes[i + 3] == 1.toByte() -> 4\n                    bytes[i] == 0.toByte() && bytes[i + 1] == 0.toByte() && bytes[i + 2] == 1.toByte() -> 3\n                    else -> { i++; continue }\n                }\n                if (i + prefixLength + 1 >= bytes.size) return null\n                val start = i\n                val type = (bytes[i + prefixLength].toInt() ushr 1) and 0x3f\n                i += prefixLength + 2\n                while (i < bytes.size - 3 && !isStartCode(bytes, i)) i++\n                val end = if (i < bytes.size - 3) i else bytes.size\n                if (type == nalType) return bytes.copyOfRange(start, end)\n            }\n            return null\n        }\n\n'''
+          if s.count(find_anchor)!=1: raise SystemExit('findNal anchor missing')
+          s=s.replace(find_anchor,find_hevc+find_anchor,1)
+          old='''        0x02 -> AvSettings.VIDEO_STREAM_TYPE_MPEG2\n        0x1b -> AvSettings.VIDEO_STREAM_TYPE_AVC\n'''
+          new='''        0x02 -> AvSettings.VIDEO_STREAM_TYPE_MPEG2\n        0x1b -> AvSettings.VIDEO_STREAM_TYPE_AVC\n        0x24 -> AvSettings.VIDEO_STREAM_TYPE_HEVC\n'''
+          if s.count(old)!=1: raise SystemExit('mapVideoStreamType anchor missing')
+          s=s.replace(old,new,1)
+          p.write_text(s)
           PY
 
-          grep -q 'NON_DESTRUCTIVE_SAME_CHANNEL_REUSE' tis/src/com/maleicacid/tvinput/tis/TunerController.kt
-          grep -q 'INVALID_MEDIA_TIMESTAMP' tis/src/com/maleicacid/tvinput/tis/PlaybackPipeline.kt
           git diff --check
+          (cd tuner_hal2/host_ci && cargo fmt --all -- --check && cargo check --workspace --all-targets --locked && cargo test --workspace --locked)
 
           tools_dir="$RUNNER_TEMP/tis-kotlin-compile"
           mkdir -p "$tools_dir"
@@ -97,16 +169,6 @@ jobs:
           mapfile -d '' -t sources < <(find tis/src tis/host_ci/kotlin/stubs/android -type f -name '*.kt' -print0 | sort -z)
           "$tools_dir/compiler/kotlinc/bin/kotlinc" -J-Xmx4g -jvm-target 17 -classpath "$tools_dir/android-all.jar" -d "$out" "${sources[@]}"
 
-          git add tis/DESIGN_JA.md tis/src/com/maleicacid/tvinput/tis/PlaybackPipeline.kt tis/src/com/maleicacid/tvinput/tis/TunerController.kt
-          git commit -m "fix(tis): align playback lifecycle and tune reuse"
-          NEW54=$(git rev-parse HEAD)
-          git push origin HEAD:agent/implement-tis-arib-si-design-pr53
-
-          git checkout -B docs/future-work-design-completion "$CUR55"
-          git rebase --onto "$NEW54" "$CUR54"
-          NEW55=$(git rev-parse HEAD)
-          git push --force-with-lease=refs/heads/docs/future-work-design-completion:$CUR55 origin HEAD:docs/future-work-design-completion
-
-          git checkout -B design/r52-contracts "$CUR57"
-          git rebase --onto "$NEW55" "$CUR55"
-          git push --force-with-lease=refs/heads/design/r52-contracts:$CUR57 origin HEAD:design/r52-contracts
+          git add tis/src/com/maleicacid/tvinput/common/ChannelKeys.kt tis/src/com/maleicacid/tvinput/tis/CasController.kt tis/src/com/maleicacid/tvinput/tis/TunerController.kt tis/src/com/maleicacid/tvinput/tis/PlaybackPipeline.kt tuner_hal2/descrambler/src/runtime/token.rs tuner_hal2/service_runtime/src/descrambler_key_table.rs tuner_hal2/service_runtime/src/registry.rs
+          git commit -m "feat(r52): connect CAS session tokens and HEVC playback"
+          git push origin HEAD:design/r52-contracts
