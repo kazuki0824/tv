@@ -1,11 +1,46 @@
+use std::ptr;
+use std::sync::atomic::{compiler_fence, Ordering};
+
 pub const DEFAULT_MULTI2_ROUNDS: usize = 4;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+fn volatile_zeroize_u8(bytes: &mut [u8]) {
+    for byte in bytes {
+        unsafe { ptr::write_volatile(byte, 0) };
+    }
+    compiler_fence(Ordering::SeqCst);
+}
+
+fn volatile_zeroize_u32(words: &mut [u32]) {
+    for word in words {
+        unsafe { ptr::write_volatile(word, 0) };
+    }
+    compiler_fence(Ordering::SeqCst);
+}
+
+#[derive(Clone, Eq, PartialEq)]
 pub struct Multi2KeyMaterial {
     pub system_key: [u8; 32],
     pub cbc_iv: [u8; 8],
     pub data_key: [u8; 8],
     pub rounds: usize,
+}
+
+impl std::fmt::Debug for Multi2KeyMaterial {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Multi2KeyMaterial")
+            .field("rounds", &self.rounds)
+            .field("key_material", &"<redacted>")
+            .finish()
+    }
+}
+
+impl Drop for Multi2KeyMaterial {
+    fn drop(&mut self) {
+        volatile_zeroize_u8(&mut self.system_key);
+        volatile_zeroize_u8(&mut self.cbc_iv);
+        volatile_zeroize_u8(&mut self.data_key);
+    }
 }
 
 impl Multi2KeyMaterial {
@@ -22,9 +57,11 @@ impl Multi2KeyMaterial {
         if self.rounds == 0 {
             return Err(Multi2PrepareError::InvalidRoundsZero);
         }
-        let system_key = parse_system_key(&self.system_key);
-        let data_key = [load_be(&self.data_key[0..4]), load_be(&self.data_key[4..8])];
-        let work_key = schedule(data_key, system_key);
+        let mut system_key = parse_system_key(&self.system_key);
+        let mut data_key = [load_be(&self.data_key[0..4]), load_be(&self.data_key[4..8])];
+        let work_key = schedule(&data_key, &system_key);
+        volatile_zeroize_u32(&mut data_key);
+        volatile_zeroize_u32(&mut system_key);
         let cbc_iv = [load_be(&self.cbc_iv[0..4]), load_be(&self.cbc_iv[4..8])];
         Ok(PreparedMulti2Key {
             cbc_iv,
@@ -34,11 +71,28 @@ impl Multi2KeyMaterial {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct PreparedMulti2Key {
     pub(crate) cbc_iv: [u32; 2],
     pub(crate) work_key: [u32; 8],
     pub(crate) rounds: usize,
+}
+
+impl std::fmt::Debug for PreparedMulti2Key {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreparedMulti2Key")
+            .field("rounds", &self.rounds)
+            .field("key_material", &"<redacted>")
+            .finish()
+    }
+}
+
+impl Drop for PreparedMulti2Key {
+    fn drop(&mut self) {
+        volatile_zeroize_u32(&mut self.cbc_iv);
+        volatile_zeroize_u32(&mut self.work_key);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -47,11 +101,11 @@ pub enum Multi2PrepareError {
 }
 
 pub fn multi2_decrypt_payload(payload: &mut [u8], key: &PreparedMulti2Key) {
-    decrypt_cbc_ofb(payload, key.cbc_iv, key.work_key, key.rounds);
+    decrypt_cbc_ofb(payload, key.cbc_iv, &key.work_key, key.rounds);
 }
 
 pub fn multi2_encrypt_payload(payload: &mut [u8], key: &PreparedMulti2Key) {
-    encrypt_cbc_ofb(payload, key.cbc_iv, key.work_key, key.rounds);
+    encrypt_cbc_ofb(payload, key.cbc_iv, &key.work_key, key.rounds);
 }
 
 fn parse_system_key(bytes: &[u8; 32]) -> [u32; 8] {
@@ -147,7 +201,7 @@ fn pi4(p: Block, k4: u32) -> Block {
     }
 }
 
-fn cipher_encrypt(mut b: Block, wk: [u32; 8], rounds: usize) -> Block {
+fn cipher_encrypt(mut b: Block, wk: &[u32; 8], rounds: usize) -> Block {
     for _ in 0..rounds {
         b = pi1(b);
         b = pi2(b, wk[0]);
@@ -161,7 +215,7 @@ fn cipher_encrypt(mut b: Block, wk: [u32; 8], rounds: usize) -> Block {
     b
 }
 
-fn cipher_decrypt(mut b: Block, wk: [u32; 8], rounds: usize) -> Block {
+fn cipher_decrypt(mut b: Block, wk: &[u32; 8], rounds: usize) -> Block {
     for _ in 0..rounds {
         b = pi4(b, wk[7]);
         b = pi3(b, wk[5], wk[6]);
@@ -175,7 +229,7 @@ fn cipher_decrypt(mut b: Block, wk: [u32; 8], rounds: usize) -> Block {
     b
 }
 
-fn schedule(dk: [u32; 2], sk: [u32; 8]) -> [u32; 8] {
+fn schedule(dk: &[u32; 2], sk: &[u32; 8]) -> [u32; 8] {
     let a0 = pi1(Block {
         left: dk[0],
         right: dk[1],
@@ -193,7 +247,7 @@ fn schedule(dk: [u32; 2], sk: [u32; 8]) -> [u32; 8] {
     ]
 }
 
-fn encrypt_cbc_ofb(buf: &mut [u8], iv: [u32; 2], key: [u32; 8], rounds: usize) {
+fn encrypt_cbc_ofb(buf: &mut [u8], iv: [u32; 2], key: &[u32; 8], rounds: usize) {
     let mut state = Block {
         left: iv[0],
         right: iv[1],
@@ -213,10 +267,11 @@ fn encrypt_cbc_ofb(buf: &mut [u8], iv: [u32; 2], key: [u32; 8], rounds: usize) {
         let c = p.xor(cipher_encrypt(state, key, rounds));
         c.store(&mut t);
         rem.copy_from_slice(&t[..rem.len()]);
+        volatile_zeroize_u8(&mut t);
     }
 }
 
-fn decrypt_cbc_ofb(buf: &mut [u8], iv: [u32; 2], key: [u32; 8], rounds: usize) {
+fn decrypt_cbc_ofb(buf: &mut [u8], iv: [u32; 2], key: &[u32; 8], rounds: usize) {
     let mut state = Block {
         left: iv[0],
         right: iv[1],
@@ -237,5 +292,6 @@ fn decrypt_cbc_ofb(buf: &mut [u8], iv: [u32; 2], key: [u32; 8], rounds: usize) {
         let p = c.xor(cipher_encrypt(state, key, rounds));
         p.store(&mut t);
         rem.copy_from_slice(&t[..rem.len()]);
+        volatile_zeroize_u8(&mut t);
     }
 }
