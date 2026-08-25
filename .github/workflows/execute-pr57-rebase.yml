@@ -1,0 +1,55 @@
+name: Execute PR57 generic key rebase
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/execute-pr57-rebase.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  execute:
+    if: github.head_ref == 'automation/rebase-pr57-generic-key'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Execute reviewed rebase blocks in one shell
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > /tmp/pr57-rebase.sh
+          from pathlib import Path
+          text = Path('.github/workflows/pr57-rebase-diagnostic.yml').read_text().splitlines()
+          names = [
+              'Rebase PR57 final diff onto latest PR55',
+              'Adapt CAS integration to generic Tuner key provisioning',
+              'Validate rebased stack',
+              'Publish rewritten PR57 branch',
+          ]
+          out = ['set -euo pipefail']
+          for name in names:
+              marker = f'      - name: {name}'
+              start = text.index(marker)
+              run = next(i for i in range(start + 1, len(text)) if text[i].strip() == 'run: |')
+              i = run + 1
+              block = []
+              while i < len(text):
+                  line = text[i]
+                  if line.startswith('          '):
+                      block.append(line[10:])
+                      i += 1
+                      continue
+                  if not line.strip():
+                      block.append('')
+                      i += 1
+                      continue
+                  break
+              out.extend(block)
+          print('\n'.join(out))
+          PY
+          bash /tmp/pr57-rebase.sh
