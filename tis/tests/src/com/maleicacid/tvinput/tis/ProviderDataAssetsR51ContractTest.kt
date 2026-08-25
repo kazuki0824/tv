@@ -14,6 +14,7 @@ class ProviderDataAssetsR51ContractTest {
         check(providerData.getJSONObject("serviceKey").getInt("serviceId") == 101)
         check(providerData.getJSONObject("diagnostics").has("descriptorDiagnostics"))
         check(providerData.getJSONObject("components").has("subtitle"))
+        check(!providerData.getBoolean("skippedUnresolvedTransport"))
         check(!providerData.has("programKeyB64"))
         check(!providerData.has("eventGroupText"))
         check(!providerData.has("unsupportedDescriptorDiagnostics"))
@@ -29,15 +30,15 @@ class ProviderDataAssetsR51ContractTest {
         check(video.getInt("streamType") == 0x24)
         check(video.getString("diagnosticCode") == "UNSUPPORTED_R51_CODEC")
         check(video.getString("parseStatus") == "UNSUPPORTED_R51")
-        check(!video.getBoolean("r51PlaybackSupported"))
-        check(!video.getBoolean("liveViewableClaim"))
+        check(!video.has("r51PlaybackSupported"))
+        check(!video.has("liveViewableClaim"))
 
         check(audio.getString("codec") == "MPEG-4-AAC-LATM")
         check(audio.getInt("streamType") == 0x11)
         check(audio.getString("diagnosticCode") == "UNSUPPORTED_R51_CODEC")
         check(audio.getString("parseStatus") == "UNSUPPORTED_R51")
-        check(!audio.getBoolean("r51PlaybackSupported"))
-        check(!audio.getBoolean("liveViewableClaim"))
+        check(!audio.has("r51PlaybackSupported"))
+        check(!audio.has("liveViewableClaim"))
     }
 
     @Test fun descriptorDiagnosticFixtureIsElementSchemaNotLegacyWrapper() {

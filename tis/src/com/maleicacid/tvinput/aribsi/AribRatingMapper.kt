@@ -10,6 +10,8 @@ import android.media.tv.TvContentRating
  * へ写像する。TvContentRating.UNRATED は rating 情報そのものが得られない場合だけに使う。
  */
 object AribRatingMapper {
+    enum class BroadcastProfile { TERRESTRIAL, BS_CS, UNRESOLVED }
+
     const val DOMAIN = "com.android.tv"
     const val RATING_SYSTEM = "ISDB"
     const val RATING_PREFIX = "ISDB_"
@@ -18,17 +20,27 @@ object AribRatingMapper {
     const val EXCEPTIONAL_RATING_SYSTEM = "ARIB_EXCEPTIONAL"
     const val EXCEPTIONAL_RATING = "BROADCASTER_DEFINED"
 
-    fun toTvContentRatingString(rating: AribParentalRating): String? = toTvContentRating(rating)?.flattenToString()
+    fun profileForDeliverySystem(deliverySystem: String?): BroadcastProfile = when (deliverySystem) {
+        "ISDB_T" -> BroadcastProfile.TERRESTRIAL
+        "ISDB_S" -> BroadcastProfile.BS_CS
+        else -> BroadcastProfile.UNRESOLVED
+    }
 
-    fun toTvContentRating(rating: AribParentalRating): TvContentRating? {
+    fun toTvContentRatingString(
+        rating: AribParentalRating,
+        profile: BroadcastProfile,
+    ): String? = toTvContentRating(rating, profile)?.flattenToString()
+
+    fun toTvContentRating(
+        rating: AribParentalRating,
+        profile: BroadcastProfile,
+    ): TvContentRating? {
         if (rating.countryCode != "JPN") return null
+        if (rating.parseStatus != "OK") return null
+        if (profile != BroadcastProfile.BS_CS) return null
         return when (val raw = rating.rawRatingByte) {
             0x00 -> null
-            in 0x01..0x11 -> {
-                if (!rating.supported) return null
-                val age = raw + 3
-                TvContentRating.createRating(DOMAIN, RATING_SYSTEM, "$RATING_PREFIX$age")
-            }
+            in 0x01..0x11 -> TvContentRating.createRating(DOMAIN, RATING_SYSTEM, "$RATING_PREFIX${raw + 3}")
             in 0x12..0xff -> TvContentRating.createRating(
                 EXCEPTIONAL_DOMAIN,
                 EXCEPTIONAL_RATING_SYSTEM,
@@ -38,15 +50,8 @@ object AribRatingMapper {
         }
     }
 
-    fun isProductSupported(rating: AribParentalRating): Boolean =
-        rating.countryCode == "JPN" && when (rating.rawRatingByte) {
-            in 0x01..0x11 -> rating.supported
-            in 0x12..0xff -> true
-            else -> false
-        }
-
-    fun isExceptional(rating: AribParentalRating): Boolean =
-        rating.countryCode == "JPN" && rating.rawRatingByte in 0x12..0xff
+    fun isExceptional(rating: AribParentalRating, profile: BroadcastProfile): Boolean =
+        profile == BroadcastProfile.BS_CS && rating.countryCode == "JPN" && rating.rawRatingByte in 0x12..0xff
 
     fun unrated(): TvContentRating = TvContentRating.UNRATED
 

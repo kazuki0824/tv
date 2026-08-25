@@ -20,7 +20,7 @@ class NativeAribSiParserCasDiscoveryTest {
             check(discoveryServices.single().serviceKey.serviceId == SERVICE_ID)
 
             val liveSnapshot = parser.livePlaybackSnapshot()
-            check(liveSnapshot.snapshotGeneration == snapshot.snapshotGeneration)
+            check(liveSnapshot.snapshotGeneration > snapshot.snapshotGeneration)
             check(liveSnapshot.servicesForCasDiscovery.single().serviceKey.serviceId == SERVICE_ID)
             check(liveSnapshot.pmtPids.values.single() == TsPid(PID_PMT))
             check(liveSnapshot.caMetadataForCasDiscovery.any { it.source == CaMetadataSource.PROGRAM && it.ecmPid == TsPid(ECM_PID_PROGRAM) })
@@ -37,9 +37,12 @@ class NativeAribSiParserCasDiscoveryTest {
                 "CAT EMM PIDはサービス行公開と独立して見える必要があります"
             }
 
-            val diagnostic = parser.serviceRegistrationSnapshot().publishabilityByServiceKey.values.single { it.serviceKey.serviceId == SERVICE_ID }
+            val facts = parser.serviceRegistrationSnapshot().semanticFactsByServiceKey.values.single {
+                it.serviceKey.serviceId == SERVICE_ID
+            }
+            val diagnostic = ServicePolicyEvaluator.evaluate(facts)
             check(!diagnostic.clearLivePlaybackSupported)
-            check(diagnostic.reasons.any { it == "SCRAMBLED_OR_UNKNOWN_SDT_FREE_CA_MODE" || it == "PMT_PROGRAM_CA_DESCRIPTOR" || it == "VIDEO_ES_CA_DESCRIPTOR" }) {
+            check(diagnostic.requiresCas && diagnostic.reasons.contains("CAS_NOT_IMPLEMENTED")) {
                 "CAS検出対象サービスは非スクランブルlive未対応診断を保持する必要があります: ${diagnostic.reasons}"
             }
         } finally {
