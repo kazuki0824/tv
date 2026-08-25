@@ -1,49 +1,98 @@
 package com.maleicacid.tvinput.tis
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.RectF
 import android.view.View
+import com.maleicacid.tvinput.aribsi.NativeAribCaptionRenderer
 
-/** TvInputService overlay 上でARIB字幕を描画する最小表示層。 */
+/** libaribcaptionのRGBA imageをrenderer viewport原点からそのまま重ねる表示層。 */
 class CaptionOverlayView(context: Context) : View(context) {
-    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
-        textSize = 34f
-        setShadowLayer(4f, 2f, 2f, Color.BLACK)
-    }
-    private val backgroundPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0x99000000.toInt()
-    }
-    private var captionText: String? = null
+    data class BitmapImage(val bitmap: Bitmap, val dstX: Int, val dstY: Int)
 
-    fun showCaption(text: String) {
-        captionText = text.takeIf { it.isNotBlank() }
+    private var images: List<BitmapImage> = emptyList()
+    private var contentLeftPx: Int = 0
+    private var contentTopPx: Int = 0
+    private var onOverlaySizeChanged: (Int, Int) -> Unit = { _, _ -> }
+
+    fun setOnOverlaySizeChangedListener(listener: (Int, Int) -> Unit) {
+        onOverlaySizeChanged = listener
+        if (width > 0 && height > 0) listener(width, height)
+    }
+
+    fun showCaptionFrame(
+        frameImages: List<NativeAribCaptionRenderer.RenderedCaptionImage>,
+        viewportLeftPx: Int,
+        viewportTopPx: Int,
+    ): Boolean {
+        val converted = mutableListOf<BitmapImage>()
+        frameImages.forEach { image ->
+            val bitmap = bitmapFromRgba(image)
+            if (bitmap == null) {
+                converted.forEach { convertedImage -> convertedImage.bitmap.recycle() }
+                return false
+            }
+            converted += BitmapImage(bitmap, image.dstX, image.dstY)
+        }
+        recycleImages()
+        images = converted
+        contentLeftPx = viewportLeftPx
+        contentTopPx = viewportTopPx
         invalidate()
+        return true
     }
 
     fun clearCaption() {
-        captionText = null
+        recycleImages()
+        images = emptyList()
         invalidate()
+    }
+
+    override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
+        super.onSizeChanged(width, height, oldWidth, oldHeight)
+        onOverlaySizeChanged(width, height)
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val text = captionText ?: return
-        val lines = text.lines().filter { it.isNotBlank() }
-        if (lines.isEmpty()) return
-        val lineHeight = textPaint.fontMetrics.let { it.descent - it.ascent + 8f }
-        val blockHeight = lineHeight * lines.size + 24f
-        val top = (height - blockHeight - 48f).coerceAtLeast(0f)
-        val left = 48f
-        val right = (width - 48f).coerceAtLeast(left + 1f)
-        canvas.drawRoundRect(RectF(left - 16f, top, right + 16f, top + blockHeight), 12f, 12f, backgroundPaint)
-        var y = top + 18f - textPaint.fontMetrics.ascent
-        lines.forEach { line ->
-            canvas.drawText(line.take(80), left, y, textPaint)
-            y += lineHeight
+        images.forEach { image ->
+            canvas.drawBitmap(
+                image.bitmap,
+                (contentLeftPx + image.dstX).toFloat(),
+                (contentTopPx + image.dstY).toFloat(),
+                null,
+            )
+        }
+    }
+
+    override fun onDetachedFromWindow() {
+        clearCaption()
+        super.onDetachedFromWindow()
+    }
+
+    private fun recycleImages() {
+        images.forEach { image -> if (!image.bitmap.isRecycled) image.bitmap.recycle() }
+    }
+
+    companion object {
+        fun bitmapFromRgba(image: NativeAribCaptionRenderer.RenderedCaptionImage): Bitmap? {
+            if (!NativeAribCaptionRenderer.validImageBuffer(image.width, image.height, image.stride, image.rgba8888.size)) {
+                return null
+            }
+            val pixels = IntArray(image.width * image.height)
+            var pixelIndex = 0
+            repeat(image.height) { y ->
+                var offset = y * image.stride
+                repeat(image.width) {
+                    val red = image.rgba8888[offset].toInt() and 0xff
+                    val green = image.rgba8888[offset + 1].toInt() and 0xff
+                    val blue = image.rgba8888[offset + 2].toInt() and 0xff
+                    val alpha = image.rgba8888[offset + 3].toInt() and 0xff
+                    pixels[pixelIndex++] = (alpha shl 24) or (red shl 16) or (green shl 8) or blue
+                    offset += 4
+                }
+            }
+            return Bitmap.createBitmap(pixels, image.width, image.height, Bitmap.Config.ARGB_8888)
         }
     }
 }

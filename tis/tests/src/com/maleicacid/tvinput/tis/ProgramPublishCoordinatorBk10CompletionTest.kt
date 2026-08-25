@@ -24,7 +24,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         val store = FakeStore(failServiceIndexOnce = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
 
         val first = coordinator.publish(
             mode = ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
@@ -49,7 +49,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         val store = FakeStore(failInsertOnce = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
 
         val failed = coordinator.publish(ChannelScanController.PublishMode.SETUP_SCAN, listOf(program), allowedServiceKeys = null)
         check(failed.failures.any { it.operation == "program-insert" }) { failed.toString() }
@@ -59,11 +59,49 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         check(retried.inserted == 1) { "公開失敗時は同じ入力を未変更扱いしてはなりません: $retried" }
     }
 
+    @Test fun bootSyncDoesNotTreatFingerprintCacheAsCurrentTaskCommit() {
+        val store = FakeStore()
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        val coordinator = ProgramPublishCoordinator(writer)
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
+
+        val first = coordinator.publish(ChannelScanController.PublishMode.BOOT_EPG_SYNC, listOf(program), allowedServiceKeys = setOf(key))
+        val second = coordinator.publish(ChannelScanController.PublishMode.BOOT_EPG_SYNC, listOf(program), allowedServiceKeys = setOf(key))
+
+        check(first.inserted == 1 && first.hasCommittedTarget)
+        check(second.updated == 1 && second.hasCommittedTarget)
+        check(store.updatedPrograms == 1)
+    }
+
+    @Test fun nonAuthoritativeWindowWithoutProgramIsNotABootCommitTarget() {
+        val store = FakeStore()
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        val coordinator = ProgramPublishCoordinator(writer)
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
+        val window = ProgramPublishCoordinator.EpgUpdateWindow(
+            serviceKey = key,
+            windowStartMs = program.startTimeMillis,
+            windowEndMs = program.startTimeMillis + program.durationMillis,
+            validProgramKeys = setOf(TvProviderWriter.programKeyForTest(program)),
+            deletionAuthoritative = false,
+        )
+
+        val result = coordinator.publishWithUpdates(
+            mode = ChannelScanController.PublishMode.BOOT_EPG_SYNC,
+            allPrograms = emptyList(),
+            updateWindows = listOf(window),
+            allowedServiceKeys = setOf(key),
+        )
+
+        check(!result.hasCommittedTarget)
+        check(result.eligibleTargetCount == 0)
+    }
+
     @Test fun authoritativeDeleteFailureIsRetriedWithObsoleteDeleteClass() {
         val store = FakeStore(failDelete = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
         writer.upsertPrograms(listOf(program))
 
         val window = ProgramPublishCoordinator.EpgUpdateWindow(
@@ -102,7 +140,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         val store = FakeStore(failDelete = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
 
         val windows = (0 until (ProgramPublishCoordinator.MAX_RETRY_WINDOWS_PER_SERVICE_FOR_TEST + 1)).map { i ->
             ProgramPublishCoordinator.EpgUpdateWindow(
@@ -131,7 +169,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         val store = FakeStore(failDelete = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
 
         val expiredFirstFailure = System.currentTimeMillis() - ProgramPublishCoordinator.RETRY_RETENTION_MS_FOR_TEST - 60_000L
         val window = ProgramPublishCoordinator.EpgUpdateWindow(
@@ -164,6 +202,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         private val channels = linkedMapOf<Long, ContentValues>()
         private val programs = linkedMapOf<Long, ContentValues>()
         var insertedPrograms = 0
+        var updatedPrograms = 0
         var deleteCalls = 0
 
         override fun findExistingChannelId(key: ServiceKey): Result<Long?> = Result.success(channels.keys.firstOrNull())
@@ -203,7 +242,9 @@ class ProgramPublishCoordinatorBk10CompletionTest {
 
         override fun updateProgram(programId: Long, values: ContentValues): Result<Int> {
             programs[programId]?.putAll(values)
-            return Result.success(if (programs.containsKey(programId)) 1 else 0)
+            val updated = if (programs.containsKey(programId)) 1 else 0
+            updatedPrograms += updated
+            return Result.success(updated)
         }
 
         override fun deleteObsoletePrograms(channelId: Long, validProgramKeys: Set<String>, windowStartMs: Long, windowEndMs: Long): Result<Int> {

@@ -23,8 +23,13 @@ class TvProviderWriterR51FixTest {
     @Test fun optionalProgramColumnsAreClearedByMergeUpdate() {
         val store = MergeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
-        val rating15 = requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 15, 15, true)))
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
+        val rating15 = requireNotNull(
+            AribRatingMapper.toTvContentRatingString(
+                AribParentalRating("JPN", 15, 15),
+                AribRatingMapper.BroadcastProfile.BS_CS,
+            ),
+        )
         val p = ProgramRecord(
             key, 1, "p1", 1_700_000_000_000L, 1_800_000L, "title", "desc",
             canonicalGenres = listOf("NEWS"),
@@ -48,7 +53,7 @@ class TvProviderWriterR51FixTest {
         check(values.get(TvProviderWriter.COLUMN_SCRAMBLED) == null)
         check(values.get(TvProviderWriter.COLUMN_SERIES_ID) == null)
         check(values.get(TvProviderWriter.COLUMN_EPISODE_DISPLAY_NUMBER) == null)
-        check(values.get(TvProviderWriter.COLUMN_ITEM_COUNT) == null)
+        check(values.get("item_count") == null)
     }
 
     private class MergeStore : TvProviderWriter.ChannelStore {

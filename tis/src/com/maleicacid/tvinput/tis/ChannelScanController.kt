@@ -5,13 +5,16 @@ import android.media.tv.TvInputService
 import android.util.Log
 import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.AribSiEngine
+import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.EventModelMapper
 import com.maleicacid.tvinput.aribsi.PmtCatCaMetadataMapper
-import com.maleicacid.tvinput.aribsi.ProviderDataBridge
+import com.maleicacid.tvinput.aribsi.ServiceListBuilder
+import com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
 import com.maleicacid.tvinput.aribsi.TransportKey
 import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.ServiceKey
+import com.maleicacid.tvinput.common.TsPid
 import com.maleicacid.tvinput.db.ChannelRecord
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -63,6 +66,7 @@ class ChannelScanController(
     private data class PublishSnapshotResult(
         val changed: Int,
         val failures: List<TvProviderWriter.Diagnostic> = emptyList(),
+        val hasCommittedProgramTarget: Boolean = false,
     ) {
         val success: Boolean get() = failures.isEmpty()
     }
@@ -117,19 +121,29 @@ class ChannelScanController(
         return ScanResult(candidates.size, published, diagnostics, successfulCandidates = successfulCandidates, terminalCancelObserved = terminalCancelObserved)
     }
 
-    fun startBootEpgSync(candidates: List<ScanCandidate> = bootEpgSyncCandidates()): ScanResult = runMaintenanceScan(
-        candidates = candidates,
+    fun startBootEpgSync(targetChannels: List<ChannelRecord>): ScanResult = runMaintenanceScan(
+        candidates = maintenanceCandidates(targetChannels),
         mode = PublishMode.BOOT_EPG_SYNC,
         failurePrefix = "boot後EPG同期",
+        allowedServiceKeys = targetChannels.map { it.serviceKey }.toSet(),
     )
 
-    fun startBackgroundChannelMaintenance(candidates: List<ScanCandidate> = backgroundMaintenanceCandidates()): ScanResult = runMaintenanceScan(
-        candidates = candidates,
-        mode = PublishMode.BACKGROUND_CHANNEL_MAINTENANCE,
-        failurePrefix = "background channel maintenance",
-    )
+    fun startBackgroundChannelMaintenance(): ScanResult {
+        val channels = existingMaintenanceChannels()
+        return runMaintenanceScan(
+            candidates = maintenanceCandidates(channels),
+            mode = PublishMode.BACKGROUND_CHANNEL_MAINTENANCE,
+            failurePrefix = "background channel maintenance",
+            allowedServiceKeys = channels.map { it.serviceKey }.toSet(),
+        )
+    }
 
-    private fun runMaintenanceScan(candidates: List<ScanCandidate>, mode: PublishMode, failurePrefix: String): ScanResult {
+    private fun runMaintenanceScan(
+        candidates: List<ScanCandidate>,
+        mode: PublishMode,
+        failurePrefix: String,
+        allowedServiceKeys: Set<ServiceKey>,
+    ): ScanResult {
         if (!cancelled.get()) cancelled.set(false)
         terminalCancelObserved = cancelled.get()
         skippedUnresolvedTransportCount = 0
@@ -151,12 +165,13 @@ class ChannelScanController(
                 Log.w(LogTags.TIS, "${failurePrefix} SI discovery 未完了のため Programs publish/delete を省略します candidate=$candidate outcome=${collection.outcome} registrationReady=${collection.registrationReadyServices}")
                 return@forEach
             }
-            val publishResult = publishCurrentServiceSnapshot(mode)
+            val publishResult = publishCurrentServiceSnapshot(mode, allowedServiceKeys)
             // TvProvider問い合わせ失敗は公開失敗であり、チャンネル不在ではない。
             // SI collection 自体が完了し 登録可能 サービスが存在しても、
             // boot保留解除/成功診断に加算してはならない。
-            // Program件数は0の場合があるが、ここではprovider失敗だけが阻害要因である。
-            if (collection.outcome == SiCollectionOutcome.COMPLETE && collection.registrationReadyServices > 0 && publishResult.success) successfulCandidates++
+            // Boot EPG sync は対象Programまたはauthoritative deletion windowが存在し、
+            // そのprovider transactionがcommitしたcandidateだけを成功に数える。
+            if (collection.outcome == SiCollectionOutcome.COMPLETE && collection.registrationReadyServices > 0 && publishResult.success && publishResult.hasCommittedProgramTarget) successfulCandidates++
             updated += publishResult.changed
         }
         currentCandidate = null
@@ -204,22 +219,39 @@ class ChannelScanController(
         casController.updateFromCaMetadata(caMetadata, bridge)
     }
 
-    private fun publishCurrentServiceSnapshot(mode: PublishMode): PublishSnapshotResult {
+    private fun publishCurrentServiceSnapshot(
+        mode: PublishMode,
+        allowedServiceKeys: Set<ServiceKey>? = null,
+    ): PublishSnapshotResult {
         if (mode == PublishMode.DIAGNOSTIC_ONLY) return PublishSnapshotResult(0)
         if (mode == PublishMode.LIVE_TUNE_REFRESH || mode == PublishMode.BOOT_EPG_SYNC || mode == PublishMode.BACKGROUND_CHANNEL_MAINTENANCE) {
-            val result = publishProgramsForRegisteredServices(mode, allowedServiceKeys = null)
+            val result = publishProgramsForRegisteredServices(mode, allowedServiceKeys)
             Log.d(LogTags.TIS, "${mode} では新規 channel row を追加しません changed=${result.changed} skippedNoChannel=${result.skippedNoChannel} skippedUnchanged=${result.skippedUnchanged}")
-            return PublishSnapshotResult(result.changed, result.failures)
+            return PublishSnapshotResult(
+                changed = result.changed,
+                failures = result.failures,
+                hasCommittedProgramTarget = result.hasCommittedTarget,
+            )
         }
         val candidate = currentCandidate ?: return PublishSnapshotResult(0)
         val transaction = engine.serviceRegistrationSnapshot()
-        val transportRemoteKeys = emptyMap<TransportKey, Int?>()
-        val diagnostics = transaction.publishabilityByServiceKey
+        val transportRemoteKeys = transaction.actualTransportMetadata.associate { transport ->
+            TransportKey(transport.originalNetwork, transport.transportStream) to transport.remoteControlKeyId
+        }
+        val diagnostics = transaction.semanticFactsByServiceKey.mapValues { (key, facts) ->
+            ServicePolicyEvaluator.evaluate(
+                facts = facts,
+                fallbackKey = key,
+                hasPhysicalTune = candidate.frequencyHz.value > 0L,
+                hasInternalTuneKey = candidate.streamSelector.value != null || candidate.streamSelector == com.maleicacid.tvinput.common.StreamSelector.NONE,
+            )
+        }
         val registrationReadyServices = transaction.services.filter { service ->
             diagnostics[service.serviceKey]?.channelRegistrationReady == true
         }
         val services = filterServicesForCurrentCandidate(registrationReadyServices, transaction.actualTransports)
-        val channels = services.map { service ->
+        val channels = services.mapNotNull { service ->
+            val serviceType = service.serviceType ?: return@mapNotNull null
             val remoteKey = transportRemoteKeys[TransportKey(service.serviceKey.originalNetwork, service.serviceKey.transportStream)]
             val diagnostic = diagnostics[service.serviceKey]
             ChannelRecord(
@@ -233,6 +265,7 @@ class ChannelScanController(
                 backendHint = candidate.backendHint,
                 satelliteBand = candidate.satelliteBand,
                 remoteControlKeyId = remoteKey,
+                serviceType = serviceType,
                 requiresCas = diagnostic?.requiresCas == true,
                 unsupportedCas = diagnostic?.unsupportedCas == true,
                 clearLivePlaybackSupported = diagnostic?.clearLivePlaybackSupported == true,
@@ -276,35 +309,21 @@ class ChannelScanController(
     }
 
     private fun publishProgramsForRegisteredServices(mode: PublishMode, allowedServiceKeys: Set<com.maleicacid.tvinput.common.ServiceKey>?): ProgramPublishCoordinator.ProgramPublishResult {
-        val channelFallbackResult = tvProviderWriter.existingChannelsResult()
-        if (channelFallbackResult.isFailure) {
-            val diagnostic = TvProviderWriter.Diagnostic(null, "existing-channels-query", channelFallbackResult.exceptionOrNull()?.message.orEmpty())
-            Log.w(LogTags.TIS, "既存 channel 復元失敗のため Programs publish を中止します mode=$mode diagnostic=$diagnostic")
-            return ProgramPublishCoordinator.ProgramPublishResult(0, 0, failures = listOf(diagnostic))
-        }
         val transaction = engine.takeProgramPublishSnapshot()
-        val publishabilityByServiceKey = transaction.publishabilityByServiceKey
-        val channelFallbackByServiceKey = channelFallbackResult.getOrThrow().associateBy { it.serviceKey }
         val allPrograms = EventModelMapper().toProgramRecords(
             events = transaction.events,
-            publishabilityByServiceKey = publishabilityByServiceKey,
-            channelFallbackByServiceKey = channelFallbackByServiceKey,
+            semanticFactsByServiceKey = transaction.semanticFactsByServiceKey,
             malformedCaDescriptorCountByServiceId = transaction.malformedCaDescriptorCountByServiceId,
+            ratingProfileByServiceKey = transaction.events.associate { event ->
+                event.serviceKey to AribRatingMapper.profileForDeliverySystem(currentCandidate?.deliverySystem)
+            },
         )
         val updateWindows = transaction.updateWindows.map { update ->
-            val validProgramKeys = allPrograms
-                .filter { program ->
-                    program.serviceKey == update.serviceKey &&
-                        program.startTimeMillis < update.windowEndMillis &&
-                        program.startTimeMillis + program.durationMillis > update.windowStartMillis
-                }
-                .map { ProviderDataBridge.buildProgramKey(it) }
-                .toSet()
             ProgramPublishCoordinator.EpgUpdateWindow(
                 serviceKey = update.serviceKey,
                 windowStartMs = update.windowStartMillis,
                 windowEndMs = update.windowEndMillis,
-                validProgramKeys = validProgramKeys,
+                validProgramKeys = validProgramKeysForUpdate(update),
                 deletionAuthoritative = update.deletionAuthoritative,
             )
         }
@@ -323,9 +342,8 @@ class ChannelScanController(
 
     private fun serviceCounts(): ServiceCounts {
         val transaction = engine.serviceRegistrationSnapshot()
-        val publishability = transaction.publishabilityByServiceKey
         val completeness = transaction.services.map { service ->
-            ServiceListBuilder.completenessForModel(service, publishability[service.serviceKey])
+            ServiceListBuilder.completenessForModel(service, transaction.semanticFactsByServiceKey[service.serviceKey])
         }
         val summary = ServiceListBuilder.ServiceSnapshotSummary(
             totalKeys = completeness.map { it.serviceKey }.toSet(),
@@ -409,15 +427,23 @@ class ChannelScanController(
     }
 
 
-    private fun bootEpgSyncCandidates(): List<ScanCandidate> {
-        val channels = tvProviderWriter.existingChannelsResult().getOrElse { error ->
+    private fun existingMaintenanceChannels(): List<ChannelRecord> =
+        tvProviderWriter.existingChannelsResult().getOrElse { error ->
             Log.w(LogTags.TIS, "既存 channel 復元失敗のため boot/background scan candidate を作成できません", error)
-            return emptyList()
+            emptyList()
         }
-        return channels.mapNotNull { channel -> scanCandidateFromChannel(channel) }
-    }
 
-    private fun backgroundMaintenanceCandidates(): List<ScanCandidate> = bootEpgSyncCandidates()
+    private fun maintenanceCandidates(channels: List<ChannelRecord>): List<ScanCandidate> = channels
+        .mapNotNull(::scanCandidateFromChannel)
+        .distinctBy { candidate ->
+            listOf(
+                candidate.deliverySystem,
+                candidate.frequencyHz.value,
+                candidate.streamSelector.type,
+                candidate.streamSelector.value,
+                candidate.satelliteBand,
+            )
+        }
 
     private fun scanCandidateFromChannel(channel: ChannelRecord): ScanCandidate? = runCatching {
         ScanCandidate(
@@ -452,6 +478,12 @@ class ChannelScanController(
             existingServiceKeys: Set<ServiceKey>,
             allowedServiceKeys: Set<ServiceKey>?,
         ): Set<ServiceKey> = ProgramPublishCoordinator.filterServiceKeysForMode(mode, allServiceKeys, existingServiceKeys, allowedServiceKeys)
+
+        fun validProgramKeysForUpdateForTest(update: com.maleicacid.tvinput.aribsi.AribEpgUpdateWindow): Set<String> =
+            validProgramKeysForUpdate(update)
+
+        private fun validProgramKeysForUpdate(update: com.maleicacid.tvinput.aribsi.AribEpgUpdateWindow): Set<String> =
+            update.validProgramStableIdentities.toSet()
 
         fun siCollectionOutcomeForTest(
             discoveryComplete: Boolean,
