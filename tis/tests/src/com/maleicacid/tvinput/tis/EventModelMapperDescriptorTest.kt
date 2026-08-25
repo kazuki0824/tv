@@ -7,13 +7,12 @@ import com.maleicacid.tvinput.aribsi.AribEvent
 import com.maleicacid.tvinput.aribsi.AribEventDescriptors
 import com.maleicacid.tvinput.aribsi.AribExtendedItem
 import com.maleicacid.tvinput.aribsi.AribFreeCaMode
-import com.maleicacid.tvinput.aribsi.AribRelatedItem
+import com.maleicacid.tvinput.aribsi.AribEventGroup
+import com.maleicacid.tvinput.aribsi.AribEventGroupReference
 import com.maleicacid.tvinput.aribsi.AribSeries
 import com.maleicacid.tvinput.aribsi.EventModelMapper
-import com.maleicacid.tvinput.common.NetworkId16
 import com.maleicacid.tvinput.common.ServiceId16
 import com.maleicacid.tvinput.common.ServiceKey
-import com.maleicacid.tvinput.common.TransportStreamId16
 import com.maleicacid.tvinput.common.TsPid
 import org.junit.Test
 
@@ -26,15 +25,16 @@ class EventModelMapperDescriptorTest {
             startTimeMillis = 1_700_000_000_000L,
             durationMillis = 1_800_000L,
             title = "番組",
-            description = "短い説明\n詳細説明",
+            description = "短い説明",
+            extendedDescription = "詳細説明",
             descriptors = AribEventDescriptors(
-                extendedItems = listOf(AribExtendedItem("出演", "A")),
+                extendedItems = listOf(AribExtendedItem("jpn", "出演", "A")),
                 componentText = "映像",
                 audioComponentText = "音声",
                 contentGenres = listOf(AribContentGenre(0x0, 0x0, aribName = "ニュース/報道/定時・総合")),
                 broadcastGenre = "ARIB(0x0/0x0):ニュース/報道/定時・総合",
                 genreSupplementText = "ニュース/報道/定時・総合",
-                relatedItems = listOf(AribRelatedItem("shared", 1, NetworkId16(4), TransportStreamId16(16625), ServiceId16(101), 202)),
+                eventGroups = listOf(AribEventGroup(groupType = 1, events = listOf(AribEventGroupReference(ServiceId16(101), 202)))),
                 scrambled = false,
                 freeCaMode = AribFreeCaMode(raw = 0, scrambled = false, text = "無料放送"),
                 series = AribSeries(seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12, name = "シリーズ"),
@@ -43,7 +43,7 @@ class EventModelMapperDescriptorTest {
         )
         val record = EventModelMapper().toProgramRecords(listOf(event)).single()
         check(record.shortDescription == "短い説明")
-        check(record.description.contains("短い説明"))
+        check(!record.description.contains("短い説明"))
         check(record.description.contains("詳細説明"))
         check(record.description.contains("【出演】A"))
         check(record.description.contains("映像: 映像"))
@@ -59,7 +59,9 @@ class EventModelMapperDescriptorTest {
         check(record.canonicalGenres == listOf("NEWS"))
         check(record.descriptors.broadcastGenre == "ARIB(0x0/0x0):ニュース/報道/定時・総合")
         check(record.descriptors.genreSupplementText == "ニュース/報道/定時・総合")
-        check(record.descriptors.relatedItems.single().eventId == 202)
+        check(record.descriptors.eventGroups.single().groupType == 1)
+        check(record.descriptors.eventGroups.single().events.single().eventId == 202)
+        check(record.descriptors.eventGroups.single().otherNetworkEvents.isEmpty())
         check(record.descriptors.scrambled == false)
         check(record.descriptors.freeCaMode?.text == "無料放送")
         check(record.descriptors.seriesId == 100)

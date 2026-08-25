@@ -64,6 +64,8 @@ object DirectBootGuard {
         prefs(context).edit().putBoolean(KEY_PENDING, false).apply()
     }
 
+    fun isPending(context: Context): Boolean = prefs(context).getBoolean(KEY_PENDING, false)
+
     fun deferPending(context: Context, reason: String) {
         prefs(context).edit()
             .putBoolean(KEY_PENDING, true)
@@ -71,6 +73,13 @@ object DirectBootGuard {
             .apply()
         BootEpgSyncDiagnostics.lastSkippedReason = reason
         Log.i(LogTags.TIS, "boot EPG 同期を延期しました reason=$reason")
+    }
+
+    fun markBootEpgSyncRequested(context: Context, reason: String) {
+        prefs(context).edit()
+            .putBoolean(KEY_PENDING, true)
+            .putString(KEY_BOOT_REASON, reason)
+            .apply()
     }
 
     fun markTunerUnavailable(context: Context) {
@@ -94,24 +103,26 @@ object DirectBootGuard {
         Log.w(LogTags.TIS, "boot EPG 同期 drain を延期します reason=$reason")
     }
 
-    private fun isTvProviderReady(context: Context): Boolean = try {
-        val cursor = context.contentResolver.query(
-            TvContract.Channels.CONTENT_URI,
-            arrayOf(TvContract.Channels._ID),
-            null,
-            null,
-            null,
-        ) ?: return false
-        cursor.close()
-        true
-    } catch (e: SecurityException) {
-        false
-    } catch (e: IllegalStateException) {
-        false
-    } catch (e: SQLiteException) {
-        false
-    } catch (e: RuntimeException) {
-        false
+    private fun isTvProviderReady(context: Context): Boolean {
+        return try {
+            val cursor = context.contentResolver.query(
+                TvContract.Channels.CONTENT_URI,
+                arrayOf(TvContract.Channels._ID),
+                null,
+                null,
+                null,
+            ) ?: return false
+            cursor.close()
+            true
+        } catch (e: SecurityException) {
+            false
+        } catch (e: IllegalStateException) {
+            false
+        } catch (e: SQLiteException) {
+            false
+        } catch (e: RuntimeException) {
+            false
+        }
     }
 
     private fun prefs(context: Context) = context.createDeviceProtectedStorageContext()

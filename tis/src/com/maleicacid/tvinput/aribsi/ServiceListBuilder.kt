@@ -4,8 +4,7 @@ import com.maleicacid.tvinput.common.ServiceKey
 
 /**
  * TvProvider 登録用のサービス snapshot を構築する。
- * readiness / EPG 公開可否 / 平文ライブ視聴 視聴可否は Rust 側 診断 を SSOT とし、
- * Kotlin 側では再計算しない。
+ * Rust が返す放送由来の意味事実に、現行 product capability を適用する。
  */
 class ServiceListBuilder(private val engine: AribSiEngine) {
     data class ServiceCompleteness(
@@ -66,8 +65,9 @@ class ServiceListBuilder(private val engine: AribSiEngine) {
 
     fun completenessSummary(): ServiceSnapshotSummary {
         val transaction = engine.serviceRegistrationSnapshot()
-        val publishability = transaction.publishabilityByServiceKey
-        val completeness = transaction.services.map { completenessForModel(it, publishability[it.serviceKey]) }
+        val completeness = transaction.services.map {
+            completenessForModel(it, transaction.semanticFactsByServiceKey[it.serviceKey])
+        }
         return ServiceSnapshotSummary(
             totalKeys = completeness.map { it.serviceKey }.toSet(),
             completeKeys = completeness.filter { it.isComplete }.map { it.serviceKey }.toSet(),
@@ -80,26 +80,33 @@ class ServiceListBuilder(private val engine: AribSiEngine) {
 
     fun epgPublishableSnapshot(): List<AribService> {
         val transaction = engine.serviceRegistrationSnapshot()
-        val publishability = transaction.publishabilityByServiceKey
-        return transaction.services.filter { service -> publishability[service.serviceKey]?.epgPublishable == true }
+        return transaction.services.filter { service ->
+            ServicePolicyEvaluator.evaluate(transaction.semanticFactsByServiceKey[service.serviceKey])
+                .epgPublishable
+        }
     }
 
     fun registrationReadySnapshot(): List<AribService> {
         val transaction = engine.serviceRegistrationSnapshot()
-        val publishability = transaction.publishabilityByServiceKey
-        return transaction.services.filter { service -> publishability[service.serviceKey]?.channelRegistrationReady == true }
+        return transaction.services.filter { service ->
+            ServicePolicyEvaluator.evaluate(transaction.semanticFactsByServiceKey[service.serviceKey])
+                .channelRegistrationReady
+        }
     }
 
     fun clearLivePlaybackSupportedSnapshot(): List<AribService> {
         val transaction = engine.serviceRegistrationSnapshot()
-        val publishability = transaction.publishabilityByServiceKey
-        return transaction.services.filter { service -> publishability[service.serviceKey]?.clearLivePlaybackSupported == true }
+        return transaction.services.filter { service ->
+            ServicePolicyEvaluator.evaluate(transaction.semanticFactsByServiceKey[service.serviceKey])
+                .clearLivePlaybackSupported
+        }
     }
 
     fun incompleteReasons(): Map<ServiceKey, List<String>> {
         val transaction = engine.serviceRegistrationSnapshot()
-        val publishability = transaction.publishabilityByServiceKey
-        val completeness = transaction.services.map { completenessForModel(it, publishability[it.serviceKey]) }
+        val completeness = transaction.services.map {
+            completenessForModel(it, transaction.semanticFactsByServiceKey[it.serviceKey])
+        }
         val reasons = completeness
             .filter { !it.isRegistrationReady }
             .associate { it.serviceKey to (it.missingComponents + it.registrationReasons + it.reasons).distinct() }
@@ -107,40 +114,24 @@ class ServiceListBuilder(private val engine: AribSiEngine) {
     }
 
     fun isServicePublishable(service: AribService): Boolean =
-        engine.serviceRegistrationSnapshot().publishabilityByServiceKey[service.serviceKey]?.publishable == true
+        completenessFor(service).publishable
 
     fun isServiceComplete(service: AribService): Boolean = completenessFor(service).isComplete
 
     fun isServiceClearLivePlaybackSupported(service: AribService): Boolean =
-        engine.serviceRegistrationSnapshot().publishabilityByServiceKey[service.serviceKey]?.clearLivePlaybackSupported == true
+        completenessFor(service).clearLivePlaybackSupported
 
     fun completenessFor(service: AribService): ServiceCompleteness = completenessForModel(
         service = service,
-        publishability = engine.serviceRegistrationSnapshot().publishabilityByServiceKey[service.serviceKey],
+        facts = engine.serviceRegistrationSnapshot().semanticFactsByServiceKey[service.serviceKey],
     )
 
     companion object {
         fun completenessForModel(
             service: AribService,
-            publishability: ServicePublishabilityDiagnostic?,
+            facts: ServiceSemanticFacts?,
         ): ServiceCompleteness {
-            val diagnostic = publishability ?: ServicePublishabilityDiagnostic(
-                serviceKey = service.serviceKey,
-                publishable = false,
-                channelRegistrationReady = false,
-                epgPublishable = false,
-                clearLivePlaybackSupported = false,
-                requiresCas = service.requiresCas || service.freeCaMode == true,
-                unsupportedCas = service.requiresCas || service.freeCaMode == true,
-                pmtPidResolved = service.pmtPid != null,
-                pmtParsed = service.pmtPid != null && service.pcrPid != null,
-                caStateResolved = service.freeCaMode != null || service.requiresCas,
-                freeCaModeResolved = service.freeCaMode != null,
-                missingComponents = emptyList(),
-                reasons = listOf("NO_RUST_PUBLISHABILITY_DIAGNOSTIC"),
-                registrationReasons = listOf("NO_RUST_PUBLISHABILITY_DIAGNOSTIC"),
-                epgReasons = listOf("NO_RUST_PUBLISHABILITY_DIAGNOSTIC"),
-            )
+            val diagnostic = ServicePolicyEvaluator.evaluate(facts, service.serviceKey)
             return ServiceCompleteness(
                 serviceKey = service.serviceKey,
                 publishable = diagnostic.publishable,
@@ -155,5 +146,93 @@ class ServiceListBuilder(private val engine: AribSiEngine) {
                 epgReasons = diagnostic.epgReasons,
             )
         }
+    }
+}
+
+object ServicePolicyEvaluator {
+    private const val SERVICE_TYPE_DIGITAL_TV = 0x01
+    private const val SERVICE_TYPE_DIGITAL_AUDIO = 0x02
+    private const val SUPPORTED_SMD = "SUPPORTED_BROADCAST"
+    private val SUPPORTED_VIDEO_STREAM_TYPES = setOf(0x02, 0x1b)
+    private val SUPPORTED_AUDIO_STREAM_TYPES = setOf(0x03, 0x04, 0x0f)
+    private val RECOGNIZED_UNSUPPORTED_VIDEO_STREAM_TYPES = setOf(0x24)
+    private val RECOGNIZED_UNSUPPORTED_AUDIO_STREAM_TYPES = setOf(0x11)
+
+    fun evaluate(
+        facts: ServiceSemanticFacts?,
+        fallbackKey: ServiceKey? = facts?.serviceKey,
+        hasPhysicalTune: Boolean = true,
+        hasInternalTuneKey: Boolean = true,
+    ): ServicePublishabilityDiagnostic {
+        val key = facts?.serviceKey ?: fallbackKey ?: ServiceKey(0, 0, 0)
+        if (facts == null) {
+            return ServicePublishabilityDiagnostic(
+                serviceKey = key,
+                publishable = false,
+                channelRegistrationReady = false,
+                epgPublishable = false,
+                clearLivePlaybackSupported = false,
+                requiresCas = false,
+                unsupportedCas = false,
+                missingComponents = listOf("SERVICE_SEMANTIC_FACTS"),
+                reasons = listOf("NO_CURRENT_SERVICE_SEMANTIC_FACTS"),
+                registrationReasons = listOf("NO_CURRENT_SERVICE_SEMANTIC_FACTS"),
+                epgReasons = listOf("NO_CURRENT_SERVICE_SEMANTIC_FACTS"),
+            )
+        }
+
+        val registrationReasons = mutableListOf<String>()
+        registrationReasons += facts.missingComponents
+        if (facts.serviceType !in setOf(SERVICE_TYPE_DIGITAL_TV, SERVICE_TYPE_DIGITAL_AUDIO)) {
+            registrationReasons += "UNSUPPORTED_OR_UNRESOLVED_SERVICE_TYPE"
+        }
+        if (!facts.pmtPidResolved) registrationReasons += "NO_PMT_PID"
+        if (!facts.pmtParsed) registrationReasons += "NO_VALID_PMT"
+        if (!facts.pcrPidResolved) registrationReasons += "NO_PCR_PID"
+        val streamTypes = facts.elementaryStreams.map { it.streamType }.toSet()
+        when (facts.serviceType) {
+            SERVICE_TYPE_DIGITAL_TV -> if (streamTypes.none(SUPPORTED_VIDEO_STREAM_TYPES::contains)) {
+                registrationReasons += if (streamTypes.any(RECOGNIZED_UNSUPPORTED_VIDEO_STREAM_TYPES::contains)) {
+                    "NO_SUPPORTED_VIDEO_CODEC"
+                } else {
+                    "NO_VIDEO_ES"
+                }
+            }
+            SERVICE_TYPE_DIGITAL_AUDIO -> if (streamTypes.none(SUPPORTED_AUDIO_STREAM_TYPES::contains)) {
+                registrationReasons += if (streamTypes.any(RECOGNIZED_UNSUPPORTED_AUDIO_STREAM_TYPES::contains)) {
+                    "NO_SUPPORTED_AUDIO_CODEC"
+                } else {
+                    "NO_AUDIO_ES"
+                }
+            }
+        }
+        if (facts.smd.semanticState != SUPPORTED_SMD) {
+            registrationReasons += facts.smd.semanticState
+        }
+        if (!hasPhysicalTune) registrationReasons += "NO_PHYSICAL_TUNE"
+        if (!hasInternalTuneKey) registrationReasons += "NO_INTERNAL_TUNE_KEY"
+        val normalizedRegistrationReasons = registrationReasons.distinct().sorted()
+        val registrationReady = normalizedRegistrationReasons.isEmpty()
+        val unsupportedCas = facts.requiresCas
+        val clearLivePlaybackSupported = registrationReady && !unsupportedCas
+        val reasons = (normalizedRegistrationReasons + facts.semanticDiagnostics +
+            if (unsupportedCas) listOf("CAS_NOT_IMPLEMENTED") else emptyList()).distinct().sorted()
+        return ServicePublishabilityDiagnostic(
+            serviceKey = key,
+            publishable = registrationReady,
+            channelRegistrationReady = registrationReady,
+            epgPublishable = registrationReady,
+            clearLivePlaybackSupported = clearLivePlaybackSupported,
+            requiresCas = facts.requiresCas,
+            unsupportedCas = unsupportedCas,
+            pmtPidResolved = facts.pmtPidResolved,
+            pmtParsed = facts.pmtParsed,
+            caStateResolved = facts.caDescriptorsResolved,
+            freeCaModeResolved = facts.freeCaMode != null,
+            missingComponents = facts.missingComponents,
+            reasons = reasons,
+            registrationReasons = normalizedRegistrationReasons,
+            epgReasons = normalizedRegistrationReasons,
+        )
     }
 }

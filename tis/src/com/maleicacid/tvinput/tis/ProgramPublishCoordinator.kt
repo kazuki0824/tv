@@ -29,8 +29,12 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
         val skippedUnchanged: Int = 0,
         val skippedNoChannel: Int = 0,
         val failures: List<TvProviderWriter.Diagnostic> = emptyList(),
+        val eligibleTargetCount: Int = 0,
+        val committedServiceCount: Int = 0,
     ) {
         val changed: Int get() = inserted + updated + deleted
+        val hasCommittedTarget: Boolean
+            get() = eligibleTargetCount > 0 && committedServiceCount > 0 && failures.isEmpty()
     }
 
     private data class RetryWindowKey(
@@ -103,12 +107,12 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
         val retryForAllowed = drainRetryWindowsFor(allowed)
         val programs = allPrograms
             .filter { it.serviceKey in allowed }
-            .map { program ->
-                program.copy(droppedRetryWindowCount = droppedRetryWindowCountByService[program.serviceKey] ?: 0)
-            }
         val windows = (retryForAllowed + updateWindows).distinctBy { RetryWindowKey(it.serviceKey, it.windowStartMs, it.windowEndMs, it.failureClass) }
             .filter { it.serviceKey in allowed && it.windowEndMs > it.windowStartMs }
         if (programs.isEmpty() && windows.isEmpty()) return ProgramPublishResult(0, 0, skippedNoChannel = allServiceKeys.size)
+        val authoritativeWindows = windows.filter { it.deletionAuthoritative }
+        val eligibleTargetCount = programs.size + authoritativeWindows.size
+        val eligibleTargetServiceKeys = (programs.map { it.serviceKey } + authoritativeWindows.map { it.serviceKey }).toSet()
 
         val signature = runCatching { plannedInputSignature(programs, windows) }.getOrElse { error ->
             enqueueRetryWindows(windows, failureClass = FailureClass.SIGNATURE_BUILD_FAILED)
@@ -118,8 +122,14 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
                 failures = listOf(TvProviderWriter.Diagnostic(null, "program-signature", error.message.orEmpty())),
             )
         }
-        if (lastProgramSignatureByMode[mode] == signature) {
-            return ProgramPublishResult(0, 0, skippedUnchanged = allServiceKeys.size)
+        if (mode != ChannelScanController.PublishMode.BOOT_EPG_SYNC && lastProgramSignatureByMode[mode] == signature) {
+            return ProgramPublishResult(
+                0,
+                0,
+                skippedUnchanged = allServiceKeys.size,
+                eligibleTargetCount = eligibleTargetCount,
+                committedServiceCount = eligibleTargetServiceKeys.size,
+            )
         }
         val result = tvProviderWriter.upsertProgramsForWindows(programs, windows)
         val failedServiceKeys = result.failures.mapNotNull { it.serviceKey }.toSet()
@@ -135,7 +145,14 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
         } else {
             enqueueFailedWindows(failedWindows, result.failures)
         }
-        return ProgramPublishResult(result.inserted, result.updated, deleted = result.deleted, failures = result.failures)
+        return ProgramPublishResult(
+            inserted = result.inserted,
+            updated = result.updated,
+            deleted = result.deleted,
+            failures = result.failures,
+            eligibleTargetCount = eligibleTargetCount,
+            committedServiceCount = result.succeededServiceKeys.count { it in eligibleTargetServiceKeys },
+        )
     }
 
     /**
@@ -256,7 +273,9 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
         EpgUpdateWindow(
             serviceKey = key,
             windowStartMs = values.minOf { it.startTimeMillis },
-            windowEndMs = values.maxOf { it.startTimeMillis + it.durationMillis },
+            windowEndMs = values.mapNotNull { program ->
+                runCatching { Math.addExact(program.startTimeMillis, program.durationMillis) }.getOrNull()
+            }.maxOrNull() ?: values.maxOf { it.startTimeMillis },
             validProgramKeys = values.map { programIdentityForCoordinator(it) }.toSet(),
         )
     }

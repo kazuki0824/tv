@@ -14,7 +14,7 @@ class TvProviderWriterUpsertTest {
     @Test fun insertNewChannel() {
         val store = FakeChannelStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        val result = writer.upsertChannels(listOf(ChannelRecord(key, displayNumber = "101", displayName = "NHK", frequencyHz = FrequencyHz(473_142_857L))))
+        val result = writer.upsertChannels(listOf(ChannelRecord(key, serviceType = 0x01, displayNumber = "101", displayName = "NHK", frequencyHz = FrequencyHz(473_142_857L))))
         check(result.inserted == 1) { result.toString() }
         check(result.updated == 0)
         check(result.failures.isEmpty())
@@ -26,8 +26,8 @@ class TvProviderWriterUpsertTest {
     @Test fun updateExistingChannel() {
         val store = FakeChannelStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        writer.upsertChannels(listOf(ChannelRecord(key, displayNumber = "101", displayName = "NHK", frequencyHz = FrequencyHz(473_142_857L))))
-        val result = writer.upsertChannels(listOf(ChannelRecord(key, displayNumber = "101", displayName = "NHK G", frequencyHz = FrequencyHz(473_142_857L))))
+        writer.upsertChannels(listOf(ChannelRecord(key, serviceType = 0x01, displayNumber = "101", displayName = "NHK", frequencyHz = FrequencyHz(473_142_857L))))
+        val result = writer.upsertChannels(listOf(ChannelRecord(key, serviceType = 0x01, displayNumber = "101", displayName = "NHK G", frequencyHz = FrequencyHz(473_142_857L))))
         check(result.inserted == 0) { result.toString() }
         check(result.updated == 1)
         check(store.rows.size == 1)
@@ -41,7 +41,7 @@ class TvProviderWriterUpsertTest {
     @Test fun providerFailureIsDiagnostic() {
         val store = FakeChannelStore(failInsert = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        val result = writer.upsertChannels(listOf(ChannelRecord(key, displayNumber = "101", displayName = "NHK", frequencyHz = FrequencyHz(473_142_857L))))
+        val result = writer.upsertChannels(listOf(ChannelRecord(key, serviceType = 0x01, displayNumber = "101", displayName = "NHK", frequencyHz = FrequencyHz(473_142_857L))))
         check(result.inserted == 0)
         check(result.failures.single().operation == "insert")
     }
