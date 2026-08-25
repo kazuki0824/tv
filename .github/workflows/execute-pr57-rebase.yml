@@ -50,6 +50,11 @@ jobs:
                       continue
                   break
               out.extend(block)
-          print('\n'.join(out))
+          script = '\n'.join(out)
+          needle = "(cd cas_hal/host_ci && cargo generate-lockfile)\ngit add -A"
+          replacement = "(cd cas_hal/host_ci && cargo generate-lockfile)\nperl -0pi -e 's/\\n+\\z/\\n/' cas_hal/host_ci/core/Cargo.toml\ngit add -A"
+          if script.count(needle) != 1:
+              raise SystemExit(f'expected one manifest normalization insertion point, got {script.count(needle)}')
+          print(script.replace(needle, replacement, 1))
           PY
           bash /tmp/pr57-rebase.sh
