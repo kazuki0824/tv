@@ -3,10 +3,18 @@ package com.maleicacid.tvinput.tis
 import org.junit.Test
 
 class PlaybackDecoderBackpressureTest {
-    @Test fun oversizedSampleDecisionDoesNotQueueBytesBeyondInputBuffer() {
-        check(!PlaybackPipeline.shouldDropOversizedSampleForTest(sampleSize = 16, inputRemaining = 16))
-        check(PlaybackPipeline.queuedInputSizeForSampleForTest(sampleSize = 16, inputRemaining = 16) == 16)
-        check(PlaybackPipeline.shouldDropOversizedSampleForTest(sampleSize = 17, inputRemaining = 16))
-        check(PlaybackPipeline.queuedInputSizeForSampleForTest(sampleSize = 17, inputRemaining = 16) == 0)
+    @Test fun directBlockModelRejectsInvalidRangesWithoutByteBufferSizingFallback() {
+        check(
+            PlaybackPipeline.mediaEventBoundsDecisionForTest(0, 16, 16) ==
+                PlaybackPipeline.MediaEventBoundsDecision.ACCEPT,
+        )
+        check(
+            PlaybackPipeline.mediaEventBoundsDecisionForTest(0, 17, 16) ==
+                PlaybackPipeline.MediaEventBoundsDecision.OUT_OF_BOUNDS,
+        )
+        check(
+            PlaybackPipeline.mediaEventBoundsDecisionForTest(0, Int.MAX_VALUE.toLong() + 1, Long.MAX_VALUE) ==
+                PlaybackPipeline.MediaEventBoundsDecision.OVERSIZED,
+        )
     }
 }

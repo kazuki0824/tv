@@ -6,7 +6,7 @@ import com.maleicacid.tvinput.aribsi.AribFreeCaMode
 import com.maleicacid.tvinput.aribsi.AribLinkage
 import com.maleicacid.tvinput.aribsi.AribParentalRating
 import com.maleicacid.tvinput.aribsi.AribProgramSource
-import com.maleicacid.tvinput.aribsi.AribRelatedItem
+import com.maleicacid.tvinput.aribsi.AribEventGroup
 import com.maleicacid.tvinput.aribsi.AribSeries
 import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.ServiceKey
@@ -14,6 +14,7 @@ import com.maleicacid.tvinput.common.StreamSelector
 
 data class ChannelRecord(
     val serviceKey: ServiceKey,
+    val serviceType: Int,
     val displayNumber: String,
     val displayName: String,
     val frequencyHz: FrequencyHz,
@@ -45,7 +46,7 @@ data class ProgramDescriptors(
     val contentGenres: List<AribContentGenre> = emptyList(),
     val broadcastGenre: String? = null,
     val genreSupplementText: String? = null,
-    val relatedItems: List<AribRelatedItem> = emptyList(),
+    val eventGroups: List<AribEventGroup> = emptyList(),
     val linkage: List<AribLinkage> = emptyList(),
     val scrambled: Boolean? = null,
     val freeCaMode: AribFreeCaMode? = null,
@@ -82,8 +83,5 @@ data class ProgramRecord(
     val videoHeight: Int? = null,
     val videoFormat: String? = null,
     val malformedCaDescriptorCount: Int = 0,
-    // Program provider-data 診断。ProgramPublishCoordinator が所有する
-    // process内だけの再試行状態であり、process再起動時にresetされる。
-    val droppedRetryWindowCount: Int = 0,
     val tvProviderProgramId: Long? = null,
 )

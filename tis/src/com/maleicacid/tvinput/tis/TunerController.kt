@@ -18,6 +18,7 @@ import android.util.Log
 import android.view.Surface
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
 import com.maleicacid.tvinput.aribsi.CaMetadata
+import com.maleicacid.tvinput.aribsi.ProviderDataBridge
 import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.WellKnownSectionPid
 import com.maleicacid.tvinput.common.CaptionTimestamp
@@ -27,7 +28,6 @@ import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.StreamSelector
 import com.maleicacid.tvinput.common.StreamSelectorType
 import com.maleicacid.tvinput.common.TsPid
-import android.content.AttributionSource
 import com.maleicacid.tvinput.db.ChannelRecord
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -39,7 +39,7 @@ class TunerController(
     private val inputId: String,
     private val useCase: Int = TvInputService.PRIORITY_HINT_USE_CASE_TYPE_LIVE,
     private val sessionId: String? = null,
-    private val attributionSource: AttributionSource? = null,
+    private val sessionContext: Context? = null,
 ) : AutoCloseable {
     interface SectionFilterHandle : AutoCloseable {
         val pid: TsPid
@@ -50,6 +50,7 @@ class TunerController(
         val uri: Uri?,
         val inputId: String,
         val serviceKey: ServiceKey,
+        val serviceType: Int,
         val displayName: String,
         val displayNumber: String,
         val deliverySystem: String,
@@ -150,7 +151,7 @@ class TunerController(
     private val sectionReadErrorCounters = linkedMapOf<TsPid, Int>()
     private val sectionMalformedCounters = linkedMapOf<TsPid, Int>()
     private val sectionOversizedCounters = linkedMapOf<TsPid, Int>()
-    private val playbackPipeline = PlaybackPipeline(inputId, tvInputSessionId, attributionSource)
+    private val playbackPipeline = PlaybackPipeline(inputId, tvInputSessionId, sessionContext)
 
     private fun createTuner(): Tuner? = try {
         Tuner(context, tvInputSessionId, useCase)
@@ -195,9 +196,9 @@ class TunerController(
     fun tuneForLive(channelUri: Uri): TuneOutcome = callOnController { tuneForLiveOnController(channelUri) }
 
     private fun tuneForLiveOnController(channelUri: Uri): TuneOutcome {
-        // channel 解決に失敗する場合も既存 ライブ state を先に破棄する。
-        resetBeforeTune()
         val resolved = resolveChannel(channelUri).getOrElse { e ->
+            // 解決不能要求では従来どおり既存live stateを破棄する。
+            resetBeforeTune()
             Log.w(LogTags.TIS, "channel 解決に失敗しました inputId=$inputId uri=$channelUri", e)
             return TuneOutcome(false, Tuner.RESULT_INVALID_ARGUMENT, null, tuneGeneration, e.message.orEmpty())
         }
@@ -211,6 +212,7 @@ class TunerController(
             uri = null,
             inputId = inputId,
             serviceKey = ServiceKey(0, 0, 0),
+            serviceType = 0x01,
             displayName = candidate.displayChannel,
             displayNumber = candidate.displayChannel,
             deliverySystem = candidate.deliverySystem,
@@ -318,7 +320,7 @@ class TunerController(
             override fun onFilterEvent(filter: Filter, events: Array<FilterEvent>) {
                 if (generation != tuneGeneration || sectionFilterTokens[pid] != filterToken) return
                 events.filterIsInstance<SectionEvent>().forEach { event ->
-                    val length = event.dataLength
+                    val length = event.dataLength.toLong()
                     when (sectionDataLengthDecisionForTest(length)) {
                         SectionDataLengthDecision.MALFORMED -> {
                             recordSectionMalformedDrop(pid, "dataLength=$length")
@@ -554,6 +556,9 @@ class TunerController(
         playbackPipeline.stop()
     }
 
+    fun currentMediaClockSnapshot(): PlaybackPipeline.MediaClockSnapshot? =
+        playbackPipeline.currentMediaClockSnapshot()
+
     fun currentResolvedChannel(): ResolvedChannel? = callOnController { currentTune }
     fun currentGeneration(): Long = callOnController { tuneGeneration }
     fun isTuneRequestAccepted(): Boolean = callOnController { tuneAccepted }
@@ -566,6 +571,7 @@ class TunerController(
             TvContract.Channels.COLUMN_SERVICE_ID,
             TvContract.Channels.COLUMN_DISPLAY_NAME,
             TvContract.Channels.COLUMN_DISPLAY_NUMBER,
+            TvContract.Channels.COLUMN_SERVICE_TYPE,
             TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA,
         )
         context.contentResolver.query(channelUri, projection, null, null, null)?.use { cursor ->
@@ -575,22 +581,25 @@ class TunerController(
             val key = ServiceKey(cursor.getInt(1), cursor.getInt(2), cursor.getInt(3))
             val displayName = cursor.getString(4) ?: "service-${key.serviceId}"
             val displayNumber = cursor.getString(5) ?: key.serviceId.toString()
-            val providerData = cursor.getBlob(6)?.let { String(it, Charsets.UTF_8) }.orEmpty()
-            val map = parseInternalProviderData(providerData)
-            val deliverySystem = map["system"] ?: error("channel provider data に delivery system がありません")
-            val frequencyHz = FrequencyHz.fromOrNull(map["frequencyHz"]?.toLongOrNull()) ?: error("channel provider data の frequencyHz が不正です")
+            val serviceType = cursor.getString(6)?.toIntOrNull()?.takeIf { it in 0..0xff }
+                ?: error("channelのARIB service_typeが不正です")
+            val providerData = providerDataBytes(cursor, 7)
+            val decoded = ProviderDataBridge.decodeChannelProviderData(providerData)
+                ?: error("channel provider data JSON v1を復元できません")
+            require(decoded.serviceKey == key) { "channel rowとprovider dataのservice keyが一致しません" }
             ResolvedChannel(
                 uri = channelUri,
                 inputId = rowInputId,
                 serviceKey = key,
+                serviceType = serviceType,
                 displayName = displayName,
                 displayNumber = displayNumber,
-                deliverySystem = deliverySystem,
-                frequencyHz = frequencyHz,
-                streamSelector = StreamSelector.fromStored(map["streamSelectorType"], map["streamSelectorValue"]),
-                physicalChannel = map["physicalChannel"]?.toIntOrNull(),
-                backendHint = map["backendHint"],
-                satelliteBand = map["satelliteBand"],
+                deliverySystem = decoded.tune.deliverySystem,
+                frequencyHz = decoded.tune.frequencyHz,
+                streamSelector = decoded.tune.streamSelector,
+                physicalChannel = decoded.tune.physicalChannel,
+                backendHint = null,
+                satelliteBand = decoded.tune.satelliteBand,
             )
         } ?: error("query が null cursor を返しました uri=$channelUri")
     }
@@ -625,7 +634,9 @@ class TunerController(
         }
     }
 
-    private fun parseInternalProviderData(data: String): Map<String, String> = TvProviderWriter.parseChannelProviderData(data)
+    private fun providerDataBytes(cursor: android.database.Cursor, index: Int): ByteArray? =
+        runCatching { cursor.getBlob(index) }.getOrNull()
+            ?: runCatching { cursor.getString(index)?.toByteArray(Charsets.UTF_8) }.getOrNull()
 
     fun release() {
         if (released) return

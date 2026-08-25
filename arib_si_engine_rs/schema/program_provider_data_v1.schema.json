@@ -15,7 +15,7 @@
     "ratings",
     "genres",
     "series",
-    "relatedItems",
+    "eventGroups",
     "linkage",
     "freeCaMode",
     "audioLanguages",
@@ -67,10 +67,10 @@
         }
       ]
     },
-    "relatedItems": {
+    "eventGroups": {
       "type": "array",
       "items": {
-        "$ref": "#/$defs/relatedItem"
+        "$ref": "#/$defs/eventGroup"
       }
     },
     "linkage": {
@@ -110,8 +110,16 @@
   },
   "not": {
     "anyOf": [
-      { "required": ["audio"] },
-      { "required": ["video"] }
+      {
+        "required": [
+          "audio"
+        ]
+      },
+      {
+        "required": [
+          "video"
+        ]
+      }
     ]
   },
   "$defs": {
@@ -261,11 +269,31 @@
       },
       "not": {
         "anyOf": [
-          { "required": ["unsupportedCas"] },
-          { "required": ["clearLivePlaybackSupported"] },
-          { "required": ["channelRegistrationReady"] },
-          { "required": ["epgPublishable"] },
-          { "required": ["publishStateSource"] }
+          {
+            "required": [
+              "unsupportedCas"
+            ]
+          },
+          {
+            "required": [
+              "clearLivePlaybackSupported"
+            ]
+          },
+          {
+            "required": [
+              "channelRegistrationReady"
+            ]
+          },
+          {
+            "required": [
+              "epgPublishable"
+            ]
+          },
+          {
+            "required": [
+              "publishStateSource"
+            ]
+          }
         ]
       }
     },
@@ -300,8 +328,16 @@
       },
       "not": {
         "anyOf": [
-          { "required": ["supported"] },
-          { "required": ["mappedTvContentRating"] }
+          {
+            "required": [
+              "supported"
+            ]
+          },
+          {
+            "required": [
+              "mappedTvContentRating"
+            ]
+          }
         ]
       }
     },
@@ -340,9 +376,21 @@
       },
       "not": {
         "anyOf": [
-          { "required": ["unmappedReason"] },
-          { "required": ["canonicalGenre"] },
-          { "required": ["mappedCanonicalGenre"] }
+          {
+            "required": [
+              "unmappedReason"
+            ]
+          },
+          {
+            "required": [
+              "canonicalGenre"
+            ]
+          },
+          {
+            "required": [
+              "mappedCanonicalGenre"
+            ]
+          }
         ]
       }
     },
@@ -398,48 +446,6 @@
             "string",
             "null"
           ]
-        },
-        "parseStatus": {
-          "$ref": "#/$defs/parseStatus"
-        }
-      }
-    },
-    "relatedItem": {
-      "type": "object",
-      "additionalProperties": true,
-      "required": [
-        "kind",
-        "groupType",
-        "originalNetworkId",
-        "transportStreamId",
-        "serviceId",
-        "eventId",
-        "parseStatus"
-      ],
-      "properties": {
-        "kind": {
-          "enum": [
-            "shared",
-            "relay",
-            "movement"
-          ]
-        },
-        "groupType": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 15
-        },
-        "originalNetworkId": {
-          "$ref": "#/$defs/uint16"
-        },
-        "transportStreamId": {
-          "$ref": "#/$defs/uint16"
-        },
-        "serviceId": {
-          "$ref": "#/$defs/uint16"
-        },
-        "eventId": {
-          "$ref": "#/$defs/uint16"
         },
         "parseStatus": {
           "$ref": "#/$defs/parseStatus"
@@ -527,11 +533,15 @@
       "type": "object",
       "additionalProperties": true,
       "required": [
+        "languageCode",
         "description",
         "text",
         "parseStatus"
       ],
       "properties": {
+        "languageCode": {
+          "$ref": "#/$defs/iso639"
+        },
         "parseStatus": {
           "$ref": "#/$defs/parseStatus"
         },
@@ -562,10 +572,24 @@
           "$ref": "#/$defs/uint8"
         },
         "componentTag": {
-          "$ref": "#/$defs/uint8"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint8"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "componentType": {
-          "$ref": "#/$defs/uint8"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint8"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "codec": {
           "type": "string",
@@ -644,17 +668,38 @@
           "$ref": "#/$defs/uint8"
         },
         "componentTag": {
-          "$ref": "#/$defs/uint8"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint8"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "componentType": {
-          "$ref": "#/$defs/uint8"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint8"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "codec": {
           "type": "string",
           "minLength": 1
         },
         "language": {
-          "$ref": "#/$defs/iso639"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/iso639"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "channelConfiguration": {
           "type": [
@@ -713,13 +758,34 @@
           "$ref": "#/$defs/uint13"
         },
         "componentTag": {
-          "$ref": "#/$defs/uint8"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint8"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "dataComponentId": {
-          "$ref": "#/$defs/uint16"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint16"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "language": {
-          "$ref": "#/$defs/iso639"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/iso639"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "captionServiceKind": {
           "type": "string",
@@ -730,7 +796,9 @@
         }
       },
       "not": {
-        "required": ["trackId"]
+        "required": [
+          "trackId"
+        ]
       }
     },
     "dataComponent": {
@@ -748,13 +816,34 @@
           "$ref": "#/$defs/uint13"
         },
         "componentTag": {
-          "$ref": "#/$defs/uint8"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint8"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "dataComponentId": {
-          "$ref": "#/$defs/uint16"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint16"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "componentType": {
-          "$ref": "#/$defs/uint8"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint8"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "parseStatus": {
           "$ref": "#/$defs/parseStatus"
@@ -874,6 +963,24 @@
           "type": "integer",
           "minimum": 0
         },
+        "providerDataDroppedCounts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "providerDataOriginalBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "providerDataFinalBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "providerDataTruncationCode": {
+          "const": "PROVIDER_DATA_TRUNCATED"
+        },
         "malformedCaDescriptorCount": {
           "type": "integer",
           "minimum": 0
@@ -884,6 +991,113 @@
           "currentProgram"
         ]
       }
+    },
+    "eventGroupReference": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "serviceId",
+        "eventId"
+      ],
+      "properties": {
+        "serviceId": {
+          "$ref": "#/$defs/uint16"
+        },
+        "eventId": {
+          "$ref": "#/$defs/uint16"
+        }
+      }
+    },
+    "otherNetworkEventReference": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "originalNetworkId",
+        "transportStreamId",
+        "serviceId",
+        "eventId"
+      ],
+      "properties": {
+        "originalNetworkId": {
+          "$ref": "#/$defs/uint16"
+        },
+        "transportStreamId": {
+          "$ref": "#/$defs/uint16"
+        },
+        "serviceId": {
+          "$ref": "#/$defs/uint16"
+        },
+        "eventId": {
+          "$ref": "#/$defs/uint16"
+        }
+      }
+    },
+    "eventGroup": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "groupType",
+        "events",
+        "otherNetworkEvents",
+        "privateDataHex",
+        "parseStatus"
+      ],
+      "properties": {
+        "groupType": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/eventGroupReference"
+          }
+        },
+        "otherNetworkEvents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/otherNetworkEventReference"
+          }
+        },
+        "privateDataHex": {
+          "$ref": "#/$defs/hex"
+        },
+        "parseStatus": {
+          "$ref": "#/$defs/parseStatus"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "groupType": {
+                "enum": [
+                  4,
+                  5
+                ]
+              }
+            },
+            "required": [
+              "groupType"
+            ]
+          },
+          "then": {
+            "properties": {
+              "privateDataHex": {
+                "const": ""
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "otherNetworkEvents": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }

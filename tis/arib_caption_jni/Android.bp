@@ -12,8 +12,8 @@ rust_ffi_shared {
     rustlibs: [
         "libjni",
     ],
-    shared_libs: [
-        "libdl",
+    static_libs: [
+        "libaribcaption",
     ],
 }
 
@@ -26,8 +26,8 @@ rust_test {
     rustlibs: [
         "libjni",
     ],
-    shared_libs: [
-        "libdl",
+    static_libs: [
+        "libaribcaption",
     ],
     auto_gen_config: true,
     test_suites: ["general-tests"],
