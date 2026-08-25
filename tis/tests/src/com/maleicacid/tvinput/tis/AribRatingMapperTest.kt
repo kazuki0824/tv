@@ -16,11 +16,11 @@ class AribRatingMapperTest {
     fun aribRawAgeValuesMapToAospIsdbAges() {
         assertEquals(
             TvContentRating.createRating("com.android.tv", "ISDB", "ISDB_4"),
-            AribRatingMapper.toTvContentRating(rating(0x01)),
+            AribRatingMapper.toTvContentRating(rating(0x01), AribRatingMapper.BroadcastProfile.BS_CS),
         )
         assertEquals(
             TvContentRating.createRating("com.android.tv", "ISDB", "ISDB_20"),
-            AribRatingMapper.toTvContentRating(rating(0x11)),
+            AribRatingMapper.toTvContentRating(rating(0x11), AribRatingMapper.BroadcastProfile.BS_CS),
         )
     }
 
@@ -31,21 +31,21 @@ class AribRatingMapperTest {
             AribRatingMapper.EXCEPTIONAL_RATING_SYSTEM,
             AribRatingMapper.EXCEPTIONAL_RATING,
         )
-        assertEquals(expected, AribRatingMapper.toTvContentRating(rating(0x12)))
-        assertEquals(expected, AribRatingMapper.toTvContentRating(rating(0xff)))
+        assertEquals(expected, AribRatingMapper.toTvContentRating(rating(0x12), AribRatingMapper.BroadcastProfile.BS_CS))
+        assertEquals(expected, AribRatingMapper.toTvContentRating(rating(0xff), AribRatingMapper.BroadcastProfile.BS_CS))
         assertNotEquals(TvContentRating.UNRATED, expected)
     }
 
     @Test
     fun undefinedOrForeignRatingsDoNotInventAndroidRatings() {
-        assertNull(AribRatingMapper.toTvContentRating(rating(0x00)))
-        assertNull(AribRatingMapper.toTvContentRating(rating(0x12, country = "USA")))
+        assertNull(AribRatingMapper.toTvContentRating(rating(0x00), AribRatingMapper.BroadcastProfile.BS_CS))
+        assertNull(AribRatingMapper.toTvContentRating(rating(0x12, country = "USA"), AribRatingMapper.BroadcastProfile.BS_CS))
+        assertNull(AribRatingMapper.toTvContentRating(rating(0x0f), AribRatingMapper.BroadcastProfile.TERRESTRIAL))
     }
 
     private fun rating(raw: Int, country: String = "JPN") = AribParentalRating(
         countryCode = country,
         ratingValue = raw,
         rawRatingByte = raw,
-        supported = country == "JPN" && raw in 0x01..0x11,
     )
 }

@@ -7,17 +7,44 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EitScope {
-    PresentFollowing,
-    R51MinimumSchedule,
-    R53LongSchedule,
+    PresentFollowingActual,
+    PresentFollowingOther,
+    ScheduleActual,
+    ScheduleOther,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EitTimingState {
+    Defined,
+    UndefinedTime,
+    BothTimingUndefined,
+    MalformedTiming,
+}
+
+impl EitTimingState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Defined => "DEFINED",
+            Self::UndefinedTime => "UNDEFINED_TIME",
+            Self::BothTimingUndefined => "BOTH_TIMING_UNDEFINED",
+            Self::MalformedTiming => "MALFORMED_TIMING",
+        }
+    }
+
+    fn has_stable_identity(self) -> bool {
+        matches!(self, Self::Defined | Self::UndefinedTime)
+    }
 }
 
 impl EitScope {
     pub fn as_str(self) -> &'static str {
         match self {
-            EitScope::PresentFollowing => "present_following",
-            EitScope::R51MinimumSchedule => "r51_minimum_schedule",
-            EitScope::R53LongSchedule => "r53_long_schedule",
+            EitScope::PresentFollowingActual => "present_following_actual",
+            EitScope::PresentFollowingOther => "present_following_other",
+            EitScope::ScheduleActual => "schedule_actual",
+            EitScope::ScheduleOther => "schedule_other",
+            EitScope::Unknown => "unknown",
         }
     }
 }
@@ -28,11 +55,15 @@ pub struct EitEvent {
     pub table_id: u8,
     pub version: u8,
     pub section_number: u8,
+    pub last_section_number: u8,
     pub scope: EitScope,
     pub service_id: u16,
     pub transport_stream_id: u16,
     pub original_network_id: u16,
     pub event_id: u16,
+    pub timing_state: EitTimingState,
+    pub raw_start_time: [u8; 5],
+    pub raw_duration: [u8; 3],
     pub start_time_millis: i64,
     pub duration_millis: i64,
     pub free_ca_mode: bool,
@@ -49,7 +80,7 @@ pub struct EitStableEventIdentity {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EitEventDiagnostic {
-    pub event_identity: EitStableEventIdentity,
+    pub event_identity: Option<EitStableEventIdentity>,
     pub parse_status: DescriptorParseStatus,
     pub reason: String,
     pub descriptor_diagnostics: Vec<DescriptorDiagnostic>,
@@ -69,6 +100,7 @@ pub struct EitUpdateWindow {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct EitEventKey {
+    table_id: u8,
     original_network_id: u16,
     transport_stream_id: u16,
     service_id: u16,
@@ -76,25 +108,35 @@ struct EitEventKey {
 }
 
 impl EitEvent {
-    pub fn stable_identity(&self) -> EitStableEventIdentity {
-        EitStableEventIdentity {
-            original_network_id: self.original_network_id,
-            transport_stream_id: self.transport_stream_id,
-            service_id: self.service_id,
-            event_id: self.event_id,
-        }
+    pub fn stable_identity(&self) -> Option<EitStableEventIdentity> {
+        self.timing_state
+            .has_stable_identity()
+            .then_some(EitStableEventIdentity {
+                original_network_id: self.original_network_id,
+                transport_stream_id: self.transport_stream_id,
+                service_id: self.service_id,
+                event_id: self.event_id,
+            })
     }
 }
 
 impl From<&EitEvent> for EitEventKey {
     fn from(event: &EitEvent) -> Self {
         Self {
+            table_id: event.table_id,
             original_network_id: event.original_network_id,
             transport_stream_id: event.transport_stream_id,
             service_id: event.service_id,
             event_id: event.event_id,
         }
     }
+}
+
+fn stable_event_key(event: &EitEvent) -> Option<EitEventKey> {
+    event
+        .timing_state
+        .has_stable_identity()
+        .then(|| event.into())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -117,6 +159,7 @@ pub struct EitStore {
     events: BTreeMap<EitEventKey, EitEvent>,
     section_events: BTreeMap<EitSectionKey, VersionedEventSet>,
     last_update_windows: Vec<EitUpdateWindow>,
+    diagnostic_section_events: BTreeMap<EitSectionKey, Vec<EitEvent>>,
 }
 
 impl EitStore {
@@ -135,8 +178,11 @@ impl EitStore {
         let original_network_id = u16_at(section, 10);
         let malformed_event_keys = malformed_eit_event_keys(section);
         let parsed = parse_eit_section(section);
-        let deletion_authoritative = malformed_event_keys.is_empty()
-            && parsed.iter().all(|event| event.diagnostics.is_empty());
+        let deletion_authoritative = header.table_id == 0x4e
+            && malformed_event_keys.is_empty()
+            && parsed.iter().all(|event| {
+                event.timing_state.has_stable_identity() && event.diagnostics.is_empty()
+            });
         if parsed.is_empty() && !malformed_event_keys.is_empty() {
             // 不正 event だけの EIT section は、同じ section 内の既存有効 event を
             // すべて削除する根拠として扱わない。既存の VersionedEventSet と保存済み event を維持する。
@@ -172,6 +218,7 @@ impl EitStore {
                 if let Some(old) = self.section_events.remove(&key) {
                     previous_keys.extend(old.event_keys);
                 }
+                self.diagnostic_section_events.remove(&key);
             }
         } else {
             previous_keys = self
@@ -180,7 +227,7 @@ impl EitStore {
                 .map(|old| old.event_keys.clone())
                 .unwrap_or_default();
         }
-        let new_keys: BTreeSet<_> = parsed.iter().map(EitEventKey::from).collect();
+        let new_keys: BTreeSet<_> = parsed.iter().filter_map(stable_event_key).collect();
         let removable_previous_keys: BTreeSet<_> = if deletion_authoritative {
             previous_keys
                 .difference(&new_keys)
@@ -196,23 +243,25 @@ impl EitStore {
                 window_events.push(old_event.clone());
             }
         }
-        if !previous_keys.is_empty() || !new_keys.is_empty() {
-            let r51_window_events: Vec<_> = window_events
+        if header.table_id == 0x4e && (!previous_keys.is_empty() || !new_keys.is_empty()) {
+            let pf_actual_window_events: Vec<_> = window_events
                 .iter()
-                .filter(|event| event.scope != EitScope::R53LongSchedule)
+                .filter(|event| {
+                    event.table_id == 0x4e && event.timing_state == EitTimingState::Defined
+                })
                 .cloned()
                 .collect();
-            let r51_current_events: Vec<_> = parsed
+            let pf_actual_current_events: Vec<_> = parsed
                 .iter()
-                .filter(|event| event.scope != EitScope::R53LongSchedule)
+                .filter(|event| event.table_id == 0x4e && event.stable_identity().is_some())
                 .cloned()
                 .collect();
             if let Some(window) = build_update_window(
                 original_network_id,
                 transport_stream_id,
                 service_id,
-                &r51_window_events,
-                &r51_current_events,
+                &pf_actual_window_events,
+                &pf_actual_current_events,
                 deletion_authoritative,
             ) {
                 self.last_update_windows.retain(|existing| {
@@ -228,8 +277,12 @@ impl EitStore {
         for old_key in &removable_previous_keys {
             self.events.remove(old_key);
         }
+        self.diagnostic_section_events
+            .insert(section_key, parsed.clone());
         for event in parsed {
-            self.events.insert(EitEventKey::from(&event), event);
+            if let Some(key) = stable_event_key(&event) {
+                self.events.insert(key, event);
+            }
         }
         self.section_events.insert(
             section_key,
@@ -240,7 +293,7 @@ impl EitStore {
         );
     }
 
-    pub fn take_update_windows_r51(&mut self) -> Vec<EitUpdateWindow> {
+    pub fn take_present_following_actual_update_windows(&mut self) -> Vec<EitUpdateWindow> {
         let mut out: Vec<_> = self
             .last_update_windows
             .drain(..)
@@ -258,11 +311,11 @@ impl EitStore {
         out
     }
 
-    pub fn snapshot_r51(&self) -> Vec<EitEvent> {
+    pub fn snapshot_present_following_actual(&self) -> Vec<EitEvent> {
         let mut out: Vec<_> = self
             .events
             .values()
-            .filter(|e| e.scope != EitScope::R53LongSchedule)
+            .filter(|event| event.table_id == 0x4e && event.timing_state == EitTimingState::Defined)
             .cloned()
             .collect();
         out.sort_by_key(|e| {
@@ -282,7 +335,11 @@ impl EitStore {
     }
 
     pub fn snapshot_all_for_diagnostic(&self) -> Vec<EitEvent> {
-        self.events.values().cloned().collect()
+        self.diagnostic_section_events
+            .values()
+            .flatten()
+            .cloned()
+            .collect()
     }
 
     pub fn section_count_for_diagnostic(&self) -> usize {
@@ -311,20 +368,16 @@ fn malformed_eit_event_keys(section: &[u8]) -> BTreeSet<EitEventKey> {
     let mut cursor = 14usize;
     while cursor + 12 <= body_end {
         let event_id = u16_at(section, cursor);
-        let start = decode_mjd_bcd_millis(section, cursor + 2);
-        let duration = decode_duration_millis(section, cursor + 7);
+        let (timing_state, _, _) = classify_timing(section, cursor + 2, cursor + 7);
         let desc_len =
             (((section[cursor + 10] & 0x0f) as usize) << 8) | section[cursor + 11] as usize;
         let desc_start = cursor + 12;
         let Some(desc_end) = desc_start.checked_add(desc_len) else {
             break;
         };
-        if start.is_none()
-            || duration.is_none()
-            || start.unwrap_or(0) <= 0
-            || duration.unwrap_or(0) <= 0
-        {
+        if timing_state == EitTimingState::MalformedTiming {
             malformed.insert(EitEventKey {
+                table_id: header.table_id,
                 original_network_id: onid,
                 transport_stream_id: tsid,
                 service_id,
@@ -356,14 +409,14 @@ fn build_update_window(
         .min()?;
     let end = window_events
         .iter()
-        .map(|event| event.start_time_millis + event.duration_millis)
+        .filter_map(|event| event.start_time_millis.checked_add(event.duration_millis))
         .max()?;
     if end <= start {
         return None;
     }
     let mut valid_event_identities: Vec<_> = current_events
         .iter()
-        .map(|event| event.stable_identity())
+        .filter_map(|event| event.stable_identity())
         .collect();
     valid_event_identities.sort_by_key(|identity| {
         (
@@ -387,9 +440,11 @@ fn build_update_window(
 
 pub fn classify_table_id(table_id: u8) -> EitScope {
     match table_id {
-        0x4e | 0x4f => EitScope::PresentFollowing,
-        0x50..=0x5f => EitScope::R51MinimumSchedule,
-        _ => EitScope::R53LongSchedule,
+        0x4e => EitScope::PresentFollowingActual,
+        0x4f => EitScope::PresentFollowingOther,
+        0x50..=0x5f => EitScope::ScheduleActual,
+        0x60..=0x6f => EitScope::ScheduleOther,
+        _ => EitScope::Unknown,
     }
 }
 
@@ -415,8 +470,11 @@ pub fn parse_eit_section(section: &[u8]) -> Vec<EitEvent> {
     let mut cursor = 14usize;
     while cursor + 12 <= body_end {
         let event_id = u16_at(section, cursor);
-        let start = decode_mjd_bcd_millis(section, cursor + 2);
-        let duration = decode_duration_millis(section, cursor + 7);
+        let mut raw_start_time = [0u8; 5];
+        raw_start_time.copy_from_slice(&section[cursor + 2..cursor + 7]);
+        let mut raw_duration = [0u8; 3];
+        raw_duration.copy_from_slice(&section[cursor + 7..cursor + 10]);
+        let (timing_state, start, duration) = classify_timing(section, cursor + 2, cursor + 7);
         let free_ca_mode = (section[cursor + 10] & 0x10) != 0;
         let desc_len =
             (((section[cursor + 10] & 0x0f) as usize) << 8) | section[cursor + 11] as usize;
@@ -424,87 +482,78 @@ pub fn parse_eit_section(section: &[u8]) -> Vec<EitEvent> {
         let Some(desc_end) = desc_start.checked_add(desc_len) else {
             break;
         };
-        if desc_end > body_end {
-            if let (Some(start), Some(duration)) = (start, duration) {
-                if start > 0 && duration > 0 {
-                    let identity = EitStableEventIdentity {
-                        original_network_id: onid,
-                        transport_stream_id: tsid,
-                        service_id,
-                        event_id,
-                    };
-                    let mut descriptors = EventDescriptors::default();
-                    descriptors
-                        .diagnostics
-                        .push(event_descriptor_loop_truncated_diagnostic(
-                            desc_start,
-                            desc_len,
-                            body_end.saturating_sub(desc_start),
-                            &section[desc_start..body_end],
-                        ));
-                    let diagnostics = vec![EitEventDiagnostic {
-                        event_identity: identity,
-                        parse_status: DescriptorParseStatus::TruncatedDescriptor,
-                        reason: "event descriptors_loop_length exceeds EIT section body"
-                            .to_string(),
-                        malformed_descriptor_count: descriptors.diagnostics.len(),
-                        descriptor_diagnostics: descriptors.diagnostics.clone(),
-                    }];
-                    out.push(EitEvent {
-                        diagnostics,
-                        table_id: header.table_id,
-                        version: header.version.unwrap_or(0),
-                        section_number: header.section_number.unwrap_or(0),
-                        scope,
-                        service_id,
-                        transport_stream_id: tsid,
-                        original_network_id: onid,
-                        event_id,
-                        start_time_millis: start,
-                        duration_millis: duration,
-                        free_ca_mode,
-                        descriptors,
-                    });
-                }
-            }
-            break;
+        let descriptor_truncated = desc_end > body_end;
+        let mut descriptors = if descriptor_truncated {
+            EventDescriptors::default()
+        } else {
+            parse_event_descriptors(&section[desc_start..desc_end])
+        };
+        if descriptor_truncated {
+            descriptors
+                .diagnostics
+                .push(event_descriptor_loop_truncated_diagnostic(
+                    desc_start,
+                    desc_len,
+                    body_end.saturating_sub(desc_start),
+                    &section[desc_start..body_end],
+                ));
         }
-        if let (Some(start), Some(duration)) = (start, duration) {
-            if start > 0 && duration > 0 {
-                let descriptors = parse_event_descriptors(&section[desc_start..desc_end]);
-                let identity = EitStableEventIdentity {
-                    original_network_id: onid,
-                    transport_stream_id: tsid,
-                    service_id,
-                    event_id,
-                };
-                let diagnostics = if descriptors.diagnostics.is_empty() {
-                    Vec::new()
+        let identity = timing_state
+            .has_stable_identity()
+            .then_some(EitStableEventIdentity {
+                original_network_id: onid,
+                transport_stream_id: tsid,
+                service_id,
+                event_id,
+            });
+        let mut diagnostics = Vec::new();
+        if timing_state == EitTimingState::MalformedTiming {
+            diagnostics.push(EitEventDiagnostic {
+                event_identity: None,
+                parse_status: DescriptorParseStatus::InvalidSequence,
+                reason: "EIT start_time or duration contains malformed BCD/time fields".to_string(),
+                malformed_descriptor_count: 0,
+                descriptor_diagnostics: Vec::new(),
+            });
+        }
+        if !descriptors.diagnostics.is_empty() {
+            diagnostics.push(EitEventDiagnostic {
+                event_identity: identity,
+                parse_status: if descriptor_truncated {
+                    DescriptorParseStatus::TruncatedDescriptor
                 } else {
-                    vec![EitEventDiagnostic {
-                        event_identity: identity,
-                        parse_status: DescriptorParseStatus::TruncatedDescriptor,
-                        reason: "event descriptor loop contains malformed descriptor".to_string(),
-                        malformed_descriptor_count: descriptors.diagnostics.len(),
-                        descriptor_diagnostics: descriptors.diagnostics.clone(),
-                    }]
-                };
-                out.push(EitEvent {
-                    diagnostics,
-                    table_id: header.table_id,
-                    version: header.version.unwrap_or(0),
-                    section_number: header.section_number.unwrap_or(0),
-                    scope,
-                    service_id,
-                    transport_stream_id: tsid,
-                    original_network_id: onid,
-                    event_id,
-                    start_time_millis: start,
-                    duration_millis: duration,
-                    free_ca_mode,
-                    descriptors,
-                });
-            }
+                    DescriptorParseStatus::MalformedLength
+                },
+                reason: if descriptor_truncated {
+                    "event descriptors_loop_length exceeds EIT section body".to_string()
+                } else {
+                    "event descriptor loop contains malformed descriptor".to_string()
+                },
+                malformed_descriptor_count: descriptors.diagnostics.len(),
+                descriptor_diagnostics: descriptors.diagnostics.clone(),
+            });
+        }
+        out.push(EitEvent {
+            diagnostics,
+            table_id: header.table_id,
+            version: header.version.unwrap_or(0),
+            section_number: header.section_number.unwrap_or(0),
+            last_section_number: header.last_section_number.unwrap_or(0),
+            scope,
+            service_id,
+            transport_stream_id: tsid,
+            original_network_id: onid,
+            event_id,
+            timing_state,
+            raw_start_time,
+            raw_duration,
+            start_time_millis: start.unwrap_or(0),
+            duration_millis: duration.unwrap_or(0),
+            free_ca_mode,
+            descriptors,
+        });
+        if descriptor_truncated {
+            break;
         }
         cursor = desc_end;
     }
@@ -518,6 +567,40 @@ fn decode_bcd2(v: u8) -> Option<i32> {
     let hi = (v >> 4) & 0x0f;
     let lo = v & 0x0f;
     (hi <= 9 && lo <= 9).then_some((hi as i32) * 10 + lo as i32)
+}
+fn classify_timing(
+    bytes: &[u8],
+    start_offset: usize,
+    duration_offset: usize,
+) -> (EitTimingState, Option<i64>, Option<i64>) {
+    let start_undefined = bytes[start_offset..start_offset + 5]
+        .iter()
+        .all(|byte| *byte == 0xff);
+    let duration_undefined = bytes[duration_offset..duration_offset + 3]
+        .iter()
+        .all(|byte| *byte == 0xff);
+    if start_undefined && duration_undefined {
+        return (EitTimingState::BothTimingUndefined, None, None);
+    }
+    if start_undefined || duration_undefined {
+        let start = (!start_undefined)
+            .then(|| decode_mjd_bcd_millis(bytes, start_offset))
+            .flatten();
+        let duration = (!duration_undefined)
+            .then(|| decode_duration_millis(bytes, duration_offset))
+            .flatten();
+        if (!start_undefined && start.is_none()) || (!duration_undefined && duration.is_none()) {
+            return (EitTimingState::MalformedTiming, start, duration);
+        }
+        return (EitTimingState::UndefinedTime, start, duration);
+    }
+    let start = decode_mjd_bcd_millis(bytes, start_offset);
+    let duration = decode_duration_millis(bytes, duration_offset);
+    if start.is_none() || duration.is_none() {
+        (EitTimingState::MalformedTiming, start, duration)
+    } else {
+        (EitTimingState::Defined, start, duration)
+    }
 }
 fn decode_duration_millis(bytes: &[u8], offset: usize) -> Option<i64> {
     let h = decode_bcd2(bytes[offset])?;
@@ -586,7 +669,7 @@ mod tests {
     }
 
     fn eit_body(version: u8, events: &[(u16, [u8; 5])]) -> Vec<u8> {
-        eit_body_with_table_id(0x50, version, events)
+        eit_body_with_table_id(0x4e, version, events)
     }
 
     fn eit_body_with_table_id(table_id: u8, version: u8, events: &[(u16, [u8; 5])]) -> Vec<u8> {
@@ -623,9 +706,9 @@ mod tests {
         let start1 = [0xee, 0x00, 0x12, 0x00, 0x00];
         let start2 = [0xee, 0x01, 0x13, 0x00, 0x00];
         store.upsert_section(&section_with_crc(eit_body(1, &[(1, start1), (2, start2)])));
-        assert_eq!(store.snapshot_r51().len(), 2);
+        assert_eq!(store.snapshot_present_following_actual().len(), 2);
         store.upsert_section(&section_with_crc(eit_body(1, &[(1, start1)])));
-        let events = store.snapshot_r51();
+        let events = store.snapshot_present_following_actual();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_id, 1);
     }
@@ -636,9 +719,9 @@ mod tests {
         let start1 = [0xee, 0x00, 0x12, 0x00, 0x00];
         let start2 = [0xee, 0x01, 0x13, 0x00, 0x00];
         store.upsert_section(&section_with_crc(eit_body(1, &[(1, start1), (2, start2)])));
-        assert_eq!(store.snapshot_r51().len(), 2);
+        assert_eq!(store.snapshot_present_following_actual().len(), 2);
         store.upsert_section(&section_with_crc(eit_body(2, &[(2, start2)])));
-        let events = store.snapshot_r51();
+        let events = store.snapshot_present_following_actual();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_id, 2);
     }
@@ -649,10 +732,10 @@ mod tests {
         let start1 = [0xee, 0x00, 0x12, 0x00, 0x00];
         let start2 = [0xee, 0x01, 0x13, 0x00, 0x00];
         store.upsert_section(&section_with_crc(eit_body(1, &[(1, start1), (2, start2)])));
-        let _ = store.take_update_windows_r51();
+        let _ = store.take_present_following_actual_update_windows();
 
         store.upsert_section(&section_with_crc(eit_body(2, &[(2, start2)])));
-        let windows = store.take_update_windows_r51();
+        let windows = store.take_present_following_actual_update_windows();
         assert!(
             windows.iter().any(|w| w.deletion_authoritative),
             "{:?}",
@@ -668,6 +751,31 @@ mod tests {
     }
 
     #[test]
+    fn undefined_time_identity_protects_existing_program_in_authoritative_window() {
+        let defined_start = [0xee, 0x00, 0x12, 0x00, 0x00];
+        let undefined_duration_start = [0xee, 0x01, 0x13, 0x00, 0x00];
+        let mut body = eit_body(1, &[(1, defined_start), (2, undefined_duration_start)]);
+        // EIT header(14) + first event(12) + event_id(2) + start_time(5).
+        body[33..36].copy_from_slice(&[0xff, 0xff, 0xff]);
+
+        let mut store = EitStore::default();
+        store.upsert_section(&section_with_crc(body));
+
+        assert_eq!(store.snapshot_present_following_actual().len(), 1);
+        let windows = store.take_present_following_actual_update_windows();
+        assert_eq!(windows.len(), 1);
+        assert!(windows[0].deletion_authoritative);
+        assert_eq!(
+            windows[0]
+                .valid_event_identities
+                .iter()
+                .map(|identity| identity.event_id)
+                .collect::<Vec<_>>(),
+            vec![1, 2],
+        );
+    }
+
+    #[test]
     fn schedule_other_is_not_r51_snapshot_or_update_window() {
         let mut store = EitStore::default();
         let start = [0xee, 0x00, 0x12, 0x00, 0x00];
@@ -676,8 +784,10 @@ mod tests {
             1,
             &[(1, start)],
         )));
-        assert!(store.snapshot_r51().is_empty());
-        assert!(store.take_update_windows_r51().is_empty());
+        assert!(store.snapshot_present_following_actual().is_empty());
+        assert!(store
+            .take_present_following_actual_update_windows()
+            .is_empty());
         assert_eq!(
             store.snapshot_all_for_diagnostic().len(),
             1,
@@ -692,7 +802,7 @@ mod tests {
         let start2 = [0xee, 0x02, 0x14, 0x00, 0x00];
         store.upsert_section(&section_with_crc(eit_body(1, &[(3, start1)])));
         store.upsert_section(&section_with_crc(eit_body(2, &[(3, start2)])));
-        let events = store.snapshot_r51();
+        let events = store.snapshot_present_following_actual();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_id, 3);
     }
@@ -701,14 +811,18 @@ mod tests {
     fn stable_identity_is_independent_from_start_time_for_tvprovider_keying() {
         let event = EitEvent {
             diagnostics: Vec::new(),
-            table_id: 0x50,
+            table_id: 0x4e,
             version: 0,
             section_number: 0,
-            scope: EitScope::R51MinimumSchedule,
+            last_section_number: 0,
+            scope: EitScope::PresentFollowingActual,
             service_id: 1,
             transport_stream_id: 0x11,
             original_network_id: 0x22,
             event_id: 3,
+            timing_state: EitTimingState::Defined,
+            raw_start_time: [0; 5],
+            raw_duration: [0; 3],
             start_time_millis: 12345,
             duration_millis: 60000,
             free_ca_mode: false,
@@ -716,12 +830,12 @@ mod tests {
         };
         assert_eq!(
             event.stable_identity(),
-            EitStableEventIdentity {
+            Some(EitStableEventIdentity {
                 original_network_id: 0x22,
                 transport_stream_id: 0x11,
                 service_id: 1,
                 event_id: 3,
-            }
+            })
         );
     }
 
@@ -738,7 +852,7 @@ mod tests {
         let mut store = EitStore::default();
         let invalid = [0xee, 0x00, 0x7a, 0x00, 0x00];
         store.upsert_section(&section_with_crc(eit_body(1, &[(1, invalid)])));
-        assert!(store.snapshot_r51().is_empty());
+        assert!(store.snapshot_present_following_actual().is_empty());
     }
 
     #[test]
@@ -750,7 +864,7 @@ mod tests {
         body[23] = 0x00;
         let mut store = EitStore::default();
         store.upsert_section(&section_with_crc(body));
-        assert!(store.snapshot_r51().is_empty());
+        assert!(store.snapshot_present_following_actual().is_empty());
     }
 
     #[test]
@@ -768,7 +882,7 @@ mod tests {
             1,
             &[(3, [0xee, 0x00, 0x12, 0x00, 0x60])],
         )));
-        assert!(store.snapshot_r51().is_empty());
+        assert!(store.snapshot_present_following_actual().is_empty());
     }
 
     #[test]
@@ -778,7 +892,7 @@ mod tests {
             1,
             &[(1, [0xff, 0xff, 0x12, 0x00, 0x00])],
         )));
-        assert!(store.snapshot_r51().is_empty());
+        assert!(store.snapshot_present_following_actual().is_empty());
     }
 
     #[test]
@@ -788,7 +902,7 @@ mod tests {
         body[25] = 0x05;
         let mut store = EitStore::default();
         store.upsert_section(&section_with_crc(body));
-        let events = store.snapshot_r51();
+        let events = store.snapshot_present_following_actual();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].diagnostics.len(), 1);
         assert_eq!(
@@ -803,10 +917,10 @@ mod tests {
         let mut store = EitStore::default();
         let valid = [0xee, 0x00, 0x12, 0x00, 0x00];
         store.upsert_section(&section_with_crc(eit_body(1, &[(1, valid)])));
-        assert_eq!(store.snapshot_r51().len(), 1);
+        assert_eq!(store.snapshot_present_following_actual().len(), 1);
         let invalid = [0xee, 0x00, 0x7a, 0x00, 0x00];
         store.upsert_section(&section_with_crc(eit_body(2, &[(1, invalid)])));
-        let events = store.snapshot_r51();
+        let events = store.snapshot_present_following_actual();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_id, 1);
         assert_eq!(
@@ -821,18 +935,34 @@ mod tests {
         let start1 = [0xee, 0x00, 0x12, 0x00, 0x00];
         let start2 = [0xee, 0x01, 0x13, 0x00, 0x00];
         store.upsert_section(&section_with_crc(eit_body(1, &[(1, start1), (2, start2)])));
-        assert_eq!(store.snapshot_r51().len(), 2);
+        assert_eq!(store.snapshot_present_following_actual().len(), 2);
 
         let invalid = [0xee, 0x01, 0x7a, 0x00, 0x00];
         store.upsert_section(&section_with_crc(eit_body(2, &[(1, start1), (2, invalid)])));
 
-        let events = store.snapshot_r51();
+        let events = store.snapshot_present_following_actual();
         assert_eq!(
             events.len(),
             2,
             "不正要素を含む混在sectionは前回の正常eventを削除してはなりません"
         );
-        let windows = store.take_update_windows_r51();
+        let windows = store.take_present_following_actual_update_windows();
         assert!(windows.iter().any(|w| !w.deletion_authoritative));
+    }
+}
+
+#[cfg(test)]
+mod eit_scope_contract_tests {
+    use super::{classify_table_id, EitScope};
+
+    #[test]
+    fn classifies_eit_scope_from_arib_table_identity_only() {
+        assert_eq!(classify_table_id(0x4e), EitScope::PresentFollowingActual);
+        assert_eq!(classify_table_id(0x4f), EitScope::PresentFollowingOther);
+        assert_eq!(classify_table_id(0x50), EitScope::ScheduleActual);
+        assert_eq!(classify_table_id(0x5f), EitScope::ScheduleActual);
+        assert_eq!(classify_table_id(0x60), EitScope::ScheduleOther);
+        assert_eq!(classify_table_id(0x6f), EitScope::ScheduleOther);
+        assert_eq!(classify_table_id(0x70), EitScope::Unknown);
     }
 }

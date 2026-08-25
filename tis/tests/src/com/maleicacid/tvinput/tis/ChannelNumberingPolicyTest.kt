@@ -15,6 +15,12 @@ class ChannelNumberingPolicyTest {
         check(ChannelNumberingPolicy.displayNumber(service, 1, candidate) == "1.1")
     }
 
+    @Test fun terrestrialWithoutRemoteKeyFallsBackToServiceId() {
+        val candidate = ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_T, FrequencyHz(473_142_857L), displayChannel = "13", physicalChannel = 13)
+        val service = AribService(ServiceKey(1, 2, 101), "svc")
+        check(ChannelNumberingPolicy.displayNumber(service, null, candidate) == "101")
+    }
+
     @Test fun satelliteUsesBandAndServiceIdWithoutCsStreamSelector() {
         val candidate = ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_S, FrequencyHz(1_613_000_000L), displayChannel = "CS1", satelliteBand = "110CS")
         val service = AribService(ServiceKey(1, 2, 333), "svc")
