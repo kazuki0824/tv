@@ -11,15 +11,15 @@ import com.maleicacid.tvinput.db.ChannelRecord
 object ChannelNumberingPolicy {
     fun displayNumber(service: AribService, remoteKey: Int?, candidate: ScanCandidate): String {
         val base = when (candidate.deliverySystem) {
-            ChannelRecord.DELIVERY_SYSTEM_ISDB_T -> terrestrialBase(service, remoteKey, candidate)
+            ChannelRecord.DELIVERY_SYSTEM_ISDB_T -> terrestrialBase(service, remoteKey)
             ChannelRecord.DELIVERY_SYSTEM_ISDB_S -> satelliteBase(service, candidate)
             else -> candidate.displayChannel.ifBlank { service.serviceKey.serviceId.toString() }
         }
         return base.replace(Regex("[^0-9A-Za-z_.-]"), "-")
     }
 
-    private fun terrestrialBase(service: AribService, remoteKey: Int?, candidate: ScanCandidate): String {
-        val key = remoteKey ?: candidate.physicalChannel ?: return service.serviceKey.serviceId.toString()
+    private fun terrestrialBase(service: AribService, remoteKey: Int?): String {
+        val key = remoteKey ?: return service.serviceKey.serviceId.toString()
         val ordinal = stableServiceOrdinal(service.serviceKey.serviceId)
         return if (ordinal == 0) key.toString() else "$key.$ordinal"
     }

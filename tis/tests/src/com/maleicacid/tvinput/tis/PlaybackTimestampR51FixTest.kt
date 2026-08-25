@@ -3,9 +3,10 @@ package com.maleicacid.tvinput.tis
 import org.junit.Test
 
 class PlaybackTimestampR51FixTest {
-    @Test fun ptsFallbackIsReportedSeparately() {
-        check(!PlaybackPipeline.normalizedPresentationTimeForTest(90_000L).fallbackUsed)
-        check(PlaybackPipeline.normalizedPresentationTimeForTest(null).fallbackUsed)
-        check(PlaybackPipeline.normalizedPresentationTimeForTest(-1L).fallbackUsed)
+    @Test fun authoritativePtsIsRequiredWithoutConsultingProvenanceBit() {
+        check(PlaybackPipeline.shouldQueueMediaEventForPtsForTest(isPtsPresent = true, pts90k = 90_000L))
+        check(PlaybackPipeline.shouldQueueMediaEventForPtsForTest(isPtsPresent = false, pts90k = 90_000L))
+        check(!PlaybackPipeline.shouldQueueMediaEventForPtsForTest(isPtsPresent = true, pts90k = null))
+        check(!PlaybackPipeline.shouldQueueMediaEventForPtsForTest(isPtsPresent = false, pts90k = -1L))
     }
 }

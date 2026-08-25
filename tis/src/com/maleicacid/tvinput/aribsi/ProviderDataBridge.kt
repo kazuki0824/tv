@@ -11,7 +11,6 @@ import org.json.JSONObject
 object ProviderDataBridge {
     data class Result(
         val bytes: ByteArray,
-        val signature: String,
         val schemaVersion: Int,
         val truncated: Boolean,
         val diagnosticsDroppedCount: Int,
@@ -23,26 +22,28 @@ object ProviderDataBridge {
         val eventId: Int,
         val key: String,
     )
-    data class ChannelTuneKey(
-        val serviceKey: ServiceKey,
-        val system: String,
+    data class ChannelTune(
+        val deliverySystem: String,
         val frequencyHz: FrequencyHz,
         val streamSelector: StreamSelector,
         val physicalChannel: Int?,
-        val backendHint: String?,
         val satelliteBand: String?,
         val remoteControlKeyId: Int?,
-        val requiresCas: Boolean,
-        val unsupportedCas: Boolean,
-        val clearLivePlaybackSupported: Boolean,
-        val channelRegistrationReady: Boolean,
-        val epgPublishable: Boolean,
+    )
+    data class ChannelProviderDataResult(
+        val canonicalBytes: ByteArray,
+        val schemaVersion: Int,
+        val serviceKey: ServiceKey,
+        val tune: ChannelTune,
     )
 
     private val native by lazy { NativeAribSiParser() }
 
     fun buildChannelProviderData(channel: ChannelRecord): Result {
-        val selector = channel.streamSelector
+        val selector = when (channel.streamSelector.type) {
+            com.maleicacid.tvinput.common.StreamSelectorType.RELATIVE -> StreamSelector.tsid(channel.serviceKey.transportStreamId)
+            else -> channel.streamSelector
+        }
         val request = JSONObject()
             .put("schema", "maleicacid.tv.channelRequest")
             .put("schemaVersion", 1)
@@ -51,24 +52,17 @@ object ProviderDataBridge {
                 .put("transportStreamId", channel.serviceKey.transportStreamId)
                 .put("serviceId", channel.serviceKey.serviceId))
             .put("tune", JSONObject()
-                .put("inputId", channel.inputId ?: JSONObject.NULL)
                 .put("displayName", channel.displayName)
                 .put("deliverySystem", channel.deliverySystem)
                 .put("frequencyHz", channel.frequencyHz.value)
                 .put("streamId", selector.value ?: JSONObject.NULL)
                 .put("streamIdType", selector.type.name)
                 .put("physicalChannel", channel.physicalChannel ?: JSONObject.NULL)
-                .put("backendHint", channel.backendHint ?: JSONObject.NULL)
                 .put("satelliteBand", channel.satelliteBand ?: JSONObject.NULL)
                 .put("remoteControlKeyId", channel.remoteControlKeyId ?: JSONObject.NULL))
             .put("cas", JSONObject()
-                .put("requiresCas", channel.requiresCas)
-                .put("unsupportedCas", channel.unsupportedCas)
-                .put("clearLivePlaybackSupported", channel.clearLivePlaybackSupported))
-            .put("diagnostics", JSONObject()
-                .put("channelRegistrationReady", channel.channelRegistrationReady)
-                .put("epgPublishable", channel.epgPublishable)
-                .put("publishStateSource", "current"))
+                .put("requiresCas", channel.requiresCas))
+            .put("diagnostics", JSONObject())
         return parseResult(native.buildChannelProviderData(request.toString()))
     }
 
@@ -84,6 +78,8 @@ object ProviderDataBridge {
 
     fun buildProgramProviderData(program: ProgramRecord): Result {
         val descriptors = program.descriptors
+        val endTimeMillis = runCatching { Math.addExact(program.startTimeMillis, program.durationMillis) }
+            .getOrElse { error -> throw IllegalArgumentException("program timing overflow", error) }
         val request = JSONObject()
             .put("schema", "maleicacid.tv.programRequest")
             .put("schemaVersion", 1)
@@ -99,27 +95,23 @@ object ProviderDataBridge {
                 .put("serviceId", program.serviceKey.serviceId))
             .put("timing", JSONObject()
                 .put("startUtcMillis", program.startTimeMillis)
-                .put("endUtcMillis", program.startTimeMillis + program.durationMillis)
+                .put("endUtcMillis", endTimeMillis)
                 .put("durationMillis", program.durationMillis))
             .put("cas", JSONObject()
                 .put("requiresCas", program.requiresCas)
-                .put("unsupportedCas", program.unsupportedCas)
-                .put("clearLivePlaybackSupported", program.clearLivePlaybackSupported)
-                .put("source", program.publishStateSource.lowercase()))
+                .put("source", "SI_SEMANTICS"))
             .put("extendedItems", toExtendedItemsArray(descriptors.extendedItems))
             .put("genres", genresJson(program))
-            .put("relatedItems", toRelatedItemsArray(descriptors.relatedItems))
+            .put("eventGroups", toEventGroupsArray(descriptors.eventGroups))
             .put("linkage", toLinkageArray(descriptors.linkage))
             .put("freeCaMode", toFreeCaModeObject(descriptors))
             .put("series", toSeriesObject(descriptors))
             .put("diagnostics", JSONObject()
                 .put("descriptorDiagnosticsCanonicalJson", descriptors.descriptorDiagnosticsCanonicalJson)
-                .put("publishDiagnostics", publishDiagnosticsJson(program))
+                .put("publishDiagnostics", JSONArray())
                 .put("parserDiagnostics", JSONArray()))
             .put("ratings", ratingsJson(program))
             .put("audioLanguages", audioLanguagesJson(descriptors))
-            .put("audio", audioMetadataJson(descriptors))
-            .put("video", videoMetadataJson(program))
             .put("components", toComponentsObject(descriptors.components))
             .put("source", JSONObject()
                 .put("pid", program.source.pid.value)
@@ -128,15 +120,11 @@ object ProviderDataBridge {
                 .put("sectionNumber", program.source.sectionNumber)
                 .put("lastSectionNumber", program.source.lastSectionNumber))
             .put("malformedCaDescriptorCount", program.malformedCaDescriptorCount.coerceAtLeast(0))
-            .put("droppedRetryWindowCount", program.droppedRetryWindowCount.coerceAtLeast(0))
         return parseResult(native.buildProgramProviderData(request.toString()))
     }
 
     fun normalizeProgramProviderData(providerData: ByteArray?): Result =
         parseResult(native.normalizeProgramProviderData(providerData ?: ByteArray(0)))
-
-    fun programProviderDataSignature(providerData: ByteArray?): String =
-        native.programProviderDataSignature(providerData ?: ByteArray(0))
 
     fun extractProgramKeyResult(providerData: ByteArray?): ProgramKeyResult? {
         val raw = native.extractProgramKeyResult(providerData ?: ByteArray(0)).takeIf { it.isNotBlank() } ?: return null
@@ -153,37 +141,32 @@ object ProviderDataBridge {
     fun extractProgramKey(providerData: ByteArray?): String? =
         extractProgramKeyResult(providerData)?.key
 
-    fun appendCurrentProgramDiagnostics(providerData: ByteArray?, overlapCount: Int, selectedProgramId: Long, selectionRule: String): Result =
-        parseResult(native.appendCurrentProgramDiagnostics(providerData ?: ByteArray(0), overlapCount.toLong(), selectedProgramId, selectionRule))
-
-    fun extractChannelTuneKey(providerData: String?): ChannelTuneKey? {
-        val text = native.extractChannelTuneKey(providerData.orEmpty()).takeIf { it.isNotBlank() } ?: return null
-        val obj = runCatching { JSONObject(text) }.getOrNull() ?: return null
-        if (obj.optString("schema") != "maleicacid.tv.channel") return null
-        val serviceKeyObj = obj.optJSONObject("serviceKey") ?: return null
-        val tuneObj = obj.optJSONObject("tune") ?: return null
-        val casObj = obj.optJSONObject("cas") ?: JSONObject()
-        val diagnosticsObj = obj.optJSONObject("diagnostics") ?: JSONObject()
-        val onid = serviceKeyObj.optInt("originalNetworkId", -1)
-        val tsid = serviceKeyObj.optInt("transportStreamId", -1)
-        val sid = serviceKeyObj.optInt("serviceId", -1)
-        val system = tuneObj.optString("deliverySystem").ifBlank { return null }
-        val frequencyHz = FrequencyHz.fromOrNull(tuneObj.optLong("frequencyHz", -1L))
+    fun decodeChannelProviderData(providerData: ByteArray?): ChannelProviderDataResult? {
+        val fields = native.decodeChannelProviderData(providerData ?: ByteArray(0))
+            .takeIf { it.isNotBlank() }
+            ?.split('\t')
+            ?.takeIf { it.size == 12 }
+            ?: return null
+        val canonicalBytes = decodeHexBytes(fields[0]) ?: return null
+        val schemaVersion = fields[1].toIntOrNull()?.takeIf { it == 1 } ?: return null
+        val onid = fields[2].toIntOrNull() ?: return null
+        val tsid = fields[3].toIntOrNull() ?: return null
+        val sid = fields[4].toIntOrNull() ?: return null
+        val deliverySystem = decodeHex(fields[5])?.takeIf { it.isNotBlank() } ?: return null
+        val frequencyHz = FrequencyHz.fromOrNull(fields[6].toLongOrNull())
         if (onid < 0 || tsid < 0 || sid < 0 || frequencyHz == null) return null
-        return ChannelTuneKey(
+        return ChannelProviderDataResult(
+            canonicalBytes = canonicalBytes,
+            schemaVersion = schemaVersion,
             serviceKey = ServiceKey(onid, tsid, sid),
-            system = system,
-            frequencyHz = frequencyHz,
-            streamSelector = runCatching { StreamSelector.fromStored(tuneObj.optString("streamIdType"), optIntOrNull(tuneObj, "streamId")?.toString()) }.getOrDefault(StreamSelector.NONE),
-            physicalChannel = optIntOrNull(tuneObj, "physicalChannel"),
-            backendHint = optStringOrNull(tuneObj, "backendHint"),
-            satelliteBand = optStringOrNull(tuneObj, "satelliteBand"),
-            remoteControlKeyId = optIntOrNull(tuneObj, "remoteControlKeyId"),
-            requiresCas = casObj.optBoolean("requiresCas", false),
-            unsupportedCas = casObj.optBoolean("unsupportedCas", false),
-            clearLivePlaybackSupported = casObj.optBoolean("clearLivePlaybackSupported", false),
-            channelRegistrationReady = diagnosticsObj.optBoolean("channelRegistrationReady", false),
-            epgPublishable = diagnosticsObj.optBoolean("epgPublishable", false),
+            tune = ChannelTune(
+                deliverySystem = deliverySystem,
+                frequencyHz = frequencyHz,
+                streamSelector = runCatching { StreamSelector.fromStored(fields[8], fields[7].takeUnless { it == "-" }) }.getOrElse { return null },
+                physicalChannel = fields[9].takeUnless { it == "-" }?.toIntOrNull(),
+                satelliteBand = fields[10].takeUnless { it == "-" }?.let(::decodeHex),
+                remoteControlKeyId = fields[11].takeUnless { it == "-" }?.toIntOrNull(),
+            ),
         )
     }
 
@@ -194,8 +177,6 @@ object ProviderDataBridge {
                 .put("countryCode", rating.countryCode)
                 .put("ratingValue", rating.ratingValue)
                 .put("rawRatingByte", rating.rawRatingByte)
-                .put("supported", rating.supported)
-                .put("mappedTvContentRating", AribRatingMapper.toTvContentRatingString(rating) ?: JSONObject.NULL)
                 .put("parseStatus", rating.parseStatus))
         }
         return arr
@@ -208,7 +189,6 @@ object ProviderDataBridge {
                 .put("level2", genre.level2)
                 .put("userNibble", genre.userNibble)
                 .put("aribName", genre.aribName)
-                .put("unmappedReason", JSONObject.NULL)
                 .put("parseStatus", genre.parseStatus))
         }
     }
@@ -234,53 +214,28 @@ object ProviderDataBridge {
             .put("parseStatus", series.parseStatus)
     } ?: JSONObject.NULL
 
-    private fun publishDiagnosticsJson(program: ProgramRecord): JSONArray {
-        val arr = JSONArray()
-        program.descriptors.parentalRatings.filter { AribRatingMapper.toTvContentRatingString(it) == null }.forEach { rating ->
-            arr.put(JSONObject()
-                .put("code", "UNSUPPORTED_PARENTAL_RATING")
-                .put("message", "country=${rating.countryCode} rating=${rating.ratingValue} supported=${rating.supported}")
-                .put("severity", "warning"))
-        }
-        return arr
-    }
-
     private fun audioLanguagesJson(descriptors: com.maleicacid.tvinput.db.ProgramDescriptors): JSONArray = JSONArray().apply {
-        descriptors.components.audio.mapNotNull { entry -> entry.language?.takeIf { it.isNotBlank() }?.let { it to entry.parseStatus } }
+        descriptors.components.audio
+            .flatMap { entry ->
+                listOfNotNull(
+                    entry.language?.takeIf { it.isNotBlank() }?.let { Triple(it, "AUDIO_COMPONENT", entry.parseStatus) },
+                    entry.secondLanguage?.takeIf { it.isNotBlank() }?.let { Triple(it, "AUDIO_COMPONENT_SECONDARY", entry.parseStatus) },
+                )
+            }
             .distinctBy { it.first }
-            .forEach { (language, parseStatus) -> put(JSONObject().put("language", language).put("source", "AUDIO_COMPONENT").put("parseStatus", parseStatus)) }
+            .forEach { (language, source, parseStatus) ->
+                put(JSONObject().put("language", language).put("source", source).put("parseStatus", parseStatus))
+            }
     }
 
-    private fun audioMetadataJson(descriptors: com.maleicacid.tvinput.db.ProgramDescriptors): Any {
-        val selected = descriptors.components.audio.firstOrNull { it.main == true } ?: descriptors.components.audio.firstOrNull() ?: return JSONObject.NULL
-        val codec = selected.codec ?: return JSONObject.NULL
-        return JSONObject()
-            .put("esPid", selected.esPid.value)
-            .put("componentTag", selected.componentTag ?: JSONObject.NULL)
-            .put("codec", codec)
-            .put("language", selected.language ?: JSONObject.NULL)
-            .put("text", selected.sourceDescriptor ?: JSONObject.NULL)
-            .put("parseStatus", selected.parseStatus)
-    }
+    private fun decodeHex(value: String): String? = runCatching {
+        decodeHexBytes(value)?.toString(Charsets.UTF_8) ?: error("invalid hexadecimal bytes")
+    }.getOrNull()
 
-    private fun videoMetadataJson(program: ProgramRecord): Any {
-        val selected = program.descriptors.components.video.firstOrNull() ?: return JSONObject.NULL
-        val codec = selected.codec ?: return JSONObject.NULL
-        return JSONObject()
-            .put("esPid", selected.esPid.value)
-            .put("componentTag", selected.componentTag ?: JSONObject.NULL)
-            .put("codec", codec)
-            .put("format", selected.sourceDescriptor ?: JSONObject.NULL)
-            .put("width", selected.resolution ?: JSONObject.NULL)
-            .put("height", JSONObject.NULL)
-            .put("parseStatus", selected.parseStatus)
-    }
-
-    private fun optStringOrNull(obj: JSONObject, key: String): String? =
-        if (obj.has(key) && !obj.isNull(key)) obj.optString(key).takeIf { it.isNotBlank() } else null
-
-    private fun optIntOrNull(obj: JSONObject, key: String): Int? =
-        if (obj.has(key) && !obj.isNull(key)) obj.optInt(key) else null
+    private fun decodeHexBytes(value: String): ByteArray? = runCatching {
+        require(value.length % 2 == 0)
+        value.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+    }.getOrNull()
 
     private fun parseResult(raw: String): Result {
         val obj = runCatching { JSONObject(raw) }.getOrElse { error ->
@@ -293,11 +248,8 @@ object ProviderDataBridge {
         }
         val json = obj.optString("bytes", "")
         require(json.isNotBlank() && json != "{}") { "provider-data JNI result did not contain valid JSON v1 bytes" }
-        val signature = obj.optString("signature", "")
-        require(signature.isNotBlank()) { "provider-data JNI result did not contain signature" }
         return Result(
             bytes = json.toByteArray(Charsets.UTF_8),
-            signature = signature,
             schemaVersion = obj.optInt("schemaVersion", 1),
             truncated = obj.optBoolean("truncated", false),
             diagnosticsDroppedCount = obj.optInt("diagnosticsDroppedCount", 0),
@@ -305,67 +257,129 @@ object ProviderDataBridge {
     }
 
     private fun toExtendedItemsArray(items: List<AribExtendedItem>): JSONArray = JSONArray().apply {
-        items.forEach { item -> put(JSONObject().put("description", item.itemDescription).put("text", item.itemText)) }
-    }
-
-    private fun toRelatedItemsArray(items: List<AribRelatedItem>): JSONArray = JSONArray().apply {
         items.forEach { item ->
-            put(JSONObject()
-                .put("kind", item.kind)
-                .put("groupType", item.groupType)
-                .put("originalNetworkId", item.originalNetworkId ?: JSONObject.NULL)
-                .put("transportStreamId", item.transportStreamId ?: JSONObject.NULL)
-                .put("serviceId", item.serviceId)
-                .put("eventId", item.eventId)
-                .put("parseStatus", item.parseStatus))
+            put(
+                JSONObject()
+                    .put("languageCode", item.languageCode)
+                    .put("description", item.itemDescription)
+                    .put("text", item.itemText)
+                    .put("parseStatus", "OK"),
+            )
         }
     }
 
-    private fun toLinkageArray(items: List<AribLinkage>): JSONArray = JSONArray().apply {
+    private fun toEventGroupsArray(groups: List<AribEventGroup>): JSONArray = JSONArray().apply {
+    groups.forEach { group ->
+        put(
+  JSONObject()
+      .put("groupType", group.groupType)
+      .put("events", JSONArray().apply {
+group.events.forEach { event ->
+    put(JSONObject()
+        .put("serviceId", event.serviceId)
+        .put("eventId", event.eventId))
+}
+      })
+      .put("otherNetworkEvents", JSONArray().apply {
+group.otherNetworkEvents.forEach { event ->
+    put(JSONObject()
+        .put("originalNetworkId", event.originalNetworkId)
+        .put("transportStreamId", event.transportStreamId)
+        .put("serviceId", event.serviceId)
+        .put("eventId", event.eventId))
+}
+      })
+      .put("privateDataHex", group.privateDataHex)
+      .put("parseStatus", group.parseStatus),
+        )
+    }
+}
+
+private fun toLinkageArray(items: List<AribLinkage>): JSONArray = JSONArray().apply {
         items.forEach { item ->
             put(JSONObject()
                 .put("linkageType", item.linkageType)
                 .put("originalNetworkId", item.originalNetworkId)
                 .put("transportStreamId", item.transportStreamId)
                 .put("serviceId", item.serviceId)
-                .put("privateDataHex", item.privateDataHex)
+                .put("privateDataPrefixHex", item.privateDataHex)
                 .put("parseStatus", item.parseStatus))
         }
     }
 
 
     fun toComponentsObject(components: AribComponents): JSONObject = JSONObject()
-        .put("video", componentEntriesJson(components.video))
-        .put("audio", componentEntriesJson(components.audio))
-        .put("subtitle", componentEntriesJson(components.subtitle))
-        .put("data", componentEntriesJson(components.data))
+        .put("video", videoComponentsJson(components.video))
+        .put("audio", audioComponentsJson(components.audio))
+        .put("subtitle", subtitleComponentsJson(components.subtitle))
+        .put("data", dataComponentsJson(components.data))
 
-    private fun componentEntriesJson(entries: List<AribComponentEntry>): JSONArray = JSONArray().apply {
+    private fun videoComponentsJson(entries: List<AribComponentEntry>): JSONArray = JSONArray().apply {
         entries.forEach { entry ->
-            val obj = JSONObject().put("esPid", entry.esPid.value).put("parseStatus", entry.parseStatus)
-            entry.streamType?.let { obj.put("streamType", it) }
-            entry.componentTag?.let { obj.put("componentTag", it) }
-            entry.componentType?.let { obj.put("componentType", it) }
-            entry.codec?.let { obj.put("codec", it) }
-            entry.language?.let { obj.put("language", it) }
-            entry.secondLanguage?.let { obj.put("secondLanguage", it) }
-            entry.channelConfiguration?.let { obj.put("channelConfiguration", it) }
-            entry.samplingInfo?.let { obj.put("samplingInfo", it) }
-            entry.sourceDescriptor?.let { obj.put("sourceDescriptor", it) }
+            val obj = JSONObject()
+                .put("esPid", entry.esPid.value)
+                .put("streamType", requireNotNull(entry.streamType) { "video streamType is required" })
+                .put("componentTag", entry.componentTag ?: JSONObject.NULL)
+                .put("componentType", entry.componentType ?: JSONObject.NULL)
+                .put("codec", requireNotNull(entry.codec?.takeIf { it.isNotBlank() }) { "video codec is required" })
+                .put("parseStatus", entry.parseStatus)
             entry.resolution?.let { obj.put("resolution", it) }
             entry.scan?.let { obj.put("scan", it) }
             entry.aspect?.let { obj.put("aspect", it) }
             entry.profileLevel?.let { obj.put("profileLevel", it) }
-            entry.dataComponentId?.let { obj.put("dataComponentId", it) }
-            entry.trackId?.let { obj.put("trackId", it) }
-            entry.captionServiceKind?.let { obj.put("captionServiceKind", it) }
-            entry.r51PlaybackSupported?.let { obj.put("r51PlaybackSupported", it) }
-            entry.liveViewableClaim?.let { obj.put("liveViewableClaim", it) }
+            entry.sourceDescriptor?.let { obj.put("sourceDescriptor", it) }
             entry.diagnosticCode?.let { obj.put("diagnosticCode", it) }
-            entry.main?.let { obj.put("main", it) }
-            entry.multiLingual?.let { obj.put("multiLingual", it) }
-            entry.qualityIndicator?.let { obj.put("qualityIndicator", it) }
             put(obj)
+        }
+    }
+
+    private fun audioComponentsJson(entries: List<AribComponentEntry>): JSONArray = JSONArray().apply {
+        entries.forEach { entry ->
+            val obj = JSONObject()
+                .put("esPid", entry.esPid.value)
+                .put("streamType", requireNotNull(entry.streamType) { "audio streamType is required" })
+                .put("componentTag", entry.componentTag ?: JSONObject.NULL)
+                .put("componentType", entry.componentType ?: JSONObject.NULL)
+                .put("codec", requireNotNull(entry.codec?.takeIf { it.isNotBlank() }) { "audio codec is required" })
+                .put("language", entry.language?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
+                .put("parseStatus", entry.parseStatus)
+            entry.channelConfiguration?.let { obj.put("channelConfiguration", it) }
+            entry.samplingInfo?.let { obj.put("samplingInfo", it) }
+            entry.sourceDescriptor?.let { obj.put("sourceDescriptor", it) }
+            entry.diagnosticCode?.let { obj.put("diagnosticCode", it) }
+            put(obj)
+        }
+    }
+
+    private fun subtitleComponentsJson(entries: List<AribComponentEntry>): JSONArray = JSONArray().apply {
+        entries.forEach { entry ->
+            put(
+                JSONObject()
+                    .put("esPid", entry.esPid.value)
+                    .put("componentTag", entry.componentTag ?: JSONObject.NULL)
+                    .put("dataComponentId", entry.dataComponentId ?: JSONObject.NULL)
+                    .put("language", entry.language?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
+                    .put(
+                        "captionServiceKind",
+                        requireNotNull(entry.captionServiceKind?.takeIf { it.isNotBlank() }) {
+                            "subtitle captionServiceKind is required"
+                        },
+                    )
+                    .put("parseStatus", entry.parseStatus),
+            )
+        }
+    }
+
+    private fun dataComponentsJson(entries: List<AribComponentEntry>): JSONArray = JSONArray().apply {
+        entries.forEach { entry ->
+            put(
+                JSONObject()
+                    .put("esPid", entry.esPid.value)
+                    .put("componentTag", entry.componentTag ?: JSONObject.NULL)
+                    .put("dataComponentId", entry.dataComponentId ?: JSONObject.NULL)
+                    .put("componentType", entry.componentType ?: JSONObject.NULL)
+                    .put("parseStatus", entry.parseStatus),
+            )
         }
     }
 
