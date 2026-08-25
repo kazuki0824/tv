@@ -13,8 +13,8 @@ import com.maleicacid.tvinput.common.TsPid
 data class AvPlaybackSignature(
     val serviceKey: ServiceKey,
     val pcrPid: TsPid?,
-    val videoPid: TsPid,
-    val videoStreamType: Int,
+    val videoPid: TsPid?,
+    val videoStreamType: Int?,
     val audioPid: TsPid?,
     val audioStreamType: Int?,
     val clear: Boolean,
