@@ -1,0 +1,40 @@
+name: PR57 rebase diagnostic
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/pr57-rebase-diagnostic.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    if: github.head_ref == 'automation/rebase-pr57-generic-key'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Reproduce three-way application
+        shell: bash
+        run: |
+          set -euo pipefail
+          OLD_BASE=8a499f49be8bd0a0134985bfb4a4b22a10a23f25
+          NEW_BASE=c81f3828ca5ff2a7091bf5df3995169d8ce6ff10
+          OLD_HEAD=fdc7a51b02695c5313100bf8e8f140b430f3c11a
+          git fetch origin "$OLD_BASE" "$NEW_BASE" "$OLD_HEAD"
+          git checkout --detach "$NEW_BASE"
+          git diff --binary "$OLD_BASE" "$OLD_HEAD" > /tmp/pr57.patch
+          set +e
+          git apply --3way --index /tmp/pr57.patch
+          rc=$?
+          set -e
+          echo "apply_rc=$rc"
+          echo "=== unmerged paths ==="
+          git diff --name-only --diff-filter=U || true
+          echo "=== status ==="
+          git status --short
+          exit "$rc"
