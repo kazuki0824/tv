@@ -1,4 +1,4 @@
-name: PR57 rebase diagnostic
+name: PR57 generic key rebase
 
 on:
   pull_request:
@@ -6,19 +6,20 @@ on:
       - ".github/workflows/pr57-rebase-diagnostic.yml"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  diagnose:
+  rebase:
     if: github.head_ref == 'automation/rebase-pr57-generic-key'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: false
-      - name: Reproduce three-way application
+          persist-credentials: true
+
+      - name: Rebase PR57 final diff onto latest PR55
         shell: bash
         run: |
           set -euo pipefail
@@ -28,13 +29,397 @@ jobs:
           git fetch origin "$OLD_BASE" "$NEW_BASE" "$OLD_HEAD"
           git checkout --detach "$NEW_BASE"
           git diff --binary "$OLD_BASE" "$OLD_HEAD" > /tmp/pr57.patch
-          set +e
-          git apply --3way --index /tmp/pr57.patch
-          rc=$?
-          set -e
-          echo "apply_rc=$rc"
-          echo "=== unmerged paths ==="
-          git diff --name-only --diff-filter=U || true
-          echo "=== status ==="
-          git status --short
-          exit "$rc"
+          git apply --3way --index /tmp/pr57.patch || true
+          unmerged="$(git diff --name-only --diff-filter=U)"
+          test "$unmerged" = "tuner_hal2/service_runtime/src/descrambler_key_table.rs"
+          git checkout --ours tuner_hal2/service_runtime/src/descrambler_key_table.rs
+          git add tuner_hal2/service_runtime/src/descrambler_key_table.rs
+          test -z "$(git diff --name-only --diff-filter=U)"
+          git config user.name maleicacid
+          git config user.email 4982384+kazuki0824@users.noreply.github.com
+          git commit -m "feat(r52): rebase CAS and HEVC integration onto latest stack"
+
+      - name: Adapt CAS integration to generic Tuner key provisioning
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          def read(path):
+              return Path(path).read_text()
+          def write(path, text):
+              Path(path).write_text(text)
+          def replace_once(text, old, new, label):
+              if text.count(old) != 1:
+                  raise SystemExit(f"{label}: expected exactly one occurrence, got {text.count(old)}")
+              return text.replace(old, new, 1)
+
+          # ---- CAS core: keep B25/B1 in CAS, remove dependency on Tuner-specific CAS types. ----
+          p = Path("cas_hal/src/lib.rs")
+          s = p.read_text()
+          old_import = '''use std::collections::BTreeMap;\nuse std::sync::{Arc, Mutex, MutexGuard};\n\nuse maleicacid_tuner_hal2_cas_key_bridge::{\n    volatile_zeroize, CasKeyResource, B1_CA_SYSTEM_ID, B25_CA_SYSTEM_ID, CAS_KEY_TOKEN_MAX_BYTES,\n};\n'''
+          new_import = '''use std::collections::BTreeMap;\nuse std::ptr;\nuse std::sync::atomic::{compiler_fence, Ordering};\nuse std::sync::{Arc, Mutex, MutexGuard};\n\npub const B25_CA_SYSTEM_ID: i32 = 0x0005;\npub const B1_CA_SYSTEM_ID: i32 = 0x0001;\npub const MEDIA_CAS_SESSION_ID_MAX_BYTES: usize = 16;\n\nfn volatile_zeroize(bytes: &mut [u8]) {\n    for byte in bytes {\n        unsafe { ptr::write_volatile(byte, 0) };\n    }\n    compiler_fence(Ordering::SeqCst);\n}\n'''
+          s = replace_once(s, old_import, new_import, "cas core import")
+          s = s.replace("CAS_KEY_TOKEN_MAX_BYTES", "MEDIA_CAS_SESSION_ID_MAX_BYTES")
+
+          old_trait = '''pub trait TunerKeyPublisher: Send + Sync {\n    fn reserve(\n        &self,\n        session_id: &[u8],\n        ca_system_id: i32,\n        session_generation: u64,\n    ) -> Result<(), CasError>;\n    fn publish(&self, session_id: &[u8], resource: CasKeyResource) -> Result<(), CasError>;\n    fn revoke(\n        &self,\n        session_id: &[u8],\n        ca_system_id: i32,\n        session_generation: u64,\n    ) -> Result<(), CasError>;\n}\n'''
+          new_trait = '''pub trait TunerKeyPublisher: Send + Sync {\n    fn reserve(&self, key_token: &[u8], provider_generation: u64) -> Result<(), CasError>;\n    fn publish(\n        &self,\n        key_token: &[u8],\n        provider_generation: u64,\n        key_epoch: u64,\n        material: EcmKeyMaterial,\n    ) -> Result<(), CasError>;\n    fn revoke(&self, key_token: &[u8], provider_generation: u64) -> Result<(), CasError>;\n}\n'''
+          s = replace_once(s, old_trait, new_trait, "publisher trait")
+
+          s = re.sub(
+              r'\.reserve\(&session_id,\s*self\.system\.ca_system_id\(\),\s*generation\)',
+              '.reserve(&session_id, generation)', s)
+          s = re.sub(
+              r'\.revoke\(\s*&session_id,\s*self\.system\.ca_system_id\(\),\s*generation,?\s*\)',
+              '.revoke(&session_id, generation)', s)
+          s = re.sub(
+              r'\.revoke\(\s*session_id,\s*self\.system\.ca_system_id\(\),\s*snapshot\.generation,?\s*\)',
+              '.revoke(session_id, snapshot.generation)', s)
+          s = re.sub(
+              r'\.revoke\(\s*&cleanup\.session_id,\s*self\.system\.ca_system_id\(\),\s*cleanup\.generation,?\s*\)',
+              '.revoke(&cleanup.session_id, cleanup.generation)', s)
+
+          old_resource = '''        let resource = CasKeyResource::try_new(\n            self.system.ca_system_id(),\n            snapshot.generation,\n            snapshot.next_key_epoch,\n            std::mem::take(&mut material.system_key),\n            std::mem::take(&mut material.cbc_initial_value),\n            std::mem::take(&mut material.even_ks),\n            std::mem::take(&mut material.odd_ks),\n        )\n        .map_err(|_| CasError::InvalidState)?;\n        if let Err(error) = self.key_publisher.publish(session_id, resource) {\n'''
+          new_resource = '''        if let Err(error) = self.key_publisher.publish(\n            session_id,\n            snapshot.generation,\n            snapshot.next_key_epoch,\n            material,\n        ) {\n'''
+          s = replace_once(s, old_resource, new_resource, "resource conversion boundary")
+          s = s.replace("let mut material = match self.path_router.process_ecm(", "let material = match self.path_router.process_ecm(")
+          s = s.replace("    use maleicacid_tuner_hal2_cas_key_bridge::CasKeyResource;\n\n", "")
+
+          # Fake publisher/test signatures.
+          s = re.sub(
+              r'''fn reserve\(\n\s*&self,\n\s*(_?[a-zA-Z_][a-zA-Z0-9_]*): &\[u8\],\n\s*_ca_system_id: i32,\n\s*(_?[a-zA-Z_][a-zA-Z0-9_]*): u64,\n\s*\) -> Result<\(\), CasError>''',
+              lambda m: f"fn reserve(\n            &self,\n            {m.group(1)}: &[u8],\n            {m.group(2)}: u64,\n        ) -> Result<(), CasError>", s)
+          s = re.sub(
+              r'''fn revoke\(\n\s*&self,\n\s*(_?[a-zA-Z_][a-zA-Z0-9_]*): &\[u8\],\n\s*_ca_system_id: i32,\n\s*(_?[a-zA-Z_][a-zA-Z0-9_]*): u64,\n\s*\) -> Result<\(\), CasError>''',
+              lambda m: f"fn revoke(\n            &self,\n            {m.group(1)}: &[u8],\n            {m.group(2)}: u64,\n        ) -> Result<(), CasError>", s)
+          s = re.sub(
+              r'''fn publish\(&self, _session_id: &\[u8\], resource: CasKeyResource\) -> Result<\(\), CasError> \{\n\s*self\.calls\.lock\(\)\.unwrap\(\)\.push\("publish"\.to_owned\(\)\);\n\s*self\.epochs\.lock\(\)\.unwrap\(\)\.push\(resource\.key_epoch\(\)\);''',
+              '''fn publish(\n            &self,\n            _session_id: &[u8],\n            _provider_generation: u64,\n            key_epoch: u64,\n            _material: EcmKeyMaterial,\n        ) -> Result<(), CasError> {\n            self.calls.lock().unwrap().push("publish".to_owned());\n            self.epochs.lock().unwrap().push(key_epoch);''', s)
+          s = s.replace(
+              "fn publish(&self, _session_id: &[u8], _resource: CasKeyResource) -> Result<(), CasError> {\n            Ok(())\n        }",
+              "fn publish(\n            &self,\n            _session_id: &[u8],\n            _provider_generation: u64,\n            _key_epoch: u64,\n            _material: EcmKeyMaterial,\n        ) -> Result<(), CasError> {\n            Ok(())\n        }")
+          p.write_text(s)
+
+          # ---- CAS transport is the CAS-specific -> generic provider adapter. ----
+          p = Path("cas_hal/src/transport.rs")
+          s = p.read_text()
+          s = s.replace(
+              '''use maleicacid_tuner_hal2_cas_key_bridge::{\n    decode_response as decode_key_response, encode_command as encode_key_command, volatile_zeroize,\n    CasKeyBridgeCommand, CasKeyBridgeStatus, CasKeyResource, CasSessionIdentity,\n    CAS_KEY_BRIDGE_SOCKET_PATH, CAS_KEY_TOKEN_MAX_BYTES,\n};''',
+              '''use maleicacid_tuner_hal2_key_provisioning_bridge::{\n    decode_response as decode_key_response, encode_command as encode_key_command, volatile_zeroize,\n    KeyProvisioningCommand, KeyProvisioningStatus, Multi2KeyResource, ProvisioningIdentity,\n    KEY_PROVISIONING_SOCKET_PATH,\n};''')
+          s = s.replace(
+              "    CasError, CasPathKind, CasPathRouter, CasSystem, EcmKeyMaterial, GenerationSource,\n    SessionIdGenerator, TunerKeyPublisher,\n",
+              "    CasError, CasPathKind, CasPathRouter, CasSystem, EcmKeyMaterial, GenerationSource,\n    SessionIdGenerator, TunerKeyPublisher, MEDIA_CAS_SESSION_ID_MAX_BYTES,\n")
+          s = s.replace("CAS_KEY_TOKEN_MAX_BYTES", "MEDIA_CAS_SESSION_ID_MAX_BYTES")
+          s = s.replace("CasKeyBridgeCommand", "KeyProvisioningCommand")
+          s = s.replace("CasKeyBridgeStatus", "KeyProvisioningStatus")
+          s = s.replace("CAS_KEY_BRIDGE_SOCKET_PATH", "KEY_PROVISIONING_SOCKET_PATH")
+          s = s.replace("CasKeyBridgeStatus::InvalidSession", "KeyProvisioningStatus::InvalidToken")
+          # Previous replacement already changed the prefix; normalize any remaining variant name.
+          s = s.replace("KeyProvisioningStatus::InvalidSession", "KeyProvisioningStatus::InvalidToken")
+          marker = "const KEY_BRIDGE_MAX_ATTEMPTS: usize = 3;\n"
+          s = replace_once(s, marker, marker + "const CAS_SERVICE_KEY_PROVIDER_ID: u64 = 0x4d43_4153_4b45_5901;\n", "provider id")
+
+          impl_start = s.index("impl TunerKeyPublisher for UnixTunerKeyPublisher {")
+          impl_end = s.index("\npub struct UnixCasPathRouter", impl_start)
+          new_impl = '''impl TunerKeyPublisher for UnixTunerKeyPublisher {\n    fn reserve(&self, key_token: &[u8], provider_generation: u64) -> Result<(), CasError> {\n        let identity = ProvisioningIdentity::try_new(\n            CAS_SERVICE_KEY_PROVIDER_ID,\n            provider_generation,\n        )\n        .map_err(|_| CasError::BadValue)?;\n        self.exchange(KeyProvisioningCommand::Reserve {\n            key_token: key_token.to_vec(),\n            identity,\n        })\n    }\n\n    fn publish(\n        &self,\n        key_token: &[u8],\n        provider_generation: u64,\n        key_epoch: u64,\n        mut material: EcmKeyMaterial,\n    ) -> Result<(), CasError> {\n        let resource = Multi2KeyResource::try_new(\n            CAS_SERVICE_KEY_PROVIDER_ID,\n            provider_generation,\n            key_epoch,\n            std::mem::take(&mut material.system_key),\n            std::mem::take(&mut material.cbc_initial_value),\n            std::mem::take(&mut material.even_ks),\n            std::mem::take(&mut material.odd_ks),\n        )\n        .map_err(|_| CasError::BadValue)?;\n        self.exchange(KeyProvisioningCommand::Publish {\n            key_token: key_token.to_vec(),\n            resource,\n        })\n    }\n\n    fn revoke(&self, key_token: &[u8], provider_generation: u64) -> Result<(), CasError> {\n        let identity = ProvisioningIdentity::try_new(\n            CAS_SERVICE_KEY_PROVIDER_ID,\n            provider_generation,\n        )\n        .map_err(|_| CasError::BadValue)?;\n        self.exchange(KeyProvisioningCommand::Revoke {\n            key_token: key_token.to_vec(),\n            identity,\n        })\n    }\n}\n'''
+          s = s[:impl_start] + new_impl + s[impl_end:]
+          p.write_text(s)
+
+          # ---- Tuner runtime registry: generic provider identity only. ----
+          p = Path("tuner_hal2/service_runtime/src/registry.rs")
+          s = p.read_text()
+          s = s.replace(
+              "    CasKeyResourceIdentity, DescramblerKeyLookupError, DescramblerKeySlotId, DescramblerKeyTable,\n",
+              "    DescramblerKeyLookupError, DescramblerKeySlotId, DescramblerKeyTable,\n    KeyProvisioningIdentity, KeyProvisioningMutationError,\n")
+          s = s.replace("CasKeyRegistryBridgeError", "KeyProvisioningRegistryError")
+          s = s.replace("InvalidSessionId", "InvalidKeyToken")
+          s = s.replace("Registry(DescramblerKeyLookupError)", "Registry(KeyProvisioningMutationError)")
+          s = s.replace("reserve_cas_key_resource", "reserve_key_provisioning_resource")
+          s = s.replace("publish_cas_key_resource", "publish_key_provisioning_resource")
+          s = s.replace("revoke_cas_key_resource", "revoke_key_provisioning_resource")
+          s = s.replace("CasKeyResourceIdentity", "KeyProvisioningIdentity")
+
+          # Only the bridge methods introduced by #57 contain these parameter names.
+          bridge_start = s.index("    pub(crate) fn reserve_key_provisioning_resource(")
+          bridge_end = s.index("\n    pub fn register_frontend(", bridge_start)
+          bridge = s[bridge_start:bridge_end]
+          bridge = bridge.replace("session_id", "key_token")
+          bridge = bridge.replace("ca_system_id", "provider_id")
+          bridge = bridge.replace("session_generation", "provider_generation")
+          bridge = bridge.replace("DescramblerKeyToken::try_from_bytes(key_token)", "DescramblerKeyToken::try_from_bytes(key_token)")
+          bridge = bridge.replace("KeyProvisioningRegistryError::Registry(DescramblerKeyLookupError::UnknownToken)", "KeyProvisioningRegistryError::Registry(KeyProvisioningMutationError::UnknownToken)")
+          bridge = bridge.replace("KeyProvisioningRegistryError::Registry(DescramblerKeyLookupError::ExpiredToken)", "KeyProvisioningRegistryError::Registry(KeyProvisioningMutationError::ExpiredToken)")
+          s = s[:bridge_start] + bridge + s[bridge_end:]
+          p.write_text(s)
+
+          # ---- Replace the old CAS-aware Tuner ops with generic provisioning ops. ----
+          old_ops = Path("tuner_hal2/service_runtime/src/cas_key_bridge_ops.rs")
+          new_ops = Path("tuner_hal2/service_runtime/src/key_provisioning_ops.rs")
+          old_ops.unlink()
+          new_ops.write_text(r'''use maleicacid_tuner_hal2_descrambler::{DescramblerKeySlot, Multi2KeyMaterial};
+          use maleicacid_tuner_hal2_key_provisioning_bridge::{
+              KeyProvisioningCommand, KeyProvisioningStatus, Multi2KeyResource,
+          };
+
+          use crate::boot::TunerServiceRuntime;
+          use crate::descrambler_key_table::KeyProvisioningMutationError;
+          use crate::registry::KeyProvisioningRegistryError;
+
+          fn status_from_registry_error(error: KeyProvisioningRegistryError) -> KeyProvisioningStatus {
+              match error {
+                  KeyProvisioningRegistryError::InvalidKeyToken(_) => KeyProvisioningStatus::InvalidToken,
+                  KeyProvisioningRegistryError::SlotIdExhausted => KeyProvisioningStatus::ResourceBusy,
+                  KeyProvisioningRegistryError::Registry(KeyProvisioningMutationError::ExpiredToken) => {
+                      KeyProvisioningStatus::Revoked
+                  }
+                  KeyProvisioningRegistryError::Registry(KeyProvisioningMutationError::StaleEpoch) => {
+                      KeyProvisioningStatus::StaleEpoch
+                  }
+                  KeyProvisioningRegistryError::Registry(KeyProvisioningMutationError::ResourceExhausted) => {
+                      KeyProvisioningStatus::ResourceBusy
+                  }
+                  KeyProvisioningRegistryError::Registry(
+                      KeyProvisioningMutationError::UnknownToken
+                      | KeyProvisioningMutationError::InvalidIdentity
+                      | KeyProvisioningMutationError::IdentityMismatch,
+                  ) => KeyProvisioningStatus::InvalidToken,
+              }
+          }
+
+          fn prepare_key_slot(resource: &Multi2KeyResource) -> Result<DescramblerKeySlot, KeyProvisioningStatus> {
+              let even = Multi2KeyMaterial::new(
+                  *resource.system_key(),
+                  *resource.cbc_initial_value(),
+                  *resource.even_ks(),
+              );
+              let odd = Multi2KeyMaterial::new(
+                  *resource.system_key(),
+                  *resource.cbc_initial_value(),
+                  *resource.odd_ks(),
+              );
+              DescramblerKeySlot::empty()
+                  .try_with_even(even)
+                  .and_then(|slot| slot.try_with_odd(odd))
+                  .map_err(|_| KeyProvisioningStatus::Internal)
+          }
+
+          impl TunerServiceRuntime {
+              pub fn apply_key_provisioning_command(
+                  &mut self,
+                  command: KeyProvisioningCommand,
+              ) -> KeyProvisioningStatus {
+                  match command {
+                      KeyProvisioningCommand::Ping => KeyProvisioningStatus::Ok,
+                      KeyProvisioningCommand::Reserve { key_token, identity } => self
+                          .registry_mut()
+                          .reserve_key_provisioning_resource(
+                              key_token,
+                              identity.provider_id(),
+                              identity.provider_generation(),
+                          )
+                          .map(|_| KeyProvisioningStatus::Ok)
+                          .unwrap_or_else(status_from_registry_error),
+                      KeyProvisioningCommand::Publish { key_token, resource } => {
+                          let key_slot = match prepare_key_slot(&resource) {
+                              Ok(key_slot) => key_slot,
+                              Err(status) => return status,
+                          };
+                          let identity = resource.identity();
+                          self.registry_mut()
+                              .publish_key_provisioning_resource(
+                                  key_token,
+                                  identity.provider_id(),
+                                  identity.provider_generation(),
+                                  resource.key_epoch(),
+                                  key_slot,
+                              )
+                              .map(|_| KeyProvisioningStatus::Ok)
+                              .unwrap_or_else(status_from_registry_error)
+                      }
+                      KeyProvisioningCommand::Revoke { key_token, identity } => self
+                          .registry_mut()
+                          .revoke_key_provisioning_resource(
+                              key_token,
+                              identity.provider_id(),
+                              identity.provider_generation(),
+                          )
+                          .map(|_| KeyProvisioningStatus::Ok)
+                          .unwrap_or_else(status_from_registry_error),
+                  }
+              }
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use maleicacid_tuner_hal2_key_provisioning_bridge::{
+                  KeyProvisioningCommand, KeyProvisioningStatus, Multi2KeyResource,
+                  ProvisioningIdentity,
+              };
+
+              use crate::boot::TunerServiceRuntime;
+
+              const PROVIDER_ID: u64 = 41;
+
+              fn resource(epoch: u64) -> Multi2KeyResource {
+                  Multi2KeyResource::try_new(
+                      PROVIDER_ID,
+                      7,
+                      epoch,
+                      [0x10; 32],
+                      [0x20; 8],
+                      [0x30; 8],
+                      [0x40; 8],
+                  )
+                  .unwrap()
+              }
+
+              fn identity(generation: u64) -> ProvisioningIdentity {
+                  ProvisioningIdentity::try_new(PROVIDER_ID, generation).unwrap()
+              }
+
+              #[test]
+              fn publish_update_and_revoke_follow_epoch_and_stale_token_contract() {
+                  let mut runtime = TunerServiceRuntime::new();
+                  let token = vec![0x31, 0x32];
+                  assert_eq!(
+                      runtime.apply_key_provisioning_command(KeyProvisioningCommand::Reserve {
+                          key_token: token.clone(),
+                          identity: identity(7),
+                      }),
+                      KeyProvisioningStatus::Ok
+                  );
+                  assert_eq!(
+                      runtime.apply_key_provisioning_command(KeyProvisioningCommand::Publish {
+                          key_token: token.clone(),
+                          resource: resource(1),
+                      }),
+                      KeyProvisioningStatus::Ok
+                  );
+                  assert_eq!(
+                      runtime.apply_key_provisioning_command(KeyProvisioningCommand::Publish {
+                          key_token: token.clone(),
+                          resource: resource(1),
+                      }),
+                      KeyProvisioningStatus::StaleEpoch
+                  );
+                  assert_eq!(
+                      runtime.apply_key_provisioning_command(KeyProvisioningCommand::Revoke {
+                          key_token: token.clone(),
+                          identity: identity(8),
+                      }),
+                      KeyProvisioningStatus::InvalidToken
+                  );
+                  assert_eq!(
+                      runtime.apply_key_provisioning_command(KeyProvisioningCommand::Revoke {
+                          key_token: token,
+                          identity: identity(7),
+                      }),
+                      KeyProvisioningStatus::Ok
+                  );
+              }
+          }
+          '''.replace("          ", ""))
+
+          # module/source/name wiring
+          for path in [
+              "tuner_hal2/service_runtime/src/lib.rs",
+              "tuner_hal2/Android.bp",
+              "tuner_hal2/aidl_service/src/lib.rs",
+              "tuner_hal2/aidl_service/src/service_entry.rs",
+              "tuner_hal2/init/android.hardware.tv.tuner-service.maleicacid2.rc",
+          ]:
+              q = Path(path)
+              x = q.read_text()
+              x = x.replace("cas_key_bridge_ops", "key_provisioning_ops")
+              x = x.replace("cas_key_bridge_server", "key_provisioning_bridge_server")
+              x = x.replace("start_cas_key_bridge_server", "start_key_provisioning_server")
+              x = x.replace("libmaleicacid_tuner_hal2_cas_key_bridge", "libmaleicacid_tuner_hal2_key_provisioning_bridge")
+              x = x.replace("maleicacid_tuner_hal2_cas_key_bridge", "maleicacid_tuner_hal2_key_provisioning_bridge")
+              x = x.replace("cas_key_bridge/src/lib.rs", "key_provisioning_bridge/src/lib.rs")
+              x = x.replace("maleicacid_tuner_hal2_cas_key_bridge_test", "maleicacid_tuner_hal2_key_provisioning_bridge_test")
+              x = x.replace("maleicacid_cas_key_bridge", "maleicacid_key_provisioning")
+              q.write_text(x)
+
+          # Soong CAS dependencies: core is CAS-only; transport/main depend on generic provisioning.
+          p = Path("cas_hal/Android.bp")
+          s = p.read_text()
+          s = s.replace('    rustlibs: ["libmaleicacid_tuner_hal2_cas_key_bridge"],\n', '', 1)
+          s = s.replace('    rustlibs: ["libmaleicacid_tuner_hal2_cas_key_bridge"],\n', '', 1)
+          s = s.replace("libmaleicacid_tuner_hal2_cas_key_bridge", "libmaleicacid_tuner_hal2_key_provisioning_bridge")
+          p.write_text(s)
+
+          # Host Cargo: CAS core no longer depends on Tuner; transport adapter does.
+          p = Path("cas_hal/host_ci/core/Cargo.toml")
+          s = p.read_text()
+          s = re.sub(r'\n\[dependencies\]\nmaleicacid-tuner-hal2-cas-key-bridge[^\n]*\n?', '\n', s)
+          p.write_text(s)
+          p = Path("cas_hal/host_ci/transport/Cargo.toml")
+          s = p.read_text().replace(
+              'maleicacid-tuner-hal2-cas-key-bridge = { package = "maleicacid-tuner-hal2-cas-key-bridge-host-ci", path = "../../../tuner_hal2/host_ci/cas_key_bridge" }',
+              'maleicacid-tuner-hal2-key-provisioning-bridge = { package = "maleicacid-tuner-hal2-key-provisioning-bridge-host-ci", path = "../../../tuner_hal2/host_ci/key_provisioning_bridge" }')
+          p.write_text(s)
+
+          # SELinux/socket is generic at the shared boundary; CAS domain remains the client.
+          old = Path("cas_hal/sepolicy/cas_key_bridge.te")
+          new = Path("cas_hal/sepolicy/key_provisioning_bridge.te")
+          text = old.read_text().replace("maleicacid_cas_key_socket", "maleicacid_key_provisioning_socket")
+          new.write_text(text)
+          old.unlink()
+          p = Path("cas_hal/sepolicy/file_contexts")
+          s = p.read_text().replace("/dev/socket/maleicacid_cas_key_bridge", "/dev/socket/maleicacid_key_provisioning")
+          s = s.replace("maleicacid_cas_key_socket", "maleicacid_key_provisioning_socket")
+          p.write_text(s)
+
+          # Document the adapter boundary explicitly without removing legitimate CAS-side terminology.
+          p = Path("cas_hal/DESIGN_JA.md")
+          s = p.read_text()
+          note = '''\n\n## Tuner key provisioning 境界\n\nCAS HAL内部ではB25/B1、CA system ID、MediaCas session、ECM/EMMを正規のCAS-domain情報として扱う。一方、Tuner HALへ渡す境界ではこれらの意味を公開しない。`cas_hal/src/transport.rs` のadapterは、本CAS serviceを表すopaqueな非CA-system値 `provider_id` と、sessionのstale/ABAを防ぐ `provider_generation`、`key_epoch`、opaque `key_token`、MULTI2 key resourceへ変換する。Tuner側はprovider IDの意味を解釈せず、B25/B1やCA system IDで分岐してはならない。\n'''
+          if "## Tuner key provisioning 境界" not in s:
+              s += note
+          p.write_text(s)
+
+          p = Path("tuner_hal2/DESIGN_JA.md")
+          s = p.read_text()
+          note = '''\n\n### Generic key provisioning 境界\n\n内部鍵供給は `KEY_PROVISIONING_BRIDGE_CONTRACT.md` を正本とする。Tuner HALが認識するのはopaque `key_token` / `provider_id` / `provider_generation` / `key_epoch`と復号algorithmに必要なkey resourceだけであり、CA system ID、B25/B1、MediaCas session、ECM/EMM、SmartCard等の上流CAS意味をTuner内部へ持ち込まない。\n'''
+          if "### Generic key provisioning 境界" not in s:
+              s += note
+          p.write_text(s)
+
+          # Sanity assertions: CAS concepts may remain under cas_hal, but not in generic Tuner bridge/runtime integration.
+          forbidden = ["B25_CA_SYSTEM_ID", "B1_CA_SYSTEM_ID", "ca_system_id", "CasSessionIdentity", "CasKeyResourceIdentity"]
+          tuner_paths = [
+              Path("tuner_hal2/key_provisioning_bridge/src/lib.rs"),
+              Path("tuner_hal2/service_runtime/src/key_provisioning_ops.rs"),
+              Path("tuner_hal2/service_runtime/src/descrambler_key_table.rs"),
+          ]
+          for path in tuner_paths:
+              text = path.read_text()
+              for token in forbidden:
+                  if token in text:
+                      raise SystemExit(f"forbidden CAS concept {token} remains in {path}")
+          PY
+
+          cargo fmt --manifest-path tuner_hal2/host_ci/Cargo.toml --all
+          cargo fmt --manifest-path cas_hal/host_ci/Cargo.toml --all
+          (cd cas_hal/host_ci && cargo generate-lockfile)
+          git add -A
+          git commit -m "refactor(cas): adapt to generic Tuner key provisioning"
+
+      - name: Validate rebased stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check "$NEW_BASE"..HEAD 2>/dev/null || git diff --check c81f3828ca5ff2a7091bf5df3995169d8ce6ff10..HEAD
+          (cd tuner_hal2/host_ci && cargo check --workspace --all-targets --locked && cargo test --workspace --locked && cargo fmt --all -- --check)
+          (cd cas_hal/host_ci && cargo check --workspace --all-targets --locked && cargo test --workspace --locked && cargo fmt --all -- --check)
+          ! grep -R -n -E 'B25_CA_SYSTEM_ID|B1_CA_SYSTEM_ID|ca_system_id|CasSessionIdentity|CasKeyResourceIdentity' \
+              tuner_hal2/key_provisioning_bridge tuner_hal2/service_runtime/src/key_provisioning_ops.rs tuner_hal2/service_runtime/src/descrambler_key_table.rs
+
+      - name: Publish rewritten PR57 branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          OLD_HEAD=fdc7a51b02695c5313100bf8e8f140b430f3c11a
+          git push --force-with-lease=refs/heads/design/r52-contracts:$OLD_HEAD origin HEAD:refs/heads/design/r52-contracts
