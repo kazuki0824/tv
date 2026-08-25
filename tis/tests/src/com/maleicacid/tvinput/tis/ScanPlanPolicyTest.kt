@@ -2,6 +2,7 @@ package com.maleicacid.tvinput.tis
 
 import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.StreamSelectorType
+import com.maleicacid.tvinput.common.TransportStreamId16
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -51,7 +52,7 @@ class ScanPlanPolicyTest {
     fun cs110ServiceIdentityCandidateStillDoesNotCarryFrontendSelector() {
         val candidate = JapanIsdbScanPlan.isdbs110CsServiceIdentityCandidate(
             frequencyHz = FrequencyHz(1_613_000_000L),
-            tsid = 0x6020,
+            tsid = TransportStreamId16(0x6020),
             label = "CS-test",
             physical = 13,
         )

@@ -125,7 +125,7 @@ EIT event fixed フィールド、start_time BCD、duration BCD、descriptor_loo
 
 TvProvider に自然に入らない descriptor は構造化した内部データとして `internal_provider_data` に保存し、診断 API にも出す。EIT event ごとの診断文字列には、content、component、音声コンポーネント、視聴年齢制限、series、イベントグループ、linkage、未知 descriptor の数と主要値を含める。
 
-provider-data JSON v1 は `provider-data / 診断情報 Rust SSOT` 節の `ProgramProviderDataV1` を唯一の正式 schema とする。少なくとも `series`、`relatedItems`、`linkage`、`freeCaMode`、`audioLanguages`、`ratings`、`genres`、`extendedItems`、`components`、`diagnostics` を最上位フィールドとして保持する。`relatedItems` は `shared` / `relay` / `movement` の種別、ONID、TSID、service_id、event_id を保持する。`series` は series_id、repeat_label、program_pattern、expire_date、episode_number、last_episode_number、series_name を保持する。
+provider-data JSON v1 は `provider-data / 診断情報 Rust SSOT` 節の `ProgramProviderDataV1` を唯一の正式 schema とする。少なくとも `series`、`eventGroups`、`linkage`、`freeCaMode`、`audioLanguages`、`ratings`、`genres`、`extendedItems`、`components`、`diagnostics` を最上位フィールドとして保持する。`eventGroups` は `event_group_descriptor` をdescriptor単位で保持する。各要素はraw `groupType`、共通の`events[] { serviceId, eventId }`、`groupType=0x4/0x5`でだけ存在する`otherNetworkEvents[] { originalNetworkId, transportStreamId, serviceId, eventId }`、それ以外のgroup typeで残余byteを保持する`privateDataHex`、`parseStatus`を持つ。`kind`のように`groupType`から導出できる値はcanonical保存しない。`series` は series_id、repeat_label、program_pattern、expire_date、episode_number、last_episode_number、series_name を保持する。
 
 
 ## 構造化変換対象 descriptor
@@ -144,7 +144,7 @@ EIT event の stable key は `DEFINED` または `UNDEFINED_TIME` の場合だ�
 
 開始時刻変更によって TvProvider row を削除・再作成する場合でも、TIS / arib_si_engine_rs の stable identity は変更しない。`event_id + start_time` は表示・検索・provider row 再作成補助には使ってよいが、event identity の SSOT にしてはならない。
 
-記述子診断は bulk snapshot DTO と `ProgramProviderDataV1.diagnostics.descriptorDiagnostics[]` で渡し、TIS はその内容を `internal_provider_data` の内部データとして保存する。旧 indexed JNI getter である `nativeGetEventDiagnosticDescriptorJson()` は提供しない。TvProvider の標準 title / description / 時刻列には番組名、short text、長形式イベント本文を入れる。さらに `ARIB_SI_EPG_TvProvider投影方針.md` で固定された範囲では、component / 音声コンポーネント / コンテンツジャンル / freeCA 由来の補足を `Programs.COLUMN_LONG_DESCRIPTION` へ整形して出してよい。イベントグループは LONG_DESCRIPTION へ出さず provider-data JSON の `relatedItems` に保存する。series、linkage、unknown descriptor、診断JSON は標準列へ出さず内部データに分離する。
+記述子診断は bulk snapshot DTO と `ProgramProviderDataV1.diagnostics.descriptorDiagnostics[]` で渡し、TIS はその内容を `internal_provider_data` の内部データとして保存する。旧 indexed JNI getter である `nativeGetEventDiagnosticDescriptorJson()` は提供しない。TvProvider の標準 title / description / 時刻列には番組名、short text、長形式イベント本文を入れる。さらに `ARIB_SI_EPG_TvProvider投影方針.md` で固定された範囲では、component / 音声コンポーネント / コンテンツジャンル / freeCA 由来の補足を `Programs.COLUMN_LONG_DESCRIPTION` へ整形して出してよい。イベントグループは LONG_DESCRIPTION へ出さず provider-data JSON の `eventGroups` に保存する。series、linkage、unknown descriptor、診断JSON は標準列へ出さず内部データに分離する。
 
 自前 ARIB 文字列 decoder は字幕以外の SI/EPG 文字列だけを対象にする。未対応 escape、切り詰め escape、切り詰め漢字、置換文字数は診断要約として観測できる。字幕は `libaribcaption` の責務である。
 
@@ -166,7 +166,7 @@ extended_eventのcollector完全性判定と文字decoder stateは別責務と�
 
 ARIB SI/EPG文字デコードの仕様固定に使う入力形態は、実波 TS ファイルを必須形式にせず、descriptor byte array / section builder を主入力とする。対象は SDT サービス名、EIT short_event、extended_event fragment、長形式イベント項目、component、audio_component、series、従来8単位符号のunsupported escape、truncated text、replacement 診断である。APR / SP / MSZ / NSZは正常系回帰試験に含め、APRの改行、SPの空白、MSZ→NSZの文字サイズ状態遷移、およびMSZ適用対象外入力のstrict/lossy境界を確認する。XCSはEDCB方式の回帰試験として、構文的に正しいCSI/XCS sequenceの直後に通常文字列を置き、XCS sequence全体がconsumeされ、XCS自体の置換文字や出力が発生せず、後続文字列が初期のdesignation / invocation stateを保って復号されることを確認する。切り詰めまたは構文不正のCSI/XCSはstrict APIで失敗し、lossy APIではoffset・理由付き診断と置換になることを確認する。extended_eventについては、言語別complete set、通常fieldの初期化、連続するdescriptorで`item_description_length == 0`となる規定継続時のstate継承、継続条件外でstateを持ち越さないことを入力契約と試験対象に含める。別coding systemの入力試験を追加する場合は、対象放送方式のSI運用profileが当該fieldについてそのcoding systemを許可・signalingすることを先に設計契約へ固定し、汎用STD-B24 capabilityだけを根拠に試験対象へ加えない。
 
-Rust descriptor モデルから Kotlin/TvProvider へ渡す通常境界は、`ProgramProviderDataV1` と、TvProvider標準列へ投影するための構造化DTOだけにする。旧来の `eventGroupText`、`freeCaText`、`seriesName` のような表示用flatフィールドは通常投影経路では使わない。イベントグループは provider-data JSON の `relatedItems`、free_CA_mode は `freeCaMode`、series name は `series.name` に保存する。TvProvider の title / description / long description への投影は `ARIB_SI_EPG_TvProvider投影方針.md` を SSOT とし、同文書で固定済みの component/audio/content/freeCA 補足だけを `Programs.COLUMN_LONG_DESCRIPTION` へ出す。イベントグループは LONG_DESCRIPTION や一般 UI 本文へ出さない。
+Rust descriptor モデルから Kotlin/TvProvider へ渡す通常境界は、`ProgramProviderDataV1` と、TvProvider標準列へ投影するための構造化DTOだけにする。旧来の `eventGroupText`、`freeCaText`、`seriesName` のような表示用flatフィールドは通常投影経路では使わない。イベントグループは provider-data JSON の `eventGroups`、free_CA_mode は `freeCaMode`、series name は `series.name` に保存する。TvProvider の title / description / long description への投影は `ARIB_SI_EPG_TvProvider投影方針.md` を SSOT とし、同文書で固定済みの component/audio/content/freeCA 補足だけを `Programs.COLUMN_LONG_DESCRIPTION` へ出す。イベントグループは LONG_DESCRIPTION や一般 UI 本文へ出さない。
 
 設計書は現行仕様中心にし、過去の経緯は CHANGELOG.md に分離する。
 
@@ -245,13 +245,13 @@ pub struct ProgramKeyV1 {
 
 ### JSON 表現規則
 
-JSON は正規表現ではなく、Rust `serde` / Kotlin JSON parser / JSON Schema によって読み書き・検証する。`ProgramProviderDataV1` の canonical JSON では、任意の単一オブジェクトは値が無い場合 `null`、繰り返し要素は空の場合 `[]`、常設containerは空でもオブジェクトとして出力する。具体的には、`series`、`freeCaMode` は未取得時 `null`、`ratings`、`genres`、`relatedItems`、`linkage`、`audioLanguages`、`extendedItems` は未取得時 `[]`、`components` は常にオブジェクトとし、内部の `video`、`audio`、`subtitle`、`data` は空でも `[]` とする。runtimeで選択したmain `audio` / `video`要約をtop-levelへ保存しない。
+JSON は正規表現ではなく、Rust `serde` / Kotlin JSON parser / JSON Schema によって読み書き・検証する。`ProgramProviderDataV1` の canonical JSON では、任意の単一オブジェクトは値が無い場合 `null`、繰り返し要素は空の場合 `[]`、常設containerは空でもオブジェクトとして出力する。具体的には、`series`、`freeCaMode` は未取得時 `null`、`ratings`、`genres`、`eventGroups`、`linkage`、`audioLanguages`、`extendedItems` は未取得時 `[]`、`components` は常にオブジェクトとし、内部の `video`、`audio`、`subtitle`、`data` は空でも `[]` とする。runtimeで選択したmain `audio` / `video`要約をtop-levelへ保存しない。
 
 未知 key を読み込んだ場合は、無言で破棄しない。既存 JSON v1 の未知 key は読み取り時に保持可能とし、新規 canonical 出力では既知 schema フィールドと `diagnostics.rawProviderDataExtensions[]` へ正規化する。`JSONObject` の手書き構築や文字列連結による JSON 生成を禁止する。
 
 `series` は series_id、repeat_label、program_pattern、expire_date_valid、expire_date、episode_number、last_episode_number、series_name、parse_status を保持する。series name は番組表 title を置換する値ではない。
 
-`relatedItems` は `event_group_descriptor` の構造保存先であり、`kind` は `shared` / `relay` / `movement` のいずれかに正規化する。`group_type=0x1` は `shared`、`0x2` / `0x4` は `relay`、`0x3` / `0x5` は `movement` とする。ONID / TSID / service_id / event_id は数値のまま保持する。
+`eventGroups` は `event_group_descriptor` の構造保存先である。`groupType`はraw 4-bit値を保持し、先頭の`event_count` loopは`events[]`として`serviceId` / `eventId`だけを保存する。`groupType=0x4/0x5`の追加loopだけを`otherNetworkEvents[]`としてONID / TSID / serviceId / eventId付きで保存し、この場合`privateDataHex`は空とする。それ以外のgroup typeでは`otherNetworkEvents`を空にして残余byteを`privateDataHex`へ保存する。`shared` / `relay` / `movement`のような派生`kind`は`groupType`からruntimeで必要時に導出し、canonical JSONへ重複保存しない。
 
 `linkage` は `linkage_descriptor` の transport_stream_id、original_network_id、service_id、linkage_type、private_data_prefix、parse_status を保持する。現行仕様では標準列、一般 UI、予約追従へ接続しない。
 
@@ -337,7 +337,7 @@ Channel provider-data の正形式は JSON v1 のみとし、schema は `maleica
 
 ## event_group_descriptor の provider-data 契約
 
-`event_group_descriptor` は現行仕様で構造化変換する。`group_type=0x1` は `shared`、`0x2` / `0x4` は `relay`、`0x3` / `0x5` は `movement` として provider-data JSON の `relatedItems` に保存する。ONID / TSID / service_id / event_id は数値のまま保持する。現行仕様では一般 UI や予約追従へ接続しない。予約追従へ接続する場合は、event identity と authoritative 条件を設計正本へ固定し、安全に確定できる場合だけにする。
+`event_group_descriptor` は現行仕様でdescriptor単位に構造化変換し、provider-data JSON の `eventGroups` に保存する。各descriptorはraw `groupType`、先頭の `event_count` loopを表す `events[] { serviceId, eventId }`、`groupType=0x4/0x5` の追加loopを表す `otherNetworkEvents[] { originalNetworkId, transportStreamId, serviceId, eventId }`、その他のgroup typeの残余byteを表す `privateDataHex`、`parseStatus` を保持する。`groupType=0x4/0x5` では残余を8-byte単位のother-network entryとして完全に解釈できる場合だけ受理し `privateDataHex` は空、それ以外のgroup typeでは `otherNetworkEvents` は空とし残余byteを `privateDataHex` に損失なく保持する。現在transportのONID / TSIDを `events[]` に補完してはならず、存在しないONID / TSIDを0やnullで擬似的な同一item shapeへ押し込まない。`kind`は保存せず必要時に`groupType`から導出する。現行仕様では一般 UI や予約追従へ接続しない。予約追従へ接続する場合は、event identity と authoritative 条件を設計正本へ固定し、安全に確定できる場合だけにする。
 
 ## series_descriptor の provider-data と標準列連携
 
@@ -357,3 +357,18 @@ TSの伝送構文、`table_id`別のsection長上限、CRCとraw配送条件、�
 | 対象 | 主なtable ID | 意味解釈の責務 | Tuner HALの処理 | 配送規則 | 禁止事項 | 理由 |
 |---|---|---|---|---|---|---|
 | すべてのPSI/SI | PAT 0x00、CAT 0x01、PMT 0x02、NIT 0x40/0x41、SDT 0x42/0x46、BAT 0x4A、EIT 0x4E-0x6F、TDT 0x70、TOT 0x73、BIT 0xC4、AMT 0xFE、私用・将来用ID | TISまたはTuner HALより上位の要求元 | 汎用sectionフィルターの照合、外形処理、宣言長・CRC処理、メタデータとバイト列の配送だけ | 条件に一致する完全なsectionは、要求元の有効な経路へすべて配送する。条件に一致しないsectionだけを配送対象外とし、`table_id`を理由に無言で破棄しない | 表ごとの意味解析・正規化・オブジェクト生成、EPG・時刻・アプリケーションDBの更新、特定の`table_id`に対する固定破棄、HAL内の意味別振り分け | AOSP Tuner HALのsection APIは、PSI/SI表ごとの意味APIではなく、汎用のsection転送を公開しているため |
+
+
+### EIT分類・component metadata・CAS signaling fact の責務境界
+
+- EITの分類はARIB/DVB SI上のtable identityだけを表し、`present/following actual`、`present/following other`、`schedule actual`、`schedule other`として保持する。製品release名や製品ごとの収集範囲をSI engineの型へ埋め込まない。
+- ESの`component_tag`、`component_type`、`data_component_id`、language等はdescriptorから観測できた場合だけ値を持つ。descriptor不在は`null`/`None`であり、0、0x0008、`und`等の実在値を欠損表現として捏造しない。
+- CASについては、PMT CA descriptorの解決完了、CA descriptorの存在、SDT/EIT `free_CA_mode`を独立したbroadcast factとして保持する。これらをSI engine内部で単一の製品policy状態へ畳み込まない。
+
+
+### codec capability・欠損値・CA cross-check・section整合性
+
+- `stream_type`やdescriptorから導出できるcodec名は放送事実として保持する。SI engineはHEVC等を製品releaseの再生可否へ変換せず、codec capability判定はTIS/MediaCodec側のpolicyとする。
+- optional descriptor値が存在しない場合は合法的absenceとして`null`を保持し、syntax破損による取得不能とはtyped diagnosticで区別する。
+- `free_CA_mode`はCA descriptorの代用品ではない。PMT解析完了後に`free_CA_mode=1`なのにCA descriptorを観測できない場合はbroadcast fact間の不整合として診断し、`requires_cas`をSI flagだけで上書きしない。
+- 同一table versionで`last_section_number`が変化した場合、または`section_number > last_section_number`の場合、そのversionをcompleteと判定しない。EIT scheduleのsegment gapはEIT固有storeで扱い、この一般section trackerの連番complete判定をEITへ流用しない。
