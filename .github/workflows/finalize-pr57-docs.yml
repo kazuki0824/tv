@@ -1,0 +1,75 @@
+name: Finalize PR57 key provisioning docs
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/finalize-pr57-docs.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.head_ref == 'automation/rebase-pr57-generic-key'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - shell: bash
+        run: |
+          set -euo pipefail
+          git checkout -B pr57 origin/design/r52-contracts
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('cas_hal/DESIGN_JA.md')
+          s = p.read_text()
+          s = s.replace(
+              '現行コードはAIDL CAS service、B25/B1 session、SmartCard/Yakisoba transport、ECM/EMM、CAS/Tuner鍵bridge、close/revokeを実装している。',
+              '現行コードはAIDL CAS service、B25/B1 session、SmartCard/Yakisoba transport、ECM/EMM、CAS固有identityをgeneric Tuner key provisioningへ変換するadapter、close/revokeを実装している。')
+          old = '''### 内部entry\n\nregistry entryはtokenとは別に、少なくとも次の論理状態を一体で保持する。\n\n```text\nCasKeyResource {\n  ca_system_id,\n  session_generation,\n  key_epoch,\n  system_key,\n  cbc_initial_value,\n  even_ks,\n  odd_ks,\n  validity,\n}\n```\n\n`system_key`、`cbc_initial_value`、`even_ks`、`odd_ks` はraw key materialである。secure-memory object、key-ladder slot、opaque in-process handleへ置換してよいが、Tuner HALがresolve後に同じCA system/session generation/key epochの完全なMULTI2 contextを一意に得られなければならない。B1でmaterial構造が異なる場合も公開token契約は変えず、CA-system typed resourceとして解決する。\n'''
+          new = '''### 内部entryとadapter\n\nCAS HAL内部はCA system、MediaCas session generation、key epoch、credential contextをCAS-domain状態として保持してよい。ただしTuner registryへその意味を渡さない。`cas_hal/src/transport.rs` のintegration adapterがCAS内部identityを次のgeneric provisioning identityへ変換する。\n\n```text\nKeyProvisioningIdentity {\n  provider_id,          // opaque; CA system IDではない\n  provider_generation, // stale/ABA fence\n  key_epoch,\n}\n\nMulti2KeyResource {\n  system_key,\n  cbc_initial_value,\n  even_ks,\n  odd_ks,\n}\n```\n\n`provider_id` は本CAS serviceのkey provider instanceを識別するopaque値であり、B25 `0x0005` / B1 `0x0001`その他のCA system IDを符号化・別名化しない。同じCAS serviceから供給されるB25/B1 key resourceをTuner側でCA方式別に分岐させない。`provider_generation`はCAS session lifecycleからadapterが生成するstale/ABA fenceであり、Tunerは大小比較・CA意味解釈をせずidentity一致判定だけに使う。\n\n`system_key`、`cbc_initial_value`、`even_ks`、`odd_ks` はraw key materialである。secure-memory object、key-ladder slot、opaque in-process handleへ置換してよいが、Tuner HALがopaque token resolve後に同じprovider identity/key epochの完全なMULTI2 contextを一意に得られなければならない。\n'''
+          if s.count(old) != 1:
+              raise SystemExit(f'CAS design internal entry block count={s.count(old)}')
+          s = s.replace(old, new, 1)
+          s = s.replace(
+              '- resolveはtoken、CA system、session generation、current epoch、validityを同一snapshotで検証する。',
+              '- resolveはtoken、opaque provider ID、provider generation、current epoch、validityを同一snapshotで検証する。')
+          s = s.replace(
+              'CAS HAL、Tuner HAL、vendor bridgeのregistry ownerは論理的に1個とし、互いに独立したshadow tableを持たない。',
+              'Tuner key registryのownerは論理的に1個とし、CAS HALやintegration adapterが独立したTuner-token shadow tableを持たない。')
+          p.write_text(s)
+
+          p = Path('cas_hal/CHANGELOG.md')
+          s = p.read_text()
+          s = s.replace(
+              '- MediaCas session IDをTuner tokenに使うversioned CAS/Tuner鍵bridgeを追加し、session open時の未解決entry予約、ECM key epoch publish、close/release/fatal failure時revoke、全mutationのCA system/session generation fence、stale epoch・identity検証を実装した。',
+              '- MediaCas session IDをTuner tokenに使い、CAS側adapterからgeneric Tuner key provisioningへ接続した。Tuner境界はopaque provider ID/provider generation/key epochだけを扱い、B25/B1やCA system IDを解釈しない。session open時の未解決entry予約、ECM key epoch publish、close/release/fatal failure時revoke、stale epoch・identity検証を維持した。')
+          s = s.replace('CAS→Tuner socket sepolicy', 'generic key provisioning socket sepolicy')
+          p.write_text(s)
+
+          p = Path('tuner_hal2/CHANGELOG.md')
+          s = p.read_text()
+          s = s.replace('# r52_cas_key_bridge_implementation', '# r52_key_provisioning_implementation', 1)
+          s = s.replace(
+              '- init管理Unix socket上のversioned CAS鍵bridgeを追加し、CAS session IDの1〜16 byte/VOID除外、request ID、bounded frame、typed statusを検証する。',
+              '- init管理Unix socket上のversioned generic key provisioning bridgeを追加し、opaque key tokenの1〜16 byte/VOID除外、request ID、bounded frame、typed statusを検証する。', 1)
+          s = s.replace(
+              '- session open時の未解決entry予約、CA system/session generation identity、単調key epoch、MULTI2 even/odd key contextのatomic publish、generation-fencedかつretry-idempotentなclose/release revokeをTuner runtime registryへ接続した。',
+              '- key providerの未解決entry予約、opaque provider ID/provider generation identity、単調key epoch、MULTI2 even/odd key contextのatomic publish、generation-fencedかつretry-idempotentなrevokeをTuner runtime registryへ接続した。Tuner側はCA system IDやB25/B1を解釈しない。', 1)
+          p.write_text(s)
+
+          p = Path('tis/CHANGELOG.md')
+          s = p.read_text().replace(
+              '後続のCAS/Tuner鍵bridge実装は`../cas_hal/CHANGELOG.md`の`r52-implementation`と`../tuner_hal2/CHANGELOG.md`の`r52_cas_key_bridge_implementation`を正とし',
+              '後続のCAS→generic Tuner key provisioning実装は`../cas_hal/CHANGELOG.md`の`r52-implementation`と`../tuner_hal2/CHANGELOG.md`の`r52_key_provisioning_implementation`を正とし', 1)
+          p.write_text(s)
+          PY
+          git diff --check
+          git config user.name maleicacid
+          git config user.email 4982384+kazuki0824@users.noreply.github.com
+          git add cas_hal/DESIGN_JA.md cas_hal/CHANGELOG.md tuner_hal2/CHANGELOG.md tis/CHANGELOG.md
+          git commit -m 'docs(r52): align CAS integration with generic key provisioning'
+          git push origin HEAD:design/r52-contracts
