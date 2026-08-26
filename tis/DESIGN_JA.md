@@ -38,9 +38,15 @@ partial snapshot はサービス単位の登録可能判定に使ってよい。
 
 `rec/` 配下の実装とテストは録画・予約作業用の準備領域であり、現行 product package、TIS manifest、boot receiver、release確認条件へ混ぜない。現行 product で起動してよい receiver / サービスは TIS のライブ視聴・setup・EPG publish に必要なものだけとする。
 
-## CAS / descrambler の現行境界
+## CAS / descrambler 境界
 
-現行 product では CAS HAL 本体はプレースホルダーのままにする。TIS は Tuner SDK API の filter 経由で PMT/CAT/SDT/ECM/EMM section payload を取得し、PMT/CAT から得た CA_descriptor と SDT 等から得た free_CA_mode / サービス識別子補助情報を arib_si_engine_rs の意味解析結果として受け取る。TIS はcurrent `ServiceSemanticFacts`とcurrent CAS capabilityに基づいて ECM/EMM セクションフィルターと MediaCas/CAS bridgeを型付きAPIで制御し、実keyトークンが得られた場合だけTuner descramblerへ不透明な参照値を渡す。仮実装や診断専用結果は復号成功を意味しないため、`setKeyToken()`へ渡さない。Tuner HALが未接続診断を返した場合も成功扱いにしない。
+TIS は Tuner SDK API の filter 経由で PMT/CAT/SDT/ECM/EMM section payload を取得し、PMT/CAT から得た CA_descriptor と SDT 等から得た free_CA_mode / サービス識別子補助情報を `arib_si_engine_rs` の意味解析結果として受け取る。CA system IDはB25 `0x0005`とB1 `0x0001`を区別し、current `ServiceSemanticFacts`とcurrent MediaCas capabilityからsession/filter構成を決める。CAS HALのpath選択、card I/O、ECM/EMM意味処理、鍵registryは `../cas_hal/DESIGN_JA.md` を正とし、TISへ複製しない。
+
+B25ではPMT/CAT由来のECM/EMM filterを開き、`MediaCas.Session.processEcm()`と`MediaCas.processEmm()`を呼ぶ。B1ではPMT由来のECM filterだけを開き、CAT由来のB1 EMM metadataをfilter起動対象にせず、`MediaCas.processEmm()`を呼ばない。CA system IDをまとめた共通集合だけでEMM可否を決めてはならない。B1 EMM、通電制御情報取得、契約更新、権利更新をTIS側で補完しない。
+
+ECM成功後にTunerへ渡すproduction tokenは、同じ `MediaCas.Session.getSessionId()` が返すbyte sequenceそのものである。`processEcm()`の戻り値からvendor tokenを得る、診断文字列をtoken化する、CA system ID/session generation/key epochをTISで符号化する、raw key materialを受け取る経路は設けない。session IDは1 byte以上16 byte以下で `[0x00]` ではないことを型付き境界で確認し、同じbytesを変更せず `Descrambler.setKeyToken()`へ渡す。ECM失敗、session ID不正、CAS registry未接続、診断専用結果では`setKeyToken()`を呼ばない。
+
+TISはdescramblerを同じTuner/demux generationに結合し、token成功後に当該CA descriptorが対象とするvideo/audio PIDだけを`addPid()`する。service/track更新では不要PIDを`removePid()`し、session close、retune、clear service遷移、CAS failureではdescramblerとMediaCas sessionを世代付きで閉じる。stale ECM/EMM callbackや旧session IDを新generationへ適用しない。Tuner HALが未接続、bad token、registry failure、descramble failureを返した場合も平文成功扱いにしない。
 
 ## Tuner SDK API 呼び出し
 
@@ -200,7 +206,7 @@ TIS のライブplaybackは、Tuner AV filterのclear-memory `MediaEvent.getLine
 
 本productはnon-tunneled MediaCodec + MediaSync経路をarchitectureとして採用し、tunneled / platform passthrough playback capabilityを恒久的に提供しない。`notifyVideoAvailable()`は、本書「MediaSync Framework-private final-output observation」で定義したcurrent availability epochのfinal-output成功eventだけをcommitにする。initial generationおよび同instanceでrecoverable unavailableから復旧するepochごとにlistenerをarm/re-armし、decoder output、`OnFrameRendered`、`getTimestamp()`のclock進行だけでは通知しない。
 
-setup scan の channel registration は global discovery complete を必須条件にしない。ただし partial snapshot を無条件に channel insert に使ってはならない。TvProvider のサービス単位の登録可否は本書の「サービス登録・公開・再生policy境界」を唯一の正本とし、この節で video ES 必須などの追加 gate を重複定義しない。したがって `service_type=0x01` は同節の audio-video / video-only 条件、`service_type=0x02` は対応 audio ES を持つ audio-only 条件に従い、`0x02` の登録に video ES を要求しない。登録可能未満の partial snapshot は診断情報 / ライブ更新 / debugにのみ使い、channel insertしない。scrambled サービスはchannel登録してよいが、CAS仮実装のまま平文ライブ視聴成功対応宣言してはならない。
+setup scan の channel registration は global discovery complete を必須条件にしない。ただし partial snapshot を無条件に channel insert に使ってはならない。TvProvider のサービス単位の登録可否は本書の「サービス登録・公開・再生policy境界」を唯一の正本とし、この節で video ES 必須などの追加 gate を重複定義しない。したがって `service_type=0x01` は同節の audio-video / video-only 条件、`service_type=0x02` は対応 audio ES を持つ audio-only 条件に従い、`0x02` の登録に video ES を要求しない。登録可能未満の partial snapshot は診断情報 / ライブ更新 / debugにのみ使い、channel insertしない。scrambled サービスはchannel登録してよいが、current CAS capabilityとproduction tokenが成立しない状態を平文ライブ視聴成功として宣言してはならない。
 
 ## codec header / A-V sync / publish mode の固定
 
@@ -281,7 +287,7 @@ TIS は `TvInputManager.ACTION_BLOCKED_RATINGS_CHANGED` と `TvInputManager.ACTI
 - Live session は現在番組ratingを `TvProvider current Program -> latest EIT cache -> TvContentRating.UNRATED` の順で解決する。ただし前二者からexceptional ratingを含む適用可能ratingが得られた場合はそれを使い、`UNRATED` はrating情報が得られなかった場合だけのfallbackとする。
 - parental blocked の通知は `notifyContentBlocked(rating)` と AV停止を主とし、parental block の通知手段として `notifyVideoUnavailable()` を呼ばない。
 - `onUnblockContent()` の解除範囲は同一 `channelUri + serviceKey + eventId + ratingString` の現在番組 / レーティングに限定する。start/end は stable identity ではなく、解除対象が現在表示中の同一 Program row であることを確認する補助条件としてのみ使ってよい。start/end/duration を provider-data `programKey`、unblock stable identity、または Program identity の SSOT にしてはならない。
-- CAS 未完成 / scrambled unsupported で再生成功にしない場合は `TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` を使う。具体的な CAS 状態 reason は CAS HAL 本実装まで使わない。
+- CAS plugin/session/ECM/token/descramblerのいずれかが成立せず再生成功にしない場合は `TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` を使う。初回映像、filter、codec、audio等の非CAS failureをこのreasonへ丸めない。
 - `requiresCas`はcurrent `ServiceSemanticFacts`のCA descriptor等から得る放送由来意味事実とし、`unsupportedCas` / `clearLivePlaybackSupported`はcurrent product/CAS capabilityからTISがその都度算出する。既存channel/Program `internal_provider_data`の旧policy値をcurrent policyの代替参照に使わない。
 
 ## TIS / EPG 公開境界
@@ -304,13 +310,15 @@ Direct Boot保留の正式状態を`DirectBootEpgPending`とする。`DirectBoot
 
 登録可能サービスは、`ServiceKey`、物理選局情報へ戻せるchannel provider-data、`Channels.COLUMN_INPUT_ID`として保存する自TISのinputId、表示名が揃い、TvProvider channel insert/update に進めるサービスとする。input ownershipのSSOTはprovider-dataではなく`Channels.COLUMN_INPUT_ID`とする。表示名は `ChannelRecord.displayName` が nonblank ならそれを使い、なければ SDT service_name、さらに無ければ `service-<onid>-<tsid>-<sid>` を使う。この代替表示名は登録可能判定上の有効な表示名と扱う。
 
-## CAS 仮実装境界
+## CAS orchestration failure境界
 
-CAS HAL 仮実装のまま scrambled サービスを平文ライブ視聴再生成功として扱ってはならない。scrambled unsupported サービスでも、PMT/CAT/CA情報と診断を使って EPG / Programs / レーティング / provider-data は更新する。ただし CAS key トークンを提供できない状態では再生成功にせず、CAS起因の unavailable のみ `VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` へ map する。初回映像到達timeout、filter start failure、非対応stream、codec失敗、audio失敗はCAS unknownにmapしない。
+scrambled unsupportedサービスでも、PMT/CAT/CA情報と診断を使って EPG / Programs / レーティング / provider-data は更新する。ただしcurrent capabilityを持つMediaCas plugin、session、ECM成功、valid session ID token、Tuner descrambler接続がすべて成立しない限り再生成功にしない。CAS起因のunavailableだけを `VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` へmapし、初回映像到達timeout、filter start failure、非対応stream、codec失敗、audio失敗をCAS unknownにmapしない。
 
 CAS可否はcurrent `ServiceSemanticFacts`とcurrent CAS implementation/capabilityからTISが算出する。provider-dataに保存するのはCA descriptor/free_CA_mode等の意味事実だけであり、旧`unsupportedCas` / `clearLivePlaybackSupported` / `publishStateSource`をcurrent判定へ再利用しない。
 
 Descrambler API の `setKeyToken()`、`addPid()`、`removePid()` は戻り値が `Tuner.RESULT_SUCCESS` の場合だけ成功とする。非 SUCCESS result は CAS 診断 failure として扱い、成功扱いで握り潰してはならない。
+
+最低確認観点は、B25でECM/EMM、B1でECM-onlyとなること、B1 CAT/EMMをfilter/process対象にしないこと、ECM成功後だけsession ID bytesを同一のままtokenへ使うこと、不正/VOID/診断tokenを拒否すること、retune/closeとECM callbackのraceでstale token/PIDを新generationへ適用しないこと、非SUCCESSのTuner結果でvideo availableを通知しないことを含む。
 
 ## TvProvider failure semantics
 

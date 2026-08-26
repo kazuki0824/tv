@@ -28,7 +28,7 @@ PRODUCT_COPY_FILES += \
 
 `AribContentRatings` は Android TIF 標準の `android.media.tv.action.QUERY_CONTENT_RATING_SYSTEMS` receiver と `android.media.tv.metadata.CONTENT_RATING_SYSTEMS` XMLだけを公開する独立product componentであり、privileged permissionやplatform-private APIを要求しない。`product_specific: true` の `/product/app` として組み込む。
 
-CAS HAL 仮実装は TIS 初回ビルド確認ゲートへ含めない。
+CAS HALのvendor統合は `../cas_hal/INTEGRATION.md` を正とし、TIS packageへCAS binaryやvendor libraryを直接linkしない。clear serviceだけを対象とするTIS単体build gateと、scrambled serviceの製品対応を表明するCAS/Tuner結合gateは分離する。
 
 ## Treble partition / platform API 統合
 
@@ -131,7 +131,7 @@ System TV App本体は本repoの所有物ではないため、同等実装を本
 
 TIS自身はraw ARIB値から独自にAV blockを強制せず、現在コンテンツの `TvContentRating` を `TvInputManager.isRatingBlocked()` に渡した結果だけをpolicy判定として使用する。`notifyContentBlocked()` / `notifyContentAllowed()` とPIN解除のruntime意味論は `DESIGN_JA.md` を正とする。
 
-`MaleicacidTvInputAcceptanceTests` と実機確認では、通常ISDB年齢rating、`0x12` / `0xFF` exceptional rating、rating情報欠落時のUNRATED、PINによるcurrent-content unblock、第三者custom rating非干渉、CAS 仮実装境界、TvProvider投影が product integration 後も成立することを確認する。
+`MaleicacidTvInputAcceptanceTests` と実機確認では、通常ISDB年齢rating、`0x12` / `0xFF` exceptional rating、rating情報欠落時のUNRATED、PINによるcurrent-content unblock、第三者custom rating非干渉、B25 ECM/EMM・B1 ECM-only・session ID tokenのCAS境界、TvProvider投影が product integration 後も成立することを確認する。
 
 ## ビルド・試験確認ゲート
 
@@ -174,7 +174,7 @@ atest \
 
 ```text
 - provider-data JSON v1、descriptor 診断、未対応 codec 試験データは maleicacid_arib_si_engine_rs_test と MaleicacidTvInputAcceptanceTests で確認する。
-- TvProvider 標準列投影、字幕トラック、視聴年齢制限、CAS 仮実装境界、設定、scan、チャンネル登録は MaleicacidTvInputAcceptanceTests の対象とする。
+- TvProvider 標準列投影、字幕トラック、視聴年齢制限、B25/B1 CAS orchestration境界、設定、scan、チャンネル登録は MaleicacidTvInputAcceptanceTests の対象とする。
 - 録画・予約は現行 product の確認対象外とし、MaleicacidRecScopeTests は録画・予約作業で明示指定して使う。
 ```
 

@@ -1,0 +1,11 @@
+[package]
+name = "maleicacid-cas-hal-transport"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "../../src/transport.rs"
+
+[dependencies]
+maleicacid-cas-hal-core = { path = "../core" }
+maleicacid-tuner-hal2-key-provisioning-bridge = { package = "maleicacid-tuner-hal2-key-provisioning-bridge-host-ci", path = "../../../tuner_hal2/host_ci/key_provisioning_bridge" }

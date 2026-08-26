@@ -1,3 +1,10 @@
+# r52-cas-design
+
+- CAS正本をB25 `0x0005`のECM/EMMとB1 `0x0001`のECM-onlyへ更新し、B1 EMM filter/`processEmm()`を禁止した。
+- ECM成功後に `MediaCas.Session.getSessionId()` の同一bytesだけをTuner tokenへ渡し、vendor token合成とraw key受領を禁止した。
+- session/descrambler/PIDのgeneration境界、CAS failure reason、非SUCCESS Tuner結果のfail-closed契約を固定した。
+- この設計記録時点ではproduction CAS実装と各試験は未実施だった。後続のCAS→generic Tuner key provisioning実装は`../cas_hal/CHANGELOG.md`の`r52-implementation`と`../tuner_hal2/CHANGELOG.md`の`r52_key_provisioning_implementation`を正とし、Android/Soong build、instrumentation test、VTS、実機確認は引き続きproduct gateとして残る。
+
 # r50ef_review_followup_3
 
 - Program provider-dataは、TvProviderへpublishする時点でKotlinのtyped requestからRust/Serde canonicalizerを呼ぶ責務境界へ戻した。bulk snapshotの`providerDataCanonicalJson`、`AribEvent` / `ProgramRecord`のshadow field、test-only Kotlin保存schema fixtureは削除した。
@@ -158,7 +165,7 @@
 - malformed CA_descriptor 診断の保存粒度を設計に補足固定した。詳細診断は CAS 検出 snapshot または service / channel provider-data 診断を一次保存先とし、Program provider-data には公開時点 summary として `malformedCaDescriptorCount` だけを保存し、raw descriptor や table/PID/service context を Program ごとに重複展開しない方針にした。
 
 # r50cx
-- r50cw 静的再確認で残っていた設計・実装不一致のうち、CAS HAL stub と libaribcaption.so 供給方式を除く項目を修正した。
+- r50cw 静的再確認で残っていた設計・実装不一致のうち、当該時点で非対応だったCAS HALと libaribcaption.so 供給方式を除く項目を修正した。
 - transaction DTO を `ProgramPublishSnapshot` / `ServiceRegistrationSnapshot` / `CasDiscoverySnapshot` の設計形状へ寄せ、`snapshotGeneration`、`ingestSequence`、publishability map、診断情報を同一 native transaction から扱うようにした。
 - `takeProgramPublishSnapshot()` の boolean 分岐を本番 API から削除し、updateWindows を消費しない視聴中参照は `programStateSnapshot()` に分離した。
 - 廃止 bulk snapshot wrapper と event diagnostics wrapper を公開通常境界から外し、Native parser の bulk JSON 取得は private 実装詳細へ閉じた。
@@ -303,7 +310,7 @@
 - Android/Soong build、Kotlin compile、instrumentationテスト、atest、CTS、実機確認は未実施。
 
 # r50bw
-- WP-08 の CAS 仮実装 境界確認として、診断-only ECM が `setKeyToken()` / `addPid()` に進まないテストを追加した。
+- WP-08 のr51 CAS非対応境界確認として、診断-only ECM が `setKeyToken()` / `addPid()` に進まないテストを追加した。
 - CAS plugin unavailable 時に TIS が fake / 仮トークン を成功扱いしないことをテストで固定した。
 
 ## r50bu
@@ -517,7 +524,7 @@
 ## r50bf
 - r51 の音声対応範囲を ARIB STD-B32 の TS 音声前提に合わせ、AAC は `stream_type=0x0f` の ADTS のみ supported とし、`0x11` は LATM/LOAS 未実装のため supported/viewable/decoder 対象から除外した。
 - setup scan の channel 登録を complete discovery のみに固定し、partial discovery は診断だけに残すようにした。
-- CAT-only EMM メタデータを dynamic filter 対象へ含め、CAS 仮実装 のまま descramble 成功扱いにしない境界を維持した。
+- CAT-only EMM メタデータを dynamic filter 対象へ含め、当該時点のCAS非対応構成を descramble 成功扱いにしない境界を維持した。
 - TvProvider Programs 更新で、同一 channel/サービスの今回 EPG 更新区間 内にある obsolete event row を削除するようにした。
 - `TvTrackInfo` language を `Locale` と最小 alias map で ISO 639-2/T へ正規化し、空文字・無効値では `setLanguage()` を呼ばないようにした。
 - decoder input buffer 超過 sample の prefix queue を禁止し、sample 全体を drop + 診断カウンター に変更した。zero-size video output と AudioTrack partial write の扱いも修正した。
