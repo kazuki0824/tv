@@ -44,6 +44,23 @@ jobs:
       - name: Check Rust formatting
         run: cargo +"$RUST_TOOLCHAIN" fmt --all -- --check
 
+  clippy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: arib_si_engine_rs/host_ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install the LineageOS 22.1 Rust toolchain
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy
+
+      - name: Run Clippy
+        run: cargo +"$RUST_TOOLCHAIN" clippy --all-targets --locked -- -D warnings
+
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 10
