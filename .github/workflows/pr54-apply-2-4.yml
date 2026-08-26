@@ -1,0 +1,152 @@
+name: PR54 apply items 2 and 4
+
+on:
+  push:
+    branches:
+      - agent/implement-tis-arib-si-design-pr53
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply item 2 and item 4 only
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              n = text.count(old)
+              if n != 1:
+                  raise SystemExit(f"{path}: expected one match, got {n}: {old[:100]!r}")
+              p.write_text(text.replace(old, new, 1))
+
+          tis_design = "tis/DESIGN_JA.md"
+          replace_once(
+              tis_design,
+              "PMTからcodec family、audio/video種別、PIDを確定した後、AV filter開始前に変更不能な`TisPlaybackBudgetSnapshot`を作る。snapshotは製品profileで事前検証した有限値として、`singleEventLimitBytes`、`startupQueueBudgetBytes`、`startupQueueMaxSamples`、`startupQueueMaxDurationUs`、`pendingQueueBudgetBytes`、`pendingQueueMaxSamples`、`pendingQueueMaxDurationUs`、`decoderStartupDeadlineMs`、`steadyBackpressureDeadlineMs`を持つ。codec headerをまだ受信していないこと、またはdecoderが未構成であることを理由に値を動的導出しない。全codec共通の8 MiB、4 sample、1000 msへ固定せず、対象codec、対象decoder/device組合せ、最大access unit、header収集量、reorder depth、allocator上限、実機最悪値からofflineで検証する。正の有限値と必要領域を開始前に予約できないprofileはAV filterを開始しない。",
+              "PMTからcodec family、audio/video種別、PIDを確定した後、AV filter開始前に変更不能な`TisPlaybackBudgetSnapshot`を作る。snapshotは当該playback generationでTISが保持してよい`MediaEvent`の有限上限として、`singleEventLimitBytes`、`startupQueueBudgetBytes`、`startupQueueMaxSamples`、`startupQueueMaxDurationUs`、`pendingQueueBudgetBytes`、`pendingQueueMaxSamples`、`pendingQueueMaxDurationUs`、`decoderStartupDeadlineMs`、`steadyBackpressureDeadlineMs`を持つ。codec headerをまだ受信していないこと、またはdecoderが未構成であることを理由に開始済みgenerationの値を動的変更しない。値は対象codecと対象decoder/device組合せについてofflineで検証したbuild-time product profile値とし、単一productでは同じ値を別のruntime profile objectへ重複保持することを要求しない。snapshotはTIS側の保持量制御であり、最大上限相当の物理メモリをAV filter開始前に事前確保する契約ではない。"
+          )
+          replace_once(
+              tis_design,
+              "startup queueと台帳claimを確保した後にAV filterを開始し、上限内の`MediaEvent`からdecoder構成に必要なcodec configuration metadataだけを取得して`MediaFormat`を構成する。r51ではMPEG-2 sequence header、H.264 SPS/PPS、AAC ADTS/AudioSpecificConfig、MPEG audio headerを対象とし、r52でHEVCを再生判定対象にする場合はHEVC VPS/SPS/PPSも同じheader収集契約へ追加する。header解析に必要な最小rangeだけ`LinearBlock.map()`でread-only参照してよいが、通常payloadのqueue境界を作るcodec parserやES/AU copyへ拡張しない。decoder構成成功後は同じsnapshotのsteady-state上限へ遷移し、startup queueの各`MediaEvent` / `LinearBlock`は元rangeのままblock model QueueRequestへ渡してqueue成功時にcodecへ所有権を移す。runtimeで観測したdecoder block capabilityは各eventの投入可否と製品profile検証の診断にだけ用い、開始済み世代のsnapshotまたは予約量を書き換えない。AOSP direct-input契約を満たさないdecoder/profileではfilterを停止し、claimとHAL handleを解放して`DECODER_CAPACITY_MISMATCH`または`DIRECT_INPUT_UNSUPPORTED`を記録し、成功対応として表明しない。",
+              "有限な`TisPlaybackBudgetSnapshot`を確定した後にAV filterを開始し、上限内の`MediaEvent`からdecoder構成に必要なcodec configuration metadataだけを取得して`MediaFormat`を構成する。r51ではMPEG-2 sequence header、H.264 SPS/PPS、AAC ADTS/AudioSpecificConfig、MPEG audio headerを対象とし、r52でHEVCを再生判定対象にする場合はHEVC VPS/SPS/PPSも同じheader収集契約へ追加する。header解析に必要な最小rangeだけ`LinearBlock.map()`でread-only参照してよいが、通常payloadのqueue境界を作るcodec parserやES/AU copyへ拡張しない。decoder構成成功後は同じsnapshotのsteady-state上限へ遷移し、startup queueの各`MediaEvent` / `LinearBlock`は元rangeのままblock model QueueRequestへ渡してqueue成功時にcodecへ所有権を移す。runtimeで観測したdecoder block capabilityは各eventの投入可否と製品profile検証の診断にだけ用い、開始済み世代のsnapshotを書き換えない。AOSP direct-input契約を満たさないdecoder/profileではfilterを停止し、保持中のHAL handleを解放して`DECODER_CAPACITY_MISMATCH`または`DIRECT_INPUT_UNSUPPORTED`を記録し、成功対応として表明しない。"
+          )
+          replace_once(
+              tis_design,
+              "必要なqueue領域とclaim台帳はplayback generation開始時に原子的に予約する。各eventはrange検証後、block model投入前に`dataLength`をsnapshot台帳へclaimし、event / byte / sample / duration上限を超える場合は原因別に`SAMPLE_TOO_LARGE`または`PENDING_QUEUE_FULL`を記録してHAL handleを解放する。TISはAU再構成用の追加buffer claimを持たない。claim済みbyte、sample、durationはQueueRequest成功、破棄、generation変更、stop、releaseの各ownership境界で正確に返す。HALの`avPerFilterLiveBytes`または`avRuntimeBudgetBytes`をTISへ公開・複製・1event上限化しない。",
+              "TISは保持中の`MediaEvent`についてevent数、payload byte数、presentation timestamp spanをsnapshotの有限上限内に制限する。range検証後にsingle-eventまたはqueue上限を超えるeventは原因別に`SAMPLE_TOO_LARGE`または`PENDING_QUEUE_FULL`を記録してHAL handleを直ちに解放する。保持量はbounded queueから算出しても、同じqueueに従属するO(1) counterで管理してもよく、独立した資源台帳や別generationを設けることを要求しない。generation変更、stop、releaseでは保持中eventを解放して保持量を0へ戻す。TISはAU再構成用の追加bufferを持たず、HALの`avPerFilterLiveBytes`または`avRuntimeBudgetBytes`等のAV backing/resource ledgerを公開・複製しない。"
+          )
+          anchor = "TISはcurrent `ServiceSemanticFacts`から`requiresCas`を意味事実として受け取り、現在releaseの対応service type/codec、実decoder availability、CAS実装状態、TvProvider transaction条件と組み合わせて、serviceごとに `channelRegistrationReady`、`epgPublishable`、`clearLivePlaybackSupported`、`unsupportedCas` を算出する。このpolicy結果はTIS runtimeの一貫した判断材料であり、SI parserへ逆流させず、保存済みprovider-dataをcurrent policyのfallback sourceにしない。"
+          replace_once(
+              tis_design,
+              anchor,
+              anchor + "\n\nSMDの通常受信対象判定では、`arib_si_engine_rs`が返す`broadcasting_flag` / `broadcasting_identifier`の放送由来事実と、TISが現在処理している`ScanCandidate.kind`を組み合わせる。`ISDB_T_UHF` / `ISDB_T_CATV`は地上デジタルテレビ`0b000011`、`ISDB_S_BS`はBSデジタル`0b000010`、`ISDB_S_110CS`は広帯域CSデジタル`0b000100`を期待値とする。`broadcasting_flag=0b00`の正常SMDでもcandidateと`broadcasting_identifier`が一致しないserviceは、そのcandidateでは`channelRegistrationReady` / `epgPublishable` / `clearLivePlaybackSupported`にしない。ONIDから放送方式またはSMD期待値を推定せず、ONIDはnetwork/service identityとしてのみ用いる。"
+          )
+
+          arib_design = "arib_si_engine_rs/DESIGN_JA.md"
+          replace_once(
+              arib_design,
+              "正常なSMDについては、`broadcasting_flag=0b00`かつ選局候補のdelivery systemと`broadcasting_identifier`が一致する場合を`SUPPORTED_BROADCAST`、`01`または`10`を`NON_BROADCAST`、`11`を`UNDEFINED_BROADCAST_CLASS`、`00`でidentifier不一致を`UNSUPPORTED_BROADCAST_SYSTEM`としてARIB意味状態に正規化する。対応する`broadcasting_identifier`はBSデジタル=`0b000010`、地上デジタルテレビ=`0b000011`、広帯域CSデジタル=`0b000100`とし、CS110は広帯域CSデジタルとして判定する。SMD欠落または構文不正は再取得可能な意味状態`UNDETERMINED_SMD`として診断し、永久的な`UNSUPPORTED`には確定しない。",
+              "正常なSMDについては、`broadcasting_flag=0b00`かつ現行productが認識する`broadcasting_identifier`である場合を`SUPPORTED_BROADCAST`、`01`または`10`を`NON_BROADCAST`、`11`を`UNDEFINED_BROADCAST_CLASS`、`00`で未知のidentifierを`UNSUPPORTED_BROADCAST_SYSTEM`としてARIB意味状態に正規化する。現行productが認識する`broadcasting_identifier`はBSデジタル=`0b000010`、地上デジタルテレビ=`0b000011`、広帯域CSデジタル=`0b000100`とする。本crateはONIDから放送方式または期待identifierを推定せず、現在の選局候補との一致判定も所有しない。選局候補との適合はTISがraw `broadcasting_identifier`と`ScanCandidate.kind`から判定する。SMD欠落または構文不正は再取得可能な意味状態`UNDETERMINED_SMD`として診断し、永久的な`UNSUPPORTED`には確定しない。"
+          )
+          replace_once(
+              arib_design,
+              "本crateは上記SMD意味状態と、その根拠となるraw値・構文診断だけを`ServiceSemanticFacts`へ出力する。SMD意味状態をAndroid channel登録、EPG公開、ライブ再生可否のbooleanへ変換しない。`UNDETERMINED_SMD`は再取得によって正常なSMDを得た時点で意味状態を再評価し、SMD適合を肯定する根拠には使わない。SMD意味状態を他のPMT/PCR/service type/codec/CAS事実と組み合わせて製品policyを決める責務はTISが所有する。",
+              "本crateは上記SMD意味状態と、その根拠となるraw値・構文診断だけを`ServiceSemanticFacts`へ出力する。SMD意味状態をAndroid channel登録、EPG公開、ライブ再生可否のbooleanへ変換せず、選局候補のdelivery systemも意味状態へ混入させない。`UNDETERMINED_SMD`は再取得によって正常なSMDを得た時点で意味状態を再評価し、SMD適合を肯定する根拠には使わない。raw `broadcasting_identifier`と現在の選局候補との適合を含め、SMD事実を他のPMT/PCR/service type/codec/CAS事実と組み合わせて製品policyを決める責務はTISが所有する。"
+          )
+
+          sd = "arib_si_engine_rs/src/service_discovery.rs"
+          replace_once(sd, "parse_system_management_descriptor(network_descriptors, onid);", "parse_system_management_descriptor(network_descriptors);")
+          replace_once(sd, "fn parse_system_management_descriptor(\n    descriptors: &[u8],\n    original_network_id: u16,\n) -> SystemManagementFacts {", "fn parse_system_management_descriptor(descriptors: &[u8]) -> SystemManagementFacts {")
+          replace_once(
+              sd,
+              "            let expected_identifier = match original_network_id {\n                4 => 0b000010,\n                6 | 7 => 0b000100,\n                _ => 0b000011,\n            };\n            let semantic_state = match broadcasting_flag {\n                0 if broadcasting_identifier == expected_identifier => {\n                    SmdSemanticState::SupportedBroadcast\n                }\n                0 => SmdSemanticState::UnsupportedBroadcastSystem,\n                1 | 2 => SmdSemanticState::NonBroadcast,\n                _ => SmdSemanticState::UndefinedBroadcastClass,\n            };",
+              "            let semantic_state = match broadcasting_flag {\n                0 if matches!(broadcasting_identifier, 0b000010 | 0b000011 | 0b000100) => {\n                    SmdSemanticState::SupportedBroadcast\n                }\n                0 => SmdSemanticState::UnsupportedBroadcastSystem,\n                1 | 2 => SmdSemanticState::NonBroadcast,\n                _ => SmdSemanticState::UndefinedBroadcastClass,\n            };"
+          )
+
+          sl = "tis/src/com/maleicacid/tvinput/aribsi/ServiceListBuilder.kt"
+          replace_once(
+              sl,
+              "        fun completenessForModel(\n            service: AribService,\n            facts: ServiceSemanticFacts?,\n        ): ServiceCompleteness {\n            val diagnostic = ServicePolicyEvaluator.evaluate(facts, service.serviceKey)",
+              "        fun completenessForModel(\n            service: AribService,\n            facts: ServiceSemanticFacts?,\n            expectedSmdBroadcastingIdentifier: Int? = null,\n        ): ServiceCompleteness {\n            val diagnostic = ServicePolicyEvaluator.evaluate(\n                facts = facts,\n                fallbackKey = service.serviceKey,\n                expectedSmdBroadcastingIdentifier = expectedSmdBroadcastingIdentifier,\n            )"
+          )
+          replace_once(
+              sl,
+              "        hasPhysicalTune: Boolean = true,\n        hasInternalTuneKey: Boolean = true,\n    ): ServicePublishabilityDiagnostic {",
+              "        hasPhysicalTune: Boolean = true,\n        hasInternalTuneKey: Boolean = true,\n        expectedSmdBroadcastingIdentifier: Int? = null,\n    ): ServicePublishabilityDiagnostic {"
+          )
+          replace_once(
+              sl,
+              "        if (facts.smd.semanticState != SUPPORTED_SMD) {\n            registrationReasons += facts.smd.semanticState\n        }\n        if (!hasPhysicalTune)",
+              "        if (facts.smd.semanticState != SUPPORTED_SMD) {\n            registrationReasons += facts.smd.semanticState\n        } else if (expectedSmdBroadcastingIdentifier != null &&\n            facts.smd.broadcastingIdentifier != expectedSmdBroadcastingIdentifier) {\n            registrationReasons += \"UNSUPPORTED_BROADCAST_SYSTEM\"\n        }\n        if (!hasPhysicalTune)"
+          )
+
+          scan = "tis/src/com/maleicacid/tvinput/tis/ChannelScanController.kt"
+          replace_once(
+              scan,
+              "                hasInternalTuneKey = candidate.streamSelector.value != null || candidate.streamSelector == com.maleicacid.tvinput.common.StreamSelector.NONE,\n            )",
+              "                hasInternalTuneKey = candidate.streamSelector.value != null || candidate.streamSelector == com.maleicacid.tvinput.common.StreamSelector.NONE,\n                expectedSmdBroadcastingIdentifier = expectedSmdBroadcastingIdentifier(candidate),\n            )"
+          )
+          replace_once(
+              scan,
+              "    private fun serviceCounts(): ServiceCounts {\n        val transaction = engine.serviceRegistrationSnapshot()\n        val completeness = transaction.services.map { service ->\n            ServiceListBuilder.completenessForModel(service, transaction.semanticFactsByServiceKey[service.serviceKey])\n        }",
+              "    private fun expectedSmdBroadcastingIdentifier(candidate: ScanCandidate): Int = when (candidate.kind) {\n        ScanCandidateKind.ISDB_T_UHF, ScanCandidateKind.ISDB_T_CATV -> 0b000011\n        ScanCandidateKind.ISDB_S_BS -> 0b000010\n        ScanCandidateKind.ISDB_S_110CS -> 0b000100\n    }\n\n    private fun serviceCounts(candidate: ScanCandidate): ServiceCounts {\n        val transaction = engine.serviceRegistrationSnapshot()\n        val expectedSmdIdentifier = expectedSmdBroadcastingIdentifier(candidate)\n        val completeness = transaction.services.map { service ->\n            ServiceListBuilder.completenessForModel(\n                service = service,\n                facts = transaction.semanticFactsByServiceKey[service.serviceKey],\n                expectedSmdBroadcastingIdentifier = expectedSmdIdentifier,\n            )\n        }"
+          )
+          p = Path(scan)
+          text = p.read_text()
+          n = text.count("serviceCounts()")
+          if n != 2:
+              raise SystemExit(f"{scan}: expected two remaining serviceCounts() calls, got {n}")
+          p.write_text(text.replace("serviceCounts()", "serviceCounts(candidate)"))
+
+          # Non-fail-fast scoped static checks.
+          failures = []
+          forbidden = {
+              tis_design: [
+                  "必要なqueue領域とclaim台帳はplayback generation開始時に原子的に予約する",
+                  "startup queueと台帳claimを確保した後にAV filterを開始",
+              ],
+              sd: [
+                  "expected_identifier = match original_network_id",
+                  "parse_system_management_descriptor(network_descriptors, onid)",
+              ],
+          }
+          required = {
+              tis_design: ["最大上限相当の物理メモリをAV filter開始前に事前確保する契約ではない", "SMDの通常受信対象判定では"],
+              arib_design: ["本crateはONIDから放送方式または期待identifierを推定せず", "選局候補との適合はTIS"],
+              sd: ["matches!(broadcasting_identifier, 0b000010 | 0b000011 | 0b000100)"],
+              sl: ["expectedSmdBroadcastingIdentifier", "UNSUPPORTED_BROADCAST_SYSTEM"],
+              scan: ["private fun expectedSmdBroadcastingIdentifier", "private fun serviceCounts(candidate: ScanCandidate)"],
+          }
+          for path, needles in forbidden.items():
+              text = Path(path).read_text()
+              for needle in needles:
+                  if needle in text:
+                      failures.append(f"{path}: forbidden remains: {needle}")
+          for path, needles in required.items():
+              text = Path(path).read_text()
+              for needle in needles:
+                  if needle not in text:
+                      failures.append(f"{path}: required missing: {needle}")
+          if failures:
+              raise SystemExit("\n".join(failures))
+          PY
+      - name: Commit source changes and remove temporary runner
+        shell: bash
+        run: |
+          rm -f .github/workflows/pr54-apply-2-4.yml .pr54-apply-trigger
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tis/DESIGN_JA.md arib_si_engine_rs/DESIGN_JA.md arib_si_engine_rs/src/service_discovery.rs tis/src/com/maleicacid/tvinput/aribsi/ServiceListBuilder.kt tis/src/com/maleicacid/tvinput/tis/ChannelScanController.kt .github/workflows/pr54-apply-2-4.yml .pr54-apply-trigger
+          git commit -m "fix: align TIS budgets and SMD reception policy"
+          git push origin HEAD:agent/implement-tis-arib-si-design-pr53
