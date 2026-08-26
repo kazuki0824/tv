@@ -55,53 +55,6 @@ diff --git a/tv/tuner/aidl/android/hardware/tv/tuner/ILnb.aidl b/tv/tuner/aidl/a
  
      /**
       * Set the lnb's power voltage.
-diff --git a/tv/tuner/aidl/aidl_api/android.hardware.tv.tuner/current/android/hardware/tv/tuner/IFilter.aidl b/tv/tuner/aidl/aidl_api/android.hardware.tv.tuner/current/android/hardware/tv/tuner/IFilter.aidl
---- a/tv/tuner/aidl/aidl_api/android.hardware.tv.tuner/current/android/hardware/tv/tuner/IFilter.aidl
-+++ b/tv/tuner/aidl/aidl_api/android.hardware.tv.tuner/current/android/hardware/tv/tuner/IFilter.aidl
-@@ -45,6 +45,6 @@ interface IFilter {
-   int getId();
-   long getId64Bit();
-   void releaseAvHandle(in android.hardware.common.NativeHandle avMemory, in long avDataId);
--  void setDataSource(in android.hardware.tv.tuner.IFilter filter);
-+  void setDataSource(in @nullable android.hardware.tv.tuner.IFilter filter);
-   void setDelayHint(in android.hardware.tv.tuner.FilterDelayHint hint);
- }
-diff --git a/tv/tuner/aidl/aidl_api/android.hardware.tv.tuner/current/android/hardware/tv/tuner/IDescrambler.aidl b/tv/tuner/aidl/aidl_api/android.hardware.tv.tuner/current/android/hardware/tv/tuner/IDescrambler.aidl
---- a/tv/tuner/aidl/aidl_api/android.hardware.tv.tuner/current/android/hardware/tv/tuner/IDescrambler.aidl
-+++ b/tv/tuner/aidl/aidl_api/android.hardware.tv.tuner/current/android/hardware/tv/tuner/IDescrambler.aidl
-@@ -33,7 +33,7 @@ interface IDescrambler {
-   void setDemuxSource(in int demuxId);
-   void setKeyToken(in byte[] keyToken);
--  void addPid(in android.hardware.tv.tuner.DemuxPid pid, in android.hardware.tv.tuner.IFilter optionalSourceFilter);
--  void removePid(in android.hardware.tv.tuner.DemuxPid pid, in android.hardware.tv.tuner.IFilter optionalSourceFilter);
-+  void addPid(in android.hardware.tv.tuner.DemuxPid pid, in @nullable android.hardware.tv.tuner.IFilter optionalSourceFilter);
-+  void removePid(in android.hardware.tv.tuner.DemuxPid pid, in @nullable android.hardware.tv.tuner.IFilter optionalSourceFilter);
-   void close();
- }
-diff --git a/tv/tuner/aidl/aidl_api/android.hardware.tv.tuner/current/android/hardware/tv/tuner/IFrontend.aidl b/tv/tuner/aidl/aidl_api/android.hardware.tv.tuner/current/android/hardware/tv/tuner/IFrontend.aidl
---- a/tv/tuner/aidl/aidl_api/android.hardware.tv.tuner/current/android/hardware/tv/tuner/IFrontend.aidl
-+++ b/tv/tuner/aidl/aidl_api/android.hardware.tv.tuner/current/android/hardware/tv/tuner/IFrontend.aidl
-@@ -32,7 +32,7 @@ package android.hardware.tv.tuner;
- /* @hide */
- @VintfStability
- interface IFrontend {
--  void setCallback(in android.hardware.tv.tuner.IFrontendCallback callback);
-+  void setCallback(in @nullable android.hardware.tv.tuner.IFrontendCallback callback);
-   void tune(in android.hardware.tv.tuner.FrontendSettings settings);
-   void stopTune();
-   void close();
-diff --git a/tv/tuner/aidl/aidl_api/android.hardware.tv.tuner/current/android/hardware/tv/tuner/ILnb.aidl b/tv/tuner/aidl/aidl_api/android.hardware.tv.tuner/current/android/hardware/tv/tuner/ILnb.aidl
---- a/tv/tuner/aidl/aidl_api/android.hardware.tv.tuner/current/android/hardware/tv/tuner/ILnb.aidl
-+++ b/tv/tuner/aidl/aidl_api/android.hardware.tv.tuner/current/android/hardware/tv/tuner/ILnb.aidl
-@@ -32,7 +32,7 @@ package android.hardware.tv.tuner;
- /* @hide */
- @VintfStability
- interface ILnb {
--  void setCallback(in android.hardware.tv.tuner.ILnbCallback callback);
-+  void setCallback(in @nullable android.hardware.tv.tuner.ILnbCallback callback);
-   void setVoltage(in android.hardware.tv.tuner.LnbVoltage voltage);
-   void setTone(in android.hardware.tv.tuner.LnbTone tone);
-   void setSatellitePosition(in android.hardware.tv.tuner.LnbPosition position);
 diff --git a/compatibility_matrices/compatibility_matrix.202404.xml b/compatibility_matrices/compatibility_matrix.202404.xml
 --- a/compatibility_matrices/compatibility_matrix.202404.xml
 +++ b/compatibility_matrices/compatibility_matrix.202404.xml
