@@ -35,11 +35,16 @@ class CasController(
     private data class EmmBinding(val caSystemId: Int, val emmPid: TsPid, val privateData: ByteArray)
     private data class CasSessionState(val caSystemId: Int, val cas: MediaCasBridge, val session: MediaCasSessionBridge, val ecmPids: MutableSet<TsPid> = linkedSetOf(), val elementaryPids: MutableSet<TsPid> = linkedSetOf())
 
+    @Volatile private var executorThread: Thread? = null
     private val executor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "maleicacid-cas-controller").apply { isDaemon = true }
+        Thread(runnable, "maleicacid-cas-controller").also { thread ->
+            thread.isDaemon = true
+            executorThread = thread
+        }
     }
     private fun <T> onExecutor(block: () -> T): T {
-        if (Thread.currentThread().name == "maleicacid-cas-controller") return block()
+        if (Thread.currentThread() === executorThread) return block()
+        check(!executor.isShutdown) { "CasController executor は停止済みです" }
         return executor.submit<T> { block() }.get()
     }
 
@@ -49,7 +54,7 @@ class CasController(
     private val elementaryPidToSystems = LinkedHashMap<TsPid, MutableSet<Int>>()
     private var descrambler: TunerDescramblerBridge? = null
     private var closed = false
-    private var lastDiagnostic = Diagnostic(State.IDLE)
+    @Volatile private var lastDiagnostic = Diagnostic(State.IDLE)
 
     fun attachDescrambler(bridge: TunerDescramblerBridge?): Unit = onExecutor {
         if (closed) {
@@ -197,7 +202,7 @@ class CasController(
         diagnostics
     }
 
-    fun lastDiagnostic(): Diagnostic = onExecutor { lastDiagnostic }
+    fun lastDiagnostic(): Diagnostic = lastDiagnostic
 
     private fun ensureSessionLocked(caSystemId: Int): Result<CasSessionState> {
         sessionsBySystemId[caSystemId]?.let { return Result.success(it) }
@@ -239,13 +244,20 @@ class CasController(
         rebuildPidIndexesLocked()
     }
 
-    override fun close(): Unit = onExecutor {
-        if (closed) return@onExecutor
-        closed = true
-        sessionsBySystemId.keys.toList().forEach { closeSystemLocked(it) }
-        ecmPidToSystems.clear(); emmPidToSystems.clear(); elementaryPidToSystems.clear()
-        descrambler?.close(); descrambler = null
-        lastDiagnostic = Diagnostic(State.CLOSED)
+    override fun close() {
+        if (executor.isShutdown) return
+        try {
+            onExecutor {
+                if (closed) return@onExecutor
+                closed = true
+                sessionsBySystemId.keys.toList().forEach { closeSystemLocked(it) }
+                ecmPidToSystems.clear(); emmPidToSystems.clear(); elementaryPidToSystems.clear()
+                descrambler?.close(); descrambler = null
+                lastDiagnostic = Diagnostic(State.CLOSED)
+            }
+        } finally {
+            executor.shutdown()
+        }
     }
 
     fun release() = close()
