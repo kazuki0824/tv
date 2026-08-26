@@ -292,3 +292,12 @@ TIS は次の表に一致する分類だけを `Programs.COLUMN_CANONICAL_GENRE`
 | 音声 ISO639 language | TvProvider audio language メタデータ、provider-data JSON | PMT / descriptor から取得可能な言語だけ設定し、取得不能時に推測しない。 |
 | 視聴年齢制限 | `COLUMN_CONTENT_RATING`、provider-data JSON、診断情報 | 既存レーティングドメイン と整合する値だけ設定し、reserved / malformed / domain不明は 診断情報に留める。 |
 | event_group_descriptor | provider-data JSON `relatedItems` | 現行仕様では保存・診断のみ。予約追従へ接続する場合は安全条件を設計正本へ固定する。 |
+### MMT/TLV transport identity の TvProvider 投影境界
+
+`JapanAdvancedMmtTlvProfile` で高度衛星サービスを登録する場合、正規化済みdelivery system `ISDB-S3` は `TvContract.Channels.TYPE_ISDB_S3` へ投影する。周波数帯がBS帯であることだけから既存 `TYPE_ISDB_S`へ丸めない。
+
+Android 14に専用frontend/public channel type対応を確定できないISDB-T2 / ISDB-T1.5 / ISDB-T3は、本releaseで `TYPE_ISDB_T` または `TYPE_OTHER`へ推測投影してchannel登録しない。MMT/TLV demuxが動作することと物理delivery systemをAndroid標準列へ正しく表現できることを別条件として扱う。
+
+MMT/TLVのchannel/program内部identityは `arib_si_engine_rs/DESIGN_JA.md` のprovider-data v2を正とする。TLV系のservice stable keyは `(original_network_id, tlv_stream_id, service_id)` をtransport-taggedに保持し、v1の `transportStreamId` フィールドへTLV stream IDを代入しない。MH-EIT program stable keyも同じservice identityに `event_id` を加え、TSの `(ONID, TSID, SID, eventId)` とuntyped比較しない。
+
+標準列の番組名、説明、ジャンル、レーティング、音声言語等は、MMT-SIで同じ意味事実が正常に得られた場合、既存の投影規則を再利用する。MPT asset type/location、MMTP packet ID、IP multicast address、MPU sequence number、TLV stream IDを表示目的の標準列へ捏造投影せず、必要な完全構造はprovider-data v2へ保存する。MPU sequence numberはtransport delivery診断であり番組identityに使用しない。

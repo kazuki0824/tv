@@ -429,3 +429,26 @@ I/O待機中にruntime lockを保持してはならない。socket serverはfram
 - publish済みentryをTTLで回収しない。
 - revoke済み・`refcount == 0` entryがpersistent tombstoneを残さない。
 - raw/prepared keyをDebugへ露出しない。
+## MMTP/TLV 実装責務マッピング
+
+`tuner_hal/DESIGN_JA.md` の `日本高度放送 MMTP/TLV 公開契約` を実装へ接続する。本節は公開capability値や戻り値を再定義しない。`JapanAdvancedMmtTlvProfile` が無効なbuildでも、将来実装をTS parserへ混在させずowner境界を固定する。
+
+| 論理責務 | canonical owner / target anchor | 所有する状態 | 禁止事項 |
+|---|---|---|---|
+| transport ingress判別 | `demux` ingress adapter | source generationと `TS / TLV` のtyped ingress | byte内容からTS/TLVを自動推測しない |
+| TLV packet framing | `demux/src/parser/tlv.rs` の `TlvPacketFramer` | 未完成TLV packet、length/bounds診断 | `ts_core`へTLVを流さない |
+| TLV payload routing | 同 `TlvPayloadRouter` | packetType別のpayload出力 | TLV-SI意味解析を行わない |
+| compressed IP | `demux/src/parser/ip.rs` の `CompressedIpContextRegistry` | generation付きcompression context、sequence、memory bound | contextをprocess-globalに共有しない |
+| IP datagram validation/reassembly | 同 `IpDatagramAssembler` | fragment集合、timeout、byte budget | MMTP service意味を解釈しない |
+| MMTP packet framing | `demux/src/parser/mmtp.rs` の `MmtpPacketFramer` | packet_id別sequence診断、packet header境界 | PA/MPT/MH-*のARIB意味を解釈しない |
+| MMTP payload/MPU assembly | 同 `MmtpPayloadAssembler` | MPU/MFU fragment、MPU sequence、sample range | TIS policyやTvProvider値を生成しない |
+| MMT clock | `demux/src/runtime/mmt_clock_anchor.rs` の `MmtClockAnchorStore` | source generation別NTP anchorとmedia time変換状態 | PCR ownerへMMT時刻を偽装投入しない |
+| main-type filter relation | 既存 `SourceBoundaryTxn` | TLV->IP / IP->MMTP relation | MMTP/TLV専用relation registryを追加しない |
+| stream切替 | 既存 `StreamBoundaryTxn` | generation change時のassembler/clock/relation invalidation | parserがgenerationを独自commitしない |
+| FMQ/MediaEvent配送 | 既存queue / callback owner | 完成済みtyped payloadのdelivery | parserがcallback/FMQ lifecycleを直接変更しない |
+
+上表のtarget anchorが未実装の間は `JapanAdvancedMmtTlvProfile` をcapabilityへcommitしてはならない。実装PRではこの表のownerを作成し、同じ機能を `packet_pipeline.rs`、AIDL façade、TISへ重複実装しない。
+
+既存 `PacketPipeline` はMPEG-2 TS packet processingのcanonical ownerとして維持する。新しい共通入口が必要な場合は `TransportUnit::{TsPacket,TlvPacket,IpDatagram,IpPayload,MmtpPacket,MmtSignaling,MmtMediaSample}` のようなtyped transport unitで振り分け、`Vec<u8>`だけを渡して下流で再判定する設計にしない。TS continuity、PES/section assembler、PCRはTS branchだけ、TLV/MMTP sequence/fragment/NTPは各専用ownerだけが変更する。
+
+`SourceBoundaryTxn`へ追加するmain-type pairは `TS->TS / TLV->IP / IP->MMTP` のみで、公開 `linkCaps` と一対一に対応させる。VTS subtype `UNDEFINED` endpointも同じrelation ownerを通し、試験専用bypassを作らない。relation commit後にdownstream workerを先に起動し、stopではupstream ingressを先に止める順序も既存worker/lifecycle ownerから実行する。
