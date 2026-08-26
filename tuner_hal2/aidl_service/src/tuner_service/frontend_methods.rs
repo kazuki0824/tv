@@ -53,8 +53,11 @@ fn frontend_readiness_from_query_value(
 }
 
 impl IFrontend for FrontendAidlObject {
-    fn setCallback(&self, callback: &Strong<dyn IFrontendCallback>) -> BinderResult<()> {
-        self.set_callback_nullable_for_aidl(Some(callback))
+    fn setCallback(
+        &self,
+        callback: Option<&Strong<dyn IFrontendCallback>>,
+    ) -> BinderResult<()> {
+        self.set_callback_nullable_for_aidl(callback)
     }
     fn tune(&self, settings: &FrontendSettings) -> BinderResult<()> {
         execute_shared_object_runtime_use_case_with_request_builder(
