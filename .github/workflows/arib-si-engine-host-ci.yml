@@ -4,7 +4,8 @@ on:
   pull_request:
     paths:
       - "arib_si_engine_rs/**"
-      - "tis/**"
+      - "tis/tests/assets/descriptor_diagnostic_v1/**"
+      - "tis/tests/assets/program_provider_data_v1/**"
       - ".github/workflows/arib-si-engine-host-ci.yml"
   push:
     branches: [main]
@@ -15,7 +16,7 @@ on:
       - ".github/workflows/arib-si-engine-host-ci.yml"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: arib-si-engine-host-${{ github.event.pull_request.number || github.ref }}
@@ -26,76 +27,6 @@ env:
   RUST_TOOLCHAIN: 1.81.0
 
 jobs:
-  apply-pr54-scoped-fix:
-    if: github.event_name == 'pull_request' && github.event.action == 'reopened' && github.event.pull_request.head.ref == 'agent/implement-tis-arib-si-design-pr53'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          fetch-depth: 0
-
-      - name: Apply scoped transformation
-        shell: bash
-        run: |
-          python3 <<'DRIVER'
-          from pathlib import Path
-          workflow = Path('.github/workflows/pr54-fix-tis-smd-once.yml').read_text().splitlines()
-          start = next(i for i, line in enumerate(workflow) if "python3 <<'PY'" in line) + 1
-          end = next(i for i in range(start, len(workflow)) if workflow[i].strip() == 'PY')
-          block = workflow[start:end]
-          indent = min(len(line) - len(line.lstrip()) for line in block if line.strip())
-          code = '\n'.join(line[indent:] for line in block) + '\n'
-          exec(compile(code, 'pr54-scoped-transform.py', 'exec'), {'__name__': '__main__'})
-          DRIVER
-
-      - name: Verify Rust source
-        shell: bash
-        run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
-          cargo +"$RUST_TOOLCHAIN" fmt --manifest-path arib_si_engine_rs/host_ci/Cargo.toml --all -- --check
-          cargo +"$RUST_TOOLCHAIN" test --manifest-path arib_si_engine_rs/host_ci/Cargo.toml --locked
-
-      - name: Use JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Compile TIS production Kotlin
-        shell: bash
-        env:
-          KOTLIN_VERSION: 1.9.22
-        run: |
-          tools_dir="$RUNNER_TEMP/tis-kotlin-compile"
-          mkdir -p "$tools_dir"
-          curl --fail --location --retry 3 --retry-all-errors \
-            "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip" \
-            --output "$tools_dir/kotlin-compiler.zip"
-          curl --fail --location --retry 3 --retry-all-errors \
-            "https://repo.maven.apache.org/maven2/org/robolectric/android-all/14-robolectric-10818077/android-all-14-robolectric-10818077.jar" \
-            --output "$tools_dir/android-all.jar"
-          echo "88b39213506532c816ff56348c07bbeefe0c8d18943bffbad11063cf97cac3e6  $tools_dir/kotlin-compiler.zip" | sha256sum --check
-          echo "6be2218c6a53fe3c57bc22ebdc723edcb7270a8a6f187545708aa5c0ed813977  $tools_dir/android-all.jar" | sha256sum --check
-          unzip -q "$tools_dir/kotlin-compiler.zip" -d "$tools_dir/compiler"
-          output_dir="$RUNNER_TEMP/tis-kotlin-production"
-          mkdir -p "$output_dir"
-          mapfile -d '' -t sources < <(find tis/src tis/host_ci/kotlin/stubs/android -type f -name '*.kt' -print0 | sort -z)
-          "$tools_dir/compiler/kotlinc/bin/kotlinc" -J-Xmx4g -jvm-target 17 \
-            -classpath "$tools_dir/android-all.jar" -d "$output_dir" "${sources[@]}"
-
-      - name: Restore CI files, remove temporary files and commit
-        shell: bash
-        run: |
-          git show HEAD^:.github/workflows/arib-si-engine-host-ci.yml > .github/workflows/arib-si-engine-host-ci.yml
-          rm -f .github/workflows/pr54-fix-tis-smd-once.yml .github/workflows/pr54-reopen-driver.yml .pr54-trigger
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add tis/DESIGN_JA.md arib_si_engine_rs/DESIGN_JA.md arib_si_engine_rs/src/service_discovery.rs tis/src/com/maleicacid/tvinput/aribsi/ServiceListBuilder.kt tis/src/com/maleicacid/tvinput/tis/ChannelScanController.kt .github/workflows/arib-si-engine-host-ci.yml .github/workflows/pr54-fix-tis-smd-once.yml .github/workflows/pr54-reopen-driver.yml .pr54-trigger
-          git commit -m 'fix: align TIS budgets and SMD reception policy'
-          git push origin HEAD:agent/implement-tis-arib-si-design-pr53
-
   rustfmt:
     runs-on: ubuntu-latest
     timeout-minutes: 10
