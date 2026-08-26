@@ -94,11 +94,11 @@ BS と CS110 の discovery completion 条件は放送方式別に扱う。BS の
 
 SMDの意味モデルは`system_management_id`の16 bit原値、上位2 bitの`broadcasting_flag`、次の6 bitの`broadcasting_identifier`、下位8 bitの`additional_broadcasting_identification`、後続の`additional_identification_info`、構文検査結果を保持する。未知値を既知方式へ丸めずraw値と診断を残す。ただし現行productの通常受信可否を下位8 bitまたは`additional_identification_info`で制限しない。
 
-正常なSMDについては、`broadcasting_flag=0b00`かつ選局候補のdelivery systemと`broadcasting_identifier`が一致する場合を`SUPPORTED_BROADCAST`、`01`または`10`を`NON_BROADCAST`、`11`を`UNDEFINED_BROADCAST_CLASS`、`00`でidentifier不一致を`UNSUPPORTED_BROADCAST_SYSTEM`としてARIB意味状態に正規化する。対応する`broadcasting_identifier`はBSデジタル=`0b000010`、地上デジタルテレビ=`0b000011`、広帯域CSデジタル=`0b000100`とし、CS110は広帯域CSデジタルとして判定する。SMD欠落または構文不正は再取得可能な意味状態`UNDETERMINED_SMD`として診断し、永久的な`UNSUPPORTED`には確定しない。
+正常なSMDについては、`broadcasting_flag=0b00`かつ現行productが認識する`broadcasting_identifier`である場合を`SUPPORTED_BROADCAST`、`01`または`10`を`NON_BROADCAST`、`11`を`UNDEFINED_BROADCAST_CLASS`、`00`で未知のidentifierを`UNSUPPORTED_BROADCAST_SYSTEM`としてARIB意味状態に正規化する。現行productが認識する`broadcasting_identifier`はBSデジタル=`0b000010`、地上デジタルテレビ=`0b000011`、広帯域CSデジタル=`0b000100`とする。本crateはONIDから放送方式または期待identifierを推定せず、現在の選局候補との一致判定も所有しない。選局候補との適合はTISがraw `broadcasting_identifier`と`ScanCandidate.kind`から判定する。SMD欠落または構文不正は再取得可能な意味状態`UNDETERMINED_SMD`として診断し、永久的な`UNSUPPORTED`には確定しない。
 
 SMDの判定対象は既存のtable-instance完成・version・寿命規則で有効とされたNITとし、SMD専用の`PENDING`状態や別のversion切替状態機械を設けない。
 
-本crateは上記SMD意味状態と、その根拠となるraw値・構文診断だけを`ServiceSemanticFacts`へ出力する。SMD意味状態をAndroid channel登録、EPG公開、ライブ再生可否のbooleanへ変換しない。`UNDETERMINED_SMD`は再取得によって正常なSMDを得た時点で意味状態を再評価し、SMD適合を肯定する根拠には使わない。SMD意味状態を他のPMT/PCR/service type/codec/CAS事実と組み合わせて製品policyを決める責務はTISが所有する。
+本crateは上記SMD意味状態と、その根拠となるraw値・構文診断だけを`ServiceSemanticFacts`へ出力する。SMD意味状態をAndroid channel登録、EPG公開、ライブ再生可否のbooleanへ変換せず、選局候補のdelivery systemも意味状態へ混入させない。`UNDETERMINED_SMD`は再取得によって正常なSMDを得た時点で意味状態を再評価し、SMD適合を肯定する根拠には使わない。raw `broadcasting_identifier`と現在の選局候補との適合を含め、SMD事実を他のPMT/PCR/service type/codec/CAS事実と組み合わせて製品policyを決める責務はTISが所有する。
 
 ## EIT 時刻状態と event identity
 
