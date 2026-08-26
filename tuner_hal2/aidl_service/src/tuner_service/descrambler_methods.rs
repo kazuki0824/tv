@@ -131,12 +131,20 @@ impl IDescrambler for DescramblerAidlObject {
         )
     }
 
-    fn addPid(&self, pid: &DemuxPid, upstream_filter: &Strong<dyn IFilter>) -> BinderResult<()> {
-        self.add_pid_nullable_for_aidl(pid, Some(upstream_filter))
+    fn addPid(
+        &self,
+        pid: &DemuxPid,
+        upstream_filter: Option<&Strong<dyn IFilter>>,
+    ) -> BinderResult<()> {
+        self.add_pid_nullable_for_aidl(pid, upstream_filter)
     }
 
-    fn removePid(&self, pid: &DemuxPid, upstream_filter: &Strong<dyn IFilter>) -> BinderResult<()> {
-        self.remove_pid_nullable_for_aidl(pid, Some(upstream_filter))
+    fn removePid(
+        &self,
+        pid: &DemuxPid,
+        upstream_filter: Option<&Strong<dyn IFilter>>,
+    ) -> BinderResult<()> {
+        self.remove_pid_nullable_for_aidl(pid, upstream_filter)
     }
 
     fn close(&self) -> BinderResult<()> {

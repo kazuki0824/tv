@@ -1,0 +1,13 @@
+rust_test {
+    name: "maleicacid_tuner_hal2_nullable_aidl_contract_test",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_nullable_aidl_contract_test",
+    srcs: ["src/lib.rs"],
+    edition: "2021",
+    rustlibs: [
+        "android.hardware.tv.tuner-V3-rust",
+        "libbinder_rs",
+    ],
+    auto_gen_config: true,
+    test_suites: ["general-tests"],
+}
