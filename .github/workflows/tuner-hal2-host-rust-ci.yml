@@ -59,7 +59,7 @@ jobs:
           persist-credentials: false
 
       - name: Run Clippy on host-compatible crates
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings -A clippy::result_unit_err
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   host-rust:
     runs-on: ubuntu-latest
