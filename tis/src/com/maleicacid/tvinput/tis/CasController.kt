@@ -110,6 +110,9 @@ class CasController(
                     esBindings += EsCaBinding(serviceKey.toString(), ca.caSystemId, ecmPid, elementaryPid, ca.privateData.copyOf())
                 }
                 CaMetadataSource.CAT -> {
+                    // STD-B1 is ECM-only in this product. Preserve CAT metadata in SI facts,
+                    // but never promote B1 CAT descriptors into an EMM execution binding.
+                    if (ca.caSystemId != SupportedCasSystemIds.ARIB_STD_B25) return@forEach
                     val emmPid = ca.emmPid ?: return@forEach
                     emmBindings += EmmBinding(ca.caSystemId, emmPid, ca.privateData.copyOf())
                 }
@@ -177,6 +180,7 @@ class CasController(
                         if (addResult.isFailure) diagnostics += Diagnostic(State.ERROR, ErrorCode.DESCRAMBLER_FAILED, systemId, elementaryPid, addResult.exceptionOrNull()?.message.orEmpty())
                     }
                 }
+                is EcmProcessResult.InvalidKeyToken -> diagnostics += Diagnostic(State.ERROR, ErrorCode.INVALID_KEY_TOKEN, systemId, pid, ecmResult.message)
                 is EcmProcessResult.DiagnosticOnly -> diagnostics += Diagnostic(State.ERROR, ErrorCode.KEY_TOKEN_MISSING, systemId, pid, ecmResult.message)
                 null -> diagnostics += Diagnostic(State.ERROR, ErrorCode.KEY_TOKEN_MISSING, systemId, pid, "MediaCas session から実 key token を取得できません")
             }
@@ -187,7 +191,7 @@ class CasController(
 
     fun onEmmSection(pid: TsPid, section: ByteArray): List<Diagnostic> = onExecutor {
         if (closed) return@onExecutor listOf(Diagnostic(State.CLOSED, ErrorCode.CLOSED, pid = pid, message = "CAS 制御は終了済みです"))
-        val systems = emmPidToSystems[pid].orEmpty()
+        val systems = emmPidToSystems[pid].orEmpty().filter { it == SupportedCasSystemIds.ARIB_STD_B25 }
         if (systems.isEmpty()) return@onExecutor emptyList()
         val diagnostics = mutableListOf<Diagnostic>()
         systems.forEach { systemId ->
@@ -272,6 +276,7 @@ class CasController(
 
 sealed class EcmProcessResult {
     data class RealKeyToken(val token: TunerKeyToken) : EcmProcessResult()
+    data class InvalidKeyToken(val message: String) : EcmProcessResult()
     data class DiagnosticOnly(val message: String) : EcmProcessResult()
 }
 
@@ -311,7 +316,13 @@ private class FrameworkMediaCasSessionBridge(
 
     override fun processEcm(section: ByteArray): Result<EcmProcessResult> = runCatching {
         session.processEcm(section, 0, section.size)
-        EcmProcessResult.DiagnosticOnly("MediaCas 標準 API は ECM 投入完了を返すが、r51 の placeholder CAS では Tuner 用の実 key token を返しません")
+        val sessionId = session.sessionId
+        val token = TunerKeyToken.fromOrNull(sessionId)
+        if (token == null) {
+            EcmProcessResult.InvalidKeyToken("MediaCas session ID は 1..16 byte かつ VOID [0x00] 以外でなければなりません")
+        } else {
+            EcmProcessResult.RealKeyToken(token)
+        }
     }
 
     @Synchronized

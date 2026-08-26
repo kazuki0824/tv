@@ -1,4 +1,5 @@
 pub(crate) mod callback_store;
+pub(crate) mod key_provisioning_bridge_server;
 pub(crate) mod child_object_open;
 pub(crate) mod cleanup_reaper;
 pub(crate) mod demux_object;
