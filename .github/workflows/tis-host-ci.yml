@@ -200,7 +200,7 @@ jobs:
           echo "TIS_KOTLIN_PRODUCTION_DIR=$production_dir" >> "$GITHUB_ENV"
           echo "TIS_KOTLIN_TEST_DIR=$test_dir" >> "$GITHUB_ENV"
 
-      - name: Run 128 host-compatible Kotlin tests
+      - name: Run 130 host-compatible Kotlin tests
         shell: bash
         run: |
           mapfile -t discovered_classes < <(
@@ -231,7 +231,7 @@ jobs:
             org.junit.runner.JUnitCore \
             "${test_classes[@]}" \
             | tee "$RUNNER_TEMP/tis-junit.log"
-          grep --fixed-strings "OK (128 tests)" "$RUNNER_TEMP/tis-junit.log"
+          grep --fixed-strings "OK (130 tests)" "$RUNNER_TEMP/tis-junit.log"
 
   xml-contract:
     runs-on: ubuntu-latest
