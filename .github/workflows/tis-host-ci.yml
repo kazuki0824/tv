@@ -1,10 +1,10 @@
 name: TIS host CI
 
 on:
-  pull_request:
+  push:
+    branches:
+      - agent/implement-tis-arib-si-design-pr53
     paths:
-      - "tis/**"
-      - "arib_si_engine_rs/**"
       - ".github/workflows/tis-host-ci.yml"
 
 permissions:
@@ -12,13 +12,12 @@ permissions:
 
 jobs:
   apply-remaining-2-4:
-    if: github.event.pull_request.head.ref == 'agent/implement-tis-arib-si-design-pr53'
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          fetch-depth: 2
+          fetch-depth: 0
       - name: Apply remaining item 2 and 4 changes
         shell: bash
         run: |
@@ -78,29 +77,30 @@ jobs:
           )
 
           failures = []
-          validations = [
-              (tis_design, "必要なqueue領域とclaim台帳はplayback generation開始時に原子的に予約する", False),
-              (tis_design, "startup queueと台帳claimを確保した後にAV filterを開始", False),
-              (tis_design, "最大上限相当の物理メモリをAV filter開始前に事前確保する契約ではない", True),
-              (tis_design, "SMDの通常受信対象判定では", True),
-              (arib_design, "本crateはONIDから放送方式または期待identifierを推定せず", True),
-              (arib_design, "選局候補との適合はTIS", True),
-              (sd, "expected_identifier = match original_network_id", False),
-              (sd, "parse_system_management_descriptor(network_descriptors, onid)", False),
-              (sd, "matches!(broadcasting_identifier, 0b000010 | 0b000011 | 0b000100)", True),
-          ]
-          for path, needle, should_exist in validations:
-              present = needle in Path(path).read_text()
-              if present != should_exist:
-                  failures.append(f"{path}: validation failed for {needle!r}; present={present}")
+          for path, forbidden in {
+              tis_design: ["必要なqueue領域とclaim台帳はplayback generation開始時に原子的に予約する", "startup queueと台帳claimを確保した後にAV filterを開始"],
+              sd: ["expected_identifier = match original_network_id", "parse_system_management_descriptor(network_descriptors, onid)"],
+          }.items():
+              text = Path(path).read_text()
+              for needle in forbidden:
+                  if needle in text:
+                      failures.append(f"{path}: forbidden text remains: {needle}")
+          for path, required in {
+              tis_design: ["最大上限相当の物理メモリをAV filter開始前に事前確保する契約ではない", "SMDの通常受信対象判定では"],
+              arib_design: ["本crateはONIDから放送方式または期待identifierを推定せず", "選局候補との適合はTIS"],
+              sd: ["matches!(broadcasting_identifier, 0b000010 | 0b000011 | 0b000100)"],
+          }.items():
+              text = Path(path).read_text()
+              for needle in required:
+                  if needle not in text:
+                      failures.append(f"{path}: required text missing: {needle}")
           if failures:
               raise SystemExit("\n".join(failures))
           PY
-
-      - name: Restore canonical CI, remove temporary files, and commit
+      - name: Restore canonical CI and remove temporary files
         shell: bash
         run: |
-          git show HEAD^:.github/workflows/tis-host-ci.yml > .github/workflows/tis-host-ci.yml
+          git show be3dda501e5cbfe05b456d8b83ff2bbfcf1f8095:.github/workflows/tis-host-ci.yml > .github/workflows/tis-host-ci.yml
           rm -f .github/workflows/pr54-remaining-2-4.yml .github/workflows/pr54-apply-2-4.yml .github/workflows/pr54-apply-macos.yml .pr54-apply-trigger .pr54-remaining-trigger
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
