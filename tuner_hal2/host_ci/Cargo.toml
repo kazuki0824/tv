@@ -1,9 +1,11 @@
 [workspace]
 members = [
+    "key_provisioning_bridge",
     "common",
     "compile_contract",
     "control",
     "descrambler",
+    "descrambler_key_table",
     "device",
     "lnb",
     "resource_ledger",

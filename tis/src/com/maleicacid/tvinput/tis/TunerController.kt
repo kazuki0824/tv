@@ -671,17 +671,18 @@ class TunerController(
     companion object {
         private const val SECTION_FILTER_BUFFER_BYTES = 64 * 1024L
         private const val SECTION_EVENT_MAX_BYTES = 4096L
-        private val VIDEO_STREAM_TYPES = setOf(0x02, 0x1b)
+        private val R51_VIDEO_STREAM_TYPES = setOf(0x02, 0x1b)
+        private val VIDEO_STREAM_TYPES = R51_VIDEO_STREAM_TYPES + 0x24
         private val AUDIO_STREAM_TYPES = setOf(0x03, 0x04, 0x0f)
         private val CAPTION_DATA_COMPONENT_IDS = setOf(0x0008, 0x0012)
 
-        fun isR51SupportedVideoStreamTypeForTest(streamType: Int): Boolean = streamType in VIDEO_STREAM_TYPES
+        fun isR51SupportedVideoStreamTypeForTest(streamType: Int): Boolean = streamType in R51_VIDEO_STREAM_TYPES
 
         fun selectVideoForTest(streams: List<AribElementaryStream>): AribElementaryStream? =
-            streams.firstOrNull { it.streamType in VIDEO_STREAM_TYPES }
+            streams.firstOrNull { it.streamType in R51_VIDEO_STREAM_TYPES }
 
         fun hasR51SupportedVideoForTest(streams: List<AribElementaryStream>): Boolean =
-            streams.any { it.streamType in VIDEO_STREAM_TYPES }
+            streams.any { it.streamType in R51_VIDEO_STREAM_TYPES }
 
         fun sectionReadDecisionForTest(expected: Int, actual: Int, generationMatches: Boolean): SectionReadDecision = when {
             !generationMatches -> SectionReadDecision.STALE_GENERATION

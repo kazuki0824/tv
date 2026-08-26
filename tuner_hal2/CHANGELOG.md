@@ -1,3 +1,11 @@
+# r52_key_provisioning_implementation
+
+- init管理Unix socket上のversioned generic key provisioning bridgeを追加し、opaque key tokenの1〜16 byte/VOID除外、request ID、bounded frame、typed statusを検証する。
+- key providerの未解決entry予約、opaque provider ID/provider generation identity、単調key epoch、MULTI2 even/odd key contextのatomic publish、generation-fencedかつretry-idempotentなrevokeをTuner runtime registryへ接続した。Tuner側はCA system IDやB25/B1を解釈しない。
+- packet descramble責務をTuner HALだけに維持し、CAS HALから受け取ったraw materialはbridge境界でprepared key slotへ変換してpacket pathへraw key tableを公開しない。
+- raw/prepared MULTI2 keyのDebug表示をredactし、drop時のzeroizeを追加した。host CIへ鍵台帳単体test crateを追加した。
+- Rust 1.81 host workspaceでCAS鍵protocolとruntime registryのunit testを実行した。Android/Soong build、VTS、実card/放送波の結合確認は未実行である。
+
 # r50eo80_customer26_followup_design_boundary_impl_recheck_source_static_unverified_v41
 
 - Closed frontend runtime read-only intermediate helper methods (`state`, `signal_state`, active request/session accessors, test-only generation helper) from the crate-public surface; service_runtime query/status paths now use `FrontendRuntimeSnapshot` DTO data instead of direct intermediate helper calls.
@@ -2336,7 +2344,7 @@
 - release marker を tuner_hal2 / tuner_hal ともに r50ei5_wp_r07a_descrambler_prereq_packet_pipeline_min へ更新した。
 - packet pipeline の診断モデルを、packet reject/drop と assembly suppression に分離した。
 - `plan_and_assemble_ts_packet_report()` の no-preflight 入口と、旧意味論の test helper `accept_ts_packet_with_outcome()` / `accept_ts_packet()` を削除した。
-- descrambler / CAS token / MULTI2 / key table / IDescrambler public API は未実装のまま維持した。
+- 当該履歴時点では descrambler / CAS token / MULTI2 / key table / IDescrambler public API を実装対象外のまま維持した。現行状態は後続のr52項目を正とする。
 
 # r50ei_wp_r07_filter_hint_runtime
 
