@@ -7,8 +7,8 @@ use super::{
 };
 
 impl ILnb for LnbAidlObject {
-    fn setCallback(&self, callback: &Strong<dyn ILnbCallback>) -> BinderResult<()> {
-        self.set_callback_nullable_for_aidl(Some(callback))
+    fn setCallback(&self, callback: Option<&Strong<dyn ILnbCallback>>) -> BinderResult<()> {
+        self.set_callback_nullable_for_aidl(callback)
     }
 
     fn setVoltage(&self, voltage: LnbVoltage) -> BinderResult<()> {
