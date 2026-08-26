@@ -128,7 +128,7 @@ A/B/Cの分類と`Txn` / `UseCase` / `Context`の命名判定は別である。B
 | `ObjectCloseTxn` | `service_runtime/src/object_close_txn.rs::ObjectCloseTxn` | `aidl_service/src/object_runtime/mod.rs`のpublic close / owner-loss / Drop接続とservice_runtimeのshutdown/reaper接続 | 別のclose owner、AIDL/Drop/worker/Reaperの直接cleanup |
 | `DescramblerPidTxn` | `service_runtime/src/boot/descrambler_txn.rs`、`service_runtime/src/descrambler_session.rs`、`service_runtime/src/descrambler_key_table.rs`を共用してよいが、正規手順所有者・入口は`DescramblerPidTxn`名で独立させる | `service_runtime/src/descrambler_ops.rs`のPID変更処理入口 | AIDL層またはデスクランブラ実装からPID台帳を直接変更、鍵変更・セッション後片付けと同じ別名所有者だけを入口にする |
 | `DescramblerKeyTxn` | `service_runtime/src/boot/descrambler_txn.rs`、`service_runtime/src/descrambler_session.rs`、`service_runtime/src/descrambler_key_table.rs`を共用してよいが、正規手順所有者・入口は`DescramblerKeyTxn`名で独立させる | `service_runtime/src/descrambler_ops.rs`の鍵変更処理入口 | AIDL層またはデスクランブラ実装から鍵台帳を直接変更、PID変更・セッション後片付けと同じ別名所有者だけを入口にする |
-| CAS key bridge ingress | protocol ownerは`cas_key_bridge/src/lib.rs`、I/O ownerは`aidl_service/src/cas_key_bridge_server.rs`、runtime適用ownerは`service_runtime/src/cas_key_bridge_ops.rs`、状態ownerは`service_runtime/src/descrambler_key_table.rs` | CAS serviceからの `Ping` / session `Reserve` / key epoch `Publish` / `Revoke`。I/O完了後にruntime lock下で型付きcommandを一回だけ適用する | AIDL façade、packet path、TISからのkey table直接変更、I/O中のruntime lock保持、予約なしpublish、CA system/session generation不一致、stale epochの成功化 |
+| Generic key provisioning ingress | protocol framing / replay ownerは`key_provisioning_bridge/src/lib.rs`、I/O ownerは`aidl_service/src/key_provisioning_bridge_server.rs`、runtime command適用ownerは`service_runtime/src/key_provisioning_ops.rs::TunerServiceRuntime::apply_key_provisioning_command`、reservation/key-slot状態ownerは`service_runtime/src/descrambler_key_table.rs` | Tuner外部の鍵供給adapterからの`Ping` / `Reserve` / `Publish` / `Revoke`。I/O完了後にruntime lock下で型付きcommandを一回だけ適用する | AIDL façade、packet path、TISからのkey table直接変更、I/O中のruntime lock保持、予約なしpublish、provider identity不一致、stale epochの成功化、CA system ID/B25/B1/MediaCas session等の上流意味をTuner内部で解釈すること |
 | `DescramblerSessionCleanupTxn` | `service_runtime/src/boot/descrambler_txn.rs`、`service_runtime/src/descrambler_session.rs`、`service_runtime/src/descrambler_key_table.rs`を共用してよいが、正規手順所有者・入口は`DescramblerSessionCleanupTxn`名で独立させる | デスクランブラのクローズ接続、Demux無効化接続 | AIDL層またはデスクランブラ実装からPID・鍵・プール台帳を直接変更、通常のPID・鍵変更所有者へ後片付け責務を統合する |
 | `SourceBoundaryTxn` | `demux/src/runtime/source_boundary.rs` | `service_runtime/src/demux_filter_dvr_ops.rs`のFilter source use-case、source Filter close/unlink接続 | filter wrapper/cleanup callerによるgraph直接変更、demux/frontend ownerとの統合 |
 | `DemuxFrontendSourceTxn` | `service_runtime/src/demux_filter_dvr_ops.rs::DemuxFrontendSourceTxn` | `IDemux.setFrontendDataSource()` object use-case、Frontend/Demux close接続 | cleanup callerによるrelation直接編集、`SourceBoundaryTxn`への統合 |
@@ -150,7 +150,7 @@ A/B/Cの分類と`Txn` / `UseCase` / `Context`の命名判定は別である。B
 | `PcrClockAnchorStore` | `demux/src/runtime/pcr_clock_anchor.rs::PcrClockAnchorStore` | PCR観測、stream boundary側のtyped invalidation入口 | APIまたは`StreamBoundaryTxn`からのstore内部直接変更、A/V sync ownerとの統合 |
 | `WorkerRuntime` | `service_runtime/src/worker_runtime.rs::{WorkerRuntime, WorkerHandle}`。`WorkerRuntime`がgeneric worker lifecycleの唯一のcanonical A state ownerであり、`WorkerHandle`は同ownerに従属するopaqueなtyped handle / authority表現 | 各domain worker ownerの`WorkerRuntime`正規入口。必要な場合に同ownerが発行・管理する`WorkerHandle`を使用する | `WorkerHandle`による独立したgeneration / retry / reaper state所有、別generic lifecycle owner、domain start/stop ownerの吸収 |
 | `WorkerFailureClassifier` | `service_runtime/src/worker_failure_classifier.rs` | worker owner / cleanup manager / callback・backend failure ownerからのtyped入口 | owner側の別classifier、classifierによるdomain ownerの置換 |
-| `FrontendWorkerTerminationUseCase` | 正規手順所有者・入口は`FrontendWorkerTerminationUseCase`名を持つ。`service_runtime/src/frontend_worker_termination_use_case.rs`はフロントエンド固有終了の補助処理、`device/src/runtime/frontend_worker.rs::FrontendWorkerRegistry`は既存の状態所有者として扱う。汎用の停止・起床・終了待ち・回収処理・再試行機構のcanonical state ownerは`WorkerRuntime`であり、`WorkerHandle`は従属する物理要素 | `service_runtime/src/frontend_ops.rs`、`service_runtime/src/boot/frontend_tune_scan_context.rs`、`ObjectCloseTxn`からの型付き後始末接続 | ワーカー・AIDL層による所有者登録解除、リース、終了待ち・回収処理、失敗分類器の直接代替、汎用寿命管理の所有責務の吸収、別のフロントエンド終了手順所有者 |
+| `FrontendWorkerTerminationUseCase` | 正規手順所有者・入口は`FrontendWorkerTerminationUseCase`名を持つ。`service_runtime/src/frontend_worker_termination_use_case.rs`はフロントエンド固有終了の補助処理、`device/src/runtime/frontend_worker.rs::FrontendWorkerRegistry`は既存の状態所有者として扱う。汎用の停止・起床・終了待ち・回収処理・再試行機構のcanonical state ownerは`WorkerRuntime`であり、`WorkerHandle`は従属する物理要素 | `service_runtime/src/frontend_ops.rs`、`service_runtime/src/boot/frontend_tune_scan_context.rs`、`ObjectCloseTxn`からの型付き後片付け接続 | ワーカー・AIDL層による所有者登録解除、リース、終了待ち・回収処理、失敗分類器の直接代替、汎用寿命管理の所有責務の吸収、別のフロントエンド終了手順所有者 |
 
 ##### 共通化対象のRust物理化追加要件
 
@@ -343,7 +343,72 @@ Filter/SharedFilterのqueue確定は`FilterProducerDrainGate`、DVR queue I/Oは
 - `共通transaction / use-caseの規範実装アンカー`以外の物理配置表を状態遷移の正本として扱わない。
 - 規範実装アンカーのrename、split、merge時に旧アンカーを残したまま新アンカーを追加し、複数のtransaction正本を作らない。
 
-
 ### Generic key provisioning 境界
 
-内部鍵供給は `KEY_PROVISIONING_BRIDGE_CONTRACT.md` を正本とする。Tuner HALが認識するのはopaque `key_token` / `provider_id` / `provider_generation` / `key_epoch`と復号algorithmに必要なkey resourceだけであり、CA system ID、B25/B1、MediaCas session、ECM/EMM、SmartCard等の上流CAS意味をTuner内部へ持ち込まない。
+本節は`tuner_hal2`内部のvendor-private鍵供給境界について、実装責務、transport reliability、reservation lifetime、secret lifetimeを規範として所有する。公開`IDescrambler`、`setKeyToken()`、VOID tokenその他のAOSP公開意味は`../tuner_hal/DESIGN_JA.md`を正とし、本節はそれらを変更しない。
+
+#### 責務境界
+
+`tuner_hal2`は鍵の供給元を解釈しない。Tuner内部へ入れてよい値は、opaque `key_token`、opaque `provider_id`、`provider_generation`、`key_epoch`、およびpacket descrambleに必要なalgorithm-specific key resourceだけである。
+
+`tuner_hal2`へ`ca_system_id`、B25/B1その他のCA方式名・固定値、`MediaCas.Session`、CAS plugin、ECM/EMM、SmartCard、上流CAS capability/profileを持ち込んではならない。上流固有identityから`provider_id / provider_generation`への変換は`tuner_hal2`外側のintegration adapterが所有する。`provider_id`をCA system IDの別名として解釈・公開・allow-listしてはならない。
+
+現行r52 production adapterは`../cas_hal/src/transport.rs`にあり、CAS-domain identityをこのgeneric境界へ変換する。r51までの親stackではproduction provisioning ingressを有効化せず、CAS HAL placeholderから実CAS tokenを供給しない。
+
+#### command modelと確定点
+
+内部bridgeが受理するcommandは次の4つだけである。
+
+- `Reserve(key_token, provider_id, provider_generation)`
+- `Publish(key_token, provider_id, provider_generation, key_epoch, key_resource)`
+- `Revoke(key_token, provider_id, provider_generation)`
+- health check用`Ping`
+
+`Reserve`はtoken namespaceだけを予約し、復号鍵を持たない。`Publish`成功後だけ当該tokenをdescrambler key slotへ解決可能にする。AOSPのVOID key token `[0x00]`を通常key resource識別子として予約してはならない。
+
+`Reserve`のTuner key table commit成功をnamespace予約のlinearization pointとする。response writeはcommitより後であるため、clientから見てtimeout、EOF、接続切断でもTuner側だけcommit済みというambiguous outcomeが成立し得る。
+
+このためmutation requestはrequest IDを持ち、serverはmutation結果をresponse I/Oより先にbounded replay journalへcommitする。同一request IDかつ同一serialized commandの再送ではmutationを再実行せず保存済みstatusを返す。同一request IDを別commandへ再利用した場合はprotocol conflictとして拒否する。provider clientが応答未確定mutationをretryする場合は新しいrequest IDを発行せず、同じrequest IDと同じserialized commandを再送する。retry回数と各I/O deadlineはboundedとし、retry exhaustion時は成功を表明しない。`Publish`と`Revoke`も同じreplay規則に従う。
+
+#### reservation / key-slot lifetime
+
+- live/reserved entry総数の現行default上限は64とする。
+- Reserve済みで未publishのreservationには現行default 120秒の有限TTLを持たせる。
+- 同一`key_token / provider_id / provider_generation`のReserve再送は同一reservationとして冪等成功し、leaseをrefreshしてよい。
+- 別provider identityによる同一tokenのReserveはretry扱いせず拒否する。
+- 新規Reserveのcapacity判定前に、TTLを超えた未publish、`refcount == 0`、非revoke entryをreapする。
+- publish済みentryはTTLでreapせず、明示Revokeとdescrambler ref lifetimeで管理する。
+- revoke済みかつ`refcount == 0`のentryはpersistent tombstoneを残さず削除する。revoke時にrefが残る場合だけ最終releaseまで隔離する。
+- 未publish reservationとreaperはraw/prepared key materialを保持しない。
+
+#### secret lifetime
+
+- raw/prepared key bytesをDebugへ出さない。
+- wire payload、一時buffer、raw key、prepared keyは不要になった時点でzeroizeする。
+- replay journalへkey materialを保持しない。
+- key schedule/cipher内部で不要な値copyを増やさない。
+- secret handlingは鍵供給元の種別に依存させない。
+
+#### 実装owner / anchor
+
+- protocol framing / replay journal: `key_provisioning_bridge/src/lib.rs`
+- socket server: `aidl_service/src/key_provisioning_bridge_server.rs`
+- typed command適用: `service_runtime/src/key_provisioning_ops.rs::TunerServiceRuntime::apply_key_provisioning_command`
+- reservation / key-slot state: `service_runtime/src/descrambler_key_table.rs`
+- CAS固有identityからgeneric provider identityへのproduction adapter: `../cas_hal/src/transport.rs`。これは`tuner_hal2`の所有外である。
+
+I/O待機中にruntime lockを保持してはならない。socket serverはframe decodeとI/Oを終えてからruntime lockを取得し、typed commandを一回だけ適用する。packet path、AIDL façade、TISがkey tableを直接変更してはならない。
+
+#### 最低テスト
+
+最低限、次を固定する。
+
+- protocol crateにCA system ID/B25/B1固定値を置かず、任意のnon-zero `provider_id`を同じ規則で扱う。
+- mutation commit後にresponseを喪失し、同一request IDで再送してもmutationを二重適用せず元statusを返す。
+- 同一request IDを別commandへ使うと拒否する。
+- 同一provider identityのReserve再送でslot数を増やさない。
+- provider IDが異なるReserveを同一retry扱いしない。
+- TTL超過の未publish reservationを次Reserveのcapacity判定前に回収する。
+- publish済みentryをTTLで回収しない。
+- revoke済み・`refcount == 0` entryがpersistent tombstoneを残さない。
+- raw/prepared keyをDebugへ露出しない。
