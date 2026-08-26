@@ -69,6 +69,14 @@ retune、clear service、CA descriptor/context消滅、CAS fatal failure、sessi
 
 途中のcleanup失敗で後続cleanupを中止しない。TISはvendor-private key registryへ直接Revokeを送らない。MediaCas session closeに伴うprovider-side revokeはCAS HAL/key provisioning側の責務とする。
 
+## CasController executor寿命
+
+`CasController` のmutableなCAS orchestration状態は、専用single-thread executorを直列化境界とする。executor threadの判定はthread nameではなく生成した`Thread` instanceのidentityで行い、同名の別threadを内部executorとして扱わない。
+
+`close()` は同executor上でcurrent contextをrouting mapから除外し、上記teardown orderingに従うcleanup、plugin/descrambler解放、`CLOSED`診断確定までを直列化した後にexecutorをshutdownする。`close()` は冪等であり、shutdown済みexecutorへ再度workを投入しない。
+
+executor shutdown後のmutation入口は新規workを受理せず失敗させる。一方、終了状態を観測するread-only queryはshutdown済みexecutorへのtask投入を必要とせず、`lastDiagnostic()` は確定済み`CLOSED`診断、`currentReadiness()` は`CLOSED`を返せるようにする。
+
 ## Generation fencing
 
 - contextはcurrent Tuner/demux generationに属する。
@@ -84,4 +92,5 @@ retune、clear service、CA descriptor/context消滅、CAS fatal failure、sessi
 - B1 CAT metadataからEMM filter planが生成されない。
 - scrambled serviceはECM前にWAITING、必要contextのECM成功後にREADYになる。
 - teardownでPID remove → VOID key unlink → Descrambler close → MediaCas.Session closeの順序になる。
+- `close()` は同じinstanceへ2回呼んでも安全で、終了後の`lastDiagnostic()` / `currentReadiness()` は`CLOSED`を返し、新規mutation workは拒否される。
 - retune/clear後のstale ECMが旧token/PIDを新generationへ適用しない。
