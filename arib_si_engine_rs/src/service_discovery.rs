@@ -159,7 +159,7 @@ pub struct ServiceSemanticFacts {
     pub semantic_diagnostics: Vec<&'static str>,
 }
 
-/// Raw conditional-access signaling facts.  These fields deliberately remain
+/// Raw conditional-access signaling facts. These fields deliberately remain
 /// independent: PMT CA-descriptor observation, PMT resolution, and SDT/EIT
 /// free_CA_mode are different broadcast facts and product policy must not
 /// collapse one into another inside the SI engine.
@@ -339,10 +339,12 @@ impl ServiceDiscoveryEngine {
     pub fn events(&self) -> Vec<EitEvent> {
         self.eit_store.snapshot_all_for_diagnostic()
     }
+
     pub fn take_epg_update_windows(&mut self) -> Vec<EitUpdateWindow> {
         self.eit_store
             .take_present_following_actual_update_windows()
     }
+
     pub fn clear_epg_update_windows(&mut self) {
         self.eit_store.clear_update_windows();
     }
@@ -819,7 +821,7 @@ impl ServiceDiscoveryEngine {
             };
             self.transport_entry_mut(tsid, onid);
             self.transport_entry_mut(tsid, onid).system_management =
-                parse_system_management_descriptor(network_descriptors, onid);
+                parse_system_management_descriptor(network_descriptors);
             let (desc_network_name, ts_name, remote_control_key_id) =
                 parse_nit_transport_metadata(&section[desc_start..desc_end])
                     .unwrap_or((None, None, None));
@@ -1703,10 +1705,7 @@ fn parse_network_name(descriptors: &[u8]) -> Option<DecodedSiText> {
     None
 }
 
-fn parse_system_management_descriptor(
-    descriptors: &[u8],
-    original_network_id: u16,
-) -> SystemManagementFacts {
+fn parse_system_management_descriptor(descriptors: &[u8]) -> SystemManagementFacts {
     let mut cursor = 0usize;
     let mut parsed: Option<SystemManagementFacts> = None;
     while cursor + 2 <= descriptors.len() {
@@ -1739,13 +1738,8 @@ fn parse_system_management_descriptor(
                 u16::from_be_bytes([descriptors[body_start], descriptors[body_start + 1]]);
             let broadcasting_flag = ((system_management_id >> 14) & 0x03) as u8;
             let broadcasting_identifier = ((system_management_id >> 8) & 0x3f) as u8;
-            let expected_identifier = match original_network_id {
-                4 => 0b000010,
-                6 | 7 => 0b000100,
-                _ => 0b000011,
-            };
             let semantic_state = match broadcasting_flag {
-                0 if broadcasting_identifier == expected_identifier => {
+                0 if matches!(broadcasting_identifier, 0b000010 | 0b000011 | 0b000100) => {
                     SmdSemanticState::SupportedBroadcast
                 }
                 0 => SmdSemanticState::UnsupportedBroadcastSystem,
@@ -1998,7 +1992,6 @@ fn retain_text_decode_diagnostic(diagnostics: &mut Vec<String>, diagnostic: Opti
 
 #[cfg(test)]
 mod tests {
-
     use super::{DiscoveryPublishStage, ServiceDiscoveryCollector, ServiceDiscoveryEngine};
     use crate::sections::crc32_mpeg;
 
@@ -2176,6 +2169,7 @@ mod tests {
             assert!(service.streams.is_empty());
         }
     }
+
     #[test]
     fn satellite_missing_components_are_scoped_to_satellite_transport() {
         let mut collector = ServiceDiscoveryCollector::default();
