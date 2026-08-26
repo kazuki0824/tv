@@ -130,8 +130,13 @@ class ServiceListBuilder(private val engine: AribSiEngine) {
         fun completenessForModel(
             service: AribService,
             facts: ServiceSemanticFacts?,
+            expectedSmdBroadcastingIdentifier: Int? = null,
         ): ServiceCompleteness {
-            val diagnostic = ServicePolicyEvaluator.evaluate(facts, service.serviceKey)
+            val diagnostic = ServicePolicyEvaluator.evaluate(
+                facts = facts,
+                fallbackKey = service.serviceKey,
+                expectedSmdBroadcastingIdentifier = expectedSmdBroadcastingIdentifier,
+            )
             return ServiceCompleteness(
                 serviceKey = service.serviceKey,
                 publishable = diagnostic.publishable,
@@ -163,6 +168,7 @@ object ServicePolicyEvaluator {
         fallbackKey: ServiceKey? = facts?.serviceKey,
         hasPhysicalTune: Boolean = true,
         hasInternalTuneKey: Boolean = true,
+        expectedSmdBroadcastingIdentifier: Int? = null,
     ): ServicePublishabilityDiagnostic {
         val key = facts?.serviceKey ?: fallbackKey ?: ServiceKey(0, 0, 0)
         if (facts == null) {
@@ -208,6 +214,11 @@ object ServicePolicyEvaluator {
         }
         if (facts.smd.semanticState != SUPPORTED_SMD) {
             registrationReasons += facts.smd.semanticState
+        } else if (
+            expectedSmdBroadcastingIdentifier != null &&
+            facts.smd.broadcastingIdentifier != expectedSmdBroadcastingIdentifier
+        ) {
+            registrationReasons += "UNSUPPORTED_BROADCAST_SYSTEM"
         }
         if (!hasPhysicalTune) registrationReasons += "NO_PHYSICAL_TUNE"
         if (!hasInternalTuneKey) registrationReasons += "NO_INTERNAL_TUNE_KEY"
