@@ -89,8 +89,11 @@ class CasControllerStateTest {
         val descrambler = FakeTunerDescramblerBridge()
         controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), descrambler)
         controller.close()
+        controller.close()
         check(descrambler.closed)
         check(controller.lastDiagnostic().state == CasController.State.CLOSED)
+        val failure = runCatching { controller.updateFromCaMetadata(emptyList()) }.exceptionOrNull()
+        check(failure is IllegalStateException) { "close後の新規workは拒否されるべきです: $failure" }
     }
 
     private fun b25Metadata(esPid: TsPid, ecmPid: TsPid, emmPid: TsPid): List<CaMetadata> = listOf(
