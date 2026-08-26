@@ -197,7 +197,6 @@ class ChannelScanController(
         refreshDynamicSectionFilters()
         publishCurrentServiceSnapshot(PublishMode.LIVE_TUNE_REFRESH)
     }
-
     fun refreshDynamicSectionFilters() {
         val transaction = engine.casDiscoverySnapshot()
         val servicesForCas = transaction.services
@@ -244,6 +243,7 @@ class ChannelScanController(
                 fallbackKey = key,
                 hasPhysicalTune = candidate.frequencyHz.value > 0L,
                 hasInternalTuneKey = candidate.streamSelector.value != null || candidate.streamSelector == com.maleicacid.tvinput.common.StreamSelector.NONE,
+                expectedSmdBroadcastingIdentifier = expectedSmdBroadcastingIdentifier(candidate),
             )
         }
         val registrationReadyServices = transaction.services.filter { service ->
@@ -340,10 +340,21 @@ class ChannelScanController(
         return result
     }
 
-    private fun serviceCounts(): ServiceCounts {
+    private fun expectedSmdBroadcastingIdentifier(candidate: ScanCandidate): Int = when (candidate.kind) {
+        ScanCandidateKind.ISDB_T_UHF, ScanCandidateKind.ISDB_T_CATV -> 0b000011
+        ScanCandidateKind.ISDB_S_BS -> 0b000010
+        ScanCandidateKind.ISDB_S_110CS -> 0b000100
+    }
+
+    private fun serviceCounts(candidate: ScanCandidate): ServiceCounts {
         val transaction = engine.serviceRegistrationSnapshot()
+        val expectedSmdIdentifier = expectedSmdBroadcastingIdentifier(candidate)
         val completeness = transaction.services.map { service ->
-            ServiceListBuilder.completenessForModel(service, transaction.semanticFactsByServiceKey[service.serviceKey])
+            ServiceListBuilder.completenessForModel(
+                service = service,
+                facts = transaction.semanticFactsByServiceKey[service.serviceKey],
+                expectedSmdBroadcastingIdentifier = expectedSmdIdentifier,
+            )
         }
         val summary = ServiceListBuilder.ServiceSnapshotSummary(
             totalKeys = completeness.map { it.serviceKey }.toSet(),
@@ -369,7 +380,7 @@ class ChannelScanController(
         val policy = DEFAULT_SI_POLICY
         val startedAt = System.currentTimeMillis()
         var lastStage = engine.discoveryStage()
-        var lastCounts = serviceCounts()
+        var lastCounts = serviceCounts(candidate)
         var stableSince = startedAt
         var outcome = SiCollectionOutcome.TIMEOUT_PARTIAL
 
@@ -377,7 +388,7 @@ class ChannelScanController(
             refreshDynamicSectionFilters()
             val now = System.currentTimeMillis()
             val stage = engine.discoveryStage()
-            val counts = serviceCounts()
+            val counts = serviceCounts(candidate)
             if (stage != lastStage || counts.signature != lastCounts.signature) {
                 lastStage = stage
                 lastCounts = counts
@@ -406,7 +417,7 @@ class ChannelScanController(
         }
         val complete = engine.isDiscoveryComplete()
         if (!cancelled.get() && complete) outcome = SiCollectionOutcome.COMPLETE
-        val finalCounts = serviceCounts()
+        val finalCounts = serviceCounts(candidate)
         val finalRegistrationReadySnapshotAvailable = finalCounts.registrationReady > 0
         if (outcome == SiCollectionOutcome.TIMEOUT_PARTIAL && !finalRegistrationReadySnapshotAvailable) outcome = SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE
         val elapsed = System.currentTimeMillis() - startedAt
