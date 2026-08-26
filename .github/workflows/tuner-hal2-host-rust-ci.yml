@@ -47,6 +47,20 @@ jobs:
       - name: Check Rust formatting
         run: cargo fmt --all -- --check
 
+  clippy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: tuner_hal2/host_ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run Clippy on host-compatible crates
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
   host-rust:
     runs-on: ubuntu-latest
     timeout-minutes: 10
