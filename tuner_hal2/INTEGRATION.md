@@ -130,18 +130,17 @@ patch は次だけを変更する。
 - `IFilter.setDataSource()` の filter を `@nullable` とする。
 - `IDescrambler.addPid()` / `removePid()` の optional source filter を `@nullable` とする。
 - `IFrontend.setCallback()` / `ILnb.setCallback()` の callback を `@nullable` とする。
-- 上記 source AIDL と一致する `aidl_api/android.hardware.tv.tuner/current/` snapshot を更新する。
 - LineageOS 22.1 の FCM 202404 で Tuner AIDL V3 を許容するため、framework compatibility matrix の version range を `1-3` とする。
 
 `aidl_api/android.hardware.tv.tuner/1` と `2` は変更しない。`android.hardware.tv.tuner-freeze-api` は実行せず、`versions_with_info` に V3 を追加しない。したがって nullable 版は current/unfrozen V3 のまま使用する。
 
-source AIDL の nullable 契約を変更する場合は、LineageOS checkout 上で source AIDL を先に変更した後、次を実行して `current` snapshot を更新し、その生成差分をこの patch へ反映する。
+platform patch適用後、通常ビルドへ進む前に、そのLineageOS checkout上で次を一度実行して source AIDL と `aidl_api/android.hardware.tv.tuner/current/` snapshot を同期する。
 
 ```bash
 m android.hardware.tv.tuner-update-api
 ```
 
-通常の product build のたびに `update-api` を実行してはならず、`aidl_api/.../current` を手編集して source AIDL と独立に変更してはならない。
+`update-api` が生成する `aidl_api/.../current` の差分はこのplatform patchへ取り込まない。clean checkoutへplatform patchを新たに適用した場合は、そのcheckoutについて通常ビルド前に上記 `update-api` を実行する。一方、同じcheckoutでsource AIDLとcurrent snapshotが同期済みである限り、通常のproduct buildのたびに `update-api` を再実行してはならない。`aidl_api/.../current` を手編集してsource AIDLと独立に変更してもならない。
 
 `tuner_hal2` は current V3 Rust binding を `android.hardware.tv.tuner-V3-rust` として参照し、VINTF fragment も Tuner version 3 を宣言する。採用 build configuration では `RELEASE_AIDL_USE_UNFROZEN=true` が実効値でなければならない。`false` の構成では最新 unfrozen APIを製品契約として使用できないため、この nullable V3 統合の完了buildとして扱わない。
 
