@@ -8,7 +8,6 @@
     "schema",
     "schemaVersion",
     "programKey",
-    "serviceKey",
     "timing",
     "source",
     "cas",
@@ -18,7 +17,6 @@
     "eventGroups",
     "linkage",
     "freeCaMode",
-    "audioLanguages",
     "extendedItems",
     "components",
     "diagnostics"
@@ -32,9 +30,6 @@
     },
     "programKey": {
       "$ref": "#/$defs/programKey"
-    },
-    "serviceKey": {
-      "$ref": "#/$defs/serviceKey"
     },
     "timing": {
       "$ref": "#/$defs/timing"
@@ -88,12 +83,6 @@
           "$ref": "#/$defs/freeCaMode"
         }
       ]
-    },
-    "audioLanguages": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/audioLanguage"
-      }
     },
     "extendedItems": {
       "type": "array",
@@ -154,7 +143,7 @@
     },
     "programKey": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "kind",
         "originalNetworkId",
@@ -180,39 +169,15 @@
         }
       }
     },
-    "serviceKey": {
-      "type": "object",
-      "additionalProperties": true,
-      "required": [
-        "originalNetworkId",
-        "transportStreamId",
-        "serviceId"
-      ],
-      "properties": {
-        "originalNetworkId": {
-          "$ref": "#/$defs/uint16"
-        },
-        "transportStreamId": {
-          "$ref": "#/$defs/uint16"
-        },
-        "serviceId": {
-          "$ref": "#/$defs/uint16"
-        }
-      }
-    },
     "timing": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "startUtcMillis",
-        "endUtcMillis",
         "durationMillis"
       ],
       "properties": {
         "startUtcMillis": {
-          "type": "integer"
-        },
-        "endUtcMillis": {
           "type": "integer"
         },
         "durationMillis": {
@@ -223,7 +188,7 @@
     },
     "source": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "pid",
         "tableId",
@@ -253,7 +218,7 @@
     },
     "cas": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "requiresCas",
         "source"
@@ -299,7 +264,7 @@
     },
     "rating": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "countryCode",
         "rawRatingByte",
@@ -337,7 +302,7 @@
     },
     "genre": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "level1",
         "level2",
@@ -390,7 +355,7 @@
     },
     "series": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "seriesId",
         "repeatLabel",
@@ -448,7 +413,7 @@
     },
     "linkage": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "transportStreamId",
         "originalNetworkId",
@@ -482,7 +447,7 @@
     },
     "freeCaMode": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "raw",
         "scrambled",
@@ -502,30 +467,9 @@
         }
       }
     },
-    "audioLanguage": {
-      "type": "object",
-      "additionalProperties": true,
-      "required": [
-        "language",
-        "source",
-        "parseStatus"
-      ],
-      "properties": {
-        "language": {
-          "$ref": "#/$defs/iso639"
-        },
-        "source": {
-          "type": "string",
-          "minLength": 1
-        },
-        "parseStatus": {
-          "$ref": "#/$defs/parseStatus"
-        }
-      }
-    },
     "extendedItem": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "languageCode",
         "description",
@@ -549,7 +493,7 @@
     },
     "videoComponent": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "esPid",
         "streamType",
@@ -644,7 +588,7 @@
     },
     "audioComponent": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "esPid",
         "streamType",
@@ -652,6 +596,7 @@
         "componentType",
         "codec",
         "language",
+        "secondLanguage",
         "parseStatus"
       ],
       "properties": {
@@ -686,6 +631,16 @@
           "minLength": 1
         },
         "language": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/iso639"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "secondLanguage": {
           "anyOf": [
             {
               "$ref": "#/$defs/iso639"
@@ -738,7 +693,7 @@
     },
     "subtitleComponent": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "esPid",
         "componentTag",
@@ -797,7 +752,7 @@
     },
     "dataComponent": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "esPid",
         "componentTag",
@@ -846,7 +801,7 @@
     },
     "components": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "video",
         "audio",
@@ -882,7 +837,7 @@
     },
     "diagnosticItem": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "code",
         "message"
@@ -902,7 +857,7 @@
     },
     "diagnostics": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "descriptorDiagnostics",
         "publishDiagnostics",
@@ -988,7 +943,7 @@
     },
     "eventGroupReference": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "serviceId",
         "eventId"
@@ -1004,7 +959,7 @@
     },
     "otherNetworkEventReference": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "originalNetworkId",
         "transportStreamId",
@@ -1028,7 +983,7 @@
     },
     "eventGroup": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "groupType",
         "events",
