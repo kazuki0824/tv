@@ -1,13 +1,13 @@
-use std::fmt::Write as _;
-
 include!("arib_jis_x0208_table.rs");
 
 pub const ARIB_STRING_DECODER_SCOPE: &str = "mirakc_scope_non_caption_si_epg_only";
 
 fn bytes_hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
-        write!(&mut out, "{byte:02x}").expect("writing to String cannot fail");
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
     }
     out
 }
@@ -20,6 +20,12 @@ pub enum AribStringDecodeError {
     UnsupportedControl,
     MalformedCsi,
     MiddleSizeGraphic,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ErrorPolicy {
+    Strict,
+    Replace,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -151,37 +157,6 @@ fn decode_single_shift(
     Ok((value, consumed_after_control))
 }
 
-fn apply_graphic(
-    out: &mut String,
-    state: &InvocationState,
-    set: GraphicSet,
-    first: u8,
-    second: Option<u8>,
-) -> Result<usize, AribStringDecodeError> {
-    if state.middle_size && set != GraphicSet::Alnum {
-        return Err(AribStringDecodeError::MiddleSizeGraphic);
-    }
-    match set {
-        GraphicSet::Alnum => {
-            out.push(first as char);
-            Ok(1)
-        }
-        GraphicSet::Hiragana => {
-            out.push_str(map_hiragana(first));
-            Ok(1)
-        }
-        GraphicSet::Katakana => {
-            out.push_str(map_katakana(first));
-            Ok(1)
-        }
-        GraphicSet::Kanji => {
-            let second = second.ok_or(AribStringDecodeError::TruncatedGraphic)?;
-            out.push_str(map_kanji(first, second));
-            Ok(2)
-        }
-    }
-}
-
 fn consume_csi(bytes: &[u8]) -> Result<usize, AribStringDecodeError> {
     if bytes.first() != Some(&0x9b) {
         return Err(AribStringDecodeError::MalformedCsi);
@@ -205,14 +180,15 @@ pub(crate) struct AribStringDecoder {
 impl AribStringDecoder {
     pub(crate) fn decode(&mut self, bytes: &[u8]) -> Result<String, AribStringDecodeError> {
         let mut next_state = self.state;
-        let decoded = decode_arib_string_with_state(bytes, &mut next_state)?;
+        let (decoded, _) =
+            decode_arib_string_with_policy(bytes, &mut next_state, ErrorPolicy::Strict)?;
         self.state = next_state;
         Ok(decoded)
     }
 
     pub(crate) fn lossy_diagnostic(&self, bytes: &[u8]) -> AribStringDecodeDiagnostic {
         let mut state = self.state;
-        decode_arib_string_lossy_with_state(bytes, &mut state).1
+        decode_arib_string_replacing(bytes, &mut state).1
     }
 }
 
@@ -223,86 +199,39 @@ pub fn decode_arib_string(bytes: &[u8]) -> Result<String, AribStringDecodeError>
     AribStringDecoder::default().decode(bytes)
 }
 
-fn decode_arib_string_with_state(
-    bytes: &[u8],
-    state: &mut InvocationState,
-) -> Result<String, AribStringDecodeError> {
-    let mut out = String::new();
-    let mut index = 0usize;
-    while index < bytes.len() {
-        let byte = bytes[index];
-        match byte {
-            0x00 => {}
-            0x0d => out.push('\n'),      // APR
-            0x0e => state.gl = state.g1, // LS1
-            0x0f => state.gl = state.g0, // LS0
-            0x19 | 0x1d => {
-                let set = if byte == 0x19 { state.g2 } else { state.g3 };
-                if state.middle_size && set != GraphicSet::Alnum {
-                    return Err(AribStringDecodeError::MiddleSizeGraphic);
-                }
-                let (value, consumed) = decode_single_shift(set, bytes, index)?;
-                out.push_str(&value);
-                index += consumed;
-            }
-            0x1b => {
-                let consumed = apply_escape(state, &bytes[index..])?;
-                index += consumed.saturating_sub(1);
-            }
-            0x20 => out.push(' '),
-            0x89 => state.middle_size = true,  // MSZ
-            0x8a => state.middle_size = false, // NSZ
-            0x9b => {
-                let consumed = consume_csi(&bytes[index..])?;
-                index += consumed.saturating_sub(1);
-            }
-            0x21..=0x7e => {
-                let consumed = apply_graphic(
-                    &mut out,
-                    state,
-                    state.gl,
-                    byte,
-                    bytes.get(index + 1).copied(),
-                )?;
-                index += consumed.saturating_sub(1);
-            }
-            0xa1..=0xfe => {
-                let normalized = byte & 0x7f;
-                if state.middle_size && state.gr != GraphicSet::Alnum {
-                    return Err(AribStringDecodeError::MiddleSizeGraphic);
-                }
-                match state.gr {
-                    GraphicSet::Alnum => out.push(normalized as char),
-                    GraphicSet::Hiragana => out.push_str(map_hiragana(normalized)),
-                    GraphicSet::Katakana => out.push_str(map_katakana(normalized)),
-                    GraphicSet::Kanji => {
-                        let next = *bytes
-                            .get(index + 1)
-                            .ok_or(AribStringDecodeError::TruncatedGraphic)?
-                            & 0x7f;
-                        out.push_str(map_kanji(normalized, next));
-                        index += 1;
-                    }
-                }
-            }
-            _ => return Err(AribStringDecodeError::UnsupportedControl),
-        }
-        index += 1;
-    }
-    Ok(out.trim_matches('\0').to_string())
-}
-
 /// 字幕以外の SI/EPG 文字列向けの劣化許容復号を行う。
 /// 不正な放送データで設定処理や EPG スキャンを停止させないため、未対応バイトは置換文字にする。
 pub fn decode_arib_string_lossy(bytes: &[u8]) -> (String, AribStringDecodeDiagnostic) {
     let mut state = InvocationState::default();
-    decode_arib_string_lossy_with_state(bytes, &mut state)
+    decode_arib_string_replacing(bytes, &mut state)
 }
 
-fn decode_arib_string_lossy_with_state(
+fn decode_arib_string_replacing(
     bytes: &[u8],
     state: &mut InvocationState,
 ) -> (String, AribStringDecodeDiagnostic) {
+    match decode_arib_string_with_policy(bytes, state, ErrorPolicy::Replace) {
+        Ok(result) => result,
+        Err(error) => {
+            let mut diagnostic = AribStringDecodeDiagnostic::default();
+            diagnostic.replacement_count = 1;
+            diagnostic.record_entry(
+                bytes,
+                0,
+                "decoder",
+                &format!("replacement_policy_failure:{error:?}"),
+                true,
+            );
+            ("�".to_string(), diagnostic)
+        }
+    }
+}
+
+fn decode_arib_string_with_policy(
+    bytes: &[u8],
+    state: &mut InvocationState,
+    error_policy: ErrorPolicy,
+) -> Result<(String, AribStringDecodeDiagnostic), AribStringDecodeError> {
     let mut out = String::new();
     let mut diagnostic = AribStringDecodeDiagnostic::default();
     let mut index = 0usize;
@@ -316,6 +245,9 @@ fn decode_arib_string_lossy_with_state(
             0x19 | 0x1d => {
                 let set = if byte == 0x19 { state.g2 } else { state.g3 };
                 if state.middle_size && set != GraphicSet::Alnum {
+                    if error_policy == ErrorPolicy::Strict {
+                        return Err(AribStringDecodeError::MiddleSizeGraphic);
+                    }
                     diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
                     diagnostic.record_entry(
                         bytes,
@@ -338,6 +270,9 @@ fn decode_arib_string_lossy_with_state(
                         index += consumed;
                     }
                     Err(AribStringDecodeError::TruncatedGraphic) => {
+                        if error_policy == ErrorPolicy::Strict {
+                            return Err(AribStringDecodeError::TruncatedGraphic);
+                        }
                         diagnostic.truncated_graphic_count =
                             diagnostic.truncated_graphic_count.saturating_add(1);
                         diagnostic.replacement_count =
@@ -346,11 +281,10 @@ fn decode_arib_string_lossy_with_state(
                         out.push('�');
                         break;
                     }
-                    Err(AribStringDecodeError::TruncatedEscape)
-                    | Err(AribStringDecodeError::UnsupportedEscape)
-                    | Err(AribStringDecodeError::UnsupportedControl)
-                    | Err(AribStringDecodeError::MalformedCsi)
-                    | Err(AribStringDecodeError::MiddleSizeGraphic) => {
+                    Err(error) => {
+                        if error_policy == ErrorPolicy::Strict {
+                            return Err(error);
+                        }
                         diagnostic.replacement_count =
                             diagnostic.replacement_count.saturating_add(1);
                         diagnostic.record_entry(
@@ -368,6 +302,9 @@ fn decode_arib_string_lossy_with_state(
             0x1b => match apply_escape(state, &bytes[index..]) {
                 Ok(consumed) => index += consumed.saturating_sub(1),
                 Err(AribStringDecodeError::TruncatedEscape) => {
+                    if error_policy == ErrorPolicy::Strict {
+                        return Err(AribStringDecodeError::TruncatedEscape);
+                    }
                     diagnostic.truncated_escape_count =
                         diagnostic.truncated_escape_count.saturating_add(1);
                     diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
@@ -376,6 +313,9 @@ fn decode_arib_string_lossy_with_state(
                     break;
                 }
                 Err(AribStringDecodeError::TruncatedGraphic) => {
+                    if error_policy == ErrorPolicy::Strict {
+                        return Err(AribStringDecodeError::TruncatedGraphic);
+                    }
                     diagnostic.truncated_graphic_count =
                         diagnostic.truncated_graphic_count.saturating_add(1);
                     diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
@@ -384,6 +324,9 @@ fn decode_arib_string_lossy_with_state(
                     break;
                 }
                 Err(AribStringDecodeError::UnsupportedEscape) => {
+                    if error_policy == ErrorPolicy::Strict {
+                        return Err(AribStringDecodeError::UnsupportedEscape);
+                    }
                     diagnostic.unsupported_escape_count =
                         diagnostic.unsupported_escape_count.saturating_add(1);
                     diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
@@ -391,9 +334,10 @@ fn decode_arib_string_lossy_with_state(
                     out.push('�');
                     index += unsupported_escape_sequence_length(&bytes[index..]).saturating_sub(1);
                 }
-                Err(AribStringDecodeError::UnsupportedControl)
-                | Err(AribStringDecodeError::MalformedCsi)
-                | Err(AribStringDecodeError::MiddleSizeGraphic) => {
+                Err(error) => {
+                    if error_policy == ErrorPolicy::Strict {
+                        return Err(error);
+                    }
                     diagnostic.unsupported_escape_count =
                         diagnostic.unsupported_escape_count.saturating_add(1);
                     diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
@@ -407,7 +351,10 @@ fn decode_arib_string_lossy_with_state(
             0x8a => state.middle_size = false,
             0x9b => match consume_csi(&bytes[index..]) {
                 Ok(consumed) => index += consumed.saturating_sub(1),
-                Err(_) => {
+                Err(error) => {
+                    if error_policy == ErrorPolicy::Strict {
+                        return Err(error);
+                    }
                     diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
                     diagnostic.record_entry(
                         bytes,
@@ -421,6 +368,9 @@ fn decode_arib_string_lossy_with_state(
                 }
             },
             0x21..=0x7e if state.middle_size && state.gl != GraphicSet::Alnum => {
+                if error_policy == ErrorPolicy::Strict {
+                    return Err(AribStringDecodeError::MiddleSizeGraphic);
+                }
                 diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
                 diagnostic.record_entry(
                     bytes,
@@ -440,6 +390,9 @@ fn decode_arib_string_lossy_with_state(
                 GraphicSet::Katakana => out.push_str(map_katakana(byte)),
                 GraphicSet::Kanji => {
                     let Some(next) = bytes.get(index + 1).copied() else {
+                        if error_policy == ErrorPolicy::Strict {
+                            return Err(AribStringDecodeError::TruncatedGraphic);
+                        }
                         diagnostic.truncated_graphic_count =
                             diagnostic.truncated_graphic_count.saturating_add(1);
                         diagnostic.replacement_count =
@@ -455,6 +408,9 @@ fn decode_arib_string_lossy_with_state(
                         break;
                     };
                     if !(0x21..=0x7e).contains(&next) {
+                        if error_policy == ErrorPolicy::Strict {
+                            return Err(AribStringDecodeError::UnsupportedControl);
+                        }
                         diagnostic.replacement_count =
                             diagnostic.replacement_count.saturating_add(1);
                         diagnostic.record_entry(bytes, index, "GL/Kanji", "不正な2バイト目", true);
@@ -466,6 +422,9 @@ fn decode_arib_string_lossy_with_state(
                 }
             },
             0xa1..=0xfe if state.middle_size && state.gr != GraphicSet::Alnum => {
+                if error_policy == ErrorPolicy::Strict {
+                    return Err(AribStringDecodeError::MiddleSizeGraphic);
+                }
                 diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
                 diagnostic.record_entry(
                     bytes,
@@ -487,6 +446,9 @@ fn decode_arib_string_lossy_with_state(
                     GraphicSet::Katakana => out.push_str(map_katakana(normalized)),
                     GraphicSet::Kanji => {
                         let Some(next) = bytes.get(index + 1).copied() else {
+                            if error_policy == ErrorPolicy::Strict {
+                                return Err(AribStringDecodeError::TruncatedGraphic);
+                            }
                             diagnostic.truncated_graphic_count =
                                 diagnostic.truncated_graphic_count.saturating_add(1);
                             diagnostic.replacement_count =
@@ -502,6 +464,9 @@ fn decode_arib_string_lossy_with_state(
                             break;
                         };
                         if !(0xa1..=0xfe).contains(&next) && !(0x21..=0x7e).contains(&next) {
+                            if error_policy == ErrorPolicy::Strict {
+                                return Err(AribStringDecodeError::UnsupportedControl);
+                            }
                             diagnostic.replacement_count =
                                 diagnostic.replacement_count.saturating_add(1);
                             diagnostic.record_entry(
@@ -520,6 +485,9 @@ fn decode_arib_string_lossy_with_state(
                 }
             }
             _ => {
+                if error_policy == ErrorPolicy::Strict {
+                    return Err(AribStringDecodeError::UnsupportedControl);
+                }
                 diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
                 diagnostic.record_entry(
                     bytes,
@@ -533,7 +501,7 @@ fn decode_arib_string_lossy_with_state(
         }
         index += 1;
     }
-    (out.trim_matches('\0').to_string(), diagnostic)
+    Ok((out.trim_matches('\0').to_string(), diagnostic))
 }
 
 fn unsupported_escape_sequence_length(bytes: &[u8]) -> usize {
@@ -753,6 +721,23 @@ mod tests {
             "EPG"
         );
     }
+
+    #[test]
+    fn strict_and_lossy_decoders_match_for_valid_si_inputs() {
+        let valid_inputs: &[&[u8]] = &[
+            &[b'E', b'l', b'5', b'~'],
+            &[0x1b, b'(', b'I', 0x22, 0x24, 0x26],
+            &[0x1b, b'(', b'B', b'A', 0x19, 0x22, b'B'],
+            &[0x1b, b'(', b'B', b'A', 0x9b, b'1', b';', b'2', b'X', b'B'],
+        ];
+        for bytes in valid_inputs {
+            let strict = decode_arib_string(bytes).unwrap();
+            let (lossy, diagnostic) = decode_arib_string_lossy(bytes);
+            assert_eq!(lossy, strict);
+            assert_eq!(diagnostic, Default::default());
+        }
+    }
+
     #[test]
     fn arib_string_lossy_preserves_prefix_on_truncated_escape() {
         assert_eq!(
