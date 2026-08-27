@@ -1,0 +1,124 @@
+name: Temporary Clippy repair for PR53 and PR54
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/tmp-fix-clippy-pr53-pr54.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fix and validate PR53 Tuner HAL Clippy findings
+        run: |
+          git fetch origin fix/tuner-hal2-rustfmt-1.81
+          git checkout -B fix/tuner-hal2-rustfmt-1.81 origin/fix/tuner-hal2-rustfmt-1.81
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("tuner_hal2/common/src/lib.rs")
+          text = path.read_text()
+          old = '''#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+          pub struct TransportStreamPid(u16);
+
+          impl TransportStreamPid {
+              pub fn validate_u16(pid: u16) -> Result<Self, ()> {
+                  if pid <= 0x1fff {
+                      Ok(Self(pid))
+                  } else {
+                      Err(())
+                  }
+              }
+
+              pub fn validate_i32(pid: i32) -> Result<Self, ()> {
+                  if (0..=0x1fff).contains(&pid) {
+                      Ok(Self(pid as u16))
+                  } else {
+                      Err(())
+                  }
+              }
+          '''
+          new = '''#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+          pub struct TransportStreamPid(u16);
+
+          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+          pub enum TransportStreamPidValidationError {
+              OutOfRange,
+          }
+
+          impl TransportStreamPid {
+              pub fn validate_u16(pid: u16) -> Result<Self, TransportStreamPidValidationError> {
+                  if pid <= 0x1fff {
+                      Ok(Self(pid))
+                  } else {
+                      Err(TransportStreamPidValidationError::OutOfRange)
+                  }
+              }
+
+              pub fn validate_i32(pid: i32) -> Result<Self, TransportStreamPidValidationError> {
+                  if (0..=0x1fff).contains(&pid) {
+                      Ok(Self(pid as u16))
+                  } else {
+                      Err(TransportStreamPidValidationError::OutOfRange)
+                  }
+              }
+          '''
+          if old not in text:
+              raise SystemExit("expected TransportStreamPid block not found")
+          path.write_text(text.replace(old, new, 1))
+          PY
+          (
+            cd tuner_hal2/host_ci
+            cargo fmt --all
+            cargo clippy --workspace --all-targets --locked -- -D warnings
+            cargo test --workspace --locked
+          )
+          git diff --check
+          git add tuner_hal2/common/src/lib.rs
+          if ! git diff --cached --quiet; then
+            git commit -m "fix(tuner_hal2): use typed PID validation error"
+            git push origin HEAD:fix/tuner-hal2-rustfmt-1.81
+          fi
+
+      - name: Apply machine-fixable PR54 ARIB SI Clippy findings
+        run: |
+          git fetch origin agent/implement-tis-arib-si-design-pr53
+          git checkout -B agent/implement-tis-arib-si-design-pr53 origin/agent/implement-tis-arib-si-design-pr53
+          rustup toolchain install 1.81.0 --profile minimal --component clippy,rustfmt
+          set +e
+          (
+            cd arib_si_engine_rs/host_ci
+            cargo +1.81.0 clippy --fix --allow-dirty --allow-staged --all-targets --locked -- -D warnings
+          )
+          set -e
+          (
+            cd arib_si_engine_rs/host_ci
+            cargo +1.81.0 fmt --all
+          )
+          if ! (cd arib_si_engine_rs/host_ci && cargo +1.81.0 clippy --all-targets --locked -- -D warnings); then
+            echo "=== remaining ARIB SI diff after machine fixes ==="
+            git diff -- arib_si_engine_rs
+            exit 1
+          fi
+          (
+            cd arib_si_engine_rs/host_ci
+            cargo +1.81.0 test --locked
+          )
+          git diff --check
+          git add arib_si_engine_rs
+          if ! git diff --cached --quiet; then
+            git commit -m "fix(arib_si): resolve Clippy findings"
+            git push origin HEAD:agent/implement-tis-arib-si-design-pr53
+          fi
