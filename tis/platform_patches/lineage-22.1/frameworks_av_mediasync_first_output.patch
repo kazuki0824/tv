@@ -61,7 +61,7 @@ index a3f55da7116a..000000000000 100644
 +void MediaSync::setFirstVideoFrameQueuedToOutputCallback(
 +        FirstVideoFrameQueuedToOutputCallback callback) {
 +    Mutex::Autolock lock(mMutex);
-+    mFirstVideoFrameQueuedToOutputCallback = std::move(callback);
++    mFirstVideoFrameQueuedToOutputCallback = callback;
 +}
 +
 +void MediaSync::setFirstVideoFrameQueuedToOutputArm(bool armed, int64_t armSequence) {
