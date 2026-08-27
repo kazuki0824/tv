@@ -175,7 +175,6 @@ object ProviderDataBridge {
         program.descriptors.parentalRatings.forEach { rating ->
             arr.put(JSONObject()
                 .put("countryCode", rating.countryCode)
-                .put("ratingValue", rating.ratingValue)
                 .put("rawRatingByte", rating.rawRatingByte)
                 .put("parseStatus", rating.parseStatus))
         }
