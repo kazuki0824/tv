@@ -194,6 +194,7 @@ jobs:
           "$TIS_KOTLIN_HOME/bin/kotlinc" \
             -J-Xmx4g \
             -jvm-target 17 \
+            -Xfriend-paths="$production_dir" \
             -classpath "$test_classpath" \
             -d "$test_dir" \
             "${test_sources[@]}"
