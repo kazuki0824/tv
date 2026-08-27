@@ -125,7 +125,7 @@ EIT event fixed フィールド、start_time BCD、duration BCD、descriptor_loo
 
 TvProvider に自然に入らない descriptor は構造化した内部データとして `internal_provider_data` に保存し、診断 API にも出す。EIT event ごとの診断文字列には、content、component、音声コンポーネント、視聴年齢制限、series、イベントグループ、linkage、未知 descriptor の数と主要値を含める。
 
-provider-data JSON v1 は `provider-data / 診断情報 Rust SSOT` 節の `ProgramProviderDataV1` を唯一の正式 schema とする。少なくとも `series`、`eventGroups`、`linkage`、`freeCaMode`、`audioLanguages`、`ratings`、`genres`、`extendedItems`、`components`、`diagnostics` を最上位フィールドとして保持する。`eventGroups` は `event_group_descriptor` をdescriptor単位で保持する。各要素はraw `groupType`、共通の`events[] { serviceId, eventId }`、`groupType=0x4/0x5`でだけ存在する`otherNetworkEvents[] { originalNetworkId, transportStreamId, serviceId, eventId }`、それ以外のgroup typeで残余byteを保持する`privateDataHex`、`parseStatus`を持つ。`kind`のように`groupType`から導出できる値はcanonical保存しない。`series` は series_id、repeat_label、program_pattern、expire_date、episode_number、last_episode_number、series_name を保持する。
+provider-data JSON v1 は `provider-data / 診断情報 Rust SSOT` 節の `ProgramProviderDataV1` を唯一の正式 schema とする。少なくとも `series`、`eventGroups`、`linkage`、`freeCaMode`、`ratings`、`genres`、`extendedItems`、`components`、`diagnostics` を最上位フィールドとして保持する。番組identityは`programKey`だけ、時刻は`timing.startUtcMillis + durationMillis`だけを正本とし、重複する`serviceKey`、`endUtcMillis`、`audioLanguages`はcanonical保存しない。音声言語は`components.audio[].language / secondLanguage`に保持する。`eventGroups` は `event_group_descriptor` をdescriptor単位で保持する。各要素はraw `groupType`、共通の`events[] { serviceId, eventId }`、`groupType=0x4/0x5`でだけ存在する`otherNetworkEvents[] { originalNetworkId, transportStreamId, serviceId, eventId }`、それ以外のgroup typeで残余byteを保持する`privateDataHex`、`parseStatus`を持つ。`kind`のように`groupType`から導出できる値はcanonical保存しない。`series` は series_id、repeat_label、program_pattern、expire_date、episode_number、last_episode_number、series_name を保持する。
 
 
 ## 構造化変換対象 descriptor
@@ -214,17 +214,15 @@ pub struct ProgramProviderDataV1 {
     pub schema: String,                  // "maleicacid.tv.program"
     pub schema_version: u32,             // 1
     pub program_key: ProgramKeyV1,
-    pub service_key: ServiceKeyV1,
     pub timing: ProgramTimingV1,
     pub source: ProgramSourceV1,
     pub cas: CasSemanticStateV1,
     pub ratings: Vec<RatingV1>,
     pub genres: Vec<GenreV1>,
     pub series: Option<SeriesV1>,
-    pub related_items: Vec<RelatedItemV1>,
+    pub event_groups: Vec<EventGroupV1>,
     pub linkage: Vec<LinkageV1>,
     pub free_ca_mode: Option<FreeCaModeV1>,
-    pub audio_languages: Vec<AudioLanguageV1>,
     pub extended_items: Vec<ExtendedItemV1>,
     pub components: ComponentsV1,
     pub diagnostics: DiagnosticsV1,
@@ -243,11 +241,13 @@ pub struct ProgramKeyV1 {
 
 `ProgramKeyV1.kind` は `arib-event-v1` とする。`ProgramKeyV1` に start/end/duration を入れてはならない。
 
+`ProgramTimingV1` は `startUtcMillis` と `durationMillis` だけをcanonical保存し、終了時刻はchecked additionで導出する。旧JSON v1の一致する`endUtcMillis`は正規化入力としてだけ受理し、新しいcanonical出力から除く。
+
 ### JSON 表現規則
 
-JSON は正規表現ではなく、Rust `serde` / Kotlin JSON parser / JSON Schema によって読み書き・検証する。`ProgramProviderDataV1` の canonical JSON では、任意の単一オブジェクトは値が無い場合 `null`、繰り返し要素は空の場合 `[]`、常設containerは空でもオブジェクトとして出力する。具体的には、`series`、`freeCaMode` は未取得時 `null`、`ratings`、`genres`、`eventGroups`、`linkage`、`audioLanguages`、`extendedItems` は未取得時 `[]`、`components` は常にオブジェクトとし、内部の `video`、`audio`、`subtitle`、`data` は空でも `[]` とする。runtimeで選択したmain `audio` / `video`要約をtop-levelへ保存しない。
+JSON は正規表現ではなく、Rust `serde` / Kotlin JSON parser / JSON Schema によって読み書き・検証する。`ProgramProviderDataV1` の canonical JSON では、任意の単一オブジェクトは値が無い場合 `null`、繰り返し要素は空の場合 `[]`、常設containerは空でもオブジェクトとして出力する。具体的には、`series`、`freeCaMode` は未取得時 `null`、`ratings`、`genres`、`eventGroups`、`linkage`、`extendedItems` は未取得時 `[]`、`components` は常にオブジェクトとし、内部の `video`、`audio`、`subtitle`、`data` は空でも `[]` とする。runtimeで選択したmain `audio` / `video`要約をtop-levelへ保存しない。
 
-未知 key を読み込んだ場合は、無言で破棄しない。既存 JSON v1 の未知 key は読み取り時に保持可能とし、新規 canonical 出力では既知 schema フィールドと `diagnostics.rawProviderDataExtensions[]` へ正規化する。`JSONObject` の手書き構築や文字列連結による JSON 生成を禁止する。
+未知のtop-level keyを読み込んだ場合は、無言で破棄せず`diagnostics.rawProviderDataExtensions[]`へ正規化する。version 1のnested DTOはclosedとし、未知nested keyはschema不一致として拒否する。これによりbuilder requestはstrict DTOへ1回だけdeserializeでき、`Value`走査による第二validatorを持たない。nested構造を拡張する場合はschema versionを更新する。`JSONObject` の手書き構築や文字列連結によるcanonical JSON生成を禁止する。
 
 `series` は series_id、repeat_label、program_pattern、expire_date_valid、expire_date、episode_number、last_episode_number、series_name、parse_status を保持する。series name は番組表 title を置換する値ではない。
 
@@ -257,13 +257,13 @@ JSON は正規表現ではなく、Rust `serde` / Kotlin JSON parser / JSON Sche
 
 `freeCaMode` は EIT `free_CA_mode` の raw 値、scrambled 投影用 boolean、parse_status を保持する。CAS権利状態、カード状態、CAS HAL状態と混同しない。
 
-`audioLanguages` は PMT / 音声コンポーネントdescriptor から取得できる ISO639 language だけを保持する。取得不能時に推測値を入れない。
+PMT / 音声コンポーネントdescriptor から取得できるISO639言語は、対応する`components.audio[]`要素の`language`と`secondLanguage`だけに保持する。標準列向けの言語一覧はこの構造から投影し、top-levelへ複製しない。取得不能時に推測値を入れない。
 
 `genres` は ARIB content descriptor の level1、level2、user_nibble、ARIB表示名、parse_statusだけを保持する。Android canonical genre の判定と `Programs.COLUMN_CANONICAL_GENRE` への投影はTIS側の責務であり、その投影結果、unmapped理由を本crateのprovider-dataへ保存しない。
 
-`ratings` は parental_rating_descriptor の country_code、rating_value、raw_rating_byte、parse_statusだけを保持する。未対応値を推測で Android レーティングに変換せず、`supported`や`mappedTvContentRating`をprovider-dataへ保存しない。Android `TvContentRating`文字列はTIS側が生成する。
+`ratings` は parental_rating_descriptor の country_code、raw_rating_byte、parse_statusだけを保持する。年齢値はraw byteから投影時に導出する。未対応値を推測で Android レーティングに変換せず、`supported`や`mappedTvContentRating`をprovider-dataへ保存しない。Android `TvContentRating`文字列はTIS側が生成する。
 
-`components.video[]` は ES PID、stream_type、component_tag、component_type、codec signaling、解像度、走査方式、aspect、profile / level、根拠 descriptor を ES/component単位で保持する。`components.audio[]` は ES PID、stream_type、component_tag、component_type、codec signaling、ISO639 language、channel configuration、sampling info、根拠 descriptor を ES/component単位で保持する。`components.subtitle[]` は ES PID、component_tag、data_component_id、ISO639 language、captionサービスkind、parse_statusを保持し、Android/TIS runtimeの`trackId`を保持しない。`components.data[]` はデータcomponentのメタデータを保持するが、BML / data broadcast実行状態やUI状態は保持しない。
+`components.video[]` は ES PID、stream_type、component_tag、component_type、codec signaling、解像度、走査方式、aspect、profile / level、根拠 descriptor を ES/component単位で保持する。`components.audio[]` は ES PID、stream_type、component_tag、component_type、codec signaling、primary/secondary ISO639 language、channel configuration、sampling info、根拠 descriptor を ES/component単位で保持する。`components.subtitle[]` は ES PID、component_tag、data_component_id、ISO639 language、captionサービスkind、parse_statusを保持し、Android/TIS runtimeの`trackId`を保持しない。`components.data[]` はデータcomponentのメタデータを保持するが、BML / data broadcast実行状態やUI状態は保持しない。
 
 codec metadataの認識はライブviewable / playable対応宣言を意味しない。`ProgramProviderDataV1.components.video[]` / `components.audio[]` にrelease固有またはruntime capability判定の `r51PlaybackSupported` / `liveViewableClaim` を保存せず、再生可否とtrack選択はTIS runtimeの製品policyとdecoder capability判定に閉じる。
 
@@ -305,7 +305,7 @@ buildChannelProviderData(inputJson) -> ProviderDataResult
 decodeChannelProviderData(rawBytes) -> ChannelProviderDataResult?
 ```
 
-`decodeChannelProviderData()` は UTF-8、JSON、schema を Rust 側で検証し、canonical bytes、schema version、型付き `ServiceKey`、型付き `ChannelTune` を返す。`ChannelTune` は `deliverySystem`、`frequencyHz`、`streamIdType`、`streamId`、`physicalChannel`、`satelliteBand`、`remoteControlKeyId` を持ち、`inputId`、backend名、driver名、driver固有slotを含めない。TV input ownershipはTvProvider channel rowのrequired `TvContract.Channels.COLUMN_INPUT_ID`をSSOTとし、Kotlin/TISはprovider-data decode前にrowのinputIdがcurrent TIS inputIdと一致することを検証する。Kotlin は channel provider-data JSON を `JSONObject`、文字列連結、個別key抽出で解釈しない。
+`decodeChannelProviderData()` は UTF-8、JSON、schema を Rust 側で検証し、canonical bytes、schema version、型付き `ServiceKey`、型付き `ChannelTune`、放送由来の`requiresCas`を返す。現行のString JNI surfaceではこれらを単一JSON result envelopeで返し、TAB区切り・hexという第二wire protocolを設けない。Kotlinが解釈するのはこのresult envelopeだけで、保存済みchannel provider-dataの検証・修復・canonical化はRustに閉じる。`ChannelTune` は `deliverySystem`、`frequencyHz`、`streamIdType`、`streamId`、`physicalChannel`、`satelliteBand`、`remoteControlKeyId` を持ち、`inputId`、表示名、backend名、driver名、driver固有slotを含めない。TV input ownershipはTvProvider channel rowのrequired `TvContract.Channels.COLUMN_INPUT_ID`をSSOTとし、Kotlin/TISはprovider-data decode前にrowのinputIdがcurrent TIS inputIdと一致することを検証する。
 
 `inputJson` は Rust builder への入力 DTO であり、TvProvider 保存 schema ではない。Rustは最終provider-data bytes、schema version、切り詰め結果、診断件数を返す。`ProviderDataResult`に`signature`または`contentDigest`フィールドを設けない。
 
@@ -319,7 +319,7 @@ Rust は `rawBytes` が invalid UTF-8 または malformed JSON の場合、通�
 
 ### ChannelProviderDataV1
 
-Channel provider-data の正形式は JSON v1 のみとし、schema は `maleicacid.tv.channel` / `schemaVersion=1` とする。`arib_si_engine_rs/schema/channel_provider_data_v1.schema.json` は、channel rowのtune復元に必要な物理選局情報、ONID / TSID / service_id、表示名、ARIB/CAS意味事実の診断を検証対象にし、`inputId`やTIS/product policyをprovider-data schemaへ重複定義しない。r50以前の `;` 区切りkey-value形式、旧flat provider-data、旧provider-data断片は読み取り互換入力としても残さない。Channel provider-data の top-level envelope は `schema="maleicacid.tv.channel"`, `schemaVersion=1`, `serviceKey`, `tune`, `cas`, `diagnostics` を持つ JSON v1 とする。`cas`は放送信号から導出した`requiresCas`等の意味事実だけを保持し、`unsupportedCas` / `clearLivePlaybackSupported`を持たない。`diagnostics`に`channelRegistrationReady` / `epgPublishable` / `publishStateSource`を保存しない。`tune` は `displayName`、`deliverySystem`、`frequencyHz`、`streamId`、`streamIdType`、`physicalChannel`、`satelliteBand`、`remoteControlKeyId` を持つ。`inputId`は保存せず、TvProvider rowの`Channels.COLUMN_INPUT_ID`を唯一のSSOTとする。backend名、driver名、px4相対slot等のbackend固有値は永続channel tune identityへ保存しない。CS110 は `streamIdType="NONE"` とし、`streamId` は null とする。
+Channel provider-data の正形式は JSON v1 のみとし、schema は `maleicacid.tv.channel` / `schemaVersion=1` とする。`arib_si_engine_rs/schema/channel_provider_data_v1.schema.json` は、channel rowのtune復元に必要な物理選局情報、ONID / TSID / service_id、ARIB/CAS意味事実の診断を検証対象にし、`inputId`、表示名、TIS/product policyをprovider-data schemaへ重複定義しない。r50以前の `;` 区切りkey-value形式、旧flat provider-data、旧provider-data断片は読み取り互換入力としても残さない。Channel provider-data の top-level envelope は `schema="maleicacid.tv.channel"`, `schemaVersion=1`, `serviceKey`, `tune`, `cas`, `diagnostics` を持つ JSON v1 とする。`cas`は放送信号から導出した`requiresCas`等の意味事実だけを保持し、`unsupportedCas` / `clearLivePlaybackSupported`を持たない。`diagnostics`に`channelRegistrationReady` / `epgPublishable` / `publishStateSource`を保存しない。`tune` は `deliverySystem`、`frequencyHz`、`streamId`、`streamIdType`、`physicalChannel`、`satelliteBand`、`remoteControlKeyId` を持つ。旧JSON v1の`displayName`は正規化入力としてだけ受理してcanonical出力から除く。`inputId`は保存せず、TvProvider rowの`Channels.COLUMN_INPUT_ID`を唯一のSSOTとする。backend名、driver名、px4相対slot等のbackend固有値は永続channel tune identityへ保存しない。CS110 は `streamIdType="NONE"` とし、`streamId` は null とする。
 
 ### 旧 event field / indexed JNI の廃止
 
@@ -329,7 +329,7 @@ Channel provider-data の正形式は JSON v1 のみとし、schema は `maleica
 
 ### JSON Schema / schema 整合確認データ
 
-現行仕様では Rust serde struct を SSOT としつつ、`arib_si_engine_rs/schema/program_provider_data_v1.schema.json`、`arib_si_engine_rs/schema/descriptor_diagnostic_v1.schema.json`、schema整合確認データを置く。`ProgramProviderDataV1` の JSON Schema は、top-level と nested オブジェクトの双方で required 最小フィールドと `additionalProperties: true` を併用し、固定済みフィールドを検証しながらARIB descriptor拡張を保持できる形にする。ただしTIS/runtime/product policy用の旧fieldは`not`で明示拒否し、未知extensionとして再保存しない。schema整合確認データは `arib_si_engine_rs/testdata/program_provider_data_v1/minimal_clear_program.json` と `tis/tests/assets/program_provider_data_v1/minimal_clear_program.json` の双方にバイト単位で同一に複製して置く。これは Rust host test と Android instrumentation asset packaging の参照経路が異なるためであり、2つの内容差分は違反とする。Rust test と Kotlin test は同じ内容のテストデータを読み、Rust JSON -> Kotlin round-trip と Kotlin input -> Rust build -> schema整合確認データとの一致を確認する。
+現行仕様では Rust serde struct を SSOT としつつ、`arib_si_engine_rs/schema/program_provider_data_v1.schema.json`、`arib_si_engine_rs/schema/descriptor_diagnostic_v1.schema.json`、schema整合確認データを置く。`ProgramProviderDataV1` の JSON Schema はtop-levelだけをextension envelopeとして`additionalProperties: true`にし、nested DTOは`additionalProperties: false`で固定する。TIS/runtime/product policy用の旧fieldは未知extensionとして再保存しない。schema整合確認データは `arib_si_engine_rs/testdata/program_provider_data_v1/minimal_clear_program.json` と `tis/tests/assets/program_provider_data_v1/minimal_clear_program.json` の双方にバイト単位で同一に複製して置く。これは Rust host test と Android instrumentation asset packaging の参照経路が異なるためであり、2つの内容差分は違反とする。Rust test と Kotlin test は同じ内容のテストデータを読み、Rust JSON -> Kotlin round-trip と Kotlin input -> Rust build -> schema整合確認データとの一致を確認する。
 
 ### 現行実装との関係
 
