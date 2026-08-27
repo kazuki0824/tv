@@ -45,7 +45,6 @@ class AribRatingMapperTest {
 
     private fun rating(raw: Int, country: String = "JPN") = AribParentalRating(
         countryCode = country,
-        ratingValue = raw,
         rawRatingByte = raw,
     )
 }

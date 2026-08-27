@@ -14,6 +14,8 @@
 未対応の SI/EPG 文字・escape は `panic` させず、置換文字または診断によって安定動作させる。字幕 payload を `decode_arib_string_lossy()` に渡す経路は禁止する。字幕本文処理は TIS 側の libaribcaption 経路だけで行う。
 `arib_si_engine_rs` は libaribcaption ラッパーを所有しない。libaribcaption は TIS 側の字幕 path から Rust JNI boundary と安全なRustラッパー経由で呼ぶ。
 
+strict APIとlossy APIはdesignation / invocation、graphic set、APR/SP/MSZ/NSZ、CSI/XCSを処理するdecoder coreを一つだけ共有する。差分は`ErrorPolicy::Strict`が最初の異常を返すか、`ErrorPolicy::Replace`が`U+FFFD`とoffset・理由付き診断へ変換するかだけとする。正常入力で両APIの文字出力が一致しなければならない。意味論を二本のdecoderへ複製しない。
+
 ARIB適合性の規範対象と検証証拠の分離は `../開発規則.md` を正とする。本decoderがSI/EPG文字列として受理する符号profileは、対象放送方式に適用される現行日本語TR-B14 / TR-B15のSI運用規定を正とし、STD-B24が定義する汎用的な文字符号機能全体をSI/EPG入力能力へ自動的に昇格させない。STD-B10 / STD-B24は、当該SI運用profileから参照される構文、designation / invocation、文字集合、制御機能の意味を解釈する基礎規格として用いる。取得可能なARIB公式英語版を条項単位の検証証拠に用いる場合も、現行日本語原文との版差を未証明差分として残し、改定概要、版一覧、二次資料を未取得本文の具体規定の代用にしない。
 
 従来8単位符号のSI/EPG文字列は、TR-B14 / TR-B15のSI運用profileで定義された初期状態と使用文字集合を適用する。初期状態は G0=Kanji、G1=Alphanumeric、G2=Hiragana、G3=Katakana、GL=LS0(G0)、GR=LS2R(G2)、文字サイズ=NSZ とする。SI運用profileが使用しないMacro code set、DRCS code set、外字字形転送を正常なSI入力として要求しない。これらがSI/EPG入力に現れた場合、strict APIは規格外または未対応入力としてエラーにし、lossy APIだけが`U+FFFD`とoffset・理由付き診断へ変換する。STD-B24の汎用Macro展開器、DRCS renderer、字幕組版機能を本crateのSI decoder capabilityとして設計しない。
@@ -72,19 +74,20 @@ content_descriptor 由来のARIB分類、表示文字列、user_nibble を構造
 parental_rating_descriptor:
   entries[]:
     country_code
-    rating_value        # ARIB STD-B10 5.13-E1 Part 2 6.2.12のRating 8 uimsbfを8bit値のまま保持する
-    raw_rating_byte     # 元8bitレーティング値
+    raw_rating_byte     # ARIB STD-B10 5.13-E1 Part 2 6.2.12のRating 8 uimsbfを8bit値のまま保持する
   raw_descriptor_bytes
   parse_status          # ok / malformed_length / truncated_descriptor / unsupported_value
 ```
 
 `arib_si_engine_rs` は Android `TvContentRating` の domain 名、flattened string、対応可否をSSOTとして決めない。Android TvProvider列への投影と `TvContentRating` 生成は TIS 側の責務とし、投影方針は tv 直下の `ARIB_SI_EPG_TvProvider投影方針.md`をSSOTとする。
 
-未対応 country_code、未定義 rating_value、不正 descriptor は破棄せず、`parse_status` と診断JSONに保持する。未対応値を推測で一般ユーザー向けレーティングに変換してはならない。
+未対応 country_code、未定義 raw rating byte、不正 descriptor は破棄せず、`parse_status` と診断JSONに保持する。未対応値を推測で一般ユーザー向けレーティングに変換してはならない。
 
-## BS / CS110 discovery
+## 放送profile別 discovery
 
-BS と CS110 の discovery completion 条件は放送方式別に扱う。BS の complete 判定では NIT actual と SDT actual / other を対象とし、NIT other の受信を必須にしない。CS110（広帯域CSデジタル放送）の complete 判定では NIT actual / other と SDT actual / other を対象とする。BAT は受信した場合に解析・意味利用するが、BAT の未受信だけを discovery incomplete の理由にしない。complete 判定は table_id だけの global 完了ではなく、table_extension と NIT/BAT transport loop から得た ONID/TSID scope を使って transport 単位で判定する。リモコンキーが得られない場合は service_id を表示番号の代替値とする。
+discovery profileはTISの選局候補から`ISDB_T / BS / CS110`を明示して設定し、ONIDや受信済みtableから推測しない。PAT、PMT、SDT actual、NIT actualはprofileにかかわらず固定必須条件とする。変化するprofile値はoptional tableの必須化だけであり、ISDB_TはSDT other/NIT otherを必須化せず、BSはSDT otherを必須・NIT otherを任意、CS110はSDT other/NIT otherを必須とする。BATは受信した場合に解析・意味利用するが、未受信だけをdiscovery incompleteの理由にしない。
+
+完成状態の正本は`TableRequirementStatus(component, scope, required, complete)`の集合とする。global missing、complete、discovery stageはこの集合から導出し、同じ意味のbooleanやmissing listを並行して保持しない。complete判定はtable_idだけのglobal完了ではなく、table_extensionとNIT/BAT transport loopから得たONID/TSID scopeを使ってtransport/service単位で判定する。リモコンキーが得られない場合はservice_idを表示番号の代替値とする。
 
 `arib_si_engine_rs` は、service / transport単位の `ServiceSemanticFacts` として、ONID / TSID / SID、ARIB `service_type`のraw 8-bit値、PMT/PCRの存在・構文状態、audio/video/subtitle/data ES一覧とcodec signaling、CA descriptor / free_CA_mode、CA descriptor等から導出した`requiresCas`、SMD意味状態、欠落・不正理由を構造化してTISへ渡す。`ServiceSemanticFacts` は放送信号から導ける事実と構文・意味解析結果だけを持ち、Android channel登録可否、EPG公開可否、現行productのdecoder/CAS対応可否、ライブ再生可否を算出しない。Android channelを登録するか、partial snapshotをchannel insertへ使用するかはTISの責務であり、`../tis/DESIGN_JA.md`を正とする。`Channels.COLUMN_SERVICE_TYPE`への最終投影は`../ARIB_SI_EPG_TvProvider投影方針.md`を正とし、本crateはAndroid generic `TvContract.Channels.SERVICE_TYPE_*`への意味変換を行わない。
 
@@ -110,6 +113,8 @@ EIT event の `start_time` と `duration` は、ARIB が各フィールドのall
 - `MALFORMED_TIMING`: 上記未定義値ではなく、BCDその他の構文規則に違反する。正常eventへ昇格せず診断に保持する。
 
 ## section 更新
+
+MPEG-2 PSI / ARIB SIのlong-form section headerにある`section_length`は12 bit固定として、parser内部の単一`parse_section_header(section)`で`0x0fff` maskを適用する。bit幅を呼び出し側引数にせず、0や別幅をlegacy互換として受理しない。宣言長、buffer境界、CRCの検査は同じheader結果を使う。
 
 PAT/PMT/SDT/NIT/BAT/EIT の version 更新では collector 全体を捨てない。table 単位、section 単位、サービス 単位で差分更新する。
 
@@ -175,7 +180,7 @@ Rust descriptor モデルから Kotlin/TvProvider へ渡す通常境界は、`Pr
 
 `arib_si_engine_rs` は ARIB `parental_rating_descriptor` の構造化解析結果だけをSSOTとする。Android `TvContentRating` の `domain` / `ratingSystem` / `rating` 文字列、`flattenToString()`、`Programs.COLUMN_CONTENT_RATING` への投影、`TvInputManager.isRatingBlocked()` に渡す値は TIS 側の責務である。
 
-Rust 側に `com.android.tv` や `ISDB_<age>` の Android domain 決定文字列を持ち込んではならない。Rust は `country_code`, `rating_value`, `raw_rating_byte`, `parse_status`, `raw_descriptor_bytes` を保持し、未対応値を推測変換しない。
+Rust 側に `com.android.tv` や `ISDB_<age>` の Android domain 決定文字列を持ち込んではならない。Rust は `country_code`, `raw_rating_byte`, `parse_status`, `raw_descriptor_bytes` を保持し、年齢値やAndroid ratingを別stateとして保存せず投影時に導出する。
 
 ## provider-data / 診断情報 Rust SSOT
 
