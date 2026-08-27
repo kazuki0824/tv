@@ -9,27 +9,26 @@ permissions:
   contents: write
 
 jobs:
-  repair:
+  tuner:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-      - name: Fix and validate PR53 Tuner HAL Clippy findings
+      - name: Fix and validate PR53 Tuner HAL
         run: |
           git fetch origin fix/tuner-hal2-rustfmt-1.81
           git checkout -B fix/tuner-hal2-rustfmt-1.81 origin/fix/tuner-hal2-rustfmt-1.81
           python3 - <<'PY'
           from pathlib import Path
-          path = Path("tuner_hal2/common/src/lib.rs")
-          text = path.read_text()
+
+          common = Path("tuner_hal2/common/src/lib.rs")
+          text = common.read_text()
           old = '''#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
           pub struct TransportStreamPid(u16);
 
@@ -75,47 +74,96 @@ jobs:
                   }
               }
           '''
-          if old not in text:
-              raise SystemExit("expected TransportStreamPid block not found")
-          path.write_text(text.replace(old, new, 1))
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif "TransportStreamPidValidationError" not in text:
+              raise SystemExit("unexpected TransportStreamPid validation block")
+          common.write_text(text)
+
+          ledger = Path("tuner_hal2/resource_ledger/src/lib.rs")
+          text = ledger.read_text()
+          typed_old = '''    pub fn len(&self) -> usize {
+              self.inner.len()
+          }
+          }
+
+          macro_rules! define_ledger_wrapper'''
+          typed_new = '''    pub fn len(&self) -> usize {
+              self.inner.len()
+          }
+
+              pub fn is_empty(&self) -> bool {
+                  self.inner.is_empty()
+              }
+          }
+
+          macro_rules! define_ledger_wrapper'''
+          if typed_old in text:
+              text = text.replace(typed_old, typed_new, 1)
+          macro_old = '''            pub fn len(&self) -> usize {
+                  self.inner.len()
+              }
+              }
+              };
+          }'''
+          macro_new = '''            pub fn len(&self) -> usize {
+                  self.inner.len()
+              }
+              pub fn is_empty(&self) -> bool {
+                  self.inner.is_empty()
+              }
+              }
+              };
+          }'''
+          if macro_old in text:
+              text = text.replace(macro_old, macro_new, 1)
+          if text.count("pub fn is_empty(&self) -> bool") < 3:
+              raise SystemExit("failed to add typed ledger is_empty methods")
+          ledger.write_text(text)
           PY
-          (
-            cd tuner_hal2/host_ci
-            cargo fmt --all
-            cargo clippy --workspace --all-targets --locked -- -D warnings
-            cargo test --workspace --locked
-          )
+          set +e
+          (cd tuner_hal2/host_ci && cargo clippy --fix --allow-dirty --allow-staged --workspace --all-targets --locked -- -D warnings)
+          set -e
+          (cd tuner_hal2/host_ci && cargo fmt --all)
+          if ! (cd tuner_hal2/host_ci && cargo clippy --workspace --all-targets --locked -- -D warnings); then
+            echo "=== remaining Tuner HAL diff ==="
+            git diff -- tuner_hal2
+            exit 1
+          fi
+          (cd tuner_hal2/host_ci && cargo test --workspace --locked)
           git diff --check
-          git add tuner_hal2/common/src/lib.rs
+          git add tuner_hal2/common tuner_hal2/resource_ledger tuner_hal2/device tuner_hal2/control tuner_hal2/descrambler tuner_hal2/lnb tuner_hal2/compile_contract
           if ! git diff --cached --quiet; then
-            git commit -m "fix(tuner_hal2): use typed PID validation error"
+            git commit -m "fix(tuner_hal2): resolve Clippy findings"
             git push origin HEAD:fix/tuner-hal2-rustfmt-1.81
           fi
 
-      - name: Apply machine-fixable PR54 ARIB SI Clippy findings
+  arib-si:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Apply machine-fixable PR54 ARIB SI findings
         run: |
           git fetch origin agent/implement-tis-arib-si-design-pr53
           git checkout -B agent/implement-tis-arib-si-design-pr53 origin/agent/implement-tis-arib-si-design-pr53
           rustup toolchain install 1.81.0 --profile minimal --component clippy,rustfmt
           set +e
-          (
-            cd arib_si_engine_rs/host_ci
-            cargo +1.81.0 clippy --fix --allow-dirty --allow-staged --all-targets --locked -- -D warnings
-          )
+          (cd arib_si_engine_rs/host_ci && cargo +1.81.0 clippy --fix --allow-dirty --allow-staged --all-targets --locked -- -D warnings)
           set -e
-          (
-            cd arib_si_engine_rs/host_ci
-            cargo +1.81.0 fmt --all
-          )
+          (cd arib_si_engine_rs/host_ci && cargo +1.81.0 fmt --all)
           if ! (cd arib_si_engine_rs/host_ci && cargo +1.81.0 clippy --all-targets --locked -- -D warnings); then
             echo "=== remaining ARIB SI diff after machine fixes ==="
             git diff -- arib_si_engine_rs
             exit 1
           fi
-          (
-            cd arib_si_engine_rs/host_ci
-            cargo +1.81.0 test --locked
-          )
+          (cd arib_si_engine_rs/host_ci && cargo +1.81.0 test --locked)
           git diff --check
           git add arib_si_engine_rs
           if ! git diff --cached --quiet; then
