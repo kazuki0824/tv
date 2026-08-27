@@ -694,7 +694,7 @@ fn event_diagnostic_text(event: &EitEvent) -> String {
         d.contents.iter().map(|c| (c.content_nibble_level_1, c.content_nibble_level_2)).collect::<Vec<_>>(),
         d.components.iter().map(|c| (c.stream_content, c.component_type, c.component_tag, c.language_code.clone())).collect::<Vec<_>>(),
         d.audio_components.iter().map(|a| (a.stream_content, a.component_type, a.component_tag, a.stream_type, a.language_code.clone(), a.language_code_2.clone())).collect::<Vec<_>>(),
-        d.parental_ratings.iter().map(|r| (r.country_code.clone(), r.rating_value, r.raw_rating_byte)).collect::<Vec<_>>(),
+        d.parental_ratings.iter().map(|r| (r.country_code.clone(), r.raw_rating_byte)).collect::<Vec<_>>(),
         d.series.iter().map(|s| (s.series_id, s.episode_number, s.last_episode_number, s.series_name.clone())).collect::<Vec<_>>(),
         diagnostic.event_group_count,
         diagnostic.linkage_count,
@@ -710,8 +710,8 @@ fn parental_ratings_json(event: &EitEvent) -> String {
             .iter()
             .map(|r| {
                 format!(
-        "{{\"countryCode\":{},\"ratingValue\":{},\"rawRatingByte\":{},\"parseStatus\":\"OK\"}}",
-        json_string(&r.country_code), r.rating_value, r.raw_rating_byte
+        "{{\"countryCode\":{},\"rawRatingByte\":{},\"parseStatus\":\"OK\"}}",
+        json_string(&r.country_code), r.raw_rating_byte
     )
             })
             .collect(),
