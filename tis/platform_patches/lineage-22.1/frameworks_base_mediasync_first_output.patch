@@ -228,7 +228,7 @@ index d1ce30a3e827..000000000000 100644
 +        mJavaVm->DetachCurrentThread();
 +    }
  }
-@@ -194,6 +259,20 @@ static void android_media_MediaSync_native_setAudioTrack(
+@@ -194,6 +259,23 @@ static void android_media_MediaSync_native_setAudioTrack(
      }
  }
  
@@ -236,6 +236,10 @@ index d1ce30a3e827..000000000000 100644
 +        JNIEnv *env, jobject thiz, jboolean armed, jlong armSequence) {
 +    sp<JMediaSync> sync = getMediaSync(env, thiz);
 +    if (sync == NULL) {
++        // Disarm is part of release cleanup and remains harmless after native_release().
++        if (armed == JNI_FALSE) {
++            return;
++        }
 +        throwExceptionAsNecessary(env, INVALID_OPERATION);
 +        return;
 +    }
@@ -248,7 +252,7 @@ index d1ce30a3e827..000000000000 100644
 +
  static jobject android_media_MediaSync_createInputSurface(
          JNIEnv* env, jobject thiz) {
-@@ -493,6 +572,10 @@ static void android_media_MediaSync_native_init(JNIEnv *env) {
+@@ -493,6 +575,10 @@ static void android_media_MediaSync_native_init(JNIEnv *env) {
      gFields.context = env->GetFieldID(clazz.get(), "mNativeContext", "J");
      CHECK(gFields.context != NULL);
  
@@ -257,7 +261,7 @@ index d1ce30a3e827..000000000000 100644
 +    CHECK(gFields.postFirstVideoFrameQueuedToOutputID != NULL);
 +
      clazz.reset(env->FindClass("android/media/MediaTimestamp"));
-@@ -516,9 +599,10 @@ static void android_media_MediaSync_native_init(JNIEnv *env) {
+@@ -516,9 +602,10 @@ static void android_media_MediaSync_native_init(JNIEnv *env) {
  }
  
  static void android_media_MediaSync_native_setup(JNIEnv *env, jobject thiz) {
@@ -267,7 +271,7 @@ index d1ce30a3e827..000000000000 100644
      setMediaSync(env, thiz, sync);
 +    sync->initializeFirstVideoFrameQueuedToOutputCallback();
  }
-@@ -536,6 +620,10 @@ static JNINativeMethod gMethods[] = {
+@@ -536,6 +623,10 @@ static JNINativeMethod gMethods[] = {
        "(Landroid/media/AudioTrack;)V",
        (void *)android_media_MediaSync_native_setAudioTrack },
  
