@@ -647,7 +647,7 @@ impl ServiceDiscoveryEngine {
             CaDescriptorParseContext {
                 pid: 0x0001,
                 table_id: 0x01,
-                table_id_extension: parse_section_header(section, 12)
+                table_id_extension: parse_section_header(section)
                     .and_then(|h| h.table_id_extension),
                 service_id: None,
                 elementary_pid: None,
@@ -1338,7 +1338,7 @@ impl ServiceDiscoveryCollector {
     }
 
     fn invalidate_changed_table(&mut self, pid: u16, section: &[u8]) {
-        let Some(header) = parse_section_header(section, 12) else {
+        let Some(header) = parse_section_header(section) else {
             return;
         };
         let Some(table_extension) = header.table_id_extension else {
@@ -1382,7 +1382,7 @@ impl ServiceDiscoveryCollector {
     }
 
     fn section_version_changed(&self, pid: u16, section: &[u8]) -> bool {
-        let Some(header) = parse_section_header(section, 12) else {
+        let Some(header) = parse_section_header(section) else {
             return false;
         };
         if header.current_next_indicator != Some(true) {
@@ -1402,7 +1402,7 @@ impl ServiceDiscoveryCollector {
     }
 
     fn track_section(&mut self, pid: u16, section: &[u8]) {
-        let Some(header) = parse_section_header(section, 12) else {
+        let Some(header) = parse_section_header(section) else {
             return;
         };
         if header.current_next_indicator != Some(true) {
@@ -1428,7 +1428,7 @@ impl ServiceDiscoveryCollector {
     }
 
     fn track_transport_scopes(&mut self, section: &[u8]) {
-        let Some(header) = parse_section_header(section, 12) else {
+        let Some(header) = parse_section_header(section) else {
             return;
         };
         if header.current_next_indicator != Some(true) {
@@ -1560,25 +1560,25 @@ fn checked_end(start: usize, len: usize, limit: usize) -> Option<usize> {
 }
 
 fn section_len(section: &[u8]) -> usize {
-    parse_section_header(section, 12)
+    parse_section_header(section)
         .map(|header| header.section_length)
         .unwrap_or_default()
 }
 
 fn valid_current_section(section: &[u8]) -> bool {
-    let Some(header) = parse_section_header(section, 12) else {
+    let Some(header) = parse_section_header(section) else {
         return false;
     };
     if header.current_next_indicator == Some(false) {
         return false;
     }
-    section_crc_valid(section, 12)
+    section_crc_valid(section)
 }
 
 const TRACKER_GLOBAL_SCOPE: u16 = 0xffff;
 
 fn tracker_scope_extension(section: &[u8]) -> Option<u16> {
-    let header = parse_section_header(section, 12)?;
+    let header = parse_section_header(section)?;
     match header.table_id {
         0x42 | 0x46 => sdt_transport_scope_from_section(section).map(|(_, onid)| onid),
         _ => Some(TRACKER_GLOBAL_SCOPE),
@@ -1586,7 +1586,7 @@ fn tracker_scope_extension(section: &[u8]) -> Option<u16> {
 }
 
 fn sdt_transport_scope_from_section(section: &[u8]) -> Option<(u16, u16)> {
-    let header = parse_section_header(section, 12)?;
+    let header = parse_section_header(section)?;
     let tsid = header.table_id_extension?;
     if section.len() < 11 {
         return None;
