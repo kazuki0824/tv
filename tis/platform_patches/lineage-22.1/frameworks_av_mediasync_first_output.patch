@@ -1,0 +1,111 @@
+diff --git a/media/libstagefright/include/media/stagefright/MediaSync.h b/media/libstagefright/include/media/stagefright/MediaSync.h
+index ef8cb23d7f19..000000000000 100644
+--- a/media/libstagefright/include/media/stagefright/MediaSync.h
++++ b/media/libstagefright/include/media/stagefright/MediaSync.h
+@@ -17,6 +17,8 @@
+ #ifndef MEDIA_SYNC_H
+ #define MEDIA_SYNC_H
+ 
++#include <functional>
++
+ #include <gui/IConsumerListener.h>
+ #include <gui/IProducerListener.h>
+ 
+@@ -117,6 +119,13 @@ public:
+     // Get the play time for pending audio frames in audio sink.
+     status_t getPlayTimeForPendingAudioFrames(int64_t *outTimeUs);
+ 
++    using FirstVideoFrameQueuedToOutputCallback = std::function<void(int64_t)>;
++
++    void setFirstVideoFrameQueuedToOutputCallback(
++            FirstVideoFrameQueuedToOutputCallback callback);
++    void setFirstVideoFrameQueuedToOutputArm(bool armed, int64_t armSequence);
++
+ protected:
+     virtual void onMessageReceived(const sp<AMessage> &msg);
+ 
+@@ -124,6 +133,7 @@ private:
+     enum {
+         kWhatDrainVideo = 'dVid',
++        kWhatFirstVideoFrameQueuedToOutput = 'fVqo',
+     };
+@@ -218,6 +228,10 @@ private:
+ 
+     sp<MediaClock> mMediaClock;
+ 
++    FirstVideoFrameQueuedToOutputCallback mFirstVideoFrameQueuedToOutputCallback;
++    bool mFirstVideoFrameQueuedToOutputArmed;
++    int64_t mFirstVideoFrameQueuedToOutputArmSequence;
++
+     MediaSync();
+ 
+     // Must be accessed through RefBase
+diff --git a/media/libstagefright/MediaSync.cpp b/media/libstagefright/MediaSync.cpp
+index a3f55da7116a..000000000000 100644
+--- a/media/libstagefright/MediaSync.cpp
++++ b/media/libstagefright/MediaSync.cpp
+@@ -55,7 +55,9 @@ MediaSync::MediaSync()
+         mNumFramesWritten(0),
+         mHasAudio(false),
+         mNextBufferItemMediaUs(-1),
+-        mPlaybackRate(0.0) {
++        mPlaybackRate(0.0),
++        mFirstVideoFrameQueuedToOutputArmed(false),
++        mFirstVideoFrameQueuedToOutputArmSequence(0) {
+     mMediaClock = new MediaClock;
+     mMediaClock->init();
+@@ -337,6 +339,19 @@ status_t MediaSync::getPlayTimeForPendingAudioFrames(int64_t *outTimeUs) {
+     return OK;
+ }
+ 
++void MediaSync::setFirstVideoFrameQueuedToOutputCallback(
++        FirstVideoFrameQueuedToOutputCallback callback) {
++    Mutex::Autolock lock(mMutex);
++    mFirstVideoFrameQueuedToOutputCallback = std::move(callback);
++}
++
++void MediaSync::setFirstVideoFrameQueuedToOutputArm(bool armed, int64_t armSequence) {
++    Mutex::Autolock lock(mMutex);
++    mFirstVideoFrameQueuedToOutputArmed = armed;
++    mFirstVideoFrameQueuedToOutputArmSequence = armed ? armSequence : 0;
++}
++
+ status_t MediaSync::updateQueuedAudioData(
+         size_t sizeInBytes, int64_t presentationTimeUs) {
+@@ -692,6 +707,15 @@ void MediaSync::renderOneBufferItem_l(const BufferItem &bufferItem) {
+     }
+     mBuffersSentToOutput.add(bufferItem.mGraphicBuffer->getId(), bufferItem.mGraphicBuffer);
+ 
++    if (mFirstVideoFrameQueuedToOutputArmed) {
++        const int64_t armSequence = mFirstVideoFrameQueuedToOutputArmSequence;
++        mFirstVideoFrameQueuedToOutputArmed = false;
++        mFirstVideoFrameQueuedToOutputArmSequence = 0;
++        sp<AMessage> msg = new AMessage(kWhatFirstVideoFrameQueuedToOutput, this);
++        msg->setInt64("armSequence", armSequence);
++        msg->post();
++    }
++
+     ALOGV("queued buffer %#llx to output", (long long)bufferItem.mGraphicBuffer->getId());
+ }
+@@ -784,6 +808,20 @@ void MediaSync::onMessageReceived(const sp<AMessage> &msg) {
+             break;
+         }
+ 
++        case kWhatFirstVideoFrameQueuedToOutput:
++        {
++            int64_t armSequence;
++            CHECK(msg->findInt64("armSequence", &armSequence));
++            FirstVideoFrameQueuedToOutputCallback callback;
++            {
++                Mutex::Autolock lock(mMutex);
++                callback = mFirstVideoFrameQueuedToOutputCallback;
++            }
++            if (callback) {
++                callback(armSequence);
++            }
++            break;
++        }
++
+         default:
+             TRESPASS();
+             break;
