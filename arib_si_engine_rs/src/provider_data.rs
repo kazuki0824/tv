@@ -77,7 +77,6 @@ struct CasV1 {
 #[serde(rename_all = "camelCase")]
 struct RatingV1 {
     country_code: String,
-    rating_value: i64,
     raw_rating_byte: i64,
     parse_status: String,
 }
@@ -505,7 +504,7 @@ fn program_request_has_only_known_fields(raw: &serde_json::Value) -> bool {
         && field_array_has_only(
             raw,
             "ratings",
-            &["countryCode", "ratingValue", "rawRatingByte", "parseStatus"],
+            &["countryCode", "rawRatingByte", "parseStatus"],
         )
         && field_array_has_only(
             raw,
@@ -1323,7 +1322,7 @@ fn collect_program_unknown_extensions(
     collect_array_unknown(
         raw.get("ratings").unwrap_or(&serde_json::Value::Null),
         "ratings",
-        &["countryCode", "ratingValue", "rawRatingByte", "parseStatus"],
+        &["countryCode", "rawRatingByte", "parseStatus"],
         out,
     );
     collect_array_unknown(
@@ -1968,7 +1967,6 @@ fn valid_iso639(s: &str) -> bool {
 }
 fn valid_rating(v: &RatingV1) -> bool {
     valid_iso639(&v.country_code)
-        && (0..=255).contains(&v.rating_value)
         && (0..=255).contains(&v.raw_rating_byte)
         && nonempty(&v.parse_status)
 }
@@ -2386,7 +2384,6 @@ mod provider_data_tests {
         stored["cas"]["unsupportedCas"] = serde_json::json!(true);
         stored["ratings"] = serde_json::json!([{
             "countryCode": "JPN",
-            "ratingValue": 1,
             "rawRatingByte": 1,
             "parseStatus": "OK",
             "supported": true,
