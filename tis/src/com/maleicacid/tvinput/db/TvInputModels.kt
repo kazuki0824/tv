@@ -26,7 +26,6 @@ data class ChannelRecord(
     val satelliteBand: String? = null,
     val remoteControlKeyId: Int? = null,
     val requiresCas: Boolean = false,
-    val inputId: String? = null,
 ) {
     companion object {
         const val DELIVERY_SYSTEM_ISDB_T = "ISDB_T"

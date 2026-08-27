@@ -27,7 +27,6 @@ class AribCaptionController(
         val contentTopPx: Int,
         val contentWidthPx: Int,
         val contentHeightPx: Int,
-        val generationToken: Long,
     )
 
     private sealed interface Boundary {
@@ -56,7 +55,7 @@ class AribCaptionController(
     }
     private val mainHandler = Handler(Looper.getMainLooper())
     private val released = AtomicBoolean(false)
-    private val uiEpoch = AtomicLong(0L)
+    private val presentationEpoch = AtomicLong(0L)
     private val boundaries = PriorityQueue<Boundary>(
         compareBy<Boundary> { it.mediaTimeMillis }
             .thenBy { it.frameToken }
@@ -65,7 +64,6 @@ class AribCaptionController(
     private var enabled = false
     private var selectedTrack: TunerController.TisTrack? = null
     private var playbackGeneration: Long = -1L
-    private var subtitleGeneration: Long = 0L
     private var overlayWidth: Int = 0
     private var overlayHeight: Int = 0
     private var videoWidth: Int = 0
@@ -110,14 +108,14 @@ class AribCaptionController(
     fun setEnabled(value: Boolean) = enqueue {
         if (enabled == value) return@enqueue
         enabled = value
-        restartSubtitleGeneration()
+        restartPresentation()
     }
 
     fun selectTrack(track: TunerController.TisTrack?) = enqueue {
         val normalized = track?.takeIf { it.type == TvTrackInfo.TYPE_SUBTITLE }
         if (normalized?.id == selectedTrack?.id) return@enqueue
         selectedTrack = normalized
-        restartSubtitleGeneration()
+        restartPresentation()
     }
 
     fun beginPlaybackGeneration(generation: Long, hasVideo: Boolean) = enqueue {
@@ -127,7 +125,7 @@ class AribCaptionController(
         videoWidth = 0
         videoHeight = 0
         viewport = null
-        restartSubtitleGeneration()
+        restartPresentation()
     }
 
     fun updateVideoGeometry(generation: Long, width: Int, height: Int) = enqueue {
@@ -143,7 +141,7 @@ class AribCaptionController(
         val track = selectedTrack ?: return@enqueue
         val currentViewport = viewport ?: return@enqueue
         val currentRenderer = renderer ?: return@enqueue
-        if (!enabled || track.id != trackId || currentViewport.generationToken != playbackGeneration) return@enqueue
+        if (!enabled || track.id != trackId) return@enqueue
         when (val decoded = runCatching { currentRenderer.decodePes(pesData, timestamp) }
             .onFailure { error -> Log.w(LogTags.TIS, "ARIB字幕PES処理に失敗しました trackId=$trackId", error) }
             .getOrNull() ?: return@enqueue) {
@@ -156,7 +154,7 @@ class AribCaptionController(
         }
     }
 
-    fun flushForSubtitleContinuityLoss() = enqueue { restartSubtitleGeneration() }
+    fun flushForSubtitleContinuityLoss() = enqueue { restartPresentation() }
 
     fun noPtsRejectedCountForDiagnostic(): Int = runBlocking { noPtsRejectedCount }
     fun invalidViewportCountForDiagnostic(): Int = runBlocking { invalidViewportCount }
@@ -196,8 +194,7 @@ class AribCaptionController(
         ensureRenderer()
     }
 
-    private fun restartSubtitleGeneration() {
-        subtitleGeneration++
+    private fun restartPresentation() {
         cancelScheduledBoundary()
         boundaries.clear()
         displayedFrameToken = null
@@ -212,7 +209,6 @@ class AribCaptionController(
         if (!enabled || !videoPathExpected) return
         val track = selectedTrack ?: return
         val currentViewport = viewport ?: return
-        if (currentViewport.generationToken != playbackGeneration) return
         if (renderer != null) return
         val created = NativeAribCaptionRenderer(
             dataComponentId = track.dataComponentId ?: ARIB_PROFILE_A_COMPONENT_ID,
@@ -255,10 +251,10 @@ class AribCaptionController(
             }
             val delayMillis = kotlin.math.ceil(remainingMediaMillis / snapshot.clockRate.toDouble()).toLong()
                 .coerceAtLeast(1L)
-            val generationAtArm = subtitleGeneration
+            val epochAtArm = presentationEpoch.get()
             val runnable = Runnable {
                 enqueue {
-                    if (generationAtArm != subtitleGeneration) return@enqueue
+                    if (epochAtArm != presentationEpoch.get()) return@enqueue
                     scheduledRunnable = null
                     armNextBoundary()
                 }
@@ -278,11 +274,11 @@ class AribCaptionController(
                 }
             }
             is Boundary.Display -> {
-                if (boundary.viewport.generationToken != playbackGeneration || boundary.viewport != viewport) return
+                if (boundary.viewport != viewport) return
                 displayedFrameToken = boundary.frameToken
-                val epoch = uiEpoch.get()
+                val epoch = presentationEpoch.get()
                 mainHandler.post {
-                    if (uiEpoch.get() != epoch) return@post
+                    if (presentationEpoch.get() != epoch) return@post
                     if (boundary.frame.images.isEmpty()) {
                         overlayView.clearCaption()
                     } else if (!overlayView.showCaptionFrame(
@@ -303,14 +299,13 @@ class AribCaptionController(
     }
 
     private fun postClear() {
-        val epoch = uiEpoch.incrementAndGet()
-        mainHandler.post { if (uiEpoch.get() == epoch) overlayView.clearCaption() }
+        val epoch = presentationEpoch.incrementAndGet()
+        mainHandler.post { if (presentationEpoch.get() == epoch) overlayView.clearCaption() }
     }
 
     override fun close() {
         if (!released.compareAndSet(false, true)) return
         runBlocking {
-            subtitleGeneration++
             cancelScheduledBoundary()
             boundaries.clear()
             renderer?.flush()
@@ -346,7 +341,6 @@ class AribCaptionController(
                     0,
                     contentWidth,
                     overlayHeight,
-                    generation,
                 )
             } else {
                 val contentHeight = (overlayWidth / videoAspect).toInt().coerceAtLeast(1)
@@ -357,7 +351,6 @@ class AribCaptionController(
                     (overlayHeight - contentHeight) / 2,
                     overlayWidth,
                     contentHeight,
-                    generation,
                 )
             }
         }

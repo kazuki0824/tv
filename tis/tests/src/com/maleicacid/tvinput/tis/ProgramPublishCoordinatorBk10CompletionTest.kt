@@ -121,28 +121,42 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         check(coordinator.retryFailureClassesForTest().contains(ProgramPublishCoordinator.FailureClass.OBSOLETE_DELETE_FAILED))
     }
 
-    @Test fun retryBackoffUsesFixedScheduleJitterAttemptsAndRetention() {
-        val one = ProgramPublishCoordinator.retryBackoffMsForTest(1, key, 1_700_000_000_000L, ProgramPublishCoordinator.FailureClass.PROGRAM_INSERT_FAILED)
-        val two = ProgramPublishCoordinator.retryBackoffMsForTest(2, key, 1_700_000_000_000L, ProgramPublishCoordinator.FailureClass.PROGRAM_INSERT_FAILED)
-        val three = ProgramPublishCoordinator.retryBackoffMsForTest(3, key, 1_700_000_000_000L, ProgramPublishCoordinator.FailureClass.PROGRAM_INSERT_FAILED)
-        val four = ProgramPublishCoordinator.retryBackoffMsForTest(4, key, 1_700_000_000_000L, ProgramPublishCoordinator.FailureClass.PROGRAM_INSERT_FAILED)
-        check(one in 48_000L..72_000L)
-        check(two in 240_000L..360_000L)
-        check(three in 720_000L..1_080_000L)
-        check(four in 2_880_000L..4_320_000L)
-        check(ProgramPublishCoordinator.MAX_RETRY_ATTEMPTS_FOR_TEST == 10)
-        check(ProgramPublishCoordinator.RETRY_RETENTION_MS_FOR_TEST == 24L * 60 * 60 * 1000)
+    @Test fun retryUsesOneFixedCooldownAndKeepsFailureClassDiagnosticOnly() {
+        val store = FakeStore(failDelete = true)
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        val coordinator = ProgramPublishCoordinator(writer)
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
+        val window = ProgramPublishCoordinator.EpgUpdateWindow(
+            serviceKey = key,
+            windowStartMs = program.startTimeMillis,
+            windowEndMs = program.startTimeMillis + program.durationMillis,
+            validProgramKeys = emptySet(),
+            deletionAuthoritative = true,
+        )
+        val before = System.currentTimeMillis()
+        coordinator.publishWithUpdates(
+            mode = ChannelScanController.PublishMode.SETUP_SCAN,
+            allPrograms = emptyList(),
+            updateWindows = listOf(window),
+            allowedServiceKeys = null,
+        )
+        val after = System.currentTimeMillis()
+
+        val notBefore = coordinator.retryNotBeforeMillisForTest().single()
+        check(notBefore >= before + ProgramPublishCoordinator.RETRY_COOLDOWN_MS_FOR_TEST)
+        check(notBefore <= after + ProgramPublishCoordinator.RETRY_COOLDOWN_MS_FOR_TEST)
+        check(coordinator.retryFailureClassesForTest() == setOf(ProgramPublishCoordinator.FailureClass.OBSOLETE_DELETE_FAILED))
     }
 
 
 
-    @Test fun retryWindowLimitsMatchDesignAndTrimPerService() {
+    @Test fun dirtyWindowQueueHasOneBoundedLruLimit() {
         val store = FakeStore(failDelete = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
         writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
 
-        val windows = (0 until (ProgramPublishCoordinator.MAX_RETRY_WINDOWS_PER_SERVICE_FOR_TEST + 1)).map { i ->
+        val windows = (0 until (ProgramPublishCoordinator.MAX_DIRTY_WINDOWS_FOR_TEST + 1)).map { i ->
             ProgramPublishCoordinator.EpgUpdateWindow(
                 serviceKey = key,
                 windowStartMs = program.startTimeMillis + i * 60_000L,
@@ -157,38 +171,9 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             updateWindows = windows,
             allowedServiceKeys = null,
         )
-        check(coordinator.retryWindowCountForTest() == ProgramPublishCoordinator.MAX_RETRY_WINDOWS_PER_SERVICE_FOR_TEST) {
-            "service単位の再試行区間上限は設計値に固定する必要があります"
+        check(coordinator.retryWindowCountForTest() == ProgramPublishCoordinator.MAX_DIRTY_WINDOWS_FOR_TEST) {
+            "再試行区間は単一の有界LRUに収める必要があります"
         }
-        check(coordinator.droppedRetryWindowCountForTest(key) == 1)
-        check(ProgramPublishCoordinator.MAX_RETRY_WINDOWS_PER_SERVICE_FOR_TEST == 32)
-        check(ProgramPublishCoordinator.MAX_RETRY_WINDOWS_TOTAL_FOR_TEST == 512)
-    }
-
-    @Test fun expiredRetryWindowIsDroppedInsteadOfKept() {
-        val store = FakeStore(failDelete = true)
-        val writer = TvProviderWriter("input.test", store, testOnly = true)
-        val coordinator = ProgramPublishCoordinator(writer)
-        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
-
-        val expiredFirstFailure = System.currentTimeMillis() - ProgramPublishCoordinator.RETRY_RETENTION_MS_FOR_TEST - 60_000L
-        val window = ProgramPublishCoordinator.EpgUpdateWindow(
-            serviceKey = key,
-            windowStartMs = program.startTimeMillis,
-            windowEndMs = program.startTimeMillis + program.durationMillis,
-            validProgramKeys = emptySet(),
-            deletionAuthoritative = true,
-            attempt = 1,
-            firstFailureAtMillis = expiredFirstFailure,
-            lastFailureAtMillis = expiredFirstFailure,
-        )
-        coordinator.publishWithUpdates(
-            mode = ChannelScanController.PublishMode.SETUP_SCAN,
-            allPrograms = emptyList(),
-            updateWindows = listOf(window),
-            allowedServiceKeys = null,
-        )
-        check(coordinator.retryWindowCountForTest() == 0) { "期限切れの再試行区間を保持してはなりません" }
         check(coordinator.droppedRetryWindowCountForTest(key) == 1)
     }
 
