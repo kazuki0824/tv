@@ -1,6 +1,6 @@
 # tuner_hal2 product integration
 
-この文書は、`tuner_hal2` を Android TV 14 系 product image の既定 Tuner HAL service として組み込むためのSSOTである。
+この文書は、`tuner_hal2` を LineageOS 22.1 / Android 15 product image の既定 Tuner HAL service として組み込むためのSSOTである。
 
 ## 0. 固定方針
 
