@@ -18,20 +18,25 @@ pub const MAX_SECTION_PAYLOAD_BYTES: usize = MAX_ARIB_SECTION_TOTAL_BYTES;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct TransportStreamPid(u16);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransportStreamPidValidationError {
+    OutOfRange,
+}
+
 impl TransportStreamPid {
-    pub fn validate_u16(pid: u16) -> Result<Self, ()> {
+    pub fn validate_u16(pid: u16) -> Result<Self, TransportStreamPidValidationError> {
         if pid <= 0x1fff {
             Ok(Self(pid))
         } else {
-            Err(())
+            Err(TransportStreamPidValidationError::OutOfRange)
         }
     }
 
-    pub fn validate_i32(pid: i32) -> Result<Self, ()> {
+    pub fn validate_i32(pid: i32) -> Result<Self, TransportStreamPidValidationError> {
         if (0..=0x1fff).contains(&pid) {
             Ok(Self(pid as u16))
         } else {
-            Err(())
+            Err(TransportStreamPidValidationError::OutOfRange)
         }
     }
 

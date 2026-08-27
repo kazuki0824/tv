@@ -286,8 +286,8 @@ mod tests {
         p[1] = ((pid >> 8) as u8) & 0x1f;
         p[2] = (pid & 0xff) as u8;
         p[3] = (tsc << 6) | (afc << 4) | 0x05;
-        for i in 4..TS_PACKET_SIZE {
-            p[i] = (i as u8).wrapping_mul(3).wrapping_add(1);
+        for (i, byte) in p.iter_mut().enumerate().skip(4) {
+            *byte = (i as u8).wrapping_mul(3).wrapping_add(1);
         }
         p
     }

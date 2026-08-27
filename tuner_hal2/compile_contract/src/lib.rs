@@ -1,3 +1,4 @@
+#[cfg(test)]
 use maleicacid_tuner_hal2_device::FrontendWorkerStopTicket;
 
 #[test]

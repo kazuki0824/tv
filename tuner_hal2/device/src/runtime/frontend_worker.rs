@@ -826,8 +826,9 @@ mod tests {
             frontend_id: 14,
             kind: FrontendWorkerKind::Tune,
         };
-        let result: Arc<Mutex<Option<Result<(Result<(), HalError>, WorkerExit), HalError>>>> =
-            Arc::new(Mutex::new(None));
+        type WorkerThreadResult =
+            Arc<Mutex<Option<Result<(Result<(), HalError>, WorkerExit), HalError>>>>;
+        let result: WorkerThreadResult = Arc::new(Mutex::new(None));
         let join = std::thread::spawn(|| {});
         registry.slots.insert(
             key,

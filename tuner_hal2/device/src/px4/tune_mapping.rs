@@ -371,7 +371,7 @@ mod tests {
         let mapped = map_isdbt_frequency_to_px4(557_142_857).unwrap();
         assert_eq!(mapped.system_code, PTX_ISDB_T_SYSTEM);
         assert_eq!(mapped.freq_no, 77);
-        assert_eq!(mapped.slot.abs() <= PX4_FREQ_TOLERANCE_KHZ, true);
+        assert!(mapped.slot.abs() <= PX4_FREQ_TOLERANCE_KHZ);
     }
 
     #[test]

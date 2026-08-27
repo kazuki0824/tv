@@ -43,12 +43,12 @@ pub struct DtvPropertyBuffer {
 impl DtvPropertyBuffer {
     pub fn read_len_unaligned(&self) -> u32 {
         // 安全性: DtvPropertyBufferは#[repr(C, packed)]である。packed fieldの読取にはread_unalignedを使い、pointerは有効参照から導出する。
-        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*self).len)) }
+        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.len)) }
     }
 
     pub fn read_data_unaligned(&self) -> [u8; 32] {
         // 安全性: read_len_unaligned() と同じpacked field規則に従う。
-        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*self).data)) }
+        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.data)) }
     }
 }
 
@@ -80,19 +80,19 @@ impl DtvProperty {
 
     pub fn read_data_unaligned(&self) -> u32 {
         // 安全性: DtvPropertyはpackedである。union storageをu32として読む処理はLinux DVB dtv_property ABI data fieldに合わせる。
-        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*self).u) as *const u32) }
+        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.u) as *const u32) }
     }
 
     pub fn read_buffer_unaligned(&self) -> DtvPropertyBuffer {
         // 安全性: DtvPropertyはpackedであり、buffer variant bytesをcopyして取り出す。
         unsafe {
-            core::ptr::read_unaligned(core::ptr::addr_of!((*self).u) as *const DtvPropertyBuffer)
+            core::ptr::read_unaligned(core::ptr::addr_of!(self.u) as *const DtvPropertyBuffer)
         }
     }
 
     pub fn read_result_unaligned(&self) -> i32 {
         // 安全性: DtvPropertyはpackedであり、fieldをunaligned copyで取り出す。
-        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*self).result)) }
+        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.result)) }
     }
 }
 
