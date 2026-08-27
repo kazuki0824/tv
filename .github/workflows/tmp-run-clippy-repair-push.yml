@@ -31,7 +31,10 @@ jobs:
           from pathlib import Path
           p = Path("tuner_hal2/compile_contract/src/lib.rs")
           s = p.read_text()
-          use = "use maleicacid_tuner_hal2_device::FrontendWorkerStopTicket;\n\n"
+          use = "#[cfg(test)]\nuse maleicacid_tuner_hal2_device::FrontendWorkerStopTicket;\n\n"
+          plain = "use maleicacid_tuner_hal2_device::FrontendWorkerStopTicket;\n\n"
+          if plain in s:
+              s = s.replace(plain, "", 1)
           if use not in s:
               p.write_text(use + s)
           PY
