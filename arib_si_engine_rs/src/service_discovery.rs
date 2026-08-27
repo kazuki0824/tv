@@ -159,27 +159,6 @@ pub struct ServiceSemanticFacts {
     pub semantic_diagnostics: Vec<&'static str>,
 }
 
-/// Raw conditional-access signaling facts. These fields deliberately remain
-/// independent: PMT CA-descriptor observation, PMT resolution, and SDT/EIT
-/// free_CA_mode are different broadcast facts and product policy must not
-/// collapse one into another inside the SI engine.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct CasSignalingFacts {
-    pub ca_descriptors_resolved: bool,
-    pub ca_descriptors_present: bool,
-    pub free_ca_mode: Option<bool>,
-}
-
-impl ServiceSemanticFacts {
-    pub fn cas_signaling_facts(&self) -> CasSignalingFacts {
-        CasSignalingFacts {
-            ca_descriptors_resolved: self.ca_descriptors_resolved,
-            ca_descriptors_present: self.requires_cas,
-            free_ca_mode: self.free_ca_mode,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DiscoveryCollectionState {
     pub snapshot: DiscoverySnapshot,
@@ -219,10 +198,12 @@ impl DiscoveryCollectionState {
         }
     }
 
+    #[cfg(test)]
     pub fn partial_snapshot(&self) -> Option<DiscoverySnapshot> {
         (!self.snapshot.services.is_empty()).then(|| self.snapshot.clone())
     }
 
+    #[cfg(test)]
     pub fn best_available_snapshot(&self) -> Option<DiscoverySnapshotEnvelope> {
         if let Some(snapshot) = self.complete_snapshot() {
             return Some(DiscoverySnapshotEnvelope {
@@ -237,6 +218,7 @@ impl DiscoveryCollectionState {
             })
     }
 
+    #[cfg(test)]
     pub fn complete_snapshot(&self) -> Option<DiscoverySnapshot> {
         self.is_complete().then(|| self.snapshot.clone())
     }
@@ -343,10 +325,6 @@ impl ServiceDiscoveryEngine {
     pub fn take_epg_update_windows(&mut self) -> Vec<EitUpdateWindow> {
         self.eit_store
             .take_present_following_actual_update_windows()
-    }
-
-    pub fn clear_epg_update_windows(&mut self) {
-        self.eit_store.clear_update_windows();
     }
 
     pub fn is_known_pmt_pid(&self, pid: u16) -> bool {
@@ -577,13 +555,13 @@ impl ServiceDiscoveryEngine {
             return;
         }
         let full_key = (onid, tsid, service_id, pmt_pid);
-        if !self.pending_pmts.contains_key(&full_key) {
+        if let std::collections::btree_map::Entry::Vacant(e) = self.pending_pmts.entry(full_key) {
             if let Some(parsed) = self
                 .unresolved_pmts_by_pat
                 .get(&(tsid, service_id, pmt_pid))
                 .cloned()
             {
-                self.pending_pmts.insert(full_key, parsed);
+                e.insert(parsed);
             }
         }
         let Some(pending) = self.pending_pmts.get(&full_key).cloned() else {
@@ -1003,10 +981,6 @@ impl ServiceDiscoveryEngine {
             cursor = desc_end;
         }
     }
-
-    fn note_eit_diagnostic(&mut self, section: &[u8]) {
-        let _ = section;
-    }
 }
 
 impl ServiceDiscoveryCollector {
@@ -1046,10 +1020,6 @@ impl ServiceDiscoveryCollector {
 
     pub fn take_epg_update_windows(&mut self) -> Vec<EitUpdateWindow> {
         self.engine.take_epg_update_windows()
-    }
-
-    pub fn clear_epg_update_windows(&mut self) {
-        self.engine.clear_epg_update_windows()
     }
 
     pub fn is_known_pmt_pid(&self, pid: u16) -> bool {
@@ -1361,10 +1331,6 @@ impl ServiceDiscoveryCollector {
             missing_components_by_scope,
             semantic_facts_by_service,
         }
-    }
-
-    pub fn is_complete(&self) -> bool {
-        self.state().is_complete()
     }
 
     pub fn sdt_actual_transport_keys(&self) -> Vec<(u16, u16)> {
@@ -1739,7 +1705,7 @@ fn parse_system_management_descriptor(descriptors: &[u8]) -> SystemManagementFac
             let broadcasting_flag = ((system_management_id >> 14) & 0x03) as u8;
             let broadcasting_identifier = ((system_management_id >> 8) & 0x3f) as u8;
             let semantic_state = match broadcasting_flag {
-                0 if matches!(broadcasting_identifier, 0b000010 | 0b000011 | 0b000100) => {
+                0 if matches!(broadcasting_identifier, 0b000010..=0b000100) => {
                     SmdSemanticState::SupportedBroadcast
                 }
                 0 => SmdSemanticState::UnsupportedBroadcastSystem,

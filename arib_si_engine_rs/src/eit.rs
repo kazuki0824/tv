@@ -311,6 +311,7 @@ impl EitStore {
         out
     }
 
+    #[cfg(test)]
     pub fn snapshot_present_following_actual(&self) -> Vec<EitEvent> {
         let mut out: Vec<_> = self
             .events
@@ -330,10 +331,6 @@ impl EitStore {
         out
     }
 
-    pub fn clear_update_windows(&mut self) {
-        self.last_update_windows.clear();
-    }
-
     pub fn snapshot_all_for_diagnostic(&self) -> Vec<EitEvent> {
         self.diagnostic_section_events
             .values()
@@ -342,6 +339,7 @@ impl EitStore {
             .collect()
     }
 
+    #[cfg(test)]
     pub fn section_count_for_diagnostic(&self) -> usize {
         self.section_events.len()
     }
