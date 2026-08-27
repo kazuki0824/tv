@@ -16,11 +16,32 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Run tuner repair definition
+      - name: Repair and validate PR53
         run: |
-          ruby -ryaml -e 'w=YAML.load_file(".github/workflows/tmp-fix-clippy-pr53-pr54.yml"); File.write("/tmp/configure.sh", w.fetch("jobs").fetch("tuner").fetch("steps")[1].fetch("run")); File.write("/tmp/repair.sh", w.fetch("jobs").fetch("tuner").fetch("steps")[2].fetch("run"))'
-          bash -e /tmp/configure.sh
-          bash -e /tmp/repair.sh
+          cp tmp/fix_clippy_pr53_pr54.py /tmp/fix_clippy.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin fix/tuner-hal2-rustfmt-1.81
+          git checkout -B fix/tuner-hal2-rustfmt-1.81 origin/fix/tuner-hal2-rustfmt-1.81
+          python3 /tmp/fix_clippy.py tuner
+          set +e
+          (cd tuner_hal2/host_ci && cargo clippy --fix --allow-dirty --allow-staged --workspace --all-targets --locked -- -D warnings)
+          set -e
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("tuner_hal2/compile_contract/src/lib.rs")
+          s = p.read_text()
+          use = "use maleicacid_tuner_hal2_device::FrontendWorkerStopTicket;\n\n"
+          if use not in s:
+              p.write_text(use + s)
+          PY
+          (cd tuner_hal2/host_ci && cargo fmt --all)
+          (cd tuner_hal2/host_ci && cargo clippy --workspace --all-targets --locked -- -D warnings)
+          (cd tuner_hal2/host_ci && cargo test --workspace --locked)
+          git diff --check
+          git add tuner_hal2/common tuner_hal2/resource_ledger tuner_hal2/device tuner_hal2/control tuner_hal2/descrambler tuner_hal2/lnb tuner_hal2/compile_contract
+          git commit -m "fix(tuner_hal2): resolve Clippy findings"
+          git push origin HEAD:fix/tuner-hal2-rustfmt-1.81
 
   arib-si:
     runs-on: ubuntu-latest
@@ -29,8 +50,22 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Run ARIB SI repair definition
+      - name: Repair and validate PR54
         run: |
-          ruby -ryaml -e 'w=YAML.load_file(".github/workflows/tmp-fix-clippy-pr53-pr54.yml"); File.write("/tmp/configure.sh", w.fetch("jobs").fetch("arib-si").fetch("steps")[1].fetch("run")); File.write("/tmp/repair.sh", w.fetch("jobs").fetch("arib-si").fetch("steps")[2].fetch("run"))'
-          bash -e /tmp/configure.sh
-          bash -e /tmp/repair.sh
+          cp tmp/fix_clippy_pr53_pr54.py /tmp/fix_clippy.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin agent/implement-tis-arib-si-design-pr53
+          git checkout -B agent/implement-tis-arib-si-design-pr53 origin/agent/implement-tis-arib-si-design-pr53
+          rustup toolchain install 1.81.0 --profile minimal --component clippy,rustfmt
+          python3 /tmp/fix_clippy.py arib
+          set +e
+          (cd arib_si_engine_rs/host_ci && cargo +1.81.0 clippy --fix --allow-dirty --allow-staged --all-targets --locked -- -D warnings)
+          set -e
+          (cd arib_si_engine_rs/host_ci && cargo +1.81.0 fmt --all)
+          (cd arib_si_engine_rs/host_ci && cargo +1.81.0 clippy --all-targets --locked -- -D warnings)
+          (cd arib_si_engine_rs/host_ci && cargo +1.81.0 test --locked)
+          git diff --check
+          git add arib_si_engine_rs
+          git commit -m "fix(arib_si): resolve Clippy findings"
+          git push origin HEAD:agent/implement-tis-arib-si-design-pr53
