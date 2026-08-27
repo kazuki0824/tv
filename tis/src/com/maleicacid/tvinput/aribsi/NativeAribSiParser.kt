@@ -211,8 +211,6 @@ class NativeAribSiParser : AutoCloseable {
             pcrPid = TsPid.fromOrNull(optIntOrNull(obj, "pcrPid")),
             freeCaMode = optBoolOrNull(obj, "freeCaMode"),
             streams = streams,
-            hasProgramCaDescriptor = obj.optBoolean("hasProgramCaDescriptor"),
-            hasEsCaDescriptor = obj.optBoolean("hasEsCaDescriptor"),
             serviceScopedCaDescriptors = caDescriptors,
         )
         provisional.copy(components = parseComponents(obj.optJSONObject("components")) ?: AribComponents())
@@ -410,16 +408,12 @@ class NativeAribSiParser : AutoCloseable {
                 extendedItems = parseExtendedItems(descriptorsObj.optJSONArray("extendedItems")),
                 componentText = optStringOrNull(component, "text"),
                 audioComponentText = optStringOrNull(audio, "componentText"),
-                audioLanguage = null,
                 contentGenres = parseContentGenres(genres.optJSONArray("content")),
                 genreSupplementText = optStringOrNull(genres, "genreSupplementText"),
                 eventGroups = parseEventGroups(descriptorsObj.optJSONArray("eventGroups")),
                 linkage = parseLinkage(descriptorsObj.optJSONArray("linkage")),
                 scrambled = if (freeCaMode.isNull("scrambled")) null else freeCaMode.optBoolean("scrambled"),
                 freeCaMode = parseFreeCaMode(freeCaMode),
-                seriesId = null,
-                episodeNumber = null,
-                lastEpisodeNumber = null,
                 series = parseSeries(series),
                 parentalRatings = parseParentalRatings(descriptorsObj.optJSONArray("parentalRatings")),
                 components = parseComponents(descriptorsObj.optJSONObject("components")) ?: AribComponents(),
@@ -445,11 +439,9 @@ class NativeAribSiParser : AutoCloseable {
     private fun parseParentalRatings(array: JSONArray?): List<AribParentalRating> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
         val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
         val country = obj.optString("countryCode")
-        val rating = obj.optInt("ratingValue", -1)
-        val raw = obj.optInt("rawRatingByte", rating)
-        if (country.isBlank() || rating < 0 || raw < 0) null else AribParentalRating(
+        val raw = obj.optInt("rawRatingByte", obj.optInt("ratingValue", -1))
+        if (country.isBlank() || raw < 0) null else AribParentalRating(
             countryCode = country,
-            ratingValue = rating,
             rawRatingByte = raw,
             parseStatus = obj.optString("parseStatus", "OK"),
         )

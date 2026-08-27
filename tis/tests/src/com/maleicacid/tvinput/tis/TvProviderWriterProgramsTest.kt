@@ -105,10 +105,6 @@ class TvProviderWriterProgramsTest {
             "Scrambled EPG",
             "desc",
             requiresCas = true,
-            unsupportedCas = true,
-            clearLivePlaybackSupported = false,
-            channelRegistrationReady = true,
-            epgPublishable = true,
         )
         writer.upsertPrograms(listOf(p))
         val providerData = store.programs.values.single().getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)

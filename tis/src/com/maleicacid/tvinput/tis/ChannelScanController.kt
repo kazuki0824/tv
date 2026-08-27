@@ -267,10 +267,6 @@ class ChannelScanController(
                 remoteControlKeyId = remoteKey,
                 serviceType = serviceType,
                 requiresCas = diagnostic?.requiresCas == true,
-                unsupportedCas = diagnostic?.unsupportedCas == true,
-                clearLivePlaybackSupported = diagnostic?.clearLivePlaybackSupported == true,
-                channelRegistrationReady = diagnostic?.channelRegistrationReady == true,
-                epgPublishable = diagnostic?.epgPublishable == true,
             )
         }
         if (channels.isEmpty()) {
@@ -356,14 +352,7 @@ class ChannelScanController(
                 expectedSmdBroadcastingIdentifier = expectedSmdIdentifier,
             )
         }
-        val summary = ServiceListBuilder.ServiceSnapshotSummary(
-            totalKeys = completeness.map { it.serviceKey }.toSet(),
-            completeKeys = completeness.filter { it.isComplete }.map { it.serviceKey }.toSet(),
-            clearLivePlaybackSupportedKeys = completeness.filter { it.isClearLivePlaybackSupported }.map { it.serviceKey }.toSet(),
-            registrationReadyKeys = completeness.filter { it.isRegistrationReady }.map { it.serviceKey }.toSet(),
-            epgPublishableKeys = completeness.filter { it.isEpgPublishable }.map { it.serviceKey }.toSet(),
-            completeness = completeness,
-        )
+        val summary = ServiceListBuilder.ServiceSnapshotSummary(completeness)
         return ServiceCounts(
             total = summary.total,
             complete = summary.complete,
