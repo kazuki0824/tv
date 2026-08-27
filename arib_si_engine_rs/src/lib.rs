@@ -1,4 +1,3 @@
-mod arib_jis_x0208_table;
 mod arib_string;
 mod ca_descriptor;
 mod descriptors;
@@ -149,12 +148,9 @@ impl ParserState {
         self.collector.state().semantic_facts_by_service
     }
 
+    #[cfg(test)]
     fn services(&self) -> Vec<DiscoveredService> {
         self.snapshot().services
-    }
-
-    fn transports(&self) -> Vec<DiscoveredTransport> {
-        self.snapshot().transports
     }
 
     fn discovery_stage(&self) -> DiscoveryPublishStage {
@@ -171,10 +167,6 @@ impl ParserState {
 
     fn sdt_actual_transport_keys(&self) -> Vec<(u16, u16)> {
         self.collector.sdt_actual_transport_keys()
-    }
-
-    fn clear_epg_update_windows(&mut self) {
-        self.collector.clear_epg_update_windows()
     }
 }
 
