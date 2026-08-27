@@ -1,6 +1,6 @@
 # Maleicacid Tuner HAL2
 
-`tuner_hal2` は、Android TV 14系 Tuner HAL service を再構成する実装である。
+`tuner_hal2` は、LineageOS 22.1 / Android 15 の Tuner HAL service を再構成する実装である。
 
 ## 参照文書
 
