@@ -379,10 +379,11 @@ data class ChannelProviderDataResult(
     val schemaVersion: Int,
     val serviceKey: ServiceKey,
     val tune: ChannelTune,
+    val requiresCas: Boolean,
 )
 ```
 
-`ChannelTune` は `deliverySystem`、`frequencyHz`、`streamIdType`、`streamId`、`physicalChannel`、`satelliteBand`、`remoteControlKeyId` だけを持つtyped物理tune復元値とし、`inputId`、backend名、driver名、px4相対slot等を持たない。channelとTvInputServiceの関連付けはchannel rowのrequired fieldである`TvContract.Channels.COLUMN_INPUT_ID`を唯一のSSOTとする。tune復元前にrowの`COLUMN_INPUT_ID`がcurrent TISの`TvInputInfo.id`と一致することを検証し、不一致rowのprovider-dataを別inputの物理tuneとして使用しない。`decodeChannelProviderData()` は invalid UTF-8、malformed JSON、schema不整合を null または診断付き失敗へ落とし、Kotlin側でJSONを解釈・修復しない。
+`ChannelTune` は `deliverySystem`、`frequencyHz`、`streamIdType`、`streamId`、`physicalChannel`、`satelliteBand`、`remoteControlKeyId` だけを持つtyped物理tune復元値とし、`inputId`、表示名、backend名、driver名、px4相対slot等を持たない。channelとTvInputServiceの関連付けはchannel rowのrequired fieldである`TvContract.Channels.COLUMN_INPUT_ID`を唯一のSSOTとする。tune復元前にrowの`COLUMN_INPUT_ID`がcurrent TISの`TvInputInfo.id`と一致することを検証し、不一致rowのprovider-dataを別inputの物理tuneとして使用しない。`decodeChannelProviderData()` は invalid UTF-8、malformed JSON、schema不整合を null または診断付き失敗へ落とす。現行String JNI surfaceではtyped resultを単一JSON envelopeで返し、Kotlinはこのresult envelopeだけを読む。保存済みprovider-data自体の解釈・修復やTAB/hexの第二wire protocolは設けない。
 
 `inputJson` は Rust builder への入力 DTO であり、TvProvider に保存する provider-data schema ではない。最終JSONバイト列、正規化、安定キー抽出はRustが行う。provider-data単体のdigestまたはsignatureは返さない。
 

@@ -31,7 +31,7 @@ pub struct ProgramKeyResult {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ProgramKeyV1 {
     kind: String,
     original_network_id: i64,
@@ -41,7 +41,7 @@ struct ProgramKeyV1 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ServiceKeyV1 {
     original_network_id: i64,
     transport_stream_id: i64,
@@ -49,15 +49,23 @@ struct ServiceKeyV1 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TimingV1 {
     start_utc_millis: i64,
-    end_utc_millis: i64,
+    duration_millis: i64,
+    #[serde(rename = "endUtcMillis", default, skip_serializing)]
+    legacy_end_utc_millis: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProgramRequestTimingV1 {
+    start_utc_millis: i64,
     duration_millis: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SourceV1 {
     pid: i64,
     table_id: i64,
@@ -67,14 +75,14 @@ struct SourceV1 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CasV1 {
     requires_cas: bool,
     source: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RatingV1 {
     country_code: String,
     raw_rating_byte: i64,
@@ -82,7 +90,7 @@ struct RatingV1 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct GenreV1 {
     level1: i64,
     level2: i64,
@@ -92,7 +100,7 @@ struct GenreV1 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SeriesV1 {
     series_id: i64,
     repeat_label: i64,
@@ -106,7 +114,7 @@ struct SeriesV1 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct FreeCaModeV1 {
     raw: i64,
     scrambled: bool,
@@ -115,15 +123,7 @@ struct FreeCaModeV1 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AudioLanguageV1 {
-    language: String,
-    source: String,
-    parse_status: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ExtendedItemV1 {
     language_code: String,
     description: String,
@@ -132,14 +132,14 @@ struct ExtendedItemV1 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct EventGroupReferenceV1 {
     service_id: i64,
     event_id: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct OtherNetworkEventReferenceV1 {
     original_network_id: i64,
     transport_stream_id: i64,
@@ -148,7 +148,7 @@ struct OtherNetworkEventReferenceV1 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct EventGroupV1 {
     group_type: i64,
     events: Vec<EventGroupReferenceV1>,
@@ -158,7 +158,7 @@ struct EventGroupV1 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LinkageV1 {
     transport_stream_id: i64,
     original_network_id: i64,
@@ -207,7 +207,7 @@ pub(crate) struct DescriptorDiagnosticV1 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct VideoComponentV1 {
     es_pid: i64,
     stream_type: i64,
@@ -224,7 +224,7 @@ struct VideoComponentV1 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AudioComponentV1 {
     es_pid: i64,
     stream_type: i64,
@@ -232,6 +232,7 @@ struct AudioComponentV1 {
     component_type: Option<i64>,
     codec: String,
     language: Option<String>,
+    second_language: Option<String>,
     channel_configuration: Option<String>,
     sampling_info: Option<String>,
     source_descriptor: Option<String>,
@@ -240,7 +241,7 @@ struct AudioComponentV1 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SubtitleComponentV1 {
     es_pid: i64,
     component_tag: Option<i64>,
@@ -251,7 +252,7 @@ struct SubtitleComponentV1 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DataComponentV1 {
     es_pid: i64,
     component_tag: Option<i64>,
@@ -261,7 +262,7 @@ struct DataComponentV1 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ComponentsV1 {
     video: Vec<VideoComponentV1>,
     audio: Vec<AudioComponentV1>,
@@ -270,7 +271,7 @@ struct ComponentsV1 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DiagnosticItemV1 {
     code: String,
     message: String,
@@ -278,14 +279,14 @@ struct DiagnosticItemV1 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawProviderDataExtensionV1 {
     key: String,
     value: serde_json::Value,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DiagnosticsV1 {
     descriptor_diagnostics: Vec<DescriptorDiagnosticV1>,
     publish_diagnostics: Vec<DiagnosticItemV1>,
@@ -318,7 +319,6 @@ struct ProgramProviderDataV1 {
     schema: String,
     schema_version: i64,
     program_key: ProgramKeyV1,
-    service_key: ServiceKeyV1,
     timing: TimingV1,
     source: SourceV1,
     cas: CasV1,
@@ -328,7 +328,6 @@ struct ProgramProviderDataV1 {
     event_groups: Vec<EventGroupV1>,
     linkage: Vec<LinkageV1>,
     free_ca_mode: Option<FreeCaModeV1>,
-    audio_languages: Vec<AudioLanguageV1>,
     extended_items: Vec<ExtendedItemV1>,
     components: ComponentsV1,
     diagnostics: DiagnosticsV1,
@@ -350,8 +349,7 @@ struct ProgramProviderDataRequestV1 {
     schema: String,
     schema_version: i64,
     program_key: ProgramKeyV1,
-    service_key: ServiceKeyV1,
-    timing: TimingV1,
+    timing: ProgramRequestTimingV1,
     source: SourceV1,
     cas: CasV1,
     ratings: Vec<RatingV1>,
@@ -360,7 +358,6 @@ struct ProgramProviderDataRequestV1 {
     event_groups: Vec<EventGroupV1>,
     linkage: Vec<LinkageV1>,
     free_ca_mode: Option<FreeCaModeV1>,
-    audio_languages: Vec<AudioLanguageV1>,
     extended_items: Vec<ExtendedItemV1>,
     components: ComponentsV1,
     diagnostics: ProgramRequestDiagnosticsV1,
@@ -369,9 +366,22 @@ struct ProgramProviderDataRequestV1 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ChannelTuneV1 {
-    display_name: String,
+    #[serde(rename = "displayName", default, skip_serializing)]
+    legacy_display_name: Option<String>,
+    delivery_system: String,
+    frequency_hz: i64,
+    stream_id: Option<i64>,
+    stream_id_type: String,
+    physical_channel: Option<i64>,
+    satellite_band: Option<String>,
+    remote_control_key_id: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChannelRequestTuneV1 {
     delivery_system: String,
     frequency_hz: i64,
     stream_id: Option<i64>,
@@ -382,13 +392,13 @@ struct ChannelTuneV1 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ChannelCasV1 {
     requires_cas: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ChannelDiagnosticsV1 {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     raw_provider_data_extensions: Vec<RawProviderDataExtensionV1>,
@@ -433,7 +443,7 @@ struct ChannelProviderDataRequestV1 {
     schema: String,
     schema_version: i64,
     service_key: ServiceKeyV1,
-    tune: ChannelTuneV1,
+    tune: ChannelRequestTuneV1,
     cas: ChannelCasV1,
     diagnostics: ChannelRequestDiagnosticsV1,
 }
@@ -447,265 +457,6 @@ pub fn build_program_key(onid: i32, tsid: i32, sid: i32, event_id: i32) -> Strin
         event_id: i64::from(event_id),
     })
     .unwrap_or_default()
-}
-
-fn program_request_has_only_known_fields(raw: &serde_json::Value) -> bool {
-    object_has_only(
-        raw,
-        &[
-            "schema",
-            "schemaVersion",
-            "programKey",
-            "serviceKey",
-            "timing",
-            "source",
-            "cas",
-            "ratings",
-            "genres",
-            "series",
-            "eventGroups",
-            "linkage",
-            "freeCaMode",
-            "audioLanguages",
-            "extendedItems",
-            "components",
-            "diagnostics",
-            "malformedCaDescriptorCount",
-        ],
-    ) && field_object_has_only(
-        raw,
-        "programKey",
-        &[
-            "kind",
-            "originalNetworkId",
-            "transportStreamId",
-            "serviceId",
-            "eventId",
-        ],
-    ) && field_object_has_only(
-        raw,
-        "serviceKey",
-        &["originalNetworkId", "transportStreamId", "serviceId"],
-    ) && field_object_has_only(
-        raw,
-        "timing",
-        &["startUtcMillis", "endUtcMillis", "durationMillis"],
-    ) && field_object_has_only(
-        raw,
-        "source",
-        &[
-            "pid",
-            "tableId",
-            "version",
-            "sectionNumber",
-            "lastSectionNumber",
-        ],
-    ) && field_object_has_only(raw, "cas", &["requiresCas", "source"])
-        && field_array_has_only(
-            raw,
-            "ratings",
-            &["countryCode", "rawRatingByte", "parseStatus"],
-        )
-        && field_array_has_only(
-            raw,
-            "genres",
-            &["level1", "level2", "userNibble", "aribName", "parseStatus"],
-        )
-        && optional_field_object_has_only(
-            raw,
-            "series",
-            &[
-                "seriesId",
-                "repeatLabel",
-                "programPattern",
-                "expireDateValid",
-                "expireDate",
-                "episodeNumber",
-                "lastEpisodeNumber",
-                "name",
-                "parseStatus",
-            ],
-        )
-        && program_request_event_groups_have_only_known_fields(raw)
-        && field_array_has_only(
-            raw,
-            "linkage",
-            &[
-                "transportStreamId",
-                "originalNetworkId",
-                "serviceId",
-                "linkageType",
-                "privateDataPrefixHex",
-                "parseStatus",
-            ],
-        )
-        && optional_field_object_has_only(
-            raw,
-            "freeCaMode",
-            &["raw", "scrambled", "text", "parseStatus"],
-        )
-        && field_array_has_only(
-            raw,
-            "audioLanguages",
-            &["language", "source", "parseStatus"],
-        )
-        && field_array_has_only(
-            raw,
-            "extendedItems",
-            &["languageCode", "description", "text", "parseStatus"],
-        )
-        && program_request_components_have_only_known_fields(raw)
-        && program_request_diagnostics_have_only_known_fields(raw)
-}
-
-fn program_request_event_groups_have_only_known_fields(raw: &serde_json::Value) -> bool {
-    let Some(groups) = raw.get("eventGroups") else {
-        return true;
-    };
-    let Some(groups) = groups.as_array() else {
-        return false;
-    };
-    groups.iter().all(|group| {
-        object_has_only(
-            group,
-            &[
-                "groupType",
-                "events",
-                "otherNetworkEvents",
-                "privateDataHex",
-                "parseStatus",
-            ],
-        ) && field_array_has_only(group, "events", &["serviceId", "eventId"])
-            && field_array_has_only(
-                group,
-                "otherNetworkEvents",
-                &[
-                    "originalNetworkId",
-                    "transportStreamId",
-                    "serviceId",
-                    "eventId",
-                ],
-            )
-    })
-}
-
-fn program_request_components_have_only_known_fields(raw: &serde_json::Value) -> bool {
-    let Some(components) = raw.get("components") else {
-        return true;
-    };
-    object_has_only(components, &["video", "audio", "subtitle", "data"])
-        && field_array_has_only(
-            components,
-            "video",
-            &[
-                "esPid",
-                "streamType",
-                "componentTag",
-                "componentType",
-                "codec",
-                "resolution",
-                "scan",
-                "aspect",
-                "profileLevel",
-                "sourceDescriptor",
-                "diagnosticCode",
-                "parseStatus",
-            ],
-        )
-        && field_array_has_only(
-            components,
-            "audio",
-            &[
-                "esPid",
-                "streamType",
-                "componentTag",
-                "componentType",
-                "codec",
-                "language",
-                "channelConfiguration",
-                "samplingInfo",
-                "sourceDescriptor",
-                "diagnosticCode",
-                "parseStatus",
-            ],
-        )
-        && field_array_has_only(
-            components,
-            "subtitle",
-            &[
-                "esPid",
-                "componentTag",
-                "dataComponentId",
-                "language",
-                "captionServiceKind",
-                "parseStatus",
-            ],
-        )
-        && field_array_has_only(
-            components,
-            "data",
-            &[
-                "esPid",
-                "componentTag",
-                "dataComponentId",
-                "componentType",
-                "parseStatus",
-            ],
-        )
-}
-
-fn program_request_diagnostics_have_only_known_fields(raw: &serde_json::Value) -> bool {
-    let Some(diagnostics) = raw.get("diagnostics") else {
-        return true;
-    };
-    object_has_only(
-        diagnostics,
-        &[
-            "descriptorDiagnosticsCanonicalJson",
-            "publishDiagnostics",
-            "parserDiagnostics",
-        ],
-    ) && field_array_has_only(
-        diagnostics,
-        "publishDiagnostics",
-        &["code", "message", "severity"],
-    ) && field_array_has_only(
-        diagnostics,
-        "parserDiagnostics",
-        &["code", "message", "severity"],
-    )
-}
-
-fn channel_request_has_only_known_fields(raw: &serde_json::Value) -> bool {
-    object_has_only(
-        raw,
-        &[
-            "schema",
-            "schemaVersion",
-            "serviceKey",
-            "tune",
-            "cas",
-            "diagnostics",
-        ],
-    ) && field_object_has_only(
-        raw,
-        "serviceKey",
-        &["originalNetworkId", "transportStreamId", "serviceId"],
-    ) && field_object_has_only(
-        raw,
-        "tune",
-        &[
-            "displayName",
-            "deliverySystem",
-            "frequencyHz",
-            "streamId",
-            "streamIdType",
-            "physicalChannel",
-            "satelliteBand",
-            "remoteControlKeyId",
-        ],
-    ) && field_object_has_only(raw, "cas", &["requiresCas"])
-        && field_object_has_only(raw, "diagnostics", &[])
 }
 
 fn field_object_has_only(parent: &serde_json::Value, field: &str, known_keys: &[&str]) -> bool {
@@ -752,25 +503,7 @@ fn array_objects_have_only(value: &serde_json::Value, known_keys: &[&str]) -> bo
 }
 
 pub fn build_program_provider_data(request_json: &str) -> ProviderDataResult {
-    let raw_value = match serde_json::from_str::<serde_json::Value>(request_json) {
-        Ok(value) => value,
-        Err(err) => {
-            return failure_result(
-                "PROGRAM_REQUEST_PARSE_FAILED",
-                format!("Program provider-data request JSON parse failed: {err}"),
-                PROVIDER_SCHEMA_VERSION,
-            )
-        }
-    };
-    if !program_request_has_only_known_fields(&raw_value) {
-        return failure_result(
-            "PROGRAM_REQUEST_PARSE_FAILED",
-            "Program provider-data request contains an unknown or structurally invalid field"
-                .to_string(),
-            PROVIDER_SCHEMA_VERSION,
-        );
-    }
-    let request = match serde_json::from_value::<ProgramProviderDataRequestV1>(raw_value) {
+    let request = match serde_json::from_str::<ProgramProviderDataRequestV1>(request_json) {
         Ok(request) => request,
         Err(err) => {
             return failure_result(
@@ -791,25 +524,7 @@ pub fn build_program_provider_data(request_json: &str) -> ProviderDataResult {
 }
 
 pub fn build_channel_provider_data(request_json: &str) -> ProviderDataResult {
-    let raw_value = match serde_json::from_str::<serde_json::Value>(request_json) {
-        Ok(value) => value,
-        Err(err) => {
-            return failure_result(
-                "CHANNEL_REQUEST_PARSE_FAILED",
-                format!("Channel provider-data request JSON parse failed: {err}"),
-                CHANNEL_SCHEMA_VERSION,
-            )
-        }
-    };
-    if !channel_request_has_only_known_fields(&raw_value) {
-        return failure_result(
-            "CHANNEL_REQUEST_PARSE_FAILED",
-            "Channel provider-data request contains an unknown or structurally invalid field"
-                .to_string(),
-            CHANNEL_SCHEMA_VERSION,
-        );
-    }
-    let request = match serde_json::from_value::<ChannelProviderDataRequestV1>(raw_value) {
+    let request = match serde_json::from_str::<ChannelProviderDataRequestV1>(request_json) {
         Ok(request) => request,
         Err(err) => {
             return failure_result(
@@ -909,39 +624,26 @@ pub fn decode_channel_provider_data(provider_data: &[u8]) -> String {
     if !canonical_result.success {
         return String::new();
     }
-    let canonical = canonical_result.json.into_bytes();
-    let nullable = |value: Option<i64>| {
-        value
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "-".to_string())
-    };
-    let hex = |value: &[u8]| {
-        use std::fmt::Write as _;
-        let mut out = String::with_capacity(value.len() * 2);
-        for byte in value {
-            write!(&mut out, "{byte:02x}").expect("writing to String cannot fail");
-        }
-        out
-    };
-    [
-        hex(&canonical),
-        data.schema_version.to_string(),
-        data.service_key.original_network_id.to_string(),
-        data.service_key.transport_stream_id.to_string(),
-        data.service_key.service_id.to_string(),
-        hex(data.tune.delivery_system.as_bytes()),
-        data.tune.frequency_hz.to_string(),
-        nullable(data.tune.stream_id),
-        data.tune.stream_id_type,
-        nullable(data.tune.physical_channel),
-        data.tune
-            .satellite_band
-            .as_deref()
-            .map(|value| hex(value.as_bytes()))
-            .unwrap_or_else(|| "-".to_string()),
-        nullable(data.tune.remote_control_key_id),
-    ]
-    .join("\t")
+    serde_json::json!({
+        "canonical": canonical_result.json,
+        "schemaVersion": data.schema_version,
+        "serviceKey": {
+            "originalNetworkId": data.service_key.original_network_id,
+            "transportStreamId": data.service_key.transport_stream_id,
+            "serviceId": data.service_key.service_id,
+        },
+        "tune": {
+            "deliverySystem": data.tune.delivery_system,
+            "frequencyHz": data.tune.frequency_hz,
+            "streamId": data.tune.stream_id,
+            "streamIdType": data.tune.stream_id_type,
+            "physicalChannel": data.tune.physical_channel,
+            "satelliteBand": data.tune.satellite_band,
+            "remoteControlKeyId": data.tune.remote_control_key_id,
+        },
+        "cas": { "requiresCas": data.cas.requires_cas },
+    })
+    .to_string()
 }
 
 fn program_data_from_request(
@@ -955,20 +657,17 @@ fn program_data_from_request(
     if request.program_key.kind != "arib-event-v1" {
         return None;
     }
-    if request.service_key.original_network_id != request.program_key.original_network_id
-        || request.service_key.transport_stream_id != request.program_key.transport_stream_id
-        || request.service_key.service_id != request.program_key.service_id
-    {
-        return None;
-    }
     let descriptor_diagnostics =
         parse_descriptor_diagnostics(&request.diagnostics.descriptor_diagnostics_canonical_json)?;
     let data = ProgramProviderDataV1 {
         schema: PROGRAM_SCHEMA_NAME.to_string(),
         schema_version: PROVIDER_SCHEMA_VERSION,
         program_key: request.program_key,
-        service_key: request.service_key,
-        timing: request.timing,
+        timing: TimingV1 {
+            start_utc_millis: request.timing.start_utc_millis,
+            duration_millis: request.timing.duration_millis,
+            legacy_end_utc_millis: None,
+        },
         source: request.source,
         cas: request.cas,
         ratings: request.ratings,
@@ -977,7 +676,6 @@ fn program_data_from_request(
         event_groups: request.event_groups,
         linkage: request.linkage,
         free_ca_mode: request.free_ca_mode,
-        audio_languages: request.audio_languages,
         extended_items: request.extended_items,
         components: request.components,
         diagnostics: DiagnosticsV1 {
@@ -1014,7 +712,16 @@ fn channel_data_from_request(
         schema: CHANNEL_SCHEMA_NAME.to_string(),
         schema_version: CHANNEL_SCHEMA_VERSION,
         service_key: request.service_key,
-        tune: request.tune,
+        tune: ChannelTuneV1 {
+            legacy_display_name: None,
+            delivery_system: request.tune.delivery_system,
+            frequency_hz: request.tune.frequency_hz,
+            stream_id: request.tune.stream_id,
+            stream_id_type: request.tune.stream_id_type,
+            physical_channel: request.tune.physical_channel,
+            satellite_band: request.tune.satellite_band,
+            remote_control_key_id: request.tune.remote_control_key_id,
+        },
         cas: request.cas,
         diagnostics: ChannelDiagnosticsV1::default(),
         extensions: serde_json::Map::new(),
@@ -1062,6 +769,7 @@ fn normalize_channel_extensions(
     mut data: ChannelProviderDataV1,
     raw_value: Option<&serde_json::Value>,
 ) -> ChannelProviderDataV1 {
+    data.tune.legacy_display_name = None;
     data.diagnostics
         .raw_provider_data_extensions
         .retain(|extension| !forbidden_channel_extension(&extension.key));
@@ -1097,7 +805,9 @@ fn normalize_channel_extensions(
 fn forbidden_program_extension(key: &str) -> bool {
     matches!(
         key,
-        "audio"
+        "serviceKey"
+            | "audioLanguages"
+            | "audio"
             | "video"
             | "eventGroupText"
             | "freeCaText"
@@ -1419,6 +1129,7 @@ fn collect_program_unknown_extensions(
                 "componentType",
                 "codec",
                 "language",
+                "secondLanguage",
                 "channelConfiguration",
                 "samplingInfo",
                 "sourceDescriptor",
@@ -1885,16 +1596,23 @@ fn valid_program_provider_data(data: &ProgramProviderDataV1) -> bool {
         && in_u16(data.program_key.transport_stream_id)
         && in_u16(data.program_key.service_id)
         && in_u16(data.program_key.event_id)
-        && data.service_key.original_network_id == data.program_key.original_network_id
-        && data.service_key.transport_stream_id == data.program_key.transport_stream_id
-        && data.service_key.service_id == data.program_key.service_id
         && data.timing.start_utc_millis >= 0
         && data.timing.duration_millis >= 0
         && data
             .timing
             .start_utc_millis
             .checked_add(data.timing.duration_millis)
-            == Some(data.timing.end_utc_millis)
+            .is_some()
+        && data
+            .timing
+            .legacy_end_utc_millis
+            .map(|end| {
+                data.timing
+                    .start_utc_millis
+                    .checked_add(data.timing.duration_millis)
+                    == Some(end)
+            })
+            .unwrap_or(true)
         && data.source.pid >= 0
         && data.source.pid <= 8191
         && data.source.table_id >= 0
@@ -1916,7 +1634,6 @@ fn valid_program_provider_data(data: &ProgramProviderDataV1) -> bool {
             .as_ref()
             .map(valid_free_ca_mode)
             .unwrap_or(true)
-        && data.audio_languages.iter().all(valid_audio_language)
         && data.extended_items.iter().all(valid_extended_item)
         && valid_components(&data.components)
         && data
@@ -1942,7 +1659,6 @@ fn valid_channel_provider_data(data: &ChannelProviderDataV1) -> bool {
         && in_u16(data.service_key.original_network_id)
         && in_u16(data.service_key.transport_stream_id)
         && in_u16(data.service_key.service_id)
-        && !data.tune.display_name.is_empty()
         && !data.tune.delivery_system.is_empty()
         && data.tune.frequency_hz > 0
         && matches!(data.tune.stream_id_type.as_str(), "NONE" | "TSID")
@@ -2020,9 +1736,6 @@ fn valid_linkage(v: &LinkageV1) -> bool {
 fn valid_free_ca_mode(v: &FreeCaModeV1) -> bool {
     (0..=1).contains(&v.raw) && nonempty(&v.parse_status)
 }
-fn valid_audio_language(v: &AudioLanguageV1) -> bool {
-    valid_iso639(&v.language) && nonempty(&v.source) && nonempty(&v.parse_status)
-}
 fn valid_extended_item(v: &ExtendedItemV1) -> bool {
     valid_iso639(&v.language_code)
         && (nonempty(&v.description) || nonempty(&v.text))
@@ -2063,6 +1776,7 @@ fn valid_audio_component(v: &AudioComponentV1) -> bool {
         && valid_optional_u8(v.component_type)
         && nonempty(&v.codec)
         && valid_optional_iso639(&v.language)
+        && valid_optional_iso639(&v.second_language)
         && nonempty(&v.parse_status)
 }
 fn valid_subtitle_component(v: &SubtitleComponentV1) -> bool {
@@ -2259,15 +1973,6 @@ fn finalize_channel(mut data: ChannelProviderDataV1) -> ProviderDataResult {
             note_drop(&mut counts, "rawProviderDataExtensions", 1);
             continue;
         }
-        let removed = shorten_utf8_tail(
-            &mut data.tune.display_name,
-            encoded.len().saturating_sub(HARD_LIMIT_BYTES),
-            true,
-        );
-        if removed > 0 {
-            note_drop(&mut counts, "longTextUtf8Bytes", removed as i64);
-            continue;
-        }
         return failure_result(
             "CHANNEL_PROVIDER_DATA_HARD_LIMIT_EXCEEDED",
             format!(
@@ -2284,24 +1989,13 @@ fn finalize_channel(mut data: ChannelProviderDataV1) -> ProviderDataResult {
 mod provider_data_tests {
     use super::*;
 
-    fn decode_hex_bytes(value: &str) -> Vec<u8> {
-        value
-            .as_bytes()
-            .chunks_exact(2)
-            .map(|pair| {
-                let text = std::str::from_utf8(pair).unwrap();
-                u8::from_str_radix(text, 16).unwrap()
-            })
-            .collect()
-    }
-
     fn minimal_channel_request(extra_top_level: &str, stream_id: i64) -> String {
         format!(
             r#"{{
             "schema":"maleicacid.tv.channelRequest",
             "schemaVersion":1,
             "serviceKey":{{"originalNetworkId":4,"transportStreamId":16400,"serviceId":101}},
-            "tune":{{"displayName":"Test","deliverySystem":"ISDB_T","frequencyHz":473142857,"streamId":{},"streamIdType":"TSID","physicalChannel":13,"satelliteBand":null,"remoteControlKeyId":1}},
+            "tune":{{"deliverySystem":"ISDB_T","frequencyHz":473142857,"streamId":{},"streamIdType":"TSID","physicalChannel":13,"satelliteBand":null,"remoteControlKeyId":1}},
             "cas":{{"requiresCas":false}},
             "diagnostics":{{}}
             {}
@@ -2316,8 +2010,7 @@ mod provider_data_tests {
             "schema":"maleicacid.tv.program",
             "schemaVersion":1,
             "programKey":{{"kind":"arib-event-v1","originalNetworkId":4,"transportStreamId":16400,"serviceId":101,"eventId":12345}},
-            "serviceKey":{{"originalNetworkId":4,"transportStreamId":16400,"serviceId":101}},
-            "timing":{{"startUtcMillis":1730000000000,"endUtcMillis":1730001800000,"durationMillis":1800000}},
+            "timing":{{"startUtcMillis":1730000000000,"durationMillis":1800000}},
             "source":{{"pid":18,"tableId":78,"version":12,"sectionNumber":0,"lastSectionNumber":1}},
             "cas":{{"requiresCas":false,"source":"SI_SEMANTICS"}},
             "ratings":[],
@@ -2326,7 +2019,6 @@ mod provider_data_tests {
             "eventGroups":[],
             "linkage":[],
             "freeCaMode":{{"raw":0,"scrambled":false,"parseStatus":"OK"}},
-            "audioLanguages":[],
             "extendedItems":[],
             "components":{{"video":[],"audio":[],"subtitle":[],"data":[]}},
             "diagnostics":{{"descriptorDiagnostics":[],"publishDiagnostics":[],"parserDiagnostics":[]}}
@@ -2376,54 +2068,33 @@ mod provider_data_tests {
     }
 
     #[test]
-    fn normalize_program_provider_data_drops_forbidden_legacy_policy_extensions() {
+    fn normalize_program_provider_data_migrates_legacy_duplicate_fields() {
         let mut stored: serde_json::Value =
             serde_json::from_str(&minimal_program_json("")).unwrap();
-        stored["futureVendorKey"] = serde_json::json!({"x": 1});
-        stored["audio"] = serde_json::json!({"codec": "legacy-runtime-selection"});
-        stored["cas"]["unsupportedCas"] = serde_json::json!(true);
-        stored["ratings"] = serde_json::json!([{
-            "countryCode": "JPN",
-            "rawRatingByte": 1,
-            "parseStatus": "OK",
-            "supported": true,
-        }]);
-        stored["components"]["subtitle"] = serde_json::json!([{
-            "esPid": 513,
-            "componentTag": 48,
-            "dataComponentId": 8,
-            "language": "jpn",
-            "captionServiceKind": "caption",
-            "parseStatus": "OK",
-            "trackId": "runtime-track",
-        }]);
-        stored["diagnostics"]["currentProgram"] = serde_json::json!({
-            "overlapCount": 1,
-            "selectedProgramId": 42,
-            "selectionRule": "legacy",
+        stored["serviceKey"] = serde_json::json!({
+            "originalNetworkId": 4,
+            "transportStreamId": 16400,
+            "serviceId": 101,
         });
-        stored["diagnostics"]["rawProviderDataExtensions"] = serde_json::json!([
-            {"key": "cas.clearLivePlaybackSupported", "value": true},
-            {"key": "future.nested", "value": {"v": 1}},
-        ]);
+        stored["timing"]["endUtcMillis"] = serde_json::json!(1_730_001_800_000_i64);
+        stored["audioLanguages"] = serde_json::json!([]);
 
         let result = normalize_program_provider_data(stored.to_string().as_bytes());
         assert!(result.success, "{}", result.error_message);
         let canonical: serde_json::Value = serde_json::from_str(&result.json).unwrap();
-        let extension_keys: Vec<_> = canonical["diagnostics"]["rawProviderDataExtensions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|extension| extension["key"].as_str().unwrap())
-            .collect();
-        assert!(extension_keys.contains(&"futureVendorKey"));
-        assert!(extension_keys.contains(&"future.nested"));
-        assert!(!extension_keys
-            .iter()
-            .any(|key| forbidden_program_extension(key)));
-        assert!(canonical.get("audio").is_none());
-        assert!(canonical["cas"].get("unsupportedCas").is_none());
-        assert!(canonical["diagnostics"].get("currentProgram").is_none());
+        assert!(canonical.get("serviceKey").is_none());
+        assert!(canonical.get("audioLanguages").is_none());
+        assert!(canonical["timing"].get("endUtcMillis").is_none());
+    }
+
+    #[test]
+    fn normalize_program_provider_data_rejects_nested_policy_extensions() {
+        let mut stored: serde_json::Value =
+            serde_json::from_str(&minimal_program_json("")).unwrap();
+        stored["cas"]["unsupportedCas"] = serde_json::json!(true);
+        let result = normalize_program_provider_data(stored.to_string().as_bytes());
+        assert!(!result.success);
+        assert_eq!(result.error_code, "PROGRAM_PROVIDER_DATA_SCHEMA_FAILED");
     }
 
     #[test]
@@ -2566,37 +2237,41 @@ mod provider_data_tests {
         let built = build_channel_provider_data(&minimal_channel_request("", 16_400));
         assert!(built.success, "{}", built.error_message);
         let decoded = decode_channel_provider_data(built.json.as_bytes());
-        let fields: Vec<&str> = decoded.split('\t').collect();
-        assert_eq!(fields.len(), 12);
-        assert_eq!(fields[1], "1");
-        assert_eq!(fields[2], "4");
-        assert_eq!(fields[3], "16400");
-        assert_eq!(fields[4], "101");
-        assert_eq!(fields[7], "16400");
-        assert_eq!(fields[8], "TSID");
-        assert!(!fields.iter().any(|field| *field == "Test"));
+        let value: serde_json::Value = serde_json::from_str(&decoded).unwrap();
+        assert_eq!(value["schemaVersion"], 1);
+        assert_eq!(value["serviceKey"]["originalNetworkId"], 4);
+        assert_eq!(value["serviceKey"]["transportStreamId"], 16400);
+        assert_eq!(value["serviceKey"]["serviceId"], 101);
+        assert_eq!(value["tune"]["streamId"], 16400);
+        assert_eq!(value["tune"]["streamIdType"], "TSID");
+        let canonical: serde_json::Value =
+            serde_json::from_str(value["canonical"].as_str().unwrap()).unwrap();
+        assert_eq!(canonical["cas"]["requiresCas"], false);
         assert!(decode_channel_provider_data(&[0xff, 0xfe]).is_empty());
     }
 
     #[test]
-    fn channel_decode_normalizes_unknown_fields_into_diagnostics() {
+    fn channel_decode_migrates_legacy_display_name() {
+        let built = build_channel_provider_data(&minimal_channel_request("", 16_400));
+        assert!(built.success, "{}", built.error_message);
+        let mut stored: serde_json::Value = serde_json::from_str(&built.json).unwrap();
+        stored["tune"]["displayName"] = serde_json::json!("legacy duplicate");
+
+        let decoded = decode_channel_provider_data(stored.to_string().as_bytes());
+        let value: serde_json::Value = serde_json::from_str(&decoded).unwrap();
+        let canonical: serde_json::Value =
+            serde_json::from_str(value["canonical"].as_str().unwrap()).unwrap();
+        assert!(canonical["tune"].get("displayName").is_none());
+    }
+
+    #[test]
+    fn channel_decode_rejects_nested_unknown_fields() {
         let built = build_channel_provider_data(&minimal_channel_request("", 16_400));
         assert!(built.success, "{}", built.error_message);
         let mut stored: serde_json::Value = serde_json::from_str(&built.json).unwrap();
         stored["tune"]["futureSelector"] = serde_json::json!({"kind": "future"});
 
-        let decoded = decode_channel_provider_data(stored.to_string().as_bytes());
-        let fields: Vec<&str> = decoded.split('\t').collect();
-        assert_eq!(fields.len(), 12);
-        let canonical: serde_json::Value =
-            serde_json::from_slice(&decode_hex_bytes(fields[0])).unwrap();
-        let extensions = canonical["diagnostics"]["rawProviderDataExtensions"]
-            .as_array()
-            .unwrap();
-        assert!(extensions
-            .iter()
-            .any(|extension| extension["key"] == "tune.futureSelector"));
-        assert!(canonical["tune"].get("futureSelector").is_none());
+        assert!(decode_channel_provider_data(stored.to_string().as_bytes()).is_empty());
     }
 
     #[test]
@@ -2604,37 +2279,8 @@ mod provider_data_tests {
         let built = build_channel_provider_data(&minimal_channel_request("", 16_400));
         assert!(built.success, "{}", built.error_message);
         let mut stored: serde_json::Value = serde_json::from_str(&built.json).unwrap();
-        stored["tune"]["inputId"] = serde_json::json!("legacy-input");
-        stored["tune"]["backendHint"] = serde_json::json!("legacy-backend");
-        stored["tune"]["futureSelector"] = serde_json::json!({"kind": "future"});
         stored["cas"]["unsupportedCas"] = serde_json::json!(true);
-        stored["diagnostics"]["channelRegistrationReady"] = serde_json::json!(true);
-        stored["diagnostics"]["rawProviderDataExtensions"] = serde_json::json!([
-            {"key": "diagnostics.epgPublishable", "value": true},
-            {"key": "future.vendor", "value": 1},
-        ]);
-
-        let decoded = decode_channel_provider_data(stored.to_string().as_bytes());
-        let fields: Vec<&str> = decoded.split('\t').collect();
-        assert_eq!(fields.len(), 12);
-        let canonical: serde_json::Value =
-            serde_json::from_slice(&decode_hex_bytes(fields[0])).unwrap();
-        let extension_keys: Vec<_> = canonical["diagnostics"]["rawProviderDataExtensions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|extension| extension["key"].as_str().unwrap())
-            .collect();
-        assert!(extension_keys.contains(&"tune.futureSelector"));
-        assert!(extension_keys.contains(&"future.vendor"));
-        assert!(!extension_keys
-            .iter()
-            .any(|key| forbidden_channel_extension(key)));
-        assert!(canonical["tune"].get("inputId").is_none());
-        assert!(canonical["cas"].get("unsupportedCas").is_none());
-        assert!(canonical["diagnostics"]
-            .get("channelRegistrationReady")
-            .is_none());
+        assert!(decode_channel_provider_data(stored.to_string().as_bytes()).is_empty());
     }
 }
 
@@ -2665,6 +2311,7 @@ mod nullable_component_fact_tests {
             component_type: None,
             codec: "AAC".to_string(),
             language: None,
+            second_language: None,
             channel_configuration: None,
             sampling_info: None,
             source_descriptor: None,
