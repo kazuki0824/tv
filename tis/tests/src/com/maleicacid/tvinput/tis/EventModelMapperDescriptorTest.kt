@@ -55,7 +55,7 @@ class EventModelMapperDescriptorTest {
         check(record.descriptors.extendedItems.single().itemDescription == "出演")
         check(record.descriptors.componentText == "映像")
         check(record.descriptors.audioComponentText == "音声")
-        check(record.descriptors.audioLanguage == "jpn")
+        check(record.descriptors.components.audio.single().language == "jpn")
         check(record.canonicalGenres == listOf("NEWS"))
         check(record.descriptors.broadcastGenre == "ARIB(0x0/0x0):ニュース/報道/定時・総合")
         check(record.descriptors.genreSupplementText == "ニュース/報道/定時・総合")
@@ -64,9 +64,9 @@ class EventModelMapperDescriptorTest {
         check(record.descriptors.eventGroups.single().otherNetworkEvents.isEmpty())
         check(record.descriptors.scrambled == false)
         check(record.descriptors.freeCaMode?.text == "無料放送")
-        check(record.descriptors.seriesId == 100)
-        check(record.descriptors.episodeNumber == 3)
-        check(record.descriptors.lastEpisodeNumber == 12)
+        check(record.descriptors.series?.seriesId == 100)
+        check(record.descriptors.series?.episodeNumber == 3)
+        check(record.descriptors.series?.lastEpisodeNumber == 12)
         check(record.descriptors.series?.name == "シリーズ")
     }
 }

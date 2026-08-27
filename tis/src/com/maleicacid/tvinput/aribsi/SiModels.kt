@@ -80,12 +80,14 @@ data class AribService(
     val pcrPid: TsPid? = null,
     val freeCaMode: Boolean? = null,
     val streams: List<AribElementaryStream> = emptyList(),
-    val hasProgramCaDescriptor: Boolean = false,
-    val hasEsCaDescriptor: Boolean = false,
     val serviceScopedCaDescriptors: List<CaDescriptor> = emptyList(),
     val components: AribComponents = AribComponents(),
 ) {
-    val requiresCas: Boolean get() = hasProgramCaDescriptor || hasEsCaDescriptor
+    val hasProgramCaDescriptor: Boolean
+        get() = serviceScopedCaDescriptors.any { it.scope == CaDescriptorScope.PROGRAM }
+    val hasEsCaDescriptor: Boolean
+        get() = serviceScopedCaDescriptors.any { it.scope == CaDescriptorScope.ES }
+    val requiresCas: Boolean get() = serviceScopedCaDescriptors.isNotEmpty() || freeCaMode == true
 }
 
 data class AribTransport(
@@ -107,10 +109,21 @@ data class AribExtendedItem(
 
 data class AribParentalRating(
     val countryCode: String,
-    val ratingValue: Int,
     val rawRatingByte: Int,
     val parseStatus: String = "OK",
-)
+) {
+    /** Android rating projection reads the canonical ARIB byte; this is not separately stored state. */
+    val ratingValue: Int get() = rawRatingByte
+
+    constructor(
+        countryCode: String,
+        ratingValue: Int,
+        rawRatingByte: Int,
+        parseStatus: String = "OK",
+    ) : this(countryCode, rawRatingByte, parseStatus) {
+        require(ratingValue == rawRatingByte) { "ratingValue must equal the canonical ARIB raw byte" }
+    }
+}
 
 data class AribContentGenre(
     val level1: Int,
@@ -226,7 +239,6 @@ data class AribEventDescriptors(
     val extendedItems: List<AribExtendedItem> = emptyList(),
     val componentText: String? = null,
     val audioComponentText: String? = null,
-    val audioLanguage: String? = null,
     val contentGenres: List<AribContentGenre> = emptyList(),
     val broadcastGenre: String? = null,
     val genreSupplementText: String? = null,
@@ -234,9 +246,6 @@ data class AribEventDescriptors(
     val linkage: List<AribLinkage> = emptyList(),
     val scrambled: Boolean? = null,
     val freeCaMode: AribFreeCaMode? = null,
-    val seriesId: Int? = null,
-    val episodeNumber: Int? = null,
-    val lastEpisodeNumber: Int? = null,
     val series: AribSeries? = null,
     val parentalRatings: List<AribParentalRating> = emptyList(),
     val components: AribComponents = AribComponents(),
@@ -416,23 +425,31 @@ data class LivePlaybackSnapshot(
     val malformedCaDescriptorDiagnostics: List<MalformedCaDescriptorDiagnostic> = emptyList(),
 )
 
-data class ServicePublishabilityDiagnostic(
+data class ServicePolicyDecision(
     val serviceKey: ServiceKey,
-    val publishable: Boolean,
-    val channelRegistrationReady: Boolean,
-    val epgPublishable: Boolean,
-    val clearLivePlaybackSupported: Boolean,
+    val registrationReady: Boolean,
     val requiresCas: Boolean,
-    val unsupportedCas: Boolean,
     val pmtPidResolved: Boolean = false,
     val pmtParsed: Boolean = false,
     val caStateResolved: Boolean = false,
     val freeCaModeResolved: Boolean = false,
     val missingComponents: List<String>,
-    val reasons: List<String>,
     val registrationReasons: List<String>,
-    val epgReasons: List<String>,
-)
+    val semanticReasons: List<String> = emptyList(),
+) {
+    val publishable: Boolean get() = registrationReady
+    val channelRegistrationReady: Boolean get() = registrationReady
+    val epgPublishable: Boolean get() = registrationReady
+    val unsupportedCas: Boolean get() = requiresCas
+    val clearLivePlaybackSupported: Boolean get() = registrationReady && !requiresCas
+    val reasons: List<String>
+        get() = (registrationReasons + semanticReasons + if (unsupportedCas) listOf("CAS_NOT_IMPLEMENTED") else emptyList())
+            .distinct()
+            .sorted()
+    val epgReasons: List<String> get() = registrationReasons
+}
+
+typealias ServicePublishabilityDiagnostic = ServicePolicyDecision
 
 enum class CaMetadataSource { PROGRAM, ELEMENTARY_STREAM, CAT }
 

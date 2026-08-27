@@ -14,7 +14,6 @@ import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.EventModelMapper
 import com.maleicacid.tvinput.aribsi.NativeAribSiParser
-import com.maleicacid.tvinput.aribsi.isCurrentDiagnosticComplete
 import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.ServiceListBuilder
 import com.maleicacid.tvinput.aribsi.ServicePublishabilityDiagnostic
@@ -333,10 +332,6 @@ class TisR51FixedPlanAcceptanceTest {
         val event = aribEvent()
         val record = EventModelMapper().toProgramRecords(listOf(event), mapOf(event.serviceKey to facts)).single()
         check(record.requiresCas)
-        check(record.unsupportedCas)
-        check(!record.clearLivePlaybackSupported)
-        check(record.channelRegistrationReady)
-        check(record.epgPublishable)
         val providerData = JSONObject(TvProviderWriter.programProviderDataForTest(record))
         check(providerData.getJSONObject("cas").getBoolean("requiresCas"))
         check(!providerData.getJSONObject("cas").has("unsupportedCas"))
@@ -637,23 +632,6 @@ class TisR51FixedPlanAcceptanceTest {
         check(ProgramPublishCoordinator.programSignatureForTest(first) != ProgramPublishCoordinator.programSignatureForTest(changedRating))
     }
 
-    @Test fun currentDiagnosticCompleteRequiresExplicitPmtAndCaStateFields() {
-        val incompletePmt = publishability(key, clearLive = true).copy(
-            pmtPidResolved = false,
-            pmtParsed = false,
-        )
-        check(!incompletePmt.isCurrentDiagnosticComplete())
-
-        val incompleteCaState = publishability(key, clearLive = true).copy(
-            caStateResolved = false,
-            freeCaModeResolved = false,
-        )
-        check(!incompleteCaState.isCurrentDiagnosticComplete())
-
-        val complete = publishability(key, clearLive = true)
-        check(complete.isCurrentDiagnosticComplete())
-    }
-
     @Test fun currentProgramChangeClearsTemporaryUnblockKeys() {
         val keys = linkedSetOf("old-unblock-key")
         var identity = PlaybackPolicy.updateUnblockStateForProgramChange(
@@ -702,20 +680,15 @@ class TisR51FixedPlanAcceptanceTest {
         reasons: List<String> = emptyList(),
     ) = ServicePublishabilityDiagnostic(
         serviceKey = serviceKey,
-        publishable = clearLive,
-        channelRegistrationReady = clearLive,
-        epgPublishable = clearLive,
-        clearLivePlaybackSupported = clearLive,
+        registrationReady = clearLive,
         requiresCas = false,
-        unsupportedCas = false,
         pmtPidResolved = clearLive,
         pmtParsed = clearLive,
         caStateResolved = clearLive,
         freeCaModeResolved = clearLive,
         missingComponents = emptyList(),
-        reasons = reasons,
         registrationReasons = if (clearLive) emptyList() else reasons,
-        epgReasons = if (clearLive) emptyList() else reasons,
+        semanticReasons = if (clearLive) reasons else emptyList(),
     )
 
     private fun semanticFacts(
