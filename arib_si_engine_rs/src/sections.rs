@@ -289,5 +289,4 @@ mod section_header_contract_tests {
         assert_eq!(header.version, Some(0));
         assert_eq!(header.current_next_indicator, Some(false));
     }
-
 }
