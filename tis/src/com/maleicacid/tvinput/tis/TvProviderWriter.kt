@@ -346,7 +346,7 @@ class TvProviderWriter private constructor(
     }
 
     private fun channelProviderDataBytes(channel: ChannelRecord): ByteArray =
-        ProviderDataBridge.buildChannelProviderData(channel.copy(inputId = inputId)).bytes
+        ProviderDataBridge.buildChannelProviderData(channel).bytes
 
     private class AndroidTvProviderChannelStore(private val context: Context, private val inputId: String) : ChannelStore {
         override fun findExistingChannelId(key: ServiceKey): Result<Long?> = runCatching {

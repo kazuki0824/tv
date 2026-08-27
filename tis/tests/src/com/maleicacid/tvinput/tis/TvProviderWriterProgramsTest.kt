@@ -188,7 +188,7 @@ class TvProviderWriterProgramsTest {
 
         val rating18 = requireNotNull(
             AribRatingMapper.toTvContentRatingString(
-                AribParentalRating("JPN", 18, 18),
+                AribParentalRating("JPN", 18),
                 AribRatingMapper.BroadcastProfile.BS_CS,
             ),
         )

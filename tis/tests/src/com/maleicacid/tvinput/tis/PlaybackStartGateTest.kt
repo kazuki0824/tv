@@ -8,71 +8,55 @@ class PlaybackStartGateTest {
     private val key = ServiceKey(originalNetworkId = 4, transportStreamId = 0x4010, serviceId = 101)
 
     @Test fun repeatedSectionUpdatesAfterFailedStartDoNotRetrySameSignature() {
-        val gate = PlaybackStartGate()
         val signature = signature(videoPid = TsPid(0x0101), audioPid = TsPid(0x0102))
+        val state: PlaybackStartState = PlaybackStartState.Failed(signature, pipelineGeneration = null)
 
-        check(gate.shouldAttempt(signature))
-        gate.recordAttempt(signature)
-        gate.recordResult(signature, startedVideo = false)
-
-        check(!gate.shouldAttempt(signature)) {
+        check(!PlaybackStartTransitions.shouldAttempt(state, signature)) {
             "失敗後に同一AV署名でPlaybackPipeline.start()を再実行してはなりません"
         }
     }
 
     @Test fun eitCatEcmEmmUpdatesWithSameSignatureStayNoopAfterStarted() {
-        val gate = PlaybackStartGate()
         val signature = signature(videoPid = TsPid(0x0101), audioPid = TsPid(0x0102))
-
-        check(gate.shouldAttempt(signature))
-        gate.recordAttempt(signature)
-        gate.recordResult(signature, startedVideo = true)
+        val state: PlaybackStartState = PlaybackStartState.Started(signature, pipelineGeneration = 7L)
 
         repeat(5) {
-            check(!gate.shouldAttempt(signature)) {
+            check(!PlaybackStartTransitions.shouldAttempt(state, signature)) {
                 "metadataだけのsection更新で再生を再起動してはなりません"
             }
         }
     }
 
     @Test fun pmtPidChangeAllowsExactlyOneNewAttempt() {
-        val gate = PlaybackStartGate()
         val first = signature(videoPid = TsPid(0x0101), audioPid = TsPid(0x0102))
         val changed = signature(videoPid = TsPid(0x0201), audioPid = TsPid(0x0202))
+        var state: PlaybackStartState = PlaybackStartState.Started(first, pipelineGeneration = 7L)
 
-        gate.recordAttempt(first)
-        gate.recordResult(first, startedVideo = true)
-
-        check(gate.shouldAttempt(changed))
-        gate.recordAttempt(changed)
-        gate.recordResult(changed, startedVideo = true)
-        check(!gate.shouldAttempt(changed))
+        check(PlaybackStartTransitions.shouldAttempt(state, changed))
+        state = PlaybackStartState.Starting(changed)
+        check(!PlaybackStartTransitions.shouldAttempt(state, changed))
+        state = PlaybackStartState.Started(changed, pipelineGeneration = 8L)
+        check(!PlaybackStartTransitions.shouldAttempt(state, changed))
     }
 
     @Test fun surfaceReattachAllowsRetryingPreviouslyFailedSignature() {
-        val gate = PlaybackStartGate()
         val signature = signature(videoPid = TsPid(0x0101), audioPid = null)
+        var state: PlaybackStartState = PlaybackStartState.Failed(signature, pipelineGeneration = null)
 
-        gate.recordAttempt(signature)
-        gate.recordResult(signature, startedVideo = false)
-        check(!gate.shouldAttempt(signature))
-
-        gate.allowRetry()
-        check(gate.shouldAttempt(signature)) {
+        check(!PlaybackStartTransitions.shouldAttempt(state, signature))
+        state = PlaybackStartTransitions.allowRetry(state)
+        check(PlaybackStartTransitions.shouldAttempt(state, signature)) {
             "新しいSurfaceまたは外部条件変更では1回の再試行を許可する必要があります"
         }
     }
 
-    @Test fun newTuneResetsAllGateState() {
-        val gate = PlaybackStartGate()
+    @Test fun newTuneResetsUnifiedStateToIdle() {
         val signature = signature(videoPid = TsPid(0x0101), audioPid = TsPid(0x0102))
+        var state: PlaybackStartState = PlaybackStartState.Started(signature, pipelineGeneration = 7L)
 
-        gate.recordAttempt(signature)
-        gate.recordResult(signature, startedVideo = true)
-        check(!gate.shouldAttempt(signature))
-
-        gate.reset()
-        check(gate.shouldAttempt(signature))
+        check(!PlaybackStartTransitions.shouldAttempt(state, signature))
+        state = PlaybackStartState.Idle
+        check(PlaybackStartTransitions.shouldAttempt(state, signature))
     }
 
     private fun signature(videoPid: TsPid, audioPid: TsPid?): AvPlaybackSignature = AvPlaybackSignature(

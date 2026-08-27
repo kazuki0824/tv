@@ -26,7 +26,7 @@ class TvProviderWriterR51FixTest {
         writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
         val rating15 = requireNotNull(
             AribRatingMapper.toTvContentRatingString(
-                AribParentalRating("JPN", 15, 15),
+                AribParentalRating("JPN", 15),
                 AribRatingMapper.BroadcastProfile.BS_CS,
             ),
         )
