@@ -302,7 +302,6 @@
       "additionalProperties": true,
       "required": [
         "countryCode",
-        "ratingValue",
         "rawRatingByte",
         "parseStatus"
       ],
@@ -311,11 +310,6 @@
           "type": "string",
           "minLength": 3,
           "maxLength": 3
-        },
-        "ratingValue": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 255
         },
         "rawRatingByte": {
           "type": "integer",

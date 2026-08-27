@@ -239,8 +239,10 @@ class TvProviderWriter private constructor(
         put(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS, Math.addExact(program.startTimeMillis, program.durationMillis))
         put(TvContract.Programs.COLUMN_SHORT_DESCRIPTION, program.shortDescription)
         if (program.description.isBlank()) putNull(TvContract.Programs.COLUMN_LONG_DESCRIPTION) else put(TvContract.Programs.COLUMN_LONG_DESCRIPTION, program.description)
-        val audioLanguage = program.descriptors.audioLanguage?.takeIf { it.isNotBlank() }
-            ?: program.descriptors.components.audio.firstNotNullOfOrNull { it.language?.takeIf(String::isNotBlank) }
+        val audioLanguage = program.descriptors.components.audio
+            .asSequence()
+            .flatMap { sequenceOf(it.language, it.secondLanguage) }
+            .firstOrNull { !it.isNullOrBlank() }
         if (audioLanguage == null) putNull(TvContract.Programs.COLUMN_AUDIO_LANGUAGE) else put(TvContract.Programs.COLUMN_AUDIO_LANGUAGE, audioLanguage)
         if (program.descriptors.broadcastGenre.isNullOrBlank()) putNull(TvContract.Programs.COLUMN_BROADCAST_GENRE) else put(TvContract.Programs.COLUMN_BROADCAST_GENRE, TvContract.Programs.Genres.encode(program.descriptors.broadcastGenre))
         val canonicalGenres = program.canonicalGenres.distinct().sorted()
@@ -250,11 +252,11 @@ class TvProviderWriter private constructor(
             null -> putNull(COLUMN_SCRAMBLED)
             else -> put(COLUMN_SCRAMBLED, if (scrambled) 1 else 0)
         }
-        val seriesId = program.descriptors.seriesId ?: program.descriptors.series?.seriesId
+        val seriesId = program.descriptors.series?.seriesId
         if (seriesId == null) putNull(COLUMN_SERIES_ID) else put(COLUMN_SERIES_ID, seriesId)
         // ARIB series descriptor はこのモデルでは単一系列なので、複数系列用列には投影しない。
         putNull(COLUMN_MULTI_SERIES_ID)
-        val episodeNumber = program.descriptors.episodeNumber ?: program.descriptors.series?.episodeNumber
+        val episodeNumber = program.descriptors.series?.episodeNumber
         if (episodeNumber == null || episodeNumber <= 0) putNull(COLUMN_EPISODE_DISPLAY_NUMBER) else put(COLUMN_EPISODE_DISPLAY_NUMBER, episodeNumber.toString())
         put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA, ProviderDataBridge.buildProgramProviderData(program.copy(tvProviderProgramId = null)).bytes)
     }
