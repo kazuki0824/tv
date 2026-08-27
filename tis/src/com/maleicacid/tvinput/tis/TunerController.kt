@@ -518,10 +518,6 @@ class TunerController(
         }
     }
 
-    fun trackIdForVideo(stream: AribElementaryStream): String = trackIdForVideoStream(stream)
-    fun trackIdForAudio(stream: AribElementaryStream): String = trackIdForAudioStream(stream)
-    fun trackIdForSubtitle(stream: AribElementaryStream): String = trackIdForSubtitleStream(stream)
-
     fun startPlayback(selection: AvStreamSelection): PlaybackPipeline.StartResult? {
         val channel = currentTune ?: return null
         val tunerInstance = tuner ?: return null
