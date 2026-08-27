@@ -18,11 +18,11 @@ use jni::objects::{JByteArray, JObject, JString};
 use jni::sys::{jint, jlong, jstring};
 use jni::JNIEnv;
 use provider_data as provider_data_api;
-use serde::Serialize;
 use sections::{parse_section_header, section_crc_valid};
+use serde::Serialize;
 use service_discovery::{
-    DiscoveredElementaryStream, DiscoveredService, DiscoveryPublishStage, ServiceDiscoveryCollector,
-    ServiceSemanticFacts, TableRequirementStatus,
+    DiscoveredElementaryStream, DiscoveredService, DiscoveryPublishStage,
+    ServiceDiscoveryCollector, ServiceSemanticFacts, TableRequirementStatus,
 };
 use std::collections::BTreeMap;
 use std::ptr;
@@ -226,7 +226,11 @@ impl From<&DiscoveredService> for ServiceDto {
             pmt_pid: service.pmt_pid,
             pcr_pid: service.pcr_pid,
             free_ca_mode: service.free_ca_mode,
-            streams: service.streams.iter().map(ElementaryStreamDto::from).collect(),
+            streams: service
+                .streams
+                .iter()
+                .map(ElementaryStreamDto::from)
+                .collect(),
             service_scoped_ca_descriptors: ca,
         }
     }
@@ -298,9 +302,12 @@ fn ca_metadata_from_services(
             transport_stream_id: service.transport_stream_id,
             service_id: service.service_id,
         });
-        out.extend(service.program_ca_descriptors.iter().map(|ca| {
-            ca_metadata_dto(key, ca, Some(ca.ca_pid), None, None, "PROGRAM")
-        }));
+        out.extend(
+            service
+                .program_ca_descriptors
+                .iter()
+                .map(|ca| ca_metadata_dto(key, ca, Some(ca.ca_pid), None, None, "PROGRAM")),
+        );
         for group in &service.es_ca_descriptors {
             out.extend(group.descriptors.iter().map(|ca| {
                 ca_metadata_dto(
@@ -911,10 +918,7 @@ fn parser_diagnostics(
     last_status: jint,
     snapshot: &service_discovery::DiscoverySnapshot,
 ) -> Vec<ParserDiagnosticDto> {
-    let message = format!(
-        "sectionsSeen={} lastStatus={}",
-        sections_seen, last_status
-    );
+    let message = format!("sectionsSeen={} lastStatus={}", sections_seen, last_status);
     let mut diagnostics = vec![ParserDiagnosticDto {
         code: "PARSER_STATE",
         message,
@@ -945,11 +949,15 @@ fn parser_diagnostics(
         .collect::<Vec<_>>();
     text_diagnostics.sort();
     text_diagnostics.dedup();
-    diagnostics.extend(text_diagnostics.into_iter().map(|message| ParserDiagnosticDto {
-        code: "ARIB_SI_TEXT_REPLACED",
-        message,
-        severity: "warning",
-    }));
+    diagnostics.extend(
+        text_diagnostics
+            .into_iter()
+            .map(|message| ParserDiagnosticDto {
+                code: "ARIB_SI_TEXT_REPLACED",
+                message,
+                severity: "warning",
+            }),
+    );
     diagnostics
 }
 
