@@ -64,7 +64,7 @@ impl ParserState {
     }
 
     fn ingest_section(&mut self, pid: u16, section: &[u8]) -> jint {
-        let Some(header) = parse_section_header(section, 12) else {
+        let Some(header) = parse_section_header(section) else {
             self.last_status = STATUS_INVALID_SECTION;
             return STATUS_INVALID_SECTION;
         };
@@ -80,7 +80,7 @@ impl ParserState {
                 self.last_status = STATUS_IGNORED_UNSUPPORTED_PID_OR_TABLE;
                 return STATUS_IGNORED_UNSUPPORTED_PID_OR_TABLE;
             }
-            if header.syntax && !section_crc_valid(section, 12) {
+            if header.syntax && !section_crc_valid(section) {
                 self.last_status = STATUS_INVALID_SECTION;
                 return STATUS_INVALID_SECTION;
             }
@@ -986,7 +986,7 @@ fn parser_diagnostics_json(state: &ParserState) -> String {
 }
 
 fn section_body_end(section: &[u8]) -> Option<usize> {
-    let header = parse_section_header(section, 12)?;
+    let header = parse_section_header(section)?;
     if header.section_length < 4 || header.total_length > section.len() {
         return None;
     }

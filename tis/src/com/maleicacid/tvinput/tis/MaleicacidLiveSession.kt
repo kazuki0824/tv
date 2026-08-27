@@ -211,7 +211,7 @@ class MaleicacidLiveSession(
         currentService = outcome.channel.serviceKey
         currentRatingProfile = AribRatingMapper.profileForDeliverySystem(outcome.channel.deliverySystem)
         currentGeneration = outcome.generation
-        if (outcome.channel.serviceType == SERVICE_TYPE_DIGITAL_AUDIO) {
+        if (PlaybackPolicy.isAudioOnlyService(outcome.channel.serviceType)) {
             notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY)
         }
         refreshDynamicSiAndCasFilters()
@@ -299,8 +299,8 @@ class MaleicacidLiveSession(
             }
         }
         val selection = tunerController.selectAvStreams(service.serviceKey, service.pcrPid, service.streams, preferredAudioTrackId, selectedSubtitleTrackId)
-        val audioOnly = service.serviceType == SERVICE_TYPE_DIGITAL_AUDIO
-        if (shouldRejectPlaybackSelectionForServiceForTest(service.serviceType ?: -1, selection)) {
+        val audioOnly = PlaybackPolicy.isAudioOnlyService(service.serviceType)
+        if (PlaybackPolicy.shouldRejectSelection(service.serviceType ?: -1, selection)) {
             currentPlaybackSignature = null
             pendingPlaybackSignature = null
             playbackStartGate.reset()
@@ -362,8 +362,8 @@ class MaleicacidLiveSession(
         selection: TunerController.AvStreamSelection,
     ): AvPlaybackSignature? {
         val video = selection.video
-        if (service.serviceType == SERVICE_TYPE_DIGITAL_AUDIO && selection.audio == null) return null
-        if (service.serviceType != SERVICE_TYPE_DIGITAL_AUDIO && video == null) return null
+        if (PlaybackPolicy.isAudioOnlyService(service.serviceType) && selection.audio == null) return null
+        if (!PlaybackPolicy.isAudioOnlyService(service.serviceType) && video == null) return null
         val audio = selection.audio
         return AvPlaybackSignature(
             serviceKey = service.serviceKey,
@@ -446,7 +446,7 @@ class MaleicacidLiveSession(
 
     private fun updateTracks(service: AribService) {
         val tracks = tunerController.tracksFor(service.streams).filterNot { track ->
-            service.serviceType == SERVICE_TYPE_DIGITAL_AUDIO && track.type == TvTrackInfo.TYPE_SUBTITLE
+            PlaybackPolicy.isAudioOnlyService(service.serviceType) && track.type == TvTrackInfo.TYPE_SUBTITLE
         }
         val signature = tracks.map { track ->
             val audioComponentType = if (track.type == TvTrackInfo.TYPE_AUDIO) track.componentType ?: -1 else -1
@@ -485,7 +485,7 @@ class MaleicacidLiveSession(
     }
 
     private fun updateSubtitleSelection(tracks: List<TunerController.TisTrack>) {
-        if (latestService?.serviceType == SERVICE_TYPE_DIGITAL_AUDIO) {
+        if (PlaybackPolicy.isAudioOnlyService(latestService?.serviceType)) {
             selectedSubtitleTrackId = null
             captionController.selectTrack(null)
             notifyTrackSelected(TvTrackInfo.TYPE_SUBTITLE, null)
@@ -604,7 +604,7 @@ class MaleicacidLiveSession(
     }
 
     private fun clearUnblocksIfCurrentProgramChanged(ratingSet: CurrentProgramRatingResolver.CurrentProgramRatingSet) {
-        currentUnblockProgramIdentityKey = updateUnblockStateForProgramChangeForTest(
+        currentUnblockProgramIdentityKey = PlaybackPolicy.updateUnblockStateForProgramChange(
             previousIdentityKey = currentUnblockProgramIdentityKey,
             nextIdentityKey = ratingSet.programIdentityKey(),
             unblockedContentKeys = unblockedContentKeys,
@@ -638,7 +638,7 @@ class MaleicacidLiveSession(
         val transaction = aribSiEngine.programStateSnapshot()
         val records = eventModelMapper.toProgramRecords(
             events = transaction.events.filter { event ->
-                eventContainsTime(event, key, now)
+                ProgramVideoMetadataPolicy.eventContainsTime(event, key, now)
             },
             semanticFactsByServiceKey = transaction.semanticFactsByServiceKey,
             malformedCaDescriptorCountByServiceId = transaction.malformedCaDescriptorCountByServiceId,
@@ -675,11 +675,12 @@ class MaleicacidLiveSession(
 
     private fun rememberVideoMetadata(records: List<ProgramRecord>, info: PlaybackPipeline.VideoFormatInfo) {
         records.forEach { record ->
-            latestVideoMetadataByProgramKey[programVideoMetadataKey(record)] = info
+            latestVideoMetadataByProgramKey[ProgramVideoMetadataPolicy.key(record)] = info
         }
     }
 
-    private fun applyLatestVideoMetadata(records: List<ProgramRecord>): List<ProgramRecord> = mergeVideoMetadataForTest(records, latestVideoMetadataByProgramKey)
+    private fun applyLatestVideoMetadata(records: List<ProgramRecord>): List<ProgramRecord> =
+        ProgramVideoMetadataPolicy.merge(records, latestVideoMetadataByProgramKey)
 
     private fun publishLivePrograms(records: List<ProgramRecord>) {
         if (records.isEmpty()) return
@@ -778,110 +779,5 @@ class MaleicacidLiveSession(
 
     companion object {
         private const val ENABLE_CAS_ORCHESTRATION = true
-        private const val SERVICE_TYPE_DIGITAL_AUDIO = 0x02
-
-        fun updateUnblockStateForProgramChangeForTest(
-            previousIdentityKey: String?,
-            nextIdentityKey: String?,
-            unblockedContentKeys: MutableSet<String>,
-        ): String? {
-            if (previousIdentityKey != nextIdentityKey) {
-                unblockedContentKeys.clear()
-            }
-            return nextIdentityKey
-        }
-
-        fun shouldRejectPlaybackSelectionWithoutVideoForTest(selection: TunerController.AvStreamSelection): Boolean =
-            shouldRejectPlaybackSelectionForServiceForTest(0x01, selection)
-
-        fun shouldRejectPlaybackSelectionForServiceForTest(
-            serviceType: Int,
-            selection: TunerController.AvStreamSelection,
-        ): Boolean = if (serviceType == SERVICE_TYPE_DIGITAL_AUDIO) selection.audio == null else selection.video == null
-
-        fun unsupportedLivePlaybackReasonForTest(): Int = TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN
-
-        @Suppress("UNUSED_PARAMETER")
-        fun subtitleSelectionAcceptedForTest(
-            trackId: String?,
-            tracks: List<TunerController.TisTrack>,
-            captionEnabled: Boolean,
-        ): Boolean = if (trackId == null) {
-            true
-        } else {
-            tracks.any { it.type == TvTrackInfo.TYPE_SUBTITLE && it.id == trackId }
-        }
-
-        fun audioTrackSelectionAcceptedForTest(
-            trackId: String?,
-            tracks: List<TunerController.TisTrack>,
-            audioSwitchSucceeded: Boolean,
-        ): Boolean = trackId != null &&
-            tracks.any { it.type == TvTrackInfo.TYPE_AUDIO && it.id == trackId } &&
-            audioSwitchSucceeded
-
-        fun preservesExistingPlaybackWhenAudioSwitchFailsForTest(
-            previousSignature: AvPlaybackSignature?,
-            restoredSignature: AvPlaybackSignature?,
-            switchSucceeded: Boolean,
-        ): Boolean = !switchSucceeded && previousSignature == restoredSignature
-
-        fun shouldStopPlaybackWhenParentalControlBecomesBlockedForTest(blocked: Boolean): Boolean = blocked
-
-        fun shouldRestartPlaybackAfterParentalControlAllowedForTest(latestServicePresent: Boolean): Boolean = latestServicePresent
-
-        fun parentalBlockUsesNotifyVideoUnavailableForTest(): Boolean = false
-
-        fun casPlaceholderUnavailableReasonForTest(): Int = TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN
-
-        fun videoMetadataProgramsForTest(
-            events: List<com.maleicacid.tvinput.aribsi.AribEvent>,
-            serviceKey: ServiceKey,
-            nowMillis: Long,
-            info: PlaybackPipeline.VideoFormatInfo,
-        ): List<ProgramRecord> {
-            val records = com.maleicacid.tvinput.aribsi.EventModelMapper().toProgramRecords(
-                events.filter { event ->
-                    eventContainsTime(event, serviceKey, nowMillis)
-                },
-            )
-            val metadata = records.associate { programVideoMetadataKey(it) to info }
-            return mergeVideoMetadataForTest(records, metadata)
-        }
-
-        fun programVideoMetadataKeyForTest(record: ProgramRecord): String = programVideoMetadataKey(record)
-
-        fun mergeVideoMetadataForTest(
-            records: List<ProgramRecord>,
-            latestVideoMetadataByProgramKey: Map<String, PlaybackPipeline.VideoFormatInfo>,
-        ): List<ProgramRecord> = records.map { record ->
-            val info = latestVideoMetadataByProgramKey[programVideoMetadataKey(record)]
-            if (info == null || record.videoWidth != null || record.videoHeight != null || record.videoFormat != null) {
-                record
-            } else {
-                record.copy(videoWidth = info.width, videoHeight = info.height, videoFormat = info.mime)
-            }
-        }
-
-        private fun programVideoMetadataKey(record: ProgramRecord): String {
-            val key = record.serviceKey
-            return listOf(
-                key.originalNetworkId,
-                key.transportStreamId,
-                key.serviceId,
-                record.eventId,
-                record.stableIdentity,
-            ).joinToString(":")
-        }
-
-        private fun eventContainsTime(
-            event: com.maleicacid.tvinput.aribsi.AribEvent,
-            serviceKey: ServiceKey,
-            nowMillis: Long,
-        ): Boolean {
-            val end = runCatching { Math.addExact(event.startTimeMillis, event.durationMillis) }.getOrNull()
-                ?: return false
-            return event.serviceKey == serviceKey && nowMillis >= event.startTimeMillis && nowMillis < end
-        }
     }
 }
