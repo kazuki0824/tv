@@ -178,6 +178,7 @@ impl DiscoveryCollectionState {
                 .all(|status| status.complete)
     }
 
+    #[cfg(test)]
     pub fn missing_components(&self) -> Vec<&'static str> {
         let mut missing = self
             .table_requirements
@@ -190,6 +191,7 @@ impl DiscoveryCollectionState {
         missing
     }
 
+    #[cfg(test)]
     pub fn missing_components_by_scope(&self) -> Vec<TableRequirementStatus> {
         self.table_requirements
             .iter()
@@ -1015,6 +1017,7 @@ impl ServiceDiscoveryCollector {
 
     /// サービスが r51 視聴可能になる前に PMTセクションフィルター を開く必要がある。
     /// サービス の公開可否や視聴可否に依存せず、PAT 由来の PMT PID を返す。
+    #[cfg(test)]
     pub fn pmt_pids_for_section_filters(&self) -> Vec<u16> {
         let mut pids: Vec<u16> = self.engine.pat_programs.values().copied().collect();
         pids.extend(
@@ -1492,6 +1495,7 @@ impl ServiceDiscoveryCollector {
             })
     }
 
+    #[cfg(test)]
     fn bat_complete_for_transport(
         &self,
         original_network_id: u16,
@@ -1918,6 +1922,7 @@ fn retain_text_decode_diagnostic(diagnostics: &mut Vec<String>, diagnostic: Opti
 #[cfg(test)]
 mod tests {
     use super::{DiscoveryPublishStage, ServiceDiscoveryCollector, ServiceDiscoveryEngine};
+    use crate::discovery_requirements::DiscoveryProfile;
     use crate::sections::crc32_mpeg;
 
     #[test]
