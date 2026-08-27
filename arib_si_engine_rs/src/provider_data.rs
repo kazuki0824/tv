@@ -466,24 +466,6 @@ fn field_object_has_only(parent: &serde_json::Value, field: &str, known_keys: &[
         .unwrap_or(true)
 }
 
-fn optional_field_object_has_only(
-    parent: &serde_json::Value,
-    field: &str,
-    known_keys: &[&str],
-) -> bool {
-    parent
-        .get(field)
-        .map(|value| value.is_null() || object_has_only(value, known_keys))
-        .unwrap_or(true)
-}
-
-fn field_array_has_only(parent: &serde_json::Value, field: &str, known_keys: &[&str]) -> bool {
-    parent
-        .get(field)
-        .map(|value| array_objects_have_only(value, known_keys))
-        .unwrap_or(true)
-}
-
 fn object_has_only(value: &serde_json::Value, known_keys: &[&str]) -> bool {
     value
         .as_object()
@@ -492,13 +474,6 @@ fn object_has_only(value: &serde_json::Value, known_keys: &[&str]) -> bool {
                 .keys()
                 .all(|key| known_keys.iter().any(|known| *known == key))
         })
-        .unwrap_or(false)
-}
-
-fn array_objects_have_only(value: &serde_json::Value, known_keys: &[&str]) -> bool {
-    value
-        .as_array()
-        .map(|items| items.iter().all(|item| object_has_only(item, known_keys)))
         .unwrap_or(false)
 }
 
