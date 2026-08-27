@@ -27,109 +27,118 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          common = Path("tuner_hal2/common/src/lib.rs")
-          text = common.read_text()
+          def replace_once(text, old, new, label):
+              if old not in text:
+                  raise SystemExit(f"{label} not found")
+              return text.replace(old, new, 1)
+
+          p = Path("tuner_hal2/common/src/lib.rs")
+          s = p.read_text()
           old = '''#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-          pub struct TransportStreamPid(u16);
+pub struct TransportStreamPid(u16);
 
-          impl TransportStreamPid {
-              pub fn validate_u16(pid: u16) -> Result<Self, ()> {
-                  if pid <= 0x1fff {
-                      Ok(Self(pid))
-                  } else {
-                      Err(())
-                  }
-              }
+impl TransportStreamPid {
+    pub fn validate_u16(pid: u16) -> Result<Self, ()> {
+        if pid <= 0x1fff {
+            Ok(Self(pid))
+        } else {
+            Err(())
+        }
+    }
 
-              pub fn validate_i32(pid: i32) -> Result<Self, ()> {
-                  if (0..=0x1fff).contains(&pid) {
-                      Ok(Self(pid as u16))
-                  } else {
-                      Err(())
-                  }
-              }
-          '''
+    pub fn validate_i32(pid: i32) -> Result<Self, ()> {
+        if (0..=0x1fff).contains(&pid) {
+            Ok(Self(pid as u16))
+        } else {
+            Err(())
+        }
+    }
+'''
           new = '''#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-          pub struct TransportStreamPid(u16);
+pub struct TransportStreamPid(u16);
 
-          #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-          pub enum TransportStreamPidValidationError {
-              OutOfRange,
-          }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransportStreamPidValidationError {
+    OutOfRange,
+}
 
-          impl TransportStreamPid {
-              pub fn validate_u16(pid: u16) -> Result<Self, TransportStreamPidValidationError> {
-                  if pid <= 0x1fff {
-                      Ok(Self(pid))
-                  } else {
-                      Err(TransportStreamPidValidationError::OutOfRange)
-                  }
-              }
+impl TransportStreamPid {
+    pub fn validate_u16(pid: u16) -> Result<Self, TransportStreamPidValidationError> {
+        if pid <= 0x1fff {
+            Ok(Self(pid))
+        } else {
+            Err(TransportStreamPidValidationError::OutOfRange)
+        }
+    }
 
-              pub fn validate_i32(pid: i32) -> Result<Self, TransportStreamPidValidationError> {
-                  if (0..=0x1fff).contains(&pid) {
-                      Ok(Self(pid as u16))
-                  } else {
-                      Err(TransportStreamPidValidationError::OutOfRange)
-                  }
-              }
-          '''
-          if old in text:
-              text = text.replace(old, new, 1)
-          elif "TransportStreamPidValidationError" not in text:
-              raise SystemExit("unexpected TransportStreamPid validation block")
-          common.write_text(text)
+    pub fn validate_i32(pid: i32) -> Result<Self, TransportStreamPidValidationError> {
+        if (0..=0x1fff).contains(&pid) {
+            Ok(Self(pid as u16))
+        } else {
+            Err(TransportStreamPidValidationError::OutOfRange)
+        }
+    }
+'''
+          s = replace_once(s, old, new, "TransportStreamPid block")
+          p.write_text(s)
 
-          ledger = Path("tuner_hal2/resource_ledger/src/lib.rs")
-          text = ledger.read_text()
-          typed_old = '''    pub fn len(&self) -> usize {
-              self.inner.len()
-          }
-          }
-
-          macro_rules! define_ledger_wrapper'''
-          typed_new = '''    pub fn len(&self) -> usize {
-              self.inner.len()
-          }
-
-              pub fn is_empty(&self) -> bool {
-                  self.inner.is_empty()
-              }
-          }
-
-          macro_rules! define_ledger_wrapper'''
-          # Use the exact source indentation, not YAML indentation.
-          typed_old = typed_old.replace("          ", "")
-          typed_new = typed_new.replace("          ", "")
-          if "impl<K: LedgerResourceKind> TypedResourceLedger<K>" in text and "macro_rules! define_ledger_wrapper" in text:
-              before, after = text.split("macro_rules! define_ledger_wrapper", 1)
-              if "pub fn is_empty(&self) -> bool" not in before.split("impl<K: LedgerResourceKind> TypedResourceLedger<K>", 1)[1]:
-                  needle = "    pub fn len(&self) -> usize {\n        self.inner.len()\n    }\n}\n\n"
-                  replacement = "    pub fn len(&self) -> usize {\n        self.inner.len()\n    }\n\n    pub fn is_empty(&self) -> bool {\n        self.inner.is_empty()\n    }\n}\n\n"
-                  if needle not in before:
-                      raise SystemExit("typed ledger len block not found")
-                  before = before.replace(needle, replacement, 1)
-              text = before + "macro_rules! define_ledger_wrapper" + after
-          else:
-              raise SystemExit("typed ledger markers missing")
-
-          macro_start = text.index("macro_rules! define_ledger_wrapper")
-          macro_end = text.index("define_ledger_wrapper!(FrontendLedger", macro_start)
-          macro = text[macro_start:macro_end]
+          p = Path("tuner_hal2/resource_ledger/src/lib.rs")
+          s = p.read_text()
+          impl_start = s.index("impl<K: LedgerResourceKind> TypedResourceLedger<K>")
+          macro_start = s.index("macro_rules! define_ledger_wrapper", impl_start)
+          before = s[:macro_start]
+          if "pub fn is_empty(&self) -> bool" not in before[impl_start:]:
+              old = "    pub fn len(&self) -> usize {\n        self.inner.len()\n    }\n}\n\n"
+              new = "    pub fn len(&self) -> usize {\n        self.inner.len()\n    }\n\n    pub fn is_empty(&self) -> bool {\n        self.inner.is_empty()\n    }\n}\n\n"
+              before = replace_once(before, old, new, "typed ledger len")
+              s = before + s[macro_start:]
+          macro_start = s.index("macro_rules! define_ledger_wrapper")
+          macro_end = s.index("define_ledger_wrapper!(FrontendLedger", macro_start)
+          macro = s[macro_start:macro_end]
           if "pub fn is_empty(&self) -> bool" not in macro:
-              needle = "            pub fn len(&self) -> usize {\n                self.inner.len()\n            }\n"
-              replacement = needle + "            pub fn is_empty(&self) -> bool {\n                self.inner.is_empty()\n            }\n"
-              if needle not in macro:
-                  raise SystemExit("wrapper ledger len block not found")
-              macro = macro.replace(needle, replacement, 1)
-              text = text[:macro_start] + macro + text[macro_end:]
-          if text.count("pub fn is_empty(&self) -> bool") < 3:
-              raise SystemExit("failed to add ledger is_empty methods")
-          ledger.write_text(text)
+              old = "            pub fn len(&self) -> usize {\n                self.inner.len()\n            }\n"
+              new = old + "            pub fn is_empty(&self) -> bool {\n                self.inner.is_empty()\n            }\n"
+              macro = replace_once(macro, old, new, "wrapper ledger len")
+              s = s[:macro_start] + macro + s[macro_end:]
+          p.write_text(s)
+
+          p = Path("tuner_hal2/device/src/runtime/frontend_worker.rs")
+          s = p.read_text()
+          old = '''        let result: Arc<Mutex<Option<Result<(Result<(), HalError>, WorkerExit), HalError>>>> =
+            Arc::new(Mutex::new(None));
+'''
+          new = '''        type WorkerThreadResult =
+            Arc<Mutex<Option<Result<(Result<(), HalError>, WorkerExit), HalError>>>>;
+        let result: WorkerThreadResult = Arc::new(Mutex::new(None));
+'''
+          s = replace_once(s, old, new, "frontend worker result type")
+          p.write_text(s)
+
+          p = Path("tuner_hal2/descrambler/src/core/packet.rs")
+          s = p.read_text()
+          old = '''        for i in 4..TS_PACKET_SIZE {
+            p[i] = (i as u8).wrapping_mul(3).wrapping_add(1);
+        }
+'''
+          new = '''        for (i, byte) in p.iter_mut().enumerate().skip(4) {
+            *byte = (i as u8).wrapping_mul(3).wrapping_add(1);
+        }
+'''
+          s = replace_once(s, old, new, "packet test initialization")
+          p.write_text(s)
           PY
+
           set +e
           (cd tuner_hal2/host_ci && cargo clippy --fix --allow-dirty --allow-staged --workspace --all-targets --locked -- -D warnings)
           set -e
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("tuner_hal2/compile_contract/src/lib.rs")
+          s = p.read_text()
+          use = "use maleicacid_tuner_hal2_device::FrontendWorkerStopTicket;\n\n"
+          if use not in s:
+              p.write_text(use + s)
+          PY
           (cd tuner_hal2/host_ci && cargo fmt --all)
           if ! (cd tuner_hal2/host_ci && cargo clippy --workspace --all-targets --locked -- -D warnings); then
             echo "=== remaining Tuner HAL diff ==="
@@ -139,10 +148,8 @@ jobs:
           (cd tuner_hal2/host_ci && cargo test --workspace --locked)
           git diff --check
           git add tuner_hal2/common tuner_hal2/resource_ledger tuner_hal2/device tuner_hal2/control tuner_hal2/descrambler tuner_hal2/lnb tuner_hal2/compile_contract
-          if ! git diff --cached --quiet; then
-            git commit -m "fix(tuner_hal2): resolve Clippy findings"
-            git push origin HEAD:fix/tuner-hal2-rustfmt-1.81
-          fi
+          git commit -m "fix(tuner_hal2): resolve Clippy findings"
+          git push origin HEAD:fix/tuner-hal2-rustfmt-1.81
 
   arib-si:
     runs-on: ubuntu-latest
@@ -166,224 +173,161 @@ jobs:
 
           def replace_once(text, old, new, label):
               if old not in text:
-                  raise SystemExit(f"{label} block not found")
+                  raise SystemExit(f"{label} not found")
               return text.replace(old, new, 1)
 
-          # lib.rs: the JIS table is include!()d by arib_string.rs; compiling it as a second module is dead duplication.
-          path = Path("arib_si_engine_rs/src/lib.rs")
-          text = path.read_text()
-          text = text.replace("mod arib_jis_x0208_table;\n", "", 1)
-          text = replace_once(
-              text,
-              "    fn services(&self) -> Vec<DiscoveredService> {\n        self.snapshot().services\n    }\n\n",
-              "    #[cfg(test)]\n    fn services(&self) -> Vec<DiscoveredService> {\n        self.snapshot().services\n    }\n\n",
-              "ParserState services",
-          )
-          text = text.replace(
-              "    fn transports(&self) -> Vec<DiscoveredTransport> {\n        self.snapshot().transports\n    }\n\n",
-              "",
-              1,
-          )
-          text = text.replace(
-              "    fn clear_epg_update_windows(&mut self) {\n        self.collector.clear_epg_update_windows()\n    }\n",
-              "",
-              1,
-          )
-          path.write_text(text)
+          p = Path("arib_si_engine_rs/src/lib.rs")
+          s = p.read_text().replace("mod arib_jis_x0208_table;\n", "", 1)
+          s = replace_once(s, "    fn services(&self) -> Vec<DiscoveredService> {\n        self.snapshot().services\n    }\n", "    #[cfg(test)]\n    fn services(&self) -> Vec<DiscoveredService> {\n        self.snapshot().services\n    }\n", "ParserState services")
+          s = s.replace("\n    fn transports(&self) -> Vec<DiscoveredTransport> {\n        self.snapshot().transports\n    }\n", "", 1)
+          s = s.replace("\n    fn clear_epg_update_windows(&mut self) {\n        self.collector.clear_epg_update_windows()\n    }\n", "", 1)
+          p.write_text(s)
 
-          # arib_string.rs: Macro is never designated by the supported SI escape grammar; keep unsupported Macro as an escape error.
-          path = Path("arib_si_engine_rs/src/arib_string.rs")
-          text = path.read_text()
-          if "use std::fmt::Write as _;" not in text:
-              text = "use std::fmt::Write as _;\n\n" + text
+          p = Path("arib_si_engine_rs/src/arib_string.rs")
+          s = p.read_text()
+          if "use std::fmt::Write as _;" not in s:
+              s = "use std::fmt::Write as _;\n\n" + s
           marker = 'pub const ARIB_STRING_DECODER_SCOPE: &str = "mirakc_scope_non_caption_si_epg_only";\n'
-          if "fn bytes_hex_lower(" not in text:
-              helper = '''\nfn bytes_hex_lower(bytes: &[u8]) -> String {\n    let mut out = String::with_capacity(bytes.len() * 2);\n    for byte in bytes {\n        write!(&mut out, "{byte:02x}").expect("writing to String cannot fail");\n    }\n    out\n}\n'''
-              text = replace_once(text, marker, marker + helper, "ARIB hex helper marker")
-          old_hex = '''            input_prefix_hex: bytes\n                .iter()\n                .skip(offset)\n                .take(8)\n                .map(|byte| format!("{:02x}", byte))\n                .collect(),\n'''
-          new_hex = '''            input_prefix_hex: bytes_hex_lower(\n                bytes.get(offset..).unwrap_or_default().get(..8).unwrap_or_else(|| bytes.get(offset..).unwrap_or_default()),\n            ),\n'''
-          text = replace_once(text, old_hex, new_hex, "ARIB diagnostic hex")
-          text = text.replace("    Macro,\n", "", 1)
-          text = text.replace('        GraphicSet::Macro => "�".to_string(),\n', "", 1)
-          text = text.replace(
-              "        GraphicSet::Macro => Err(AribStringDecodeError::UnsupportedEscape),\n",
-              "",
-              1,
-          )
-          text = re.sub(
-              r'''\n\s*if matches!\(set, GraphicSet::Macro\) \{\n.*?diagnostic\.record_entry\(\n.*?"SS3/Macro",\n.*?"unsupported_macro",\n.*?true,\n.*?\);\n\s*\}\n''',
-              "\n",
-              text,
-              count=1,
-              flags=re.S,
-          )
-          macro_branch = re.compile(
-              r'''\n\s*GraphicSet::Macro => \{\n.*?"unsupported_macro".*?out\.push\('�'\);\n\s*\},?''',
-              re.S,
-          )
-          text, count = macro_branch.subn("", text)
+          helper = '''\nfn bytes_hex_lower(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut out, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    out
+}
+'''
+          s = replace_once(s, marker, marker + helper, "ARIB hex helper marker")
+          old = '''            input_prefix_hex: bytes
+                .iter()
+                .skip(offset)
+                .take(8)
+                .map(|byte| format!("{:02x}", byte))
+                .collect(),
+'''
+          new = '''            input_prefix_hex: {
+                let remaining = bytes.get(offset..).unwrap_or_default();
+                bytes_hex_lower(&remaining[..remaining.len().min(8)])
+            },
+'''
+          s = replace_once(s, old, new, "ARIB diagnostic hex")
+          s = s.replace("    Macro,\n", "", 1)
+          s = s.replace('        GraphicSet::Macro => "�".to_string(),\n', "", 1)
+          s = s.replace("        GraphicSet::Macro => Err(AribStringDecodeError::UnsupportedEscape),\n", "", 1)
+          s = s.replace("                    GraphicSet::Macro => return Err(AribStringDecodeError::UnsupportedEscape),\n", "", 1)
+          s = re.sub(r'''\n\s*if matches!\(set, GraphicSet::Macro\) \{\n.*?"SS3/Macro".*?\n\s*\}\n''', "\n", s, count=1, flags=re.S)
+          pattern = re.compile(r'''\n\s*GraphicSet::Macro => \{\n.*?"unsupported_macro".*?out\.push\('�'\);\n\s*\},?''', re.S)
+          s, count = pattern.subn("", s)
           if count != 2:
               raise SystemExit(f"expected 2 lossy Macro branches, removed {count}")
-          text = replace_once(
-              text,
-              "pub fn decode_arib_string(bytes: &[u8]) -> Result<String, AribStringDecodeError> {\n",
-              "#[cfg(test)]\npub fn decode_arib_string(bytes: &[u8]) -> Result<String, AribStringDecodeError> {\n",
-              "test-only strict ARIB decoder",
-          )
-          path.write_text(text)
+          s = replace_once(s, "pub fn decode_arib_string(bytes: &[u8]) -> Result<String, AribStringDecodeError> {\n", "#[cfg(test)]\npub fn decode_arib_string(bytes: &[u8]) -> Result<String, AribStringDecodeError> {\n", "strict decoder cfg(test)")
+          p.write_text(s)
 
-          # CA convenience parser is test-only; production uses the diagnostic form.
-          path = Path("arib_si_engine_rs/src/ca_descriptor.rs")
-          text = path.read_text()
-          text = replace_once(
-              text,
-              "pub fn parse_ca_descriptors(descriptors: &[u8]) -> Vec<CaDescriptor> {\n",
-              "#[cfg(test)]\npub fn parse_ca_descriptors(descriptors: &[u8]) -> Vec<CaDescriptor> {\n",
-              "test-only CA parser",
-          )
-          path.write_text(text)
+          p = Path("arib_si_engine_rs/src/ca_descriptor.rs")
+          s = p.read_text()
+          s = replace_once(s, "pub fn parse_ca_descriptors(descriptors: &[u8]) -> Vec<CaDescriptor> {\n", "#[cfg(test)]\npub fn parse_ca_descriptors(descriptors: &[u8]) -> Vec<CaDescriptor> {\n", "CA parser cfg(test)")
+          p.write_text(s)
 
-          # EIT helpers: retain test-observable snapshots under cfg(test); remove the unused clear chain.
-          path = Path("arib_si_engine_rs/src/eit.rs")
-          text = path.read_text()
-          text = replace_once(
-              text,
-              "    pub fn snapshot_present_following_actual(&self) -> Vec<EitEvent> {\n",
-              "    #[cfg(test)]\n    pub fn snapshot_present_following_actual(&self) -> Vec<EitEvent> {\n",
-              "test-only EIT p/f snapshot",
-          )
-          text = re.sub(
-              r'''\n    pub fn clear_update_windows\(&mut self\) \{\n        self\.last_update_windows\.clear\(\);\n    \}\n''',
-              "\n",
-              text,
-              count=1,
-          )
-          text = replace_once(
-              text,
-              "    pub fn section_count_for_diagnostic(&self) -> usize {\n",
-              "    #[cfg(test)]\n    pub fn section_count_for_diagnostic(&self) -> usize {\n",
-              "test-only EIT section count",
-          )
-          path.write_text(text)
+          p = Path("arib_si_engine_rs/src/eit.rs")
+          s = p.read_text()
+          s = replace_once(s, "    pub fn snapshot_present_following_actual(&self) -> Vec<EitEvent> {\n", "    #[cfg(test)]\n    pub fn snapshot_present_following_actual(&self) -> Vec<EitEvent> {\n", "EIT p/f cfg(test)")
+          s = s.replace("\n    pub fn clear_update_windows(&mut self) {\n        self.last_update_windows.clear();\n    }\n", "", 1)
+          s = replace_once(s, "    pub fn section_count_for_diagnostic(&self) -> usize {\n", "    #[cfg(test)]\n    pub fn section_count_for_diagnostic(&self) -> usize {\n", "EIT count cfg(test)")
+          p.write_text(s)
 
-          # Descriptor parser Clippy cleanup.
-          path = Path("arib_si_engine_rs/src/descriptors.rs")
-          text = path.read_text()
-          text = text.replace(
-              "        let Some(desc_end) = desc_start.checked_add(desc_len) else {\n            return None;\n        };\n",
-              "        let desc_end = desc_start.checked_add(desc_len)?;\n",
-              1,
-          )
-          text = text.replace(
-              "        let Some(item_end) = item_start.checked_add(item_len) else {\n            return None;\n        };\n",
-              "        let item_end = item_start.checked_add(item_len)?;\n",
-              1,
-          )
-          text = text.replace(
-              "    let Some(text_end) = text_start.checked_add(text_len) else {\n        return None;\n    };\n",
-              "    let text_end = text_start.checked_add(text_len)?;\n",
-              1,
-          )
-          old_sig = '''fn decode_descriptor_text_lossy(\n    bytes: &[u8],\n    out: &mut EventDescriptors,\n    tag: u8,\n    descriptor_offset: usize,\n    declared_length: usize,\n    descriptor_body: &[u8],\n    field_kind: &str,\n    field_offset: usize,\n) -> String {\n'''
-          new_sig = '''type DescriptorTextField<'a> = (&'a str, usize);\n\nfn decode_descriptor_text_lossy(\n    bytes: &[u8],\n    out: &mut EventDescriptors,\n    tag: u8,\n    descriptor_offset: usize,\n    declared_length: usize,\n    descriptor_body: &[u8],\n    field: DescriptorTextField<'_>,\n) -> String {\n    let (field_kind, field_offset) = field;\n'''
-          text = replace_once(text, old_sig, new_sig, "descriptor text helper signature")
-          call_pairs = [
+          p = Path("arib_si_engine_rs/src/descriptors.rs")
+          s = p.read_text()
+          s = s.replace("        let Some(desc_end) = desc_start.checked_add(desc_len) else {\n            return None;\n        };\n", "        let desc_end = desc_start.checked_add(desc_len)?;\n", 1)
+          s = s.replace("        let Some(item_end) = item_start.checked_add(item_len) else {\n            return None;\n        };\n", "        let item_end = item_start.checked_add(item_len)?;\n", 1)
+          s = s.replace("    let Some(text_end) = text_start.checked_add(text_len) else {\n        return None;\n    };\n", "    let text_end = text_start.checked_add(text_len)?;\n", 1)
+          old = '''fn decode_descriptor_text_lossy(
+    bytes: &[u8],
+    out: &mut EventDescriptors,
+    tag: u8,
+    descriptor_offset: usize,
+    declared_length: usize,
+    descriptor_body: &[u8],
+    field_kind: &str,
+    field_offset: usize,
+) -> String {
+'''
+          new = '''type DescriptorTextField<'a> = (&'a str, usize);
+
+fn decode_descriptor_text_lossy(
+    bytes: &[u8],
+    out: &mut EventDescriptors,
+    tag: u8,
+    descriptor_offset: usize,
+    declared_length: usize,
+    descriptor_body: &[u8],
+    field: DescriptorTextField<'_>,
+) -> String {
+    let (field_kind, field_offset) = field;
+'''
+          s = replace_once(s, old, new, "descriptor text signature")
+          pairs = [
               ('        body,\n        "eventName",\n        offset.saturating_add(2).saturating_add(name_start),\n', '        body,\n        ("eventName", offset.saturating_add(2).saturating_add(name_start)),\n'),
               ('        body,\n        "text",\n        offset.saturating_add(2).saturating_add(text_start),\n', '        body,\n        ("text", offset.saturating_add(2).saturating_add(text_start)),\n'),
               ('            body,\n            "text",\n            offset.saturating_add(8),\n', '            body,\n            ("text", offset.saturating_add(8)),\n'),
               ('            body,\n            "text",\n            offset.saturating_add(2).saturating_add(cursor),\n', '            body,\n            ("text", offset.saturating_add(2).saturating_add(cursor)),\n'),
               ('                body,\n                "seriesName",\n                offset.saturating_add(11),\n', '                body,\n                ("seriesName", offset.saturating_add(11)),\n'),
           ]
-          for index, (old, new) in enumerate(call_pairs, 1):
-              text = replace_once(text, old, new, f"descriptor text call {index}")
-          # Unused test-only wrapper; scoped production API remains.
-          text = re.sub(
-              r'''\n#\[cfg\(test\)\]\npub fn event_descriptor_diagnostics_array_json\(desc: &EventDescriptors\) -> String \{\n    event_descriptor_diagnostics_array_json_scoped\(desc, None\)\n\}\n''',
-              "\n",
-              text,
-              count=1,
-          )
-          for fn_name in [
-              "descriptor_diagnostic_to_json_scoped",
-              "event_group_to_json",
-              "event_group_reference_to_json",
-              "other_network_event_group_reference_to_json",
-              "additive_checksum",
-          ]:
-              marker = f"fn {fn_name}("
-              if f"#[cfg(test)]\n{marker}" not in text:
-                  text = replace_once(text, marker, f"#[cfg(test)]\n{marker}", f"cfg(test) {fn_name}")
-          path.write_text(text)
+          for i, (old, new) in enumerate(pairs):
+              s = replace_once(s, old, new, f"descriptor call {i}")
+          s = re.sub(r'''\n#\[cfg\(test\)\]\npub fn event_descriptor_diagnostics_array_json\(desc: &EventDescriptors\) -> String \{\n    event_descriptor_diagnostics_array_json_scoped\(desc, None\)\n\}\n''', "\n", s, count=1)
+          for name in ["descriptor_diagnostic_to_json_scoped", "event_group_to_json", "event_group_reference_to_json", "other_network_event_group_reference_to_json", "additive_checksum"]:
+              marker = f"fn {name}("
+              s = replace_once(s, marker, f"#[cfg(test)]\n{marker}", f"cfg(test) {name}")
+          p.write_text(s)
 
-          # Provider-data: the string-only key helper is test-only; use a single byte hex writer; drop unused SHA test code.
-          path = Path("arib_si_engine_rs/src/provider_data.rs")
-          text = path.read_text()
-          text = replace_once(
-              text,
-              "pub fn extract_program_key(raw_bytes: &[u8]) -> Option<String> {\n",
-              "#[cfg(test)]\npub fn extract_program_key(raw_bytes: &[u8]) -> Option<String> {\n",
-              "test-only program key helper",
-          )
-          old_hex = '''    let hex = |value: &str| {\n        value\n            .as_bytes()\n            .iter()\n            .map(|b| format!("{b:02x}"))\n            .collect::<String>()\n    };\n    [\n        canonical\n            .iter()\n            .map(|b| format!("{b:02x}"))\n            .collect::<String>(),\n'''
-          new_hex = '''    let hex = |value: &[u8]| {\n        use std::fmt::Write as _;\n        let mut out = String::with_capacity(value.len() * 2);\n        for byte in value {\n            write!(&mut out, "{byte:02x}").expect("writing to String cannot fail");\n        }\n        out\n    };\n    [\n        hex(&canonical),\n'''
-          text = replace_once(text, old_hex, new_hex, "provider-data hex closure")
-          text = text.replace("        hex(&data.tune.delivery_system),\n", "        hex(data.tune.delivery_system.as_bytes()),\n", 1)
-          text = text.replace("            .map(hex)\n", "            .map(|value| hex(value.as_bytes()))\n", 1)
-          sha_start = text.find("#[cfg(test)]\nfn sha256_hex(data: &[u8]) -> String {")
-          tests_start = text.find("#[cfg(test)]\nmod provider_data_tests", sha_start)
-          if sha_start < 0 or tests_start < 0:
-              raise SystemExit("provider-data unused SHA block markers missing")
-          text = text[:sha_start] + text[tests_start:]
-          path.write_text(text)
+          p = Path("arib_si_engine_rs/src/provider_data.rs")
+          s = p.read_text()
+          s = replace_once(s, "pub fn extract_program_key(raw_bytes: &[u8]) -> Option<String> {\n", "#[cfg(test)]\npub fn extract_program_key(raw_bytes: &[u8]) -> Option<String> {\n", "program key cfg(test)")
+          old = '''    let hex = |value: &str| {
+        value
+            .as_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    [
+        canonical
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>(),
+'''
+          new = '''    let hex = |value: &[u8]| {
+        use std::fmt::Write as _;
+        let mut out = String::with_capacity(value.len() * 2);
+        for byte in value {
+            write!(&mut out, "{byte:02x}").expect("writing to String cannot fail");
+        }
+        out
+    };
+    [
+        hex(&canonical),
+'''
+          s = replace_once(s, old, new, "provider hex")
+          s = s.replace("        hex(&data.tune.delivery_system),\n", "        hex(data.tune.delivery_system.as_bytes()),\n", 1)
+          s = s.replace("            .map(hex)\n", "            .map(|value| hex(value.as_bytes()))\n", 1)
+          a = s.find("#[cfg(test)]\nfn sha256_hex(data: &[u8]) -> String {")
+          b = s.find("#[cfg(test)]\nmod provider_data_tests", a)
+          if a < 0 or b < 0:
+              raise SystemExit("unused SHA block markers missing")
+          s = s[:a] + s[b:]
+          p.write_text(s)
 
-          # Discovery helpers: cfg(test) where tests consume them; remove no-op/unused clear plumbing.
-          path = Path("arib_si_engine_rs/src/service_discovery.rs")
-          text = path.read_text()
-          for marker in [
-              "    pub fn cas_signaling_facts(&self) -> CasSignalingFacts {\n",
-              "    pub fn partial_snapshot(&self) -> Option<DiscoverySnapshot> {\n",
-              "    pub fn best_available_snapshot(&self) -> Option<DiscoverySnapshotEnvelope> {\n",
-              "    pub fn complete_snapshot(&self) -> Option<DiscoverySnapshot> {\n",
-              "    pub fn is_complete(&self) -> bool {\n",
-          ]:
-              # The first is in ServiceSemanticFacts, the next three in DiscoveryCollectionState,
-              # and the final occurrence selected below must be Collector::is_complete, not state::is_complete.
-              pass
-          text = replace_once(
-              text,
-              "impl ServiceSemanticFacts {\n    pub fn cas_signaling_facts(&self) -> CasSignalingFacts {\n",
-              "impl ServiceSemanticFacts {\n    #[cfg(test)]\n    pub fn cas_signaling_facts(&self) -> CasSignalingFacts {\n",
-              "test-only CAS signaling facts",
-          )
+          p = Path("arib_si_engine_rs/src/service_discovery.rs")
+          s = p.read_text()
+          s = replace_once(s, "impl ServiceSemanticFacts {\n    pub fn cas_signaling_facts(&self) -> CasSignalingFacts {\n", "impl ServiceSemanticFacts {\n    #[cfg(test)]\n    pub fn cas_signaling_facts(&self) -> CasSignalingFacts {\n", "CAS facts cfg(test)")
           for name in ["partial_snapshot", "best_available_snapshot", "complete_snapshot"]:
               marker = f"    pub fn {name}"
-              text = replace_once(text, marker, f"    #[cfg(test)]\n{marker}", f"test-only {name}")
-          text = re.sub(
-              r'''\n    pub fn clear_epg_update_windows\(&mut self\) \{\n        self\.eit_store\.clear_update_windows\(\);\n    \}\n''',
-              "\n",
-              text,
-              count=1,
-          )
-          text = re.sub(
-              r'''\n    fn note_eit_diagnostic\(&mut self, section: &\[u8\]\) \{\n        let _ = section;\n    \}\n''',
-              "\n",
-              text,
-              count=1,
-          )
-          text = re.sub(
-              r'''\n    pub fn clear_epg_update_windows\(&mut self\) \{\n        self\.engine\.clear_epg_update_windows\(\);\n    \}\n''',
-              "\n",
-              text,
-              count=1,
-          )
-          collector_marker = "    pub fn is_complete(&self) -> bool {\n        self.state().is_complete()\n    }\n"
-          text = replace_once(
-              text,
-              collector_marker,
-              "    #[cfg(test)]\n" + collector_marker,
-              "test-only collector is_complete",
-          )
-          path.write_text(text)
+              s = replace_once(s, marker, f"    #[cfg(test)]\n{marker}", f"cfg(test) {name}")
+          s = s.replace("\n    pub fn clear_epg_update_windows(&mut self) {\n        self.eit_store.clear_update_windows();\n    }\n", "", 1)
+          s = s.replace("\n    fn note_eit_diagnostic(&mut self, section: &[u8]) {\n        let _ = section;\n    }\n", "", 1)
+          s = s.replace("\n    pub fn clear_epg_update_windows(&mut self) {\n        self.engine.clear_epg_update_windows()\n    }\n", "", 1)
+          marker = "    pub fn is_complete(&self) -> bool {\n        self.state().is_complete()\n    }\n"
+          s = replace_once(s, marker, "    #[cfg(test)]\n" + marker, "collector is_complete cfg(test)")
+          p.write_text(s)
           PY
 
           set +e
@@ -398,7 +342,5 @@ jobs:
           (cd arib_si_engine_rs/host_ci && cargo +1.81.0 test --locked)
           git diff --check
           git add arib_si_engine_rs
-          if ! git diff --cached --quiet; then
-            git commit -m "fix(arib_si): resolve Clippy findings"
-            git push origin HEAD:agent/implement-tis-arib-si-design-pr53
-          fi
+          git commit -m "fix(arib_si): resolve Clippy findings"
+          git push origin HEAD:agent/implement-tis-arib-si-design-pr53
