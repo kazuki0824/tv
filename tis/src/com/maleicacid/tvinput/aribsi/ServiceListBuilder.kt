@@ -11,26 +11,16 @@ class ServiceListBuilder(private val engine: AribSiEngine) {
         val decision: ServicePolicyDecision,
     ) {
         val serviceKey: ServiceKey get() = decision.serviceKey
-        val publishable: Boolean get() = decision.registrationReady
-        val channelRegistrationReady: Boolean get() = decision.registrationReady
-        val epgPublishable: Boolean get() = decision.registrationReady
+        val registrationReady: Boolean get() = decision.registrationReady
         val clearLivePlaybackSupported: Boolean get() = decision.clearLivePlaybackSupported
         val requiresCas: Boolean get() = decision.requiresCas
-        val unsupportedCas: Boolean get() = decision.unsupportedCas
-        val missingComponents: List<String> get() = decision.missingComponents
         val reasons: List<String> get() = decision.reasons
-        val registrationReasons: List<String> get() = decision.registrationReasons
-        val isComplete: Boolean get() = decision.registrationReady
-        val isRegistrationReady: Boolean get() = decision.registrationReady
-        val isEpgPublishable: Boolean get() = decision.registrationReady
-        val isClearLivePlaybackSupported: Boolean get() = decision.clearLivePlaybackSupported
         fun signatureToken(): String = listOf(
             serviceKey.originalNetworkId,
             serviceKey.transportStreamId,
             serviceKey.serviceId,
             decision.registrationReady,
             requiresCas,
-            missingComponents.joinToString(","),
             reasons.joinToString(","),
         ).joinToString(":")
     }
@@ -39,17 +29,13 @@ class ServiceListBuilder(private val engine: AribSiEngine) {
         val completeness: List<ServiceCompleteness>,
     ) {
         val totalKeys: Set<ServiceKey> get() = completeness.mapTo(linkedSetOf()) { it.serviceKey }
-        val completeKeys: Set<ServiceKey> get() = registrationReadyKeys
         val clearLivePlaybackSupportedKeys: Set<ServiceKey>
-            get() = completeness.filterTo(mutableListOf()) { it.isClearLivePlaybackSupported }.mapTo(linkedSetOf()) { it.serviceKey }
+            get() = completeness.filterTo(mutableListOf()) { it.clearLivePlaybackSupported }.mapTo(linkedSetOf()) { it.serviceKey }
         val registrationReadyKeys: Set<ServiceKey>
-            get() = completeness.filterTo(mutableListOf()) { it.isRegistrationReady }.mapTo(linkedSetOf()) { it.serviceKey }
-        val epgPublishableKeys: Set<ServiceKey> get() = registrationReadyKeys
+            get() = completeness.filterTo(mutableListOf()) { it.registrationReady }.mapTo(linkedSetOf()) { it.serviceKey }
         val total: Int get() = totalKeys.size
-        val complete: Int get() = completeKeys.size
         val clearLivePlaybackSupported: Int get() = clearLivePlaybackSupportedKeys.size
         val registrationReady: Int get() = registrationReadyKeys.size
-        val epgPublishable: Int get() = epgPublishableKeys.size
         fun stableSignature(): String = completeness
             .sortedWith(compareBy<ServiceCompleteness> { it.serviceKey.originalNetworkId }
                 .thenBy { it.serviceKey.transportStreamId }
@@ -69,19 +55,11 @@ class ServiceListBuilder(private val engine: AribSiEngine) {
         )
     }
 
-    fun epgPublishableSnapshot(): List<AribService> {
-        val transaction = engine.serviceRegistrationSnapshot()
-        return transaction.services.filter { service ->
-            ServicePolicyEvaluator.evaluate(transaction.semanticFactsByServiceKey[service.serviceKey])
-                .epgPublishable
-        }
-    }
-
     fun registrationReadySnapshot(): List<AribService> {
         val transaction = engine.serviceRegistrationSnapshot()
         return transaction.services.filter { service ->
             ServicePolicyEvaluator.evaluate(transaction.semanticFactsByServiceKey[service.serviceKey])
-                .channelRegistrationReady
+                .registrationReady
         }
     }
 
@@ -99,23 +77,10 @@ class ServiceListBuilder(private val engine: AribSiEngine) {
             completenessForModel(it, transaction.semanticFactsByServiceKey[it.serviceKey])
         }
         val reasons = completeness
-            .filter { !it.isRegistrationReady }
-            .associate { it.serviceKey to (it.missingComponents + it.registrationReasons + it.reasons).distinct() }
+            .filter { !it.registrationReady }
+            .associate { it.serviceKey to it.reasons }
         return reasons
     }
-
-    fun isServicePublishable(service: AribService): Boolean =
-        completenessFor(service).publishable
-
-    fun isServiceComplete(service: AribService): Boolean = completenessFor(service).isComplete
-
-    fun isServiceClearLivePlaybackSupported(service: AribService): Boolean =
-        completenessFor(service).clearLivePlaybackSupported
-
-    fun completenessFor(service: AribService): ServiceCompleteness = completenessForModel(
-        service = service,
-        facts = engine.serviceRegistrationSnapshot().semanticFactsByServiceKey[service.serviceKey],
-    )
 
     companion object {
         fun completenessForModel(
@@ -155,8 +120,7 @@ object ServicePolicyEvaluator {
                 serviceKey = key,
                 registrationReady = false,
                 requiresCas = false,
-                missingComponents = listOf("SERVICE_SEMANTIC_FACTS"),
-                registrationReasons = listOf("NO_CURRENT_SERVICE_SEMANTIC_FACTS"),
+                reasons = listOf("NO_CURRENT_SERVICE_SEMANTIC_FACTS"),
             )
         }
 
@@ -201,13 +165,11 @@ object ServicePolicyEvaluator {
             serviceKey = key,
             registrationReady = registrationReady,
             requiresCas = facts.requiresCas,
-            pmtPidResolved = facts.pmtPidResolved,
-            pmtParsed = facts.pmtParsed,
-            caStateResolved = facts.caDescriptorsResolved,
-            freeCaModeResolved = facts.freeCaMode != null,
-            missingComponents = facts.missingComponents,
-            registrationReasons = normalizedRegistrationReasons,
-            semanticReasons = facts.semanticDiagnostics,
+            reasons = (
+                normalizedRegistrationReasons +
+                    facts.semanticDiagnostics +
+                    if (facts.requiresCas) listOf("CAS_NOT_IMPLEMENTED") else emptyList()
+                ).distinct().sorted(),
         )
     }
 }

@@ -194,7 +194,6 @@ pub struct AudioComponentDescriptor {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParentalRating {
     pub country_code: String,
-    pub rating_value: u8,
     pub raw_rating_byte: u8,
 }
 
@@ -1054,7 +1053,6 @@ fn parse_parental_rating_descriptor(
         .chunks_exact(4)
         .map(|chunk| ParentalRating {
             country_code: language(&chunk[0..3]),
-            rating_value: chunk[3],
             raw_rating_byte: chunk[3],
         })
         .collect();
@@ -1254,9 +1252,8 @@ pub fn event_descriptors_to_json(desc: &EventDescriptors) -> String {
         desc.parental_ratings
             .iter()
             .map(|r| format!(
-                "{{\"country\":\"{}\",\"ratingValue\":{},\"rawRatingByte\":{}}}",
+                "{{\"country\":\"{}\",\"rawRatingByte\":{}}}",
                 json_escape(&r.country_code),
-                r.rating_value,
                 r.raw_rating_byte
             ))
             .collect::<Vec<_>>()
@@ -1519,7 +1516,6 @@ mod diagnostic_json_tests {
             }],
             parental_ratings: vec![ParentalRating {
                 country_code: "JPN".to_string(),
-                rating_value: 15,
                 raw_rating_byte: 15,
             }],
             series: vec![SeriesDescriptor {
@@ -1775,7 +1771,6 @@ mod mirakc_scope_extended_event_tests {
     #[test]
     fn parental_rating_keeps_full_rating_byte_and_reports_bad_length() {
         let desc = parse_event_descriptors(&[0x55, 0x05, b'J', b'P', b'N', 0x8f, 0xaa]);
-        assert_eq!(desc.parental_ratings[0].rating_value, 0x8f);
         assert_eq!(desc.parental_ratings[0].raw_rating_byte, 0x8f);
         assert!(desc
             .diagnostics
@@ -1895,7 +1890,7 @@ mod r51_descriptor_coverage_tests {
         assert_eq!(parsed.parental_ratings.len(), 1);
         let json = event_descriptors_to_json(&parsed);
         assert!(json.contains("\"country\":\"JPN\""));
-        assert!(json.contains("\"ratingValue\":12"));
+        assert!(json.contains("\"rawRatingByte\":12"));
         let android_domain = format!("{}.{}", "com.android", "tv");
         let isdb_rating = format!("{}{}", "IS", "DB_12");
         let old_rating_system = format!("{}{}", "AR", "IB_JP");

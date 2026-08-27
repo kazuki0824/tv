@@ -15,11 +15,6 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
         val windowEndMs: Long,
         val validProgramKeys: Set<String>,
         val deletionAuthoritative: Boolean = false,
-        val failureClass: String = FailureClass.NONE,
-        val attempt: Int = 0,
-        val nextAttemptAtMs: Long = 0L,
-        val firstFailureAtMillis: Long = 0L,
-        val lastFailureAtMillis: Long = 0L,
     )
 
     data class ProgramPublishResult(
@@ -37,15 +32,19 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
             get() = eligibleTargetCount > 0 && committedServiceCount > 0 && failures.isEmpty()
     }
 
-    private data class RetryWindowKey(
+    private data class DirtyWindowKey(
         val serviceKey: ServiceKey,
         val windowStartMs: Long,
         val windowEndMs: Long,
-        val failureClass: String = FailureClass.NONE,
+    )
+
+    private data class DirtyWindow(
+        val window: EpgUpdateWindow,
+        val notBeforeMs: Long,
+        val failureClass: String,
     )
 
     object FailureClass {
-        const val NONE = "NONE"
         const val REQUIRED_QUERY_FAILED = "REQUIRED_QUERY_FAILED"
         const val PROGRAM_INSERT_FAILED = "PROGRAM_INSERT_FAILED"
         const val PROGRAM_UPDATE_FAILED = "PROGRAM_UPDATE_FAILED"
@@ -55,13 +54,13 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
     }
 
     private val lastProgramSignatureByMode = linkedMapOf<ChannelScanController.PublishMode, String>()
-    private val retryWindows = linkedMapOf<RetryWindowKey, EpgUpdateWindow>()
-    private val droppedRetryWindowCountByService = linkedMapOf<ServiceKey, Int>()
+    private val dirtyWindows = linkedMapOf<DirtyWindowKey, DirtyWindow>()
+    private val droppedDirtyWindowCountByService = linkedMapOf<ServiceKey, Int>()
 
     fun reset() {
         lastProgramSignatureByMode.clear()
-        retryWindows.clear()
-        droppedRetryWindowCountByService.clear()
+        dirtyWindows.clear()
+        droppedDirtyWindowCountByService.clear()
     }
 
     fun publish(
@@ -87,9 +86,9 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
         // 再試行区間は公開入口入力の一部である。
         // これを確認する前に早期returnしてはならない。EPG区間排出API後の
         // provider失敗で、排出済み区間を失うことを防ぐ。
-        val retryServiceKeys = retryWindows.keys.map { it.serviceKey }
+        val retryServiceKeys = dirtyWindows.keys.map { it.serviceKey }
         val allServiceKeys = (allPrograms.map { it.serviceKey } + updateWindows.map { it.serviceKey } + retryServiceKeys).toSet()
-        if (allPrograms.isEmpty() && updateWindows.isEmpty() && retryWindows.isEmpty()) {
+        if (allPrograms.isEmpty() && updateWindows.isEmpty() && dirtyWindows.isEmpty()) {
             return ProgramPublishResult(0, 0, skippedUnchanged = 0)
         }
         val existingServiceKeys = if (mode == ChannelScanController.PublishMode.LIVE_TUNE_REFRESH || mode == ChannelScanController.PublishMode.BOOT_EPG_SYNC || mode == ChannelScanController.PublishMode.BACKGROUND_CHANNEL_MAINTENANCE) {
@@ -107,7 +106,9 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
         val retryForAllowed = drainRetryWindowsFor(allowed)
         val programs = allPrograms
             .filter { it.serviceKey in allowed }
-        val windows = (retryForAllowed + updateWindows).distinctBy { RetryWindowKey(it.serviceKey, it.windowStartMs, it.windowEndMs, it.failureClass) }
+        val windows = (updateWindows + retryForAllowed).distinctBy {
+            DirtyWindowKey(it.serviceKey, it.windowStartMs, it.windowEndMs)
+        }
             .filter { it.serviceKey in allowed && it.windowEndMs > it.windowStartMs }
         if (programs.isEmpty() && windows.isEmpty()) return ProgramPublishResult(0, 0, skippedNoChannel = allServiceKeys.size)
         val authoritativeWindows = windows.filter { it.deletionAuthoritative }
@@ -162,18 +163,16 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
      */
     private fun drainRetryWindowsFor(allowed: Set<ServiceKey>): List<EpgUpdateWindow> {
         val now = System.currentTimeMillis()
-        discardExpiredRetryWindows(now)
-        return retryWindows
+        return dirtyWindows
             .filterKeys { it.serviceKey in allowed }
             .values
-            .filter { it.nextAttemptAtMs <= now }
-            .toList()
+            .filter { it.notBeforeMs <= now }
+            .map { it.window }
     }
 
     private fun removeRetryWindows(windows: List<EpgUpdateWindow>) {
         windows.forEach { window ->
-            retryWindows.keys.filter { it.serviceKey == window.serviceKey && it.windowStartMs == window.windowStartMs && it.windowEndMs == window.windowEndMs }
-                .forEach { retryWindows.remove(it) }
+            dirtyWindows.remove(DirtyWindowKey(window.serviceKey, window.windowStartMs, window.windowEndMs))
         }
     }
 
@@ -197,52 +196,26 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
 
     private fun enqueueRetryWindows(windows: List<EpgUpdateWindow>, failureClass: String = FailureClass.PROVIDER_UNAVAILABLE) {
         val now = System.currentTimeMillis()
-        discardExpiredRetryWindows(now)
         windows.sortedWith(compareBy<EpgUpdateWindow> { it.serviceKey.originalNetworkId }.thenBy { it.serviceKey.transportStreamId }.thenBy { it.serviceKey.serviceId }.thenBy { it.windowStartMs }.thenBy { it.windowEndMs })
             .forEach { window ->
                 if (!window.deletionAuthoritative && failureClass == FailureClass.OBSOLETE_DELETE_FAILED) return@forEach
-                if (window.attempt >= MAX_RETRY_ATTEMPTS) {
-                    droppedRetryWindowCountByService[window.serviceKey] = (droppedRetryWindowCountByService[window.serviceKey] ?: 0) + 1
-                    return@forEach
-                }
-                val attempt = window.attempt + 1
-                val firstFailureAt = if (window.firstFailureAtMillis > 0L) window.firstFailureAtMillis else now
-                if (now - firstFailureAt > RETRY_RETENTION_MS) {
-                    droppedRetryWindowCountByService[window.serviceKey] = (droppedRetryWindowCountByService[window.serviceKey] ?: 0) + 1
-                    return@forEach
-                }
-                val retry = window.copy(
+                val key = DirtyWindowKey(window.serviceKey, window.windowStartMs, window.windowEndMs)
+                dirtyWindows.remove(key)
+                dirtyWindows[key] = DirtyWindow(
+                    window = window,
+                    notBeforeMs = now + RETRY_COOLDOWN_MS,
                     failureClass = failureClass,
-                    attempt = attempt,
-                    nextAttemptAtMs = now + retryBackoffMs(attempt, window.serviceKey, window.windowStartMs, failureClass),
-                    firstFailureAtMillis = firstFailureAt,
-                    lastFailureAtMillis = now,
                 )
-                retryWindows[RetryWindowKey(retry.serviceKey, retry.windowStartMs, retry.windowEndMs, retry.failureClass)] = retry
-                trimRetryWindowsForService(retry.serviceKey)
-                trimRetryWindowsGlobal()
+                trimDirtyWindows()
             }
     }
 
-    private fun discardExpiredRetryWindows(now: Long) {
-        retryWindows.entries.removeIf { (_, window) ->
-            window.firstFailureAtMillis > 0L && now - window.firstFailureAtMillis > RETRY_RETENTION_MS
-        }
-    }
-
-    private fun trimRetryWindowsForService(serviceKey: ServiceKey) {
-        while (retryWindows.keys.count { it.serviceKey == serviceKey } > MAX_RETRY_WINDOWS_PER_SERVICE) {
-            val oldest = retryWindows.keys.firstOrNull { it.serviceKey == serviceKey } ?: return
-            retryWindows.remove(oldest)
-            droppedRetryWindowCountByService[serviceKey] = (droppedRetryWindowCountByService[serviceKey] ?: 0) + 1
-        }
-    }
-
-    private fun trimRetryWindowsGlobal() {
-        while (retryWindows.size > MAX_RETRY_WINDOWS_TOTAL) {
-            val oldest = retryWindows.keys.firstOrNull() ?: return
-            retryWindows.remove(oldest)
-            droppedRetryWindowCountByService[oldest.serviceKey] = (droppedRetryWindowCountByService[oldest.serviceKey] ?: 0) + 1
+    private fun trimDirtyWindows() {
+        while (dirtyWindows.size > MAX_DIRTY_WINDOWS) {
+            val oldest = dirtyWindows.keys.firstOrNull() ?: return
+            dirtyWindows.remove(oldest)
+            droppedDirtyWindowCountByService[oldest.serviceKey] =
+                (droppedDirtyWindowCountByService[oldest.serviceKey] ?: 0) + 1
         }
     }
 
@@ -252,8 +225,7 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
             .thenBy { it.serviceKey.transportStreamId }
             .thenBy { it.serviceKey.serviceId }
             .thenBy { it.windowStartMs }
-            .thenBy { it.windowEndMs }
-            .thenBy { it.failureClass })
+            .thenBy { it.windowEndMs })
             .joinToString("|") { window ->
                 listOf(
                     window.serviceKey.originalNetworkId,
@@ -263,7 +235,6 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
                     window.windowEndMs,
                     window.validProgramKeys.sorted().joinToString(","),
                     window.deletionAuthoritative,
-                    window.failureClass,
                 ).joinToString(":")
             }
         return "programs=$programPart#windows=$windowPart"
@@ -280,43 +251,21 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
         )
     }
 
-    private fun retryBackoffMs(attempt: Int, serviceKey: ServiceKey, windowStartMs: Long, failureClass: String): Long =
-        retryBackoffMsForTest(attempt, serviceKey, windowStartMs, failureClass)
+    fun retryWindowCountForTest(): Int = dirtyWindows.size
 
-    fun retryWindowCountForTest(): Int {
-        discardExpiredRetryWindows(System.currentTimeMillis())
-        return retryWindows.size
-    }
+    fun retryFailureClassesForTest(): Set<String> = dirtyWindows.values.map { it.failureClass }.toSet()
 
-    fun retryFailureClassesForTest(): Set<String> {
-        discardExpiredRetryWindows(System.currentTimeMillis())
-        return retryWindows.keys.map { it.failureClass }.toSet()
-    }
+    fun retryNotBeforeMillisForTest(): List<Long> = dirtyWindows.values.map { it.notBeforeMs }
 
-    fun droppedRetryWindowCountForTest(serviceKey: ServiceKey): Int = droppedRetryWindowCountByService[serviceKey] ?: 0
+    fun droppedRetryWindowCountForTest(serviceKey: ServiceKey): Int =
+        droppedDirtyWindowCountByService[serviceKey] ?: 0
 
     companion object {
-        const val RETRY_RETENTION_MS_FOR_TEST: Long = 24 * 60 * 60 * 1000L
-        const val MAX_RETRY_ATTEMPTS_FOR_TEST: Int = 10
-        const val MAX_RETRY_WINDOWS_PER_SERVICE_FOR_TEST: Int = 32
-        const val MAX_RETRY_WINDOWS_TOTAL_FOR_TEST: Int = 512
+        const val RETRY_COOLDOWN_MS_FOR_TEST: Long = 60_000L
+        const val MAX_DIRTY_WINDOWS_FOR_TEST: Int = 512
 
-        private const val MAX_RETRY_WINDOWS_PER_SERVICE = MAX_RETRY_WINDOWS_PER_SERVICE_FOR_TEST
-        private const val MAX_RETRY_WINDOWS_TOTAL = MAX_RETRY_WINDOWS_TOTAL_FOR_TEST
-        private const val MAX_RETRY_ATTEMPTS = MAX_RETRY_ATTEMPTS_FOR_TEST
-        private const val RETRY_RETENTION_MS = RETRY_RETENTION_MS_FOR_TEST
-
-        fun retryBackoffMsForTest(attempt: Int, serviceKey: ServiceKey, windowStartMs: Long, failureClass: String): Long {
-            val base = when (attempt.coerceAtLeast(1)) {
-                1 -> 60_000L
-                2 -> 5 * 60_000L
-                3 -> 15 * 60_000L
-                else -> 60 * 60_000L
-            }
-            val hash = (serviceKey.hashCode() * 31 + windowStartMs.hashCode() * 17 + failureClass.hashCode()).let { if (it == Int.MIN_VALUE) 0 else kotlin.math.abs(it) }
-            val jitterPercent = (hash % 41) - 20 // 決定的な±20%
-            return base + (base * jitterPercent / 100)
-        }
+        private const val RETRY_COOLDOWN_MS = RETRY_COOLDOWN_MS_FOR_TEST
+        private const val MAX_DIRTY_WINDOWS = MAX_DIRTY_WINDOWS_FOR_TEST
 
         fun filterServiceKeysForMode(
             mode: ChannelScanController.PublishMode,

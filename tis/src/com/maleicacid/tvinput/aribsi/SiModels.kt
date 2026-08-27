@@ -16,12 +16,19 @@ object SiStatus {
     const val INDEX_OUT_OF_RANGE = -5
     const val JNI_ERROR = -6
     const val INTERNAL_ERROR = -7
+    const val INVALID_DISCOVERY_PROFILE = -8
 }
 
 object SiDiscoveryStage {
     const val INCOMPLETE = 0
     const val PARTIAL = 1
     const val COMPLETE = 2
+}
+
+object SiDiscoveryProfile {
+    const val ISDB_T: Int = 0
+    const val BS: Int = 1
+    const val CS110: Int = 2
 }
 
 data class SiIngestResult(
@@ -81,7 +88,6 @@ data class AribService(
     val freeCaMode: Boolean? = null,
     val streams: List<AribElementaryStream> = emptyList(),
     val serviceScopedCaDescriptors: List<CaDescriptor> = emptyList(),
-    val components: AribComponents = AribComponents(),
 ) {
     val hasProgramCaDescriptor: Boolean
         get() = serviceScopedCaDescriptors.any { it.scope == CaDescriptorScope.PROGRAM }
@@ -111,19 +117,7 @@ data class AribParentalRating(
     val countryCode: String,
     val rawRatingByte: Int,
     val parseStatus: String = "OK",
-) {
-    /** Android rating projection reads the canonical ARIB byte; this is not separately stored state. */
-    val ratingValue: Int get() = rawRatingByte
-
-    constructor(
-        countryCode: String,
-        ratingValue: Int,
-        rawRatingByte: Int,
-        parseStatus: String = "OK",
-    ) : this(countryCode, rawRatingByte, parseStatus) {
-        require(ratingValue == rawRatingByte) { "ratingValue must equal the canonical ARIB raw byte" }
-    }
-}
+)
 
 data class AribContentGenre(
     val level1: Int,
@@ -382,7 +376,6 @@ data class TransportKey(
 }
 
 data class ProgramPublishSnapshot(
-    val snapshotGeneration: Long,
     val ingestSequence: Long,
     val events: List<AribEvent>,
     val updateWindows: List<EpgUpdateWindow>,
@@ -392,8 +385,18 @@ data class ProgramPublishSnapshot(
     val malformedCaDescriptorCountByServiceId: Map<ServiceId16, Int> = emptyMap(),
 )
 
+data class TableRequirementStatus(
+    val component: String,
+    val originalNetworkId: Int?,
+    val transportStreamId: Int?,
+    val serviceId: Int?,
+    val required: Boolean,
+    val complete: Boolean,
+)
+
 data class ServiceRegistrationSnapshot(
-    val snapshotGeneration: Long,
+    val discoveryStage: Int,
+    val tableRequirements: List<TableRequirementStatus>,
     val services: List<AribService>,
     val actualTransports: Set<TransportKey>,
     val actualTransportMetadata: List<AribTransport>,
@@ -402,7 +405,6 @@ data class ServiceRegistrationSnapshot(
 )
 
 data class CasDiscoverySnapshot(
-    val snapshotGeneration: Long,
     val services: List<AribService>,
     val caMetadata: List<CaMetadata>,
     val pmtPids: Map<ServiceKey, TsPid>,
@@ -412,11 +414,9 @@ data class CasDiscoverySnapshot(
 )
 
 data class LivePlaybackSnapshot(
-    val snapshotGeneration: Long,
     val ingestSequence: Long,
     val services: List<AribService>,
-    val servicesForCasDiscovery: List<AribService>,
-    val caMetadataForCasDiscovery: List<CaMetadata>,
+    val caMetadata: List<CaMetadata>,
     val pmtPids: Map<ServiceKey, TsPid>,
     val catEmmPids: List<TsPid>,
     val semanticFactsByServiceKey: Map<ServiceKey, ServiceSemanticFacts>,
@@ -429,24 +429,9 @@ data class ServicePolicyDecision(
     val serviceKey: ServiceKey,
     val registrationReady: Boolean,
     val requiresCas: Boolean,
-    val pmtPidResolved: Boolean = false,
-    val pmtParsed: Boolean = false,
-    val caStateResolved: Boolean = false,
-    val freeCaModeResolved: Boolean = false,
-    val missingComponents: List<String>,
-    val registrationReasons: List<String>,
-    val semanticReasons: List<String> = emptyList(),
+    val reasons: List<String>,
 ) {
-    val publishable: Boolean get() = registrationReady
-    val channelRegistrationReady: Boolean get() = registrationReady
-    val epgPublishable: Boolean get() = registrationReady
-    val unsupportedCas: Boolean get() = requiresCas
     val clearLivePlaybackSupported: Boolean get() = registrationReady && !requiresCas
-    val reasons: List<String>
-        get() = (registrationReasons + semanticReasons + if (unsupportedCas) listOf("CAS_NOT_IMPLEMENTED") else emptyList())
-            .distinct()
-            .sorted()
-    val epgReasons: List<String> get() = registrationReasons
 }
 
 typealias ServicePublishabilityDiagnostic = ServicePolicyDecision
@@ -486,25 +471,6 @@ data class CaMetadata(
         result = 31 * result + (elementaryPid?.value ?: 0)
         result = 31 * result + privateData.contentHashCode()
         result = 31 * result + source.hashCode()
-        return result
-    }
-}
-
-data class PrivateSection(
-    val pid: TsPid,
-    val tableId: Int,
-    val bytes: ByteArray,
-) {
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (other !is PrivateSection) return false
-        return pid == other.pid && tableId == other.tableId && bytes.contentEquals(other.bytes)
-    }
-
-    override fun hashCode(): Int {
-        var result = pid.value
-        result = 31 * result + tableId
-        result = 31 * result + bytes.contentHashCode()
         return result
     }
 }
