@@ -15,7 +15,7 @@ class MediaSync {
     }
 
     fun interface OnFirstVideoFrameQueuedToOutputListener {
-        fun onFirstVideoFrameQueuedToOutput(sync: MediaSync, registrationToken: Long)
+        fun onFirstVideoFrameQueuedToOutput(sync: MediaSync, armSequence: Long)
     }
 
     fun setCallback(callback: Callback?, handler: Handler?) = Unit
@@ -23,7 +23,7 @@ class MediaSync {
     fun setOnErrorListener(listener: OnErrorListener?, handler: Handler?) = Unit
 
     fun setOnFirstVideoFrameQueuedToOutputListener(
-        registrationToken: Long,
+        armSequence: Long,
         listener: OnFirstVideoFrameQueuedToOutputListener?,
         handler: Handler?,
     ) = Unit
