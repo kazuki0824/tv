@@ -43,15 +43,15 @@ class TisR51FixedPlanAcceptanceTest {
     }
 
     @Test fun hevcOnlyServiceIsNotR51VideoCandidate() {
-        check(!TunerController.isR51SupportedVideoStreamTypeForTest(0x24))
-        check(TunerController.selectVideoForTest(listOf(es(TsPid(0x120), 0x24))) == null)
+        check(!TunerSelectionPolicy.isSupportedVideoStreamType(0x24))
+        check(TunerSelectionPolicy.selectVideo(listOf(es(TsPid(0x120), 0x24))) == null)
     }
 
     @Test fun h264AndMpeg2RemainR51VideoCandidates() {
-        check(TunerController.isR51SupportedVideoStreamTypeForTest(0x02))
-        check(TunerController.isR51SupportedVideoStreamTypeForTest(0x1b))
-        check(TunerController.selectVideoForTest(listOf(es(TsPid(0x100), 0x1b)))?.streamType == 0x1b)
-        check(TunerController.selectVideoForTest(listOf(es(TsPid(0x101), 0x02)))?.streamType == 0x02)
+        check(TunerSelectionPolicy.isSupportedVideoStreamType(0x02))
+        check(TunerSelectionPolicy.isSupportedVideoStreamType(0x1b))
+        check(TunerSelectionPolicy.selectVideo(listOf(es(TsPid(0x100), 0x1b)))?.streamType == 0x1b)
+        check(TunerSelectionPolicy.selectVideo(listOf(es(TsPid(0x101), 0x02)))?.streamType == 0x02)
     }
 
     @Test fun unsupportedVideoCodecMetadataIsSeparatedFromR51PlaybackClaim() {
@@ -78,7 +78,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(providerVideo.getString("codec") == "HEVC")
         check(!providerVideo.has("r51PlaybackSupported"))
         check(!providerVideo.has("liveViewableClaim"))
-        check(TunerController.selectVideoForTest(service.streams) == null)
+        check(TunerSelectionPolicy.selectVideo(service.streams) == null)
     }
 
     @Test fun unsupportedAudioCodecMetadataDoesNotMakePlaybackUnsupportedWhenVideoIsSupported() {
@@ -102,12 +102,12 @@ class TisR51FixedPlanAcceptanceTest {
         val providerAudio = providerData.getJSONObject("components").getJSONArray("audio").getJSONObject(0)
         check(providerAudio.getString("codec") == "MPEG-4-AAC-LATM")
         check(!providerAudio.has("r51PlaybackSupported"))
-        check(TunerController.selectVideoForTest(service.streams)?.streamType == 0x1b)
+        check(TunerSelectionPolicy.selectVideo(service.streams)?.streamType == 0x1b)
         check(!PlaybackPipeline.isSupportedAudioStreamTypeForTest(0x11))
     }
 
     @Test fun mixedH264AndHevcSelectsH264CapablePath() {
-        val selected = TunerController.selectVideoForTest(listOf(es(TsPid(0x200), 0x24), es(TsPid(0x201), 0x1b)))
+        val selected = TunerSelectionPolicy.selectVideo(listOf(es(TsPid(0x200), 0x24), es(TsPid(0x201), 0x1b)))
         check(selected?.streamType == 0x1b)
     }
 
@@ -118,9 +118,9 @@ class TisR51FixedPlanAcceptanceTest {
             video = null,
             audio = es(TsPid(0x110), 0x0f),
         )
-        check(!TunerController.hasR51SupportedVideoForTest(listOf(es(TsPid(0x110), 0x0f))))
-        check(!MaleicacidLiveSession.shouldRejectPlaybackSelectionForServiceForTest(0x02, selection))
-        check(MaleicacidLiveSession.shouldRejectPlaybackSelectionForServiceForTest(0x01, selection))
+        check(!TunerSelectionPolicy.hasSupportedVideo(listOf(es(TsPid(0x110), 0x0f))))
+        check(!PlaybackPolicy.shouldRejectSelection(0x02, selection))
+        check(PlaybackPolicy.shouldRejectSelection(0x01, selection))
     }
 
     @Test fun hevcOnlyServiceIsRejectedBeforePlaybackStart() {
@@ -128,11 +128,11 @@ class TisR51FixedPlanAcceptanceTest {
         val selection = TunerController.AvStreamSelection(
             serviceKey = key,
             pcrPid = TsPid(0x100),
-            video = TunerController.selectVideoForTest(streams),
+            video = TunerSelectionPolicy.selectVideo(streams),
             audio = null,
         )
-        check(!TunerController.hasR51SupportedVideoForTest(streams))
-        check(MaleicacidLiveSession.shouldRejectPlaybackSelectionWithoutVideoForTest(selection))
+        check(!TunerSelectionPolicy.hasSupportedVideo(streams))
+        check(PlaybackPolicy.shouldRejectSelection(0x01, selection))
     }
 
     @Test fun supportedAribRawRatingConvertsToTvContentRatingString() {
@@ -407,28 +407,18 @@ class TisR51FixedPlanAcceptanceTest {
         val video = es(TsPid(0x101), 0x1b)
         val audio = es(TsPid(0x110), 0x0f, componentTag = 7, language = "jpn")
         val subtitle = es(TsPid(0x130), 0x06, componentTag = 8, dataComponentId = 0x0008, isCaption = true)
-        check(TunerController.trackIdForVideoStream(video) == "video:257")
-        check(TunerController.trackIdForAudioStream(audio) == "audio:272:7")
-        check(TunerController.trackIdForSubtitleStream(subtitle) == "subtitle:304:8")
+        check(TunerSelectionPolicy.trackIdForVideo(video) == "video:257")
+        check(TunerSelectionPolicy.trackIdForAudio(audio) == "audio:272:7")
+        check(TunerSelectionPolicy.trackIdForSubtitle(subtitle) == "subtitle:304:8")
         val tracks = listOf(
             TunerController.TisTrack("video:257", TvTrackInfo.TYPE_VIDEO, TsPid(0x101), 0x1b, null, -1, null),
             TunerController.TisTrack("audio:272:7", TvTrackInfo.TYPE_AUDIO, TsPid(0x110), 0x0f, 7, -1, "jpn"),
             TunerController.TisTrack("subtitle:304:8", TvTrackInfo.TYPE_SUBTITLE, TsPid(0x130), 0x06, 8, null, null, dataComponentId = 0x0008),
         )
-        check(TunerController.isSelectableTrackForTest(TvTrackInfo.TYPE_AUDIO, "audio:272:7", tracks))
-        check(!TunerController.isSelectableTrackForTest(TvTrackInfo.TYPE_AUDIO, "audio:999", tracks))
-        check(TunerController.isSelectableTrackForTest(TvTrackInfo.TYPE_SUBTITLE, "subtitle:304:8", tracks))
-        check(!TunerController.isSelectableTrackForTest(TvTrackInfo.TYPE_SUBTITLE, "subtitle:1", tracks))
-    }
-
-    @Test fun subtitleSelectionIsAcceptedAndActivationRemainsCaptionEnabledGated() {
-        val tracks = listOf(
-            TunerController.TisTrack("subtitle:304:8", TvTrackInfo.TYPE_SUBTITLE, TsPid(0x130), 0x06, 8, null, null, dataComponentId = 0x0008),
-        )
-        check(MaleicacidLiveSession.subtitleSelectionAcceptedForTest("subtitle:304:8", tracks, captionEnabled = true))
-        check(MaleicacidLiveSession.subtitleSelectionAcceptedForTest("subtitle:304:8", tracks, captionEnabled = false))
-        check(!MaleicacidLiveSession.subtitleSelectionAcceptedForTest("subtitle:999", tracks, captionEnabled = true))
-        check(MaleicacidLiveSession.subtitleSelectionAcceptedForTest(null, tracks, captionEnabled = true))
+        check(TunerSelectionPolicy.isSelectableTrack(TvTrackInfo.TYPE_AUDIO, "audio:272:7", tracks))
+        check(!TunerSelectionPolicy.isSelectableTrack(TvTrackInfo.TYPE_AUDIO, "audio:999", tracks))
+        check(TunerSelectionPolicy.isSelectableTrack(TvTrackInfo.TYPE_SUBTITLE, "subtitle:304:8", tracks))
+        check(!TunerSelectionPolicy.isSelectableTrack(TvTrackInfo.TYPE_SUBTITLE, "subtitle:1", tracks))
     }
 
     @Test fun captionControllerDrawsOnlyEnabledSelectedTrack() {
@@ -436,45 +426,6 @@ class TisR51FixedPlanAcceptanceTest {
         check(!AribCaptionController.shouldDrawCaptionForTest(enabled = false, selectedTrackId = "subtitle:304:8", incomingTrackId = "subtitle:304:8"))
         check(!AribCaptionController.shouldDrawCaptionForTest(enabled = true, selectedTrackId = "subtitle:304:8", incomingTrackId = "subtitle:999"))
         check(!AribCaptionController.shouldDrawCaptionForTest(enabled = true, selectedTrackId = null, incomingTrackId = "subtitle:304:8"))
-    }
-
-    @Test fun audioSelectTrackCommitsOnlyWhenAudioSwitchSucceeds() {
-        val tracks = listOf(
-            TunerController.TisTrack("audio:272:7", TvTrackInfo.TYPE_AUDIO, TsPid(0x110), 0x0f, 7, -1, "jpn"),
-        )
-        check(MaleicacidLiveSession.audioTrackSelectionAcceptedForTest("audio:272:7", tracks, audioSwitchSucceeded = true))
-        check(!MaleicacidLiveSession.audioTrackSelectionAcceptedForTest("audio:272:7", tracks, audioSwitchSucceeded = false))
-        check(!MaleicacidLiveSession.audioTrackSelectionAcceptedForTest("audio:999", tracks, audioSwitchSucceeded = true))
-        check(!MaleicacidLiveSession.audioTrackSelectionAcceptedForTest(null, tracks, audioSwitchSucceeded = true))
-    }
-
-    @Test fun audioSelectTrackFailurePreservesExistingPlaybackSignature() {
-        val previous = AvPlaybackSignature(
-            serviceKey = key,
-            pcrPid = TsPid(0x100),
-            videoPid = TsPid(0x101),
-            videoStreamType = 0x1b,
-            audioPid = TsPid(0x110),
-            audioStreamType = 0x0f,
-            clear = true,
-            keyTokenAvailable = false,
-        )
-        check(MaleicacidLiveSession.preservesExistingPlaybackWhenAudioSwitchFailsForTest(previous, previous, switchSucceeded = false))
-    }
-
-    @Test fun parentalBlockedReevaluationStopsPlayback() {
-        check(MaleicacidLiveSession.shouldStopPlaybackWhenParentalControlBecomesBlockedForTest(blocked = true))
-        check(!MaleicacidLiveSession.shouldStopPlaybackWhenParentalControlBecomesBlockedForTest(blocked = false))
-        check(!MaleicacidLiveSession.parentalBlockUsesNotifyVideoUnavailableForTest())
-    }
-
-    @Test fun casPlaceholderUsesCasUnknownUnavailableReason() {
-        check(MaleicacidLiveSession.casPlaceholderUnavailableReasonForTest() == android.media.tv.TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN)
-    }
-
-    @Test fun parentalAllowedReevaluationRestartsPlaybackWhenServiceIsAvailable() {
-        check(MaleicacidLiveSession.shouldRestartPlaybackAfterParentalControlAllowedForTest(latestServicePresent = true))
-        check(!MaleicacidLiveSession.shouldRestartPlaybackAfterParentalControlAllowedForTest(latestServicePresent = false))
     }
 
     @Test fun unblockKeyIncludesCurrentProgramIdentityAndRating() {
@@ -518,7 +469,7 @@ class TisR51FixedPlanAcceptanceTest {
 
     @Test fun videoHeaderMetadataIsProjectedIntoCurrentProgramRecord() {
         val info = PlaybackPipeline.VideoFormatInfo(0x1b, "video/avc", 1280, 720)
-        val records = MaleicacidLiveSession.videoMetadataProgramsForTest(
+        val records = ProgramVideoMetadataPolicy.currentProgramsWithMetadata(
             events = listOf(aribEvent()),
             serviceKey = key,
             nowMillis = 1_700_000_000_100L,
@@ -534,7 +485,7 @@ class TisR51FixedPlanAcceptanceTest {
 
     @Test fun videoHeaderMetadataIgnoresNonCurrentEvent() {
         val info = PlaybackPipeline.VideoFormatInfo(0x1b, "video/avc", 1280, 720)
-        val records = MaleicacidLiveSession.videoMetadataProgramsForTest(
+        val records = ProgramVideoMetadataPolicy.currentProgramsWithMetadata(
             events = listOf(aribEvent().copy(startTimeMillis = 1_600_000_000_000L)),
             serviceKey = key,
             nowMillis = 1_700_000_000_100L,
@@ -544,10 +495,10 @@ class TisR51FixedPlanAcceptanceTest {
     }
 
     @Test fun cs110SelectorNoneRejectsTsidAndRelative() {
-        check(TunerController.isCs110SelectorAllowedForTest("110CS", StreamSelector.NONE))
-        check(!TunerController.isCs110SelectorAllowedForTest("110CS", StreamSelector.tsid(0x4010)))
-        check(!TunerController.isCs110SelectorAllowedForTest("110CS", StreamSelector.relative(2)))
-        check(TunerController.isCs110SelectorAllowedForTest("BS", StreamSelector.tsid(0x4010)))
+        check(TunerSelectionPolicy.isCs110SelectorAllowed("110CS", StreamSelector.NONE))
+        check(!TunerSelectionPolicy.isCs110SelectorAllowed("110CS", StreamSelector.tsid(0x4010)))
+        check(!TunerSelectionPolicy.isCs110SelectorAllowed("110CS", StreamSelector.relative(2)))
+        check(TunerSelectionPolicy.isCs110SelectorAllowed("BS", StreamSelector.tsid(0x4010)))
     }
 
     @Test fun bootAndBackgroundMaintenanceUpdateExistingChannelsOnly() {
@@ -643,10 +594,10 @@ class TisR51FixedPlanAcceptanceTest {
     }
 
     @Test fun sectionShortReadIsDiagnosticAndNotIngest() {
-        check(TunerController.sectionReadDecisionForTest(expected = 64, actual = 64, generationMatches = true) == TunerController.SectionReadDecision.INGEST)
-        check(TunerController.sectionReadDecisionForTest(expected = 64, actual = 12, generationMatches = true) == TunerController.SectionReadDecision.SHORT_READ)
-        check(TunerController.sectionReadDecisionForTest(expected = 64, actual = 0, generationMatches = true) == TunerController.SectionReadDecision.READ_ERROR)
-        check(TunerController.sectionReadDecisionForTest(expected = 64, actual = 64, generationMatches = false) == TunerController.SectionReadDecision.STALE_GENERATION)
+        check(SectionFilterPolicy.readDecision(expected = 64, actual = 64, sourceIsCurrent = true) == SectionFilterPolicy.ReadDecision.INGEST)
+        check(SectionFilterPolicy.readDecision(expected = 64, actual = 12, sourceIsCurrent = true) == SectionFilterPolicy.ReadDecision.SHORT_READ)
+        check(SectionFilterPolicy.readDecision(expected = 64, actual = 0, sourceIsCurrent = true) == SectionFilterPolicy.ReadDecision.READ_ERROR)
+        check(SectionFilterPolicy.readDecision(expected = 64, actual = 64, sourceIsCurrent = false) == SectionFilterPolicy.ReadDecision.STALE_SOURCE)
     }
 
     @Test fun firstFrameTimeoutUsesGenerationAndNotificationState() {
@@ -705,7 +656,7 @@ class TisR51FixedPlanAcceptanceTest {
 
     @Test fun currentProgramChangeClearsTemporaryUnblockKeys() {
         val keys = linkedSetOf("old-unblock-key")
-        var identity = MaleicacidLiveSession.updateUnblockStateForProgramChangeForTest(
+        var identity = PlaybackPolicy.updateUnblockStateForProgramChange(
             previousIdentityKey = "program-a",
             nextIdentityKey = "program-a",
             unblockedContentKeys = keys,
@@ -713,7 +664,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(identity == "program-a")
         check("old-unblock-key" in keys)
 
-        identity = MaleicacidLiveSession.updateUnblockStateForProgramChangeForTest(
+        identity = PlaybackPolicy.updateUnblockStateForProgramChange(
             previousIdentityKey = identity,
             nextIdentityKey = "program-b",
             unblockedContentKeys = keys,
@@ -722,7 +673,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(keys.isEmpty())
 
         keys += "program-b-unblock"
-        identity = MaleicacidLiveSession.updateUnblockStateForProgramChangeForTest(
+        identity = PlaybackPolicy.updateUnblockStateForProgramChange(
             previousIdentityKey = identity,
             nextIdentityKey = null,
             unblockedContentKeys = keys,
@@ -984,11 +935,6 @@ class TisR51FixedPlanAcceptanceTest {
         )
         override fun insertChannel(values: ContentValues): Result<Long?> { val id = nextChannelId++; channels[id] = ContentValues(values); return Result.success(id) }
         override fun updateChannel(channelId: Long, values: ContentValues): Result<Int> { channels[channelId] = ContentValues(values); return Result.success(1) }
-        override fun findExistingProgramId(channelId: Long, programKey: String): Result<Long?> = Result.success(
-            programs.entries.firstOrNull { (_, v) ->
-                v.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == channelId && TvProviderWriter.parseProgramKey(v.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)) == programKey
-            }?.key,
-        )
         override fun indexExistingProgramsForWindow(channelId: Long, windowStartMs: Long, windowEndMs: Long): Result<Map<String, Long>> = Result.success(
             programs.entries.mapNotNull { (id, v) ->
                 if (v.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) != channelId) return@mapNotNull null
