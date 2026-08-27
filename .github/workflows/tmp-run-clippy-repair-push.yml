@@ -1,4 +1,4 @@
-name: Run temporary Clippy repair on push
+name: Run temporary ARIB SI Clippy repair on push
 
 on:
   push:
@@ -9,43 +9,6 @@ permissions:
   contents: write
 
 jobs:
-  tuner:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Repair and validate PR53
-        run: |
-          cp tmp/fix_clippy_pr53_pr54.py /tmp/fix_clippy.py
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin fix/tuner-hal2-rustfmt-1.81
-          git checkout -B fix/tuner-hal2-rustfmt-1.81 origin/fix/tuner-hal2-rustfmt-1.81
-          python3 /tmp/fix_clippy.py tuner
-          set +e
-          (cd tuner_hal2/host_ci && cargo clippy --fix --allow-dirty --allow-staged --workspace --all-targets --locked -- -D warnings)
-          set -e
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path("tuner_hal2/compile_contract/src/lib.rs")
-          s = p.read_text()
-          use = "#[cfg(test)]\nuse maleicacid_tuner_hal2_device::FrontendWorkerStopTicket;\n\n"
-          plain = "use maleicacid_tuner_hal2_device::FrontendWorkerStopTicket;\n\n"
-          if plain in s:
-              s = s.replace(plain, "", 1)
-          if use not in s:
-              p.write_text(use + s)
-          PY
-          (cd tuner_hal2/host_ci && cargo fmt --all)
-          (cd tuner_hal2/host_ci && cargo clippy --workspace --all-targets --locked -- -D warnings)
-          (cd tuner_hal2/host_ci && cargo test --workspace --locked)
-          git diff --check
-          git add tuner_hal2/common tuner_hal2/resource_ledger tuner_hal2/device tuner_hal2/control tuner_hal2/descrambler tuner_hal2/lnb tuner_hal2/compile_contract
-          git commit -m "fix(tuner_hal2): resolve Clippy findings"
-          git push origin HEAD:fix/tuner-hal2-rustfmt-1.81
-
   arib-si:
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -56,12 +19,14 @@ jobs:
       - name: Repair and validate PR54
         run: |
           cp tmp/fix_clippy_pr53_pr54.py /tmp/fix_clippy.py
+          cp tmp/fix_arib_clippy_remaining.py /tmp/fix_arib_remaining.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git fetch origin agent/implement-tis-arib-si-design-pr53
           git checkout -B agent/implement-tis-arib-si-design-pr53 origin/agent/implement-tis-arib-si-design-pr53
           rustup toolchain install 1.81.0 --profile minimal --component clippy,rustfmt
           python3 /tmp/fix_clippy.py arib
+          python3 /tmp/fix_arib_remaining.py
           set +e
           (cd arib_si_engine_rs/host_ci && cargo +1.81.0 clippy --fix --allow-dirty --allow-staged --all-targets --locked -- -D warnings)
           set -e
