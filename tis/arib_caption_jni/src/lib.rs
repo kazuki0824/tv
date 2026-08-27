@@ -1,5 +1,5 @@
 use jni::objects::{JByteArray, JObject};
-use jni::sys::{jboolean, jint, jintArray, jlong, jlongArray};
+use jni::sys::{jboolean, jbyteArray, jint, jlong};
 use jni::JNIEnv;
 use std::collections::BTreeMap;
 use std::os::raw::{c_int, c_longlong, c_void};
@@ -26,6 +26,8 @@ const ARIBCC_DURATION_INDEFINITE: c_longlong = i64::MAX;
 const MAX_FRAME_DIMENSION: c_int = 16_384;
 const MAX_IMAGES_PER_FRAME: usize = 256;
 const MAX_FRAME_BITMAP_BYTES: usize = 256 * 1024 * 1024;
+const FRAME_HEADER_BYTES: usize = 8 + 8 + 4;
+const IMAGE_HEADER_BYTES: usize = 6 * 4;
 
 #[repr(C)]
 struct AribccCaption {
@@ -141,7 +143,6 @@ extern "C" {
     fn aribcc_render_result_cleanup(result: *mut AribccRenderResult);
 }
 
-#[derive(Clone)]
 struct RenderedCaptionImage {
     dst_x: i32,
     dst_y: i32,
@@ -151,7 +152,6 @@ struct RenderedCaptionImage {
     rgba8888: Vec<u8>,
 }
 
-#[derive(Clone)]
 struct RenderedCaptionFrame {
     pts_millis: i64,
     duration_millis: Option<i64>,
@@ -428,11 +428,40 @@ fn copy_render_result(
     })
 }
 
+fn encode_rendered_frame(frame: RenderedCaptionFrame) -> Option<Vec<u8>> {
+    let image_count = u32::try_from(frame.images.len()).ok()?;
+    let bitmap_bytes = frame.images.iter().try_fold(0usize, |total, image| {
+        total.checked_add(image.rgba8888.len())
+    })?;
+    if frame.images.len() > MAX_IMAGES_PER_FRAME || bitmap_bytes > MAX_FRAME_BITMAP_BYTES {
+        return None;
+    }
+    let metadata_bytes = IMAGE_HEADER_BYTES.checked_mul(frame.images.len())?;
+    let packet_bytes = FRAME_HEADER_BYTES
+        .checked_add(metadata_bytes)?
+        .checked_add(bitmap_bytes)?;
+    let mut packet = Vec::new();
+    packet.try_reserve_exact(packet_bytes).ok()?;
+    packet.extend_from_slice(&frame.pts_millis.to_le_bytes());
+    packet.extend_from_slice(&frame.duration_millis.unwrap_or(-1).to_le_bytes());
+    packet.extend_from_slice(&image_count.to_le_bytes());
+    for image in frame.images {
+        let bitmap_bytes = u32::try_from(image.rgba8888.len()).ok()?;
+        packet.extend_from_slice(&image.dst_x.to_le_bytes());
+        packet.extend_from_slice(&image.dst_y.to_le_bytes());
+        packet.extend_from_slice(&image.width.to_le_bytes());
+        packet.extend_from_slice(&image.height.to_le_bytes());
+        packet.extend_from_slice(&image.stride.to_le_bytes());
+        packet.extend_from_slice(&bitmap_bytes.to_le_bytes());
+        packet.extend_from_slice(&image.rgba8888);
+    }
+    Some(packet)
+}
+
 #[derive(Default)]
 struct Registry {
     next_handle: jlong,
     engines: BTreeMap<jlong, CaptionEngine>,
-    frames: BTreeMap<jlong, RenderedCaptionFrame>,
 }
 
 impl Registry {
@@ -444,12 +473,6 @@ impl Registry {
     fn insert_engine(&mut self, engine: CaptionEngine) -> jlong {
         let handle = self.next_handle();
         self.engines.insert(handle, engine);
-        handle
-    }
-
-    fn insert_frame(&mut self, frame: RenderedCaptionFrame) -> jlong {
-        let handle = self.next_handle();
-        self.frames.insert(handle, frame);
         handle
     }
 }
@@ -502,115 +525,27 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribCaptionRende
     handle: jlong,
     pes_data: JByteArray<'_>,
     pts_millis: jlong,
-) -> jlong {
+) -> jbyteArray {
     if handle == 0 || pts_millis == ARIBCC_PTS_NOPTS {
-        return 0;
+        return ptr::null_mut();
     }
     let Ok(bytes) = env.convert_byte_array(pes_data) else {
-        return 0;
+        return ptr::null_mut();
     };
     let Ok(mut guard) = registry().lock() else {
-        return 0;
+        return ptr::null_mut();
     };
     let frame = guard
         .engines
         .get_mut(&handle)
         .and_then(|engine| engine.decode_and_render(&bytes, pts_millis));
-    frame.map(|value| guard.insert_frame(value)).unwrap_or(0)
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribCaptionRenderer_nativeFrameInfo(
-    env: JNIEnv<'_>,
-    _this: JObject<'_>,
-    frame_handle: jlong,
-) -> jlongArray {
-    let values = registry().lock().ok().and_then(|guard| {
-        guard.frames.get(&frame_handle).map(|frame| {
-            [
-                frame.pts_millis,
-                frame.duration_millis.unwrap_or(-1),
-                frame.images.len() as i64,
-            ]
-        })
-    });
-    let Some(values) = values else {
+    drop(guard);
+    let Some(packet) = frame.and_then(encode_rendered_frame) else {
         return ptr::null_mut();
     };
-    let Ok(array) = env.new_long_array(values.len() as jint) else {
-        return ptr::null_mut();
-    };
-    if env.set_long_array_region(&array, 0, &values).is_err() {
-        return ptr::null_mut();
-    }
-    array.into_raw()
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribCaptionRenderer_nativeImageInfo(
-    env: JNIEnv<'_>,
-    _this: JObject<'_>,
-    frame_handle: jlong,
-    image_index: jint,
-) -> jintArray {
-    let values = registry().lock().ok().and_then(|guard| {
-        let image = guard
-            .frames
-            .get(&frame_handle)?
-            .images
-            .get(usize::try_from(image_index).ok()?)?;
-        Some([
-            image.dst_x,
-            image.dst_y,
-            image.width,
-            image.height,
-            image.stride,
-        ])
-    });
-    let Some(values) = values else {
-        return ptr::null_mut();
-    };
-    let Ok(array) = env.new_int_array(values.len() as jint) else {
-        return ptr::null_mut();
-    };
-    if env.set_int_array_region(&array, 0, &values).is_err() {
-        return ptr::null_mut();
-    }
-    array.into_raw()
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribCaptionRenderer_nativeImageRgba(
-    env: JNIEnv<'_>,
-    _this: JObject<'_>,
-    frame_handle: jlong,
-    image_index: jint,
-) -> jni::sys::jbyteArray {
-    let bytes = registry().lock().ok().and_then(|guard| {
-        guard
-            .frames
-            .get(&frame_handle)?
-            .images
-            .get(usize::try_from(image_index).ok()?)
-            .map(|image| image.rgba8888.clone())
-    });
-    let Some(bytes) = bytes else {
-        return ptr::null_mut();
-    };
-    env.byte_array_from_slice(&bytes)
+    env.byte_array_from_slice(&packet)
         .map(|array| array.into_raw())
         .unwrap_or(ptr::null_mut())
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribCaptionRenderer_nativeReleaseFrame(
-    _env: JNIEnv<'_>,
-    _this: JObject<'_>,
-    frame_handle: jlong,
-) {
-    if let Ok(mut guard) = registry().lock() {
-        guard.frames.remove(&frame_handle);
-    }
 }
 
 #[no_mangle]
@@ -738,5 +673,30 @@ mod tests {
         image.bitmap = std::ptr::NonNull::<u8>::dangling().as_ptr();
         image.bitmap_size = u32::MAX;
         assert!(copy_render_result(&result, 100, 25, false).is_none());
+    }
+
+    #[test]
+    fn rendered_frame_is_one_bounds_checked_little_endian_packet() {
+        let frame = RenderedCaptionFrame {
+            pts_millis: 100,
+            duration_millis: Some(25),
+            images: vec![RenderedCaptionImage {
+                dst_x: 2,
+                dst_y: 3,
+                width: 1,
+                height: 1,
+                stride: 4,
+                rgba8888: vec![0x11, 0x22, 0x33, 0x44],
+            }],
+        };
+        let packet = encode_rendered_frame(frame).unwrap();
+        assert_eq!(packet.len(), FRAME_HEADER_BYTES + IMAGE_HEADER_BYTES + 4);
+        assert_eq!(&packet[0..8], &100i64.to_le_bytes());
+        assert_eq!(&packet[8..16], &25i64.to_le_bytes());
+        assert_eq!(&packet[16..20], &1u32.to_le_bytes());
+        assert_eq!(&packet[20..24], &2i32.to_le_bytes());
+        assert_eq!(&packet[24..28], &3i32.to_le_bytes());
+        assert_eq!(&packet[40..44], &4u32.to_le_bytes());
+        assert_eq!(&packet[44..48], &[0x11, 0x22, 0x33, 0x44]);
     }
 }
