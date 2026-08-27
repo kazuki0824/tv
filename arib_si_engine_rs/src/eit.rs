@@ -164,7 +164,7 @@ pub struct EitStore {
 
 impl EitStore {
     pub fn upsert_section(&mut self, section: &[u8]) {
-        let Some(header) = parse_section_header(section, 12) else {
+        let Some(header) = parse_section_header(section) else {
             return;
         };
         let (Some(version), Some(section_number)) = (header.version, header.section_number) else {
@@ -347,7 +347,7 @@ impl EitStore {
 
 fn malformed_eit_event_keys(section: &[u8]) -> BTreeSet<EitEventKey> {
     let mut malformed = BTreeSet::new();
-    let Some(header) = parse_section_header(section, 12) else {
+    let Some(header) = parse_section_header(section) else {
         return malformed;
     };
     if !(0x4e..=0x6f).contains(&header.table_id)
@@ -447,7 +447,7 @@ pub fn classify_table_id(table_id: u8) -> EitScope {
 }
 
 pub fn parse_eit_section(section: &[u8]) -> Vec<EitEvent> {
-    let Some(header) = parse_section_header(section, 12) else {
+    let Some(header) = parse_section_header(section) else {
         return Vec::new();
     };
     if !(0x4e..=0x6f).contains(&header.table_id)

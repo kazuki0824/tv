@@ -64,7 +64,6 @@ class TvProviderWriterR51FixTest {
         override fun findExistingChannelId(key: ServiceKey): Result<Long?> = Result.success(channels.keys.firstOrNull())
         override fun insertChannel(values: ContentValues): Result<Long?> { val id = nextChannelId++; channels[id] = ContentValues(values); return Result.success(id) }
         override fun updateChannel(channelId: Long, values: ContentValues): Result<Int> { channels[channelId]?.putAll(values); return Result.success(1) }
-        override fun findExistingProgramId(channelId: Long, programKey: String): Result<Long?> = Result.success(programs.entries.firstOrNull { (_, v) -> TvProviderWriter.parseProgramKey(v.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)) == programKey }?.key)
         override fun indexExistingProgramsForWindow(channelId: Long, windowStartMs: Long, windowEndMs: Long): Result<Map<String, Long>> = Result.success(
             programs.entries.mapNotNull { (id, v) ->
                 val key = TvProviderWriter.parseProgramKey(v.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)) ?: return@mapNotNull null
