@@ -1,0 +1,36 @@
+name: Run temporary Clippy repair on push
+
+on:
+  push:
+    branches:
+      - automation/fix-clippy-pr53-pr54
+
+permissions:
+  contents: write
+
+jobs:
+  tuner:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run tuner repair definition
+        run: |
+          ruby -ryaml -e 'w=YAML.load_file(".github/workflows/tmp-fix-clippy-pr53-pr54.yml"); File.write("/tmp/configure.sh", w.fetch("jobs").fetch("tuner").fetch("steps")[1].fetch("run")); File.write("/tmp/repair.sh", w.fetch("jobs").fetch("tuner").fetch("steps")[2].fetch("run"))'
+          bash -e /tmp/configure.sh
+          bash -e /tmp/repair.sh
+
+  arib-si:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run ARIB SI repair definition
+        run: |
+          ruby -ryaml -e 'w=YAML.load_file(".github/workflows/tmp-fix-clippy-pr53-pr54.yml"); File.write("/tmp/configure.sh", w.fetch("jobs").fetch("arib-si").fetch("steps")[1].fetch("run")); File.write("/tmp/repair.sh", w.fetch("jobs").fetch("arib-si").fetch("steps")[2].fetch("run"))'
+          bash -e /tmp/configure.sh
+          bash -e /tmp/repair.sh
