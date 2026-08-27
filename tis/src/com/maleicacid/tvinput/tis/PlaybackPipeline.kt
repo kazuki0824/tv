@@ -61,10 +61,6 @@ class PlaybackPipeline(
     private var videoFilter: Filter? = null
     private var audioFilter: Filter? = null
     private var subtitleFilter: Filter? = null
-    private var nextAvFilterToken: Long = 1L
-    private var currentVideoFilterToken: Long = -1L
-    private var currentAudioFilterToken: Long = -1L
-    private var currentSubtitleFilterToken: Long = -1L
     private var videoDecoder: VideoDecoderPipeline? = null
     private var audioDecoder: AudioDecoderPipeline? = null
     private var mediaSync: MediaSync? = null
@@ -392,17 +388,16 @@ class PlaybackPipeline(
         val pidValue = pid.value
         val subtype = if (isAudio) Filter.SUBTYPE_AUDIO else Filter.SUBTYPE_VIDEO
         val filterGeneration = playbackGeneration
-        val filterToken = nextAvFilterToken++
-        if (isAudio) currentAudioFilterToken = filterToken else currentVideoFilterToken = filterToken
         val targetAudioDecoder = audioDecoder
         val targetVideoDecoder = videoDecoder
-        fun tokenMatches(): Boolean = if (isAudio) currentAudioFilterToken == filterToken else currentVideoFilterToken == filterToken
+        fun sourceIsCurrent(filter: Filter): Boolean =
+            filterGeneration == playbackGeneration && (if (isAudio) audioFilter else videoFilter) === filter
         val filter = tuner.openFilter(Filter.TYPE_TS, subtype, AV_FILTER_BUFFER_BYTES, executor, object : FilterCallback {
             override fun onFilterEvent(filter: Filter, events: Array<FilterEvent>) {
                 runCatching {
-                    if (filterGeneration != playbackGeneration || !tokenMatches()) return
+                    if (!sourceIsCurrent(filter)) return
                     for (event in events.filterIsInstance<MediaEvent>()) {
-                        if (filterGeneration != playbackGeneration || !tokenMatches()) {
+                        if (!sourceIsCurrent(filter)) {
                             releaseMediaEvent(event)
                             continue
                         }
@@ -411,7 +406,7 @@ class PlaybackPipeline(
                             releaseMediaEvent(event)
                             continue
                         }
-                        if (filterGeneration != playbackGeneration || !tokenMatches()) {
+                        if (!sourceIsCurrent(filter)) {
                             releaseMediaEvent(event)
                             continue
                         }
@@ -443,15 +438,14 @@ class PlaybackPipeline(
         val config = TsFilterConfiguration.builder().setTpid(pidValue).setSettings(settingsBuilder.build()).build()
         val configureResult = filter.configure(config)
         if (configureResult != Tuner.RESULT_SUCCESS) {
-            if (isAudio && currentAudioFilterToken == filterToken) currentAudioFilterToken = -1L
-            if (!isAudio && currentVideoFilterToken == filterToken) currentVideoFilterToken = -1L
             closeFilter(filter)
             error("AV filter configure failed result=$configureResult pid=$pid isAudio=$isAudio")
         }
+        if (isAudio) audioFilter = filter else videoFilter = filter
         val startResult = filter.start()
         if (startResult != Tuner.RESULT_SUCCESS) {
-            if (isAudio && currentAudioFilterToken == filterToken) currentAudioFilterToken = -1L
-            if (!isAudio && currentVideoFilterToken == filterToken) currentVideoFilterToken = -1L
+            if (isAudio && audioFilter === filter) audioFilter = null
+            if (!isAudio && videoFilter === filter) videoFilter = null
             closeFilter(filter)
             error("AV filter start failed result=$startResult pid=$pid isAudio=$isAudio")
         }
@@ -461,18 +455,17 @@ class PlaybackPipeline(
     private fun createAndStartSubtitlePesFilter(tuner: Tuner, stream: AribElementaryStream): Result<Filter> = runCatching {
         val pid = stream.elementaryPid
         val pidValue = pid.value
-        require(TunerController.isCaptionStream(stream)) { "字幕ではない stream を subtitle filter に接続しません pid=$pid" }
+        require(TunerSelectionPolicy.isCaptionStream(stream)) { "字幕ではない stream を subtitle filter に接続しません pid=$pid" }
         val filterGeneration = playbackGeneration
-        val filterToken = nextAvFilterToken++
-        currentSubtitleFilterToken = filterToken
-        fun tokenMatches(): Boolean = currentSubtitleFilterToken == filterToken
-        val trackId = TunerController.trackIdForSubtitleStream(stream)
+        fun sourceIsCurrent(filter: Filter): Boolean =
+            filterGeneration == playbackGeneration && subtitleFilter === filter
+        val trackId = TunerSelectionPolicy.trackIdForSubtitle(stream)
         val filter = tuner.openFilter(Filter.TYPE_TS, Filter.SUBTYPE_PES, SUBTITLE_FILTER_BUFFER_BYTES, executor, object : FilterCallback {
             override fun onFilterEvent(filter: Filter, events: Array<FilterEvent>) {
                 runCatching {
-                    if (filterGeneration != playbackGeneration || !tokenMatches()) return
+                    if (!sourceIsCurrent(filter)) return
                     for (event in events.filterIsInstance<PesEvent>()) {
-                        if (filterGeneration != playbackGeneration || !tokenMatches()) continue
+                        if (!sourceIsCurrent(filter)) continue
                         val dataLength = event.dataLength
                         if (dataLength <= 0 || dataLength > MAX_SUBTITLE_PES_BYTES) continue
                         val buffer = ByteArray(dataLength)
@@ -504,13 +497,13 @@ class PlaybackPipeline(
         val config = TsFilterConfiguration.builder().setTpid(pidValue).setSettings(settings).build()
         val configureResult = filter.configure(config)
         if (configureResult != Tuner.RESULT_SUCCESS) {
-            if (currentSubtitleFilterToken == filterToken) currentSubtitleFilterToken = -1L
             closeFilter(filter)
             error("subtitle PES filter configure failed result=$configureResult pid=$pid")
         }
+        subtitleFilter = filter
         val startResult = filter.start()
         if (startResult != Tuner.RESULT_SUCCESS) {
-            if (currentSubtitleFilterToken == filterToken) currentSubtitleFilterToken = -1L
+            if (subtitleFilter === filter) subtitleFilter = null
             closeFilter(filter)
             error("subtitle PES filter start failed result=$startResult pid=$pid")
         }
@@ -1459,16 +1452,16 @@ class PlaybackPipeline(
 
     private fun stopOnPlaybackExecutor() {
         playbackGeneration++
-        currentVideoFilterToken = -1L
-        currentAudioFilterToken = -1L
-        currentSubtitleFilterToken = -1L
         videoAvailableNotified.set(false)
-        closeFilter(videoFilter)
-        closeFilter(audioFilter)
-        closeFilter(subtitleFilter)
+        val previousVideoFilter = videoFilter
+        val previousAudioFilter = audioFilter
+        val previousSubtitleFilter = subtitleFilter
         videoFilter = null
         audioFilter = null
         subtitleFilter = null
+        closeFilter(previousVideoFilter)
+        closeFilter(previousAudioFilter)
+        closeFilter(previousSubtitleFilter)
         releaseOutstandingAudioOutputs()
         videoDecoder?.close()
         audioDecoder?.close()

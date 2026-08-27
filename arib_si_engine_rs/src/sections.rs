@@ -11,16 +11,8 @@ pub struct SectionHeader {
     pub last_section_number: Option<u8>,
 }
 
-pub fn normalize_length_field_bits(bits: i32) -> Option<i32> {
-    match bits {
-        0 | 12 => Some(12),
-        _ => None,
-    }
-}
-
-pub fn parse_section_header(section: &[u8], length_field_bits: i32) -> Option<SectionHeader> {
-    let normalized = normalize_length_field_bits(length_field_bits)?;
-    if normalized != 12 || section.len() < 3 {
+pub fn parse_section_header(section: &[u8]) -> Option<SectionHeader> {
+    if section.len() < 3 {
         return None;
     }
     let section_length = (((section[1] & 0x0f) as usize) << 8) | section[2] as usize;
@@ -57,8 +49,8 @@ pub fn parse_section_header(section: &[u8], length_field_bits: i32) -> Option<Se
     })
 }
 
-pub fn section_crc_valid(section: &[u8], length_field_bits: i32) -> bool {
-    let Some(header) = parse_section_header(section, length_field_bits) else {
+pub fn section_crc_valid(section: &[u8]) -> bool {
+    let Some(header) = parse_section_header(section) else {
         return false;
     };
     if header.section_length < 4 {
@@ -138,7 +130,7 @@ impl SectionAssembler {
                 self.expected_len = None;
                 break;
             }
-            let Some(header) = parse_section_header(remaining, 12).or_else(|| {
+            let Some(header) = parse_section_header(remaining).or_else(|| {
                 let partial_len =
                     3 + ((((remaining[1] & 0x0f) as usize) << 8) | remaining[2] as usize);
                 Some(SectionHeader {
@@ -209,13 +201,13 @@ mod tests {
         let section = section_with_crc(vec![
             0x42, 0xf0, 0x0b, 0x00, 0x01, 0xc7, 0x02, 0x03, 0x00, 0x00,
         ]);
-        let header = parse_section_header(&section, 12).unwrap();
+        let header = parse_section_header(&section).unwrap();
         assert_eq!(header.table_id, 0x42);
         assert_eq!(header.table_id_extension, Some(1));
         assert_eq!(header.version, Some(3));
         assert_eq!(header.section_number, Some(2));
         assert_eq!(header.last_section_number, Some(3));
-        assert!(section_crc_valid(&section, 12));
+        assert!(section_crc_valid(&section));
     }
 
     #[test]
@@ -293,14 +285,9 @@ mod section_header_contract_tests {
             0x00, 0xb0, 0x0d, 0x00, 0x01, 0xc0, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
             0xff, 0xff,
         ];
-        let header = parse_section_header(&section, 12).unwrap();
+        let header = parse_section_header(&section).unwrap();
         assert_eq!(header.version, Some(0));
         assert_eq!(header.current_next_indicator, Some(false));
     }
 
-    #[test]
-    fn rejects_non_12bit_length_field_contract() {
-        let section = [0x00, 0xb0, 0x0d];
-        assert!(parse_section_header(&section, 10).is_none());
-    }
 }
