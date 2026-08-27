@@ -213,8 +213,10 @@ fn decode_arib_string_replacing(
     match decode_arib_string_with_policy(bytes, state, ErrorPolicy::Replace) {
         Ok(result) => result,
         Err(error) => {
-            let mut diagnostic = AribStringDecodeDiagnostic::default();
-            diagnostic.replacement_count = 1;
+            let mut diagnostic = AribStringDecodeDiagnostic {
+                replacement_count: 1,
+                ..Default::default()
+            };
             diagnostic.record_entry(
                 bytes,
                 0,
@@ -725,7 +727,7 @@ mod tests {
     #[test]
     fn strict_and_lossy_decoders_match_for_valid_si_inputs() {
         let valid_inputs: &[&[u8]] = &[
-            &[b'E', b'l', b'5', b'~'],
+            b"El5~",
             &[0x1b, b'(', b'I', 0x22, 0x24, 0x26],
             &[0x1b, b'(', b'B', b'A', 0x19, 0x22, b'B'],
             &[0x1b, b'(', b'B', b'A', 0x9b, b'1', b';', b'2', b'X', b'B'],
