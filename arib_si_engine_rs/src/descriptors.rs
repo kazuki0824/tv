@@ -415,8 +415,10 @@ fn parse_short_event(
         offset,
         declared_length,
         body,
-        "eventName",
-        offset.saturating_add(2).saturating_add(name_start),
+        (
+            "eventName",
+            offset.saturating_add(2).saturating_add(name_start),
+        ),
     )
     .trim()
     .to_string();
@@ -430,8 +432,7 @@ fn parse_short_event(
         offset,
         declared_length,
         body,
-        "text",
-        offset.saturating_add(2).saturating_add(text_start),
+        ("text", offset.saturating_add(2).saturating_add(text_start)),
     )
     .trim()
     .to_string();
@@ -730,9 +731,7 @@ fn parse_extended_event_fragment(
         }
         let desc_len = body[cursor] as usize;
         let desc_start = cursor + 1;
-        let Some(desc_end) = desc_start.checked_add(desc_len) else {
-            return None;
-        };
+        let desc_end = desc_start.checked_add(desc_len)?;
         if desc_end >= items_end {
             out.diagnostics.push(descriptor_diagnostic(
                 DescriptorParseStatus::MalformedLength,
@@ -747,9 +746,7 @@ fn parse_extended_event_fragment(
         }
         let item_len = body[desc_end] as usize;
         let item_start = desc_end + 1;
-        let Some(item_end) = item_start.checked_add(item_len) else {
-            return None;
-        };
+        let item_end = item_start.checked_add(item_len)?;
         if item_end > items_end {
             out.diagnostics.push(descriptor_diagnostic(
                 DescriptorParseStatus::MalformedLength,
@@ -773,9 +770,7 @@ fn parse_extended_event_fragment(
     let text_len_index = items_end;
     let text_len = body[text_len_index] as usize;
     let text_start = text_len_index + 1;
-    let Some(text_end) = text_start.checked_add(text_len) else {
-        return None;
-    };
+    let text_end = text_start.checked_add(text_len)?;
     if text_end != body.len() {
         out.diagnostics.push(descriptor_diagnostic(
             DescriptorParseStatus::MalformedLength,
@@ -979,8 +974,7 @@ fn parse_component_descriptor(
             offset,
             declared_length,
             body,
-            "text",
-            offset.saturating_add(8),
+            ("text", offset.saturating_add(8)),
         )
         .trim()
         .to_string(),
@@ -1028,8 +1022,7 @@ fn parse_audio_component_descriptor(
             offset,
             declared_length,
             body,
-            "text",
-            offset.saturating_add(2).saturating_add(cursor),
+            ("text", offset.saturating_add(2).saturating_add(cursor)),
         )
         .trim()
         .to_string(),
@@ -1101,8 +1094,7 @@ fn parse_series_descriptor(
                 offset,
                 declared_length,
                 body,
-                "seriesName",
-                offset.saturating_add(11),
+                ("seriesName", offset.saturating_add(11)),
             )
             .trim()
             .to_string()
@@ -1176,6 +1168,8 @@ fn language(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).trim().to_string()
 }
 
+type DescriptorTextField<'a> = (&'a str, usize);
+
 fn decode_descriptor_text_lossy(
     bytes: &[u8],
     out: &mut EventDescriptors,
@@ -1183,9 +1177,9 @@ fn decode_descriptor_text_lossy(
     descriptor_offset: usize,
     declared_length: usize,
     descriptor_body: &[u8],
-    field_kind: &str,
-    field_offset: usize,
+    field: DescriptorTextField<'_>,
 ) -> String {
+    let (field_kind, field_offset) = field;
     let (decoded, diagnostic) = decode_arib_string_lossy(bytes);
     if diagnostic.replacement_count != 0 {
         out.diagnostics.push(descriptor_diagnostic(
@@ -1219,11 +1213,6 @@ fn join_description(current: &str, next: &str) -> String {
 
 /// TvProvider の安定キーに自然に入らない記述子向けの診断専用 JSON。
 /// TvProvider 向けのタイトルと説明は event_provider_fields() を使う。
-
-#[cfg(test)]
-pub fn event_descriptor_diagnostics_array_json(desc: &EventDescriptors) -> String {
-    event_descriptor_diagnostics_array_json_scoped(desc, None)
-}
 
 pub fn event_descriptor_diagnostics_array_json_scoped(
     desc: &EventDescriptors,
@@ -1389,6 +1378,7 @@ fn descriptor_diagnostic_model(
     }
 }
 
+#[cfg(test)]
 fn descriptor_diagnostic_to_json_scoped(
     d: &DescriptorDiagnostic,
     scope: Option<DescriptorSectionScope>,
@@ -1416,6 +1406,7 @@ fn descriptor_diagnostic_code(status: DescriptorParseStatus) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn event_group_to_json(group: &EventGroupDescriptor) -> String {
     let events = group
         .events
@@ -1438,6 +1429,7 @@ fn event_group_to_json(group: &EventGroupDescriptor) -> String {
     )
 }
 
+#[cfg(test)]
 fn event_group_reference_to_json(reference: &EventGroupReference) -> String {
     format!(
         r#"{{"serviceId":{},"eventId":{}}}"#,
@@ -1445,6 +1437,7 @@ fn event_group_reference_to_json(reference: &EventGroupReference) -> String {
     )
 }
 
+#[cfg(test)]
 fn other_network_event_group_reference_to_json(
     reference: &OtherNetworkEventGroupReference,
 ) -> String {
@@ -1466,6 +1459,7 @@ fn hex_prefix(bytes: &[u8], max_len: usize) -> String {
         .join("")
 }
 
+#[cfg(test)]
 fn additive_checksum(bytes: &[u8]) -> u32 {
     bytes
         .iter()
@@ -1637,7 +1631,7 @@ mod mirakc_scope_extended_event_tests {
             b'j',
             b'p',
             b'n',
-            (1 + 0 + 1 + second_text.len()) as u8,
+            (1 + 1 + second_text.len()) as u8,
             0x00,
             second_text.len() as u8,
         ];

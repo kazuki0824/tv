@@ -1,6 +1,16 @@
+use std::fmt::Write as _;
+
 include!("arib_jis_x0208_table.rs");
 
 pub const ARIB_STRING_DECODER_SCOPE: &str = "mirakc_scope_non_caption_si_epg_only";
+
+fn bytes_hex_lower(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut out, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    out
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AribStringDecodeError {
@@ -41,12 +51,10 @@ impl AribStringDecodeDiagnostic {
     ) {
         self.entries.push(AribStringDecodeDiagnosticEntry {
             offset,
-            input_prefix_hex: bytes
-                .iter()
-                .skip(offset)
-                .take(8)
-                .map(|byte| format!("{:02x}", byte))
-                .collect(),
+            input_prefix_hex: {
+                let remaining = bytes.get(offset..).unwrap_or_default();
+                bytes_hex_lower(&remaining[..remaining.len().min(8)])
+            },
             code_set_or_control: code_set_or_control.to_string(),
             reason: reason.to_string(),
             replacement_emitted,
@@ -87,7 +95,6 @@ enum GraphicSet {
     Hiragana,
     Katakana,
     Kanji,
-    Macro,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -135,7 +142,6 @@ fn decode_single_shift(
                 .ok_or(AribStringDecodeError::TruncatedGraphic)?;
             map_kanji(first, second).to_string()
         }
-        GraphicSet::Macro => "�".to_string(),
     };
     let consumed_after_control = if matches!(set, GraphicSet::Kanji) {
         2
@@ -173,7 +179,6 @@ fn apply_graphic(
             out.push_str(map_kanji(first, second));
             Ok(2)
         }
-        GraphicSet::Macro => Err(AribStringDecodeError::UnsupportedEscape),
     }
 }
 
@@ -192,16 +197,9 @@ fn consume_csi(bytes: &[u8]) -> Result<usize, AribStringDecodeError> {
     Err(AribStringDecodeError::MalformedCsi)
 }
 
+#[derive(Default)]
 pub(crate) struct AribStringDecoder {
     state: InvocationState,
-}
-
-impl Default for AribStringDecoder {
-    fn default() -> Self {
-        Self {
-            state: InvocationState::default(),
-        }
-    }
 }
 
 impl AribStringDecoder {
@@ -220,6 +218,7 @@ impl AribStringDecoder {
 
 /// 字幕以外の ARIB SI/EPG 文字列を復号する。
 /// サービス名、番組名、短形式イベント、長形式イベント用であり、字幕描画器ではない。
+#[cfg(test)]
 pub fn decode_arib_string(bytes: &[u8]) -> Result<String, AribStringDecodeError> {
     AribStringDecoder::default().decode(bytes)
 }
@@ -284,7 +283,6 @@ fn decode_arib_string_with_state(
                         out.push_str(map_kanji(normalized, next));
                         index += 1;
                     }
-                    GraphicSet::Macro => return Err(AribStringDecodeError::UnsupportedEscape),
                 }
             }
             _ => return Err(AribStringDecodeError::UnsupportedControl),
@@ -336,19 +334,6 @@ fn decode_arib_string_lossy_with_state(
                 }
                 match decode_single_shift(set, bytes, index) {
                     Ok((value, consumed)) => {
-                        if matches!(set, GraphicSet::Macro) {
-                            diagnostic.unsupported_escape_count =
-                                diagnostic.unsupported_escape_count.saturating_add(1);
-                            diagnostic.replacement_count =
-                                diagnostic.replacement_count.saturating_add(1);
-                            diagnostic.record_entry(
-                                bytes,
-                                index,
-                                "SS3/Macro",
-                                "unsupported_macro",
-                                true,
-                            );
-                        }
                         out.push_str(&value);
                         index += consumed;
                     }
@@ -479,13 +464,6 @@ fn decode_arib_string_lossy_with_state(
                         index += 1;
                     }
                 }
-                GraphicSet::Macro => {
-                    diagnostic.unsupported_escape_count =
-                        diagnostic.unsupported_escape_count.saturating_add(1);
-                    diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
-                    diagnostic.record_entry(bytes, index, "GL/Macro", "unsupported_macro", true);
-                    out.push('�');
-                }
             },
             0xa1..=0xfe if state.middle_size && state.gr != GraphicSet::Alnum => {
                 diagnostic.replacement_count = diagnostic.replacement_count.saturating_add(1);
@@ -538,20 +516,6 @@ fn decode_arib_string_lossy_with_state(
                             out.push_str(map_kanji(normalized, next & 0x7f));
                             index += 1;
                         }
-                    }
-                    GraphicSet::Macro => {
-                        diagnostic.unsupported_escape_count =
-                            diagnostic.unsupported_escape_count.saturating_add(1);
-                        diagnostic.replacement_count =
-                            diagnostic.replacement_count.saturating_add(1);
-                        diagnostic.record_entry(
-                            bytes,
-                            index,
-                            "GR/Macro",
-                            "unsupported_macro",
-                            true,
-                        );
-                        out.push('�');
                     }
                 }
             }
