@@ -370,6 +370,18 @@ Filter/SharedFilterのqueue確定は`FilterProducerDrainGate`、DVR queue I/Oは
 
 このためmutation requestはrequest IDを持ち、serverはmutation結果をresponse I/Oより先にbounded replay journalへcommitする。同一request IDかつ同一serialized commandの再送ではmutationを再実行せず保存済みstatusを返す。同一request IDを別commandへ再利用した場合はprotocol conflictとして拒否する。provider clientが応答未確定mutationをretryする場合は新しいrequest IDを発行せず、同じrequest IDと同じserialized commandを再送する。retry回数と各I/O deadlineはboundedとし、retry exhaustion時は成功を表明しない。`Publish`と`Revoke`も同じreplay規則に従う。
 
+#### replay / fencing の閉包
+
+mutationのreplay identityは`(provider_id, provider_generation, request_id)`とする。同一`provider_id / provider_generation`では新規mutationの`request_id`を再利用せず、providerはmutationを送信順に直列化し、一つのresponse-unknown mutationが未解決の間に同generationの後続mutationを追い越させない。再送だけが既存request IDを使用する。request IDを安全に発行できなくなったgenerationではwrapまたは再利用せず、そのprovider generationを新規mutationに使用しない。
+
+replay journalはboundedのままとし、各完了entryをprovider側の最大retry horizonより短い期間でevictしてはならない。retry horizon内のentryだけでjournal capacityへ達した場合は、未expire entryを捨てて新規mutationを受理するのではなく、新規mutationをruntime stateへ適用する前に一時的なcapacity failureとして拒否する。expire済みentryをevictした後も、同一provider generationについて受理済みrequest IDのhigh-water markを保持し、journalから消えた過去request IDが再到着した場合は新規mutationとして再実行せずexpired replayとして拒否する。providerはretry exhaustion後にそのrequest IDを再送しない。
+
+同一request IDのcommand同一性判定ではraw/prepared key materialをjournalへ保存しない。serverはcanonical serialized commandのcollision-resistant digest等、key materialを復元できない固定長fingerprintと保存済みstatusだけをjournalへ保持してよい。同じreplay identityでfingerprintが一致した場合だけ保存済みstatusを返し、不一致ならprotocol conflictとしてstateを変更しない。fingerprint、request ID、statusを診断へ出す場合もraw key materialまたはそれを復元可能な表現を含めない。
+
+`Publish`の`key_epoch`は同一`key_token / provider_id / provider_generation`内でstrictly monotonicとする。current epochより小さいepochの新規Publishはstaleとして拒否し、current epochと同じepochを持つfresh request IDも置換として成功させない。同一epochを成功として返せるのは、既にcommit済みの同一request identityかつ同一command fingerprintのreplayだけである。これによりresponse loss後のretryと、古いPublishによる鍵巻戻しを区別する。provider generation不一致のPublish/Revokeはcurrent entryへ作用させない。
+
+replay journal、high-water mark、reservation/key tableは同一Tuner service process incarnationに従属し、process restartを跨ぐexactly-onceを要求しない。restartではこれらのin-memory stateが同時に失われるため、旧processでのcommit済み結果を新processへ復元したものとして扱わない。providerはbridge再接続後、現在のreservation/key stateを前提にせず必要な`Reserve` / `Publish`を正規手順から再確立し、旧generationの遅延mutationが新generationへ作用しないよう既存のprovider generation fencingを維持する。
+
 #### reservation / key-slot lifetime
 
 - live/reserved entry総数の現行default上限は64とする。
@@ -406,6 +418,11 @@ I/O待機中にruntime lockを保持してはならない。socket serverはfram
 - protocol crateにCA system ID/B25/B1固定値を置かず、任意のnon-zero `provider_id`を同じ規則で扱う。
 - mutation commit後にresponseを喪失し、同一request IDで再送してもmutationを二重適用せず元statusを返す。
 - 同一request IDを別commandへ使うと拒否する。
+- retry horizon内のjournal entryをcapacity都合でevictせず、capacity不足では新規mutationをcommit前に拒否する。
+- journal eviction後に過去request IDを再送しても新規mutationとして再実行しない。
+- `Publish` replayの同一command判定でraw/prepared key materialをjournalへ保持しない。
+- fresh request IDによるsame/stale epochの`Publish`を成功させず、同一request replayだけ元statusを返す。
+- provider generation不一致の遅延`Publish` / `Revoke`がcurrent entryへ作用しない。
 - 同一provider identityのReserve再送でslot数を増やさない。
 - provider IDが異なるReserveを同一retry扱いしない。
 - TTL超過の未publish reservationを次Reserveのcapacity判定前に回収する。
