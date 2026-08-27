@@ -200,7 +200,7 @@ jobs:
           echo "TIS_KOTLIN_PRODUCTION_DIR=$production_dir" >> "$GITHUB_ENV"
           echo "TIS_KOTLIN_TEST_DIR=$test_dir" >> "$GITHUB_ENV"
 
-      - name: Run 128 host-compatible Kotlin tests
+      - name: Run 122 host-compatible Kotlin tests
         shell: bash
         run: |
           mapfile -t discovered_classes < <(
@@ -221,8 +221,8 @@ jobs:
                 ;;
             esac
           done
-          test "${#discovered_classes[@]}" -eq 29
-          test "${#test_classes[@]}" -eq 25
+          test "${#discovered_classes[@]}" -eq 30
+          test "${#test_classes[@]}" -eq 26
           runtime_classpath="$TIS_KOTLIN_PRODUCTION_DIR:$TIS_KOTLIN_TEST_DIR:$TIS_ANDROID_ALL_JAR:$TIS_JUNIT_JAR:$TIS_HAMCREST_JAR:$TIS_KOTLIN_HOME/lib/kotlin-stdlib.jar:$TIS_KOTLIN_HOME/lib/kotlin-stdlib-jdk7.jar:$TIS_KOTLIN_HOME/lib/kotlin-stdlib-jdk8.jar:$TIS_KOTLIN_HOME/lib/kotlin-test.jar:$TIS_KOTLIN_HOME/lib/kotlin-test-junit.jar"
           java \
             -Xmx4g \
@@ -231,7 +231,7 @@ jobs:
             org.junit.runner.JUnitCore \
             "${test_classes[@]}" \
             | tee "$RUNNER_TEMP/tis-junit.log"
-          grep --fixed-strings "OK (128 tests)" "$RUNNER_TEMP/tis-junit.log"
+          grep --fixed-strings "OK (122 tests)" "$RUNNER_TEMP/tis-junit.log"
 
   xml-contract:
     runs-on: ubuntu-latest

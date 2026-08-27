@@ -12,6 +12,8 @@ import com.maleicacid.tvinput.aribsi.ServiceListBuilder
 import com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
 import com.maleicacid.tvinput.aribsi.TransportKey
 import com.maleicacid.tvinput.aribsi.SectionIngestController
+import com.maleicacid.tvinput.aribsi.SiDiscoveryStage
+import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
 import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.TsPid
@@ -30,15 +32,13 @@ class ChannelScanController(
     data class SiCollectionResult(
         val outcome: SiCollectionOutcome,
         val diagnostic: ScanDiagnostic?,
-        val countsSignature: String,
         val clearLivePlaybackSupportedServices: Int,
         val registrationReadyServices: Int = clearLivePlaybackSupportedServices,
-        val registrationReadySnapshotAvailable: Boolean = false,
     ) {
         val mayPublishChannels: Boolean
             get() = outcome != SiCollectionOutcome.CANCELLED &&
                 outcome != SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE &&
-                registrationReadySnapshotAvailable
+                registrationReadyServices > 0
     }
     data class SiCollectionPolicy(
         val minWaitMs: Long = 2_000L,
@@ -55,8 +55,8 @@ class ChannelScanController(
         DIAGNOSTIC_ONLY,
     }
     private data class ServiceCounts(
+        val discoveryStage: Int,
         val total: Int,
-        val complete: Int,
         val clearLivePlaybackSupported: Int,
         val registrationReady: Int,
         val signature: String,
@@ -100,7 +100,7 @@ class ChannelScanController(
         var successfulCandidates = 0
         candidates.forEach { candidate ->
             if (cancelled.get()) return@forEach
-            engine.reset()
+            engine.reset(discoveryProfile(candidate.kind))
             currentCandidate = candidate
             val tune = tunerController.tuneForScan(candidate)
             if (!tune.success) {
@@ -152,7 +152,7 @@ class ChannelScanController(
         var successfulCandidates = 0
         candidates.forEach { candidate ->
             if (cancelled.get()) return@forEach
-            engine.reset()
+            engine.reset(discoveryProfile(candidate.kind))
             currentCandidate = candidate
             val tune = tunerController.tuneForScan(candidate)
             if (!tune.success) {
@@ -247,7 +247,7 @@ class ChannelScanController(
             )
         }
         val registrationReadyServices = transaction.services.filter { service ->
-            diagnostics[service.serviceKey]?.channelRegistrationReady == true
+            diagnostics[service.serviceKey]?.registrationReady == true
         }
         val services = filterServicesForCurrentCandidate(registrationReadyServices, transaction.actualTransports)
         val channels = services.mapNotNull { service ->
@@ -270,9 +270,9 @@ class ChannelScanController(
             )
         }
         if (channels.isEmpty()) {
-            val incomplete = diagnostics.filterValues { !it.channelRegistrationReady }
-                .mapValues { (_, d) -> (d.missingComponents + d.registrationReasons + d.reasons).distinct() }
-            Log.d(LogTags.TIS, "registration-ready なサービスがないため channel snapshot 登録を省略します candidate=$candidate stage=${engine.discoveryStage()} incomplete=$incomplete")
+            val incomplete = diagnostics.filterValues { !it.registrationReady }
+                .mapValues { (_, decision) -> decision.reasons }
+            Log.d(LogTags.TIS, "registration-ready なサービスがないため channel snapshot 登録を省略します candidate=$candidate stage=${transaction.discoveryStage} incomplete=$incomplete")
             return PublishSnapshotResult(0)
         }
         val channelResult = tvProviderWriter.upsertChannels(channels)
@@ -342,6 +342,12 @@ class ChannelScanController(
         ScanCandidateKind.ISDB_S_110CS -> 0b000100
     }
 
+    private fun discoveryProfile(kind: ScanCandidateKind): Int = when (kind) {
+        ScanCandidateKind.ISDB_T_UHF, ScanCandidateKind.ISDB_T_CATV -> SiDiscoveryProfile.ISDB_T
+        ScanCandidateKind.ISDB_S_BS -> SiDiscoveryProfile.BS
+        ScanCandidateKind.ISDB_S_110CS -> SiDiscoveryProfile.CS110
+    }
+
     private fun serviceCounts(candidate: ScanCandidate): ServiceCounts {
         val transaction = engine.serviceRegistrationSnapshot()
         val expectedSmdIdentifier = expectedSmdBroadcastingIdentifier(candidate)
@@ -354,30 +360,30 @@ class ChannelScanController(
         }
         val summary = ServiceListBuilder.ServiceSnapshotSummary(completeness)
         return ServiceCounts(
+            discoveryStage = transaction.discoveryStage,
             total = summary.total,
-            complete = summary.complete,
             clearLivePlaybackSupported = summary.clearLivePlaybackSupported,
             registrationReady = summary.registrationReady,
             signature = summary.stableSignature(),
             incompleteReasons = completeness
-                .filter { !it.isRegistrationReady }
-                .associate { it.serviceKey to (it.missingComponents + it.registrationReasons + it.reasons).distinct() },
+                .filter { !it.registrationReady }
+                .associate { it.serviceKey to it.reasons },
         )
     }
 
     private fun collectSiForCandidate(candidate: ScanCandidate): SiCollectionResult {
         val policy = DEFAULT_SI_POLICY
         val startedAt = System.currentTimeMillis()
-        var lastStage = engine.discoveryStage()
         var lastCounts = serviceCounts(candidate)
+        var lastStage = lastCounts.discoveryStage
         var stableSince = startedAt
         var outcome = SiCollectionOutcome.TIMEOUT_PARTIAL
 
         while (!cancelled.get()) {
             refreshDynamicSectionFilters()
             val now = System.currentTimeMillis()
-            val stage = engine.discoveryStage()
             val counts = serviceCounts(candidate)
+            val stage = counts.discoveryStage
             if (stage != lastStage || counts.signature != lastCounts.signature) {
                 lastStage = stage
                 lastCounts = counts
@@ -385,7 +391,7 @@ class ChannelScanController(
             }
             val elapsed = now - startedAt
             val stableFor = now - stableSince
-            if (engine.isDiscoveryComplete() && elapsed >= policy.minWaitMs) {
+            if (stage == SiDiscoveryStage.COMPLETE && elapsed >= policy.minWaitMs) {
                 outcome = SiCollectionOutcome.COMPLETE
                 break
             }
@@ -404,25 +410,23 @@ class ChannelScanController(
             terminalCancelObserved = true
             outcome = SiCollectionOutcome.CANCELLED
         }
-        val complete = engine.isDiscoveryComplete()
-        if (!cancelled.get() && complete) outcome = SiCollectionOutcome.COMPLETE
         val finalCounts = serviceCounts(candidate)
+        val complete = finalCounts.discoveryStage == SiDiscoveryStage.COMPLETE
+        if (!cancelled.get() && complete) outcome = SiCollectionOutcome.COMPLETE
         val finalRegistrationReadySnapshotAvailable = finalCounts.registrationReady > 0
         if (outcome == SiCollectionOutcome.TIMEOUT_PARTIAL && !finalRegistrationReadySnapshotAvailable) outcome = SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE
         val elapsed = System.currentTimeMillis() - startedAt
         val message = if (outcome == SiCollectionOutcome.COMPLETE) {
             null
         } else {
-            "SI 収集が完全完了していません outcome=$outcome stage=${engine.discoveryStage()} services=${finalCounts.total} completeServices=${finalCounts.complete} clearLivePlaybackSupportedServices=${finalCounts.clearLivePlaybackSupported} registrationReadyServices=${finalCounts.registrationReady} incomplete=${finalCounts.incompleteReasons} sections=${ingestController.diagnosticSummary()} elapsedMs=$elapsed"
+            "SI 収集が完全完了していません outcome=$outcome stage=${finalCounts.discoveryStage} services=${finalCounts.total} clearLivePlaybackSupportedServices=${finalCounts.clearLivePlaybackSupported} registrationReadyServices=${finalCounts.registrationReady} incomplete=${finalCounts.incompleteReasons} sections=${ingestController.diagnosticSummary()} elapsedMs=$elapsed"
         }
         Log.i(LogTags.TIS, "scan 候補の SI 収集結果 candidate=$candidate outcome=$outcome complete=$complete counts=$finalCounts message=$message")
         return SiCollectionResult(
             outcome = outcome,
             diagnostic = message?.let { ScanDiagnostic(candidate, it) },
-            countsSignature = finalCounts.signature,
             clearLivePlaybackSupportedServices = finalCounts.clearLivePlaybackSupported,
             registrationReadyServices = finalCounts.registrationReady,
-            registrationReadySnapshotAvailable = finalRegistrationReadySnapshotAvailable,
         )
     }
 
@@ -490,15 +494,13 @@ class ChannelScanController(
             cancelled: Boolean,
             elapsedMs: Long,
             stableForMs: Long,
-            clearLivePlaybackSupportedServices: Int,
+            registrationReadyServices: Int,
             policy: SiCollectionPolicy,
-            registrationReadyServices: Int = clearLivePlaybackSupportedServices,
-            registrationReadySnapshotAvailable: Boolean = false,
         ): SiCollectionOutcome = when {
             cancelled -> SiCollectionOutcome.CANCELLED
             discoveryComplete && elapsedMs >= policy.minWaitMs -> SiCollectionOutcome.COMPLETE
-            elapsedMs >= policy.minWaitMs && registrationReadySnapshotAvailable && stableForMs >= policy.stableWaitMs -> SiCollectionOutcome.STABLE_PARTIAL
-            elapsedMs >= policy.maxWaitMs && registrationReadySnapshotAvailable -> SiCollectionOutcome.TIMEOUT_PARTIAL
+            elapsedMs >= policy.minWaitMs && registrationReadyServices > 0 && stableForMs >= policy.stableWaitMs -> SiCollectionOutcome.STABLE_PARTIAL
+            elapsedMs >= policy.maxWaitMs && registrationReadyServices > 0 -> SiCollectionOutcome.TIMEOUT_PARTIAL
             elapsedMs >= policy.maxWaitMs -> SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE
             else -> SiCollectionOutcome.TIMEOUT_PARTIAL
         }

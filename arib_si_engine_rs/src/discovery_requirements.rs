@@ -1,51 +1,30 @@
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DeliverySystemRequirement {
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DiscoveryProfile {
+    #[default]
     IsdbT,
     Bs,
     Cs110,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DiscoveryRequirement {
-    pub delivery_system: DeliverySystemRequirement,
-    pub require_pat: bool,
-    pub require_pmt: bool,
-    pub require_sdt_actual: bool,
-    pub require_nit_actual: bool,
-    pub require_bat: bool,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OptionalTableRequirement {
     pub require_sdt_other: bool,
     pub require_nit_other: bool,
 }
 
-pub fn requirement_for_original_network_id(original_network_id: u16) -> DiscoveryRequirement {
-    match original_network_id {
-        4 => satellite(DeliverySystemRequirement::Bs, false),
-        6 | 7 => satellite(DeliverySystemRequirement::Cs110, true),
-        _ => DiscoveryRequirement {
-            delivery_system: DeliverySystemRequirement::IsdbT,
-            require_pat: true,
-            require_pmt: true,
-            require_sdt_actual: true,
-            require_nit_actual: true,
-            require_bat: false,
+pub fn optional_table_requirement(profile: DiscoveryProfile) -> OptionalTableRequirement {
+    match profile {
+        DiscoveryProfile::IsdbT => OptionalTableRequirement {
             require_sdt_other: false,
             require_nit_other: false,
         },
-    }
-}
-
-fn satellite(
-    delivery_system: DeliverySystemRequirement,
-    require_nit_other: bool,
-) -> DiscoveryRequirement {
-    DiscoveryRequirement {
-        delivery_system,
-        require_pat: true,
-        require_pmt: true,
-        require_sdt_actual: true,
-        require_nit_actual: true,
-        require_bat: false,
-        require_sdt_other: true,
-        require_nit_other,
+        DiscoveryProfile::Bs => OptionalTableRequirement {
+            require_sdt_other: true,
+            require_nit_other: false,
+        },
+        DiscoveryProfile::Cs110 => OptionalTableRequirement {
+            require_sdt_other: true,
+            require_nit_other: true,
+        },
     }
 }
