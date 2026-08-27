@@ -30,13 +30,11 @@ import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.PesPts90k
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
-import java.security.SecureRandom
 import java.util.concurrent.Callable
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
 
 class PlaybackPipeline(
     private val inputId: String,
@@ -82,7 +80,7 @@ class PlaybackPipeline(
     private var activeTuner: Tuner? = null
     private var activeSelection: TunerController.AvStreamSelection? = null
     private var waitingAvailabilityArm: AvailabilityArm? = null
-    private val availabilityTokens = AvailabilityTokenAllocator()
+    private var nextAvailabilityArmSequence: Long = 1L
     private val ptsEpochCoordinator = PtsEpochCoordinator()
     private val outstandingAudioOutputs = linkedMapOf<Int, AudioOutput>()
     private var nextAudioBufferId = 1
@@ -155,7 +153,7 @@ class PlaybackPipeline(
         val isAudio: Boolean,
     )
 
-    private data class AvailabilityArm(val generation: Long, val registrationToken: Long)
+    private data class AvailabilityArm(val generation: Long, val armSequence: Long)
 
     private data class AudioOutput(
         val codec: MediaCodec,
@@ -521,6 +519,7 @@ class PlaybackPipeline(
 
     private fun createMediaSync(outputSurface: Surface?, generation: Long): MediaSync? = runCatching {
         val sync = MediaSync()
+        nextAvailabilityArmSequence = 1L
         sync.setCallback(object : MediaSync.Callback() {
             override fun onAudioBufferConsumed(sync: MediaSync, audioBuffer: ByteBuffer, bufferId: Int) {
                 enqueuePlaybackAction { onAudioBufferConsumedOnPlaybackExecutor(sync, generation, bufferId) }
@@ -543,28 +542,33 @@ class PlaybackPipeline(
         emitUnavailable(PlaybackUnavailableReason.VIDEO_CODEC_ERROR, error.message.orEmpty())
     }.getOrNull()
 
+    private fun allocateAvailabilityArmSequence(): Long {
+        val armSequence = nextAvailabilityArmSequence
+        check(armSequence > 0L && armSequence < Long.MAX_VALUE) { "MediaSync availability arm sequence exhausted" }
+        nextAvailabilityArmSequence = armSequence + 1L
+        return armSequence
+    }
+
     private fun armVideoAvailability(sync: MediaSync, generation: Long) {
-        waitingAvailabilityArm?.let { availabilityTokens.retire(it.registrationToken) }
-        val arm = AvailabilityArm(generation, availabilityTokens.allocate())
+        val arm = AvailabilityArm(generation, allocateAvailabilityArmSequence())
         waitingAvailabilityArm = arm
         videoAvailableNotified.set(false)
         sync.setOnFirstVideoFrameQueuedToOutputListener(
-            arm.registrationToken,
-            MediaSync.OnFirstVideoFrameQueuedToOutputListener { callbackSync, registrationToken ->
-                enqueuePlaybackAction { commitVideoAvailability(callbackSync, generation, registrationToken) }
+            arm.armSequence,
+            MediaSync.OnFirstVideoFrameQueuedToOutputListener { callbackSync, armSequence ->
+                enqueuePlaybackAction { commitVideoAvailability(callbackSync, generation, armSequence) }
             },
             codecCallbackHandler,
         )
     }
 
-    private fun commitVideoAvailability(sync: MediaSync, generation: Long, registrationToken: Long) {
+    private fun commitVideoAvailability(sync: MediaSync, generation: Long, armSequence: Long) {
         val arm = waitingAvailabilityArm ?: return
         if (sync !== mediaSync || generation != playbackGeneration || arm.generation != generation ||
-            arm.registrationToken != registrationToken || mediaSyncSurfaceFailed || surface?.isValid != true) {
+            arm.armSequence != armSequence || mediaSyncSurfaceFailed || surface?.isValid != true) {
             return
         }
         waitingAvailabilityArm = null
-        availabilityTokens.retire(registrationToken)
         if (videoAvailableNotified.compareAndSet(false, true)) onVideoAvailable()
     }
 
@@ -582,7 +586,6 @@ class PlaybackPipeline(
             MediaSync.MEDIASYNC_ERROR_SURFACE_FAIL -> {
                 if (!videoPathExpected) return
                 mediaSyncSurfaceFailed = true
-                waitingAvailabilityArm?.let { availabilityTokens.retire(it.registrationToken) }
                 waitingAvailabilityArm = null
                 emitUnavailable(PlaybackUnavailableReason.VIDEO_OUTPUT_RENDER_FAILED, "MEDIASYNC_ERROR_SURFACE_FAIL extra=$extra")
             }
@@ -674,8 +677,8 @@ class PlaybackPipeline(
     fun simulateFirstFrameRenderedForTest(generation: Long) {
         enqueuePlaybackAction {
             val sync = mediaSync ?: return@enqueuePlaybackAction
-            val token = waitingAvailabilityArm?.registrationToken ?: return@enqueuePlaybackAction
-            commitVideoAvailability(sync, generation, token)
+            val armSequence = waitingAvailabilityArm?.armSequence ?: return@enqueuePlaybackAction
+            commitVideoAvailability(sync, generation, armSequence)
         }
     }
 
@@ -1115,27 +1118,6 @@ class PlaybackPipeline(
 
     private fun isAuthoritativePtsValid(pts90k: Long): Boolean = pts90k in 0..PTS_MASK
 
-    private class AvailabilityTokenAllocator {
-        private val nonce = SecureRandom().nextLong()
-        private val counter = AtomicLong(0L)
-        private val allocatedOrRetired = linkedSetOf<Long>()
-
-        fun allocate(): Long {
-            while (true) {
-                val candidate = nonce xor counter.getAndIncrement()
-                if (allocatedOrRetired.add(candidate)) return candidate
-            }
-        }
-
-        fun retire(token: Long) {
-            allocatedOrRetired.add(token)
-        }
-
-        fun clearNamespace() {
-            allocatedOrRetired.clear()
-        }
-    }
-
     private class PtsEpochCoordinator {
         private data class TrackState(var rawPrevious: Long, var extendedPrevious: Long)
         private data class SharedReference(var raw: Long, var extended: Long)
@@ -1492,7 +1474,6 @@ class PlaybackPipeline(
         audioDecoder?.close()
         videoDecoder = null
         audioDecoder = null
-        waitingAvailabilityArm?.let { availabilityTokens.retire(it.registrationToken) }
         waitingAvailabilityArm = null
         val sync = mediaSync
         mediaSync = null
@@ -1543,7 +1524,6 @@ class PlaybackPipeline(
         runOnPlaybackExecutorBlocking { stopOnPlaybackExecutor() }
         executor.shutdownNow()
         codecCallbackThread.quitSafely()
-        availabilityTokens.clearNamespace()
     }
 
     override fun close() = release()
