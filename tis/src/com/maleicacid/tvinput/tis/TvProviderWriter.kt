@@ -405,7 +405,7 @@ class TvProviderWriter private constructor(
                             physicalChannel = stored.tune.physicalChannel,
                             satelliteBand = stored.tune.satelliteBand,
                             remoteControlKeyId = stored.tune.remoteControlKeyId,
-                            requiresCas = false,
+                            requiresCas = stored.requiresCas,
                         )
                     }
                 }
