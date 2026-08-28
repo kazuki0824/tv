@@ -1,3 +1,10 @@
+# r50ef_review_followup_4
+
+- Program provider-dataから派生表示値`freeCaMode.text`とrelease固有component診断を除去し、production builder出力とschema検証fixtureを同じ値へ固定した。
+- series descriptorの`expire_date_valid_flag`と16-bit MJDを保持し、canonical `expireDate`をintegerまたはnullとしてRust/Kotlin/schemaで統一した。
+- EIT component/audio-component descriptorの映像形式、音声構成、sampling、根拠descriptorとlinkage private-data prefixをbulk transactionへ保持した。
+- Android/Soong build、atest、CTS、VTS、実機確認は未実施。本commitのRust/Kotlin host検証はPR checksを正とする。
+
 # r50ef_review_followup_3
 
 - Program provider-dataはTISのpublish境界でtyped requestを組み立て、Rustのclosed Serde DTOが検証してcanonical保存形式へ変換する境界へ戻した。bulk SI transactionをTvProvider保存形式へ結合せず、未publish eventの先行encodeを避ける。

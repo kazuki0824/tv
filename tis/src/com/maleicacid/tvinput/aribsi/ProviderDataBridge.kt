@@ -197,7 +197,6 @@ object ProviderDataBridge {
         JSONObject()
             .put("raw", mode.raw ?: JSONObject.NULL)
             .put("scrambled", mode.scrambled ?: JSONObject.NULL)
-            .put("text", mode.text ?: JSONObject.NULL)
             .put("parseStatus", mode.parseStatus)
     } ?: JSONObject.NULL
 
@@ -305,7 +304,6 @@ private fun toLinkageArray(items: List<AribLinkage>): JSONArray = JSONArray().ap
             entry.aspect?.let { obj.put("aspect", it) }
             entry.profileLevel?.let { obj.put("profileLevel", it) }
             entry.sourceDescriptor?.let { obj.put("sourceDescriptor", it) }
-            entry.diagnosticCode?.let { obj.put("diagnosticCode", it) }
             put(obj)
         }
     }
@@ -324,7 +322,6 @@ private fun toLinkageArray(items: List<AribLinkage>): JSONArray = JSONArray().ap
             entry.channelConfiguration?.let { obj.put("channelConfiguration", it) }
             entry.samplingInfo?.let { obj.put("samplingInfo", it) }
             entry.sourceDescriptor?.let { obj.put("sourceDescriptor", it) }
-            entry.diagnosticCode?.let { obj.put("diagnosticCode", it) }
             put(obj)
         }
     }
