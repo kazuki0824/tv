@@ -377,3 +377,57 @@ TSの伝送構文、`table_id`別のsection長上限、CRCとraw配送条件、�
 - optional descriptor値が存在しない場合は合法的absenceとして`null`を保持し、syntax破損による取得不能とはtyped diagnosticで区別する。
 - `free_CA_mode`はCA descriptorの代用品ではない。PMT解析完了後に`free_CA_mode=1`なのにCA descriptorを観測できない場合はbroadcast fact間の不整合として診断し、`requires_cas`をSI flagだけで上書きしない。
 - 同一table versionで`last_section_number`が変化した場合、または`section_number > last_section_number`の場合、そのversionをcompleteと判定しない。EIT scheduleのsegment gapはEIT固有storeで扱い、この一般section trackerの連番complete判定をEITへ流用しない。
+## MMT/TLV SI意味解析
+
+`JapanAdvancedMmtTlvProfile` では、本crateの責務をMPEG-2 PSI/SIだけに固定せず、TISがTuner SDK filterから受け取った **完全なTLV-SI signaling単位、MMTP control packet、M2 section** の構文・意味解析まで拡張する。raw TLV packet framing、IP reassembly、一般MMTP media packet/MPU assembly、filter routingはTuner HALの責務であり、本crateへ複製しない。
+
+規範対象は現行日本語 ARIB STD-B60 / STD-B32 と対象物理方式のSTD-B44 / STD-B79 / STD-B80を正とする。公開詳細確認に用いるSTD-B60 1.14-E1では、映像・音声等がMFU/MPUとしてMMTP化されIP packetで伝送され、一個のIPまたはheader-compressed IP packetが一個のTLV packetで運ばれること、TLV-SIがtuningとIP/service対応を、MMT-SIがprogram構成を表すこと、PA messageがMMT-SI entry pointでMPTがassetとlocationを表すことを確認している。2.0で追加された高度地上固有descriptorは現行日本語本文を取得・照合するまで、未知descriptorを既知意味へ推測昇格させない。
+
+### transport-tagged identity
+
+既存TSとMMT/TLVを一つの整数tupleへ押し込めず、意味モデルのtransport identityを次のtagged shapeにする。
+
+```text
+BroadcastTransportIdentity =
+  MpegTs { originalNetworkId, transportStreamId }
+  Tlv    { originalNetworkId, tlvStreamId }
+
+BroadcastServiceIdentity = {
+  transport: BroadcastTransportIdentity,
+  serviceId
+}
+```
+
+TLV stream IDを `transportStreamId` と呼び替えない。PATがないMMT/TLV serviceに架空のPMT PID / PCR PID / TSIDを生成しない。共通 `ServiceSemanticFacts` はtransport identity、service ID、service type、codec/asset、CA、構文診断を持つtransport-neutral外形へ拡張し、TS固有のPMT/PCR存在状態は `MpegTs` branch、MMT固有のMPT/asset状態は `Tlv` branchだけで意味を持つ。
+
+### TLV-SI
+
+TLV `SECTION` filterから受けるsignalingについて、少なくともTLV-NITとAMTを解析対象とする。TLV-NITから `(original_network_id, tlv_stream_id)`、service list、tuning/service関連情報を構造化し、AMTからserviceに対応するIPv4/IPv6 data flowを構造化する。section/version/current-next/CRC等、適用規格で存在する更新単位をinstance別に管理し、不完全instanceをcomplete snapshotへ混ぜない。未知descriptorはtag/raw/diagnosticとして保持し、TS NIT descriptorとして誤解釈しない。
+
+### MMT-SI / PA / MPT / M2 section
+
+`mmtpPid=0x0000` の完全なcontrol packetからPA messageを解析し、PA内table list/version/lengthを検証してからMPTへ進む。MPTはpackage ID、asset ID/type、clock relation、location list、descriptorを構造化する。STD-B60でpackage ID下位16bitがservice identificationと一致する規定をservice相関に使用するが、不正長や矛盾時にservice IDを推測補正しない。
+
+asset locationは少なくとも同一packet flow、IPv4/IPv6 source/destination/port + packet IDをtagged locationとして保持する。`hvc1/hev1/mp4a`等のasset typeは放送由来factとして返すが、Android decoder対応可否へ変換しない。
+
+M2 section messageで運ばれるMH-EIT / MH-SDT / MH-TOT / CAT(MH)等は、message lengthと内包section lengthをそれぞれ検証してからtable parserへ渡す。MH-EIT eventの時刻、descriptor、version/section寿命はTS EITと共通化できる意味だけを共通型へ上げ、table IDやtransport identityを失わない。CA message/CAT(MH)はCA system/scramble system/descriptor事実だけを返し、CAS HAL対応可否を算出しない。
+
+### parser failure と更新寿命
+
+TLV-SI、PA/MPT、M2 sectionは `(transport identity, table/message identity, version, section/subset)` を含むinstance keyで管理する。length不整合、CRC不正、fragment欠落、version混在、同一identityの矛盾は正常snapshotへ採用せず、offset/raw prefix/reasonをdiagnosticへ残す。旧generationから到着したpayloadを新generationのinstanceへ合流させない。未知の2.0高度地上descriptorはunknownとして保持できるが、その存在を無視して「完全適合」と判定しない。
+
+### provider-data v2
+
+TLV stream IDをv1 `serviceKey.transportStreamId`へ流用しないため、MMT/TLV実装と同時にchannel/program provider-dataを **v2** へ移行する。v2のservice identityは次のcanonical shapeを持つ。
+
+```json
+{
+  "originalNetworkId": 1,
+  "serviceId": 101,
+  "transport": { "kind": "TLV", "tlvStreamId": 7 }
+}
+```
+
+TSの場合は `transport = { "kind": "MPEG_TS", "transportStreamId": ... }` とする。program stable keyはこのservice identityへ `eventId` を加える。`kind`と対応しないIDを同居させず、TLVでTSID、TSでTLV stream IDを補完しない。
+
+実装時のreaderは既存v1を読み取って `MPEG_TS` identityへ正規化できなければならない。writerはv2導入commit以後、新規/更新rowをv2でcanonical encodeする。v1 rowを読み出しただけでDB全件を書き換えず、通常のchannel/program update transactionでv2へ移行する。schemaVersionだけを2へ上げてv1 shapeを残すことは禁止する。具体JSON SchemaとRust serde structは実装PRで同時に追加し、Kotlin側へ第二schema定義を作らない。
