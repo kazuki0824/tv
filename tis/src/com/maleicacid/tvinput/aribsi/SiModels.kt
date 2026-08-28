@@ -168,7 +168,6 @@ data class AribLinkage(
 data class AribFreeCaMode(
     val raw: Int?,
     val scrambled: Boolean?,
-    val text: String?,
     val parseStatus: String = "OK",
 )
 
@@ -201,7 +200,6 @@ data class AribComponentEntry(
     val profileLevel: String? = null,
     val dataComponentId: Int? = null,
     val captionServiceKind: String? = null,
-    val diagnosticCode: String? = null,
     val main: Boolean? = null,
     val multiLingual: Boolean? = null,
     val qualityIndicator: Int? = null,

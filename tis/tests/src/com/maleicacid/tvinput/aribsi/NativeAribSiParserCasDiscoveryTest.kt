@@ -1,6 +1,7 @@
 package com.maleicacid.tvinput.aribsi
 
 import com.maleicacid.tvinput.common.TsPid
+import org.json.JSONObject
 import org.junit.Test
 
 class NativeAribSiParserCasDiscoveryTest {
@@ -50,13 +51,74 @@ class NativeAribSiParserCasDiscoveryTest {
         }
     }
 
+    @Test fun eitDescriptorFactsSurviveBulkSnapshotAndProgramProviderData() {
+        val parser = NativeAribSiParser()
+        try {
+            check(parser.ingestSection(TsPid(PID_PAT), section(PAT_BODY)) == SiStatus.OK)
+            check(parser.ingestSection(TsPid(PID_SDT), section(SDT_SCRAMBLED_SERVICE_BODY)) == SiStatus.OK)
+            check(parser.ingestSection(TsPid(PID_PMT), section(pmtWithComponentTagsBody())) == SiStatus.OK)
+            check(parser.ingestSection(TsPid(PID_EIT), section(eitWithDescriptorFactsBody())) == SiStatus.OK)
+
+            val event = parser.programStateSnapshot().events.single()
+            val video = event.descriptors.components.video.single()
+            check(video.esPid == TsPid(VIDEO_PID))
+            check(video.streamType == 0x1b)
+            check(video.componentType == 0xb3)
+            check(video.resolution == "1080")
+            check(video.scan == "interlaced")
+            check(video.aspect == "16:9")
+            check(video.sourceDescriptor == "component_descriptor")
+
+            val audio = event.descriptors.components.audio.single()
+            check(audio.esPid == TsPid(AUDIO_PID))
+            check(audio.streamType == 0x0f)
+            check(audio.componentType == 0x02)
+            check(audio.language == "jpn")
+            check(audio.secondLanguage == "eng")
+            check(audio.channelConfiguration == "1/0+1/0")
+            check(audio.samplingInfo == "48kHz")
+            check(audio.sourceDescriptor == "audio_component_descriptor")
+
+            check(event.descriptors.series?.expireDateValid == true)
+            check(event.descriptors.series?.expireDate == 0xe123)
+            check(event.descriptors.linkage.single().privateDataHex == "aabb")
+
+            val program = EventModelMapper().toProgramRecords(listOf(event)).single()
+            val providerData = JSONObject(ProviderDataBridge.buildProgramProviderData(program).json)
+            val providerVideo = providerData.getJSONObject("components").getJSONArray("video").getJSONObject(0)
+            check(providerVideo.getString("resolution") == "1080")
+            check(providerVideo.getString("scan") == "interlaced")
+            check(providerVideo.getString("aspect") == "16:9")
+            check(providerVideo.getString("sourceDescriptor") == "component_descriptor")
+            check(!providerVideo.has("diagnosticCode"))
+            check(!providerVideo.has("r51PlaybackSupported"))
+
+            val providerAudio = providerData.getJSONObject("components").getJSONArray("audio").getJSONObject(0)
+            check(providerAudio.getString("channelConfiguration") == "1/0+1/0")
+            check(providerAudio.getString("samplingInfo") == "48kHz")
+            check(providerAudio.getString("sourceDescriptor") == "audio_component_descriptor")
+            check(!providerAudio.has("diagnosticCode"))
+            check(!providerAudio.has("liveViewableClaim"))
+
+            val providerSeries = providerData.getJSONObject("series")
+            check(providerSeries.getBoolean("expireDateValid"))
+            check(providerSeries.getInt("expireDate") == 0xe123)
+            check(providerData.getJSONArray("linkage").getJSONObject(0).getString("privateDataPrefixHex") == "aabb")
+            check(!providerData.getJSONObject("freeCaMode").has("text"))
+        } finally {
+            parser.close()
+        }
+    }
+
     companion object {
         private const val SERVICE_ID = 0x0001
         private const val PID_PAT = 0x0000
         private const val PID_CAT = 0x0001
         private const val PID_SDT = 0x0011
+        private const val PID_EIT = 0x0012
         private const val PID_PMT = 0x0100
         private const val VIDEO_PID = 0x0101
+        private const val AUDIO_PID = 0x0102
         private const val ECM_PID_PROGRAM = 0x0123
         private const val ECM_PID_ES = 0x0124
         private const val EMM_PID = 0x0100
@@ -85,6 +147,44 @@ class NativeAribSiParserCasDiscoveryTest {
             0x01, 0xb0, 0x0f, 0x00, 0x01, 0xc1, 0x00, 0x00,
             0x09, 0x04, 0x00, 0x05, 0xe1, 0x00,
         )
+
+        private fun pmtWithComponentTagsBody(): IntArray {
+            val body = mutableListOf(
+                0x02, 0xb0, 0x00, 0x00, 0x01, 0xc1, 0x00, 0x00,
+                0xe1, 0x01, 0xf0, 0x00,
+                0x1b, 0xe1, 0x01, 0xf0, 0x03, 0x52, 0x01, 0x10,
+                0x0f, 0xe1, 0x02, 0xf0, 0x03, 0x52, 0x01, 0x20,
+            )
+            setSectionLength(body, 0xb0)
+            return body.toIntArray()
+        }
+
+        private fun eitWithDescriptorFactsBody(): IntArray {
+            val descriptors = mutableListOf(
+                0x50, 0x06, 0x01, 0xb3, 0x10, 'j'.code, 'p'.code, 'n'.code,
+                0xc4, 0x0c, 0x02, 0x02, 0x20, 0x0f, 0xff, 0xee,
+                'j'.code, 'p'.code, 'n'.code, 'e'.code, 'n'.code, 'g'.code,
+                0xd5, 0x09, 0x12, 0x34, 0x2b, 0xe1, 0x23, 0x00, 0x03, 0x00, 0x0c,
+                0x4a, 0x09, 0x00, 0x11, 0x00, 0x22, 0x00, 0x01, 0x0d, 0xaa, 0xbb,
+            )
+            val descriptorLength = descriptors.size
+            val body = mutableListOf(
+                0x4e, 0xf0, 0x00, 0x00, 0x01, 0xc1, 0x00, 0x00,
+                0x00, 0x11, 0x00, 0x22, 0x00, 0x4e,
+                0x12, 0x34, 0xee, 0x00, 0x12, 0x00, 0x00,
+                0x00, 0x30, 0x00,
+                0x80 or ((descriptorLength ushr 8) and 0x0f), descriptorLength and 0xff,
+            )
+            body += descriptors
+            setSectionLength(body, 0xf0)
+            return body.toIntArray()
+        }
+
+        private fun setSectionLength(body: MutableList<Int>, highBits: Int) {
+            val sectionLength = body.size - 3 + 4
+            body[1] = highBits or ((sectionLength ushr 8) and 0x0f)
+            body[2] = sectionLength and 0xff
+        }
 
         private fun section(body: IntArray): ByteArray {
             val bytes = body.map { it.toByte() }.toMutableList()
