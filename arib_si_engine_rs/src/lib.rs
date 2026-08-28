@@ -633,8 +633,8 @@ fn event_value(
             event_id: Some(event.event_id),
         }),
     );
-    let descriptor_diagnostics = serde_json::to_string(&descriptor_diagnostic_models)
-        .unwrap_or_else(|_| "[]".to_string());
+    let descriptor_diagnostics =
+        serde_json::to_string(&descriptor_diagnostic_models).unwrap_or_else(|_| "[]".to_string());
     let service = services.iter().find(|service| {
         service.original_network_id == event.original_network_id
             && service.transport_stream_id == event.transport_stream_id
@@ -656,8 +656,9 @@ fn event_value(
         descriptor_diagnostic_models,
         malformed_ca_descriptor_count,
     );
-    let provider_data_canonical_json =
-        provider_data_result.success.then_some(provider_data_result.json);
+    let provider_data_canonical_json = provider_data_result
+        .success
+        .then_some(provider_data_result.json);
     let stable_identity = event.stable_identity();
     let program_key = stable_identity.map(|_| {
         serde_json::json!({
