@@ -3,6 +3,7 @@ package com.maleicacid.tvinput.tis
 import android.content.ContentValues
 import android.media.tv.TvContentRating
 import android.media.tv.TvContract
+import android.media.tv.TvInputService
 import android.media.tv.TvTrackInfo
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
 import com.maleicacid.tvinput.aribsi.AribEventDescriptors
@@ -560,6 +561,10 @@ class TisR51FixedPlanAcceptanceTest {
     }
 
     @Test fun liveSessionPreemptsBootAndBackgroundButNotSetupScan() {
+        check(tunerPriorityHintUseCase(ScanPurpose.SETUP_SCAN) == TvInputService.PRIORITY_HINT_USE_CASE_TYPE_SCAN)
+        check(tunerPriorityHintUseCase(ScanPurpose.BOOT_EPG_SYNC) == TvInputService.PRIORITY_HINT_USE_CASE_TYPE_BACKGROUND)
+        check(tunerPriorityHintUseCase(ScanPurpose.BACKGROUND_MAINTENANCE) == TvInputService.PRIORITY_HINT_USE_CASE_TYPE_BACKGROUND)
+
         val idle = ChannelScanManager.liveSessionPreemptDecisionForTest(scanRunning = false, purpose = null)
         check(!idle.shouldCancel)
         check(!idle.deferBootEpgSync)
