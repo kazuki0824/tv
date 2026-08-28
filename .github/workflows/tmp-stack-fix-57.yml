@@ -1,0 +1,57 @@
+name: tmp stack fix 57
+on:
+  push:
+    branches:
+      - tmp/stack-fix-control-20260829
+    paths:
+      - .github/workflows/tmp-stack-fix-57.yml
+permissions:
+  contents: write
+jobs:
+  merge57:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Merge latest #55 into #57 without workflow changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config core.quotePath false
+          git fetch origin design/r52-contracts docs/future-work-design-completion
+          old57=49307ba4154c6e2f7f4d4630c90b72fde6581fa9
+          new55=7939fe760f4ce2858779a5800ea2a30310248ddb
+          test "$(git rev-parse origin/design/r52-contracts)" = "$old57"
+          test "$(git rev-parse origin/docs/future-work-design-completion)" = "$new55"
+          git checkout -B merged57 "$old57"
+          set +e
+          git merge --no-ff --no-commit "$new55"
+          rc=$?
+          set -e
+          test "$rc" -ne 0
+          actual="$(git diff --name-only --diff-filter=U | sort)"
+          expected="$(printf '%s\n' '.github/workflows/tis-host-ci.yml' 'tis/CHANGELOG.md' | sort)"
+          test "$actual" = "$expected"
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+          old='49307ba4154c6e2f7f4d4630c90b72fde6581fa9'
+          new='7939fe760f4ce2858779a5800ea2a30310248ddb'
+          old_text=subprocess.check_output(['git','show',f'{old}:tis/CHANGELOG.md'],text=True)
+          parent_text=subprocess.check_output(['git','show',f'{new}:tis/CHANGELOG.md'],text=True)
+          marker='\n# r50ef_review_followup_3\n'
+          cut=old_text.find(marker)
+          if cut < 0:
+              raise SystemExit('r52 changelog prefix anchor missing')
+          prefix=old_text[:cut].rstrip()+'\n\n'
+          Path('tis/CHANGELOG.md').write_text(prefix+parent_text.lstrip())
+          PY
+          git checkout "$old57" -- .github/workflows/tis-host-ci.yml .github/workflows/arib-si-engine-host-ci.yml
+          git add tis/CHANGELOG.md .github/workflows/tis-host-ci.yml .github/workflows/arib-si-engine-host-ci.yml
+          test -z "$(git diff --name-only --diff-filter=U)"
+          git commit -m "Merge latest #55 into #57 stack"
+          test -z "$(git diff --name-only "$old57"..HEAD | grep '^.github/workflows/' || true)"
+          git push --force origin HEAD:refs/heads/tmp/latest57-noworkflows-20260829
