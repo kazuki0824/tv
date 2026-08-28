@@ -1,6 +1,7 @@
 package com.maleicacid.tvinput.tis
 
 import android.content.Context
+import android.media.tv.TvInputService
 import android.util.Log
 import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.common.LogTags
@@ -97,7 +98,13 @@ object ChannelScanManager {
         executor.execute {
             val result = runCatching {
                 val createdEngine = AribSiEngine(appContext)
-                val createdController = ChannelScanController(appContext, inputId, createdEngine, task.cancelRequested)
+                val createdController = ChannelScanController(
+                    appContext,
+                    inputId,
+                    createdEngine,
+                    TvInputService.PRIORITY_HINT_USE_CASE_TYPE_SCAN,
+                    task.cancelRequested,
+                )
                 if (!isCurrentGeneration(generation)) {
                     createdController.close()
                     createdEngine.close()
@@ -167,7 +174,13 @@ object ChannelScanManager {
             var needsReschedule = true
             val result = runCatching {
                 val createdEngine = AribSiEngine(appContext)
-                val createdController = ChannelScanController(appContext, inputId, createdEngine, task.cancelRequested)
+                val createdController = ChannelScanController(
+                    appContext,
+                    inputId,
+                    createdEngine,
+                    TvInputService.PRIORITY_HINT_USE_CASE_TYPE_BACKGROUND,
+                    task.cancelRequested,
+                )
                 if (!isCurrentGeneration(generation)) {
                     createdController.close()
                     createdEngine.close()
@@ -247,7 +260,13 @@ object ChannelScanManager {
             BackgroundChannelMaintenanceDiagnostics.startedCount.incrementAndGet()
             val result = runCatching {
                 val createdEngine = AribSiEngine(appContext)
-                val createdController = ChannelScanController(appContext, inputId, createdEngine, task.cancelRequested)
+                val createdController = ChannelScanController(
+                    appContext,
+                    inputId,
+                    createdEngine,
+                    TvInputService.PRIORITY_HINT_USE_CASE_TYPE_BACKGROUND,
+                    task.cancelRequested,
+                )
                 if (!isCurrentGeneration(generation)) {
                     createdController.close()
                     createdEngine.close()

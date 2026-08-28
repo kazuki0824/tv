@@ -324,7 +324,7 @@
         "userNibble": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 15
+          "maximum": 255
         },
         "aribName": {
           "type": "string"

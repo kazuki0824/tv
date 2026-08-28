@@ -258,7 +258,13 @@ class TvProviderWriter private constructor(
         putNull(COLUMN_MULTI_SERIES_ID)
         val episodeNumber = program.descriptors.series?.episodeNumber
         if (episodeNumber == null || episodeNumber <= 0) putNull(COLUMN_EPISODE_DISPLAY_NUMBER) else put(COLUMN_EPISODE_DISPLAY_NUMBER, episodeNumber.toString())
-        put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA, ProviderDataBridge.buildProgramProviderData(program.copy(tvProviderProgramId = null)).bytes)
+        require(program.providerDataCanonicalJson.isNotBlank()) {
+            "canonical Program provider-data is required for ${program.stableIdentity}"
+        }
+        put(
+            TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA,
+            program.providerDataCanonicalJson.toByteArray(Charsets.UTF_8),
+        )
     }
 
     private fun programIdentity(program: ProgramRecord): String = ProviderDataBridge.buildProgramKey(program)
@@ -299,7 +305,9 @@ class TvProviderWriter private constructor(
         fun programKeyForTest(program: ProgramRecord): String = ProviderDataBridge.buildProgramKey(program)
 
         fun programProviderDataForTest(program: ProgramRecord): String =
-            ProviderDataBridge.buildProgramProviderData(program).json
+            program.providerDataCanonicalJson.also {
+                require(it.isNotBlank()) { "canonical Program provider-data is required" }
+            }
 
         fun parseProgramKey(providerData: ByteArray?): String? = ProviderDataBridge.extractProgramKey(providerData)
 
