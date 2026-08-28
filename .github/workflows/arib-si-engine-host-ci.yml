@@ -110,6 +110,30 @@ jobs:
           done < <(find arib_si_engine_rs/schema arib_si_engine_rs/testdata tis/tests/assets \
             -type f -name '*.json' -print | sort)
 
+      - name: Validate Program provider-data fixtures against the canonical schema
+        run: |
+          python3 -m pip install --disable-pip-version-check 'jsonschema==4.23.0'
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          from jsonschema import Draft202012Validator, RefResolver
+
+          schema_dir = Path("arib_si_engine_rs/schema")
+          schema = json.loads((schema_dir / "program_provider_data_v1.schema.json").read_text())
+          diagnostic_schema = json.loads((schema_dir / "descriptor_diagnostic_v1.schema.json").read_text())
+          resolver = RefResolver.from_schema(
+              schema,
+              store={diagnostic_schema["$id"]: diagnostic_schema},
+          )
+          Draft202012Validator.check_schema(schema)
+          validator = Draft202012Validator(schema, resolver=resolver)
+          fixture_dir = Path("arib_si_engine_rs/testdata/program_provider_data_v1")
+          for path in sorted(fixture_dir.glob("*.json")):
+              validator.validate(json.loads(path.read_text()))
+              print(path)
+          PY
+
       - name: Check paired fixture bytes
         run: |
           cmp \
