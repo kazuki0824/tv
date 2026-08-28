@@ -209,6 +209,7 @@ pub struct SeriesDescriptor {
     pub series_id: u16,
     pub repeat_label: u8,
     pub program_pattern: u8,
+    pub expire_date_valid: bool,
     pub expire_date: u16,
     pub episode_number: u16,
     pub last_episode_number: u16,
@@ -1081,7 +1082,8 @@ fn parse_series_descriptor(
         series_id: u16_at(body, 0),
         repeat_label: (body[2] >> 4) & 0x0f,
         program_pattern: body[2] & 0x07,
-        expire_date: u16::from_be_bytes([body[3] & 0x0f, body[4]]),
+        expire_date_valid: (body[2] & 0x08) != 0,
+        expire_date: u16::from_be_bytes([body[3], body[4]]),
         episode_number: (((body[5] & 0x0f) as u16) << 8) | body[6] as u16,
         last_episode_number: (((body[7] & 0x0f) as u16) << 8) | body[8] as u16,
         series_name: if body.len() > 9 {
@@ -1274,7 +1276,7 @@ pub fn event_descriptors_to_json(desc: &EventDescriptors) -> String {
     ));
     fields.push(format!("\"components\":[{}]", desc.components.iter().map(|c| format!("{{\"streamContent\":{},\"componentType\":{},\"componentTag\":{},\"language\":\"{}\",\"text\":\"{}\"}}", c.stream_content, c.component_type, c.component_tag, json_escape(&c.language_code), json_escape(&c.text))).collect::<Vec<_>>().join(",")));
     fields.push(format!("\"audioComponents\":[{}]", desc.audio_components.iter().map(|a| format!("{{\"streamContent\":{},\"componentType\":{},\"componentTag\":{},\"streamType\":{},\"simulcastGroupTag\":{},\"multiLingual\":{},\"main\":{},\"quality\":{},\"samplingRate\":{},\"language\":\"{}\",\"secondLanguage\":\"{}\",\"text\":\"{}\"}}", a.stream_content, a.component_type, a.component_tag, a.stream_type, a.simulcast_group_tag, a.es_multi_lingual_flag, a.main_component_flag, a.quality_indicator, a.sampling_rate, json_escape(&a.language_code), json_escape(a.language_code_2.as_deref().unwrap_or("")), json_escape(&a.text))).collect::<Vec<_>>().join(",")));
-    fields.push(format!("\"series\":[{}]", desc.series.iter().map(|v| format!("{{\"seriesId\":{},\"repeatLabel\":{},\"programPattern\":{},\"expireDate\":{},\"episodeNumber\":{},\"lastEpisodeNumber\":{},\"name\":\"{}\"}}", v.series_id, v.repeat_label, v.program_pattern, v.expire_date, v.episode_number, v.last_episode_number, json_escape(&v.series_name))).collect::<Vec<_>>().join(",")));
+    fields.push(format!("\"series\":[{}]", desc.series.iter().map(|v| format!("{{\"seriesId\":{},\"repeatLabel\":{},\"programPattern\":{},\"expireDateValid\":{},\"expireDate\":{},\"episodeNumber\":{},\"lastEpisodeNumber\":{},\"name\":\"{}\"}}", v.series_id, v.repeat_label, v.program_pattern, v.expire_date_valid, v.expire_date, v.episode_number, v.last_episode_number, json_escape(&v.series_name))).collect::<Vec<_>>().join(",")));
     fields.push(format!(
         "\"eventGroups\":[{}]",
         desc.event_groups
@@ -1522,6 +1524,7 @@ mod diagnostic_json_tests {
                 series_id: 0x1234,
                 repeat_label: 1,
                 program_pattern: 2,
+                expire_date_valid: true,
                 expire_date: 0x1fff,
                 episode_number: 3,
                 last_episode_number: 12,
@@ -1870,6 +1873,17 @@ mod r51_descriptor_coverage_tests {
         assert_eq!(parsed.linkages[0].service_id, 101);
         assert_eq!(parsed.linkages[0].linkage_type, 0x0d);
         assert_eq!(parsed.linkages[0].private_data, vec![0xaa, 0xbb]);
+    }
+
+    #[test]
+    fn series_descriptor_keeps_valid_flag_and_full_mjd() {
+        let body = [0x12, 0x34, 0x2b, 0xe1, 0x23, 0x00, 0x03, 0x00, 0x0c];
+        let parsed = parse_event_descriptors(&descriptor(0xd5, &body));
+        let series = parsed.series.first().expect("series descriptor");
+        assert!(series.expire_date_valid);
+        assert_eq!(series.expire_date, 0xe123);
+        assert_eq!(series.repeat_label, 2);
+        assert_eq!(series.program_pattern, 3);
     }
 
     #[test]

@@ -37,7 +37,7 @@ class TvProviderWriterR51FixTest {
                 contentGenres = listOf(AribContentGenre(0x0, 0x0, aribName = "ニュース/報道/定時・総合")),
                 broadcastGenre = "ARIB(0x0/0x0):ニュース/報道/定時・総合",
                 scrambled = false,
-                freeCaMode = AribFreeCaMode(raw = 0, scrambled = false, text = "無料放送"),
+                freeCaMode = AribFreeCaMode(raw = 0, scrambled = false),
                 series = AribSeries(seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12, name = null),
                 components = AribComponents(audio = listOf(AribComponentEntry(esPid = TsPid(256), streamType = 0x0f, componentTag = 1, componentType = 3, codec = "AAC", language = "jpn", parseStatus = "OK"))),
             ),
