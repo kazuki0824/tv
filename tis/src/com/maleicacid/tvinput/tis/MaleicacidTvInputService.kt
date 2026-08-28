@@ -51,7 +51,7 @@ class MaleicacidTvInputService : TvInputService() {
         return try {
             MaleicacidLiveSession(this, sessionContext, inputId, tvInputSessionId)
         } finally {
-            ChannelScanManager.finishLiveSessionCreation()
+            ChannelScanManager.finishLiveSessionCreation(applicationContext)
         }
     }
 

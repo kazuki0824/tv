@@ -3,13 +3,6 @@ package com.maleicacid.tvinput.tis
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.TsPid
 
-/**
- * AV パイプラインの過剰な再起動を抑止する純粋な状態機械。
- *
- * section 更新は頻繁に発生するため、PMT/CAT/EIT/ECM 更新だけでは再生を再起動しない。
- * AV に関係する署名が変わった場合、または Surface 再設定や再選局など外部条件が明示的に
- * 前回失敗した開始試行の再試行を許可した場合だけ再起動する。
- */
 data class AvPlaybackSignature(
     val serviceKey: ServiceKey,
     val pcrPid: TsPid?,
@@ -23,36 +16,66 @@ data class AvPlaybackSignature(
     val subtitleDataComponentId: Int? = null,
 )
 
-class PlaybackStartGate {
-    private var lastAttemptedSignature: AvPlaybackSignature? = null
-    private var lastStartedSignature: AvPlaybackSignature? = null
+/** LiveSession が一つだけ所有する AV 再生 lifecycle。 */
+sealed class PlaybackStartState {
+    object Idle : PlaybackStartState()
+    data class Starting(val signature: AvPlaybackSignature) : PlaybackStartState()
+    data class WaitingFirstOutput(
+        val signature: AvPlaybackSignature,
+        val pipelineGeneration: Long,
+    ) : PlaybackStartState()
+    data class Started(
+        val signature: AvPlaybackSignature,
+        val pipelineGeneration: Long,
+    ) : PlaybackStartState()
+    data class Failed(
+        val signature: AvPlaybackSignature,
+        val pipelineGeneration: Long?,
+    ) : PlaybackStartState()
+    object Stopped : PlaybackStartState()
+}
 
-    /** 呼び出し側が PlaybackPipeline.start() を実行してよい場合だけ真を返す。 */
-    fun shouldAttempt(signature: AvPlaybackSignature): Boolean = signature != lastAttemptedSignature
-
-    /** start() 呼び出し前に記録し、開始失敗後に section 更新ごとの無限再試行を防ぐ。 */
-    fun recordAttempt(signature: AvPlaybackSignature) {
-        lastAttemptedSignature = signature
+/**
+ * [PlaybackStartState] を保持しない純粋な遷移判定。
+ *
+ * section 更新は頻繁に発生するため、同じ AV 署名の開始済み・開始中・失敗済み状態では
+ * 再試行しない。Surface 再接続など外部条件が変化した場合だけ [allowRetry] で Idle へ戻す。
+ */
+object PlaybackStartTransitions {
+    fun shouldAttempt(state: PlaybackStartState, signature: AvPlaybackSignature): Boolean = when (state) {
+        PlaybackStartState.Idle,
+        PlaybackStartState.Stopped,
+        -> true
+        is PlaybackStartState.Starting -> state.signature != signature
+        is PlaybackStartState.WaitingFirstOutput -> state.signature != signature
+        is PlaybackStartState.Started -> state.signature != signature
+        is PlaybackStartState.Failed -> state.signature != signature
     }
 
-    fun recordResult(signature: AvPlaybackSignature, startedVideo: Boolean) {
-        if (startedVideo) lastStartedSignature = signature
+    fun allowRetry(state: PlaybackStartState): PlaybackStartState = when (state) {
+        PlaybackStartState.Stopped,
+        is PlaybackStartState.Failed,
+        -> PlaybackStartState.Idle
+        else -> state
     }
 
-    /** 現在の AV 署名が初回フレーム到達済みとして記録されているかを返す。 */
-    fun isStartedSignature(signature: AvPlaybackSignature): Boolean = signature == lastStartedSignature
-
-    /** 再選局または release 後に全状態を消去する。 */
-    fun reset() {
-        lastAttemptedSignature = null
-        lastStartedSignature = null
+    fun signature(state: PlaybackStartState): AvPlaybackSignature? = when (state) {
+        is PlaybackStartState.Starting -> state.signature
+        is PlaybackStartState.WaitingFirstOutput -> state.signature
+        is PlaybackStartState.Started -> state.signature
+        is PlaybackStartState.Failed -> state.signature
+        PlaybackStartState.Idle,
+        PlaybackStartState.Stopped,
+        -> null
     }
 
-    /**
-     * 外部条件が変化した後に同じ AV 署名の再試行を許可する。たとえば、
-     * 前回 SURFACE_NOT_SET で失敗した後に新しい Surface が接続された場合が該当する。
-     */
-    fun allowRetry() {
-        lastAttemptedSignature = null
+    fun pipelineGeneration(state: PlaybackStartState): Long? = when (state) {
+        is PlaybackStartState.WaitingFirstOutput -> state.pipelineGeneration
+        is PlaybackStartState.Started -> state.pipelineGeneration
+        is PlaybackStartState.Failed -> state.pipelineGeneration
+        PlaybackStartState.Idle,
+        is PlaybackStartState.Starting,
+        PlaybackStartState.Stopped,
+        -> null
     }
 }

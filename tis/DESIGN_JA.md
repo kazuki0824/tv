@@ -90,7 +90,7 @@ callbackは物理display/compositorへのpresent fence完了を意味せず、vi
 
 ## EIT と TvProvider
 
-現行releaseで収集するEIT table範囲、短期補完の用途、長期・他service・予約/追従利用のrelease境界は、tv直下の`開発規則.md`のr51到達点を唯一の正本とする。本書はそのscopeを再定義せず、TIS runtimeにおけるfilter起動・停止、Programs書き込み契機、retry、現在番組解決、視聴セッション利用だけを定義する。Programs の `internal_provider_data` には JSON v1 の stable `programKey`、timing、放送由来CAS意味事実、長形式イベント項目、component/audioメタデータ、series完全構造、イベントグループ`relatedItems`、linkage、free_CA_mode、音声言語、ARIBレーティングraw値、診断JSONをTIS内部データとして保存する。runtimeで選択したaudio/video track、`TvTrackInfo.trackId`、Android canonical genre投影結果、Android rating文字列、decoder/CAS product capability、channel/EPG/live可否はprovider-dataへ保存しない。TvProvider の標準columnには title / short description / long description、broadcast genre、明示写像できる canonical genre、series id、episode display number、scrambled、audio language、コンテンツレーティングなど、`ARIB_SI_EPG_TvProvider投影方針.md`で自然対応が固定された範囲だけ反映する。last episode number は通常の `TvContract.Programs` 標準列へ投影しない。
+現行releaseで収集するEIT table範囲、短期補完の用途、長期・他service・予約/追従利用のrelease境界は、tv直下の`開発規則.md`のr51到達点を唯一の正本とする。本書はそのscopeを再定義せず、TIS runtimeにおけるfilter起動・停止、Programs書き込み契機、retry、現在番組解決、視聴セッション利用だけを定義する。Programs の `internal_provider_data` には JSON v1 の stable `programKey`、start+durationのtiming、放送由来CAS意味事実、長形式イベント項目、component/audioメタデータ、series完全構造、`eventGroups`、linkage、free_CA_mode、ARIBレーティングraw値、診断JSONをTIS内部データとして保存する。音声言語は`components.audio[].language/secondLanguage`にだけ保持し、top-levelへ複製しない。runtimeで選択したaudio/video track、`TvTrackInfo.trackId`、Android canonical genre投影結果、Android rating文字列、decoder/CAS product capability、channel/EPG/live可否はprovider-dataへ保存しない。TvProvider の標準columnには title / short description / long description、broadcast genre、明示写像できる canonical genre、series id、episode display number、scrambled、audio language、コンテンツレーティングなど、`ARIB_SI_EPG_TvProvider投影方針.md`で自然対応が固定された範囲だけ反映する。last episode number は通常の `TvContract.Programs` 標準列へ投影しない。
 
 TvProvider標準列への投影判断は tv 直下の `ARIB_SI_EPG_TvProvider投影方針.md` を正とする。`internal_provider_data` の schema、canonical encode、保存上限、parser/descriptor診断schemaは `arib_si_engine_rs/DESIGN_JA.md` と Rust serde 構造体を正とする。本書はTIS runtimeにおける取得、policy算出、書き込み契機、retry、現在番組解決、視聴セッションでの利用だけを定義する。
 
@@ -111,7 +111,7 @@ ARIB 字幕は TIS 側の字幕 path で `libaribcaption` を使用する。現�
 
 ARIB字幕表示は、repoで供給される `libaribcaption-android` の製品forkをSoong build graphに入れ、renderer有効の `libaribcaption` moduleを正式経路として使用する。build/link/partitionの統合条件は `INTEGRATION.md` を正とし、本書はTIS内部runtime、renderer viewport、PTS、native lifecycleだけを所有する。out-of-graph prebuilt、renderer無効build、`dlopen()`確認だけ、decoder API呼び出しだけ、Canvas文字描画だけを字幕対応宣言条件にしてはならない。
 
-`libmaleicacid_arib_caption_jni` は Rust JNI boundary + 安全なRustラッパーから libaribcaption C APIを直接利用し、TISは字幕PESをdecoderからrendererへ渡してRGBA8888 renderer出力を字幕overlayへ接続する。字幕PESを受け取ってもrenderer表示に到達できない状態を字幕対応成功として扱ってはならない。renderer結果はin-processでRust-owned bufferからKotlin/Bitmap所有へ直接受け渡しし、serialization round-tripを挟まない。Kotlinへlibaribcaptionのraw pointerや借用寿命を漏らさず、caption/result/imageのcleanupはRust FFI境界で完結させる。
+`libmaleicacid_arib_caption_jni` は Rust JNI boundary + 安全なRustラッパーから libaribcaption C APIを直接利用し、TISは字幕PESをdecoderからrendererへ渡してRGBA8888 renderer出力を字幕overlayへ接続する。字幕PESを受け取ってもrenderer表示に到達できない状態を字幕対応成功として扱ってはならない。renderer結果は、PTS、duration、image metadata、RGBAを含む長さ検査済みのone-shot packed result 1個としてRust-owned bufferからKotlin/Bitmap所有へ渡す。frame handle registry、imageごとのJNI往復、永続serializationは設けない。Kotlinへlibaribcaptionのraw pointerや借用寿命を漏らさず、caption/result/imageのcleanupはRust FFI境界で完結させる。
 
 Rust JNIの表示用出力は文字列ではなくrenderer結果を表し、次のmodelを保持する。
 
@@ -132,7 +132,7 @@ struct RenderedCaptionImage {
 }
 ```
 
-libaribcaption所有bitmapはRust-owned `Vec<u8>`へcopyしてからcleanupし、JNIを越えた後はKotlin/Bitmap側が所有する。`CaptionOverlayView`はrenderer imageをBitmap化し、後述viewport originを一度だけ加算して`drawBitmap()`する。`caption.text` / `Canvas.drawText()`を字幕表示正式経路に残さない。strideを無視して `width * 4` の密な配列と仮定せず、Bitmap生成前にwidth/height/stride/buffer sizeの整合を検査する。
+libaribcaption所有bitmapはRust-owned `Vec<u8>`へcopyしてからcleanupし、JNIを越えた後はKotlin/Bitmap側が所有する。非同期UI queueへlibaribcaptionの借用bufferを露出しない。`CaptionOverlayView`はRGBAのchannel順を明示的にAndroid ARGB pixelへ変換してBitmap化し、後述viewport originを一度だけ加算して`drawBitmap()`する。`caption.text` / `Canvas.drawText()`を字幕表示正式経路に残さない。strideを無視して `width * 4` の密な配列と仮定せず、Bitmap生成前にwidth/height/stride/buffer sizeの整合を検査する。
 
 ### renderer viewport / 座標契約
 
@@ -148,7 +148,6 @@ CaptionViewport:
   contentTopPx
   contentWidthPx   > 0
   contentHeightPx  > 0
-  generationToken
 ```
 
 `contentLeftPx/contentTopPx/contentWidthPx/contentHeightPx` はletterbox / pillarboxを含むoverlay全体ではなくcurrent video content表示矩形を表す。videoを持たないaudio-only serviceでは映像座標のrenderer viewportを成立させず、その経路で字幕表示成功を表明しない。
@@ -171,10 +170,10 @@ libaribcaptionが有限`wait_duration`を返すcaptionは `PTS + duration` を�
 
 ### decoder / renderer / scheduler lifecycle
 
-字幕native state、scheduler state、overlay stateは同じsubtitle generationに属し、少なくとも次を一組として扱う。
+字幕native state、scheduler state、overlay stateは同じpresentation epochに属し、少なくとも次を一組として扱う。decoder queue用generationとUI runnable用epochを別々に所有せず、全失効イベントで単一epochを進める。
 
 ```text
-SubtitleGeneration:
+CaptionPresentationEpoch:
   playbackGenerationToken
   selectedSubtitleTrackId
   CaptionViewport
@@ -185,7 +184,7 @@ SubtitleGeneration:
   current rendered frame
 ```
 
-状態変更はsession/subtitleのserial executor上に直列化し、旧generation callback/result/eventはgeneration token不一致で破棄する。
+状態変更はsession/subtitleのserial executor上に直列化し、旧epoch callback/result/eventはepoch不一致で破棄する。
 
 字幕がenabledかつsubtitle trackが選択され、current playback generationと有効viewportが揃った場合だけnative renderer pathをactiveにする。新subtitle generation開始時はcontext/decoder/rendererを既知の初期状態から構築し、renderer initialize後にcurrent viewportで `aribcc_renderer_set_frame_size()` を成功させてからcaption inputを受け入れる。
 
@@ -301,7 +300,7 @@ EIT 更新時の update/削除区間は、追加・変更・削除された even
 
 ただし、廃止行削除の根拠にできる EIT section / table snapshot は Rust parser が `deletionAuthoritative=true` と判定したものに限る。start_time BCD、duration BCD、event descriptor_loop_length、event fixed フィールドが malformed の event を含む section は、既存 event 削除用の authoritative valid-event-set として扱わない。malformed event は既存正常 Program を消す根拠にせず、DescriptorDiagnosticV1 / ParserDiagnosticV1 に記録する。
 
-Direct Boot保留の正式状態を`DirectBootEpgPending`とする。`BootEpgSyncCoordinator`がinputIdごとにdevice-protected storage上のこの状態を所有し、boot EPG sync要求を受理した時点または未完了・失敗終了時に設定する。状態はprocess restartとuser unlockをまたいで保持し、background maintenanceは設定・解除しない。
+Direct Boot保留の正式状態を`DirectBootEpgPending`とする。`DirectBootGuard`がdevice-protected storage上のこの状態を唯一所有し、boot EPG sync要求を受理した時点または未完了・失敗終了時に設定する。`ChannelScanManager`はJobSchedulerのschedule/cancelだけを担当し、pending、inputId、Contextのshadow stateを持たない。JobServiceは開始時に自TISのinputIdを再解決する。状態はprocess restartとuser unlockをまたいで保持し、background maintenanceは設定・解除しない。
 
 `BootEpgSyncCoordinator` は Tuner や SI collection を開始する前に、解決済みの自 TIS `inputId` を使って既存 `TvContract.Channels` を必須問い合わせとして取得し、今回の boot EPG sync の authoritative target channel 集合を確定する。この必須問い合わせ自体が失敗した場合は channel なしとは扱わず `DirectBootEpgPending` を維持して再試行対象にする。問い合わせが正常終了し、自 TIS 所有の既存 channel が 0 件だった場合は、boot EPG sync に更新対象が存在しない `NO_WORK` 正常終了とする。この場合は Tuner、SI collection、Programs publish/delete を開始せず `DirectBootEpgPending` を解除し、JobScheduler の再試行を要求しない。setup / explicit rescan はこの `NO_WORK` 判定とは独立した channel 登録経路であり、boot EPG sync は 0 件状態から channel を作成しない。
 
@@ -327,9 +326,9 @@ TvProvider query failure と channel なしは別状態として扱う。既存 
 
 TvProvider query は必須問い合わせと任意問い合わせを区別する。チャンネル・番組の追加または更新、廃止行削除、既存チャンネル・番組検索、Direct Boot準備完了判定に使う query は必須問い合わせとする。必須問い合わせで `ContentResolver.query()` が null cursor を返した場合は `TvProviderQueryFailure` とし、empty resultとみなさない。`TvProviderQueryFailure` が発生したサービス/windowでは channel insert、program insert/update、廃止行削除、publish fingerprint cache更新、`DirectBootEpgPending`解除に進まず、再試行区間を保持する。provider-dataはcurrent policyのfallback sourceにしないため、policy判定のためのprovider-data代替参照queryを設けない。
 
-Programs publish/delete が provider failure になった場合は、`ProgramPublishCoordinator` の process-local retry queue に `ServiceKey + updateWindow + failureClass` を key として enqueue する。backoff は 1分、5分、15分、60分、以後最大60分、jitter ±20%、最大10回、保持期間24時間または次回正常 snapshot までとする。次回 `publishLiveProgramsForCurrentService()`、boot EPG sync、background maintenance の publish entrypoint 先頭で、`now >= earliestEligibleAtMillis`のentryだけを実行対象としてdrainする。未到達entryはqueueに保持し、entrypointが来ない限り指定時刻でのwake-upは行わない。成功した key は削除し、失敗した key はattemptを進めて新しい`earliestEligibleAtMillis`を設定する。process restartでは retry queueを破棄し、boot/background syncによる再収集を正とする。provider failure時は廃止行削除、publish fingerprint更新、`DirectBootEpgPending`解除に進まない。
+Programs publish/delete が provider failure になった場合は、`ProgramPublishCoordinator` の process-local dirty-window queue に `ServiceKey + updateWindow` をkeyとしてenqueueする。entryが持つ実行制御値はauthoritative windowと`notBeforeMs`だけとし、failure classは診断値に限定する。固定cooldownは60秒とする。次回 `publishLiveProgramsForCurrentService()`、boot EPG sync、background maintenance のpublish entrypoint先頭で、`now >= notBeforeMs`のentryだけを実行対象としてdrainする。entrypointが来ない限り時刻到達だけでwake-upしない。成功したkeyは削除し、失敗したkeyは同じ固定cooldownで末尾へ戻す。attempt段階、jitter、retention timer、failure class別queueを設けない。process restartではqueueを破棄し、boot/background syncによる再収集を正とする。provider failure時は廃止行削除、publish fingerprint更新、`DirectBootEpgPending`解除に進まない。
 
-retry queue は全体上限 512 windows、ServiceKey ごと上限 32 windows とする。超過時は古い順に破棄し、ServiceKey 別 `droppedRetryWindowCount` を加算する。process restart 後は counter を 0 に戻す。
+dirty-window queueは全体上限512 windowsの単一LRUとする。超過時は最古entryを破棄し、ServiceKey別`droppedRetryWindowCount`を加算する。ServiceKeyごとの第二上限は設けない。process restart後はcounterを0に戻す。
 
 SDT-other / NIT-other / BAT 由来で現在 candidate の actual transport に解決できないサービスは、現在 candidate の物理情報で channel insertしない。未登録で Program row が存在しない unresolved transport は scan/maintenance 診断情報に `skippedUnresolvedTransportCount` として記録し、Program provider-dataには書かない。unresolved transport はTISのpublish policy上の結果であって放送由来のProgram意味情報ではないため、解決済み・publish済みProgramについてもその否定値をprovider-dataへ保存しない。unresolved情報だけを根拠に現在candidateのONID / TSID / 物理情報を補完してChannel / Programを生成・更新せず、既存rowの失効・削除は通常のauthoritative snapshot契約だけに従う。
 
@@ -387,10 +386,11 @@ data class ChannelProviderDataResult(
     val schemaVersion: Int,
     val serviceKey: ServiceKey,
     val tune: ChannelTune,
+    val requiresCas: Boolean,
 )
 ```
 
-`ChannelTune` は `deliverySystem`、`frequencyHz`、`streamIdType`、`streamId`、`physicalChannel`、`satelliteBand`、`remoteControlKeyId` だけを持つtyped物理tune復元値とし、`inputId`、backend名、driver名、px4相対slot等を持たない。channelとTvInputServiceの関連付けはchannel rowのrequired fieldである`TvContract.Channels.COLUMN_INPUT_ID`を唯一のSSOTとする。tune復元前にrowの`COLUMN_INPUT_ID`がcurrent TISの`TvInputInfo.id`と一致することを検証し、不一致rowのprovider-dataを別inputの物理tuneとして使用しない。`decodeChannelProviderData()` は invalid UTF-8、malformed JSON、schema不整合を null または診断付き失敗へ落とし、Kotlin側でJSONを解釈・修復しない。
+`ChannelTune` は `deliverySystem`、`frequencyHz`、`streamIdType`、`streamId`、`physicalChannel`、`satelliteBand`、`remoteControlKeyId` だけを持つtyped物理tune復元値とし、`inputId`、表示名、backend名、driver名、px4相対slot等を持たない。channelとTvInputServiceの関連付けはchannel rowのrequired fieldである`TvContract.Channels.COLUMN_INPUT_ID`を唯一のSSOTとする。tune復元前にrowの`COLUMN_INPUT_ID`がcurrent TISの`TvInputInfo.id`と一致することを検証し、不一致rowのprovider-dataを別inputの物理tuneとして使用しない。`decodeChannelProviderData()` は invalid UTF-8、malformed JSON、schema不整合を null または診断付き失敗へ落とす。現行String JNI surfaceではtyped resultを単一JSON envelopeで返し、Kotlinはこのresult envelopeだけを読む。保存済みprovider-data自体の解釈・修復やTAB/hexの第二wire protocolは設けない。
 
 `inputJson` は Rust builder への入力 DTO であり、TvProvider に保存する provider-data schema ではない。最終JSONバイト列、正規化、安定キー抽出はRustが行う。provider-data単体のdigestまたはsignatureは返さない。
 
@@ -416,7 +416,6 @@ TIS の PSI/SI section path は allocation 前に `SectionEvent.dataLength` を�
 
 ```kotlin
 data class ProgramPublishSnapshot(
-    val snapshotGeneration: Long,
     val ingestSequence: Long,
     val events: List<AribEvent>,
     val updateWindows: List<EpgUpdateWindow>,
@@ -430,10 +429,21 @@ fun takeProgramPublishSnapshot(): ProgramPublishSnapshot
 ```
 
 ```kotlin
+data class TableRequirementStatus(
+    val component: String,
+    val originalNetworkId: Int?,
+    val transportStreamId: Int?,
+    val serviceId: Int?,
+    val required: Boolean,
+    val complete: Boolean,
+)
+
 data class ServiceRegistrationSnapshot(
-    val snapshotGeneration: Long,
+    val discoveryStage: Int,
+    val tableRequirements: List<TableRequirementStatus>,
     val services: List<AribService>,
     val actualTransports: Set<TransportKey>,
+    val actualTransportMetadata: List<AribTransport>,
     val serviceFactsByServiceKey: Map<ServiceKey, ServiceSemanticFacts>,
     val diagnostics: List<ParserDiagnostic>,
 )
@@ -443,7 +453,6 @@ fun serviceRegistrationSnapshot(): ServiceRegistrationSnapshot
 
 ```kotlin
 data class CasDiscoverySnapshot(
-    val snapshotGeneration: Long,
     val services: List<AribService>,
     val caMetadata: List<CaMetadata>,
     val pmtPids: Map<ServiceKey, Int>,
@@ -455,6 +464,8 @@ data class CasDiscoverySnapshot(
 fun casDiscoverySnapshot(): CasDiscoverySnapshot
 ```
 
+`ingestSequence`はsection ingestにより意味stateが更新された順序であり、snapshot read回数ではない。readするたびに増える`snapshotGeneration`は設けない。discovery stage、table requirement status、services、CA、diagnosticsは一回取得した同じimmutable native transactionから用途別DTOへ投影し、stageやCAS用serviceを別JNI readで再取得しない。
+
 `MalformedCaDescriptorDiagnostic` は、少なくとも `pid`、`tableId`、`tableIdExtension`、`serviceId`、`elementaryPid`、`scope`、`offset`、`declaredLength`、`actualRemainingLength`、`reason`、`rawPrefixHex` を持つ。詳細診断の一次保存先は CAS discovery snapshot とし、Program provider-data は `malformedCaDescriptorCount` summary だけを保存する。
 
 `takeProgramPublishSnapshot()` は events / updateWindows / service semantic facts / 診断情報を同一ロック / 同一 native state から取得し、updateWindows の drain もこの API 内だけで行う。`snapshotEvents()` と `takeEpgUpdateWindows()` を本番経路呼び出し側で別々に呼ぶことは禁止する。LiveSessionの現在番組判定、視聴年齢制限判定、映像メタデータ補完のようにupdateWindowsを消費してはならないread-only参照は`programStateSnapshot()`を使い、drain型stateを返してはならない。
@@ -463,11 +474,11 @@ fun casDiscoverySnapshot(): CasDiscoverySnapshot
 
 ### LiveSession / PlaybackPipeline / Scan の直列化
 
-`MaleicacidLiveSession` は session-level serial executor を持ち、currentサービス、generation、playback署名、track state、unblock state、latest videoメタデータ、`ProgramPublishCoordinator`へのアクセスを同一executorに閉じる。TunerController、PlaybackPipeline、parental receiverのコールバックは直接state mutationせず、session executorにenqueueする。
+`MaleicacidLiveSession` は session-level serial executor を持ち、currentサービス、generation、track state、unblock state、latest videoメタデータ、`ProgramPublishCoordinator`へのアクセスを同一executorに閉じる。AV開始lifecycleはSessionが`Idle / Starting(signature) / WaitingFirstOutput(signature,generation) / Started(signature,generation) / Failed(signature,generation?) / Stopped`のsealed stateを一つだけ所有する。current/pending signature、last attempted/started gate、pipeline generationを並行して保持しない。遷移判定は状態を持たない純粋関数とする。TunerController、PlaybackPipeline、parental receiverのコールバックは直接state mutationせず、session executorにenqueueする。
 
 `PlaybackPipeline` は playback-level serial executor を持ち、`setSurface()`、`setVolume()`、`start()`、`switchAudio()`、`stop()`、`release()` の state mutation を同一 executor に閉じる。filter、block model decoder、MediaSync、MediaSync input Surface、AudioTrack、generation、surface、未返却audio buffer id、availability arm sequenceの変更を呼び出し元スレッドで直接行わない。release後のqueued taskはreleased flagとgenerationで破棄する。
 
-`ChannelScanManager` は scan generation と purpose を持つ。cancel / cleanup task は対象 generation にだけ作用し、stale cleanup が後続 scan の `running`、controller、engine を変更してはならない。
+`ChannelScanManager` は`ActiveScanTask(generation, purpose, context, cancelRequested, controller, engine)`を一つのatomic referenceとして所有する。running boolean、active generation/purpose、controller、engine、contextを別fieldに複製しない。cancel / cleanup taskは取得した同じtask identityにだけ作用し、stale cleanupが後続scanを変更してはならない。Tuner Framework/TRMへ渡すpriority hintは`ScanPurpose`から全列挙で一意に決め、setup scanを`PRIORITY_HINT_USE_CASE_TYPE_SCAN`、boot EPG同期とbackground maintenanceを`PRIORITY_HINT_USE_CASE_TYPE_BACKGROUND`、liveを`PRIORITY_HINT_USE_CASE_TYPE_LIVE`とする。frontend等のhardware arbitrationは再実装しない。一方、ライブ中はboot/background作業の開始を延期するというTIS製品policyだけはManagerに残す。
 
 ### SetupActivity 保護
 
@@ -510,7 +521,7 @@ TIS は `nativeSnapshotBulkJson()` と provider-data JNI API を通常境界と�
 
 ### Program publish retry
 
-Program publish retry queue は現行仕様では process-local とする。process death 後の retry 永続化は行わず、boot/background scan による再収集を正とする。ただし、process-local queue であっても retry key は `ServiceKey + updateWindow + failureClass`、entry は `attempt / earliestEligibleAtMillis / firstFailureAtMillis / lastFailureAtMillis` を持つ。1/5/15/60分 backoffと決定的jitter ±20%は、次回実行可能になる最短時刻`earliestEligibleAtMillis`の算出にだけ使い、その時刻でのwake-upまたは実行開始を保証しない。最大10回、24時間 retention を適用する。
+Program publish retry queue は現行仕様ではprocess-localとする。process death後のretry永続化は行わず、boot/background scanによる再収集を正とする。keyは`ServiceKey + updateWindow`、entryはauthoritative windowと`notBeforeMs`だけを持ち、固定60秒cooldownを適用する。failure classは診断値であってkeyやbackoff入力ではない。queueは単一の有界LRU 512件とし、attempt段階、jitter、retention timer、ServiceKey別上限、retry専用schedulerを持たない。
 
 Provider 必須問い合わせ failure、Program insert/update failure、廃止行削除 failure、publish fingerprint build failureではpublish fingerprint cache更新と `DirectBootEpgPending`解除に進まない。廃止行削除は `deletionAuthoritative=true` の更新区間でのみ実行する。
 

@@ -20,10 +20,10 @@ class NativeAribSiParserCasDiscoveryTest {
             check(discoveryServices.single().serviceKey.serviceId == SERVICE_ID)
 
             val liveSnapshot = parser.livePlaybackSnapshot()
-            check(liveSnapshot.snapshotGeneration > snapshot.snapshotGeneration)
-            check(liveSnapshot.servicesForCasDiscovery.single().serviceKey.serviceId == SERVICE_ID)
+            check(liveSnapshot.services == snapshot.services)
             check(liveSnapshot.pmtPids.values.single() == TsPid(PID_PMT))
-            check(liveSnapshot.caMetadataForCasDiscovery.any { it.source == CaMetadataSource.PROGRAM && it.ecmPid == TsPid(ECM_PID_PROGRAM) })
+            check(liveSnapshot.caMetadata == snapshot.caMetadata)
+            check(liveSnapshot.caMetadata.any { it.source == CaMetadataSource.PROGRAM && it.ecmPid == TsPid(ECM_PID_PROGRAM) })
             check(liveSnapshot.catEmmPids == listOf(TsPid(EMM_PID)))
 
             val metadata = snapshot.caMetadata

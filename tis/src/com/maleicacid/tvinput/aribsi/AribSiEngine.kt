@@ -15,9 +15,6 @@ class AribSiEngine(private val context: Context) : AutoCloseable {
         SiIngestResult(pid = pid, status = status)
     }
 
-    fun discoveryStage(): Int = synchronized(lock) { nativeParser.discoveryStage() }
-    fun isDiscoveryComplete(): Boolean = synchronized(lock) { nativeParser.isDiscoveryComplete() }
-
     fun takeProgramPublishSnapshot(): ProgramPublishSnapshot = synchronized(lock) {
         nativeParser.takeProgramPublishSnapshot()
     }
@@ -41,9 +38,14 @@ class AribSiEngine(private val context: Context) : AutoCloseable {
     fun decodeAribString(bytes: ByteArray): String = synchronized(lock) { nativeParser.decodeAribString(bytes) }
     fun decodeAribStringDiagnosticSummary(bytes: ByteArray): String = synchronized(lock) { nativeParser.decodeAribStringDiagnosticSummary(bytes) }
 
-    fun reset() = synchronized(lock) {
+    fun reset(discoveryProfile: Int = SiDiscoveryProfile.ISDB_T) = synchronized(lock) {
         nativeParser.close()
         nativeParser = NativeAribSiParser()
+        nativeParser.setDiscoveryProfile(discoveryProfile)
+    }
+
+    fun setDiscoveryProfile(discoveryProfile: Int) = synchronized(lock) {
+        nativeParser.setDiscoveryProfile(discoveryProfile)
     }
 
     override fun close() = synchronized(lock) { nativeParser.close() }
