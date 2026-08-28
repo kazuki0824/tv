@@ -1,0 +1,31 @@
+name: tmp stack fix 66
+on:
+  push:
+    branches:
+      - tmp/stack-fix-control-20260829
+    paths:
+      - .github/workflows/tmp-stack-fix-66.yml
+permissions:
+  contents: write
+jobs:
+  merge66:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Merge #66 design delta onto latest #57
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin design/r52-contracts design/r52-mmtp-tlv
+          new57=67da64e24100ede74e938dc53f58a759593e613b
+          old66=5b9d3ca80c64c8dfad1d61ccfdd12da2e9634596
+          test "$(git rev-parse origin/design/r52-contracts)" = "$new57"
+          test "$(git rev-parse origin/design/r52-mmtp-tlv)" = "$old66"
+          git checkout -B merged66 "$new57"
+          git merge --no-ff --no-edit "$old66"
+          test -z "$(git diff --name-only --diff-filter=U)"
+          git push --force origin HEAD:refs/heads/tmp/latest66-20260829
