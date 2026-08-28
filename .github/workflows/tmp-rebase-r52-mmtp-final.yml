@@ -1,0 +1,22 @@
+name: tmp finalize r52 mmtp rebase
+
+on:
+  push:
+    branches:
+      - tmp/rebase-r52-contracts-20260829
+    paths:
+      - .github/workflows/tmp-rebase-r52-mmtp-final.yml
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Finalize MMTP rebase
+        run: bash .github/tmp-finalize-r52-mmtp.sh
