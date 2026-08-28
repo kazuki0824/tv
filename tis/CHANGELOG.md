@@ -1,3 +1,9 @@
+# r50ef_review_followup_3
+
+- Program provider-dataは、TvProviderへpublishする時点でKotlinのtyped requestからRust/Serde canonicalizerを呼ぶ責務境界へ戻した。bulk snapshotの`providerDataCanonicalJson`、`AribEvent` / `ProgramRecord`のshadow field、test-only Kotlin保存schema fixtureは削除した。
+- この境界ではTISがAndroid列投影とpublish判断、Rustが保存schema・検証・canonical encodeを所有し、同じruntime stateの二重ownerを作らない。
+- Android/Soong build、atest、CTS、VTS、実機確認は未実施。本commitのRust/Kotlin host検証はPR checksを正とする。
+
 # r50ef_review_followup_2
 
 - Rust bulk transaction内で生成したProgram provider-data canonical JSONを`AribEvent` / `ProgramRecord`がopaqueに運び、TvProviderへ同じUTF-8 bytesを書き込む形へ変更した。KotlinのProgram `JSONObject` builderとRustへの戻りJNIは削除した。
