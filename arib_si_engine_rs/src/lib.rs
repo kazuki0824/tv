@@ -9,8 +9,8 @@ mod service_discovery;
 
 use ca_descriptor::{CaDescriptor, MalformedCaDescriptorDiagnostic};
 use descriptors::{
-    event_descriptor_diagnostic, event_descriptor_diagnostic_models_scoped, event_provider_fields,
-    json_escape, DescriptorSectionScope,
+    event_descriptor_diagnostic, event_descriptor_diagnostics_array_json_scoped,
+    event_provider_fields, json_escape, DescriptorSectionScope,
 };
 use discovery_requirements::DiscoveryProfile;
 use eit::{EitEvent, EitStableEventIdentity, EitUpdateWindow};
@@ -612,14 +612,9 @@ fn json_value(text: String) -> serde_json::Value {
     serde_json::from_str(&text).unwrap_or(serde_json::Value::Null)
 }
 
-fn event_value(
-    event: &EitEvent,
-    services: &[DiscoveredService],
-    semantic_facts: &[ServiceSemanticFacts],
-    malformed_ca_diagnostics: &[MalformedCaDescriptorDiagnostic],
-) -> serde_json::Value {
+fn event_value(event: &EitEvent) -> serde_json::Value {
     let provider = event_provider_fields(&event.descriptors);
-    let descriptor_diagnostic_models = event_descriptor_diagnostic_models_scoped(
+    let descriptor_diagnostics = event_descriptor_diagnostics_array_json_scoped(
         &event.descriptors,
         Some(DescriptorSectionScope {
             pid: Some(18),
@@ -633,32 +628,6 @@ fn event_value(
             event_id: Some(event.event_id),
         }),
     );
-    let descriptor_diagnostics =
-        serde_json::to_string(&descriptor_diagnostic_models).unwrap_or_else(|_| "[]".to_string());
-    let service = services.iter().find(|service| {
-        service.original_network_id == event.original_network_id
-            && service.transport_stream_id == event.transport_stream_id
-            && service.service_id == event.service_id
-    });
-    let facts = semantic_facts.iter().find(|facts| {
-        facts.original_network_id == event.original_network_id
-            && facts.transport_stream_id == event.transport_stream_id
-            && facts.service_id == event.service_id
-    });
-    let malformed_ca_descriptor_count = malformed_ca_diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.service_id == Some(event.service_id))
-        .count();
-    let provider_data_result = provider_data_api::build_program_provider_data_from_event(
-        event,
-        service,
-        facts,
-        descriptor_diagnostic_models,
-        malformed_ca_descriptor_count,
-    );
-    let provider_data_canonical_json = provider_data_result
-        .success
-        .then_some(provider_data_result.json);
     let stable_identity = event.stable_identity();
     let program_key = stable_identity.map(|_| {
         serde_json::json!({
@@ -689,7 +658,6 @@ fn event_value(
         "title": provider.title,
         "description": provider.description,
         "extendedDescription": provider.extended_description,
-        "providerDataCanonicalJson": provider_data_canonical_json,
         "eventScope": event.scope.as_str(),
         "source": {
             "pid": 18,
@@ -926,18 +894,7 @@ fn bulk_snapshot_json(state: &mut ParserState, take_update_windows: bool) -> Str
                 transport_stream_id: *tsid,
             })
             .collect(),
-        events: state
-            .events()
-            .iter()
-            .map(|event| {
-                event_value(
-                    event,
-                    services,
-                    semantic_facts,
-                    &snapshot.malformed_ca_descriptor_diagnostics,
-                )
-            })
-            .collect(),
+        events: state.events().iter().map(event_value).collect(),
         epg_update_windows: epg_windows.iter().map(EpgUpdateWindowDto::from).collect(),
         service_semantic_facts: semantic_facts
             .iter()
@@ -1366,6 +1323,17 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
 }
 
 #[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeBuildProgramProviderData(
+    mut env: JNIEnv<'_>,
+    _this: JObject<'_>,
+    request_json: JString<'_>,
+) -> jstring {
+    let request = jstring_to_string(&mut env, request_json).unwrap_or_default();
+    let result = provider_data_api::build_program_provider_data(&request);
+    java_string(&mut env, Some(provider_result_json(result)))
+}
+
+#[no_mangle]
 pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeNormalizeProgramProviderData(
     mut env: JNIEnv<'_>,
     _this: JObject<'_>,
@@ -1538,13 +1506,6 @@ mod tests {
             duration_millis: 1,
             free_ca_mode: false,
             descriptors: crate::descriptors::EventDescriptors {
-                contents: vec![crate::descriptors::ContentDescriptorItem {
-                    content_nibble_level_1: 1,
-                    content_nibble_level_2: 2,
-                    user_nibble_1: 3,
-                    user_nibble_2: 4,
-                    arib_display_name: "試験分類".to_string(),
-                }],
                 event_groups: vec![crate::descriptors::EventGroupDescriptor {
                     group_type,
                     events: vec![crate::descriptors::EventGroupReference {
@@ -1590,18 +1551,16 @@ mod tests {
 
     #[test]
     fn event_identity_uses_the_same_canonical_key_as_provider_data() {
-        let event = minimal_event_for_related_items(1, 10);
-        let identity = event.stable_identity().unwrap();
-        let value = event_value(&event, &[], &[], &[]);
-        let provider_data = value["providerDataCanonicalJson"].as_str().unwrap();
-        let provider_value: serde_json::Value = serde_json::from_str(provider_data).unwrap();
+        let identity = EitStableEventIdentity {
+            original_network_id: 4,
+            transport_stream_id: 16625,
+            service_id: 101,
+            event_id: 10,
+        };
         assert_eq!(
             stable_identity_string(identity),
-            provider_data_api::extract_program_key_result(provider_data.as_bytes())
-                .unwrap()
-                .key,
+            provider_data_api::build_program_key(4, 16625, 101, 10)
         );
-        assert_eq!(provider_value["genres"][0]["userNibble"], 0x34);
     }
 
     #[test]

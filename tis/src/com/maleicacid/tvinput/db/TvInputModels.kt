@@ -70,5 +70,4 @@ data class ProgramRecord(
     val videoFormat: String? = null,
     val malformedCaDescriptorCount: Int = 0,
     val tvProviderProgramId: Long? = null,
-    val providerDataCanonicalJson: String = "",
 )
