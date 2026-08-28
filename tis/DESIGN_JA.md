@@ -471,7 +471,7 @@ fun casDiscoverySnapshot(): CasDiscoverySnapshot
 
 `PlaybackPipeline` は playback-level serial executor を持ち、`setSurface()`、`setVolume()`、`start()`、`switchAudio()`、`stop()`、`release()` の state mutation を同一 executor に閉じる。filter、block model decoder、MediaSync、MediaSync input Surface、AudioTrack、generation、surface、未返却audio buffer id、availability arm sequenceの変更を呼び出し元スレッドで直接行わない。release後のqueued taskはreleased flagとgenerationで破棄する。
 
-`ChannelScanManager` は`ActiveScanTask(generation, purpose, context, cancelRequested, controller, engine)`を一つのatomic referenceとして所有する。running boolean、active generation/purpose、controller、engine、contextを別fieldに複製しない。cancel / cleanup taskは取得した同じtask identityにだけ作用し、stale cleanupが後続scanを変更してはならない。Tuner Framework/TRMにはsetup scanで`PRIORITY_HINT_USE_CASE_TYPE_SCAN`、boot EPG同期とbackground maintenanceで`PRIORITY_HINT_USE_CASE_TYPE_BACKGROUND`、liveで`PRIORITY_HINT_USE_CASE_TYPE_LIVE`を渡し、frontend等のhardware arbitrationを再実装しない。一方、ライブ中はboot/background作業の開始を延期するというTIS製品policyだけはManagerに残す。
+`ChannelScanManager` は`ActiveScanTask(generation, purpose, context, cancelRequested, controller, engine)`を一つのatomic referenceとして所有する。running boolean、active generation/purpose、controller、engine、contextを別fieldに複製しない。cancel / cleanup taskは取得した同じtask identityにだけ作用し、stale cleanupが後続scanを変更してはならない。Tuner Framework/TRMへ渡すpriority hintは`ScanPurpose`から全列挙で一意に決め、setup scanを`PRIORITY_HINT_USE_CASE_TYPE_SCAN`、boot EPG同期とbackground maintenanceを`PRIORITY_HINT_USE_CASE_TYPE_BACKGROUND`、liveを`PRIORITY_HINT_USE_CASE_TYPE_LIVE`とする。frontend等のhardware arbitrationは再実装しない。一方、ライブ中はboot/background作業の開始を延期するというTIS製品policyだけはManagerに残す。
 
 ### SetupActivity 保護
 
