@@ -1,3 +1,23 @@
+# r50ef_review_followup_3
+
+- Program provider-dataはTISのpublish境界でtyped requestを組み立て、Rustのclosed Serde DTOが検証してcanonical保存形式へ変換する境界へ戻した。bulk SI transactionをTvProvider保存形式へ結合せず、未publish eventの先行encodeを避ける。
+- ARIB content descriptorの2つのuser nibbleを結合した保存値を0..255の1 byteとして扱うschema / validator修正は維持した。
+- Android/Soong build、atest、CTS、VTS、実機確認は未実施。本commitのRust/Kotlin host検証はPR checksを正とする。
+
+# r50ef_review_followup_2
+
+- Program provider-dataを、bulk transactionと同じRustのEIT event / service semantic facts / descriptor診断から直接canonical encodeする形へ変更し、Kotlin `programRequest` とJNI再parse経路を削除した。
+- ARIB content descriptorの2つのuser nibbleを結合した保存値を0..255の1 byteとしてschemaとvalidatorに固定した。
+- Android/Soong build、atest、CTS、VTS、実機確認は未実施。本commitのRust/Kotlin host検証はPR checksを正とする。
+
+# r50ef_review_followup
+
+- bulk snapshotを一回取得したcollector stateから型付きSerde DTO群へ直接投影し、手組みJSONの再parse、read回数`snapshotGeneration`、CAS用service/CA複製、private section保持、discovery stage別readを削除した。
+- discovery profileをTISから明示設定し、固定必須tableとprofile別optional tableを`TableRequirementStatus`一集合で表す形へ整理した。
+- ARIB SI/EPG文字列のstrict/lossy処理を一つのdecoder coreと`ErrorPolicy`へ統合し、MPEG-2/ARIB SIの`section_length`を内部12-bit固定APIへ変更した。
+- parental ratingはARIB raw byte一つだけを保持し、service component DTOはcanonical elementary streamからKotlin投影するためbulk JSONから重複出力しない。
+- Android/Soong build、Rust unit test、atest、CTS、VTS、実機確認は未実施。静的差分・schema fixture一致・構文参照検査のみ実施する。
+
 # r50ee98_provider_contract_residual_fix
 
 - `ChannelProviderDataV1` schemaから`inputId` / `backendHint` / `RELATIVE` / `65535` TSIDを除去し、`NONE -> null` / `TSID -> 0..65534`の組合せを機械検証する契約へ修正した。

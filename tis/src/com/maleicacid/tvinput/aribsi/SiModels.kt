@@ -16,12 +16,19 @@ object SiStatus {
     const val INDEX_OUT_OF_RANGE = -5
     const val JNI_ERROR = -6
     const val INTERNAL_ERROR = -7
+    const val INVALID_DISCOVERY_PROFILE = -8
 }
 
 object SiDiscoveryStage {
     const val INCOMPLETE = 0
     const val PARTIAL = 1
     const val COMPLETE = 2
+}
+
+object SiDiscoveryProfile {
+    const val ISDB_T: Int = 0
+    const val BS: Int = 1
+    const val CS110: Int = 2
 }
 
 data class SiIngestResult(
@@ -80,12 +87,13 @@ data class AribService(
     val pcrPid: TsPid? = null,
     val freeCaMode: Boolean? = null,
     val streams: List<AribElementaryStream> = emptyList(),
-    val hasProgramCaDescriptor: Boolean = false,
-    val hasEsCaDescriptor: Boolean = false,
     val serviceScopedCaDescriptors: List<CaDescriptor> = emptyList(),
-    val components: AribComponents = AribComponents(),
 ) {
-    val requiresCas: Boolean get() = hasProgramCaDescriptor || hasEsCaDescriptor
+    val hasProgramCaDescriptor: Boolean
+        get() = serviceScopedCaDescriptors.any { it.scope == CaDescriptorScope.PROGRAM }
+    val hasEsCaDescriptor: Boolean
+        get() = serviceScopedCaDescriptors.any { it.scope == CaDescriptorScope.ES }
+    val requiresCas: Boolean get() = serviceScopedCaDescriptors.isNotEmpty() || freeCaMode == true
 }
 
 data class AribTransport(
@@ -107,7 +115,6 @@ data class AribExtendedItem(
 
 data class AribParentalRating(
     val countryCode: String,
-    val ratingValue: Int,
     val rawRatingByte: Int,
     val parseStatus: String = "OK",
 )
@@ -226,7 +233,6 @@ data class AribEventDescriptors(
     val extendedItems: List<AribExtendedItem> = emptyList(),
     val componentText: String? = null,
     val audioComponentText: String? = null,
-    val audioLanguage: String? = null,
     val contentGenres: List<AribContentGenre> = emptyList(),
     val broadcastGenre: String? = null,
     val genreSupplementText: String? = null,
@@ -234,9 +240,6 @@ data class AribEventDescriptors(
     val linkage: List<AribLinkage> = emptyList(),
     val scrambled: Boolean? = null,
     val freeCaMode: AribFreeCaMode? = null,
-    val seriesId: Int? = null,
-    val episodeNumber: Int? = null,
-    val lastEpisodeNumber: Int? = null,
     val series: AribSeries? = null,
     val parentalRatings: List<AribParentalRating> = emptyList(),
     val components: AribComponents = AribComponents(),
@@ -373,7 +376,6 @@ data class TransportKey(
 }
 
 data class ProgramPublishSnapshot(
-    val snapshotGeneration: Long,
     val ingestSequence: Long,
     val events: List<AribEvent>,
     val updateWindows: List<EpgUpdateWindow>,
@@ -383,8 +385,18 @@ data class ProgramPublishSnapshot(
     val malformedCaDescriptorCountByServiceId: Map<ServiceId16, Int> = emptyMap(),
 )
 
+data class TableRequirementStatus(
+    val component: String,
+    val originalNetworkId: Int?,
+    val transportStreamId: Int?,
+    val serviceId: Int?,
+    val required: Boolean,
+    val complete: Boolean,
+)
+
 data class ServiceRegistrationSnapshot(
-    val snapshotGeneration: Long,
+    val discoveryStage: Int,
+    val tableRequirements: List<TableRequirementStatus>,
     val services: List<AribService>,
     val actualTransports: Set<TransportKey>,
     val actualTransportMetadata: List<AribTransport>,
@@ -393,7 +405,6 @@ data class ServiceRegistrationSnapshot(
 )
 
 data class CasDiscoverySnapshot(
-    val snapshotGeneration: Long,
     val services: List<AribService>,
     val caMetadata: List<CaMetadata>,
     val pmtPids: Map<ServiceKey, TsPid>,
@@ -403,11 +414,9 @@ data class CasDiscoverySnapshot(
 )
 
 data class LivePlaybackSnapshot(
-    val snapshotGeneration: Long,
     val ingestSequence: Long,
     val services: List<AribService>,
-    val servicesForCasDiscovery: List<AribService>,
-    val caMetadataForCasDiscovery: List<CaMetadata>,
+    val caMetadata: List<CaMetadata>,
     val pmtPids: Map<ServiceKey, TsPid>,
     val catEmmPids: List<TsPid>,
     val semanticFactsByServiceKey: Map<ServiceKey, ServiceSemanticFacts>,
@@ -416,23 +425,16 @@ data class LivePlaybackSnapshot(
     val malformedCaDescriptorDiagnostics: List<MalformedCaDescriptorDiagnostic> = emptyList(),
 )
 
-data class ServicePublishabilityDiagnostic(
+data class ServicePolicyDecision(
     val serviceKey: ServiceKey,
-    val publishable: Boolean,
-    val channelRegistrationReady: Boolean,
-    val epgPublishable: Boolean,
-    val clearLivePlaybackSupported: Boolean,
+    val registrationReady: Boolean,
     val requiresCas: Boolean,
-    val unsupportedCas: Boolean,
-    val pmtPidResolved: Boolean = false,
-    val pmtParsed: Boolean = false,
-    val caStateResolved: Boolean = false,
-    val freeCaModeResolved: Boolean = false,
-    val missingComponents: List<String>,
     val reasons: List<String>,
-    val registrationReasons: List<String>,
-    val epgReasons: List<String>,
-)
+) {
+    val clearLivePlaybackSupported: Boolean get() = registrationReady && !requiresCas
+}
+
+typealias ServicePublishabilityDiagnostic = ServicePolicyDecision
 
 enum class CaMetadataSource { PROGRAM, ELEMENTARY_STREAM, CAT }
 
@@ -469,25 +471,6 @@ data class CaMetadata(
         result = 31 * result + (elementaryPid?.value ?: 0)
         result = 31 * result + privateData.contentHashCode()
         result = 31 * result + source.hashCode()
-        return result
-    }
-}
-
-data class PrivateSection(
-    val pid: TsPid,
-    val tableId: Int,
-    val bytes: ByteArray,
-) {
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (other !is PrivateSection) return false
-        return pid == other.pid && tableId == other.tableId && bytes.contentEquals(other.bytes)
-    }
-
-    override fun hashCode(): Int {
-        var result = pid.value
-        result = 31 * result + tableId
-        result = 31 * result + bytes.contentHashCode()
         return result
     }
 }

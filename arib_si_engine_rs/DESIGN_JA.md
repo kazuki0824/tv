@@ -14,6 +14,8 @@
 未対応の SI/EPG 文字・escape は `panic` させず、置換文字または診断によって安定動作させる。字幕 payload を `decode_arib_string_lossy()` に渡す経路は禁止する。字幕本文処理は TIS 側の libaribcaption 経路だけで行う。
 `arib_si_engine_rs` は libaribcaption ラッパーを所有しない。libaribcaption は TIS 側の字幕 path から Rust JNI boundary と安全なRustラッパー経由で呼ぶ。
 
+strict APIとlossy APIはdesignation / invocation、graphic set、APR/SP/MSZ/NSZ、CSI/XCSを処理するdecoder coreを一つだけ共有する。差分は`ErrorPolicy::Strict`が最初の異常を返すか、`ErrorPolicy::Replace`が`U+FFFD`とoffset・理由付き診断へ変換するかだけとする。正常入力で両APIの文字出力が一致しなければならない。意味論を二本のdecoderへ複製しない。
+
 ARIB適合性の規範対象と検証証拠の分離は `../開発規則.md` を正とする。本decoderがSI/EPG文字列として受理する符号profileは、対象放送方式に適用される現行日本語TR-B14 / TR-B15のSI運用規定を正とし、STD-B24が定義する汎用的な文字符号機能全体をSI/EPG入力能力へ自動的に昇格させない。STD-B10 / STD-B24は、当該SI運用profileから参照される構文、designation / invocation、文字集合、制御機能の意味を解釈する基礎規格として用いる。取得可能なARIB公式英語版を条項単位の検証証拠に用いる場合も、現行日本語原文との版差を未証明差分として残し、改定概要、版一覧、二次資料を未取得本文の具体規定の代用にしない。
 
 従来8単位符号のSI/EPG文字列は、TR-B14 / TR-B15のSI運用profileで定義された初期状態と使用文字集合を適用する。初期状態は G0=Kanji、G1=Alphanumeric、G2=Hiragana、G3=Katakana、GL=LS0(G0)、GR=LS2R(G2)、文字サイズ=NSZ とする。SI運用profileが使用しないMacro code set、DRCS code set、外字字形転送を正常なSI入力として要求しない。これらがSI/EPG入力に現れた場合、strict APIは規格外または未対応入力としてエラーにし、lossy APIだけが`U+FFFD`とoffset・理由付き診断へ変換する。STD-B24の汎用Macro展開器、DRCS renderer、字幕組版機能を本crateのSI decoder capabilityとして設計しない。
@@ -72,19 +74,20 @@ content_descriptor 由来のARIB分類、表示文字列、user_nibble を構造
 parental_rating_descriptor:
   entries[]:
     country_code
-    rating_value        # ARIB STD-B10 5.13-E1 Part 2 6.2.12のRating 8 uimsbfを8bit値のまま保持する
-    raw_rating_byte     # 元8bitレーティング値
+    raw_rating_byte     # ARIB STD-B10 5.13-E1 Part 2 6.2.12のRating 8 uimsbfを8bit値のまま保持する
   raw_descriptor_bytes
   parse_status          # ok / malformed_length / truncated_descriptor / unsupported_value
 ```
 
 `arib_si_engine_rs` は Android `TvContentRating` の domain 名、flattened string、対応可否をSSOTとして決めない。Android TvProvider列への投影と `TvContentRating` 生成は TIS 側の責務とし、投影方針は tv 直下の `ARIB_SI_EPG_TvProvider投影方針.md`をSSOTとする。
 
-未対応 country_code、未定義 rating_value、不正 descriptor は破棄せず、`parse_status` と診断JSONに保持する。未対応値を推測で一般ユーザー向けレーティングに変換してはならない。
+未対応 country_code、未定義 raw rating byte、不正 descriptor は破棄せず、`parse_status` と診断JSONに保持する。未対応値を推測で一般ユーザー向けレーティングに変換してはならない。
 
-## BS / CS110 discovery
+## 放送profile別 discovery
 
-BS と CS110 の discovery completion 条件は放送方式別に扱う。BS の complete 判定では NIT actual と SDT actual / other を対象とし、NIT other の受信を必須にしない。CS110（広帯域CSデジタル放送）の complete 判定では NIT actual / other と SDT actual / other を対象とする。BAT は受信した場合に解析・意味利用するが、BAT の未受信だけを discovery incomplete の理由にしない。complete 判定は table_id だけの global 完了ではなく、table_extension と NIT/BAT transport loop から得た ONID/TSID scope を使って transport 単位で判定する。リモコンキーが得られない場合は service_id を表示番号の代替値とする。
+discovery profileはTISの選局候補から`ISDB_T / BS / CS110`を明示して設定し、ONIDや受信済みtableから推測しない。PAT、PMT、SDT actual、NIT actualはprofileにかかわらず固定必須条件とする。変化するprofile値はoptional tableの必須化だけであり、ISDB_TはSDT other/NIT otherを必須化せず、BSはSDT otherを必須・NIT otherを任意、CS110はSDT other/NIT otherを必須とする。BATは受信した場合に解析・意味利用するが、未受信だけをdiscovery incompleteの理由にしない。
+
+完成状態の正本は`TableRequirementStatus(component, scope, required, complete)`の集合とする。global missing、complete、discovery stageはこの集合から導出し、同じ意味のbooleanやmissing listを並行して保持しない。complete判定はtable_idだけのglobal完了ではなく、table_extensionとNIT/BAT transport loopから得たONID/TSID scopeを使ってtransport/service単位で判定する。リモコンキーが得られない場合はservice_idを表示番号の代替値とする。
 
 `arib_si_engine_rs` は、service / transport単位の `ServiceSemanticFacts` として、ONID / TSID / SID、ARIB `service_type`のraw 8-bit値、PMT/PCRの存在・構文状態、audio/video/subtitle/data ES一覧とcodec signaling、CA descriptor / free_CA_mode、CA descriptor等から導出した`requiresCas`、SMD意味状態、欠落・不正理由を構造化してTISへ渡す。`ServiceSemanticFacts` は放送信号から導ける事実と構文・意味解析結果だけを持ち、Android channel登録可否、EPG公開可否、現行productのdecoder/CAS対応可否、ライブ再生可否を算出しない。Android channelを登録するか、partial snapshotをchannel insertへ使用するかはTISの責務であり、`../tis/DESIGN_JA.md`を正とする。`Channels.COLUMN_SERVICE_TYPE`への最終投影は`../ARIB_SI_EPG_TvProvider投影方針.md`を正とし、本crateはAndroid generic `TvContract.Channels.SERVICE_TYPE_*`への意味変換を行わない。
 
@@ -111,6 +114,8 @@ EIT event の `start_time` と `duration` は、ARIB が各フィールドのall
 
 ## section 更新
 
+MPEG-2 PSI / ARIB SIのlong-form section headerにある`section_length`は12 bit固定として、parser内部の単一`parse_section_header(section)`で`0x0fff` maskを適用する。bit幅を呼び出し側引数にせず、0や別幅をlegacy互換として受理しない。宣言長、buffer境界、CRCの検査は同じheader結果を使う。
+
 PAT/PMT/SDT/NIT/BAT/EIT の version 更新では collector 全体を捨てない。table 単位、section 単位、サービス 単位で差分更新する。
 
 EIT は section version 更新で消えた event を削除候補として扱う。ただし TvProvider / TIS 側へ stable identity として `original_network_id / transport_stream_id / service_id / event_id` を提供できるのは `DEFINED` または `UNDEFINED_TIME` の event に限る。`BOTH_TIMING_UNDEFINED` は本製品の保守的ポリシーとしてvalid event identity setに含めず、既存Programの削除根拠にも後続具体eventとの自動相関根拠にも使わない。section 更新後の stable event set が空になった場合も no-op として破棄せず、サービスキー、更新区間、空の valid event identity set を JNI/TIS へ返す。TIS は、Rust parser が `deletionAuthoritative=true` と判定した snapshot だけを obsolete Programs delete に使う。
@@ -125,7 +130,7 @@ EIT event fixed フィールド、start_time BCD、duration BCD、descriptor_loo
 
 TvProvider に自然に入らない descriptor は構造化した内部データとして `internal_provider_data` に保存し、診断 API にも出す。EIT event ごとの診断文字列には、content、component、音声コンポーネント、視聴年齢制限、series、イベントグループ、linkage、未知 descriptor の数と主要値を含める。
 
-provider-data JSON v1 は `provider-data / 診断情報 Rust SSOT` 節の `ProgramProviderDataV1` を唯一の正式 schema とする。少なくとも `series`、`eventGroups`、`linkage`、`freeCaMode`、`audioLanguages`、`ratings`、`genres`、`extendedItems`、`components`、`diagnostics` を最上位フィールドとして保持する。`eventGroups` は `event_group_descriptor` をdescriptor単位で保持する。各要素はraw `groupType`、共通の`events[] { serviceId, eventId }`、`groupType=0x4/0x5`でだけ存在する`otherNetworkEvents[] { originalNetworkId, transportStreamId, serviceId, eventId }`、それ以外のgroup typeで残余byteを保持する`privateDataHex`、`parseStatus`を持つ。`kind`のように`groupType`から導出できる値はcanonical保存しない。`series` は series_id、repeat_label、program_pattern、expire_date、episode_number、last_episode_number、series_name を保持する。
+provider-data JSON v1 は `provider-data / 診断情報 Rust SSOT` 節の `ProgramProviderDataV1` を唯一の正式 schema とする。少なくとも `series`、`eventGroups`、`linkage`、`freeCaMode`、`ratings`、`genres`、`extendedItems`、`components`、`diagnostics` を最上位フィールドとして保持する。番組identityは`programKey`だけ、時刻は`timing.startUtcMillis + durationMillis`だけを正本とし、重複する`serviceKey`、`endUtcMillis`、`audioLanguages`はcanonical保存しない。音声言語は`components.audio[].language / secondLanguage`に保持する。`eventGroups` は `event_group_descriptor` をdescriptor単位で保持する。各要素はraw `groupType`、共通の`events[] { serviceId, eventId }`、`groupType=0x4/0x5`でだけ存在する`otherNetworkEvents[] { originalNetworkId, transportStreamId, serviceId, eventId }`、それ以外のgroup typeで残余byteを保持する`privateDataHex`、`parseStatus`を持つ。`kind`のように`groupType`から導出できる値はcanonical保存しない。`series` は series_id、repeat_label、program_pattern、expire_date、episode_number、last_episode_number、series_name を保持する。
 
 
 ## 構造化変換対象 descriptor
@@ -175,7 +180,7 @@ Rust descriptor モデルから Kotlin/TvProvider へ渡す通常境界は、`Pr
 
 `arib_si_engine_rs` は ARIB `parental_rating_descriptor` の構造化解析結果だけをSSOTとする。Android `TvContentRating` の `domain` / `ratingSystem` / `rating` 文字列、`flattenToString()`、`Programs.COLUMN_CONTENT_RATING` への投影、`TvInputManager.isRatingBlocked()` に渡す値は TIS 側の責務である。
 
-Rust 側に `com.android.tv` や `ISDB_<age>` の Android domain 決定文字列を持ち込んではならない。Rust は `country_code`, `rating_value`, `raw_rating_byte`, `parse_status`, `raw_descriptor_bytes` を保持し、未対応値を推測変換しない。
+Rust 側に `com.android.tv` や `ISDB_<age>` の Android domain 決定文字列を持ち込んではならない。Rust は `country_code`, `raw_rating_byte`, `parse_status`, `raw_descriptor_bytes` を保持し、年齢値やAndroid ratingを別stateとして保存せず投影時に導出する。
 
 ## provider-data / 診断情報 Rust SSOT
 
@@ -214,17 +219,15 @@ pub struct ProgramProviderDataV1 {
     pub schema: String,                  // "maleicacid.tv.program"
     pub schema_version: u32,             // 1
     pub program_key: ProgramKeyV1,
-    pub service_key: ServiceKeyV1,
     pub timing: ProgramTimingV1,
     pub source: ProgramSourceV1,
     pub cas: CasSemanticStateV1,
     pub ratings: Vec<RatingV1>,
     pub genres: Vec<GenreV1>,
     pub series: Option<SeriesV1>,
-    pub related_items: Vec<RelatedItemV1>,
+    pub event_groups: Vec<EventGroupV1>,
     pub linkage: Vec<LinkageV1>,
     pub free_ca_mode: Option<FreeCaModeV1>,
-    pub audio_languages: Vec<AudioLanguageV1>,
     pub extended_items: Vec<ExtendedItemV1>,
     pub components: ComponentsV1,
     pub diagnostics: DiagnosticsV1,
@@ -243,11 +246,13 @@ pub struct ProgramKeyV1 {
 
 `ProgramKeyV1.kind` は `arib-event-v1` とする。`ProgramKeyV1` に start/end/duration を入れてはならない。
 
+`ProgramTimingV1` は `startUtcMillis` と `durationMillis` だけをcanonical保存し、終了時刻はchecked additionで導出する。旧JSON v1の一致する`endUtcMillis`は正規化入力としてだけ受理し、新しいcanonical出力から除く。
+
 ### JSON 表現規則
 
-JSON は正規表現ではなく、Rust `serde` / Kotlin JSON parser / JSON Schema によって読み書き・検証する。`ProgramProviderDataV1` の canonical JSON では、任意の単一オブジェクトは値が無い場合 `null`、繰り返し要素は空の場合 `[]`、常設containerは空でもオブジェクトとして出力する。具体的には、`series`、`freeCaMode` は未取得時 `null`、`ratings`、`genres`、`eventGroups`、`linkage`、`audioLanguages`、`extendedItems` は未取得時 `[]`、`components` は常にオブジェクトとし、内部の `video`、`audio`、`subtitle`、`data` は空でも `[]` とする。runtimeで選択したmain `audio` / `video`要約をtop-levelへ保存しない。
+JSON は正規表現ではなく、Rust `serde` / Kotlin JSON parser / JSON Schema によって読み書き・検証する。`ProgramProviderDataV1` の canonical JSON では、任意の単一オブジェクトは値が無い場合 `null`、繰り返し要素は空の場合 `[]`、常設containerは空でもオブジェクトとして出力する。具体的には、`series`、`freeCaMode` は未取得時 `null`、`ratings`、`genres`、`eventGroups`、`linkage`、`extendedItems` は未取得時 `[]`、`components` は常にオブジェクトとし、内部の `video`、`audio`、`subtitle`、`data` は空でも `[]` とする。runtimeで選択したmain `audio` / `video`要約をtop-levelへ保存しない。
 
-未知 key を読み込んだ場合は、無言で破棄しない。既存 JSON v1 の未知 key は読み取り時に保持可能とし、新規 canonical 出力では既知 schema フィールドと `diagnostics.rawProviderDataExtensions[]` へ正規化する。`JSONObject` の手書き構築や文字列連結による JSON 生成を禁止する。
+未知のtop-level keyを読み込んだ場合は、無言で破棄せず`diagnostics.rawProviderDataExtensions[]`へ正規化する。version 1のnested DTOはclosedとし、未知nested keyはschema不一致として拒否する。これによりbuilder requestはstrict DTOへ1回だけdeserializeでき、`Value`走査による第二validatorを持たない。nested構造を拡張する場合はschema versionを更新する。`JSONObject` の手書き構築や文字列連結によるcanonical JSON生成を禁止する。
 
 `series` は series_id、repeat_label、program_pattern、expire_date_valid、expire_date、episode_number、last_episode_number、series_name、parse_status を保持する。series name は番組表 title を置換する値ではない。
 
@@ -257,13 +262,13 @@ JSON は正規表現ではなく、Rust `serde` / Kotlin JSON parser / JSON Sche
 
 `freeCaMode` は EIT `free_CA_mode` の raw 値、scrambled 投影用 boolean、parse_status を保持する。CAS権利状態、カード状態、CAS HAL状態と混同しない。
 
-`audioLanguages` は PMT / 音声コンポーネントdescriptor から取得できる ISO639 language だけを保持する。取得不能時に推測値を入れない。
+PMT / 音声コンポーネントdescriptor から取得できるISO639言語は、対応する`components.audio[]`要素の`language`と`secondLanguage`だけに保持する。標準列向けの言語一覧はこの構造から投影し、top-levelへ複製しない。取得不能時に推測値を入れない。
 
 `genres` は ARIB content descriptor の level1、level2、user_nibble、ARIB表示名、parse_statusだけを保持する。Android canonical genre の判定と `Programs.COLUMN_CANONICAL_GENRE` への投影はTIS側の責務であり、その投影結果、unmapped理由を本crateのprovider-dataへ保存しない。
 
-`ratings` は parental_rating_descriptor の country_code、rating_value、raw_rating_byte、parse_statusだけを保持する。未対応値を推測で Android レーティングに変換せず、`supported`や`mappedTvContentRating`をprovider-dataへ保存しない。Android `TvContentRating`文字列はTIS側が生成する。
+`ratings` は parental_rating_descriptor の country_code、raw_rating_byte、parse_statusだけを保持する。年齢値はraw byteから投影時に導出する。未対応値を推測で Android レーティングに変換せず、`supported`や`mappedTvContentRating`をprovider-dataへ保存しない。Android `TvContentRating`文字列はTIS側が生成する。
 
-`components.video[]` は ES PID、stream_type、component_tag、component_type、codec signaling、解像度、走査方式、aspect、profile / level、根拠 descriptor を ES/component単位で保持する。`components.audio[]` は ES PID、stream_type、component_tag、component_type、codec signaling、ISO639 language、channel configuration、sampling info、根拠 descriptor を ES/component単位で保持する。`components.subtitle[]` は ES PID、component_tag、data_component_id、ISO639 language、captionサービスkind、parse_statusを保持し、Android/TIS runtimeの`trackId`を保持しない。`components.data[]` はデータcomponentのメタデータを保持するが、BML / data broadcast実行状態やUI状態は保持しない。
+`components.video[]` は ES PID、stream_type、component_tag、component_type、codec signaling、解像度、走査方式、aspect、profile / level、根拠 descriptor を ES/component単位で保持する。`components.audio[]` は ES PID、stream_type、component_tag、component_type、codec signaling、primary/secondary ISO639 language、channel configuration、sampling info、根拠 descriptor を ES/component単位で保持する。`components.subtitle[]` は ES PID、component_tag、data_component_id、ISO639 language、captionサービスkind、parse_statusを保持し、Android/TIS runtimeの`trackId`を保持しない。`components.data[]` はデータcomponentのメタデータを保持するが、BML / data broadcast実行状態やUI状態は保持しない。
 
 codec metadataの認識はライブviewable / playable対応宣言を意味しない。`ProgramProviderDataV1.components.video[]` / `components.audio[]` にrelease固有またはruntime capability判定の `r51PlaybackSupported` / `liveViewableClaim` を保存せず、再生可否とtrack選択はTIS runtimeの製品policyとdecoder capability判定に閉じる。
 
@@ -305,7 +310,7 @@ buildChannelProviderData(inputJson) -> ProviderDataResult
 decodeChannelProviderData(rawBytes) -> ChannelProviderDataResult?
 ```
 
-`decodeChannelProviderData()` は UTF-8、JSON、schema を Rust 側で検証し、canonical bytes、schema version、型付き `ServiceKey`、型付き `ChannelTune` を返す。`ChannelTune` は `deliverySystem`、`frequencyHz`、`streamIdType`、`streamId`、`physicalChannel`、`satelliteBand`、`remoteControlKeyId` を持ち、`inputId`、backend名、driver名、driver固有slotを含めない。TV input ownershipはTvProvider channel rowのrequired `TvContract.Channels.COLUMN_INPUT_ID`をSSOTとし、Kotlin/TISはprovider-data decode前にrowのinputIdがcurrent TIS inputIdと一致することを検証する。Kotlin は channel provider-data JSON を `JSONObject`、文字列連結、個別key抽出で解釈しない。
+`decodeChannelProviderData()` は UTF-8、JSON、schema を Rust 側で検証し、canonical bytes、schema version、型付き `ServiceKey`、型付き `ChannelTune`、放送由来の`requiresCas`を返す。現行のString JNI surfaceではこれらを単一JSON result envelopeで返し、TAB区切り・hexという第二wire protocolを設けない。Kotlinが解釈するのはこのresult envelopeだけで、保存済みchannel provider-dataの検証・修復・canonical化はRustに閉じる。`ChannelTune` は `deliverySystem`、`frequencyHz`、`streamIdType`、`streamId`、`physicalChannel`、`satelliteBand`、`remoteControlKeyId` を持ち、`inputId`、表示名、backend名、driver名、driver固有slotを含めない。TV input ownershipはTvProvider channel rowのrequired `TvContract.Channels.COLUMN_INPUT_ID`をSSOTとし、Kotlin/TISはprovider-data decode前にrowのinputIdがcurrent TIS inputIdと一致することを検証する。
 
 `inputJson` は Rust builder への入力 DTO であり、TvProvider 保存 schema ではない。Rustは最終provider-data bytes、schema version、切り詰め結果、診断件数を返す。`ProviderDataResult`に`signature`または`contentDigest`フィールドを設けない。
 
@@ -319,7 +324,7 @@ Rust は `rawBytes` が invalid UTF-8 または malformed JSON の場合、通�
 
 ### ChannelProviderDataV1
 
-Channel provider-data の正形式は JSON v1 のみとし、schema は `maleicacid.tv.channel` / `schemaVersion=1` とする。`arib_si_engine_rs/schema/channel_provider_data_v1.schema.json` は、channel rowのtune復元に必要な物理選局情報、ONID / TSID / service_id、表示名、ARIB/CAS意味事実の診断を検証対象にし、`inputId`やTIS/product policyをprovider-data schemaへ重複定義しない。r50以前の `;` 区切りkey-value形式、旧flat provider-data、旧provider-data断片は読み取り互換入力としても残さない。Channel provider-data の top-level envelope は `schema="maleicacid.tv.channel"`, `schemaVersion=1`, `serviceKey`, `tune`, `cas`, `diagnostics` を持つ JSON v1 とする。`cas`は放送信号から導出した`requiresCas`等の意味事実だけを保持し、`unsupportedCas` / `clearLivePlaybackSupported`を持たない。`diagnostics`に`channelRegistrationReady` / `epgPublishable` / `publishStateSource`を保存しない。`tune` は `displayName`、`deliverySystem`、`frequencyHz`、`streamId`、`streamIdType`、`physicalChannel`、`satelliteBand`、`remoteControlKeyId` を持つ。`inputId`は保存せず、TvProvider rowの`Channels.COLUMN_INPUT_ID`を唯一のSSOTとする。backend名、driver名、px4相対slot等のbackend固有値は永続channel tune identityへ保存しない。CS110 は `streamIdType="NONE"` とし、`streamId` は null とする。
+Channel provider-data の正形式は JSON v1 のみとし、schema は `maleicacid.tv.channel` / `schemaVersion=1` とする。`arib_si_engine_rs/schema/channel_provider_data_v1.schema.json` は、channel rowのtune復元に必要な物理選局情報、ONID / TSID / service_id、ARIB/CAS意味事実の診断を検証対象にし、`inputId`、表示名、TIS/product policyをprovider-data schemaへ重複定義しない。r50以前の `;` 区切りkey-value形式、旧flat provider-data、旧provider-data断片は読み取り互換入力としても残さない。Channel provider-data の top-level envelope は `schema="maleicacid.tv.channel"`, `schemaVersion=1`, `serviceKey`, `tune`, `cas`, `diagnostics` を持つ JSON v1 とする。`cas`は放送信号から導出した`requiresCas`等の意味事実だけを保持し、`unsupportedCas` / `clearLivePlaybackSupported`を持たない。`diagnostics`に`channelRegistrationReady` / `epgPublishable` / `publishStateSource`を保存しない。`tune` は `deliverySystem`、`frequencyHz`、`streamId`、`streamIdType`、`physicalChannel`、`satelliteBand`、`remoteControlKeyId` を持つ。旧JSON v1の`displayName`は正規化入力としてだけ受理してcanonical出力から除く。`inputId`は保存せず、TvProvider rowの`Channels.COLUMN_INPUT_ID`を唯一のSSOTとする。backend名、driver名、px4相対slot等のbackend固有値は永続channel tune identityへ保存しない。CS110 は `streamIdType="NONE"` とし、`streamId` は null とする。
 
 ### 旧 event field / indexed JNI の廃止
 
@@ -329,7 +334,7 @@ Channel provider-data の正形式は JSON v1 のみとし、schema は `maleica
 
 ### JSON Schema / schema 整合確認データ
 
-現行仕様では Rust serde struct を SSOT としつつ、`arib_si_engine_rs/schema/program_provider_data_v1.schema.json`、`arib_si_engine_rs/schema/descriptor_diagnostic_v1.schema.json`、schema整合確認データを置く。`ProgramProviderDataV1` の JSON Schema は、top-level と nested オブジェクトの双方で required 最小フィールドと `additionalProperties: true` を併用し、固定済みフィールドを検証しながらARIB descriptor拡張を保持できる形にする。ただしTIS/runtime/product policy用の旧fieldは`not`で明示拒否し、未知extensionとして再保存しない。schema整合確認データは `arib_si_engine_rs/testdata/program_provider_data_v1/minimal_clear_program.json` と `tis/tests/assets/program_provider_data_v1/minimal_clear_program.json` の双方にバイト単位で同一に複製して置く。これは Rust host test と Android instrumentation asset packaging の参照経路が異なるためであり、2つの内容差分は違反とする。Rust test と Kotlin test は同じ内容のテストデータを読み、Rust JSON -> Kotlin round-trip と Kotlin input -> Rust build -> schema整合確認データとの一致を確認する。
+現行仕様では Rust serde struct を SSOT としつつ、`arib_si_engine_rs/schema/program_provider_data_v1.schema.json`、`arib_si_engine_rs/schema/descriptor_diagnostic_v1.schema.json`、schema整合確認データを置く。`ProgramProviderDataV1` の JSON Schema はtop-levelだけをextension envelopeとして`additionalProperties: true`にし、nested DTOは`additionalProperties: false`で固定する。TIS/runtime/product policy用の旧fieldは未知extensionとして再保存しない。schema整合確認データは `arib_si_engine_rs/testdata/program_provider_data_v1/minimal_clear_program.json` と `tis/tests/assets/program_provider_data_v1/minimal_clear_program.json` の双方にバイト単位で同一に複製して置く。これは Rust host test と Android instrumentation asset packaging の参照経路が異なるためであり、2つの内容差分は違反とする。Rust test と Kotlin test は同じ内容のテストデータを読み、Rust JSON -> Kotlin round-trip と Kotlin input -> Rust build -> schema整合確認データとの一致を確認する。
 
 ### 現行実装との関係
 

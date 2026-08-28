@@ -3,6 +3,7 @@ package com.maleicacid.tvinput.tis
 import android.content.ContentValues
 import android.media.tv.TvContentRating
 import android.media.tv.TvContract
+import android.media.tv.TvInputService
 import android.media.tv.TvTrackInfo
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
 import com.maleicacid.tvinput.aribsi.AribEventDescriptors
@@ -14,7 +15,6 @@ import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.EventModelMapper
 import com.maleicacid.tvinput.aribsi.NativeAribSiParser
-import com.maleicacid.tvinput.aribsi.isCurrentDiagnosticComplete
 import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.ServiceListBuilder
 import com.maleicacid.tvinput.aribsi.ServicePublishabilityDiagnostic
@@ -43,15 +43,15 @@ class TisR51FixedPlanAcceptanceTest {
     }
 
     @Test fun hevcOnlyServiceIsNotR51VideoCandidate() {
-        check(!TunerController.isR51SupportedVideoStreamTypeForTest(0x24))
-        check(TunerController.selectVideoForTest(listOf(es(TsPid(0x120), 0x24))) == null)
+        check(!TunerSelectionPolicy.isR51SupportedVideoStreamTypeForTest(0x24))
+        check(TunerSelectionPolicy.selectR51VideoForTest(listOf(es(TsPid(0x120), 0x24))) == null)
     }
 
     @Test fun h264AndMpeg2RemainR51VideoCandidates() {
-        check(TunerController.isR51SupportedVideoStreamTypeForTest(0x02))
-        check(TunerController.isR51SupportedVideoStreamTypeForTest(0x1b))
-        check(TunerController.selectVideoForTest(listOf(es(TsPid(0x100), 0x1b)))?.streamType == 0x1b)
-        check(TunerController.selectVideoForTest(listOf(es(TsPid(0x101), 0x02)))?.streamType == 0x02)
+        check(TunerSelectionPolicy.isR51SupportedVideoStreamTypeForTest(0x02))
+        check(TunerSelectionPolicy.isR51SupportedVideoStreamTypeForTest(0x1b))
+        check(TunerSelectionPolicy.selectVideo(listOf(es(TsPid(0x100), 0x1b)))?.streamType == 0x1b)
+        check(TunerSelectionPolicy.selectVideo(listOf(es(TsPid(0x101), 0x02)))?.streamType == 0x02)
     }
 
     @Test fun unsupportedVideoCodecMetadataIsSeparatedFromR51PlaybackClaim() {
@@ -78,7 +78,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(providerVideo.getString("codec") == "HEVC")
         check(!providerVideo.has("r51PlaybackSupported"))
         check(!providerVideo.has("liveViewableClaim"))
-        check(TunerController.selectVideoForTest(service.streams) == null)
+        check(TunerSelectionPolicy.selectR51VideoForTest(service.streams) == null)
     }
 
     @Test fun unsupportedAudioCodecMetadataDoesNotMakePlaybackUnsupportedWhenVideoIsSupported() {
@@ -102,12 +102,12 @@ class TisR51FixedPlanAcceptanceTest {
         val providerAudio = providerData.getJSONObject("components").getJSONArray("audio").getJSONObject(0)
         check(providerAudio.getString("codec") == "MPEG-4-AAC-LATM")
         check(!providerAudio.has("r51PlaybackSupported"))
-        check(TunerController.selectVideoForTest(service.streams)?.streamType == 0x1b)
+        check(TunerSelectionPolicy.selectVideo(service.streams)?.streamType == 0x1b)
         check(!PlaybackPipeline.isSupportedAudioStreamTypeForTest(0x11))
     }
 
     @Test fun mixedH264AndHevcSelectsH264CapablePath() {
-        val selected = TunerController.selectVideoForTest(listOf(es(TsPid(0x200), 0x24), es(TsPid(0x201), 0x1b)))
+        val selected = TunerSelectionPolicy.selectR51VideoForTest(listOf(es(TsPid(0x200), 0x24), es(TsPid(0x201), 0x1b)))
         check(selected?.streamType == 0x1b)
     }
 
@@ -118,9 +118,9 @@ class TisR51FixedPlanAcceptanceTest {
             video = null,
             audio = es(TsPid(0x110), 0x0f),
         )
-        check(!TunerController.hasR51SupportedVideoForTest(listOf(es(TsPid(0x110), 0x0f))))
-        check(!MaleicacidLiveSession.shouldRejectPlaybackSelectionForServiceForTest(0x02, selection))
-        check(MaleicacidLiveSession.shouldRejectPlaybackSelectionForServiceForTest(0x01, selection))
+        check(!TunerSelectionPolicy.hasSupportedVideo(listOf(es(TsPid(0x110), 0x0f))))
+        check(!PlaybackPolicy.shouldRejectSelection(0x02, selection))
+        check(PlaybackPolicy.shouldRejectSelection(0x01, selection))
     }
 
     @Test fun hevcOnlyServiceIsRejectedBeforePlaybackStart() {
@@ -128,16 +128,16 @@ class TisR51FixedPlanAcceptanceTest {
         val selection = TunerController.AvStreamSelection(
             serviceKey = key,
             pcrPid = TsPid(0x100),
-            video = TunerController.selectVideoForTest(streams),
+            video = TunerSelectionPolicy.selectR51VideoForTest(streams),
             audio = null,
         )
-        check(!TunerController.hasR51SupportedVideoForTest(streams))
-        check(MaleicacidLiveSession.shouldRejectPlaybackSelectionWithoutVideoForTest(selection))
+        check(!TunerSelectionPolicy.hasR51SupportedVideoForTest(streams))
+        check(PlaybackPolicy.shouldRejectSelection(0x01, selection))
     }
 
     @Test fun supportedAribRawRatingConvertsToTvContentRatingString() {
         val flattened = AribRatingMapper.toTvContentRatingString(
-            AribParentalRating("JPN", 12, 12),
+            AribParentalRating("JPN", 12),
             AribRatingMapper.BroadcastProfile.BS_CS,
         )
         check(flattened != null)
@@ -147,20 +147,20 @@ class TisR51FixedPlanAcceptanceTest {
     }
 
     @Test fun isdbRawRatingBoundaryValuesAreProjected() {
-        check(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 1, 1), AribRatingMapper.BroadcastProfile.BS_CS)).contains("ISDB_4"))
-        check(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 17, 17), AribRatingMapper.BroadcastProfile.BS_CS)).contains("ISDB_20"))
+        check(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 1), AribRatingMapper.BroadcastProfile.BS_CS)).contains("ISDB_4"))
+        check(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 17), AribRatingMapper.BroadcastProfile.BS_CS)).contains("ISDB_20"))
     }
 
     @Test fun explicitAribExceptionalRatingUsesProductDomainInsteadOfUnrated() {
         listOf(0x12, 0x15, 0x63, 0xff).forEach { raw ->
-            val flattened = requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", raw, raw), AribRatingMapper.BroadcastProfile.BS_CS))
+            val flattened = requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", raw), AribRatingMapper.BroadcastProfile.BS_CS))
             check(flattened.contains(AribRatingMapper.EXCEPTIONAL_DOMAIN))
             check(flattened.contains(AribRatingMapper.EXCEPTIONAL_RATING_SYSTEM))
             check(flattened.contains(AribRatingMapper.EXCEPTIONAL_RATING))
             check(flattened != TvContentRating.UNRATED.flattenToString())
         }
-        check(AribRatingMapper.toTvContentRatingString(AribParentalRating("USA", 0x12, 0x12), AribRatingMapper.BroadcastProfile.BS_CS) == null)
-        check(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 0, 0), AribRatingMapper.BroadcastProfile.BS_CS) == null)
+        check(AribRatingMapper.toTvContentRatingString(AribParentalRating("USA", 0x12), AribRatingMapper.BroadcastProfile.BS_CS) == null)
+        check(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 0), AribRatingMapper.BroadcastProfile.BS_CS) == null)
     }
 
     @Test fun explicitAribExceptionalRatingIsWrittenToProgramsContentRating() {
@@ -168,7 +168,7 @@ class TisR51FixedPlanAcceptanceTest {
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
         val record = EventModelMapper().toProgramRecords(
-            events = listOf(aribEvent(parentalRatings = listOf(AribParentalRating("JPN", 0x12, 0x12)))),
+            events = listOf(aribEvent(parentalRatings = listOf(AribParentalRating("JPN", 0x12)))),
             ratingProfileByServiceKey = mapOf(key to AribRatingMapper.BroadcastProfile.BS_CS),
         ).single()
         writer.upsertPrograms(listOf(record))
@@ -185,12 +185,12 @@ class TisR51FixedPlanAcceptanceTest {
     }
 
     @Test fun unsupportedRatingRemainsRawWithoutProductDiagnostics() {
-        val event = aribEvent(parentalRatings = listOf(AribParentalRating("USA", 15, 15)))
+        val event = aribEvent(parentalRatings = listOf(AribParentalRating("USA", 15)))
         val record = EventModelMapper().toProgramRecords(listOf(event)).single()
         check(record.contentRatings.isEmpty())
         val ratingEntry = record.descriptors.parentalRatings.single()
         check(ratingEntry.countryCode == "USA")
-        check(ratingEntry.ratingValue == 15)
+        check(ratingEntry.rawRatingByte == 15)
         val providerData = org.json.JSONObject(TvProviderWriter.programProviderDataForTest(record))
         val ratings = providerData.getJSONArray("ratings")
         check(ratings.length() == 1)
@@ -204,11 +204,11 @@ class TisR51FixedPlanAcceptanceTest {
 
     @Test fun malformedAndTruncatedParentalRatingAreNotProjectedToContentRating() {
         val malformed = aribEvent(
-            parentalRatings = listOf(AribParentalRating("JPN", 12, 12, parseStatus = "MalformedLength")),
+            parentalRatings = listOf(AribParentalRating("JPN", 12, parseStatus = "MalformedLength")),
             descriptorDiagnosticsCanonicalJson = descriptorDiagnosticsCanonicalJson("MalformedLength", 0x55),
         )
         val truncated = aribEvent(
-            parentalRatings = listOf(AribParentalRating("JPN", 15, 15, parseStatus = "TruncatedDescriptor")),
+            parentalRatings = listOf(AribParentalRating("JPN", 15, parseStatus = "TruncatedDescriptor")),
             descriptorDiagnosticsCanonicalJson = descriptorDiagnosticsCanonicalJson("TruncatedDescriptor", 0x55),
         )
         val records = EventModelMapper().toProgramRecords(
@@ -231,8 +231,8 @@ class TisR51FixedPlanAcceptanceTest {
         writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
         val unsupported = EventModelMapper().toProgramRecords(listOf(
             aribEvent(parentalRatings = listOf(
-                AribParentalRating("USA", 12, 12),
-                AribParentalRating("JPN", 12, 12),
+                AribParentalRating("USA", 12),
+                AribParentalRating("JPN", 12),
             )),
         )).single()
         writer.upsertPrograms(listOf(unsupported))
@@ -245,11 +245,11 @@ class TisR51FixedPlanAcceptanceTest {
     }
 
     @Test fun productExceptionalAribRatingDomainIsGeneratedSeparatelyFromAospIsdbAgeDomain() {
-        val age = requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 12, 12), AribRatingMapper.BroadcastProfile.BS_CS))
+        val age = requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 12), AribRatingMapper.BroadcastProfile.BS_CS))
         check(age.contains("com.android.tv"))
         check(age.contains("ISDB"))
         check(age.contains("ISDB_15"))
-        val exceptional = requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 0x12, 0x12), AribRatingMapper.BroadcastProfile.BS_CS))
+        val exceptional = requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 0x12), AribRatingMapper.BroadcastProfile.BS_CS))
         check(exceptional.contains(AribRatingMapper.EXCEPTIONAL_DOMAIN))
         check(exceptional.contains(AribRatingMapper.EXCEPTIONAL_RATING_SYSTEM))
         check(exceptional.contains(AribRatingMapper.EXCEPTIONAL_RATING))
@@ -275,7 +275,7 @@ class TisR51FixedPlanAcceptanceTest {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
-        val rating = requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 12, 12), AribRatingMapper.BroadcastProfile.BS_CS))
+        val rating = requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 12), AribRatingMapper.BroadcastProfile.BS_CS))
         writer.upsertPrograms(listOf(program(key, contentRatings = listOf(rating))))
         val values = store.programs.values.single()
         check(values.getAsString(TvContract.Programs.COLUMN_CONTENT_RATING) == rating)
@@ -302,13 +302,13 @@ class TisR51FixedPlanAcceptanceTest {
             streams = listOf(es(TsPid(0x101), 0x1b)),
         )
         val clearFacts = semanticFacts(elementaryStreams = clearService.streams)
-        check(ServiceListBuilder.completenessForModel(clearService, clearFacts).isClearLivePlaybackSupported)
-        check(ServiceListBuilder.completenessForModel(clearService, clearFacts).isRegistrationReady)
+        check(ServiceListBuilder.completenessForModel(clearService, clearFacts).clearLivePlaybackSupported)
+        check(ServiceListBuilder.completenessForModel(clearService, clearFacts).registrationReady)
 
-        check(!ServiceListBuilder.completenessForModel(clearService, clearFacts.copy(pcrPidResolved = false)).isClearLivePlaybackSupported)
-        check(!ServiceListBuilder.completenessForModel(clearService, clearFacts.copy(elementaryStreams = emptyList())).isClearLivePlaybackSupported)
-        check(!ServiceListBuilder.completenessForModel(clearService, clearFacts.copy(requiresCas = true)).isClearLivePlaybackSupported)
-        check(ServiceListBuilder.completenessForModel(clearService, clearFacts.copy(freeCaMode = true)).isClearLivePlaybackSupported)
+        check(!ServiceListBuilder.completenessForModel(clearService, clearFacts.copy(pcrPidResolved = false)).clearLivePlaybackSupported)
+        check(!ServiceListBuilder.completenessForModel(clearService, clearFacts.copy(elementaryStreams = emptyList())).clearLivePlaybackSupported)
+        check(!ServiceListBuilder.completenessForModel(clearService, clearFacts.copy(requiresCas = true)).clearLivePlaybackSupported)
+        check(ServiceListBuilder.completenessForModel(clearService, clearFacts.copy(freeCaMode = true)).clearLivePlaybackSupported)
     }
 
     @Test fun scrambledCasPlaceholderServiceCanRegisterAndPublishEpgButNotClearLive() {
@@ -324,19 +324,13 @@ class TisR51FixedPlanAcceptanceTest {
             freeCaMode = true,
         )
         val completeness = ServiceListBuilder.completenessForModel(scrambledService, facts)
-        check(completeness.isRegistrationReady)
-        check(completeness.isEpgPublishable)
-        check(!completeness.isClearLivePlaybackSupported)
+        check(completeness.registrationReady)
+        check(!completeness.clearLivePlaybackSupported)
         check(completeness.requiresCas)
-        check(completeness.unsupportedCas)
 
         val event = aribEvent()
         val record = EventModelMapper().toProgramRecords(listOf(event), mapOf(event.serviceKey to facts)).single()
         check(record.requiresCas)
-        check(record.unsupportedCas)
-        check(!record.clearLivePlaybackSupported)
-        check(record.channelRegistrationReady)
-        check(record.epgPublishable)
         val providerData = JSONObject(TvProviderWriter.programProviderDataForTest(record))
         check(providerData.getJSONObject("cas").getBoolean("requiresCas"))
         check(!providerData.getJSONObject("cas").has("unsupportedCas"))
@@ -359,17 +353,17 @@ class TisR51FixedPlanAcceptanceTest {
     @Test fun scanStablePartialRequiresRegistrationReadySnapshotAndStableWait() {
         val policy = ChannelScanController.SiCollectionPolicy(minWaitMs = 100, maxWaitMs = 1_000, stableWaitMs = 200, pollIntervalMs = 10)
         check(ChannelScanController.siCollectionOutcomeForTest(false, false, 150, 50, 1, policy) == ChannelScanController.SiCollectionOutcome.TIMEOUT_PARTIAL)
-        check(ChannelScanController.siCollectionOutcomeForTest(false, false, 300, 250, 1, policy, registrationReadySnapshotAvailable = true) == ChannelScanController.SiCollectionOutcome.STABLE_PARTIAL)
-        check(ChannelScanController.siCollectionOutcomeForTest(false, false, 1_000, 100, 1, policy, registrationReadySnapshotAvailable = true) == ChannelScanController.SiCollectionOutcome.TIMEOUT_PARTIAL)
+        check(ChannelScanController.siCollectionOutcomeForTest(false, false, 300, 250, 1, policy) == ChannelScanController.SiCollectionOutcome.STABLE_PARTIAL)
+        check(ChannelScanController.siCollectionOutcomeForTest(false, false, 1_000, 100, 1, policy) == ChannelScanController.SiCollectionOutcome.TIMEOUT_PARTIAL)
         check(ChannelScanController.siCollectionOutcomeForTest(false, false, 1_000, 250, 0, policy) == ChannelScanController.SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE)
         check(ChannelScanController.siCollectionOutcomeForTest(true, false, 100, 0, 0, policy) == ChannelScanController.SiCollectionOutcome.COMPLETE)
     }
 
     @Test fun partialSiDiscoveryPublishesOnlyRegistrationReadySnapshotServices() {
-        check(ChannelScanController.SiCollectionResult(ChannelScanController.SiCollectionOutcome.STABLE_PARTIAL, null, countsSignature = "v=1", clearLivePlaybackSupportedServices = 0, registrationReadyServices = 1, registrationReadySnapshotAvailable = true).mayPublishChannels)
-        check(ChannelScanController.SiCollectionResult(ChannelScanController.SiCollectionOutcome.TIMEOUT_PARTIAL, null, countsSignature = "v=1", clearLivePlaybackSupportedServices = 0, registrationReadyServices = 1, registrationReadySnapshotAvailable = true).mayPublishChannels)
-        check(!ChannelScanController.SiCollectionResult(ChannelScanController.SiCollectionOutcome.TIMEOUT_PARTIAL, null, countsSignature = "v=1", clearLivePlaybackSupportedServices = 0, registrationReadyServices = 1, registrationReadySnapshotAvailable = false).mayPublishChannels)
-        check(!ChannelScanController.SiCollectionResult(ChannelScanController.SiCollectionOutcome.TIMEOUT_PARTIAL, null, countsSignature = "v=0", clearLivePlaybackSupportedServices = 0, registrationReadyServices = 0, registrationReadySnapshotAvailable = false).mayPublishChannels)
+        check(ChannelScanController.SiCollectionResult(ChannelScanController.SiCollectionOutcome.STABLE_PARTIAL, null, clearLivePlaybackSupportedServices = 0, registrationReadyServices = 1).mayPublishChannels)
+        check(ChannelScanController.SiCollectionResult(ChannelScanController.SiCollectionOutcome.TIMEOUT_PARTIAL, null, clearLivePlaybackSupportedServices = 0, registrationReadyServices = 1).mayPublishChannels)
+        check(!ChannelScanController.SiCollectionResult(ChannelScanController.SiCollectionOutcome.TIMEOUT_PARTIAL, null, clearLivePlaybackSupportedServices = 0, registrationReadyServices = 0).mayPublishChannels)
+        check(!ChannelScanController.SiCollectionResult(ChannelScanController.SiCollectionOutcome.CANCELLED, null, clearLivePlaybackSupportedServices = 0, registrationReadyServices = 1).mayPublishChannels)
     }
 
     @Test fun setupScanPublishesEventsForRegisteredServicesOnly() {
@@ -407,28 +401,18 @@ class TisR51FixedPlanAcceptanceTest {
         val video = es(TsPid(0x101), 0x1b)
         val audio = es(TsPid(0x110), 0x0f, componentTag = 7, language = "jpn")
         val subtitle = es(TsPid(0x130), 0x06, componentTag = 8, dataComponentId = 0x0008, isCaption = true)
-        check(TunerController.trackIdForVideoStream(video) == "video:257")
-        check(TunerController.trackIdForAudioStream(audio) == "audio:272:7")
-        check(TunerController.trackIdForSubtitleStream(subtitle) == "subtitle:304:8")
+        check(TunerSelectionPolicy.trackIdForVideo(video) == "video:257")
+        check(TunerSelectionPolicy.trackIdForAudio(audio) == "audio:272:7")
+        check(TunerSelectionPolicy.trackIdForSubtitle(subtitle) == "subtitle:304:8")
         val tracks = listOf(
             TunerController.TisTrack("video:257", TvTrackInfo.TYPE_VIDEO, TsPid(0x101), 0x1b, null, -1, null),
             TunerController.TisTrack("audio:272:7", TvTrackInfo.TYPE_AUDIO, TsPid(0x110), 0x0f, 7, -1, "jpn"),
             TunerController.TisTrack("subtitle:304:8", TvTrackInfo.TYPE_SUBTITLE, TsPid(0x130), 0x06, 8, null, null, dataComponentId = 0x0008),
         )
-        check(TunerController.isSelectableTrackForTest(TvTrackInfo.TYPE_AUDIO, "audio:272:7", tracks))
-        check(!TunerController.isSelectableTrackForTest(TvTrackInfo.TYPE_AUDIO, "audio:999", tracks))
-        check(TunerController.isSelectableTrackForTest(TvTrackInfo.TYPE_SUBTITLE, "subtitle:304:8", tracks))
-        check(!TunerController.isSelectableTrackForTest(TvTrackInfo.TYPE_SUBTITLE, "subtitle:1", tracks))
-    }
-
-    @Test fun subtitleSelectionIsAcceptedAndActivationRemainsCaptionEnabledGated() {
-        val tracks = listOf(
-            TunerController.TisTrack("subtitle:304:8", TvTrackInfo.TYPE_SUBTITLE, TsPid(0x130), 0x06, 8, null, null, dataComponentId = 0x0008),
-        )
-        check(MaleicacidLiveSession.subtitleSelectionAcceptedForTest("subtitle:304:8", tracks, captionEnabled = true))
-        check(MaleicacidLiveSession.subtitleSelectionAcceptedForTest("subtitle:304:8", tracks, captionEnabled = false))
-        check(!MaleicacidLiveSession.subtitleSelectionAcceptedForTest("subtitle:999", tracks, captionEnabled = true))
-        check(MaleicacidLiveSession.subtitleSelectionAcceptedForTest(null, tracks, captionEnabled = true))
+        check(TunerSelectionPolicy.isSelectableTrack(TvTrackInfo.TYPE_AUDIO, "audio:272:7", tracks))
+        check(!TunerSelectionPolicy.isSelectableTrack(TvTrackInfo.TYPE_AUDIO, "audio:999", tracks))
+        check(TunerSelectionPolicy.isSelectableTrack(TvTrackInfo.TYPE_SUBTITLE, "subtitle:304:8", tracks))
+        check(!TunerSelectionPolicy.isSelectableTrack(TvTrackInfo.TYPE_SUBTITLE, "subtitle:1", tracks))
     }
 
     @Test fun captionControllerDrawsOnlyEnabledSelectedTrack() {
@@ -438,47 +422,8 @@ class TisR51FixedPlanAcceptanceTest {
         check(!AribCaptionController.shouldDrawCaptionForTest(enabled = true, selectedTrackId = null, incomingTrackId = "subtitle:304:8"))
     }
 
-    @Test fun audioSelectTrackCommitsOnlyWhenAudioSwitchSucceeds() {
-        val tracks = listOf(
-            TunerController.TisTrack("audio:272:7", TvTrackInfo.TYPE_AUDIO, TsPid(0x110), 0x0f, 7, -1, "jpn"),
-        )
-        check(MaleicacidLiveSession.audioTrackSelectionAcceptedForTest("audio:272:7", tracks, audioSwitchSucceeded = true))
-        check(!MaleicacidLiveSession.audioTrackSelectionAcceptedForTest("audio:272:7", tracks, audioSwitchSucceeded = false))
-        check(!MaleicacidLiveSession.audioTrackSelectionAcceptedForTest("audio:999", tracks, audioSwitchSucceeded = true))
-        check(!MaleicacidLiveSession.audioTrackSelectionAcceptedForTest(null, tracks, audioSwitchSucceeded = true))
-    }
-
-    @Test fun audioSelectTrackFailurePreservesExistingPlaybackSignature() {
-        val previous = AvPlaybackSignature(
-            serviceKey = key,
-            pcrPid = TsPid(0x100),
-            videoPid = TsPid(0x101),
-            videoStreamType = 0x1b,
-            audioPid = TsPid(0x110),
-            audioStreamType = 0x0f,
-            clear = true,
-            keyTokenAvailable = false,
-        )
-        check(MaleicacidLiveSession.preservesExistingPlaybackWhenAudioSwitchFailsForTest(previous, previous, switchSucceeded = false))
-    }
-
-    @Test fun parentalBlockedReevaluationStopsPlayback() {
-        check(MaleicacidLiveSession.shouldStopPlaybackWhenParentalControlBecomesBlockedForTest(blocked = true))
-        check(!MaleicacidLiveSession.shouldStopPlaybackWhenParentalControlBecomesBlockedForTest(blocked = false))
-        check(!MaleicacidLiveSession.parentalBlockUsesNotifyVideoUnavailableForTest())
-    }
-
-    @Test fun casPlaceholderUsesCasUnknownUnavailableReason() {
-        check(MaleicacidLiveSession.casPlaceholderUnavailableReasonForTest() == android.media.tv.TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN)
-    }
-
-    @Test fun parentalAllowedReevaluationRestartsPlaybackWhenServiceIsAvailable() {
-        check(MaleicacidLiveSession.shouldRestartPlaybackAfterParentalControlAllowedForTest(latestServicePresent = true))
-        check(!MaleicacidLiveSession.shouldRestartPlaybackAfterParentalControlAllowedForTest(latestServicePresent = false))
-    }
-
     @Test fun unblockKeyIncludesCurrentProgramIdentityAndRating() {
-        val rating = requireNotNull(AribRatingMapper.parseFlattened(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 12, 12), AribRatingMapper.BroadcastProfile.BS_CS))))
+        val rating = requireNotNull(AribRatingMapper.parseFlattened(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 12), AribRatingMapper.BroadcastProfile.BS_CS))))
         val keyString = CurrentProgramRatingResolver.unblockKey(
             serviceKey = key,
             eventId = 10,
@@ -490,8 +435,8 @@ class TisR51FixedPlanAcceptanceTest {
     }
 
     @Test fun onUnblockContentAcceptsOnlySameCurrentProgramRatingWithCompleteIdentity() {
-        val rating15 = requireNotNull(AribRatingMapper.parseFlattened(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 12, 12), AribRatingMapper.BroadcastProfile.BS_CS))))
-        val rating18 = requireNotNull(AribRatingMapper.parseFlattened(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 15, 15), AribRatingMapper.BroadcastProfile.BS_CS))))
+        val rating15 = requireNotNull(AribRatingMapper.parseFlattened(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 12), AribRatingMapper.BroadcastProfile.BS_CS))))
+        val rating18 = requireNotNull(AribRatingMapper.parseFlattened(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 15), AribRatingMapper.BroadcastProfile.BS_CS))))
         val current = CurrentProgramRatingResolver.CurrentProgramRatingSet(
             ratings = listOf(rating15),
             source = CurrentProgramRatingResolver.Source.LATEST_EIT_CACHE,
@@ -518,7 +463,7 @@ class TisR51FixedPlanAcceptanceTest {
 
     @Test fun videoHeaderMetadataIsProjectedIntoCurrentProgramRecord() {
         val info = PlaybackPipeline.VideoFormatInfo(0x1b, "video/avc", 1280, 720)
-        val records = MaleicacidLiveSession.videoMetadataProgramsForTest(
+        val records = ProgramVideoMetadataPolicy.currentProgramsWithMetadata(
             events = listOf(aribEvent()),
             serviceKey = key,
             nowMillis = 1_700_000_000_100L,
@@ -534,7 +479,7 @@ class TisR51FixedPlanAcceptanceTest {
 
     @Test fun videoHeaderMetadataIgnoresNonCurrentEvent() {
         val info = PlaybackPipeline.VideoFormatInfo(0x1b, "video/avc", 1280, 720)
-        val records = MaleicacidLiveSession.videoMetadataProgramsForTest(
+        val records = ProgramVideoMetadataPolicy.currentProgramsWithMetadata(
             events = listOf(aribEvent().copy(startTimeMillis = 1_600_000_000_000L)),
             serviceKey = key,
             nowMillis = 1_700_000_000_100L,
@@ -544,10 +489,10 @@ class TisR51FixedPlanAcceptanceTest {
     }
 
     @Test fun cs110SelectorNoneRejectsTsidAndRelative() {
-        check(TunerController.isCs110SelectorAllowedForTest("110CS", StreamSelector.NONE))
-        check(!TunerController.isCs110SelectorAllowedForTest("110CS", StreamSelector.tsid(0x4010)))
-        check(!TunerController.isCs110SelectorAllowedForTest("110CS", StreamSelector.relative(2)))
-        check(TunerController.isCs110SelectorAllowedForTest("BS", StreamSelector.tsid(0x4010)))
+        check(TunerSelectionPolicy.isCs110SelectorAllowed("110CS", StreamSelector.NONE))
+        check(!TunerSelectionPolicy.isCs110SelectorAllowed("110CS", StreamSelector.tsid(0x4010)))
+        check(!TunerSelectionPolicy.isCs110SelectorAllowed("110CS", StreamSelector.relative(2)))
+        check(TunerSelectionPolicy.isCs110SelectorAllowed("BS", StreamSelector.tsid(0x4010)))
     }
 
     @Test fun bootAndBackgroundMaintenanceUpdateExistingChannelsOnly() {
@@ -616,6 +561,10 @@ class TisR51FixedPlanAcceptanceTest {
     }
 
     @Test fun liveSessionPreemptsBootAndBackgroundButNotSetupScan() {
+        check(tunerPriorityHintUseCase(ScanPurpose.SETUP_SCAN) == TvInputService.PRIORITY_HINT_USE_CASE_TYPE_SCAN)
+        check(tunerPriorityHintUseCase(ScanPurpose.BOOT_EPG_SYNC) == TvInputService.PRIORITY_HINT_USE_CASE_TYPE_BACKGROUND)
+        check(tunerPriorityHintUseCase(ScanPurpose.BACKGROUND_MAINTENANCE) == TvInputService.PRIORITY_HINT_USE_CASE_TYPE_BACKGROUND)
+
         val idle = ChannelScanManager.liveSessionPreemptDecisionForTest(scanRunning = false, purpose = null)
         check(!idle.shouldCancel)
         check(!idle.deferBootEpgSync)
@@ -643,10 +592,10 @@ class TisR51FixedPlanAcceptanceTest {
     }
 
     @Test fun sectionShortReadIsDiagnosticAndNotIngest() {
-        check(TunerController.sectionReadDecisionForTest(expected = 64, actual = 64, generationMatches = true) == TunerController.SectionReadDecision.INGEST)
-        check(TunerController.sectionReadDecisionForTest(expected = 64, actual = 12, generationMatches = true) == TunerController.SectionReadDecision.SHORT_READ)
-        check(TunerController.sectionReadDecisionForTest(expected = 64, actual = 0, generationMatches = true) == TunerController.SectionReadDecision.READ_ERROR)
-        check(TunerController.sectionReadDecisionForTest(expected = 64, actual = 64, generationMatches = false) == TunerController.SectionReadDecision.STALE_GENERATION)
+        check(SectionFilterPolicy.readDecision(expected = 64, actual = 64, sourceIsCurrent = true) == SectionFilterPolicy.ReadDecision.INGEST)
+        check(SectionFilterPolicy.readDecision(expected = 64, actual = 12, sourceIsCurrent = true) == SectionFilterPolicy.ReadDecision.SHORT_READ)
+        check(SectionFilterPolicy.readDecision(expected = 64, actual = 0, sourceIsCurrent = true) == SectionFilterPolicy.ReadDecision.READ_ERROR)
+        check(SectionFilterPolicy.readDecision(expected = 64, actual = 64, sourceIsCurrent = false) == SectionFilterPolicy.ReadDecision.STALE_SOURCE)
     }
 
     @Test fun firstFrameTimeoutUsesGenerationAndNotificationState() {
@@ -680,32 +629,15 @@ class TisR51FixedPlanAcceptanceTest {
         val first = listOf(program(key, description = "desc"))
         val same = listOf(program(key, description = "desc"))
         val changedDescription = listOf(program(key, description = "updated"))
-        val changedRating = listOf(program(key, description = "desc", contentRatings = listOf(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 15, 15), AribRatingMapper.BroadcastProfile.BS_CS)))))
+        val changedRating = listOf(program(key, description = "desc", contentRatings = listOf(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 15), AribRatingMapper.BroadcastProfile.BS_CS)))))
         check(ProgramPublishCoordinator.programSignatureForTest(first) == ProgramPublishCoordinator.programSignatureForTest(same))
         check(ProgramPublishCoordinator.programSignatureForTest(first) != ProgramPublishCoordinator.programSignatureForTest(changedDescription))
         check(ProgramPublishCoordinator.programSignatureForTest(first) != ProgramPublishCoordinator.programSignatureForTest(changedRating))
     }
 
-    @Test fun currentDiagnosticCompleteRequiresExplicitPmtAndCaStateFields() {
-        val incompletePmt = publishability(key, clearLive = true).copy(
-            pmtPidResolved = false,
-            pmtParsed = false,
-        )
-        check(!incompletePmt.isCurrentDiagnosticComplete())
-
-        val incompleteCaState = publishability(key, clearLive = true).copy(
-            caStateResolved = false,
-            freeCaModeResolved = false,
-        )
-        check(!incompleteCaState.isCurrentDiagnosticComplete())
-
-        val complete = publishability(key, clearLive = true)
-        check(complete.isCurrentDiagnosticComplete())
-    }
-
     @Test fun currentProgramChangeClearsTemporaryUnblockKeys() {
         val keys = linkedSetOf("old-unblock-key")
-        var identity = MaleicacidLiveSession.updateUnblockStateForProgramChangeForTest(
+        var identity = PlaybackPolicy.updateUnblockStateForProgramChange(
             previousIdentityKey = "program-a",
             nextIdentityKey = "program-a",
             unblockedContentKeys = keys,
@@ -713,7 +645,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(identity == "program-a")
         check("old-unblock-key" in keys)
 
-        identity = MaleicacidLiveSession.updateUnblockStateForProgramChangeForTest(
+        identity = PlaybackPolicy.updateUnblockStateForProgramChange(
             previousIdentityKey = identity,
             nextIdentityKey = "program-b",
             unblockedContentKeys = keys,
@@ -722,7 +654,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(keys.isEmpty())
 
         keys += "program-b-unblock"
-        identity = MaleicacidLiveSession.updateUnblockStateForProgramChangeForTest(
+        identity = PlaybackPolicy.updateUnblockStateForProgramChange(
             previousIdentityKey = identity,
             nextIdentityKey = null,
             unblockedContentKeys = keys,
@@ -751,20 +683,9 @@ class TisR51FixedPlanAcceptanceTest {
         reasons: List<String> = emptyList(),
     ) = ServicePublishabilityDiagnostic(
         serviceKey = serviceKey,
-        publishable = clearLive,
-        channelRegistrationReady = clearLive,
-        epgPublishable = clearLive,
-        clearLivePlaybackSupported = clearLive,
+        registrationReady = clearLive,
         requiresCas = false,
-        unsupportedCas = false,
-        pmtPidResolved = clearLive,
-        pmtParsed = clearLive,
-        caStateResolved = clearLive,
-        freeCaModeResolved = clearLive,
-        missingComponents = emptyList(),
         reasons = reasons,
-        registrationReasons = if (clearLive) emptyList() else reasons,
-        epgReasons = if (clearLive) emptyList() else reasons,
     )
 
     private fun semanticFacts(
@@ -984,11 +905,6 @@ class TisR51FixedPlanAcceptanceTest {
         )
         override fun insertChannel(values: ContentValues): Result<Long?> { val id = nextChannelId++; channels[id] = ContentValues(values); return Result.success(id) }
         override fun updateChannel(channelId: Long, values: ContentValues): Result<Int> { channels[channelId] = ContentValues(values); return Result.success(1) }
-        override fun findExistingProgramId(channelId: Long, programKey: String): Result<Long?> = Result.success(
-            programs.entries.firstOrNull { (_, v) ->
-                v.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) == channelId && TvProviderWriter.parseProgramKey(v.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)) == programKey
-            }?.key,
-        )
         override fun indexExistingProgramsForWindow(channelId: Long, windowStartMs: Long, windowEndMs: Long): Result<Map<String, Long>> = Result.success(
             programs.entries.mapNotNull { (id, v) ->
                 if (v.getAsLong(TvContract.Programs.COLUMN_CHANNEL_ID) != channelId) return@mapNotNull null

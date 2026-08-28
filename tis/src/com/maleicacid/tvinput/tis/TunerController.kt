@@ -89,14 +89,10 @@ class TunerController(
         val captionServiceKind: String? = null,
     )
 
-    enum class SectionReadDecision { INGEST, SHORT_READ, READ_ERROR, STALE_GENERATION }
-    enum class SectionDataLengthDecision { ACCEPT, MALFORMED, OVERSIZED }
-
     private inner class TunerSectionFilterHandle(
         override val pid: TsPid,
         private val filter: Filter,
         private val generation: Long,
-        private val filterToken: Long,
     ) : SectionFilterHandle {
         private var closed = false
         override val isOpen: Boolean get() = !closed
@@ -106,7 +102,7 @@ class TunerController(
             runCatching { filter.stop() }.onFailure { Log.w(LogTags.TIS, "section filter stop に失敗しました pid=$pid", it) }
             runCatching { filter.close() }.onFailure { Log.w(LogTags.TIS, "section filter close に失敗しました pid=$pid", it) }
         }
-        override fun toString(): String = "TunerSectionFilterHandle(pid=$pid, generation=$generation, token=$filterToken, closed=$closed)"
+        override fun toString(): String = "TunerSectionFilterHandle(pid=$pid, generation=$generation, closed=$closed)"
     }
 
     private inner class UnavailableSectionFilterHandle(
@@ -133,8 +129,7 @@ class TunerController(
         }
     }
     private val sectionFilterHandles = LinkedHashMap<TsPid, SectionFilterHandle>()
-    private val sectionFilterTokens = LinkedHashMap<TsPid, Long>()
-    private var nextSectionFilterToken: Long = 1L
+    private val sectionFilters = LinkedHashMap<TsPid, Filter>()
     private val dynamicPmtPids = linkedSetOf<TsPid>()
     private val dynamicEcmPids = linkedSetOf<TsPid>()
     private val dynamicEmmPids = linkedSetOf<TsPid>()
@@ -305,32 +300,30 @@ class TunerController(
             if (existing.isOpen) return existing
             sectionFilterHandles.remove(pid)
         }
-        val token = nextSectionFilterToken++
-        val handle = createSectionFilter(pid, generation, token)
+        val handle = createSectionFilter(pid, generation)
         if (handle.isOpen) {
             sectionFilterHandles[pid] = handle
-            sectionFilterTokens[pid] = token
         }
         return handle
     }
 
-    private fun createSectionFilter(pid: TsPid, generation: Long, filterToken: Long): SectionFilterHandle {
+    private fun createSectionFilter(pid: TsPid, generation: Long): SectionFilterHandle {
         val tunerInstance = tuner ?: return UnavailableSectionFilterHandle(pid, "Tuner利用不可")
         val callback = object : FilterCallback {
             override fun onFilterEvent(filter: Filter, events: Array<FilterEvent>) {
-                if (generation != tuneGeneration || sectionFilterTokens[pid] != filterToken) return
+                if (!isCurrentSectionFilter(pid, generation, filter)) return
                 events.filterIsInstance<SectionEvent>().forEach { event ->
                     val length = event.dataLength.toLong()
-                    when (sectionDataLengthDecisionForTest(length)) {
-                        SectionDataLengthDecision.MALFORMED -> {
+                    when (SectionFilterPolicy.dataLengthDecision(length)) {
+                        SectionFilterPolicy.DataLengthDecision.MALFORMED -> {
                             recordSectionMalformedDrop(pid, "dataLength=$length")
                             return@forEach
                         }
-                        SectionDataLengthDecision.OVERSIZED -> {
+                        SectionFilterPolicy.DataLengthDecision.OVERSIZED -> {
                             recordSectionOversizedDrop(pid, length)
                             return@forEach
                         }
-                        SectionDataLengthDecision.ACCEPT -> Unit
+                        SectionFilterPolicy.DataLengthDecision.ACCEPT -> Unit
                     }
                     val section = ByteArray(length.toInt())
                     val readResult = runCatching { filter.read(section, 0, section.size.toLong()) }
@@ -339,12 +332,12 @@ class TunerController(
                         return@forEach
                     }
                     val read = readResult.getOrThrow()
-                    val generationStillMatches = generation == tuneGeneration && sectionFilterTokens[pid] == filterToken
-                    when (sectionReadDecisionForTest(expected = section.size, actual = read, generationMatches = generationStillMatches)) {
-                        SectionReadDecision.INGEST -> onSection(pid, section, generation, filterToken)
-                        SectionReadDecision.SHORT_READ -> recordSectionShortRead(pid, expected = section.size, actual = read)
-                        SectionReadDecision.READ_ERROR -> recordSectionReadError(pid, "read=$read expected=${section.size}")
-                        SectionReadDecision.STALE_GENERATION -> Unit
+                    val sourceIsCurrent = isCurrentSectionFilter(pid, generation, filter)
+                    when (SectionFilterPolicy.readDecision(expected = section.size, actual = read, sourceIsCurrent = sourceIsCurrent)) {
+                        SectionFilterPolicy.ReadDecision.INGEST -> onSectionFromFilter(pid, section, generation, filter)
+                        SectionFilterPolicy.ReadDecision.SHORT_READ -> recordSectionShortRead(pid, expected = section.size, actual = read)
+                        SectionFilterPolicy.ReadDecision.READ_ERROR -> recordSectionReadError(pid, "read=$read expected=${section.size}")
+                        SectionFilterPolicy.ReadDecision.STALE_SOURCE -> Unit
                     }
                 }
             }
@@ -366,13 +359,18 @@ class TunerController(
             runCatching { filter.close() }
             return UnavailableSectionFilterHandle(pid, "configure失敗-$configureResult")
         }
+        sectionFilters[pid] = filter
         val startResult = filter.start()
         if (startResult != Tuner.RESULT_SUCCESS) {
+            if (sectionFilters[pid] === filter) sectionFilters.remove(pid)
             runCatching { filter.close() }
             return UnavailableSectionFilterHandle(pid, "start失敗-$startResult")
         }
-        return TunerSectionFilterHandle(pid, filter, generation, filterToken)
+        return TunerSectionFilterHandle(pid, filter, generation)
     }
+
+    private fun isCurrentSectionFilter(pid: TsPid, generation: Long, filter: Filter): Boolean =
+        generation == tuneGeneration && sectionFilters[pid] === filter
 
     private fun recordSectionShortRead(pid: TsPid, expected: Int, actual: Int) {
         sectionShortReadCounters[pid] = (sectionShortReadCounters[pid] ?: 0) + 1
@@ -391,30 +389,13 @@ class TunerController(
 
     private fun recordSectionOversizedDrop(pid: TsPid, dataLength: Long) {
         sectionOversizedCounters[pid] = (sectionOversizedCounters[pid] ?: 0) + 1
-        Log.w(LogTags.TIS, "oversized section を allocation 前に破棄します inputId=$inputId pid=$pid dataLength=$dataLength max=$SECTION_EVENT_MAX_BYTES count=${sectionOversizedCounters[pid]}")
+        Log.w(LogTags.TIS, "oversized section を allocation 前に破棄します inputId=$inputId pid=$pid dataLength=$dataLength max=${SectionFilterPolicy.MAX_SECTION_EVENT_BYTES} count=${sectionOversizedCounters[pid]}")
     }
-
-    data class SectionReadDiagnostics(
-        val shortRead: Int,
-        val readError: Int,
-        val malformed: Int,
-        val oversized: Int,
-    )
-
-    fun sectionReadDiagnosticsForTest(): Map<Int, SectionReadDiagnostics> =
-        (sectionShortReadCounters.keys + sectionReadErrorCounters.keys + sectionMalformedCounters.keys + sectionOversizedCounters.keys).associate { pid ->
-            pid.value to SectionReadDiagnostics(
-                shortRead = sectionShortReadCounters[pid] ?: 0,
-                readError = sectionReadErrorCounters[pid] ?: 0,
-                malformed = sectionMalformedCounters[pid] ?: 0,
-                oversized = sectionOversizedCounters[pid] ?: 0,
-            )
-        }
 
     fun closeSectionFilter(pid: TsPid): Unit = callOnController { closeSectionFilterOnController(pid) }
 
     private fun closeSectionFilterOnController(pid: TsPid) {
-        sectionFilterTokens.remove(pid)
+        sectionFilters.remove(pid)
         sectionFilterHandles.remove(pid)?.close()
     }
 
@@ -423,7 +404,7 @@ class TunerController(
     private fun closeSectionFiltersOnController() {
         val handles = sectionFilterHandles.values.toList()
         sectionFilterHandles.clear()
-        sectionFilterTokens.clear()
+        sectionFilters.clear()
         dynamicPmtPids.clear()
         dynamicEcmPids.clear()
         dynamicEmmPids.clear()
@@ -478,11 +459,16 @@ class TunerController(
 
     private fun initialPids(): Set<TsPid> = setOf(WellKnownSectionPid.PAT, WellKnownSectionPid.CAT, WellKnownSectionPid.NIT, WellKnownSectionPid.SDT_BAT, WellKnownSectionPid.EIT)
 
-    fun onSection(pid: TsPid, section: ByteArray, generation: Long = tuneGeneration, filterToken: Long? = sectionFilterTokens[pid]): Unit =
-        callOnController { onSectionOnController(pid, section, generation, filterToken) }
+    fun onSection(pid: TsPid, section: ByteArray, generation: Long = tuneGeneration): Unit =
+        callOnController { onSectionOnController(pid, section, generation) }
 
-    private fun onSectionOnController(pid: TsPid, section: ByteArray, generation: Long = tuneGeneration, filterToken: Long? = sectionFilterTokens[pid]) {
-        if (generation != tuneGeneration || sectionFilterTokens[pid] != filterToken) return
+    private fun onSectionFromFilter(pid: TsPid, section: ByteArray, generation: Long, filter: Filter) {
+        if (!isCurrentSectionFilter(pid, generation, filter)) return
+        onSectionOnController(pid, section, generation)
+    }
+
+    private fun onSectionOnController(pid: TsPid, section: ByteArray, generation: Long = tuneGeneration) {
+        if (generation != tuneGeneration) return
         val result = sectionIngestController?.onSection(pid, section)
         if (pid in dynamicEcmPids) {
             val diagnostics = casController?.onEcmSection(pid, section).orEmpty()
@@ -512,29 +498,25 @@ class TunerController(
         preferredAudioTrackId: String? = null,
         preferredSubtitleTrackId: String? = null,
     ): AvStreamSelection {
-        val video = streams.firstOrNull { it.streamType in VIDEO_STREAM_TYPES }
-        val audioCandidates = streams.filter { it.streamType in AUDIO_STREAM_TYPES }
-        val audio = preferredAudioTrackId?.let { wanted -> audioCandidates.firstOrNull { trackIdForAudio(it) == wanted } } ?: audioCandidates.firstOrNull()
-        val subtitleCandidates = streams.filter { isCaptionStream(it) }
-        val subtitle = preferredSubtitleTrackId?.let { wanted -> subtitleCandidates.firstOrNull { trackIdForSubtitle(it) == wanted } } ?: subtitleCandidates.firstOrNull()
+        val video = TunerSelectionPolicy.selectVideo(streams)
+        val audioCandidates = streams.filter { TunerSelectionPolicy.isSupportedAudioStreamType(it.streamType) }
+        val audio = preferredAudioTrackId?.let { wanted -> audioCandidates.firstOrNull { TunerSelectionPolicy.trackIdForAudio(it) == wanted } } ?: audioCandidates.firstOrNull()
+        val subtitleCandidates = streams.filter(TunerSelectionPolicy::isCaptionStream)
+        val subtitle = preferredSubtitleTrackId?.let { wanted -> subtitleCandidates.firstOrNull { TunerSelectionPolicy.trackIdForSubtitle(it) == wanted } } ?: subtitleCandidates.firstOrNull()
         return AvStreamSelection(serviceKey, pcrPid, video, audio, subtitle)
     }
 
     fun tracksFor(streams: List<AribElementaryStream>): List<TisTrack> = buildList {
-        streams.filter { it.streamType in VIDEO_STREAM_TYPES }.forEach { stream ->
-            add(TisTrack(trackIdForVideo(stream), android.media.tv.TvTrackInfo.TYPE_VIDEO, stream.elementaryPid, stream.streamType, stream.componentTag, stream.componentType, stream.languageCodes.firstOrNull()))
+        streams.filter { TunerSelectionPolicy.isSupportedVideoStreamType(it.streamType) }.forEach { stream ->
+            add(TisTrack(TunerSelectionPolicy.trackIdForVideo(stream), android.media.tv.TvTrackInfo.TYPE_VIDEO, stream.elementaryPid, stream.streamType, stream.componentTag, stream.componentType, stream.languageCodes.firstOrNull()))
         }
-        streams.filter { it.streamType in AUDIO_STREAM_TYPES }.forEach { stream ->
-            add(TisTrack(trackIdForAudio(stream), android.media.tv.TvTrackInfo.TYPE_AUDIO, stream.elementaryPid, stream.streamType, stream.componentTag, stream.componentType, stream.languageCodes.firstOrNull()))
+        streams.filter { TunerSelectionPolicy.isSupportedAudioStreamType(it.streamType) }.forEach { stream ->
+            add(TisTrack(TunerSelectionPolicy.trackIdForAudio(stream), android.media.tv.TvTrackInfo.TYPE_AUDIO, stream.elementaryPid, stream.streamType, stream.componentTag, stream.componentType, stream.languageCodes.firstOrNull()))
         }
-        streams.filter { isCaptionStream(it) }.forEach { stream ->
-            add(TisTrack(trackIdForSubtitle(stream), android.media.tv.TvTrackInfo.TYPE_SUBTITLE, stream.elementaryPid, stream.streamType, stream.componentTag, stream.componentType, stream.languageCodes.firstOrNull(), stream.dataComponentId, captionKindFor(stream)))
+        streams.filter(TunerSelectionPolicy::isCaptionStream).forEach { stream ->
+            add(TisTrack(TunerSelectionPolicy.trackIdForSubtitle(stream), android.media.tv.TvTrackInfo.TYPE_SUBTITLE, stream.elementaryPid, stream.streamType, stream.componentTag, stream.componentType, stream.languageCodes.firstOrNull(), stream.dataComponentId, TunerSelectionPolicy.captionKind(stream)))
         }
     }
-
-    fun trackIdForVideo(stream: AribElementaryStream): String = trackIdForVideoStream(stream)
-    fun trackIdForAudio(stream: AribElementaryStream): String = trackIdForAudioStream(stream)
-    fun trackIdForSubtitle(stream: AribElementaryStream): String = trackIdForSubtitleStream(stream)
 
     fun startPlayback(selection: AvStreamSelection): PlaybackPipeline.StartResult? {
         val channel = currentTune ?: return null
@@ -670,59 +652,5 @@ class TunerController(
 
     companion object {
         private const val SECTION_FILTER_BUFFER_BYTES = 64 * 1024L
-        private const val SECTION_EVENT_MAX_BYTES = 4096L
-        private val R51_VIDEO_STREAM_TYPES = setOf(0x02, 0x1b)
-        private val VIDEO_STREAM_TYPES = R51_VIDEO_STREAM_TYPES + 0x24
-        private val AUDIO_STREAM_TYPES = setOf(0x03, 0x04, 0x0f)
-        private val CAPTION_DATA_COMPONENT_IDS = setOf(0x0008, 0x0012)
-
-        fun isR51SupportedVideoStreamTypeForTest(streamType: Int): Boolean = streamType in R51_VIDEO_STREAM_TYPES
-
-        fun selectVideoForTest(streams: List<AribElementaryStream>): AribElementaryStream? =
-            streams.firstOrNull { it.streamType in R51_VIDEO_STREAM_TYPES }
-
-        fun hasR51SupportedVideoForTest(streams: List<AribElementaryStream>): Boolean =
-            streams.any { it.streamType in R51_VIDEO_STREAM_TYPES }
-
-        fun sectionReadDecisionForTest(expected: Int, actual: Int, generationMatches: Boolean): SectionReadDecision = when {
-            !generationMatches -> SectionReadDecision.STALE_GENERATION
-            expected <= 0 -> SectionReadDecision.READ_ERROR
-            actual == expected -> SectionReadDecision.INGEST
-            actual > 0 -> SectionReadDecision.SHORT_READ
-            else -> SectionReadDecision.READ_ERROR
-        }
-
-        fun sectionDataLengthDecisionForTest(dataLength: Long): SectionDataLengthDecision = when {
-            dataLength <= 0L -> SectionDataLengthDecision.MALFORMED
-            dataLength > SECTION_EVENT_MAX_BYTES -> SectionDataLengthDecision.OVERSIZED
-            else -> SectionDataLengthDecision.ACCEPT
-        }
-
-        fun trackIdForVideoStream(stream: AribElementaryStream): String = "video:${stream.elementaryPid}"
-
-        fun trackIdForAudioStream(stream: AribElementaryStream): String =
-            stream.componentTag?.let { "audio:${stream.elementaryPid}:$it" } ?: "audio:${stream.elementaryPid}"
-
-        fun trackIdForSubtitleStream(stream: AribElementaryStream): String =
-            stream.componentTag?.let { "subtitle:${stream.elementaryPid}:$it" } ?: "subtitle:${stream.elementaryPid}"
-
-        fun isCaptionStream(stream: AribElementaryStream): Boolean =
-            stream.isCaption || stream.dataComponentId in CAPTION_DATA_COMPONENT_IDS
-
-        fun captionKindFor(stream: AribElementaryStream): String = when {
-            stream.isSuperimpose -> "superimpose"
-            stream.dataComponentId == 0x0012 -> "one-seg-caption"
-            else -> "caption"
-        }
-
-        fun isCs110SelectorAllowedForTest(satelliteBand: String?, selector: StreamSelector): Boolean =
-            satelliteBand != "110CS" || selector.type == StreamSelectorType.NONE
-
-        fun isSelectableTrackForTest(type: Int, trackId: String?, tracks: List<TisTrack>): Boolean = when (type) {
-            android.media.tv.TvTrackInfo.TYPE_AUDIO -> trackId != null && tracks.any { it.type == type && it.id == trackId }
-            android.media.tv.TvTrackInfo.TYPE_VIDEO -> trackId != null && tracks.firstOrNull { it.type == type }?.id == trackId
-            android.media.tv.TvTrackInfo.TYPE_SUBTITLE -> trackId != null && tracks.any { it.type == type && it.id == trackId }
-            else -> false
-        }
     }
 }
