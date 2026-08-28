@@ -68,7 +68,7 @@ class TisR51FixedPlanAcceptanceTest {
         val video = components.getJSONArray("video").getJSONObject(0)
         check(video.getString("codec") == "HEVC")
         check(video.getString("parseStatus") == "OK")
-        check(video.getString("diagnosticCode") == "UNSUPPORTED_R51_CODEC_SIGNALING")
+        check(!video.has("diagnosticCode"))
         check(!video.has("r51PlaybackSupported"))
         check(!video.has("liveViewableClaim"))
         val providerData = org.json.JSONObject(TvProviderWriter.programProviderDataForTest(
@@ -778,7 +778,6 @@ class TisR51FixedPlanAcceptanceTest {
             language = obj.optString("language").takeIf { it.isNotBlank() },
             dataComponentId = obj.optInt("dataComponentId").takeIf { obj.has("dataComponentId") },
             captionServiceKind = obj.optString("captionServiceKind").takeIf { it.isNotBlank() },
-            diagnosticCode = obj.optString("diagnosticCode").takeIf { it.isNotBlank() },
             parseStatus = obj.optString("parseStatus", "OK"),
         )
     }
