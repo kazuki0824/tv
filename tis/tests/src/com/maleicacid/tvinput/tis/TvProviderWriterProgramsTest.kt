@@ -30,7 +30,7 @@ class TvProviderWriterProgramsTest {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
-        val p = ProgramRecord(key, 10, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":10}", 1_700_000_000_000L, 1_800_000L, "News", "desc").withCanonicalProgramProviderDataForTest()
+        val p = ProgramRecord(key, 10, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":10}", 1_700_000_000_000L, 1_800_000L, "News", "desc")
         val first = writer.upsertPrograms(listOf(p))
         check(first.inserted == 1)
         val second = writer.upsertPrograms(listOf(p.copy(description = "updated", shortDescription = "updated")))
@@ -50,7 +50,7 @@ class TvProviderWriterProgramsTest {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
-        val original = ProgramRecord(key, 10, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":10}", 1_700_000_000_000L, 1_800_000L, "News", "desc").withCanonicalProgramProviderDataForTest()
+        val original = ProgramRecord(key, 10, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":10}", 1_700_000_000_000L, 1_800_000L, "News", "desc")
         val first = writer.upsertPrograms(listOf(original))
         check(first.inserted == 1) { first.toString() }
 
@@ -59,7 +59,7 @@ class TvProviderWriterProgramsTest {
             durationMillis = 1_800_000L,
             shortDescription = "moved",
             description = "moved",
-        ).withCanonicalProgramProviderDataForTest()
+        )
         val second = writer.upsertPrograms(listOf(moved))
         check(second.inserted == 0) { second.toString() }
         check(second.updated == 1) { second.toString() }
@@ -83,7 +83,7 @@ class TvProviderWriterProgramsTest {
             1L,
             "News",
             "desc",
-        ).withCanonicalProgramProviderDataForTest()
+        )
 
         val result = writer.upsertPrograms(listOf(overflow))
 
@@ -105,7 +105,7 @@ class TvProviderWriterProgramsTest {
             "Scrambled EPG",
             "desc",
             requiresCas = true,
-        ).withCanonicalProgramProviderDataForTest()
+        )
         writer.upsertPrograms(listOf(p))
         val providerData = store.programs.values.single().getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)
         check(providerData.utf8Contains("\"requiresCas\":true"))
@@ -138,7 +138,7 @@ class TvProviderWriterProgramsTest {
                 components = AribComponents(audio = listOf(AribComponentEntry(esPid = TsPid(256), streamType = 0x0f, componentTag = 1, componentType = 3, codec = "AAC", language = "jpn", parseStatus = "OK"))),
             ),
             diagnosticText = "unknownCount=0",
-        ).withCanonicalProgramProviderDataForTest()
+        )
         writer.upsertPrograms(listOf(p))
         val providerData = store.programs.values.single().getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)
         check(providerData.utf8Contains("extendedItems"))
@@ -170,7 +170,7 @@ class TvProviderWriterProgramsTest {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        val p = ProgramRecord(key, 12, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":12}", 1_700_000_000_000L, 1_800_000L, "News", "desc").withCanonicalProgramProviderDataForTest()
+        val p = ProgramRecord(key, 12, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":12}", 1_700_000_000_000L, 1_800_000L, "News", "desc")
 
         val missingChannel = coordinator.publish(ChannelScanController.PublishMode.LIVE_TUNE_REFRESH, listOf(p), allowedServiceKeys = null)
         check(missingChannel.inserted == 0 && missingChannel.updated == 0 && store.programs.isEmpty())
@@ -210,7 +210,7 @@ class TvProviderWriterProgramsTest {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        val p = ProgramRecord(key, 13, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":13}", 1_700_000_000_000L, 1_800_000L, "News", "desc").withCanonicalProgramProviderDataForTest()
+        val p = ProgramRecord(key, 13, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":13}", 1_700_000_000_000L, 1_800_000L, "News", "desc")
         val info = PlaybackPipeline.VideoFormatInfo(0x1b, "video/avc", 1280, 720)
         val metadata = mapOf(ProgramVideoMetadataPolicy.key(p) to info)
 
@@ -222,9 +222,7 @@ class TvProviderWriterProgramsTest {
         check(!providerData.utf8Contains("video/avc"))
         check(!providerData.utf8Contains("videoFormat"))
 
-        val laterEitRecord = p
-            .copy(durationMillis = 2_400_000L, description = "EIT更新", shortDescription = "EIT更新")
-            .withCanonicalProgramProviderDataForTest()
+        val laterEitRecord = p.copy(durationMillis = 2_400_000L, description = "EIT更新", shortDescription = "EIT更新")
         val mergedLaterEit = ProgramVideoMetadataPolicy.merge(listOf(laterEitRecord), metadata)
         val updated = coordinator.publish(ChannelScanController.PublishMode.LIVE_TUNE_REFRESH, mergedLaterEit, allowedServiceKeys = null)
         check(updated.updated == 1)
@@ -238,9 +236,9 @@ class TvProviderWriterProgramsTest {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
-        val p1 = ProgramRecord(key, 21, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":21}", 1_700_000_000_000L, 1_800_000L, "P1", "desc").withCanonicalProgramProviderDataForTest()
-        val p2 = ProgramRecord(key, 22, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":22}", 1_700_000_600_000L, 600_000L, "P2", "desc").withCanonicalProgramProviderDataForTest()
-        val p3 = ProgramRecord(key, 23, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":23}", 1_700_001_200_000L, 600_000L, "P3", "desc").withCanonicalProgramProviderDataForTest()
+        val p1 = ProgramRecord(key, 21, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":21}", 1_700_000_000_000L, 1_800_000L, "P1", "desc")
+        val p2 = ProgramRecord(key, 22, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":22}", 1_700_000_600_000L, 600_000L, "P2", "desc")
+        val p3 = ProgramRecord(key, 23, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":23}", 1_700_001_200_000L, 600_000L, "P3", "desc")
         val first = writer.upsertPrograms(listOf(p1, p2, p3))
         check(first.inserted == 3)
 
@@ -282,8 +280,8 @@ class TvProviderWriterProgramsTest {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
-        val defined = ProgramRecord(key, 31, "defined", 1_700_000_000_000L, 600_000L, "Defined", "desc").withCanonicalProgramProviderDataForTest()
-        val nowUndefined = ProgramRecord(key, 32, "now-undefined", 1_700_000_300_000L, 600_000L, "Undefined", "desc").withCanonicalProgramProviderDataForTest()
+        val defined = ProgramRecord(key, 31, "defined", 1_700_000_000_000L, 600_000L, "Defined", "desc")
+        val nowUndefined = ProgramRecord(key, 32, "now-undefined", 1_700_000_300_000L, 600_000L, "Undefined", "desc")
         check(writer.upsertPrograms(listOf(defined, nowUndefined)).inserted == 2)
 
         val result = writer.upsertProgramsForWindows(
