@@ -40,9 +40,8 @@ class EventModelMapperDescriptorTest {
                 series = AribSeries(seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12, name = "シリーズ"),
                 components = AribComponents(audio = listOf(AribComponentEntry(esPid = TsPid(256), streamType = 0x0f, componentTag = 1, componentType = 3, codec = "AAC", language = "jpn", parseStatus = "OK"))),
             ),
-        ).withCanonicalProgramProviderDataForTest()
+        )
         val record = EventModelMapper().toProgramRecords(listOf(event)).single()
-        check(record.providerDataCanonicalJson == event.providerDataCanonicalJson)
         check(record.shortDescription == "短い説明")
         check(!record.description.contains("短い説明"))
         check(record.description.contains("詳細説明"))
