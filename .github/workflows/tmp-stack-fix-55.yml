@@ -1,0 +1,29 @@
+name: tmp stack fix 55
+on:
+  push:
+    branches:
+      - tmp/stack-fix-control-20260829
+    paths:
+      - .github/workflows/tmp-stack-fix-55.yml
+permissions:
+  contents: write
+jobs:
+  merge55:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Merge latest #54 into #55 on temp ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin agent/implement-tis-arib-si-design-pr53 docs/future-work-design-completion
+          test "$(git rev-parse origin/agent/implement-tis-arib-si-design-pr53)" = "29a41c10b2c64b0be4655a0517e306506edaf29b"
+          test "$(git rev-parse origin/docs/future-work-design-completion)" = "43b8ac5a7e431d2d4ef274ad2907d819364a9ccf"
+          git checkout -B merged55 origin/agent/implement-tis-arib-si-design-pr53
+          git merge --no-ff --no-edit origin/docs/future-work-design-completion
+          git diff --check origin/agent/implement-tis-arib-si-design-pr53..HEAD
+          git push --force origin HEAD:refs/heads/tmp/latest55-20260829
