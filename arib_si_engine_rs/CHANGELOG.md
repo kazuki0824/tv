@@ -1,3 +1,9 @@
+# r50ef_review_followup_2
+
+- Program provider-dataを、bulk transactionと同じRustのEIT event / service semantic facts / descriptor診断から直接canonical encodeする形へ変更し、Kotlin `programRequest` とJNI再parse経路を削除した。
+- ARIB content descriptorの2つのuser nibbleを結合した保存値を0..255の1 byteとしてschemaとvalidatorに固定した。
+- Android/Soong build、atest、CTS、VTS、実機確認は未実施。本commitのRust/Kotlin host検証はPR checksを正とする。
+
 # r50ef_review_followup
 
 - bulk snapshotを一回取得したcollector stateから型付きSerde DTO群へ直接投影し、手組みJSONの再parse、read回数`snapshotGeneration`、CAS用service/CA複製、private section保持、discovery stage別readを削除した。

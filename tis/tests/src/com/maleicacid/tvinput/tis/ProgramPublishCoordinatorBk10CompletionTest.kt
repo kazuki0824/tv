@@ -18,7 +18,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         durationMillis = 1_800_000L,
         title = "News",
         description = "desc",
-    )
+    ).withCanonicalProgramProviderDataForTest()
 
     @Test fun requiredQueryFailureDoesNotUpdateSignatureOrDeleteAndNextSuccessPublishes() {
         val store = FakeStore(failServiceIndexOnce = true)

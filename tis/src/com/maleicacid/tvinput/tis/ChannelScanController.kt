@@ -1,7 +1,6 @@
 package com.maleicacid.tvinput.tis
 
 import android.content.Context
-import android.media.tv.TvInputService
 import android.util.Log
 import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.AribSiEngine
@@ -24,6 +23,7 @@ class ChannelScanController(
     private val context: Context,
     private val inputId: String,
     private val engine: AribSiEngine,
+    tunerPriorityHintUseCase: Int,
     private val cancelRequested: AtomicBoolean = AtomicBoolean(false),
 ) : AutoCloseable {
     data class ScanDiagnostic(val candidate: ScanCandidate, val message: String)
@@ -71,7 +71,7 @@ class ChannelScanController(
         val success: Boolean get() = failures.isEmpty()
     }
 
-    private val tunerController = TunerController(context, inputId, TvInputService.PRIORITY_HINT_USE_CASE_TYPE_SCAN)
+    private val tunerController = TunerController(context, inputId, tunerPriorityHintUseCase)
     private val ingestController = SectionIngestController(engine)
     private val tvProviderWriter = TvProviderWriter(context, inputId)
     private val programPublishCoordinator = ProgramPublishCoordinator(tvProviderWriter)
