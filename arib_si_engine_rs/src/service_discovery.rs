@@ -3,7 +3,7 @@ use crate::ca_descriptor::{
     parse_ca_descriptors_with_diagnostics, CaDescriptor, CaDescriptorParseContext,
     MalformedCaDescriptorDiagnostic,
 };
-use crate::discovery_requirements::requirement_for_original_network_id;
+use crate::discovery_requirements::{optional_table_requirement, DiscoveryProfile};
 use crate::eit::{EitEvent, EitStore, EitUpdateWindow};
 use crate::sections::{parse_section_header, section_crc_valid};
 use std::collections::{BTreeMap, BTreeSet};
@@ -134,11 +134,13 @@ pub struct DiscoverySnapshotEnvelope {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DiscoveryMissingComponent {
+pub struct TableRequirementStatus {
     pub component: &'static str,
     pub original_network_id: Option<u16>,
     pub transport_stream_id: Option<u16>,
     pub service_id: Option<u16>,
+    pub required: bool,
+    pub complete: bool,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -162,26 +164,50 @@ pub struct ServiceSemanticFacts {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DiscoveryCollectionState {
     pub snapshot: DiscoverySnapshot,
-    pub pat_complete: bool,
-    pub sdt_complete: bool,
-    pub nit_complete: bool,
-    pub required_pmts_complete: bool,
-    pub bat_complete: bool,
-    pub sdt_other_complete: bool,
-    pub nit_other_complete: bool,
-    pub satellite_tables_required: bool,
-    pub missing_components: Vec<&'static str>,
-    pub missing_components_by_scope: Vec<DiscoveryMissingComponent>,
+    pub table_requirements: Vec<TableRequirementStatus>,
     pub semantic_facts_by_service: Vec<ServiceSemanticFacts>,
 }
 
 impl DiscoveryCollectionState {
     pub fn is_complete(&self) -> bool {
-        self.pat_complete
-            && self.sdt_complete
-            && self.nit_complete
-            && self.required_pmts_complete
-            && self.missing_components.is_empty()
+        !self.table_requirements.is_empty()
+            && self
+                .table_requirements
+                .iter()
+                .filter(|status| status.required)
+                .all(|status| status.complete)
+    }
+
+    #[cfg(test)]
+    pub fn missing_components(&self) -> Vec<&'static str> {
+        let mut missing = self
+            .table_requirements
+            .iter()
+            .filter(|status| status.required && !status.complete)
+            .map(|status| status.component)
+            .collect::<Vec<_>>();
+        missing.sort_unstable();
+        missing.dedup();
+        missing
+    }
+
+    #[cfg(test)]
+    pub fn missing_components_by_scope(&self) -> Vec<TableRequirementStatus> {
+        self.table_requirements
+            .iter()
+            .filter(|status| status.required && !status.complete)
+            .cloned()
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn component_complete(&self, component: &str) -> bool {
+        let statuses = self
+            .table_requirements
+            .iter()
+            .filter(|status| status.required && status.component == component)
+            .collect::<Vec<_>>();
+        !statuses.is_empty() && statuses.iter().all(|status| status.complete)
     }
 
     pub fn is_partially_complete(&self) -> bool {
@@ -278,6 +304,7 @@ impl SectionTracker {
 #[derive(Default)]
 pub struct ServiceDiscoveryCollector {
     engine: ServiceDiscoveryEngine,
+    discovery_profile: DiscoveryProfile,
     section_trackers: BTreeMap<(u16, u8, u16, u16), SectionTracker>,
     nit_transport_scopes: BTreeMap<(u8, u16), BTreeSet<(u16, u16)>>,
     bat_transport_scopes: BTreeMap<u16, BTreeSet<(u16, u16)>>,
@@ -647,7 +674,7 @@ impl ServiceDiscoveryEngine {
             CaDescriptorParseContext {
                 pid: 0x0001,
                 table_id: 0x01,
-                table_id_extension: parse_section_header(section, 12)
+                table_id_extension: parse_section_header(section)
                     .and_then(|h| h.table_id_extension),
                 service_id: None,
                 elementary_pid: None,
@@ -984,8 +1011,13 @@ impl ServiceDiscoveryEngine {
 }
 
 impl ServiceDiscoveryCollector {
+    pub fn set_discovery_profile(&mut self, profile: DiscoveryProfile) {
+        self.discovery_profile = profile;
+    }
+
     /// サービスが r51 視聴可能になる前に PMTセクションフィルター を開く必要がある。
     /// サービス の公開可否や視聴可否に依存せず、PAT 由来の PMT PID を返す。
+    #[cfg(test)]
     pub fn pmt_pids_for_section_filters(&self) -> Vec<u16> {
         let mut pids: Vec<u16> = self.engine.pat_programs.values().copied().collect();
         pids.extend(
@@ -1051,226 +1083,165 @@ impl ServiceDiscoveryCollector {
             })
         };
 
-        let mut satellite_tables_required = false;
-        let mut require_bat = false;
-        let mut require_sdt_other = false;
-        let mut require_nit_other = false;
-        let mut bat_complete = true;
-        let mut sdt_other_complete = true;
-        let mut nit_other_complete = true;
-        let mut missing_components_by_scope = Vec::new();
-        for transport in &snapshot.transports {
-            let req = requirement_for_original_network_id(transport.original_network_id);
-            let is_satellite_transport =
-                req.require_bat || req.require_sdt_other || req.require_nit_other;
-            satellite_tables_required |= is_satellite_transport;
-            require_bat |= req.require_bat;
-            require_sdt_other |= req.require_sdt_other;
-            require_nit_other |= req.require_nit_other;
+        let req = optional_table_requirement(self.discovery_profile);
+        let bat_complete = self.table_complete(0x0011, 0x4a);
+        let sdt_other_complete = self.table_complete(0x0011, 0x46);
+        let nit_other_complete = self.table_complete(0x0010, 0x41);
 
-            let transport_bat_complete = !req.require_bat
-                || self.bat_complete_for_transport(
-                    transport.original_network_id,
-                    transport.transport_stream_id,
-                );
-            let transport_sdt_other_complete = !req.require_sdt_other
-                || self.sdt_other_complete_for_transport(
-                    transport.original_network_id,
-                    transport.transport_stream_id,
-                );
-            let transport_nit_other_complete = !req.require_nit_other
-                || self.nit_complete_for_transport(
-                    0x41,
-                    transport.original_network_id,
-                    transport.transport_stream_id,
-                );
-            bat_complete &= transport_bat_complete;
-            sdt_other_complete &= transport_sdt_other_complete;
-            nit_other_complete &= transport_nit_other_complete;
-
-            if req.require_bat && !transport_bat_complete {
-                missing_components_by_scope.push(DiscoveryMissingComponent {
-                    component: "BAT",
-                    original_network_id: Some(transport.original_network_id),
-                    transport_stream_id: Some(transport.transport_stream_id),
+        let mut table_requirements = vec![TableRequirementStatus {
+            component: "PAT",
+            original_network_id: None,
+            transport_stream_id: None,
+            service_id: None,
+            required: true,
+            complete: pat_complete,
+        }];
+        if snapshot.transports.is_empty() {
+            table_requirements.push(TableRequirementStatus {
+                component: "SDT",
+                original_network_id: None,
+                transport_stream_id: None,
+                service_id: None,
+                required: true,
+                complete: sdt_complete,
+            });
+            table_requirements.push(TableRequirementStatus {
+                component: "NIT",
+                original_network_id: None,
+                transport_stream_id: None,
+                service_id: None,
+                required: true,
+                complete: nit_complete,
+            });
+            table_requirements.push(TableRequirementStatus {
+                component: "SDT-other",
+                original_network_id: None,
+                transport_stream_id: None,
+                service_id: None,
+                required: req.require_sdt_other,
+                complete: sdt_other_complete,
+            });
+            table_requirements.push(TableRequirementStatus {
+                component: "NIT-other",
+                original_network_id: None,
+                transport_stream_id: None,
+                service_id: None,
+                required: req.require_nit_other,
+                complete: nit_other_complete,
+            });
+        } else {
+            for transport in &snapshot.transports {
+                let onid = transport.original_network_id;
+                let tsid = transport.transport_stream_id;
+                table_requirements.push(TableRequirementStatus {
+                    component: "SDT",
+                    original_network_id: Some(onid),
+                    transport_stream_id: Some(tsid),
                     service_id: None,
+                    required: true,
+                    complete: self.sdt_actual_complete_for_transport(onid, tsid),
                 });
-            }
-            if req.require_sdt_other && !transport_sdt_other_complete {
-                missing_components_by_scope.push(DiscoveryMissingComponent {
+                table_requirements.push(TableRequirementStatus {
+                    component: "NIT",
+                    original_network_id: Some(onid),
+                    transport_stream_id: Some(tsid),
+                    service_id: None,
+                    required: true,
+                    complete: self.nit_complete_for_transport(0x40, onid, tsid),
+                });
+                table_requirements.push(TableRequirementStatus {
                     component: "SDT-other",
-                    original_network_id: Some(transport.original_network_id),
-                    transport_stream_id: Some(transport.transport_stream_id),
+                    original_network_id: Some(onid),
+                    transport_stream_id: Some(tsid),
                     service_id: None,
+                    required: req.require_sdt_other,
+                    complete: self.sdt_other_complete_for_transport(onid, tsid),
                 });
-            }
-            if req.require_nit_other && !transport_nit_other_complete {
-                missing_components_by_scope.push(DiscoveryMissingComponent {
+                table_requirements.push(TableRequirementStatus {
                     component: "NIT-other",
-                    original_network_id: Some(transport.original_network_id),
-                    transport_stream_id: Some(transport.transport_stream_id),
+                    original_network_id: Some(onid),
+                    transport_stream_id: Some(tsid),
                     service_id: None,
+                    required: req.require_nit_other,
+                    complete: self.nit_complete_for_transport(0x41, onid, tsid),
                 });
             }
         }
-        if !require_bat {
-            bat_complete = self.table_complete(0x0011, 0x4a);
+        table_requirements.push(TableRequirementStatus {
+            component: "BAT",
+            original_network_id: None,
+            transport_stream_id: None,
+            service_id: None,
+            required: false,
+            complete: bat_complete,
+        });
+        if snapshot.services.is_empty() && snapshot.pmt_pids_by_service.is_empty() {
+            table_requirements.push(TableRequirementStatus {
+                component: "PMT",
+                original_network_id: None,
+                transport_stream_id: None,
+                service_id: None,
+                required: true,
+                complete: false,
+            });
         }
-        if !require_sdt_other {
-            sdt_other_complete = self.table_complete(0x0011, 0x46);
+        for service in &snapshot.services {
+            table_requirements.push(TableRequirementStatus {
+                component: "PMT",
+                original_network_id: Some(service.original_network_id),
+                transport_stream_id: Some(service.transport_stream_id),
+                service_id: Some(service.service_id),
+                required: true,
+                complete: service.pmt_pid.is_some() && service.pcr_pid.is_some(),
+            });
         }
-        if !require_nit_other {
-            nit_other_complete = self.table_complete(0x0010, 0x41);
-        }
-
         for mapping in &snapshot.pmt_pids_by_service {
-            let pmt_loaded_for_service = snapshot.services.iter().any(|service| {
+            if !snapshot.services.iter().any(|service| {
                 service.original_network_id == mapping.original_network_id
                     && service.transport_stream_id == mapping.transport_stream_id
                     && service.service_id == mapping.service_id
-                    && service.pmt_pid == Some(mapping.pmt_pid)
-                    && service.pcr_pid.is_some()
-            });
-            if !pmt_loaded_for_service {
-                missing_components_by_scope.push(DiscoveryMissingComponent {
+            }) {
+                table_requirements.push(TableRequirementStatus {
                     component: "PMT",
                     original_network_id: Some(mapping.original_network_id),
                     transport_stream_id: Some(mapping.transport_stream_id),
                     service_id: Some(mapping.service_id),
+                    required: true,
+                    complete: false,
                 });
             }
         }
-        let required_pmts_complete = !snapshot.pmt_pids_by_service.is_empty()
-            && !missing_components_by_scope
-                .iter()
-                .any(|m| m.component == "PMT");
-        let mut missing_components = Vec::new();
-
-        if !pat_complete {
-            missing_components.push("PAT");
-            missing_components_by_scope.push(DiscoveryMissingComponent {
-                component: "PAT",
-                original_network_id: None,
-                transport_stream_id: None,
-                service_id: None,
-            });
-        }
-        if !sdt_complete {
-            missing_components.push("SDT");
-            for transport in &snapshot.transports {
-                if !self.sdt_actual_complete_for_transport(
-                    transport.original_network_id,
-                    transport.transport_stream_id,
-                ) {
-                    missing_components_by_scope.push(DiscoveryMissingComponent {
-                        component: "SDT",
-                        original_network_id: Some(transport.original_network_id),
-                        transport_stream_id: Some(transport.transport_stream_id),
-                        service_id: None,
-                    });
-                }
-            }
-        }
-        if !nit_complete {
-            missing_components.push("NIT");
-            for transport in &snapshot.transports {
-                if !self.nit_complete_for_transport(
-                    0x40,
-                    transport.original_network_id,
-                    transport.transport_stream_id,
-                ) {
-                    missing_components_by_scope.push(DiscoveryMissingComponent {
-                        component: "NIT",
-                        original_network_id: Some(transport.original_network_id),
-                        transport_stream_id: Some(transport.transport_stream_id),
-                        service_id: None,
-                    });
-                }
-            }
-        }
-        if !required_pmts_complete {
-            missing_components.push("PMT");
-        }
-        if require_bat && !bat_complete {
-            missing_components.push("BAT");
-        }
-        if require_sdt_other && !sdt_other_complete {
-            missing_components.push("SDT-other");
-        }
-        if require_nit_other && !nit_other_complete {
-            missing_components.push("NIT-other");
-        }
-        missing_components.sort_unstable();
-        missing_components.dedup();
-        missing_components_by_scope.sort_by_key(|m| {
+        table_requirements.sort_by_key(|status| {
             (
-                m.component,
-                m.original_network_id,
-                m.transport_stream_id,
-                m.service_id,
-            )
-        });
-        missing_components_by_scope.dedup_by_key(|m| {
-            (
-                m.component,
-                m.original_network_id,
-                m.transport_stream_id,
-                m.service_id,
+                status.component,
+                status.original_network_id,
+                status.transport_stream_id,
+                status.service_id,
             )
         });
 
         let mut semantic_facts_by_service = Vec::new();
         for service in &snapshot.services {
-            let req = requirement_for_original_network_id(service.original_network_id);
-            let mut missing_for_service = Vec::new();
-            if !pat_complete {
-                missing_for_service.push("PAT");
-            }
-            if req.require_sdt_actual
-                && !self.sdt_actual_complete_for_transport(
-                    service.original_network_id,
-                    service.transport_stream_id,
-                )
-            {
-                missing_for_service.push("SDT");
-            }
-            if req.require_nit_actual
-                && !self.nit_complete_for_transport(
-                    0x40,
-                    service.original_network_id,
-                    service.transport_stream_id,
-                )
-            {
-                missing_for_service.push("NIT");
-            }
-            if service.pmt_pid.is_none() || service.pcr_pid.is_none() {
-                missing_for_service.push("PMT");
-            }
-            if req.require_bat
-                && !self.bat_complete_for_transport(
-                    service.original_network_id,
-                    service.transport_stream_id,
-                )
-            {
-                missing_for_service.push("BAT");
-            }
-            if req.require_sdt_other
-                && !self.sdt_other_complete_for_transport(
-                    service.original_network_id,
-                    service.transport_stream_id,
-                )
-            {
-                missing_for_service.push("SDT-other");
-            }
-            if req.require_nit_other
-                && !self.nit_complete_for_transport(
-                    0x41,
-                    service.original_network_id,
-                    service.transport_stream_id,
-                )
-            {
-                missing_for_service.push("NIT-other");
-            }
+            let mut missing_for_service = table_requirements
+                .iter()
+                .filter(|status| {
+                    status.required
+                        && !status.complete
+                        && status
+                            .original_network_id
+                            .map(|value| value == service.original_network_id)
+                            .unwrap_or(true)
+                        && status
+                            .transport_stream_id
+                            .map(|value| value == service.transport_stream_id)
+                            .unwrap_or(true)
+                        && status
+                            .service_id
+                            .map(|value| value == service.service_id)
+                            .unwrap_or(true)
+                })
+                .map(|status| status.component)
+                .collect::<Vec<_>>();
             missing_for_service.sort_unstable();
             missing_for_service.dedup();
             let has_program_ca_descriptor = !service.program_ca_descriptors.is_empty();
@@ -1319,16 +1290,7 @@ impl ServiceDiscoveryCollector {
 
         DiscoveryCollectionState {
             snapshot,
-            pat_complete,
-            sdt_complete,
-            nit_complete,
-            required_pmts_complete,
-            bat_complete,
-            sdt_other_complete,
-            nit_other_complete,
-            satellite_tables_required,
-            missing_components,
-            missing_components_by_scope,
+            table_requirements,
             semantic_facts_by_service,
         }
     }
@@ -1338,7 +1300,7 @@ impl ServiceDiscoveryCollector {
     }
 
     fn invalidate_changed_table(&mut self, pid: u16, section: &[u8]) {
-        let Some(header) = parse_section_header(section, 12) else {
+        let Some(header) = parse_section_header(section) else {
             return;
         };
         let Some(table_extension) = header.table_id_extension else {
@@ -1382,7 +1344,7 @@ impl ServiceDiscoveryCollector {
     }
 
     fn section_version_changed(&self, pid: u16, section: &[u8]) -> bool {
-        let Some(header) = parse_section_header(section, 12) else {
+        let Some(header) = parse_section_header(section) else {
             return false;
         };
         if header.current_next_indicator != Some(true) {
@@ -1402,7 +1364,7 @@ impl ServiceDiscoveryCollector {
     }
 
     fn track_section(&mut self, pid: u16, section: &[u8]) {
-        let Some(header) = parse_section_header(section, 12) else {
+        let Some(header) = parse_section_header(section) else {
             return;
         };
         if header.current_next_indicator != Some(true) {
@@ -1428,7 +1390,7 @@ impl ServiceDiscoveryCollector {
     }
 
     fn track_transport_scopes(&mut self, section: &[u8]) {
-        let Some(header) = parse_section_header(section, 12) else {
+        let Some(header) = parse_section_header(section) else {
             return;
         };
         if header.current_next_indicator != Some(true) {
@@ -1533,6 +1495,7 @@ impl ServiceDiscoveryCollector {
             })
     }
 
+    #[cfg(test)]
     fn bat_complete_for_transport(
         &self,
         original_network_id: u16,
@@ -1560,25 +1523,25 @@ fn checked_end(start: usize, len: usize, limit: usize) -> Option<usize> {
 }
 
 fn section_len(section: &[u8]) -> usize {
-    parse_section_header(section, 12)
+    parse_section_header(section)
         .map(|header| header.section_length)
         .unwrap_or_default()
 }
 
 fn valid_current_section(section: &[u8]) -> bool {
-    let Some(header) = parse_section_header(section, 12) else {
+    let Some(header) = parse_section_header(section) else {
         return false;
     };
     if header.current_next_indicator == Some(false) {
         return false;
     }
-    section_crc_valid(section, 12)
+    section_crc_valid(section)
 }
 
 const TRACKER_GLOBAL_SCOPE: u16 = 0xffff;
 
 fn tracker_scope_extension(section: &[u8]) -> Option<u16> {
-    let header = parse_section_header(section, 12)?;
+    let header = parse_section_header(section)?;
     match header.table_id {
         0x42 | 0x46 => sdt_transport_scope_from_section(section).map(|(_, onid)| onid),
         _ => Some(TRACKER_GLOBAL_SCOPE),
@@ -1586,7 +1549,7 @@ fn tracker_scope_extension(section: &[u8]) -> Option<u16> {
 }
 
 fn sdt_transport_scope_from_section(section: &[u8]) -> Option<(u16, u16)> {
-    let header = parse_section_header(section, 12)?;
+    let header = parse_section_header(section)?;
     let tsid = header.table_id_extension?;
     if section.len() < 11 {
         return None;
@@ -1959,6 +1922,7 @@ fn retain_text_decode_diagnostic(diagnostics: &mut Vec<String>, diagnostic: Opti
 #[cfg(test)]
 mod tests {
     use super::{DiscoveryPublishStage, ServiceDiscoveryCollector, ServiceDiscoveryEngine};
+    use crate::discovery_requirements::DiscoveryProfile;
     use crate::sections::crc32_mpeg;
 
     #[test]
@@ -2139,19 +2103,60 @@ mod tests {
     #[test]
     fn satellite_missing_components_are_scoped_to_satellite_transport() {
         let mut collector = ServiceDiscoveryCollector::default();
+        collector.set_discovery_profile(DiscoveryProfile::Bs);
         collector.engine.transport_entry_mut(0x4010, 0x0004);
         collector.engine.transport_entry_mut(0x7fe0, 0x7fe0);
         let state = collector.state();
         assert!(state
-            .missing_components_by_scope
+            .missing_components_by_scope()
             .iter()
             .any(|m| m.component == "SDT-other"
                 && m.original_network_id == Some(0x0004)
                 && m.transport_stream_id == Some(0x4010)));
         assert!(state
-            .missing_components_by_scope
+            .missing_components_by_scope()
             .iter()
             .all(|m| m.component != "BAT"));
+    }
+
+    #[test]
+    fn explicit_profile_controls_only_optional_satellite_tables() {
+        let mut collector = ServiceDiscoveryCollector::default();
+        collector.engine.transport_entry_mut(0x4010, 0x0004);
+
+        let terrestrial = collector.state();
+        assert!(terrestrial
+            .table_requirements
+            .iter()
+            .filter(|status| matches!(status.component, "SDT-other" | "NIT-other" | "BAT"))
+            .all(|status| !status.required));
+
+        collector.set_discovery_profile(DiscoveryProfile::Bs);
+        let bs = collector.state();
+        assert!(bs
+            .table_requirements
+            .iter()
+            .any(|status| status.component == "SDT-other" && status.required));
+        assert!(bs
+            .table_requirements
+            .iter()
+            .any(|status| status.component == "NIT-other" && !status.required));
+        assert!(bs
+            .table_requirements
+            .iter()
+            .any(|status| status.component == "BAT" && !status.required));
+
+        collector.set_discovery_profile(DiscoveryProfile::Cs110);
+        let cs110 = collector.state();
+        assert!(cs110
+            .table_requirements
+            .iter()
+            .filter(|status| matches!(status.component, "SDT-other" | "NIT-other"))
+            .all(|status| status.required));
+        assert!(cs110
+            .table_requirements
+            .iter()
+            .any(|status| status.component == "BAT" && !status.required));
     }
 
     #[test]
@@ -2227,7 +2232,7 @@ mod tests {
         assert_eq!(state.publish_stage(), DiscoveryPublishStage::Partial);
         assert_eq!(state.snapshot.services.len(), 1);
         assert_eq!(state.semantic_facts_by_service.len(), 1);
-        assert_eq!(state.missing_components, vec!["NIT", "PMT"]);
+        assert_eq!(state.missing_components(), vec!["NIT", "PMT"]);
     }
 
     #[test]
@@ -2280,20 +2285,20 @@ mod tests {
         let mut collector = ServiceDiscoveryCollector::default();
         collector.push_section(0x0000, &pat);
         let state = collector.state();
-        assert!(state.pat_complete);
+        assert!(state.component_complete("PAT"));
         assert!(!state.is_complete());
 
         collector.push_section(0x0010, &nit);
         collector.push_section(0x0011, &sdt);
         let state = collector.state();
-        assert!(state.nit_complete);
-        assert!(state.sdt_complete);
-        assert!(!state.required_pmts_complete);
+        assert!(state.component_complete("NIT"));
+        assert!(state.component_complete("SDT"));
+        assert!(!state.component_complete("PMT"));
         assert!(!state.is_complete());
 
         collector.push_section(0x0100, &pmt);
         let state = collector.state();
-        assert!(state.required_pmts_complete);
+        assert!(state.component_complete("PMT"));
         assert!(state.is_complete());
     }
 
@@ -2318,6 +2323,17 @@ mod tests {
 mod staged_tests {
     use super::*;
 
+    fn required_status(component: &'static str, complete: bool) -> TableRequirementStatus {
+        TableRequirementStatus {
+            component,
+            original_network_id: None,
+            transport_stream_id: None,
+            service_id: None,
+            required: true,
+            complete,
+        }
+    }
+
     #[test]
     fn last_discovery_retains_publish_stage() {
         let mut state = DiscoveryCollectionState::default();
@@ -2334,8 +2350,12 @@ mod staged_tests {
             service_id: 1,
             pmt_pid: 0x0100,
         });
-        state.pat_complete = true;
-        state.required_pmts_complete = true;
+        state.table_requirements = vec![
+            required_status("PAT", true),
+            required_status("PMT", true),
+            required_status("SDT", false),
+            required_status("NIT", false),
+        ];
         let env = state.best_available_snapshot().expect("partial env");
         assert_eq!(env.stage, DiscoveryPublishStage::Partial);
     }
@@ -2356,14 +2376,21 @@ mod staged_tests {
             service_id: 1,
             pmt_pid: 0x0100,
         });
-        state.pat_complete = true;
-        state.required_pmts_complete = true;
+        state.table_requirements = vec![
+            required_status("PAT", true),
+            required_status("PMT", true),
+            required_status("SDT", false),
+            required_status("NIT", false),
+        ];
         assert_eq!(
             state.best_available_snapshot().unwrap().stage,
             DiscoveryPublishStage::Partial
         );
-        state.sdt_complete = true;
-        state.nit_complete = true;
+        state
+            .table_requirements
+            .iter_mut()
+            .filter(|status| matches!(status.component, "SDT" | "NIT"))
+            .for_each(|status| status.complete = true);
         assert_eq!(
             state.best_available_snapshot().unwrap().stage,
             DiscoveryPublishStage::Complete
@@ -2580,7 +2607,7 @@ mod current_version_tests {
         ]);
         let mut collector = ServiceDiscoveryCollector::default();
         collector.push_section(0x0000, &pat_next);
-        assert!(!collector.state().pat_complete);
+        assert!(!collector.state().component_complete("PAT"));
     }
 
     #[test]
@@ -2606,11 +2633,11 @@ mod current_version_tests {
         ]);
         collector.push_section(0x0000, &pat_v1);
         assert!(collector.state().snapshot.pmt_pids_by_service.is_empty());
-        assert!(collector.state().pat_complete);
+        assert!(collector.state().component_complete("PAT"));
 
         collector.push_section(0x0000, &pat_v2_sec0);
         let state = collector.state();
-        assert!(!state.pat_complete);
+        assert!(!state.component_complete("PAT"));
         assert!(state
             .snapshot
             .pmt_pids_by_service
@@ -2638,7 +2665,7 @@ mod current_version_tests {
         ]);
         collector.push_section(0x0000, &pat_v1_sec0);
         collector.push_section(0x0000, &pat_v2_sec1);
-        assert!(!collector.state().pat_complete);
+        assert!(!collector.state().component_complete("PAT"));
     }
 }
 

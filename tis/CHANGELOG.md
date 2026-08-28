@@ -1,3 +1,23 @@
+# r50ef_review_followup_3
+
+- Program provider-dataは、TvProviderへpublishする時点でKotlinのtyped requestからRust/Serde canonicalizerを呼ぶ責務境界へ戻した。bulk snapshotの`providerDataCanonicalJson`、`AribEvent` / `ProgramRecord`のshadow field、test-only Kotlin保存schema fixtureは削除した。
+- この境界ではTISがAndroid列投影とpublish判断、Rustが保存schema・検証・canonical encodeを所有し、同じruntime stateの二重ownerを作らない。
+- Android/Soong build、atest、CTS、VTS、実機確認は未実施。本commitのRust/Kotlin host検証はPR checksを正とする。
+
+# r50ef_review_followup_2
+
+- Rust bulk transaction内で生成したProgram provider-data canonical JSONを`AribEvent` / `ProgramRecord`がopaqueに運び、TvProviderへ同じUTF-8 bytesを書き込む形へ変更した。KotlinのProgram `JSONObject` builderとRustへの戻りJNIは削除した。
+- AOSP Tuner Resource Managerへ申告するuse caseを`ScanPurpose`から一意に決め、setup scanは`SCAN`、boot EPG syncとbackground maintenanceは`BACKGROUND`、live sessionは既存どおり`LIVE`に固定した。
+- Android/Soong build、atest、CTS、VTS、実機確認は未実施。本commitのRust/Kotlin host検証はPR checksを正とする。
+
+# r50ef_review_followup
+
+- service policy、provider-data入力、TvProvider列、Direct Boot pending、scan task、AV playback、字幕presentationの各状態ownerを一つへ整理し、派生値と失効判定だけを投影境界へ残した。
+- Program publish失敗queueを`ServiceKey + updateWindow + notBeforeMs`の単一有界LRUへ縮小し、段階backoff、jitter、attempt、retention、ServiceKey別上限を削除した。最終`ContentValues`の単一SHA-256 fingerprintは更新抑止用に維持した。
+- 字幕renderer結果をone-shot packed JNI resultへ変更してframe handle registryを削除し、decoder/scheduler/UI失効を単一presentation epochへ統合した。AV開始lifecycleもSession所有のsealed state一つへ統合した。
+- Rust bulk transactionのdiscovery stage/table requirementを同一readへ含め、read回数generation、CAS用重複service/metadata、別stage JNI readを削除した。service componentはcanonical streamから投影し、secondary audio languageも保持する。
+- Android/Soong build、Rust unit test、atest、CTS、VTS、実機確認は未実施。静的差分・schema fixture一致・構文参照検査のみ実施する。
+
 # r50ee99_review_wording_precision
 
 - AOSP frozen Tuner AIDLで`RELATIVE_STREAM_NUMBER`が合法なselector種別であることを明示し、永続channel tune identityでは採用しないという製品設計理由へ表現を修正した。

@@ -35,6 +35,7 @@ object ProviderDataBridge {
         val schemaVersion: Int,
         val serviceKey: ServiceKey,
         val tune: ChannelTune,
+        val requiresCas: Boolean,
     )
 
     private val native by lazy { NativeAribSiParser() }
@@ -52,7 +53,6 @@ object ProviderDataBridge {
                 .put("transportStreamId", channel.serviceKey.transportStreamId)
                 .put("serviceId", channel.serviceKey.serviceId))
             .put("tune", JSONObject()
-                .put("displayName", channel.displayName)
                 .put("deliverySystem", channel.deliverySystem)
                 .put("frequencyHz", channel.frequencyHz.value)
                 .put("streamId", selector.value ?: JSONObject.NULL)
@@ -78,7 +78,7 @@ object ProviderDataBridge {
 
     fun buildProgramProviderData(program: ProgramRecord): Result {
         val descriptors = program.descriptors
-        val endTimeMillis = runCatching { Math.addExact(program.startTimeMillis, program.durationMillis) }
+        runCatching { Math.addExact(program.startTimeMillis, program.durationMillis) }
             .getOrElse { error -> throw IllegalArgumentException("program timing overflow", error) }
         val request = JSONObject()
             .put("schema", "maleicacid.tv.programRequest")
@@ -89,13 +89,8 @@ object ProviderDataBridge {
                 .put("transportStreamId", program.serviceKey.transportStreamId)
                 .put("serviceId", program.serviceKey.serviceId)
                 .put("eventId", program.eventId))
-            .put("serviceKey", JSONObject()
-                .put("originalNetworkId", program.serviceKey.originalNetworkId)
-                .put("transportStreamId", program.serviceKey.transportStreamId)
-                .put("serviceId", program.serviceKey.serviceId))
             .put("timing", JSONObject()
                 .put("startUtcMillis", program.startTimeMillis)
-                .put("endUtcMillis", endTimeMillis)
                 .put("durationMillis", program.durationMillis))
             .put("cas", JSONObject()
                 .put("requiresCas", program.requiresCas)
@@ -111,7 +106,6 @@ object ProviderDataBridge {
                 .put("publishDiagnostics", JSONArray())
                 .put("parserDiagnostics", JSONArray()))
             .put("ratings", ratingsJson(program))
-            .put("audioLanguages", audioLanguagesJson(descriptors))
             .put("components", toComponentsObject(descriptors.components))
             .put("source", JSONObject()
                 .put("pid", program.source.pid.value)
@@ -142,31 +136,38 @@ object ProviderDataBridge {
         extractProgramKeyResult(providerData)?.key
 
     fun decodeChannelProviderData(providerData: ByteArray?): ChannelProviderDataResult? {
-        val fields = native.decodeChannelProviderData(providerData ?: ByteArray(0))
-            .takeIf { it.isNotBlank() }
-            ?.split('\t')
-            ?.takeIf { it.size == 12 }
-            ?: return null
-        val canonicalBytes = decodeHexBytes(fields[0]) ?: return null
-        val schemaVersion = fields[1].toIntOrNull()?.takeIf { it == 1 } ?: return null
-        val onid = fields[2].toIntOrNull() ?: return null
-        val tsid = fields[3].toIntOrNull() ?: return null
-        val sid = fields[4].toIntOrNull() ?: return null
-        val deliverySystem = decodeHex(fields[5])?.takeIf { it.isNotBlank() } ?: return null
-        val frequencyHz = FrequencyHz.fromOrNull(fields[6].toLongOrNull())
+        val root = runCatching {
+            JSONObject(native.decodeChannelProviderData(providerData ?: ByteArray(0)))
+        }.getOrNull() ?: return null
+        val canonical = root.optString("canonical").takeIf { it.isNotBlank() } ?: return null
+        val schemaVersion = root.optInt("schemaVersion", -1).takeIf { it == 1 } ?: return null
+        val serviceKey = root.optJSONObject("serviceKey") ?: return null
+        val tune = root.optJSONObject("tune") ?: return null
+        val cas = root.optJSONObject("cas") ?: return null
+        val onid = serviceKey.optInt("originalNetworkId", -1)
+        val tsid = serviceKey.optInt("transportStreamId", -1)
+        val sid = serviceKey.optInt("serviceId", -1)
+        val deliverySystem = tune.optString("deliverySystem").takeIf { it.isNotBlank() } ?: return null
+        val frequencyHz = FrequencyHz.fromOrNull(tune.optLong("frequencyHz", -1L))
         if (onid < 0 || tsid < 0 || sid < 0 || frequencyHz == null) return null
         return ChannelProviderDataResult(
-            canonicalBytes = canonicalBytes,
+            canonicalBytes = canonical.toByteArray(Charsets.UTF_8),
             schemaVersion = schemaVersion,
             serviceKey = ServiceKey(onid, tsid, sid),
             tune = ChannelTune(
                 deliverySystem = deliverySystem,
                 frequencyHz = frequencyHz,
-                streamSelector = runCatching { StreamSelector.fromStored(fields[8], fields[7].takeUnless { it == "-" }) }.getOrElse { return null },
-                physicalChannel = fields[9].takeUnless { it == "-" }?.toIntOrNull(),
-                satelliteBand = fields[10].takeUnless { it == "-" }?.let(::decodeHex),
-                remoteControlKeyId = fields[11].takeUnless { it == "-" }?.toIntOrNull(),
+                streamSelector = runCatching {
+                    StreamSelector.fromStored(
+                        tune.optString("streamIdType"),
+                        if (tune.isNull("streamId")) null else tune.optInt("streamId").toString(),
+                    )
+                }.getOrElse { return null },
+                physicalChannel = if (tune.isNull("physicalChannel")) null else tune.optInt("physicalChannel"),
+                satelliteBand = if (tune.isNull("satelliteBand")) null else tune.optString("satelliteBand"),
+                remoteControlKeyId = if (tune.isNull("remoteControlKeyId")) null else tune.optInt("remoteControlKeyId"),
             ),
+            requiresCas = cas.optBoolean("requiresCas", false),
         )
     }
 
@@ -175,7 +176,6 @@ object ProviderDataBridge {
         program.descriptors.parentalRatings.forEach { rating ->
             arr.put(JSONObject()
                 .put("countryCode", rating.countryCode)
-                .put("ratingValue", rating.ratingValue)
                 .put("rawRatingByte", rating.rawRatingByte)
                 .put("parseStatus", rating.parseStatus))
         }
@@ -213,29 +213,6 @@ object ProviderDataBridge {
             .put("name", series.name ?: JSONObject.NULL)
             .put("parseStatus", series.parseStatus)
     } ?: JSONObject.NULL
-
-    private fun audioLanguagesJson(descriptors: com.maleicacid.tvinput.db.ProgramDescriptors): JSONArray = JSONArray().apply {
-        descriptors.components.audio
-            .flatMap { entry ->
-                listOfNotNull(
-                    entry.language?.takeIf { it.isNotBlank() }?.let { Triple(it, "AUDIO_COMPONENT", entry.parseStatus) },
-                    entry.secondLanguage?.takeIf { it.isNotBlank() }?.let { Triple(it, "AUDIO_COMPONENT_SECONDARY", entry.parseStatus) },
-                )
-            }
-            .distinctBy { it.first }
-            .forEach { (language, source, parseStatus) ->
-                put(JSONObject().put("language", language).put("source", source).put("parseStatus", parseStatus))
-            }
-    }
-
-    private fun decodeHex(value: String): String? = runCatching {
-        decodeHexBytes(value)?.toString(Charsets.UTF_8) ?: error("invalid hexadecimal bytes")
-    }.getOrNull()
-
-    private fun decodeHexBytes(value: String): ByteArray? = runCatching {
-        require(value.length % 2 == 0)
-        value.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-    }.getOrNull()
 
     private fun parseResult(raw: String): Result {
         val obj = runCatching { JSONObject(raw) }.getOrElse { error ->
@@ -342,6 +319,7 @@ private fun toLinkageArray(items: List<AribLinkage>): JSONArray = JSONArray().ap
                 .put("componentType", entry.componentType ?: JSONObject.NULL)
                 .put("codec", requireNotNull(entry.codec?.takeIf { it.isNotBlank() }) { "audio codec is required" })
                 .put("language", entry.language?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
+                .put("secondLanguage", entry.secondLanguage?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
                 .put("parseStatus", entry.parseStatus)
             entry.channelConfiguration?.let { obj.put("channelConfiguration", it) }
             entry.samplingInfo?.let { obj.put("samplingInfo", it) }
