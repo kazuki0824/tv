@@ -257,7 +257,7 @@ class TisR51FixedPlanAcceptanceTest {
 
     @Test fun programProviderDataKeepsOnlyBroadcastCasSemanticFact() {
         val record = EventModelMapper().toProgramRecords(
-            events = listOf(aribEvent().withCanonicalProgramProviderDataForTest(requiresCas = true)),
+            events = listOf(aribEvent()),
             semanticFactsByServiceKey = mapOf(key to semanticFacts(requiresCas = true)),
         ).single()
         val providerData = JSONObject(TvProviderWriter.programProviderDataForTest(record))
@@ -328,7 +328,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(!completeness.clearLivePlaybackSupported)
         check(completeness.requiresCas)
 
-        val event = aribEvent().withCanonicalProgramProviderDataForTest(requiresCas = true)
+        val event = aribEvent()
         val record = EventModelMapper().toProgramRecords(listOf(event), mapOf(event.serviceKey to facts)).single()
         check(record.requiresCas)
         val providerData = JSONObject(TvProviderWriter.programProviderDataForTest(record))
@@ -754,11 +754,10 @@ class TisR51FixedPlanAcceptanceTest {
             parentalRatings = parentalRatings,
             diagnostics = com.maleicacid.tvinput.aribsi.AribEventDiagnostics(descriptorDiagnosticsCanonicalJson = descriptorDiagnosticsCanonicalJson),
         ),
-    ).withCanonicalProgramProviderDataForTest()
+    )
 
     private fun AribEvent.withComponents(components: AribComponents): AribEvent =
         copy(descriptors = descriptors.copy(components = components))
-            .withCanonicalProgramProviderDataForTest()
 
     private fun componentsFromJson(obj: org.json.JSONObject): AribComponents = AribComponents(
         video = componentEntries(obj.optJSONArray("video")),
@@ -830,7 +829,7 @@ class TisR51FixedPlanAcceptanceTest {
         title = "title",
         description = description,
         contentRatings = contentRatings,
-    ).withCanonicalProgramProviderDataForTest()
+    )
 
     private fun makeSps(
         codedWidth: Int,
