@@ -13,7 +13,11 @@ class EventModelMapper {
         ratingProfileByServiceKey: Map<ServiceKey, AribRatingMapper.BroadcastProfile> = emptyMap(),
     ): List<ProgramRecord> {
         return events.mapNotNull { event ->
-            if (event.source.tableId != 0x4e || event.timingState != "DEFINED") return@mapNotNull null
+            if (
+                event.source.tableId != 0x4e ||
+                event.timingState != "DEFINED" ||
+                event.providerDataCanonicalJson.isBlank()
+            ) return@mapNotNull null
             val semanticFacts = semanticFactsByServiceKey[event.serviceKey]
             val end = runCatching { Math.addExact(event.startTimeMillis, event.durationMillis) }
                 .getOrElse { return@mapNotNull null }
@@ -53,6 +57,7 @@ class EventModelMapper {
                     )
                 },
                 malformedCaDescriptorCount = malformedCaDescriptorCountByServiceId[event.serviceKey.service] ?: 0,
+                providerDataCanonicalJson = event.providerDataCanonicalJson,
             )
         }
     }

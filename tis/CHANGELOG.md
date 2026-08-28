@@ -1,3 +1,9 @@
+# r50ef_review_followup_2
+
+- Rust bulk transaction内で生成したProgram provider-data canonical JSONを`AribEvent` / `ProgramRecord`がopaqueに運び、TvProviderへ同じUTF-8 bytesを書き込む形へ変更した。KotlinのProgram `JSONObject` builderとRustへの戻りJNIは削除した。
+- AOSP Tuner Resource Managerへ申告するuse caseを、setup scanは`SCAN`、boot EPG syncとbackground maintenanceは`BACKGROUND`、live sessionは既存どおり`LIVE`に固定した。
+- Android/Soong build、atest、CTS、VTS、実機確認は未実施。本commitのRust/Kotlin host検証はPR checksを正とする。
+
 # r50ef_review_followup
 
 - service policy、provider-data入力、TvProvider列、Direct Boot pending、scan task、AV playback、字幕presentationの各状態ownerを一つへ整理し、派生値と失効判定だけを投影境界へ残した。
