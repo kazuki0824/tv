@@ -133,7 +133,7 @@ class TvProviderWriterProgramsTest {
                 genreSupplementText = "ニュース/報道/定時・総合",
                 eventGroups = listOf(AribEventGroup(groupType = 1, events = listOf(AribEventGroupReference(ServiceId16(101), 202)))),
                 scrambled = false,
-                freeCaMode = AribFreeCaMode(raw = 0, scrambled = false, text = "無料放送"),
+                freeCaMode = AribFreeCaMode(raw = 0, scrambled = false),
                 series = AribSeries(seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12, name = "シリーズ"),
                 components = AribComponents(audio = listOf(AribComponentEntry(esPid = TsPid(256), streamType = 0x0f, componentTag = 1, componentType = 3, codec = "AAC", language = "jpn", parseStatus = "OK"))),
             ),

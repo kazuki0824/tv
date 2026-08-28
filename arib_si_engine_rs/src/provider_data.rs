@@ -106,7 +106,7 @@ struct SeriesV1 {
     repeat_label: i64,
     program_pattern: i64,
     expire_date_valid: bool,
-    expire_date: Option<String>,
+    expire_date: Option<i64>,
     episode_number: i64,
     last_episode_number: i64,
     name: Option<String>,
@@ -118,7 +118,6 @@ struct SeriesV1 {
 struct FreeCaModeV1 {
     raw: i64,
     scrambled: bool,
-    text: Option<String>,
     parse_status: String,
 }
 
@@ -219,7 +218,6 @@ struct VideoComponentV1 {
     aspect: Option<String>,
     profile_level: Option<String>,
     source_descriptor: Option<String>,
-    diagnostic_code: Option<String>,
     parse_status: String,
 }
 
@@ -236,7 +234,6 @@ struct AudioComponentV1 {
     channel_configuration: Option<String>,
     sampling_info: Option<String>,
     source_descriptor: Option<String>,
-    diagnostic_code: Option<String>,
     parse_status: String,
 }
 
@@ -1052,7 +1049,7 @@ fn collect_program_unknown_extensions(
     collect_object_unknown(
         raw.get("freeCaMode").unwrap_or(&serde_json::Value::Null),
         "freeCaMode",
-        &["raw", "scrambled", "text", "parseStatus"],
+        &["raw", "scrambled", "parseStatus"],
         out,
     );
     collect_array_unknown(
@@ -1089,7 +1086,6 @@ fn collect_program_unknown_extensions(
                 "aspect",
                 "profileLevel",
                 "sourceDescriptor",
-                "diagnosticCode",
                 "parseStatus",
             ],
             out,
@@ -1108,7 +1104,6 @@ fn collect_program_unknown_extensions(
                 "channelConfiguration",
                 "samplingInfo",
                 "sourceDescriptor",
-                "diagnosticCode",
                 "parseStatus",
             ],
             out,
@@ -1399,15 +1394,6 @@ fn shorten_program_long_text(data: &mut ProgramProviderDataV1, requested_bytes: 
             return shorten_utf8_tail(name, requested_bytes, false);
         }
     }
-    if let Some(text) = data
-        .free_ca_mode
-        .as_mut()
-        .and_then(|mode| mode.text.as_mut())
-    {
-        if !text.is_empty() {
-            return shorten_utf8_tail(text, requested_bytes, false);
-        }
-    }
     if let Some(item) = data
         .linkage
         .iter_mut()
@@ -1423,7 +1409,6 @@ fn shorten_program_long_text(data: &mut ProgramProviderDataV1, requested_bytes: 
     }
     for item in data.components.video.iter_mut().rev() {
         for value in [
-            &mut item.diagnostic_code,
             &mut item.source_descriptor,
             &mut item.profile_level,
             &mut item.aspect,
@@ -1439,7 +1424,6 @@ fn shorten_program_long_text(data: &mut ProgramProviderDataV1, requested_bytes: 
     }
     for item in data.components.audio.iter_mut().rev() {
         for value in [
-            &mut item.diagnostic_code,
             &mut item.source_descriptor,
             &mut item.sampling_info,
             &mut item.channel_configuration,
@@ -1671,6 +1655,8 @@ fn valid_series(v: &SeriesV1) -> bool {
     in_u16(v.series_id)
         && (0..=15).contains(&v.repeat_label)
         && (0..=7).contains(&v.program_pattern)
+        && v.expire_date_valid == v.expire_date.is_some()
+        && v.expire_date.map(in_u16).unwrap_or(true)
         && (0..=4095).contains(&v.episode_number)
         && (0..=4095).contains(&v.last_episode_number)
         && nonempty(&v.parse_status)
@@ -2017,6 +2003,63 @@ mod provider_data_tests {
     }
 
     #[test]
+    fn production_builder_output_matches_schema_validated_fixture() {
+        let mut request = minimal_program_request_value();
+        request["genres"] = serde_json::json!([{
+            "level1": 0,
+            "level2": 0,
+            "userNibble": 0,
+            "aribName": "ニュース／報道",
+            "parseStatus": "OK",
+        }]);
+
+        let result = build_program_provider_data(&request.to_string());
+        assert!(result.success, "{}", result.error_message);
+        let actual: serde_json::Value = serde_json::from_str(&result.json).unwrap();
+        let expected: serde_json::Value = serde_json::from_str(include_str!(
+            "../testdata/program_provider_data_v1/minimal_clear_program.json"
+        ))
+        .unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn program_request_rejects_derived_free_ca_text() {
+        let mut request = minimal_program_request_value();
+        request["freeCaMode"]["text"] = serde_json::json!("無料放送");
+
+        let result = build_program_provider_data(&request.to_string());
+        assert!(!result.success);
+        assert_eq!(result.error_code, "PROGRAM_REQUEST_PARSE_FAILED");
+    }
+
+    #[test]
+    fn series_expire_date_requires_matching_validity_flag() {
+        let mut request = minimal_program_request_value();
+        request["series"] = serde_json::json!({
+            "seriesId": 0x1234,
+            "repeatLabel": 2,
+            "programPattern": 3,
+            "expireDateValid": true,
+            "expireDate": 0xe123,
+            "episodeNumber": 3,
+            "lastEpisodeNumber": 12,
+            "name": "シリーズ",
+            "parseStatus": "OK",
+        });
+
+        let valid = build_program_provider_data(&request.to_string());
+        assert!(valid.success, "{}", valid.error_message);
+        let canonical: serde_json::Value = serde_json::from_str(&valid.json).unwrap();
+        assert_eq!(canonical["series"]["expireDate"], 0xe123);
+
+        request["series"]["expireDateValid"] = serde_json::json!(false);
+        let invalid = build_program_provider_data(&request.to_string());
+        assert!(!invalid.success);
+        assert_eq!(invalid.error_code, "PROGRAM_REQUEST_INVALID");
+    }
+
+    #[test]
     fn extended_event_item_allows_empty_description_when_text_exists() {
         let item = ExtendedItemV1 {
             language_code: "jpn".to_string(),
@@ -2293,7 +2336,6 @@ mod nullable_component_fact_tests {
             aspect: None,
             profile_level: None,
             source_descriptor: None,
-            diagnostic_code: None,
             parse_status: "OK".to_string(),
         }));
         assert!(valid_audio_component(&AudioComponentV1 {
@@ -2307,7 +2349,6 @@ mod nullable_component_fact_tests {
             channel_configuration: None,
             sampling_info: None,
             source_descriptor: None,
-            diagnostic_code: None,
             parse_status: "OK".to_string(),
         }));
     }

@@ -440,13 +440,16 @@ fn event_primary_series_value(event: &EitEvent) -> serde_json::Value {
     let Some(series) = event.descriptors.series.first() else {
         return serde_json::Value::Null;
     };
-    let expire_date_valid = series.expire_date != 0x1fff;
     serde_json::json!({
         "seriesId": series.series_id,
         "repeatLabel": series.repeat_label,
         "programPattern": series.program_pattern,
-        "expireDateValid": expire_date_valid,
-        "expireDate": serde_json::Value::Null,
+        "expireDateValid": series.expire_date_valid,
+        "expireDate": if series.expire_date_valid {
+            serde_json::json!(series.expire_date)
+        } else {
+            serde_json::Value::Null
+        },
         "episodeNumber": series.episode_number,
         "lastEpisodeNumber": series.last_episode_number,
         "name": if series.series_name.is_empty() {
@@ -590,10 +593,114 @@ fn parental_ratings_value(event: &EitEvent) -> serde_json::Value {
     )
 }
 
-fn event_components_value() -> serde_json::Value {
+fn video_component_semantics(
+    stream_content: u8,
+    component_type: u8,
+) -> (Option<&'static str>, Option<&'static str>, Option<&'static str>) {
+    if stream_content != 0x01 {
+        return (None, None, None);
+    }
+    let (resolution, scan) = match component_type {
+        0x01..=0x04 => (Some("480"), Some("interlaced")),
+        0xa1..=0xa4 => (Some("480"), Some("progressive")),
+        0xb1..=0xb4 => (Some("1080"), Some("interlaced")),
+        0xc1..=0xc4 => (Some("720"), Some("progressive")),
+        0xd1..=0xd4 => (Some("240"), Some("progressive")),
+        _ => (None, None),
+    };
+    let aspect = if resolution.is_some() {
+        match component_type & 0x0f {
+            0x01 => Some("4:3"),
+            0x02 | 0x03 => Some("16:9"),
+            0x04 => Some(">16:9"),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    (resolution, scan, aspect)
+}
+
+fn audio_channel_configuration(
+    stream_content: u8,
+    component_type: u8,
+) -> Option<&'static str> {
+    if stream_content != 0x02 {
+        return None;
+    }
+    match component_type {
+        0x01 => Some("1/0"),
+        0x02 => Some("1/0+1/0"),
+        0x03 => Some("2/0"),
+        0x04 => Some("2/1"),
+        0x05 => Some("3/0"),
+        0x06 => Some("2/2"),
+        0x07 => Some("3/1"),
+        0x08 => Some("3/2"),
+        0x09 => Some("3/2+LFE"),
+        _ => None,
+    }
+}
+
+fn audio_sampling_info(sampling_rate: u8) -> Option<&'static str> {
+    match sampling_rate {
+        0x01 => Some("16kHz"),
+        0x02 => Some("22.05kHz"),
+        0x03 => Some("24kHz"),
+        0x05 => Some("32kHz"),
+        0x06 => Some("44.1kHz"),
+        0x07 => Some("48kHz"),
+        _ => None,
+    }
+}
+
+fn event_components_value(event: &EitEvent) -> serde_json::Value {
+    let video = event
+        .descriptors
+        .components
+        .iter()
+        .map(|component| {
+            let (resolution, scan, aspect) =
+                video_component_semantics(component.stream_content, component.component_type);
+            serde_json::json!({
+                "componentTag": component.component_tag,
+                "componentType": component.component_type,
+                "resolution": resolution,
+                "scan": scan,
+                "aspect": aspect,
+                "profileLevel": serde_json::Value::Null,
+                "sourceDescriptor": "component_descriptor",
+                "parseStatus": "OK",
+            })
+        })
+        .collect::<Vec<_>>();
+    let audio = event
+        .descriptors
+        .audio_components
+        .iter()
+        .map(|component| {
+            serde_json::json!({
+                "streamType": component.stream_type,
+                "componentTag": component.component_tag,
+                "componentType": component.component_type,
+                "language": component.language_code,
+                "secondLanguage": component.language_code_2,
+                "channelConfiguration": audio_channel_configuration(
+                    component.stream_content,
+                    component.component_type,
+                ),
+                "samplingInfo": audio_sampling_info(component.sampling_rate),
+                "sourceDescriptor": "audio_component_descriptor",
+                "main": component.main_component_flag,
+                "multiLingual": component.es_multi_lingual_flag,
+                "qualityIndicator": component.quality_indicator,
+                "parseStatus": "OK",
+            })
+        })
+        .collect::<Vec<_>>();
     serde_json::json!({
-        "video": [],
-        "audio": [],
+        "video": video,
+        "audio": audio,
         "subtitle": [],
         "data": [],
     })
@@ -676,11 +783,10 @@ fn event_value(event: &EitEvent) -> serde_json::Value {
             "freeCaMode": {
                 "raw": if event.free_ca_mode { 1 } else { 0 },
                 "scrambled": event.free_ca_mode,
-                "text": if event.free_ca_mode { "有料放送" } else { "無料放送" },
                 "parseStatus": "OK",
             },
             "series": event_primary_series_value(event),
-            "components": event_components_value(),
+            "components": event_components_value(event),
             "diagnostics": {
                 "summary": event_diagnostic_text(event),
                 "descriptorDiagnostics": json_value(descriptor_diagnostics.clone()),
@@ -1532,6 +1638,52 @@ mod tests {
             assert!(group["events"].is_array());
             assert!(group.get("kind").is_none());
         }
+    }
+
+    #[test]
+    fn event_component_json_keeps_arib_descriptor_facts_without_release_policy() {
+        let mut event = minimal_event_for_related_items(1, 0x0101);
+        event.descriptors.components = vec![crate::descriptors::ComponentDescriptor {
+            stream_content: 0x01,
+            component_type: 0xb3,
+            component_tag: 0x10,
+            language_code: "jpn".to_string(),
+            text: String::new(),
+        }];
+        event.descriptors.audio_components = vec![crate::descriptors::AudioComponentDescriptor {
+            stream_content: 0x02,
+            component_type: 0x02,
+            component_tag: 0x20,
+            stream_type: 0x0f,
+            simulcast_group_tag: 0xff,
+            es_multi_lingual_flag: true,
+            main_component_flag: true,
+            quality_indicator: 2,
+            sampling_rate: 7,
+            language_code: "jpn".to_string(),
+            language_code_2: Some("eng".to_string()),
+            text: String::new(),
+        }];
+
+        let components = event_components_value(&event);
+        assert_eq!(components["video"][0]["resolution"], "1080");
+        assert_eq!(components["video"][0]["scan"], "interlaced");
+        assert_eq!(components["video"][0]["aspect"], "16:9");
+        assert_eq!(
+            components["video"][0]["sourceDescriptor"],
+            "component_descriptor"
+        );
+        assert_eq!(
+            components["audio"][0]["channelConfiguration"],
+            "1/0+1/0"
+        );
+        assert_eq!(components["audio"][0]["samplingInfo"], "48kHz");
+        assert_eq!(
+            components["audio"][0]["sourceDescriptor"],
+            "audio_component_descriptor"
+        );
+        assert!(components["video"][0].get("diagnosticCode").is_none());
+        assert!(components["audio"][0].get("diagnosticCode").is_none());
     }
 
     #[test]

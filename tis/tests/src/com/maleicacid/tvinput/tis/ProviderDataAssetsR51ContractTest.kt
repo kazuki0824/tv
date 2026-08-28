@@ -31,15 +31,15 @@ class ProviderDataAssetsR51ContractTest {
 
         check(video.getString("codec") == "HEVC")
         check(video.getInt("streamType") == 0x24)
-        check(video.getString("diagnosticCode") == "UNSUPPORTED_R51_CODEC")
-        check(video.getString("parseStatus") == "UNSUPPORTED_R51")
+        check(video.getString("parseStatus") == "OK")
+        check(!video.has("diagnosticCode"))
         check(!video.has("r51PlaybackSupported"))
         check(!video.has("liveViewableClaim"))
 
         check(audio.getString("codec") == "MPEG-4-AAC-LATM")
         check(audio.getInt("streamType") == 0x11)
-        check(audio.getString("diagnosticCode") == "UNSUPPORTED_R51_CODEC")
-        check(audio.getString("parseStatus") == "UNSUPPORTED_R51")
+        check(audio.getString("parseStatus") == "OK")
+        check(!audio.has("diagnosticCode"))
         check(!audio.has("r51PlaybackSupported"))
         check(!audio.has("liveViewableClaim"))
     }
