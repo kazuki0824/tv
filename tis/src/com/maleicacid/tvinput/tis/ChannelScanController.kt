@@ -1,6 +1,7 @@
 package com.maleicacid.tvinput.tis
 
 import android.content.Context
+import android.media.tv.TvInputService
 import android.util.Log
 import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.AribSiEngine
@@ -23,7 +24,7 @@ class ChannelScanController(
     private val context: Context,
     private val inputId: String,
     private val engine: AribSiEngine,
-    tunerPriorityHintUseCase: Int,
+    scanPurpose: ScanPurpose,
     private val cancelRequested: AtomicBoolean = AtomicBoolean(false),
 ) : AutoCloseable {
     data class ScanDiagnostic(val candidate: ScanCandidate, val message: String)
@@ -71,7 +72,11 @@ class ChannelScanController(
         val success: Boolean get() = failures.isEmpty()
     }
 
-    private val tunerController = TunerController(context, inputId, tunerPriorityHintUseCase)
+    private val tunerController = TunerController(
+        context,
+        inputId,
+        tunerPriorityHintUseCase(scanPurpose),
+    )
     private val ingestController = SectionIngestController(engine)
     private val tvProviderWriter = TvProviderWriter(context, inputId)
     private val programPublishCoordinator = ProgramPublishCoordinator(tvProviderWriter)
@@ -505,4 +510,10 @@ class ChannelScanController(
             else -> SiCollectionOutcome.TIMEOUT_PARTIAL
         }
     }
+}
+
+internal fun tunerPriorityHintUseCase(purpose: ScanPurpose): Int = when (purpose) {
+    ScanPurpose.SETUP_SCAN -> TvInputService.PRIORITY_HINT_USE_CASE_TYPE_SCAN
+    ScanPurpose.BOOT_EPG_SYNC,
+    ScanPurpose.BACKGROUND_MAINTENANCE -> TvInputService.PRIORITY_HINT_USE_CASE_TYPE_BACKGROUND
 }
