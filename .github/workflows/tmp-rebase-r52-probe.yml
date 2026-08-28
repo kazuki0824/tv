@@ -27,10 +27,16 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config core.quotePath false
-          git fetch origin docs/future-work-design-completion design/r52-contracts
-          git checkout -B probe e33df9027edb3a543a7943d28ac5e66a566a27dc
+          git fetch origin \
+            docs/future-work-design-completion \
+            tmp/r52-old-base-20260829 \
+            tmp/r52-old-head-20260829
+          git checkout -B probe origin/tmp/r52-old-head-20260829
           set +e
-          GIT_EDITOR=true git rebase --onto origin/docs/future-work-design-completion f029ebc1b63bbc7af85dcd8825f482ee3eaadd1f e33df9027edb3a543a7943d28ac5e66a566a27dc
+          GIT_EDITOR=true git rebase --onto \
+            origin/docs/future-work-design-completion \
+            origin/tmp/r52-old-base-20260829 \
+            origin/tmp/r52-old-head-20260829
           rc=$?
           set -e
           mkdir -p "$RUNNER_TEMP/rebase-probe/conflicts"
