@@ -596,7 +596,11 @@ fn parental_ratings_value(event: &EitEvent) -> serde_json::Value {
 fn video_component_semantics(
     stream_content: u8,
     component_type: u8,
-) -> (Option<&'static str>, Option<&'static str>, Option<&'static str>) {
+) -> (
+    Option<&'static str>,
+    Option<&'static str>,
+    Option<&'static str>,
+) {
     if stream_content != 0x01 {
         return (None, None, None);
     }
@@ -621,10 +625,7 @@ fn video_component_semantics(
     (resolution, scan, aspect)
 }
 
-fn audio_channel_configuration(
-    stream_content: u8,
-    component_type: u8,
-) -> Option<&'static str> {
+fn audio_channel_configuration(stream_content: u8, component_type: u8) -> Option<&'static str> {
     if stream_content != 0x02 {
         return None;
     }
@@ -1673,10 +1674,7 @@ mod tests {
             components["video"][0]["sourceDescriptor"],
             "component_descriptor"
         );
-        assert_eq!(
-            components["audio"][0]["channelConfiguration"],
-            "1/0+1/0"
-        );
+        assert_eq!(components["audio"][0]["channelConfiguration"], "1/0+1/0");
         assert_eq!(components["audio"][0]["samplingInfo"], "48kHz");
         assert_eq!(
             components["audio"][0]["sourceDescriptor"],
