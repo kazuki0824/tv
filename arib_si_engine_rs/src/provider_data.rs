@@ -2208,8 +2208,7 @@ mod provider_data_tests {
 
     #[test]
     fn generated_program_key_matches_key_extracted_from_provider_data() {
-        let data: ProgramProviderDataV1 =
-            serde_json::from_str(&minimal_program_json("")).unwrap();
+        let data: ProgramProviderDataV1 = serde_json::from_str(&minimal_program_json("")).unwrap();
         let result = finalize_program(data);
         assert!(result.success, "{}", result.error_message);
         assert_eq!(
