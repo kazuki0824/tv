@@ -1216,8 +1216,7 @@ pub(crate) fn event_descriptor_diagnostic_models_scoped(
     desc: &EventDescriptors,
     scope: Option<DescriptorSectionScope>,
 ) -> Vec<DescriptorDiagnosticV1> {
-    desc
-        .diagnostics
+    desc.diagnostics
         .iter()
         .map(|d| descriptor_diagnostic_model(d, scope))
         .collect()
