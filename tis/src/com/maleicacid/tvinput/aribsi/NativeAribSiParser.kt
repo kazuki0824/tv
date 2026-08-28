@@ -28,7 +28,6 @@ class NativeAribSiParser : AutoCloseable {
     private var handle: Long = nativeCreate()
 
     fun buildChannelProviderData(requestJson: String): String = nativeBuildChannelProviderData(requestJson)
-    fun buildProgramProviderData(requestJson: String): String = nativeBuildProgramProviderData(requestJson)
     fun buildProgramKey(onid: Int, tsid: Int, sid: Int, eventId: Int): String = nativeBuildProgramKey(onid, tsid, sid, eventId)
     fun normalizeProgramProviderData(providerData: ByteArray): String = nativeNormalizeProgramProviderData(providerData)
     fun extractProgramKeyResult(providerData: ByteArray): String = nativeExtractProgramKeyResult(providerData)
@@ -393,6 +392,11 @@ class NativeAribSiParser : AutoCloseable {
             title = obj.optString("title"),
             description = obj.optString("description"),
             extendedDescription = obj.optString("extendedDescription"),
+            providerDataCanonicalJson = if (obj.isNull("providerDataCanonicalJson")) {
+                ""
+            } else {
+                obj.optString("providerDataCanonicalJson")
+            },
             eventScope = obj.optString("eventScope", "present_following"),
             source = AribProgramSource(
                 pid = TsPid.fromOrNull(sourceObj.optInt("pid", 18)) ?: TsPid.EIT,
@@ -651,7 +655,6 @@ private fun parseLinkage(array: JSONArray?): List<AribLinkage> = (0 until (array
     }
 
     private external fun nativeBuildChannelProviderData(requestJson: String): String
-    private external fun nativeBuildProgramProviderData(requestJson: String): String
     private external fun nativeBuildProgramKey(onid: Int, tsid: Int, sid: Int, eventId: Int): String
     private external fun nativeNormalizeProgramProviderData(providerData: ByteArray): String
     private external fun nativeExtractProgramKeyResult(providerData: ByteArray): String
