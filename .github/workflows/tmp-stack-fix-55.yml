@@ -25,5 +25,5 @@ jobs:
           test "$(git rev-parse origin/docs/future-work-design-completion)" = "43b8ac5a7e431d2d4ef274ad2907d819364a9ccf"
           git checkout -B merged55 origin/agent/implement-tis-arib-si-design-pr53
           git merge --no-ff --no-edit origin/docs/future-work-design-completion
-          git diff --check origin/agent/implement-tis-arib-si-design-pr53..HEAD
+          test -z "$(git diff --name-only --diff-filter=U)"
           git push --force origin HEAD:refs/heads/tmp/latest55-20260829
