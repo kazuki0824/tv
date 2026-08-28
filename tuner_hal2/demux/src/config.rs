@@ -7,6 +7,7 @@ use crate::packet_pipeline::{FilterPipelineConfig, PipelineOpenKind};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FilterOpenType {
+    TsUndefined,
     TsRaw,
     TsPcr,
     TsAudio,
@@ -30,6 +31,7 @@ impl FilterOpenType {
 
     pub const fn pipeline_open_kind(self) -> PipelineOpenKind {
         match self {
+            Self::TsUndefined => PipelineOpenKind::Other,
             Self::TsRaw => PipelineOpenKind::Raw,
             Self::TsPcr => PipelineOpenKind::Pcr,
             Self::TsAudio | Self::TsVideo => PipelineOpenKind::Av,
@@ -47,7 +49,7 @@ impl FilterOpenType {
             PipelineOpenKind::Section => Some(Self::TsSection),
             PipelineOpenKind::Pes => Some(Self::TsPes),
             PipelineOpenKind::Record => Some(Self::TsRecord),
-            PipelineOpenKind::Other => None,
+            PipelineOpenKind::Other => Some(Self::TsUndefined),
         }
     }
 }
@@ -66,6 +68,33 @@ pub struct SectionCondition {
     pub mode: Vec<u8>,
     pub table_id: Option<i32>,
     pub version: Option<i32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SectionRuntimeConfig {
+    pub check_crc: bool,
+    pub repeat: bool,
+    pub length_field_bits: i32,
+    pub condition: SectionCondition,
+}
+
+impl SectionRuntimeConfig {
+    #[cfg(test)]
+    pub(crate) fn match_all_repeat() -> Self {
+        Self {
+            check_crc: false,
+            repeat: true,
+            length_field_bits: 12,
+            condition: SectionCondition {
+                kind: SectionConditionKind::SectionBits,
+                filter: Vec::new(),
+                mask: Vec::new(),
+                mode: Vec::new(),
+                table_id: None,
+                version: None,
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -202,6 +231,24 @@ impl FilterConfig {
                 FilterConfigKind::TsRecord(settings) => Some(settings.clone()),
                 _ => None,
             },
+        }
+    }
+
+    pub(crate) fn section_runtime_config(&self) -> Option<SectionRuntimeConfig> {
+        match &self.kind {
+            FilterConfigKind::TsSection {
+                check_crc,
+                repeat,
+                length_field_bits,
+                condition,
+                ..
+            } => Some(SectionRuntimeConfig {
+                check_crc: *check_crc,
+                repeat: *repeat,
+                length_field_bits: *length_field_bits,
+                condition: condition.clone(),
+            }),
+            _ => None,
         }
     }
 }

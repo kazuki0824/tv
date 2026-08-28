@@ -24,7 +24,6 @@ use crate::frontend::FrontendCommand;
 use crate::lnb::LnbCommand;
 use crate::{CommandPlan, DomainCommand};
 
-const MAX_FILTER_DELAY_MS: i64 = 10_000;
 const DVR_PACKET_SIZE_TS_188: i64 = 188;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -298,9 +297,6 @@ pub fn build_filter_delay_hint_request(
         if request.value < 0 {
             return Err(invalid("filter delay hint value must be non-negative"));
         }
-        if request.kind == FilterDelayHintKind::TimeDelayMs && request.value > MAX_FILTER_DELAY_MS {
-            return Err(invalid("filter delay time hint exceeds product limit"));
-        }
         Ok(request)
     })
 }
@@ -379,7 +375,16 @@ pub fn build_lnb_voltage_request(voltage: LnbVoltage) -> Result<LnbVoltageReques
         LnbVoltage::NONE => Ok(LnbVoltageRequest::None),
         LnbVoltage::VOLTAGE_11V => Ok(LnbVoltageRequest::Voltage11V),
         LnbVoltage::VOLTAGE_15V => Ok(LnbVoltageRequest::Voltage15V),
-        _ => Err(invalid("LNB voltage is unsupported")),
+        LnbVoltage::VOLTAGE_5V
+        | LnbVoltage::VOLTAGE_12V
+        | LnbVoltage::VOLTAGE_13V
+        | LnbVoltage::VOLTAGE_14V
+        | LnbVoltage::VOLTAGE_18V
+        | LnbVoltage::VOLTAGE_19V => Err(HalError::unsupported_detail(
+            "lnb.voltage",
+            "known LNB voltage is unavailable in the product profile",
+        )),
+        _ => Err(invalid("LNB voltage contains a reserved enum value")),
     }
 }
 
@@ -394,6 +399,12 @@ pub fn build_lnb_tone_request(tone: LnbTone) -> Result<LnbToneRequest, HalError>
 pub fn build_lnb_satellite_position_request(
     position: LnbPosition,
 ) -> Result<LnbSetSatellitePositionRequest, HalError> {
+    if !matches!(
+        position,
+        LnbPosition::UNDEFINED | LnbPosition::POSITION_A | LnbPosition::POSITION_B
+    ) {
+        return Err(invalid("LNB position contains a reserved enum value"));
+    }
     Ok(LnbSetSatellitePositionRequest {
         position: position.0,
     })
@@ -603,6 +614,42 @@ mod tests {
         }))
         .unwrap_err();
         assert!(matches!(error, HalError::UnsupportedDetail { .. }));
+    }
+
+    #[test]
+    fn filter_delay_hint_has_no_undocumented_ten_second_cap() {
+        let request = build_filter_delay_hint_request(&FilterDelayHint {
+            hintType: FilterDelayHintType::TIME_DELAY_IN_MS,
+            hintValue: 60_000,
+        })
+        .unwrap();
+        assert_eq!(request.value, 60_000);
+    }
+
+    #[test]
+    fn known_unavailable_lnb_voltage_is_not_invalid_argument() {
+        assert!(matches!(
+            build_lnb_voltage_request(LnbVoltage::VOLTAGE_18V),
+            Err(HalError::UnsupportedDetail { .. })
+        ));
+        assert!(matches!(
+            build_lnb_voltage_request(LnbVoltage(99)),
+            Err(HalError::InvalidArgument { .. })
+        ));
+    }
+
+    #[test]
+    fn known_lnb_positions_are_retained_but_reserved_values_are_invalid() {
+        assert_eq!(
+            build_lnb_satellite_position_request(LnbPosition::POSITION_B)
+                .unwrap()
+                .position,
+            LnbPosition::POSITION_B.0
+        );
+        assert!(matches!(
+            build_lnb_satellite_position_request(LnbPosition(99)),
+            Err(HalError::InvalidArgument { .. })
+        ));
     }
 
     #[test]

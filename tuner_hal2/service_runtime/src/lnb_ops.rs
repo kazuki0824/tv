@@ -748,6 +748,17 @@ mod wp_r11_lnb_apply_tests {
     }
 
     #[test]
+    fn diseqc_oversized_payload_is_still_profile_unsupported() {
+        let mut runtime = runtime_with_lnb(LnbRegistryProfile::Px4Device15VOnly);
+        let payload = vec![0_u8; maleicacid_tuner_hal2_lnb::LnbDiseqcMessage::MAX_LEN + 1];
+        let err = runtime.send_lnb_diseqc(10001, &payload).unwrap_err();
+        assert_eq!(
+            err,
+            HalError::Unsupported("DiSEqC is unavailable for this LNB profile")
+        );
+    }
+
+    #[test]
     fn px4_lnb_profile_rejects_11v_before_registry_commit() {
         let mut runtime = runtime_with_lnb(LnbRegistryProfile::Px4Device15VOnly);
         let err = runtime

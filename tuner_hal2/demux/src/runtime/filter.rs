@@ -1,7 +1,11 @@
 use crate::config::{
     AvStreamTypeConfig, FilterDelayHint, FilterDelayHints, FilterOpenType, OpenFilterRequest,
+    SectionConditionKind, SectionRuntimeConfig,
 };
-use crate::packet_pipeline::{FilterPipelineConfig, PipelineFilterView, PipelineOpenKind};
+use crate::packet_pipeline::{
+    FilterPipelineConfig, PacketPid, PipelineFilterView, PipelineOpenKind,
+};
+use crate::sections::{parse_section_header, section_crc_valid};
 use crate::runtime::{
     WatermarkClassifier, WatermarkDecision, WatermarkPolicy, WatermarkQueueSnapshot,
 };
@@ -64,6 +68,82 @@ impl FilterSource {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SectionTableInstanceKey {
+    origin: TsInputOrigin,
+    filter_generation: u64,
+    pid: i32,
+    table_id: u8,
+    table_id_extension: Option<u16>,
+    version: Option<u8>,
+    current_next: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct SectionDeliveryState {
+    target: Option<SectionTableInstanceKey>,
+    target_last_section: Option<u8>,
+    delivered_sections: [u64; 4],
+    completed: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PreparedSectionDelivery {
+    Repeat,
+    SectionBitsOneShot,
+    TableInfo {
+        key: SectionTableInstanceKey,
+        section_number: u8,
+        last_section_number: u8,
+    },
+}
+
+fn section_bits_match(section: &[u8], config: &SectionRuntimeConfig) -> bool {
+    let mut has_negative_bits = false;
+    let mut negative_bit_mismatched = false;
+    for (index, mask) in config.condition.mask.iter().copied().enumerate() {
+        if mask == 0 {
+            continue;
+        }
+        let Some(data) = section.get(index).copied() else {
+            return false;
+        };
+        let Some(filter) = config.condition.filter.get(index).copied() else {
+            return false;
+        };
+        let Some(mode) = config.condition.mode.get(index).copied() else {
+            return false;
+        };
+        let differing_bits = data ^ filter;
+        let positive_mask = mask & !mode;
+        if differing_bits & positive_mask != 0 {
+            return false;
+        }
+        let negative_mask = mask & mode;
+        if negative_mask != 0 {
+            has_negative_bits = true;
+            negative_bit_mismatched |= differing_bits & negative_mask != 0;
+        }
+    }
+    !has_negative_bits || negative_bit_mismatched
+}
+
+fn section_was_delivered(delivered: &[u64; 4], section_number: u8) -> bool {
+    let number = usize::from(section_number);
+    (delivered[number / 64] & (1_u64 << (number % 64))) != 0
+}
+
+fn mark_section_delivered(delivered: &mut [u64; 4], section_number: u8) {
+    let number = usize::from(section_number);
+    delivered[number / 64] |= 1_u64 << (number % 64);
+}
+
+fn all_sections_delivered(delivered: &[u64; 4], last_section_number: u8) -> bool {
+    (0..=last_section_number).all(|section_number| {
+        section_was_delivered(delivered, section_number)
+    })
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FilterRuntimeSnapshot {
     pub state: FilterRuntimeState,
@@ -73,6 +153,8 @@ pub struct FilterRuntimeSnapshot {
     pub buffer_size: i32,
     pub callback_present: bool,
     pub pipeline_config: Option<FilterPipelineConfig>,
+    pub(crate) section_config: Option<SectionRuntimeConfig>,
+    section_delivery_state: SectionDeliveryState,
     pub tpid: Option<i32>,
     pub pes_stream_id: Option<i32>,
     pub raw: bool,
@@ -98,6 +180,8 @@ pub struct FilterRuntime {
     buffer_size: i32,
     callback_present: bool,
     pipeline_config: Option<FilterPipelineConfig>,
+    section_config: Option<SectionRuntimeConfig>,
+    section_delivery_state: SectionDeliveryState,
     tpid: Option<i32>,
     pes_stream_id: Option<i32>,
     raw: bool,
@@ -117,13 +201,13 @@ impl FilterRuntime {
     #[cfg(test)]
     pub(crate) fn new(filter_id: i32, generation: u64, open_kind: PipelineOpenKind) -> Self {
         let open_type = match open_kind {
+            PipelineOpenKind::Other => FilterOpenType::TsUndefined,
             PipelineOpenKind::Raw => FilterOpenType::TsRaw,
             PipelineOpenKind::Pcr => FilterOpenType::TsPcr,
             PipelineOpenKind::Av => FilterOpenType::TsVideo,
             PipelineOpenKind::Section => FilterOpenType::TsSection,
             PipelineOpenKind::Pes => FilterOpenType::TsPes,
             PipelineOpenKind::Record => FilterOpenType::TsRecord,
-            PipelineOpenKind::Other => FilterOpenType::TsRaw,
         };
         Self {
             filter_id,
@@ -134,6 +218,8 @@ impl FilterRuntime {
             buffer_size: 0,
             callback_present: false,
             pipeline_config: None,
+            section_config: None,
+            section_delivery_state: SectionDeliveryState::default(),
             tpid: None,
             pes_stream_id: None,
             raw: false,
@@ -160,6 +246,8 @@ impl FilterRuntime {
             buffer_size: 0,
             callback_present: false,
             pipeline_config: None,
+            section_config: None,
+            section_delivery_state: SectionDeliveryState::default(),
             tpid: None,
             pes_stream_id: None,
             raw: false,
@@ -251,6 +339,8 @@ impl FilterRuntime {
             buffer_size: self.buffer_size,
             callback_present: self.callback_present,
             pipeline_config: self.pipeline_config.clone(),
+            section_config: self.section_config.clone(),
+            section_delivery_state: self.section_delivery_state.clone(),
             tpid: self.tpid,
             pes_stream_id: self.pes_stream_id,
             raw: self.raw,
@@ -275,6 +365,8 @@ impl FilterRuntime {
         self.buffer_size = snapshot.buffer_size;
         self.callback_present = snapshot.callback_present;
         self.pipeline_config = snapshot.pipeline_config;
+        self.section_config = snapshot.section_config;
+        self.section_delivery_state = snapshot.section_delivery_state;
         self.tpid = snapshot.tpid;
         self.pes_stream_id = snapshot.pes_stream_id;
         self.raw = snapshot.raw;
@@ -298,6 +390,8 @@ impl FilterRuntime {
     ) {
         self.generation = generation;
         self.pipeline_config = Some(config.clone());
+        self.section_config = None;
+        self.section_delivery_state = SectionDeliveryState::default();
         self.tpid = config.tpid;
         self.pes_stream_id = pes_stream_id;
         self.raw = config.raw;
@@ -315,6 +409,140 @@ impl FilterRuntime {
         pes_stream_id: Option<i32>,
     ) -> bool {
         self.pipeline_config.as_ref() == Some(config) && self.pes_stream_id == pes_stream_id
+    }
+
+    pub(crate) fn set_section_runtime_config(&mut self, config: Option<SectionRuntimeConfig>) {
+        self.section_config = config;
+        self.section_delivery_state = SectionDeliveryState::default();
+    }
+
+    pub(crate) fn prepare_section_delivery(
+        &self,
+        origin: TsInputOrigin,
+        pid: PacketPid,
+        section: &[u8],
+    ) -> Option<PreparedSectionDelivery> {
+        let config = self.section_config.as_ref()?;
+        let header = parse_section_header(section, config.length_field_bits)?;
+        if config.check_crc && !section_crc_valid(section, config.length_field_bits) {
+            return None;
+        }
+        match config.condition.kind {
+            SectionConditionKind::SectionBits => {
+                if !section_bits_match(&section[..header.total_length], config)
+                    || !config.repeat && self.section_delivery_state.completed
+                {
+                    return None;
+                }
+                Some(if config.repeat {
+                    PreparedSectionDelivery::Repeat
+                } else {
+                    PreparedSectionDelivery::SectionBitsOneShot
+                })
+            }
+            SectionConditionKind::TableInfo => {
+                if Some(i32::from(header.table_id)) != config.condition.table_id {
+                    return None;
+                }
+                if config.condition.version.is_some()
+                    && header.version.map(i32::from) != config.condition.version
+                {
+                    return None;
+                }
+                if config.repeat {
+                    return Some(PreparedSectionDelivery::Repeat);
+                }
+                if self.section_delivery_state.completed {
+                    return None;
+                }
+                let section_number = header.section_number.unwrap_or(0);
+                let last_section_number = header.last_section_number.unwrap_or(0);
+                if section_number > last_section_number {
+                    return None;
+                }
+                let key = SectionTableInstanceKey {
+                    origin,
+                    filter_generation: self.generation,
+                    pid: pid.to_i32_for_aidl_boundary(),
+                    table_id: header.table_id,
+                    table_id_extension: header.table_id_extension,
+                    version: header.version,
+                    current_next: header.current_next_indicator,
+                };
+                if self
+                    .section_delivery_state
+                    .target
+                    .is_some_and(|target| target != key)
+                    || self
+                        .section_delivery_state
+                        .target_last_section
+                        .is_some_and(|last| last != last_section_number)
+                    || section_was_delivered(
+                        &self.section_delivery_state.delivered_sections,
+                        section_number,
+                    )
+                {
+                    return None;
+                }
+                Some(PreparedSectionDelivery::TableInfo {
+                    key,
+                    section_number,
+                    last_section_number,
+                })
+            }
+        }
+    }
+
+    pub(crate) fn commit_section_delivery(&mut self, prepared: PreparedSectionDelivery) -> bool {
+        match prepared {
+            PreparedSectionDelivery::Repeat => true,
+            PreparedSectionDelivery::SectionBitsOneShot => {
+                if self.section_delivery_state.completed {
+                    return false;
+                }
+                self.section_delivery_state.completed = true;
+                true
+            }
+            PreparedSectionDelivery::TableInfo {
+                key,
+                section_number,
+                last_section_number,
+            } => {
+                if self.section_delivery_state.completed
+                    || self
+                        .section_delivery_state
+                        .target
+                        .is_some_and(|target| target != key)
+                    || self
+                        .section_delivery_state
+                        .target_last_section
+                        .is_some_and(|last| last != last_section_number)
+                    || section_was_delivered(
+                        &self.section_delivery_state.delivered_sections,
+                        section_number,
+                    )
+                {
+                    return false;
+                }
+                self.section_delivery_state.target.get_or_insert(key);
+                self.section_delivery_state
+                    .target_last_section
+                    .get_or_insert(last_section_number);
+                mark_section_delivered(
+                    &mut self.section_delivery_state.delivered_sections,
+                    section_number,
+                );
+                self.section_delivery_state.completed = all_sections_delivered(
+                    &self.section_delivery_state.delivered_sections,
+                    last_section_number,
+                );
+                true
+            }
+        }
+    }
+
+    pub(crate) fn reset_section_delivery_state(&mut self) {
+        self.section_delivery_state = SectionDeliveryState::default();
     }
 
     pub(crate) fn accepts_pes_stream_id(&self, stream_id: u8) -> bool {
@@ -490,10 +718,12 @@ impl FilterRuntime {
     }
 
     pub fn mark_started(&mut self) {
+        self.reset_section_delivery_state();
         self.state = FilterRuntimeState::Started;
         self.rearm_delivery_deadline_if_needed();
     }
     pub fn mark_stopped(&mut self) {
+        self.reset_section_delivery_state();
         self.state = FilterRuntimeState::Stopped;
         self.delivery_not_before = None;
     }
@@ -526,6 +756,151 @@ impl FilterRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn long_section(
+        table_id: u8,
+        version: u8,
+        section_number: u8,
+        last_section_number: u8,
+    ) -> Vec<u8> {
+        let mut section = vec![
+            table_id,
+            0xb0,
+            9,
+            0x12,
+            0x34,
+            0xc1 | ((version & 0x1f) << 1),
+            section_number,
+            last_section_number,
+        ];
+        let crc = crate::sections::crc32_mpeg(&section);
+        section.extend_from_slice(&crc.to_be_bytes());
+        section
+    }
+
+    fn section_runtime(
+        condition: crate::config::SectionCondition,
+        check_crc: bool,
+        repeat: bool,
+    ) -> FilterRuntime {
+        let mut runtime = FilterRuntime::new(1, 7, PipelineOpenKind::Section);
+        runtime.set_section_runtime_config(Some(SectionRuntimeConfig {
+            check_crc,
+            repeat,
+            length_field_bits: 12,
+            condition,
+        }));
+        runtime.mark_started();
+        runtime
+    }
+
+    #[test]
+    fn section_bits_one_shot_advances_only_after_commit() {
+        let mut runtime = section_runtime(
+            crate::config::SectionCondition {
+                kind: SectionConditionKind::SectionBits,
+                filter: vec![0x42],
+                mask: vec![0xff],
+                mode: vec![0],
+                table_id: None,
+                version: None,
+            },
+            true,
+            false,
+        );
+        let section = long_section(0x42, 3, 0, 0);
+        let origin = TsInputOrigin::frontend(9);
+        let pid = PacketPid::from_config(crate::config::ConfigInputPid::validate_tpid(0x11).unwrap());
+        let prepared = runtime
+            .prepare_section_delivery(origin, pid, &section)
+            .unwrap();
+        assert!(runtime
+            .prepare_section_delivery(origin, pid, &section)
+            .is_some());
+        assert!(runtime.commit_section_delivery(prepared));
+        assert!(runtime
+            .prepare_section_delivery(origin, pid, &section)
+            .is_none());
+    }
+
+    #[test]
+    fn section_bits_negative_mode_requires_a_selected_mismatch() {
+        let runtime = section_runtime(
+            crate::config::SectionCondition {
+                kind: SectionConditionKind::SectionBits,
+                filter: vec![0x42],
+                mask: vec![0xff],
+                mode: vec![0xff],
+                table_id: None,
+                version: None,
+            },
+            false,
+            true,
+        );
+        let origin = TsInputOrigin::frontend(9);
+        let pid = PacketPid::from_config(crate::config::ConfigInputPid::validate_tpid(0x11).unwrap());
+        assert!(runtime
+            .prepare_section_delivery(origin, pid, &long_section(0x42, 0, 0, 0))
+            .is_none());
+        assert!(runtime
+            .prepare_section_delivery(origin, pid, &long_section(0x43, 0, 0, 0))
+            .is_some());
+    }
+
+    #[test]
+    fn table_info_one_shot_tracks_one_versioned_table_instance() {
+        let mut runtime = section_runtime(
+            crate::config::SectionCondition {
+                kind: SectionConditionKind::TableInfo,
+                filter: vec![0x42],
+                mask: vec![0xff],
+                mode: vec![0],
+                table_id: Some(0x42),
+                version: None,
+            },
+            true,
+            false,
+        );
+        let origin = TsInputOrigin::frontend(9);
+        let pid = PacketPid::from_config(crate::config::ConfigInputPid::validate_tpid(0x11).unwrap());
+        let section_one = runtime
+            .prepare_section_delivery(origin, pid, &long_section(0x42, 3, 1, 1))
+            .unwrap();
+        assert!(runtime.commit_section_delivery(section_one));
+        assert!(runtime
+            .prepare_section_delivery(origin, pid, &long_section(0x42, 4, 0, 1))
+            .is_none());
+        let section_zero = runtime
+            .prepare_section_delivery(origin, pid, &long_section(0x42, 3, 0, 1))
+            .unwrap();
+        assert!(runtime.commit_section_delivery(section_zero));
+        assert!(runtime
+            .prepare_section_delivery(origin, pid, &long_section(0x42, 3, 0, 1))
+            .is_none());
+    }
+
+    #[test]
+    fn section_crc_failure_is_discarded() {
+        let runtime = section_runtime(
+            crate::config::SectionCondition {
+                kind: SectionConditionKind::SectionBits,
+                filter: Vec::new(),
+                mask: Vec::new(),
+                mode: Vec::new(),
+                table_id: None,
+                version: None,
+            },
+            true,
+            true,
+        );
+        let origin = TsInputOrigin::frontend(9);
+        let pid = PacketPid::from_config(crate::config::ConfigInputPid::validate_tpid(0x11).unwrap());
+        let mut section = long_section(0x42, 0, 0, 0);
+        section[8] ^= 1;
+        assert!(runtime
+            .prepare_section_delivery(origin, pid, &section)
+            .is_none());
+    }
 
     #[test]
     fn filter_projects_strict_rounded_watermark_decisions() {

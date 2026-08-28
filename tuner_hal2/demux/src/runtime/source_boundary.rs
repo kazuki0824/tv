@@ -353,7 +353,7 @@ mod tests {
             PipelineOpenKind::Section => FilterOpenType::TsSection,
             PipelineOpenKind::Pes => FilterOpenType::TsPes,
             PipelineOpenKind::Record => FilterOpenType::TsRecord,
-            PipelineOpenKind::Other => FilterOpenType::TsRaw,
+            PipelineOpenKind::Other => FilterOpenType::TsUndefined,
         };
         super::super::demux::DemuxRuntime::open_filter_runtime_from_request(
             filter_id,

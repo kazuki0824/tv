@@ -618,11 +618,17 @@ impl<'a> RuntimeQuery<'a> {
                 )
             })?;
         let snapshot = runtime.snapshot();
+        let lnb_voltage = self
+            .registry
+            .lnb_for_frontend(FrontendRuntimeId(entry.id.0))
+            .and_then(|lnb| self.registry.lnb_runtime(lnb.id))
+            .map(|lnb| lnb.backend_committed_state().voltage);
         Ok(ObjectFrontendStatusSnapshot {
             backend: entry.backend,
             lnb_profile: entry.lnb_profile,
             runtime_state: snapshot.state,
             signal_state: snapshot.signal_state,
+            lnb_voltage,
         })
     }
 

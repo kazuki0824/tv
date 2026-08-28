@@ -101,6 +101,9 @@ pub(crate) use query_api::{
 };
 mod child_open_context;
 pub(crate) use child_open_context::ChildOpenContext;
+pub(crate) use child_open_context::{
+    attach_diagnostic_detail_to_public_error, format_filter_runtime_operation_report,
+};
 #[path = "demux_filter_dvr_ops.rs"]
 mod demux_filter_dvr_ops;
 pub use demux_filter_dvr_ops::ChildOpenTxn;
@@ -1453,6 +1456,13 @@ impl TunerServiceRuntime {
         record: DemuxTransactionDiagnosticRecord,
     ) {
         self.demux_transaction_diagnostics.push(record);
+    }
+
+    pub(crate) fn discard_playback_consume_for_queue_cleanup(&mut self, dvr_id: i32) -> usize {
+        self.playback_consume_txns
+            .get_mut(&dvr_id)
+            .map(|txn| txn.discard_for_boundary())
+            .unwrap_or(0)
     }
 
     pub fn record_object_cleanup_diagnostic(

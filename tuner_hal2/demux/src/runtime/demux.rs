@@ -47,7 +47,6 @@ use super::source_boundary::{
     SourceBoundaryReport,
 };
 const TUNER_EVENT_DATA_READY: u32 = 1 << 0;
-const MAX_FILTER_DELAY_MS: u64 = 10_000;
 #[cfg(test)]
 const TEST_PENDING_FILTER_EVENT_CAPACITY: usize = 64;
 
@@ -1582,6 +1581,7 @@ impl DemuxRuntime {
         }
         if let Some(filter) = self.filters.get_mut(&filter_id) {
             filter.clear_queued_payload_state();
+            filter.reset_section_delivery_state();
         }
         if drain.commit().is_err() {
             self.quarantine_filter_runtime(filter_id);
@@ -1919,6 +1919,7 @@ impl DemuxRuntime {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn configure_filter_runtime(
         &mut self,
         filter_id: i32,
@@ -1927,11 +1928,32 @@ impl DemuxRuntime {
         self.configure_filter_runtime_with_pes_stream_id(filter_id, config, None)
     }
 
+    #[cfg(test)]
     pub(crate) fn configure_filter_runtime_with_pes_stream_id(
         &mut self,
         filter_id: i32,
         config: FilterPipelineConfig,
         pes_stream_id: Option<i32>,
+    ) -> Result<(), DemuxRuntimeError> {
+        let section_config = self
+            .filters
+            .get(&filter_id)
+            .is_some_and(|filter| filter.open_kind() == PipelineOpenKind::Section)
+            .then(crate::config::SectionRuntimeConfig::match_all_repeat);
+        self.configure_filter_runtime_with_full_config(
+            filter_id,
+            config,
+            pes_stream_id,
+            section_config,
+        )
+    }
+
+    pub(crate) fn configure_filter_runtime_with_full_config(
+        &mut self,
+        filter_id: i32,
+        config: FilterPipelineConfig,
+        pes_stream_id: Option<i32>,
+        section_config: Option<crate::config::SectionRuntimeConfig>,
     ) -> Result<(), DemuxRuntimeError> {
         let (
             current_generation,
@@ -2029,6 +2051,7 @@ impl DemuxRuntime {
             return Err(DemuxRuntimeError::filter_missing(filter_id));
         };
         filter.configure_with_generation(next, config, pes_stream_id);
+        filter.set_section_runtime_config(section_config);
         filter.clear_queued_payload_state();
         #[cfg(test)]
         {
@@ -2368,6 +2391,7 @@ impl DemuxRuntime {
                 }
                 if let Some(filter) = self.filters.get_mut(&filter_id) {
                     filter.clear_queued_payload_state();
+                    filter.reset_section_delivery_state();
                     report.succeeded(FilterRuntimeOperationStep::QueuedPayloadClear);
                 } else {
                     report.skipped(
@@ -2479,9 +2503,6 @@ impl DemuxRuntime {
         filter_id: i32,
         hint: FilterDelayHint,
     ) -> Result<(), DemuxRuntimeError> {
-        if matches!(hint, FilterDelayHint::TimeDelayMs(ms) if ms > MAX_FILTER_DELAY_MS) {
-            return Err(DemuxRuntimeError::invalid_state(filter_id));
-        }
         self.filters
             .get_mut(&filter_id)
             .ok_or(DemuxRuntimeError::filter_missing(filter_id))?
@@ -3527,6 +3548,7 @@ impl DemuxRuntime {
             .get_mut(&sink_filter_id)
             .ok_or(DemuxRuntimeError::filter_missing(sink_filter_id))?;
         filter.clear_queued_payload_state();
+        filter.reset_section_delivery_state();
         match next_source_generation {
             Some(source_filter_generation) => {
                 if !filter.set_source_filter(
@@ -3683,6 +3705,7 @@ impl DemuxRuntime {
         self.pipeline = prepared.prepared_pipeline;
         for filter in self.filters.values_mut() {
             filter.clear_queued_payload_state();
+            filter.reset_section_delivery_state();
         }
         self.pcr_clock_anchor_store
             .commit_invalidation(prepared.pcr_invalidation);
@@ -4057,6 +4080,7 @@ impl DemuxRuntime {
             packet,
             &mut report.generated_events,
             packet_pid,
+            origin,
         );
         report.diagnostics.extend(queue_payload_diagnostics);
         let source_filter_ids: Vec<i32> = report
@@ -4744,11 +4768,28 @@ impl DemuxRuntime {
         packet: &[u8],
         generated_events: &mut Vec<PipelineGeneratedEvent>,
         packet_pid: crate::packet_pipeline::PacketPid,
+        origin: TsInputOrigin,
     ) -> Vec<crate::packet_pipeline::PipelineDiagnostic> {
         let mut diagnostics = Vec::new();
         let mut committed_events = Vec::with_capacity(generated_events.len());
         let mut gates_with_pending_events = BTreeSet::new();
         for event in std::mem::take(generated_events) {
+            let prepared_section_delivery = match &event {
+                PipelineGeneratedEvent::SectionPayloadReady {
+                    filter_id,
+                    pid,
+                    bytes,
+                    ..
+                } => match self
+                    .filters
+                    .get(filter_id)
+                    .and_then(|filter| filter.prepare_section_delivery(origin, *pid, bytes))
+                {
+                    Some(prepared) => Some(prepared),
+                    None => continue,
+                },
+                _ => None,
+            };
             let (filter_id, pid, payload, callback_event) = match &event {
                 PipelineGeneratedEvent::FilterStatus { .. } => {
                     committed_events.push(event);
@@ -4871,6 +4912,25 @@ impl DemuxRuntime {
             } else {
                 true
             };
+            if permit_committed {
+                if let Some(prepared) = prepared_section_delivery {
+                    let committed = self
+                        .filters
+                        .get_mut(&filter_id)
+                        .is_some_and(|filter| filter.commit_section_delivery(prepared));
+                    if !committed {
+                        self.quarantine_filter_runtime(filter_id);
+                        diagnostics.push(
+                            PipelineDiagnostic::filter_queue_payload_delivery_failure(
+                                pid,
+                                filter_id,
+                                DemuxRuntimeError::queue_runtime_failure(filter_id),
+                            ),
+                        );
+                        continue;
+                    }
+                }
+            }
             if payload_committed && permit_committed {
                 match self.committed_filter_status_events(filter_id) {
                     Ok(mut events) => committed_events.append(&mut events),

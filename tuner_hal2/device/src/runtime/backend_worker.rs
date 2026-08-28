@@ -18,7 +18,7 @@ use super::thread_result_owner::{ThreadResultOwner, ThreadResultPoll};
 use super::tune_txn::{BackendTuneOps, BackendTuneOutcome, BackendTuneStep, BackendTuneTxn};
 use crate::dvb;
 use crate::dvb::abi::{
-    DtvProperties, DtvProperty, DTV_CLEAR, FE_HAS_LOCK, FE_HAS_SIGNAL, FE_READ_STATUS,
+    DtvProperties, DtvProperty, DTV_CLEAR, FE_HAS_CARRIER, FE_HAS_LOCK, FE_READ_STATUS,
     FE_SET_PROPERTY, FE_SET_VOLTAGE, SEC_VOLTAGE_13, SEC_VOLTAGE_18, SEC_VOLTAGE_OFF,
 };
 use crate::px4;
@@ -189,7 +189,7 @@ impl FrontendBackendSession {
                 )?;
                 if status & FE_HAS_LOCK != 0 {
                     Ok(FrontendSignalState::Locked)
-                } else if status & FE_HAS_SIGNAL != 0 {
+                } else if status & FE_HAS_CARRIER != 0 {
                     Ok(FrontendSignalState::SignalDetected)
                 } else {
                     Ok(FrontendSignalState::NoSignal)
@@ -1006,7 +1006,7 @@ impl FrontendBackendTuneExecutor {
                 )?;
                 if status & FE_HAS_LOCK != 0 {
                     Ok(FrontendSignalState::Locked)
-                } else if status & FE_HAS_SIGNAL != 0 {
+                } else if status & FE_HAS_CARRIER != 0 {
                     Ok(FrontendSignalState::SignalDetected)
                 } else {
                     Ok(FrontendSignalState::NoSignal)

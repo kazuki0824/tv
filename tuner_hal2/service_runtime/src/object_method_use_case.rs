@@ -111,6 +111,7 @@ impl ObjectQueryRequest {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObjectFrontendStatusType {
     DemodLock,
+    RfLock,
     LnbVoltage,
     Unsupported,
 }
@@ -118,7 +119,10 @@ pub enum ObjectFrontendStatusType {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObjectFrontendStatusValue {
     DemodLocked(bool),
+    RfLocked(bool),
     LnbVoltageNone,
+    LnbVoltage11V,
+    LnbVoltage15V,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -135,6 +139,7 @@ pub struct ObjectFrontendStatusSnapshot {
     pub lnb_profile: Option<LnbRegistryProfile>,
     pub runtime_state: FrontendRuntimeState,
     pub signal_state: FrontendSignalState,
+    pub lnb_voltage: Option<maleicacid_tuner_hal2_lnb::LnbVoltage>,
 }
 
 pub fn lnb_profile_supports_voltage_status(profile: Option<LnbRegistryProfile>) -> bool {
@@ -163,10 +168,33 @@ fn object_frontend_status_value(
                 FrontendSignalState::Locked
             )))
         }
+        ObjectFrontendStatusType::RfLock if snapshot.backend == FrontendBackendKind::LinuxDvb => {
+            Ok(ObjectFrontendStatusValue::RfLocked(matches!(
+                snapshot.signal_state,
+                FrontendSignalState::SignalDetected | FrontendSignalState::Locked
+            )))
+        }
+        ObjectFrontendStatusType::RfLock => Err(HalError::Unsupported(
+            "frontend RF lock status is unsupported",
+        )),
         ObjectFrontendStatusType::LnbVoltage
             if lnb_profile_supports_voltage_status(snapshot.lnb_profile) =>
         {
-            Ok(ObjectFrontendStatusValue::LnbVoltageNone)
+            match snapshot.lnb_voltage {
+                Some(maleicacid_tuner_hal2_lnb::LnbVoltage::None) => {
+                    Ok(ObjectFrontendStatusValue::LnbVoltageNone)
+                }
+                Some(maleicacid_tuner_hal2_lnb::LnbVoltage::Voltage11V) => {
+                    Ok(ObjectFrontendStatusValue::LnbVoltage11V)
+                }
+                Some(maleicacid_tuner_hal2_lnb::LnbVoltage::Voltage15V) => {
+                    Ok(ObjectFrontendStatusValue::LnbVoltage15V)
+                }
+                None => Err(HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "advertised frontend LNB voltage has no committed state",
+                )),
+            }
         }
         ObjectFrontendStatusType::LnbVoltage => Err(HalError::Unsupported(
             "frontend LNB voltage status is unsupported",
@@ -186,7 +214,10 @@ fn object_frontend_readiness_value(
     {
         return ObjectFrontendStatusReadinessValue::Unsupported;
     }
-    if matches!(status_type, ObjectFrontendStatusType::Unsupported) {
+    if matches!(status_type, ObjectFrontendStatusType::Unsupported)
+        || matches!(status_type, ObjectFrontendStatusType::RfLock)
+            && snapshot.backend != FrontendBackendKind::LinuxDvb
+    {
         return ObjectFrontendStatusReadinessValue::Unsupported;
     }
     if matches!(
@@ -196,8 +227,14 @@ fn object_frontend_readiness_value(
         return ObjectFrontendStatusReadinessValue::Unavailable;
     }
     match status_type {
-        ObjectFrontendStatusType::LnbVoltage => ObjectFrontendStatusReadinessValue::Stable,
-        ObjectFrontendStatusType::DemodLock => match snapshot.signal_state {
+        ObjectFrontendStatusType::LnbVoltage => {
+            if snapshot.lnb_voltage.is_some() {
+                ObjectFrontendStatusReadinessValue::Stable
+            } else {
+                ObjectFrontendStatusReadinessValue::Unavailable
+            }
+        }
+        ObjectFrontendStatusType::DemodLock | ObjectFrontendStatusType::RfLock => match snapshot.signal_state {
             FrontendSignalState::Locked | FrontendSignalState::NoSignal => {
                 ObjectFrontendStatusReadinessValue::Stable
             }
@@ -272,6 +309,8 @@ fn prepare_object_query_request(
                         .into_iter()
                         .filter(|status_type| {
                             matches!(status_type, ObjectFrontendStatusType::DemodLock)
+                                || matches!(status_type, ObjectFrontendStatusType::RfLock)
+                                    && snapshot.backend == FrontendBackendKind::LinuxDvb
                                 || matches!(status_type, ObjectFrontendStatusType::LnbVoltage)
                                     && lnb_profile_supports_voltage_status(snapshot.lnb_profile)
                         })
@@ -793,6 +832,7 @@ mod tests {
             lnb_profile,
             runtime_state,
             signal_state,
+            lnb_voltage: lnb_profile.map(|_| maleicacid_tuner_hal2_lnb::LnbVoltage::None),
         }
     }
 
@@ -920,12 +960,49 @@ mod tests {
     }
 
     #[test]
+    fn frontend_status_reports_committed_lnb_voltage() {
+        let mut value = snapshot(
+            Some(LnbRegistryProfile::Px4Device15VOnly),
+            FrontendRuntimeState::Idle,
+            FrontendSignalState::NoSignal,
+        );
+        value.lnb_voltage = Some(maleicacid_tuner_hal2_lnb::LnbVoltage::Voltage15V);
+        assert_eq!(
+            object_frontend_status_value(value, ObjectFrontendStatusType::LnbVoltage),
+            Ok(ObjectFrontendStatusValue::LnbVoltage15V)
+        );
+    }
+
+    #[test]
+    fn dvb_rf_lock_uses_carrier_or_demod_lock_snapshot() {
+        let carrier = snapshot(
+            None,
+            FrontendRuntimeState::Tuning { generation: 4 },
+            FrontendSignalState::SignalDetected,
+        );
+        let no_signal = snapshot(
+            None,
+            FrontendRuntimeState::Tuning { generation: 4 },
+            FrontendSignalState::NoSignal,
+        );
+        assert_eq!(
+            object_frontend_status_value(carrier, ObjectFrontendStatusType::RfLock),
+            Ok(ObjectFrontendStatusValue::RfLocked(true))
+        );
+        assert_eq!(
+            object_frontend_status_value(no_signal, ObjectFrontendStatusType::RfLock),
+            Ok(ObjectFrontendStatusValue::RfLocked(false))
+        );
+    }
+
+    #[test]
     fn px4_demod_lock_status_is_exposed_from_current_readback_snapshot() {
         let px4 = ObjectFrontendStatusSnapshot {
             backend: FrontendBackendKind::Px4CharDevice,
             lnb_profile: None,
             runtime_state: FrontendRuntimeState::Tuning { generation: 7 },
             signal_state: FrontendSignalState::Locked,
+            lnb_voltage: None,
         };
 
         assert_eq!(

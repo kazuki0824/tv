@@ -95,7 +95,9 @@ impl CapabilitySnapshot {
 
     pub const fn filter_capacity(self, open_type: FilterOpenType) -> i32 {
         match open_type {
-            FilterOpenType::TsRaw | FilterOpenType::TsRecord => self.num_ts_filter,
+            FilterOpenType::TsUndefined | FilterOpenType::TsRaw | FilterOpenType::TsRecord => {
+                self.num_ts_filter
+            }
             FilterOpenType::TsSection => self.num_section_filter,
             FilterOpenType::TsAudio => self.num_audio_filter,
             FilterOpenType::TsVideo => self.num_video_filter,
