@@ -76,47 +76,6 @@ object ProviderDataBridge {
             eventId,
         )
 
-    fun buildProgramProviderData(program: ProgramRecord): Result {
-        val descriptors = program.descriptors
-        runCatching { Math.addExact(program.startTimeMillis, program.durationMillis) }
-            .getOrElse { error -> throw IllegalArgumentException("program timing overflow", error) }
-        val request = JSONObject()
-            .put("schema", "maleicacid.tv.programRequest")
-            .put("schemaVersion", 1)
-            .put("programKey", JSONObject()
-                .put("kind", "arib-event-v1")
-                .put("originalNetworkId", program.serviceKey.originalNetworkId)
-                .put("transportStreamId", program.serviceKey.transportStreamId)
-                .put("serviceId", program.serviceKey.serviceId)
-                .put("eventId", program.eventId))
-            .put("timing", JSONObject()
-                .put("startUtcMillis", program.startTimeMillis)
-                .put("durationMillis", program.durationMillis))
-            .put("cas", JSONObject()
-                .put("requiresCas", program.requiresCas)
-                .put("source", "SI_SEMANTICS"))
-            .put("extendedItems", toExtendedItemsArray(descriptors.extendedItems))
-            .put("genres", genresJson(program))
-            .put("eventGroups", toEventGroupsArray(descriptors.eventGroups))
-            .put("linkage", toLinkageArray(descriptors.linkage))
-            .put("freeCaMode", toFreeCaModeObject(descriptors))
-            .put("series", toSeriesObject(descriptors))
-            .put("diagnostics", JSONObject()
-                .put("descriptorDiagnosticsCanonicalJson", descriptors.descriptorDiagnosticsCanonicalJson)
-                .put("publishDiagnostics", JSONArray())
-                .put("parserDiagnostics", JSONArray()))
-            .put("ratings", ratingsJson(program))
-            .put("components", toComponentsObject(descriptors.components))
-            .put("source", JSONObject()
-                .put("pid", program.source.pid.value)
-                .put("tableId", program.source.tableId)
-                .put("version", program.source.version)
-                .put("sectionNumber", program.source.sectionNumber)
-                .put("lastSectionNumber", program.source.lastSectionNumber))
-            .put("malformedCaDescriptorCount", program.malformedCaDescriptorCount.coerceAtLeast(0))
-        return parseResult(native.buildProgramProviderData(request.toString()))
-    }
-
     fun normalizeProgramProviderData(providerData: ByteArray?): Result =
         parseResult(native.normalizeProgramProviderData(providerData ?: ByteArray(0)))
 
@@ -171,49 +130,6 @@ object ProviderDataBridge {
         )
     }
 
-    private fun ratingsJson(program: ProgramRecord): JSONArray {
-        val arr = JSONArray()
-        program.descriptors.parentalRatings.forEach { rating ->
-            arr.put(JSONObject()
-                .put("countryCode", rating.countryCode)
-                .put("rawRatingByte", rating.rawRatingByte)
-                .put("parseStatus", rating.parseStatus))
-        }
-        return arr
-    }
-
-    private fun genresJson(program: ProgramRecord): JSONArray = JSONArray().apply {
-        program.descriptors.contentGenres.forEach { genre ->
-            put(JSONObject()
-                .put("level1", genre.level1)
-                .put("level2", genre.level2)
-                .put("userNibble", genre.userNibble)
-                .put("aribName", genre.aribName)
-                .put("parseStatus", genre.parseStatus))
-        }
-    }
-
-    private fun toFreeCaModeObject(descriptors: com.maleicacid.tvinput.db.ProgramDescriptors): Any = descriptors.freeCaMode?.let { mode ->
-        JSONObject()
-            .put("raw", mode.raw ?: JSONObject.NULL)
-            .put("scrambled", mode.scrambled ?: JSONObject.NULL)
-            .put("text", mode.text ?: JSONObject.NULL)
-            .put("parseStatus", mode.parseStatus)
-    } ?: JSONObject.NULL
-
-    private fun toSeriesObject(descriptors: com.maleicacid.tvinput.db.ProgramDescriptors): Any = descriptors.series?.let { series ->
-        JSONObject()
-            .put("seriesId", series.seriesId ?: JSONObject.NULL)
-            .put("repeatLabel", series.repeatLabel)
-            .put("programPattern", series.programPattern)
-            .put("expireDateValid", series.expireDateValid)
-            .put("expireDate", series.expireDate ?: JSONObject.NULL)
-            .put("episodeNumber", series.episodeNumber ?: JSONObject.NULL)
-            .put("lastEpisodeNumber", series.lastEpisodeNumber ?: JSONObject.NULL)
-            .put("name", series.name ?: JSONObject.NULL)
-            .put("parseStatus", series.parseStatus)
-    } ?: JSONObject.NULL
-
     private fun parseResult(raw: String): Result {
         val obj = runCatching { JSONObject(raw) }.getOrElse { error ->
             throw IllegalStateException("provider-data JNI result is not JSON", error)
@@ -232,58 +148,6 @@ object ProviderDataBridge {
             diagnosticsDroppedCount = obj.optInt("diagnosticsDroppedCount", 0),
         )
     }
-
-    private fun toExtendedItemsArray(items: List<AribExtendedItem>): JSONArray = JSONArray().apply {
-        items.forEach { item ->
-            put(
-                JSONObject()
-                    .put("languageCode", item.languageCode)
-                    .put("description", item.itemDescription)
-                    .put("text", item.itemText)
-                    .put("parseStatus", "OK"),
-            )
-        }
-    }
-
-    private fun toEventGroupsArray(groups: List<AribEventGroup>): JSONArray = JSONArray().apply {
-    groups.forEach { group ->
-        put(
-  JSONObject()
-      .put("groupType", group.groupType)
-      .put("events", JSONArray().apply {
-group.events.forEach { event ->
-    put(JSONObject()
-        .put("serviceId", event.serviceId)
-        .put("eventId", event.eventId))
-}
-      })
-      .put("otherNetworkEvents", JSONArray().apply {
-group.otherNetworkEvents.forEach { event ->
-    put(JSONObject()
-        .put("originalNetworkId", event.originalNetworkId)
-        .put("transportStreamId", event.transportStreamId)
-        .put("serviceId", event.serviceId)
-        .put("eventId", event.eventId))
-}
-      })
-      .put("privateDataHex", group.privateDataHex)
-      .put("parseStatus", group.parseStatus),
-        )
-    }
-}
-
-private fun toLinkageArray(items: List<AribLinkage>): JSONArray = JSONArray().apply {
-        items.forEach { item ->
-            put(JSONObject()
-                .put("linkageType", item.linkageType)
-                .put("originalNetworkId", item.originalNetworkId)
-                .put("transportStreamId", item.transportStreamId)
-                .put("serviceId", item.serviceId)
-                .put("privateDataPrefixHex", item.privateDataHex)
-                .put("parseStatus", item.parseStatus))
-        }
-    }
-
 
     fun toComponentsObject(components: AribComponents): JSONObject = JSONObject()
         .put("video", videoComponentsJson(components.video))

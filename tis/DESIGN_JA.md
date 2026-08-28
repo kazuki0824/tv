@@ -359,7 +359,6 @@ TIS Kotlin は provider-data JSON を解釈せず、以下の Rust JNI API 相�
 
 ```kotlin
 object NativeProviderData {
-    external fun buildProgramProviderData(inputJson: String): ProviderDataResult
     external fun normalizeProgramProviderData(rawBytes: ByteArray): ProviderDataResult
     external fun extractProgramKey(rawBytes: ByteArray): ProgramKeyResult?
     external fun buildChannelProviderData(inputJson: String): ProviderDataResult
@@ -384,7 +383,7 @@ data class ChannelProviderDataResult(
 
 `ChannelTune` は `deliverySystem`、`frequencyHz`、`streamIdType`、`streamId`、`physicalChannel`、`satelliteBand`、`remoteControlKeyId` だけを持つtyped物理tune復元値とし、`inputId`、表示名、backend名、driver名、px4相対slot等を持たない。channelとTvInputServiceの関連付けはchannel rowのrequired fieldである`TvContract.Channels.COLUMN_INPUT_ID`を唯一のSSOTとする。tune復元前にrowの`COLUMN_INPUT_ID`がcurrent TISの`TvInputInfo.id`と一致することを検証し、不一致rowのprovider-dataを別inputの物理tuneとして使用しない。`decodeChannelProviderData()` は invalid UTF-8、malformed JSON、schema不整合を null または診断付き失敗へ落とす。現行String JNI surfaceではtyped resultを単一JSON envelopeで返し、Kotlinはこのresult envelopeだけを読む。保存済みprovider-data自体の解釈・修復やTAB/hexの第二wire protocolは設けない。
 
-`inputJson` は Rust builder への入力 DTO であり、TvProvider に保存する provider-data schema ではない。最終JSONバイト列、正規化、安定キー抽出はRustが行う。provider-data単体のdigestまたはsignatureは返さない。
+`inputJson` はChannel builderだけの入力 DTO であり、TvProvider に保存する provider-data schema ではない。Program provider-dataはRustが同一SI transactionのevent / service factsから直接canonical encodeし、event DTOの`providerDataCanonicalJson`として返す。Kotlinはこのfieldを不透明なUTF-8 JSON文字列として`ProgramRecord`へ運び、`Programs.COLUMN_INTERNAL_PROVIDER_DATA`へ保存する。最終JSONバイト列、正規化、安定キー抽出はRustが行う。provider-data単体のdigestまたはsignatureは返さない。
 
 `rawBytes` は任意バイナリではなく、既存 TvProvider に保存済みの JSON v1 UTF-8 バイト列を指す。Kotlin は `String(rawBytes)` などで再解釈してから Rust へ渡してはならず、TvProvider から取得した `COLUMN_INTERNAL_PROVIDER_DATA` の BLOB バイト列をそのまま Rust JNI 境界へ渡す。TvProvider が文字列として返した場合の互換補助は、UTF-8 バイト列へ戻すだけに限定し、Kotlin側でJSON構造を解釈・再構築してはならない。
 
@@ -419,6 +418,8 @@ data class ProgramPublishSnapshot(
 
 fun takeProgramPublishSnapshot(): ProgramPublishSnapshot
 ```
+
+`AribEvent.providerDataCanonicalJson`は同じbulk read内でRustが同じevent / service / semantic facts / descriptor診断から生成した保存bytesである。標準列投影用の構造化fieldと用途は異なるが、意味stateとtransaction ownerは一つである。Kotlinが構造化fieldからProgram provider-data requestを再構築し、JNIへ戻してはならない。
 
 ```kotlin
 data class TableRequirementStatus(
@@ -470,7 +471,7 @@ fun casDiscoverySnapshot(): CasDiscoverySnapshot
 
 `PlaybackPipeline` は playback-level serial executor を持ち、`setSurface()`、`setVolume()`、`start()`、`switchAudio()`、`stop()`、`release()` の state mutation を同一 executor に閉じる。filter、block model decoder、MediaSync、MediaSync input Surface、AudioTrack、generation、surface、未返却audio buffer id、availability arm sequenceの変更を呼び出し元スレッドで直接行わない。release後のqueued taskはreleased flagとgenerationで破棄する。
 
-`ChannelScanManager` は`ActiveScanTask(generation, purpose, context, cancelRequested, controller, engine)`を一つのatomic referenceとして所有する。running boolean、active generation/purpose、controller、engine、contextを別fieldに複製しない。cancel / cleanup taskは取得した同じtask identityにだけ作用し、stale cleanupが後続scanを変更してはならない。Tuner Framework/TRMにはbackground scanで`USE_CASE_SCAN`、liveで`USE_CASE_LIVE`を渡し、frontend等のhardware arbitrationを再実装しない。一方、ライブ中はbackground scan開始を延期するというTIS製品policyだけはManagerに残す。
+`ChannelScanManager` は`ActiveScanTask(generation, purpose, context, cancelRequested, controller, engine)`を一つのatomic referenceとして所有する。running boolean、active generation/purpose、controller、engine、contextを別fieldに複製しない。cancel / cleanup taskは取得した同じtask identityにだけ作用し、stale cleanupが後続scanを変更してはならない。Tuner Framework/TRMにはsetup scanで`PRIORITY_HINT_USE_CASE_TYPE_SCAN`、boot EPG同期とbackground maintenanceで`PRIORITY_HINT_USE_CASE_TYPE_BACKGROUND`、liveで`PRIORITY_HINT_USE_CASE_TYPE_LIVE`を渡し、frontend等のhardware arbitrationを再実装しない。一方、ライブ中はboot/background作業の開始を延期するというTIS製品policyだけはManagerに残す。
 
 ### SetupActivity 保護
 
@@ -561,18 +562,18 @@ ISO/IEC 14496-2 Visual、JPEG 2000、auxiliary video、SVC、MVC、3D additional
 
 MPEG-H 3D Audio と AC-4 は ARIB STD-B32 4.0以降の改定概要で高度地上デジタルテレビジョン放送向け追加codecであることを確認できるが、STD-B79 / STD-B80 の高度地上方式は本productの恒久scope外であるためcodec固定表には含めない。AC-3、Enhanced AC-3、DTS、DTS-HD、Dolby TrueHDも現行対象transportに対する取得可能なARIB本文の条項根拠を確認せず推測で追加しない。
 
-## provider-data 受け渡し境界（推奨案A）
+## provider-data 生成・受け渡し境界
 
 TIS は TvProvider 標準列への投影を担当する。TIS は `Programs.COLUMN_INTERNAL_PROVIDER_DATA` / `Channels.COLUMN_INTERNAL_PROVIDER_DATA` に保存される最終 JSON を直接生成してはならない。
 
-TIS が JNI へ渡す JSON は、保存形式ではなく Rust へ値を渡すための受け渡し用形式である。この受け渡し用形式の型、必須項目、欠落時の扱い、旧形式拒否、値域検査は Rust の serde 型を正とする。TIS はこの受け渡し用 JSON を provider-data schema の Kotlin 実装、保存形式または正規形として扱ってはならない。
+Program provider-dataはRustが同じbulk SI transactionのEIT event / service / `ServiceSemanticFacts` / descriptor診断から直接生成し、`AribEvent.providerDataCanonicalJson`として返す。TISは標準列用の構造化event fieldから`JSONObject` requestを再構築せず、このcanonical JSONだけを`ProgramRecord`へ透過保持して保存する。
 
-受け渡し用形式の schema 名は `maleicacid.tv.programRequest` / `maleicacid.tv.channelRequest` とし、保存用 schema 名 `maleicacid.tv.program` / `maleicacid.tv.channel` を名乗らない。
+Channel provider-dataはfrequency、delivery system、stream selector等のTIS-owned tune identityを必要とするため、`maleicacid.tv.channelRequest`をRustへ渡す。この受け渡し用形式は保存用`maleicacid.tv.channel`を名乗らず、Rustのclosed serde型を正とする。TISはこの受け渡し用JSONをprovider-data schemaのKotlin実装、保存形式または正規形として扱ってはならない。
 
-Rust は受け渡し用 JSON を serde 型へ読み込み、検査し、保存用JSON、識別子、切り詰め診断を生成する。TIS は Rustが返した保存用JSONをそのままTvProviderの`internal_provider_data`に保存する。TISはRustが返した識別子と診断結果だけを使う。TIS runtimeのpolicy結果、track identity、Android投影結果はbuilder入力へ含めず、保存JSONへ戻さない。
+RustはProgramをtyped意味stateから、Channelを検査済みrequestから生成し、保存用JSON、識別子、切り詰め診断を確定する。TIS runtimeのpolicy結果、track identity、Android投影結果は保存JSONへ戻さない。
 
 TIS は保存データの型、正規化、必須項目判定、欠落補完、旧形式互換、識別子抽出、サイズ上限処理を実装してはならない。TIS 側で `0`、`false`、`jpn`、`UNKNOWN`、空文字などを使って必須項目欠落を補い、provider-data を成立させてはならない。
 
-`DescriptorDiagnosticV1` は Rust が生成した正規 JSON を正とする。TIS は `DescriptorDiagnosticV1` を項目ごとに再構築してはならない。TIS が保持する場合は、Rust 生成の正規 JSON を不透明な文字列として透過保持する。
+`DescriptorDiagnosticV1` はRustが解析したdescriptor診断modelからProgram provider-dataへ直接格納する。TIS は `DescriptorDiagnosticV1` を項目ごとに再構築してRustへ戻してはならない。TIS が保持する場合は、Rust 生成の正規 JSON を不透明な文字列として透過保持する。
 
-TIS の試験は、受け渡し用 JSON の細部を保存形式として検査しない。検査対象は Rust provider-data builder が返した保存用JSON、識別子、拒否診断に寄せる。
+TIS の試験は、Channel受け渡し用 JSON の細部を保存形式として検査しない。ProgramはRust bulk snapshotが返す保存用JSON、ChannelはRust builderが返す保存用JSON、識別子、拒否診断を検査する。

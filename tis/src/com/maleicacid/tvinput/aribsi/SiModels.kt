@@ -258,6 +258,7 @@ data class AribEvent(
     val title: String,
     val description: String,
     val extendedDescription: String = "",
+    val providerDataCanonicalJson: String = "",
     val eventScope: String = "present_following",
     val source: AribProgramSource = AribProgramSource(),
     val descriptors: AribEventDescriptors = AribEventDescriptors(),

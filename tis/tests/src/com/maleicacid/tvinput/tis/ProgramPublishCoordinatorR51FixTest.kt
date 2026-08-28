@@ -14,7 +14,7 @@ class ProgramPublishCoordinatorR51FixTest {
         val p = ProgramRecord(
             key, 1, "p1", 1_700_000_000_000L, 1_800_000L, "title", "desc",
             descriptors = ProgramDescriptors(components = AribComponents(audio = listOf(AribComponentEntry(esPid = TsPid(256), streamType = 0x0f, componentTag = 1, componentType = 3, codec = "AAC", language = "jpn", parseStatus = "OK")))),
-        )
+        ).withCanonicalProgramProviderDataForTest()
         val withoutAudio = p.copy(descriptors = p.descriptors.copy(components = AribComponents()))
         check(ProgramPublishCoordinator.programSignatureForTest(listOf(p)) != ProgramPublishCoordinator.programSignatureForTest(listOf(withoutAudio)))
     }
