@@ -66,7 +66,11 @@ class EventModelMapper {
             d.componentText?.takeIf { it.isNotBlank() }?.let { "映像: $it" },
             d.audioComponentText?.takeIf { it.isNotBlank() }?.let { "音声: $it" },
             d.genreSupplementText?.takeIf { it.isNotBlank() }?.let { "ジャンル: $it" },
-            (d.freeCaMode?.text ?: when (d.scrambled) { true -> "有料放送"; false -> "無料放送"; null -> null })?.takeIf { it.isNotBlank() }?.let { "放送種別: $it" },
+            when (d.scrambled) {
+                true -> "放送種別: 有料放送"
+                false -> "放送種別: 無料放送"
+                null -> null
+            },
         )
         return listOf(event.extendedDescription, extended)
             .plus(uiSupplements)

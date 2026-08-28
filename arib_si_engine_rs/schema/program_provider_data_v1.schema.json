@@ -385,9 +385,13 @@
           "type": "boolean"
         },
         "expireDate": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint16"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "episodeNumber": {
@@ -409,7 +413,35 @@
         "parseStatus": {
           "$ref": "#/$defs/parseStatus"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "expireDateValid": {
+                "const": true
+              }
+            },
+            "required": [
+              "expireDateValid"
+            ]
+          },
+          "then": {
+            "properties": {
+              "expireDate": {
+                "$ref": "#/$defs/uint16"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "expireDate": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
     },
     "linkage": {
       "type": "object",
@@ -565,10 +597,6 @@
         },
         "parseStatus": {
           "$ref": "#/$defs/parseStatus"
-        },
-        "diagnosticCode": {
-          "type": "string",
-          "minLength": 1
         }
       },
       "not": {
@@ -670,10 +698,6 @@
         },
         "parseStatus": {
           "$ref": "#/$defs/parseStatus"
-        },
-        "diagnosticCode": {
-          "type": "string",
-          "minLength": 1
         }
       },
       "not": {

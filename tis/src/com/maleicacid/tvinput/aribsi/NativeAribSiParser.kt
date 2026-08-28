@@ -293,7 +293,7 @@ class NativeAribSiParser : AutoCloseable {
             val index = merged.indexOfFirst { sameComponentIdentity(it, eventEntry) }
             if (index >= 0) {
                 merged[index] = mergeComponentEntry(eventEntry, merged[index])
-            } else {
+            } else if (eventEntry.esPid != TsPid.PAT) {
                 merged += eventEntry
             }
         }
@@ -517,7 +517,7 @@ private fun parseLinkage(array: JSONArray?): List<AribLinkage> = (0 until (array
         AribLinkage(
             linkageType = obj.optInt("linkageType", -1),
             serviceKey = key,
-            privateDataHex = obj.optString("privateDataHex", ""),
+            privateDataHex = obj.optString("privateDataPrefixHex", ""),
             parseStatus = obj.optString("parseStatus", "OK"),
         ).takeIf { it.linkageType >= 0 }
     }
@@ -525,7 +525,6 @@ private fun parseLinkage(array: JSONArray?): List<AribLinkage> = (0 until (array
     private fun parseFreeCaMode(obj: JSONObject): AribFreeCaMode? = if (obj.length() == 0) null else AribFreeCaMode(
         raw = optIntOrNull(obj, "raw"),
         scrambled = optBoolOrNull(obj, "scrambled"),
-        text = optStringOrNull(obj, "text"),
         parseStatus = obj.optString("parseStatus", "OK"),
     )
 
@@ -572,7 +571,6 @@ private fun parseLinkage(array: JSONArray?): List<AribLinkage> = (0 until (array
             profileLevel = optStringOrNull(obj, "profileLevel"),
             dataComponentId = optIntOrNull(obj, "dataComponentId"),
             captionServiceKind = optStringOrNull(obj, "captionServiceKind"),
-            diagnosticCode = optStringOrNull(obj, "diagnosticCode"),
             main = optBoolOrNull(obj, "main"),
             multiLingual = optBoolOrNull(obj, "multiLingual"),
             qualityIndicator = optIntOrNull(obj, "qualityIndicator"),
@@ -685,8 +683,8 @@ private fun parseLinkage(array: JSONArray?): List<AribLinkage> = (0 until (array
                 val videoCodec = RECOGNIZED_VIDEO_CODECS[stream.streamType]
                 val audioCodec = RECOGNIZED_AUDIO_CODECS[stream.streamType]
                 when {
-                    videoCodec != null -> video += codecComponent(stream, videoCodec, r51Supported = R51_VIDEO_CODECS.containsKey(stream.streamType))
-                    audioCodec != null -> audio += codecComponent(stream, audioCodec, r51Supported = R51_AUDIO_CODECS.containsKey(stream.streamType)).copy(
+                    videoCodec != null -> video += codecComponent(stream, videoCodec)
+                    audioCodec != null -> audio += codecComponent(stream, audioCodec).copy(
                         language = stream.languageCodes.firstOrNull(),
                         secondLanguage = stream.languageCodes.drop(1).firstOrNull(),
                     )
@@ -716,13 +714,12 @@ private fun parseLinkage(array: JSONArray?): List<AribLinkage> = (0 until (array
 
         fun toComponentsObjectForServiceForTest(service: AribService): String = ProviderDataBridge.toComponentsObject(componentsForServiceForTest(service)).toString()
 
-        private fun codecComponent(stream: AribElementaryStream, codec: String, r51Supported: Boolean): AribComponentEntry = AribComponentEntry(
+        private fun codecComponent(stream: AribElementaryStream, codec: String): AribComponentEntry = AribComponentEntry(
             esPid = stream.elementaryPid,
             streamType = stream.streamType,
             componentTag = stream.componentTag,
             componentType = stream.componentType,
             codec = codec,
-            diagnosticCode = if (r51Supported) "CODEC_SIGNALING_OBSERVED" else "UNSUPPORTED_R51_CODEC_SIGNALING",
             parseStatus = "OK",
         )
 
