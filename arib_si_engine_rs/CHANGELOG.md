@@ -1,3 +1,9 @@
+# r50ef_review_followup_3
+
+- Program provider-dataはTISのpublish境界でtyped requestを組み立て、Rustのclosed Serde DTOが検証してcanonical保存形式へ変換する境界へ戻した。bulk SI transactionをTvProvider保存形式へ結合せず、未publish eventの先行encodeを避ける。
+- ARIB content descriptorの2つのuser nibbleを結合した保存値を0..255の1 byteとして扱うschema / validator修正は維持した。
+- Android/Soong build、atest、CTS、VTS、実機確認は未実施。本commitのRust/Kotlin host検証はPR checksを正とする。
+
 # r50ef_review_followup_2
 
 - Program provider-dataを、bulk transactionと同じRustのEIT event / service semantic facts / descriptor診断から直接canonical encodeする形へ変更し、Kotlin `programRequest` とJNI再parse経路を削除した。

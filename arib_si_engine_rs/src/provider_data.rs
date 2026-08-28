@@ -1,13 +1,10 @@
-use crate::eit::{EitEvent, EitTimingState};
-use crate::service_discovery::{
-    DiscoveredElementaryStream, DiscoveredService, ServiceSemanticFacts,
-};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 const PROVIDER_SCHEMA_VERSION: i64 = 1;
 const PROGRAM_SCHEMA_NAME: &str = "maleicacid.tv.program";
 const CHANNEL_SCHEMA_NAME: &str = "maleicacid.tv.channel";
+const PROGRAM_REQUEST_SCHEMA_NAME: &str = "maleicacid.tv.programRequest";
 const CHANNEL_REQUEST_SCHEMA_NAME: &str = "maleicacid.tv.channelRequest";
 const CHANNEL_SCHEMA_VERSION: i64 = 1;
 const SOFT_LIMIT_BYTES: usize = 16 * 1024;
@@ -58,6 +55,13 @@ struct TimingV1 {
     duration_millis: i64,
     #[serde(rename = "endUtcMillis", default, skip_serializing)]
     legacy_end_utc_millis: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProgramRequestTimingV1 {
+    start_utc_millis: i64,
+    duration_millis: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -331,6 +335,36 @@ struct ProgramProviderDataV1 {
     extensions: serde_json::Map<String, serde_json::Value>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProgramRequestDiagnosticsV1 {
+    descriptor_diagnostics_canonical_json: String,
+    publish_diagnostics: Vec<DiagnosticItemV1>,
+    parser_diagnostics: Vec<DiagnosticItemV1>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProgramProviderDataRequestV1 {
+    schema: String,
+    schema_version: i64,
+    program_key: ProgramKeyV1,
+    timing: ProgramRequestTimingV1,
+    source: SourceV1,
+    cas: CasV1,
+    ratings: Vec<RatingV1>,
+    genres: Vec<GenreV1>,
+    series: Option<SeriesV1>,
+    event_groups: Vec<EventGroupV1>,
+    linkage: Vec<LinkageV1>,
+    free_ca_mode: Option<FreeCaModeV1>,
+    extended_items: Vec<ExtendedItemV1>,
+    components: ComponentsV1,
+    diagnostics: ProgramRequestDiagnosticsV1,
+    #[serde(default)]
+    malformed_ca_descriptor_count: i64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ChannelTuneV1 {
@@ -425,280 +459,43 @@ pub fn build_program_key(onid: i32, tsid: i32, sid: i32, event_id: i32) -> Strin
     .unwrap_or_default()
 }
 
-pub(crate) fn build_program_provider_data_from_event(
-    event: &EitEvent,
-    service: Option<&DiscoveredService>,
-    semantic_facts: Option<&ServiceSemanticFacts>,
-    descriptor_diagnostics: Vec<DescriptorDiagnosticV1>,
-    malformed_ca_descriptor_count: usize,
-) -> ProviderDataResult {
-    if event.table_id != 0x4e
-        || event.timing_state != EitTimingState::Defined
-        || event.start_time_millis <= 0
-        || event.duration_millis <= 0
-        || event
-            .start_time_millis
-            .checked_add(event.duration_millis)
-            .is_none()
-    {
+fn field_object_has_only(parent: &serde_json::Value, field: &str, known_keys: &[&str]) -> bool {
+    parent
+        .get(field)
+        .map(|value| object_has_only(value, known_keys))
+        .unwrap_or(true)
+}
+
+fn object_has_only(value: &serde_json::Value, known_keys: &[&str]) -> bool {
+    value
+        .as_object()
+        .map(|object| {
+            object
+                .keys()
+                .all(|key| known_keys.iter().any(|known| *known == key))
+        })
+        .unwrap_or(false)
+}
+
+pub fn build_program_provider_data(request_json: &str) -> ProviderDataResult {
+    let request = match serde_json::from_str::<ProgramProviderDataRequestV1>(request_json) {
+        Ok(request) => request,
+        Err(err) => {
+            return failure_result(
+                "PROGRAM_REQUEST_PARSE_FAILED",
+                format!("Program provider-data request JSON parse failed: {err}"),
+                PROVIDER_SCHEMA_VERSION,
+            )
+        }
+    };
+    let Some(data) = program_data_from_request(request) else {
         return failure_result(
-            "PROGRAM_EVENT_NOT_PUBLISHABLE",
-            "EIT event does not have publishable present/following identity and timing".to_string(),
+            "PROGRAM_REQUEST_INVALID",
+            "Program provider-data request did not satisfy schema v1 invariants".to_string(),
             PROVIDER_SCHEMA_VERSION,
         );
-    }
-
-    let streams = service
-        .map(|value| value.streams.as_slice())
-        .or_else(|| semantic_facts.map(|value| value.elementary_streams.as_slice()))
-        .unwrap_or(&[]);
-    let data = ProgramProviderDataV1 {
-        schema: PROGRAM_SCHEMA_NAME.to_string(),
-        schema_version: PROVIDER_SCHEMA_VERSION,
-        program_key: ProgramKeyV1 {
-            kind: "arib-event-v1".to_string(),
-            original_network_id: i64::from(event.original_network_id),
-            transport_stream_id: i64::from(event.transport_stream_id),
-            service_id: i64::from(event.service_id),
-            event_id: i64::from(event.event_id),
-        },
-        timing: TimingV1 {
-            start_utc_millis: event.start_time_millis,
-            duration_millis: event.duration_millis,
-            legacy_end_utc_millis: None,
-        },
-        source: SourceV1 {
-            pid: 18,
-            table_id: i64::from(event.table_id),
-            version: i64::from(event.version),
-            section_number: i64::from(event.section_number),
-            last_section_number: i64::from(event.last_section_number),
-        },
-        cas: CasV1 {
-            requires_cas: semantic_facts
-                .map(|facts| facts.requires_cas)
-                .unwrap_or(event.free_ca_mode),
-            source: "SI_SEMANTICS".to_string(),
-        },
-        ratings: event
-            .descriptors
-            .parental_ratings
-            .iter()
-            .map(|rating| RatingV1 {
-                country_code: rating.country_code.clone(),
-                raw_rating_byte: i64::from(rating.raw_rating_byte),
-                parse_status: "OK".to_string(),
-            })
-            .collect(),
-        genres: event
-            .descriptors
-            .contents
-            .iter()
-            .map(|genre| GenreV1 {
-                level1: i64::from(genre.content_nibble_level_1),
-                level2: i64::from(genre.content_nibble_level_2),
-                user_nibble: i64::from(
-                    (u16::from(genre.user_nibble_1) << 4) | u16::from(genre.user_nibble_2),
-                ),
-                arib_name: genre.arib_display_name.clone(),
-                parse_status: "OK".to_string(),
-            })
-            .collect(),
-        series: event.descriptors.series.first().map(|series| SeriesV1 {
-            series_id: i64::from(series.series_id),
-            repeat_label: i64::from(series.repeat_label),
-            program_pattern: i64::from(series.program_pattern),
-            expire_date_valid: series.expire_date != 0x1fff,
-            expire_date: None,
-            episode_number: i64::from(series.episode_number),
-            last_episode_number: i64::from(series.last_episode_number),
-            name: (!series.series_name.is_empty()).then_some(series.series_name.clone()),
-            parse_status: "OK".to_string(),
-        }),
-        event_groups: event
-            .descriptors
-            .event_groups
-            .iter()
-            .map(|group| EventGroupV1 {
-                group_type: i64::from(group.group_type),
-                events: group
-                    .events
-                    .iter()
-                    .map(|reference| EventGroupReferenceV1 {
-                        service_id: i64::from(reference.service_id),
-                        event_id: i64::from(reference.event_id),
-                    })
-                    .collect(),
-                other_network_events: group
-                    .other_network_events
-                    .iter()
-                    .map(|reference| OtherNetworkEventReferenceV1 {
-                        original_network_id: i64::from(reference.original_network_id),
-                        transport_stream_id: i64::from(reference.transport_stream_id),
-                        service_id: i64::from(reference.service_id),
-                        event_id: i64::from(reference.event_id),
-                    })
-                    .collect(),
-                private_data_hex: bytes_to_hex(&group.private_data),
-                parse_status: "OK".to_string(),
-            })
-            .collect(),
-        linkage: event
-            .descriptors
-            .linkages
-            .iter()
-            .map(|linkage| LinkageV1 {
-                transport_stream_id: i64::from(linkage.transport_stream_id),
-                original_network_id: i64::from(linkage.original_network_id),
-                service_id: i64::from(linkage.service_id),
-                linkage_type: i64::from(linkage.linkage_type),
-                private_data_prefix_hex: bytes_to_hex(
-                    &linkage.private_data[..linkage.private_data.len().min(16)],
-                ),
-                parse_status: "OK".to_string(),
-            })
-            .collect(),
-        free_ca_mode: Some(FreeCaModeV1 {
-            raw: if event.free_ca_mode { 1 } else { 0 },
-            scrambled: event.free_ca_mode,
-            text: Some(if event.free_ca_mode {
-                "有料放送".to_string()
-            } else {
-                "無料放送".to_string()
-            }),
-            parse_status: "OK".to_string(),
-        }),
-        extended_items: event
-            .descriptors
-            .extended_items
-            .iter()
-            .map(|item| ExtendedItemV1 {
-                language_code: item.language_code.clone(),
-                description: item.item_description.clone(),
-                text: item.item_text.clone(),
-                parse_status: "OK".to_string(),
-            })
-            .collect(),
-        components: components_from_streams(streams),
-        diagnostics: DiagnosticsV1 {
-            descriptor_diagnostics,
-            publish_diagnostics: Vec::new(),
-            parser_diagnostics: Vec::new(),
-            raw_provider_data_extensions: Vec::new(),
-            provider_data_truncated: None,
-            provider_data_hard_limit_bytes: None,
-            provider_data_soft_limit_bytes: None,
-            provider_data_dropped_count: None,
-            provider_data_dropped_counts: None,
-            provider_data_original_bytes: None,
-            provider_data_final_bytes: None,
-            provider_data_truncation_code: None,
-            malformed_ca_descriptor_count: (malformed_ca_descriptor_count > 0)
-                .then_some(malformed_ca_descriptor_count as i64),
-        },
-        extensions: serde_json::Map::new(),
     };
     finalize_program(data)
-}
-
-fn components_from_streams(streams: &[DiscoveredElementaryStream]) -> ComponentsV1 {
-    let mut components = ComponentsV1::default();
-    for stream in streams {
-        if let Some((codec, r51_supported)) = video_codec(stream.stream_type) {
-            components.video.push(VideoComponentV1 {
-                es_pid: i64::from(stream.elementary_pid),
-                stream_type: i64::from(stream.stream_type),
-                component_tag: stream.component_tag.map(i64::from),
-                component_type: stream.component_type.map(i64::from),
-                codec: codec.to_string(),
-                resolution: None,
-                scan: None,
-                aspect: None,
-                profile_level: None,
-                source_descriptor: None,
-                diagnostic_code: Some(codec_diagnostic(r51_supported).to_string()),
-                parse_status: "OK".to_string(),
-            });
-        } else if let Some((codec, r51_supported)) = audio_codec(stream.stream_type) {
-            components.audio.push(AudioComponentV1 {
-                es_pid: i64::from(stream.elementary_pid),
-                stream_type: i64::from(stream.stream_type),
-                component_tag: stream.component_tag.map(i64::from),
-                component_type: stream.component_type.map(i64::from),
-                codec: codec.to_string(),
-                language: stream.language_codes.first().cloned(),
-                second_language: stream.language_codes.get(1).cloned(),
-                channel_configuration: None,
-                sampling_info: None,
-                source_descriptor: None,
-                diagnostic_code: Some(codec_diagnostic(r51_supported).to_string()),
-                parse_status: "OK".to_string(),
-            });
-        } else if stream.is_caption
-            || matches!(stream.data_component_id, Some(0x0008) | Some(0x0012))
-        {
-            components.subtitle.push(SubtitleComponentV1 {
-                es_pid: i64::from(stream.elementary_pid),
-                component_tag: stream.component_tag.map(i64::from),
-                data_component_id: stream.data_component_id.map(i64::from),
-                language: stream.language_codes.first().cloned(),
-                caption_service_kind: if stream.is_superimpose {
-                    "superimpose"
-                } else if stream.data_component_id == Some(0x0012) {
-                    "one-seg-caption"
-                } else {
-                    "caption"
-                }
-                .to_string(),
-                parse_status: "OK".to_string(),
-            });
-        } else if stream.data_component_id.is_some() {
-            components.data.push(DataComponentV1 {
-                es_pid: i64::from(stream.elementary_pid),
-                component_tag: stream.component_tag.map(i64::from),
-                data_component_id: stream.data_component_id.map(i64::from),
-                component_type: stream.component_type.map(i64::from),
-                parse_status: "OK".to_string(),
-            });
-        }
-    }
-    components
-}
-
-fn video_codec(stream_type: u8) -> Option<(&'static str, bool)> {
-    match stream_type {
-        0x02 => Some(("MPEG-2", true)),
-        0x1b => Some(("H.264", true)),
-        0x24 => Some(("HEVC", false)),
-        _ => None,
-    }
-}
-
-fn audio_codec(stream_type: u8) -> Option<(&'static str, bool)> {
-    match stream_type {
-        0x03 | 0x04 => Some(("MPEG-Audio", true)),
-        0x0f => Some(("AAC", true)),
-        0x11 => Some(("MPEG-4-AAC-LATM", false)),
-        _ => None,
-    }
-}
-
-fn codec_diagnostic(r51_supported: bool) -> &'static str {
-    if r51_supported {
-        "CODEC_SIGNALING_OBSERVED"
-    } else {
-        "UNSUPPORTED_R51_CODEC_SIGNALING"
-    }
-}
-
-fn bytes_to_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(char::from(HEX[usize::from(byte >> 4)]));
-        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    output
 }
 
 pub fn build_channel_provider_data(request_json: &str) -> ProviderDataResult {
@@ -822,6 +619,59 @@ pub fn decode_channel_provider_data(provider_data: &[u8]) -> String {
         "cas": { "requiresCas": data.cas.requires_cas },
     })
     .to_string()
+}
+
+fn program_data_from_request(
+    request: ProgramProviderDataRequestV1,
+) -> Option<ProgramProviderDataV1> {
+    if request.schema != PROGRAM_REQUEST_SCHEMA_NAME
+        || request.schema_version != PROVIDER_SCHEMA_VERSION
+    {
+        return None;
+    }
+    if request.program_key.kind != "arib-event-v1" {
+        return None;
+    }
+    let descriptor_diagnostics =
+        parse_descriptor_diagnostics(&request.diagnostics.descriptor_diagnostics_canonical_json)?;
+    let data = ProgramProviderDataV1 {
+        schema: PROGRAM_SCHEMA_NAME.to_string(),
+        schema_version: PROVIDER_SCHEMA_VERSION,
+        program_key: request.program_key,
+        timing: TimingV1 {
+            start_utc_millis: request.timing.start_utc_millis,
+            duration_millis: request.timing.duration_millis,
+            legacy_end_utc_millis: None,
+        },
+        source: request.source,
+        cas: request.cas,
+        ratings: request.ratings,
+        genres: request.genres,
+        series: request.series,
+        event_groups: request.event_groups,
+        linkage: request.linkage,
+        free_ca_mode: request.free_ca_mode,
+        extended_items: request.extended_items,
+        components: request.components,
+        diagnostics: DiagnosticsV1 {
+            descriptor_diagnostics,
+            publish_diagnostics: request.diagnostics.publish_diagnostics,
+            parser_diagnostics: request.diagnostics.parser_diagnostics,
+            raw_provider_data_extensions: Vec::new(),
+            provider_data_truncated: None,
+            provider_data_hard_limit_bytes: None,
+            provider_data_soft_limit_bytes: None,
+            provider_data_dropped_count: None,
+            provider_data_dropped_counts: None,
+            provider_data_original_bytes: None,
+            provider_data_final_bytes: None,
+            provider_data_truncation_code: None,
+            malformed_ca_descriptor_count: (request.malformed_ca_descriptor_count > 0)
+                .then_some(request.malformed_ca_descriptor_count),
+        },
+        extensions: serde_json::Map::new(),
+    };
+    valid_program_provider_data(&data).then_some(data)
 }
 
 fn channel_data_from_request(
@@ -1640,6 +1490,65 @@ fn serialize_channel_with_truncation_metadata(
     Ok(text)
 }
 
+fn parse_descriptor_diagnostics(text: &str) -> Option<Vec<DescriptorDiagnosticV1>> {
+    let raw = serde_json::from_str::<serde_json::Value>(text).ok()?;
+    if !descriptor_diagnostics_have_only_known_fields(&raw) {
+        return None;
+    }
+    let items = serde_json::from_value::<Vec<DescriptorDiagnosticV1>>(raw).ok()?;
+    if items.iter().all(valid_descriptor_diagnostic) {
+        Some(items)
+    } else {
+        None
+    }
+}
+
+fn descriptor_diagnostics_have_only_known_fields(value: &serde_json::Value) -> bool {
+    let Some(items) = value.as_array() else {
+        return false;
+    };
+    items.iter().all(|item| {
+        object_has_only(
+            item,
+            &[
+                "schema",
+                "schemaVersion",
+                "severity",
+                "code",
+                "scope",
+                "descriptor",
+                "message",
+            ],
+        ) && field_object_has_only(
+            item,
+            "scope",
+            &[
+                "pid",
+                "tableId",
+                "tableIdExtension",
+                "version",
+                "sectionNumber",
+                "originalNetworkId",
+                "transportStreamId",
+                "serviceId",
+                "eventId",
+            ],
+        ) && field_object_has_only(
+            item,
+            "descriptor",
+            &[
+                "tag",
+                "name",
+                "offset",
+                "declaredLength",
+                "actualRemainingLength",
+                "parseStatus",
+                "rawPrefixHex",
+            ],
+        )
+    })
+}
+
 fn valid_descriptor_diagnostic(item: &DescriptorDiagnosticV1) -> bool {
     item.schema == "maleicacid.tv.descriptorDiagnostic"
         && item.schema_version == 1
@@ -2094,6 +2003,19 @@ mod provider_data_tests {
         )
     }
 
+    fn minimal_program_request_value() -> serde_json::Value {
+        let mut value =
+            serde_json::from_str::<serde_json::Value>(&minimal_program_json("")).unwrap();
+        value["schema"] = serde_json::json!("maleicacid.tv.programRequest");
+        value["diagnostics"] = serde_json::json!({
+            "descriptorDiagnosticsCanonicalJson": "[]",
+            "publishDiagnostics": [],
+            "parserDiagnostics": [],
+        });
+        value["malformedCaDescriptorCount"] = serde_json::json!(0);
+        value
+    }
+
     #[test]
     fn extended_event_item_allows_empty_description_when_text_exists() {
         let item = ExtendedItemV1 {
@@ -2151,10 +2073,9 @@ mod provider_data_tests {
     }
 
     #[test]
-    fn canonical_program_preserves_event_group_shape_and_rejects_invalid_scope() {
-        let mut stored =
-            serde_json::from_str::<serde_json::Value>(&minimal_program_json("")).unwrap();
-        stored["eventGroups"] = serde_json::json!([
+    fn program_request_rejects_nested_unknown_fields_and_preserves_event_group_shape() {
+        let mut request = minimal_program_request_value();
+        request["eventGroups"] = serde_json::json!([
               {
         "groupType": 2,
         "events": [{"serviceId": 102, "eventId": 456}],
@@ -2175,7 +2096,7 @@ mod provider_data_tests {
         "parseStatus": "OK"
               }
           ]);
-        let valid = normalize_program_provider_data(stored.to_string().as_bytes());
+        let valid = build_program_provider_data(&request.to_string());
         assert!(valid.success, "{}", valid.error_message);
         let canonical: serde_json::Value = serde_json::from_str(&valid.json).unwrap();
         assert!(canonical.get("skippedUnresolvedTransport").is_none());
@@ -2187,8 +2108,7 @@ mod provider_data_tests {
             6
         );
 
-        let mut invalid =
-            serde_json::from_str::<serde_json::Value>(&minimal_program_json("")).unwrap();
+        let mut invalid = minimal_program_request_value();
         invalid["eventGroups"] = serde_json::json!([{
               "groupType": 2,
               "events": [{"serviceId": 102, "eventId": 456}],
@@ -2201,20 +2121,42 @@ mod provider_data_tests {
               "privateDataHex": "",
               "parseStatus": "OK"
           }]);
-        let rejected = normalize_program_provider_data(invalid.to_string().as_bytes());
+        let rejected = build_program_provider_data(&invalid.to_string());
         assert!(!rejected.success);
-        assert_eq!(rejected.error_code, "PROGRAM_PROVIDER_DATA_INVALID");
+        assert_eq!(rejected.error_code, "PROGRAM_REQUEST_INVALID");
+
+        let mut legacy = minimal_program_request_value();
+        legacy["skippedUnresolvedTransport"] = serde_json::json!(false);
+        let rejected = build_program_provider_data(&legacy.to_string());
+        assert!(!rejected.success);
+        assert_eq!(rejected.error_code, "PROGRAM_REQUEST_PARSE_FAILED");
     }
 
     #[test]
     fn generated_program_key_matches_key_extracted_from_provider_data() {
-        let data: ProgramProviderDataV1 = serde_json::from_str(&minimal_program_json("")).unwrap();
-        let result = finalize_program(data);
+        let result = build_program_provider_data(&minimal_program_request_value().to_string());
         assert!(result.success, "{}", result.error_message);
         assert_eq!(
             build_program_key(4, 16400, 101, 12345),
             extract_program_key(result.json.as_bytes()).unwrap()
         );
+    }
+
+    #[test]
+    fn program_request_preserves_combined_user_nibble_byte() {
+        let mut request = minimal_program_request_value();
+        request["genres"] = serde_json::json!([{
+            "level1": 1,
+            "level2": 2,
+            "userNibble": 0x34,
+            "aribName": "試験分類",
+            "parseStatus": "OK",
+        }]);
+
+        let result = build_program_provider_data(&request.to_string());
+        assert!(result.success, "{}", result.error_message);
+        let canonical: serde_json::Value = serde_json::from_str(&result.json).unwrap();
+        assert_eq!(canonical["genres"][0]["userNibble"], 0x34);
     }
 
     #[test]
@@ -2264,10 +2206,10 @@ mod provider_data_tests {
 
     #[test]
     fn invalid_program_provider_data_returns_failure_not_empty_json() {
-        let result = normalize_program_provider_data(b"{not-json");
+        let result = build_program_provider_data("{not-json");
         assert!(!result.success);
         assert!(result.json.is_empty());
-        assert_eq!(result.error_code, "PROGRAM_PROVIDER_DATA_PARSE_FAILED");
+        assert_eq!(result.error_code, "PROGRAM_REQUEST_PARSE_FAILED");
     }
 
     #[test]

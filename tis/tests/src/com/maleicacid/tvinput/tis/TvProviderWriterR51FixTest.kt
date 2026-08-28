@@ -42,7 +42,7 @@ class TvProviderWriterR51FixTest {
                 components = AribComponents(audio = listOf(AribComponentEntry(esPid = TsPid(256), streamType = 0x0f, componentTag = 1, componentType = 3, codec = "AAC", language = "jpn", parseStatus = "OK"))),
             ),
             contentRatings = listOf(rating15),
-        ).withCanonicalProgramProviderDataForTest()
+        )
         writer.upsertPrograms(listOf(p))
         writer.upsertPrograms(listOf(p.copy(canonicalGenres = emptyList(), descriptors = ProgramDescriptors(), contentRatings = emptyList())))
         val values = store.programs.values.single()
