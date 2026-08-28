@@ -1,7 +1,6 @@
 package com.maleicacid.tvinput.tis
 
 import android.content.Context
-import android.media.tv.TvInputService
 import android.util.Log
 import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.common.LogTags
@@ -102,7 +101,7 @@ object ChannelScanManager {
                     appContext,
                     inputId,
                     createdEngine,
-                    TvInputService.PRIORITY_HINT_USE_CASE_TYPE_SCAN,
+                    task.purpose,
                     task.cancelRequested,
                 )
                 if (!isCurrentGeneration(generation)) {
@@ -178,7 +177,7 @@ object ChannelScanManager {
                     appContext,
                     inputId,
                     createdEngine,
-                    TvInputService.PRIORITY_HINT_USE_CASE_TYPE_BACKGROUND,
+                    task.purpose,
                     task.cancelRequested,
                 )
                 if (!isCurrentGeneration(generation)) {
@@ -264,7 +263,7 @@ object ChannelScanManager {
                     appContext,
                     inputId,
                     createdEngine,
-                    TvInputService.PRIORITY_HINT_USE_CASE_TYPE_BACKGROUND,
+                    task.purpose,
                     task.cancelRequested,
                 )
                 if (!isCurrentGeneration(generation)) {
