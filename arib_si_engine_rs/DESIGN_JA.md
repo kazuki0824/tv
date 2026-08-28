@@ -184,21 +184,19 @@ Rust 側に `com.android.tv` や `ISDB_<age>` の Android domain 決定文字列
 
 ## provider-data / 診断情報 Rust SSOT
 
-### provider-data 受け渡し境界（推奨案A）
+### provider-data 生成境界
 
-TIS が JNI へ渡す JSON は、保存形式ではなく Rust serde 型へ値を渡すための受け渡し用形式である。受け渡し用形式の型、必須項目、欠落時の扱い、旧形式拒否、値域検査は Rust 側の serde 型を正とする。
+Program provider-data は、EIT event、同じ `DiscoveryCollectionState` のservice / `ServiceSemanticFacts`、descriptor診断からRust内で直接 `ProgramProviderDataV1` を構築し、canonical encodeする。放送由来fieldをbulk JSONでKotlinへ出した後にKotlinがbuilder requestを再構築してRustへ戻す経路、および`maleicacid.tv.programRequest` schemaは持たない。
 
-Rust provider-data builder は、受け渡し用 JSON を serde 型へ読み込み、必須項目、型、値域、旧形式混入を検査する。検査に通った入力だけから、保存用 JSON、識別子、切り詰め診断を生成する。
+同一bulk transactionは、TvProvider標準列へ投影する構造化event DTOと、`Programs.COLUMN_INTERNAL_PROVIDER_DATA`へ保存する`providerDataCanonicalJson`を返す。前者はAndroid列への投影入力、後者はRustが確定した保存bytesであり、Kotlinは後者のfieldを解釈・再構築せず透過保持する。両者は同じimmutableなRust意味stateから同時生成し、別々の意味ownerやread transactionを作らない。
+
+Channel provider-dataだけは、frequency、delivery system、stream selector等のTIS-owned tune identityをRustへ渡す必要があるため、`maleicacid.tv.channelRequest`を受け渡し形式とする。Rustはこれをclosed serde型へ1回deserializeし、`maleicacid.tv.channel`を生成する。受け渡し形式を`Channels.COLUMN_INTERNAL_PROVIDER_DATA`へ保存してはならない。
 
 保存用 JSON の schema、正規化、識別子抽出、サイズ上限処理は Rust が単独で所有する。TIS は保存用 JSON を直接生成してはならない。ただしこの所有は保存表現の機械的SSOTに限り、TIS/product policyの算出責務を意味しない。
 
-受け渡し用形式の schema 名は `maleicacid.tv.programRequest` / `maleicacid.tv.channelRequest` とし、保存用 schema 名 `maleicacid.tv.program` / `maleicacid.tv.channel` と分離する。
+required field 欠落時に `0`、`false`、`jpn`、`UNKNOWN`、空文字で補完して provider-data を成立させてはならない。r50 以前の `;` 区切り形式、旧 flat provider-data、旧 provider-data 断片は保存用形式として拒否し、旧channel requestも受け渡し形式として拒否する。
 
-受け渡し用形式と保存用形式は別物である。受け渡し用形式を `Programs.COLUMN_INTERNAL_PROVIDER_DATA` / `Channels.COLUMN_INTERNAL_PROVIDER_DATA` に保存してはならない。
-
-required field 欠落時に `0`、`false`、`jpn`、`UNKNOWN`、空文字で補完して provider-data を成立させてはならない。r50 以前の `;` 区切り形式、旧 flat provider-data、旧 provider-data 断片は受け渡し用形式としても保存用形式としても拒否する。
-
-`DescriptorDiagnosticV1` は Rust が生成した正規 JSON を正とする。TIS から戻ってくる場合も、TIS が項目単位で再構築した JSON ではなく、Rust が生成した正規 JSON を透過保持したものだけを受ける。
+`DescriptorDiagnosticV1` はRustが解析したdescriptor診断modelから同じProgram provider-data生成中に直接格納する。Kotlinが項目単位で再構築したJSONをRustへ戻してはならない。
 
 `arib_si_engine_rs` は SI/EIT 意味解析に加えて、TvProvider `internal_provider_data` JSON v1 の構造SSOTを持つ。実装上は `provider_data` module に Rust `serde` struct を置き、JSON canonical encode、正規化、安定キー抽出をこの module に閉じる。
 
@@ -252,7 +250,7 @@ pub struct ProgramKeyV1 {
 
 JSON は正規表現ではなく、Rust `serde` / Kotlin JSON parser / JSON Schema によって読み書き・検証する。`ProgramProviderDataV1` の canonical JSON では、任意の単一オブジェクトは値が無い場合 `null`、繰り返し要素は空の場合 `[]`、常設containerは空でもオブジェクトとして出力する。具体的には、`series`、`freeCaMode` は未取得時 `null`、`ratings`、`genres`、`eventGroups`、`linkage`、`extendedItems` は未取得時 `[]`、`components` は常にオブジェクトとし、内部の `video`、`audio`、`subtitle`、`data` は空でも `[]` とする。runtimeで選択したmain `audio` / `video`要約をtop-levelへ保存しない。
 
-未知のtop-level keyを読み込んだ場合は、無言で破棄せず`diagnostics.rawProviderDataExtensions[]`へ正規化する。version 1のnested DTOはclosedとし、未知nested keyはschema不一致として拒否する。これによりbuilder requestはstrict DTOへ1回だけdeserializeでき、`Value`走査による第二validatorを持たない。nested構造を拡張する場合はschema versionを更新する。`JSONObject` の手書き構築や文字列連結によるcanonical JSON生成を禁止する。
+未知のtop-level keyを保存済みJSONから読み込んだ場合は、無言で破棄せず`diagnostics.rawProviderDataExtensions[]`へ正規化する。version 1のnested DTOはclosedとし、未知nested keyはschema不一致として拒否する。Channel requestはstrict DTOへ1回だけdeserializeし、`Value`走査による第二validatorを持たない。nested構造を拡張する場合はschema versionを更新する。`JSONObject` の手書き構築や文字列連結によるcanonical JSON生成を禁止する。
 
 `series` は series_id、repeat_label、program_pattern、expire_date_valid、expire_date、episode_number、last_episode_number、series_name、parse_status を保持する。series name は番組表 title を置換する値ではない。
 
@@ -303,7 +301,6 @@ canonical JSON は Rust `serde_json` で生成し、struct フィールド順序
 Rust は少なくとも以下の JNI API 相当を提供する。
 
 ```text
-buildProgramProviderData(inputJson) -> ProviderDataResult
 normalizeProgramProviderData(rawBytes) -> ProviderDataResult
 extractProgramKey(rawBytes) -> ProgramKeyResult?
 buildChannelProviderData(inputJson) -> ProviderDataResult
@@ -312,7 +309,7 @@ decodeChannelProviderData(rawBytes) -> ChannelProviderDataResult?
 
 `decodeChannelProviderData()` は UTF-8、JSON、schema を Rust 側で検証し、canonical bytes、schema version、型付き `ServiceKey`、型付き `ChannelTune`、放送由来の`requiresCas`を返す。現行のString JNI surfaceではこれらを単一JSON result envelopeで返し、TAB区切り・hexという第二wire protocolを設けない。Kotlinが解釈するのはこのresult envelopeだけで、保存済みchannel provider-dataの検証・修復・canonical化はRustに閉じる。`ChannelTune` は `deliverySystem`、`frequencyHz`、`streamIdType`、`streamId`、`physicalChannel`、`satelliteBand`、`remoteControlKeyId` を持ち、`inputId`、表示名、backend名、driver名、driver固有slotを含めない。TV input ownershipはTvProvider channel rowのrequired `TvContract.Channels.COLUMN_INPUT_ID`をSSOTとし、Kotlin/TISはprovider-data decode前にrowのinputIdがcurrent TIS inputIdと一致することを検証する。
 
-`inputJson` は Rust builder への入力 DTO であり、TvProvider 保存 schema ではない。Rustは最終provider-data bytes、schema version、切り詰め結果、診断件数を返す。`ProviderDataResult`に`signature`または`contentDigest`フィールドを設けない。
+`inputJson` はChannel builderだけの入力 DTO であり、TvProvider 保存 schema ではない。Programの最終provider-data bytesはbulk snapshot eventの`providerDataCanonicalJson`として返す。`ProviderDataResult`に`signature`または`contentDigest`フィールドを設けない。
 
 `rawBytes` は任意バイナリではなく、既存 TvProvider に保存済みの JSON v1 UTF-8 バイト列を指す。JNI 呼び出し元は provider-data を `String` 化して渡してはならず、保存済み BLOB バイト列をそのまま渡す。互換上 TvProvider が文字列として返す場合も、呼び出し元は UTF-8 バイト列へ戻すだけに限定し、provider-data JSON を Kotlin 側で解釈・再構築しない。
 

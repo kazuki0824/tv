@@ -1212,16 +1212,15 @@ fn join_description(current: &str, next: &str) -> String {
 /// TvProvider の安定キーに自然に入らない記述子向けの診断専用 JSON。
 /// TvProvider 向けのタイトルと説明は event_provider_fields() を使う。
 
-pub fn event_descriptor_diagnostics_array_json_scoped(
+pub(crate) fn event_descriptor_diagnostic_models_scoped(
     desc: &EventDescriptors,
     scope: Option<DescriptorSectionScope>,
-) -> String {
-    let models = desc
+) -> Vec<DescriptorDiagnosticV1> {
+    desc
         .diagnostics
         .iter()
         .map(|d| descriptor_diagnostic_model(d, scope))
-        .collect::<Vec<_>>();
-    serde_json::to_string(&models).unwrap_or_else(|_| "[]".to_string())
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
