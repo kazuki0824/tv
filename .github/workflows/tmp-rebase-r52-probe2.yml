@@ -1,0 +1,65 @@
+name: tmp probe r52 rebase conflicts 2
+
+on:
+  push:
+    branches:
+      - tmp/rebase-r52-contracts-20260829
+    paths:
+      - .github/workflows/tmp-rebase-r52-probe2.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Rebase original r52 commits onto latest parent and capture first conflict
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config core.quotePath false
+          git fetch origin \
+            docs/future-work-design-completion \
+            tmp/r52-old-base-20260829 \
+            tmp/r52-old-head-20260829
+          git checkout -B probe origin/tmp/r52-old-head-20260829
+          set +e
+          GIT_EDITOR=true git rebase --onto \
+            origin/docs/future-work-design-completion \
+            origin/tmp/r52-old-base-20260829 \
+            origin/tmp/r52-old-head-20260829
+          rc=$?
+          set -e
+          mkdir -p "$RUNNER_TEMP/rebase-probe/conflicts"
+          printf '%s\n' "$rc" > "$RUNNER_TEMP/rebase-probe/rebase-rc.txt"
+          git status --short > "$RUNNER_TEMP/rebase-probe/status.txt" || true
+          git diff --name-only --diff-filter=U > "$RUNNER_TEMP/rebase-probe/conflicts.txt" || true
+          if git rev-parse --verify REBASE_HEAD >/dev/null 2>&1; then
+            git rev-parse REBASE_HEAD > "$RUNNER_TEMP/rebase-probe/rebase-head.txt"
+            git show --no-patch --format=fuller REBASE_HEAD > "$RUNNER_TEMP/rebase-probe/rebase-head-show.txt"
+          fi
+          while IFS= read -r p; do
+            [ -n "$p" ] || continue
+            safe=$(printf '%s' "$p" | tr '/' '_')
+            cp "$p" "$RUNNER_TEMP/rebase-probe/conflicts/${safe}.worktree" || true
+            git show ":1:$p" > "$RUNNER_TEMP/rebase-probe/conflicts/${safe}.base" 2>/dev/null || true
+            git show ":2:$p" > "$RUNNER_TEMP/rebase-probe/conflicts/${safe}.ours" 2>/dev/null || true
+            git show ":3:$p" > "$RUNNER_TEMP/rebase-probe/conflicts/${safe}.theirs" 2>/dev/null || true
+            git diff --cc -- "$p" > "$RUNNER_TEMP/rebase-probe/conflicts/${safe}.diffcc" || true
+          done < "$RUNNER_TEMP/rebase-probe/conflicts.txt"
+          exit 0
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r52-rebase-probe-2
+          path: ${{ runner.temp }}/rebase-probe
+          if-no-files-found: error
