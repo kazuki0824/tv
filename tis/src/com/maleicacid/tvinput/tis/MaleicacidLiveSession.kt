@@ -290,11 +290,8 @@ class MaleicacidLiveSession(
     }
 
     private fun stopPlaybackForCasWait() {
-        currentPlaybackSignature = null
-        pendingPlaybackSignature = null
-        playbackStartGate.reset()
+        playbackState = PlaybackStartState.Stopped
         tunerController.stopPlayback()
-        currentPlaybackPipelineGeneration = -1L
         captionController.beginPlaybackGeneration(-1L, false)
     }
 
