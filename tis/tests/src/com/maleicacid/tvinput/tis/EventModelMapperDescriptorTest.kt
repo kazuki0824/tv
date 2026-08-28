@@ -36,7 +36,7 @@ class EventModelMapperDescriptorTest {
                 genreSupplementText = "ニュース/報道/定時・総合",
                 eventGroups = listOf(AribEventGroup(groupType = 1, events = listOf(AribEventGroupReference(ServiceId16(101), 202)))),
                 scrambled = false,
-                freeCaMode = AribFreeCaMode(raw = 0, scrambled = false, text = "無料放送"),
+                freeCaMode = AribFreeCaMode(raw = 0, scrambled = false),
                 series = AribSeries(seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12, name = "シリーズ"),
                 components = AribComponents(audio = listOf(AribComponentEntry(esPid = TsPid(256), streamType = 0x0f, componentTag = 1, componentType = 3, codec = "AAC", language = "jpn", parseStatus = "OK"))),
             ),
@@ -63,7 +63,8 @@ class EventModelMapperDescriptorTest {
         check(record.descriptors.eventGroups.single().events.single().eventId == 202)
         check(record.descriptors.eventGroups.single().otherNetworkEvents.isEmpty())
         check(record.descriptors.scrambled == false)
-        check(record.descriptors.freeCaMode?.text == "無料放送")
+        check(record.descriptors.freeCaMode?.raw == 0)
+        check(record.descriptors.freeCaMode?.scrambled == false)
         check(record.descriptors.series?.seriesId == 100)
         check(record.descriptors.series?.episodeNumber == 3)
         check(record.descriptors.series?.lastEpisodeNumber == 12)

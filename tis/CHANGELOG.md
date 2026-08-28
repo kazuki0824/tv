@@ -1,3 +1,10 @@
+# r50ef_review_followup_4
+
+- Rust bulk snapshotのEIT component/audio-component descriptor事実をPMT streamへcomponent_tagで結合し、TvProvider Program provider-dataまで損失なく運ぶ経路を追加した。
+- `freeCaMode.text`と`diagnosticCode`をcanonical保存境界から除去し、表示文言と現行releaseの再生可否をTIS process-local派生へ戻した。
+- linkage private-data wire fieldを`privateDataPrefixHex`へ統一し、seriesの有効な16-bit MJDと合わせてRust bulk snapshotからprovider-dataまで確認するhost testを追加した。
+- Android/Soong build、atest、CTS、VTS、実機確認は未実施。本commitのRust/Kotlin host検証はPR checksを正とする。
+
 # r50ef_review_followup_3
 
 - Program provider-dataは、TvProviderへpublishする時点でKotlinのtyped requestからRust/Serde canonicalizerを呼ぶ責務境界へ戻した。bulk snapshotの`providerDataCanonicalJson`、`AribEvent` / `ProgramRecord`のshadow field、test-only Kotlin保存schema fixtureは削除した。

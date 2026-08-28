@@ -50,7 +50,6 @@
         "componentTag": 1,
         "componentType": 0,
         "codec": "HEVC",
-        "diagnosticCode": "CODEC_SIGNALING_OBSERVED",
         "parseStatus": "OK"
       }
     ],
@@ -63,7 +62,6 @@
         "codec": "MPEG-4-AAC-LATM",
         "language": "jpn",
         "secondLanguage": null,
-        "diagnosticCode": "CODEC_SIGNALING_OBSERVED",
         "parseStatus": "OK"
       }
     ],
