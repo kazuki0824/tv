@@ -1,0 +1,22 @@
+name: tmp fix r52 playback
+
+on:
+  push:
+    branches:
+      - tmp/rebase-r52-contracts-20260829
+    paths:
+      - .github/workflows/tmp-fix-r52-playback.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fix playback state integration
+        run: bash .github/tmp-fix-r52-playback.sh
