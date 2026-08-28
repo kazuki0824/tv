@@ -21,7 +21,6 @@ use maleicacid_tuner_hal2_demux::{
 };
 use maleicacid_tuner_hal2_domain_request::DvrDataFormat as DomainDvrDataFormat;
 
-const MAX_FILTER_DELAY_MS: i64 = 10_000;
 const DVR_PACKET_SIZE_TS_188: i64 = 188;
 
 fn format_filter_configure_report(
@@ -49,7 +48,7 @@ fn format_dvr_configure_report(
     )
 }
 
-fn format_filter_runtime_operation_report(
+pub(crate) fn format_filter_runtime_operation_report(
     diagnostic_id: DemuxTransactionDiagnosticId,
     report: &maleicacid_tuner_hal2_demux::FilterRuntimeOperationReport,
 ) -> String {
@@ -78,7 +77,10 @@ fn format_source_boundary_report(
     )
 }
 
-fn attach_diagnostic_detail_to_public_error(primary: HalError, detail: String) -> HalError {
+pub(crate) fn attach_diagnostic_detail_to_public_error(
+    primary: HalError,
+    detail: String,
+) -> HalError {
     match primary {
         HalError::InvalidArgument {
             kind,
@@ -306,7 +308,7 @@ impl TunerServiceRuntime {
             })
     }
 
-    pub(super) fn map_filter_runtime_error(error: DemuxRuntimeError) -> HalError {
+    pub(crate) fn map_filter_runtime_error(error: DemuxRuntimeError) -> HalError {
         match error.kind {
             DemuxRuntimeErrorKind::FilterMissing => HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
@@ -450,42 +452,6 @@ impl TunerServiceRuntime {
             ));
         };
         let (report, result) = demux_runtime.stop_filter_runtime_with_typed_request(
-            maleicacid_tuner_hal2_demux::FilterRuntimeOperationRequest::new(filter_id),
-        );
-        match result {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                let primary = Self::map_filter_runtime_error(error);
-                let diagnostic_id = self.allocate_demux_transaction_diagnostic_id();
-                self.record_demux_transaction_diagnostic(
-                    DemuxTransactionDiagnosticRecord::filter_runtime_operation(
-                        diagnostic_id,
-                        owner_demux_id,
-                        filter_id,
-                        report.clone(),
-                        primary.clone(),
-                    ),
-                );
-                Err(attach_diagnostic_detail_to_public_error(
-                    primary,
-                    format_filter_runtime_operation_report(diagnostic_id, &report),
-                ))
-            }
-        }
-    }
-
-    pub(crate) fn transact_flush_filter_runtime(&mut self, filter_id: i32) -> Result<(), HalError> {
-        let owner_demux_id = self.owner_demux_id_for_filter(filter_id)?;
-        let Some(demux_runtime) = self
-            .registry
-            .demux_runtime_mut(DemuxRuntimeId(owner_demux_id))
-        else {
-            return Err(HalError::invalid_state(
-                HalInvalidStateKind::InvalidLifecycle,
-                "owner demux runtime is missing",
-            ));
-        };
-        let (report, result) = demux_runtime.flush_filter_runtime_with_typed_request(
             maleicacid_tuner_hal2_demux::FilterRuntimeOperationRequest::new(filter_id),
         );
         match result {
@@ -859,12 +825,6 @@ impl TunerServiceRuntime {
         }
         let hint = match request.kind {
             FilterDelayHintKind::TimeDelayMs => {
-                if request.value > MAX_FILTER_DELAY_MS {
-                    return Err(HalError::invalid_argument(
-                        HalInvalidArgumentKind::NumericRange,
-                        "filter delay time hint exceeds product limit",
-                    ));
-                }
                 FilterDelayHint::TimeDelayMs(u64::try_from(request.value).map_err(|_| {
                     HalError::invalid_argument(
                         HalInvalidArgumentKind::NumericRange,
@@ -1182,7 +1142,7 @@ impl TunerServiceRuntime {
         Ok(owner_demux_id)
     }
 
-    fn map_dvr_runtime_error(error: DemuxRuntimeError) -> HalError {
+    pub(crate) fn map_dvr_runtime_error(error: DemuxRuntimeError) -> HalError {
         match error.kind {
             DemuxRuntimeErrorKind::DvrMissing => HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
@@ -1572,44 +1532,6 @@ impl TunerServiceRuntime {
             .map_err(Self::map_dvr_runtime_error)
     }
 
-    pub(crate) fn transact_flush_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
-        let owner_demux_id = self.owner_demux_id_for_dvr(dvr_id)?;
-        {
-            let Some(demux_runtime) = self
-                .registry
-                .demux_runtime_mut(DemuxRuntimeId(owner_demux_id))
-            else {
-                return Err(HalError::invalid_state(
-                    HalInvalidStateKind::InvalidLifecycle,
-                    "owner demux runtime is missing",
-                ));
-            };
-            demux_runtime
-                .flush_dvr_runtime_from_typed_request(
-                maleicacid_tuner_hal2_demux::DvrRuntimeOperationRequest::new(dvr_id),
-            )
-                .map_err(Self::map_dvr_runtime_error)?;
-        }
-        let dropped_bytes = self
-            .playback_consume_txns
-            .get_mut(&dvr_id)
-            .map(|txn| txn.discard_for_boundary())
-            .unwrap_or(0);
-        if dropped_bytes > 0 {
-            self.registry
-                .demux_runtime_mut(DemuxRuntimeId(owner_demux_id))
-                .ok_or_else(|| {
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "owner demux runtime disappeared after playback flush",
-                    )
-                })?
-                .note_playback_consume_boundary_discard(dvr_id, dropped_bytes)
-                .map_err(Self::map_dvr_runtime_error)?;
-        }
-        Ok(())
-    }
-
     pub(crate) fn transact_set_dvr_status_check_interval(
         &mut self,
         dvr_id: i32,
@@ -1725,21 +1647,29 @@ impl<'a> ChildOpenContext<'a> {
             )
         })?;
         let live_capacity_use = match request.open_type {
-            FilterOpenType::TsRaw | FilterOpenType::TsRecord => self
-                .runtime
-                .registry
-                .filter_open_type_count(FilterOpenType::TsRaw)?
-                .checked_add(
-                    self.runtime
-                        .registry
-                        .filter_open_type_count(FilterOpenType::TsRecord)?,
-                )
-                .ok_or_else(|| {
+            FilterOpenType::TsUndefined | FilterOpenType::TsRaw | FilterOpenType::TsRecord => {
+                let undefined_count = self
+                    .runtime
+                    .registry
+                    .filter_open_type_count(FilterOpenType::TsUndefined)?;
+                let raw_count = self
+                    .runtime
+                    .registry
+                    .filter_open_type_count(FilterOpenType::TsRaw)?;
+                let record_count = self
+                    .runtime
+                    .registry
+                    .filter_open_type_count(FilterOpenType::TsRecord)?;
+                undefined_count
+                    .checked_add(raw_count)
+                    .and_then(|count| count.checked_add(record_count))
+                    .ok_or_else(|| {
                     HalError::internal(
                         HalInternalKind::InvariantViolation,
                         "shared TS filter capacity counter overflow",
                     )
-                })?,
+                    })?
+            }
             _ => self
                 .runtime
                 .registry

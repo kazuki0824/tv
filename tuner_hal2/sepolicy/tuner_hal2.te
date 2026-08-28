@@ -1,7 +1,5 @@
 # Allow the standard Tuner HAL domain used by tuner_hal2 to access the
 # product tuner character devices discovered by the runtime probe.
 allow hal_tv_tuner_default dvb_frontend_device:chr_file rw_file_perms;
-allow hal_tv_tuner_default dvb_demux_device:chr_file rw_file_perms;
-allow hal_tv_tuner_default dvb_dvr_device:chr_file rw_file_perms;
-allow hal_tv_tuner_default dvb_net_device:chr_file rw_file_perms;
+allow hal_tv_tuner_default dvb_dvr_device:chr_file r_file_perms;
 allow hal_tv_tuner_default px4_tuner_device:chr_file rw_file_perms;

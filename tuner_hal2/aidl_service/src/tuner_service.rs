@@ -371,6 +371,9 @@ fn frontend_status_caps_for_snapshot(
     // optional telemetryは保守的に扱う。tune/scan backend runtime接続前は決定的な状態fieldだけをadvertiseする。
     // LNB voltageは、systemがISDB-Sであるだけではなく、frontend exportとexported LNBがprobe/registry由来の同じ固定LNB profileを共有する場合だけadvertiseする。
     let mut caps = vec![FrontendStatusType::DEMOD_LOCK];
+    if snapshot.backend == FrontendBackendKind::LinuxDvb {
+        caps.push(FrontendStatusType::RF_LOCK);
+    }
     if lnb_profile_supports_voltage_status(snapshot.lnb_profile) {
         caps.push(FrontendStatusType::LNB_VOLTAGE);
     }
@@ -793,5 +796,7 @@ mod tests {
 
         assert!(frontend_status_caps_for_snapshot(&px4).contains(&FrontendStatusType::DEMOD_LOCK));
         assert!(frontend_status_caps_for_snapshot(&dvb).contains(&FrontendStatusType::DEMOD_LOCK));
+        assert!(!frontend_status_caps_for_snapshot(&px4).contains(&FrontendStatusType::RF_LOCK));
+        assert!(frontend_status_caps_for_snapshot(&dvb).contains(&FrontendStatusType::RF_LOCK));
     }
 }

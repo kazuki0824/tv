@@ -19,6 +19,7 @@ fn object_frontend_status_type_from_aidl(
 ) -> ObjectFrontendStatusType {
     match status_type {
         FrontendStatusType::DEMOD_LOCK => ObjectFrontendStatusType::DemodLock,
+        FrontendStatusType::RF_LOCK => ObjectFrontendStatusType::RfLock,
         FrontendStatusType::LNB_VOLTAGE => ObjectFrontendStatusType::LnbVoltage,
         _ => ObjectFrontendStatusType::Unsupported,
     }
@@ -27,8 +28,15 @@ fn object_frontend_status_type_from_aidl(
 fn frontend_status_from_query_value(value: ObjectFrontendStatusValue) -> FrontendStatus {
     match value {
         ObjectFrontendStatusValue::DemodLocked(locked) => FrontendStatus::IsDemodLocked(locked),
+        ObjectFrontendStatusValue::RfLocked(locked) => FrontendStatus::IsRfLocked(locked),
         ObjectFrontendStatusValue::LnbVoltageNone => {
             FrontendStatus::LnbVoltage(super::LnbVoltage::NONE)
+        }
+        ObjectFrontendStatusValue::LnbVoltage11V => {
+            FrontendStatus::LnbVoltage(super::LnbVoltage::VOLTAGE_11V)
+        }
+        ObjectFrontendStatusValue::LnbVoltage15V => {
+            FrontendStatus::LnbVoltage(super::LnbVoltage::VOLTAGE_15V)
         }
     }
 }

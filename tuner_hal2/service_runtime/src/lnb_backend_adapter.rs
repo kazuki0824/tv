@@ -98,6 +98,10 @@ impl ServiceRuntimeLnbBackendSnapshot {
             frontends,
         })
     }
+
+    pub(crate) const fn supports_diseqc(&self) -> bool {
+        false
+    }
 }
 
 pub(crate) struct ServiceRuntimeLnbProfileAdapter<'permit, 'gate> {

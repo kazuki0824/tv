@@ -4,13 +4,16 @@
 //! filter open / configure 検証の本番正本である。
 
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
+    DemuxAlpFilterType::DemuxAlpFilterType,
     DemuxFilterMainType::DemuxFilterMainType, DemuxFilterScIndexMask::DemuxFilterScIndexMask,
     DemuxFilterSectionBits::DemuxFilterSectionBits,
     DemuxFilterSectionSettings::DemuxFilterSectionSettings,
     DemuxFilterSectionSettingsCondition::DemuxFilterSectionSettingsCondition,
     DemuxFilterSectionSettingsConditionTableInfo::DemuxFilterSectionSettingsConditionTableInfo,
     DemuxFilterSettings::DemuxFilterSettings, DemuxFilterSubType::DemuxFilterSubType,
-    DemuxFilterType::DemuxFilterType,
+    DemuxFilterType::DemuxFilterType, DemuxIpFilterType::DemuxIpFilterType,
+    DemuxMmtpFilterType::DemuxMmtpFilterType,
+    DemuxTlvFilterType::DemuxTlvFilterType,
     DemuxTsIndex::DemuxTsIndex,
     DemuxTsFilterSettingsFilterSettings::DemuxTsFilterSettingsFilterSettings,
     DemuxTsFilterType::DemuxTsFilterType,
@@ -40,25 +43,116 @@ pub fn filter_main_type_supported(main_type: DemuxFilterMainType) -> bool {
 }
 
 pub fn filter_open_type(filter_type: &DemuxFilterType) -> Result<FilterOpenType, HalError> {
-    if !filter_main_type_supported(filter_type.mainType) {
-        return Err(HalError::Unsupported(
-            "filter main type is outside the TS-only tuner_hal2 profile",
-        ));
-    }
-    match &filter_type.subType {
-        DemuxFilterSubType::TsFilterType(DemuxTsFilterType::UNDEFINED)
-        | DemuxFilterSubType::TsFilterType(DemuxTsFilterType::TS) => Ok(FilterOpenType::TsRaw),
-        DemuxFilterSubType::TsFilterType(DemuxTsFilterType::AUDIO) => Ok(FilterOpenType::TsAudio),
-        DemuxFilterSubType::TsFilterType(DemuxTsFilterType::VIDEO) => Ok(FilterOpenType::TsVideo),
-        DemuxFilterSubType::TsFilterType(DemuxTsFilterType::SECTION) => {
-            Ok(FilterOpenType::TsSection)
-        }
-        DemuxFilterSubType::TsFilterType(DemuxTsFilterType::PES) => Ok(FilterOpenType::TsPes),
-        DemuxFilterSubType::TsFilterType(DemuxTsFilterType::RECORD) => Ok(FilterOpenType::TsRecord),
-        DemuxFilterSubType::TsFilterType(DemuxTsFilterType::PCR) => Ok(FilterOpenType::TsPcr),
-        _ => Err(HalError::Unsupported(
-            "filter subtype is outside the TS-only tuner_hal2 profile",
-        )),
+    match filter_type.mainType {
+        DemuxFilterMainType::TS => match &filter_type.subType {
+            DemuxFilterSubType::TsFilterType(DemuxTsFilterType::UNDEFINED) => {
+                Ok(FilterOpenType::TsUndefined)
+            }
+            DemuxFilterSubType::TsFilterType(DemuxTsFilterType::TS) => {
+                Ok(FilterOpenType::TsRaw)
+            }
+            DemuxFilterSubType::TsFilterType(DemuxTsFilterType::AUDIO) => {
+                Ok(FilterOpenType::TsAudio)
+            }
+            DemuxFilterSubType::TsFilterType(DemuxTsFilterType::VIDEO) => {
+                Ok(FilterOpenType::TsVideo)
+            }
+            DemuxFilterSubType::TsFilterType(DemuxTsFilterType::SECTION) => {
+                Ok(FilterOpenType::TsSection)
+            }
+            DemuxFilterSubType::TsFilterType(DemuxTsFilterType::PES) => {
+                Ok(FilterOpenType::TsPes)
+            }
+            DemuxFilterSubType::TsFilterType(DemuxTsFilterType::RECORD) => {
+                Ok(FilterOpenType::TsRecord)
+            }
+            DemuxFilterSubType::TsFilterType(DemuxTsFilterType::PCR) => {
+                Ok(FilterOpenType::TsPcr)
+            }
+            DemuxFilterSubType::TsFilterType(DemuxTsFilterType::TEMI) => Err(
+                HalError::unsupported_detail("filter.subType", "TS TEMI filter is unavailable"),
+            ),
+            DemuxFilterSubType::TsFilterType(_) => {
+                Err(invalid("TS filter subtype contains a reserved enum value"))
+            }
+            _ => Err(invalid("filter main type and subtype union arm do not match")),
+        },
+        DemuxFilterMainType::MMTP => match &filter_type.subType {
+            DemuxFilterSubType::MmtpFilterType(value)
+                if matches!(
+                    *value,
+                    DemuxMmtpFilterType::UNDEFINED
+                        | DemuxMmtpFilterType::SECTION
+                        | DemuxMmtpFilterType::PES
+                        | DemuxMmtpFilterType::MMTP
+                        | DemuxMmtpFilterType::AUDIO
+                        | DemuxMmtpFilterType::VIDEO
+                        | DemuxMmtpFilterType::RECORD
+                        | DemuxMmtpFilterType::DOWNLOAD
+                ) => Err(HalError::unsupported_detail(
+                "filter.mainType",
+                "MMTP filter is unavailable in the TS-only product profile",
+            )),
+            DemuxFilterSubType::MmtpFilterType(_) => Err(invalid(
+                "MMTP filter subtype contains a reserved enum value",
+            )),
+            _ => Err(invalid("filter main type and subtype union arm do not match")),
+        },
+        DemuxFilterMainType::IP => match &filter_type.subType {
+            DemuxFilterSubType::IpFilterType(value)
+                if matches!(
+                    *value,
+                    DemuxIpFilterType::UNDEFINED
+                        | DemuxIpFilterType::SECTION
+                        | DemuxIpFilterType::NTP
+                        | DemuxIpFilterType::IP_PAYLOAD
+                        | DemuxIpFilterType::IP
+                        | DemuxIpFilterType::PAYLOAD_THROUGH
+                ) => Err(HalError::unsupported_detail(
+                "filter.mainType",
+                "IP filter is unavailable in the TS-only product profile",
+            )),
+            DemuxFilterSubType::IpFilterType(_) => {
+                Err(invalid("IP filter subtype contains a reserved enum value"))
+            }
+            _ => Err(invalid("filter main type and subtype union arm do not match")),
+        },
+        DemuxFilterMainType::TLV => match &filter_type.subType {
+            DemuxFilterSubType::TlvFilterType(value)
+                if matches!(
+                    *value,
+                    DemuxTlvFilterType::UNDEFINED
+                        | DemuxTlvFilterType::SECTION
+                        | DemuxTlvFilterType::TLV
+                        | DemuxTlvFilterType::PAYLOAD_THROUGH
+                ) => Err(HalError::unsupported_detail(
+                "filter.mainType",
+                "TLV filter is unavailable in the TS-only product profile",
+            )),
+            DemuxFilterSubType::TlvFilterType(_) => {
+                Err(invalid("TLV filter subtype contains a reserved enum value"))
+            }
+            _ => Err(invalid("filter main type and subtype union arm do not match")),
+        },
+        DemuxFilterMainType::ALP => match &filter_type.subType {
+            DemuxFilterSubType::AlpFilterType(value)
+                if matches!(
+                    *value,
+                    DemuxAlpFilterType::UNDEFINED
+                        | DemuxAlpFilterType::SECTION
+                        | DemuxAlpFilterType::PTP
+                        | DemuxAlpFilterType::PAYLOAD_THROUGH
+                ) => Err(HalError::unsupported_detail(
+                "filter.mainType",
+                "ALP filter is unavailable in the TS-only product profile",
+            )),
+            DemuxFilterSubType::AlpFilterType(_) => {
+                Err(invalid("ALP filter subtype contains a reserved enum value"))
+            }
+            _ => Err(invalid("filter main type and subtype union arm do not match")),
+        },
+        DemuxFilterMainType::UNDEFINED => Err(invalid("filter main type must not be UNDEFINED")),
+        _ => Err(invalid("filter main type contains a reserved enum value")),
     }
 }
 
@@ -123,11 +217,15 @@ fn normalize_section_table_id(table_id: i32) -> Result<i32, HalError> {
 fn build_section_bits_condition(
     bits: &DemuxFilterSectionBits,
 ) -> Result<SectionCondition, HalError> {
-    if bits.filter.len() > MAX_SECTION_FILTER_BYTES
-        || bits.mask.len() > MAX_SECTION_FILTER_BYTES
-        || bits.mode.len() > MAX_SECTION_FILTER_BYTES
-    {
-        return Err(invalid("section filter/mask/mode exceeds maximum length"));
+    if bits.mask.len() > MAX_SECTION_FILTER_BYTES {
+        return Err(invalid("section mask exceeds maximum length"));
+    }
+    for (index, mask) in bits.mask.iter().copied().enumerate() {
+        if mask != 0 && (bits.filter.get(index).is_none() || bits.mode.get(index).is_none()) {
+            return Err(invalid(
+                "active section mask byte requires corresponding filter and mode bytes",
+            ));
+        }
     }
     Ok(SectionCondition {
         kind: SectionConditionKind::SectionBits,
@@ -329,8 +427,10 @@ mod tests {
     use super::*;
     use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
         DemuxFilterMainType::DemuxFilterMainType,
+        DemuxFilterSectionBits::DemuxFilterSectionBits,
         DemuxFilterSectionSettingsCondition::DemuxFilterSectionSettingsCondition,
         DemuxFilterSubType::DemuxFilterSubType, DemuxFilterType::DemuxFilterType,
+        DemuxMmtpFilterType::DemuxMmtpFilterType,
         DemuxTsFilterType::DemuxTsFilterType,
     };
     #[test]
@@ -395,14 +495,49 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_filter_type_is_unavailable_profile() {
+    fn known_unsupported_filter_type_is_unavailable_profile() {
+        let filter_type = DemuxFilterType {
+            mainType: DemuxFilterMainType::MMTP,
+            subType: DemuxFilterSubType::MmtpFilterType(DemuxMmtpFilterType::SECTION),
+        };
+        assert!(matches!(
+            filter_open_type(&filter_type),
+            Err(HalError::UnsupportedDetail { .. })
+        ));
+    }
+
+    #[test]
+    fn mismatched_filter_subtype_union_is_invalid_argument() {
         let filter_type = DemuxFilterType {
             mainType: DemuxFilterMainType::MMTP,
             subType: DemuxFilterSubType::TsFilterType(DemuxTsFilterType::SECTION),
         };
         assert!(matches!(
             filter_open_type(&filter_type),
-            Err(HalError::Unsupported(_))
+            Err(HalError::InvalidArgument { .. })
+        ));
+    }
+
+    #[test]
+    fn section_mask_limit_does_not_limit_inactive_filter_shape() {
+        let bits = DemuxFilterSectionBits {
+            filter: vec![0; MAX_SECTION_FILTER_BYTES + 8],
+            mask: vec![0; MAX_SECTION_FILTER_BYTES],
+            mode: vec![0; MAX_SECTION_FILTER_BYTES + 8],
+        };
+        assert!(build_section_bits_condition(&bits).is_ok());
+    }
+
+    #[test]
+    fn active_section_mask_requires_filter_and_mode_bytes() {
+        let bits = DemuxFilterSectionBits {
+            filter: vec![0x42],
+            mask: vec![0, 0xff],
+            mode: vec![0],
+        };
+        assert!(matches!(
+            build_section_bits_condition(&bits),
+            Err(HalError::InvalidArgument { .. })
         ));
     }
 }

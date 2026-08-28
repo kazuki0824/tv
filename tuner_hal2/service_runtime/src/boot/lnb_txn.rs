@@ -322,7 +322,12 @@ impl<'a> LnbTxn<'a> {
             .lnb_runtime(lnb_key)
             .ok_or_else(missing_lnb_error)?;
         ensure_lnb_open(runtime)?;
-        let message = LnbDiseqcMessage::new(lnb_id, payload).map_err(map_lnb_failure)?;
+        if payload.is_empty() {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "DiSEqC message must not be empty",
+            ));
+        }
         let backend = ServiceRuntimeLnbBackendSnapshot::new(self.runtime.registry(), lnb_key)
             .map_err(|kind| {
                 map_lnb_failure(LnbFailureRecord {
@@ -331,6 +336,12 @@ impl<'a> LnbTxn<'a> {
                     step: LnbFailureStep::SendDiseqc,
                 })
             })?;
+        if !backend.supports_diseqc() {
+            return Err(HalError::Unsupported(
+                "DiSEqC is unavailable for this LNB profile",
+            ));
+        }
+        let message = LnbDiseqcMessage::new(lnb_id, payload).map_err(map_lnb_failure)?;
         Ok(PreparedLnbDiseqc {
             lnb_key,
             expected_generation: runtime.generation(),
