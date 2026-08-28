@@ -1,0 +1,98 @@
+name: tmp probe r52 rebase conflicts 3
+
+on:
+  push:
+    branches:
+      - tmp/rebase-r52-contracts-20260829
+    paths:
+      - .github/workflows/tmp-rebase-r52-probe3.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Rebase and resolve first r52 commit semantically
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config core.quotePath false
+          git fetch origin docs/future-work-design-completion tmp/r52-old-base-20260829 tmp/r52-old-head-20260829
+          git checkout -B probe origin/tmp/r52-old-head-20260829
+          set +e
+          GIT_EDITOR=true git rebase --onto origin/docs/future-work-design-completion origin/tmp/r52-old-base-20260829 origin/tmp/r52-old-head-20260829
+          rc=$?
+          set -e
+          test "$rc" -ne 0
+          test "$(git rev-parse REBASE_HEAD)" = "e9a283a00f9e2682bb51215ae1097ef14cf97494"
+          mapfile -t conflicts < <(git diff --name-only --diff-filter=U | sort)
+          expected=("tis/CHANGELOG.md" "tis/src/com/maleicacid/tvinput/tis/TunerController.kt")
+          test "$(printf '%s\n' "${conflicts[@]}")" = "$(printf '%s\n' "${expected[@]}" | sort)"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def split_one_conflict(text: str):
+              a = text.index('<<<<<<< HEAD\n')
+              b = text.index('=======\n', a)
+              c = text.index('>>>>>>> ', b)
+              d = text.index('\n', c) + 1
+              ours = text[a + len('<<<<<<< HEAD\n'):b]
+              theirs = text[b + len('=======\n'):c]
+              return a, d, ours, theirs
+
+          p = Path('tis/CHANGELOG.md')
+          s = p.read_text()
+          a, d, ours, theirs = split_one_conflict(s)
+          # Child r52 history first, then retain all newer parent review history.
+          merged = theirs.rstrip() + '\n\n' + ours.lstrip()
+          p.write_text(s[:a] + merged + s[d:])
+
+          p = Path('tis/src/com/maleicacid/tvinput/tis/TunerController.kt')
+          s = p.read_text()
+          a, d, ours, theirs = split_one_conflict(s)
+          # Latest parent moved these pure selection helpers to TunerSelectionPolicy.
+          # Keep the parent side for this conflict while preserving all non-conflicting child hunks.
+          p.write_text(s[:a] + ours + s[d:])
+          PY
+
+          git add tis/CHANGELOG.md tis/src/com/maleicacid/tvinput/tis/TunerController.kt
+          test -z "$(git diff --name-only --diff-filter=U)"
+          GIT_EDITOR=true git rebase --continue
+
+          mkdir -p "$RUNNER_TEMP/rebase-probe3/conflicts"
+          git status --short > "$RUNNER_TEMP/rebase-probe3/status.txt" || true
+          git diff --name-only --diff-filter=U > "$RUNNER_TEMP/rebase-probe3/conflicts.txt" || true
+          if git rev-parse --verify REBASE_HEAD >/dev/null 2>&1; then
+            git rev-parse REBASE_HEAD > "$RUNNER_TEMP/rebase-probe3/rebase-head.txt"
+            git show --no-patch --format=fuller REBASE_HEAD > "$RUNNER_TEMP/rebase-probe3/rebase-head-show.txt"
+          else
+            git rev-parse HEAD > "$RUNNER_TEMP/rebase-probe3/final-head.txt"
+            git diff --check origin/docs/future-work-design-completion..HEAD > "$RUNNER_TEMP/rebase-probe3/diff-check.txt"
+          fi
+          while IFS= read -r p; do
+            [ -n "$p" ] || continue
+            safe=$(printf '%s' "$p" | tr '/' '_')
+            cp "$p" "$RUNNER_TEMP/rebase-probe3/conflicts/${safe}.worktree" || true
+            git show ":1:$p" > "$RUNNER_TEMP/rebase-probe3/conflicts/${safe}.base" 2>/dev/null || true
+            git show ":2:$p" > "$RUNNER_TEMP/rebase-probe3/conflicts/${safe}.ours" 2>/dev/null || true
+            git show ":3:$p" > "$RUNNER_TEMP/rebase-probe3/conflicts/${safe}.theirs" 2>/dev/null || true
+            git diff --cc -- "$p" > "$RUNNER_TEMP/rebase-probe3/conflicts/${safe}.diffcc" || true
+          done < "$RUNNER_TEMP/rebase-probe3/conflicts.txt"
+          exit 0
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r52-rebase-probe-3
+          path: ${{ runner.temp }}/rebase-probe3
+          if-no-files-found: error
