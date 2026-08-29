@@ -373,16 +373,25 @@ class MaleicacidLiveSession(
             TvTrackInfo.TYPE_AUDIO -> {
                 if (trackId == null || tracks.none { it.type == TvTrackInfo.TYPE_AUDIO && it.id == trackId }) return false
                 val previousAudioTrackId = preferredAudioTrackId
-                val previousState = playbackState as? PlaybackStartState.Started ?: return false
+                if (playbackState !is PlaybackStartState.Started) return false
                 preferredAudioTrackId = trackId
                 val selection = tunerController.selectAvStreams(service.serviceKey, service.pcrPid, service.streams, preferredAudioTrackId, selectedSubtitleTrackId)
                 val signature = playbackSignatureFor(service, selection) ?: run {
                     preferredAudioTrackId = previousAudioTrackId
                     return false
                 }
-                val switched = tunerController.switchAudioTrack(selection)?.switchedAudio == true
-                if (switched) {
-                    playbackState = PlaybackStartState.Started(signature, previousState.pipelineGeneration)
+                val switched = tunerController.switchAudioTrack(selection)
+                if (switched?.switchedAudio == true) {
+                    playbackState = PlaybackStartTransitions.afterSuccessfulRestart(
+                        signature,
+                        switched.generation,
+                        switched.firstFramePending,
+                    )
+                    captionController.beginPlaybackGeneration(
+                        switched.generation,
+                        hasVideo = !PlaybackPolicy.isAudioOnlyService(service.serviceType),
+                    )
+                    captionController.onPlaybackClockChanged()
                     notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, trackId)
                     true
                 } else {
@@ -500,9 +509,16 @@ class MaleicacidLiveSession(
     }
 
     private fun handlePlaybackUnavailable(reason: PlaybackPipeline.PlaybackUnavailable) {
-        if (reason.reason == PlaybackPipeline.PlaybackUnavailableReason.AUDIO_UNAVAILABLE ||
+        val audioFailure = reason.reason == PlaybackPipeline.PlaybackUnavailableReason.AUDIO_UNAVAILABLE ||
             reason.reason == PlaybackPipeline.PlaybackUnavailableReason.AUDIO_FILTER_NOT_STARTED ||
-            reason.reason == PlaybackPipeline.PlaybackUnavailableReason.UNSUPPORTED_AUDIO_STREAM) {
+            reason.reason == PlaybackPipeline.PlaybackUnavailableReason.UNSUPPORTED_AUDIO_STREAM
+        if (audioFailure) {
+            if (PlaybackPolicy.isAudioOnlyService(latestService?.serviceType)) {
+                playbackState = PlaybackStartTransitions.failCurrentGeneration(playbackState, reason.generation)
+                captionController.beginPlaybackGeneration(-1L, false)
+                notifyVideoUnavailable(mapUnavailableReason(reason))
+                return
+            }
             android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "audio unavailable は video unavailable として通知しません reason=${reason.reason} detail=${reason.detail}")
             return
         }
