@@ -184,7 +184,7 @@ data class AribSeries(
 )
 
 data class AribComponentEntry(
-    val esPid: TsPid,
+    val esPid: TsPid?,
     val streamType: Int? = null,
     val componentTag: Int? = null,
     val componentType: Int? = null,

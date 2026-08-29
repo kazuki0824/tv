@@ -293,11 +293,11 @@ private fun toLinkageArray(items: List<AribLinkage>): JSONArray = JSONArray().ap
     private fun videoComponentsJson(entries: List<AribComponentEntry>): JSONArray = JSONArray().apply {
         entries.forEach { entry ->
             val obj = JSONObject()
-                .put("esPid", entry.esPid.value)
-                .put("streamType", requireNotNull(entry.streamType) { "video streamType is required" })
+                .put("esPid", entry.esPid?.value ?: JSONObject.NULL)
+                .put("streamType", entry.streamType ?: JSONObject.NULL)
                 .put("componentTag", entry.componentTag ?: JSONObject.NULL)
                 .put("componentType", entry.componentType ?: JSONObject.NULL)
-                .put("codec", requireNotNull(entry.codec?.takeIf { it.isNotBlank() }) { "video codec is required" })
+                .put("codec", entry.codec?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
                 .put("parseStatus", entry.parseStatus)
             entry.resolution?.let { obj.put("resolution", it) }
             entry.scan?.let { obj.put("scan", it) }
@@ -311,11 +311,11 @@ private fun toLinkageArray(items: List<AribLinkage>): JSONArray = JSONArray().ap
     private fun audioComponentsJson(entries: List<AribComponentEntry>): JSONArray = JSONArray().apply {
         entries.forEach { entry ->
             val obj = JSONObject()
-                .put("esPid", entry.esPid.value)
-                .put("streamType", requireNotNull(entry.streamType) { "audio streamType is required" })
+                .put("esPid", entry.esPid?.value ?: JSONObject.NULL)
+                .put("streamType", entry.streamType ?: JSONObject.NULL)
                 .put("componentTag", entry.componentTag ?: JSONObject.NULL)
                 .put("componentType", entry.componentType ?: JSONObject.NULL)
-                .put("codec", requireNotNull(entry.codec?.takeIf { it.isNotBlank() }) { "audio codec is required" })
+                .put("codec", entry.codec?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
                 .put("language", entry.language?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
                 .put("secondLanguage", entry.secondLanguage?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
                 .put("parseStatus", entry.parseStatus)
@@ -330,7 +330,7 @@ private fun toLinkageArray(items: List<AribLinkage>): JSONArray = JSONArray().ap
         entries.forEach { entry ->
             put(
                 JSONObject()
-                    .put("esPid", entry.esPid.value)
+                    .put("esPid", entry.esPid?.value ?: JSONObject.NULL)
                     .put("componentTag", entry.componentTag ?: JSONObject.NULL)
                     .put("dataComponentId", entry.dataComponentId ?: JSONObject.NULL)
                     .put("language", entry.language?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
@@ -349,7 +349,7 @@ private fun toLinkageArray(items: List<AribLinkage>): JSONArray = JSONArray().ap
         entries.forEach { entry ->
             put(
                 JSONObject()
-                    .put("esPid", entry.esPid.value)
+                    .put("esPid", entry.esPid?.value ?: JSONObject.NULL)
                     .put("componentTag", entry.componentTag ?: JSONObject.NULL)
                     .put("dataComponentId", entry.dataComponentId ?: JSONObject.NULL)
                     .put("componentType", entry.componentType ?: JSONObject.NULL)

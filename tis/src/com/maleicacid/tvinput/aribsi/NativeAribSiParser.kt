@@ -509,9 +509,9 @@ private fun parseLinkage(array: JSONArray?): List<AribLinkage> = (0 until (array
 
     private fun parseComponentEntries(array: JSONArray?): List<AribComponentEntry> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
         val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
-        val pid = TsPid.fromOrNull(obj.optInt("esPid", -1))
+        val pid = TsPid.fromOrNull(optIntOrNull(obj, "esPid"))
         if (pid == null && optIntOrNull(obj, "componentTag") == null) null else AribComponentEntry(
-            esPid = pid ?: TsPid.PAT,
+            esPid = pid,
             streamType = optIntOrNull(obj, "streamType"),
             componentTag = optIntOrNull(obj, "componentTag"),
             componentType = optIntOrNull(obj, "componentType"),
