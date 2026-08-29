@@ -107,7 +107,17 @@ class PlaybackPipeline(
         val diagnostics: List<String> = emptyList(),
         val firstFramePending: Boolean = false,
         val generation: Long = -1L,
-    )
+    ) {
+        companion object {
+            /** stop 後に発行済みの世代を、開始失敗でも必ず呼び出し側へ返す。 */
+            internal fun failedAfterRestart(generation: Long, diagnostics: List<String>) = StartResult(
+                startedVideo = false,
+                startedAudio = false,
+                diagnostics = diagnostics,
+                generation = generation,
+            )
+        }
+    }
 
     data class AudioSwitchResult(
         val switchedAudio: Boolean,
@@ -263,15 +273,15 @@ class PlaybackPipeline(
         val audioKind = audio?.let { stream -> AudioCodecKind.fromStreamType(stream.streamType) }
         if (!audioOnly && (video == null || videoKind == null)) {
             emitUnavailable(PlaybackUnavailableReason.UNSUPPORTED_VIDEO_STREAM, "audio-video service の対応video PIDがありません service=${selection.serviceKey}")
-            return StartResult(false, false, listOf("SERVICE_TYPE_PMT_MISMATCH"))
+            return StartResult.failedAfterRestart(startGeneration, listOf("SERVICE_TYPE_PMT_MISMATCH"))
         }
         if (audioOnly && (audio == null || audioKind == null)) {
             emitUnavailable(PlaybackUnavailableReason.UNSUPPORTED_AUDIO_STREAM, "audio-only service の対応audio PIDがありません service=${selection.serviceKey}")
-            return StartResult(false, false, listOf("SERVICE_TYPE_PMT_MISMATCH"))
+            return StartResult.failedAfterRestart(startGeneration, listOf("SERVICE_TYPE_PMT_MISMATCH"))
         }
         if (video != null && (currentSurface == null || !currentSurface.isValid)) {
             emitUnavailable(PlaybackUnavailableReason.SURFACE_NOT_SET, "有効な Surface がありません")
-            return StartResult(false, false, listOf("surface未設定"))
+            return StartResult.failedAfterRestart(startGeneration, listOf("surface未設定"))
         }
         if (audio != null && audioKind == null) {
             Log.w(LogTags.TIS, "未対応 audio stream_type=0x${audio.streamType.toString(16)} のため video-only として開始します")
@@ -283,7 +293,7 @@ class PlaybackPipeline(
         audioPathExpected = audioExpected
         ptsEpochCoordinator.reset()
         val sync = createMediaSync(currentSurface?.takeIf { videoPathExpected }, startGeneration)
-            ?: return StartResult(false, false, listOf("MediaSync初期化失敗"))
+            ?: return StartResult.failedAfterRestart(startGeneration, listOf("MediaSync初期化失敗"))
         val videoDecoderLocal = if (video != null && videoKind != null) {
             VideoDecoderPipeline(videoKind, requireNotNull(mediaSyncInputSurface), startGeneration) { reason, detail ->
                 emitUnavailable(reason, detail)
@@ -302,7 +312,7 @@ class PlaybackPipeline(
                 emitUnavailable(PlaybackUnavailableReason.VIDEO_FILTER_NOT_STARTED, error.message.orEmpty())
                 diagnostics += "video filter start failed: ${error.message}"
                 stopOnPlaybackExecutor()
-                return StartResult(false, false, diagnostics)
+                return StartResult.failedAfterRestart(startGeneration, diagnostics)
             }
             videoFilter = openedVideo
             diagnostics += "videoPid=${video.elementaryPid}"
@@ -330,7 +340,7 @@ class PlaybackPipeline(
                 if (audioOnly) {
                     emitUnavailable(PlaybackUnavailableReason.AUDIO_FILTER_NOT_STARTED, "audio-only serviceのaudio filterを開始できません")
                     stopOnPlaybackExecutor()
-                    return StartResult(false, false, diagnostics)
+                    return StartResult.failedAfterRestart(startGeneration, diagnostics)
                 }
             }
         } else {
