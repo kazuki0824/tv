@@ -1,3 +1,6 @@
+use crate::av::{
+    AudioTimestampAssociation, AudioTimestampAssociationFailure, AvMediaEventMetadata,
+};
 use crate::config::{
     AvStreamTypeConfig, FilterDelayHint, FilterDelayHints, FilterOpenType, OpenFilterRequest,
     SectionConditionKind, SectionRuntimeConfig,
@@ -9,6 +12,7 @@ use crate::sections::{parse_section_header, section_crc_valid};
 use crate::runtime::{
     WatermarkClassifier, WatermarkDecision, WatermarkPolicy, WatermarkQueueSnapshot,
 };
+use crate::ts_core::PesPacket;
 use crate::TsInputOrigin;
 use std::time::{Duration, Instant};
 
@@ -163,6 +167,7 @@ pub struct FilterRuntimeSnapshot {
     pub queue_present: bool,
     pub av_backing_present: bool,
     pub av_stream_type_hint: Option<AvStreamTypeConfig>,
+    pub(crate) audio_timestamp_association: AudioTimestampAssociation,
     pub delay_hints: FilterDelayHints,
     pub queued_bytes: usize,
     pub delivery_not_before: Option<Instant>,
@@ -190,6 +195,7 @@ pub struct FilterRuntime {
     queue_present: bool,
     av_backing_present: bool,
     av_stream_type_hint: Option<AvStreamTypeConfig>,
+    audio_timestamp_association: AudioTimestampAssociation,
     delay_hints: FilterDelayHints,
     queued_bytes: usize,
     delivery_not_before: Option<Instant>,
@@ -228,6 +234,7 @@ impl FilterRuntime {
             queue_present: false,
             av_backing_present: false,
             av_stream_type_hint: None,
+            audio_timestamp_association: AudioTimestampAssociation::default(),
             delay_hints: FilterDelayHints::default(),
             queued_bytes: 0,
             delivery_not_before: None,
@@ -256,6 +263,7 @@ impl FilterRuntime {
             queue_present: false,
             av_backing_present: false,
             av_stream_type_hint: None,
+            audio_timestamp_association: AudioTimestampAssociation::default(),
             delay_hints: FilterDelayHints::default(),
             queued_bytes: 0,
             delivery_not_before: None,
@@ -349,6 +357,7 @@ impl FilterRuntime {
             queue_present: self.queue_present,
             av_backing_present: self.av_backing_present,
             av_stream_type_hint: self.av_stream_type_hint,
+            audio_timestamp_association: self.audio_timestamp_association.clone(),
             delay_hints: self.delay_hints,
             queued_bytes: self.queued_bytes,
             delivery_not_before: self.delivery_not_before,
@@ -375,6 +384,7 @@ impl FilterRuntime {
         self.queue_present = snapshot.queue_present;
         self.av_backing_present = snapshot.av_backing_present;
         self.av_stream_type_hint = snapshot.av_stream_type_hint;
+        self.audio_timestamp_association = snapshot.audio_timestamp_association;
         self.delay_hints = snapshot.delay_hints;
         self.queued_bytes = snapshot.queued_bytes;
         self.delivery_not_before = snapshot.delivery_not_before;
@@ -397,6 +407,8 @@ impl FilterRuntime {
         self.raw = config.raw;
         self.queue_present = self.supports_normal_fmq_queue();
         self.av_backing_present = matches!(self.open_kind, PipelineOpenKind::Av);
+        self.av_stream_type_hint = None;
+        self.audio_timestamp_association.reset();
         self.queued_bytes = 0;
         self.delivery_not_before = None;
         self.last_watermark_status = None;
@@ -554,6 +566,36 @@ impl FilterRuntime {
 
     pub fn set_av_stream_type_hint(&mut self, config: AvStreamTypeConfig) {
         self.av_stream_type_hint = Some(config);
+        self.audio_timestamp_association.reset();
+    }
+
+    pub(crate) fn av_media_event_metadata(
+        &mut self,
+        packet: &PesPacket,
+        origin: TsInputOrigin,
+    ) -> Result<AvMediaEventMetadata, AudioTimestampAssociationFailure> {
+        if self.open_type != FilterOpenType::TsAudio {
+            return Ok(AvMediaEventMetadata::from_pes(
+                packet.stream_id,
+                packet.pts_90khz,
+                packet.dts_90khz,
+            ));
+        }
+        let authoritative_pts_90khz = self.audio_timestamp_association.associate(packet, origin)?;
+        Ok(AvMediaEventMetadata::from_pes_with_authoritative_pts(
+            packet.stream_id,
+            packet.pts_90khz,
+            authoritative_pts_90khz,
+            packet.dts_90khz,
+        ))
+    }
+
+    pub(crate) fn reset_audio_timestamp_association(&mut self) {
+        self.audio_timestamp_association.reset();
+    }
+
+    pub(crate) fn reset_audio_timestamp_association_for_origin(&mut self, origin: TsInputOrigin) {
+        self.audio_timestamp_association.reset_if_origin(origin);
     }
 
     pub fn set_delay_hint(&mut self, hint: FilterDelayHint) {
@@ -640,6 +682,7 @@ impl FilterRuntime {
         }
         self.source = FilterSource::DemuxInput;
         self.source_relation_generation = next_generation;
+        self.audio_timestamp_association.reset();
         true
     }
 
@@ -661,6 +704,7 @@ impl FilterRuntime {
             source_filter_generation,
         };
         self.source_relation_generation = next_generation;
+        self.audio_timestamp_association.reset();
         true
     }
 
@@ -719,15 +763,18 @@ impl FilterRuntime {
 
     pub fn mark_started(&mut self) {
         self.reset_section_delivery_state();
+        self.audio_timestamp_association.reset();
         self.state = FilterRuntimeState::Started;
         self.rearm_delivery_deadline_if_needed();
     }
     pub fn mark_stopped(&mut self) {
         self.reset_section_delivery_state();
+        self.audio_timestamp_association.reset();
         self.state = FilterRuntimeState::Stopped;
         self.delivery_not_before = None;
     }
     pub fn mark_failed(&mut self) {
+        self.audio_timestamp_association.reset();
         self.state = FilterRuntimeState::Failed;
         self.delivery_not_before = None;
     }
@@ -810,7 +857,8 @@ mod tests {
         );
         let section = long_section(0x42, 3, 0, 0);
         let origin = TsInputOrigin::frontend(9);
-        let pid = PacketPid::from_config(crate::config::ConfigInputPid::validate_tpid(0x11).unwrap());
+        let pid =
+            PacketPid::from_config_pid(crate::config::ConfigInputPid::validate_tpid(0x11).unwrap());
         let prepared = runtime
             .prepare_section_delivery(origin, pid, &section)
             .unwrap();
@@ -838,7 +886,8 @@ mod tests {
             true,
         );
         let origin = TsInputOrigin::frontend(9);
-        let pid = PacketPid::from_config(crate::config::ConfigInputPid::validate_tpid(0x11).unwrap());
+        let pid =
+            PacketPid::from_config_pid(crate::config::ConfigInputPid::validate_tpid(0x11).unwrap());
         assert!(runtime
             .prepare_section_delivery(origin, pid, &long_section(0x42, 0, 0, 0))
             .is_none());
@@ -862,7 +911,8 @@ mod tests {
             false,
         );
         let origin = TsInputOrigin::frontend(9);
-        let pid = PacketPid::from_config(crate::config::ConfigInputPid::validate_tpid(0x11).unwrap());
+        let pid =
+            PacketPid::from_config_pid(crate::config::ConfigInputPid::validate_tpid(0x11).unwrap());
         let section_one = runtime
             .prepare_section_delivery(origin, pid, &long_section(0x42, 3, 1, 1))
             .unwrap();
@@ -894,7 +944,8 @@ mod tests {
             true,
         );
         let origin = TsInputOrigin::frontend(9);
-        let pid = PacketPid::from_config(crate::config::ConfigInputPid::validate_tpid(0x11).unwrap());
+        let pid =
+            PacketPid::from_config_pid(crate::config::ConfigInputPid::validate_tpid(0x11).unwrap());
         let mut section = long_section(0x42, 0, 0, 0);
         section[8] ^= 1;
         assert!(runtime

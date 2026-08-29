@@ -301,6 +301,8 @@ TS入力originとgeneration名前空間は`../tuner_hal/DESIGN_JA.md`の`TsInput
 
 Filter/SharedFilterのqueue確定は`FilterProducerDrainGate`、DVR queue I/Oは`QueueEpochProtocol`、配送済みAV領域のallocation/leaseはAV resource ownerへ接続する。write authorityのgeneration、失効条件、配送済みAV資源の寿命は`../tuner_hal/DESIGN_JA.md`の同名契約・資源寿命表を正とし、本書では再定義しない。
 
+TS AUDIOのPTS-sparse event associationは`demux/src/av/audio_timestamp.rs`の有限codec extractorを`FilterRuntime`所有の従属状態として保持し、`DemuxRuntime`の既存AV配送境界からだけ更新する。独立した正規state owner、packet pipeline、clock、queue、workerを追加しない。明示PTSをanchorとし、payload全域のframe境界と時刻算出に必要なheader parameterを構造検証できるMPEG-2 AAC LC ADTS / MPEG audio frame列のactual sample rateとexact sample countだけを33-bit 90 kHzへ変換する。TEI、continuity gap、scramble/drop、flush、source/generation変更は既存`PacketPipeline` / filter lifecycle / stream boundaryの結果から同従属状態へreset通知し、PCR / wallclock / nominal値へfallbackしない。AIDLのpresence/value投影と成功配送条件は`../tuner_hal/DESIGN_JA.md`の「clear non-passthrough MediaEvent presentation timestamp 契約」を正とする。
+
 ## 実装構造索引
 
 次表は規範実装アンカーを探すための補助索引であり、transaction正本または公開契約を置き換えない。

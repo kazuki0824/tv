@@ -1760,6 +1760,7 @@ impl DemuxRuntime {
         if let Some(filter) = self.filters.get_mut(&filter_id) {
             filter.clear_queued_payload_state();
             filter.reset_section_delivery_state();
+            filter.reset_audio_timestamp_association();
         }
         if drain.commit().is_err() {
             self.quarantine_filter_runtime(filter_id);
@@ -2526,6 +2527,7 @@ impl DemuxRuntime {
         let filter_state_cleared = if let Some(filter) = self.filters.get_mut(&plan.filter_id) {
             filter.clear_queued_payload_state();
             filter.reset_section_delivery_state();
+            filter.reset_audio_timestamp_association();
             true
         } else {
             false
@@ -3138,11 +3140,15 @@ impl DemuxRuntime {
         let Some((queue_identity, queue_epoch)) = committed.playback_coordinates else {
             return false;
         };
-        self.pipeline.reset_origin(TsInputOrigin::PlaybackDvr {
+        let origin = TsInputOrigin::PlaybackDvr {
             dvr_id: committed.dvr_id,
             queue_identity,
             queue_epoch,
-        });
+        };
+        self.pipeline.reset_origin(origin);
+        for filter in self.filters.values_mut() {
+            filter.reset_audio_timestamp_association_for_origin(origin);
+        }
         true
     }
 
@@ -3795,6 +3801,7 @@ impl DemuxRuntime {
             .ok_or(DemuxRuntimeError::filter_missing(sink_filter_id))?;
         filter.clear_queued_payload_state();
         filter.reset_section_delivery_state();
+        filter.reset_audio_timestamp_association();
         match next_source_generation {
             Some(source_filter_generation) => {
                 if !filter.set_source_filter(
@@ -3952,6 +3959,7 @@ impl DemuxRuntime {
         for filter in self.filters.values_mut() {
             filter.clear_queued_payload_state();
             filter.reset_section_delivery_state();
+            filter.reset_audio_timestamp_association();
         }
         self.pcr_clock_anchor_store
             .commit_invalidation(prepared.pcr_invalidation);
@@ -4105,12 +4113,16 @@ impl DemuxRuntime {
             dvr.mark_failed();
         }
         if let Some((queue_identity, queue_epoch)) = playback_coordinates {
-            self.pipeline.reset_origin(TsInputOrigin::PlaybackDvr {
+            let origin = TsInputOrigin::PlaybackDvr {
                 dvr_id,
                 queue_identity,
                 queue_epoch,
-            });
+            };
+            self.pipeline.reset_origin(origin);
             self.invalidate_all_pcr_clock_anchors();
+            for filter in self.filters.values_mut() {
+                filter.reset_audio_timestamp_association_for_origin(origin);
+            }
         }
     }
 
@@ -4247,10 +4259,15 @@ impl DemuxRuntime {
         });
         report.diagnostics.extend(downstream.diagnostics);
         self.mark_filters_failed_for_generation_overflow(&report.diagnostics);
-        let av_payloads: Vec<_> = report
-            .generated_events
-            .iter()
-            .filter_map(|event| match event {
+        self.reset_audio_timestamp_associations_after_packet_gap(
+            validated.pid(),
+            origin,
+            &report.diagnostics,
+        );
+        let mut av_payloads = Vec::new();
+        let generated_events = std::mem::take(&mut report.generated_events);
+        for event in generated_events {
+            match event {
                 PipelineGeneratedEvent::PesPacketReady {
                     filter_id,
                     pid,
@@ -4258,34 +4275,33 @@ impl DemuxRuntime {
                     ..
                 } if self
                     .filters
-                    .get(filter_id)
-                    .is_some_and(|filter| filter.open_kind() == PipelineOpenKind::Av) => {
-                    Some((
-                        *filter_id,
-                        *pid,
-                        packet.payload.clone(),
-                        crate::av::AvMediaEventMetadata::from_pes(
-                            packet.stream_id,
-                            packet.pts_90khz,
-                            packet.dts_90khz,
-                        ),
-                    ))
+                    .get(&filter_id)
+                    .is_some_and(|filter| filter.open_kind() == PipelineOpenKind::Av) =>
+                {
+                    av_payloads.push((filter_id, pid, packet));
                 }
-                _ => None,
-            })
-            .collect();
-        report.generated_events.retain(|event| match event {
-            PipelineGeneratedEvent::PesPacketReady { filter_id, .. } => !self
-                .filters
-                .get(filter_id)
-                .is_some_and(|filter| filter.open_kind() == PipelineOpenKind::Av),
-            _ => true,
-        });
-        for (filter_id, pid, payload, metadata) in av_payloads {
+                event => report.generated_events.push(event),
+            }
+        }
+        for (filter_id, pid, packet) in av_payloads {
+            let Some(filter) = self.filters.get_mut(&filter_id) else {
+                continue;
+            };
+            let metadata = match filter.av_media_event_metadata(&packet, origin) {
+                Ok(metadata) => metadata,
+                Err(_) => {
+                    report.diagnostics.push(
+                        crate::packet_pipeline::PipelineDiagnostic::av_authoritative_timestamp_unavailable(
+                            pid, filter_id,
+                        ),
+                    );
+                    continue;
+                }
+            };
             let outcome = self
                 .filter_av_backings
                 .get_mut(&filter_id)
-                .map(|backing| backing.allocate_payload_bytes(&payload, metadata));
+                .map(|backing| backing.allocate_payload_bytes(&packet.payload, metadata));
             match outcome {
                 Some(Ok(AvPayloadDeliveryOutcome::Delivered(descriptor))) => {
                     report
@@ -4413,6 +4429,58 @@ impl DemuxRuntime {
                 if let Some(filter) = self.filters.get_mut(filter_id) {
                     filter.mark_failed();
                 }
+            }
+        }
+    }
+
+    fn reset_audio_timestamp_associations_after_packet_gap(
+        &mut self,
+        pid: crate::packet_pipeline::PacketPid,
+        origin: TsInputOrigin,
+        diagnostics: &[PipelineDiagnostic],
+    ) {
+        let timeline_gap = diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic,
+                PipelineDiagnostic::TeiAssemblySuppressed { pid: diagnostic_pid }
+                    | PipelineDiagnostic::ContinuityCounterCollisionAssemblySuppressed {
+                        pid: diagnostic_pid,
+                        ..
+                    }
+                    | PipelineDiagnostic::ContinuityDiscontinuityAssemblyReset {
+                        pid: diagnostic_pid,
+                        ..
+                    }
+                    | PipelineDiagnostic::KeylessScrambledAssemblySuppressed {
+                        pid: diagnostic_pid,
+                    }
+                    | PipelineDiagnostic::PesGenerationOverflow {
+                        pid: diagnostic_pid,
+                        ..
+                    }
+                    | PipelineDiagnostic::PesAssemblerDrop {
+                        pid: diagnostic_pid,
+                        ..
+                    }
+                    | PipelineDiagnostic::SourceFilterValidationFailure {
+                        pid: diagnostic_pid,
+                        ..
+                    }
+                    | PipelineDiagnostic::SourceFilterDescramblePolicyFailure {
+                        pid: diagnostic_pid,
+                        ..
+                    } if *diagnostic_pid == pid
+            )
+        });
+        if !timeline_gap {
+            return;
+        }
+        for filter in self.filters.values_mut() {
+            if filter
+                .pipeline_view()
+                .accepts_packet_pid_from_origin(pid, origin)
+            {
+                filter.reset_audio_timestamp_association_for_origin(origin);
             }
         }
     }

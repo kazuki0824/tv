@@ -269,6 +269,64 @@ mod tests {
         packet
     }
 
+    fn pts_field(pts_90khz: u64) -> [u8; 5] {
+        let pts = pts_90khz & ((1_u64 << 33) - 1);
+        [
+            0x20 | (((pts >> 30) as u8 & 0x07) << 1) | 0x01,
+            (pts >> 22) as u8,
+            (((pts >> 15) as u8 & 0x7f) << 1) | 0x01,
+            (pts >> 7) as u8,
+            ((pts as u8 & 0x7f) << 1) | 0x01,
+        ]
+    }
+
+    fn adts_aac_lc_frame_48khz(body_len: usize) -> Vec<u8> {
+        let frame_len = 9 + body_len;
+        let mut frame = vec![0u8; frame_len];
+        frame[0] = 0xff;
+        frame[1] = 0xf8;
+        frame[2] = 0x4c;
+        frame[3] = 0x80 | ((frame_len >> 11) as u8 & 0x03);
+        frame[4] = (frame_len >> 3) as u8;
+        frame[5] = ((frame_len & 0x07) as u8) << 5;
+        frame[6] = 0;
+        frame
+    }
+
+    fn bounded_audio_pes(payload: &[u8], pts_90khz: Option<u64>) -> Vec<u8> {
+        let optional_header_len = if pts_90khz.is_some() { 5 } else { 0 };
+        let packet_length = 3 + optional_header_len + payload.len();
+        let mut bytes = vec![
+            0x00,
+            0x00,
+            0x01,
+            0xc0,
+            (packet_length >> 8) as u8,
+            packet_length as u8,
+            0x80,
+            if pts_90khz.is_some() { 0x80 } else { 0x00 },
+            optional_header_len as u8,
+        ];
+        if let Some(pts_90khz) = pts_90khz {
+            bytes.extend_from_slice(&pts_field(pts_90khz));
+        }
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    fn av_metadata(report: &PipelineReport, filter_id: i32) -> Option<AvMediaEventMetadata> {
+        report
+            .generated_events
+            .iter()
+            .find_map(|event| match event {
+                PipelineGeneratedEvent::AvMedia {
+                    filter_id: event_filter_id,
+                    descriptor,
+                } if *event_filter_id == filter_id => Some(descriptor.metadata),
+                _ => None,
+            })
+    }
+
     fn raw_ts_packet(pid: u16, continuity_counter: u8, payload: &[u8]) -> [u8; 188] {
         let mut packet = [0xffu8; 188];
         packet[0] = 0x47;
@@ -333,6 +391,40 @@ mod tests {
             },
             config,
         )
+    }
+
+    fn started_audio_filter_runtime(filter_id: i32, pid: i32) -> DemuxRuntime {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(open_filter_runtime_with_queue(
+                filter_id,
+                1,
+                FilterOpenType::TsAudio,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                filter_id,
+                FilterPipelineConfig {
+                    tpid: Some(pid),
+                    raw: false,
+                    record_index: None,
+                },
+            )
+            .unwrap();
+        demux
+            .configure_filter_av_stream_type(
+                filter_id,
+                AvStreamTypeConfig {
+                    kind: AvStreamKind::Audio,
+                    stream_type: 0x0f,
+                },
+            )
+            .unwrap();
+        let _shared_handle = demux.export_filter_av_shared_handle(filter_id).unwrap();
+        demux.start_filter_runtime(filter_id).unwrap();
+        demux
     }
 
     fn started_section_filter_runtime(filter_id: i32) -> DemuxRuntime {
@@ -3186,6 +3278,90 @@ mod tests {
             FilterRuntimeState::Stopped
         );
         assert!(demux.filter(18).unwrap().av_backing_present());
+    }
+
+    #[test]
+    fn audio_media_event_associates_pts_sparse_adts_from_exact_sample_count() {
+        let filter_id = 38;
+        let pid = 0x0101;
+        let mut demux = started_audio_filter_runtime(filter_id, pid);
+        let frame = adts_aac_lc_frame_48khz(4);
+
+        let explicit = demux.push_ts_packet_from_origin(
+            &pes_start_packet(pid as u16, 0, &bounded_audio_pes(&frame, Some(90_000))),
+            TsInputOrigin::frontend(1),
+        );
+        assert_eq!(
+            av_metadata(&explicit, filter_id),
+            Some(AvMediaEventMetadata {
+                stream_id: 0xc0,
+                is_pts_present: true,
+                pts_90khz: Some(90_000),
+                is_dts_present: false,
+                dts_90khz: None,
+            })
+        );
+
+        let associated = demux.push_ts_packet_from_origin(
+            &pes_start_packet(pid as u16, 1, &bounded_audio_pes(&frame, None)),
+            TsInputOrigin::frontend(1),
+        );
+        assert_eq!(
+            av_metadata(&associated, filter_id),
+            Some(AvMediaEventMetadata {
+                stream_id: 0xc0,
+                is_pts_present: false,
+                pts_90khz: Some(91_920),
+                is_dts_present: false,
+                dts_90khz: None,
+            })
+        );
+    }
+
+    #[test]
+    fn audio_timestamp_association_is_fenced_by_flush_and_transport_discontinuity() {
+        let filter_id = 39;
+        let pid = 0x0101;
+        let mut demux = started_audio_filter_runtime(filter_id, pid);
+        let frame = adts_aac_lc_frame_48khz(4);
+        let origin = TsInputOrigin::frontend(1);
+
+        let explicit = demux.push_ts_packet_from_origin(
+            &pes_start_packet(pid as u16, 0, &bounded_audio_pes(&frame, Some(90_000))),
+            origin,
+        );
+        assert!(av_metadata(&explicit, filter_id).is_some());
+        demux.flush_filter_runtime(filter_id).unwrap();
+
+        let after_flush = demux.push_ts_packet_from_origin(
+            &pes_start_packet(pid as u16, 1, &bounded_audio_pes(&frame, None)),
+            origin,
+        );
+        assert_eq!(av_metadata(&after_flush, filter_id), None);
+        assert!(after_flush.diagnostics.contains(
+            &PipelineDiagnostic::AvAuthoritativeTimestampUnavailable {
+                pid: packet_pid(pid),
+                filter_id,
+            }
+        ));
+
+        let reanchored = demux.push_ts_packet_from_origin(
+            &pes_start_packet(pid as u16, 2, &bounded_audio_pes(&frame, Some(180_000))),
+            origin,
+        );
+        assert!(av_metadata(&reanchored, filter_id).is_some());
+        demux.push_ts_packet_from_origin(&discontinuity_packet_without_pcr(pid as u16, 3), origin);
+        let after_discontinuity = demux.push_ts_packet_from_origin(
+            &pes_start_packet(pid as u16, 3, &bounded_audio_pes(&frame, None)),
+            origin,
+        );
+        assert_eq!(av_metadata(&after_discontinuity, filter_id), None);
+        assert!(after_discontinuity.diagnostics.contains(
+            &PipelineDiagnostic::AvAuthoritativeTimestampUnavailable {
+                pid: packet_pid(pid),
+                filter_id,
+            }
+        ));
     }
 
     #[test]

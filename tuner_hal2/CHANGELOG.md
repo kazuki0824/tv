@@ -1,3 +1,12 @@
+# r50eo84_pr53_audio_timestamp_association_followup
+
+- TS AUDIO filterのproducer側に、明示PTSをanchorとしてframe境界と時刻算出parameterを構造検証済みのMPEG-2 AAC LC ADTS / MPEG audio frame列のactual sample rateとexact sample countからPTS-sparse eventの先頭frame時刻を確定する`AudioTimestampAssociation`を追加した。`isPtsPresent`は元PES headerのprovenanceのまま保持し、PCR、wallclock、arrival time、nominal rateへfallbackしない。
+- 未anchor、partial/unsupported frame、未通知parameter変更、overflowではAV eventを配送せず型付き診断を生成する。anchorは既存`TsInputOrigin`を含み、別frontend / playback queue epochへ再利用しない。TEI、continuity gap、scramble/PES drop、filter/DVR flush、source/generation境界、stop/failureでは該当anchorを破棄する。状態は既存`FilterRuntime`に従属するO(1)値だけで、独立owner、queue、worker、clockは追加していない。
+- 製品既定snapshotをTS AUDIO=1、TS VIDEO=1とし、両filterの未解放payload上限を閉じる有限AV runtime予算へ更新した。TS AUDIOが公開demux open-filter use-caseを通る試験、explicit/sparse ADTSのAIDL provenance/value、exact sample duration、33-bit wrap、MPEG audio、missing anchor、parameter変更、flush/discontinuity fenceの試験を追加した。
+- demux test targetに残っていた削除済み`PacketPid::from_config()`呼出4箇所を現行`from_config_pid()`へ更新し、今回追加したaudio timestamp試験を含む`--all-targets`の型検査を妨げていた既存test harnessのAPIずれを同じPR内で解消した。製品経路に互換aliasは追加していない。全filter能力を0へ落とす既存capacity fixtureも、AV能力と同時にAV byte予算を0へ落として検査軸を自己完結させた。
+- `tuner_hal/DESIGN_JA.md`へH.222.0のaudio PTS/access-unit対応、ARIB STD-B32 3.11-E1 Fascicle 2のADTS frame条件とparameter切替PTS条件、producer-side associationの成功/抑止境界を反映し、`tuner_hal2/DESIGN_JA.md`へ物理owner mappingを追加した。現行日本語版4.1との差分未証明、公開AIDL/VINTF、future_work、`RELEASE_VERSION`は変更していない。
+- ローカルでは`git diff --check`、変更Rust 9ファイルのtree-sitter構文解析、Rust 1.81による新規moduleのrustfmt check、製品demux sourceそのままの`cargo check --all-targets`、Clippy通常実行、audio timestamp対象8試験、`CapabilitySnapshot`全8試験を実施した。新規audio moduleにClippy警告はないが、`-D warnings`は既存demux警告があるため成功扱いにしていない。Android/Soong build、atest、VTS、loom、実機・実放送波確認は未実施。
+
 # r50eo83_pr53_media_event_metadata_video_capability_followup
 
 - PES parserが確定した`stream_id`、PTS/DTSのheader presenceと33-bit 90 kHz値を`AvMediaEventMetadata`としてAV allocation descriptorへ保持し、`DemuxFilterMediaEvent`の`streamId`、`isPtsPresent` / `pts`、`isDtsPresent` / `dts`へ無損失に投影するよう変更した。PTS/DTSやwallclockを推測生成する時刻源、永続state、queue、workerは追加していない。

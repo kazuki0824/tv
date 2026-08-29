@@ -627,6 +627,10 @@ pub enum PipelineDiagnostic {
         pid: PacketPid,
         filter_id: i32,
     },
+    AvAuthoritativeTimestampUnavailable {
+        pid: PacketPid,
+        filter_id: i32,
+    },
     AvSharedHandleNotExported {
         pid: PacketPid,
         filter_id: i32,
@@ -676,6 +680,7 @@ impl PipelineDiagnostic {
             | Self::FilterQueuePayloadDeliveryFailure { pid, .. }
             | Self::AvSharedBackingFailure { pid, .. }
             | Self::AvSharedBackingMissing { pid, .. }
+            | Self::AvAuthoritativeTimestampUnavailable { pid, .. }
             | Self::AvSharedHandleNotExported { pid, .. }
             | Self::AvClientHandleReleased { pid, .. }
             | Self::AvPayloadEmpty { pid, .. }
@@ -774,6 +779,10 @@ impl PipelineDiagnostic {
 
     pub fn av_shared_backing_missing(pid: PacketPid, filter_id: i32) -> Self {
         Self::AvSharedBackingMissing { pid, filter_id }
+    }
+
+    pub fn av_authoritative_timestamp_unavailable(pid: PacketPid, filter_id: i32) -> Self {
+        Self::AvAuthoritativeTimestampUnavailable { pid, filter_id }
     }
 
     pub fn av_shared_handle_not_exported(pid: PacketPid, filter_id: i32) -> Self {

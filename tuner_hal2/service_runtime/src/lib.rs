@@ -1600,6 +1600,51 @@ mod tests {
         }
     }
 
+    fn assert_product_profile_opens_filter_through_demux_use_case(open_type: FilterOpenType) {
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let demux_entry = {
+            let mut guard = runtime.lock().unwrap();
+            guard
+                .root_open_txn()
+                .open_demux_root_object(AidlMethodCall::PublicApi {
+                    object: AidlObjectKind::Tuner,
+                    api: AidlApi::TunerOpenDemux,
+                })
+                .unwrap()
+        };
+
+        ObjectMethodUseCase::execute_after_live(
+            &runtime,
+            demux_entry.object_id(),
+            demux_entry.generation(),
+            AidlObjectKind::Demux,
+            || -> Result<_, HalError> {
+                let request = OpenFilterRequest {
+                    open_type,
+                    buffer_size: 4096,
+                    callback_present: false,
+                };
+                Ok((
+                    AidlMethodCall::DemuxOpenFilter(RuntimeExecutableRequest::OpenFilter(
+                        request.clone(),
+                    )),
+                    request,
+                ))
+            },
+            |runtime, dispatch, request| {
+                runtime
+                    .child_open_txn()
+                    .open_filter_child_runtime_for_demux_object(
+                        demux_entry.object_id(),
+                        demux_entry.generation(),
+                        &request,
+                        dispatch,
+                    )
+            },
+        )
+        .expect("published filter capability must open through the public use-case path");
+    }
+
     #[test]
     fn attach_dvr_filter_maps_non_record_filter_to_invalid_argument() {
         let mut runtime = TunerServiceRuntime::new();
@@ -1650,69 +1695,13 @@ mod tests {
     }
 
     #[test]
-    fn audio_media_filter_is_unavailable_without_authoritative_pts_source() {
-        let mut runtime = TunerServiceRuntime::new();
-        let demux = runtime.allocate_demux_runtime().unwrap();
-        let filter = runtime.allocate_filter_runtime(demux.id.0).unwrap();
-        let error = runtime
-            .register_demux_filter_runtime(
-                demux.id.0,
-                filter.id.0,
-                &OpenFilterRequest {
-                    open_type: FilterOpenType::TsAudio,
-                    buffer_size: 4096,
-                    callback_present: false,
-                },
-            )
-            .unwrap_err();
-
-        assert!(matches!(error, HalError::Unsupported(_)));
+    fn product_profile_opens_ts_audio_through_demux_open_filter_use_case() {
+        assert_product_profile_opens_filter_through_demux_use_case(FilterOpenType::TsAudio);
     }
 
     #[test]
     fn product_profile_opens_ts_video_through_demux_open_filter_use_case() {
-        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
-        let demux_entry = {
-            let mut guard = runtime.lock().unwrap();
-            guard
-                .root_open_txn()
-                .open_demux_root_object(AidlMethodCall::PublicApi {
-                    object: AidlObjectKind::Tuner,
-                    api: AidlApi::TunerOpenDemux,
-                })
-                .unwrap()
-        };
-
-        ObjectMethodUseCase::execute_after_live(
-            &runtime,
-            demux_entry.object_id(),
-            demux_entry.generation(),
-            AidlObjectKind::Demux,
-            || -> Result<_, HalError> {
-                let request = OpenFilterRequest {
-                    open_type: FilterOpenType::TsVideo,
-                    buffer_size: 4096,
-                    callback_present: false,
-                };
-                Ok((
-                    AidlMethodCall::DemuxOpenFilter(RuntimeExecutableRequest::OpenFilter(
-                        request.clone(),
-                    )),
-                    request,
-                ))
-            },
-            |runtime, dispatch, request| {
-                runtime
-                    .child_open_txn()
-                    .open_filter_child_runtime_for_demux_object(
-                        demux_entry.object_id(),
-                        demux_entry.generation(),
-                        &request,
-                        dispatch,
-                    )
-            },
-        )
-        .expect("published TS video capability must open through the public use-case path");
+        assert_product_profile_opens_filter_through_demux_use_case(FilterOpenType::TsVideo);
     }
 
     #[test]

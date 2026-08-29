@@ -69,9 +69,9 @@ impl CapabilitySnapshot {
             num_playback: 8,
             num_ts_filter: 32,
             num_section_filter: 8,
-            // ARIB TS audio は PTS のない合法 PES を含み得るが、現行 backend は
-            // event-associated timestamp を提供しないため成功能力を広告しない。
-            num_audio_filter: 0,
+            // TS audio は producer 側の frame/sample 関連付けにより、PTS header が
+            // 疎な PES でも event-associated timestamp を確定できる。
+            num_audio_filter: 1,
             // 製品対象の MPEG-2 / AVC / HEVC video PES は ARIB profile 上 PTS を明示する。
             num_video_filter: 1,
             num_pes_filter: 4,
@@ -85,7 +85,7 @@ impl CapabilitySnapshot {
             av_max_outstanding_events_per_filter:
                 DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
             av_per_filter_live_bytes: DEFAULT_AV_PER_FILTER_LIVE_BYTES,
-            av_runtime_budget_bytes: DEFAULT_AV_PER_FILTER_LIVE_BYTES,
+            av_runtime_budget_bytes: DEFAULT_AV_PER_FILTER_LIVE_BYTES * 2,
             cleanup_reaper_capacity: 160,
             cleanup_retry_schedule_ms: [0, 10, 100, 1_000],
             cleanup_terminal_deadline_ms: 30_000,
@@ -638,6 +638,10 @@ mod tests {
         snapshot.num_pcr_filter = 0;
         snapshot.pes_max_bytes_per_filter = 0;
         snapshot.pes_runtime_budget_bytes = 0;
+        snapshot.av_max_event_bytes = 0;
+        snapshot.av_max_outstanding_events_per_filter = 0;
+        snapshot.av_per_filter_live_bytes = 0;
+        snapshot.av_runtime_budget_bytes = 0;
         snapshot.num_record = 0;
         snapshot.num_playback = 0;
         snapshot.public_demuxes = [None; 8];
@@ -718,12 +722,12 @@ mod tests {
     }
 
     #[test]
-    fn product_snapshot_closes_video_only_av_dependencies() {
+    fn product_snapshot_closes_audio_and_video_av_dependencies() {
         let snapshot = CapabilitySnapshot::product_default();
-        assert_eq!(snapshot.num_audio_filter, 0);
+        assert_eq!(snapshot.num_audio_filter, 1);
         assert_eq!(snapshot.num_video_filter, 1);
         snapshot
             .validate_dependency_closures()
-            .expect("product video capability must retain a closed finite byte budget");
+            .expect("product AV capabilities must retain a closed finite byte budget");
     }
 }

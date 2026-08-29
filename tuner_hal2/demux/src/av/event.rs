@@ -25,6 +25,21 @@ impl AvMediaEventMetadata {
             dts_90khz,
         }
     }
+
+    pub const fn from_pes_with_authoritative_pts(
+        stream_id: u8,
+        pes_pts_90khz: Option<u64>,
+        authoritative_pts_90khz: u64,
+        dts_90khz: Option<u64>,
+    ) -> Self {
+        Self {
+            stream_id,
+            is_pts_present: pes_pts_90khz.is_some(),
+            pts_90khz: Some(authoritative_pts_90khz),
+            is_dts_present: dts_90khz.is_some(),
+            dts_90khz,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
