@@ -279,50 +279,6 @@ class NativeAribSiParser : AutoCloseable {
         }
     }
 
-    private fun mergeEventAndServiceComponents(eventComponents: AribComponents, serviceComponents: AribComponents): AribComponents = AribComponents(
-        video = mergeComponentEntries(eventComponents.video, serviceComponents.video),
-        audio = mergeComponentEntries(eventComponents.audio, serviceComponents.audio),
-        subtitle = serviceComponents.subtitle + eventComponents.subtitle.filterNot { e -> serviceComponents.subtitle.any { sameComponentIdentity(it, e) } },
-        data = serviceComponents.data + eventComponents.data.filterNot { e -> serviceComponents.data.any { sameComponentIdentity(it, e) } },
-    )
-
-    private fun mergeComponentEntries(eventEntries: List<AribComponentEntry>, serviceEntries: List<AribComponentEntry>): List<AribComponentEntry> {
-        if (eventEntries.isEmpty()) return serviceEntries
-        val merged = serviceEntries.toMutableList()
-        eventEntries.forEach { eventEntry ->
-            val index = merged.indexOfFirst { sameComponentIdentity(it, eventEntry) }
-            if (index >= 0) {
-                merged[index] = mergeComponentEntry(eventEntry, merged[index])
-            } else if (eventEntry.esPid != TsPid.PAT) {
-                merged += eventEntry
-            }
-        }
-        return merged
-    }
-
-    private fun sameComponentIdentity(left: AribComponentEntry, right: AribComponentEntry): Boolean {
-        val leftTag = left.componentTag
-        val rightTag = right.componentTag
-        return leftTag != null && rightTag != null && leftTag == rightTag
-    }
-
-    private fun mergeComponentEntry(eventEntry: AribComponentEntry, serviceEntry: AribComponentEntry): AribComponentEntry = serviceEntry.copy(
-        componentType = eventEntry.componentType ?: serviceEntry.componentType,
-        language = eventEntry.language ?: serviceEntry.language,
-        secondLanguage = eventEntry.secondLanguage ?: serviceEntry.secondLanguage,
-        channelConfiguration = eventEntry.channelConfiguration ?: serviceEntry.channelConfiguration,
-        samplingInfo = eventEntry.samplingInfo ?: serviceEntry.samplingInfo,
-        sourceDescriptor = eventEntry.sourceDescriptor ?: serviceEntry.sourceDescriptor,
-        resolution = eventEntry.resolution ?: serviceEntry.resolution,
-        scan = eventEntry.scan ?: serviceEntry.scan,
-        aspect = eventEntry.aspect ?: serviceEntry.aspect,
-        profileLevel = eventEntry.profileLevel ?: serviceEntry.profileLevel,
-        main = eventEntry.main ?: serviceEntry.main,
-        multiLingual = eventEntry.multiLingual ?: serviceEntry.multiLingual,
-        qualityIndicator = eventEntry.qualityIndicator ?: serviceEntry.qualityIndicator,
-        parseStatus = if (eventEntry.parseStatus != "OK") eventEntry.parseStatus else serviceEntry.parseStatus,
-    )
-
     private fun parseCaMetadataList(array: JSONArray?): List<CaMetadata> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
         val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
         val keyObj = obj.optJSONObject("serviceKey")
@@ -712,6 +668,11 @@ private fun parseLinkage(array: JSONArray?): List<AribLinkage> = (0 until (array
 
         fun componentsForServiceForTest(service: AribService): AribComponents = componentsForService(service)
 
+        fun mergeEventAndServiceComponentsForTest(
+            eventComponents: AribComponents,
+            serviceComponents: AribComponents,
+        ): AribComponents = mergeEventAndServiceComponents(eventComponents, serviceComponents)
+
         fun toComponentsObjectForServiceForTest(service: AribService): String = ProviderDataBridge.toComponentsObject(componentsForServiceForTest(service)).toString()
 
         private fun codecComponent(stream: AribElementaryStream, codec: String): AribComponentEntry = AribComponentEntry(
@@ -727,5 +688,62 @@ private fun parseLinkage(array: JSONArray?): List<AribLinkage> = (0 until (array
         fun isRecognizedVideoCodecForTest(streamType: Int): Boolean = RECOGNIZED_VIDEO_CODECS.containsKey(streamType)
         fun isR51PlaybackSupportedAudioCodecForTest(streamType: Int): Boolean = R51_AUDIO_CODECS.containsKey(streamType)
         fun isRecognizedAudioCodecForTest(streamType: Int): Boolean = RECOGNIZED_AUDIO_CODECS.containsKey(streamType)
+
+        private fun mergeEventAndServiceComponents(
+            eventComponents: AribComponents,
+            serviceComponents: AribComponents,
+        ): AribComponents = AribComponents(
+            video = mergeComponentEntries(eventComponents.video, serviceComponents.video),
+            audio = mergeComponentEntries(eventComponents.audio, serviceComponents.audio),
+            subtitle = serviceComponents.subtitle + eventComponents.subtitle.filterNot { event ->
+                serviceComponents.subtitle.any { sameComponentIdentity(it, event) }
+            },
+            data = serviceComponents.data + eventComponents.data.filterNot { event ->
+                serviceComponents.data.any { sameComponentIdentity(it, event) }
+            },
+        )
+
+        private fun mergeComponentEntries(
+            eventEntries: List<AribComponentEntry>,
+            serviceEntries: List<AribComponentEntry>,
+        ): List<AribComponentEntry> {
+            if (eventEntries.isEmpty()) return serviceEntries
+            val merged = serviceEntries.toMutableList()
+            eventEntries.forEach { eventEntry ->
+                val index = merged.indexOfFirst { sameComponentIdentity(it, eventEntry) }
+                if (index >= 0) {
+                    merged[index] = mergeComponentEntry(eventEntry, merged[index])
+                } else {
+                    merged += eventEntry
+                }
+            }
+            return merged
+        }
+
+        private fun sameComponentIdentity(left: AribComponentEntry, right: AribComponentEntry): Boolean {
+            val leftTag = left.componentTag
+            val rightTag = right.componentTag
+            return leftTag != null && rightTag != null && leftTag == rightTag
+        }
+
+        private fun mergeComponentEntry(
+            eventEntry: AribComponentEntry,
+            serviceEntry: AribComponentEntry,
+        ): AribComponentEntry = serviceEntry.copy(
+            componentType = eventEntry.componentType ?: serviceEntry.componentType,
+            language = eventEntry.language ?: serviceEntry.language,
+            secondLanguage = eventEntry.secondLanguage ?: serviceEntry.secondLanguage,
+            channelConfiguration = eventEntry.channelConfiguration ?: serviceEntry.channelConfiguration,
+            samplingInfo = eventEntry.samplingInfo ?: serviceEntry.samplingInfo,
+            sourceDescriptor = eventEntry.sourceDescriptor ?: serviceEntry.sourceDescriptor,
+            resolution = eventEntry.resolution ?: serviceEntry.resolution,
+            scan = eventEntry.scan ?: serviceEntry.scan,
+            aspect = eventEntry.aspect ?: serviceEntry.aspect,
+            profileLevel = eventEntry.profileLevel ?: serviceEntry.profileLevel,
+            main = eventEntry.main ?: serviceEntry.main,
+            multiLingual = eventEntry.multiLingual ?: serviceEntry.multiLingual,
+            qualityIndicator = eventEntry.qualityIndicator ?: serviceEntry.qualityIndicator,
+            parseStatus = if (eventEntry.parseStatus != "OK") eventEntry.parseStatus else serviceEntry.parseStatus,
+        )
     }
 }

@@ -1,3 +1,11 @@
+# r50ef_review_followup_6
+
+- 音声track切替のrestart失敗でも新playback generationをLiveSessionへ反映し、旧`Started` stateを残さず`Failed`へ遷移するようにした。restart前の入力拒否ではcurrent stateを維持する。
+- audio-only serviceの旧generation failureをstate、字幕generation、外部unavailable通知の全境界で破棄するようにした。
+- PMT側に同じ`component_tag`が無い場合も、有効なEIT component/audio-component descriptor事実をcanonical componentsへ保持するようにした。
+- 上記generation/current-stale/ARIB descriptor保持のbehavior testを追加し、Kotlin host test固定件数を127件へ更新した。
+- Android/Soong build、atest、CTS、VTS、実機確認は未実施。本commitのKotlin host compile/testはPR checksを正とする。
+
 # r50ef_review_followup_5
 
 - 音声track切替で再生成したplayback generationとfirst-output待機状態をLiveSessionおよび字幕controllerへ伝播し、旧generationをStartedとして保持しないようにした。

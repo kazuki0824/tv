@@ -111,6 +111,39 @@ class TisR51FixedPlanAcceptanceTest {
         check(selected?.streamType == 0x1b)
     }
 
+    @Test fun validEitComponentWithoutPmtComponentTagIsPreserved() {
+        val videoComponent = AribComponentEntry(
+            esPid = TsPid.PAT,
+            componentTag = 7,
+            componentType = 0xb3,
+            language = "jpn",
+            sourceDescriptor = "component_descriptor",
+            parseStatus = "OK",
+        )
+        val audioComponent = AribComponentEntry(
+            esPid = TsPid.PAT,
+            componentTag = 8,
+            componentType = 0x03,
+            language = "jpn",
+            sourceDescriptor = "audio_component_descriptor",
+            parseStatus = "OK",
+        )
+        val merged = NativeAribSiParser.mergeEventAndServiceComponentsForTest(
+            eventComponents = AribComponents(
+                video = listOf(videoComponent),
+                audio = listOf(audioComponent),
+            ),
+            serviceComponents = AribComponents(),
+        )
+
+        check(merged.video == listOf(videoComponent)) {
+            "PMTにcomponent_tagが無くても有効なEIT component_descriptor事実を失ってはなりません"
+        }
+        check(merged.audio == listOf(audioComponent)) {
+            "PMTにcomponent_tagが無くても有効なEIT audio_component_descriptor事実を失ってはなりません"
+        }
+    }
+
     @Test fun audioOnlyServiceTypeAcceptsSupportedAudioWithoutVideo() {
         val selection = TunerController.AvStreamSelection(
             serviceKey = key,
