@@ -4260,7 +4260,16 @@ impl DemuxRuntime {
                     .filters
                     .get(filter_id)
                     .is_some_and(|filter| filter.open_kind() == PipelineOpenKind::Av) => {
-                    Some((*filter_id, *pid, packet.payload.clone()))
+                    Some((
+                        *filter_id,
+                        *pid,
+                        packet.payload.clone(),
+                        crate::av::AvMediaEventMetadata::from_pes(
+                            packet.stream_id,
+                            packet.pts_90khz,
+                            packet.dts_90khz,
+                        ),
+                    ))
                 }
                 _ => None,
             })
@@ -4272,11 +4281,11 @@ impl DemuxRuntime {
                 .is_some_and(|filter| filter.open_kind() == PipelineOpenKind::Av),
             _ => true,
         });
-        for (filter_id, pid, payload) in av_payloads {
+        for (filter_id, pid, payload, metadata) in av_payloads {
             let outcome = self
                 .filter_av_backings
                 .get_mut(&filter_id)
-                .map(|backing| backing.allocate_payload_bytes(&payload));
+                .map(|backing| backing.allocate_payload_bytes(&payload, metadata));
             match outcome {
                 Some(Ok(AvPayloadDeliveryOutcome::Delivered(descriptor))) => {
                     report

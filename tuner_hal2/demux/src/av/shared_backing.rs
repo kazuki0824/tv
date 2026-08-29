@@ -1,4 +1,4 @@
-use super::event::AvMediaEventDescriptor;
+use super::event::{AvMediaEventDescriptor, AvMediaEventMetadata};
 use super::release_txn::{
     AvDataIdState, AvEventLocalHandleLeaseState, AvFilterReleaseState, AvHandleReleaseInput,
     AvHandleReleaseKind, AvHandleReleaseOutcome, AvHandleReleaseTxn,
@@ -382,10 +382,11 @@ impl AvSharedBacking {
     pub fn allocate_payload_bytes(
         &mut self,
         payload: &[u8],
+        metadata: AvMediaEventMetadata,
     ) -> Result<AvPayloadDeliveryOutcome, AvSharedBackingError> {
         let slot_index = match self.shared_slot_candidate(payload.len()) {
             Ok(slot_index) => slot_index,
-            Err(_) => return self.allocate_event_local_payload(payload),
+            Err(_) => return self.allocate_event_local_payload(payload, metadata),
         };
         let Some(runtime_claim) = PendingAvRuntimeClaim::prepare(
             Arc::clone(&self.runtime_budget),
@@ -436,6 +437,7 @@ impl AvSharedBacking {
             slot_id: slot.slot_id,
             offset: slot.slot_id.0 as usize * self.slot_size,
             data_length: payload.len(),
+            metadata,
             event_local_file: None,
         }))
     }
@@ -443,6 +445,7 @@ impl AvSharedBacking {
     fn allocate_event_local_payload(
         &mut self,
         payload: &[u8],
+        metadata: AvMediaEventMetadata,
     ) -> Result<AvPayloadDeliveryOutcome, AvSharedBackingError> {
         if payload.is_empty() {
             return Ok(AvPayloadDeliveryOutcome::PayloadEmpty);
@@ -530,6 +533,7 @@ impl AvSharedBacking {
             slot_id: AvSlotId(u32::MAX),
             offset: 0,
             data_length: payload.len(),
+            metadata,
             event_local_file: Some(file),
         }))
     }
@@ -583,6 +587,7 @@ impl AvSharedBacking {
             slot_id: slot.slot_id,
             offset: slot.slot_id.0 as usize * self.slot_size,
             data_length,
+            metadata: AvMediaEventMetadata::default(),
             event_local_file: None,
         })
     }
@@ -936,7 +941,9 @@ mod tests {
         backing.mark_exported();
 
         assert_eq!(
-            backing.allocate_payload_bytes(&[]).unwrap(),
+            backing
+                .allocate_payload_bytes(&[], AvMediaEventMetadata::default())
+                .unwrap(),
             AvPayloadDeliveryOutcome::PayloadEmpty
         );
         assert_eq!(backing.active_slot_count(), 0);

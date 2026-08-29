@@ -50,6 +50,34 @@ impl AidlFilterEventDispatcher {
     }
 }
 
+fn aidl_media_timestamp_90khz(
+    is_present: bool,
+    value: Option<u64>,
+    field_name: &'static str,
+) -> Result<i64, HalError> {
+    if is_present && value.is_none() {
+        return Err(HalError::internal(
+            HalInternalKind::InvariantViolation,
+            format!("filter media event {field_name} presence has no value"),
+        ));
+    }
+    let Some(value) = value else {
+        return Ok(0);
+    };
+    if value >= (1_u64 << 33) {
+        return Err(HalError::internal(
+            HalInternalKind::InvariantViolation,
+            format!("filter media event {field_name} exceeds the 33-bit MPEG timestamp domain"),
+        ));
+    }
+    i64::try_from(value).map_err(|_| {
+        HalError::internal(
+            HalInternalKind::InvariantViolation,
+            format!("filter media event {field_name} does not fit i64"),
+        )
+    })
+}
+
 fn event_from_snapshot(
     snapshot: FilterEventDeliverySnapshot,
 ) -> Result<AidlFilterCallbackDelivery, HalError> {
@@ -75,6 +103,16 @@ fn event_from_snapshot(
                     "filter media event offset does not fit i64",
                 )
             })?;
+            let pts = aidl_media_timestamp_90khz(
+                event.metadata.is_pts_present,
+                event.metadata.pts_90khz,
+                "PTS",
+            )?;
+            let dts = aidl_media_timestamp_90khz(
+                event.metadata.is_dts_present,
+                event.metadata.dts_90khz,
+                "DTS",
+            )?;
             let av_memory = match event.event_local_file {
                 Some(file) => NativeHandle {
                     fds: vec![ParcelFileDescriptor::new(file.try_clone().map_err(|_| {
@@ -88,6 +126,11 @@ fn event_from_snapshot(
                 None => Default::default(),
             };
             Ok(AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Media(DemuxFilterMediaEvent {
+                streamId: i32::from(event.metadata.stream_id),
+                isPtsPresent: event.metadata.is_pts_present,
+                pts,
+                isDtsPresent: event.metadata.is_dts_present,
+                dts,
                 dataLength: data_length,
                 offset,
                 avDataId: event.data_id.0,
@@ -294,8 +337,9 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
 mod tests {
     use super::*;
     use maleicacid_tuner_hal2_binder_adapter::{AidlObjectGeneration, AidlObjectId};
-    use maleicacid_tuner_hal2_demux::AvMediaEventDescriptor;
-    use maleicacid_tuner_hal2_demux::{AvDataId, AvSlotId};
+    use maleicacid_tuner_hal2_demux::{
+        AvDataId, AvMediaEventDescriptor, AvMediaEventMetadata, AvSlotId,
+    };
 
     fn snapshot(event: FilterEventDelivery) -> FilterEventDeliverySnapshot {
         FilterEventDeliverySnapshot {
@@ -313,6 +357,7 @@ mod tests {
                 slot_id: AvSlotId(0),
                 offset: 12,
                 data_length: 188,
+                metadata: AvMediaEventMetadata::default(),
                 event_local_file: None,
             },
         )))
@@ -350,6 +395,83 @@ mod tests {
                 ..
             }))
         ));
+    }
+
+    fn projected_media_event(
+        metadata: AvMediaEventMetadata,
+    ) -> Result<DemuxFilterMediaEvent, HalError> {
+        match event_from_snapshot(snapshot(FilterEventDelivery::Media(
+            AvMediaEventDescriptor {
+                data_id: AvDataId(7),
+                slot_id: AvSlotId(0),
+                offset: 12,
+                data_length: 188,
+                metadata,
+                event_local_file: None,
+            },
+        )))? {
+            AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Media(event)) => Ok(event),
+            _ => panic!("media snapshot must project to a media event"),
+        }
+    }
+
+    #[test]
+    fn media_event_preserves_explicit_pes_pts() {
+        let event = projected_media_event(AvMediaEventMetadata::from_pes(
+            0xe0,
+            Some(90_001),
+            None,
+        ))
+        .unwrap();
+
+        assert_eq!(event.streamId, 0xe0);
+        assert!(event.isPtsPresent);
+        assert_eq!(event.pts, 90_001);
+        assert!(!event.isDtsPresent);
+        assert_eq!(event.dts, 0);
+    }
+
+    #[test]
+    fn media_event_preserves_explicit_pes_pts_and_dts() {
+        let event = projected_media_event(AvMediaEventMetadata::from_pes(
+            0xe0,
+            Some(180_001),
+            Some(90_001),
+        ))
+        .unwrap();
+
+        assert_eq!(event.streamId, 0xe0);
+        assert!(event.isPtsPresent);
+        assert_eq!(event.pts, 180_001);
+        assert!(event.isDtsPresent);
+        assert_eq!(event.dts, 90_001);
+    }
+
+    #[test]
+    fn media_event_preserves_legal_pes_timestamp_absence() {
+        let event = projected_media_event(AvMediaEventMetadata::from_pes(0xc0, None, None)).unwrap();
+
+        assert_eq!(event.streamId, 0xc0);
+        assert!(!event.isPtsPresent);
+        assert_eq!(event.pts, 0);
+        assert!(!event.isDtsPresent);
+        assert_eq!(event.dts, 0);
+    }
+
+    #[test]
+    fn media_event_keeps_non_header_authoritative_pts_provenance() {
+        let event = projected_media_event(AvMediaEventMetadata {
+            stream_id: 0xc0,
+            is_pts_present: false,
+            pts_90khz: Some(270_001),
+            is_dts_present: false,
+            dts_90khz: None,
+        })
+        .unwrap();
+
+        assert_eq!(event.streamId, 0xc0);
+        assert!(!event.isPtsPresent);
+        assert_eq!(event.pts, 270_001);
     }
 
     #[test]

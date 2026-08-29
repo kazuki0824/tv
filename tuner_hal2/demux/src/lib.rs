@@ -43,8 +43,9 @@ impl TsInputOrigin {
 
 pub use av::{
     AvDataId, AvDataIdAllocator, AvFileIdentity, AvHandleReleaseDescriptor,
-    AvHandleReleaseOutcome, AvMediaEventDescriptor, AvPayloadDeliveryOutcome, AvRuntimeBudget,
-    AvSharedBacking, AvSharedBackingError, AvSharedHandleExport, AvSlotId,
+    AvHandleReleaseOutcome, AvMediaEventDescriptor, AvMediaEventMetadata,
+    AvPayloadDeliveryOutcome, AvRuntimeBudget, AvSharedBacking, AvSharedBackingError,
+    AvSharedHandleExport, AvSlotId,
     DEFAULT_AV_MAX_EVENT_BYTES, DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
     DEFAULT_AV_PER_FILTER_LIVE_BYTES,
 };

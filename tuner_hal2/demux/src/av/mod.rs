@@ -3,7 +3,7 @@ mod release_txn;
 pub mod shared_backing;
 pub mod slot;
 
-pub use event::AvMediaEventDescriptor;
+pub use event::{AvMediaEventDescriptor, AvMediaEventMetadata};
 pub use release_txn::AvHandleReleaseOutcome;
 pub(crate) use release_txn::{
     AvDataIdState, AvFilterReleaseState, AvHandleReleaseInput, AvHandleReleaseKind,
