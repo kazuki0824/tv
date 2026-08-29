@@ -235,12 +235,12 @@ class TunerController(
     }
 
     private fun tuneResolvedChannel(channel: ResolvedChannel, startPlayback: Boolean): TuneOutcome {
+        resetBeforeTune()
         val tunerInstance = tuner ?: return TuneOutcome(false, Tuner.RESULT_UNAVAILABLE, channel, tuneGeneration, "Tuner を利用できません")
         val settings = buildFrontendSettings(channel).getOrElse { e ->
             Log.w(LogTags.TIS, "frontend settings 構築に失敗しました channel=$channel", e)
             return TuneOutcome(false, Tuner.RESULT_INVALID_ARGUMENT, channel, tuneGeneration, e.message.orEmpty())
         }
-        resetBeforeTune()
         val result = runCatching { tunerInstance.tune(settings) }.getOrElse { e ->
             Log.w(LogTags.TIS, "Tuner.tune が例外を返しました inputId=$inputId channel=$channel", e)
             return TuneOutcome(false, Tuner.RESULT_UNAVAILABLE, channel, tuneGeneration, e.message.orEmpty())

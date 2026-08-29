@@ -1,3 +1,11 @@
+# r50ef_review_followup_5
+
+- 音声track切替で再生成したplayback generationとfirst-output待機状態をLiveSessionおよび字幕controllerへ伝播し、旧generationをStartedとして保持しないようにした。
+- audio-only serviceのfatal audio失敗をcurrent generationのFailed遷移へ接続し、停止済みPipelineをStartedとして残さないようにした。audio-video serviceのvideo-only fallbackは従来どおり映像unavailable通知から分離する。
+- 新しい選局要求ではfrontend settings構築前に旧PlaybackPipeline、section filter、CAS状態を破棄し、settings構築失敗時にも旧live stateを残さないようにした。
+- audio switchのgeneration遷移、first-output待機、current/stale generationのfatal失敗をbehavior testへ追加した。
+- Kotlin host testの固定件数を追加した2件に合わせて125件へ更新した。Android/Soong build、atest、CTS、VTS、実機確認は未実施。本commitのKotlin host compile/testはPR checksを正とする。
+
 # r50ef_review_followup_4
 
 - Rust bulk snapshotのEIT component/audio-component descriptor事実をPMT streamへcomponent_tagで結合し、TvProvider Program provider-dataまで損失なく運ぶ経路を追加した。
