@@ -59,7 +59,31 @@ class PlaybackStartGateTest {
         check(PlaybackStartTransitions.shouldAttempt(state, signature))
     }
 
-    private fun signature(videoPid: TsPid, audioPid: TsPid?): AvPlaybackSignature = AvPlaybackSignature(
+    @Test fun audioSwitchUsesRestartedGenerationAndWaitsForNewFirstOutput() {
+        val signature = signature(videoPid = TsPid(0x0101), audioPid = TsPid(0x0202))
+        val state = PlaybackStartTransitions.afterSuccessfulRestart(
+            signature,
+            pipelineGeneration = 9L,
+            firstOutputPending = true,
+        )
+
+        check(state == PlaybackStartState.WaitingFirstOutput(signature, pipelineGeneration = 9L))
+    }
+
+    @Test fun audioOnlyFatalFailureStopsAdvertisingStartedGeneration() {
+        val signature = signature(videoPid = null, audioPid = TsPid(0x0102))
+        val started = PlaybackStartState.Started(signature, pipelineGeneration = 7L)
+
+        check(
+            PlaybackStartTransitions.failCurrentGeneration(started, failedGeneration = 7L) ==
+                PlaybackStartState.Failed(signature, pipelineGeneration = 7L),
+        )
+        check(PlaybackStartTransitions.failCurrentGeneration(started, failedGeneration = 6L) == started) {
+            "旧generationの失敗通知でcurrent playback stateを変更してはなりません"
+        }
+    }
+
+    private fun signature(videoPid: TsPid?, audioPid: TsPid?): AvPlaybackSignature = AvPlaybackSignature(
         serviceKey = key,
         pcrPid = TsPid(0x0100),
         videoPid = videoPid,

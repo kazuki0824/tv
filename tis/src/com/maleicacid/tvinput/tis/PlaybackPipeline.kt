@@ -112,6 +112,8 @@ class PlaybackPipeline(
     data class AudioSwitchResult(
         val switchedAudio: Boolean,
         val diagnostics: List<String> = emptyList(),
+        val firstFramePending: Boolean = false,
+        val generation: Long = -1L,
     )
 
     data class VideoFormatInfo(
@@ -380,6 +382,8 @@ class PlaybackPipeline(
         return AudioSwitchResult(
             switchedAudio = restarted.startedAudio,
             diagnostics = restarted.diagnostics + "MEDIASYNC_GENERATION_RECREATED_FOR_AUDIO_SWITCH",
+            firstFramePending = restarted.firstFramePending,
+            generation = restarted.generation,
         )
     }
 

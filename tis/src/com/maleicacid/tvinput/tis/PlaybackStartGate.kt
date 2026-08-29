@@ -59,6 +59,28 @@ object PlaybackStartTransitions {
         else -> state
     }
 
+    fun afterSuccessfulRestart(
+        signature: AvPlaybackSignature,
+        pipelineGeneration: Long,
+        firstOutputPending: Boolean,
+    ): PlaybackStartState = if (firstOutputPending) {
+        PlaybackStartState.WaitingFirstOutput(signature, pipelineGeneration)
+    } else {
+        PlaybackStartState.Started(signature, pipelineGeneration)
+    }
+
+    fun failCurrentGeneration(
+        state: PlaybackStartState,
+        failedGeneration: Long,
+    ): PlaybackStartState {
+        val signature = signature(state) ?: return state
+        return if (pipelineGeneration(state) == failedGeneration) {
+            PlaybackStartState.Failed(signature, failedGeneration)
+        } else {
+            state
+        }
+    }
+
     fun signature(state: PlaybackStartState): AvPlaybackSignature? = when (state) {
         is PlaybackStartState.Starting -> state.signature
         is PlaybackStartState.WaitingFirstOutput -> state.signature
