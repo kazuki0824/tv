@@ -1,3 +1,10 @@
+# r50eo81_pr53_raw_filter_callback_fix
+
+- Section/PESの完成payload eventへ設定時の`raw`属性を保持し、FMQ commit後のcallback投影で`raw=true`をtyped Section/PES eventへ変換しないようにした。既存のcommit後`DATA_READY` status配送は維持した。
+- raw Section/PESそれぞれについて、完成payloadのFMQ commit後に`DATA_READY`が投影され、typed Section/PES eventが0件であることを実runtime経路で確認する単体テストを追加した。既存のraw section parser testも完成eventの`raw=true`保持を確認するよう更新した。
+- 公開契約文書、実装規約、product統合文書、future_work、`RELEASE_VERSION`は変更していない。
+- Source-static checks performed: AOSP Tuner frameworkのraw Section/PES event表、`tuner_hal/DESIGN_JA.md`のraw callback行列、generated-eventからservice callback投影までのdata flow、`git diff --check`。ローカル環境ではrustfmt、rustc/cargo、Soong build、unit/loom、atest、VTS、実機・実放送波検証を実行していない。
+
 # r50eo80_customer26_followup_design_boundary_impl_recheck_source_static_unverified_v41
 
 - Closed frontend runtime read-only intermediate helper methods (`state`, `signal_state`, active request/session accessors, test-only generation helper) from the crate-public surface; service_runtime query/status paths now use `FrontendRuntimeSnapshot` DTO data instead of direct intermediate helper calls.

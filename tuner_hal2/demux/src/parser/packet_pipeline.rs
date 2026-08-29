@@ -539,12 +539,14 @@ pub enum PipelineGeneratedEvent {
         filter_id: i32,
         pid: PacketPid,
         generation: u64,
+        raw: bool,
         bytes: Vec<u8>,
     },
     PesPacketReady {
         filter_id: i32,
         pid: PacketPid,
         generation: u64,
+        raw: bool,
         packet: crate::ts_core::PesPacket,
     },
 }
@@ -1276,6 +1278,11 @@ impl PacketPipeline {
                                 filter_id,
                                 pid,
                                 generation: section_generation,
+                                raw: filters
+                                    .iter()
+                                    .find(|filter| filter.filter_id == filter_id)
+                                    .map(|filter| filter.section_raw)
+                                    .unwrap_or(false),
                                 bytes: section,
                             });
                     }
@@ -1371,6 +1378,11 @@ impl PacketPipeline {
                             filter_id,
                             pid,
                             generation: pes_generation,
+                            raw: filters
+                                .iter()
+                                .find(|filter| filter.filter_id == filter_id)
+                                .map(|filter| filter.pes_raw)
+                                .unwrap_or(false),
                             packet,
                         });
                 }
@@ -2562,13 +2574,19 @@ mod discontinuity_generation_tests {
                 PipelineGeneratedEvent::SectionPayloadReady {
                     filter_id,
                     pid,
+                    raw,
                     bytes,
                     ..
-                } => Some((*filter_id, pid.to_i32_for_aidl_boundary(), bytes.clone())),
+                } => Some((
+                    *filter_id,
+                    pid.to_i32_for_aidl_boundary(),
+                    *raw,
+                    bytes.clone(),
+                )),
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(ready, vec![(17, pid as i32, section)]);
+        assert_eq!(ready, vec![(17, pid as i32, true, section)]);
     }
 }
 

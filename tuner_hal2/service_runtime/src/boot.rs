@@ -989,24 +989,38 @@ impl TunerServiceRuntime {
                         descriptor,
                     } => (*filter_id, FilterEventDelivery::Media(descriptor.clone())),
                     PipelineGeneratedEvent::SectionPayloadReady {
-                        filter_id, bytes, ..
-                    } => (
-                        *filter_id,
-                        FilterEventDelivery::Section {
-                            data_length: bytes.len(),
-                        },
-                    ),
+                        filter_id,
+                        raw,
+                        bytes,
+                        ..
+                    } => {
+                        if *raw {
+                            return None;
+                        }
+                        (
+                            *filter_id,
+                            FilterEventDelivery::Section {
+                                data_length: bytes.len(),
+                            },
+                        )
+                    }
                     PipelineGeneratedEvent::PesPacketReady {
                         filter_id,
+                        raw,
                         packet,
                         ..
-                    } => (
-                        *filter_id,
-                        FilterEventDelivery::Pes {
-                            stream_id: i32::from(packet.stream_id),
-                            data_length: packet.raw_bytes.len(),
-                        },
-                    ),
+                    } => {
+                        if *raw {
+                            return None;
+                        }
+                        (
+                            *filter_id,
+                            FilterEventDelivery::Pes {
+                                stream_id: i32::from(packet.stream_id),
+                                data_length: packet.raw_bytes.len(),
+                            },
+                        )
+                    }
                     PipelineGeneratedEvent::RecordIndex { filter_id, data } => {
                         (*filter_id, FilterEventDelivery::RecordIndex(*data))
                     }
@@ -1023,6 +1037,211 @@ impl TunerServiceRuntime {
                 })
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod raw_filter_event_projection_tests {
+    use super::*;
+    use maleicacid_tuner_hal2_demux::{
+        FilterConfigKind, FilterStatusEvent, PesSettings, PipelineGeneratedEvent,
+        SectionCondition, SectionConditionKind, ValidatedPacketIngressRequest,
+    };
+
+    fn packet_with_payload(
+        pid: u16,
+        payload_unit_start: bool,
+        payload: &[u8],
+    ) -> [u8; TS_PACKET_SIZE] {
+        let mut packet = [0xffu8; TS_PACKET_SIZE];
+        packet[0] = 0x47;
+        packet[1] = ((pid >> 8) as u8) & 0x1f;
+        if payload_unit_start {
+            packet[1] |= 0x40;
+        }
+        packet[2] = pid as u8;
+        let adaptation_len = TS_PACKET_SIZE - 5 - payload.len();
+        packet[3] = 0x30;
+        packet[4] = adaptation_len as u8;
+        if adaptation_len > 0 {
+            packet[5] = 0;
+        }
+        let payload_offset = 5 + adaptation_len;
+        packet[payload_offset..payload_offset + payload.len()].copy_from_slice(payload);
+        packet
+    }
+
+    fn configured_raw_filter(
+        open_type: FilterOpenType,
+        pid: i32,
+        kind: FilterConfigKind,
+    ) -> (TunerServiceRuntime, i32, i32) {
+        let mut runtime = TunerServiceRuntime::new();
+        let demux = runtime
+            .allocate_demux_runtime()
+            .expect("test demux allocation succeeds");
+        let filter = runtime
+            .allocate_filter_runtime(demux.id.0)
+            .expect("test filter allocation succeeds");
+        runtime
+            .register_demux_filter_runtime(
+                demux.id.0,
+                filter.id.0,
+                &OpenFilterRequest {
+                    open_type,
+                    buffer_size: 4096,
+                    callback_present: true,
+                },
+            )
+            .expect("test filter registration succeeds");
+        runtime
+            .configure_filter_runtime_request(
+                filter.id.0,
+                FilterConfig {
+                    open_type,
+                    tpid: pid,
+                    kind,
+                },
+            )
+            .expect("test filter configuration succeeds");
+        runtime
+            .start_filter_runtime(filter.id.0)
+            .expect("test filter start succeeds");
+        let demux_object_id = AidlObjectId(10_000 + i64::from(demux.id.0));
+        runtime
+            .object_table
+            .insert(RuntimeObjectEntry {
+                object_kind: AidlObjectKind::Demux,
+                object_id: demux_object_id,
+                generation: AidlObjectGeneration(1),
+                ledger_id: LedgerId(i64::from(demux.id.0)),
+                ledger_generation: LedgerGeneration(1),
+                owner: RuntimeOwnerRelation::Root,
+                lifecycle: RuntimeObjectLifecycle::Live,
+            })
+            .expect("test demux object registration succeeds");
+        runtime
+            .object_table
+            .insert(RuntimeObjectEntry {
+                object_kind: AidlObjectKind::Filter,
+                object_id: AidlObjectId(20_000 + i64::from(filter.id.0)),
+                generation: AidlObjectGeneration(1),
+                ledger_id: LedgerId(i64::from(filter.id.0)),
+                ledger_generation: LedgerGeneration(1),
+                owner: RuntimeOwnerRelation::Demux {
+                    demux: demux_object_id,
+                    generation: AidlObjectGeneration(1),
+                },
+                lifecycle: RuntimeObjectLifecycle::Live,
+            })
+            .expect("test filter object registration succeeds");
+        (runtime, demux.id.0, filter.id.0)
+    }
+
+    fn push_and_project(
+        runtime: &mut TunerServiceRuntime,
+        demux_id: i32,
+        packet: &[u8; TS_PACKET_SIZE],
+    ) -> (PipelineReport, Vec<FilterEventDeliverySnapshot>) {
+        let validated = ValidatedTsPacket::validate(packet).expect("test TS packet is valid");
+        let report = runtime
+            .registry
+            .demux_runtime_mut(DemuxRuntimeId(demux_id))
+            .expect("test demux runtime exists")
+            .push_validated_ts_packet_from_typed_request(ValidatedPacketIngressRequest::new(
+                &validated,
+                TsInputOrigin::frontend(1),
+            ));
+        let snapshots = runtime.filter_event_delivery_snapshots(std::slice::from_ref(&report));
+        (report, snapshots)
+    }
+
+    fn assert_data_ready_without_typed_event(snapshots: &[FilterEventDeliverySnapshot]) {
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.event == FilterEventDelivery::Status(FilterStatusEvent::DataReady)
+        }));
+        assert!(!snapshots.iter().any(|snapshot| {
+            matches!(
+                snapshot.event,
+                FilterEventDelivery::Section { .. } | FilterEventDelivery::Pes { .. }
+            )
+        }));
+    }
+
+    #[test]
+    fn raw_section_fmq_commit_projects_data_ready_without_typed_event() {
+        let pid = 0x0123;
+        let (mut runtime, demux_id, filter_id) = configured_raw_filter(
+            FilterOpenType::TsSection,
+            pid,
+            FilterConfigKind::TsSection {
+                check_crc: false,
+                repeat: true,
+                raw: true,
+                length_field_bits: 12,
+                condition: SectionCondition {
+                    kind: SectionConditionKind::SectionBits,
+                    filter: Vec::new(),
+                    mask: Vec::new(),
+                    mode: Vec::new(),
+                    table_id: None,
+                    version: None,
+                },
+            },
+        );
+        let section = [0x7f, 0x30, 0x05, 0xaa, 0xbb, 0xcc, 0xdd, 0xee];
+        let mut payload = vec![0x00];
+        payload.extend_from_slice(&section);
+
+        let (report, snapshots) = push_and_project(
+            &mut runtime,
+            demux_id,
+            &packet_with_payload(pid as u16, true, &payload),
+        );
+
+        assert!(report.generated_events.iter().any(|event| matches!(
+            event,
+            PipelineGeneratedEvent::SectionPayloadReady {
+                filter_id: event_filter_id,
+                raw: true,
+                bytes,
+                ..
+            } if *event_filter_id == filter_id && bytes.as_slice() == section.as_slice()
+        )));
+        assert_data_ready_without_typed_event(&snapshots);
+    }
+
+    #[test]
+    fn raw_pes_fmq_commit_projects_data_ready_without_typed_event() {
+        let pid = 0x0100;
+        let (mut runtime, demux_id, filter_id) = configured_raw_filter(
+            FilterOpenType::TsPes,
+            pid,
+            FilterConfigKind::TsPes(PesSettings {
+                stream_id: 0xffff,
+                raw: true,
+            }),
+        );
+        let pes = [
+            0x00, 0x00, 0x01, 0xe0, 0x00, 0x04, 0x80, 0x00, 0x00, 0xde,
+        ];
+
+        let (report, snapshots) = push_and_project(
+            &mut runtime,
+            demux_id,
+            &packet_with_payload(pid as u16, true, &pes),
+        );
+
+        assert!(report.generated_events.iter().any(|event| matches!(
+            event,
+            PipelineGeneratedEvent::PesPacketReady {
+                filter_id: event_filter_id,
+                raw: true,
+                packet,
+                ..
+            } if *event_filter_id == filter_id && packet.raw_bytes.as_slice() == pes.as_slice()
+        )));
+        assert_data_ready_without_typed_event(&snapshots);
     }
 }
 
