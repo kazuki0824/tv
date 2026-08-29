@@ -178,7 +178,38 @@ impl TunerServiceRuntime {
         }
     }
 
-    fn transact_set_descrambler_key_token(
+}
+
+/// Descrambler 鍵変更の検証、backend 適用、commit、旧鍵解放を所有する transaction。
+///
+/// registry/session は既存の atomic primitive のまま使い、追加の状態や lifecycle は
+/// 持たない call-local owner とする。
+pub(crate) struct DescramblerKeyTxn<'a> {
+    runtime: &'a mut TunerServiceRuntime,
+}
+
+impl std::ops::Deref for DescramblerKeyTxn<'_> {
+    type Target = TunerServiceRuntime;
+
+    fn deref(&self) -> &Self::Target {
+        self.runtime
+    }
+}
+
+impl std::ops::DerefMut for DescramblerKeyTxn<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.runtime
+    }
+}
+
+impl TunerServiceRuntime {
+    pub(crate) fn descrambler_key_txn(&mut self) -> DescramblerKeyTxn<'_> {
+        DescramblerKeyTxn { runtime: self }
+    }
+}
+
+impl DescramblerKeyTxn<'_> {
+    pub(crate) fn set_key_token(
         &mut self,
         descrambler_id: i32,
         key_token: &[u8],
@@ -763,8 +794,38 @@ impl DescramblerPidTxn<'_> {
     }
 }
 
+/// Descrambler close と owner-loss cleanup の全対象処理・失敗集約を所有する transaction。
+///
+/// session/key table の状態所有者は既存 registry primitive のままとし、この型は
+/// call-local な処理順序だけを所有する。
+pub(crate) struct DescramblerSessionCleanupTxn<'a> {
+    runtime: &'a mut TunerServiceRuntime,
+}
+
+impl std::ops::Deref for DescramblerSessionCleanupTxn<'_> {
+    type Target = TunerServiceRuntime;
+
+    fn deref(&self) -> &Self::Target {
+        self.runtime
+    }
+}
+
+impl std::ops::DerefMut for DescramblerSessionCleanupTxn<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.runtime
+    }
+}
+
 impl TunerServiceRuntime {
-    fn transact_unregister_descrambler_runtime(
+    pub(crate) fn descrambler_session_cleanup_txn(
+        &mut self,
+    ) -> DescramblerSessionCleanupTxn<'_> {
+        DescramblerSessionCleanupTxn { runtime: self }
+    }
+}
+
+impl DescramblerSessionCleanupTxn<'_> {
+    pub(crate) fn unregister_runtime(
         &mut self,
         id: i32,
     ) -> Result<Option<crate::registry::DescramblerRegistryEntry>, HalError> {
@@ -774,7 +835,7 @@ impl TunerServiceRuntime {
             .unregister_descrambler(DescramblerRuntimeId(id)))
     }
 
-    fn transact_cleanup_descramblers_for_demux_owner_loss(
+    pub(crate) fn cleanup_for_demux_owner_loss(
         &mut self,
         demux_id: i32,
     ) -> Result<(), HalError> {
@@ -827,8 +888,9 @@ impl TunerServiceRuntime {
 
 /// Descrambler registry primitive への call-local access。
 ///
-/// PID、鍵、source relation、cleanup の transaction ownership は各 canonical owner が
-/// 持ち、この context 自身は共有状態や lifecycle を持たない。
+/// 鍵、PID、cleanup の transaction ownership は各 canonical owner が持つ。この
+/// context は allocation と source relation の registry primitive だけを束ね、共有状態や
+/// lifecycle を持たない。
 pub(crate) struct DescramblerMutationContext<'a> {
     runtime: &'a mut TunerServiceRuntime,
 }
@@ -853,29 +915,5 @@ impl DescramblerMutationContext<'_> {
     ) -> Result<(), HalError> {
         self.runtime
             .transact_set_descrambler_demux_source(descrambler_id, demux_id)
-    }
-
-    pub(crate) fn set_descrambler_key_token(
-        &mut self,
-        descrambler_id: i32,
-        key_token: &[u8],
-    ) -> Result<(), HalError> {
-        self.runtime
-            .transact_set_descrambler_key_token(descrambler_id, key_token)
-    }
-
-    pub(crate) fn unregister_descrambler_runtime(
-        &mut self,
-        id: i32,
-    ) -> Result<Option<crate::registry::DescramblerRegistryEntry>, HalError> {
-        self.runtime.transact_unregister_descrambler_runtime(id)
-    }
-
-    pub(crate) fn cleanup_descramblers_for_demux_owner_loss(
-        &mut self,
-        demux_id: i32,
-    ) -> Result<(), HalError> {
-        self.runtime
-            .transact_cleanup_descramblers_for_demux_owner_loss(demux_id)
     }
 }

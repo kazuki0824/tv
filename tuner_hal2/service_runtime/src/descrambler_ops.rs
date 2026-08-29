@@ -25,8 +25,8 @@ impl TunerServiceRuntime {
         descrambler_id: i32,
         key_token: &[u8],
     ) -> Result<(), HalError> {
-        self.descrambler_mutation_context()
-            .set_descrambler_key_token(descrambler_id, key_token)
+        self.descrambler_key_txn()
+            .set_key_token(descrambler_id, key_token)
     }
 
     pub(crate) fn add_descrambler_pid_non_null_source(
@@ -71,16 +71,16 @@ impl TunerServiceRuntime {
         &mut self,
         id: i32,
     ) -> Result<Option<DescramblerRegistryEntry>, HalError> {
-        self.descrambler_mutation_context()
-            .unregister_descrambler_runtime(id)
+        self.descrambler_session_cleanup_txn()
+            .unregister_runtime(id)
     }
 
     pub(crate) fn cleanup_descramblers_for_demux_owner_loss(
         &mut self,
         demux_id: i32,
     ) -> Result<(), HalError> {
-        self.descrambler_mutation_context()
-            .cleanup_descramblers_for_demux_owner_loss(demux_id)
+        self.descrambler_session_cleanup_txn()
+            .cleanup_for_demux_owner_loss(demux_id)
     }
 }
 
