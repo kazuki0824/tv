@@ -3319,6 +3319,56 @@ mod tests {
     }
 
     #[test]
+    fn audio_media_event_keeps_timeline_across_a_mid_frame_pes_boundary() {
+        let filter_id = 40;
+        let pid = 0x0101;
+        let mut demux = started_audio_filter_runtime(filter_id, pid);
+        let first_frame = adts_aac_lc_frame_48khz(8);
+        let second_frame = adts_aac_lc_frame_48khz(4);
+        let split_at = 12;
+
+        let explicit = demux.push_ts_packet_from_origin(
+            &pes_start_packet(
+                pid as u16,
+                0,
+                &bounded_audio_pes(&first_frame[..split_at], Some(90_000)),
+            ),
+            TsInputOrigin::frontend(1),
+        );
+        assert_eq!(
+            av_metadata(&explicit, filter_id),
+            Some(AvMediaEventMetadata {
+                stream_id: 0xc0,
+                is_pts_present: true,
+                pts_90khz: Some(90_000),
+                is_dts_present: false,
+                dts_90khz: None,
+            })
+        );
+
+        let mut continuation = first_frame[split_at..].to_vec();
+        continuation.extend_from_slice(&second_frame);
+        let associated = demux.push_ts_packet_from_origin(
+            &pes_start_packet(
+                pid as u16,
+                1,
+                &bounded_audio_pes(&continuation, None),
+            ),
+            TsInputOrigin::frontend(1),
+        );
+        assert_eq!(
+            av_metadata(&associated, filter_id),
+            Some(AvMediaEventMetadata {
+                stream_id: 0xc0,
+                is_pts_present: false,
+                pts_90khz: Some(91_920),
+                is_dts_present: false,
+                dts_90khz: None,
+            })
+        );
+    }
+
+    #[test]
     fn audio_timestamp_association_is_fenced_by_flush_and_transport_discontinuity() {
         let filter_id = 39;
         let pid = 0x0101;

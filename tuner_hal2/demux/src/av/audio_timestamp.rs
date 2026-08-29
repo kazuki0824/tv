@@ -1,10 +1,12 @@
 use crate::ts_core::PesPacket;
 use crate::TsInputOrigin;
 
-// This is a FilterRuntime-owned association value, not a second packet pipeline or clock.
-// It accepts only complete supported frame sequences and never falls back to PCR/wallclock.
+// FilterRuntimeに従属する有限な関連付け状態であり、第二のpacket pipelineやclockではない。
+// PES境界を跨ぐframeは最大1個だけ追跡し、PCR/wallclockへfallbackしない。
 const PTS_MODULUS: u128 = 1_u128 << 33;
 const PTS_CLOCK_HZ: u128 = 90_000;
+const MAX_AUDIO_HEADER_BYTES: usize = 7;
+const MAX_AUDIO_FRAME_BYTES: usize = (1usize << 13) - 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AudioFrameSignature {
@@ -46,9 +48,11 @@ enum MpegLayer {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct AudioPayloadTiming {
+struct AudioFrameHeader {
     signature: AudioFrameSignature,
     sample_count: u64,
+    frame_len: usize,
+    parsed_header_len: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -56,7 +60,6 @@ struct AudioTimestampAnchor {
     base_pts_90khz: u64,
     signature: AudioFrameSignature,
     elapsed_samples: u64,
-    origin: TsInputOrigin,
 }
 
 impl AudioTimestampAnchor {
@@ -70,20 +73,73 @@ impl AudioTimestampAnchor {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AudioTimestampAssociationFailure {
     MissingAnchor,
-    UnsupportedOrIncompleteFrames,
+    UnsupportedOrMalformedFrames,
     UnannouncedParameterChange,
     OriginChange,
     SampleCountOverflow,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum AudioFrameResidual {
+    Boundary,
+    Header {
+        bytes: Vec<u8>,
+        frame_pts_90khz: u64,
+        reanchor: bool,
+    },
+    Frame {
+        remaining_bytes: usize,
+        frame_pts_90khz: u64,
+    },
+}
+
+impl AudioFrameResidual {
+    fn frame_pts_90khz(&self) -> Option<u64> {
+        match self {
+            Self::Boundary => None,
+            Self::Header {
+                frame_pts_90khz,
+                ..
+            }
+            | Self::Frame {
+                frame_pts_90khz,
+                ..
+            } => Some(*frame_pts_90khz),
+        }
+    }
+}
+
+impl Default for AudioFrameResidual {
+    fn default() -> Self {
+        Self::Boundary
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AudioFrameHeaderParse {
+    NeedMore(usize),
+    Complete(AudioFrameHeader),
+    Invalid,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum AudioFrameHeaderRead {
+    Partial(Vec<u8>),
+    Complete(AudioFrameHeader),
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct AudioTimestampAssociation {
     anchor: Option<AudioTimestampAnchor>,
+    origin: Option<TsInputOrigin>,
+    residual: AudioFrameResidual,
 }
 
 impl AudioTimestampAssociation {
     pub(crate) fn reset(&mut self) {
         self.anchor = None;
+        self.origin = None;
+        self.residual = AudioFrameResidual::Boundary;
     }
 
     pub(crate) fn associate(
@@ -91,204 +147,364 @@ impl AudioTimestampAssociation {
         packet: &PesPacket,
         origin: TsInputOrigin,
     ) -> Result<u64, AudioTimestampAssociationFailure> {
-        let timing = parse_audio_payload_timing(&packet.payload);
-        if let Some(explicit_pts) = packet.pts_90khz {
-            self.anchor = timing.and_then(|timing| {
-                (timing.sample_count > 0).then_some(AudioTimestampAnchor {
-                    base_pts_90khz: explicit_pts,
-                    signature: timing.signature,
-                    elapsed_samples: timing.sample_count,
-                    origin,
-                })
-            });
-            return Ok(explicit_pts);
+        let result = self.associate_inner(packet, origin);
+        if result.is_err() {
+            self.reset();
+        }
+        result
+    }
+
+    pub(crate) fn reset_if_origin(&mut self, origin: TsInputOrigin) {
+        if self.origin == Some(origin) {
+            self.reset();
+        }
+    }
+
+    fn associate_inner(
+        &mut self,
+        packet: &PesPacket,
+        origin: TsInputOrigin,
+    ) -> Result<u64, AudioTimestampAssociationFailure> {
+        if packet.payload.is_empty() {
+            return Err(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames);
+        }
+        if self.origin.is_some_and(|stored| stored != origin) {
+            if packet.pts_90khz.is_none() {
+                return Err(AudioTimestampAssociationFailure::OriginChange);
+            }
+            self.reset();
+        }
+        if self.origin.is_none() {
+            if packet.pts_90khz.is_none() {
+                return Err(AudioTimestampAssociationFailure::MissingAnchor);
+            }
+            self.origin = Some(origin);
         }
 
-        let timing = match timing {
-            Some(timing) if timing.sample_count > 0 => timing,
-            _ => {
-                self.reset();
-                return Err(AudioTimestampAssociationFailure::UnsupportedOrIncompleteFrames);
+        let continued_frame_pts_90khz = self.residual.frame_pts_90khz();
+        let mut explicit_for_first_start = packet.pts_90khz;
+        let mut first_started_frame_pts_90khz = None;
+        let mut offset = 0usize;
+
+        while offset < packet.payload.len() {
+            match std::mem::take(&mut self.residual) {
+                AudioFrameResidual::Boundary => {
+                    let reanchor = explicit_for_first_start.is_some();
+                    let frame_pts_90khz = match explicit_for_first_start.take() {
+                        Some(explicit_pts_90khz) => explicit_pts_90khz,
+                        None => self.next_frame_pts_90khz()?,
+                    };
+                    first_started_frame_pts_90khz.get_or_insert(frame_pts_90khz);
+                    self.read_and_commit_frame(
+                        Vec::new(),
+                        frame_pts_90khz,
+                        reanchor,
+                        &packet.payload,
+                        &mut offset,
+                    )?;
+                }
+                AudioFrameResidual::Header {
+                    bytes,
+                    frame_pts_90khz,
+                    reanchor,
+                } => {
+                    self.read_and_commit_frame(
+                        bytes,
+                        frame_pts_90khz,
+                        reanchor,
+                        &packet.payload,
+                        &mut offset,
+                    )?;
+                }
+                AudioFrameResidual::Frame {
+                    remaining_bytes,
+                    frame_pts_90khz,
+                } => {
+                    let available = packet.payload.len().checked_sub(offset).ok_or(
+                        AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames,
+                    )?;
+                    let consumed = remaining_bytes.min(available);
+                    offset = offset.checked_add(consumed).ok_or(
+                        AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames,
+                    )?;
+                    let remaining_bytes = remaining_bytes.checked_sub(consumed).ok_or(
+                        AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames,
+                    )?;
+                    if remaining_bytes > 0 {
+                        self.residual = AudioFrameResidual::Frame {
+                            remaining_bytes,
+                            frame_pts_90khz,
+                        };
+                    }
+                }
             }
+        }
+
+        if explicit_for_first_start.is_some() {
+            return Err(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames);
+        }
+        packet
+            .pts_90khz
+            .or(first_started_frame_pts_90khz)
+            .or(continued_frame_pts_90khz)
+            .ok_or(AudioTimestampAssociationFailure::MissingAnchor)
+    }
+
+    fn next_frame_pts_90khz(&self) -> Result<u64, AudioTimestampAssociationFailure> {
+        self.anchor
+            .map(AudioTimestampAnchor::next_pts_90khz)
+            .ok_or(AudioTimestampAssociationFailure::MissingAnchor)
+    }
+
+    fn read_and_commit_frame(
+        &mut self,
+        bytes: Vec<u8>,
+        frame_pts_90khz: u64,
+        reanchor: bool,
+        payload: &[u8],
+        offset: &mut usize,
+    ) -> Result<(), AudioTimestampAssociationFailure> {
+        let header = match read_audio_frame_header(bytes, payload, offset)? {
+            AudioFrameHeaderRead::Partial(bytes) => {
+                self.residual = AudioFrameResidual::Header {
+                    bytes,
+                    frame_pts_90khz,
+                    reanchor,
+                };
+                return Ok(());
+            }
+            AudioFrameHeaderRead::Complete(header) => header,
         };
+        self.commit_frame_header(header, frame_pts_90khz, reanchor)?;
+
+        let remaining_bytes = header
+            .frame_len
+            .checked_sub(header.parsed_header_len)
+            .ok_or(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)?;
+        let available = payload
+            .len()
+            .checked_sub(*offset)
+            .ok_or(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)?;
+        let consumed = remaining_bytes.min(available);
+        *offset = (*offset)
+            .checked_add(consumed)
+            .ok_or(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)?;
+        let remaining_bytes = remaining_bytes
+            .checked_sub(consumed)
+            .ok_or(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)?;
+        if remaining_bytes > 0 {
+            self.residual = AudioFrameResidual::Frame {
+                remaining_bytes,
+                frame_pts_90khz,
+            };
+        }
+        Ok(())
+    }
+
+    fn commit_frame_header(
+        &mut self,
+        header: AudioFrameHeader,
+        frame_pts_90khz: u64,
+        reanchor: bool,
+    ) -> Result<(), AudioTimestampAssociationFailure> {
+        if reanchor {
+            self.anchor = Some(AudioTimestampAnchor {
+                base_pts_90khz: frame_pts_90khz,
+                signature: header.signature,
+                elapsed_samples: header.sample_count,
+            });
+            return Ok(());
+        }
+
         let Some(mut anchor) = self.anchor else {
             return Err(AudioTimestampAssociationFailure::MissingAnchor);
         };
-        if anchor.origin != origin {
-            self.reset();
-            return Err(AudioTimestampAssociationFailure::OriginChange);
-        }
-        if anchor.signature != timing.signature {
-            self.reset();
+        if anchor.signature != header.signature {
             return Err(AudioTimestampAssociationFailure::UnannouncedParameterChange);
         }
-        let pts_90khz = anchor.next_pts_90khz();
-        let Some(elapsed_samples) = anchor.elapsed_samples.checked_add(timing.sample_count) else {
-            self.reset();
+        let Some(elapsed_samples) = anchor.elapsed_samples.checked_add(header.sample_count) else {
             return Err(AudioTimestampAssociationFailure::SampleCountOverflow);
         };
         anchor.elapsed_samples = elapsed_samples;
         self.anchor = Some(anchor);
-        Ok(pts_90khz)
+        Ok(())
     }
+}
 
-    pub(crate) fn reset_if_origin(&mut self, origin: TsInputOrigin) {
-        if self.anchor.is_some_and(|anchor| anchor.origin == origin) {
-            self.reset();
+fn read_audio_frame_header(
+    mut bytes: Vec<u8>,
+    payload: &[u8],
+    offset: &mut usize,
+) -> Result<AudioFrameHeaderRead, AudioTimestampAssociationFailure> {
+    loop {
+        match parse_audio_frame_header(&bytes) {
+            AudioFrameHeaderParse::NeedMore(required_len) => {
+                if required_len > MAX_AUDIO_HEADER_BYTES || required_len <= bytes.len() {
+                    return Err(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames);
+                }
+                let available = payload
+                    .len()
+                    .checked_sub(*offset)
+                    .ok_or(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)?;
+                let required = required_len
+                    .checked_sub(bytes.len())
+                    .ok_or(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)?;
+                let consumed = required.min(available);
+                let end = (*offset)
+                    .checked_add(consumed)
+                    .ok_or(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)?;
+                let chunk = payload
+                    .get(*offset..end)
+                    .ok_or(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)?;
+                bytes.extend_from_slice(chunk);
+                *offset = end;
+                if bytes.len() < required_len {
+                    return Ok(AudioFrameHeaderRead::Partial(bytes));
+                }
+            }
+            AudioFrameHeaderParse::Complete(header) => {
+                return Ok(AudioFrameHeaderRead::Complete(header));
+            }
+            AudioFrameHeaderParse::Invalid => {
+                return Err(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames);
+            }
         }
     }
 }
 
-fn parse_audio_payload_timing(payload: &[u8]) -> Option<AudioPayloadTiming> {
-    if payload.len() < 4 {
-        return None;
+fn parse_audio_frame_header(bytes: &[u8]) -> AudioFrameHeaderParse {
+    if bytes.len() < 2 {
+        return AudioFrameHeaderParse::NeedMore(2);
     }
-    if payload.len() >= 7 && payload[0] == 0xff && (payload[1] & 0xf6) == 0xf0 {
-        parse_adts_payload_timing(payload)
+    if bytes[0] != 0xff {
+        return AudioFrameHeaderParse::Invalid;
+    }
+    if (bytes[1] & 0xf6) == 0xf0 {
+        parse_adts_frame_header(bytes)
+    } else if (bytes[1] & 0xe0) == 0xe0 {
+        parse_mpeg_audio_frame_header(bytes)
     } else {
-        parse_mpeg_audio_payload_timing(payload)
+        AudioFrameHeaderParse::Invalid
     }
 }
 
-fn parse_adts_payload_timing(payload: &[u8]) -> Option<AudioPayloadTiming> {
-    let mut offset = 0usize;
-    let mut signature = None;
-    let mut sample_count = 0u64;
-    while offset < payload.len() {
-        let header = payload.get(offset..offset.checked_add(7)?)?;
-        if header[0] != 0xff || (header[1] & 0xf6) != 0xf0 {
-            return None;
-        }
-        let mpeg_id = (header[1] >> 3) & 0x01;
-        let protection_absent = (header[1] & 0x01) != 0;
-        let header_len = 9;
-        let profile = (header[2] >> 6) & 0x03;
-        if mpeg_id != 1 || protection_absent || profile != 1 {
-            return None;
-        }
-        let frequency_index = usize::from((header[2] >> 2) & 0x0f);
-        let sample_rate_hz = match frequency_index {
-            0 => 96_000,
-            3 => 48_000,
-            4 => 44_100,
-            5 => 32_000,
-            6 => 24_000,
-            7 => 22_050,
-            8 => 16_000,
-            _ => return None,
-        };
-        let channel_configuration = ((header[2] & 0x01) << 2) | (header[3] >> 6);
-        let frame_len = (usize::from(header[3] & 0x03) << 11)
-            | (usize::from(header[4]) << 3)
-            | usize::from(header[5] >> 5);
-        let buffer_fullness = (u16::from(header[5] & 0x1f) << 6) | u16::from(header[6] >> 2);
-        if frame_len < header_len || buffer_fullness == 0x07ff || (header[6] & 0x03) != 0 {
-            return None;
-        }
-        let frame_end = offset.checked_add(frame_len)?;
-        if frame_end > payload.len() {
-            return None;
-        }
-        let current_signature = AudioFrameSignature::Adts {
+fn parse_adts_frame_header(bytes: &[u8]) -> AudioFrameHeaderParse {
+    let Some(header) = bytes.get(..7) else {
+        return AudioFrameHeaderParse::NeedMore(7);
+    };
+    let mpeg_id = (header[1] >> 3) & 0x01;
+    let protection_absent = (header[1] & 0x01) != 0;
+    let profile = (header[2] >> 6) & 0x03;
+    if mpeg_id != 1 || protection_absent || profile != 1 {
+        return AudioFrameHeaderParse::Invalid;
+    }
+    let frequency_index = usize::from((header[2] >> 2) & 0x0f);
+    let sample_rate_hz = match frequency_index {
+        0 => 96_000,
+        3 => 48_000,
+        4 => 44_100,
+        5 => 32_000,
+        6 => 24_000,
+        7 => 22_050,
+        8 => 16_000,
+        _ => return AudioFrameHeaderParse::Invalid,
+    };
+    let channel_configuration = ((header[2] & 0x01) << 2) | (header[3] >> 6);
+    let frame_len = (usize::from(header[3] & 0x03) << 11)
+        | (usize::from(header[4]) << 3)
+        | usize::from(header[5] >> 5);
+    let buffer_fullness = (u16::from(header[5] & 0x1f) << 6) | u16::from(header[6] >> 2);
+    if !(9..=MAX_AUDIO_FRAME_BYTES).contains(&frame_len)
+        || buffer_fullness == 0x07ff
+        || (header[6] & 0x03) != 0
+    {
+        return AudioFrameHeaderParse::Invalid;
+    }
+    AudioFrameHeaderParse::Complete(AudioFrameHeader {
+        signature: AudioFrameSignature::Adts {
             mpeg_id,
             profile,
             sample_rate_hz,
             channel_configuration,
-        };
-        if signature.is_some_and(|stored| stored != current_signature) {
-            return None;
-        }
-        signature.get_or_insert(current_signature);
-        sample_count = sample_count.checked_add(1024)?;
-        offset = frame_end;
-    }
-    Some(AudioPayloadTiming {
-        signature: signature?,
-        sample_count,
+        },
+        sample_count: 1024,
+        frame_len,
+        parsed_header_len: 7,
     })
 }
 
-fn parse_mpeg_audio_payload_timing(payload: &[u8]) -> Option<AudioPayloadTiming> {
-    let mut offset = 0usize;
-    let mut signature = None;
-    let mut sample_count = 0u64;
-    while offset < payload.len() {
-        let header = payload.get(offset..offset.checked_add(4)?)?;
-        if header[0] != 0xff || (header[1] & 0xe0) != 0xe0 {
-            return None;
-        }
-        let version = match (header[1] >> 3) & 0x03 {
-            0b11 => MpegVersion::One,
-            0b10 => MpegVersion::Two,
-            _ => return None,
-        };
-        let layer = match (header[1] >> 1) & 0x03 {
-            0b11 => MpegLayer::One,
-            0b10 => MpegLayer::Two,
-            0b01 => MpegLayer::Three,
-            _ => return None,
-        };
-        let bitrate_index = usize::from(header[2] >> 4);
-        let sample_rate_index = usize::from((header[2] >> 2) & 0x03);
-        if !(1..=14).contains(&bitrate_index) || sample_rate_index >= 3 {
-            return None;
-        }
-        let bitrate_kbps = mpeg_audio_bitrate_kbps(version, layer, bitrate_index)?;
-        let sample_rate_hz = mpeg_audio_sample_rate_hz(version, sample_rate_index)?;
-        let padding = if (header[2] & 0x02) != 0 { 1usize } else { 0 };
-        let (frame_len, samples_per_frame) = match layer {
-            MpegLayer::One => (
-                ((12usize.checked_mul(bitrate_kbps)?.checked_mul(1000)?
-                    / usize::try_from(sample_rate_hz).ok()?)
-                .checked_add(padding)?)
-                .checked_mul(4)?,
-                384u64,
-            ),
-            MpegLayer::Two => (
-                (144usize.checked_mul(bitrate_kbps)?.checked_mul(1000)?
-                    / usize::try_from(sample_rate_hz).ok()?)
-                .checked_add(padding)?,
-                1152u64,
-            ),
-            MpegLayer::Three => match version {
-                MpegVersion::One => (
-                    (144usize.checked_mul(bitrate_kbps)?.checked_mul(1000)?
-                        / usize::try_from(sample_rate_hz).ok()?)
-                    .checked_add(padding)?,
-                    1152u64,
-                ),
-                MpegVersion::Two => (
-                    (72usize.checked_mul(bitrate_kbps)?.checked_mul(1000)?
-                        / usize::try_from(sample_rate_hz).ok()?)
-                    .checked_add(padding)?,
-                    576u64,
-                ),
-            },
-        };
-        if frame_len < 4 {
-            return None;
-        }
-        let frame_end = offset.checked_add(frame_len)?;
-        if frame_end > payload.len() {
-            return None;
-        }
-        let current_signature = AudioFrameSignature::MpegAudio {
+fn parse_mpeg_audio_frame_header(bytes: &[u8]) -> AudioFrameHeaderParse {
+    let Some(header) = bytes.get(..4) else {
+        return AudioFrameHeaderParse::NeedMore(4);
+    };
+    let version = match (header[1] >> 3) & 0x03 {
+        0b11 => MpegVersion::One,
+        0b10 => MpegVersion::Two,
+        _ => return AudioFrameHeaderParse::Invalid,
+    };
+    let layer = match (header[1] >> 1) & 0x03 {
+        0b11 => MpegLayer::One,
+        0b10 => MpegLayer::Two,
+        0b01 => MpegLayer::Three,
+        _ => return AudioFrameHeaderParse::Invalid,
+    };
+    let bitrate_index = usize::from(header[2] >> 4);
+    let sample_rate_index = usize::from((header[2] >> 2) & 0x03);
+    if !(1..=14).contains(&bitrate_index) || sample_rate_index >= 3 {
+        return AudioFrameHeaderParse::Invalid;
+    }
+    let Some(bitrate_kbps) = mpeg_audio_bitrate_kbps(version, layer, bitrate_index) else {
+        return AudioFrameHeaderParse::Invalid;
+    };
+    let Some(sample_rate_hz) = mpeg_audio_sample_rate_hz(version, sample_rate_index) else {
+        return AudioFrameHeaderParse::Invalid;
+    };
+    let padding = if (header[2] & 0x02) != 0 { 1usize } else { 0 };
+    let Some((frame_len, sample_count)) =
+        mpeg_audio_frame_layout(version, layer, bitrate_kbps, sample_rate_hz, padding)
+    else {
+        return AudioFrameHeaderParse::Invalid;
+    };
+    if !(4..=MAX_AUDIO_FRAME_BYTES).contains(&frame_len) {
+        return AudioFrameHeaderParse::Invalid;
+    }
+    AudioFrameHeaderParse::Complete(AudioFrameHeader {
+        signature: AudioFrameSignature::MpegAudio {
             version,
             layer,
             sample_rate_hz,
             channel_mode: header[3] >> 6,
-        };
-        if signature.is_some_and(|stored| stored != current_signature) {
-            return None;
-        }
-        signature.get_or_insert(current_signature);
-        sample_count = sample_count.checked_add(samples_per_frame)?;
-        offset = frame_end;
-    }
-    Some(AudioPayloadTiming {
-        signature: signature?,
+        },
         sample_count,
+        frame_len,
+        parsed_header_len: 4,
     })
+}
+
+fn mpeg_audio_frame_layout(
+    version: MpegVersion,
+    layer: MpegLayer,
+    bitrate_kbps: usize,
+    sample_rate_hz: u32,
+    padding: usize,
+) -> Option<(usize, u64)> {
+    let sample_rate_hz = usize::try_from(sample_rate_hz).ok()?;
+    let (coefficient, sample_count) = match (version, layer) {
+        (_, MpegLayer::One) => (12usize, 384u64),
+        (_, MpegLayer::Two) | (MpegVersion::One, MpegLayer::Three) => (144, 1152),
+        (MpegVersion::Two, MpegLayer::Three) => (72, 576),
+    };
+    let slots = coefficient
+        .checked_mul(bitrate_kbps)?
+        .checked_mul(1000)?
+        .checked_div(sample_rate_hz)?
+        .checked_add(padding)?;
+    let frame_len = if layer == MpegLayer::One {
+        slots.checked_mul(4)?
+    } else {
+        slots
+    };
+    Some((frame_len, sample_count))
 }
 
 fn mpeg_audio_sample_rate_hz(version: MpegVersion, index: usize) -> Option<u32> {
@@ -404,7 +620,161 @@ mod tests {
     }
 
     #[test]
-    fn missing_anchor_and_incomplete_payload_never_create_a_timestamp() {
+    fn adts_body_residual_crosses_a_pes_boundary_and_keeps_the_first_new_frame_pts() {
+        let mut association = AudioTimestampAssociation::default();
+        let first_frame = adts_frame(3, 8);
+        let second_frame = adts_frame(3, 4);
+        let split_at = 12;
+
+        assert_eq!(
+            association.associate(
+                &packet(first_frame[..split_at].to_vec(), Some(90_000)),
+                ORIGIN,
+            ),
+            Ok(90_000)
+        );
+        assert!(matches!(
+            &association.residual,
+            AudioFrameResidual::Frame {
+                remaining_bytes: 5,
+                frame_pts_90khz: 90_000,
+            }
+        ));
+
+        let mut continuation = first_frame[split_at..].to_vec();
+        continuation.extend_from_slice(&second_frame);
+        assert_eq!(
+            association.associate(&packet(continuation, None), ORIGIN),
+            Ok(91_920)
+        );
+        assert_eq!(association.residual, AudioFrameResidual::Boundary);
+    }
+
+    #[test]
+    fn adts_header_residual_is_bounded_and_preserves_exact_sample_count() {
+        let mut association = AudioTimestampAssociation::default();
+        let first_frame = adts_frame(3, 4);
+        let second_frame = adts_frame(3, 8);
+        let third_frame = adts_frame(3, 4);
+        let mut first_payload = first_frame;
+        first_payload.extend_from_slice(&second_frame[..3]);
+
+        assert_eq!(
+            association.associate(&packet(first_payload, Some(90_000)), ORIGIN),
+            Ok(90_000)
+        );
+        assert!(matches!(
+            &association.residual,
+            AudioFrameResidual::Header {
+                bytes,
+                frame_pts_90khz: 91_920,
+                reanchor: false,
+            } if bytes.as_slice() == &second_frame[..3]
+        ));
+
+        let mut continuation = second_frame[3..].to_vec();
+        continuation.extend_from_slice(&third_frame);
+        assert_eq!(
+            association.associate(&packet(continuation, None), ORIGIN),
+            Ok(93_840)
+        );
+        assert_eq!(association.residual, AudioFrameResidual::Boundary);
+    }
+
+    #[test]
+    fn a_continuation_only_pes_uses_the_containing_frame_pts() {
+        let mut association = AudioTimestampAssociation::default();
+        let frame = adts_frame(3, 8);
+        let split_at = 12;
+
+        assert_eq!(
+            association.associate(
+                &packet(frame[..split_at].to_vec(), Some(90_000)),
+                ORIGIN,
+            ),
+            Ok(90_000)
+        );
+        assert_eq!(
+            association.associate(&packet(frame[split_at..].to_vec(), None), ORIGIN),
+            Ok(90_000)
+        );
+        assert_eq!(
+            association.associate(&packet(adts_frame(3, 4), None), ORIGIN),
+            Ok(91_920)
+        );
+    }
+
+    #[test]
+    fn explicit_pts_after_a_continuation_reanchors_the_first_frame_started_in_the_pes() {
+        let mut association = AudioTimestampAssociation::default();
+        let first_frame = adts_frame(3, 8);
+        let second_frame = adts_frame(3, 4);
+        let split_at = 12;
+
+        assert_eq!(
+            association.associate(
+                &packet(first_frame[..split_at].to_vec(), Some(90_000)),
+                ORIGIN,
+            ),
+            Ok(90_000)
+        );
+        let mut continuation = first_frame[split_at..].to_vec();
+        continuation.extend_from_slice(&second_frame);
+        assert_eq!(
+            association.associate(&packet(continuation, Some(180_000)), ORIGIN),
+            Ok(180_000)
+        );
+        assert_eq!(
+            association.associate(&packet(adts_frame(3, 4), None), ORIGIN),
+            Ok(181_920)
+        );
+    }
+
+    #[test]
+    fn mpeg_audio_body_residual_crosses_a_pes_boundary() {
+        let mut association = AudioTimestampAssociation::default();
+        let first_frame = mpeg1_layer2_frame();
+        let second_frame = mpeg1_layer2_frame();
+        let split_at = 100;
+
+        assert_eq!(
+            association.associate(
+                &packet(first_frame[..split_at].to_vec(), Some(180_000)),
+                ORIGIN,
+            ),
+            Ok(180_000)
+        );
+        let mut continuation = first_frame[split_at..].to_vec();
+        continuation.extend_from_slice(&second_frame);
+        assert_eq!(
+            association.associate(&packet(continuation, None), ORIGIN),
+            Ok(182_160)
+        );
+    }
+
+    #[test]
+    fn reset_discards_a_partial_frame_and_requires_a_new_anchor() {
+        let mut association = AudioTimestampAssociation::default();
+        let frame = adts_frame(3, 8);
+        let split_at = 12;
+
+        assert_eq!(
+            association.associate(
+                &packet(frame[..split_at].to_vec(), Some(90_000)),
+                ORIGIN,
+            ),
+            Ok(90_000)
+        );
+        association.reset();
+        assert_eq!(association.residual, AudioFrameResidual::Boundary);
+        assert_eq!(
+            association.associate(&packet(frame[split_at..].to_vec(), None), ORIGIN),
+            Err(AudioTimestampAssociationFailure::MissingAnchor)
+        );
+    }
+
+    #[test]
+    fn missing_anchor_and_malformed_payload_never_create_a_timestamp() {
         let mut association = AudioTimestampAssociation::default();
         assert_eq!(
             association.associate(&packet(adts_frame(3, 4), None), ORIGIN),
@@ -414,8 +784,12 @@ mod tests {
         let explicit = packet(adts_frame(3, 4), Some(90_000));
         assert_eq!(association.associate(&explicit, ORIGIN), Ok(90_000));
         assert_eq!(
-            association.associate(&packet(vec![0xff, 0xf8, 0x4c], None), ORIGIN),
-            Err(AudioTimestampAssociationFailure::UnsupportedOrIncompleteFrames)
+            association.associate(&packet(vec![0x00, 0x00], None), ORIGIN),
+            Err(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)
+        );
+        assert_eq!(
+            association.associate(&packet(adts_frame(3, 4), None), ORIGIN),
+            Err(AudioTimestampAssociationFailure::MissingAnchor)
         );
     }
 
