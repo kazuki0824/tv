@@ -21,14 +21,16 @@ pub use configure_txn::{
     FilterConfigureReport, FilterConfigureStep,
 };
 pub use demux::{
-    DemuxStreamBoundaryRequest, DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind,
+    CommittedFilterQueueCleanup, DemuxStreamBoundaryRequest, DemuxRuntime, DemuxRuntimeError,
+    DemuxRuntimeErrorKind,
     DemuxRuntimeQuarantineRequest, DemuxRuntimeRollbackCommitRequest,
     DemuxRuntimeRollbackRestoreRequest, DemuxRuntimeRollbackToken,
     DemuxRuntimeRollbackTokenPrepareRequest, DemuxRuntimeSnapshot, DemuxRuntimeState,
     DvrFilterLinkRequest, DvrRuntimeConfigureRequest, DvrRuntimeOperationRequest,
     DvrRuntimeRegistrationRequest, DvrStatusIntervalRuntimeRequest, DvrStatusReportingRequest,
     FilterAvHandleReleaseRequest, FilterAvStreamTypeRuntimeRequest, FilterDelayHintRuntimeRequest,
-    FilterRuntimeConfigureRequest, FilterRuntimeOperationKind, FilterRuntimeOperationOutcome,
+    FilterQueueCleanupPlan, FilterQueuePayloadCleanupOutcome, FilterRuntimeConfigureRequest,
+    FilterRuntimeOperationKind, FilterRuntimeOperationOutcome,
     FilterRuntimeOperationReport, FilterRuntimeOperationRequest, FilterRuntimeOperationSkipReason,
     FilterRuntimeOperationStep, FilterRuntimeOperationStepOutcome,
     FilterRuntimeRegistrationRequest, FilterSourceConnectRequest, FilterSourceDisconnectRequest,

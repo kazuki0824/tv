@@ -75,7 +75,8 @@ pub use parser::record_index::{
 };
 pub use parser::sections::normalize_length_field_bits;
 pub use runtime::{
-    DemuxStreamBoundaryRequest, DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind,
+    CommittedFilterQueueCleanup, DemuxStreamBoundaryRequest, DemuxRuntime, DemuxRuntimeError,
+    DemuxRuntimeErrorKind,
     DemuxRuntimeQuarantineRequest, DemuxRuntimeRollbackCommitRequest,
     DemuxRuntimeRollbackRestoreRequest, DemuxRuntimeRollbackToken,
     DemuxRuntimeRollbackTokenPrepareRequest, DemuxRuntimeSnapshot, DemuxRuntimeState,
@@ -86,6 +87,7 @@ pub use runtime::{
     FilterAvHandleReleaseRequest,
     FilterAvStreamTypeRuntimeRequest, FilterConfigureOutcome, FilterConfigureReport,
     FilterConfigureStep, FilterDelayHintRuntimeRequest, FilterRuntimeConfigureRequest,
+    FilterQueueCleanupPlan, FilterQueuePayloadCleanupOutcome,
     FilterRuntimeOperationKind, FilterRuntimeOperationOutcome, FilterRuntimeOperationReport,
     FilterRuntimeOperationRequest, FilterRuntimeOperationSkipReason, FilterRuntimeOperationStep,
     FilterRuntimeOperationStepOutcome, FilterRuntimeRegistrationRequest, FilterRuntimeSnapshot,
