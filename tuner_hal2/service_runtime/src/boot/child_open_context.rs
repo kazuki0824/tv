@@ -63,6 +63,19 @@ pub(crate) fn format_filter_runtime_operation_report(
     )
 }
 
+pub(crate) fn format_dvr_queue_cleanup_report(
+    diagnostic_id: DemuxTransactionDiagnosticId,
+    report: &maleicacid_tuner_hal2_demux::DvrQueueCleanupReport,
+) -> String {
+    format!(
+        "demux runtime DVR queue cleanup failed; diagnostic_id={}; dvr_id={}; outcome={:?}; steps={:?}",
+        diagnostic_id.value(),
+        report.dvr_id(),
+        report.outcome(),
+        report.steps()
+    )
+}
+
 fn format_source_boundary_report(
     diagnostic_id: DemuxTransactionDiagnosticId,
     report: &SourceBoundaryReport,

@@ -227,7 +227,7 @@ impl Drop for QueueEpochToken {
 }
 
 #[derive(Debug)]
-struct QueueEpochDrainTxn {
+pub(crate) struct QueueEpochDrainTxn {
     protocol: Arc<QueueEpochProtocol>,
     epoch: u64,
     next_epoch: u64,
@@ -235,7 +235,7 @@ struct QueueEpochDrainTxn {
 }
 
 impl QueueEpochDrainTxn {
-    fn commit(mut self) -> Result<(), QueueRuntimeError> {
+    pub(crate) fn commit(mut self) -> Result<(), QueueRuntimeError> {
         let mut state = self.protocol.state.lock().map_err(|_| {
             protocol_error("DVR queue epoch lock poisoned while committing drain")
         })?;
@@ -470,7 +470,7 @@ impl QueueRuntime {
         self.begin_dvr_transaction(QueueTransactionDirection::Write, reserved_bytes)
     }
 
-    fn begin_dvr_drain(&self) -> Result<QueueEpochDrainTxn, QueueRuntimeError> {
+    pub(crate) fn begin_dvr_drain(&self) -> Result<QueueEpochDrainTxn, QueueRuntimeError> {
         let protocol = self
             .dvr_epoch
             .as_ref()
@@ -502,14 +502,6 @@ impl QueueRuntime {
             next_epoch,
             active: true,
         })
-    }
-
-    pub(crate) fn clear_dvr_boundary(&self) -> Result<usize, QueueRuntimeError> {
-        let drain = self.begin_dvr_drain()?;
-        let dropped_bytes = self.available_to_read()?;
-        self.clear_contents()?;
-        drain.commit()?;
-        Ok(dropped_bytes)
     }
 
     pub(crate) fn playback_coordinates(&self) -> Result<(u64, u64), QueueRuntimeError> {

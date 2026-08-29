@@ -101,7 +101,8 @@ pub(crate) use query_api::{
 };
 mod child_open_context;
 pub(crate) use child_open_context::{
-    attach_diagnostic_detail_to_public_error, format_filter_runtime_operation_report,
+    attach_diagnostic_detail_to_public_error, format_dvr_queue_cleanup_report,
+    format_filter_runtime_operation_report,
 };
 #[path = "demux_filter_dvr_ops.rs"]
 mod demux_filter_dvr_ops;

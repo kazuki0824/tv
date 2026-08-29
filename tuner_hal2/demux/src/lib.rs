@@ -75,15 +75,17 @@ pub use parser::record_index::{
 };
 pub use parser::sections::normalize_length_field_bits;
 pub use runtime::{
-    CommittedFilterQueueCleanup, DemuxStreamBoundaryRequest, DemuxRuntime, DemuxRuntimeError,
-    DemuxRuntimeErrorKind,
+    CommittedDvrQueueCleanup, CommittedFilterQueueCleanup, DemuxStreamBoundaryRequest,
+    DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind,
     DemuxRuntimeQuarantineRequest, DemuxRuntimeRollbackCommitRequest,
     DemuxRuntimeRollbackRestoreRequest, DemuxRuntimeRollbackToken,
     DemuxRuntimeRollbackTokenPrepareRequest, DemuxRuntimeSnapshot, DemuxRuntimeState,
     DemuxStreamGeneration, DvrConfigureOutcome, DvrConfigureReport, DvrConfigureStep,
-    DvrDataFormat, DvrFilterLinkRequest, DvrKind, DvrRuntimeConfigureRequest,
-    DvrRuntimeOperationRequest, DvrRuntimeRegistrationRequest, DvrRuntimeSnapshot,
-    DvrRuntimeState, DvrStatusEvent, DvrStatusIntervalRuntimeRequest, DvrStatusReportingRequest,
+    DvrDataFormat, DvrFilterLinkRequest, DvrKind, DvrQueueCleanupOutcome, DvrQueueCleanupPlan,
+    DvrQueueCleanupReport, DvrQueueCleanupSkipReason, DvrQueueCleanupStep,
+    DvrQueueCleanupStepOutcome, DvrRuntimeConfigureRequest, DvrRuntimeOperationRequest,
+    DvrRuntimeRegistrationRequest, DvrRuntimeSnapshot, DvrRuntimeState, DvrStatusEvent,
+    DvrStatusIntervalRuntimeRequest, DvrStatusReportingRequest,
     FilterAvHandleReleaseRequest,
     FilterAvStreamTypeRuntimeRequest, FilterConfigureOutcome, FilterConfigureReport,
     FilterConfigureStep, FilterDelayHintRuntimeRequest, FilterRuntimeConfigureRequest,
@@ -1280,6 +1282,41 @@ mod tests {
         assert_eq!(error.kind, DemuxRuntimeErrorKind::InvalidState);
         assert_eq!(demux.dvr(94).unwrap().state(), DvrRuntimeState::Open);
         assert_eq!(demux.dvr(94).unwrap().generation(), u64::MAX);
+    }
+
+    #[test]
+    fn dropped_dvr_cleanup_plan_reopens_the_existing_queue_epoch() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                95,
+                1,
+                DvrKind::Playback,
+                8192,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(95).unwrap();
+        let packet = raw_ts_packet(0x0100, 0, &[1, 2, 3, 4]);
+        let plan = demux
+            .prepare_dvr_queue_cleanup(DvrRuntimeOperationRequest::new(95))
+            .unwrap();
+
+        assert_eq!(
+            demux
+                .write_playback_dvr_queue_bytes_for_test(95, &packet)
+                .unwrap_err()
+                .kind,
+            DemuxRuntimeErrorKind::QueueRuntimeFailure
+        );
+        drop(plan);
+        assert_eq!(
+            demux
+                .write_playback_dvr_queue_bytes_for_test(95, &packet)
+                .unwrap(),
+            packet.len()
+        );
+        assert_eq!(demux.dvr(95).unwrap().generation(), 1);
     }
 
     #[test]

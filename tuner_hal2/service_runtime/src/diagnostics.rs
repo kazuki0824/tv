@@ -1400,6 +1400,7 @@ pub enum DemuxTransactionDiagnosticKind {
     FilterConfigure,
     DvrConfigure,
     FilterRuntimeOperation,
+    DvrQueueCleanup,
 }
 
 pub type StartupDiagnosticSnapshot = DiagnosticSnapshot<StartupDiagnosticRecord>;
@@ -1578,6 +1579,13 @@ pub enum DemuxTransactionDiagnosticRecord {
         report: maleicacid_tuner_hal2_demux::FilterRuntimeOperationReport,
         error: HalError,
     },
+    DvrQueueCleanup {
+        diagnostic_id: DemuxTransactionDiagnosticId,
+        demux_id: i32,
+        dvr_id: i32,
+        report: maleicacid_tuner_hal2_demux::DvrQueueCleanupReport,
+        error: HalError,
+    },
 }
 
 impl DemuxTransactionDiagnosticRecord {
@@ -1647,12 +1655,29 @@ impl DemuxTransactionDiagnosticRecord {
         }
     }
 
+    pub fn dvr_queue_cleanup(
+        diagnostic_id: DemuxTransactionDiagnosticId,
+        demux_id: i32,
+        dvr_id: i32,
+        report: maleicacid_tuner_hal2_demux::DvrQueueCleanupReport,
+        error: HalError,
+    ) -> Self {
+        Self::DvrQueueCleanup {
+            diagnostic_id,
+            demux_id,
+            dvr_id,
+            report,
+            error,
+        }
+    }
+
     pub const fn diagnostic_id(&self) -> DemuxTransactionDiagnosticId {
         match self {
             Self::SourceBoundary { diagnostic_id, .. }
             | Self::FilterConfigure { diagnostic_id, .. }
             | Self::DvrConfigure { diagnostic_id, .. }
-            | Self::FilterRuntimeOperation { diagnostic_id, .. } => *diagnostic_id,
+            | Self::FilterRuntimeOperation { diagnostic_id, .. }
+            | Self::DvrQueueCleanup { diagnostic_id, .. } => *diagnostic_id,
         }
     }
 
@@ -1664,6 +1689,7 @@ impl DemuxTransactionDiagnosticRecord {
             Self::FilterRuntimeOperation { .. } => {
                 DemuxTransactionDiagnosticKind::FilterRuntimeOperation
             }
+            Self::DvrQueueCleanup { .. } => DemuxTransactionDiagnosticKind::DvrQueueCleanup,
         }
     }
 }

@@ -1,3 +1,10 @@
+# r50eo82_pr53_dvr_queue_cleanup_owner_followup
+
+- DVR `flush()` の queue drain、FMQ clear、queue epoch commit、runtime state更新、playback pipeline/PCR reset、record index resetをtyped phaseへ分割し、`QueueCleanupUseCase`が呼出順序と`DvrQueueCleanupReport`の結果集約を所有する形へ変更した。
+- `QueueEpochProtocol`のepoch・one-shot drain transactionとDemux/DVRの永続状態所有は移動せず、opaque plan / committed tokenだけを上位orchestratorのtyped入口へ渡す形を維持した。
+- 未commitのDVR cleanup planをdropした場合に既存queue epochが再びOpenとなり、generationを更新せずI/Oを再開できるbehavior testを追加した。
+- 公開AIDL/VINTF、ARIB処理、future_work、`RELEASE_VERSION`は変更していない。ローカルでは変更Rust 8ファイルのtree-sitter構文解析、`git diff --check`、参照検査を実施した。rustfmt、Rust compile/unit/loom、Android/Soong build、atest、VTS、実機確認はローカル環境では未実施。
+
 # r50eo82_review_transaction_owner_and_playback_memory_fix
 
 - `FrontendTuneScanTxn`へpreflight、固定LNB給電準備、worker start/stop、rollback、event/terminal acceptanceを移し、横流しだけのtransaction façadeと第二ownerの`FrontendTuneScanContext`を削除した。
