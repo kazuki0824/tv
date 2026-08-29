@@ -113,7 +113,7 @@ class TisR51FixedPlanAcceptanceTest {
 
     @Test fun validEitComponentWithoutPmtComponentTagIsPreserved() {
         val videoComponent = AribComponentEntry(
-            esPid = TsPid.PAT,
+            esPid = null,
             componentTag = 7,
             componentType = 0xb3,
             language = "jpn",
@@ -121,7 +121,7 @@ class TisR51FixedPlanAcceptanceTest {
             parseStatus = "OK",
         )
         val audioComponent = AribComponentEntry(
-            esPid = TsPid.PAT,
+            esPid = null,
             componentTag = 8,
             componentType = 0x03,
             language = "jpn",
@@ -142,6 +142,17 @@ class TisR51FixedPlanAcceptanceTest {
         check(merged.audio == listOf(audioComponent)) {
             "PMTにcomponent_tagが無くても有効なEIT audio_component_descriptor事実を失ってはなりません"
         }
+
+        val program = EventModelMapper()
+            .toProgramRecords(listOf(aribEvent().withComponents(merged)))
+            .single()
+        val providerData = JSONObject(TvProviderWriter.programProviderDataForTest(program))
+        val providerVideo = providerData.getJSONObject("components").getJSONArray("video").getJSONObject(0)
+        check(providerVideo.isNull("esPid"))
+        check(providerVideo.isNull("streamType"))
+        check(providerVideo.isNull("codec"))
+        check(providerVideo.getInt("componentTag") == 7)
+        check(providerVideo.getString("sourceDescriptor") == "component_descriptor")
     }
 
     @Test fun audioOnlyServiceTypeAcceptsSupportedAudioWithoutVideo() {
