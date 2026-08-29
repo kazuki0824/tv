@@ -110,6 +110,35 @@ class NativeAribSiParserCasDiscoveryTest {
         }
     }
 
+    @Test fun eitDescriptorWithoutMatchingPmtTagRemainsCanonicalProviderData() {
+        val parser = NativeAribSiParser()
+        try {
+            check(parser.ingestSection(TsPid(PID_PAT), section(PAT_BODY)) == SiStatus.OK)
+            check(parser.ingestSection(TsPid(PID_SDT), section(SDT_SCRAMBLED_SERVICE_BODY)) == SiStatus.OK)
+            check(parser.ingestSection(TsPid(PID_PMT), section(PMT_WITH_PROGRAM_AND_ES_CA_BODY)) == SiStatus.OK)
+            check(parser.ingestSection(TsPid(PID_EIT), section(eitWithDescriptorFactsBody())) == SiStatus.OK)
+
+            val event = parser.programStateSnapshot().events.single()
+            val eitOnlyVideo = event.descriptors.components.video.single { it.componentTag == 0x10 }
+            check(eitOnlyVideo.esPid == null)
+            check(eitOnlyVideo.streamType == null)
+            check(eitOnlyVideo.codec == null)
+
+            val program = EventModelMapper().toProgramRecords(listOf(event)).single()
+            val providerData = JSONObject(ProviderDataBridge.buildProgramProviderData(program).json)
+            val videoArray = providerData.getJSONObject("components").getJSONArray("video")
+            val providerVideo = (0 until videoArray.length())
+                .map { videoArray.getJSONObject(it) }
+                .single { it.optInt("componentTag", -1) == 0x10 }
+            check(providerVideo.isNull("esPid"))
+            check(providerVideo.isNull("streamType"))
+            check(providerVideo.isNull("codec"))
+            check(providerVideo.getString("sourceDescriptor") == "component_descriptor")
+        } finally {
+            parser.close()
+        }
+    }
+
     companion object {
         private const val SERVICE_ID = 0x0001
         private const val PID_PAT = 0x0000
