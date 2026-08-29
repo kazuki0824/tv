@@ -1,9 +1,8 @@
 use std::collections::BTreeMap;
 
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidArgumentKind};
-use maleicacid_tuner_hal2_demux::{DvrKind, FilterOpenType, MAX_PES_BUFFER_BYTES};
-#[cfg(test)]
 use maleicacid_tuner_hal2_demux::{
+    DvrKind, FilterOpenType, MAX_PES_BUFFER_BYTES,
     DEFAULT_AV_MAX_EVENT_BYTES, DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
     DEFAULT_AV_PER_FILTER_LIVE_BYTES,
 };
@@ -70,10 +69,11 @@ impl CapabilitySnapshot {
             num_playback: 8,
             num_ts_filter: 32,
             num_section_filter: 8,
-            // 現行 backend は PTS のない合法 PES に対する authoritative timing metadata
-            // を提供しないため、live media-filter 能力を成功広告しない。
+            // ARIB TS audio は PTS のない合法 PES を含み得るが、現行 backend は
+            // event-associated timestamp を提供しないため成功能力を広告しない。
             num_audio_filter: 0,
-            num_video_filter: 0,
+            // 製品対象の MPEG-2 / AVC / HEVC video PES は ARIB profile 上 PTS を明示する。
+            num_video_filter: 1,
             num_pes_filter: 4,
             num_pcr_filter: 4,
             filter_pending_event_capacity_per_filter: 64,
@@ -81,10 +81,11 @@ impl CapabilitySnapshot {
             pes_max_bytes_per_filter: MAX_PES_BUFFER_BYTES,
             pes_runtime_budget_bytes: 4 * MIB,
             playback_processing_budget_bytes: 64 * MIB,
-            av_max_event_bytes: 0,
-            av_max_outstanding_events_per_filter: 0,
-            av_per_filter_live_bytes: 0,
-            av_runtime_budget_bytes: 0,
+            av_max_event_bytes: DEFAULT_AV_MAX_EVENT_BYTES,
+            av_max_outstanding_events_per_filter:
+                DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
+            av_per_filter_live_bytes: DEFAULT_AV_PER_FILTER_LIVE_BYTES,
+            av_runtime_budget_bytes: DEFAULT_AV_PER_FILTER_LIVE_BYTES,
             cleanup_reaper_capacity: 160,
             cleanup_retry_schedule_ms: [0, 10, 100, 1_000],
             cleanup_terminal_deadline_ms: 30_000,
@@ -717,9 +718,12 @@ mod tests {
     }
 
     #[test]
-    fn product_snapshot_closes_suppressed_av_dependencies() {
-        CapabilitySnapshot::product_default()
+    fn product_snapshot_closes_video_only_av_dependencies() {
+        let snapshot = CapabilitySnapshot::product_default();
+        assert_eq!(snapshot.num_audio_filter, 0);
+        assert_eq!(snapshot.num_video_filter, 1);
+        snapshot
             .validate_dependency_closures()
-            .expect("suppressed product AV capability must not retain a byte budget");
+            .expect("product video capability must retain a closed finite byte budget");
     }
 }

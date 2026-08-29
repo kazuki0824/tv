@@ -1,3 +1,11 @@
+# r50eo83_pr53_media_event_metadata_video_capability_followup
+
+- PES parserが確定した`stream_id`、PTS/DTSのheader presenceと33-bit 90 kHz値を`AvMediaEventMetadata`としてAV allocation descriptorへ保持し、`DemuxFilterMediaEvent`の`streamId`、`isPtsPresent` / `pts`、`isDtsPresent` / `dts`へ無損失に投影するよう変更した。PTS/DTSやwallclockを推測生成する時刻源、永続state、queue、workerは追加していない。
+- 製品対象のMPEG-2 Video、AVC、HEVCでは今回精読したARIB STD-B32 3.11-E1 Fascicle 1がvideo PES headerへのPTS明示を要求することに基づき、製品既定snapshotのTS VIDEO filterを1件と有限AV byte予算で有効化した。全audio PESへの同等のPTS明示保証とauthoritative event timestamp sourceはないため、TS AUDIO filterは0件を維持した。
+- 明示PTS、明示PTS+DTS、PTS/DTSなしPES、PES header由来ではないauthoritative PTSのpresence/value分離のAIDL投影試験、video-only AV capability closure試験、製品既定profileのTS VIDEOが公開demux open-filter use-caseを通る試験を追加した。
+- `tuner_hal/DESIGN_JA.md`のSTD-B32証拠本文台帳とMediaEvent timestamp契約をFascicle 1・2の精読結果、video/audioの別capability判断、audioを将来有効化する具体条件、`getAvSyncTime()`用wallclockを個別event PTSへ流用しない境界へ同期した。現行日本語版4.1との差分未証明は維持し、future_workと`RELEASE_VERSION`は変更していない。
+- ローカルでは`git diff --check`、全`AvMediaEventDescriptor`構築箇所と`allocate_payload_bytes()`呼出箇所、製品snapshotのAV依存閉包を静的確認した。添付tree-sitter CLIはRust grammar設定がなく構文解析を実行できず、添付rustfmtは`librustc_driver`を含まない。rustfmt、Rust compile/unit/loom、Android/Soong build、atest、VTS、実機・実放送波確認はローカル環境では未実施。
+
 # r50eo83_pr53_dvr_queue_cleanup_failure_semantics_followup
 
 - DVR queue cleanupのFMQ clearとqueue epoch publicationを`QueueEpochProtocol`配下の単一commit境界へ統合した。epoch/drainを事前検証してからfailure-atomicなexact readでFMQをclearし、成功後はfallibleな処理を挟まず次epochを公開するため、precommit失敗時は旧content/read position/epoch/Open状態を維持する。
