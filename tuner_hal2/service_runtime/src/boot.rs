@@ -100,7 +100,6 @@ pub(crate) use query_api::{
     map_queue_descriptor_query_error, QueueDescriptorExportPlan, RuntimeQuery,
 };
 mod child_open_context;
-pub(crate) use child_open_context::ChildOpenContext;
 pub(crate) use child_open_context::{
     attach_diagnostic_detail_to_public_error, format_filter_runtime_operation_report,
 };
@@ -108,9 +107,7 @@ pub(crate) use child_open_context::{
 mod demux_filter_dvr_ops;
 pub use demux_filter_dvr_ops::ChildOpenTxn;
 mod descrambler_txn;
-mod frontend_tune_scan_context;
 mod frontend_txn;
-pub(crate) use frontend_tune_scan_context::FrontendTuneScanContext;
 pub(crate) mod lnb_txn;
 #[path = "packet_ops.rs"]
 mod packet_ops;

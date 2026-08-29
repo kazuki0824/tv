@@ -1,3 +1,13 @@
+# r50eo82_review_transaction_owner_and_playback_memory_fix
+
+- `FrontendTuneScanTxn`へpreflight、固定LNB給電準備、worker start/stop、rollback、event/terminal acceptanceを移し、横流しだけのtransaction façadeと第二ownerの`FrontendTuneScanContext`を削除した。
+- `ChildOpenTxn`自身がruntime borrowとfilter/DVRのallocation、registration、commit、rollback手順を所有する形へ変更し、実処理を保持していた`ChildOpenContext`型を削除した。
+- broadな`LnbTxn`名称を廃止し、relation/controlのcanonical ownerとは別のcall-local primitive accessである`LnbMutationContext`へ縮退した。`FrontendLnbRelationTxn`と既存`LnbControlTxn`の正規入口は維持した。
+- descrambler PIDのsource検証、排他確認、session commit、失敗診断をservice-level `DescramblerPidTxn`へ移し、鍵・source binding・cleanupを含むbroadな`DescramblerTxn`を、所有権を主張しない`DescramblerMutationContext`へ縮退した。session側の同名transactionはatomic commit primitiveとして維持した。
+- `PlaybackConsumeTxn`のprocessing bufferをFMQ全容量mirrorではなく最大256 TS packetのbounded chunkへ縮小し、FMQ capacity identity、最大187 byte completion tail、packet cursorを独立して維持した。
+- 4 MiB FMQでもbounded chunkだけを確保すること、小容量FMQでは容量を超えて確保しないことをbehavior testへ追加した。
+- 公開AIDL/VINTF、future_work、`RELEASE_VERSION`は変更していない。`tuner_hal2/DESIGN_JA.md`とSoong source listは削除した第二ownerに同期した。ローカルでは`git diff --check`と参照検査のみ実施し、rustfmt、Rust compile/unit/loom、Android/Soong build、atest、VTS、実機確認は未実施。
+
 # r50eo81_pr53_raw_filter_callback_fix
 
 - Section/PESの完成payload eventへ設定時の`raw`属性を保持し、FMQ commit後のcallback投影で`raw=true`をtyped Section/PES eventへ変換しないようにした。既存のcommit後`DATA_READY` status配送は維持した。

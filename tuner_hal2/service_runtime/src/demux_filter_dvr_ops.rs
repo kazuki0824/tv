@@ -1,6 +1,4 @@
-use crate::boot::{
-    ChildOpenContext, DvrChildRuntimeOpen, FilterChildRuntimeOpen, TunerServiceRuntime,
-};
+use crate::boot::TunerServiceRuntime;
 use crate::object_method_use_case::ObjectMethodExecutionToken;
 use crate::registry::{
     DemuxRegistryEntry, DemuxRuntimeId, DvrRegistryEntry, FilterRegistryEntry, FrontendRuntimeId,
@@ -375,68 +373,12 @@ impl TunerServiceRuntime {
 
 /// Call-local owner for child object allocation, registration, and rollback.
 pub struct ChildOpenTxn<'a> {
-    context: ChildOpenContext<'a>,
+    pub(crate) runtime: &'a mut TunerServiceRuntime,
 }
 
 impl TunerServiceRuntime {
     pub fn child_open_txn(&mut self) -> ChildOpenTxn<'_> {
-        ChildOpenTxn {
-            context: ChildOpenContext::new(self),
-        }
-    }
-}
-
-impl ChildOpenTxn<'_> {
-    pub fn open_filter_child_runtime_for_demux_object(
-        &mut self,
-        owner_object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
-        owner_generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
-        request: &OpenFilterRequest,
-        dispatch: ObjectMethodExecutionToken,
-    ) -> Result<FilterChildRuntimeOpen, HalError> {
-        self.context
-            .open_filter_child_runtime_for_demux_object(
-                owner_object_id,
-                owner_generation,
-                request,
-                dispatch,
-            )
-    }
-
-    pub fn open_dvr_child_runtime_for_demux_object(
-        &mut self,
-        owner_object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
-        owner_generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
-        request: OpenDvrRequest,
-        dispatch: ObjectMethodExecutionToken,
-    ) -> Result<DvrChildRuntimeOpen, HalError> {
-        self.context
-            .open_dvr_child_runtime_for_demux_object(
-                owner_object_id,
-                owner_generation,
-                request,
-                dispatch,
-            )
-    }
-
-    pub fn rollback_filter_child_open_after_aidl_failure(
-        &mut self,
-        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
-        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
-        filter_id: i32,
-    ) -> Result<(), HalError> {
-        self.context
-            .rollback_filter_child_open_after_aidl_failure(object_id, generation, filter_id)
-    }
-
-    pub fn rollback_dvr_child_open_after_aidl_failure(
-        &mut self,
-        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
-        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
-        dvr_id: i32,
-    ) -> Result<(), HalError> {
-        self.context
-            .rollback_dvr_child_open_after_aidl_failure(object_id, generation, dvr_id)
+        ChildOpenTxn { runtime: self }
     }
 }
 

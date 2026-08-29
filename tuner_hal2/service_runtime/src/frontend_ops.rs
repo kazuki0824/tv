@@ -1,15 +1,20 @@
-use crate::boot::{FrontendTuneScanContext, TunerServiceRuntime};
+use crate::boot::TunerServiceRuntime;
+use crate::frontend_worker_termination_use_case::FrontendWorkerTerminationUseCase;
 use crate::frontend_worker_txn::{
-    FrontendScanNotification, FrontendScanNotifier, FrontendTuneNotification,
-    FrontendTuneNotifier,
+    start_frontend_backend_scan_session_worker, start_frontend_backend_tune_worker,
+    stop_frontend_scan_object, stop_frontend_tune_object, FrontendScanNotification,
+    FrontendScanNotifier, FrontendTuneNotification, FrontendTuneNotifier,
 };
 use crate::object_method_use_case::ObjectMethodExecutionToken;
+use crate::registry::FrontendRuntimeId;
 use crate::worker_runtime::WorkerTerminalResult;
 use maleicacid_tuner_hal2_common::{
-    FrontendScanMode, FrontendTuneRequest, HalError,
+    compose_primary_cleanup_failure, FrontendScanMode, FrontendTuneRequest, HalError,
+    HalInternalKind,
 };
 use maleicacid_tuner_hal2_device::{
-    FrontendWorkerCancelReason, FrontendWorkerKind, FrontendWorkerStopOutcome,
+    FrontendRuntimeState, FrontendWorkerCancelReason, FrontendWorkerKind,
+    FrontendWorkerStopOutcome,
 };
 use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 
@@ -136,14 +141,22 @@ impl FrontendTuneScanTxn {
         notifier: FrontendTuneNotifier,
         dispatch: ObjectMethodExecutionToken,
     ) -> Result<(), HalError> {
-        FrontendTuneScanContext::new(&runtime).begin_tune(
+        Self::preflight_begin(&runtime, object_id, object_generation, &request, None)?;
+        let fixed_power = crate::lnb_ops::ensure_frontend_fixed_power_for_object(
+            &runtime,
+            object_id,
+            object_generation,
+        )?;
+        let result = start_frontend_backend_tune_worker(
+            std::sync::Arc::clone(&runtime),
             object_id,
             object_generation,
             request,
             kind,
             notifier,
             dispatch,
-        )
+        );
+        Self::rollback_new_fixed_power_after_begin_failure(&runtime, fixed_power, result)
     }
 
     pub fn begin_scan(
@@ -155,14 +168,28 @@ impl FrontendTuneScanTxn {
         notifier: FrontendScanNotifier,
         dispatch: ObjectMethodExecutionToken,
     ) -> Result<(), HalError> {
-        FrontendTuneScanContext::new(&runtime).begin_scan(
+        Self::preflight_begin(
+            &runtime,
+            object_id,
+            object_generation,
+            &request,
+            Some(scan_mode),
+        )?;
+        let fixed_power = crate::lnb_ops::ensure_frontend_fixed_power_for_object(
+            &runtime,
+            object_id,
+            object_generation,
+        )?;
+        let result = start_frontend_backend_scan_session_worker(
+            std::sync::Arc::clone(&runtime),
             object_id,
             object_generation,
             request,
             scan_mode,
             notifier,
             dispatch,
-        )
+        );
+        Self::rollback_new_fixed_power_after_begin_failure(&runtime, fixed_power, result)
     }
 
     pub fn stop_tune(
@@ -172,7 +199,8 @@ impl FrontendTuneScanTxn {
         reason: FrontendWorkerCancelReason,
         dispatch: ObjectMethodExecutionToken,
     ) -> Result<(), HalError> {
-        FrontendTuneScanContext::new(&runtime).stop_tune(
+        stop_frontend_tune_object(
+            std::sync::Arc::clone(&runtime),
             object_id,
             object_generation,
             reason,
@@ -187,7 +215,8 @@ impl FrontendTuneScanTxn {
         reason: FrontendWorkerCancelReason,
         dispatch: ObjectMethodExecutionToken,
     ) -> Result<(), HalError> {
-        FrontendTuneScanContext::new(&runtime).stop_scan(
+        stop_frontend_scan_object(
+            std::sync::Arc::clone(&runtime),
             object_id,
             object_generation,
             reason,
@@ -201,18 +230,128 @@ impl FrontendTuneScanTxn {
         operation_generation: u64,
         event: FrontendOperationEvent,
     ) -> Result<FrontendOperationEventAcceptance, HalError> {
-        FrontendTuneScanContext::new(runtime).accept_operation_event(
-            frontend_id,
-            operation_generation,
-            event,
-        )
+        let is_current = runtime
+            .lock()
+            .map_err(|_| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "service runtime lock poisoned while validating a frontend operation event",
+                )
+            })?
+            .query()
+            .frontend_runtime_snapshot(frontend_id)?
+            .generation
+            == operation_generation;
+        if !is_current {
+            return Ok(FrontendOperationEventAcceptance::DiscardedStale);
+        }
+        match event {
+            FrontendOperationEvent::Tune {
+                notifier,
+                notification,
+            } => {
+                let _ = notifier(frontend_id, operation_generation, notification);
+            }
+            FrontendOperationEvent::Scan {
+                notifier,
+                notification,
+            } => {
+                let _ = notifier(frontend_id, operation_generation, notification);
+            }
+        }
+        Ok(FrontendOperationEventAcceptance::Accepted)
     }
 
     pub fn accept_worker_terminal(
         runtime: &SharedFrontendRuntime,
         event: FrontendWorkerTerminalEvent,
     ) -> Result<FrontendWorkerTerminalEventAcceptance, HalError> {
-        FrontendTuneScanContext::new(runtime).accept_worker_terminal(event)
+        let frontend_id = FrontendRuntimeId(event.frontend_id());
+        let acceptance = {
+            let mut guard = runtime.lock().map_err(|_| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "service runtime lock poisoned while accepting a frontend worker terminal",
+                )
+            })?;
+            FrontendWorkerTerminationUseCase::accept_worker_terminal(&mut guard, event)?
+        };
+        Self::release_fixed_power_if_operation_terminal(runtime, frontend_id)?;
+        Ok(acceptance)
+    }
+
+    fn preflight_begin(
+        runtime: &SharedFrontendRuntime,
+        object_id: AidlObjectId,
+        object_generation: AidlObjectGeneration,
+        request: &FrontendTuneRequest,
+        scan_mode: Option<FrontendScanMode>,
+    ) -> Result<(), HalError> {
+        let guard = runtime.lock().map_err(|_| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "service runtime lock poisoned during frontend begin preflight",
+            )
+        })?;
+        let entry = guard.frontend_entry_for_aidl_object(object_id, object_generation)?;
+        let normalized = request.clone().normalized_for_non_blind_operation();
+        let validated = guard.validate_frontend_request_for_id(entry.id.0, &normalized)?;
+        if let Some(scan_mode) = scan_mode {
+            guard.scan_candidates_for_frontend_entry(&validated, &normalized, scan_mode)?;
+        }
+        Ok(())
+    }
+
+    fn rollback_new_fixed_power_after_begin_failure(
+        runtime: &SharedFrontendRuntime,
+        preparation: crate::lnb_ops::FrontendFixedPowerPreparation,
+        result: Result<(), HalError>,
+    ) -> Result<(), HalError> {
+        let Err(primary) = result else {
+            return Ok(());
+        };
+        if !preparation.newly_retained() {
+            return Err(primary);
+        }
+        match crate::lnb_ops::release_frontend_fixed_power_after_operation(
+            runtime,
+            preparation.frontend_id(),
+        ) {
+            Ok(()) => Err(primary),
+            Err(cleanup) => Err(compose_primary_cleanup_failure(
+                "frontend begin failed and fixed LNB power rollback failed",
+                primary,
+                cleanup,
+            )),
+        }
+    }
+
+    fn release_fixed_power_if_operation_terminal(
+        runtime: &SharedFrontendRuntime,
+        frontend_id: FrontendRuntimeId,
+    ) -> Result<(), HalError> {
+        let terminal = runtime
+            .lock()
+            .map_err(|_| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "service runtime lock poisoned while checking fixed-power release",
+                )
+            })?
+            .query()
+            .frontend_runtime_snapshot(frontend_id.0)
+            .map(|snapshot| {
+                matches!(
+                    snapshot.state,
+                    FrontendRuntimeState::Idle
+                        | FrontendRuntimeState::Closing
+                        | FrontendRuntimeState::Failed
+                )
+            })?;
+        if terminal {
+            crate::lnb_ops::release_frontend_fixed_power_after_operation(runtime, frontend_id)?;
+        }
+        Ok(())
     }
 }
 
@@ -234,7 +373,7 @@ impl FrontendLnbRelationTxn {
         runtime: &mut TunerServiceRuntime,
     ) -> Result<crate::boot::lnb_txn::PreparedFrontendLnbAssignment, HalError> {
         runtime
-            .lnb_txn()
+            .lnb_mutation_context()
             .prepare_frontend_lnb_assignment(self.frontend_id, self.lnb_id)
     }
 
@@ -243,7 +382,7 @@ impl FrontendLnbRelationTxn {
         executed: crate::boot::lnb_txn::ExecutedFrontendLnbAssignment,
     ) -> Result<(), HalError> {
         runtime
-            .lnb_txn()
+            .lnb_mutation_context()
             .commit_frontend_lnb_assignment(executed)
     }
 

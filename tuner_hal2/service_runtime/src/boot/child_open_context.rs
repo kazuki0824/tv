@@ -2,9 +2,10 @@ use super::{
     AvStreamKind, AvStreamTypeConfig, DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeId,
     DvrChildRuntimeOpen, DvrConfigureKind, DvrConfigureRequest, DvrKind, DvrOpenKind, DvrRuntimeId,
     FilterAvStreamKind, FilterAvStreamTypeRequest, FilterChildRuntimeOpen, FilterConfig,
-    FilterDelayHint, FilterDelayHintKind, FilterDelayHintRequest, FilterOpenType, FilterRuntimeId,
-    HalError, HalInternalKind, HalInvalidArgumentKind, HalInvalidStateKind, OpenDvrRequest,
-    OpenFilterRequest, PipelineResetReport, RegistryCommitError, TunerServiceRuntime,
+    ChildOpenTxn, FilterDelayHint, FilterDelayHintKind, FilterDelayHintRequest, FilterOpenType,
+    FilterRuntimeId, HalError, HalInternalKind, HalInvalidArgumentKind, HalInvalidStateKind,
+    OpenDvrRequest, OpenFilterRequest, PipelineResetReport, RegistryCommitError,
+    TunerServiceRuntime,
 };
 #[cfg(test)]
 use crate::diagnostics::ChildOpenRollbackKind;
@@ -1579,15 +1580,7 @@ impl TunerServiceRuntime {
     }
 }
 
-/// Private, call-local context used only by the canonical `ChildOpenTxn`.
-pub(crate) struct ChildOpenContext<'a> {
-    runtime: &'a mut TunerServiceRuntime,
-}
-
-impl<'a> ChildOpenContext<'a> {
-    pub(crate) fn new(runtime: &'a mut TunerServiceRuntime) -> Self {
-        Self { runtime }
-    }
+impl ChildOpenTxn<'_> {
     fn unregister_filter_runtime_for_open_rollback(
         &mut self,
         filter_id: i32,
@@ -1618,7 +1611,7 @@ impl<'a> ChildOpenContext<'a> {
         }
     }
 
-    pub(crate) fn open_filter_child_runtime_for_demux_object(
+    pub fn open_filter_child_runtime_for_demux_object(
         &mut self,
         owner_object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
         owner_generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
@@ -1778,7 +1771,7 @@ impl<'a> ChildOpenContext<'a> {
         }
     }
 
-    pub(crate) fn open_dvr_child_runtime_for_demux_object(
+    pub fn open_dvr_child_runtime_for_demux_object(
         &mut self,
         owner_object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
         owner_generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
@@ -1898,7 +1891,7 @@ impl<'a> ChildOpenContext<'a> {
         }
     }
 
-    pub(crate) fn rollback_filter_child_open_after_aidl_failure(
+    pub fn rollback_filter_child_open_after_aidl_failure(
         &mut self,
         object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
         generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
@@ -1937,7 +1930,7 @@ impl<'a> ChildOpenContext<'a> {
         )
     }
 
-    pub(crate) fn rollback_dvr_child_open_after_aidl_failure(
+    pub fn rollback_dvr_child_open_after_aidl_failure(
         &mut self,
         object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
         generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,

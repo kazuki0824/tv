@@ -48,10 +48,11 @@ impl TunerServiceRuntime {
             .ok_or_else(crate::boot::lnb_txn::missing_lnb_error)?;
         authority.execute(|permit| {
             let prepared = self
-                .lnb_txn()
+                .lnb_mutation_context()
                 .prepare_frontend_lnb_assignment(frontend_id, lnb_id)?;
             let executed = prepared.execute(&permit);
-            self.lnb_txn().commit_frontend_lnb_assignment(executed)
+            self.lnb_mutation_context()
+                .commit_frontend_lnb_assignment(executed)
         })
     }
 
@@ -91,26 +92,30 @@ impl TunerServiceRuntime {
             .lnb_physical_io_authority(LnbRuntimeId(lnb_id))
             .ok_or_else(crate::boot::lnb_txn::missing_lnb_error)?;
         authority.execute(|permit| {
-            let prepared = self.lnb_txn().prepare_lnb_diseqc(lnb_id, payload)?;
+            let prepared = self
+                .lnb_mutation_context()
+                .prepare_lnb_diseqc(lnb_id, payload)?;
             let executed = prepared.execute(&permit);
-            self.lnb_txn().finish_lnb_diseqc(executed)
+            self.lnb_mutation_context().finish_lnb_diseqc(executed)
         })
     }
 
     pub(crate) fn open_lnb_for_public_id(&mut self, lnb_id: i32) -> Result<(), HalError> {
-        self.lnb_txn().open_lnb_for_public_id(lnb_id)
+        self.lnb_mutation_context().open_lnb_for_public_id(lnb_id)
     }
 
     pub(crate) fn commit_lnb_callback_registration(&mut self, lnb_id: i32) -> Result<(), HalError> {
-        self.lnb_txn().commit_lnb_callback_registration(lnb_id)
+        self.lnb_mutation_context()
+            .commit_lnb_callback_registration(lnb_id)
     }
 
     pub(crate) fn clear_lnb_callback_registration(&mut self, lnb_id: i32) -> Result<(), HalError> {
-        self.lnb_txn().clear_lnb_callback_registration(lnb_id)
+        self.lnb_mutation_context()
+            .clear_lnb_callback_registration(lnb_id)
     }
 
     pub(crate) fn record_lnb_drop_leak(&mut self, lnb_id: i32) -> Result<(), HalError> {
-        self.lnb_txn().record_lnb_drop_leak(lnb_id)
+        self.lnb_mutation_context().record_lnb_drop_leak(lnb_id)
     }
 
     pub fn record_lnb_drop_leak_after_domain_cleanup_command(
@@ -558,11 +563,13 @@ pub fn send_lnb_diseqc_object_use_case(
                     "LNB object changed physical endpoint before DiSEqC I/O preparation",
                 ));
             }
-            guard.lnb_txn().prepare_lnb_diseqc(lnb_id, &payload)?
+            guard
+                .lnb_mutation_context()
+                .prepare_lnb_diseqc(lnb_id, &payload)?
         };
         let executed = prepared.execute(&permit);
         lock_shared_lnb_runtime(&runtime)?
-            .lnb_txn()
+            .lnb_mutation_context()
             .finish_lnb_diseqc(executed)
     })
 }
@@ -585,11 +592,11 @@ fn close_lnb_runtime_with_authority(
 ) -> Result<(), HalError> {
     authority.execute(|permit| {
         let prepared = lock_shared_lnb_runtime(runtime)?
-            .lnb_txn()
+            .lnb_mutation_context()
             .prepare_lnb_lifecycle_close(lnb_id, reason)?;
         let executed = prepared.execute(&permit);
         lock_shared_lnb_runtime(runtime)?
-            .lnb_txn()
+            .lnb_mutation_context()
             .finish_lnb_lifecycle_close(executed)
     })
 }
@@ -649,7 +656,9 @@ pub(crate) fn close_lnbs_from_frontend_owner_loss_report(
     frontend_id: i32,
 ) -> Vec<(i32, Result<(), HalError>)> {
     let owned_lnb_ids = match lock_shared_lnb_runtime(&runtime) {
-        Ok(mut guard) => guard.lnb_txn().owned_lnb_ids_for_frontend(frontend_id),
+        Ok(mut guard) => guard
+            .lnb_mutation_context()
+            .owned_lnb_ids_for_frontend(frontend_id),
         Err(error) => return vec![(frontend_id, Err(error))],
     };
     let mut outcomes = Vec::with_capacity(owned_lnb_ids.len());

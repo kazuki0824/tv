@@ -123,17 +123,22 @@ impl PreparedLnbLifecycleClose {
     }
 }
 
-pub(crate) struct LnbTxn<'a> {
+/// LNB registryのmutation primitiveへアクセスするcall-local context。
+///
+/// relationとcontrolの正規authorityは`FrontendLnbRelationTxn`と
+/// `LnbControlTxn`が保持する。このcontextは状態も呼出しを跨ぐtransaction境界も
+/// 所有しない。
+pub(crate) struct LnbMutationContext<'a> {
     runtime: &'a mut TunerServiceRuntime,
 }
 
 impl TunerServiceRuntime {
-    pub(crate) fn lnb_txn(&mut self) -> LnbTxn<'_> {
-        LnbTxn { runtime: self }
+    pub(crate) fn lnb_mutation_context(&mut self) -> LnbMutationContext<'_> {
+        LnbMutationContext { runtime: self }
     }
 }
 
-impl<'a> LnbTxn<'a> {
+impl<'a> LnbMutationContext<'a> {
     pub(crate) fn prepare_frontend_lnb_assignment(
         &mut self,
         frontend_id: i32,

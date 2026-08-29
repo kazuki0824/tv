@@ -314,8 +314,38 @@ impl TunerServiceRuntime {
             }
         }
     }
+}
 
-    fn transact_add_descrambler_pid_demux_input(
+/// Descrambler PID 変更の検証から commit までを所有する call-local transaction。
+///
+/// registry の session transaction は atomic commit primitive として使用し、source
+/// 検証、排他確認、commit、失敗診断はこの transaction 境界から外へ分散させない。
+pub(crate) struct DescramblerPidTxn<'a> {
+    runtime: &'a mut TunerServiceRuntime,
+}
+
+impl std::ops::Deref for DescramblerPidTxn<'_> {
+    type Target = TunerServiceRuntime;
+
+    fn deref(&self) -> &Self::Target {
+        self.runtime
+    }
+}
+
+impl std::ops::DerefMut for DescramblerPidTxn<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.runtime
+    }
+}
+
+impl TunerServiceRuntime {
+    pub(crate) fn descrambler_pid_txn(&mut self) -> DescramblerPidTxn<'_> {
+        DescramblerPidTxn { runtime: self }
+    }
+}
+
+impl DescramblerPidTxn<'_> {
+    pub(crate) fn add_demux_input(
         &mut self,
         descrambler_id: i32,
         pid: u16,
@@ -405,7 +435,7 @@ impl TunerServiceRuntime {
         Ok(())
     }
 
-    fn transact_remove_descrambler_pid_demux_input(
+    pub(crate) fn remove_demux_input(
         &mut self,
         descrambler_id: i32,
         pid: u16,
@@ -475,7 +505,7 @@ impl TunerServiceRuntime {
         Ok(())
     }
 
-    fn transact_add_descrambler_pid_non_null_source(
+    pub(crate) fn add_non_null_source(
         &mut self,
         descrambler_id: i32,
         pid: u16,
@@ -603,7 +633,7 @@ impl TunerServiceRuntime {
         Ok(())
     }
 
-    fn transact_remove_descrambler_pid_non_null_source(
+    pub(crate) fn remove_non_null_source(
         &mut self,
         descrambler_id: i32,
         pid: u16,
@@ -731,7 +761,9 @@ impl TunerServiceRuntime {
         }
         Ok(())
     }
+}
 
+impl TunerServiceRuntime {
     fn transact_unregister_descrambler_runtime(
         &mut self,
         id: i32,
@@ -793,17 +825,21 @@ impl TunerServiceRuntime {
     }
 }
 
-pub(crate) struct DescramblerTxn<'a> {
+/// Descrambler registry primitive への call-local access。
+///
+/// PID、鍵、source relation、cleanup の transaction ownership は各 canonical owner が
+/// 持ち、この context 自身は共有状態や lifecycle を持たない。
+pub(crate) struct DescramblerMutationContext<'a> {
     runtime: &'a mut TunerServiceRuntime,
 }
 
 impl TunerServiceRuntime {
-    pub(crate) fn descrambler_txn(&mut self) -> DescramblerTxn<'_> {
-        DescramblerTxn { runtime: self }
+    pub(crate) fn descrambler_mutation_context(&mut self) -> DescramblerMutationContext<'_> {
+        DescramblerMutationContext { runtime: self }
     }
 }
 
-impl<'a> DescramblerTxn<'a> {
+impl DescramblerMutationContext<'_> {
     pub(crate) fn allocate_descrambler_runtime(
         &mut self,
     ) -> Result<crate::registry::DescramblerRegistryEntry, RegistryCommitError> {
@@ -826,47 +862,6 @@ impl<'a> DescramblerTxn<'a> {
     ) -> Result<(), HalError> {
         self.runtime
             .transact_set_descrambler_key_token(descrambler_id, key_token)
-    }
-
-    pub(crate) fn add_descrambler_pid_demux_input(
-        &mut self,
-        descrambler_id: i32,
-        pid: u16,
-    ) -> Result<(), HalError> {
-        self.runtime
-            .transact_add_descrambler_pid_demux_input(descrambler_id, pid)
-    }
-
-    pub(crate) fn remove_descrambler_pid_demux_input(
-        &mut self,
-        descrambler_id: i32,
-        pid: u16,
-    ) -> Result<(), HalError> {
-        self.runtime
-            .transact_remove_descrambler_pid_demux_input(descrambler_id, pid)
-    }
-
-    pub(crate) fn add_descrambler_pid_non_null_source(
-        &mut self,
-        descrambler_id: i32,
-        pid: u16,
-        source_filter_id: i32,
-    ) -> Result<(), HalError> {
-        self.runtime.transact_add_descrambler_pid_non_null_source(
-            descrambler_id,
-            pid,
-            source_filter_id,
-        )
-    }
-
-    pub(crate) fn remove_descrambler_pid_non_null_source(
-        &mut self,
-        descrambler_id: i32,
-        pid: u16,
-        source_filter_id: i32,
-    ) -> Result<(), HalError> {
-        self.runtime
-            .transact_remove_descrambler_pid_non_null_source(descrambler_id, pid, source_filter_id)
     }
 
     pub(crate) fn unregister_descrambler_runtime(
