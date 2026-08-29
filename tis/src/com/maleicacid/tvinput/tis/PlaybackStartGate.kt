@@ -69,6 +69,24 @@ object PlaybackStartTransitions {
         PlaybackStartState.Started(signature, pipelineGeneration)
     }
 
+    fun afterRestartResult(
+        currentState: PlaybackStartState,
+        signature: AvPlaybackSignature,
+        pipelineGeneration: Long,
+        firstOutputPending: Boolean,
+        started: Boolean,
+    ): PlaybackStartState {
+        if (pipelineGeneration < 0L) return currentState
+        return if (started) {
+            afterSuccessfulRestart(signature, pipelineGeneration, firstOutputPending)
+        } else {
+            PlaybackStartState.Failed(signature, pipelineGeneration)
+        }
+    }
+
+    fun acceptsGeneration(state: PlaybackStartState, generation: Long): Boolean =
+        pipelineGeneration(state) == generation
+
     fun failCurrentGeneration(
         state: PlaybackStartState,
         failedGeneration: Long,

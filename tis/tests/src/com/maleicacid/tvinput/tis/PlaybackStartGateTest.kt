@@ -70,6 +70,33 @@ class PlaybackStartGateTest {
         check(state == PlaybackStartState.WaitingFirstOutput(signature, pipelineGeneration = 9L))
     }
 
+    @Test fun failedAudioSwitchDoesNotKeepOldStartedGeneration() {
+        val oldSignature = signature(videoPid = TsPid(0x0101), audioPid = TsPid(0x0102))
+        val newSignature = signature(videoPid = TsPid(0x0101), audioPid = TsPid(0x0202))
+        val oldState = PlaybackStartState.Started(oldSignature, pipelineGeneration = 7L)
+
+        check(
+            PlaybackStartTransitions.afterRestartResult(
+                oldState,
+                newSignature,
+                pipelineGeneration = 9L,
+                firstOutputPending = true,
+                started = false,
+            ) == PlaybackStartState.Failed(newSignature, pipelineGeneration = 9L),
+        )
+        check(
+            PlaybackStartTransitions.afterRestartResult(
+                oldState,
+                newSignature,
+                pipelineGeneration = -1L,
+                firstOutputPending = false,
+                started = false,
+            ) == oldState,
+        ) {
+            "restart前の入力拒否ではcurrent playback stateを変更してはなりません"
+        }
+    }
+
     @Test fun audioOnlyFatalFailureStopsAdvertisingStartedGeneration() {
         val signature = signature(videoPid = null, audioPid = TsPid(0x0102))
         val started = PlaybackStartState.Started(signature, pipelineGeneration = 7L)
@@ -78,6 +105,10 @@ class PlaybackStartGateTest {
             PlaybackStartTransitions.failCurrentGeneration(started, failedGeneration = 7L) ==
                 PlaybackStartState.Failed(signature, pipelineGeneration = 7L),
         )
+        check(PlaybackStartTransitions.acceptsGeneration(started, generation = 7L))
+        check(!PlaybackStartTransitions.acceptsGeneration(started, generation = 6L)) {
+            "旧generationの失敗通知ではstate・caption・外部通知を変更してはなりません"
+        }
         check(PlaybackStartTransitions.failCurrentGeneration(started, failedGeneration = 6L) == started) {
             "旧generationの失敗通知でcurrent playback stateを変更してはなりません"
         }

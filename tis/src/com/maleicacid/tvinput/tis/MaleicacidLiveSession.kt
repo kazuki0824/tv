@@ -381,17 +381,21 @@ class MaleicacidLiveSession(
                     return false
                 }
                 val switched = tunerController.switchAudioTrack(selection)
-                if (switched?.switchedAudio == true) {
-                    playbackState = PlaybackStartTransitions.afterSuccessfulRestart(
+                if (switched != null && switched.generation >= 0L) {
+                    playbackState = PlaybackStartTransitions.afterRestartResult(
+                        playbackState,
                         signature,
                         switched.generation,
                         switched.firstFramePending,
+                        switched.switchedAudio,
                     )
                     captionController.beginPlaybackGeneration(
                         switched.generation,
                         hasVideo = !PlaybackPolicy.isAudioOnlyService(service.serviceType),
                     )
                     captionController.onPlaybackClockChanged()
+                }
+                if (switched?.switchedAudio == true) {
                     notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, trackId)
                     true
                 } else {
@@ -514,6 +518,13 @@ class MaleicacidLiveSession(
             reason.reason == PlaybackPipeline.PlaybackUnavailableReason.UNSUPPORTED_AUDIO_STREAM
         if (audioFailure) {
             if (PlaybackPolicy.isAudioOnlyService(latestService?.serviceType)) {
+                if (!PlaybackStartTransitions.acceptsGeneration(playbackState, reason.generation)) {
+                    android.util.Log.w(
+                        com.maleicacid.tvinput.common.LogTags.TIS,
+                        "旧generationのaudio unavailableを破棄します reason=${reason.reason} generation=${reason.generation}",
+                    )
+                    return
+                }
                 playbackState = PlaybackStartTransitions.failCurrentGeneration(playbackState, reason.generation)
                 captionController.beginPlaybackGeneration(-1L, false)
                 notifyVideoUnavailable(mapUnavailableReason(reason))
