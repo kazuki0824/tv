@@ -39,8 +39,8 @@ use super::filter_producer_drain_gate::{
     FilterDrainBoundary, FilterProducerDrainGate, FilterProducerPermit,
 };
 use super::queue_runtime::{
-    FilterDrainTxn, QueueDescriptorExportPlan, QueueDescriptorExportTarget, QueueEpochDrainTxn,
-    QueueRuntime, QueueRuntimeError,
+    DvrQueueDrainCommitError, FilterDrainTxn, QueueDescriptorExportPlan,
+    QueueDescriptorExportTarget, QueueEpochDrainTxn, QueueRuntime, QueueRuntimeError,
 };
 use super::pcr_clock_anchor::{PcrClockAnchorStore, PcrObservationOutcome};
 use super::source_boundary::{
@@ -275,10 +275,31 @@ pub enum DvrQueueCleanupStep {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DvrQueueCleanupCommitError {
+    failed_step: DvrQueueCleanupStep,
+    error: DemuxRuntimeError,
+}
+
+impl DvrQueueCleanupCommitError {
+    const fn new(failed_step: DvrQueueCleanupStep, error: DemuxRuntimeError) -> Self {
+        Self { failed_step, error }
+    }
+
+    pub const fn failed_step(self) -> DvrQueueCleanupStep {
+        self.failed_step
+    }
+
+    pub const fn error(self) -> DemuxRuntimeError {
+        self.error
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DvrQueueCleanupSkipReason {
     PlaybackOnly,
     RecordOnly,
     NoRetainedPlaybackBytes,
+    PrerequisiteFailed,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3037,34 +3058,10 @@ impl DemuxRuntime {
         }
     }
 
-    pub fn clear_dvr_fmq_for_queue_cleanup(
-        &mut self,
-        plan: &DvrQueueCleanupPlan,
-    ) -> Result<usize, DemuxRuntimeError> {
-        let result = self
-            .dvr_queue_runtimes
-            .get(&plan.dvr_id)
-            .ok_or(DemuxRuntimeError::queue_missing(plan.dvr_id))
-            .and_then(|queue| {
-                let dropped_bytes = queue
-                    .available_to_read()
-                    .map_err(|_| DemuxRuntimeError::queue_runtime_failure(plan.dvr_id))?;
-                queue
-                    .clear_contents()
-                    .map_err(|_| DemuxRuntimeError::queue_runtime_failure(plan.dvr_id))?;
-                Ok(dropped_bytes)
-            });
-        if result.is_err() {
-            self.quarantine_dvr_runtime(plan.dvr_id);
-        }
-        result
-    }
-
-    pub fn commit_dvr_queue_epoch_for_queue_cleanup(
+    pub fn commit_dvr_queue_boundary_for_queue_cleanup(
         &mut self,
         plan: DvrQueueCleanupPlan,
-        queue_dropped_bytes: usize,
-    ) -> Result<CommittedDvrQueueCleanup, DemuxRuntimeError> {
+    ) -> Result<CommittedDvrQueueCleanup, DvrQueueCleanupCommitError> {
         let DvrQueueCleanupPlan {
             dvr_id,
             kind,
@@ -3073,10 +3070,30 @@ impl DemuxRuntime {
             playback_coordinates,
             drain,
         } = plan;
-        if drain.commit().is_err() {
+        let Some(queue) = self.dvr_queue_runtimes.get(&dvr_id) else {
             self.quarantine_dvr_runtime(dvr_id);
-            return Err(DemuxRuntimeError::queue_runtime_failure(dvr_id));
-        }
+            return Err(DvrQueueCleanupCommitError::new(
+                DvrQueueCleanupStep::QueueClear,
+                DemuxRuntimeError::queue_missing(dvr_id),
+            ));
+        };
+        let queue_commit_result = queue.commit_dvr_drain_with_queue_clear(drain);
+        let queue_dropped_bytes = match queue_commit_result {
+            Ok(dropped_bytes) => dropped_bytes,
+            Err(DvrQueueDrainCommitError::QueueClear) => {
+                return Err(DvrQueueCleanupCommitError::new(
+                    DvrQueueCleanupStep::QueueClear,
+                    DemuxRuntimeError::queue_runtime_failure(dvr_id),
+                ));
+            }
+            Err(DvrQueueDrainCommitError::EpochCommit) => {
+                self.quarantine_dvr_runtime(dvr_id);
+                return Err(DvrQueueCleanupCommitError::new(
+                    DvrQueueCleanupStep::QueueEpochCommit,
+                    DemuxRuntimeError::queue_runtime_failure(dvr_id),
+                ));
+            }
+        };
         Ok(CommittedDvrQueueCleanup {
             dvr_id,
             kind,
@@ -3156,9 +3173,9 @@ impl DemuxRuntime {
     #[cfg(test)]
     pub(crate) fn flush_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
         let plan = self.prepare_dvr_queue_cleanup(DvrRuntimeOperationRequest::new(dvr_id))?;
-        let queue_dropped_bytes = self.clear_dvr_fmq_for_queue_cleanup(&plan)?;
-        let committed =
-            self.commit_dvr_queue_epoch_for_queue_cleanup(plan, queue_dropped_bytes)?;
+        let committed = self
+            .commit_dvr_queue_boundary_for_queue_cleanup(plan)
+            .map_err(DvrQueueCleanupCommitError::error)?;
         self.commit_dvr_runtime_state_for_queue_cleanup(&committed)?;
         self.reset_dvr_playback_pipeline_for_queue_cleanup(&committed);
         self.invalidate_dvr_playback_pcr_for_queue_cleanup(&committed);

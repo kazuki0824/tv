@@ -1,3 +1,10 @@
+# r50eo83_pr53_dvr_queue_cleanup_failure_semantics_followup
+
+- DVR queue cleanupのFMQ clearとqueue epoch publicationを`QueueEpochProtocol`配下の単一commit境界へ統合した。epoch/drainを事前検証してからfailure-atomicなexact readでFMQをclearし、成功後はfallibleな処理を挟まず次epochを公開するため、precommit失敗時は旧content/read position/epoch/Open状態を維持する。
+- `QueueCleanupUseCase`はruntime state更新が失敗しても、独立したplayback pipeline reset、PCR invalidate、record index resetとservice側playback residual/diagnostic cleanupを続行し、既存`DvrQueueCleanupReport`へ全phaseの結果と最初の失敗を集約するよう変更した。前提phase失敗で実行不能なphaseもtyped skipとして記録する。
+- FMQ clear失敗時のcontent/epoch/Open維持、成功時のclearとepoch更新、およびpost-commit失敗後も後続phaseを集約するbehavior testを追加した。永続state owner、epoch namespace、queue、worker、diagnostic storeは追加していない。
+- 公開AIDL/VINTF、ARIB処理、future_work、`RELEASE_VERSION`は変更していない。ローカルでは変更Rustファイルのtree-sitter構文解析、`git diff --check`、旧split入口の不在と参照経路を確認した。rustfmt、Rust compile/unit/loom、Android/Soong build、atest、VTS、実機確認はローカル環境では未実施。
+
 # r50eo82_pr53_dvr_queue_cleanup_owner_followup
 
 - DVR `flush()` の queue drain、FMQ clear、queue epoch commit、runtime state更新、playback pipeline/PCR reset、record index resetをtyped phaseへ分割し、`QueueCleanupUseCase`が呼出順序と`DvrQueueCleanupReport`の結果集約を所有する形へ変更した。

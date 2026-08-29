@@ -235,23 +235,6 @@ pub(crate) struct QueueEpochDrainTxn {
 }
 
 impl QueueEpochDrainTxn {
-    pub(crate) fn commit(mut self) -> Result<(), QueueRuntimeError> {
-        let mut state = self.protocol.state.lock().map_err(|_| {
-            protocol_error("DVR queue epoch lock poisoned while committing drain")
-        })?;
-        if state.state != QueueEpochState::Draining
-            || state.epoch != self.epoch
-            || state.admitted_transaction_count != 0
-        {
-            return Err(protocol_error("DVR queue drain state changed before commit"));
-        }
-        state.epoch = self.next_epoch;
-        state.state = QueueEpochState::Open;
-        self.active = false;
-        self.protocol.drained.notify_all();
-        Ok(())
-    }
-
     fn rollback(&mut self) -> Result<(), QueueRuntimeError> {
         if !self.active {
             return Ok(());
@@ -269,6 +252,12 @@ impl QueueEpochDrainTxn {
         self.protocol.drained.notify_all();
         Ok(())
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DvrQueueDrainCommitError {
+    QueueClear,
+    EpochCommit,
 }
 
 impl Drop for QueueEpochDrainTxn {
@@ -420,6 +409,55 @@ impl QueueRuntime {
             self.wake_pending.store(false, Ordering::Release);
         }
         result
+    }
+
+    pub(crate) fn commit_dvr_drain_with_queue_clear(
+        &self,
+        drain: QueueEpochDrainTxn,
+    ) -> Result<usize, DvrQueueDrainCommitError> {
+        self.commit_dvr_drain_with_queue_clear_operation(drain, |queue| {
+            let dropped_bytes = queue.available_to_read()?;
+            queue.clear_contents()?;
+            Ok(dropped_bytes)
+        })
+    }
+
+    fn commit_dvr_drain_with_queue_clear_operation<Clear>(
+        &self,
+        mut drain: QueueEpochDrainTxn,
+        clear: Clear,
+    ) -> Result<usize, DvrQueueDrainCommitError>
+    where
+        Clear: FnOnce(&Self) -> Result<usize, QueueRuntimeError>,
+    {
+        let protocol = self
+            .dvr_epoch
+            .as_ref()
+            .ok_or(DvrQueueDrainCommitError::EpochCommit)?;
+        if !Arc::ptr_eq(protocol, &drain.protocol) {
+            return Err(DvrQueueDrainCommitError::EpochCommit);
+        }
+        let mut state = protocol
+            .state
+            .lock()
+            .map_err(|_| DvrQueueDrainCommitError::EpochCommit)?;
+        if state.state != QueueEpochState::Draining
+            || state.epoch != drain.epoch
+            || state.admitted_transaction_count != 0
+        {
+            return Err(DvrQueueDrainCommitError::EpochCommit);
+        }
+
+        // FmqQueue::clear() is failure-atomic: allocation happens before the
+        // exact read, and a failed exact read leaves the read position intact.
+        // Once it succeeds, only infallible in-memory epoch publication remains.
+        let dropped_bytes = clear(self).map_err(|_| DvrQueueDrainCommitError::QueueClear)?;
+        state.epoch = drain.next_epoch;
+        state.state = QueueEpochState::Open;
+        drain.active = false;
+        self.wake_pending.store(false, Ordering::Release);
+        protocol.drained.notify_all();
+        Ok(dropped_bytes)
     }
 
     fn begin_dvr_transaction(
@@ -1165,5 +1203,90 @@ impl Drop for FilterDrainTxn {
                 self.inner.drained.notify_all();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod dvr_queue_cleanup_tests {
+    use super::*;
+
+    #[test]
+    fn failed_queue_clear_preserves_content_epoch_and_open_state() {
+        let queue = QueueRuntime::new_dvr(64, false, true).expect("DVR queue must open");
+        let payload = [0x11, 0x22, 0x33, 0x44];
+        assert_eq!(queue.write_checked(&payload), Ok(payload.len()));
+        let coordinates_before = queue
+            .playback_coordinates()
+            .expect("playback coordinates must be available");
+        let drain = queue
+            .begin_dvr_drain()
+            .expect("queue drain must begin without admitted transactions");
+
+        let error = queue
+            .commit_dvr_drain_with_queue_clear_operation(drain, |_| {
+                Err(QueueRuntimeError::new(
+                    QueueRuntimeErrorKind::DataPathFailure,
+                    "injected FMQ clear failure",
+                ))
+            })
+            .expect_err("injected clear failure must fail the cleanup boundary");
+
+        assert_eq!(error, DvrQueueDrainCommitError::QueueClear);
+        assert_eq!(queue.available_to_read(), Ok(payload.len()));
+        assert_eq!(queue.playback_coordinates(), Ok(coordinates_before));
+        let transaction = queue
+            .begin_dvr_read(1)
+            .expect("failed precommit must reopen the old epoch");
+        transaction
+            .commit()
+            .expect("old-epoch transaction must remain usable");
+    }
+
+    #[test]
+    fn rejected_epoch_preflight_does_not_clear_queue_content() {
+        let target = QueueRuntime::new_dvr(64, false, true).expect("target DVR queue must open");
+        let other = QueueRuntime::new_dvr(64, false, true).expect("other DVR queue must open");
+        let payload = [0x21, 0x32, 0x43];
+        assert_eq!(target.write_checked(&payload), Ok(payload.len()));
+        let other_drain = other
+            .begin_dvr_drain()
+            .expect("other queue drain must begin without admitted transactions");
+
+        let error = target
+            .commit_dvr_drain_with_queue_clear(other_drain)
+            .expect_err("a drain from another queue must fail preflight");
+
+        assert_eq!(error, DvrQueueDrainCommitError::EpochCommit);
+        assert_eq!(target.available_to_read(), Ok(payload.len()));
+        let transaction = other
+            .begin_dvr_read(1)
+            .expect("rejected drain must reopen its original queue");
+        transaction
+            .commit()
+            .expect("the original queue epoch must remain usable");
+    }
+
+    #[test]
+    fn successful_queue_clear_publishes_the_next_epoch_after_content_is_gone() {
+        let queue = QueueRuntime::new_dvr(64, false, true).expect("DVR queue must open");
+        let payload = [0x55, 0x66, 0x77];
+        assert_eq!(queue.write_checked(&payload), Ok(payload.len()));
+        let (_, epoch_before) = queue
+            .playback_coordinates()
+            .expect("playback coordinates must be available");
+        let drain = queue
+            .begin_dvr_drain()
+            .expect("queue drain must begin without admitted transactions");
+
+        let dropped_bytes = queue
+            .commit_dvr_drain_with_queue_clear(drain)
+            .expect("queue clear and epoch commit must succeed together");
+
+        assert_eq!(dropped_bytes, payload.len());
+        assert_eq!(queue.available_to_read(), Ok(0));
+        let (_, epoch_after) = queue
+            .playback_coordinates()
+            .expect("playback coordinates must remain available");
+        assert_eq!(epoch_after, epoch_before + 1);
     }
 }

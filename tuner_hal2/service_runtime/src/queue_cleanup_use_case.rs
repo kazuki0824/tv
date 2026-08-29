@@ -6,11 +6,11 @@ use crate::diagnostics::DemuxTransactionDiagnosticRecord;
 use crate::registry::{DemuxRuntimeId, DvrRuntimeId, FilterRuntimeId};
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidStateKind};
 use maleicacid_tuner_hal2_demux::{
-    DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind, DvrKind, DvrQueueCleanupOutcome,
-    DvrQueueCleanupReport, DvrQueueCleanupSkipReason, DvrQueueCleanupStep,
-    DvrRuntimeOperationRequest, FilterRuntimeOperationKind, FilterRuntimeOperationOutcome,
-    FilterRuntimeOperationReport, FilterRuntimeOperationRequest, FilterRuntimeOperationSkipReason,
-    FilterRuntimeOperationStep,
+    DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind, DvrKind,
+    DvrQueueCleanupCommitError, DvrQueueCleanupOutcome, DvrQueueCleanupReport,
+    DvrQueueCleanupSkipReason, DvrQueueCleanupStep, DvrRuntimeOperationRequest,
+    FilterRuntimeOperationKind, FilterRuntimeOperationOutcome, FilterRuntimeOperationReport,
+    FilterRuntimeOperationRequest, FilterRuntimeOperationSkipReason, FilterRuntimeOperationStep,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -18,6 +18,9 @@ pub(crate) enum QueueCleanupTarget {
     Filter { filter_id: i32 },
     Dvr { dvr_id: i32 },
 }
+
+type DvrQueueCleanupFailure = (DvrQueueCleanupStep, DemuxRuntimeError);
+type DvrDemuxCleanupResult = Result<(DvrKind, Option<DvrQueueCleanupFailure>), DemuxRuntimeError>;
 
 pub(crate) struct QueueCleanupUseCase<'a> {
     runtime: &'a mut TunerServiceRuntime,
@@ -116,8 +119,8 @@ impl<'a> QueueCleanupUseCase<'a> {
                 })?,
             dvr_id,
         );
-        let kind = match demux_result {
-            Ok(kind) => kind,
+        let (kind, demux_failure) = match demux_result {
+            Ok(committed) => committed,
             Err(error) => {
                 let primary = TunerServiceRuntime::map_dvr_runtime_error(error);
                 return Err(record_dvr_queue_cleanup_failure(
@@ -129,6 +132,12 @@ impl<'a> QueueCleanupUseCase<'a> {
                 ));
             }
         };
+        let mut primary_failure = demux_failure.map(|(step, error)| {
+            (
+                step,
+                TunerServiceRuntime::map_dvr_runtime_error(error),
+            )
+        });
 
         if kind == DvrKind::Record {
             report.skipped(
@@ -139,8 +148,13 @@ impl<'a> QueueCleanupUseCase<'a> {
                 DvrQueueCleanupStep::PlaybackDiscardDiagnosticCommit,
                 DvrQueueCleanupSkipReason::PlaybackOnly,
             );
-            report.finish(DvrQueueCleanupOutcome::Committed);
-            return Ok(());
+            return finish_dvr_queue_cleanup(
+                self.runtime,
+                owner_demux_id,
+                dvr_id,
+                report,
+                primary_failure,
+            );
         }
 
         let dropped_bytes = self
@@ -152,8 +166,13 @@ impl<'a> QueueCleanupUseCase<'a> {
                 DvrQueueCleanupStep::PlaybackDiscardDiagnosticCommit,
                 DvrQueueCleanupSkipReason::NoRetainedPlaybackBytes,
             );
-            report.finish(DvrQueueCleanupOutcome::Committed);
-            return Ok(());
+            return finish_dvr_queue_cleanup(
+                self.runtime,
+                owner_demux_id,
+                dvr_id,
+                report,
+                primary_failure,
+            );
         }
 
         let diagnostic_result = self
@@ -182,33 +201,34 @@ impl<'a> QueueCleanupUseCase<'a> {
         match diagnostic_result {
             Ok(()) => {
                 report.succeeded(DvrQueueCleanupStep::PlaybackDiscardDiagnosticCommit);
-                report.finish(DvrQueueCleanupOutcome::Committed);
-                Ok(())
             }
             Err((error_kind, primary)) => {
                 report.failed(
                     DvrQueueCleanupStep::PlaybackDiscardDiagnosticCommit,
                     error_kind,
                 );
-                report.finish(DvrQueueCleanupOutcome::Isolated {
-                    failed_step: DvrQueueCleanupStep::PlaybackDiscardDiagnosticCommit,
-                });
-                Err(record_dvr_queue_cleanup_failure(
-                    self.runtime,
-                    owner_demux_id,
-                    dvr_id,
-                    report,
-                    primary,
-                ))
+                if primary_failure.is_none() {
+                    primary_failure = Some((
+                        DvrQueueCleanupStep::PlaybackDiscardDiagnosticCommit,
+                        primary,
+                    ));
+                }
             }
         }
+        finish_dvr_queue_cleanup(
+            self.runtime,
+            owner_demux_id,
+            dvr_id,
+            report,
+            primary_failure,
+        )
     }
 }
 
 fn execute_dvr_demux_cleanup_protocol(
     demux: &mut DemuxRuntime,
     dvr_id: i32,
-) -> (DvrQueueCleanupReport, Result<DvrKind, DemuxRuntimeError>) {
+) -> (DvrQueueCleanupReport, DvrDemuxCleanupResult) {
     let mut report = DvrQueueCleanupReport::new(dvr_id);
     let plan = match demux.prepare_dvr_queue_cleanup(DvrRuntimeOperationRequest::new(dvr_id)) {
         Ok(plan) => {
@@ -217,6 +237,19 @@ fn execute_dvr_demux_cleanup_protocol(
         }
         Err(error) => {
             report.failed(DvrQueueCleanupStep::Prepare, error.kind);
+            skip_dvr_queue_cleanup_steps(
+                &mut report,
+                &[
+                    DvrQueueCleanupStep::QueueClear,
+                    DvrQueueCleanupStep::QueueEpochCommit,
+                    DvrQueueCleanupStep::RuntimeStateCommit,
+                    DvrQueueCleanupStep::PlaybackPipelineReset,
+                    DvrQueueCleanupStep::PcrAnchorInvalidate,
+                    DvrQueueCleanupStep::RecordIndexReset,
+                    DvrQueueCleanupStep::PlaybackResidualDiscard,
+                    DvrQueueCleanupStep::PlaybackDiscardDiagnosticCommit,
+                ],
+            );
             let outcome = if matches!(
                 error.kind,
                 DemuxRuntimeErrorKind::GenerationExhausted
@@ -236,47 +269,97 @@ fn execute_dvr_demux_cleanup_protocol(
     };
     let kind = plan.kind();
 
-    let queue_dropped_bytes = match demux.clear_dvr_fmq_for_queue_cleanup(&plan) {
-        Ok(dropped_bytes) => {
-            report.succeeded(DvrQueueCleanupStep::QueueClear);
-            dropped_bytes
-        }
-        Err(error) => {
-            report.failed(DvrQueueCleanupStep::QueueClear, error.kind);
-            report.finish(DvrQueueCleanupOutcome::Isolated {
-                failed_step: DvrQueueCleanupStep::QueueClear,
-            });
-            return (report, Err(error));
-        }
-    };
-
-    let committed = match demux.commit_dvr_queue_epoch_for_queue_cleanup(
-        plan,
-        queue_dropped_bytes,
-    ) {
+    let committed = match demux.commit_dvr_queue_boundary_for_queue_cleanup(plan) {
         Ok(committed) => {
+            report.succeeded(DvrQueueCleanupStep::QueueClear);
             report.succeeded(DvrQueueCleanupStep::QueueEpochCommit);
             committed
         }
         Err(error) => {
-            report.failed(DvrQueueCleanupStep::QueueEpochCommit, error.kind);
+            record_dvr_queue_boundary_failure(&mut report, error);
             report.finish(DvrQueueCleanupOutcome::Isolated {
-                failed_step: DvrQueueCleanupStep::QueueEpochCommit,
+                failed_step: error.failed_step(),
             });
-            return (report, Err(error));
+            return (report, Err(error.error()));
         }
     };
 
-    if let Err(error) = demux.commit_dvr_runtime_state_for_queue_cleanup(&committed) {
-        report.failed(DvrQueueCleanupStep::RuntimeStateCommit, error.kind);
-        report.finish(DvrQueueCleanupOutcome::Isolated {
-            failed_step: DvrQueueCleanupStep::RuntimeStateCommit,
-        });
-        return (report, Err(error));
-    }
-    report.succeeded(DvrQueueCleanupStep::RuntimeStateCommit);
+    let runtime_state_result = demux.commit_dvr_runtime_state_for_queue_cleanup(&committed);
+    let playback_pipeline_reset =
+        demux.reset_dvr_playback_pipeline_for_queue_cleanup(&committed);
+    let playback_pcr_invalidated =
+        demux.invalidate_dvr_playback_pcr_for_queue_cleanup(&committed);
+    let record_index_reset = demux.reset_dvr_record_index_for_queue_cleanup(&committed);
+    let first_failure = record_dvr_post_commit_demux_results(
+        &mut report,
+        runtime_state_result,
+        playback_pipeline_reset,
+        playback_pcr_invalidated,
+        record_index_reset,
+    );
 
-    if demux.reset_dvr_playback_pipeline_for_queue_cleanup(&committed) {
+    (report, Ok((kind, first_failure)))
+}
+
+fn record_dvr_queue_boundary_failure(
+    report: &mut DvrQueueCleanupReport,
+    error: DvrQueueCleanupCommitError,
+) {
+    match error.failed_step() {
+        DvrQueueCleanupStep::QueueClear => {
+            report.failed(DvrQueueCleanupStep::QueueClear, error.error().kind);
+            skip_dvr_queue_cleanup_steps(report, &[DvrQueueCleanupStep::QueueEpochCommit]);
+        }
+        DvrQueueCleanupStep::QueueEpochCommit => {
+            skip_dvr_queue_cleanup_steps(report, &[DvrQueueCleanupStep::QueueClear]);
+            report.failed(
+                DvrQueueCleanupStep::QueueEpochCommit,
+                error.error().kind,
+            );
+        }
+        failed_step => report.failed(failed_step, error.error().kind),
+    }
+    skip_dvr_queue_cleanup_steps(
+        report,
+        &[
+            DvrQueueCleanupStep::RuntimeStateCommit,
+            DvrQueueCleanupStep::PlaybackPipelineReset,
+            DvrQueueCleanupStep::PcrAnchorInvalidate,
+            DvrQueueCleanupStep::RecordIndexReset,
+            DvrQueueCleanupStep::PlaybackResidualDiscard,
+            DvrQueueCleanupStep::PlaybackDiscardDiagnosticCommit,
+        ],
+    );
+}
+
+fn skip_dvr_queue_cleanup_steps(
+    report: &mut DvrQueueCleanupReport,
+    steps: &[DvrQueueCleanupStep],
+) {
+    for step in steps {
+        report.skipped(*step, DvrQueueCleanupSkipReason::PrerequisiteFailed);
+    }
+}
+
+fn record_dvr_post_commit_demux_results(
+    report: &mut DvrQueueCleanupReport,
+    runtime_state_result: Result<(), DemuxRuntimeError>,
+    playback_pipeline_reset: bool,
+    playback_pcr_invalidated: bool,
+    record_index_reset: bool,
+) -> Option<DvrQueueCleanupFailure> {
+    let first_failure = match runtime_state_result {
+        Ok(()) => {
+            report.succeeded(DvrQueueCleanupStep::RuntimeStateCommit);
+            None
+        }
+        Err(error) => {
+            report.failed(DvrQueueCleanupStep::RuntimeStateCommit, error.kind);
+            Some((DvrQueueCleanupStep::RuntimeStateCommit, error))
+        }
+    };
+
+    if playback_pipeline_reset {
         report.succeeded(DvrQueueCleanupStep::PlaybackPipelineReset);
     } else {
         report.skipped(
@@ -284,7 +367,7 @@ fn execute_dvr_demux_cleanup_protocol(
             DvrQueueCleanupSkipReason::PlaybackOnly,
         );
     }
-    if demux.invalidate_dvr_playback_pcr_for_queue_cleanup(&committed) {
+    if playback_pcr_invalidated {
         report.succeeded(DvrQueueCleanupStep::PcrAnchorInvalidate);
     } else {
         report.skipped(
@@ -292,7 +375,7 @@ fn execute_dvr_demux_cleanup_protocol(
             DvrQueueCleanupSkipReason::PlaybackOnly,
         );
     }
-    if demux.reset_dvr_record_index_for_queue_cleanup(&committed) {
+    if record_index_reset {
         report.succeeded(DvrQueueCleanupStep::RecordIndexReset);
     } else {
         report.skipped(
@@ -301,7 +384,32 @@ fn execute_dvr_demux_cleanup_protocol(
         );
     }
 
-    (report, Ok(kind))
+    first_failure
+}
+
+fn finish_dvr_queue_cleanup(
+    runtime: &mut TunerServiceRuntime,
+    owner_demux_id: i32,
+    dvr_id: i32,
+    mut report: DvrQueueCleanupReport,
+    primary_failure: Option<(DvrQueueCleanupStep, HalError)>,
+) -> Result<(), HalError> {
+    match primary_failure {
+        Some((failed_step, primary)) => {
+            report.finish(DvrQueueCleanupOutcome::Isolated { failed_step });
+            Err(record_dvr_queue_cleanup_failure(
+                runtime,
+                owner_demux_id,
+                dvr_id,
+                report,
+                primary,
+            ))
+        }
+        None => {
+            report.finish(DvrQueueCleanupOutcome::Committed);
+            Ok(())
+        }
+    }
 }
 
 fn record_dvr_queue_cleanup_failure(
@@ -452,4 +560,48 @@ fn execute_filter_cleanup_protocol(
     }
     report.finish(FilterRuntimeOperationOutcome::Committed);
     (report, Ok(()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maleicacid_tuner_hal2_demux::DvrQueueCleanupStepOutcome;
+
+    #[test]
+    fn post_commit_failure_still_aggregates_every_later_demux_phase() {
+        let mut report = DvrQueueCleanupReport::new(71);
+        let runtime_error = DemuxRuntimeError::dvr_missing(71);
+
+        let first_failure = record_dvr_post_commit_demux_results(
+            &mut report,
+            Err(runtime_error),
+            true,
+            true,
+            false,
+        );
+
+        assert_eq!(
+            first_failure,
+            Some((DvrQueueCleanupStep::RuntimeStateCommit, runtime_error))
+        );
+        assert_eq!(
+            report.steps(),
+            &[
+                DvrQueueCleanupStepOutcome::Failed {
+                    step: DvrQueueCleanupStep::RuntimeStateCommit,
+                    error: DemuxRuntimeErrorKind::DvrMissing,
+                },
+                DvrQueueCleanupStepOutcome::Succeeded(
+                    DvrQueueCleanupStep::PlaybackPipelineReset,
+                ),
+                DvrQueueCleanupStepOutcome::Succeeded(
+                    DvrQueueCleanupStep::PcrAnchorInvalidate,
+                ),
+                DvrQueueCleanupStepOutcome::Skipped {
+                    step: DvrQueueCleanupStep::RecordIndexReset,
+                    reason: DvrQueueCleanupSkipReason::RecordOnly,
+                },
+            ]
+        );
+    }
 }
