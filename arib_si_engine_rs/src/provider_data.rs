@@ -208,11 +208,11 @@ pub(crate) struct DescriptorDiagnosticV1 {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct VideoComponentV1 {
-    es_pid: i64,
-    stream_type: i64,
+    es_pid: Option<i64>,
+    stream_type: Option<i64>,
     component_tag: Option<i64>,
     component_type: Option<i64>,
-    codec: String,
+    codec: Option<String>,
     resolution: Option<String>,
     scan: Option<String>,
     aspect: Option<String>,
@@ -224,11 +224,11 @@ struct VideoComponentV1 {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct AudioComponentV1 {
-    es_pid: i64,
-    stream_type: i64,
+    es_pid: Option<i64>,
+    stream_type: Option<i64>,
     component_tag: Option<i64>,
     component_type: Option<i64>,
-    codec: String,
+    codec: Option<String>,
     language: Option<String>,
     second_language: Option<String>,
     channel_configuration: Option<String>,
@@ -240,7 +240,7 @@ struct AudioComponentV1 {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SubtitleComponentV1 {
-    es_pid: i64,
+    es_pid: Option<i64>,
     component_tag: Option<i64>,
     data_component_id: Option<i64>,
     language: Option<String>,
@@ -251,7 +251,7 @@ struct SubtitleComponentV1 {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DataComponentV1 {
-    es_pid: i64,
+    es_pid: Option<i64>,
     component_tag: Option<i64>,
     data_component_id: Option<i64>,
     component_type: Option<i64>,
@@ -1721,41 +1721,45 @@ fn valid_components(v: &ComponentsV1) -> bool {
         && v.data.iter().all(valid_data_component)
 }
 fn valid_video_component(v: &VideoComponentV1) -> bool {
-    v.es_pid > 0
-        && v.es_pid <= 8191
-        && (0..=255).contains(&v.stream_type)
+    valid_optional_es_pid(v.es_pid)
+        && valid_optional_u8(v.stream_type)
         && valid_optional_u8(v.component_tag)
         && valid_optional_u8(v.component_type)
-        && nonempty(&v.codec)
+        && v.codec.as_deref().map(nonempty).unwrap_or(true)
+        && (v.es_pid.is_some() || v.component_tag.is_some())
         && nonempty(&v.parse_status)
 }
 fn valid_audio_component(v: &AudioComponentV1) -> bool {
-    v.es_pid > 0
-        && v.es_pid <= 8191
-        && (0..=255).contains(&v.stream_type)
+    valid_optional_es_pid(v.es_pid)
+        && valid_optional_u8(v.stream_type)
         && valid_optional_u8(v.component_tag)
         && valid_optional_u8(v.component_type)
-        && nonempty(&v.codec)
+        && v.codec.as_deref().map(nonempty).unwrap_or(true)
+        && (v.es_pid.is_some() || v.component_tag.is_some())
         && valid_optional_iso639(&v.language)
         && valid_optional_iso639(&v.second_language)
         && nonempty(&v.parse_status)
 }
 fn valid_subtitle_component(v: &SubtitleComponentV1) -> bool {
-    v.es_pid > 0
-        && v.es_pid <= 8191
+    valid_optional_es_pid(v.es_pid)
         && valid_optional_u8(v.component_tag)
+        && (v.es_pid.is_some() || v.component_tag.is_some())
         && valid_optional_u16(v.data_component_id)
         && valid_optional_iso639(&v.language)
         && nonempty(&v.caption_service_kind)
         && nonempty(&v.parse_status)
 }
 fn valid_data_component(v: &DataComponentV1) -> bool {
-    v.es_pid > 0
-        && v.es_pid <= 8191
+    valid_optional_es_pid(v.es_pid)
         && valid_optional_u8(v.component_tag)
+        && (v.es_pid.is_some() || v.component_tag.is_some())
         && valid_optional_u16(v.data_component_id)
         && valid_optional_u8(v.component_type)
         && nonempty(&v.parse_status)
+}
+
+fn valid_optional_es_pid(v: Option<i64>) -> bool {
+    v.map(|value| (1..=8191).contains(&value)).unwrap_or(true)
 }
 
 fn failure_result(code: &str, message: String, schema_version: i64) -> ProviderDataResult {
@@ -2326,11 +2330,11 @@ mod nullable_component_fact_tests {
     #[test]
     fn component_descriptor_absence_is_a_valid_fact() {
         assert!(valid_video_component(&VideoComponentV1 {
-            es_pid: 0x120,
-            stream_type: 0x24,
+            es_pid: Some(0x120),
+            stream_type: Some(0x24),
             component_tag: None,
             component_type: None,
-            codec: "HEVC".to_string(),
+            codec: Some("HEVC".to_string()),
             resolution: None,
             scan: None,
             aspect: None,
@@ -2339,16 +2343,33 @@ mod nullable_component_fact_tests {
             parse_status: "OK".to_string(),
         }));
         assert!(valid_audio_component(&AudioComponentV1 {
-            es_pid: 0x110,
-            stream_type: 0x0f,
+            es_pid: Some(0x110),
+            stream_type: Some(0x0f),
             component_tag: None,
             component_type: None,
-            codec: "AAC".to_string(),
+            codec: Some("AAC".to_string()),
             language: None,
             second_language: None,
             channel_configuration: None,
             sampling_info: None,
             source_descriptor: None,
+            parse_status: "OK".to_string(),
+        }));
+    }
+
+    #[test]
+    fn eit_only_component_keeps_descriptor_facts_without_invented_pmt_identity() {
+        assert!(valid_video_component(&VideoComponentV1 {
+            es_pid: None,
+            stream_type: None,
+            component_tag: Some(7),
+            component_type: Some(0xb3),
+            codec: None,
+            resolution: Some("1080".to_string()),
+            scan: Some("interlaced".to_string()),
+            aspect: Some("16:9".to_string()),
+            profile_level: None,
+            source_descriptor: Some("component_descriptor".to_string()),
             parse_status: "OK".to_string(),
         }));
     }

@@ -536,10 +536,24 @@
       ],
       "properties": {
         "esPid": {
-          "$ref": "#/$defs/uint13"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint13"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "streamType": {
-          "$ref": "#/$defs/uint8"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint8"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "componentTag": {
           "anyOf": [
@@ -562,8 +576,15 @@
           ]
         },
         "codec": {
-          "type": "string",
-          "minLength": 1
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "resolution": {
           "type": [
@@ -629,10 +650,24 @@
       ],
       "properties": {
         "esPid": {
-          "$ref": "#/$defs/uint13"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint13"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "streamType": {
-          "$ref": "#/$defs/uint8"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint8"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "componentTag": {
           "anyOf": [
@@ -655,8 +690,15 @@
           ]
         },
         "codec": {
-          "type": "string",
-          "minLength": 1
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "language": {
           "anyOf": [
@@ -728,7 +770,14 @@
       ],
       "properties": {
         "esPid": {
-          "$ref": "#/$defs/uint13"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint13"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "componentTag": {
           "anyOf": [
@@ -786,7 +835,14 @@
       ],
       "properties": {
         "esPid": {
-          "$ref": "#/$defs/uint13"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint13"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "componentTag": {
           "anyOf": [
