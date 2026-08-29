@@ -97,6 +97,22 @@ class PlaybackStartGateTest {
         }
     }
 
+    @Test fun everyFailureAfterRestartCarriesTheIssuedGeneration() {
+        val generation = 9L
+        listOf(
+            "unsupported-video",
+            "unsupported-audio-only",
+            "invalid-surface",
+            "media-sync-init",
+            "video-filter-start",
+            "audio-only-filter-start",
+        ).forEach { failure ->
+            val result = PlaybackPipeline.StartResult.failedAfterRestart(generation, listOf(failure))
+            check(result.generation == generation)
+            check(!result.startedVideo && !result.startedAudio)
+        }
+    }
+
     @Test fun audioOnlyFatalFailureStopsAdvertisingStartedGeneration() {
         val signature = signature(videoPid = null, audioPid = TsPid(0x0102))
         val started = PlaybackStartState.Started(signature, pipelineGeneration = 7L)
