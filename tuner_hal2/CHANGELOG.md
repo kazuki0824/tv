@@ -4,7 +4,7 @@
 - 残余は同一`FilterRuntime`内の未完了header最大7 byte、またはADTSの13-bit frame length上限8191 byte以内の残りbyte数1件だけとした。payload本体の再構成・copy、新しいstate owner、queue、worker、clock、ledger、TIS側codec parserは追加していない。既存のTEI、continuity gap、scramble/drop、flush、source/generation、stop/failure fenceはanchorと残余を同時に破棄する。
 - ADTSのframe body／header途中とMPEG audioのframe body途中にPES境界を置くunit test、公開demux AV配送経路で`explicit PTS + mid-frame boundary -> PTS-sparse PES`が`isPtsPresent=false`のまま次の開始AU時刻を配送する回帰試験を追加した。unsupported／malformed header、未anchor、未通知parameter変更では従来どおりfail-closedとし、PCR／wallclock／nominal rateへfallbackしない。
 - `tuner_hal/DESIGN_JA.md`と`tuner_hal2/DESIGN_JA.md`をH.222.0のfirst-AU対応、TR-B15のnon-synchronization許容、有限残余上限、成功／失敗境界へ同期した。TR-B15の根拠は公式英訳4.6-E1の精読範囲であり、現行日本語版8.9との差分は未証明のままとした。公開AIDL/VINTF、capability値、future_work、`RELEASE_VERSION`は変更していない。
-- 検証結果は本変更のCI完了後に追記する。Android/Soong build、atest、VTS、実機・実放送波確認は未実施。
+- GitHub Actions `tuner_hal2 host Rust CI` run 33278079105でRust 1.81.0のrustfmt、Clippy（`-D warnings`）、全target type-check、workspace unit testが成功した。Android/Soong build、atest、VTS、実機・実放送波確認は未実施。
 
 # r50eo84_pr53_audio_timestamp_association_followup
 
