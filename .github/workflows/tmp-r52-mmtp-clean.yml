@@ -1,0 +1,51 @@
+name: tmp r52 mmtp clean
+
+on:
+  push:
+    branches:
+      - tmp/r52-cleanup-control-20260831
+    paths:
+      - .github/workflows/tmp-r52-mmtp-clean.yml
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply clean MMTP design delta onto rebuilt r52
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config core.quotePath false
+          BASE=e7de5c0d131969278ef700341294a636af0daeac
+          OLD_BASE=67da64e24100ede74e938dc53f58a759593e613b
+          OLD_HEAD=ea828c83c16fe202e16e65a0ef6dfd5ff311a1f8
+          git fetch origin "$BASE" "$OLD_BASE" "$OLD_HEAD"
+          git checkout -B rebuilt66 "$BASE"
+          git diff --binary "$OLD_BASE" "$OLD_HEAD" > /tmp/mmtp.patch
+          set +e
+          git apply --3way --index /tmp/mmtp.patch
+          rc=$?
+          set -e
+          echo "apply_rc=$rc"
+          git diff --name-only --diff-filter=U || true
+          if [ "$rc" -ne 0 ]; then
+            for f in $(git diff --name-only --diff-filter=U); do
+              echo "===== $f ====="
+              grep -n -B8 -A50 '^<<<<<<<\|^=======\|^>>>>>>>' "$f" || true
+            done
+            exit "$rc"
+          fi
+          git diff --cached --check
+          test "$(git diff --cached --name-only | wc -l)" -eq 7
+          git commit -m 'docs(r52): reapply MMTP/TLV design on rebuilt #57'
+          test "$(git rev-parse HEAD^)" = "$BASE"
+          git push --force origin HEAD:refs/heads/tmp/rebuilt-r52-mmtp-20260831
