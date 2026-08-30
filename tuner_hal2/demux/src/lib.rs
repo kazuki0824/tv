@@ -3401,6 +3401,7 @@ mod tests {
         let false_candidate = adts_aac_lc_frame_48khz(200);
         let first_frame = adts_aac_lc_frame_48khz(8);
         let second_frame = adts_aac_lc_frame_48khz(4);
+        let disambiguating_frame = adts_aac_lc_frame_48khz(40);
         let split_at = 12;
         let mut first_payload = false_candidate[..7].to_vec();
         first_payload.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]);
@@ -3418,7 +3419,7 @@ mod tests {
 
         let mut continuation = first_frame[split_at..].to_vec();
         continuation.extend_from_slice(&second_frame);
-        let confirmed = demux.push_ts_packet_from_origin(
+        let still_deferred = demux.push_ts_packet_from_origin(
             &pes_start_packet(
                 pid as u16,
                 1,
@@ -3426,8 +3427,32 @@ mod tests {
             ),
             TsInputOrigin::frontend(1),
         );
+        assert!(av_descriptors(&still_deferred, filter_id).is_empty());
+
+        let mut disambiguating_frames = Vec::new();
+        for _ in 0..2 {
+            disambiguating_frames.extend_from_slice(&disambiguating_frame);
+        }
+        let still_ambiguous = demux.push_ts_packet_from_origin(
+            &pes_start_packet(
+                pid as u16,
+                2,
+                &bounded_audio_pes(&disambiguating_frames, None),
+            ),
+            TsInputOrigin::frontend(1),
+        );
+        assert!(av_descriptors(&still_ambiguous, filter_id).is_empty());
+
+        let confirmed = demux.push_ts_packet_from_origin(
+            &pes_start_packet(
+                pid as u16,
+                3,
+                &bounded_audio_pes(&disambiguating_frames, None),
+            ),
+            TsInputOrigin::frontend(1),
+        );
         let descriptors = av_descriptors(&confirmed, filter_id);
-        assert_eq!(descriptors.len(), 2);
+        assert_eq!(descriptors.len(), 6);
         assert_eq!(descriptors[0].data_length, first_frame.len());
         assert_eq!(descriptors[0].metadata.pts_90khz, Some(90_000));
         assert!(descriptors[0].metadata.is_pts_present);
@@ -3456,6 +3481,41 @@ mod tests {
                 pid as u16,
                 0,
                 &bounded_audio_pes(&first_payload, Some(90_000)),
+            ),
+            TsInputOrigin::frontend(1),
+        );
+        assert!(av_descriptors(&deferred, filter_id).is_empty());
+
+        let mut continuation = real_first_frame[split_at..].to_vec();
+        continuation.extend_from_slice(&real_second_frame);
+        let rejected = demux.push_ts_packet_from_origin(
+            &pes_start_packet(pid as u16, 1, &bounded_audio_pes(&continuation, None)),
+            TsInputOrigin::frontend(1),
+        );
+        assert!(av_descriptors(&rejected, filter_id).is_empty());
+    }
+
+    #[test]
+    fn audio_media_event_never_publishes_a_later_confirmed_false_cold_start_candidate() {
+        let filter_id = 44;
+        let pid = 0x0101;
+        let mut demux = started_audio_filter_runtime(filter_id, pid);
+        let mut real_first_frame = adts_aac_lc_frame_48khz(60);
+        let false_first_frame = adts_aac_lc_frame_48khz(0);
+        let false_continuation_frame = adts_aac_lc_frame_48khz(200);
+        let real_second_frame = adts_aac_lc_frame_48khz(4);
+        let false_offset = 11;
+        let false_next_offset = false_offset + false_first_frame.len();
+        real_first_frame[false_offset..false_next_offset].copy_from_slice(&false_first_frame);
+        real_first_frame[false_next_offset..false_next_offset + 9]
+            .copy_from_slice(&false_continuation_frame[..9]);
+        let split_at = 40;
+
+        let deferred = demux.push_ts_packet_from_origin(
+            &pes_start_packet(
+                pid as u16,
+                0,
+                &bounded_audio_pes(&real_first_frame[..split_at], Some(90_000)),
             ),
             TsInputOrigin::frontend(1),
         );

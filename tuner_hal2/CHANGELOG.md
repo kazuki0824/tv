@@ -1,3 +1,10 @@
+# r50eo84_pr53_audio_cold_start_order_independent_uniqueness_followup
+
+- `data_alignment_indicator=false`のaudio cold startで、独立した`Pending`候補を`ConfirmedBoundary`より前後どちらで観測しても候補競合として扱うよう、一意性判定を走査順非依存へ修正した。確定検証に使った同一frame列のnext headerだけは独立候補から除外する。
+- 実first AUが次PESへ跨ぐ先行`Pending`となり、その圧縮body内の後方に偽2-header列の`ConfirmedBoundary`が成立する逆順入力をunit testと公開demux AV配送試験へ追加した。初回PESで偽frameへexplicit PTS / `MediaEvent`を付与せず、後続で複数候補が確定する場合は既存上限内でfail-closedとする。
+- H.222.0のfirst-AU PTS対応、ARIB TR-B15 4.6-E1 Fascicle 3 4.2.2のPES/audio-frame non-synchronization、AOSP `MediaEvent`の同一AU metadata対応を、既存`FilterRuntime`従属の有限候補判定だけで満たす。新規owner、queue、worker、clock、generation、payload複製、公開AIDL/VINTF・capability変更は追加していない。設計正本は既に候補順序によらない一意確定を要求しているため変更していない。
+- Rust 1.81.0で変更audio moduleのrustfmt checkとClippy `-D warnings`、製品demux sourceの`cargo check --all-targets`、audio module 19 unit tests、公開demuxのaudio `MediaEvent` 6試験とlifecycle fence 1試験を実施した。Android/Soong build、atest、VTS、実機・実放送波確認は未実施。
+
 # r50eo84_pr53_audio_cold_start_candidate_uniqueness_followup
 
 - `data_alignment_indicator=false`のaudio cold startで、1件の`ConfirmedBoundary`があっても、その後方に独立した`Pending`候補が残る間はexplicit PTS anchorと`MediaEvent`をcommitしないよう候補一意性判定を修正した。確定検証に使った直後の同一frame列headerは競合候補から除外し、既存の正当なframe列は維持する。

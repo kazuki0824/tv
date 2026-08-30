@@ -506,8 +506,8 @@ fn cold_start_decision(bytes: &[u8], first_payload_len: usize) -> ColdStartDecis
         .min(MAX_AUDIO_FRAME_BYTES)
         .min(bytes.len());
     let mut confirmed = None;
-    let mut saw_pending = false;
-    let mut competing_pending = false;
+    let mut pending_offset = None;
+    let mut multiple_pending = false;
     for offset in 0..search_len {
         match cold_start_candidate_validation(bytes, offset) {
             ColdStartCandidateValidation::ConfirmedBoundary { next_offset } => {
@@ -516,20 +516,24 @@ fn cold_start_decision(bytes: &[u8], first_payload_len: usize) -> ColdStartDecis
                 }
             }
             ColdStartCandidateValidation::Pending => {
-                saw_pending = true;
-                if let Some((confirmed_offset, next_offset)) = confirmed {
-                    // 確定検証に使った直後headerは同一frame列であり、別候補ではない。
-                    // その後方で開始する未確定候補だけは競合するため確定を保留する。
-                    competing_pending |= offset > confirmed_offset && offset != next_offset;
+                if pending_offset.is_some() {
+                    multiple_pending = true;
                 }
+                pending_offset = Some(offset);
             }
             ColdStartCandidateValidation::Invalid => {}
         }
     }
     match confirmed {
-        Some(_) if competing_pending => ColdStartDecision::Pending,
+        // 確定検証に使った直後headerは同一frame列であり、独立候補ではない。
+        // それ以外のPendingは前後位置にかかわらず競合するため確定を保留する。
+        Some((_, next_offset))
+            if multiple_pending || pending_offset.is_some_and(|offset| offset != next_offset) =>
+        {
+            ColdStartDecision::Pending
+        }
         Some((offset, _)) => ColdStartDecision::Confirmed(offset),
-        None if saw_pending => ColdStartDecision::Pending,
+        None if pending_offset.is_some() => ColdStartDecision::Pending,
         None => ColdStartDecision::Invalid,
     }
 }
@@ -933,6 +937,7 @@ mod tests {
         let false_candidate = adts_frame(3, 200);
         let first_frame = adts_frame(3, 8);
         let second_frame = adts_frame(3, 4);
+        let disambiguating_frame = adts_frame(3, 40);
         let split_at = 12;
         let mut first_payload = false_candidate[..7].to_vec();
         first_payload.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]);
@@ -950,10 +955,23 @@ mod tests {
 
         let mut continuation = first_frame[split_at..].to_vec();
         continuation.extend_from_slice(&second_frame);
-        let confirmed = association
+        let still_deferred = association
             .extract(packet_with_alignment(continuation, None, false), ORIGIN)
             .unwrap();
-        assert_eq!(pts(&confirmed), vec![90_000, 91_920]);
+        assert!(still_deferred.is_empty());
+
+        let mut disambiguating_frames = Vec::new();
+        for _ in 0..4 {
+            disambiguating_frames.extend_from_slice(&disambiguating_frame);
+        }
+        let confirmed = association
+            .extract(
+                packet_with_alignment(disambiguating_frames, None, false),
+                ORIGIN,
+            )
+            .unwrap();
+        assert_eq!(confirmed.len(), 6);
+        assert_eq!(&pts(&confirmed)[..2], &[90_000, 91_920]);
         assert_eq!(confirmed[0].payload, first_frame);
         assert_eq!(confirmed[1].payload, second_frame);
     }
@@ -974,6 +992,39 @@ mod tests {
         let deferred = association
             .extract(
                 packet_with_alignment(first_payload, Some(90_000), false),
+                ORIGIN,
+            )
+            .unwrap();
+        assert!(deferred.is_empty());
+        assert!(association.anchor.is_none());
+        assert!(association.cold_start.is_some());
+
+        let mut continuation = real_first_frame[split_at..].to_vec();
+        continuation.extend_from_slice(&real_second_frame);
+        assert_eq!(
+            association.extract(packet_with_alignment(continuation, None, false), ORIGIN),
+            Err(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)
+        );
+        assert_eq!(association, AudioTimestampAssociation::default());
+    }
+
+    #[test]
+    fn cold_start_never_commits_a_later_confirmed_candidate_while_an_earlier_is_pending() {
+        let mut association = AudioTimestampAssociation::default();
+        let mut real_first_frame = adts_frame(3, 60);
+        let false_first_frame = adts_frame(3, 0);
+        let false_continuation_frame = adts_frame(3, 200);
+        let real_second_frame = adts_frame(3, 4);
+        let false_offset = 11;
+        let false_next_offset = false_offset + false_first_frame.len();
+        real_first_frame[false_offset..false_next_offset].copy_from_slice(&false_first_frame);
+        real_first_frame[false_next_offset..false_next_offset + 9]
+            .copy_from_slice(&false_continuation_frame[..9]);
+        let split_at = 40;
+
+        let deferred = association
+            .extract(
+                packet_with_alignment(real_first_frame[..split_at].to_vec(), Some(90_000), false),
                 ORIGIN,
             )
             .unwrap();
