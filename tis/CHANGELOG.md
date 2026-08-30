@@ -1,3 +1,12 @@
+# 未リリース
+
+- helper追加: `MediaSyncFirstOutputBridge`を追加し、platform-privateな`MediaSync.OnFirstVideoFrameQueuedToOutputListener`型とsetterを実行時reflectionで解決して呼び出す。stock platformへの静的hidden API型依存は持たない。
+- 公開到達経路: private listener経路が呼び出し可能な場合はExact modeを使用し、API不存在、reflection解決失敗、登録setter呼出し失敗などを含めprivate listener経路を呼び出せない場合は公開APIの`MediaCodec.OnFrameRenderedListener`を型付きで`setOnFrameRenderedListener()`へ登録してCompatibility modeへfallbackする。current codec、playback generation、待機開始時刻、Surface、MediaSync surface errorを確認し、Exact modeとCompatibility modeは診断上区別してCompatibility modeをfinal-output成功と同値には扱わない。
+- platform差分: `frameworks_av_mediasync_first_output.patch`と`frameworks_base_mediasync_first_output.patch`の本文は変更せず、Exact modeの正規platform実装として維持する。
+- 文書追従: Exact/Compatibilityのruntime契約を`DESIGN_JA.md`、platform patch適用、target build、実機確認を`INTEGRATION.md`へ集約した。`tis/platform_patches/lineage-22.1/README.md`の統合手順は`INTEGRATION.md`へ移し、許可外Markdownを削除した。
+- テスト期待値・host境界: host用`MediaSync` stubからprivate listener/setterを削除し、TIS production sourceがstock platform APIだけで静的compileできる境界へ変更した。
+- 検証: TIS host CIでKotlin production compile、host tests、caption関連、XML contractを確認する。Android/Soong target build、atest、VTS、platform patch適用後の実機late-drop非通知・final-output one-shot・stale sequence棄却は未実施であり、`INTEGRATION.md`の製品統合gateとして残す。
+
 # r50ef_review_followup_7
 
 - `MediaEvent.getPts()`をproducer確定済みのauthoritative metadataとしてTISがopaqueに受理する責務を明記した。HAL producer側のcodec header構造検証、PES横断bounded residual、first-AU位置、actual sample rate、exact sample countによるassociationを、TIS側で禁止するgenericな0／前値／PCR／wallclock補間と明確に分離した。

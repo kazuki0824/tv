@@ -32,7 +32,7 @@ CAS HAL 仮実装は TIS 初回ビルド確認ゲートへ含めない。
 
 ## Treble partition / platform API 統合
 
-`MaleicacidTvInput` は、`DESIGN_JA.md` の MediaSync Framework-private final-output observation を同一platform sourceから型付き利用する platform-coupled component である。そのため `/product` へ配置せず、`system_ext_specific: true` かつ `platform_apis: true` の `/system_ext` priv-app として組み込む。reflection、hidden API allowlist回避、`/product` からのprivate API依存へ置き換えない。
+`MaleicacidTvInput` は、`DESIGN_JA.md` の MediaSync Framework-private final-output observation を正規製品で利用する platform-coupled component である。そのため `/product` へ配置せず、`system_ext_specific: true` かつ `platform_apis: true` の `/system_ext` priv-app として組み込む。MediaSyncの追加private listenerだけはstock LineageOSでも同一TISをbuild/runできるようruntime reflectionで解決して呼び出し、private listener経路が呼び出し可能な場合はExact modeを使う。API不存在、reflection解決失敗、登録setter呼出し失敗などを含めprivate listener経路を呼び出せない場合は、公開`MediaCodec.OnFrameRenderedListener`を型付きで使うCompatibility modeへfallbackする。その他のplatform APIをreflectionやHAL binder直呼びへ一般化してはならない。
 
 `privapp-permissions-maleicacid-tvinput` は `MaleicacidTvInput` と同じ `/system_ext` に配置する。TIS専用の `libmaleicacid_arib_si_engine_jni` と `libmaleicacid_arib_caption_jni` も `system_ext_specific: true` とし、TISから `/product` 専用native moduleへ逆向き依存を作らない。TIS専用 `libaribcaption` variantを正式統合する場合も、TISのnative依存closureから利用可能なsystem/system_ext側variantとして閉じ、product-only private dependencyにしない。
 
@@ -107,6 +107,54 @@ libaribcaption rendererの設計正本は本節と`DESIGN_JA.md`に集約済み�
 TIS は `directBootAware=true` を維持する。`AndroidManifest.xml` には `<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />` を宣言し、`BootReceiver` は `android:directBootAware="true"` とする。`BootReceiver` の intent filter は `ACTION_LOCKED_BOOT_COMPLETED` と `ACTION_BOOT_COMPLETED` を含める。`ACTION_USER_UNLOCKED` は manifest receiver の対象にしない。
 
 `BootEpgSyncJobService` は `AndroidManifest.xml` に service として宣言し、`android.permission.BIND_JOB_SERVICE` で保護する。`BootReceiver`、`BootEpgSyncJobService`、`DirectBootEpgPending`、`BootEpgSyncCoordinator` の実行時役割、ジョブ登録・再試行、保留解除、開始条件、ライブセッションとの優先順位は `DESIGN_JA.md` を正とし、本書では状態遷移を再定義しない。
+
+## MediaSync Exact-mode platform統合
+
+TISは追加private APIを静的参照しない。private listener経路を呼び出せるplatformではExact modeを使用し、API不存在、reflection解決失敗、登録setter呼出し失敗などにより呼び出せない場合は公開`MediaCodec.OnFrameRenderedListener`を使うCompatibility modeで動作する。正規製品で`DESIGN_JA.md`のfinal-output成功意味論を満たす場合は、次の既存2patchをLineageOS 22.1 platform treeへ適用してprivate listener経路を提供する。patch本文はTIS側runtime変更とは独立した再現可能なplatform統合差分として維持する。
+
+```text
+tis/platform_patches/lineage-22.1/frameworks_av_mediasync_first_output.patch
+tis/platform_patches/lineage-22.1/frameworks_base_mediasync_first_output.patch
+```
+
+Android build rootから、まず適用可能性を確認してから適用する。
+
+```bash
+git -C frameworks/av apply --check \
+  "$ANDROID_BUILD_TOP/vendor/maleicacid/tv/tis/platform_patches/lineage-22.1/frameworks_av_mediasync_first_output.patch"
+git -C frameworks/base apply --check \
+  "$ANDROID_BUILD_TOP/vendor/maleicacid/tv/tis/platform_patches/lineage-22.1/frameworks_base_mediasync_first_output.patch"
+
+git -C frameworks/av apply \
+  "$ANDROID_BUILD_TOP/vendor/maleicacid/tv/tis/platform_patches/lineage-22.1/frameworks_av_mediasync_first_output.patch"
+git -C frameworks/base apply \
+  "$ANDROID_BUILD_TOP/vendor/maleicacid/tv/tis/platform_patches/lineage-22.1/frameworks_base_mediasync_first_output.patch"
+```
+
+対象baselineはLineageOS 22.1の次のplatform sourceである。
+
+```text
+frameworks/av:
+  media/libstagefright/include/media/stagefright/MediaSync.h
+  media/libstagefright/MediaSync.cpp
+
+frameworks/base:
+  media/java/android/media/MediaSync.java
+  media/jni/android_media_MediaSync.h
+  media/jni/android_media_MediaSync.cpp
+```
+
+追加callbackのlate-drop、`attachBuffer()` / `queueBuffer()`、one-shot arm、`armSequence`、mutex外配送などのruntime意味論は`DESIGN_JA.md`を正とし、本書では重複定義しない。public SDK、`@SystemApi`、`@TestApi`、Tuner AIDL/VINTFをこの統合のために変更しない。
+
+patch適用後は少なくとも次をtarget buildする。対象treeのmodule分割でmodule名が異なる場合は、`frameworks/base`のmedia JNI / framework Java、`frameworks/av`のMediaSync、TISを実際に再コンパイルする同等Soong targetを使用する。
+
+```bash
+m framework-minus-apex
+m libstagefright
+m MaleicacidTvInput
+```
+
+実機ではExact modeが選択されること、late-dropではavailabilityが成立しないこと、current final outputへのqueue成功で一回だけ通知されること、re-arm後の旧sequence eventが棄却されることを確認する。TIS host CIはstock APIでの静的compileとrepository内契約を確認するものであり、このplatform patchのJava/JNI/native型接続やnative実行時意味論を代替しない。未パッチplatformのCompatibility modeだけをもって正規製品のfinal-output意味論を確認済みとは扱わない。これらは未決設計ではなく製品統合・検証gateなので`future_work/r53`へ重複配置しない。
 
 ## flash 後の確認
 
