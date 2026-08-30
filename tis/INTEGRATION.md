@@ -32,7 +32,7 @@ CAS HAL 仮実装は TIS 初回ビルド確認ゲートへ含めない。
 
 ## Treble partition / platform API 統合
 
-`MaleicacidTvInput` は、`DESIGN_JA.md` の MediaSync Framework-private final-output observation を正規製品で利用する platform-coupled component である。そのため `/product` へ配置せず、`system_ext_specific: true` かつ `platform_apis: true` の `/system_ext` priv-app として組み込む。MediaSyncの追加private listenerだけはstock LineageOSでも同一TISをbuild/runできるようruntime reflectionでoptional discoveryし、発見できない場合は公開`MediaCodec.OnFrameRenderedListener`を型付きで使うCompatibility modeへ落とす。その他のplatform APIをreflectionやHAL binder直呼びへ一般化してはならない。
+`MaleicacidTvInput` は、`DESIGN_JA.md` の MediaSync Framework-private final-output observation を正規製品で利用する platform-coupled component である。そのため `/product` へ配置せず、`system_ext_specific: true` かつ `platform_apis: true` の `/system_ext` priv-app として組み込む。MediaSyncの追加private listenerだけはstock LineageOSでも同一TISをbuild/runできるようruntime reflectionで解決して呼び出し、private listener経路が呼び出し可能な場合はExact modeを使う。API不存在、reflection解決失敗、登録setter呼出し失敗などを含めprivate listener経路を呼び出せない場合は、公開`MediaCodec.OnFrameRenderedListener`を型付きで使うCompatibility modeへfallbackする。その他のplatform APIをreflectionやHAL binder直呼びへ一般化してはならない。
 
 `privapp-permissions-maleicacid-tvinput` は `MaleicacidTvInput` と同じ `/system_ext` に配置する。TIS専用の `libmaleicacid_arib_si_engine_jni` と `libmaleicacid_arib_caption_jni` も `system_ext_specific: true` とし、TISから `/product` 専用native moduleへ逆向き依存を作らない。TIS専用 `libaribcaption` variantを正式統合する場合も、TISのnative依存closureから利用可能なsystem/system_ext側variantとして閉じ、product-only private dependencyにしない。
 
@@ -110,7 +110,7 @@ TIS は `directBootAware=true` を維持する。`AndroidManifest.xml` には `<
 
 ## MediaSync Exact-mode platform統合
 
-TISは追加private APIを静的参照しないため、未パッチLineageOSでも公開`MediaCodec.OnFrameRenderedListener`を使うCompatibility modeでbuild/runできる。正規製品で`DESIGN_JA.md`のfinal-output成功意味論を満たす場合は、次の既存2patchをLineageOS 22.1 platform treeへ適用してExact modeを有効にする。patch本文はTIS側runtime変更とは独立した再現可能なplatform統合差分として維持する。
+TISは追加private APIを静的参照しない。private listener経路を呼び出せるplatformではExact modeを使用し、API不存在、reflection解決失敗、登録setter呼出し失敗などにより呼び出せない場合は公開`MediaCodec.OnFrameRenderedListener`を使うCompatibility modeで動作する。正規製品で`DESIGN_JA.md`のfinal-output成功意味論を満たす場合は、次の既存2patchをLineageOS 22.1 platform treeへ適用してprivate listener経路を提供する。patch本文はTIS側runtime変更とは独立した再現可能なplatform統合差分として維持する。
 
 ```text
 tis/platform_patches/lineage-22.1/frameworks_av_mediasync_first_output.patch
