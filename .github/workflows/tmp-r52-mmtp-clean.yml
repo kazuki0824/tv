@@ -11,14 +11,14 @@ permissions:
   contents: write
 
 jobs:
-  probe:
+  finalize:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Apply clean MMTP design delta onto rebuilt r52
+      - name: Reapply MMTP design delta onto rebuilt r52
         shell: bash
         run: |
           set -euo pipefail
@@ -35,17 +35,57 @@ jobs:
           git apply --3way --index /tmp/mmtp.patch
           rc=$?
           set -e
-          echo "apply_rc=$rc"
-          git diff --name-only --diff-filter=U || true
-          if [ "$rc" -ne 0 ]; then
-            for f in $(git diff --name-only --diff-filter=U); do
-              echo "===== $f ====="
-              grep -n -B8 -A50 '^<<<<<<<\|^=======\|^>>>>>>>' "$f" || true
-            done
-            exit "$rc"
-          fi
+          test "$rc" -ne 0
+          test "$(git diff --name-only --diff-filter=U | sort)" = "$(printf '%s\n' 'tuner_hal/DESIGN_JA.md' 'tuner_hal2/DESIGN_JA.md' | sort)"
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def one_conflict(path: str):
+              p=Path(path)
+              s=p.read_text()
+              if s.count('<<<<<<< ours') != 1:
+                  raise SystemExit(f'{path}: unexpected conflict count')
+              a=s.index('<<<<<<< ours\n')
+              b=s.index('=======\n',a)
+              c=s.index('>>>>>>> theirs\n',b)
+              d=c+len('>>>>>>> theirs\n')
+              ours=s[a+len('<<<<<<< ours\n'):b]
+              theirs=s[b+len('=======\n'):c]
+              return p,s,a,d,ours,theirs
+
+          # Keep the rebuilt #57 producer-side PTS/AU contract and append only #66's
+          # Japanese advanced-broadcast public contract; do not restore #66's stale short test list.
+          p,s,a,d,ours,theirs=one_conflict('tuner_hal/DESIGN_JA.md')
+          marker='## 日本高度放送 MMTP/TLV 公開契約\n'
+          pos=theirs.find(marker)
+          if pos < 0:
+              raise SystemExit('MMTP public-contract marker missing')
+          merged=ours.rstrip()+'\n\n'+theirs[pos:].lstrip()
+          p.write_text(s[:a]+merged+s[d:])
+
+          # Keep #57's latest key-provisioning deadline tests, then append #66's MMTP/TLV owner mapping.
+          p,s,a,d,ours,theirs=one_conflict('tuner_hal2/DESIGN_JA.md')
+          marker='## MMTP/TLV 実装責務マッピング\n'
+          pos=theirs.find(marker)
+          if pos < 0:
+              raise SystemExit('MMTP implementation mapping marker missing')
+          merged=ours.rstrip()+'\n\n'+theirs[pos:].lstrip()
+          p.write_text(s[:a]+merged+s[d:])
+          PY
+
+          git add tuner_hal/DESIGN_JA.md tuner_hal2/DESIGN_JA.md
+          test -z "$(git diff --name-only --diff-filter=U)"
+          ! git grep -n '^<<<<<<<\|^=======\|^>>>>>>>' -- ':!*.patch'
           git diff --cached --check
           test "$(git diff --cached --name-only | wc -l)" -eq 7
+          grep -Fq '## 日本高度放送 MMTP/TLV 公開契約' tuner_hal/DESIGN_JA.md
+          grep -Fq '## MMTP/TLV 実装責務マッピング' tuner_hal2/DESIGN_JA.md
+          grep -Fq 'read timeout設定失敗とwrite timeout設定失敗' tuner_hal2/DESIGN_JA.md
+          grep -Fq 'PES境界はframe境界と一致する前提にせず' tuner_hal/DESIGN_JA.md
+          test ! -e future_work/r52/japan_advanced_broadcast_mmtp_tlv_support.md
+          echo '--- clean #66 delta ---'
+          git diff --cached --name-status "$BASE"
           git commit -m 'docs(r52): reapply MMTP/TLV design on rebuilt #57'
           test "$(git rev-parse HEAD^)" = "$BASE"
           git push --force origin HEAD:refs/heads/tmp/rebuilt-r52-mmtp-20260831
