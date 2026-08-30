@@ -1,6 +1,13 @@
+# r50eo84_pr53_earth_pt1_fixed_symbol_rate_followup
+
+- Linux v6.6 `tc90522`のISDB-S `FE_GET_INFO`がsymbol-rate rangeを0/0で返すため、現行earth-pt1製品profileの能力証跡をprobe rangeから固定28,860,000 sym/sへ修正した。ISDB-S frontendは0/0を理由に抑止せず、`FrontendInfo.minSymbolRate=maxSymbolRate=28,860,000`として公開する。
+- public `symbolRate=0`は未指定sentinelのまま保持し、0または28,860,000だけを副作用前に受理する。Linux DVB mapping境界では両入力を実効値28,860,000へ正規化し、`DTV_SYMBOL_RATE`へ必ず投影する。新しいowner、queue、worker、state machine、汎用capability layerは追加していない。
+- upstreamのcapability metadata改善候補は`future_work/not_planned/linux_tc90522_isdbs_symbol_rate_capability_metadata.md`へ分離し、現行製品runtimeはその将来作業へ依存しない。
+- Rust 1.81.0でhost workspace全164試験、Clippy `-D warnings`、全target check、host workspaceのrustfmt check、変更Rust 3ファイルのstandalone rustfmt check、実`frontend_request_txn.rs`の固定rate境界2試験、変更Rust 4ファイルのtree-sitter構文解析、`git diff --check`を実施した。service-runtimeの拒否時状態不変試験とaidl-serviceの0/0 capability試験は追加したが、Android/Soong test target、atest、VTS、CTS、実機・実放送波確認は未実施である。
+
 # r50eo84_pr53_capability_topology_ssot_followup
 
-- ISDB-S `symbolRate`の正本をAOSP公開APIと実装へ同期し、`0`を未指定sentinel、正値を不変`CapabilitySnapshot`の広告範囲とbackend適用経路に閉じた。px4は28,860,000固定、Linux DVB / earth_pt1はprobe範囲と`DTV_SYMBOL_RATE`を同じ証跡とし、範囲外は副作用前に拒否する。
+- ISDB-S `symbolRate`の正本をAOSP公開APIと実装へ同期し、`0`を未指定sentinel、正値を不変`CapabilitySnapshot`の広告範囲とbackend適用経路に閉じた。px4とLinux DVB / earth_pt1はいずれもpinned製品profileの28,860,000固定とし、DVBでは`DTV_SYMBOL_RATE`へ投影して範囲外を副作用前に拒否する。
 - Linux DVB `exclusiveGroupId`を公開`(adapter, frontend_index)`から直接生成する経路を廃止した。canonical sysfs物理device identityとLinux v6.6 `earth-pt1`の完全な独立4-stream profileから検証済みgroup keyを作り、key単位でDVB namespace IDを割り当てる。topology不明・不完全候補は公開せず、同じkeyを共有するtupleは同group、検証済み独立streamだけ別groupとする。
 - `configureAvStreamType()`は現行実装どおりAndroid 14 AIDL定義済み`VideoStreamType::RESERVED`を有効なhintとして維持し、正本T-AOSP-65と診断文言を「定義済みRESERVED」と「enum未定義numeric値」に分離した。追加状態、owner、queue、worker、clock、resource manager、公開AIDL/VINTF変更はない。
 - Rust 1.81.0で変更Rust 4ファイルのrustfmt check、host workspace全163試験とClippy `-D warnings`、実sourceを参照するsymbol-rate境界2試験、topology割当型検査、tree-sitter構文解析、`git diff --check`を実施した。Android/Soong build、atest、VTS、CTS、実機確認は未実施。
@@ -9,7 +16,7 @@
 
 - AOSP VTS `testStartIdAfterReconfigure`へ合わせ、filterが一度startされた後の再configureごとに非0・非再利用の`startId`を予約し、次の通常event直前へ単独callback eventとして一度だけ配送する。flush、source/generation変更、failure/closeでは未配送IDを失効させる。
 - `stop()`はqueueと同様にSection/PES assembler、one-shot Section状態、audio timestamp残余を保持し、`flush()`だけがそれらを破棄するようlifecycle境界を修正した。TS `UNDEFINED`は公開TS→TS `linkCaps`と同じraw pipeline種別へ閉包した。
-- ARIB STD-B10のTDTについて`table_id=0x70`の`section_length`を5に限定し、TOTを含む他のshort sectionの既存上限は維持した。ISDB-Sの正の`symbolRate`を広告range内で受理し、Linux DVBへ`DTV_SYMBOL_RATE`として転送し、px4では広告済み固定値28,860,000だけを受理する。
+- ARIB STD-B10のTDTについて`table_id=0x70`の`section_length`を5に限定し、TOTを含む他のshort sectionの既存上限は維持した。ISDB-Sの正の`symbolRate`はpinned px4 / earth_pt1製品profileが広告する固定値28,860,000だけを受理し、Linux DVBへ`DTV_SYMBOL_RATE`として転送する。
 - Linux DVBの`exclusiveGroupId`を物理`(adapter, frontend_index)`単位で安定生成し、同一物理frontendのsystem variantだけを同groupへ置いた。px4とはtag namespaceを分離した。
 - started filterの`configure()`はsecure/passthrough capability判定より先に`INVALID_STATE`とする。`configureAvStreamType()`はAOSP定義済みenum値だけを受理し、同一・別の有効hint変更のいずれも既存AV allocation/backingとaudio associationを破壊しない。公開能力を表さない未使用`ProfileFeature`/`feature_declared`は削除した。
 - 追加状態は既存`FilterRuntime`内の次ID/未配送IDだけで、新規owner、queue、worker、clock、ledger、payload複製は追加していない。Rust 1.81の製品demux全target型検査、対象回帰試験、host workspace全163試験、`git diff --check`を実施した。簡易FMQ差し替えによるdemux全体試験は既知26件を除く239件が成功した。Android/Soong build、atest、VTS、実機・実放送波確認は未実施。

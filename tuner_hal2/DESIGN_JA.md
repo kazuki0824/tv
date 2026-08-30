@@ -305,7 +305,7 @@ TS AUDIOのPTS-sparse event associationは`demux/src/av/audio_timestamp.rs`の�
 
 Filterの`stop()`は配送を停止するだけで、FMQ内容、Section/PES assembler、Section one-shot状態、audio timestamp anchor/有限残余を保持する。`start()`はその状態から再開し、`flush()`、close、source/generation変更、transport discontinuity、failureだけを破棄境界とする。再configure後の`startId`は既存`FilterRuntime`が単調な非0 IDと未配送1件だけを所有し、次の通常event直前に単独callback eventとして消費する。別owner、queue、worker、時計は設けない。
 
-物理frontendの`exclusiveGroupId`はbackend namespaceとprobe済み物理排他group keyから生成し、公開DVB tuple自体を物理トポロジーの証拠にしない。現行`earth-pt1` profileはcanonical sysfs物理device identityごとにLinux v6.6 driverの独立4-stream構成が完全な場合だけ各driver streamへ別keyを与え、同じstreamのdelivery-system variantは同じkeyを共有する。shared-resource keyは複数tupleで共有し、topology不明候補は公開しない。広告したISDB-S symbol-rate range内の正値はtune入力として受理してpx4固定28,860,000またはLinux DVB `DTV_SYMBOL_RATE`へ投影し、`0`は範囲外判定を受けない未指定sentinelとする。
+物理frontendの`exclusiveGroupId`はbackend namespaceとprobe済み物理排他group keyから生成し、公開DVB tuple自体を物理トポロジーの証拠にしない。現行`earth-pt1` profileはcanonical sysfs物理device identityごとにLinux v6.6 driverの独立4-stream構成が完全な場合だけ各driver streamへ別keyを与え、同じstreamのdelivery-system variantは同じkeyを共有する。shared-resource keyは複数tupleで共有し、topology不明候補は公開しない。ISDB-S symbol rateはpx4とLinux DVB / earth_pt1の双方で固定28,860,000を`CapabilitySnapshot`へ広告し、public入力は未指定sentinelの`0`または同固定値だけを受理する。Linux v6.6 `tc90522`の`FE_GET_INFO`が返す0/0を抑止理由にせず、Binder境界で`0`を未指定のまま保持した後、DVB mapping境界で実効値28,860,000へ正規化し、`DTV_SYMBOL_RATE`へ必ず投影する。
 
 ## 実装構造索引
 

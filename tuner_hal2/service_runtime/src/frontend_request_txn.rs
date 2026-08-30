@@ -253,15 +253,15 @@ mod tests {
     }
 
     #[test]
-    fn dvb_symbol_rate_acceptance_matches_probe_derived_bounds() {
-        let entry = isdbs_entry(FrontendBackendKind::LinuxDvb, 20_000_000, 30_000_000);
-        for symbol_rate in [None, Some(20_000_000), Some(30_000_000)] {
+    fn dvb_symbol_rate_acceptance_matches_fixed_earth_pt1_capability() {
+        let entry = isdbs_entry(FrontendBackendKind::LinuxDvb, 28_860_000, 28_860_000);
+        for symbol_rate in [None, Some(28_860_000)] {
             assert!(
                 validate_frontend_request_against_entry(&entry, &isdbs_request(symbol_rate))
                     .is_ok()
             );
         }
-        for symbol_rate in [19_999_999, 30_000_001] {
+        for symbol_rate in [28_859_999, 28_860_001] {
             let error =
                 validate_frontend_request_against_entry(&entry, &isdbs_request(Some(symbol_rate)))
                     .unwrap_err();

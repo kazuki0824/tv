@@ -479,6 +479,74 @@ mod tests {
     }
 
     #[test]
+    fn rejected_earth_pt1_symbol_rate_preserves_active_frontend_state() {
+        let mut runtime = TunerServiceRuntime::new();
+        runtime.boot_from_probe_results([available(
+            2_000_001,
+            FrontendBackendKind::LinuxDvb,
+            FrontendSystem::IsdbS,
+            "/dev/dvb/adapter0/frontend0",
+            Some(LnbRegistryProfile::EarthPt1FixedLnb),
+        )]);
+        let accepted = maleicacid_tuner_hal2_common::FrontendTuneRequest {
+            system: FrontendSystem::IsdbS,
+            frequency: 1_049_480_000,
+            end_frequency: None,
+            stream_id: Some(0x4010),
+            stream_id_kind: Some(
+                maleicacid_tuner_hal2_common::FrontendStreamIdKind::AbsoluteStreamId,
+            ),
+            bandwidth_hz: None,
+            symbol_rate: Some(28_860_000),
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
+        };
+        let generation = runtime
+            .frontend_txn()
+            .prepare_frontend_worker_generation(
+                2_000_001,
+                maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+            )
+            .unwrap();
+        runtime
+            .frontend_txn()
+            .install_frontend_live_reader_descriptor_for_generation(
+                2_000_001,
+                maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+                generation,
+            )
+            .unwrap();
+        runtime
+            .frontend_txn()
+            .commit_frontend_active_tune_request(2_000_001, generation, accepted.clone())
+            .unwrap();
+        let before = runtime
+            .registry()
+            .frontend_runtime(FrontendRuntimeId(2_000_001))
+            .unwrap()
+            .snapshot();
+
+        let mut rejected = accepted;
+        rejected.symbol_rate = Some(28_859_999);
+        let error = runtime
+            .validate_frontend_request_for_id(2_000_001, &rejected)
+            .unwrap_err();
+        assert_eq!(
+            error.invalid_argument_kind(),
+            Some(maleicacid_tuner_hal2_common::HalInvalidArgumentKind::UnsupportedSymbolRate)
+        );
+        assert_eq!(
+            runtime
+                .registry()
+                .frontend_runtime(FrontendRuntimeId(2_000_001))
+                .unwrap()
+                .snapshot(),
+            before,
+            "symbol-rate rejection must not replace the old request, generation, or backend descriptor",
+        );
+    }
+
+    #[test]
     fn frontend_limit_query_and_open_share_current_lease_limit() {
         let mut runtime = TunerServiceRuntime::new();
         runtime.boot_from_probe_results([

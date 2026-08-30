@@ -228,24 +228,18 @@ fn dvb_capability(
             )
         }
         FrontendSystem::IsdbS => {
-            if probed_min > JAPAN_BS_FIRST_IF_HZ
-                || probed_max < JAPAN_CS110_LAST_IF_HZ
-                || info.symbol_rate_min == 0
-                || info.symbol_rate_min > info.symbol_rate_max
-            {
-                return None;
-            }
-            let min_symbol_rate = i32::try_from(info.symbol_rate_min).ok()?;
-            let max_symbol_rate = i32::try_from(info.symbol_rate_max).ok()?;
-            if min_symbol_rate > ISDBS_SYMBOL_RATE || max_symbol_rate < ISDBS_SYMBOL_RATE {
+            if probed_min > JAPAN_BS_FIRST_IF_HZ || probed_max < JAPAN_CS110_LAST_IF_HZ {
                 return None;
             }
             (
                 FrontendScalarCapability {
                     min_frequency_hz: JAPAN_BS_FIRST_IF_HZ,
                     max_frequency_hz: JAPAN_CS110_LAST_IF_HZ,
-                    min_symbol_rate,
-                    max_symbol_rate,
+                    // Linux v6.6 tc90522 leaves FE_GET_INFO's symbol-rate
+                    // metadata at 0/0 even though the pinned ISDB-S module
+                    // operates at this fixed rate.
+                    min_symbol_rate: ISDBS_SYMBOL_RATE,
+                    max_symbol_rate: ISDBS_SYMBOL_RATE,
                     acquire_range_hz: 0,
                 },
                 None,
@@ -707,6 +701,35 @@ mod tests {
             path: PathBuf::from(format!("/dev/dvb/adapter{adapter}/frontend0")),
             physical_device_identity: Some(PathBuf::from(device)),
         }
+    }
+
+    fn earth_pt1_frontend_info() -> DvbFrontendInfo {
+        DvbFrontendInfo {
+            name: [0; 128],
+            fe_type: 0,
+            frequency_min: 950_000,
+            frequency_max: 2_150_000,
+            frequency_stepsize: 0,
+            frequency_tolerance: 0,
+            symbol_rate_min: 0,
+            symbol_rate_max: 0,
+            symbol_rate_tolerance: 0,
+            notifier_delay: 0,
+            caps: 0,
+        }
+    }
+
+    #[test]
+    fn earth_pt1_isdbs_uses_fixed_rate_when_fe_get_info_reports_zero_range() {
+        let capability = dvb_capability(
+            &earth_pt1_frontend_info(),
+            FrontendSystem::IsdbS,
+            DVB_PHYSICAL_GROUP_TAG,
+        )
+        .expect("the pinned earth-pt1 profile must publish ISDB-S");
+
+        assert_eq!(capability.scalar.min_symbol_rate, ISDBS_SYMBOL_RATE);
+        assert_eq!(capability.scalar.max_symbol_rate, ISDBS_SYMBOL_RATE);
     }
 
     #[test]

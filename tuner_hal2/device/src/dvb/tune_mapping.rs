@@ -13,6 +13,8 @@ use crate::dvb::abi::{
     DTV_SYMBOL_RATE, DTV_TUNE, NO_STREAM_ID_FILTER, SYS_DVBS2, SYS_ISDBS, SYS_ISDBT,
 };
 
+const EARTH_PT1_ISDBS_SYMBOL_RATE: u32 = 28_860_000;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DvbTuneRequest {
     pub frequency_hz: Option<u32>,
@@ -222,12 +224,26 @@ pub fn normalized_tune_request_from_common(
         }
         FrontendSystem::IsdbS3 | FrontendSystem::DvbS => None,
     };
+    let symbol_rate = match request.system {
+        FrontendSystem::IsdbS => match request.symbol_rate {
+            None | Some(EARTH_PT1_ISDBS_SYMBOL_RATE) => Some(EARTH_PT1_ISDBS_SYMBOL_RATE),
+            Some(_) => {
+                return Err(HalError::invalid_argument(
+                    HalInvalidArgumentKind::UnsupportedSymbolRate,
+                    "earth-pt1 accepts only the fixed ISDB-S symbol rate",
+                ))
+            }
+        },
+        FrontendSystem::IsdbT | FrontendSystem::IsdbS3 | FrontendSystem::DvbS => {
+            request.symbol_rate
+        }
+    };
     Ok(DvbTuneRequest {
         frequency_hz: Some(frequency_hz),
         stream_id,
         stream_id_kind,
         bandwidth_hz,
-        symbol_rate: request.symbol_rate,
+        symbol_rate,
         system: Some(request.system),
     })
 }
@@ -308,6 +324,28 @@ mod tests {
             .unwrap()
             .pairs
             .contains(&(DTV_SYMBOL_RATE, 28_860_000)));
+    }
+
+    #[test]
+    fn isdbs_zero_sentinel_projects_fixed_rate_to_linux_dvb() {
+        let common = FrontendTuneRequest {
+            system: FrontendSystem::IsdbS,
+            frequency: 1_049_480_000,
+            end_frequency: None,
+            stream_id: Some(0x4010),
+            stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId),
+            bandwidth_hz: None,
+            symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
+        };
+        let request = normalized_tune_request_from_common(&common).unwrap();
+
+        assert_eq!(request.symbol_rate, Some(EARTH_PT1_ISDBS_SYMBOL_RATE));
+        assert!(tune_property_pairs(&request)
+            .unwrap()
+            .pairs
+            .contains(&(DTV_SYMBOL_RATE, EARTH_PT1_ISDBS_SYMBOL_RATE)));
     }
 
     #[test]
