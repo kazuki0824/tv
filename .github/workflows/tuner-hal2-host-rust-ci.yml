@@ -3,6 +3,9 @@ name: tuner_hal2 host Rust CI
 on:
   pull_request:
     paths:
+      - "tuner_hal2/key_provisioning_bridge/**"
+      - "tuner_hal2/aidl_service/src/key_provisioning_bridge_server.rs"
+      - "tuner_hal2/aidl_service/src/key_provisioning_connection.rs"
       - "tuner_hal2/common/**"
       - "tuner_hal2/compile_contract/**"
       - "tuner_hal2/control/**"
@@ -15,6 +18,9 @@ on:
   push:
     branches: [main]
     paths:
+      - "tuner_hal2/key_provisioning_bridge/**"
+      - "tuner_hal2/aidl_service/src/key_provisioning_bridge_server.rs"
+      - "tuner_hal2/aidl_service/src/key_provisioning_connection.rs"
       - "tuner_hal2/common/**"
       - "tuner_hal2/compile_contract/**"
       - "tuner_hal2/control/**"

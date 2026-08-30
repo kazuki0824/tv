@@ -1,0 +1,4 @@
+/vendor/bin/hw/maleicacid\.tv\.cas_hal-service u:object_r:hal_cas_default_exec:s0
+/vendor/etc/maleicacid u:object_r:maleicacid_cas_config_file:s0
+/vendor/etc/maleicacid/cas_capabilities u:object_r:maleicacid_cas_config_file:s0
+/dev/socket/maleicacid_key_provisioning u:object_r:maleicacid_key_provisioning_socket:s0

@@ -166,7 +166,7 @@ BOARD_VENDOR_SEPOLICY_DIRS include
 固定方針:
 
 ```text
-- CAS HAL 仮実装 のため descramble 前提 flow を含めない。
+- CAS/Tuner鍵bridge、対象CAS capability profile、実card/vectorを有効化していない試験profileにはdescramble前提flowを含めない。有効化したprofileではflowを隠さない。
 - HAL-generated 範囲スキャン / ブラインドスキャン は 対応宣言しない。
 - frequency は explicit tune point に固定する。
 - ISDB-T bandwidth は 6MHz または AUTO 相当だけを使う。
