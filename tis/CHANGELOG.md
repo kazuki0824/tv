@@ -1,3 +1,9 @@
+# r50ef_review_followup_7
+
+- `MediaEvent.getPts()`をproducer確定済みのauthoritative metadataとしてTISがopaqueに受理する責務を明記した。HAL producer側のcodec header構造検証、PES横断bounded residual、first-AU位置、actual sample rate、exact sample countによるassociationを、TIS側で禁止するgenericな0／前値／PCR／wallclock補間と明確に分離した。
+- TISはproducer側codec parser／associationを再実行・複製せず、`isPtsPresent`を元PES headerのprovenanceとして維持し、`isPtsPresent=false`でもauthoritative `getPts()`を既存consumer pathへ透過する。producer個別実装の完成をTIS文書から主張せず、consumer責務だけを固定したため、新しいstate owner、parser、queue、clockは追加していない。
+- 文書差分のみで、production Kotlin、公開schema、AOSP API、ARIB parser、future_work、`RELEASE_VERSION`は変更していない。`git diff --check`を実施し、Android/Soong build、atest、CTS/VTS、実機確認は未実施。
+
 # r50ef_review_followup_6
 
 - 音声track切替のrestart失敗でも新playback generationをLiveSessionへ反映し、旧`Started` stateを残さず`Failed`へ遷移するようにした。restart前の入力拒否ではcurrent stateを維持する。
