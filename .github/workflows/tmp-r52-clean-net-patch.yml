@@ -18,40 +18,39 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Apply clean r52 delta and print conflict hunks
+      - name: Apply complete current r52 delta and print conflicts
         shell: bash
         run: |
           set -euo pipefail
           git config core.quotePath false
-          git fetch origin 7939fe760f4ce2858779a5800ea2a30310248ddb 67da64e24100ede74e938dc53f58a759593e613b 81fa1e66c317b7b0258383b7d09bf67634ac092c
+          git fetch origin 7939fe760f4ce2858779a5800ea2a30310248ddb 6de8935c80bedd2e8edf8f35fa55dd43f4a947c4 81fa1e66c317b7b0258383b7d09bf67634ac092c
           git checkout -B rebuilt-r52 81fa1e66c317b7b0258383b7d09bf67634ac092c
-          git diff --binary 7939fe760f4ce2858779a5800ea2a30310248ddb 67da64e24100ede74e938dc53f58a759593e613b > /tmp/r52.patch
+          git diff --binary 7939fe760f4ce2858779a5800ea2a30310248ddb 6de8935c80bedd2e8edf8f35fa55dd43f4a947c4 > /tmp/r52.patch
           set +e
           git apply --3way --index /tmp/r52.patch
           rc=$?
           set -e
           echo "apply_rc=$rc"
+          echo "--- conflicts ---"
+          git diff --name-only --diff-filter=U || true
           python3 - <<'PY'
           from pathlib import Path
-          files = [
+          for name in [
               '.github/workflows/tis-host-ci.yml',
               'tis/CHANGELOG.md',
               'tuner_hal2/CHANGELOG.md',
               'tuner_hal2/DESIGN_JA.md',
-          ]
-          for name in files:
+              'tuner_hal2/INTEGRATION.md',
+          ]:
               p=Path(name)
-              if not p.exists():
-                  continue
+              if not p.exists(): continue
               lines=p.read_text(errors='replace').splitlines()
               marks=[i for i,s in enumerate(lines) if s.startswith('<<<<<<<')]
-              if not marks:
-                  continue
+              if not marks: continue
               print(f'===== {name} =====')
               for n,i in enumerate(marks,1):
-                  lo=max(0,i-8); hi=min(len(lines),i+80)
+                  lo=max(0,i-6); hi=min(len(lines),i+70)
                   print(f'--- hunk {n} lines {lo+1}-{hi} ---')
-                  for j in range(lo,hi):
-                      print(f'{j+1:05d}: {lines[j]}')
+                  for j in range(lo,hi): print(f'{j+1:05d}: {lines[j]}')
           PY
           exit "$rc"
