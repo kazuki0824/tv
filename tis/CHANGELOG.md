@@ -1,3 +1,16 @@
+# r52_review_pid_link_state
+
+- `CasSessionState`でPMT由来のdesired PIDと、成功した`Descrambler.addPid()` / `removePid()`で確認できたlinked PIDを分離し、失敗した差分を同一metadata refreshで再試行できるようにした。
+- `READY`をkey接続済みかつdesired/linked一致に限定し、初回PID部分成功のrollbackも成功した操作だけを実状態へ反映するようにした。既存state ownerと単一executorの内側だけの変更で、別queue、worker、timerは追加していない。
+- add失敗、remove失敗、初回部分成功の3回帰試験を追加した。Kotlin 1.9.22/JDK 17でproduction/test compileとhost-compatible 128試験が成功した。Android/Soong build、instrumentation test、atest、VTS、実card/放送波確認は未実施である。
+
+# r52-cas-design
+
+- CAS正本をB25 `0x0005`のECM/EMMとB1 `0x0001`のECM-onlyへ更新し、B1 EMM filter/`processEmm()`を禁止した。
+- ECM成功後に `MediaCas.Session.getSessionId()` の同一bytesだけをTuner tokenへ渡し、vendor token合成とraw key受領を禁止した。
+- session/descrambler/PIDのgeneration境界、CAS failure reason、非SUCCESS Tuner結果のfail-closed契約を固定した。
+- この設計記録時点ではproduction CAS実装と各試験は未実施だった。後続のCAS→generic Tuner key provisioning実装は`../cas_hal/CHANGELOG.md`の`r52-implementation`と`../tuner_hal2/CHANGELOG.md`の`r52_key_provisioning_implementation`を正とし、Android/Soong build、instrumentation test、VTS、実機確認は引き続きproduct gateとして残る。
+
 # 未リリース
 
 - helper追加: `MediaSyncFirstOutputBridge`を追加し、platform-privateな`MediaSync.OnFirstVideoFrameQueuedToOutputListener`型とsetterを実行時reflectionで解決して呼び出す。stock platformへの静的hidden API型依存は持たない。
