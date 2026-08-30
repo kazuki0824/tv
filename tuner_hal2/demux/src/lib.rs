@@ -327,6 +327,20 @@ mod tests {
             })
     }
 
+    fn av_descriptors(report: &PipelineReport, filter_id: i32) -> Vec<AvMediaEventDescriptor> {
+        report
+            .generated_events
+            .iter()
+            .filter_map(|event| match event {
+                PipelineGeneratedEvent::AvMedia {
+                    filter_id: event_filter_id,
+                    descriptor,
+                } if *event_filter_id == filter_id => Some(descriptor.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn raw_ts_packet(pid: u16, continuity_counter: u8, payload: &[u8]) -> [u8; 188] {
         let mut packet = [0xffu8; 188];
         packet[0] = 0x47;
@@ -3281,7 +3295,7 @@ mod tests {
     }
 
     #[test]
-    fn audio_media_event_associates_pts_sparse_adts_from_exact_sample_count() {
+    fn audio_media_event_associates_complete_adts_frames_from_exact_sample_count() {
         let filter_id = 38;
         let pid = 0x0101;
         let mut demux = started_audio_filter_runtime(filter_id, pid);
@@ -3291,31 +3305,20 @@ mod tests {
             &pes_start_packet(pid as u16, 0, &bounded_audio_pes(&frame, Some(90_000))),
             TsInputOrigin::frontend(1),
         );
-        assert_eq!(
-            av_metadata(&explicit, filter_id),
-            Some(AvMediaEventMetadata {
-                stream_id: 0xc0,
-                is_pts_present: true,
-                pts_90khz: Some(90_000),
-                is_dts_present: false,
-                dts_90khz: None,
-            })
-        );
+        assert_eq!(av_metadata(&explicit, filter_id), None);
 
         let associated = demux.push_ts_packet_from_origin(
             &pes_start_packet(pid as u16, 1, &bounded_audio_pes(&frame, None)),
             TsInputOrigin::frontend(1),
         );
-        assert_eq!(
-            av_metadata(&associated, filter_id),
-            Some(AvMediaEventMetadata {
-                stream_id: 0xc0,
-                is_pts_present: false,
-                pts_90khz: Some(91_920),
-                is_dts_present: false,
-                dts_90khz: None,
-            })
-        );
+        let descriptors = av_descriptors(&associated, filter_id);
+        assert_eq!(descriptors.len(), 2);
+        assert_eq!(descriptors[0].data_length, frame.len());
+        assert_eq!(descriptors[0].metadata.pts_90khz, Some(90_000));
+        assert!(descriptors[0].metadata.is_pts_present);
+        assert_eq!(descriptors[1].data_length, frame.len());
+        assert_eq!(descriptors[1].metadata.pts_90khz, Some(91_920));
+        assert!(!descriptors[1].metadata.is_pts_present);
     }
 
     #[test]
@@ -3335,16 +3338,7 @@ mod tests {
             ),
             TsInputOrigin::frontend(1),
         );
-        assert_eq!(
-            av_metadata(&explicit, filter_id),
-            Some(AvMediaEventMetadata {
-                stream_id: 0xc0,
-                is_pts_present: true,
-                pts_90khz: Some(90_000),
-                is_dts_present: false,
-                dts_90khz: None,
-            })
-        );
+        assert_eq!(av_metadata(&explicit, filter_id), None);
 
         let mut continuation = first_frame[split_at..].to_vec();
         continuation.extend_from_slice(&second_frame);
@@ -3356,16 +3350,14 @@ mod tests {
             ),
             TsInputOrigin::frontend(1),
         );
-        assert_eq!(
-            av_metadata(&associated, filter_id),
-            Some(AvMediaEventMetadata {
-                stream_id: 0xc0,
-                is_pts_present: false,
-                pts_90khz: Some(91_920),
-                is_dts_present: false,
-                dts_90khz: None,
-            })
-        );
+        let descriptors = av_descriptors(&associated, filter_id);
+        assert_eq!(descriptors.len(), 2);
+        assert_eq!(descriptors[0].data_length, first_frame.len());
+        assert_eq!(descriptors[0].metadata.pts_90khz, Some(90_000));
+        assert!(descriptors[0].metadata.is_pts_present);
+        assert_eq!(descriptors[1].data_length, second_frame.len());
+        assert_eq!(descriptors[1].metadata.pts_90khz, Some(91_920));
+        assert!(!descriptors[1].metadata.is_pts_present);
     }
 
     #[test]
@@ -3385,31 +3377,63 @@ mod tests {
             ),
             TsInputOrigin::frontend(1),
         );
-        assert_eq!(
-            av_metadata(&explicit, filter_id),
-            Some(AvMediaEventMetadata {
-                stream_id: 0xc0,
-                is_pts_present: true,
-                pts_90khz: Some(90_000),
-                is_dts_present: false,
-                dts_90khz: None,
-            })
-        );
+        assert_eq!(av_metadata(&explicit, filter_id), None);
 
         let associated = demux.push_ts_packet_from_origin(
             &pes_start_packet(pid as u16, 1, &bounded_audio_pes(&frame, None)),
             TsInputOrigin::frontend(1),
         );
-        assert_eq!(
-            av_metadata(&associated, filter_id),
-            Some(AvMediaEventMetadata {
-                stream_id: 0xc0,
-                is_pts_present: false,
-                pts_90khz: Some(91_920),
-                is_dts_present: false,
-                dts_90khz: None,
-            })
+        let descriptors = av_descriptors(&associated, filter_id);
+        assert_eq!(descriptors.len(), 2);
+        assert_eq!(descriptors[0].data_length, frame.len());
+        assert_eq!(descriptors[0].metadata.pts_90khz, Some(90_000));
+        assert!(descriptors[0].metadata.is_pts_present);
+        assert_eq!(descriptors[1].data_length, frame.len());
+        assert_eq!(descriptors[1].metadata.pts_90khz, Some(91_920));
+        assert!(!descriptors[1].metadata.is_pts_present);
+    }
+
+    #[test]
+    fn audio_media_event_defers_ambiguous_cold_start_and_emits_exact_au_ranges() {
+        let filter_id = 42;
+        let pid = 0x0101;
+        let mut demux = started_audio_filter_runtime(filter_id, pid);
+        let false_candidate = adts_aac_lc_frame_48khz(200);
+        let first_frame = adts_aac_lc_frame_48khz(8);
+        let second_frame = adts_aac_lc_frame_48khz(4);
+        let split_at = 12;
+        let mut first_payload = false_candidate[..7].to_vec();
+        first_payload.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]);
+        first_payload.extend_from_slice(&first_frame[..split_at]);
+
+        let deferred = demux.push_ts_packet_from_origin(
+            &pes_start_packet(
+                pid as u16,
+                0,
+                &bounded_audio_pes(&first_payload, Some(90_000)),
+            ),
+            TsInputOrigin::frontend(1),
         );
+        assert!(av_descriptors(&deferred, filter_id).is_empty());
+
+        let mut continuation = first_frame[split_at..].to_vec();
+        continuation.extend_from_slice(&second_frame);
+        let confirmed = demux.push_ts_packet_from_origin(
+            &pes_start_packet(
+                pid as u16,
+                1,
+                &bounded_audio_pes(&continuation, None),
+            ),
+            TsInputOrigin::frontend(1),
+        );
+        let descriptors = av_descriptors(&confirmed, filter_id);
+        assert_eq!(descriptors.len(), 2);
+        assert_eq!(descriptors[0].data_length, first_frame.len());
+        assert_eq!(descriptors[0].metadata.pts_90khz, Some(90_000));
+        assert!(descriptors[0].metadata.is_pts_present);
+        assert_eq!(descriptors[1].data_length, second_frame.len());
+        assert_eq!(descriptors[1].metadata.pts_90khz, Some(91_920));
+        assert!(!descriptors[1].metadata.is_pts_present);
     }
 
     #[test]
@@ -3418,10 +3442,16 @@ mod tests {
         let pid = 0x0101;
         let mut demux = started_audio_filter_runtime(filter_id, pid);
         let frame = adts_aac_lc_frame_48khz(4);
+        let mut anchor_payload = frame.clone();
+        anchor_payload.extend_from_slice(&frame);
         let origin = TsInputOrigin::frontend(1);
 
         let explicit = demux.push_ts_packet_from_origin(
-            &pes_start_packet(pid as u16, 0, &bounded_audio_pes(&frame, Some(90_000))),
+            &pes_start_packet(
+                pid as u16,
+                0,
+                &bounded_audio_pes(&anchor_payload, Some(90_000)),
+            ),
             origin,
         );
         assert!(av_metadata(&explicit, filter_id).is_some());
@@ -3440,7 +3470,11 @@ mod tests {
         ));
 
         let reanchored = demux.push_ts_packet_from_origin(
-            &pes_start_packet(pid as u16, 2, &bounded_audio_pes(&frame, Some(180_000))),
+            &pes_start_packet(
+                pid as u16,
+                2,
+                &bounded_audio_pes(&anchor_payload, Some(180_000)),
+            ),
             origin,
         );
         assert!(av_metadata(&reanchored, filter_id).is_some());

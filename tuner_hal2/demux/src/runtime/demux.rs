@@ -4287,8 +4287,8 @@ impl DemuxRuntime {
             let Some(filter) = self.filters.get_mut(&filter_id) else {
                 continue;
             };
-            let metadata = match filter.av_media_event_metadata(&packet, origin) {
-                Ok(metadata) => metadata,
+            let payloads = match filter.prepare_av_media_payloads(packet, origin) {
+                Ok(payloads) => payloads,
                 Err(_) => {
                     report.diagnostics.push(
                         crate::packet_pipeline::PipelineDiagnostic::av_authoritative_timestamp_unavailable(
@@ -4298,42 +4298,43 @@ impl DemuxRuntime {
                     continue;
                 }
             };
-            let outcome = self
-                .filter_av_backings
-                .get_mut(&filter_id)
-                .map(|backing| backing.allocate_payload_bytes(&packet.payload, metadata));
-            match outcome {
-                Some(Ok(AvPayloadDeliveryOutcome::Delivered(descriptor))) => {
-                    report
-                        .generated_events
-                        .push(PipelineGeneratedEvent::AvMedia {
-                            filter_id,
-                            descriptor,
-                        });
-                }
-                Some(Ok(outcome)) => {
-                    if let Some(diagnostic) =
-                        av_payload_delivery_outcome_diagnostic(outcome, pid, filter_id)
-                    {
-                        report.diagnostics.push(diagnostic);
+            for payload in payloads {
+                let outcome = self.filter_av_backings.get_mut(&filter_id).map(|backing| {
+                    backing.allocate_payload_bytes(&payload.payload, payload.metadata)
+                });
+                match outcome {
+                    Some(Ok(AvPayloadDeliveryOutcome::Delivered(descriptor))) => {
+                        report
+                            .generated_events
+                            .push(PipelineGeneratedEvent::AvMedia {
+                                filter_id,
+                                descriptor,
+                            });
                     }
-                }
-                Some(Err(error)) => {
-                    if let Some(filter) = self.filters.get_mut(&filter_id) {
-                        filter.mark_failed();
+                    Some(Ok(outcome)) => {
+                        if let Some(diagnostic) =
+                            av_payload_delivery_outcome_diagnostic(outcome, pid, filter_id)
+                        {
+                            report.diagnostics.push(diagnostic);
+                        }
                     }
-                    report.diagnostics.push(
-                        crate::packet_pipeline::PipelineDiagnostic::av_shared_backing_failure(
-                            pid, filter_id, error,
-                        ),
-                    );
-                }
-                None => {
-                    report.diagnostics.push(
-                        crate::packet_pipeline::PipelineDiagnostic::av_shared_backing_missing(
-                            pid, filter_id,
-                        ),
-                    );
+                    Some(Err(error)) => {
+                        if let Some(filter) = self.filters.get_mut(&filter_id) {
+                            filter.mark_failed();
+                        }
+                        report.diagnostics.push(
+                            crate::packet_pipeline::PipelineDiagnostic::av_shared_backing_failure(
+                                pid, filter_id, error,
+                            ),
+                        );
+                    }
+                    None => {
+                        report.diagnostics.push(
+                            crate::packet_pipeline::PipelineDiagnostic::av_shared_backing_missing(
+                                pid, filter_id,
+                            ),
+                        );
+                    }
                 }
             }
         }

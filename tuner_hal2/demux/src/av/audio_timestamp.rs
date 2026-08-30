@@ -1,12 +1,14 @@
+use super::AvMediaEventMetadata;
 use crate::ts_core::PesPacket;
 use crate::TsInputOrigin;
 
 // FilterRuntimeに従属する有限な関連付け状態であり、第二のpacket pipelineやclockではない。
-// PES境界を跨ぐframeは最大1個だけ追跡し、PCR/wallclockへfallbackしない。
+// PES境界を跨ぐframeは最大1個だけ再構成し、PCR/wallclockへfallbackしない。
 const PTS_MODULUS: u128 = 1_u128 << 33;
 const PTS_CLOCK_HZ: u128 = 90_000;
 const MAX_AUDIO_HEADER_BYTES: usize = 7;
 const MAX_AUDIO_FRAME_BYTES: usize = (1usize << 13) - 1;
+const MAX_COLD_START_BYTES: usize = MAX_AUDIO_FRAME_BYTES * 2 + MAX_AUDIO_HEADER_BYTES;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AudioFrameSignature {
@@ -80,36 +82,29 @@ pub(crate) enum AudioTimestampAssociationFailure {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum AudioFrameResidual {
+pub(crate) struct AudioMediaFrame {
+    pub(crate) payload: Vec<u8>,
+    pub(crate) metadata: AvMediaEventMetadata,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AudioFrameInProgress {
+    bytes: Vec<u8>,
+    expected_len: Option<usize>,
+    frame_pts_90khz: u64,
+    stream_id: u8,
+    is_pts_present: bool,
+    dts_90khz: Option<u64>,
+    reanchor: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum AudioFrameAssembly {
     Boundary,
-    Header {
-        bytes: Vec<u8>,
-        frame_pts_90khz: u64,
-        reanchor: bool,
-    },
-    Frame {
-        remaining_bytes: usize,
-        frame_pts_90khz: u64,
-    },
+    Frame(AudioFrameInProgress),
 }
 
-impl AudioFrameResidual {
-    fn frame_pts_90khz(&self) -> Option<u64> {
-        match self {
-            Self::Boundary => None,
-            Self::Header {
-                frame_pts_90khz,
-                ..
-            }
-            | Self::Frame {
-                frame_pts_90khz,
-                ..
-            } => Some(*frame_pts_90khz),
-        }
-    }
-}
-
-impl Default for AudioFrameResidual {
+impl Default for AudioFrameAssembly {
     fn default() -> Self {
         Self::Boundary
     }
@@ -123,31 +118,94 @@ enum AudioFrameHeaderParse {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum AudioFrameHeaderRead {
-    Partial(Vec<u8>),
-    Complete(AudioFrameHeader),
+struct AudioPesChunk {
+    stream_id: u8,
+    pts_90khz: Option<u64>,
+    dts_90khz: Option<u64>,
+    data_alignment_indicator: bool,
+    payload: Vec<u8>,
+}
+
+impl From<PesPacket> for AudioPesChunk {
+    fn from(packet: PesPacket) -> Self {
+        Self {
+            stream_id: packet.stream_id,
+            pts_90khz: packet.pts_90khz,
+            dts_90khz: packet.dts_90khz,
+            data_alignment_indicator: packet.data_alignment_indicator,
+            payload: packet.payload,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ColdStartAcquisition {
+    chunks: Vec<AudioPesChunk>,
+    first_payload_len: usize,
+    total_bytes: usize,
+}
+
+impl ColdStartAcquisition {
+    fn new(chunk: AudioPesChunk) -> Result<Self, AudioTimestampAssociationFailure> {
+        let total_bytes = chunk.payload.len();
+        if total_bytes > MAX_COLD_START_BYTES {
+            return Err(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames);
+        }
+        Ok(Self {
+            chunks: vec![chunk],
+            first_payload_len: total_bytes,
+            total_bytes,
+        })
+    }
+
+    fn probe_with(&self, chunk: &AudioPesChunk) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(
+            MAX_COLD_START_BYTES.min(self.total_bytes.saturating_add(chunk.payload.len())),
+        );
+        for stored in &self.chunks {
+            bytes.extend_from_slice(&stored.payload);
+        }
+        let remaining = MAX_COLD_START_BYTES.saturating_sub(bytes.len());
+        bytes.extend_from_slice(&chunk.payload[..chunk.payload.len().min(remaining)]);
+        bytes
+    }
+
+    fn push(&mut self, chunk: AudioPesChunk) -> Result<(), AudioTimestampAssociationFailure> {
+        let total_bytes = self
+            .total_bytes
+            .checked_add(chunk.payload.len())
+            .ok_or(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)?;
+        if total_bytes > MAX_COLD_START_BYTES {
+            return Err(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames);
+        }
+        self.total_bytes = total_bytes;
+        self.chunks.push(chunk);
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct AudioTimestampAssociation {
     anchor: Option<AudioTimestampAnchor>,
     origin: Option<TsInputOrigin>,
-    residual: AudioFrameResidual,
+    assembly: AudioFrameAssembly,
+    cold_start: Option<ColdStartAcquisition>,
 }
 
 impl AudioTimestampAssociation {
     pub(crate) fn reset(&mut self) {
         self.anchor = None;
         self.origin = None;
-        self.residual = AudioFrameResidual::Boundary;
+        self.assembly = AudioFrameAssembly::Boundary;
+        self.cold_start = None;
     }
 
-    pub(crate) fn associate(
+    pub(crate) fn extract(
         &mut self,
-        packet: &PesPacket,
+        packet: PesPacket,
         origin: TsInputOrigin,
-    ) -> Result<u64, AudioTimestampAssociationFailure> {
-        let result = self.associate_inner(packet, origin);
+    ) -> Result<Vec<AudioMediaFrame>, AudioTimestampAssociationFailure> {
+        let result = self.extract_inner(packet, origin);
         if result.is_err() {
             self.reset();
         }
@@ -160,11 +218,11 @@ impl AudioTimestampAssociation {
         }
     }
 
-    fn associate_inner(
+    fn extract_inner(
         &mut self,
-        packet: &PesPacket,
+        packet: PesPacket,
         origin: TsInputOrigin,
-    ) -> Result<u64, AudioTimestampAssociationFailure> {
+    ) -> Result<Vec<AudioMediaFrame>, AudioTimestampAssociationFailure> {
         if packet.payload.is_empty() {
             return Err(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames);
         }
@@ -181,80 +239,17 @@ impl AudioTimestampAssociation {
             self.origin = Some(origin);
         }
 
-        let continued_frame_pts_90khz = self.residual.frame_pts_90khz();
-        let mut explicit_for_first_start = packet.pts_90khz;
-        let mut first_started_frame_pts_90khz = None;
+        let chunk = AudioPesChunk::from(packet);
+        if let Some(cold_start) = self.cold_start.as_ref() {
+            return self.continue_cold_start(chunk, cold_start.first_payload_len);
+        }
+
         let acquiring_initial_boundary =
-            self.anchor.is_none() && matches!(&self.residual, AudioFrameResidual::Boundary);
-        let mut offset = if acquiring_initial_boundary && !packet.data_alignment_indicator {
-            cold_start_audio_frame_offset(&packet.payload)
-                .ok_or(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)?
-        } else {
-            0usize
-        };
-
-        while offset < packet.payload.len() {
-            match std::mem::take(&mut self.residual) {
-                AudioFrameResidual::Boundary => {
-                    let reanchor = explicit_for_first_start.is_some();
-                    let frame_pts_90khz = match explicit_for_first_start.take() {
-                        Some(explicit_pts_90khz) => explicit_pts_90khz,
-                        None => self.next_frame_pts_90khz()?,
-                    };
-                    first_started_frame_pts_90khz.get_or_insert(frame_pts_90khz);
-                    self.read_and_commit_frame(
-                        Vec::new(),
-                        frame_pts_90khz,
-                        reanchor,
-                        &packet.payload,
-                        &mut offset,
-                    )?;
-                }
-                AudioFrameResidual::Header {
-                    bytes,
-                    frame_pts_90khz,
-                    reanchor,
-                } => {
-                    self.read_and_commit_frame(
-                        bytes,
-                        frame_pts_90khz,
-                        reanchor,
-                        &packet.payload,
-                        &mut offset,
-                    )?;
-                }
-                AudioFrameResidual::Frame {
-                    remaining_bytes,
-                    frame_pts_90khz,
-                } => {
-                    let available = packet.payload.len().checked_sub(offset).ok_or(
-                        AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames,
-                    )?;
-                    let consumed = remaining_bytes.min(available);
-                    offset = offset.checked_add(consumed).ok_or(
-                        AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames,
-                    )?;
-                    let remaining_bytes = remaining_bytes.checked_sub(consumed).ok_or(
-                        AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames,
-                    )?;
-                    if remaining_bytes > 0 {
-                        self.residual = AudioFrameResidual::Frame {
-                            remaining_bytes,
-                            frame_pts_90khz,
-                        };
-                    }
-                }
-            }
+            self.anchor.is_none() && matches!(self.assembly, AudioFrameAssembly::Boundary);
+        if acquiring_initial_boundary && !chunk.data_alignment_indicator {
+            return self.start_cold_start(chunk);
         }
-
-        if explicit_for_first_start.is_some() {
-            return Err(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames);
-        }
-        packet
-            .pts_90khz
-            .or(first_started_frame_pts_90khz)
-            .or(continued_frame_pts_90khz)
-            .ok_or(AudioTimestampAssociationFailure::MissingAnchor)
+        self.process_chunk(chunk, 0)
     }
 
     fn next_frame_pts_90khz(&self) -> Result<u64, AudioTimestampAssociationFailure> {
@@ -263,48 +258,199 @@ impl AudioTimestampAssociation {
             .ok_or(AudioTimestampAssociationFailure::MissingAnchor)
     }
 
-    fn read_and_commit_frame(
+    fn start_cold_start(
         &mut self,
-        bytes: Vec<u8>,
-        frame_pts_90khz: u64,
-        reanchor: bool,
+        chunk: AudioPesChunk,
+    ) -> Result<Vec<AudioMediaFrame>, AudioTimestampAssociationFailure> {
+        match cold_start_decision(&chunk.payload, chunk.payload.len()) {
+            ColdStartDecision::Confirmed(offset) => self.process_chunk(chunk, offset),
+            ColdStartDecision::Pending => {
+                self.cold_start = Some(ColdStartAcquisition::new(chunk)?);
+                Ok(Vec::new())
+            }
+            ColdStartDecision::Invalid => {
+                Err(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)
+            }
+        }
+    }
+
+    fn continue_cold_start(
+        &mut self,
+        chunk: AudioPesChunk,
+        first_payload_len: usize,
+    ) -> Result<Vec<AudioMediaFrame>, AudioTimestampAssociationFailure> {
+        let decision = {
+            let cold_start = self
+                .cold_start
+                .as_ref()
+                .ok_or(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)?;
+            cold_start_decision(&cold_start.probe_with(&chunk), first_payload_len)
+        };
+        match decision {
+            ColdStartDecision::Confirmed(offset) => {
+                let cold_start = self
+                    .cold_start
+                    .take()
+                    .ok_or(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)?;
+                let mut chunks = cold_start.chunks;
+                chunks.push(chunk);
+                let mut outputs = Vec::new();
+                for (index, stored) in chunks.into_iter().enumerate() {
+                    let start_offset = if index == 0 { offset } else { 0 };
+                    outputs.extend(self.process_chunk(stored, start_offset)?);
+                }
+                Ok(outputs)
+            }
+            ColdStartDecision::Pending => {
+                self.cold_start
+                    .as_mut()
+                    .ok_or(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)?
+                    .push(chunk)?;
+                Ok(Vec::new())
+            }
+            ColdStartDecision::Invalid => {
+                Err(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)
+            }
+        }
+    }
+
+    fn process_chunk(
+        &mut self,
+        chunk: AudioPesChunk,
+        mut offset: usize,
+    ) -> Result<Vec<AudioMediaFrame>, AudioTimestampAssociationFailure> {
+        if offset >= chunk.payload.len() {
+            return Err(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames);
+        }
+        let mut outputs = Vec::new();
+        let mut explicit_for_first_start = chunk.pts_90khz;
+        let mut dts_for_first_start = chunk.dts_90khz;
+
+        while offset < chunk.payload.len() {
+            if matches!(self.assembly, AudioFrameAssembly::Boundary) {
+                let explicit_pts_90khz = explicit_for_first_start.take();
+                let reanchor = explicit_pts_90khz.is_some();
+                let frame_pts_90khz = match explicit_pts_90khz {
+                    Some(pts_90khz) => pts_90khz,
+                    None => self.next_frame_pts_90khz()?,
+                };
+                self.assembly = AudioFrameAssembly::Frame(AudioFrameInProgress {
+                    bytes: Vec::new(),
+                    expected_len: None,
+                    frame_pts_90khz,
+                    stream_id: chunk.stream_id,
+                    is_pts_present: reanchor,
+                    dts_90khz: dts_for_first_start.take(),
+                    reanchor,
+                });
+            }
+            self.fill_frame(&chunk.payload, &mut offset, &mut outputs)?;
+        }
+
+        if explicit_for_first_start.is_some() {
+            return Err(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames);
+        }
+        Ok(outputs)
+    }
+
+    fn fill_frame(
+        &mut self,
         payload: &[u8],
         offset: &mut usize,
+        outputs: &mut Vec<AudioMediaFrame>,
     ) -> Result<(), AudioTimestampAssociationFailure> {
-        let header = match read_audio_frame_header(bytes, payload, offset)? {
-            AudioFrameHeaderRead::Partial(bytes) => {
-                self.residual = AudioFrameResidual::Header {
-                    bytes,
-                    frame_pts_90khz,
-                    reanchor,
-                };
-                return Ok(());
+        let mut frame = match std::mem::take(&mut self.assembly) {
+            AudioFrameAssembly::Boundary => {
+                return Err(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames);
             }
-            AudioFrameHeaderRead::Complete(header) => header,
+            AudioFrameAssembly::Frame(frame) => frame,
         };
-        self.commit_frame_header(header, frame_pts_90khz, reanchor)?;
 
-        let remaining_bytes = header
-            .frame_len
-            .checked_sub(header.parsed_header_len)
+        if frame.expected_len.is_none() {
+            loop {
+                match parse_audio_frame_header(&frame.bytes) {
+                    AudioFrameHeaderParse::NeedMore(required_len) => {
+                        if required_len > MAX_AUDIO_HEADER_BYTES
+                            || required_len <= frame.bytes.len()
+                        {
+                            return Err(
+                                AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames,
+                            );
+                        }
+                        let available = payload.len().checked_sub(*offset).ok_or(
+                            AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames,
+                        )?;
+                        let required = required_len.checked_sub(frame.bytes.len()).ok_or(
+                            AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames,
+                        )?;
+                        let consumed = required.min(available);
+                        let end = (*offset).checked_add(consumed).ok_or(
+                            AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames,
+                        )?;
+                        frame
+                            .bytes
+                            .extend_from_slice(payload.get(*offset..end).ok_or(
+                                AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames,
+                            )?);
+                        *offset = end;
+                        if frame.bytes.len() < required_len {
+                            self.assembly = AudioFrameAssembly::Frame(frame);
+                            return Ok(());
+                        }
+                    }
+                    AudioFrameHeaderParse::Complete(header) => {
+                        if header.parsed_header_len > frame.bytes.len() {
+                            return Err(
+                                AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames,
+                            );
+                        }
+                        self.commit_frame_header(header, frame.frame_pts_90khz, frame.reanchor)?;
+                        frame.expected_len = Some(header.frame_len);
+                        break;
+                    }
+                    AudioFrameHeaderParse::Invalid => {
+                        return Err(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames);
+                    }
+                }
+            }
+        }
+
+        let expected_len = frame
+            .expected_len
+            .ok_or(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)?;
+        let remaining = expected_len
+            .checked_sub(frame.bytes.len())
             .ok_or(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)?;
         let available = payload
             .len()
             .checked_sub(*offset)
             .ok_or(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)?;
-        let consumed = remaining_bytes.min(available);
-        *offset = (*offset)
+        let consumed = remaining.min(available);
+        let end = (*offset)
             .checked_add(consumed)
             .ok_or(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)?;
-        let remaining_bytes = remaining_bytes
-            .checked_sub(consumed)
-            .ok_or(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)?;
-        if remaining_bytes > 0 {
-            self.residual = AudioFrameResidual::Frame {
-                remaining_bytes,
-                frame_pts_90khz,
-            };
+        frame.bytes.extend_from_slice(
+            payload
+                .get(*offset..end)
+                .ok_or(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)?,
+        );
+        *offset = end;
+        if frame.bytes.len() < expected_len {
+            self.assembly = AudioFrameAssembly::Frame(frame);
+            return Ok(());
         }
+
+        outputs.push(AudioMediaFrame {
+            payload: frame.bytes,
+            metadata: AvMediaEventMetadata {
+                stream_id: frame.stream_id,
+                is_pts_present: frame.is_pts_present,
+                pts_90khz: Some(frame.frame_pts_90khz),
+                is_dts_present: frame.dts_90khz.is_some(),
+                dts_90khz: frame.dts_90khz,
+            },
+        });
+        self.assembly = AudioFrameAssembly::Boundary;
         Ok(())
     }
 
@@ -338,50 +484,72 @@ impl AudioTimestampAssociation {
     }
 }
 
-// data_alignment_indicator=falseのcold startではpayload先頭をsyncwordと仮定しない。
-// 先行AUの残りは規格上の最大frame長未満に限られるため探索範囲を有限にし、
-// sync patternだけでなくframe lengthが示す次境界まで検証してからanchorを置く。
-fn cold_start_audio_frame_offset(payload: &[u8]) -> Option<usize> {
-    let search_len = payload.len().min(MAX_AUDIO_FRAME_BYTES);
-    let mut header_only_candidate = None;
-    for offset in 0..search_len {
-        match cold_start_candidate_validation(payload, offset) {
-            ColdStartCandidateValidation::ConfirmedBoundary => return Some(offset),
-            ColdStartCandidateValidation::HeaderOnly => {
-                header_only_candidate.get_or_insert(offset);
-            }
-            ColdStartCandidateValidation::Invalid => {}
-        }
-    }
-    header_only_candidate
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ColdStartCandidateValidation {
     Invalid,
-    HeaderOnly,
+    Pending,
     ConfirmedBoundary,
 }
 
-fn cold_start_candidate_validation(payload: &[u8], offset: usize) -> ColdStartCandidateValidation {
-    let Some(candidate) = payload.get(offset..) else {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ColdStartDecision {
+    Invalid,
+    Pending,
+    Confirmed(usize),
+}
+
+// data_alignment_indicator=falseのcold startではpayload先頭をsyncwordと仮定しない。
+// 最初のPES内で開始する候補だけを有限探索し、後続の同一signature境界を
+// 実際に観測するまでPTS anchorとMediaEvent payloadを公開しない。
+fn cold_start_decision(bytes: &[u8], first_payload_len: usize) -> ColdStartDecision {
+    let search_len = first_payload_len
+        .min(MAX_AUDIO_FRAME_BYTES)
+        .min(bytes.len());
+    let mut confirmed = None;
+    let mut pending = false;
+    for offset in 0..search_len {
+        match cold_start_candidate_validation(bytes, offset) {
+            ColdStartCandidateValidation::ConfirmedBoundary => {
+                if confirmed.replace(offset).is_some() {
+                    return ColdStartDecision::Invalid;
+                }
+            }
+            ColdStartCandidateValidation::Pending => pending = true,
+            ColdStartCandidateValidation::Invalid => {}
+        }
+    }
+    match confirmed {
+        Some(offset) => ColdStartDecision::Confirmed(offset),
+        None if pending => ColdStartDecision::Pending,
+        None => ColdStartDecision::Invalid,
+    }
+}
+
+fn cold_start_candidate_validation(bytes: &[u8], offset: usize) -> ColdStartCandidateValidation {
+    let Some(candidate) = bytes.get(offset..) else {
         return ColdStartCandidateValidation::Invalid;
     };
-    let AudioFrameHeaderParse::Complete(header) = parse_audio_frame_header(candidate) else {
-        return ColdStartCandidateValidation::Invalid;
+    let header = match parse_audio_frame_header(candidate) {
+        AudioFrameHeaderParse::Complete(header) => header,
+        AudioFrameHeaderParse::NeedMore(required_len)
+            if candidate.first() == Some(&0xff)
+                && required_len <= MAX_AUDIO_HEADER_BYTES
+                && candidate.len() < required_len =>
+        {
+            return ColdStartCandidateValidation::Pending;
+        }
+        AudioFrameHeaderParse::NeedMore(_) | AudioFrameHeaderParse::Invalid => {
+            return ColdStartCandidateValidation::Invalid;
+        }
     };
     let Some(next_offset) = offset.checked_add(header.frame_len) else {
         return ColdStartCandidateValidation::Invalid;
     };
-    if next_offset > payload.len() {
-        // Header全体と宣言frame長は検証済みだが、次境界は後続PESにある。
-        return ColdStartCandidateValidation::HeaderOnly;
-    }
-    if next_offset == payload.len() {
-        return ColdStartCandidateValidation::ConfirmedBoundary;
+    if next_offset >= bytes.len() {
+        return ColdStartCandidateValidation::Pending;
     }
 
-    let Some(next_candidate) = payload.get(next_offset..) else {
+    let Some(next_candidate) = bytes.get(next_offset..) else {
         return ColdStartCandidateValidation::Invalid;
     };
     match parse_audio_frame_header(next_candidate) {
@@ -395,54 +563,13 @@ fn cold_start_candidate_validation(payload: &[u8], offset: usize) -> ColdStartCa
                 && next_candidate.len() < required_len
                 && required_len <= MAX_AUDIO_HEADER_BYTES
             {
-                ColdStartCandidateValidation::ConfirmedBoundary
+                ColdStartCandidateValidation::Pending
             } else {
                 ColdStartCandidateValidation::Invalid
             }
         }
         AudioFrameHeaderParse::Complete(_) | AudioFrameHeaderParse::Invalid => {
             ColdStartCandidateValidation::Invalid
-        }
-    }
-}
-
-fn read_audio_frame_header(
-    mut bytes: Vec<u8>,
-    payload: &[u8],
-    offset: &mut usize,
-) -> Result<AudioFrameHeaderRead, AudioTimestampAssociationFailure> {
-    loop {
-        match parse_audio_frame_header(&bytes) {
-            AudioFrameHeaderParse::NeedMore(required_len) => {
-                if required_len > MAX_AUDIO_HEADER_BYTES || required_len <= bytes.len() {
-                    return Err(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames);
-                }
-                let available = payload
-                    .len()
-                    .checked_sub(*offset)
-                    .ok_or(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)?;
-                let required = required_len
-                    .checked_sub(bytes.len())
-                    .ok_or(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)?;
-                let consumed = required.min(available);
-                let end = (*offset)
-                    .checked_add(consumed)
-                    .ok_or(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)?;
-                let chunk = payload
-                    .get(*offset..end)
-                    .ok_or(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)?;
-                bytes.extend_from_slice(chunk);
-                *offset = end;
-                if bytes.len() < required_len {
-                    return Ok(AudioFrameHeaderRead::Partial(bytes));
-                }
-            }
-            AudioFrameHeaderParse::Complete(header) => {
-                return Ok(AudioFrameHeaderRead::Complete(header));
-            }
-            AudioFrameHeaderParse::Invalid => {
-                return Err(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames);
-            }
         }
     }
 }
@@ -667,60 +794,88 @@ mod tests {
         frame
     }
 
-    #[test]
-    fn adts_explicit_anchor_associates_pts_sparse_events_without_changing_provenance() {
-        let mut association = AudioTimestampAssociation::default();
-        let first = packet(adts_frame(3, 4), Some(90_000));
-        let second = packet(adts_frame(3, 4), None);
+    fn pts(frames: &[AudioMediaFrame]) -> Vec<u64> {
+        frames
+            .iter()
+            .map(|frame| frame.metadata.pts_90khz.expect("frame PTS"))
+            .collect()
+    }
 
-        assert_eq!(association.associate(&first, ORIGIN), Ok(90_000));
-        assert_eq!(association.associate(&second, ORIGIN), Ok(91_920));
+    #[test]
+    fn adts_explicit_anchor_associates_pts_sparse_frames_without_changing_provenance() {
+        let mut association = AudioTimestampAssociation::default();
+        let first = association
+            .extract(packet(adts_frame(3, 4), Some(90_000)), ORIGIN)
+            .unwrap();
+        let second = association
+            .extract(packet(adts_frame(3, 4), None), ORIGIN)
+            .unwrap();
+
+        assert_eq!(pts(&first), vec![90_000]);
+        assert!(first[0].metadata.is_pts_present);
+        assert_eq!(pts(&second), vec![91_920]);
+        assert!(!second[0].metadata.is_pts_present);
     }
 
     #[test]
     fn adts_rational_duration_accumulates_from_the_explicit_anchor() {
         let mut association = AudioTimestampAssociation::default();
-        let first = packet(adts_frame(4, 4), Some((1_u64 << 33) - 1_000));
-        let second = packet(adts_frame(4, 4), None);
-        let third = packet(adts_frame(4, 4), None);
+        let first = association
+            .extract(
+                packet(adts_frame(4, 4), Some((1_u64 << 33) - 1_000)),
+                ORIGIN,
+            )
+            .unwrap();
+        let second = association
+            .extract(packet(adts_frame(4, 4), None), ORIGIN)
+            .unwrap();
+        let third = association
+            .extract(packet(adts_frame(4, 4), None), ORIGIN)
+            .unwrap();
 
-        assert_eq!(
-            association.associate(&first, ORIGIN),
-            Ok((1_u64 << 33) - 1_000)
-        );
-        assert_eq!(association.associate(&second, ORIGIN), Ok(1_089));
-        assert_eq!(association.associate(&third, ORIGIN), Ok(3_179));
+        assert_eq!(pts(&first), vec![(1_u64 << 33) - 1_000]);
+        assert_eq!(pts(&second), vec![1_089]);
+        assert_eq!(pts(&third), vec![3_179]);
     }
 
     #[test]
-    fn mpeg_audio_frame_sample_count_associates_the_next_event() {
+    fn mpeg_audio_frame_sample_count_associates_the_next_frame() {
         let mut association = AudioTimestampAssociation::default();
-        let first = packet(mpeg1_layer2_frame(), Some(180_000));
-        let second = packet(mpeg1_layer2_frame(), None);
+        let first = association
+            .extract(packet(mpeg1_layer2_frame(), Some(180_000)), ORIGIN)
+            .unwrap();
+        let second = association
+            .extract(packet(mpeg1_layer2_frame(), None), ORIGIN)
+            .unwrap();
 
-        assert_eq!(association.associate(&first, ORIGIN), Ok(180_000));
-        assert_eq!(association.associate(&second, ORIGIN), Ok(182_160));
+        assert_eq!(pts(&first), vec![180_000]);
+        assert_eq!(pts(&second), vec![182_160]);
     }
 
     #[test]
-    fn cold_start_finds_the_first_adts_au_after_a_continuation_prefix() {
+    fn cold_start_defers_until_the_next_adts_boundary_is_confirmed() {
         let mut association = AudioTimestampAssociation::default();
         let frame = adts_frame(3, 4);
-        let mut payload = vec![0x11, 0x22, 0x33, 0x44];
-        payload.extend_from_slice(&frame);
+        let mut first_payload = vec![0x11, 0x22, 0x33, 0x44];
+        first_payload.extend_from_slice(&frame);
 
-        assert_eq!(
-            association.associate(&packet_with_alignment(payload, Some(90_000), false), ORIGIN,),
-            Ok(90_000)
-        );
-        assert_eq!(
-            association.associate(&packet(frame, None), ORIGIN),
-            Ok(91_920)
-        );
+        let deferred = association
+            .extract(
+                packet_with_alignment(first_payload, Some(90_000), false),
+                ORIGIN,
+            )
+            .unwrap();
+        assert!(deferred.is_empty());
+
+        let confirmed = association
+            .extract(packet_with_alignment(frame.clone(), None, false), ORIGIN)
+            .unwrap();
+        assert_eq!(pts(&confirmed), vec![90_000, 91_920]);
+        assert_eq!(confirmed[0].payload, frame);
     }
 
     #[test]
-    fn cold_start_keeps_a_structurally_valid_first_au_that_crosses_the_next_pes() {
+    fn cold_start_keeps_a_first_au_that_crosses_the_next_pes() {
         let mut association = AudioTimestampAssociation::default();
         let first_frame = adts_frame(3, 8);
         let second_frame = adts_frame(3, 4);
@@ -728,20 +883,22 @@ mod tests {
         let mut first_payload = vec![0x11, 0x22, 0x33, 0x44];
         first_payload.extend_from_slice(&first_frame[..split_at]);
 
-        assert_eq!(
-            association.associate(
-                &packet_with_alignment(first_payload, Some(90_000), false),
+        let deferred = association
+            .extract(
+                packet_with_alignment(first_payload, Some(90_000), false),
                 ORIGIN,
-            ),
-            Ok(90_000)
-        );
+            )
+            .unwrap();
+        assert!(deferred.is_empty());
 
         let mut continuation = first_frame[split_at..].to_vec();
         continuation.extend_from_slice(&second_frame);
-        assert_eq!(
-            association.associate(&packet_with_alignment(continuation, None, false), ORIGIN,),
-            Ok(91_920)
-        );
+        let confirmed = association
+            .extract(packet_with_alignment(continuation, None, false), ORIGIN)
+            .unwrap();
+        assert_eq!(pts(&confirmed), vec![90_000, 91_920]);
+        assert_eq!(confirmed[0].payload, first_frame);
+        assert_eq!(confirmed[1].payload, second_frame);
     }
 
     #[test]
@@ -754,34 +911,42 @@ mod tests {
         payload.extend_from_slice(&real_frame);
         payload.extend_from_slice(&real_frame);
 
-        assert_eq!(
-            association.associate(&packet_with_alignment(payload, Some(90_000), false), ORIGIN,),
-            Ok(90_000)
-        );
-        assert_eq!(
-            association.associate(&packet(real_frame, None), ORIGIN),
-            Ok(93_840)
-        );
+        let frames = association
+            .extract(packet_with_alignment(payload, Some(90_000), false), ORIGIN)
+            .unwrap();
+        assert_eq!(pts(&frames), vec![90_000, 91_920]);
+        assert_eq!(frames[0].payload, real_frame);
     }
 
     #[test]
-    fn cold_start_prefers_a_confirmed_boundary_over_an_earlier_header_only_candidate() {
+    fn cold_start_defers_ambiguous_header_only_candidates_until_true_boundary() {
         let mut association = AudioTimestampAssociation::default();
         let false_candidate = adts_frame(3, 200);
-        let real_frame = adts_frame(3, 4);
-        let mut payload = false_candidate[..7].to_vec();
-        payload.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]);
-        payload.extend_from_slice(&real_frame);
-        payload.extend_from_slice(&real_frame);
+        let first_frame = adts_frame(3, 8);
+        let second_frame = adts_frame(3, 4);
+        let split_at = 12;
+        let mut first_payload = false_candidate[..7].to_vec();
+        first_payload.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]);
+        first_payload.extend_from_slice(&first_frame[..split_at]);
 
-        assert_eq!(
-            association.associate(&packet_with_alignment(payload, Some(90_000), false), ORIGIN,),
-            Ok(90_000)
-        );
-        assert_eq!(
-            association.associate(&packet(real_frame, None), ORIGIN),
-            Ok(93_840)
-        );
+        let deferred = association
+            .extract(
+                packet_with_alignment(first_payload, Some(90_000), false),
+                ORIGIN,
+            )
+            .unwrap();
+        assert!(deferred.is_empty());
+        assert!(association.anchor.is_none());
+        assert!(association.cold_start.is_some());
+
+        let mut continuation = first_frame[split_at..].to_vec();
+        continuation.extend_from_slice(&second_frame);
+        let confirmed = association
+            .extract(packet_with_alignment(continuation, None, false), ORIGIN)
+            .unwrap();
+        assert_eq!(pts(&confirmed), vec![90_000, 91_920]);
+        assert_eq!(confirmed[0].payload, first_frame);
+        assert_eq!(confirmed[1].payload, second_frame);
     }
 
     #[test]
@@ -791,41 +956,44 @@ mod tests {
         payload.extend_from_slice(&adts_frame(3, 4));
 
         assert_eq!(
-            association.associate(&packet_with_alignment(payload, Some(90_000), true), ORIGIN,),
+            association.extract(packet_with_alignment(payload, Some(90_000), true), ORIGIN,),
             Err(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)
         );
         assert_eq!(association, AudioTimestampAssociation::default());
     }
 
     #[test]
-    fn adts_body_residual_crosses_a_pes_boundary_and_keeps_the_first_new_frame_pts() {
+    fn adts_body_is_reassembled_across_pes_into_exact_frame_ranges() {
         let mut association = AudioTimestampAssociation::default();
         let first_frame = adts_frame(3, 8);
         let second_frame = adts_frame(3, 4);
         let split_at = 12;
 
-        assert_eq!(
-            association.associate(
-                &packet(first_frame[..split_at].to_vec(), Some(90_000)),
+        let first = association
+            .extract(
+                packet(first_frame[..split_at].to_vec(), Some(90_000)),
                 ORIGIN,
-            ),
-            Ok(90_000)
-        );
+            )
+            .unwrap();
+        assert!(first.is_empty());
         assert!(matches!(
-            &association.residual,
-            AudioFrameResidual::Frame {
-                remaining_bytes: 5,
-                frame_pts_90khz: 90_000,
-            }
+            &association.assembly,
+            AudioFrameAssembly::Frame(frame)
+                if frame.bytes.as_slice() == &first_frame[..split_at]
+                    && frame.expected_len == Some(first_frame.len())
         ));
 
         let mut continuation = first_frame[split_at..].to_vec();
         continuation.extend_from_slice(&second_frame);
-        assert_eq!(
-            association.associate(&packet(continuation, None), ORIGIN),
-            Ok(91_920)
-        );
-        assert_eq!(association.residual, AudioFrameResidual::Boundary);
+        let completed = association
+            .extract(packet(continuation, None), ORIGIN)
+            .unwrap();
+        assert_eq!(pts(&completed), vec![90_000, 91_920]);
+        assert_eq!(completed[0].payload, first_frame);
+        assert_eq!(completed[1].payload, second_frame);
+        assert!(completed[0].metadata.is_pts_present);
+        assert!(!completed[1].metadata.is_pts_present);
+        assert_eq!(association.assembly, AudioFrameAssembly::Boundary);
     }
 
     #[test]
@@ -834,100 +1002,104 @@ mod tests {
         let first_frame = adts_frame(3, 4);
         let second_frame = adts_frame(3, 8);
         let third_frame = adts_frame(3, 4);
-        let mut first_payload = first_frame;
+        let mut first_payload = first_frame.clone();
         first_payload.extend_from_slice(&second_frame[..3]);
 
-        assert_eq!(
-            association.associate(&packet(first_payload, Some(90_000)), ORIGIN),
-            Ok(90_000)
-        );
+        let first = association
+            .extract(packet(first_payload, Some(90_000)), ORIGIN)
+            .unwrap();
+        assert_eq!(pts(&first), vec![90_000]);
         assert!(matches!(
-            &association.residual,
-            AudioFrameResidual::Header {
-                bytes,
-                frame_pts_90khz: 91_920,
-                reanchor: false,
-            } if bytes.as_slice() == &second_frame[..3]
+            &association.assembly,
+            AudioFrameAssembly::Frame(frame)
+                if frame.bytes.as_slice() == &second_frame[..3]
+                    && frame.expected_len.is_none()
+                    && frame.frame_pts_90khz == 91_920
         ));
 
         let mut continuation = second_frame[3..].to_vec();
         continuation.extend_from_slice(&third_frame);
-        assert_eq!(
-            association.associate(&packet(continuation, None), ORIGIN),
-            Ok(93_840)
-        );
-        assert_eq!(association.residual, AudioFrameResidual::Boundary);
+        let completed = association
+            .extract(packet(continuation, None), ORIGIN)
+            .unwrap();
+        assert_eq!(pts(&completed), vec![91_920, 93_840]);
+        assert_eq!(completed[0].payload, second_frame);
+        assert_eq!(completed[1].payload, third_frame);
     }
 
     #[test]
-    fn a_continuation_only_pes_uses_the_containing_frame_pts() {
+    fn continuation_only_pes_completes_the_containing_frame_with_its_pts() {
         let mut association = AudioTimestampAssociation::default();
         let frame = adts_frame(3, 8);
         let split_at = 12;
 
-        assert_eq!(
-            association.associate(
-                &packet(frame[..split_at].to_vec(), Some(90_000)),
-                ORIGIN,
-            ),
-            Ok(90_000)
-        );
-        assert_eq!(
-            association.associate(&packet(frame[split_at..].to_vec(), None), ORIGIN),
-            Ok(90_000)
-        );
-        assert_eq!(
-            association.associate(&packet(adts_frame(3, 4), None), ORIGIN),
-            Ok(91_920)
-        );
+        assert!(association
+            .extract(packet(frame[..split_at].to_vec(), Some(90_000)), ORIGIN,)
+            .unwrap()
+            .is_empty());
+        let completed = association
+            .extract(packet(frame[split_at..].to_vec(), None), ORIGIN)
+            .unwrap();
+        assert_eq!(pts(&completed), vec![90_000]);
+        assert_eq!(completed[0].payload, frame);
+
+        let next = association
+            .extract(packet(adts_frame(3, 4), None), ORIGIN)
+            .unwrap();
+        assert_eq!(pts(&next), vec![91_920]);
     }
 
     #[test]
-    fn explicit_pts_after_a_continuation_reanchors_the_first_frame_started_in_the_pes() {
+    fn explicit_pts_after_a_continuation_reanchors_the_first_new_frame() {
         let mut association = AudioTimestampAssociation::default();
         let first_frame = adts_frame(3, 8);
         let second_frame = adts_frame(3, 4);
         let split_at = 12;
 
-        assert_eq!(
-            association.associate(
-                &packet(first_frame[..split_at].to_vec(), Some(90_000)),
+        assert!(association
+            .extract(
+                packet(first_frame[..split_at].to_vec(), Some(90_000)),
                 ORIGIN,
-            ),
-            Ok(90_000)
-        );
+            )
+            .unwrap()
+            .is_empty());
         let mut continuation = first_frame[split_at..].to_vec();
         continuation.extend_from_slice(&second_frame);
-        assert_eq!(
-            association.associate(&packet(continuation, Some(180_000)), ORIGIN),
-            Ok(180_000)
-        );
-        assert_eq!(
-            association.associate(&packet(adts_frame(3, 4), None), ORIGIN),
-            Ok(181_920)
-        );
+        let completed = association
+            .extract(packet(continuation, Some(180_000)), ORIGIN)
+            .unwrap();
+        assert_eq!(pts(&completed), vec![90_000, 180_000]);
+        assert!(completed[0].metadata.is_pts_present);
+        assert!(completed[1].metadata.is_pts_present);
+
+        let next = association
+            .extract(packet(adts_frame(3, 4), None), ORIGIN)
+            .unwrap();
+        assert_eq!(pts(&next), vec![181_920]);
     }
 
     #[test]
-    fn mpeg_audio_body_residual_crosses_a_pes_boundary() {
+    fn mpeg_audio_body_is_reassembled_across_a_pes_boundary() {
         let mut association = AudioTimestampAssociation::default();
         let first_frame = mpeg1_layer2_frame();
         let second_frame = mpeg1_layer2_frame();
         let split_at = 100;
 
-        assert_eq!(
-            association.associate(
-                &packet(first_frame[..split_at].to_vec(), Some(180_000)),
+        assert!(association
+            .extract(
+                packet(first_frame[..split_at].to_vec(), Some(180_000)),
                 ORIGIN,
-            ),
-            Ok(180_000)
-        );
+            )
+            .unwrap()
+            .is_empty());
         let mut continuation = first_frame[split_at..].to_vec();
         continuation.extend_from_slice(&second_frame);
-        assert_eq!(
-            association.associate(&packet(continuation, None), ORIGIN),
-            Ok(182_160)
-        );
+        let completed = association
+            .extract(packet(continuation, None), ORIGIN)
+            .unwrap();
+        assert_eq!(pts(&completed), vec![180_000, 182_160]);
+        assert_eq!(completed[0].payload, first_frame);
+        assert_eq!(completed[1].payload, second_frame);
     }
 
     #[test]
@@ -936,17 +1108,14 @@ mod tests {
         let frame = adts_frame(3, 8);
         let split_at = 12;
 
-        assert_eq!(
-            association.associate(
-                &packet(frame[..split_at].to_vec(), Some(90_000)),
-                ORIGIN,
-            ),
-            Ok(90_000)
-        );
+        assert!(association
+            .extract(packet(frame[..split_at].to_vec(), Some(90_000)), ORIGIN,)
+            .unwrap()
+            .is_empty());
         association.reset();
-        assert_eq!(association.residual, AudioFrameResidual::Boundary);
+        assert_eq!(association.assembly, AudioFrameAssembly::Boundary);
         assert_eq!(
-            association.associate(&packet(frame[split_at..].to_vec(), None), ORIGIN),
+            association.extract(packet(frame[split_at..].to_vec(), None), ORIGIN),
             Err(AudioTimestampAssociationFailure::MissingAnchor)
         );
     }
@@ -955,18 +1124,20 @@ mod tests {
     fn missing_anchor_and_malformed_payload_never_create_a_timestamp() {
         let mut association = AudioTimestampAssociation::default();
         assert_eq!(
-            association.associate(&packet(adts_frame(3, 4), None), ORIGIN),
+            association.extract(packet(adts_frame(3, 4), None), ORIGIN),
             Err(AudioTimestampAssociationFailure::MissingAnchor)
         );
 
-        let explicit = packet(adts_frame(3, 4), Some(90_000));
-        assert_eq!(association.associate(&explicit, ORIGIN), Ok(90_000));
+        let explicit = association
+            .extract(packet(adts_frame(3, 4), Some(90_000)), ORIGIN)
+            .unwrap();
+        assert_eq!(pts(&explicit), vec![90_000]);
         assert_eq!(
-            association.associate(&packet(vec![0x00, 0x00], None), ORIGIN),
+            association.extract(packet(vec![0x00, 0x00], None), ORIGIN),
             Err(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)
         );
         assert_eq!(
-            association.associate(&packet(adts_frame(3, 4), None), ORIGIN),
+            association.extract(packet(adts_frame(3, 4), None), ORIGIN),
             Err(AudioTimestampAssociationFailure::MissingAnchor)
         );
     }
@@ -974,16 +1145,15 @@ mod tests {
     #[test]
     fn unannounced_sample_rate_change_invalidates_the_anchor() {
         let mut association = AudioTimestampAssociation::default();
+        assert!(association
+            .extract(packet(adts_frame(3, 4), Some(90_000)), ORIGIN)
+            .is_ok());
         assert_eq!(
-            association.associate(&packet(adts_frame(3, 4), Some(90_000)), ORIGIN),
-            Ok(90_000)
-        );
-        assert_eq!(
-            association.associate(&packet(adts_frame(4, 4), None), ORIGIN),
+            association.extract(packet(adts_frame(4, 4), None), ORIGIN),
             Err(AudioTimestampAssociationFailure::UnannouncedParameterChange)
         );
         assert_eq!(
-            association.associate(&packet(adts_frame(3, 4), None), ORIGIN),
+            association.extract(packet(adts_frame(3, 4), None), ORIGIN),
             Err(AudioTimestampAssociationFailure::MissingAnchor)
         );
     }
@@ -991,13 +1161,12 @@ mod tests {
     #[test]
     fn input_origin_change_cannot_reuse_an_anchor() {
         let mut association = AudioTimestampAssociation::default();
+        assert!(association
+            .extract(packet(adts_frame(3, 4), Some(90_000)), ORIGIN)
+            .is_ok());
         assert_eq!(
-            association.associate(&packet(adts_frame(3, 4), Some(90_000)), ORIGIN),
-            Ok(90_000)
-        );
-        assert_eq!(
-            association.associate(
-                &packet(adts_frame(3, 4), None),
+            association.extract(
+                packet(adts_frame(3, 4), None),
                 TsInputOrigin::PlaybackDvr {
                     dvr_id: 1,
                     queue_identity: 2,

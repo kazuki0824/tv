@@ -1,5 +1,6 @@
 use crate::av::{
-    AudioTimestampAssociation, AudioTimestampAssociationFailure, AvMediaEventMetadata,
+    AudioMediaFrame, AudioTimestampAssociation, AudioTimestampAssociationFailure,
+    AvMediaEventMetadata,
 };
 use crate::config::{
     AvStreamTypeConfig, FilterDelayHint, FilterDelayHints, FilterOpenType, OpenFilterRequest,
@@ -201,6 +202,21 @@ pub struct FilterRuntime {
     delivery_not_before: Option<Instant>,
     callback_unhealthy: bool,
     last_watermark_status: Option<FilterStatusEvent>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PreparedAvMediaPayload {
+    pub(crate) payload: Vec<u8>,
+    pub(crate) metadata: AvMediaEventMetadata,
+}
+
+impl From<AudioMediaFrame> for PreparedAvMediaPayload {
+    fn from(frame: AudioMediaFrame) -> Self {
+        Self {
+            payload: frame.payload,
+            metadata: frame.metadata,
+        }
+    }
 }
 
 impl FilterRuntime {
@@ -569,25 +585,30 @@ impl FilterRuntime {
         self.audio_timestamp_association.reset();
     }
 
-    pub(crate) fn av_media_event_metadata(
+    pub(crate) fn prepare_av_media_payloads(
         &mut self,
-        packet: &PesPacket,
+        packet: PesPacket,
         origin: TsInputOrigin,
-    ) -> Result<AvMediaEventMetadata, AudioTimestampAssociationFailure> {
+    ) -> Result<Vec<PreparedAvMediaPayload>, AudioTimestampAssociationFailure> {
         if self.open_type != FilterOpenType::TsAudio {
-            return Ok(AvMediaEventMetadata::from_pes(
+            let metadata = AvMediaEventMetadata::from_pes(
                 packet.stream_id,
                 packet.pts_90khz,
                 packet.dts_90khz,
-            ));
+            );
+            return Ok(vec![PreparedAvMediaPayload {
+                payload: packet.payload,
+                metadata,
+            }]);
         }
-        let authoritative_pts_90khz = self.audio_timestamp_association.associate(packet, origin)?;
-        Ok(AvMediaEventMetadata::from_pes_with_authoritative_pts(
-            packet.stream_id,
-            packet.pts_90khz,
-            authoritative_pts_90khz,
-            packet.dts_90khz,
-        ))
+        self.audio_timestamp_association
+            .extract(packet, origin)
+            .map(|frames| {
+                frames
+                    .into_iter()
+                    .map(PreparedAvMediaPayload::from)
+                    .collect()
+            })
     }
 
     pub(crate) fn reset_audio_timestamp_association(&mut self) {

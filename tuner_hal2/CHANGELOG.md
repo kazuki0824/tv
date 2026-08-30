@@ -1,3 +1,11 @@
+# r50eo84_pr53_audio_au_aligned_media_event_followup
+
+- AOSP `MediaEvent`の`pts` / `dataLength`を同じaudio frameへ対応させるため、TS AUDIOのPES payload全体を1イベントとして配送する経路を、構造検証済みの完成AUごとに正確な長さで配送する経路へ変更した。PES途中から始まるcontinuationは既存frameへ結合し、そのframeのPTSで完成後に配送する。後方で開始するAUは別イベントとし、元PESのexplicit PTSまたはactual sample rate / exact sample countから確定したPTSだけを付与する。
+- cold startの未確認`HeaderOnly`候補は即座にanchorへ採用せず、先行AU最大1 frame、当該PESで開始する最大1 frame、次header最大7 byteの合計16389 byte以内だけ同一`FilterRuntime`へ保留する。後続PES上の同一signature境界を実際に確認した一意候補だけをcommitし、複数候補または上限超過はfail-closedとする。false `HeaderOnly`と真のfirst AUがともに次PESへ跨ぐ場合にも誤anchorを公開しない。
+- 保持対象は規格上限8191 byteの未完了AU 1件とcold-start確認用の有限bytesだけであり、既存owner・AV allocation・lifecycle fenceを再利用する。独立queue、worker、clock、ledger、TIS側parser、PCR/wallclock/nominal-rate fallbackは追加していないため、TR-B15のPES/audio-frame non-synchronizationとAOSPのframe metadata契約を同時に満たす最小実装である。
+- unit testへ`false HeaderOnly + true HeaderOnly`の後続境界確認、PES横断AUのbyte完全性、PTS/provenanceを追加した。公開demux回帰試験ではmixed continuation/new-AUとcold-start ambiguityについて、最終`AvMediaEventDescriptor.data_length`が各完成AU長と一致し、付与PTSも同じAUを指すことを固定した。公開AIDL/VINTF、capability値、future_work、`RELEASE_VERSION`は変更していない。
+- Rust 1.81.0で変更audio moduleのrustfmt check、製品demux sourceの`cargo check --all-targets`、audio module 17 unit testsとClippy `-D warnings`、公開demuxのaudio MediaEvent 4試験とlifecycle fence 1試験、変更Rust 5ファイルのtree-sitter構文解析、`git diff --check`を実施した。製品demux全体のClippyは既存警告のみで完走した。Android/Soong build、atest、VTS、実機・実放送波確認は未実施。
+
 # r50eo84_pr53_audio_cold_start_acquisition_followup
 
 - ARIB TR-B15 4.6-E1 Fascicle 3 4.2.2のPES/audio-frame non-synchronizationとH.222.0のfirst-AU PTS対応へ合わせ、filter開始後の最初のPESが「先行AUのcontinuation + 当該PESで最初に開始するAU + explicit PTS」である場合のbounded cold-start sync acquisitionを既存`AudioTimestampAssociation`へ追加した。`data_alignment_indicator=true`ではpayload先頭以外を探索しない。
