@@ -1,3 +1,11 @@
+# r50eo84_pr53_audio_cold_start_acquisition_followup
+
+- ARIB TR-B15 4.6-E1 Fascicle 3 4.2.2のPES/audio-frame non-synchronizationとH.222.0のfirst-AU PTS対応へ合わせ、filter開始後の最初のPESが「先行AUのcontinuation + 当該PESで最初に開始するAU + explicit PTS」である場合のbounded cold-start sync acquisitionを既存`AudioTimestampAssociation`へ追加した。`data_alignment_indicator=true`ではpayload先頭以外を探索しない。
+- 探索はADTSの13-bit frame length上限未満に閉じ、対応codecの完全header、宣言frame length、観測可能な次frame境界を検査する。次境界まで確認できる候補をheader-only候補より優先し、syncword一致だけのlock、上限なし走査、payload copy、第二buffer、queue、worker、clockは追加していないため、既存`FilterRuntime`従属状態の最小拡張に留まる。
+- continuation prefixからのexplicit anchorと後続PTS-sparse event、次PESへ跨ぐ最初のAU、偽sync候補、先行header-only候補より確認済み境界を優先するケース、`data_alignment_indicator=true`のfail-closedをunit testへ追加し、公開demux AV配送経路にもcold-start回帰試験を追加した。PCR、wallclock、nominal rateへのfallbackと`isPtsPresent` provenanceの偽装は行わない。
+- `tuner_hal/DESIGN_JA.md`と`tuner_hal2/DESIGN_JA.md`をcold-startの成功条件、誤同期防止、上限、責務境界へ同期した。公開AIDL/VINTF、capability値、future_work、`RELEASE_VERSION`は変更していない。
+- Rust 1.81.0で製品demux sourceの`cargo check --all-targets`、対象moduleの17 unit testsとClippy `-D warnings`、変更Rust 2ファイルのtree-sitter構文解析、`git diff --check`を実施した。Android/Soong build、atest、VTS、実機・実放送波確認は未実施。
+
 # r50eo84_pr53_cross_pes_audio_frame_residual_followup
 
 - ARIB TR-B15 4.6-E1 Fascicle 3 4.2.2がBS／広帯域CSのMPEG-2 AACで許容するPES packet／audio frame non-synchronizationへ合わせ、既存`AudioTimestampAssociation`をPES横断の有限frame walkerへ更新した。H.222.0どおり明示PTSを当該PES内で開始する最初のAUへanchorし、PTS-sparse PESは継続frame後に最初に開始するAU、continuation-only PESはその先頭byteを含むAUの時刻をexact sample countから確定する。

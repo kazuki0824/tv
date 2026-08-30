@@ -184,7 +184,14 @@ impl AudioTimestampAssociation {
         let continued_frame_pts_90khz = self.residual.frame_pts_90khz();
         let mut explicit_for_first_start = packet.pts_90khz;
         let mut first_started_frame_pts_90khz = None;
-        let mut offset = 0usize;
+        let acquiring_initial_boundary =
+            self.anchor.is_none() && matches!(&self.residual, AudioFrameResidual::Boundary);
+        let mut offset = if acquiring_initial_boundary && !packet.data_alignment_indicator {
+            cold_start_audio_frame_offset(&packet.payload)
+                .ok_or(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)?
+        } else {
+            0usize
+        };
 
         while offset < packet.payload.len() {
             match std::mem::take(&mut self.residual) {
@@ -328,6 +335,74 @@ impl AudioTimestampAssociation {
         anchor.elapsed_samples = elapsed_samples;
         self.anchor = Some(anchor);
         Ok(())
+    }
+}
+
+// data_alignment_indicator=falseのcold startではpayload先頭をsyncwordと仮定しない。
+// 先行AUの残りは規格上の最大frame長未満に限られるため探索範囲を有限にし、
+// sync patternだけでなくframe lengthが示す次境界まで検証してからanchorを置く。
+fn cold_start_audio_frame_offset(payload: &[u8]) -> Option<usize> {
+    let search_len = payload.len().min(MAX_AUDIO_FRAME_BYTES);
+    let mut header_only_candidate = None;
+    for offset in 0..search_len {
+        match cold_start_candidate_validation(payload, offset) {
+            ColdStartCandidateValidation::ConfirmedBoundary => return Some(offset),
+            ColdStartCandidateValidation::HeaderOnly => {
+                header_only_candidate.get_or_insert(offset);
+            }
+            ColdStartCandidateValidation::Invalid => {}
+        }
+    }
+    header_only_candidate
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ColdStartCandidateValidation {
+    Invalid,
+    HeaderOnly,
+    ConfirmedBoundary,
+}
+
+fn cold_start_candidate_validation(payload: &[u8], offset: usize) -> ColdStartCandidateValidation {
+    let Some(candidate) = payload.get(offset..) else {
+        return ColdStartCandidateValidation::Invalid;
+    };
+    let AudioFrameHeaderParse::Complete(header) = parse_audio_frame_header(candidate) else {
+        return ColdStartCandidateValidation::Invalid;
+    };
+    let Some(next_offset) = offset.checked_add(header.frame_len) else {
+        return ColdStartCandidateValidation::Invalid;
+    };
+    if next_offset > payload.len() {
+        // Header全体と宣言frame長は検証済みだが、次境界は後続PESにある。
+        return ColdStartCandidateValidation::HeaderOnly;
+    }
+    if next_offset == payload.len() {
+        return ColdStartCandidateValidation::ConfirmedBoundary;
+    }
+
+    let Some(next_candidate) = payload.get(next_offset..) else {
+        return ColdStartCandidateValidation::Invalid;
+    };
+    match parse_audio_frame_header(next_candidate) {
+        AudioFrameHeaderParse::Complete(next_header)
+            if next_header.signature == header.signature =>
+        {
+            ColdStartCandidateValidation::ConfirmedBoundary
+        }
+        AudioFrameHeaderParse::NeedMore(required_len) => {
+            if next_candidate.first() == Some(&0xff)
+                && next_candidate.len() < required_len
+                && required_len <= MAX_AUDIO_HEADER_BYTES
+            {
+                ColdStartCandidateValidation::ConfirmedBoundary
+            } else {
+                ColdStartCandidateValidation::Invalid
+            }
+        }
+        AudioFrameHeaderParse::Complete(_) | AudioFrameHeaderParse::Invalid => {
+            ColdStartCandidateValidation::Invalid
+        }
     }
 }
 
@@ -550,7 +625,11 @@ mod tests {
         frontend_generation: 1,
     };
 
-    fn packet(payload: Vec<u8>, pts_90khz: Option<u64>) -> PesPacket {
+    fn packet_with_alignment(
+        payload: Vec<u8>,
+        pts_90khz: Option<u64>,
+        data_alignment_indicator: bool,
+    ) -> PesPacket {
         PesPacket {
             pid: PacketPid::from_config_pid(
                 ConfigInputPid::validate_tpid(0x0101).expect("valid test PID"),
@@ -558,10 +637,14 @@ mod tests {
             stream_id: 0xc0,
             pts_90khz,
             dts_90khz: None,
-            data_alignment_indicator: true,
+            data_alignment_indicator,
             raw_bytes: Vec::new(),
             payload,
         }
+    }
+
+    fn packet(payload: Vec<u8>, pts_90khz: Option<u64>) -> PesPacket {
+        packet_with_alignment(payload, pts_90khz, true)
     }
 
     fn adts_frame(sample_rate_index: u8, body_len: usize) -> Vec<u8> {
@@ -617,6 +700,101 @@ mod tests {
 
         assert_eq!(association.associate(&first, ORIGIN), Ok(180_000));
         assert_eq!(association.associate(&second, ORIGIN), Ok(182_160));
+    }
+
+    #[test]
+    fn cold_start_finds_the_first_adts_au_after_a_continuation_prefix() {
+        let mut association = AudioTimestampAssociation::default();
+        let frame = adts_frame(3, 4);
+        let mut payload = vec![0x11, 0x22, 0x33, 0x44];
+        payload.extend_from_slice(&frame);
+
+        assert_eq!(
+            association.associate(&packet_with_alignment(payload, Some(90_000), false), ORIGIN,),
+            Ok(90_000)
+        );
+        assert_eq!(
+            association.associate(&packet(frame, None), ORIGIN),
+            Ok(91_920)
+        );
+    }
+
+    #[test]
+    fn cold_start_keeps_a_structurally_valid_first_au_that_crosses_the_next_pes() {
+        let mut association = AudioTimestampAssociation::default();
+        let first_frame = adts_frame(3, 8);
+        let second_frame = adts_frame(3, 4);
+        let split_at = 12;
+        let mut first_payload = vec![0x11, 0x22, 0x33, 0x44];
+        first_payload.extend_from_slice(&first_frame[..split_at]);
+
+        assert_eq!(
+            association.associate(
+                &packet_with_alignment(first_payload, Some(90_000), false),
+                ORIGIN,
+            ),
+            Ok(90_000)
+        );
+
+        let mut continuation = first_frame[split_at..].to_vec();
+        continuation.extend_from_slice(&second_frame);
+        assert_eq!(
+            association.associate(&packet_with_alignment(continuation, None, false), ORIGIN,),
+            Ok(91_920)
+        );
+    }
+
+    #[test]
+    fn cold_start_rejects_a_sync_like_prefix_without_a_valid_declared_boundary() {
+        let mut association = AudioTimestampAssociation::default();
+        let fake_frame = adts_frame(3, 0);
+        let real_frame = adts_frame(3, 4);
+        let mut payload = fake_frame;
+        payload.push(0x00);
+        payload.extend_from_slice(&real_frame);
+        payload.extend_from_slice(&real_frame);
+
+        assert_eq!(
+            association.associate(&packet_with_alignment(payload, Some(90_000), false), ORIGIN,),
+            Ok(90_000)
+        );
+        assert_eq!(
+            association.associate(&packet(real_frame, None), ORIGIN),
+            Ok(93_840)
+        );
+    }
+
+    #[test]
+    fn cold_start_prefers_a_confirmed_boundary_over_an_earlier_header_only_candidate() {
+        let mut association = AudioTimestampAssociation::default();
+        let false_candidate = adts_frame(3, 200);
+        let real_frame = adts_frame(3, 4);
+        let mut payload = false_candidate[..7].to_vec();
+        payload.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]);
+        payload.extend_from_slice(&real_frame);
+        payload.extend_from_slice(&real_frame);
+
+        assert_eq!(
+            association.associate(&packet_with_alignment(payload, Some(90_000), false), ORIGIN,),
+            Ok(90_000)
+        );
+        assert_eq!(
+            association.associate(&packet(real_frame, None), ORIGIN),
+            Ok(93_840)
+        );
+    }
+
+    #[test]
+    fn aligned_cold_start_never_scans_past_a_malformed_payload_start() {
+        let mut association = AudioTimestampAssociation::default();
+        let mut payload = vec![0x11, 0x22, 0x33, 0x44];
+        payload.extend_from_slice(&adts_frame(3, 4));
+
+        assert_eq!(
+            association.associate(&packet_with_alignment(payload, Some(90_000), true), ORIGIN,),
+            Err(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)
+        );
+        assert_eq!(association, AudioTimestampAssociation::default());
     }
 
     #[test]

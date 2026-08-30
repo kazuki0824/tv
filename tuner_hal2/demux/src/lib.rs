@@ -3369,6 +3369,50 @@ mod tests {
     }
 
     #[test]
+    fn audio_media_event_cold_start_skips_a_continuation_prefix_before_the_first_au() {
+        let filter_id = 41;
+        let pid = 0x0101;
+        let mut demux = started_audio_filter_runtime(filter_id, pid);
+        let frame = adts_aac_lc_frame_48khz(4);
+        let mut cold_start_payload = vec![0x11, 0x22, 0x33, 0x44];
+        cold_start_payload.extend_from_slice(&frame);
+
+        let explicit = demux.push_ts_packet_from_origin(
+            &pes_start_packet(
+                pid as u16,
+                0,
+                &bounded_audio_pes(&cold_start_payload, Some(90_000)),
+            ),
+            TsInputOrigin::frontend(1),
+        );
+        assert_eq!(
+            av_metadata(&explicit, filter_id),
+            Some(AvMediaEventMetadata {
+                stream_id: 0xc0,
+                is_pts_present: true,
+                pts_90khz: Some(90_000),
+                is_dts_present: false,
+                dts_90khz: None,
+            })
+        );
+
+        let associated = demux.push_ts_packet_from_origin(
+            &pes_start_packet(pid as u16, 1, &bounded_audio_pes(&frame, None)),
+            TsInputOrigin::frontend(1),
+        );
+        assert_eq!(
+            av_metadata(&associated, filter_id),
+            Some(AvMediaEventMetadata {
+                stream_id: 0xc0,
+                is_pts_present: false,
+                pts_90khz: Some(91_920),
+                is_dts_present: false,
+                dts_90khz: None,
+            })
+        );
+    }
+
+    #[test]
     fn audio_timestamp_association_is_fenced_by_flush_and_transport_discontinuity() {
         let filter_id = 39;
         let pid = 0x0101;
