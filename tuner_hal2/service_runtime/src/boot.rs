@@ -1187,7 +1187,9 @@ mod raw_filter_event_projection_tests {
                 },
             },
         );
-        let section = [0x7f, 0x30, 0x05, 0xaa, 0xbb, 0xcc, 0xdd, 0xee];
+        // raw + isCheckCrc=false はreserved bitsをsemantic rejectせず、
+        // pointer/section_lengthでframingした生バイト列を配送する。
+        let section = [0x7f, 0x00, 0x05, 0xaa, 0xbb, 0xcc, 0xdd, 0xee];
         let mut payload = vec![0x00];
         payload.extend_from_slice(&section);
 

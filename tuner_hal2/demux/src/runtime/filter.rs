@@ -9,7 +9,7 @@ use crate::config::{
 use crate::packet_pipeline::{
     FilterPipelineConfig, PacketPid, PipelineFilterView, PipelineOpenKind,
 };
-use crate::sections::{parse_section_header, section_crc_valid};
+use crate::sections::{parse_raw_section_framing, parse_section_header, section_crc_valid};
 use crate::runtime::{
     WatermarkClassifier, WatermarkDecision, WatermarkPolicy, WatermarkQueueSnapshot,
 };
@@ -449,9 +449,14 @@ impl FilterRuntime {
         origin: TsInputOrigin,
         pid: PacketPid,
         section: &[u8],
+        raw: bool,
     ) -> Option<PreparedSectionDelivery> {
         let config = self.section_config.as_ref()?;
-        let header = parse_section_header(section, config.length_field_bits)?;
+        let header = if raw && !config.check_crc {
+            parse_raw_section_framing(section, config.length_field_bits)?
+        } else {
+            parse_section_header(section, config.length_field_bits)?
+        };
         if config.check_crc && !section_crc_valid(section, config.length_field_bits) {
             return None;
         }
@@ -595,6 +600,7 @@ impl FilterRuntime {
                 packet.stream_id,
                 packet.pts_90khz,
                 packet.dts_90khz,
+                packet.is_pes_private_data,
             );
             return Ok(vec![PreparedAvMediaPayload {
                 payload: packet.payload,
@@ -881,14 +887,14 @@ mod tests {
         let pid =
             PacketPid::from_config_pid(crate::config::ConfigInputPid::validate_tpid(0x11).unwrap());
         let prepared = runtime
-            .prepare_section_delivery(origin, pid, &section)
+            .prepare_section_delivery(origin, pid, &section, false)
             .unwrap();
         assert!(runtime
-            .prepare_section_delivery(origin, pid, &section)
+            .prepare_section_delivery(origin, pid, &section, false)
             .is_some());
         assert!(runtime.commit_section_delivery(prepared));
         assert!(runtime
-            .prepare_section_delivery(origin, pid, &section)
+            .prepare_section_delivery(origin, pid, &section, false)
             .is_none());
     }
 
@@ -910,10 +916,10 @@ mod tests {
         let pid =
             PacketPid::from_config_pid(crate::config::ConfigInputPid::validate_tpid(0x11).unwrap());
         assert!(runtime
-            .prepare_section_delivery(origin, pid, &long_section(0x42, 0, 0, 0))
+            .prepare_section_delivery(origin, pid, &long_section(0x42, 0, 0, 0), false)
             .is_none());
         assert!(runtime
-            .prepare_section_delivery(origin, pid, &long_section(0x43, 0, 0, 0))
+            .prepare_section_delivery(origin, pid, &long_section(0x43, 0, 0, 0), false)
             .is_some());
     }
 
@@ -935,18 +941,18 @@ mod tests {
         let pid =
             PacketPid::from_config_pid(crate::config::ConfigInputPid::validate_tpid(0x11).unwrap());
         let section_one = runtime
-            .prepare_section_delivery(origin, pid, &long_section(0x42, 3, 1, 1))
+            .prepare_section_delivery(origin, pid, &long_section(0x42, 3, 1, 1), false)
             .unwrap();
         assert!(runtime.commit_section_delivery(section_one));
         assert!(runtime
-            .prepare_section_delivery(origin, pid, &long_section(0x42, 4, 0, 1))
+            .prepare_section_delivery(origin, pid, &long_section(0x42, 4, 0, 1), false)
             .is_none());
         let section_zero = runtime
-            .prepare_section_delivery(origin, pid, &long_section(0x42, 3, 0, 1))
+            .prepare_section_delivery(origin, pid, &long_section(0x42, 3, 0, 1), false)
             .unwrap();
         assert!(runtime.commit_section_delivery(section_zero));
         assert!(runtime
-            .prepare_section_delivery(origin, pid, &long_section(0x42, 3, 0, 1))
+            .prepare_section_delivery(origin, pid, &long_section(0x42, 3, 0, 1), false)
             .is_none());
     }
 
@@ -970,7 +976,7 @@ mod tests {
         let mut section = long_section(0x42, 0, 0, 0);
         section[8] ^= 1;
         assert!(runtime
-            .prepare_section_delivery(origin, pid, &section)
+            .prepare_section_delivery(origin, pid, &section, false)
             .is_none());
     }
 

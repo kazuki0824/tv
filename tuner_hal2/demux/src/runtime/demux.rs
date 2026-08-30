@@ -5089,12 +5089,15 @@ impl DemuxRuntime {
                 PipelineGeneratedEvent::SectionPayloadReady {
                     filter_id,
                     pid,
+                    raw,
                     bytes,
                     ..
                 } => match self
                     .filters
                     .get(filter_id)
-                    .and_then(|filter| filter.prepare_section_delivery(origin, *pid, bytes))
+                    .and_then(|filter| {
+                        filter.prepare_section_delivery(origin, *pid, bytes, *raw)
+                    })
                 {
                     Some(prepared) => Some(prepared),
                     None => continue,

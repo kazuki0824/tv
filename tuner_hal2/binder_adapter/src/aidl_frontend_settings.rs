@@ -136,6 +136,9 @@ fn validate_isdbt_fixed_settings(
             )
         }
     }
+    if s.layerSettings.len() > 3 {
+        return invalid_frontend_setting("ISDB-T has at most three physical layer settings");
+    }
     for layer in &s.layerSettings {
         validate_auto_only(
             layer.modulation.0,
@@ -445,6 +448,50 @@ mod tests {
         let mut settings = valid_isdbt_settings();
         settings.layerSettings[0].numOfSegment = 0xFF;
         assert_eq!(validate_isdbt_fixed_settings(&settings), Ok(()));
+    }
+
+    #[test]
+    fn isdbt_accepts_zero_through_three_layers_and_preserves_order() {
+        let mut template = valid_isdbt_settings();
+        let layer = template.layerSettings.remove(0);
+        for count in 0..=3 {
+            let mut settings = valid_isdbt_settings();
+            settings.layerSettings = (0..count)
+                .map(|index| {
+                    let mut entry = layer.clone();
+                    entry.numOfSegment = if index % 2 == 0 { 0 } else { 0xff };
+                    entry
+                })
+                .collect();
+            let before = settings
+                .layerSettings
+                .iter()
+                .map(|entry| entry.numOfSegment)
+                .collect::<Vec<_>>();
+
+            assert_eq!(validate_isdbt_fixed_settings(&settings), Ok(()));
+            assert_eq!(
+                settings
+                    .layerSettings
+                    .iter()
+                    .map(|entry| entry.numOfSegment)
+                    .collect::<Vec<_>>(),
+                before
+            );
+        }
+    }
+
+    #[test]
+    fn isdbt_rejects_a_fourth_physical_layer() {
+        let mut template = valid_isdbt_settings();
+        let layer = template.layerSettings.remove(0);
+        let mut settings = valid_isdbt_settings();
+        settings.layerSettings = vec![layer; 4];
+
+        assert!(matches!(
+            validate_isdbt_fixed_settings(&settings),
+            Err(HalError::InvalidArgument { .. })
+        ));
     }
 
     #[test]

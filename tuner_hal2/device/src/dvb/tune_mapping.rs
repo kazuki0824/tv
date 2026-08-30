@@ -66,12 +66,6 @@ fn validate_stream_id(request: &DvbTuneRequest) -> Result<Option<u16>, HalError>
             "DVB backend does not accept relative stream number",
         ));
     }
-    if matches!(request.system, Some(FrontendSystem::IsdbS)) && stream_id < 12 {
-        return Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::InvalidStreamIdRange,
-            "BS STREAM_ID must be an absolute TSID",
-        ));
-    }
     Ok(Some(stream_id))
 }
 
@@ -169,12 +163,6 @@ fn normalize_stream_id_from_common(
                     return Err(HalError::invalid_argument(
                         HalInvalidArgumentKind::UnsupportedFrequency,
                         "ISDB-S TSID selection is valid only for Japanese BS IF frequencies",
-                    ));
-                }
-                if stream_id < 12 {
-                    return Err(HalError::invalid_argument(
-                        HalInvalidArgumentKind::InvalidStreamIdRange,
-                        "BS STREAM_ID must be an absolute TSID",
                     ));
                 }
             }
@@ -292,6 +280,27 @@ mod tests {
                 maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         assert!(normalized_tune_request_from_common(&common).is_err());
+    }
+
+    #[test]
+    fn bs_absolute_tsid_zero_is_preserved_for_dvb() {
+        let common = FrontendTuneRequest {
+            system: FrontendSystem::IsdbS,
+            frequency: 1_049_480_000,
+            end_frequency: None,
+            stream_id: Some(0),
+            stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId),
+            bandwidth_hz: None,
+            symbol_rate: None,
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
+        };
+        let request = normalized_tune_request_from_common(&common).unwrap();
+        assert_eq!(request.stream_id, Some(0));
+        assert!(tune_property_pairs(&request)
+            .unwrap()
+            .pairs
+            .contains(&(DTV_STREAM_ID, 0)));
     }
 
     #[test]

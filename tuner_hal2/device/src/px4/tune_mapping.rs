@@ -232,9 +232,9 @@ pub fn reportable_bs_tsid_for_scan(
 fn map_absolute_stream_id_to_px4_slot(stream_id: u16, band: Px4SatBand) -> Result<i32, HalError> {
     match band {
         Px4SatBand::Bs if stream_id >= 12 => Ok(i32::from(stream_id)),
-        Px4SatBand::Bs => Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::InvalidStreamIdRange,
-            "px4 BS STREAM_ID は絶対TSIDでなければなりません",
+        Px4SatBand::Bs => Err(HalError::unsupported_detail(
+            "isdbs.streamId",
+            "px4 legacy slot ABI cannot represent an absolute TSID in 0..=11",
         )),
         Px4SatBand::Cs110 => Err(HalError::invalid_argument(
             HalInvalidArgumentKind::UnsupportedStreamSelector,
@@ -455,17 +455,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_relative_like_value_in_absolute_stream_id_path() {
+    fn absolute_tsid_in_legacy_slot_range_is_unavailable_on_px4() {
         let request = FrontendTuneRequest {
             stream_id: Some(3),
             stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId),
             ..bs_request(0x4010)
         };
         let err = map_tune_request_to_px4(&request).unwrap_err();
-        assert_eq!(
-            err.invalid_argument_kind(),
-            Some(HalInvalidArgumentKind::InvalidStreamIdRange)
-        );
+        assert!(matches!(err, HalError::UnsupportedDetail { .. }));
     }
 
     #[test]

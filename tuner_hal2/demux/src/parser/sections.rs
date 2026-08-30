@@ -21,12 +21,16 @@ pub fn normalize_length_field_bits(bits: i32) -> Option<i32> {
     }
 }
 
-pub fn parse_section_header(section: &[u8], length_field_bits: i32) -> Option<SectionHeader> {
+fn parse_section_header_with_reserved_bit_policy(
+    section: &[u8],
+    length_field_bits: i32,
+    require_reserved_bits: bool,
+) -> Option<SectionHeader> {
     let normalized = normalize_length_field_bits(length_field_bits)?;
     if normalized != 12 || section.len() < 3 {
         return None;
     }
-    if (section[1] & 0x30) != 0x30 {
+    if require_reserved_bits && (section[1] & 0x30) != 0x30 {
         return None;
     }
     let section_length = (((section[1] & 0x0f) as usize) << 8) | section[2] as usize;
@@ -46,7 +50,7 @@ pub fn parse_section_header(section: &[u8], length_field_bits: i32) -> Option<Se
     }
     let (table_id_extension, version, current_next_indicator, section_number, last_section_number) =
         if syntax {
-            if (section[5] & 0xc0) != 0xc0 {
+            if require_reserved_bits && (section[5] & 0xc0) != 0xc0 {
                 return None;
             }
             (
@@ -70,6 +74,17 @@ pub fn parse_section_header(section: &[u8], length_field_bits: i32) -> Option<Se
         section_number,
         last_section_number,
     })
+}
+
+pub fn parse_section_header(section: &[u8], length_field_bits: i32) -> Option<SectionHeader> {
+    parse_section_header_with_reserved_bit_policy(section, length_field_bits, true)
+}
+
+pub(crate) fn parse_raw_section_framing(
+    section: &[u8],
+    length_field_bits: i32,
+) -> Option<SectionHeader> {
+    parse_section_header_with_reserved_bit_policy(section, length_field_bits, false)
 }
 
 pub(crate) fn section_crc_valid(section: &[u8], length_field_bits: i32) -> bool {
@@ -167,11 +182,24 @@ impl SectionAssembler {
         payload_unit_start: bool,
         payload: &[u8],
     ) -> SectionPushOutcome {
+        self.push_payload_with_outcome_policy(payload_unit_start, payload, true)
+    }
+
+    pub(crate) fn push_payload_with_outcome_policy(
+        &mut self,
+        payload_unit_start: bool,
+        payload: &[u8],
+        require_reserved_bits: bool,
+    ) -> SectionPushOutcome {
         let oversized_before = self.oversized_section_drops;
         let stale_before = self.stale_partial_section_discards;
         let oversized_saturated_before = self.oversized_section_drop_counter_saturated;
         let stale_saturated_before = self.stale_partial_section_discard_counter_saturated;
-        let sections = self.push_payload(payload_unit_start, payload);
+        let sections = self.push_payload_with_reserved_bit_policy(
+            payload_unit_start,
+            payload,
+            require_reserved_bits,
+        );
         SectionPushOutcome {
             sections,
             oversized_section_drop_delta: self
@@ -192,6 +220,15 @@ impl SectionAssembler {
         payload_unit_start: bool,
         payload: &[u8],
     ) -> Vec<Vec<u8>> {
+        self.push_payload_with_reserved_bit_policy(payload_unit_start, payload, true)
+    }
+
+    fn push_payload_with_reserved_bit_policy(
+        &mut self,
+        payload_unit_start: bool,
+        payload: &[u8],
+        require_reserved_bits: bool,
+    ) -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         if payload.is_empty() {
             return out;
@@ -207,7 +244,7 @@ impl SectionAssembler {
             if !self.buf.is_empty() || self.expected_len.is_some() {
                 if pointer > 0 {
                     self.buf.extend_from_slice(&payload[1..1 + pointer]);
-                    self.try_take_pending(&mut out);
+                    self.try_take_pending(&mut out, require_reserved_bits);
                 }
                 // PUSI は新しいsection境界を示す。pointer バイト列だけが直前sectionの
                 // 合法な継続である。pointer == 0 を含め、完了できない場合は古い未完了sectionを
@@ -228,7 +265,7 @@ impl SectionAssembler {
 
         if !self.buf.is_empty() || self.expected_len.is_some() {
             self.buf.extend_from_slice(&payload[cursor..]);
-            self.try_take_pending(&mut out);
+            self.try_take_pending(&mut out, require_reserved_bits);
             return out;
         }
 
@@ -245,7 +282,7 @@ impl SectionAssembler {
             let section_length = (((remaining[1] & 0x0f) as usize) << 8) | remaining[2] as usize;
             let total_length = 3 + section_length;
             let syntax = (remaining[1] & 0x80) != 0;
-            let invalid_declared_header = (remaining[1] & 0x30) != 0x30
+            let invalid_declared_header = (require_reserved_bits && (remaining[1] & 0x30) != 0x30)
                 || section_length > max_arib_section_length_for_table_id(remaining[0])
                 || total_length > MAX_SECTION_PAYLOAD_BYTES
                 || (syntax && (section_length < 9 || total_length < 12));
@@ -255,7 +292,12 @@ impl SectionAssembler {
                 continue;
             }
             if remaining.len() >= total_length {
-                if parse_section_header(remaining, 12).is_some() {
+                let parsed = if require_reserved_bits {
+                    parse_section_header(remaining, 12)
+                } else {
+                    parse_raw_section_framing(remaining, 12)
+                };
+                if parsed.is_some() {
                     out.push(remaining[..total_length].to_vec());
                     cursor += total_length;
                 } else {
@@ -273,13 +315,14 @@ impl SectionAssembler {
         out
     }
 
-    fn try_take_pending(&mut self, out: &mut Vec<Vec<u8>>) {
+    fn try_take_pending(&mut self, out: &mut Vec<Vec<u8>>, require_reserved_bits: bool) {
         loop {
             if self.expected_len.is_none() && self.buf.len() >= 3 {
                 let section_length = (((self.buf[1] & 0x0f) as usize) << 8) | self.buf[2] as usize;
                 let expected_len = 3 + section_length;
                 let syntax = (self.buf[1] & 0x80) != 0;
-                let invalid_declared_header = (self.buf[1] & 0x30) != 0x30
+                let invalid_declared_header = (require_reserved_bits
+                    && (self.buf[1] & 0x30) != 0x30)
                     || section_length > max_arib_section_length_for_table_id(self.buf[0])
                     || expected_len > MAX_SECTION_PAYLOAD_BYTES
                     || (syntax && (section_length < 9 || expected_len < 12));
@@ -298,7 +341,12 @@ impl SectionAssembler {
             let remaining = self.buf.split_off(expected_len);
             let section = std::mem::replace(&mut self.buf, remaining);
             self.expected_len = None;
-            if parse_section_header(&section, 12).is_some() {
+            let parsed = if require_reserved_bits {
+                parse_section_header(&section, 12)
+            } else {
+                parse_raw_section_framing(&section, 12)
+            };
+            if parsed.is_some() {
                 out.push(section);
             } else {
                 self.increment_oversized_section_drops();

@@ -95,6 +95,7 @@ struct AudioFrameInProgress {
     stream_id: u8,
     is_pts_present: bool,
     dts_90khz: Option<u64>,
+    is_pes_private_data: bool,
     reanchor: bool,
 }
 
@@ -122,6 +123,7 @@ struct AudioPesChunk {
     stream_id: u8,
     pts_90khz: Option<u64>,
     dts_90khz: Option<u64>,
+    is_pes_private_data: bool,
     data_alignment_indicator: bool,
     payload: Vec<u8>,
 }
@@ -132,6 +134,7 @@ impl From<PesPacket> for AudioPesChunk {
             stream_id: packet.stream_id,
             pts_90khz: packet.pts_90khz,
             dts_90khz: packet.dts_90khz,
+            is_pes_private_data: packet.is_pes_private_data,
             data_alignment_indicator: packet.data_alignment_indicator,
             payload: packet.payload,
         }
@@ -341,6 +344,7 @@ impl AudioTimestampAssociation {
                     stream_id: chunk.stream_id,
                     is_pts_present: reanchor,
                     dts_90khz: dts_for_first_start.take(),
+                    is_pes_private_data: chunk.is_pes_private_data,
                     reanchor,
                 });
             }
@@ -448,6 +452,7 @@ impl AudioTimestampAssociation {
                 pts_90khz: Some(frame.frame_pts_90khz),
                 is_dts_present: frame.dts_90khz.is_some(),
                 dts_90khz: frame.dts_90khz,
+                is_pes_private_data: frame.is_pes_private_data,
             },
         });
         self.assembly = AudioFrameAssembly::Boundary;
@@ -779,6 +784,7 @@ mod tests {
             stream_id: 0xc0,
             pts_90khz,
             dts_90khz: None,
+            is_pes_private_data: false,
             data_alignment_indicator,
             raw_bytes: Vec::new(),
             payload,
@@ -787,6 +793,16 @@ mod tests {
 
     fn packet(payload: Vec<u8>, pts_90khz: Option<u64>) -> PesPacket {
         packet_with_alignment(payload, pts_90khz, true)
+    }
+
+    fn packet_with_private_data(
+        payload: Vec<u8>,
+        pts_90khz: Option<u64>,
+        is_pes_private_data: bool,
+    ) -> PesPacket {
+        let mut packet = packet(payload, pts_90khz);
+        packet.is_pes_private_data = is_pes_private_data;
+        packet
     }
 
     fn adts_frame(sample_rate_index: u8, body_len: usize) -> Vec<u8> {
@@ -830,6 +846,56 @@ mod tests {
         assert!(first[0].metadata.is_pts_present);
         assert_eq!(pts(&second), vec![91_920]);
         assert!(!second[0].metadata.is_pts_present);
+    }
+
+    #[test]
+    fn pes_private_data_stays_with_the_pes_where_each_audio_frame_starts() {
+        let mut association = AudioTimestampAssociation::default();
+        let first_frame = adts_frame(3, 20);
+        let second_frame = adts_frame(3, 4);
+        let split_at = 12;
+
+        let partial = association
+            .extract(
+                packet_with_private_data(first_frame[..split_at].to_vec(), Some(90_000), true),
+                ORIGIN,
+            )
+            .unwrap();
+        assert!(partial.is_empty());
+
+        let mut continuation = first_frame[split_at..].to_vec();
+        continuation.extend_from_slice(&second_frame);
+        let frames = association
+            .extract(packet_with_private_data(continuation, None, false), ORIGIN)
+            .unwrap();
+        assert_eq!(frames.len(), 2);
+        assert!(frames[0].metadata.is_pes_private_data);
+        assert!(!frames[1].metadata.is_pes_private_data);
+    }
+
+    #[test]
+    fn origin_change_discards_partial_private_data_association() {
+        let mut association = AudioTimestampAssociation::default();
+        let stale_frame = adts_frame(3, 20);
+        let partial = association
+            .extract(
+                packet_with_private_data(stale_frame[..12].to_vec(), Some(90_000), true),
+                ORIGIN,
+            )
+            .unwrap();
+        assert!(partial.is_empty());
+
+        let next_origin = TsInputOrigin::Frontend {
+            frontend_generation: 2,
+        };
+        let frames = association
+            .extract(
+                packet_with_private_data(adts_frame(3, 4), Some(180_000), false),
+                next_origin,
+            )
+            .unwrap();
+        assert_eq!(frames.len(), 1);
+        assert!(!frames[0].metadata.is_pes_private_data);
     }
 
     #[test]

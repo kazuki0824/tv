@@ -318,6 +318,20 @@ impl PipelineSectionState {
         self.inner
             .push_payload_with_outcome(payload_unit_start, payload)
     }
+
+    fn push_payload_with_outcome_policy(
+        &mut self,
+        payload_unit_start: bool,
+        payload: &[u8],
+        require_reserved_bits: bool,
+    ) -> crate::sections::SectionPushOutcome {
+        if require_reserved_bits {
+            self.push_payload_with_outcome(payload_unit_start, payload)
+        } else {
+            self.inner
+                .push_payload_with_outcome_policy(payload_unit_start, payload, false)
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1251,25 +1265,37 @@ impl PacketPipeline {
             .iter()
             .any(|action| matches!(action, PipelineDeliveryAction::SectionPayload { .. }));
         if has_section_action {
-            let section_filter_ids: Vec<i32> = report
+            let section_filters: Vec<(i32, bool)> = report
                 .delivery_actions
                 .iter()
                 .filter_map(|action| match action {
-                    PipelineDeliveryAction::SectionPayload { filter_id } => Some(*filter_id),
+                    PipelineDeliveryAction::SectionPayload { filter_id } => Some((
+                        *filter_id,
+                        filters
+                            .iter()
+                            .find(|filter| filter.filter_id == *filter_id)
+                            .map(|filter| filter.section_raw)
+                            .unwrap_or(false),
+                    )),
                     _ => None,
                 })
                 .collect();
+            let section_filter_ids = section_filters
+                .iter()
+                .map(|(filter_id, _)| *filter_id)
+                .collect::<Vec<_>>();
             let section_generation = if view.payload_unit_start {
                 self.bump_section_generation(origin, pid)
             } else {
                 Some(self.current_section_generation(origin, pid))
             };
             if let Some(section_generation) = section_generation {
-                for filter_id in section_filter_ids {
+                for (filter_id, raw) in section_filters {
                     let outcome = self.assemble_section_for_filter(
                         origin,
                         pid,
                         filter_id,
+                        raw,
                         view.payload_unit_start,
                         payload,
                     );
@@ -1287,11 +1313,7 @@ impl PacketPipeline {
                                 filter_id,
                                 pid,
                                 generation: section_generation,
-                                raw: filters
-                                    .iter()
-                                    .find(|filter| filter.filter_id == filter_id)
-                                    .map(|filter| filter.section_raw)
-                                    .unwrap_or(false),
+                                raw,
                                 bytes: section,
                             });
                     }
@@ -1575,13 +1597,14 @@ impl PacketPipeline {
         origin: crate::TsInputOrigin,
         pid: PacketPid,
         filter_id: i32,
+        raw: bool,
         payload_unit_start: bool,
         payload: &[u8],
     ) -> crate::sections::SectionPushOutcome {
         self.section_assemblers
             .entry((origin, pid, filter_id))
             .or_default()
-            .push_payload_with_outcome(payload_unit_start, payload)
+            .push_payload_with_outcome_policy(payload_unit_start, payload, !raw)
     }
 
     pub(crate) fn assemble_pes_for_filter(
@@ -2550,7 +2573,7 @@ mod discontinuity_generation_tests {
             pes_raw: false,
             wants_record_index: false,
         };
-        let section = vec![0x7f, 0x30, 0x05, 0xaa, 0xbb, 0xcc, 0xdd, 0xee];
+        let section = vec![0x7f, 0x00, 0x05, 0xaa, 0xbb, 0xcc, 0xdd, 0xee];
         let mut first_payload = vec![0x00];
         first_payload.extend_from_slice(&section[..4]);
         let first = packet_with_payload(pid, 0, true, &first_payload);

@@ -9,6 +9,7 @@ pub struct AvMediaEventMetadata {
     pub pts_90khz: Option<u64>,
     pub is_dts_present: bool,
     pub dts_90khz: Option<u64>,
+    pub is_pes_private_data: bool,
 }
 
 impl AvMediaEventMetadata {
@@ -16,6 +17,7 @@ impl AvMediaEventMetadata {
         stream_id: u8,
         pts_90khz: Option<u64>,
         dts_90khz: Option<u64>,
+        is_pes_private_data: bool,
     ) -> Self {
         Self {
             stream_id,
@@ -23,6 +25,7 @@ impl AvMediaEventMetadata {
             pts_90khz,
             is_dts_present: dts_90khz.is_some(),
             dts_90khz,
+            is_pes_private_data,
         }
     }
 
@@ -31,6 +34,7 @@ impl AvMediaEventMetadata {
         pes_pts_90khz: Option<u64>,
         authoritative_pts_90khz: u64,
         dts_90khz: Option<u64>,
+        is_pes_private_data: bool,
     ) -> Self {
         Self {
             stream_id,
@@ -38,6 +42,7 @@ impl AvMediaEventMetadata {
             pts_90khz: Some(authoritative_pts_90khz),
             is_dts_present: dts_90khz.is_some(),
             dts_90khz,
+            is_pes_private_data,
         }
     }
 }

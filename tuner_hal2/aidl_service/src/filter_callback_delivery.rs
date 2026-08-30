@@ -135,6 +135,7 @@ fn event_from_snapshot(
                 offset,
                 avDataId: event.data_id.0,
                 avMemory: av_memory,
+                isPesPrivateData: event.metadata.is_pes_private_data,
                 ..Default::default()
             })))
         }
@@ -421,6 +422,7 @@ mod tests {
             0xe0,
             Some(90_001),
             None,
+            false,
         ))
         .unwrap();
 
@@ -437,6 +439,7 @@ mod tests {
             0xe0,
             Some(180_001),
             Some(90_001),
+            false,
         ))
         .unwrap();
 
@@ -449,7 +452,9 @@ mod tests {
 
     #[test]
     fn media_event_preserves_legal_pes_timestamp_absence() {
-        let event = projected_media_event(AvMediaEventMetadata::from_pes(0xc0, None, None)).unwrap();
+        let event =
+            projected_media_event(AvMediaEventMetadata::from_pes(0xc0, None, None, false))
+                .unwrap();
 
         assert_eq!(event.streamId, 0xc0);
         assert!(!event.isPtsPresent);
@@ -466,12 +471,21 @@ mod tests {
             pts_90khz: Some(270_001),
             is_dts_present: false,
             dts_90khz: None,
+            is_pes_private_data: false,
         })
         .unwrap();
 
         assert_eq!(event.streamId, 0xc0);
         assert!(!event.isPtsPresent);
         assert_eq!(event.pts, 270_001);
+    }
+
+    #[test]
+    fn media_event_preserves_authoritative_pes_private_data_presence() {
+        let event =
+            projected_media_event(AvMediaEventMetadata::from_pes(0xe0, None, None, true)).unwrap();
+
+        assert!(event.isPesPrivateData);
     }
 
     #[test]
