@@ -588,3 +588,43 @@ TIS は保存データの型、正規化、必須項目判定、欠落補完、�
 `DescriptorDiagnosticV1` は Rust が生成した正規 JSON を正とする。TIS は `DescriptorDiagnosticV1` を項目ごとに再構築してはならない。TIS が保持する場合は、Rust 生成の正規 JSON を不透明な文字列として透過保持する。
 
 TIS の試験は、受け渡し用 JSON の細部を保存形式として検査しない。検査対象は Rust provider-data builder が返した保存用JSON、識別子、拒否診断に寄せる。
+## MMT/TLV サービス検出・ライブ視聴経路
+
+本節は `JapanAdvancedMmtTlvProfile` がTuner SDKから実際に観測できる場合のTIS契約を定義する。TISは従来どおりTuner HAL binderを直接呼ばず、`Filter.setDataSource()`を含むTuner SDK APIだけを使う。現行TS scan / PSI/SI経路は維持し、byte列を見てTSとMMTPを自動判定しない。
+
+### 物理選局とbootstrap
+
+高度衛星ではTuner SDKの `ISDBS3` frontend設定だけを使用する。最初のtune候補はproduct integrationで検証済みの周波数/stream selectorから生成し、TLV-NITを受信する前にTLV-SIから周波数を逆算してbootstrapしない。高度地上ISDB-T2/T1.5/T3はAndroid 14で損失なく表現できるfrontend型がないため、本releaseではscan候補とchannel登録を生成しない。
+
+### filter graph と起動順
+
+一つの高度放送tune generationでは、必要なfilterを次の責務で構成する。
+
+1. TLV `SECTION` でsignaling packetを取得し、TLV-NIT / AMT等のTLV-SI payloadを `arib_si_engine_rs` へ渡す。
+2. TLV `PAYLOAD_THROUGH` をsource、IP filterをsinkとして接続し、TLV-SIで得たaddress/service対応を使って対象IP data flowを選ぶ。
+3. 必要に応じてIP `NTP`を開き、HAL側MMT clock anchorを成立させる。
+4. IP `PAYLOAD_THROUGH` をsource、MMTP filterをsinkとして接続する。
+5. PA entry point用 `mmtpPid=0x0000` のMMTP `MMTP` filterで完全なPA/control packetを取得し、PA/MPTの意味解析を `arib_si_engine_rs` へ渡す。M2 sectionで運ばれるMH-EIT / MH-SDT / MH-TOT等はMMTP `SECTION` filterで取得する。
+6. MPTで解決したasset location / packet IDを使ってMMTP AUDIO / VIDEO filterを開く。
+
+configureとsource relation確定をすべて終えてから、data lossを避けるためMMTP -> IP -> TLVの下流優先でstartする。retune/release/errorではTLV ingressを先に止め、旧generationのcallbackを遮断した後にIP -> MMTPをdrain/closeする。途中のopen/configure/link/start失敗は同じgenerationで既に作成したrelation/filterをbest-effort cleanupし、半端なgraphを次generationへ再利用しない。
+
+### service identity とasset選択
+
+TLV-SIは `(original_network_id, tlv_stream_id)` をtransport identity、service IDをservice identityの一部として扱う。MPT package ID下位16bitから得るservice ID、TLV-SIのservice対応、MPT asset locationを同じgenerationで相関する。TLV stream IDを既存MPEG-2 `transport_stream_id`へ格納・比較・永続化しない。
+
+TISが受ける意味objectは `arib_si_engine_rs` のtransport-tagged `ServiceSemanticFacts` を正とする。MMT serviceではMPT asset type/locationからvideo/audio assetを選び、current productが対応するcodecと実decoder availabilityを組み合わせて従来と同じ `channelRegistrationReady / epgPublishable / livePlaybackSupported` policyを算出する。SI engineへAndroid policyを逆流させない。
+
+### EPG / provider-data
+
+MH-EIT等から得たeventは `(original_network_id, TLV stream identity, service_id, event_id)` をtransport-tagged stable identityとして扱う。TS eventとの衝突回避のため、既存 `(ONID, TSID, SID, eventId)` と同じuntyped tupleに丸めない。TvProvider保存は `ARIB_SI_EPG_TvProvider投影方針.md` とprovider-data v2設計を正とし、旧v1の `transportStreamId` にTLV stream IDを詰めない。
+
+### AV / clock / subtitle-data boundary
+
+MMTP AUDIO/VIDEO filterから届く `MediaEvent` も、既存のclear-memory / non-passthrough LinearBlock経路へ直接渡す。TISでMMTP packet、MPU/MFU、NAL/AUを再構成し直さない。`mpuSequenceNumber`はgeneration診断とstale event排除に利用してよいが、番組stable keyやTuner generationの代用にしない。`pts`はHALがNTP/MPUのauthoritative時刻から構成した90 kHz値を使用し、TISのwallclock受信時刻から補完しない。
+
+MMTのtimed text/application/general dataは本releaseのlive成功条件へ含めず、AUDIO/VIDEO対応を理由にMMTP `PES` / `DOWNLOAD` を開かない。将来これらを製品機能に追加する場合も、libaribcaptionのARIB字幕PES経路へMMT timed textを偽装投入せず、asset typeに対応する別renderer/consumer設計を追加する。
+
+### CAS境界
+
+MMT-SIのCA message / CAT(MH)等から得たCA事実はSI engineが意味object化し、TISはcurrent CAS HAL capabilityと組み合わせる。#57のB25/B1 TS向け実装が存在することだけを理由に高度放送の第二世代CASや高度地上のAES/Camellia系を対応済みとしない。scrambled MMT serviceでCA system / scramble systemがcurrent CAS HAL profileに存在しない場合、EPG/channel意味情報は保持できてもlive playbackは `unsupportedCas` とし、clear成功へfallbackしない。

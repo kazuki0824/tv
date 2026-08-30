@@ -1664,3 +1664,84 @@ presentation timestampと当該media outputのassociation責務は`MediaEvent`�
 一方、同3.11-E1 Fascicle 2 Attachment Chapter 2 2.1のaudio規定はparameter切替等の境界における先頭frameへのPTSを要求するが、全audio PESへの明示を保証しない。Fascicle 3 Chapter 3 3.1が参照するH.222.0 2.4.3.7ではaudio PTSは当該PES内で開始する最初のaudio access unitへ対応し、Fascicle 2 Chapter 5.2.2の製品対象MPEG-2 AAC LC ADTSはheaderにactual sampling frequencyを持ち、`number_of_raw_data_blocks_in_frame=0`により1 raw-data-block/frameへ固定される。さらにARIB TR-B15 4.6-E1 Fascicle 3 4.2.2はBS／広帯域CSのMPEG-2 AACについてPES packetとaudio frameのnon-synchronizationを許容する。製品既定producerはMPEG-2 AAC LC ADTSとMPEG audioについて、PESを跨いで連続するframe header／lengthを上限付きで追跡し、この規格上のanchor、actual sample rate、exact sample countを結合してPTS-sparse eventのauthoritativeな33-bit 90 kHz時刻を確定する。parameter変更後の明示PTSで最初に開始するAUへ再anchorし、未通知変更、unsupported／malformed frame、gapまたは各lifecycle境界では配送を抑止して型付き診断を残す。この成立範囲に対応する`numAudioFilter=1`とaudio/video各1件を閉じる有限AV予算を製品既定profileで広告する。`getAvSyncTime()`用のPCR/wallclock補間を個別eventのPTSとして流用しない。TR-B15の証拠は公式英訳4.6-E1の精読範囲であり、現行日本語版8.9との差分は未証明とする。
 
 最低試験は、(1) explicit PTS PESでは`isPtsPresent=true`かつ`pts`がその明示PTSと一致すること、(2) `isPtsPresent=false`の合法なPTS-sparse inputでもbackend metadataまたはframe境界・timing parameterを構造検証済みのframe列からauthoritative associationを確定できる場合は当該media outputに対応する値を`pts`へ出すこと、(3) authoritative sourceがない場合は定数0、直前PTS、PCR、wallclock、nominal frame rate / sample rate等のgeneric interpolationを行わず、そのeventを成功配送しないこと、(4) exact sample countの有理数累積、33-bit wrapとA/V timeline差を維持すること、(5) `isPtsPresent=false`だけを理由にpayload破棄/fatalせず、associationが成立するeventはprovenanceをfalseのまま配送すること、(6) flush、transport discontinuity、source/generation変更後は明示PTSまで再開しないこと、(7) ADTS／MPEG audioのframe bodyおよびheader途中にPES境界を置いても有限残余で明示anchorからPTS-sparse eventへ継続し、最初に開始するAUの時刻とpresence=falseを維持すること、(8)未anchorかつ`data_alignment_indicator=false`の最初のPESが先行AUのcontinuationから始まる場合に、sync-likeな偽候補を次frame境界の構造不一致で拒否し、最初に開始する検証済みAUへだけ明示PTSをanchorして後続PTS-sparse eventへ継続すること、(9)先行する偽`HeaderOnly`候補と真のfirst AUがともに次PESへ跨ぐ場合は後続境界確認までevent/anchorを公開せず、確認後に真のAUだけを採用すること、(10)continuation tailとnew AUが同じPESにある場合も、最終`MediaEvent.offset/dataLength`が各完成AUの正確なrangeとなり、付与PTS/provenanceが同じAUへ対応すること、(11)製品snapshotのTS AUDIOが公開demux open-filter use-caseを通り、audio-only serviceがvideo filterなしで既存TIS start gateを通ること、を含める。
+
+## 日本高度放送 MMTP/TLV 公開契約
+
+本節は `JapanAdvancedMmtTlvProfile` を有効にした場合のAOSP公開契約を固定する。既存のTS-only記載は現行default `LegacyTsProfile` の契約として引き続き有効であり、本節の存在だけでは能力値を変更しない。
+
+### capability と filter linkage
+
+Android 14 AIDL V2 の main type bit は `TS=0x01 / MMTP=0x02 / IP=0x04 / TLV=0x08 / ALP=0x10` とする。`JapanAdvancedMmtTlvProfile` は既存TS能力と高度放送能力を同一demuxで提供するため、次に固定する。
+
+| 項目 | `LegacyTsProfile` | `JapanAdvancedMmtTlvProfile` |
+|---|---:|---:|
+| `filterCaps` | `0x01` | `0x0F` |
+| `linkCaps` main type順 `[TS, MMTP, IP, TLV, ALP]` | `[0x01, 0, 0, 0, 0]` | `[0x01, 0, 0x02, 0x04, 0]` |
+
+高度プロファイルで広告するmain-type graphは **TS -> TS、TLV -> IP、IP -> MMTP** の3組だけである。MMTPは終端filterであり別main typeへのsource linkを広告しない。ALPは非対応のままとする。広告したpairについてはAOSP VTSがsource/sink双方を subtype `UNDEFINED` でopenして `setDataSource()` / detachを行う経路も成功させる。`UNDEFINED`はlinkage endpointであり、SECTION / AV等の具体subtypeへ暗黙昇格させない。
+
+backendがTLV packet ingress、必要なparser、FMQ/AV予算、source relationの全てを確保できない場合は `JapanAdvancedMmtTlvProfile` を `CapabilitySnapshot` へcommitせず、既存のTS-only値を返す。実行時入力を見て `filterCaps` / `linkCaps` を増減させない。
+
+### `openFilter()` acceptance matrix
+
+`JapanAdvancedMmtTlvProfile` で追加する成功範囲を次に固定する。表にない既知subtypeは `UNAVAILABLE`、main/subtype union不一致または未知値は `INVALID_ARGUMENT` とし、拒否時にobject、queue、relation、worker、leaseを生成しない。
+
+| main type | subtype | 成功時の意味 | 出力 |
+|---|---|---|---|
+| TLV | `UNDEFINED` | VTS/linkCaps用endpoint | linkageのみ |
+| TLV | `SECTION` | TLV-SI signaling packetをpacketType条件で抽出 | Filter FMQ + `section` event |
+| TLV | `TLV` | 完全なTLV packet列を抽出 | Filter FMQ、`passthrough=true`ならlink source |
+| TLV | `PAYLOAD_THROUGH` | TLV headerを除去し、packetTypeに従うpayloadをIP main typeへ渡す | link source |
+| IP | `UNDEFINED` | VTS/linkCaps用endpoint | linkageのみ |
+| IP | `NTP` | RFC 5905 NTP packetを検証しMMT clock anchorへ入力 | clock state更新、通常payload FMQなし |
+| IP | `IP` | address/port条件に一致する完全なIP datagramを抽出 | Filter FMQ、`bPassthrough=true`ならlink source |
+| IP | `IP_PAYLOAD` | IP header除去後payloadを抽出 | Filter FMQ + `ipPayload` event |
+| IP | `PAYLOAD_THROUGH` | IP header除去後payloadをMMTP main typeへ渡す | link source |
+| MMTP | `UNDEFINED` | VTS/linkCaps用endpoint | linkageのみ |
+| MMTP | `SECTION` | MMTP signaling payload中の完全なMMT signaling / M2 section単位を抽出 | Filter FMQ + `section` event |
+| MMTP | `MMTP` | 指定 `mmtpPid` の完全なMMTP packet列を抽出 | Filter FMQ |
+| MMTP | `AUDIO` | 指定asset packet IDの完全なaudio MFU/sampleを組み立てる | clear `MediaEvent` |
+| MMTP | `VIDEO` | 指定asset packet IDの完全なvideo MFU/sampleを組み立てる | clear `MediaEvent` |
+| MMTP | `PES` | 本profileでは採用しない。AOSP名はMMTPではMFU抽出を意味するが、TIS通常経路を二重化しない | `UNAVAILABLE` |
+| MMTP | `RECORD` / `DOWNLOAD` | 現行productの録画・download非採用 | `UNAVAILABLE` |
+| ALP | 全subtype | 日本高度放送MMT/TLV profileの対象外 | `UNAVAILABLE` |
+
+TS行の既存契約は変更しない。
+
+### TLV packet と圧縮IP境界
+
+TLV packet typeはAOSP frameworkの `IPv4=0x01 / IPv6=0x02 / compressed IP=0x03 / signaling=0xFE / null=0xFF` を受理候補とする。未知packet typeは `INVALID_ARGUMENT`、既知だが当該filterで意味を持たない組合せは `UNAVAILABLE` とする。`packetType=0x03` は `isCompressedIpPacket=true`、IPv4/IPv6/signalingは `false` でなければならず、矛盾する設定を保存して成功扱いにしない。null packetは統計上消費してよいがdownstreamへpayloadを生成しない。
+
+TLV packet framingはARIB STD-B32のcurrent product適用版に従い、headerのtype/lengthから一個のpacket境界を確定する。宣言長が入力上限を超える、不完全、reserved/不正なheaderはそのpacketを正常payloadへ昇格させず診断する。破損位置から任意byte patternをscanして架空のpacket境界を作らない。入力source generationが変わった時点で未完成packetを破棄する。
+
+header-compressed IPは、B32で規定される放送用header compressionを実装する `CompressedIpContextRegistry` が当該profileで有効な場合だけ `packetType=0x03` を成功させる。contextはdemux/source generationに所属し、context ID、sequence、参照header、寿命、memory上限をbounded stateとして保持する。context欠落、sequence破綻、復元長不整合、generation跨ぎは復元IP packetを生成しない。decoder未実装のbuildではcompressed IPだけを `UNAVAILABLE` とし、TLV main type全体を成功no-opにはしない。実放送対応を表明するproduct qualificationでは、対象局が使用するcompressed/uncompressed packet typeを全て実装済みであることを別途確認する。
+
+### IP datagram と UDP/MMTP 境界
+
+TLV payloadから得たIPv4/IPv6は、version、header長、total/payload length、extension header、上限を検証してからIP filterへ渡す。fragmented IPを対応するbuildではbounded `IpFragmentAssembler` で `(generation, src, dst, protocol, identification)` 単位に再構成し、重複fragmentの内容不一致、範囲重複、長さ矛盾、timeout、memory上限超過はdatagramを成立させない。fragment reassembly非対応buildはfragmentを含むproductを対応宣言しない。
+
+MMTP sinkへ接続する `IP/PAYLOAD_THROUGH` は、MMTP用data flowとして選択されたUDP datagramだけを受ける。IP filterがIP headerを除去した後、MMTP ingress adapterがUDP header/lengthと選択済みaddress/portを検証し、UDP payloadを一個のMMTP packet候補として渡す。UDP以外、port不一致、length不一致をMMTPとして推測解釈しない。
+
+### MMTP packet / signaling / media 境界
+
+MMTP packet framerは、version、payload type、packet ID、timestamp、packet sequence number、optional header lengthを検証し、一個のIP/UDP payloadから一個のMMTP packetを成立させる。ARIB STD-B60の基本stackでは一個のMMTP packetは一個のIP packetで伝送されるため、複数IP datagramを連結して一個のMMTP packetを捏造しない。packet sequence numberの欠落・重複・逆行は `(generation, packet_id)` ごとに診断し、欠落を別packetのpayloadで補完しない。
+
+`payload_type=0x00` のMPU系はMMTP payloadのfragmentation/aggregation情報、MPU sequence number、MFU/sample位置を検証して再構成する。`payload_type=0x02` のcontrol messageはmessage lengthで完全性を検証する。PA/MPTやM2 sectionのARIB意味解析はTuner HALで行わず、完全なsignaling単位だけをTISへ渡す。
+
+MMTP AUDIO/VIDEOの `MediaEvent` は既存のclear-memory / non-passthrough契約に従う。`avMemory`はmappable、`isSecureMemory=false` とする。`mpuSequenceNumber`は当該MFUが属する実MPU sequence numberを設定し、固定0やpacket sequence numberを代入しない。`pts`は受信NTP clockとMPU/sampleのauthoritativeなpresentation timeから90 kHzへ変換した値だけを設定し、wallclock到着時刻やMMTP distribution timestampを根拠なくPTSへ流用しない。MMTPにはPES headerがないため `isPtsPresent=false` としつつ、成功対応するnon-empty AV eventでは `pts` 自体は有効値を必須とする。DTSを構成できない場合は `isDtsPresent=false, dts=0` とし、`isPesPrivateData=false` とする。
+
+NTP同期はMMTP専用の `MmtClockAnchor` としてsource generationに所属させ、retune/source変更で旧anchorを失効させる。PCR値を捏造して既存TS `PcrClockAnchorStore`へ投入しない。MMTP AVをAOSPのA/V sync IDへ接続できる実同期源がないbuildでは、MMTPについてその同期API成功能力を広告せず、TISは `MediaEvent.pts` とMediaCodec/MediaSyncの標準経路を使用する。
+
+### source relation / lifecycle / rollback
+
+高度放送の実データgraphは `frontend TLV ingress -> TLV/PAYLOAD_THROUGH -> IP/PAYLOAD_THROUGH -> MMTP` とする。TLV-SI用TLV/SECTION、NTP用IP/NTP、PA/MPT/M2用MMTP signaling、AV用MMTP AUDIO/VIDEOは必要に応じて同じgenerationのsourceから分岐する。
+
+relationの所有者、cycle禁止、同一demux/owner検証、generation、configure中のsource整合、start/stop/flush/close時のdetach、pre-commit rollback、post-commit cleanupは既存 `SourceBoundaryTxn` / `StreamBoundaryTxn` 契約をそのまま適用する。MMTP/TLV専用の第二relation registryを設けない。設定時は全filterをconfigureしてrelationをcommitした後に **下流から上流**（MMTP -> IP -> TLV）の順でstartし、停止時は **上流から下流**（TLV -> IP -> MMTP）の順で新規入力を止めてからdrain/closeする。途中失敗時に一部relationだけをcurrent graphとして残さない。
+
+### frontend と VTS gate
+
+高度衛星ではAOSP `FrontendType.ISDBS3` / `Isdbs3FrontendSettings`を使用し、backendが実ISDB-S3 lockとTLV ingressを確認できる場合だけfrontendを公開する。ISDB-S settingsへ丸めない。
+
+Android 14 AIDLに ISDB-T2 / ISDB-T1.5 / ISDB-T3 専用frontend型がないため、高度地上物理方式を `ISDBT` として偽装して公開しない。将来platform側に損失なく表現できる公開frontend契約が追加された時点で、その契約とSTD-B79/B80の対応を別途固定する。これはMMTP/TLV demux graphの未設計を意味せず、物理frontendのAOSP公開面に対するactivation gateである。
+
+AIDL V2 `linkCaps` のVTSは広告bitごとに subtype `UNDEFINED` endpointを生成するため、本節の3pairは必ずその経路で検証する。TLV/MMTPの具体filter fixtureを選択VTS artifactが設定ファイルから表現できない場合、推測したXMLでVTS成功を宣言せず `DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED` とする。その場合もhost/integration testでTLV framing、TLV->IP->MMTP linkage、PA/MPT/M2、NTP、AV MediaEventを固定し、VTS artifactが決まった時点で公式fixtureへ置換する。
