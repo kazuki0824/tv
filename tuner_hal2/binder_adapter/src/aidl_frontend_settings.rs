@@ -7,8 +7,8 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     FrontendIsdbtModulation::FrontendIsdbtModulation,
     FrontendIsdbtPartialReceptionFlag::FrontendIsdbtPartialReceptionFlag,
     FrontendIsdbtTimeInterleaveMode::FrontendIsdbtTimeInterleaveMode,
-    FrontendSpectralInversion::FrontendSpectralInversion,
     FrontendScanType::FrontendScanType, FrontendSettings::FrontendSettings,
+    FrontendSpectralInversion::FrontendSpectralInversion,
 };
 use maleicacid_tuner_hal2_common::{
     is_japan_cs110_if_frequency_hz, FrontendIsdbtPartialReceptionRequirement, FrontendScanMode,
@@ -76,10 +76,7 @@ fn validate_isdbt_fixed_settings(
         s.bandwidth,
         FrontendIsdbtBandwidth::AUTO | FrontendIsdbtBandwidth::BANDWIDTH_6MHZ
     ) {
-        if is_single_known_enum_value(
-            s.bandwidth.0,
-            FrontendIsdbtBandwidth::BANDWIDTH_6MHZ.0,
-        ) {
+        if is_single_known_enum_value(s.bandwidth.0, FrontendIsdbtBandwidth::BANDWIDTH_6MHZ.0) {
             unsupported_frontend_setting(
                 "isdbt.bandwidth",
                 "known ISDB-T bandwidth is not supported by this product profile",
@@ -559,6 +556,29 @@ mod tests {
         assert!(matches!(
             validate_isdbs_fixed_settings(&settings),
             Err(HalError::UnsupportedDetail { .. })
+        ));
+    }
+
+    #[test]
+    fn isdbs_symbol_rate_preserves_zero_sentinel_and_positive_value() {
+        let mut unspecified = valid_isdbs_settings();
+        unspecified.frequency = 1_049_480_000;
+        let request =
+            aidl_frontend_settings_to_request(&FrontendSettings::Isdbs(unspecified)).unwrap();
+        assert_eq!(request.symbol_rate, None);
+
+        let mut explicit = valid_isdbs_settings();
+        explicit.frequency = 1_049_480_000;
+        explicit.symbolRate = 28_860_000;
+        let request =
+            aidl_frontend_settings_to_request(&FrontendSettings::Isdbs(explicit)).unwrap();
+        assert_eq!(request.symbol_rate, Some(28_860_000));
+
+        let mut negative = valid_isdbs_settings();
+        negative.symbolRate = -1;
+        assert!(matches!(
+            aidl_frontend_settings_to_request(&FrontendSettings::Isdbs(negative)),
+            Err(HalError::InvalidArgument { .. })
         ));
     }
 

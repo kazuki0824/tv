@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
@@ -121,6 +122,20 @@ struct DvbProbeVariant {
     capability: Option<FrontendCapabilitySnapshot>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DvbProbeCandidate {
+    adapter: i32,
+    frontend_index: i32,
+    path: PathBuf,
+    physical_device_identity: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct DvbPhysicalExclusiveGroupKey {
+    physical_device_identity: PathBuf,
+    driver_stream_ordinal: u8,
+}
+
 const JAPAN_BS_FIRST_IF_HZ: i64 = 1_049_480_000;
 const JAPAN_CS110_LAST_IF_HZ: i64 = 2_053_000_000;
 const ISDBS_SYMBOL_RATE: i32 = 28_860_000;
@@ -140,8 +155,7 @@ fn px4_capability(
     let exclusive_group_id = PX4_PHYSICAL_GROUP_TAG.checked_add(group_payload)?;
     let (scalar, isdbt_segment) = match system {
         FrontendSystem::IsdbT => {
-            let (min_frequency_hz, max_frequency_hz, _) =
-                japan_isdbt_frequency_contract_range_hz();
+            let (min_frequency_hz, max_frequency_hz, _) = japan_isdbt_frequency_contract_range_hz();
             (
                 FrontendScalarCapability {
                     min_frequency_hz: i64::try_from(min_frequency_hz).ok()?,
@@ -246,13 +260,69 @@ fn dvb_capability(
     })
 }
 
-fn dvb_physical_group_id(adapter: i32, frontend_index: i32) -> Option<i32> {
-    if !(0..=255).contains(&adapter) || !(0..=255).contains(&frontend_index) {
-        return None;
+fn earth_pt1_verified_topology_keys(
+    candidates: &[DvbProbeCandidate],
+) -> BTreeMap<(i32, i32), DvbPhysicalExclusiveGroupKey> {
+    const EARTH_PT1_INDEPENDENT_STREAMS: usize = 4;
+
+    let mut candidates_by_device: BTreeMap<PathBuf, Vec<&DvbProbeCandidate>> = BTreeMap::new();
+    for candidate in candidates {
+        let Some(identity) = candidate.physical_device_identity.as_ref() else {
+            continue;
+        };
+        candidates_by_device
+            .entry(identity.clone())
+            .or_default()
+            .push(candidate);
     }
-    DVB_PHYSICAL_GROUP_TAG
-        .checked_add(adapter.checked_shl(8)?)
-        .and_then(|base| base.checked_add(frontend_index))
+
+    let mut verified = BTreeMap::new();
+    for (identity, mut device_candidates) in candidates_by_device {
+        device_candidates.sort_by_key(|candidate| (candidate.adapter, candidate.frontend_index));
+        let tuple_set = device_candidates
+            .iter()
+            .map(|candidate| (candidate.adapter, candidate.frontend_index))
+            .collect::<BTreeSet<_>>();
+        if device_candidates.len() != EARTH_PT1_INDEPENDENT_STREAMS
+            || tuple_set.len() != EARTH_PT1_INDEPENDENT_STREAMS
+            || device_candidates
+                .iter()
+                .any(|candidate| candidate.frontend_index != 0)
+        {
+            continue;
+        }
+
+        for (ordinal, candidate) in device_candidates.into_iter().enumerate() {
+            let Ok(driver_stream_ordinal) = u8::try_from(ordinal) else {
+                continue;
+            };
+            verified.insert(
+                (candidate.adapter, candidate.frontend_index),
+                DvbPhysicalExclusiveGroupKey {
+                    physical_device_identity: identity.clone(),
+                    driver_stream_ordinal,
+                },
+            );
+        }
+    }
+    verified
+}
+
+fn dvb_exclusive_group_ids(
+    topology_keys: &BTreeMap<(i32, i32), DvbPhysicalExclusiveGroupKey>,
+) -> Option<BTreeMap<(i32, i32), i32>> {
+    let unique_keys = topology_keys.values().cloned().collect::<BTreeSet<_>>();
+    let mut id_by_key = BTreeMap::new();
+    for (payload, key) in unique_keys.into_iter().enumerate() {
+        let payload = i32::try_from(payload).ok()?;
+        let group_id = DVB_PHYSICAL_GROUP_TAG.checked_add(payload)?;
+        id_by_key.insert(key, group_id);
+    }
+
+    topology_keys
+        .iter()
+        .map(|(tuple, key)| Some((*tuple, *id_by_key.get(key)?)))
+        .collect()
 }
 
 fn dvb_export_frontend_id(
@@ -282,6 +352,13 @@ fn dvb_driver_basename(adapter: i32, frontend_index: i32) -> Option<String> {
         path.file_name()
             .map(|name| name.to_string_lossy().to_string())
     })
+}
+
+fn dvb_physical_device_identity(adapter: i32, frontend_index: i32) -> Option<PathBuf> {
+    std::fs::canonicalize(format!(
+        "/sys/class/dvb/dvb{adapter}.frontend{frontend_index}/device"
+    ))
+    .ok()
 }
 
 fn systems_from_dvb_delsys_buffer(buffer: DtvPropertyBuffer) -> Vec<FrontendSystem> {
@@ -383,11 +460,9 @@ fn dvb_probe_variants(
     adapter: i32,
     frontend_index: i32,
     path: &PathBuf,
+    exclusive_group_id: i32,
 ) -> Result<Vec<DvbProbeVariant>, HalError> {
     let (systems, info) = probe_dvb_delivery_systems(path)?;
-    let Some(exclusive_group_id) = dvb_physical_group_id(adapter, frontend_index) else {
-        return Ok(Vec::new());
-    };
     let mut variants = Vec::new();
     for system in systems {
         if let Some(id) = dvb_export_frontend_id(adapter, frontend_index, system) {
@@ -487,6 +562,7 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
         }
     }
 
+    let mut dvb_candidates = Vec::new();
     for adapter in 0..16 {
         for frontend_index in 0..16 {
             let path = PathBuf::from(format!(
@@ -503,51 +579,76 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
                 });
                 continue;
             }
-            match dvb_probe_variants(adapter, frontend_index, &path) {
-                Ok(variants) => {
-                    if variants.is_empty() {
-                        outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
-                            backend: FrontendBackendKind::LinuxDvb,
-                            path,
-                            reason: CapabilitySuppressionReason::UnsupportedDeliverySystem,
-                        });
-                    } else {
-                        for variant in variants {
-                            let Some(capability) = variant.capability else {
-                                outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
-                                    backend: FrontendBackendKind::LinuxDvb,
-                                    path: path.clone(),
-                                    reason: CapabilitySuppressionReason::InvalidCapabilityProfile,
-                                });
-                                continue;
-                            };
-                            let lnb_profile = probe_lnb_profile_for_frontend(
-                                FrontendBackendKind::LinuxDvb,
-                                variant.system,
-                                &path,
-                                None,
-                            );
-                            outcomes.push(FrontendProbeOutcome::Available {
-                                id: FrontendRuntimeId(variant.id),
+            dvb_candidates.push(DvbProbeCandidate {
+                adapter,
+                frontend_index,
+                path,
+                physical_device_identity: dvb_physical_device_identity(adapter, frontend_index),
+            });
+        }
+    }
+
+    let topology_keys = earth_pt1_verified_topology_keys(&dvb_candidates);
+    let group_ids = dvb_exclusive_group_ids(&topology_keys).unwrap_or_default();
+    for candidate in dvb_candidates {
+        let DvbProbeCandidate {
+            adapter,
+            frontend_index,
+            path,
+            ..
+        } = candidate;
+        let Some(exclusive_group_id) = group_ids.get(&(adapter, frontend_index)).copied() else {
+            outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
+                backend: FrontendBackendKind::LinuxDvb,
+                path,
+                reason: CapabilitySuppressionReason::InvalidCapabilityProfile,
+            });
+            continue;
+        };
+        match dvb_probe_variants(adapter, frontend_index, &path, exclusive_group_id) {
+            Ok(variants) => {
+                if variants.is_empty() {
+                    outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
+                        backend: FrontendBackendKind::LinuxDvb,
+                        path,
+                        reason: CapabilitySuppressionReason::UnsupportedDeliverySystem,
+                    });
+                } else {
+                    for variant in variants {
+                        let Some(capability) = variant.capability else {
+                            outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
                                 backend: FrontendBackendKind::LinuxDvb,
-                                system: variant.system,
                                 path: path.clone(),
-                                lnb_profile,
-                                satellite_power_topology: probe_satellite_power_topology(
-                                    variant.system,
-                                    lnb_profile,
-                                ),
-                                capability,
+                                reason: CapabilitySuppressionReason::InvalidCapabilityProfile,
                             });
-                        }
+                            continue;
+                        };
+                        let lnb_profile = probe_lnb_profile_for_frontend(
+                            FrontendBackendKind::LinuxDvb,
+                            variant.system,
+                            &path,
+                            None,
+                        );
+                        outcomes.push(FrontendProbeOutcome::Available {
+                            id: FrontendRuntimeId(variant.id),
+                            backend: FrontendBackendKind::LinuxDvb,
+                            system: variant.system,
+                            path: path.clone(),
+                            lnb_profile,
+                            satellite_power_topology: probe_satellite_power_topology(
+                                variant.system,
+                                lnb_profile,
+                            ),
+                            capability,
+                        });
                     }
                 }
-                Err(error) => outcomes.push(FrontendProbeOutcome::DeviceOpenFailed {
-                    backend: FrontendBackendKind::LinuxDvb,
-                    path,
-                    error,
-                }),
             }
+            Err(error) => outcomes.push(FrontendProbeOutcome::DeviceOpenFailed {
+                backend: FrontendBackendKind::LinuxDvb,
+                path,
+                error,
+            }),
         }
     }
 
@@ -599,13 +700,66 @@ mod tests {
         );
     }
 
+    fn candidate(adapter: i32, device: &str) -> DvbProbeCandidate {
+        DvbProbeCandidate {
+            adapter,
+            frontend_index: 0,
+            path: PathBuf::from(format!("/dev/dvb/adapter{adapter}/frontend0")),
+            physical_device_identity: Some(PathBuf::from(device)),
+        }
+    }
+
     #[test]
-    fn dvb_exclusive_groups_share_only_one_physical_frontend() {
-        let adapter0_frontend0 = dvb_physical_group_id(0, 0).unwrap();
-        assert_eq!(adapter0_frontend0, dvb_physical_group_id(0, 0).unwrap());
-        assert_ne!(adapter0_frontend0, dvb_physical_group_id(0, 1).unwrap());
-        assert_ne!(adapter0_frontend0, dvb_physical_group_id(1, 0).unwrap());
-        assert_ne!(adapter0_frontend0 & 0xf000_0000, PX4_PHYSICAL_GROUP_TAG);
+    fn earth_pt1_complete_profile_proves_four_independent_stream_groups() {
+        let candidates = (0..4)
+            .map(|adapter| candidate(adapter, "/sys/devices/pci0000:00/0000:03:00.0"))
+            .collect::<Vec<_>>();
+        let topology = earth_pt1_verified_topology_keys(&candidates);
+        let group_ids = dvb_exclusive_group_ids(&topology).unwrap();
+
+        assert_eq!(group_ids.len(), 4);
+        assert_eq!(
+            group_ids.values().copied().collect::<BTreeSet<_>>().len(),
+            4
+        );
+        assert!(group_ids
+            .values()
+            .all(|group| group & 0xf000_0000 == DVB_PHYSICAL_GROUP_TAG));
+        assert!(group_ids
+            .values()
+            .all(|group| group & 0xf000_0000 != PX4_PHYSICAL_GROUP_TAG));
+    }
+
+    #[test]
+    fn topology_group_key_controls_sharing_independently_of_public_tuple() {
+        let shared_key = DvbPhysicalExclusiveGroupKey {
+            physical_device_identity: PathBuf::from("/sys/devices/shared"),
+            driver_stream_ordinal: 0,
+        };
+        let independent_key = DvbPhysicalExclusiveGroupKey {
+            physical_device_identity: PathBuf::from("/sys/devices/independent"),
+            driver_stream_ordinal: 0,
+        };
+        let topology = BTreeMap::from([
+            ((0, 0), shared_key.clone()),
+            ((1, 0), shared_key),
+            ((2, 0), independent_key),
+        ]);
+        let group_ids = dvb_exclusive_group_ids(&topology).unwrap();
+
+        assert_eq!(group_ids[&(0, 0)], group_ids[&(1, 0)]);
+        assert_ne!(group_ids[&(0, 0)], group_ids[&(2, 0)]);
+    }
+
+    #[test]
+    fn incomplete_or_unknown_earth_pt1_topology_is_not_published() {
+        let candidates = (0..3)
+            .map(|adapter| candidate(adapter, "/sys/devices/pci0000:00/0000:03:00.0"))
+            .collect::<Vec<_>>();
+        let topology = earth_pt1_verified_topology_keys(&candidates);
+
+        assert!(topology.is_empty());
+        assert!(dvb_exclusive_group_ids(&topology).unwrap().is_empty());
     }
 
     #[test]

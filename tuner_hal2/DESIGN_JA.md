@@ -305,7 +305,7 @@ TS AUDIOのPTS-sparse event associationは`demux/src/av/audio_timestamp.rs`の�
 
 Filterの`stop()`は配送を停止するだけで、FMQ内容、Section/PES assembler、Section one-shot状態、audio timestamp anchor/有限残余を保持する。`start()`はその状態から再開し、`flush()`、close、source/generation変更、transport discontinuity、failureだけを破棄境界とする。再configure後の`startId`は既存`FilterRuntime`が単調な非0 IDと未配送1件だけを所有し、次の通常event直前に単独callback eventとして消費する。別owner、queue、worker、時計は設けない。
 
-物理frontendの`exclusiveGroupId`はbackend namespaceと物理経路identityから安定生成する。同一Linux DVB `(adapter, frontend_index)`のdelivery-system variantだけが同じgroupを共有し、別index/adapterとpx4 unitは別groupとする。広告したISDB-S symbol-rate range内の正値はtune入力として受理し、backend固有の同じ契約へ投影する。
+物理frontendの`exclusiveGroupId`はbackend namespaceとprobe済み物理排他group keyから生成し、公開DVB tuple自体を物理トポロジーの証拠にしない。現行`earth-pt1` profileはcanonical sysfs物理device identityごとにLinux v6.6 driverの独立4-stream構成が完全な場合だけ各driver streamへ別keyを与え、同じstreamのdelivery-system variantは同じkeyを共有する。shared-resource keyは複数tupleで共有し、topology不明候補は公開しない。広告したISDB-S symbol-rate range内の正値はtune入力として受理してpx4固定28,860,000またはLinux DVB `DTV_SYMBOL_RATE`へ投影し、`0`は範囲外判定を受けない未指定sentinelとする。
 
 ## 実装構造索引
 

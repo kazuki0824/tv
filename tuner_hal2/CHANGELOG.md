@@ -1,3 +1,10 @@
+# r50eo84_pr53_capability_topology_ssot_followup
+
+- ISDB-S `symbolRate`の正本をAOSP公開APIと実装へ同期し、`0`を未指定sentinel、正値を不変`CapabilitySnapshot`の広告範囲とbackend適用経路に閉じた。px4は28,860,000固定、Linux DVB / earth_pt1はprobe範囲と`DTV_SYMBOL_RATE`を同じ証跡とし、範囲外は副作用前に拒否する。
+- Linux DVB `exclusiveGroupId`を公開`(adapter, frontend_index)`から直接生成する経路を廃止した。canonical sysfs物理device identityとLinux v6.6 `earth-pt1`の完全な独立4-stream profileから検証済みgroup keyを作り、key単位でDVB namespace IDを割り当てる。topology不明・不完全候補は公開せず、同じkeyを共有するtupleは同group、検証済み独立streamだけ別groupとする。
+- `configureAvStreamType()`は現行実装どおりAndroid 14 AIDL定義済み`VideoStreamType::RESERVED`を有効なhintとして維持し、正本T-AOSP-65と診断文言を「定義済みRESERVED」と「enum未定義numeric値」に分離した。追加状態、owner、queue、worker、clock、resource manager、公開AIDL/VINTF変更はない。
+- Rust 1.81.0で変更Rust 4ファイルのrustfmt check、host workspace全163試験とClippy `-D warnings`、実sourceを参照するsymbol-rate境界2試験、topology割当型検査、tree-sitter構文解析、`git diff --check`を実施した。Android/Soong build、atest、VTS、CTS、実機確認は未実施。
+
 # r50eo84_pr53_aosp_vts_arib_review_contract_followup
 
 - AOSP VTS `testStartIdAfterReconfigure`へ合わせ、filterが一度startされた後の再configureごとに非0・非再利用の`startId`を予約し、次の通常event直前へ単独callback eventとして一度だけ配送する。flush、source/generation変更、failure/closeでは未配送IDを失効させる。

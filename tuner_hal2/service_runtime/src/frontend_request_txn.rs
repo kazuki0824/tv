@@ -187,3 +187,88 @@ impl TunerServiceRuntime {
         self.backend_scan_candidates_for_entry(entry, request, scan_mode)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::registry::{
+        FrontendCapabilitySnapshot, FrontendRuntimeId, FrontendScalarCapability,
+    };
+    use std::path::PathBuf;
+
+    fn isdbs_entry(
+        backend: FrontendBackendKind,
+        min_symbol_rate: i32,
+        max_symbol_rate: i32,
+    ) -> FrontendRegistryEntry {
+        FrontendRegistryEntry {
+            id: FrontendRuntimeId(1),
+            backend,
+            system: FrontendSystem::IsdbS,
+            device_path: PathBuf::from("/dev/frontend-test"),
+            capability: FrontendCapabilitySnapshot {
+                scalar: FrontendScalarCapability {
+                    min_frequency_hz: 1_049_480_000,
+                    max_frequency_hz: 2_053_000_000,
+                    min_symbol_rate,
+                    max_symbol_rate,
+                    acquire_range_hz: 0,
+                },
+                exclusive_group_id: match backend {
+                    FrontendBackendKind::Px4CharDevice => 0x1000_0001,
+                    FrontendBackendKind::LinuxDvb => 0x2000_0001,
+                },
+                isdbt_segment: None,
+            },
+            lnb_profile: None,
+            satellite_power_topology: SatellitePowerTopology::ExternalOrShared,
+        }
+    }
+
+    fn isdbs_request(symbol_rate: Option<u32>) -> FrontendTuneRequest {
+        FrontendTuneRequest {
+            system: FrontendSystem::IsdbS,
+            frequency: 1_049_480_000,
+            end_frequency: None,
+            stream_id: None,
+            stream_id_kind: None,
+            bandwidth_hz: None,
+            symbol_rate,
+            partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+        }
+    }
+
+    #[test]
+    fn px4_symbol_rate_acceptance_matches_fixed_advertised_capability() {
+        let entry = isdbs_entry(FrontendBackendKind::Px4CharDevice, 28_860_000, 28_860_000);
+        assert!(validate_frontend_request_against_entry(&entry, &isdbs_request(None)).is_ok());
+        assert!(
+            validate_frontend_request_against_entry(&entry, &isdbs_request(Some(28_860_000)))
+                .is_ok()
+        );
+        assert!(matches!(
+            validate_frontend_request_against_entry(&entry, &isdbs_request(Some(28_859_999))),
+            Err(HalError::InvalidArgument { .. })
+        ));
+    }
+
+    #[test]
+    fn dvb_symbol_rate_acceptance_matches_probe_derived_bounds() {
+        let entry = isdbs_entry(FrontendBackendKind::LinuxDvb, 20_000_000, 30_000_000);
+        for symbol_rate in [None, Some(20_000_000), Some(30_000_000)] {
+            assert!(
+                validate_frontend_request_against_entry(&entry, &isdbs_request(symbol_rate))
+                    .is_ok()
+            );
+        }
+        for symbol_rate in [19_999_999, 30_000_001] {
+            let error =
+                validate_frontend_request_against_entry(&entry, &isdbs_request(Some(symbol_rate)))
+                    .unwrap_err();
+            assert_eq!(
+                error.invalid_argument_kind(),
+                Some(HalInvalidArgumentKind::UnsupportedSymbolRate)
+            );
+        }
+    }
+}

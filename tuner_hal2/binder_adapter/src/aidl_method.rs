@@ -13,8 +13,8 @@ use maleicacid_tuner_hal2_domain_request::{
     DemuxSetFrontendDataSourceRequest, DvrConfigureKind, DvrConfigureRequest, DvrDataFormat,
     DvrFilterLinkRequest, DvrOpenKind, FilterAvStreamKind, FilterAvStreamTypeRequest,
     FilterDelayHintKind, FilterDelayHintRequest, FilterReleaseAvHandleRequest,
-    FilterSetDataSourceRequest, LnbSetSatellitePositionRequest, LnbToneRequest,
-    LnbVoltageRequest, OpenDvrRequest, RuntimeExecutableRequest,
+    FilterSetDataSourceRequest, LnbSetSatellitePositionRequest, LnbToneRequest, LnbVoltageRequest,
+    OpenDvrRequest, RuntimeExecutableRequest,
 };
 
 use crate::demux::DemuxCommand;
@@ -295,7 +295,7 @@ pub fn build_filter_av_stream_type_request(
                     | VideoStreamType::VVC
             ) {
                 return Err(invalid(
-                    "video stream type contains a reserved numeric value",
+                    "video stream type contains an unknown numeric enum value",
                 ));
             }
             (FilterAvStreamKind::Video, value.0)
@@ -325,7 +325,7 @@ pub fn build_filter_av_stream_type_request(
                     | AudioStreamType::AAC_HE_LATM
             ) {
                 return Err(invalid(
-                    "audio stream type contains a reserved numeric value",
+                    "audio stream type contains an unknown numeric enum value",
                 ));
             }
             (FilterAvStreamKind::Audio, value.0)
@@ -677,6 +677,39 @@ mod tests {
         })
         .unwrap();
         assert_eq!(request.value, 60_000);
+    }
+
+    #[test]
+    fn av_stream_type_accepts_defined_sentinels_and_codecs_only() {
+        for stream_type in [
+            VideoStreamType::UNDEFINED,
+            VideoStreamType::RESERVED,
+            VideoStreamType::MPEG1,
+        ] {
+            let request =
+                build_filter_av_stream_type_request(&AvStreamType::Video(stream_type)).unwrap();
+            assert_eq!(request.kind, FilterAvStreamKind::Video);
+            assert_eq!(request.stream_type, stream_type.0);
+        }
+        for stream_type in [
+            AudioStreamType::UNDEFINED,
+            AudioStreamType::MP3,
+            AudioStreamType::MPEG1,
+        ] {
+            let request =
+                build_filter_av_stream_type_request(&AvStreamType::Audio(stream_type)).unwrap();
+            assert_eq!(request.kind, FilterAvStreamKind::Audio);
+            assert_eq!(request.stream_type, stream_type.0);
+        }
+
+        assert!(matches!(
+            build_filter_av_stream_type_request(&AvStreamType::Video(VideoStreamType(i32::MAX))),
+            Err(HalError::InvalidArgument { .. })
+        ));
+        assert!(matches!(
+            build_filter_av_stream_type_request(&AvStreamType::Audio(AudioStreamType(i32::MAX))),
+            Err(HalError::InvalidArgument { .. })
+        ));
     }
 
     #[test]
