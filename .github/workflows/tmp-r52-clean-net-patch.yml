@@ -1,0 +1,44 @@
+name: tmp r52 clean net patch
+
+on:
+  push:
+    branches:
+      - tmp/r52-cleanup-control-20260831
+    paths:
+      - .github/workflows/tmp-r52-clean-net-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply last clean r52 delta onto current #55
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config core.quotePath false
+          git fetch origin 7939fe760f4ce2858779a5800ea2a30310248ddb 67da64e24100ede74e938dc53f58a759593e613b 81fa1e66c317b7b0258383b7d09bf67634ac092c
+          git checkout -B rebuilt-r52 81fa1e66c317b7b0258383b7d09bf67634ac092c
+          git diff --binary 7939fe760f4ce2858779a5800ea2a30310248ddb 67da64e24100ede74e938dc53f58a759593e613b > /tmp/r52.patch
+          set +e
+          git apply --3way --index /tmp/r52.patch
+          rc=$?
+          set -e
+          echo "apply_rc=$rc"
+          echo "--- conflicts ---"
+          git diff --name-only --diff-filter=U || true
+          echo "--- status ---"
+          git status --short
+          if [ "$rc" -ne 0 ]; then
+            exit "$rc"
+          fi
+          git commit -m "feat(r52): reapply CAS and HEVC delta onto current #55"
+          git push --force origin HEAD:refs/heads/tmp/rebuilt-r52-20260831
