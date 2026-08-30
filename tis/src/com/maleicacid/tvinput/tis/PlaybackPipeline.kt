@@ -77,6 +77,7 @@ class PlaybackPipeline(
     private var activeSelection: TunerController.AvStreamSelection? = null
     private var waitingAvailabilityArm: AvailabilityArm? = null
     private var nextAvailabilityArmSequence: Long = 1L
+    private var videoAvailabilityMode: VideoAvailabilityMode? = null
     private val ptsEpochCoordinator = PtsEpochCoordinator()
     private val outstandingAudioOutputs = linkedMapOf<Int, AudioOutput>()
     private var nextAudioBufferId = 1
@@ -87,6 +88,11 @@ class PlaybackPipeline(
     private var decoderBackpressureDrops: Int = 0
     private var subtitleMissingPtsSamples: Int = 0
     private val released = AtomicBoolean(false)
+
+    private enum class VideoAvailabilityMode {
+        MEDIA_SYNC_FINAL_OUTPUT_EXACT,
+        MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT,
+    }
 
     enum class PlaybackUnavailableReason {
         SURFACE_DETACHED, SURFACE_NOT_SET, VIDEO_FILTER_NOT_STARTED, AUDIO_FILTER_NOT_STARTED,
@@ -161,7 +167,11 @@ class PlaybackPipeline(
         val isAudio: Boolean,
     )
 
-    private data class AvailabilityArm(val generation: Long, val armSequence: Long)
+    private data class AvailabilityArm(
+        val generation: Long,
+        val armSequence: Long,
+        val armedAtNanoTime: Long,
+    )
 
     private data class AudioOutput(
         val codec: MediaCodec,
@@ -557,22 +567,48 @@ class PlaybackPipeline(
     }
 
     private fun armVideoAvailability(sync: MediaSync, generation: Long) {
-        val arm = AvailabilityArm(generation, allocateAvailabilityArmSequence())
+        val arm = AvailabilityArm(
+            generation = generation,
+            armSequence = allocateAvailabilityArmSequence(),
+            armedAtNanoTime = System.nanoTime(),
+        )
         waitingAvailabilityArm = arm
         videoAvailableNotified.set(false)
-        sync.setOnFirstVideoFrameQueuedToOutputListener(
-            arm.armSequence,
-            MediaSync.OnFirstVideoFrameQueuedToOutputListener { callbackSync, armSequence ->
-                enqueuePlaybackAction { commitVideoAvailability(callbackSync, generation, armSequence) }
-            },
-            codecCallbackHandler,
+
+        val exactArmed = MediaSyncFirstOutputBridge.isAvailable() && MediaSyncFirstOutputBridge.arm(
+            sync = sync,
+            armSequence = arm.armSequence,
+            handler = codecCallbackHandler,
+        ) { callbackSync, armSequence ->
+            enqueuePlaybackAction { commitVideoAvailability(callbackSync, generation, armSequence) }
+        }
+        videoAvailabilityMode = if (exactArmed) {
+            VideoAvailabilityMode.MEDIA_SYNC_FINAL_OUTPUT_EXACT
+        } else {
+            VideoAvailabilityMode.MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT
+        }
+        Log.i(
+            LogTags.TIS,
+            "video availability mode=$videoAvailabilityMode inputId=$inputId generation=$generation armSequence=${arm.armSequence}",
         )
     }
 
     private fun commitVideoAvailability(sync: MediaSync, generation: Long, armSequence: Long) {
+        if (videoAvailabilityMode != VideoAvailabilityMode.MEDIA_SYNC_FINAL_OUTPUT_EXACT) return
         val arm = waitingAvailabilityArm ?: return
         if (sync !== mediaSync || generation != playbackGeneration || arm.generation != generation ||
             arm.armSequence != armSequence || mediaSyncSurfaceFailed || surface?.isValid != true) {
+            return
+        }
+        waitingAvailabilityArm = null
+        if (videoAvailableNotified.compareAndSet(false, true)) onVideoAvailable()
+    }
+
+    private fun commitCompatibilityVideoAvailability(generation: Long, frameNanoTime: Long) {
+        if (videoAvailabilityMode != VideoAvailabilityMode.MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT) return
+        val arm = waitingAvailabilityArm ?: return
+        if (generation != playbackGeneration || arm.generation != generation ||
+            frameNanoTime < arm.armedAtNanoTime || mediaSyncSurfaceFailed || surface?.isValid != true) {
             return
         }
         waitingAvailabilityArm = null
@@ -864,6 +900,7 @@ class PlaybackPipeline(
             }, codecCallbackHandler)
             try {
                 decoder.configure(format, decoderOutputSurface(), null, MediaCodec.CONFIGURE_FLAG_USE_BLOCK_MODEL)
+                onDecoderPrepared(decoder)
                 decoder.start()
                 onDecoderConfigured(format)
                 return decoder
@@ -896,6 +933,7 @@ class PlaybackPipeline(
         protected abstract fun codecMime(): String
         protected abstract fun formatFromBufferedHeader(bytes: ByteArray): MediaFormat?
         protected abstract fun decoderOutputSurface(): Surface?
+        protected open fun onDecoderPrepared(codec: MediaCodec) = Unit
         protected open fun onDecoderConfigured(format: MediaFormat) = Unit
         protected open fun onOutputFormatChanged(format: MediaFormat) = Unit
         protected abstract fun onOutput(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo)
@@ -931,6 +969,21 @@ class PlaybackPipeline(
         override val budget = PlaybackBudget.forVideo(kind)
         override fun codecMime(): String = kind.mime
         override fun decoderOutputSurface(): Surface = outputSurface
+
+        override fun onDecoderPrepared(codec: MediaCodec) {
+            codec.setOnFrameRenderedListener(
+                MediaCodec.OnFrameRenderedListener { callbackCodec, _, nanoTime ->
+                    enqueuePlaybackAction {
+                        if (generation != playbackGeneration || this@VideoDecoderPipeline.codec !== callbackCodec) {
+                            return@enqueuePlaybackAction
+                        }
+                        commitCompatibilityVideoAvailability(generation, nanoTime)
+                    }
+                },
+                codecCallbackHandler,
+            )
+        }
+
         override fun formatFromBufferedHeader(bytes: ByteArray): MediaFormat? = when (kind) {
                 VideoCodecKind.MPEG2 -> EsHeaderParser.mpeg2VideoFormat(bytes)
                 VideoCodecKind.AVC -> EsHeaderParser.avcVideoFormat(bytes)
@@ -1496,6 +1549,7 @@ class PlaybackPipeline(
         audioTrack = null
         mediaSyncStarted = false
         mediaSyncSurfaceFailed = false
+        videoAvailabilityMode = null
         videoInputQueued = false
         audioInputQueued = false
         videoPathExpected = false
