@@ -3437,6 +3437,40 @@ mod tests {
     }
 
     #[test]
+    fn audio_media_event_never_publishes_a_confirmed_false_cold_start_candidate() {
+        let filter_id = 43;
+        let pid = 0x0101;
+        let mut demux = started_audio_filter_runtime(filter_id, pid);
+        let false_first_frame = adts_aac_lc_frame_48khz(0);
+        let false_continuation_frame = adts_aac_lc_frame_48khz(200);
+        let real_first_frame = adts_aac_lc_frame_48khz(8);
+        let real_second_frame = adts_aac_lc_frame_48khz(4);
+        let split_at = 12;
+        let mut first_payload = false_first_frame;
+        first_payload.extend_from_slice(&false_continuation_frame[..7]);
+        first_payload.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]);
+        first_payload.extend_from_slice(&real_first_frame[..split_at]);
+
+        let deferred = demux.push_ts_packet_from_origin(
+            &pes_start_packet(
+                pid as u16,
+                0,
+                &bounded_audio_pes(&first_payload, Some(90_000)),
+            ),
+            TsInputOrigin::frontend(1),
+        );
+        assert!(av_descriptors(&deferred, filter_id).is_empty());
+
+        let mut continuation = real_first_frame[split_at..].to_vec();
+        continuation.extend_from_slice(&real_second_frame);
+        let rejected = demux.push_ts_packet_from_origin(
+            &pes_start_packet(pid as u16, 1, &bounded_audio_pes(&continuation, None)),
+            TsInputOrigin::frontend(1),
+        );
+        assert!(av_descriptors(&rejected, filter_id).is_empty());
+    }
+
+    #[test]
     fn audio_timestamp_association_is_fenced_by_flush_and_transport_discontinuity() {
         let filter_id = 39;
         let pid = 0x0101;

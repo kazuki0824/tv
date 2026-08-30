@@ -1,3 +1,10 @@
+# r50eo84_pr53_audio_cold_start_candidate_uniqueness_followup
+
+- `data_alignment_indicator=false`のaudio cold startで、1件の`ConfirmedBoundary`があっても、その後方に独立した`Pending`候補が残る間はexplicit PTS anchorと`MediaEvent`をcommitしないよう候補一意性判定を修正した。確定検証に使った直後の同一frame列headerは競合候補から除外し、既存の正当なframe列は維持する。
+- 偽の2-header列が`ConfirmedBoundary`、実際のfirst AUが次PESへ跨ぐ`Pending`となる入力をunit testと公開demux AV配送試験へ追加した。初回PESで偽frameへPTSを付与せず、後続でも複数候補が残る場合は既存契約どおりfail-closedとする。
+- H.222.0のfirst-AU PTS対応、ARIB TR-B15 4.6-E1 Fascicle 3 4.2.2のPES/audio-frame non-synchronization、AOSP `MediaEvent`の同一AU metadata対応を、既存`FilterRuntime`従属の有限候補判定だけで満たす。新規owner、queue、worker、clock、generation、payload複製は追加していない。設計正本は既に「一意候補だけcommitし、複数候補はfail-closed」と定めているため変更していない。公開AIDL/VINTF、capability値、future_work、`RELEASE_VERSION`も変更していない。
+- Rust 1.81.0で変更audio moduleのrustfmt checkとClippy `-D warnings`、製品demux sourceの`cargo check --all-targets`、audio module 18 unit tests、公開demuxのaudio `MediaEvent` 5試験とlifecycle fence 1試験を実施した。Android/Soong build、atest、VTS、実機・実放送波確認は未実施。
+
 # r50eo84_pr53_audio_au_aligned_media_event_followup
 
 - AOSP `MediaEvent`の`pts` / `dataLength`を同じaudio frameへ対応させるため、TS AUDIOのPES payload全体を1イベントとして配送する経路を、構造検証済みの完成AUごとに正確な長さで配送する経路へ変更した。PES途中から始まるcontinuationは既存frameへ結合し、そのframeのPTSで完成後に配送する。後方で開始するAUは別イベントとし、元PESのexplicit PTSまたはactual sample rate / exact sample countから確定したPTSだけを付与する。

@@ -488,7 +488,7 @@ impl AudioTimestampAssociation {
 enum ColdStartCandidateValidation {
     Invalid,
     Pending,
-    ConfirmedBoundary,
+    ConfirmedBoundary { next_offset: usize },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -506,21 +506,30 @@ fn cold_start_decision(bytes: &[u8], first_payload_len: usize) -> ColdStartDecis
         .min(MAX_AUDIO_FRAME_BYTES)
         .min(bytes.len());
     let mut confirmed = None;
-    let mut pending = false;
+    let mut saw_pending = false;
+    let mut competing_pending = false;
     for offset in 0..search_len {
         match cold_start_candidate_validation(bytes, offset) {
-            ColdStartCandidateValidation::ConfirmedBoundary => {
-                if confirmed.replace(offset).is_some() {
+            ColdStartCandidateValidation::ConfirmedBoundary { next_offset } => {
+                if confirmed.replace((offset, next_offset)).is_some() {
                     return ColdStartDecision::Invalid;
                 }
             }
-            ColdStartCandidateValidation::Pending => pending = true,
+            ColdStartCandidateValidation::Pending => {
+                saw_pending = true;
+                if let Some((confirmed_offset, next_offset)) = confirmed {
+                    // 確定検証に使った直後headerは同一frame列であり、別候補ではない。
+                    // その後方で開始する未確定候補だけは競合するため確定を保留する。
+                    competing_pending |= offset > confirmed_offset && offset != next_offset;
+                }
+            }
             ColdStartCandidateValidation::Invalid => {}
         }
     }
     match confirmed {
-        Some(offset) => ColdStartDecision::Confirmed(offset),
-        None if pending => ColdStartDecision::Pending,
+        Some(_) if competing_pending => ColdStartDecision::Pending,
+        Some((offset, _)) => ColdStartDecision::Confirmed(offset),
+        None if saw_pending => ColdStartDecision::Pending,
         None => ColdStartDecision::Invalid,
     }
 }
@@ -556,7 +565,7 @@ fn cold_start_candidate_validation(bytes: &[u8], offset: usize) -> ColdStartCand
         AudioFrameHeaderParse::Complete(next_header)
             if next_header.signature == header.signature =>
         {
-            ColdStartCandidateValidation::ConfirmedBoundary
+            ColdStartCandidateValidation::ConfirmedBoundary { next_offset }
         }
         AudioFrameHeaderParse::NeedMore(required_len) => {
             if next_candidate.first() == Some(&0xff)
@@ -947,6 +956,38 @@ mod tests {
         assert_eq!(pts(&confirmed), vec![90_000, 91_920]);
         assert_eq!(confirmed[0].payload, first_frame);
         assert_eq!(confirmed[1].payload, second_frame);
+    }
+
+    #[test]
+    fn cold_start_never_commits_a_confirmed_candidate_while_another_is_pending() {
+        let mut association = AudioTimestampAssociation::default();
+        let false_first_frame = adts_frame(3, 0);
+        let false_continuation_frame = adts_frame(3, 200);
+        let real_first_frame = adts_frame(3, 8);
+        let real_second_frame = adts_frame(3, 4);
+        let split_at = 12;
+        let mut first_payload = false_first_frame;
+        first_payload.extend_from_slice(&false_continuation_frame[..7]);
+        first_payload.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]);
+        first_payload.extend_from_slice(&real_first_frame[..split_at]);
+
+        let deferred = association
+            .extract(
+                packet_with_alignment(first_payload, Some(90_000), false),
+                ORIGIN,
+            )
+            .unwrap();
+        assert!(deferred.is_empty());
+        assert!(association.anchor.is_none());
+        assert!(association.cold_start.is_some());
+
+        let mut continuation = real_first_frame[split_at..].to_vec();
+        continuation.extend_from_slice(&real_second_frame);
+        assert_eq!(
+            association.extract(packet_with_alignment(continuation, None, false), ORIGIN),
+            Err(AudioTimestampAssociationFailure::UnsupportedOrMalformedFrames)
+        );
+        assert_eq!(association, AudioTimestampAssociation::default());
     }
 
     #[test]
