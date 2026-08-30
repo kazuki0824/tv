@@ -1094,7 +1094,7 @@ LNB固有の安全状態復帰は後始末対象として`ObjectCloseTxn`へ型�
 
 ## 復号鍵台帳
 
-`IDescrambler.setKeyToken()` が受け取る値は復号鍵そのものではなく、不透明な参照値である。Tuner HAL はこの参照値で復号鍵台帳を引き、内部の `DescramblerKeySlot` に変換する。Binder 境界を越える バイト列に MULTI2 の system key、CBC 初期値、偶数鍵、奇数鍵を入れてはならない。r52のCAS/Tuner内部鍵資源の完全なmaterial構成、供給・更新・revoke境界は`../future_work/r52/b25_key_slot_registry_contract.md`を正とし、本書では公開AIDL境界とTuner側のtoken解決意味だけを定義する。
+`IDescrambler.setKeyToken()` が受け取る値は復号鍵そのものではなく、不透明な参照値である。Tuner HAL はこの参照値で復号鍵台帳を引き、内部の `DescramblerKeySlot` に変換する。Binder 境界を越える バイト列に MULTI2 の system key、CBC 初期値、偶数鍵、奇数鍵を入れてはならない。CAS/Tuner内部鍵資源のmaterial構成、供給・atomic更新・revoke境界は`../cas_hal/DESIGN_JA.md`を正とし、本書では公開AIDL境界とTuner側のtoken解決意味だけを定義する。
 
 復号鍵台帳の key slot 状態は次で固定する。
 
@@ -1129,7 +1129,7 @@ STD-B25デコード能力とSTD-B25 Part 1 §4.9への適合宣言を分離す�
 
 製品profileで公開demuxのいずれにもSTD-B25デコード能力を有効にしない構成では`openDescrambler()`を`UNAVAILABLE`とし、VTS製品設定へdescrambling flowを含めない。一部のdemux経路だけで能力を有効にする構成では、未結合objectの生成後、対象外demuxへの`setDemuxSource()`を`UNAVAILABLE`とする。能力を有効にする場合も、実鍵組数または実PID数を、本製品全体として恒久的に適合対象外であるPart 1 §4.9への適合、Part 1 CAS-R適合、またはSTD-B25全面準拠の宣言へ読み替えない。鍵素材はslot数だけを台帳化し、公開AIDLまたは診断へ出さない。
 
-VTS/lab config の descrambling flow は、`VTS profile / capability 対応契約`と`開発規則.md`のrelease到達点を正とする。r51ではCAS HALがplaceholderで本番の実CAS tokenを成立させないため、VTS product profileで本番descrambling成功を表明するflowを宣言しない。r52の正式リリース到達点でCAS HAL / MediaCas / vendor key bridgeが実tokenを成立させ、対象demuxの`StdB25DecodeCapability`を有効化し、使用するVTS artifact / variant / input / CAS system / filter / PID / queue / memory等の`VtsEnvironmentProfile`入力と必要資源を起動前に確定・予約できるprofileでは、AOSP VTSのdescrambling flowを到達可能にする。descrambler能力を宣言したprofileからflowを隠して検査を回避してはならない。Tuner HAL は PMT/CAT/SDT/ECM/EMM 等の section payload delivery、`IDescrambler`、`setKeyToken()`、`addPid()` / `removePid()`、token lookup境界、未接続・bad token・expired token診断を契約対象とする。本番経路スクランブル解除成功のrelease scopeと、CA情報 / service metadataの意味解析、ECM/EMM filter開始方針、MediaCas/CAS bridge呼出し、実token取得、Tuner descramblerへの接続判断、未接続診断の上位制御は`開発規則.md`を正とする。Tuner HALのpacket単位デスクランブル中核は単体テスト内で既知鍵を登録して確認してよい。
+VTS/lab config の descrambling flow は、`VTS profile / capability 対応契約`と`開発規則.md`のrelease到達点を正とする。r51ではCAS production tokenを成立させない非対応構成だったため、VTS product profileで本番descrambling成功を表明するflowを宣言しない。r52ではCAS HAL / MediaCas / vendor key bridgeが実tokenを成立させ、対象demuxの`StdB25DecodeCapability`を有効化し、使用するVTS artifact / variant / input / CAS system / filter / PID / queue / memory等の`VtsEnvironmentProfile`入力と必要資源を起動前に確定・予約できるprofileで、AOSP VTSのdescrambling flowを到達可能にする。descrambler能力を宣言したprofileからflowを隠して検査を回避してはならない。Tuner HAL は PMT/CAT/SDT/ECM/EMM 等の section payload delivery、`IDescrambler`、`setKeyToken()`、`addPid()` / `removePid()`、token lookup境界、未接続・bad token・expired token診断を契約対象とする。本番経路スクランブル解除成功のrelease scopeと、CA情報 / service metadataの意味解析、ECM/EMM filter開始方針、MediaCas/CAS bridge呼出し、実token取得、Tuner descramblerへの接続判断、未接続診断の上位制御は`開発規則.md`を正とする。Tuner HALのpacket単位デスクランブル中核は単体テスト内で既知鍵を登録して確認してよい。
 
 
 ## IDescrambler optionalSourceFilter 境界
@@ -1176,9 +1176,9 @@ DVB backend は frontend index と同じ demux index / dvr index を使う。`ad
 
 本番経路トークンの用語、リリース段階、TIS から `setKeyToken()` へ渡してよい値のスコープは `開発規則.md` を正とする。本節では、Tuner HAL が受け取ったトークンの検証、AIDL戻り値、診断、副作用だけを固定する。CAS bridgeからのtoken登録は標準MediaCas session ID bytesと内部key resourceの対応を成立させる論理契約に従う。具体helper名、内部登録API、debug出力方法は本契約で規範化しない。product defaultの`IDescrambler.setKeyToken()`に伴うkey table mutationのowner / entryは`../tuner_hal2/DESIGN_JA.md`の`DescramblerKeyTxn` / descrambler key table規範実装アンカーを正とする。
 
-`IDescrambler.setKeyToken()` に到達する non-VOID トークンは、標準MediaCas経路では `MediaCas.Session.getSessionId()` と同一byte sequenceをTuner key tokenとして用い、CAS / vendor key bridgeがそのbytesと内部`DescramblerKeySlot`の対応をHAL key token tableへ登録したものを解決対象とする。TIS向けに別形式のvendor-private tokenを設けない。入力形式はTuner SDK `Descrambler.isValidKeyToken()` に合わせ、1 byte以上16 byte以下を有効なtoken形式とする。ただしAndroid 14系の `Tuner.VOID_KEYTOKEN` は1 byteトークン `[0x00]` としてcurrent key removal用に予約する。空トークン `[]` はVOIDトークンではなく、常に `INVALID_ARGUMENT` と内部診断 `BAD_TOKEN` に落とす。16 byteを超えるnon-VOIDトークンはregistry lookup前に `INVALID_ARGUMENT` / `BAD_TOKEN` とする。
+`IDescrambler.setKeyToken()` に到達する non-VOID トークンは、標準MediaCas経路では `MediaCas.Session.getSessionId()` と同一byte sequenceをTuner key tokenとして用い、CAS / vendor key bridgeがそのbytesと内部`DescramblerKeySlot`の対応をHAL key token tableへ登録したものを解決対象とする。TIS向けに別形式のvendor-private tokenを設けない。 同一`IMediaCasService/default`配下の全`ICas` plugin / CA systemはこのbyte sequenceについて1個のservice-global namespaceを共有し、Tuner key registryの`Reserve`成功を一意性の確定点とする。既存またはretired tokenとの衝突はCAS側が別のopaque session ID candidateを再生成する理由であり、CA system IDやplugin identityをtoken bytesへ追加する理由にしない。入力形式はTuner SDK `Descrambler.isValidKeyToken()` に合わせ、1 byte以上16 byte以下を有効なtoken形式とする。ただしAndroid 14系の `Tuner.VOID_KEYTOKEN` は1 byteトークン `[0x00]` としてcurrent key removal用に予約する。空トークン `[]` はVOIDトークンではなく、常に `INVALID_ARGUMENT` と内部診断 `BAD_TOKEN` に落とす。16 byteを超えるnon-VOIDトークンはregistry lookup前に `INVALID_ARGUMENT` / `BAD_TOKEN` とする。
 
-`maleicacid-cas-desc-token-*`、`maleicacid-placeholder-desc-token*`、既存 TIS 側の `maleicacid-kari-token-*` は、設計文書上の診断名またはログ上のラベルであり、Tuner SDK API 経由で渡す実 トークン ではない。単体テスト、fake CAS、診断注入で同等のケースを表現する場合も、`setKeyToken()` に渡すtest用non-VOID byte arrayは1 byte以上16 byte以下（`[0x00]`を除く）のtest-only tokenをHAL key token tableへ事前登録したものとし、長い診断名はテストケース名、lookup tableの説明、診断dumpの表示名に限定する。
+`maleicacid-cas-desc-token-*`、r51以前の長い境界試験token名、既存 TIS 側の `maleicacid-kari-token-*` は、設計文書上のlegacy診断名またはログ上のラベルであり、Tuner SDK API 経由で渡す実 トークン ではない。単体テスト、fake CAS、診断注入で同等のケースを表現する場合も、`setKeyToken()` に渡すtest用non-VOID byte arrayは1 byte以上16 byte以下（`[0x00]`を除く）のtest-only tokenをHAL key token tableへ事前登録したものとし、長い診断名はテストケース名、lookup tableの説明、診断dumpの表示名に限定する。
 
 これらの診断 トークン origin を受け取った場合は、復号成功ではなく `CAS_BRIDGE_UNCONNECTED`、`BAD_TOKEN`、`EXPIRED_KEY_SLOT` など該当する診断へ落とす。
 
@@ -1223,7 +1223,7 @@ Tuner HAL の descrambler は、key token で与えられた鍵を用いて、18
 ECM / EMM、CAS権利判定、card I/O、CW取得は Tuner HAL の責務ではない。CAS HAL または CAS bridge が責務を持つ。Tuner HAL は、取得済み key token を使う payload 復号中核だけを担当する。
 
 
-ECM / EMM 処理、カード I/O、CAS 権利判定、CW 取得、不透明 トークン 発行、B25 system key / CBC 初期値 / data key を CAS 側から安全に供給する経路は CAS HAL または CAS bridge の責務であり、r52内部鍵資源の詳細は`../future_work/r52/b25_key_slot_registry_contract.md`を正とする。CAS / TIS / Tuner HAL のリリース段階ごとの統合スコープは `開発規則.md` を正とする。本節が規定するのはTuner HALのpacket単位デスクランブル中核と診断境界であり、libaribb25相当のTS→TS B25処理系全体の完成条件または作業完了判定を定義しない。
+ECM / EMM 処理、カード I/O、CAS 権利判定、CW 取得、MediaCas session IDと内部鍵資源の登録、B25 system key / CBC 初期値 / data key を安全に供給する経路は CAS HAL または CAS bridge の責務であり、内部鍵資源の詳細は`../cas_hal/DESIGN_JA.md`を正とする。CAS / TIS / Tuner HAL のリリース段階ごとの統合スコープは `開発規則.md` を正とする。本節が規定するのはTuner HALのpacket単位デスクランブル中核と診断境界であり、libaribb25相当のTS→TS B25処理系全体の完成条件または作業完了判定を定義しない。
 
 ## LNB profile 判定表
 

@@ -1,5 +1,6 @@
 mod boot;
 mod callback_registry;
+mod key_provisioning_ops;
 mod capability_snapshot;
 mod capability_profile;
 mod cleanup_execution;
