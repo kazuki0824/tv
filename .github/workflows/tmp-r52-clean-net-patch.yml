@@ -11,46 +11,101 @@ permissions:
   contents: write
 
 jobs:
-  probe:
+  finalize:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Apply complete current r52 delta and print conflicts
+      - name: Rebuild current r52 delta on current #55 without touching parent branches
         shell: bash
         run: |
           set -euo pipefail
+          BASE=81fa1e66c317b7b0258383b7d09bf67634ac092c
+          OLD_BASE=7939fe760f4ce2858779a5800ea2a30310248ddb
+          R52=6de8935c80bedd2e8edf8f35fa55dd43f4a947c4
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config core.quotePath false
-          git fetch origin 7939fe760f4ce2858779a5800ea2a30310248ddb 6de8935c80bedd2e8edf8f35fa55dd43f4a947c4 81fa1e66c317b7b0258383b7d09bf67634ac092c
-          git checkout -B rebuilt-r52 81fa1e66c317b7b0258383b7d09bf67634ac092c
-          git diff --binary 7939fe760f4ce2858779a5800ea2a30310248ddb 6de8935c80bedd2e8edf8f35fa55dd43f4a947c4 > /tmp/r52.patch
+          git fetch origin "$BASE" "$OLD_BASE" "$R52"
+          git checkout -B rebuilt-r52 "$BASE"
+          git diff --binary "$OLD_BASE" "$R52" > /tmp/r52.patch
           set +e
           git apply --3way --index /tmp/r52.patch
           rc=$?
           set -e
-          echo "apply_rc=$rc"
-          echo "--- conflicts ---"
-          git diff --name-only --diff-filter=U || true
+          test "$rc" -ne 0
+          test "$(git diff --name-only --diff-filter=U | sort)" = "$(printf '%s\n' '.github/workflows/tis-host-ci.yml' 'tis/CHANGELOG.md' 'tuner_hal2/CHANGELOG.md' 'tuner_hal2/DESIGN_JA.md' | sort)"
+
           python3 - <<'PY'
+          import subprocess
           from pathlib import Path
-          for name in [
-              '.github/workflows/tis-host-ci.yml',
-              'tis/CHANGELOG.md',
-              'tuner_hal2/CHANGELOG.md',
-              'tuner_hal2/DESIGN_JA.md',
-              'tuner_hal2/INTEGRATION.md',
-          ]:
-              p=Path(name)
-              if not p.exists(): continue
-              lines=p.read_text(errors='replace').splitlines()
-              marks=[i for i,s in enumerate(lines) if s.startswith('<<<<<<<')]
-              if not marks: continue
-              print(f'===== {name} =====')
-              for n,i in enumerate(marks,1):
-                  lo=max(0,i-6); hi=min(len(lines),i+70)
-                  print(f'--- hunk {n} lines {lo+1}-{hi} ---')
-                  for j in range(lo,hi): print(f'{j+1:05d}: {lines[j]}')
+
+          BASE='81fa1e66c317b7b0258383b7d09bf67634ac092c'
+          R52='6de8935c80bedd2e8edf8f35fa55dd43f4a947c4'
+          def show(ref,path):
+              return subprocess.check_output(['git','show',f'{ref}:{path}'], text=True)
+
+          # Preserve all current-parent TIS history, prepending only the two r52-owned entries.
+          r52_tis=show(R52,'tis/CHANGELOG.md')
+          marker='# r50ef_review_followup_4\n'
+          if marker not in r52_tis:
+              raise SystemExit('TIS r52 changelog boundary missing')
+          r52_prefix=r52_tis.split(marker,1)[0].rstrip()
+          base_tis=show(BASE,'tis/CHANGELOG.md').lstrip()
+          Path('tis/CHANGELOG.md').write_text(r52_prefix+'\n\n'+base_tis)
+
+          # Preserve all current-parent tuner_hal2 history, prepending only r52 key-provisioning entries.
+          r52_th=show(R52,'tuner_hal2/CHANGELOG.md')
+          marker='# r50eo80_customer26_followup_design_boundary_impl_recheck_source_static_unverified_v41\n'
+          if marker not in r52_th:
+              raise SystemExit('tuner_hal2 r52 changelog boundary missing')
+          r52_prefix=r52_th.split(marker,1)[0].rstrip()
+          base_th=show(BASE,'tuner_hal2/CHANGELOG.md').lstrip()
+          Path('tuner_hal2/CHANGELOG.md').write_text(r52_prefix+'\n\n'+base_th)
+
+          # DESIGN: current parent owns the current FrontendWorkerTerminationUseCase anchor.
+          # r52 owns the Generic key provisioning section. There must be exactly two conflicts.
+          p=Path('tuner_hal2/DESIGN_JA.md')
+          s=p.read_text()
+          if s.count('<<<<<<< ours') != 2:
+              raise SystemExit(f'unexpected DESIGN conflict count: {s.count("<<<<<<< ours")}')
+          for choice in ('ours','theirs'):
+              a=s.index('<<<<<<< ours\n')
+              b=s.index('=======\n',a)
+              c=s.index('>>>>>>> theirs\n',b)
+              d=c+len('>>>>>>> theirs\n')
+              ours=s[a+len('<<<<<<< ours\n'):b]
+              theirs=s[b+len('=======\n'):c]
+              s=s[:a]+(ours if choice=='ours' else theirs)+s[d:]
+          if any(x in s for x in ('<<<<<<<','=======','>>>>>>>')):
+              raise SystemExit('DESIGN conflict markers remain')
+          if 'service_runtime/src/boot/frontend_tune_scan_context.rs' in s:
+              raise SystemExit('obsolete frontend_tune_scan_context anchor resurrected')
+          if '### Generic key provisioning 境界' not in s or 'aidl_service/src/key_provisioning_connection.rs' not in s:
+              raise SystemExit('current r52 key provisioning contract missing')
+          p.write_text(s)
           PY
-          exit "$rc"
+
+          # Workflow files are restored separately through the GitHub API; do not push workflow changes with GITHUB_TOKEN.
+          git checkout "$BASE" -- .github/workflows/tis-host-ci.yml .github/workflows/tuner-hal2-host-rust-ci.yml
+          git rm -f --ignore-unmatch .github/workflows/cas-host-ci.yml
+
+          git add -A
+          test -z "$(git diff --name-only --diff-filter=U)"
+          test -z "$(git diff --cached --name-only | grep '^.github/workflows/' || true)"
+          ! git grep -n '^<<<<<<<\|^=======\|^>>>>>>>' -- ':!*.patch'
+          grep -Fq '# r52_review_pid_link_state' tis/CHANGELOG.md
+          grep -Fq '# r52-cas-design' tis/CHANGELOG.md
+          grep -Fq '# 未リリース' tis/CHANGELOG.md
+          grep -Fq '# r52_key_provisioning_deadline_setup' tuner_hal2/CHANGELOG.md
+          grep -Fq '# r52_key_provisioning_implementation' tuner_hal2/CHANGELOG.md
+          grep -Fq '### Generic key provisioning 境界' tuner_hal2/DESIGN_JA.md
+          test -f tuner_hal2/aidl_service/src/key_provisioning_connection.rs
+          git diff --cached --check
+          echo '--- rebuilt non-workflow delta ---'
+          git diff --cached --name-status "$BASE"
+          git commit -m 'feat(r52): rebuild CAS and HEVC delta on current #55'
+          test "$(git rev-parse HEAD^)" = "$BASE"
+          git push --force origin HEAD:refs/heads/tmp/rebuilt-r52-20260831
