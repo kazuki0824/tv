@@ -18,12 +18,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Apply last clean r52 delta onto current #55
+      - name: Apply clean r52 delta and print conflict hunks
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config core.quotePath false
           git fetch origin 7939fe760f4ce2858779a5800ea2a30310248ddb 67da64e24100ede74e938dc53f58a759593e613b 81fa1e66c317b7b0258383b7d09bf67634ac092c
           git checkout -B rebuilt-r52 81fa1e66c317b7b0258383b7d09bf67634ac092c
@@ -33,12 +31,27 @@ jobs:
           rc=$?
           set -e
           echo "apply_rc=$rc"
-          echo "--- conflicts ---"
-          git diff --name-only --diff-filter=U || true
-          echo "--- status ---"
-          git status --short
-          if [ "$rc" -ne 0 ]; then
-            exit "$rc"
-          fi
-          git commit -m "feat(r52): reapply CAS and HEVC delta onto current #55"
-          git push --force origin HEAD:refs/heads/tmp/rebuilt-r52-20260831
+          python3 - <<'PY'
+          from pathlib import Path
+          files = [
+              '.github/workflows/tis-host-ci.yml',
+              'tis/CHANGELOG.md',
+              'tuner_hal2/CHANGELOG.md',
+              'tuner_hal2/DESIGN_JA.md',
+          ]
+          for name in files:
+              p=Path(name)
+              if not p.exists():
+                  continue
+              lines=p.read_text(errors='replace').splitlines()
+              marks=[i for i,s in enumerate(lines) if s.startswith('<<<<<<<')]
+              if not marks:
+                  continue
+              print(f'===== {name} =====')
+              for n,i in enumerate(marks,1):
+                  lo=max(0,i-8); hi=min(len(lines),i+80)
+                  print(f'--- hunk {n} lines {lo+1}-{hi} ---')
+                  for j in range(lo,hi):
+                      print(f'{j+1:05d}: {lines[j]}')
+          PY
+          exit "$rc"
