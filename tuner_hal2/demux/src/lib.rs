@@ -3394,6 +3394,37 @@ mod tests {
     }
 
     #[test]
+    fn audio_media_event_accepts_three_confirmed_frames_from_one_cold_start_chain() {
+        let filter_id = 45;
+        let pid = 0x0101;
+        let mut demux = started_audio_filter_runtime(filter_id, pid);
+        let frame = adts_aac_lc_frame_48khz(4);
+        let mut payload = frame.clone();
+        payload.extend_from_slice(&frame);
+        payload.extend_from_slice(&frame);
+
+        let events = demux.push_ts_packet_from_origin(
+            &pes_start_packet(
+                pid as u16,
+                0,
+                &bounded_audio_pes(&payload, Some(90_000)),
+            ),
+            TsInputOrigin::frontend(1),
+        );
+        let descriptors = av_descriptors(&events, filter_id);
+        assert_eq!(descriptors.len(), 3);
+        assert_eq!(descriptors[0].data_length, frame.len());
+        assert_eq!(descriptors[1].data_length, frame.len());
+        assert_eq!(descriptors[2].data_length, frame.len());
+        assert_eq!(descriptors[0].metadata.pts_90khz, Some(90_000));
+        assert_eq!(descriptors[1].metadata.pts_90khz, Some(91_920));
+        assert_eq!(descriptors[2].metadata.pts_90khz, Some(93_840));
+        assert!(descriptors[0].metadata.is_pts_present);
+        assert!(!descriptors[1].metadata.is_pts_present);
+        assert!(!descriptors[2].metadata.is_pts_present);
+    }
+
+    #[test]
     fn audio_media_event_defers_ambiguous_cold_start_and_emits_exact_au_ranges() {
         let filter_id = 42;
         let pid = 0x0101;

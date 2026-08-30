@@ -510,11 +510,13 @@ fn cold_start_decision(bytes: &[u8], first_payload_len: usize) -> ColdStartDecis
     let mut multiple_pending = false;
     for offset in 0..search_len {
         match cold_start_candidate_validation(bytes, offset) {
-            ColdStartCandidateValidation::ConfirmedBoundary { next_offset } => {
-                if confirmed.replace((offset, next_offset)).is_some() {
-                    return ColdStartDecision::Invalid;
+            ColdStartCandidateValidation::ConfirmedBoundary { next_offset } => match confirmed {
+                None => confirmed = Some((offset, next_offset)),
+                Some((start_offset, chain_next_offset)) if offset == chain_next_offset => {
+                    confirmed = Some((start_offset, next_offset));
                 }
-            }
+                Some(_) => return ColdStartDecision::Invalid,
+            },
             ColdStartCandidateValidation::Pending => {
                 if pending_offset.is_some() {
                     multiple_pending = true;
@@ -912,6 +914,23 @@ mod tests {
         assert_eq!(pts(&confirmed), vec![90_000, 91_920]);
         assert_eq!(confirmed[0].payload, first_frame);
         assert_eq!(confirmed[1].payload, second_frame);
+    }
+
+    #[test]
+    fn cold_start_accepts_three_confirmed_frames_from_one_contiguous_chain() {
+        let mut association = AudioTimestampAssociation::default();
+        let frame = adts_frame(3, 4);
+        let mut payload = frame.clone();
+        payload.extend_from_slice(&frame);
+        payload.extend_from_slice(&frame);
+
+        let confirmed = association
+            .extract(packet_with_alignment(payload, Some(90_000), false), ORIGIN)
+            .unwrap();
+        assert_eq!(pts(&confirmed), vec![90_000, 91_920, 93_840]);
+        assert!(confirmed[0].metadata.is_pts_present);
+        assert!(!confirmed[1].metadata.is_pts_present);
+        assert!(!confirmed[2].metadata.is_pts_present);
     }
 
     #[test]
