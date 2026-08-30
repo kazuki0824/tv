@@ -272,6 +272,7 @@ pub struct FilterEventDeliverySnapshot {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FilterEventDelivery {
+    StartId(i32),
     Status(maleicacid_tuner_hal2_demux::FilterStatusEvent),
     Media(AvMediaEventDescriptor),
     Section { data_length: usize },
@@ -970,71 +971,91 @@ impl TunerServiceRuntime {
     }
 
     fn filter_event_delivery_snapshots(
-        &self,
+        &mut self,
         reports: &[PipelineReport],
     ) -> Vec<FilterEventDeliverySnapshot> {
-        reports
+        let mut snapshots = Vec::new();
+        for event in reports
             .iter()
             .flat_map(|report| report.generated_events.iter())
-            .filter_map(|event| {
-                use maleicacid_tuner_hal2_demux::PipelineGeneratedEvent;
-                let (filter_id, event) = match event {
-                    PipelineGeneratedEvent::FilterStatus { filter_id, status } => {
-                        (*filter_id, FilterEventDelivery::Status(*status))
+        {
+            use maleicacid_tuner_hal2_demux::PipelineGeneratedEvent;
+            let (filter_id, event) = match event {
+                PipelineGeneratedEvent::FilterStatus { filter_id, status } => {
+                    (*filter_id, FilterEventDelivery::Status(*status))
+                }
+                PipelineGeneratedEvent::AvMedia {
+                    filter_id,
+                    descriptor,
+                } => (*filter_id, FilterEventDelivery::Media(descriptor.clone())),
+                PipelineGeneratedEvent::SectionPayloadReady {
+                    filter_id,
+                    raw,
+                    bytes,
+                    ..
+                } => {
+                    if *raw {
+                        continue;
                     }
-                    PipelineGeneratedEvent::AvMedia {
-                        filter_id,
-                        descriptor,
-                    } => (*filter_id, FilterEventDelivery::Media(descriptor.clone())),
-                    PipelineGeneratedEvent::SectionPayloadReady {
-                        filter_id,
-                        raw,
-                        bytes,
-                        ..
-                    } => {
-                        if *raw {
-                            return None;
-                        }
-                        (
-                            *filter_id,
-                            FilterEventDelivery::Section {
-                                data_length: bytes.len(),
-                            },
-                        )
+                    (
+                        *filter_id,
+                        FilterEventDelivery::Section {
+                            data_length: bytes.len(),
+                        },
+                    )
+                }
+                PipelineGeneratedEvent::PesPacketReady {
+                    filter_id,
+                    raw,
+                    packet,
+                    ..
+                } => {
+                    if *raw {
+                        continue;
                     }
-                    PipelineGeneratedEvent::PesPacketReady {
-                        filter_id,
-                        raw,
-                        packet,
-                        ..
-                    } => {
-                        if *raw {
-                            return None;
-                        }
-                        (
-                            *filter_id,
-                            FilterEventDelivery::Pes {
-                                stream_id: i32::from(packet.stream_id),
-                                data_length: packet.raw_bytes.len(),
-                            },
-                        )
-                    }
-                    PipelineGeneratedEvent::RecordIndex { filter_id, data } => {
-                        (*filter_id, FilterEventDelivery::RecordIndex(*data))
-                    }
-                    _ => return None,
-                };
-                let entry = self.object_table.live_entry_for_runtime(
-                    AidlObjectKind::Filter,
-                    LedgerId(i64::from(filter_id)),
-                )?;
-                Some(FilterEventDeliverySnapshot {
-                    object_id: entry.object_id,
-                    generation: entry.generation,
-                    event,
-                })
-            })
-            .collect()
+                    (
+                        *filter_id,
+                        FilterEventDelivery::Pes {
+                            stream_id: i32::from(packet.stream_id),
+                            data_length: packet.raw_bytes.len(),
+                        },
+                    )
+                }
+                PipelineGeneratedEvent::RecordIndex { filter_id, data } => {
+                    (*filter_id, FilterEventDelivery::RecordIndex(*data))
+                }
+                _ => continue,
+            };
+            let Some(entry) = self.object_table.live_entry_for_runtime(
+                AidlObjectKind::Filter,
+                LedgerId(i64::from(filter_id)),
+            ) else {
+                continue;
+            };
+            let object_id = entry.object_id;
+            let generation = entry.generation;
+            let owner_demux_id = self
+                .registry
+                .filter(FilterRuntimeId(filter_id))
+                .map(|filter| filter.owner_demux_id);
+            if let Some(start_id) = owner_demux_id
+                .and_then(|demux_id| self.registry.demux_runtime_mut(DemuxRuntimeId(demux_id)))
+                .and_then(|demux| demux.take_pending_filter_start_id(filter_id).ok())
+                .flatten()
+            {
+                snapshots.push(FilterEventDeliverySnapshot {
+                    object_id,
+                    generation,
+                    event: FilterEventDelivery::StartId(start_id),
+                });
+            }
+            snapshots.push(FilterEventDeliverySnapshot {
+                object_id,
+                generation,
+                event,
+            });
+        }
+        snapshots
     }
 }
 

@@ -68,6 +68,21 @@ fn validate_frontend_request_against_entry(
                     "CS110 tune must not carry TSID or relative stream selector",
                 ));
             }
+            if let Some(symbol_rate) = request.symbol_rate {
+                let symbol_rate = i32::try_from(symbol_rate).map_err(|_| {
+                    HalError::invalid_argument(
+                        HalInvalidArgumentKind::UnsupportedSymbolRate,
+                        "ISDB-S symbol rate does not fit the advertised capability domain",
+                    )
+                })?;
+                let scalar = entry.capability.scalar;
+                if symbol_rate < scalar.min_symbol_rate || symbol_rate > scalar.max_symbol_rate {
+                    return Err(HalError::invalid_argument(
+                        HalInvalidArgumentKind::UnsupportedSymbolRate,
+                        "ISDB-S symbol rate is outside the advertised frontend range",
+                    ));
+                }
+            }
         }
         FrontendSystem::IsdbS3 | FrontendSystem::DvbS => {
             return Err(HalError::Unsupported(

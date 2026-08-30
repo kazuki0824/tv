@@ -9,8 +9,8 @@ use maleicacid_tuner_hal2_common::{
 };
 
 use crate::dvb::abi::{
-    DtvProperty, DTV_BANDWIDTH_HZ, DTV_DELIVERY_SYSTEM, DTV_FREQUENCY, DTV_STREAM_ID, DTV_TUNE,
-    NO_STREAM_ID_FILTER, SYS_DVBS2, SYS_ISDBS, SYS_ISDBT,
+    DtvProperty, DTV_BANDWIDTH_HZ, DTV_DELIVERY_SYSTEM, DTV_FREQUENCY, DTV_STREAM_ID,
+    DTV_SYMBOL_RATE, DTV_TUNE, NO_STREAM_ID_FILTER, SYS_DVBS2, SYS_ISDBS, SYS_ISDBT,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -69,16 +69,6 @@ fn validate_stream_id(request: &DvbTuneRequest) -> Result<Option<u16>, HalError>
     Ok(Some(stream_id))
 }
 
-fn validate_symbol_rate(request: &DvbTuneRequest) -> Result<(), HalError> {
-    if request.symbol_rate.is_some() {
-        return Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::UnsupportedSymbolRate,
-            "r51 DVB backend does not accept explicit symbol_rate",
-        ));
-    }
-    Ok(())
-}
-
 fn normalize_bandwidth(request: &DvbTuneRequest) -> Result<Option<u32>, HalError> {
     match request.system {
         Some(FrontendSystem::IsdbT) => match request.bandwidth_hz {
@@ -100,7 +90,6 @@ fn normalize_bandwidth(request: &DvbTuneRequest) -> Result<Option<u32>, HalError
 }
 
 pub fn tune_property_pairs(request: &DvbTuneRequest) -> Result<DvbTunePropertyPairs, HalError> {
-    validate_symbol_rate(request)?;
     let delivery = delivery_system(request.system)?;
     let bandwidth_hz = normalize_bandwidth(request)?;
     let mut pairs = Vec::new();
@@ -110,6 +99,9 @@ pub fn tune_property_pairs(request: &DvbTuneRequest) -> Result<DvbTunePropertyPa
     }
     if let Some(bandwidth_hz) = bandwidth_hz {
         pairs.push((DTV_BANDWIDTH_HZ, bandwidth_hz));
+    }
+    if let Some(symbol_rate) = request.symbol_rate {
+        pairs.push((DTV_SYMBOL_RATE, symbol_rate));
     }
     match validate_stream_id(request)? {
         Some(stream_id) => pairs.push((DTV_STREAM_ID, u32::from(stream_id))),
@@ -208,12 +200,6 @@ pub fn normalized_tune_request_from_common(
             ));
         }
     }
-    if request.symbol_rate.is_some() {
-        return Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::UnsupportedSymbolRate,
-            "r51 ISDB-T/ISDB-S backend contract rejects explicit symbol_rate",
-        ));
-    }
     let (stream_id, stream_id_kind) = normalize_stream_id_from_common(request)?;
     let bandwidth_hz = match request.system {
         FrontendSystem::IsdbT => match request.bandwidth_hz {
@@ -241,7 +227,7 @@ pub fn normalized_tune_request_from_common(
         stream_id,
         stream_id_kind,
         bandwidth_hz,
-        symbol_rate: None,
+        symbol_rate: request.symbol_rate,
         system: Some(request.system),
     })
 }
@@ -301,6 +287,27 @@ mod tests {
             .unwrap()
             .pairs
             .contains(&(DTV_STREAM_ID, 0)));
+    }
+
+    #[test]
+    fn isdbs_symbol_rate_is_forwarded_to_linux_dvb() {
+        let common = FrontendTuneRequest {
+            system: FrontendSystem::IsdbS,
+            frequency: 1_049_480_000,
+            end_frequency: None,
+            stream_id: Some(0x4010),
+            stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId),
+            bandwidth_hz: None,
+            symbol_rate: Some(28_860_000),
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
+        };
+        let request = normalized_tune_request_from_common(&common).unwrap();
+        assert_eq!(request.symbol_rate, Some(28_860_000));
+        assert!(tune_property_pairs(&request)
+            .unwrap()
+            .pairs
+            .contains(&(DTV_SYMBOL_RATE, 28_860_000)));
     }
 
     #[test]

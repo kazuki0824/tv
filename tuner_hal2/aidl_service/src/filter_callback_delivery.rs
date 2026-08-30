@@ -82,6 +82,9 @@ fn event_from_snapshot(
     snapshot: FilterEventDeliverySnapshot,
 ) -> Result<AidlFilterCallbackDelivery, HalError> {
     match snapshot.event {
+        FilterEventDelivery::StartId(start_id) => Ok(AidlFilterCallbackDelivery::Event(
+            DemuxFilterEvent::StartId(start_id),
+        )),
         FilterEventDelivery::Status(status) => Ok(AidlFilterCallbackDelivery::Status(
             match status {
                 FilterStatusEvent::DataReady => DemuxFilterStatus::DATA_READY,
@@ -395,6 +398,15 @@ mod tests {
                 dataLength: 1024,
                 ..
             }))
+        ));
+    }
+
+    #[test]
+    fn start_id_snapshot_projects_to_the_start_id_union_variant() {
+        let delivery = event_from_snapshot(snapshot(FilterEventDelivery::StartId(7))).unwrap();
+        assert!(matches!(
+            delivery,
+            AidlFilterCallbackDelivery::Event(DemuxFilterEvent::StartId(7))
         ));
     }
 

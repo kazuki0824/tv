@@ -264,11 +264,13 @@ fn validate_backend_bandwidth(request: &FrontendTuneRequest) -> Result<(), HalEr
 }
 
 pub fn map_tune_request_to_px4(request: &FrontendTuneRequest) -> Result<Px4TuneRequest, HalError> {
-    if request.symbol_rate.is_some() {
-        return Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::UnsupportedSymbolRate,
-            "r51のpx4バックエンド契約では明示symbol_rateを受け付けません",
-        ));
+    if let Some(symbol_rate) = request.symbol_rate {
+        if request.system != FrontendSystem::IsdbS || symbol_rate != 28_860_000 {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::UnsupportedSymbolRate,
+                "px4 symbol_rate must match the fixed advertised ISDB-S rate",
+            ));
+        }
     }
     validate_backend_bandwidth(request)?;
     match request.system {
@@ -354,12 +356,18 @@ mod tests {
     }
 
     #[test]
-    fn rejects_internal_symbol_rate_contract_violation() {
+    fn accepts_advertised_isdbs_symbol_rate_and_rejects_other_values() {
         let request = FrontendTuneRequest {
             symbol_rate: Some(28_860_000),
             ..bs_request(0x4010)
         };
-        let err = map_tune_request_to_px4(&request).unwrap_err();
+        assert!(map_tune_request_to_px4(&request).is_ok());
+
+        let unsupported = FrontendTuneRequest {
+            symbol_rate: Some(28_859_999),
+            ..bs_request(0x4010)
+        };
+        let err = map_tune_request_to_px4(&unsupported).unwrap_err();
         assert_eq!(
             err.invalid_argument_kind(),
             Some(HalInvalidArgumentKind::UnsupportedSymbolRate)

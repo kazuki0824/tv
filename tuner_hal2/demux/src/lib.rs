@@ -936,6 +936,18 @@ mod tests {
     }
 
     #[test]
+    fn undefined_ts_uses_the_same_raw_pipeline_kind_as_ts_linkcap_sinks() {
+        let filter = DemuxRuntime::open_filter_runtime_typed(
+            71,
+            1,
+            FilterOpenType::TsUndefined,
+            None,
+        );
+        assert_eq!(filter.snapshot().open_type, FilterOpenType::TsUndefined);
+        assert_eq!(filter.open_kind(), PipelineOpenKind::Raw);
+    }
+
+    #[test]
     fn set_filter_source_non_null_allows_record_sink_for_ts_linkcap() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
@@ -3240,6 +3252,65 @@ mod tests {
     }
 
     #[test]
+    fn reconfigure_after_first_start_generates_unique_nonzero_start_ids() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        let config = FilterPipelineConfig {
+            tpid: Some(300),
+            raw: false,
+            record_index: None,
+        };
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime_from_request(
+                72,
+                1,
+                &OpenFilterRequest {
+                    open_type: FilterOpenType::TsRaw,
+                    buffer_size: 4096,
+                    callback_present: true,
+                },
+                Some(config.clone()),
+            ))
+            .unwrap();
+        demux.create_filter_queue(72).unwrap();
+
+        assert_eq!(demux.take_pending_filter_start_id(72).unwrap(), None);
+        demux.start_filter_runtime(72).unwrap();
+        demux.stop_filter_runtime(72).unwrap();
+        FilterConfigureTxn::new(72)
+            .configure(&mut demux, PipelineOpenKind::Raw, config.clone())
+            .1
+            .unwrap();
+        assert_eq!(demux.take_pending_filter_start_id(72).unwrap(), Some(1));
+        assert_eq!(demux.take_pending_filter_start_id(72).unwrap(), None);
+
+        demux.start_filter_runtime(72).unwrap();
+        demux.stop_filter_runtime(72).unwrap();
+        FilterConfigureTxn::new(72)
+            .configure(&mut demux, PipelineOpenKind::Raw, config)
+            .1
+            .unwrap();
+        assert_eq!(demux.take_pending_filter_start_id(72).unwrap(), Some(2));
+
+        demux.start_filter_runtime(72).unwrap();
+        demux.stop_filter_runtime(72).unwrap();
+        FilterConfigureTxn::new(72)
+            .configure(
+                &mut demux,
+                PipelineOpenKind::Raw,
+                FilterPipelineConfig {
+                    tpid: Some(300),
+                    raw: false,
+                    record_index: None,
+                },
+            )
+            .1
+            .unwrap();
+        demux.start_filter_runtime(72).unwrap();
+        demux.flush_filter_runtime(72).unwrap();
+        assert_eq!(demux.take_pending_filter_start_id(72).unwrap(), None);
+    }
+
+    #[test]
     fn av_configure_uses_av_backing_marker_and_start_stop_preserve_axes() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
@@ -3306,6 +3377,9 @@ mod tests {
             TsInputOrigin::frontend(1),
         );
         assert_eq!(av_metadata(&explicit, filter_id), None);
+
+        demux.stop_filter_runtime(filter_id).unwrap();
+        demux.start_filter_runtime(filter_id).unwrap();
 
         let associated = demux.push_ts_packet_from_origin(
             &pes_start_packet(pid as u16, 1, &bounded_audio_pes(&frame, None)),
@@ -4053,6 +4127,41 @@ mod tests {
             packet_pid(0x0100),
             22
         )));
+    }
+
+    #[test]
+    fn filter_stop_start_preserves_partial_pes_state_until_flush() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime_from_request(
+                73,
+                1,
+                &OpenFilterRequest {
+                    open_type: FilterOpenType::TsPes,
+                    buffer_size: 4096,
+                    callback_present: true,
+                },
+                Some(FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: false,
+                    record_index: None,
+                }),
+            ))
+            .unwrap();
+        demux.create_filter_queue(73).unwrap();
+        demux.start_filter_runtime(73).unwrap();
+        let origin = TsInputOrigin::frontend(1);
+        let partial_pes = pes_start_packet(0x0100, 0, &[0x00, 0x00, 0x01, 0xe0, 0x00]);
+        demux.push_ts_packet_from_origin(&partial_pes, origin);
+        let key = (origin, packet_pid(0x0100), 73);
+        assert!(demux.pipeline().pes_assemblers.contains_key(&key));
+
+        demux.stop_filter_runtime(73).unwrap();
+        demux.start_filter_runtime(73).unwrap();
+        assert!(demux.pipeline().pes_assemblers.contains_key(&key));
+
+        demux.flush_filter_runtime(73).unwrap();
+        assert!(!demux.pipeline().pes_assemblers.contains_key(&key));
     }
 
     #[test]

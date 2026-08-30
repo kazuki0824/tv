@@ -1,7 +1,8 @@
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
-    AvStreamType::AvStreamType, DataFormat::DataFormat, DvrSettings::DvrSettings, DvrType::DvrType,
-    FilterDelayHint::FilterDelayHint, FilterDelayHintType::FilterDelayHintType,
-    LnbPosition::LnbPosition, LnbTone::LnbTone, LnbVoltage::LnbVoltage,
+    AudioStreamType::AudioStreamType, AvStreamType::AvStreamType, DataFormat::DataFormat,
+    DvrSettings::DvrSettings, DvrType::DvrType, FilterDelayHint::FilterDelayHint,
+    FilterDelayHintType::FilterDelayHintType, LnbPosition::LnbPosition, LnbTone::LnbTone,
+    LnbVoltage::LnbVoltage, VideoStreamType::VideoStreamType,
 };
 #[cfg(test)]
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
@@ -275,8 +276,60 @@ pub fn build_filter_av_stream_type_request(
     av_stream_type: &AvStreamType,
 ) -> Result<FilterAvStreamTypeRequest, HalError> {
     let (kind, stream_type) = match av_stream_type {
-        AvStreamType::Video(value) => (FilterAvStreamKind::Video, value.0),
-        AvStreamType::Audio(value) => (FilterAvStreamKind::Audio, value.0),
+        AvStreamType::Video(value) => {
+            if !matches!(
+                *value,
+                VideoStreamType::UNDEFINED
+                    | VideoStreamType::RESERVED
+                    | VideoStreamType::MPEG1
+                    | VideoStreamType::MPEG2
+                    | VideoStreamType::MPEG4P2
+                    | VideoStreamType::AVC
+                    | VideoStreamType::HEVC
+                    | VideoStreamType::VC1
+                    | VideoStreamType::VP8
+                    | VideoStreamType::VP9
+                    | VideoStreamType::AV1
+                    | VideoStreamType::AVS
+                    | VideoStreamType::AVS2
+                    | VideoStreamType::VVC
+            ) {
+                return Err(invalid(
+                    "video stream type contains a reserved numeric value",
+                ));
+            }
+            (FilterAvStreamKind::Video, value.0)
+        }
+        AvStreamType::Audio(value) => {
+            if !matches!(
+                *value,
+                AudioStreamType::UNDEFINED
+                    | AudioStreamType::PCM
+                    | AudioStreamType::MP3
+                    | AudioStreamType::MPEG1
+                    | AudioStreamType::MPEG2
+                    | AudioStreamType::MPEGH
+                    | AudioStreamType::AAC
+                    | AudioStreamType::AC3
+                    | AudioStreamType::EAC3
+                    | AudioStreamType::AC4
+                    | AudioStreamType::DTS
+                    | AudioStreamType::DTS_HD
+                    | AudioStreamType::WMA
+                    | AudioStreamType::OPUS
+                    | AudioStreamType::VORBIS
+                    | AudioStreamType::DRA
+                    | AudioStreamType::AAC_ADTS
+                    | AudioStreamType::AAC_LATM
+                    | AudioStreamType::AAC_HE_ADTS
+                    | AudioStreamType::AAC_HE_LATM
+            ) {
+                return Err(invalid(
+                    "audio stream type contains a reserved numeric value",
+                ));
+            }
+            (FilterAvStreamKind::Audio, value.0)
+        }
     };
     Ok(FilterAvStreamTypeRequest { kind, stream_type })
 }

@@ -31,7 +31,7 @@ impl FilterOpenType {
 
     pub const fn pipeline_open_kind(self) -> PipelineOpenKind {
         match self {
-            Self::TsUndefined => PipelineOpenKind::Other,
+            Self::TsUndefined => PipelineOpenKind::Raw,
             Self::TsRaw => PipelineOpenKind::Raw,
             Self::TsPcr => PipelineOpenKind::Pcr,
             Self::TsAudio | Self::TsVideo => PipelineOpenKind::Av,

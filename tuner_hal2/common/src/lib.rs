@@ -12,6 +12,7 @@ pub const TUNER_SERVICE_NAME: &str = "android.hardware.tv.tuner.ITuner/default";
 pub const TS_PACKET_SIZE: usize = 188;
 pub const MAX_ARIB_SHORT_SECTION_LENGTH: usize = 1021;
 pub const MAX_ARIB_EIT_SECTION_LENGTH: usize = 4093;
+pub const ARIB_TDT_SECTION_LENGTH: usize = 5;
 pub const MAX_ARIB_SECTION_TOTAL_BYTES: usize = 3 + MAX_ARIB_EIT_SECTION_LENGTH;
 pub const MAX_SECTION_PAYLOAD_BYTES: usize = MAX_ARIB_SECTION_TOTAL_BYTES;
 
@@ -57,7 +58,15 @@ impl TransportStreamPid {
 pub fn max_arib_section_length_for_table_id(table_id: u8) -> usize {
     match table_id {
         0x4e..=0x6f => MAX_ARIB_EIT_SECTION_LENGTH,
+        0x70 => ARIB_TDT_SECTION_LENGTH,
         _ => MAX_ARIB_SHORT_SECTION_LENGTH,
+    }
+}
+
+pub fn is_valid_arib_section_length(table_id: u8, section_length: usize) -> bool {
+    match table_id {
+        0x70 => section_length == ARIB_TDT_SECTION_LENGTH,
+        _ => section_length <= max_arib_section_length_for_table_id(table_id),
     }
 }
 

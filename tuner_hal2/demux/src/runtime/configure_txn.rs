@@ -232,6 +232,12 @@ impl FilterConfigureTxn {
             && snapshot.pes_stream_id == pes_stream_id
             && snapshot.section_config == section_config
         {
+            if let Err(error) = demux.schedule_filter_start_id_after_reconfigure(self.filter_id) {
+                self.outcome = Some(FilterConfigureOutcome::Failed {
+                    failed_step: FilterConfigureStep::Commit,
+                });
+                return (self, Err(error));
+            }
             self.record_step(FilterConfigureStep::Commit);
             let outcome = FilterConfigureOutcome::Noop;
             self.outcome = Some(outcome);
@@ -258,6 +264,16 @@ impl FilterConfigureTxn {
                 rollback_error: err.kind,
             });
             return (self, Err(err));
+        }
+        if let Err(error) = demux.schedule_filter_start_id_after_reconfigure(self.filter_id) {
+            demux.quarantine_filter_runtime(self.filter_id);
+            self.record_step(FilterConfigureStep::QuarantineOnRollbackFailure);
+            self.outcome = Some(FilterConfigureOutcome::Quarantined {
+                failed_step: FilterConfigureStep::Commit,
+                rollback_step: FilterConfigureStep::RollbackSoftDemuxConfig,
+                rollback_error: error.kind,
+            });
+            return (self, Err(error));
         }
         self.record_step(FilterConfigureStep::Commit);
         let outcome = FilterConfigureOutcome::Committed;

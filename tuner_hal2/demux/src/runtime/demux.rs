@@ -1761,6 +1761,7 @@ impl DemuxRuntime {
             filter.clear_queued_payload_state();
             filter.reset_section_delivery_state();
             filter.reset_audio_timestamp_association();
+            filter.clear_pending_start_id();
         }
         if drain.commit().is_err() {
             self.quarantine_filter_runtime(filter_id);
@@ -2283,6 +2284,28 @@ impl DemuxRuntime {
         super::configure_txn::configure_filter_runtime(self, request.filter_id, request.config)
     }
 
+    pub fn schedule_filter_start_id_after_reconfigure(
+        &mut self,
+        filter_id: i32,
+    ) -> Result<(), DemuxRuntimeError> {
+        self.filters
+            .get_mut(&filter_id)
+            .ok_or(DemuxRuntimeError::filter_missing(filter_id))?
+            .schedule_start_id_after_reconfigure()
+            .map_err(|_| DemuxRuntimeError::generation_exhausted(Some(filter_id)))
+    }
+
+    pub fn take_pending_filter_start_id(
+        &mut self,
+        filter_id: i32,
+    ) -> Result<Option<i32>, DemuxRuntimeError> {
+        Ok(self
+            .filters
+            .get_mut(&filter_id)
+            .ok_or(DemuxRuntimeError::filter_missing(filter_id))?
+            .take_pending_start_id())
+    }
+
     pub fn start_filter_runtime_from_typed_request(
         &mut self,
         request: FilterRuntimeOperationRequest,
@@ -2528,6 +2551,7 @@ impl DemuxRuntime {
             filter.clear_queued_payload_state();
             filter.reset_section_delivery_state();
             filter.reset_audio_timestamp_association();
+            filter.clear_pending_start_id();
             true
         } else {
             false
@@ -2629,9 +2653,6 @@ impl DemuxRuntime {
             .get_mut(&filter_id)
             .ok_or(DemuxRuntimeError::filter_missing(filter_id))?
             .set_av_stream_type_hint(config);
-        if let Some(backing) = self.filter_av_backings.get_mut(&filter_id) {
-            backing.flush_slots_keep_exported_handle();
-        }
         Ok(())
     }
 
@@ -3802,6 +3823,7 @@ impl DemuxRuntime {
         filter.clear_queued_payload_state();
         filter.reset_section_delivery_state();
         filter.reset_audio_timestamp_association();
+        filter.clear_pending_start_id();
         match next_source_generation {
             Some(source_filter_generation) => {
                 if !filter.set_source_filter(
@@ -3960,6 +3982,7 @@ impl DemuxRuntime {
             filter.clear_queued_payload_state();
             filter.reset_section_delivery_state();
             filter.reset_audio_timestamp_association();
+            filter.clear_pending_start_id();
         }
         self.pcr_clock_anchor_store
             .commit_invalidation(prepared.pcr_invalidation);

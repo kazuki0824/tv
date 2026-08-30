@@ -1,3 +1,12 @@
+# r50eo84_pr53_aosp_vts_arib_review_contract_followup
+
+- AOSP VTS `testStartIdAfterReconfigure`へ合わせ、filterが一度startされた後の再configureごとに非0・非再利用の`startId`を予約し、次の通常event直前へ単独callback eventとして一度だけ配送する。flush、source/generation変更、failure/closeでは未配送IDを失効させる。
+- `stop()`はqueueと同様にSection/PES assembler、one-shot Section状態、audio timestamp残余を保持し、`flush()`だけがそれらを破棄するようlifecycle境界を修正した。TS `UNDEFINED`は公開TS→TS `linkCaps`と同じraw pipeline種別へ閉包した。
+- ARIB STD-B10のTDTについて`table_id=0x70`の`section_length`を5に限定し、TOTを含む他のshort sectionの既存上限は維持した。ISDB-Sの正の`symbolRate`を広告range内で受理し、Linux DVBへ`DTV_SYMBOL_RATE`として転送し、px4では広告済み固定値28,860,000だけを受理する。
+- Linux DVBの`exclusiveGroupId`を物理`(adapter, frontend_index)`単位で安定生成し、同一物理frontendのsystem variantだけを同groupへ置いた。px4とはtag namespaceを分離した。
+- started filterの`configure()`はsecure/passthrough capability判定より先に`INVALID_STATE`とする。`configureAvStreamType()`はAOSP定義済みenum値だけを受理し、同一・別の有効hint変更のいずれも既存AV allocation/backingとaudio associationを破壊しない。公開能力を表さない未使用`ProfileFeature`/`feature_declared`は削除した。
+- 追加状態は既存`FilterRuntime`内の次ID/未配送IDだけで、新規owner、queue、worker、clock、ledger、payload複製は追加していない。Rust 1.81の製品demux全target型検査、対象回帰試験、host workspace全163試験、`git diff --check`を実施した。簡易FMQ差し替えによるdemux全体試験は既知26件を除く239件が成功した。Android/Soong build、atest、VTS、実機・実放送波確認は未実施。
+
 # r50eo84_pr53_audio_cold_start_order_independent_uniqueness_followup
 
 - `data_alignment_indicator=false`のaudio cold startで、独立した`Pending`候補を`ConfirmedBoundary`より前後どちらで観測しても候補競合として扱うよう、一意性判定を走査順非依存へ修正した。確定検証に使った同一frame列のnext headerだけは独立候補から除外する。

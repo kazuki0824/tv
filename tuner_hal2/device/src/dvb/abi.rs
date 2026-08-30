@@ -144,6 +144,7 @@ pub const DTV_TUNE: u32 = 1;
 pub const DTV_CLEAR: u32 = 2;
 pub const DTV_FREQUENCY: u32 = 3;
 pub const DTV_BANDWIDTH_HZ: u32 = 5;
+pub const DTV_SYMBOL_RATE: u32 = 8;
 pub const DTV_DELIVERY_SYSTEM: u32 = 17;
 pub const DTV_STREAM_ID: u32 = 42;
 pub const DTV_ENUM_DELSYS: u32 = 44;

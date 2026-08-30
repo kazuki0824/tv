@@ -1,6 +1,4 @@
-use maleicacid_tuner_hal2_common::{
-    max_arib_section_length_for_table_id, MAX_SECTION_PAYLOAD_BYTES,
-};
+use maleicacid_tuner_hal2_common::{is_valid_arib_section_length, MAX_SECTION_PAYLOAD_BYTES};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SectionHeader {
     pub table_id: u8,
@@ -34,7 +32,7 @@ fn parse_section_header_with_reserved_bit_policy(
         return None;
     }
     let section_length = (((section[1] & 0x0f) as usize) << 8) | section[2] as usize;
-    if section_length > max_arib_section_length_for_table_id(section[0]) {
+    if !is_valid_arib_section_length(section[0], section_length) {
         return None;
     }
     let total_length = 3 + section_length;
@@ -283,7 +281,7 @@ impl SectionAssembler {
             let total_length = 3 + section_length;
             let syntax = (remaining[1] & 0x80) != 0;
             let invalid_declared_header = (require_reserved_bits && (remaining[1] & 0x30) != 0x30)
-                || section_length > max_arib_section_length_for_table_id(remaining[0])
+                || !is_valid_arib_section_length(remaining[0], section_length)
                 || total_length > MAX_SECTION_PAYLOAD_BYTES
                 || (syntax && (section_length < 9 || total_length < 12));
             if invalid_declared_header {
@@ -323,7 +321,7 @@ impl SectionAssembler {
                 let syntax = (self.buf[1] & 0x80) != 0;
                 let invalid_declared_header = (require_reserved_bits
                     && (self.buf[1] & 0x30) != 0x30)
-                    || section_length > max_arib_section_length_for_table_id(self.buf[0])
+                    || !is_valid_arib_section_length(self.buf[0], section_length)
                     || expected_len > MAX_SECTION_PAYLOAD_BYTES
                     || (syntax && (section_length < 9 || expected_len < 12));
                 if invalid_declared_header || !self.set_expected_len_or_drop(expected_len) {
@@ -623,6 +621,22 @@ mod section_header_contract_tests {
 
         let oversized_sdt = [0x42, 0xb3, 0xfe, 0, 0, 0xc1, 0, 0, 0, 0, 0, 0];
         assert!(parse_section_header(&oversized_sdt, 12).is_none());
+    }
+
+    #[test]
+    fn tdt_requires_exact_length_five_while_tot_keeps_short_section_limit() {
+        let tdt = [0x70, 0x30, 0x05, 0, 0, 0, 0, 0];
+        assert_eq!(parse_section_header(&tdt, 12).unwrap().section_length, 5);
+
+        for section_length in [4usize, 6, 1021] {
+            let mut section = vec![0x70, 0x30 | ((section_length >> 8) as u8), section_length as u8];
+            section.resize(3 + section_length, 0);
+            assert!(parse_section_header(&section, 12).is_none());
+        }
+
+        let mut tot = vec![0x73, 0x33, 0xfd];
+        tot.resize(1024, 0);
+        assert_eq!(parse_section_header(&tot, 12).unwrap().section_length, 1021);
     }
 
     #[test]

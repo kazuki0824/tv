@@ -174,6 +174,9 @@ pub struct FilterRuntimeSnapshot {
     pub delivery_not_before: Option<Instant>,
     pub callback_unhealthy: bool,
     pub last_watermark_status: Option<FilterStatusEvent>,
+    pub has_started_once: bool,
+    pub next_start_id: i32,
+    pub pending_start_id: Option<i32>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -202,6 +205,9 @@ pub struct FilterRuntime {
     delivery_not_before: Option<Instant>,
     callback_unhealthy: bool,
     last_watermark_status: Option<FilterStatusEvent>,
+    has_started_once: bool,
+    next_start_id: i32,
+    pending_start_id: Option<i32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -256,6 +262,9 @@ impl FilterRuntime {
             delivery_not_before: None,
             callback_unhealthy: false,
             last_watermark_status: None,
+            has_started_once: false,
+            next_start_id: 1,
+            pending_start_id: None,
         }
     }
 
@@ -285,6 +294,9 @@ impl FilterRuntime {
             delivery_not_before: None,
             callback_unhealthy: false,
             last_watermark_status: None,
+            has_started_once: false,
+            next_start_id: 1,
+            pending_start_id: None,
         }
     }
 
@@ -379,6 +391,9 @@ impl FilterRuntime {
             delivery_not_before: self.delivery_not_before,
             callback_unhealthy: self.callback_unhealthy,
             last_watermark_status: self.last_watermark_status,
+            has_started_once: self.has_started_once,
+            next_start_id: self.next_start_id,
+            pending_start_id: self.pending_start_id,
         }
     }
 
@@ -406,6 +421,9 @@ impl FilterRuntime {
         self.delivery_not_before = snapshot.delivery_not_before;
         self.callback_unhealthy = snapshot.callback_unhealthy;
         self.last_watermark_status = snapshot.last_watermark_status;
+        self.has_started_once = snapshot.has_started_once;
+        self.next_start_id = snapshot.next_start_id;
+        self.pending_start_id = snapshot.pending_start_id;
     }
 
     pub fn configure_with_generation(
@@ -587,7 +605,6 @@ impl FilterRuntime {
 
     pub fn set_av_stream_type_hint(&mut self, config: AvStreamTypeConfig) {
         self.av_stream_type_hint = Some(config);
-        self.audio_timestamp_association.reset();
     }
 
     pub(crate) fn prepare_av_media_payloads(
@@ -789,25 +806,45 @@ impl FilterRuntime {
     }
 
     pub fn mark_started(&mut self) {
-        self.reset_section_delivery_state();
-        self.audio_timestamp_association.reset();
+        self.has_started_once = true;
         self.state = FilterRuntimeState::Started;
         self.rearm_delivery_deadline_if_needed();
     }
     pub fn mark_stopped(&mut self) {
-        self.reset_section_delivery_state();
-        self.audio_timestamp_association.reset();
         self.state = FilterRuntimeState::Stopped;
         self.delivery_not_before = None;
     }
     pub fn mark_failed(&mut self) {
         self.audio_timestamp_association.reset();
+        self.clear_pending_start_id();
         self.state = FilterRuntimeState::Failed;
         self.delivery_not_before = None;
     }
 
     pub fn mark_callback_unhealthy(&mut self) {
         self.callback_unhealthy = true;
+    }
+
+    pub(crate) fn schedule_start_id_after_reconfigure(&mut self) -> Result<(), ()> {
+        if !self.has_started_once {
+            return Ok(());
+        }
+        let start_id = self.next_start_id;
+        let next_start_id = start_id.checked_add(1).ok_or(())?;
+        if start_id == 0 {
+            return Err(());
+        }
+        self.pending_start_id = Some(start_id);
+        self.next_start_id = next_start_id;
+        Ok(())
+    }
+
+    pub(crate) fn take_pending_start_id(&mut self) -> Option<i32> {
+        self.pending_start_id.take()
+    }
+
+    pub(crate) fn clear_pending_start_id(&mut self) {
+        self.pending_start_id = None;
     }
 
     fn rearm_delivery_deadline_if_needed(&mut self) {

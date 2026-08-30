@@ -15,7 +15,9 @@ use maleicacid_tuner_hal2_demux::{
     DvrFilterLinkRequest, StreamBoundaryReport, PlaybackConsumeReport, PipelineBoundaryReason,
     PipelineResetReport,
 };
-use maleicacid_tuner_hal2_demux::{FilterConfig, FilterOpenType, OpenFilterRequest};
+use maleicacid_tuner_hal2_demux::{
+    FilterConfig, FilterOpenType, FilterRuntimeState, OpenFilterRequest,
+};
 use maleicacid_tuner_hal2_domain_request::{
     DvrConfigureRequest, FilterAvStreamTypeRequest, FilterDelayHintRequest, OpenDvrRequest,
 };
@@ -434,6 +436,12 @@ impl TunerServiceRuntime {
                 "filter runtime is missing",
             )
         })?;
+        if self.filter_runtime_state(filter_id) == Some(FilterRuntimeState::Started) {
+            return Err(HalError::invalid_state(
+                maleicacid_tuner_hal2_common::HalInvalidStateKind::InvalidLifecycle,
+                "filter cannot be configured while started",
+            ));
+        }
         let config = build_config(open_type)?;
         self.configure_filter_runtime_request(filter_id, config)
     }

@@ -1447,9 +1447,7 @@ impl PacketPipeline {
     pub fn start_filter(&mut self, _filter_id: i32) -> Result<(), PipelineError> {
         Ok(())
     }
-    pub fn stop_filter(&mut self, filter_id: i32) -> Result<(), PipelineError> {
-        self.clear_filter_state(filter_id);
-        self.reset_record_index_state(filter_id);
+    pub fn stop_filter(&mut self, _filter_id: i32) -> Result<(), PipelineError> {
         Ok(())
     }
     pub fn remove_filter(&mut self, filter_id: i32) -> Result<(), PipelineError> {

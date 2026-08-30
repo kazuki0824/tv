@@ -125,7 +125,7 @@ const JAPAN_BS_FIRST_IF_HZ: i64 = 1_049_480_000;
 const JAPAN_CS110_LAST_IF_HZ: i64 = 2_053_000_000;
 const ISDBS_SYMBOL_RATE: i32 = 28_860_000;
 const PX4_PHYSICAL_GROUP_TAG: i32 = 0x1000_0000;
-const DVB_SHARED_PHYSICAL_GROUP_ID: i32 = 0x2000_0000;
+const DVB_PHYSICAL_GROUP_TAG: i32 = 0x2000_0000;
 
 fn px4_capability(
     unit: i32,
@@ -180,6 +180,7 @@ fn px4_capability(
 fn dvb_capability(
     info: &DvbFrontendInfo,
     system: FrontendSystem,
+    exclusive_group_id: i32,
 ) -> Option<FrontendCapabilitySnapshot> {
     let frequency_scale = if matches!(system, FrontendSystem::IsdbS) {
         1_000_i64
@@ -240,11 +241,18 @@ fn dvb_capability(
     };
     Some(FrontendCapabilitySnapshot {
         scalar,
-        // earth-pt1の独立RF経路を識別するprobe証跡がないため、
-        // 保守的に共有groupとする。
-        exclusive_group_id: DVB_SHARED_PHYSICAL_GROUP_ID,
+        exclusive_group_id,
         isdbt_segment,
     })
+}
+
+fn dvb_physical_group_id(adapter: i32, frontend_index: i32) -> Option<i32> {
+    if !(0..=255).contains(&adapter) || !(0..=255).contains(&frontend_index) {
+        return None;
+    }
+    DVB_PHYSICAL_GROUP_TAG
+        .checked_add(adapter.checked_shl(8)?)
+        .and_then(|base| base.checked_add(frontend_index))
 }
 
 fn dvb_export_frontend_id(
@@ -377,13 +385,16 @@ fn dvb_probe_variants(
     path: &PathBuf,
 ) -> Result<Vec<DvbProbeVariant>, HalError> {
     let (systems, info) = probe_dvb_delivery_systems(path)?;
+    let Some(exclusive_group_id) = dvb_physical_group_id(adapter, frontend_index) else {
+        return Ok(Vec::new());
+    };
     let mut variants = Vec::new();
     for system in systems {
         if let Some(id) = dvb_export_frontend_id(adapter, frontend_index, system) {
             variants.push(DvbProbeVariant {
                 id,
                 system,
-                capability: dvb_capability(&info, system),
+                capability: dvb_capability(&info, system, exclusive_group_id),
             });
         }
     }
@@ -586,6 +597,15 @@ mod tests {
             dvb_export_frontend_id(1, 2, FrontendSystem::IsdbT),
             Some(2_004_128)
         );
+    }
+
+    #[test]
+    fn dvb_exclusive_groups_share_only_one_physical_frontend() {
+        let adapter0_frontend0 = dvb_physical_group_id(0, 0).unwrap();
+        assert_eq!(adapter0_frontend0, dvb_physical_group_id(0, 0).unwrap());
+        assert_ne!(adapter0_frontend0, dvb_physical_group_id(0, 1).unwrap());
+        assert_ne!(adapter0_frontend0, dvb_physical_group_id(1, 0).unwrap());
+        assert_ne!(adapter0_frontend0 & 0xf000_0000, PX4_PHYSICAL_GROUP_TAG);
     }
 
     #[test]

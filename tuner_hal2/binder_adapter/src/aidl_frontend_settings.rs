@@ -220,12 +220,6 @@ fn validate_isdbs_fixed_settings(
     if s.symbolRate < 0 {
         return invalid_frontend_setting("ISDB-S symbolRate must be non-negative");
     }
-    if s.symbolRate > 0 {
-        unsupported_frontend_setting(
-            "isdbs.symbolRate",
-            "explicit ISDB-S symbolRate is not supported",
-        )?;
-    }
     match s.rolloff {
         FrontendIsdbsRolloff::UNDEFINED => {}
         FrontendIsdbsRolloff::ROLLOFF_0_35 => {
@@ -331,6 +325,16 @@ pub fn aidl_frontend_settings_to_request(
         FrontendSettings::Isdbs(s) => {
             validate_isdbs_fixed_settings(s)?;
             let frequency = cast_u64_field(s.frequency, "isdbs.frequency")?;
+            let symbol_rate = if s.symbolRate > 0 {
+                Some(u32::try_from(s.symbolRate).map_err(|_| {
+                    HalError::invalid_argument(
+                        HalInvalidArgumentKind::UnsupportedSymbolRate,
+                        "ISDB-S symbolRate does not fit u32",
+                    )
+                })?)
+            } else {
+                None
+            };
             let (stream_id, stream_id_kind) =
                 map_isdbs_stream_selector(s.streamId, s.streamIdType, frequency)?;
             Ok(FrontendTuneRequest {
@@ -342,7 +346,7 @@ pub fn aidl_frontend_settings_to_request(
                 stream_id,
                 stream_id_kind,
                 bandwidth_hz: None,
-                symbol_rate: None,
+                symbol_rate,
                 partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
             })
         }

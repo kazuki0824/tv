@@ -45,9 +45,9 @@ pub use boot::{
     TunerServiceRuntime,
 };
 pub use capability_profile::{
-    configure_ip_cid_result, configure_monitor_event_result, failure_domain, feature_declared,
+    configure_ip_cid_result, configure_monitor_event_result, failure_domain,
     hal_generates_japanese_scan_plan, open_failed, scan_candidate_owner, transport_declared,
-    ProfileFeature, RuntimeFailureDomain, ScanCandidateOwner, TransportCapability,
+    RuntimeFailureDomain, ScanCandidateOwner, TransportCapability,
 };
 pub use capability_snapshot::{CapabilitySnapshot, PublicDemuxCapability};
 pub use cleanup_execution::{

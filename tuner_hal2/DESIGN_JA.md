@@ -303,6 +303,10 @@ Filter/SharedFilterのqueue確定は`FilterProducerDrainGate`、DVR queue I/Oは
 
 TS AUDIOのPTS-sparse event associationは`demux/src/av/audio_timestamp.rs`の有限codec extractorを`FilterRuntime`所有の従属状態として保持し、`DemuxRuntime`の既存AV配送境界からだけ更新する。独立した正規state owner、packet pipeline、clock、queue、workerを追加しない。明示PTSをH.222.0のfirst AU commencing in PESへanchorし、PES境界を跨ぐMPEG-2 AAC LC ADTS / MPEG audioについて、規格上限8191 byte以内の未完了frameを最大1件だけbyte完全に保持する。完成frameだけを1件のMediaEvent payloadとし、その正確なframe長と同じframeへ適用可能なPTS/provenanceを既存AV allocationへ渡す。未anchorかつ`data_alignment_indicator=false`では先行frameの最大残り長未満だけを走査し、対応headerと宣言frame lengthを検査する。次境界未確認の候補はanchorへcommitせず、先行AU最大1 frame、first AU最大1 frame、次header最大7 byteの合計16389 byte以内だけ保留する。後続PES上で同一signatureの次境界まで確認できた一意候補だけを採用し、複数候補または上限超過はfail-closedとする。syncword一致だけの探索や上限なし走査は追加せず、`data_alignment_indicator=true`ならpayload先頭以外を候補にしない。連続ES上で検証したframe headerのactual sample rateとexact sample countだけを33-bit 90 kHzへ変換し、合法なpartial frameをPES境界だけを理由に抑止しない。TEI、continuity gap、scramble/drop、flush、source/generation変更は既存`PacketPipeline` / filter lifecycle / stream boundaryの結果からanchor、未完了frame、cold-start保留bytesへreset通知し、PCR / wallclock / nominal値へfallbackしない。AIDLのpresence/value投影と成功配送条件は`../tuner_hal/DESIGN_JA.md`の「clear non-passthrough MediaEvent presentation timestamp 契約」を正とする。
 
+Filterの`stop()`は配送を停止するだけで、FMQ内容、Section/PES assembler、Section one-shot状態、audio timestamp anchor/有限残余を保持する。`start()`はその状態から再開し、`flush()`、close、source/generation変更、transport discontinuity、failureだけを破棄境界とする。再configure後の`startId`は既存`FilterRuntime`が単調な非0 IDと未配送1件だけを所有し、次の通常event直前に単独callback eventとして消費する。別owner、queue、worker、時計は設けない。
+
+物理frontendの`exclusiveGroupId`はbackend namespaceと物理経路identityから安定生成する。同一Linux DVB `(adapter, frontend_index)`のdelivery-system variantだけが同じgroupを共有し、別index/adapterとpx4 unitは別groupとする。広告したISDB-S symbol-rate range内の正値はtune入力として受理し、backend固有の同じ契約へ投影する。
+
 ## 実装構造索引
 
 次表は規範実装アンカーを探すための補助索引であり、transaction正本または公開契約を置き換えない。
