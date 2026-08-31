@@ -1,4 +1,4 @@
-name: temp PR53 worker owner repair
+name: temp PR53 worker owner diagnose
 
 on:
   push:
@@ -27,9 +27,22 @@ jobs:
       - name: Check
         working-directory: tuner_hal2/host_ci
         run: cargo check --workspace --all-targets --locked
-      - name: Test
+      - name: Test with log
+        id: tests
+        continue-on-error: true
         working-directory: tuner_hal2/host_ci
-        run: cargo test --workspace --locked
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --workspace --locked 2>&1 | tee ../../tools/temp_worker_owner_test.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: temp-worker-owner-test-log
+          path: tools/temp_worker_owner_test.log
+      - name: Stop on test failure
+        if: steps.tests.outcome != 'success'
+        run: exit 1
       - name: Clippy
         working-directory: tuner_hal2/host_ci
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
