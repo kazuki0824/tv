@@ -2,12 +2,19 @@ use std::collections::VecDeque;
 
 use maleicacid_tuner_hal2_common::{TsPacketCompletionBuffer, TS_PACKET_SIZE};
 use maleicacid_tuner_hal2_demux::{
-    DemuxRuntime, DemuxRuntimeError, PlaybackConsumeReport, TsInputOrigin,
-    ValidatedTsPacket,
+    DemuxRuntime, DemuxRuntimeError, PlaybackConsumeReport, TsInputOrigin, ValidatedTsPacket,
 };
 
 const PLAYBACK_CONSUME_CHUNK_PACKETS: usize = 256;
 const PLAYBACK_CONSUME_CHUNK_BYTES: usize = TS_PACKET_SIZE * PLAYBACK_CONSUME_CHUNK_PACKETS;
+
+pub(crate) const fn required_playback_processing_bytes(queue_capacity: usize) -> usize {
+    if queue_capacity < PLAYBACK_CONSUME_CHUNK_BYTES {
+        queue_capacity
+    } else {
+        PLAYBACK_CONSUME_CHUNK_BYTES
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PlaybackConsumeTxn {
@@ -34,7 +41,7 @@ impl PlaybackConsumeTxn {
             .ok()
             .filter(|capacity| *capacity > 0)
             .ok_or(PlaybackConsumeTxnPrepareError::InvalidCapacity)?;
-        let processing_capacity = capacity.min(PLAYBACK_CONSUME_CHUNK_BYTES);
+        let processing_capacity = required_playback_processing_bytes(capacity);
         let mut processing_buffer = Vec::new();
         processing_buffer
             .try_reserve_exact(processing_capacity)
@@ -60,10 +67,9 @@ impl PlaybackConsumeTxn {
     ) -> Result<PlaybackConsumeReport, DemuxRuntimeError> {
         let mut report = PlaybackConsumeReport::default();
         if self.parse_inject_cursor.is_empty() {
-            let Some(read_txn) = demux.begin_playback_queue_read(
-                self.dvr_id,
-                self.processing_buffer.len(),
-            )? else {
+            let Some(read_txn) =
+                demux.begin_playback_queue_read(self.dvr_id, self.processing_buffer.len())?
+            else {
                 return Ok(report);
             };
             let read_limit = read_txn.read_limit();
@@ -150,6 +156,10 @@ mod tests {
         let queue_capacity = 4 * 1024 * 1024;
         let txn = PlaybackConsumeTxn::prepare(7, queue_capacity).expect("prepare");
 
+        assert_eq!(
+            txn.processing_buffer.len(),
+            required_playback_processing_bytes(queue_capacity as usize)
+        );
         assert_eq!(txn.processing_buffer.len(), PLAYBACK_CONSUME_CHUNK_BYTES);
         assert!(txn.capacity_matches(queue_capacity));
         assert!(!txn.capacity_matches(queue_capacity / 2));
@@ -159,6 +169,7 @@ mod tests {
     fn small_fmq_does_not_allocate_beyond_its_capacity() {
         let txn = PlaybackConsumeTxn::prepare(7, 100).expect("prepare");
 
+        assert_eq!(txn.processing_buffer.len(), required_playback_processing_bytes(100));
         assert_eq!(txn.processing_buffer.len(), 100);
         assert!(txn.capacity_matches(100));
     }

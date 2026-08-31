@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use crate::playback_consume_txn::required_playback_processing_bytes;
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidArgumentKind};
 use maleicacid_tuner_hal2_demux::{
     DvrKind, FilterOpenType, MAX_PES_BUFFER_BYTES,
@@ -79,7 +80,9 @@ impl CapabilitySnapshot {
             filter_pending_event_capacity_per_filter: 64,
             fmq_runtime_budget_bytes: 256 * MIB,
             pes_max_bytes_per_filter: MAX_PES_BUFFER_BYTES,
-            pes_runtime_budget_bytes: 4 * MIB,
+            // TsPesだけでなくTsAudio/TsVideoもper-filter PesAssemblerを持つため、
+            // 4 PES + 1 AUDIO + 1 VIDEOの全6本を同時に閉じる。
+            pes_runtime_budget_bytes: 6 * MIB,
             playback_processing_budget_bytes: 64 * MIB,
             av_max_event_bytes: DEFAULT_AV_MAX_EVENT_BYTES,
             av_max_outstanding_events_per_filter:
@@ -311,23 +314,28 @@ impl CapabilitySnapshot {
                 ));
             }
         }
-        let pes_filter_count = usize::try_from(self.num_pes_filter).map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "PES filter capability count must not be negative",
-            )
-        })?;
-        if pes_filter_count == 0 {
+        let pes_assembler_filter_count = self
+            .num_pes_filter
+            .checked_add(self.num_audio_filter)
+            .and_then(|count| count.checked_add(self.num_video_filter))
+            .and_then(|count| usize::try_from(count).ok())
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "PES assembler filter capability count is invalid",
+                )
+            })?;
+        if pes_assembler_filter_count == 0 {
             if self.pes_max_bytes_per_filter != 0 || self.pes_runtime_budget_bytes != 0 {
                 return Err(HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "suppressed PES capability must not reserve PES byte budgets",
+                    "suppressed PES assembler capability must not reserve PES byte budgets",
                 ));
             }
         } else {
             let minimum_pes_runtime = self
                 .pes_max_bytes_per_filter
-                .checked_mul(pes_filter_count)
+                .checked_mul(pes_assembler_filter_count)
                 .ok_or_else(|| {
                     HalError::internal(
                         HalInternalKind::InvariantViolation,
@@ -339,7 +347,7 @@ impl CapabilitySnapshot {
             {
                 return Err(HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "PES runtime budget does not close all advertised PES filter leases",
+                    "PES runtime budget does not close all advertised PES/AV assembler leases",
                 ));
             }
         }
@@ -453,7 +461,10 @@ impl CapacityLedger {
         } else {
             0
         };
-        let pes = if open_type == FilterOpenType::TsPes {
+        let pes = if matches!(
+            open_type,
+            FilterOpenType::TsPes | FilterOpenType::TsAudio | FilterOpenType::TsVideo
+        ) {
             snapshot.pes_max_bytes_per_filter
         } else {
             0
@@ -528,7 +539,8 @@ impl CapacityLedger {
         if kind != DvrKind::Playback {
             return Ok(false);
         }
-        let amount = Self::request_bytes(buffer_size, "playback processing")?;
+        let queue_capacity = Self::request_bytes(buffer_size, "playback processing")?;
+        let amount = required_playback_processing_bytes(queue_capacity);
         let claim = self.dvr_claims.get_mut(&dvr_id).ok_or_else(|| {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
@@ -614,9 +626,15 @@ mod tests {
     }
 
     #[test]
-    fn suppressed_pes_capability_requires_zero_pes_budgets() {
+    fn suppressed_pes_assembler_capability_requires_zero_pes_budgets() {
         let mut snapshot = CapabilitySnapshot::product_default();
         snapshot.num_pes_filter = 0;
+        snapshot.num_audio_filter = 0;
+        snapshot.num_video_filter = 0;
+        snapshot.av_max_event_bytes = 0;
+        snapshot.av_max_outstanding_events_per_filter = 0;
+        snapshot.av_per_filter_live_bytes = 0;
+        snapshot.av_runtime_budget_bytes = 0;
         assert!(snapshot.validate_dependency_closures().is_err());
 
         snapshot.pes_max_bytes_per_filter = 0;
@@ -699,6 +717,50 @@ mod tests {
     }
 
     #[test]
+    fn playback_processing_claim_matches_bounded_allocation() {
+        let queue_capacity = 4 * MIB;
+        let processing_bytes = required_playback_processing_bytes(queue_capacity);
+        let snapshot = CapabilitySnapshot {
+            playback_processing_budget_bytes: processing_bytes,
+            ..CapabilitySnapshot::product_default()
+        };
+        let mut ledger = CapacityLedger::default();
+        ledger.reserve_dvr(snapshot, 7, queue_capacity as i32).unwrap();
+        ledger.reserve_dvr(snapshot, 8, queue_capacity as i32).unwrap();
+        assert!(ledger
+            .reserve_playback_processing(snapshot, 7, DvrKind::Playback, queue_capacity as i32)
+            .is_ok());
+        assert!(ledger
+            .reserve_playback_processing(snapshot, 8, DvrKind::Playback, queue_capacity as i32)
+            .is_err());
+        ledger.release_dvr(7).unwrap();
+        assert!(ledger
+            .reserve_playback_processing(snapshot, 8, DvrKind::Playback, queue_capacity as i32)
+            .is_ok());
+        ledger.release_dvr(8).unwrap();
+    }
+
+    #[test]
+    fn av_filters_claim_their_pes_assembly_budget() {
+        let snapshot = CapabilitySnapshot {
+            pes_runtime_budget_bytes: MAX_PES_BUFFER_BYTES,
+            ..CapabilitySnapshot::product_default()
+        };
+        let mut ledger = CapacityLedger::default();
+        ledger
+            .reserve_filter(snapshot, 1, FilterOpenType::TsAudio, 4096)
+            .unwrap();
+        assert!(ledger
+            .reserve_filter(snapshot, 2, FilterOpenType::TsVideo, 4096)
+            .is_err());
+        ledger.release_filter(1).unwrap();
+        ledger
+            .reserve_filter(snapshot, 2, FilterOpenType::TsVideo, 4096)
+            .unwrap();
+        ledger.release_filter(2).unwrap();
+    }
+
+    #[test]
     fn av_filter_open_does_not_preclaim_payload_budget() {
         let snapshot = CapabilitySnapshot {
             num_audio_filter: 0,
@@ -726,6 +788,11 @@ mod tests {
         let snapshot = CapabilitySnapshot::product_default();
         assert_eq!(snapshot.num_audio_filter, 1);
         assert_eq!(snapshot.num_video_filter, 1);
+        assert_eq!(snapshot.num_pes_filter, 4);
+        assert!(
+            snapshot.pes_runtime_budget_bytes
+                >= snapshot.pes_max_bytes_per_filter * 6
+        );
         snapshot
             .validate_dependency_closures()
             .expect("product AV capabilities must retain a closed finite byte budget");
