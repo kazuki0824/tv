@@ -28,6 +28,31 @@ pub(crate) enum PreparedFrontendLnbAssignment {
     },
 }
 
+pub(crate) enum ExecutedFrontendLnbAssignment {
+    Unchanged,
+    Apply {
+        prepared_lease: PreparedLnbAssignmentLease,
+    },
+}
+
+impl PreparedFrontendLnbAssignment {
+    pub(crate) fn execute(
+        self,
+        _permit: &LnbPhysicalIoPermit<'_>,
+    ) -> ExecutedFrontendLnbAssignment {
+        match self {
+            Self::Unchanged => ExecutedFrontendLnbAssignment::Unchanged,
+            Self::Apply { prepared_lease } => {
+                // FrontendLnbRelationTxn owns only relation/lease mutation. setLnb()
+                // deliberately performs no electrical-state backend I/O here; the
+                // permit remains a serialization fence for existing callers while
+                // LnbRegistry/LnbControlTxn remain the only electrical-state owners.
+                ExecutedFrontendLnbAssignment::Apply { prepared_lease }
+            }
+        }
+    }
+}
+
 pub(crate) struct PreparedLnbDiseqc {
     lnb_key: LnbRuntimeId,
     expected_generation: u64,
@@ -137,7 +162,7 @@ impl<'a> LnbMutationContext<'a> {
             return Ok(PreparedFrontendLnbAssignment::Unchanged);
         };
 
-        // setLnb() owns only the frontend-to-LNB relation and its lease.  Validate
+        // setLnb() owns only the frontend-to-LNB relation and its lease. Validate
         // that the pending relation is representable by the selected backend, but
         // do not re-apply the LNB electrical state here: persistent electrical
         // state and physical I/O remain owned by LnbRegistry/LnbControlTxn.
@@ -176,9 +201,9 @@ impl<'a> LnbMutationContext<'a> {
 
     pub(crate) fn commit_frontend_lnb_assignment(
         &mut self,
-        prepared: PreparedFrontendLnbAssignment,
+        executed: ExecutedFrontendLnbAssignment,
     ) -> Result<(), HalError> {
-        let PreparedFrontendLnbAssignment::Apply { prepared_lease } = prepared else {
+        let ExecutedFrontendLnbAssignment::Apply { prepared_lease } = executed else {
             return Ok(());
         };
         let cleanup = match self
