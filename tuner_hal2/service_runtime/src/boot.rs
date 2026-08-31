@@ -1694,6 +1694,38 @@ impl TunerServiceRuntime {
         Ok(())
     }
 
+
+    pub(crate) fn register_prepared_aidl_object_for_runtime_auto_generation(
+        &mut self,
+        object_kind: AidlObjectKind,
+        runtime_id: i64,
+        owner: RuntimeOwnerRelation,
+    ) -> Result<RuntimeObjectEntry, RuntimeObjectTableError> {
+        let generation = self.object_table.next_generation()?;
+        let object_id = self.object_table.next_object_id()?;
+        let entry = RuntimeObjectEntry {
+            object_kind,
+            object_id,
+            generation,
+            ledger_id: LedgerId(runtime_id),
+            ledger_generation: LedgerGeneration(generation.0),
+            owner,
+            lifecycle: RuntimeObjectLifecycle::Prepared,
+        };
+        self.object_table.insert_prepared(entry.clone())?;
+        Ok(entry)
+    }
+
+    pub fn commit_prepared_child_object(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<RuntimeObjectEntry, HalError> {
+        self.object_table
+            .commit_prepared(object_id, generation)
+            .map_err(object_table_error_to_hal)
+    }
+
     pub(crate) fn record_child_open_rollback_diagnostic(
         &mut self,
         record: ChildOpenRollbackDiagnosticRecord,

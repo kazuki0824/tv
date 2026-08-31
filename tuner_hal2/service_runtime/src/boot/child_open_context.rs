@@ -1758,7 +1758,7 @@ impl ChildOpenTxn<'_> {
         };
         match self
             .runtime
-            .register_aidl_object_for_runtime_auto_generation(
+            .register_prepared_aidl_object_for_runtime_auto_generation(
                 maleicacid_tuner_hal2_domain_request::AidlObjectKind::Filter,
                 i64::from(filter_entry.id.0),
                 owner,
@@ -1878,7 +1878,7 @@ impl ChildOpenTxn<'_> {
         };
         match self
             .runtime
-            .register_aidl_object_for_runtime_auto_generation(
+            .register_prepared_aidl_object_for_runtime_auto_generation(
                 maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
                 i64::from(dvr_entry.id.0),
                 owner,

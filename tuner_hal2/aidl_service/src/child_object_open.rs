@@ -296,27 +296,45 @@ fn finish_filter_child_open(
 ) -> BinderResult<Strong<dyn IFilter>> {
     let child_handle = handle_from_runtime_entry(runtime_open.runtime_entry);
     let filter_id = runtime_open.filter_id;
-    if let Err(primary_error) = retain_filter_child_callback(context, child_handle, callback) {
-        return finish_filter_child_open_artifact_retain_failure(
-            runtime,
-            child_handle,
-            filter_id,
-            primary_error,
+    let artifact = match context.prepare_filter_callback_artifact(child_handle, callback) {
+        Ok(token) => token,
+        Err(primary_error) => {
+            return finish_filter_child_open_artifact_retain_failure(
+                runtime, child_handle, filter_id, primary_error,
+            )
+        }
+    };
+    let object = match FilterAidlObject::new(child_handle, context.clone()) {
+        Ok(object) => BnFilter::new_binder(object, BinderFeatures::default()),
+        Err(_) => {
+            let _ = context.abort_child_callback_artifact(child_handle, AidlApi::DemuxOpenFilter, artifact);
+            return finish_filter_child_object_construction_failure(
+                context,
+                runtime,
+                child_handle,
+                filter_id,
+                HalError::internal(HalInternalKind::InvariantViolation, "filter object kind mismatch"),
+            );
+        }
+    };
+    if let Err(primary) = context.commit_child_callback_artifact(
+        child_handle,
+        AidlApi::DemuxOpenFilter,
+        artifact,
+    ) {
+        return finish_filter_child_open_artifact_retain_failure(runtime, child_handle, filter_id, primary);
+    }
+    if let Err(primary) = runtime
+        .lock()
+        .map_err(|_| status_from_hal_error(HalError::internal(HalInternalKind::InvariantViolation, "service runtime lock poisoned")))?
+        .commit_prepared_child_object(child_handle.object_id(), child_handle.generation())
+    {
+        let _ = context.clear_owner_callbacks(child_handle);
+        return finish_filter_child_object_construction_failure(
+            context, runtime, child_handle, filter_id, primary,
         );
     }
-    match FilterAidlObject::new(child_handle, context.clone()) {
-        Ok(object) => Ok(BnFilter::new_binder(object, BinderFeatures::default())),
-        Err(_) => finish_filter_child_object_construction_failure(
-            context,
-            runtime,
-            child_handle,
-            filter_id,
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "filter object kind mismatch",
-            ),
-        ),
-    }
+    Ok(object)
 }
 
 fn finish_dvr_child_open(
@@ -327,25 +345,40 @@ fn finish_dvr_child_open(
 ) -> BinderResult<Strong<dyn IDvr>> {
     let child_handle = handle_from_runtime_entry(runtime_open.runtime_entry);
     let dvr_id = runtime_open.dvr_id;
-    if let Err(primary_error) = retain_dvr_child_callback(context, child_handle, callback) {
-        return finish_dvr_child_open_artifact_retain_failure(
-            runtime,
-            child_handle,
-            dvr_id,
-            primary_error,
-        );
+    let artifact = match context.prepare_dvr_callback_artifact(child_handle, callback) {
+        Ok(token) => token,
+        Err(primary_error) => {
+            return finish_dvr_child_open_artifact_retain_failure(runtime, child_handle, dvr_id, primary_error)
+        }
+    };
+    let object = match DvrAidlObject::new(child_handle, context.clone()) {
+        Ok(object) => BnDvr::new_binder(object, BinderFeatures::default()),
+        Err(_) => {
+            let _ = context.abort_child_callback_artifact(child_handle, AidlApi::DemuxOpenDvr, artifact);
+            return finish_dvr_child_object_construction_failure(
+                context,
+                runtime,
+                child_handle,
+                dvr_id,
+                HalError::internal(HalInternalKind::InvariantViolation, "DVR object kind mismatch"),
+            );
+        }
+    };
+    if let Err(primary) = context.commit_child_callback_artifact(
+        child_handle,
+        AidlApi::DemuxOpenDvr,
+        artifact,
+    ) {
+        return finish_dvr_child_open_artifact_retain_failure(runtime, child_handle, dvr_id, primary);
     }
-    match DvrAidlObject::new(child_handle, context.clone()) {
-        Ok(object) => Ok(BnDvr::new_binder(object, BinderFeatures::default())),
-        Err(_) => finish_dvr_child_object_construction_failure(
-            context,
-            runtime,
-            child_handle,
-            dvr_id,
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "DVR object kind mismatch",
-            ),
-        ),
+    if let Err(primary) = runtime
+        .lock()
+        .map_err(|_| status_from_hal_error(HalError::internal(HalInternalKind::InvariantViolation, "service runtime lock poisoned")))?
+        .commit_prepared_child_object(child_handle.object_id(), child_handle.generation())
+    {
+        let _ = context.clear_owner_callbacks(child_handle);
+        return finish_dvr_child_object_construction_failure(context, runtime, child_handle, dvr_id, primary);
     }
+    Ok(object)
 }
+

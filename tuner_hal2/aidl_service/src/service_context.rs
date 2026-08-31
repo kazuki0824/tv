@@ -331,6 +331,57 @@ impl AidlServiceContext {
         )
     }
 
+
+    pub(crate) fn prepare_filter_callback_artifact(
+        &self,
+        handle: AidlObjectHandle,
+        callback: &binder::Strong<dyn android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::IFilterCallback::IFilterCallback>,
+    ) -> Result<crate::callback_store::PreparedCallbackArtifactToken, HalError> {
+        self.callbacks
+            .lock()
+            .map_err(|_| HalError::internal(HalInternalKind::InvariantViolation, "callback store lock poisoned"))?
+            .prepare_filter_callback(handle, callback)
+            .map_err(|error| error.into_hal_error("filter callback prepare failed"))
+    }
+
+    pub(crate) fn prepare_dvr_callback_artifact(
+        &self,
+        handle: AidlObjectHandle,
+        callback: &binder::Strong<dyn android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::IDvrCallback::IDvrCallback>,
+    ) -> Result<crate::callback_store::PreparedCallbackArtifactToken, HalError> {
+        self.callbacks
+            .lock()
+            .map_err(|_| HalError::internal(HalInternalKind::InvariantViolation, "callback store lock poisoned"))?
+            .prepare_dvr_callback(handle, callback)
+            .map_err(|error| error.into_hal_error("DVR callback prepare failed"))
+    }
+
+    pub(crate) fn commit_child_callback_artifact(
+        &self,
+        handle: AidlObjectHandle,
+        api: AidlApi,
+        token: crate::callback_store::PreparedCallbackArtifactToken,
+    ) -> Result<(), HalError> {
+        let committed = self.callbacks
+            .lock()
+            .map_err(|_| HalError::internal(HalInternalKind::InvariantViolation, "callback store lock poisoned"))?
+            .commit_prepared_callback(handle, api, token);
+        if committed { Ok(()) } else { Err(HalError::internal(HalInternalKind::InvariantViolation, "prepared child callback disappeared before commit")) }
+    }
+
+    pub(crate) fn abort_child_callback_artifact(
+        &self,
+        handle: AidlObjectHandle,
+        api: AidlApi,
+        token: crate::callback_store::PreparedCallbackArtifactToken,
+    ) -> Result<(), HalError> {
+        let _ = self.callbacks
+            .lock()
+            .map_err(|_| HalError::internal(HalInternalKind::InvariantViolation, "callback store lock poisoned"))?
+            .abort_prepared_callback(handle, api, token);
+        Ok(())
+    }
+
     pub(crate) fn runtime(&self) -> SharedTunerRuntime {
         Arc::clone(&self.runtime)
     }

@@ -92,6 +92,41 @@ impl CallbackStore {
         Ok(token)
     }
 
+
+    pub(crate) fn prepare_filter_callback(
+        &mut self,
+        handle: AidlObjectHandle,
+        callback: &Strong<dyn IFilterCallback>,
+    ) -> Result<PreparedCallbackArtifactToken, AidlCallbackStoreError> {
+        let key = CallbackStoreKey::new(handle, AidlApi::DemuxOpenFilter);
+        if self.prepared_callbacks.contains_key(&key) {
+            return Err(AidlCallbackStoreError::PreparedArtifactInFlight);
+        }
+        let token = self.next_prepared_token()?;
+        self.prepared_callbacks.insert(
+            key,
+            (token, StoredCallback::Filter(callback.clone())),
+        );
+        Ok(token)
+    }
+
+    pub(crate) fn prepare_dvr_callback(
+        &mut self,
+        handle: AidlObjectHandle,
+        callback: &Strong<dyn IDvrCallback>,
+    ) -> Result<PreparedCallbackArtifactToken, AidlCallbackStoreError> {
+        let key = CallbackStoreKey::new(handle, AidlApi::DemuxOpenDvr);
+        if self.prepared_callbacks.contains_key(&key) {
+            return Err(AidlCallbackStoreError::PreparedArtifactInFlight);
+        }
+        let token = self.next_prepared_token()?;
+        self.prepared_callbacks.insert(
+            key,
+            (token, StoredCallback::Dvr(callback.clone())),
+        );
+        Ok(token)
+    }
+
     fn next_prepared_token(
         &mut self,
     ) -> Result<PreparedCallbackArtifactToken, AidlCallbackStoreError> {
