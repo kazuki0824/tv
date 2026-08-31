@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "target": {"hal": "tuner_hal2", "product": "default", "backend": "px4"},
+  "vts": {"contract": "android14-aidl-v1", "source_ref": "REPLACE_WITH_SELECTED_AOSP_VTS_TAG_OR_COMMIT", "variant": ""},
+  "frontend": {"type": "ISDBT", "is_software_frontend": false, "frequency_hz": null},
+  "region": {"query": "REPLACE_WITH_REGION_KEY", "candidates": []},
+  "flows": {"scan": true, "record": {"enabled": true, "pid": null}, "clear_live": {"enabled": false}},
+  "queues": {"record_filter_bytes": 1048576, "record_dvr_bytes": 4194304}
+}
