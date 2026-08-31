@@ -1,4 +1,4 @@
-name: temp PR53 structural scan
+name: temp PR53 worker repair
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 jobs:
-  scan:
+  repair:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,12 +19,24 @@ jobs:
           ref: fix/tuner-hal2-rustfmt-1.81
           persist-credentials: true
           fetch-depth: 0
-      - name: Scan call sites
-        run: bash tools/temp_fix53_scan.sh
-      - name: Commit scan report
+      - name: Apply repairs
+        run: python3 tools/temp_fix53_worker.py
+      - name: Format
+        working-directory: tuner_hal2/host_ci
+        run: cargo fmt --all
+      - name: Check
+        working-directory: tuner_hal2/host_ci
+        run: cargo check --workspace --all-targets --locked
+      - name: Test
+        working-directory: tuner_hal2/host_ci
+        run: cargo test --workspace --locked
+      - name: Clippy
+        working-directory: tuner_hal2/host_ci
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Commit repairs
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add tools/temp_fix53_scan.txt
-          git commit -m "ci: record temporary PR53 structural scan"
+          git add tuner_hal2/service_runtime/src/frontend_ops.rs tuner_hal2/service_runtime/src/frontend_worker_txn.rs tuner_hal2/service_runtime/src/worker_failure_classifier.rs tuner_hal2/service_runtime/src/frontend_worker_termination_use_case.rs tuner_hal2/service_runtime/src/worker_runtime.rs tuner_hal2/service_runtime/src/lib.rs tuner_hal2/aidl_service/src/dvr_callback_delivery.rs
+          git commit -m "Route callback and worker failures through canonical outcomes"
           git push origin HEAD:fix/tuner-hal2-rustfmt-1.81
