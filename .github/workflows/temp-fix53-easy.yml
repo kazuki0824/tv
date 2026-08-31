@@ -1,4 +1,4 @@
-name: temp PR53 repair easy
+name: temp PR53 structural scan
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 jobs:
-  repair:
+  scan:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,27 +19,12 @@ jobs:
           ref: fix/tuner-hal2-rustfmt-1.81
           persist-credentials: true
           fetch-depth: 0
-      - name: Apply repairs
-        run: python3 tools/temp_fix53_easy.py
-      - name: Format
-        working-directory: tuner_hal2/host_ci
-        run: cargo fmt --all
-      - name: Verify formatting
-        working-directory: tuner_hal2/host_ci
-        run: cargo fmt --all -- --check
-      - name: Check
-        working-directory: tuner_hal2/host_ci
-        run: cargo check --workspace --all-targets --locked
-      - name: Test
-        working-directory: tuner_hal2/host_ci
-        run: cargo test --workspace --locked
-      - name: Clippy
-        working-directory: tuner_hal2/host_ci
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: Commit repairs
+      - name: Scan call sites
+        run: bash tools/temp_fix53_scan.sh
+      - name: Commit scan report
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add tuner_hal2/common/src/lib.rs tuner_hal2/demux/src/runtime/filter.rs tuner_hal2/descrambler/src/core/multi2.rs
-          git commit -m "Fix section length, video PTS, and MULTI2 verification contracts"
+          git add tools/temp_fix53_scan.txt
+          git commit -m "ci: record temporary PR53 structural scan"
           git push origin HEAD:fix/tuner-hal2-rustfmt-1.81
