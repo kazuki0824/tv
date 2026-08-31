@@ -3308,21 +3308,25 @@ impl DemuxRuntime {
                 .wake(TUNER_EVENT_DATA_READY)
                 .map_err(|_| FmqFailureKind::EventFlagWakeFailed),
         );
-        if matches!(
-            result.action,
-            FmqDeliveryAction::Continue | FmqDeliveryAction::WakePending
-        ) {
-            transaction
-                .commit()
-                .map_err(|_| DemuxRuntimeError::queue_runtime_failure(dvr_id))?;
-        }
         match result.action {
-            FmqDeliveryAction::Continue | FmqDeliveryAction::WakePending => Ok(result.bytes),
-            FmqDeliveryAction::Overflow => Ok(0),
+            FmqDeliveryAction::Continue | FmqDeliveryAction::WakePending => {
+                transaction
+                    .commit()
+                    .map_err(|_| DemuxRuntimeError::queue_runtime_failure(dvr_id))?;
+                Ok(result.bytes)
+            }
+            FmqDeliveryAction::Overflow => {
+                transaction
+                    .abort()
+                    .map_err(|_| DemuxRuntimeError::queue_runtime_failure(dvr_id))?;
+                Ok(0)
+            }
             FmqDeliveryAction::RuntimeFailed(_) => {
+                let abort_failed = transaction.abort().is_err();
                 if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
                     dvr.mark_failed();
                 }
+                let _ = abort_failed;
                 Err(DemuxRuntimeError::queue_runtime_failure(dvr_id))
             }
         }
@@ -3385,6 +3389,7 @@ impl DemuxRuntime {
         let (queue_identity, queue_epoch) = match token.playback_coordinates() {
             Ok(coordinates) => coordinates,
             Err(_) => {
+                let _ = token.abort();
                 if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
                     dvr.mark_failed();
                 }
@@ -3428,6 +3433,22 @@ impl DemuxRuntime {
                 Err(DemuxRuntimeError::queue_runtime_failure(txn.dvr_id))
             }
         }
+    }
+
+    pub fn abort_playback_queue_read(
+        &mut self,
+        mut txn: PlaybackQueueReadTxn,
+    ) -> Result<(), DemuxRuntimeError> {
+        let token = txn
+            .token
+            .take()
+            .ok_or(DemuxRuntimeError::queue_runtime_failure(txn.dvr_id))?;
+        token.abort().map_err(|_| {
+            if let Some(dvr) = self.dvrs.get_mut(&txn.dvr_id) {
+                dvr.mark_failed();
+            }
+            DemuxRuntimeError::queue_runtime_failure(txn.dvr_id)
+        })
     }
 
     pub fn commit_playback_queue_read(

@@ -73,11 +73,18 @@ impl PlaybackConsumeTxn {
                 return Ok(report);
             };
             let read_limit = read_txn.read_limit();
-            let read = demux.read_playback_queue(
+            let read = match demux.read_playback_queue(
                 &read_txn,
                 &mut self.processing_buffer[..read_limit],
-            )?;
+            ) {
+                Ok(read) => read,
+                Err(primary) => {
+                    let _ = demux.abort_playback_queue_read(read_txn);
+                    return Err(primary);
+                }
+            };
             if read == 0 {
+                demux.abort_playback_queue_read(read_txn)?;
                 return Err(DemuxRuntimeError::queue_runtime_failure(self.dvr_id));
             }
             let origin = demux.commit_playback_queue_read(read_txn)?;

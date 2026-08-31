@@ -202,6 +202,10 @@ impl QueueEpochToken {
         }
     }
 
+    pub(crate) fn abort(mut self) -> Result<(), QueueRuntimeError> {
+        self.release().map(|_| ())
+    }
+
     pub(crate) fn playback_coordinates(&self) -> Result<(u64, u64), QueueRuntimeError> {
         if !self.active || self.direction != QueueTransactionDirection::Read {
             return Err(protocol_error(
@@ -251,6 +255,10 @@ impl QueueEpochDrainTxn {
         self.active = false;
         self.protocol.drained.notify_all();
         Ok(())
+    }
+
+    pub(crate) fn abort(mut self) -> Result<(), QueueRuntimeError> {
+        self.rollback()
     }
 }
 
@@ -430,28 +438,44 @@ impl QueueRuntime {
     where
         Clear: FnOnce(&Self) -> Result<usize, QueueRuntimeError>,
     {
-        let protocol = self
-            .dvr_epoch
-            .as_ref()
-            .ok_or(DvrQueueDrainCommitError::EpochCommit)?;
+        let Some(protocol) = self.dvr_epoch.as_ref() else {
+            let _ = drain.abort();
+            return Err(DvrQueueDrainCommitError::EpochCommit);
+        };
         if !Arc::ptr_eq(protocol, &drain.protocol) {
+            let _ = drain.abort();
             return Err(DvrQueueDrainCommitError::EpochCommit);
         }
-        let mut state = protocol
-            .state
-            .lock()
-            .map_err(|_| DvrQueueDrainCommitError::EpochCommit)?;
+        let mut state = match protocol.state.lock() {
+            Ok(state) => state,
+            Err(_) => {
+                // The canonical lock itself is unavailable. Explicit abort is
+                // attempted; Drop is only the final fail-closed backstop if that
+                // abort cannot reacquire the poisoned state.
+                let _ = drain.abort();
+                return Err(DvrQueueDrainCommitError::EpochCommit);
+            }
+        };
         if state.state != QueueEpochState::Draining
             || state.epoch != drain.epoch
             || state.admitted_transaction_count != 0
         {
+            drop(state);
+            let _ = drain.abort();
             return Err(DvrQueueDrainCommitError::EpochCommit);
         }
 
         // FmqQueue::clear() is failure-atomic: allocation happens before the
         // exact read, and a failed exact read leaves the read position intact.
         // Once it succeeds, only infallible in-memory epoch publication remains.
-        let dropped_bytes = clear(self).map_err(|_| DvrQueueDrainCommitError::QueueClear)?;
+        let dropped_bytes = match clear(self) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                drop(state);
+                let _ = drain.abort();
+                return Err(DvrQueueDrainCommitError::QueueClear);
+            }
+        };
         state.epoch = drain.next_epoch;
         state.state = QueueEpochState::Open;
         drain.active = false;
