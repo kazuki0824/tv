@@ -105,10 +105,11 @@ jobs:
       - name: Format and validate
         shell: bash
         run: |
-          rustup toolchain install 1.81.0 --profile minimal --component rustfmt clippy
-          cargo +1.81.0 fmt --all
-          cargo +1.81.0 test --workspace
-          cargo +1.81.0 clippy --workspace --all-targets -- -D warnings
+          cd tuner_hal2/host_ci
+          cargo fmt --all
+          cargo test --workspace --locked
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cd ../..
           git diff --check
       - name: Commit fixes and remove temporary workflow
         shell: bash
