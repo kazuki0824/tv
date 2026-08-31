@@ -54,12 +54,18 @@ impl TransportStreamPid {
 }
 
 /// ARIB STD-B10 の table_id 別 section_length 上限を返す。
-/// EIT p/f と EIT schedule は 0x4e..=0x6f、それ以外は短い section として扱う。
+///
+/// HALは表の意味解析を行わずtransport外形だけを検証する。STD-B10で
+/// 1021-byte区分として固定される既知tableだけをshort classへ置き、
+/// EIT/ST/INT/PCAT/BIT/NBIT/LDT/LIT/ERT/ITT/AMTおよび予約/private/未割当は
+/// 4093-byte transport classとして扱う。TDTだけはsection_length=5固定。
 pub fn max_arib_section_length_for_table_id(table_id: u8) -> usize {
     match table_id {
-        0x4e..=0x6f => MAX_ARIB_EIT_SECTION_LENGTH,
         0x70 => ARIB_TDT_SECTION_LENGTH,
-        _ => MAX_ARIB_SHORT_SECTION_LENGTH,
+        0x00..=0x03 | 0x40 | 0x41 | 0x42 | 0x46 | 0x4a | 0x71 | 0x73 => {
+            MAX_ARIB_SHORT_SECTION_LENGTH
+        }
+        _ => MAX_ARIB_EIT_SECTION_LENGTH,
     }
 }
 
@@ -996,5 +1002,29 @@ mod tests {
     fn id_allocator_reports_exhaustion_without_wrapping() {
         let alloc = IdAllocator::new_bounded(i32::MAX, i32::MAX);
         assert!(alloc.try_allocate().is_err());
+    }
+}
+
+#[cfg(test)]
+mod section_length_contract_tests {
+    use super::*;
+
+    #[test]
+    fn section_length_contract_distinguishes_short_extended_and_tdt_classes() {
+        for table_id in [
+            0x00, 0x01, 0x02, 0x03, 0x40, 0x41, 0x42, 0x46, 0x4a, 0x71, 0x73,
+        ] {
+            assert!(is_valid_arib_section_length(table_id, 1021));
+            assert!(!is_valid_arib_section_length(table_id, 1022));
+        }
+        for table_id in [
+            0x04, 0x4c, 0x4e, 0x6f, 0x72, 0xc2, 0xc4, 0xc7, 0xd0, 0xd2, 0xfe, 0xff,
+        ] {
+            assert!(is_valid_arib_section_length(table_id, 4093));
+            assert!(!is_valid_arib_section_length(table_id, 4094));
+        }
+        assert!(is_valid_arib_section_length(0x70, 5));
+        assert!(!is_valid_arib_section_length(0x70, 4));
+        assert!(!is_valid_arib_section_length(0x70, 6));
     }
 }

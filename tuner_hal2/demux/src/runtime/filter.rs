@@ -616,6 +616,9 @@ impl FilterRuntime {
         packet: PesPacket,
         origin: TsInputOrigin,
     ) -> Result<Vec<PreparedAvMediaPayload>, AudioTimestampAssociationFailure> {
+        if self.open_type == FilterOpenType::TsVideo && packet.pts_90khz.is_none() {
+            return Err(AudioTimestampAssociationFailure::MissingAnchor);
+        }
         if self.open_type != FilterOpenType::TsAudio {
             let metadata = AvMediaEventMetadata::from_pes(
                 packet.stream_id,
@@ -1060,5 +1063,40 @@ mod tests {
             runtime.classify_watermark_transition(5, 5),
             Some(FilterStatusEvent::HighWater)
         );
+    }
+}
+
+
+#[cfg(test)]
+mod video_pts_contract_tests {
+    use super::*;
+    use crate::config::ConfigInputPid;
+
+    fn video_packet(pts_90khz: Option<u64>) -> PesPacket {
+        PesPacket {
+            pid: PacketPid::from_config_pid(ConfigInputPid::validate_tpid(0x0100).unwrap()),
+            stream_id: 0xe0,
+            pts_90khz,
+            dts_90khz: None,
+            is_pes_private_data: false,
+            data_alignment_indicator: true,
+            raw_bytes: vec![0, 0, 1, 0xe0],
+            payload: vec![1, 2, 3, 4],
+        }
+    }
+
+    #[test]
+    fn video_media_payload_requires_authoritative_pes_pts() {
+        let mut filter = FilterRuntime::new_typed(1, 1, FilterOpenType::TsVideo);
+        assert_eq!(
+            filter.prepare_av_media_payloads(video_packet(None), TsInputOrigin::frontend(1)),
+            Err(AudioTimestampAssociationFailure::MissingAnchor)
+        );
+        let prepared = filter
+            .prepare_av_media_payloads(video_packet(Some(90_000)), TsInputOrigin::frontend(1))
+            .expect("explicit video PTS is authoritative for this product profile");
+        assert_eq!(prepared.len(), 1);
+        assert!(prepared[0].metadata.is_pts_present);
+        assert_eq!(prepared[0].metadata.pts_90khz, Some(90_000));
     }
 }
