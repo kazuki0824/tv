@@ -1,4 +1,4 @@
-name: temp PR53 ISDB-S repair
+name: temp PR53 ISDB-S repair retry
 
 on:
   push:
