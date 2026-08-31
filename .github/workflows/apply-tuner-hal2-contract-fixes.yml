@@ -1,0 +1,125 @@
+name: apply tuner_hal2 contract fixes
+
+on:
+  push:
+    branches:
+      - fix/tuner-hal2-rustfmt-1.81
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.head_commit.message == 'chore: apply remaining tuner-hal2 fixes'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: fix/tuner-hal2-rustfmt-1.81
+      - name: Apply design and ISDB-T layer fixes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          design = Path('tuner_hal/DESIGN_JA.md')
+          s = design.read_text()
+          replacements = {
+              '| T-SEC-14g | target未完成、`stop()`／`flush()`／再設定／stream boundary | timeoutで誤完了せず、境界前targetを境界後へ継承・完了扱いしない。境界時は0-S-3Bのowner境界に従い、`StreamBoundaryTxn`のtyped reset / invalidate dispatchを受けて各per-filter ownerが対象stateを更新する |':
+              '| T-SEC-14g | target未完成、`stop()`／`flush()`／再設定／stream boundary | `stop()`ではtarget metadata・配送済みbitmap・partial sectionを保持して再`start()`で継続する。`flush()`／再設定／stream boundaryでは境界前targetを境界後へ継承・完了扱いせず、0-S-3Bのowner境界に従い各per-filter ownerが対象stateを更新する |',
+              '- `TableInfo repeat=false`の完了に時間窓、再送一巡、最初に完成したcandidate、非公開table一覧を使用しない。不完全なtargetでは有限時間で停止することを推測せず、callerの`stop()`、`flush()`、再設定、stream boundaryまで待機する。これらの境界前target / sectionを境界後のtarget / sectionへ連結・配送しない。stream boundaryでは`StreamBoundaryTxn`が各steady-state ownerへのtyped reset / invalidateをprepare / dispatchする。target metadata / 配送済みbitmapは対応するper-filter TableInfo tracker owner、parser / assembler stateは各per-filter parser owner、Filter parser fence generationは`FilterProducerDrainGate.parser_state_generation`がそれぞれmutation ownerであり、`StreamBoundaryTxn`はこれらのstate自体を所有・直接mutationしない。':
+              '- `TableInfo repeat=false`の完了に時間窓、再送一巡、最初に完成したcandidate、非公開table一覧を使用しない。不完全なtargetでは有限時間で停止することを推測しない。`stop()`はdeliveryだけを停止し、target metadata・配送済みbitmap・partial sectionを保持して再`start()`で継続する。`flush()`、再設定、stream boundaryでは境界前target / sectionを境界後のtarget / sectionへ連結・配送しない。stream boundaryでは`StreamBoundaryTxn`が各steady-state ownerへのtyped reset / invalidateをprepare / dispatchする。target metadata / 配送済みbitmapは対応するper-filter TableInfo tracker owner、parser / assembler stateは各per-filter parser owner、Filter parser fence generationは`FilterProducerDrainGate.parser_state_generation`がそれぞれmutation ownerであり、`StreamBoundaryTxn`はこれらのstate自体を所有・直接mutationしない。',
+              '| T-PES-9 | bounded PESのflush/stop/close | 未完成を完成扱いせず、claimを返却 |':
+              '| T-PES-9 | bounded PESの`stop()`／`flush()`／`close()` | `stop()`は未完成PESと対応claimを保持して再`start()`で継続する。`flush()`／`close()`は未完成を完成扱いせず破棄してclaimを返却する |',
+              '| flush / stop / close / source unlink | boundary | `StreamBoundaryTxn`参照 | 境界前の未完了PESを境界後のPESとして配送しない |':
+              '| `stop()` | delivery pause | 未完了PESと対応claimを保持し、再`start()`で同じPES組立てを継続する |\n| `flush()` / close / source unlink | boundary | `StreamBoundaryTxn`参照 | 境界前の未完了PESを境界後のPESとして配送せず、partial stateと対応claimを破棄・返却する |',
+              '別PIDのPUSIは影響させない。TEI、連続性の不連続、`flush()`、`stop()`、`close()`では、境界前の未完PESを境界後の完了PESへ連結・配送せず、対応する型付き診断を記録する。':
+              '別PIDのPUSIは影響させない。`stop()`では未完PESと対応claimを保持して再`start()`で継続する。TEI、連続性の不連続、`flush()`、`close()`では、境界前の未完PESを境界後の完了PESへ連結・配送せず、対応する型付き診断を記録してpartial stateと対応claimを破棄・返却する。',
+          }
+          for old, new in replacements.items():
+              if old not in s:
+                  raise SystemExit(f'missing design replacement: {old[:80]}')
+              s = s.replace(old, new, 1)
+          design.write_text(s)
+
+          common = Path('tuner_hal2/common/src/lib.rs')
+          s = common.read_text()
+          marker = '''#[derive(Clone, Debug, Eq, PartialEq)]\npub struct FrontendTuneRequest {\n'''
+          insert = '''#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub enum FrontendIsdbtSegmentRequest {\n    Unspecified,\n    Auto,\n}\n\n#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub struct FrontendIsdbtLayerSetting {\n    pub num_of_segment: FrontendIsdbtSegmentRequest,\n}\n\n#[derive(Clone, Debug, Eq, PartialEq)]\npub struct FrontendTuneRequest {\n'''
+          if marker not in s:
+              raise SystemExit('FrontendTuneRequest marker missing')
+          s = s.replace(marker, insert, 1)
+          field_marker = '    pub partial_reception: FrontendIsdbtPartialReceptionRequirement,\n'
+          if field_marker not in s:
+              raise SystemExit('partial_reception field missing')
+          s = s.replace(field_marker, '    pub isdbt_layer_settings: Vec<FrontendIsdbtLayerSetting>,\n' + field_marker, 1)
+          common.write_text(s)
+
+          # Existing internal/test literals are non-ISDB-T unless explicitly filled by the Binder converter.
+          for path in Path('tuner_hal2').rglob('*.rs'):
+              if path == Path('tuner_hal2/common/src/lib.rs') or path == Path('tuner_hal2/binder_adapter/src/aidl_frontend_settings.rs'):
+                  continue
+              text = path.read_text()
+              if 'FrontendTuneRequest {' not in text:
+                  continue
+              # Add the new field immediately before partial_reception in request literals that do not yet carry it.
+              pattern = re.compile(r'(FrontendTuneRequest\s*\{.*?)(\n(?P<i>\s*)partial_reception:)', re.S)
+              pos = 0
+              out = []
+              changed = False
+              for m in pattern.finditer(text):
+                  block = m.group(1)
+                  out.append(text[pos:m.start()])
+                  if 'isdbt_layer_settings:' not in block:
+                      out.append(block + f"\n{m.group('i')}isdbt_layer_settings: Vec::new()," + m.group(2))
+                      changed = True
+                  else:
+                      out.append(m.group(0))
+                  pos = m.end()
+              if changed:
+                  out.append(text[pos:])
+                  path.write_text(''.join(out))
+
+          binder = Path('tuner_hal2/binder_adapter/src/aidl_frontend_settings.rs')
+          s = binder.read_text()
+          old_import = '''    is_japan_cs110_if_frequency_hz, FrontendIsdbtPartialReceptionRequirement, FrontendScanMode,\n    FrontendStreamIdKind, FrontendSystem, FrontendTuneRequest, HalError, HalInvalidArgumentKind,\n'''
+          new_import = '''    is_japan_cs110_if_frequency_hz, FrontendIsdbtLayerSetting,\n    FrontendIsdbtPartialReceptionRequirement, FrontendIsdbtSegmentRequest, FrontendScanMode,\n    FrontendStreamIdKind, FrontendSystem, FrontendTuneRequest, HalError, HalInvalidArgumentKind,\n'''
+          if old_import not in s:
+              raise SystemExit('binder import marker missing')
+          s = s.replace(old_import, new_import, 1)
+          helper_marker = '''fn map_isdbt_partial_reception(\n'''
+          helper = '''fn map_isdbt_layer_settings(\n    settings: &android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::FrontendIsdbtSettings::FrontendIsdbtSettings,\n) -> Result<Vec<FrontendIsdbtLayerSetting>, HalError> {\n    settings\n        .layerSettings\n        .iter()\n        .map(|layer| {\n            let num_of_segment = match layer.numOfSegment {\n                0 => FrontendIsdbtSegmentRequest::Unspecified,\n                0xFF => FrontendIsdbtSegmentRequest::Auto,\n                _ => {\n                    return invalid_frontend_setting(\n                        "validated ISDB-T layer segment request changed before conversion",\n                    )\n                }\n            };\n            Ok(FrontendIsdbtLayerSetting { num_of_segment })\n        })\n        .collect()\n}\n\nfn map_isdbt_partial_reception(\n'''
+          if helper_marker not in s:
+              raise SystemExit('binder helper marker missing')
+          s = s.replace(helper_marker, helper, 1)
+          isdbt_marker = '''                symbol_rate: None,\n                partial_reception: map_isdbt_partial_reception(s.partialReceptionFlag)?,\n'''
+          if isdbt_marker not in s:
+              raise SystemExit('ISDB-T request marker missing')
+          s = s.replace(isdbt_marker, '''                symbol_rate: None,\n                isdbt_layer_settings: map_isdbt_layer_settings(s)?,\n                partial_reception: map_isdbt_partial_reception(s.partialReceptionFlag)?,\n''', 1)
+          isdbs_marker = '''                symbol_rate,\n                partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,\n'''
+          if isdbs_marker not in s:
+              raise SystemExit('ISDB-S request marker missing')
+          s = s.replace(isdbs_marker, '''                symbol_rate,\n                isdbt_layer_settings: Vec::new(),\n                partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,\n''', 1)
+          binder.write_text(s)
+
+          # The converter regression must inspect the converted request, not merely the source AIDL vector.
+          PY
+      - name: Format and validate
+        shell: bash
+        run: |
+          rustup toolchain install 1.81.0 --profile minimal --component rustfmt clippy
+          cargo +1.81.0 fmt --all
+          cargo +1.81.0 test --workspace
+          cargo +1.81.0 clippy --workspace --all-targets -- -D warnings
+          git diff --check
+      - name: Commit fixes and remove temporary workflow
+        shell: bash
+        run: |
+          rm .github/workflows/apply-tuner-hal2-contract-fixes.yml
+          git config user.name 'maleicacid'
+          git config user.email '4982384+kazuki0824@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix(tuner-hal2): preserve filter and ISDB-T contracts'
+          git push origin HEAD:fix/tuner-hal2-rustfmt-1.81
