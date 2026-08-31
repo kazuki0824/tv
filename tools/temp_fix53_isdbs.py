@@ -51,8 +51,6 @@ fn normalize_frequency_to_discrete_raster(
         return None;
     }
     let center = first_hz.checked_add(step_hz.checked_mul(index)?)?;
-    // For an exact half-step tie, the integer nearest-index rule above chooses
-    // the upper channel. Every non-tie accepted value has one nearest center.
     (frequency_hz.abs_diff(center) <= half_step).then_some(center)
 }
 
@@ -104,7 +102,6 @@ mod isdbs_raster_adapter_tests {
 '''
 p.write_text(s)
 
-# Service validation uses the same normalizer as backend projection.
 replace_once(
     "tuner_hal2/service_runtime/src/frontend_request_txn.rs",
     """use maleicacid_tuner_hal2_common::{
@@ -138,7 +135,6 @@ replace_once(
 """,
 )
 
-# px4 mapping consumes the canonical normalized center, then converts center->freq_no.
 p = Path("tuner_hal2/device/src/px4/tune_mapping.rs")
 s = p.read_text()
 s = s.replace(
@@ -159,20 +155,11 @@ replacement = r'''pub fn map_bs_if_frequency_to_px4_freq_no(if_hz: u64) -> Resul
     let delta = center - PX4_BS_BASE_IF_HZ;
     let freq_no = PX4_BS_FREQ_NO_MIN
         + i32::try_from(delta / PX4_BS_STEP_HZ).map_err(|_| {
-            HalError::invalid_argument(
-                HalInvalidArgumentKind::UnsupportedFrequency,
-                "px4 BS IF frequency is unsupported",
-            )
+            HalError::invalid_argument(HalInvalidArgumentKind::UnsupportedFrequency, "px4 BS IF frequency is unsupported")
         })?;
-    (PX4_BS_FREQ_NO_MIN..=PX4_BS_FREQ_NO_MAX)
-        .contains(&freq_no)
-        .then_some(freq_no)
-        .ok_or_else(|| {
-            HalError::invalid_argument(
-                HalInvalidArgumentKind::UnsupportedFrequency,
-                "px4 BS IF frequency is unsupported",
-            )
-        })
+    (PX4_BS_FREQ_NO_MIN..=PX4_BS_FREQ_NO_MAX).contains(&freq_no).then_some(freq_no).ok_or_else(|| {
+        HalError::invalid_argument(HalInvalidArgumentKind::UnsupportedFrequency, "px4 BS IF frequency is unsupported")
+    })
 }
 
 pub fn map_cs110_if_frequency_to_px4_freq_no(if_hz: u64) -> Result<i32, HalError> {
@@ -185,20 +172,11 @@ pub fn map_cs110_if_frequency_to_px4_freq_no(if_hz: u64) -> Result<i32, HalError
     let delta = center - PX4_CS_BASE_IF_HZ;
     let freq_no = PX4_CS_FREQ_NO_MIN
         + i32::try_from(delta / PX4_CS_STEP_HZ).map_err(|_| {
-            HalError::invalid_argument(
-                HalInvalidArgumentKind::UnsupportedFrequency,
-                "px4 CS110 IF frequency is unsupported",
-            )
+            HalError::invalid_argument(HalInvalidArgumentKind::UnsupportedFrequency, "px4 CS110 IF frequency is unsupported")
         })?;
-    (PX4_CS_FREQ_NO_MIN..=PX4_CS_FREQ_NO_MAX)
-        .contains(&freq_no)
-        .then_some(freq_no)
-        .ok_or_else(|| {
-            HalError::invalid_argument(
-                HalInvalidArgumentKind::UnsupportedFrequency,
-                "px4 CS110 IF frequency is unsupported",
-            )
-        })
+    (PX4_CS_FREQ_NO_MIN..=PX4_CS_FREQ_NO_MAX).contains(&freq_no).then_some(freq_no).ok_or_else(|| {
+        HalError::invalid_argument(HalInvalidArgumentKind::UnsupportedFrequency, "px4 CS110 IF frequency is unsupported")
+    })
 }
 
 '''
@@ -208,7 +186,6 @@ s = s.replace(
     "            let band = if normalize_japan_cs110_if_frequency_hz(request.frequency).is_some() {\n",
     1,
 )
-# old broad range helper is no longer needed.
 old_helper = '''fn is_japan_cs110_if_frequency_range_hz(if_hz: u64) -> bool {
     let last =
         PX4_CS_BASE_IF_HZ + PX4_CS_STEP_HZ * ((PX4_CS_FREQ_NO_MAX - PX4_CS_FREQ_NO_MIN) as u64);
@@ -217,6 +194,29 @@ old_helper = '''fn is_japan_cs110_if_frequency_range_hz(if_hz: u64) -> bool {
 
 '''
 s = s.replace(old_helper, "", 1)
+old_test = '''    #[test]
+    fn isdbs_satellite_frequency_validation_is_exact_when_acquire_range_is_zero() {
+        assert!(map_bs_if_frequency_to_px4_freq_no(1_049_480_000).is_ok());
+        assert!(map_bs_if_frequency_to_px4_freq_no(1_049_480_001).is_err());
+        assert!(map_bs_if_frequency_to_px4_freq_no(1_049_979_999).is_err());
+        assert!(map_cs110_if_frequency_to_px4_freq_no(1_613_000_000).is_ok());
+        assert!(map_cs110_if_frequency_to_px4_freq_no(1_613_000_001).is_err());
+        assert!(map_cs110_if_frequency_to_px4_freq_no(1_613_499_999).is_err());
+    }
+'''
+new_test = '''    #[test]
+    fn isdbs_satellite_frequency_validation_normalizes_within_the_unambiguous_raster_cell() {
+        assert_eq!(map_bs_if_frequency_to_px4_freq_no(1_049_480_000), Ok(0));
+        assert_eq!(map_bs_if_frequency_to_px4_freq_no(1_050_000_000), Ok(0));
+        assert_eq!(map_cs110_if_frequency_to_px4_freq_no(1_613_000_000), Ok(12));
+        assert_eq!(map_cs110_if_frequency_to_px4_freq_no(1_613_499_999), Ok(12));
+        assert!(map_bs_if_frequency_to_px4_freq_no(1_550_000_000).is_err());
+        assert!(map_cs110_if_frequency_to_px4_freq_no(1_550_000_000).is_err());
+    }
+'''
+if s.count(old_test) != 1:
+    raise SystemExit("old exact ISDB-S regression test anchor mismatch")
+s = s.replace(old_test, new_test, 1)
 if "android_isdbs_frequency_is_normalized_to_px4_raster" not in s:
     s += r'''
 
@@ -236,8 +236,6 @@ mod android_isdbs_frequency_adapter_tests {
 '''
 p.write_text(s)
 
-# Repo SSOT: the scalar is a bounding envelope; discrete-raster acceptance is
-# derived from the same immutable product profile, with no CTS-only exception.
 p = Path("tuner_hal/DESIGN_JA.md")
 s = p.read_text()
 old = "| T-AOSP-44 | `FrontendInfo` scalar境界とtune validation | min/max frequency、symbol rate、acquire rangeが同一`CapabilitySnapshot`と受付範囲に一致 |"
