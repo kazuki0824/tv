@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, Weak};
 
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
@@ -257,7 +258,17 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
         snapshots: Vec<FilterEventDeliverySnapshot>,
     ) -> Result<(), HalError> {
         let mut failures = FirstErrorCollector::new();
+        let mut start_id_blocked = BTreeSet::new();
         for snapshot in snapshots {
+            let delivery_key = (snapshot.object_id.0, snapshot.generation.0);
+            if start_id_blocked.contains(&delivery_key) {
+                continue;
+            }
+            let pending_start_id = match &snapshot.event {
+                FilterEventDelivery::StartId(start_id) => Some(*start_id),
+                _ => None,
+            };
+            let filter_id = snapshot.filter_id;
             let handle = AidlObjectHandle::new(
                 AidlObjectKind::Filter,
                 snapshot.object_id,
@@ -270,6 +281,9 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
                         HalInternalKind::InvariantViolation,
                         "AIDL service context is not available for filter callback delivery",
                     ));
+                    if pending_start_id.is_some() {
+                        start_id_blocked.insert(delivery_key);
+                    }
                     continue;
                 }
             };
@@ -287,6 +301,9 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
                         CallbackDeliveryFailurePhase::CallbackArtifactLookup,
                         primary,
                     ));
+                    if pending_start_id.is_some() {
+                        start_id_blocked.insert(delivery_key);
+                    }
                     continue;
                 }
                 Err(error) => {
@@ -298,6 +315,9 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
                         CallbackDeliveryFailurePhase::CallbackArtifactLookup,
                         primary,
                     ));
+                    if pending_start_id.is_some() {
+                        start_id_blocked.insert(delivery_key);
+                    }
                     continue;
                 }
             };
@@ -311,6 +331,9 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
                         CallbackDeliveryFailurePhase::EventConversion,
                         primary,
                     ));
+                    if pending_start_id.is_some() {
+                        start_id_blocked.insert(delivery_key);
+                    }
                     continue;
                 }
             };
@@ -331,6 +354,32 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
                     CallbackDeliveryFailurePhase::BinderDelivery,
                     primary,
                 ));
+                if pending_start_id.is_some() {
+                    start_id_blocked.insert(delivery_key);
+                }
+                continue;
+            }
+            if let Some(start_id) = pending_start_id {
+                let commit_result = runtime
+                    .lock()
+                    .map_err(|_| {
+                        HalError::internal(
+                            HalInternalKind::InvariantViolation,
+                            "service runtime lock poisoned while committing filter startId delivery",
+                        )
+                    })
+                    .and_then(|mut runtime| {
+                        runtime.commit_filter_start_id_delivery(
+                            handle.object_id(),
+                            handle.generation(),
+                            filter_id,
+                            start_id,
+                        )
+                    });
+                if let Err(error) = commit_result {
+                    failures.push_error(error);
+                    start_id_blocked.insert(delivery_key);
+                }
             }
         }
         failures.into_result()
@@ -349,6 +398,7 @@ mod tests {
         FilterEventDeliverySnapshot {
             object_id: AidlObjectId(1),
             generation: AidlObjectGeneration(2),
+            filter_id: 3,
             event,
         }
     }

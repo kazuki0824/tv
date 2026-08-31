@@ -15,10 +15,9 @@ use crate::av::{
     ClientHandleState, DEFAULT_AV_MAX_EVENT_BYTES,
     DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER, DEFAULT_AV_PER_FILTER_LIVE_BYTES,
 };
-#[cfg(test)]
-use crate::config::FilterDelayReadiness;
 use crate::config::{
-    AvStreamTypeConfig, ConfigInputPid, FilterDelayHint, FilterOpenType, OpenFilterRequest,
+    AvStreamTypeConfig, ConfigInputPid, FilterDelayHint, FilterDelayReadiness, FilterOpenType,
+    OpenFilterRequest,
 };
 use crate::packet_pipeline::{
     FilterPipelineConfig, PacketPipeline, PipelineBoundaryReason, PipelineDeliveryAction,
@@ -2295,15 +2294,27 @@ impl DemuxRuntime {
             .map_err(|_| DemuxRuntimeError::generation_exhausted(Some(filter_id)))
     }
 
-    pub fn take_pending_filter_start_id(
-        &mut self,
+    pub fn pending_filter_start_id(
+        &self,
         filter_id: i32,
     ) -> Result<Option<i32>, DemuxRuntimeError> {
         Ok(self
             .filters
+            .get(&filter_id)
+            .ok_or(DemuxRuntimeError::filter_missing(filter_id))?
+            .pending_start_id())
+    }
+
+    pub fn commit_pending_filter_start_id(
+        &mut self,
+        filter_id: i32,
+        expected_start_id: i32,
+    ) -> Result<bool, DemuxRuntimeError> {
+        Ok(self
+            .filters
             .get_mut(&filter_id)
             .ok_or(DemuxRuntimeError::filter_missing(filter_id))?
-            .take_pending_start_id())
+            .commit_pending_start_id(expected_start_id))
     }
 
     pub fn start_filter_runtime_from_typed_request(
@@ -4915,20 +4926,6 @@ impl DemuxRuntime {
                     None
                 }
             };
-            let gate = match self.filter_producer_gates.get(&filter_id).cloned() {
-                Some(gate) => gate,
-                None => {
-                    drop(permit);
-                    diagnostics.push(
-                        PipelineDiagnostic::filter_queue_payload_delivery_failure(
-                            pid,
-                            filter_id,
-                            DemuxRuntimeError::filter_missing(filter_id),
-                        ),
-                    );
-                    continue;
-                }
-            };
             if permit
                 .commit_record_output(TS_PACKET_SIZE, event)
                 .is_err()
@@ -4943,18 +4940,8 @@ impl DemuxRuntime {
                 );
                 continue;
             }
-            match gate.take_pending_events() {
-                Ok(mut events) => generated_events.append(&mut events),
-                Err(_) => {
-                    self.quarantine_filter_runtime(filter_id);
-                    diagnostics.push(
-                        PipelineDiagnostic::filter_queue_payload_delivery_failure(
-                            pid,
-                            filter_id,
-                            DemuxRuntimeError::queue_runtime_failure(filter_id),
-                        ),
-                    );
-                }
+            if let Some(filter) = self.filters.get_mut(&filter_id) {
+                filter.note_payload_queued(TS_PACKET_SIZE);
             }
         }
         (diagnostics, generated_events)
@@ -5279,7 +5266,24 @@ impl DemuxRuntime {
                 }
             }
         }
+        for (filter_id, filter) in &self.filters {
+            if filter.state().is_started()
+                && filter.delivery_readiness() == FilterDelayReadiness::Ready
+            {
+                gates_with_pending_events.insert(*filter_id);
+            }
+        }
         for filter_id in gates_with_pending_events {
+            let ready = self
+                .filters
+                .get(&filter_id)
+                .is_some_and(|filter| {
+                    filter.state().is_started()
+                        && filter.delivery_readiness() == FilterDelayReadiness::Ready
+                });
+            if !ready {
+                continue;
+            }
             let pending = self
                 .filter_producer_gates
                 .get(&filter_id)
@@ -5289,7 +5293,14 @@ impl DemuxRuntime {
                         .map_err(|_| DemuxRuntimeError::queue_runtime_failure(filter_id))
                 });
             match pending {
-                Ok(mut pending) => committed_events.append(&mut pending),
+                Ok(mut pending) => {
+                    if !pending.is_empty() {
+                        if let Some(filter) = self.filters.get_mut(&filter_id) {
+                            filter.commit_delivery_batch();
+                        }
+                        committed_events.append(&mut pending);
+                    }
+                }
                 Err(error) => {
                     self.quarantine_filter_runtime(filter_id);
                     diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(

@@ -267,6 +267,7 @@ pub struct FrontendDemuxPacketSink {
 pub struct FilterEventDeliverySnapshot {
     pub object_id: AidlObjectId,
     pub generation: AidlObjectGeneration,
+    pub filter_id: i32,
     pub event: FilterEventDelivery,
 }
 
@@ -975,6 +976,7 @@ impl TunerServiceRuntime {
         reports: &[PipelineReport],
     ) -> Vec<FilterEventDeliverySnapshot> {
         let mut snapshots = Vec::new();
+        let mut start_id_snapshot_emitted = BTreeSet::new();
         for event in reports
             .iter()
             .flat_map(|report| report.generated_events.iter())
@@ -1038,24 +1040,81 @@ impl TunerServiceRuntime {
                 .registry
                 .filter(FilterRuntimeId(filter_id))
                 .map(|filter| filter.owner_demux_id);
-            if let Some(start_id) = owner_demux_id
-                .and_then(|demux_id| self.registry.demux_runtime_mut(DemuxRuntimeId(demux_id)))
-                .and_then(|demux| demux.take_pending_filter_start_id(filter_id).ok())
-                .flatten()
-            {
-                snapshots.push(FilterEventDeliverySnapshot {
-                    object_id,
-                    generation,
-                    event: FilterEventDelivery::StartId(start_id),
-                });
+            if start_id_snapshot_emitted.insert(filter_id) {
+                if let Some(start_id) = owner_demux_id
+                    .and_then(|demux_id| self.registry.demux_runtime(DemuxRuntimeId(demux_id)))
+                    .and_then(|demux| demux.pending_filter_start_id(filter_id).ok())
+                    .flatten()
+                {
+                    snapshots.push(FilterEventDeliverySnapshot {
+                        object_id,
+                        generation,
+                        filter_id,
+                        event: FilterEventDelivery::StartId(start_id),
+                    });
+                }
             }
             snapshots.push(FilterEventDeliverySnapshot {
                 object_id,
                 generation,
+                filter_id,
                 event,
             });
         }
         snapshots
+    }
+
+    pub fn commit_filter_start_id_delivery(
+        &mut self,
+        object_id: AidlObjectId,
+        object_generation: AidlObjectGeneration,
+        filter_id: i32,
+        start_id: i32,
+    ) -> Result<(), HalError> {
+        let entry = self
+            .object_table
+            .live_entry_for_runtime(AidlObjectKind::Filter, LedgerId(i64::from(filter_id)))
+            .ok_or_else(|| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "filter object is no longer live while committing startId delivery",
+                )
+            })?;
+        if entry.object_id != object_id || entry.generation != object_generation {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "filter object generation changed while committing startId delivery",
+            ));
+        }
+        let owner_demux_id = self
+            .registry
+            .filter(FilterRuntimeId(filter_id))
+            .map(|filter| filter.owner_demux_id)
+            .ok_or_else(|| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "filter registry entry is missing while committing startId delivery",
+                )
+            })?;
+        let committed = self
+            .registry
+            .demux_runtime_mut(DemuxRuntimeId(owner_demux_id))
+            .ok_or_else(|| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "owner demux is missing while committing startId delivery",
+                )
+            })?
+            .commit_pending_filter_start_id(filter_id, start_id)
+            .map_err(demux_runtime_error_to_hal)?;
+        if committed {
+            Ok(())
+        } else {
+            Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "pending filter startId changed before successful delivery commit",
+            ))
+        }
     }
 }
 

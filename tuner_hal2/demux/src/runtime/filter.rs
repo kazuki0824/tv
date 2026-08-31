@@ -3,8 +3,8 @@ use crate::av::{
     AvMediaEventMetadata,
 };
 use crate::config::{
-    AvStreamTypeConfig, FilterDelayHint, FilterDelayHints, FilterOpenType, OpenFilterRequest,
-    SectionConditionKind, SectionRuntimeConfig,
+    AvStreamTypeConfig, FilterDelayHint, FilterDelayHints, FilterDelayReadiness, FilterOpenType,
+    OpenFilterRequest, SectionConditionKind, SectionRuntimeConfig,
 };
 use crate::packet_pipeline::{
     FilterPipelineConfig, PacketPid, PipelineFilterView, PipelineOpenKind,
@@ -351,8 +351,7 @@ impl FilterRuntime {
     pub fn av_backing_present(&self) -> bool {
         self.av_backing_present
     }
-    #[cfg(test)]
-    pub fn delivery_readiness(&self) -> crate::config::FilterDelayReadiness {
+    pub(crate) fn delivery_readiness(&self) -> FilterDelayReadiness {
         self.delay_hints.delivery_readiness(
             self.delivery_not_before
                 .map(|deadline| {
@@ -365,6 +364,11 @@ impl FilterRuntime {
                 .unwrap_or(u64::MAX),
             self.queued_bytes,
         )
+    }
+
+    pub(crate) fn commit_delivery_batch(&mut self) {
+        self.queued_bytes = 0;
+        self.delivery_not_before = None;
     }
     pub fn snapshot(&self) -> FilterRuntimeSnapshot {
         FilterRuntimeSnapshot {
@@ -839,8 +843,16 @@ impl FilterRuntime {
         Ok(())
     }
 
-    pub(crate) fn take_pending_start_id(&mut self) -> Option<i32> {
-        self.pending_start_id.take()
+    pub(crate) const fn pending_start_id(&self) -> Option<i32> {
+        self.pending_start_id
+    }
+
+    pub(crate) fn commit_pending_start_id(&mut self, expected_start_id: i32) -> bool {
+        if self.pending_start_id != Some(expected_start_id) {
+            return false;
+        }
+        self.pending_start_id = None;
+        true
     }
 
     pub(crate) fn clear_pending_start_id(&mut self) {
