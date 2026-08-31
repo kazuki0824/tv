@@ -11,7 +11,7 @@ pub const WORKER_IO_DEADLINE_MS: u64 = 2_000;
 pub const WORKER_REAPER_DEADLINE_MS: u64 = 10_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum WorkerTerminalResult<T> {
+pub(crate) enum WorkerTerminalResult<T> {
     Normal(T),
     StopRequested,
     RuntimeFailure(HalError),
@@ -65,7 +65,7 @@ impl<T> WorkerRuntime<T> {
         }
     }
 
-    pub fn join(mut self) -> WorkerTerminalResult<T> {
+    pub(crate) fn join(mut self) -> WorkerTerminalResult<T> {
         let Some(join) = self.handle.join.take() else {
             return WorkerTerminalResult::PanicOrJoinFailure;
         };
@@ -133,6 +133,14 @@ impl WorkerRuntime<()> {
     pub fn checked_next_generation(current: u64) -> Option<u64> {
         current.checked_add(1)
     }
+
+    pub fn join_classified(self) -> crate::worker_failure_classifier::ClassifiedWorkerTerminalResult<T> {
+        crate::worker_failure_classifier::WorkerFailureClassifier::classify_terminal(
+            self.join(),
+            "worker panicked or could not be joined",
+        )
+    }
+
 }
 
 #[cfg(test)]

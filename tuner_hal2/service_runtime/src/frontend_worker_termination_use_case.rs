@@ -1,4 +1,4 @@
-use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
+use maleicacid_tuner_hal2_common::HalError;
 use maleicacid_tuner_hal2_device::{
     FrontendRuntimeState, FrontendWorkerCancelReason, FrontendWorkerKind,
 };
@@ -11,7 +11,7 @@ use crate::frontend_ops::{
 use crate::frontend_worker_txn::{
     cleanup_frontend_object_after_close_begin, FrontendCloseCleanupReport,
 };
-use crate::worker_runtime::WorkerTerminalResult;
+use crate::worker_failure_classifier::WorkerFailureClassifier;
 
 /// Call-local frontend-specific terminal orchestration. Generic stop, wake,
 /// join, and reaping state remains owned by `WorkerRuntime`.
@@ -32,14 +32,12 @@ impl FrontendWorkerTerminationUseCase {
         let frontend_id = event.frontend_id();
         let owner_generation = event.owner_generation();
         let worker_kind = event.worker_kind();
-        let terminal_error = match event.into_terminal_result() {
-            WorkerTerminalResult::Normal(()) | WorkerTerminalResult::StopRequested => None,
-            WorkerTerminalResult::RuntimeFailure(error) => Some(error),
-            WorkerTerminalResult::PanicOrJoinFailure => Some(HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "frontend worker panicked or could not be joined",
-            )),
-        };
+        let terminal_error = WorkerFailureClassifier::classify_terminal(
+            event.into_terminal_result(),
+            "frontend worker panicked or could not be joined",
+        )
+        .into_failure()
+        .map(|(_, error)| error);
         if matches!(
             snapshot.state,
             FrontendRuntimeState::Tuning { .. } | FrontendRuntimeState::Scanning { .. }

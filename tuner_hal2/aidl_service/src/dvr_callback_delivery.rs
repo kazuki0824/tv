@@ -19,7 +19,7 @@ use maleicacid_tuner_hal2_service_runtime::{
     CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport, CapabilitySnapshot,
     DvrPostCommitNotificationDiagnosticRecord, DvrPostCommitNotificationFailureKind,
     DvrPostCommitNotificationPhase, DvrStatusNotifierCleanupDiagnosticRecord,
-    DvrStatusPollSnapshot, WorkerRuntime, WorkerTerminalResult,
+    ClassifiedWorkerTerminalResult, DvrStatusPollSnapshot, WorkerRuntime,
 };
 
 use crate::object_handle::AidlObjectHandle;
@@ -49,13 +49,10 @@ fn signal_dvr_status_notifier_stop(notifier: &DvrStatusNotifier) {
 }
 
 fn join_finished_dvr_status_notifier(notifier: DvrStatusNotifier) -> Result<(), HalError> {
-    match notifier.worker.join() {
-        WorkerTerminalResult::Normal(()) | WorkerTerminalResult::StopRequested => Ok(()),
-        WorkerTerminalResult::RuntimeFailure(error) => Err(error),
-        WorkerTerminalResult::PanicOrJoinFailure => Err(HalError::cleanup_failed(
-            "DVR status notifier join",
-            "DVR status notifier thread panicked",
-        )),
+    match notifier.worker.join_classified() {
+        ClassifiedWorkerTerminalResult::Normal(())
+        | ClassifiedWorkerTerminalResult::StopRequested => Ok(()),
+        ClassifiedWorkerTerminalResult::Failure { error, .. } => Err(error),
     }
 }
 

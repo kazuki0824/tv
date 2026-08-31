@@ -34,6 +34,7 @@ pub enum FrontendOperationEvent {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrontendOperationEventAcceptance {
     Accepted,
+    AcceptedCallbackFailure,
     DiscardedStale,
 }
 
@@ -271,21 +272,25 @@ impl FrontendTuneScanTxn {
         if !is_current {
             return Ok(FrontendOperationEventAcceptance::DiscardedStale);
         }
-        match event {
+        let delivery = match event {
             FrontendOperationEvent::Tune {
                 notifier,
                 notification,
-            } => {
-                let _ = notifier(frontend_id, operation_generation, notification);
-            }
+            } => notifier(frontend_id, operation_generation, notification),
             FrontendOperationEvent::Scan {
                 notifier,
                 notification,
-            } => {
-                let _ = notifier(frontend_id, operation_generation, notification);
-            }
-        }
-        Ok(FrontendOperationEventAcceptance::Accepted)
+            } => notifier(frontend_id, operation_generation, notification),
+        };
+        Ok(if delivery.is_ok() {
+            FrontendOperationEventAcceptance::Accepted
+        } else {
+            // The AIDL notifier already commits the classified post-commit callback
+            // failure through WorkerFailureClassifier -> PostCommitCallbackFailureTxn.
+            // Preserve the committed tune/scan operation and expose that delivery
+            // outcome explicitly instead of silently discarding it.
+            FrontendOperationEventAcceptance::AcceptedCallbackFailure
+        })
     }
 
     pub fn accept_worker_terminal(

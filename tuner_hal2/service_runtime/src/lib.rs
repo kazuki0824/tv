@@ -132,8 +132,9 @@ pub use root_method_txn::{
     RootFrontendInfoSnapshot, RootQueryRequest, RootQueryResponse,
 };
 pub use root_object_ops::RootOpenTxn;
+pub use worker_failure_classifier::{ClassifiedWorkerTerminalResult, WorkerFailureCategory};
 pub use worker_runtime::{
-    WorkerHandle, WorkerRuntime, WorkerTerminalResult, CLEANUP_RETRY_SCHEDULE_MS,
+    WorkerHandle, WorkerRuntime, CLEANUP_RETRY_SCHEDULE_MS,
     CLEANUP_TERMINAL_DEADLINE_MS, WORKER_IO_DEADLINE_MS, WORKER_REAPER_DEADLINE_MS,
 };
 #[cfg(test)]

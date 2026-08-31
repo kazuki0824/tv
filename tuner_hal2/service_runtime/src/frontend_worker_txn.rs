@@ -63,8 +63,8 @@ fn deliver_committed_tune_notification(
     frontend_id: i32,
     generation: u64,
     notification: FrontendTuneNotification,
-) {
-    let _ = FrontendTuneScanTxn::accept_operation_event(
+) -> Result<(), HalError> {
+    match FrontendTuneScanTxn::accept_operation_event(
         runtime,
         frontend_id,
         generation,
@@ -72,7 +72,11 @@ fn deliver_committed_tune_notification(
             notifier: Arc::clone(notifier),
             notification,
         },
-    );
+    )? {
+        crate::frontend_ops::FrontendOperationEventAcceptance::Accepted
+        | crate::frontend_ops::FrontendOperationEventAcceptance::AcceptedCallbackFailure
+        | crate::frontend_ops::FrontendOperationEventAcceptance::DiscardedStale => Ok(()),
+    }
 }
 
 fn deliver_committed_scan_notification(
@@ -81,8 +85,8 @@ fn deliver_committed_scan_notification(
     frontend_id: i32,
     generation: u64,
     notification: FrontendScanNotification,
-) {
-    let _ = FrontendTuneScanTxn::accept_operation_event(
+) -> Result<(), HalError> {
+    match FrontendTuneScanTxn::accept_operation_event(
         runtime,
         frontend_id,
         generation,
@@ -90,7 +94,11 @@ fn deliver_committed_scan_notification(
             notifier: Arc::clone(notifier),
             notification,
         },
-    );
+    )? {
+        crate::frontend_ops::FrontendOperationEventAcceptance::Accepted
+        | crate::frontend_ops::FrontendOperationEventAcceptance::AcceptedCallbackFailure
+        | crate::frontend_ops::FrontendOperationEventAcceptance::DiscardedStale => Ok(()),
+    }
 }
 
 fn finish_frontend_worker_execution(
@@ -2401,7 +2409,7 @@ fn record_frontend_tune_no_signal(
         frontend_id,
         generation,
         FrontendTuneNotification::NoSignal,
-    );
+    )?;
     let mut guard = lock_runtime(
         runtime,
         "service runtime lock poisoned while recording tune no-signal",
@@ -2540,7 +2548,7 @@ fn run_frontend_backend_tune_session_worker(
                     frontend_id,
                     generation,
                     FrontendTuneNotification::Locked,
-                );
+                )?;
             }
             FrontendLockWaitOutcome::NoSignal => {
                 record_frontend_tune_no_signal(&runtime, frontend_id, generation, &tune_notifier)?;
@@ -2590,7 +2598,7 @@ fn run_frontend_backend_tune_session_worker(
                         frontend_id,
                         generation,
                         FrontendTuneNotification::Locked,
-                    );
+                    )?;
                     lock_announced = true;
                 }
                 FrontendLockTransition::LostLock => {
@@ -2600,7 +2608,7 @@ fn run_frontend_backend_tune_session_worker(
                         frontend_id,
                         generation,
                         FrontendTuneNotification::LostLock,
-                    );
+                    )?;
                     lock_announced = false;
                 }
                 FrontendLockTransition::NoSignal => {
@@ -3127,7 +3135,7 @@ pub(crate) fn start_frontend_backend_tune_worker(
             frontend_id,
             generation,
             FrontendTuneNotification::Locked,
-        );
+        )?;
         return Ok(());
     }
 
@@ -3617,7 +3625,7 @@ fn run_frontend_backend_scan_session_worker(
                 ctx.frontend_id(),
                 ctx.generation(),
                 FrontendScanNotification::Locked,
-            );
+            )?;
             let mut guard = lock_runtime(
                 &runtime,
                 "service runtime lock poisoned while recording scan lock delivery",
@@ -3645,7 +3653,7 @@ fn run_frontend_backend_scan_session_worker(
                 ctx.frontend_id(),
                 ctx.generation(),
                 FrontendScanNotification::End,
-            );
+            )?;
             return Ok(());
         }
     }
@@ -3740,7 +3748,7 @@ fn finish_committed_scan_replacement(
                 frontend_id,
                 generation,
                 FrontendScanNotification::End,
-            );
+            )?;
             crate::lnb_ops::release_frontend_fixed_power_after_operation(
                 runtime,
                 crate::registry::FrontendRuntimeId(frontend_id),
