@@ -234,6 +234,7 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: None,
             symbol_rate,
+            isdbt_layer_settings: Vec::new(),
             partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
         }
     }

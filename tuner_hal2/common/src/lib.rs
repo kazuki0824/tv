@@ -525,6 +525,17 @@ pub enum FrontendIsdbtPartialReceptionRequirement {
     Required(bool),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrontendIsdbtSegmentRequest {
+    Unspecified,
+    Auto,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrontendIsdbtLayerSetting {
+    pub num_of_segment: FrontendIsdbtSegmentRequest,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrontendTuneRequest {
     pub system: FrontendSystem,
@@ -534,6 +545,7 @@ pub struct FrontendTuneRequest {
     pub stream_id_kind: Option<FrontendStreamIdKind>,
     pub bandwidth_hz: Option<u32>,
     pub symbol_rate: Option<u32>,
+    pub isdbt_layer_settings: Vec<FrontendIsdbtLayerSetting>,
     pub partial_reception: FrontendIsdbtPartialReceptionRequirement,
 }
 

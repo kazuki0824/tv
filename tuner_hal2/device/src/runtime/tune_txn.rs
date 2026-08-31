@@ -490,6 +490,7 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: None,
             symbol_rate: None,
+            isdbt_layer_settings: Vec::new(),
             partial_reception:
                 maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         }

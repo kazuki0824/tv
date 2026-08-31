@@ -11,7 +11,8 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     FrontendSpectralInversion::FrontendSpectralInversion,
 };
 use maleicacid_tuner_hal2_common::{
-    is_japan_cs110_if_frequency_hz, FrontendIsdbtPartialReceptionRequirement, FrontendScanMode,
+    is_japan_cs110_if_frequency_hz, FrontendIsdbtLayerSetting,
+    FrontendIsdbtPartialReceptionRequirement, FrontendIsdbtSegmentRequest, FrontendScanMode,
     FrontendStreamIdKind, FrontendSystem, FrontendTuneRequest, HalError, HalInvalidArgumentKind,
 };
 
@@ -176,6 +177,27 @@ fn validate_isdbt_fixed_settings(
     Ok(())
 }
 
+fn map_isdbt_layer_settings(
+    settings: &android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::FrontendIsdbtSettings::FrontendIsdbtSettings,
+) -> Result<Vec<FrontendIsdbtLayerSetting>, HalError> {
+    settings
+        .layerSettings
+        .iter()
+        .map(|layer| {
+            let num_of_segment = match layer.numOfSegment {
+                0 => FrontendIsdbtSegmentRequest::Unspecified,
+                0xFF => FrontendIsdbtSegmentRequest::Auto,
+                _ => {
+                    return invalid_frontend_setting(
+                        "validated ISDB-T layer segment request changed before conversion",
+                    )
+                }
+            };
+            Ok(FrontendIsdbtLayerSetting { num_of_segment })
+        })
+        .collect()
+}
+
 fn map_isdbt_partial_reception(
     value: FrontendIsdbtPartialReceptionFlag,
 ) -> Result<FrontendIsdbtPartialReceptionRequirement, HalError> {
@@ -316,6 +338,7 @@ pub fn aidl_frontend_settings_to_request(
                 stream_id_kind: None,
                 bandwidth_hz: map_isdbt_bandwidth(s.bandwidth),
                 symbol_rate: None,
+                isdbt_layer_settings: map_isdbt_layer_settings(s)?,
                 partial_reception: map_isdbt_partial_reception(s.partialReceptionFlag)?,
             })
         }
@@ -344,6 +367,7 @@ pub fn aidl_frontend_settings_to_request(
                 stream_id_kind,
                 bandwidth_hz: None,
                 symbol_rate,
+                isdbt_layer_settings: Vec::new(),
                 partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
             })
         }

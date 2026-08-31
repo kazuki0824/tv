@@ -578,7 +578,7 @@ generic worker failureの隔離範囲と`ServiceCritical`昇格条件は0-S-3B�
 - 本製品は、AOSP未規定の複数候補解決として、公開条件に一致して入力順で最初に受理した構造上完全なsectionが属する1個の`TableInstanceKey`をone-shot targetに選ぶ。first-instanceはAOSPの明文要求ではなく、有限なsnapshotを決定的に選択する製品内規則である。これはcaller-visible filter条件を追加するものでも、AOSPがall sectionsを1個のinstanceと定義したと主張するものでもない。`version=-1`はtarget選択時のwildcardであり、全actual versionを1回で配送する指定ではない。target確定後のactual version固定は設定値の書換えではなくtable instance identityである。全serviceのEIT等、複数instanceを包括的・継続的に取得するcallerは`repeat=true`を使用し、SI engineがinstance別の完成を管理した後に明示的に`stop()`する。Tuner HALは未知の全instance集合の一巡または終端を推測しない。
 - 対象instanceの構造上完全なsectionは、最初の出現順に各section番号を正確に1回だけ逐次配送する。FMQ書込みまたはevent登録が確定した後にだけ対応bitを配送済みbitmapへ立て、重複sectionは再配送しない。`0..last_section_number`の全bitが確定した時点で自動配送を停止する。全payloadをtable完成まで保持せず、section番号順への並べ替えも行わない。短形式でversion、extension、section番号を持たないtableは、公開条件に一致した最初の完全sectionを1 sectionのtableとして配送して停止する。
 - target確定後は、別extension、別actual version、別current/nextのsectionを対象へ混成または配送しない。`version=-1`でtarget完成前に別versionが到着してもtargetを先着instanceから切り替えず、明示versionでは他versionを無視する。target内で`last_section_number`が矛盾するsectionはmalformedとして破棄し、誤完了させない。`repeat=true`では公開条件に一致する全instanceを継続配送する。
-- `TableInfo repeat=false`の完了に時間窓、再送一巡、最初に完成したcandidate、非公開table一覧を使用しない。不完全なtargetでは有限時間で停止することを推測せず、callerの`stop()`、`flush()`、再設定、stream boundaryまで待機する。これらの境界前target / sectionを境界後のtarget / sectionへ連結・配送しない。stream boundaryでは`StreamBoundaryTxn`が各steady-state ownerへのtyped reset / invalidateをprepare / dispatchする。target metadata / 配送済みbitmapは対応するper-filter TableInfo tracker owner、parser / assembler stateは各per-filter parser owner、Filter parser fence generationは`FilterProducerDrainGate.parser_state_generation`がそれぞれmutation ownerであり、`StreamBoundaryTxn`はこれらのstate自体を所有・直接mutationしない。
+- `TableInfo repeat=false`の完了に時間窓、再送一巡、最初に完成したcandidate、非公開table一覧を使用しない。不完全なtargetでは有限時間で停止することを推測しない。`stop()`はdeliveryだけを停止し、target metadata・配送済みbitmap・partial sectionを保持して再`start()`で継続する。`flush()`、再設定、stream boundaryでは境界前target / sectionを境界後のtarget / sectionへ連結・配送しない。stream boundaryでは`StreamBoundaryTxn`が各steady-state ownerへのtyped reset / invalidateをprepare / dispatchする。target metadata / 配送済みbitmapは対応するper-filter TableInfo tracker owner、parser / assembler stateは各per-filter parser owner、Filter parser fence generationは`FilterProducerDrainGate.parser_state_generation`がそれぞれmutation ownerであり、`StreamBoundaryTxn`はこれらのstate自体を所有・直接mutationしない。
 - SECTION能力閉包がone-shot用に確保する追加状態は、1 filter当たり1個の`TableInstanceKey`、`last_section_number`等の固定metadata、および256-bit（32 byte）の配送済みbitmapだけとする。FMQ backpressure中の未確定sectionは既存のsection assembler／配送保留予算で保持し、commit前にbitmapを更新しない。最大256 section分のpayloadを別領域へ常時予約せず、通常のsection組立て・FMQ・配送予算とone-shot追跡状態を二重計上しない。
 - `TableInfo.version`は`-1`または`0..31`だけを受け付ける。`-1`はtarget選択時にversionを無視する指定であり、caller-visibleな設定をruntime観測値へ書き換えない。範囲外は`INVALID_ARGUMENT`とする。
 - PES `streamId`は`0..=255`を明示`stream_id`として照合し、AOSP `Constant.INVALID_STREAM_ID`の`0xFFFF`をwildcardとして扱う。負値、`256..=65534`、`65536`以上は`INVALID_ARGUMENT`とする。PES能力を広告するdemuxは、全ての有効な明示stream IDとwildcardを通常のPES filter設定として受理し、`0xBD`その他の私的部分集合へ制限しない。ARIB字幕を利用するTIS profileは`0xBD`を指定してよいが、それは利用側の選択でありHAL capabilityの制限ではない。`PES_packet_length=0`はH.222.0で許可される映像stream ID `0xE0..0xEF`のruntime組立てとして扱い、その他のstream IDで受信した長さ0 PESはmalformedとして当該意味単位を破棄する。
@@ -619,10 +619,11 @@ nonraw Section eventの`tableId`は実sectionのtable_id、long sectionでは実
 | 映像以外の`stream_id`で`PES_packet_length == 0` | malformed | state 破棄 | 配送しない |
 | 有効`stream_id`かつ`PES_packet_length > 0` | supported bounded PES | stream id別の構文分岐後、宣言長+6 byteを共通台帳からclaimし、1 filter 1 assemblerで収集 | 対応する完全長・構文検証成功時だけ配送 |
 | `stream_id=0xE0..0xEF`かつ`PES_packet_length == 0` | supported zero-length video PES | 次PUSIまで収集し、`MAX_PES_BUFFER_BYTES`超過時はoversize破棄 | 完成境界とordinary PES検証成功時だけ配送 |
-| flush / stop / close / source unlink | boundary | `StreamBoundaryTxn`参照 | 境界前の未完了PESを境界後のPESとして配送しない |
+| `stop()` | delivery pause | 未完了PESと対応claimを保持し、再`start()`で同じPES組立てを継続する |
+| `flush()` / close / source unlink | boundary | `StreamBoundaryTxn`参照 | 境界前の未完了PESを境界後のPESとして配送せず、partial stateと対応claimを破棄・返却する |
 
 
-PESの組み立て状態はPIDごとに分離する。`PES_packet_length > 0` の場合は、宣言されたPESバイト数を正確に収集した時点だけを完了とする。同じPIDで宣言長に達する前にPUSIを受信した場合は破損とし、未完のPESを破棄する。`PES_packet_length == 0` の場合は、同じPIDの後続TSペイロードで `payload_unit_start_indicator=1` かつ、ペイロード先頭に構造上有効な `0x000001` のPES開始コードと最低限有効なPESヘッダーがある場合に限り、その直前で現在のPESを完了する。境界となるパケットは次のPESの先頭とし、前のPESへ追加しない。同じPIDのPUSIと有効なPESヘッダーを伴わないエレメンタリーストリーム内の `0x000001` 開始コードによって、現在のPESを終了してはならない。同じPIDのPUSIがあってもPES開始部またはヘッダーが構造上不正な場合は、伝送破損として未完PESを破棄し、型付き診断を記録して、完了PESとして通知しない。別PIDのPUSIは影響させない。TEI、連続性の不連続、`flush()`、`stop()`、`close()`では、境界前の未完PESを境界後の完了PESへ連結・配送せず、対応する型付き診断を記録する。steady-state parser / assembler stateは対応するper-filter parser ownerを正本とし、境界時のreset / invalidate要求と`stream_boundary_generation`だけを`StreamBoundaryTxn`のtyped boundaryとして扱う。
+PESの組み立て状態はPIDごとに分離する。`PES_packet_length > 0` の場合は、宣言されたPESバイト数を正確に収集した時点だけを完了とする。同じPIDで宣言長に達する前にPUSIを受信した場合は破損とし、未完のPESを破棄する。`PES_packet_length == 0` の場合は、同じPIDの後続TSペイロードで `payload_unit_start_indicator=1` かつ、ペイロード先頭に構造上有効な `0x000001` のPES開始コードと最低限有効なPESヘッダーがある場合に限り、その直前で現在のPESを完了する。境界となるパケットは次のPESの先頭とし、前のPESへ追加しない。同じPIDのPUSIと有効なPESヘッダーを伴わないエレメンタリーストリーム内の `0x000001` 開始コードによって、現在のPESを終了してはならない。同じPIDのPUSIがあってもPES開始部またはヘッダーが構造上不正な場合は、伝送破損として未完PESを破棄し、型付き診断を記録して、完了PESとして通知しない。別PIDのPUSIは影響させない。`stop()`では未完PESと対応claimを保持して再`start()`で継続する。TEI、連続性の不連続、`flush()`、`close()`では、境界前の未完PESを境界後の完了PESへ連結・配送せず、対応する型付き診断を記録してpartial stateと対応claimを破棄・返却する。steady-state parser / assembler stateは対応するper-filter parser ownerを正本とし、境界時のreset / invalidate要求と`stream_boundary_generation`だけを`StreamBoundaryTxn`のtyped boundaryとして扱う。
 
 
 ### ワーカー失敗と所有権境界
@@ -1425,7 +1426,7 @@ release AIDL経路からテスト専用入口へ到達してはならず、テ�
 | T-SEC-14d | target sectionの`last_section_number`不一致 | 不一致sectionをmalformedとして破棄し、bitmapまたは停止判定を進めない |
 | T-SEC-14e | short syntax + wildcard + `repeat=false` | 最初の完全sectionを1 section tableとして1回配送後停止 |
 | T-SEC-14f | 最大`last_section_number=255` | 256-bit（32 byte）bitmapと固定metadataだけで追跡し、各section payloadは逐次配送してtable全体を保持しない |
-| T-SEC-14g | target未完成、`stop()`／`flush()`／再設定／stream boundary | timeoutで誤完了せず、境界前targetを境界後へ継承・完了扱いしない。境界時は0-S-3Bのowner境界に従い、`StreamBoundaryTxn`のtyped reset / invalidate dispatchを受けて各per-filter ownerが対象stateを更新する |
+| T-SEC-14g | target未完成、`stop()`／`flush()`／再設定／stream boundary | `stop()`ではtarget metadata・配送済みbitmap・partial sectionを保持して再`start()`で継続する。`flush()`／再設定／stream boundaryでは境界前targetを境界後へ継承・完了扱いせず、0-S-3Bのowner境界に従い各per-filter ownerが対象stateを更新する |
 | T-SEC-14h | 各section配送時のFMQ一時backpressure | 既存の配送保留予算で当該sectionを再試行し、FMQ/event commit前に配送済みbitを立てない |
 | T-SEC-14i | 複数extension/versionが並行する`TableInfo repeat=true` | table id/version条件に一致する全instanceのsectionを継続配送する |
 | T-SEC-15 | `repeat=true` version更新 | 継続監視 |
@@ -1445,7 +1446,7 @@ release AIDL経路からテスト専用入口へ到達してはならず、テ�
 | T-PES-6 | `PES_packet_length` とheader長矛盾 | malformed |
 | T-PES-7 | bounded PES complete | delivery |
 | T-PES-8 | bounded PESが宣言長到達前に次PUSI | 未完PESを破棄し、次PESから再開 |
-| T-PES-9 | bounded PESのflush/stop/close | 未完成を完成扱いせず、claimを返却 |
+| T-PES-9 | bounded PESの`stop()`／`flush()`／`close()` | `stop()`は未完成PESと対応claimを保持して再`start()`で継続する。`flush()`／`close()`は未完成を完成扱いせず破棄してclaimを返却する |
 | T-PES-10 | 同時PES filterが各`MAX_PES_BUFFER_BYTES`までclaim可能 | `pesRuntimeBudgetBytes`内で公開数全filterを受理 |
 | T-PES-11 | PES header TS packet境界分割 | 正しく組立 |
 | T-PES-12 | PTS field TS packet境界分割 | PTS抽出 |
