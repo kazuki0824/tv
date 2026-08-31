@@ -1,0 +1,350 @@
+name: temp PR53 repair easy
+
+on:
+  push:
+    branches: [fix/tuner-hal2-rustfmt-1.81]
+    paths:
+      - ".github/workflows/temp-fix53-easy.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tuner-hal2-rustfmt-1.81
+          persist-credentials: true
+          fetch-depth: 0
+      - name: Apply repairs
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              s = p.read_text()
+              if old not in s:
+                  raise SystemExit(f"missing replacement anchor in {path}: {old[:80]!r}")
+              if s.count(old) != 1:
+                  raise SystemExit(f"non-unique replacement anchor in {path}: count={s.count(old)}")
+              p.write_text(s.replace(old, new, 1))
+
+          # #8: ARIB table_id-specific section_length closure.
+          replace_once(
+              "tuner_hal2/common/src/lib.rs",
+              '''/// ARIB STD-B10 の table_id 別 section_length 上限を返す。
+/// EIT p/f と EIT schedule は 0x4e..=0x6f、それ以外は短い section として扱う。
+pub fn max_arib_section_length_for_table_id(table_id: u8) -> usize {
+    match table_id {
+        0x4e..=0x6f => MAX_ARIB_EIT_SECTION_LENGTH,
+        0x70 => ARIB_TDT_SECTION_LENGTH,
+        _ => MAX_ARIB_SHORT_SECTION_LENGTH,
+    }
+}
+''',
+              '''/// ARIB STD-B10 の table_id 別 section_length 上限を返す。
+///
+/// HAL は表の意味解析を行わずtransport外形だけを検証する。STD-B10で
+/// 1021-byte区分として定義される既知tableだけをshort classへ置き、
+/// EIT/ST/INT/PCAT/BIT/NBIT/LDT/LIT/ERT/ITT/AMTおよび予約/private/未割当は
+/// 4093-byte transport classとして扱う。TDTだけはsection_length=5固定。
+pub fn max_arib_section_length_for_table_id(table_id: u8) -> usize {
+    match table_id {
+        0x70 => ARIB_TDT_SECTION_LENGTH,
+        0x00..=0x03 | 0x40 | 0x41 | 0x42 | 0x46 | 0x4a | 0x71 | 0x73 => {
+            MAX_ARIB_SHORT_SECTION_LENGTH
+        }
+        _ => MAX_ARIB_EIT_SECTION_LENGTH,
+    }
+}
+''')
+
+          common = Path("tuner_hal2/common/src/lib.rs")
+          s = common.read_text()
+          marker = "section_length_contract_distinguishes_short_extended_and_tdt_classes"
+          if marker not in s:
+              s += r'''
+
+#[cfg(test)]
+mod section_length_contract_tests {
+    use super::*;
+
+    #[test]
+    fn section_length_contract_distinguishes_short_extended_and_tdt_classes() {
+        for table_id in [0x00, 0x01, 0x02, 0x03, 0x40, 0x41, 0x42, 0x46, 0x4a, 0x71, 0x73] {
+            assert!(is_valid_arib_section_length(table_id, 1021));
+            assert!(!is_valid_arib_section_length(table_id, 1022));
+        }
+        for table_id in [0x04, 0x4c, 0x4e, 0x6f, 0x72, 0xc2, 0xc4, 0xc7, 0xd0, 0xd2, 0xfe, 0xff] {
+            assert!(is_valid_arib_section_length(table_id, 4093));
+            assert!(!is_valid_arib_section_length(table_id, 4094));
+        }
+        assert!(is_valid_arib_section_length(0x70, 5));
+        assert!(!is_valid_arib_section_length(0x70, 4));
+        assert!(!is_valid_arib_section_length(0x70, 6));
+    }
+}
+'''
+              common.write_text(s)
+
+          # #11: one canonical ISDB-S raster-normalization contract.
+          common = Path("tuner_hal2/common/src/lib.rs")
+          s = common.read_text()
+          marker = "JAPAN_ISDBS_TUNE_TOLERANCE_HZ"
+          if marker not in s:
+              s += r'''
+
+/// Product adapter tolerance for Android Hz requests targeting the fixed Japanese
+/// BS/CS110 channel raster. This covers rounded framework/CTS frequencies while
+/// remaining far below half of the minimum 38.36 MHz raster spacing, so a request
+/// cannot be ambiguous between adjacent channels.
+pub const JAPAN_ISDBS_TUNE_TOLERANCE_HZ: u64 = 1_000_000;
+
+fn normalize_japan_isdbs_raster_frequency_hz(
+    frequency_hz: u64,
+    first_hz: u64,
+    step_hz: u64,
+    count: u64,
+) -> Option<u64> {
+    if count == 0 {
+        return None;
+    }
+    let last_hz = first_hz.checked_add(step_hz.checked_mul(count.checked_sub(1)?)?)?;
+    let lower = first_hz.saturating_sub(JAPAN_ISDBS_TUNE_TOLERANCE_HZ);
+    let upper = last_hz.checked_add(JAPAN_ISDBS_TUNE_TOLERANCE_HZ)?;
+    if !(lower..=upper).contains(&frequency_hz) {
+        return None;
+    }
+    let index = if frequency_hz <= first_hz {
+        0
+    } else {
+        frequency_hz
+            .checked_sub(first_hz)?
+            .checked_add(step_hz / 2)?
+            / step_hz
+    };
+    if index >= count {
+        return None;
+    }
+    let center = first_hz.checked_add(step_hz.checked_mul(index)?)?;
+    (frequency_hz.abs_diff(center) <= JAPAN_ISDBS_TUNE_TOLERANCE_HZ).then_some(center)
+}
+
+pub fn normalize_japan_bs_if_frequency_hz(frequency_hz: u64) -> Option<u64> {
+    normalize_japan_isdbs_raster_frequency_hz(frequency_hz, 1_049_480_000, 38_360_000, 12)
+}
+
+pub fn normalize_japan_cs110_if_frequency_hz(frequency_hz: u64) -> Option<u64> {
+    normalize_japan_isdbs_raster_frequency_hz(frequency_hz, 1_613_000_000, 40_000_000, 12)
+}
+
+#[cfg(test)]
+mod isdbs_frequency_normalization_tests {
+    use super::*;
+
+    #[test]
+    fn cts_rounded_isdbs_frequency_maps_to_bs1_without_widening_to_adjacent_channels() {
+        assert_eq!(normalize_japan_bs_if_frequency_hz(1_050_000_000), Some(1_049_480_000));
+        assert_eq!(normalize_japan_bs_if_frequency_hz(1_050_480_000), Some(1_049_480_000));
+        assert_eq!(normalize_japan_bs_if_frequency_hz(1_050_480_001), None);
+        assert_eq!(normalize_japan_cs110_if_frequency_hz(1_613_500_000), Some(1_613_000_000));
+        assert_eq!(normalize_japan_cs110_if_frequency_hz(1_614_000_001), None);
+    }
+}
+'''
+              common.write_text(s)
+
+          replace_once(
+              "tuner_hal2/service_runtime/src/frontend_request_txn.rs",
+              "    is_japan_bs_if_frequency_hz, is_japan_cs110_if_frequency_hz,\n    is_japan_isdbt_frequency_contract_hz, FrontendBackendKind,\n",
+              "    is_japan_isdbt_frequency_contract_hz, normalize_japan_bs_if_frequency_hz,\n    normalize_japan_cs110_if_frequency_hz, FrontendBackendKind,\n")
+          replace_once(
+              "tuner_hal2/service_runtime/src/frontend_request_txn.rs",
+              "            let is_bs = is_japan_bs_if_frequency_hz(request.frequency);\n            let is_cs110 = is_japan_cs110_if_frequency_hz(request.frequency);\n",
+              "            let is_bs = normalize_japan_bs_if_frequency_hz(request.frequency).is_some();\n            let is_cs110 = normalize_japan_cs110_if_frequency_hz(request.frequency).is_some();\n")
+
+          replace_once(
+              "tuner_hal2/device/src/px4/tune_mapping.rs",
+              "    FrontendStreamIdKind, FrontendSystem, FrontendTuneRequest, HalError, HalInvalidArgumentKind,\n",
+              "    normalize_japan_bs_if_frequency_hz, normalize_japan_cs110_if_frequency_hz,\n    FrontendStreamIdKind, FrontendSystem, FrontendTuneRequest, HalError, HalInvalidArgumentKind,\n")
+          replace_once(
+              "tuner_hal2/device/src/px4/tune_mapping.rs",
+              '''fn is_japan_cs110_if_frequency_range_hz(if_hz: u64) -> bool {
+    let last =
+        PX4_CS_BASE_IF_HZ + PX4_CS_STEP_HZ * ((PX4_CS_FREQ_NO_MAX - PX4_CS_FREQ_NO_MIN) as u64);
+    (PX4_CS_BASE_IF_HZ..=last).contains(&if_hz)
+}
+
+''',
+              "")
+
+          p = Path("tuner_hal2/device/src/px4/tune_mapping.rs")
+          s = p.read_text()
+          start = s.index("pub fn map_bs_if_frequency_to_px4_freq_no")
+          mid = s.index("pub fn map_cs110_if_frequency_to_px4_freq_no", start)
+          end = s.index("pub fn map_relative_stream_number_to_px4_slot", mid)
+          new = r'''pub fn map_bs_if_frequency_to_px4_freq_no(if_hz: u64) -> Result<i32, HalError> {
+    let normalized = normalize_japan_bs_if_frequency_hz(if_hz).ok_or_else(|| {
+        HalError::invalid_argument(
+            HalInvalidArgumentKind::UnsupportedFrequency,
+            "px4 BS IF周波数は公開raster許容範囲外です",
+        )
+    })?;
+    let delta = normalized - PX4_BS_BASE_IF_HZ;
+    let freq_no = PX4_BS_FREQ_NO_MIN
+        + i32::try_from(delta / PX4_BS_STEP_HZ).map_err(|_| {
+            HalError::invalid_argument(
+                HalInvalidArgumentKind::UnsupportedFrequency,
+                "px4 BS IF周波数は非対応です",
+            )
+        })?;
+    if (PX4_BS_FREQ_NO_MIN..=PX4_BS_FREQ_NO_MAX).contains(&freq_no) {
+        Ok(freq_no)
+    } else {
+        Err(HalError::invalid_argument(
+            HalInvalidArgumentKind::UnsupportedFrequency,
+            "px4 BS IF周波数は非対応です",
+        ))
+    }
+}
+
+pub fn map_cs110_if_frequency_to_px4_freq_no(if_hz: u64) -> Result<i32, HalError> {
+    let normalized = normalize_japan_cs110_if_frequency_hz(if_hz).ok_or_else(|| {
+        HalError::invalid_argument(
+            HalInvalidArgumentKind::UnsupportedFrequency,
+            "px4 110CS IF周波数は公開raster許容範囲外です",
+        )
+    })?;
+    let delta = normalized - PX4_CS_BASE_IF_HZ;
+    let freq_no = PX4_CS_FREQ_NO_MIN
+        + i32::try_from(delta / PX4_CS_STEP_HZ).map_err(|_| {
+            HalError::invalid_argument(
+                HalInvalidArgumentKind::UnsupportedFrequency,
+                "px4 110CS IF周波数は非対応です",
+            )
+        })?;
+    if (PX4_CS_FREQ_NO_MIN..=PX4_CS_FREQ_NO_MAX).contains(&freq_no) {
+        Ok(freq_no)
+    } else {
+        Err(HalError::invalid_argument(
+            HalInvalidArgumentKind::UnsupportedFrequency,
+            "px4 110CS IF周波数は非対応です",
+        ))
+    }
+}
+
+'''
+          p.write_text(s[:start] + new + s[end:])
+          replace_once(
+              "tuner_hal2/device/src/px4/tune_mapping.rs",
+              "            let band = if is_japan_cs110_if_frequency_range_hz(request.frequency) {\n",
+              "            let band = if normalize_japan_cs110_if_frequency_hz(request.frequency).is_some() {\n")
+          s = p.read_text()
+          if "cts_rounded_isdbs_frequency_maps_to_px4_bs_raster" not in s:
+              s += r'''
+
+#[cfg(test)]
+mod android_frequency_adapter_tests {
+    use super::*;
+
+    #[test]
+    fn cts_rounded_isdbs_frequency_maps_to_px4_bs_raster() {
+        assert_eq!(map_bs_if_frequency_to_px4_freq_no(1_050_000_000), Ok(0));
+        assert!(map_bs_if_frequency_to_px4_freq_no(1_050_480_001).is_err());
+        assert_eq!(map_cs110_if_frequency_to_px4_freq_no(1_613_500_000), Ok(12));
+    }
+}
+'''
+              p.write_text(s)
+
+          replace_once(
+              "tuner_hal2/aidl_service/src/service_entry.rs",
+              "    japan_isdbt_frequency_contract_range_hz, FrontendBackendKind, FrontendSystem, HalError,\n    HalErrorDetail, TUNER_SERVICE_NAME,\n",
+              "    japan_isdbt_frequency_contract_range_hz, FrontendBackendKind, FrontendSystem, HalError,\n    HalErrorDetail, JAPAN_ISDBS_TUNE_TOLERANCE_HZ, TUNER_SERVICE_NAME,\n")
+          # Two ISDB-S product capability blocks (px4 and earth-pt1) use the same adapter tolerance.
+          p = Path("tuner_hal2/aidl_service/src/service_entry.rs")
+          s = p.read_text()
+          old = "                    acquire_range_hz: 0,\n"
+          # Only change the two occurrences inside ISDB-S blocks by matching nearby symbol-rate fields.
+          target = "                    min_symbol_rate: ISDBS_SYMBOL_RATE,\n                    max_symbol_rate: ISDBS_SYMBOL_RATE,\n                    acquire_range_hz: 0,\n"
+          repl = "                    min_symbol_rate: ISDBS_SYMBOL_RATE,\n                    max_symbol_rate: ISDBS_SYMBOL_RATE,\n                    acquire_range_hz: i64::try_from(JAPAN_ISDBS_TUNE_TOLERANCE_HZ).ok()?,\n"
+          if s.count(target) != 2:
+              raise SystemExit(f"expected 2 ISDB-S capability targets, got {s.count(target)}")
+          p.write_text(s.replace(target, repl))
+
+          replace_once(
+              "tuner_hal/DESIGN_JA.md",
+              "| T-AOSP-44 | `FrontendInfo` scalar境界とtune validation | min/max frequency、symbol rate、acquire rangeが同一`CapabilitySnapshot`と受付範囲に一致 |",
+              "| T-AOSP-44 | `FrontendInfo` scalar境界とtune validation | min/max frequency、symbol rate、acquire rangeを同一`CapabilitySnapshot`から公開する。固定raster backendではHz要求を`acquireRange`以内の一意なnearest channel centerへ正規化し、許容外・channel間で一意化できない値は副作用前に拒否する。Android/CTS向けの個別周波数特例を置かない |")
+
+          # #10: current product video capability is justified only where PES PTS is authoritative.
+          replace_once(
+              "tuner_hal2/demux/src/runtime/filter.rs",
+              "        if self.open_type != FilterOpenType::TsAudio {\n",
+              "        if self.open_type == FilterOpenType::TsVideo && packet.pts_90khz.is_none() {\n            return Err(AudioTimestampAssociationFailure::MissingAnchor);\n        }\n        if self.open_type != FilterOpenType::TsAudio {\n")
+          p = Path("tuner_hal2/demux/src/runtime/filter.rs")
+          s = p.read_text()
+          if "video_media_payload_requires_authoritative_pes_pts" not in s:
+              s += r'''
+
+#[cfg(test)]
+mod video_pts_contract_tests {
+    use super::*;
+    use crate::config::ConfigInputPid;
+
+    fn video_packet(pts_90khz: Option<u64>) -> PesPacket {
+        PesPacket {
+            pid: PacketPid::from_config_pid(ConfigInputPid::validate_tpid(0x0100).unwrap()),
+            stream_id: 0xe0,
+            pts_90khz,
+            dts_90khz: None,
+            is_pes_private_data: false,
+            data_alignment_indicator: true,
+            raw_bytes: vec![0, 0, 1, 0xe0],
+            payload: vec![1, 2, 3, 4],
+        }
+    }
+
+    #[test]
+    fn video_media_payload_requires_authoritative_pes_pts() {
+        let mut filter = FilterRuntime::new_typed(1, 1, FilterOpenType::TsVideo);
+        assert_eq!(
+            filter.prepare_av_media_payloads(video_packet(None), TsInputOrigin::frontend(1)),
+            Err(AudioTimestampAssociationFailure::MissingAnchor)
+        );
+        let prepared = filter
+            .prepare_av_media_payloads(video_packet(Some(90_000)), TsInputOrigin::frontend(1))
+            .expect("explicit video PTS is authoritative for this product profile");
+        assert_eq!(prepared.len(), 1);
+        assert!(prepared[0].metadata.is_pts_present);
+        assert_eq!(prepared[0].metadata.pts_90khz, Some(90_000));
+    }
+}
+'''
+              p.write_text(s)
+          PY
+      - name: Format
+        run: cargo fmt --all -- --check
+        working-directory: tuner_hal2/host_ci
+      - name: Check
+        run: cargo check --workspace --all-targets --locked
+        working-directory: tuner_hal2/host_ci
+      - name: Test
+        run: cargo test --workspace --locked
+        working-directory: tuner_hal2/host_ci
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        working-directory: tuner_hal2/host_ci
+      - name: Commit repairs
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tuner_hal2/common/src/lib.rs tuner_hal2/service_runtime/src/frontend_request_txn.rs tuner_hal2/device/src/px4/tune_mapping.rs tuner_hal2/aidl_service/src/service_entry.rs tuner_hal2/demux/src/runtime/filter.rs tuner_hal/DESIGN_JA.md
+          git commit -m "Fix section, video PTS, and ISDB-S frequency contracts"
+          git push origin HEAD:fix/tuner-hal2-rustfmt-1.81
