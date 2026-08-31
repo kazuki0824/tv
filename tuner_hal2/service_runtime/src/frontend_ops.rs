@@ -199,6 +199,32 @@ impl FrontendTuneScanTxn {
         reason: FrontendWorkerCancelReason,
         dispatch: ObjectMethodExecutionToken,
     ) -> Result<(), HalError> {
+        {
+            let mut guard = runtime.lock().map_err(|_| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "service runtime lock poisoned while checking stopTune during scan",
+                )
+            })?;
+            let frontend_id = guard
+                .frontend_entry_for_aidl_object(object_id, object_generation)?
+                .id
+                .0;
+            let state = guard.query().frontend_runtime_snapshot(frontend_id)?.state;
+            if state == FrontendRuntimeState::Scanning {
+                // AOSP T-AOSP-35: stopTune() is an idempotent success while a scan owns
+                // the frontend. Consume the public method authority, but do not fence the
+                // scan generation, stop a worker, clear live data, or advance any demux
+                // stream boundary.
+                dispatch.consume_for_object(
+                    &mut guard,
+                    object_id,
+                    object_generation,
+                    AidlObjectKind::Frontend,
+                )?;
+                return Ok(());
+            }
+        }
         stop_frontend_tune_object(
             std::sync::Arc::clone(&runtime),
             object_id,
