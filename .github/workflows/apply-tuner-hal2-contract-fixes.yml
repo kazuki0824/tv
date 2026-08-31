@@ -1,16 +1,16 @@
 name: apply tuner_hal2 contract fixes
 
 on:
-  push:
-    branches:
-      - fix/tuner-hal2-rustfmt-1.81
+  pull_request:
+    types:
+      - synchronize
 
 permissions:
   contents: write
 
 jobs:
   apply:
-    if: github.event.head_commit.message == 'chore: apply remaining tuner-hal2 fixes'
+    if: github.event.pull_request.head.ref == 'fix/tuner-hal2-rustfmt-1.81'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -57,14 +57,12 @@ jobs:
           s = s.replace(field_marker, '    pub isdbt_layer_settings: Vec<FrontendIsdbtLayerSetting>,\n' + field_marker, 1)
           common.write_text(s)
 
-          # Existing internal/test literals are non-ISDB-T unless explicitly filled by the Binder converter.
           for path in Path('tuner_hal2').rglob('*.rs'):
               if path == Path('tuner_hal2/common/src/lib.rs') or path == Path('tuner_hal2/binder_adapter/src/aidl_frontend_settings.rs'):
                   continue
               text = path.read_text()
               if 'FrontendTuneRequest {' not in text:
                   continue
-              # Add the new field immediately before partial_reception in request literals that do not yet carry it.
               pattern = re.compile(r'(FrontendTuneRequest\s*\{.*?)(\n(?P<i>\s*)partial_reception:)', re.S)
               pos = 0
               out = []
@@ -103,8 +101,6 @@ jobs:
               raise SystemExit('ISDB-S request marker missing')
           s = s.replace(isdbs_marker, '''                symbol_rate,\n                isdbt_layer_settings: Vec::new(),\n                partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,\n''', 1)
           binder.write_text(s)
-
-          # The converter regression must inspect the converted request, not merely the source AIDL vector.
           PY
       - name: Format and validate
         shell: bash
