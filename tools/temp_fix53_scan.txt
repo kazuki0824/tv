@@ -1,0 +1,606 @@
+=== frontend operation notifier call sites ===
+tuner_hal2/DESIGN_JA.md:147:| `FrontendTuneScanTxn` | `service_runtime/src/frontend_ops.rs::FrontendTuneScanTxn`がpreflight、固定給電準備、worker start/stop、rollback、operation event / terminal acceptanceを直接所有する。第二の`Context` ownerを置かない | `FrontendTuneScanTxn`の有限正規入口集合 `begin_tune` / `begin_scan` / `stop_tune` / `stop_scan` / `accept_operation_event` / `accept_worker_terminal`。AIDL境界は`begin_*` / `stop_*`だけ、ワーカー・下位機器処理の完了通知橋渡しは`accept_*`だけを呼ぶ | ワーカー・機器層・コールバック層によるフロントエンド所有者の迂回、Demux所有者の吸収、第二の正規所有者化、有限正規入口集合外での選局・走査進行の再実装 |
+tuner_hal2/DESIGN_JA.md:262:| `accept_operation_event` | ワーカー・下位機器処理の完了通知橋渡し | 操作世代 + 型付きフロントエンド事象・結果 | 世代を再検証し、失効事象を拒否し、現世代に対するコールバック配送予約とドメイン完了処理を調停する | `FrontendRuntime`の現行操作・コールバック配送状態 |
+tuner_hal2/DESIGN_JA.md:266:- 各入口は開始時に正本所有者から状態の写し・世代・一回実行権限を取得し、外部処理後に世代を再検証する。旧世代の`accept_operation_event` / `accept_worker_terminal`は状態変更またはコールバック予約を行わず、失効結果として破棄・診断する。
+tuner_hal2/aidl_service/src/frontend_callback_delivery.rs:10:    FrontendCallbackDeliveryDiagnosticRecord, FrontendScanNotification, FrontendScanNotifier,
+tuner_hal2/aidl_service/src/frontend_callback_delivery.rs:11:    FrontendTuneNotification, FrontendTuneNotifier,
+tuner_hal2/aidl_service/src/frontend_callback_delivery.rs:156:) -> FrontendScanNotifier {
+tuner_hal2/aidl_service/src/frontend_callback_delivery.rs:277:) -> FrontendTuneNotifier {
+tuner_hal2/service_runtime/src/frontend_ops.rs:6:    FrontendScanNotifier, FrontendTuneNotification, FrontendTuneNotifier,
+tuner_hal2/service_runtime/src/frontend_ops.rs:25:        notifier: FrontendTuneNotifier,
+tuner_hal2/service_runtime/src/frontend_ops.rs:29:        notifier: FrontendScanNotifier,
+tuner_hal2/service_runtime/src/frontend_ops.rs:141:        notifier: FrontendTuneNotifier,
+tuner_hal2/service_runtime/src/frontend_ops.rs:168:        notifier: FrontendScanNotifier,
+tuner_hal2/service_runtime/src/frontend_ops.rs:253:    pub fn accept_operation_event(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:52:pub type FrontendTuneNotifier = Arc<
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:56:pub type FrontendScanNotifier = Arc<
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:60:fn deliver_committed_tune_notification(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:62:    notifier: &FrontendTuneNotifier,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:67:    let _ = FrontendTuneScanTxn::accept_operation_event(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:78:fn deliver_committed_scan_notification(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:80:    notifier: &FrontendScanNotifier,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:85:    let _ = FrontendTuneScanTxn::accept_operation_event(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:2396:    tune_notifier: &FrontendTuneNotifier,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:2398:    deliver_committed_tune_notification(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:2514:    tune_notifier: FrontendTuneNotifier,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:2537:                deliver_committed_tune_notification(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:2587:                    deliver_committed_tune_notification(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:2597:                    deliver_committed_tune_notification(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:2686:    tune_notifier: FrontendTuneNotifier,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3092:    tune_notifier: FrontendTuneNotifier,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3124:        deliver_committed_tune_notification(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3429:    scan_notifier: FrontendScanNotifier,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3614:            deliver_committed_scan_notification(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3642:            deliver_committed_scan_notification(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3664:    scan_notifier: FrontendScanNotifier,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3737:            deliver_committed_scan_notification(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3939:    scan_notifier: FrontendScanNotifier,
+tuner_hal2/service_runtime/src/lib.rs:89:    FrontendCloseCleanupReport, FrontendScanNotification, FrontendScanNotifier,
+tuner_hal2/service_runtime/src/lib.rs:90:    FrontendTuneNotification, FrontendTuneNotifier, FrontendWorkerCleanupDiagnosticKind,
+=== frontend callback owner mappings ===
+tuner_hal2/aidl_service/src/frontend_callback_delivery.rs:4:    FrontendEventType::FrontendEventType,
+tuner_hal2/aidl_service/src/frontend_callback_delivery.rs:178:            CallbackDeliveryFailureReport::frontend_event(
+tuner_hal2/aidl_service/src/frontend_callback_delivery.rs:226:            FrontendEventType::LOCKED,
+tuner_hal2/aidl_service/src/frontend_callback_delivery.rs:230:            FrontendEventType::LOST_LOCK,
+tuner_hal2/aidl_service/src/frontend_callback_delivery.rs:234:            FrontendEventType::NO_SIGNAL,
+tuner_hal2/aidl_service/src/lib.rs:12:pub(crate) mod frontend_object;
+tuner_hal2/aidl_service/src/lib.rs:27:pub use frontend_object::FrontendAidlObject;
+tuner_hal2/aidl_service/src/lib.rs:53:        assert_eq!(frontend.handle().object_id(), AidlObjectId(1));
+tuner_hal2/aidl_service/src/tuner_service.rs:71:    set_frontend_lnb_object_use_case, FrontendTuneScanTxn,
+tuner_hal2/aidl_service/src/tuner_service.rs:93:use crate::frontend_object::FrontendAidlObject;
+tuner_hal2/aidl_service/src/tuner_service.rs:249:    fn frontend_object_from_entry(
+tuner_hal2/aidl_service/src/tuner_service.rs:255:                "frontend root object runtime id conversion rollback failed",
+tuner_hal2/aidl_service/src/tuner_service.rs:267:                "frontend root object construction rollback failed",
+tuner_hal2/aidl_service/src/tuner_service.rs:466:            .root_open_txn().open_frontend_root_object_for_id(
+tuner_hal2/aidl_service/src/tuner_service.rs:471:        self.frontend_object_from_entry(entry)
+tuner_hal2/aidl_service/src/tuner_service/demux_methods.rs:23:                runtime.set_demux_frontend_data_source_for_object(
+tuner_hal2/aidl_service/src/tuner_service/frontend_methods.rs:3:    aidl_frontend_settings_to_request, aidl_scan_type_to_mode, close_object_after_close_preflight,
+tuner_hal2/aidl_service/src/tuner_service/frontend_methods.rs:6:    plan_unavailable_object_method_use_case, scan_notifier, set_frontend_lnb_object_use_case,
+tuner_hal2/aidl_service/src/tuner_service/frontend_methods.rs:173:                set_frontend_lnb_object_use_case(
+tuner_hal2/service_runtime/src/boot.rs:737:    FrontendEvent {
+tuner_hal2/service_runtime/src/boot.rs:804:    pub fn frontend_event(
+tuner_hal2/service_runtime/src/boot.rs:812:        Self::FrontendEvent {
+tuner_hal2/service_runtime/src/boot.rs:826:            | Self::FrontendEvent { phase, .. }
+tuner_hal2/service_runtime/src/boot.rs:1942:                .clear_frontend_callback_registration_for_object(
+tuner_hal2/service_runtime/src/boot.rs:1988:                        .commit_frontend_callback_registration_for_object(
+tuner_hal2/service_runtime/src/boot.rs:2348:            CallbackDeliveryFailureReport::FrontendEvent {
+tuner_hal2/service_runtime/src/boot.rs:2416:                        FrontendCallbackDeliveryDiagnosticPhase::FrontendEventDelivery => {
+tuner_hal2/service_runtime/src/boot/query_api.rs:258:    pub(crate) fn frontend_entry_for_aidl_object(
+tuner_hal2/service_runtime/src/boot/query_api.rs:264:            .frontend_entry_for_aidl_object(object_id, generation)
+tuner_hal2/service_runtime/src/boot/query_api.rs:597:    pub(crate) fn frontend_entry_for_aidl_object(
+tuner_hal2/service_runtime/src/boot/query_api.rs:609:    pub(crate) fn frontend_status_query_for_aidl_object(
+tuner_hal2/service_runtime/src/boot/query_api.rs:614:        let entry = self.frontend_entry_for_aidl_object(object_id, generation)?;
+tuner_hal2/service_runtime/src/demux_filter_dvr_ops.rs:388:    pub fn set_demux_frontend_data_source_for_object(
+tuner_hal2/service_runtime/src/diagnostics.rs:1247:    FrontendEventDelivery,
+tuner_hal2/service_runtime/src/diagnostics.rs:1260:    FrontendEventDelivery {
+tuner_hal2/service_runtime/src/diagnostics.rs:1326:        Self::FrontendEventDelivery {
+tuner_hal2/service_runtime/src/diagnostics.rs:1372:            Self::FrontendEventDelivery { .. } => {
+tuner_hal2/service_runtime/src/diagnostics.rs:1373:                FrontendCallbackDeliveryDiagnosticPhase::FrontendEventDelivery
+tuner_hal2/service_runtime/src/failure_injection_tests.rs:418:        CallbackDeliveryFailureReport::frontend_event(
+tuner_hal2/service_runtime/src/failure_injection_tests.rs:440:        crate::FrontendCallbackDeliveryDiagnosticPhase::FrontendEventDelivery
+tuner_hal2/service_runtime/src/frontend_ops.rs:5:    stop_frontend_scan_object, stop_frontend_tune_object, FrontendScanNotification,
+tuner_hal2/service_runtime/src/frontend_ops.rs:145:        let fixed_power = crate::lnb_ops::ensure_frontend_fixed_power_for_object(
+tuner_hal2/service_runtime/src/frontend_ops.rs:178:        let fixed_power = crate::lnb_ops::ensure_frontend_fixed_power_for_object(
+tuner_hal2/service_runtime/src/frontend_ops.rs:210:                .frontend_entry_for_aidl_object(object_id, object_generation)?
+tuner_hal2/service_runtime/src/frontend_ops.rs:228:        stop_frontend_tune_object(
+tuner_hal2/service_runtime/src/frontend_ops.rs:244:        stop_frontend_scan_object(
+tuner_hal2/service_runtime/src/frontend_ops.rs:322:        let entry = guard.frontend_entry_for_aidl_object(object_id, object_generation)?;
+tuner_hal2/service_runtime/src/frontend_ops.rs:426:pub fn set_frontend_lnb_object_use_case(
+tuner_hal2/service_runtime/src/frontend_ops.rs:440:        let frontend_entry = guard.frontend_entry_for_aidl_object(object_id, object_generation)?;
+tuner_hal2/service_runtime/src/frontend_ops.rs:473:            let current = guard.frontend_entry_for_aidl_object(object_id, object_generation)?;
+tuner_hal2/service_runtime/src/frontend_ops.rs:477:                    "frontend object changed runtime id before LNB assignment preparation",
+tuner_hal2/service_runtime/src/frontend_ops.rs:494:    pub fn commit_frontend_callback_registration_for_object(
+tuner_hal2/service_runtime/src/frontend_ops.rs:514:    pub fn clear_frontend_callback_registration_for_object(
+tuner_hal2/service_runtime/src/frontend_worker_termination_use_case.rs:12:    cleanup_frontend_object_after_close_begin, FrontendCloseCleanupReport,
+tuner_hal2/service_runtime/src/frontend_worker_termination_use_case.rs:74:        cleanup_frontend_object_after_close_begin(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:1032:fn ensure_frontend_ticket_still_targets_object(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:1038:    ensure_frontend_object_still_live(guard, object_id, object_generation)?;
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:1040:        resolve_frontend_object_for_method(guard, object_id, object_generation)?;
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:1151:    let target = FrontendWorkerCleanupTarget::object(frontend_id, object_id, object_generation);
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:1177:    if let Err(error) = ensure_frontend_ticket_still_targets_object(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:1229:fn prepare_frontend_worker_stop_object_ticket(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:1237:        resolve_frontend_object_for_method(runtime, object_id, object_generation)?;
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:1260:fn complete_frontend_worker_stop_object_ticket<'a>(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:1287:    let target = FrontendWorkerCleanupTarget::object(frontend_id, object_id, object_generation);
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:1314:                    "frontend worker stop object diagnostic record failed after stop failure",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:1327:    if let Err(error) = ensure_frontend_ticket_still_targets_object(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:2026:fn resolve_frontend_object_for_method(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:2031:    let entry = runtime.frontend_entry_for_aidl_object(object_id, generation)?;
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:2035:fn ensure_frontend_object_still_live(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:2043:fn resolve_frontend_object_for_close_cleanup(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:2895:        ensure_frontend_ticket_still_targets_object(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3105:        resolve_frontend_object_for_method(&guard, object_id, object_generation)?;
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3706:        ensure_frontend_ticket_still_targets_object(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3953:        resolve_frontend_object_for_method(&guard, object_id, object_generation)?;
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4362:fn stop_frontend_object_without_join(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4379:        resolve_frontend_object_for_method(&guard, object_id, object_generation)?;
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4418:            FrontendWorkerCleanupTarget::object(frontend_id, object_id, object_generation);
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4499:        FrontendWorkerCleanupTarget::object(frontend_id, object_id, object_generation);
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4608:pub(crate) fn stop_frontend_tune_object(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4615:    stop_frontend_object_without_join(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4625:pub(crate) fn stop_frontend_scan_object(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4632:    stop_frontend_object_without_join(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4653:pub(crate) fn cleanup_frontend_object_after_close_begin(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4662:            resolve_frontend_object_for_close_cleanup(&guard, object_id, object_generation)?;
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4666:    let target = FrontendWorkerCleanupTarget::object(frontend_id, object_id, object_generation);
+tuner_hal2/service_runtime/src/lib.rs:83:    set_frontend_lnb_object_use_case, FrontendOperationEvent,
+tuner_hal2/service_runtime/src/lib.rs:585:            .root_open_txn().open_frontend_root_object_for_id(
+tuner_hal2/service_runtime/src/lib.rs:594:            runtime.root_open_txn().open_frontend_root_object_for_id(
+tuner_hal2/service_runtime/src/lib.rs:625:            .root_open_txn().open_frontend_root_object_for_id(
+tuner_hal2/service_runtime/src/lib.rs:635:            runtime.root_open_txn().open_frontend_root_object_for_id(
+tuner_hal2/service_runtime/src/lnb_ops.rs:213:pub(crate) fn ensure_frontend_fixed_power_for_object(
+tuner_hal2/service_runtime/src/lnb_ops.rs:220:        let frontend = guard.frontend_entry_for_aidl_object(object_id, object_generation)?;
+tuner_hal2/service_runtime/src/lnb_ops.rs:245:            let current = guard.frontend_entry_for_aidl_object(object_id, object_generation)?;
+tuner_hal2/service_runtime/src/object_method_use_case.rs:305:                .frontend_status_query_for_aidl_object(target.object_id(), target.generation())?;
+tuner_hal2/service_runtime/src/object_method_use_case.rs:324:                .frontend_entry_for_aidl_object(target.object_id(), target.generation())?;
+tuner_hal2/service_runtime/src/object_method_use_case.rs:338:                .frontend_status_query_for_aidl_object(target.object_id(), target.generation())?;
+tuner_hal2/service_runtime/src/post_commit_callback_failure_txn.rs:27:        | CallbackDeliveryFailureReport::FrontendEvent { .. }
+tuner_hal2/service_runtime/src/root_object_ops.rs:93:    pub fn open_frontend_root_object_for_id(
+tuner_hal2/service_runtime/src/root_object_ops.rs:107:                "frontend id is already leased by a live object",
+tuner_hal2/service_runtime/src/root_object_ops.rs:112:                "frontend physical group is already leased by a live object",
+=== worker terminal raw matches ===
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:22:    DvrStatusPollSnapshot, WorkerRuntime, WorkerTerminalResult,
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:52:    match notifier.worker.join() {
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:53:        WorkerTerminalResult::Normal(()) | WorkerTerminalResult::StopRequested => Ok(()),
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:54:        WorkerTerminalResult::RuntimeFailure(error) => Err(error),
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:55:        WorkerTerminalResult::PanicOrJoinFailure => Err(HalError::cleanup_failed(
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:704:            DvrPostCommitNotificationPhase::StatusNotifierRuntimeFailure,
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:725:                DvrPostCommitNotificationPhase::StatusNotifierRuntimeFailure,
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:737:                    DvrPostCommitNotificationPhase::StatusNotifierRuntimeFailure,
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:794:        DvrPostCommitNotificationPhase::StatusNotifierRuntimeFailure,
+tuner_hal2/aidl_service/src/loom_tests.rs:21:        artifact_thread.join().unwrap();
+tuner_hal2/aidl_service/src/loom_tests.rs:22:        runtime_thread.join().unwrap();
+tuner_hal2/service_runtime/src/boot.rs:194:    Some(parent.join("dvr0"))
+tuner_hal2/service_runtime/src/boot.rs:428:        maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::QueueRuntimeFailure
+tuner_hal2/service_runtime/src/boot/child_open_context.rs:365:            | DemuxRuntimeErrorKind::QueueRuntimeFailure
+tuner_hal2/service_runtime/src/boot/child_open_context.rs:1189:            | DemuxRuntimeErrorKind::QueueRuntimeFailure
+tuner_hal2/service_runtime/src/boot/frontend_txn.rs:972:    pub(crate) fn request_worker_stop_for_join(
+tuner_hal2/service_runtime/src/boot/frontend_txn.rs:980:            .request_stop_for_join(frontend_id, kind, reason)
+tuner_hal2/service_runtime/src/capability_profile.rs:6:pub enum RuntimeFailureDomain {
+tuner_hal2/service_runtime/src/capability_profile.rs:66:pub fn failure_domain(error: &HalError) -> RuntimeFailureDomain {
+tuner_hal2/service_runtime/src/capability_profile.rs:69:        HalError::DeviceMissing(_) => RuntimeFailureDomain::DeviceMissing,
+tuner_hal2/service_runtime/src/capability_profile.rs:70:        HalError::OpenFailed { .. } => RuntimeFailureDomain::DeviceOpen,
+tuner_hal2/service_runtime/src/capability_profile.rs:71:        HalError::PermissionDenied { .. } => RuntimeFailureDomain::DevicePermission,
+tuner_hal2/service_runtime/src/capability_profile.rs:72:        HalError::Busy { .. } => RuntimeFailureDomain::DeviceBusy,
+tuner_hal2/service_runtime/src/capability_profile.rs:73:        HalError::IoctlFailed { .. } => RuntimeFailureDomain::RuntimeIoctl,
+tuner_hal2/service_runtime/src/capability_profile.rs:74:        HalError::Io { .. } => RuntimeFailureDomain::RuntimeReadWrite,
+tuner_hal2/service_runtime/src/capability_profile.rs:75:        HalError::CallbackFailed { .. } => RuntimeFailureDomain::Callback,
+tuner_hal2/service_runtime/src/capability_profile.rs:76:        HalError::FmqFailed { .. } => RuntimeFailureDomain::Fmq,
+tuner_hal2/service_runtime/src/capability_profile.rs:77:        HalError::EventFlagFailed { .. } => RuntimeFailureDomain::EventFlag,
+tuner_hal2/service_runtime/src/capability_profile.rs:78:        HalError::CleanupFailed { .. } => RuntimeFailureDomain::Cleanup,
+tuner_hal2/service_runtime/src/capability_profile.rs:79:        HalError::OutOfMemory { .. } => RuntimeFailureDomain::ResourceExhausted,
+tuner_hal2/service_runtime/src/capability_profile.rs:80:        HalError::InvalidArgument { .. } => RuntimeFailureDomain::ClientArgument,
+tuner_hal2/service_runtime/src/capability_profile.rs:81:        HalError::InvalidState { .. } => RuntimeFailureDomain::ObjectState,
+tuner_hal2/service_runtime/src/capability_profile.rs:83:            RuntimeFailureDomain::UnsupportedByDesign
+tuner_hal2/service_runtime/src/capability_profile.rs:85:        HalError::Internal { .. } => RuntimeFailureDomain::InternalInvariant,
+tuner_hal2/service_runtime/src/capability_profile.rs:155:            RuntimeFailureDomain::DeviceMissing
+tuner_hal2/service_runtime/src/capability_profile.rs:157:        assert_eq!(failure_domain(&open), RuntimeFailureDomain::DeviceOpen);
+tuner_hal2/service_runtime/src/capability_profile.rs:158:        assert_eq!(failure_domain(&ioctl), RuntimeFailureDomain::RuntimeIoctl);
+tuner_hal2/service_runtime/src/capability_profile.rs:159:        assert_eq!(failure_domain(&callback), RuntimeFailureDomain::Callback);
+tuner_hal2/service_runtime/src/capability_profile.rs:160:        assert_eq!(failure_domain(&fmq), RuntimeFailureDomain::Fmq);
+tuner_hal2/service_runtime/src/capability_profile.rs:161:        assert_eq!(failure_domain(&event), RuntimeFailureDomain::EventFlag);
+tuner_hal2/service_runtime/src/capability_profile.rs:162:        assert_eq!(failure_domain(&cleanup), RuntimeFailureDomain::Cleanup);
+tuner_hal2/service_runtime/src/capability_profile.rs:165:            RuntimeFailureDomain::ClientArgument
+tuner_hal2/service_runtime/src/capability_profile.rs:169:            RuntimeFailureDomain::ObjectState
+tuner_hal2/service_runtime/src/capability_profile.rs:173:            RuntimeFailureDomain::UnsupportedByDesign
+tuner_hal2/service_runtime/src/capability_profile.rs:177:            RuntimeFailureDomain::InternalInvariant
+tuner_hal2/service_runtime/src/diagnostics.rs:401:    StatusNotifierRuntimeFailure,
+tuner_hal2/service_runtime/src/diagnostics.rs:498:            phase: DvrPostCommitNotificationPhase::StatusNotifierRuntimeFailure,
+tuner_hal2/service_runtime/src/diagnostics.rs:1082:    ArtifactAndRuntimeFailure {
+tuner_hal2/service_runtime/src/diagnostics.rs:1106:    ServiceBootRuntimeFailure {
+tuner_hal2/service_runtime/src/diagnostics.rs:1120:            (Some(artifact_error), Some(runtime_error)) => Some(Self::ArtifactAndRuntimeFailure {
+tuner_hal2/service_runtime/src/diagnostics.rs:1162:            outcomes.push(Self::ServiceBootRuntimeFailure { error });
+tuner_hal2/service_runtime/src/frontend_ops.rs:10:use crate::worker_runtime::WorkerTerminalResult;
+tuner_hal2/service_runtime/src/frontend_ops.rs:45:    terminal_result: WorkerTerminalResult<()>,
+tuner_hal2/service_runtime/src/frontend_ops.rs:53:        terminal_result: WorkerTerminalResult<()>,
+tuner_hal2/service_runtime/src/frontend_ops.rs:75:    pub fn into_terminal_result(self) -> WorkerTerminalResult<()> {
+tuner_hal2/service_runtime/src/frontend_ops.rs:91:                WorkerTerminalResult::StopRequested,
+tuner_hal2/service_runtime/src/frontend_ops.rs:103:                WorkerTerminalResult::RuntimeFailure(error.clone()),
+tuner_hal2/service_runtime/src/frontend_ops.rs:116:                    Ok(()) => WorkerTerminalResult::Normal(()),
+tuner_hal2/service_runtime/src/frontend_ops.rs:117:                    Err(error) => WorkerTerminalResult::RuntimeFailure(error.clone()),
+tuner_hal2/service_runtime/src/frontend_worker_termination_use_case.rs:14:use crate::worker_runtime::WorkerTerminalResult;
+tuner_hal2/service_runtime/src/frontend_worker_termination_use_case.rs:36:            WorkerTerminalResult::Normal(()) | WorkerTerminalResult::StopRequested => None,
+tuner_hal2/service_runtime/src/frontend_worker_termination_use_case.rs:37:            WorkerTerminalResult::RuntimeFailure(error) => Some(error),
+tuner_hal2/service_runtime/src/frontend_worker_termination_use_case.rs:38:            WorkerTerminalResult::PanicOrJoinFailure => Some(HalError::internal(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:22:use crate::worker_runtime::WorkerTerminalResult;
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:102:        Ok(()) if ctx.cancel_requested() => WorkerTerminalResult::StopRequested,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:103:        Ok(()) => WorkerTerminalResult::Normal(()),
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:104:        Err(error) => WorkerTerminalResult::RuntimeFailure(error.clone()),
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:1244:            .request_worker_stop_for_join(frontend_id, kind, reason);
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:2205:    runtime.frontend_txn().request_worker_stop_for_join(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3192:    let scan_stop_ticket = guard.frontend_txn().request_worker_stop_for_join(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3197:    let tune_stop_ticket = guard.frontend_txn().request_worker_stop_for_join(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4014:    let tune_stop_ticket = guard.frontend_txn().request_worker_stop_for_join(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4019:    let scan_stop_ticket = guard.frontend_txn().request_worker_stop_for_join(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4259:            .request_worker_stop_for_join(frontend_id, kind, reason)
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4362:fn stop_frontend_object_without_join(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4459:        .request_worker_stop_for_join(frontend_id, kind, reason);
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4615:    stop_frontend_object_without_join(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4632:    stop_frontend_object_without_join(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4763:        let tune_ticket = guard.frontend_txn().request_worker_stop_for_join(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4768:        let scan_ticket = guard.frontend_txn().request_worker_stop_for_join(
+tuner_hal2/service_runtime/src/lib.rs:50:    RuntimeFailureDomain, ScanCandidateOwner, TransportCapability,
+tuner_hal2/service_runtime/src/lib.rs:136:    WorkerHandle, WorkerRuntime, WorkerTerminalResult, CLEANUP_RETRY_SCHEDULE_MS,
+tuner_hal2/service_runtime/src/loom_tests.rs:18:        joiner.join().unwrap();
+tuner_hal2/service_runtime/src/queue_cleanup_use_case.rs:256:                    | DemuxRuntimeErrorKind::QueueRuntimeFailure
+tuner_hal2/service_runtime/src/queue_cleanup_use_case.rs:459:                DemuxRuntimeErrorKind::QueueRuntimeFailure => (
+tuner_hal2/service_runtime/src/worker_runtime.rs:14:pub enum WorkerTerminalResult<T> {
+tuner_hal2/service_runtime/src/worker_runtime.rs:17:    RuntimeFailure(HalError),
+tuner_hal2/service_runtime/src/worker_runtime.rs:18:    PanicOrJoinFailure,
+tuner_hal2/service_runtime/src/worker_runtime.rs:68:    pub fn join(mut self) -> WorkerTerminalResult<T> {
+tuner_hal2/service_runtime/src/worker_runtime.rs:70:            return WorkerTerminalResult::PanicOrJoinFailure;
+tuner_hal2/service_runtime/src/worker_runtime.rs:72:        match join.join() {
+tuner_hal2/service_runtime/src/worker_runtime.rs:74:            Err(_) => WorkerTerminalResult::PanicOrJoinFailure,
+tuner_hal2/service_runtime/src/worker_runtime.rs:89:    join: Option<JoinHandle<WorkerTerminalResult<T>>>,
+tuner_hal2/service_runtime/src/worker_runtime.rs:112:                    WorkerTerminalResult::StopRequested
+tuner_hal2/service_runtime/src/worker_runtime.rs:114:                Ok(Ok(result)) => WorkerTerminalResult::Normal(result),
+tuner_hal2/service_runtime/src/worker_runtime.rs:115:                Ok(Err(error)) => WorkerTerminalResult::RuntimeFailure(error),
+tuner_hal2/service_runtime/src/worker_runtime.rs:116:                Err(_) => WorkerTerminalResult::PanicOrJoinFailure,
+tuner_hal2/service_runtime/src/worker_runtime.rs:153:        assert_eq!(normal.join(), WorkerTerminalResult::Normal(7));
+tuner_hal2/service_runtime/src/worker_runtime.rs:169:            failure.join(),
+tuner_hal2/service_runtime/src/worker_runtime.rs:170:            WorkerTerminalResult::RuntimeFailure(_)
+tuner_hal2/service_runtime/src/worker_runtime.rs:181:        assert_eq!(panic.join(), WorkerTerminalResult::PanicOrJoinFailure);
+tuner_hal2/service_runtime/src/worker_runtime.rs:200:        assert_eq!(worker.join(), WorkerTerminalResult::StopRequested);
+=== reaper supervisors/state ===
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:62:struct DvrStatusNotifierReaperJob {
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:82:    reaping: BTreeMap<DvrStatusNotifierKey, DvrStatusNotifierReaperJob>,
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:86:    Completed(DvrStatusNotifierReaperJob),
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:93:    ReaperPending,
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:106:            capacity: snapshot.cleanup_reaper_capacity.max(1),
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:107:            deadline: Duration::from_millis(snapshot.worker_reaper_deadline_ms),
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:133:                    "finished DVR status notifier disappeared before reaper transfer",
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:136:            state.reaping.insert(
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:138:                DvrStatusNotifierReaperJob {
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:154:        if let Some(job) = state.reaping.get_mut(&key) {
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:159:        if state.active.len().saturating_add(state.reaping.len()) >= self.capacity {
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:182:        if let Some(job) = state.reaping.get_mut(&key) {
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:185:            return Ok(DvrStatusNotifierStopDisposition::ReaperPending);
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:191:        state.reaping.insert(
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:193:            DvrStatusNotifierReaperJob {
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:204:        Ok(DvrStatusNotifierStopDisposition::ReaperPending)
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:214:        for job in state.reaping.values_mut() {
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:220:            state.reaping.insert(
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:222:                DvrStatusNotifierReaperJob {
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:245:                "DVR status notifier supervisor lock poisoned in reaper",
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:255:                state.reaping.insert(
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:257:                    DvrStatusNotifierReaperJob {
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:273:            if let Some(key) = state.reaping.iter().find_map(|(key, job)| {
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:279:                let Some(job) = state.reaping.remove(&key) else {
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:284:            if let Some(handle) = state.reaping.values_mut().find_map(|job| {
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:295:                .reaping
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:307:                                "DVR status notifier supervisor wait lock poisoned in reaper",
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:315:                        "DVR status notifier supervisor wait lock poisoned in reaper",
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:977:    job: DvrStatusNotifierReaperJob,
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:994:                DvrStatusNotifierCleanupDiagnosticRecord::reaper_completion(
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:1008:                DvrStatusNotifierCleanupDiagnosticRecord::reaper_completion(
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:1035:fn handle_dvr_status_notifier_reaper_deadline(
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:1043:        "DVR status notifier reaper deadline",
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:1044:        "worker did not exit within the configured worker reaper deadline",
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:1049:        DvrStatusNotifierCleanupDiagnosticRecord::reaper_deadline(
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:1062:pub(crate) fn start_dvr_status_notifier_reaper(
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:1067:        .name("tuner-hal2-dvr-notifier-reaper".to_owned())
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:1074:                    handle_dvr_status_notifier_reaper_deadline(context.upgrade(), handle);
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:1088:                format!("failed to spawn DVR status notifier reaper: {error}"),
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:1144:        DvrStatusNotifierStopDisposition::ReaperPending => Err(HalError::cleanup_failed(
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:1146:            "worker ownership transferred to the DVR notifier reaper",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:2:use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:138:type FrontendWorkerReaperDeadlineAction =
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:140:type FrontendWorkerReaperCompletionAction =
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:150:struct FrontendWorkerReaperTicketGroup {
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:155:impl FrontendWorkerReaperTicketGroup {
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:195:            "frontend worker reaper waited without a pending ticket",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:212:struct FrontendWorkerReaperJob {
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:215:    tickets: FrontendWorkerReaperTicketGroup,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:217:    deadline_action: Option<FrontendWorkerReaperDeadlineAction>,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:218:    completion_action: FrontendWorkerReaperCompletionAction,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:221:impl FrontendWorkerReaperJob {
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:301:pub(crate) struct FrontendWorkerReaperHandle {
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:302:    sender: SyncSender<FrontendWorkerReaperJob>,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:307:enum FrontendWorkerReaperPendingState {
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:313:impl core::fmt::Debug for FrontendWorkerReaperHandle {
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:315:        f.debug_struct("FrontendWorkerReaperHandle").finish()
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:319:impl FrontendWorkerReaperHandle {
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:326:        let (sender, receiver) = mpsc::sync_channel(capacity);
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:328:        let receiver: Arc<Mutex<Receiver<FrontendWorkerReaperJob>>> =
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:335:                .name(format!("maleicacid-frontend-reaper-{lane}"))
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:349:                        format!("frontend worker reaper lane spawn failed: {error}"),
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:356:    fn enqueue(&self, job: FrontendWorkerReaperJob) -> Result<(), HalError> {
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:365:                    "frontend worker reaper pending registry lock poisoned",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:373:                "frontend worker reaper received a duplicate endpoint lease",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:388:                    "frontend worker reaper capacity exhausted",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:395:                    "frontend worker reaper is unavailable",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:408:                    "frontend worker reaper pending registry lock poisoned",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:417:    ) -> Result<FrontendWorkerReaperPendingState, HalError> {
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:421:                None => FrontendWorkerReaperPendingState::NotPending,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:422:                Some(None) => FrontendWorkerReaperPendingState::CleanupOnly,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:423:                Some(Some(kind)) => FrontendWorkerReaperPendingState::Replacement(kind),
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:428:                    "frontend worker reaper pending registry lock poisoned",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:434:fn ensure_frontend_worker_reaper(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:436:) -> Result<FrontendWorkerReaperHandle, HalError> {
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:438:        let guard = lock_runtime(runtime, "service runtime lock poisoned while finding reaper")?;
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:439:        if let Some(handle) = guard.frontend_worker_reaper_handle() {
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:443:            guard.frontend_worker_reaper_capacity(),
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:444:            Duration::from_millis(guard.capability_snapshot().worker_reaper_deadline_ms),
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:448:        FrontendWorkerReaperHandle::start(Arc::downgrade(runtime), capacity, deadline)?;
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:449:    let mut guard = lock_runtime(runtime, "service runtime lock poisoned while installing reaper")?;
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:450:    if let Some(handle) = guard.frontend_worker_reaper_handle() {
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:453:    guard.install_frontend_worker_reaper_handle(candidate.clone());
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:473:    WorkerReaperDeadline,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:474:    WorkerReaperCompletion,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:1726:    reaper: &FrontendWorkerReaperHandle,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:1745:        reaper,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:1758:    reaper: &FrontendWorkerReaperHandle,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:1780:        reaper,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:1793:    reaper: &FrontendWorkerReaperHandle,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:1812:    let job = FrontendWorkerReaperJob {
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:1815:        tickets: FrontendWorkerReaperTicketGroup::new(vec![(worker_kind, cleanup_ticket)]),
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:1818:            handle_frontend_worker_reaper_deadline(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:1831:                    "frontend backend submit reaper deadline elapsed",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:1834:                        "frontend backend submit reaper",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:1835:                        "submit operation did not exit before the reaper deadline",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:1857:    if let Err(transfer_error) = reaper.enqueue(job) {
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:1860:            "frontend backend submit reaper transfer failed",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:2709:fn record_frontend_reaper_completion(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:2735:        FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:2771:        FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:2778:fn handle_frontend_worker_reaper_deadline(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:2787:        "frontend worker reaper deadline",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:2793:            "service runtime lock poisoned at frontend worker reaper deadline",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:2850:        FrontendWorkerCleanupDiagnosticKind::WorkerReaperDeadline,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:2878:    let reaper = ensure_frontend_worker_reaper(runtime)?;
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:2883:                "frontend worker replacement was quarantined after reaper deadline",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:2953:                    &reaper,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:2985:        let (activation_sender, activation_receiver) = mpsc::sync_channel(1);
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3076:    record_frontend_reaper_completion(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3095:    let reaper = ensure_frontend_worker_reaper(&runtime)?;
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3106:    if reaper.is_pending(frontend_id, FrontendWorkerKind::Tune)?
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3107:        || reaper.is_pending(frontend_id, FrontendWorkerKind::Scan)?
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3111:            "frontend endpoint remains owned by the worker reaper",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3202:    let tickets = FrontendWorkerReaperTicketGroup::new(vec![
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3250:                        "frontend demux rollback-token commit failed with pending worker stop",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3304:                "frontend pending worker-stop failure state commit failed",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3345:                        "pending frontend worker tickets lost their public failure",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3362:            let job = FrontendWorkerReaperJob {
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3371:                    handle_frontend_worker_reaper_deadline(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3383:                            "frontend tune replacement reaper deadline elapsed",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3386:                                "frontend tune replacement reaper",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3387:                                "old worker did not exit before the reaper deadline",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3409:            if let Err(error) = reaper.enqueue(job) {
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3433:    let reaper = ensure_frontend_worker_reaper(&runtime)?;
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3553:                        &reaper,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3689:    let reaper = ensure_frontend_worker_reaper(runtime)?;
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3694:                "frontend scan replacement was quarantined after reaper deadline",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3795:                    &reaper,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3827:        let (activation_sender, activation_receiver) = mpsc::sync_channel(1);
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3923:    record_frontend_reaper_completion(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3942:    let reaper = ensure_frontend_worker_reaper(&runtime)?;
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3954:    if reaper.is_pending(frontend_id, FrontendWorkerKind::Tune)?
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3955:        || reaper.is_pending(frontend_id, FrontendWorkerKind::Scan)?
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:3959:            "frontend endpoint remains owned by the worker reaper",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4024:    let tickets = FrontendWorkerReaperTicketGroup::new(vec![
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4072:                        "frontend demux rollback-token commit failed with pending scan worker stop",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4132:                "frontend pending scan worker-stop failure state commit failed",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4190:            let job = FrontendWorkerReaperJob {
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4199:                    handle_frontend_worker_reaper_deadline(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4211:                            "frontend scan replacement reaper deadline elapsed",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4214:                                "frontend scan replacement reaper",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4215:                                "old worker did not exit before the reaper deadline",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4237:            if let Err(error) = reaper.enqueue(job) {
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4274:fn record_frontend_stop_reaper_completion(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4291:                "frontend reaper completion omitted the requested worker kind",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4296:            "frontend worker reaper deadline",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4297:            "worker exit was observed only after the reaper deadline",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4330:                        "frontend quarantine failed after worker reaper completion",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4354:            FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4370:    let reaper = ensure_frontend_worker_reaper(&runtime)?;
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4380:    let replacement_pending_for_kind = match reaper.pending_state(frontend_id, kind)? {
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4381:        FrontendWorkerReaperPendingState::NotPending => false,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4382:        FrontendWorkerReaperPendingState::CleanupOnly => return Ok(()),
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4383:        FrontendWorkerReaperPendingState::Replacement(replacement_kind)
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4388:        FrontendWorkerReaperPendingState::Replacement(_) => true,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4461:    let tickets = FrontendWorkerReaperTicketGroup::new(vec![(kind, ticket)]);
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4560:        Ok(outcomes) => record_frontend_stop_reaper_completion(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4571:            let job = FrontendWorkerReaperJob {
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4577:                    handle_frontend_worker_reaper_deadline(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4587:                    record_frontend_stop_reaper_completion(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4597:            if let Err(error) = reaper.enqueue(job) {
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4739:    let reaper = ensure_frontend_worker_reaper(&runtime)?;
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4740:    if reaper.is_pending(frontend_id, FrontendWorkerKind::Tune)?
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4741:        || reaper.is_pending(frontend_id, FrontendWorkerKind::Scan)?
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4745:            "frontend worker exit is still owned by the reaper",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4752:            "service runtime lock poisoned while preparing frontend close reaping",
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4773:        let tickets = FrontendWorkerReaperTicketGroup::new(vec![
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4885:            let job = FrontendWorkerReaperJob {
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4894:                    handle_frontend_worker_reaper_deadline(
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4931:                            FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion,
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4939:            if let Err(error) = reaper.enqueue(job) {
+tuner_hal2/service_runtime/src/frontend_worker_txn.rs:4947:                "frontend worker ownership transferred to the reaper",
+=== queue token/drain uses ===
+tuner_hal2/demux/src/av/shared_backing.rs:434:        runtime_claim.commit();
+tuner_hal2/demux/src/av/shared_backing.rs:530:        runtime_claim.commit();
+tuner_hal2/demux/src/av/shared_backing.rs:584:        runtime_claim.commit();
+tuner_hal2/demux/src/runtime/demux.rs:42:    QueueDescriptorExportTarget, QueueEpochDrainTxn, QueueRuntime, QueueRuntimeError,
+tuner_hal2/demux/src/runtime/demux.rs:382:    drain: QueueEpochDrainTxn,
+tuner_hal2/demux/src/runtime/demux.rs:950:    token: Option<super::queue_runtime::QueueEpochToken>,
+tuner_hal2/demux/src/runtime/demux.rs:1765:        if drain.commit().is_err() {
+tuner_hal2/demux/src/runtime/demux.rs:1805:            .commit()
+tuner_hal2/demux/src/runtime/demux.rs:2250:        if drain.commit().is_err() {
+tuner_hal2/demux/src/runtime/demux.rs:2601:        if drain.commit().is_err() {
+tuner_hal2/demux/src/runtime/demux.rs:3070:                    .begin_dvr_drain()
+tuner_hal2/demux/src/runtime/demux.rs:3114:        let queue_commit_result = queue.commit_dvr_drain_with_queue_clear(drain);
+tuner_hal2/demux/src/runtime/demux.rs:3300:            .begin_dvr_write(data.len())
+tuner_hal2/demux/src/runtime/demux.rs:3316:                .commit()
+tuner_hal2/demux/src/runtime/demux.rs:3375:            .begin_dvr_read(read_limit)
+tuner_hal2/demux/src/runtime/demux.rs:3441:        token.commit().map_err(|_| {
+tuner_hal2/demux/src/runtime/demux.rs:3541:        let transaction = match queue.begin_dvr_read(read_limit) {
+tuner_hal2/demux/src/runtime/demux.rs:3578:        if transaction.commit().is_err() {
+tuner_hal2/demux/src/runtime/demux.rs:3860:            .commit()
+tuner_hal2/demux/src/runtime/demux.rs:4855:                        } else if permit.commit().is_err() {
+tuner_hal2/demux/src/runtime/demux.rs:4869:                        if permit.commit().is_err() {
+tuner_hal2/demux/src/runtime/demux.rs:4881:                        if permit.commit().is_err() {
+tuner_hal2/demux/src/runtime/demux.rs:5038:            .begin_dvr_write(packet.len())
+tuner_hal2/demux/src/runtime/demux.rs:5054:                .commit()
+tuner_hal2/demux/src/runtime/demux.rs:5222:            let permit_committed = if permit.commit().is_err() {
+tuner_hal2/demux/src/runtime/queue_runtime.rs:149:pub(crate) struct QueueEpochToken {
+tuner_hal2/demux/src/runtime/queue_runtime.rs:158:impl QueueEpochToken {
+tuner_hal2/demux/src/runtime/queue_runtime.rs:218:impl Drop for QueueEpochToken {
+tuner_hal2/demux/src/runtime/queue_runtime.rs:230:pub(crate) struct QueueEpochDrainTxn {
+tuner_hal2/demux/src/runtime/queue_runtime.rs:237:impl QueueEpochDrainTxn {
+tuner_hal2/demux/src/runtime/queue_runtime.rs:263:impl Drop for QueueEpochDrainTxn {
+tuner_hal2/demux/src/runtime/queue_runtime.rs:414:    pub(crate) fn commit_dvr_drain_with_queue_clear(
+tuner_hal2/demux/src/runtime/queue_runtime.rs:416:        drain: QueueEpochDrainTxn,
+tuner_hal2/demux/src/runtime/queue_runtime.rs:418:        self.commit_dvr_drain_with_queue_clear_operation(drain, |queue| {
+tuner_hal2/demux/src/runtime/queue_runtime.rs:425:    fn commit_dvr_drain_with_queue_clear_operation<Clear>(
+tuner_hal2/demux/src/runtime/queue_runtime.rs:427:        mut drain: QueueEpochDrainTxn,
+tuner_hal2/demux/src/runtime/queue_runtime.rs:467:    ) -> Result<QueueEpochToken, QueueRuntimeError> {
+tuner_hal2/demux/src/runtime/queue_runtime.rs:487:        Ok(QueueEpochToken {
+tuner_hal2/demux/src/runtime/queue_runtime.rs:497:    pub(crate) fn begin_dvr_read(
+tuner_hal2/demux/src/runtime/queue_runtime.rs:500:    ) -> Result<QueueEpochToken, QueueRuntimeError> {
+tuner_hal2/demux/src/runtime/queue_runtime.rs:504:    pub(crate) fn begin_dvr_write(
+tuner_hal2/demux/src/runtime/queue_runtime.rs:507:    ) -> Result<QueueEpochToken, QueueRuntimeError> {
+tuner_hal2/demux/src/runtime/queue_runtime.rs:511:    pub(crate) fn begin_dvr_drain(&self) -> Result<QueueEpochDrainTxn, QueueRuntimeError> {
+tuner_hal2/demux/src/runtime/queue_runtime.rs:537:        Ok(QueueEpochDrainTxn {
+tuner_hal2/demux/src/runtime/queue_runtime.rs:1222:            .begin_dvr_drain()
+tuner_hal2/demux/src/runtime/queue_runtime.rs:1226:            .commit_dvr_drain_with_queue_clear_operation(drain, |_| {
+tuner_hal2/demux/src/runtime/queue_runtime.rs:1238:            .begin_dvr_read(1)
+tuner_hal2/demux/src/runtime/queue_runtime.rs:1241:            .commit()
+tuner_hal2/demux/src/runtime/queue_runtime.rs:1252:            .begin_dvr_drain()
+tuner_hal2/demux/src/runtime/queue_runtime.rs:1256:            .commit_dvr_drain_with_queue_clear(other_drain)
+tuner_hal2/demux/src/runtime/queue_runtime.rs:1262:            .begin_dvr_read(1)
+tuner_hal2/demux/src/runtime/queue_runtime.rs:1265:            .commit()
+tuner_hal2/demux/src/runtime/queue_runtime.rs:1278:            .begin_dvr_drain()
+tuner_hal2/demux/src/runtime/queue_runtime.rs:1282:            .commit_dvr_drain_with_queue_clear(drain)
+tuner_hal2/demux/src/runtime/transaction_contract_tests.rs:12:    drain.commit().expect("drain commit must reopen gate");
+tuner_hal2/demux/src/runtime/transaction_contract_tests.rs:16:    permit.commit().expect("producer permit must commit once");
+tuner_hal2/demux/src/runtime/transaction_contract_tests.rs:32:    permit.commit().expect("producer permit must commit once");
+=== child open and finish paths ===
+tuner_hal2/aidl_service/src/child_object_open.rs:43:fn finish_filter_child_open_artifact_retain_failure(
+tuner_hal2/aidl_service/src/child_object_open.rs:57:        .finish_filter_child_open_artifact_retain_failure_use_case(
+tuner_hal2/aidl_service/src/child_object_open.rs:70:fn finish_dvr_child_open_artifact_retain_failure(
+tuner_hal2/aidl_service/src/child_object_open.rs:84:        .finish_dvr_child_open_artifact_retain_failure_use_case(
+tuner_hal2/aidl_service/src/child_object_open.rs:114:        .finish_filter_child_open_object_construction_failure_use_case(primary_error, cleanup)
+tuner_hal2/aidl_service/src/child_object_open.rs:138:        .finish_dvr_child_open_object_construction_failure_use_case(primary_error, cleanup)
+tuner_hal2/aidl_service/src/child_object_open.rs:247:            runtime.child_open_txn().open_filter_child_runtime_for_demux_object(
+tuner_hal2/aidl_service/src/child_object_open.rs:256:    finish_filter_child_open(context, &runtime, runtime_entry, callback)
+tuner_hal2/aidl_service/src/child_object_open.rs:279:            runtime.child_open_txn().open_dvr_child_runtime_for_demux_object(
+tuner_hal2/aidl_service/src/child_object_open.rs:288:    finish_dvr_child_open(context, &runtime, runtime_entry, callback)
+tuner_hal2/aidl_service/src/child_object_open.rs:291:fn finish_filter_child_open(
+tuner_hal2/aidl_service/src/child_object_open.rs:300:        return finish_filter_child_open_artifact_retain_failure(
+tuner_hal2/aidl_service/src/child_object_open.rs:322:fn finish_dvr_child_open(
+tuner_hal2/aidl_service/src/child_object_open.rs:331:        return finish_dvr_child_open_artifact_retain_failure(
+tuner_hal2/aidl_service/src/dvr_callback_delivery.rs:1278:                runtime.child_open_txn().open_dvr_child_runtime_for_demux_object(
+tuner_hal2/aidl_service/src/object_runtime/mod.rs:1118:                        runtime.child_open_txn().open_filter_child_runtime_for_demux_object(
+tuner_hal2/aidl_service/src/object_runtime/mod.rs:1172:                        runtime.child_open_txn().open_dvr_child_runtime_for_demux_object(
+tuner_hal2/aidl_service/src/tuner_service.rs:751:                runtime.child_open_txn().open_dvr_child_runtime_for_demux_object(
+tuner_hal2/service_runtime/src/boot.rs:1818:    pub fn finish_filter_child_open_artifact_retain_failure_use_case(
+tuner_hal2/service_runtime/src/boot.rs:1827:            .rollback_filter_child_open_after_aidl_failure(object_id, generation, filter_id)
+tuner_hal2/service_runtime/src/boot.rs:1838:    pub fn finish_dvr_child_open_artifact_retain_failure_use_case(
+tuner_hal2/service_runtime/src/boot.rs:1847:            .rollback_dvr_child_open_after_aidl_failure(object_id, generation, dvr_id)
+tuner_hal2/service_runtime/src/boot.rs:1858:    pub fn finish_filter_child_open_object_construction_failure_use_case(
+tuner_hal2/service_runtime/src/boot.rs:1873:    pub fn finish_dvr_child_open_object_construction_failure_use_case(
+tuner_hal2/service_runtime/src/boot.rs:1894:        let primary_result = self.child_open_txn().rollback_filter_child_open_after_aidl_failure(
+tuner_hal2/service_runtime/src/boot.rs:1917:            .rollback_dvr_child_open_after_aidl_failure(
+tuner_hal2/service_runtime/src/boot.rs:3060:    pub fn register_aidl_object_for_runtime_auto_generation(
+tuner_hal2/service_runtime/src/boot/child_open_context.rs:1627:    pub fn open_filter_child_runtime_for_demux_object(
+tuner_hal2/service_runtime/src/boot/child_open_context.rs:1761:            .register_aidl_object_for_runtime_auto_generation(
+tuner_hal2/service_runtime/src/boot/child_open_context.rs:1787:    pub fn open_dvr_child_runtime_for_demux_object(
+tuner_hal2/service_runtime/src/boot/child_open_context.rs:1881:            .register_aidl_object_for_runtime_auto_generation(
+tuner_hal2/service_runtime/src/boot/child_open_context.rs:1907:    pub fn rollback_filter_child_open_after_aidl_failure(
+tuner_hal2/service_runtime/src/boot/child_open_context.rs:1946:    pub fn rollback_dvr_child_open_after_aidl_failure(
+tuner_hal2/service_runtime/src/lib.rs:1707:                    .open_filter_child_runtime_for_demux_object(
+tuner_hal2/service_runtime/src/lib.rs:1844:                        .open_filter_child_runtime_for_demux_object(
+tuner_hal2/service_runtime/src/object_method_use_case.rs:908:                runtime.child_open_txn().open_filter_child_runtime_for_demux_object(
+tuner_hal2/service_runtime/src/root_object_ops.rs:17:        .register_aidl_object_for_runtime_auto_generation(
+=== runtime object table reads/lifecycle ===
+tuner_hal2/service_runtime/src/boot.rs:1198:                lifecycle: RuntimeObjectLifecycle::Live,
+tuner_hal2/service_runtime/src/boot.rs:1213:                lifecycle: RuntimeObjectLifecycle::Live,
+tuner_hal2/service_runtime/src/boot.rs:3054:            lifecycle: RuntimeObjectLifecycle::Live,
+tuner_hal2/service_runtime/src/boot/child_open_context.rs:586:        if entry.lifecycle == crate::RuntimeObjectLifecycle::Quarantined {
+tuner_hal2/service_runtime/src/failure_injection_tests.rs:78:        lifecycle: RuntimeObjectLifecycle::Closed,
+tuner_hal2/service_runtime/src/lib.rs:1370:            lifecycle: RuntimeObjectLifecycle::Live,
+tuner_hal2/service_runtime/src/lib.rs:1406:                lifecycle: RuntimeObjectLifecycle::Live,
+tuner_hal2/service_runtime/src/lib.rs:1417:                lifecycle: RuntimeObjectLifecycle::Live,
+tuner_hal2/service_runtime/src/lib.rs:1447:                lifecycle: RuntimeObjectLifecycle::Live,
+tuner_hal2/service_runtime/src/lib.rs:1451:            .entry_checked(AidlObjectId(20), AidlObjectGeneration(5))
+tuner_hal2/service_runtime/src/lib.rs:1479:                lifecycle: RuntimeObjectLifecycle::Live,
+tuner_hal2/service_runtime/src/lib.rs:1502:                lifecycle: RuntimeObjectLifecycle::Closed,
+tuner_hal2/service_runtime/src/lib.rs:1527:                lifecycle: RuntimeObjectLifecycle::Live,
+tuner_hal2/service_runtime/src/lib.rs:1556:                lifecycle: RuntimeObjectLifecycle::Live,
+tuner_hal2/service_runtime/src/lib.rs:1570:                lifecycle: RuntimeObjectLifecycle::Live,
+tuner_hal2/service_runtime/src/lib.rs:1586:            RuntimeObjectLifecycle::Closing {
+tuner_hal2/service_runtime/src/lib.rs:1604:                lifecycle: RuntimeObjectLifecycle::Closed
+tuner_hal2/service_runtime/src/lib.rs:1625:                lifecycle: RuntimeObjectLifecycle::Live,
+tuner_hal2/service_runtime/src/object_close_txn.rs:1112:        Ok(entry.lifecycle == crate::RuntimeObjectLifecycle::Closed
+tuner_hal2/service_runtime/src/object_close_txn.rs:1462:                lifecycle: crate::RuntimeObjectLifecycle::Live,
+tuner_hal2/service_runtime/src/object_close_txn.rs:1487:                lifecycle: crate::RuntimeObjectLifecycle::Live,
+tuner_hal2/service_runtime/src/object_close_txn.rs:1512:            crate::RuntimeObjectLifecycle::Closing {
+tuner_hal2/service_runtime/src/object_close_txn.rs:1529:                lifecycle: crate::RuntimeObjectLifecycle::Live,
+tuner_hal2/service_runtime/src/object_close_txn.rs:1626:            crate::RuntimeObjectLifecycle::Closed
+tuner_hal2/service_runtime/src/object_close_txn.rs:1658:            crate::RuntimeObjectLifecycle::CleanupPending {
+tuner_hal2/service_runtime/src/object_close_txn.rs:1676:                lifecycle: crate::RuntimeObjectLifecycle::Live,
+tuner_hal2/service_runtime/src/object_close_txn.rs:1709:            crate::RuntimeObjectLifecycle::Closed
+tuner_hal2/service_runtime/src/object_lifecycle.rs:61:        RuntimeObjectLifecycle::Live
+tuner_hal2/service_runtime/src/object_lifecycle.rs:62:        | RuntimeObjectLifecycle::Closing { .. }
+tuner_hal2/service_runtime/src/object_lifecycle.rs:63:        | RuntimeObjectLifecycle::CleanupPending { .. } => {
+tuner_hal2/service_runtime/src/object_lifecycle.rs:66:        RuntimeObjectLifecycle::Closed
+tuner_hal2/service_runtime/src/object_lifecycle.rs:67:        | RuntimeObjectLifecycle::Quarantined => Err(HalError::invalid_state(
+tuner_hal2/service_runtime/src/object_lifecycle.rs:99:        RuntimeObjectLifecycle::Closing { step }
+tuner_hal2/service_runtime/src/object_lifecycle.rs:100:        | RuntimeObjectLifecycle::CleanupPending { step } => Ok(step),
+tuner_hal2/service_runtime/src/object_lifecycle.rs:101:        RuntimeObjectLifecycle::Live
+tuner_hal2/service_runtime/src/object_lifecycle.rs:102:        | RuntimeObjectLifecycle::Closed
+tuner_hal2/service_runtime/src/object_lifecycle.rs:103:        | RuntimeObjectLifecycle::Quarantined => Err(HalError::invalid_state(
+tuner_hal2/service_runtime/src/object_lifecycle.rs:136:        RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined
+tuner_hal2/service_runtime/src/object_lifecycle.rs:179:        RuntimeObjectLifecycle::Live
+tuner_hal2/service_runtime/src/object_lifecycle.rs:180:        | RuntimeObjectLifecycle::Closing { .. }
+tuner_hal2/service_runtime/src/object_lifecycle.rs:181:        | RuntimeObjectLifecycle::CleanupPending { .. } => Ok(entry.clone()),
+tuner_hal2/service_runtime/src/object_lifecycle.rs:182:        RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined => {
+tuner_hal2/service_runtime/src/object_lifecycle.rs:223:                lifecycle: RuntimeObjectLifecycle::Live,
+tuner_hal2/service_runtime/src/object_table.rs:217:        entry.lifecycle = RuntimeObjectLifecycle::Live;
+tuner_hal2/service_runtime/src/object_table.rs:227:        self.entry_checked(object_id, generation)?;
+tuner_hal2/service_runtime/src/object_table.rs:242:            RuntimeObjectLifecycle::Live | RuntimeObjectLifecycle::CleanupPending { .. } => {}
+tuner_hal2/service_runtime/src/object_table.rs:256:                RuntimeObjectLifecycle::Live | RuntimeObjectLifecycle::CleanupPending { .. } => {
+tuner_hal2/service_runtime/src/object_table.rs:257:                    entry.lifecycle = RuntimeObjectLifecycle::Closing { step };
+tuner_hal2/service_runtime/src/object_table.rs:260:                RuntimeObjectLifecycle::Closing { .. } => {
+tuner_hal2/service_runtime/src/object_table.rs:263:                RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined => {}
+tuner_hal2/service_runtime/src/object_table.rs:277:            RuntimeObjectLifecycle::Live
+tuner_hal2/service_runtime/src/object_table.rs:278:            | RuntimeObjectLifecycle::Closing { .. }
+tuner_hal2/service_runtime/src/object_table.rs:279:            | RuntimeObjectLifecycle::CleanupPending { .. } => {}
+tuner_hal2/service_runtime/src/object_table.rs:296:                RuntimeObjectLifecycle::Live
+tuner_hal2/service_runtime/src/object_table.rs:297:                | RuntimeObjectLifecycle::Closing { .. }
+tuner_hal2/service_runtime/src/object_table.rs:298:                | RuntimeObjectLifecycle::CleanupPending { .. } => {
+tuner_hal2/service_runtime/src/object_table.rs:299:                    entry.lifecycle = RuntimeObjectLifecycle::Closing { step };
+tuner_hal2/service_runtime/src/object_table.rs:302:                RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined
+tuner_hal2/service_runtime/src/object_table.rs:331:            RuntimeObjectLifecycle::Closing { .. }
+tuner_hal2/service_runtime/src/object_table.rs:332:                | RuntimeObjectLifecycle::CleanupPending { .. }
+tuner_hal2/service_runtime/src/object_table.rs:396:                RuntimeObjectLifecycle::Closing { .. }
+tuner_hal2/service_runtime/src/object_table.rs:397:                | RuntimeObjectLifecycle::CleanupPending { .. } => {
+tuner_hal2/service_runtime/src/object_table.rs:398:                    entry.lifecycle = RuntimeObjectLifecycle::CleanupPending { step };
+tuner_hal2/service_runtime/src/object_table.rs:401:                RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined
+tuner_hal2/service_runtime/src/object_table.rs:430:                RuntimeObjectLifecycle::Closing { .. }
+tuner_hal2/service_runtime/src/object_table.rs:431:                | RuntimeObjectLifecycle::CleanupPending { .. } => entries.push(entry.clone()),
+tuner_hal2/service_runtime/src/object_table.rs:432:                RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined
+tuner_hal2/service_runtime/src/object_table.rs:460:                RuntimeObjectLifecycle::Closing { .. }
+tuner_hal2/service_runtime/src/object_table.rs:461:                | RuntimeObjectLifecycle::CleanupPending { .. } => {
+tuner_hal2/service_runtime/src/object_table.rs:462:                    entry.lifecycle = RuntimeObjectLifecycle::Closed;
+tuner_hal2/service_runtime/src/object_table.rs:465:                RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined
+tuner_hal2/service_runtime/src/object_table.rs:504:    pub fn entry_checked(
+tuner_hal2/service_runtime/src/object_table.rs:510:        if !entry.lifecycle.is_live() {
+tuner_hal2/service_runtime/src/object_table.rs:525:        let entry = self.entry_checked(object_id, generation)?;
+tuner_hal2/service_runtime/src/object_table.rs:547:                    && entry.lifecycle.is_live()
+tuner_hal2/service_runtime/src/object_table.rs:557:                    && !matches!(entry.lifecycle, RuntimeObjectLifecycle::Closed)
+tuner_hal2/service_runtime/src/object_table.rs:618:        if !owner_entry.lifecycle.is_live() {
+tuner_hal2/service_runtime/src/object_table.rs:692:            RuntimeObjectLifecycle::Closing { .. }
+tuner_hal2/service_runtime/src/object_table.rs:693:            | RuntimeObjectLifecycle::CleanupPending { .. } => Ok(()),
+tuner_hal2/service_runtime/src/object_table.rs:708:            RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined => Ok(None),
+tuner_hal2/service_runtime/src/object_table.rs:710:                entry.lifecycle = RuntimeObjectLifecycle::Quarantined;
+tuner_hal2/service_runtime/src/object_table.rs:738:            lifecycle: RuntimeObjectLifecycle::Live,
+tuner_hal2/service_runtime/src/object_table.rs:770:            RuntimeObjectLifecycle::Quarantined
+tuner_hal2/service_runtime/src/object_table.rs:774:            RuntimeObjectLifecycle::Quarantined
+tuner_hal2/service_runtime/src/object_table.rs:832:            RuntimeObjectLifecycle::Closed;
+tuner_hal2/service_runtime/src/object_table.rs:834:            RuntimeObjectLifecycle::Closing {
+tuner_hal2/service_runtime/src/object_table.rs:845:                lifecycle: RuntimeObjectLifecycle::Closed,
+tuner_hal2/service_runtime/src/object_table.rs:850:            RuntimeObjectLifecycle::Closing {
+tuner_hal2/service_runtime/src/object_table.rs:879:            RuntimeObjectLifecycle::Quarantined;
+tuner_hal2/service_runtime/src/object_table.rs:881:            RuntimeObjectLifecycle::Closing {
+tuner_hal2/service_runtime/src/object_table.rs:896:                lifecycle: RuntimeObjectLifecycle::Quarantined,
+tuner_hal2/service_runtime/src/object_table.rs:901:            RuntimeObjectLifecycle::Closing {
