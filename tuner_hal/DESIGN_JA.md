@@ -1331,7 +1331,7 @@ release AIDL経路からテスト専用入口へ到達してはならず、テ�
 | T-AOSP-38 | `FilterDelayHint` timeのみ | time条件 |
 | T-AOSP-39 | `FilterDelayHint` dataのみ | data条件 |
 | T-AOSP-40 | `FilterDelayHint` time+data | OR条件 |
-| T-AOSP-44 | `FrontendInfo` scalar境界とtune validation | min/max frequency、symbol rate、acquire rangeが同一`CapabilitySnapshot`と受付範囲に一致 |
+| T-AOSP-44 | `FrontendInfo` scalar境界とtune validation | min/max frequency、symbol rate、acquire rangeは同一`CapabilitySnapshot`を正本とする。固定離散raster backendのfrequencyはscalar envelopeに加えて同snapshotのraster profileを適用し、Android Hz要求を隣接center間の半間隔以内で一意なnearest centerへ正規化する。BS/CS間gap、range外、曖昧化できない値は副作用前に拒否し、CTS個別値の特例を置かない |
 | T-AOSP-45 | DVBの検証済み物理group key、同一streamのvariant、共有資源、独立stream、topology不明 | 同一物理streamのvariantと同時利用不可資源を共有するtupleは同じ`exclusiveGroupId`、同時利用可能性を検証した独立streamだけ別group、別backend namespaceは衝突せず、topology不明候補は公開しない |
 | T-AOSP-46 | ISDB-T segment capabilityとlayer `numOfSegment` | `0`は未指定、`0xFF`はCTS互換AUTO、`1..13`は明示値として分離する。さらに`isSegmentAuto=true`→`0xFF`、`false && isFullSegment=true`→`13`、`false && isFullSegment=false`→`1`のCTS分岐ごとに、公開capability pairが対応入力を必ず実現できる閉包条件を満たすこと。成立しないcandidateはfrontendとしてexportしない |
 | T-AOSP-47 | ISDB-T V2 `inversion` / `serviceAreaId` / `partialReceptionFlag` / `numOfSegment` | 成功・`UNAVAILABLE`・`INVALID_ARGUMENT`をフィールド別に固定する。`partialReceptionFlag`明示値では同期`tune()`受付と非同期lock成立を分離し、blocker解消後はfresh TMCC readback一致時だけ`LOCKED`、不一致は`NO_SIGNAL`、未確定・I/O失敗・旧generationでは`LOCKED`を生成しない。blocker未解決中はsilent ignore-successがない |

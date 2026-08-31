@@ -13,6 +13,59 @@ pub const TS_PACKET_SIZE: usize = 188;
 pub const MAX_ARIB_SHORT_SECTION_LENGTH: usize = 1021;
 pub const MAX_ARIB_EIT_SECTION_LENGTH: usize = 4093;
 pub const ARIB_TDT_SECTION_LENGTH: usize = 5;
+
+pub const JAPAN_BS_FIRST_IF_HZ: u64 = 1_049_480_000;
+pub const JAPAN_BS_IF_STEP_HZ: u64 = 38_360_000;
+pub const JAPAN_BS_CHANNEL_COUNT: u64 = 12;
+pub const JAPAN_CS110_FIRST_IF_HZ: u64 = 1_613_000_000;
+pub const JAPAN_CS110_IF_STEP_HZ: u64 = 40_000_000;
+pub const JAPAN_CS110_CHANNEL_COUNT: u64 = 12;
+
+fn normalize_frequency_to_discrete_raster(
+    frequency_hz: u64,
+    first_hz: u64,
+    step_hz: u64,
+    count: u64,
+) -> Option<u64> {
+    if count == 0 || step_hz == 0 {
+        return None;
+    }
+    let last = first_hz.checked_add(step_hz.checked_mul(count.checked_sub(1)?)?)?;
+    let half_step = step_hz / 2;
+    if frequency_hz < first_hz.saturating_sub(half_step)
+        || frequency_hz > last.checked_add(half_step)?
+    {
+        return None;
+    }
+    let index = if frequency_hz <= first_hz {
+        0
+    } else {
+        frequency_hz.checked_sub(first_hz)?.checked_add(half_step)? / step_hz
+    };
+    if index >= count {
+        return None;
+    }
+    let center = first_hz.checked_add(step_hz.checked_mul(index)?)?;
+    (frequency_hz.abs_diff(center) <= half_step).then_some(center)
+}
+
+pub fn normalize_japan_bs_if_frequency_hz(frequency_hz: u64) -> Option<u64> {
+    normalize_frequency_to_discrete_raster(
+        frequency_hz,
+        JAPAN_BS_FIRST_IF_HZ,
+        JAPAN_BS_IF_STEP_HZ,
+        JAPAN_BS_CHANNEL_COUNT,
+    )
+}
+
+pub fn normalize_japan_cs110_if_frequency_hz(frequency_hz: u64) -> Option<u64> {
+    normalize_frequency_to_discrete_raster(
+        frequency_hz,
+        JAPAN_CS110_FIRST_IF_HZ,
+        JAPAN_CS110_IF_STEP_HZ,
+        JAPAN_CS110_CHANNEL_COUNT,
+    )
+}
 pub const MAX_ARIB_SECTION_TOTAL_BYTES: usize = 3 + MAX_ARIB_EIT_SECTION_LENGTH;
 pub const MAX_SECTION_PAYLOAD_BYTES: usize = MAX_ARIB_SECTION_TOTAL_BYTES;
 
@@ -1026,5 +1079,30 @@ mod section_length_contract_tests {
         assert!(is_valid_arib_section_length(0x70, 5));
         assert!(!is_valid_arib_section_length(0x70, 4));
         assert!(!is_valid_arib_section_length(0x70, 6));
+    }
+}
+
+#[cfg(test)]
+mod isdbs_raster_adapter_tests {
+    use super::*;
+
+    #[test]
+    fn isdbs_android_hz_adapter_accepts_cts_nominal_frequency_without_special_case() {
+        assert_eq!(
+            normalize_japan_bs_if_frequency_hz(1_050_000_000),
+            Some(1_049_480_000)
+        );
+    }
+
+    #[test]
+    fn isdbs_raster_adapter_is_bounded_by_half_adjacent_spacing_and_rejects_band_gap() {
+        let bs_half = JAPAN_BS_IF_STEP_HZ / 2;
+        assert_eq!(
+            normalize_japan_bs_if_frequency_hz(JAPAN_BS_FIRST_IF_HZ + bs_half),
+            Some(JAPAN_BS_FIRST_IF_HZ + JAPAN_BS_IF_STEP_HZ)
+        );
+        assert!(normalize_japan_bs_if_frequency_hz(JAPAN_BS_FIRST_IF_HZ - bs_half - 1).is_none());
+        assert!(normalize_japan_bs_if_frequency_hz(1_550_000_000).is_none());
+        assert!(normalize_japan_cs110_if_frequency_hz(1_550_000_000).is_none());
     }
 }
