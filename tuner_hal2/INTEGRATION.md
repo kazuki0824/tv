@@ -200,13 +200,21 @@ build-time compiler / validatorは、静的なHAL product contractとAOSP VTS契
 
 `resolve-device`とpreflightはHAL内部registry、private diagnostic、driver-private stateをVTS成功条件の正本にしない。解決済みprofileに対するpreflight不成立時は別frontend、別周波数、別PIDへ自動fallbackして同じprofileの解決結果を変更せず、そのprofileによるVTS実行を開始しない。preflight結果またはVTS実行結果をHAL runtime capabilityへフィードバックして次回起動時の公開能力を変更してはならない。
 
+#### VTS device agentの配置と実行
+
+`resolve-device`で使用する`maleicacid_tuner_hal2_vts_agent`は通常productの`PRODUCT_PACKAGES`へ含めない。host CLIは明示されたagent binaryを一時的に`/data/local/tmp`へadb-pushして起動し、解決処理終了後に除去する。この通常経路によってproduct imageへtest helperを恒久配置しない。
+
+対象deviceのSELinuxまたはlinker policyにより、shell domainから起動した一時agentがpublic Tuner AIDLへ接続できない場合は、同じagentを明示的なVTS/test imageだけへ含める`config/vts_test_agent_integration.mk`を使用する。このtest image経路を通常product integrationへ継承してはならない。
+
+agentの論理責務・禁止責務、C++をFMQ descriptor import/read境界へ限定する規則、およびSI意味解析をhost側のcanonical `arib_si_engine_rs`へ接続する依存方向は`DESIGN_JA.md`を正とする。本書では配置・起動・除去・test imageへの接続だけを所有する。
+
 ### 6.7 生成物とproduct配置
 
-生成されるAOSP Tuner VTS XMLはderived artifactであり、`VtsEnvironmentProfile`と同格の正本ではない。product integrationは、`../tuner_hal/DESIGN_JA.md`のfilename解決契約で得た解決済みfilenameを使用して、生成XMLをvendor imageへ正確に1個installする。
+生成されるAOSP Tuner VTS XMLはderived artifactであり、`VtsEnvironmentProfile`と同格の正本ではない。product integrationは、`../tuner_hal/DESIGN_JA.md`のfilename解決契約で得た解決済みfilenameを使用して、生成・検証済みXMLをproduct build graph経由でvendor imageへ正確に1個installする。`PRODUCT_COPY_FILES`、生成済みconfig moduleその他の具体的なbuild mechanismは、この一意なinstall契約を満たす限り実装詳細とする。
 
 variantを使用する場合、variant propertyの値と生成XML filenameは同一`VtsEnvironmentProfile`の入力から導出し、product makefile側で別値を独立定義しない。variantを使用しない場合も、その判断は同じprofileから導出し、別のproduct設定面を設けない。
 
-`config/product_integration.mk`は、`../tuner_hal/DESIGN_JA.md`のVTS状態契約に従って静的configをinstall可能と判定されたproductだけで生成VTS config moduleを`PRODUCT_PACKAGES`へ追加できる構造にする。VTS config moduleを含めないproductでは、推測した既定XMLまたは旧`tuner_hal`のVTS XMLを代用しない。
+`config/product_integration.mk`は、`../tuner_hal/DESIGN_JA.md`のVTS状態契約に従って静的configをinstall可能と判定されたproductだけで、生成・検証済みVTS config artifactをvendor imageへのbuild graphへ接続できる構造にする。artifactを含めないproductでは、推測した既定XMLまたは旧`tuner_hal`のVTS XMLを代用しない。
 
 ### 6.8 統合完了条件への接続
 
