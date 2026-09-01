@@ -22,58 +22,7 @@ jobs:
         shell: bash
         run: |
           git reset --hard 18acff9b68fd187edcd777a0dd1a056f89594a93
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path('arib_si_engine_rs/src/lib.rs')
-          text = path.read_text()
-
-          old = '''    match parser.lock() {
-        Ok(guard) => f(&guard),
-        Err(error) => {
-            drop(error);
-            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
-            default_value
-        }
-    }
-}'''
-          new = '''    let result = match parser.lock() {
-        Ok(guard) => f(&guard),
-        Err(error) => {
-            drop(error);
-            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
-            default_value
-        }
-    };
-    result
-}'''
-          if text.count(old) != 1:
-              raise SystemExit(f'with_state match count={text.count(old)}')
-          text = text.replace(old, new, 1)
-
-          old = '''    match parser.lock() {
-        Ok(mut guard) => f(&mut guard),
-        Err(error) => {
-            drop(error);
-            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
-            default_value
-        }
-    }
-}'''
-          new = '''    let result = match parser.lock() {
-        Ok(mut guard) => f(&mut guard),
-        Err(error) => {
-            drop(error);
-            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
-            default_value
-        }
-    };
-    result
-}'''
-          if text.count(old) != 1:
-              raise SystemExit(f'with_state_mut match count={text.count(old)}')
-          path.write_text(text.replace(old, new, 1))
-          PY
+          python3 -c "import base64;exec(base64.b64decode('ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCgpwYXRoID0gUGF0aCgiYXJpYl9zaV9lbmdpbmVfcnMvc3JjL2xpYi5ycyIpCnRleHQgPSBwYXRoLnJlYWRfdGV4dCgpCgpvbGQgPSAiIiIgICAgbWF0Y2ggcGFyc2VyLmxvY2soKSB7CiAgICAgICAgT2soZ3VhcmQpID0+IGYoJmd1YXJkKSwKICAgICAgICBFcnIoZXJyb3IpID0+IHsKICAgICAgICAgICAgZHJvcChlcnJvcik7CiAgICAgICAgICAgIHJlY29yZF9zaV9tdXRleF9wb2lzb24oU0lfUEFSU0VSX0xPQ0tfTkFNRSk7CiAgICAgICAgICAgIGRlZmF1bHRfdmFsdWUKICAgICAgICB9CiAgICB9Cn0iIiIKbmV3ID0gIiIiICAgIGxldCByZXN1bHQgPSBtYXRjaCBwYXJzZXIubG9jaygpIHsKICAgICAgICBPayhndWFyZCkgPT4gZigmZ3VhcmQpLAogICAgICAgIEVycihlcnJvcikgPT4gewogICAgICAgICAgICBkcm9wKGVycm9yKTsKICAgICAgICAgICAgcmVjb3JkX3NpX211dGV4X3BvaXNvbihTSV9QQVJTRVJfTE9DS19OQU1FKTsKICAgICAgICAgICAgZGVmYXVsdF92YWx1ZQogICAgICAgIH0KICAgIH07CiAgICByZXN1bHQKfSIiIgppZiB0ZXh0LmNvdW50KG9sZCkgIT0gMToKICAgIHJhaXNlIFN5c3RlbUV4aXQoZiJ3aXRoX3N0YXRlIG1hdGNoIGNvdW50PXt0ZXh0LmNvdW50KG9sZCl9IikKdGV4dCA9IHRleHQucmVwbGFjZShvbGQsIG5ldywgMSkKCm9sZCA9ICIiIiAgICBtYXRjaCBwYXJzZXIubG9jaygpIHsKICAgICAgICBPayhtdXQgZ3VhcmQpID0+IGYoJm11dCBndWFyZCksCiAgICAgICAgRXJyKGVycm9yKSA9PiB7CiAgICAgICAgICAgIGRyb3AoZXJyb3IpOwogICAgICAgICAgICByZWNvcmRfc2lfbXV0ZXhfcG9pc29uKFNJX1BBUlNFUl9MT0NLX05BTUUpOwogICAgICAgICAgICBkZWZhdWx0X3ZhbHVlCiAgICAgICAgfQogICAgfQp9IiIiCm5ldyA9ICIiIiAgICBsZXQgcmVzdWx0ID0gbWF0Y2ggcGFyc2VyLmxvY2soKSB7CiAgICAgICAgT2sobXV0IGd1YXJkKSA9PiBmKCZtdXQgZ3VhcmQpLAogICAgICAgIEVycihlcnJvcikgPT4gewogICAgICAgICAgICBkcm9wKGVycm9yKTsKICAgICAgICAgICAgcmVjb3JkX3NpX211dGV4X3BvaXNvbihTSV9QQVJTRVJfTE9DS19OQU1FKTsKICAgICAgICAgICAgZGVmYXVsdF92YWx1ZQogICAgICAgIH0KICAgIH07CiAgICByZXN1bHQKfSIiIgppZiB0ZXh0LmNvdW50KG9sZCkgIT0gMToKICAgIHJhaXNlIFN5c3RlbUV4aXQoZiJ3aXRoX3N0YXRlX211dCBtYXRjaCBjb3VudD17dGV4dC5jb3VudChvbGQpfSIpCnBhdGgud3JpdGVfdGV4dCh0ZXh0LnJlcGxhY2Uob2xkLCBuZXcsIDEpKQo='))"
           git diff --check
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
