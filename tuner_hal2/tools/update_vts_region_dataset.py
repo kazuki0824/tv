@@ -10,6 +10,8 @@ from pathlib import Path
 
 INDEX_URL = "https://ina4n.com/chideji/47info/chideji-index.html"
 USER_AGENT = "maleicacid-tuner-hal2-vts-region-dataset/1"
+CURRENT_ISDBT_FIRST_CHANNEL = 13
+CURRENT_ISDBT_LAST_CHANNEL = 52
 PREFECTURE_NAMES = (
     "北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県",
     "茨城県", "栃木県", "群馬県", "埼玉県", "千葉県", "東京都", "神奈川県",
@@ -125,7 +127,7 @@ class _PrefectureParser(HTMLParser):
             number = int(value)
             if 1 <= number <= 12:
                 saw_small_number = True
-            elif 13 <= number <= 62:
+            elif CURRENT_ISDBT_FIRST_CHANNEL <= number <= CURRENT_ISDBT_LAST_CHANNEL:
                 numeric.append(number)
         if not numeric or saw_small_number:
             return
@@ -141,7 +143,6 @@ def _area_keys(coverage: str) -> list[str]:
     normalized = coverage.replace("の一部", " ").replace("全域", " ")
     normalized = re.sub(r"[、，,・/／()（）]", " ", normalized)
     keys: set[str] = set()
-    # 政令市+区を先に拾い、同時に市名も候補に残す。
     for city, ward in re.findall(
         r"([一-龯々ヶヵぁ-んァ-ヶー]{1,20}市)([一-龯々ヶヵぁ-んァ-ヶー]{1,20}区)",
         normalized,
@@ -175,7 +176,7 @@ def _build_prefecture(url: str) -> dict[str, object]:
     parser = _PrefectureParser()
     parser.feed(_fetch_text(url))
     if not parser.all_channels:
-        raise RuntimeError(f"no physical channels parsed from {url}")
+        raise RuntimeError(f"no current physical channels parsed from {url}")
     areas: dict[str, set[int]] = {}
     for coverage, channels in parser.coverage_channels.items():
         for key in _area_keys(coverage):
@@ -201,7 +202,10 @@ def generate(dataset_version: str) -> dict[str, object]:
         "dataset_version": dataset_version,
         "source": {
             "index_url": INDEX_URL,
-            "source_notice": "全国地上デジタル中継局情報; source site reports ongoing corrections",
+            "source_notice": (
+                "community-maintained nationwide terrestrial relay listing; "
+                "snapshot normalized to current Japan ISDB-T physical channels 13-52"
+            ),
         },
         "prefectures": prefectures,
     }
