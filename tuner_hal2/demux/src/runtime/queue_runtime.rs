@@ -265,7 +265,28 @@ impl QueueEpochDrainTxn {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DvrQueueDrainCommitError {
     QueueClear,
+    QueueClearRollbackFailed,
     EpochCommit,
+    EpochCommitRollbackFailed,
+}
+
+impl DvrQueueDrainCommitError {
+    fn after_abort(self, abort: Result<(), QueueRuntimeError>) -> Self {
+        if abort.is_ok() {
+            return self;
+        }
+        match self {
+            Self::QueueClear | Self::QueueClearRollbackFailed => Self::QueueClearRollbackFailed,
+            Self::EpochCommit | Self::EpochCommitRollbackFailed => Self::EpochCommitRollbackFailed,
+        }
+    }
+
+    pub(crate) const fn rollback_failed(self) -> bool {
+        matches!(
+            self,
+            Self::QueueClearRollbackFailed | Self::EpochCommitRollbackFailed
+        )
+    }
 }
 
 impl Drop for QueueEpochDrainTxn {
@@ -439,21 +460,21 @@ impl QueueRuntime {
         Clear: FnOnce(&Self) -> Result<usize, QueueRuntimeError>,
     {
         let Some(protocol) = self.dvr_epoch.as_ref() else {
-            let _ = drain.abort();
-            return Err(DvrQueueDrainCommitError::EpochCommit);
+            let abort = drain.abort();
+            return Err(DvrQueueDrainCommitError::EpochCommit.after_abort(abort));
         };
         if !Arc::ptr_eq(protocol, &drain.protocol) {
-            let _ = drain.abort();
-            return Err(DvrQueueDrainCommitError::EpochCommit);
+            let abort = drain.abort();
+            return Err(DvrQueueDrainCommitError::EpochCommit.after_abort(abort));
         }
         let mut state = match protocol.state.lock() {
             Ok(state) => state,
             Err(_) => {
-                // The canonical lock itself is unavailable. Explicit abort is
-                // attempted; Drop is only the final fail-closed backstop if that
-                // abort cannot reacquire the poisoned state.
-                let _ = drain.abort();
-                return Err(DvrQueueDrainCommitError::EpochCommit);
+                // The canonical lock itself is unavailable. Preserve an abort
+                // failure as a typed secondary failure; Drop remains only the
+                // final fail-closed backstop for an unconsumed authority.
+                let abort = drain.abort();
+                return Err(DvrQueueDrainCommitError::EpochCommit.after_abort(abort));
             }
         };
         if state.state != QueueEpochState::Draining
@@ -461,8 +482,8 @@ impl QueueRuntime {
             || state.admitted_transaction_count != 0
         {
             drop(state);
-            let _ = drain.abort();
-            return Err(DvrQueueDrainCommitError::EpochCommit);
+            let abort = drain.abort();
+            return Err(DvrQueueDrainCommitError::EpochCommit.after_abort(abort));
         }
 
         // FmqQueue::clear() is failure-atomic: allocation happens before the
@@ -472,8 +493,8 @@ impl QueueRuntime {
             Ok(bytes) => bytes,
             Err(_) => {
                 drop(state);
-                let _ = drain.abort();
-                return Err(DvrQueueDrainCommitError::QueueClear);
+                let abort = drain.abort();
+                return Err(DvrQueueDrainCommitError::QueueClear.after_abort(abort));
             }
         };
         state.epoch = drain.next_epoch;

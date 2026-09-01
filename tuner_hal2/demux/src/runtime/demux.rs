@@ -265,6 +265,7 @@ pub enum DvrQueueCleanupStep {
     Prepare,
     QueueClear,
     QueueEpochCommit,
+    QueueRollback,
     RuntimeStateCommit,
     PlaybackPipelineReset,
     PcrAnchorInvalidate,
@@ -277,11 +278,27 @@ pub enum DvrQueueCleanupStep {
 pub struct DvrQueueCleanupCommitError {
     failed_step: DvrQueueCleanupStep,
     error: DemuxRuntimeError,
+    rollback_failed: bool,
 }
 
 impl DvrQueueCleanupCommitError {
     const fn new(failed_step: DvrQueueCleanupStep, error: DemuxRuntimeError) -> Self {
-        Self { failed_step, error }
+        Self {
+            failed_step,
+            error,
+            rollback_failed: false,
+        }
+    }
+
+    const fn with_rollback_failure(
+        failed_step: DvrQueueCleanupStep,
+        error: DemuxRuntimeError,
+    ) -> Self {
+        Self {
+            failed_step,
+            error,
+            rollback_failed: true,
+        }
     }
 
     pub const fn failed_step(self) -> DvrQueueCleanupStep {
@@ -290,6 +307,10 @@ impl DvrQueueCleanupCommitError {
 
     pub const fn error(self) -> DemuxRuntimeError {
         self.error
+    }
+
+    pub const fn rollback_failed(self) -> bool {
+        self.rollback_failed
     }
 }
 
@@ -3120,9 +3141,23 @@ impl DemuxRuntime {
                     DemuxRuntimeError::queue_runtime_failure(dvr_id),
                 ));
             }
+            Err(DvrQueueDrainCommitError::QueueClearRollbackFailed) => {
+                self.quarantine_dvr_runtime(dvr_id);
+                return Err(DvrQueueCleanupCommitError::with_rollback_failure(
+                    DvrQueueCleanupStep::QueueClear,
+                    DemuxRuntimeError::queue_runtime_failure(dvr_id),
+                ));
+            }
             Err(DvrQueueDrainCommitError::EpochCommit) => {
                 self.quarantine_dvr_runtime(dvr_id);
                 return Err(DvrQueueCleanupCommitError::new(
+                    DvrQueueCleanupStep::QueueEpochCommit,
+                    DemuxRuntimeError::queue_runtime_failure(dvr_id),
+                ));
+            }
+            Err(DvrQueueDrainCommitError::EpochCommitRollbackFailed) => {
+                self.quarantine_dvr_runtime(dvr_id);
+                return Err(DvrQueueCleanupCommitError::with_rollback_failure(
                     DvrQueueCleanupStep::QueueEpochCommit,
                     DemuxRuntimeError::queue_runtime_failure(dvr_id),
                 ));

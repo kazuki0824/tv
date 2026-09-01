@@ -242,6 +242,7 @@ fn execute_dvr_demux_cleanup_protocol(
                 &[
                     DvrQueueCleanupStep::QueueClear,
                     DvrQueueCleanupStep::QueueEpochCommit,
+                    DvrQueueCleanupStep::QueueRollback,
                     DvrQueueCleanupStep::RuntimeStateCommit,
                     DvrQueueCleanupStep::PlaybackPipelineReset,
                     DvrQueueCleanupStep::PcrAnchorInvalidate,
@@ -318,6 +319,17 @@ fn record_dvr_queue_boundary_failure(
             );
         }
         failed_step => report.failed(failed_step, error.error().kind),
+    }
+    if error.rollback_failed() {
+        report.failed(
+            DvrQueueCleanupStep::QueueRollback,
+            DemuxRuntimeErrorKind::QueueRuntimeFailure,
+        );
+    } else {
+        report.skipped(
+            DvrQueueCleanupStep::QueueRollback,
+            DvrQueueCleanupSkipReason::PrerequisiteFailed,
+        );
     }
     skip_dvr_queue_cleanup_steps(
         report,
