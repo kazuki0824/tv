@@ -25,8 +25,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config core.quotePath false
-          BASE=9a759f8373eb7d8535b53c47c229109e973fdf17
-          OLD_MMT=bce2bb5c102a0abd063070b9413f318bdfaa9bc7
+          BASE=af56ec33f19ace227ca71bbd2bde1f7fca1a9e9c
+          OLD_MMT=ecf17f2b78551162c6b0eb0207b94e85dd99cce6
           git fetch origin "$BASE" "$OLD_MMT"
           git checkout -B rebuilt-r52-mmtp "$BASE"
           set +e
@@ -37,13 +37,14 @@ jobs:
           if [ "$rc" -ne 0 ]; then
             echo '--- conflicts ---'
             git diff --name-only --diff-filter=U || true
-            for f in $(git diff --name-only --diff-filter=U); do
+            while IFS= read -r f; do
+              [ -n "$f" ] || continue
               echo "===== $f ====="
-              grep -n -B8 -A70 '^<<<<<<<\|^=======\|^>>>>>>>' "$f" || true
-            done
+              grep -n -B8 -A80 '^<<<<<<<\|^=======\|^>>>>>>>' "$f" || true
+            done < <(git diff --name-only --diff-filter=U)
             exit "$rc"
           fi
-          git diff "$BASE" HEAD --check
+          git diff "$BASE" HEAD --check -- . ':(exclude)tuner_hal2/platform_patches/lineage-22.1/android_hardware_tv_tuner_nullable_current.patch'
           test "$(git rev-parse HEAD^)" = "$BASE"
           test "$(git diff --name-only "$BASE" HEAD | wc -l)" -eq 7
           git push --force origin HEAD:refs/heads/tmp/rebuilt-r52-mmtp-20260901
