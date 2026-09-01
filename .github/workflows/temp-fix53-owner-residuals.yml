@@ -5,6 +5,7 @@ on:
     branches: [fix/tuner-hal2-rustfmt-1.81]
     paths:
       - tools/temp_fix53_owner_residuals.py
+      - tools/temp_fix53_owner_residuals_v2.py
       - .github/workflows/temp-fix53-owner-residuals.yml
 jobs:
   apply-and-validate:
@@ -17,7 +18,7 @@ jobs:
           ref: fix/tuner-hal2-rustfmt-1.81
           fetch-depth: 0
       - name: Apply owner residual repair
-        run: python3 tools/temp_fix53_owner_residuals.py
+        run: python3 tools/temp_fix53_owner_residuals_v2.py
       - name: Rustfmt touched Rust files
         run: |
           rustup toolchain install 1.81.0 --profile minimal --component rustfmt
