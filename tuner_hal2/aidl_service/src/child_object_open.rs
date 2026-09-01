@@ -8,11 +8,9 @@ use binder::{BinderFeatures, Result as BinderResult, Strong};
 use maleicacid_tuner_hal2_binder_adapter::{
     AidlApi, AidlMethodCall, OpenDvrRequest, RuntimeExecutableRequest,
 };
-use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
+use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, HalError, HalInternalKind};
 use maleicacid_tuner_hal2_demux::config::OpenFilterRequest;
-use maleicacid_tuner_hal2_service_runtime::{
-    ObjectMethodUseCase, ObjectMethodUseCaseBuildError,
-};
+use maleicacid_tuner_hal2_service_runtime::{ObjectMethodUseCase, ObjectMethodUseCaseBuildError};
 
 use crate::dvr_object::DvrAidlObject;
 use crate::error_bridge::status_from_hal_error;
@@ -244,12 +242,14 @@ where
             ))
         },
         |runtime, dispatch_proof, request| {
-            runtime.child_open_txn().open_filter_child_runtime_for_demux_object(
-                owner_handle.object_id(),
-                owner_handle.generation(),
-                &request,
-                dispatch_proof,
-            )
+            runtime
+                .child_open_txn()
+                .open_filter_child_runtime_for_demux_object(
+                    owner_handle.object_id(),
+                    owner_handle.generation(),
+                    &request,
+                    dispatch_proof,
+                )
         },
     )
     .map_err(child_open_txn_error::<maleicacid_tuner_hal2_common::HalError>)?;
@@ -276,12 +276,14 @@ where
             Ok((AidlMethodCall::DemuxOpenDvr(request.clone()), request))
         },
         |runtime, dispatch_proof, request| {
-            runtime.child_open_txn().open_dvr_child_runtime_for_demux_object(
-                owner_handle.object_id(),
-                owner_handle.generation(),
-                request,
-                dispatch_proof,
-            )
+            runtime
+                .child_open_txn()
+                .open_dvr_child_runtime_for_demux_object(
+                    owner_handle.object_id(),
+                    owner_handle.generation(),
+                    request,
+                    dispatch_proof,
+                )
         },
     )
     .map_err(child_open_txn_error::<maleicacid_tuner_hal2_common::HalError>)?;
@@ -300,38 +302,67 @@ fn finish_filter_child_open(
         Ok(token) => token,
         Err(primary_error) => {
             return finish_filter_child_open_artifact_retain_failure(
-                runtime, child_handle, filter_id, primary_error,
+                runtime,
+                child_handle,
+                filter_id,
+                primary_error,
             )
         }
     };
     let object = match FilterAidlObject::new(child_handle, context.clone()) {
         Ok(object) => BnFilter::new_binder(object, BinderFeatures::default()),
         Err(_) => {
-            let _ = context.abort_child_callback_artifact(child_handle, AidlApi::DemuxOpenFilter, artifact);
+            let primary = HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "filter object kind mismatch",
+            );
+            let primary = match context.abort_child_callback_artifact(
+                child_handle,
+                AidlApi::DemuxOpenFilter,
+                artifact,
+            ) {
+                Ok(()) => primary,
+                Err(cleanup) => compose_primary_cleanup_failure(
+                    "prepared filter callback abort failed after Binder object construction failure",
+                    primary,
+                    cleanup,
+                ),
+            };
             return finish_filter_child_object_construction_failure(
                 context,
                 runtime,
                 child_handle,
                 filter_id,
-                HalError::internal(HalInternalKind::InvariantViolation, "filter object kind mismatch"),
+                primary,
             );
         }
     };
-    if let Err(primary) = context.commit_child_callback_artifact(
-        child_handle,
-        AidlApi::DemuxOpenFilter,
-        artifact,
-    ) {
-        return finish_filter_child_open_artifact_retain_failure(runtime, child_handle, filter_id, primary);
+    if let Err(primary) =
+        context.commit_child_callback_artifact(child_handle, AidlApi::DemuxOpenFilter, artifact)
+    {
+        return finish_filter_child_open_artifact_retain_failure(
+            runtime,
+            child_handle,
+            filter_id,
+            primary,
+        );
     }
     if let Err(primary) = runtime
         .lock()
-        .map_err(|_| status_from_hal_error(HalError::internal(HalInternalKind::InvariantViolation, "service runtime lock poisoned")))?
+        .map_err(|_| {
+            status_from_hal_error(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "service runtime lock poisoned",
+            ))
+        })?
         .commit_prepared_child_object(child_handle.object_id(), child_handle.generation())
     {
-        let _ = context.clear_owner_callbacks(child_handle);
         return finish_filter_child_object_construction_failure(
-            context, runtime, child_handle, filter_id, primary,
+            context,
+            runtime,
+            child_handle,
+            filter_id,
+            primary,
         );
     }
     Ok(object)
@@ -348,37 +379,69 @@ fn finish_dvr_child_open(
     let artifact = match context.prepare_dvr_callback_artifact(child_handle, callback) {
         Ok(token) => token,
         Err(primary_error) => {
-            return finish_dvr_child_open_artifact_retain_failure(runtime, child_handle, dvr_id, primary_error)
+            return finish_dvr_child_open_artifact_retain_failure(
+                runtime,
+                child_handle,
+                dvr_id,
+                primary_error,
+            )
         }
     };
     let object = match DvrAidlObject::new(child_handle, context.clone()) {
         Ok(object) => BnDvr::new_binder(object, BinderFeatures::default()),
         Err(_) => {
-            let _ = context.abort_child_callback_artifact(child_handle, AidlApi::DemuxOpenDvr, artifact);
+            let primary = HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "DVR object kind mismatch",
+            );
+            let primary = match context.abort_child_callback_artifact(
+                child_handle,
+                AidlApi::DemuxOpenDvr,
+                artifact,
+            ) {
+                Ok(()) => primary,
+                Err(cleanup) => compose_primary_cleanup_failure(
+                    "prepared DVR callback abort failed after Binder object construction failure",
+                    primary,
+                    cleanup,
+                ),
+            };
             return finish_dvr_child_object_construction_failure(
                 context,
                 runtime,
                 child_handle,
                 dvr_id,
-                HalError::internal(HalInternalKind::InvariantViolation, "DVR object kind mismatch"),
+                primary,
             );
         }
     };
-    if let Err(primary) = context.commit_child_callback_artifact(
-        child_handle,
-        AidlApi::DemuxOpenDvr,
-        artifact,
-    ) {
-        return finish_dvr_child_open_artifact_retain_failure(runtime, child_handle, dvr_id, primary);
+    if let Err(primary) =
+        context.commit_child_callback_artifact(child_handle, AidlApi::DemuxOpenDvr, artifact)
+    {
+        return finish_dvr_child_open_artifact_retain_failure(
+            runtime,
+            child_handle,
+            dvr_id,
+            primary,
+        );
     }
     if let Err(primary) = runtime
         .lock()
-        .map_err(|_| status_from_hal_error(HalError::internal(HalInternalKind::InvariantViolation, "service runtime lock poisoned")))?
+        .map_err(|_| {
+            status_from_hal_error(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "service runtime lock poisoned",
+            ))
+        })?
         .commit_prepared_child_object(child_handle.object_id(), child_handle.generation())
     {
-        let _ = context.clear_owner_callbacks(child_handle);
-        return finish_dvr_child_object_construction_failure(context, runtime, child_handle, dvr_id, primary);
+        return finish_dvr_child_object_construction_failure(
+            context,
+            runtime,
+            child_handle,
+            dvr_id,
+            primary,
+        );
     }
     Ok(object)
 }
-

@@ -743,7 +743,13 @@ rust_test {
     vendor: true,
     crate_name: "maleicacid_tuner_hal2_compile_contract_test",
     crate_root: "compile_contract/src/lib.rs",
-    srcs: ["compile_contract/src/lib.rs"],
+    srcs: [
+        "compile_contract/src/lib.rs",
+        "aidl_service/src/callback_store.rs",
+        "aidl_service/src/service_context.rs",
+        "aidl_service/src/object_runtime/mod.rs",
+        "aidl_service/src/child_object_open.rs",
+    ],
     edition: "2021",
     rustlibs: [
         "libmaleicacid_tuner_hal2_device",

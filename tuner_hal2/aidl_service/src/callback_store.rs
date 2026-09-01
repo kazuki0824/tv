@@ -68,10 +68,8 @@ impl CallbackStore {
             return Err(AidlCallbackStoreError::PreparedArtifactInFlight);
         }
         let token = self.next_prepared_token()?;
-        self.prepared_callbacks.insert(
-            key,
-            (token.0, StoredCallback::Frontend(callback.clone())),
-        );
+        self.prepared_callbacks
+            .insert(key, (token.0, StoredCallback::Frontend(callback.clone())));
         Ok(token)
     }
 
@@ -85,13 +83,10 @@ impl CallbackStore {
             return Err(AidlCallbackStoreError::PreparedArtifactInFlight);
         }
         let token = self.next_prepared_token()?;
-        self.prepared_callbacks.insert(
-            key,
-            (token.0, StoredCallback::Lnb(callback.clone())),
-        );
+        self.prepared_callbacks
+            .insert(key, (token.0, StoredCallback::Lnb(callback.clone())));
         Ok(token)
     }
-
 
     pub(crate) fn prepare_filter_callback(
         &mut self,
@@ -103,10 +98,8 @@ impl CallbackStore {
             return Err(AidlCallbackStoreError::PreparedArtifactInFlight);
         }
         let token = self.next_prepared_token()?;
-        self.prepared_callbacks.insert(
-            key,
-            (token.0, StoredCallback::Filter(callback.clone())),
-        );
+        self.prepared_callbacks
+            .insert(key, (token.0, StoredCallback::Filter(callback.clone())));
         Ok(token)
     }
 
@@ -120,10 +113,8 @@ impl CallbackStore {
             return Err(AidlCallbackStoreError::PreparedArtifactInFlight);
         }
         let token = self.next_prepared_token()?;
-        self.prepared_callbacks.insert(
-            key,
-            (token.0, StoredCallback::Dvr(callback.clone())),
-        );
+        self.prepared_callbacks
+            .insert(key, (token.0, StoredCallback::Dvr(callback.clone())));
         Ok(token)
     }
 
@@ -309,11 +300,10 @@ mod tests {
         store.retain_test_callback_marker(handle, AidlApi::FrontendSetCallback);
         let token = store.prepare_test_callback_marker(handle, AidlApi::FrontendSetCallback);
 
-        assert!(store.abort_prepared_callback(
-            handle,
-            AidlApi::FrontendSetCallback,
-            token
-        ));
+        assert_eq!(
+            store.abort_prepared_callback(handle, AidlApi::FrontendSetCallback, token),
+            Ok(())
+        );
         assert!(store.has_callback_for_owner(handle, AidlApi::FrontendSetCallback));
         assert!(store.prepared_callbacks.is_empty());
     }
@@ -325,11 +315,10 @@ mod tests {
         let token = store.prepare_test_callback_marker(handle, AidlApi::FrontendSetCallback);
 
         assert!(!store.has_callback_for_owner(handle, AidlApi::FrontendSetCallback));
-        assert!(store.commit_prepared_callback(
-            handle,
-            AidlApi::FrontendSetCallback,
-            token
-        ));
+        assert_eq!(
+            store.commit_prepared_callback(handle, AidlApi::FrontendSetCallback, token),
+            Ok(())
+        );
         assert!(store.has_callback_for_owner(handle, AidlApi::FrontendSetCallback));
         assert!(store.prepared_callbacks.is_empty());
     }
@@ -339,23 +328,28 @@ mod tests {
         let handle = frontend_handle();
         let mut store = CallbackStore::default();
         let token = store.prepare_test_callback_marker(handle, AidlApi::FrontendSetCallback);
-        let stale = PreparedCallbackArtifactToken(token.0 + 1);
+        let stale_id = token.0 + 1;
 
-        assert!(!store.commit_prepared_callback(
-            handle,
-            AidlApi::FrontendSetCallback,
-            stale
-        ));
-        assert!(!store.abort_prepared_callback(
-            handle,
-            AidlApi::FrontendSetCallback,
-            stale
-        ));
-        assert!(store.abort_prepared_callback(
-            handle,
-            AidlApi::FrontendSetCallback,
-            token
-        ));
+        assert_eq!(
+            store.commit_prepared_callback(
+                handle,
+                AidlApi::FrontendSetCallback,
+                PreparedCallbackArtifactToken(stale_id),
+            ),
+            Err(AidlCallbackStoreError::PreparedArtifactAuthorityMismatch)
+        );
+        assert_eq!(
+            store.abort_prepared_callback(
+                handle,
+                AidlApi::FrontendSetCallback,
+                PreparedCallbackArtifactToken(stale_id),
+            ),
+            Err(AidlCallbackStoreError::PreparedArtifactAuthorityMismatch)
+        );
+        assert_eq!(
+            store.abort_prepared_callback(handle, AidlApi::FrontendSetCallback, token),
+            Ok(())
+        );
     }
 }
 
@@ -363,6 +357,7 @@ mod tests {
 pub(crate) enum AidlCallbackStoreError {
     Poisoned,
     PreparedArtifactInFlight,
+    PreparedArtifactAuthorityMismatch,
     PreparedTokenExhausted,
 }
 
@@ -376,6 +371,10 @@ impl AidlCallbackStoreError {
             Self::PreparedArtifactInFlight => HalError::internal(
                 HalInternalKind::InvariantViolation,
                 format!("{context}: callback registration is already in flight"),
+            ),
+            Self::PreparedArtifactAuthorityMismatch => HalError::internal(
+                HalInternalKind::InvariantViolation,
+                format!("{context}: prepared callback artifact authority is stale or missing"),
             ),
             Self::PreparedTokenExhausted => HalError::internal(
                 HalInternalKind::InvariantViolation,

@@ -12,13 +12,13 @@ use maleicacid_tuner_hal2_service_runtime::{
     finish_object_close_use_case, CallbackArtifactCleanupResult,
     CallbackArtifactRuntimeSplitDiagnosticRecord, CallbackArtifactRuntimeSplitOutcome,
     CallbackArtifactRuntimeSplitPhase, CallbackRegistrationArtifactOutcome,
-    ObjectArtifactCleanupCommand, ObjectArtifactCleanupExecutor, ObjectCleanupDiagnosticRecord,
-    ObjectCleanupExecutionReport, ObjectCloseCleanupFailure, ObjectCloseRuntimeExecutor,
-    CloseCleanupAttemptCompletion, ObjectCloseCleanupAttempt, ObjectCloseUseCasePlan,
-    ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor,
-    ObjectMethodExecutionToken, ObjectMethodUseCase, ObjectMethodUseCaseBuildError,
-    ObjectQueryRequest, ObjectQueryResponse, ObjectRuntimeCleanupCommand,
-    FrontendWorkerTerminationUseCase, ObjectCloseTxn, OwnerCallbackCleanupArtifactCommand,
+    CloseCleanupAttemptCompletion, FrontendWorkerTerminationUseCase, ObjectArtifactCleanupCommand,
+    ObjectArtifactCleanupExecutor, ObjectCleanupDiagnosticRecord, ObjectCleanupExecutionReport,
+    ObjectCloseCleanupAttempt, ObjectCloseCleanupFailure, ObjectCloseRuntimeExecutor,
+    ObjectCloseTxn, ObjectCloseUseCasePlan, ObjectDomainCleanupCommand,
+    ObjectDomainCleanupExecutor, ObjectMethodExecutionToken, ObjectMethodUseCase,
+    ObjectMethodUseCaseBuildError, ObjectQueryRequest, ObjectQueryResponse,
+    ObjectRuntimeCleanupCommand, OwnerCallbackCleanupArtifactCommand,
     OwnerCallbackCleanupUseCaseOutcome, TunerServiceRuntime,
 };
 
@@ -57,13 +57,7 @@ fn abort_prepared_callback_artifact_bridge(
     );
     context
         .abort_prepared_callback(handle, registration_api, token)
-        .map(|removed| {
-            if removed {
-                CallbackArtifactCleanupResult::Cleared
-            } else {
-                CallbackArtifactCleanupResult::NoArtifact
-            }
-        })
+        .map(|()| CallbackArtifactCleanupResult::Cleared)
         .map_err(|error| error.into_hal_error(command.cleanup_failure_message()))
 }
 
@@ -74,17 +68,9 @@ fn commit_prepared_callback_artifact_bridge(
 ) -> Result<(), HalError> {
     let (owner_kind, owner_id, owner_generation, registration_api) = outcome.artifact_key();
     let handle = AidlObjectHandle::new(owner_kind, owner_id, owner_generation);
-    let committed = context
+    context
         .commit_prepared_callback(handle, registration_api, token)
-        .map_err(|error| error.into_hal_error("prepared callback artifact commit failed"))?;
-    if committed {
-        Ok(())
-    } else {
-        Err(HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "prepared callback artifact disappeared before composite commit",
-        ))
-    }
+        .map_err(|error| error.into_hal_error("prepared callback artifact commit failed"))
 }
 
 fn callback_artifact_runtime_finish_lock_failure_error(
@@ -131,7 +117,7 @@ fn callback_artifact_runtime_finish_lock_failure_error(
 fn callback_artifact_registration_runtime_lock_failure_error(
     context: &SharedAidlServiceContext,
     command: OwnerCallbackCleanupArtifactCommand,
-    artifact_result: &Result<PreparedCallbackArtifactToken, HalError>,
+    artifact_result: Result<PreparedCallbackArtifactToken, HalError>,
     runtime_error: HalError,
 ) -> HalError {
     let artifact_error = artifact_result.as_ref().err().cloned();
@@ -139,7 +125,7 @@ fn callback_artifact_registration_runtime_lock_failure_error(
     let mut rollback_cleanup_error = None;
     if let Ok(token) = artifact_result {
         if let Err(cleanup_error) =
-            abort_prepared_callback_artifact_bridge(context, &command, *token)
+            abort_prepared_callback_artifact_bridge(context, &command, token)
         {
             runtime_or_record_error = compose_primary_cleanup_failure(
                 command.cleanup_failure_message(),
@@ -273,23 +259,19 @@ fn finish_callback_registration_artifact_outcome(
     let finish_lock_failure_command = outcome.finish_lock_failure_command();
     let primary_error = outcome.primary_error().cloned();
     let rollback_command = outcome.rollback_command().copied();
-    let rollback_result = rollback_command
-        .as_ref()
-        .map(|command| {
-            if uses_prepared_artifact {
-                match prepared_token {
-                    Some(token) => {
-                        abort_prepared_callback_artifact_bridge(context, command, token)
-                    }
-                    None => Err(HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "callback registration rollback omitted its prepared artifact token",
-                    )),
-                }
-            } else {
-                context.clear_owner_callback_artifacts_bridge(command)
+    let rollback_result = rollback_command.as_ref().map(|command| {
+        if uses_prepared_artifact {
+            match prepared_token {
+                Some(token) => abort_prepared_callback_artifact_bridge(context, command, token),
+                None => Err(HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "callback registration rollback omitted its prepared artifact token",
+                )),
             }
-        });
+        } else {
+            context.clear_owner_callback_artifacts_bridge(command)
+        }
+    });
     let runtime = context.runtime();
     let mut guard = match lock_runtime(&runtime) {
         Ok(guard) => guard,
@@ -609,19 +591,22 @@ fn execute_callback_registration_after_artifact_bridge(
                     return Err(callback_artifact_registration_runtime_lock_failure_error(
                         context,
                         registration_finish_lock_failure_command,
-                        &artifact_retain_result,
+                        artifact_retain_result,
                         runtime_error,
                     ));
                 }
             };
-            let prepared_token = artifact_retain_result.as_ref().ok().copied();
-            let outcome =
-                guard.execute_callback_registration_after_artifact_result_for_object_use_case(
+            let (artifact_result_for_runtime, prepared_token) = match artifact_retain_result {
+                Ok(prepared_token) => (Ok(()), Some(prepared_token)),
+                Err(error) => (Err(error), None),
+            };
+            let outcome = guard
+                .execute_callback_registration_after_artifact_result_for_object_use_case(
                     handle.object_kind(),
                     handle.object_id(),
                     handle.generation(),
                     api,
-                    artifact_retain_result.map(|_| ()),
+                    artifact_result_for_runtime,
                     token,
                 );
 
@@ -634,18 +619,14 @@ fn execute_callback_registration_after_artifact_bridge(
                 })?;
                 let (owner_kind, owner_id, owner_generation, registration_api) =
                     outcome.artifact_key();
-                let artifact_handle =
-                    AidlObjectHandle::new(owner_kind, owner_id, owner_generation);
-                if !callback_store.commit_prepared_callback(
-                    artifact_handle,
-                    registration_api,
-                    prepared_token,
-                ) {
-                    return Err(HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "prepared callback artifact disappeared during composite commit",
-                    ));
-                }
+                let artifact_handle = AidlObjectHandle::new(owner_kind, owner_id, owner_generation);
+                callback_store
+                    .commit_prepared_callback(artifact_handle, registration_api, prepared_token)
+                    .map_err(|error| {
+                        error.into_hal_error(
+                            "prepared callback artifact commit failed during composite commit",
+                        )
+                    })?;
                 return outcome.into_primary_result();
             }
 
@@ -667,15 +648,14 @@ fn execute_callback_registration_after_artifact_bridge(
                     command.owner_id(),
                     command.owner_generation(),
                 );
-                Ok(if callback_store.abort_prepared_callback(
-                    artifact_handle,
-                    registration_api,
-                    prepared_token,
-                ) {
-                    CallbackArtifactCleanupResult::Cleared
-                } else {
-                    CallbackArtifactCleanupResult::NoArtifact
-                })
+                callback_store
+                    .abort_prepared_callback(artifact_handle, registration_api, prepared_token)
+                    .map(|()| CallbackArtifactCleanupResult::Cleared)
+                    .map_err(|error| {
+                        error.into_hal_error(
+                            "prepared callback artifact abort failed during registration rollback",
+                        )
+                    })
             });
             guard.finish_callback_registration_after_artifact_result_use_case(
                 outcome,
@@ -938,11 +918,7 @@ fn finish_object_close_plan(
         ));
     let runtime = context.runtime();
     let finish_result = match runtime.lock() {
-        Ok(mut guard) => finish_object_close_use_case(
-            &mut guard,
-            completion,
-            cleanup_result,
-        ),
+        Ok(mut guard) => finish_object_close_use_case(&mut guard, completion, cleanup_result),
         Err(_) => Err(HalError::internal(
             HalInternalKind::InvariantViolation,
             "service runtime lock poisoned while finishing object close",
@@ -1073,7 +1049,8 @@ mod tests {
             AidlObjectKind::Demux => {
                 let mut guard = runtime.lock().unwrap();
                 let entry = guard
-                    .root_open_txn().open_demux_root_object(AidlMethodCall::PublicApi {
+                    .root_open_txn()
+                    .open_demux_root_object(AidlMethodCall::PublicApi {
                         object: AidlObjectKind::Tuner,
                         api: AidlApi::TunerOpenDemux,
                     })
@@ -1090,7 +1067,8 @@ mod tests {
                 let owner = {
                     let mut guard = runtime.lock().unwrap();
                     guard
-                        .root_open_txn().open_demux_root_object(AidlMethodCall::PublicApi {
+                        .root_open_txn()
+                        .open_demux_root_object(AidlMethodCall::PublicApi {
                             object: AidlObjectKind::Tuner,
                             api: AidlApi::TunerOpenDemux,
                         })
@@ -1115,12 +1093,14 @@ mod tests {
                         ))
                     },
                     |runtime, dispatch, request| {
-                        runtime.child_open_txn().open_filter_child_runtime_for_demux_object(
-                            owner.object_id(),
-                            owner.generation(),
-                            &request,
-                            dispatch,
-                        )
+                        runtime
+                            .child_open_txn()
+                            .open_filter_child_runtime_for_demux_object(
+                                owner.object_id(),
+                                owner.generation(),
+                                &request,
+                                dispatch,
+                            )
                     },
                 )
                 .unwrap();
@@ -1150,7 +1130,8 @@ mod tests {
                 let owner = {
                     let mut guard = runtime.lock().unwrap();
                     guard
-                        .root_open_txn().open_demux_root_object(AidlMethodCall::PublicApi {
+                        .root_open_txn()
+                        .open_demux_root_object(AidlMethodCall::PublicApi {
                             object: AidlObjectKind::Tuner,
                             api: AidlApi::TunerOpenDemux,
                         })
@@ -1169,12 +1150,14 @@ mod tests {
                         Ok((AidlMethodCall::DemuxOpenDvr(request.clone()), request))
                     },
                     |runtime, dispatch, request| {
-                        runtime.child_open_txn().open_dvr_child_runtime_for_demux_object(
-                            owner.object_id(),
-                            owner.generation(),
-                            request,
-                            dispatch,
-                        )
+                        runtime
+                            .child_open_txn()
+                            .open_dvr_child_runtime_for_demux_object(
+                                owner.object_id(),
+                                owner.generation(),
+                                request,
+                                dispatch,
+                            )
                     },
                 )
                 .unwrap();
@@ -1203,7 +1186,8 @@ mod tests {
             AidlObjectKind::Descrambler => {
                 let mut guard = runtime.lock().unwrap();
                 let entry = guard
-                    .root_open_txn().open_descrambler_root_object(AidlMethodCall::PublicApi {
+                    .root_open_txn()
+                    .open_descrambler_root_object(AidlMethodCall::PublicApi {
                         object: AidlObjectKind::Tuner,
                         api: AidlApi::TunerOpenDescrambler,
                     })

@@ -23,13 +23,9 @@ use maleicacid_tuner_hal2_service_runtime::{
     SharedObjectCleanupDiagnostics, TunerServiceRuntime,
 };
 
-use crate::callback_store::{
-    AidlCallbackStoreError, CallbackStore, PreparedCallbackArtifactToken,
-};
+use crate::callback_store::{AidlCallbackStoreError, CallbackStore, PreparedCallbackArtifactToken};
 use crate::cleanup_reaper::{start_cleanup_reaper, CleanupReaperQueue};
-use crate::dvr_callback_delivery::{
-    start_dvr_status_notifier_reaper, DvrStatusNotifierSupervisor,
-};
+use crate::dvr_callback_delivery::{start_dvr_status_notifier_reaper, DvrStatusNotifierSupervisor};
 use crate::object_handle::AidlObjectHandle;
 
 const MAX_DROP_LEAK_ERROR_RECORDS: usize = 64;
@@ -105,9 +101,9 @@ impl AidlServiceContext {
         Self {
             runtime: Arc::new(Mutex::new(runtime)),
             callback_store: Mutex::new(CallbackStore::default()),
-            dvr_status_notifier_supervisor: Arc::new(
-                DvrStatusNotifierSupervisor::from_snapshot(capability_snapshot),
-            ),
+            dvr_status_notifier_supervisor: Arc::new(DvrStatusNotifierSupervisor::from_snapshot(
+                capability_snapshot,
+            )),
             drop_leak_error_records: Mutex::new(BoundedDiagnosticStore::new(
                 MAX_DROP_LEAK_ERROR_RECORDS,
             )),
@@ -124,9 +120,7 @@ impl AidlServiceContext {
             ),
             filter_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
             frontend_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
-            cleanup_reaper_queue: Arc::new(CleanupReaperQueue::from_snapshot(
-                capability_snapshot,
-            )),
+            cleanup_reaper_queue: Arc::new(CleanupReaperQueue::from_snapshot(capability_snapshot)),
         }
     }
 
@@ -180,9 +174,9 @@ impl AidlServiceContext {
         let context = Arc::new(Self {
             runtime,
             callback_store: Mutex::new(CallbackStore::default()),
-            dvr_status_notifier_supervisor: Arc::new(
-                DvrStatusNotifierSupervisor::from_snapshot(capability_snapshot),
-            ),
+            dvr_status_notifier_supervisor: Arc::new(DvrStatusNotifierSupervisor::from_snapshot(
+                capability_snapshot,
+            )),
             drop_leak_error_records: Mutex::new(BoundedDiagnosticStore::new(
                 MAX_DROP_LEAK_ERROR_RECORDS,
             )),
@@ -199,9 +193,7 @@ impl AidlServiceContext {
             ),
             filter_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
             frontend_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
-            cleanup_reaper_queue: Arc::new(CleanupReaperQueue::from_snapshot(
-                capability_snapshot,
-            )),
+            cleanup_reaper_queue: Arc::new(CleanupReaperQueue::from_snapshot(capability_snapshot)),
         });
         if start_cleanup_reaper(
             Arc::downgrade(&context),
@@ -331,15 +323,15 @@ impl AidlServiceContext {
         )
     }
 
-
     pub(crate) fn prepare_filter_callback_artifact(
         &self,
         handle: AidlObjectHandle,
         callback: &binder::Strong<dyn android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::IFilterCallback::IFilterCallback>,
     ) -> Result<crate::callback_store::PreparedCallbackArtifactToken, HalError> {
-        self.callbacks
-            .lock()
-            .map_err(|_| HalError::internal(HalInternalKind::InvariantViolation, "callback store lock poisoned"))?
+        self.callback_store_lock()
+            .map_err(|error| {
+                error.into_hal_error("filter callback store lock failed during child prepare")
+            })?
             .prepare_filter_callback(handle, callback)
             .map_err(|error| error.into_hal_error("filter callback prepare failed"))
     }
@@ -349,9 +341,10 @@ impl AidlServiceContext {
         handle: AidlObjectHandle,
         callback: &binder::Strong<dyn android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::IDvrCallback::IDvrCallback>,
     ) -> Result<crate::callback_store::PreparedCallbackArtifactToken, HalError> {
-        self.callbacks
-            .lock()
-            .map_err(|_| HalError::internal(HalInternalKind::InvariantViolation, "callback store lock poisoned"))?
+        self.callback_store_lock()
+            .map_err(|error| {
+                error.into_hal_error("DVR callback store lock failed during child prepare")
+            })?
             .prepare_dvr_callback(handle, callback)
             .map_err(|error| error.into_hal_error("DVR callback prepare failed"))
     }
@@ -362,11 +355,8 @@ impl AidlServiceContext {
         api: AidlApi,
         token: crate::callback_store::PreparedCallbackArtifactToken,
     ) -> Result<(), HalError> {
-        let committed = self.callbacks
-            .lock()
-            .map_err(|_| HalError::internal(HalInternalKind::InvariantViolation, "callback store lock poisoned"))?
-            .commit_prepared_callback(handle, api, token);
-        if committed { Ok(()) } else { Err(HalError::internal(HalInternalKind::InvariantViolation, "prepared child callback disappeared before commit")) }
+        self.commit_prepared_callback(handle, api, token)
+            .map_err(|error| error.into_hal_error("prepared child callback commit failed"))
     }
 
     pub(crate) fn abort_child_callback_artifact(
@@ -375,11 +365,8 @@ impl AidlServiceContext {
         api: AidlApi,
         token: crate::callback_store::PreparedCallbackArtifactToken,
     ) -> Result<(), HalError> {
-        let _ = self.callbacks
-            .lock()
-            .map_err(|_| HalError::internal(HalInternalKind::InvariantViolation, "callback store lock poisoned"))?
-            .abort_prepared_callback(handle, api, token);
-        Ok(())
+        self.abort_prepared_callback(handle, api, token)
+            .map_err(|error| error.into_hal_error("prepared child callback abort failed"))
     }
 
     pub(crate) fn runtime(&self) -> SharedTunerRuntime {
@@ -616,9 +603,7 @@ impl AidlServiceContext {
             .map_err(|_| AidlCallbackStoreError::Poisoned)
     }
 
-    pub(crate) fn dvr_status_notifier_supervisor(
-        &self,
-    ) -> Arc<DvrStatusNotifierSupervisor> {
+    pub(crate) fn dvr_status_notifier_supervisor(&self) -> Arc<DvrStatusNotifierSupervisor> {
         Arc::clone(&self.dvr_status_notifier_supervisor)
     }
 
@@ -707,10 +692,9 @@ impl AidlServiceContext {
         handle: AidlObjectHandle,
         registration_api: AidlApi,
         token: PreparedCallbackArtifactToken,
-    ) -> Result<bool, AidlCallbackStoreError> {
-        Ok(self
-            .callback_store_lock()?
-            .commit_prepared_callback(handle, registration_api, token))
+    ) -> Result<(), AidlCallbackStoreError> {
+        self.callback_store_lock()?
+            .commit_prepared_callback(handle, registration_api, token)
     }
 
     pub(crate) fn abort_prepared_callback(
@@ -718,10 +702,9 @@ impl AidlServiceContext {
         handle: AidlObjectHandle,
         registration_api: AidlApi,
         token: PreparedCallbackArtifactToken,
-    ) -> Result<bool, AidlCallbackStoreError> {
-        Ok(self
-            .callback_store_lock()?
-            .abort_prepared_callback(handle, registration_api, token))
+    ) -> Result<(), AidlCallbackStoreError> {
+        self.callback_store_lock()?
+            .abort_prepared_callback(handle, registration_api, token)
     }
 
     pub(crate) fn retain_filter_callback(
