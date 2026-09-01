@@ -16,7 +16,7 @@ jobs:
           persist-credentials: true
           fetch-depth: 0
       - name: Apply reviewed production repair
-        run: python3 tools/temp_fix53_queue_authority_followup.py
+        run: python3 tools/temp_fix53_queue_authority_followup_v2.py
       - name: Format changed Rust sources
         run: |
           rustfmt --edition 2021 tuner_hal2/demux/src/runtime/queue_runtime.rs
@@ -48,8 +48,12 @@ jobs:
               before = s[max(0,pos-700):pos]
               assert '#[must_use' in before, (name,p)
           q = Path('tuner_hal2/demux/src/runtime/queue_runtime.rs').read_text()
-          assert 'if self.active && self.release().is_err()' not in q
-          assert 'if self.active && self.rollback().is_err()' not in q
+          for type_name, forbidden in [('QueueEpochToken','self.release()'),('QueueEpochDrainTxn','self.rollback()')]:
+              start = q.index(f'impl Drop for {type_name} {{')
+              end = q.index('\n}\n', start) + 3
+              block = q[start:end]
+              assert forbidden not in block, (type_name, block)
+              assert 'fail_close_unconsumed_authority()' in block, (type_name, block)
           assert 'fn fail_close_unconsumed_authority(&self)' in q
           print('authority source contracts verified')
           PY
