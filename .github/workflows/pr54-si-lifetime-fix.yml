@@ -1,0 +1,82 @@
+name: PR54 SI lifetime repair
+
+on:
+  push:
+    branches:
+      - automation/pr54-fix-si-lifetime-20260901
+    paths:
+      - .github/workflows/pr54-si-lifetime-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: automation/pr54-fix-si-lifetime-20260901
+          fetch-depth: 0
+      - name: Create clean repair commit
+        shell: bash
+        run: |
+          git reset --hard 18acff9b68fd187edcd777a0dd1a056f89594a93
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('arib_si_engine_rs/src/lib.rs')
+          text = path.read_text()
+
+          old = '''    match parser.lock() {
+        Ok(guard) => f(&guard),
+        Err(error) => {
+            drop(error);
+            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
+            default_value
+        }
+    }
+}'''
+          new = '''    let result = match parser.lock() {
+        Ok(guard) => f(&guard),
+        Err(error) => {
+            drop(error);
+            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
+            default_value
+        }
+    };
+    result
+}'''
+          if text.count(old) != 1:
+              raise SystemExit(f'with_state match count={text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          old = '''    match parser.lock() {
+        Ok(mut guard) => f(&mut guard),
+        Err(error) => {
+            drop(error);
+            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
+            default_value
+        }
+    }
+}'''
+          new = '''    let result = match parser.lock() {
+        Ok(mut guard) => f(&mut guard),
+        Err(error) => {
+            drop(error);
+            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
+            default_value
+        }
+    };
+    result
+}'''
+          if text.count(old) != 1:
+              raise SystemExit(f'with_state_mut match count={text.count(old)}')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          git diff --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add arib_si_engine_rs/src/lib.rs
+          git commit -m 'fix(si): end parser lock temporaries before owner drop'
+          git push --force origin HEAD:automation/pr54-fix-si-lifetime-20260901
