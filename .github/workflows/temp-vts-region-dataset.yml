@@ -32,8 +32,17 @@ jobs:
           assert d['schema_version'] == 2
           assert len(d['prefectures']) == 47
           assert all(v['prefecture_channels'] for v in d['prefectures'].values())
+          assert all(
+              13 <= channel <= 52
+              for v in d['prefectures'].values()
+              for channel in v['prefecture_channels']
+          )
+          assert d['prefectures']['大阪府']['areas']['大阪市'] == [13, 14, 15, 16, 17, 18, 24]
           print(sum(len(v['areas']) for v in d['prefectures'].values()), 'area keys')
           PY
+      - name: Run region and VTS profile unit tests
+        working-directory: tuner_hal2/tools
+        run: python -m unittest test_vts_region_defaults.py test_vts_profile.py
       - name: Commit snapshot
         run: |
           git config user.name github-actions[bot]
