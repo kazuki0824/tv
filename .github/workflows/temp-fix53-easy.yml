@@ -1,4 +1,4 @@
-name: temp PR53 publish production repairs
+name: temp PR53 cleanup helpers
 
 on:
   push:
@@ -10,12 +10,8 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: temp-pr53-final-repair
-  cancel-in-progress: false
-
 jobs:
-  repair:
+  cleanup:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,26 +19,16 @@ jobs:
           ref: fix/tuner-hal2-rustfmt-1.81
           persist-credentials: true
           fetch-depth: 0
-      - name: Apply ISDB-S follow-up
-        run: python3 tools/temp_fix53_isdbs_followup.py
-      - name: Apply worker ownership repair
-        run: python3 tools/temp_fix53_worker_owner.py
-      - name: Format
-        working-directory: tuner_hal2/host_ci
-        run: cargo fmt --all
-      - name: Test
-        working-directory: tuner_hal2/host_ci
-        run: cargo test --workspace --locked
-      - name: Check
-        working-directory: tuner_hal2/host_ci
-        run: cargo check --workspace --all-targets --locked
-      - name: Clippy
-        working-directory: tuner_hal2/host_ci
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: Commit production repairs
+      - name: Remove temporary helpers
+        run: |
+          rm -f tools/temp_fix53_*.py tools/temp_fix53_*.sh tools/temp_fix53_*.txt tools/temp_worker_owner_test*.log
+      - name: Commit helper cleanup
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add tuner_hal2/common/src/lib.rs tuner_hal2/device/src/px4/tune_mapping.rs tuner_hal2/service_runtime/src/worker_runtime.rs tuner_hal2/service_runtime/src/lib.rs tuner_hal2/service_runtime/src/frontend_worker_txn.rs tuner_hal2/aidl_service/src/dvr_callback_delivery.rs tuner_hal2/DESIGN_JA.md
-          git commit -m "Finish ISDB-S raster and worker lifecycle contracts"
+          git add -A tools
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "chore: remove temporary PR53 repair helpers"
           git push origin HEAD:fix/tuner-hal2-rustfmt-1.81
