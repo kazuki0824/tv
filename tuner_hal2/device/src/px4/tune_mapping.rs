@@ -1,6 +1,5 @@
 use crate::px4::abi::{PTX_ISDB_S_SYSTEM, PTX_ISDB_T_SYSTEM};
 use maleicacid_tuner_hal2_common::{
-    normalize_japan_bs_if_frequency_hz, normalize_japan_cs110_if_frequency_hz,
     FrontendStreamIdKind, FrontendSystem, FrontendTuneRequest, HalError, HalInvalidArgumentKind,
 };
 
@@ -37,6 +36,59 @@ const PX4_CS_BASE_IF_HZ: u64 = 1_613_000_000;
 const PX4_CS_STEP_HZ: u64 = 40_000_000;
 const PX4_CS_FREQ_NO_MIN: i32 = 12;
 const PX4_CS_FREQ_NO_MAX: i32 = 23;
+
+fn normalize_frequency_to_discrete_raster(
+    frequency_hz: u64,
+    first_hz: u64,
+    step_hz: u64,
+    count: u64,
+) -> Option<u64> {
+    if count == 0 || step_hz == 0 {
+        return None;
+    }
+    let last = first_hz.checked_add(step_hz.checked_mul(count.checked_sub(1)?)?)?;
+    let half_step = step_hz / 2;
+    if frequency_hz < first_hz.saturating_sub(half_step)
+        || frequency_hz > last.checked_add(half_step)?
+    {
+        return None;
+    }
+    if frequency_hz <= first_hz {
+        return Some(first_hz);
+    }
+    if frequency_hz >= last {
+        return Some(last);
+    }
+    let delta = frequency_hz.checked_sub(first_hz)?;
+    let lower_index = delta / step_hz;
+    let remainder = delta % step_hz;
+    if step_hz % 2 == 0 && remainder == half_step {
+        return None;
+    }
+    let index = lower_index + u64::from(remainder > half_step);
+    if index >= count {
+        return None;
+    }
+    first_hz.checked_add(step_hz.checked_mul(index)?)
+}
+
+pub fn normalize_japan_bs_if_frequency_hz(frequency_hz: u64) -> Option<u64> {
+    normalize_frequency_to_discrete_raster(
+        frequency_hz,
+        PX4_BS_BASE_IF_HZ,
+        PX4_BS_STEP_HZ,
+        u64::try_from(PX4_BS_FREQ_NO_MAX - PX4_BS_FREQ_NO_MIN + 1).ok()?,
+    )
+}
+
+pub fn normalize_japan_cs110_if_frequency_hz(frequency_hz: u64) -> Option<u64> {
+    normalize_frequency_to_discrete_raster(
+        frequency_hz,
+        PX4_CS_BASE_IF_HZ,
+        PX4_CS_STEP_HZ,
+        u64::try_from(PX4_CS_FREQ_NO_MAX - PX4_CS_FREQ_NO_MIN + 1).ok()?,
+    )
+}
 
 fn hz_to_nearest_khz(hz: u64) -> Result<i32, HalError> {
     let rounded = (hz + 500) / 1_000;

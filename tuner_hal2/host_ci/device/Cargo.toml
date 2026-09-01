@@ -7,7 +7,6 @@ publish = false
 [lib]
 name = "maleicacid_tuner_hal2_device"
 path = "../../device/src/lib.rs"
-doctest = false
 
 [dependencies]
 maleicacid_tuner_hal2_common = { package = "maleicacid-tuner-hal2-common-host-ci", path = "../common" }

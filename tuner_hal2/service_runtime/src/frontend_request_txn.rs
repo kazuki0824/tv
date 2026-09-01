@@ -1,8 +1,7 @@
 use crate::registry::{FrontendRegistryEntry, SatellitePowerTopology};
 use crate::TunerServiceRuntime;
 use maleicacid_tuner_hal2_common::{
-    is_japan_isdbt_frequency_contract_hz, normalize_japan_bs_if_frequency_hz,
-    normalize_japan_cs110_if_frequency_hz, FrontendBackendKind,
+    is_japan_isdbt_frequency_contract_hz, FrontendBackendKind,
     FrontendIsdbtPartialReceptionRequirement, FrontendScanMode, FrontendSystem,
     FrontendTuneRequest, HalError, HalInternalKind, HalInvalidArgumentKind,
 };
@@ -54,8 +53,8 @@ fn validate_frontend_request_against_entry(
                     "ISDB-S tune must not carry an ISDB-T partial reception requirement",
                 ));
             }
-            let is_bs = normalize_japan_bs_if_frequency_hz(request.frequency).is_some();
-            let is_cs110 = normalize_japan_cs110_if_frequency_hz(request.frequency).is_some();
+            let is_bs = maleicacid_tuner_hal2_device::px4::normalize_japan_bs_if_frequency_hz(request.frequency).is_some();
+            let is_cs110 = maleicacid_tuner_hal2_device::px4::normalize_japan_cs110_if_frequency_hz(request.frequency).is_some();
             if !is_bs && !is_cs110 {
                 return Err(HalError::invalid_argument(
                     HalInvalidArgumentKind::UnsupportedFrequency,
