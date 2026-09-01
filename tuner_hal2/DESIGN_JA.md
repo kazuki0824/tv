@@ -301,6 +301,16 @@ TS入力originとgeneration名前空間は`../tuner_hal/DESIGN_JA.md`の`TsInput
 
 Filter/SharedFilterのqueue確定は`FilterProducerDrainGate`、DVR queue I/Oは`QueueEpochProtocol`、配送済みAV領域のallocation/leaseはAV resource ownerへ接続する。write authorityのgeneration、失効条件、配送済みAV資源の寿命は`../tuner_hal/DESIGN_JA.md`の同名契約・資源寿命表を正とし、本書では再定義しない。
 
+## VTS device agentの実装責務境界
+
+`maleicacid_tuner_hal2_vts_agent`はhost側VTS profile CLIからだけ使用するtest-onlyのdevice-side bridgeとする。通常productのTuner HAL runtime責務へ組み込まず、公開`android.hardware.tv.tuner.ITuner/default`へ接続して一時的な`IFrontend` / `IDemux` / `IFilter`を所有し、1回のtuneで`DEMOD_LOCK`を確認した後、hostから要求されたPID / tableのTS `SECTION` filterを開き、FMQから完成済みsection payloadを取得してhostへ返すところまでを責務とする。
+
+1つのfrequency候補は1つのagent processかつ1つのtune generationで解決し、そのsessionを保持したままPAT、PATから選択されたPMT、SDT actualの各sectionをhostへ供給する。agentはPAT/PMT/SDTの意味解析、service選択、elementary PID選択、`VtsEnvironmentProfile`の解釈、HAL capabilityの変更を行ってはならない。
+
+SIの構文・意味解析は`../arib_si_engine_rs/DESIGN_JA.md`を正本とし、host側`maleicacid_arib_si_engine_vts_host`はcanonical `libmaleicacid_arib_si_engine_core`へ接続する。device agent側に独立したPAT/PMT parser、section意味解析、service選択ロジックを持たせない。
+
+C++はAIDL FMQ descriptorのimport/read境界だけに限定し、Binder/AIDL制御、frontend/demux/filter session lifetime、tune/LOCK確認はRustが所有する。agentのproduct/test imageへの配置、adb-push、除去、SELinux/linker policyに応じたtest image経路は`INTEGRATION.md`を正とし、本書では再定義しない。
+
 ## 実装構造索引
 
 次表は規範実装アンカーを探すための補助索引であり、transaction正本または公開契約を置き換えない。
@@ -341,13 +351,3 @@ Filter/SharedFilterのqueue確定は`FilterProducerDrainGate`、DVR queue I/Oは
 - file名またはtype名をAOSP公開契約、ARIB根拠、公開状態遷移の値そのものとして扱わない。
 - `共通transaction / use-caseの規範実装アンカー`以外の物理配置表を状態遷移の正本として扱わない。
 - 規範実装アンカーのrename、split、merge時に旧アンカーを残したまま新アンカーを追加し、複数のtransaction正本を作らない。
-
-## VTS device agentの実装責務境界
-
-`maleicacid_tuner_hal2_vts_agent`はhost側VTS profile CLIからだけ使用するtest-onlyのdevice-side bridgeとする。通常productのTuner HAL runtime責務へ組み込まず、公開`android.hardware.tv.tuner.ITuner/default`へ接続して一時的な`IFrontend` / `IDemux` / `IFilter`を所有し、1回のtuneで`DEMOD_LOCK`を確認した後、hostから要求されたPID / tableのTS `SECTION` filterを開き、FMQから完成済みsection payloadを取得してhostへ返すところまでを責務とする。
-
-1つのfrequency候補は1つのagent processかつ1つのtune generationで解決し、そのsessionを保持したままPAT、PATから選択されたPMT、SDT actualの各sectionをhostへ供給する。agentはPAT/PMT/SDTの意味解析、service選択、elementary PID選択、`VtsEnvironmentProfile`の解釈、HAL capabilityの変更を行ってはならない。
-
-SIの構文・意味解析は`../arib_si_engine_rs/DESIGN_JA.md`を正本とし、host側`maleicacid_arib_si_engine_vts_host`はcanonical `libmaleicacid_arib_si_engine_core`へ接続する。device agent側に独立したPAT/PMT parser、section意味解析、service選択ロジックを持たせない。
-
-C++はAIDL FMQ descriptorのimport/read境界だけに限定し、Binder/AIDL制御、frontend/demux/filter session lifetime、tune/LOCK確認はRustが所有する。agentのproduct/test imageへの配置、adb-push、除去、SELinux/linker policyに応じたtest image経路は`INTEGRATION.md`を正とし、本書では再定義しない。
