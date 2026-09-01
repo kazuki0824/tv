@@ -123,7 +123,7 @@ impl PlaybackConsumeTxn {
         let origin = match self.cursor_origin {
             Some(origin) => origin,
             None if self.parse_inject_cursor.is_empty() => return Ok(report),
-            None => return Err(DemuxRuntimeError::queue_runtime_failure(self.dvr_id)),
+            None => return Err(DemuxRuntimeError::queue_runtime_failure(self.dvr_id).into()),
         };
         let mut injected_packets = 0usize;
         let mut malformed_packets = 0usize;

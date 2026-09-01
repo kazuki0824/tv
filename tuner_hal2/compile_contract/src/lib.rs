@@ -54,3 +54,16 @@ fn aidl_callback_prepared_authority_source_contract() {
     assert!(!CHILD_OPEN.contains("let _ = context.clear_owner_callbacks"));
     assert!(CHILD_OPEN.contains("compose_primary_cleanup_failure"));
 }
+
+#[test]
+fn playback_consume_error_conversion_source_contract() {
+    const PLAYBACK_CONSUME: &str =
+        include_str!("../../service_runtime/src/playback_consume_txn.rs");
+
+    assert!(PLAYBACK_CONSUME.contains(
+        "None => return Err(DemuxRuntimeError::queue_runtime_failure(self.dvr_id).into()),"
+    ));
+    assert!(!PLAYBACK_CONSUME.contains(
+        "None => return Err(DemuxRuntimeError::queue_runtime_failure(self.dvr_id)),"
+    ));
+}

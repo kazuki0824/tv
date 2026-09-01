@@ -12,6 +12,7 @@ on:
       - "tuner_hal2/device/**"
       - "tuner_hal2/lnb/**"
       - "tuner_hal2/resource_ledger/**"
+      - "tuner_hal2/service_runtime/**"
       - "tuner_hal2/host_ci/**"
       - ".github/workflows/tuner-hal2-host-rust-ci.yml"
   push:
@@ -26,6 +27,7 @@ on:
       - "tuner_hal2/device/**"
       - "tuner_hal2/lnb/**"
       - "tuner_hal2/resource_ledger/**"
+      - "tuner_hal2/service_runtime/**"
       - "tuner_hal2/host_ci/**"
       - ".github/workflows/tuner-hal2-host-rust-ci.yml"
 
@@ -64,6 +66,7 @@ jobs:
           rustfmt --edition 2021 --check ../aidl_service/src/service_context.rs
           rustfmt --edition 2021 --check ../aidl_service/src/object_runtime/mod.rs
           rustfmt --edition 2021 --check ../aidl_service/src/child_object_open.rs
+          rustfmt --edition 2021 --check ../service_runtime/src/playback_consume_txn.rs
 
   clippy:
     runs-on: ubuntu-latest
@@ -90,7 +93,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Run AIDL callback authority source contract
+      - name: Run source contracts
         run: cargo test -p maleicacid-tuner-hal2-compile-contract-host-ci --locked
 
       - name: Type-check host-compatible crates
