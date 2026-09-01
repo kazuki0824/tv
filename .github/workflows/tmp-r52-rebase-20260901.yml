@@ -1,0 +1,49 @@
+name: tmp r52 rebase 20260901
+
+on:
+  push:
+    branches:
+      - tmp/r52-rebase-control-20260901
+    paths:
+      - .github/workflows/tmp-r52-rebase-20260901.yml
+
+permissions:
+  contents: write
+
+jobs:
+  rebase:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Rebase r52 net commit onto current PR55
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config core.quotePath false
+          BASE=1ff04d33dbb0a20a3cec81deb89c9c52774ac557
+          OLD_R52=e7de5c0d131969278ef700341294a636af0daeac
+          git fetch origin "$BASE" "$OLD_R52"
+          git checkout -B rebuilt-r52 "$BASE"
+          set +e
+          git cherry-pick "$OLD_R52"
+          rc=$?
+          set -e
+          echo "cherry_pick_rc=$rc"
+          if [ "$rc" -ne 0 ]; then
+            echo '--- conflicts ---'
+            git diff --name-only --diff-filter=U || true
+            for f in $(git diff --name-only --diff-filter=U); do
+              echo "===== $f ====="
+              grep -n -B8 -A60 '^<<<<<<<\|^=======\|^>>>>>>>' "$f" || true
+            done
+            exit "$rc"
+          fi
+          git diff "$BASE" HEAD --check
+          test "$(git rev-parse HEAD^)" = "$BASE"
+          echo "changed_files=$(git diff --name-only "$BASE" HEAD | wc -l)"
+          git push --force origin HEAD:refs/heads/tmp/rebuilt-r52-20260901
