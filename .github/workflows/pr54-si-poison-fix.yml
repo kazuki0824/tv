@@ -1,0 +1,237 @@
+name: PR54 SI poison fix
+
+on:
+  push:
+    branches:
+      - agent/implement-tis-arib-si-design-pr53
+    paths:
+      - .github/workflows/pr54-si-poison-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/implement-tis-arib-si-design-pr53
+          fetch-depth: 0
+      - name: Patch SI mutex poison handling
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("arib_si_engine_rs/src/lib.rs")
+          text = path.read_text()
+
+          def replace_once(old: str, new: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected exactly one match, got {count}: {old[:80]!r}")
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              "use std::sync::{Arc, Mutex, OnceLock};",
+              "use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};\nuse std::sync::{Arc, Mutex, OnceLock};",
+          )
+          replace_once(
+              "const DISCOVERY_STAGE_COMPLETE: jint = 2;\n",
+              """const DISCOVERY_STAGE_COMPLETE: jint = 2;
+
+const SI_REGISTRY_LOCK_NAME: &str = \"arib_si_registry\";
+const SI_PARSER_LOCK_NAME: &str = \"arib_si_parser_state\";
+static SI_MODULE_ABNORMAL: AtomicBool = AtomicBool::new(false);
+static SI_MUTEX_POISON_COUNT: AtomicU64 = AtomicU64::new(0);
+
+fn record_si_mutex_poison(lock_name: &'static str) {
+    let count = SI_MUTEX_POISON_COUNT
+        .fetch_add(1, Ordering::Relaxed)
+        .saturating_add(1);
+    SI_MODULE_ABNORMAL.store(true, Ordering::Release);
+    eprintln!(\"ARIB SI mutex汚染: lock={lock_name} poison_count={count}\");
+}
+
+fn si_module_is_healthy() -> bool {
+    !SI_MODULE_ABNORMAL.load(Ordering::Acquire)
+}
+""",
+          )
+          replace_once(
+              """fn with_state<T>(handle: jlong, default_value: T, f: impl FnOnce(&ParserState) -> T) -> T {
+    let parser = match registry().lock() {
+        Ok(guard) => guard.get(handle),
+        Err(_) => return default_value,
+    };
+    let Some(parser) = parser else {
+        return default_value;
+    };
+    let result = match parser.lock() {
+        Ok(guard) => f(&guard),
+        Err(_) => default_value,
+    };
+    result
+}
+""",
+              """fn with_state<T>(handle: jlong, default_value: T, f: impl FnOnce(&ParserState) -> T) -> T {
+    if !si_module_is_healthy() {
+        return default_value;
+    }
+    let parser = match registry().lock() {
+        Ok(guard) => guard.get(handle),
+        Err(_) => {
+            record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
+            return default_value;
+        }
+    };
+    let Some(parser) = parser else {
+        return default_value;
+    };
+    match parser.lock() {
+        Ok(guard) => f(&guard),
+        Err(_) => {
+            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
+            default_value
+        }
+    }
+}
+""",
+          )
+          replace_once(
+              """fn with_state_mut(
+    handle: jlong,
+    default_value: jint,
+    f: impl FnOnce(&mut ParserState) -> jint,
+) -> jint {
+    let parser = match registry().lock() {
+        Ok(guard) => guard.get(handle),
+        Err(_) => return STATUS_INTERNAL_ERROR,
+    };
+    let Some(parser) = parser else {
+        return default_value;
+    };
+    let result = match parser.lock() {
+        Ok(mut guard) => f(&mut guard),
+        Err(_) => STATUS_INTERNAL_ERROR,
+    };
+    result
+}
+""",
+              """fn with_state_mut(
+    handle: jlong,
+    default_value: jint,
+    f: impl FnOnce(&mut ParserState) -> jint,
+) -> jint {
+    if !si_module_is_healthy() {
+        return STATUS_INTERNAL_ERROR;
+    }
+    let parser = match registry().lock() {
+        Ok(guard) => guard.get(handle),
+        Err(_) => {
+            record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
+            return STATUS_INTERNAL_ERROR;
+        }
+    };
+    let Some(parser) = parser else {
+        return default_value;
+    };
+    match parser.lock() {
+        Ok(mut guard) => f(&mut guard),
+        Err(_) => {
+            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
+            STATUS_INTERNAL_ERROR
+        }
+    }
+}
+""",
+          )
+          replace_once(
+              """    let parser = match registry().lock() {
+        Ok(guard) => guard.get(handle),
+        Err(_) => return java_string(&mut env, Some(\"{}\".to_string())),
+    };
+    let Some(parser) = parser else {
+        return java_string(&mut env, Some(\"{}\".to_string()));
+    };
+    let json = match parser.lock() {
+        Ok(mut guard) => bulk_snapshot_json(&mut guard, take_update_windows != 0),
+        Err(_) => \"{}\".to_string(),
+    };
+""",
+              """    if !si_module_is_healthy() {
+        return java_string(&mut env, Some(\"{}\".to_string()));
+    }
+    let parser = match registry().lock() {
+        Ok(guard) => guard.get(handle),
+        Err(_) => {
+            record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
+            return java_string(&mut env, Some(\"{}\".to_string()));
+        }
+    };
+    let Some(parser) = parser else {
+        return java_string(&mut env, Some(\"{}\".to_string()));
+    };
+    let json = match parser.lock() {
+        Ok(mut guard) => bulk_snapshot_json(&mut guard, take_update_windows != 0),
+        Err(_) => {
+            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
+            \"{}\".to_string()
+        }
+    };
+""",
+          )
+          replace_once(
+              """    match registry().lock() {
+        Ok(mut guard) => guard.create(),
+        Err(_) => 0,
+    }
+""",
+              """    if !si_module_is_healthy() {
+        return 0;
+    }
+    match registry().lock() {
+        Ok(mut guard) => guard.create(),
+        Err(_) => {
+            record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
+            0
+        }
+    }
+""",
+          )
+          replace_once(
+              """        Err(_) => STATUS_INTERNAL_ERROR,
+    }
+}
+
+#[no_mangle]
+pub extern \"system\" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeIngestSection""",
+              """        Err(_) => {
+            record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
+            STATUS_INTERNAL_ERROR
+        }
+    }
+}
+
+#[no_mangle]
+pub extern \"system\" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeIngestSection""",
+          )
+
+          path.write_text(text)
+
+          # 補助workflowは最終treeへ残さない。
+          Path(".github/workflows/pr54-si-poison-fix.yml").unlink()
+      - name: Verify patch
+        run: |
+          git diff --check
+          grep -q 'record_si_mutex_poison(SI_PARSER_LOCK_NAME)' arib_si_engine_rs/src/lib.rs
+          grep -q 'record_si_mutex_poison(SI_REGISTRY_LOCK_NAME)' arib_si_engine_rs/src/lib.rs
+          test ! -e .github/workflows/pr54-si-poison-fix.yml
+      - name: Commit patch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'fix(si): surface mutex poison failures'
+          git push origin HEAD:agent/implement-tis-arib-si-design-pr53
