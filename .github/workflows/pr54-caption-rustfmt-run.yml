@@ -1,0 +1,40 @@
+name: PR54 字幕JNI rustfmt修正
+
+on:
+  push:
+    branches:
+      - automation/pr54-caption-rustfmt-20260901
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/implement-tis-arib-si-design-pr53
+          fetch-depth: 0
+
+      - name: Rust 1.81 rustfmtを導入
+        run: rustup toolchain install 1.81.0 --profile minimal --component rustfmt
+
+      - name: 字幕JNIだけをrustfmtする
+        working-directory: tis/host_ci/caption
+        run: cargo +1.81.0 fmt --all
+
+      - name: 差分を字幕JNIだけに制限する
+        run: |
+          changed="$(git diff --name-only)"
+          test "$changed" = "tis/arib_caption_jni/src/lib.rs"
+          git diff --check
+          git diff -- tis/arib_caption_jni/src/lib.rs
+
+      - name: 修正をコミットしてPRブランチへpushする
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tis/arib_caption_jni/src/lib.rs
+          git commit -m "style(tis): apply Rust 1.81 rustfmt to caption JNI"
+          git push origin HEAD:agent/implement-tis-arib-si-design-pr53
