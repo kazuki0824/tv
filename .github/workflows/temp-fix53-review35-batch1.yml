@@ -4,6 +4,7 @@ on:
     branches: [fix/tuner-hal2-rustfmt-1.81]
     paths:
       - tools/temp_fix53_review35_batch1_v2.py
+      - tools/temp_fix53_review35_batch1_s05.py
       - .github/workflows/temp-fix53-review35-batch1.yml
 permissions:
   contents: write
@@ -14,8 +15,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Apply batch1 repair
-        run: python3 tools/temp_fix53_review35_batch1_v2.py
+      - name: Apply FFI and authority repair
+        run: |
+          set +e
+          python3 tools/temp_fix53_review35_batch1_v2.py
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "unexpected full v2 success; S-05 patch expects the known old callback anchor mismatch"
+            exit 1
+          fi
+      - name: Apply S-05 owner repair
+        run: python3 tools/temp_fix53_review35_batch1_s05.py
       - name: Rustfmt touched Rust files
         run: |
           rustfmt --edition 2021 \
@@ -38,7 +49,11 @@ jobs:
           assert av.count('// SAFETY:') >= 10
           assert av.count('// POSTCONDITION:') >= 10
           dvr=Path('tuner_hal2/aidl_service/src/tuner_service/dvr_methods.rs').read_text()
+          delivery=Path('tuner_hal2/aidl_service/src/dvr_callback_delivery.rs').read_text()
+          boot=Path('tuner_hal2/service_runtime/src/boot.rs').read_text()
           assert 'runtime.mark_service_critical()' not in dvr
+          assert 'finish_dvr_post_commit_notification_failure_use_case' in delivery
+          assert 'pub fn finish_dvr_post_commit_notification_failure_use_case' in boot
           for path,name in [
             ('tuner_hal2/service_runtime/src/registry.rs','PreparedLnbAssignmentLease'),
             ('tuner_hal2/service_runtime/src/registry.rs','LnbAssignmentCleanupRecord'),
