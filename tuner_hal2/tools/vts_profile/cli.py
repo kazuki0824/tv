@@ -208,7 +208,10 @@ def build_parser() -> argparse.ArgumentParser:
     region.add_argument("profile")
     region.add_argument(
         "--dataset",
-        help="optional explicit region dataset; ISDBT uses the built-in Japan UHF 13-52 plan when omitted",
+        help=(
+            "optional explicit versioned region dataset; when omitted, ISDBT uses the "
+            "repository snapshot to map the address to regional physical-channel candidates"
+        ),
     )
     region.add_argument("--select-index", type=int)
     region.set_defaults(func=cmd_resolve_region)
