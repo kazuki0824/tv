@@ -26,6 +26,7 @@ use service_discovery::{
 };
 use std::collections::BTreeMap;
 use std::ptr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 const STATUS_OK: jint = 0;
@@ -41,6 +42,23 @@ const STATUS_INVALID_DISCOVERY_PROFILE: jint = -8;
 const DISCOVERY_STAGE_INCOMPLETE: jint = 0;
 const DISCOVERY_STAGE_PARTIAL: jint = 1;
 const DISCOVERY_STAGE_COMPLETE: jint = 2;
+
+const SI_REGISTRY_LOCK_NAME: &str = "arib_si_registry";
+const SI_PARSER_LOCK_NAME: &str = "arib_si_parser_state";
+static SI_MODULE_ABNORMAL: AtomicBool = AtomicBool::new(false);
+static SI_MUTEX_POISON_COUNT: AtomicU64 = AtomicU64::new(0);
+
+fn record_si_mutex_poison(lock_name: &'static str) {
+    let count = SI_MUTEX_POISON_COUNT
+        .fetch_add(1, Ordering::Relaxed)
+        .saturating_add(1);
+    SI_MODULE_ABNORMAL.store(true, Ordering::Release);
+    eprintln!("ARIB SI mutex汚染: lock={lock_name} poison_count={count}");
+}
+
+fn si_module_is_healthy() -> bool {
+    !SI_MODULE_ABNORMAL.load(Ordering::Acquire)
+}
 
 #[derive(Default)]
 struct ParserState {
@@ -1300,18 +1318,26 @@ fn registry() -> &'static Mutex<ParserRegistry> {
 }
 
 fn with_state<T>(handle: jlong, default_value: T, f: impl FnOnce(&ParserState) -> T) -> T {
+    if !si_module_is_healthy() {
+        return default_value;
+    }
     let parser = match registry().lock() {
         Ok(guard) => guard.get(handle),
-        Err(_) => return default_value,
+        Err(_) => {
+            record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
+            return default_value;
+        }
     };
     let Some(parser) = parser else {
         return default_value;
     };
-    let result = match parser.lock() {
+    match parser.lock() {
         Ok(guard) => f(&guard),
-        Err(_) => default_value,
-    };
-    result
+        Err(_) => {
+            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
+            default_value
+        }
+    }
 }
 
 fn with_state_mut(
@@ -1319,18 +1345,26 @@ fn with_state_mut(
     default_value: jint,
     f: impl FnOnce(&mut ParserState) -> jint,
 ) -> jint {
+    if !si_module_is_healthy() {
+        return STATUS_INTERNAL_ERROR;
+    }
     let parser = match registry().lock() {
         Ok(guard) => guard.get(handle),
-        Err(_) => return STATUS_INTERNAL_ERROR,
+        Err(_) => {
+            record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
+            return STATUS_INTERNAL_ERROR;
+        }
     };
     let Some(parser) = parser else {
         return default_value;
     };
-    let result = match parser.lock() {
+    match parser.lock() {
         Ok(mut guard) => f(&mut guard),
-        Err(_) => STATUS_INTERNAL_ERROR,
-    };
-    result
+        Err(_) => {
+            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
+            STATUS_INTERNAL_ERROR
+        }
+    }
 }
 
 fn java_string(env: &mut JNIEnv<'_>, value: Option<String>) -> jstring {
@@ -1355,16 +1389,25 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     handle: jlong,
     take_update_windows: jint,
 ) -> jstring {
+    if !si_module_is_healthy() {
+        return java_string(&mut env, Some("{}".to_string()));
+    }
     let parser = match registry().lock() {
         Ok(guard) => guard.get(handle),
-        Err(_) => return java_string(&mut env, Some("{}".to_string())),
+        Err(_) => {
+            record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
+            return java_string(&mut env, Some("{}".to_string()));
+        }
     };
     let Some(parser) = parser else {
         return java_string(&mut env, Some("{}".to_string()));
     };
     let json = match parser.lock() {
         Ok(mut guard) => bulk_snapshot_json(&mut guard, take_update_windows != 0),
-        Err(_) => "{}".to_string(),
+        Err(_) => {
+            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
+            "{}".to_string()
+        }
     };
     java_string(&mut env, Some(json))
 }
@@ -1482,9 +1525,15 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     _env: JNIEnv<'_>,
     _this: JObject<'_>,
 ) -> jlong {
+    if !si_module_is_healthy() {
+        return 0;
+    }
     match registry().lock() {
         Ok(mut guard) => guard.create(),
-        Err(_) => 0,
+        Err(_) => {
+            record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
+            0
+        }
     }
 }
 
@@ -1505,7 +1554,10 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
                 STATUS_INVALID_HANDLE
             }
         }
-        Err(_) => STATUS_INTERNAL_ERROR,
+        Err(_) => {
+            record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
+            STATUS_INTERNAL_ERROR
+        }
     }
 }
 
