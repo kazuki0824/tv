@@ -14,7 +14,17 @@ jobs:
           ref: fix/tuner-hal2-rustfmt-1.81
           persist-credentials: true
           fetch-depth: 0
-      - run: python3 tools/temp_fix53_callback_authority.py
+      - name: Apply repair with diagnostic
+        id: repair_script
+        continue-on-error: true
+        run: python3 tools/temp_fix53_callback_authority.py 2>&1 | tee tools/temp_callback_authority_diag.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: temp-callback-authority-diag
+          path: tools/temp_callback_authority_diag.txt
+      - name: Fail on repair script error
+        if: steps.repair_script.outcome != 'success'
+        run: exit 1
       - working-directory: tuner_hal2/host_ci
         run: cargo fmt --all
       - working-directory: tuner_hal2/host_ci
