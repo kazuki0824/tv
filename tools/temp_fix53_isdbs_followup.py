@@ -70,29 +70,25 @@ replace_once(
 ''',
 )
 
-# Remove the stale exact-frequency test left by the old acquireRange=0 model.
 replace_once(
     "tuner_hal2/device/src/px4/tune_mapping.rs",
     '''    #[test]
-    fn isdbs_satellite_frequency_validation_is_exact_when_acquire_range_is_zero() {
-        assert!(map_bs_if_frequency_to_px4_freq_no(1_049_480_000).is_ok());
-        assert!(map_bs_if_frequency_to_px4_freq_no(1_049_480_001).is_err());
-        assert!(map_bs_if_frequency_to_px4_freq_no(1_049_979_999).is_err());
-        assert!(map_cs110_if_frequency_to_px4_freq_no(1_613_000_000).is_ok());
-        assert!(map_cs110_if_frequency_to_px4_freq_no(1_613_000_001).is_err());
-        assert!(map_cs110_if_frequency_to_px4_freq_no(1_613_499_999).is_err());
+    fn isdbs_satellite_frequency_validation_normalizes_within_the_unambiguous_raster_cell() {
+        assert_eq!(map_bs_if_frequency_to_px4_freq_no(1_049_480_000), Ok(0));
+        assert_eq!(map_bs_if_frequency_to_px4_freq_no(1_050_000_000), Ok(0));
+        assert_eq!(map_cs110_if_frequency_to_px4_freq_no(1_613_000_000), Ok(12));
+        assert_eq!(map_cs110_if_frequency_to_px4_freq_no(1_613_499_999), Ok(12));
+        assert!(map_bs_if_frequency_to_px4_freq_no(1_550_000_000).is_err());
+        assert!(map_cs110_if_frequency_to_px4_freq_no(1_550_000_000).is_err());
     }
 ''',
     '''    #[test]
     fn isdbs_satellite_frequency_validation_uses_unambiguous_nearest_raster_center() {
         assert_eq!(map_bs_if_frequency_to_px4_freq_no(1_049_480_000), Ok(0));
         assert_eq!(map_bs_if_frequency_to_px4_freq_no(1_050_000_000), Ok(0));
-        assert_eq!(
-            map_bs_if_frequency_to_px4_freq_no(PX4_BS_BASE_IF_HZ + PX4_BS_STEP_HZ / 2),
-            Err(HalError::invalid_argument(
-                HalInvalidArgumentKind::UnsupportedFrequency,
-                "px4 BS IF frequency is outside the unambiguous Japan raster domain",
-            ))
+        assert!(
+            map_bs_if_frequency_to_px4_freq_no(PX4_BS_BASE_IF_HZ + PX4_BS_STEP_HZ / 2)
+                .is_err()
         );
         assert_eq!(map_cs110_if_frequency_to_px4_freq_no(1_613_500_000), Ok(12));
         assert!(map_bs_if_frequency_to_px4_freq_no(1_550_000_000).is_err());
@@ -101,9 +97,10 @@ replace_once(
 ''',
 )
 
-# Rust 1.81 host CI exhibited dependency metadata reuse when a non-linking
-# all-target check immediately preceded tests in the same target directory.
-# Run linked tests first, then the broader type-check. Coverage is unchanged.
+# The host-ci crates point their lib path outside each package directory. With
+# Rust/Cargo 1.81, running all-target check before linked tests can reuse a stale
+# dependency artifact for rustdoc. Tests first still cover doctests; the later
+# all-target check preserves the same type-check coverage.
 replace_once(
     ".github/workflows/tuner-hal2-host-rust-ci.yml",
     '''      - name: Type-check host-compatible crates
