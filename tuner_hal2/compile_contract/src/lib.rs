@@ -63,7 +63,6 @@ fn playback_consume_error_conversion_source_contract() {
     assert!(PLAYBACK_CONSUME.contains(
         "None => return Err(DemuxRuntimeError::queue_runtime_failure(self.dvr_id).into()),"
     ));
-    assert!(!PLAYBACK_CONSUME.contains(
-        "None => return Err(DemuxRuntimeError::queue_runtime_failure(self.dvr_id)),"
-    ));
+    assert!(!PLAYBACK_CONSUME
+        .contains("None => return Err(DemuxRuntimeError::queue_runtime_failure(self.dvr_id)),"));
 }
