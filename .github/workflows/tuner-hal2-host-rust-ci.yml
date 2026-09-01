@@ -3,6 +3,8 @@ name: tuner_hal2 host Rust CI
 on:
   pull_request:
     paths:
+      - "tuner_hal2/aidl_service/**"
+      - "tuner_hal2/Android.bp"
       - "tuner_hal2/common/**"
       - "tuner_hal2/compile_contract/**"
       - "tuner_hal2/control/**"
@@ -15,6 +17,8 @@ on:
   push:
     branches: [main]
     paths:
+      - "tuner_hal2/aidl_service/**"
+      - "tuner_hal2/Android.bp"
       - "tuner_hal2/common/**"
       - "tuner_hal2/compile_contract/**"
       - "tuner_hal2/control/**"
@@ -47,6 +51,13 @@ jobs:
       - name: Check Rust formatting
         run: cargo fmt --all -- --check
 
+      - name: Check reviewed AIDL authority sources formatting
+        run: |
+          rustfmt --edition 2021 --check ../aidl_service/src/callback_store.rs
+          rustfmt --edition 2021 --check ../aidl_service/src/service_context.rs
+          rustfmt --edition 2021 --check ../aidl_service/src/object_runtime/mod.rs
+          rustfmt --edition 2021 --check ../aidl_service/src/child_object_open.rs
+
   clippy:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -71,6 +82,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - name: Run AIDL callback authority source contract
+        run: cargo test -p maleicacid-tuner-hal2-compile-contract-host-ci --locked
 
       - name: Type-check host-compatible crates
         run: cargo check --workspace --all-targets --locked
