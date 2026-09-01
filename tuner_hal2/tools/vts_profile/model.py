@@ -7,7 +7,6 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 SUPPORTED_VTS_CONTRACT = "android14-aidl-v1"
-DEFAULT_CAPABILITY_SOURCE = Path("tuner_hal2/service_runtime/src/capability_snapshot.rs")
 FRONTEND_ID = {"ISDBT": "FE_ISDBT_0", "ISDBS": "FE_ISDBS_0"}
 
 _TOP = {"schema_version", "target", "vts", "frontend", "region", "service", "flows", "queues"}
@@ -212,46 +211,3 @@ def validate_profile(profile: dict[str, Any], *, require_resolved: bool = False)
         raise ProfileError("queues has unconsumed fields: " + ", ".join(extra))
     for key in required:
         positive_int(queues[key], f"queues.{key}")
-
-
-def parse_capability_source(path: Path) -> dict[str, int]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise ProfileError(f"failed to read capability source {path}: {exc}") from exc
-    marker = "pub const fn product_default() -> Self"
-    start = text.find(marker)
-    end = text.find("pub const fn filter_capacity", start)
-    if start < 0 or end < 0:
-        raise ProfileError("CapabilitySnapshot::product_default was not found")
-    body = text[start:end]
-    result: dict[str, int] = {}
-    for key in (
-        "num_record", "num_playback", "num_ts_filter", "num_section_filter",
-        "num_audio_filter", "num_video_filter", "num_pes_filter", "num_pcr_filter",
-    ):
-        match = re.search(rf"\b{re.escape(key)}:\s*(\d+)\s*,", body)
-        if not match:
-            raise ProfileError(f"could not read {key} from CapabilitySnapshot::product_default")
-        result[key] = int(match.group(1))
-    budget = re.search(r"\bfmq_runtime_budget_bytes:\s*(\d+)\s*\*\s*MIB\s*,", body)
-    if not budget:
-        raise ProfileError("could not read fmq_runtime_budget_bytes from CapabilitySnapshot::product_default")
-    result["fmq_runtime_budget_bytes"] = int(budget.group(1)) * 1024 * 1024
-    return result
-
-
-def validate_against_capability(profile: dict[str, Any], capability: dict[str, int]) -> None:
-    flows = profile["flows"]
-    if flows["record"]["enabled"] and (capability["num_record"] <= 0 or capability["num_ts_filter"] <= 0):
-        raise ProfileError("record flow is not published by tuner_hal2 capability")
-    if flows["clear_live"]["enabled"] and (capability["num_audio_filter"] <= 0 or capability["num_video_filter"] <= 0):
-        raise ProfileError("clear_live requires published audio and video filters")
-    claimed = 0
-    queues = profile["queues"]
-    if flows["record"]["enabled"]:
-        claimed += int(queues["record_filter_bytes"]) + int(queues["record_dvr_bytes"])
-    if flows["clear_live"]["enabled"]:
-        claimed += int(queues["audio_filter_bytes"]) + int(queues["video_filter_bytes"])
-    if claimed > capability["fmq_runtime_budget_bytes"]:
-        raise ProfileError("configured VTS queues exceed tuner_hal2 FMQ runtime budget")
