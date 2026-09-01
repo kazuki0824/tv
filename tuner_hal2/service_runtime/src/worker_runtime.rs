@@ -31,18 +31,18 @@ fn filter_delivery_sequence_lock() -> MutexGuard<'static, u64> {
     }
 }
 
-pub(crate) fn filter_delivery_wake_sequence() -> u64 {
+pub fn filter_delivery_wake_sequence() -> u64 {
     *filter_delivery_sequence_lock()
 }
 
-pub(crate) fn notify_filter_delivery_change() {
+pub fn notify_filter_delivery_change() {
     let wake = filter_delivery_wake();
     let mut sequence = filter_delivery_sequence_lock();
     *sequence = sequence.wrapping_add(1);
     wake.changed.notify_all();
 }
 
-pub(crate) fn wait_filter_delivery_change(observed: u64, deadline: Option<Instant>) -> u64 {
+pub fn wait_filter_delivery_change(observed: u64, deadline: Option<Instant>) -> u64 {
     let wake = filter_delivery_wake();
     let mut sequence = filter_delivery_sequence_lock();
     loop {
