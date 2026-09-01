@@ -1359,13 +1359,14 @@ fn with_state_mut(
     let Some(parser) = parser else {
         return default_value;
     };
-    match parser.lock() {
+    let result = match parser.lock() {
         Ok(mut guard) => f(&mut guard),
         Err(_) => {
             record_si_mutex_poison(SI_PARSER_LOCK_NAME);
             STATUS_INTERNAL_ERROR
         }
-    }
+    };
+    result
 }
 
 fn java_string(env: &mut JNIEnv<'_>, value: Option<String>) -> jstring {
