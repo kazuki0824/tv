@@ -571,11 +571,13 @@ mod tests {
     }
 
     #[test]
-    fn isdbs_satellite_frequency_validation_normalizes_within_the_unambiguous_raster_cell() {
+    fn isdbs_satellite_frequency_validation_uses_unambiguous_nearest_raster_center() {
         assert_eq!(map_bs_if_frequency_to_px4_freq_no(1_049_480_000), Ok(0));
         assert_eq!(map_bs_if_frequency_to_px4_freq_no(1_050_000_000), Ok(0));
-        assert_eq!(map_cs110_if_frequency_to_px4_freq_no(1_613_000_000), Ok(12));
-        assert_eq!(map_cs110_if_frequency_to_px4_freq_no(1_613_499_999), Ok(12));
+        assert!(
+            map_bs_if_frequency_to_px4_freq_no(PX4_BS_BASE_IF_HZ + PX4_BS_STEP_HZ / 2).is_err()
+        );
+        assert_eq!(map_cs110_if_frequency_to_px4_freq_no(1_613_500_000), Ok(12));
         assert!(map_bs_if_frequency_to_px4_freq_no(1_550_000_000).is_err());
         assert!(map_cs110_if_frequency_to_px4_freq_no(1_550_000_000).is_err());
     }

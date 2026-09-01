@@ -1,4 +1,8 @@
+use std::collections::BTreeMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::mpsc::{self, SyncSender, TrySendError};
+use std::sync::{Condvar, Mutex, MutexGuard};
+use std::time::Duration;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -9,6 +13,168 @@ pub const CLEANUP_RETRY_SCHEDULE_MS: &[u64] = &[0, 10, 100, 1_000];
 pub const CLEANUP_TERMINAL_DEADLINE_MS: u64 = 30_000;
 pub const WORKER_IO_DEADLINE_MS: u64 = 2_000;
 pub const WORKER_REAPER_DEADLINE_MS: u64 = 10_000;
+
+
+/// Canonical generic bounded reaper queue owned by the WorkerRuntime subsystem.
+/// Domain code supplies only typed jobs and completion semantics; it does not own
+/// the channel, pending-key registry, or worker-lane lifecycle.
+pub struct WorkerRuntimeReaperQueue<K, V, J> {
+    sender: SyncSender<J>,
+    pending: Arc<Mutex<BTreeMap<K, V>>>,
+}
+
+impl<K, V, J> Clone for WorkerRuntimeReaperQueue<K, V, J> {
+    fn clone(&self) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            pending: Arc::clone(&self.pending),
+        }
+    }
+}
+
+impl<K, V, J> WorkerRuntimeReaperQueue<K, V, J>
+where
+    K: Ord + Clone + Send + 'static,
+    V: Clone + Send + 'static,
+    J: Send + 'static,
+{
+    pub fn start(
+        capacity: usize,
+        thread_prefix: &'static str,
+        runner: Arc<dyn Fn(J, Arc<Mutex<BTreeMap<K, V>>>) + Send + Sync + 'static>,
+    ) -> Result<Self, HalError> {
+        let capacity = capacity.max(1);
+        let (sender, receiver) = mpsc::sync_channel(capacity);
+        let pending = Arc::new(Mutex::new(BTreeMap::new()));
+        let receiver = Arc::new(Mutex::new(receiver));
+        for lane in 0..capacity {
+            let receiver = Arc::clone(&receiver);
+            let runner = Arc::clone(&runner);
+            let pending_for_lane = Arc::clone(&pending);
+            thread::Builder::new()
+                .name(format!("{thread_prefix}-{lane}"))
+                .spawn(move || loop {
+                    let job = match receiver.lock() {
+                        Ok(receiver) => receiver.recv(),
+                        Err(_) => return,
+                    };
+                    match job {
+                        Ok(job) => runner(job, Arc::clone(&pending_for_lane)),
+                        Err(_) => return,
+                    }
+                })
+                .map_err(|error| {
+                    HalError::internal(
+                        maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                        format!("worker reaper lane spawn failed: {error}"),
+                    )
+                })?;
+        }
+        Ok(Self { sender, pending })
+    }
+
+    pub fn enqueue_reserved(
+        &self,
+        job: J,
+        reservations: impl IntoIterator<Item = (K, V)>,
+    ) -> Result<(), HalError> {
+        let reservations: Vec<_> = reservations.into_iter().collect();
+        let mut pending = match self.pending.lock() {
+            Ok(pending) => pending,
+            Err(_) => {
+                core::mem::forget(job);
+                return Err(HalError::internal(
+                    maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                    "worker reaper pending registry lock poisoned",
+                ));
+            }
+        };
+        if reservations.iter().any(|(key, _)| pending.contains_key(key)) {
+            core::mem::forget(job);
+            return Err(HalError::internal(
+                maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                "worker reaper received a duplicate endpoint lease",
+            ));
+        }
+        for (key, value) in reservations {
+            pending.insert(key, value);
+        }
+        drop(pending);
+        self.sender.try_send(job).map_err(|error| match error {
+            TrySendError::Full(job) => {
+                core::mem::forget(job);
+                HalError::internal(
+                    maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                    "worker reaper capacity exhausted",
+                )
+            }
+            TrySendError::Disconnected(job) => {
+                core::mem::forget(job);
+                HalError::internal(
+                    maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                    "worker reaper is unavailable",
+                )
+            }
+        })
+    }
+
+    pub fn pending_value(&self, key: &K) -> Result<Option<V>, HalError> {
+        self.pending
+            .lock()
+            .map(|pending| pending.get(key).cloned())
+            .map_err(|_| {
+                HalError::internal(
+                    maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                    "worker reaper pending registry lock poisoned",
+                )
+            })
+    }
+}
+
+/// Canonical generic active/reaping registry, capacity, deadline and wake state
+/// for supervisor-style workers. Domain modules retain only typed job semantics.
+pub struct WorkerRuntimeSupervisor<K, A, R> {
+    capacity: usize,
+    deadline: Duration,
+    state: Mutex<WorkerRuntimeSupervisorMaps<K, A, R>>,
+    wake: Condvar,
+}
+
+pub struct WorkerRuntimeSupervisorMaps<K, A, R> {
+    active: BTreeMap<K, A>,
+    reaping: BTreeMap<K, R>,
+}
+
+impl<K, A, R> Default for WorkerRuntimeSupervisorMaps<K, A, R> {
+    fn default() -> Self {
+        Self {
+            active: BTreeMap::new(),
+            reaping: BTreeMap::new(),
+        }
+    }
+}
+
+impl<K: Ord, A, R> WorkerRuntimeSupervisorMaps<K, A, R> {
+    pub fn active_mut(&mut self) -> &mut BTreeMap<K, A> { &mut self.active }
+    pub fn reaping_mut(&mut self) -> &mut BTreeMap<K, R> { &mut self.reaping }
+    pub fn total_len(&self) -> usize { self.active.len().saturating_add(self.reaping.len()) }
+}
+
+impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
+    pub fn new(capacity: usize, deadline: Duration) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            deadline,
+            state: Mutex::new(WorkerRuntimeSupervisorMaps::default()),
+            wake: Condvar::new(),
+        }
+    }
+
+    pub fn capacity(&self) -> usize { self.capacity }
+    pub fn deadline(&self) -> Duration { self.deadline }
+    pub fn state(&self) -> &Mutex<WorkerRuntimeSupervisorMaps<K, A, R>> { &self.state }
+    pub fn wake(&self) -> &Condvar { &self.wake }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum WorkerTerminalResult<T> {

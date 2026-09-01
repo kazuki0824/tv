@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, Weak};
 #[cfg(test)]
 use std::sync::MutexGuard;
@@ -19,7 +18,7 @@ use crate::{
     object_method_use_case::ObjectMethodExecutionToken,
     start_frontend_demux_live_pump_from_reader, TunerServiceRuntime,
 };
-use crate::worker_runtime::WorkerTerminalResult;
+use crate::worker_runtime::{WorkerRuntimeReaperQueue, WorkerTerminalResult};
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FrontendBackendKind, FrontendDevicePath, FrontendScanMode,
     FrontendIsdbtPartialReceptionRequirement, FrontendTuneRequest, HalError, HalErrorDetail,
@@ -307,8 +306,11 @@ impl FrontendWorkerReaperJob {
 
 #[derive(Clone)]
 pub(crate) struct FrontendWorkerReaperHandle {
-    sender: SyncSender<FrontendWorkerReaperJob>,
-    pending: Arc<Mutex<BTreeMap<(i32, FrontendWorkerKind), Option<FrontendWorkerKind>>>>,
+    runtime: WorkerRuntimeReaperQueue<
+        (i32, FrontendWorkerKind),
+        Option<FrontendWorkerKind>,
+        FrontendWorkerReaperJob,
+    >,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -330,92 +332,36 @@ impl FrontendWorkerReaperHandle {
         capacity: usize,
         deadline: Duration,
     ) -> Result<Self, HalError> {
-        let capacity = capacity.max(1);
-        let (sender, receiver) = mpsc::sync_channel(capacity);
-        let pending = Arc::new(Mutex::new(BTreeMap::new()));
-        let receiver: Arc<Mutex<Receiver<FrontendWorkerReaperJob>>> =
-            Arc::new(Mutex::new(receiver));
-        for lane in 0..capacity {
-            let receiver = Arc::clone(&receiver);
-            let runtime = Weak::clone(&runtime);
-            let pending = Arc::clone(&pending);
-            thread::Builder::new()
-                .name(format!("maleicacid-frontend-reaper-{lane}"))
-                .spawn(move || loop {
-                    let job = match receiver.lock() {
-                        Ok(receiver) => receiver.recv(),
-                        Err(_) => return,
-                    };
-                    match job {
-                        Ok(job) => job.run(&runtime, &pending, deadline),
-                        Err(_) => return,
-                    }
-                })
-                .map_err(|error| {
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        format!("frontend worker reaper lane spawn failed: {error}"),
-                    )
-                })?;
-        }
-        Ok(Self { sender, pending })
-    }
-
-    fn enqueue(&self, job: FrontendWorkerReaperJob) -> Result<(), HalError> {
-        let mut pending = match self.pending.lock() {
-            Ok(pending) => pending,
-            Err(_) => {
-                // pending key台帳が利用不能でも、移譲済みJoinHandleの所有権を保持する。
-                // ここでjobをdropするとendpoint leaseが有効なままworkerがdetachされる。
-                core::mem::forget(job);
-                return Err(HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend worker reaper pending registry lock poisoned",
-                ));
-            }
-        };
-        if job.keys.iter().any(|key| pending.contains_key(key)) {
-            core::mem::forget(job);
-            return Err(HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "frontend worker reaper received a duplicate endpoint lease",
-            ));
-        }
-        for key in &job.keys {
-            pending.insert(*key, job.continuation_kind);
-        }
-        drop(pending);
-        self.sender.try_send(job).map_err(|error| match error {
-            TrySendError::Full(job) => {
-                // 移譲済みJoinHandleをdropまたはdetachしてはならない。
-                // 容量枯渇はServiceCriticalとし、不安全なendpoint再利用を防ぐため
-                // process lifetime中は所有権を保持する。
-                core::mem::forget(job);
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend worker reaper capacity exhausted",
-                )
-            }
-            TrySendError::Disconnected(job) => {
-                core::mem::forget(job);
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend worker reaper is unavailable",
-                )
-            }
+        let runner = Arc::new(move |
+            job: FrontendWorkerReaperJob,
+            pending: Arc<Mutex<BTreeMap<(i32, FrontendWorkerKind), Option<FrontendWorkerKind>>>>,
+        | {
+            job.run(&runtime, pending.as_ref(), deadline);
+        });
+        Ok(Self {
+            runtime: WorkerRuntimeReaperQueue::start(
+                capacity,
+                "maleicacid-frontend-reaper",
+                runner,
+            )?,
         })
     }
 
+    fn enqueue(&self, job: FrontendWorkerReaperJob) -> Result<(), HalError> {
+        let continuation = job.continuation_kind;
+        let reservations = job
+            .keys
+            .iter()
+            .copied()
+            .map(|key| (key, continuation))
+            .collect::<Vec<_>>();
+        self.runtime.enqueue_reserved(job, reservations)
+    }
+
     fn is_pending(&self, frontend_id: i32, kind: FrontendWorkerKind) -> Result<bool, HalError> {
-        self.pending
-            .lock()
-            .map(|pending| pending.contains_key(&(frontend_id, kind)))
-            .map_err(|_| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend worker reaper pending registry lock poisoned",
-                )
-            })
+        self.runtime
+            .pending_value(&(frontend_id, kind))
+            .map(|value| value.is_some())
     }
 
     fn pending_state(
@@ -423,18 +369,12 @@ impl FrontendWorkerReaperHandle {
         frontend_id: i32,
         kind: FrontendWorkerKind,
     ) -> Result<FrontendWorkerReaperPendingState, HalError> {
-        self.pending
-            .lock()
-            .map(|pending| match pending.get(&(frontend_id, kind)).copied() {
+        self.runtime
+            .pending_value(&(frontend_id, kind))
+            .map(|pending| match pending {
                 None => FrontendWorkerReaperPendingState::NotPending,
                 Some(None) => FrontendWorkerReaperPendingState::CleanupOnly,
                 Some(Some(kind)) => FrontendWorkerReaperPendingState::Replacement(kind),
-            })
-            .map_err(|_| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend worker reaper pending registry lock poisoned",
-                )
             })
     }
 }

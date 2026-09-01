@@ -37,16 +37,23 @@ fn normalize_frequency_to_discrete_raster(
     {
         return None;
     }
-    let index = if frequency_hz <= first_hz {
-        0
-    } else {
-        frequency_hz.checked_sub(first_hz)?.checked_add(half_step)? / step_hz
-    };
+    if frequency_hz <= first_hz {
+        return Some(first_hz);
+    }
+    if frequency_hz >= last {
+        return Some(last);
+    }
+    let delta = frequency_hz.checked_sub(first_hz)?;
+    let lower_index = delta / step_hz;
+    let remainder = delta % step_hz;
+    if step_hz % 2 == 0 && remainder == half_step {
+        return None;
+    }
+    let index = lower_index + u64::from(remainder > half_step);
     if index >= count {
         return None;
     }
-    let center = first_hz.checked_add(step_hz.checked_mul(index)?)?;
-    (frequency_hz.abs_diff(center) <= half_step).then_some(center)
+    first_hz.checked_add(step_hz.checked_mul(index)?)
 }
 
 pub fn normalize_japan_bs_if_frequency_hz(frequency_hz: u64) -> Option<u64> {
@@ -1099,6 +1106,14 @@ mod isdbs_raster_adapter_tests {
         let bs_half = JAPAN_BS_IF_STEP_HZ / 2;
         assert_eq!(
             normalize_japan_bs_if_frequency_hz(JAPAN_BS_FIRST_IF_HZ + bs_half),
+            None
+        );
+        assert_eq!(
+            normalize_japan_bs_if_frequency_hz(JAPAN_BS_FIRST_IF_HZ + bs_half - 1),
+            Some(JAPAN_BS_FIRST_IF_HZ)
+        );
+        assert_eq!(
+            normalize_japan_bs_if_frequency_hz(JAPAN_BS_FIRST_IF_HZ + bs_half + 1),
             Some(JAPAN_BS_FIRST_IF_HZ + JAPAN_BS_IF_STEP_HZ)
         );
         assert!(normalize_japan_bs_if_frequency_hz(JAPAN_BS_FIRST_IF_HZ - bs_half - 1).is_none());
