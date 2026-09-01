@@ -34,6 +34,7 @@ rust_binary {
         "android.hardware.common-V2-rust",
         "android.hardware.common.fmq-V1-rust",
         "libbinder_rs",
+        "libserde_json",
     ],
     static_libs: ["libmaleicacid_tuner_hal2_vts_agent_fmq"],
     shared_libs: [

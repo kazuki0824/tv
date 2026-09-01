@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, call, patch
 
 from vts_profile.cli import _new_profile
 from vts_profile.device import resolve_device
@@ -24,11 +24,16 @@ class VtsProfileTest(unittest.TestCase):
             "schema_version": 1,
             "target": {"hal": "tuner_hal2", "product": "default", "backend": "px4"},
             "vts": {"contract": "android14-aidl-v1", "source_ref": "aosp-commit", "variant": ""},
-            "frontend": {"type": "ISDBT", "is_software_frontend": False,
-                         "frequency_hz": 557142857 if resolved else None},
-            "flows": {"scan": True,
-                      "record": {"enabled": True, "pid": 272 if resolved else None},
-                      "clear_live": {"enabled": False}},
+            "frontend": {
+                "type": "ISDBT",
+                "is_software_frontend": False,
+                "frequency_hz": 557142857 if resolved else None,
+            },
+            "flows": {
+                "scan": True,
+                "record": {"enabled": True, "pid": 272 if resolved else None},
+                "clear_live": {"enabled": False},
+            },
             "queues": {"record_filter_bytes": 1048576, "record_dvr_bytes": 4194304},
         }
 
@@ -40,12 +45,16 @@ class VtsProfileTest(unittest.TestCase):
     def test_region_resolution_and_selection_update_same_profile(self) -> None:
         profile = self.profile(resolved=False)
         profile["region"] = {"query": "test", "candidates": []}
-        dataset = {"schema_version": 1, "dataset_version": "v1", "entries": [
-            {"region": "test", "delivery_system": "ISDBT", "physical_channel": 22,
-             "frequency_hz": 527142857, "label": "A"},
-            {"region": "test", "delivery_system": "ISDBT", "physical_channel": 27,
-             "frequency_hz": 557142857, "label": "B"},
-        ]}
+        dataset = {
+            "schema_version": 1,
+            "dataset_version": "v1",
+            "entries": [
+                {"region": "test", "delivery_system": "ISDBT", "physical_channel": 22,
+                 "frequency_hz": 527142857, "label": "A"},
+                {"region": "test", "delivery_system": "ISDBT", "physical_channel": 27,
+                 "frequency_hz": 557142857, "label": "B"},
+            ],
+        }
         resolve_region(profile, dataset)
         self.assertEqual(len(profile["region"]["candidates"]), 2)
         select_candidate(profile, 1)
@@ -78,13 +87,17 @@ class VtsProfileTest(unittest.TestCase):
             failed = SimpleNamespace(returncode=1, stdout="", stderr="compile failed")
             with patch("vts_profile.resource_closure.subprocess.run", return_value=failed):
                 with self.assertRaises(ProfileError):
-                    validate_resource_closure(self.profile(), capability_source=capability, pes_source=pes)
+                    validate_resource_closure(
+                        self.profile(), capability_source=capability, pes_source=pes
+                    )
 
     def test_noninteractive_init_requires_explicit_inputs(self) -> None:
-        args = SimpleNamespace(non_interactive=True, backend="px4", product="default",
-            delivery_system="ISDBT", vts_source_ref="aosp-commit", region=None,
-            frequency_hz="557142857", service_id=None, record="yes", record_pid="272",
-            scan="yes", record_filter_bytes="1048576", record_dvr_bytes="4194304", variant="")
+        args = SimpleNamespace(
+            non_interactive=True, backend="px4", product="default", delivery_system="ISDBT",
+            vts_source_ref="aosp-commit", region=None, frequency_hz="557142857", service_id=None,
+            record="yes", record_pid="272", scan="yes", record_filter_bytes="1048576",
+            record_dvr_bytes="4194304", variant="",
+        )
         self.assertEqual(_new_profile(args)["vts"]["source_ref"], "aosp-commit")
 
     def test_selected_xsd_requires_exact_checkout(self) -> None:
@@ -98,8 +111,10 @@ class VtsProfileTest(unittest.TestCase):
             xsd.write_text("<x/>")
             subprocess.run(["git", "-C", str(root), "add", "."], check=True)
             subprocess.run(["git", "-C", str(root), "commit", "-qm", "xsd"], check=True)
-            commit = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], check=True,
-                                    capture_output=True, text=True).stdout.strip()
+            commit = subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "HEAD"], check=True,
+                capture_output=True, text=True,
+            ).stdout.strip()
             self.assertEqual(selected_xsd(root, commit), xsd)
             with self.assertRaises(ProfileError):
                 selected_xsd(root, "HEAD~1")
@@ -116,24 +131,51 @@ class VtsProfileTest(unittest.TestCase):
             profile = self.profile(); profile["vts"]["variant"] = "lab"
             output = write_product_artifacts(profile, "<validated/>", root)
             self.assertEqual(output.name, "tuner_vts_config_aidl_V1.lab.xml")
-            self.assertIn("ro.vendor.vts_tuner_configuration_variant=lab",
-                          (root / "vts_product_generated.mk").read_text())
+            self.assertIn(
+                "ro.vendor.vts_tuner_configuration_variant=lab",
+                (root / "vts_product_generated.mk").read_text(),
+            )
 
-    def test_device_resolution_uses_host_si_semantics_and_updates_same_profile(self) -> None:
+    def test_device_resolution_keeps_all_si_reads_in_one_tune_session(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "profile.json"
-            profile = self.profile(resolved=False); profile["frontend"]["frequency_hz"] = 557142857
+            profile = self.profile(resolved=False)
+            profile["frontend"]["frequency_hz"] = 557142857
             save_profile(path, profile)
-            pat_semantics = {"programs": [{"transport_stream_id": 1, "service_id": 100, "pmt_pid": 256}], "pmts": []}
-            full_semantics = {"programs": pat_semantics["programs"], "pmts": [{
-                "transport_stream_id": 1, "service_id": 100, "pmt_pid": 256,
-                "pcr_pid": 272, "streams": [{"pid": 272, "stream_type": 0x1B},
-                                               {"pid": 273, "stream_type": 0x0F}]}]}
-            with patch("vts_profile.device._prepare_agent", return_value=("/data/local/tmp/agent", False)), \
-                 patch("vts_profile.device._run_agent_payload", side_effect=[(0, b"pat"), (256, b"pmt")]), \
-                 patch("vts_profile.device._si_query", side_effect=[pat_semantics, full_semantics]), \
-                 patch("vts_profile.device._cleanup_agent"):
+            pat_semantics = {"pmt_pids": [256], "services": []}
+            full_semantics = {
+                "pmt_pids": [256],
+                "services": [{
+                    "original_network_id": 4,
+                    "transport_stream_id": 1,
+                    "service_id": 100,
+                    "pmt_pid": 256,
+                    "pcr_pid": 272,
+                    "streams": [
+                        {"pid": 272, "stream_type": 0x1B},
+                        {"pid": 273, "stream_type": 0x0F},
+                    ],
+                }],
+            }
+            session = MagicMock()
+            session.__enter__.return_value = session
+            session.section.side_effect = [
+                (0x0000, b"pat"),
+                (0x0100, b"pmt"),
+                (0x0011, b"sdt"),
+            ]
+            with (
+                patch("vts_profile.device._prepare_agent", return_value=("/data/local/tmp/agent", False)),
+                patch("vts_profile.device._AgentSession", return_value=session) as session_type,
+                patch("vts_profile.device._si_query", side_effect=[pat_semantics, full_semantics]),
+                patch("vts_profile.device._cleanup_agent"),
+            ):
                 updated = resolve_device(path)
+            session_type.assert_called_once()
+            self.assertEqual(
+                session.section.call_args_list,
+                [call(0x0000, 0x00), call(0x0100, 0x02), call(0x0011, 0x42)],
+            )
             self.assertEqual(updated["service"]["service_id"], 100)
             self.assertEqual(updated["flows"]["record"]["pid"], 272)
             self.assertEqual(json.loads(path.read_text())["flows"]["record"]["pid"], 272)
@@ -141,28 +183,54 @@ class VtsProfileTest(unittest.TestCase):
     def test_device_resolution_failure_does_not_modify_profile(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "profile.json"
-            original = self.profile(resolved=False); original["frontend"]["frequency_hz"] = 557142857
+            original = self.profile(resolved=False)
+            original["frontend"]["frequency_hz"] = 557142857
             save_profile(path, original)
-            with patch("vts_profile.device._prepare_agent", return_value=("/data/local/tmp/agent", False)), \
-                 patch("vts_profile.device._run_agent_payload", side_effect=ProfileError("no lock")), \
-                 patch("vts_profile.device._cleanup_agent"):
+            session = MagicMock()
+            session.__enter__.return_value = session
+            session.section.side_effect = ProfileError("no lock")
+            with (
+                patch("vts_profile.device._prepare_agent", return_value=("/data/local/tmp/agent", False)),
+                patch("vts_profile.device._AgentSession", return_value=session),
+                patch("vts_profile.device._cleanup_agent"),
+            ):
                 with self.assertRaises(ProfileError):
                     resolve_device(path)
             self.assertEqual(json.loads(path.read_text()), original)
 
-    def test_device_agent_is_transport_only_and_si_parser_is_host_side(self) -> None:
+    def test_architecture_matches_approved_resolver_design(self) -> None:
         tuner_hal2 = Path(__file__).resolve().parents[1]
+        repo = tuner_hal2.parent
         agent = (tuner_hal2 / "vts_agent/main.rs").read_text()
-        host = (tuner_hal2.parent / "arib_si_engine_rs/src/vts_profile_host.rs").read_text()
+        device = (tuner_hal2 / "tools/vts_profile/device.py").read_text()
+        host = (repo / "arib_si_engine_rs/src/vts_profile_host.rs").read_text()
+        arib_bp = (repo / "arib_si_engine_rs/Android.bp").read_text()
+        service_wrapper = (repo / "arib_si_engine_rs/src/service_discovery.rs").read_text()
         product = (tuner_hal2 / "config/product_integration.mk").read_text()
         test_product = (tuner_hal2 / "config/vts_test_agent_integration.mk").read_text()
+
         self.assertIn("DemuxTsFilterType::SECTION", agent)
+        self.assertIn('request.get("op")', agent)
         self.assertNotIn("parse_pat", agent)
         self.assertNotIn("parse_pmt", agent)
         self.assertNotIn("SectionAssembler", agent)
-        self.assertIn('include!("service_discovery.rs")', host)
-        self.assertNotIn("fn parse_pat", host)
-        self.assertNotIn("fn parse_pmt", host)
+
+        self.assertIn("class _AgentSession", device)
+        self.assertNotIn("_run_agent_payload", device)
+        self.assertIn("with _AgentSession(", device)
+        self.assertIn("session.section(0x0011, 0x42)", device)
+
+        self.assertNotIn("include!", host)
+        self.assertIn("maleicacid_arib_si_engine_core", host)
+        self.assertIn("ServiceDiscoveryCollector", host)
+        self.assertIn("pmt_pids_for_section_filters", host)
+        self.assertEqual(
+            service_wrapper.strip(),
+            "pub use maleicacid_arib_si_engine_core::service_discovery::*;",
+        )
+        self.assertIn('name: "libmaleicacid_arib_si_engine_core"', arib_bp)
+        self.assertGreaterEqual(arib_bp.count('"libmaleicacid_arib_si_engine_core"'), 3)
+
         self.assertNotIn("maleicacid_tuner_hal2_vts_agent", product)
         self.assertIn("maleicacid_tuner_hal2_vts_agent", test_product)
         self.assertTrue((tuner_hal2 / "tools/pyproject.toml").is_file())
