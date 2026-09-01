@@ -240,11 +240,8 @@ fn parse_args() -> Result<Args, String> {
     let modulation = opt("--modulation")?;
     let coderate = opt("--coderate")?;
     let rolloff = opt("--rolloff")?;
-    if !values.is_empty() {
-        return Err(format!(
-            "unknown argument: {}",
-            values.keys().next().expect("non-empty map")
-        ));
+    if let Some(key) = values.keys().next() {
+        return Err(format!("unknown argument: {key}"));
     }
 
     Ok(Args {
