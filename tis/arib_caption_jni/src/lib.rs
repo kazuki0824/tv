@@ -598,7 +598,8 @@ impl Registry {
 
     fn insert_engine(&mut self, engine: CaptionEngine) -> jlong {
         let handle = self.next_handle();
-        self.engines.insert(handle, Arc::new(EngineSlot::new(engine)));
+        self.engines
+            .insert(handle, Arc::new(EngineSlot::new(engine)));
         handle
     }
 
@@ -691,7 +692,10 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribCaptionRende
     let Ok(bytes) = env.convert_byte_array(pes_data) else {
         return ptr::null_mut();
     };
-    let frame = with_engine(handle, |engine| engine.decode_and_render(&bytes, pts_millis)).flatten();
+    let frame = with_engine(handle, |engine| {
+        engine.decode_and_render(&bytes, pts_millis)
+    })
+    .flatten();
     let Some(packet) = frame.and_then(encode_rendered_frame) else {
         return ptr::null_mut();
     };
