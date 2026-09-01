@@ -110,6 +110,8 @@ TIS は `directBootAware=true` を維持する。`AndroidManifest.xml` には `<
 
 ## MediaSync Exact-mode platform統合
 
+この節をLineageOS 22.1向けMediaSync platform patchの適用手順と確認項目の正本とし、patch配下へ別のREADMEや重複手順書を置かない。
+
 TISは追加private APIを静的参照しない。private listener経路を呼び出せるplatformではExact modeを使用し、API不存在、reflection解決失敗、登録setter呼出し失敗などにより呼び出せない場合は公開`MediaCodec.OnFrameRenderedListener`を使うCompatibility modeで動作する。正規製品で`DESIGN_JA.md`のfinal-output成功意味論を満たす場合は、次の既存2patchをLineageOS 22.1 platform treeへ適用してprivate listener経路を提供する。patch本文はTIS側runtime変更とは独立した再現可能なplatform統合差分として維持する。
 
 ```text
