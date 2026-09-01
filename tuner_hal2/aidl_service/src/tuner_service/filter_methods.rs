@@ -85,15 +85,19 @@ impl IFilter for FilterAidlObject {
     }
 
     fn close(&self) -> BinderResult<()> {
-        close_object_after_close_preflight(
+        let result = close_object_after_close_preflight(
             &self.context(),
             self.handle(),
             AidlMethodCall::FilterClose,
-        )
+        );
+        if result.is_ok() {
+            maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change();
+        }
+        result
     }
 
     fn configure(&self, settings: &DemuxFilterSettings) -> BinderResult<()> {
-        execute_object_runtime_use_case(
+        let result = execute_object_runtime_use_case(
             &self.runtime(),
             self.handle(),
             AidlMethodCall::FilterConfigure(
@@ -107,7 +111,11 @@ impl IFilter for FilterAidlObject {
                     |open_type| build_filter_summary_for_open_type(settings, open_type),
                 )
             },
-        )
+        );
+        if result.is_ok() {
+            maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change();
+        }
+        result
     }
 
     fn configureAvStreamType(&self, av_stream_type: &AvStreamType) -> BinderResult<()> {
@@ -180,7 +188,7 @@ impl IFilter for FilterAidlObject {
     }
 
     fn start(&self) -> BinderResult<()> {
-        execute_object_runtime_use_case(
+        let result = execute_object_runtime_use_case(
             &self.runtime(),
             self.handle(),
             AidlMethodCall::FilterStart,
@@ -191,11 +199,15 @@ impl IFilter for FilterAidlObject {
                     dispatch_proof,
                 )
             },
-        )
+        );
+        if result.is_ok() {
+            maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change();
+        }
+        result
     }
 
     fn stop(&self) -> BinderResult<()> {
-        execute_object_runtime_use_case(
+        let result = execute_object_runtime_use_case(
             &self.runtime(),
             self.handle(),
             AidlMethodCall::FilterStop,
@@ -206,11 +218,15 @@ impl IFilter for FilterAidlObject {
                     dispatch_proof,
                 )
             },
-        )
+        );
+        if result.is_ok() {
+            maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change();
+        }
+        result
     }
 
     fn flush(&self) -> BinderResult<()> {
-        execute_object_runtime_use_case(
+        let result = execute_object_runtime_use_case(
             &self.runtime(),
             self.handle(),
             AidlMethodCall::FilterFlush,
@@ -221,7 +237,11 @@ impl IFilter for FilterAidlObject {
                     dispatch_proof,
                 )
             },
-        )
+        );
+        if result.is_ok() {
+            maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change();
+        }
+        result
     }
 
     fn getAvSharedHandle(&self, av_memory: &mut TunerNativeHandle) -> BinderResult<i64> {
@@ -310,7 +330,7 @@ impl IFilter for FilterAidlObject {
     }
 
     fn setDelayHint(&self, hint: &FilterDelayHint) -> BinderResult<()> {
-        execute_object_runtime_use_case_with_request_builder(
+        let result = execute_object_runtime_use_case_with_request_builder(
             &self.runtime(),
             self.handle(),
             || {
@@ -326,6 +346,10 @@ impl IFilter for FilterAidlObject {
                     dispatch_proof,
                 )
             },
-        )
+        );
+        if result.is_ok() {
+            maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change();
+        }
+        result
     }
 }

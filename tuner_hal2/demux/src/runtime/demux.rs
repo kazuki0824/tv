@@ -46,6 +46,7 @@ use super::source_boundary::{
     apply_filter_source_boundary_change, connect_filter_source_boundary_change,
     SourceBoundaryReport,
 };
+mod filter_delay_delivery;
 const TUNER_EVENT_DATA_READY: u32 = 1 << 0;
 #[cfg(test)]
 const TEST_PENDING_FILTER_EVENT_CAPACITY: usize = 64;

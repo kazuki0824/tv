@@ -20,6 +20,7 @@ use maleicacid_tuner_hal2_service_runtime::{
     WorkerRuntimeSupervisor,
 };
 
+use crate::filter_callback_delivery::dispatch_filter_event_snapshots;
 use crate::object_handle::AidlObjectHandle;
 use crate::service_context::{SharedAidlServiceContext, SharedTunerRuntime};
 
@@ -424,18 +425,24 @@ pub fn is_playback_dvr(
 }
 
 fn consume_playback_dvr_once(
-    runtime: &SharedTunerRuntime,
+    context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
 ) -> Result<(), HalError> {
-    let mut guard = runtime.lock().map_err(|_| {
-        HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "service runtime lock poisoned while consuming playback DVR data",
-        )
-    })?;
-    guard
-        .consume_playback_dvr_for_object(handle.object_id(), handle.generation())
-        .map(|_| ())
+    let runtime = context.runtime();
+    let events = {
+        let mut guard = runtime.lock().map_err(|_| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "service runtime lock poisoned while consuming playback DVR data",
+            )
+        })?;
+        let report =
+            guard.consume_playback_dvr_for_object(handle.object_id(), handle.generation())?;
+        guard.filter_event_delivery_snapshots_for_playback_report(&report)
+    };
+    maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change();
+    let _recorded_failure = dispatch_filter_event_snapshots(context, events);
+    Ok(())
 }
 
 fn record_dvr_artifact_lookup_failure(
@@ -717,7 +724,7 @@ fn dvr_status_notifier_loop(
             return Ok(());
         }
         if initial_snapshot.is_playback {
-            consume_playback_dvr_once(&runtime, handle)?;
+            consume_playback_dvr_once(&context, handle)?;
         }
         let snapshot = poll_dvr_status_snapshot(&runtime, handle)?;
         if !snapshot.started {

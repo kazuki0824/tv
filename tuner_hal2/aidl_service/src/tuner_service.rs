@@ -203,7 +203,7 @@ impl TunerAidlService {
                 )
             })?;
             runtime.install_filter_event_dispatcher(std::sync::Arc::new(
-                AidlFilterEventDispatcher::new(&context),
+                AidlFilterEventDispatcher::new(&context)?,
             ))?;
         }
         Ok(Self { context })

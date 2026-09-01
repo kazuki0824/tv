@@ -17,9 +17,11 @@ use maleicacid_tuner_hal2_demux::{
     RECORD_SC_TYPE_SC_HEVC, RECORD_SC_TYPE_SC_VVC,
 };
 use maleicacid_tuner_hal2_service_runtime::{
+    filter_delivery_wake_sequence, notify_filter_delivery_change, wait_filter_delivery_change,
     CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport,
     FilterCallbackDeliveryDiagnosticPhase, FilterCallbackDeliveryDiagnosticRecord,
     FilterEventDelivery, FilterEventDeliverySnapshot, FilterEventDispatcher, TunerServiceRuntime,
+    WorkerRuntime,
 };
 
 use crate::object_handle::AidlObjectHandle;
@@ -27,6 +29,7 @@ use crate::service_context::{AidlServiceContext, SharedAidlServiceContext};
 
 pub struct AidlFilterEventDispatcher {
     context: Weak<AidlServiceContext>,
+    delay_worker: Option<WorkerRuntime<()>>,
 }
 
 enum AidlFilterCallbackDelivery {
@@ -44,10 +47,87 @@ impl AidlFilterCallbackDelivery {
 }
 
 impl AidlFilterEventDispatcher {
-    pub fn new(context: &SharedAidlServiceContext) -> Self {
+    pub fn new(context: &SharedAidlServiceContext) -> Result<Self, HalError> {
+        let worker_context = Arc::downgrade(context);
+        let delay_worker = WorkerRuntime::spawn(
+            "maleicacid-filter-delay-delivery".to_string(),
+            0,
+            1,
+            move |stop| run_filter_delay_delivery(worker_context, stop),
+            notify_filter_delivery_change,
+        )
+        .map_err(|error| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                format!("filter delay delivery worker spawn failed: {error}"),
+            )
+        })?;
+        Ok(Self {
+            context: Arc::downgrade(context),
+            delay_worker: Some(delay_worker),
+        })
+    }
+
+    fn without_worker(context: &SharedAidlServiceContext) -> Self {
         Self {
             context: Arc::downgrade(context),
+            delay_worker: None,
         }
+    }
+}
+
+impl Drop for AidlFilterEventDispatcher {
+    fn drop(&mut self) {
+        if let Some(worker) = self.delay_worker.as_ref() {
+            worker.request_stop_and_wake();
+            notify_filter_delivery_change();
+        }
+    }
+}
+
+pub(crate) fn dispatch_filter_event_snapshots(
+    context: &SharedAidlServiceContext,
+    snapshots: Vec<FilterEventDeliverySnapshot>,
+) -> Result<(), HalError> {
+    if snapshots.is_empty() {
+        return Ok(());
+    }
+    let runtime = context.runtime();
+    AidlFilterEventDispatcher::without_worker(context).dispatch(&runtime, snapshots)
+}
+
+fn run_filter_delay_delivery(
+    weak_context: Weak<AidlServiceContext>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(), HalError> {
+    loop {
+        if stop.load(std::sync::atomic::Ordering::Acquire) {
+            return Ok(());
+        }
+        let observed = filter_delivery_wake_sequence();
+        let Some(context) = weak_context.upgrade() else {
+            return Ok(());
+        };
+        let runtime = context.runtime();
+        let (snapshots, deadline) = {
+            let mut guard = runtime.lock().map_err(|_| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "service runtime lock poisoned while polling delayed filter events",
+                )
+            })?;
+            guard.poll_filter_delay_delivery()?
+        };
+        if !snapshots.is_empty() {
+            let _recorded_failure = dispatch_filter_event_snapshots(&context, snapshots);
+            continue;
+        }
+        drop(runtime);
+        drop(context);
+        if stop.load(std::sync::atomic::Ordering::Acquire) {
+            return Ok(());
+        }
+        let _ = wait_filter_delivery_change(observed, deadline);
     }
 }
 
