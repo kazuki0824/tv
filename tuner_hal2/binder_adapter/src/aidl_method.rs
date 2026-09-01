@@ -1,7 +1,8 @@
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
-    AvStreamType::AvStreamType, DataFormat::DataFormat, DvrSettings::DvrSettings, DvrType::DvrType,
-    FilterDelayHint::FilterDelayHint, FilterDelayHintType::FilterDelayHintType,
-    LnbPosition::LnbPosition, LnbTone::LnbTone, LnbVoltage::LnbVoltage,
+    AudioStreamType::AudioStreamType, AvStreamType::AvStreamType, DataFormat::DataFormat,
+    DvrSettings::DvrSettings, DvrType::DvrType, FilterDelayHint::FilterDelayHint,
+    FilterDelayHintType::FilterDelayHintType, LnbPosition::LnbPosition, LnbTone::LnbTone,
+    LnbVoltage::LnbVoltage, VideoStreamType::VideoStreamType,
 };
 #[cfg(test)]
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
@@ -12,8 +13,8 @@ use maleicacid_tuner_hal2_domain_request::{
     DemuxSetFrontendDataSourceRequest, DvrConfigureKind, DvrConfigureRequest, DvrDataFormat,
     DvrFilterLinkRequest, DvrOpenKind, FilterAvStreamKind, FilterAvStreamTypeRequest,
     FilterDelayHintKind, FilterDelayHintRequest, FilterReleaseAvHandleRequest,
-    FilterSetDataSourceRequest, LnbSetSatellitePositionRequest, LnbToneRequest,
-    LnbVoltageRequest, OpenDvrRequest, RuntimeExecutableRequest,
+    FilterSetDataSourceRequest, LnbSetSatellitePositionRequest, LnbToneRequest, LnbVoltageRequest,
+    OpenDvrRequest, RuntimeExecutableRequest,
 };
 
 use crate::demux::DemuxCommand;
@@ -24,7 +25,6 @@ use crate::frontend::FrontendCommand;
 use crate::lnb::LnbCommand;
 use crate::{CommandPlan, DomainCommand};
 
-const MAX_FILTER_DELAY_MS: i64 = 10_000;
 const DVR_PACKET_SIZE_TS_188: i64 = 188;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -276,8 +276,60 @@ pub fn build_filter_av_stream_type_request(
     av_stream_type: &AvStreamType,
 ) -> Result<FilterAvStreamTypeRequest, HalError> {
     let (kind, stream_type) = match av_stream_type {
-        AvStreamType::Video(value) => (FilterAvStreamKind::Video, value.0),
-        AvStreamType::Audio(value) => (FilterAvStreamKind::Audio, value.0),
+        AvStreamType::Video(value) => {
+            if !matches!(
+                *value,
+                VideoStreamType::UNDEFINED
+                    | VideoStreamType::RESERVED
+                    | VideoStreamType::MPEG1
+                    | VideoStreamType::MPEG2
+                    | VideoStreamType::MPEG4P2
+                    | VideoStreamType::AVC
+                    | VideoStreamType::HEVC
+                    | VideoStreamType::VC1
+                    | VideoStreamType::VP8
+                    | VideoStreamType::VP9
+                    | VideoStreamType::AV1
+                    | VideoStreamType::AVS
+                    | VideoStreamType::AVS2
+                    | VideoStreamType::VVC
+            ) {
+                return Err(invalid(
+                    "video stream type contains an unknown numeric enum value",
+                ));
+            }
+            (FilterAvStreamKind::Video, value.0)
+        }
+        AvStreamType::Audio(value) => {
+            if !matches!(
+                *value,
+                AudioStreamType::UNDEFINED
+                    | AudioStreamType::PCM
+                    | AudioStreamType::MP3
+                    | AudioStreamType::MPEG1
+                    | AudioStreamType::MPEG2
+                    | AudioStreamType::MPEGH
+                    | AudioStreamType::AAC
+                    | AudioStreamType::AC3
+                    | AudioStreamType::EAC3
+                    | AudioStreamType::AC4
+                    | AudioStreamType::DTS
+                    | AudioStreamType::DTS_HD
+                    | AudioStreamType::WMA
+                    | AudioStreamType::OPUS
+                    | AudioStreamType::VORBIS
+                    | AudioStreamType::DRA
+                    | AudioStreamType::AAC_ADTS
+                    | AudioStreamType::AAC_LATM
+                    | AudioStreamType::AAC_HE_ADTS
+                    | AudioStreamType::AAC_HE_LATM
+            ) {
+                return Err(invalid(
+                    "audio stream type contains an unknown numeric enum value",
+                ));
+            }
+            (FilterAvStreamKind::Audio, value.0)
+        }
     };
     Ok(FilterAvStreamTypeRequest { kind, stream_type })
 }
@@ -297,9 +349,6 @@ pub fn build_filter_delay_hint_request(
     .and_then(|request| {
         if request.value < 0 {
             return Err(invalid("filter delay hint value must be non-negative"));
-        }
-        if request.kind == FilterDelayHintKind::TimeDelayMs && request.value > MAX_FILTER_DELAY_MS {
-            return Err(invalid("filter delay time hint exceeds product limit"));
         }
         Ok(request)
     })
@@ -379,7 +428,16 @@ pub fn build_lnb_voltage_request(voltage: LnbVoltage) -> Result<LnbVoltageReques
         LnbVoltage::NONE => Ok(LnbVoltageRequest::None),
         LnbVoltage::VOLTAGE_11V => Ok(LnbVoltageRequest::Voltage11V),
         LnbVoltage::VOLTAGE_15V => Ok(LnbVoltageRequest::Voltage15V),
-        _ => Err(invalid("LNB voltage is unsupported")),
+        LnbVoltage::VOLTAGE_5V
+        | LnbVoltage::VOLTAGE_12V
+        | LnbVoltage::VOLTAGE_13V
+        | LnbVoltage::VOLTAGE_14V
+        | LnbVoltage::VOLTAGE_18V
+        | LnbVoltage::VOLTAGE_19V => Err(HalError::unsupported_detail(
+            "lnb.voltage",
+            "known LNB voltage is unavailable in the product profile",
+        )),
+        _ => Err(invalid("LNB voltage contains a reserved enum value")),
     }
 }
 
@@ -394,6 +452,12 @@ pub fn build_lnb_tone_request(tone: LnbTone) -> Result<LnbToneRequest, HalError>
 pub fn build_lnb_satellite_position_request(
     position: LnbPosition,
 ) -> Result<LnbSetSatellitePositionRequest, HalError> {
+    if !matches!(
+        position,
+        LnbPosition::UNDEFINED | LnbPosition::POSITION_A | LnbPosition::POSITION_B
+    ) {
+        return Err(invalid("LNB position contains a reserved enum value"));
+    }
     Ok(LnbSetSatellitePositionRequest {
         position: position.0,
     })
@@ -538,6 +602,7 @@ mod tests {
             stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId),
             bandwidth_hz: Some(6_000_000),
             symbol_rate: None,
+            isdbt_layer_settings: Vec::new(),
             partial_reception:
                 maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         }
@@ -603,6 +668,75 @@ mod tests {
         }))
         .unwrap_err();
         assert!(matches!(error, HalError::UnsupportedDetail { .. }));
+    }
+
+    #[test]
+    fn filter_delay_hint_has_no_undocumented_ten_second_cap() {
+        let request = build_filter_delay_hint_request(&FilterDelayHint {
+            hintType: FilterDelayHintType::TIME_DELAY_IN_MS,
+            hintValue: 60_000,
+        })
+        .unwrap();
+        assert_eq!(request.value, 60_000);
+    }
+
+    #[test]
+    fn av_stream_type_accepts_defined_sentinels_and_codecs_only() {
+        for stream_type in [
+            VideoStreamType::UNDEFINED,
+            VideoStreamType::RESERVED,
+            VideoStreamType::MPEG1,
+        ] {
+            let request =
+                build_filter_av_stream_type_request(&AvStreamType::Video(stream_type)).unwrap();
+            assert_eq!(request.kind, FilterAvStreamKind::Video);
+            assert_eq!(request.stream_type, stream_type.0);
+        }
+        for stream_type in [
+            AudioStreamType::UNDEFINED,
+            AudioStreamType::MP3,
+            AudioStreamType::MPEG1,
+        ] {
+            let request =
+                build_filter_av_stream_type_request(&AvStreamType::Audio(stream_type)).unwrap();
+            assert_eq!(request.kind, FilterAvStreamKind::Audio);
+            assert_eq!(request.stream_type, stream_type.0);
+        }
+
+        assert!(matches!(
+            build_filter_av_stream_type_request(&AvStreamType::Video(VideoStreamType(i32::MAX))),
+            Err(HalError::InvalidArgument { .. })
+        ));
+        assert!(matches!(
+            build_filter_av_stream_type_request(&AvStreamType::Audio(AudioStreamType(i32::MAX))),
+            Err(HalError::InvalidArgument { .. })
+        ));
+    }
+
+    #[test]
+    fn known_unavailable_lnb_voltage_is_not_invalid_argument() {
+        assert!(matches!(
+            build_lnb_voltage_request(LnbVoltage::VOLTAGE_18V),
+            Err(HalError::UnsupportedDetail { .. })
+        ));
+        assert!(matches!(
+            build_lnb_voltage_request(LnbVoltage(99)),
+            Err(HalError::InvalidArgument { .. })
+        ));
+    }
+
+    #[test]
+    fn known_lnb_positions_are_retained_but_reserved_values_are_invalid() {
+        assert_eq!(
+            build_lnb_satellite_position_request(LnbPosition::POSITION_B)
+                .unwrap()
+                .position,
+            LnbPosition::POSITION_B.0
+        );
+        assert!(matches!(
+            build_lnb_satellite_position_request(LnbPosition(99)),
+            Err(HalError::InvalidArgument { .. })
+        ));
     }
 
     #[test]

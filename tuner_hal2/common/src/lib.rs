@@ -12,26 +12,37 @@ pub const TUNER_SERVICE_NAME: &str = "android.hardware.tv.tuner.ITuner/default";
 pub const TS_PACKET_SIZE: usize = 188;
 pub const MAX_ARIB_SHORT_SECTION_LENGTH: usize = 1021;
 pub const MAX_ARIB_EIT_SECTION_LENGTH: usize = 4093;
+pub const ARIB_TDT_SECTION_LENGTH: usize = 5;
+
 pub const MAX_ARIB_SECTION_TOTAL_BYTES: usize = 3 + MAX_ARIB_EIT_SECTION_LENGTH;
 pub const MAX_SECTION_PAYLOAD_BYTES: usize = MAX_ARIB_SECTION_TOTAL_BYTES;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct TransportStreamPid(u16);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransportStreamPidValidationError {
+    OutOfRange,
+}
+
 impl TransportStreamPid {
-    pub fn validate_u16(pid: u16) -> Result<Self, ()> {
+    pub const fn from_mpeg_ts_header_bytes(header_byte_1: u8, header_byte_2: u8) -> Self {
+        Self((((header_byte_1 & 0x1f) as u16) << 8) | header_byte_2 as u16)
+    }
+
+    pub fn validate_u16(pid: u16) -> Result<Self, TransportStreamPidValidationError> {
         if pid <= 0x1fff {
             Ok(Self(pid))
         } else {
-            Err(())
+            Err(TransportStreamPidValidationError::OutOfRange)
         }
     }
 
-    pub fn validate_i32(pid: i32) -> Result<Self, ()> {
+    pub fn validate_i32(pid: i32) -> Result<Self, TransportStreamPidValidationError> {
         if (0..=0x1fff).contains(&pid) {
             Ok(Self(pid as u16))
         } else {
-            Err(())
+            Err(TransportStreamPidValidationError::OutOfRange)
         }
     }
 
@@ -48,11 +59,25 @@ impl TransportStreamPid {
 }
 
 /// ARIB STD-B10 の table_id 別 section_length 上限を返す。
-/// EIT p/f と EIT schedule は 0x4e..=0x6f、それ以外は短い section として扱う。
+///
+/// HALは表の意味解析を行わずtransport外形だけを検証する。STD-B10で
+/// 1021-byte区分として固定される既知tableだけをshort classへ置き、
+/// EIT/ST/INT/PCAT/BIT/NBIT/LDT/LIT/ERT/ITT/AMTおよび予約/private/未割当は
+/// 4093-byte transport classとして扱う。TDTだけはsection_length=5固定。
 pub fn max_arib_section_length_for_table_id(table_id: u8) -> usize {
     match table_id {
-        0x4e..=0x6f => MAX_ARIB_EIT_SECTION_LENGTH,
-        _ => MAX_ARIB_SHORT_SECTION_LENGTH,
+        0x70 => ARIB_TDT_SECTION_LENGTH,
+        0x00..=0x03 | 0x40 | 0x41 | 0x42 | 0x46 | 0x4a | 0x71 | 0x73 => {
+            MAX_ARIB_SHORT_SECTION_LENGTH
+        }
+        _ => MAX_ARIB_EIT_SECTION_LENGTH,
+    }
+}
+
+pub fn is_valid_arib_section_length(table_id: u8, section_length: usize) -> bool {
+    match table_id {
+        0x70 => section_length == ARIB_TDT_SECTION_LENGTH,
+        _ => section_length <= max_arib_section_length_for_table_id(table_id),
     }
 }
 
@@ -511,6 +536,17 @@ pub enum FrontendIsdbtPartialReceptionRequirement {
     Required(bool),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrontendIsdbtSegmentRequest {
+    Unspecified,
+    Auto,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrontendIsdbtLayerSetting {
+    pub num_of_segment: FrontendIsdbtSegmentRequest,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrontendTuneRequest {
     pub system: FrontendSystem,
@@ -520,6 +556,7 @@ pub struct FrontendTuneRequest {
     pub stream_id_kind: Option<FrontendStreamIdKind>,
     pub bandwidth_hz: Option<u32>,
     pub symbol_rate: Option<u32>,
+    pub isdbt_layer_settings: Vec<FrontendIsdbtLayerSetting>,
     pub partial_reception: FrontendIsdbtPartialReceptionRequirement,
 }
 
@@ -970,5 +1007,29 @@ mod tests {
     fn id_allocator_reports_exhaustion_without_wrapping() {
         let alloc = IdAllocator::new_bounded(i32::MAX, i32::MAX);
         assert!(alloc.try_allocate().is_err());
+    }
+}
+
+#[cfg(test)]
+mod section_length_contract_tests {
+    use super::*;
+
+    #[test]
+    fn section_length_contract_distinguishes_short_extended_and_tdt_classes() {
+        for table_id in [
+            0x00, 0x01, 0x02, 0x03, 0x40, 0x41, 0x42, 0x46, 0x4a, 0x71, 0x73,
+        ] {
+            assert!(is_valid_arib_section_length(table_id, 1021));
+            assert!(!is_valid_arib_section_length(table_id, 1022));
+        }
+        for table_id in [
+            0x04, 0x4c, 0x4e, 0x6f, 0x72, 0xc2, 0xc4, 0xc7, 0xd0, 0xd2, 0xfe, 0xff,
+        ] {
+            assert!(is_valid_arib_section_length(table_id, 4093));
+            assert!(!is_valid_arib_section_length(table_id, 4094));
+        }
+        assert!(is_valid_arib_section_length(0x70, 5));
+        assert!(!is_valid_arib_section_length(0x70, 4));
+        assert!(!is_valid_arib_section_length(0x70, 6));
     }
 }

@@ -20,6 +20,7 @@ pub(crate) struct PcrClockAnchorStore {
 }
 
 #[derive(Debug)]
+#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
 pub(crate) struct PreparedPcrInvalidation {
     filter_ids: Vec<i32>,
 }
@@ -61,9 +62,8 @@ impl PcrClockAnchorStore {
                     anchors.remove(&filter_id);
                     return PcrObservationOutcome::Invalidated;
                 }
-                let Some(unwrapped_pcr_90k) = previous
-                    .unwrapped_pcr_90k
-                    .checked_add(u128::from(forward))
+                let Some(unwrapped_pcr_90k) =
+                    previous.unwrapped_pcr_90k.checked_add(u128::from(forward))
                 else {
                     anchors.remove(&filter_id);
                     return PcrObservationOutcome::Invalidated;
@@ -109,10 +109,7 @@ impl PcrClockAnchorStore {
         Some((current % u128::from(PCR_MODULUS_90KHZ)) as u64)
     }
 
-    pub(crate) fn prepare_invalidate_filter(
-        &self,
-        filter_id: i32,
-    ) -> PreparedPcrInvalidation {
+    pub(crate) fn prepare_invalidate_filter(&self, filter_id: i32) -> PreparedPcrInvalidation {
         PreparedPcrInvalidation {
             filter_ids: vec![filter_id],
         }
@@ -133,9 +130,10 @@ impl PcrClockAnchorStore {
 
     #[cfg(test)]
     pub(crate) fn observation_for_test(&self, filter_id: i32) -> Option<(u64, u64)> {
-        self.anchors.borrow().get(&filter_id).map(|anchor| {
-            (anchor.raw_pcr_base_33, anchor.monotonic_base_ns)
-        })
+        self.anchors
+            .borrow()
+            .get(&filter_id)
+            .map(|anchor| (anchor.raw_pcr_base_33, anchor.monotonic_base_ns))
     }
 }
 

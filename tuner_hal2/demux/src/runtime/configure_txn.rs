@@ -2,7 +2,7 @@ use super::demux::{DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind};
 use super::dvr::DvrRuntimeSnapshot;
 use super::filter::{FilterRuntimeSnapshot, FilterRuntimeState, FilterSource};
 use super::source_boundary::SourceBoundaryReport;
-use crate::config::FilterConfig;
+use crate::config::{FilterConfig, SectionRuntimeConfig};
 use crate::packet_pipeline::{FilterPipelineConfig, PipelineOpenKind};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -140,13 +140,16 @@ impl FilterConfigureTxn {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn configure(
         self,
         demux: &mut DemuxRuntime,
         open_kind: PipelineOpenKind,
         config: FilterPipelineConfig,
     ) -> (Self, Result<FilterConfigureOutcome, DemuxRuntimeError>) {
-        self.configure_with_pes_stream_id(demux, open_kind, config, None)
+        let section_config = (open_kind == PipelineOpenKind::Section)
+            .then(SectionRuntimeConfig::match_all_repeat);
+        self.configure_with_pes_stream_id(demux, open_kind, config, None, section_config)
     }
 
     pub(crate) fn configure_with_pes_stream_id(
@@ -155,6 +158,7 @@ impl FilterConfigureTxn {
         open_kind: PipelineOpenKind,
         config: FilterPipelineConfig,
         pes_stream_id: Option<i32>,
+        section_config: Option<SectionRuntimeConfig>,
     ) -> (Self, Result<FilterConfigureOutcome, DemuxRuntimeError>) {
         self.record_step(FilterConfigureStep::ValidateState);
         let snapshot: FilterRuntimeSnapshot = match demux.filter_snapshot(self.filter_id) {
@@ -226,17 +230,25 @@ impl FilterConfigureTxn {
         }
         if snapshot.pipeline_config.as_ref() == Some(&config)
             && snapshot.pes_stream_id == pes_stream_id
+            && snapshot.section_config == section_config
         {
+            if let Err(error) = demux.schedule_filter_start_id_after_reconfigure(self.filter_id) {
+                self.outcome = Some(FilterConfigureOutcome::Failed {
+                    failed_step: FilterConfigureStep::Commit,
+                });
+                return (self, Err(error));
+            }
             self.record_step(FilterConfigureStep::Commit);
             let outcome = FilterConfigureOutcome::Noop;
             self.outcome = Some(outcome);
             return (self, Ok(outcome));
         }
         self.record_step(FilterConfigureStep::ApplySoftDemuxConfig);
-        if let Err(err) = demux.configure_filter_runtime_with_pes_stream_id(
+        if let Err(err) = demux.configure_filter_runtime_with_full_config(
             self.filter_id,
             config,
             pes_stream_id,
+            section_config,
         ) {
             if err.kind == DemuxRuntimeErrorKind::FilterMissing {
                 self.outcome = Some(FilterConfigureOutcome::Failed {
@@ -252,6 +264,16 @@ impl FilterConfigureTxn {
                 rollback_error: err.kind,
             });
             return (self, Err(err));
+        }
+        if let Err(error) = demux.schedule_filter_start_id_after_reconfigure(self.filter_id) {
+            demux.quarantine_filter_runtime(self.filter_id);
+            self.record_step(FilterConfigureStep::QuarantineOnRollbackFailure);
+            self.outcome = Some(FilterConfigureOutcome::Quarantined {
+                failed_step: FilterConfigureStep::Commit,
+                rollback_step: FilterConfigureStep::RollbackSoftDemuxConfig,
+                rollback_error: error.kind,
+            });
+            return (self, Err(error));
         }
         self.record_step(FilterConfigureStep::Commit);
         let outcome = FilterConfigureOutcome::Committed;
@@ -343,11 +365,13 @@ pub(crate) fn configure_filter_runtime(
         crate::config::FilterConfigKind::TsPes(settings) => Some(settings.stream_id),
         _ => None,
     };
+    let section_config = config.section_runtime_config();
     let (txn, result) = FilterConfigureTxn::new(filter_id).configure_with_pes_stream_id(
         demux,
         config.open_type.pipeline_open_kind(),
         config.pipeline_config(),
         pes_stream_id,
+        section_config,
     );
     (txn.report(), result)
 }

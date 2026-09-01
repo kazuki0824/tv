@@ -43,8 +43,9 @@ impl TsInputOrigin {
 
 pub use av::{
     AvDataId, AvDataIdAllocator, AvFileIdentity, AvHandleReleaseDescriptor,
-    AvHandleReleaseOutcome, AvMediaEventDescriptor, AvPayloadDeliveryOutcome, AvRuntimeBudget,
-    AvSharedBacking, AvSharedBackingError, AvSharedHandleExport, AvSlotId,
+    AvHandleReleaseOutcome, AvMediaEventDescriptor, AvMediaEventMetadata,
+    AvPayloadDeliveryOutcome, AvRuntimeBudget, AvSharedBacking, AvSharedBackingError,
+    AvSharedHandleExport, AvSlotId,
     DEFAULT_AV_MAX_EVENT_BYTES, DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
     DEFAULT_AV_PER_FILTER_LIVE_BYTES,
 };
@@ -75,17 +76,22 @@ pub use parser::record_index::{
 };
 pub use parser::sections::normalize_length_field_bits;
 pub use runtime::{
-    DemuxStreamBoundaryRequest, DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind,
+    CommittedDvrQueueCleanup, CommittedFilterQueueCleanup, DemuxStreamBoundaryRequest,
+    DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind,
     DemuxRuntimeQuarantineRequest, DemuxRuntimeRollbackCommitRequest,
     DemuxRuntimeRollbackRestoreRequest, DemuxRuntimeRollbackToken,
     DemuxRuntimeRollbackTokenPrepareRequest, DemuxRuntimeSnapshot, DemuxRuntimeState,
     DemuxStreamGeneration, DvrConfigureOutcome, DvrConfigureReport, DvrConfigureStep,
-    DvrDataFormat, DvrFilterLinkRequest, DvrKind, DvrRuntimeConfigureRequest,
-    DvrRuntimeOperationRequest, DvrRuntimeRegistrationRequest, DvrRuntimeSnapshot,
-    DvrRuntimeState, DvrStatusEvent, DvrStatusIntervalRuntimeRequest, DvrStatusReportingRequest,
+    DvrDataFormat, DvrFilterLinkRequest, DvrKind, DvrQueueCleanupCommitError,
+    DvrQueueCleanupOutcome, DvrQueueCleanupPlan, DvrQueueCleanupReport,
+    DvrQueueCleanupSkipReason, DvrQueueCleanupStep, DvrQueueCleanupStepOutcome,
+    DvrRuntimeConfigureRequest, DvrRuntimeOperationRequest,
+    DvrRuntimeRegistrationRequest, DvrRuntimeSnapshot, DvrRuntimeState, DvrStatusEvent,
+    DvrStatusIntervalRuntimeRequest, DvrStatusReportingRequest,
     FilterAvHandleReleaseRequest,
     FilterAvStreamTypeRuntimeRequest, FilterConfigureOutcome, FilterConfigureReport,
     FilterConfigureStep, FilterDelayHintRuntimeRequest, FilterRuntimeConfigureRequest,
+    FilterQueueCleanupPlan, FilterQueuePayloadCleanupOutcome,
     FilterRuntimeOperationKind, FilterRuntimeOperationOutcome, FilterRuntimeOperationReport,
     FilterRuntimeOperationRequest, FilterRuntimeOperationSkipReason, FilterRuntimeOperationStep,
     FilterRuntimeOperationStepOutcome, FilterRuntimeRegistrationRequest, FilterRuntimeSnapshot,
@@ -263,6 +269,78 @@ mod tests {
         packet
     }
 
+    fn pts_field(pts_90khz: u64) -> [u8; 5] {
+        let pts = pts_90khz & ((1_u64 << 33) - 1);
+        [
+            0x20 | (((pts >> 30) as u8 & 0x07) << 1) | 0x01,
+            (pts >> 22) as u8,
+            (((pts >> 15) as u8 & 0x7f) << 1) | 0x01,
+            (pts >> 7) as u8,
+            ((pts as u8 & 0x7f) << 1) | 0x01,
+        ]
+    }
+
+    fn adts_aac_lc_frame_48khz(body_len: usize) -> Vec<u8> {
+        let frame_len = 9 + body_len;
+        let mut frame = vec![0u8; frame_len];
+        frame[0] = 0xff;
+        frame[1] = 0xf8;
+        frame[2] = 0x4c;
+        frame[3] = 0x80 | ((frame_len >> 11) as u8 & 0x03);
+        frame[4] = (frame_len >> 3) as u8;
+        frame[5] = ((frame_len & 0x07) as u8) << 5;
+        frame[6] = 0;
+        frame
+    }
+
+    fn bounded_audio_pes(payload: &[u8], pts_90khz: Option<u64>) -> Vec<u8> {
+        let optional_header_len = if pts_90khz.is_some() { 5 } else { 0 };
+        let packet_length = 3 + optional_header_len + payload.len();
+        let mut bytes = vec![
+            0x00,
+            0x00,
+            0x01,
+            0xc0,
+            (packet_length >> 8) as u8,
+            packet_length as u8,
+            0x80,
+            if pts_90khz.is_some() { 0x80 } else { 0x00 },
+            optional_header_len as u8,
+        ];
+        if let Some(pts_90khz) = pts_90khz {
+            bytes.extend_from_slice(&pts_field(pts_90khz));
+        }
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
+    fn av_metadata(report: &PipelineReport, filter_id: i32) -> Option<AvMediaEventMetadata> {
+        report
+            .generated_events
+            .iter()
+            .find_map(|event| match event {
+                PipelineGeneratedEvent::AvMedia {
+                    filter_id: event_filter_id,
+                    descriptor,
+                } if *event_filter_id == filter_id => Some(descriptor.metadata),
+                _ => None,
+            })
+    }
+
+    fn av_descriptors(report: &PipelineReport, filter_id: i32) -> Vec<AvMediaEventDescriptor> {
+        report
+            .generated_events
+            .iter()
+            .filter_map(|event| match event {
+                PipelineGeneratedEvent::AvMedia {
+                    filter_id: event_filter_id,
+                    descriptor,
+                } if *event_filter_id == filter_id => Some(descriptor.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn raw_ts_packet(pid: u16, continuity_counter: u8, payload: &[u8]) -> [u8; 188] {
         let mut packet = [0xffu8; 188];
         packet[0] = 0x47;
@@ -327,6 +405,40 @@ mod tests {
             },
             config,
         )
+    }
+
+    fn started_audio_filter_runtime(filter_id: i32, pid: i32) -> DemuxRuntime {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(open_filter_runtime_with_queue(
+                filter_id,
+                1,
+                FilterOpenType::TsAudio,
+                None,
+            ))
+            .unwrap();
+        demux
+            .configure_filter_runtime(
+                filter_id,
+                FilterPipelineConfig {
+                    tpid: Some(pid),
+                    raw: false,
+                    record_index: None,
+                },
+            )
+            .unwrap();
+        demux
+            .configure_filter_av_stream_type(
+                filter_id,
+                AvStreamTypeConfig {
+                    kind: AvStreamKind::Audio,
+                    stream_type: 0x0f,
+                },
+            )
+            .unwrap();
+        let _shared_handle = demux.export_filter_av_shared_handle(filter_id).unwrap();
+        demux.start_filter_runtime(filter_id).unwrap();
+        demux
     }
 
     fn started_section_filter_runtime(filter_id: i32) -> DemuxRuntime {
@@ -824,6 +936,18 @@ mod tests {
     }
 
     #[test]
+    fn undefined_ts_uses_the_same_raw_pipeline_kind_as_ts_linkcap_sinks() {
+        let filter = DemuxRuntime::open_filter_runtime_typed(
+            71,
+            1,
+            FilterOpenType::TsUndefined,
+            None,
+        );
+        assert_eq!(filter.snapshot().open_type, FilterOpenType::TsUndefined);
+        assert_eq!(filter.open_kind(), PipelineOpenKind::Raw);
+    }
+
+    #[test]
     fn set_filter_source_non_null_allows_record_sink_for_ts_linkcap() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
@@ -1278,6 +1402,41 @@ mod tests {
         assert_eq!(error.kind, DemuxRuntimeErrorKind::InvalidState);
         assert_eq!(demux.dvr(94).unwrap().state(), DvrRuntimeState::Open);
         assert_eq!(demux.dvr(94).unwrap().generation(), u64::MAX);
+    }
+
+    #[test]
+    fn dropped_dvr_cleanup_plan_reopens_the_existing_queue_epoch() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                95,
+                1,
+                DvrKind::Playback,
+                8192,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(95).unwrap();
+        let packet = raw_ts_packet(0x0100, 0, &[1, 2, 3, 4]);
+        let plan = demux
+            .prepare_dvr_queue_cleanup(DvrRuntimeOperationRequest::new(95))
+            .unwrap();
+
+        assert_eq!(
+            demux
+                .write_playback_dvr_queue_bytes_for_test(95, &packet)
+                .unwrap_err()
+                .kind,
+            DemuxRuntimeErrorKind::QueueRuntimeFailure
+        );
+        drop(plan);
+        assert_eq!(
+            demux
+                .write_playback_dvr_queue_bytes_for_test(95, &packet)
+                .unwrap(),
+            packet.len()
+        );
+        assert_eq!(demux.dvr(95).unwrap().generation(), 1);
     }
 
     #[test]
@@ -3093,6 +3252,65 @@ mod tests {
     }
 
     #[test]
+    fn reconfigure_after_first_start_generates_unique_nonzero_start_ids() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        let config = FilterPipelineConfig {
+            tpid: Some(300),
+            raw: false,
+            record_index: None,
+        };
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime_from_request(
+                72,
+                1,
+                &OpenFilterRequest {
+                    open_type: FilterOpenType::TsRaw,
+                    buffer_size: 4096,
+                    callback_present: true,
+                },
+                Some(config.clone()),
+            ))
+            .unwrap();
+        demux.create_filter_queue(72).unwrap();
+
+        assert_eq!(demux.take_pending_filter_start_id(72).unwrap(), None);
+        demux.start_filter_runtime(72).unwrap();
+        demux.stop_filter_runtime(72).unwrap();
+        FilterConfigureTxn::new(72)
+            .configure(&mut demux, PipelineOpenKind::Raw, config.clone())
+            .1
+            .unwrap();
+        assert_eq!(demux.take_pending_filter_start_id(72).unwrap(), Some(1));
+        assert_eq!(demux.take_pending_filter_start_id(72).unwrap(), None);
+
+        demux.start_filter_runtime(72).unwrap();
+        demux.stop_filter_runtime(72).unwrap();
+        FilterConfigureTxn::new(72)
+            .configure(&mut demux, PipelineOpenKind::Raw, config)
+            .1
+            .unwrap();
+        assert_eq!(demux.take_pending_filter_start_id(72).unwrap(), Some(2));
+
+        demux.start_filter_runtime(72).unwrap();
+        demux.stop_filter_runtime(72).unwrap();
+        FilterConfigureTxn::new(72)
+            .configure(
+                &mut demux,
+                PipelineOpenKind::Raw,
+                FilterPipelineConfig {
+                    tpid: Some(300),
+                    raw: false,
+                    record_index: None,
+                },
+            )
+            .1
+            .unwrap();
+        demux.start_filter_runtime(72).unwrap();
+        demux.flush_filter_runtime(72).unwrap();
+        assert_eq!(demux.take_pending_filter_start_id(72).unwrap(), None);
+    }
+
+    #[test]
     fn av_configure_uses_av_backing_marker_and_start_stop_preserve_axes() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
@@ -3145,6 +3363,332 @@ mod tests {
             FilterRuntimeState::Stopped
         );
         assert!(demux.filter(18).unwrap().av_backing_present());
+    }
+
+    #[test]
+    fn audio_media_event_associates_complete_adts_frames_from_exact_sample_count() {
+        let filter_id = 38;
+        let pid = 0x0101;
+        let mut demux = started_audio_filter_runtime(filter_id, pid);
+        let frame = adts_aac_lc_frame_48khz(4);
+
+        let explicit = demux.push_ts_packet_from_origin(
+            &pes_start_packet(pid as u16, 0, &bounded_audio_pes(&frame, Some(90_000))),
+            TsInputOrigin::frontend(1),
+        );
+        assert_eq!(av_metadata(&explicit, filter_id), None);
+
+        demux.stop_filter_runtime(filter_id).unwrap();
+        demux.start_filter_runtime(filter_id).unwrap();
+
+        let associated = demux.push_ts_packet_from_origin(
+            &pes_start_packet(pid as u16, 1, &bounded_audio_pes(&frame, None)),
+            TsInputOrigin::frontend(1),
+        );
+        let descriptors = av_descriptors(&associated, filter_id);
+        assert_eq!(descriptors.len(), 2);
+        assert_eq!(descriptors[0].data_length, frame.len());
+        assert_eq!(descriptors[0].metadata.pts_90khz, Some(90_000));
+        assert!(descriptors[0].metadata.is_pts_present);
+        assert_eq!(descriptors[1].data_length, frame.len());
+        assert_eq!(descriptors[1].metadata.pts_90khz, Some(91_920));
+        assert!(!descriptors[1].metadata.is_pts_present);
+    }
+
+    #[test]
+    fn audio_media_event_keeps_timeline_across_a_mid_frame_pes_boundary() {
+        let filter_id = 40;
+        let pid = 0x0101;
+        let mut demux = started_audio_filter_runtime(filter_id, pid);
+        let first_frame = adts_aac_lc_frame_48khz(8);
+        let second_frame = adts_aac_lc_frame_48khz(4);
+        let split_at = 12;
+
+        let explicit = demux.push_ts_packet_from_origin(
+            &pes_start_packet(
+                pid as u16,
+                0,
+                &bounded_audio_pes(&first_frame[..split_at], Some(90_000)),
+            ),
+            TsInputOrigin::frontend(1),
+        );
+        assert_eq!(av_metadata(&explicit, filter_id), None);
+
+        let mut continuation = first_frame[split_at..].to_vec();
+        continuation.extend_from_slice(&second_frame);
+        let associated = demux.push_ts_packet_from_origin(
+            &pes_start_packet(
+                pid as u16,
+                1,
+                &bounded_audio_pes(&continuation, None),
+            ),
+            TsInputOrigin::frontend(1),
+        );
+        let descriptors = av_descriptors(&associated, filter_id);
+        assert_eq!(descriptors.len(), 2);
+        assert_eq!(descriptors[0].data_length, first_frame.len());
+        assert_eq!(descriptors[0].metadata.pts_90khz, Some(90_000));
+        assert!(descriptors[0].metadata.is_pts_present);
+        assert_eq!(descriptors[1].data_length, second_frame.len());
+        assert_eq!(descriptors[1].metadata.pts_90khz, Some(91_920));
+        assert!(!descriptors[1].metadata.is_pts_present);
+    }
+
+    #[test]
+    fn audio_media_event_cold_start_skips_a_continuation_prefix_before_the_first_au() {
+        let filter_id = 41;
+        let pid = 0x0101;
+        let mut demux = started_audio_filter_runtime(filter_id, pid);
+        let frame = adts_aac_lc_frame_48khz(4);
+        let mut cold_start_payload = vec![0x11, 0x22, 0x33, 0x44];
+        cold_start_payload.extend_from_slice(&frame);
+
+        let explicit = demux.push_ts_packet_from_origin(
+            &pes_start_packet(
+                pid as u16,
+                0,
+                &bounded_audio_pes(&cold_start_payload, Some(90_000)),
+            ),
+            TsInputOrigin::frontend(1),
+        );
+        assert_eq!(av_metadata(&explicit, filter_id), None);
+
+        let associated = demux.push_ts_packet_from_origin(
+            &pes_start_packet(pid as u16, 1, &bounded_audio_pes(&frame, None)),
+            TsInputOrigin::frontend(1),
+        );
+        let descriptors = av_descriptors(&associated, filter_id);
+        assert_eq!(descriptors.len(), 2);
+        assert_eq!(descriptors[0].data_length, frame.len());
+        assert_eq!(descriptors[0].metadata.pts_90khz, Some(90_000));
+        assert!(descriptors[0].metadata.is_pts_present);
+        assert_eq!(descriptors[1].data_length, frame.len());
+        assert_eq!(descriptors[1].metadata.pts_90khz, Some(91_920));
+        assert!(!descriptors[1].metadata.is_pts_present);
+    }
+
+    #[test]
+    fn audio_media_event_accepts_three_confirmed_frames_from_one_cold_start_chain() {
+        let filter_id = 45;
+        let pid = 0x0101;
+        let mut demux = started_audio_filter_runtime(filter_id, pid);
+        let frame = adts_aac_lc_frame_48khz(4);
+        let mut payload = frame.clone();
+        payload.extend_from_slice(&frame);
+        payload.extend_from_slice(&frame);
+
+        let events = demux.push_ts_packet_from_origin(
+            &pes_start_packet(
+                pid as u16,
+                0,
+                &bounded_audio_pes(&payload, Some(90_000)),
+            ),
+            TsInputOrigin::frontend(1),
+        );
+        let descriptors = av_descriptors(&events, filter_id);
+        assert_eq!(descriptors.len(), 3);
+        assert_eq!(descriptors[0].data_length, frame.len());
+        assert_eq!(descriptors[1].data_length, frame.len());
+        assert_eq!(descriptors[2].data_length, frame.len());
+        assert_eq!(descriptors[0].metadata.pts_90khz, Some(90_000));
+        assert_eq!(descriptors[1].metadata.pts_90khz, Some(91_920));
+        assert_eq!(descriptors[2].metadata.pts_90khz, Some(93_840));
+        assert!(descriptors[0].metadata.is_pts_present);
+        assert!(!descriptors[1].metadata.is_pts_present);
+        assert!(!descriptors[2].metadata.is_pts_present);
+    }
+
+    #[test]
+    fn audio_media_event_defers_ambiguous_cold_start_and_emits_exact_au_ranges() {
+        let filter_id = 42;
+        let pid = 0x0101;
+        let mut demux = started_audio_filter_runtime(filter_id, pid);
+        let false_candidate = adts_aac_lc_frame_48khz(200);
+        let first_frame = adts_aac_lc_frame_48khz(8);
+        let second_frame = adts_aac_lc_frame_48khz(4);
+        let disambiguating_frame = adts_aac_lc_frame_48khz(40);
+        let split_at = 12;
+        let mut first_payload = false_candidate[..7].to_vec();
+        first_payload.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]);
+        first_payload.extend_from_slice(&first_frame[..split_at]);
+
+        let deferred = demux.push_ts_packet_from_origin(
+            &pes_start_packet(
+                pid as u16,
+                0,
+                &bounded_audio_pes(&first_payload, Some(90_000)),
+            ),
+            TsInputOrigin::frontend(1),
+        );
+        assert!(av_descriptors(&deferred, filter_id).is_empty());
+
+        let mut continuation = first_frame[split_at..].to_vec();
+        continuation.extend_from_slice(&second_frame);
+        let still_deferred = demux.push_ts_packet_from_origin(
+            &pes_start_packet(
+                pid as u16,
+                1,
+                &bounded_audio_pes(&continuation, None),
+            ),
+            TsInputOrigin::frontend(1),
+        );
+        assert!(av_descriptors(&still_deferred, filter_id).is_empty());
+
+        let mut disambiguating_frames = Vec::new();
+        for _ in 0..2 {
+            disambiguating_frames.extend_from_slice(&disambiguating_frame);
+        }
+        let still_ambiguous = demux.push_ts_packet_from_origin(
+            &pes_start_packet(
+                pid as u16,
+                2,
+                &bounded_audio_pes(&disambiguating_frames, None),
+            ),
+            TsInputOrigin::frontend(1),
+        );
+        assert!(av_descriptors(&still_ambiguous, filter_id).is_empty());
+
+        let confirmed = demux.push_ts_packet_from_origin(
+            &pes_start_packet(
+                pid as u16,
+                3,
+                &bounded_audio_pes(&disambiguating_frames, None),
+            ),
+            TsInputOrigin::frontend(1),
+        );
+        let descriptors = av_descriptors(&confirmed, filter_id);
+        assert_eq!(descriptors.len(), 6);
+        assert_eq!(descriptors[0].data_length, first_frame.len());
+        assert_eq!(descriptors[0].metadata.pts_90khz, Some(90_000));
+        assert!(descriptors[0].metadata.is_pts_present);
+        assert_eq!(descriptors[1].data_length, second_frame.len());
+        assert_eq!(descriptors[1].metadata.pts_90khz, Some(91_920));
+        assert!(!descriptors[1].metadata.is_pts_present);
+    }
+
+    #[test]
+    fn audio_media_event_never_publishes_a_confirmed_false_cold_start_candidate() {
+        let filter_id = 43;
+        let pid = 0x0101;
+        let mut demux = started_audio_filter_runtime(filter_id, pid);
+        let false_first_frame = adts_aac_lc_frame_48khz(0);
+        let false_continuation_frame = adts_aac_lc_frame_48khz(200);
+        let real_first_frame = adts_aac_lc_frame_48khz(8);
+        let real_second_frame = adts_aac_lc_frame_48khz(4);
+        let split_at = 12;
+        let mut first_payload = false_first_frame;
+        first_payload.extend_from_slice(&false_continuation_frame[..7]);
+        first_payload.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]);
+        first_payload.extend_from_slice(&real_first_frame[..split_at]);
+
+        let deferred = demux.push_ts_packet_from_origin(
+            &pes_start_packet(
+                pid as u16,
+                0,
+                &bounded_audio_pes(&first_payload, Some(90_000)),
+            ),
+            TsInputOrigin::frontend(1),
+        );
+        assert!(av_descriptors(&deferred, filter_id).is_empty());
+
+        let mut continuation = real_first_frame[split_at..].to_vec();
+        continuation.extend_from_slice(&real_second_frame);
+        let rejected = demux.push_ts_packet_from_origin(
+            &pes_start_packet(pid as u16, 1, &bounded_audio_pes(&continuation, None)),
+            TsInputOrigin::frontend(1),
+        );
+        assert!(av_descriptors(&rejected, filter_id).is_empty());
+    }
+
+    #[test]
+    fn audio_media_event_never_publishes_a_later_confirmed_false_cold_start_candidate() {
+        let filter_id = 44;
+        let pid = 0x0101;
+        let mut demux = started_audio_filter_runtime(filter_id, pid);
+        let mut real_first_frame = adts_aac_lc_frame_48khz(60);
+        let false_first_frame = adts_aac_lc_frame_48khz(0);
+        let false_continuation_frame = adts_aac_lc_frame_48khz(200);
+        let real_second_frame = adts_aac_lc_frame_48khz(4);
+        let false_offset = 11;
+        let false_next_offset = false_offset + false_first_frame.len();
+        real_first_frame[false_offset..false_next_offset].copy_from_slice(&false_first_frame);
+        real_first_frame[false_next_offset..false_next_offset + 9]
+            .copy_from_slice(&false_continuation_frame[..9]);
+        let split_at = 40;
+
+        let deferred = demux.push_ts_packet_from_origin(
+            &pes_start_packet(
+                pid as u16,
+                0,
+                &bounded_audio_pes(&real_first_frame[..split_at], Some(90_000)),
+            ),
+            TsInputOrigin::frontend(1),
+        );
+        assert!(av_descriptors(&deferred, filter_id).is_empty());
+
+        let mut continuation = real_first_frame[split_at..].to_vec();
+        continuation.extend_from_slice(&real_second_frame);
+        let rejected = demux.push_ts_packet_from_origin(
+            &pes_start_packet(pid as u16, 1, &bounded_audio_pes(&continuation, None)),
+            TsInputOrigin::frontend(1),
+        );
+        assert!(av_descriptors(&rejected, filter_id).is_empty());
+    }
+
+    #[test]
+    fn audio_timestamp_association_is_fenced_by_flush_and_transport_discontinuity() {
+        let filter_id = 39;
+        let pid = 0x0101;
+        let mut demux = started_audio_filter_runtime(filter_id, pid);
+        let frame = adts_aac_lc_frame_48khz(4);
+        let mut anchor_payload = frame.clone();
+        anchor_payload.extend_from_slice(&frame);
+        let origin = TsInputOrigin::frontend(1);
+
+        let explicit = demux.push_ts_packet_from_origin(
+            &pes_start_packet(
+                pid as u16,
+                0,
+                &bounded_audio_pes(&anchor_payload, Some(90_000)),
+            ),
+            origin,
+        );
+        assert!(av_metadata(&explicit, filter_id).is_some());
+        demux.flush_filter_runtime(filter_id).unwrap();
+
+        let after_flush = demux.push_ts_packet_from_origin(
+            &pes_start_packet(pid as u16, 1, &bounded_audio_pes(&frame, None)),
+            origin,
+        );
+        assert_eq!(av_metadata(&after_flush, filter_id), None);
+        assert!(after_flush.diagnostics.contains(
+            &PipelineDiagnostic::AvAuthoritativeTimestampUnavailable {
+                pid: packet_pid(pid),
+                filter_id,
+            }
+        ));
+
+        let reanchored = demux.push_ts_packet_from_origin(
+            &pes_start_packet(
+                pid as u16,
+                2,
+                &bounded_audio_pes(&anchor_payload, Some(180_000)),
+            ),
+            origin,
+        );
+        assert!(av_metadata(&reanchored, filter_id).is_some());
+        demux.push_ts_packet_from_origin(&discontinuity_packet_without_pcr(pid as u16, 3), origin);
+        let after_discontinuity = demux.push_ts_packet_from_origin(
+            &pes_start_packet(pid as u16, 3, &bounded_audio_pes(&frame, None)),
+            origin,
+        );
+        assert_eq!(av_metadata(&after_discontinuity, filter_id), None);
+        assert!(after_discontinuity.diagnostics.contains(
+            &PipelineDiagnostic::AvAuthoritativeTimestampUnavailable {
+                pid: packet_pid(pid),
+                filter_id,
+            }
+        ));
     }
 
     #[test]
@@ -3583,6 +4127,41 @@ mod tests {
             packet_pid(0x0100),
             22
         )));
+    }
+
+    #[test]
+    fn filter_stop_start_preserves_partial_pes_state_until_flush() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        demux
+            .register_filter(DemuxRuntime::open_filter_runtime_from_request(
+                73,
+                1,
+                &OpenFilterRequest {
+                    open_type: FilterOpenType::TsPes,
+                    buffer_size: 4096,
+                    callback_present: true,
+                },
+                Some(FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: false,
+                    record_index: None,
+                }),
+            ))
+            .unwrap();
+        demux.create_filter_queue(73).unwrap();
+        demux.start_filter_runtime(73).unwrap();
+        let origin = TsInputOrigin::frontend(1);
+        let partial_pes = pes_start_packet(0x0100, 0, &[0x00, 0x00, 0x01, 0xe0, 0x00]);
+        demux.push_ts_packet_from_origin(&partial_pes, origin);
+        let key = (origin, packet_pid(0x0100), 73);
+        assert!(demux.pipeline().pes_assemblers.contains_key(&key));
+
+        demux.stop_filter_runtime(73).unwrap();
+        demux.start_filter_runtime(73).unwrap();
+        assert!(demux.pipeline().pes_assemblers.contains_key(&key));
+
+        demux.flush_filter_runtime(73).unwrap();
+        assert!(!demux.pipeline().pes_assemblers.contains_key(&key));
     }
 
     #[test]

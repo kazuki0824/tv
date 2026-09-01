@@ -1,0 +1,6 @@
+# Character-device types used by tuner_hal2.
+type dvb_frontend_device, dev_type;
+type dvb_demux_device, dev_type;
+type dvb_dvr_device, dev_type;
+type dvb_net_device, dev_type;
+type px4_tuner_device, dev_type;

@@ -1,208 +1,139 @@
-use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::thread::{self, JoinHandle};
+use std::sync::{Condvar, Mutex, MutexGuard, OnceLock};
+use std::time::Instant;
 
-use maleicacid_tuner_hal2_common::HalError;
+pub use maleicacid_tuner_hal2_control_core::{
+    WorkerHandle, WorkerRuntime, WorkerRuntimeReaperQueue, WorkerRuntimeSupervisor,
+    WorkerTerminalResult,
+};
 
 pub const CLEANUP_RETRY_SCHEDULE_MS: &[u64] = &[0, 10, 100, 1_000];
 pub const CLEANUP_TERMINAL_DEADLINE_MS: u64 = 30_000;
 pub const WORKER_IO_DEADLINE_MS: u64 = 2_000;
 pub const WORKER_REAPER_DEADLINE_MS: u64 = 10_000;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum WorkerTerminalResult<T> {
-    Normal(T),
-    StopRequested,
-    RuntimeFailure(HalError),
-    PanicOrJoinFailure,
+struct FilterDeliveryWake {
+    sequence: Mutex<u64>,
+    changed: Condvar,
 }
 
-/// Canonical owner for one generic worker lifecycle.
-pub struct WorkerRuntime<T = ()> {
-    owner_id: i64,
-    generation: u64,
-    stop: Arc<AtomicBool>,
-    stop_signalled: Arc<AtomicBool>,
-    wake_signalled: Arc<AtomicBool>,
-    finished: Arc<AtomicBool>,
-    handle: WorkerHandle<T>,
+fn filter_delivery_wake() -> &'static FilterDeliveryWake {
+    static WAKE: OnceLock<FilterDeliveryWake> = OnceLock::new();
+    WAKE.get_or_init(|| FilterDeliveryWake {
+        sequence: Mutex::new(0),
+        changed: Condvar::new(),
+    })
 }
 
-impl<T> WorkerRuntime<T> {
-    pub const fn owner_id(&self) -> i64 {
-        self.owner_id
+fn filter_delivery_sequence_lock() -> MutexGuard<'static, u64> {
+    match filter_delivery_wake().sequence.lock() {
+        Ok(sequence) => sequence,
+        Err(poisoned) => poisoned.into_inner(),
     }
+}
 
-    pub const fn generation(&self) -> u64 {
-        self.generation
-    }
+pub fn filter_delivery_wake_sequence() -> u64 {
+    *filter_delivery_sequence_lock()
+}
 
-    pub fn stop_signal(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.stop)
-    }
+pub fn notify_filter_delivery_change() {
+    let wake = filter_delivery_wake();
+    let mut sequence = filter_delivery_sequence_lock();
+    *sequence = sequence.wrapping_add(1);
+    wake.changed.notify_all();
+}
 
-    pub fn is_finished(&self) -> bool {
-        self.finished.load(Ordering::Acquire)
-    }
-
-    pub fn request_stop_and_wake(&self) {
-        if self
-            .stop_signalled
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            self.stop.store(true, Ordering::Release);
+pub fn wait_filter_delivery_change(observed: u64, deadline: Option<Instant>) -> u64 {
+    let wake = filter_delivery_wake();
+    let mut sequence = filter_delivery_sequence_lock();
+    loop {
+        if *sequence != observed {
+            return *sequence;
         }
-        if self
-            .wake_signalled
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            if let Some(join) = self.handle.join.as_ref() {
-                join.thread().unpark();
+        match deadline {
+            Some(deadline) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    return *sequence;
+                }
+                sequence = match wake
+                    .changed
+                    .wait_timeout(sequence, deadline.saturating_duration_since(now))
+                {
+                    Ok((sequence, _)) => sequence,
+                    Err(poisoned) => poisoned.into_inner().0,
+                };
+            }
+            None => {
+                sequence = match wake.changed.wait(sequence) {
+                    Ok(sequence) => sequence,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
             }
         }
     }
-
-    pub fn join(mut self) -> WorkerTerminalResult<T> {
-        let Some(join) = self.handle.join.take() else {
-            return WorkerTerminalResult::PanicOrJoinFailure;
-        };
-        match join.join() {
-            Ok(result) => result,
-            Err(_) => WorkerTerminalResult::PanicOrJoinFailure,
-        }
-    }
 }
 
-impl<T> Drop for WorkerRuntime<T> {
-    fn drop(&mut self) {
-        if self.handle.join.is_some() && !self.is_finished() {
-            self.request_stop_and_wake();
-        }
-    }
-}
-
-/// Physical join element subordinate to its `WorkerRuntime` owner.
-pub struct WorkerHandle<T> {
-    join: Option<JoinHandle<WorkerTerminalResult<T>>>,
-}
-
-impl WorkerRuntime<()> {
-    pub fn spawn<T, F, C>(
-        thread_name: String,
-        owner_id: i64,
-        generation: u64,
-        worker: F,
-        completion_signal: C,
-    ) -> std::io::Result<WorkerRuntime<T>>
-    where
-        T: Send + 'static,
-        F: FnOnce(Arc<AtomicBool>) -> Result<T, HalError> + Send + 'static,
-        C: FnOnce() + Send + 'static,
-    {
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread_stop = Arc::clone(&stop);
-        let finished = Arc::new(AtomicBool::new(false));
-        let thread_finished = Arc::clone(&finished);
-        let join = thread::Builder::new().name(thread_name).spawn(move || {
-            let terminal = match catch_unwind(AssertUnwindSafe(|| worker(Arc::clone(&thread_stop)))) {
-                Ok(Ok(_result)) if thread_stop.load(Ordering::Acquire) => {
-                    WorkerTerminalResult::StopRequested
-                }
-                Ok(Ok(result)) => WorkerTerminalResult::Normal(result),
-                Ok(Err(error)) => WorkerTerminalResult::RuntimeFailure(error),
-                Err(_) => WorkerTerminalResult::PanicOrJoinFailure,
-            };
-            thread_finished.store(true, Ordering::Release);
-            completion_signal();
-            terminal
-        })?;
-        Ok(WorkerRuntime {
-            owner_id,
-            generation,
-            stop,
-            stop_signalled: Arc::new(AtomicBool::new(false)),
-            wake_signalled: Arc::new(AtomicBool::new(false)),
-            finished,
-            handle: WorkerHandle { join: Some(join) },
-        })
-    }
-
-    pub fn checked_next_generation(current: u64) -> Option<u64> {
-        current.checked_add(1)
-    }
+pub fn join_worker_classified<T>(
+    worker: WorkerRuntime<T>,
+) -> crate::worker_failure_classifier::ClassifiedWorkerTerminalResult<T> {
+    crate::worker_failure_classifier::WorkerFailureClassifier::classify_terminal(
+        worker.join(),
+        "worker panicked or could not be joined",
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maleicacid_tuner_hal2_common::{HalInternalKind, HalError};
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
 
     #[test]
-    fn worker_runtime_reports_normal_runtime_failure_and_panic() {
-        let normal = WorkerRuntime::spawn(
-            "worker-normal".to_owned(),
-            1,
-            1,
-            |_| Ok(7_u8),
-            || {},
-        )
-        .unwrap();
-        assert_eq!(normal.join(), WorkerTerminalResult::Normal(7));
-
-        let failure = WorkerRuntime::spawn(
-            "worker-failure".to_owned(),
-            1,
-            2,
-            |_| {
-                Err::<u8, _>(HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "worker failed",
-                ))
-            },
-            || {},
-        )
-        .unwrap();
-        assert!(matches!(
-            failure.join(),
-            WorkerTerminalResult::RuntimeFailure(_)
-        ));
-
-        let panic = WorkerRuntime::spawn(
-            "worker-panic".to_owned(),
-            1,
-            3,
-            |_| -> Result<(), HalError> { panic!("worker panic") },
-            || {},
-        )
-        .unwrap();
-        assert_eq!(panic.join(), WorkerTerminalResult::PanicOrJoinFailure);
+    fn filter_delivery_wake_is_not_lost_between_snapshot_and_wait() {
+        let observed = filter_delivery_wake_sequence();
+        notify_filter_delivery_change();
+        let next = wait_filter_delivery_change(
+            observed,
+            Some(Instant::now() + Duration::from_millis(100)),
+        );
+        assert_ne!(next, observed);
     }
 
     #[test]
-    fn worker_runtime_reports_stop_requested() {
-        let worker = WorkerRuntime::spawn(
-            "worker-stop".to_owned(),
-            2,
-            1,
-            |stop| {
-                while !stop.load(Ordering::Acquire) {
-                    thread::yield_now();
-                }
-                Ok(())
-            },
-            || {},
-        )
-        .unwrap();
-        worker.request_stop_and_wake();
-        assert_eq!(worker.join(), WorkerTerminalResult::StopRequested);
+    fn filter_delivery_wait_returns_at_deadline_without_a_notification() {
+        let observed = filter_delivery_wake_sequence();
+        let started = Instant::now();
+        let next = wait_filter_delivery_change(
+            observed,
+            Some(started + Duration::from_millis(5)),
+        );
+        assert_eq!(next, observed);
+        assert!(started.elapsed() >= Duration::from_millis(5));
     }
 
     #[test]
-    fn generation_never_wraps() {
-        assert_eq!(WorkerRuntime::checked_next_generation(7), Some(8));
-        assert_eq!(WorkerRuntime::checked_next_generation(u64::MAX), None);
+    fn filter_delivery_notification_wakes_all_waiters_without_consuming_the_signal() {
+        let observed = filter_delivery_wake_sequence();
+        let results = Arc::new(Mutex::new(Vec::new()));
+        let mut joins = Vec::new();
+        for _ in 0..2 {
+            let results = Arc::clone(&results);
+            joins.push(thread::spawn(move || {
+                let next = wait_filter_delivery_change(
+                    observed,
+                    Some(Instant::now() + Duration::from_millis(200)),
+                );
+                results.lock().unwrap().push(next);
+            }));
+        }
+        thread::sleep(Duration::from_millis(5));
+        notify_filter_delivery_change();
+        for join in joins {
+            join.join().unwrap();
+        }
+        let results = results.lock().unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|next| *next != observed));
     }
 }

@@ -732,11 +732,7 @@ impl<'a> FrontendTxn<'a> {
                     "frontend runtime is missing while recording backend request failure",
                 )
             })?;
-        runtime.record_backend_request_failure_after_fence(
-            generation,
-            error,
-            backend_stopped,
-        )
+        runtime.record_backend_request_failure_after_fence(generation, error, backend_stopped)
     }
 
     pub(crate) fn record_frontend_backend_activation_failure_after_commit(
@@ -756,11 +752,7 @@ impl<'a> FrontendTxn<'a> {
                     "frontend runtime is missing while recording backend activation failure",
                 )
             })?;
-        runtime.record_backend_activation_failure_after_commit(
-            generation,
-            error,
-            backend_stopped,
-        )
+        runtime.record_backend_activation_failure_after_commit(generation, error, backend_stopped)
     }
 
     pub(crate) fn clear_frontend_live_reader_descriptor_and_idle(
@@ -873,11 +865,7 @@ impl<'a> FrontendTxn<'a> {
                     "frontend runtime is missing for fenced scan continuation",
                 )
             })?;
-        runtime.complete_locked_scan_continuation_after_fence(
-            generation,
-            fingerprint,
-            candidates,
-        )
+        runtime.complete_locked_scan_continuation_after_fence(generation, fingerprint, candidates)
     }
 
     pub(crate) fn mark_frontend_tune_worker_failed(

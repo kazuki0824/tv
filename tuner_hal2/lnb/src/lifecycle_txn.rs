@@ -80,10 +80,9 @@ pub fn finish_lnb_close(
         || (prepared.already_closed && runtime.state() != LnbRuntimeState::Closed)
         || (!prepared.already_closed && runtime.state() != LnbRuntimeState::Closing)
     {
-        return Err(runtime.record_failure(
-            LnbFailureKind::InvalidState,
-            LnbFailureStep::ValidateState,
-        ));
+        return Err(
+            runtime.record_failure(LnbFailureKind::InvalidState, LnbFailureStep::ValidateState)
+        );
     }
     if prepared.already_closed {
         return Ok(());
@@ -94,10 +93,9 @@ pub fn finish_lnb_close(
             return Err(runtime.record_failure(kind, LnbFailureStep::ApplyBackend));
         }
         LnbBackendApplyOutcome::Indeterminate(kind) => {
-            return Err(runtime.quarantine_indeterminate_backend(
-                kind,
-                LnbFailureStep::ApplyBackend,
-            ));
+            return Err(
+                runtime.quarantine_indeterminate_backend(kind, LnbFailureStep::ApplyBackend)
+            );
         }
     }
     let safe = LnbElectricalState::safe();

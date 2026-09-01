@@ -106,8 +106,9 @@ impl DescramblerSession {
         ) {
             return false;
         }
-        self.source_call_state =
-            DescramblerSourceCallState::CallConsumedUnbound { failure: Some(failure) };
+        self.source_call_state = DescramblerSourceCallState::CallConsumedUnbound {
+            failure: Some(failure),
+        };
         true
     }
     pub(crate) fn clear_pid_claims(&mut self) {
@@ -123,9 +124,11 @@ impl DescramblerSession {
         }
     }
     pub(crate) fn add_pid_claim(&mut self, claim: DescramblerPidClaim) {
-        if !self.pid_claims.contains(&claim) {
-            self.pid_claims.push(claim);
+        if self.pid_claims.contains(&claim) {
+            return;
         }
+        self.pid_claims.retain(|stored| stored.pid() != claim.pid());
+        self.pid_claims.push(claim);
     }
     pub(crate) fn remove_pid_claim(&mut self, claim: DescramblerPidClaim) {
         self.pid_claims.retain(|item| *item != claim);
@@ -362,7 +365,6 @@ pub(crate) enum DescramblerSessionFailureKind {
     SessionClosed,
     DemuxNotBound,
     DemuxAlreadyBound,
-    PidSourceConflict,
     ClearKeyPlanMismatch,
     ReplaceKeyPlanMismatch,
 }
@@ -418,7 +420,8 @@ impl DescramblerClearKeyPlan {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
+#[must_use = "prepared descrambler clear-key authority must be consumed by commit"]
 struct PreparedDescramblerClearKey {
     plan: DescramblerClearKeyPlan,
 }
@@ -589,16 +592,6 @@ impl DescramblerTxnJournal {
             return Err(DescramblerSessionFailure {
                 step: DescramblerSessionTxnStep::ValidateDemux,
                 kind: DescramblerSessionFailureKind::DemuxNotBound,
-            });
-        }
-        if session
-            .pid_claims()
-            .iter()
-            .any(|stored| stored.pid() == claim.pid() && *stored != claim)
-        {
-            return Err(DescramblerSessionFailure {
-                step: DescramblerSessionTxnStep::AddPidClaim,
-                kind: DescramblerSessionFailureKind::PidSourceConflict,
             });
         }
         self.record_step(DescramblerSessionTxnStep::AddPidClaim);
@@ -848,9 +841,7 @@ where
         if let Err(release_old) = self.key_table.release_key_token(token) {
             self.session.add_pending_key_release(token.clone());
             self.session.quarantine();
-            return Ok(DescramblerClearKeyOutcome::ClearedWithOldKeyReleaseFailure {
-                release_old,
-            });
+            return Ok(DescramblerClearKeyOutcome::ClearedWithOldKeyReleaseFailure { release_old });
         }
         Ok(DescramblerClearKeyOutcome::Cleared)
     }
@@ -893,9 +884,7 @@ where
                 self.session.add_pending_key_release(old_token.clone());
                 self.session.quarantine();
                 return Ok(
-                    DescramblerReplaceKeyOutcome::ReplacedWithOldKeyReleaseFailure {
-                        release_old,
-                    },
+                    DescramblerReplaceKeyOutcome::ReplacedWithOldKeyReleaseFailure { release_old },
                 );
             }
         }
@@ -1054,18 +1043,18 @@ mod tests {
     }
 
     #[test]
-    fn pid_txn_is_idempotent_only_for_the_exact_source_tuple() {
+    fn pid_txn_is_idempotent_for_same_source_and_replaces_different_source() {
         let mut session = DescramblerSession::new();
         bind_demux_use_case(&mut session, 3, 9).unwrap();
         let first = DescramblerPidClaim::from_source_filter(0x0100, 20, 4).unwrap();
-        let conflicting = DescramblerPidClaim::from_source_filter(0x0100, 21, 4).unwrap();
+        let replacement = DescramblerPidClaim::from_source_filter(0x0100, 21, 4).unwrap();
 
         add_pid_claim_use_case(&mut session, first).unwrap();
         add_pid_claim_use_case(&mut session, first).unwrap();
-        let error = add_pid_claim_use_case(&mut session, conflicting).unwrap_err();
-
-        assert_eq!(error.kind, DescramblerSessionFailureKind::PidSourceConflict);
         assert_eq!(session.pid_claims(), &[first]);
+
+        add_pid_claim_use_case(&mut session, replacement).unwrap();
+        assert_eq!(session.pid_claims(), &[replacement]);
     }
 
     #[test]

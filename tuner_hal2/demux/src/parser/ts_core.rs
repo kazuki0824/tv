@@ -70,6 +70,7 @@ pub struct PesPacket {
     pub stream_id: u8,
     pub pts_90khz: Option<u64>,
     pub dts_90khz: Option<u64>,
+    pub is_pes_private_data: bool,
     pub data_alignment_indicator: bool,
     pub raw_bytes: Vec<u8>,
     pub payload: Vec<u8>,
@@ -81,6 +82,7 @@ pub struct PesHeaderSummary {
     pub payload_offset: usize,
     pub pts_90khz: Option<u64>,
     pub dts_90khz: Option<u64>,
+    pub is_pes_private_data: bool,
     pub data_alignment_indicator: bool,
     pub expected_len: Option<usize>,
 }
@@ -108,6 +110,68 @@ fn pts_dts_field_value(field: &[u8], expected_prefix: u8) -> Option<u64> {
         | ((field[3] as u64) << 7)
         | ((field[4] >> 1) as u64);
     Some(value)
+}
+
+fn advance_optional_field(cursor: &mut usize, length: usize, header_len: usize) -> Option<()> {
+    let end = cursor.checked_add(length)?;
+    if end > header_len {
+        return None;
+    }
+    *cursor = end;
+    Some(())
+}
+
+fn pes_private_data_presence(flags2: u8, optional_header: &[u8]) -> Option<bool> {
+    let mut cursor = match (flags2 >> 6) & 0x03 {
+        0b00 => 0,
+        0b10 => 5,
+        0b11 => 10,
+        _ => return None,
+    };
+    advance_optional_field(&mut cursor, 0, optional_header.len())?;
+
+    for (flag, length) in [(0x20, 6), (0x10, 3), (0x08, 1), (0x04, 1), (0x02, 2)] {
+        if (flags2 & flag) != 0 {
+            advance_optional_field(&mut cursor, length, optional_header.len())?;
+        }
+    }
+    if (flags2 & 0x01) == 0 {
+        return Some(false);
+    }
+
+    let extension_flags = *optional_header.get(cursor)?;
+    cursor = cursor.checked_add(1)?;
+    if (extension_flags & 0x0e) != 0x0e {
+        return None;
+    }
+    let is_private_data = (extension_flags & 0x80) != 0;
+    if is_private_data {
+        advance_optional_field(&mut cursor, 16, optional_header.len())?;
+    }
+    if (extension_flags & 0x40) != 0 {
+        let pack_header_len = usize::from(*optional_header.get(cursor)?);
+        cursor = cursor.checked_add(1)?;
+        advance_optional_field(&mut cursor, pack_header_len, optional_header.len())?;
+    }
+    if (extension_flags & 0x20) != 0 {
+        advance_optional_field(&mut cursor, 2, optional_header.len())?;
+    }
+    if (extension_flags & 0x10) != 0 {
+        advance_optional_field(&mut cursor, 2, optional_header.len())?;
+    }
+    if (extension_flags & 0x01) != 0 {
+        let extension_length = *optional_header.get(cursor)?;
+        if (extension_length & 0x80) == 0 {
+            return None;
+        }
+        cursor = cursor.checked_add(1)?;
+        advance_optional_field(
+            &mut cursor,
+            usize::from(extension_length & 0x7f),
+            optional_header.len(),
+        )?;
+    }
+    Some(is_private_data)
 }
 
 enum PesHeaderParseStatus {
@@ -139,6 +203,7 @@ fn parse_pes_header_status(bytes: &[u8]) -> PesHeaderParseStatus {
             payload_offset: 6,
             pts_90khz: None,
             dts_90khz: None,
+            is_pes_private_data: false,
             data_alignment_indicator: false,
             expected_len,
         });
@@ -187,6 +252,10 @@ fn parse_pes_header_status(bytes: &[u8]) -> PesHeaderParseStatus {
         },
         _ => None,
     };
+    let is_pes_private_data = match pes_private_data_presence(flags2, &bytes[9..payload_offset]) {
+        Some(value) => value,
+        None => return PesHeaderParseStatus::Malformed,
+    };
     let expected_len = if packet_length == 0 {
         None
     } else {
@@ -197,6 +266,7 @@ fn parse_pes_header_status(bytes: &[u8]) -> PesHeaderParseStatus {
         payload_offset,
         pts_90khz,
         dts_90khz,
+        is_pes_private_data,
         data_alignment_indicator,
         expected_len,
     })
@@ -356,6 +426,7 @@ impl PesAssembler {
             stream_id: summary.stream_id,
             pts_90khz: summary.pts_90khz,
             dts_90khz: summary.dts_90khz,
+            is_pes_private_data: summary.is_pes_private_data,
             data_alignment_indicator: summary.data_alignment_indicator,
             raw_bytes,
             payload,
@@ -709,6 +780,39 @@ mod pes_optional_header_contract_tests {
             let bytes = pes_with_optional(0xe0, 0x80, 0x80, &bad, &[0xaa]);
             assert!(parse_pes_header(&bytes).is_none());
         }
+    }
+
+    #[test]
+    fn pes_extension_private_data_presence_is_parsed_from_the_header() {
+        let mut header = vec![0x8e];
+        header.extend_from_slice(&[0x5a; 16]);
+        let bytes = pes_with_optional(0xe0, 0x80, 0x01, &header, &[0xaa]);
+        let summary = parse_pes_header(&bytes).expect("valid PES private data extension");
+        assert!(summary.is_pes_private_data);
+
+        let packets = PesAssembler::default().push(packet_pid_for_test(0x0100), true, &bytes);
+        assert_eq!(packets.len(), 1);
+        assert!(packets[0].is_pes_private_data);
+    }
+
+    #[test]
+    fn private_stream_id_does_not_imply_pes_private_data() {
+        let bytes = pes_with_optional(0xbd, 0x80, 0x00, &[], &[0xaa]);
+        let summary = parse_pes_header(&bytes).expect("valid private_stream_1 PES");
+        assert!(!summary.is_pes_private_data);
+    }
+
+    #[test]
+    fn truncated_pes_private_data_extension_is_rejected() {
+        let mut header = vec![0x8e];
+        header.extend_from_slice(&[0x5a; 15]);
+        let bytes = pes_with_optional(0xe0, 0x80, 0x01, &header, &[0xaa]);
+        assert!(parse_pes_header(&bytes).is_none());
+
+        let mut assembler = PesAssembler::default();
+        assert!(assembler
+            .push(packet_pid_for_test(0x0100), true, &bytes)
+            .is_empty());
     }
 
     #[test]

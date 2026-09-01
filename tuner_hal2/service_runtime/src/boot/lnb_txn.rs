@@ -6,10 +6,9 @@ use maleicacid_tuner_hal2_domain_request::{
     LnbSetSatellitePositionRequest, LnbToneRequest, LnbVoltageRequest,
 };
 use maleicacid_tuner_hal2_lnb::{
-    LnbBackendApplyOutcome, LnbBackendOps, LnbDiseqcMessage, LnbElectricalState,
-    LnbFailureKind, LnbFailureRecord, LnbFailureStep, LnbLifecycleReason, LnbRuntime,
-    LnbRuntimeState, LnbTone as RuntimeLnbTone, LnbVoltage as RuntimeLnbVoltage,
-    PreparedLnbClose, PreparedLnbStateApply,
+    LnbBackendApplyOutcome, LnbBackendOps, LnbDiseqcMessage, LnbElectricalState, LnbFailureKind,
+    LnbFailureRecord, LnbFailureStep, LnbLifecycleReason, LnbRuntime, LnbRuntimeState,
+    LnbTone as RuntimeLnbTone, LnbVoltage as RuntimeLnbVoltage, PreparedLnbClose,
 };
 
 use super::TunerServiceRuntime;
@@ -21,50 +20,43 @@ use crate::registry::{
     PreparedLnbAssignmentLease,
 };
 
+#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+
 pub(crate) enum PreparedFrontendLnbAssignment {
     Unchanged,
     Apply {
         prepared_lease: PreparedLnbAssignmentLease,
-        runtime_apply: PreparedLnbStateApply,
-        backend: ServiceRuntimeLnbBackendSnapshot,
     },
 }
+
+#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
 
 pub(crate) enum ExecutedFrontendLnbAssignment {
     Unchanged,
     Apply {
         prepared_lease: PreparedLnbAssignmentLease,
-        runtime_apply: PreparedLnbStateApply,
-        backend_result: LnbBackendApplyOutcome,
     },
 }
 
 impl PreparedFrontendLnbAssignment {
     pub(crate) fn execute(
         self,
-        permit: &LnbPhysicalIoPermit<'_>,
+        _permit: &LnbPhysicalIoPermit<'_>,
     ) -> ExecutedFrontendLnbAssignment {
         match self {
             Self::Unchanged => ExecutedFrontendLnbAssignment::Unchanged,
-            Self::Apply {
-                prepared_lease,
-                runtime_apply,
-                backend,
-            } => {
-                let mut backend = ServiceRuntimeLnbProfileAdapter::new(backend, permit);
-                let backend_result = backend.apply_lnb_state(
-                    runtime_apply.lnb_id(),
-                    runtime_apply.target_state(),
-                );
-                ExecutedFrontendLnbAssignment::Apply {
-                    prepared_lease,
-                    runtime_apply,
-                    backend_result,
-                }
+            Self::Apply { prepared_lease } => {
+                // FrontendLnbRelationTxn owns only relation/lease mutation. setLnb()
+                // deliberately performs no electrical-state backend I/O here; the
+                // permit remains a serialization fence for existing callers while
+                // LnbRegistry/LnbControlTxn remain the only electrical-state owners.
+                ExecutedFrontendLnbAssignment::Apply { prepared_lease }
             }
         }
     }
 }
+
+#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
 
 pub(crate) struct PreparedLnbDiseqc {
     lnb_key: LnbRuntimeId,
@@ -73,6 +65,8 @@ pub(crate) struct PreparedLnbDiseqc {
     message: LnbDiseqcMessage,
     backend: ServiceRuntimeLnbBackendSnapshot,
 }
+
+#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
 
 pub(crate) struct ExecutedLnbDiseqc {
     lnb_key: LnbRuntimeId,
@@ -92,11 +86,15 @@ impl PreparedLnbDiseqc {
     }
 }
 
+#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+
 pub(crate) struct PreparedLnbLifecycleClose {
     lnb_key: LnbRuntimeId,
     runtime_close: PreparedLnbClose,
     backend: ServiceRuntimeLnbBackendSnapshot,
 }
+
+#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
 
 pub(crate) struct ExecutedLnbLifecycleClose {
     lnb_key: LnbRuntimeId,
@@ -105,10 +103,7 @@ pub(crate) struct ExecutedLnbLifecycleClose {
 }
 
 impl PreparedLnbLifecycleClose {
-    pub(crate) fn execute(
-        self,
-        permit: &LnbPhysicalIoPermit<'_>,
-    ) -> ExecutedLnbLifecycleClose {
+    pub(crate) fn execute(self, permit: &LnbPhysicalIoPermit<'_>) -> ExecutedLnbLifecycleClose {
         let backend_result = if self.runtime_close.requires_backend_io() {
             let mut backend = ServiceRuntimeLnbProfileAdapter::new(self.backend, permit);
             backend.apply_lnb_state(self.runtime_close.lnb_id(), LnbElectricalState::safe())
@@ -123,17 +118,22 @@ impl PreparedLnbLifecycleClose {
     }
 }
 
-pub(crate) struct LnbTxn<'a> {
+/// LNB registryのmutation primitiveへアクセスするcall-local context。
+///
+/// relationとcontrolの正規authorityは`FrontendLnbRelationTxn`と
+/// `LnbControlTxn`が保持する。このcontextは状態も呼出しを跨ぐtransaction境界も
+/// 所有しない。
+pub(crate) struct LnbMutationContext<'a> {
     runtime: &'a mut TunerServiceRuntime,
 }
 
 impl TunerServiceRuntime {
-    pub(crate) fn lnb_txn(&mut self) -> LnbTxn<'_> {
-        LnbTxn { runtime: self }
+    pub(crate) fn lnb_mutation_context(&mut self) -> LnbMutationContext<'_> {
+        LnbMutationContext { runtime: self }
     }
 }
 
-impl<'a> LnbTxn<'a> {
+impl<'a> LnbMutationContext<'a> {
     pub(crate) fn prepare_frontend_lnb_assignment(
         &mut self,
         frontend_id: i32,
@@ -156,12 +156,6 @@ impl<'a> LnbTxn<'a> {
                 "LNB does not belong to this frontend",
             ));
         }
-        let target = self
-            .runtime
-            .registry()
-            .lnb_runtime(lnb_key)
-            .map(|runtime| runtime.registry_state())
-            .ok_or_else(missing_lnb_error)?;
         ensure_lnb_open(
             self.runtime
                 .registry()
@@ -175,106 +169,51 @@ impl<'a> LnbTxn<'a> {
         else {
             return Ok(PreparedFrontendLnbAssignment::Unchanged);
         };
-        let backend = match ServiceRuntimeLnbBackendSnapshot::new_with_pending_frontend(
+
+        // setLnb() owns only the frontend-to-LNB relation and its lease. Validate
+        // that the pending relation is representable by the selected backend, but
+        // do not re-apply the LNB electrical state here: persistent electrical
+        // state and physical I/O remain owned by LnbRegistry/LnbControlTxn.
+        if let Err(error) = ServiceRuntimeLnbBackendSnapshot::new_with_pending_frontend(
             self.runtime.registry(),
             lnb_key,
             frontend_key,
         ) {
-            Ok(backend) => backend,
-            Err(error) => {
-                if self
-                    .runtime
-                    .registry_mut()
-                    .abort_prepared_lnb_assignment_lease(prepared_lease)
-                {
-                    return Err(map_lnb_failure(LnbFailureRecord {
-                        lnb_id,
-                        kind: error,
-                        step: LnbFailureStep::ApplyBackend,
-                    }));
-                }
-                return Err(compose_primary_cleanup_failure(
-                    "LNB assignment backend prepare failed and prepared lease abort failed",
-                    map_lnb_failure(LnbFailureRecord {
-                        lnb_id,
-                        kind: error,
-                        step: LnbFailureStep::ApplyBackend,
-                    }),
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "prepared LNB assignment lease disappeared before abort",
-                    ),
-                ));
+            if self
+                .runtime
+                .registry_mut()
+                .abort_prepared_lnb_assignment_lease(prepared_lease)
+            {
+                return Err(map_lnb_failure(LnbFailureRecord {
+                    lnb_id,
+                    kind: error,
+                    step: LnbFailureStep::ApplyBackend,
+                }));
             }
-        };
-        let runtime_apply = match self
-            .runtime
-            .registry_mut()
-            .prepare_lnb_state_apply(lnb_key, target)
-            .map_err(map_lnb_failure)
-        {
-            Ok(runtime_apply) => runtime_apply,
-            Err(error) => {
-                if self
-                    .runtime
-                    .registry_mut()
-                    .abort_prepared_lnb_assignment_lease(prepared_lease)
-                {
-                    return Err(error);
-                }
-                return Err(compose_primary_cleanup_failure(
-                    "LNB assignment runtime prepare failed and prepared lease abort failed",
-                    error,
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "prepared LNB assignment lease disappeared before runtime prepare abort",
-                    ),
-                ));
-            }
-        };
-        Ok(PreparedFrontendLnbAssignment::Apply {
-            prepared_lease,
-            runtime_apply,
-            backend,
-        })
+            return Err(compose_primary_cleanup_failure(
+                "LNB assignment backend validation failed and prepared lease abort failed",
+                map_lnb_failure(LnbFailureRecord {
+                    lnb_id,
+                    kind: error,
+                    step: LnbFailureStep::ApplyBackend,
+                }),
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "prepared LNB assignment lease disappeared before abort",
+                ),
+            ));
+        }
+
+        Ok(PreparedFrontendLnbAssignment::Apply { prepared_lease })
     }
 
     pub(crate) fn commit_frontend_lnb_assignment(
         &mut self,
         executed: ExecutedFrontendLnbAssignment,
     ) -> Result<(), HalError> {
-        let ExecutedFrontendLnbAssignment::Apply {
-            prepared_lease,
-            runtime_apply,
-            backend_result,
-        } = executed
-        else {
+        let ExecutedFrontendLnbAssignment::Apply { prepared_lease } = executed else {
             return Ok(());
         };
-        let lnb_key = LnbRuntimeId(runtime_apply.lnb_id());
-        let apply_result = self
-            .runtime
-            .registry_mut()
-            .finish_lnb_state_apply(lnb_key, runtime_apply, backend_result)
-            .map(|_| ())
-            .map_err(map_lnb_failure);
-        if let Err(error) = apply_result {
-            if self
-                .runtime
-                .registry_mut()
-                .abort_prepared_lnb_assignment_lease(prepared_lease)
-            {
-                return Err(error);
-            }
-            return Err(compose_primary_cleanup_failure(
-                "LNB assignment backend apply failed and prepared lease abort failed",
-                error,
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "prepared LNB assignment lease disappeared after backend apply failure",
-                ),
-            ));
-        }
         let cleanup = match self
             .runtime
             .registry_mut()
@@ -322,7 +261,12 @@ impl<'a> LnbTxn<'a> {
             .lnb_runtime(lnb_key)
             .ok_or_else(missing_lnb_error)?;
         ensure_lnb_open(runtime)?;
-        let message = LnbDiseqcMessage::new(lnb_id, payload).map_err(map_lnb_failure)?;
+        if payload.is_empty() {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::NumericRange,
+                "DiSEqC message must not be empty",
+            ));
+        }
         let backend = ServiceRuntimeLnbBackendSnapshot::new(self.runtime.registry(), lnb_key)
             .map_err(|kind| {
                 map_lnb_failure(LnbFailureRecord {
@@ -331,6 +275,12 @@ impl<'a> LnbTxn<'a> {
                     step: LnbFailureStep::SendDiseqc,
                 })
             })?;
+        if !backend.supports_diseqc() {
+            return Err(HalError::Unsupported(
+                "DiSEqC is unavailable for this LNB profile",
+            ));
+        }
+        let message = LnbDiseqcMessage::new(lnb_id, payload).map_err(map_lnb_failure)?;
         Ok(PreparedLnbDiseqc {
             lnb_key,
             expected_generation: runtime.generation(),
@@ -387,13 +337,9 @@ impl<'a> LnbTxn<'a> {
             .map_err(map_lnb_failure)
     }
 
-    pub(crate) fn owned_lnb_ids_for_frontend(
-        &mut self,
-        frontend_id: i32,
-    ) -> Vec<i32> {
+    pub(crate) fn owned_lnb_ids_for_frontend(&mut self, frontend_id: i32) -> Vec<i32> {
         let frontend_key = FrontendRuntimeId(frontend_id);
-        self
-            .runtime
+        self.runtime
             .registry()
             .lnb_ids()
             .into_iter()
@@ -507,10 +453,12 @@ pub(crate) fn map_lnb_failure(record: LnbFailureRecord) -> HalError {
         LnbFailureKind::DiseqcUnsupported => {
             HalError::Unsupported("DiSEqC is unavailable for this LNB profile")
         }
-        LnbFailureKind::BackendApplyFailed | LnbFailureKind::DropWithoutClose => HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "LNB transaction failed",
-        ),
+        LnbFailureKind::BackendApplyFailed | LnbFailureKind::DropWithoutClose => {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "LNB transaction failed",
+            )
+        }
     }
 }
 

@@ -3,6 +3,8 @@ name: tuner_hal2 host Rust CI
 on:
   pull_request:
     paths:
+      - "tuner_hal2/aidl_service/**"
+      - "tuner_hal2/Android.bp"
       - "tuner_hal2/common/**"
       - "tuner_hal2/compile_contract/**"
       - "tuner_hal2/control/**"
@@ -10,11 +12,14 @@ on:
       - "tuner_hal2/device/**"
       - "tuner_hal2/lnb/**"
       - "tuner_hal2/resource_ledger/**"
+      - "tuner_hal2/service_runtime/**"
       - "tuner_hal2/host_ci/**"
       - ".github/workflows/tuner-hal2-host-rust-ci.yml"
   push:
     branches: [main]
     paths:
+      - "tuner_hal2/aidl_service/**"
+      - "tuner_hal2/Android.bp"
       - "tuner_hal2/common/**"
       - "tuner_hal2/compile_contract/**"
       - "tuner_hal2/control/**"
@@ -22,6 +27,7 @@ on:
       - "tuner_hal2/device/**"
       - "tuner_hal2/lnb/**"
       - "tuner_hal2/resource_ledger/**"
+      - "tuner_hal2/service_runtime/**"
       - "tuner_hal2/host_ci/**"
       - ".github/workflows/tuner-hal2-host-rust-ci.yml"
 
@@ -31,6 +37,13 @@ permissions:
 concurrency:
   group: tuner-hal2-host-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
+
+# host_ci/target exists in the repository for historical reasons. Never let Cargo
+# reuse those checked-in artifacts: they can predate the source at the PR HEAD and
+# make a clean checkout validate stale rlibs/binaries. Hosted jobs use an isolated
+# target directory outside the checkout instead.
+env:
+  CARGO_TARGET_DIR: /tmp/tuner-hal2-host-ci-target
 
 jobs:
   rustfmt:
@@ -46,6 +59,14 @@ jobs:
 
       - name: Check Rust formatting
         run: cargo fmt --all -- --check
+
+      - name: Check reviewed AIDL authority sources formatting
+        run: |
+          rustfmt --edition 2021 --check ../aidl_service/src/callback_store.rs
+          rustfmt --edition 2021 --check ../aidl_service/src/service_context.rs
+          rustfmt --edition 2021 --check ../aidl_service/src/object_runtime/mod.rs
+          rustfmt --edition 2021 --check ../aidl_service/src/child_object_open.rs
+          rustfmt --edition 2021 --check ../service_runtime/src/playback_consume_txn.rs
 
   clippy:
     runs-on: ubuntu-latest
@@ -71,6 +92,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - name: Run source contracts
+        run: cargo test -p maleicacid-tuner-hal2-compile-contract-host-ci --locked
 
       - name: Type-check host-compatible crates
         run: cargo check --workspace --all-targets --locked

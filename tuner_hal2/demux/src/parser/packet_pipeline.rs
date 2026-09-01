@@ -25,7 +25,7 @@ pub enum TsPacketValidationError {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TsPacketView<'a> {
-    pid: i32,
+    pid: PacketPid,
     transport_error_indicator: bool,
     payload_unit_start: bool,
     priority: bool,
@@ -88,10 +88,6 @@ impl<'a> TsPacketView<'a> {
 pub struct PacketPid(TransportStreamPid);
 
 impl PacketPid {
-    fn from_validated_pid(pid: i32) -> Self {
-        Self(TransportStreamPid::validate_i32(pid).expect("validated TS packet PID"))
-    }
-
     pub const fn to_i32_for_aidl_boundary(self) -> i32 {
         self.0.to_i32_for_aidl_boundary()
     }
@@ -100,8 +96,8 @@ impl PacketPid {
         Self(pid.to_transport_stream_pid_for_packet_pid_bridge())
     }
 
-    pub(crate) fn from_config_pid(pid: ConfigInputPid) -> Self {
-        Self(TransportStreamPid::validate_i32(pid.raw()).expect("validated filter config PID"))
+    pub(crate) const fn from_config_pid(pid: ConfigInputPid) -> Self {
+        Self(pid.transport_stream_pid())
     }
 
     pub(crate) const fn matches_config_tpid(self, tpid: Option<i32>) -> bool {
@@ -137,8 +133,8 @@ impl<'a> ValidatedTsPacket<'a> {
         self.packet
     }
 
-    pub fn pid(&self) -> PacketPid {
-        PacketPid::from_validated_pid(self.view.pid)
+    pub const fn pid(&self) -> PacketPid {
+        self.view.pid
     }
 
     pub const fn scrambling_control(&self) -> u8 {
@@ -160,8 +156,8 @@ pub enum PacketDescramblePolicyFailure {
 }
 
 impl<'a> TsPacketView<'a> {
-    pub(crate) fn packet_pid(&self) -> PacketPid {
-        PacketPid::from_validated_pid(self.pid)
+    pub(crate) const fn packet_pid(&self) -> PacketPid {
+        self.pid
     }
 }
 
@@ -176,7 +172,9 @@ impl<'a> TsPacketView<'a> {
         let transport_error_indicator = (packet[1] & 0x80) != 0;
         let payload_unit_start = (packet[1] & 0x40) != 0;
         let priority = (packet[1] & 0x20) != 0;
-        let pid = (((packet[1] & 0x1f) as i32) << 8) | packet[2] as i32;
+        let pid = PacketPid(TransportStreamPid::from_mpeg_ts_header_bytes(
+            packet[1], packet[2],
+        ));
         let scrambling_control = (packet[3] >> 6) & 0x03;
         let adaptation_control = (packet[3] >> 4) & 0x03;
         let continuity_counter = packet[3] & 0x0f;
@@ -318,6 +316,20 @@ impl PipelineSectionState {
         self.inner
             .push_payload_with_outcome(payload_unit_start, payload)
     }
+
+    fn push_payload_with_outcome_policy(
+        &mut self,
+        payload_unit_start: bool,
+        payload: &[u8],
+        require_reserved_bits: bool,
+    ) -> crate::sections::SectionPushOutcome {
+        if require_reserved_bits {
+            self.push_payload_with_outcome(payload_unit_start, payload)
+        } else {
+            self.inner
+                .push_payload_with_outcome_policy(payload_unit_start, payload, false)
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -450,17 +462,11 @@ impl PipelineDiagnosticCounters {
     }
 
     fn note_malformed_ts(&mut self) {
-        Self::increment(
-            &mut self.malformed_ts_packets,
-            &mut self.counter_saturated,
-        );
+        Self::increment(&mut self.malformed_ts_packets, &mut self.counter_saturated);
     }
 
     fn note_tei(&mut self) {
-        Self::increment(
-            &mut self.tei_packets_observed,
-            &mut self.counter_saturated,
-        );
+        Self::increment(&mut self.tei_packets_observed, &mut self.counter_saturated);
     }
 
     fn note_duplicate(&mut self) {
@@ -539,12 +545,14 @@ pub enum PipelineGeneratedEvent {
         filter_id: i32,
         pid: PacketPid,
         generation: u64,
+        raw: bool,
         bytes: Vec<u8>,
     },
     PesPacketReady {
         filter_id: i32,
         pid: PacketPid,
         generation: u64,
+        raw: bool,
         packet: crate::ts_core::PesPacket,
     },
 }
@@ -625,6 +633,10 @@ pub enum PipelineDiagnostic {
         pid: PacketPid,
         filter_id: i32,
     },
+    AvAuthoritativeTimestampUnavailable {
+        pid: PacketPid,
+        filter_id: i32,
+    },
     AvSharedHandleNotExported {
         pid: PacketPid,
         filter_id: i32,
@@ -674,6 +686,7 @@ impl PipelineDiagnostic {
             | Self::FilterQueuePayloadDeliveryFailure { pid, .. }
             | Self::AvSharedBackingFailure { pid, .. }
             | Self::AvSharedBackingMissing { pid, .. }
+            | Self::AvAuthoritativeTimestampUnavailable { pid, .. }
             | Self::AvSharedHandleNotExported { pid, .. }
             | Self::AvClientHandleReleased { pid, .. }
             | Self::AvPayloadEmpty { pid, .. }
@@ -774,6 +787,10 @@ impl PipelineDiagnostic {
         Self::AvSharedBackingMissing { pid, filter_id }
     }
 
+    pub fn av_authoritative_timestamp_unavailable(pid: PacketPid, filter_id: i32) -> Self {
+        Self::AvAuthoritativeTimestampUnavailable { pid, filter_id }
+    }
+
     pub fn av_shared_handle_not_exported(pid: PacketPid, filter_id: i32) -> Self {
         Self::AvSharedHandleNotExported { pid, filter_id }
     }
@@ -832,8 +849,9 @@ impl PipelineFilterView {
             return false;
         }
         match origin {
-            crate::TsInputOrigin::Frontend { .. }
-            | crate::TsInputOrigin::PlaybackDvr { .. } => self.source_filter.is_none(),
+            crate::TsInputOrigin::Frontend { .. } | crate::TsInputOrigin::PlaybackDvr { .. } => {
+                self.source_filter.is_none()
+            }
             crate::TsInputOrigin::SourceFilter {
                 source_filter_id,
                 source_filter_generation,
@@ -861,9 +879,7 @@ pub enum PipelineBoundaryReason {
 }
 
 impl PacketPipeline {
-    pub(crate) fn malformed_ts_packet_report(
-        reason: TsPacketValidationError,
-    ) -> PipelineReport {
+    pub(crate) fn malformed_ts_packet_report(reason: TsPacketValidationError) -> PipelineReport {
         let mut report = PipelineReport::default();
         report.dropped_packets += 1;
         report.malformed_packets += 1;
@@ -954,11 +970,10 @@ impl PacketPipeline {
                 .push(PipelineDiagnostic::TeiAssemblySuppressed { pid });
         }
         if view.discontinuity_indicator {
-            self.diagnostic_counters
-                .note_continuity_discontinuity();
-            report.diagnostics.push(
-                PipelineDiagnostic::ContinuityDiscontinuityAssemblyReset { pid, origin },
-            );
+            self.diagnostic_counters.note_continuity_discontinuity();
+            report
+                .diagnostics
+                .push(PipelineDiagnostic::ContinuityDiscontinuityAssemblyReset { pid, origin });
             self.reset_continuity_pid(origin, pid);
             self.reset_assembly_for_origin_pid(origin, pid);
         }
@@ -982,8 +997,7 @@ impl PacketPipeline {
             continuity,
             crate::ts_core::ContinuityOutcome::CounterCollision
         ) {
-            self.diagnostic_counters
-                .note_continuity_discontinuity();
+            self.diagnostic_counters.note_continuity_discontinuity();
             report
                 .assembly_suppression_reasons
                 .push(PipelineAssemblySuppressionReason::ContinuityCounterCollision);
@@ -992,11 +1006,10 @@ impl PacketPipeline {
             );
         }
         if matches!(continuity, crate::ts_core::ContinuityOutcome::Discontinuity) {
-            self.diagnostic_counters
-                .note_continuity_discontinuity();
-            report.diagnostics.push(
-                PipelineDiagnostic::ContinuityDiscontinuityAssemblyReset { pid, origin },
-            );
+            self.diagnostic_counters.note_continuity_discontinuity();
+            report
+                .diagnostics
+                .push(PipelineDiagnostic::ContinuityDiscontinuityAssemblyReset { pid, origin });
         }
         if matches!(
             continuity,
@@ -1240,25 +1253,37 @@ impl PacketPipeline {
             .iter()
             .any(|action| matches!(action, PipelineDeliveryAction::SectionPayload { .. }));
         if has_section_action {
-            let section_filter_ids: Vec<i32> = report
+            let section_filters: Vec<(i32, bool)> = report
                 .delivery_actions
                 .iter()
                 .filter_map(|action| match action {
-                    PipelineDeliveryAction::SectionPayload { filter_id } => Some(*filter_id),
+                    PipelineDeliveryAction::SectionPayload { filter_id } => Some((
+                        *filter_id,
+                        filters
+                            .iter()
+                            .find(|filter| filter.filter_id == *filter_id)
+                            .map(|filter| filter.section_raw)
+                            .unwrap_or(false),
+                    )),
                     _ => None,
                 })
                 .collect();
+            let section_filter_ids = section_filters
+                .iter()
+                .map(|(filter_id, _)| *filter_id)
+                .collect::<Vec<_>>();
             let section_generation = if view.payload_unit_start {
                 self.bump_section_generation(origin, pid)
             } else {
                 Some(self.current_section_generation(origin, pid))
             };
             if let Some(section_generation) = section_generation {
-                for filter_id in section_filter_ids {
+                for (filter_id, raw) in section_filters {
                     let outcome = self.assemble_section_for_filter(
                         origin,
                         pid,
                         filter_id,
+                        raw,
                         view.payload_unit_start,
                         payload,
                     );
@@ -1276,6 +1301,7 @@ impl PacketPipeline {
                                 filter_id,
                                 pid,
                                 generation: section_generation,
+                                raw,
                                 bytes: section,
                             });
                     }
@@ -1371,6 +1397,11 @@ impl PacketPipeline {
                             filter_id,
                             pid,
                             generation: pes_generation,
+                            raw: filters
+                                .iter()
+                                .find(|filter| filter.filter_id == filter_id)
+                                .map(|filter| filter.pes_raw)
+                                .unwrap_or(false),
                             packet,
                         });
                 }
@@ -1404,9 +1435,7 @@ impl PacketPipeline {
     pub fn start_filter(&mut self, _filter_id: i32) -> Result<(), PipelineError> {
         Ok(())
     }
-    pub fn stop_filter(&mut self, filter_id: i32) -> Result<(), PipelineError> {
-        self.clear_filter_state(filter_id);
-        self.reset_record_index_state(filter_id);
+    pub fn stop_filter(&mut self, _filter_id: i32) -> Result<(), PipelineError> {
         Ok(())
     }
     pub fn remove_filter(&mut self, filter_id: i32) -> Result<(), PipelineError> {
@@ -1554,13 +1583,14 @@ impl PacketPipeline {
         origin: crate::TsInputOrigin,
         pid: PacketPid,
         filter_id: i32,
+        raw: bool,
         payload_unit_start: bool,
         payload: &[u8],
     ) -> crate::sections::SectionPushOutcome {
         self.section_assemblers
             .entry((origin, pid, filter_id))
             .or_default()
-            .push_payload_with_outcome(payload_unit_start, payload)
+            .push_payload_with_outcome_policy(payload_unit_start, payload, !raw)
     }
 
     pub(crate) fn assemble_pes_for_filter(
@@ -1722,7 +1752,11 @@ impl PacketPipeline {
         self.filter_section_flush_generations.clear();
         self.filter_pes_flush_generations.clear();
         self.continuity_trackers.clear();
-        let record_filter_ids = self.record_index_settings.keys().copied().collect::<Vec<_>>();
+        let record_filter_ids = self
+            .record_index_settings
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
         for filter_id in record_filter_ids {
             self.reset_record_index_partial_state(filter_id);
         }
@@ -2461,15 +2495,12 @@ mod malformed_adaptation_tests {
         assert!(malformed
             .drop_reasons
             .contains(&PipelineDropReason::MalformedPacket));
-        assert!(malformed
-            .diagnostics
-            .iter()
-            .any(|diag| matches!(
-                diag,
-                PipelineDiagnostic::MalformedTsPacket {
-                    reason: TsPacketValidationError::WrongLength,
-                }
-            )));
+        assert!(malformed.diagnostics.iter().any(|diag| matches!(
+            diag,
+            PipelineDiagnostic::MalformedTsPacket {
+                reason: TsPacketValidationError::WrongLength,
+            }
+        )));
 
         let mut tei = [0xffu8; TS_PACKET_SIZE];
         tei[0] = 0x47;
@@ -2529,7 +2560,7 @@ mod discontinuity_generation_tests {
             pes_raw: false,
             wants_record_index: false,
         };
-        let section = vec![0x7f, 0x30, 0x05, 0xaa, 0xbb, 0xcc, 0xdd, 0xee];
+        let section = vec![0x7f, 0x00, 0x05, 0xaa, 0xbb, 0xcc, 0xdd, 0xee];
         let mut first_payload = vec![0x00];
         first_payload.extend_from_slice(&section[..4]);
         let first = packet_with_payload(pid, 0, true, &first_payload);
@@ -2562,13 +2593,19 @@ mod discontinuity_generation_tests {
                 PipelineGeneratedEvent::SectionPayloadReady {
                     filter_id,
                     pid,
+                    raw,
                     bytes,
                     ..
-                } => Some((*filter_id, pid.to_i32_for_aidl_boundary(), bytes.clone())),
+                } => Some((
+                    *filter_id,
+                    pid.to_i32_for_aidl_boundary(),
+                    *raw,
+                    bytes.clone(),
+                )),
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(ready, vec![(17, pid as i32, section)]);
+        assert_eq!(ready, vec![(17, pid as i32, true, section)]);
     }
 }
 
@@ -3069,10 +3106,10 @@ mod keyless_scrambled_policy_tests {
             &[],
         );
 
-        assert!(report.generated_events.iter().all(|event| !matches!(
-            event,
-            PipelineGeneratedEvent::RecordIndex { .. }
-        )));
+        assert!(report
+            .generated_events
+            .iter()
+            .all(|event| !matches!(event, PipelineGeneratedEvent::RecordIndex { .. })));
         let event = pipeline.record_index_event_after_record_commit(1, &validated, 0);
         assert!(matches!(
             event,

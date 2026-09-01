@@ -9,9 +9,11 @@ use maleicacid_tuner_hal2_common::{
 };
 
 use crate::dvb::abi::{
-    DtvProperty, DTV_BANDWIDTH_HZ, DTV_DELIVERY_SYSTEM, DTV_FREQUENCY, DTV_STREAM_ID, DTV_TUNE,
-    NO_STREAM_ID_FILTER, SYS_DVBS2, SYS_ISDBS, SYS_ISDBT,
+    DtvProperty, DTV_BANDWIDTH_HZ, DTV_DELIVERY_SYSTEM, DTV_FREQUENCY, DTV_STREAM_ID,
+    DTV_SYMBOL_RATE, DTV_TUNE, NO_STREAM_ID_FILTER, SYS_DVBS2, SYS_ISDBS, SYS_ISDBT,
 };
+
+const EARTH_PT1_ISDBS_SYMBOL_RATE: u32 = 28_860_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DvbTuneRequest {
@@ -66,23 +68,7 @@ fn validate_stream_id(request: &DvbTuneRequest) -> Result<Option<u16>, HalError>
             "DVB backend does not accept relative stream number",
         ));
     }
-    if matches!(request.system, Some(FrontendSystem::IsdbS)) && stream_id < 12 {
-        return Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::InvalidStreamIdRange,
-            "BS STREAM_ID must be an absolute TSID",
-        ));
-    }
     Ok(Some(stream_id))
-}
-
-fn validate_symbol_rate(request: &DvbTuneRequest) -> Result<(), HalError> {
-    if request.symbol_rate.is_some() {
-        return Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::UnsupportedSymbolRate,
-            "r51 DVB backend does not accept explicit symbol_rate",
-        ));
-    }
-    Ok(())
 }
 
 fn normalize_bandwidth(request: &DvbTuneRequest) -> Result<Option<u32>, HalError> {
@@ -106,7 +92,6 @@ fn normalize_bandwidth(request: &DvbTuneRequest) -> Result<Option<u32>, HalError
 }
 
 pub fn tune_property_pairs(request: &DvbTuneRequest) -> Result<DvbTunePropertyPairs, HalError> {
-    validate_symbol_rate(request)?;
     let delivery = delivery_system(request.system)?;
     let bandwidth_hz = normalize_bandwidth(request)?;
     let mut pairs = Vec::new();
@@ -116,6 +101,9 @@ pub fn tune_property_pairs(request: &DvbTuneRequest) -> Result<DvbTunePropertyPa
     }
     if let Some(bandwidth_hz) = bandwidth_hz {
         pairs.push((DTV_BANDWIDTH_HZ, bandwidth_hz));
+    }
+    if let Some(symbol_rate) = request.symbol_rate {
+        pairs.push((DTV_SYMBOL_RATE, symbol_rate));
     }
     match validate_stream_id(request)? {
         Some(stream_id) => pairs.push((DTV_STREAM_ID, u32::from(stream_id))),
@@ -171,12 +159,6 @@ fn normalize_stream_id_from_common(
                         "ISDB-S TSID selection is valid only for Japanese BS IF frequencies",
                     ));
                 }
-                if stream_id < 12 {
-                    return Err(HalError::invalid_argument(
-                        HalInvalidArgumentKind::InvalidStreamIdRange,
-                        "BS STREAM_ID must be an absolute TSID",
-                    ));
-                }
             }
             Ok((
                 Some(stream_id),
@@ -220,12 +202,6 @@ pub fn normalized_tune_request_from_common(
             ));
         }
     }
-    if request.symbol_rate.is_some() {
-        return Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::UnsupportedSymbolRate,
-            "r51 ISDB-T/ISDB-S backend contract rejects explicit symbol_rate",
-        ));
-    }
     let (stream_id, stream_id_kind) = normalize_stream_id_from_common(request)?;
     let bandwidth_hz = match request.system {
         FrontendSystem::IsdbT => match request.bandwidth_hz {
@@ -248,12 +224,26 @@ pub fn normalized_tune_request_from_common(
         }
         FrontendSystem::IsdbS3 | FrontendSystem::DvbS => None,
     };
+    let symbol_rate = match request.system {
+        FrontendSystem::IsdbS => match request.symbol_rate {
+            None | Some(EARTH_PT1_ISDBS_SYMBOL_RATE) => Some(EARTH_PT1_ISDBS_SYMBOL_RATE),
+            Some(_) => {
+                return Err(HalError::invalid_argument(
+                    HalInvalidArgumentKind::UnsupportedSymbolRate,
+                    "earth-pt1 accepts only the fixed ISDB-S symbol rate",
+                ))
+            }
+        },
+        FrontendSystem::IsdbT | FrontendSystem::IsdbS3 | FrontendSystem::DvbS => {
+            request.symbol_rate
+        }
+    };
     Ok(DvbTuneRequest {
         frequency_hz: Some(frequency_hz),
         stream_id,
         stream_id_kind,
         bandwidth_hz,
-        symbol_rate: None,
+        symbol_rate,
         system: Some(request.system),
     })
 }
@@ -288,10 +278,78 @@ mod tests {
             stream_id_kind: Some(FrontendStreamIdKind::RelativeStreamNumber),
             bandwidth_hz: None,
             symbol_rate: None,
+            isdbt_layer_settings: Vec::new(),
             partial_reception:
                 maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         assert!(normalized_tune_request_from_common(&common).is_err());
+    }
+
+    #[test]
+    fn bs_absolute_tsid_zero_is_preserved_for_dvb() {
+        let common = FrontendTuneRequest {
+            system: FrontendSystem::IsdbS,
+            frequency: 1_049_480_000,
+            end_frequency: None,
+            stream_id: Some(0),
+            stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId),
+            bandwidth_hz: None,
+            symbol_rate: None,
+            isdbt_layer_settings: Vec::new(),
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
+        };
+        let request = normalized_tune_request_from_common(&common).unwrap();
+        assert_eq!(request.stream_id, Some(0));
+        assert!(tune_property_pairs(&request)
+            .unwrap()
+            .pairs
+            .contains(&(DTV_STREAM_ID, 0)));
+    }
+
+    #[test]
+    fn isdbs_symbol_rate_is_forwarded_to_linux_dvb() {
+        let common = FrontendTuneRequest {
+            system: FrontendSystem::IsdbS,
+            frequency: 1_049_480_000,
+            end_frequency: None,
+            stream_id: Some(0x4010),
+            stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId),
+            bandwidth_hz: None,
+            symbol_rate: Some(28_860_000),
+            isdbt_layer_settings: Vec::new(),
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
+        };
+        let request = normalized_tune_request_from_common(&common).unwrap();
+        assert_eq!(request.symbol_rate, Some(28_860_000));
+        assert!(tune_property_pairs(&request)
+            .unwrap()
+            .pairs
+            .contains(&(DTV_SYMBOL_RATE, 28_860_000)));
+    }
+
+    #[test]
+    fn isdbs_zero_sentinel_projects_fixed_rate_to_linux_dvb() {
+        let common = FrontendTuneRequest {
+            system: FrontendSystem::IsdbS,
+            frequency: 1_049_480_000,
+            end_frequency: None,
+            stream_id: Some(0x4010),
+            stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId),
+            bandwidth_hz: None,
+            symbol_rate: None,
+            isdbt_layer_settings: Vec::new(),
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
+        };
+        let request = normalized_tune_request_from_common(&common).unwrap();
+
+        assert_eq!(request.symbol_rate, Some(EARTH_PT1_ISDBS_SYMBOL_RATE));
+        assert!(tune_property_pairs(&request)
+            .unwrap()
+            .pairs
+            .contains(&(DTV_SYMBOL_RATE, EARTH_PT1_ISDBS_SYMBOL_RATE)));
     }
 
     #[test]
@@ -304,17 +362,16 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: None,
             symbol_rate: None,
+            isdbt_layer_settings: Vec::new(),
             partial_reception:
                 maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         let req = normalized_tune_request_from_common(&common).unwrap();
         assert_eq!(req.stream_id, None);
-        assert!(
-            tune_property_pairs(&req)
-                .unwrap()
-                .pairs
-                .contains(&(DTV_STREAM_ID, NO_STREAM_ID_FILTER))
-        );
+        assert!(tune_property_pairs(&req)
+            .unwrap()
+            .pairs
+            .contains(&(DTV_STREAM_ID, NO_STREAM_ID_FILTER)));
     }
 
     #[test]
@@ -327,16 +384,15 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: None,
             symbol_rate: None,
+            isdbt_layer_settings: Vec::new(),
             partial_reception:
                 maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
         let req = normalized_tune_request_from_common(&common).unwrap();
         assert_eq!(req.stream_id, None);
-        assert!(
-            tune_property_pairs(&req)
-                .unwrap()
-                .pairs
-                .contains(&(DTV_STREAM_ID, NO_STREAM_ID_FILTER))
-        );
+        assert!(tune_property_pairs(&req)
+            .unwrap()
+            .pairs
+            .contains(&(DTV_STREAM_ID, NO_STREAM_ID_FILTER)));
     }
 }

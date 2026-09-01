@@ -5,12 +5,13 @@ use super::support::local_filter_handle_from_strong;
 use super::{
     build_filter_av_stream_type_request, build_filter_delay_hint_request,
     build_filter_summary_for_open_type, close_object_after_close_preflight,
-    execute_object_query_use_case, execute_object_runtime_use_case,
-    execute_object_runtime_use_case_with_request_builder, plan_unavailable_object_method_use_case,
-    status_from_hal_error, status_unknown_error, tuner_queue_desc_from_snapshot, AidlMethodCall,
-    AvStreamType, BinderResult, DemuxFilterSettings, FilterAidlObject, FilterDelayHint,
-    FilterSetDataSourceRequest, IFilter, ObjectQueryRequest, ObjectQueryResponse,
-    ParcelFileDescriptor, Strong, TunerNativeHandle, TunerQueueDesc,
+    execute_filter_av_handle_release_use_case, execute_object_query_use_case,
+    execute_object_runtime_use_case, execute_object_runtime_use_case_with_request_builder,
+    plan_unavailable_object_method_use_case, status_from_hal_error, status_unknown_error,
+    tuner_queue_desc_from_snapshot, AidlMethodCall, AvStreamType, BinderResult,
+    DemuxFilterSettings, FilterAidlObject, FilterDelayHint, FilterSetDataSourceRequest, IFilter,
+    ObjectQueryRequest, ObjectQueryResponse, ParcelFileDescriptor, Strong, TunerNativeHandle,
+    TunerQueueDesc,
 };
 use maleicacid_tuner_hal2_binder_adapter::RuntimeExecutableRequest;
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidArgumentKind};
@@ -84,15 +85,19 @@ impl IFilter for FilterAidlObject {
     }
 
     fn close(&self) -> BinderResult<()> {
-        close_object_after_close_preflight(
+        let result = close_object_after_close_preflight(
             &self.context(),
             self.handle(),
             AidlMethodCall::FilterClose,
-        )
+        );
+        if result.is_ok() {
+            maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change();
+        }
+        result
     }
 
     fn configure(&self, settings: &DemuxFilterSettings) -> BinderResult<()> {
-        execute_object_runtime_use_case(
+        let result = execute_object_runtime_use_case(
             &self.runtime(),
             self.handle(),
             AidlMethodCall::FilterConfigure(
@@ -106,7 +111,11 @@ impl IFilter for FilterAidlObject {
                     |open_type| build_filter_summary_for_open_type(settings, open_type),
                 )
             },
-        )
+        );
+        if result.is_ok() {
+            maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change();
+        }
+        result
     }
 
     fn configureAvStreamType(&self, av_stream_type: &AvStreamType) -> BinderResult<()> {
@@ -179,7 +188,7 @@ impl IFilter for FilterAidlObject {
     }
 
     fn start(&self) -> BinderResult<()> {
-        execute_object_runtime_use_case(
+        let result = execute_object_runtime_use_case(
             &self.runtime(),
             self.handle(),
             AidlMethodCall::FilterStart,
@@ -190,11 +199,15 @@ impl IFilter for FilterAidlObject {
                     dispatch_proof,
                 )
             },
-        )
+        );
+        if result.is_ok() {
+            maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change();
+        }
+        result
     }
 
     fn stop(&self) -> BinderResult<()> {
-        execute_object_runtime_use_case(
+        let result = execute_object_runtime_use_case(
             &self.runtime(),
             self.handle(),
             AidlMethodCall::FilterStop,
@@ -205,11 +218,15 @@ impl IFilter for FilterAidlObject {
                     dispatch_proof,
                 )
             },
-        )
+        );
+        if result.is_ok() {
+            maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change();
+        }
+        result
     }
 
     fn flush(&self) -> BinderResult<()> {
-        execute_object_runtime_use_case(
+        let result = execute_object_runtime_use_case(
             &self.runtime(),
             self.handle(),
             AidlMethodCall::FilterFlush,
@@ -220,7 +237,11 @@ impl IFilter for FilterAidlObject {
                     dispatch_proof,
                 )
             },
-        )
+        );
+        if result.is_ok() {
+            maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change();
+        }
+        result
     }
 
     fn getAvSharedHandle(&self, av_memory: &mut TunerNativeHandle) -> BinderResult<i64> {
@@ -276,65 +297,32 @@ impl IFilter for FilterAidlObject {
     }
 
     fn releaseAvHandle(&self, av_memory: &TunerNativeHandle, av_data_id: i64) -> BinderResult<()> {
-        // 表1-C-AVHの優先順をAIDL境界でも維持する。負値はhandle形状や
-        // lifecycleを調べる前に拒否し、Quarantinedは形状判定より先に確認する。
-        if av_data_id < 0 {
-            return Err(status_from_hal_error(HalError::invalid_argument(
-                HalInvalidArgumentKind::NumericRange,
-                "AV data id must not be negative",
-            )));
-        }
-        let runtime = self.runtime();
-        {
-            let runtime = runtime
-                .lock()
-                .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
-            runtime
-                .preflight_filter_av_handle_release_for_any_lifecycle(
-                    self.handle().object_id(),
-                    self.handle().generation(),
-                )
-                .map_err(status_from_hal_error)?;
-        }
-        let descriptor = match (av_memory.fds.as_slice(), av_memory.ints.as_slice()) {
-            ([], []) => AvHandleReleaseDescriptor::Empty,
-            ([file], [0]) => {
-                let metadata = std::fs::metadata(format!(
-                    "/proc/self/fd/{}",
-                    file.as_raw_fd()
-                ))
-                .map_err(|_| {
-                    status_from_hal_error(HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "AV release handle identity could not be classified safely",
-                    ))
-                })?;
-                AvHandleReleaseDescriptor::File(AvFileIdentity::new(
-                    metadata.dev(),
-                    metadata.ino(),
-                    metadata.size(),
-                ))
-            }
-            _ => {
-                return Err(status_from_hal_error(HalError::invalid_argument(
+        execute_filter_av_handle_release_use_case(
+            &self.runtime(),
+            self.handle(),
+            av_data_id,
+            || match (av_memory.fds.as_slice(), av_memory.ints.as_slice()) {
+                ([], []) => Ok(AvHandleReleaseDescriptor::Empty),
+                ([file], [0]) => {
+                    let metadata = std::fs::metadata(format!("/proc/self/fd/{}", file.as_raw_fd()))
+                        .map_err(|_| {
+                            HalError::internal(
+                                HalInternalKind::InvariantViolation,
+                                "AV release handle identity could not be classified safely",
+                            )
+                        })?;
+                    Ok(AvHandleReleaseDescriptor::File(AvFileIdentity::new(
+                        metadata.dev(),
+                        metadata.ino(),
+                        metadata.size(),
+                    )))
+                }
+                _ => Err(HalError::invalid_argument(
                     HalInvalidArgumentKind::NumericRange,
                     "AV handle shape is neither empty nor a single exported allocation handle",
-                )))
-            }
-        };
-        // fd同一性の取得中はservice runtime lockを保持しない。再取得後のrelease側で
-        // object identityとQuarantinedを再検証し、preflight後の競合を閉じる。
-        let mut runtime = runtime
-            .lock()
-            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
-        runtime
-            .release_filter_av_handle_for_any_lifecycle(
-                self.handle().object_id(),
-                self.handle().generation(),
-                descriptor,
-                av_data_id,
-            )
-            .map_err(status_from_hal_error)
+                )),
+            },
+        )
     }
 
     fn setDataSource(&self, filter: &Strong<dyn IFilter>) -> BinderResult<()> {
@@ -342,7 +330,7 @@ impl IFilter for FilterAidlObject {
     }
 
     fn setDelayHint(&self, hint: &FilterDelayHint) -> BinderResult<()> {
-        execute_object_runtime_use_case_with_request_builder(
+        let result = execute_object_runtime_use_case_with_request_builder(
             &self.runtime(),
             self.handle(),
             || {
@@ -358,6 +346,10 @@ impl IFilter for FilterAidlObject {
                     dispatch_proof,
                 )
             },
-        )
+        );
+        if result.is_ok() {
+            maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change();
+        }
+        result
     }
 }

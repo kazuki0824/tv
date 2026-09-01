@@ -1,3 +1,112 @@
+# r50eo84_pr53_earth_pt1_fixed_symbol_rate_followup
+
+- Linux v6.6 `tc90522`のISDB-S `FE_GET_INFO`がsymbol-rate rangeを0/0で返すため、現行earth-pt1製品profileの能力証跡をprobe rangeから固定28,860,000 sym/sへ修正した。ISDB-S frontendは0/0を理由に抑止せず、`FrontendInfo.minSymbolRate=maxSymbolRate=28,860,000`として公開する。
+- public `symbolRate=0`は未指定sentinelのまま保持し、0または28,860,000だけを副作用前に受理する。Linux DVB mapping境界では両入力を実効値28,860,000へ正規化し、`DTV_SYMBOL_RATE`へ必ず投影する。新しいowner、queue、worker、state machine、汎用capability layerは追加していない。
+- upstreamのcapability metadata改善候補は`future_work/not_planned/linux_tc90522_isdbs_symbol_rate_capability_metadata.md`へ分離し、現行製品runtimeはその将来作業へ依存しない。
+- Rust 1.81.0でhost workspace全164試験、Clippy `-D warnings`、全target check、host workspaceのrustfmt check、変更Rust 3ファイルのstandalone rustfmt check、実`frontend_request_txn.rs`の固定rate境界2試験、変更Rust 4ファイルのtree-sitter構文解析、`git diff --check`を実施した。service-runtimeの拒否時状態不変試験とaidl-serviceの0/0 capability試験は追加したが、Android/Soong test target、atest、VTS、CTS、実機・実放送波確認は未実施である。
+
+# r50eo84_pr53_capability_topology_ssot_followup
+
+- ISDB-S `symbolRate`の正本をAOSP公開APIと実装へ同期し、`0`を未指定sentinel、正値を不変`CapabilitySnapshot`の広告範囲とbackend適用経路に閉じた。px4とLinux DVB / earth_pt1はいずれもpinned製品profileの28,860,000固定とし、DVBでは`DTV_SYMBOL_RATE`へ投影して範囲外を副作用前に拒否する。
+- Linux DVB `exclusiveGroupId`を公開`(adapter, frontend_index)`から直接生成する経路を廃止した。canonical sysfs物理device identityとLinux v6.6 `earth-pt1`の完全な独立4-stream profileから検証済みgroup keyを作り、key単位でDVB namespace IDを割り当てる。topology不明・不完全候補は公開せず、同じkeyを共有するtupleは同group、検証済み独立streamだけ別groupとする。
+- `configureAvStreamType()`は現行実装どおりAndroid 14 AIDL定義済み`VideoStreamType::RESERVED`を有効なhintとして維持し、正本T-AOSP-65と診断文言を「定義済みRESERVED」と「enum未定義numeric値」に分離した。追加状態、owner、queue、worker、clock、resource manager、公開AIDL/VINTF変更はない。
+- Rust 1.81.0で変更Rust 4ファイルのrustfmt check、host workspace全163試験とClippy `-D warnings`、実sourceを参照するsymbol-rate境界2試験、topology割当型検査、tree-sitter構文解析、`git diff --check`を実施した。Android/Soong build、atest、VTS、CTS、実機確認は未実施。
+
+# r50eo84_pr53_aosp_vts_arib_review_contract_followup
+
+- AOSP VTS `testStartIdAfterReconfigure`へ合わせ、filterが一度startされた後の再configureごとに非0・非再利用の`startId`を予約し、次の通常event直前へ単独callback eventとして一度だけ配送する。flush、source/generation変更、failure/closeでは未配送IDを失効させる。
+- `stop()`はqueueと同様にSection/PES assembler、one-shot Section状態、audio timestamp残余を保持し、`flush()`だけがそれらを破棄するようlifecycle境界を修正した。TS `UNDEFINED`は公開TS→TS `linkCaps`と同じraw pipeline種別へ閉包した。
+- ARIB STD-B10のTDTについて`table_id=0x70`の`section_length`を5に限定し、TOTを含む他のshort sectionの既存上限は維持した。ISDB-Sの正の`symbolRate`はpinned px4 / earth_pt1製品profileが広告する固定値28,860,000だけを受理し、Linux DVBへ`DTV_SYMBOL_RATE`として転送する。
+- Linux DVBの`exclusiveGroupId`を物理`(adapter, frontend_index)`単位で安定生成し、同一物理frontendのsystem variantだけを同groupへ置いた。px4とはtag namespaceを分離した。
+- started filterの`configure()`はsecure/passthrough capability判定より先に`INVALID_STATE`とする。`configureAvStreamType()`はAOSP定義済みenum値だけを受理し、同一・別の有効hint変更のいずれも既存AV allocation/backingとaudio associationを破壊しない。公開能力を表さない未使用`ProfileFeature`/`feature_declared`は削除した。
+- 追加状態は既存`FilterRuntime`内の次ID/未配送IDだけで、新規owner、queue、worker、clock、ledger、payload複製は追加していない。Rust 1.81の製品demux全target型検査、対象回帰試験、host workspace全163試験、`git diff --check`を実施した。簡易FMQ差し替えによるdemux全体試験は既知26件を除く239件が成功した。Android/Soong build、atest、VTS、実機・実放送波確認は未実施。
+
+# r50eo84_pr53_audio_cold_start_order_independent_uniqueness_followup
+
+- `data_alignment_indicator=false`のaudio cold startで、独立した`Pending`候補を`ConfirmedBoundary`より前後どちらで観測しても候補競合として扱うよう、一意性判定を走査順非依存へ修正した。確定検証に使った同一frame列のnext headerだけは独立候補から除外する。
+- 実first AUが次PESへ跨ぐ先行`Pending`となり、その圧縮body内の後方に偽2-header列の`ConfirmedBoundary`が成立する逆順入力をunit testと公開demux AV配送試験へ追加した。初回PESで偽frameへexplicit PTS / `MediaEvent`を付与せず、後続で複数候補が確定する場合は既存上限内でfail-closedとする。
+- H.222.0のfirst-AU PTS対応、ARIB TR-B15 4.6-E1 Fascicle 3 4.2.2のPES/audio-frame non-synchronization、AOSP `MediaEvent`の同一AU metadata対応を、既存`FilterRuntime`従属の有限候補判定だけで満たす。新規owner、queue、worker、clock、generation、payload複製、公開AIDL/VINTF・capability変更は追加していない。設計正本は既に候補順序によらない一意確定を要求しているため変更していない。
+- Rust 1.81.0で変更audio moduleのrustfmt checkとClippy `-D warnings`、製品demux sourceの`cargo check --all-targets`、audio module 19 unit tests、公開demuxのaudio `MediaEvent` 6試験とlifecycle fence 1試験を実施した。Android/Soong build、atest、VTS、実機・実放送波確認は未実施。
+
+# r50eo84_pr53_audio_cold_start_candidate_uniqueness_followup
+
+- `data_alignment_indicator=false`のaudio cold startで、1件の`ConfirmedBoundary`があっても、その後方に独立した`Pending`候補が残る間はexplicit PTS anchorと`MediaEvent`をcommitしないよう候補一意性判定を修正した。確定検証に使った直後の同一frame列headerは競合候補から除外し、既存の正当なframe列は維持する。
+- 偽の2-header列が`ConfirmedBoundary`、実際のfirst AUが次PESへ跨ぐ`Pending`となる入力をunit testと公開demux AV配送試験へ追加した。初回PESで偽frameへPTSを付与せず、後続でも複数候補が残る場合は既存契約どおりfail-closedとする。
+- H.222.0のfirst-AU PTS対応、ARIB TR-B15 4.6-E1 Fascicle 3 4.2.2のPES/audio-frame non-synchronization、AOSP `MediaEvent`の同一AU metadata対応を、既存`FilterRuntime`従属の有限候補判定だけで満たす。新規owner、queue、worker、clock、generation、payload複製は追加していない。設計正本は既に「一意候補だけcommitし、複数候補はfail-closed」と定めているため変更していない。公開AIDL/VINTF、capability値、future_work、`RELEASE_VERSION`も変更していない。
+- Rust 1.81.0で変更audio moduleのrustfmt checkとClippy `-D warnings`、製品demux sourceの`cargo check --all-targets`、audio module 18 unit tests、公開demuxのaudio `MediaEvent` 5試験とlifecycle fence 1試験を実施した。Android/Soong build、atest、VTS、実機・実放送波確認は未実施。
+
+# r50eo84_pr53_audio_au_aligned_media_event_followup
+
+- AOSP `MediaEvent`の`pts` / `dataLength`を同じaudio frameへ対応させるため、TS AUDIOのPES payload全体を1イベントとして配送する経路を、構造検証済みの完成AUごとに正確な長さで配送する経路へ変更した。PES途中から始まるcontinuationは既存frameへ結合し、そのframeのPTSで完成後に配送する。後方で開始するAUは別イベントとし、元PESのexplicit PTSまたはactual sample rate / exact sample countから確定したPTSだけを付与する。
+- cold startの未確認`HeaderOnly`候補は即座にanchorへ採用せず、先行AU最大1 frame、当該PESで開始する最大1 frame、次header最大7 byteの合計16389 byte以内だけ同一`FilterRuntime`へ保留する。後続PES上の同一signature境界を実際に確認した一意候補だけをcommitし、複数候補または上限超過はfail-closedとする。false `HeaderOnly`と真のfirst AUがともに次PESへ跨ぐ場合にも誤anchorを公開しない。
+- 保持対象は規格上限8191 byteの未完了AU 1件とcold-start確認用の有限bytesだけであり、既存owner・AV allocation・lifecycle fenceを再利用する。独立queue、worker、clock、ledger、TIS側parser、PCR/wallclock/nominal-rate fallbackは追加していないため、TR-B15のPES/audio-frame non-synchronizationとAOSPのframe metadata契約を同時に満たす最小実装である。
+- unit testへ`false HeaderOnly + true HeaderOnly`の後続境界確認、PES横断AUのbyte完全性、PTS/provenanceを追加した。公開demux回帰試験ではmixed continuation/new-AUとcold-start ambiguityについて、最終`AvMediaEventDescriptor.data_length`が各完成AU長と一致し、付与PTSも同じAUを指すことを固定した。公開AIDL/VINTF、capability値、future_work、`RELEASE_VERSION`は変更していない。
+- Rust 1.81.0で変更audio moduleのrustfmt check、製品demux sourceの`cargo check --all-targets`、audio module 17 unit testsとClippy `-D warnings`、公開demuxのaudio MediaEvent 4試験とlifecycle fence 1試験、変更Rust 5ファイルのtree-sitter構文解析、`git diff --check`を実施した。製品demux全体のClippyは既存警告のみで完走した。Android/Soong build、atest、VTS、実機・実放送波確認は未実施。
+
+# r50eo84_pr53_audio_cold_start_acquisition_followup
+
+- ARIB TR-B15 4.6-E1 Fascicle 3 4.2.2のPES/audio-frame non-synchronizationとH.222.0のfirst-AU PTS対応へ合わせ、filter開始後の最初のPESが「先行AUのcontinuation + 当該PESで最初に開始するAU + explicit PTS」である場合のbounded cold-start sync acquisitionを既存`AudioTimestampAssociation`へ追加した。`data_alignment_indicator=true`ではpayload先頭以外を探索しない。
+- 探索はADTSの13-bit frame length上限未満に閉じ、対応codecの完全header、宣言frame length、観測可能な次frame境界を検査する。次境界まで確認できる候補をheader-only候補より優先し、syncword一致だけのlock、上限なし走査、payload copy、第二buffer、queue、worker、clockは追加していないため、既存`FilterRuntime`従属状態の最小拡張に留まる。
+- continuation prefixからのexplicit anchorと後続PTS-sparse event、次PESへ跨ぐ最初のAU、偽sync候補、先行header-only候補より確認済み境界を優先するケース、`data_alignment_indicator=true`のfail-closedをunit testへ追加し、公開demux AV配送経路にもcold-start回帰試験を追加した。PCR、wallclock、nominal rateへのfallbackと`isPtsPresent` provenanceの偽装は行わない。
+- `tuner_hal/DESIGN_JA.md`と`tuner_hal2/DESIGN_JA.md`をcold-startの成功条件、誤同期防止、上限、責務境界へ同期した。公開AIDL/VINTF、capability値、future_work、`RELEASE_VERSION`は変更していない。
+- Rust 1.81.0で製品demux sourceの`cargo check --all-targets`、対象moduleの17 unit testsとClippy `-D warnings`、変更Rust 2ファイルのtree-sitter構文解析、`git diff --check`を実施した。Android/Soong build、atest、VTS、実機・実放送波確認は未実施。
+
+# r50eo84_pr53_cross_pes_audio_frame_residual_followup
+
+- ARIB TR-B15 4.6-E1 Fascicle 3 4.2.2がBS／広帯域CSのMPEG-2 AACで許容するPES packet／audio frame non-synchronizationへ合わせ、既存`AudioTimestampAssociation`をPES横断の有限frame walkerへ更新した。H.222.0どおり明示PTSを当該PES内で開始する最初のAUへanchorし、PTS-sparse PESは継続frame後に最初に開始するAU、continuation-only PESはその先頭byteを含むAUの時刻をexact sample countから確定する。
+- 残余は同一`FilterRuntime`内の未完了header最大7 byte、またはADTSの13-bit frame length上限8191 byte以内の残りbyte数1件だけとした。payload本体の再構成・copy、新しいstate owner、queue、worker、clock、ledger、TIS側codec parserは追加していない。既存のTEI、continuity gap、scramble/drop、flush、source/generation、stop/failure fenceはanchorと残余を同時に破棄する。
+- ADTSのframe body／header途中とMPEG audioのframe body途中にPES境界を置くunit test、公開demux AV配送経路で`explicit PTS + mid-frame boundary -> PTS-sparse PES`が`isPtsPresent=false`のまま次の開始AU時刻を配送する回帰試験を追加した。unsupported／malformed header、未anchor、未通知parameter変更では従来どおりfail-closedとし、PCR／wallclock／nominal rateへfallbackしない。
+- `tuner_hal/DESIGN_JA.md`と`tuner_hal2/DESIGN_JA.md`をH.222.0のfirst-AU対応、TR-B15のnon-synchronization許容、有限残余上限、成功／失敗境界へ同期した。TR-B15の根拠は公式英訳4.6-E1の精読範囲であり、現行日本語版8.9との差分は未証明のままとした。公開AIDL/VINTF、capability値、future_work、`RELEASE_VERSION`は変更していない。
+- GitHub Actions `tuner_hal2 host Rust CI` run 33278079105でRust 1.81.0のrustfmt、Clippy（`-D warnings`）、全target type-check、workspace unit testが成功した。Android/Soong build、atest、VTS、実機・実放送波確認は未実施。
+
+# r50eo84_pr53_audio_timestamp_association_followup
+
+- TS AUDIO filterのproducer側に、明示PTSをanchorとしてframe境界と時刻算出parameterを構造検証済みのMPEG-2 AAC LC ADTS / MPEG audio frame列のactual sample rateとexact sample countからPTS-sparse eventの先頭frame時刻を確定する`AudioTimestampAssociation`を追加した。`isPtsPresent`は元PES headerのprovenanceのまま保持し、PCR、wallclock、arrival time、nominal rateへfallbackしない。
+- 未anchor、partial/unsupported frame、未通知parameter変更、overflowではAV eventを配送せず型付き診断を生成する。anchorは既存`TsInputOrigin`を含み、別frontend / playback queue epochへ再利用しない。TEI、continuity gap、scramble/PES drop、filter/DVR flush、source/generation境界、stop/failureでは該当anchorを破棄する。状態は既存`FilterRuntime`に従属するO(1)値だけで、独立owner、queue、worker、clockは追加していない。
+- 製品既定snapshotをTS AUDIO=1、TS VIDEO=1とし、両filterの未解放payload上限を閉じる有限AV runtime予算へ更新した。TS AUDIOが公開demux open-filter use-caseを通る試験、explicit/sparse ADTSのAIDL provenance/value、exact sample duration、33-bit wrap、MPEG audio、missing anchor、parameter変更、flush/discontinuity fenceの試験を追加した。
+- demux test targetに残っていた削除済み`PacketPid::from_config()`呼出4箇所を現行`from_config_pid()`へ更新し、今回追加したaudio timestamp試験を含む`--all-targets`の型検査を妨げていた既存test harnessのAPIずれを同じPR内で解消した。製品経路に互換aliasは追加していない。全filter能力を0へ落とす既存capacity fixtureも、AV能力と同時にAV byte予算を0へ落として検査軸を自己完結させた。
+- `tuner_hal/DESIGN_JA.md`へH.222.0のaudio PTS/access-unit対応、ARIB STD-B32 3.11-E1 Fascicle 2のADTS frame条件とparameter切替PTS条件、producer-side associationの成功/抑止境界を反映し、`tuner_hal2/DESIGN_JA.md`へ物理owner mappingを追加した。現行日本語版4.1との差分未証明、公開AIDL/VINTF、future_work、`RELEASE_VERSION`は変更していない。
+- ローカルでは`git diff --check`、変更Rust 9ファイルのtree-sitter構文解析、Rust 1.81による新規moduleのrustfmt check、製品demux sourceそのままの`cargo check --all-targets`、Clippy通常実行、audio timestamp対象8試験、`CapabilitySnapshot`全8試験を実施した。新規audio moduleにClippy警告はないが、`-D warnings`は既存demux警告があるため成功扱いにしていない。Android/Soong build、atest、VTS、loom、実機・実放送波確認は未実施。
+
+# r50eo83_pr53_media_event_metadata_video_capability_followup
+
+- PES parserが確定した`stream_id`、PTS/DTSのheader presenceと33-bit 90 kHz値を`AvMediaEventMetadata`としてAV allocation descriptorへ保持し、`DemuxFilterMediaEvent`の`streamId`、`isPtsPresent` / `pts`、`isDtsPresent` / `dts`へ無損失に投影するよう変更した。PTS/DTSやwallclockを推測生成する時刻源、永続state、queue、workerは追加していない。
+- 製品対象のMPEG-2 Video、AVC、HEVCでは今回精読したARIB STD-B32 3.11-E1 Fascicle 1がvideo PES headerへのPTS明示を要求することに基づき、製品既定snapshotのTS VIDEO filterを1件と有限AV byte予算で有効化した。全audio PESへの同等のPTS明示保証とauthoritative event timestamp sourceはないため、TS AUDIO filterは0件を維持した。
+- 明示PTS、明示PTS+DTS、PTS/DTSなしPES、PES header由来ではないauthoritative PTSのpresence/value分離のAIDL投影試験、video-only AV capability closure試験、製品既定profileのTS VIDEOが公開demux open-filter use-caseを通る試験を追加した。
+- `tuner_hal/DESIGN_JA.md`のSTD-B32証拠本文台帳とMediaEvent timestamp契約をFascicle 1・2の精読結果、video/audioの別capability判断、audioを将来有効化する具体条件、`getAvSyncTime()`用wallclockを個別event PTSへ流用しない境界へ同期した。現行日本語版4.1との差分未証明は維持し、future_workと`RELEASE_VERSION`は変更していない。
+- ローカルでは`git diff --check`、全`AvMediaEventDescriptor`構築箇所と`allocate_payload_bytes()`呼出箇所、製品snapshotのAV依存閉包を静的確認した。添付tree-sitter CLIはRust grammar設定がなく構文解析を実行できず、添付rustfmtは`librustc_driver`を含まない。rustfmt、Rust compile/unit/loom、Android/Soong build、atest、VTS、実機・実放送波確認はローカル環境では未実施。
+
+# r50eo83_pr53_dvr_queue_cleanup_failure_semantics_followup
+
+- DVR queue cleanupのFMQ clearとqueue epoch publicationを`QueueEpochProtocol`配下の単一commit境界へ統合した。epoch/drainを事前検証してからfailure-atomicなexact readでFMQをclearし、成功後はfallibleな処理を挟まず次epochを公開するため、precommit失敗時は旧content/read position/epoch/Open状態を維持する。
+- `QueueCleanupUseCase`はruntime state更新が失敗しても、独立したplayback pipeline reset、PCR invalidate、record index resetとservice側playback residual/diagnostic cleanupを続行し、既存`DvrQueueCleanupReport`へ全phaseの結果と最初の失敗を集約するよう変更した。前提phase失敗で実行不能なphaseもtyped skipとして記録する。
+- FMQ clear失敗時のcontent/epoch/Open維持、成功時のclearとepoch更新、およびpost-commit失敗後も後続phaseを集約するbehavior testを追加した。永続state owner、epoch namespace、queue、worker、diagnostic storeは追加していない。
+- 公開AIDL/VINTF、ARIB処理、future_work、`RELEASE_VERSION`は変更していない。ローカルでは変更Rustファイルのtree-sitter構文解析、`git diff --check`、旧split入口の不在と参照経路を確認した。rustfmt、Rust compile/unit/loom、Android/Soong build、atest、VTS、実機確認はローカル環境では未実施。
+
+# r50eo82_pr53_dvr_queue_cleanup_owner_followup
+
+- DVR `flush()` の queue drain、FMQ clear、queue epoch commit、runtime state更新、playback pipeline/PCR reset、record index resetをtyped phaseへ分割し、`QueueCleanupUseCase`が呼出順序と`DvrQueueCleanupReport`の結果集約を所有する形へ変更した。
+- `QueueEpochProtocol`のepoch・one-shot drain transactionとDemux/DVRの永続状態所有は移動せず、opaque plan / committed tokenだけを上位orchestratorのtyped入口へ渡す形を維持した。
+- 未commitのDVR cleanup planをdropした場合に既存queue epochが再びOpenとなり、generationを更新せずI/Oを再開できるbehavior testを追加した。
+- 公開AIDL/VINTF、ARIB処理、future_work、`RELEASE_VERSION`は変更していない。ローカルでは変更Rust 8ファイルのtree-sitter構文解析、`git diff --check`、参照検査を実施した。rustfmt、Rust compile/unit/loom、Android/Soong build、atest、VTS、実機確認はローカル環境では未実施。
+
+# r50eo82_review_transaction_owner_and_playback_memory_fix
+
+- `FrontendTuneScanTxn`へpreflight、固定LNB給電準備、worker start/stop、rollback、event/terminal acceptanceを移し、横流しだけのtransaction façadeと第二ownerの`FrontendTuneScanContext`を削除した。
+- `ChildOpenTxn`自身がruntime borrowとfilter/DVRのallocation、registration、commit、rollback手順を所有する形へ変更し、実処理を保持していた`ChildOpenContext`型を削除した。
+- broadな`LnbTxn`名称を廃止し、relation/controlのcanonical ownerとは別のcall-local primitive accessである`LnbMutationContext`へ縮退した。`FrontendLnbRelationTxn`と既存`LnbControlTxn`の正規入口は維持した。
+- descrambler PIDのsource検証、排他確認、session commit、失敗診断をservice-level `DescramblerPidTxn`へ移し、鍵・source binding・cleanupを含むbroadな`DescramblerTxn`を、所有権を主張しない`DescramblerMutationContext`へ縮退した。session側の同名transactionはatomic commit primitiveとして維持した。
+- `PlaybackConsumeTxn`のprocessing bufferをFMQ全容量mirrorではなく最大256 TS packetのbounded chunkへ縮小し、FMQ capacity identity、最大187 byte completion tail、packet cursorを独立して維持した。
+- 4 MiB FMQでもbounded chunkだけを確保すること、小容量FMQでは容量を超えて確保しないことをbehavior testへ追加した。
+- 公開AIDL/VINTF、future_work、`RELEASE_VERSION`は変更していない。`tuner_hal2/DESIGN_JA.md`とSoong source listは削除した第二ownerに同期した。ローカルでは`git diff --check`と参照検査のみ実施し、rustfmt、Rust compile/unit/loom、Android/Soong build、atest、VTS、実機確認は未実施。
+
+# r50eo81_pr53_raw_filter_callback_fix
+
+- Section/PESの完成payload eventへ設定時の`raw`属性を保持し、FMQ commit後のcallback投影で`raw=true`をtyped Section/PES eventへ変換しないようにした。既存のcommit後`DATA_READY` status配送は維持した。
+- raw Section/PESそれぞれについて、完成payloadのFMQ commit後に`DATA_READY`が投影され、typed Section/PES eventが0件であることを実runtime経路で確認する単体テストを追加した。既存のraw section parser testも完成eventの`raw=true`保持を確認するよう更新した。
+- 公開契約文書、実装規約、product統合文書、future_work、`RELEASE_VERSION`は変更していない。
+- Source-static checks performed: AOSP Tuner frameworkのraw Section/PES event表、`tuner_hal/DESIGN_JA.md`のraw callback行列、generated-eventからservice callback投影までのdata flow、`git diff --check`。ローカル環境ではrustfmt、rustc/cargo、Soong build、unit/loom、atest、VTS、実機・実放送波検証を実行していない。
+
 # r50eo80_customer26_followup_design_boundary_impl_recheck_source_static_unverified_v41
 
 - Closed frontend runtime read-only intermediate helper methods (`state`, `signal_state`, active request/session accessors, test-only generation helper) from the crate-public surface; service_runtime query/status paths now use `FrontendRuntimeSnapshot` DTO data instead of direct intermediate helper calls.

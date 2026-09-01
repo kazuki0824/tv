@@ -9,6 +9,7 @@ pub(crate) struct AvSyncRegistry {
 }
 
 #[derive(Debug)]
+#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
 pub(crate) struct PreparedAvSyncRegistryMutation {
     candidate: AvSyncRegistry,
 }
@@ -125,15 +126,11 @@ impl AvSyncRegistry {
     }
 
     fn remove_media_relation(&mut self, media_filter_id: i32) {
-        let Some(hw_sync_id) = self
-            .hw_sync_id_by_media_filter_id
-            .remove(&media_filter_id)
-        else {
+        let Some(hw_sync_id) = self.hw_sync_id_by_media_filter_id.remove(&media_filter_id) else {
             return;
         };
-        let remove_reverse_entry = if let Some(media_filter_ids) = self
-            .media_filter_ids_by_hw_sync_id
-            .get_mut(&hw_sync_id)
+        let remove_reverse_entry = if let Some(media_filter_ids) =
+            self.media_filter_ids_by_hw_sync_id.get_mut(&hw_sync_id)
         {
             media_filter_ids.remove(&media_filter_id);
             media_filter_ids.is_empty()

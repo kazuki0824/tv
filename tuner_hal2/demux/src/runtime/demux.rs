@@ -3,22 +3,21 @@ use std::collections::VecDeque;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use maleicacid_tuner_hal2_common::TS_PACKET_SIZE;
 use maleicacid_tuner_hal2_control_core::{
     FmqDeliveryAction, FmqDeliveryTxn, FmqFailureKind, FmqObjectKind,
 };
-use maleicacid_tuner_hal2_common::TS_PACKET_SIZE;
 
 use crate::av::{
     AvDataId, AvDataIdAllocator, AvDataIdState, AvFilterReleaseState, AvHandleReleaseDescriptor,
     AvHandleReleaseInput, AvHandleReleaseKind, AvHandleReleaseOutcome, AvHandleReleaseTxn,
     AvPayloadDeliveryOutcome, AvRuntimeBudget, AvSharedBacking, AvSharedHandleExport,
-    ClientHandleState, DEFAULT_AV_MAX_EVENT_BYTES,
-    DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER, DEFAULT_AV_PER_FILTER_LIVE_BYTES,
+    ClientHandleState, DEFAULT_AV_MAX_EVENT_BYTES, DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
+    DEFAULT_AV_PER_FILTER_LIVE_BYTES,
 };
-#[cfg(test)]
-use crate::config::FilterDelayReadiness;
 use crate::config::{
-    AvStreamTypeConfig, ConfigInputPid, FilterDelayHint, FilterOpenType, OpenFilterRequest,
+    AvStreamTypeConfig, ConfigInputPid, FilterDelayHint, FilterDelayReadiness, FilterOpenType,
+    OpenFilterRequest,
 };
 use crate::packet_pipeline::{
     FilterPipelineConfig, PacketPipeline, PipelineBoundaryReason, PipelineDeliveryAction,
@@ -38,16 +37,17 @@ use super::filter::{
 use super::filter_producer_drain_gate::{
     FilterDrainBoundary, FilterProducerDrainGate, FilterProducerPermit,
 };
-use super::queue_runtime::{
-    QueueDescriptorExportPlan, QueueDescriptorExportTarget, QueueRuntime, QueueRuntimeError,
-};
 use super::pcr_clock_anchor::{PcrClockAnchorStore, PcrObservationOutcome};
+use super::queue_runtime::{
+    DvrQueueDrainCommitError, FilterDrainTxn, QueueDescriptorExportPlan,
+    QueueDescriptorExportTarget, QueueEpochDrainTxn, QueueRuntime, QueueRuntimeError,
+};
 use super::source_boundary::{
     apply_filter_source_boundary_change, connect_filter_source_boundary_change,
     SourceBoundaryReport,
 };
+mod filter_delay_delivery;
 const TUNER_EVENT_DATA_READY: u32 = 1 << 0;
-const MAX_FILTER_DELAY_MS: u64 = 10_000;
 #[cfg(test)]
 const TEST_PENDING_FILTER_EVENT_CAPACITY: usize = 64;
 
@@ -111,6 +111,7 @@ pub enum DemuxRuntimeErrorKind {
     PipelineFailed,
     GenerationExhausted,
     QueueRuntimeFailure,
+    QueueRuntimeFailureRollbackFailed,
     AvBackingFailure,
     SourceBoundaryRollbackFailed,
     RelationCommitUnknown,
@@ -134,10 +135,14 @@ pub enum FilterRuntimeOperationStep {
     PipelineStop,
     PipelineFlush,
     QueueClear,
+    PendingEventDiscard,
     PipelineRollback,
     MirrorQueueClear,
     QueuedPayloadClear,
     AvBackingFlush,
+    PcrAnchorInvalidate,
+    ProducerDrainCommit,
+    SourceGenerationRefresh,
     MarkStopped,
 }
 
@@ -150,6 +155,7 @@ pub enum FilterRuntimeOperationSkipReason {
     AlreadyStoppedOrConfigured,
     OpenStateNoop,
     StopPreservesQueue,
+    NoSourceDownstreams,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -190,7 +196,7 @@ pub struct FilterRuntimeOperationReport {
 }
 
 impl FilterRuntimeOperationReport {
-    fn new(operation: FilterRuntimeOperationKind, filter_id: i32) -> Self {
+    pub fn new(operation: FilterRuntimeOperationKind, filter_id: i32) -> Self {
         Self {
             operation,
             filter_id,
@@ -199,17 +205,17 @@ impl FilterRuntimeOperationReport {
         }
     }
 
-    fn succeeded(&mut self, step: FilterRuntimeOperationStep) {
+    pub fn succeeded(&mut self, step: FilterRuntimeOperationStep) {
         self.steps
             .push(FilterRuntimeOperationStepOutcome::Succeeded(step));
     }
 
-    fn failed(&mut self, step: FilterRuntimeOperationStep, error: DemuxRuntimeErrorKind) {
+    pub fn failed(&mut self, step: FilterRuntimeOperationStep, error: DemuxRuntimeErrorKind) {
         self.steps
             .push(FilterRuntimeOperationStepOutcome::Failed { step, error });
     }
 
-    fn skipped(
+    pub fn skipped(
         &mut self,
         step: FilterRuntimeOperationStep,
         reason: FilterRuntimeOperationSkipReason,
@@ -218,7 +224,7 @@ impl FilterRuntimeOperationReport {
             .push(FilterRuntimeOperationStepOutcome::Skipped { step, reason });
     }
 
-    fn finish(&mut self, outcome: FilterRuntimeOperationOutcome) {
+    pub fn finish(&mut self, outcome: FilterRuntimeOperationOutcome) {
         self.outcome = Some(outcome);
     }
 
@@ -236,6 +242,202 @@ impl FilterRuntimeOperationReport {
 
     pub const fn outcome(&self) -> Option<FilterRuntimeOperationOutcome> {
         self.outcome
+    }
+}
+
+/// Queue cleanup の lower protocol が発行する opaque な call-local plan。
+///
+/// producer drain と snapshot は Demux 内部に閉じたまま、service 側の
+/// QueueCleanupUseCase が各 phase の呼び出し順序と結果集約を所有する。
+#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+pub struct FilterQueueCleanupPlan {
+    filter_id: i32,
+    snapshot: FilterRuntimeSnapshot,
+    next_source_generation: Option<u64>,
+    drain: FilterDrainTxn,
+}
+
+/// producer drain commit 済みであることを示す one-shot token。
+#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+pub struct CommittedFilterQueueCleanup {
+    filter_id: i32,
+    source_generation: Option<(u64, u64)>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DvrQueueCleanupStep {
+    Prepare,
+    QueueClear,
+    QueueEpochCommit,
+    QueueRollback,
+    RuntimeStateCommit,
+    PlaybackPipelineReset,
+    PcrAnchorInvalidate,
+    RecordIndexReset,
+    PlaybackResidualDiscard,
+    PlaybackDiscardDiagnosticCommit,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DvrQueueCleanupCommitError {
+    failed_step: DvrQueueCleanupStep,
+    error: DemuxRuntimeError,
+    rollback_failed: bool,
+}
+
+impl DvrQueueCleanupCommitError {
+    const fn new(failed_step: DvrQueueCleanupStep, error: DemuxRuntimeError) -> Self {
+        Self {
+            failed_step,
+            error,
+            rollback_failed: false,
+        }
+    }
+
+    const fn with_rollback_failure(
+        failed_step: DvrQueueCleanupStep,
+        error: DemuxRuntimeError,
+    ) -> Self {
+        Self {
+            failed_step,
+            error,
+            rollback_failed: true,
+        }
+    }
+
+    pub const fn failed_step(self) -> DvrQueueCleanupStep {
+        self.failed_step
+    }
+
+    pub const fn error(self) -> DemuxRuntimeError {
+        self.error
+    }
+
+    pub const fn rollback_failed(self) -> bool {
+        self.rollback_failed
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DvrQueueCleanupSkipReason {
+    PlaybackOnly,
+    RecordOnly,
+    NoRetainedPlaybackBytes,
+    PrerequisiteFailed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DvrQueueCleanupStepOutcome {
+    Succeeded(DvrQueueCleanupStep),
+    Failed {
+        step: DvrQueueCleanupStep,
+        error: DemuxRuntimeErrorKind,
+    },
+    Skipped {
+        step: DvrQueueCleanupStep,
+        reason: DvrQueueCleanupSkipReason,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DvrQueueCleanupOutcome {
+    Committed,
+    Isolated { failed_step: DvrQueueCleanupStep },
+    Failed { failed_step: DvrQueueCleanupStep },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DvrQueueCleanupReport {
+    dvr_id: i32,
+    steps: Vec<DvrQueueCleanupStepOutcome>,
+    outcome: Option<DvrQueueCleanupOutcome>,
+}
+
+impl DvrQueueCleanupReport {
+    pub fn new(dvr_id: i32) -> Self {
+        Self {
+            dvr_id,
+            steps: Vec::new(),
+            outcome: None,
+        }
+    }
+
+    pub fn succeeded(&mut self, step: DvrQueueCleanupStep) {
+        self.steps.push(DvrQueueCleanupStepOutcome::Succeeded(step));
+    }
+
+    pub fn failed(&mut self, step: DvrQueueCleanupStep, error: DemuxRuntimeErrorKind) {
+        self.steps
+            .push(DvrQueueCleanupStepOutcome::Failed { step, error });
+    }
+
+    pub fn skipped(&mut self, step: DvrQueueCleanupStep, reason: DvrQueueCleanupSkipReason) {
+        self.steps
+            .push(DvrQueueCleanupStepOutcome::Skipped { step, reason });
+    }
+
+    pub fn finish(&mut self, outcome: DvrQueueCleanupOutcome) {
+        self.outcome = Some(outcome);
+    }
+
+    pub const fn dvr_id(&self) -> i32 {
+        self.dvr_id
+    }
+
+    pub fn steps(&self) -> &[DvrQueueCleanupStepOutcome] {
+        &self.steps
+    }
+
+    pub const fn outcome(&self) -> Option<DvrQueueCleanupOutcome> {
+        self.outcome
+    }
+}
+
+/// QueueEpochProtocol が発行する opaque な call-local DVR cleanup plan。
+///
+/// queue epoch と drain transaction は Demux 内部に閉じたまま、service 側の
+/// QueueCleanupUseCase が各 phase の呼び出し順序と結果集約を所有する。
+#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+pub struct DvrQueueCleanupPlan {
+    dvr_id: i32,
+    kind: DvrKind,
+    next_playback_generation: Option<u64>,
+    attached_record_filters: Vec<i32>,
+    playback_coordinates: Option<(u64, u64)>,
+    drain: QueueEpochDrainTxn,
+}
+
+impl DvrQueueCleanupPlan {
+    pub const fn kind(&self) -> DvrKind {
+        self.kind
+    }
+}
+
+/// queue epoch commit 済みであることを示す one-shot cleanup token。
+#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+pub struct CommittedDvrQueueCleanup {
+    dvr_id: i32,
+    kind: DvrKind,
+    next_playback_generation: Option<u64>,
+    attached_record_filters: Vec<i32>,
+    playback_coordinates: Option<(u64, u64)>,
+    queue_dropped_bytes: usize,
+}
+
+impl CommittedDvrQueueCleanup {
+    pub const fn is_playback(&self) -> bool {
+        matches!(self.kind, DvrKind::Playback)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FilterQueuePayloadCleanupOutcome {
+    filter_state_cleared: bool,
+}
+
+impl FilterQueuePayloadCleanupOutcome {
+    pub const fn filter_state_cleared(self) -> bool {
+        self.filter_state_cleared
     }
 }
 
@@ -327,6 +529,12 @@ impl DemuxRuntimeError {
     pub const fn queue_runtime_failure(id: i32) -> Self {
         Self {
             kind: DemuxRuntimeErrorKind::QueueRuntimeFailure,
+            id: Some(id),
+        }
+    }
+    pub const fn queue_runtime_failure_rollback_failed(id: i32) -> Self {
+        Self {
+            kind: DemuxRuntimeErrorKind::QueueRuntimeFailureRollbackFailed,
             id: Some(id),
         }
     }
@@ -640,6 +848,7 @@ pub struct DvrFilterLinkRequest {
 }
 
 #[derive(Debug)]
+#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
 pub struct PreparedDvrFilterRelation {
     dvr_id: i32,
     filter_id: i32,
@@ -816,20 +1025,16 @@ impl DemuxRuntime {
     }
 
     fn unregister_av_sync_filter(&mut self, filter_id: i32) {
-        let prepared = self
-            .av_sync_registry
-            .prepare_unregister_filter(filter_id);
+        let prepared = self.av_sync_registry.prepare_unregister_filter(filter_id);
         self.av_sync_registry.commit(prepared);
     }
 
     pub fn av_sync_hw_id_for_media_filter(&self, filter_id: i32) -> Option<i32> {
-        self.av_sync_registry
-            .hw_sync_id_for_media_filter(filter_id)
+        self.av_sync_registry.hw_sync_id_for_media_filter(filter_id)
     }
 
     pub fn pcr_filter_id_for_av_sync_hw_id(&self, hw_id: i32) -> Option<i32> {
-        self.av_sync_registry
-            .pcr_filter_id_for_hw_sync_id(hw_id)
+        self.av_sync_registry.pcr_filter_id_for_hw_sync_id(hw_id)
     }
 
     pub fn pcr_clock_time_90khz(&self, filter_id: i32) -> Option<u64> {
@@ -839,10 +1044,7 @@ impl DemuxRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn pcr_anchor_observation_for_test(
-        &self,
-        filter_id: i32,
-    ) -> Option<(u64, u64)> {
+    pub(crate) fn pcr_anchor_observation_for_test(&self, filter_id: i32) -> Option<(u64, u64)> {
         self.pcr_clock_anchor_store.observation_for_test(filter_id)
     }
 
@@ -901,12 +1103,10 @@ impl DemuxRuntime {
             return;
         };
         for (filter_id, generation) in targets {
-            match self.pcr_clock_anchor_store.observe(
-                filter_id,
-                generation,
-                raw_pcr_base_33,
-                false,
-            ) {
+            match self
+                .pcr_clock_anchor_store
+                .observe(filter_id, generation, raw_pcr_base_33, false)
+            {
                 PcrObservationOutcome::Observed
                 | PcrObservationOutcome::Invalidated
                 | PcrObservationOutcome::ClockUnavailable => {}
@@ -1317,10 +1517,7 @@ impl DemuxRuntime {
         &mut self,
         filter: FilterRuntime,
     ) -> Result<(), DemuxRuntimeError> {
-        self.register_filter_with_pending_event_capacity(
-            filter,
-            TEST_PENDING_FILTER_EVENT_CAPACITY,
-        )
+        self.register_filter_with_pending_event_capacity(filter, TEST_PENDING_FILTER_EVENT_CAPACITY)
     }
 
     pub fn register_filter_from_typed_request(
@@ -1328,11 +1525,7 @@ impl DemuxRuntime {
         request: FilterRuntimeRegistrationRequest<'_>,
     ) -> Result<(), DemuxRuntimeError> {
         self.register_filter_with_pending_event_capacity(
-            FilterRuntime::new_open_request(
-                request.filter_id,
-                self.generation(),
-                request.request,
-            ),
+            FilterRuntime::new_open_request(request.filter_id, self.generation(), request.request),
             request.pending_event_capacity,
         )
     }
@@ -1378,8 +1571,7 @@ impl DemuxRuntime {
             .remove_filter(filter_id)
             .map_err(|_| DemuxRuntimeError::pipeline_failed())?;
         if let Some(gate) = self.filter_producer_gates.get(&filter_id) {
-            gate
-                .close()
+            gate.close()
                 .map_err(|_| DemuxRuntimeError::queue_runtime_failure(filter_id))?;
         }
         self.filter_producer_gates.remove(&filter_id);
@@ -1582,6 +1774,9 @@ impl DemuxRuntime {
         }
         if let Some(filter) = self.filters.get_mut(&filter_id) {
             filter.clear_queued_payload_state();
+            filter.reset_section_delivery_state();
+            filter.reset_audio_timestamp_association();
+            filter.clear_pending_start_id();
         }
         if drain.commit().is_err() {
             self.quarantine_filter_runtime(filter_id);
@@ -1637,24 +1832,17 @@ impl DemuxRuntime {
                 DemuxRuntimeError::filter_missing(filter_id),
             ));
         }
-        let queue = self
-            .filter_queue_runtimes
-            .get(&filter_id)
-            .ok_or_else(|| {
-                FilterQueuePayloadError::Runtime(DemuxRuntimeError::queue_missing(filter_id))
-            })?;
+        let queue = self.filter_queue_runtimes.get(&filter_id).ok_or_else(|| {
+            FilterQueuePayloadError::Runtime(DemuxRuntimeError::queue_missing(filter_id))
+        })?;
         if queue.retry_pending_wake(TUNER_EVENT_DATA_READY).is_err() {
             return Err(FilterQueuePayloadError::Runtime(
                 DemuxRuntimeError::queue_runtime_failure(filter_id),
             ));
         }
-        let available = queue
-            .available_to_write()
-            .map_err(|_| {
-                FilterQueuePayloadError::Runtime(DemuxRuntimeError::queue_runtime_failure(
-                    filter_id,
-                ))
-            })?;
+        let available = queue.available_to_write().map_err(|_| {
+            FilterQueuePayloadError::Runtime(DemuxRuntimeError::queue_runtime_failure(filter_id))
+        })?;
         if available < payload_len {
             return Err(FilterQueuePayloadError::Overflow(
                 DemuxRuntimeError::queue_runtime_failure(filter_id),
@@ -1732,9 +1920,7 @@ impl DemuxRuntime {
             filter_id,
             status: FilterStatusEvent::DataReady,
         }];
-        if let Some(status) =
-            filter.classify_watermark_transition(capacity_bytes, readable_bytes)
-        {
+        if let Some(status) = filter.classify_watermark_transition(capacity_bytes, readable_bytes) {
             events.push(PipelineGeneratedEvent::FilterStatus { filter_id, status });
         }
         Ok(events)
@@ -1919,6 +2105,7 @@ impl DemuxRuntime {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn configure_filter_runtime(
         &mut self,
         filter_id: i32,
@@ -1927,11 +2114,32 @@ impl DemuxRuntime {
         self.configure_filter_runtime_with_pes_stream_id(filter_id, config, None)
     }
 
+    #[cfg(test)]
     pub(crate) fn configure_filter_runtime_with_pes_stream_id(
         &mut self,
         filter_id: i32,
         config: FilterPipelineConfig,
         pes_stream_id: Option<i32>,
+    ) -> Result<(), DemuxRuntimeError> {
+        let section_config = self
+            .filters
+            .get(&filter_id)
+            .is_some_and(|filter| filter.open_kind() == PipelineOpenKind::Section)
+            .then(crate::config::SectionRuntimeConfig::match_all_repeat);
+        self.configure_filter_runtime_with_full_config(
+            filter_id,
+            config,
+            pes_stream_id,
+            section_config,
+        )
+    }
+
+    pub(crate) fn configure_filter_runtime_with_full_config(
+        &mut self,
+        filter_id: i32,
+        config: FilterPipelineConfig,
+        pes_stream_id: Option<i32>,
+        section_config: Option<crate::config::SectionRuntimeConfig>,
     ) -> Result<(), DemuxRuntimeError> {
         let (
             current_generation,
@@ -2029,6 +2237,7 @@ impl DemuxRuntime {
             return Err(DemuxRuntimeError::filter_missing(filter_id));
         };
         filter.configure_with_generation(next, config, pes_stream_id);
+        filter.set_section_runtime_config(section_config);
         filter.clear_queued_payload_state();
         #[cfg(test)]
         {
@@ -2079,6 +2288,40 @@ impl DemuxRuntime {
         Result<super::configure_txn::FilterConfigureOutcome, DemuxRuntimeError>,
     ) {
         super::configure_txn::configure_filter_runtime(self, request.filter_id, request.config)
+    }
+
+    pub fn schedule_filter_start_id_after_reconfigure(
+        &mut self,
+        filter_id: i32,
+    ) -> Result<(), DemuxRuntimeError> {
+        self.filters
+            .get_mut(&filter_id)
+            .ok_or(DemuxRuntimeError::filter_missing(filter_id))?
+            .schedule_start_id_after_reconfigure()
+            .map_err(|_| DemuxRuntimeError::generation_exhausted(Some(filter_id)))
+    }
+
+    pub fn pending_filter_start_id(
+        &self,
+        filter_id: i32,
+    ) -> Result<Option<i32>, DemuxRuntimeError> {
+        Ok(self
+            .filters
+            .get(&filter_id)
+            .ok_or(DemuxRuntimeError::filter_missing(filter_id))?
+            .pending_start_id())
+    }
+
+    pub fn commit_pending_filter_start_id(
+        &mut self,
+        filter_id: i32,
+        expected_start_id: i32,
+    ) -> Result<bool, DemuxRuntimeError> {
+        Ok(self
+            .filters
+            .get_mut(&filter_id)
+            .ok_or(DemuxRuntimeError::filter_missing(filter_id))?
+            .commit_pending_start_id(expected_start_id))
     }
 
     pub fn start_filter_runtime_from_typed_request(
@@ -2215,234 +2458,197 @@ impl DemuxRuntime {
         }
     }
 
-    pub fn flush_filter_runtime_with_typed_request(
+    pub fn prepare_filter_queue_cleanup(
         &mut self,
         request: FilterRuntimeOperationRequest,
-    ) -> (FilterRuntimeOperationReport, Result<(), DemuxRuntimeError>) {
-        self.flush_filter_runtime_report(request.filter_id)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn flush_filter_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError> {
-        self.flush_filter_runtime_report(filter_id).1
-    }
-
-    fn flush_filter_runtime_report(
-        &mut self,
-        filter_id: i32,
-    ) -> (FilterRuntimeOperationReport, Result<(), DemuxRuntimeError>) {
-        let mut report =
-            FilterRuntimeOperationReport::new(FilterRuntimeOperationKind::Flush, filter_id);
-        let snapshot = match self.filter_snapshot(filter_id) {
-            Ok(snapshot) => {
-                report.succeeded(FilterRuntimeOperationStep::ValidateState);
-                snapshot
-            }
-            Err(error) => {
-                report.failed(FilterRuntimeOperationStep::ValidateState, error.kind);
-                report.finish(FilterRuntimeOperationOutcome::Failed {
-                    failed_step: FilterRuntimeOperationStep::ValidateState,
-                });
-                return (report, Err(error));
-            }
-        };
+    ) -> Result<FilterQueueCleanupPlan, DemuxRuntimeError> {
+        let filter_id = request.filter_id;
+        let snapshot = self.filter_snapshot(filter_id)?;
         match snapshot.state {
             FilterRuntimeState::Configured
             | FilterRuntimeState::Started
-            | FilterRuntimeState::Stopped => {
-                let next_source_generation =
-                    if self.source_filter_downstream_ids(filter_id).is_empty() {
-                        None
-                    } else {
-                        match next_generation(snapshot.generation) {
-                            Ok(next) => Some(next),
-                            Err(_) => {
-                                self.quarantine_filter_runtime(filter_id);
-                                let error =
-                                    DemuxRuntimeError::generation_exhausted(Some(filter_id));
-                                report.failed(
-                                    FilterRuntimeOperationStep::PipelineFlush,
-                                    error.kind,
-                                );
-                                report.finish(FilterRuntimeOperationOutcome::Isolated {
-                                    failed_step: FilterRuntimeOperationStep::PipelineFlush,
-                                });
-                                return (report, Err(error));
-                            }
-                        }
-                    };
-                let gate = match self.filter_producer_gates.get(&filter_id).cloned() {
-                    Some(gate) => gate,
-                    None => {
-                        let error = DemuxRuntimeError::filter_missing(filter_id);
-                        report.failed(FilterRuntimeOperationStep::ValidateState, error.kind);
-                        report.finish(FilterRuntimeOperationOutcome::Failed {
-                            failed_step: FilterRuntimeOperationStep::ValidateState,
-                        });
-                        return (report, Err(error));
-                    }
-                };
-                let mut drain = match gate.begin_drain(FilterDrainBoundary::Flush) {
-                    Ok(drain) => drain,
-                    Err(_) => {
-                        self.quarantine_filter_runtime(filter_id);
-                        let error = DemuxRuntimeError::queue_runtime_failure(filter_id);
-                        report.failed(FilterRuntimeOperationStep::QueueClear, error.kind);
-                        report.finish(FilterRuntimeOperationOutcome::Isolated {
-                            failed_step: FilterRuntimeOperationStep::QueueClear,
-                        });
-                        return (report, Err(error));
-                    }
-                };
-                if let (Some(origin), Some(tpid)) = (
-                    snapshot.source.source_filter_origin(),
-                    snapshot.tpid.and_then(ConfigInputPid::validate_tpid),
-                ) {
-                    let origins = [(origin, tpid)];
-                    self.pipeline.flush_filter(filter_id, &origins);
-                } else {
-                    self.pipeline.clear_filter_state_after_flush(filter_id);
-                }
-                report.succeeded(FilterRuntimeOperationStep::PipelineFlush);
-                if snapshot.queue_present {
-                    if let Err(error) = self.clear_filter_queue_runtime(filter_id) {
-                        report.failed(FilterRuntimeOperationStep::QueueClear, error.kind);
-                        self.quarantine_filter_runtime(filter_id);
-                        report.skipped(
-                            FilterRuntimeOperationStep::MirrorQueueClear,
-                            FilterRuntimeOperationSkipReason::QueueClearFailed,
-                        );
-                        report.skipped(
-                            FilterRuntimeOperationStep::QueuedPayloadClear,
-                            FilterRuntimeOperationSkipReason::QueueClearFailed,
-                        );
-                        report.skipped(
-                            FilterRuntimeOperationStep::AvBackingFlush,
-                            FilterRuntimeOperationSkipReason::QueueClearFailed,
-                        );
-                        report.finish(FilterRuntimeOperationOutcome::Isolated {
-                            failed_step: FilterRuntimeOperationStep::QueueClear,
-                        });
-                        return (report, Err(error));
-                    }
-                    report.succeeded(FilterRuntimeOperationStep::QueueClear);
-                } else {
-                    report.skipped(
-                        FilterRuntimeOperationStep::QueueClear,
-                        FilterRuntimeOperationSkipReason::QueueNotPresent,
-                    );
-                }
-                let pending_events = match drain.take_pending_events() {
-                    Ok(events) => events,
-                    Err(_) => {
-                        self.quarantine_filter_runtime(filter_id);
-                        let error = DemuxRuntimeError::queue_runtime_failure(filter_id);
-                        report.failed(FilterRuntimeOperationStep::QueueClear, error.kind);
-                        report.finish(FilterRuntimeOperationOutcome::Isolated {
-                            failed_step: FilterRuntimeOperationStep::QueueClear,
-                        });
-                        return (report, Err(error));
-                    }
-                };
-                if let Err(error) =
-                    self.discard_undelivered_filter_events(filter_id, pending_events)
-                {
-                    self.quarantine_filter_runtime(filter_id);
-                    report.failed(FilterRuntimeOperationStep::AvBackingFlush, error.kind);
-                    report.finish(FilterRuntimeOperationOutcome::Isolated {
-                        failed_step: FilterRuntimeOperationStep::AvBackingFlush,
-                    });
-                    return (report, Err(error));
-                }
-                #[cfg(test)]
-                {
-                    if let Some(queue) = self.filter_queue_mirror.get_mut(&filter_id) {
-                        queue.clear();
-                        report.succeeded(FilterRuntimeOperationStep::MirrorQueueClear);
-                    } else {
-                        report.skipped(
-                            FilterRuntimeOperationStep::MirrorQueueClear,
-                            FilterRuntimeOperationSkipReason::QueueNotPresent,
-                        );
-                    }
-                }
-                if let Some(filter) = self.filters.get_mut(&filter_id) {
-                    filter.clear_queued_payload_state();
-                    report.succeeded(FilterRuntimeOperationStep::QueuedPayloadClear);
-                } else {
-                    report.skipped(
-                        FilterRuntimeOperationStep::QueuedPayloadClear,
-                        FilterRuntimeOperationSkipReason::FilterMissingForOptionalFlush,
-                    );
-                }
-                if let Some(backing) = self.filter_av_backings.get_mut(&filter_id) {
-                    backing.flush_slots_keep_exported_handle();
-                    report.succeeded(FilterRuntimeOperationStep::AvBackingFlush);
-                } else {
-                    report.skipped(
-                        FilterRuntimeOperationStep::AvBackingFlush,
-                        FilterRuntimeOperationSkipReason::AvBackingNotPresent,
-                    );
-                }
-                self.invalidate_pcr_clock_anchor(filter_id);
-                if drain.commit().is_err() {
-                    self.quarantine_filter_runtime(filter_id);
-                    let error = DemuxRuntimeError::queue_runtime_failure(filter_id);
-                    report.failed(FilterRuntimeOperationStep::QueueClear, error.kind);
-                    report.finish(FilterRuntimeOperationOutcome::Isolated {
-                        failed_step: FilterRuntimeOperationStep::QueueClear,
-                    });
-                    return (report, Err(error));
-                }
-                if let Some(next_source_generation) = next_source_generation {
-                    self.pipeline.reset_origin(TsInputOrigin::SourceFilter {
-                        source_filter_id: filter_id,
-                        source_filter_generation: snapshot.generation,
-                    });
-                    let Some(source_filter) = self.filters.get_mut(&filter_id) else {
-                        let error = DemuxRuntimeError::filter_missing(filter_id);
-                        report.failed(FilterRuntimeOperationStep::PipelineFlush, error.kind);
-                        report.finish(FilterRuntimeOperationOutcome::Isolated {
-                            failed_step: FilterRuntimeOperationStep::PipelineFlush,
-                        });
-                        return (report, Err(error));
-                    };
-                    source_filter.set_generation(next_source_generation);
-                    if let Err(error) = self.refresh_source_filter_downstreams(
-                        filter_id,
-                        next_source_generation,
-                    ) {
-                        self.quarantine_filter_runtime(filter_id);
-                        report.failed(FilterRuntimeOperationStep::QueueClear, error.kind);
-                        report.finish(FilterRuntimeOperationOutcome::Isolated {
-                            failed_step: FilterRuntimeOperationStep::QueueClear,
-                        });
-                        return (report, Err(error));
-                    }
-                }
-                report.finish(FilterRuntimeOperationOutcome::Committed);
-                (report, Ok(()))
-            }
+            | FilterRuntimeState::Stopped => {}
             FilterRuntimeState::Open => {
-                let error = DemuxRuntimeError::invalid_state(filter_id);
-                report.failed(FilterRuntimeOperationStep::ValidateState, error.kind);
-                report.finish(FilterRuntimeOperationOutcome::Failed {
-                    failed_step: FilterRuntimeOperationStep::ValidateState,
-                });
-                (report, Err(error))
+                return Err(DemuxRuntimeError::invalid_state(filter_id));
             }
             FilterRuntimeState::Closing
             | FilterRuntimeState::CleanupFailed
             | FilterRuntimeState::Closed
             | FilterRuntimeState::Failed => {
-                let error = DemuxRuntimeError::sink_lifecycle(filter_id);
-                report.failed(FilterRuntimeOperationStep::ValidateState, error.kind);
-                report.finish(FilterRuntimeOperationOutcome::Failed {
-                    failed_step: FilterRuntimeOperationStep::ValidateState,
-                });
-                (report, Err(error))
+                return Err(DemuxRuntimeError::sink_lifecycle(filter_id));
             }
         }
+        let next_source_generation = if self.source_filter_downstream_ids(filter_id).is_empty() {
+            None
+        } else {
+            match next_generation(snapshot.generation) {
+                Ok(next) => Some(next),
+                Err(_) => {
+                    self.quarantine_filter_runtime(filter_id);
+                    return Err(DemuxRuntimeError::generation_exhausted(Some(filter_id)));
+                }
+            }
+        };
+        let gate = self
+            .filter_producer_gates
+            .get(&filter_id)
+            .cloned()
+            .ok_or(DemuxRuntimeError::filter_missing(filter_id))?;
+        let drain = match gate.begin_drain(FilterDrainBoundary::Flush) {
+            Ok(drain) => drain,
+            Err(_) => {
+                self.quarantine_filter_runtime(filter_id);
+                return Err(DemuxRuntimeError::queue_runtime_failure(filter_id));
+            }
+        };
+        Ok(FilterQueueCleanupPlan {
+            filter_id,
+            snapshot,
+            next_source_generation,
+            drain,
+        })
+    }
+
+    pub fn flush_filter_pipeline_for_queue_cleanup(&mut self, plan: &FilterQueueCleanupPlan) {
+        if let (Some(origin), Some(tpid)) = (
+            plan.snapshot.source.source_filter_origin(),
+            plan.snapshot.tpid.and_then(ConfigInputPid::validate_tpid),
+        ) {
+            let origins = [(origin, tpid)];
+            self.pipeline.flush_filter(plan.filter_id, &origins);
+        } else {
+            self.pipeline.clear_filter_state_after_flush(plan.filter_id);
+        }
+    }
+
+    pub fn clear_filter_fmq_for_queue_cleanup(
+        &mut self,
+        plan: &FilterQueueCleanupPlan,
+    ) -> Result<bool, DemuxRuntimeError> {
+        if !plan.snapshot.queue_present {
+            return Ok(false);
+        }
+        if let Err(error) = self.clear_filter_queue_runtime(plan.filter_id) {
+            self.quarantine_filter_runtime(plan.filter_id);
+            return Err(error);
+        }
+        Ok(true)
+    }
+
+    pub fn discard_filter_pending_events_for_queue_cleanup(
+        &mut self,
+        plan: &mut FilterQueueCleanupPlan,
+    ) -> Result<(), DemuxRuntimeError> {
+        let pending_events = match plan.drain.take_pending_events() {
+            Ok(events) => events,
+            Err(_) => {
+                self.quarantine_filter_runtime(plan.filter_id);
+                return Err(DemuxRuntimeError::queue_runtime_failure(plan.filter_id));
+            }
+        };
+        if let Err(error) = self.discard_undelivered_filter_events(plan.filter_id, pending_events) {
+            self.quarantine_filter_runtime(plan.filter_id);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub fn clear_filter_payload_state_for_queue_cleanup(
+        &mut self,
+        plan: &FilterQueueCleanupPlan,
+    ) -> FilterQueuePayloadCleanupOutcome {
+        #[cfg(test)]
+        if let Some(queue) = self.filter_queue_mirror.get_mut(&plan.filter_id) {
+            queue.clear();
+        }
+        let filter_state_cleared = if let Some(filter) = self.filters.get_mut(&plan.filter_id) {
+            filter.clear_queued_payload_state();
+            filter.reset_section_delivery_state();
+            filter.reset_audio_timestamp_association();
+            filter.clear_pending_start_id();
+            true
+        } else {
+            false
+        };
+        FilterQueuePayloadCleanupOutcome {
+            filter_state_cleared,
+        }
+    }
+
+    pub fn flush_filter_av_backing_for_queue_cleanup(
+        &mut self,
+        plan: &FilterQueueCleanupPlan,
+    ) -> bool {
+        if let Some(backing) = self.filter_av_backings.get_mut(&plan.filter_id) {
+            backing.flush_slots_keep_exported_handle();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn invalidate_filter_pcr_for_queue_cleanup(&mut self, plan: &FilterQueueCleanupPlan) {
+        self.invalidate_pcr_clock_anchor(plan.filter_id);
+    }
+
+    pub fn commit_filter_producer_drain_for_queue_cleanup(
+        &mut self,
+        plan: FilterQueueCleanupPlan,
+    ) -> Result<CommittedFilterQueueCleanup, DemuxRuntimeError> {
+        let FilterQueueCleanupPlan {
+            filter_id,
+            snapshot,
+            next_source_generation,
+            drain,
+        } = plan;
+        if drain.commit().is_err() {
+            self.quarantine_filter_runtime(filter_id);
+            return Err(DemuxRuntimeError::queue_runtime_failure(filter_id));
+        }
+        Ok(CommittedFilterQueueCleanup {
+            filter_id,
+            source_generation: next_source_generation
+                .map(|next_generation| (snapshot.generation, next_generation)),
+        })
+    }
+
+    pub fn refresh_filter_source_generation_for_queue_cleanup(
+        &mut self,
+        committed: CommittedFilterQueueCleanup,
+    ) -> Result<bool, DemuxRuntimeError> {
+        let Some((previous_generation, next_generation)) = committed.source_generation else {
+            return Ok(false);
+        };
+        self.pipeline.reset_origin(TsInputOrigin::SourceFilter {
+            source_filter_id: committed.filter_id,
+            source_filter_generation: previous_generation,
+        });
+        let Some(source_filter) = self.filters.get_mut(&committed.filter_id) else {
+            return Err(DemuxRuntimeError::filter_missing(committed.filter_id));
+        };
+        source_filter.set_generation(next_generation);
+        if let Err(error) =
+            self.refresh_source_filter_downstreams(committed.filter_id, next_generation)
+        {
+            self.quarantine_filter_runtime(committed.filter_id);
+            return Err(error);
+        }
+        Ok(true)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn flush_filter_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError> {
+        let mut plan =
+            self.prepare_filter_queue_cleanup(FilterRuntimeOperationRequest::new(filter_id))?;
+        self.flush_filter_pipeline_for_queue_cleanup(&plan);
+        self.clear_filter_fmq_for_queue_cleanup(&plan)?;
+        self.discard_filter_pending_events_for_queue_cleanup(&mut plan)?;
+        let _ = self.clear_filter_payload_state_for_queue_cleanup(&plan);
+        let _ = self.flush_filter_av_backing_for_queue_cleanup(&plan);
+        self.invalidate_filter_pcr_for_queue_cleanup(&plan);
+        let committed = self.commit_filter_producer_drain_for_queue_cleanup(plan)?;
+        self.refresh_filter_source_generation_for_queue_cleanup(committed)
+            .map(|_| ())
     }
 
     pub fn configure_filter_av_stream_type_from_typed_request(
@@ -2461,9 +2667,6 @@ impl DemuxRuntime {
             .get_mut(&filter_id)
             .ok_or(DemuxRuntimeError::filter_missing(filter_id))?
             .set_av_stream_type_hint(config);
-        if let Some(backing) = self.filter_av_backings.get_mut(&filter_id) {
-            backing.flush_slots_keep_exported_handle();
-        }
         Ok(())
     }
 
@@ -2479,9 +2682,6 @@ impl DemuxRuntime {
         filter_id: i32,
         hint: FilterDelayHint,
     ) -> Result<(), DemuxRuntimeError> {
-        if matches!(hint, FilterDelayHint::TimeDelayMs(ms) if ms > MAX_FILTER_DELAY_MS) {
-            return Err(DemuxRuntimeError::invalid_state(filter_id));
-        }
         self.filters
             .get_mut(&filter_id)
             .ok_or(DemuxRuntimeError::filter_missing(filter_id))?
@@ -2553,10 +2753,8 @@ impl DemuxRuntime {
         dvr_id: i32,
         filter_id: i32,
     ) -> Result<(), DemuxRuntimeError> {
-        let prepared = self.prepare_dvr_filter_relation(
-            DvrFilterLinkRequest::new(dvr_id, filter_id),
-            true,
-        )?;
+        let prepared =
+            self.prepare_dvr_filter_relation(DvrFilterLinkRequest::new(dvr_id, filter_id), true)?;
         self.commit_prepared_dvr_filter_relation(prepared)
     }
 
@@ -2594,11 +2792,13 @@ impl DemuxRuntime {
         if filter.open_kind() != PipelineOpenKind::Record {
             return Err(DemuxRuntimeError::invalid_dvr_filter(filter_id));
         }
-        if attach && self.dvrs.iter().any(|(other_dvr_id, other_dvr)| {
-            *other_dvr_id != dvr_id
-                && other_dvr.kind() == DvrKind::Record
-                && other_dvr.attached_record_filters().contains(&filter_id)
-        }) {
+        if attach
+            && self.dvrs.iter().any(|(other_dvr_id, other_dvr)| {
+                *other_dvr_id != dvr_id
+                    && other_dvr.kind() == DvrKind::Record
+                    && other_dvr.attached_record_filters().contains(&filter_id)
+            })
+        {
             return Err(DemuxRuntimeError::unsupported_dvr_operation(dvr_id));
         }
         match dvr.state() {
@@ -2657,10 +2857,8 @@ impl DemuxRuntime {
         dvr_id: i32,
         filter_id: i32,
     ) -> Result<(), DemuxRuntimeError> {
-        let prepared = self.prepare_dvr_filter_relation(
-            DvrFilterLinkRequest::new(dvr_id, filter_id),
-            false,
-        )?;
+        let prepared =
+            self.prepare_dvr_filter_relation(DvrFilterLinkRequest::new(dvr_id, filter_id), false)?;
         self.commit_prepared_dvr_filter_relation(prepared)
     }
 
@@ -2772,10 +2970,7 @@ impl DemuxRuntime {
         let availability = queue
             .availability_snapshot()
             .map_err(|_| DemuxRuntimeError::queue_runtime_failure(dvr_id))?;
-        Ok(dvr.status_event_for_snapshot(
-            availability.readable_bytes,
-            availability.writable_bytes,
-        ))
+        Ok(dvr.status_event_for_snapshot(availability.readable_bytes, availability.writable_bytes))
     }
 
     pub fn stop_dvr_runtime_from_typed_request(
@@ -2810,14 +3005,11 @@ impl DemuxRuntime {
         }
     }
 
-    pub fn flush_dvr_runtime_from_typed_request(
+    pub fn prepare_dvr_queue_cleanup(
         &mut self,
         request: DvrRuntimeOperationRequest,
-    ) -> Result<(), DemuxRuntimeError> {
-        self.flush_dvr_runtime(request.dvr_id)
-    }
-
-    pub(crate) fn flush_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
+    ) -> Result<DvrQueueCleanupPlan, DemuxRuntimeError> {
+        let dvr_id = request.dvr_id;
         let (state, kind, generation, attached_record_filters) = {
             let dvr = self
                 .dvrs
@@ -2837,9 +3029,7 @@ impl DemuxRuntime {
             super::dvr::DvrRuntimeState::Configured
             | super::dvr::DvrRuntimeState::Started
             | super::dvr::DvrRuntimeState::Stopped => {
-                if kind == DvrKind::Record
-                    && state == super::dvr::DvrRuntimeState::Started
-                {
+                if kind == DvrKind::Record && state == super::dvr::DvrRuntimeState::Started {
                     return Err(DemuxRuntimeError::invalid_state(dvr_id));
                 }
                 let next_playback_generation = if kind == DvrKind::Playback {
@@ -2869,44 +3059,26 @@ impl DemuxRuntime {
                 } else {
                     None
                 };
-                let queue_dropped_bytes = match self.clear_dvr_queue_runtime(dvr_id) {
-                    Ok(dropped_bytes) => dropped_bytes,
+                let drain = match self
+                    .dvr_queue_runtimes
+                    .get(&dvr_id)
+                    .ok_or(DemuxRuntimeError::queue_missing(dvr_id))?
+                    .begin_dvr_drain()
+                {
+                    Ok(drain) => drain,
                     Err(_) => {
                         self.quarantine_dvr_runtime(dvr_id);
                         return Err(DemuxRuntimeError::queue_runtime_failure(dvr_id));
                     }
                 };
-                if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
-                    if kind == DvrKind::Playback {
-                        #[cfg(test)]
-                        let assembler_dropped_bytes =
-                            dvr.drain_playback_completion_for_boundary();
-                        #[cfg(not(test))]
-                        let assembler_dropped_bytes = 0;
-                        dvr.reset_playback_stats_after_flush(
-                            queue_dropped_bytes.saturating_add(assembler_dropped_bytes),
-                        );
-                        if let Some(next) = next_playback_generation {
-                            dvr.set_generation(next);
-                        }
-                    } else {
-                        dvr.clear_pending_overflow();
-                    }
-                }
-                if let Some((queue_identity, queue_epoch)) = playback_coordinates {
-                    self.pipeline.reset_origin(TsInputOrigin::PlaybackDvr {
-                        dvr_id,
-                        queue_identity,
-                        queue_epoch,
-                    });
-                    self.invalidate_all_pcr_clock_anchors();
-                }
-                if kind == DvrKind::Record {
-                    for filter_id in attached_record_filters {
-                        self.pipeline.reset_record_index_state(filter_id);
-                    }
-                }
-                Ok(())
+                Ok(DvrQueueCleanupPlan {
+                    dvr_id,
+                    kind,
+                    next_playback_generation,
+                    attached_record_filters,
+                    playback_coordinates,
+                    drain,
+                })
             }
             super::dvr::DvrRuntimeState::Open => Err(DemuxRuntimeError::invalid_state(dvr_id)),
             super::dvr::DvrRuntimeState::Closing
@@ -2914,6 +3086,149 @@ impl DemuxRuntime {
             | super::dvr::DvrRuntimeState::Closed
             | super::dvr::DvrRuntimeState::Failed => Err(DemuxRuntimeError::invalid_state(dvr_id)),
         }
+    }
+
+    pub fn commit_dvr_queue_boundary_for_queue_cleanup(
+        &mut self,
+        plan: DvrQueueCleanupPlan,
+    ) -> Result<CommittedDvrQueueCleanup, DvrQueueCleanupCommitError> {
+        let DvrQueueCleanupPlan {
+            dvr_id,
+            kind,
+            next_playback_generation,
+            attached_record_filters,
+            playback_coordinates,
+            drain,
+        } = plan;
+        let Some(queue) = self.dvr_queue_runtimes.get(&dvr_id) else {
+            self.quarantine_dvr_runtime(dvr_id);
+            return Err(DvrQueueCleanupCommitError::new(
+                DvrQueueCleanupStep::QueueClear,
+                DemuxRuntimeError::queue_missing(dvr_id),
+            ));
+        };
+        let queue_commit_result = queue.commit_dvr_drain_with_queue_clear(drain);
+        let queue_dropped_bytes = match queue_commit_result {
+            Ok(dropped_bytes) => dropped_bytes,
+            Err(DvrQueueDrainCommitError::QueueClear) => {
+                return Err(DvrQueueCleanupCommitError::new(
+                    DvrQueueCleanupStep::QueueClear,
+                    DemuxRuntimeError::queue_runtime_failure(dvr_id),
+                ));
+            }
+            Err(DvrQueueDrainCommitError::QueueClearRollbackFailed) => {
+                self.quarantine_dvr_runtime(dvr_id);
+                return Err(DvrQueueCleanupCommitError::with_rollback_failure(
+                    DvrQueueCleanupStep::QueueClear,
+                    DemuxRuntimeError::queue_runtime_failure(dvr_id),
+                ));
+            }
+            Err(DvrQueueDrainCommitError::EpochCommit) => {
+                self.quarantine_dvr_runtime(dvr_id);
+                return Err(DvrQueueCleanupCommitError::new(
+                    DvrQueueCleanupStep::QueueEpochCommit,
+                    DemuxRuntimeError::queue_runtime_failure(dvr_id),
+                ));
+            }
+            Err(DvrQueueDrainCommitError::EpochCommitRollbackFailed) => {
+                self.quarantine_dvr_runtime(dvr_id);
+                return Err(DvrQueueCleanupCommitError::with_rollback_failure(
+                    DvrQueueCleanupStep::QueueEpochCommit,
+                    DemuxRuntimeError::queue_runtime_failure(dvr_id),
+                ));
+            }
+        };
+        Ok(CommittedDvrQueueCleanup {
+            dvr_id,
+            kind,
+            next_playback_generation,
+            attached_record_filters,
+            playback_coordinates,
+            queue_dropped_bytes,
+        })
+    }
+
+    pub fn commit_dvr_runtime_state_for_queue_cleanup(
+        &mut self,
+        committed: &CommittedDvrQueueCleanup,
+    ) -> Result<(), DemuxRuntimeError> {
+        let Some(dvr) = self.dvrs.get_mut(&committed.dvr_id) else {
+            self.quarantine_dvr_runtime(committed.dvr_id);
+            return Err(DemuxRuntimeError::dvr_missing(committed.dvr_id));
+        };
+        if committed.kind == DvrKind::Playback {
+            #[cfg(test)]
+            let assembler_dropped_bytes = dvr.drain_playback_completion_for_boundary();
+            #[cfg(not(test))]
+            let assembler_dropped_bytes = 0;
+            dvr.reset_playback_stats_after_flush(
+                committed
+                    .queue_dropped_bytes
+                    .saturating_add(assembler_dropped_bytes),
+            );
+            if let Some(next) = committed.next_playback_generation {
+                dvr.set_generation(next);
+            }
+        } else {
+            dvr.clear_pending_overflow();
+        }
+        Ok(())
+    }
+
+    pub fn reset_dvr_playback_pipeline_for_queue_cleanup(
+        &mut self,
+        committed: &CommittedDvrQueueCleanup,
+    ) -> bool {
+        let Some((queue_identity, queue_epoch)) = committed.playback_coordinates else {
+            return false;
+        };
+        let origin = TsInputOrigin::PlaybackDvr {
+            dvr_id: committed.dvr_id,
+            queue_identity,
+            queue_epoch,
+        };
+        self.pipeline.reset_origin(origin);
+        for filter in self.filters.values_mut() {
+            filter.reset_audio_timestamp_association_for_origin(origin);
+        }
+        true
+    }
+
+    pub fn invalidate_dvr_playback_pcr_for_queue_cleanup(
+        &mut self,
+        committed: &CommittedDvrQueueCleanup,
+    ) -> bool {
+        if !committed.is_playback() {
+            return false;
+        }
+        self.invalidate_all_pcr_clock_anchors();
+        true
+    }
+
+    pub fn reset_dvr_record_index_for_queue_cleanup(
+        &mut self,
+        committed: &CommittedDvrQueueCleanup,
+    ) -> bool {
+        if committed.kind != DvrKind::Record {
+            return false;
+        }
+        for filter_id in &committed.attached_record_filters {
+            self.pipeline.reset_record_index_state(*filter_id);
+        }
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn flush_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
+        let plan = self.prepare_dvr_queue_cleanup(DvrRuntimeOperationRequest::new(dvr_id))?;
+        let committed = self
+            .commit_dvr_queue_boundary_for_queue_cleanup(plan)
+            .map_err(DvrQueueCleanupCommitError::error)?;
+        self.commit_dvr_runtime_state_for_queue_cleanup(&committed)?;
+        self.reset_dvr_playback_pipeline_for_queue_cleanup(&committed);
+        self.invalidate_dvr_playback_pcr_for_queue_cleanup(&committed);
+        self.reset_dvr_record_index_for_queue_cleanup(&committed);
+        Ok(())
     }
 
     pub fn set_dvr_status_check_interval_from_typed_request(
@@ -3003,21 +3318,25 @@ impl DemuxRuntime {
                 .wake(TUNER_EVENT_DATA_READY)
                 .map_err(|_| FmqFailureKind::EventFlagWakeFailed),
         );
-        if matches!(
-            result.action,
-            FmqDeliveryAction::Continue | FmqDeliveryAction::WakePending
-        ) {
-            transaction
-                .commit()
-                .map_err(|_| DemuxRuntimeError::queue_runtime_failure(dvr_id))?;
-        }
         match result.action {
-            FmqDeliveryAction::Continue | FmqDeliveryAction::WakePending => Ok(result.bytes),
-            FmqDeliveryAction::Overflow => Ok(0),
+            FmqDeliveryAction::Continue | FmqDeliveryAction::WakePending => {
+                transaction
+                    .commit()
+                    .map_err(|_| DemuxRuntimeError::queue_runtime_failure(dvr_id))?;
+                Ok(result.bytes)
+            }
+            FmqDeliveryAction::Overflow => {
+                transaction
+                    .abort()
+                    .map_err(|_| DemuxRuntimeError::queue_runtime_failure(dvr_id))?;
+                Ok(0)
+            }
             FmqDeliveryAction::RuntimeFailed(_) => {
+                let abort_failed = transaction.abort().is_err();
                 if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
                     dvr.mark_failed();
                 }
+                let _ = abort_failed;
                 Err(DemuxRuntimeError::queue_runtime_failure(dvr_id))
             }
         }
@@ -3080,6 +3399,12 @@ impl DemuxRuntime {
         let (queue_identity, queue_epoch) = match token.playback_coordinates() {
             Ok(coordinates) => coordinates,
             Err(_) => {
+                if token.abort().is_err() {
+                    self.quarantine_dvr_runtime(dvr_id);
+                    return Err(DemuxRuntimeError::queue_runtime_failure_rollback_failed(
+                        dvr_id,
+                    ));
+                }
                 if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
                     dvr.mark_failed();
                 }
@@ -3103,10 +3428,7 @@ impl DemuxRuntime {
         txn: &PlaybackQueueReadTxn,
         destination: &mut [u8],
     ) -> Result<usize, DemuxRuntimeError> {
-        if destination.is_empty()
-            || destination.len() > txn.read_limit
-            || txn.token.is_none()
-        {
+        if destination.is_empty() || destination.len() > txn.read_limit || txn.token.is_none() {
             return Err(DemuxRuntimeError::queue_runtime_failure(txn.dvr_id));
         }
         match self
@@ -3123,6 +3445,22 @@ impl DemuxRuntime {
                 Err(DemuxRuntimeError::queue_runtime_failure(txn.dvr_id))
             }
         }
+    }
+
+    pub fn abort_playback_queue_read(
+        &mut self,
+        mut txn: PlaybackQueueReadTxn,
+    ) -> Result<(), DemuxRuntimeError> {
+        let token = txn
+            .token
+            .take()
+            .ok_or(DemuxRuntimeError::queue_runtime_failure(txn.dvr_id))?;
+        token.abort().map_err(|_| {
+            if let Some(dvr) = self.dvrs.get_mut(&txn.dvr_id) {
+                dvr.mark_failed();
+            }
+            DemuxRuntimeError::queue_runtime_failure(txn.dvr_id)
+        })
     }
 
     pub fn commit_playback_queue_read(
@@ -3318,11 +3656,7 @@ impl DemuxRuntime {
                 .dvrs
                 .get_mut(&dvr_id)
                 .ok_or(DemuxRuntimeError::dvr_missing(dvr_id))?;
-            dvr.note_playback_consume(
-                injected_packets,
-                malformed_packets,
-                drain.malformed_bytes,
-            );
+            dvr.note_playback_consume(injected_packets, malformed_packets, drain.malformed_bytes);
             dvr.playback_stats()
         };
         if dropped_bytes > 0 {
@@ -3420,8 +3754,7 @@ impl DemuxRuntime {
         if !self.filters.contains_key(&sink_filter_id) {
             return Err(DemuxRuntimeError::filter_missing(sink_filter_id));
         }
-        self.pipeline
-            .clear_filter_state_after_flush(sink_filter_id);
+        self.pipeline.clear_filter_state_after_flush(sink_filter_id);
         self.invalidate_pcr_clock_anchor(sink_filter_id);
         Ok(PipelineResetReport {
             cleared: true,
@@ -3516,8 +3849,7 @@ impl DemuxRuntime {
             .take_pending_events()
             .map_err(|_| DemuxRuntimeError::queue_runtime_failure(sink_filter_id))?;
         self.discard_undelivered_filter_events(sink_filter_id, pending_events)?;
-        self.pipeline
-            .clear_filter_state_after_flush(sink_filter_id);
+        self.pipeline.clear_filter_state_after_flush(sink_filter_id);
         #[cfg(test)]
         if let Some(queue) = self.filter_queue_mirror.get_mut(&sink_filter_id) {
             queue.clear();
@@ -3527,6 +3859,9 @@ impl DemuxRuntime {
             .get_mut(&sink_filter_id)
             .ok_or(DemuxRuntimeError::filter_missing(sink_filter_id))?;
         filter.clear_queued_payload_state();
+        filter.reset_section_delivery_state();
+        filter.reset_audio_timestamp_association();
+        filter.clear_pending_start_id();
         match next_source_generation {
             Some(source_filter_generation) => {
                 if !filter.set_source_filter(
@@ -3674,15 +4009,18 @@ impl DemuxRuntime {
         if self.state != DemuxRuntimeState::Open {
             return Err(DemuxRuntimeError::invalid_state(self.demux_id));
         }
-        if !self.stream_boundary.commit_prepared_generation(
-            prepared.expected_generation,
-            prepared.next_generation,
-        ) {
+        if !self
+            .stream_boundary
+            .commit_prepared_generation(prepared.expected_generation, prepared.next_generation)
+        {
             return Err(DemuxRuntimeError::invalid_state(self.demux_id));
         }
         self.pipeline = prepared.prepared_pipeline;
         for filter in self.filters.values_mut() {
             filter.clear_queued_payload_state();
+            filter.reset_section_delivery_state();
+            filter.reset_audio_timestamp_association();
+            filter.clear_pending_start_id();
         }
         self.pcr_clock_anchor_store
             .commit_invalidation(prepared.pcr_invalidation);
@@ -3780,10 +4118,7 @@ impl DemuxRuntime {
 
     pub(crate) fn quarantine_filter_runtime(&mut self, filter_id: i32) {
         let downstream_ids = self.source_filter_downstream_ids(filter_id);
-        let source_generation = self
-            .filters
-            .get(&filter_id)
-            .map(FilterRuntime::generation);
+        let source_generation = self.filters.get(&filter_id).map(FilterRuntime::generation);
         if let Some(gate) = self.filter_producer_gates.get(&filter_id) {
             if gate.close().is_err() {
                 self.state = DemuxRuntimeState::Quarantined;
@@ -3836,12 +4171,16 @@ impl DemuxRuntime {
             dvr.mark_failed();
         }
         if let Some((queue_identity, queue_epoch)) = playback_coordinates {
-            self.pipeline.reset_origin(TsInputOrigin::PlaybackDvr {
+            let origin = TsInputOrigin::PlaybackDvr {
                 dvr_id,
                 queue_identity,
                 queue_epoch,
-            });
+            };
+            self.pipeline.reset_origin(origin);
             self.invalidate_all_pcr_clock_anchors();
+            for filter in self.filters.values_mut() {
+                filter.reset_audio_timestamp_association_for_origin(origin);
+            }
         }
     }
 
@@ -3978,10 +4317,15 @@ impl DemuxRuntime {
         });
         report.diagnostics.extend(downstream.diagnostics);
         self.mark_filters_failed_for_generation_overflow(&report.diagnostics);
-        let av_payloads: Vec<_> = report
-            .generated_events
-            .iter()
-            .filter_map(|event| match event {
+        self.reset_audio_timestamp_associations_after_packet_gap(
+            validated.pid(),
+            origin,
+            &report.diagnostics,
+        );
+        let mut av_payloads = Vec::new();
+        let generated_events = std::mem::take(&mut report.generated_events);
+        for event in generated_events {
+            match event {
                 PipelineGeneratedEvent::PesPacketReady {
                     filter_id,
                     pid,
@@ -3989,57 +4333,66 @@ impl DemuxRuntime {
                     ..
                 } if self
                     .filters
-                    .get(filter_id)
-                    .is_some_and(|filter| filter.open_kind() == PipelineOpenKind::Av) => {
-                    Some((*filter_id, *pid, packet.payload.clone()))
+                    .get(&filter_id)
+                    .is_some_and(|filter| filter.open_kind() == PipelineOpenKind::Av) =>
+                {
+                    av_payloads.push((filter_id, pid, packet));
                 }
-                _ => None,
-            })
-            .collect();
-        report.generated_events.retain(|event| match event {
-            PipelineGeneratedEvent::PesPacketReady { filter_id, .. } => !self
-                .filters
-                .get(filter_id)
-                .is_some_and(|filter| filter.open_kind() == PipelineOpenKind::Av),
-            _ => true,
-        });
-        for (filter_id, pid, payload) in av_payloads {
-            let outcome = self
-                .filter_av_backings
-                .get_mut(&filter_id)
-                .map(|backing| backing.allocate_payload_bytes(&payload));
-            match outcome {
-                Some(Ok(AvPayloadDeliveryOutcome::Delivered(descriptor))) => {
-                    report
-                        .generated_events
-                        .push(PipelineGeneratedEvent::AvMedia {
-                            filter_id,
-                            descriptor,
-                        });
-                }
-                Some(Ok(outcome)) => {
-                    if let Some(diagnostic) =
-                        av_payload_delivery_outcome_diagnostic(outcome, pid, filter_id)
-                    {
-                        report.diagnostics.push(diagnostic);
-                    }
-                }
-                Some(Err(error)) => {
-                    if let Some(filter) = self.filters.get_mut(&filter_id) {
-                        filter.mark_failed();
-                    }
+                event => report.generated_events.push(event),
+            }
+        }
+        for (filter_id, pid, packet) in av_payloads {
+            let Some(filter) = self.filters.get_mut(&filter_id) else {
+                continue;
+            };
+            let payloads = match filter.prepare_av_media_payloads(packet, origin) {
+                Ok(payloads) => payloads,
+                Err(_) => {
                     report.diagnostics.push(
-                        crate::packet_pipeline::PipelineDiagnostic::av_shared_backing_failure(
-                            pid, filter_id, error,
-                        ),
-                    );
-                }
-                None => {
-                    report.diagnostics.push(
-                        crate::packet_pipeline::PipelineDiagnostic::av_shared_backing_missing(
+                        crate::packet_pipeline::PipelineDiagnostic::av_authoritative_timestamp_unavailable(
                             pid, filter_id,
                         ),
                     );
+                    continue;
+                }
+            };
+            for payload in payloads {
+                let outcome = self.filter_av_backings.get_mut(&filter_id).map(|backing| {
+                    backing.allocate_payload_bytes(&payload.payload, payload.metadata)
+                });
+                match outcome {
+                    Some(Ok(AvPayloadDeliveryOutcome::Delivered(descriptor))) => {
+                        report
+                            .generated_events
+                            .push(PipelineGeneratedEvent::AvMedia {
+                                filter_id,
+                                descriptor,
+                            });
+                    }
+                    Some(Ok(outcome)) => {
+                        if let Some(diagnostic) =
+                            av_payload_delivery_outcome_diagnostic(outcome, pid, filter_id)
+                        {
+                            report.diagnostics.push(diagnostic);
+                        }
+                    }
+                    Some(Err(error)) => {
+                        if let Some(filter) = self.filters.get_mut(&filter_id) {
+                            filter.mark_failed();
+                        }
+                        report.diagnostics.push(
+                            crate::packet_pipeline::PipelineDiagnostic::av_shared_backing_failure(
+                                pid, filter_id, error,
+                            ),
+                        );
+                    }
+                    None => {
+                        report.diagnostics.push(
+                            crate::packet_pipeline::PipelineDiagnostic::av_shared_backing_missing(
+                                pid, filter_id,
+                            ),
+                        );
+                    }
                 }
             }
         }
@@ -4057,6 +4410,7 @@ impl DemuxRuntime {
             packet,
             &mut report.generated_events,
             packet_pid,
+            origin,
         );
         report.diagnostics.extend(queue_payload_diagnostics);
         let source_filter_ids: Vec<i32> = report
@@ -4081,12 +4435,9 @@ impl DemuxRuntime {
             let has_started_downstream = self.filters.values().any(|filter| {
                 let view = filter.pipeline_view();
                 view.started
-                    && view.source_filter
-                        == Some((source_filter_id, source_filter_generation))
+                    && view.source_filter == Some((source_filter_id, source_filter_generation))
             });
-            if !has_started_downstream
-                || !propagated_source_filters.insert(source_filter_id)
-            {
+            if !has_started_downstream || !propagated_source_filters.insert(source_filter_id) {
                 continue;
             }
             let downstream = self.push_validated_ts_packet_from_origin_inner(
@@ -4134,6 +4485,58 @@ impl DemuxRuntime {
                 if let Some(filter) = self.filters.get_mut(filter_id) {
                     filter.mark_failed();
                 }
+            }
+        }
+    }
+
+    fn reset_audio_timestamp_associations_after_packet_gap(
+        &mut self,
+        pid: crate::packet_pipeline::PacketPid,
+        origin: TsInputOrigin,
+        diagnostics: &[PipelineDiagnostic],
+    ) {
+        let timeline_gap = diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic,
+                PipelineDiagnostic::TeiAssemblySuppressed { pid: diagnostic_pid }
+                    | PipelineDiagnostic::ContinuityCounterCollisionAssemblySuppressed {
+                        pid: diagnostic_pid,
+                        ..
+                    }
+                    | PipelineDiagnostic::ContinuityDiscontinuityAssemblyReset {
+                        pid: diagnostic_pid,
+                        ..
+                    }
+                    | PipelineDiagnostic::KeylessScrambledAssemblySuppressed {
+                        pid: diagnostic_pid,
+                    }
+                    | PipelineDiagnostic::PesGenerationOverflow {
+                        pid: diagnostic_pid,
+                        ..
+                    }
+                    | PipelineDiagnostic::PesAssemblerDrop {
+                        pid: diagnostic_pid,
+                        ..
+                    }
+                    | PipelineDiagnostic::SourceFilterValidationFailure {
+                        pid: diagnostic_pid,
+                        ..
+                    }
+                    | PipelineDiagnostic::SourceFilterDescramblePolicyFailure {
+                        pid: diagnostic_pid,
+                        ..
+                    } if *diagnostic_pid == pid
+            )
+        });
+        if !timeline_gap {
+            return;
+        }
+        for filter in self.filters.values_mut() {
+            if filter
+                .pipeline_view()
+                .accepts_packet_pid_from_origin(pid, origin)
+            {
+                filter.reset_audio_timestamp_association_for_origin(origin);
             }
         }
     }
@@ -4260,19 +4663,6 @@ impl DemuxRuntime {
         Ok(())
     }
 
-    pub(crate) fn clear_dvr_queue_runtime(
-        &mut self,
-        dvr_id: i32,
-    ) -> Result<usize, DemuxRuntimeError> {
-        let queue = self
-            .dvr_queue_runtimes
-            .get_mut(&dvr_id)
-            .ok_or(DemuxRuntimeError::queue_missing(dvr_id))?;
-        queue
-            .clear_dvr_boundary()
-            .map_err(|_| DemuxRuntimeError::queue_runtime_failure(dvr_id))
-    }
-
     fn build_filter_queue_runtimes_for_snapshot(
         filters: &BTreeMap<i32, FilterRuntime>,
     ) -> Result<BTreeMap<i32, QueueRuntime>, DemuxRuntimeError> {
@@ -4293,12 +4683,9 @@ impl DemuxRuntime {
         let mut runtimes = BTreeMap::new();
         for (dvr_id, dvr) in dvrs {
             if Self::should_keep_dvr_queue_runtime(dvr) {
-                let queue = QueueRuntime::new_dvr(
-                    dvr.buffer_size(),
-                    true,
-                    dvr.kind() == DvrKind::Playback,
-                )
-                    .map_err(|_| DemuxRuntimeError::queue_runtime_failure(*dvr_id))?;
+                let queue =
+                    QueueRuntime::new_dvr(dvr.buffer_size(), true, dvr.kind() == DvrKind::Playback)
+                        .map_err(|_| DemuxRuntimeError::queue_runtime_failure(*dvr_id))?;
                 runtimes.insert(*dvr_id, queue);
             }
         }
@@ -4341,11 +4728,7 @@ impl DemuxRuntime {
         {
             return Ok(());
         }
-        let queue = QueueRuntime::new_dvr(
-            dvr.buffer_size(),
-            true,
-            dvr.kind() == DvrKind::Playback,
-        )
+        let queue = QueueRuntime::new_dvr(dvr.buffer_size(), true, dvr.kind() == DvrKind::Playback)
             .map_err(|_| DemuxRuntimeError::queue_runtime_failure(dvr_id))?;
         self.dvr_queue_runtimes.insert(dvr_id, queue);
         Ok(())
@@ -4367,10 +4750,7 @@ impl DemuxRuntime {
         delivery_actions: &[PipelineDeliveryAction],
         pid: crate::packet_pipeline::PacketPid,
         record_index_commit_mode: RecordIndexCommitMode,
-    ) -> (
-        Vec<PipelineDiagnostic>,
-        Vec<PipelineGeneratedEvent>,
-    ) {
+    ) -> (Vec<PipelineDiagnostic>, Vec<PipelineGeneratedEvent>) {
         let mut diagnostics = Vec::new();
         let mut generated_events = Vec::new();
         let mut matched_filter_ids = BTreeSet::new();
@@ -4391,13 +4771,11 @@ impl DemuxRuntime {
             let gate = match self.filter_producer_gates.get(&filter_id).cloned() {
                 Some(gate) => gate,
                 None => {
-                    diagnostics.push(
-                        PipelineDiagnostic::filter_queue_payload_delivery_failure(
-                            pid,
-                            filter_id,
-                            DemuxRuntimeError::filter_missing(filter_id),
-                        ),
-                    );
+                    diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(
+                        pid,
+                        filter_id,
+                        DemuxRuntimeError::filter_missing(filter_id),
+                    ));
                     continue;
                 }
             };
@@ -4418,13 +4796,11 @@ impl DemuxRuntime {
                 || admission_failures.try_reserve_exact(reserve_count).is_err()
             {
                 for (filter_id, _) in filter_gates {
-                    diagnostics.push(
-                        PipelineDiagnostic::filter_queue_payload_delivery_failure(
-                            pid,
-                            filter_id,
-                            DemuxRuntimeError::queue_runtime_failure(filter_id),
-                        ),
-                    );
+                    diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(
+                        pid,
+                        filter_id,
+                        DemuxRuntimeError::queue_runtime_failure(filter_id),
+                    ));
                 }
                 continue;
             }
@@ -4453,26 +4829,22 @@ impl DemuxRuntime {
             }
             if admitted.is_empty() {
                 for filter_id in admission_failures {
-                    diagnostics.push(
-                        PipelineDiagnostic::filter_queue_payload_delivery_failure(
-                            pid,
-                            filter_id,
-                            DemuxRuntimeError::queue_runtime_failure(filter_id),
-                        ),
-                    );
+                    diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(
+                        pid,
+                        filter_id,
+                        DemuxRuntimeError::queue_runtime_failure(filter_id),
+                    ));
                 }
                 continue;
             }
 
             let write_result = self.try_write_record_dvr_packet(dvr_id, packet.packet_bytes());
             for filter_id in admission_failures {
-                diagnostics.push(
-                    PipelineDiagnostic::filter_queue_payload_delivery_failure(
-                        pid,
-                        filter_id,
-                        DemuxRuntimeError::queue_runtime_failure(filter_id),
-                    ),
-                );
+                diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(
+                    pid,
+                    filter_id,
+                    DemuxRuntimeError::queue_runtime_failure(filter_id),
+                ));
             }
 
             match write_result {
@@ -4500,11 +4872,9 @@ impl DemuxRuntime {
                         if permit.commit().is_err() {
                             self.quarantine_filter_runtime(filter_id);
                         }
-                        diagnostics.push(
-                            PipelineDiagnostic::record_dvr_mirror_overflow(
-                                pid, filter_id, dvr_id,
-                            ),
-                        );
+                        diagnostics.push(PipelineDiagnostic::record_dvr_mirror_overflow(
+                            pid, filter_id, dvr_id,
+                        ));
                     }
                 }
                 Err(error) => {
@@ -4512,14 +4882,12 @@ impl DemuxRuntime {
                         if permit.commit().is_err() {
                             self.quarantine_filter_runtime(filter_id);
                         }
-                        diagnostics.push(
-                            PipelineDiagnostic::record_dvr_mirror_failure(
-                                pid,
-                                filter_id,
-                                dvr_id,
-                                error.clone(),
-                            ),
-                        );
+                        diagnostics.push(PipelineDiagnostic::record_dvr_mirror_failure(
+                            pid,
+                            filter_id,
+                            dvr_id,
+                            error.clone(),
+                        ));
                     }
                 }
             }
@@ -4531,13 +4899,11 @@ impl DemuxRuntime {
                 Err(_) => {
                     drop(permit);
                     self.quarantine_filter_runtime(filter_id);
-                    diagnostics.push(
-                        PipelineDiagnostic::filter_queue_payload_delivery_failure(
-                            pid,
-                            filter_id,
-                            DemuxRuntimeError::queue_runtime_failure(filter_id),
-                        ),
-                    );
+                    diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(
+                        pid,
+                        filter_id,
+                        DemuxRuntimeError::queue_runtime_failure(filter_id),
+                    ));
                     continue;
                 }
             };
@@ -4547,8 +4913,11 @@ impl DemuxRuntime {
                     .record_index_event_after_record_commit(filter_id, packet, byte_number),
                 RecordIndexCommitMode::ResetThenParse => {
                     self.pipeline.reset_record_index_partial_state(filter_id);
-                    self.pipeline
-                        .record_index_event_after_record_commit(filter_id, packet, byte_number)
+                    self.pipeline.record_index_event_after_record_commit(
+                        filter_id,
+                        packet,
+                        byte_number,
+                    )
                 }
                 RecordIndexCommitMode::AdvanceOnly => None,
                 RecordIndexCommitMode::ResetAndAdvance => {
@@ -4557,46 +4926,17 @@ impl DemuxRuntime {
                     None
                 }
             };
-            let gate = match self.filter_producer_gates.get(&filter_id).cloned() {
-                Some(gate) => gate,
-                None => {
-                    drop(permit);
-                    diagnostics.push(
-                        PipelineDiagnostic::filter_queue_payload_delivery_failure(
-                            pid,
-                            filter_id,
-                            DemuxRuntimeError::filter_missing(filter_id),
-                        ),
-                    );
-                    continue;
-                }
-            };
-            if permit
-                .commit_record_output(TS_PACKET_SIZE, event)
-                .is_err()
-            {
+            if permit.commit_record_output(TS_PACKET_SIZE, event).is_err() {
                 self.quarantine_filter_runtime(filter_id);
-                diagnostics.push(
-                    PipelineDiagnostic::filter_queue_payload_delivery_failure(
-                        pid,
-                        filter_id,
-                        DemuxRuntimeError::queue_runtime_failure(filter_id),
-                    ),
-                );
+                diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(
+                    pid,
+                    filter_id,
+                    DemuxRuntimeError::queue_runtime_failure(filter_id),
+                ));
                 continue;
             }
-            match gate.take_pending_events() {
-                Ok(mut events) => generated_events.append(&mut events),
-                Err(_) => {
-                    self.quarantine_filter_runtime(filter_id);
-                    diagnostics.push(
-                        PipelineDiagnostic::filter_queue_payload_delivery_failure(
-                            pid,
-                            filter_id,
-                            DemuxRuntimeError::queue_runtime_failure(filter_id),
-                        ),
-                    );
-                }
+            if let Some(filter) = self.filters.get_mut(&filter_id) {
+                filter.note_payload_queued(TS_PACKET_SIZE);
             }
         }
         (diagnostics, generated_events)
@@ -4643,8 +4983,7 @@ impl DemuxRuntime {
             .filter_map(|(dvr_id, dvr)| {
                 (dvr.kind() == DvrKind::Record
                     && dvr.state() == super::dvr::DvrRuntimeState::Started
-                    && dvr.record_filter_relation_state()
-                        == RecordDvrFilterRelationState::Healthy
+                    && dvr.record_filter_relation_state() == RecordDvrFilterRelationState::Healthy
                     && dvr.attached_record_filters().contains(&filter_id))
                 .then_some(*dvr_id)
             })
@@ -4744,11 +5083,28 @@ impl DemuxRuntime {
         packet: &[u8],
         generated_events: &mut Vec<PipelineGeneratedEvent>,
         packet_pid: crate::packet_pipeline::PacketPid,
+        origin: TsInputOrigin,
     ) -> Vec<crate::packet_pipeline::PipelineDiagnostic> {
         let mut diagnostics = Vec::new();
         let mut committed_events = Vec::with_capacity(generated_events.len());
         let mut gates_with_pending_events = BTreeSet::new();
         for event in std::mem::take(generated_events) {
+            let prepared_section_delivery =
+                match &event {
+                    PipelineGeneratedEvent::SectionPayloadReady {
+                        filter_id,
+                        pid,
+                        raw,
+                        bytes,
+                        ..
+                    } => match self.filters.get(filter_id).and_then(|filter| {
+                        filter.prepare_section_delivery(origin, *pid, bytes, *raw)
+                    }) {
+                        Some(prepared) => Some(prepared),
+                        None => continue,
+                    },
+                    _ => None,
+                };
             let (filter_id, pid, payload, callback_event) = match &event {
                 PipelineGeneratedEvent::FilterStatus { .. } => {
                     committed_events.push(event);
@@ -4820,8 +5176,9 @@ impl DemuxRuntime {
             };
             let payload_committed = payload.is_some();
             let payload_result = match payload {
-                Some(payload) => self
-                    .enqueue_filter_queue_payload_with_permit(filter_id, payload, &mut permit),
+                Some(payload) => {
+                    self.enqueue_filter_queue_payload_with_permit(filter_id, payload, &mut permit)
+                }
                 None => Ok(()),
             };
             if let Err(error) = payload_result {
@@ -4871,18 +5228,51 @@ impl DemuxRuntime {
             } else {
                 true
             };
+            if permit_committed {
+                if let Some(prepared) = prepared_section_delivery {
+                    let committed = self
+                        .filters
+                        .get_mut(&filter_id)
+                        .is_some_and(|filter| filter.commit_section_delivery(prepared));
+                    if !committed {
+                        self.quarantine_filter_runtime(filter_id);
+                        diagnostics.push(
+                            PipelineDiagnostic::filter_queue_payload_delivery_failure(
+                                pid,
+                                filter_id,
+                                DemuxRuntimeError::queue_runtime_failure(filter_id),
+                            ),
+                        );
+                        continue;
+                    }
+                }
+            }
             if payload_committed && permit_committed {
                 match self.committed_filter_status_events(filter_id) {
                     Ok(mut events) => committed_events.append(&mut events),
-                    Err(error) => diagnostics.push(
-                        PipelineDiagnostic::filter_queue_payload_delivery_failure(
+                    Err(error) => {
+                        diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(
                             pid, filter_id, error,
-                        ),
-                    ),
+                        ))
+                    }
                 }
             }
         }
+        for (filter_id, filter) in &self.filters {
+            if filter.state().is_started()
+                && filter.delivery_readiness() == FilterDelayReadiness::Ready
+            {
+                gates_with_pending_events.insert(*filter_id);
+            }
+        }
         for filter_id in gates_with_pending_events {
+            let ready = self.filters.get(&filter_id).is_some_and(|filter| {
+                filter.state().is_started()
+                    && filter.delivery_readiness() == FilterDelayReadiness::Ready
+            });
+            if !ready {
+                continue;
+            }
             let pending = self
                 .filter_producer_gates
                 .get(&filter_id)
@@ -4892,13 +5282,18 @@ impl DemuxRuntime {
                         .map_err(|_| DemuxRuntimeError::queue_runtime_failure(filter_id))
                 });
             match pending {
-                Ok(mut pending) => committed_events.append(&mut pending),
+                Ok(mut pending) => {
+                    if !pending.is_empty() {
+                        if let Some(filter) = self.filters.get_mut(&filter_id) {
+                            filter.commit_delivery_batch();
+                        }
+                        committed_events.append(&mut pending);
+                    }
+                }
                 Err(error) => {
                     self.quarantine_filter_runtime(filter_id);
                     diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(
-                        packet_pid,
-                        filter_id,
-                        error,
+                        packet_pid, filter_id, error,
                     ));
                 }
             }

@@ -195,11 +195,11 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: Some(6_000_000),
             symbol_rate: None,
+            isdbt_layer_settings: Vec::new(),
             partial_reception:
                 maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         }
     }
-
     #[test]
     fn scan_session_rejects_empty_candidates() {
         assert!(FrontendScanSession::start(1, "empty", Vec::new()).is_err());
@@ -253,7 +253,6 @@ mod tests {
             Some(FrontendScanTerminalReason::BackendFailure)
         );
     }
-
 
     #[test]
     fn locked_reported_waits_for_a_new_scan_continuation() {

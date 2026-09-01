@@ -68,11 +68,11 @@ use maleicacid_tuner_hal2_service_runtime::{
     apply_lnb_satellite_position_object_use_case, apply_lnb_tone_object_use_case,
     apply_lnb_voltage_object_use_case, close_lnb_after_root_open_rollback_use_case,
     lnb_profile_supports_voltage_status, send_lnb_diseqc_object_use_case,
-    set_frontend_lnb_object_use_case, FrontendTuneScanTxn,
-    ObjectFrontendStatusReadinessValue, ObjectFrontendStatusType, ObjectFrontendStatusValue,
-    ObjectQueryRequest, ObjectQueryResponse, RootCommandRequest, RootDemuxCapabilitiesSnapshot,
-    RootDemuxInfoSnapshot, RootFrontendInfoSnapshot, RootQueryRequest, RootQueryResponse,
-    RuntimeObjectEntry, TunerServiceRuntime,
+    set_frontend_lnb_object_use_case, FrontendTuneScanTxn, ObjectFrontendStatusReadinessValue,
+    ObjectFrontendStatusType, ObjectFrontendStatusValue, ObjectQueryRequest, ObjectQueryResponse,
+    RootCommandRequest, RootDemuxCapabilitiesSnapshot, RootDemuxInfoSnapshot,
+    RootFrontendInfoSnapshot, RootQueryRequest, RootQueryResponse, RuntimeObjectEntry,
+    TunerServiceRuntime,
 };
 
 use crate::child_object_open::{
@@ -94,9 +94,10 @@ use crate::frontend_object::FrontendAidlObject;
 use crate::lnb_object::LnbAidlObject;
 use crate::object_handle::AidlObjectHandle;
 use crate::object_runtime::{
-    close_object_after_close_preflight, execute_object_query_use_case,
-    execute_object_query_use_case_with_aidl_input_conversion, execute_object_runtime_use_case,
-    execute_object_runtime_use_case_with_request_builder, execute_shared_object_runtime_use_case,
+    close_object_after_close_preflight, execute_filter_av_handle_release_use_case,
+    execute_object_query_use_case, execute_object_query_use_case_with_aidl_input_conversion,
+    execute_object_runtime_use_case, execute_object_runtime_use_case_with_request_builder,
+    execute_shared_object_runtime_use_case,
     execute_shared_object_runtime_use_case_with_request_builder,
     plan_unavailable_object_method_use_case,
 };
@@ -202,7 +203,7 @@ impl TunerAidlService {
                 )
             })?;
             runtime.install_filter_event_dispatcher(std::sync::Arc::new(
-                AidlFilterEventDispatcher::new(&context),
+                AidlFilterEventDispatcher::new(&context)?,
             ))?;
         }
         Ok(Self { context })
@@ -371,6 +372,9 @@ fn frontend_status_caps_for_snapshot(
     // optional telemetryは保守的に扱う。tune/scan backend runtime接続前は決定的な状態fieldだけをadvertiseする。
     // LNB voltageは、systemがISDB-Sであるだけではなく、frontend exportとexported LNBがprobe/registry由来の同じ固定LNB profileを共有する場合だけadvertiseする。
     let mut caps = vec![FrontendStatusType::DEMOD_LOCK];
+    if snapshot.backend == FrontendBackendKind::LinuxDvb {
+        caps.push(FrontendStatusType::RF_LOCK);
+    }
     if lnb_profile_supports_voltage_status(snapshot.lnb_profile) {
         caps.push(FrontendStatusType::LNB_VOLTAGE);
     }
@@ -460,7 +464,8 @@ impl ITuner for TunerAidlService {
     fn openFrontendById(&self, frontend_id: i32) -> BinderResult<Strong<dyn IFrontend>> {
         let entry = self
             .lock_runtime()?
-            .root_open_txn().open_frontend_root_object_for_id(
+            .root_open_txn()
+            .open_frontend_root_object_for_id(
                 frontend_id,
                 public_api_call(AidlObjectKind::Tuner, AidlApi::TunerOpenFrontendById, None),
             )
@@ -472,7 +477,8 @@ impl ITuner for TunerAidlService {
         demux_id.clear();
         let entry = self
             .lock_runtime()?
-            .root_open_txn().open_demux_root_object(public_api_call(
+            .root_open_txn()
+            .open_demux_root_object(public_api_call(
                 AidlObjectKind::Tuner,
                 AidlApi::TunerOpenDemux,
                 None,
@@ -501,7 +507,8 @@ impl ITuner for TunerAidlService {
     fn openDescrambler(&self) -> BinderResult<Strong<dyn IDescrambler>> {
         let entry = self
             .lock_runtime()?
-            .root_open_txn().open_descrambler_root_object(public_api_call(
+            .root_open_txn()
+            .open_descrambler_root_object(public_api_call(
                 AidlObjectKind::Tuner,
                 AidlApi::TunerOpenDescrambler,
                 None,
@@ -539,7 +546,8 @@ impl ITuner for TunerAidlService {
     fn openLnbById(&self, lnb_id: i32) -> BinderResult<Strong<dyn ILnb>> {
         let entry = self
             .lock_runtime()?
-            .root_open_txn().open_lnb_root_object_for_id(
+            .root_open_txn()
+            .open_lnb_root_object_for_id(
                 lnb_id,
                 public_api_call(AidlObjectKind::Tuner, AidlApi::TunerOpenLnbById, None),
             )
@@ -555,7 +563,8 @@ impl ITuner for TunerAidlService {
         lnb_id.clear();
         let (id, entry) = self
             .lock_runtime()?
-            .root_open_txn().open_lnb_root_object_by_name(
+            .root_open_txn()
+            .open_lnb_root_object_by_name(
                 lnb_name,
                 public_api_call(AidlObjectKind::Tuner, AidlApi::TunerOpenLnbByName, None),
             )
@@ -630,7 +639,8 @@ impl ITuner for TunerAidlService {
     fn openDemuxById(&self, demux_id: i32) -> BinderResult<Strong<dyn IDemux>> {
         let entry = self
             .lock_runtime()?
-            .root_open_txn().open_demux_root_object_by_id(
+            .root_open_txn()
+            .open_demux_root_object_by_id(
                 demux_id,
                 public_api_call(AidlObjectKind::Tuner, AidlApi::TunerOpenDemuxById, None),
             )
@@ -659,9 +669,7 @@ impl ITuner for TunerAidlService {
 mod tests {
     use super::*;
     use maleicacid_tuner_hal2_binder_adapter::{DvrOpenKind, OpenDvrRequest};
-    use maleicacid_tuner_hal2_service_runtime::{
-        ObjectMethodUseCase, RuntimeOwnerRelation,
-    };
+    use maleicacid_tuner_hal2_service_runtime::{ObjectMethodUseCase, RuntimeOwnerRelation};
 
     #[test]
     fn configure_ip_cid_returns_unavailable_for_any_value() {
@@ -725,7 +733,8 @@ mod tests {
         let demux_entry = {
             let mut guard = runtime.lock().unwrap();
             guard
-                .root_open_txn().open_demux_root_object(public_api_call(
+                .root_open_txn()
+                .open_demux_root_object(public_api_call(
                     AidlObjectKind::Tuner,
                     AidlApi::TunerOpenDemux,
                     None,
@@ -745,12 +754,14 @@ mod tests {
                 Ok((AidlMethodCall::DemuxOpenDvr(request.clone()), request))
             },
             |runtime, dispatch, request| {
-                runtime.child_open_txn().open_dvr_child_runtime_for_demux_object(
-                    demux_entry.object_id(),
-                    demux_entry.generation(),
-                    request,
-                    dispatch,
-                )
+                runtime
+                    .child_open_txn()
+                    .open_dvr_child_runtime_for_demux_object(
+                        demux_entry.object_id(),
+                        demux_entry.generation(),
+                        request,
+                        dispatch,
+                    )
             },
         )
         .unwrap();
@@ -793,5 +804,7 @@ mod tests {
 
         assert!(frontend_status_caps_for_snapshot(&px4).contains(&FrontendStatusType::DEMOD_LOCK));
         assert!(frontend_status_caps_for_snapshot(&dvb).contains(&FrontendStatusType::DEMOD_LOCK));
+        assert!(!frontend_status_caps_for_snapshot(&px4).contains(&FrontendStatusType::RF_LOCK));
+        assert!(frontend_status_caps_for_snapshot(&dvb).contains(&FrontendStatusType::RF_LOCK));
     }
 }

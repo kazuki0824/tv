@@ -287,6 +287,10 @@ impl TunerServiceRuntime {
         self.query().filter_open_type(filter_id)
     }
 
+    pub(crate) fn filter_runtime_state(&self, filter_id: i32) -> Option<FilterRuntimeState> {
+        self.query().filter_runtime_state(filter_id)
+    }
+
     pub fn dvr_status_poll_snapshot_for_aidl_object(
         &self,
         object_id: AidlObjectId,
@@ -618,11 +622,17 @@ impl<'a> RuntimeQuery<'a> {
                 )
             })?;
         let snapshot = runtime.snapshot();
+        let lnb_voltage = self
+            .registry
+            .lnb_for_frontend(FrontendRuntimeId(entry.id.0))
+            .and_then(|lnb| self.registry.lnb_runtime(lnb.id))
+            .map(|lnb| lnb.backend_committed_state().voltage);
         Ok(ObjectFrontendStatusSnapshot {
             backend: entry.backend,
             lnb_profile: entry.lnb_profile,
             runtime_state: snapshot.state,
             signal_state: snapshot.signal_state,
+            lnb_voltage,
         })
     }
 
@@ -740,6 +750,17 @@ impl<'a> RuntimeQuery<'a> {
         demux
             .filter_snapshot(filter_id)
             .map(|snapshot| snapshot.open_type)
+            .ok()
+    }
+
+    pub(crate) fn filter_runtime_state(&self, filter_id: i32) -> Option<FilterRuntimeState> {
+        let entry = self.registry.filter(FilterRuntimeId(filter_id))?;
+        let demux = self
+            .registry
+            .demux_runtime(DemuxRuntimeId(entry.owner_demux_id))?;
+        demux
+            .filter_snapshot(filter_id)
+            .map(|snapshot| snapshot.state)
             .ok()
     }
 

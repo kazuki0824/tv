@@ -69,6 +69,7 @@ impl RuntimeOwnerRelation {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeObjectLifecycle {
+    Prepared,
     Live,
     Closing { step: CleanupStep },
     CleanupPending { step: CleanupStep },
@@ -192,7 +193,11 @@ impl Default for RuntimeObjectTable {
 }
 
 impl RuntimeObjectTable {
-    pub fn insert(&mut self, mut entry: RuntimeObjectEntry) -> Result<(), RuntimeObjectTableError> {
+    fn insert_with_lifecycle(
+        &mut self,
+        mut entry: RuntimeObjectEntry,
+        lifecycle: RuntimeObjectLifecycle,
+    ) -> Result<(), RuntimeObjectTableError> {
         if let Some(existing) = self.entries.get(&entry.object_id) {
             if !existing.lifecycle.is_terminal() {
                 return Err(RuntimeObjectTableError::DuplicateObjectId {
@@ -214,9 +219,36 @@ impl RuntimeObjectTable {
         }
         self.ensure_owner_live_for(entry.object_id, entry.owner)?;
         self.object_close_txn.clear_obligation(entry.object_id);
-        entry.lifecycle = RuntimeObjectLifecycle::Live;
+        entry.lifecycle = lifecycle;
         self.entries.insert(entry.object_id, entry);
         Ok(())
+    }
+
+    pub fn insert(&mut self, entry: RuntimeObjectEntry) -> Result<(), RuntimeObjectTableError> {
+        self.insert_with_lifecycle(entry, RuntimeObjectLifecycle::Live)
+    }
+
+    pub(crate) fn insert_prepared(
+        &mut self,
+        entry: RuntimeObjectEntry,
+    ) -> Result<(), RuntimeObjectTableError> {
+        self.insert_with_lifecycle(entry, RuntimeObjectLifecycle::Prepared)
+    }
+
+    pub(crate) fn commit_prepared(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+    ) -> Result<RuntimeObjectEntry, RuntimeObjectTableError> {
+        let entry = self.entry_mut_checked_any(object_id, generation)?;
+        if entry.lifecycle != RuntimeObjectLifecycle::Prepared {
+            return Err(RuntimeObjectTableError::InvalidLifecycle {
+                object_id,
+                lifecycle: entry.lifecycle,
+            });
+        }
+        entry.lifecycle = RuntimeObjectLifecycle::Live;
+        Ok(entry.clone())
     }
 
     pub fn remove(

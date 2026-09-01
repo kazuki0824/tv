@@ -168,11 +168,7 @@ impl LnbRuntime {
     }
 
     /// Completes a backend-confirmed apply without allocation or further I/O.
-    pub(crate) fn commit_successful_apply(
-        &mut self,
-        state: LnbElectricalState,
-        generation: u64,
-    ) {
+    pub(crate) fn commit_successful_apply(&mut self, state: LnbElectricalState, generation: u64) {
         self.backend_committed_state = state;
         self.registry_state = state;
         self.generation = generation;
@@ -277,11 +273,8 @@ impl LnbRuntime {
 }
 
 pub trait LnbBackendOps {
-    fn apply_lnb_state(
-        &mut self,
-        lnb_id: i32,
-        state: LnbElectricalState,
-    ) -> LnbBackendApplyOutcome;
+    fn apply_lnb_state(&mut self, lnb_id: i32, state: LnbElectricalState)
+        -> LnbBackendApplyOutcome;
 
     fn send_diseqc_message(
         &mut self,

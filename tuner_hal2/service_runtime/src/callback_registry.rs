@@ -30,6 +30,7 @@ pub(crate) struct RuntimeCallbackRegistry {
 }
 
 #[derive(Debug)]
+#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
 pub(crate) struct PreparedCallbackRegistration {
     key: (AidlObjectKind, AidlObjectId, AidlObjectGeneration, AidlApi),
 }
@@ -44,12 +45,7 @@ impl CallbackRegistrationUseCase {
         registration_api: AidlApi,
     ) -> PreparedCallbackRegistration {
         PreparedCallbackRegistration {
-            key: (
-                owner_kind,
-                owner_id,
-                owner_generation,
-                registration_api,
-            ),
+            key: (owner_kind, owner_id, owner_generation, registration_api),
         }
     }
 

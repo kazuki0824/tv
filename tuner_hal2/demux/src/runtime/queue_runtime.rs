@@ -145,7 +145,19 @@ pub(crate) struct QueueEpochProtocol {
     queue_identity: Option<u64>,
 }
 
+impl QueueEpochProtocol {
+    fn fail_close_unconsumed_authority(&self) {
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        state.state = QueueEpochState::Closed;
+        self.drained.notify_all();
+    }
+}
+
 #[derive(Debug)]
+#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
 pub(crate) struct QueueEpochToken {
     protocol: Arc<QueueEpochProtocol>,
     queue_identity: Option<u64>,
@@ -158,16 +170,12 @@ pub(crate) struct QueueEpochToken {
 impl QueueEpochToken {
     fn release(&mut self) -> Result<QueueEpochState, QueueRuntimeError> {
         if !self.active {
-            return Err(protocol_error(
-                "DVR queue transaction was already consumed",
-            ));
+            return Err(protocol_error("DVR queue transaction was already consumed"));
         }
         let mut state = self.protocol.state.lock().map_err(|_| {
             protocol_error("DVR queue epoch lock poisoned while releasing a transaction")
         })?;
-        if self.protocol.queue_identity != self.queue_identity
-            || state.epoch != self.epoch
-        {
+        if self.protocol.queue_identity != self.queue_identity || state.epoch != self.epoch {
             return Err(protocol_error(
                 "DVR queue transaction identity or epoch changed before release",
             ));
@@ -202,6 +210,10 @@ impl QueueEpochToken {
         }
     }
 
+    pub(crate) fn abort(mut self) -> Result<(), QueueRuntimeError> {
+        self.release().map(|_| ())
+    }
+
     pub(crate) fn playback_coordinates(&self) -> Result<(u64, u64), QueueRuntimeError> {
         if !self.active || self.direction != QueueTransactionDirection::Read {
             return Err(protocol_error(
@@ -217,17 +229,16 @@ impl QueueEpochToken {
 
 impl Drop for QueueEpochToken {
     fn drop(&mut self) {
-        if self.active && self.release().is_err() {
-            if let Ok(mut state) = self.protocol.state.lock() {
-                state.state = QueueEpochState::Closed;
-                self.protocol.drained.notify_all();
-            }
+        if self.active {
+            self.active = false;
+            self.protocol.fail_close_unconsumed_authority();
         }
     }
 }
 
 #[derive(Debug)]
-struct QueueEpochDrainTxn {
+#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+pub(crate) struct QueueEpochDrainTxn {
     protocol: Arc<QueueEpochProtocol>,
     epoch: u64,
     next_epoch: u64,
@@ -235,23 +246,6 @@ struct QueueEpochDrainTxn {
 }
 
 impl QueueEpochDrainTxn {
-    fn commit(mut self) -> Result<(), QueueRuntimeError> {
-        let mut state = self.protocol.state.lock().map_err(|_| {
-            protocol_error("DVR queue epoch lock poisoned while committing drain")
-        })?;
-        if state.state != QueueEpochState::Draining
-            || state.epoch != self.epoch
-            || state.admitted_transaction_count != 0
-        {
-            return Err(protocol_error("DVR queue drain state changed before commit"));
-        }
-        state.epoch = self.next_epoch;
-        state.state = QueueEpochState::Open;
-        self.active = false;
-        self.protocol.drained.notify_all();
-        Ok(())
-    }
-
     fn rollback(&mut self) -> Result<(), QueueRuntimeError> {
         if !self.active {
             return Ok(());
@@ -269,15 +263,44 @@ impl QueueEpochDrainTxn {
         self.protocol.drained.notify_all();
         Ok(())
     }
+
+    pub(crate) fn abort(mut self) -> Result<(), QueueRuntimeError> {
+        self.rollback()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DvrQueueDrainCommitError {
+    QueueClear,
+    QueueClearRollbackFailed,
+    EpochCommit,
+    EpochCommitRollbackFailed,
+}
+
+impl DvrQueueDrainCommitError {
+    fn after_abort(self, abort: Result<(), QueueRuntimeError>) -> Self {
+        if abort.is_ok() {
+            return self;
+        }
+        match self {
+            Self::QueueClear | Self::QueueClearRollbackFailed => Self::QueueClearRollbackFailed,
+            Self::EpochCommit | Self::EpochCommitRollbackFailed => Self::EpochCommitRollbackFailed,
+        }
+    }
+
+    pub(crate) const fn rollback_failed(self) -> bool {
+        matches!(
+            self,
+            Self::QueueClearRollbackFailed | Self::EpochCommitRollbackFailed
+        )
+    }
 }
 
 impl Drop for QueueEpochDrainTxn {
     fn drop(&mut self) {
-        if self.active && self.rollback().is_err() {
-            if let Ok(mut state) = self.protocol.state.lock() {
-                state.state = QueueEpochState::Closed;
-                self.protocol.drained.notify_all();
-            }
+        if self.active {
+            self.active = false;
+            self.protocol.fail_close_unconsumed_authority();
         }
     }
 }
@@ -422,6 +445,71 @@ impl QueueRuntime {
         result
     }
 
+    pub(crate) fn commit_dvr_drain_with_queue_clear(
+        &self,
+        drain: QueueEpochDrainTxn,
+    ) -> Result<usize, DvrQueueDrainCommitError> {
+        self.commit_dvr_drain_with_queue_clear_operation(drain, |queue| {
+            let dropped_bytes = queue.available_to_read()?;
+            queue.clear_contents()?;
+            Ok(dropped_bytes)
+        })
+    }
+
+    fn commit_dvr_drain_with_queue_clear_operation<Clear>(
+        &self,
+        mut drain: QueueEpochDrainTxn,
+        clear: Clear,
+    ) -> Result<usize, DvrQueueDrainCommitError>
+    where
+        Clear: FnOnce(&Self) -> Result<usize, QueueRuntimeError>,
+    {
+        let Some(protocol) = self.dvr_epoch.as_ref() else {
+            let abort = drain.abort();
+            return Err(DvrQueueDrainCommitError::EpochCommit.after_abort(abort));
+        };
+        if !Arc::ptr_eq(protocol, &drain.protocol) {
+            let abort = drain.abort();
+            return Err(DvrQueueDrainCommitError::EpochCommit.after_abort(abort));
+        }
+        let mut state = match protocol.state.lock() {
+            Ok(state) => state,
+            Err(_) => {
+                // The canonical lock itself is unavailable. Preserve an abort
+                // failure as a typed secondary failure; Drop remains only the
+                // final fail-closed backstop for an unconsumed authority.
+                let abort = drain.abort();
+                return Err(DvrQueueDrainCommitError::EpochCommit.after_abort(abort));
+            }
+        };
+        if state.state != QueueEpochState::Draining
+            || state.epoch != drain.epoch
+            || state.admitted_transaction_count != 0
+        {
+            drop(state);
+            let abort = drain.abort();
+            return Err(DvrQueueDrainCommitError::EpochCommit.after_abort(abort));
+        }
+
+        // FmqQueue::clear() is failure-atomic: allocation happens before the
+        // exact read, and a failed exact read leaves the read position intact.
+        // Once it succeeds, only infallible in-memory epoch publication remains.
+        let dropped_bytes = match clear(self) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                drop(state);
+                let abort = drain.abort();
+                return Err(DvrQueueDrainCommitError::QueueClear.after_abort(abort));
+            }
+        };
+        state.epoch = drain.next_epoch;
+        state.state = QueueEpochState::Open;
+        drain.active = false;
+        self.wake_pending.store(false, Ordering::Release);
+        protocol.drained.notify_all();
+        Ok(dropped_bytes)
+    }
+
     fn begin_dvr_transaction(
         &self,
         direction: QueueTransactionDirection,
@@ -470,14 +558,15 @@ impl QueueRuntime {
         self.begin_dvr_transaction(QueueTransactionDirection::Write, reserved_bytes)
     }
 
-    fn begin_dvr_drain(&self) -> Result<QueueEpochDrainTxn, QueueRuntimeError> {
+    pub(crate) fn begin_dvr_drain(&self) -> Result<QueueEpochDrainTxn, QueueRuntimeError> {
         let protocol = self
             .dvr_epoch
             .as_ref()
             .ok_or_else(|| protocol_error("DVR queue epoch protocol is not installed"))?;
-        let mut state = protocol.state.lock().map_err(|_| {
-            protocol_error("DVR queue epoch lock poisoned while beginning drain")
-        })?;
+        let mut state = protocol
+            .state
+            .lock()
+            .map_err(|_| protocol_error("DVR queue epoch lock poisoned while beginning drain"))?;
         if state.state != QueueEpochState::Open {
             return Err(protocol_error("DVR queue epoch is not open"));
         }
@@ -504,14 +593,6 @@ impl QueueRuntime {
         })
     }
 
-    pub(crate) fn clear_dvr_boundary(&self) -> Result<usize, QueueRuntimeError> {
-        let drain = self.begin_dvr_drain()?;
-        let dropped_bytes = self.available_to_read()?;
-        self.clear_contents()?;
-        drain.commit()?;
-        Ok(dropped_bytes)
-    }
-
     pub(crate) fn playback_coordinates(&self) -> Result<(u64, u64), QueueRuntimeError> {
         let queue_identity = self
             .playback_backing
@@ -533,9 +614,10 @@ impl QueueRuntime {
             .dvr_epoch
             .as_ref()
             .ok_or_else(|| protocol_error("DVR queue epoch protocol is not installed"))?;
-        let mut state = protocol.state.lock().map_err(|_| {
-            protocol_error("DVR queue epoch lock poisoned while closing")
-        })?;
+        let mut state = protocol
+            .state
+            .lock()
+            .map_err(|_| protocol_error("DVR queue epoch lock poisoned while closing"))?;
         state.state = QueueEpochState::Closed;
         protocol.drained.notify_all();
         Ok(())
@@ -560,9 +642,12 @@ impl QueueRuntime {
             .queue
             .current_fill()
             .map_err(|err| map_data_path_error(err, "FMQ fill snapshot failed"))?;
-        let writable_bytes = self.capacity_bytes.checked_sub(readable_bytes).ok_or_else(|| {
-            protocol_error("FMQ fill snapshot exceeds the configured queue capacity")
-        })?;
+        let writable_bytes = self
+            .capacity_bytes
+            .checked_sub(readable_bytes)
+            .ok_or_else(|| {
+                protocol_error("FMQ fill snapshot exceeds the configured queue capacity")
+            })?;
         Ok(QueueAvailabilitySnapshot {
             readable_bytes,
             writable_bytes,
@@ -910,11 +995,10 @@ impl FilterProducerDrainGate {
     pub(crate) fn take_pending_events(
         &self,
     ) -> Result<Vec<PipelineGeneratedEvent>, QueueRuntimeError> {
-        let mut data = self
-            .inner
-            .data
-            .lock()
-            .map_err(|_| gate_error("filter producer gate lock poisoned while taking events"))?;
+        let mut data =
+            self.inner.data.lock().map_err(|_| {
+                gate_error("filter producer gate lock poisoned while taking events")
+            })?;
         match data.state {
             GateState::Open => Ok(data.pending_events.drain(..).collect()),
             GateState::Draining => Ok(Vec::new()),
@@ -973,8 +1057,8 @@ impl FilterProducerPermit {
             .record_output_byte_offset
             .checked_add(committed_bytes)
             .ok_or_else(|| gate_error("record output byte offset exhausted"))?;
-        let event_queue_full = event.is_some()
-            && data.pending_events.len() >= data.pending_event_capacity;
+        let event_queue_full =
+            event.is_some() && data.pending_events.len() >= data.pending_event_capacity;
         data.record_output_byte_offset = next_offset;
         if !event_queue_full {
             if let Some(event) = event {
@@ -993,7 +1077,9 @@ impl FilterProducerPermit {
         if event_queue_full {
             Err(gate_error("filter producer pending event queue is full"))
         } else if gate_state == GateState::Closed {
-            Err(gate_error("filter producer gate closed before record output commit"))
+            Err(gate_error(
+                "filter producer gate closed before record output commit",
+            ))
         } else {
             Ok(())
         }
@@ -1006,11 +1092,10 @@ impl FilterProducerPermit {
         if !self.active {
             return Err(gate_error("filter producer permit was already consumed"));
         }
-        let mut data = self
-            .inner
-            .data
-            .lock()
-            .map_err(|_| gate_error("filter producer gate lock poisoned while queueing event"))?;
+        let mut data =
+            self.inner.data.lock().map_err(|_| {
+                gate_error("filter producer gate lock poisoned while queueing event")
+            })?;
         if data.state == GateState::Closed
             || data.filter_delivery_generation != self.delivery_generation
         {
@@ -1075,11 +1160,10 @@ impl FilterDrainTxn {
         if !self.active {
             return Err(gate_error("filter producer drain was already consumed"));
         }
-        let mut data = self
-            .inner
-            .data
-            .lock()
-            .map_err(|_| gate_error("filter producer gate lock poisoned while draining events"))?;
+        let mut data =
+            self.inner.data.lock().map_err(|_| {
+                gate_error("filter producer gate lock poisoned while draining events")
+            })?;
         if data.state != GateState::Draining
             || data.filter_delivery_generation != self.delivery_generation
             || data.parser_state_generation != self.parser_generation
@@ -1103,7 +1187,9 @@ impl FilterDrainTxn {
             || data.parser_state_generation != self.parser_generation
             || data.admitted_producer_count != 0
         {
-            return Err(gate_error("filter producer drain state changed before commit"));
+            return Err(gate_error(
+                "filter producer drain state changed before commit",
+            ));
         }
         match self.boundary {
             FilterDrainBoundary::Flush | FilterDrainBoundary::Reconfigure => {
@@ -1131,7 +1217,9 @@ impl FilterDrainTxn {
             || data.parser_state_generation != self.parser_generation
             || data.admitted_producer_count != 0
         {
-            return Err(gate_error("filter producer drain state changed before commit"));
+            return Err(gate_error(
+                "filter producer drain state changed before commit",
+            ));
         }
         let pending_events = data.pending_events.drain(..).collect();
         data.filter_delivery_generation = self.next_delivery_generation;
@@ -1155,7 +1243,9 @@ impl FilterDrainTxn {
             || data.filter_delivery_generation != self.delivery_generation
             || data.parser_state_generation != self.parser_generation
         {
-            return Err(gate_error("filter producer drain state changed before rollback"));
+            return Err(gate_error(
+                "filter producer drain state changed before rollback",
+            ));
         }
         data.state = GateState::Open;
         self.active = false;
@@ -1173,5 +1263,203 @@ impl Drop for FilterDrainTxn {
                 self.inner.drained.notify_all();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod dvr_queue_cleanup_tests {
+    use super::*;
+
+    #[test]
+    fn failed_queue_clear_preserves_content_epoch_and_open_state() {
+        let queue = QueueRuntime::new_dvr(64, false, true).expect("DVR queue must open");
+        let payload = [0x11, 0x22, 0x33, 0x44];
+        assert_eq!(queue.write_checked(&payload), Ok(payload.len()));
+        let coordinates_before = queue
+            .playback_coordinates()
+            .expect("playback coordinates must be available");
+        let drain = queue
+            .begin_dvr_drain()
+            .expect("queue drain must begin without admitted transactions");
+
+        let error = queue
+            .commit_dvr_drain_with_queue_clear_operation(drain, |_| {
+                Err(QueueRuntimeError::new(
+                    QueueRuntimeErrorKind::DataPathFailure,
+                    "injected FMQ clear failure",
+                ))
+            })
+            .expect_err("injected clear failure must fail the cleanup boundary");
+
+        assert_eq!(error, DvrQueueDrainCommitError::QueueClear);
+        assert_eq!(queue.available_to_read(), Ok(payload.len()));
+        assert_eq!(queue.playback_coordinates(), Ok(coordinates_before));
+        let transaction = queue
+            .begin_dvr_read(1)
+            .expect("failed precommit must reopen the old epoch");
+        transaction
+            .commit()
+            .expect("old-epoch transaction must remain usable");
+    }
+
+    #[test]
+    fn rejected_epoch_preflight_does_not_clear_queue_content() {
+        let target = QueueRuntime::new_dvr(64, false, true).expect("target DVR queue must open");
+        let other = QueueRuntime::new_dvr(64, false, true).expect("other DVR queue must open");
+        let payload = [0x21, 0x32, 0x43];
+        assert_eq!(target.write_checked(&payload), Ok(payload.len()));
+        let other_drain = other
+            .begin_dvr_drain()
+            .expect("other queue drain must begin without admitted transactions");
+
+        let error = target
+            .commit_dvr_drain_with_queue_clear(other_drain)
+            .expect_err("a drain from another queue must fail preflight");
+
+        assert_eq!(error, DvrQueueDrainCommitError::EpochCommit);
+        assert_eq!(target.available_to_read(), Ok(payload.len()));
+        let transaction = other
+            .begin_dvr_read(1)
+            .expect("rejected drain must reopen its original queue");
+        transaction
+            .commit()
+            .expect("the original queue epoch must remain usable");
+    }
+
+    #[test]
+    fn successful_queue_clear_publishes_the_next_epoch_after_content_is_gone() {
+        let queue = QueueRuntime::new_dvr(64, false, true).expect("DVR queue must open");
+        let payload = [0x55, 0x66, 0x77];
+        assert_eq!(queue.write_checked(&payload), Ok(payload.len()));
+        let (_, epoch_before) = queue
+            .playback_coordinates()
+            .expect("playback coordinates must be available");
+        let drain = queue
+            .begin_dvr_drain()
+            .expect("queue drain must begin without admitted transactions");
+
+        let dropped_bytes = queue
+            .commit_dvr_drain_with_queue_clear(drain)
+            .expect("queue clear and epoch commit must succeed together");
+
+        assert_eq!(dropped_bytes, payload.len());
+        assert_eq!(queue.available_to_read(), Ok(0));
+        let (_, epoch_after) = queue
+            .playback_coordinates()
+            .expect("playback coordinates must remain available");
+        assert_eq!(epoch_after, epoch_before + 1);
+    }
+}
+
+#[cfg(test)]
+mod queue_epoch_authority_drop_contract_tests {
+    use super::*;
+
+    fn protocol(state: QueueEpochState, epoch: u64, admitted: usize) -> Arc<QueueEpochProtocol> {
+        Arc::new(QueueEpochProtocol {
+            state: Mutex::new(QueueEpochProtocolState {
+                state,
+                epoch,
+                admitted_transaction_count: admitted,
+            }),
+            drained: Condvar::new(),
+            queue_identity: Some(77),
+        })
+    }
+
+    #[test]
+    fn dropping_unconsumed_queue_epoch_authority_fail_closes_without_rollback() {
+        let protocol = protocol(QueueEpochState::Open, 4, 1);
+        let token = QueueEpochToken {
+            protocol: Arc::clone(&protocol),
+            queue_identity: Some(77),
+            epoch: 4,
+            direction: QueueTransactionDirection::Read,
+            reserved_bytes: 188,
+            active: true,
+        };
+
+        drop(token);
+
+        let state = protocol.state.lock().unwrap();
+        assert_eq!(state.state, QueueEpochState::Closed);
+        assert_eq!(state.epoch, 4);
+        assert_eq!(state.admitted_transaction_count, 1);
+    }
+
+    #[test]
+    fn dropping_unconsumed_queue_drain_authority_fail_closes_without_rollback() {
+        let protocol = protocol(QueueEpochState::Draining, 9, 0);
+        let txn = QueueEpochDrainTxn {
+            protocol: Arc::clone(&protocol),
+            epoch: 9,
+            next_epoch: 10,
+            active: true,
+        };
+
+        drop(txn);
+
+        let state = protocol.state.lock().unwrap();
+        assert_eq!(state.state, QueueEpochState::Closed);
+        assert_eq!(state.epoch, 9);
+    }
+
+    #[test]
+    fn explicit_queue_authority_abort_is_the_only_normal_rollback_path() {
+        let transaction_protocol = protocol(QueueEpochState::Open, 11, 1);
+        QueueEpochToken {
+            protocol: Arc::clone(&transaction_protocol),
+            queue_identity: Some(77),
+            epoch: 11,
+            direction: QueueTransactionDirection::Read,
+            reserved_bytes: 188,
+            active: true,
+        }
+        .abort()
+        .unwrap();
+        {
+            let state = transaction_protocol.state.lock().unwrap();
+            assert_eq!(state.state, QueueEpochState::Open);
+            assert_eq!(state.admitted_transaction_count, 0);
+        }
+
+        let drain_protocol = protocol(QueueEpochState::Draining, 12, 0);
+        QueueEpochDrainTxn {
+            protocol: Arc::clone(&drain_protocol),
+            epoch: 12,
+            next_epoch: 13,
+            active: true,
+        }
+        .abort()
+        .unwrap();
+        let state = drain_protocol.state.lock().unwrap();
+        assert_eq!(state.state, QueueEpochState::Open);
+        assert_eq!(state.epoch, 12);
+    }
+
+    #[test]
+    fn fail_closed_drop_recovers_a_poisoned_protocol_lock_without_panicking() {
+        let protocol = protocol(QueueEpochState::Open, 13, 1);
+        let poison_target = Arc::clone(&protocol);
+        assert!(std::thread::spawn(move || {
+            let _guard = poison_target.state.lock().unwrap();
+            panic!("poison queue epoch lock for drop-backstop test");
+        })
+        .join()
+        .is_err());
+
+        let token = QueueEpochToken {
+            protocol: Arc::clone(&protocol),
+            queue_identity: Some(77),
+            epoch: 13,
+            direction: QueueTransactionDirection::Read,
+            reserved_bytes: 188,
+            active: true,
+        };
+        drop(token);
+
+        let state = protocol.state.lock().unwrap_err().into_inner();
+        assert_eq!(state.state, QueueEpochState::Closed);
+        assert_eq!(state.epoch, 13);
     }
 }

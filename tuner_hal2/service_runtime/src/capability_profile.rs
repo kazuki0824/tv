@@ -35,31 +35,8 @@ pub enum TransportCapability {
     IpCid,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProfileFeature {
-    MonitorEvent,
-    AvPassthrough,
-    LinkCaps,
-    AvSharedHandleRelease,
-    DescramblerObject,
-    LnbObject,
-    FrontendStatusCaps,
-}
-
 pub const fn transport_declared(capability: TransportCapability) -> bool {
     matches!(capability, TransportCapability::Ts)
-}
-
-pub const fn feature_declared(feature: ProfileFeature) -> bool {
-    match feature {
-        ProfileFeature::MonitorEvent
-        | ProfileFeature::AvPassthrough
-        | ProfileFeature::LinkCaps
-        | ProfileFeature::AvSharedHandleRelease
-        | ProfileFeature::DescramblerObject
-        | ProfileFeature::LnbObject
-        | ProfileFeature::FrontendStatusCaps => false,
-    }
 }
 
 pub const fn hal_generates_japanese_scan_plan() -> bool {

@@ -778,10 +778,7 @@ impl FrontendRuntime {
         Ok(has_next)
     }
 
-    pub fn mark_scan_session_locked_reported(
-        &mut self,
-        generation: u64,
-    ) -> Result<(), HalError> {
+    pub fn mark_scan_session_locked_reported(&mut self, generation: u64) -> Result<(), HalError> {
         if !self.should_accept_terminal_event(generation) {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
@@ -1279,6 +1276,7 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: Some(6_000_000),
             symbol_rate: None,
+            isdbt_layer_settings: Vec::new(),
             partial_reception:
                 maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Required(
                     true,
@@ -1355,6 +1353,7 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: Some(6_000_000),
             symbol_rate: None,
+            isdbt_layer_settings: Vec::new(),
             partial_reception:
                 maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
@@ -1395,6 +1394,7 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: Some(6_000_000),
             symbol_rate: None,
+            isdbt_layer_settings: Vec::new(),
             partial_reception:
                 maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };

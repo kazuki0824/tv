@@ -111,6 +111,7 @@ impl ObjectQueryRequest {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObjectFrontendStatusType {
     DemodLock,
+    RfLock,
     LnbVoltage,
     Unsupported,
 }
@@ -118,7 +119,10 @@ pub enum ObjectFrontendStatusType {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObjectFrontendStatusValue {
     DemodLocked(bool),
+    RfLocked(bool),
     LnbVoltageNone,
+    LnbVoltage11V,
+    LnbVoltage15V,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -135,6 +139,7 @@ pub struct ObjectFrontendStatusSnapshot {
     pub lnb_profile: Option<LnbRegistryProfile>,
     pub runtime_state: FrontendRuntimeState,
     pub signal_state: FrontendSignalState,
+    pub lnb_voltage: Option<maleicacid_tuner_hal2_lnb::LnbVoltage>,
 }
 
 pub fn lnb_profile_supports_voltage_status(profile: Option<LnbRegistryProfile>) -> bool {
@@ -157,16 +162,36 @@ fn object_frontend_status_value(
         ));
     }
     match status_type {
-        ObjectFrontendStatusType::DemodLock => {
-            Ok(ObjectFrontendStatusValue::DemodLocked(matches!(
+        ObjectFrontendStatusType::DemodLock => Ok(ObjectFrontendStatusValue::DemodLocked(
+            matches!(snapshot.signal_state, FrontendSignalState::Locked),
+        )),
+        ObjectFrontendStatusType::RfLock if snapshot.backend == FrontendBackendKind::LinuxDvb => {
+            Ok(ObjectFrontendStatusValue::RfLocked(matches!(
                 snapshot.signal_state,
-                FrontendSignalState::Locked
+                FrontendSignalState::SignalDetected | FrontendSignalState::Locked
             )))
         }
+        ObjectFrontendStatusType::RfLock => Err(HalError::Unsupported(
+            "frontend RF lock status is unsupported",
+        )),
         ObjectFrontendStatusType::LnbVoltage
             if lnb_profile_supports_voltage_status(snapshot.lnb_profile) =>
         {
-            Ok(ObjectFrontendStatusValue::LnbVoltageNone)
+            match snapshot.lnb_voltage {
+                Some(maleicacid_tuner_hal2_lnb::LnbVoltage::None) => {
+                    Ok(ObjectFrontendStatusValue::LnbVoltageNone)
+                }
+                Some(maleicacid_tuner_hal2_lnb::LnbVoltage::Voltage11V) => {
+                    Ok(ObjectFrontendStatusValue::LnbVoltage11V)
+                }
+                Some(maleicacid_tuner_hal2_lnb::LnbVoltage::Voltage15V) => {
+                    Ok(ObjectFrontendStatusValue::LnbVoltage15V)
+                }
+                None => Err(HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "advertised frontend LNB voltage has no committed state",
+                )),
+            }
         }
         ObjectFrontendStatusType::LnbVoltage => Err(HalError::Unsupported(
             "frontend LNB voltage status is unsupported",
@@ -186,7 +211,10 @@ fn object_frontend_readiness_value(
     {
         return ObjectFrontendStatusReadinessValue::Unsupported;
     }
-    if matches!(status_type, ObjectFrontendStatusType::Unsupported) {
+    if matches!(status_type, ObjectFrontendStatusType::Unsupported)
+        || matches!(status_type, ObjectFrontendStatusType::RfLock)
+            && snapshot.backend != FrontendBackendKind::LinuxDvb
+    {
         return ObjectFrontendStatusReadinessValue::Unsupported;
     }
     if matches!(
@@ -196,18 +224,24 @@ fn object_frontend_readiness_value(
         return ObjectFrontendStatusReadinessValue::Unavailable;
     }
     match status_type {
-        ObjectFrontendStatusType::LnbVoltage => ObjectFrontendStatusReadinessValue::Stable,
-        ObjectFrontendStatusType::DemodLock => match snapshot.signal_state {
-            FrontendSignalState::Locked | FrontendSignalState::NoSignal => {
+        ObjectFrontendStatusType::LnbVoltage => {
+            if snapshot.lnb_voltage.is_some() {
                 ObjectFrontendStatusReadinessValue::Stable
+            } else {
+                ObjectFrontendStatusReadinessValue::Unavailable
             }
-            FrontendSignalState::SignalDetected | FrontendSignalState::Unknown => {
-                ObjectFrontendStatusReadinessValue::Unstable
-            }
-        },
-        ObjectFrontendStatusType::Unsupported => {
-            ObjectFrontendStatusReadinessValue::Unsupported
         }
+        ObjectFrontendStatusType::DemodLock | ObjectFrontendStatusType::RfLock => {
+            match snapshot.signal_state {
+                FrontendSignalState::Locked | FrontendSignalState::NoSignal => {
+                    ObjectFrontendStatusReadinessValue::Stable
+                }
+                FrontendSignalState::SignalDetected | FrontendSignalState::Unknown => {
+                    ObjectFrontendStatusReadinessValue::Unstable
+                }
+            }
+        }
+        ObjectFrontendStatusType::Unsupported => ObjectFrontendStatusReadinessValue::Unsupported,
     }
 }
 
@@ -272,6 +306,8 @@ fn prepare_object_query_request(
                         .into_iter()
                         .filter(|status_type| {
                             matches!(status_type, ObjectFrontendStatusType::DemodLock)
+                                || matches!(status_type, ObjectFrontendStatusType::RfLock)
+                                    && snapshot.backend == FrontendBackendKind::LinuxDvb
                                 || matches!(status_type, ObjectFrontendStatusType::LnbVoltage)
                                     && lnb_profile_supports_voltage_status(snapshot.lnb_profile)
                         })
@@ -281,8 +317,8 @@ fn prepare_object_query_request(
             ))
         }
         ObjectQueryRequest::FrontendGetHardwareInfo => {
-            let entry = query
-                .frontend_entry_for_aidl_object(target.object_id(), target.generation())?;
+            let entry =
+                query.frontend_entry_for_aidl_object(target.object_id(), target.generation())?;
             let hardware_info = entry.hardware_info();
             if hardware_info.is_empty() {
                 return Err(HalError::internal(
@@ -482,6 +518,7 @@ pub(crate) struct ObjectMethodDispatchProof {
 }
 
 #[derive(Debug, Eq, PartialEq)]
+#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
 pub struct ObjectMethodExecutionToken {
     target: ObjectMethodUseCaseTarget,
 }
@@ -621,7 +658,11 @@ impl ObjectMethodUseCase {
             let method = request.method();
             let plan = plan_aidl_method_call(method)?;
             validate_plan_target(&plan, target)?;
-            plan_object_method_dispatch(&mut runtime, plan.command_plan(), plan.executable_request())?;
+            plan_object_method_dispatch(
+                &mut runtime,
+                plan.command_plan(),
+                plan.executable_request(),
+            )?;
             let query = runtime.query();
             prepare_object_query_request(&query, target, request)?
         };
@@ -654,16 +695,22 @@ impl ObjectMethodUseCase {
                 target.object_kind(),
             )
             .map_err(ObjectMethodUseCaseBuildError::Runtime)?;
-            let plan = plan_aidl_method_call(method).map_err(ObjectMethodUseCaseBuildError::Runtime)?;
+            let plan =
+                plan_aidl_method_call(method).map_err(ObjectMethodUseCaseBuildError::Runtime)?;
             validate_plan_target(&plan, target).map_err(ObjectMethodUseCaseBuildError::Runtime)?;
-            plan_object_method_dispatch(&mut runtime, plan.command_plan(), plan.executable_request())
-                .map_err(ObjectMethodUseCaseBuildError::Runtime)?;
+            plan_object_method_dispatch(
+                &mut runtime,
+                plan.command_plan(),
+                plan.executable_request(),
+            )
+            .map_err(ObjectMethodUseCaseBuildError::Runtime)?;
             let request = build().map_err(ObjectMethodUseCaseBuildError::Builder)?;
             let query = runtime.query();
             prepare_object_query_request(&query, target, request)
                 .map_err(ObjectMethodUseCaseBuildError::Runtime)?
         };
-        finish_object_query_execution(runtime, execution).map_err(ObjectMethodUseCaseBuildError::Runtime)
+        finish_object_query_execution(runtime, execution)
+            .map_err(ObjectMethodUseCaseBuildError::Runtime)
     }
 
     pub fn execute_after_live<T, E, B, Build, Execute>(
@@ -676,7 +723,8 @@ impl ObjectMethodUseCase {
     ) -> Result<T, ObjectMethodUseCaseBuildError<E>>
     where
         Build: FnOnce() -> Result<(AidlMethodCall, B), E>,
-        Execute: FnOnce(&mut TunerServiceRuntime, ObjectMethodExecutionToken, B) -> Result<T, HalError>,
+        Execute:
+            FnOnce(&mut TunerServiceRuntime, ObjectMethodExecutionToken, B) -> Result<T, HalError>,
     {
         let target = ObjectMethodUseCaseTarget::new(object_id, generation, object_kind);
         let mut runtime = runtime.lock().map_err(|_| {
@@ -737,7 +785,8 @@ impl ObjectMethodUseCase {
             )
             .map_err(ObjectMethodUseCaseBuildError::Runtime)?;
             let (method, request) = build().map_err(ObjectMethodUseCaseBuildError::Builder)?;
-            let plan = plan_aidl_method_call(method).map_err(ObjectMethodUseCaseBuildError::Runtime)?;
+            let plan =
+                plan_aidl_method_call(method).map_err(ObjectMethodUseCaseBuildError::Runtime)?;
             validate_plan_target(&plan, target).map_err(ObjectMethodUseCaseBuildError::Runtime)?;
             plan_object_method_dispatch(
                 &mut runtime_guard,
@@ -793,6 +842,7 @@ mod tests {
             lnb_profile,
             runtime_state,
             signal_state,
+            lnb_voltage: lnb_profile.map(|_| maleicacid_tuner_hal2_lnb::LnbVoltage::None),
         }
     }
 
@@ -840,7 +890,8 @@ mod tests {
         let demux_entry = {
             let mut guard = runtime.lock().unwrap();
             guard
-                .root_open_txn().open_demux_root_object(AidlMethodCall::PublicApi {
+                .root_open_txn()
+                .open_demux_root_object(AidlMethodCall::PublicApi {
                     object: AidlObjectKind::Tuner,
                     api: AidlApi::TunerOpenDemux,
                 })
@@ -865,12 +916,14 @@ mod tests {
                 ))
             },
             |runtime, dispatch, request| {
-                runtime.child_open_txn().open_filter_child_runtime_for_demux_object(
-                    demux_entry.object_id(),
-                    demux_entry.generation(),
-                    &request,
-                    dispatch,
-                )
+                runtime
+                    .child_open_txn()
+                    .open_filter_child_runtime_for_demux_object(
+                        demux_entry.object_id(),
+                        demux_entry.generation(),
+                        &request,
+                        dispatch,
+                    )
             },
         )
         .expect("PCR filter child open succeeds");
@@ -920,12 +973,49 @@ mod tests {
     }
 
     #[test]
+    fn frontend_status_reports_committed_lnb_voltage() {
+        let mut value = snapshot(
+            Some(LnbRegistryProfile::Px4Device15VOnly),
+            FrontendRuntimeState::Idle,
+            FrontendSignalState::NoSignal,
+        );
+        value.lnb_voltage = Some(maleicacid_tuner_hal2_lnb::LnbVoltage::Voltage15V);
+        assert_eq!(
+            object_frontend_status_value(value, ObjectFrontendStatusType::LnbVoltage),
+            Ok(ObjectFrontendStatusValue::LnbVoltage15V)
+        );
+    }
+
+    #[test]
+    fn dvb_rf_lock_uses_carrier_or_demod_lock_snapshot() {
+        let carrier = snapshot(
+            None,
+            FrontendRuntimeState::Tuning { generation: 4 },
+            FrontendSignalState::SignalDetected,
+        );
+        let no_signal = snapshot(
+            None,
+            FrontendRuntimeState::Tuning { generation: 4 },
+            FrontendSignalState::NoSignal,
+        );
+        assert_eq!(
+            object_frontend_status_value(carrier, ObjectFrontendStatusType::RfLock),
+            Ok(ObjectFrontendStatusValue::RfLocked(true))
+        );
+        assert_eq!(
+            object_frontend_status_value(no_signal, ObjectFrontendStatusType::RfLock),
+            Ok(ObjectFrontendStatusValue::RfLocked(false))
+        );
+    }
+
+    #[test]
     fn px4_demod_lock_status_is_exposed_from_current_readback_snapshot() {
         let px4 = ObjectFrontendStatusSnapshot {
             backend: FrontendBackendKind::Px4CharDevice,
             lnb_profile: None,
             runtime_state: FrontendRuntimeState::Tuning { generation: 7 },
             signal_state: FrontendSignalState::Locked,
+            lnb_voltage: None,
         };
 
         assert_eq!(

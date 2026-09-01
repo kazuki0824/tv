@@ -16,12 +16,14 @@
 
 ### 0.1 px4_drv direct-slot 前提の確認
 
-px4 backend で BS `STREAM_ID` を使う product は、対象 kernel driver が px4_drv `feat/android-ddk` 系であり、BS legacy `slot >= 8` reject が無効で、`PTX_SET_CHANNEL.slot` に absolute TSID を渡せることを事前確認する。確認対象は次である。
+px4 backend で BS `STREAM_ID` または `DEMOD_LOCK` current readback を使う product は、対象 kernel driver を `kazuki0824/px4_drv` `feat/android-ddk` commit `90d9c6506389ece3e47cced826326ccd1c6d22e8`（`Add PX4 demod status readbacks (#1)`）または、その契約を明示的に引き継いだ検証済みcommitへ固定する。BS legacy `slot >= 8` reject が無効で、`PTX_SET_CHANNEL.slot` に absolute TSID を渡せること、および `PTX_GET_LOCK_STATUS` がread-only current demod lock ABIとして存在することを事前確認する。確認対象は次である。
 
 ```text
 - driver/ptx_chrdev.c の BS path で slot >= 8 reject が有効ではないこと
 - PTX_SET_CHANNEL の slot が PTX_ISDB_S_SYSTEM で stream_id として set_stream_id() へ渡ること
 - HAL 側で TSID -> relative slot 変換表を持たず、absolute TSID をそのまま slot に渡すこと
+- `include/ptx_ioctl.h` に `PTX_GET_LOCK_STATUS _IOR(0x8d, 0x0c, __u32)` が存在し、driver実装がcurrent `ops->check_lock()`結果を返すこと
+- HAL `device/src/px4/abi.rs` と backend `observe_signal_state()` が同ABIを使用し、過去のtune成功/CNRをcurrent lockへ代用しないこと
 ```
 
 公開 `nns779/px4_drv` develop 相当など、BS `slot >= 8` reject が有効な driver では px4 BS absolute TSID 経路は使用不可である。その構成では px4 BS `STREAM_ID` 対応を product capability、VTS profile、integration note で 対応宣言 してはならない。

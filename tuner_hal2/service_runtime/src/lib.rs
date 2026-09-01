@@ -1,7 +1,7 @@
 mod boot;
 mod callback_registry;
-mod capability_snapshot;
 mod capability_profile;
+mod capability_snapshot;
 mod cleanup_execution;
 mod command_dispatch;
 mod descrambler_key_table;
@@ -45,9 +45,9 @@ pub use boot::{
     TunerServiceRuntime,
 };
 pub use capability_profile::{
-    configure_ip_cid_result, configure_monitor_event_result, failure_domain, feature_declared,
+    configure_ip_cid_result, configure_monitor_event_result, failure_domain,
     hal_generates_japanese_scan_plan, open_failed, scan_candidate_owner, transport_declared,
-    ProfileFeature, RuntimeFailureDomain, ScanCandidateOwner, TransportCapability,
+    RuntimeFailureDomain, ScanCandidateOwner, TransportCapability,
 };
 pub use capability_snapshot::{CapabilitySnapshot, PublicDemuxCapability};
 pub use cleanup_execution::{
@@ -80,9 +80,9 @@ pub use diagnostics::{
 };
 pub use dispatch::{dispatch_target_for, ServiceRuntimeDispatchTarget};
 pub use frontend_ops::{
-    set_frontend_lnb_object_use_case, FrontendOperationEvent,
-    FrontendOperationEventAcceptance, FrontendTuneScanTxn, FrontendWorkerTerminalEvent,
-    FrontendWorkerTerminalEventAcceptance, SharedFrontendRuntime,
+    set_frontend_lnb_object_use_case, FrontendOperationEvent, FrontendOperationEventAcceptance,
+    FrontendTuneScanTxn, FrontendWorkerTerminalEvent, FrontendWorkerTerminalEventAcceptance,
+    SharedFrontendRuntime,
 };
 pub use frontend_worker_termination_use_case::FrontendWorkerTerminationUseCase;
 pub use frontend_worker_txn::{
@@ -101,25 +101,23 @@ pub use lnb_ops::{
 };
 pub use object_close_txn::{
     close_object_use_case, finish_object_close_use_case, quarantine_object_drop_leak_use_case,
-    CloseCleanupAttemptCompletion, CloseCleanupAuthority,
-    ObjectArtifactCleanupCommand, ObjectArtifactCleanupExecutor, ObjectArtifactCleanupKind,
-    ObjectCleanupDiagnosticKind, ObjectCleanupDiagnosticRecord, ObjectCleanupDiagnosticSnapshot,
-    ObjectCleanupExecutionKind, ObjectCleanupExecutionReport, ObjectCleanupObjectTarget,
-    ObjectCleanupStepOutcome, ObjectCloseCleanupFailure, ObjectCloseRuntimeExecutor,
-    ObjectCloseCleanupAttempt, ObjectCloseTxn, ObjectCloseUseCasePlan,
-    ObjectRuntimeCleanupCommand, ObjectRuntimeCleanupKind, SharedObjectCleanupDiagnostics,
+    CloseCleanupAttemptCompletion, CloseCleanupAuthority, ObjectArtifactCleanupCommand,
+    ObjectArtifactCleanupExecutor, ObjectArtifactCleanupKind, ObjectCleanupDiagnosticKind,
+    ObjectCleanupDiagnosticRecord, ObjectCleanupDiagnosticSnapshot, ObjectCleanupExecutionKind,
+    ObjectCleanupExecutionReport, ObjectCleanupObjectTarget, ObjectCleanupStepOutcome,
+    ObjectCloseCleanupAttempt, ObjectCloseCleanupFailure, ObjectCloseRuntimeExecutor,
+    ObjectCloseTxn, ObjectCloseUseCasePlan, ObjectRuntimeCleanupCommand, ObjectRuntimeCleanupKind,
+    SharedObjectCleanupDiagnostics,
 };
 pub use object_domain_cleanup::{
     ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor, ObjectDomainCleanupKind,
     ObjectDomainCleanupOutcome,
 };
+pub use object_lifecycle::{aidl_object_cleanup_dependency, aidl_object_cleanup_is_terminal};
 pub use object_method_use_case::{
     lnb_profile_supports_voltage_status, ObjectFrontendStatusReadinessValue,
     ObjectFrontendStatusType, ObjectFrontendStatusValue, ObjectMethodExecutionToken,
     ObjectMethodUseCase, ObjectMethodUseCaseBuildError, ObjectQueryRequest, ObjectQueryResponse,
-};
-pub use object_lifecycle::{
-    aidl_object_cleanup_dependency, aidl_object_cleanup_is_terminal,
 };
 pub(crate) use object_table::RuntimeObjectLifecycle;
 pub use object_table::{RuntimeObjectEntry, RuntimeObjectTableError, RuntimeOwnerRelation};
@@ -132,8 +130,11 @@ pub use root_method_txn::{
     RootFrontendInfoSnapshot, RootQueryRequest, RootQueryResponse,
 };
 pub use root_object_ops::RootOpenTxn;
+pub use worker_failure_classifier::{ClassifiedWorkerTerminalResult, WorkerFailureCategory};
 pub use worker_runtime::{
-    WorkerHandle, WorkerRuntime, WorkerTerminalResult, CLEANUP_RETRY_SCHEDULE_MS,
+    filter_delivery_wake_sequence, join_worker_classified, notify_filter_delivery_change,
+    wait_filter_delivery_change, WorkerHandle, WorkerRuntime, WorkerRuntimeReaperQueue,
+    WorkerRuntimeSupervisor, WorkerTerminalResult, CLEANUP_RETRY_SCHEDULE_MS,
     CLEANUP_TERMINAL_DEADLINE_MS, WORKER_IO_DEADLINE_MS, WORKER_REAPER_DEADLINE_MS,
 };
 #[cfg(test)]
@@ -361,8 +362,7 @@ mod tests {
                 (
                     FrontendSystem::IsdbS,
                     Some(
-                        LnbRegistryProfile::Px4Device15VOnly
-                        | LnbRegistryProfile::EarthPt1FixedLnb,
+                        LnbRegistryProfile::Px4Device15VOnly | LnbRegistryProfile::EarthPt1FixedLnb,
                     ),
                 ) => crate::registry::SatellitePowerTopology::InternalFixed15V,
                 (FrontendSystem::IsdbS, Some(LnbRegistryProfile::NoPower)) => {
@@ -383,6 +383,7 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: Some(6_000_000),
             symbol_rate: None,
+            isdbt_layer_settings: Vec::new(),
             partial_reception:
                 maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         }
@@ -479,6 +480,75 @@ mod tests {
     }
 
     #[test]
+    fn rejected_earth_pt1_symbol_rate_preserves_active_frontend_state() {
+        let mut runtime = TunerServiceRuntime::new();
+        runtime.boot_from_probe_results([available(
+            2_000_001,
+            FrontendBackendKind::LinuxDvb,
+            FrontendSystem::IsdbS,
+            "/dev/dvb/adapter0/frontend0",
+            Some(LnbRegistryProfile::EarthPt1FixedLnb),
+        )]);
+        let accepted = maleicacid_tuner_hal2_common::FrontendTuneRequest {
+            system: FrontendSystem::IsdbS,
+            frequency: 1_049_480_000,
+            end_frequency: None,
+            stream_id: Some(0x4010),
+            stream_id_kind: Some(
+                maleicacid_tuner_hal2_common::FrontendStreamIdKind::AbsoluteStreamId,
+            ),
+            bandwidth_hz: None,
+            symbol_rate: Some(28_860_000),
+            isdbt_layer_settings: Vec::new(),
+            partial_reception:
+                maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
+        };
+        let generation = runtime
+            .frontend_txn()
+            .prepare_frontend_worker_generation(
+                2_000_001,
+                maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+            )
+            .unwrap();
+        runtime
+            .frontend_txn()
+            .install_frontend_live_reader_descriptor_for_generation(
+                2_000_001,
+                maleicacid_tuner_hal2_device::FrontendWorkerKind::Tune,
+                generation,
+            )
+            .unwrap();
+        runtime
+            .frontend_txn()
+            .commit_frontend_active_tune_request(2_000_001, generation, accepted.clone())
+            .unwrap();
+        let before = runtime
+            .registry()
+            .frontend_runtime(FrontendRuntimeId(2_000_001))
+            .unwrap()
+            .snapshot();
+
+        let mut rejected = accepted;
+        rejected.symbol_rate = Some(28_859_999);
+        let error = runtime
+            .validate_frontend_request_for_id(2_000_001, &rejected)
+            .unwrap_err();
+        assert_eq!(
+            error.invalid_argument_kind(),
+            Some(maleicacid_tuner_hal2_common::HalInvalidArgumentKind::UnsupportedSymbolRate)
+        );
+        assert_eq!(
+            runtime
+                .registry()
+                .frontend_runtime(FrontendRuntimeId(2_000_001))
+                .unwrap()
+                .snapshot(),
+            before,
+            "symbol-rate rejection must not replace the old request, generation, or backend descriptor",
+        );
+    }
+
+    #[test]
     fn frontend_limit_query_and_open_share_current_lease_limit() {
         let mut runtime = TunerServiceRuntime::new();
         runtime.boot_from_probe_results([
@@ -512,7 +582,8 @@ mod tests {
             RootQueryResponse::MaxNumberOfFrontends(1)
         );
         runtime
-            .root_open_txn().open_frontend_root_object_for_id(
+            .root_open_txn()
+            .open_frontend_root_object_for_id(
                 1_000_000,
                 AidlMethodCall::PublicApi {
                     object: AidlObjectKind::Tuner,
@@ -552,7 +623,8 @@ mod tests {
             ),
         ]);
         runtime
-            .root_open_txn().open_frontend_root_object_for_id(
+            .root_open_txn()
+            .open_frontend_root_object_for_id(
                 1_000_000,
                 AidlMethodCall::PublicApi {
                     object: AidlObjectKind::Tuner,
@@ -590,7 +662,8 @@ mod tests {
             RootQueryResponse::DemuxIds(vec![1, 2, 3, 4, 5, 6, 7, 8])
         );
         let opened = runtime
-            .root_open_txn().open_demux_root_object(AidlMethodCall::PublicApi {
+            .root_open_txn()
+            .open_demux_root_object(AidlMethodCall::PublicApi {
                 object: AidlObjectKind::Tuner,
                 api: AidlApi::TunerOpenDemux,
             })
@@ -1600,6 +1673,51 @@ mod tests {
         }
     }
 
+    fn assert_product_profile_opens_filter_through_demux_use_case(open_type: FilterOpenType) {
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let demux_entry = {
+            let mut guard = runtime.lock().unwrap();
+            guard
+                .root_open_txn()
+                .open_demux_root_object(AidlMethodCall::PublicApi {
+                    object: AidlObjectKind::Tuner,
+                    api: AidlApi::TunerOpenDemux,
+                })
+                .unwrap()
+        };
+
+        ObjectMethodUseCase::execute_after_live(
+            &runtime,
+            demux_entry.object_id(),
+            demux_entry.generation(),
+            AidlObjectKind::Demux,
+            || -> Result<_, HalError> {
+                let request = OpenFilterRequest {
+                    open_type,
+                    buffer_size: 4096,
+                    callback_present: false,
+                };
+                Ok((
+                    AidlMethodCall::DemuxOpenFilter(RuntimeExecutableRequest::OpenFilter(
+                        request.clone(),
+                    )),
+                    request,
+                ))
+            },
+            |runtime, dispatch, request| {
+                runtime
+                    .child_open_txn()
+                    .open_filter_child_runtime_for_demux_object(
+                        demux_entry.object_id(),
+                        demux_entry.generation(),
+                        &request,
+                        dispatch,
+                    )
+            },
+        )
+        .expect("published filter capability must open through the public use-case path");
+    }
+
     #[test]
     fn attach_dvr_filter_maps_non_record_filter_to_invalid_argument() {
         let mut runtime = TunerServiceRuntime::new();
@@ -1650,23 +1768,13 @@ mod tests {
     }
 
     #[test]
-    fn media_filter_is_unavailable_without_authoritative_pts_source() {
-        let mut runtime = TunerServiceRuntime::new();
-        let demux = runtime.allocate_demux_runtime().unwrap();
-        let filter = runtime.allocate_filter_runtime(demux.id.0).unwrap();
-        let error = runtime
-            .register_demux_filter_runtime(
-                demux.id.0,
-                filter.id.0,
-                &OpenFilterRequest {
-                    open_type: FilterOpenType::TsAudio,
-                    buffer_size: 4096,
-                    callback_present: false,
-                },
-            )
-            .unwrap_err();
+    fn product_profile_opens_ts_audio_through_demux_open_filter_use_case() {
+        assert_product_profile_opens_filter_through_demux_use_case(FilterOpenType::TsAudio);
+    }
 
-        assert!(matches!(error, HalError::Unsupported(_)));
+    #[test]
+    fn product_profile_opens_ts_video_through_demux_open_filter_use_case() {
+        assert_product_profile_opens_filter_through_demux_use_case(FilterOpenType::TsVideo);
     }
 
     #[test]

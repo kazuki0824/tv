@@ -1,15 +1,19 @@
-use crate::boot::{FrontendTuneScanContext, TunerServiceRuntime};
+use crate::boot::TunerServiceRuntime;
+use crate::frontend_worker_termination_use_case::FrontendWorkerTerminationUseCase;
 use crate::frontend_worker_txn::{
-    FrontendScanNotification, FrontendScanNotifier, FrontendTuneNotification,
-    FrontendTuneNotifier,
+    start_frontend_backend_scan_session_worker, start_frontend_backend_tune_worker,
+    stop_frontend_scan_object, stop_frontend_tune_object, FrontendScanNotification,
+    FrontendScanNotifier, FrontendTuneNotification, FrontendTuneNotifier,
 };
 use crate::object_method_use_case::ObjectMethodExecutionToken;
+use crate::registry::{FrontendRuntimeId, LnbRuntimeId, SatellitePowerTopology};
 use crate::worker_runtime::WorkerTerminalResult;
 use maleicacid_tuner_hal2_common::{
-    FrontendScanMode, FrontendTuneRequest, HalError,
+    compose_primary_cleanup_failure, FrontendScanMode, FrontendTuneRequest, HalError,
+    HalInternalKind, LnbVoltageRequest,
 };
 use maleicacid_tuner_hal2_device::{
-    FrontendWorkerCancelReason, FrontendWorkerKind, FrontendWorkerStopOutcome,
+    FrontendRuntimeState, FrontendWorkerCancelReason, FrontendWorkerKind, FrontendWorkerStopOutcome,
 };
 use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 
@@ -29,6 +33,7 @@ pub enum FrontendOperationEvent {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrontendOperationEventAcceptance {
     Accepted,
+    AcceptedCallbackFailure,
     DiscardedStale,
 }
 
@@ -126,6 +131,23 @@ pub enum FrontendWorkerTerminalEventAcceptance {
 /// methods below are the complete canonical entry-role set.
 pub struct FrontendTuneScanTxn;
 
+#[derive(Debug, Eq, PartialEq)]
+#[must_use = "frontend fixed-power preparation must be completed or rolled back by value"]
+struct FrontendFixedPowerPreparation {
+    frontend_id: FrontendRuntimeId,
+    newly_retained: bool,
+}
+
+impl FrontendFixedPowerPreparation {
+    const fn frontend_id(&self) -> FrontendRuntimeId {
+        self.frontend_id
+    }
+
+    const fn newly_retained(&self) -> bool {
+        self.newly_retained
+    }
+}
+
 impl FrontendTuneScanTxn {
     pub fn begin_tune(
         runtime: SharedFrontendRuntime,
@@ -136,14 +158,19 @@ impl FrontendTuneScanTxn {
         notifier: FrontendTuneNotifier,
         dispatch: ObjectMethodExecutionToken,
     ) -> Result<(), HalError> {
-        FrontendTuneScanContext::new(&runtime).begin_tune(
+        Self::preflight_begin(&runtime, object_id, object_generation, &request, None)?;
+        let fixed_power =
+            Self::ensure_frontend_fixed_power_for_object(&runtime, object_id, object_generation)?;
+        let result = start_frontend_backend_tune_worker(
+            std::sync::Arc::clone(&runtime),
             object_id,
             object_generation,
             request,
             kind,
             notifier,
             dispatch,
-        )
+        );
+        Self::rollback_new_fixed_power_after_begin_failure(&runtime, fixed_power, result)
     }
 
     pub fn begin_scan(
@@ -155,14 +182,25 @@ impl FrontendTuneScanTxn {
         notifier: FrontendScanNotifier,
         dispatch: ObjectMethodExecutionToken,
     ) -> Result<(), HalError> {
-        FrontendTuneScanContext::new(&runtime).begin_scan(
+        Self::preflight_begin(
+            &runtime,
+            object_id,
+            object_generation,
+            &request,
+            Some(scan_mode),
+        )?;
+        let fixed_power =
+            Self::ensure_frontend_fixed_power_for_object(&runtime, object_id, object_generation)?;
+        let result = start_frontend_backend_scan_session_worker(
+            std::sync::Arc::clone(&runtime),
             object_id,
             object_generation,
             request,
             scan_mode,
             notifier,
             dispatch,
-        )
+        );
+        Self::rollback_new_fixed_power_after_begin_failure(&runtime, fixed_power, result)
     }
 
     pub fn stop_tune(
@@ -172,7 +210,34 @@ impl FrontendTuneScanTxn {
         reason: FrontendWorkerCancelReason,
         dispatch: ObjectMethodExecutionToken,
     ) -> Result<(), HalError> {
-        FrontendTuneScanContext::new(&runtime).stop_tune(
+        {
+            let mut guard = runtime.lock().map_err(|_| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "service runtime lock poisoned while checking stopTune during scan",
+                )
+            })?;
+            let frontend_id = guard
+                .frontend_entry_for_aidl_object(object_id, object_generation)?
+                .id
+                .0;
+            let state = guard.query().frontend_runtime_snapshot(frontend_id)?.state;
+            if state == FrontendRuntimeState::Scanning {
+                // AOSP T-AOSP-35: stopTune() is an idempotent success while a scan owns
+                // the frontend. Consume the public method authority, but do not fence the
+                // scan generation, stop a worker, clear live data, or advance any demux
+                // stream boundary.
+                dispatch.consume_for_object(
+                    &mut guard,
+                    object_id,
+                    object_generation,
+                    AidlObjectKind::Frontend,
+                )?;
+                return Ok(());
+            }
+        }
+        stop_frontend_tune_object(
+            std::sync::Arc::clone(&runtime),
             object_id,
             object_generation,
             reason,
@@ -187,7 +252,8 @@ impl FrontendTuneScanTxn {
         reason: FrontendWorkerCancelReason,
         dispatch: ObjectMethodExecutionToken,
     ) -> Result<(), HalError> {
-        FrontendTuneScanContext::new(&runtime).stop_scan(
+        stop_frontend_scan_object(
+            std::sync::Arc::clone(&runtime),
             object_id,
             object_generation,
             reason,
@@ -201,18 +267,428 @@ impl FrontendTuneScanTxn {
         operation_generation: u64,
         event: FrontendOperationEvent,
     ) -> Result<FrontendOperationEventAcceptance, HalError> {
-        FrontendTuneScanContext::new(runtime).accept_operation_event(
-            frontend_id,
-            operation_generation,
-            event,
-        )
+        let is_current = runtime
+            .lock()
+            .map_err(|_| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "service runtime lock poisoned while validating a frontend operation event",
+                )
+            })?
+            .query()
+            .frontend_runtime_snapshot(frontend_id)?
+            .generation
+            == operation_generation;
+        if !is_current {
+            return Ok(FrontendOperationEventAcceptance::DiscardedStale);
+        }
+        let delivery = match event {
+            FrontendOperationEvent::Tune {
+                notifier,
+                notification,
+            } => notifier(frontend_id, operation_generation, notification),
+            FrontendOperationEvent::Scan {
+                notifier,
+                notification,
+            } => notifier(frontend_id, operation_generation, notification),
+        };
+        Ok(if delivery.is_ok() {
+            FrontendOperationEventAcceptance::Accepted
+        } else {
+            // The AIDL notifier already commits the classified post-commit callback
+            // failure through WorkerFailureClassifier -> PostCommitCallbackFailureTxn.
+            // Preserve the committed tune/scan operation and expose that delivery
+            // outcome explicitly instead of silently discarding it.
+            FrontendOperationEventAcceptance::AcceptedCallbackFailure
+        })
     }
 
     pub fn accept_worker_terminal(
         runtime: &SharedFrontendRuntime,
         event: FrontendWorkerTerminalEvent,
     ) -> Result<FrontendWorkerTerminalEventAcceptance, HalError> {
-        FrontendTuneScanContext::new(runtime).accept_worker_terminal(event)
+        let frontend_id = FrontendRuntimeId(event.frontend_id());
+        let acceptance = {
+            let mut guard = runtime.lock().map_err(|_| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "service runtime lock poisoned while accepting a frontend worker terminal",
+                )
+            })?;
+            FrontendWorkerTerminationUseCase::accept_worker_terminal(&mut guard, event)?
+        };
+        Self::release_fixed_power_if_operation_terminal(runtime, frontend_id)?;
+        Ok(acceptance)
+    }
+
+    fn restore_fixed_power_lease_after_failure(
+        runtime: &mut TunerServiceRuntime,
+        frontend_id: FrontendRuntimeId,
+        lnb_id: LnbRuntimeId,
+        primary: HalError,
+    ) -> HalError {
+        match runtime
+            .registry_mut()
+            .retain_frontend_fixed_power_lease(frontend_id, lnb_id)
+        {
+            Ok(_) => primary,
+            Err(cleanup) => compose_primary_cleanup_failure(
+                "fixed LNB power failure and rail lease restoration both failed",
+                primary,
+                cleanup,
+            ),
+        }
+    }
+
+    fn rollback_new_fixed_power_lease(
+        runtime: &mut TunerServiceRuntime,
+        frontend_id: FrontendRuntimeId,
+        newly_retained: bool,
+        primary: HalError,
+    ) -> HalError {
+        if !newly_retained {
+            return primary;
+        }
+        match runtime
+            .registry_mut()
+            .release_frontend_fixed_power_lease(frontend_id)
+        {
+            Ok(Some(_)) => primary,
+            Ok(None) => compose_primary_cleanup_failure(
+                "fixed LNB power preparation failed after its rail lease disappeared",
+                primary,
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "new fixed-power lease was missing during rollback",
+                ),
+            ),
+            Err(cleanup) => compose_primary_cleanup_failure(
+                "fixed LNB power preparation and rail lease rollback both failed",
+                primary,
+                cleanup,
+            ),
+        }
+    }
+
+    fn ensure_frontend_fixed_power_for_object(
+        runtime: &SharedFrontendRuntime,
+        object_id: AidlObjectId,
+        object_generation: AidlObjectGeneration,
+    ) -> Result<FrontendFixedPowerPreparation, HalError> {
+        let (frontend_id, lnb_id, authority) = {
+            let guard = runtime.lock().map_err(|_| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "service runtime lock poisoned during fixed-power preflight",
+                )
+            })?;
+            let frontend = guard.frontend_entry_for_aidl_object(object_id, object_generation)?;
+            let frontend_id = frontend.id;
+            if frontend.satellite_power_topology != SatellitePowerTopology::InternalFixed15V {
+                return Ok(FrontendFixedPowerPreparation {
+                    frontend_id,
+                    newly_retained: false,
+                });
+            }
+            let lnb_id = guard
+                .registry()
+                .lnb_for_frontend(frontend_id)
+                .map(|entry| entry.id)
+                .ok_or(HalError::Unsupported(
+                    "internal fixed-15V frontend has no registered LNB rail",
+                ))?;
+            let authority = guard
+                .registry()
+                .lnb_physical_io_authority(lnb_id)
+                .ok_or_else(crate::boot::lnb_txn::missing_lnb_error)?;
+            (frontend_id, lnb_id, authority)
+        };
+
+        authority.execute(|permit| {
+            let (prepared, newly_retained) = {
+                let mut guard = runtime.lock().map_err(|_| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "service runtime lock poisoned during fixed-power preparation",
+                    )
+                })?;
+                let current = guard.frontend_entry_for_aidl_object(object_id, object_generation)?;
+                if current.id != frontend_id
+                    || current.satellite_power_topology != SatellitePowerTopology::InternalFixed15V
+                {
+                    return Err(HalError::invalid_state(
+                        maleicacid_tuner_hal2_common::HalInvalidStateKind::InvalidLifecycle,
+                        "frontend fixed-power topology changed before rail preparation",
+                    ));
+                }
+                let newly_retained = guard
+                    .registry_mut()
+                    .retain_frontend_fixed_power_lease(frontend_id, lnb_id)?;
+                let already_applied = guard.registry().lnb_runtime(lnb_id).is_some_and(|lnb| {
+                    lnb.state() == maleicacid_tuner_hal2_lnb::LnbRuntimeState::Open
+                        && lnb.registry_state().voltage
+                            == maleicacid_tuner_hal2_lnb::LnbVoltage::Voltage15V
+                });
+                if already_applied {
+                    return Ok(FrontendFixedPowerPreparation {
+                        frontend_id,
+                        newly_retained,
+                    });
+                }
+                if guard.registry().lnb_runtime(lnb_id).is_some_and(|lnb| {
+                    lnb.state() == maleicacid_tuner_hal2_lnb::LnbRuntimeState::Closed
+                }) {
+                    if let Err(error) = guard
+                        .registry_mut()
+                        .reopen_lnb(lnb_id)
+                        .map_err(crate::boot::lnb_txn::map_lnb_failure)
+                    {
+                        return Err(Self::rollback_new_fixed_power_lease(
+                            &mut guard,
+                            frontend_id,
+                            newly_retained,
+                            error,
+                        ));
+                    }
+                }
+                let prepared = match guard.lnb_control_txn().prepare_internal_fixed_15v(lnb_id.0) {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        return Err(Self::rollback_new_fixed_power_lease(
+                            &mut guard,
+                            frontend_id,
+                            newly_retained,
+                            error,
+                        ));
+                    }
+                };
+                (prepared, newly_retained)
+            };
+
+            let completed = prepared.execute(&permit);
+            let backend_result = completed.backend_result();
+            let finish_result = runtime
+                .lock()
+                .map_err(|_| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "service runtime lock poisoned while finishing fixed power",
+                    )
+                })?
+                .lnb_control_txn()
+                .finish(completed);
+            match finish_result {
+                Ok(()) => Ok(FrontendFixedPowerPreparation {
+                    frontend_id,
+                    newly_retained,
+                }),
+                Err(error)
+                    if matches!(
+                        backend_result,
+                        maleicacid_tuner_hal2_lnb::LnbBackendApplyOutcome::Rejected(_)
+                    ) =>
+                {
+                    let mut guard = runtime.lock().map_err(|_| {
+                        HalError::internal(
+                            HalInternalKind::InvariantViolation,
+                            "service runtime lock poisoned while rolling back fixed power",
+                        )
+                    })?;
+                    Err(Self::rollback_new_fixed_power_lease(
+                        &mut guard,
+                        frontend_id,
+                        newly_retained,
+                        error,
+                    ))
+                }
+                Err(error) => Err(error),
+            }
+        })
+    }
+
+    fn release_frontend_fixed_power_after_operation(
+        runtime: &SharedFrontendRuntime,
+        frontend_id: FrontendRuntimeId,
+    ) -> Result<(), HalError> {
+        let (lnb_id, authority) = {
+            let guard = runtime.lock().map_err(|_| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "service runtime lock poisoned during fixed-power release preflight",
+                )
+            })?;
+            let Some(lnb_id) = guard.registry().frontend_fixed_power_lnb(frontend_id) else {
+                return Ok(());
+            };
+            let authority = guard
+                .registry()
+                .lnb_physical_io_authority(lnb_id)
+                .ok_or_else(crate::boot::lnb_txn::missing_lnb_error)?;
+            (lnb_id, authority)
+        };
+
+        authority.execute(|permit| {
+            let prepared = {
+                let mut guard = runtime.lock().map_err(|_| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "service runtime lock poisoned during fixed-power release",
+                    )
+                })?;
+                if guard.registry().frontend_fixed_power_lnb(frontend_id) != Some(lnb_id) {
+                    return Ok(());
+                }
+                let operation_is_terminal = guard
+                    .registry()
+                    .frontend_runtime(frontend_id)
+                    .map(|frontend| {
+                        matches!(
+                            frontend.snapshot().state,
+                            FrontendRuntimeState::Idle
+                                | FrontendRuntimeState::Closing
+                                | FrontendRuntimeState::Failed
+                        )
+                    })
+                    .unwrap_or(true);
+                if !operation_is_terminal {
+                    return Ok(());
+                }
+                let state_is_safe = guard.registry().lnb_runtime(lnb_id).is_some_and(|lnb| {
+                    lnb.registry_state() == maleicacid_tuner_hal2_lnb::LnbElectricalState::safe()
+                });
+                let remaining = match guard
+                    .registry_mut()
+                    .release_frontend_fixed_power_lease(frontend_id)?
+                {
+                    Some((released_lnb_id, remaining)) if released_lnb_id == lnb_id => remaining,
+                    Some(_) => {
+                        return Err(HalError::internal(
+                            HalInternalKind::InvariantViolation,
+                            "fixed-power release changed physical LNB identity",
+                        ));
+                    }
+                    None => return Ok(()),
+                };
+                if remaining != 0 || state_is_safe {
+                    return Ok(());
+                }
+                match guard
+                    .lnb_control_txn()
+                    .prepare_voltage(lnb_id.0, LnbVoltageRequest::None)
+                {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        return Err(Self::restore_fixed_power_lease_after_failure(
+                            &mut guard,
+                            frontend_id,
+                            lnb_id,
+                            error,
+                        ));
+                    }
+                }
+            };
+
+            let completed = prepared.execute(&permit);
+            match runtime
+                .lock()
+                .map_err(|_| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "service runtime lock poisoned while finishing fixed-power release",
+                    )
+                })?
+                .lnb_control_txn()
+                .finish(completed)
+            {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    let mut guard = runtime.lock().map_err(|_| {
+                        HalError::internal(
+                            HalInternalKind::InvariantViolation,
+                            "service runtime lock poisoned while restoring fixed-power lease",
+                        )
+                    })?;
+                    Err(Self::restore_fixed_power_lease_after_failure(
+                        &mut guard,
+                        frontend_id,
+                        lnb_id,
+                        error,
+                    ))
+                }
+            }
+        })
+    }
+
+    fn preflight_begin(
+        runtime: &SharedFrontendRuntime,
+        object_id: AidlObjectId,
+        object_generation: AidlObjectGeneration,
+        request: &FrontendTuneRequest,
+        scan_mode: Option<FrontendScanMode>,
+    ) -> Result<(), HalError> {
+        let guard = runtime.lock().map_err(|_| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "service runtime lock poisoned during frontend begin preflight",
+            )
+        })?;
+        let entry = guard.frontend_entry_for_aidl_object(object_id, object_generation)?;
+        let normalized = request.clone().normalized_for_non_blind_operation();
+        let validated = guard.validate_frontend_request_for_id(entry.id.0, &normalized)?;
+        if let Some(scan_mode) = scan_mode {
+            guard.scan_candidates_for_frontend_entry(&validated, &normalized, scan_mode)?;
+        }
+        Ok(())
+    }
+
+    fn rollback_new_fixed_power_after_begin_failure(
+        runtime: &SharedFrontendRuntime,
+        preparation: FrontendFixedPowerPreparation,
+        result: Result<(), HalError>,
+    ) -> Result<(), HalError> {
+        let Err(primary) = result else {
+            return Ok(());
+        };
+        if !preparation.newly_retained() {
+            return Err(primary);
+        }
+        match Self::release_frontend_fixed_power_after_operation(runtime, preparation.frontend_id())
+        {
+            Ok(()) => Err(primary),
+            Err(cleanup) => Err(compose_primary_cleanup_failure(
+                "frontend begin failed and fixed LNB power rollback failed",
+                primary,
+                cleanup,
+            )),
+        }
+    }
+
+    fn release_fixed_power_if_operation_terminal(
+        runtime: &SharedFrontendRuntime,
+        frontend_id: FrontendRuntimeId,
+    ) -> Result<(), HalError> {
+        let terminal = runtime
+            .lock()
+            .map_err(|_| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "service runtime lock poisoned while checking fixed-power release",
+                )
+            })?
+            .query()
+            .frontend_runtime_snapshot(frontend_id.0)
+            .map(|snapshot| {
+                matches!(
+                    snapshot.state,
+                    FrontendRuntimeState::Idle
+                        | FrontendRuntimeState::Closing
+                        | FrontendRuntimeState::Failed
+                )
+            })?;
+        if terminal {
+            Self::release_frontend_fixed_power_after_operation(runtime, frontend_id)?;
+        }
+        Ok(())
     }
 }
 
@@ -234,7 +710,7 @@ impl FrontendLnbRelationTxn {
         runtime: &mut TunerServiceRuntime,
     ) -> Result<crate::boot::lnb_txn::PreparedFrontendLnbAssignment, HalError> {
         runtime
-            .lnb_txn()
+            .lnb_mutation_context()
             .prepare_frontend_lnb_assignment(self.frontend_id, self.lnb_id)
     }
 
@@ -243,7 +719,7 @@ impl FrontendLnbRelationTxn {
         executed: crate::boot::lnb_txn::ExecutedFrontendLnbAssignment,
     ) -> Result<(), HalError> {
         runtime
-            .lnb_txn()
+            .lnb_mutation_context()
             .commit_frontend_lnb_assignment(executed)
     }
 

@@ -146,9 +146,9 @@ impl FrontendBackendSubmitDetachedJoin {
 
     fn try_complete(mut self) -> FrontendWorkerStopPoll {
         let Some(result) = self.ticket.try_complete_cleanup() else {
-            return FrontendWorkerStopPoll::Pending(
-                FrontendWorkerStopTicket::backend_submit_join(self),
-            );
+            return FrontendWorkerStopPoll::Pending(FrontendWorkerStopTicket::backend_submit_join(
+                self,
+            ));
         };
         FrontendWorkerStopPoll::Completed(FrontendWorkerStopOutcome::Completed {
             frontend_id: self.frontend_id,
@@ -826,20 +826,21 @@ mod tests {
             frontend_id: 14,
             kind: FrontendWorkerKind::Tune,
         };
-        let result: Arc<Mutex<Option<Result<(Result<(), HalError>, WorkerExit), HalError>>>> =
-            Arc::new(Mutex::new(None));
-        let join = std::thread::spawn(|| {});
         registry.slots.insert(
             key,
             FrontendWorkerSlot {
                 generation: 10,
                 cancel: Arc::new(AtomicBool::new(false)),
                 cancel_reason: Arc::new(Mutex::new(None)),
-                thread_result: Some(ThreadResultOwner::new_for_test(
-                    "frontend-worker-missing-test",
-                    result,
-                    Some(join),
-                )),
+                thread_result: Some(
+                    ThreadResultOwner::start(
+                        "frontend-worker-owner-failure-test",
+                        || -> Result<(Result<(), HalError>, WorkerExit), HalError> {
+                            panic!("forced worker owner failure")
+                        },
+                    )
+                    .unwrap(),
+                ),
                 pending_completed: None,
             },
         );

@@ -4,9 +4,8 @@ use super::{
     execute_object_query_use_case, execute_object_runtime_use_case,
     execute_object_runtime_use_case_with_request_builder, is_playback_dvr,
     start_dvr_status_notifier, status_from_hal_error, status_unknown_error,
-    stop_dvr_status_notifier,
-    tuner_queue_desc_from_snapshot, AidlMethodCall, AidlObjectGeneration, AidlObjectId,
-    BinderResult, DvrAidlObject, DvrFilterLinkRequest, DvrSettings, IDvr, IFilter,
+    stop_dvr_status_notifier, tuner_queue_desc_from_snapshot, AidlMethodCall, AidlObjectGeneration,
+    AidlObjectId, BinderResult, DvrAidlObject, DvrFilterLinkRequest, DvrSettings, IDvr, IFilter,
     ObjectQueryRequest, ObjectQueryResponse, Strong, TunerQueueDesc,
 };
 use crate::dvr_callback_delivery::{
@@ -130,14 +129,6 @@ impl IDvr for DvrAidlObject {
             DvrPostCommitNotificationPhase::StatusNotifierStart,
             notifier_outcome,
         );
-        if playback_kind.is_err()
-            || matches!(playback_kind, Ok(true)) && worker_start_result.is_err()
-        {
-            let shared_runtime = self.runtime();
-            if let Ok(mut runtime) = shared_runtime.lock() {
-                runtime.mark_service_critical();
-            }
-        }
         Ok(())
     }
     fn stop(&self) -> BinderResult<()> {

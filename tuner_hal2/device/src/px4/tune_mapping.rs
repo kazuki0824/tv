@@ -37,6 +37,59 @@ const PX4_CS_STEP_HZ: u64 = 40_000_000;
 const PX4_CS_FREQ_NO_MIN: i32 = 12;
 const PX4_CS_FREQ_NO_MAX: i32 = 23;
 
+fn normalize_frequency_to_discrete_raster(
+    frequency_hz: u64,
+    first_hz: u64,
+    step_hz: u64,
+    count: u64,
+) -> Option<u64> {
+    if count == 0 || step_hz == 0 {
+        return None;
+    }
+    let last = first_hz.checked_add(step_hz.checked_mul(count.checked_sub(1)?)?)?;
+    let half_step = step_hz / 2;
+    if frequency_hz < first_hz.saturating_sub(half_step)
+        || frequency_hz > last.checked_add(half_step)?
+    {
+        return None;
+    }
+    if frequency_hz <= first_hz {
+        return Some(first_hz);
+    }
+    if frequency_hz >= last {
+        return Some(last);
+    }
+    let delta = frequency_hz.checked_sub(first_hz)?;
+    let lower_index = delta / step_hz;
+    let remainder = delta % step_hz;
+    if step_hz % 2 == 0 && remainder == half_step {
+        return None;
+    }
+    let index = lower_index + u64::from(remainder > half_step);
+    if index >= count {
+        return None;
+    }
+    first_hz.checked_add(step_hz.checked_mul(index)?)
+}
+
+pub fn normalize_japan_bs_if_frequency_hz(frequency_hz: u64) -> Option<u64> {
+    normalize_frequency_to_discrete_raster(
+        frequency_hz,
+        PX4_BS_BASE_IF_HZ,
+        PX4_BS_STEP_HZ,
+        u64::try_from(PX4_BS_FREQ_NO_MAX - PX4_BS_FREQ_NO_MIN + 1).ok()?,
+    )
+}
+
+pub fn normalize_japan_cs110_if_frequency_hz(frequency_hz: u64) -> Option<u64> {
+    normalize_frequency_to_discrete_raster(
+        frequency_hz,
+        PX4_CS_BASE_IF_HZ,
+        PX4_CS_STEP_HZ,
+        u64::try_from(PX4_CS_FREQ_NO_MAX - PX4_CS_FREQ_NO_MIN + 1).ok()?,
+    )
+}
+
 fn hz_to_nearest_khz(hz: u64) -> Result<i32, HalError> {
     let rounded = (hz + 500) / 1_000;
     i32::try_from(rounded).map_err(|_| {
@@ -87,12 +140,6 @@ fn checked_direct_freq_no(
     )
 }
 
-fn is_japan_cs110_if_frequency_range_hz(if_hz: u64) -> bool {
-    let last =
-        PX4_CS_BASE_IF_HZ + PX4_CS_STEP_HZ * ((PX4_CS_FREQ_NO_MAX - PX4_CS_FREQ_NO_MIN) as u64);
-    (PX4_CS_BASE_IF_HZ..=last).contains(&if_hz)
-}
-
 pub fn map_isdbt_frequency_to_px4(freq_hz: u64) -> Result<Px4TuneRequest, HalError> {
     let freq_khz = hz_to_nearest_khz(freq_hz)?;
     if let Some((freq_no, addfreq_khz)) = checked_direct_freq_no(
@@ -132,65 +179,55 @@ pub fn map_isdbt_frequency_to_px4(freq_hz: u64) -> Result<Px4TuneRequest, HalErr
 }
 
 pub fn map_bs_if_frequency_to_px4_freq_no(if_hz: u64) -> Result<i32, HalError> {
-    if if_hz < PX4_BS_BASE_IF_HZ {
-        return Err(HalError::invalid_argument(
+    let center = normalize_japan_bs_if_frequency_hz(if_hz).ok_or_else(|| {
+        HalError::invalid_argument(
             HalInvalidArgumentKind::UnsupportedFrequency,
-            "px4 BS IF周波数は非対応です",
-        ));
-    }
-    let delta = if_hz - PX4_BS_BASE_IF_HZ;
-    if delta % PX4_BS_STEP_HZ != 0 {
-        return Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::UnsupportedFrequency,
-            "px4 BS IF周波数は非対応です",
-        ));
-    }
+            "px4 BS IF frequency is outside the unambiguous Japan raster domain",
+        )
+    })?;
+    let delta = center - PX4_BS_BASE_IF_HZ;
     let freq_no = PX4_BS_FREQ_NO_MIN
         + i32::try_from(delta / PX4_BS_STEP_HZ).map_err(|_| {
             HalError::invalid_argument(
                 HalInvalidArgumentKind::UnsupportedFrequency,
-                "px4 BS IF周波数は非対応です",
+                "px4 BS IF frequency is unsupported",
             )
         })?;
-    if (PX4_BS_FREQ_NO_MIN..=PX4_BS_FREQ_NO_MAX).contains(&freq_no) {
-        Ok(freq_no)
-    } else {
-        Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::UnsupportedFrequency,
-            "px4 BS IF周波数は非対応です",
-        ))
-    }
+    (PX4_BS_FREQ_NO_MIN..=PX4_BS_FREQ_NO_MAX)
+        .contains(&freq_no)
+        .then_some(freq_no)
+        .ok_or_else(|| {
+            HalError::invalid_argument(
+                HalInvalidArgumentKind::UnsupportedFrequency,
+                "px4 BS IF frequency is unsupported",
+            )
+        })
 }
 
 pub fn map_cs110_if_frequency_to_px4_freq_no(if_hz: u64) -> Result<i32, HalError> {
-    if if_hz < PX4_CS_BASE_IF_HZ {
-        return Err(HalError::invalid_argument(
+    let center = normalize_japan_cs110_if_frequency_hz(if_hz).ok_or_else(|| {
+        HalError::invalid_argument(
             HalInvalidArgumentKind::UnsupportedFrequency,
-            "px4 110CS IF周波数は非対応です",
-        ));
-    }
-    let delta = if_hz - PX4_CS_BASE_IF_HZ;
-    if delta % PX4_CS_STEP_HZ != 0 {
-        return Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::UnsupportedFrequency,
-            "px4 110CS IF周波数は非対応です",
-        ));
-    }
+            "px4 CS110 IF frequency is outside the unambiguous Japan raster domain",
+        )
+    })?;
+    let delta = center - PX4_CS_BASE_IF_HZ;
     let freq_no = PX4_CS_FREQ_NO_MIN
         + i32::try_from(delta / PX4_CS_STEP_HZ).map_err(|_| {
             HalError::invalid_argument(
                 HalInvalidArgumentKind::UnsupportedFrequency,
-                "px4 110CS IF周波数は非対応です",
+                "px4 CS110 IF frequency is unsupported",
             )
         })?;
-    if (PX4_CS_FREQ_NO_MIN..=PX4_CS_FREQ_NO_MAX).contains(&freq_no) {
-        Ok(freq_no)
-    } else {
-        Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::UnsupportedFrequency,
-            "px4 110CS IF周波数は非対応です",
-        ))
-    }
+    (PX4_CS_FREQ_NO_MIN..=PX4_CS_FREQ_NO_MAX)
+        .contains(&freq_no)
+        .then_some(freq_no)
+        .ok_or_else(|| {
+            HalError::invalid_argument(
+                HalInvalidArgumentKind::UnsupportedFrequency,
+                "px4 CS110 IF frequency is unsupported",
+            )
+        })
 }
 
 pub fn map_relative_stream_number_to_px4_slot(
@@ -232,9 +269,9 @@ pub fn reportable_bs_tsid_for_scan(
 fn map_absolute_stream_id_to_px4_slot(stream_id: u16, band: Px4SatBand) -> Result<i32, HalError> {
     match band {
         Px4SatBand::Bs if stream_id >= 12 => Ok(i32::from(stream_id)),
-        Px4SatBand::Bs => Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::InvalidStreamIdRange,
-            "px4 BS STREAM_ID は絶対TSIDでなければなりません",
+        Px4SatBand::Bs => Err(HalError::unsupported_detail(
+            "isdbs.streamId",
+            "px4 legacy slot ABI cannot represent an absolute TSID in 0..=11",
         )),
         Px4SatBand::Cs110 => Err(HalError::invalid_argument(
             HalInvalidArgumentKind::UnsupportedStreamSelector,
@@ -264,17 +301,19 @@ fn validate_backend_bandwidth(request: &FrontendTuneRequest) -> Result<(), HalEr
 }
 
 pub fn map_tune_request_to_px4(request: &FrontendTuneRequest) -> Result<Px4TuneRequest, HalError> {
-    if request.symbol_rate.is_some() {
-        return Err(HalError::invalid_argument(
-            HalInvalidArgumentKind::UnsupportedSymbolRate,
-            "r51のpx4バックエンド契約では明示symbol_rateを受け付けません",
-        ));
+    if let Some(symbol_rate) = request.symbol_rate {
+        if request.system != FrontendSystem::IsdbS || symbol_rate != 28_860_000 {
+            return Err(HalError::invalid_argument(
+                HalInvalidArgumentKind::UnsupportedSymbolRate,
+                "px4 symbol_rate must match the fixed advertised ISDB-S rate",
+            ));
+        }
     }
     validate_backend_bandwidth(request)?;
     match request.system {
         FrontendSystem::IsdbT => map_isdbt_frequency_to_px4(request.frequency),
         FrontendSystem::IsdbS => {
-            let band = if is_japan_cs110_if_frequency_range_hz(request.frequency) {
+            let band = if normalize_japan_cs110_if_frequency_hz(request.frequency).is_some() {
                 Px4SatBand::Cs110
             } else {
                 Px4SatBand::Bs
@@ -348,18 +387,25 @@ mod tests {
             stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId),
             bandwidth_hz: None,
             symbol_rate: None,
+            isdbt_layer_settings: Vec::new(),
             partial_reception:
                 maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         }
     }
 
     #[test]
-    fn rejects_internal_symbol_rate_contract_violation() {
+    fn accepts_advertised_isdbs_symbol_rate_and_rejects_other_values() {
         let request = FrontendTuneRequest {
             symbol_rate: Some(28_860_000),
             ..bs_request(0x4010)
         };
-        let err = map_tune_request_to_px4(&request).unwrap_err();
+        assert!(map_tune_request_to_px4(&request).is_ok());
+
+        let unsupported = FrontendTuneRequest {
+            symbol_rate: Some(28_859_999),
+            ..bs_request(0x4010)
+        };
+        let err = map_tune_request_to_px4(&unsupported).unwrap_err();
         assert_eq!(
             err.invalid_argument_kind(),
             Some(HalInvalidArgumentKind::UnsupportedSymbolRate)
@@ -371,7 +417,7 @@ mod tests {
         let mapped = map_isdbt_frequency_to_px4(557_142_857).unwrap();
         assert_eq!(mapped.system_code, PTX_ISDB_T_SYSTEM);
         assert_eq!(mapped.freq_no, 77);
-        assert_eq!(mapped.slot.abs() <= PX4_FREQ_TOLERANCE_KHZ, true);
+        assert!(mapped.slot.abs() <= PX4_FREQ_TOLERANCE_KHZ);
     }
 
     #[test]
@@ -455,17 +501,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_relative_like_value_in_absolute_stream_id_path() {
+    fn absolute_tsid_in_legacy_slot_range_is_unavailable_on_px4() {
         let request = FrontendTuneRequest {
             stream_id: Some(3),
             stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId),
             ..bs_request(0x4010)
         };
         let err = map_tune_request_to_px4(&request).unwrap_err();
-        assert_eq!(
-            err.invalid_argument_kind(),
-            Some(HalInvalidArgumentKind::InvalidStreamIdRange)
-        );
+        assert!(matches!(err, HalError::UnsupportedDetail { .. }));
     }
 
     #[test]
@@ -489,6 +532,7 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: None,
             symbol_rate: None,
+            isdbt_layer_settings: Vec::new(),
             partial_reception:
                 maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
@@ -508,6 +552,7 @@ mod tests {
             stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId),
             bandwidth_hz: None,
             symbol_rate: None,
+            isdbt_layer_settings: Vec::new(),
             partial_reception:
                 maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
@@ -528,6 +573,7 @@ mod tests {
             stream_id_kind: Some(FrontendStreamIdKind::RelativeStreamNumber),
             bandwidth_hz: None,
             symbol_rate: None,
+            isdbt_layer_settings: Vec::new(),
             partial_reception:
                 maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
@@ -548,6 +594,7 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: Some(6_000_000),
             symbol_rate: None,
+            isdbt_layer_settings: Vec::new(),
             partial_reception:
                 maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
@@ -563,6 +610,7 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: None,
             symbol_rate: None,
+            isdbt_layer_settings: Vec::new(),
             partial_reception:
                 maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
@@ -575,13 +623,15 @@ mod tests {
     }
 
     #[test]
-    fn isdbs_satellite_frequency_validation_is_exact_when_acquire_range_is_zero() {
-        assert!(map_bs_if_frequency_to_px4_freq_no(1_049_480_000).is_ok());
-        assert!(map_bs_if_frequency_to_px4_freq_no(1_049_480_001).is_err());
-        assert!(map_bs_if_frequency_to_px4_freq_no(1_049_979_999).is_err());
-        assert!(map_cs110_if_frequency_to_px4_freq_no(1_613_000_000).is_ok());
-        assert!(map_cs110_if_frequency_to_px4_freq_no(1_613_000_001).is_err());
-        assert!(map_cs110_if_frequency_to_px4_freq_no(1_613_499_999).is_err());
+    fn isdbs_satellite_frequency_validation_uses_unambiguous_nearest_raster_center() {
+        assert_eq!(map_bs_if_frequency_to_px4_freq_no(1_049_480_000), Ok(0));
+        assert_eq!(map_bs_if_frequency_to_px4_freq_no(1_050_000_000), Ok(0));
+        assert!(
+            map_bs_if_frequency_to_px4_freq_no(PX4_BS_BASE_IF_HZ + PX4_BS_STEP_HZ / 2).is_err()
+        );
+        assert_eq!(map_cs110_if_frequency_to_px4_freq_no(1_613_500_000), Ok(12));
+        assert!(map_bs_if_frequency_to_px4_freq_no(1_550_000_000).is_err());
+        assert!(map_cs110_if_frequency_to_px4_freq_no(1_550_000_000).is_err());
     }
 
     #[test]
@@ -604,5 +654,25 @@ mod tests {
         let candidates = px4_scan_requests(&request).unwrap();
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].end_frequency, None);
+    }
+}
+
+#[cfg(test)]
+mod android_isdbs_frequency_adapter_tests {
+    use super::*;
+
+    #[test]
+    fn android_isdbs_frequency_is_normalized_to_px4_raster() {
+        assert_eq!(map_bs_if_frequency_to_px4_freq_no(1_050_000_000), Ok(0));
+        assert_eq!(
+            map_bs_if_frequency_to_px4_freq_no(PX4_BS_BASE_IF_HZ + PX4_BS_STEP_HZ),
+            Ok(1)
+        );
+        assert_eq!(
+            map_cs110_if_frequency_to_px4_freq_no(PX4_CS_BASE_IF_HZ),
+            Ok(12)
+        );
+        assert!(map_bs_if_frequency_to_px4_freq_no(1_550_000_000).is_err());
+        assert!(map_cs110_if_frequency_to_px4_freq_no(1_550_000_000).is_err());
     }
 }

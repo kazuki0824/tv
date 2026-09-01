@@ -18,7 +18,7 @@ use super::thread_result_owner::{ThreadResultOwner, ThreadResultPoll};
 use super::tune_txn::{BackendTuneOps, BackendTuneOutcome, BackendTuneStep, BackendTuneTxn};
 use crate::dvb;
 use crate::dvb::abi::{
-    DtvProperties, DtvProperty, DTV_CLEAR, FE_HAS_LOCK, FE_HAS_SIGNAL, FE_READ_STATUS,
+    DtvProperties, DtvProperty, DTV_CLEAR, FE_HAS_CARRIER, FE_HAS_LOCK, FE_READ_STATUS,
     FE_SET_PROPERTY, FE_SET_VOLTAGE, SEC_VOLTAGE_13, SEC_VOLTAGE_18, SEC_VOLTAGE_OFF,
 };
 use crate::px4;
@@ -189,7 +189,7 @@ impl FrontendBackendSession {
                 )?;
                 if status & FE_HAS_LOCK != 0 {
                     Ok(FrontendSignalState::Locked)
-                } else if status & FE_HAS_SIGNAL != 0 {
+                } else if status & FE_HAS_CARRIER != 0 {
                     Ok(FrontendSignalState::SignalDetected)
                 } else {
                     Ok(FrontendSignalState::NoSignal)
@@ -351,10 +351,7 @@ impl FrontendBackendSubmitTicket {
     ) -> Result<Self, HalError> {
         let generation = plan.generation;
         Self::start_with(generation, move || {
-            FrontendBackendSession::open_and_submit_with_previous_report(
-                &plan,
-                previous_request,
-            )
+            FrontendBackendSession::open_and_submit_with_previous_report(&plan, previous_request)
         })
     }
 
@@ -403,10 +400,7 @@ impl FrontendBackendSubmitTicket {
         })
     }
 
-    pub fn wait_until(
-        mut self,
-        deadline: Instant,
-    ) -> Result<FrontendBackendSubmitWait, HalError> {
+    pub fn wait_until(mut self, deadline: Instant) -> Result<FrontendBackendSubmitWait, HalError> {
         let wait = deadline.saturating_duration_since(Instant::now());
         match self.ready.recv_timeout(wait) {
             Ok(FrontendBackendSubmitReady::Submitted) => {
@@ -433,12 +427,12 @@ impl FrontendBackendSubmitTicket {
                     }
                 };
                 match outcome {
-                    FrontendBackendSubmitThreadOutcome::Claimed(session) => Ok(
-                        FrontendBackendSubmitWait::Completed(Ok(session)),
-                    ),
-                    FrontendBackendSubmitThreadOutcome::Failed(failure) => Ok(
-                        FrontendBackendSubmitWait::Completed(Err(failure)),
-                    ),
+                    FrontendBackendSubmitThreadOutcome::Claimed(session) => {
+                        Ok(FrontendBackendSubmitWait::Completed(Ok(session)))
+                    }
+                    FrontendBackendSubmitThreadOutcome::Failed(failure) => {
+                        Ok(FrontendBackendSubmitWait::Completed(Err(failure)))
+                    }
                     FrontendBackendSubmitThreadOutcome::Aborted(stop_result) => {
                         let error = stop_result.err().unwrap_or_else(|| {
                             HalError::internal(
@@ -469,9 +463,9 @@ impl FrontendBackendSubmitTicket {
                     }
                 };
                 match outcome {
-                    FrontendBackendSubmitThreadOutcome::Failed(failure) => Ok(
-                        FrontendBackendSubmitWait::Completed(Err(failure)),
-                    ),
+                    FrontendBackendSubmitThreadOutcome::Failed(failure) => {
+                        Ok(FrontendBackendSubmitWait::Completed(Err(failure)))
+                    }
                     FrontendBackendSubmitThreadOutcome::Claimed(session) => {
                         let stop_result = session.stop();
                         let error = stop_result.err().unwrap_or_else(|| {
@@ -523,9 +517,9 @@ impl FrontendBackendSubmitTicket {
                     }
                 };
                 match outcome {
-                    FrontendBackendSubmitThreadOutcome::Failed(failure) => Ok(
-                        FrontendBackendSubmitWait::Completed(Err(failure)),
-                    ),
+                    FrontendBackendSubmitThreadOutcome::Failed(failure) => {
+                        Ok(FrontendBackendSubmitWait::Completed(Err(failure)))
+                    }
                     FrontendBackendSubmitThreadOutcome::Claimed(session) => {
                         let stop_error = session.stop().err().unwrap_or_else(|| {
                             HalError::internal(
@@ -1012,7 +1006,7 @@ impl FrontendBackendTuneExecutor {
                 )?;
                 if status & FE_HAS_LOCK != 0 {
                     Ok(FrontendSignalState::Locked)
-                } else if status & FE_HAS_SIGNAL != 0 {
+                } else if status & FE_HAS_CARRIER != 0 {
                     Ok(FrontendSignalState::SignalDetected)
                 } else {
                     Ok(FrontendSignalState::NoSignal)
@@ -1343,6 +1337,7 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: Some(6_000_000),
             symbol_rate: None,
+            isdbt_layer_settings: Vec::new(),
             partial_reception:
                 maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
@@ -1370,6 +1365,7 @@ mod tests {
             stream_id_kind: Some(FrontendStreamIdKind::AbsoluteStreamId),
             bandwidth_hz: None,
             symbol_rate: None,
+            isdbt_layer_settings: Vec::new(),
             partial_reception:
                 maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
@@ -1394,6 +1390,7 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: Some(6_000_000),
             symbol_rate: None,
+            isdbt_layer_settings: Vec::new(),
             partial_reception:
                 maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };
@@ -1421,6 +1418,7 @@ mod tests {
             stream_id_kind: None,
             bandwidth_hz: Some(6_000_000),
             symbol_rate: None,
+            isdbt_layer_settings: Vec::new(),
             partial_reception:
                 maleicacid_tuner_hal2_common::FrontendIsdbtPartialReceptionRequirement::Unspecified,
         };

@@ -5,11 +5,10 @@ use super::{
     execute_shared_object_runtime_use_case_with_request_builder,
     plan_unavailable_object_method_use_case, scan_notifier, set_frontend_lnb_object_use_case,
     status_from_hal_error, status_unknown_error, tune_notifier, AidlApi, AidlMethodCall,
-    AidlObjectKind, BinderResult, FrontendAidlObject, FrontendTuneScanTxn,
-    FrontendScanType, FrontendSettings, FrontendStatus, FrontendStatusReadiness,
-    FrontendStatusType, IFrontend, IFrontendCallback, ObjectFrontendStatusReadinessValue,
-    ObjectFrontendStatusType, ObjectFrontendStatusValue, ObjectQueryRequest, ObjectQueryResponse,
-    Strong,
+    AidlObjectKind, BinderResult, FrontendAidlObject, FrontendScanType, FrontendSettings,
+    FrontendStatus, FrontendStatusReadiness, FrontendStatusType, FrontendTuneScanTxn, IFrontend,
+    IFrontendCallback, ObjectFrontendStatusReadinessValue, ObjectFrontendStatusType,
+    ObjectFrontendStatusValue, ObjectQueryRequest, ObjectQueryResponse, Strong,
 };
 use maleicacid_tuner_hal2_common::{HalError, HalInvalidArgumentKind};
 use maleicacid_tuner_hal2_device::{FrontendWorkerCancelReason, FrontendWorkerKind};
@@ -19,6 +18,7 @@ fn object_frontend_status_type_from_aidl(
 ) -> ObjectFrontendStatusType {
     match status_type {
         FrontendStatusType::DEMOD_LOCK => ObjectFrontendStatusType::DemodLock,
+        FrontendStatusType::RF_LOCK => ObjectFrontendStatusType::RfLock,
         FrontendStatusType::LNB_VOLTAGE => ObjectFrontendStatusType::LnbVoltage,
         _ => ObjectFrontendStatusType::Unsupported,
     }
@@ -27,8 +27,15 @@ fn object_frontend_status_type_from_aidl(
 fn frontend_status_from_query_value(value: ObjectFrontendStatusValue) -> FrontendStatus {
     match value {
         ObjectFrontendStatusValue::DemodLocked(locked) => FrontendStatus::IsDemodLocked(locked),
+        ObjectFrontendStatusValue::RfLocked(locked) => FrontendStatus::IsRfLocked(locked),
         ObjectFrontendStatusValue::LnbVoltageNone => {
             FrontendStatus::LnbVoltage(super::LnbVoltage::NONE)
+        }
+        ObjectFrontendStatusValue::LnbVoltage11V => {
+            FrontendStatus::LnbVoltage(super::LnbVoltage::VOLTAGE_11V)
+        }
+        ObjectFrontendStatusValue::LnbVoltage15V => {
+            FrontendStatus::LnbVoltage(super::LnbVoltage::VOLTAGE_15V)
         }
     }
 }
