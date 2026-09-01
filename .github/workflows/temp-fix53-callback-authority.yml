@@ -1,0 +1,31 @@
+name: temp PR53 callback authority
+on:
+  push:
+    branches: [fix/tuner-hal2-rustfmt-1.81]
+    paths: [.github/workflows/temp-fix53-callback-authority.yml]
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tuner-hal2-rustfmt-1.81
+          persist-credentials: true
+          fetch-depth: 0
+      - run: python3 tools/temp_fix53_callback_authority.py
+      - working-directory: tuner_hal2/host_ci
+        run: cargo fmt --all
+      - working-directory: tuner_hal2/host_ci
+        run: cargo test --workspace --locked
+      - working-directory: tuner_hal2/host_ci
+        run: cargo check --workspace --all-targets --locked
+      - working-directory: tuner_hal2/host_ci
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tuner_hal2/aidl_service/src/callback_store.rs tuner_hal2/aidl_service/src/service_context.rs tuner_hal2/aidl_service/src/object_runtime/mod.rs tuner_hal2/aidl_service/src/child_object_open.rs
+          git commit -m "Make callback prepare tokens one-shot authorities"
+          git push origin HEAD:fix/tuner-hal2-rustfmt-1.81
