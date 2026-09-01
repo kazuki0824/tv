@@ -26,6 +26,10 @@ pub enum TransportStreamPidValidationError {
 }
 
 impl TransportStreamPid {
+    pub const fn from_mpeg_ts_header_bytes(header_byte_1: u8, header_byte_2: u8) -> Self {
+        Self((((header_byte_1 & 0x1f) as u16) << 8) | header_byte_2 as u16)
+    }
+
     pub fn validate_u16(pid: u16) -> Result<Self, TransportStreamPidValidationError> {
         if pid <= 0x1fff {
             Ok(Self(pid))

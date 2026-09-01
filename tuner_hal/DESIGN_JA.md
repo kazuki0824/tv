@@ -849,7 +849,7 @@ playback input のstream境界について、本節はcaller/domain-visibleなda
 
 定常的に配送先がない状態を即時fatal stream failureへ昇格しない。FMQの背圧・容量状態は既存のplayback queue公開契約に従い、read admissionや入力保持方法を本節で追加定義しない。
 
-Playback DVR の `configure()` 時は、FMQ 容量と同じ上限の processing-buffer 使用権を `CapabilitySnapshot.playbackProcessingBudgetBytes` から予約し、実領域を確保する。予約または確保に失敗した場合は `OUT_OF_MEMORY` を返し、FMQ descriptor と DVR 設定を部分公開しない。この領域は第二の queue ではなく、1 consume transaction のための予約済み storage であり、使用権は DVR の最終 cleanup 完了時に返す。processing-buffer の read / parse / inject / retain / discard semantics は 0-S-3B の `PlaybackConsumeTxn` だけを正本とする。
+Playback DVR の `configure()` 時は、FMQ descriptor / queue capacity 自体は要求された全容量を保持する一方、1回の `PlaybackConsumeTxn` が同時に保持する processing-buffer は `min(FMQ容量, 188 * 256)` bytes に有界化する。`CapabilitySnapshot.playbackProcessingBudgetBytes` から予約する使用権と実領域の確保量は、この同一 `required_playback_processing_bytes(queue_capacity)` 契約から導出し、FMQ全容量を第二の processing buffer として二重予約しない。予約または確保に失敗した場合は `OUT_OF_MEMORY` を返し、FMQ descriptor と DVR 設定を部分公開しない。この領域は第二の queue ではなく、1 consume transaction のための予約済み storage であり、使用権は DVR の最終 cleanup 完了時に返す。processing-buffer の read / parse / inject / retain / discard semantics は 0-S-3B の `PlaybackConsumeTxn` だけを正本とする。
 
 ### playback consumer ワーカー 起動順序
 

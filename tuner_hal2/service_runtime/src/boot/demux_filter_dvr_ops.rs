@@ -707,19 +707,32 @@ impl TunerServiceRuntime {
         let result = match self.registry.demux_runtime_mut(DemuxRuntimeId(demux_id)) {
             Some(demux) => match consume_txn.consume(demux) {
                 Ok(report) => Ok(report),
-                Err(_) => {
+                Err(error) => {
+                    let mut primary = super::demux_runtime_error_to_hal(error.primary());
+                    if let Some(cleanup) = error.cleanup() {
+                        primary = compose_primary_cleanup_failure(
+                            "playback queue read abort failed",
+                            primary,
+                            super::demux_runtime_error_to_hal(cleanup),
+                        );
+                    }
                     let dropped_bytes = consume_txn.discard_for_boundary();
                     if dropped_bytes > 0 {
-                        let _ = demux.note_playback_consume_boundary_discard(dvr_id, dropped_bytes);
+                        if let Err(cleanup) =
+                            demux.note_playback_consume_boundary_discard(dvr_id, dropped_bytes)
+                        {
+                            primary = compose_primary_cleanup_failure(
+                                "playback consume boundary discard accounting failed",
+                                primary,
+                                super::demux_runtime_error_to_hal(cleanup),
+                            );
+                        }
                         eprintln!(
                             "maleicacid-tuner-hal2-dvr-playback-diagnostic: dvr_id={} boundary=fatal dropped_bytes={}",
                             dvr_id, dropped_bytes,
                         );
                     }
-                    Err(HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "playback DVR consume failed",
-                    ))
+                    Err(primary)
                 }
             },
             None => Err(HalError::internal(

@@ -3,4 +3,3 @@ service vendor.maleicacid-tuner2 /vendor/bin/hw/android.hardware.tv.tuner-servic
     user system
     group system media drmrpc
     interface aidl android.hardware.tv.tuner.ITuner/default
-    oneshot

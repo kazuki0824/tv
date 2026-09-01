@@ -25,7 +25,7 @@ pub enum TsPacketValidationError {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TsPacketView<'a> {
-    pid: i32,
+    pid: PacketPid,
     transport_error_indicator: bool,
     payload_unit_start: bool,
     priority: bool,
@@ -88,10 +88,6 @@ impl<'a> TsPacketView<'a> {
 pub struct PacketPid(TransportStreamPid);
 
 impl PacketPid {
-    fn from_validated_pid(pid: i32) -> Self {
-        Self(TransportStreamPid::validate_i32(pid).expect("validated TS packet PID"))
-    }
-
     pub const fn to_i32_for_aidl_boundary(self) -> i32 {
         self.0.to_i32_for_aidl_boundary()
     }
@@ -100,8 +96,8 @@ impl PacketPid {
         Self(pid.to_transport_stream_pid_for_packet_pid_bridge())
     }
 
-    pub(crate) fn from_config_pid(pid: ConfigInputPid) -> Self {
-        Self(TransportStreamPid::validate_i32(pid.raw()).expect("validated filter config PID"))
+    pub(crate) const fn from_config_pid(pid: ConfigInputPid) -> Self {
+        Self(pid.transport_stream_pid())
     }
 
     pub(crate) const fn matches_config_tpid(self, tpid: Option<i32>) -> bool {
@@ -137,8 +133,8 @@ impl<'a> ValidatedTsPacket<'a> {
         self.packet
     }
 
-    pub fn pid(&self) -> PacketPid {
-        PacketPid::from_validated_pid(self.view.pid)
+    pub const fn pid(&self) -> PacketPid {
+        self.view.pid
     }
 
     pub const fn scrambling_control(&self) -> u8 {
@@ -160,8 +156,8 @@ pub enum PacketDescramblePolicyFailure {
 }
 
 impl<'a> TsPacketView<'a> {
-    pub(crate) fn packet_pid(&self) -> PacketPid {
-        PacketPid::from_validated_pid(self.pid)
+    pub(crate) const fn packet_pid(&self) -> PacketPid {
+        self.pid
     }
 }
 
@@ -176,7 +172,9 @@ impl<'a> TsPacketView<'a> {
         let transport_error_indicator = (packet[1] & 0x80) != 0;
         let payload_unit_start = (packet[1] & 0x40) != 0;
         let priority = (packet[1] & 0x20) != 0;
-        let pid = (((packet[1] & 0x1f) as i32) << 8) | packet[2] as i32;
+        let pid = PacketPid(TransportStreamPid::from_mpeg_ts_header_bytes(
+            packet[1], packet[2],
+        ));
         let scrambling_control = (packet[3] >> 6) & 0x03;
         let adaptation_control = (packet[3] >> 4) & 0x03;
         let continuity_counter = packet[3] & 0x0f;
@@ -464,17 +462,11 @@ impl PipelineDiagnosticCounters {
     }
 
     fn note_malformed_ts(&mut self) {
-        Self::increment(
-            &mut self.malformed_ts_packets,
-            &mut self.counter_saturated,
-        );
+        Self::increment(&mut self.malformed_ts_packets, &mut self.counter_saturated);
     }
 
     fn note_tei(&mut self) {
-        Self::increment(
-            &mut self.tei_packets_observed,
-            &mut self.counter_saturated,
-        );
+        Self::increment(&mut self.tei_packets_observed, &mut self.counter_saturated);
     }
 
     fn note_duplicate(&mut self) {
@@ -857,8 +849,9 @@ impl PipelineFilterView {
             return false;
         }
         match origin {
-            crate::TsInputOrigin::Frontend { .. }
-            | crate::TsInputOrigin::PlaybackDvr { .. } => self.source_filter.is_none(),
+            crate::TsInputOrigin::Frontend { .. } | crate::TsInputOrigin::PlaybackDvr { .. } => {
+                self.source_filter.is_none()
+            }
             crate::TsInputOrigin::SourceFilter {
                 source_filter_id,
                 source_filter_generation,
@@ -886,9 +879,7 @@ pub enum PipelineBoundaryReason {
 }
 
 impl PacketPipeline {
-    pub(crate) fn malformed_ts_packet_report(
-        reason: TsPacketValidationError,
-    ) -> PipelineReport {
+    pub(crate) fn malformed_ts_packet_report(reason: TsPacketValidationError) -> PipelineReport {
         let mut report = PipelineReport::default();
         report.dropped_packets += 1;
         report.malformed_packets += 1;
@@ -979,11 +970,10 @@ impl PacketPipeline {
                 .push(PipelineDiagnostic::TeiAssemblySuppressed { pid });
         }
         if view.discontinuity_indicator {
-            self.diagnostic_counters
-                .note_continuity_discontinuity();
-            report.diagnostics.push(
-                PipelineDiagnostic::ContinuityDiscontinuityAssemblyReset { pid, origin },
-            );
+            self.diagnostic_counters.note_continuity_discontinuity();
+            report
+                .diagnostics
+                .push(PipelineDiagnostic::ContinuityDiscontinuityAssemblyReset { pid, origin });
             self.reset_continuity_pid(origin, pid);
             self.reset_assembly_for_origin_pid(origin, pid);
         }
@@ -1007,8 +997,7 @@ impl PacketPipeline {
             continuity,
             crate::ts_core::ContinuityOutcome::CounterCollision
         ) {
-            self.diagnostic_counters
-                .note_continuity_discontinuity();
+            self.diagnostic_counters.note_continuity_discontinuity();
             report
                 .assembly_suppression_reasons
                 .push(PipelineAssemblySuppressionReason::ContinuityCounterCollision);
@@ -1017,11 +1006,10 @@ impl PacketPipeline {
             );
         }
         if matches!(continuity, crate::ts_core::ContinuityOutcome::Discontinuity) {
-            self.diagnostic_counters
-                .note_continuity_discontinuity();
-            report.diagnostics.push(
-                PipelineDiagnostic::ContinuityDiscontinuityAssemblyReset { pid, origin },
-            );
+            self.diagnostic_counters.note_continuity_discontinuity();
+            report
+                .diagnostics
+                .push(PipelineDiagnostic::ContinuityDiscontinuityAssemblyReset { pid, origin });
         }
         if matches!(
             continuity,
@@ -1764,7 +1752,11 @@ impl PacketPipeline {
         self.filter_section_flush_generations.clear();
         self.filter_pes_flush_generations.clear();
         self.continuity_trackers.clear();
-        let record_filter_ids = self.record_index_settings.keys().copied().collect::<Vec<_>>();
+        let record_filter_ids = self
+            .record_index_settings
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
         for filter_id in record_filter_ids {
             self.reset_record_index_partial_state(filter_id);
         }
@@ -2503,15 +2495,12 @@ mod malformed_adaptation_tests {
         assert!(malformed
             .drop_reasons
             .contains(&PipelineDropReason::MalformedPacket));
-        assert!(malformed
-            .diagnostics
-            .iter()
-            .any(|diag| matches!(
-                diag,
-                PipelineDiagnostic::MalformedTsPacket {
-                    reason: TsPacketValidationError::WrongLength,
-                }
-            )));
+        assert!(malformed.diagnostics.iter().any(|diag| matches!(
+            diag,
+            PipelineDiagnostic::MalformedTsPacket {
+                reason: TsPacketValidationError::WrongLength,
+            }
+        )));
 
         let mut tei = [0xffu8; TS_PACKET_SIZE];
         tei[0] = 0x47;
@@ -3117,10 +3106,10 @@ mod keyless_scrambled_policy_tests {
             &[],
         );
 
-        assert!(report.generated_events.iter().all(|event| !matches!(
-            event,
-            PipelineGeneratedEvent::RecordIndex { .. }
-        )));
+        assert!(report
+            .generated_events
+            .iter()
+            .all(|event| !matches!(event, PipelineGeneratedEvent::RecordIndex { .. })));
         let event = pipeline.record_index_event_after_record_commit(1, &validated, 0);
         assert!(matches!(
             event,

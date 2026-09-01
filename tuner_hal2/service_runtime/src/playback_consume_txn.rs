@@ -32,6 +32,32 @@ pub(crate) enum PlaybackConsumeTxnPrepareError {
     OutOfMemory,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PlaybackConsumeTxnError {
+    primary: DemuxRuntimeError,
+    cleanup: Option<DemuxRuntimeError>,
+}
+
+impl PlaybackConsumeTxnError {
+    const fn new(primary: DemuxRuntimeError, cleanup: Option<DemuxRuntimeError>) -> Self {
+        Self { primary, cleanup }
+    }
+
+    pub(crate) const fn primary(self) -> DemuxRuntimeError {
+        self.primary
+    }
+
+    pub(crate) const fn cleanup(self) -> Option<DemuxRuntimeError> {
+        self.cleanup
+    }
+}
+
+impl From<DemuxRuntimeError> for PlaybackConsumeTxnError {
+    fn from(primary: DemuxRuntimeError) -> Self {
+        Self::new(primary, None)
+    }
+}
+
 impl PlaybackConsumeTxn {
     pub(crate) fn prepare(
         dvr_id: i32,
@@ -64,7 +90,7 @@ impl PlaybackConsumeTxn {
     pub(crate) fn consume(
         &mut self,
         demux: &mut DemuxRuntime,
-    ) -> Result<PlaybackConsumeReport, DemuxRuntimeError> {
+    ) -> Result<PlaybackConsumeReport, PlaybackConsumeTxnError> {
         let mut report = PlaybackConsumeReport::default();
         if self.parse_inject_cursor.is_empty() {
             let Some(read_txn) =
@@ -73,19 +99,18 @@ impl PlaybackConsumeTxn {
                 return Ok(report);
             };
             let read_limit = read_txn.read_limit();
-            let read = match demux.read_playback_queue(
-                &read_txn,
-                &mut self.processing_buffer[..read_limit],
-            ) {
+            let read = match demux
+                .read_playback_queue(&read_txn, &mut self.processing_buffer[..read_limit])
+            {
                 Ok(read) => read,
                 Err(primary) => {
-                    let _ = demux.abort_playback_queue_read(read_txn);
-                    return Err(primary);
+                    let cleanup = demux.abort_playback_queue_read(read_txn).err();
+                    return Err(PlaybackConsumeTxnError::new(primary, cleanup));
                 }
             };
             if read == 0 {
                 demux.abort_playback_queue_read(read_txn)?;
-                return Err(DemuxRuntimeError::queue_runtime_failure(self.dvr_id));
+                return Err(DemuxRuntimeError::queue_runtime_failure(self.dvr_id).into());
             }
             let origin = demux.commit_playback_queue_read(read_txn)?;
             let drain = self.completion.push(&self.processing_buffer[..read]);
@@ -176,7 +201,10 @@ mod tests {
     fn small_fmq_does_not_allocate_beyond_its_capacity() {
         let txn = PlaybackConsumeTxn::prepare(7, 100).expect("prepare");
 
-        assert_eq!(txn.processing_buffer.len(), required_playback_processing_bytes(100));
+        assert_eq!(
+            txn.processing_buffer.len(),
+            required_playback_processing_bytes(100)
+        );
         assert_eq!(txn.processing_buffer.len(), 100);
         assert!(txn.capacity_matches(100));
     }

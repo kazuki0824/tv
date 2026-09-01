@@ -4,6 +4,7 @@
 //! これらの型へ直接変換する。Debug文字列や文字列field list表現をruntime正本にしない。
 
 use crate::packet_pipeline::{FilterPipelineConfig, PipelineOpenKind};
+use maleicacid_tuner_hal2_common::TransportStreamPid;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FilterOpenType {
@@ -175,18 +176,18 @@ pub enum FilterDelayHint {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub(crate) struct ConfigInputPid(i32);
+pub(crate) struct ConfigInputPid(TransportStreamPid);
 
 impl ConfigInputPid {
     pub(crate) fn validate_tpid(pid: i32) -> Option<Self> {
-        if (0..=0x1fff).contains(&pid) {
-            Some(Self(pid))
-        } else {
-            None
-        }
+        TransportStreamPid::validate_i32(pid).ok().map(Self)
     }
 
     pub(crate) const fn raw(self) -> i32 {
+        self.0.to_i32_for_aidl_boundary()
+    }
+
+    pub(crate) const fn transport_stream_pid(self) -> TransportStreamPid {
         self.0
     }
 }
