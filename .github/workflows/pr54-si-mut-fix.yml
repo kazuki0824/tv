@@ -1,0 +1,55 @@
+name: PR54 SI mut lifetime repair
+
+on:
+  push:
+    branches:
+      - automation/pr54-fix-si-lifetime-mut-20260901
+    paths:
+      - .github/workflows/pr54-si-mut-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: automation/pr54-fix-si-lifetime-mut-20260901
+          fetch-depth: 0
+      - name: Repair mutable SI lifetime
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('arib_si_engine_rs/src/lib.rs')
+          t=p.read_text()
+          old='''    match parser.lock() {
+        Ok(mut guard) => f(&mut guard),
+        Err(_) => {
+            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
+            STATUS_INTERNAL_ERROR
+        }
+    }
+}'''
+          new='''    let result = match parser.lock() {
+        Ok(mut guard) => f(&mut guard),
+        Err(_) => {
+            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
+            STATUS_INTERNAL_ERROR
+        }
+    };
+    result
+}'''
+          if t.count(old)!=1:
+              raise SystemExit(f'match count={t.count(old)}')
+          p.write_text(t.replace(old,new,1))
+          PY
+          git diff --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add arib_si_engine_rs/src/lib.rs
+          git rm .github/workflows/pr54-si-mut-fix.yml
+          git commit -m 'fix(si): end mutable parser lock temporary before owner drop'
+          git push origin HEAD:automation/pr54-fix-si-lifetime-mut-20260901
