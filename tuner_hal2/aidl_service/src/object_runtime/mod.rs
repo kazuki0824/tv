@@ -4,7 +4,10 @@ use binder::{Result as BinderResult, Strong};
 use maleicacid_tuner_hal2_binder_adapter::{
     AidlApi, AidlFailureSource, AidlMethodCall, AidlStatusMapper, TunerStatusCode,
 };
-use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, HalError, HalInternalKind};
+use maleicacid_tuner_hal2_common::{
+    compose_primary_cleanup_failure, HalError, HalInternalKind, HalInvalidArgumentKind,
+};
+use maleicacid_tuner_hal2_demux::AvHandleReleaseDescriptor;
 use maleicacid_tuner_hal2_device::FrontendWorkerCancelReason;
 use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
 use maleicacid_tuner_hal2_service_runtime::{
@@ -316,6 +319,42 @@ pub(crate) fn finish_callback_artifact_registration_after_owner_ready_hal(
         )
     };
     finish_callback_registration_artifact_outcome(context, outcome, None)
+}
+
+pub(crate) fn execute_filter_av_handle_release_use_case<F>(
+    runtime: &SharedTunerRuntime,
+    handle: AidlObjectHandle,
+    av_data_id: i64,
+    classify_handle: F,
+) -> BinderResult<()>
+where
+    F: FnOnce() -> Result<AvHandleReleaseDescriptor, HalError>,
+{
+    if av_data_id < 0 {
+        return Err(status_from_hal_error(HalError::invalid_argument(
+            HalInvalidArgumentKind::NumericRange,
+            "AV data id must not be negative",
+        )));
+    }
+    {
+        let guard = lock_runtime(runtime).map_err(status_from_hal_error)?;
+        guard
+            .preflight_filter_av_handle_release_for_any_lifecycle(
+                handle.object_id(),
+                handle.generation(),
+            )
+            .map_err(status_from_hal_error)?;
+    }
+    let descriptor = classify_handle().map_err(status_from_hal_error)?;
+    let mut guard = lock_runtime(runtime).map_err(status_from_hal_error)?;
+    guard
+        .release_filter_av_handle_for_any_lifecycle(
+            handle.object_id(),
+            handle.generation(),
+            descriptor,
+            av_data_id,
+        )
+        .map_err(status_from_hal_error)
 }
 
 pub(crate) fn execute_object_runtime_use_case<T, F>(

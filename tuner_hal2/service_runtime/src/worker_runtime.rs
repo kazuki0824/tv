@@ -1,19 +1,19 @@
 use std::collections::BTreeMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::mpsc::{self, SyncSender, TrySendError};
-use std::sync::{Condvar, Mutex, MutexGuard};
-use std::time::Duration;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::Arc;
-use std::thread::{self, JoinHandle};
+use std::sync::{Condvar, Mutex, MutexGuard};
+use std::thread;
+use std::time::Duration;
 
 use maleicacid_tuner_hal2_common::HalError;
+use maleicacid_tuner_hal2_control_core::WorkerRuntimeResultOwner;
 
 pub const CLEANUP_RETRY_SCHEDULE_MS: &[u64] = &[0, 10, 100, 1_000];
 pub const CLEANUP_TERMINAL_DEADLINE_MS: u64 = 30_000;
 pub const WORKER_IO_DEADLINE_MS: u64 = 2_000;
 pub const WORKER_REAPER_DEADLINE_MS: u64 = 10_000;
-
 
 /// Canonical generic bounded reaper queue owned by the WorkerRuntime subsystem.
 /// Domain code supplies only typed jobs and completion semantics; it does not own
@@ -89,7 +89,10 @@ where
                 ));
             }
         };
-        if reservations.iter().any(|(key, _)| pending.contains_key(key)) {
+        if reservations
+            .iter()
+            .any(|(key, _)| pending.contains_key(key))
+        {
             core::mem::forget(job);
             return Err(HalError::internal(
                 maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
@@ -155,9 +158,15 @@ impl<K, A, R> Default for WorkerRuntimeSupervisorMaps<K, A, R> {
 }
 
 impl<K: Ord, A, R> WorkerRuntimeSupervisorMaps<K, A, R> {
-    pub fn active_mut(&mut self) -> &mut BTreeMap<K, A> { &mut self.active }
-    pub fn reaping_mut(&mut self) -> &mut BTreeMap<K, R> { &mut self.reaping }
-    pub fn total_len(&self) -> usize { self.active.len().saturating_add(self.reaping.len()) }
+    pub fn active_mut(&mut self) -> &mut BTreeMap<K, A> {
+        &mut self.active
+    }
+    pub fn reaping_mut(&mut self) -> &mut BTreeMap<K, R> {
+        &mut self.reaping
+    }
+    pub fn total_len(&self) -> usize {
+        self.active.len().saturating_add(self.reaping.len())
+    }
 }
 
 impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
@@ -170,10 +179,18 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
         }
     }
 
-    pub fn capacity(&self) -> usize { self.capacity }
-    pub fn deadline(&self) -> Duration { self.deadline }
-    pub fn state(&self) -> &Mutex<WorkerRuntimeSupervisorMaps<K, A, R>> { &self.state }
-    pub fn wake(&self) -> &Condvar { &self.wake }
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+    pub fn deadline(&self) -> Duration {
+        self.deadline
+    }
+    pub fn state(&self) -> &Mutex<WorkerRuntimeSupervisorMaps<K, A, R>> {
+        &self.state
+    }
+    pub fn wake(&self) -> &Condvar {
+        &self.wake
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -192,7 +209,7 @@ pub struct WorkerRuntime<T = ()> {
     stop_signalled: Arc<AtomicBool>,
     wake_signalled: Arc<AtomicBool>,
     finished: Arc<AtomicBool>,
-    handle: WorkerHandle<T>,
+    handle: Option<WorkerRuntimeResultOwner<WorkerTerminalResult<T>, ()>>,
 }
 
 impl<T> WorkerRuntime<T> {
@@ -210,6 +227,11 @@ impl<T> WorkerRuntime<T> {
 
     pub fn is_finished(&self) -> bool {
         self.finished.load(Ordering::Acquire)
+            || self
+                .handle
+                .as_ref()
+                .map(|handle| handle.is_thread_finished())
+                .unwrap_or(true)
     }
 
     pub fn request_stop_and_wake(&self) {
@@ -225,34 +247,29 @@ impl<T> WorkerRuntime<T> {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
-            if let Some(join) = self.handle.join.as_ref() {
-                join.thread().unpark();
+            if let Some(handle) = self.handle.as_ref() {
+                handle.unpark();
             }
         }
     }
 
     pub(crate) fn join(mut self) -> WorkerTerminalResult<T> {
-        let Some(join) = self.handle.join.take() else {
+        let Some(handle) = self.handle.take() else {
             return WorkerTerminalResult::PanicOrJoinFailure;
         };
-        match join.join() {
-            Ok(result) => result,
-            Err(_) => WorkerTerminalResult::PanicOrJoinFailure,
+        match handle.join_after_stop() {
+            Ok(Ok(result)) => result,
+            Ok(Err(())) | Err(_) => WorkerTerminalResult::PanicOrJoinFailure,
         }
     }
 }
 
 impl<T> Drop for WorkerRuntime<T> {
     fn drop(&mut self) {
-        if self.handle.join.is_some() && !self.is_finished() {
+        if !self.is_finished() {
             self.request_stop_and_wake();
         }
     }
-}
-
-/// Physical join element subordinate to its `WorkerRuntime` owner.
-pub struct WorkerHandle<T> {
-    join: Option<JoinHandle<WorkerTerminalResult<T>>>,
 }
 
 impl WorkerRuntime<()> {
@@ -272,8 +289,9 @@ impl WorkerRuntime<()> {
         let thread_stop = Arc::clone(&stop);
         let finished = Arc::new(AtomicBool::new(false));
         let thread_finished = Arc::clone(&finished);
-        let join = thread::Builder::new().name(thread_name).spawn(move || {
-            let terminal = match catch_unwind(AssertUnwindSafe(|| worker(Arc::clone(&thread_stop)))) {
+        let handle = WorkerRuntimeResultOwner::start(thread_name, move || {
+            let terminal = match catch_unwind(AssertUnwindSafe(|| worker(Arc::clone(&thread_stop))))
+            {
                 Ok(Ok(_result)) if thread_stop.load(Ordering::Acquire) => {
                     WorkerTerminalResult::StopRequested
                 }
@@ -283,7 +301,7 @@ impl WorkerRuntime<()> {
             };
             thread_finished.store(true, Ordering::Release);
             completion_signal();
-            terminal
+            Ok::<_, ()>(terminal)
         })?;
         Ok(WorkerRuntime {
             owner_id,
@@ -292,7 +310,7 @@ impl WorkerRuntime<()> {
             stop_signalled: Arc::new(AtomicBool::new(false)),
             wake_signalled: Arc::new(AtomicBool::new(false)),
             finished,
-            handle: WorkerHandle { join: Some(join) },
+            handle: Some(handle),
         })
     }
 
@@ -300,30 +318,25 @@ impl WorkerRuntime<()> {
         current.checked_add(1)
     }
 
-    pub fn join_classified(self) -> crate::worker_failure_classifier::ClassifiedWorkerTerminalResult<T> {
+    pub fn join_classified(
+        self,
+    ) -> crate::worker_failure_classifier::ClassifiedWorkerTerminalResult<T> {
         crate::worker_failure_classifier::WorkerFailureClassifier::classify_terminal(
             self.join(),
             "worker panicked or could not be joined",
         )
     }
-
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maleicacid_tuner_hal2_common::{HalInternalKind, HalError};
+    use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
 
     #[test]
     fn worker_runtime_reports_normal_runtime_failure_and_panic() {
-        let normal = WorkerRuntime::spawn(
-            "worker-normal".to_owned(),
-            1,
-            1,
-            |_| Ok(7_u8),
-            || {},
-        )
-        .unwrap();
+        let normal =
+            WorkerRuntime::spawn("worker-normal".to_owned(), 1, 1, |_| Ok(7_u8), || {}).unwrap();
         assert_eq!(normal.join(), WorkerTerminalResult::Normal(7));
 
         let failure = WorkerRuntime::spawn(

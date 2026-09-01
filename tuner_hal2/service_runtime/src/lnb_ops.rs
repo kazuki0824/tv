@@ -163,8 +163,8 @@ fn restore_fixed_power_lease_after_failure(
     primary: HalError,
 ) -> HalError {
     match runtime
-        .registry_mut()
-        .retain_frontend_fixed_power_lease(frontend_id, lnb_id)
+        .frontend_txn()
+        .retain_fixed_power_lease(frontend_id, lnb_id)
     {
         Ok(_) => primary,
         Err(cleanup) => compose_primary_cleanup_failure(
@@ -185,8 +185,8 @@ fn rollback_new_fixed_power_lease(
         return primary;
     }
     match runtime
-        .registry_mut()
-        .release_frontend_fixed_power_lease(frontend_id)
+        .frontend_txn()
+        .release_fixed_power_lease(frontend_id)
     {
         Ok(Some(_)) => primary,
         Ok(None) => compose_primary_cleanup_failure(
@@ -247,8 +247,8 @@ pub(crate) fn ensure_frontend_fixed_power_for_object(
                 ));
             }
             let newly_retained = guard
-                .registry_mut()
-                .retain_frontend_fixed_power_lease(frontend_id, lnb_id)?;
+                .frontend_txn()
+                .retain_fixed_power_lease(frontend_id, lnb_id)?;
             let already_applied = guard.registry().lnb_runtime(lnb_id).is_some_and(|lnb| {
                 lnb.state() == maleicacid_tuner_hal2_lnb::LnbRuntimeState::Open
                     && lnb.registry_state().voltage
@@ -263,11 +263,7 @@ pub(crate) fn ensure_frontend_fixed_power_for_object(
             if guard.registry().lnb_runtime(lnb_id).is_some_and(|lnb| {
                 lnb.state() == maleicacid_tuner_hal2_lnb::LnbRuntimeState::Closed
             }) {
-                if let Err(error) = guard
-                    .registry_mut()
-                    .reopen_lnb(lnb_id)
-                    .map_err(crate::boot::lnb_txn::map_lnb_failure)
-                {
+                if let Err(error) = guard.frontend_txn().reopen_fixed_power_lnb(lnb_id) {
                     return Err(rollback_new_fixed_power_lease(
                         &mut guard,
                         frontend_id,
@@ -360,8 +356,8 @@ pub(crate) fn release_frontend_fixed_power_after_operation(
                 lnb.registry_state() == maleicacid_tuner_hal2_lnb::LnbElectricalState::safe()
             });
             let remaining = match guard
-                .registry_mut()
-                .release_frontend_fixed_power_lease(frontend_id)?
+                .frontend_txn()
+                .release_fixed_power_lease(frontend_id)?
             {
                 Some((released_lnb_id, remaining)) if released_lnb_id == lnb_id => remaining,
                 Some(_) => {

@@ -280,6 +280,35 @@ impl TunerServiceRuntime {
 }
 
 impl<'a> FrontendTxn<'a> {
+    pub(crate) fn retain_fixed_power_lease(
+        &mut self,
+        frontend_id: crate::registry::FrontendRuntimeId,
+        lnb_id: crate::registry::LnbRuntimeId,
+    ) -> Result<bool, HalError> {
+        self.runtime
+            .registry
+            .retain_frontend_fixed_power_lease(frontend_id, lnb_id)
+    }
+
+    pub(crate) fn release_fixed_power_lease(
+        &mut self,
+        frontend_id: crate::registry::FrontendRuntimeId,
+    ) -> Result<Option<(crate::registry::LnbRuntimeId, usize)>, HalError> {
+        self.runtime
+            .registry
+            .release_frontend_fixed_power_lease(frontend_id)
+    }
+
+    pub(crate) fn reopen_fixed_power_lnb(
+        &mut self,
+        lnb_id: crate::registry::LnbRuntimeId,
+    ) -> Result<(), HalError> {
+        self.runtime
+            .registry
+            .reopen_lnb(lnb_id)
+            .map_err(crate::boot::lnb_txn::map_lnb_failure)
+    }
+
     pub(crate) fn is_stable_locked_tune_reentry(
         &mut self,
         frontend_id: i32,

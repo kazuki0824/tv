@@ -199,7 +199,7 @@ fn io_error_to_hal(operation: &'static str, error: io::Error) -> HalError {
 mod tests {
     use super::*;
     use std::io::Cursor;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
     use std::time::Duration;
 
     #[derive(Default)]
@@ -306,32 +306,30 @@ mod tests {
 
     #[test]
     fn live_pump_owner_missing_report_is_error() {
-        let result: Arc<Mutex<Option<Result<FrontendLivePumpReport, HalError>>>> =
-            Arc::new(Mutex::new(None));
-        let join = std::thread::spawn(|| {});
         let owner = FrontendLivePumpOwner {
             cancel: Arc::new(AtomicBool::new(false)),
-            thread_result: ThreadResultOwner::new_for_test(
-                "live-pump-missing-test",
-                result,
-                Some(join),
-            ),
+            thread_result: ThreadResultOwner::start(
+                "live-pump-owner-failure-test",
+                || -> Result<FrontendLivePumpReport, HalError> {
+                    panic!("forced worker owner failure")
+                },
+            )
+            .unwrap(),
         };
         assert!(owner.join_after_stop().is_err());
     }
 
     #[test]
     fn live_pump_owner_missing_report_is_error_after_join() {
-        let result: Arc<Mutex<Option<Result<FrontendLivePumpReport, HalError>>>> =
-            Arc::new(Mutex::new(None));
-        let join = std::thread::spawn(|| {});
         let owner = FrontendLivePumpOwner {
             cancel: Arc::new(AtomicBool::new(false)),
-            thread_result: ThreadResultOwner::new_for_test(
-                "live-pump-missing-after-join-test",
-                result,
-                Some(join),
-            ),
+            thread_result: ThreadResultOwner::start(
+                "live-pump-owner-failure-test",
+                || -> Result<FrontendLivePumpReport, HalError> {
+                    panic!("forced worker owner failure")
+                },
+            )
+            .unwrap(),
         };
         assert!(owner.join_after_stop().is_err());
     }

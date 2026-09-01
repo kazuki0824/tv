@@ -826,21 +826,21 @@ mod tests {
             frontend_id: 14,
             kind: FrontendWorkerKind::Tune,
         };
-        type WorkerThreadResult =
-            Arc<Mutex<Option<Result<(Result<(), HalError>, WorkerExit), HalError>>>>;
-        let result: WorkerThreadResult = Arc::new(Mutex::new(None));
-        let join = std::thread::spawn(|| {});
         registry.slots.insert(
             key,
             FrontendWorkerSlot {
                 generation: 10,
                 cancel: Arc::new(AtomicBool::new(false)),
                 cancel_reason: Arc::new(Mutex::new(None)),
-                thread_result: Some(ThreadResultOwner::new_for_test(
-                    "frontend-worker-missing-test",
-                    result,
-                    Some(join),
-                )),
+                thread_result: Some(
+                    ThreadResultOwner::start(
+                        "frontend-worker-owner-failure-test",
+                        || -> Result<(Result<(), HalError>, WorkerExit), HalError> {
+                            panic!("forced worker owner failure")
+                        },
+                    )
+                    .unwrap(),
+                ),
                 pending_completed: None,
             },
         );
