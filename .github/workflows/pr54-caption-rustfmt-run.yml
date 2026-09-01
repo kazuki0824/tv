@@ -1,4 +1,4 @@
-name: PR54 字幕JNI rustfmt修正
+name: PR54 A/B/C検証
 
 on:
   push:
@@ -6,10 +6,10 @@ on:
       - automation/pr54-caption-rustfmt-20260901
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  fix:
+  verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,24 +17,26 @@ jobs:
           ref: agent/implement-tis-arib-si-design-pr53
           fetch-depth: 0
 
-      - name: Rust 1.81 rustfmtを導入
+      - name: Rust 1.81検証用toolchainを導入
         run: rustup toolchain install 1.81.0 --profile minimal --component rustfmt
 
-      - name: 字幕JNIだけをrustfmtする
+      - name: ARIB SI lifetime修正を検証
+        working-directory: arib_si_engine_rs/host_ci
+        run: |
+          cargo +1.81.0 fmt --all -- --check
+          cargo +1.81.0 check --all-targets --locked
+          cargo +1.81.0 test --locked
+
+      - name: 字幕JNI rustfmt修正を検証
         working-directory: tis/host_ci/caption
-        run: cargo +1.81.0 fmt --all
-
-      - name: 差分を字幕JNIだけに制限する
         run: |
-          changed="$(git diff --name-only)"
-          test "$changed" = "tis/arib_caption_jni/src/lib.rs"
+          cargo +1.81.0 fmt --all -- --check
+          cargo +1.81.0 check --all-targets --locked
+          cargo +1.81.0 test --locked
+
+      - name: 一時workflowと補修scriptがPR HEADに残っていないことを確認
+        run: |
+          test ! -e .github/pr54_fix_mut.py
+          test ! -e .github/workflows/pr54-fix-mut.yml
+          test ! -e .github/workflows/pr54-japanese-audit.yml
           git diff --check
-          git diff -- tis/arib_caption_jni/src/lib.rs
-
-      - name: 修正をコミットしてPRブランチへpushする
-        run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add tis/arib_caption_jni/src/lib.rs
-          git commit -m "style(tis): apply Rust 1.81 rustfmt to caption JNI"
-          git push origin HEAD:agent/implement-tis-arib-si-design-pr53
