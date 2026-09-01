@@ -1,0 +1,75 @@
+name: temp PR53 AIDL callback authority follow-up
+on:
+  push:
+    branches: [fix/tuner-hal2-rustfmt-1.81]
+    paths: [.github/workflows/temp-fix53-aidl-callback-authority-followup.yml]
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tuner-hal2-rustfmt-1.81
+          persist-credentials: true
+          fetch-depth: 0
+      - name: Tighten temporary repair script
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('tools/temp_fix53_aidl_callback_authority_followup.py')
+          s = p.read_text()
+          s = s.replace('    assert!(!SERVICE_CONTEXT.contains("let _ ="));\n', '')
+          old = '''replace_once(child, "        let _ = context.clear_owner_callbacks(child_handle);\\n", "")
+          replace_once(child, "        let _ = context.clear_owner_callbacks(child_handle);\\n", "")
+          '''
+          new = '''p = Path(child)
+          child_text = p.read_text()
+          clear_owner_ignored = "        let _ = context.clear_owner_callbacks(child_handle);\\n"
+          if child_text.count(clear_owner_ignored) != 2:
+              raise SystemExit(f"{child}: expected 2 ignored clear-owner results, got {child_text.count(clear_owner_ignored)}")
+          p.write_text(child_text.replace(clear_owner_ignored, ""))
+          '''
+          if old not in s:
+              raise SystemExit('clear-owner repair-script anchor not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
+      - name: Apply production repair
+        run: python3 tools/temp_fix53_aidl_callback_authority_followup.py
+      - name: Format changed Rust sources
+        run: |
+          rustfmt --edition 2021 tuner_hal2/aidl_service/src/callback_store.rs
+          rustfmt --edition 2021 tuner_hal2/aidl_service/src/service_context.rs
+          rustfmt --edition 2021 tuner_hal2/aidl_service/src/object_runtime/mod.rs
+          rustfmt --edition 2021 tuner_hal2/aidl_service/src/child_object_open.rs
+          rustfmt --edition 2021 tuner_hal2/compile_contract/src/lib.rs
+          (cd tuner_hal2/host_ci && cargo fmt --all)
+      - name: Run AIDL callback source contract
+        working-directory: tuner_hal2/host_ci
+        run: cargo test -p maleicacid-tuner-hal2-compile-contract-host-ci --locked
+      - name: Run host workspace tests
+        working-directory: tuner_hal2/host_ci
+        run: cargo test --workspace --locked
+      - name: Run host all-target check
+        working-directory: tuner_hal2/host_ci
+        run: cargo check --workspace --all-targets --locked
+      - name: Run host Clippy
+        working-directory: tuner_hal2/host_ci
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Commit production repair
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            tuner_hal2/aidl_service/src/callback_store.rs \
+            tuner_hal2/aidl_service/src/service_context.rs \
+            tuner_hal2/aidl_service/src/object_runtime/mod.rs \
+            tuner_hal2/aidl_service/src/child_object_open.rs \
+            tuner_hal2/compile_contract/src/lib.rs \
+            tuner_hal2/Android.bp \
+            .github/workflows/tuner-hal2-host-rust-ci.yml
+          git diff --cached --check
+          git commit -m "Close AIDL callback authority failure paths"
+          git push origin HEAD:fix/tuner-hal2-rustfmt-1.81
