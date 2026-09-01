@@ -235,9 +235,8 @@ fn dvb_capability(
                 FrontendScalarCapability {
                     min_frequency_hz: JAPAN_BS_FIRST_IF_HZ,
                     max_frequency_hz: JAPAN_CS110_LAST_IF_HZ,
-                    // Linux v6.6 tc90522 leaves FE_GET_INFO's symbol-rate
-                    // metadata at 0/0 even though the pinned ISDB-S module
-                    // operates at this fixed rate.
+                    // Linux v6.6 tc90522は固定済みISDB-S moduleがこのrateで動作する一方、
+                    // FE_GET_INFOのsymbol-rate metadataを0/0のまま返す。
                     min_symbol_rate: ISDBS_SYMBOL_RATE,
                     max_symbol_rate: ISDBS_SYMBOL_RATE,
                     acquire_range_hz: 0,

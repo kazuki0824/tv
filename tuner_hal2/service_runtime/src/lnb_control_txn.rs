@@ -14,7 +14,7 @@ use crate::lnb_backend_adapter::{
 };
 use crate::registry::{LnbPhysicalIoPermit, LnbRuntimeId};
 
-#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+#[must_use = "この準備済み一回限り権限は型付き完了入口で消費する必要があります"]
 
 pub(crate) struct PreparedLnbControlTxn {
     lnb_key: LnbRuntimeId,
@@ -22,7 +22,7 @@ pub(crate) struct PreparedLnbControlTxn {
     backend: ServiceRuntimeLnbBackendSnapshot,
 }
 
-#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+#[must_use = "この準備済み一回限り権限は型付き完了入口で消費する必要があります"]
 
 pub(crate) struct CompletedLnbControlTxn {
     lnb_key: LnbRuntimeId,
