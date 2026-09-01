@@ -1,0 +1,50 @@
+name: temp-fix53-review35-batch1
+on:
+  push:
+    branches: [fix/tuner-hal2-rustfmt-1.81]
+    paths:
+      - tools/temp_fix53_review35_batch1.py
+      - .github/workflows/temp-fix53-review35-batch1.yml
+permissions:
+  contents: write
+jobs:
+  apply-and-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply batch1 repair
+        run: python3 tools/temp_fix53_review35_batch1.py
+      - name: Rustfmt touched Rust files
+        run: |
+          rustfmt --edition 2021 \
+            tuner_hal2/fmq/src/lib.rs \
+            tuner_hal2/demux/src/av/shared_backing.rs \
+            tuner_hal2/service_runtime/src/registry.rs \
+            tuner_hal2/service_runtime/src/descrambler_session.rs \
+            tuner_hal2/service_runtime/src/lnb_ops.rs \
+            tuner_hal2/service_runtime/src/boot.rs \
+            tuner_hal2/aidl_service/src/dvr_callback_delivery.rs \
+            tuner_hal2/aidl_service/src/tuner_service/dvr_methods.rs
+      - name: Re-run source contract after rustfmt
+        run: python3 tools/temp_fix53_review35_batch1.py || true
+      - name: Verify no second application occurred
+        run: git diff --check
+      - name: Host workspace test
+        working-directory: tuner_hal2/host_ci
+        run: cargo test --workspace --all-targets
+      - name: Host workspace check
+        working-directory: tuner_hal2/host_ci
+        run: cargo check --workspace --all-targets
+      - name: Host workspace clippy
+        working-directory: tuner_hal2/host_ci
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Commit production repair
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tuner_hal2
+          git diff --cached --check
+          git commit -m "Close review authority and FFI contracts"
+          git push
