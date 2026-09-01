@@ -2,9 +2,8 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-// Canonical pure-Rust SI syntax/semantic core. Android JNI and the host-side
-// VTS adapter both link this library instead of compiling or including an
-// independent PAT/PMT parser.
+// PSI/SIの構文・意味解析を所有するcanonicalなpure-Rust core。
+// Android JNIとhost側VTS adapterはいずれもこのlibraryをlinkし、独立したPAT/PMT parserを持たない。
 rust_library {
     name: "libmaleicacid_arib_si_engine_core",
     crate_name: "maleicacid_arib_si_engine_core",
