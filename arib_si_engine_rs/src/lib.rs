@@ -1331,13 +1331,14 @@ fn with_state<T>(handle: jlong, default_value: T, f: impl FnOnce(&ParserState) -
     let Some(parser) = parser else {
         return default_value;
     };
-    match parser.lock() {
+    let result = match parser.lock() {
         Ok(guard) => f(&guard),
         Err(_) => {
             record_si_mutex_poison(SI_PARSER_LOCK_NAME);
             default_value
         }
-    }
+    };
+    result
 }
 
 fn with_state_mut(
