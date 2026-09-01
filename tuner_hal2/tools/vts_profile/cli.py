@@ -1,17 +1,28 @@
 from __future__ import annotations
+
 import argparse
 import sys
 from pathlib import Path
+
 from .device import resolve_device
 from .integration import write_product_artifacts
 from .model import (
-    FRONTEND_ID, ProfileError, SCHEMA_VERSION, SUPPORTED_VTS_CONTRACT,
-    load_json, load_profile, positive_int, save_profile, validate_profile,
+    FRONTEND_ID,
+    ProfileError,
+    SCHEMA_VERSION,
+    SUPPORTED_VTS_CONTRACT,
+    load_json,
+    load_profile,
+    positive_int,
+    save_profile,
+    validate_profile,
 )
 from .region import resolve_region, select_candidate
 from .render import output_filename, render_xml
 from .resource_closure import (
-    DEFAULT_CAPABILITY_SOURCE, DEFAULT_PES_SOURCE, validate_resource_closure,
+    DEFAULT_CAPABILITY_SOURCE,
+    DEFAULT_PES_SOURCE,
+    validate_resource_closure,
 )
 from .schema import selected_xsd, validate_xml
 
@@ -140,8 +151,14 @@ def cmd_compile(args: argparse.Namespace) -> int:
 
 def cmd_resolve_device(args: argparse.Namespace) -> int:
     updated = resolve_device(
-        Path(args.profile), adb=args.adb, serial=args.serial, helper=args.helper,
-        timeout_ms=args.timeout_ms, candidate_index=args.candidate_index,
+        Path(args.profile),
+        adb=args.adb,
+        serial=args.serial,
+        agent_binary=Path(args.agent) if args.agent else None,
+        remote_agent=args.remote_agent,
+        si_host=args.si_host,
+        timeout_ms=args.timeout_ms,
+        candidate_index=args.candidate_index,
     )
     print(updated["frontend"]["frequency_hz"])
     return 0
@@ -200,7 +217,10 @@ def build_parser() -> argparse.ArgumentParser:
     device.add_argument("profile")
     device.add_argument("--adb", default="adb")
     device.add_argument("--serial")
-    device.add_argument("--helper", default="/vendor/bin/maleicacid_tuner_hal2_vts_resolver")
+    device.add_argument("--agent", help="local maleicacid_tuner_hal2_vts_agent to adb-push temporarily")
+    device.add_argument("--remote-agent", default="/vendor/bin/maleicacid_tuner_hal2_vts_agent",
+                        help="agent path in an explicit VTS/test image when --agent is omitted")
+    device.add_argument("--si-host", default="maleicacid_arib_si_engine_vts_host")
     device.add_argument("--timeout-ms", type=int, default=5000)
     device.add_argument("--candidate-index", type=int)
     device.set_defaults(func=cmd_resolve_device)

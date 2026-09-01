@@ -1,0 +1,48 @@
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+// Device-side VTS bridge. C++ is intentionally limited to importing/reading the
+// AIDL FMQ descriptor; Binder/AIDL control remains Rust.
+cc_library_static {
+    name: "libmaleicacid_tuner_hal2_vts_agent_fmq",
+    vendor: true,
+    srcs: ["fmq_import.cpp"],
+    export_include_dirs: ["."],
+    cflags: ["-Wall", "-Wextra", "-Werror", "-std=c++20"],
+    shared_libs: [
+        "libfmq",
+        "libutils",
+        "libcutils",
+        "libbase",
+        "libc++",
+        "android.hardware.common-V2-ndk",
+        "android.hardware.common.fmq-V1-ndk",
+    ],
+}
+
+// This target is built for explicit VTS/device-resolution use and is not added
+// to the normal product package list. The host CLI adb-pushes it temporarily.
+rust_binary {
+    name: "maleicacid_tuner_hal2_vts_agent",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_vts_agent",
+    srcs: ["main.rs"],
+    edition: "2021",
+    rustlibs: [
+        "android.hardware.tv.tuner-V2-rust",
+        "android.hardware.common-V2-rust",
+        "android.hardware.common.fmq-V1-rust",
+        "libbinder_rs",
+    ],
+    static_libs: ["libmaleicacid_tuner_hal2_vts_agent_fmq"],
+    shared_libs: [
+        "libfmq",
+        "libutils",
+        "libcutils",
+        "libbase",
+        "libc++",
+        "android.hardware.common-V2-ndk",
+        "android.hardware.common.fmq-V1-ndk",
+    ],
+}

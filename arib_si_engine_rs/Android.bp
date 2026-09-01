@@ -16,6 +16,31 @@ rust_ffi_shared {
     ],
 }
 
+// Host-only adapter for VTS environment resolution. It includes the same
+// service_discovery.rs parser used by the production SI engine; it does not
+// carry an independent PAT/PMT parser.
+rust_binary_host {
+    name: "maleicacid_arib_si_engine_vts_host",
+    crate_name: "maleicacid_arib_si_engine_vts_host",
+    crate_root: "src/vts_profile_host.rs",
+    srcs: [
+        "src/vts_profile_host.rs",
+        "src/arib_jis_x0208_table.rs",
+        "src/arib_string.rs",
+        "src/ca_descriptor.rs",
+        "src/descriptors.rs",
+        "src/discovery_requirements.rs",
+        "src/eit.rs",
+        "src/provider_data.rs",
+        "src/sections.rs",
+        "src/service_discovery.rs",
+    ],
+    edition: "2021",
+    rustlibs: [
+        "libserde",
+        "libserde_json",
+    ],
+}
 
 rust_test {
     name: "maleicacid_arib_si_engine_rs_test",
