@@ -1,0 +1,42 @@
+name: Apply FilterDelayHint production wiring v2
+
+on:
+  push:
+    branches:
+      - fix/tuner-hal2-rustfmt-1.81
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply exact patch
+        run: python3 .github/scripts/apply_filter_delay_fix.py
+
+      - name: Format and test
+        run: |
+          cd tuner_hal2/host_ci
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo test -p maleicacid-tuner-hal2-compile-contract-host-ci --locked
+          cargo check --workspace --all-targets --locked
+          cargo test --workspace --locked
+
+      - name: Commit verified fix and remove helpers
+        run: |
+          git config user.name "maleicacid"
+          git config user.email "4982384+kazuki0824@users.noreply.github.com"
+          git rm .github/workflows/apply-filter-delay-fix.yml
+          git rm .github/workflows/apply-filter-delay-fix-v2.yml
+          git rm .github/scripts/apply_filter_delay_fix.py
+          git add tuner_hal2
+          git commit -m "fix(tuner): complete FilterDelayHint production delivery"
+          git push origin HEAD:fix/tuner-hal2-rustfmt-1.81
