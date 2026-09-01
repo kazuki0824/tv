@@ -35,15 +35,29 @@ jobs:
           set -e
           echo "cherry_pick_rc=$rc"
           if [ "$rc" -ne 0 ]; then
-            echo '--- conflicts ---'
-            git diff --name-only --diff-filter=U || true
-            for f in $(git diff --name-only --diff-filter=U); do
-              echo "===== $f ====="
-              grep -n -B8 -A60 '^<<<<<<<\|^=======\|^>>>>>>>' "$f" || true
-            done
-            exit "$rc"
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            echo "--- conflicts ---"
+            printf '%s\n' "$conflicts"
+            test "$conflicts" = "tuner_hal2/CHANGELOG.md"
+            git show "$OLD_R52:tuner_hal2/CHANGELOG.md" > /tmp/r52-changelog.md
+            git show "$BASE:tuner_hal2/CHANGELOG.md" > /tmp/base-changelog.md
+            python3 - <<'PY'
+          from pathlib import Path
+          child = Path('/tmp/r52-changelog.md').read_text()
+          base = Path('/tmp/base-changelog.md').read_text()
+          marker = '# r50eo84_pr53_capability_topology_ssot_followup\n'
+          if marker not in child or marker not in base:
+              raise SystemExit('expected common changelog marker not found')
+          prefix = child.split(marker, 1)[0]
+          if '# r52_key_provisioning_deadline_setup' not in prefix or '# r52_key_provisioning_implementation' not in prefix:
+              raise SystemExit('r52 changelog prefix incomplete')
+          Path('tuner_hal2/CHANGELOG.md').write_text(prefix + base)
+          PY
+            git add tuner_hal2/CHANGELOG.md
+            git cherry-pick --continue
           fi
           git diff "$BASE" HEAD --check
           test "$(git rev-parse HEAD^)" = "$BASE"
+          test -z "$(git grep -l '^<<<<<<<\|^=======\|^>>>>>>>' HEAD -- ':!*.patch' || true)"
           echo "changed_files=$(git diff --name-only "$BASE" HEAD | wc -l)"
           git push --force origin HEAD:refs/heads/tmp/rebuilt-r52-20260901
