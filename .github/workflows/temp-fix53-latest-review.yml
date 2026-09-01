@@ -1,0 +1,63 @@
+name: temp PR53 latest review fixes
+
+on:
+  push:
+    branches:
+      - fix/tuner-hal2-rustfmt-1.81
+    paths:
+      - .github/workflows/temp-fix53-latest-review.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: temp-pr53-latest-review
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tuner-hal2-rustfmt-1.81
+          persist-credentials: true
+          fetch-depth: 0
+      - name: Apply review fixes
+        run: python3 tools/temp_fix53_latest_review.py
+      - name: Verify production path overrides are gone
+        run: |
+          if grep -R -n -E '^\s*#\[path\s*=' tuner_hal2 --include='*.rs'; then
+            echo 'production #[path] remains' >&2
+            exit 1
+          fi
+      - name: Format
+        working-directory: tuner_hal2/host_ci
+        run: cargo fmt --all
+      - name: Test
+        working-directory: tuner_hal2/host_ci
+        run: cargo test --workspace --locked
+      - name: Check
+        working-directory: tuner_hal2/host_ci
+        run: cargo check --workspace --all-targets --locked
+      - name: Clippy
+        working-directory: tuner_hal2/host_ci
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Commit fixes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A \
+            tuner_hal2/service_runtime/src/boot.rs \
+            tuner_hal2/service_runtime/src/boot/demux_filter_dvr_ops.rs \
+            tuner_hal2/service_runtime/src/boot/packet_ops.rs \
+            tuner_hal2/service_runtime/src/demux_filter_dvr_ops.rs \
+            tuner_hal2/service_runtime/src/packet_ops.rs \
+            tuner_hal2/Android.bp \
+            tuner_hal2/DESIGN_JA.md \
+            tuner_hal/DESIGN_JA.md \
+            tuner_hal/INTEGRATION.md \
+            開発規則.md \
+            future_work/r51/px4_demod_lock_status_readback_blocker.md
+          git commit -m "Align latest Tuner HAL review contracts"
+          git push origin HEAD:fix/tuner-hal2-rustfmt-1.81
