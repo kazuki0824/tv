@@ -81,10 +81,8 @@ def resolve_region(
                 "automatic region resolution without a dataset is supported only for ISDBT"
             )
         matches = _builtin_isdbt_candidates()
-        region["dataset_version"] = "builtin-japan-isdbt-uhf-13-52-v1"
     else:
         matches = _dataset_candidates(profile, dataset)
-        region["dataset_version"] = str(dataset["dataset_version"])
 
     if not matches:
         raise ProfileError(f"no {fe_type} candidates found for region {query!r}")
