@@ -3,7 +3,7 @@ on:
   push:
     branches: [fix/tuner-hal2-rustfmt-1.81]
     paths:
-      - tools/temp_fix53_review35_batch1.py
+      - tools/temp_fix53_review35_batch1_v2.py
       - .github/workflows/temp-fix53-review35-batch1.yml
 permissions:
   contents: write
@@ -15,7 +15,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Apply batch1 repair
-        run: python3 tools/temp_fix53_review35_batch1.py
+        run: python3 tools/temp_fix53_review35_batch1_v2.py
       - name: Rustfmt touched Rust files
         run: |
           rustfmt --edition 2021 \
@@ -27,9 +27,29 @@ jobs:
             tuner_hal2/service_runtime/src/boot.rs \
             tuner_hal2/aidl_service/src/dvr_callback_delivery.rs \
             tuner_hal2/aidl_service/src/tuner_service/dvr_methods.rs
-      - name: Re-run source contract after rustfmt
-        run: python3 tools/temp_fix53_review35_batch1.py || true
-      - name: Verify no second application occurred
+      - name: Validate source shape
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          fmq=Path('tuner_hal2/fmq/src/lib.rs').read_text()
+          av=Path('tuner_hal2/demux/src/av/shared_backing.rs').read_text()
+          assert fmq.count('// SAFETY:') >= 18
+          assert fmq.count('// POSTCONDITION:') >= 16
+          assert av.count('// SAFETY:') >= 10
+          assert av.count('// POSTCONDITION:') >= 10
+          dvr=Path('tuner_hal2/aidl_service/src/tuner_service/dvr_methods.rs').read_text()
+          assert 'runtime.mark_service_critical()' not in dvr
+          for path,name in [
+            ('tuner_hal2/service_runtime/src/registry.rs','PreparedLnbAssignmentLease'),
+            ('tuner_hal2/service_runtime/src/registry.rs','LnbAssignmentCleanupRecord'),
+            ('tuner_hal2/service_runtime/src/descrambler_session.rs','PreparedDescramblerClearKey'),
+            ('tuner_hal2/service_runtime/src/lnb_ops.rs','FrontendFixedPowerPreparation')]:
+              text=Path(path).read_text(); pos=text.index('struct '+name); pre=text[max(0,pos-300):pos]
+              assert '#[must_use' in pre
+              deriv=pre.split('\n\n')[-1]
+              assert 'Clone' not in deriv and 'Copy' not in deriv
+          PY
+      - name: Diff check
         run: git diff --check
       - name: Host workspace test
         working-directory: tuner_hal2/host_ci
