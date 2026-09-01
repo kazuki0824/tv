@@ -11,29 +11,11 @@ from unittest.mock import patch
 from vts_profile.cli import _new_profile
 from vts_profile.device import resolve_device
 from vts_profile.integration import write_product_artifacts
-from vts_profile.model import ProfileError, parse_capability_source, save_profile, validate_against_capability, validate_profile
+from vts_profile.model import ProfileError, save_profile, validate_profile
 from vts_profile.region import resolve_region, select_candidate
 from vts_profile.render import render_xml
+from vts_profile.resource_closure import _program, validate_resource_closure
 from vts_profile.schema import selected_xsd, validate_xml
-
-CAPABILITY_SOURCE = """
-impl CapabilitySnapshot {
-    pub const fn product_default() -> Self {
-        Self {
-            num_record: 8,
-            num_playback: 8,
-            num_ts_filter: 32,
-            num_section_filter: 8,
-            num_audio_filter: 0,
-            num_video_filter: 0,
-            num_pes_filter: 4,
-            num_pcr_filter: 4,
-            fmq_runtime_budget_bytes: 256 * MIB,
-        }
-    }
-    pub const fn filter_capacity(self) {}
-}
-"""
 
 
 class VtsProfileTest(unittest.TestCase):
@@ -51,15 +33,8 @@ class VtsProfileTest(unittest.TestCase):
             "queues": {"record_filter_bytes": 1048576, "record_dvr_bytes": 4194304},
         }
 
-    def capability(self) -> dict[str, int]:
-        return {
-            "num_record": 8, "num_playback": 8, "num_ts_filter": 32, "num_section_filter": 8,
-            "num_audio_filter": 0, "num_video_filter": 0, "num_pes_filter": 4, "num_pcr_filter": 4,
-            "fmq_runtime_budget_bytes": 256 * 1024 * 1024,
-        }
-
     def test_record_only_xml_is_generated_without_device(self) -> None:
-        xml = render_xml(self.profile(), self.capability())
+        xml = render_xml(self.profile())
         self.assertIn('frequency="557142857"', xml)
         self.assertIn('pid="272"', xml)
         self.assertNotIn("isdbtFrontendSettings", xml)
@@ -83,29 +58,50 @@ class VtsProfileTest(unittest.TestCase):
         select_candidate(profile, 1)
         self.assertEqual(profile["frontend"]["frequency_hz"], 557142857)
 
-    def test_clear_live_is_rejected_by_current_capability(self) -> None:
-        profile = self.profile()
-        profile["flows"]["clear_live"] = {
-            "enabled": True, "audio_pid": 273, "video_pid": 272,
-            "audio_stream_type": 2, "video_stream_type": 2,
-        }
-        profile["queues"].update({"audio_filter_bytes": 1048576, "video_filter_bytes": 1048576})
-        with self.assertRaises(ProfileError):
-            validate_against_capability(profile, self.capability())
-
     def test_unknown_profile_field_is_rejected(self) -> None:
         profile = self.profile()
         profile["unused"] = True
         with self.assertRaises(ProfileError):
             validate_profile(profile)
 
-    def test_capability_is_read_from_rust_ssot(self) -> None:
+    def test_resource_closure_program_executes_production_capacity_ledger(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "capability_snapshot.rs"
-            path.write_text(CAPABILITY_SOURCE, encoding="utf-8")
-            capability = parse_capability_source(path)
-        self.assertEqual(capability["num_audio_filter"], 0)
-        self.assertEqual(capability["fmq_runtime_budget_bytes"], 256 * 1024 * 1024)
+            source = Path(directory) / "capability_snapshot.rs"
+            source.write_text("// production fixture")
+            program = _program(self.profile(), source, 1024 * 1024)
+        self.assertIn('include!(r#"', program)
+        self.assertIn("CapabilitySnapshot::product_default()", program)
+        self.assertIn("validate_dependency_closures()", program)
+        self.assertIn("CapacityLedger::default()", program)
+        self.assertIn("reserve_filter(snapshot, 1, FilterOpenType::TsRecord, 1048576)", program)
+        self.assertIn("reserve_dvr(snapshot, 1, 4194304)", program)
+
+    def test_resource_closure_is_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capability = root / "capability_snapshot.rs"
+            capability.write_text("// fixture")
+            pes = root / "ts_core.rs"
+            pes.write_text("pub const MAX_PES_BUFFER_BYTES: usize = 1024 * 1024;\n")
+            failed_compile = SimpleNamespace(returncode=1, stdout="", stderr="compile failed")
+            with patch("vts_profile.resource_closure.subprocess.run", return_value=failed_compile):
+                with self.assertRaises(ProfileError):
+                    validate_resource_closure(self.profile(), capability_source=capability, pes_source=pes)
+
+    def test_resource_closure_runs_checker_after_compile(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            capability = root / "capability_snapshot.rs"
+            capability.write_text("// fixture")
+            pes = root / "ts_core.rs"
+            pes.write_text("pub const MAX_PES_BUFFER_BYTES: usize = 1024 * 1024;\n")
+            results = [
+                SimpleNamespace(returncode=0, stdout="", stderr=""),
+                SimpleNamespace(returncode=0, stdout="", stderr=""),
+            ]
+            with patch("vts_profile.resource_closure.subprocess.run", side_effect=results) as run:
+                validate_resource_closure(self.profile(), capability_source=capability, pes_source=pes)
+            self.assertEqual(run.call_count, 2)
 
     def test_noninteractive_init_requires_explicit_inputs(self) -> None:
         args = SimpleNamespace(
