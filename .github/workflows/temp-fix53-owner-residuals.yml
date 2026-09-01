@@ -6,7 +6,6 @@ on:
     paths:
       - tools/temp_fix53_owner_residuals.py
       - tools/temp_fix53_owner_residuals_v2.py
-      - tools/temp_fix53_owner_residuals_clippy.py
       - .github/workflows/temp-fix53-owner-residuals.yml
 jobs:
   apply-and-validate:
@@ -19,9 +18,7 @@ jobs:
           ref: fix/tuner-hal2-rustfmt-1.81
           fetch-depth: 0
       - name: Apply owner residual repair
-        run: |
-          python3 tools/temp_fix53_owner_residuals_v2.py
-          python3 tools/temp_fix53_owner_residuals_clippy.py
+        run: python3 tools/temp_fix53_owner_residuals_v2.py
       - name: Rustfmt touched Rust files
         run: |
           rustup toolchain install 1.81.0 --profile minimal --component rustfmt
@@ -54,6 +51,8 @@ jobs:
           assert 'pub struct WorkerRuntime<' in control
           assert 'pub struct WorkerHandle<' in control
           assert 'pub fn spawn_handle' in control
+          assert 'type WorkerReaperRunner<' in control
+          assert '#[allow(clippy::type_complexity)]' not in control
           handle_body = control.split('pub struct WorkerHandle',1)[1].split('pub enum WorkerTerminalResult',1)[0]
           assert 'pub fn start(' not in handle_body
           assert 'WorkerRuntime::spawn_handle' in device
