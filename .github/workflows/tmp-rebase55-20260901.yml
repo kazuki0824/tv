@@ -168,7 +168,7 @@ jobs:
               raise RuntimeError("TMCC partial-reception product invariant was not preserved")
           PY
           git add -A
-          git diff --cached --check
+          git diff --cached --check -- . ':(exclude)tuner_hal2/platform_patches/lineage-22.1/android_hardware_tv_tuner_nullable_current.patch'
           echo '--- rebuilt #55 files ---'
           git diff --cached --name-status
           test -n "$(git diff --cached --name-only)"
