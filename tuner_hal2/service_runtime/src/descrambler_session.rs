@@ -106,8 +106,9 @@ impl DescramblerSession {
         ) {
             return false;
         }
-        self.source_call_state =
-            DescramblerSourceCallState::CallConsumedUnbound { failure: Some(failure) };
+        self.source_call_state = DescramblerSourceCallState::CallConsumedUnbound {
+            failure: Some(failure),
+        };
         true
     }
     pub(crate) fn clear_pid_claims(&mut self) {
@@ -419,7 +420,8 @@ impl DescramblerClearKeyPlan {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
+#[must_use = "prepared descrambler clear-key authority must be consumed by commit"]
 struct PreparedDescramblerClearKey {
     plan: DescramblerClearKeyPlan,
 }
@@ -839,9 +841,7 @@ where
         if let Err(release_old) = self.key_table.release_key_token(token) {
             self.session.add_pending_key_release(token.clone());
             self.session.quarantine();
-            return Ok(DescramblerClearKeyOutcome::ClearedWithOldKeyReleaseFailure {
-                release_old,
-            });
+            return Ok(DescramblerClearKeyOutcome::ClearedWithOldKeyReleaseFailure { release_old });
         }
         Ok(DescramblerClearKeyOutcome::Cleared)
     }
@@ -884,9 +884,7 @@ where
                 self.session.add_pending_key_release(old_token.clone());
                 self.session.quarantine();
                 return Ok(
-                    DescramblerReplaceKeyOutcome::ReplacedWithOldKeyReleaseFailure {
-                        release_old,
-                    },
+                    DescramblerReplaceKeyOutcome::ReplacedWithOldKeyReleaseFailure { release_old },
                 );
             }
         }

@@ -18,9 +18,8 @@ use maleicacid_tuner_hal2_demux::config::{
 use maleicacid_tuner_hal2_demux::OpenFilterRequest;
 use maleicacid_tuner_hal2_demux::{
     AvDataId, AvMediaEventDescriptor, AvSharedBacking, DemuxRuntimeError, DemuxRuntimeErrorKind,
-    DemuxRuntimeRollbackToken, DemuxRuntimeState, DvrKind, DvrRuntimeState,
-    StreamBoundaryReport, PipelineBoundaryReason, PipelineDiagnostic, PipelineReport,
-    PipelineResetReport, TsInputOrigin,
+    DemuxRuntimeRollbackToken, DemuxRuntimeState, DvrKind, DvrRuntimeState, PipelineBoundaryReason,
+    PipelineDiagnostic, PipelineReport, PipelineResetReport, StreamBoundaryReport, TsInputOrigin,
     TsPacketValidationError, ValidatedTsPacket,
 };
 #[cfg(test)]
@@ -43,7 +42,7 @@ use maleicacid_tuner_hal2_domain_request::{
 };
 
 use crate::callback_registry::{CallbackRegistryUpdate, RuntimeCallbackRegistry};
-use crate::capability_snapshot::{CapacityLedger, CapabilitySnapshot};
+use crate::capability_snapshot::{CapabilitySnapshot, CapacityLedger};
 use crate::command_dispatch::{
     RuntimeCommandDispatchError, RuntimeCommandDispatchPlan, RuntimeCommandDispatcher,
 };
@@ -180,9 +179,7 @@ fn frontend_capability_is_consistent(
         FrontendSystem::IsdbT => capability
             .isdbt_segment
             .is_some_and(|segment| segment.is_segment_auto),
-        FrontendSystem::IsdbS => {
-            capability.isdbt_segment.is_none() && scalar.max_symbol_rate > 0
-        }
+        FrontendSystem::IsdbS => capability.isdbt_segment.is_none() && scalar.max_symbol_rate > 0,
         FrontendSystem::IsdbS3 | FrontendSystem::DvbS => false,
     }
 }
@@ -557,8 +554,7 @@ pub struct TunerServiceRuntime {
     callback_registry: RuntimeCallbackRegistry,
     frontend_workers: FrontendWorkerRegistry,
     playback_consume_txns: BTreeMap<i32, crate::playback_consume_txn::PlaybackConsumeTxn>,
-    frontend_worker_reaper:
-        Option<crate::frontend_worker_txn::FrontendWorkerReaperHandle>,
+    frontend_worker_reaper: Option<crate::frontend_worker_txn::FrontendWorkerReaperHandle>,
     frontend_current_max: BTreeMap<FrontendSystem, i32>,
     next_aidl_generation: u64,
     next_aidl_object_id: i64,
@@ -642,14 +638,7 @@ impl CallbackRegistrationArtifactOutcome {
         }
     }
 
-    pub fn artifact_key(
-        &self,
-    ) -> (
-        AidlObjectKind,
-        AidlObjectId,
-        AidlObjectGeneration,
-        AidlApi,
-    ) {
+    pub fn artifact_key(&self) -> (AidlObjectKind, AidlObjectId, AidlObjectGeneration, AidlApi) {
         (
             self.owner_kind,
             self.owner_id,
@@ -1026,10 +1015,10 @@ impl TunerServiceRuntime {
                 }
                 _ => continue,
             };
-            let Some(entry) = self.object_table.live_entry_for_runtime(
-                AidlObjectKind::Filter,
-                LedgerId(i64::from(filter_id)),
-            ) else {
+            let Some(entry) = self
+                .object_table
+                .live_entry_for_runtime(AidlObjectKind::Filter, LedgerId(i64::from(filter_id)))
+            else {
                 continue;
             };
             let object_id = entry.object_id;
@@ -1120,8 +1109,8 @@ impl TunerServiceRuntime {
 mod raw_filter_event_projection_tests {
     use super::*;
     use maleicacid_tuner_hal2_demux::{
-        FilterConfigKind, FilterStatusEvent, PesSettings, PipelineGeneratedEvent,
-        SectionCondition, SectionConditionKind, ValidatedPacketIngressRequest,
+        FilterConfigKind, FilterStatusEvent, PesSettings, PipelineGeneratedEvent, SectionCondition,
+        SectionConditionKind, ValidatedPacketIngressRequest,
     };
 
     fn packet_with_payload(
@@ -1300,9 +1289,7 @@ mod raw_filter_event_projection_tests {
                 raw: true,
             }),
         );
-        let pes = [
-            0x00, 0x00, 0x01, 0xe0, 0x00, 0x04, 0x80, 0x00, 0x00, 0xde,
-        ];
+        let pes = [0x00, 0x00, 0x01, 0xe0, 0x00, 0x04, 0x80, 0x00, 0x00, 0xde];
 
         let (report, snapshots) = push_and_project(
             &mut runtime,
@@ -1394,9 +1381,7 @@ impl TunerServiceRuntime {
             .any(|id| {
                 self.registry
                     .frontend(FrontendRuntimeId(id))
-                    .is_some_and(|entry| {
-                        entry.capability.exclusive_group_id == exclusive_group_id
-                    })
+                    .is_some_and(|entry| entry.capability.exclusive_group_id == exclusive_group_id)
             })
     }
 
@@ -1692,7 +1677,6 @@ impl TunerServiceRuntime {
         Ok(())
     }
 
-
     pub(crate) fn register_prepared_aidl_object_for_runtime_auto_generation(
         &mut self,
         object_kind: AidlObjectKind,
@@ -1921,11 +1905,9 @@ impl TunerServiceRuntime {
         owner_generation: AidlObjectGeneration,
         filter_id: i32,
     ) -> OwnerCallbackCleanupUseCaseOutcome<()> {
-        let primary_result = self.child_open_txn().rollback_filter_child_open_after_aidl_failure(
-            owner_id,
-            owner_generation,
-            filter_id,
-        );
+        let primary_result = self
+            .child_open_txn()
+            .rollback_filter_child_open_after_aidl_failure(owner_id, owner_generation, filter_id);
         let command = OwnerCallbackCleanupArtifactCommand::new(
             AidlObjectKind::Filter,
             owner_id,
@@ -1944,11 +1926,7 @@ impl TunerServiceRuntime {
     ) -> OwnerCallbackCleanupUseCaseOutcome<()> {
         let primary_result = self
             .child_open_txn()
-            .rollback_dvr_child_open_after_aidl_failure(
-                owner_id,
-                owner_generation,
-                dvr_id,
-            );
+            .rollback_dvr_child_open_after_aidl_failure(owner_id, owner_generation, dvr_id);
         let command = OwnerCallbackCleanupArtifactCommand::new(
             AidlObjectKind::Dvr,
             owner_id,
@@ -2080,8 +2058,8 @@ impl TunerServiceRuntime {
                     owner_generation,
                     registration_api,
                 );
-                let record_result =
-                    aidl_object_live(self, owner_id, owner_generation, owner_kind).map(|_| {
+                let record_result = aidl_object_live(self, owner_id, owner_generation, owner_kind)
+                    .map(|_| {
                         crate::callback_registry::CallbackRegistrationUseCase::commit(
                             &mut self.callback_registry,
                             prepared,
@@ -2290,6 +2268,31 @@ impl TunerServiceRuntime {
         failures.into_result()
     }
 
+    pub fn finish_dvr_post_commit_notification_failure_use_case(
+        &mut self,
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        phase: DvrPostCommitNotificationPhase,
+        primary: HalError,
+    ) -> Result<(), HalError> {
+        let service_critical = phase == DvrPostCommitNotificationPhase::StatusNotifierStart
+            && self
+                .dvr_status_metadata_snapshot_for_aidl_object(object_id, generation)
+                .map(|snapshot| snapshot.is_playback)
+                .unwrap_or(true);
+        self.finish_callback_delivery_failure_use_case(CallbackDeliveryFailureReport::dvr(
+            object_id,
+            generation,
+            CallbackDeliveryFailurePhase::PostCommitNotification,
+            phase,
+            primary,
+        ))?;
+        if service_critical {
+            self.mark_service_critical();
+        }
+        Ok(())
+    }
+
     pub fn finish_callback_delivery_failure_use_case(
         &mut self,
         report: CallbackDeliveryFailureReport,
@@ -2481,8 +2484,8 @@ impl TunerServiceRuntime {
                         }
                     },
                 );
-                if let Err(error) = self
-                    .mark_frontend_scan_session_callback_failed(frontend_id, scan_generation)
+                if let Err(error) =
+                    self.mark_frontend_scan_session_callback_failed(frontend_id, scan_generation)
                 {
                     self.record_frontend_callback_delivery_diagnostic(
                         FrontendCallbackDeliveryDiagnosticRecord::scan_session_accounting(
@@ -2909,22 +2912,22 @@ impl TunerServiceRuntime {
                     satellite_power_topology,
                     capability,
                 } => {
-                    let path_group_mismatch = physical_group_by_path
-                        .get(&path)
-                        .is_some_and(|(known_backend, known_group)| {
+                    let path_group_mismatch = physical_group_by_path.get(&path).is_some_and(
+                        |(known_backend, known_group)| {
                             *known_backend != backend
                                 || *known_group != capability.exclusive_group_id
-                        });
+                        },
+                    );
                     let px4_group_collision = backend == FrontendBackendKind::Px4CharDevice
                         && px4_path_by_group
                             .get(&capability.exclusive_group_id)
                             .is_some_and(|known_path| known_path != &path);
                     let satellite_power_is_consistent = match system {
-                        FrontendSystem::IsdbS => satellite_power_topology
-                            != SatellitePowerTopology::UnknownOrDisabled,
+                        FrontendSystem::IsdbS => {
+                            satellite_power_topology != SatellitePowerTopology::UnknownOrDisabled
+                        }
                         FrontendSystem::IsdbT => {
-                            satellite_power_topology
-                                == SatellitePowerTopology::UnknownOrDisabled
+                            satellite_power_topology == SatellitePowerTopology::UnknownOrDisabled
                         }
                         FrontendSystem::IsdbS3 | FrontendSystem::DvbS => false,
                     };
@@ -2952,10 +2955,8 @@ impl TunerServiceRuntime {
                     };
                     match self.registry.register_frontend(entry.clone()) {
                         Ok(()) => {
-                            physical_group_by_path.insert(
-                                path.clone(),
-                                (backend, capability.exclusive_group_id),
-                            );
+                            physical_group_by_path
+                                .insert(path.clone(), (backend, capability.exclusive_group_id));
                             if backend == FrontendBackendKind::Px4CharDevice {
                                 px4_path_by_group
                                     .insert(capability.exclusive_group_id, path.clone());

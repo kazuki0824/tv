@@ -137,13 +137,11 @@ impl TunerServiceRuntime {
             }
         }
         let demux_generation = demux_runtime.generation();
-        match self.registry
-            .bind_descrambler_demux_use_case(
-                DescramblerRuntimeId(descrambler_id),
-                demux_id,
-                demux_generation,
-            )
-        {
+        match self.registry.bind_descrambler_demux_use_case(
+            DescramblerRuntimeId(descrambler_id),
+            demux_id,
+            demux_generation,
+        ) {
             Ok(()) => Ok(()),
             Err(failure) => {
                 let error = descrambler_session_failure_to_hal(failure.kind);
@@ -167,8 +165,7 @@ impl TunerServiceRuntime {
             .record_descrambler_demux_source_call_failure_use_case(
                 DescramblerRuntimeId(descrambler_id),
                 failure,
-            )
-        {
+            ) {
             Ok(()) => primary,
             Err(record_failure) => compose_primary_cleanup_failure(
                 "descrambler source-call failure state commit failed",
@@ -177,7 +174,6 @@ impl TunerServiceRuntime {
             ),
         }
     }
-
 }
 
 /// Descrambler 鍵変更の検証、backend 適用、commit、旧鍵解放を所有する transaction。
@@ -817,9 +813,7 @@ impl std::ops::DerefMut for DescramblerSessionCleanupTxn<'_> {
 }
 
 impl TunerServiceRuntime {
-    pub(crate) fn descrambler_session_cleanup_txn(
-        &mut self,
-    ) -> DescramblerSessionCleanupTxn<'_> {
+    pub(crate) fn descrambler_session_cleanup_txn(&mut self) -> DescramblerSessionCleanupTxn<'_> {
         DescramblerSessionCleanupTxn { runtime: self }
     }
 }
@@ -835,10 +829,7 @@ impl DescramblerSessionCleanupTxn<'_> {
             .unregister_descrambler(DescramblerRuntimeId(id)))
     }
 
-    pub(crate) fn cleanup_for_demux_owner_loss(
-        &mut self,
-        demux_id: i32,
-    ) -> Result<(), HalError> {
+    pub(crate) fn cleanup_for_demux_owner_loss(&mut self, demux_id: i32) -> Result<(), HalError> {
         let descrambler_ids = self.registry.descrambler_ids_bound_to_demux(demux_id);
         let mut collector = FirstErrorCollector::new();
         for descrambler_id in descrambler_ids {

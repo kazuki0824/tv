@@ -4,16 +4,16 @@ use crate::registry::{
     DemuxRegistryEntry, DemuxRuntimeId, DvrRegistryEntry, FilterRegistryEntry, FrontendRuntimeId,
     RegistryCommitError,
 };
-use maleicacid_tuner_hal2_device::FrontendRuntimeState;
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, HalError, HalInternalKind, HalInvalidStateKind,
 };
+use maleicacid_tuner_hal2_device::FrontendRuntimeState;
 
 use crate::queue_cleanup_use_case::QueueCleanupUseCase;
 use maleicacid_tuner_hal2_demux::{
-    DemuxStreamBoundaryRequest, DemuxRuntime, DemuxRuntimeError, DemuxStreamGeneration,
-    DvrFilterLinkRequest, StreamBoundaryReport, PlaybackConsumeReport, PipelineBoundaryReason,
-    PipelineResetReport,
+    DemuxRuntime, DemuxRuntimeError, DemuxStreamBoundaryRequest, DemuxStreamGeneration,
+    DvrFilterLinkRequest, PipelineBoundaryReason, PipelineResetReport, PlaybackConsumeReport,
+    StreamBoundaryReport,
 };
 use maleicacid_tuner_hal2_demux::{
     FilterConfig, FilterOpenType, FilterRuntimeState, OpenFilterRequest,
@@ -80,8 +80,7 @@ impl DemuxFrontendSourceTxn {
                     | FrontendRuntimeState::Tuning { .. }
                     | FrontendRuntimeState::Scanning { .. } => {}
                 }
-                if runtime.registry.frontend_bound_to_demux(self.demux_id)
-                    == Some(next_frontend_id)
+                if runtime.registry.frontend_bound_to_demux(self.demux_id) == Some(next_frontend_id)
                 {
                     let generation = runtime
                         .registry
@@ -126,9 +125,7 @@ impl DemuxFrontendSourceTxn {
                     "demux runtime is missing",
                 )
             })?
-            .prepare_stream_boundary_from_typed_request(
-                DemuxStreamBoundaryRequest::new(reason),
-            )
+            .prepare_stream_boundary_from_typed_request(DemuxStreamBoundaryRequest::new(reason))
             .map_err(super::demux_runtime_error_to_hal)?;
         let report = runtime
             .registry
@@ -180,10 +177,7 @@ impl RecordDvrFilterRelationTxn {
         }
     }
 
-    pub(crate) fn execute(
-        self,
-        demux: &mut DemuxRuntime,
-    ) -> Result<(), DemuxRuntimeError> {
+    pub(crate) fn execute(self, demux: &mut DemuxRuntime) -> Result<(), DemuxRuntimeError> {
         let request = DvrFilterLinkRequest::new(self.dvr_id, self.filter_id);
         let prepared = match self.mutation {
             RecordDvrFilterRelationMutation::Attach => {
@@ -240,11 +234,7 @@ impl TunerServiceRuntime {
         filter_id: i32,
         request: &OpenFilterRequest,
     ) -> Result<(), HalError> {
-        self.reserve_filter_capacity_for_test(
-            filter_id,
-            request.open_type,
-            request.buffer_size,
-        )?;
+        self.reserve_filter_capacity_for_test(filter_id, request.open_type, request.buffer_size)?;
         if let Err(error) =
             self.transact_register_demux_filter_runtime(owner_demux_id, filter_id, request)
         {
@@ -708,23 +698,19 @@ impl TunerServiceRuntime {
             generation,
             maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
         )?;
-        let mut consume_txn = self
-            .playback_consume_txns
-            .remove(&dvr_id)
-            .ok_or_else(|| {
-                HalError::invalid_state(
-                    HalInvalidStateKind::InvalidLifecycle,
-                    "playback consume transaction is not configured",
-                )
-            })?;
+        let mut consume_txn = self.playback_consume_txns.remove(&dvr_id).ok_or_else(|| {
+            HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "playback consume transaction is not configured",
+            )
+        })?;
         let result = match self.registry.demux_runtime_mut(DemuxRuntimeId(demux_id)) {
             Some(demux) => match consume_txn.consume(demux) {
                 Ok(report) => Ok(report),
                 Err(_) => {
                     let dropped_bytes = consume_txn.discard_for_boundary();
                     if dropped_bytes > 0 {
-                        let _ = demux
-                            .note_playback_consume_boundary_discard(dvr_id, dropped_bytes);
+                        let _ = demux.note_playback_consume_boundary_discard(dvr_id, dropped_bytes);
                         eprintln!(
                             "maleicacid-tuner-hal2-dvr-playback-diagnostic: dvr_id={} boundary=fatal dropped_bytes={}",
                             dvr_id, dropped_bytes,

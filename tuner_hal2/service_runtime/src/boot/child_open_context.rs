@@ -1,11 +1,11 @@
 use super::{
-    AvStreamKind, AvStreamTypeConfig, DemuxRuntimeError, DemuxRuntimeErrorKind, DemuxRuntimeId,
-    DvrChildRuntimeOpen, DvrConfigureKind, DvrConfigureRequest, DvrKind, DvrOpenKind, DvrRuntimeId,
-    FilterAvStreamKind, FilterAvStreamTypeRequest, FilterChildRuntimeOpen, FilterConfig,
-    ChildOpenTxn, FilterDelayHint, FilterDelayHintKind, FilterDelayHintRequest, FilterOpenType,
-    FilterRuntimeId, HalError, HalInternalKind, HalInvalidArgumentKind, HalInvalidStateKind,
-    OpenDvrRequest, OpenFilterRequest, PipelineResetReport, RegistryCommitError,
-    TunerServiceRuntime,
+    AvStreamKind, AvStreamTypeConfig, ChildOpenTxn, DemuxRuntimeError, DemuxRuntimeErrorKind,
+    DemuxRuntimeId, DvrChildRuntimeOpen, DvrConfigureKind, DvrConfigureRequest, DvrKind,
+    DvrOpenKind, DvrRuntimeId, FilterAvStreamKind, FilterAvStreamTypeRequest,
+    FilterChildRuntimeOpen, FilterConfig, FilterDelayHint, FilterDelayHintKind,
+    FilterDelayHintRequest, FilterOpenType, FilterRuntimeId, HalError, HalInternalKind,
+    HalInvalidArgumentKind, HalInvalidStateKind, OpenDvrRequest, OpenFilterRequest,
+    PipelineResetReport, RegistryCommitError, TunerServiceRuntime,
 };
 #[cfg(test)]
 use crate::diagnostics::ChildOpenRollbackKind;
@@ -255,8 +255,7 @@ impl TunerServiceRuntime {
             .filter_snapshot(id)
             .map(|snapshot| snapshot.open_type)
             .map_err(Self::map_filter_runtime_error)?;
-        let release_only_backing =
-            demux_runtime.take_filter_av_backing_for_release_only(id);
+        let release_only_backing = demux_runtime.take_filter_av_backing_for_release_only(id);
         if demux_runtime
             .remove_filter_from_typed_request(
                 maleicacid_tuner_hal2_demux::FilterRuntimeOperationRequest::new(id),
@@ -527,15 +526,15 @@ impl TunerServiceRuntime {
                     "owner demux runtime is missing",
                 )
             })?;
-        Self::map_av_handle_release_outcome(demux
-            .release_filter_av_handle_from_typed_request(
-                maleicacid_tuner_hal2_demux::FilterAvHandleReleaseRequest::new(
-                    filter_id,
-                    descriptor,
-                    av_data_id,
-                ),
-            )
-            .map_err(Self::map_filter_runtime_error)?)
+        Self::map_av_handle_release_outcome(
+            demux
+                .release_filter_av_handle_from_typed_request(
+                    maleicacid_tuner_hal2_demux::FilterAvHandleReleaseRequest::new(
+                        filter_id, descriptor, av_data_id,
+                    ),
+                )
+                .map_err(Self::map_filter_runtime_error)?,
+        )
     }
 
     fn map_av_handle_release_outcome(
@@ -575,8 +574,7 @@ impl TunerServiceRuntime {
             )
         })?;
         if entry.generation != generation
-            || entry.object_kind
-                != maleicacid_tuner_hal2_domain_request::AidlObjectKind::Filter
+            || entry.object_kind != maleicacid_tuner_hal2_domain_request::AidlObjectKind::Filter
         {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
@@ -672,8 +670,7 @@ impl TunerServiceRuntime {
             )
         })?;
         if entry.generation != generation
-            || entry.object_kind
-                != maleicacid_tuner_hal2_domain_request::AidlObjectKind::Filter
+            || entry.object_kind != maleicacid_tuner_hal2_domain_request::AidlObjectKind::Filter
         {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
@@ -1670,10 +1667,10 @@ impl ChildOpenTxn<'_> {
                     .checked_add(raw_count)
                     .and_then(|count| count.checked_add(record_count))
                     .ok_or_else(|| {
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "shared TS filter capacity counter overflow",
-                    )
+                        HalError::internal(
+                            HalInternalKind::InvariantViolation,
+                            "shared TS filter capacity counter overflow",
+                        )
                     })?
             }
             _ => self

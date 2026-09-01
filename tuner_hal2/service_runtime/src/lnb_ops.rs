@@ -9,9 +9,7 @@ use crate::object_method_use_case::ObjectMethodExecutionToken;
 use crate::registry::{
     FrontendRuntimeId, LnbPhysicalIoAuthority, LnbRuntimeId, SatellitePowerTopology,
 };
-use maleicacid_tuner_hal2_common::{
-    compose_primary_cleanup_failure, HalError, HalInternalKind,
-};
+use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, HalError, HalInternalKind};
 use maleicacid_tuner_hal2_domain_request::{
     AidlObjectGeneration, AidlObjectId, AidlObjectKind, LnbSetSatellitePositionRequest,
     LnbToneRequest, LnbVoltageRequest,
@@ -19,18 +17,19 @@ use maleicacid_tuner_hal2_domain_request::{
 
 use crate::boot::TunerServiceRuntime;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
+#[must_use = "frontend fixed-power preparation must be completed or rolled back by value"]
 pub(crate) struct FrontendFixedPowerPreparation {
     frontend_id: FrontendRuntimeId,
     newly_retained: bool,
 }
 
 impl FrontendFixedPowerPreparation {
-    pub(crate) const fn frontend_id(self) -> FrontendRuntimeId {
+    pub(crate) const fn frontend_id(&self) -> FrontendRuntimeId {
         self.frontend_id
     }
 
-    pub(crate) const fn newly_retained(self) -> bool {
+    pub(crate) const fn newly_retained(&self) -> bool {
         self.newly_retained
     }
 }
@@ -128,11 +127,7 @@ impl TunerServiceRuntime {
     }
 
     #[cfg(test)]
-    fn execute_lnb_control_for_test<F>(
-        &mut self,
-        lnb_id: i32,
-        prepare: F,
-    ) -> Result<(), HalError>
+    fn execute_lnb_control_for_test<F>(&mut self, lnb_id: i32, prepare: F) -> Result<(), HalError>
     where
         F: FnOnce(&mut LnbControlTxn<'_>) -> Result<PreparedLnbControlTxn, HalError>,
     {
@@ -244,8 +239,7 @@ pub(crate) fn ensure_frontend_fixed_power_for_object(
             let mut guard = lock_shared_lnb_runtime(runtime)?;
             let current = guard.frontend_entry_for_aidl_object(object_id, object_generation)?;
             if current.id != frontend_id
-                || current.satellite_power_topology
-                    != SatellitePowerTopology::InternalFixed15V
+                || current.satellite_power_topology != SatellitePowerTopology::InternalFixed15V
             {
                 return Err(HalError::invalid_state(
                     maleicacid_tuner_hal2_common::HalInvalidStateKind::InvalidLifecycle,
@@ -255,27 +249,20 @@ pub(crate) fn ensure_frontend_fixed_power_for_object(
             let newly_retained = guard
                 .registry_mut()
                 .retain_frontend_fixed_power_lease(frontend_id, lnb_id)?;
-            let already_applied = guard
-                .registry()
-                .lnb_runtime(lnb_id)
-                .is_some_and(|lnb| {
-                    lnb.state() == maleicacid_tuner_hal2_lnb::LnbRuntimeState::Open
-                        && lnb.registry_state().voltage
-                            == maleicacid_tuner_hal2_lnb::LnbVoltage::Voltage15V
-                });
+            let already_applied = guard.registry().lnb_runtime(lnb_id).is_some_and(|lnb| {
+                lnb.state() == maleicacid_tuner_hal2_lnb::LnbRuntimeState::Open
+                    && lnb.registry_state().voltage
+                        == maleicacid_tuner_hal2_lnb::LnbVoltage::Voltage15V
+            });
             if already_applied {
                 return Ok(FrontendFixedPowerPreparation {
                     frontend_id,
                     newly_retained,
                 });
             }
-            if guard
-                .registry()
-                .lnb_runtime(lnb_id)
-                .is_some_and(|lnb| {
-                    lnb.state() == maleicacid_tuner_hal2_lnb::LnbRuntimeState::Closed
-                })
-            {
+            if guard.registry().lnb_runtime(lnb_id).is_some_and(|lnb| {
+                lnb.state() == maleicacid_tuner_hal2_lnb::LnbRuntimeState::Closed
+            }) {
                 if let Err(error) = guard
                     .registry_mut()
                     .reopen_lnb(lnb_id)
@@ -289,10 +276,7 @@ pub(crate) fn ensure_frontend_fixed_power_for_object(
                     ));
                 }
             }
-            let prepared = match guard
-                .lnb_control_txn()
-                .prepare_internal_fixed_15v(lnb_id.0)
-            {
+            let prepared = match guard.lnb_control_txn().prepare_internal_fixed_15v(lnb_id.0) {
                 Ok(prepared) => prepared,
                 Err(error) => {
                     return Err(rollback_new_fixed_power_lease(
@@ -372,12 +356,9 @@ pub(crate) fn release_frontend_fixed_power_after_operation(
             if !operation_is_terminal {
                 return Ok(());
             }
-            let state_is_safe = guard
-                .registry()
-                .lnb_runtime(lnb_id)
-                .is_some_and(|lnb| {
-                    lnb.registry_state() == maleicacid_tuner_hal2_lnb::LnbElectricalState::safe()
-                });
+            let state_is_safe = guard.registry().lnb_runtime(lnb_id).is_some_and(|lnb| {
+                lnb.registry_state() == maleicacid_tuner_hal2_lnb::LnbElectricalState::safe()
+            });
             let remaining = match guard
                 .registry_mut()
                 .release_frontend_fixed_power_lease(frontend_id)?
@@ -435,11 +416,8 @@ fn live_lnb_io_authority(
     generation: AidlObjectGeneration,
 ) -> Result<(i32, LnbPhysicalIoAuthority), HalError> {
     let guard = lock_shared_lnb_runtime(runtime)?;
-    let lnb_id = guard.public_runtime_id_for_object_method(
-        object_id,
-        generation,
-        AidlObjectKind::Lnb,
-    )?;
+    let lnb_id =
+        guard.public_runtime_id_for_object_method(object_id, generation, AidlObjectKind::Lnb)?;
     let authority = guard
         .registry()
         .lnb_physical_io_authority(LnbRuntimeId(lnb_id))
@@ -461,12 +439,7 @@ where
     authority.execute(|permit| {
         let prepared = {
             let mut guard = lock_shared_lnb_runtime(&runtime)?;
-            dispatch.consume_for_object(
-                &mut guard,
-                object_id,
-                generation,
-                AidlObjectKind::Lnb,
-            )?;
+            dispatch.consume_for_object(&mut guard, object_id, generation, AidlObjectKind::Lnb)?;
             let current_lnb_id = guard.public_runtime_id_for_object_method(
                 object_id,
                 generation,
@@ -494,13 +467,9 @@ pub fn apply_lnb_voltage_object_use_case(
     request: LnbVoltageRequest,
     dispatch: ObjectMethodExecutionToken,
 ) -> Result<(), HalError> {
-    execute_lnb_control_object_use_case(
-        runtime,
-        object_id,
-        generation,
-        dispatch,
-        |txn, lnb_id| txn.prepare_voltage(lnb_id, request),
-    )
+    execute_lnb_control_object_use_case(runtime, object_id, generation, dispatch, |txn, lnb_id| {
+        txn.prepare_voltage(lnb_id, request)
+    })
 }
 
 pub fn apply_lnb_tone_object_use_case(
@@ -510,13 +479,9 @@ pub fn apply_lnb_tone_object_use_case(
     request: LnbToneRequest,
     dispatch: ObjectMethodExecutionToken,
 ) -> Result<(), HalError> {
-    execute_lnb_control_object_use_case(
-        runtime,
-        object_id,
-        generation,
-        dispatch,
-        |txn, lnb_id| txn.prepare_tone(lnb_id, request),
-    )
+    execute_lnb_control_object_use_case(runtime, object_id, generation, dispatch, |txn, lnb_id| {
+        txn.prepare_tone(lnb_id, request)
+    })
 }
 
 pub fn apply_lnb_satellite_position_object_use_case(
@@ -526,13 +491,9 @@ pub fn apply_lnb_satellite_position_object_use_case(
     request: LnbSetSatellitePositionRequest,
     dispatch: ObjectMethodExecutionToken,
 ) -> Result<(), HalError> {
-    execute_lnb_control_object_use_case(
-        runtime,
-        object_id,
-        generation,
-        dispatch,
-        |txn, lnb_id| txn.prepare_satellite_position(lnb_id, request),
-    )
+    execute_lnb_control_object_use_case(runtime, object_id, generation, dispatch, |txn, lnb_id| {
+        txn.prepare_satellite_position(lnb_id, request)
+    })
 }
 
 pub fn send_lnb_diseqc_object_use_case(
@@ -546,12 +507,7 @@ pub fn send_lnb_diseqc_object_use_case(
     authority.execute(|permit| {
         let prepared = {
             let mut guard = lock_shared_lnb_runtime(&runtime)?;
-            dispatch.consume_for_object(
-                &mut guard,
-                object_id,
-                generation,
-                AidlObjectKind::Lnb,
-            )?;
+            dispatch.consume_for_object(&mut guard, object_id, generation, AidlObjectKind::Lnb)?;
             let current_lnb_id = guard.public_runtime_id_for_object_method(
                 object_id,
                 generation,
@@ -627,7 +583,10 @@ pub fn close_lnb_explicit_after_object_close_begin_use_case(
         maleicacid_tuner_hal2_lnb::LnbLifecycleReason::PublicClose,
     )?;
     let mut guard = lock_shared_lnb_runtime(&runtime)?;
-    for frontend_id in guard.registry().selected_frontends_for_lnb(LnbRuntimeId(lnb_id)) {
+    for frontend_id in guard
+        .registry()
+        .selected_frontends_for_lnb(LnbRuntimeId(lnb_id))
+    {
         crate::frontend_ops::FrontendLnbRelationTxn::release(&mut guard, frontend_id.0)?;
     }
     Ok(())
@@ -645,7 +604,10 @@ pub fn close_lnb_after_root_open_rollback_use_case(
         maleicacid_tuner_hal2_lnb::LnbLifecycleReason::PublicClose,
     )?;
     let mut guard = lock_shared_lnb_runtime(&runtime)?;
-    for frontend_id in guard.registry().selected_frontends_for_lnb(LnbRuntimeId(lnb_id)) {
+    for frontend_id in guard
+        .registry()
+        .selected_frontends_for_lnb(LnbRuntimeId(lnb_id))
+    {
         crate::frontend_ops::FrontendLnbRelationTxn::release(&mut guard, frontend_id.0)?;
     }
     Ok(())
@@ -706,8 +668,7 @@ mod wp_r11_lnb_apply_tests {
                 device_path: "/dev/null".into(),
                 lnb_profile: Some(profile),
                 satellite_power_topology: match profile {
-                    LnbRegistryProfile::Px4Device15VOnly
-                    | LnbRegistryProfile::EarthPt1FixedLnb => {
+                    LnbRegistryProfile::Px4Device15VOnly | LnbRegistryProfile::EarthPt1FixedLnb => {
                         SatellitePowerTopology::InternalFixed15V
                     }
                     LnbRegistryProfile::NoPower => SatellitePowerTopology::ExternalOrShared,
@@ -931,5 +892,4 @@ impl TunerServiceRuntime {
         )?;
         self.clear_lnb_callback_registration(lnb_id)
     }
-
 }

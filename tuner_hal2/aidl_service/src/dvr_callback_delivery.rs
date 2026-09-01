@@ -10,15 +10,13 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
 };
 use binder::Strong;
 use maleicacid_tuner_hal2_binder_adapter::{AidlObjectGeneration, AidlObjectId};
-use maleicacid_tuner_hal2_common::{
-    compose_primary_cleanup_failure, HalError, HalInternalKind,
-};
+use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, HalError, HalInternalKind};
 use maleicacid_tuner_hal2_demux::DvrStatusEvent;
 use maleicacid_tuner_hal2_service_runtime::{
     CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport, CapabilitySnapshot,
-    DvrPostCommitNotificationDiagnosticRecord, DvrPostCommitNotificationFailureKind,
-    DvrPostCommitNotificationPhase, DvrStatusNotifierCleanupDiagnosticRecord,
-    ClassifiedWorkerTerminalResult, DvrStatusPollSnapshot, WorkerRuntime,
+    ClassifiedWorkerTerminalResult, DvrPostCommitNotificationDiagnosticRecord,
+    DvrPostCommitNotificationFailureKind, DvrPostCommitNotificationPhase,
+    DvrStatusNotifierCleanupDiagnosticRecord, DvrStatusPollSnapshot, WorkerRuntime,
     WorkerRuntimeSupervisor,
 };
 
@@ -238,9 +236,11 @@ impl DvrStatusNotifierSupervisor {
             )
         })?;
         loop {
-            if let Some(key) = state.active_mut().iter().find_map(|(key, notifier)| {
-                notifier.worker.is_finished().then_some(*key)
-            }) {
+            if let Some(key) = state
+                .active_mut()
+                .iter()
+                .find_map(|(key, notifier)| notifier.worker.is_finished().then_some(*key))
+            {
                 let Some(notifier) = state.active_mut().remove(&key) else {
                     continue;
                 };
@@ -262,19 +262,19 @@ impl DvrStatusNotifierSupervisor {
                 );
                 continue;
             }
-            if let Some(key) = state.reaping_mut().iter().find_map(|(key, job)| {
-                job.notifier
-                    .worker
-                    .is_finished()
-                    .then_some(*key)
-            }) {
+            if let Some(key) = state
+                .reaping_mut()
+                .iter()
+                .find_map(|(key, job)| job.notifier.worker.is_finished().then_some(*key))
+            {
                 let Some(job) = state.reaping_mut().remove(&key) else {
                     continue;
                 };
                 return Ok(DvrStatusNotifierSupervisorAction::Completed(job));
             }
             if let Some(handle) = state.reaping_mut().values_mut().find_map(|job| {
-                if !job.deadline_reported && job.transferred_at.elapsed() >= self.runtime.deadline() {
+                if !job.deadline_reported && job.transferred_at.elapsed() >= self.runtime.deadline()
+                {
                     job.deadline_reported = true;
                     Some(job.handle)
                 } else {
@@ -287,11 +287,16 @@ impl DvrStatusNotifierSupervisor {
                 .reaping
                 .values()
                 .filter(|job| !job.deadline_reported)
-                .map(|job| self.runtime.deadline().saturating_sub(job.transferred_at.elapsed()))
+                .map(|job| {
+                    self.runtime
+                        .deadline()
+                        .saturating_sub(job.transferred_at.elapsed())
+                })
                 .min();
             state = match next_wait {
                 Some(wait) => {
-                    self.runtime.wake()
+                    self.runtime
+                        .wake()
                         .wait_timeout(state, wait)
                         .map_err(|_| {
                             HalError::internal(
@@ -537,13 +542,22 @@ fn record_dvr_callback_delivery_failure(
                 "service runtime lock poisoned while finishing DVR callback delivery failure",
             )
         })?;
-        guard.finish_callback_delivery_failure_use_case(CallbackDeliveryFailureReport::dvr(
-            handle.object_id(),
-            handle.generation(),
-            phase,
-            dvr_phase,
-            primary.clone(),
-        ))
+        if phase == CallbackDeliveryFailurePhase::PostCommitNotification {
+            guard.finish_dvr_post_commit_notification_failure_use_case(
+                handle.object_id(),
+                handle.generation(),
+                dvr_phase,
+                primary.clone(),
+            )
+        } else {
+            guard.finish_callback_delivery_failure_use_case(CallbackDeliveryFailureReport::dvr(
+                handle.object_id(),
+                handle.generation(),
+                phase,
+                dvr_phase,
+                primary.clone(),
+            ))
+        }
     })();
     if let Err(accounting_error) = finish_result {
         record_post_commit_accounting_failure_fallback(
@@ -870,11 +884,11 @@ fn spawn_dvr_status_notifier(
         },
     )
     .map_err(|error| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                format!("failed to spawn DVR status notifier: {error}"),
-            )
-        })?;
+        HalError::internal(
+            HalInternalKind::InvariantViolation,
+            format!("failed to spawn DVR status notifier: {error}"),
+        )
+    })?;
     Ok(DvrStatusNotifier { worker })
 }
 
@@ -943,11 +957,7 @@ fn enqueue_cleanup_retry_after_notifier_reap(
         Err(dependency_error) => match context.cleanup_is_terminal_for_handle(handle) {
             Ok(true) => {}
             Ok(false) => {
-                record_dvr_notifier_cleanup_control_failure(
-                    context,
-                    handle,
-                    dependency_error,
-                );
+                record_dvr_notifier_cleanup_control_failure(context, handle, dependency_error);
             }
             Err(terminal_error) => {
                 record_dvr_notifier_cleanup_control_failure(
@@ -1248,7 +1258,8 @@ mod tests {
         let demux_entry = {
             let mut guard = runtime.lock().unwrap();
             guard
-                .root_open_txn().open_demux_root_object(AidlMethodCall::PublicApi {
+                .root_open_txn()
+                .open_demux_root_object(AidlMethodCall::PublicApi {
                     object: AidlObjectKind::Tuner,
                     api: AidlApi::TunerOpenDemux,
                 })
@@ -1267,12 +1278,14 @@ mod tests {
                 Ok((AidlMethodCall::DemuxOpenDvr(request.clone()), request))
             },
             |runtime, dispatch, request| {
-                runtime.child_open_txn().open_dvr_child_runtime_for_demux_object(
-                    demux_entry.object_id(),
-                    demux_entry.generation(),
-                    request,
-                    dispatch,
-                )
+                runtime
+                    .child_open_txn()
+                    .open_dvr_child_runtime_for_demux_object(
+                        demux_entry.object_id(),
+                        demux_entry.generation(),
+                        request,
+                        dispatch,
+                    )
             },
         )
         .unwrap();

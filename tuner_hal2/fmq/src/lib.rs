@@ -66,7 +66,9 @@ unsafe impl Sync for NativeFmqQueue {}
 
 impl NativeFmqQueue {
     fn create(num_bytes: usize, configure_event_flag: bool) -> Option<Self> {
+        // SAFETY: arguments are values; the shim returns an opaque pointer and retains no Rust reference.
         let queue = unsafe { native_queue_create(num_bytes, configure_event_flag) };
+        // POSTCONDITION: null is rejected; a non-null queue becomes this wrapper's sole native owner.
         if queue.is_null() {
             None
         } else {
@@ -75,7 +77,10 @@ impl NativeFmqQueue {
     }
 
     pub(crate) fn available_to_read(&self) -> usize {
-        unsafe { native_queue_available_to_read(self.queue) }
+        // SAFETY: self.queue is a live create-derived handle for the whole shared borrow.
+        let value = unsafe { native_queue_available_to_read(self.queue) };
+        // POSTCONDITION: only detached scalar metadata is returned; ownership is unchanged.
+        value
     }
 
     fn fill_bytes(&self) -> usize {
@@ -83,7 +88,10 @@ impl NativeFmqQueue {
     }
 
     pub(crate) fn available_to_write(&self) -> usize {
-        unsafe { native_queue_available_to_write(self.queue) }
+        // SAFETY: self.queue is a live create-derived handle for the whole shared borrow.
+        let value = unsafe { native_queue_available_to_write(self.queue) };
+        // POSTCONDITION: only detached scalar metadata is returned; ownership is unchanged.
+        value
     }
 
     pub(crate) fn write_checked(&self, data: &[u8]) -> Result<usize, i32> {
@@ -93,7 +101,9 @@ impl NativeFmqQueue {
         } else {
             (data.as_ptr(), data.len())
         };
+        // SAFETY: queue is live; ptr is readable for len bytes (or null when len==0), and written is a unique writable out-parameter.
         let status = unsafe { native_queue_write_checked(self.queue, ptr, len, &mut written) };
+        // POSTCONDITION: the shim retains neither pointer; written is interpreted only through status.
         if status == 0 {
             Ok(written)
         } else {
@@ -105,7 +115,10 @@ impl NativeFmqQueue {
         if data.is_empty() {
             0
         } else {
-            unsafe { native_queue_read(self.queue, data.as_mut_ptr(), data.len()) }
+            // SAFETY: queue is live and data provides an exclusive writable data.len()-byte region for this call.
+            let read = unsafe { native_queue_read(self.queue, data.as_mut_ptr(), data.len()) };
+            // POSTCONDITION: native retains no buffer pointer; the returned count describes this call only.
+            read
         }
     }
 
@@ -113,7 +126,9 @@ impl NativeFmqQueue {
         if data.is_empty() {
             return Ok(());
         }
+        // SAFETY: queue is live and data is an exclusive writable region of exactly data.len() bytes.
         let status = unsafe { native_queue_read_exact(self.queue, data.as_mut_ptr(), data.len()) };
+        // POSTCONDITION: status==0 is the only state treated as a complete exact read; no pointer escapes.
         if status == 0 {
             Ok(())
         } else {
@@ -122,26 +137,40 @@ impl NativeFmqQueue {
     }
 
     pub(crate) fn wake(&self, bits: u32) -> i32 {
-        unsafe { native_queue_wake(self.queue, bits) }
+        // SAFETY: queue is live and bits is passed by value to the queue's EventFlag operation.
+        let status = unsafe { native_queue_wake(self.queue, bits) };
+        // POSTCONDITION: status is returned verbatim; queue ownership/lifetime is unchanged.
+        status
     }
 
     pub(crate) fn quantum(&self) -> i32 {
-        unsafe { native_queue_quantum(self.queue) }
+        // SAFETY: queue is live; the shim reads descriptor metadata only.
+        let value = unsafe { native_queue_quantum(self.queue) };
+        // POSTCONDITION: only scalar descriptor metadata is returned.
+        value
     }
 
     pub(crate) fn flags(&self) -> i32 {
-        unsafe { native_queue_flags(self.queue) }
+        // SAFETY: queue is live; the shim reads descriptor metadata only.
+        let value = unsafe { native_queue_flags(self.queue) };
+        // POSTCONDITION: only scalar descriptor metadata is returned.
+        value
     }
 
     pub(crate) fn grantor_count(&self) -> usize {
-        unsafe { native_queue_grantor_count(self.queue) }
+        // SAFETY: queue is live; the shim reads the descriptor grantor count only.
+        let count = unsafe { native_queue_grantor_count(self.queue) };
+        // POSTCONDITION: count is detached metadata used as the later grantor index bound.
+        count
     }
 
     pub(crate) fn grantor_at(&self, index: usize) -> Option<(i32, i32, i64)> {
         let (mut fd_index, mut offset, mut extent) = (0i32, 0i32, 0i64);
+        // SAFETY: queue is live; native validates index, and all three out-pointers are unique writable locals.
         let ok = unsafe {
             native_queue_grantor_at(self.queue, index, &mut fd_index, &mut offset, &mut extent)
         };
+        // POSTCONDITION: out-values are observed only when true; false maps to None.
         if ok {
             Some((fd_index, offset, extent))
         } else {
@@ -150,20 +179,31 @@ impl NativeFmqQueue {
     }
 
     pub(crate) fn fd_count(&self) -> usize {
-        unsafe { native_queue_fd_count(self.queue) }
+        // SAFETY: queue is live; the shim reads the descriptor FD count only.
+        let count = unsafe { native_queue_fd_count(self.queue) };
+        // POSTCONDITION: count is detached metadata used as the later FD index bound.
+        count
     }
 
     pub(crate) fn dup_fd_at(&self, index: usize) -> i32 {
-        unsafe { native_queue_dup_fd_at(self.queue, index) }
+        // SAFETY: queue is live and native validates index against its FD table.
+        let fd = unsafe { native_queue_dup_fd_at(self.queue, index) };
+        // POSTCONDITION: non-negative means a newly duplicated caller-owned FD; negative remains failure.
+        fd
     }
 
     pub(crate) fn int_count(&self) -> usize {
-        unsafe { native_queue_int_count(self.queue) }
+        // SAFETY: queue is live; the shim reads the descriptor integer count only.
+        let count = unsafe { native_queue_int_count(self.queue) };
+        // POSTCONDITION: count is detached metadata used as the later integer index bound.
+        count
     }
 
     pub(crate) fn int_at(&self, index: usize) -> Option<i32> {
         let mut value = 0i32;
+        // SAFETY: queue is live; native validates index and value is a unique writable out-parameter.
         let ok = unsafe { native_queue_int_at(self.queue, index, &mut value) };
+        // POSTCONDITION: value is observed only when true; false maps to None.
         if ok {
             Some(value)
         } else {
@@ -174,7 +214,9 @@ impl NativeFmqQueue {
 
 impl Drop for NativeFmqQueue {
     fn drop(&mut self) {
+        // SAFETY: this wrapper is the sole owner of the live create-derived handle and Drop executes its unique destroy.
         unsafe { native_queue_destroy(self.queue) };
+        // POSTCONDITION: the native handle is lifetime-ended and is never used again.
     }
 }
 

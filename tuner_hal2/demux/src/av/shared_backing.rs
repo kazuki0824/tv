@@ -356,11 +356,15 @@ impl AvSharedBacking {
             .checked_mul(self.slots.len())
             .ok_or(AvSharedBackingError::AllocationFailed)?;
         if self.file.is_none() {
+            // SAFETY: size_bytes is checked above; allocator receives no Rust pointer and returns a fresh FD or negative error.
             let raw_fd = unsafe { tuner_dmabuf_heap_alloc_system(size_bytes) };
+            // POSTCONDITION: only a non-negative fresh FD proceeds to the unique File ownership transfer.
             if raw_fd < 0 {
                 return Err(AvSharedBackingError::AllocationFailed);
             }
+            // SAFETY: raw_fd is non-negative, fresh, and has no Rust owner; ownership transfers exactly once here.
             self.file = Some(unsafe { File::from_raw_fd(raw_fd) });
+            // POSTCONDITION: self.file is the sole Rust owner responsible for closing that FD.
         }
         if self.shared_handle_identity.is_none() {
             self.shared_handle_identity = Some(AvFileIdentity::from_file(
@@ -388,10 +392,9 @@ impl AvSharedBacking {
             Ok(slot_index) => slot_index,
             Err(_) => return self.allocate_event_local_payload(payload, metadata),
         };
-        let Some(runtime_claim) = PendingAvRuntimeClaim::prepare(
-            Arc::clone(&self.runtime_budget),
-            payload.len(),
-        )? else {
+        let Some(runtime_claim) =
+            PendingAvRuntimeClaim::prepare(Arc::clone(&self.runtime_budget), payload.len())?
+        else {
             return Ok(AvPayloadDeliveryOutcome::NoFreeSlot);
         };
         let file = self
@@ -402,6 +405,7 @@ impl AvSharedBacking {
             .slot_size
             .checked_mul(self.slots.len())
             .ok_or(AvSharedBackingError::MappingFailed)?;
+        // SAFETY: file is live, map_len is the checked full backing extent, offset is zero, and no Rust reference aliases the requested mapping.
         let mapped = unsafe {
             mmap(
                 ptr::null_mut(),
@@ -412,9 +416,11 @@ impl AvSharedBacking {
                 0,
             )
         };
+        // POSTCONDITION: MAP_FAILED is rejected; otherwise mapped denotes map_len writable bytes until munmap.
         if mapped == MAP_FAILED {
             return Err(AvSharedBackingError::MappingFailed);
         }
+        // SAFETY: slot validation proves offset + payload.len() <= map_len; source is readable, destination writable, and regions do not overlap.
         unsafe {
             ptr::copy_nonoverlapping(
                 payload.as_ptr(),
@@ -422,9 +428,12 @@ impl AvSharedBacking {
                 payload.len(),
             );
         }
+        // POSTCONDITION: exactly payload.len() bytes are copied into the selected mapped slot.
+        // SAFETY: mapped is the same successful mmap pointer and map_len is the identical mapping length; no mapped reference escapes.
         if unsafe { munmap(mapped, map_len) } != 0 {
             return Err(AvSharedBackingError::UnmappingFailed);
         }
+        // POSTCONDITION: after munmap the mapping is treated as invalid and is never accessed again.
         let Some(data_id) = self.data_id_allocator.issue() else {
             return Ok(AvPayloadDeliveryOutcome::DataIdExhausted);
         };
@@ -432,14 +441,16 @@ impl AvSharedBacking {
         slot.active_data_id = Some(data_id);
         slot.data_length = payload.len();
         runtime_claim.commit();
-        Ok(AvPayloadDeliveryOutcome::Delivered(AvMediaEventDescriptor {
-            data_id,
-            slot_id: slot.slot_id,
-            offset: slot.slot_id.0 as usize * self.slot_size,
-            data_length: payload.len(),
-            metadata,
-            event_local_file: None,
-        }))
+        Ok(AvPayloadDeliveryOutcome::Delivered(
+            AvMediaEventDescriptor {
+                data_id,
+                slot_id: slot.slot_id,
+                offset: slot.slot_id.0 as usize * self.slot_size,
+                data_length: payload.len(),
+                metadata,
+                event_local_file: None,
+            },
+        ))
     }
 
     fn allocate_event_local_payload(
@@ -480,17 +491,21 @@ impl AvSharedBacking {
         if !self.data_id_allocator.can_issue() {
             return Ok(AvPayloadDeliveryOutcome::DataIdExhausted);
         }
-        let Some(runtime_claim) = PendingAvRuntimeClaim::prepare(
-            Arc::clone(&self.runtime_budget),
-            payload.len(),
-        )? else {
+        let Some(runtime_claim) =
+            PendingAvRuntimeClaim::prepare(Arc::clone(&self.runtime_budget), payload.len())?
+        else {
             return Ok(AvPayloadDeliveryOutcome::NoFreeSlot);
         };
+        // SAFETY: payload is non-empty and len is passed by value; allocator returns a fresh FD or negative error.
         let raw_fd = unsafe { tuner_dmabuf_heap_alloc_system(payload.len()) };
+        // POSTCONDITION: only a non-negative fresh FD proceeds to unique File ownership transfer.
         if raw_fd < 0 {
             return Err(AvSharedBackingError::AllocationFailed);
         }
+        // SAFETY: raw_fd is fresh, non-negative, and unowned by Rust; ownership transfers exactly once into File.
         let file = Arc::new(unsafe { File::from_raw_fd(raw_fd) });
+        // POSTCONDITION: the Arc<File> owns close responsibility; raw_fd is never wrapped or closed separately.
+        // SAFETY: file is live, payload.len() is a non-zero mapping extent, offset is zero, and no Rust reference aliases the requested mapping.
         let mapped = unsafe {
             mmap(
                 ptr::null_mut(),
@@ -501,15 +516,20 @@ impl AvSharedBacking {
                 0,
             )
         };
+        // POSTCONDITION: MAP_FAILED is rejected; otherwise mapped denotes payload.len() writable bytes until munmap.
         if mapped == MAP_FAILED {
             return Err(AvSharedBackingError::MappingFailed);
         }
+        // SAFETY: payload is readable for len bytes, mapped is writable for the same len, and independent dmabuf storage cannot overlap the slice.
         unsafe {
             ptr::copy_nonoverlapping(payload.as_ptr(), mapped as *mut u8, payload.len());
         }
+        // POSTCONDITION: the complete event payload occupies the mapped dmabuf region.
+        // SAFETY: mapped is the same successful mmap pointer and payload.len() is the identical mapping length; no mapped reference escapes.
         if unsafe { munmap(mapped, payload.len()) } != 0 {
             return Err(AvSharedBackingError::UnmappingFailed);
         }
+        // POSTCONDITION: after munmap the event-local mapping is invalid and is never accessed again.
         let file_identity = AvFileIdentity::from_file(&file)?;
         let Some(data_id) = self.data_id_allocator.issue() else {
             return Ok(AvPayloadDeliveryOutcome::DataIdExhausted);
@@ -528,14 +548,16 @@ impl AvSharedBacking {
             },
         );
         runtime_claim.commit();
-        Ok(AvPayloadDeliveryOutcome::Delivered(AvMediaEventDescriptor {
-            data_id,
-            slot_id: AvSlotId(u32::MAX),
-            offset: 0,
-            data_length: payload.len(),
-            metadata,
-            event_local_file: Some(file),
-        }))
+        Ok(AvPayloadDeliveryOutcome::Delivered(
+            AvMediaEventDescriptor {
+                data_id,
+                slot_id: AvSlotId(u32::MAX),
+                offset: 0,
+                data_length: payload.len(),
+                metadata,
+                event_local_file: Some(file),
+            },
+        ))
     }
 
     pub fn mark_client_released(&mut self) {
@@ -568,13 +590,11 @@ impl AvSharedBacking {
             Ok(slot_index) => slot_index,
             Err(outcome) => return outcome,
         };
-        let runtime_claim = match PendingAvRuntimeClaim::prepare(
-            Arc::clone(&self.runtime_budget),
-            data_length,
-        ) {
-            Ok(Some(claim)) => claim,
-            Ok(None) | Err(_) => return AvPayloadDeliveryOutcome::NoFreeSlot,
-        };
+        let runtime_claim =
+            match PendingAvRuntimeClaim::prepare(Arc::clone(&self.runtime_budget), data_length) {
+                Ok(Some(claim)) => claim,
+                Ok(None) | Err(_) => return AvPayloadDeliveryOutcome::NoFreeSlot,
+            };
         let Some(data_id) = self.data_id_allocator.issue() else {
             return AvPayloadDeliveryOutcome::DataIdExhausted;
         };
@@ -592,10 +612,7 @@ impl AvSharedBacking {
         })
     }
 
-    fn shared_slot_candidate(
-        &self,
-        data_length: usize,
-    ) -> Result<usize, AvPayloadDeliveryOutcome> {
+    fn shared_slot_candidate(&self, data_length: usize) -> Result<usize, AvPayloadDeliveryOutcome> {
         if !self.ever_exported {
             return Err(AvPayloadDeliveryOutcome::SharedHandleNotExported);
         }
@@ -663,7 +680,8 @@ impl AvSharedBacking {
 
     pub(crate) fn discard_undelivered_data_id(&mut self, data_id: AvDataId) -> bool {
         if let Some(allocation) = self.event_local_allocations.get(&data_id) {
-            let Some(next_live_bytes) = self.event_local_bytes.checked_sub(allocation.length) else {
+            let Some(next_live_bytes) = self.event_local_bytes.checked_sub(allocation.length)
+            else {
                 return false;
             };
             if !self.runtime_budget.release(allocation.length) {
@@ -700,8 +718,7 @@ impl AvSharedBacking {
                             lease_state: allocation.handle_lease_state,
                         },
                     )
-                })
-            {
+                }) {
                 Some(kind) => kind,
                 None => AvHandleReleaseKind::UnknownFile,
             },
@@ -724,9 +741,7 @@ impl AvSharedBacking {
         let outcome = self.classify_release(descriptor, data_id, filter_state);
         match outcome {
             AvHandleReleaseOutcome::ClientHandleReleased
-            | AvHandleReleaseOutcome::ClientHandleReleaseAfterClose => {
-                self.mark_client_released()
-            }
+            | AvHandleReleaseOutcome::ClientHandleReleaseAfterClose => self.mark_client_released(),
             AvHandleReleaseOutcome::EventLocalHandleReleased { data_id } => {
                 let Some(allocation) = self.event_local_allocations.get_mut(&data_id) else {
                     return AvHandleReleaseOutcome::RegistryFailure;
@@ -766,10 +781,7 @@ impl AvSharedBacking {
 
     pub fn release_is_complete(&self) -> bool {
         self.state != ClientHandleState::ExportedActive
-            && self
-                .slots
-                .iter()
-                .all(|slot| slot.active_data_id.is_none())
+            && self.slots.iter().all(|slot| slot.active_data_id.is_none())
             && self.event_local_allocations.is_empty()
     }
 
@@ -916,10 +928,7 @@ mod tests {
             other => panic!("unexpected outcome: {other:?}"),
         };
         assert_eq!(
-            backing.apply_release_after_close(
-                AvHandleReleaseDescriptor::Empty,
-                delivered.data_id,
-            ),
+            backing.apply_release_after_close(AvHandleReleaseDescriptor::Empty, delivered.data_id,),
             AvHandleReleaseOutcome::SlotReleased {
                 data_id: delivered.data_id
             }
@@ -1014,15 +1023,8 @@ mod tests {
             Arc::clone(&allocator),
             Arc::clone(&runtime_budget),
         );
-        let mut second = AvSharedBacking::with_profile_limits(
-            1,
-            188,
-            188,
-            1,
-            188,
-            allocator,
-            runtime_budget,
-        );
+        let mut second =
+            AvSharedBacking::with_profile_limits(1, 188, 188, 1, 188, allocator, runtime_budget);
         first.mark_exported();
         second.mark_exported();
         let first_id = match first.allocate_payload(188) {

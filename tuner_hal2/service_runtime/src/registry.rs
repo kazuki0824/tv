@@ -31,8 +31,8 @@ use maleicacid_tuner_hal2_descrambler::{
 use maleicacid_tuner_hal2_device::FrontendRuntime;
 use maleicacid_tuner_hal2_lnb::{
     finish_lnb_close, finish_lnb_state_apply, prepare_lnb_close, prepare_lnb_state_apply,
-    LnbBackendApplyOutcome, LnbElectricalState, LnbFailureKind, LnbFailureRecord,
-    LnbFailureStep, LnbRuntime, PreparedLnbClose, PreparedLnbStateApply,
+    LnbBackendApplyOutcome, LnbElectricalState, LnbFailureKind, LnbFailureRecord, LnbFailureStep,
+    LnbRuntime, PreparedLnbClose, PreparedLnbStateApply,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -199,10 +199,7 @@ impl LnbRegistry {
         }
     }
 
-    pub(crate) fn physical_io_authority(
-        &self,
-        id: LnbRuntimeId,
-    ) -> Option<LnbPhysicalIoAuthority> {
+    pub(crate) fn physical_io_authority(&self, id: LnbRuntimeId) -> Option<LnbPhysicalIoAuthority> {
         let key = self.physical_keys.get(&id)?;
         self.physical_io.get(key).cloned()
     }
@@ -257,10 +254,7 @@ impl LnbRegistry {
         finish_lnb_state_apply(runtime, prepared, outcome)
     }
 
-    fn prepare_close(
-        &mut self,
-        id: LnbRuntimeId,
-    ) -> Result<PreparedLnbClose, LnbFailureRecord> {
+    fn prepare_close(&mut self, id: LnbRuntimeId) -> Result<PreparedLnbClose, LnbFailureRecord> {
         if self
             .fixed_power_leases
             .values()
@@ -355,9 +349,9 @@ impl LnbRegistry {
                 kind,
                 step: LnbFailureStep::SendDiseqc,
             }),
-            LnbBackendApplyOutcome::Indeterminate(kind) => Err(
-                runtime.quarantine_indeterminate_backend(kind, LnbFailureStep::SendDiseqc),
-            ),
+            LnbBackendApplyOutcome::Indeterminate(kind) => {
+                Err(runtime.quarantine_indeterminate_backend(kind, LnbFailureStep::SendDiseqc))
+            }
         }
     }
 
@@ -468,7 +462,8 @@ struct LnbAssignmentLease {
     token: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
+#[must_use = "prepared LNB assignment lease must be committed or aborted by value"]
 pub(crate) struct PreparedLnbAssignmentLease {
     frontend_id: FrontendRuntimeId,
     lnb_id: LnbRuntimeId,
@@ -477,7 +472,8 @@ pub(crate) struct PreparedLnbAssignmentLease {
     expected_lease: Option<LnbAssignmentLease>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
+#[must_use = "LNB assignment cleanup authority must be completed by value"]
 pub(crate) struct LnbAssignmentCleanupRecord {
     frontend_id: FrontendRuntimeId,
     lnb_id: LnbRuntimeId,
@@ -850,8 +846,7 @@ impl Default for RuntimeRegistry {
             av_data_id_allocator: Arc::new(AvDataIdAllocator::default()),
             av_runtime_budget: Arc::new(AvRuntimeBudget::unlimited()),
             av_max_event_bytes: DEFAULT_AV_MAX_EVENT_BYTES,
-            av_max_outstanding_events_per_filter:
-                DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
+            av_max_outstanding_events_per_filter: DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
             av_per_filter_live_bytes: DEFAULT_AV_PER_FILTER_LIVE_BYTES,
             next_demux_id: 1,
             next_lnb_id: 1,
@@ -942,19 +937,18 @@ impl RuntimeRegistry {
         if self.demuxes.contains_key(&entry.id) {
             return Err(RegistryCommitError::DuplicateDemuxId { id: entry.id });
         }
-        self.demux_runtimes
-            .insert(
-                entry.id,
-                DemuxRuntime::new_with_av_runtime_limits(
-                    entry.id.0,
-                    1,
-                    Arc::clone(&self.av_data_id_allocator),
-                    Arc::clone(&self.av_runtime_budget),
-                    self.av_max_event_bytes,
-                    self.av_max_outstanding_events_per_filter,
-                    self.av_per_filter_live_bytes,
-                ),
-            );
+        self.demux_runtimes.insert(
+            entry.id,
+            DemuxRuntime::new_with_av_runtime_limits(
+                entry.id.0,
+                1,
+                Arc::clone(&self.av_data_id_allocator),
+                Arc::clone(&self.av_runtime_budget),
+                self.av_max_event_bytes,
+                self.av_max_outstanding_events_per_filter,
+                self.av_per_filter_live_bytes,
+            ),
+        );
         self.demuxes.insert(entry.id, entry);
         Ok(())
     }
@@ -981,10 +975,7 @@ impl RuntimeRegistry {
         self.demux_frontend_bindings.insert(demux_id, frontend_id);
     }
 
-    pub fn frontend_bound_to_demux(
-        &self,
-        demux_id: DemuxRuntimeId,
-    ) -> Option<FrontendRuntimeId> {
+    pub fn frontend_bound_to_demux(&self, demux_id: DemuxRuntimeId) -> Option<FrontendRuntimeId> {
         self.demux_frontend_bindings.get(&demux_id).copied()
     }
 
@@ -1064,13 +1055,15 @@ impl RuntimeRegistry {
     }
 
     pub fn lnb_for_frontend(&self, frontend_id: FrontendRuntimeId) -> Option<&LnbRegistryEntry> {
-        self.lnb_registry.entries
+        self.lnb_registry
+            .entries
             .values()
             .find(|entry| entry.owner_frontend_id == frontend_id)
     }
 
     pub fn lnb_by_name(&self, name: &str) -> Option<&LnbRegistryEntry> {
-        self.lnb_registry.entries
+        self.lnb_registry
+            .entries
             .values()
             .find(|entry| entry.name.as_deref() == Some(name))
     }
@@ -1329,7 +1322,10 @@ impl RuntimeRegistry {
             .prepared_assignment_leases
             .get(&prepared.token)
             != Some(&(prepared.frontend_id, prepared.lnb_id))
-            || self.frontend_lnb_bindings.get(&prepared.frontend_id).copied()
+            || self
+                .frontend_lnb_bindings
+                .get(&prepared.frontend_id)
+                .copied()
                 != prepared.expected_relation
             || self
                 .lnb_registry
@@ -1345,8 +1341,7 @@ impl RuntimeRegistry {
             ));
         }
 
-        self.lnb_registry
-            .retain_rail_reference(prepared.lnb_id)?;
+        self.lnb_registry.retain_rail_reference(prepared.lnb_id)?;
         self.lnb_registry
             .prepared_assignment_leases
             .remove(&prepared.token);
@@ -1386,8 +1381,7 @@ impl RuntimeRegistry {
                 "old frontend/LNB assignment cleanup record is missing",
             ));
         }
-        self.lnb_registry
-            .release_rail_reference(cleanup.lnb_id)?;
+        self.lnb_registry.release_rail_reference(cleanup.lnb_id)?;
         self.lnb_registry
             .pending_assignment_cleanup
             .remove(&cleanup.token);
@@ -1549,10 +1543,7 @@ impl RuntimeRegistry {
             .collect()
     }
 
-    fn filter_open_type(
-        &self,
-        entry: &FilterRegistryEntry,
-    ) -> Result<FilterOpenType, HalError> {
+    fn filter_open_type(&self, entry: &FilterRegistryEntry) -> Result<FilterOpenType, HalError> {
         let demux = self
             .demux_runtimes
             .get(&DemuxRuntimeId(entry.owner_demux_id))
@@ -1573,10 +1564,7 @@ impl RuntimeRegistry {
             })
     }
 
-    pub fn filter_open_type_count(
-        &self,
-        open_type: FilterOpenType,
-    ) -> Result<usize, HalError> {
+    pub fn filter_open_type_count(&self, open_type: FilterOpenType) -> Result<usize, HalError> {
         let mut count = 0;
         for entry in self.filters.values() {
             if self.filter_open_type(entry)? == open_type {
@@ -1668,11 +1656,7 @@ impl RuntimeRegistry {
         Ok(count)
     }
 
-    pub fn demux_has_dvr_kind(
-        &self,
-        owner_demux_id: i32,
-        kind: DvrKind,
-    ) -> Result<bool, HalError> {
+    pub fn demux_has_dvr_kind(&self, owner_demux_id: i32, kind: DvrKind) -> Result<bool, HalError> {
         for entry in self
             .dvrs
             .values()
@@ -1850,11 +1834,7 @@ impl RuntimeRegistry {
     ) -> Vec<DescramblerRuntimeId> {
         self.descrambler_runtimes
             .iter()
-            .filter_map(|(id, runtime)| {
-                runtime
-                    .holds_binding_to_demux_id(demux_id)
-                    .then_some(*id)
-            })
+            .filter_map(|(id, runtime)| runtime.holds_binding_to_demux_id(demux_id).then_some(*id))
             .collect()
     }
 
