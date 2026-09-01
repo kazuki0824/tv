@@ -5,6 +5,7 @@ on:
     paths:
       - tools/temp_fix53_review35_batch2.py
       - tools/temp_fix53_review35_batch2_tail.py
+      - tools/temp_fix53_review35_batch2_msrv.py
       - .github/workflows/temp-fix53-review35-batch2.yml
 permissions:
   contents: write
@@ -24,6 +25,8 @@ jobs:
           test "$rc" -ne 0
       - name: Apply repaired tail
         run: python3 tools/temp_fix53_review35_batch2_tail.py
+      - name: Apply Rust 1.81 compatibility
+        run: python3 tools/temp_fix53_review35_batch2_msrv.py
       - name: Rustfmt touched Rust files
         run: |
           rustfmt --edition 2021 \
@@ -41,8 +44,7 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           cleanup=Path('tuner_hal2/aidl_service/src/cleanup_reaper.rs').read_text()
-          assert 'std::thread::Builder' not in cleanup
-          assert 'Condvar' not in cleanup
+          assert 'std::thread::Builder' not in cleanup and 'Condvar' not in cleanup
           assert 'WorkerRuntimeReaperQueue' in cleanup
           thread_owner=Path('tuner_hal2/device/src/runtime/thread_result_owner.rs').read_text()
           for bad in ['JoinHandle','Condvar','thread::Builder','catch_unwind','Arc<Mutex']:
@@ -53,14 +55,14 @@ jobs:
           method=Path('tuner_hal2/aidl_service/src/tuner_service/filter_methods.rs').read_text()
           body=method[method.index('fn releaseAvHandle'):method.index('fn setDataSource')]
           assert 'preflight_filter_av_handle_release_for_any_lifecycle' not in body
-          assert '.lock()' not in body
-          assert 'execute_filter_av_handle_release_use_case' in body
+          assert '.lock()' not in body and 'execute_filter_av_handle_release_use_case' in body
           lnb=Path('tuner_hal2/service_runtime/src/lnb_ops.rs').read_text()
           assert '.registry_mut()\n        .retain_frontend_fixed_power_lease' not in lnb
           assert '.registry_mut()\n        .release_frontend_fixed_power_lease' not in lnb
           frontend=Path('tuner_hal2/service_runtime/src/boot/frontend_txn.rs').read_text()
-          assert 'fn retain_fixed_power_lease' in frontend
-          assert 'fn release_fixed_power_lease' in frontend
+          assert 'fn retain_fixed_power_lease' in frontend and 'fn release_fixed_power_lease' in frontend
+          control=Path('tuner_hal2/control/src/lib.rs').read_text()
+          assert '.is_none_or(' not in control
           PY
       - name: Diff check
         run: git diff --check
