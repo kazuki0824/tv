@@ -8,11 +8,12 @@ def one(p,o,n):
 # S-10 remainder: AIDL method is now a pure descriptor adapter calling object_runtime façade.
 fm=R/'aidl_service/src/tuner_service/filter_methods.rs'
 one(fm,
-'''    execute_object_runtime_use_case,
+'''    execute_object_query_use_case, execute_object_runtime_use_case,
     execute_object_runtime_use_case_with_request_builder, plan_unavailable_object_method_use_case,
 ''',
-'''    execute_filter_av_handle_release_use_case, execute_object_runtime_use_case,
-    execute_object_runtime_use_case_with_request_builder, plan_unavailable_object_method_use_case,
+'''    execute_filter_av_handle_release_use_case, execute_object_query_use_case,
+    execute_object_runtime_use_case, execute_object_runtime_use_case_with_request_builder,
+    plan_unavailable_object_method_use_case,
 ''')
 t=fm.read_text(); a=t.index('    fn releaseAvHandle('); b=t.index('    fn setDataSource(',a)
 new='''    fn releaseAvHandle(&self, av_memory: &TunerNativeHandle, av_data_id: i64) -> BinderResult<()> {
