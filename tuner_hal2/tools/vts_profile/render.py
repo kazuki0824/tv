@@ -1,8 +1,6 @@
 from __future__ import annotations
-
 from typing import Any
 from xml.sax.saxutils import escape
-
 from .model import FRONTEND_ID, validate_against_capability, validate_profile
 
 
@@ -14,17 +12,13 @@ def _frontend_xml(profile: dict[str, Any]) -> str:
         f'type="{fe_type}"',
         'isSoftwareFrontend="false"',
         f'frequency="{int(fe["frequency_hz"])}"',
-        'supportBlindScan="false"',
     ]
     if fe_type == "ISDBT":
-        return f'      <frontend {" ".join(attrs)}><isdbtFrontendSettings/></frontend>'
+        return f'      <frontend {" ".join(attrs)}/>'
     settings = {
-        "streamId": fe["stream_id"],
-        "streamIdType": fe["stream_id_type"],
-        "modulation": fe["modulation"],
-        "coderate": fe["coderate"],
-        "symbolRate": fe["symbol_rate"],
-        "rolloff": fe["rolloff"],
+        "streamId": fe["stream_id"], "streamIdType": fe["stream_id_type"],
+        "modulation": fe["modulation"], "coderate": fe["coderate"],
+        "symbolRate": fe["symbol_rate"], "rolloff": fe["rolloff"],
     }
     settings_text = " ".join(f'{key}="{escape(str(value))}"' for key, value in settings.items())
     return f'      <frontend {" ".join(attrs)}><isdbsFrontendSettings {settings_text}/></frontend>'
@@ -40,10 +34,8 @@ def render_xml(profile: dict[str, Any], capability: dict[str, int]) -> str:
     dvrs: list[str] = []
     data_flows: list[str] = []
     frontend_id = FRONTEND_ID[profile["frontend"]["type"]]
-
     if flows["scan"]:
         data_flows.append(f'    <scan frontendConnection="{frontend_id}"/>')
-
     if flows["record"]["enabled"]:
         pid = int(flows["record"]["pid"])
         filters.append(
@@ -61,7 +53,6 @@ def render_xml(profile: dict[str, Any], capability: dict[str, int]) -> str:
             f'    <dvrRecord hasFrontendConnection="true" frontendConnection="{frontend_id}" '
             'recordFilterConnection="FILTER_TS_RECORD_0" dvrRecordConnection="DVR_RECORD_0"/>'
         )
-
     if flows["clear_live"]["enabled"]:
         live = flows["clear_live"]
         filters.extend([
@@ -76,21 +67,15 @@ def render_xml(profile: dict[str, Any], capability: dict[str, int]) -> str:
             f'    <clearLiveBroadcast frontendConnection="{frontend_id}" '
             'audioFilterConnection="FILTER_TS_AUDIO_0" videoFilterConnection="FILTER_TS_VIDEO_0"/>'
         )
-
     if filters:
         hardware.extend(["    <filters>", *filters, "    </filters>"])
     if dvrs:
         hardware.extend(["    <dvrs>", *dvrs, "    </dvrs>"])
-
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
         '<TunerConfiguration version="1.0" xmlns:xi="http://www.w3.org/2001/XInclude">\n'
-        '  <hardwareConfiguration>\n'
-        + "\n".join(hardware)
-        + '\n  </hardwareConfiguration>\n'
-        '  <dataFlowConfiguration>\n'
-        + "\n".join(data_flows)
-        + '\n  </dataFlowConfiguration>\n'
+        '  <hardwareConfiguration>\n' + "\n".join(hardware) + '\n  </hardwareConfiguration>\n'
+        '  <dataFlowConfiguration>\n' + "\n".join(data_flows) + '\n  </dataFlowConfiguration>\n'
         '</TunerConfiguration>\n'
     )
 

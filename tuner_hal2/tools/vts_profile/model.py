@@ -10,7 +10,7 @@ SUPPORTED_VTS_CONTRACT = "android14-aidl-v1"
 DEFAULT_CAPABILITY_SOURCE = Path("tuner_hal2/service_runtime/src/capability_snapshot.rs")
 FRONTEND_ID = {"ISDBT": "FE_ISDBT_0", "ISDBS": "FE_ISDBS_0"}
 
-_TOP = {"schema_version", "target", "vts", "frontend", "region", "flows", "queues"}
+_TOP = {"schema_version", "target", "vts", "frontend", "region", "service", "flows", "queues"}
 _TARGET = {"hal", "product", "backend"}
 _VTS = {"contract", "source_ref", "variant"}
 _FRONTEND = {
@@ -19,6 +19,7 @@ _FRONTEND = {
 }
 _REGION = {"query", "candidates"}
 _CANDIDATE = {"delivery_system", "physical_channel", "frequency_hz", "label"}
+_SERVICE = {"service_id"}
 _FLOWS = {"scan", "record", "clear_live"}
 _RECORD = {"enabled", "pid"}
 _CLEAR_LIVE = {"enabled", "audio_pid", "video_pid", "audio_stream_type", "video_stream_type"}
@@ -60,12 +61,15 @@ def validate_pid(value: Any, name: str) -> int:
     return pid
 
 
-def load_profile(path: Path) -> dict[str, Any]:
+def load_json(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ProfileError(f"failed to read {path}: {exc}") from exc
     return require_dict(value, str(path))
+
+
+load_profile = load_json
 
 
 def save_profile(path: Path, profile: dict[str, Any]) -> None:
@@ -105,20 +109,21 @@ def validate_profile(profile: dict[str, Any], *, require_resolved: bool = False)
         raise ProfileError("frontend.type must be ISDBT or ISDBS")
     if frontend.get("is_software_frontend") is not False:
         raise ProfileError("frontend.is_software_frontend must be false for tuner_hal2")
-    if frontend.get("frequency_hz") is None:
+    freq = frontend.get("frequency_hz")
+    if freq is None:
         if require_resolved:
             raise ProfileError("frontend.frequency_hz is unresolved")
     else:
-        positive_int(frontend["frequency_hz"], "frontend.frequency_hz")
+        positive_int(freq, "frontend.frequency_hz")
     if frontend.get("physical_channel") is not None:
         positive_int(frontend["physical_channel"], "frontend.physical_channel")
-
     satellite = ("stream_id", "stream_id_type", "symbol_rate", "modulation", "coderate", "rolloff")
     if fe_type == "ISDBS":
-        if require_resolved:
-            for key in satellite:
-                if frontend.get(key) in (None, ""):
-                    raise ProfileError(f"frontend.{key} is required for ISDBS")
+        for key in satellite:
+            if frontend.get(key) in (None, "") and require_resolved:
+                raise ProfileError(f"frontend.{key} is required for ISDBS")
+            if frontend.get(key) not in (None, ""):
+                positive_int(frontend[key], f"frontend.{key}", allow_zero=True)
     else:
         leftovers = [key for key in satellite if key in frontend]
         if leftovers:
@@ -133,26 +138,30 @@ def validate_profile(profile: dict[str, Any], *, require_resolved: bool = False)
         candidates = region.get("candidates", [])
         if not isinstance(candidates, list):
             raise ProfileError("region.candidates must be an array")
-        for index, candidate in enumerate(candidates):
-            candidate = require_dict(candidate, f"region.candidates[{index}]")
+        for index, raw in enumerate(candidates):
+            candidate = require_dict(raw, f"region.candidates[{index}]")
             reject_unknown(candidate, _CANDIDATE, f"region.candidates[{index}]")
             if candidate.get("delivery_system") not in FRONTEND_ID:
                 raise ProfileError(f"region.candidates[{index}].delivery_system is unsupported")
             positive_int(candidate.get("frequency_hz"), f"region.candidates[{index}].frequency_hz")
             if candidate.get("physical_channel") is not None:
                 positive_int(candidate["physical_channel"], f"region.candidates[{index}].physical_channel")
-            if candidate.get("label") is not None and not isinstance(candidate["label"], str):
-                raise ProfileError(f"region.candidates[{index}].label must be a string")
-        if candidates and frontend.get("frequency_hz") is not None:
-            frequencies = {int(item["frequency_hz"]) for item in candidates}
-            if int(frontend["frequency_hz"]) not in frequencies:
+        if candidates and freq is not None:
+            if int(freq) not in {int(item["frequency_hz"]) for item in candidates}:
                 raise ProfileError("frontend.frequency_hz is not one of region.candidates")
+
+    service = profile.get("service")
+    if service is not None:
+        service = require_dict(service, "service")
+        reject_unknown(service, _SERVICE, "service")
+        sid = positive_int(service.get("service_id"), "service.service_id")
+        if sid > 0xFFFF:
+            raise ProfileError("service.service_id must be in 1..65535")
 
     flows = require_dict(profile.get("flows"), "flows")
     reject_unknown(flows, _FLOWS, "flows")
     if not isinstance(flows.get("scan"), bool):
         raise ProfileError("flows.scan must be boolean")
-
     record = require_dict(flows.get("record"), "flows.record")
     reject_unknown(record, _RECORD, "flows.record")
     if not isinstance(record.get("enabled"), bool):
@@ -177,10 +186,12 @@ def validate_profile(profile: dict[str, Any], *, require_resolved: bool = False)
                     raise ProfileError(f"flows.clear_live.{key} is unresolved")
             else:
                 validate_pid(live[key], f"flows.clear_live.{key}")
-        if require_resolved:
-            for key in ("audio_stream_type", "video_stream_type"):
-                if live.get(key) is None:
+        for key in ("audio_stream_type", "video_stream_type"):
+            if live.get(key) is None:
+                if require_resolved:
                     raise ProfileError(f"flows.clear_live.{key} is unresolved")
+            else:
+                positive_int(live[key], f"flows.clear_live.{key}", allow_zero=True)
     else:
         leftovers = sorted(set(live) - {"enabled"})
         if leftovers:
@@ -214,12 +225,11 @@ def parse_capability_source(path: Path) -> dict[str, int]:
     if start < 0 or end < 0:
         raise ProfileError("CapabilitySnapshot::product_default was not found")
     body = text[start:end]
-    keys = (
+    result: dict[str, int] = {}
+    for key in (
         "num_record", "num_playback", "num_ts_filter", "num_section_filter",
         "num_audio_filter", "num_video_filter", "num_pes_filter", "num_pcr_filter",
-    )
-    result: dict[str, int] = {}
-    for key in keys:
+    ):
         match = re.search(rf"\b{re.escape(key)}:\s*(\d+)\s*,", body)
         if not match:
             raise ProfileError(f"could not read {key} from CapabilitySnapshot::product_default")
@@ -233,12 +243,10 @@ def parse_capability_source(path: Path) -> dict[str, int]:
 
 def validate_against_capability(profile: dict[str, Any], capability: dict[str, int]) -> None:
     flows = profile["flows"]
-    if flows["record"]["enabled"]:
-        if capability["num_record"] <= 0 or capability["num_ts_filter"] <= 0:
-            raise ProfileError("record flow is not published by tuner_hal2 capability")
-    if flows["clear_live"]["enabled"]:
-        if capability["num_audio_filter"] <= 0 or capability["num_video_filter"] <= 0:
-            raise ProfileError("clear_live requires published audio and video filters")
+    if flows["record"]["enabled"] and (capability["num_record"] <= 0 or capability["num_ts_filter"] <= 0):
+        raise ProfileError("record flow is not published by tuner_hal2 capability")
+    if flows["clear_live"]["enabled"] and (capability["num_audio_filter"] <= 0 or capability["num_video_filter"] <= 0):
+        raise ProfileError("clear_live requires published audio and video filters")
     claimed = 0
     queues = profile["queues"]
     if flows["record"]["enabled"]:
