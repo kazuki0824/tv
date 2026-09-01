@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any
 
 from .model import FRONTEND_ID, ProfileError, load_json, positive_int, reject_unknown, require_dict, validate_profile
 
 DEFAULT_REGION_DATASET = Path(__file__).resolve().parents[2] / "config/vts_channel_plan.japan.json"
+ISDBT_FIRST_CHANNEL = 13
+ISDBT_LAST_CHANNEL = 52
 ISDBT_CHANNEL_13_HZ = 473_142_857
 ISDBT_CHANNEL_STEP_HZ = 6_000_000
 JAPAN_PREFECTURES = (
@@ -21,9 +22,9 @@ JAPAN_PREFECTURES = (
 
 
 def _frequency_for_channel(channel: int) -> int:
-    if channel < 13 or channel > 62:
-        raise ProfileError(f"unsupported ISDBT physical channel: {channel}")
-    return ISDBT_CHANNEL_13_HZ + (channel - 13) * ISDBT_CHANNEL_STEP_HZ
+    if channel < ISDBT_FIRST_CHANNEL or channel > ISDBT_LAST_CHANNEL:
+        raise ProfileError(f"unsupported current ISDBT physical channel: {channel}")
+    return ISDBT_CHANNEL_13_HZ + (channel - ISDBT_FIRST_CHANNEL) * ISDBT_CHANNEL_STEP_HZ
 
 
 def _prefecture_from_address(query: str) -> str:
@@ -33,6 +34,13 @@ def _prefecture_from_address(query: str) -> str:
             "built-in ISDBT region dataset requires an address containing exactly one Japanese prefecture name"
         )
     return matches[0]
+
+
+def _current_channel(value: Any, name: str) -> int:
+    channel = positive_int(value, name)
+    if not ISDBT_FIRST_CHANNEL <= channel <= ISDBT_LAST_CHANNEL:
+        raise ProfileError(f"{name} must be in current ISDBT range 13..52")
+    return channel
 
 
 def _snapshot_candidates(profile: dict[str, Any], dataset: dict[str, Any]) -> list[dict[str, Any]]:
@@ -66,23 +74,19 @@ def _snapshot_candidates(profile: dict[str, Any], dataset: dict[str, Any]) -> li
         key=lambda key: (-len(key), key),
     )
     if matching_keys:
-        # 最長の行政区域一致だけを使用する。大阪市と大阪市中央区が両方ある場合、
-        # より具体的な中央区側を優先して候補を不必要に広げない。
         max_length = len(matching_keys[0])
         selected_keys = [key for key in matching_keys if len(key) == max_length]
         channels = sorted(
             {
-                positive_int(channel, f"dataset area {key} channel")
+                _current_channel(channel, f"dataset area {key} channel")
                 for key in selected_keys
                 for channel in areas[key]
             }
         )
         label_prefix = "/".join(selected_keys)
     else:
-        # 都道府県までは解決できるが市区町村がdatasetに一致しない粗い住所では、
-        # 同県内の候補へ広げる。全国UHF rasterへは広げない。
         channels = sorted(
-            positive_int(channel, f"dataset prefecture {prefecture} channel")
+            _current_channel(channel, f"dataset prefecture {prefecture} channel")
             for channel in prefecture_data.get("prefecture_channels", [])
         )
         label_prefix = prefecture
