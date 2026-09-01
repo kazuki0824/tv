@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any
 
-from .model import FRONTEND_ID, ProfileError, positive_int, reject_unknown, require_dict, validate_profile
+from .model import FRONTEND_ID, ProfileError, load_json, positive_int, reject_unknown, require_dict, validate_profile
 
-ISDBT_FIRST_CHANNEL = 13
-ISDBT_LAST_CHANNEL = 52
+DEFAULT_REGION_DATASET = Path(__file__).resolve().parents[2] / "config/vts_channel_plan.japan.json"
 ISDBT_CHANNEL_13_HZ = 473_142_857
 ISDBT_CHANNEL_STEP_HZ = 6_000_000
 JAPAN_PREFECTURES = (
@@ -20,37 +20,92 @@ JAPAN_PREFECTURES = (
 )
 
 
-def _validate_japan_region_query(query: str) -> None:
-    compact = re.sub(r"[\s-]", "", query)
-    if re.fullmatch(r"\d{7}", compact):
-        return
-    if any(prefecture in query for prefecture in JAPAN_PREFECTURES):
-        return
-    raise ProfileError(
-        "builtin ISDBT region resolution requires a Japanese 7-digit postal code "
-        "or an address containing a prefecture name"
+def _frequency_for_channel(channel: int) -> int:
+    if channel < 13 or channel > 62:
+        raise ProfileError(f"unsupported ISDBT physical channel: {channel}")
+    return ISDBT_CHANNEL_13_HZ + (channel - 13) * ISDBT_CHANNEL_STEP_HZ
+
+
+def _prefecture_from_address(query: str) -> str:
+    matches = [prefecture for prefecture in JAPAN_PREFECTURES if prefecture in query]
+    if len(matches) != 1:
+        raise ProfileError(
+            "built-in ISDBT region dataset requires an address containing exactly one Japanese prefecture name"
+        )
+    return matches[0]
+
+
+def _snapshot_candidates(profile: dict[str, Any], dataset: dict[str, Any]) -> list[dict[str, Any]]:
+    reject_unknown(dataset, {"schema_version", "dataset_version", "source", "prefectures"}, "dataset")
+    if dataset.get("schema_version") != 2:
+        raise ProfileError("built-in region dataset schema_version must be 2")
+    if not isinstance(dataset.get("dataset_version"), str) or not dataset["dataset_version"]:
+        raise ProfileError("dataset.dataset_version is required")
+    source = require_dict(dataset.get("source"), "dataset.source")
+    reject_unknown(source, {"index_url", "source_notice"}, "dataset.source")
+    prefectures = require_dict(dataset.get("prefectures"), "dataset.prefectures")
+
+    region = require_dict(profile.get("region"), "region")
+    query = region.get("query")
+    if not isinstance(query, str) or not query.strip():
+        raise ProfileError("region.query is required for resolve-region")
+    if profile["frontend"]["type"] != "ISDBT":
+        raise ProfileError("built-in regional channel dataset is only valid for ISDBT")
+
+    prefecture = _prefecture_from_address(query)
+    prefecture_data = require_dict(prefectures.get(prefecture), f"dataset.prefectures[{prefecture!r}]")
+    reject_unknown(
+        prefecture_data,
+        {"source_url", "default_channels", "prefecture_channels", "areas"},
+        f"dataset.prefectures[{prefecture!r}]",
     )
+    areas = require_dict(prefecture_data.get("areas"), f"dataset.prefectures[{prefecture!r}].areas")
 
+    matching_keys = sorted(
+        (key for key in areas if isinstance(key, str) and key and key in query),
+        key=lambda key: (-len(key), key),
+    )
+    if matching_keys:
+        # 最長の行政区域一致だけを使用する。大阪市と大阪市中央区が両方ある場合、
+        # より具体的な中央区側を優先して候補を不必要に広げない。
+        max_length = len(matching_keys[0])
+        selected_keys = [key for key in matching_keys if len(key) == max_length]
+        channels = sorted(
+            {
+                positive_int(channel, f"dataset area {key} channel")
+                for key in selected_keys
+                for channel in areas[key]
+            }
+        )
+        label_prefix = "/".join(selected_keys)
+    else:
+        # 都道府県までは解決できるが市区町村がdatasetに一致しない粗い住所では、
+        # 同県内の候補へ広げる。全国UHF rasterへは広げない。
+        channels = sorted(
+            positive_int(channel, f"dataset prefecture {prefecture} channel")
+            for channel in prefecture_data.get("prefecture_channels", [])
+        )
+        label_prefix = prefecture
 
-def _builtin_isdbt_candidates() -> list[dict[str, Any]]:
+    if not channels:
+        raise ProfileError(f"region dataset has no ISDBT channels for {query!r}")
     return [
         {
             "delivery_system": "ISDBT",
             "physical_channel": channel,
-            "frequency_hz": ISDBT_CHANNEL_13_HZ
-            + (channel - ISDBT_FIRST_CHANNEL) * ISDBT_CHANNEL_STEP_HZ,
-            "label": f"Japan UHF {channel}",
+            "frequency_hz": _frequency_for_channel(channel),
+            "label": f"{label_prefix} ch{channel}",
         }
-        for channel in range(ISDBT_FIRST_CHANNEL, ISDBT_LAST_CHANNEL + 1)
+        for channel in channels
     ]
 
 
-def _dataset_candidates(
+def _legacy_dataset_candidates(
     profile: dict[str, Any], dataset: dict[str, Any]
 ) -> list[dict[str, Any]]:
     reject_unknown(dataset, {"schema_version", "dataset_version", "entries"}, "dataset")
     if dataset.get("schema_version") != 1:
-        raise ProfileError("dataset.schema_version must be 1")
+        raise ProfileError("dataset.schema_version must be 1 or 2")
     if not isinstance(dataset.get("dataset_version"), str) or not dataset["dataset_version"]:
         raise ProfileError("dataset.dataset_version is required")
     entries = dataset.get("entries")
@@ -95,20 +150,22 @@ def resolve_region(
     query = region.get("query")
     if not isinstance(query, str) or not query.strip():
         raise ProfileError("region.query is required for resolve-region")
-    fe_type = profile["frontend"]["type"]
 
     if dataset is None:
-        if fe_type != "ISDBT":
-            raise ProfileError(
-                "automatic region resolution without a dataset is supported only for ISDBT"
-            )
-        _validate_japan_region_query(query)
-        matches = _builtin_isdbt_candidates()
+        if not DEFAULT_REGION_DATASET.is_file():
+            raise ProfileError(f"built-in region dataset is missing: {DEFAULT_REGION_DATASET}")
+        dataset = load_json(DEFAULT_REGION_DATASET)
+
+    schema_version = dataset.get("schema_version")
+    if schema_version == 2:
+        matches = _snapshot_candidates(profile, dataset)
+    elif schema_version == 1:
+        matches = _legacy_dataset_candidates(profile, dataset)
     else:
-        matches = _dataset_candidates(profile, dataset)
+        raise ProfileError("dataset.schema_version must be 1 or 2")
 
     if not matches:
-        raise ProfileError(f"no {fe_type} candidates found for region {query!r}")
+        raise ProfileError(f"no {profile['frontend']['type']} candidates found for region {query!r}")
     matches.sort(
         key=lambda item: (
             item["frequency_hz"],
