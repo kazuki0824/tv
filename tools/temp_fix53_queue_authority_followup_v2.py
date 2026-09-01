@@ -13,7 +13,7 @@ for forbidden in [
 if "fn fail_close_unconsumed_authority(&self)" not in queue_text:
     raise SystemExit("infallible queue authority fail-close helper missing")
 '''
-new = '''# Validate only the two reviewed queue-authority Drop implementations.
+new = r'''# Validate only the two reviewed queue-authority Drop implementations.
 queue_text = QUEUE.read_text()
 for type_name, forbidden in [
     ("QueueEpochToken", "self.release()"),
