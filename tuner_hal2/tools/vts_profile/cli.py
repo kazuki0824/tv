@@ -5,12 +5,14 @@ from pathlib import Path
 from .device import resolve_device
 from .integration import write_product_artifacts
 from .model import (
-    DEFAULT_CAPABILITY_SOURCE, FRONTEND_ID, ProfileError, SCHEMA_VERSION, SUPPORTED_VTS_CONTRACT,
-    load_json, load_profile, parse_capability_source, positive_int, save_profile,
-    validate_against_capability, validate_profile,
+    FRONTEND_ID, ProfileError, SCHEMA_VERSION, SUPPORTED_VTS_CONTRACT,
+    load_json, load_profile, positive_int, save_profile, validate_profile,
 )
 from .region import resolve_region, select_candidate
 from .render import output_filename, render_xml
+from .resource_closure import (
+    DEFAULT_CAPABILITY_SOURCE, DEFAULT_PES_SOURCE, validate_resource_closure,
+)
 from .schema import selected_xsd, validate_xml
 
 DEFAULT_PROFILE = Path("tuner_hal2/config/vts_environment_profile.json")
@@ -98,18 +100,28 @@ def cmd_select_candidate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _validate_closure(profile: dict, args: argparse.Namespace) -> None:
+    validate_resource_closure(
+        profile,
+        capability_source=Path(args.capability_source),
+        pes_source=Path(args.pes_source),
+        rustc=args.rustc,
+    )
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
     profile = load_profile(Path(args.profile))
     validate_profile(profile, require_resolved=args.resolved)
-    validate_against_capability(profile, parse_capability_source(Path(args.capability_source)))
+    _validate_closure(profile, args)
     print("ok")
     return 0
 
 
 def cmd_compile(args: argparse.Namespace) -> int:
     profile = load_profile(Path(args.profile))
-    capability = parse_capability_source(Path(args.capability_source))
-    xml = render_xml(profile, capability)
+    validate_profile(profile, require_resolved=True)
+    _validate_closure(profile, args)
+    xml = render_xml(profile)
     xsd = selected_xsd(Path(args.hardware_interfaces_root), profile["vts"]["source_ref"])
     validate_xml(xml, xsd, xmllint=args.xmllint)
     if args.product_integration_dir:
@@ -133,6 +145,12 @@ def cmd_resolve_device(args: argparse.Namespace) -> int:
     )
     print(updated["frontend"]["frequency_hz"])
     return 0
+
+
+def _add_closure_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--capability-source", default=str(DEFAULT_CAPABILITY_SOURCE))
+    parser.add_argument("--pes-source", default=str(DEFAULT_PES_SOURCE))
+    parser.add_argument("--rustc", default="rustc")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -167,11 +185,11 @@ def build_parser() -> argparse.ArgumentParser:
     validate = sub.add_parser("validate")
     validate.add_argument("profile")
     validate.add_argument("--resolved", action="store_true")
-    validate.add_argument("--capability-source", default=str(DEFAULT_CAPABILITY_SOURCE))
+    _add_closure_args(validate)
     validate.set_defaults(func=cmd_validate)
     compile_cmd = sub.add_parser("compile")
     compile_cmd.add_argument("profile")
-    compile_cmd.add_argument("--capability-source", default=str(DEFAULT_CAPABILITY_SOURCE))
+    _add_closure_args(compile_cmd)
     compile_cmd.add_argument("--hardware-interfaces-root", required=True)
     compile_cmd.add_argument("--xmllint", default="xmllint")
     compile_cmd.add_argument("--output")
