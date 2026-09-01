@@ -18,15 +18,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Rebase r52 net commit onto current PR55
+      - name: Rebase r52 net commit onto rebuilt PR55
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config core.quotePath false
-          BASE=1ff04d33dbb0a20a3cec81deb89c9c52774ac557
-          OLD_R52=e7de5c0d131969278ef700341294a636af0daeac
+          BASE=067268a463599674c6555c665dc5bc9d0e6169fb
+          OLD_R52=9a759f8373eb7d8535b53c47c229109e973fdf17
           git fetch origin "$BASE" "$OLD_R52"
           git checkout -B rebuilt-r52 "$BASE"
           set +e
@@ -38,25 +38,33 @@ jobs:
             conflicts="$(git diff --name-only --diff-filter=U)"
             echo "--- conflicts ---"
             printf '%s\n' "$conflicts"
-            test "$conflicts" = "tuner_hal2/CHANGELOG.md"
-            git show "$OLD_R52:tuner_hal2/CHANGELOG.md" > /tmp/r52-changelog.md
-            git show "$BASE:tuner_hal2/CHANGELOG.md" > /tmp/base-changelog.md
-            python3 - <<'PY'
+            if [ "$conflicts" = "tuner_hal2/CHANGELOG.md" ]; then
+              git show "$OLD_R52:tuner_hal2/CHANGELOG.md" > /tmp/r52-changelog.md
+              git show "$BASE:tuner_hal2/CHANGELOG.md" > /tmp/base-changelog.md
+              git show "$OLD_R52^:tuner_hal2/CHANGELOG.md" > /tmp/oldbase-changelog.md
+              python3 - <<'PY'
           from pathlib import Path
           child = Path('/tmp/r52-changelog.md').read_text()
-          base = Path('/tmp/base-changelog.md').read_text()
-          marker = '# r50eo84_pr53_capability_topology_ssot_followup\n'
-          if marker not in child or marker not in base:
-              raise SystemExit('expected common changelog marker not found')
-          prefix = child.split(marker, 1)[0]
+          oldbase = Path('/tmp/oldbase-changelog.md').read_text()
+          newbase = Path('/tmp/base-changelog.md').read_text()
+          # Preserve only the r52 prefix introduced by the child; the new parent owns all r50/r51 history below it.
+          common = '# r50eo84_pr53_'
+          idx_child = child.find(common)
+          idx_old = oldbase.find(common)
+          if idx_child < 0 or idx_old < 0:
+              raise SystemExit('expected parent changelog marker not found')
+          prefix = child[:idx_child]
           if '# r52_key_provisioning_deadline_setup' not in prefix or '# r52_key_provisioning_implementation' not in prefix:
               raise SystemExit('r52 changelog prefix incomplete')
-          Path('tuner_hal2/CHANGELOG.md').write_text(prefix + base)
+          Path('tuner_hal2/CHANGELOG.md').write_text(prefix + newbase)
           PY
-            git add tuner_hal2/CHANGELOG.md
-            git cherry-pick --continue
+              git add tuner_hal2/CHANGELOG.md
+              git cherry-pick --continue
+            else
+              exit "$rc"
+            fi
           fi
-          git diff "$BASE" HEAD --check
+          git diff "$BASE" HEAD --check -- . ':(exclude)tuner_hal2/platform_patches/lineage-22.1/android_hardware_tv_tuner_nullable_current.patch'
           test "$(git rev-parse HEAD^)" = "$BASE"
           test -z "$(git grep -l '^<<<<<<<\|^=======\|^>>>>>>>' HEAD -- ':!*.patch' || true)"
           echo "changed_files=$(git diff --name-only "$BASE" HEAD | wc -l)"
