@@ -14,10 +14,9 @@ pub enum WorkerRuntimePoll<T, E> {
     OwnerFailure(WorkerRuntimeOwnerFailure),
 }
 
-/// Canonical low-level owner for a spawned worker's JoinHandle, result cell and
-/// completion wakeup. Domain layers add stop/cancel semantics but do not create
-/// a second thread-result lifecycle owner.
-pub struct WorkerRuntimeResultOwner<T, E> {
+/// Opaque physical result/join authority issued only by `WorkerRuntime`.
+/// It owns no independent generation, retry policy, reaper registry, or domain state.
+pub struct WorkerHandle<T, E> {
     result: std::sync::Arc<std::sync::Mutex<Option<Result<T, E>>>>,
     owner_failure: std::sync::Arc<std::sync::Mutex<Option<WorkerRuntimeOwnerFailure>>>,
     completion: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
@@ -25,15 +24,15 @@ pub struct WorkerRuntimeResultOwner<T, E> {
     collected: bool,
 }
 
-impl<T, E> WorkerRuntimeResultOwner<T, E>
-where
-    T: Send + 'static,
-    E: Send + 'static,
-{
-    pub fn start(
+impl<T, E> WorkerHandle<T, E> {
+    fn start(
         name: String,
         run: impl FnOnce() -> Result<T, E> + Send + 'static,
-    ) -> std::io::Result<Self> {
+    ) -> std::io::Result<Self>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+    {
         let result = std::sync::Arc::new(std::sync::Mutex::new(None));
         let owner_failure = std::sync::Arc::new(std::sync::Mutex::new(None));
         let completion =
@@ -182,6 +181,368 @@ where
             .map_err(|_| WorkerRuntimeOwnerFailure::ResultLockPoison)?
             .take()
             .ok_or(WorkerRuntimeOwnerFailure::MissingReport)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorkerTerminalResult<T> {
+    Normal(T),
+    StopRequested,
+    RuntimeFailure(maleicacid_tuner_hal2_common::HalError),
+    PanicOrJoinFailure,
+}
+
+/// Canonical generic worker lifecycle owner shared by device and service layers.
+/// All thread creation and all subordinate reaper/supervisor handles originate here.
+pub struct WorkerRuntime<T = ()> {
+    owner_id: i64,
+    generation: u64,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    stop_signalled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    wake_signalled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    finished: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<WorkerHandle<WorkerTerminalResult<T>, ()>>,
+}
+
+impl<T> WorkerRuntime<T> {
+    pub const fn owner_id(&self) -> i64 {
+        self.owner_id
+    }
+
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn stop_signal(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        std::sync::Arc::clone(&self.stop)
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.finished.load(std::sync::atomic::Ordering::Acquire)
+            || self
+                .handle
+                .as_ref()
+                .map(|handle| handle.is_thread_finished())
+                .unwrap_or(true)
+    }
+
+    pub fn request_stop_and_wake(&self) {
+        if self
+            .stop_signalled
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            self.stop.store(true, std::sync::atomic::Ordering::Release);
+        }
+        if self
+            .wake_signalled
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            if let Some(handle) = self.handle.as_ref() {
+                handle.unpark();
+            }
+        }
+    }
+
+    pub fn join(mut self) -> WorkerTerminalResult<T> {
+        let Some(handle) = self.handle.take() else {
+            return WorkerTerminalResult::PanicOrJoinFailure;
+        };
+        match handle.join_after_stop() {
+            Ok(Ok(result)) => result,
+            Ok(Err(())) | Err(_) => WorkerTerminalResult::PanicOrJoinFailure,
+        }
+    }
+}
+
+impl<T> Drop for WorkerRuntime<T> {
+    fn drop(&mut self) {
+        if !self.is_finished() {
+            self.request_stop_and_wake();
+        }
+    }
+}
+
+type WorkerReaperRunner<K, V, J> = dyn Fn(J, std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<K, V>>>)
+    + Send
+    + Sync
+    + 'static;
+
+impl WorkerRuntime<()> {
+    pub fn spawn<T, F, C>(
+        thread_name: String,
+        owner_id: i64,
+        generation: u64,
+        worker: F,
+        completion_signal: C,
+    ) -> std::io::Result<WorkerRuntime<T>>
+    where
+        T: Send + 'static,
+        F: FnOnce(
+                std::sync::Arc<std::sync::atomic::AtomicBool>,
+            ) -> Result<T, maleicacid_tuner_hal2_common::HalError>
+            + Send
+            + 'static,
+        C: FnOnce() + Send + 'static,
+    {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread_stop = std::sync::Arc::clone(&stop);
+        let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread_finished = std::sync::Arc::clone(&finished);
+        let handle = Self::spawn_handle(thread_name, move || {
+            let terminal = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                worker(std::sync::Arc::clone(&thread_stop))
+            })) {
+                Ok(Ok(_result)) if thread_stop.load(std::sync::atomic::Ordering::Acquire) => {
+                    WorkerTerminalResult::StopRequested
+                }
+                Ok(Ok(result)) => WorkerTerminalResult::Normal(result),
+                Ok(Err(error)) => WorkerTerminalResult::RuntimeFailure(error),
+                Err(_) => WorkerTerminalResult::PanicOrJoinFailure,
+            };
+            thread_finished.store(true, std::sync::atomic::Ordering::Release);
+            completion_signal();
+            Ok::<_, ()>(terminal)
+        })?;
+        Ok(WorkerRuntime {
+            owner_id,
+            generation,
+            stop,
+            stop_signalled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            wake_signalled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            finished,
+            handle: Some(handle),
+        })
+    }
+
+    pub fn spawn_handle<T, E>(
+        name: String,
+        run: impl FnOnce() -> Result<T, E> + Send + 'static,
+    ) -> std::io::Result<WorkerHandle<T, E>>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+    {
+        WorkerHandle::start(name, run)
+    }
+
+    pub fn start_reaper_queue<K, V, J>(
+        capacity: usize,
+        thread_prefix: &'static str,
+        runner: std::sync::Arc<WorkerReaperRunner<K, V, J>>,
+    ) -> Result<WorkerRuntimeReaperQueue<K, V, J>, maleicacid_tuner_hal2_common::HalError>
+    where
+        K: Ord + Clone + Send + 'static,
+        V: Clone + Send + 'static,
+        J: Send + 'static,
+    {
+        WorkerRuntimeReaperQueue::start(capacity, thread_prefix, runner)
+    }
+
+    pub fn supervisor<K, A, R>(
+        capacity: usize,
+        deadline: std::time::Duration,
+    ) -> WorkerRuntimeSupervisor<K, A, R> {
+        WorkerRuntimeSupervisor::new(capacity, deadline)
+    }
+
+    pub fn checked_next_generation(current: u64) -> Option<u64> {
+        current.checked_add(1)
+    }
+}
+
+/// Opaque bounded reaper handle issued by `WorkerRuntime`.
+pub struct WorkerRuntimeReaperQueue<K, V, J> {
+    sender: std::sync::mpsc::SyncSender<J>,
+    pending: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<K, V>>>,
+}
+
+impl<K, V, J> Clone for WorkerRuntimeReaperQueue<K, V, J> {
+    fn clone(&self) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            pending: std::sync::Arc::clone(&self.pending),
+        }
+    }
+}
+
+impl<K, V, J> WorkerRuntimeReaperQueue<K, V, J>
+where
+    K: Ord + Clone + Send + 'static,
+    V: Clone + Send + 'static,
+    J: Send + 'static,
+{
+    fn start(
+        capacity: usize,
+        thread_prefix: &'static str,
+        runner: std::sync::Arc<WorkerReaperRunner<K, V, J>>,
+    ) -> Result<Self, maleicacid_tuner_hal2_common::HalError> {
+        let capacity = capacity.max(1);
+        let (sender, receiver) = std::sync::mpsc::sync_channel(capacity);
+        let pending = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
+        let receiver = std::sync::Arc::new(std::sync::Mutex::new(receiver));
+        for lane in 0..capacity {
+            let receiver = std::sync::Arc::clone(&receiver);
+            let runner = std::sync::Arc::clone(&runner);
+            let pending_for_lane = std::sync::Arc::clone(&pending);
+            std::thread::Builder::new()
+                .name(format!("{thread_prefix}-{lane}"))
+                .spawn(move || loop {
+                    let job = match receiver.lock() {
+                        Ok(receiver) => receiver.recv(),
+                        Err(_) => return,
+                    };
+                    match job {
+                        Ok(job) => runner(job, std::sync::Arc::clone(&pending_for_lane)),
+                        Err(_) => return,
+                    }
+                })
+                .map_err(|error| {
+                    maleicacid_tuner_hal2_common::HalError::internal(
+                        maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                        format!("worker reaper lane spawn failed: {error}"),
+                    )
+                })?;
+        }
+        Ok(Self { sender, pending })
+    }
+
+    pub fn enqueue_reserved(
+        &self,
+        job: J,
+        reservations: impl IntoIterator<Item = (K, V)>,
+    ) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+        let reservations: Vec<_> = reservations.into_iter().collect();
+        let mut pending = match self.pending.lock() {
+            Ok(pending) => pending,
+            Err(_) => {
+                core::mem::forget(job);
+                return Err(maleicacid_tuner_hal2_common::HalError::internal(
+                    maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                    "worker reaper pending registry lock poisoned",
+                ));
+            }
+        };
+        if reservations
+            .iter()
+            .any(|(key, _)| pending.contains_key(key))
+        {
+            core::mem::forget(job);
+            return Err(maleicacid_tuner_hal2_common::HalError::internal(
+                maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                "worker reaper received a duplicate endpoint lease",
+            ));
+        }
+        for (key, value) in reservations {
+            pending.insert(key, value);
+        }
+        drop(pending);
+        self.sender.try_send(job).map_err(|error| match error {
+            std::sync::mpsc::TrySendError::Full(job) => {
+                core::mem::forget(job);
+                maleicacid_tuner_hal2_common::HalError::internal(
+                    maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                    "worker reaper capacity exhausted",
+                )
+            }
+            std::sync::mpsc::TrySendError::Disconnected(job) => {
+                core::mem::forget(job);
+                maleicacid_tuner_hal2_common::HalError::internal(
+                    maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                    "worker reaper is unavailable",
+                )
+            }
+        })
+    }
+
+    pub fn pending_value(
+        &self,
+        key: &K,
+    ) -> Result<Option<V>, maleicacid_tuner_hal2_common::HalError> {
+        self.pending
+            .lock()
+            .map(|pending| pending.get(key).cloned())
+            .map_err(|_| {
+                maleicacid_tuner_hal2_common::HalError::internal(
+                    maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                    "worker reaper pending registry lock poisoned",
+                )
+            })
+    }
+}
+
+/// Opaque active/reaping registry handle issued by `WorkerRuntime`.
+pub struct WorkerRuntimeSupervisor<K, A, R> {
+    capacity: usize,
+    deadline: std::time::Duration,
+    state: std::sync::Mutex<WorkerRuntimeSupervisorMaps<K, A, R>>,
+    wake: std::sync::Condvar,
+}
+
+pub struct WorkerRuntimeSupervisorMaps<K, A, R> {
+    active: std::collections::BTreeMap<K, A>,
+    reaping: std::collections::BTreeMap<K, R>,
+}
+
+impl<K, A, R> Default for WorkerRuntimeSupervisorMaps<K, A, R> {
+    fn default() -> Self {
+        Self {
+            active: std::collections::BTreeMap::new(),
+            reaping: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+impl<K: Ord, A, R> WorkerRuntimeSupervisorMaps<K, A, R> {
+    pub fn active(&self) -> &std::collections::BTreeMap<K, A> {
+        &self.active
+    }
+    pub fn reaping(&self) -> &std::collections::BTreeMap<K, R> {
+        &self.reaping
+    }
+    pub fn active_mut(&mut self) -> &mut std::collections::BTreeMap<K, A> {
+        &mut self.active
+    }
+    pub fn reaping_mut(&mut self) -> &mut std::collections::BTreeMap<K, R> {
+        &mut self.reaping
+    }
+    pub fn total_len(&self) -> usize {
+        self.active.len().saturating_add(self.reaping.len())
+    }
+}
+
+impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
+    fn new(capacity: usize, deadline: std::time::Duration) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            deadline,
+            state: std::sync::Mutex::new(WorkerRuntimeSupervisorMaps::default()),
+            wake: std::sync::Condvar::new(),
+        }
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+    pub fn deadline(&self) -> std::time::Duration {
+        self.deadline
+    }
+    pub fn state(&self) -> &std::sync::Mutex<WorkerRuntimeSupervisorMaps<K, A, R>> {
+        &self.state
+    }
+    pub fn wake(&self) -> &std::sync::Condvar {
+        &self.wake
     }
 }
 

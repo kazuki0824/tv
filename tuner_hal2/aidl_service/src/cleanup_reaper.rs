@@ -268,7 +268,7 @@ pub(crate) fn start_cleanup_reaper(
     let runner = Arc::new(move |job, pending| {
         run_cleanup_job(runner_context.clone(), policy, job, pending);
     });
-    let owner = maleicacid_tuner_hal2_service_runtime::WorkerRuntimeReaperQueue::start(
+    let owner = maleicacid_tuner_hal2_service_runtime::WorkerRuntime::start_reaper_queue(
         policy.max_jobs,
         "tuner-hal2-cleanup-reaper",
         runner,

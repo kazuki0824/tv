@@ -253,6 +253,7 @@ rust_library {
     edition: "2021",
     rustlibs: [
         "libmaleicacid_tuner_hal2_common",
+        "libmaleicacid_tuner_hal2_control_core",
         "libmaleicacid_tuner_hal2_binder_adapter",
         "libmaleicacid_tuner_hal2_domain_request",
         "libmaleicacid_tuner_hal2_device",

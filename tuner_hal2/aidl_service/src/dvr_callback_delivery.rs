@@ -13,8 +13,8 @@ use maleicacid_tuner_hal2_binder_adapter::{AidlObjectGeneration, AidlObjectId};
 use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, HalError, HalInternalKind};
 use maleicacid_tuner_hal2_demux::DvrStatusEvent;
 use maleicacid_tuner_hal2_service_runtime::{
-    CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport, CapabilitySnapshot,
-    ClassifiedWorkerTerminalResult, DvrPostCommitNotificationDiagnosticRecord,
+    join_worker_classified, CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport,
+    CapabilitySnapshot, ClassifiedWorkerTerminalResult, DvrPostCommitNotificationDiagnosticRecord,
     DvrPostCommitNotificationFailureKind, DvrPostCommitNotificationPhase,
     DvrStatusNotifierCleanupDiagnosticRecord, DvrStatusPollSnapshot, WorkerRuntime,
     WorkerRuntimeSupervisor,
@@ -47,7 +47,7 @@ fn signal_dvr_status_notifier_stop(notifier: &DvrStatusNotifier) {
 }
 
 fn join_finished_dvr_status_notifier(notifier: DvrStatusNotifier) -> Result<(), HalError> {
-    match notifier.worker.join_classified() {
+    match join_worker_classified(notifier.worker) {
         ClassifiedWorkerTerminalResult::Normal(())
         | ClassifiedWorkerTerminalResult::StopRequested => Ok(()),
         ClassifiedWorkerTerminalResult::Failure { error, .. } => Err(error),
@@ -93,7 +93,7 @@ pub(crate) struct DvrStatusNotifierSupervisor {
 impl DvrStatusNotifierSupervisor {
     pub(crate) fn from_snapshot(snapshot: CapabilitySnapshot) -> Self {
         Self {
-            runtime: WorkerRuntimeSupervisor::new(
+            runtime: WorkerRuntime::supervisor(
                 snapshot.cleanup_reaper_capacity,
                 Duration::from_millis(snapshot.worker_reaper_deadline_ms),
             ),
@@ -113,7 +113,7 @@ impl DvrStatusNotifierSupervisor {
             )
         })?;
         if state
-            .active
+            .active()
             .get(&key)
             .is_some_and(|notifier| notifier.worker.is_finished())
         {
@@ -284,7 +284,7 @@ impl DvrStatusNotifierSupervisor {
                 return Ok(DvrStatusNotifierSupervisorAction::Deadline(handle));
             }
             let next_wait = state
-                .reaping
+                .reaping()
                 .values()
                 .filter(|job| !job.deadline_reported)
                 .map(|job| {
@@ -879,7 +879,7 @@ fn spawn_dvr_status_notifier(
         },
         move || {
             if let Some(supervisor) = supervisor.upgrade() {
-                supervisor.wake.notify_one();
+                supervisor.runtime.wake().notify_one();
             }
         },
     )

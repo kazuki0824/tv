@@ -1,7 +1,7 @@
 mod boot;
 mod callback_registry;
-mod capability_snapshot;
 mod capability_profile;
+mod capability_snapshot;
 mod cleanup_execution;
 mod command_dispatch;
 mod descrambler_key_table;
@@ -80,9 +80,9 @@ pub use diagnostics::{
 };
 pub use dispatch::{dispatch_target_for, ServiceRuntimeDispatchTarget};
 pub use frontend_ops::{
-    set_frontend_lnb_object_use_case, FrontendOperationEvent,
-    FrontendOperationEventAcceptance, FrontendTuneScanTxn, FrontendWorkerTerminalEvent,
-    FrontendWorkerTerminalEventAcceptance, SharedFrontendRuntime,
+    set_frontend_lnb_object_use_case, FrontendOperationEvent, FrontendOperationEventAcceptance,
+    FrontendTuneScanTxn, FrontendWorkerTerminalEvent, FrontendWorkerTerminalEventAcceptance,
+    SharedFrontendRuntime,
 };
 pub use frontend_worker_termination_use_case::FrontendWorkerTerminationUseCase;
 pub use frontend_worker_txn::{
@@ -101,25 +101,23 @@ pub use lnb_ops::{
 };
 pub use object_close_txn::{
     close_object_use_case, finish_object_close_use_case, quarantine_object_drop_leak_use_case,
-    CloseCleanupAttemptCompletion, CloseCleanupAuthority,
-    ObjectArtifactCleanupCommand, ObjectArtifactCleanupExecutor, ObjectArtifactCleanupKind,
-    ObjectCleanupDiagnosticKind, ObjectCleanupDiagnosticRecord, ObjectCleanupDiagnosticSnapshot,
-    ObjectCleanupExecutionKind, ObjectCleanupExecutionReport, ObjectCleanupObjectTarget,
-    ObjectCleanupStepOutcome, ObjectCloseCleanupFailure, ObjectCloseRuntimeExecutor,
-    ObjectCloseCleanupAttempt, ObjectCloseTxn, ObjectCloseUseCasePlan,
-    ObjectRuntimeCleanupCommand, ObjectRuntimeCleanupKind, SharedObjectCleanupDiagnostics,
+    CloseCleanupAttemptCompletion, CloseCleanupAuthority, ObjectArtifactCleanupCommand,
+    ObjectArtifactCleanupExecutor, ObjectArtifactCleanupKind, ObjectCleanupDiagnosticKind,
+    ObjectCleanupDiagnosticRecord, ObjectCleanupDiagnosticSnapshot, ObjectCleanupExecutionKind,
+    ObjectCleanupExecutionReport, ObjectCleanupObjectTarget, ObjectCleanupStepOutcome,
+    ObjectCloseCleanupAttempt, ObjectCloseCleanupFailure, ObjectCloseRuntimeExecutor,
+    ObjectCloseTxn, ObjectCloseUseCasePlan, ObjectRuntimeCleanupCommand, ObjectRuntimeCleanupKind,
+    SharedObjectCleanupDiagnostics,
 };
 pub use object_domain_cleanup::{
     ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor, ObjectDomainCleanupKind,
     ObjectDomainCleanupOutcome,
 };
+pub use object_lifecycle::{aidl_object_cleanup_dependency, aidl_object_cleanup_is_terminal};
 pub use object_method_use_case::{
     lnb_profile_supports_voltage_status, ObjectFrontendStatusReadinessValue,
     ObjectFrontendStatusType, ObjectFrontendStatusValue, ObjectMethodExecutionToken,
     ObjectMethodUseCase, ObjectMethodUseCaseBuildError, ObjectQueryRequest, ObjectQueryResponse,
-};
-pub use object_lifecycle::{
-    aidl_object_cleanup_dependency, aidl_object_cleanup_is_terminal,
 };
 pub(crate) use object_table::RuntimeObjectLifecycle;
 pub use object_table::{RuntimeObjectEntry, RuntimeObjectTableError, RuntimeOwnerRelation};
@@ -134,8 +132,8 @@ pub use root_method_txn::{
 pub use root_object_ops::RootOpenTxn;
 pub use worker_failure_classifier::{ClassifiedWorkerTerminalResult, WorkerFailureCategory};
 pub use worker_runtime::{
-    WorkerHandle, WorkerRuntime, WorkerRuntimeReaperQueue, WorkerRuntimeSupervisor,
-    CLEANUP_RETRY_SCHEDULE_MS,
+    join_worker_classified, WorkerHandle, WorkerRuntime, WorkerRuntimeReaperQueue,
+    WorkerRuntimeSupervisor, WorkerTerminalResult, CLEANUP_RETRY_SCHEDULE_MS,
     CLEANUP_TERMINAL_DEADLINE_MS, WORKER_IO_DEADLINE_MS, WORKER_REAPER_DEADLINE_MS,
 };
 #[cfg(test)]
@@ -363,8 +361,7 @@ mod tests {
                 (
                     FrontendSystem::IsdbS,
                     Some(
-                        LnbRegistryProfile::Px4Device15VOnly
-                        | LnbRegistryProfile::EarthPt1FixedLnb,
+                        LnbRegistryProfile::Px4Device15VOnly | LnbRegistryProfile::EarthPt1FixedLnb,
                     ),
                 ) => crate::registry::SatellitePowerTopology::InternalFixed15V,
                 (FrontendSystem::IsdbS, Some(LnbRegistryProfile::NoPower)) => {
@@ -584,7 +581,8 @@ mod tests {
             RootQueryResponse::MaxNumberOfFrontends(1)
         );
         runtime
-            .root_open_txn().open_frontend_root_object_for_id(
+            .root_open_txn()
+            .open_frontend_root_object_for_id(
                 1_000_000,
                 AidlMethodCall::PublicApi {
                     object: AidlObjectKind::Tuner,
@@ -624,7 +622,8 @@ mod tests {
             ),
         ]);
         runtime
-            .root_open_txn().open_frontend_root_object_for_id(
+            .root_open_txn()
+            .open_frontend_root_object_for_id(
                 1_000_000,
                 AidlMethodCall::PublicApi {
                     object: AidlObjectKind::Tuner,
@@ -662,7 +661,8 @@ mod tests {
             RootQueryResponse::DemuxIds(vec![1, 2, 3, 4, 5, 6, 7, 8])
         );
         let opened = runtime
-            .root_open_txn().open_demux_root_object(AidlMethodCall::PublicApi {
+            .root_open_txn()
+            .open_demux_root_object(AidlMethodCall::PublicApi {
                 object: AidlObjectKind::Tuner,
                 api: AidlApi::TunerOpenDemux,
             })

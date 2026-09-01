@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, Weak};
 #[cfg(test)]
 use std::sync::MutexGuard;
+use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -10,19 +10,17 @@ use crate::cleanup_execution::{
     SharedCleanupDiagnostics,
 };
 use crate::registry::FrontendRegistryEntry;
+use crate::worker_runtime::{WorkerRuntime, WorkerRuntimeReaperQueue, WorkerTerminalResult};
 use crate::{
-    frontend_ops::{
-        FrontendOperationEvent, FrontendTuneScanTxn, FrontendWorkerTerminalEvent,
-    },
+    frontend_ops::{FrontendOperationEvent, FrontendTuneScanTxn, FrontendWorkerTerminalEvent},
     object_lifecycle::{aidl_object_live, aidl_public_runtime_id_for_close_cleanup},
     object_method_use_case::ObjectMethodExecutionToken,
     start_frontend_demux_live_pump_from_reader, TunerServiceRuntime,
 };
-use crate::worker_runtime::{WorkerRuntimeReaperQueue, WorkerTerminalResult};
 use maleicacid_tuner_hal2_common::{
-    compose_primary_cleanup_failure, FrontendBackendKind, FrontendDevicePath, FrontendScanMode,
-    FrontendIsdbtPartialReceptionRequirement, FrontendTuneRequest, HalError, HalErrorDetail,
-    HalInternalKind, HalInvalidStateKind,
+    compose_primary_cleanup_failure, FrontendBackendKind, FrontendDevicePath,
+    FrontendIsdbtPartialReceptionRequirement, FrontendScanMode, FrontendTuneRequest, HalError,
+    HalErrorDetail, HalInternalKind, HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackToken;
 use maleicacid_tuner_hal2_device::{
@@ -48,13 +46,11 @@ pub enum FrontendTuneNotification {
     NoSignal,
 }
 
-pub type FrontendTuneNotifier = Arc<
-    dyn Fn(i32, u64, FrontendTuneNotification) -> Result<(), HalError> + Send + Sync + 'static,
->;
+pub type FrontendTuneNotifier =
+    Arc<dyn Fn(i32, u64, FrontendTuneNotification) -> Result<(), HalError> + Send + Sync + 'static>;
 
-pub type FrontendScanNotifier = Arc<
-    dyn Fn(i32, u64, FrontendScanNotification) -> Result<(), HalError> + Send + Sync + 'static,
->;
+pub type FrontendScanNotifier =
+    Arc<dyn Fn(i32, u64, FrontendScanNotification) -> Result<(), HalError> + Send + Sync + 'static>;
 
 fn deliver_committed_tune_notification(
     runtime: &SharedRuntime,
@@ -142,17 +138,12 @@ enum FrontendScanWorkerActivation {
     Abort,
 }
 
-type FrontendWorkerReaperDeadlineAction =
-    Box<dyn FnOnce(&SharedRuntime) + Send + 'static>;
-type FrontendWorkerReaperCompletionAction =
-    Box<
-        dyn FnOnce(
-                &SharedRuntime,
-                Vec<(FrontendWorkerKind, FrontendWorkerStopOutcome)>,
-                bool,
-            ) + Send
-            + 'static,
-    >;
+type FrontendWorkerReaperDeadlineAction = Box<dyn FnOnce(&SharedRuntime) + Send + 'static>;
+type FrontendWorkerReaperCompletionAction = Box<
+    dyn FnOnce(&SharedRuntime, Vec<(FrontendWorkerKind, FrontendWorkerStopOutcome)>, bool)
+        + Send
+        + 'static,
+>;
 
 struct FrontendWorkerReaperTicketGroup {
     pending: Vec<(FrontendWorkerKind, FrontendWorkerStopTicket)>,
@@ -174,9 +165,7 @@ impl FrontendWorkerReaperTicketGroup {
         let mut still_pending = Vec::new();
         for (kind, ticket) in self.pending {
             match ticket.try_complete() {
-                FrontendWorkerStopPoll::Completed(outcome) => {
-                    self.completed.push((kind, outcome))
-                }
+                FrontendWorkerStopPoll::Completed(outcome) => self.completed.push((kind, outcome)),
                 FrontendWorkerStopPoll::Pending(ticket) => still_pending.push((kind, ticket)),
             }
         }
@@ -332,14 +321,16 @@ impl FrontendWorkerReaperHandle {
         capacity: usize,
         deadline: Duration,
     ) -> Result<Self, HalError> {
-        let runner = Arc::new(move |
-            job: FrontendWorkerReaperJob,
-            pending: Arc<Mutex<BTreeMap<(i32, FrontendWorkerKind), Option<FrontendWorkerKind>>>>,
-        | {
-            job.run(&runtime, pending.as_ref(), deadline);
-        });
+        let runner = Arc::new(
+            move |job: FrontendWorkerReaperJob,
+                  pending: Arc<
+                Mutex<BTreeMap<(i32, FrontendWorkerKind), Option<FrontendWorkerKind>>>,
+            >| {
+                job.run(&runtime, pending.as_ref(), deadline);
+            },
+        );
         Ok(Self {
-            runtime: WorkerRuntimeReaperQueue::start(
+            runtime: WorkerRuntime::start_reaper_queue(
                 capacity,
                 "maleicacid-frontend-reaper",
                 runner,
@@ -383,7 +374,10 @@ fn ensure_frontend_worker_reaper(
     runtime: &SharedRuntime,
 ) -> Result<FrontendWorkerReaperHandle, HalError> {
     let (capacity, deadline) = {
-        let guard = lock_runtime(runtime, "service runtime lock poisoned while finding reaper")?;
+        let guard = lock_runtime(
+            runtime,
+            "service runtime lock poisoned while finding reaper",
+        )?;
         if let Some(handle) = guard.frontend_worker_reaper_handle() {
             return Ok(handle);
         }
@@ -392,9 +386,11 @@ fn ensure_frontend_worker_reaper(
             Duration::from_millis(guard.capability_snapshot().worker_reaper_deadline_ms),
         )
     };
-    let candidate =
-        FrontendWorkerReaperHandle::start(Arc::downgrade(runtime), capacity, deadline)?;
-    let mut guard = lock_runtime(runtime, "service runtime lock poisoned while installing reaper")?;
+    let candidate = FrontendWorkerReaperHandle::start(Arc::downgrade(runtime), capacity, deadline)?;
+    let mut guard = lock_runtime(
+        runtime,
+        "service runtime lock poisoned while installing reaper",
+    )?;
     if let Some(handle) = guard.frontend_worker_reaper_handle() {
         return Ok(handle);
     }
@@ -2846,17 +2842,14 @@ fn finish_committed_tune_replacement(
             transition.object_generation,
             frontend_id,
         )?;
-        let snapshot = guard
-            .query()
-            .frontend_runtime_snapshot(frontend_id)?;
+        let snapshot = guard.query().frontend_runtime_snapshot(frontend_id)?;
         if snapshot.generation > generation && snapshot.live_reader_descriptor.is_none() {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
                 "frontend replacement was cancelled by a later stop or close",
             ));
         }
-        if snapshot.generation != generation || snapshot.live_reader_descriptor.is_some()
-        {
+        if snapshot.generation != generation || snapshot.live_reader_descriptor.is_some() {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
                 "frontend replacement fence changed before old worker exit",
@@ -3005,14 +2998,16 @@ fn finish_committed_tune_replacement(
                         HalInternalKind::InvariantViolation,
                         "frontend tune worker ended before backend activation",
                     );
-                    Err(finish_backend_session_after_frontend_commit_activation_failure(
-                        &mut guard,
-                        frontend_id,
-                        generation,
-                        session,
-                        primary,
-                        "frontend backend stop failed after tune activation failure",
-                    ))
+                    Err(
+                        finish_backend_session_after_frontend_commit_activation_failure(
+                            &mut guard,
+                            frontend_id,
+                            generation,
+                            session,
+                            primary,
+                            "frontend backend stop failed after tune activation failure",
+                        ),
+                    )
                 }
                 FrontendTuneWorkerActivation::Abort => Err(HalError::internal(
                     HalInternalKind::InvariantViolation,
@@ -3166,11 +3161,13 @@ pub(crate) fn start_frontend_backend_tune_worker(
                             commit_error,
                         );
                     }
-                    if let Err(quarantine_error) = crate::object_close_txn::quarantine_object_cascade(
-                        &mut guard,
-                        object_id,
-                        object_generation,
-                    ) {
+                    if let Err(quarantine_error) =
+                        crate::object_close_txn::quarantine_object_cascade(
+                            &mut guard,
+                            object_id,
+                            object_generation,
+                        )
+                    {
                         public_error = compose_frontend_cleanup_error(
                             "frontend quarantine failed after worker stop failure",
                             public_error,
@@ -3299,11 +3296,8 @@ pub(crate) fn start_frontend_backend_tune_worker(
                     return Err(error);
                 }
             };
-            let target = FrontendWorkerCleanupTarget::object(
-                frontend_id,
-                object_id,
-                object_generation,
-            );
+            let target =
+                FrontendWorkerCleanupTarget::object(frontend_id, object_id, object_generation);
             let deadline_demux_generations = fenced_demux_generations;
             let completion_public_error = pending_stop_error.clone();
             let deadline_diagnostic_sink = cleanup_diagnostic_sink.clone();
@@ -3411,7 +3405,8 @@ fn run_frontend_backend_scan_session_worker(
             ) {
                 Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Ok(session))) => session,
                 Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Err(failure)))
-                    if failure.rollback_succeeded => {
+                    if failure.rollback_succeeded =>
+                {
                     let primary = failure.error;
                     let mut guard = match lock_runtime(
                         &runtime,
@@ -3572,10 +3567,7 @@ fn run_frontend_backend_scan_session_worker(
             )?;
             guard
                 .frontend_txn()
-                .mark_frontend_scan_session_locked_reported(
-                    ctx.frontend_id(),
-                    ctx.generation(),
-                )?;
+                .mark_frontend_scan_session_locked_reported(ctx.frontend_id(), ctx.generation())?;
             return Ok(());
         }
         let mut guard = lock_runtime(
@@ -3657,9 +3649,7 @@ fn finish_committed_scan_replacement(
             transition.object_generation,
             frontend_id,
         )?;
-        let snapshot = guard
-            .query()
-            .frontend_runtime_snapshot(frontend_id)?;
+        let snapshot = guard.query().frontend_runtime_snapshot(frontend_id)?;
         if snapshot.generation > generation && snapshot.live_reader_descriptor.is_none() {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
@@ -3852,14 +3842,16 @@ fn finish_committed_scan_replacement(
                         HalInternalKind::InvariantViolation,
                         "frontend scan worker ended before backend activation",
                     );
-                    Err(finish_backend_session_after_frontend_commit_activation_failure(
-                        &mut guard,
-                        frontend_id,
-                        generation,
-                        session,
-                        primary,
-                        "frontend backend stop failed after scan activation failure",
-                    ))
+                    Err(
+                        finish_backend_session_after_frontend_commit_activation_failure(
+                            &mut guard,
+                            frontend_id,
+                            generation,
+                            session,
+                            primary,
+                            "frontend backend stop failed after scan activation failure",
+                        ),
+                    )
                 }
                 FrontendScanWorkerActivation::Abort => Err(HalError::internal(
                     HalInternalKind::InvariantViolation,
@@ -3910,10 +3902,13 @@ pub(crate) fn start_frontend_backend_scan_session_worker(
     let entry = guard.validate_frontend_request_for_id(frontend_id, &request)?;
     let candidates = guard.scan_candidates_for_frontend_entry(&entry, &request, scan_mode)?;
     let frontend_snapshot = guard.query().frontend_runtime_snapshot(frontend_id)?;
-    let is_locked_continuation = frontend_snapshot.scan_session.as_ref().is_some_and(|session| {
-        session.phase() == FrontendScanPhase::LockedReported
-            && session.fingerprint() == fingerprint
-    });
+    let is_locked_continuation = frontend_snapshot
+        .scan_session
+        .as_ref()
+        .is_some_and(|session| {
+            session.phase() == FrontendScanPhase::LockedReported
+                && session.fingerprint() == fingerprint
+        });
     let demux_rollback_tokens = guard.prepare_bound_demux_runtime_rollback_tokens(frontend_id)?;
     let cleanup_diagnostic_sink = guard.frontend_worker_cleanup_diagnostic_sink();
     let generation = guard
@@ -3988,11 +3983,13 @@ pub(crate) fn start_frontend_backend_scan_session_worker(
                             commit_error,
                         );
                     }
-                    if let Err(quarantine_error) = crate::object_close_txn::quarantine_object_cascade(
-                        &mut guard,
-                        object_id,
-                        object_generation,
-                    ) {
+                    if let Err(quarantine_error) =
+                        crate::object_close_txn::quarantine_object_cascade(
+                            &mut guard,
+                            object_id,
+                            object_generation,
+                        )
+                    {
                         public_error = compose_frontend_cleanup_error(
                             "frontend quarantine failed after scan worker stop failure",
                             public_error,
@@ -4128,11 +4125,8 @@ pub(crate) fn start_frontend_backend_scan_session_worker(
                     return Err(error);
                 }
             };
-            let target = FrontendWorkerCleanupTarget::object(
-                frontend_id,
-                object_id,
-                object_generation,
-            );
+            let target =
+                FrontendWorkerCleanupTarget::object(frontend_id, object_id, object_generation);
             let completion_public_error = pending_stop_error.clone();
             let deadline_diagnostic_sink = cleanup_diagnostic_sink.clone();
             let job = FrontendWorkerReaperJob {
@@ -4235,9 +4229,9 @@ fn record_frontend_stop_reaper_completion(
     let mut result = match outcome {
         Some(outcome) => frontend_worker_stop_result_from_outcome(outcome),
         None => Err(HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "frontend reaper completion omitted the requested worker kind",
-            )),
+            HalInternalKind::InvariantViolation,
+            "frontend reaper completion omitted the requested worker kind",
+        )),
     };
     if deadline_elapsed && result.is_ok() {
         result = Err(HalError::cleanup_failed(
@@ -4345,9 +4339,11 @@ fn stop_frontend_object_without_join(
             .as_ref()
             .is_some_and(|session| session.phase() == FrontendScanPhase::Running)
     {
-        guard
-            .frontend_txn()
-            .cancel_frontend_scan_session(frontend_id, snapshot.generation, reason)?;
+        guard.frontend_txn().cancel_frontend_scan_session(
+            frontend_id,
+            snapshot.generation,
+            reason,
+        )?;
     }
     guard
         .frontend_txn()
@@ -4362,8 +4358,7 @@ fn stop_frontend_object_without_join(
                 .frontend_txn()
                 .clear_frontend_live_reader_descriptor_and_idle(frontend_id),
         };
-        let target =
-            FrontendWorkerCleanupTarget::object(frontend_id, object_id, object_generation);
+        let target = FrontendWorkerCleanupTarget::object(frontend_id, object_id, object_generation);
         let mut report = FrontendWorkerCleanupExecutionReport::new();
         report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
             target,
@@ -4372,12 +4367,12 @@ fn stop_frontend_object_without_join(
             Ok(()),
         ));
         match kind {
-            FrontendWorkerKind::Tune => report.push(
-                FrontendWorkerCleanupStepOutcome::stop_live_data_and_unbind(
+            FrontendWorkerKind::Tune => {
+                report.push(FrontendWorkerCleanupStepOutcome::stop_live_data_and_unbind(
                     target,
                     boundary_result.clone(),
-                ),
-            ),
+                ))
+            }
             FrontendWorkerKind::Scan => report.push(
                 FrontendWorkerCleanupStepOutcome::clear_live_reader_descriptor(
                     target,
@@ -4388,12 +4383,8 @@ fn stop_frontend_object_without_join(
         guard.frontend_worker_cleanup_diagnostic_sink().record(
             FrontendWorkerCleanupDiagnosticRecord::new(
                 match kind {
-                    FrontendWorkerKind::Tune => {
-                        FrontendWorkerCleanupDiagnosticKind::StopTuneObject
-                    }
-                    FrontendWorkerKind::Scan => {
-                        FrontendWorkerCleanupDiagnosticKind::StopScanObject
-                    }
+                    FrontendWorkerKind::Tune => FrontendWorkerCleanupDiagnosticKind::StopTuneObject,
+                    FrontendWorkerKind::Scan => FrontendWorkerCleanupDiagnosticKind::StopScanObject,
                 },
                 target,
                 report,
@@ -4443,8 +4434,7 @@ fn stop_frontend_object_without_join(
             .frontend_txn()
             .clear_frontend_live_reader_descriptor_and_idle(frontend_id),
     };
-    let target =
-        FrontendWorkerCleanupTarget::object(frontend_id, object_id, object_generation);
+    let target = FrontendWorkerCleanupTarget::object(frontend_id, object_id, object_generation);
     let mut report = FrontendWorkerCleanupExecutionReport::new();
     report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
         target,
@@ -4453,12 +4443,12 @@ fn stop_frontend_object_without_join(
         Ok(()),
     ));
     match kind {
-        FrontendWorkerKind::Tune => report.push(
-            FrontendWorkerCleanupStepOutcome::stop_live_data_and_unbind(
+        FrontendWorkerKind::Tune => {
+            report.push(FrontendWorkerCleanupStepOutcome::stop_live_data_and_unbind(
                 target,
                 boundary_result.clone(),
-            ),
-        ),
+            ))
+        }
         FrontendWorkerKind::Scan => report.push(
             FrontendWorkerCleanupStepOutcome::clear_live_reader_descriptor(
                 target,
@@ -4586,7 +4576,6 @@ pub(crate) fn stop_frontend_scan_object(
         dispatch,
     )
 }
-
 
 pub fn close_frontend_live_data_and_unbind(
     runtime: SharedRuntime,
@@ -4726,24 +4715,22 @@ fn close_frontend_workers_and_live_data_with_sink(
             .frontend_txn()
             .close_frontend_live_data_and_unbind(frontend_id)
             .map(|_| ());
-        let fenced_demux_generations = match current_bound_demux_generation_snapshot(
-            &guard,
-            frontend_id,
-        ) {
-            Ok(snapshot) => snapshot,
-            Err(snapshot_error) => {
-                guard.mark_service_critical();
-                core::mem::forget(tickets);
-                return Err(match close_result {
-                    Ok(()) => snapshot_error,
-                    Err(primary) => compose_frontend_cleanup_error(
-                        "frontend demux snapshot failed after close boundary failure",
-                        primary,
-                        snapshot_error,
-                    ),
-                });
-            }
-        };
+        let fenced_demux_generations =
+            match current_bound_demux_generation_snapshot(&guard, frontend_id) {
+                Ok(snapshot) => snapshot,
+                Err(snapshot_error) => {
+                    guard.mark_service_critical();
+                    core::mem::forget(tickets);
+                    return Err(match close_result {
+                        Ok(()) => snapshot_error,
+                        Err(primary) => compose_frontend_cleanup_error(
+                            "frontend demux snapshot failed after close boundary failure",
+                            primary,
+                            snapshot_error,
+                        ),
+                    });
+                }
+            };
         (generation, tickets, fenced_demux_generations, close_result)
     };
 
@@ -4791,10 +4778,9 @@ fn close_frontend_workers_and_live_data_with_sink(
             Ok(()),
         ));
     }
-    report.push(FrontendWorkerCleanupStepOutcome::close_live_data_and_unbind(
-        target,
-        close_result.clone(),
-    ));
+    report.push(
+        FrontendWorkerCleanupStepOutcome::close_live_data_and_unbind(target, close_result.clone()),
+    );
     sink.record(FrontendWorkerCleanupDiagnosticRecord::new(
         FrontendWorkerCleanupDiagnosticKind::FrontendClose,
         target,

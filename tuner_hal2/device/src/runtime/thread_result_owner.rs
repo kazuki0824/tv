@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
 use maleicacid_tuner_hal2_control_core::{
-    WorkerRuntimeOwnerFailure, WorkerRuntimePoll, WorkerRuntimeResultOwner,
+    WorkerHandle, WorkerRuntime, WorkerRuntimeOwnerFailure, WorkerRuntimePoll,
 };
 
 fn owner_failure_to_hal(error: WorkerRuntimeOwnerFailure, name: &'static str) -> HalError {
@@ -28,7 +28,7 @@ pub(crate) enum ThreadResultPoll<T> {
 }
 
 pub(crate) struct ThreadResultOwner<T> {
-    owner: WorkerRuntimeResultOwner<T, HalError>,
+    owner: WorkerHandle<T, HalError>,
     name: &'static str,
 }
 
@@ -48,7 +48,7 @@ where
         name: &'static str,
         run: impl FnOnce() -> Result<T, HalError> + Send + 'static,
     ) -> Result<Self, HalError> {
-        let owner = WorkerRuntimeResultOwner::start(name.to_owned(), run).map_err(|error| {
+        let owner = WorkerRuntime::spawn_handle(name.to_owned(), run).map_err(|error| {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
                 format!("{name}: thread spawn failed: {error}"),
