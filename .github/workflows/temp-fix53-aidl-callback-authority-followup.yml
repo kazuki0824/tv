@@ -15,29 +15,8 @@ jobs:
           ref: fix/tuner-hal2-rustfmt-1.81
           persist-credentials: true
           fetch-depth: 0
-      - name: Tighten temporary repair script
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('tools/temp_fix53_aidl_callback_authority_followup.py')
-          s = p.read_text()
-          s = s.replace('    assert!(!SERVICE_CONTEXT.contains("let _ ="));\n', '')
-          old = '''replace_once(child, "        let _ = context.clear_owner_callbacks(child_handle);\\n", "")
-          replace_once(child, "        let _ = context.clear_owner_callbacks(child_handle);\\n", "")
-          '''
-          new = '''p = Path(child)
-          child_text = p.read_text()
-          clear_owner_ignored = "        let _ = context.clear_owner_callbacks(child_handle);\\n"
-          if child_text.count(clear_owner_ignored) != 2:
-              raise SystemExit(f"{child}: expected 2 ignored clear-owner results, got {child_text.count(clear_owner_ignored)}")
-          p.write_text(child_text.replace(clear_owner_ignored, ""))
-          '''
-          if old not in s:
-              raise SystemExit('clear-owner repair-script anchor not found')
-          p.write_text(s.replace(old, new, 1))
-          PY
       - name: Apply production repair
-        run: python3 tools/temp_fix53_aidl_callback_authority_followup.py
+        run: python3 tools/temp_fix53_aidl_callback_authority_followup_v2.py
       - name: Format changed Rust sources
         run: |
           rustfmt --edition 2021 tuner_hal2/aidl_service/src/callback_store.rs
