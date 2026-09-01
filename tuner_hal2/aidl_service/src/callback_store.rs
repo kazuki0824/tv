@@ -50,11 +50,11 @@ enum StoredCallback {
 #[derive(Default)]
 pub(crate) struct CallbackStore {
     callbacks: BTreeMap<CallbackStoreKey, StoredCallback>,
-    prepared_callbacks: BTreeMap<CallbackStoreKey, (PreparedCallbackArtifactToken, StoredCallback)>,
+    prepared_callbacks: BTreeMap<CallbackStoreKey, (u64, StoredCallback)>,
     next_prepared_token: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub(crate) struct PreparedCallbackArtifactToken(u64);
 
 impl CallbackStore {
@@ -70,7 +70,7 @@ impl CallbackStore {
         let token = self.next_prepared_token()?;
         self.prepared_callbacks.insert(
             key,
-            (token, StoredCallback::Frontend(callback.clone())),
+            (token.0, StoredCallback::Frontend(callback.clone())),
         );
         Ok(token)
     }
@@ -87,7 +87,7 @@ impl CallbackStore {
         let token = self.next_prepared_token()?;
         self.prepared_callbacks.insert(
             key,
-            (token, StoredCallback::Lnb(callback.clone())),
+            (token.0, StoredCallback::Lnb(callback.clone())),
         );
         Ok(token)
     }
@@ -105,7 +105,7 @@ impl CallbackStore {
         let token = self.next_prepared_token()?;
         self.prepared_callbacks.insert(
             key,
-            (token, StoredCallback::Filter(callback.clone())),
+            (token.0, StoredCallback::Filter(callback.clone())),
         );
         Ok(token)
     }
@@ -122,7 +122,7 @@ impl CallbackStore {
         let token = self.next_prepared_token()?;
         self.prepared_callbacks.insert(
             key,
-            (token, StoredCallback::Dvr(callback.clone())),
+            (token.0, StoredCallback::Dvr(callback.clone())),
         );
         Ok(token)
     }
@@ -143,20 +143,21 @@ impl CallbackStore {
         handle: AidlObjectHandle,
         registration_api: AidlApi,
         token: PreparedCallbackArtifactToken,
-    ) -> bool {
+    ) -> Result<(), AidlCallbackStoreError> {
         let key = CallbackStoreKey::new(handle, registration_api);
         if !self
             .prepared_callbacks
             .get(&key)
-            .is_some_and(|(prepared, _)| *prepared == token)
+            .is_some_and(|(prepared, _)| *prepared == token.0)
         {
-            return false;
+            return Err(AidlCallbackStoreError::PreparedArtifactAuthorityMismatch);
         }
-        let Some((_, callback)) = self.prepared_callbacks.remove(&key) else {
-            return false;
-        };
+        let (_, callback) = self
+            .prepared_callbacks
+            .remove(&key)
+            .ok_or(AidlCallbackStoreError::PreparedArtifactAuthorityMismatch)?;
         self.callbacks.insert(key, callback);
-        true
+        Ok(())
     }
 
     pub(crate) fn abort_prepared_callback(
@@ -164,16 +165,19 @@ impl CallbackStore {
         handle: AidlObjectHandle,
         registration_api: AidlApi,
         token: PreparedCallbackArtifactToken,
-    ) -> bool {
+    ) -> Result<(), AidlCallbackStoreError> {
         let key = CallbackStoreKey::new(handle, registration_api);
         if !self
             .prepared_callbacks
             .get(&key)
-            .is_some_and(|(prepared, _)| *prepared == token)
+            .is_some_and(|(prepared, _)| *prepared == token.0)
         {
-            return false;
+            return Err(AidlCallbackStoreError::PreparedArtifactAuthorityMismatch);
         }
-        self.prepared_callbacks.remove(&key).is_some()
+        self.prepared_callbacks
+            .remove(&key)
+            .map(|_| ())
+            .ok_or(AidlCallbackStoreError::PreparedArtifactAuthorityMismatch)
     }
 
     pub(crate) fn retain_filter_callback(
@@ -280,7 +284,7 @@ impl CallbackStore {
         let token = self.next_prepared_token().unwrap();
         self.prepared_callbacks.insert(
             CallbackStoreKey::new(handle, api),
-            (token, StoredCallback::TestMarker),
+            (token.0, StoredCallback::TestMarker),
         );
         token
     }
