@@ -104,13 +104,11 @@ pub(crate) use child_open_context::{
     attach_diagnostic_detail_to_public_error, format_dvr_queue_cleanup_report,
     format_filter_runtime_operation_report,
 };
-#[path = "demux_filter_dvr_ops.rs"]
 mod demux_filter_dvr_ops;
 pub use demux_filter_dvr_ops::ChildOpenTxn;
 mod descrambler_txn;
 mod frontend_txn;
 pub(crate) mod lnb_txn;
-#[path = "packet_ops.rs"]
 mod packet_ops;
 
 #[derive(Clone, Debug, Eq, PartialEq)]

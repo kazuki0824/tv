@@ -161,7 +161,7 @@ object methodでは、呼出対象のlifecycle/generation不整合を引数値�
 | 契約 | 必須phase order | 確定点・失敗処理 |
 |---|---|---|
 | object method | 呼出対象live・自身の登録owner・generation・kind確認 → request変換 → 引数object live/generation確認 → 引数object owner/demux/kind/関係検証 → dispatch計画 → 一回限り権限消費 → domain実行 | domain commit前は無変更。呼出対象lifecycle不整合と引数object lifecycle不整合は`INVALID_STATE`、foreign/wrong関係は`INVALID_ARGUMENT`、commit後失敗は型付き診断と契約別cleanupへ接続 |
-| root/child open | 公開ID・能力確認 → 全使用権仮予約 → runtime登録準備 → Binder object準備 → 一括commit | objectとruntime登録を同時公開し、途中失敗は全仮予約・artifactを逆順解放 |
+| root/child open | 公開ID・能力確認 → 全使用権仮予約 → runtime/object-tableを`Prepared`で登録 → callback/Binder artifact準備 → Binder object準備 → private callback artifact stage → runtime `Live` publish | **AIDLから観測可能な公開確定点はruntime/object-tableの`Live` publishだけ**とする。callback artifactは`Live`前にprivate storeへstageしてよいが、child objectはまだcallerへ返さず通常delivery sourceにもならない。後段`Live` publish失敗時はstage済みartifactと全仮予約を逆順cleanupしてerrorを返し、artifactだけを公開成功状態として残さない。AOSP/VINTF/VTSにvendor内部のcallback storeとruntime tableを同一物理mutationでcommitせよという契約は追加しない |
 | public close / owner loss / Drop | `ObjectCloseTxn`の`begin_close`とtyped cleanup契約を正とし、本行では再定義しない | 確定点、`CloseCleanupAuthority`、`CleanupPending`、回収移管は`ObjectCloseTxn`契約を正とする |
 | descrambler key / PID / session cleanup | key変更は`DescramblerKeyTxn`、PID変更は`DescramblerPidTxn`、session cleanupは`DescramblerSessionCleanupTxn`を正とし、本行ではphaseを再定義しない | 各契約の確定点、rollback / cleanup、失敗時状態をそのまま適用する |
 | source relation / stream boundary | Filter source relationは`SourceBoundaryTxn`、Demux-Frontend relationは`DemuxFrontendSourceTxn`、stream state境界は`StreamBoundaryTxn`を正とし、本行では一体transactionを再定義しない | 各relation契約と`StreamBoundaryTxn`の確定点、rollback / cleanup、失敗時状態をそのまま適用する |
@@ -339,7 +339,7 @@ stream-type hintの保存は、open subtypeから決まるAudio/Video routing、
 
 `IFilter.setDataSource(source)` は、AOSP意味論どおり`source != NULL`では指定filter outputを入力元とし、`source == NULL`ではsink filterの入力元をdemux inputへ戻す。`setDataSource(NULL)`は現行設計の成功対象に含める。AOSP frozen/stable AIDLのvendor独自改変、raw Binder transaction parserによる公開契約を通さない実装は採用しない。source relationの変更は0-S-3Bの`SourceBoundaryTxn`、旧入力origin由来のpartial dataを新入力originへ連結しないstream/parser boundaryは`StreamBoundaryTxn`を唯一の正本とし、本節ではrelation phase、generation更新、parser mutationを再定義しない。
 
-TS main typeの具体的linkageでは、実データを供給するsourceとして完全な188-byte MPEG-TS packet列を出力するTS `TS` subtypeを成功対象とする。そのpacket列は、各sinkの通常のPID/settings/filter semanticsで再処理するため、公開済みのTS `TS` / `SECTION` / `PES` / `AUDIO` / `VIDEO` / `PCR` / `RECORD` subtypeへ接続できる。source/sinkのconfigure前後にrelationを設定できる範囲は既存lifecycle契約に従い、後続`configure()`が既存relationと両立しない場合は前段契約どおり`INVALID_STATE`で旧settings/relationを維持する。TS `UNDEFINED`同士の接続は`linkCaps`検査用endpointとして別に成功させるが、通常のdata producerへ昇格させない。Section/PES/AV/Record等の加工済みoutputをTS packet sourceとして再解釈する接続は、別の公開capabilityを定義しない限り成功対象へ追加しない。
+TS main typeの具体的linkageでは、実データを供給するsourceとして完全な188-byte MPEG-TS packet列を出力するTS `TS` subtypeを成功対象とする。そのpacket列は、各sinkの通常のPID/settings/filter semanticsで再処理するため、公開済みのTS `TS` / `SECTION` / `PES` / `AUDIO` / `VIDEO` / `PCR` / `RECORD` subtypeへ接続できる。source/sinkのconfigure前後にrelationを設定できる範囲は既存lifecycle契約に従い、後続`configure()`が既存relationと両立しない場合は前段契約どおり`INVALID_STATE`で旧settings/relationを維持する。TS `UNDEFINED`はVTSが`linkCaps`の広告closureを構成するために使用するAIDL定義済みsubtypeであり、TS→TSを広告する場合は同一demuxのTS packet source relationとして成功させる。内部packet mechanicsは`TS`/raw sourceと共有してよい。AOSP/VTSが定義しないprobe-only制約は追加せず、非広告main-type pair、加工済みSection/PES/AV/Record outputのTS source化は従来どおり`UNAVAILABLE`とする。Section/PES/AV/Record等の加工済みoutputをTS packet sourceとして再解釈する接続は、別の公開capabilityを定義しない限り成功対象へ追加しない。
 
 `IFrontend.tune()`はbinder thread上でlock完了まで待ち続けない。同一の正規化settings、typed selector、LNB/power条件で既存lockを安全に継続できる場合は、既存streamを中断せず当該requestに対応する`LOCKED`を正確に1回配送する。それ以外の要求ではfull retuneとして扱い、破壊的遷移後に旧service由来のdataを新要求の出力として復元しない。入力分類、caller-visibleな結果、失敗後の公開状態は本節のfrontend各API契約を正とし、同値性snapshot、generation、worker/backend停止、boundary、commit / rollbackの内部semanticsはcanonical `frontend tune/scan`だけを正本とする。
 
@@ -705,15 +705,11 @@ Live/AV経路、診断、recording メタデータ、VTS 判定では、scramble
 
 ## px4_drv ロック 方針
 
-px4_drv backendはRF/carrier lockを直接返すuserspace APIを持たないため、`RF_LOCK`をadvertiseしない。現行userspace ABIではcurrent demodulator lockを副作用なしに読み戻すAPIも持たないため、px4の`DEMOD_LOCK`も`FrontendInfo.statusCaps`へadvertiseしない。`PTX_GET_CNR`、TS packet到達、過去の選局成功をcurrent `DEMOD_LOCK`の代替にしてはならない。
+px4_drv backendはRF/carrier lockを直接返すuserspace APIを持たないため、`RF_LOCK`をadvertiseしない。一方、product採用driverは `kazuki0824/px4_drv` `feat/android-ddk` commit `90d9c6506389ece3e47cced826326ccd1c6d22e8`（`Add PX4 demod status readbacks (#1)`）に固定し、同commitのUAPIはread-only `PTX_GET_LOCK_STATUS = _IOR(0x8d, 0x0c, __u32)`を持つ。driverはcurrent system未設定時を`-EAGAIN`とし、それ以外は既存`ops->check_lock()`で現在のdemodulator lockを観測し、I/O/device failureを正常unlocked値へ丸めずerrnoで返す。
 
-一方、`PTX_SET_CHANNEL`はdriver内部で`ops->check_lock()`をポーリングし、demodulator lockを取得できなければ失敗し、取得できた場合だけ成功する。したがって、active tune/scan generationに対する`PTX_SET_CHANNEL`成功は、その選局要求についてdriverが実demodulator lock成立を確認した一回限りの証跡として扱い、同じgenerationの`LOCKED`を正確に1回通知する。ioctl成功を選局後のcurrent lock状態として保持し続けたり、後続generationへ流用したりしてはならない。
+HALは同ABIを`device/src/px4/abi.rs::PTX_GET_LOCK_STATUS`として固定し、active backend sessionの`observe_signal_state()`から副作用なくcurrent lockを取得する。したがってpx4の`FrontendInfo.statusCaps`には`DEMOD_LOCK`をadvertiseし、`getStatus(DEMOD_LOCK)`およびtune/scan workerのlock/lost-lock/relock判定は同一generationのfresh readbackから導出する。`PTX_GET_CNR`、TS packet到達、過去の`PTX_SET_CHANNEL`成功履歴だけをcurrent `DEMOD_LOCK`の代替にしてはならない。readback I/O failure、`EAGAIN`、古いgenerationは正常な`false`へ捏造せず既存backend failure/pending契約へ接続する。
 
-現行userspace ABIでは選局後のcurrent demodulator lockを再観測できないため、px4 backendは`LOST_LOCK`をTS無受信時間、C/N、read timeout、streaming停止、USB経路異常などから推測して生成しない。これらはtransport/backend health、診断、fatal failure判定には使用してよいが、AOSPのdemodulator lock transitionとは分離する。driver/backendのfatal failureでは既存のbackend failure契約に従って状態を無効化し、観測していない`LOST_LOCK`を捏造しない。
-
-TS入力について、188-byte境界、sync byte `0x47`、`transport_error_indicator`、`adaptation_field_control`、連続packet数、packet無受信時間などを監視してtransport healthを判定してよい。ただし、この判定を`DEMOD_LOCK`、`RF_LOCK`、`LOCKED`、`LOST_LOCK`の真値へ写像しない。`px4DemodLockPacketCount`、`px4DemodUnlockGapMs`のような閾値をAIDL lock意味論の正本値として`CapabilitySnapshot`へ持たせない。
-
-`future_work/r51/px4_demod_lock_status_readback_blocker.md`が解消され、target `px4_drv`からcurrent demodulator lockを副作用なしに取得できるread-only ABIとI/O failureの分離が固定された後は、そのgeneration-fenced readbackを`DEMOD_LOCK`の正本にできる。その時点でのみpx4の`DEMOD_LOCK`を`statusCaps`へ追加し、観測したlock transitionに一致する`LOST_LOCK`および必要なrelock後の`LOCKED`を生成する。driver ABI未解決の間は、この将来状態を実装済み能力として扱わない。
+`PTX_SET_CHANNEL`が選局時に内部`check_lock()`を使用する既存動作は維持するが、その一回の成功履歴は後続current statusの代替にしない。transport health（188-byte境界、sync、TEI、continuity、無受信時間等）も`DEMOD_LOCK`/`RF_LOCK`の真値へ写像しない。採用driver commitを変更する場合は、新commitに同等のread-only lock ABIとfailure分離が存在することをproduct integration証跡として更新するまでpx4 `DEMOD_LOCK` capabilityを維持してはならない。
 
 ## px4_drv chardev open / ライブ TS reader 方針
 
@@ -1427,7 +1423,7 @@ release AIDL経路からテスト専用入口へ到達してはならず、テ�
 | T-SEC-14e | short syntax + wildcard + `repeat=false` | 最初の完全sectionを1 section tableとして1回配送後停止 |
 | T-SEC-14f | 最大`last_section_number=255` | 256-bit（32 byte）bitmapと固定metadataだけで追跡し、各section payloadは逐次配送してtable全体を保持しない |
 | T-SEC-14g | target未完成、`stop()`／`flush()`／再設定／stream boundary | `stop()`ではtarget metadata・配送済みbitmap・partial sectionを保持して再`start()`で継続する。`flush()`／再設定／stream boundaryでは境界前targetを境界後へ継承・完了扱いせず、0-S-3Bのowner境界に従い各per-filter ownerが対象stateを更新する |
-| T-SEC-14h | 各section配送時のFMQ一時backpressure | 既存の配送保留予算で当該sectionを再試行し、FMQ/event commit前に配送済みbitを立てない |
+| T-SEC-14h | 各section配送時のFMQ overflow/backpressure | AOSP `DemuxFilterStatus::OVERFLOW` の契約どおり、filter bufferがfullでcommitできない新規sectionは内部第二queueへ複製・再試行せず破棄して`OVERFLOW`を通知する。FMQ payload/event commitが成功するまでは配送済みbitを立てないため、`repeat=false` targetも未達のまま維持し、放送入力として後続に再到来した同一sectionは通常のmatching対象として再び受理できる |
 | T-SEC-14i | 複数extension/versionが並行する`TableInfo repeat=true` | table id/version条件に一致する全instanceのsectionを継続配送する |
 | T-SEC-15 | `repeat=true` version更新 | 継続監視 |
 
