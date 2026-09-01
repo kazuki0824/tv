@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Any
 from xml.sax.saxutils import escape
-from .model import FRONTEND_ID, validate_against_capability, validate_profile
+from .model import FRONTEND_ID, validate_profile
 
 
 def _frontend_xml(profile: dict[str, Any]) -> str:
@@ -24,9 +24,8 @@ def _frontend_xml(profile: dict[str, Any]) -> str:
     return f'      <frontend {" ".join(attrs)}><isdbsFrontendSettings {settings_text}/></frontend>'
 
 
-def render_xml(profile: dict[str, Any], capability: dict[str, int]) -> str:
+def render_xml(profile: dict[str, Any]) -> str:
     validate_profile(profile, require_resolved=True)
-    validate_against_capability(profile, capability)
     flows = profile["flows"]
     queues = profile["queues"]
     hardware = ["    <frontends>", _frontend_xml(profile), "    </frontends>"]
