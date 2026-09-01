@@ -18,7 +18,9 @@ jobs:
           fetch-depth: 0
 
       - name: Apply exact patch
-        run: python3 .github/scripts/apply_filter_delay_fix.py
+        run: |
+          sed -i 's#tuner_hal2/aidl_service/src/filter_methods.rs#tuner_hal2/aidl_service/src/tuner_service/filter_methods.rs#g' .github/scripts/apply_filter_delay_fix.py
+          python3 .github/scripts/apply_filter_delay_fix.py
 
       - name: Format and test
         run: |
