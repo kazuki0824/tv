@@ -36,6 +36,13 @@ concurrency:
   group: tuner-hal2-host-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+# host_ci/target exists in the repository for historical reasons. Never let Cargo
+# reuse those checked-in artifacts: they can predate the source at the PR HEAD and
+# make a clean checkout validate stale rlibs/binaries. Each job gets an isolated
+# runner-temporary target directory instead.
+env:
+  CARGO_TARGET_DIR: ${{ runner.temp }}/tuner-hal2-target
+
 jobs:
   rustfmt:
     runs-on: ubuntu-latest
