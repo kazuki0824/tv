@@ -38,7 +38,7 @@ jobs:
           git config user.email "4982384+kazuki0824@users.noreply.github.com"
           git rm .github/workflows/apply-filter-delay-fix.yml
           git rm .github/workflows/apply-filter-delay-fix-v2.yml
-          git rm .github/scripts/apply_filter_delay_fix.py
+          git rm -f .github/scripts/apply_filter_delay_fix.py
           git add tuner_hal2
           git commit -m "fix(tuner): complete FilterDelayHint production delivery"
           git push origin HEAD:fix/tuner-hal2-rustfmt-1.81
