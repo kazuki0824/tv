@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .model import FRONTEND_ID, ProfileError, positive_int, reject_unknown, require_dict, validate_profile
@@ -8,6 +9,27 @@ ISDBT_FIRST_CHANNEL = 13
 ISDBT_LAST_CHANNEL = 52
 ISDBT_CHANNEL_13_HZ = 473_142_857
 ISDBT_CHANNEL_STEP_HZ = 6_000_000
+JAPAN_PREFECTURES = (
+    "北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県",
+    "茨城県", "栃木県", "群馬県", "埼玉県", "千葉県", "東京都", "神奈川県",
+    "新潟県", "富山県", "石川県", "福井県", "山梨県", "長野県", "岐阜県",
+    "静岡県", "愛知県", "三重県", "滋賀県", "京都府", "大阪府", "兵庫県",
+    "奈良県", "和歌山県", "鳥取県", "島根県", "岡山県", "広島県", "山口県",
+    "徳島県", "香川県", "愛媛県", "高知県", "福岡県", "佐賀県", "長崎県",
+    "熊本県", "大分県", "宮崎県", "鹿児島県", "沖縄県",
+)
+
+
+def _validate_japan_region_query(query: str) -> None:
+    compact = re.sub(r"[\s-]", "", query)
+    if re.fullmatch(r"\d{7}", compact):
+        return
+    if any(prefecture in query for prefecture in JAPAN_PREFECTURES):
+        return
+    raise ProfileError(
+        "builtin ISDBT region resolution requires a Japanese 7-digit postal code "
+        "or an address containing a prefecture name"
+    )
 
 
 def _builtin_isdbt_candidates() -> list[dict[str, Any]]:
@@ -80,6 +102,7 @@ def resolve_region(
             raise ProfileError(
                 "automatic region resolution without a dataset is supported only for ISDBT"
             )
+        _validate_japan_region_query(query)
         matches = _builtin_isdbt_candidates()
     else:
         matches = _dataset_candidates(profile, dataset)
