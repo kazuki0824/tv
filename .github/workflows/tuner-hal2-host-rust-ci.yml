@@ -38,10 +38,10 @@ concurrency:
 
 # host_ci/target exists in the repository for historical reasons. Never let Cargo
 # reuse those checked-in artifacts: they can predate the source at the PR HEAD and
-# make a clean checkout validate stale rlibs/binaries. Each job gets an isolated
-# runner-temporary target directory instead.
+# make a clean checkout validate stale rlibs/binaries. Hosted jobs use an isolated
+# target directory outside the checkout instead.
 env:
-  CARGO_TARGET_DIR: ${{ runner.temp }}/tuner-hal2-target
+  CARGO_TARGET_DIR: /tmp/tuner-hal2-host-ci-target
 
 jobs:
   rustfmt:
