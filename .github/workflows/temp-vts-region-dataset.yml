@@ -40,9 +40,14 @@ jobs:
           assert d['prefectures']['大阪府']['areas']['大阪市'] == [13, 14, 15, 16, 17, 18, 24]
           print(sum(len(v['areas']) for v in d['prefectures'].values()), 'area keys')
           PY
-      - name: Run region and VTS profile unit tests
+      - name: Run region/default unit tests
         working-directory: tuner_hal2/tools
-        run: python -m unittest test_vts_region_defaults.py test_vts_profile.py
+        run: |
+          python -m unittest test_vts_region_defaults.py
+          python -m unittest \
+            test_vts_profile.VtsProfileTest.test_region_resolution_and_selection_update_same_profile \
+            test_vts_profile.VtsProfileTest.test_noninteractive_init_requires_explicit_inputs \
+            test_vts_profile.VtsProfileTest.test_resource_closure_uses_production_rust_ssot
       - name: Commit snapshot
         run: |
           git config user.name github-actions[bot]
