@@ -18,23 +18,18 @@ if text.count(old) != 1:
     raise SystemExit("expected duplicate fixed-power helper block not found")
 text = text.replace(old, new, 1)
 
-# The runner callback is intentionally an internal generic reaper boundary. Naming a
-# public alias only to satisfy Clippy would enlarge the API surface, so suppress the
-# complexity lint locally at the two owner-controlled factory boundaries.
-public_factory = "    pub fn start_reaper_queue<K, V, J>(\\n"
-if text.count(public_factory) != 1:
-    raise SystemExit(f"public reaper factory count={text.count(public_factory)}")
-text = text.replace(
-    public_factory,
-    "    #[allow(clippy::type_complexity)]\\n" + public_factory,
-    1,
-)
-private_factory = "impl<K, V, J> WorkerRuntimeReaperQueue<K, V, J>\\nwhere"
-if text.count(private_factory) != 1:
-    raise SystemExit(f"private reaper impl count={text.count(private_factory)}")
-idx = text.index(private_factory)
-start_idx = text.index("    fn start(\\n", idx)
-text = text[:start_idx] + "    #[allow(clippy::type_complexity)]\\n" + text[start_idx:]
+# Name the internal callback shape rather than suppressing Clippy. The alias is
+# private to control-core and does not enlarge the public API surface.
+alias_anchor = "impl WorkerRuntime<()> {\n"
+alias = '''type WorkerReaperRunner<K, V, J> = dyn Fn(\n        J,\n        std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<K, V>>>,\n    ) + Send\n    + Sync\n    + 'static;\n\n'''
+if text.count(alias_anchor) != 1:
+    raise SystemExit(f"worker runtime impl anchor count={text.count(alias_anchor)}")
+text = text.replace(alias_anchor, alias + alias_anchor, 1)
+
+complex_runner = '''std::sync::Arc<\n            dyn Fn(\n                    J,\n                    std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<K, V>>>,\n                ) + Send\n                + Sync\n                + 'static,\n        >'''
+if text.count(complex_runner) != 2:
+    raise SystemExit(f"complex reaper runner count={text.count(complex_runner)}")
+text = text.replace(complex_runner, "std::sync::Arc<WorkerReaperRunner<K, V, J>>")
 
 helper.write_text(text)
 exec(compile(helper.read_text(), str(helper), "exec"))
