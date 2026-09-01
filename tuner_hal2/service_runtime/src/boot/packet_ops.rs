@@ -1,8 +1,10 @@
+use std::time::Instant;
+
 use super::{
     demux_runtime_error_to_hal, DescrambleFailure, DescramblePacketDecision, DescramblePacketFlow,
-    FrontendRuntimeId, HalError, HalInvalidStateKind, PipelineBoundaryReason, PipelineReport,
-    StreamBoundaryReport, TsInputOrigin, TsPacketValidationError, TunerServiceRuntime,
-    ValidatedTsPacket, TS_PACKET_SIZE,
+    FilterEventDeliverySnapshot, FrontendRuntimeId, HalError, HalInvalidStateKind,
+    PipelineBoundaryReason, PipelineReport, PlaybackConsumeReport, StreamBoundaryReport,
+    TsInputOrigin, TsPacketValidationError, TunerServiceRuntime, ValidatedTsPacket, TS_PACKET_SIZE,
 };
 use crate::registry::ResolvedDescramblerPacketFlow;
 
@@ -156,7 +158,55 @@ impl TunerServiceRuntime {
             self.record_descrambler_packet_diagnostics(demux_id.0, demux_generation, &report);
             reports.push(report);
         }
+        crate::worker_runtime::notify_filter_delivery_change();
         Ok(reports)
+    }
+
+    /// Polls the canonical FilterRuntime/FilterProducerDrainGate owners for
+    /// time-based delay readiness. This owns no delay state; it only projects
+    /// already-committed ready events into the existing callback delivery path.
+    pub fn poll_filter_delay_delivery(
+        &mut self,
+    ) -> Result<(Vec<FilterEventDeliverySnapshot>, Option<Instant>), HalError> {
+        let demux_ids = self.registry.demux_ids();
+        let mut reports = Vec::new();
+        for demux_id in &demux_ids {
+            let events = self
+                .registry
+                .demux_runtime_mut(*demux_id)
+                .ok_or_else(|| {
+                    HalError::invalid_state(
+                        HalInvalidStateKind::InvalidLifecycle,
+                        "demux runtime is missing while polling delayed filter events",
+                    )
+                })?
+                .take_ready_filter_events()
+                .map_err(demux_runtime_error_to_hal)?;
+            if !events.is_empty() {
+                let mut report = PipelineReport::default();
+                report.generated_events = events;
+                reports.push(report);
+            }
+        }
+        let snapshots = self.filter_event_delivery_snapshots(&reports);
+        let next_deadline = demux_ids
+            .into_iter()
+            .filter_map(|demux_id| {
+                self.registry
+                    .demux_runtime(demux_id)
+                    .and_then(|demux| demux.next_filter_delivery_deadline())
+            })
+            .min();
+        Ok((snapshots, next_deadline))
+    }
+
+    /// Projects events already produced by PlaybackConsumeTxn through the same
+    /// Filter callback path used by live frontend ingress.
+    pub fn filter_event_delivery_snapshots_for_playback_report(
+        &mut self,
+        report: &PlaybackConsumeReport,
+    ) -> Vec<FilterEventDeliverySnapshot> {
+        self.filter_event_delivery_snapshots(&report.packet_reports)
     }
 
     fn decide_descrambled_packet(
