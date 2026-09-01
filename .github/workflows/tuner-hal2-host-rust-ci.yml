@@ -72,8 +72,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Run host-compatible unit tests
-        run: cargo test --workspace --locked
-
       - name: Type-check host-compatible crates
         run: cargo check --workspace --all-targets --locked
+
+      - name: Run host-compatible unit tests
+        run: cargo test --workspace --locked
