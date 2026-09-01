@@ -1,0 +1,42 @@
+name: temp PR53 px4 raster owner
+
+on:
+  push:
+    branches:
+      - fix/tuner-hal2-rustfmt-1.81
+    paths:
+      - .github/workflows/temp-fix53-raster-owner.yml
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tuner-hal2-rustfmt-1.81
+          persist-credentials: true
+          fetch-depth: 0
+      - name: Apply correction
+        run: python3 tools/temp_fix53_px4_raster_owner.py
+      - name: Format
+        working-directory: tuner_hal2/host_ci
+        run: cargo fmt --all
+      - name: Clippy
+        working-directory: tuner_hal2/host_ci
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Check
+        working-directory: tuner_hal2/host_ci
+        run: cargo check --workspace --all-targets --locked
+      - name: Test
+        working-directory: tuner_hal2/host_ci
+        run: cargo test --workspace --locked
+      - name: Commit correction
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tuner_hal2/common/src/lib.rs tuner_hal2/device/src/px4/tune_mapping.rs tuner_hal2/device/src/px4/mod.rs tuner_hal2/service_runtime/src/frontend_request_txn.rs tuner_hal2/host_ci/device/Cargo.toml
+          git commit -m "Keep ISDB-S raster normalization in the px4 adapter"
+          git push origin HEAD:fix/tuner-hal2-rustfmt-1.81
