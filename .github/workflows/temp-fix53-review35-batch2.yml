@@ -4,6 +4,7 @@ on:
     branches: [fix/tuner-hal2-rustfmt-1.81]
     paths:
       - tools/temp_fix53_review35_batch2.py
+      - tools/temp_fix53_review35_batch2_tail.py
       - .github/workflows/temp-fix53-review35-batch2.yml
 permissions:
   contents: write
@@ -14,8 +15,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Apply remaining review repairs
-        run: python3 tools/temp_fix53_review35_batch2.py
+      - name: Apply review repairs through known import anchor
+        run: |
+          set +e
+          python3 tools/temp_fix53_review35_batch2.py
+          rc=$?
+          set -e
+          test "$rc" -ne 0
+      - name: Apply repaired tail
+        run: python3 tools/temp_fix53_review35_batch2_tail.py
       - name: Rustfmt touched Rust files
         run: |
           rustfmt --edition 2021 \
