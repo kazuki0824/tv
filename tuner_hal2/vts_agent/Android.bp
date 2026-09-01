@@ -2,8 +2,8 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-// Device-side VTS bridge. C++ is intentionally limited to importing/reading the
-// AIDL FMQ descriptor; Binder/AIDL control remains Rust.
+// device-side VTS bridge。C++はAIDL FMQ descriptorのimport/readだけに限定し、
+// Binder/AIDL制御はRustが所有する。
 cc_library_static {
     name: "libmaleicacid_tuner_hal2_vts_agent_fmq",
     vendor: true,
@@ -21,8 +21,8 @@ cc_library_static {
     ],
 }
 
-// This target is built for explicit VTS/device-resolution use and is not added
-// to the normal product package list. The host CLI adb-pushes it temporarily.
+// このtargetは明示的なVTS/device-resolution用にだけbuildし、通常productのpackage listへ追加しない。
+// host CLIが一時的にadb-pushして使用する。
 rust_binary {
     name: "maleicacid_tuner_hal2_vts_agent",
     vendor: true,
