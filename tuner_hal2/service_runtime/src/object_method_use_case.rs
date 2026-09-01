@@ -162,12 +162,9 @@ fn object_frontend_status_value(
         ));
     }
     match status_type {
-        ObjectFrontendStatusType::DemodLock => {
-            Ok(ObjectFrontendStatusValue::DemodLocked(matches!(
-                snapshot.signal_state,
-                FrontendSignalState::Locked
-            )))
-        }
+        ObjectFrontendStatusType::DemodLock => Ok(ObjectFrontendStatusValue::DemodLocked(
+            matches!(snapshot.signal_state, FrontendSignalState::Locked),
+        )),
         ObjectFrontendStatusType::RfLock if snapshot.backend == FrontendBackendKind::LinuxDvb => {
             Ok(ObjectFrontendStatusValue::RfLocked(matches!(
                 snapshot.signal_state,
@@ -234,17 +231,17 @@ fn object_frontend_readiness_value(
                 ObjectFrontendStatusReadinessValue::Unavailable
             }
         }
-        ObjectFrontendStatusType::DemodLock | ObjectFrontendStatusType::RfLock => match snapshot.signal_state {
-            FrontendSignalState::Locked | FrontendSignalState::NoSignal => {
-                ObjectFrontendStatusReadinessValue::Stable
+        ObjectFrontendStatusType::DemodLock | ObjectFrontendStatusType::RfLock => {
+            match snapshot.signal_state {
+                FrontendSignalState::Locked | FrontendSignalState::NoSignal => {
+                    ObjectFrontendStatusReadinessValue::Stable
+                }
+                FrontendSignalState::SignalDetected | FrontendSignalState::Unknown => {
+                    ObjectFrontendStatusReadinessValue::Unstable
+                }
             }
-            FrontendSignalState::SignalDetected | FrontendSignalState::Unknown => {
-                ObjectFrontendStatusReadinessValue::Unstable
-            }
-        },
-        ObjectFrontendStatusType::Unsupported => {
-            ObjectFrontendStatusReadinessValue::Unsupported
         }
+        ObjectFrontendStatusType::Unsupported => ObjectFrontendStatusReadinessValue::Unsupported,
     }
 }
 
@@ -320,8 +317,8 @@ fn prepare_object_query_request(
             ))
         }
         ObjectQueryRequest::FrontendGetHardwareInfo => {
-            let entry = query
-                .frontend_entry_for_aidl_object(target.object_id(), target.generation())?;
+            let entry =
+                query.frontend_entry_for_aidl_object(target.object_id(), target.generation())?;
             let hardware_info = entry.hardware_info();
             if hardware_info.is_empty() {
                 return Err(HalError::internal(
@@ -521,6 +518,7 @@ pub(crate) struct ObjectMethodDispatchProof {
 }
 
 #[derive(Debug, Eq, PartialEq)]
+#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
 pub struct ObjectMethodExecutionToken {
     target: ObjectMethodUseCaseTarget,
 }
@@ -660,7 +658,11 @@ impl ObjectMethodUseCase {
             let method = request.method();
             let plan = plan_aidl_method_call(method)?;
             validate_plan_target(&plan, target)?;
-            plan_object_method_dispatch(&mut runtime, plan.command_plan(), plan.executable_request())?;
+            plan_object_method_dispatch(
+                &mut runtime,
+                plan.command_plan(),
+                plan.executable_request(),
+            )?;
             let query = runtime.query();
             prepare_object_query_request(&query, target, request)?
         };
@@ -693,16 +695,22 @@ impl ObjectMethodUseCase {
                 target.object_kind(),
             )
             .map_err(ObjectMethodUseCaseBuildError::Runtime)?;
-            let plan = plan_aidl_method_call(method).map_err(ObjectMethodUseCaseBuildError::Runtime)?;
+            let plan =
+                plan_aidl_method_call(method).map_err(ObjectMethodUseCaseBuildError::Runtime)?;
             validate_plan_target(&plan, target).map_err(ObjectMethodUseCaseBuildError::Runtime)?;
-            plan_object_method_dispatch(&mut runtime, plan.command_plan(), plan.executable_request())
-                .map_err(ObjectMethodUseCaseBuildError::Runtime)?;
+            plan_object_method_dispatch(
+                &mut runtime,
+                plan.command_plan(),
+                plan.executable_request(),
+            )
+            .map_err(ObjectMethodUseCaseBuildError::Runtime)?;
             let request = build().map_err(ObjectMethodUseCaseBuildError::Builder)?;
             let query = runtime.query();
             prepare_object_query_request(&query, target, request)
                 .map_err(ObjectMethodUseCaseBuildError::Runtime)?
         };
-        finish_object_query_execution(runtime, execution).map_err(ObjectMethodUseCaseBuildError::Runtime)
+        finish_object_query_execution(runtime, execution)
+            .map_err(ObjectMethodUseCaseBuildError::Runtime)
     }
 
     pub fn execute_after_live<T, E, B, Build, Execute>(
@@ -715,7 +723,8 @@ impl ObjectMethodUseCase {
     ) -> Result<T, ObjectMethodUseCaseBuildError<E>>
     where
         Build: FnOnce() -> Result<(AidlMethodCall, B), E>,
-        Execute: FnOnce(&mut TunerServiceRuntime, ObjectMethodExecutionToken, B) -> Result<T, HalError>,
+        Execute:
+            FnOnce(&mut TunerServiceRuntime, ObjectMethodExecutionToken, B) -> Result<T, HalError>,
     {
         let target = ObjectMethodUseCaseTarget::new(object_id, generation, object_kind);
         let mut runtime = runtime.lock().map_err(|_| {
@@ -776,7 +785,8 @@ impl ObjectMethodUseCase {
             )
             .map_err(ObjectMethodUseCaseBuildError::Runtime)?;
             let (method, request) = build().map_err(ObjectMethodUseCaseBuildError::Builder)?;
-            let plan = plan_aidl_method_call(method).map_err(ObjectMethodUseCaseBuildError::Runtime)?;
+            let plan =
+                plan_aidl_method_call(method).map_err(ObjectMethodUseCaseBuildError::Runtime)?;
             validate_plan_target(&plan, target).map_err(ObjectMethodUseCaseBuildError::Runtime)?;
             plan_object_method_dispatch(
                 &mut runtime_guard,
@@ -880,7 +890,8 @@ mod tests {
         let demux_entry = {
             let mut guard = runtime.lock().unwrap();
             guard
-                .root_open_txn().open_demux_root_object(AidlMethodCall::PublicApi {
+                .root_open_txn()
+                .open_demux_root_object(AidlMethodCall::PublicApi {
                     object: AidlObjectKind::Tuner,
                     api: AidlApi::TunerOpenDemux,
                 })
@@ -905,12 +916,14 @@ mod tests {
                 ))
             },
             |runtime, dispatch, request| {
-                runtime.child_open_txn().open_filter_child_runtime_for_demux_object(
-                    demux_entry.object_id(),
-                    demux_entry.generation(),
-                    &request,
-                    dispatch,
-                )
+                runtime
+                    .child_open_txn()
+                    .open_filter_child_runtime_for_demux_object(
+                        demux_entry.object_id(),
+                        demux_entry.generation(),
+                        &request,
+                        dispatch,
+                    )
             },
         )
         .expect("PCR filter child open succeeds");

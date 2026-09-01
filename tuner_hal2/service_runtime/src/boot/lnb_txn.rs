@@ -6,10 +6,9 @@ use maleicacid_tuner_hal2_domain_request::{
     LnbSetSatellitePositionRequest, LnbToneRequest, LnbVoltageRequest,
 };
 use maleicacid_tuner_hal2_lnb::{
-    LnbBackendApplyOutcome, LnbBackendOps, LnbDiseqcMessage, LnbElectricalState,
-    LnbFailureKind, LnbFailureRecord, LnbFailureStep, LnbLifecycleReason, LnbRuntime,
-    LnbRuntimeState, LnbTone as RuntimeLnbTone, LnbVoltage as RuntimeLnbVoltage,
-    PreparedLnbClose,
+    LnbBackendApplyOutcome, LnbBackendOps, LnbDiseqcMessage, LnbElectricalState, LnbFailureKind,
+    LnbFailureRecord, LnbFailureStep, LnbLifecycleReason, LnbRuntime, LnbRuntimeState,
+    LnbTone as RuntimeLnbTone, LnbVoltage as RuntimeLnbVoltage, PreparedLnbClose,
 };
 
 use super::TunerServiceRuntime;
@@ -21,12 +20,16 @@ use crate::registry::{
     PreparedLnbAssignmentLease,
 };
 
+#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+
 pub(crate) enum PreparedFrontendLnbAssignment {
     Unchanged,
     Apply {
         prepared_lease: PreparedLnbAssignmentLease,
     },
 }
+
+#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
 
 pub(crate) enum ExecutedFrontendLnbAssignment {
     Unchanged,
@@ -53,6 +56,8 @@ impl PreparedFrontendLnbAssignment {
     }
 }
 
+#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+
 pub(crate) struct PreparedLnbDiseqc {
     lnb_key: LnbRuntimeId,
     expected_generation: u64,
@@ -60,6 +65,8 @@ pub(crate) struct PreparedLnbDiseqc {
     message: LnbDiseqcMessage,
     backend: ServiceRuntimeLnbBackendSnapshot,
 }
+
+#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
 
 pub(crate) struct ExecutedLnbDiseqc {
     lnb_key: LnbRuntimeId,
@@ -79,11 +86,15 @@ impl PreparedLnbDiseqc {
     }
 }
 
+#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+
 pub(crate) struct PreparedLnbLifecycleClose {
     lnb_key: LnbRuntimeId,
     runtime_close: PreparedLnbClose,
     backend: ServiceRuntimeLnbBackendSnapshot,
 }
+
+#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
 
 pub(crate) struct ExecutedLnbLifecycleClose {
     lnb_key: LnbRuntimeId,
@@ -92,10 +103,7 @@ pub(crate) struct ExecutedLnbLifecycleClose {
 }
 
 impl PreparedLnbLifecycleClose {
-    pub(crate) fn execute(
-        self,
-        permit: &LnbPhysicalIoPermit<'_>,
-    ) -> ExecutedLnbLifecycleClose {
+    pub(crate) fn execute(self, permit: &LnbPhysicalIoPermit<'_>) -> ExecutedLnbLifecycleClose {
         let backend_result = if self.runtime_close.requires_backend_io() {
             let mut backend = ServiceRuntimeLnbProfileAdapter::new(self.backend, permit);
             backend.apply_lnb_state(self.runtime_close.lnb_id(), LnbElectricalState::safe())
@@ -329,13 +337,9 @@ impl<'a> LnbMutationContext<'a> {
             .map_err(map_lnb_failure)
     }
 
-    pub(crate) fn owned_lnb_ids_for_frontend(
-        &mut self,
-        frontend_id: i32,
-    ) -> Vec<i32> {
+    pub(crate) fn owned_lnb_ids_for_frontend(&mut self, frontend_id: i32) -> Vec<i32> {
         let frontend_key = FrontendRuntimeId(frontend_id);
-        self
-            .runtime
+        self.runtime
             .registry()
             .lnb_ids()
             .into_iter()
@@ -449,10 +453,12 @@ pub(crate) fn map_lnb_failure(record: LnbFailureRecord) -> HalError {
         LnbFailureKind::DiseqcUnsupported => {
             HalError::Unsupported("DiSEqC is unavailable for this LNB profile")
         }
-        LnbFailureKind::BackendApplyFailed | LnbFailureKind::DropWithoutClose => HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "LNB transaction failed",
-        ),
+        LnbFailureKind::BackendApplyFailed | LnbFailureKind::DropWithoutClose => {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "LNB transaction failed",
+            )
+        }
     }
 }
 

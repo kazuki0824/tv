@@ -2,13 +2,11 @@ use maleicacid_tuner_hal2_common::HalError;
 use maleicacid_tuner_hal2_domain_request::{
     LnbSetSatellitePositionRequest, LnbToneRequest, LnbVoltageRequest,
 };
-use maleicacid_tuner_hal2_lnb::{
-    LnbBackendApplyOutcome, LnbBackendOps, PreparedLnbStateApply,
-};
+use maleicacid_tuner_hal2_lnb::{LnbBackendApplyOutcome, LnbBackendOps, PreparedLnbStateApply};
 
 use crate::boot::lnb_txn::{
-    map_lnb_failure, missing_lnb_error, validate_position_for_profile,
-    validate_tone_for_profile, validate_voltage_for_profile,
+    map_lnb_failure, missing_lnb_error, validate_position_for_profile, validate_tone_for_profile,
+    validate_voltage_for_profile,
 };
 use crate::boot::TunerServiceRuntime;
 use crate::lnb_backend_adapter::{
@@ -16,11 +14,15 @@ use crate::lnb_backend_adapter::{
 };
 use crate::registry::{LnbPhysicalIoPermit, LnbRuntimeId};
 
+#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+
 pub(crate) struct PreparedLnbControlTxn {
     lnb_key: LnbRuntimeId,
     runtime_apply: PreparedLnbStateApply,
     backend: ServiceRuntimeLnbBackendSnapshot,
 }
+
+#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
 
 pub(crate) struct CompletedLnbControlTxn {
     lnb_key: LnbRuntimeId,
@@ -29,10 +31,7 @@ pub(crate) struct CompletedLnbControlTxn {
 }
 
 impl PreparedLnbControlTxn {
-    pub(crate) fn execute(
-        self,
-        permit: &LnbPhysicalIoPermit<'_>,
-    ) -> CompletedLnbControlTxn {
+    pub(crate) fn execute(self, permit: &LnbPhysicalIoPermit<'_>) -> CompletedLnbControlTxn {
         let mut backend = ServiceRuntimeLnbProfileAdapter::new(self.backend, permit);
         let backend_result = backend.apply_lnb_state(
             self.runtime_apply.lnb_id(),
@@ -109,10 +108,7 @@ impl LnbControlTxn<'_> {
         self.prepare_candidate(lnb_key, candidate)
     }
 
-    pub(crate) fn finish(
-        &mut self,
-        completed: CompletedLnbControlTxn,
-    ) -> Result<(), HalError> {
+    pub(crate) fn finish(&mut self, completed: CompletedLnbControlTxn) -> Result<(), HalError> {
         self.runtime
             .registry_mut()
             .finish_lnb_state_apply(
@@ -120,8 +116,8 @@ impl LnbControlTxn<'_> {
                 completed.runtime_apply,
                 completed.backend_result,
             )
-        .map(|_| ())
-        .map_err(map_lnb_failure)
+            .map(|_| ())
+            .map_err(map_lnb_failure)
     }
 
     fn current_state(
