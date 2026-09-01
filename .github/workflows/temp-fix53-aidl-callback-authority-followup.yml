@@ -47,8 +47,7 @@ jobs:
             tuner_hal2/aidl_service/src/object_runtime/mod.rs \
             tuner_hal2/aidl_service/src/child_object_open.rs \
             tuner_hal2/compile_contract/src/lib.rs \
-            tuner_hal2/Android.bp \
-            .github/workflows/tuner-hal2-host-rust-ci.yml
+            tuner_hal2/Android.bp
           git diff --cached --check
           git commit -m "Close AIDL callback authority failure paths"
           git push origin HEAD:fix/tuner-hal2-rustfmt-1.81
