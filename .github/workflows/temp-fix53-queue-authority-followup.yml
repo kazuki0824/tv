@@ -1,0 +1,72 @@
+name: temp PR53 queue authority follow-up
+on:
+  push:
+    branches: [fix/tuner-hal2-rustfmt-1.81]
+    paths: [.github/workflows/temp-fix53-queue-authority-followup.yml]
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tuner-hal2-rustfmt-1.81
+          persist-credentials: true
+          fetch-depth: 0
+      - name: Apply reviewed production repair
+        run: python3 tools/temp_fix53_queue_authority_followup.py
+      - name: Format changed Rust sources
+        run: |
+          rustfmt --edition 2021 tuner_hal2/demux/src/runtime/queue_runtime.rs
+          find tuner_hal2 -name '*.rs' -type f -print0 | xargs -0 grep -l '#\[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"\]' | xargs rustfmt --edition 2021
+          (cd tuner_hal2/host_ci && cargo fmt --all)
+      - name: Verify authority source contracts
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          root = Path('tuner_hal2')
+          names = [
+              'PreparedAvSyncRegistryMutation','PreparedPcrInvalidation','PreparedDvrFilterRelation',
+              'FilterQueueCleanupPlan','DvrQueueCleanupPlan','CommittedFilterQueueCleanup',
+              'CommittedDvrQueueCleanup','PreparedCallbackRegistration','PreparedLnbControlTxn',
+              'CompletedLnbControlTxn','PreparedFrontendLnbAssignment','ExecutedFrontendLnbAssignment',
+              'PreparedLnbDiseqc','ExecutedLnbDiseqc','PreparedLnbLifecycleClose',
+              'ExecutedLnbLifecycleClose','ObjectMethodExecutionToken','QueueEpochToken','QueueEpochDrainTxn',
+          ]
+          for name in names:
+              found = []
+              for p in root.rglob('*.rs'):
+                  s = p.read_text()
+                  m = re.search(rf'^(?:pub(?:\([^\n)]*\))?\s+)?(?:struct|enum)\s+{name}\b', s, re.M)
+                  if m:
+                      found.append((p,s,m.start()))
+              assert len(found) == 1, (name, [str(x[0]) for x in found])
+              p,s,pos = found[0]
+              before = s[max(0,pos-700):pos]
+              assert '#[must_use' in before, (name,p)
+          q = Path('tuner_hal2/demux/src/runtime/queue_runtime.rs').read_text()
+          assert 'if self.active && self.release().is_err()' not in q
+          assert 'if self.active && self.rollback().is_err()' not in q
+          assert 'fn fail_close_unconsumed_authority(&self)' in q
+          print('authority source contracts verified')
+          PY
+      - name: Run host workspace tests
+        working-directory: tuner_hal2/host_ci
+        run: cargo test --workspace --locked
+      - name: Run host all-target check
+        working-directory: tuner_hal2/host_ci
+        run: cargo check --workspace --all-targets --locked
+      - name: Run host Clippy
+        working-directory: tuner_hal2/host_ci
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Commit production repair
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tuner_hal2
+          git diff --cached --check
+          git commit -m "Close queue authority cleanup contracts"
+          git push origin HEAD:fix/tuner-hal2-rustfmt-1.81
