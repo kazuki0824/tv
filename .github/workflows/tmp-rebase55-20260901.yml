@@ -18,24 +18,160 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Inspect semantic merge hunks for PR55
+      - name: Rebuild PR55 semantic delta on current PR54
         shell: bash
         run: |
           set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config core.quotePath false
           BASE=03b64958244e398a67cb4dc66f79938d17645d38
           OLD_BASE=a7d5976e6e371ab45f39fd0ceacc8c6550a95fe9
           OLD_HEAD=81fa1e66c317b7b0258383b7d09bf67634ac092c
           git fetch origin "$BASE" "$OLD_BASE" "$OLD_HEAD"
-          for f in 'tuner_hal/DESIGN_JA.md' '開発規則.md'; do
-            rm -rf /tmp/m55 && mkdir -p /tmp/m55
-            git show "$BASE:$f" > /tmp/m55/ours
-            git show "$OLD_BASE:$f" > /tmp/m55/base
-            git show "$OLD_HEAD:$f" > /tmp/m55/theirs
-            set +e
-            git merge-file -p /tmp/m55/ours /tmp/m55/base /tmp/m55/theirs > /tmp/m55/merged
-            rc=$?
-            set -e
-            echo "===== $f merge_rc=$rc ====="
-            grep -n -B20 -A100 '^<<<<<<<\|^=======\|^>>>>>>>' /tmp/m55/merged || true
-          done
+          git checkout -B rebuilt55 "$BASE"
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import subprocess
+          import tempfile
+
+          BASE = "03b64958244e398a67cb4dc66f79938d17645d38"
+          OLD_BASE = "a7d5976e6e371ab45f39fd0ceacc8c6550a95fe9"
+          OLD_HEAD = "81fa1e66c317b7b0258383b7d09bf67634ac092c"
+
+          def git_show(sha: str, path: str):
+              p = subprocess.run(["git", "show", f"{sha}:{path}"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+              return None if p.returncode else p.stdout
+
+          def write(path: str, data: bytes):
+              p = pathlib.Path(path)
+              p.parent.mkdir(parents=True, exist_ok=True)
+              p.write_bytes(data)
+
+          def merge3(current: bytes, base: bytes, desired: bytes, path: str) -> bytes:
+              with tempfile.TemporaryDirectory() as td:
+                  td = pathlib.Path(td)
+                  (td / "ours").write_bytes(current)
+                  (td / "base").write_bytes(base)
+                  (td / "theirs").write_bytes(desired)
+                  p = subprocess.run(
+                      ["git", "merge-file", "-p", str(td / "ours"), str(td / "base"), str(td / "theirs")],
+                      stdout=subprocess.PIPE,
+                  )
+                  merged = p.stdout.decode("utf-8")
+              if p.returncode == 0:
+                  return merged.encode()
+
+              def resolve_ours(text: str) -> str:
+                  lines = text.splitlines(keepends=True)
+                  out = []
+                  i = 0
+                  while i < len(lines):
+                      if not lines[i].startswith("<<<<<<<"):
+                          out.append(lines[i]); i += 1; continue
+                      i += 1
+                      ours = []
+                      while i < len(lines) and not lines[i].startswith("======="):
+                          ours.append(lines[i]); i += 1
+                      if i == len(lines): raise RuntimeError(f"unterminated conflict in {path}")
+                      i += 1
+                      while i < len(lines) and not lines[i].startswith(">>>>>>>"):
+                          i += 1
+                      if i == len(lines): raise RuntimeError(f"unterminated conflict in {path}")
+                      i += 1
+                      out.extend(ours)
+                  return "".join(out)
+
+              if path == "tuner_hal/DESIGN_JA.md":
+                  merged = resolve_ours(merged)
+              elif path == "開発規則.md":
+                  lines = merged.splitlines(keepends=True)
+                  out = []
+                  i = 0
+                  replacement = (
+                      "px4_drv / product-level invariant として、採用driverは `kazuki0824/px4_drv` `feat/android-ddk` commit `90d9c6506389ece3e47cced826326ccd1c6d22e8` を基準とし、`PTX_SET_CHANNEL` の既存lock確認に加えて、read-only `PTX_GET_LOCK_STATUS` が current `ops->check_lock()` 結果を副作用なく返し、read-only `PTX_GET_TMCC_PARTIAL_RECEPTION` が current ISDB-T TMCC partial-reception 状態を副作用なく返すことを必須とする。未確定状態および I/O failure は正常な unlocked / `false` と区別する。AOSPへの具体的な `DEMOD_LOCK` / event / `partialReceptionFlag` 写像、世代柵、`LOCKED` / `LOST_LOCK` 遷移は `tuner_hal/DESIGN_JA.md` を正本とし、本書で重複定義しない。\n"
+                  )
+                  while i < len(lines):
+                      if not lines[i].startswith("<<<<<<<"):
+                          out.append(lines[i]); i += 1; continue
+                      i += 1
+                      while i < len(lines) and not lines[i].startswith("======="):
+                          i += 1
+                      if i == len(lines): raise RuntimeError("unterminated rules conflict")
+                      i += 1
+                      while i < len(lines) and not lines[i].startswith(">>>>>>>"):
+                          i += 1
+                      if i == len(lines): raise RuntimeError("unterminated rules conflict")
+                      i += 1
+                      out.append(replacement)
+                  merged = "".join(out)
+              else:
+                  raise RuntimeError(f"unexpected semantic conflict in {path}")
+              if "<<<<<<<" in merged or ">>>>>>>" in merged or "\n=======\n" in merged:
+                  raise RuntimeError(f"conflict marker remains in {path}")
+              return merged.encode()
+
+          raw = subprocess.check_output(["git", "diff", "--name-status", "-M", "-z", OLD_BASE, OLD_HEAD])
+          parts = raw.split(b"\0")
+          i = 0
+          while i < len(parts) and parts[i]:
+              status = parts[i].decode(); i += 1
+              if status.startswith("R"):
+                  old = parts[i].decode(); new = parts[i+1].decode(); i += 2
+                  cur_old = git_show(BASE, old)
+                  cur_new = git_show(BASE, new)
+                  if cur_new is not None:
+                      if cur_old is not None:
+                          pathlib.Path(old).unlink(missing_ok=True)
+                      continue
+                  if cur_old is not None:
+                      pathlib.Path(new).parent.mkdir(parents=True, exist_ok=True)
+                      os.replace(old, new)
+                  else:
+                      desired = git_show(OLD_HEAD, new)
+                      if desired is None: raise RuntimeError(f"missing desired rename target {new}")
+                      write(new, desired)
+                  continue
+
+              path = parts[i].decode(); i += 1
+              current = git_show(BASE, path)
+              desired = git_show(OLD_HEAD, path)
+              base = git_show(OLD_BASE, path)
+              kind = status[0]
+              if kind == "A":
+                  if current is None:
+                      if desired is None: raise RuntimeError(f"missing desired add {path}")
+                      write(path, desired)
+              elif kind == "D":
+                  if current is not None:
+                      pathlib.Path(path).unlink(missing_ok=True)
+              elif kind == "M":
+                  if current is None or base is None or desired is None:
+                      raise RuntimeError(f"unexpected missing version for {path}")
+                  if current == desired:
+                      continue
+                  if current == base:
+                      write(path, desired)
+                  else:
+                      write(path, merge3(current, base, desired, path))
+              else:
+                  raise RuntimeError(f"unsupported status {status} {path}")
+
+          for path in ("tuner_hal/DESIGN_JA.md", "開発規則.md"):
+              text = pathlib.Path(path).read_text()
+              if "<<<<<<<" in text or ">>>>>>>" in text:
+                  raise RuntimeError(f"conflict marker remains in {path}")
+          if "PTX_GET_TMCC_PARTIAL_RECEPTION" not in pathlib.Path("tuner_hal/DESIGN_JA.md").read_text():
+              raise RuntimeError("TMCC partial-reception contract was not preserved in tuner_hal design")
+          if "PTX_GET_TMCC_PARTIAL_RECEPTION" not in pathlib.Path("開発規則.md").read_text():
+              raise RuntimeError("TMCC partial-reception product invariant was not preserved")
+          PY
+          git add -A
+          git diff --cached --check
+          echo '--- rebuilt #55 files ---'
+          git diff --cached --name-status
+          test -n "$(git diff --cached --name-only)"
+          git commit -m 'rebase: rebuild #55 delta on current #54'
+          test "$(git rev-parse HEAD^)" = "$BASE"
+          git push --force origin HEAD:refs/heads/tmp/rebuilt55-20260901
