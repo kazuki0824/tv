@@ -8,6 +8,16 @@
 
 物理ファイル名、module名、type名、関数名はAOSP公開契約またはARIB規範ではない。ただし、`../tuner_hal/DESIGN_JA.md`の論理契約を実装へ一意に接続するため、実装owner/anchorと許可entry pointは、本書の`共通transaction / use-caseの規範実装アンカー`で追跡アンカーとして固定する。責務を変えないrename、split、mergeだけでは公開設計変更にならないが、同一変更でアンカーを更新し、移動前後に複数ownerを残してはならない。論理契約の状態、phase、確定点、rollback / cleanup、failure semanticsは本書へ再掲せず`../tuner_hal/DESIGN_JA.md`を参照する。
 
+## VTS device agentの実装責務境界
+
+`maleicacid_tuner_hal2_vts_agent`はhost側VTS profile CLIからだけ使用するtest-onlyのdevice-side bridgeとする。通常productのTuner HAL runtime責務へ組み込まず、公開`android.hardware.tv.tuner.ITuner/default`へ接続して一時的な`IFrontend` / `IDemux` / `IFilter`を所有し、1回のtuneで`DEMOD_LOCK`を確認した後、hostから要求されたPID / tableのTS `SECTION` filterを開き、FMQから完成済みsection payloadを取得してhostへ返すところまでを責務とする。
+
+1つのfrequency候補は1つのagent processかつ1つのtune generationで解決し、そのsessionを保持したままPAT、PATから選択されたPMT、SDT actualの各sectionをhostへ供給する。agentはPAT/PMT/SDTの意味解析、service選択、elementary PID選択、`VtsEnvironmentProfile`の解釈、HAL capabilityの変更を行ってはならない。
+
+SIの構文・意味解析は`../arib_si_engine_rs/DESIGN_JA.md`を正本とし、host側`maleicacid_arib_si_engine_vts_host`はcanonical `libmaleicacid_arib_si_engine_core`へ接続する。device agent側に独立したPAT/PMT parser、section意味解析、service選択ロジックを持たせない。
+
+C++はAIDL FMQ descriptorのimport/read境界だけに限定し、Binder/AIDL制御、frontend/demux/filter session lifetime、tune/LOCK確認はRustが所有する。agentのproduct/test imageへの配置、adb-push、除去、SELinux/linker policyに応じたtest image経路は`INTEGRATION.md`を正とし、本書では再定義しない。
+
 ## 責務の一方向参照
 
 | 正本 | 所有する内容 | 他文書での扱い |
@@ -300,16 +310,6 @@ Filter、DVR、TimeFilterなどの子object生成は`ChildOpenTxn`の正規入�
 TS入力originとgeneration名前空間は`../tuner_hal/DESIGN_JA.md`の`TsInputOrigin`／soft demux入力元契約を正とする。本書では、各パケットを型付き`TsInputOrigin`とともに`PacketPipeline`の正規入口へ入力し、`PacketPipeline`がパケット検証と入力元別の定常時continuityの正本を所有し、各Filter等の正規所有者へ配送接続する責務境界を定義する。section/PES assembler等の状態所有権とPSI/SI意味解析は`PacketPipeline`へ吸収しない。通常パケット処理の第二の正規状態所有者または正規手順所有者を設けない。
 
 Filter/SharedFilterのqueue確定は`FilterProducerDrainGate`、DVR queue I/Oは`QueueEpochProtocol`、配送済みAV領域のallocation/leaseはAV resource ownerへ接続する。write authorityのgeneration、失効条件、配送済みAV資源の寿命は`../tuner_hal/DESIGN_JA.md`の同名契約・資源寿命表を正とし、本書では再定義しない。
-
-## VTS device agentの実装責務境界
-
-`maleicacid_tuner_hal2_vts_agent`はhost側VTS profile CLIからだけ使用するtest-onlyのdevice-side bridgeとする。通常productのTuner HAL runtime責務へ組み込まず、公開`android.hardware.tv.tuner.ITuner/default`へ接続して一時的な`IFrontend` / `IDemux` / `IFilter`を所有し、1回のtuneで`DEMOD_LOCK`を確認した後、hostから要求されたPID / tableのTS `SECTION` filterを開き、FMQから完成済みsection payloadを取得してhostへ返すところまでを責務とする。
-
-1つのfrequency候補は1つのagent processかつ1つのtune generationで解決し、そのsessionを保持したままPAT、PATから選択されたPMT、SDT actualの各sectionをhostへ供給する。agentはPAT/PMT/SDTの意味解析、service選択、elementary PID選択、`VtsEnvironmentProfile`の解釈、HAL capabilityの変更を行ってはならない。
-
-SIの構文・意味解析は`../arib_si_engine_rs/DESIGN_JA.md`を正本とし、host側`maleicacid_arib_si_engine_vts_host`はcanonical `libmaleicacid_arib_si_engine_core`へ接続する。device agent側に独立したPAT/PMT parser、section意味解析、service選択ロジックを持たせない。
-
-C++はAIDL FMQ descriptorのimport/read境界だけに限定し、Binder/AIDL制御、frontend/demux/filter session lifetime、tune/LOCK確認はRustが所有する。agentのproduct/test imageへの配置、adb-push、除去、SELinux/linker policyに応じたtest image経路は`INTEGRATION.md`を正とし、本書では再定義しない。
 
 ## 実装構造索引
 
