@@ -420,6 +420,12 @@ pub(super) fn demux_runtime_error_to_hal(
                 "demux runtime was quarantined after source boundary rollback failure",
             )
         }
+        maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::QueueRuntimeFailureRollbackFailed => {
+            HalError::cleanup_failed(
+                "playback queue read rollback",
+                "DVR was quarantined after playback queue transaction rollback failure",
+            )
+        }
         maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::QueueRuntimeFailure
         | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::AvBackingFailure => {
             HalError::internal(

@@ -195,7 +195,9 @@ fn run_cleanup_job(
     let mut attempt = 0usize;
     loop {
         let Some(context) = context.upgrade() else {
-            let _ = clear_pending_cleanup_job(&pending, key);
+            // The canonical service context is gone, so no owner remains that can
+            // truthfully mark this cleanup obligation complete. Keep it pending
+            // until the reaper state itself is destroyed.
             return;
         };
         if job.registered_at.elapsed() >= policy.terminal_deadline {
@@ -220,7 +222,9 @@ fn run_cleanup_job(
             }
             Err(_) => {
                 mark_cleanup_reaper_critical(&context);
-                let _ = clear_pending_cleanup_job(&pending, key);
+                if clear_pending_cleanup_job(&pending, key).is_err() {
+                    mark_cleanup_reaper_critical(&context);
+                }
                 return;
             }
         };

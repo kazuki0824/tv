@@ -111,6 +111,7 @@ pub enum DemuxRuntimeErrorKind {
     PipelineFailed,
     GenerationExhausted,
     QueueRuntimeFailure,
+    QueueRuntimeFailureRollbackFailed,
     AvBackingFailure,
     SourceBoundaryRollbackFailed,
     RelationCommitUnknown,
@@ -528,6 +529,12 @@ impl DemuxRuntimeError {
     pub const fn queue_runtime_failure(id: i32) -> Self {
         Self {
             kind: DemuxRuntimeErrorKind::QueueRuntimeFailure,
+            id: Some(id),
+        }
+    }
+    pub const fn queue_runtime_failure_rollback_failed(id: i32) -> Self {
+        Self {
+            kind: DemuxRuntimeErrorKind::QueueRuntimeFailureRollbackFailed,
             id: Some(id),
         }
     }
@@ -3392,7 +3399,12 @@ impl DemuxRuntime {
         let (queue_identity, queue_epoch) = match token.playback_coordinates() {
             Ok(coordinates) => coordinates,
             Err(_) => {
-                let _ = token.abort();
+                if token.abort().is_err() {
+                    self.quarantine_dvr_runtime(dvr_id);
+                    return Err(DemuxRuntimeError::queue_runtime_failure_rollback_failed(
+                        dvr_id,
+                    ));
+                }
                 if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
                     dvr.mark_failed();
                 }
