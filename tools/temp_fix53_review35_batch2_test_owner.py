@@ -1,14 +1,12 @@
 from pathlib import Path
 import re
 
-# Replace tests that intentionally reconstructed the old device-local owner
-# internals. The replacement still verifies that abnormal worker termination
-# cannot be converted to success, but only through the canonical start path.
 p=Path('tuner_hal2/device/src/runtime/live_pump.rs'); t=p.read_text()
 pat=r'''        let result: Arc<Mutex<Option<Result<FrontendLivePumpReport, HalError>>>> =\n            Arc::new\(Mutex::new\(None\)\);\n        let join = std::thread::spawn\(\|\| \{\}\);\n        let owner = FrontendLivePumpOwner \{\n            cancel: Arc::new\(AtomicBool::new\(false\)\),\n            thread_result: ThreadResultOwner::new_for_test\(\n                "[^"]+",\n                result,\n                Some\(join\),\n            \),\n        \};'''
 rep='''        let owner = FrontendLivePumpOwner {\n            cancel: Arc::new(AtomicBool::new(false)),\n            thread_result: ThreadResultOwner::start(\n                "live-pump-owner-failure-test",\n                || -> Result<FrontendLivePumpReport, HalError> {\n                    panic!("forced worker owner failure")\n                },\n            )\n            .unwrap(),\n        };'''
 t,n=re.subn(pat,rep,t)
 if n!=2: raise SystemExit(f'live pump old-owner test blocks: expected 2, got {n}')
+t=t.replace('    use std::sync::{Arc, Mutex};\n','    use std::sync::Arc;\n')
 p.write_text(t)
 
 p=Path('tuner_hal2/device/src/runtime/frontend_worker.rs'); t=p.read_text()
@@ -16,6 +14,14 @@ pat=r'''        type WorkerThreadResult =\n            Arc<Mutex<Option<Result<\
 rep='''        registry.slots.insert(\n            key,\n            FrontendWorkerSlot {\n                generation: 10,\n                cancel: Arc::new(AtomicBool::new(false)),\n                cancel_reason: Arc::new(Mutex::new(None)),\n                thread_result: Some(\n                    ThreadResultOwner::start(\n                        "frontend-worker-owner-failure-test",\n                        || -> Result<(Result<(), HalError>, WorkerExit), HalError> {\n                            panic!("forced worker owner failure")\n                        },\n                    )\n                    .unwrap(),\n                ),\n                pending_completed: None,\n            },\n        );'''
 t,n=re.subn(pat,rep,t)
 if n!=1: raise SystemExit(f'frontend worker old-owner test block: expected 1, got {n}')
+p.write_text(t)
+
+# The device adapter has no caller for a separate is_finished surface; removing it
+# keeps the adapter minimal and leaves physical lifecycle state solely in control-core.
+p=Path('tuner_hal2/device/src/runtime/thread_result_owner.rs'); t=p.read_text()
+old='''    pub(crate) fn is_thread_finished(&self) -> bool {\n        self.owner.is_thread_finished()\n    }\n\n'''
+if t.count(old)!=1: raise SystemExit(f'dead adapter method count {t.count(old)}')
+t=t.replace(old,'',1)
 p.write_text(t)
 
 # WorkerRuntime implements Drop, so the shared physical owner is optional and
@@ -31,4 +37,4 @@ t=t.replace(old,new,1)
 if t.count('            handle,\n')<1: raise SystemExit('spawn handle initializer missing')
 t=t.replace('            handle,\n','            handle: Some(handle),\n',1)
 p.write_text(t)
-print('worker owner tests and Drop-safe ownership aligned')
+print('worker owner tests, minimal adapter and Drop-safe ownership aligned')
