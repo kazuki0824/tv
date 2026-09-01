@@ -1,0 +1,53 @@
+name: tmp rebase55 20260901
+
+on:
+  push:
+    branches:
+      - tmp/rebase55-control-20260901
+    paths:
+      - .github/workflows/tmp-rebase55-20260901.yml
+
+permissions:
+  contents: write
+
+jobs:
+  rebase:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reapply clean PR55 delta onto current PR54
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config core.quotePath false
+          BASE=03b64958244e398a67cb4dc66f79938d17645d38
+          OLD_BASE=a7d5976e6e371ab45f39fd0ceacc8c6550a95fe9
+          OLD_HEAD=81fa1e66c317b7b0258383b7d09bf67634ac092c
+          git fetch origin "$BASE" "$OLD_BASE" "$OLD_HEAD"
+          git checkout -B rebuilt55 "$BASE"
+          git diff --binary "$OLD_BASE" "$OLD_HEAD" > /tmp/pr55.patch
+          set +e
+          git apply --3way --index /tmp/pr55.patch
+          rc=$?
+          set -e
+          echo "apply_rc=$rc"
+          if [ "$rc" -ne 0 ]; then
+            echo '--- conflicts ---'
+            git diff --name-only --diff-filter=U || true
+            while IFS= read -r f; do
+              [ -n "$f" ] || continue
+              echo "===== $f ====="
+              grep -n -B10 -A80 '^<<<<<<<\|^=======\|^>>>>>>>' "$f" || true
+            done < <(git diff --name-only --diff-filter=U)
+            exit "$rc"
+          fi
+          git diff --cached --check
+          echo "changed_files=$(git diff --cached --name-only | wc -l)"
+          git commit -m 'rebase: rebuild #55 delta on current #54'
+          test "$(git rev-parse HEAD^)" = "$BASE"
+          git push --force origin HEAD:refs/heads/tmp/rebuilt55-20260901
