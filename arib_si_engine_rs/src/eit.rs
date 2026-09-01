@@ -753,7 +753,7 @@ mod tests {
         let defined_start = [0xee, 0x00, 0x12, 0x00, 0x00];
         let undefined_duration_start = [0xee, 0x01, 0x13, 0x00, 0x00];
         let mut body = eit_body(1, &[(1, defined_start), (2, undefined_duration_start)]);
-        // EIT header(14) + first event(12) + event_id(2) + start_time(5).
+        // EIT header(14) + 先頭event(12) + event_id(2) + start_time(5)。
         body[33..36].copy_from_slice(&[0xff, 0xff, 0xff]);
 
         let mut store = EitStore::default();

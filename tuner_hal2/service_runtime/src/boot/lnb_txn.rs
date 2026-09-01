@@ -20,7 +20,7 @@ use crate::registry::{
     PreparedLnbAssignmentLease,
 };
 
-#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+#[must_use = "この準備済み一回限り権限は型付き完了入口で消費する必要があります"]
 
 pub(crate) enum PreparedFrontendLnbAssignment {
     Unchanged,
@@ -29,7 +29,7 @@ pub(crate) enum PreparedFrontendLnbAssignment {
     },
 }
 
-#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+#[must_use = "この準備済み一回限り権限は型付き完了入口で消費する必要があります"]
 
 pub(crate) enum ExecutedFrontendLnbAssignment {
     Unchanged,
@@ -46,17 +46,16 @@ impl PreparedFrontendLnbAssignment {
         match self {
             Self::Unchanged => ExecutedFrontendLnbAssignment::Unchanged,
             Self::Apply { prepared_lease } => {
-                // FrontendLnbRelationTxn owns only relation/lease mutation. setLnb()
-                // deliberately performs no electrical-state backend I/O here; the
-                // permit remains a serialization fence for existing callers while
-                // LnbRegistry/LnbControlTxn remain the only electrical-state owners.
+                // FrontendLnbRelationTxnはrelation/lease mutationだけを所有する。
+                // setLnb()はここでelectrical-state backend I/Oを行わず、permitは既存caller向けの
+                // serialization fenceとして維持し、electrical-state ownerはLnbRegistry/LnbControlTxnだけとする。
                 ExecutedFrontendLnbAssignment::Apply { prepared_lease }
             }
         }
     }
 }
 
-#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+#[must_use = "この準備済み一回限り権限は型付き完了入口で消費する必要があります"]
 
 pub(crate) struct PreparedLnbDiseqc {
     lnb_key: LnbRuntimeId,
@@ -66,7 +65,7 @@ pub(crate) struct PreparedLnbDiseqc {
     backend: ServiceRuntimeLnbBackendSnapshot,
 }
 
-#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+#[must_use = "この準備済み一回限り権限は型付き完了入口で消費する必要があります"]
 
 pub(crate) struct ExecutedLnbDiseqc {
     lnb_key: LnbRuntimeId,
@@ -86,7 +85,7 @@ impl PreparedLnbDiseqc {
     }
 }
 
-#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+#[must_use = "この準備済み一回限り権限は型付き完了入口で消費する必要があります"]
 
 pub(crate) struct PreparedLnbLifecycleClose {
     lnb_key: LnbRuntimeId,
@@ -94,7 +93,7 @@ pub(crate) struct PreparedLnbLifecycleClose {
     backend: ServiceRuntimeLnbBackendSnapshot,
 }
 
-#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+#[must_use = "この準備済み一回限り権限は型付き完了入口で消費する必要があります"]
 
 pub(crate) struct ExecutedLnbLifecycleClose {
     lnb_key: LnbRuntimeId,
@@ -170,10 +169,9 @@ impl<'a> LnbMutationContext<'a> {
             return Ok(PreparedFrontendLnbAssignment::Unchanged);
         };
 
-        // setLnb() owns only the frontend-to-LNB relation and its lease. Validate
-        // that the pending relation is representable by the selected backend, but
-        // do not re-apply the LNB electrical state here: persistent electrical
-        // state and physical I/O remain owned by LnbRegistry/LnbControlTxn.
+        // setLnb()はfrontend-to-LNB relationとそのleaseだけを所有する。
+        // pending relationを選択backendで表現可能か検証するが、ここでLNB electrical stateを再適用しない。
+        // 永続electrical stateと物理I/OはLnbRegistry/LnbControlTxnが引き続き所有する。
         if let Err(error) = ServiceRuntimeLnbBackendSnapshot::new_with_pending_frontend(
             self.runtime.registry(),
             lnb_key,

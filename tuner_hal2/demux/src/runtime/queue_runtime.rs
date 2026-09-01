@@ -136,9 +136,8 @@ struct QueueEpochProtocolState {
 }
 
 #[derive(Debug)]
-/// Canonical DVR queue-epoch state owner. Tokens and drain transactions are
-/// one-shot authorities issued by this owner and never carry an independent
-/// epoch namespace.
+/// DVR queue-epoch stateを所有する正規owner。
+/// tokenとdrain transactionはこのownerが発行する一回限り権限であり、独立epoch namespaceを持たない。
 pub(crate) struct QueueEpochProtocol {
     state: Mutex<QueueEpochProtocolState>,
     drained: Condvar,
@@ -157,7 +156,7 @@ impl QueueEpochProtocol {
 }
 
 #[derive(Debug)]
-#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+#[must_use = "この準備済み一回限り権限は型付き完了入口で消費する必要があります"]
 pub(crate) struct QueueEpochToken {
     protocol: Arc<QueueEpochProtocol>,
     queue_identity: Option<u64>,
@@ -237,7 +236,7 @@ impl Drop for QueueEpochToken {
 }
 
 #[derive(Debug)]
-#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+#[must_use = "この準備済み一回限り権限は型付き完了入口で消費する必要があります"]
 pub(crate) struct QueueEpochDrainTxn {
     protocol: Arc<QueueEpochProtocol>,
     epoch: u64,
@@ -491,9 +490,9 @@ impl QueueRuntime {
             return Err(DvrQueueDrainCommitError::EpochCommit.after_abort(abort));
         }
 
-        // FmqQueue::clear() is failure-atomic: allocation happens before the
-        // exact read, and a failed exact read leaves the read position intact.
-        // Once it succeeds, only infallible in-memory epoch publication remains.
+        // FmqQueue::clear()はfailure-atomicで、allocationをexact readより先に行い、
+        // exact read失敗時はread positionを維持する。
+        // 成功後に残るのは失敗しないmemory内epoch publicationだけである。
         let dropped_bytes = match clear(self) {
             Ok(bytes) => bytes,
             Err(_) => {

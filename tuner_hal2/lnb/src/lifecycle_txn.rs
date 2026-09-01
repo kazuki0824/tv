@@ -43,7 +43,7 @@ pub struct LnbLifecycleOutcome {
     pub result: Result<(), LnbFailureRecord>,
 }
 
-#[must_use = "a prepared LNB close must consume exactly one backend result"]
+#[must_use = "準備済みLNB closeはbackend結果を正確に1件消費する必要があります"]
 #[derive(Debug, Eq, PartialEq)]
 pub struct PreparedLnbClose {
     lnb_id: i32,

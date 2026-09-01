@@ -1,5 +1,5 @@
-# Allow the standard Tuner HAL domain used by tuner_hal2 to access the
-# product tuner character devices discovered by the runtime probe.
+# tuner_hal2が使用する標準Tuner HAL domainから、runtime probeで検出した
+# 製品tuner character deviceへのアクセスを許可する。
 allow hal_tv_tuner_default dvb_frontend_device:chr_file rw_file_perms;
 allow hal_tv_tuner_default dvb_dvr_device:chr_file r_file_perms;
 allow hal_tv_tuner_default px4_tuner_device:chr_file rw_file_perms;

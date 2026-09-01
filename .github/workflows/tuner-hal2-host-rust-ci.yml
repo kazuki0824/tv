@@ -1,4 +1,4 @@
-name: tuner_hal2 host Rust CI
+name: tuner_hal2 ホストRust CI
 
 on:
   pull_request:
@@ -36,10 +36,6 @@ concurrency:
   group: tuner-hal2-host-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# host_ci/target exists in the repository for historical reasons. Never let Cargo
-# reuse those checked-in artifacts: they can predate the source at the PR HEAD and
-# make a clean checkout validate stale rlibs/binaries. Hosted jobs use an isolated
-# target directory outside the checkout instead.
 env:
   CARGO_TARGET_DIR: /tmp/tuner-hal2-host-ci-target
 
@@ -55,10 +51,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check Rust formatting
+      - name: Rust整形を確認
         run: cargo fmt --all -- --check
 
-      - name: Check reviewed AIDL authority sources formatting
+      - name: レビュー済みAIDL権限ソースの整形を確認
         run: |
           rustfmt --edition 2021 --check ../aidl_service/src/callback_store.rs
           rustfmt --edition 2021 --check ../aidl_service/src/service_context.rs
@@ -76,7 +72,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Run Clippy on host-compatible crates
+      - name: ホスト互換crateへClippyを実行
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   host-rust:
@@ -90,11 +86,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Run AIDL callback authority source contract
+      - name: AIDL callback権限ソース契約を確認
         run: cargo test -p maleicacid-tuner-hal2-compile-contract-host-ci --locked
 
-      - name: Type-check host-compatible crates
+      - name: ホスト互換crateを型検査
         run: cargo check --workspace --all-targets --locked
 
-      - name: Run host-compatible unit tests
+      - name: ホスト互換単体テストを実行
         run: cargo test --workspace --locked
