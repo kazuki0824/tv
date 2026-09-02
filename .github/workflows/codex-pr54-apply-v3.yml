@@ -1,0 +1,49 @@
+name: Apply PR54 validated fixes v3
+
+on:
+  push:
+    branches:
+      - codex/pr54-apply-20260902
+    paths:
+      - .github/workflows/codex-pr54-apply-v3.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout staging branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/pr54-apply-20260902
+          path: staging
+          fetch-depth: 1
+
+      - name: Checkout PR54 branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/implement-tis-arib-si-design-pr53
+          path: target
+          fetch-depth: 0
+
+      - name: Apply validated code patch and fast-forward PR54
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat staging/.codex/pr54/part-{00..17} \
+              staging/.codex/pr54/part-18b \
+              staging/.codex/pr54/part-19b > /tmp/pr54-fixes.patch
+          echo '63160b7e55d9cfde13ceb4d321eae0ebeb281222d5d7e8c0d1d52e4685630b4b  /tmp/pr54-fixes.patch' | sha256sum -c -
+          cd target
+          test "$(git rev-parse HEAD)" = "b5465355dee074a223fb00fcc46900c8c6f2858f"
+          git apply --check /tmp/pr54-fixes.patch
+          git apply --index /tmp/pr54-fixes.patch
+          # Workflow expectations are committed separately because GITHUB_TOKEN cannot update workflow files.
+          git restore --staged --worktree .github/workflows/tis-host-ci.yml
+          git diff --cached --check
+          git config user.name 'OpenAI Codex'
+          git config user.email 'codex@openai.com'
+          git commit -m 'fix(tis): close validated TIF and ARIB review gaps'
+          git push origin HEAD:agent/implement-tis-arib-si-design-pr53
