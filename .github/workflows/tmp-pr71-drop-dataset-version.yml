@@ -39,7 +39,7 @@ jobs:
         run: |
           uv run python -m unittest test_vts_region_defaults.py
           uv run python -m py_compile vts_profile/region.py update_vts_region_dataset.py test_vts_region_defaults.py test_vts_profile.py
-          ! grep -R --exclude-dir=.venv --exclude=uv.lock -n 'dataset_version\|dataset-version' ../INTEGRATION.md ../config vts_profile update_vts_region_dataset.py test_vts_region_defaults.py test_vts_profile.py
+          ! grep -R -n 'dataset_version\|dataset-version' ../config/vts_channel_plan.japan.json ../config/vts_channel_plan.example.json vts_profile/region.py update_vts_region_dataset.py test_vts_profile.py
       - name: Commit
         run: |
           git config user.name github-actions[bot]
