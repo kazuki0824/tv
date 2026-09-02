@@ -128,9 +128,16 @@ class VtsRegionDefaultsTest(unittest.TestCase):
         resolve_region(profile, dataset)
         self.assertEqual(_channels(profile), [15])
 
-    def test_address_without_prefecture_is_fail_closed(self) -> None:
-        with self.assertRaises(ProfileError):
-            resolve_region(_profile("大阪市中央区大阪城1-1"))
+    def test_address_without_prefecture_is_geocoded_before_channel_lookup(self) -> None:
+        profile = _profile("大阪市中央区大阪城1-1")
+        with patch("vts_profile.region._geocoded_address", return_value="大阪府大阪市中央区大阪城"):
+            resolve_region(profile)
+        self.assertEqual(_channels(profile), [13, 14, 15, 16, 17, 18, 24])
+
+    def test_ambiguous_address_geocoding_is_fail_closed(self) -> None:
+        with patch("vts_profile.region._fetch_json_value", return_value=[{}, {}]):
+            with self.assertRaises(ProfileError):
+                resolve_region(_profile("中央区一丁目"))
 
     def test_invalid_postal_code_is_fail_closed(self) -> None:
         with self.assertRaises(ProfileError):

@@ -10,6 +10,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from japanese_address_parser_py import Parser
+
 from .model import FRONTEND_ID, ProfileError, load_json, positive_int, reject_unknown, require_dict, validate_profile
 
 DEFAULT_REGION_DATASET = Path(__file__).resolve().parents[2] / "config/vts_channel_plan.japan.json"
@@ -19,6 +21,7 @@ ISDBT_CHANNEL_13_HZ = 473_142_857
 ISDBT_CHANNEL_STEP_HZ = 6_000_000
 JAPAN_POST_KEN_ALL_URL = "https://www.post.japanpost.jp/zipcode/dl/kogaki/zip/ken_all.zip"
 GSI_REVERSE_GEOCODER_URL = "https://mreversegeocoder.gsi.go.jp/reverse-geocoder/LonLatToAddress"
+GSI_ADDRESS_SEARCH_URL = "https://msearch.gsi.go.jp/address-search/AddressSearch"
 HTTP_USER_AGENT = "maleicacid-tuner-hal2-vts-region-resolver/1"
 JAPAN_PREFECTURES = (
     "北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県",
@@ -30,6 +33,22 @@ JAPAN_PREFECTURES = (
     "熊本県", "大分県", "宮崎県", "鹿児島県", "沖縄県",
 )
 
+
+_ADDRESS_PARSER = Parser()
+
+def _normalize_address(query: str) -> str:
+    result = _ADDRESS_PARSER.parse(query)
+    if result.error:
+        raise ProfileError(f"failed to normalize Japanese address: {result.error}")
+    address = result.address
+    if not isinstance(address, dict):
+        raise ProfileError("Japanese address parser returned no structured address")
+    prefecture = address.get("prefecture")
+    city = address.get("city")
+    if not isinstance(prefecture, str) or not prefecture or not isinstance(city, str) or not city:
+        raise ProfileError("Japanese address must resolve to a prefecture and municipality")
+    town = address.get("town")
+    return prefecture + city + (town if isinstance(town, str) else "")
 
 def _frequency_for_channel(channel: int) -> int:
     if channel < ISDBT_FIRST_CHANNEL or channel > ISDBT_LAST_CHANNEL:
@@ -60,13 +79,16 @@ def _fetch_bytes(url: str) -> bytes:
         raise ProfileError(f"failed to fetch regional lookup data from {url}: {exc}") from exc
 
 
-def _fetch_json(url: str) -> dict[str, Any]:
+def _fetch_json_value(url: str) -> Any:
     raw = _fetch_bytes(url)
     try:
-        value = json.loads(raw.decode("utf-8"))
+        return json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ProfileError(f"invalid JSON from regional lookup service {url}") from exc
-    return require_dict(value, "regional lookup response")
+
+
+def _fetch_json(url: str) -> dict[str, Any]:
+    return require_dict(_fetch_json_value(url), "regional lookup response")
 
 
 def _japan_post_lookups() -> tuple[dict[str, set[str]], dict[str, str]]:
@@ -149,6 +171,24 @@ def _coordinate_address(query: str) -> str:
     return address
 
 
+def _geocoded_address(query: str) -> str:
+    url = GSI_ADDRESS_SEARCH_URL + "?" + urllib.parse.urlencode({"q": query})
+    value = _fetch_json_value(url)
+    if not isinstance(value, list) or len(value) != 1:
+        raise ProfileError("GSI address search must resolve the address to exactly one location")
+    feature = require_dict(value[0], "GSI address-search feature")
+    geometry = require_dict(feature.get("geometry"), "GSI address-search geometry")
+    coordinates = geometry.get("coordinates")
+    if not isinstance(coordinates, list) or len(coordinates) < 2:
+        raise ProfileError("GSI address search result has no coordinates")
+    try:
+        longitude = float(coordinates[0])
+        latitude = float(coordinates[1])
+    except (TypeError, ValueError) as exc:
+        raise ProfileError("GSI address search returned invalid coordinates") from exc
+    return _coordinate_address(f"{latitude},{longitude}")
+
+
 def _resolved_region_addresses(query: str) -> list[str]:
     value = query.strip()
     if value.lower().startswith("postal:"):
@@ -159,7 +199,11 @@ def _resolved_region_addresses(query: str) -> list[str]:
         return [_coordinate_address(value)]
     if re.fullmatch(r"[+-]?\d+(?:\.\d+)?\s*,\s*[+-]?\d+(?:\.\d+)?", value):
         return [_coordinate_address(value)]
-    return [value]
+    if value in JAPAN_PREFECTURES:
+        return [value]
+    if any(prefecture in value for prefecture in JAPAN_PREFECTURES):
+        return [_normalize_address(value)]
+    return [_geocoded_address(value)]
 
 
 def _channels_for_address(address: str, prefectures: dict[str, Any]) -> tuple[set[int], str]:
