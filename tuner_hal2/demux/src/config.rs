@@ -26,11 +26,19 @@ impl FilterOpenType {
         }
     }
 
-    pub const fn supports_normal_fmq_queue(self) -> bool {
+    pub const fn has_filter_fmq(self) -> bool {
         matches!(
             self,
             Self::TsRaw | Self::TsSection | Self::TsPes | Self::TsRecord
         )
+    }
+
+    pub const fn uses_filter_fmq_for_payload(self) -> bool {
+        matches!(self, Self::TsRaw | Self::TsSection | Self::TsPes)
+    }
+
+    pub const fn supports_normal_fmq_queue(self) -> bool {
+        self.has_filter_fmq()
     }
 
     pub const fn pipeline_open_kind(self) -> PipelineOpenKind {
@@ -266,12 +274,26 @@ pub struct OpenFilterRequest {
 
 #[cfg(test)]
 mod tests {
-    use super::{FilterOpenType, OpenFilterRequest};
-    use crate::{DemuxRuntime, QueueDescriptorQueryError};
+    use super::{FilterOpenType, OpenFilterRequest, RecordIndexSettings};
+    use crate::packet_pipeline::FilterPipelineConfig;
+    use crate::{
+        DemuxRuntime, DvrKind, PipelineGeneratedEvent, QueueDescriptorQueryError, TsInputOrigin,
+        DEMUX_TS_INDEX_PAYLOAD_UNIT_START, RECORD_SC_TYPE_NONE,
+    };
+
+    fn record_packet(pid: u16, continuity_counter: u8) -> [u8; 188] {
+        let mut packet = [0xffu8; 188];
+        packet[0] = 0x47;
+        packet[1] = 0x40 | (((pid >> 8) as u8) & 0x1f);
+        packet[2] = pid as u8;
+        packet[3] = 0x10 | (continuity_counter & 0x0f);
+        packet
+    }
 
     #[test]
-    fn record_filter_uses_standard_filter_fmq_descriptor_path() {
-        assert!(FilterOpenType::TsRecord.supports_normal_fmq_queue());
+    fn record_filter_owns_filter_fmq_without_using_it_for_payload() {
+        assert!(FilterOpenType::TsRecord.has_filter_fmq());
+        assert!(!FilterOpenType::TsRecord.uses_filter_fmq_for_payload());
 
         let mut demux = DemuxRuntime::new(1, 1);
         let request = OpenFilterRequest {
@@ -281,7 +303,7 @@ mod tests {
         };
         demux
             .register_filter_from_open_request(1, &request)
-            .expect("record filter open must create its standard filter FMQ");
+            .expect("record filter open must create its Filter FMQ");
 
         assert!(demux.queue_exists(1));
         let descriptor = demux
@@ -295,5 +317,71 @@ mod tests {
         assert!(!grantors.is_empty());
         assert!(!fds.is_empty());
         assert!(quantum > 0);
+    }
+
+    #[test]
+    fn record_payload_and_byte_number_follow_record_dvr_not_filter_fmq() {
+        let mut demux = DemuxRuntime::new(1, 1);
+        let request = OpenFilterRequest {
+            open_type: FilterOpenType::TsRecord,
+            buffer_size: 4096,
+            callback_present: true,
+        };
+        demux.register_filter_from_open_request(1, &request).unwrap();
+        demux
+            .configure_filter_runtime(
+                1,
+                FilterPipelineConfig {
+                    tpid: Some(0x0100),
+                    raw: false,
+                    record_index: Some(RecordIndexSettings {
+                        ts_index_mask: DEMUX_TS_INDEX_PAYLOAD_UNIT_START,
+                        sc_index_type: RECORD_SC_TYPE_NONE,
+                        sc_index_mask: 0,
+                    }),
+                },
+            )
+            .unwrap();
+        demux.start_filter_runtime(1).unwrap();
+        demux
+            .register_dvr(DemuxRuntime::open_dvr_runtime(
+                2,
+                1,
+                DvrKind::Record,
+                8192,
+                true,
+            ))
+            .unwrap();
+        demux.configure_dvr_runtime(2).unwrap();
+        demux.attach_dvr_filter(2, 1).unwrap();
+        demux.start_dvr_runtime(2).unwrap();
+
+        let first = record_packet(0x0100, 0);
+        let first_report = demux.push_ts_packet_from_origin(&first, TsInputOrigin::frontend(1));
+        assert!(first_report.generated_events.iter().any(|event| matches!(
+            event,
+            PipelineGeneratedEvent::RecordIndex { filter_id: 1, data }
+                if data.byte_number == 0
+        )));
+        assert!(demux
+            .snapshot_filter_queue_bytes_for_test(1)
+            .expect("record Filter FMQ mirror must exist")
+            .is_empty());
+
+        let second = record_packet(0x0100, 1);
+        let second_report = demux.push_ts_packet_from_origin(&second, TsInputOrigin::frontend(1));
+        assert!(second_report.generated_events.iter().any(|event| matches!(
+            event,
+            PipelineGeneratedEvent::RecordIndex { filter_id: 1, data }
+                if data.byte_number == 188
+        )));
+        assert!(demux
+            .snapshot_filter_queue_bytes_for_test(1)
+            .expect("record Filter FMQ mirror must exist")
+            .is_empty());
+        assert_eq!(
+            demux.read_record_dvr_queue_bytes_for_test(2).unwrap(),
+            [first.to_vec(), second.to_vec()].concat()
+        );
     }
 }
