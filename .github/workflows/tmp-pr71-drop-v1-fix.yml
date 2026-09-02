@@ -1,0 +1,117 @@
+name: tmp-pr71-drop-v1-fix
+on:
+  push:
+    branches:
+      - fix/tuner-hal2-vts-auto-region
+    paths:
+      - .github/workflows/tmp-pr71-drop-v1-fix.yml
+permissions:
+  contents: write
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tuner-hal2-vts-auto-region
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+      - name: Remove unused schema v1
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          p = Path('tuner_hal2/tools/vts_profile/region.py')
+          s = p.read_text(encoding='utf-8')
+          start = s.index('def _legacy_dataset_candidates(')
+          end = s.index('\n\ndef resolve_region(', start)
+          s = s[:start] + s[end + 2:]
+          old = '''    schema_version = dataset.get("schema_version")
+    if schema_version == 2:
+        matches = _snapshot_candidates(profile, dataset)
+    elif schema_version == 1:
+        matches = _legacy_dataset_candidates(profile, dataset)
+    else:
+        raise ProfileError("dataset.schema_version must be 1 or 2")
+'''
+          new = '''    if dataset.get("schema_version") != 2:
+        raise ProfileError("dataset.schema_version must be 2")
+    matches = _snapshot_candidates(profile, dataset)
+'''
+          if old not in s:
+              raise SystemExit('schema dispatch block not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s, encoding='utf-8')
+
+          example = Path('tuner_hal2/config/vts_channel_plan.example.json')
+          example.write_text(json.dumps({
+              'schema_version': 2,
+              'source': {'index_url': 'example-only', 'source_notice': 'example-only-not-a-reception-claim'},
+              'prefectures': {
+                  '大阪府': {
+                      'source_url': 'example-only',
+                      'default_channels': [24],
+                      'prefecture_channels': [24],
+                      'areas': {'大阪市': [24]},
+                  }
+              },
+          }, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+          p = Path('tuner_hal2/tools/test_vts_profile.py')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('def test_region_resolution_is_reproducible_and_persists_candidates(self) -> None:',
+                        'def test_region_resolution_persists_candidates(self) -> None:', 1)
+          old = '''        profile["region"] = {"query": "test", "candidates": []}
+        dataset = {
+            "schema_version": 1,
+            "entries": [
+                {"region": "test", "delivery_system": "ISDBT", "physical_channel": 22,
+                 "frequency_hz": 527142857, "label": "A"},
+            ],
+        }
+'''
+          new = '''        profile["region"] = {"query": "大阪府大阪市", "candidates": []}
+        dataset = {
+            "schema_version": 2,
+            "source": {"index_url": "fixture", "source_notice": "fixture"},
+            "prefectures": {
+                "大阪府": {
+                    "source_url": "fixture",
+                    "default_channels": [22],
+                    "prefecture_channels": [22],
+                    "areas": {"大阪市": [22]},
+                }
+            },
+        }
+'''
+          if old not in s:
+              raise SystemExit('v1 test fixture not found')
+          p.write_text(s.replace(old, new, 1), encoding='utf-8')
+          PY
+      - name: Validate
+        working-directory: tuner_hal2/tools
+        run: |
+          uv run python -m unittest test_vts_region_defaults.py test_vts_profile.py
+          uv run python -m py_compile vts_profile/region.py test_vts_region_defaults.py test_vts_profile.py
+          python - <<'PY'
+          from pathlib import Path
+          targets = [
+              Path('../config/vts_channel_plan.example.json'),
+              Path('vts_profile/region.py'),
+              Path('test_vts_profile.py'),
+          ]
+          forbidden = ('_legacy_dataset_candidates', 'schema_version must be 1 or 2', '"schema_version": 1')
+          for path in targets:
+              text = path.read_text(encoding='utf-8')
+              for token in forbidden:
+                  if token in text:
+                      raise SystemExit(f'{path}: legacy token remains: {token}')
+          PY
+      - name: Commit
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tuner_hal2/tools/vts_profile/region.py tuner_hal2/config/vts_channel_plan.example.json tuner_hal2/tools/test_vts_profile.py
+          git commit -m 'fix: remove unused VTS region v1 schema'
+          git push origin HEAD:fix/tuner-hal2-vts-auto-region
