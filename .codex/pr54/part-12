@@ -1,0 +1,125 @@
+@@ -496,25 +526,23 @@ class PlaybackPipeline(
+                         val read = filter.read(buffer, 0, dataLength.toLong())
+                         if (read <= 0) continue
+                         val pes = if (read == buffer.size) buffer else buffer.copyOf(read)
+-                        val captionSample = captionSampleFromPes(pes)
+-                        if (captionSample == null) {
+-                            subtitleMissingPtsSamples++
+-                            continue
+-                        }
++                        val captionSample = captionSampleFromPes(pes) ?: continue
++                        if (!sourceIsCurrent(filter)) continue
+                         onSubtitlePes(
++                            filterGeneration,
+                             trackId,
+                             captionSample.payload,
+-                            captionTimestampFrom(captionSample.pts90k),
++                            captionTimestampFrom(captionSample.pts90k, superimpose),
+                         )
+                     }
+                 }.onFailure { error ->
+-                    Log.w(LogTags.TIS, "字幕PES filter callback に失敗しました inputId=$inputId pid=$pid", error)
++                    Log.w(LogTags.TIS, "caption PES filter callback に失敗しました inputId=$inputId pid=$pid superimpose=$superimpose", error)
+                 }
+             }
+             override fun onFilterStatusChanged(filter: Filter, status: Int) {
+-                Log.d(LogTags.TIS, "字幕PES filter 状態 inputId=$inputId pid=$pid status=$status")
++                Log.d(LogTags.TIS, "caption PES filter 状態 inputId=$inputId pid=$pid superimpose=$superimpose status=$status")
+             }
+-        }) ?: error("openFilter が null を返しました subtitle pid=$pid")
++        }) ?: error("openFilter が null を返しました caption pid=$pid")
+         val settings = PesSettings.builder(Filter.TYPE_TS)
+             .setStreamId(PES_STREAM_ID_PRIVATE_STREAM_1)
+             .build()
+@@ -522,14 +550,15 @@ class PlaybackPipeline(
+         val configureResult = filter.configure(config)
+         if (configureResult != Tuner.RESULT_SUCCESS) {
+             closeFilter(filter)
+-            error("subtitle PES filter configure failed result=$configureResult pid=$pid")
++            error("caption PES filter configure failed result=$configureResult pid=$pid")
+         }
+-        subtitleFilter = filter
++        if (superimpose) superimposeFilter = filter else subtitleFilter = filter
+         val startResult = filter.start()
+         if (startResult != Tuner.RESULT_SUCCESS) {
+-            if (subtitleFilter === filter) subtitleFilter = null
++            if (superimpose && superimposeFilter === filter) superimposeFilter = null
++            if (!superimpose && subtitleFilter === filter) subtitleFilter = null
+             closeFilter(filter)
+-            error("subtitle PES filter start failed result=$startResult pid=$pid")
++            error("caption PES filter start failed result=$startResult pid=$pid")
+         }
+         filter
+     }
+@@ -601,7 +630,7 @@ class PlaybackPipeline(
+             return
+         }
+         waitingAvailabilityArm = null
+-        if (videoAvailableNotified.compareAndSet(false, true)) onVideoAvailable()
++        if (videoAvailableNotified.compareAndSet(false, true)) onVideoAvailable(generation)
+     }
+ 
+     private fun commitCompatibilityVideoAvailability(generation: Long, frameNanoTime: Long) {
+@@ -612,7 +641,7 @@ class PlaybackPipeline(
+             return
+         }
+         waitingAvailabilityArm = null
+-        if (videoAvailableNotified.compareAndSet(false, true)) onVideoAvailable()
++        if (videoAvailableNotified.compareAndSet(false, true)) onVideoAvailable(generation)
+     }
+ 
+     private fun onAudioBufferConsumedOnPlaybackExecutor(sync: MediaSync, generation: Long, bufferId: Int) {
+@@ -645,6 +674,7 @@ class PlaybackPipeline(
+     }
+ 
+     private fun handleAudioFailure(reason: PlaybackUnavailableReason, detail: String, audioOnly: Boolean) {
++        val originGeneration = playbackGeneration
+         val restartTuner = activeTuner
+         val restartChannel = activeChannel
+         val restartSelection = activeSelection
+@@ -667,7 +697,8 @@ class PlaybackPipeline(
+             return
+         }
+         val restarted = startOnPlaybackExecutor(restartTuner, restartChannel, restartSelection.copy(audio = null))
+-        if (restarted.generation < 0L) {
++        onVideoOnlyFallbackRestarted(VideoOnlyFallbackRestart(originGeneration, restarted))
++        if (restarted.generation < 0L || (!restarted.firstFramePending && !restarted.startedVideo)) {
+             emitUnavailable(reason, "$detail; video-only generation restart failed")
+         }
+     }
+@@ -989,11 +1020,13 @@ class PlaybackPipeline(
+                 VideoCodecKind.AVC -> EsHeaderParser.avcVideoFormat(bytes)
+             }?.also { format ->
+             onVideoFormatDiscovered(
++                generation,
+                 VideoFormatInfo(
+                     streamType = kind.streamType,
+                     mime = kind.mime,
+                     width = getIntegerOrDefault(format, MediaFormat.KEY_WIDTH, 0),
+                     height = getIntegerOrDefault(format, MediaFormat.KEY_HEIGHT, 0),
++                    displayAspectRatio = EsHeaderParser.displayAspectRatio(kind, bytes),
+                 ),
+             )
+         }
+@@ -1114,7 +1147,8 @@ class PlaybackPipeline(
+ 
+         private fun ensureAudioTrack() {
+             if (audioTrack != null) return
+-            val channelMask = if (outputChannels <= 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO
++            val channelMask = channelMaskForPcmOutput(outputChannels)
++                ?: throw IllegalStateException("unsupported decoded PCM channel count=$outputChannels")
+             val minBuffer = AudioTrack.getMinBufferSize(outputSampleRate, channelMask, AudioFormat.ENCODING_PCM_16BIT).coerceAtLeast(32 * 1024)
+             val builder = AudioTrack.Builder()
+                 .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MOVIE).build())
+@@ -1135,46 +1169,51 @@ class PlaybackPipeline(
+ 
+     enum class MediaEventBoundsDecision { ACCEPT, MALFORMED, OVERSIZED, OUT_OF_BOUNDS }
+ 
+-    private data class CaptionPesSample(val payload: ByteArray, val pts90k: Long)
++    private data class CaptionPesSample(val payload: ByteArray, val pts90k: Long?)
+ 
+-    private fun captionTimestampFrom(rawPts90k: Long?): CaptionTimestamp {
++    private fun captionTimestampFrom(rawPts90k: Long?, superimpose: Boolean): CaptionTimestamp {
+         val rawPts = rawPts90k?.takeIf { it in 0..PTS_MASK }
+         val timestamp = rawPts?.let { raw ->
+-            CaptionTimestamp.Pts(com.maleicacid.tvinput.common.CaptionPtsMillis(ptsEpochCoordinator.normalize(PtsTrack.SUBTITLE, raw) / 1_000L))
