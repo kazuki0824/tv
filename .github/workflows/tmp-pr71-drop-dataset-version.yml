@@ -1,0 +1,100 @@
+name: tmp-pr71-drop-dataset-version
+on:
+  push:
+    branches: [fix/tuner-hal2-vts-auto-region]
+    paths: [.github/workflows/tmp-pr71-drop-dataset-version.yml]
+permissions:
+  contents: write
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tuner-hal2-vts-auto-region
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+      - name: Remove dataset version contract
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          integration = Path('tuner_hal2/INTEGRATION.md')
+          text = integration.read_text(encoding='utf-8')
+          old = ('地域resolverは、放送エリア/チャンネル計画datasetを入力とする。'
+                 'datasetの版識別や同一版からの候補再現性はVTS profile契約に含めない。'
+                 'profileへdataset識別情報を永続化せず、resolverがその実行で使用するdatasetから受信候補を生成する。')
+          new = ('地域resolverは、放送エリア/チャンネル計画datasetを入力とする。'
+                 'dataset versionの識別規格は設けず、`VtsEnvironmentProfile`にもdataset versionまたはdataset識別情報を永続化しない。'
+                 'resolverはその実行で使用するdatasetから受信候補を生成する。')
+          if old not in text:
+              raise SystemExit('INTEGRATION dataset-version paragraph not found')
+          integration.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          current = Path('tuner_hal2/config/vts_channel_plan.japan.json')
+          data = json.loads(current.read_text(encoding='utf-8'))
+          data.pop('dataset_version', None)
+          current.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+
+          example = Path('tuner_hal2/config/vts_channel_plan.example.json')
+          data = json.loads(example.read_text(encoding='utf-8'))
+          data.pop('dataset_version', None)
+          example.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+          generator = Path('tuner_hal2/tools/update_vts_region_dataset.py')
+          text = generator.read_text(encoding='utf-8')
+          text = text.replace('def generate(dataset_version: str) -> dict[str, object]:', 'def generate() -> dict[str, object]:', 1)
+          text = text.replace('        "dataset_version": dataset_version,\n', '', 1)
+          text = text.replace('    parser.add_argument("--dataset-version", required=True)\n', '', 1)
+          text = text.replace('    dataset = generate(args.dataset_version)\n', '    dataset = generate()\n', 1)
+          if 'dataset_version' in text or '--dataset-version' in text:
+              raise SystemExit('generator still contains dataset version')
+          generator.write_text(text, encoding='utf-8')
+
+          region = Path('tuner_hal2/tools/vts_profile/region.py')
+          text = region.read_text(encoding='utf-8')
+          text = text.replace(
+              'reject_unknown(dataset, {"schema_version", "dataset_version", "source", "prefectures"}, "dataset")',
+              'reject_unknown(dataset, {"schema_version", "source", "prefectures"}, "dataset")',
+              1,
+          )
+          text = text.replace(
+              'reject_unknown(dataset, {"schema_version", "dataset_version", "entries"}, "dataset")',
+              'reject_unknown(dataset, {"schema_version", "entries"}, "dataset")',
+              1,
+          )
+          required = '''    if not isinstance(dataset.get("dataset_version"), str) or not dataset["dataset_version"]:\n        raise ProfileError("dataset.dataset_version is required")\n'''
+          text = text.replace(required, '', 1)
+          if 'dataset_version' in text:
+              raise SystemExit('region resolver still contains dataset version')
+          region.write_text(text, encoding='utf-8')
+
+          for name in ('tuner_hal2/tools/test_vts_region_defaults.py', 'tuner_hal2/tools/test_vts_profile.py'):
+              path = Path(name)
+              text = path.read_text(encoding='utf-8')
+              text = text.replace('            "dataset_version": "fixture",\n', '')
+              text = text.replace('            "dataset_version": "v1",\n', '')
+              path.write_text(text, encoding='utf-8')
+
+          tests = Path('tuner_hal2/tools/test_vts_region_defaults.py')
+          text = tests.read_text(encoding='utf-8')
+          needle = '        self.assertEqual(dataset["schema_version"], 2)\n'
+          if needle not in text:
+              raise SystemExit('dataset shape assertion not found')
+          text = text.replace(needle, needle + '        self.assertNotIn("dataset_version", dataset)\n', 1)
+          tests.write_text(text, encoding='utf-8')
+          PY
+      - name: Validate
+        working-directory: tuner_hal2/tools
+        run: |
+          uv run python -m unittest test_vts_region_defaults.py test_vts_profile.py
+          uv run python -m py_compile vts_profile/region.py update_vts_region_dataset.py test_vts_region_defaults.py test_vts_profile.py
+          ! grep -R --exclude-dir=.venv --exclude=uv.lock -n 'dataset_version\|dataset-version' ../INTEGRATION.md ../config vts_profile update_vts_region_dataset.py test_vts_region_defaults.py test_vts_profile.py
+      - name: Commit
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tuner_hal2/INTEGRATION.md tuner_hal2/config/vts_channel_plan.japan.json tuner_hal2/config/vts_channel_plan.example.json tuner_hal2/tools/update_vts_region_dataset.py tuner_hal2/tools/vts_profile/region.py tuner_hal2/tools/test_vts_region_defaults.py tuner_hal2/tools/test_vts_profile.py
+          git commit -m 'fix: remove VTS region dataset version contract'
+          git push origin HEAD:fix/tuner-hal2-vts-auto-region
