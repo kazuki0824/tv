@@ -44,7 +44,7 @@ class VtsProfileTest(unittest.TestCase):
 
     def test_region_resolution_and_selection_update_same_profile(self) -> None:
         profile = self.profile(resolved=False)
-        profile["region"] = {"query": "大阪府大阪市", "candidates": []}
+        profile["region"] = {"query": "大阪府", "candidates": []}
         dataset = {
             "schema_version": 2,
             "source": {"index_url": "fixture", "source_notice": "fixture"},
@@ -89,9 +89,7 @@ class VtsProfileTest(unittest.TestCase):
             failed = SimpleNamespace(returncode=1, stdout="", stderr="compile failed")
             with patch("vts_profile.resource_closure.subprocess.run", return_value=failed):
                 with self.assertRaises(ProfileError):
-                    validate_resource_closure(
-                        self.profile(), capability_source=capability, pes_source=pes
-                    )
+                    validate_resource_closure(self.profile(), capability_source=capability, pes_source=pes)
 
     def test_noninteractive_init_requires_explicit_inputs(self) -> None:
         args = SimpleNamespace(
@@ -113,10 +111,7 @@ class VtsProfileTest(unittest.TestCase):
             xsd.write_text("<x/>")
             subprocess.run(["git", "-C", str(root), "add", "."], check=True)
             subprocess.run(["git", "-C", str(root), "commit", "-qm", "xsd"], check=True)
-            commit = subprocess.run(
-                ["git", "-C", str(root), "rev-parse", "HEAD"], check=True,
-                capture_output=True, text=True,
-            ).stdout.strip()
+            commit = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
             self.assertEqual(selected_xsd(root, commit), xsd)
             with self.assertRaises(ProfileError):
                 selected_xsd(root, "HEAD~1")
@@ -133,10 +128,7 @@ class VtsProfileTest(unittest.TestCase):
             profile = self.profile(); profile["vts"]["variant"] = "lab"
             output = write_product_artifacts(profile, "<validated/>", root)
             self.assertEqual(output.name, "tuner_vts_config_aidl_V1.lab.xml")
-            self.assertIn(
-                "ro.vendor.vts_tuner_configuration_variant=lab",
-                (root / "vts_product_generated.mk").read_text(),
-            )
+            self.assertIn("ro.vendor.vts_tuner_configuration_variant=lab", (root / "vts_product_generated.mk").read_text())
 
     def test_device_resolution_keeps_all_si_reads_in_one_tune_session(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -147,25 +139,12 @@ class VtsProfileTest(unittest.TestCase):
             pat_semantics = {"pmt_pids": [256], "services": []}
             full_semantics = {
                 "pmt_pids": [256],
-                "services": [{
-                    "original_network_id": 4,
-                    "transport_stream_id": 1,
-                    "service_id": 100,
-                    "pmt_pid": 256,
-                    "pcr_pid": 272,
-                    "streams": [
-                        {"pid": 272, "stream_type": 0x1B},
-                        {"pid": 273, "stream_type": 0x0F},
-                    ],
-                }],
+                "services": [{"original_network_id": 4, "transport_stream_id": 1, "service_id": 100,
+                              "pmt_pid": 256, "pcr_pid": 272,
+                              "streams": [{"pid": 272, "stream_type": 0x1B}, {"pid": 273, "stream_type": 0x0F}]}],
             }
-            session = MagicMock()
-            session.__enter__.return_value = session
-            session.section.side_effect = [
-                (0x0000, b"pat"),
-                (0x0100, b"pmt"),
-                (0x0011, b"sdt"),
-            ]
+            session = MagicMock(); session.__enter__.return_value = session
+            session.section.side_effect = [(0x0000, b"pat"), (0x0100, b"pmt"), (0x0011, b"sdt")]
             with (
                 patch("vts_profile.device._prepare_agent", return_value=("/data/local/tmp/agent", False)),
                 patch("vts_profile.device._AgentSession", return_value=session) as session_type,
@@ -174,10 +153,7 @@ class VtsProfileTest(unittest.TestCase):
             ):
                 updated = resolve_device(path)
             session_type.assert_called_once()
-            self.assertEqual(
-                session.section.call_args_list,
-                [call(0x0000, 0x00), call(0x0100, 0x02), call(0x0011, 0x42)],
-            )
+            self.assertEqual(session.section.call_args_list, [call(0x0000, 0x00), call(0x0100, 0x02), call(0x0011, 0x42)])
             self.assertEqual(updated["service"]["service_id"], 100)
             self.assertEqual(updated["flows"]["record"]["pid"], 272)
             self.assertEqual(json.loads(path.read_text())["flows"]["record"]["pid"], 272)
@@ -185,12 +161,9 @@ class VtsProfileTest(unittest.TestCase):
     def test_device_resolution_failure_does_not_modify_profile(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "profile.json"
-            original = self.profile(resolved=False)
-            original["frontend"]["frequency_hz"] = 557142857
+            original = self.profile(resolved=False); original["frontend"]["frequency_hz"] = 557142857
             save_profile(path, original)
-            session = MagicMock()
-            session.__enter__.return_value = session
-            session.section.side_effect = ProfileError("no lock")
+            session = MagicMock(); session.__enter__.return_value = session; session.section.side_effect = ProfileError("no lock")
             with (
                 patch("vts_profile.device._prepare_agent", return_value=("/data/local/tmp/agent", False)),
                 patch("vts_profile.device._AgentSession", return_value=session),
@@ -210,33 +183,18 @@ class VtsProfileTest(unittest.TestCase):
         service_wrapper = (repo / "arib_si_engine_rs/src/service_discovery.rs").read_text()
         product = (tuner_hal2 / "config/product_integration.mk").read_text()
         test_product = (tuner_hal2 / "config/vts_test_agent_integration.mk").read_text()
-
         self.assertIn("DemuxTsFilterType::SECTION", agent)
         self.assertIn('request.get("op")', agent)
-        self.assertNotIn("parse_pat", agent)
-        self.assertNotIn("parse_pmt", agent)
-        self.assertNotIn("SectionAssembler", agent)
-
-        self.assertIn("class _AgentSession", device)
-        self.assertNotIn("_run_agent_payload", device)
-        self.assertIn("with _AgentSession(", device)
-        self.assertIn("session.section(0x0011, 0x42)", device)
-
-        self.assertNotIn("include!", host)
-        self.assertIn("maleicacid_arib_si_engine_core", host)
-        self.assertIn("ServiceDiscoveryCollector", host)
-        self.assertIn("pmt_pids_for_section_filters", host)
-        self.assertEqual(
-            service_wrapper.strip(),
-            "pub use maleicacid_arib_si_engine_core::service_discovery::*;",
-        )
+        self.assertNotIn("parse_pat", agent); self.assertNotIn("parse_pmt", agent); self.assertNotIn("SectionAssembler", agent)
+        self.assertIn("class _AgentSession", device); self.assertNotIn("_run_agent_payload", device)
+        self.assertIn("with _AgentSession(", device); self.assertIn("session.section(0x0011, 0x42)", device)
+        self.assertNotIn("include!", host); self.assertIn("maleicacid_arib_si_engine_core", host)
+        self.assertIn("ServiceDiscoveryCollector", host); self.assertIn("pmt_pids_for_section_filters", host)
+        self.assertEqual(service_wrapper.strip(), "pub use maleicacid_arib_si_engine_core::service_discovery::*;")
         self.assertIn('name: "libmaleicacid_arib_si_engine_core"', arib_bp)
         self.assertGreaterEqual(arib_bp.count('"libmaleicacid_arib_si_engine_core"'), 3)
-
-        self.assertNotIn("maleicacid_tuner_hal2_vts_agent", product)
-        self.assertIn("maleicacid_tuner_hal2_vts_agent", test_product)
-        self.assertTrue((tuner_hal2 / "tools/pyproject.toml").is_file())
-        self.assertTrue((tuner_hal2 / "tools/uv.lock").is_file())
+        self.assertNotIn("maleicacid_tuner_hal2_vts_agent", product); self.assertIn("maleicacid_tuner_hal2_vts_agent", test_product)
+        self.assertTrue((tuner_hal2 / "tools/pyproject.toml").is_file()); self.assertTrue((tuner_hal2 / "tools/uv.lock").is_file())
 
 
 if __name__ == "__main__":
