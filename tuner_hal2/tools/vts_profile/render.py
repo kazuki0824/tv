@@ -39,7 +39,7 @@ def render_xml(profile: dict[str, Any]) -> str:
         pid = int(flows["record"]["pid"])
         filters.append(
             '      <filter id="FILTER_TS_RECORD_0" mainType="TS" subType="RECORD" '
-            f'bufferSize="{int(queues["record_filter_bytes"])}" pid="{pid}" useFMQ="false">'
+            f'bufferSize="{int(queues["record_filter_bytes"])}" pid="{pid}" useFMQ="true">'
             '<recordFilterSettings tsIndexMask="1" scIndexType="NONE"/></filter>'
         )
         dvr_size = int(queues["record_dvr_bytes"])
