@@ -1,0 +1,53 @@
+name: Apply PR54 actionable delta fixes
+
+on:
+  push:
+    branches: [codex/pr54-apply-20260902]
+    paths:
+      - .github/workflows/codex-pr54-apply-delta5.yml
+
+permissions:
+  contents: write
+
+env:
+  EXPECTED_TARGET_SHA: 11dd3218cb6a159dd3a63c0ed8ed11c8d33578d3
+  TARGET_BRANCH: agent/implement-tis-arib-si-design-pr53
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout staging branch
+        uses: actions/checkout@v4
+        with:
+          ref: codex/pr54-apply-20260902
+          path: staging
+      - name: Checkout target branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 2
+          path: target
+      - name: Verify and apply
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd target
+          test "$(git rev-parse HEAD)" = "$EXPECTED_TARGET_SHA"
+          python3 ../staging/codex_apply_pr54_delta5.py
+          git diff --check
+          test -z "$(git diff --name-only | grep -E '^(tis/src/com/maleicacid/tvinput/tis/ScanPlan\.kt|arib_si_engine_rs/src/(descriptors|service_discovery|lib)\.rs)$' || true)"
+          git status --short
+          git config user.name maleicacid
+          git config user.email 4982384+kazuki0824@users.noreply.github.com
+          git add tis/src/com/maleicacid/tvinput/tis/MaleicacidTvInputService.kt \
+                  tis/src/com/maleicacid/tvinput/tis/TunerController.kt \
+                  tis/src/com/maleicacid/tvinput/tis/MaleicacidLiveSession.kt \
+                  tis/src/com/maleicacid/tvinput/tis/PlaybackPipeline.kt \
+                  tis/src/com/maleicacid/tvinput/tis/TvProviderWriter.kt \
+                  tis/tests/src/com/maleicacid/tvinput/tis/TisR51FixedPlanAcceptanceTest.kt \
+                  tis/tests/src/com/maleicacid/tvinput/tis/PlaybackAudioSinkR51FixTest.kt \
+                  tis/tests/src/com/maleicacid/tvinput/tis/TvProviderWriterProgramsTest.kt
+          git diff --cached --check
+          git commit -m 'fix(tis): close actionable conditional review gaps'
+          git push origin HEAD:"$TARGET_BRANCH"
