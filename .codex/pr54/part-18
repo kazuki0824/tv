@@ -1,0 +1,101 @@
+         if (program.descriptors.broadcastGenre.isNullOrBlank()) putNull(TvContract.Programs.COLUMN_BROADCAST_GENRE) else put(TvContract.Programs.COLUMN_BROADCAST_GENRE, TvContract.Programs.Genres.encode(program.descriptors.broadcastGenre))
+         val canonicalGenres = program.canonicalGenres.distinct().sorted()
+         if (canonicalGenres.isEmpty()) putNull(TvContract.Programs.COLUMN_CANONICAL_GENRE) else put(TvContract.Programs.COLUMN_CANONICAL_GENRE, TvContract.Programs.Genres.encode(*canonicalGenres.toTypedArray()))
+@@ -272,6 +283,7 @@ class TvProviderWriter private constructor(
+          * ProviderDataBridge / Rust だけが生成・正規化する。
+          */
+         const val PROGRAM_KEY_FIELD = "programKey"
++        internal const val EVENT_ID_REUSE_GUARD_MS = 24L * 60L * 60L * 1_000L
+         const val COLUMN_SCRAMBLED = "scrambled"
+         const val COLUMN_SERIES_ID = "series_id"
+         const val COLUMN_MULTI_SERIES_ID = "multi_series_id"
+@@ -417,14 +429,19 @@ class TvProviderWriter private constructor(
+             val projection = arrayOf(TvContract.Programs._ID, TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)
+             val selection = "${TvContract.Programs.COLUMN_CHANNEL_ID}=? AND ${TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS}>? AND ${TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS}<?"
+             val args = arrayOf(channelId.toString(), windowStartMs.toString(), windowEndMs.toString())
+-            val cursor = context.contentResolver.query(TvContract.Programs.CONTENT_URI, projection, selection, args, null)
+-                ?: throw IllegalStateException("TvProvider program index query returned null cursor")
++            val cursor = context.contentResolver.query(
++                TvContract.Programs.CONTENT_URI,
++                projection,
++                selection,
++                args,
++                "${TvContract.Programs._ID} DESC",
++            ) ?: throw IllegalStateException("TvProvider program index query returned null cursor")
+             val out = linkedMapOf<String, Long>()
+             cursor.use { c ->
+                 while (c.moveToNext()) {
+                     val data = providerDataBytes(c, 1)
+                     val key = TvProviderWriter.parseProgramKey(data)
+-                    if (key != null) out[key] = c.getLong(0)
++                    if (key != null && key !in out) out[key] = c.getLong(0)
+                 }
+             }
+             out
+diff --git a/tis/tests/src/com/maleicacid/tvinput/aribsi/CaptionFramePacketTest.kt b/tis/tests/src/com/maleicacid/tvinput/aribsi/CaptionFramePacketTest.kt
+index b724f92..322985e 100644
+--- a/tis/tests/src/com/maleicacid/tvinput/aribsi/CaptionFramePacketTest.kt
++++ b/tis/tests/src/com/maleicacid/tvinput/aribsi/CaptionFramePacketTest.kt
+@@ -19,6 +19,18 @@ class CaptionFramePacketTest {
+         check(frame.images.single().rgba8888.contentEquals(byteArrayOf(0x11, 0x22, 0x33, 0x44)))
+     }
+ 
++    @Test fun asynchronousSuperimposeNoPtsPacketIsAccepted() {
++        val packet = packet(
++            ptsMillis = Long.MIN_VALUE,
++            durationMillis = 25L,
++            metadata = intArrayOf(2, 3, 1, 1, 4, 4),
++            rgba = byteArrayOf(0x11, 0x22, 0x33, 0x44),
++        )
++        val frame = checkNotNull(NativeAribCaptionRenderer.decodeFramePacket(packet))
++        check(frame.ptsMillis == null)
++        check(frame.durationMillis == 25L)
++    }
++
+     @Test fun truncatedOrLengthMismatchedPacketIsRejected() {
+         val valid = packet(
+             ptsMillis = 100L,
+diff --git a/tis/tests/src/com/maleicacid/tvinput/tis/ChannelNumberingPolicyTest.kt b/tis/tests/src/com/maleicacid/tvinput/tis/ChannelNumberingPolicyTest.kt
+index 69a6aa3..97d5828 100644
+--- a/tis/tests/src/com/maleicacid/tvinput/tis/ChannelNumberingPolicyTest.kt
++++ b/tis/tests/src/com/maleicacid/tvinput/tis/ChannelNumberingPolicyTest.kt
+@@ -11,8 +11,8 @@ import org.junit.Test
+ class ChannelNumberingPolicyTest {
+     @Test fun terrestrialUsesRemoteKeyAndStableBranch() {
+         val candidate = ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_T, FrequencyHz(473_142_857L), displayChannel = "13", physicalChannel = 13)
+-        val service = AribService(ServiceKey(1, 2, 101), "svc")
+-        check(ChannelNumberingPolicy.displayNumber(service, 1, candidate) == "1.1")
++        val service = AribService(ServiceKey(1, 2, 0x0400), "svc")
++        check(ChannelNumberingPolicy.displayNumber(service, 1, candidate) == "011")
+     }
+ 
+     @Test fun terrestrialWithoutRemoteKeyFallsBackToServiceId() {
+diff --git a/tis/tests/src/com/maleicacid/tvinput/tis/LanguageCodeNormalizerTest.kt b/tis/tests/src/com/maleicacid/tvinput/tis/LanguageCodeNormalizerTest.kt
+index 2bcc41c..409b964 100644
+--- a/tis/tests/src/com/maleicacid/tvinput/tis/LanguageCodeNormalizerTest.kt
++++ b/tis/tests/src/com/maleicacid/tvinput/tis/LanguageCodeNormalizerTest.kt
+@@ -12,5 +12,6 @@ class LanguageCodeNormalizerTest {
+         check(LanguageCodeNormalizer.normalizeForTvTrackLanguage("ja") == "jpn")
+         check(LanguageCodeNormalizer.normalizeForTvTrackLanguage("fre") == "fra")
+         check(LanguageCodeNormalizer.normalizeForTvTrackLanguage("ger") == "deu")
++        check(LanguageCodeNormalizer.normalizeForTvTrackLanguage("haw") == "haw")
+     }
+ }
+diff --git a/tis/tests/src/com/maleicacid/tvinput/tis/TisR51FixedPlanAcceptanceTest.kt b/tis/tests/src/com/maleicacid/tvinput/tis/TisR51FixedPlanAcceptanceTest.kt
+index e1b8147..2ae12b7 100644
+--- a/tis/tests/src/com/maleicacid/tvinput/tis/TisR51FixedPlanAcceptanceTest.kt
++++ b/tis/tests/src/com/maleicacid/tvinput/tis/TisR51FixedPlanAcceptanceTest.kt
+@@ -447,16 +447,25 @@ class TisR51FixedPlanAcceptanceTest {
+         val subtitle = es(TsPid(0x130), 0x06, componentTag = 8, dataComponentId = 0x0008, isCaption = true)
+         check(TunerSelectionPolicy.trackIdForVideo(video) == "video:257")
+         check(TunerSelectionPolicy.trackIdForAudio(audio) == "audio:272:7")
+-        check(TunerSelectionPolicy.trackIdForSubtitle(subtitle) == "subtitle:304:8")
++        check(TunerSelectionPolicy.trackIdForSubtitle(subtitle) == "subtitle:304:8:lang1")
+         val tracks = listOf(
+             TunerController.TisTrack("video:257", TvTrackInfo.TYPE_VIDEO, TsPid(0x101), 0x1b, null, -1, null),
+             TunerController.TisTrack("audio:272:7", TvTrackInfo.TYPE_AUDIO, TsPid(0x110), 0x0f, 7, -1, "jpn"),
+-            TunerController.TisTrack("subtitle:304:8", TvTrackInfo.TYPE_SUBTITLE, TsPid(0x130), 0x06, 8, null, null, dataComponentId = 0x0008),
++            TunerController.TisTrack("subtitle:304:8:lang1", TvTrackInfo.TYPE_SUBTITLE, TsPid(0x130), 0x06, 8, null, null, dataComponentId = 0x0008, captionLanguageId = 1),
+         )
+         check(TunerSelectionPolicy.isSelectableTrack(TvTrackInfo.TYPE_AUDIO, "audio:272:7", tracks))
+         check(!TunerSelectionPolicy.isSelectableTrack(TvTrackInfo.TYPE_AUDIO, "audio:999", tracks))
