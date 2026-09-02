@@ -1,0 +1,55 @@
+name: tuner_hal2 VTS profile CI
+
+on:
+  pull_request:
+    paths:
+      - "tuner_hal2/tools/**"
+      - "tuner_hal2/config/vts_channel_plan*.json"
+      - "tuner_hal2/config/product_integration.mk"
+      - "tuner_hal2/config/vts_test_agent_integration.mk"
+      - "tuner_hal2/vts_agent/**"
+      - "tuner_hal2/INTEGRATION.md"
+      - "arib_si_engine_rs/src/vts_profile_host.rs"
+      - "arib_si_engine_rs/src/service_discovery.rs"
+      - "arib_si_engine_rs/Android.bp"
+      - ".github/workflows/tuner-hal2-vts-profile-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "tuner_hal2/tools/**"
+      - "tuner_hal2/config/vts_channel_plan*.json"
+      - "tuner_hal2/config/product_integration.mk"
+      - "tuner_hal2/config/vts_test_agent_integration.mk"
+      - "tuner_hal2/vts_agent/**"
+      - "tuner_hal2/INTEGRATION.md"
+      - "arib_si_engine_rs/src/vts_profile_host.rs"
+      - "arib_si_engine_rs/src/service_discovery.rs"
+      - "arib_si_engine_rs/Android.bp"
+      - ".github/workflows/tuner-hal2-vts-profile-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tuner-hal2-vts-profile-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vts-profile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: tuner_hal2/tools
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Run VTS profile unit tests
+        run: uv run python -m unittest discover -s . -p 'test_*.py'
+
+      - name: Compile-check VTS profile Python
+        run: uv run python -m compileall -q .
