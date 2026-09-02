@@ -1,0 +1,162 @@
++++ b/tis/src/com/maleicacid/tvinput/tis/CaptionOverlayView.kt
+@@ -10,13 +10,20 @@ import com.maleicacid.tvinput.aribsi.NativeAribCaptionRenderer
+ class CaptionOverlayView(context: Context) : View(context) {
+     data class BitmapImage(val bitmap: Bitmap, val dstX: Int, val dstY: Int)
+ 
+-    private var images: List<BitmapImage> = emptyList()
+-    private var contentLeftPx: Int = 0
+-    private var contentTopPx: Int = 0
+-    private var onOverlaySizeChanged: (Int, Int) -> Unit = { _, _ -> }
++    private data class Layer(
++        val images: List<BitmapImage>,
++        val contentLeftPx: Int,
++        val contentTopPx: Int,
++    )
+ 
+-    fun setOnOverlaySizeChangedListener(listener: (Int, Int) -> Unit) {
+-        onOverlaySizeChanged = listener
++    private val layers = linkedMapOf<String, Layer>()
++    private val sizeListeners = linkedMapOf<String, (Int, Int) -> Unit>()
++
++    fun setOnOverlaySizeChangedListener(listener: (Int, Int) -> Unit) =
++        setOnOverlaySizeChangedListener(DEFAULT_LAYER_ID, listener)
++
++    fun setOnOverlaySizeChangedListener(layerId: String, listener: (Int, Int) -> Unit) {
++        sizeListeners[layerId] = listener
+         if (width > 0 && height > 0) listener(width, height)
+     }
+ 
+@@ -24,57 +31,73 @@ class CaptionOverlayView(context: Context) : View(context) {
+         frameImages: List<NativeAribCaptionRenderer.RenderedCaptionImage>,
+         viewportLeftPx: Int,
+         viewportTopPx: Int,
++    ): Boolean = showCaptionFrame(DEFAULT_LAYER_ID, frameImages, viewportLeftPx, viewportTopPx)
++
++    fun showCaptionFrame(
++        layerId: String,
++        frameImages: List<NativeAribCaptionRenderer.RenderedCaptionImage>,
++        viewportLeftPx: Int,
++        viewportTopPx: Int,
+     ): Boolean {
+         val converted = mutableListOf<BitmapImage>()
+         frameImages.forEach { image ->
+             val bitmap = bitmapFromRgba(image)
+             if (bitmap == null) {
+-                converted.forEach { convertedImage -> convertedImage.bitmap.recycle() }
++                recycleImages(converted)
+                 return false
+             }
+             converted += BitmapImage(bitmap, image.dstX, image.dstY)
+         }
+-        recycleImages()
+-        images = converted
+-        contentLeftPx = viewportLeftPx
+-        contentTopPx = viewportTopPx
++        layers.remove(layerId)?.let { recycleImages(it.images) }
++        layers[layerId] = Layer(converted, viewportLeftPx, viewportTopPx)
+         invalidate()
+         return true
+     }
+ 
+-    fun clearCaption() {
+-        recycleImages()
+-        images = emptyList()
++    fun clearCaption() = clearCaptionLayer(DEFAULT_LAYER_ID)
++
++    fun clearCaptionLayer(layerId: String) {
++        layers.remove(layerId)?.let { recycleImages(it.images) }
++        invalidate()
++    }
++
++    private fun clearAllLayers() {
++        layers.values.forEach { recycleImages(it.images) }
++        layers.clear()
+         invalidate()
+     }
+ 
+     override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
+         super.onSizeChanged(width, height, oldWidth, oldHeight)
+-        onOverlaySizeChanged(width, height)
++        sizeListeners.values.toList().forEach { listener -> listener(width, height) }
+     }
+ 
+     override fun onDraw(canvas: Canvas) {
+         super.onDraw(canvas)
+-        images.forEach { image ->
+-            canvas.drawBitmap(
+-                image.bitmap,
+-                (contentLeftPx + image.dstX).toFloat(),
+-                (contentTopPx + image.dstY).toFloat(),
+-                null,
+-            )
++        layers.values.forEach { layer ->
++            layer.images.forEach { image ->
++                canvas.drawBitmap(
++                    image.bitmap,
++                    (layer.contentLeftPx + image.dstX).toFloat(),
++                    (layer.contentTopPx + image.dstY).toFloat(),
++                    null,
++                )
++            }
+         }
+     }
+ 
+     override fun onDetachedFromWindow() {
+-        clearCaption()
++        clearAllLayers()
+         super.onDetachedFromWindow()
+     }
+ 
+-    private fun recycleImages() {
++    private fun recycleImages(images: List<BitmapImage>) {
+         images.forEach { image -> if (!image.bitmap.isRecycled) image.bitmap.recycle() }
+     }
+ 
+     companion object {
++        private const val DEFAULT_LAYER_ID = "caption"
++
+         fun bitmapFromRgba(image: NativeAribCaptionRenderer.RenderedCaptionImage): Bitmap? {
+             if (!NativeAribCaptionRenderer.validImageBuffer(image.width, image.height, image.stride, image.rgba8888.size)) {
+                 return null
+diff --git a/tis/src/com/maleicacid/tvinput/tis/ChannelNumberingPolicy.kt b/tis/src/com/maleicacid/tvinput/tis/ChannelNumberingPolicy.kt
+index 451e1d6..9d7c053 100644
+--- a/tis/src/com/maleicacid/tvinput/tis/ChannelNumberingPolicy.kt
++++ b/tis/src/com/maleicacid/tvinput/tis/ChannelNumberingPolicy.kt
+@@ -19,9 +19,13 @@ object ChannelNumberingPolicy {
+     }
+ 
+     private fun terrestrialBase(service: AribService, remoteKey: Int?): String {
+-        val key = remoteKey ?: return service.serviceKey.serviceId.toString()
+-        val ordinal = stableServiceOrdinal(service.serviceKey.serviceId)
+-        return if (ordinal == 0) key.toString() else "$key.$ordinal"
++        val key = remoteKey?.takeIf { it in 1..12 } ?: return service.serviceKey.serviceId.toString()
++        val serviceId = service.serviceKey.serviceId
++        // ARIB TR-B14 Vol.7 encodes service type in b8..b7 and service number in b2..b0.
++        val serviceType = (serviceId ushr 7) and 0x03
++        val serviceNumber = serviceId and 0x07
++        val threeDigitNumber = serviceType * 200 + key * 10 + (serviceNumber + 1)
++        return threeDigitNumber.toString().padStart(3, '0')
+     }
+ 
+     private fun satelliteBase(service: AribService, candidate: ScanCandidate): String {
+@@ -33,8 +37,4 @@ object ChannelNumberingPolicy {
+         return "$prefix-${service.serviceKey.serviceId}"
+     }
+ 
+-    private fun stableServiceOrdinal(serviceId: Int): Int {
+-        val suffix = serviceId % 100
+-        return if (suffix == 0) 0 else suffix
+-    }
+ }
+diff --git a/tis/src/com/maleicacid/tvinput/tis/ChannelScanManager.kt b/tis/src/com/maleicacid/tvinput/tis/ChannelScanManager.kt
+index fdc46c0..acd7e9c 100644
+--- a/tis/src/com/maleicacid/tvinput/tis/ChannelScanManager.kt
++++ b/tis/src/com/maleicacid/tvinput/tis/ChannelScanManager.kt
+@@ -193,13 +193,15 @@ object ChannelScanManager {
+             result.onSuccess { scanResult ->
+                 if (scanResult != null) {
+                     val terminalCancel = scanResult.terminalCancelObserved || isCancelledGeneration(generation)
+-                    val successCandidateObserved = scanResult.successfulCandidates > 0 && !terminalCancel
+-                    if (successCandidateObserved) {
++                    val allRequiredTargetsCommitted = scanResult.scanned > 0 &&
++                        scanResult.successfulCandidates == scanResult.scanned &&
