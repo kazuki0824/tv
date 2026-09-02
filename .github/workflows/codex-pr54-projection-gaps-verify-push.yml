@@ -1,0 +1,40 @@
+name: Verify PR54 projection gap fixes
+
+on:
+  push:
+    branches: [codex/pr54-apply-20260902]
+    paths: [.github/workflows/codex-pr54-projection-gaps-verify-push.yml]
+
+permissions:
+  contents: write
+
+env:
+  EXPECTED_TARGET_SHA: 3015db754868fa6753b09b12162ae9d31c883051
+  TARGET_BRANCH: agent/implement-tis-arib-si-design-pr53
+  RUST_TOOLCHAIN: 1.81.0
+  KOTLIN_VERSION: 1.9.22
+
+jobs:
+  verify-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout staging
+        uses: actions/checkout@v4
+        with:
+          ref: codex/pr54-apply-20260902
+          path: staging
+      - name: Checkout target
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 2
+          path: target
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Rust 1.81
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
+      - name: Apply, verify, commit and push
+        shell: bash
+        run: bash staging/codex_verify_pr54_projection_gaps.sh "$GITHUB_WORKSPACE/target"
