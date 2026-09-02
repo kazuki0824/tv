@@ -86,8 +86,14 @@ pub enum DvrKind {{ Record, Playback }}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FilterOpenType {{ TsRaw, TsRecord, TsSection, TsAudio, TsVideo, TsPes, TsPcr }}
 impl FilterOpenType {{
-    pub const fn supports_normal_fmq_queue(self) -> bool {{
+    pub const fn has_filter_fmq(self) -> bool {{
         matches!(self, Self::TsRaw | Self::TsSection | Self::TsPes | Self::TsRecord)
+    }}
+    pub const fn uses_filter_fmq_for_payload(self) -> bool {{
+        matches!(self, Self::TsRaw | Self::TsSection | Self::TsPes)
+    }}
+    pub const fn supports_normal_fmq_queue(self) -> bool {{
+        self.has_filter_fmq()
     }}
 }}
 pub const MAX_PES_BUFFER_BYTES: usize = {pes_max};
