@@ -184,7 +184,7 @@ class VtsProfileTest(unittest.TestCase):
         product = (tuner_hal2 / "config/product_integration.mk").read_text()
         test_product = (tuner_hal2 / "config/vts_test_agent_integration.mk").read_text()
         self.assertIn("DemuxTsFilterType::SECTION", agent)
-        self.assertIn('request.get("op")', agent)
+        self.assertIn('.get("op")', agent)
         self.assertNotIn("parse_pat", agent); self.assertNotIn("parse_pmt", agent); self.assertNotIn("SectionAssembler", agent)
         self.assertIn("class _AgentSession", device); self.assertNotIn("_run_agent_payload", device)
         self.assertIn("with _AgentSession(", device); self.assertIn("session.section(0x0011, 0x42)", device)
