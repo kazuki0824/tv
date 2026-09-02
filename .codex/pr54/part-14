@@ -1,0 +1,135 @@
+-                    bytes[i] == 0.toByte() && bytes[i + 1] == 0.toByte() && bytes[i + 2] == 1.toByte() -> 3
++                    i + 3 < bytes.size && bytes[i] == 0.toByte() && bytes[i + 1] == 0.toByte() && bytes[i + 2] == 0.toByte() && bytes[i + 3] == 1.toByte() -> 4
++                    i + 2 < bytes.size && bytes[i] == 0.toByte() && bytes[i + 1] == 0.toByte() && bytes[i + 2] == 1.toByte() -> 3
+                     else -> { i++; continue }
+                 }
++                if (i + prefixLength >= bytes.size) return null
+                 val start = i
+                 val nalHeader = bytes[i + prefixLength].toInt() and 0x1f
+                 i += prefixLength + 1
+-                while (i < bytes.size - 4 && !isStartCode(bytes, i)) i++
++                while (i < bytes.size && !isStartCode(bytes, i)) i++
+                 if (nalHeader == nalType) return bytes.copyOfRange(start, i)
+             }
+             return null
+         }
+ 
+         private fun isStartCode(bytes: ByteArray, i: Int): Boolean =
+-            i + 3 < bytes.size && bytes[i] == 0.toByte() && bytes[i + 1] == 0.toByte() &&
+-                (bytes[i + 2] == 1.toByte() || (i + 4 < bytes.size && bytes[i + 2] == 0.toByte() && bytes[i + 3] == 1.toByte()))
++            i + 2 < bytes.size && bytes[i] == 0.toByte() && bytes[i + 1] == 0.toByte() &&
++                (bytes[i + 2] == 1.toByte() ||
++                    (i + 3 < bytes.size && bytes[i + 2] == 0.toByte() && bytes[i + 3] == 1.toByte()))
++    }
++
++    private fun channelMaskForPcmOutput(channelCount: Int): Int? = when (channelCount) {
++        1 -> AudioFormat.CHANNEL_OUT_MONO
++        2 -> AudioFormat.CHANNEL_OUT_STEREO
++        6 -> AudioFormat.CHANNEL_OUT_5POINT1
++        8 -> AudioFormat.CHANNEL_OUT_7POINT1_SURROUND
++        else -> null
+     }
+ 
+     private fun getIntegerOrDefault(format: MediaFormat, key: String, defaultValue: Int): Int =
+@@ -1523,12 +1618,15 @@ class PlaybackPipeline(
+         val previousVideoFilter = videoFilter
+         val previousAudioFilter = audioFilter
+         val previousSubtitleFilter = subtitleFilter
++        val previousSuperimposeFilter = superimposeFilter
+         videoFilter = null
+         audioFilter = null
+         subtitleFilter = null
++        superimposeFilter = null
+         closeFilter(previousVideoFilter)
+         closeFilter(previousAudioFilter)
+         closeFilter(previousSubtitleFilter)
++        closeFilter(previousSuperimposeFilter)
+         releaseOutstandingAudioOutputs()
+         videoDecoder?.close()
+         audioDecoder?.close()
+@@ -1575,11 +1673,19 @@ class PlaybackPipeline(
+         runCatching { filter.close() }.onFailure { Log.w(LogTags.TIS, "AV filter close に失敗しました", it) }
+     }
+ 
+-    private fun emitUnavailable(reason: PlaybackUnavailableReason, detail: String = "") {
+-        Log.w(LogTags.TIS, "映像を利用できません inputId=$inputId sessionId=$sessionId reason=$reason detail=$detail generation=$playbackGeneration")
+-        onVideoUnavailable(PlaybackUnavailable(reason, detail, playbackGeneration))
++    private fun emitUnavailableForGeneration(
++        generation: Long,
++        reason: PlaybackUnavailableReason,
++        detail: String = "",
++    ) {
++        if (generation != playbackGeneration) return
++        Log.w(LogTags.TIS, "映像を利用できません inputId=$inputId sessionId=$sessionId reason=$reason detail=$detail generation=$generation")
++        onVideoUnavailable(PlaybackUnavailable(reason, detail, generation))
+     }
+ 
++    private fun emitUnavailable(reason: PlaybackUnavailableReason, detail: String = "") =
++        emitUnavailableForGeneration(playbackGeneration, reason, detail)
++
+     fun release() {
+         if (!released.compareAndSet(false, true)) return
+         runOnPlaybackExecutorBlocking { stopOnPlaybackExecutor() }
+@@ -1612,7 +1718,8 @@ class PlaybackPipeline(
+                 val ptsTrack = when (track) {
+                     "video" -> PtsTrack.VIDEO
+                     "audio" -> PtsTrack.AUDIO
+-                    "subtitle" -> PtsTrack.SUBTITLE
++                    "subtitle", "caption" -> PtsTrack.CAPTION
++                    "superimpose" -> PtsTrack.SUPERIMPOSE
+                     else -> throw IllegalArgumentException("unknown PTS track: $track")
+                 }
+                 coordinator.normalizeTicks(ptsTrack, rawPts)
+@@ -1650,6 +1757,14 @@ class PlaybackPipeline(
+ 
+         fun isSupportedAudioStreamTypeForTest(streamType: Int): Boolean = AudioCodecKind.fromStreamType(streamType) != null
+ 
++        fun channelMaskForPcmOutputForTest(channelCount: Int): Int? = when (channelCount) {
++            1 -> AudioFormat.CHANNEL_OUT_MONO
++            2 -> AudioFormat.CHANNEL_OUT_STEREO
++            6 -> AudioFormat.CHANNEL_OUT_5POINT1
++            8 -> AudioFormat.CHANNEL_OUT_7POINT1_SURROUND
++            else -> null
++        }
++
+         fun videoFormatInfoForTest(streamType: Int, spsWithStartCode: ByteArray): VideoFormatInfo? {
+             val dimensions = h264DimensionsForTest(spsWithStartCode) ?: return null
+             return VideoFormatInfo(streamType, MediaFormat.MIMETYPE_VIDEO_AVC, dimensions.first, dimensions.second)
+diff --git a/tis/src/com/maleicacid/tvinput/tis/PlaybackStartGate.kt b/tis/src/com/maleicacid/tvinput/tis/PlaybackStartGate.kt
+index 2da5ca9..2e15157 100644
+--- a/tis/src/com/maleicacid/tvinput/tis/PlaybackStartGate.kt
++++ b/tis/src/com/maleicacid/tvinput/tis/PlaybackStartGate.kt
+@@ -14,6 +14,9 @@ data class AvPlaybackSignature(
+     val keyTokenAvailable: Boolean,
+     val subtitlePid: TsPid? = null,
+     val subtitleDataComponentId: Int? = null,
++    val subtitleLanguageId: Int? = null,
++    val superimposePid: TsPid? = null,
++    val superimposeDataComponentId: Int? = null,
+ )
+ 
+ /** LiveSession が一つだけ所有する AV 再生 lifecycle。 */
+diff --git a/tis/src/com/maleicacid/tvinput/tis/SetupActivity.kt b/tis/src/com/maleicacid/tvinput/tis/SetupActivity.kt
+index 597a69e..9a054e1 100644
+--- a/tis/src/com/maleicacid/tvinput/tis/SetupActivity.kt
++++ b/tis/src/com/maleicacid/tvinput/tis/SetupActivity.kt
+@@ -19,6 +19,7 @@ class SetupActivity : Activity(), ChannelScanManager.Listener {
+         super.onCreate(savedInstanceState)
+         inputId = resolveInputId()
+         invalidInputId = inputId.isNullOrBlank() || !isOwnInputId(inputId)
++        setupGeneration = savedInstanceState?.getInt(STATE_SETUP_GENERATION)?.takeIf { it > 0 }
+         val layout = LinearLayout(this).apply {
+             orientation = LinearLayout.VERTICAL
+             setPadding(32, 32, 32, 32)
+@@ -61,6 +62,11 @@ class SetupActivity : Activity(), ChannelScanManager.Listener {
+         }
+     }
+ 
++    override fun onSaveInstanceState(outState: Bundle) {
++        setupGeneration?.let { outState.putInt(STATE_SETUP_GENERATION, it) }
++        super.onSaveInstanceState(outState)
++    }
++
+     private fun resolveInputId(): String? {
+         val extras = intent?.extras
+         return extras?.getString("android.media.tv.extra.INPUT_ID")
