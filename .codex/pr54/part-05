@@ -1,0 +1,132 @@
+@@ -328,10 +381,12 @@ class AribCaptionController(
+             videoWidth: Int,
+             videoHeight: Int,
+             generation: Long,
++            displayAspectRatio: Double? = null,
+         ): CaptionViewport? {
+             if (overlayWidth <= 0 || overlayHeight <= 0 || videoWidth <= 0 || videoHeight <= 0 || generation < 0L) return null
+             val overlayAspect = overlayWidth.toDouble() / overlayHeight.toDouble()
+-            val videoAspect = videoWidth.toDouble() / videoHeight.toDouble()
++            val videoAspect = displayAspectRatio?.takeIf { it.isFinite() && it > 0.0 }
++                ?: (videoWidth.toDouble() / videoHeight.toDouble())
+             return if (overlayAspect > videoAspect) {
+                 val contentWidth = (overlayHeight * videoAspect).toInt().coerceAtLeast(1)
+                 CaptionViewport(
+diff --git a/tis/src/com/maleicacid/tvinput/tis/BootEpgSyncJobService.kt b/tis/src/com/maleicacid/tvinput/tis/BootEpgSyncJobService.kt
+index a733449..ea90048 100644
+--- a/tis/src/com/maleicacid/tvinput/tis/BootEpgSyncJobService.kt
++++ b/tis/src/com/maleicacid/tvinput/tis/BootEpgSyncJobService.kt
+@@ -6,64 +6,89 @@ import android.os.Handler
+ import android.os.Looper
+ import java.util.concurrent.atomic.AtomicBoolean
+ import java.util.concurrent.atomic.AtomicInteger
++import java.util.concurrent.atomic.AtomicReference
+ 
+ class BootEpgSyncJobService : JobService() {
+-    private val completionDelivered = AtomicBoolean(false)
+-    private val stopped = AtomicBoolean(false)
+-    private val activeGeneration = AtomicInteger(0)
++    private data class ScanCompletion(val generation: Int, val needsReschedule: Boolean)
++
++    private data class RunContext(
++        val params: JobParameters,
++        val completionDelivered: AtomicBoolean = AtomicBoolean(false),
++        val stopped: AtomicBoolean = AtomicBoolean(false),
++        val scanGeneration: AtomicInteger = AtomicInteger(0),
++        val earlyCompletion: AtomicReference<ScanCompletion?> = AtomicReference(null),
++    )
++
++    private val activeRun = AtomicReference<RunContext?>(null)
+     private val mainHandler = Handler(Looper.getMainLooper())
+ 
+     override fun onStartJob(params: JobParameters): Boolean {
+-        completionDelivered.set(false)
+-        stopped.set(false)
+-        activeGeneration.set(0)
++        val run = RunContext(params)
++        activeRun.set(run)
+         when (DirectBootGuard.drainIfUserUnlocked(applicationContext, "JOB_START", System.currentTimeMillis())) {
+-            DirectBootGuard.DrainDecision.SKIP_NO_PENDING -> return false
++            DirectBootGuard.DrainDecision.SKIP_NO_PENDING -> {
++                activeRun.compareAndSet(run, null)
++                return false
++            }
+             DirectBootGuard.DrainDecision.SKIP_LOCKED,
+             DirectBootGuard.DrainDecision.SKIP_TV_PROVIDER_UNAVAILABLE,
+-            -> return finish(params, needsReschedule = true)
++            -> return finish(run, needsReschedule = true)
+             DirectBootGuard.DrainDecision.START_BOOT_EPG_SYNC -> Unit
+         }
+         val inputId = TisInputIdResolver.resolveOwnInputId(applicationContext)
+         if (inputId == null) {
+             DirectBootGuard.deferPending(applicationContext, "TV_INPUT_ID_UNRESOLVED")
+-            return finish(params, needsReschedule = true)
++            return finish(run, needsReschedule = true)
+         }
+         val existingChannels = TvProviderWriter(applicationContext, inputId).existingChannelsResult()
+         if (existingChannels.isFailure) {
+             DirectBootGuard.deferPending(applicationContext, "TV_PROVIDER_CHANNEL_QUERY_FAILED")
+-            return finish(params, needsReschedule = true)
++            return finish(run, needsReschedule = true)
+         }
+         val targetChannels = existingChannels.getOrThrow()
+         if (targetChannels.isEmpty()) {
+             DirectBootGuard.clearPending(applicationContext)
++            activeRun.compareAndSet(run, null)
+             return false
+         }
+         val generation = ChannelScanManager.startBootEpgSyncIfIdle(applicationContext, inputId, targetChannels) { completedGeneration, needsReschedule ->
+-            activeGeneration.compareAndSet(completedGeneration, 0)
+-            finish(params, needsReschedule)
++            if (activeRun.get() !== run || run.stopped.get()) return@startBootEpgSyncIfIdle
++            val activeGeneration = run.scanGeneration.get()
++            if (activeGeneration == 0) {
++                run.earlyCompletion.compareAndSet(null, ScanCompletion(completedGeneration, needsReschedule))
++                return@startBootEpgSyncIfIdle
++            }
++            if (!run.scanGeneration.compareAndSet(completedGeneration, 0)) return@startBootEpgSyncIfIdle
++            finish(run, needsReschedule)
++        } ?: return finish(run, needsReschedule = true)
++        run.scanGeneration.set(generation)
++        run.earlyCompletion.getAndSet(null)?.takeIf { it.generation == generation }?.let { completion ->
++            if (run.scanGeneration.compareAndSet(generation, 0)) finish(run, completion.needsReschedule)
+         }
+-            ?: return finish(params, needsReschedule = true)
+-        activeGeneration.set(generation)
+-        if (completionDelivered.get()) activeGeneration.compareAndSet(generation, 0)
+         return true
+     }
+ 
+     override fun onStopJob(params: JobParameters): Boolean {
+-        stopped.set(true)
+-        val generation = activeGeneration.getAndSet(0)
++        val run = activeRun.get()
++        if (run == null || run.params !== params) return true
++        run.stopped.set(true)
++        val generation = run.scanGeneration.getAndSet(0)
+         if (generation != 0) {
+             ChannelScanManager.cancelIfCurrent(generation, ScanPurpose.BOOT_EPG_SYNC)
+         }
+         DirectBootGuard.deferPending(applicationContext, "BOOT_EPG_JOB_STOPPED")
+-        completionDelivered.compareAndSet(false, true)
++        run.completionDelivered.compareAndSet(false, true)
++        activeRun.compareAndSet(run, null)
+         return true
+     }
+ 
+-    private fun finish(params: JobParameters, needsReschedule: Boolean): Boolean {
+-        if (completionDelivered.compareAndSet(false, true)) {
++    private fun finish(run: RunContext, needsReschedule: Boolean): Boolean {
++        if (run.completionDelivered.compareAndSet(false, true)) {
+             mainHandler.post {
+-                if (!stopped.get()) jobFinished(params, needsReschedule)
++                if (activeRun.get() === run && !run.stopped.get()) {
++                    activeRun.compareAndSet(run, null)
++                    jobFinished(run.params, needsReschedule)
++                }
+             }
+         }
+         return true
+diff --git a/tis/src/com/maleicacid/tvinput/tis/CaptionOverlayView.kt b/tis/src/com/maleicacid/tvinput/tis/CaptionOverlayView.kt
+index f06419f..140e6a1 100644
+--- a/tis/src/com/maleicacid/tvinput/tis/CaptionOverlayView.kt
