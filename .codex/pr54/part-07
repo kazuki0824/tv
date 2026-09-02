@@ -1,0 +1,120 @@
++                        !terminalCancel
++                    if (allRequiredTargetsCommitted) {
+                         DirectBootGuard.clearPending(appContext)
+                         shouldScheduleBackgroundMaintenance = true
+                         needsReschedule = false
+                     } else {
+-                        DirectBootGuard.deferPending(appContext, if (terminalCancel) "BOOT_EPG_CANCELLED" else "BOOT_EPG_NO_SUCCESSFUL_CANDIDATE")
++                        DirectBootGuard.deferPending(appContext, if (terminalCancel) "BOOT_EPG_CANCELLED" else "BOOT_EPG_INCOMPLETE_TARGET_SET")
+                     }
+                     if (terminalCancel) {
+                         setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, ScanPurpose.BOOT_EPG_SYNC))
+diff --git a/tis/src/com/maleicacid/tvinput/tis/CurrentProgramRatingResolver.kt b/tis/src/com/maleicacid/tvinput/tis/CurrentProgramRatingResolver.kt
+index 5c891ac..d7dc7d1 100644
+--- a/tis/src/com/maleicacid/tvinput/tis/CurrentProgramRatingResolver.kt
++++ b/tis/src/com/maleicacid/tvinput/tis/CurrentProgramRatingResolver.kt
+@@ -38,6 +38,7 @@ class CurrentProgramRatingResolver(private val context: Context) {
+         fun ratingsForBlocking(): List<TvContentRating> = ratings.ifEmpty { listOf(AribRatingMapper.unrated()) }
+ 
+         fun unblockKeyFor(rating: TvContentRating): String = unblockKey(
++            channelUriString = channelUriString,
+             serviceKey = serviceKey,
+             eventId = eventId,
+             ratingString = rating.flattenToString(),
+@@ -67,7 +68,7 @@ class CurrentProgramRatingResolver(private val context: Context) {
+          * 意図的に unblock 不可とする。
+          */
+         fun exactUnblockKeyFor(rating: TvContentRating): String? {
+-            if (programIdentityKey() == null) return null
++            if (programIdentityKey() == null || currentRowSelectionKey() == null) return null
+             val requested = rating.flattenToString()
+             val currentRatings = ratingsForBlocking().map { it.flattenToString() }.toSet()
+             if (requested !in currentRatings) return null
+@@ -112,12 +113,10 @@ class CurrentProgramRatingResolver(private val context: Context) {
+                     ?: ResolveResult.Ratings(unresolvedRatingFallback(channelUri, serviceKey))
+             }
+             is TvProviderLookupResult.QueryFailed -> {
++                // DESIGN_JA: TvProvider current Program -> latest EIT -> UNRATED.
++                // Provider access failure does not authorize carrying a previous program/channel decision.
+                 fromLatestEit(channelUri, serviceKey, latestEvents, ratingProfile, nowMillis)?.let { ResolveResult.Ratings(it) }
+-                    ?: ResolveResult.ProviderQueryFailed(
+-                        channelUriString = channelUri?.toString().orEmpty(),
+-                        serviceKey = serviceKey,
+-                        reason = tvProvider.reason,
+-                    )
++                    ?: ResolveResult.Ratings(unresolvedRatingFallback(channelUri, serviceKey))
+             }
+         }
+     }
+@@ -236,10 +235,12 @@ class CurrentProgramRatingResolver(private val context: Context) {
+         fun stableProgramKey(serviceKey: ServiceKey, eventId: Int): String = ProviderDataBridge.buildProgramKey(serviceKey, eventId)
+ 
+         fun unblockKey(
++            channelUriString: String,
+             serviceKey: ServiceKey?,
+             eventId: Int?,
+             ratingString: String,
+         ): String = listOf(
++            channelUriString,
+             serviceKey?.let { stableProgramKey(it, eventId ?: -1) }.orEmpty(),
+             ratingString,
+         ).joinToString("|")
+diff --git a/tis/src/com/maleicacid/tvinput/tis/LanguageCodeNormalizer.kt b/tis/src/com/maleicacid/tvinput/tis/LanguageCodeNormalizer.kt
+index 5e7b331..4a452df 100644
+--- a/tis/src/com/maleicacid/tvinput/tis/LanguageCodeNormalizer.kt
++++ b/tis/src/com/maleicacid/tvinput/tis/LanguageCodeNormalizer.kt
+@@ -12,8 +12,6 @@ object LanguageCodeNormalizer {
+         runCatching { iso2.lowercase(Locale.ROOT) to Locale(iso2).getISO3Language().lowercase(Locale.ROOT) }.getOrNull()
+     }.toMap()
+ 
+-    private val iso3T: Set<String> = iso2ToIso3T.values.toSet()
+-
+     private val bibliographicAliases = mapOf(
+         "alb" to "sqi",
+         "arm" to "hye",
+@@ -41,7 +39,7 @@ object LanguageCodeNormalizer {
+         val code = value?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotBlank() } ?: return null
+         return when (code.length) {
+             2 -> iso2ToIso3T[code]
+-            3 -> bibliographicAliases[code] ?: code.takeIf { it in iso3T }
++            3 -> bibliographicAliases[code] ?: code.takeIf { it.all { ch -> ch in 'a'..'z' } }
+             else -> null
+         }
+     }
+diff --git a/tis/src/com/maleicacid/tvinput/tis/MaleicacidLiveSession.kt b/tis/src/com/maleicacid/tvinput/tis/MaleicacidLiveSession.kt
+index 9bd3668..9b9eb48 100644
+--- a/tis/src/com/maleicacid/tvinput/tis/MaleicacidLiveSession.kt
++++ b/tis/src/com/maleicacid/tvinput/tis/MaleicacidLiveSession.kt
+@@ -63,12 +63,21 @@ class MaleicacidLiveSession(
+     private var latestService: AribService? = null
+     private val latestVideoMetadataByProgramKey = linkedMapOf<String, PlaybackPipeline.VideoFormatInfo>()
+     private var preferredAudioTrackId: String? = null
++    private var audioFallbackDisabled: Boolean = false
+     private var selectedSubtitleTrackId: String? = null
++    private var subtitleExplicitlyDisabled: Boolean = false
+     private var currentTrackSignature: Set<String> = emptySet()
+     private val captionOverlayView = CaptionOverlayView(appContext)
+-    private val captionController = AribCaptionController(captionOverlayView) {
+-        tunerController.currentMediaClockSnapshot()
+-    }
++    private val captionController = AribCaptionController(
++        captionOverlayView,
++        mediaClock = { tunerController.currentMediaClockSnapshot() },
++    )
++    private val superimposeController = AribCaptionController(
++        captionOverlayView,
++        { tunerController.currentMediaClockSnapshot() },
++        overlayLayerId = "superimpose",
++        allowNoPts = true,
++    )
+     private val unblockedContentKeys = linkedSetOf<String>()
+     private var currentUnblockProgramIdentityKey: String? = null
+     private var lastParentalAccessState: ParentalAccessState = ParentalAccessState.UNKNOWN
+@@ -91,13 +100,30 @@ class MaleicacidLiveSession(
+         tunerController.setCasController(casController)
+         tunerController.setOnSectionIngestedCallback { enqueueSessionAction { refreshDynamicSiAndCasFilters() } }
+         tunerController.setPlaybackCallbacks(
+-            onVideoAvailable = { enqueueSessionAction { handleFirstFrameAvailable() } },
++            onVideoAvailable = { generation -> enqueueSessionAction { handleFirstFrameAvailable(generation) } },
+             onVideoUnavailable = { reason -> enqueueSessionAction { handlePlaybackUnavailable(reason) } },
+         )
