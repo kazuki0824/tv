@@ -1,0 +1,30 @@
+name: Fix PR54 Kotlin display aspect body v2
+
+on:
+  push:
+    branches: [codex/pr54-apply-20260902]
+    paths: [.github/workflows/codex-pr54-kotlin-fix2.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/implement-tis-arib-si-design-pr53
+          fetch-depth: 0
+      - name: Patch and push
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "4466f7e7204b23f3b194b75a139d2843c8447263"
+          python3 -c 'from pathlib import Path; p=Path("tis/src/com/maleicacid/tvinput/tis/PlaybackPipeline.kt"); s=p.read_text(); a="        fun displayAspectRatio(kind: VideoCodecKind, bytes: ByteArray): Double? = when (kind) {"; b="        fun displayAspectRatio(kind: VideoCodecKind, bytes: ByteArray): Double? {\n            return when (kind) {"; assert s.count(a)==1; s=s.replace(a,b,1); a2="            }\n        }\n\n\n        data class VideoDimensions("; b2="            }\n            }\n        }\n\n\n        data class VideoDimensions("; assert s.count(a2)==1; p.write_text(s.replace(a2,b2,1))'
+          git diff --check
+          git config user.name 'OpenAI Codex'
+          git config user.email 'codex@openai.com'
+          git add tis/src/com/maleicacid/tvinput/tis/PlaybackPipeline.kt
+          git commit -m 'fix(tis): use block body for display aspect parser'
+          git push origin HEAD:agent/implement-tis-arib-si-design-pr53
