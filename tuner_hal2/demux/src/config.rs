@@ -27,7 +27,10 @@ impl FilterOpenType {
     }
 
     pub const fn supports_normal_fmq_queue(self) -> bool {
-        matches!(self, Self::TsRaw | Self::TsSection | Self::TsPes)
+        matches!(
+            self,
+            Self::TsRaw | Self::TsSection | Self::TsPes | Self::TsRecord
+        )
     }
 
     pub const fn pipeline_open_kind(self) -> PipelineOpenKind {
@@ -259,4 +262,38 @@ pub struct OpenFilterRequest {
     pub open_type: FilterOpenType,
     pub buffer_size: i32,
     pub callback_present: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FilterOpenType, OpenFilterRequest};
+    use crate::{DemuxRuntime, QueueDescriptorQueryError};
+
+    #[test]
+    fn record_filter_uses_standard_filter_fmq_descriptor_path() {
+        assert!(FilterOpenType::TsRecord.supports_normal_fmq_queue());
+
+        let mut demux = DemuxRuntime::new(1, 1);
+        let request = OpenFilterRequest {
+            open_type: FilterOpenType::TsRecord,
+            buffer_size: 4096,
+            callback_present: true,
+        };
+        demux
+            .register_filter_from_open_request(1, &request)
+            .expect("record filter open must create its standard filter FMQ");
+
+        assert!(demux.queue_exists(1));
+        let descriptor = demux
+            .filter_queue_descriptor_export_plan(1)
+            .and_then(|plan| {
+                plan.export_descriptor()
+                    .map_err(QueueDescriptorQueryError::Runtime)
+            })
+            .expect("record filter getQueueDesc path must export a valid FMQ descriptor");
+        let (grantors, fds, _ints, quantum, _flags) = descriptor.into_parts();
+        assert!(!grantors.is_empty());
+        assert!(!fds.is_empty());
+        assert!(quantum > 0);
+    }
 }
