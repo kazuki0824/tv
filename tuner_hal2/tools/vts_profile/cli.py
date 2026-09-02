@@ -27,6 +27,8 @@ from .resource_closure import (
 from .schema import selected_xsd, validate_xml
 
 DEFAULT_PROFILE = Path("tuner_hal2/config/vts_environment_profile.json")
+DEFAULT_RECORD_FILTER_BYTES = 16 * 1024 * 1024
+DEFAULT_RECORD_DVR_BYTES = 4 * 1024 * 1024
 
 
 def _value(args: argparse.Namespace, name: str, label: str, *, optional: bool = False) -> str:
@@ -47,7 +49,7 @@ def _new_profile(args: argparse.Namespace) -> dict:
     product = _value(args, "product", "product")
     fe_type = _value(args, "delivery_system", "delivery system (ISDBT/ISDBS)").upper()
     source_ref = _value(args, "vts_source_ref", "selected AOSP Tuner VTS tag/commit")
-    region = _value(args, "region", "region/postal/address (optional)", optional=True)
+    region = _value(args, "region", "region address/postal/latitude,longitude (optional)", optional=True)
     frequency = _value(args, "frequency_hz", "frequency Hz (optional)", optional=True)
     record_enabled = _value(args, "record", "record flow (yes/no)").lower() in {"y", "yes", "true", "1"}
     record_pid = _value(args, "record_pid", "record PID (optional)", optional=True) if record_enabled else ""
@@ -56,10 +58,12 @@ def _new_profile(args: argparse.Namespace) -> dict:
     queues: dict[str, int] = {}
     if record_enabled:
         queues["record_filter_bytes"] = positive_int(
-            _value(args, "record_filter_bytes", "record filter buffer bytes"), "record_filter_bytes"
+            args.record_filter_bytes if args.record_filter_bytes is not None else DEFAULT_RECORD_FILTER_BYTES,
+            "record_filter_bytes",
         )
         queues["record_dvr_bytes"] = positive_int(
-            _value(args, "record_dvr_bytes", "record DVR buffer bytes"), "record_dvr_bytes"
+            args.record_dvr_bytes if args.record_dvr_bytes is not None else DEFAULT_RECORD_DVR_BYTES,
+            "record_dvr_bytes",
         )
     profile: dict = {
         "schema_version": SCHEMA_VERSION,
@@ -92,7 +96,7 @@ def cmd_resolve_region(args: argparse.Namespace) -> int:
     path = Path(args.profile)
     profile = load_profile(path)
     validate_profile(profile)
-    dataset = load_json(Path(args.dataset))
+    dataset = load_json(Path(args.dataset)) if args.dataset else None
     resolve_region(profile, dataset, args.select_index)
     save_profile(path, profile)
     for index, candidate in enumerate(profile["region"]["candidates"]):
@@ -186,13 +190,29 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--record-pid")
     init.add_argument("--scan")
     init.add_argument("--vts-source-ref")
-    init.add_argument("--record-filter-bytes")
-    init.add_argument("--record-dvr-bytes")
+    init.add_argument(
+        "--record-filter-bytes",
+        type=int,
+        default=DEFAULT_RECORD_FILTER_BYTES,
+        help=f"TS RECORD filter buffer bytes (default: {DEFAULT_RECORD_FILTER_BYTES})",
+    )
+    init.add_argument(
+        "--record-dvr-bytes",
+        type=int,
+        default=DEFAULT_RECORD_DVR_BYTES,
+        help=f"RECORD DVR buffer bytes (default: {DEFAULT_RECORD_DVR_BYTES})",
+    )
     init.add_argument("--variant", default="")
     init.set_defaults(func=cmd_init)
     region = sub.add_parser("resolve-region")
     region.add_argument("profile")
-    region.add_argument("--dataset", required=True)
+    region.add_argument(
+        "--dataset",
+        help=(
+            "optional explicit region dataset; when omitted, ISDBT uses the "
+            "repository snapshot after resolving the region input through coordinates"
+        ),
+    )
     region.add_argument("--select-index", type=int)
     region.set_defaults(func=cmd_resolve_region)
     select = sub.add_parser("select-candidate")
