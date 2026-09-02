@@ -36,6 +36,7 @@ JAPAN_PREFECTURES = (
 
 _ADDRESS_PARSER = Parser()
 
+
 def _normalize_address(query: str) -> str:
     result = _ADDRESS_PARSER.parse(query)
     if result.error:
@@ -49,6 +50,7 @@ def _normalize_address(query: str) -> str:
         raise ProfileError("Japanese address must resolve to a prefecture and municipality")
     town = address.get("town")
     return prefecture + city + (town if isinstance(town, str) else "")
+
 
 def _frequency_for_channel(channel: int) -> int:
     if channel < ISDBT_FIRST_CHANNEL or channel > ISDBT_LAST_CHANNEL:
@@ -269,45 +271,6 @@ def _snapshot_candidates(profile: dict[str, Any], dataset: dict[str, Any]) -> li
     ]
 
 
-def _legacy_dataset_candidates(
-    profile: dict[str, Any], dataset: dict[str, Any]
-) -> list[dict[str, Any]]:
-    reject_unknown(dataset, {"schema_version", "entries"}, "dataset")
-    if dataset.get("schema_version") != 1:
-        raise ProfileError("dataset.schema_version must be 1 or 2")
-    entries = dataset.get("entries")
-    if not isinstance(entries, list):
-        raise ProfileError("dataset.entries must be an array")
-
-    region = require_dict(profile.get("region"), "region")
-    query = region.get("query")
-    if not isinstance(query, str) or not query.strip():
-        raise ProfileError("region.query is required for resolve-region")
-    fe_type = profile["frontend"]["type"]
-
-    matches: list[dict[str, Any]] = []
-    for index, raw in enumerate(entries):
-        entry = require_dict(raw, f"dataset.entries[{index}]")
-        reject_unknown(
-            entry,
-            {"region", "delivery_system", "physical_channel", "frequency_hz", "label"},
-            f"dataset.entries[{index}]",
-        )
-        if entry.get("region") != query or entry.get("delivery_system") != fe_type:
-            continue
-        matches.append(
-            {
-                "delivery_system": fe_type,
-                "physical_channel": entry.get("physical_channel"),
-                "frequency_hz": positive_int(
-                    entry.get("frequency_hz"), f"dataset.entries[{index}].frequency_hz"
-                ),
-                "label": entry.get("label") or "",
-            }
-        )
-    return matches
-
-
 def resolve_region(
     profile: dict[str, Any],
     dataset: dict[str, Any] | None = None,
@@ -323,13 +286,9 @@ def resolve_region(
             raise ProfileError(f"built-in region dataset is missing: {DEFAULT_REGION_DATASET}")
         dataset = load_json(DEFAULT_REGION_DATASET)
 
-    schema_version = dataset.get("schema_version")
-    if schema_version == 2:
-        matches = _snapshot_candidates(profile, dataset)
-    elif schema_version == 1:
-        matches = _legacy_dataset_candidates(profile, dataset)
-    else:
-        raise ProfileError("dataset.schema_version must be 1 or 2")
+    if dataset.get("schema_version") != 2:
+        raise ProfileError("dataset.schema_version must be 2")
+    matches = _snapshot_candidates(profile, dataset)
 
     if not matches:
         raise ProfileError(f"no {profile['frontend']['type']} candidates found for region {query!r}")
