@@ -3,30 +3,6 @@ revision = 3
 requires-python = ">=3.11"
 
 [[package]]
-name = "japanese-address-parser-py"
-version = "0.3.6"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d1/be/c1370cd9958cbcd403d69f3cbe390bf9ad00e86d7de0dafa75bf2a6a8717/japanese_address_parser_py-0.3.6.tar.gz", hash = "sha256:dba44ee1ef4bc85bc74d8277cc5dde303f62824e8fd342683d257cfd76d3b755", size = 61130, upload-time = "2026-06-28T10:11:35.347Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/37/72/895adacdf2571976c10216acddbcabe871e7e98370a0f92b9233d7e7adc7/japanese_address_parser_py-0.3.6-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:fa2d07ba3ddb652475553a6988f96a98cb926ffc349c2dc288ca118adface277", size = 3004403, upload-time = "2026-06-28T10:11:33.895Z" },
-    { url = "https://files.pythonhosted.org/packages/3b/7a/28a309ae8b0f6e320dc4a893b1113c6525a55ed905bfa96104d3213c68f4/japanese_address_parser_py-0.3.6-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:ffd1e265fcb472d01631fb671fe858fdceb38e4d00826c25f1c8e4bfccc8e753", size = 2862278, upload-time = "2026-06-28T10:11:32.396Z" },
-    { url = "https://files.pythonhosted.org/packages/6f/37/fc00dc17df4a3d512d42ff78921335ca5cd6ce74a7ebd8d624d137856d31/japanese_address_parser_py-0.3.6-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:9166e910bf339edb7b0990a242c0e235b421e3961da18f3c698ef48e1a747e1c", size = 2627762, upload-time = "2026-06-28T10:11:23.491Z" },
-    { url = "https://files.pythonhosted.org/packages/ba/db/8b2e3b51d0945eb2e187b71430dfd98974661345e5d8694bd0a7d52db3c1/japanese_address_parser_py-0.3.6-cp310-abi3-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:ad8d81b2b11685b0d5b8b81d1fbf4954679eb67295d13b63fa0fab9e523041d6", size = 2112712, upload-time = "2026-06-28T10:11:25.262Z" },
-    { url = "https://files.pythonhosted.org/packages/93/38/d4b8e440976d8a2f6b865dcdbf95f3bd02e8f28ea25ed74ec4f8cd6cb433/japanese_address_parser_py-0.3.6-cp310-abi3-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:21b3c4fd34c9a49151d20e0ed9b049dd30a5f9f98610163f7f6cc5804bb8d4fc", size = 2592482, upload-time = "2026-06-28T10:11:29.718Z" },
-    { url = "https://files.pythonhosted.org/packages/7b/1c/4638c1bad19bd5d6b79cc5627a273d39e7151a40b14739a72863c6adc4e1/japanese_address_parser_py-0.3.6-cp310-abi3-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl", hash = "sha256:acae44d7ca965d04dcf0d8708db92fe518317f31fec352b47f162b0220a34229", size = 2940938, upload-time = "2026-06-28T10:11:26.646Z" },
-    { url = "https://files.pythonhosted.org/packages/55/c9/3a5aee4ae0dcad48b336fbc9031ca8da4f76dcc9bcb8fd4a5ff356f7e081/japanese_address_parser_py-0.3.6-cp310-abi3-manylinux_2_17_s390x.manylinux2014_s390x.whl", hash = "sha256:5990660be1c360ed1c351839ee9f35d1b72ea855b1c81df1b5e73721b5b224b6", size = 2802522, upload-time = "2026-06-28T10:11:28.069Z" },
-    { url = "https://files.pythonhosted.org/packages/fe/a6/541d0c99a714c7b3030dd022a8a033092633913c600bdb0f1c2b01409f79/japanese_address_parser_py-0.3.6-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:28bbd8c87b495842e55b951f8f0e1d8ebd8065c128cce05eec54404ff070ced6", size = 2831567, upload-time = "2026-06-28T10:11:31.118Z" },
-    { url = "https://files.pythonhosted.org/packages/a8/d6/3f3b14c79304492fa89cd0a5a67f0221c8e9a5ee2d73da1fbea6460327ec/japanese_address_parser_py-0.3.6-cp310-abi3-win32.whl", hash = "sha256:68f46d6f1254b6bcda70591dde102a611053cfd4049aab42f34208766d55692d", size = 2040852, upload-time = "2026-06-28T10:11:37.647Z" },
-    { url = "https://files.pythonhosted.org/packages/0b/cb/b5dbf6f40184411d2b3bafb2431a6156e1577136605040111e548a1eeb8b/japanese_address_parser_py-0.3.6-cp310-abi3-win_amd64.whl", hash = "sha256:a016561c988f67f2a98cd419198e11d58ebf697a7dc471fd36bd5ad62807fdb1", size = 2406819, upload-time = "2026-06-28T10:11:36.277Z" },
-]
-
-[[package]]
 name = "maleicacid-tuner-hal2-vts-tools"
 version = "0.0.0"
 source = { virtual = "." }
-dependencies = [
-    { name = "japanese-address-parser-py" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "japanese-address-parser-py", specifier = ">=0.3.6" }]
