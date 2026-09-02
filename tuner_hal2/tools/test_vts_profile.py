@@ -42,6 +42,13 @@ class VtsProfileTest(unittest.TestCase):
         self.assertIn('frequency="557142857"', xml)
         self.assertIn('pid="272"', xml)
         self.assertIn('subType="RECORD"', xml)
+        self.assertIn('useFMQ="false"', xml)
+
+    def test_record_filter_fmq_probe_variant_requests_filter_descriptor(self) -> None:
+        profile = self.profile()
+        profile["vts"]["variant"] = "record-filter-fmq"
+        xml = render_xml(profile)
+        self.assertIn('subType="RECORD"', xml)
         self.assertIn('useFMQ="true"', xml)
 
     def test_region_resolution_and_selection_update_same_profile(self) -> None:
