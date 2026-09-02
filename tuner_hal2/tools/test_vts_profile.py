@@ -44,15 +44,18 @@ class VtsProfileTest(unittest.TestCase):
 
     def test_region_resolution_and_selection_update_same_profile(self) -> None:
         profile = self.profile(resolved=False)
-        profile["region"] = {"query": "test", "candidates": []}
+        profile["region"] = {"query": "大阪府大阪市", "candidates": []}
         dataset = {
-            "schema_version": 1,
-            "entries": [
-                {"region": "test", "delivery_system": "ISDBT", "physical_channel": 22,
-                 "frequency_hz": 527142857, "label": "A"},
-                {"region": "test", "delivery_system": "ISDBT", "physical_channel": 27,
-                 "frequency_hz": 557142857, "label": "B"},
-            ],
+            "schema_version": 2,
+            "source": {"index_url": "fixture", "source_notice": "fixture"},
+            "prefectures": {
+                "大阪府": {
+                    "source_url": "fixture",
+                    "default_channels": [22, 27],
+                    "prefecture_channels": [22, 27],
+                    "areas": {"大阪市": [22, 27]},
+                }
+            },
         }
         resolve_region(profile, dataset)
         self.assertEqual(len(profile["region"]["candidates"]), 2)
