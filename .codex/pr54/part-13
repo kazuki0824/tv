@@ -1,0 +1,138 @@
++            CaptionTimestamp.Pts(com.maleicacid.tvinput.common.CaptionPtsMillis(ptsEpochCoordinator.normalize(if (superimpose) PtsTrack.SUPERIMPOSE else PtsTrack.CAPTION, raw) / 1_000L))
+         } ?: CaptionTimestamp.NoPts
+         if (timestamp == CaptionTimestamp.NoPts) subtitleMissingPtsSamples++
+         return timestamp
+     }
+ 
+     private fun captionSampleFromPes(pes: ByteArray): CaptionPesSample? {
+-        if (pes.size < 14 || pes[0] != 0.toByte() || pes[1] != 0.toByte() || pes[2] != 1.toByte() ||
++        if (pes.size < 9 || pes[0] != 0.toByte() || pes[1] != 0.toByte() || pes[2] != 1.toByte() ||
+             pes[3].toInt() and 0xff != PES_STREAM_ID_PRIVATE_STREAM_1) return null
+         val flags1 = pes[6].toInt() and 0xff
+         val flags2 = pes[7].toInt() and 0xff
+         if (flags1 and 0xc0 != 0x80) return null
+         val ptsDtsFlags = (flags2 ushr 6) and 0x03
+-        if (ptsDtsFlags !in setOf(0x02, 0x03)) return null
++        if (ptsDtsFlags == 0x01) return null
+         val headerLength = pes[8].toInt() and 0xff
+         val payloadStart = 9 + headerLength
+-        if (headerLength < 5 || payloadStart > pes.size) return null
+-        val b0 = pes[9].toInt() and 0xff
+-        val b1 = pes[10].toInt() and 0xff
+-        val b2 = pes[11].toInt() and 0xff
+-        val b3 = pes[12].toInt() and 0xff
+-        val b4 = pes[13].toInt() and 0xff
+-        val expectedPrefix = if (ptsDtsFlags == 0x02) 0x20 else 0x30
+-        if (b0 and 0xf0 != expectedPrefix || b0 and 0x01 != 1 || b2 and 0x01 != 1 || b4 and 0x01 != 1) return null
+-        val pts90k = ((b0.toLong() and 0x0eL) shl 29) or
+-            (b1.toLong() shl 22) or
+-            ((b2.toLong() and 0xfeL) shl 14) or
+-            (b3.toLong() shl 7) or
+-            ((b4.toLong() and 0xfeL) ushr 1)
++        if (payloadStart > pes.size) return null
++        val pts90k = if (ptsDtsFlags == 0x02 || ptsDtsFlags == 0x03) {
++            if (headerLength < 5 || pes.size < 14) return null
++            val b0 = pes[9].toInt() and 0xff
++            val b1 = pes[10].toInt() and 0xff
++            val b2 = pes[11].toInt() and 0xff
++            val b3 = pes[12].toInt() and 0xff
++            val b4 = pes[13].toInt() and 0xff
++            val expectedPrefix = if (ptsDtsFlags == 0x02) 0x20 else 0x30
++            if (b0 and 0xf0 != expectedPrefix || b0 and 0x01 != 1 || b2 and 0x01 != 1 || b4 and 0x01 != 1) return null
++            ((b0.toLong() and 0x0eL) shl 29) or
++                (b1.toLong() shl 22) or
++                ((b2.toLong() and 0xfeL) shl 14) or
++                (b3.toLong() shl 7) or
++                ((b4.toLong() and 0xfeL) ushr 1)
++        } else {
++            null
++        }
+         val payload = pes.copyOfRange(payloadStart, pes.size)
+         if (payload.isEmpty()) return null
+         return CaptionPesSample(payload, pts90k)
+     }
+ 
+-    private enum class PtsTrack { VIDEO, AUDIO, SUBTITLE }
++    private enum class PtsTrack { VIDEO, AUDIO, CAPTION, SUPERIMPOSE }
+ 
+     private fun isAuthoritativePtsValid(pts90k: Long): Boolean = pts90k in 0..PTS_MASK
+ 
+@@ -1286,6 +1325,12 @@ class PlaybackPipeline(
+ 
+     private object EsHeaderParser {
+         private val sampleRates = intArrayOf(96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350)
++        private val AVC_SAR_TABLE = mapOf(
++            1 to (1 to 1), 2 to (12 to 11), 3 to (10 to 11), 4 to (16 to 11),
++            5 to (40 to 33), 6 to (24 to 11), 7 to (20 to 11), 8 to (32 to 11),
++            9 to (80 to 33), 10 to (18 to 11), 11 to (15 to 11), 12 to (64 to 33),
++            13 to (160 to 99), 14 to (4 to 3), 15 to (3 to 2), 16 to (2 to 1),
++        )
+ 
+         fun mpeg2VideoFormat(bytes: ByteArray): MediaFormat? {
+             val pos = findStartCode(bytes, 0xb3) ?: return null
+@@ -1306,7 +1351,33 @@ class PlaybackPipeline(
+         }
+ 
+ 
+-        data class VideoDimensions(val width: Int, val height: Int)
++        fun displayAspectRatio(kind: VideoCodecKind, bytes: ByteArray): Double? = when (kind) {
++            VideoCodecKind.MPEG2 -> {
++                val pos = findStartCode(bytes, 0xb3) ?: return null
++                if (pos + 7 >= bytes.size) return null
++                val width = ((bytes[pos + 4].toInt() and 0xff) shl 4) or ((bytes[pos + 5].toInt() and 0xf0) ushr 4)
++                val height = ((bytes[pos + 5].toInt() and 0x0f) shl 8) or (bytes[pos + 6].toInt() and 0xff)
++                when ((bytes[pos + 7].toInt() ushr 4) and 0x0f) {
++                    1 -> width.toDouble() / height.coerceAtLeast(1).toDouble()
++                    2 -> 4.0 / 3.0
++                    3 -> 16.0 / 9.0
++                    4 -> 2.21
++                    else -> null
++                }
++            }
++            VideoCodecKind.AVC -> findNal(bytes, 7)?.let(::parseAvcSpsDimensions)?.let { dimensions ->
++                dimensions.width.toDouble() * dimensions.sarWidth.toDouble() /
++                    (dimensions.height.toDouble() * dimensions.sarHeight.toDouble())
++            }
++        }
++
++
++        data class VideoDimensions(
++            val width: Int,
++            val height: Int,
++            val sarWidth: Int = 1,
++            val sarHeight: Int = 1,
++        )
+ 
+         fun parseAvcSpsDimensionsForTest(spsWithStartCode: ByteArray): VideoDimensions? = parseAvcSpsDimensions(spsWithStartCode)
+ 
+@@ -1369,7 +1440,21 @@ class PlaybackPipeline(
+             }
+             val width = ((picWidthInMbsMinus1 + 1) * 16) - (cropLeft + cropRight) * cropUnitX
+             val height = ((picHeightInMapUnitsMinus1 + 1) * 16 * frameMbsFactor) - (cropTop + cropBottom) * cropUnitY
+-            VideoDimensions(width.coerceAtLeast(1), height.coerceAtLeast(1))
++            var sarWidth = 1
++            var sarHeight = 1
++            if (bits.readBit() == 1 && bits.readBit() == 1) {
++                val aspectRatioIdc = bits.readBits(8)
++                val sar = if (aspectRatioIdc == 255) {
++                    bits.readBits(16) to bits.readBits(16)
++                } else {
++                    AVC_SAR_TABLE[aspectRatioIdc]
++                }
++                if (sar != null && sar.first > 0 && sar.second > 0) {
++                    sarWidth = sar.first
++                    sarHeight = sar.second
++                }
++            }
++            VideoDimensions(width.coerceAtLeast(1), height.coerceAtLeast(1), sarWidth, sarHeight)
+         }.getOrNull()
+ 
+         private fun nalRbspPayload(nalWithStartCode: ByteArray): ByteArray {
+@@ -1477,24 +1562,34 @@ class PlaybackPipeline(
+ 
+         private fun findNal(bytes: ByteArray, nalType: Int): ByteArray? {
+             var i = 0
+-            while (i < bytes.size - 4) {
++            while (i + 3 < bytes.size) {
+                 val prefixLength = when {
+-                    i + 4 < bytes.size && bytes[i] == 0.toByte() && bytes[i + 1] == 0.toByte() && bytes[i + 2] == 0.toByte() && bytes[i + 3] == 1.toByte() -> 4
