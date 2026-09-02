@@ -189,7 +189,7 @@ def _build_prefecture(url: str) -> dict[str, object]:
     }
 
 
-def generate(dataset_version: str) -> dict[str, object]:
+def generate() -> dict[str, object]:
     links = _frequency_links(_fetch_text(INDEX_URL))
     prefectures = {
         prefecture: _build_prefecture(links[prefecture])
@@ -199,7 +199,6 @@ def generate(dataset_version: str) -> dict[str, object]:
         raise RuntimeError(f"expected 47 prefectures, got {len(prefectures)}")
     return {
         "schema_version": 2,
-        "dataset_version": dataset_version,
         "source": {
             "index_url": INDEX_URL,
             "source_notice": (
@@ -214,9 +213,8 @@ def generate(dataset_version: str) -> dict[str, object]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True)
-    parser.add_argument("--dataset-version", required=True)
     args = parser.parse_args()
-    dataset = generate(args.dataset_version)
+    dataset = generate()
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(

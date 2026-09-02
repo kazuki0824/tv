@@ -236,7 +236,7 @@ def _channels_for_address(address: str, prefectures: dict[str, Any]) -> tuple[se
 
 
 def _snapshot_candidates(profile: dict[str, Any], dataset: dict[str, Any]) -> list[dict[str, Any]]:
-    reject_unknown(dataset, {"schema_version", "dataset_version", "source", "prefectures"}, "dataset")
+    reject_unknown(dataset, {"schema_version", "source", "prefectures"}, "dataset")
     if dataset.get("schema_version") != 2:
         raise ProfileError("built-in region dataset schema_version must be 2")
     source = require_dict(dataset.get("source"), "dataset.source")
@@ -272,11 +272,9 @@ def _snapshot_candidates(profile: dict[str, Any], dataset: dict[str, Any]) -> li
 def _legacy_dataset_candidates(
     profile: dict[str, Any], dataset: dict[str, Any]
 ) -> list[dict[str, Any]]:
-    reject_unknown(dataset, {"schema_version", "dataset_version", "entries"}, "dataset")
+    reject_unknown(dataset, {"schema_version", "entries"}, "dataset")
     if dataset.get("schema_version") != 1:
         raise ProfileError("dataset.schema_version must be 1 or 2")
-    if not isinstance(dataset.get("dataset_version"), str) or not dataset["dataset_version"]:
-        raise ProfileError("dataset.dataset_version is required")
     entries = dataset.get("entries")
     if not isinstance(entries, list):
         raise ProfileError("dataset.entries must be an array")

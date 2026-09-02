@@ -168,7 +168,7 @@ CLIと生成profileのtargetはproduct defaultである`tuner_hal2`に固定す�
 
 `init`では具体的な受信チャンネルを必須入力にせず、地上波では地域指定から候補を導出できる。地域入力は少なくとも郵便番号、住所、緯度経度のいずれかを表現可能とし、市区町村等の粗い入力で複数候補が残る場合は候補集合を同じprofileファイルに保存して一意の周波数を捏造しない。
 
-地域resolverは、放送エリア/チャンネル計画datasetを入力とする。datasetの版識別や同一版からの候補再現性はVTS profile契約に含めない。profileへdataset識別情報を永続化せず、resolverがその実行で使用するdatasetから受信候補を生成する。
+地域resolverは、放送エリア/チャンネル計画datasetを入力とする。dataset versionの識別規格は設けず、`VtsEnvironmentProfile`にもdataset versionまたはdataset識別情報を永続化しない。resolverはその実行で使用するdatasetから受信候補を生成する。
 
 地上波の地域resolverが生成してよいのは、送信所または受信エリアに対応するdelivery system、物理チャンネル、frequency等の**受信候補**である。候補に含まれることを、その地点・アンテナ・配線・tunerで実際に受信可能である証明として扱わない。BS/110度CS等、地域による送信周波数候補の選択を必要としない方式では、地域情報を周波数選択の擬似根拠にせず、対象transport候補表から候補を構成する。
 

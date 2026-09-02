@@ -47,7 +47,6 @@ class VtsProfileTest(unittest.TestCase):
         profile["region"] = {"query": "test", "candidates": []}
         dataset = {
             "schema_version": 1,
-            "dataset_version": "v1",
             "entries": [
                 {"region": "test", "delivery_system": "ISDBT", "physical_channel": 22,
                  "frequency_hz": 527142857, "label": "A"},

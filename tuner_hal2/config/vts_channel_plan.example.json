@@ -1,7 +1,12 @@
 {
   "schema_version": 1,
-  "dataset_version": "example-only",
   "entries": [
-    {"region": "example-region", "delivery_system": "ISDBT", "physical_channel": 27, "frequency_hz": 557142857, "label": "example-only-not-a-reception-claim"}
+    {
+      "region": "example-region",
+      "delivery_system": "ISDBT",
+      "physical_channel": 27,
+      "frequency_hz": 557142857,
+      "label": "example-only-not-a-reception-claim"
+    }
   ]
 }

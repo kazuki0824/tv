@@ -30,6 +30,7 @@ class VtsRegionDefaultsTest(unittest.TestCase):
     def test_bundled_dataset_has_all_prefectures_and_current_channels_only(self) -> None:
         dataset = json.loads(DEFAULT_REGION_DATASET.read_text(encoding="utf-8"))
         self.assertEqual(dataset["schema_version"], 2)
+        self.assertNotIn("dataset_version", dataset)
         self.assertEqual(len(dataset["prefectures"]), 47)
         for prefecture in dataset["prefectures"].values():
             channels = prefecture["prefecture_channels"]
@@ -113,7 +114,6 @@ class VtsRegionDefaultsTest(unittest.TestCase):
     def test_longest_area_match_is_used(self) -> None:
         dataset = {
             "schema_version": 2,
-            "dataset_version": "fixture",
             "source": {"index_url": "fixture", "source_notice": "fixture"},
             "prefectures": {
                 "大阪府": {
