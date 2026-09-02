@@ -87,7 +87,7 @@ pub enum DvrKind {{ Record, Playback }}
 pub enum FilterOpenType {{ TsRaw, TsRecord, TsSection, TsAudio, TsVideo, TsPes, TsPcr }}
 impl FilterOpenType {{
     pub const fn supports_normal_fmq_queue(self) -> bool {{
-        matches!(self, Self::TsRaw | Self::TsSection | Self::TsPes)
+        matches!(self, Self::TsRaw | Self::TsSection | Self::TsPes | Self::TsRecord)
     }}
 }}
 pub const MAX_PES_BUFFER_BYTES: usize = {pes_max};
