@@ -1,12 +1,17 @@
 {
-  "schema_version": 1,
-  "entries": [
-    {
-      "region": "example-region",
-      "delivery_system": "ISDBT",
-      "physical_channel": 27,
-      "frequency_hz": 557142857,
-      "label": "example-only-not-a-reception-claim"
+  "schema_version": 2,
+  "source": {
+    "index_url": "example-only",
+    "source_notice": "example-only-not-a-reception-claim"
+  },
+  "prefectures": {
+    "大阪府": {
+      "source_url": "example-only",
+      "default_channels": [24],
+      "prefecture_channels": [24],
+      "areas": {
+        "大阪市": [24]
+      }
     }
-  ]
+  }
 }
