@@ -1,0 +1,130 @@
++            superimposeDataComponentId = selection.superimpose?.dataComponentId,
+             clear = true,
+             keyTokenAvailable = false,
+         )
+@@ -368,16 +412,29 @@ class MaleicacidLiveSession(
+ 
+     private fun onSelectTrackOnSessionExecutor(type: Int, trackId: String?): Boolean {
+         val service = latestService ?: return false
+-        val tracks = tunerController.tracksFor(service.streams)
++        val defaultComponentGroupTags = currentDefaultComponentGroupTags(service.serviceKey)
++        val tracks = tunerController.tracksFor(service.streams, defaultComponentGroupTags)
+         return when (type) {
+             TvTrackInfo.TYPE_AUDIO -> {
+                 if (trackId == null || tracks.none { it.type == TvTrackInfo.TYPE_AUDIO && it.id == trackId }) return false
+                 val previousAudioTrackId = preferredAudioTrackId
++                val previousAudioFallbackDisabled = audioFallbackDisabled
+                 if (playbackState !is PlaybackStartState.Started) return false
+                 preferredAudioTrackId = trackId
+-                val selection = tunerController.selectAvStreams(service.serviceKey, service.pcrPid, service.streams, preferredAudioTrackId, selectedSubtitleTrackId)
++                audioFallbackDisabled = false
++                val selection = tunerController.selectAvStreams(
++                    service.serviceKey,
++                    service.pcrPid,
++                    service.streams,
++                    preferredAudioTrackId,
++                    selectedSubtitleTrackId,
++                    audioExplicitlyDisabled = audioFallbackDisabled,
++                    subtitleExplicitlyDisabled = subtitleExplicitlyDisabled,
++                    defaultComponentGroupTags = defaultComponentGroupTags,
++                )
+                 val signature = playbackSignatureFor(service, selection) ?: run {
+                     preferredAudioTrackId = previousAudioTrackId
++                    audioFallbackDisabled = previousAudioFallbackDisabled
+                     return false
+                 }
+                 val switched = tunerController.switchAudioTrack(selection)
+@@ -389,17 +446,18 @@ class MaleicacidLiveSession(
+                         switched.firstFramePending,
+                         switched.switchedAudio,
+                     )
+-                    captionController.beginPlaybackGeneration(
++                    beginCaptionPresentationGeneration(
+                         switched.generation,
+                         hasVideo = !PlaybackPolicy.isAudioOnlyService(service.serviceType),
+                     )
+-                    captionController.onPlaybackClockChanged()
++                    onCaptionPlaybackClockChanged()
+                 }
+                 if (switched?.switchedAudio == true) {
+                     notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, trackId)
+                     true
+                 } else {
+                     preferredAudioTrackId = previousAudioTrackId
++                    audioFallbackDisabled = previousAudioFallbackDisabled
+                     false
+                 }
+             }
+@@ -416,6 +474,7 @@ class MaleicacidLiveSession(
+             TvTrackInfo.TYPE_SUBTITLE -> {
+                 if (trackId == null) {
+                     selectedSubtitleTrackId = null
++                    subtitleExplicitlyDisabled = true
+                     captionController.selectTrack(null)
+                     notifyTrackSelected(TvTrackInfo.TYPE_SUBTITLE, null)
+                     maybeStartPlayback(service)
+@@ -423,6 +482,7 @@ class MaleicacidLiveSession(
+                 } else {
+                     val subtitle = tracks.firstOrNull { it.type == TvTrackInfo.TYPE_SUBTITLE && it.id == trackId } ?: return false
+                     selectedSubtitleTrackId = subtitle.id
++                    subtitleExplicitlyDisabled = false
+                     captionController.selectTrack(subtitle)
+                     if (captionEnabled) notifyTrackSelected(TvTrackInfo.TYPE_SUBTITLE, subtitle.id)
+                     maybeStartPlayback(service)
+@@ -433,8 +493,26 @@ class MaleicacidLiveSession(
+         }
+     }
+ 
++    private fun currentDefaultComponentGroupTags(serviceKey: ServiceKey, nowMillis: Long = System.currentTimeMillis()): Set<Int>? {
++        val currentEvent = aribSiEngine.programStateSnapshot().events
++            .asSequence()
++            .filter { event -> event.serviceKey == serviceKey && event.durationMillis > 0L }
++            .filter { event -> nowMillis >= event.startTimeMillis && nowMillis < event.startTimeMillis + event.durationMillis }
++            .minByOrNull { it.startTimeMillis }
++            ?: return null
++        return currentEvent.descriptors.componentGroups
++            .asSequence()
++            .filter { it.componentGroupType == 0 } // STD-B10: 0 == Multi-view TV service
++            .flatMap { it.groups.asSequence() }
++            .firstOrNull { it.componentGroupId == 0 } // main group
++            ?.componentTags
++            ?.toSet()
++            ?.takeIf { it.isNotEmpty() }
++    }
++
+     private fun updateTracks(service: AribService) {
+-        val tracks = tunerController.tracksFor(service.streams).filterNot { track ->
++        val defaultComponentGroupTags = currentDefaultComponentGroupTags(service.serviceKey)
++        val tracks = tunerController.tracksFor(service.streams, defaultComponentGroupTags).filterNot { track ->
+             PlaybackPolicy.isAudioOnlyService(service.serviceType) && track.type == TvTrackInfo.TYPE_SUBTITLE
+         }
+         val signature = tracks.map { track ->
+@@ -471,6 +549,7 @@ class MaleicacidLiveSession(
+             notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, it.id)
+         }
+         updateSubtitleSelection(tracks)
++        updateSuperimposeSelection(service)
+     }
+ 
+     private fun updateSubtitleSelection(tracks: List<TunerController.TisTrack>) {
+@@ -480,6 +559,12 @@ class MaleicacidLiveSession(
+             notifyTrackSelected(TvTrackInfo.TYPE_SUBTITLE, null)
+             return
+         }
++        if (subtitleExplicitlyDisabled) {
++            selectedSubtitleTrackId = null
++            captionController.selectTrack(null)
++            notifyTrackSelected(TvTrackInfo.TYPE_SUBTITLE, null)
++            return
++        }
+         val selected = selectedSubtitleTrackId?.let { wanted -> tracks.firstOrNull { it.type == TvTrackInfo.TYPE_SUBTITLE && it.id == wanted } }
+             ?: tracks.firstOrNull { it.type == TvTrackInfo.TYPE_SUBTITLE }
+         selectedSubtitleTrackId = selected?.id
+@@ -487,14 +572,29 @@ class MaleicacidLiveSession(
+         notifyTrackSelected(TvTrackInfo.TYPE_SUBTITLE, if (captionEnabled) selected?.id else null)
+     }
+ 
+-    private fun handleFirstFrameAvailable() {
+-        captionController.onPlaybackClockChanged()
+-        when (val state = playbackState) {
+-            is PlaybackStartState.WaitingFirstOutput -> {
