@@ -1,0 +1,167 @@
+     private var overlayHeight: Int = 0
+     private var videoWidth: Int = 0
+     private var videoHeight: Int = 0
++    private var videoDisplayAspectRatio: Double? = null
+     private var videoPathExpected = false
+     private var viewport: CaptionViewport? = null
+     private var renderer: NativeAribCaptionRenderer? = null
+@@ -78,7 +81,7 @@ class AribCaptionController(
+     private var invalidViewportCount: Int = 0
+ 
+     init {
+-        overlayView.setOnOverlaySizeChangedListener { width, height ->
++        overlayView.setOnOverlaySizeChangedListener(overlayLayerId) { width, height ->
+             enqueue { updateOverlaySize(width, height) }
+         }
+     }
+@@ -124,14 +127,21 @@ class AribCaptionController(
+         videoPathExpected = hasVideo
+         videoWidth = 0
+         videoHeight = 0
++        videoDisplayAspectRatio = null
+         viewport = null
+         restartPresentation()
+     }
+ 
+-    fun updateVideoGeometry(generation: Long, width: Int, height: Int) = enqueue {
++    fun updateVideoGeometry(
++        generation: Long,
++        width: Int,
++        height: Int,
++        displayAspectRatio: Double? = null,
++    ) = enqueue {
+         if (generation != playbackGeneration || !videoPathExpected || width <= 0 || height <= 0) return@enqueue
+         videoWidth = width
+         videoHeight = height
++        videoDisplayAspectRatio = displayAspectRatio?.takeIf { it.isFinite() && it > 0.0 }
+         updateViewport()
+     }
+ 
+@@ -147,7 +157,7 @@ class AribCaptionController(
+             .getOrNull() ?: return@enqueue) {
+             NativeAribCaptionRenderer.DecodeResult.NoPtsRejected -> {
+                 noPtsRejectedCount++
+-                Log.w(LogTags.TIS, "authoritative PTSのない字幕をrenderer queueへ追加しません count=$noPtsRejectedCount")
++                Log.w(LogTags.TIS, "この字幕serviceではauthoritative PTSなしPESを受理しません count=$noPtsRejectedCount")
+             }
+             NativeAribCaptionRenderer.DecodeResult.NoOutput -> Unit
+             is NativeAribCaptionRenderer.DecodeResult.Rendered -> enqueueFrame(decoded.frame, currentViewport)
+@@ -173,6 +183,7 @@ class AribCaptionController(
+             videoWidth,
+             videoHeight,
+             playbackGeneration,
++            videoDisplayAspectRatio,
+         )
+         if (next == viewport) return
+         cancelScheduledBoundary()
+@@ -213,6 +224,7 @@ class AribCaptionController(
+         val created = NativeAribCaptionRenderer(
+             dataComponentId = track.dataComponentId ?: ARIB_PROFILE_A_COMPONENT_ID,
+             superimpose = track.captionServiceKind == "superimpose",
++            languageId = track.captionLanguageId ?: 1,
+         )
+         if (!created.setViewport(currentViewport.contentWidthPx, currentViewport.contentHeightPx)) {
+             created.close()
+@@ -226,16 +238,49 @@ class AribCaptionController(
+         frame: NativeAribCaptionRenderer.RenderedCaptionFrame,
+         currentViewport: CaptionViewport,
+     ) {
++        val pts = frame.ptsMillis
++        if (pts == null) {
++            if (!allowNoPts) {
++                noPtsRejectedCount++
++                return
++            }
++            displayImmediate(frame, currentViewport)
++            return
++        }
+         val token = ++nextFrameToken
+-        boundaries.removeIf { boundary -> boundary.mediaTimeMillis == frame.ptsMillis && boundary is Boundary.Display }
+-        boundaries += Boundary.Display(frame.ptsMillis, token, frame, currentViewport)
++        boundaries.removeIf { boundary -> boundary.mediaTimeMillis == pts && boundary is Boundary.Display }
++        boundaries += Boundary.Display(pts, token, frame, currentViewport)
+         frame.durationMillis?.let { duration ->
+-            val clearAt = frame.ptsMillis.checkedAdd(duration) ?: return@let
++            val clearAt = pts.checkedAdd(duration) ?: return@let
+             boundaries += Boundary.Clear(clearAt, token)
+         }
+         armNextBoundary()
+     }
+ 
++    private fun displayImmediate(
++        frame: NativeAribCaptionRenderer.RenderedCaptionFrame,
++        currentViewport: CaptionViewport,
++    ) {
++        cancelScheduledBoundary()
++        boundaries.clear()
++        val token = ++nextFrameToken
++        displayedFrameToken = token
++        postFrame(frame, currentViewport)
++        frame.durationMillis?.let { duration ->
++            val epochAtArm = presentationEpoch.get()
++            val runnable = Runnable {
++                enqueue {
++                    if (epochAtArm != presentationEpoch.get() || displayedFrameToken != token) return@enqueue
++                    scheduledRunnable = null
++                    displayedFrameToken = null
++                    postClear()
++                }
++            }
++            scheduledRunnable = runnable
++            mainHandler.postDelayed(runnable, duration.coerceAtLeast(0L))
++        }
++    }
++
+     private fun armNextBoundary() {
+         cancelScheduledBoundary()
+         while (true) {
+@@ -276,19 +321,27 @@ class AribCaptionController(
+             is Boundary.Display -> {
+                 if (boundary.viewport != viewport) return
+                 displayedFrameToken = boundary.frameToken
+-                val epoch = presentationEpoch.get()
+-                mainHandler.post {
+-                    if (presentationEpoch.get() != epoch) return@post
+-                    if (boundary.frame.images.isEmpty()) {
+-                        overlayView.clearCaption()
+-                    } else if (!overlayView.showCaptionFrame(
+-                            boundary.frame.images,
+-                            boundary.viewport.contentLeftPx,
+-                            boundary.viewport.contentTopPx,
+-                        )) {
+-                        overlayView.clearCaption()
+-                    }
+-                }
++                postFrame(boundary.frame, boundary.viewport)
++            }
++        }
++    }
++
++    private fun postFrame(
++        frame: NativeAribCaptionRenderer.RenderedCaptionFrame,
++        frameViewport: CaptionViewport,
++    ) {
++        val epoch = presentationEpoch.get()
++        mainHandler.post {
++            if (presentationEpoch.get() != epoch) return@post
++            if (frame.images.isEmpty()) {
++                overlayView.clearCaptionLayer(overlayLayerId)
++            } else if (!overlayView.showCaptionFrame(
++                    overlayLayerId,
++                    frame.images,
++                    frameViewport.contentLeftPx,
++                    frameViewport.contentTopPx,
++                )) {
++                overlayView.clearCaptionLayer(overlayLayerId)
+             }
+         }
+     }
+@@ -300,7 +353,7 @@ class AribCaptionController(
+ 
+     private fun postClear() {
+         val epoch = presentationEpoch.incrementAndGet()
+-        mainHandler.post { if (presentationEpoch.get() == epoch) overlayView.clearCaption() }
++        mainHandler.post { if (presentationEpoch.get() == epoch) overlayView.clearCaptionLayer(overlayLayerId) }
+     }
+ 
+     override fun close() {
