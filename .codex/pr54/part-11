@@ -1,0 +1,137 @@
+-    private var onSubtitlePes: (String, ByteArray, CaptionTimestamp) -> Unit = { _, _, _ -> }
++    private var onVideoFormatDiscovered: (Long, VideoFormatInfo) -> Unit = { _, _ -> }
++    private var onSubtitlePes: (Long, String, ByteArray, CaptionTimestamp) -> Unit = { _, _, _, _ -> }
++    private var onVideoOnlyFallbackRestarted: (VideoOnlyFallbackRestart) -> Unit = {}
+     private var videoFilter: Filter? = null
+     private var audioFilter: Filter? = null
+     private var subtitleFilter: Filter? = null
++    private var superimposeFilter: Filter? = null
+     private var videoDecoder: VideoDecoderPipeline? = null
+     private var audioDecoder: AudioDecoderPipeline? = null
+     private var mediaSync: MediaSync? = null
+@@ -132,11 +134,17 @@ class PlaybackPipeline(
+         val generation: Long = -1L,
+     )
+ 
++    data class VideoOnlyFallbackRestart(
++        val originGeneration: Long,
++        val result: StartResult,
++    )
++
+     data class VideoFormatInfo(
+         val streamType: Int,
+         val mime: String,
+         val width: Int,
+         val height: Int,
++        val displayAspectRatio: Double? = null,
+     )
+ 
+     private enum class VideoCodecKind(val streamType: Int, val mime: String) {
+@@ -220,21 +228,25 @@ class PlaybackPipeline(
+         }
+     }
+ 
+-    fun setCallbacks(onAvailable: () -> Unit, onUnavailable: (PlaybackUnavailable) -> Unit) {
++    fun setCallbacks(onAvailable: (Long) -> Unit, onUnavailable: (PlaybackUnavailable) -> Unit) {
+         runOnPlaybackExecutorBlocking {
+             onVideoAvailable = onAvailable
+             onVideoUnavailable = onUnavailable
+         }
+     }
+ 
+-    fun setOnVideoFormatDiscoveredCallback(callback: (VideoFormatInfo) -> Unit) {
++    fun setOnVideoFormatDiscoveredCallback(callback: (Long, VideoFormatInfo) -> Unit) {
+         runOnPlaybackExecutorBlocking { onVideoFormatDiscovered = callback }
+     }
+ 
+-    fun setOnSubtitlePesCallback(callback: (String, ByteArray, CaptionTimestamp) -> Unit) {
++    fun setOnSubtitlePesCallback(callback: (Long, String, ByteArray, CaptionTimestamp) -> Unit) {
+         runOnPlaybackExecutorBlocking { onSubtitlePes = callback }
+     }
+ 
++    fun setOnVideoOnlyFallbackRestartedCallback(callback: (VideoOnlyFallbackRestart) -> Unit) {
++        runOnPlaybackExecutorBlocking { onVideoOnlyFallbackRestarted = callback }
++    }
++
+     fun reportUnavailable(reason: PlaybackUnavailableReason, detail: String = "") {
+         enqueuePlaybackAction { emitUnavailable(reason, detail) }
+     }
+@@ -306,14 +318,14 @@ class PlaybackPipeline(
+             ?: return StartResult.failedAfterRestart(startGeneration, listOf("MediaSync初期化失敗"))
+         val videoDecoderLocal = if (video != null && videoKind != null) {
+             VideoDecoderPipeline(videoKind, requireNotNull(mediaSyncInputSurface), startGeneration) { reason, detail ->
+-                emitUnavailable(reason, detail)
++                emitUnavailableForGeneration(startGeneration, reason, detail)
+             }.also { videoDecoder = it }
+         } else {
+             null
+         }
+         if (audioExpected) {
+             audioDecoder = AudioDecoderPipeline(audioKind!!, streamVolume, startGeneration) { reason, detail ->
+-                handleAudioFailure(reason, detail, audioOnly)
++                if (startGeneration == playbackGeneration) handleAudioFailure(reason, detail, audioOnly)
+             }
+         }
+ 
+@@ -358,7 +370,8 @@ class PlaybackPipeline(
+         }
+         val subtitle = selection.subtitle
+         if (subtitle != null) {
+-            val openedSubtitle = createAndStartSubtitlePesFilter(tuner, subtitle)
++            val trackId = TunerSelectionPolicy.trackIdForSubtitle(subtitle, selection.subtitleLanguageId ?: 1)
++            val openedSubtitle = createAndStartCaptionPesFilter(tuner, subtitle, trackId, superimpose = false)
+                 .onFailure { error -> diagnostics += "subtitle PES filter start failed: ${error.message}" }
+                 .getOrNull()
+             if (openedSubtitle != null) {
+@@ -366,6 +379,16 @@ class PlaybackPipeline(
+                 diagnostics += "subtitlePid=${subtitle.elementaryPid}"
+             }
+         }
++        selection.superimpose?.let { superimpose ->
++            val trackId = TunerSelectionPolicy.trackIdForSuperimpose(superimpose)
++            val openedSuperimpose = createAndStartCaptionPesFilter(tuner, superimpose, trackId, superimpose = true)
++                .onFailure { error -> diagnostics += "superimpose PES filter start failed: ${error.message}" }
++                .getOrNull()
++            if (openedSuperimpose != null) {
++                superimposeFilter = openedSuperimpose
++                diagnostics += "superimposePid=${superimpose.elementaryPid}"
++            }
++        }
+         diagnostics += "service=${selection.serviceKey}"
+         diagnostics += "channel=${channel.displayNumber}"
+         diagnostics += "volume=$streamVolume"
+@@ -445,7 +468,7 @@ class PlaybackPipeline(
+                     if (isAudio) {
+                         logAudioUnavailable(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, error.message.orEmpty())
+                     } else {
+-                        emitUnavailable(PlaybackUnavailableReason.VIDEO_CODEC_ERROR, error.message.orEmpty())
++                        emitUnavailableForGeneration(filterGeneration, PlaybackUnavailableReason.VIDEO_CODEC_ERROR, error.message.orEmpty())
+                     }
+                 }
+             }
+@@ -476,14 +499,21 @@ class PlaybackPipeline(
+         filter
+     }
+ 
+-    private fun createAndStartSubtitlePesFilter(tuner: Tuner, stream: AribElementaryStream): Result<Filter> = runCatching {
++    private fun createAndStartCaptionPesFilter(
++        tuner: Tuner,
++        stream: AribElementaryStream,
++        trackId: String,
++        superimpose: Boolean,
++    ): Result<Filter> = runCatching {
+         val pid = stream.elementaryPid
+         val pidValue = pid.value
+-        require(TunerSelectionPolicy.isCaptionStream(stream)) { "字幕ではない stream を subtitle filter に接続しません pid=$pid" }
++        require(if (superimpose) TunerSelectionPolicy.isSuperimposeStream(stream) else TunerSelectionPolicy.isCaptionStream(stream)) {
++            "caption kindとstreamが一致しません pid=$pid superimpose=$superimpose"
++        }
+         val filterGeneration = playbackGeneration
+         fun sourceIsCurrent(filter: Filter): Boolean =
+-            filterGeneration == playbackGeneration && subtitleFilter === filter
+-        val trackId = TunerSelectionPolicy.trackIdForSubtitle(stream)
++            filterGeneration == playbackGeneration &&
++                (if (superimpose) superimposeFilter === filter else subtitleFilter === filter)
+         val filter = tuner.openFilter(Filter.TYPE_TS, Filter.SUBTYPE_PES, SUBTITLE_FILTER_BUFFER_BYTES, executor, object : FilterCallback {
+             override fun onFilterEvent(filter: Filter, events: Array<FilterEvent>) {
+                 runCatching {
