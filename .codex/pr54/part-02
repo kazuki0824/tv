@@ -1,0 +1,166 @@
+-        || decoded_pts < 0
+-        || (decoded_duration != ARIBCC_DURATION_INDEFINITE && decoded_duration < 0)
+-    {
++    if decoded_duration != ARIBCC_DURATION_INDEFINITE && decoded_duration < 0 {
++        return None;
++    }
++    if authoritative_pts == ARIBCC_PTS_NOPTS {
++        return (allow_no_pts && decoded_pts == ARIBCC_PTS_NOPTS)
++            .then_some((ARIBCC_PTS_NOPTS, decoded_duration));
++    }
++    if decoded_pts == ARIBCC_PTS_NOPTS || decoded_pts != authoritative_pts || decoded_pts < 0 {
+         return None;
+     }
+     Some((decoded_pts, decoded_duration))
+@@ -405,14 +419,22 @@ fn copy_render_result(
+     decoded_duration: i64,
+     no_image: bool,
+ ) -> Option<RenderedCaptionFrame> {
+-    let pts_millis = if result.pts == ARIBCC_PTS_NOPTS {
+-        authoritative_pts
++    let pts_millis = if authoritative_pts == ARIBCC_PTS_NOPTS {
++        if result.pts != ARIBCC_PTS_NOPTS {
++            return None;
++        }
++        ARIBCC_PTS_NOPTS
+     } else {
+-        result.pts
++        let pts = if result.pts == ARIBCC_PTS_NOPTS {
++            authoritative_pts
++        } else {
++            result.pts
++        };
++        if pts < 0 || pts != authoritative_pts {
++            return None;
++        }
++        pts
+     };
+-    if pts_millis < 0 || pts_millis != authoritative_pts {
+-        return None;
+-    }
+     let duration_raw = if result.duration == ARIBCC_DURATION_INDEFINITE {
+         decoded_duration
+     } else {
+@@ -648,11 +670,12 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribCaptionRende
+     _this: JObject<'_>,
+     data_component_id: jint,
+     superimpose: jboolean,
++    language_id: jint,
+ ) -> jlong {
+     if !caption_module_is_healthy() {
+         return 0;
+     }
+-    let Some(engine) = CaptionEngine::new(data_component_id, superimpose != 0) else {
++    let Some(engine) = CaptionEngine::new(data_component_id, superimpose != 0, language_id) else {
+         return 0;
+     };
+     let mut guard = match registry().lock() {
+@@ -686,7 +709,7 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribCaptionRende
+     pes_data: JByteArray<'_>,
+     pts_millis: jlong,
+ ) -> jbyteArray {
+-    if handle == 0 || pts_millis == ARIBCC_PTS_NOPTS || !caption_module_is_healthy() {
++    if handle == 0 || !caption_module_is_healthy() {
+         return ptr::null_mut();
+     }
+     let Ok(bytes) = env.convert_byte_array(pes_data) else {
+@@ -749,23 +772,30 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn no_pts_is_never_renderer_input() {
++    fn no_pts_is_reserved_for_asynchronous_superimpose() {
+         assert_eq!(ARIBCC_PTS_NOPTS, i64::MIN);
+-        assert_ne!(ARIBCC_PTS_NOPTS, 0);
++        assert_eq!(
++            validate_decoded_caption_timing(ARIBCC_PTS_NOPTS, ARIBCC_PTS_NOPTS, 10, true),
++            Some((ARIBCC_PTS_NOPTS, 10)),
++        );
++        assert_eq!(
++            validate_decoded_caption_timing(ARIBCC_PTS_NOPTS, ARIBCC_PTS_NOPTS, 10, false),
++            None,
++        );
+     }
+ 
+     #[test]
+     fn decoded_caption_timing_requires_authoritative_pts_and_valid_duration() {
+         assert_eq!(
+-            validate_decoded_caption_timing(90, 90, ARIBCC_DURATION_INDEFINITE),
++            validate_decoded_caption_timing(90, 90, ARIBCC_DURATION_INDEFINITE, false),
+             Some((90, ARIBCC_DURATION_INDEFINITE))
+         );
+         assert_eq!(
+-            validate_decoded_caption_timing(ARIBCC_PTS_NOPTS, 90, 10),
++            validate_decoded_caption_timing(ARIBCC_PTS_NOPTS, 90, 10, false),
+             None
+         );
+-        assert_eq!(validate_decoded_caption_timing(91, 90, 10), None);
+-        assert_eq!(validate_decoded_caption_timing(90, 90, -1), None);
++        assert_eq!(validate_decoded_caption_timing(91, 90, 10, false), None);
++        assert_eq!(validate_decoded_caption_timing(90, 90, -1, false), None);
+     }
+ 
+     #[test]
+diff --git a/tis/src/com/maleicacid/tvinput/aribsi/NativeAribCaptionRenderer.kt b/tis/src/com/maleicacid/tvinput/aribsi/NativeAribCaptionRenderer.kt
+index 9e564d6..b28c14f 100644
+--- a/tis/src/com/maleicacid/tvinput/aribsi/NativeAribCaptionRenderer.kt
++++ b/tis/src/com/maleicacid/tvinput/aribsi/NativeAribCaptionRenderer.kt
+@@ -7,13 +7,14 @@ import java.nio.ByteOrder
+ /** libaribcaption decoder/rendererを一つの字幕generationに閉じ込めるJNI境界。 */
+ class NativeAribCaptionRenderer(
+     dataComponentId: Int,
+-    superimpose: Boolean,
++    private val superimpose: Boolean,
++    languageId: Int = 1,
+ ) : AutoCloseable {
+     init {
+         System.loadLibrary("maleicacid_arib_caption_jni")
+     }
+ 
+-    private var handle: Long = nativeCreateRenderer(dataComponentId, superimpose)
++    private var handle: Long = nativeCreateRenderer(dataComponentId, superimpose, languageId)
+ 
+     sealed interface DecodeResult {
+         data class Rendered(val frame: RenderedCaptionFrame) : DecodeResult
+@@ -22,7 +23,7 @@ class NativeAribCaptionRenderer(
+     }
+ 
+     data class RenderedCaptionFrame(
+-        val ptsMillis: Long,
++        val ptsMillis: Long?,
+         val durationMillis: Long?,
+         val images: List<RenderedCaptionImage>,
+     )
+@@ -43,8 +44,10 @@ class NativeAribCaptionRenderer(
+     }
+ 
+     fun decodePes(pesData: ByteArray, timestamp: CaptionTimestamp): DecodeResult {
+-        val pts = (timestamp as? CaptionTimestamp.Pts)?.ptsMillis?.value
+-            ?: return DecodeResult.NoPtsRejected
++        val pts = when (timestamp) {
++            is CaptionTimestamp.Pts -> timestamp.ptsMillis.value
++            CaptionTimestamp.NoPts -> if (superimpose) NO_PTS_SENTINEL else return DecodeResult.NoPtsRejected
++        }
+         val current = handle.takeIf { it != 0L } ?: return DecodeResult.NoOutput
+         if (pesData.isEmpty()) return DecodeResult.NoOutput
+         val packet = nativeDecodeAndRender(current, pesData, pts)
+@@ -63,7 +66,7 @@ class NativeAribCaptionRenderer(
+         if (current != 0L) nativeReleaseRenderer(current)
+     }
+ 
+-    private external fun nativeCreateRenderer(dataComponentId: Int, superimpose: Boolean): Long
++    private external fun nativeCreateRenderer(dataComponentId: Int, superimpose: Boolean, languageId: Int): Long
+     private external fun nativeSetViewport(handle: Long, width: Int, height: Int): Boolean
+     private external fun nativeDecodeAndRender(handle: Long, pesData: ByteArray, ptsMillis: Long): ByteArray?
+     private external fun nativeFlush(handle: Long)
+@@ -73,6 +76,7 @@ class NativeAribCaptionRenderer(
+         private const val FRAME_HEADER_BYTES = 8 + 8 + 4
+         private const val IMAGE_HEADER_BYTES = 6 * 4
+         private const val MAX_IMAGES_PER_FRAME = 256
++        private const val NO_PTS_SENTINEL = Long.MIN_VALUE
+ 
+         internal fun decodeFramePacket(packet: ByteArray): RenderedCaptionFrame? {
+             if (packet.size < FRAME_HEADER_BYTES) return null
+@@ -80,7 +84,7 @@ class NativeAribCaptionRenderer(
+             val ptsMillis = buffer.getLong()
+             val durationRaw = buffer.getLong()
