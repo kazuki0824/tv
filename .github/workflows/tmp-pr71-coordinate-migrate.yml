@@ -19,3 +19,4 @@ jobs:
           ref: fix/tuner-hal2-vts-auto-region
           fetch-depth: 0
       - run: python .github/tmp_pr71_finalize.py
+        name: Patch, test, and commit
