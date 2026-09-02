@@ -1,0 +1,80 @@
+-        check(TunerSelectionPolicy.isSelectableTrack(TvTrackInfo.TYPE_SUBTITLE, "subtitle:304:8", tracks))
++        check(TunerSelectionPolicy.isSelectableTrack(TvTrackInfo.TYPE_SUBTITLE, "subtitle:304:8:lang1", tracks))
+         check(!TunerSelectionPolicy.isSelectableTrack(TvTrackInfo.TYPE_SUBTITLE, "subtitle:1", tracks))
++
++        val normalDefaultVideo = es(TsPid(0x201), 0x1b, componentTag = 0x00)
++        val mvtvMainVideo = es(TsPid(0x202), 0x1b, componentTag = 0x05)
++        val mvtvHigherVideo = es(TsPid(0x203), 0x1b, componentTag = 0x06)
++        check(TunerSelectionPolicy.selectVideo(listOf(mvtvHigherVideo, normalDefaultVideo, mvtvMainVideo)) == normalDefaultVideo)
++        check(TunerSelectionPolicy.selectVideo(
++            listOf(normalDefaultVideo, mvtvHigherVideo, mvtvMainVideo),
++            componentGroupTags = setOf(0x05, 0x06),
++        ) == mvtvMainVideo)
+     }
+ 
+     @Test fun captionControllerDrawsOnlyEnabledSelectedTrack() {
+@@ -469,6 +478,7 @@ class TisR51FixedPlanAcceptanceTest {
+     @Test fun unblockKeyIncludesCurrentProgramIdentityAndRating() {
+         val rating = requireNotNull(AribRatingMapper.parseFlattened(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 12), AribRatingMapper.BroadcastProfile.BS_CS))))
+         val keyString = CurrentProgramRatingResolver.unblockKey(
++            channelUriString = "content://android.media.tv/channel/1",
+             serviceKey = key,
+             eventId = 10,
+             ratingString = rating.flattenToString(),
+diff --git a/tis/tests/src/com/maleicacid/tvinput/tis/TvProviderWriterProgramsTest.kt b/tis/tests/src/com/maleicacid/tvinput/tis/TvProviderWriterProgramsTest.kt
+index 07b220e..4dbfc6f 100644
+--- a/tis/tests/src/com/maleicacid/tvinput/tis/TvProviderWriterProgramsTest.kt
++++ b/tis/tests/src/com/maleicacid/tvinput/tis/TvProviderWriterProgramsTest.kt
+@@ -135,7 +135,7 @@ class TvProviderWriterProgramsTest {
+                 scrambled = false,
+                 freeCaMode = AribFreeCaMode(raw = 0, scrambled = false),
+                 series = AribSeries(seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12, name = "シリーズ"),
+-                components = AribComponents(audio = listOf(AribComponentEntry(esPid = TsPid(256), streamType = 0x0f, componentTag = 1, componentType = 3, codec = "AAC", language = "jpn", parseStatus = "OK"))),
++                components = AribComponents(audio = listOf(AribComponentEntry(esPid = TsPid(256), streamType = 0x0f, componentTag = 1, componentType = 3, codec = "AAC", language = "jpn", secondLanguage = "eng", parseStatus = "OK"))),
+             ),
+             diagnosticText = "unknownCount=0",
+         )
+@@ -155,7 +155,7 @@ class TvProviderWriterProgramsTest {
+         check(!providerData.utf8Contains("skippedUnresolvedTransport"))
+         check(providerData.utf8Contains("freeCaMode"))
+         check(providerData.utf8Contains("seriesId"))
+-        check(store.programs.values.single().getAsString(TvContract.Programs.COLUMN_AUDIO_LANGUAGE) == "jpn")
++        check(store.programs.values.single().getAsString(TvContract.Programs.COLUMN_AUDIO_LANGUAGE) == "jpn,eng")
+         check(store.programs.values.single().getAsString(TvContract.Programs.COLUMN_CANONICAL_GENRE) == TvContract.Programs.Genres.encode("NEWS"))
+         check(store.programs.values.single().getAsString(TvContract.Programs.COLUMN_BROADCAST_GENRE) == TvContract.Programs.Genres.encode("ARIB(0x0/0x0):ニュース/報道/定時・総合"))
+         check(store.programs.values.single().getAsInteger(TvProviderWriter.COLUMN_SCRAMBLED) == 0)
+@@ -232,6 +232,21 @@ class TvProviderWriterProgramsTest {
+         check(store.programs.values.single().getAsString(TvContract.Programs.COLUMN_LONG_DESCRIPTION) == "EIT更新")
+     }
+ 
++    @Test fun reusedEventIdAfterAribGuardWindowInsertsDistinctProgramRow() {
++        val store = FakeStore()
++        val writer = TvProviderWriter("input.test", store, testOnly = true)
++        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
++        val first = ProgramRecord(key, 40, "first", 1_700_000_000_000L, 1_800_000L, "First", "desc")
++        check(writer.upsertPrograms(listOf(first)).inserted == 1)
++        val reused = first.copy(
++            startTimeMillis = first.startTimeMillis + first.durationMillis + TvProviderWriter.EVENT_ID_REUSE_GUARD_MS + 1L,
++            title = "Reused",
++        )
++        val result = writer.upsertPrograms(listOf(reused))
++        check(result.inserted == 1 && result.updated == 0) { result.toString() }
++        check(store.programs.size == 2)
++    }
++
+     @Test fun obsoleteProgramsInsideCurrentUpdateWindowAreDeletedOnlyWhenAuthoritative() {
+         val store = FakeStore()
+         val writer = TvProviderWriter("input.test", store, testOnly = true)
+diff --git a/tis/tests/src/com/maleicacid/tvinput/tis/TvProviderWriterUpsertTest.kt b/tis/tests/src/com/maleicacid/tvinput/tis/TvProviderWriterUpsertTest.kt
+index 1913160..30fa2f3 100644
+--- a/tis/tests/src/com/maleicacid/tvinput/tis/TvProviderWriterUpsertTest.kt
++++ b/tis/tests/src/com/maleicacid/tvinput/tis/TvProviderWriterUpsertTest.kt
+@@ -19,7 +19,7 @@ class TvProviderWriterUpsertTest {
+         check(result.updated == 0)
+         check(result.failures.isEmpty())
+         check(store.rows.size == 1)
+-        check(store.rows.values.single().getAsInteger(TvContract.Channels.COLUMN_BROWSABLE) == 1)
++        check(store.rows.values.single().get(TvContract.Channels.COLUMN_BROWSABLE) == null)
+         check(store.rows.values.single().getAsInteger(TvContract.Channels.COLUMN_SEARCHABLE) == 1)
+     }
+ 
