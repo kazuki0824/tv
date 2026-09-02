@@ -1,0 +1,152 @@
++        // CA_unit_id=1 with video/audio/caption component tags; empty text.
++        let body = [0x01, 0x01, 0x13, 0x00, 0x10, 0x30, 0x00];
++        let mut bytes = vec![0xd9, body.len() as u8];
++        bytes.extend_from_slice(&body);
++        let parsed = parse_event_descriptors(&bytes);
++        assert!(parsed.diagnostics.is_empty());
++        assert_eq!(parsed.component_groups.len(), 1);
++        let descriptor = &parsed.component_groups[0];
++        assert_eq!(descriptor.component_group_type, 0);
++        assert_eq!(descriptor.groups.len(), 1);
++        assert_eq!(descriptor.groups[0].component_group_id, 0);
++        assert_eq!(descriptor.groups[0].component_tags, vec![0x00, 0x10, 0x30]);
++    }
++}
+diff --git a/arib_si_engine_rs/src/lib.rs b/arib_si_engine_rs/src/lib.rs
+index f0a85d1..28e1609 100644
+--- a/arib_si_engine_rs/src/lib.rs
++++ b/arib_si_engine_rs/src/lib.rs
+@@ -520,6 +520,28 @@ fn event_groups_value(event: &EitEvent) -> serde_json::Value {
+     )
+ }
+ 
++fn event_component_groups_value(event: &EitEvent) -> serde_json::Value {
++    serde_json::Value::Array(
++        event
++            .descriptors
++            .component_groups
++            .iter()
++            .map(|descriptor| {
++                serde_json::json!({
++                    "componentGroupType": descriptor.component_group_type,
++                    "groups": descriptor.groups.iter().map(|group| {
++                        serde_json::json!({
++                            "componentGroupId": group.component_group_id,
++                            "componentTags": group.component_tags,
++                        })
++                    }).collect::<Vec<_>>(),
++                    "parseStatus": "OK",
++                })
++            })
++            .collect(),
++    )
++}
++
+ fn event_linkage_value(event: &EitEvent) -> serde_json::Value {
+     serde_json::Value::Array(
+         event
+@@ -582,13 +604,14 @@ fn event_diagnostic_text(event: &EitEvent) -> String {
+     let d = event.descriptors.clone();
+     let diagnostic = event_descriptor_diagnostic(&d);
+     format!(
+-        "content={:?} component={:?} audio={:?} parental={:?} series={:?} eventGroupCount={} linkageCount={} unknownCount={}",
++        "content={:?} component={:?} audio={:?} parental={:?} series={:?} eventGroupCount={} componentGroupCount={} linkageCount={} unknownCount={}",
+         d.contents.iter().map(|c| (c.content_nibble_level_1, c.content_nibble_level_2)).collect::<Vec<_>>(),
+         d.components.iter().map(|c| (c.stream_content, c.component_type, c.component_tag, c.language_code.clone())).collect::<Vec<_>>(),
+         d.audio_components.iter().map(|a| (a.stream_content, a.component_type, a.component_tag, a.stream_type, a.language_code.clone(), a.language_code_2.clone())).collect::<Vec<_>>(),
+         d.parental_ratings.iter().map(|r| (r.country_code.clone(), r.raw_rating_byte)).collect::<Vec<_>>(),
+         d.series.iter().map(|s| (s.series_id, s.episode_number, s.last_episode_number, s.series_name.clone())).collect::<Vec<_>>(),
+         diagnostic.event_group_count,
++        diagnostic.component_group_count,
+         diagnostic.linkage_count,
+         diagnostic.unknown_count,
+     )
+@@ -798,6 +821,7 @@ fn event_value(event: &EitEvent) -> serde_json::Value {
+             "audio": { "componentText": event_audio_component_text(event), "language": event_audio_language(event) },
+             "genres": { "content": event_content_genres_value(event), "genreSupplementText": event_genre_supplement_text(event) },
+             "eventGroups": event_groups_value(event),
++            "componentGroups": event_component_groups_value(event),
+             "linkage": event_linkage_value(event),
+             "freeCaMode": {
+                 "raw": if event.free_ca_mode { 1 } else { 0 },
+diff --git a/tis/arib_caption_jni/src/lib.rs b/tis/arib_caption_jni/src/lib.rs
+index 84e431d..744d564 100644
+--- a/tis/arib_caption_jni/src/lib.rs
++++ b/tis/arib_caption_jni/src/lib.rs
+@@ -19,6 +19,7 @@ const ARIBCC_RENDER_STATUS_GOT_IMAGE_UNCHANGED: c_int = 3;
+ const ARIBCC_PROFILE_A: c_int = 0x0008;
+ const ARIBCC_PROFILE_C: c_int = 0x0012;
+ const ARIBCC_LANGUAGEID_FIRST: c_int = 1;
++const ARIBCC_LANGUAGEID_SECOND: c_int = 2;
+ const ARIBCC_FONTPROVIDER_TYPE_AUTO: c_int = 0;
+ const ARIBCC_TEXTRENDERER_TYPE_AUTO: c_int = 0;
+ const ARIBCC_PIXELFORMAT_RGBA8888: c_int = 0;
+@@ -181,6 +182,7 @@ struct CaptionEngine {
+     decoder: *mut c_void,
+     renderer: *mut c_void,
+     viewport: Option<(i32, i32)>,
++    superimpose: bool,
+ }
+ 
+ // 安全性: 3つのC pointerはCaptionEngineだけが所有し、JNI handleごとのoperationでは
+@@ -210,7 +212,10 @@ impl Drop for CaptionEngine {
+ }
+ 
+ impl CaptionEngine {
+-    fn new(data_component_id: jint, superimpose: bool) -> Option<Self> {
++    fn new(data_component_id: jint, superimpose: bool, language_id: jint) -> Option<Self> {
++        if language_id != ARIBCC_LANGUAGEID_FIRST && language_id != ARIBCC_LANGUAGEID_SECOND {
++            return None;
++        }
+         let caption_type = if superimpose {
+             ARIBCC_CAPTIONTYPE_SUPERIMPOSE
+         } else {
+@@ -240,7 +245,7 @@ impl CaptionEngine {
+                     ARIBCC_ENCODING_SCHEME_ARIB_STD_B24_JIS,
+                     caption_type,
+                     profile,
+-                    ARIBCC_LANGUAGEID_FIRST,
++                    language_id,
+                 ) {
+                     aribcc_decoder_free(decoder);
+                     aribcc_context_free(context);
+@@ -267,6 +272,7 @@ impl CaptionEngine {
+                     decoder,
+                     renderer,
+                     viewport: None,
++                    superimpose,
+                 });
+             }
+         };
+@@ -300,8 +306,7 @@ impl CaptionEngine {
+ 
+     fn decode_and_render(&mut self, pes: &[u8], pts_millis: jlong) -> Option<RenderedCaptionFrame> {
+         if pes.is_empty()
+-            || pts_millis == ARIBCC_PTS_NOPTS
+-            || pts_millis < 0
++            || (pts_millis < 0 && !(self.superimpose && pts_millis == ARIBCC_PTS_NOPTS))
+             || self.viewport.is_none()
+         {
+             return None;
+@@ -330,7 +335,12 @@ impl CaptionEngine {
+                     break 'decode None;
+                 }
+                 let Some((caption_pts, caption_duration)) =
+-                    validate_decoded_caption_timing(caption.pts, pts_millis, caption.wait_duration)
++                    validate_decoded_caption_timing(
++                        caption.pts,
++                        pts_millis,
++                        caption.wait_duration,
++                        self.superimpose,
++                    )
+                 else {
+                     aribcc_caption_cleanup(&mut caption);
+                     break 'decode None;
+@@ -377,12 +387,16 @@ fn validate_decoded_caption_timing(
+     decoded_pts: i64,
+     authoritative_pts: i64,
+     decoded_duration: i64,
++    allow_no_pts: bool,
+ ) -> Option<(i64, i64)> {
+-    if decoded_pts == ARIBCC_PTS_NOPTS
+-        || decoded_pts != authoritative_pts
