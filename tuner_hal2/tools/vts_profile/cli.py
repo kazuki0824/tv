@@ -49,7 +49,7 @@ def _new_profile(args: argparse.Namespace) -> dict:
     product = _value(args, "product", "product")
     fe_type = _value(args, "delivery_system", "delivery system (ISDBT/ISDBS)").upper()
     source_ref = _value(args, "vts_source_ref", "selected AOSP Tuner VTS tag/commit")
-    region = _value(args, "region", "region/postal/address (optional)", optional=True)
+    region = _value(args, "region", "region address/postal/latitude,longitude (optional)", optional=True)
     frequency = _value(args, "frequency_hz", "frequency Hz (optional)", optional=True)
     record_enabled = _value(args, "record", "record flow (yes/no)").lower() in {"y", "yes", "true", "1"}
     record_pid = _value(args, "record_pid", "record PID (optional)", optional=True) if record_enabled else ""
