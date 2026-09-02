@@ -41,6 +41,8 @@ class VtsProfileTest(unittest.TestCase):
         xml = render_xml(self.profile())
         self.assertIn('frequency="557142857"', xml)
         self.assertIn('pid="272"', xml)
+        self.assertIn('subType="RECORD"', xml)
+        self.assertIn('useFMQ="true"', xml)
 
     def test_region_resolution_and_selection_update_same_profile(self) -> None:
         profile = self.profile(resolved=False)
@@ -78,6 +80,10 @@ class VtsProfileTest(unittest.TestCase):
         self.assertIn("CapacityLedger::default()", program)
         self.assertIn("reserve_filter(snapshot, 1, FilterOpenType::TsRecord, 1048576)", program)
         self.assertIn("reserve_dvr(snapshot, 1, 4194304)", program)
+        self.assertIn(
+            "Self::TsRaw | Self::TsSection | Self::TsPes | Self::TsRecord",
+            program,
+        )
 
     def test_resource_closure_is_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
