@@ -1,0 +1,63 @@
+name: tmp-pr71-region-finalize
+on:
+  push:
+    branches:
+      - fix/tuner-hal2-vts-auto-region
+    paths:
+      - .github/workflows/tmp-pr71-region-finalize.yml
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tuner-hal2-vts-auto-region
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+      - name: Update contract and CLI wording
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          integration = Path('tuner_hal2/INTEGRATION.md')
+          text = integration.read_text(encoding='utf-8')
+          old = ('地域resolverは、版を識別できる放送エリア/チャンネル計画datasetを入力とし、'
+                 '同じ地域入力と同じdataset版からは同じ順序の候補集合を生成する。'
+                 'dataset識別情報をprofileへ保存する場合は候補生成の再現性確保に実際に使用し、'
+                 '未消費metadataとして保持しない。')
+          new = ('地域resolverは、放送エリア/チャンネル計画datasetを入力とする。'
+                 'datasetの版識別や同一版からの候補再現性はVTS profile契約に含めない。'
+                 'profileへdataset識別情報を永続化せず、resolverがその実行で使用するdatasetから受信候補を生成する。')
+          if old not in text:
+              raise SystemExit('target reproducibility contract not found')
+          text = text.replace(old, new, 1)
+          table_row = '| region dataset識別 | 直接は反映しない | region resolverが候補生成に使用 |\n'
+          if table_row not in text:
+              raise SystemExit('dataset identity table row not found')
+          text = text.replace(table_row, '', 1)
+          integration.write_text(text, encoding='utf-8')
+
+          cli = Path('tuner_hal2/tools/vts_profile/cli.py')
+          text = cli.read_text(encoding='utf-8')
+          old = 'region/postal/address (optional)'
+          new = 'region address/postal/latitude,longitude (optional)'
+          if old not in text:
+              raise SystemExit('CLI region label not found')
+          cli.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+      - name: Validate region implementation
+        run: |
+          cd tuner_hal2/tools
+          uv run python -m unittest test_vts_region_defaults.py
+          uv run python -m py_compile vts_profile/region.py vts_profile/cli.py test_vts_region_defaults.py
+      - name: Commit finalized contract
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tuner_hal2/INTEGRATION.md tuner_hal2/tools/vts_profile/cli.py
+          git commit -m 'fix: complete VTS region input contract'
+          git push origin HEAD:fix/tuner-hal2-vts-auto-region
