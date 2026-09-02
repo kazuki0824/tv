@@ -1,0 +1,135 @@
+-                playbackState = PlaybackStartState.Started(state.signature, state.pipelineGeneration)
+-            }
+-            else -> Unit
++    private fun updateSuperimposeSelection(service: AribService) {
++        if (PlaybackPolicy.isAudioOnlyService(service.serviceType)) {
++            superimposeController.selectTrack(null)
++            return
+         }
++        superimposeController.selectTrack(tunerController.superimposeTrackFor(service.streams, currentDefaultComponentGroupTags(service.serviceKey)))
++    }
++
++    private fun beginCaptionPresentationGeneration(generation: Long, hasVideo: Boolean) {
++        captionController.beginPlaybackGeneration(generation, hasVideo)
++        superimposeController.beginPlaybackGeneration(generation, hasVideo)
++    }
++
++    private fun onCaptionPlaybackClockChanged() {
++        captionController.onPlaybackClockChanged()
++        superimposeController.onPlaybackClockChanged()
++    }
++
++    private fun handleFirstFrameAvailable(generation: Long) {
++        val state = playbackState as? PlaybackStartState.WaitingFirstOutput ?: return
++        if (state.pipelineGeneration != generation) return
++        playbackState = PlaybackStartState.Started(state.signature, state.pipelineGeneration)
++        onCaptionPlaybackClockChanged()
+         when (val decision = contentAccessDecision()) {
+             is ContentAccessDecision.Block -> {
+                 rememberBlockedContent(decision.blocked)
+@@ -512,7 +612,34 @@ class MaleicacidLiveSession(
+         }
+     }
+ 
++    private fun handleVideoOnlyFallbackRestart(restart: PlaybackPipeline.VideoOnlyFallbackRestart) {
++        if (!PlaybackStartTransitions.acceptsGeneration(playbackState, restart.originGeneration)) return
++        val previousSignature = PlaybackStartTransitions.signature(playbackState) ?: return
++        val videoOnlySignature = previousSignature.copy(audioPid = null, audioStreamType = null)
++        audioFallbackDisabled = true
++        playbackState = PlaybackStartTransitions.afterRestartResult(
++            playbackState,
++            videoOnlySignature,
++            restart.result.generation,
++            restart.result.firstFramePending,
++            restart.result.startedVideo || restart.result.firstFramePending,
++        )
++        beginCaptionPresentationGeneration(restart.result.generation, hasVideo = true)
++        onCaptionPlaybackClockChanged()
++    }
++
++    private fun handleTunerResourceLost(lostTuneGeneration: Long) {
++        if (lostTuneGeneration != currentGeneration) return
++        playbackState = PlaybackStartState.Stopped
++        beginCaptionPresentationGeneration(-1L, false)
++        notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
++    }
++
+     private fun handlePlaybackUnavailable(reason: PlaybackPipeline.PlaybackUnavailable) {
++        if (reason.generation > 0L && !PlaybackStartTransitions.acceptsGeneration(playbackState, reason.generation)) {
++            android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "旧generationのplayback unavailableを破棄します reason=${reason.reason} generation=${reason.generation}")
++            return
++        }
+         val audioFailure = reason.reason == PlaybackPipeline.PlaybackUnavailableReason.AUDIO_UNAVAILABLE ||
+             reason.reason == PlaybackPipeline.PlaybackUnavailableReason.AUDIO_FILTER_NOT_STARTED ||
+             reason.reason == PlaybackPipeline.PlaybackUnavailableReason.UNSUPPORTED_AUDIO_STREAM
+@@ -526,7 +653,7 @@ class MaleicacidLiveSession(
+                     return
+                 }
+                 playbackState = PlaybackStartTransitions.failCurrentGeneration(playbackState, reason.generation)
+-                captionController.beginPlaybackGeneration(-1L, false)
++                beginCaptionPresentationGeneration(-1L, false)
+                 notifyVideoUnavailable(mapUnavailableReason(reason))
+                 return
+             }
+@@ -552,7 +679,7 @@ class MaleicacidLiveSession(
+         notifyContentBlocked(blocked.rating)
+         playbackState = PlaybackStartState.Stopped
+         tunerController.stopPlayback()
+-        captionController.beginPlaybackGeneration(-1L, false)
++        beginCaptionPresentationGeneration(-1L, false)
+     }
+ 
+     private fun contentAccessDecision(): ContentAccessDecision {
+@@ -610,7 +737,7 @@ class MaleicacidLiveSession(
+     private fun clearUnblocksIfCurrentProgramChanged(ratingSet: CurrentProgramRatingResolver.CurrentProgramRatingSet) {
+         currentUnblockProgramIdentityKey = PlaybackPolicy.updateUnblockStateForProgramChange(
+             previousIdentityKey = currentUnblockProgramIdentityKey,
+-            nextIdentityKey = ratingSet.programIdentityKey(),
++            nextIdentityKey = ratingSet.currentRowSelectionKey(),
+             unblockedContentKeys = unblockedContentKeys,
+         )
+     }
+@@ -635,11 +762,19 @@ class MaleicacidLiveSession(
+         }
+     }
+ 
+-    private fun updateCurrentProgramVideoMetadata(info: PlaybackPipeline.VideoFormatInfo) {
++    private fun updateCurrentProgramVideoMetadata(generation: Long, info: PlaybackPipeline.VideoFormatInfo) {
++        if (!PlaybackStartTransitions.acceptsGeneration(playbackState, generation)) return
+         captionController.updateVideoGeometry(
+-            PlaybackStartTransitions.pipelineGeneration(playbackState) ?: -1L,
++            generation,
++            info.width,
++            info.height,
++            info.displayAspectRatio,
++        )
++        superimposeController.updateVideoGeometry(
++            generation,
+             info.width,
+             info.height,
++            info.displayAspectRatio,
+         )
+         val key = currentService ?: return
+         val now = System.currentTimeMillis()
+@@ -770,6 +905,9 @@ class MaleicacidLiveSession(
+             captionController.setEnabled(false)
+             captionController.selectTrack(null)
+             captionController.close()
++            superimposeController.setEnabled(false)
++            superimposeController.selectTrack(null)
++            superimposeController.close()
+             unblockedContentKeys.clear()
+             currentUnblockProgramIdentityKey = null
+             playbackState = PlaybackStartState.Stopped
+diff --git a/tis/src/com/maleicacid/tvinput/tis/PlaybackPipeline.kt b/tis/src/com/maleicacid/tvinput/tis/PlaybackPipeline.kt
+index 7842b22..b9c7ede 100644
+--- a/tis/src/com/maleicacid/tvinput/tis/PlaybackPipeline.kt
++++ b/tis/src/com/maleicacid/tvinput/tis/PlaybackPipeline.kt
+@@ -54,13 +54,15 @@ class PlaybackPipeline(
+     private var surface: Surface? = null
+     private var streamVolume: Float = 1.0f
+     private var playbackGeneration: Long = 0L
+-    private var onVideoAvailable: () -> Unit = {}
++    private var onVideoAvailable: (Long) -> Unit = {}
+     private var onVideoUnavailable: (PlaybackUnavailable) -> Unit = {}
+-    private var onVideoFormatDiscovered: (VideoFormatInfo) -> Unit = {}
