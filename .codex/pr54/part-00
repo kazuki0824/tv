@@ -1,0 +1,148 @@
+diff --git a/.github/workflows/tis-host-ci.yml b/.github/workflows/tis-host-ci.yml
+index 6085f59..6520470 100644
+--- a/.github/workflows/tis-host-ci.yml
++++ b/.github/workflows/tis-host-ci.yml
+@@ -232,7 +232,7 @@ jobs:
+             org.junit.runner.JUnitCore \
+             "${test_classes[@]}" \
+             | tee "$RUNNER_TEMP/tis-junit.log"
+-          grep --fixed-strings "OK (129 tests)" "$RUNNER_TEMP/tis-junit.log"
++          grep --fixed-strings "OK (131 tests)" "$RUNNER_TEMP/tis-junit.log"
+ 
+   xml-contract:
+     runs-on: ubuntu-latest
+diff --git a/arib_si_engine_rs/src/descriptors.rs b/arib_si_engine_rs/src/descriptors.rs
+index 2fac160..13464bd 100644
+--- a/arib_si_engine_rs/src/descriptors.rs
++++ b/arib_si_engine_rs/src/descriptors.rs
+@@ -16,6 +16,7 @@ pub struct EventDescriptors {
+     pub parental_rating_descriptors: Vec<ParentalRatingDescriptor>,
+     pub series: Vec<SeriesDescriptor>,
+     pub event_groups: Vec<EventGroupDescriptor>,
++    pub component_groups: Vec<ComponentGroupDescriptor>,
+     pub linkages: Vec<LinkageDescriptor>,
+     pub extended_items: Vec<ExtendedEventItem>,
+     pub unknown: Vec<(u8, Vec<u8>)>,
+@@ -36,6 +37,7 @@ pub struct EventDescriptorDiagnostic {
+     pub parental_rating_count: usize,
+     pub series_count: usize,
+     pub event_group_count: usize,
++    pub component_group_count: usize,
+     pub linkage_count: usize,
+     pub unknown_count: usize,
+ }
+@@ -56,6 +58,7 @@ pub fn event_descriptor_diagnostic(desc: &EventDescriptors) -> EventDescriptorDi
+         parental_rating_count: desc.parental_ratings.len(),
+         series_count: desc.series.len(),
+         event_group_count: desc.event_groups.len(),
++        component_group_count: desc.component_groups.len(),
+         linkage_count: desc.linkages.len(),
+         unknown_count: desc.unknown.len(),
+     }
+@@ -238,6 +241,18 @@ pub struct OtherNetworkEventGroupReference {
+     pub event_id: u16,
+ }
+ 
++#[derive(Clone, Debug, Eq, PartialEq)]
++pub struct ComponentGroupDescriptor {
++    pub component_group_type: u8,
++    pub groups: Vec<ComponentGroup>,
++}
++
++#[derive(Clone, Debug, Eq, PartialEq)]
++pub struct ComponentGroup {
++    pub component_group_id: u8,
++    pub component_tags: Vec<u8>,
++}
++
+ #[derive(Clone, Debug, Eq, PartialEq)]
+ pub struct LinkageDescriptor {
+     pub transport_stream_id: u16,
+@@ -305,6 +320,7 @@ pub fn parse_event_descriptors(bytes: &[u8]) -> EventDescriptors {
+             },
+             0xd5 => match parse_series_descriptor(body, &mut out, tag, cursor, len) { Some(v) => out.series.push(v), None => out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, cursor, len, body.len(), body, "series_descriptor is shorter than 9-byte fixed fields")), },
+             0xd6 => if let Some(v) = parse_event_group_descriptor(body) { out.event_groups.push(v); } else { out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, cursor, len, body.len(), body, "event_group_descriptor is malformed")); },
++            0xd9 => if let Some(v) = parse_component_group_descriptor(body) { out.component_groups.push(v); } else { out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, cursor, len, body.len(), body, "component_group_descriptor is malformed")); },
+             0x4a => if let Some(v) = parse_linkage_descriptor(body) { out.linkages.push(v); } else { out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, cursor, len, body.len(), body, "linkage_descriptor is shorter than fixed fields")); },
+             _ => {
+                 out.unknown.push((tag, body.to_vec()));
+@@ -1151,6 +1167,44 @@ fn parse_event_group_descriptor(body: &[u8]) -> Option<EventGroupDescriptor> {
+     })
+ }
+ 
++fn parse_component_group_descriptor(body: &[u8]) -> Option<ComponentGroupDescriptor> {
++    let first = *body.first()?;
++    let component_group_type = (first >> 5) & 0x07;
++    let total_bit_rate_flag = (first & 0x10) != 0;
++    let num_of_group = (first & 0x0f) as usize;
++    let mut cursor = 1usize;
++    let mut groups = Vec::with_capacity(num_of_group);
++    for _ in 0..num_of_group {
++        let group_header = *body.get(cursor)?;
++        cursor += 1;
++        let component_group_id = (group_header >> 4) & 0x0f;
++        let num_of_ca_unit = (group_header & 0x0f) as usize;
++        let mut component_tags = Vec::new();
++        for _ in 0..num_of_ca_unit {
++            let ca_header = *body.get(cursor)?;
++            cursor += 1;
++            let num_of_component = (ca_header & 0x0f) as usize;
++            let end = cursor.checked_add(num_of_component)?;
++            let tags = body.get(cursor..end)?;
++            component_tags.extend_from_slice(tags);
++            cursor = end;
++        }
++        if total_bit_rate_flag {
++            body.get(cursor)?;
++            cursor += 1;
++        }
++        let text_length = *body.get(cursor)? as usize;
++        cursor += 1;
++        cursor = cursor.checked_add(text_length)?;
++        body.get(..cursor)?;
++        groups.push(ComponentGroup { component_group_id, component_tags });
++    }
++    if cursor != body.len() {
++        return None;
++    }
++    Some(ComponentGroupDescriptor { component_group_type, groups })
++}
++
+ fn parse_linkage_descriptor(body: &[u8]) -> Option<LinkageDescriptor> {
+     if body.len() < 7 {
+         return None;
+@@ -1285,6 +1339,22 @@ pub fn event_descriptors_to_json(desc: &EventDescriptors) -> String {
+             .collect::<Vec<_>>()
+             .join(",")
+     ));
++    fields.push(format!(
++        "\"componentGroups\":[{}]",
++        desc.component_groups
++            .iter()
++            .map(|descriptor| format!(
++                "{{\"componentGroupType\":{},\"groups\":[{}]}}",
++                descriptor.component_group_type,
++                descriptor.groups.iter().map(|group| format!(
++                    "{{\"componentGroupId\":{},\"componentTags\":[{}]}}",
++                    group.component_group_id,
++                    group.component_tags.iter().map(u8::to_string).collect::<Vec<_>>().join(",")
++                )).collect::<Vec<_>>().join(",")
++            ))
++            .collect::<Vec<_>>()
++            .join(",")
++    ));
+     fields.push(format!("\"linkages\":[{}]", desc.linkages.iter().map(|l| format!("{{\"transportStreamId\":{},\"originalNetworkId\":{},\"serviceId\":{},\"linkageType\":{},\"privateDataHex\":\"{}\"}}", l.transport_stream_id, l.original_network_id, l.service_id, l.linkage_type, hex_prefix(&l.private_data, 32))).collect::<Vec<_>>().join(",")));
+     fields.push(format!(
+         "\"extendedItems\":[{}]",
+@@ -2065,3 +2135,25 @@ mod event_group_structure_tests {
+         assert!(parse_event_group_descriptor(&body).is_none());
+     }
+ }
++
++#[cfg(test)]
++mod component_group_structure_tests {
++    use super::*;
++
++    #[test]
++    fn mvtv_main_group_preserves_component_tags() {
++        // type=0 (MVTV), total_bit_rate_flag=0, one group; group id=0, one CA unit;
