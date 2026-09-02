@@ -209,8 +209,8 @@ def build_parser() -> argparse.ArgumentParser:
     region.add_argument(
         "--dataset",
         help=(
-            "optional explicit versioned region dataset; when omitted, ISDBT uses the "
-            "repository snapshot to map the address to regional physical-channel candidates"
+            "optional explicit region dataset; when omitted, ISDBT uses the "
+            "repository snapshot after resolving the region input through coordinates"
         ),
     )
     region.add_argument("--select-index", type=int)
