@@ -1,0 +1,131 @@
+name: tmp-pr71-address-normalize
+on:
+  push:
+    branches:
+      - fix/tuner-hal2-vts-auto-region
+    paths:
+      - .github/workflows/tmp-pr71-address-normalize.yml
+permissions:
+  contents: write
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tuner-hal2-vts-auto-region
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+      - name: Add address normalization
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('tuner_hal2/tools/vts_profile/region.py')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace(
+              'GSI_REVERSE_GEOCODER_URL = "https://mreversegeocoder.gsi.go.jp/reverse-geocoder/LonLatToAddress"\n',
+              'GSI_REVERSE_GEOCODER_URL = "https://mreversegeocoder.gsi.go.jp/reverse-geocoder/LonLatToAddress"\n'
+              'GSI_ADDRESS_SEARCH_URL = "https://msearch.gsi.go.jp/address-search/AddressSearch"\n',
+              1,
+          )
+          old = '''def _fetch_json(url: str) -> dict[str, Any]:
+    raw = _fetch_bytes(url)
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ProfileError(f"invalid JSON from regional lookup service {url}") from exc
+    return require_dict(value, "regional lookup response")
+'''
+          new = '''def _fetch_json_value(url: str) -> Any:
+    raw = _fetch_bytes(url)
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ProfileError(f"invalid JSON from regional lookup service {url}") from exc
+
+
+def _fetch_json(url: str) -> dict[str, Any]:
+    return require_dict(_fetch_json_value(url), "regional lookup response")
+'''
+          if old not in text:
+              raise SystemExit('fetch_json block not found')
+          text = text.replace(old, new, 1)
+          marker = '''def _resolved_region_addresses(query: str) -> list[str]:
+'''
+          insert = '''def _geocoded_address(query: str) -> str:
+    url = GSI_ADDRESS_SEARCH_URL + "?" + urllib.parse.urlencode({"q": query})
+    value = _fetch_json_value(url)
+    if not isinstance(value, list) or len(value) != 1:
+        raise ProfileError("GSI address search must resolve the address to exactly one location")
+    feature = require_dict(value[0], "GSI address-search feature")
+    geometry = require_dict(feature.get("geometry"), "GSI address-search geometry")
+    coordinates = geometry.get("coordinates")
+    if not isinstance(coordinates, list) or len(coordinates) < 2:
+        raise ProfileError("GSI address search result has no coordinates")
+    try:
+        longitude = float(coordinates[0])
+        latitude = float(coordinates[1])
+    except (TypeError, ValueError) as exc:
+        raise ProfileError("GSI address search returned invalid coordinates") from exc
+    return _coordinate_address(f"{latitude},{longitude}")
+
+
+'''
+          if marker not in text:
+              raise SystemExit('resolved_region marker not found')
+          text = text.replace(marker, insert + marker, 1)
+          old_return = '''    return [value]
+
+
+def _channels_for_address'''
+          new_return = '''    if any(prefecture in value for prefecture in JAPAN_PREFECTURES):
+        return [value]
+    return [_geocoded_address(value)]
+
+
+def _channels_for_address'''
+          if old_return not in text:
+              raise SystemExit('direct-address return block not found')
+          text = text.replace(old_return, new_return, 1)
+          path.write_text(text, encoding='utf-8')
+
+          test = Path('tuner_hal2/tools/test_vts_region_defaults.py')
+          text = test.read_text(encoding='utf-8')
+          old_test = '''    def test_address_without_prefecture_is_fail_closed(self) -> None:
+        with self.assertRaises(ProfileError):
+            resolve_region(_profile("大阪市中央区大阪城1-1"))
+'''
+          new_test = '''    def test_address_without_prefecture_is_normalized_before_channel_lookup(self) -> None:
+        profile = _profile("大阪市中央区大阪城1-1")
+        with patch(
+            "vts_profile.region._geocoded_address",
+            return_value="大阪府大阪市中央区大阪城1-1",
+        ):
+            resolve_region(profile)
+        self.assertEqual(_channels(profile), [13, 14, 15, 16, 17, 18, 24])
+
+    def test_ambiguous_geocoding_is_fail_closed(self) -> None:
+        with patch(
+            "vts_profile.region._fetch_json_value",
+            return_value=[{"geometry": {"coordinates": [135.5, 34.6]}}, {"geometry": {"coordinates": [135.6, 34.7]}}],
+        ):
+            with self.assertRaises(ProfileError):
+                resolve_region(_profile("中央区一丁目"))
+'''
+          if old_test not in text:
+              raise SystemExit('old address test not found')
+          test.write_text(text.replace(old_test, new_test, 1), encoding='utf-8')
+          PY
+      - name: Validate
+        run: |
+          cd tuner_hal2/tools
+          uv run python -m unittest test_vts_region_defaults.py
+          uv run python -m py_compile vts_profile/region.py test_vts_region_defaults.py
+      - name: Commit
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tuner_hal2/tools/vts_profile/region.py tuner_hal2/tools/test_vts_region_defaults.py
+          git commit -m 'fix: normalize generic VTS region addresses'
+          git push origin HEAD:fix/tuner-hal2-vts-auto-region
