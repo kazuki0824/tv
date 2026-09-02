@@ -1,0 +1,116 @@
+@@ -133,6 +139,7 @@ class SetupActivity : Activity(), ChannelScanManager.Listener {
+     }
+ 
+     companion object {
++        private const val STATE_SETUP_GENERATION = "maleicacid.setupGeneration"
+         fun scanStartAllowedForTest(candidateInputId: String?, isOwnInputId: Boolean): Boolean =
+             !candidateInputId.isNullOrBlank() && isOwnInputId
+ 
+diff --git a/tis/src/com/maleicacid/tvinput/tis/TunerController.kt b/tis/src/com/maleicacid/tvinput/tis/TunerController.kt
+index 79dc29b..96eb058 100644
+--- a/tis/src/com/maleicacid/tvinput/tis/TunerController.kt
++++ b/tis/src/com/maleicacid/tvinput/tis/TunerController.kt
+@@ -75,6 +75,8 @@ class TunerController(
+         val video: AribElementaryStream?,
+         val audio: AribElementaryStream?,
+         val subtitle: AribElementaryStream? = null,
++        val subtitleLanguageId: Int? = null,
++        val superimpose: AribElementaryStream? = null,
+     )
+ 
+     data class TisTrack(
+@@ -87,6 +89,7 @@ class TunerController(
+         val language: String?,
+         val dataComponentId: Int? = null,
+         val captionServiceKind: String? = null,
++        val captionLanguageId: Int? = null,
+     )
+ 
+     private inner class TunerSectionFilterHandle(
+@@ -136,6 +139,7 @@ class TunerController(
+     private var sectionIngestController: SectionIngestController? = null
+     private var casController: CasController? = null
+     private var onSectionIngestedCallback: (() -> Unit)? = null
++    private var onTunerResourceLostCallback: ((Long) -> Unit)? = null
+     private val tvInputSessionId: String = sessionId?.takeIf { it.isNotBlank() } ?: "maleicacid-$inputId-${System.nanoTime()}"
+     private var tuner: Tuner? = createTuner()
+     private var descramblerBridge: CasController.TunerDescramblerBridge? = null
+@@ -149,7 +153,11 @@ class TunerController(
+     private val playbackPipeline = PlaybackPipeline(inputId, tvInputSessionId, sessionContext)
+ 
+     private fun createTuner(): Tuner? = try {
+-        Tuner(context, tvInputSessionId, useCase)
++        Tuner(context, tvInputSessionId, useCase).also { created ->
++            created.setResourceLostListener(sectionExecutor) { callbackTuner ->
++                if (callbackTuner === tuner && !released) handleTunerResourceLostOnController()
++            }
++        }
+     } catch (e: RuntimeException) {
+         Log.w(LogTags.TIS, "Tuner を利用できません inputId=$inputId tvInputSessionId=$tvInputSessionId useCase=$useCase", e)
+         null
+@@ -163,14 +171,30 @@ class TunerController(
+ 
+     fun setOnSectionIngestedCallback(callback: (() -> Unit)?) = callOnController { onSectionIngestedCallback = callback }
+ 
+-    fun setPlaybackCallbacks(onVideoAvailable: () -> Unit, onVideoUnavailable: (PlaybackPipeline.PlaybackUnavailable) -> Unit) {
++    fun setOnTunerResourceLostCallback(callback: ((Long) -> Unit)?) = callOnController { onTunerResourceLostCallback = callback }
++
++    fun setPlaybackCallbacks(onVideoAvailable: (Long) -> Unit, onVideoUnavailable: (PlaybackPipeline.PlaybackUnavailable) -> Unit) {
+         playbackPipeline.setCallbacks(onVideoAvailable, onVideoUnavailable)
+     }
+ 
+-    fun setOnVideoFormatDiscoveredCallback(callback: (PlaybackPipeline.VideoFormatInfo) -> Unit) {
++    fun setOnVideoFormatDiscoveredCallback(callback: (Long, PlaybackPipeline.VideoFormatInfo) -> Unit) {
+         playbackPipeline.setOnVideoFormatDiscoveredCallback(callback)
+     }
+ 
++    fun setOnVideoOnlyFallbackRestartedCallback(callback: (PlaybackPipeline.VideoOnlyFallbackRestart) -> Unit) {
++        playbackPipeline.setOnVideoOnlyFallbackRestartedCallback(callback)
++    }
++
++    private fun handleTunerResourceLostOnController() {
++        val lostGeneration = tuneGeneration
++        playbackPipeline.stop()
++        closeSectionFiltersOnController()
++        currentTune = null
++        tuneAccepted = false
++        descramblerBridge = null
++        onTunerResourceLostCallback?.invoke(lostGeneration)
++    }
++
+     fun createDescramblerBridge(): CasController.TunerDescramblerBridge = callOnController {
+         val existing = descramblerBridge
+         if (existing != null) return@callOnController existing
+@@ -497,34 +521,60 @@ class TunerController(
+         streams: List<AribElementaryStream>,
+         preferredAudioTrackId: String? = null,
+         preferredSubtitleTrackId: String? = null,
++        audioExplicitlyDisabled: Boolean = false,
++        subtitleExplicitlyDisabled: Boolean = false,
++        defaultComponentGroupTags: Set<Int>? = null,
+     ): AvStreamSelection {
+-        val video = TunerSelectionPolicy.selectVideo(streams)
++        val video = TunerSelectionPolicy.selectVideo(streams, defaultComponentGroupTags)
+         val audioCandidates = streams.filter { TunerSelectionPolicy.isSupportedAudioStreamType(it.streamType) }
+-        val audio = preferredAudioTrackId?.let { wanted -> audioCandidates.firstOrNull { TunerSelectionPolicy.trackIdForAudio(it) == wanted } } ?: audioCandidates.firstOrNull()
+-        val subtitleCandidates = streams.filter(TunerSelectionPolicy::isCaptionStream)
+-        val subtitle = preferredSubtitleTrackId?.let { wanted -> subtitleCandidates.firstOrNull { TunerSelectionPolicy.trackIdForSubtitle(it) == wanted } } ?: subtitleCandidates.firstOrNull()
+-        return AvStreamSelection(serviceKey, pcrPid, video, audio, subtitle)
+-    }
+-
+-    fun tracksFor(streams: List<AribElementaryStream>): List<TisTrack> = buildList {
+-        streams.filter { TunerSelectionPolicy.isSupportedVideoStreamType(it.streamType) }.forEach { stream ->
++        val audio = if (audioExplicitlyDisabled) null else preferredAudioTrackId?.let { wanted ->
++            audioCandidates.firstOrNull { TunerSelectionPolicy.trackIdForAudio(it) == wanted }
++        } ?: TunerSelectionPolicy.selectAudio(streams, defaultComponentGroupTags)
++        val captionTracks = captionTracksFor(streams, defaultComponentGroupTags)
++        val selectedCaptionTrack = if (subtitleExplicitlyDisabled) null else preferredSubtitleTrackId?.let { wanted ->
++            captionTracks.firstOrNull { it.id == wanted }
++        } ?: TunerSelectionPolicy.selectCaption(streams, defaultComponentGroupTags)?.let { defaultStream -> captionTracks.firstOrNull { it.pid == defaultStream.elementaryPid } }
++        val subtitle = selectedCaptionTrack?.let { track -> streams.firstOrNull { it.elementaryPid == track.pid && TunerSelectionPolicy.isCaptionStream(it) } }
++        val superimpose = TunerSelectionPolicy.selectSuperimpose(streams, defaultComponentGroupTags)
++        return AvStreamSelection(serviceKey, pcrPid, video, audio, subtitle, selectedCaptionTrack?.captionLanguageId, superimpose)
++    }
++
++    fun tracksFor(streams: List<AribElementaryStream>, defaultComponentGroupTags: Set<Int>? = null): List<TisTrack> = buildList {
++        TunerSelectionPolicy.selectVideo(streams, defaultComponentGroupTags)?.let { stream ->
