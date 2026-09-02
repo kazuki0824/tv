@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 env:
-  EXPECTED_TARGET_SHA: 11dd3218cb6a159dd3a63c0ed8ed11c8d33578d3
+  EXPECTED_TARGET_SHA: 2ded90ff7a578e529cc95304da04b551fc9fd285
   TARGET_BRANCH: agent/implement-tis-arib-si-design-pr53
 
 jobs:
@@ -34,20 +34,15 @@ jobs:
           set -euo pipefail
           cd target
           test "$(git rev-parse HEAD)" = "$EXPECTED_TARGET_SHA"
-          python3 ../staging/codex_apply_pr54_delta5_v2.py
+          python3 ../staging/codex_apply_pr54_dualmono_eit.py
           git diff --check
           test -z "$(git diff --name-only | grep -E '^(tis/src/com/maleicacid/tvinput/tis/ScanPlan\.kt|arib_si_engine_rs/src/(descriptors|service_discovery|lib)\.rs)$' || true)"
           git status --short
           git config user.name maleicacid
           git config user.email 4982384+kazuki0824@users.noreply.github.com
-          git add tis/src/com/maleicacid/tvinput/tis/MaleicacidTvInputService.kt \
-                  tis/src/com/maleicacid/tvinput/tis/TunerController.kt \
-                  tis/src/com/maleicacid/tvinput/tis/MaleicacidLiveSession.kt \
+          git add tis/src/com/maleicacid/tvinput/tis/MaleicacidLiveSession.kt \
                   tis/src/com/maleicacid/tvinput/tis/PlaybackPipeline.kt \
-                  tis/src/com/maleicacid/tvinput/tis/TvProviderWriter.kt \
-                  tis/tests/src/com/maleicacid/tvinput/tis/TisR51FixedPlanAcceptanceTest.kt \
-                  tis/tests/src/com/maleicacid/tvinput/tis/PlaybackAudioSinkR51FixTest.kt \
-                  tis/tests/src/com/maleicacid/tvinput/tis/TvProviderWriterProgramsTest.kt
+                  tis/src/com/maleicacid/tvinput/tis/TunerController.kt
           git diff --cached --check
-          git commit -m 'fix(tis): close actionable conditional review gaps'
+          git commit -m 'fix(tis): resolve dual-mono from current EIT'
           git push origin HEAD:"$TARGET_BRANCH"
