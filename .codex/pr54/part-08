@@ -1,0 +1,128 @@
+-        tunerController.setOnVideoFormatDiscoveredCallback { info -> enqueueSessionAction { updateCurrentProgramVideoMetadata(info) } }
+-        tunerController.setOnSubtitlePesCallback { trackId, pesData, timestamp ->
+-            captionController.onPesData(trackId, pesData, timestamp)
++        tunerController.setOnVideoFormatDiscoveredCallback { generation, info ->
++            enqueueSessionAction { updateCurrentProgramVideoMetadata(generation, info) }
++        }
++        tunerController.setOnSubtitlePesCallback { generation, trackId, pesData, timestamp ->
++            enqueueSessionAction {
++                if (PlaybackStartTransitions.acceptsGeneration(playbackState, generation)) {
++                    if (trackId.startsWith("superimpose:")) {
++                        superimposeController.onPesData(trackId, pesData, timestamp)
++                    } else {
++                        captionController.onPesData(trackId, pesData, timestamp)
++                    }
++                }
++            }
++        }
++        tunerController.setOnVideoOnlyFallbackRestartedCallback { restart ->
++            enqueueSessionAction { handleVideoOnlyFallbackRestart(restart) }
++        }
++        tunerController.setOnTunerResourceLostCallback { tuneGeneration ->
++            enqueueSessionAction { handleTunerResourceLost(tuneGeneration) }
+         }
++        superimposeController.setEnabled(true)
+         runCatching { setOverlayViewEnabled(true) }
+         ChannelScanManager.registerLiveSession()
+         registerParentalControlReceiver()
+@@ -144,7 +170,7 @@ class MaleicacidLiveSession(
+         if (surface == null) {
+             playbackState = PlaybackStartState.Stopped
+             tunerController.stopPlayback()
+-            captionController.beginPlaybackGeneration(-1L, false)
++            beginCaptionPresentationGeneration(-1L, false)
+             notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+         } else {
+             playbackState = PlaybackStartState.Idle
+@@ -168,7 +194,7 @@ class MaleicacidLiveSession(
+         enqueueSessionAction {
+             captionEnabled = enabled
+             captionController.setEnabled(enabled)
+-            latestService?.let { updateSubtitleSelection(tunerController.tracksFor(it.streams)) }
++            latestService?.let { updateSubtitleSelection(tunerController.tracksFor(it.streams, currentDefaultComponentGroupTags(it.serviceKey))) }
+         }
+     }
+ 
+@@ -184,17 +210,23 @@ class MaleicacidLiveSession(
+         currentService = null
+         currentRatingProfile = AribRatingMapper.BroadcastProfile.UNRESOLVED
+         currentGeneration = 0L
+-        captionController.beginPlaybackGeneration(-1L, false)
++        beginCaptionPresentationGeneration(-1L, false)
+         currentChannelUri = channelUri
+         latestService = null
+         latestVideoMetadataByProgramKey.clear()
+         unblockedContentKeys.clear()
+         currentUnblockProgramIdentityKey = null
++        lastParentalAccessState = ParentalAccessState.UNKNOWN
++        lastBlockedContent = null
+         programPublishCoordinator.reset()
+         preferredAudioTrackId = null
++        audioFallbackDisabled = false
+         selectedSubtitleTrackId = null
++        subtitleExplicitlyDisabled = false
+         captionController.setEnabled(captionEnabled)
+         captionController.selectTrack(null)
++        superimposeController.setEnabled(true)
++        superimposeController.selectTrack(null)
+         currentTrackSignature = emptySet()
+         val outcome = tunerController.tuneForLive(channelUri)
+         if (!outcome.success || outcome.channel == null) {
+@@ -257,14 +289,14 @@ class MaleicacidLiveSession(
+             if (blockingCasError) {
+                 playbackState = PlaybackStartState.Stopped
+                 tunerController.stopPlayback()
+-                captionController.beginPlaybackGeneration(-1L, false)
++                beginCaptionPresentationGeneration(-1L, false)
+                 notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN)
+                 return
+             }
+             if (serviceCaMetadata.isNotEmpty()) {
+                 playbackState = PlaybackStartState.Stopped
+                 tunerController.stopPlayback()
+-                captionController.beginPlaybackGeneration(-1L, false)
++                beginCaptionPresentationGeneration(-1L, false)
+                 notifyVideoUnavailable(mapUnavailableReason(PlaybackPipeline.PlaybackUnavailable(PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY, "r51 CAS placeholder cannot provide real key token")))
+                 return
+             }
+@@ -292,12 +324,21 @@ class MaleicacidLiveSession(
+                 return false
+             }
+         }
+-        val selection = tunerController.selectAvStreams(service.serviceKey, service.pcrPid, service.streams, preferredAudioTrackId, selectedSubtitleTrackId)
++        val selection = tunerController.selectAvStreams(
++            service.serviceKey,
++            service.pcrPid,
++            service.streams,
++            preferredAudioTrackId,
++            selectedSubtitleTrackId,
++            audioExplicitlyDisabled = audioFallbackDisabled,
++            subtitleExplicitlyDisabled = subtitleExplicitlyDisabled,
++            defaultComponentGroupTags = currentDefaultComponentGroupTags(service.serviceKey),
++        )
+         val audioOnly = PlaybackPolicy.isAudioOnlyService(service.serviceType)
+         if (PlaybackPolicy.shouldRejectSelection(service.serviceType ?: -1, selection)) {
+             playbackState = PlaybackStartState.Stopped
+             tunerController.stopPlayback()
+-            captionController.beginPlaybackGeneration(-1L, false)
++            beginCaptionPresentationGeneration(-1L, false)
+             val failure = if (audioOnly) {
+                 PlaybackPipeline.PlaybackUnavailable(
+                     PlaybackPipeline.PlaybackUnavailableReason.UNSUPPORTED_AUDIO_STREAM,
+@@ -324,8 +365,8 @@ class MaleicacidLiveSession(
+             notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+             return false
+         }
+-        captionController.beginPlaybackGeneration(result.generation, hasVideo = !audioOnly)
+-        captionController.onPlaybackClockChanged()
++        beginCaptionPresentationGeneration(result.generation, hasVideo = !audioOnly)
++        onCaptionPlaybackClockChanged()
+         if (result.firstFramePending == true) {
+             playbackState = PlaybackStartState.WaitingFirstOutput(signature, result.generation)
+             return false
+@@ -357,6 +398,9 @@ class MaleicacidLiveSession(
+             audioStreamType = audio?.streamType,
+             subtitlePid = selection.subtitle?.elementaryPid,
+             subtitleDataComponentId = selection.subtitle?.dataComponentId,
++            subtitleLanguageId = selection.subtitleLanguageId,
++            superimposePid = selection.superimpose?.elementaryPid,
