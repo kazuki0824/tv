@@ -1,0 +1,107 @@
++            ?.takeIf { it.isNotEmpty() }
++            ?.let { tags -> candidates.filter { stream -> stream.componentTag?.let(tags::contains) == true } }
++            ?.takeIf { it.isNotEmpty() }
++        if (grouped != null) {
++            // MVTV: main component-group (id=0) 内ではstream種別ごとの最小component_tagがdefault。
++            return grouped.minWithOrNull(componentTagOrder)
++        }
++        return candidates.firstOrNull { it.componentTag == defaultComponentTag }
++            ?: candidates.minWithOrNull(componentTagOrder)
++    }
++
++    fun orderedAudioStreams(streams: List<AribElementaryStream>, componentGroupTags: Set<Int>? = null): List<AribElementaryStream> =
++        orderedWithDefault(streams.filter { isSupportedAudioStreamType(it.streamType) }, selectAudio(streams, componentGroupTags))
++
++    fun orderedCaptionStreams(streams: List<AribElementaryStream>, componentGroupTags: Set<Int>? = null): List<AribElementaryStream> =
++        orderedWithDefault(streams.filter(::isCaptionStream), selectCaption(streams, componentGroupTags))
++
++    private fun orderedWithDefault(candidates: List<AribElementaryStream>, selected: AribElementaryStream?): List<AribElementaryStream> =
++        buildList {
++            selected?.let(::add)
++            candidates.filterNot { it == selected }.sortedWith(componentTagOrder).forEach(::add)
++        }
++
++    private val componentTagOrder = compareBy<AribElementaryStream> { it.componentTag ?: Int.MAX_VALUE }
++        .thenBy { it.elementaryPid.value }
++
+     fun isSelectableTrack(type: Int, trackId: String?, tracks: List<TunerController.TisTrack>): Boolean = when (type) {
+         TvTrackInfo.TYPE_AUDIO -> trackId != null && tracks.any { it.type == type && it.id == trackId }
+         TvTrackInfo.TYPE_VIDEO -> trackId != null && tracks.firstOrNull { it.type == type }?.id == trackId
+         TvTrackInfo.TYPE_SUBTITLE -> trackId != null && tracks.any { it.type == type && it.id == trackId }
+         else -> false
+     }
++
++    private const val DEFAULT_VIDEO_COMPONENT_TAG = 0x00
++    private const val DEFAULT_AUDIO_COMPONENT_TAG = 0x10
++    private const val DEFAULT_CAPTION_COMPONENT_TAG = 0x30
++    private const val DEFAULT_SUPERIMPOSE_COMPONENT_TAG = 0x38
+ }
+diff --git a/tis/src/com/maleicacid/tvinput/tis/TvProviderWriter.kt b/tis/src/com/maleicacid/tvinput/tis/TvProviderWriter.kt
+index 703bfad..7d89f54 100644
+--- a/tis/src/com/maleicacid/tvinput/tis/TvProviderWriter.kt
++++ b/tis/src/com/maleicacid/tvinput/tis/TvProviderWriter.kt
+@@ -108,21 +108,27 @@ class TvProviderWriter private constructor(
+             if (channelId == null) { failures += Diagnostic(serviceKey, "program-channel-query", "program 登録対象 channel がありません"); return@forEach }
+             val servicePrograms = programsByChannel[serviceKey].orEmpty().sortedBy { it.startTimeMillis }
+             val serviceWindows = windowsByChannel[serviceKey].orEmpty()
+-            val existingProgramsByKey = if (servicePrograms.isNotEmpty()) {
+-                val indexResult = channelStore.indexExistingProgramsForService(channelId)
+-                if (indexResult.isFailure) {
+-                    failures += Diagnostic(serviceKey, "program-index-query", indexResult.exceptionOrNull()?.message.orEmpty())
+-                    return@forEach
+-                }
+-                indexResult.getOrThrow()
+-            } else {
+-                emptyMap()
+-            }
+             servicePrograms.forEach { program ->
+                 val validation = validate(program)
+                 if (validation != null) { failures += validation; return@forEach }
+                 val key = programIdentity(program)
+-                val existingId = existingProgramsByKey[key]
++                val programEnd = checkedProgramEndTimeMillis(program)
++                if (programEnd == null) {
++                    failures += Diagnostic(serviceKey, "program-index-window", "program end time overflow eventId=${program.eventId}")
++                    return@forEach
++                }
++                val guardStart = runCatching { Math.subtractExact(program.startTimeMillis, EVENT_ID_REUSE_GUARD_MS) }
++                    .getOrDefault(Long.MIN_VALUE)
++                val guardEnd = runCatching { Math.addExact(programEnd, EVENT_ID_REUSE_GUARD_MS) }
++                    .getOrDefault(Long.MAX_VALUE)
++                val indexResult = channelStore.indexExistingProgramsForWindow(channelId, guardStart, guardEnd)
++                if (indexResult.isFailure) {
++                    failures += Diagnostic(serviceKey, "program-index-query", indexResult.exceptionOrNull()?.message.orEmpty())
++                    return@forEach
++                }
++                // event_idは終了後24時間を越えて再利用できるため、service全履歴ではなく
++                // 対象event近傍のguard window内だけでstable programKeyを照合する。
++                val existingId = indexResult.getOrThrow()[key]
+                 val values = runCatching { programValues(channelId, program) }.getOrElse { error ->
+                     failures += Diagnostic(serviceKey, "program-provider-data", error.message.orEmpty())
+                     return@forEach
+@@ -227,7 +233,6 @@ class TvProviderWriter private constructor(
+         put(TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID, channel.serviceKey.transportStreamId)
+         put(TvContract.Channels.COLUMN_SERVICE_ID, channel.serviceKey.serviceId)
+         put(TvContract.Channels.COLUMN_SEARCHABLE, 1)
+-        put(TvContract.Channels.COLUMN_BROWSABLE, 1)
+         put(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA, channelProviderDataBytes(channel))
+     }
+ 
+@@ -239,11 +244,17 @@ class TvProviderWriter private constructor(
+         put(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS, Math.addExact(program.startTimeMillis, program.durationMillis))
+         put(TvContract.Programs.COLUMN_SHORT_DESCRIPTION, program.shortDescription)
+         if (program.description.isBlank()) putNull(TvContract.Programs.COLUMN_LONG_DESCRIPTION) else put(TvContract.Programs.COLUMN_LONG_DESCRIPTION, program.description)
+-        val audioLanguage = program.descriptors.components.audio
++        val audioLanguages = program.descriptors.components.audio
+             .asSequence()
+             .flatMap { sequenceOf(it.language, it.secondLanguage) }
+-            .firstOrNull { !it.isNullOrBlank() }
+-        if (audioLanguage == null) putNull(TvContract.Programs.COLUMN_AUDIO_LANGUAGE) else put(TvContract.Programs.COLUMN_AUDIO_LANGUAGE, audioLanguage)
++            .mapNotNull(LanguageCodeNormalizer::normalizeForTvTrackLanguage)
++            .distinct()
++            .toList()
++        if (audioLanguages.isEmpty()) {
++            putNull(TvContract.Programs.COLUMN_AUDIO_LANGUAGE)
++        } else {
++            put(TvContract.Programs.COLUMN_AUDIO_LANGUAGE, audioLanguages.joinToString(","))
++        }
