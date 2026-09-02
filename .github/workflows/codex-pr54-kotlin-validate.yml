@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 env:
-  TARGET_SHA: 498b4f6436d2b83807d3a34aba398b826639e6fa
+  TARGET_SHA: 11dd3218cb6a159dd3a63c0ed8ed11c8d33578d3
   RUST_TOOLCHAIN: 1.81.0
   KOTLIN_VERSION: 1.9.22
 
