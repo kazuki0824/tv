@@ -7,10 +7,9 @@ import re
 import urllib.parse
 import urllib.request
 import zipfile
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
-
-from japanese_address_parser_py import Parser
 
 from .model import FRONTEND_ID, ProfileError, load_json, positive_int, reject_unknown, require_dict, validate_profile
 
@@ -22,6 +21,7 @@ ISDBT_CHANNEL_STEP_HZ = 6_000_000
 JAPAN_POST_KEN_ALL_URL = "https://www.post.japanpost.jp/zipcode/dl/kogaki/zip/ken_all.zip"
 GSI_REVERSE_GEOCODER_URL = "https://mreversegeocoder.gsi.go.jp/reverse-geocoder/LonLatToAddress"
 GSI_ADDRESS_SEARCH_URL = "https://msearch.gsi.go.jp/address-search/AddressSearch"
+GSI_MUNICIPALITY_URL = "https://maps.gsi.go.jp/js/muni.js"
 HTTP_USER_AGENT = "maleicacid-tuner-hal2-vts-region-resolver/1"
 JAPAN_PREFECTURES = (
     "北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県",
@@ -34,35 +34,10 @@ JAPAN_PREFECTURES = (
 )
 
 
-_ADDRESS_PARSER = Parser()
-
-
-def _normalize_address(query: str) -> str:
-    result = _ADDRESS_PARSER.parse(query)
-    if result.error:
-        raise ProfileError(f"failed to normalize Japanese address: {result.error}")
-    address = result.address
-    if not isinstance(address, dict):
-        raise ProfileError("Japanese address parser returned no structured address")
-    prefecture = address.get("prefecture")
-    city = address.get("city")
-    if not isinstance(prefecture, str) or not prefecture or not isinstance(city, str) or not city:
-        raise ProfileError("Japanese address must resolve to a prefecture and municipality")
-    town = address.get("town")
-    return prefecture + city + (town if isinstance(town, str) else "")
-
-
 def _frequency_for_channel(channel: int) -> int:
     if channel < ISDBT_FIRST_CHANNEL or channel > ISDBT_LAST_CHANNEL:
         raise ProfileError(f"unsupported current ISDBT physical channel: {channel}")
     return ISDBT_CHANNEL_13_HZ + (channel - ISDBT_FIRST_CHANNEL) * ISDBT_CHANNEL_STEP_HZ
-
-
-def _prefecture_from_address(query: str) -> str:
-    matches = [prefecture for prefecture in JAPAN_PREFECTURES if prefecture in query]
-    if len(matches) != 1:
-        raise ProfileError("resolved Japanese address must contain exactly one prefecture name")
-    return matches[0]
 
 
 def _current_channel(value: Any, name: str) -> int:
@@ -93,49 +68,6 @@ def _fetch_json(url: str) -> dict[str, Any]:
     return require_dict(_fetch_json_value(url), "regional lookup response")
 
 
-def _japan_post_lookups() -> tuple[dict[str, set[str]], dict[str, str]]:
-    archive = _fetch_bytes(JAPAN_POST_KEN_ALL_URL)
-    try:
-        with zipfile.ZipFile(io.BytesIO(archive)) as zf:
-            csv_names = [name for name in zf.namelist() if name.upper().endswith(".CSV")]
-            if len(csv_names) != 1:
-                raise ProfileError("Japan Post KEN_ALL archive must contain exactly one CSV")
-            csv_text = zf.read(csv_names[0]).decode("cp932")
-    except (zipfile.BadZipFile, KeyError, UnicodeDecodeError) as exc:
-        raise ProfileError("failed to parse Japan Post KEN_ALL postal dataset") from exc
-
-    postal_to_addresses: dict[str, set[str]] = {}
-    municipality_to_address: dict[str, str] = {}
-    for row in csv.reader(io.StringIO(csv_text)):
-        if len(row) < 9:
-            continue
-        municipality_code = row[0].strip()
-        postal_code = row[2].strip()
-        prefecture = row[6].strip()
-        municipality = row[7].strip()
-        if not municipality_code or not postal_code or not prefecture or not municipality:
-            continue
-        address = prefecture + municipality
-        postal_to_addresses.setdefault(postal_code, set()).add(address)
-        existing = municipality_to_address.get(municipality_code)
-        if existing is None:
-            municipality_to_address[municipality_code] = address
-        elif existing != address:
-            raise ProfileError(f"Japan Post municipality code {municipality_code} maps to multiple regions")
-    return postal_to_addresses, municipality_to_address
-
-
-def _postal_addresses(query: str) -> list[str]:
-    postal_code = re.sub(r"[^0-9]", "", query)
-    if not re.fullmatch(r"\d{7}", postal_code):
-        raise ProfileError("postal region input must contain exactly seven digits")
-    postal_to_addresses, _ = _japan_post_lookups()
-    matches = sorted(postal_to_addresses.get(postal_code, ()))
-    if not matches:
-        raise ProfileError(f"Japan Post dataset has no address for postal code {postal_code}")
-    return matches
-
-
 def _parse_latlon(query: str) -> tuple[float, float]:
     value = query.strip()
     if value.lower().startswith("latlon:"):
@@ -153,28 +85,8 @@ def _parse_latlon(query: str) -> tuple[float, float]:
     return latitude, longitude
 
 
-def _coordinate_address(query: str) -> str:
-    latitude, longitude = _parse_latlon(query)
-    url = GSI_REVERSE_GEOCODER_URL + "?" + urllib.parse.urlencode(
-        {"lat": f"{latitude:.8f}", "lon": f"{longitude:.8f}"}
-    )
-    response = _fetch_json(url)
-    results = require_dict(response.get("results"), "GSI reverse-geocoder results")
-    municipality_code = str(results.get("muniCd", "")).strip()
-    if not re.fullmatch(r"\d{5}", municipality_code):
-        raise ProfileError("GSI reverse geocoder did not return a Japanese municipality code")
-    _, municipality_to_address = _japan_post_lookups()
-    address = municipality_to_address.get(municipality_code)
-    if address is None:
-        raise ProfileError(f"Japan Post dataset has no municipality for GSI code {municipality_code}")
-    town = results.get("lv01Nm")
-    if isinstance(town, str) and town.strip():
-        address += town.strip()
-    return address
-
-
-def _geocoded_address(query: str) -> str:
-    url = GSI_ADDRESS_SEARCH_URL + "?" + urllib.parse.urlencode({"q": query})
+def _geocode_address(address: str) -> tuple[float, float]:
+    url = GSI_ADDRESS_SEARCH_URL + "?" + urllib.parse.urlencode({"q": address})
     value = _fetch_json_value(url)
     if not isinstance(value, list) or len(value) != 1:
         raise ProfileError("GSI address search must resolve the address to exactly one location")
@@ -188,28 +100,95 @@ def _geocoded_address(query: str) -> str:
         latitude = float(coordinates[1])
     except (TypeError, ValueError) as exc:
         raise ProfileError("GSI address search returned invalid coordinates") from exc
-    return _coordinate_address(f"{latitude},{longitude}")
+    return latitude, longitude
 
 
-def _resolved_region_addresses(query: str) -> list[str]:
+@lru_cache(maxsize=1)
+def _postal_addresses() -> dict[str, set[str]]:
+    archive = _fetch_bytes(JAPAN_POST_KEN_ALL_URL)
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive)) as zf:
+            csv_names = [name for name in zf.namelist() if name.upper().endswith(".CSV")]
+            if len(csv_names) != 1:
+                raise ProfileError("Japan Post KEN_ALL archive must contain exactly one CSV")
+            csv_text = zf.read(csv_names[0]).decode("cp932")
+    except (zipfile.BadZipFile, KeyError, UnicodeDecodeError) as exc:
+        raise ProfileError("failed to parse Japan Post KEN_ALL postal dataset") from exc
+
+    result: dict[str, set[str]] = {}
+    for row in csv.reader(io.StringIO(csv_text)):
+        if len(row) < 9:
+            continue
+        postal_code = row[2].strip()
+        prefecture = row[6].strip()
+        municipality = row[7].strip()
+        town = row[8].strip()
+        if postal_code and prefecture and municipality:
+            result.setdefault(postal_code, set()).add(prefecture + municipality + town)
+    return result
+
+
+def _postal_coordinates(query: str) -> list[tuple[float, float]]:
+    postal_code = re.sub(r"[^0-9]", "", query)
+    if not re.fullmatch(r"\d{7}", postal_code):
+        raise ProfileError("postal region input must contain exactly seven digits")
+    addresses = sorted(_postal_addresses().get(postal_code, ()))
+    if not addresses:
+        raise ProfileError(f"Japan Post dataset has no address for postal code {postal_code}")
+    return [_geocode_address(address) for address in addresses]
+
+
+@lru_cache(maxsize=1)
+def _municipalities() -> dict[str, tuple[str, str]]:
+    try:
+        text = _fetch_bytes(GSI_MUNICIPALITY_URL).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ProfileError("invalid GSI municipality table encoding") from exc
+    result: dict[str, tuple[str, str]] = {}
+    pattern = re.compile(r"GSI\.MUNI_ARRAY\[\"(\d+)\"\]\s*=\s*'([^']+)';")
+    for code, value in pattern.findall(text):
+        parts = value.split(",", 3)
+        if len(parts) != 4:
+            continue
+        prefecture = parts[1].strip()
+        municipality = re.sub(r"[\s　]+", "", parts[3])
+        result[code.zfill(5)] = (prefecture, municipality)
+    if not result:
+        raise ProfileError("GSI municipality table is empty")
+    return result
+
+
+def _coordinate_area(coordinate: tuple[float, float]) -> tuple[str, str]:
+    latitude, longitude = coordinate
+    url = GSI_REVERSE_GEOCODER_URL + "?" + urllib.parse.urlencode(
+        {"lat": f"{latitude:.8f}", "lon": f"{longitude:.8f}"}
+    )
+    response = _fetch_json(url)
+    results = require_dict(response.get("results"), "GSI reverse-geocoder results")
+    raw_code = str(results.get("muniCd", "")).strip()
+    if not re.fullmatch(r"\d{4,5}", raw_code):
+        raise ProfileError("GSI reverse geocoder did not return a Japanese municipality code")
+    code = raw_code.zfill(5)
+    area = _municipalities().get(code)
+    if area is None:
+        raise ProfileError(f"GSI municipality table has no entry for code {code}")
+    return area
+
+
+def _region_coordinates(query: str) -> list[tuple[float, float]]:
     value = query.strip()
     if value.lower().startswith("postal:"):
-        return _postal_addresses(value.split(":", 1)[1])
+        return _postal_coordinates(value.split(":", 1)[1])
     if re.fullmatch(r"\d{3}-?\d{4}", value):
-        return _postal_addresses(value)
+        return _postal_coordinates(value)
     if value.lower().startswith("latlon:"):
-        return [_coordinate_address(value)]
+        return [_parse_latlon(value)]
     if re.fullmatch(r"[+-]?\d+(?:\.\d+)?\s*,\s*[+-]?\d+(?:\.\d+)?", value):
-        return [_coordinate_address(value)]
-    if value in JAPAN_PREFECTURES:
-        return [value]
-    if any(prefecture in value for prefecture in JAPAN_PREFECTURES):
-        return [_normalize_address(value)]
-    return [_geocoded_address(value)]
+        return [_parse_latlon(value)]
+    return [_geocode_address(value)]
 
 
-def _channels_for_address(address: str, prefectures: dict[str, Any]) -> tuple[set[int], str]:
-    prefecture = _prefecture_from_address(address)
+def _channels_for_area(prefecture: str, municipality: str, prefectures: dict[str, Any]) -> tuple[set[int], str]:
     prefecture_data = require_dict(prefectures.get(prefecture), f"dataset.prefectures[{prefecture!r}]")
     reject_unknown(
         prefecture_data,
@@ -218,7 +197,7 @@ def _channels_for_address(address: str, prefectures: dict[str, Any]) -> tuple[se
     )
     areas = require_dict(prefecture_data.get("areas"), f"dataset.prefectures[{prefecture!r}].areas")
     matching_keys = sorted(
-        (key for key in areas if isinstance(key, str) and key and key in address),
+        (key for key in areas if isinstance(key, str) and key and key in municipality),
         key=lambda key: (-len(key), key),
     )
     if matching_keys:
@@ -240,7 +219,7 @@ def _channels_for_address(address: str, prefectures: dict[str, Any]) -> tuple[se
 def _snapshot_candidates(profile: dict[str, Any], dataset: dict[str, Any]) -> list[dict[str, Any]]:
     reject_unknown(dataset, {"schema_version", "source", "prefectures"}, "dataset")
     if dataset.get("schema_version") != 2:
-        raise ProfileError("built-in region dataset schema_version must be 2")
+        raise ProfileError("region dataset schema_version must be 2")
     source = require_dict(dataset.get("source"), "dataset.source")
     reject_unknown(source, {"index_url", "source_notice"}, "dataset.source")
     prefectures = require_dict(dataset.get("prefectures"), "dataset.prefectures")
@@ -250,13 +229,22 @@ def _snapshot_candidates(profile: dict[str, Any], dataset: dict[str, Any]) -> li
     if not isinstance(query, str) or not query.strip():
         raise ProfileError("region.query is required for resolve-region")
     if profile["frontend"]["type"] != "ISDBT":
-        raise ProfileError("built-in regional channel dataset is only valid for ISDBT")
+        raise ProfileError("regional channel dataset is only valid for ISDBT")
 
-    channel_labels: dict[int, set[str]] = {}
-    for address in _resolved_region_addresses(query):
-        channels, label = _channels_for_address(address, prefectures)
-        for channel in channels:
-            channel_labels.setdefault(channel, set()).add(label)
+    if query.strip() in JAPAN_PREFECTURES:
+        prefecture = query.strip()
+        prefecture_data = require_dict(prefectures.get(prefecture), f"dataset.prefectures[{prefecture!r}]")
+        channel_labels = {
+            _current_channel(channel, f"dataset prefecture {prefecture} channel"): {prefecture}
+            for channel in prefecture_data.get("prefecture_channels", [])
+        }
+    else:
+        channel_labels: dict[int, set[str]] = {}
+        for coordinate in _region_coordinates(query):
+            prefecture, municipality = _coordinate_area(coordinate)
+            channels, label = _channels_for_area(prefecture, municipality, prefectures)
+            for channel in channels:
+                channel_labels.setdefault(channel, set()).add(label)
 
     if not channel_labels:
         raise ProfileError(f"region dataset has no ISDBT channels for {query!r}")
@@ -289,16 +277,9 @@ def resolve_region(
     if dataset.get("schema_version") != 2:
         raise ProfileError("dataset.schema_version must be 2")
     matches = _snapshot_candidates(profile, dataset)
-
     if not matches:
         raise ProfileError(f"no {profile['frontend']['type']} candidates found for region {query!r}")
-    matches.sort(
-        key=lambda item: (
-            item["frequency_hz"],
-            item.get("physical_channel") or 0,
-            item["label"],
-        )
-    )
+    matches.sort(key=lambda item: (item["frequency_hz"], item.get("physical_channel") or 0, item["label"]))
     region["candidates"] = matches
     if select_index is not None:
         select_candidate(profile, select_index)
