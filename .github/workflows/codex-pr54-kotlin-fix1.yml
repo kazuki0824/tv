@@ -1,0 +1,81 @@
+name: Fix PR54 Kotlin display aspect body
+
+on:
+  push:
+    branches:
+      - codex/pr54-apply-20260902
+    paths:
+      - .github/workflows/codex-pr54-kotlin-fix1.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/implement-tis-arib-si-design-pr53
+          fetch-depth: 0
+      - name: Convert displayAspectRatio to block body
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "4466f7e7204b23f3b194b75a139d2843c8447263"
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('tis/src/com/maleicacid/tvinput/tis/PlaybackPipeline.kt')
+          s = p.read_text()
+          old = '''        fun displayAspectRatio(kind: VideoCodecKind, bytes: ByteArray): Double? = when (kind) {
+              VideoCodecKind.MPEG2 -> {
+                  val pos = findStartCode(bytes, 0xb3) ?: return null
+                  if (pos + 7 >= bytes.size) return null
+                  val width = ((bytes[pos + 4].toInt() and 0xff) shl 4) or ((bytes[pos + 5].toInt() and 0xf0) ushr 4)
+                  val height = ((bytes[pos + 5].toInt() and 0x0f) shl 8) or (bytes[pos + 6].toInt() and 0xff)
+                  when ((bytes[pos + 7].toInt() ushr 4) and 0x0f) {
+                      1 -> width.toDouble() / height.coerceAtLeast(1).toDouble()
+                      2 -> 4.0 / 3.0
+                      3 -> 16.0 / 9.0
+                      4 -> 2.21
+                      else -> null
+                  }
+              }
+              VideoCodecKind.AVC -> findNal(bytes, 7)?.let(::parseAvcSpsDimensions)?.let { dimensions ->
+                  dimensions.width.toDouble() * dimensions.sarWidth.toDouble() /
+                      (dimensions.height.toDouble() * dimensions.sarHeight.toDouble())
+              }
+          }
+'''
+          new = '''        fun displayAspectRatio(kind: VideoCodecKind, bytes: ByteArray): Double? {
+              return when (kind) {
+                  VideoCodecKind.MPEG2 -> {
+                      val pos = findStartCode(bytes, 0xb3) ?: return null
+                      if (pos + 7 >= bytes.size) return null
+                      val width = ((bytes[pos + 4].toInt() and 0xff) shl 4) or ((bytes[pos + 5].toInt() and 0xf0) ushr 4)
+                      val height = ((bytes[pos + 5].toInt() and 0x0f) shl 8) or (bytes[pos + 6].toInt() and 0xff)
+                      when ((bytes[pos + 7].toInt() ushr 4) and 0x0f) {
+                          1 -> width.toDouble() / height.coerceAtLeast(1).toDouble()
+                          2 -> 4.0 / 3.0
+                          3 -> 16.0 / 9.0
+                          4 -> 2.21
+                          else -> null
+                      }
+                  }
+                  VideoCodecKind.AVC -> findNal(bytes, 7)?.let(::parseAvcSpsDimensions)?.let { dimensions ->
+                      dimensions.width.toDouble() * dimensions.sarWidth.toDouble() /
+                          (dimensions.height.toDouble() * dimensions.sarHeight.toDouble())
+                  }
+              }
+          }
+'''
+          if old not in s:
+              raise SystemExit('expected displayAspectRatio block not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          git diff --check
+          git config user.name 'OpenAI Codex'
+          git config user.email 'codex@openai.com'
+          git add tis/src/com/maleicacid/tvinput/tis/PlaybackPipeline.kt
+          git commit -m 'fix(tis): use block body for display aspect parser'
+          git push origin HEAD:agent/implement-tis-arib-si-design-pr53
