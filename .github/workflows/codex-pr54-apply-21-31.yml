@@ -1,0 +1,60 @@
+name: Apply PR54 BS scan and audio metadata fixes
+
+on:
+  push:
+    branches: [codex/pr54-apply-20260902]
+    paths: [.github/workflows/codex-pr54-apply-21-31.yml]
+
+permissions:
+  contents: write
+
+env:
+  EXPECTED_TARGET_SHA: 9b3ed7440a923ff861b7ff19cf03a0490677b015
+  TARGET_BRANCH: agent/implement-tis-arib-si-design-pr53
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/pr54-apply-20260902
+          path: staging
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 2
+          path: target
+      - name: Apply and push
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd target
+          test "$(git rev-parse HEAD)" = "$EXPECTED_TARGET_SHA"
+          python3 ../staging/codex_apply_pr54_31.py
+          python3 ../staging/codex_apply_pr54_21.py
+          git diff --check
+          git status --short
+          git config user.name maleicacid
+          git config user.email 4982384+kazuki0824@users.noreply.github.com
+          git add \
+            ARIB_SI_EPG_TvProvider投影方針.md \
+            開発規則.md \
+            arib_si_engine_rs/DESIGN_JA.md \
+            arib_si_engine_rs/schema/program_provider_data_v1.schema.json \
+            arib_si_engine_rs/src/lib.rs \
+            arib_si_engine_rs/src/provider_data.rs \
+            tis/DESIGN_JA.md \
+            tis/src/com/maleicacid/tvinput/aribsi/NativeAribSiParser.kt \
+            tis/src/com/maleicacid/tvinput/aribsi/ProviderDataBridge.kt \
+            tis/src/com/maleicacid/tvinput/aribsi/SiModels.kt \
+            tis/src/com/maleicacid/tvinput/tis/ChannelScanController.kt \
+            tis/src/com/maleicacid/tvinput/tis/MaleicacidLiveSession.kt \
+            tis/src/com/maleicacid/tvinput/tis/ScanPlan.kt \
+            tis/src/com/maleicacid/tvinput/tis/TunerController.kt \
+            tis/src/com/maleicacid/tvinput/tis/TunerSelectionPolicy.kt \
+            tis/tests/src/com/maleicacid/tvinput/tis/TisR51FixedPlanAcceptanceTest.kt \
+            tis/tests/src/com/maleicacid/tvinput/tis/TvProviderWriterProgramsTest.kt
+          git diff --cached --check
+          git commit -m 'fix(tis): align BS discovery and ARIB audio metadata'
+          git push origin HEAD:"$TARGET_BRANCH"
