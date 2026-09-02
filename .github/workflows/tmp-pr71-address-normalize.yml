@@ -51,7 +51,7 @@ jobs:
               s=s.replace(marker,insert+marker,1)
           start=s.index('def _resolved_region_addresses(query: str) -> list[str]:\n')
           end=s.index('\n\ndef _channels_for_address', start)
-          replacement='''def _resolved_region_addresses(query: str) -> list[str]:\n    value = query.strip()\n    if value.lower().startswith("postal:"):\n        return _postal_addresses(value.split(":", 1)[1])\n    if re.fullmatch(r"\\d{3}-?\\d{4}", value):\n        return _postal_addresses(value)\n    if value.lower().startswith("latlon:"):\n        return [_coordinate_address(value)]\n    if re.fullmatch(r"[+-]?\\d+(?:\\.\\d+)?\\s*,\\s*[+-]?\\d+(?:\\.\\d+)?", value):\n        return [_coordinate_address(value)]\n    if any(prefecture in value for prefecture in JAPAN_PREFECTURES):\n        return [_normalize_address(value)]\n    return [_geocoded_address(value)]\n'''
+          replacement='''def _resolved_region_addresses(query: str) -> list[str]:\n    value = query.strip()\n    if value.lower().startswith("postal:"):\n        return _postal_addresses(value.split(":", 1)[1])\n    if re.fullmatch(r"\\d{3}-?\\d{4}", value):\n        return _postal_addresses(value)\n    if value.lower().startswith("latlon:"):\n        return [_coordinate_address(value)]\n    if re.fullmatch(r"[+-]?\\d+(?:\\.\\d+)?\\s*,\\s*[+-]?\\d+(?:\\.\\d+)?", value):\n        return [_coordinate_address(value)]\n    if value in JAPAN_PREFECTURES:\n        return [value]\n    if any(prefecture in value for prefecture in JAPAN_PREFECTURES):\n        return [_normalize_address(value)]\n    return [_geocoded_address(value)]\n'''
           s=s[:start]+replacement+s[end:]
           p.write_text(s)
 
