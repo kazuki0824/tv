@@ -3,6 +3,8 @@ from typing import Any
 from xml.sax.saxutils import escape
 from .model import FRONTEND_ID, validate_profile
 
+RECORD_FILTER_FMQ_PROBE_VARIANT = "record-filter-fmq"
+
 
 def _frontend_xml(profile: dict[str, Any]) -> str:
     fe = profile["frontend"]
@@ -37,9 +39,13 @@ def render_xml(profile: dict[str, Any]) -> str:
         data_flows.append(f'    <scan frontendConnection="{frontend_id}"/>')
     if flows["record"]["enabled"]:
         pid = int(flows["record"]["pid"])
+        record_filter_uses_fmq = (
+            profile["vts"].get("variant", "") == RECORD_FILTER_FMQ_PROBE_VARIANT
+        )
         filters.append(
             '      <filter id="FILTER_TS_RECORD_0" mainType="TS" subType="RECORD" '
-            f'bufferSize="{int(queues["record_filter_bytes"])}" pid="{pid}" useFMQ="true">'
+            f'bufferSize="{int(queues["record_filter_bytes"])}" pid="{pid}" '
+            f'useFMQ="{"true" if record_filter_uses_fmq else "false"}">'
             '<recordFilterSettings tsIndexMask="1" scIndexType="NONE"/></filter>'
         )
         dvr_size = int(queues["record_dvr_bytes"])
