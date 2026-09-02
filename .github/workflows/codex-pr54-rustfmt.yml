@@ -1,0 +1,41 @@
+name: Format PR54 Rust changes
+
+on:
+  push:
+    branches:
+      - codex/pr54-apply-20260902
+    paths:
+      - .github/workflows/codex-pr54-rustfmt.yml
+
+permissions:
+  contents: write
+
+env:
+  RUST_TOOLCHAIN: 1.81.0
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/implement-tis-arib-si-design-pr53
+          fetch-depth: 0
+      - run: test "$(git rev-parse HEAD)" = "6f638daa90f315dfb689e7345947651db7d62e76"
+      - run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
+      - working-directory: arib_si_engine_rs/host_ci
+        run: cargo +"$RUST_TOOLCHAIN" fmt --all
+      - working-directory: tis/host_ci/caption
+        run: cargo +"$RUST_TOOLCHAIN" fmt --all
+      - name: Commit formatting only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          test -n "$(git status --porcelain)"
+          git config user.name 'OpenAI Codex'
+          git config user.email 'codex@openai.com'
+          git add arib_si_engine_rs/src/descriptors.rs arib_si_engine_rs/src/lib.rs tis/arib_caption_jni/src/lib.rs
+          git diff --cached --check
+          git commit -m 'style: apply Rust 1.81 formatting'
+          git push origin HEAD:agent/implement-tis-arib-si-design-pr53
