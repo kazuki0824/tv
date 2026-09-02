@@ -1,0 +1,18 @@
+name: tmp-pr71-coordinate-migrate
+
+on:
+  push:
+    branches:
+      - fix/tuner-hal2-vts-auto-region
+
+permissions:
+  contents: write
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tuner-hal2-vts-auto-region
+      - run: echo coordinate-migration-runner-ok
