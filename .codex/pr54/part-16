@@ -1,0 +1,97 @@
+             add(TisTrack(TunerSelectionPolicy.trackIdForVideo(stream), android.media.tv.TvTrackInfo.TYPE_VIDEO, stream.elementaryPid, stream.streamType, stream.componentTag, stream.componentType, stream.languageCodes.firstOrNull()))
+         }
+-        streams.filter { TunerSelectionPolicy.isSupportedAudioStreamType(it.streamType) }.forEach { stream ->
++        TunerSelectionPolicy.orderedAudioStreams(streams, defaultComponentGroupTags).forEach { stream ->
+             add(TisTrack(TunerSelectionPolicy.trackIdForAudio(stream), android.media.tv.TvTrackInfo.TYPE_AUDIO, stream.elementaryPid, stream.streamType, stream.componentTag, stream.componentType, stream.languageCodes.firstOrNull()))
+         }
+-        streams.filter(TunerSelectionPolicy::isCaptionStream).forEach { stream ->
+-            add(TisTrack(TunerSelectionPolicy.trackIdForSubtitle(stream), android.media.tv.TvTrackInfo.TYPE_SUBTITLE, stream.elementaryPid, stream.streamType, stream.componentTag, stream.componentType, stream.languageCodes.firstOrNull(), stream.dataComponentId, TunerSelectionPolicy.captionKind(stream)))
++        addAll(captionTracksFor(streams, defaultComponentGroupTags))
++    }
++
++    private fun captionTracksFor(streams: List<AribElementaryStream>, defaultComponentGroupTags: Set<Int>? = null): List<TisTrack> = buildList {
++        TunerSelectionPolicy.orderedCaptionStreams(streams, defaultComponentGroupTags).forEach { stream ->
++            val languages = stream.languageCodes.take(2)
++            if (languages.isEmpty()) {
++                add(TisTrack(TunerSelectionPolicy.trackIdForSubtitle(stream, 1), android.media.tv.TvTrackInfo.TYPE_SUBTITLE, stream.elementaryPid, stream.streamType, stream.componentTag, stream.componentType, null, stream.dataComponentId, TunerSelectionPolicy.captionKind(stream), 1))
++            } else {
++                languages.forEachIndexed { index, language ->
++                    val languageId = index + 1
++                    add(TisTrack(TunerSelectionPolicy.trackIdForSubtitle(stream, languageId), android.media.tv.TvTrackInfo.TYPE_SUBTITLE, stream.elementaryPid, stream.streamType, stream.componentTag, stream.componentType, language, stream.dataComponentId, TunerSelectionPolicy.captionKind(stream), languageId))
++                }
++            }
+         }
+     }
+ 
++    fun superimposeTrackFor(streams: List<AribElementaryStream>, defaultComponentGroupTags: Set<Int>? = null): TisTrack? =
++        TunerSelectionPolicy.selectSuperimpose(streams, defaultComponentGroupTags)?.let { stream ->
++            TisTrack(TunerSelectionPolicy.trackIdForSuperimpose(stream), android.media.tv.TvTrackInfo.TYPE_SUBTITLE, stream.elementaryPid, stream.streamType, stream.componentTag, stream.componentType, stream.languageCodes.firstOrNull(), stream.dataComponentId, "superimpose", 1)
++        }
++
+     fun startPlayback(selection: AvStreamSelection): PlaybackPipeline.StartResult? {
+         val channel = currentTune ?: return null
+         val tunerInstance = tuner ?: return null
+         return playbackPipeline.start(tunerInstance, channel, selection)
+     }
+ 
+-    fun setOnSubtitlePesCallback(callback: (String, ByteArray, CaptionTimestamp) -> Unit) {
++    fun setOnSubtitlePesCallback(callback: (Long, String, ByteArray, CaptionTimestamp) -> Unit) {
+         playbackPipeline.setOnSubtitlePesCallback(callback)
+     }
+ 
+diff --git a/tis/src/com/maleicacid/tvinput/tis/TunerSelectionPolicy.kt b/tis/src/com/maleicacid/tvinput/tis/TunerSelectionPolicy.kt
+index 19e024e..735ebee 100644
+--- a/tis/src/com/maleicacid/tvinput/tis/TunerSelectionPolicy.kt
++++ b/tis/src/com/maleicacid/tvinput/tis/TunerSelectionPolicy.kt
+@@ -13,8 +13,17 @@ object TunerSelectionPolicy {
+ 
+     fun isSupportedVideoStreamType(streamType: Int): Boolean = streamType in videoStreamTypes
+     fun isSupportedAudioStreamType(streamType: Int): Boolean = streamType in audioStreamTypes
+-    fun selectVideo(streams: List<AribElementaryStream>): AribElementaryStream? =
+-        streams.firstOrNull { isSupportedVideoStreamType(it.streamType) }
++    fun selectVideo(streams: List<AribElementaryStream>, componentGroupTags: Set<Int>? = null): AribElementaryStream? =
++        selectDefault(streams.filter { isSupportedVideoStreamType(it.streamType) }, DEFAULT_VIDEO_COMPONENT_TAG, componentGroupTags)
++
++    fun selectAudio(streams: List<AribElementaryStream>, componentGroupTags: Set<Int>? = null): AribElementaryStream? =
++        selectDefault(streams.filter { isSupportedAudioStreamType(it.streamType) }, DEFAULT_AUDIO_COMPONENT_TAG, componentGroupTags)
++
++    fun selectCaption(streams: List<AribElementaryStream>, componentGroupTags: Set<Int>? = null): AribElementaryStream? =
++        selectDefault(streams.filter(::isCaptionStream), DEFAULT_CAPTION_COMPONENT_TAG, componentGroupTags)
++
++    fun selectSuperimpose(streams: List<AribElementaryStream>, componentGroupTags: Set<Int>? = null): AribElementaryStream? =
++        selectDefault(streams.filter(::isSuperimposeStream), DEFAULT_SUPERIMPOSE_COMPONENT_TAG, componentGroupTags)
+ 
+     fun hasSupportedVideo(streams: List<AribElementaryStream>): Boolean =
+         streams.any { isSupportedVideoStreamType(it.streamType) }
+@@ -23,11 +32,18 @@ object TunerSelectionPolicy {
+     fun trackIdForAudio(stream: AribElementaryStream): String =
+         stream.componentTag?.let { "audio:${stream.elementaryPid}:$it" } ?: "audio:${stream.elementaryPid}"
+ 
+-    fun trackIdForSubtitle(stream: AribElementaryStream): String =
+-        stream.componentTag?.let { "subtitle:${stream.elementaryPid}:$it" } ?: "subtitle:${stream.elementaryPid}"
++    fun trackIdForSubtitle(stream: AribElementaryStream, languageId: Int = 1): String {
++        val base = stream.componentTag?.let { "subtitle:${stream.elementaryPid}:$it" } ?: "subtitle:${stream.elementaryPid}"
++        return "$base:lang$languageId"
++    }
++
++    fun trackIdForSuperimpose(stream: AribElementaryStream): String =
++        stream.componentTag?.let { "superimpose:${stream.elementaryPid}:$it" } ?: "superimpose:${stream.elementaryPid}"
++
++    fun isSuperimposeStream(stream: AribElementaryStream): Boolean = stream.isSuperimpose
+ 
+     fun isCaptionStream(stream: AribElementaryStream): Boolean =
+-        stream.isCaption || stream.dataComponentId in captionDataComponentIds
++        !stream.isSuperimpose && (stream.isCaption || stream.dataComponentId in captionDataComponentIds)
+ 
+     fun captionKind(stream: AribElementaryStream): String = when {
+         stream.isSuperimpose -> "superimpose"
+@@ -38,10 +54,47 @@ object TunerSelectionPolicy {
+     fun isCs110SelectorAllowed(satelliteBand: String?, selector: StreamSelector): Boolean =
+         satelliteBand != "110CS" || selector.type == StreamSelectorType.NONE
+ 
++    private fun selectDefault(
++        candidates: List<AribElementaryStream>,
++        defaultComponentTag: Int,
++        componentGroupTags: Set<Int>?,
++    ): AribElementaryStream? {
++        val grouped = componentGroupTags
