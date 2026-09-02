@@ -1,0 +1,135 @@
+             val imageCount = buffer.getInt()
+-            if (ptsMillis < 0L || durationRaw < -1L || imageCount !in 0..MAX_IMAGES_PER_FRAME) return null
++            if ((ptsMillis < 0L && ptsMillis != NO_PTS_SENTINEL) || durationRaw < -1L || imageCount !in 0..MAX_IMAGES_PER_FRAME) return null
+             val images = ArrayList<RenderedCaptionImage>(imageCount)
+             repeat(imageCount) {
+                 if (buffer.remaining() < IMAGE_HEADER_BYTES) return null
+@@ -101,7 +105,7 @@ class NativeAribCaptionRenderer(
+             }
+             if (buffer.hasRemaining()) return null
+             return RenderedCaptionFrame(
+-                ptsMillis = ptsMillis,
++                ptsMillis = ptsMillis.takeUnless { it == NO_PTS_SENTINEL },
+                 durationMillis = durationRaw.takeIf { it >= 0L },
+                 images = images,
+             )
+diff --git a/tis/src/com/maleicacid/tvinput/aribsi/NativeAribSiParser.kt b/tis/src/com/maleicacid/tvinput/aribsi/NativeAribSiParser.kt
+index 1d04ef1..a46e8df 100644
+--- a/tis/src/com/maleicacid/tvinput/aribsi/NativeAribSiParser.kt
++++ b/tis/src/com/maleicacid/tvinput/aribsi/NativeAribSiParser.kt
+@@ -364,6 +364,7 @@ class NativeAribSiParser : AutoCloseable {
+                 contentGenres = parseContentGenres(genres.optJSONArray("content")),
+                 genreSupplementText = optStringOrNull(genres, "genreSupplementText"),
+                 eventGroups = parseEventGroups(descriptorsObj.optJSONArray("eventGroups")),
++                componentGroups = parseComponentGroups(descriptorsObj.optJSONArray("componentGroups")),
+                 linkage = parseLinkage(descriptorsObj.optJSONArray("linkage")),
+                 scrambled = if (freeCaMode.isNull("scrambled")) null else freeCaMode.optBoolean("scrambled"),
+                 freeCaMode = parseFreeCaMode(freeCaMode),
+@@ -437,6 +438,29 @@ class NativeAribSiParser : AutoCloseable {
+         )
+     }
+ 
++private fun parseComponentGroups(array: JSONArray?): List<AribComponentGroupDescriptor> =
++    (0 until (array?.length() ?: 0)).mapNotNull { index ->
++        val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
++        val type = obj.optInt("componentGroupType", -1)
++        if (type !in 0..7) return@mapNotNull null
++        val groupsArray = obj.optJSONArray("groups")
++        val groups = (0 until (groupsArray?.length() ?: 0)).mapNotNull { groupIndex ->
++            val group = groupsArray!!.optJSONObject(groupIndex) ?: return@mapNotNull null
++            val id = group.optInt("componentGroupId", -1)
++            if (id !in 0..15) return@mapNotNull null
++            val tagsArray = group.optJSONArray("componentTags")
++            val tags = (0 until (tagsArray?.length() ?: 0)).mapNotNull { tagIndex ->
++                tagsArray!!.optInt(tagIndex, -1).takeIf { it in 0..0xff }
++            }
++            AribComponentGroup(componentGroupId = id, componentTags = tags)
++        }
++        AribComponentGroupDescriptor(
++            componentGroupType = type,
++            groups = groups,
++            parseStatus = obj.optString("parseStatus", "OK"),
++        )
++    }
++
+ private fun parseEventGroupReferences(array: JSONArray?): List<AribEventGroupReference> =
+     (0 until (array?.length() ?: 0)).mapNotNull { index ->
+         val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
+diff --git a/tis/src/com/maleicacid/tvinput/aribsi/SectionIngestController.kt b/tis/src/com/maleicacid/tvinput/aribsi/SectionIngestController.kt
+index 2e32322..d58ad98 100644
+--- a/tis/src/com/maleicacid/tvinput/aribsi/SectionIngestController.kt
++++ b/tis/src/com/maleicacid/tvinput/aribsi/SectionIngestController.kt
+@@ -37,6 +37,7 @@ class SectionIngestController(private val engine: AribSiEngine) {
+         return result
+     }
+ 
++    @Synchronized
+     fun diagnostics(): List<SectionIngestCounter> = counters.map { (key, value) ->
+         SectionIngestCounter(
+             pid = key.first,
+@@ -53,6 +54,7 @@ class SectionIngestController(private val engine: AribSiEngine) {
+         "pid=${c.pid.value} table=${c.tableId} status=${c.status} ok=${c.acceptedCount} crc=${c.crcMismatchCount} malformed=${c.malformedCount} lastError=${c.lastErrorTimeMillis}"
+     }
+ 
++    @Synchronized
+     private fun record(pid: TsPid, tableId: Int, status: Int) {
+         val counter = counters.getOrPut(Triple(pid, tableId, status)) { MutableCounter() }
+         when (statusBucketForTest(status)) {
+diff --git a/tis/src/com/maleicacid/tvinput/aribsi/SiModels.kt b/tis/src/com/maleicacid/tvinput/aribsi/SiModels.kt
+index 2d55af4..3869c8a 100644
+--- a/tis/src/com/maleicacid/tvinput/aribsi/SiModels.kt
++++ b/tis/src/com/maleicacid/tvinput/aribsi/SiModels.kt
+@@ -154,6 +154,17 @@ data class AribEventGroup(
+     val parseStatus: String = "OK",
+ )
+ 
++data class AribComponentGroup(
++    val componentGroupId: Int,
++    val componentTags: List<Int> = emptyList(),
++)
++
++data class AribComponentGroupDescriptor(
++    val componentGroupType: Int,
++    val groups: List<AribComponentGroup> = emptyList(),
++    val parseStatus: String = "OK",
++)
++
+ data class AribLinkage(
+     val linkageType: Int,
+     val serviceKey: ServiceKey,
+@@ -235,6 +246,7 @@ data class AribEventDescriptors(
+     val broadcastGenre: String? = null,
+     val genreSupplementText: String? = null,
+     val eventGroups: List<AribEventGroup> = emptyList(),
++    val componentGroups: List<AribComponentGroupDescriptor> = emptyList(),
+     val linkage: List<AribLinkage> = emptyList(),
+     val scrambled: Boolean? = null,
+     val freeCaMode: AribFreeCaMode? = null,
+diff --git a/tis/src/com/maleicacid/tvinput/tis/AribCaptionController.kt b/tis/src/com/maleicacid/tvinput/tis/AribCaptionController.kt
+index 5ceef67..1730b43 100644
+--- a/tis/src/com/maleicacid/tvinput/tis/AribCaptionController.kt
++++ b/tis/src/com/maleicacid/tvinput/tis/AribCaptionController.kt
+@@ -15,10 +15,12 @@ import java.util.concurrent.Executors
+ import java.util.concurrent.atomic.AtomicBoolean
+ import java.util.concurrent.atomic.AtomicLong
+ 
+-/** ARIB字幕のnative generation、MediaSync時刻、RGBA overlayを直列化する。 */
++/** ARIB字幕/文字スーパーのnative generation、表示時刻、RGBA overlayを直列化する。 */
+ class AribCaptionController(
+     private val overlayView: CaptionOverlayView,
+     private val mediaClock: () -> PlaybackPipeline.MediaClockSnapshot?,
++    private val overlayLayerId: String = "caption",
++    private val allowNoPts: Boolean = false,
+ ) : AutoCloseable {
+     data class CaptionViewport(
+         val overlayWidthPx: Int,
+@@ -48,7 +50,7 @@ class AribCaptionController(
+ 
+     @Volatile private var executorThread: Thread? = null
+     private val executor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
+-        Thread(runnable, "maleicacid-subtitle").also { thread ->
++        Thread(runnable, "maleicacid-subtitle-$overlayLayerId").also { thread ->
+             thread.isDaemon = true
+             executorThread = thread
+         }
+@@ -68,6 +70,7 @@ class AribCaptionController(
