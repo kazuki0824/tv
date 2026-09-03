@@ -3,8 +3,10 @@ members = [
     "common",
     "compile_contract",
     "control",
+    "demux",
     "descrambler",
     "device",
+    "fmq",
     "lnb",
     "resource_ledger",
 ]
