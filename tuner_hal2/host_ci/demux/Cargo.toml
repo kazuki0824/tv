@@ -1,0 +1,15 @@
+[package]
+name = "maleicacid-tuner-hal2-demux-host-ci"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "maleicacid_tuner_hal2_demux"
+path = "../../demux/src/lib.rs"
+
+[dependencies]
+maleicacid_tuner_hal2_common = { package = "maleicacid-tuner-hal2-common-host-ci", path = "../common" }
+maleicacid_tuner_hal2_control_core = { package = "maleicacid-tuner-hal2-control-host-ci", path = "../control" }
+maleicacid_tuner_hal2_descrambler = { package = "maleicacid-tuner-hal2-descrambler-host-ci", path = "../descrambler" }
+maleicacid_tuner_hal2_fmq = { package = "maleicacid-tuner-hal2-fmq-host-ci", path = "../fmq" }
