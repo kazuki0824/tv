@@ -1,9 +1,7 @@
 from __future__ import annotations
 from typing import Any
 from xml.sax.saxutils import escape
-from .model import FRONTEND_ID, validate_profile
-
-RECORD_FILTER_FMQ_PROBE_VARIANT = "record-filter-fmq"
+from .model import FRONTEND_ID, RECORD_FILTER_FMQ_PROBE_VARIANT, validate_profile
 
 
 def _frontend_xml(profile: dict[str, Any]) -> str:
