@@ -34,7 +34,10 @@ impl FmqQueue {
     }
 
     pub fn read_into(&self, data: &mut [u8]) -> Result<usize, FmqQueueError> {
-        let mut bytes = self.bytes.lock().map_err(|_| FmqQueueError::NativeReadZero)?;
+        let mut bytes = self
+            .bytes
+            .lock()
+            .map_err(|_| FmqQueueError::NativeReadZero)?;
         let count = data.len().min(bytes.len());
         for slot in data.iter_mut().take(count) {
             *slot = bytes.pop_front().ok_or(FmqQueueError::NativeReadZero)?;
@@ -43,7 +46,10 @@ impl FmqQueue {
     }
 
     pub fn write_checked(&self, data: &[u8]) -> Result<usize, FmqQueueError> {
-        let mut bytes = self.bytes.lock().map_err(|_| FmqQueueError::NativeWriteFailed)?;
+        let mut bytes = self
+            .bytes
+            .lock()
+            .map_err(|_| FmqQueueError::NativeWriteFailed)?;
         if data.len() > self.capacity.saturating_sub(bytes.len()) {
             return Err(FmqQueueError::NativeWriteFailed);
         }
