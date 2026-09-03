@@ -16,6 +16,7 @@ jobs:
         run: |
           mkdir out
           cp helper/codex_apply_pr54_review_core.py out/
+          cp helper/codex_apply_pr54_review_remaining.py out/
           cp helper/codex_apply_pr54_review_remaining_fixed5.py out/
       - uses: actions/upload-artifact@v4
         with:
