@@ -9,6 +9,7 @@ from typing import Any
 from .model import ProfileError
 
 DEFAULT_CAPABILITY_SOURCE = Path("tuner_hal2/service_runtime/src/capability_snapshot.rs")
+DEFAULT_FILTER_CONFIG_SOURCE = Path("tuner_hal2/demux/src/config.rs")
 DEFAULT_PES_SOURCE = Path("tuner_hal2/demux/src/parser/ts_core.rs")
 
 
@@ -37,7 +38,12 @@ def _i32_buffer(value: Any, name: str) -> int:
     return value
 
 
-def _program(profile: dict[str, Any], capability_source: Path, pes_max: int) -> str:
+def _program(
+    profile: dict[str, Any],
+    capability_source: Path,
+    pes_max: int,
+    filter_config_source: Path = DEFAULT_FILTER_CONFIG_SOURCE,
+) -> str:
     flows = profile["flows"]
     queues = profile["queues"]
     record = flows["record"]["enabled"]
@@ -63,7 +69,8 @@ def _program(profile: dict[str, Any], capability_source: Path, pes_max: int) -> 
         ])
     demux_demand = 1 if record or live else 0
     operations = "\n        ".join(lines)
-    source = str(capability_source.resolve()).replace("\\", "\\\\")
+    capability = str(capability_source.resolve()).replace("\\", "\\\\")
+    filter_config = str(filter_config_source.resolve()).replace("\\", "\\\\")
     return f'''extern crate self as maleicacid_tuner_hal2_common;
 extern crate self as maleicacid_tuner_hal2_demux;
 
@@ -81,21 +88,34 @@ impl HalError {{
     pub fn out_of_memory(_domain: impl Into<String>, _detail: impl Into<String>) -> Self {{ Self }}
 }}
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DvrKind {{ Record, Playback }}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FilterOpenType {{ TsRaw, TsRecord, TsSection, TsAudio, TsVideo, TsPes, TsPcr }}
-impl FilterOpenType {{
-    pub const fn has_filter_fmq(self) -> bool {{
-        matches!(self, Self::TsRaw | Self::TsSection | Self::TsPes | Self::TsRecord)
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct TransportStreamPid(i32);
+impl TransportStreamPid {{
+    pub fn validate_i32(value: i32) -> Result<Self, ()> {{
+        if (0..=0x1fff).contains(&value) {{ Ok(Self(value)) }} else {{ Err(()) }}
     }}
-    pub const fn uses_filter_fmq_for_payload(self) -> bool {{
-        matches!(self, Self::TsRaw | Self::TsSection | Self::TsPes)
+    pub const fn to_i32_for_aidl_boundary(self) -> i32 {{ self.0 }}
+}}
+
+pub mod packet_pipeline {{
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub enum PipelineOpenKind {{ Raw, Pcr, Record, Section, Pes, Av, Other }}
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct FilterPipelineConfig {{
+        pub tpid: Option<i32>,
+        pub raw: bool,
+        pub record_index: Option<crate::production_demux_config::RecordIndexSettings>,
     }}
 }}
+
+mod production_demux_config {{ include!(r#"{filter_config}"#); }}
+pub use production_demux_config::FilterOpenType;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DvrKind {{ Record, Playback }}
 pub const MAX_PES_BUFFER_BYTES: usize = {pes_max};
 
-mod production {{ include!(r#"{source}"#); }}
+mod production {{ include!(r#"{capability}"#); }}
 use production::{{CapacityLedger, CapabilitySnapshot}};
 
 fn debug_error(error: HalError) -> String {{ format!("{{error:?}}") }}
@@ -128,17 +148,23 @@ def validate_resource_closure(
     profile: dict[str, Any],
     *,
     capability_source: Path = DEFAULT_CAPABILITY_SOURCE,
+    filter_config_source: Path = DEFAULT_FILTER_CONFIG_SOURCE,
     pes_source: Path = DEFAULT_PES_SOURCE,
     rustc: str = "rustc",
 ) -> None:
     if not capability_source.is_file():
         raise ProfileError(f"capability source is missing: {capability_source}")
+    if not filter_config_source.is_file():
+        raise ProfileError(f"filter config source is missing: {filter_config_source}")
     pes_max = _pes_max_bytes(pes_source)
     with tempfile.TemporaryDirectory(prefix="tuner-hal2-vts-closure-") as directory:
         directory_path = Path(directory)
         source = directory_path / "main.rs"
         binary = directory_path / "closure-check"
-        source.write_text(_program(profile, capability_source, pes_max), encoding="utf-8")
+        source.write_text(
+            _program(profile, capability_source, pes_max, filter_config_source),
+            encoding="utf-8",
+        )
         compiled = subprocess.run(
             [rustc, "--edition=2021", "-O", str(source), "-o", str(binary)],
             check=False, capture_output=True, text=True,
