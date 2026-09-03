@@ -1,0 +1,24 @@
+name: Package PR54 source snapshot
+on:
+  push:
+    branches: [codex/pr54-source-snapshot-20260903]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 161f41516cff83057979e5031723509ed4adbf5b
+          path: source
+      - name: Verify fixed source SHA
+        run: test "$(git -C source rev-parse HEAD)" = "161f41516cff83057979e5031723509ed4adbf5b"
+      - name: Package source tree
+        run: tar -C source --exclude=.git -czf pr54-source-161f415.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr54-source-161f415
+          path: pr54-source-161f415.tar.gz
+          if-no-files-found: error
+          retention-days: 1
