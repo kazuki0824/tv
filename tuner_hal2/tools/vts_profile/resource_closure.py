@@ -8,9 +8,10 @@ from typing import Any
 
 from .model import ProfileError
 
-DEFAULT_CAPABILITY_SOURCE = Path("tuner_hal2/service_runtime/src/capability_snapshot.rs")
-DEFAULT_FILTER_CONFIG_SOURCE = Path("tuner_hal2/demux/src/config.rs")
-DEFAULT_PES_SOURCE = Path("tuner_hal2/demux/src/parser/ts_core.rs")
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_CAPABILITY_SOURCE = _REPO_ROOT / "tuner_hal2/service_runtime/src/capability_snapshot.rs"
+DEFAULT_FILTER_CONFIG_SOURCE = _REPO_ROOT / "tuner_hal2/demux/src/config.rs"
+DEFAULT_PES_SOURCE = _REPO_ROOT / "tuner_hal2/demux/src/parser/ts_core.rs"
 
 
 def _pes_max_bytes(path: Path) -> int:
@@ -36,6 +37,13 @@ def _i32_buffer(value: Any, name: str) -> int:
     if value <= 0 or value > 0x7FFF_FFFF:
         raise ProfileError(f"{name} must fit the positive AIDL i32 buffer-size domain")
     return value
+
+
+def _read_filter_config_source(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ProfileError(f"failed to read filter config source {path}: {exc}") from exc
 
 
 def _program(
@@ -70,7 +78,7 @@ def _program(
     demux_demand = 1 if record or live else 0
     operations = "\n        ".join(lines)
     capability = str(capability_source.resolve()).replace("\\", "\\\\")
-    filter_config = str(filter_config_source.resolve()).replace("\\", "\\\\")
+    filter_config_text = _read_filter_config_source(filter_config_source)
     return f'''extern crate self as maleicacid_tuner_hal2_common;
 extern crate self as maleicacid_tuner_hal2_demux;
 
@@ -108,7 +116,9 @@ pub mod packet_pipeline {{
     }}
 }}
 
-mod production_demux_config {{ include!(r#"{filter_config}"#); }}
+mod production_demux_config {{
+{filter_config_text}
+}}
 pub use production_demux_config::FilterOpenType;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
