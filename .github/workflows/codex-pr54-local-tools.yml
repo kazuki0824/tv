@@ -1,0 +1,27 @@
+name: Package PR54 local verification tools
+on:
+  push:
+    branches: [codex/pr54-source-snapshot-20260903]
+permissions:
+  contents: read
+jobs:
+  tools:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust 1.81
+        run: rustup toolchain install 1.81.0 --profile minimal --component rustfmt
+      - name: Download Kotlin and Android/JUnit jars
+        run: |
+          mkdir -p bundle
+          curl --fail --location --retry 3 --retry-all-errors https://github.com/JetBrains/kotlin/releases/download/v1.9.22/kotlin-compiler-1.9.22.zip -o bundle/kotlin-compiler-1.9.22.zip
+          curl --fail --location --retry 3 --retry-all-errors https://repo.maven.apache.org/maven2/org/robolectric/android-all/14-robolectric-10818077/android-all-14-robolectric-10818077.jar -o bundle/android-all.jar
+          curl --fail --location --retry 3 --retry-all-errors https://repo.maven.apache.org/maven2/junit/junit/4.13.2/junit-4.13.2.jar -o bundle/junit.jar
+          curl --fail --location --retry 3 --retry-all-errors https://repo.maven.apache.org/maven2/org/hamcrest/hamcrest-core/1.3/hamcrest-core-1.3.jar -o bundle/hamcrest-core.jar
+          tar -C "$HOME/.rustup/toolchains" -cJf bundle/rust-1.81.0-toolchain.tar.xz 1.81.0-x86_64-unknown-linux-gnu
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr54-local-verification-tools
+          path: bundle/*
+          if-no-files-found: error
+          retention-days: 1
