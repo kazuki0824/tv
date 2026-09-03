@@ -1,0 +1,33 @@
+name: Verify PR54 remaining review fixes
+on:
+  push:
+    branches: [codex/pr54-apply-20260902]
+permissions:
+  contents: write
+jobs:
+  verify-and-push:
+    runs-on: ubuntu-24.04
+    env:
+      EXPECTED_TARGET_SHA: 161f41516cff83057979e5031723509ed4adbf5b
+      TARGET_BRANCH: agent/implement-tis-arib-si-design-pr53
+      RUST_TOOLCHAIN: 1.81.0
+      KOTLIN_VERSION: 1.9.22
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/pr54-apply-20260902
+          path: staging
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/implement-tis-arib-si-design-pr53
+          fetch-depth: 2
+          path: target
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Rust 1.81
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
+      - name: Apply, verify, commit and push
+        shell: bash --noprofile --norc -e -o pipefail {0}
+        run: bash staging/codex_verify_pr54_review_remaining.sh "$GITHUB_WORKSPACE/target"
