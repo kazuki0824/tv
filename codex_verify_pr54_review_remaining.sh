@@ -9,7 +9,7 @@ STAGING_DIR=$(cd "$(dirname "$0")" && pwd)
 cd "$TARGET_DIR"
 test "$(git rev-parse HEAD)" = "$EXPECTED_TARGET_SHA"
 python3 "$STAGING_DIR/codex_apply_pr54_review_core.py"
-python3 "$STAGING_DIR/codex_apply_pr54_review_remaining_fixed.py"
+python3 "$STAGING_DIR/codex_apply_pr54_review_remaining_fixed2.py"
 cargo +"$RUST_TOOLCHAIN" fmt --manifest-path arib_si_engine_rs/host_ci/Cargo.toml
 git diff --check
 cargo +"$RUST_TOOLCHAIN" check --locked --manifest-path arib_si_engine_rs/host_ci/Cargo.toml
@@ -59,17 +59,12 @@ python3 - <<'PY'
 from pathlib import Path
 from xml.etree import ElementTree
 for p in sorted(Path('tis').rglob('*.xml')): ElementTree.parse(p)
-scan=Path('tis/src/com/maleicacid/tvinput/tis/ScanPlan.kt').read_text()
-assert 'TransportStreamId16(18803)' in scan
+scan=Path('tis/src/com/maleicacid/tvinput/tis/ScanPlan.kt').read_text(); assert 'TransportStreamId16(18803)' in scan
 playback=Path('tis/src/com/maleicacid/tvinput/tis/PlaybackPipeline.kt').read_text()
-for token in ('3 -> AudioFormat.CHANNEL_OUT_STEREO or AudioFormat.CHANNEL_OUT_FRONT_CENTER','4 -> AudioFormat.CHANNEL_OUT_QUAD','5 -> AudioFormat.CHANNEL_OUT_QUAD or AudioFormat.CHANNEL_OUT_FRONT_CENTER'):
-    assert token in playback
-manager=Path('tis/src/com/maleicacid/tvinput/tis/ChannelScanManager.kt').read_text()
-assert 'committedServiceKeys.containsAll(requiredTargetKeys)' in manager
-service=Path('arib_si_engine_rs/src/service_discovery.rs').read_text()
-assert 'caption_timing' in service and 'matches!(timing, 0x00 | 0x02)' in service
-session=Path('tis/src/com/maleicacid/tvinput/tis/MaleicacidLiveSession.kt').read_text()
-assert 'captionSelectors' in session and 'setDescription' in session
+for token in ('3 -> AudioFormat.CHANNEL_OUT_STEREO or AudioFormat.CHANNEL_OUT_FRONT_CENTER','4 -> AudioFormat.CHANNEL_OUT_QUAD','5 -> AudioFormat.CHANNEL_OUT_QUAD or AudioFormat.CHANNEL_OUT_FRONT_CENTER'): assert token in playback
+manager=Path('tis/src/com/maleicacid/tvinput/tis/ChannelScanManager.kt').read_text(); assert 'committedServiceKeys.containsAll(requiredTargetKeys)' in manager
+service=Path('arib_si_engine_rs/src/service_discovery.rs').read_text(); assert 'caption_timing' in service and 'matches!(timing, 0x00 | 0x02)' in service
+session=Path('tis/src/com/maleicacid/tvinput/tis/MaleicacidLiveSession.kt').read_text(); assert 'captionSelectors' in session and 'setDescription' in session
 print('review contract guards OK')
 PY
 git diff --check
