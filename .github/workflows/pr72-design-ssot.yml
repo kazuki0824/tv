@@ -18,14 +18,15 @@ jobs:
         with:
           ref: fix/tuner-hal2-record-filter-fmq
           fetch-depth: 0
+
       - name: Apply RECORD Filter FMQ SSOT contract
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
-          path = Path("tuner_hal/DESIGN_JA.md")
-          text = path.read_text(encoding="utf-8")
+          public_path = Path("tuner_hal/DESIGN_JA.md")
+          text = public_path.read_text(encoding="utf-8")
 
           def replace_once(old: str, new: str, label: str) -> None:
               global text
@@ -35,12 +36,8 @@ jobs:
               text = text.replace(old, new, 1)
 
           vts_anchor = "| `linkCaps` | main type 粒度 | 広告した main type pair は VTS が生成する subtype `UNDEFINED` 接続も成功対象に含める。成功させない pair は広告しない |\n"
-          replace_once(
-              vts_anchor,
-              vts_anchor
-              + "| TS `RECORD` Filter FMQ | canonical RECORD data-flow profileは `useFMQ=false` とする。Filter FMQ descriptorを明示検査する `record-filter-fmq` probe variantだけ `useFMQ=true` を使用できる | `useFMQ=true` は `IFilter.getQueueDesc()` のdescriptor取得coverageだけを追加し、RECORD payloadの配送先をFilter FMQへ変更しない。実record payloadはRecord DVR FMQへ正確に1回だけ配送し、Filter FMQへ二重配送しない |\n",
-              "VTS RECORD row",
-          )
+          vts_row = "| TS `RECORD` Filter FMQ | canonical RECORD data-flow profileは `useFMQ=false` とする。Filter FMQ descriptorを明示検査する `record-filter-fmq` probe variantだけ `useFMQ=true` を使用できる | `useFMQ=true` は `IFilter.getQueueDesc()` のdescriptor取得coverageだけを追加し、RECORD payloadの配送先をFilter FMQへ変更しない。実record payloadはRecord DVR FMQへ正確に1回だけ配送し、Filter FMQへ二重配送しない |\n"
+          replace_once(vts_anchor, vts_anchor + vts_row, "VTS RECORD row")
 
           replace_once(
               "| `IFilter.getQueueDesc()` | open時filter種別が通常payload FMQを持つ場合、`configure()`前後を問わずopen時に確保した同一FMQ descriptorを返す | 通常payload FMQを持たないfilterは`UNAVAILABLE`とし、FMQ descriptorを後付け生成しない |",
@@ -48,23 +45,25 @@ jobs:
               "getQueueDesc contract",
           )
 
-          old_query_paragraph = "通常payload FMQを持つFilterは、未configureを理由に`getQueueDesc()`を拒否しない。Record FilterのpayloadはRecord DVR FMQへ、audio/video mediaは`MediaEvent`の共有領域またはイベント固有fdへ配送し、PCRその他callback-only eventには通常payload FMQを設けない。DVR FMQは`openDvr()`の`bufferSize`から生成し、`configure()`はしきい値等のDVR設定だけを変更する。"
-          new_query_paragraph = """Filter FMQ resourceを所有するFilterは、未configureを理由に`getQueueDesc()`を拒否しない。Filter FMQ resourceの所有とpayload data planeとしての使用は次の契約で分離する。audio/video mediaは`MediaEvent`の共有領域またはイベント固有fdへ配送し、PCRその他callback-only eventにはFilter FMQ resourceを設けない。DVR FMQは`openDvr()`の`bufferSize`から生成し、`configure()`はしきい値等のDVR設定だけを変更する。
-
-#### Filter FMQ ownership / payload data-plane 分離契約
-
-Filter FMQの「Filter objectがresourceとして所有し`IFilter.getQueueDesc()`でdescriptorをexportできること」と、「そのFMQを当該Filterのpayload data planeとして使用すること」は独立した2軸とする。resource ownershipをpayload配送能力の別名として扱わない。
-
-現行TS-only profileでは、TS `TS`（raw TS）、`SECTION`、`PES`、`RECORD` Filterがopen時にFilter FMQ resourceを所有する。これらは有効な`openFilter(type, bufferSize, callback)`の`bufferSize`をFilter FMQ byte容量として`CapabilitySnapshot.fmqRuntimeBudgetBytes`から予約し、Filter object lifetime中は同じqueue identity / descriptorを維持する。`AUDIO`、`VIDEO`、`PCR`、`UNDEFINED`はFilter FMQ resourceを所有せず、`IFilter.getQueueDesc()`は`UNAVAILABLE`とする。
-
-Filter FMQをpayload data planeとして使用するのはTS `TS`、`SECTION`、`PES`だけとする。これらのpayload commit、EventFlag wake、`DATA_READY` / `LOW_WATER` / `HIGH_WATER` / `OVERFLOW`は後段の通常Filter status契約を正とする。
-
-TS `RECORD` FilterはFilter FMQ resourceを所有しdescriptorをexportできるが、RECORD TS payloadをそのFilter FMQへ書き込まない。RECORD Filterの実payload data planeは、`RecordDvrFilterRelationTxn`でattachされたRecord DVRのRecord DVR FMQだけとし、同じ188-byte TS packetをRECORD Filter FMQとRecord DVR FMQへ二重配送してはならない。RECORD Filter FMQのread/write position、occupancy、EventFlagはRECORD payload、Record status、`record_output_byte_offset`、`DemuxFilterTsRecordEvent.byteNumber`の入力にしない。
-
-RECORDの`record_output_byte_offset`と`DemuxFilterTsRecordEvent.byteNumber`は「TS RECORD filter settings / event 固定契約」と0-S-3Bの`FilterProducerDrainGate`を正とし、Record DVR FMQへの実output commit成功時だけ実commit byte数に従って進める。Record DVR output commit失敗時、RECORD Filter FMQのdescriptor取得、Filter FMQのqueue position変化だけでは進めない。
-
-VTS/profileの`useFMQ`はこのownership/data-plane境界を変更しない。canonical RECORD data-flow profileはAOSPのRECORD経路に合わせ`useFMQ=false`とし、`record-filter-fmq` probe variantの`useFMQ=true`は`IFilter.getQueueDesc()` descriptor contractを追加検査するためだけに使用する。probe variantでもRECORD payloadの唯一のdata planeはRecord DVR FMQのままとする。"""
-          replace_once(old_query_paragraph, new_query_paragraph, "Filter FMQ ownership contract")
+          old_query = "通常payload FMQを持つFilterは、未configureを理由に`getQueueDesc()`を拒否しない。Record FilterのpayloadはRecord DVR FMQへ、audio/video mediaは`MediaEvent`の共有領域またはイベント固有fdへ配送し、PCRその他callback-only eventには通常payload FMQを設けない。DVR FMQは`openDvr()`の`bufferSize`から生成し、`configure()`はしきい値等のDVR設定だけを変更する。"
+          new_query = "\n".join([
+              "Filter FMQ resourceを所有するFilterは、未configureを理由に`getQueueDesc()`を拒否しない。Filter FMQ resourceの所有とpayload data planeとしての使用は次の契約で分離する。audio/video mediaは`MediaEvent`の共有領域またはイベント固有fdへ配送し、PCRその他callback-only eventにはFilter FMQ resourceを設けない。DVR FMQは`openDvr()`の`bufferSize`から生成し、`configure()`はしきい値等のDVR設定だけを変更する。",
+              "",
+              "#### Filter FMQ ownership / payload data-plane 分離契約",
+              "",
+              "Filter FMQの「Filter objectがresourceとして所有し`IFilter.getQueueDesc()`でdescriptorをexportできること」と、「そのFMQを当該Filterのpayload data planeとして使用すること」は独立した2軸とする。resource ownershipをpayload配送能力の別名として扱わない。",
+              "",
+              "現行TS-only profileでは、TS `TS`（raw TS）、`SECTION`、`PES`、`RECORD` Filterがopen時にFilter FMQ resourceを所有する。これらは有効な`openFilter(type, bufferSize, callback)`の`bufferSize`をFilter FMQ byte容量として`CapabilitySnapshot.fmqRuntimeBudgetBytes`から予約し、Filter object lifetime中は同じqueue identity / descriptorを維持する。`AUDIO`、`VIDEO`、`PCR`、`UNDEFINED`はFilter FMQ resourceを所有せず、`IFilter.getQueueDesc()`は`UNAVAILABLE`とする。",
+              "",
+              "Filter FMQをpayload data planeとして使用するのはTS `TS`、`SECTION`、`PES`だけとする。これらのpayload commit、EventFlag wake、`DATA_READY` / `LOW_WATER` / `HIGH_WATER` / `OVERFLOW`は後段の通常Filter status契約を正とする。",
+              "",
+              "TS `RECORD` FilterはFilter FMQ resourceを所有しdescriptorをexportできるが、RECORD TS payloadをそのFilter FMQへ書き込まない。RECORD Filterの実payload data planeは、`RecordDvrFilterRelationTxn`でattachされたRecord DVRのRecord DVR FMQだけとし、同じ188-byte TS packetをRECORD Filter FMQとRecord DVR FMQへ二重配送してはならない。RECORD Filter FMQのread/write position、occupancy、EventFlagはRECORD payload、Record status、`record_output_byte_offset`、`DemuxFilterTsRecordEvent.byteNumber`の入力にしない。",
+              "",
+              "RECORDの`record_output_byte_offset`と`DemuxFilterTsRecordEvent.byteNumber`は「TS RECORD filter settings / event 固定契約」と0-S-3Bの`FilterProducerDrainGate`を正とし、Record DVR FMQへの実output commit成功時だけ実commit byte数に従って進める。Record DVR output commit失敗時、RECORD Filter FMQのdescriptor取得、Filter FMQのqueue position変化だけでは進めない。",
+              "",
+              "VTS/profileの`useFMQ`はこのownership/data-plane境界を変更しない。canonical RECORD data-flow profileはAOSPのRECORD経路に合わせ`useFMQ=false`とし、`record-filter-fmq` probe variantの`useFMQ=true`は`IFilter.getQueueDesc()` descriptor contractを追加検査するためだけに使用する。probe variantでもRECORD payloadの唯一のdata planeはRecord DVR FMQのままとする。",
+          ])
+          replace_once(old_query, new_query, "Filter FMQ ownership contract")
 
           replace_once(
               "| TS | `RECORD` | 成功 | `record` | payloadはRecord DVR FMQ、index metadataはcallback |",
@@ -85,21 +84,29 @@ VTS/profileの`useFMQ`はこのownership/data-plane境界を変更しない。ca
           )
 
           test_anchor = "| T-AOSP-71 | `openFilter()` acceptance matrix | TSのUNDEFINED/SECTION/PES/TS/AUDIO/VIDEO/PCR/RECORDは表の条件で開き、TEMIおよびMMTP/IP/TLV/ALPは`UNAVAILABLE`。wrong main/subtype/unionと未知値を`INVALID_ARGUMENT`とし、拒否時にobject/queue/leaseを生成しない |\n"
-          replace_once(
-              test_anchor,
-              test_anchor
-              + "| T-AOSP-72 | RECORD Filter FMQ ownership / data-plane split | RECORD Filterはopen時にFilter FMQ resourceを所有し`getQueueDesc()`で有効descriptorを返す。一方、RECORD TS投入でFilter FMQ payloadは増加せず、attach済みRecord DVR FMQへ正確に1回だけ188-byte packetをcommitする。`record_output_byte_offset` / `byteNumber`はRecord DVR output commitだけから進む |\n"
-              + "| T-AOSP-73 | RECORD VTS canonical / probe variant | canonical RECORD profileは`useFMQ=false`、`record-filter-fmq` probe variantだけ`useFMQ=true`とする。probe variantでも`useFMQ`はFilter descriptor取得coverageだけを変更し、RECORD payload routeはRecord DVR FMQのまま維持する |\n",
-              "T-AOSP-72/73",
-          )
+          tests = "".join([
+              "| T-AOSP-72 | RECORD Filter FMQ ownership / data-plane split | RECORD Filterはopen時にFilter FMQ resourceを所有し`getQueueDesc()`で有効descriptorを返す。一方、RECORD TS投入でFilter FMQ payloadは増加せず、attach済みRecord DVR FMQへ正確に1回だけ188-byte packetをcommitする。`record_output_byte_offset` / `byteNumber`はRecord DVR output commitだけから進む |\n",
+              "| T-AOSP-73 | RECORD VTS canonical / probe variant | canonical RECORD profileは`useFMQ=false`、`record-filter-fmq` probe variantだけ`useFMQ=true`とする。probe variantでも`useFMQ`はFilter descriptor取得coverageだけを変更し、RECORD payload routeはRecord DVR FMQのまま維持する |\n",
+          ])
+          replace_once(test_anchor, test_anchor + tests, "T-AOSP-72/73")
+          public_path.write_text(text, encoding="utf-8")
 
-          path.write_text(text, encoding="utf-8")
+          impl_path = Path("tuner_hal2/DESIGN_JA.md")
+          impl = impl_path.read_text(encoding="utf-8")
+          impl_anchor = "Filter/SharedFilterのqueue確定は`FilterProducerDrainGate`、DVR queue I/Oは`QueueEpochProtocol`、配送済みAV領域のallocation/leaseはAV resource ownerへ接続する。write authorityのgeneration、失効条件、配送済みAV資源の寿命は`../tuner_hal/DESIGN_JA.md`の同名契約・資源寿命表を正とし、本書では再定義しない。"
+          impl_note = "\n\nFilter FMQ ownership / payload data-planeの公開意味は`../tuner_hal/DESIGN_JA.md`の同名分離契約だけを正本とする。実装上は`demux/src/config.rs::FilterOpenType::has_filter_fmq()`をFilter FMQ resourceのopen時所有・descriptor export・FMQ byte台帳の判定アンカー、`FilterOpenType::uses_filter_fmq_for_payload()`を通常Filter payload commit / EventFlag / Filter status対象の判定アンカーとして対応付ける。TS `RECORD`では前者だけがtrueとなり、payload routeは`RecordDvrFilterRelationTxn`とRecord DVR queue ownerへ接続する。これらのpredicateから公開semanticsを再定義せず、追加・変更時は先に`../tuner_hal/DESIGN_JA.md`の正本契約を更新する。"
+          count = impl.count(impl_anchor)
+          if count != 1:
+              raise SystemExit(f"implementation anchor: expected exactly one match, got {count}")
+          impl = impl.replace(impl_anchor, impl_anchor + impl_note, 1)
+          impl_path.write_text(impl, encoding="utf-8")
           PY
 
           git diff --check
           grep -F '#### Filter FMQ ownership / payload data-plane 分離契約' tuner_hal/DESIGN_JA.md
           grep -F '| T-AOSP-72 | RECORD Filter FMQ ownership / data-plane split |' tuner_hal/DESIGN_JA.md
           grep -F '| T-AOSP-73 | RECORD VTS canonical / probe variant |' tuner_hal/DESIGN_JA.md
+          grep -F 'FilterOpenType::has_filter_fmq()' tuner_hal2/DESIGN_JA.md
 
       - name: Commit SSOT and remove temporary workflow
         shell: bash
@@ -107,6 +114,6 @@ VTS/profileの`useFMQ`はこのownership/data-plane境界を変更しない。ca
           rm .github/workflows/pr72-design-ssot.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add tuner_hal/DESIGN_JA.md .github/workflows/pr72-design-ssot.yml
-          git commit -m "docs(tuner): define RECORD Filter FMQ contract"
+          git add tuner_hal/DESIGN_JA.md tuner_hal2/DESIGN_JA.md .github/workflows/pr72-design-ssot.yml
+          git commit -m "docs(tuner): define RECORD Filter FMQ SSOT"
           git push origin "HEAD:${GITHUB_REF_NAME}"
