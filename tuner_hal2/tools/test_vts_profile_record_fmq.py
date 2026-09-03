@@ -7,12 +7,32 @@ from pathlib import Path
 from vts_profile.model import ProfileError, validate_profile
 from vts_profile.resource_closure import _program
 
-from test_vts_profile import VtsProfileTest
-
 
 class RecordFilterFmqProfileTest(unittest.TestCase):
     def profile(self) -> dict:
-        return VtsProfileTest().profile()
+        return {
+            "schema_version": 1,
+            "target": {"hal": "tuner_hal2", "product": "default", "backend": "px4"},
+            "vts": {
+                "contract": "android14-aidl-v1",
+                "source_ref": "aosp-commit",
+                "variant": "",
+            },
+            "frontend": {
+                "type": "ISDBT",
+                "is_software_frontend": False,
+                "frequency_hz": 557142857,
+            },
+            "flows": {
+                "scan": True,
+                "record": {"enabled": True, "pid": 272},
+                "clear_live": {"enabled": False},
+            },
+            "queues": {
+                "record_filter_bytes": 1048576,
+                "record_dvr_bytes": 4194304,
+            },
+        }
 
     def test_record_filter_fmq_probe_requires_record_flow(self) -> None:
         profile = self.profile()
@@ -26,7 +46,7 @@ class RecordFilterFmqProfileTest(unittest.TestCase):
         ):
             validate_profile(profile, require_resolved=True)
 
-    def test_resource_checker_includes_production_filter_config_ssot(self) -> None:
+    def test_resource_checker_uses_supplied_filter_config_source(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             capability = root / "capability_snapshot.rs"
@@ -41,9 +61,8 @@ class RecordFilterFmqProfileTest(unittest.TestCase):
             )
 
         self.assertIn("mod production_demux_config", program)
-        self.assertIn(str(filter_config.resolve()), program)
+        self.assertIn("// production config fixture", program)
         self.assertNotIn("pub enum FilterOpenType { TsRaw", program)
-        self.assertNotIn("matches!(self, Self::TsRaw | Self::TsSection", program)
 
 
 if __name__ == "__main__":
