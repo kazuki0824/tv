@@ -37,10 +37,6 @@ impl FilterOpenType {
         matches!(self, Self::TsRaw | Self::TsSection | Self::TsPes)
     }
 
-    pub const fn supports_normal_fmq_queue(self) -> bool {
-        self.has_filter_fmq()
-    }
-
     pub const fn pipeline_open_kind(self) -> PipelineOpenKind {
         match self {
             Self::TsUndefined => PipelineOpenKind::Raw,
@@ -363,6 +359,10 @@ mod tests {
             PipelineGeneratedEvent::RecordIndex { filter_id: 1, data }
                 if data.byte_number == 0
         )));
+        assert!(first_report.generated_events.iter().all(|event| !matches!(
+            event,
+            PipelineGeneratedEvent::FilterStatus { filter_id: 1, .. }
+        )));
         assert!(demux
             .snapshot_filter_queue_bytes_for_test(1)
             .expect("record Filter FMQ mirror must exist")
@@ -374,6 +374,10 @@ mod tests {
             event,
             PipelineGeneratedEvent::RecordIndex { filter_id: 1, data }
                 if data.byte_number == 188
+        )));
+        assert!(second_report.generated_events.iter().all(|event| !matches!(
+            event,
+            PipelineGeneratedEvent::FilterStatus { filter_id: 1, .. }
         )));
         assert!(demux
             .snapshot_filter_queue_bytes_for_test(1)

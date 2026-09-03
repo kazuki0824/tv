@@ -308,7 +308,7 @@ impl FilterRuntime {
         let mut runtime = Self::new_typed(filter_id, generation, request.open_type);
         runtime.buffer_size = request.buffer_size;
         runtime.callback_present = request.callback_present;
-        runtime.queue_present = runtime.supports_normal_fmq_queue() && request.buffer_size > 0;
+        runtime.queue_present = runtime.has_filter_fmq() && request.buffer_size > 0;
         runtime
     }
 
@@ -333,12 +333,15 @@ impl FilterRuntime {
     pub fn queue_present(&self) -> bool {
         self.queue_present
     }
-    pub fn supports_normal_fmq_queue(&self) -> bool {
-        self.open_type.supports_normal_fmq_queue()
+    pub fn has_filter_fmq(&self) -> bool {
+        self.open_type.has_filter_fmq()
+    }
+    pub fn uses_filter_fmq_for_payload(&self) -> bool {
+        self.open_type.uses_filter_fmq_for_payload()
     }
     pub fn allows_queue_desc(&self) -> bool {
         match self.state {
-            FilterRuntimeState::Open => self.supports_normal_fmq_queue(),
+            FilterRuntimeState::Open => self.has_filter_fmq(),
             FilterRuntimeState::Configured
             | FilterRuntimeState::Started
             | FilterRuntimeState::Stopped => self.queue_present,
@@ -443,7 +446,7 @@ impl FilterRuntime {
         self.tpid = config.tpid;
         self.pes_stream_id = pes_stream_id;
         self.raw = config.raw;
-        self.queue_present = self.supports_normal_fmq_queue();
+        self.queue_present = self.has_filter_fmq();
         self.av_backing_present = matches!(self.open_kind, PipelineOpenKind::Av);
         self.av_stream_type_hint = None;
         self.audio_timestamp_association.reset();
@@ -685,6 +688,10 @@ impl FilterRuntime {
         capacity_bytes: usize,
         readable_bytes: usize,
     ) -> Option<FilterStatusEvent> {
+        if !self.uses_filter_fmq_for_payload() {
+            self.last_watermark_status = None;
+            return None;
+        }
         if capacity_bytes == 0 || readable_bytes > capacity_bytes {
             return None;
         }
