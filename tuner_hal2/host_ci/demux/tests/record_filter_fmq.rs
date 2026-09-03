@@ -8,6 +8,11 @@ use maleicacid_tuner_hal2_demux::{
 };
 use maleicacid_tuner_hal2_fmq::{host_ci_queue_snapshots, host_ci_reset_queue_registry};
 
+#[no_mangle]
+pub extern "C" fn tuner_dmabuf_heap_alloc_system(_len: usize) -> i32 {
+    -1
+}
+
 fn record_packet(pid: u16, continuity_counter: u8) -> [u8; 188] {
     let mut packet = [0xffu8; 188];
     packet[0] = 0x47;
