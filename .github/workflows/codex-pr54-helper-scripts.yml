@@ -1,0 +1,25 @@
+name: Package PR54 helper scripts
+on:
+  push:
+    branches: [codex/pr54-source-snapshot-20260903]
+permissions:
+  contents: read
+jobs:
+  scripts:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/pr54-apply-20260902
+          path: helper
+      - name: Package scripts
+        run: |
+          mkdir out
+          cp helper/codex_apply_pr54_review_core.py out/
+          cp helper/codex_apply_pr54_review_remaining_fixed5.py out/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr54-helper-scripts
+          path: out
+          if-no-files-found: error
+          retention-days: 1
