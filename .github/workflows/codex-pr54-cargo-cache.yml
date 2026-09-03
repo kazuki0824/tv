@@ -1,0 +1,24 @@
+name: Package PR54 cargo cache
+on:
+  push:
+    branches: [codex/pr54-source-snapshot-20260903]
+permissions:
+  contents: read
+jobs:
+  cache:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 161f41516cff83057979e5031723509ed4adbf5b
+          path: source
+      - name: Fetch locked Rust dependencies
+        run: cargo fetch --locked --manifest-path source/arib_si_engine_rs/host_ci/Cargo.toml
+      - name: Package cargo registry
+        run: tar -C "$HOME/.cargo" -czf cargo-registry.tar.gz registry
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr54-cargo-registry
+          path: cargo-registry.tar.gz
+          if-no-files-found: error
+          retention-days: 1
