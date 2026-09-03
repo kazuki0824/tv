@@ -15,9 +15,7 @@ fn record_filter_exports_standard_filter_fmq_descriptor() {
         callback_present: true,
     };
     demux
-        .register_filter_from_typed_request(FilterRuntimeRegistrationRequest::new(
-            1, &request, 64,
-        ))
+        .register_filter_from_typed_request(FilterRuntimeRegistrationRequest::new(1, &request, 64))
         .expect("record filter open must create its owned Filter FMQ");
 
     let descriptor = demux
