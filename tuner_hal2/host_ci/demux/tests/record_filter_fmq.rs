@@ -28,8 +28,8 @@ fn configured_record_demux() -> DemuxRuntime {
     demux
         .register_filter_from_typed_request(FilterRuntimeRegistrationRequest::new(1, &request, 64))
         .expect("record filter open must create its owned Filter FMQ");
-    let (_, configured) = demux.configure_filter_runtime_with_typed_request(
-        FilterRuntimeConfigureRequest::new(
+    let (_, configured) =
+        demux.configure_filter_runtime_with_typed_request(FilterRuntimeConfigureRequest::new(
             1,
             FilterConfig {
                 open_type: FilterOpenType::TsRecord,
@@ -40,8 +40,7 @@ fn configured_record_demux() -> DemuxRuntime {
                     sc_index_mask: 0,
                 }),
             },
-        ),
-    );
+        ));
     configured.expect("record filter configure must succeed");
     demux
         .start_filter_runtime_from_typed_request(FilterRuntimeOperationRequest::new(1))
@@ -108,7 +107,8 @@ fn record_payload_stays_on_dvr_fmq_and_byte_number_follows_dvr_commits() {
     )));
 
     let second = record_packet(0x0100, 1);
-    let second_validated = ValidatedTsPacket::validate(&second).expect("second packet must be valid");
+    let second_validated =
+        ValidatedTsPacket::validate(&second).expect("second packet must be valid");
     let second_report = demux.push_validated_ts_packet_from_typed_request(
         ValidatedPacketIngressRequest::new(&second_validated, TsInputOrigin::frontend(1)),
     );
@@ -123,8 +123,15 @@ fn record_payload_stays_on_dvr_fmq_and_byte_number_follows_dvr_commits() {
     )));
 
     let queues = host_ci_queue_snapshots();
-    assert_eq!(queues.len(), 2, "record filter and record DVR must each own one queue");
-    assert!(queues[0].is_empty(), "record payload must not enter the Filter FMQ");
+    assert_eq!(
+        queues.len(),
+        2,
+        "record filter and record DVR must each own one queue"
+    );
+    assert!(
+        queues[0].is_empty(),
+        "record payload must not enter the Filter FMQ"
+    );
     assert_eq!(
         queues[1],
         [first.to_vec(), second.to_vec()].concat(),
