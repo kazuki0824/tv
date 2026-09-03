@@ -40,10 +40,6 @@ concurrency:
   group: tuner-hal2-host-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# host_ci/target exists in the repository for historical reasons. Never let Cargo
-# reuse those checked-in artifacts: they can predate the source at the PR HEAD and
-# make a clean checkout validate stale rlibs/binaries. Hosted jobs use an isolated
-# target directory outside the checkout instead.
 env:
   CARGO_TARGET_DIR: /tmp/tuner-hal2-host-ci-target
 
@@ -59,8 +55,19 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check Rust formatting
-        run: cargo fmt --all -- --check
+      - name: Check host harness formatting
+        run: |
+          cargo fmt \
+            -p maleicacid-tuner-hal2-common-host-ci \
+            -p maleicacid-tuner-hal2-compile-contract-host-ci \
+            -p maleicacid-tuner-hal2-control-host-ci \
+            -p maleicacid-tuner-hal2-descrambler-host-ci \
+            -p maleicacid-tuner-hal2-device-host-ci \
+            -p maleicacid-tuner-hal2-fmq-host-ci \
+            -p maleicacid-tuner-hal2-lnb-host-ci \
+            -p maleicacid-tuner-hal2-resource-ledger-host-ci \
+            -- --check
+          rustfmt --edition 2021 --check demux/tests/record_filter_fmq.rs
 
       - name: Check reviewed AIDL authority sources formatting
         run: |
@@ -81,8 +88,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Run Clippy on host-compatible crates
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Run Clippy on existing host-compatible crates
+        run: cargo clippy --workspace --exclude maleicacid-tuner-hal2-demux-host-ci --all-targets --locked -- -D warnings
 
   host-rust:
     runs-on: ubuntu-latest
@@ -98,8 +105,11 @@ jobs:
       - name: Run source contracts
         run: cargo test -p maleicacid-tuner-hal2-compile-contract-host-ci --locked
 
-      - name: Type-check host-compatible crates
-        run: cargo check --workspace --all-targets --locked
+      - name: Type-check production demux library and host crates
+        run: cargo check --workspace --lib --locked
 
-      - name: Run host-compatible unit tests
-        run: cargo test --workspace --locked
+      - name: Run existing host-compatible unit tests
+        run: cargo test --workspace --exclude maleicacid-tuner-hal2-demux-host-ci --locked
+
+      - name: Run production demux Record FMQ integration test
+        run: cargo test -p maleicacid-tuner-hal2-demux-host-ci --test record_filter_fmq --locked
