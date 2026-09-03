@@ -1,0 +1,9 @@
+[package]
+name = "maleicacid-tuner-hal2-fmq-host-ci"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "maleicacid_tuner_hal2_fmq"
+path = "src/lib.rs"
