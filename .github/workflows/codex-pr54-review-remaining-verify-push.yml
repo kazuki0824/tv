@@ -31,5 +31,5 @@ jobs:
       - name: Apply, verify, commit and push
         shell: bash --noprofile --norc -e -o pipefail {0}
         run: |
-          sed -i 's/codex_apply_pr54_review_remaining_fixed2.py/codex_apply_pr54_review_remaining_fixed4.py/' staging/codex_verify_pr54_review_remaining.sh
+          sed -i 's/codex_apply_pr54_review_remaining_fixed2.py/codex_apply_pr54_review_remaining_fixed5.py/' staging/codex_verify_pr54_review_remaining.sh
           bash staging/codex_verify_pr54_review_remaining.sh "$GITHUB_WORKSPACE/target"
