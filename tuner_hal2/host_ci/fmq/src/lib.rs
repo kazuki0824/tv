@@ -1,7 +1,39 @@
 use std::collections::VecDeque;
 use std::fs::File;
 use std::os::fd::IntoRawFd;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock, Weak};
+
+type QueueBytes = Arc<Mutex<VecDeque<u8>>>;
+type QueueRegistry = Vec<Weak<Mutex<VecDeque<u8>>>>;
+
+fn host_ci_registry() -> &'static Mutex<QueueRegistry> {
+    static REGISTRY: OnceLock<Mutex<QueueRegistry>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+pub fn host_ci_reset_queue_registry() {
+    host_ci_registry()
+        .lock()
+        .expect("host FMQ registry lock must remain healthy")
+        .clear();
+}
+
+pub fn host_ci_queue_snapshots() -> Vec<Vec<u8>> {
+    host_ci_registry()
+        .lock()
+        .expect("host FMQ registry lock must remain healthy")
+        .iter()
+        .filter_map(Weak::upgrade)
+        .map(|bytes| {
+            bytes
+                .lock()
+                .expect("host FMQ queue lock must remain healthy")
+                .iter()
+                .copied()
+                .collect()
+        })
+        .collect()
+}
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum FmqQueueError {
@@ -19,7 +51,7 @@ pub enum FmqQueueError {
 
 pub struct FmqQueue {
     capacity: usize,
-    bytes: Mutex<VecDeque<u8>>,
+    bytes: QueueBytes,
 }
 
 impl FmqQueue {
@@ -27,9 +59,14 @@ impl FmqQueue {
         if num_bytes == 0 {
             return Err(FmqQueueError::NativeCreateFailed);
         }
+        let bytes = Arc::new(Mutex::new(VecDeque::with_capacity(num_bytes)));
+        host_ci_registry()
+            .lock()
+            .map_err(|_| FmqQueueError::NativeCreateFailed)?
+            .push(Arc::downgrade(&bytes));
         Ok(Self {
             capacity: num_bytes,
-            bytes: Mutex::new(VecDeque::with_capacity(num_bytes)),
+            bytes,
         })
     }
 
