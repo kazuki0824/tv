@@ -92,7 +92,6 @@ jobs:
               "    ) -> Result<Vec<PipelineGeneratedEvent>, DemuxRuntimeError> {\n        let uses_filter_fmq_for_payload = self\n            .filters\n            .get(&filter_id)\n            .ok_or_else(|| DemuxRuntimeError::filter_missing(filter_id))?\n            .uses_filter_fmq_for_payload();\n        if !uses_filter_fmq_for_payload {\n            return Ok(Vec::new());\n        }\n        let queue = self",
               "committed Filter status payload-FMQ guard",
           )
-
           replace_once(
               demux,
               "            };\n            let gate = match self.filter_producer_gates.get(&filter_id).cloned() {",
@@ -116,7 +115,7 @@ jobs:
           closure = Path("tuner_hal2/tools/vts_profile/resource_closure.py")
           replace_once(
               closure,
-              "    pub const fn supports_normal_fmq_queue(self) -> bool {{{{\n        self.has_filter_fmq()\n    }}}}\n",
+              "    pub const fn supports_normal_fmq_queue(self) -> bool {{\n        self.has_filter_fmq()\n    }}\n",
               "",
               "resource closure compatibility alias",
           )
