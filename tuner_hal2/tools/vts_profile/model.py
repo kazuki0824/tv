@@ -7,6 +7,7 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 SUPPORTED_VTS_CONTRACT = "android14-aidl-v1"
+RECORD_FILTER_FMQ_PROBE_VARIANT = "record-filter-fmq"
 FRONTEND_ID = {"ISDBT": "FE_ISDBT_0", "ISDBS": "FE_ISDBS_0"}
 
 _TOP = {"schema_version", "target", "vts", "frontend", "region", "service", "flows", "queues"}
@@ -173,6 +174,8 @@ def validate_profile(profile: dict[str, Any], *, require_resolved: bool = False)
             validate_pid(record["pid"], "flows.record.pid")
     elif "pid" in record:
         raise ProfileError("disabled flows.record must not keep an unconsumed pid")
+    if variant == RECORD_FILTER_FMQ_PROBE_VARIANT and not record["enabled"]:
+        raise ProfileError("record-filter-fmq VTS variant requires flows.record.enabled=true")
 
     live = require_dict(flows.get("clear_live"), "flows.clear_live")
     reject_unknown(live, _CLEAR_LIVE, "flows.clear_live")
