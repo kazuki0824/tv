@@ -1,0 +1,159 @@
+name: PR72 SSOT implementation alignment
+
+on:
+  push:
+    branches:
+      - fix/tuner-hal2-record-filter-fmq
+    paths:
+      - .github/workflows/pr72-ssot-implementation.yml
+
+permissions:
+  contents: write
+
+jobs:
+  align-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CARGO_TARGET_DIR: /tmp/tuner-hal2-pr72-ssot-target
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tuner-hal2-record-filter-fmq
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Align production predicates with design SSOT
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: Path, old: str, new: str, label: str) -> None:
+              text = path.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected exactly one match, got {count}")
+              path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          config = Path("tuner_hal2/demux/src/config.rs")
+          replace_once(
+              config,
+              "    pub const fn supports_normal_fmq_queue(self) -> bool {\n        self.has_filter_fmq()\n    }\n\n",
+              "",
+              "remove FilterOpenType compatibility alias",
+          )
+
+          filter_rs = Path("tuner_hal2/demux/src/runtime/filter.rs")
+          replace_once(
+              filter_rs,
+              "        runtime.queue_present = runtime.supports_normal_fmq_queue() && request.buffer_size > 0;",
+              "        runtime.queue_present = runtime.has_filter_fmq() && request.buffer_size > 0;",
+              "open request FMQ ownership",
+          )
+          replace_once(
+              filter_rs,
+              "    pub fn supports_normal_fmq_queue(&self) -> bool {\n        self.open_type.supports_normal_fmq_queue()\n    }\n",
+              "    pub fn has_filter_fmq(&self) -> bool {\n        self.open_type.has_filter_fmq()\n    }\n    pub fn uses_filter_fmq_for_payload(&self) -> bool {\n        self.open_type.uses_filter_fmq_for_payload()\n    }\n",
+              "FilterRuntime FMQ predicates",
+          )
+          replace_once(
+              filter_rs,
+              "            FilterRuntimeState::Open => self.supports_normal_fmq_queue(),",
+              "            FilterRuntimeState::Open => self.has_filter_fmq(),",
+              "queue descriptor ownership",
+          )
+          replace_once(
+              filter_rs,
+              "        self.queue_present = self.supports_normal_fmq_queue();",
+              "        self.queue_present = self.has_filter_fmq();",
+              "configure FMQ ownership",
+          )
+          replace_once(
+              filter_rs,
+              "    ) -> Option<FilterStatusEvent> {\n        if capacity_bytes == 0 || readable_bytes > capacity_bytes {",
+              "    ) -> Option<FilterStatusEvent> {\n        if !self.uses_filter_fmq_for_payload() {\n            self.last_watermark_status = None;\n            return None;\n        }\n        if capacity_bytes == 0 || readable_bytes > capacity_bytes {",
+              "watermark payload-FMQ guard",
+          )
+
+          demux = Path("tuner_hal2/demux/src/runtime/demux.rs")
+          text = demux.read_text(encoding="utf-8")
+          old = "filter.supports_normal_fmq_queue()"
+          count = text.count(old)
+          if count != 2:
+              raise SystemExit(f"DemuxRuntime FMQ ownership: expected 2 matches, got {count}")
+          text = text.replace(old, "filter.has_filter_fmq()")
+          demux.write_text(text, encoding="utf-8")
+
+          replace_once(
+              demux,
+              "    ) -> Result<Vec<PipelineGeneratedEvent>, DemuxRuntimeError> {\n        let queue = self",
+              "    ) -> Result<Vec<PipelineGeneratedEvent>, DemuxRuntimeError> {\n        let uses_filter_fmq_for_payload = self\n            .filters\n            .get(&filter_id)\n            .ok_or_else(|| DemuxRuntimeError::filter_missing(filter_id))?\n            .uses_filter_fmq_for_payload();\n        if !uses_filter_fmq_for_payload {\n            return Ok(Vec::new());\n        }\n        let queue = self",
+              "committed Filter status payload-FMQ guard",
+          )
+
+          replace_once(
+              demux,
+              "            };\n            let gate = match self.filter_producer_gates.get(&filter_id).cloned() {",
+              "            };\n            if payload.is_some() {\n                let uses_filter_fmq_for_payload = match self.filters.get(&filter_id) {\n                    Some(filter) => filter.uses_filter_fmq_for_payload(),\n                    None => {\n                        diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(\n                            pid,\n                            filter_id,\n                            DemuxRuntimeError::filter_missing(filter_id),\n                        ));\n                        continue;\n                    }\n                };\n                if !uses_filter_fmq_for_payload {\n                    self.quarantine_filter_runtime(filter_id);\n                    diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(\n                        pid,\n                        filter_id,\n                        DemuxRuntimeError::queue_runtime_failure(filter_id),\n                    ));\n                    continue;\n                }\n            }\n            let gate = match self.filter_producer_gates.get(&filter_id).cloned() {",
+              "payload commit payload-FMQ guard",
+          )
+
+          replace_once(
+              config,
+              "        assert!(first_report.generated_events.iter().any(|event| matches!(\n            event,\n            PipelineGeneratedEvent::RecordIndex { filter_id: 1, data }\n                if data.byte_number == 0\n        )));",
+              "        assert!(first_report.generated_events.iter().any(|event| matches!(\n            event,\n            PipelineGeneratedEvent::RecordIndex { filter_id: 1, data }\n                if data.byte_number == 0\n        )));\n        assert!(first_report.generated_events.iter().all(|event| !matches!(\n            event,\n            PipelineGeneratedEvent::FilterStatus { filter_id: 1, .. }\n        )));",
+              "RECORD first packet status invariant",
+          )
+          replace_once(
+              config,
+              "        assert!(second_report.generated_events.iter().any(|event| matches!(\n            event,\n            PipelineGeneratedEvent::RecordIndex { filter_id: 1, data }\n                if data.byte_number == 188\n        )));",
+              "        assert!(second_report.generated_events.iter().any(|event| matches!(\n            event,\n            PipelineGeneratedEvent::RecordIndex { filter_id: 1, data }\n                if data.byte_number == 188\n        )));\n        assert!(second_report.generated_events.iter().all(|event| !matches!(\n            event,\n            PipelineGeneratedEvent::FilterStatus { filter_id: 1, .. }\n        )));",
+              "RECORD second packet status invariant",
+          )
+
+          closure = Path("tuner_hal2/tools/vts_profile/resource_closure.py")
+          replace_once(
+              closure,
+              "    pub const fn supports_normal_fmq_queue(self) -> bool {{{{\n        self.has_filter_fmq()\n    }}}}\n",
+              "",
+              "resource closure compatibility alias",
+          )
+          PY
+
+          if grep -R --exclude-dir=target -n 'supports_normal_fmq_queue' tuner_hal2; then
+            echo 'obsolete FMQ predicate remains' >&2
+            exit 1
+          fi
+          grep -R --exclude-dir=target -n 'uses_filter_fmq_for_payload' tuner_hal2/demux/src tuner_hal2/service_runtime/src
+          git diff --check
+
+      - name: Validate host-compatible Rust
+        shell: bash
+        working-directory: tuner_hal2/host_ci
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo test --workspace --locked
+
+      - name: Validate VTS profile tooling
+        shell: bash
+        working-directory: tuner_hal2/tools
+        run: |
+          uv run python -m unittest discover -s . -p 'test_*.py'
+          uv run python -m compileall -q .
+
+      - name: Commit implementation alignment and remove temporary workflow
+        shell: bash
+        run: |
+          rm .github/workflows/pr72-ssot-implementation.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tuner_hal2/demux/src/config.rs \
+                  tuner_hal2/demux/src/runtime/filter.rs \
+                  tuner_hal2/demux/src/runtime/demux.rs \
+                  tuner_hal2/tools/vts_profile/resource_closure.py \
+                  .github/workflows/pr72-ssot-implementation.yml
+          git commit -m "refactor(tuner): enforce RECORD FMQ SSOT predicates"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
