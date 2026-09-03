@@ -9,7 +9,7 @@ STAGING_DIR=$(cd "$(dirname "$0")" && pwd)
 cd "$TARGET_DIR"
 test "$(git rev-parse HEAD)" = "$EXPECTED_TARGET_SHA"
 python3 "$STAGING_DIR/codex_apply_pr54_review_core.py"
-python3 "$STAGING_DIR/codex_apply_pr54_review_remaining.py"
+python3 "$STAGING_DIR/codex_apply_pr54_review_remaining_fixed.py"
 cargo +"$RUST_TOOLCHAIN" fmt --manifest-path arib_si_engine_rs/host_ci/Cargo.toml
 git diff --check
 cargo +"$RUST_TOOLCHAIN" check --locked --manifest-path arib_si_engine_rs/host_ci/Cargo.toml
