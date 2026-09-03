@@ -1,0 +1,84 @@
+name: Independently verify PR54 review fixes
+on:
+  push:
+    branches: [codex/pr54-source-snapshot-20260903]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 161f41516cff83057979e5031723509ed4adbf5b
+          path: target
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/pr54-apply-20260902
+          path: scripts
+      - name: Verify fixed target SHA
+        run: test "$(git -C target rev-parse HEAD)" = "161f41516cff83057979e5031723509ed4adbf5b"
+      - name: Install Rust 1.81
+        run: rustup toolchain install 1.81.0 --profile minimal --component rustfmt
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Apply already locally validated review delta
+        run: |
+          cd target
+          python3 ../scripts/codex_apply_pr54_review_core.py
+          python3 ../scripts/codex_apply_pr54_review_remaining_fixed5.py
+          cargo +1.81.0 fmt --manifest-path arib_si_engine_rs/host_ci/Cargo.toml
+          git diff --check
+      - name: Rust verification
+        run: |
+          cd target
+          cargo +1.81.0 check --locked --manifest-path arib_si_engine_rs/host_ci/Cargo.toml
+          cargo +1.81.0 test --locked --manifest-path arib_si_engine_rs/host_ci/Cargo.toml
+      - name: Kotlin host verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd target
+          tools="$RUNNER_TEMP/kotlin"
+          mkdir -p "$tools"
+          curl --fail --location --retry 3 --retry-all-errors https://github.com/JetBrains/kotlin/releases/download/v1.9.22/kotlin-compiler-1.9.22.zip -o "$tools/compiler.zip"
+          curl --fail --location --retry 3 --retry-all-errors https://repo.maven.apache.org/maven2/org/robolectric/android-all/14-robolectric-10818077/android-all-14-robolectric-10818077.jar -o "$tools/android-all.jar"
+          curl --fail --location --retry 3 --retry-all-errors https://repo.maven.apache.org/maven2/junit/junit/4.13.2/junit-4.13.2.jar -o "$tools/junit.jar"
+          curl --fail --location --retry 3 --retry-all-errors https://repo.maven.apache.org/maven2/org/hamcrest/hamcrest-core/1.3/hamcrest-core-1.3.jar -o "$tools/hamcrest.jar"
+          unzip -q "$tools/compiler.zip" -d "$tools/compiler"
+          kh="$tools/compiler/kotlinc"
+          prod="$RUNNER_TEMP/prod"; tests="$RUNNER_TEMP/tests"; mkdir -p "$prod" "$tests"
+          mapfile -d '' -t prodsrc < <(find tis/src tis/host_ci/kotlin/stubs/android -type f -name '*.kt' -print0 | sort -z)
+          "$kh/bin/kotlinc" -J-Xmx4g -jvm-target 17 -classpath "$tools/android-all.jar" -d "$prod" "${prodsrc[@]}"
+          cp="$prod:$tools/android-all.jar:$tools/junit.jar:$tools/hamcrest.jar:$kh/lib/kotlin-test.jar:$kh/lib/kotlin-test-junit.jar"
+          mapfile -d '' -t testsrc < <(find tis/tests/src tis/host_ci/kotlin/stubs/androidx -type f -name '*.kt' -print0 | sort -z)
+          "$kh/bin/kotlinc" -J-Xmx4g -jvm-target 17 -Xfriend-paths="$prod" -classpath "$cp" -d "$tests" "${testsrc[@]}"
+          mapfile -t discovered < <(find "$tests" -type f -name '*Test.class' -printf '%P\n' | sed 's#/#.#g; s#\.class$##' | sort)
+          classes=()
+          for c in "${discovered[@]}"; do
+            case "$c" in
+              com.maleicacid.tvinput.tis.DirectBootGuardR51FixTest|com.maleicacid.tvinput.tis.ProviderDataAssetsR51ContractTest|com.maleicacid.tvinput.tis.RecordingDisabledR51Test|com.maleicacid.tvinput.tis.TvProviderWriterDescriptorSchemaTest) ;;
+              *) classes+=("$c") ;;
+            esac
+          done
+          rcp="$prod:$tests:$tools/android-all.jar:$tools/junit.jar:$tools/hamcrest.jar:$kh/lib/kotlin-stdlib.jar:$kh/lib/kotlin-stdlib-jdk7.jar:$kh/lib/kotlin-stdlib-jdk8.jar:$kh/lib/kotlin-test.jar:$kh/lib/kotlin-test-junit.jar"
+          java -Xmx4g -Djava.library.path=arib_si_engine_rs/host_ci/target/debug/deps -cp "$rcp" org.junit.runner.JUnitCore "${classes[@]}" | tee "$RUNNER_TEMP/junit.log"
+          grep -F 'OK (131 tests)' "$RUNNER_TEMP/junit.log"
+      - name: Contract guards
+        run: |
+          cd target
+          python3 - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree
+          for p in Path('tis').rglob('*.xml'): ElementTree.parse(p)
+          assert 'TransportStreamId16(18803)' in Path('tis/src/com/maleicacid/tvinput/tis/ScanPlan.kt').read_text()
+          p=Path('tis/src/com/maleicacid/tvinput/tis/PlaybackPipeline.kt').read_text()
+          for t in ('3 -> AudioFormat.CHANNEL_OUT_STEREO or AudioFormat.CHANNEL_OUT_FRONT_CENTER','4 -> AudioFormat.CHANNEL_OUT_QUAD','5 -> AudioFormat.CHANNEL_OUT_QUAD or AudioFormat.CHANNEL_OUT_FRONT_CENTER'): assert t in p
+          s=Path('arib_si_engine_rs/src/service_discovery.rs').read_text(); assert 'caption_timing' in s and 'matches!(timing, 0x00 | 0x02)' in s
+          d=Path('arib_si_engine_rs/src/descriptors.rs').read_text(); assert 'caption_selectors' in d and 'language_tag' in d
+          m=Path('tis/src/com/maleicacid/tvinput/tis/ChannelScanManager.kt').read_text(); assert 'committedServiceKeys.containsAll(requiredTargetKeys)' in m
+          print('contract guards OK')
+          PY
+          git diff --check
