@@ -22,6 +22,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "maleicacid-tuner-hal2-demux-host-ci"
+version = "0.0.0"
+dependencies = [
+ "maleicacid-tuner-hal2-common-host-ci",
+ "maleicacid-tuner-hal2-control-host-ci",
+ "maleicacid-tuner-hal2-descrambler-host-ci",
+ "maleicacid-tuner-hal2-fmq-host-ci",
+]
+
+[[package]]
 name = "maleicacid-tuner-hal2-descrambler-host-ci"
 version = "0.0.0"
 dependencies = [
@@ -36,6 +46,10 @@ dependencies = [
  "maleicacid-tuner-hal2-common-host-ci",
  "maleicacid-tuner-hal2-control-host-ci",
 ]
+
+[[package]]
+name = "maleicacid-tuner-hal2-fmq-host-ci"
+version = "0.0.0"
 
 [[package]]
 name = "maleicacid-tuner-hal2-lnb-host-ci"
