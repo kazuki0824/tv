@@ -48,18 +48,13 @@ jobs:
 
       - uses: astral-sh/setup-uv@v6
 
-      - name: Resolve locked host-tool dependencies
-        run: |
-          uv lock
-          cat uv.lock
-
       - name: Run VTS profile unit tests
         run: uv run --locked python -m unittest discover -s . -p 'test_*.py'
 
       - name: Compile-check VTS profile Python
         run: uv run --locked python -m compileall -q .
 
-      - name: Validate canonical XML against pinned Android 14 AOSP XSD
+      - name: Validate canonical XML against pinned Android 14 AOSP XSD contracts
         env:
           AOSP_TUNER_CONFIG_REF: 53c69987b8
         run: |
