@@ -39,6 +39,15 @@ pub struct PtxFreq {
     pub slot: i32,
 }
 
+pub const PTX_TMCC_TSID_MAX: usize = 12;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PtxTmccTsidList {
+    pub num: u32,
+    pub tsid: [u16; PTX_TMCC_TSID_MAX],
+}
+
 pub const PTX_SET_CHANNEL: u64 = iow::<PtxFreq>(PTX_IOCTL_TYPE_BASIC, 0x01);
 pub const PTX_START_STREAMING: u64 = io(PTX_IOCTL_TYPE_BASIC, 0x02);
 pub const PTX_STOP_STREAMING: u64 = io(PTX_IOCTL_TYPE_BASIC, 0x03);
@@ -48,6 +57,7 @@ pub const PTX_DISABLE_LNB_POWER: u64 = io(PTX_IOCTL_TYPE_BASIC, 0x06);
 pub const PTX_SET_SYSTEM_MODE: u64 = iow::<u32>(PTX_IOCTL_TYPE_BASIC, 0x0b);
 pub const PTX_GET_LOCK_STATUS: u64 = ior::<u32>(PTX_IOCTL_TYPE_BASIC, 0x0c);
 pub const PTX_GET_TMCC_PARTIAL_RECEPTION: u64 = ior::<u32>(PTX_IOCTL_TYPE_BASIC, 0x0d);
+pub const PTX_GET_TMCC_TSID_LIST: u64 = ior::<PtxTmccTsidList>(PTX_IOCTL_TYPE_BASIC, 0x0e);
 pub const PTXT_SET_LNB_VOLTAGE: u64 = iow::<i32>(PTX_IOCTL_TYPE_EXT, 0x05);
 
 pub const O_NONBLOCK: i32 = 0x800;
@@ -55,6 +65,7 @@ pub const ERRNO_EAGAIN: i32 = 11;
 pub const ERRNO_EINVAL: i32 = 22;
 pub const ERRNO_ENOTTY: i32 = 25;
 pub const ERRNO_ENOSYS: i32 = 38;
+pub const ERRNO_EOPNOTSUPP: i32 = 95;
 
 pub const PTX_ISDB_T_SYSTEM: u32 = 0x0000_0010;
 pub const PTX_ISDB_S_SYSTEM: u32 = 0x0000_0020;
@@ -78,5 +89,11 @@ mod tests {
             ior::<u32>(PTX_IOCTL_TYPE_BASIC, 0x0d)
         );
         assert_eq!(PTX_GET_TMCC_PARTIAL_RECEPTION, 0x8004_8d0d);
+        assert_eq!(size_of::<PtxTmccTsidList>(), 28);
+        assert_eq!(
+            PTX_GET_TMCC_TSID_LIST,
+            ior::<PtxTmccTsidList>(PTX_IOCTL_TYPE_BASIC, 0x0e)
+        );
+        assert_eq!(PTX_GET_TMCC_TSID_LIST, 0x801c_8d0e);
     }
 }
