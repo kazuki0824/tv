@@ -56,7 +56,7 @@
 
 Tuner VTS用XMLは実行環境に依存する静的構成であり、既定では導入しない。使用するVTS artifact/tag/commitと、試験実行機の`ro.vendor.vts_tuner_configuration_variant`を`VtsEnvironmentProfile`の入力として固定し、XML filenameは選択したVTS実装が実際に行う解決規則から決定する。Android 14 AIDL VTSでbase名`/vendor/etc/tuner_vts_config_aidl_V1`へnon-empty variantを`.`区切りで付加して`.xml`を読む実装を選択した場合は、`/vendor/etc/tuner_vts_config_aidl_V1[.<variant>].xml`として解決する。AOSP branch、VTS artifact/tag/commit、variant property、受信元、周波数、stream ID、PID、実行手順、filter/DVR queue容量、製品memory予算を宣言し、必要な全資源を起動前に予約できる場合だけ、その値を持つ静的XMLを解決済みpathへinstallする。VTS artifactまたはvariant propertyを含む環境入力が未確定な場合はfilename自体を`DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED`とし、推測したpathへXMLをinstallせず、VTS成功を宣言しない。descrambler AIDL objectを実装していても、試験設定だけで本番のスクランブル解除成功を宣言しない。
 
-Tuner HAL の capability / VTS profile では TS 入力だけを宣言する。製品全体の TS-only スコープは `開発規則.md` を正とし、本書では Tuner HAL の宣言値と返却値を固定する。MMTP、TLV、ALP、IP CID は capability と VTS profile に宣言しない。`IFilter.configureIpCid()` は filter種別にかかわらず `UNAVAILABLE` とする。CID を保存だけして 照合、経路制御、配送 に使わない成功扱いの無処理 を残してはならない。
+既定の `LegacyTsProfile` ではTuner HALのcapability / VTS profileにTS入力だけを宣言し、MMTP / IP / TLV / ALP main typeを広告しない。条件付き `JapanAdvancedMmtTlvProfile` を選択できる製品構成だけが、後段の「日本高度放送 MMTP/TLV 公開契約」に固定したMMTP / IP / TLV能力を広告できる。製品profileの選択条件は `開発規則.md` を正とし、本書ではTuner HALの宣言値と返却値を固定する。ALPとIP CIDはどちらのprofileでも対応宣言せず、`IFilter.configureIpCid()` はfilter種別にかかわらず `UNAVAILABLE` とする。IP main typeへの対応をIP CID対応へ読み替えず、CIDを保存だけして照合、経路制御、配送に使わない成功扱いの無処理を残してはならない。
 
 
 ### export ID と VTS profile の固定
@@ -80,7 +80,7 @@ VTS XML/profileで使用する機能とcapabilityで宣言する機能は一致�
 | `IFilter.setDataSource(filter)`、`filter == NULL` | AOSP意味論として存在する必須契約であり、現行設計の成功対象 | sink filter の入力元を demux input へ戻す |
 | `IDescrambler.addPid(pid, optionalSourceFilter)` / `removePid(pid, optionalSourceFilter)`、`optionalSourceFilter == NULL` | AOSP意味論として存在する必須契約であり、現行設計の成功対象 | 指定PIDについてdemux input全体への登録 / 解除として扱う |
 | AV shared handle release | media filter shared memory profileでは到達する | `releaseAvHandle(fd付き handle, 0)` を成功させる |
-| monitor event | 本製品のTS-only `ProductProfile`では対応宣言しない | `configureMonitorEvent(0)`だけを監視停止として成功させ、非0 maskは`UNAVAILABLE`とする。monitor event用の状態、worker、queue、能力値を生成しない |
+| monitor event | `LegacyTsProfile` / `JapanAdvancedMmtTlvProfile`のどちらでも対応宣言しない | `configureMonitorEvent(0)`だけを監視停止として成功させ、非0 maskは`UNAVAILABLE`とする。monitor event用の状態、worker、queue、能力値を生成しない |
 | AV passthrough | 対応宣言しない | profileでは `isPassthrough=false` に固定する |
 | `linkCaps` | main type 粒度 | 広告した main type pair は VTS が生成する subtype `UNDEFINED` 接続も成功対象に含める。成功させない pair は広告しない |
 | TS `RECORD` Filter FMQ | canonical RECORD data-flow profileは `useFMQ=false` とする。Filter FMQ descriptorを明示検査する `record-filter-fmq` probe variantだけ `useFMQ=true` を使用できる | `useFMQ=true` は `IFilter.getQueueDesc()` のdescriptor取得coverageだけを追加し、RECORD payloadの配送先をFilter FMQへ変更しない。実record payloadはRecord DVR FMQへ正確に1回だけ配送し、Filter FMQへ二重配送しない |
@@ -88,11 +88,11 @@ VTS XML/profileで使用する機能とcapabilityで宣言する機能は一致�
 
 #### `DemuxCapabilities.linkCaps` / `numBytesInSectionFilter` 固定契約
 
-Android 14 AIDL V2 の `DemuxCapabilities.linkCaps` は `DemuxFilterMainType` の各bit位置をsource rowとし、各要素をsink main typeのbitmaskとして返す。本製品の `ProductProfile` はTS main typeだけを公開し、公開するmain-type linkageは **TS -> TS の1組だけ** とする。Android 14 V2で定義済みのmain type順 `TS, MMTP, IP, TLV, ALP` に対する具体値は `linkCaps = [0x01, 0, 0, 0, 0]` とし、`filterCaps`にもTS以外のmain type bitを立てない。`linkCaps` はmain type間の接続能力を表すものであり、TS内部の具体的subtype組み合わせを独自の第二capability matrixとして符号化しない。将来main typeが追加されても、現行profileで対応を証明していないrow / sink bitを推測して1にしない。
+Android 14 AIDL V2 の `DemuxCapabilities.linkCaps` は `DemuxFilterMainType` の各bit位置をsource rowとし、各要素をsink main typeのbitmaskとして返す。既定の `LegacyTsProfile` はTS main typeだけを公開し、公開するmain-type linkageは **TS -> TS の1組だけ** とする。Android 14 V2で定義済みのmain type順 `TS, MMTP, IP, TLV, ALP` に対する具体値は `linkCaps = [0x01, 0, 0, 0, 0]` とし、`filterCaps`にもTS以外のmain type bitを立てない。`JapanAdvancedMmtTlvProfile` の追加値とlinkageは後段の「日本高度放送 MMTP/TLV 公開契約」だけを正とする。`linkCaps` はmain type間の接続能力を表すものであり、TS内部の具体的subtype組み合わせを独自の第二capability matrixとして符号化しない。将来main typeが追加されても、選択したprofileで対応を証明していないrow / sink bitを推測して1にしない。
 
 `linkCaps`で1を返したpairは、VTSがsource / sink双方をsubtype `UNDEFINED`でopenして`setDataSource()`を呼ぶ場合も成功対象に含める。実データ経路では、完全なMPEG-TS packet列を出力するTS raw filterをsourceとし、同じTS main typeのうちMPEG-TS packetを入力として処理する `TS` / `SECTION` / `PES` / `AUDIO` / `VIDEO` / `PCR` / `RECORD` filterをdownstreamとして成功対象に含める。各接続は、対象subtype自体が本製品で公開済みであること、同一demux・owner、lifecycle、cycle禁止、既存settingsとの整合、資源条件などsource filter契約の通常validationを満たす場合にだけ成功する。Section/PES/AV/Record等の加工済みoutputを完全なTS packet列へ暗黙再解釈してsourceにする経路は追加しない。`UNDEFINED`はVTSのmain-type linkage endpointとしての役割を維持し、具体filter subtypeへ暗黙昇格させない。
 
-`DemuxCapabilities.numBytesInSectionFilter` は **16** を返す。AIDL上、この値はSection Filterの`mask`でサポートする最大byte数を表し、section payload最大長、`filter`配列長、`mode`配列長の上限ではない。したがって `sectionBits.mask.size() > 16` は `INVALID_ARGUMENT` とし、状態を変更しない一方、`filter` / `mode` に16-byte上限をこのcapability値から派生させない。`sectionBits.filter`、`mask`、`mode` はAOSPが独立したbyte arrayとして渡すため、長さ不一致だけを理由に拒否せず、各arrayを改変・padding・truncationせず保持する。matching domainは`mask`とし、各byte位置`i < mask.size()`について`mask[i]`の0 bitは比較対象外とする。`mask[i]`に1のactive bitが1つでも存在する場合は、同じbyte位置の`filter[i]`と`mode[i]`の双方が存在しなければ、そのconditionは意味的に不完全として`INVALID_ARGUMENT`とし、値0その他で補完しない。`mask.size()`を超える`filter` / `mode`末尾要素はmatchingに使用しないが、入力shape自体は保持する。active bitの比較はAIDLどおり、`mode` bitが0ならsection bitと`filter` bitの一致、1なら不一致を要求する。runtime sectionがactive comparison位置まで存在しない場合はconfigure/runtime failureへ昇格させず、そのsectionをnon-matchとする。`bitWidthOfLengthField`はMMTP section messageのlength-field幅であり、TSの`section_length`、CRC、condition幅の代用にしない。本製品はMMTP main typeを公開しないため、TS section処理をこの値で変化させない。
+`DemuxCapabilities.numBytesInSectionFilter` は **16** を返す。AIDL上、この値はSection Filterの`mask`でサポートする最大byte数を表し、section payload最大長、`filter`配列長、`mode`配列長の上限ではない。したがって `sectionBits.mask.size() > 16` は `INVALID_ARGUMENT` とし、状態を変更しない一方、`filter` / `mode` に16-byte上限をこのcapability値から派生させない。`sectionBits.filter`、`mask`、`mode` はAOSPが独立したbyte arrayとして渡すため、長さ不一致だけを理由に拒否せず、各arrayを改変・padding・truncationせず保持する。matching domainは`mask`とし、各byte位置`i < mask.size()`について`mask[i]`の0 bitは比較対象外とする。`mask[i]`に1のactive bitが1つでも存在する場合は、同じbyte位置の`filter[i]`と`mode[i]`の双方が存在しなければ、そのconditionは意味的に不完全として`INVALID_ARGUMENT`とし、値0その他で補完しない。`mask.size()`を超える`filter` / `mode`末尾要素はmatchingに使用しないが、入力shape自体は保持する。active bitの比較はAIDLどおり、`mode` bitが0ならsection bitと`filter` bitの一致、1なら不一致を要求する。runtime sectionがactive comparison位置まで存在しない場合はconfigure/runtime failureへ昇格させず、そのsectionをnon-matchとする。`bitWidthOfLengthField`はMMTP section messageのlength-field幅であり、TSの`section_length`、CRC、condition幅の代用にしない。`LegacyTsProfile` はMMTP main typeを公開しないためTS section処理をこの値で変化させず、`JapanAdvancedMmtTlvProfile` のMMTP sectionでは後段のMMTP acceptance matrixとframing契約に従う。
 
 ### Tuner HAL 固定境界
 
@@ -108,7 +108,7 @@ ISDB-S selectorはAOSPの`FrontendIsdbsStreamIdType`を正とし、`STREAM_ID`�
 backendのエラーは、呼び出し側の不正値・値域違反を`INVALID_ARGUMENT`、不存在・使用中・容量不足・規格上は有効だが未対応を`UNAVAILABLE`、不正なライフサイクルを`INVALID_STATE`、依存資源の未初期化を`NOT_INITIALIZED`、割り当て失敗を`OUT_OF_MEMORY`、権限・入出力・設定破損・不変条件違反を`UNKNOWN_ERROR`へ対応付ける。
 
 
-- 本製品のTS-only `ProductProfile`はfilter monitor eventを対応能力として採用しない。`configureMonitorEvent(0)`は監視停止として成功し、未配送monitor event、保存mask、種別ごとの最終観測値を消去する。非0 maskは常に`UNAVAILABLE`とし、monitor event用の状態、worker、queueを生成しない。通常の`DATA_READY` / `OVERFLOW` / `onFilterEvent()` deliveryはmask 0または非0要求の拒否によって抑止しない。
+- `LegacyTsProfile` / `JapanAdvancedMmtTlvProfile`のどちらもfilter monitor eventを対応能力として採用しない。`configureMonitorEvent(0)`は監視停止として成功し、未配送monitor event、保存mask、種別ごとの最終観測値を消去する。非0 maskは常に`UNAVAILABLE`とし、monitor event用の状態、worker、queueを生成しない。通常の`DATA_READY` / `OVERFLOW` / `onFilterEvent()` deliveryはmask 0または非0要求の拒否によって抑止しない。
 - soft demux の section / PES assembler と filter `stop()` / `flush()` / `configure()` / `close()` は、後段の「フィルタ状態破棄境界と遅延通知方針」、0-S-3Bの`FilterProducerDrainGate` / `QueueCleanupUseCase` / `StreamBoundaryTxn`、および各公開Filter APIの名前付き契約を正とする。
 - `setMaxNumberOfFrontends(type, maxNumber)`は同じ`FrontendType`の`0 <= maxNumber <= defaultMax(type)`だけを成功させる。負値、未知type、同typeの既定上限超過は`INVALID_ARGUMENT`とし、別typeの上限を変更しない。
 - 製品実行時 の frontend registry は実在 probe できた backendエントリ だけで構成する。probe 失敗は 診断情報レコード に残し、劣化 frontendエントリ / テスト劣化補助関数 / 診断劣化補助関数 は作らない。
@@ -305,7 +305,7 @@ Record DVRの`attachFilter()` / `detachFilter()`は、Record DVRがLiveであれ
 - `statusMask=0` はstatus callbackを要求しない有効値として成功させ、データ経路は通常どおり動作させる。AIDLで既知のstatus bitのうち現行profileが生成できないbitは`UNAVAILABLE`、予約bit・未知bitは`INVALID_ARGUMENT`とする。成功後はmaskで選択したstatusだけをcallback対象にする。
 - `lowThreshold` と `highThreshold` はbyte単位とし、`0 <= lowThreshold <= highThreshold <= openDvr(bufferSize)`を満たす場合だけ受理する。負値、大小逆転、FMQ容量超過は`INVALID_ARGUMENT`とし、clampしない。`lowThreshold == highThreshold` はAOSPが禁止していない有効入力として受理し、等値だけを理由に本製品固有の拒否条件を追加しない。
 - 水位判定は、同一queue snapshotとcommit済み `DvrSettingsSnapshot` だけから決定し、別のwatermark state machineを設けない。Playbackは同一snapshotから `readableBytes = availableToRead` と `writableBytes = availableToWrite` を取得し、AOSP default HAL / VTSの歴史的behaviorに合わせて、`writableBytes == 0` なら `PlaybackStatus::SPACE_FULL`、それ以外で `readableBytes > highThreshold` なら `SPACE_ALMOST_FULL`、それ以外で `readableBytes < lowThreshold` なら `SPACE_ALMOST_EMPTY`、それ以外で `readableBytes == 0` なら `SPACE_EMPTY`、それ以外は直前のPlayback statusを維持して新しいstatus遷移を生成しない。したがってPlaybackでは `readableBytes == lowThreshold` / `readableBytes == highThreshold` をALMOST側の新規遷移条件にしない。Recordは `q = unconsumedBytes` とし、`q > highThreshold` なら `RecordStatus::HIGH_WATER`、それ以外で `q < lowThreshold` なら `LOW_WATER`、それ以外は直前のRecord statusを維持して新しいwatermark status遷移を生成しない。Recordでは `lowThreshold == highThreshold == T` かつ `q == T` の場合もLOW/HIGHのどちらにも新規遷移しない。Playbackのthreshold判定へunused/free bytesを代用せず、Recordの判定へunused bytesを代用しない。`RecordStatus::DATA_READY` はwatermark分類ではなく、Record outputが実際に成功commitされ読み取り可能になった事象として既存のdata-ready契約に従う。
-- `dataFormat` は現行TS-only `ProductProfile`が扱うTS formatだけを成功させる。AIDL上既知だが現行profileで扱わないformatは`UNAVAILABLE`、予約値・未知値・未定義値は`INVALID_ARGUMENT`とする。
+- `dataFormat` は `LegacyTsProfile` が扱うTS formatだけを成功させる。`JapanAdvancedMmtTlvProfile` でもMMTP/TLVのDVR record/playbackを広告しないため、このDVR設定の成功範囲は拡張しない。AIDL上既知だが選択済みprofileで扱わないformatは`UNAVAILABLE`、予約値・未知値・未定義値は`INVALID_ARGUMENT`とする。
 - `packetSize` は正のbyte数だけを構文上受理し、現行TS formatでは188だけを成功させる。正の別packet sizeは`UNAVAILABLE`、0以下は`INVALID_ARGUMENT`とし、`dataFormat`との組として検証する。
 - `statusMask` は上記のsemantic status分類後に適用し、選択されているbitのstatusだけをcallback対象とする。分類されたstatusのbitがmaskされている場合、同じsnapshotで条件が重なる別statusへfallback / remapしない。開始直後の初期評価、threshold crossing / status変化、および受理済み`setStatusCheckIntervalHint()`による周期評価は同じ分類式と同じ`DvrSettingsSnapshot`を参照し、callback失敗は`PostCommitCallbackFailureTxn`へ接続する。
 
@@ -324,7 +324,7 @@ Record DVRの`attachFilter()` / `detachFilter()`は、Record DVRがLiveであれ
 | TS | `PCR` | 成功 | `noinit` | callback-only。通常Filter FMQなし |
 | TS | `RECORD` | 成功 | `record` | Filter FMQ resourceをopen時に所有し`getQueueDesc()`でexport可能。payloadはRecord DVR FMQ、index metadataはcallback。Filter FMQへRECORD payloadを二重配送しない |
 | TS | `TEMI` | `UNAVAILABLE` | なし | 本製品はTEMI処理能力を採用せず、object / queue / workerを生成しない |
-| MMTP / IP / TLV / ALP | AIDL上の任意の既知subtype | `UNAVAILABLE` | なし | TS-only `ProductProfile`の固定能力外。main-type objectを生成しない |
+| `LegacyTsProfile` の MMTP / IP / TLV / ALP | AIDL上の任意の既知subtype | `UNAVAILABLE` | なし | `LegacyTsProfile`の固定能力外。main-type objectを生成しない。`JapanAdvancedMmtTlvProfile`の追加範囲は後段の専用matrixだけを正とする |
 
 上表の成功行でも、`bufferSize`、callback、個数枠、FMQ / AV / PES予算その他の既存child-open条件を満たさない場合は既存契約の原因別errorへ写像する。成功行を理由に資源不足を成功へ丸めない。TS `UNDEFINED` は `linkCaps` のmain-type接続試験を成立させるための公開subtypeであり、SECTION/PES/TS/AV/PCR/RECORDのいずれかへ暗黙昇格させない。
 
@@ -616,7 +616,7 @@ Section/PES処理は外形抽出、設定されたCRC検査、typed event生成�
 
 raw=trueではFMQ payloadをcommitした後に`DATA_READY` status callbackを配送する。EventFlagはFMQ consumerを追加で起床させる同期手段であり、`onFilterStatus(DATA_READY)`の代替ではない。raw/nonraw切替前のcallback/eventを切替後として配送しないfenceは`FilterProducerDrainGate.filter_delivery_generation`を使う。
 
-nonraw Section eventの`tableId`は実sectionのtable_id、long sectionでは実際の5-bit `version`と`section_number`、short sectionでは`version=0` / `sectionNum=0`とする。`dataLength`は対応する完全section byte数と一致させる。nonraw PES eventの`streamId`はparseした実stream_id 0..255、`dataLength`は対応する完全PES byte数、TS-only productの`mpuSequenceNumber`は0とする。推測値でmetadataを生成しない。
+nonraw Section eventの`tableId`は実sectionのtable_id、long sectionでは実際の5-bit `version`と`section_number`、short sectionでは`version=0` / `sectionNum=0`とする。`dataLength`は対応する完全section byte数と一致させる。nonraw PES eventの`streamId`はparseした実stream_id 0..255、`dataLength`は対応する完全PES byte数、`LegacyTsProfile`のTS入力ではMMTP用の`mpuSequenceNumber`を生成せず0とする。推測値でmetadataを生成しない。
 
 ### PES assembler の異常系状態表
 
@@ -840,7 +840,7 @@ Android 14 AIDL本文は`milliseconds=0`に特別なreset意味を規定せず�
 
 `DemuxFilterRecordSettings` は `tsIndexMask`、`scIndexType`、tagged `scIndexMask` を1個の設定snapshotとして検証し、全項目が成功した場合だけFilter設定へcommitする。拒否時は旧settings、parser/tracker、`record_output_byte_offset`、source relation、Record DVR relation、generationを変更しない。
 
-- `tsIndexMask=0` はTS header/adaptation indexを要求しない有効値とする。Android 14 `DemuxTsIndex` のうちMPEG-TS packet header / adaptation fieldを直接表す既知bitだけを本製品のTS record index候補とし、要求maskの各bitはその既知bit集合のsubsetでなければならない。MMTP/MPT固有としてAIDL上定義された既知bitはTS-only productで `UNAVAILABLE`、予約bit・未知bitは `INVALID_ARGUMENT` とする。
+- `tsIndexMask=0` はTS header/adaptation indexを要求しない有効値とする。Android 14 `DemuxTsIndex` のうちMPEG-TS packet header / adaptation fieldを直接表す既知bitだけを本製品のTS record index候補とし、要求maskの各bitはその既知bit集合のsubsetでなければならない。MMTP/MPT固有としてAIDL上定義された既知bitは、現行両profileともMMTP recordを広告しないため `UNAVAILABLE`、予約bit・未知bitは `INVALID_ARGUMENT` とする。
 - `scIndexType=NONE` はstart-code indexなしを意味し、effective `scIndexMask` は0でなければならない。NONE時に非0 maskを要求した場合は `INVALID_ARGUMENT` とし、unionの未使用tagからcodecを推測しない。event側のcanonical zeroは `scIndex` tag + 0とする。
 - `SC` / `SC_HEVC` / `SC_AVC` / `SC_VVC` はそれぞれ `scIndex` / `scHevc` / `scAvc` / `scVvc` union tagと一致しなければならず、tag不一致は `INVALID_ARGUMENT` とする。各maskは選択tagでAndroid 14 AIDLが定義するbitのsubsetだけを受理し、予約bit・未知bitは `INVALID_ARGUMENT` とする。
 - non-NONEの `scIndexType` は、同じ確定済み `CapabilitySnapshot` に当該index parser / codec能力が存在する場合だけ成功する。AIDL上既知だが能力非採用のtypeは `UNAVAILABLE` とし、値を保存して無視しない。未知の `scIndexType` は `INVALID_ARGUMENT` とする。
@@ -1342,7 +1342,7 @@ release AIDL経路からテスト専用入口へ到達してはならず、テ�
 | T-AOSP-21 | `releaseAvHandle(any, negativeAvDataId)` | `INVALID_ARGUMENT` |
 | T-AOSP-22 | `getAvSharedHandle()` 複数回取得 + release | fd duplicate寿命確認 |
 | T-AOSP-23 | `configureMonitorEvent(0)` | 成功。未配送monitor stateだけをresetし、通常event、callback、FMQ、parser状態を維持 |
-| T-AOSP-24 | `configureMonitorEvent(nonzero)` | `UNAVAILABLE`。本製品のTS-only `ProductProfile`はmonitor eventを対応能力として採用せず、monitor state、worker、queueを生成しない |
+| T-AOSP-24 | `configureMonitorEvent(nonzero)` | `UNAVAILABLE`。`LegacyTsProfile` / `JapanAdvancedMmtTlvProfile`のどちらもmonitor eventを対応能力として採用せず、monitor state、worker、queueを生成しない |
 | T-AOSP-26 | AV `isPassthrough=false` | shared memory AV経路成功 |
 | T-AOSP-27 | AV `isPassthrough=true` | `UNAVAILABLE` |
 | T-AOSP-28a | `openDemux(out demuxId)` | objectと要素数1のID配列を同一成功応答で取得し、失敗時はどちらも公開されない |
@@ -1382,7 +1382,7 @@ release AIDL経路からテスト専用入口へ到達してはならず、テ�
 | T-AOSP-56 | Filter lifecycle closure | non-AV未設定`start()`/`flush()`は`INVALID_STATE`、未開始`stop()`と重複`start()`は冪等成功、開始中`configure()`は`INVALID_STATE`。`stop()`はcommit済みoutput/client資源を維持し、`flush()`だけが対象の未消費FMQ・未配送event・partial stateを破棄する。開始済みFilterのflushは開始状態を維持し、一度start済みFilterのstop後同一settings再configureはT-AOSP-53の新`startId`契約を満たす |
 | T-AOSP-57 | DVR lifecycle closure | 未設定`start()`/`flush()`は`INVALID_STATE`、未開始`stop()`と重複`start()`は冪等成功、開始中`configure()`は`INVALID_STATE`。Record開始中flushは`INVALID_STATE`、Playback開始中flushは成功して開始状態を維持する。stopではRecord未消費outputおよびPlayback未読input/processing residualを維持し、configureでqueue identity/relationを置換しない |
 | T-AOSP-58 | Record DVR Filter relation lifecycle | configure前/停止中/開始中のRecord DVRでvalid attach/detachを成功させ、duplicate attach / absent detachは状態不変成功。Playback DVR、foreign owner、別demux、record非対応Filterは`INVALID_ARGUMENT`、閉鎖済みFilter引数は`INVALID_STATE`。route mutationは`RecordDvrFilterRelationTxn`だけを通る |
-| T-AOSP-59 | `linkCaps` concrete matrix | TS-only profileでは`[0x01, 0, 0, 0, 0]`を返し、TS->TSのUNDEFINED subtype linkageを成功させ、非広告pairを成功させない |
+| T-AOSP-59 | profile別 `linkCaps` concrete matrix | `LegacyTsProfile`は`[0x01, 0, 0, 0, 0]`、`JapanAdvancedMmtTlvProfile`は`[0x01, 0, 0x02, 0x04, 0]`を返す。各profileが広告したpairのUNDEFINED subtype linkageだけを成功させ、非広告pairを成功させない |
 | T-AOSP-60 | `numBytesInSectionFilter` / SectionBits boundary | capabilityはmask最大幅16。filter/mask/modeは独立shapeを保持し、maskだけ16 bytes超を`INVALID_ARGUMENT`で拒否する。active mask bitが参照するbyte位置ではfilter/mode双方の存在を必須とし、missing valueを補完しない。mask外のfilter/mode末尾はmatchingに使わず、短いruntime sectionはnon-matchとする |
 | T-AOSP-61 | `DvrSettings` atomic configure | statusMask / low/high threshold / dataFormat / packetSizeを同一snapshotでvalidateし、1 field拒否時にsettings・queue位置・identity・relationを変更しない |
 | T-AOSP-62 | Filter / Record DVR FMQ full | 既存未消費dataをevictせず新規論理単位を部分commitしない。Filterは`DemuxFilterStatus::OVERFLOW`、Recordの188-byte commit拒否は`RecordStatus::OVERFLOW`へ一意に写像する。Recordは`OVERFLOW` bit選択時だけ通知し、mask時にHIGH/LOW/DATA_READYへ代替しない。commit失敗ではqueue位置と`record_output_byte_offset`不変 |
@@ -1706,3 +1706,84 @@ presentation timestampと当該media outputのassociation責務は`MediaEvent`�
 一方、同3.11-E1 Fascicle 2 Attachment Chapter 2 2.1のaudio規定はparameter切替等の境界における先頭frameへのPTSを要求するが、全audio PESへの明示を保証しない。Fascicle 3 Chapter 3 3.1が参照するH.222.0 2.4.3.7ではaudio PTSは当該PES内で開始する最初のaudio access unitへ対応し、Fascicle 2 Chapter 5.2.2の製品対象MPEG-2 AAC LC ADTSはheaderにactual sampling frequencyを持ち、`number_of_raw_data_blocks_in_frame=0`により1 raw-data-block/frameへ固定される。さらにARIB TR-B15 4.6-E1 Fascicle 3 4.2.2はBS／広帯域CSのMPEG-2 AACについてPES packetとaudio frameのnon-synchronizationを許容する。製品既定producerはMPEG-2 AAC LC ADTSとMPEG audioについて、PESを跨いで連続するframe header／lengthを上限付きで追跡し、この規格上のanchor、actual sample rate、exact sample countを結合してPTS-sparse eventのauthoritativeな33-bit 90 kHz時刻を確定する。parameter変更後の明示PTSで最初に開始するAUへ再anchorし、未通知変更、unsupported／malformed frame、gapまたは各lifecycle境界では配送を抑止して型付き診断を残す。この成立範囲に対応する`numAudioFilter=1`とaudio/video各1件を閉じる有限AV予算を製品既定profileで広告する。`getAvSyncTime()`用のPCR/wallclock補間を個別eventのPTSとして流用しない。TR-B15の証拠は公式英訳4.6-E1の精読範囲であり、現行日本語版8.9との差分は未証明とする。
 
 最低試験は、(1) explicit PTS PESでは`isPtsPresent=true`かつ`pts`がその明示PTSと一致すること、(2) `isPtsPresent=false`の合法なPTS-sparse inputでもbackend metadataまたはframe境界・timing parameterを構造検証済みのframe列からauthoritative associationを確定できる場合は当該media outputに対応する値を`pts`へ出すこと、(3) authoritative sourceがない場合は定数0、直前PTS、PCR、wallclock、nominal frame rate / sample rate等のgeneric interpolationを行わず、そのeventを成功配送しないこと、(4) exact sample countの有理数累積、33-bit wrapとA/V timeline差を維持すること、(5) `isPtsPresent=false`だけを理由にpayload破棄/fatalせず、associationが成立するeventはprovenanceをfalseのまま配送すること、(6) flush、transport discontinuity、source/generation変更後は明示PTSまで再開しないこと、(7) ADTS／MPEG audioのframe bodyおよびheader途中にPES境界を置いても有限残余で明示anchorからPTS-sparse eventへ継続し、最初に開始するAUの時刻とpresence=falseを維持すること、(8)未anchorかつ`data_alignment_indicator=false`の最初のPESが先行AUのcontinuationから始まる場合に、sync-likeな偽候補を次frame境界の構造不一致で拒否し、最初に開始する検証済みAUへだけ明示PTSをanchorして後続PTS-sparse eventへ継続すること、(9)先行する偽`HeaderOnly`候補と真のfirst AUがともに次PESへ跨ぐ場合は後続境界確認までevent/anchorを公開せず、確認後に真のAUだけを採用すること、(10)continuation tailとnew AUが同じPESにある場合も、最終`MediaEvent.offset/dataLength`が各完成AUの正確なrangeとなり、付与PTS/provenanceが同じAUへ対応すること、(11)製品snapshotのTS AUDIOが公開demux open-filter use-caseを通り、audio-only serviceがvideo filterなしで既存TIS start gateを通ること、を含める。
+
+## 日本高度放送 MMTP/TLV 公開契約
+
+本節は `JapanAdvancedMmtTlvProfile` を有効にした場合のAOSP公開契約を固定する。既存のTS-only記載は現行default `LegacyTsProfile` の契約として引き続き有効であり、本節の存在だけでは能力値を変更しない。
+
+### capability と filter linkage
+
+Android 14 AIDL V2 の main type bit は `TS=0x01 / MMTP=0x02 / IP=0x04 / TLV=0x08 / ALP=0x10` とする。`JapanAdvancedMmtTlvProfile` は既存TS能力と高度放送能力を同一demuxで提供するため、次に固定する。
+
+| 項目 | `LegacyTsProfile` | `JapanAdvancedMmtTlvProfile` |
+|---|---:|---:|
+| `filterCaps` | `0x01` | `0x0F` |
+| `linkCaps` main type順 `[TS, MMTP, IP, TLV, ALP]` | `[0x01, 0, 0, 0, 0]` | `[0x01, 0, 0x02, 0x04, 0]` |
+
+高度プロファイルで広告するmain-type graphは **TS -> TS、TLV -> IP、IP -> MMTP** の3組だけである。MMTPは終端filterであり別main typeへのsource linkを広告しない。ALPは非対応のままとする。広告したpairについてはAOSP VTSがsource/sink双方を subtype `UNDEFINED` でopenして `setDataSource()` / detachを行う経路も成功させる。`UNDEFINED`はlinkage endpointであり、SECTION / AV等の具体subtypeへ暗黙昇格させない。
+
+backendがTLV packet ingress、必要なparser、FMQ/AV予算、source relationの全てを確保できない場合は `JapanAdvancedMmtTlvProfile` を `CapabilitySnapshot` へcommitせず、既存のTS-only値を返す。実行時入力を見て `filterCaps` / `linkCaps` を増減させない。
+
+### `openFilter()` acceptance matrix
+
+`JapanAdvancedMmtTlvProfile` で追加する成功範囲を次に固定する。表にない既知subtypeは `UNAVAILABLE`、main/subtype union不一致または未知値は `INVALID_ARGUMENT` とし、拒否時にobject、queue、relation、worker、leaseを生成しない。
+
+| main type | subtype | 成功時の意味 | 出力 |
+|---|---|---|---|
+| TLV | `UNDEFINED` | VTS/linkCaps用endpoint | linkageのみ |
+| TLV | `SECTION` | TLV-SI signaling packetをpacketType条件で抽出 | Filter FMQ + `section` event |
+| TLV | `TLV` | 完全なTLV packet列を抽出 | Filter FMQ、`passthrough=true`ならlink source |
+| TLV | `PAYLOAD_THROUGH` | TLV headerを除去し、packetTypeに従うpayloadをIP main typeへ渡す | link source |
+| IP | `UNDEFINED` | VTS/linkCaps用endpoint | linkageのみ |
+| IP | `NTP` | RFC 5905 NTP packetを検証しMMT clock anchorへ入力 | clock state更新、通常payload FMQなし |
+| IP | `IP` | address/port条件に一致する完全なIP datagramを抽出 | Filter FMQ、`bPassthrough=true`ならlink source |
+| IP | `IP_PAYLOAD` | IP header除去後payloadを抽出 | Filter FMQ + `ipPayload` event |
+| IP | `PAYLOAD_THROUGH` | IP header除去後payloadをMMTP main typeへ渡す | link source |
+| MMTP | `UNDEFINED` | VTS/linkCaps用endpoint | linkageのみ |
+| MMTP | `SECTION` | MMTP signaling payload中の完全なMMT signaling / M2 section単位を抽出 | Filter FMQ + `section` event |
+| MMTP | `MMTP` | 指定 `mmtpPid` の完全なMMTP packet列を抽出 | Filter FMQ |
+| MMTP | `AUDIO` | 指定asset packet IDの完全なaudio MFU/sampleを組み立てる | clear `MediaEvent` |
+| MMTP | `VIDEO` | 指定asset packet IDの完全なvideo MFU/sampleを組み立てる | clear `MediaEvent` |
+| MMTP | `PES` | 本profileでは採用しない。AOSP名はMMTPではMFU抽出を意味するが、TIS通常経路を二重化しない | `UNAVAILABLE` |
+| MMTP | `RECORD` / `DOWNLOAD` | 現行productの録画・download非採用 | `UNAVAILABLE` |
+| ALP | 全subtype | 日本高度放送MMT/TLV profileの対象外 | `UNAVAILABLE` |
+
+TS行の既存契約は変更しない。
+
+### TLV packet と圧縮IP境界
+
+TLV packet typeはAOSP frameworkの `IPv4=0x01 / IPv6=0x02 / compressed IP=0x03 / signaling=0xFE / null=0xFF` を受理候補とする。未知packet typeは `INVALID_ARGUMENT`、既知だが当該filterで意味を持たない組合せは `UNAVAILABLE` とする。`packetType=0x03` は `isCompressedIpPacket=true`、IPv4/IPv6/signalingは `false` でなければならず、矛盾する設定を保存して成功扱いにしない。null packetは統計上消費してよいがdownstreamへpayloadを生成しない。
+
+TLV packet framingはARIB STD-B32のcurrent product適用版に従い、headerのtype/lengthから一個のpacket境界を確定する。宣言長が入力上限を超える、不完全、reserved/不正なheaderはそのpacketを正常payloadへ昇格させず診断する。破損位置から任意byte patternをscanして架空のpacket境界を作らない。入力source generationが変わった時点で未完成packetを破棄する。
+
+header-compressed IPは、B32で規定される放送用header compressionを実装する `CompressedIpContextRegistry` が当該profileで有効な場合だけ `packetType=0x03` を成功させる。contextはdemux/source generationに所属し、context ID、sequence、参照header、寿命、memory上限をbounded stateとして保持する。context欠落、sequence破綻、復元長不整合、generation跨ぎは復元IP packetを生成しない。decoder未実装のbuildではcompressed IPだけを `UNAVAILABLE` とし、TLV main type全体を成功no-opにはしない。実放送対応を表明するproduct qualificationでは、対象局が使用するcompressed/uncompressed packet typeを全て実装済みであることを別途確認する。
+
+### IP datagram と UDP/MMTP 境界
+
+TLV payloadから得たIPv4/IPv6は、version、header長、total/payload length、extension header、上限を検証してからIP filterへ渡す。fragmented IPを対応するbuildではbounded `IpFragmentAssembler` で `(generation, src, dst, protocol, identification)` 単位に再構成し、重複fragmentの内容不一致、範囲重複、長さ矛盾、timeout、memory上限超過はdatagramを成立させない。fragment reassembly非対応buildはfragmentを含むproductを対応宣言しない。
+
+MMTP sinkへ接続する `IP/PAYLOAD_THROUGH` は、MMTP用data flowとして選択されたUDP datagramだけを受ける。IP filterがIP headerを除去した後、MMTP ingress adapterがUDP header/lengthと選択済みaddress/portを検証し、UDP payloadを一個のMMTP packet候補として渡す。UDP以外、port不一致、length不一致をMMTPとして推測解釈しない。
+
+### MMTP packet / signaling / media 境界
+
+MMTP packet framerは、version、payload type、packet ID、timestamp、packet sequence number、optional header lengthを検証し、一個のIP/UDP payloadから一個のMMTP packetを成立させる。ARIB STD-B60の基本stackでは一個のMMTP packetは一個のIP packetで伝送されるため、複数IP datagramを連結して一個のMMTP packetを捏造しない。packet sequence numberの欠落・重複・逆行は `(generation, packet_id)` ごとに診断し、欠落を別packetのpayloadで補完しない。
+
+`payload_type=0x00` のMPU系はMMTP payloadのfragmentation/aggregation情報、MPU sequence number、MFU/sample位置を検証して再構成する。`payload_type=0x02` のcontrol messageはmessage lengthで完全性を検証する。PA/MPTやM2 sectionのARIB意味解析はTuner HALで行わず、完全なsignaling単位だけをTISへ渡す。
+
+MMTP AUDIO/VIDEOの `MediaEvent` は既存のclear-memory / non-passthrough契約に従う。`avMemory`はmappable、`isSecureMemory=false` とする。`mpuSequenceNumber`は当該MFUが属する実MPU sequence numberを設定し、固定0やpacket sequence numberを代入しない。`pts`は受信NTP clockとMPU/sampleのauthoritativeなpresentation timeから90 kHzへ変換した値だけを設定し、wallclock到着時刻やMMTP distribution timestampを根拠なくPTSへ流用しない。MMTPにはPES headerがないため `isPtsPresent=false` としつつ、成功対応するnon-empty AV eventでは `pts` 自体は有効値を必須とする。DTSを構成できない場合は `isDtsPresent=false, dts=0` とし、`isPesPrivateData=false` とする。
+
+NTP同期はMMTP専用の `MmtClockAnchor` としてsource generationに所属させ、retune/source変更で旧anchorを失効させる。PCR値を捏造して既存TS `PcrClockAnchorStore`へ投入しない。MMTP AVをAOSPのA/V sync IDへ接続できる実同期源がないbuildでは、MMTPについてその同期API成功能力を広告せず、TISは `MediaEvent.pts` とMediaCodec/MediaSyncの標準経路を使用する。
+
+### source relation / lifecycle / rollback
+
+高度放送の実データgraphは `frontend TLV ingress -> TLV/PAYLOAD_THROUGH -> IP/PAYLOAD_THROUGH -> MMTP` とする。TLV-SI用TLV/SECTION、NTP用IP/NTP、PA/MPT/M2用MMTP signaling、AV用MMTP AUDIO/VIDEOは必要に応じて同じgenerationのsourceから分岐する。
+
+relationの所有者、cycle禁止、同一demux/owner検証、generation、configure中のsource整合、start/stop/flush/close時のdetach、pre-commit rollback、post-commit cleanupは既存 `SourceBoundaryTxn` / `StreamBoundaryTxn` 契約をそのまま適用する。MMTP/TLV専用の第二relation registryを設けない。設定時は全filterをconfigureしてrelationをcommitした後に **下流から上流**（MMTP -> IP -> TLV）の順でstartし、停止時は **上流から下流**（TLV -> IP -> MMTP）の順で新規入力を止めてからdrain/closeする。途中失敗時に一部relationだけをcurrent graphとして残さない。
+
+### frontend と VTS gate
+
+高度衛星ではAOSP `FrontendType.ISDBS3` / `Isdbs3FrontendSettings`を使用し、backendが実ISDB-S3 lockとTLV ingressを確認できる場合だけfrontendを公開する。ISDB-S settingsへ丸めない。
+
+Android 14 AIDLに ISDB-T2 / ISDB-T1.5 / ISDB-T3 専用frontend型がないため、高度地上物理方式を `ISDBT` として偽装して公開しない。将来platform側に損失なく表現できる公開frontend契約が追加された時点で、その契約とSTD-B79/B80の対応を別途固定する。これはMMTP/TLV demux graphの未設計を意味せず、物理frontendのAOSP公開面に対するactivation gateである。
+
+AIDL V2 `linkCaps` のVTSは広告bitごとに subtype `UNDEFINED` endpointを生成するため、本節の3pairは必ずその経路で検証する。TLV/MMTPの具体filter fixtureを選択VTS artifactが設定ファイルから表現できない場合、推測したXMLでVTS成功を宣言せず `DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED` とする。その場合もhost/integration testでTLV framing、TLV->IP->MMTP linkage、PA/MPT/M2、NTP、AV MediaEventを固定し、VTS artifactが決まった時点で公式fixtureへ置換する。
