@@ -3,6 +3,9 @@ from typing import Any
 from xml.sax.saxutils import escape
 from .model import FRONTEND_ID, RECORD_FILTER_FMQ_PROBE_VARIANT, validate_profile
 
+SECTION_LENGTH_FIELD_BITS = 12
+SECTION_DELAY_HINT_MS = 100
+
 
 def _frontend_xml(profile: dict[str, Any]) -> str:
     fe = profile["frontend"]
@@ -30,6 +33,38 @@ def _dvr_xml(dvr_id: str, dvr_type: str, size: int, *, input_file_path: str | No
         f'      <dvr id="{dvr_id}" type="{dvr_type}" bufferSize="{size}" statusMask="15" '
         f'lowThreshold="{size // 4}" highThreshold="{size * 3 // 4}" dataFormat="TS" '
         f'packetSize="188"{input_attr}/>'
+    )
+
+
+def _av_filter_xml(
+    filter_id: str,
+    subtype: str,
+    buffer_size: int,
+    pid: int,
+    stream_type: int,
+) -> str:
+    stream_tag = "audioStreamType" if subtype == "AUDIO" else "videoStreamType"
+    return (
+        f'      <filter id="{filter_id}" mainType="TS" subType="{subtype}" '
+        f'bufferSize="{buffer_size}" pid="{pid}" useFMQ="false">'
+        '<avFilterSettings isPassthrough="false" isSecureMemory="false">'
+        f'<{stream_tag}>{stream_type}</{stream_tag}></avFilterSettings></filter>'
+    )
+
+
+def _section_filter_xml(
+    filter_id: str,
+    buffer_size: int,
+    pid: int,
+    *,
+    delay_hint_ms: int | None = None,
+) -> str:
+    delay_attr = "" if delay_hint_ms is None else f' timeDelayInMs="{delay_hint_ms}"'
+    return (
+        f'      <filter id="{filter_id}" mainType="TS" subType="SECTION" '
+        f'bufferSize="{buffer_size}" pid="{pid}" useFMQ="true"{delay_attr}>'
+        f'<sectionFilterSettings isCheckCrc="false" isRepeat="true" isRaw="false" '
+        f'bitWidthOfLengthField="{SECTION_LENGTH_FIELD_BITS}"/></filter>'
     )
 
 
@@ -67,26 +102,58 @@ def render_xml(profile: dict[str, Any]) -> str:
     if flows["clear_live"]["enabled"]:
         live = flows["clear_live"]
         filters.extend([
-            '      <filter id="FILTER_TS_AUDIO_0" mainType="TS" subType="AUDIO" '
-            f'bufferSize="{int(queues["audio_filter_bytes"])}" pid="{int(live["audio_pid"])}" useFMQ="false">'
-            f'<avFilterSettings isPassthrough="false" isSecureMemory="false"><audioStreamType>{int(live["audio_stream_type"])}</audioStreamType></avFilterSettings></filter>',
-            '      <filter id="FILTER_TS_VIDEO_0" mainType="TS" subType="VIDEO" '
-            f'bufferSize="{int(queues["video_filter_bytes"])}" pid="{int(live["video_pid"])}" useFMQ="false">'
-            f'<avFilterSettings isPassthrough="false" isSecureMemory="false"><videoStreamType>{int(live["video_stream_type"])}</videoStreamType></avFilterSettings></filter>',
-            '      <filter id="FILTER_TS_PCR_0" mainType="TS" subType="PCR" '
+            _av_filter_xml(
+                "FILTER_TS_AUDIO_LIVE_0",
+                "AUDIO",
+                int(queues["audio_filter_bytes"]),
+                int(live["audio_pid"]),
+                int(live["audio_stream_type"]),
+            ),
+            _av_filter_xml(
+                "FILTER_TS_VIDEO_LIVE_0",
+                "VIDEO",
+                int(queues["video_filter_bytes"]),
+                int(live["video_pid"]),
+                int(live["video_stream_type"]),
+            ),
+            '      <filter id="FILTER_TS_PCR_LIVE_0" mainType="TS" subType="PCR" '
             f'bufferSize="{int(queues["pcr_filter_bytes"])}" pid="{int(live["pcr_pid"])}" useFMQ="false"/>',
-            '      <filter id="FILTER_TS_SECTION_0" mainType="TS" subType="SECTION" '
-            f'bufferSize="{int(queues["section_filter_bytes"])}" pid="{int(live["section_pid"])}" useFMQ="true">'
-            '<sectionFilterSettings isCheckCrc="false" isRepeat="true" isRaw="false"/></filter>',
+            _section_filter_xml(
+                "FILTER_TS_SECTION_LIVE_0",
+                int(queues["section_filter_bytes"]),
+                int(live["section_pid"]),
+                delay_hint_ms=SECTION_DELAY_HINT_MS,
+            ),
         ])
         data_flows.append(
             f'    <clearLiveBroadcast frontendConnection="{frontend_id}" '
-            'audioFilterConnection="FILTER_TS_AUDIO_0" videoFilterConnection="FILTER_TS_VIDEO_0" '
-            'pcrFilterConnection="FILTER_TS_PCR_0" sectionFilterConnection="FILTER_TS_SECTION_0"/>'
+            'audioFilterConnection="FILTER_TS_AUDIO_LIVE_0" videoFilterConnection="FILTER_TS_VIDEO_LIVE_0" '
+            'pcrFilterConnection="FILTER_TS_PCR_LIVE_0" sectionFilterConnection="FILTER_TS_SECTION_LIVE_0"/>'
         )
 
     if flows["playback"]["enabled"]:
         playback = flows["playback"]
+        filters.extend([
+            _av_filter_xml(
+                "FILTER_TS_AUDIO_PLAYBACK_0",
+                "AUDIO",
+                int(queues["audio_filter_bytes"]),
+                int(playback["audio_pid"]),
+                int(playback["audio_stream_type"]),
+            ),
+            _av_filter_xml(
+                "FILTER_TS_VIDEO_PLAYBACK_0",
+                "VIDEO",
+                int(queues["video_filter_bytes"]),
+                int(playback["video_pid"]),
+                int(playback["video_stream_type"]),
+            ),
+            _section_filter_xml(
+                "FILTER_TS_SECTION_PLAYBACK_0",
+                int(queues["section_filter_bytes"]),
+                int(playback["section_pid"]),
+            ),
+        ])
         dvr_size = int(queues["playback_dvr_bytes"])
         dvrs.append(
             _dvr_xml(
@@ -98,8 +165,9 @@ def render_xml(profile: dict[str, Any]) -> str:
         )
         data_flows.append(
             '    <dvrPlayback dvrConnection="DVR_PLAYBACK_0" '
-            'audioFilterConnection="FILTER_TS_AUDIO_0" videoFilterConnection="FILTER_TS_VIDEO_0" '
-            'sectionFilterConnection="FILTER_TS_SECTION_0"/>'
+            'audioFilterConnection="FILTER_TS_AUDIO_PLAYBACK_0" '
+            'videoFilterConnection="FILTER_TS_VIDEO_PLAYBACK_0" '
+            'sectionFilterConnection="FILTER_TS_SECTION_PLAYBACK_0"/>'
         )
 
     if filters:
