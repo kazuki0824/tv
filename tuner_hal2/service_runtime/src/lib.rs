@@ -2,6 +2,7 @@ mod boot;
 mod callback_registry;
 mod capability_profile;
 mod capability_snapshot;
+mod key_provisioning_ops;
 mod cleanup_execution;
 mod command_dispatch;
 mod descrambler_key_table;

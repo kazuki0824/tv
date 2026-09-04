@@ -68,7 +68,10 @@ value class TsPid(val value: Int) : Comparable<TsPid> {
 }
 
 class TunerKeyToken private constructor(private val bytes: ByteArray) {
-    init { require(bytes.size in TOKEN_LENGTH_RANGE) { "Tuner key token は 1..16 byte でなければなりません: ${bytes.size}" } }
+    init {
+        require(bytes.size in TOKEN_LENGTH_RANGE) { "Tuner key token は 1..16 byte でなければなりません: ${bytes.size}" }
+        require(!(bytes.size == 1 && bytes[0] == 0.toByte())) { "Tuner key token に VOID [0x00] は使用できません" }
+    }
     fun toByteArray(): ByteArray = bytes.copyOf()
     val size: Int get() = bytes.size
 
@@ -78,7 +81,7 @@ class TunerKeyToken private constructor(private val bytes: ByteArray) {
 
     companion object {
         operator fun invoke(raw: ByteArray): TunerKeyToken = TunerKeyToken(raw.copyOf())
-        fun fromOrNull(raw: ByteArray?): TunerKeyToken? = raw?.takeIf { it.size in TOKEN_LENGTH_RANGE }?.let(::TunerKeyToken)
+        fun fromOrNull(raw: ByteArray?): TunerKeyToken? = raw?.takeIf { it.size in TOKEN_LENGTH_RANGE && !(it.size == 1 && it[0] == 0.toByte()) }?.let(::TunerKeyToken)
     }
 }
 

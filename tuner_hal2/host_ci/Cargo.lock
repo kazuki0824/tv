@@ -3,6 +3,17 @@
 version = 3
 
 [[package]]
+name = "maleicacid-tuner-hal2-key-provisioning-bridge-host-ci"
+version = "0.0.0"
+
+[[package]]
+name = "maleicacid-tuner-hal2-key-provisioning-connection-host-ci"
+version = "0.0.0"
+dependencies = [
+ "maleicacid-tuner-hal2-key-provisioning-bridge-host-ci",
+]
+
+[[package]]
 name = "maleicacid-tuner-hal2-common-host-ci"
 version = "0.0.0"
 
@@ -37,6 +48,13 @@ version = "0.0.0"
 dependencies = [
  "maleicacid-tuner-hal2-common-host-ci",
  "maleicacid-tuner-hal2-control-host-ci",
+]
+
+[[package]]
+name = "maleicacid-tuner-hal2-descrambler-key-table-host-ci"
+version = "0.0.0"
+dependencies = [
+ "maleicacid-tuner-hal2-descrambler-host-ci",
 ]
 
 [[package]]

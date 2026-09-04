@@ -2,7 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::descrambler_key_table::{DescramblerKeyLookupError, DescramblerKeyTable};
+use crate::descrambler_key_table::{
+    DescramblerKeyLookupError, DescramblerKeySlotId, DescramblerKeyTable,
+    KeyProvisioningIdentity, KeyProvisioningMutationError,
+};
 use crate::descrambler_session::{
     DescramblerCleanupReport, DescramblerCleanupTxnError, DescramblerClearKeyOutcome,
     DescramblerClearKeyTxnError, DescramblerReplaceKeyOutcome, DescramblerReplaceKeyTxnError,
@@ -25,8 +28,8 @@ use maleicacid_tuner_hal2_demux::{
 };
 use maleicacid_tuner_hal2_descrambler::{
     descramble_validated_ts_packet_in_place, packet_policy_for_descramble_failure,
-    DescrambleFailure, DescrambleOutcome, DescramblerKeySlot, DescramblerKeyToken, DescramblerPid,
-    DescramblerPidClaim, PacketPolicyAction,
+    DescrambleFailure, DescrambleOutcome, DescramblerKeySlot, DescramblerKeyToken,
+    DescramblerKeyTokenError, DescramblerPid, DescramblerPidClaim, PacketPolicyAction,
 };
 use maleicacid_tuner_hal2_device::FrontendRuntime;
 use maleicacid_tuner_hal2_lnb::{
@@ -757,6 +760,13 @@ impl ResolvedDescramblerPacketMaterial {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KeyProvisioningRegistryError {
+    InvalidKeyToken(DescramblerKeyTokenError),
+    Registry(KeyProvisioningMutationError),
+    SlotIdExhausted,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RegistryCommitError {
     DuplicateFrontendId {
@@ -825,6 +835,7 @@ pub struct RuntimeRegistry {
     next_filter_id: i32,
     next_dvr_id: i32,
     next_descrambler_id: i32,
+    next_descrambler_key_slot_id: u64,
 }
 
 impl Default for RuntimeRegistry {
@@ -852,6 +863,7 @@ impl Default for RuntimeRegistry {
             next_filter_id: 1,
             next_dvr_id: 1,
             next_descrambler_id: 1,
+            next_descrambler_key_slot_id: 1,
         }
     }
 }
@@ -869,6 +881,66 @@ impl RuntimeRegistry {
             av_max_outstanding_events_per_filter,
             av_per_filter_live_bytes,
             ..Self::default()
+        }
+    }
+
+    pub(crate) fn reserve_key_provisioning_resource(
+        &mut self,
+        key_token: Vec<u8>,
+        provider_id: i32,
+        provider_generation: u64,
+    ) -> Result<DescramblerKeySlotId, KeyProvisioningRegistryError> {
+        let token = DescramblerKeyToken::try_from_bytes(key_token)
+            .map_err(KeyProvisioningRegistryError::InvalidKeyToken)?;
+        let candidate = DescramblerKeySlotId(self.next_descrambler_key_slot_id);
+        let next_candidate = self
+            .next_descrambler_key_slot_id
+            .checked_add(1)
+            .ok_or(KeyProvisioningRegistryError::SlotIdExhausted)?;
+        self.descrambler_key_table
+            .reserve_key_slot(token, candidate, provider_id, provider_generation)
+            .map_err(KeyProvisioningRegistryError::Registry)?;
+        self.next_descrambler_key_slot_id = next_candidate;
+        Ok(candidate)
+    }
+
+    pub(crate) fn publish_key_provisioning_resource(
+        &mut self,
+        key_token: Vec<u8>,
+        provider_id: i32,
+        provider_generation: u64,
+        key_epoch: u64,
+        key_slot: DescramblerKeySlot,
+    ) -> Result<DescramblerKeySlotId, KeyProvisioningRegistryError> {
+        let token = DescramblerKeyToken::try_from_bytes(key_token)
+            .map_err(KeyProvisioningRegistryError::InvalidKeyToken)?;
+        let identity = KeyProvisioningIdentity {
+            provider_id,
+            provider_generation,
+            key_epoch,
+        };
+        self.descrambler_key_table
+            .publish_key_slot(token, identity, key_slot)
+            .map_err(KeyProvisioningRegistryError::Registry)
+    }
+
+    pub(crate) fn revoke_key_provisioning_resource(
+        &mut self,
+        key_token: Vec<u8>,
+        provider_id: i32,
+        provider_generation: u64,
+    ) -> Result<(), KeyProvisioningRegistryError> {
+        let token = DescramblerKeyToken::try_from_bytes(key_token)
+            .map_err(KeyProvisioningRegistryError::InvalidKeyToken)?;
+        match self.descrambler_key_table.revoke_key_slot(
+            &token,
+            provider_id,
+            provider_generation,
+        ) {
+            Ok(())
+            | Err(DescramblerKeyLookupError::UnknownToken)
+            | Err(DescramblerKeyLookupError::ExpiredToken) => Ok(()),
+            Err(error) => Err(KeyProvisioningRegistryError::Registry(error)),
         }
     }
 
@@ -911,6 +983,7 @@ impl RuntimeRegistry {
         self.next_filter_id = 1;
         self.next_dvr_id = 1;
         self.next_descrambler_id = 1;
+        self.next_descrambler_key_slot_id = 1;
     }
 
     pub fn frontend_count(&self) -> usize {
