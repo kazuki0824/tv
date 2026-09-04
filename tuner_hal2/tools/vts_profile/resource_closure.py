@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .model import ProfileError
+from .model import ProfileError, RECORD_FILTER_FMQ_PROBE_VARIANT
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CAPABILITY_SOURCE = _REPO_ROOT / "tuner_hal2/service_runtime/src/capability_snapshot.rs"
@@ -56,6 +56,8 @@ def _program(
     queues = profile["queues"]
     record = flows["record"]["enabled"]
     live = flows["clear_live"]["enabled"]
+    playback = flows["playback"]["enabled"]
+    canonical = profile["vts"].get("variant", "") != RECORD_FILTER_FMQ_PROBE_VARIANT
     lines: list[str] = []
     if record:
         filter_bytes = _i32_buffer(queues["record_filter_bytes"], "queues.record_filter_bytes")
@@ -69,13 +71,36 @@ def _program(
     if live:
         audio_bytes = _i32_buffer(queues["audio_filter_bytes"], "queues.audio_filter_bytes")
         video_bytes = _i32_buffer(queues["video_filter_bytes"], "queues.video_filter_bytes")
+        pcr_bytes = _i32_buffer(queues["pcr_filter_bytes"], "queues.pcr_filter_bytes")
+        section_bytes = _i32_buffer(queues["section_filter_bytes"], "queues.section_filter_bytes")
         lines.extend([
             'require_capacity(snapshot.filter_capacity(FilterOpenType::TsAudio), 1, "audio filter")?;',
             f'ledger.reserve_filter(snapshot, 2, FilterOpenType::TsAudio, {audio_bytes}).map_err(debug_error)?;',
             'require_capacity(snapshot.filter_capacity(FilterOpenType::TsVideo), 1, "video filter")?;',
             f'ledger.reserve_filter(snapshot, 3, FilterOpenType::TsVideo, {video_bytes}).map_err(debug_error)?;',
+            'require_capacity(snapshot.filter_capacity(FilterOpenType::TsPcr), 1, "PCR filter")?;',
+            f'ledger.reserve_filter(snapshot, 4, FilterOpenType::TsPcr, {pcr_bytes}).map_err(debug_error)?;',
+            'require_capacity(snapshot.filter_capacity(FilterOpenType::TsSection), 1, "section filter")?;',
+            f'ledger.reserve_filter(snapshot, 5, FilterOpenType::TsSection, {section_bytes}).map_err(debug_error)?;',
         ])
-    demux_demand = 1 if record or live else 0
+    if playback:
+        playback_bytes = _i32_buffer(queues["playback_dvr_bytes"], "queues.playback_dvr_bytes")
+        lines.extend([
+            'require_capacity(snapshot.num_playback, 1, "playback DVR")?;',
+            f'ledger.reserve_dvr(snapshot, 2, {playback_bytes}).map_err(debug_error)?;',
+            f'ledger.reserve_playback_processing(snapshot, 2, DvrKind::Playback, {playback_bytes}).map_err(debug_error)?;',
+        ])
+    coverage = ""
+    if canonical:
+        coverage = '''
+    require_published_coverage(snapshot.num_record, true, "record")?;
+    require_published_coverage(snapshot.num_playback, true, "playback")?;
+    require_published_coverage(snapshot.num_audio_filter, true, "audio")?;
+    require_published_coverage(snapshot.num_video_filter, true, "video")?;
+    require_published_coverage(snapshot.num_pcr_filter, true, "PCR")?;
+    require_published_coverage(snapshot.num_section_filter, true, "section")?;
+'''
+    demux_demand = 1 if record or live or playback else 0
     operations = "\n        ".join(lines)
     capability = str(capability_source.resolve()).replace("\\", "\\\\")
     filter_config_text = _read_filter_config_source(filter_config_source)
@@ -124,6 +149,12 @@ pub use production_demux_config::FilterOpenType;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DvrKind {{ Record, Playback }}
 pub const MAX_PES_BUFFER_BYTES: usize = {pes_max};
+mod playback_consume_txn {{
+    pub(crate) const fn required_playback_processing_bytes(queue_capacity: usize) -> usize {{
+        let chunk = 188usize * 256usize;
+        if queue_capacity < chunk {{ queue_capacity }} else {{ chunk }}
+    }}
+}}
 
 mod production {{ include!(r#"{capability}"#); }}
 use production::{{CapacityLedger, CapabilitySnapshot}};
@@ -132,10 +163,16 @@ fn debug_error(error: HalError) -> String {{ format!("{{error:?}}") }}
 fn require_capacity(limit: i32, demand: i32, name: &str) -> Result<(), String> {{
     if limit < demand {{ Err(format!("{{name}} demand {{demand}} exceeds capability {{limit}}")) }} else {{ Ok(()) }}
 }}
+fn require_published_coverage(capability: i32, covered: bool, name: &str) -> Result<(), String> {{
+    if capability > 0 && !covered {{
+        Err(format!("published {{name}} capability is unreachable from canonical VTS profile"))
+    }} else {{ Ok(()) }}
+}}
 
 fn run() -> Result<(), String> {{
     let snapshot = CapabilitySnapshot::product_default();
     snapshot.validate_dependency_closures().map_err(debug_error)?;
+{coverage}
     let demux_count = snapshot.public_demuxes().map_err(debug_error)?.len();
     if {demux_demand}usize > demux_count {{
         return Err(format!("demux demand {demux_demand} exceeds capability {{demux_count}}"));
