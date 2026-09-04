@@ -1,6 +1,8 @@
 package com.maleicacid.tvinput.tis
 
 import android.content.AttributionSource
+import android.content.Context
+import android.content.ContextParams
 import android.content.Intent
 import android.content.IntentFilter
 import android.media.tv.TvInputService
@@ -19,36 +21,38 @@ class MaleicacidTvInputService : TvInputService() {
         // boot/unlock receiverとライブ session解放後に処理し、tuner競合を避ける。
     }
 
-    override fun onCreateSession(inputId: String): Session {
-        val fallbackSessionId = fallbackSessionId(inputId)
-        Log.i(LogTags.TIS, "旧1引数 onCreateSession 経路でライブセッションを作成します inputId=$inputId fallbackSessionId=$fallbackSessionId")
-        return createLiveSession(inputId, fallbackSessionId, null)
+    override fun onCreateSession(inputId: String): Session? {
+        Log.w(LogTags.TIS, "TIF sessionId がない旧1引数 onCreateSession 経路では TRM/Tuner ライブセッションを作成しません inputId=$inputId")
+        return null
     }
 
     override fun onCreateSession(inputId: String, sessionId: String): Session {
         Log.i(LogTags.TIS, "ライブセッションを作成します inputId=$inputId sessionId=$sessionId")
-        return createLiveSession(inputId, sessionId, null)
+        return createLiveSession(inputId, sessionId, this)
     }
 
     override fun onCreateSession(inputId: String, sessionId: String, tvAppAttributionSource: AttributionSource): Session {
         Log.i(LogTags.TIS, "ライブセッションを作成します inputId=$inputId sessionId=$sessionId")
-        return createLiveSession(inputId, sessionId, tvAppAttributionSource)
+        val sessionContext = createContext(
+            ContextParams.Builder()
+                .setNextAttributionSource(tvAppAttributionSource)
+                .build(),
+        )
+        return createLiveSession(inputId, sessionId, sessionContext)
     }
 
-    private fun createLiveSession(inputId: String, tvInputSessionId: String, attributionSource: AttributionSource?): Session {
+    private fun createLiveSession(inputId: String, tvInputSessionId: String, sessionContext: Context): Session {
         // TvInputService.onCreateSession()入口から MaleicacidLiveSession constructor が
         // active ライブセッション を登録するまでの短い区間で、boot / background maintenance を
         // 開始してはならない。この境界を明示し、session creation が完了または失敗するまで
         // ChannelScanManager が tuner-consuming work を延期できるようにする。
         ChannelScanManager.beginLiveSessionCreation()
         return try {
-            MaleicacidLiveSession(this, inputId, tvInputSessionId, attributionSource)
+            MaleicacidLiveSession(this, sessionContext, inputId, tvInputSessionId)
         } finally {
-            ChannelScanManager.finishLiveSessionCreation()
+            ChannelScanManager.finishLiveSessionCreation(applicationContext)
         }
     }
-
-    private fun fallbackSessionId(inputId: String): String = legacyFallbackSessionIdForTest(inputId)
 
     override fun onCreateRecordingSession(inputId: String): RecordingSession? {
         Log.i(LogTags.TIS, "録画はこの TIS APK の対象外です。inputId=$inputId")
@@ -79,7 +83,5 @@ class MaleicacidTvInputService : TvInputService() {
         fun api30SessionIdForTest(inputId: String, sessionId: String): String = sessionId.also {
             require(inputId.isNotBlank()) { "inputId must not be blank" }
         }
-
-        fun legacyFallbackSessionIdForTest(inputId: String): String = "maleicacid-$inputId-${System.nanoTime()}"
     }
 }

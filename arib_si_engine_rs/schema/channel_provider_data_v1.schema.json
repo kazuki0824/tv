@@ -3,7 +3,7 @@
   "$id": "https://maleicacid.local/schema/channel_provider_data_v1.schema.json",
   "title": "Maleicacid ChannelProviderDataV1",
   "type": "object",
-  "additionalProperties": false,
+  "additionalProperties": true,
   "required": [
     "schema",
     "schemaVersion",
@@ -26,16 +26,12 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "displayName",
         "deliverySystem",
         "frequencyHz",
         "streamId",
         "streamIdType"
       ],
       "properties": {
-        "displayName": {
-          "type": "string"
-        },
         "deliverySystem": {
           "type": "string"
         },
@@ -100,7 +96,7 @@
     },
     "diagnostics": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "properties": {
         "providerDataTruncated": {"type": "boolean"},
         "providerDataHardLimitBytes": {"type": "integer"},
@@ -121,9 +117,24 @@
           "type": "integer",
           "minimum": 0
         },
+        "providerDataDroppedCounts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "providerDataOriginalBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "providerDataFinalBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
         "providerDataTruncationCode": {
           "type": "string",
-          "enum": ["PROVIDER_DATA_TRUNCATED", "DIAGNOSTICS_TRUNCATED"]
+          "const": "PROVIDER_DATA_TRUNCATED"
         }
       },
       "not": {

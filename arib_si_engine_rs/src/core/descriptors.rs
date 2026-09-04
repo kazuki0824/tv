@@ -1,4 +1,4 @@
-use crate::arib_string::decode_arib_string_lossy;
+use crate::arib_string::{decode_arib_string_lossy, AribStringDecoder};
 use crate::provider_data::{DescriptorDiagnosticV1, DescriptorScopeV1, SectionScopeV1};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -9,6 +9,8 @@ pub struct EventDescriptors {
     pub description: String,
     /// extended_event_descriptor.text。TvProvider の LONG_DESCRIPTION の詳細本文に対応する。
     pub extended_description: String,
+    pub short_events: Vec<ShortEventText>,
+    pub extended_texts: Vec<ExtendedEventText>,
     pub contents: Vec<ContentDescriptorItem>,
     pub components: Vec<ComponentDescriptor>,
     pub audio_components: Vec<AudioComponentDescriptor>,
@@ -16,6 +18,7 @@ pub struct EventDescriptors {
     pub parental_rating_descriptors: Vec<ParentalRatingDescriptor>,
     pub series: Vec<SeriesDescriptor>,
     pub event_groups: Vec<EventGroupDescriptor>,
+    pub component_groups: Vec<ComponentGroupDescriptor>,
     pub linkages: Vec<LinkageDescriptor>,
     pub extended_items: Vec<ExtendedEventItem>,
     pub unknown: Vec<(u8, Vec<u8>)>,
@@ -36,6 +39,7 @@ pub struct EventDescriptorDiagnostic {
     pub parental_rating_count: usize,
     pub series_count: usize,
     pub event_group_count: usize,
+    pub component_group_count: usize,
     pub linkage_count: usize,
     pub unknown_count: usize,
 }
@@ -56,6 +60,7 @@ pub fn event_descriptor_diagnostic(desc: &EventDescriptors) -> EventDescriptorDi
         parental_rating_count: desc.parental_ratings.len(),
         series_count: desc.series.len(),
         event_group_count: desc.event_groups.len(),
+        component_group_count: desc.component_groups.len(),
         linkage_count: desc.linkages.len(),
         unknown_count: desc.unknown.len(),
     }
@@ -110,13 +115,25 @@ fn descriptor_diagnostic(
     raw_prefix: &[u8],
     message: &str,
 ) -> DescriptorDiagnostic {
+    let raw_prefix = if tag != 0xff
+        && !(raw_prefix.first() == Some(&tag)
+            && raw_prefix.get(1) == Some(&(declared_length as u8)))
+    {
+        [tag, declared_length as u8]
+            .into_iter()
+            .chain(raw_prefix.iter().copied())
+            .take(16)
+            .collect()
+    } else {
+        raw_prefix.iter().take(16).copied().collect()
+    };
     DescriptorDiagnostic {
         parse_status: status,
         descriptor_tag: tag,
         offset,
         declared_length,
         remaining_length,
-        raw_prefix: raw_prefix.iter().take(16).copied().collect(),
+        raw_prefix,
         message: message.to_string(),
     }
 }
@@ -140,8 +157,22 @@ pub fn event_descriptor_loop_truncated_diagnostic(
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExtendedEventItem {
+    pub language_code: String,
     pub item_description: String,
     pub item_text: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ShortEventText {
+    pub language_code: String,
+    pub title: String,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExtendedEventText {
+    pub language_code: String,
+    pub text: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -181,7 +212,6 @@ pub struct AudioComponentDescriptor {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParentalRating {
     pub country_code: String,
-    pub rating_value: u8,
     pub raw_rating_byte: u8,
 }
 
@@ -197,6 +227,7 @@ pub struct SeriesDescriptor {
     pub series_id: u16,
     pub repeat_label: u8,
     pub program_pattern: u8,
+    pub expire_date_valid: bool,
     pub expire_date: u16,
     pub episode_number: u16,
     pub last_episode_number: u16,
@@ -207,15 +238,34 @@ pub struct SeriesDescriptor {
 pub struct EventGroupDescriptor {
     pub group_type: u8,
     pub events: Vec<EventGroupReference>,
-    pub other_network_events: Vec<EventGroupReference>,
+    pub other_network_events: Vec<OtherNetworkEventGroupReference>,
+    pub private_data: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EventGroupReference {
     pub service_id: u16,
     pub event_id: u16,
-    pub original_network_id: Option<u16>,
-    pub transport_stream_id: Option<u16>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OtherNetworkEventGroupReference {
+    pub original_network_id: u16,
+    pub transport_stream_id: u16,
+    pub service_id: u16,
+    pub event_id: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ComponentGroupDescriptor {
+    pub component_group_type: u8,
+    pub groups: Vec<ComponentGroup>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ComponentGroup {
+    pub component_group_id: u8,
+    pub component_tags: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -276,15 +326,16 @@ pub fn parse_event_descriptors(bytes: &[u8]) -> EventDescriptors {
             0x4d => parse_short_event(body, &mut out, tag, cursor, len),
             0x4e => extended_event_bodies.push(RawExtendedEventDescriptor { body: body.to_vec(), tag, offset: cursor, declared_length: len }),
             0x54 => parse_content_descriptor(body, &mut out, tag, cursor, len),
-            0x50 => match parse_component_descriptor(body) { Some(v) => out.components.push(v), None => out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, cursor, len, body.len(), body, "component_descriptor is shorter than its fixed fields")), },
-            0xc4 => match parse_audio_component_descriptor(body) { Some(v) => out.audio_components.push(v), None => out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, cursor, len, body.len(), body, "audio_component_descriptor is shorter than its fixed fields or second language is truncated")), },
+            0x50 => match parse_component_descriptor(body, &mut out, tag, cursor, len) { Some(v) => out.components.push(v), None => out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, cursor, len, body.len(), body, "component_descriptor is shorter than its fixed fields")), },
+            0xc4 => match parse_audio_component_descriptor(body, &mut out, tag, cursor, len) { Some(v) => out.audio_components.push(v), None => out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, cursor, len, body.len(), body, "audio_component_descriptor is shorter than its fixed fields or second language is truncated")), },
             0x55 => {
                 let descriptor = parse_parental_rating_descriptor(body, &mut out, tag, cursor, len);
                 out.parental_ratings.extend(descriptor.entries.clone());
                 out.parental_rating_descriptors.push(descriptor);
             },
-            0xd5 => match parse_series_descriptor(body) { Some(v) => out.series.push(v), None => out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, cursor, len, body.len(), body, "series_descriptor is shorter than 9-byte fixed fields")), },
+            0xd5 => match parse_series_descriptor(body, &mut out, tag, cursor, len) { Some(v) => out.series.push(v), None => out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, cursor, len, body.len(), body, "series_descriptor is shorter than 9-byte fixed fields")), },
             0xd6 => if let Some(v) = parse_event_group_descriptor(body) { out.event_groups.push(v); } else { out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, cursor, len, body.len(), body, "event_group_descriptor is malformed")); },
+            0xd9 => if let Some(v) = parse_component_group_descriptor(body) { out.component_groups.push(v); } else { out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, cursor, len, body.len(), body, "component_group_descriptor is malformed")); },
             0x4a => if let Some(v) = parse_linkage_descriptor(body) { out.linkages.push(v); } else { out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, cursor, len, body.len(), body, "linkage_descriptor is shorter than fixed fields")); },
             _ => {
                 out.unknown.push((tag, body.to_vec()));
@@ -388,16 +439,68 @@ fn parse_short_event(
         ));
         return;
     }
-    if out.title.is_empty() {
-        out.title = decode_arib_string_lossy(&body[name_start..name_end])
-            .trim()
-            .to_string();
+    let language_code = language(&body[0..3]);
+    if language_code.len() != 3 || !language_code.bytes().all(|byte| byte.is_ascii_alphabetic()) {
+        out.diagnostics.push(descriptor_diagnostic(
+            DescriptorParseStatus::UnsupportedValue,
+            tag,
+            offset,
+            declared_length,
+            body.len(),
+            body,
+            "short_event_descriptor ISO_639_language_code is invalid",
+        ));
+        return;
     }
-    let text = decode_arib_string_lossy(&body[text_start..text_end])
-        .trim()
-        .to_string();
-    if !text.is_empty() {
-        out.description = join_description(&out.description, &text);
+    if out
+        .short_events
+        .iter()
+        .any(|candidate| candidate.language_code == language_code)
+    {
+        out.diagnostics.push(descriptor_diagnostic(
+            DescriptorParseStatus::InvalidSequence,
+            tag,
+            offset,
+            declared_length,
+            body.len(),
+            body,
+            &format!("short_event_descriptor is repeated for the same language={language_code}"),
+        ));
+        return;
+    }
+    let title = decode_descriptor_text_lossy(
+        &body[name_start..name_end],
+        out,
+        tag,
+        offset,
+        declared_length,
+        body,
+        (
+            "eventName",
+            offset.saturating_add(2).saturating_add(name_start),
+        ),
+    )
+    .trim()
+    .to_string();
+    let text = decode_descriptor_text_lossy(
+        &body[text_start..text_end],
+        out,
+        tag,
+        offset,
+        declared_length,
+        body,
+        ("text", offset.saturating_add(2).saturating_add(text_start)),
+    )
+    .trim()
+    .to_string();
+    out.short_events.push(ShortEventText {
+        language_code,
+        title: title.clone(),
+        text: text.clone(),
+    });
+    if out.short_events.len() == 1 {
+        out.title = title;
+        out.description = text;
     }
 }
 
@@ -405,8 +508,21 @@ fn parse_short_event(
 struct ExtendedEventFragment {
     descriptor_number: u8,
     last_descriptor_number: u8,
-    items: Vec<(Vec<u8>, Vec<u8>)>,
+    language_code: String,
+    items: Vec<ExtendedEventItemFragment>,
     text: Vec<u8>,
+    text_offset: usize,
+    descriptor_offset: usize,
+    declared_length: usize,
+    raw_body: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct ExtendedEventItemFragment {
+    description: Vec<u8>,
+    text: Vec<u8>,
+    description_offset: usize,
+    text_offset: usize,
 }
 
 fn parse_extended_event_fragments(
@@ -424,51 +540,208 @@ fn parse_extended_event_fragments(
     if fragments.is_empty() {
         return;
     }
-    fragments.sort_by_key(|fragment| fragment.descriptor_number);
-    let expected_last = fragments[0].last_descriptor_number;
-    let mut seen = std::collections::BTreeSet::new();
-    let sequence_ok = fragments
-        .iter()
-        .all(|fragment| fragment.last_descriptor_number == expected_last)
-        && expected_last as usize + 1 == fragments.len()
-        && fragments
-            .iter()
-            .all(|fragment| seen.insert(fragment.descriptor_number))
-        && (0..=expected_last).all(|number| seen.contains(&number));
-    if !sequence_ok {
-        out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::InvalidSequence, 0x4e, 0, bodies.len(), fragments.len(), bodies.first().map(|b| b.body.as_slice()).unwrap_or(&[]), "extended_event_descriptor fragment sequence has duplicate, missing, or inconsistent last_descriptor_number"));
-        return;
+    let mut by_language = std::collections::BTreeMap::<String, Vec<ExtendedEventFragment>>::new();
+    let mut language_order = Vec::<String>::new();
+    for fragment in fragments {
+        if !by_language.contains_key(&fragment.language_code) {
+            language_order.push(fragment.language_code.clone());
+        }
+        by_language
+            .entry(fragment.language_code.clone())
+            .or_default()
+            .push(fragment);
     }
+    for language_code in language_order {
+        let mut fragments = by_language.remove(&language_code).unwrap_or_default();
+        fragments.sort_by_key(|fragment| fragment.descriptor_number);
+        let expected_last = fragments[0].last_descriptor_number;
+        let mut seen = std::collections::BTreeSet::new();
+        let sequence_ok = fragments
+            .iter()
+            .all(|fragment| fragment.last_descriptor_number == expected_last)
+            && expected_last as usize + 1 == fragments.len()
+            && fragments
+                .iter()
+                .all(|fragment| seen.insert(fragment.descriptor_number))
+            && (0..=expected_last).all(|number| seen.contains(&number));
+        if !sequence_ok {
+            let first = &fragments[0];
+            out.diagnostics.push(descriptor_diagnostic(
+                DescriptorParseStatus::InvalidSequence,
+                0x4e,
+                first.descriptor_offset,
+                first.declared_length,
+                first.raw_body.len(),
+                &first.raw_body,
+                &format!("extended_event_descriptor language={} fragment sequence has duplicate, missing, or inconsistent last_descriptor_number", language_code),
+            ));
+            continue;
+        }
 
-    let mut text_bytes = Vec::new();
-    let mut current_item_description = Vec::new();
-    let mut current_item_text = Vec::new();
-    let mut flush_item =
-        |out: &mut EventDescriptors, description: &mut Vec<u8>, item_text: &mut Vec<u8>| {
-            if description.is_empty() && item_text.is_empty() {
-                return;
+        let mut current_item_description = String::new();
+        let mut current_item_text = String::new();
+        let mut current_item_decoder: Option<AribStringDecoder> = None;
+        let mut current_item_active = false;
+        let mut current_item_valid = true;
+        let flush_item = |out: &mut EventDescriptors,
+                          description: &mut String,
+                          item_text: &mut String,
+                          decoder: &mut Option<AribStringDecoder>,
+                          active: &mut bool,
+                          valid: &mut bool| {
+            if *active && *valid && (!description.is_empty() || !item_text.is_empty()) {
+                out.extended_items.push(ExtendedEventItem {
+                    language_code: language_code.clone(),
+                    item_description: description.trim().to_string(),
+                    item_text: item_text.trim().to_string(),
+                });
             }
-            out.extended_items.push(ExtendedEventItem {
-                item_description: decode_arib_string_lossy(description).trim().to_string(),
-                item_text: decode_arib_string_lossy(item_text).trim().to_string(),
-            });
             description.clear();
             item_text.clear();
+            *decoder = None;
+            *active = false;
+            *valid = true;
         };
-    for fragment in &fragments {
-        text_bytes.extend_from_slice(&fragment.text);
-        for (description, item_text) in &fragment.items {
-            if !description.is_empty() {
-                flush_item(out, &mut current_item_description, &mut current_item_text);
-                current_item_description.extend_from_slice(description);
+        let mut decoded_text_fragments = Vec::new();
+        let mut previous_descriptor_number = None;
+        let mut previous_fragment_had_item = false;
+        for fragment in &fragments {
+            let mut text_decoder = AribStringDecoder::default();
+            if let Some(text) = decode_extended_event_field(
+                &mut text_decoder,
+                &fragment.text,
+                &language_code,
+                fragment,
+                "text",
+                fragment.text_offset,
+                out,
+            ) {
+                let text = text.trim().to_string();
+                if !text.is_empty() {
+                    decoded_text_fragments.push(text);
+                }
             }
-            current_item_text.extend_from_slice(item_text);
+            for (item_index, item) in fragment.items.iter().enumerate() {
+                let continues_previous = item_index == 0
+                    && item.description.is_empty()
+                    && previous_fragment_had_item
+                    && previous_descriptor_number.and_then(|number: u8| number.checked_add(1))
+                        == Some(fragment.descriptor_number)
+                    && current_item_active
+                    && current_item_decoder.is_some();
+                if !continues_previous {
+                    flush_item(
+                        out,
+                        &mut current_item_description,
+                        &mut current_item_text,
+                        &mut current_item_decoder,
+                        &mut current_item_active,
+                        &mut current_item_valid,
+                    );
+                    current_item_active = true;
+                    current_item_decoder = Some(AribStringDecoder::default());
+                    if !item.description.is_empty() {
+                        let mut description_decoder = AribStringDecoder::default();
+                        match decode_extended_event_field(
+                            &mut description_decoder,
+                            &item.description,
+                            &language_code,
+                            fragment,
+                            "itemDescription",
+                            item.description_offset,
+                            out,
+                        ) {
+                            Some(description) => current_item_description = description,
+                            None => current_item_valid = false,
+                        }
+                    }
+                }
+                if let Some(decoder) = current_item_decoder.as_mut() {
+                    match decode_extended_event_field(
+                        decoder,
+                        &item.text,
+                        &language_code,
+                        fragment,
+                        "itemText",
+                        item.text_offset,
+                        out,
+                    ) {
+                        Some(text) => current_item_text.push_str(&text),
+                        None => current_item_valid = false,
+                    }
+                }
+            }
+            previous_descriptor_number = Some(fragment.descriptor_number);
+            previous_fragment_had_item = !fragment.items.is_empty();
+        }
+        flush_item(
+            out,
+            &mut current_item_description,
+            &mut current_item_text,
+            &mut current_item_decoder,
+            &mut current_item_active,
+            &mut current_item_valid,
+        );
+        let text = decoded_text_fragments.join("");
+        if !text.is_empty() {
+            out.extended_texts.push(ExtendedEventText {
+                language_code,
+                text,
+            });
         }
     }
-    flush_item(out, &mut current_item_description, &mut current_item_text);
-    let text = decode_arib_string_lossy(&text_bytes).trim().to_string();
-    if !text.is_empty() {
-        out.extended_description = join_description(&out.extended_description, &text);
+    out.extended_description = if let Some(language_code) = out
+        .short_events
+        .first()
+        .map(|candidate| candidate.language_code.as_str())
+    {
+        out.extended_texts
+            .iter()
+            .find(|candidate| candidate.language_code == language_code)
+            .map(|candidate| candidate.text.clone())
+            .unwrap_or_default()
+    } else {
+        out.extended_texts
+            .iter()
+            .find(|candidate| candidate.language_code == "jpn")
+            .or_else(|| out.extended_texts.first())
+            .map(|candidate| candidate.text.clone())
+            .unwrap_or_default()
+    };
+}
+
+fn decode_extended_event_field(
+    decoder: &mut AribStringDecoder,
+    bytes: &[u8],
+    language_code: &str,
+    fragment: &ExtendedEventFragment,
+    field_kind: &str,
+    field_offset: usize,
+    out: &mut EventDescriptors,
+) -> Option<String> {
+    match decoder.decode(bytes) {
+        Ok(text) => Some(text),
+        Err(error) => {
+            let text_diagnostic = decoder.lossy_diagnostic(bytes);
+            out.diagnostics.push(descriptor_diagnostic(
+                DescriptorParseStatus::UnsupportedValue,
+                0x4e,
+                fragment.descriptor_offset,
+                fragment.declared_length,
+                fragment.raw_body.len(),
+                &fragment.raw_body,
+                &format!(
+                    "extended_event_descriptor language={} descriptor_number={} field={} field_offset={} strict decode failed: {:?}; {}",
+                    language_code,
+                    fragment.descriptor_number,
+                    field_kind,
+                    field_offset,
+                    error,
+                    text_diagnostic.summary(),
+                ),
+            ));
+            None
+        }
     }
 }
 
@@ -493,6 +766,18 @@ fn parse_extended_event_fragment(
     }
     let descriptor_number = (body[0] >> 4) & 0x0f;
     let last_descriptor_number = body[0] & 0x0f;
+    if !body[1..4].iter().all(u8::is_ascii_alphabetic) {
+        out.diagnostics.push(descriptor_diagnostic(
+            DescriptorParseStatus::UnsupportedValue,
+            tag,
+            offset,
+            declared_length,
+            body.len(),
+            body,
+            "extended_event_descriptor ISO_639_language_code is invalid",
+        ));
+        return None;
+    }
     let items_len = body[4] as usize;
     let mut cursor = 5usize;
     let Some(items_end) = cursor.checked_add(items_len) else {
@@ -535,9 +820,7 @@ fn parse_extended_event_fragment(
         }
         let desc_len = body[cursor] as usize;
         let desc_start = cursor + 1;
-        let Some(desc_end) = desc_start.checked_add(desc_len) else {
-            return None;
-        };
+        let desc_end = desc_start.checked_add(desc_len)?;
         if desc_end >= items_end {
             out.diagnostics.push(descriptor_diagnostic(
                 DescriptorParseStatus::MalformedLength,
@@ -552,9 +835,7 @@ fn parse_extended_event_fragment(
         }
         let item_len = body[desc_end] as usize;
         let item_start = desc_end + 1;
-        let Some(item_end) = item_start.checked_add(item_len) else {
-            return None;
-        };
+        let item_end = item_start.checked_add(item_len)?;
         if item_end > items_end {
             out.diagnostics.push(descriptor_diagnostic(
                 DescriptorParseStatus::MalformedLength,
@@ -567,18 +848,18 @@ fn parse_extended_event_fragment(
             ));
             return None;
         }
-        items.push((
-            body[desc_start..desc_end].to_vec(),
-            body[item_start..item_end].to_vec(),
-        ));
+        items.push(ExtendedEventItemFragment {
+            description: body[desc_start..desc_end].to_vec(),
+            text: body[item_start..item_end].to_vec(),
+            description_offset: offset.saturating_add(2).saturating_add(desc_start),
+            text_offset: offset.saturating_add(2).saturating_add(item_start),
+        });
         cursor = item_end;
     }
     let text_len_index = items_end;
     let text_len = body[text_len_index] as usize;
     let text_start = text_len_index + 1;
-    let Some(text_end) = text_start.checked_add(text_len) else {
-        return None;
-    };
+    let text_end = text_start.checked_add(text_len)?;
     if text_end != body.len() {
         out.diagnostics.push(descriptor_diagnostic(
             DescriptorParseStatus::MalformedLength,
@@ -594,8 +875,13 @@ fn parse_extended_event_fragment(
     Some(ExtendedEventFragment {
         descriptor_number,
         last_descriptor_number,
+        language_code: std::str::from_utf8(&body[1..4]).ok()?.to_string(),
         items,
         text: body[text_start..text_end].to_vec(),
+        text_offset: offset.saturating_add(2).saturating_add(text_start),
+        descriptor_offset: offset,
+        declared_length,
+        raw_body: body.to_vec(),
     })
 }
 
@@ -755,7 +1041,13 @@ fn arib_content_to_display_name(level1: u8, level2: u8) -> String {
     )
 }
 
-fn parse_component_descriptor(body: &[u8]) -> Option<ComponentDescriptor> {
+fn parse_component_descriptor(
+    body: &[u8],
+    out: &mut EventDescriptors,
+    tag: u8,
+    offset: usize,
+    declared_length: usize,
+) -> Option<ComponentDescriptor> {
     if body.len() < 6 {
         return None;
     }
@@ -764,11 +1056,27 @@ fn parse_component_descriptor(body: &[u8]) -> Option<ComponentDescriptor> {
         component_type: body[1],
         component_tag: body[2],
         language_code: language(&body[3..6]),
-        text: decode_arib_string_lossy(&body[6..]).trim().to_string(),
+        text: decode_descriptor_text_lossy(
+            &body[6..],
+            out,
+            tag,
+            offset,
+            declared_length,
+            body,
+            ("text", offset.saturating_add(8)),
+        )
+        .trim()
+        .to_string(),
     })
 }
 
-fn parse_audio_component_descriptor(body: &[u8]) -> Option<AudioComponentDescriptor> {
+fn parse_audio_component_descriptor(
+    body: &[u8],
+    out: &mut EventDescriptors,
+    tag: u8,
+    offset: usize,
+    declared_length: usize,
+) -> Option<AudioComponentDescriptor> {
     if body.len() < 9 {
         return None;
     }
@@ -796,9 +1104,17 @@ fn parse_audio_component_descriptor(body: &[u8]) -> Option<AudioComponentDescrip
         sampling_rate: (flags >> 1) & 0x07,
         language_code: language(&body[6..9]),
         language_code_2: lang2,
-        text: decode_arib_string_lossy(body.get(cursor..).unwrap_or(&[]))
-            .trim()
-            .to_string(),
+        text: decode_descriptor_text_lossy(
+            body.get(cursor..).unwrap_or(&[]),
+            out,
+            tag,
+            offset,
+            declared_length,
+            body,
+            ("text", offset.saturating_add(2).saturating_add(cursor)),
+        )
+        .trim()
+        .to_string(),
     })
 }
 
@@ -827,7 +1143,6 @@ fn parse_parental_rating_descriptor(
         .chunks_exact(4)
         .map(|chunk| ParentalRating {
             country_code: language(&chunk[0..3]),
-            rating_value: chunk[3],
             raw_rating_byte: chunk[3],
         })
         .collect();
@@ -842,7 +1157,13 @@ fn parse_parental_rating_descriptor(
     }
 }
 
-fn parse_series_descriptor(body: &[u8]) -> Option<SeriesDescriptor> {
+fn parse_series_descriptor(
+    body: &[u8],
+    out: &mut EventDescriptors,
+    tag: u8,
+    offset: usize,
+    declared_length: usize,
+) -> Option<SeriesDescriptor> {
     if body.len() < 9 {
         return None;
     }
@@ -850,11 +1171,22 @@ fn parse_series_descriptor(body: &[u8]) -> Option<SeriesDescriptor> {
         series_id: u16_at(body, 0),
         repeat_label: (body[2] >> 4) & 0x0f,
         program_pattern: body[2] & 0x07,
-        expire_date: u16::from_be_bytes([body[3] & 0x0f, body[4]]),
+        expire_date_valid: (body[2] & 0x08) != 0,
+        expire_date: u16::from_be_bytes([body[3], body[4]]),
         episode_number: (((body[5] & 0x0f) as u16) << 8) | body[6] as u16,
         last_episode_number: (((body[7] & 0x0f) as u16) << 8) | body[8] as u16,
         series_name: if body.len() > 9 {
-            decode_arib_string_lossy(&body[9..]).trim().to_string()
+            decode_descriptor_text_lossy(
+                &body[9..],
+                out,
+                tag,
+                offset,
+                declared_length,
+                body,
+                ("seriesName", offset.saturating_add(11)),
+            )
+            .trim()
+            .to_string()
         } else {
             String::new()
         },
@@ -876,28 +1208,79 @@ fn parse_event_group_descriptor(body: &[u8]) -> Option<EventGroupDescriptor> {
         events.push(EventGroupReference {
             service_id: u16_at(body, cursor),
             event_id: u16_at(body, cursor + 2),
-            original_network_id: None,
-            transport_stream_id: None,
         });
         cursor += 4;
     }
+
     let mut other_network_events = Vec::new();
-    while cursor + 8 <= body.len() {
-        other_network_events.push(EventGroupReference {
-            service_id: u16_at(body, cursor + 4),
-            event_id: u16_at(body, cursor + 6),
-            original_network_id: Some(u16_at(body, cursor)),
-            transport_stream_id: Some(u16_at(body, cursor + 2)),
-        });
-        cursor += 8;
-    }
-    if cursor != body.len() {
-        return None;
-    }
+    let private_data = if matches!(group_type, 0x4 | 0x5) {
+        let remaining = body.len().saturating_sub(cursor);
+        if remaining % 8 != 0 {
+            return None;
+        }
+        while cursor < body.len() {
+            other_network_events.push(OtherNetworkEventGroupReference {
+                original_network_id: u16_at(body, cursor),
+                transport_stream_id: u16_at(body, cursor + 2),
+                service_id: u16_at(body, cursor + 4),
+                event_id: u16_at(body, cursor + 6),
+            });
+            cursor += 8;
+        }
+        Vec::new()
+    } else {
+        body[cursor..].to_vec()
+    };
+
     Some(EventGroupDescriptor {
         group_type,
         events,
         other_network_events,
+        private_data,
+    })
+}
+
+fn parse_component_group_descriptor(body: &[u8]) -> Option<ComponentGroupDescriptor> {
+    let first = *body.first()?;
+    let component_group_type = (first >> 5) & 0x07;
+    let total_bit_rate_flag = (first & 0x10) != 0;
+    let num_of_group = (first & 0x0f) as usize;
+    let mut cursor = 1usize;
+    let mut groups = Vec::with_capacity(num_of_group);
+    for _ in 0..num_of_group {
+        let group_header = *body.get(cursor)?;
+        cursor += 1;
+        let component_group_id = (group_header >> 4) & 0x0f;
+        let num_of_ca_unit = (group_header & 0x0f) as usize;
+        let mut component_tags = Vec::new();
+        for _ in 0..num_of_ca_unit {
+            let ca_header = *body.get(cursor)?;
+            cursor += 1;
+            let num_of_component = (ca_header & 0x0f) as usize;
+            let end = cursor.checked_add(num_of_component)?;
+            let tags = body.get(cursor..end)?;
+            component_tags.extend_from_slice(tags);
+            cursor = end;
+        }
+        if total_bit_rate_flag {
+            body.get(cursor)?;
+            cursor += 1;
+        }
+        let text_length = *body.get(cursor)? as usize;
+        cursor += 1;
+        cursor = cursor.checked_add(text_length)?;
+        body.get(..cursor)?;
+        groups.push(ComponentGroup {
+            component_group_id,
+            component_tags,
+        });
+    }
+    if cursor != body.len() {
+        return None;
+    }
+    Some(ComponentGroupDescriptor {
+        component_group_type,
+        groups,
     })
 }
 
@@ -918,24 +1301,44 @@ fn language(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).trim().to_string()
 }
 
+type DescriptorTextField<'a> = (&'a str, usize);
+
+fn decode_descriptor_text_lossy(
+    bytes: &[u8],
+    out: &mut EventDescriptors,
+    tag: u8,
+    descriptor_offset: usize,
+    declared_length: usize,
+    descriptor_body: &[u8],
+    field: DescriptorTextField<'_>,
+) -> String {
+    let (field_kind, field_offset) = field;
+    let (decoded, diagnostic) = decode_arib_string_lossy(bytes);
+    if diagnostic.replacement_count != 0 {
+        out.diagnostics.push(descriptor_diagnostic(
+            DescriptorParseStatus::UnsupportedValue,
+            tag,
+            descriptor_offset,
+            declared_length,
+            descriptor_body.len(),
+            descriptor_body,
+            &format!(
+                "descriptor text field={} field_offset={} used lossy ARIB SI decoding: {}",
+                field_kind,
+                field_offset,
+                diagnostic.summary(),
+            ),
+        ));
+    }
+    decoded
+}
+
 fn u16_at(bytes: &[u8], offset: usize) -> u16 {
     u16::from_be_bytes([bytes[offset], bytes[offset + 1]])
-}
-fn join_description(current: &str, next: &str) -> String {
-    if current.is_empty() {
-        next.to_string()
-    } else {
-        format!("{}\n{}", current, next)
-    }
 }
 
 /// TvProvider の安定キーに自然に入らない記述子向けの診断専用 JSON。
 /// TvProvider 向けのタイトルと説明は event_provider_fields() を使う。
-
-#[cfg(test)]
-pub fn event_descriptor_diagnostics_array_json(desc: &EventDescriptors) -> String {
-    event_descriptor_diagnostics_array_json_scoped(desc, None)
-}
 
 pub fn event_descriptor_diagnostics_array_json_scoped(
     desc: &EventDescriptors,
@@ -977,9 +1380,8 @@ pub fn event_descriptors_to_json(desc: &EventDescriptors) -> String {
         desc.parental_ratings
             .iter()
             .map(|r| format!(
-                "{{\"country\":\"{}\",\"ratingValue\":{},\"rawRatingByte\":{}}}",
+                "{{\"country\":\"{}\",\"rawRatingByte\":{}}}",
                 json_escape(&r.country_code),
-                r.rating_value,
                 r.raw_rating_byte
             ))
             .collect::<Vec<_>>()
@@ -992,7 +1394,7 @@ pub fn event_descriptors_to_json(desc: &EventDescriptors) -> String {
             .map(|p| format!(
                 "{{\"parseStatus\":\"{}\",\"rawDescriptorHex\":\"{}\",\"entryCount\":{}}}",
                 p.parse_status.as_str(),
-                hex(&p.raw_descriptor_bytes),
+                hex_prefix(&p.raw_descriptor_bytes, usize::MAX),
                 p.entries.len()
             ))
             .collect::<Vec<_>>()
@@ -1000,12 +1402,38 @@ pub fn event_descriptors_to_json(desc: &EventDescriptors) -> String {
     ));
     fields.push(format!("\"components\":[{}]", desc.components.iter().map(|c| format!("{{\"streamContent\":{},\"componentType\":{},\"componentTag\":{},\"language\":\"{}\",\"text\":\"{}\"}}", c.stream_content, c.component_type, c.component_tag, json_escape(&c.language_code), json_escape(&c.text))).collect::<Vec<_>>().join(",")));
     fields.push(format!("\"audioComponents\":[{}]", desc.audio_components.iter().map(|a| format!("{{\"streamContent\":{},\"componentType\":{},\"componentTag\":{},\"streamType\":{},\"simulcastGroupTag\":{},\"multiLingual\":{},\"main\":{},\"quality\":{},\"samplingRate\":{},\"language\":\"{}\",\"secondLanguage\":\"{}\",\"text\":\"{}\"}}", a.stream_content, a.component_type, a.component_tag, a.stream_type, a.simulcast_group_tag, a.es_multi_lingual_flag, a.main_component_flag, a.quality_indicator, a.sampling_rate, json_escape(&a.language_code), json_escape(a.language_code_2.as_deref().unwrap_or("")), json_escape(&a.text))).collect::<Vec<_>>().join(",")));
-    fields.push(format!("\"series\":[{}]", desc.series.iter().map(|v| format!("{{\"seriesId\":{},\"repeatLabel\":{},\"programPattern\":{},\"expireDate\":{},\"episodeNumber\":{},\"lastEpisodeNumber\":{},\"name\":\"{}\"}}", v.series_id, v.repeat_label, v.program_pattern, v.expire_date, v.episode_number, v.last_episode_number, json_escape(&v.series_name))).collect::<Vec<_>>().join(",")));
+    fields.push(format!("\"series\":[{}]", desc.series.iter().map(|v| format!("{{\"seriesId\":{},\"repeatLabel\":{},\"programPattern\":{},\"expireDateValid\":{},\"expireDate\":{},\"episodeNumber\":{},\"lastEpisodeNumber\":{},\"name\":\"{}\"}}", v.series_id, v.repeat_label, v.program_pattern, v.expire_date_valid, v.expire_date, v.episode_number, v.last_episode_number, json_escape(&v.series_name))).collect::<Vec<_>>().join(",")));
     fields.push(format!(
         "\"eventGroups\":[{}]",
         desc.event_groups
             .iter()
             .map(event_group_to_json)
+            .collect::<Vec<_>>()
+            .join(",")
+    ));
+    fields.push(format!(
+        "\"componentGroups\":[{}]",
+        desc.component_groups
+            .iter()
+            .map(|descriptor| format!(
+                "{{\"componentGroupType\":{},\"groups\":[{}]}}",
+                descriptor.component_group_type,
+                descriptor
+                    .groups
+                    .iter()
+                    .map(|group| format!(
+                        "{{\"componentGroupId\":{},\"componentTags\":[{}]}}",
+                        group.component_group_id,
+                        group
+                            .component_tags
+                            .iter()
+                            .map(u8::to_string)
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ))
             .collect::<Vec<_>>()
             .join(",")
     ));
@@ -1101,6 +1529,7 @@ fn descriptor_diagnostic_model(
     }
 }
 
+#[cfg(test)]
 fn descriptor_diagnostic_to_json_scoped(
     d: &DescriptorDiagnostic,
     scope: Option<DescriptorSectionScope>,
@@ -1128,6 +1557,7 @@ fn descriptor_diagnostic_code(status: DescriptorParseStatus) -> &'static str {
     }
 }
 
+#[cfg(test)]
 fn event_group_to_json(group: &EventGroupDescriptor) -> String {
     let events = group
         .events
@@ -1138,28 +1568,36 @@ fn event_group_to_json(group: &EventGroupDescriptor) -> String {
     let other = group
         .other_network_events
         .iter()
-        .map(event_group_reference_to_json)
+        .map(other_network_event_group_reference_to_json)
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "{{\"groupType\":{},\"events\":[{}],\"otherNetworkEvents\":[{}]}}",
-        group.group_type, events, other
+        r#"{{"groupType":{},"events":[{}],"otherNetworkEvents":[{}],"privateDataHex":"{}"}}"#,
+        group.group_type,
+        events,
+        other,
+        hex_prefix(&group.private_data, usize::MAX),
     )
 }
 
+#[cfg(test)]
 fn event_group_reference_to_json(reference: &EventGroupReference) -> String {
     format!(
-        "{{\"serviceId\":{},\"eventId\":{},\"originalNetworkId\":{},\"transportStreamId\":{}}}",
+        r#"{{"serviceId":{},"eventId":{}}}"#,
+        reference.service_id, reference.event_id,
+    )
+}
+
+#[cfg(test)]
+fn other_network_event_group_reference_to_json(
+    reference: &OtherNetworkEventGroupReference,
+) -> String {
+    format!(
+        r#"{{"originalNetworkId":{},"transportStreamId":{},"serviceId":{},"eventId":{}}}"#,
+        reference.original_network_id,
+        reference.transport_stream_id,
         reference.service_id,
         reference.event_id,
-        reference
-            .original_network_id
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "null".to_string()),
-        reference
-            .transport_stream_id
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "null".to_string())
     )
 }
 
@@ -1172,13 +1610,14 @@ fn hex_prefix(bytes: &[u8], max_len: usize) -> String {
         .join("")
 }
 
+#[cfg(test)]
 fn additive_checksum(bytes: &[u8]) -> u32 {
     bytes
         .iter()
         .fold(0u32, |acc, b| acc.wrapping_add(u32::from(*b)))
 }
 
-pub(crate) fn json_escape(value: &str) -> String {
+pub fn json_escape(value: &str) -> String {
     let mut out = String::new();
     for ch in value.chars() {
         match ch {
@@ -1231,13 +1670,13 @@ mod diagnostic_json_tests {
             }],
             parental_ratings: vec![ParentalRating {
                 country_code: "JPN".to_string(),
-                rating_value: 15,
                 raw_rating_byte: 15,
             }],
             series: vec![SeriesDescriptor {
                 series_id: 0x1234,
                 repeat_label: 1,
                 program_pattern: 2,
+                expire_date_valid: true,
                 expire_date: 0x1fff,
                 episode_number: 3,
                 last_episode_number: 12,
@@ -1255,10 +1694,9 @@ mod diagnostic_json_tests {
                 events: vec![EventGroupReference {
                     service_id: 101,
                     event_id: 202,
-                    original_network_id: None,
-                    transport_stream_id: None,
                 }],
                 other_network_events: vec![],
+                private_data: vec![],
             }],
             unknown: vec![(0xfe, vec![0x12, 0x34, 0x56])],
             ..EventDescriptors::default()
@@ -1308,7 +1746,7 @@ mod mirakc_scope_extended_event_tests {
     }
 
     #[test]
-    fn extended_event_text_fragments_are_decoded_after_descriptor_order_concatenation() {
+    fn extended_event_text_fields_are_decoded_independently_in_descriptor_order() {
         let first_text = [0x1b, b'(', b'B', b'A', b'B'];
         let second_text = [0x1b, b'(', b'B', b'C', b'D'];
         let mut first = vec![0x11, b'j', b'p', b'n', 0x00, first_text.len() as u8];
@@ -1326,7 +1764,7 @@ mod mirakc_scope_extended_event_tests {
     fn extended_event_item_fragments_continue_until_next_description() {
         let desc = [0x1b, b'(', b'B', b'A', b'B', b'C'];
         let first_text = [0x1b, b'(', b'B', b'D'];
-        let second_text = [0x1b, b'(', b'B', b'E', b'F'];
+        let second_text = [b'E', b'F'];
         let mut first = vec![
             0x01,
             b'j',
@@ -1344,7 +1782,7 @@ mod mirakc_scope_extended_event_tests {
             b'j',
             b'p',
             b'n',
-            (1 + 0 + 1 + second_text.len()) as u8,
+            (1 + 1 + second_text.len()) as u8,
             0x00,
             second_text.len() as u8,
         ];
@@ -1357,18 +1795,142 @@ mod mirakc_scope_extended_event_tests {
         assert_eq!(parsed.extended_items[0].item_description, "ABC");
         assert_eq!(parsed.extended_items[0].item_text, "DEF");
     }
+
+    #[test]
+    fn extended_event_non_continuation_item_resets_decoder_state() {
+        let first_description = [0x1b, b'(', b'B', b'A'];
+        let first_text = [0x1b, b'(', b'B', b'B'];
+        let mut first = vec![
+            0x01,
+            b'j',
+            b'p',
+            b'n',
+            (1 + first_description.len() + 1 + first_text.len()) as u8,
+            first_description.len() as u8,
+        ];
+        first.extend_from_slice(&first_description);
+        first.push(first_text.len() as u8);
+        first.extend_from_slice(&first_text);
+        first.push(0);
+
+        let second_description = [0x1b, b'(', b'B', b'C'];
+        let second_text = [b'E', b'l'];
+        let mut second = vec![
+            0x11,
+            b'j',
+            b'p',
+            b'n',
+            (1 + second_description.len() + 1 + second_text.len()) as u8,
+            second_description.len() as u8,
+        ];
+        second.extend_from_slice(&second_description);
+        second.push(second_text.len() as u8);
+        second.extend_from_slice(&second_text);
+        second.push(0);
+
+        let mut bytes = descriptor(0x4e, &first);
+        bytes.extend_from_slice(&descriptor(0x4e, &second));
+        let parsed = parse_event_descriptors(&bytes);
+        assert_eq!(parsed.extended_items.len(), 2);
+        assert_eq!(parsed.extended_items[0].item_text, "B");
+        assert_eq!(parsed.extended_items[1].item_text, "東");
+    }
+
+    #[test]
+    fn extended_event_language_sets_are_completed_independently() {
+        let jpn_text = [0x1b, b'(', b'B', b'J', b'P'];
+        let mut jpn = vec![0x00, b'j', b'p', b'n', 0, jpn_text.len() as u8];
+        jpn.extend_from_slice(&jpn_text);
+        let eng_text = [0x1b, b'(', b'B', b'E', b'N'];
+        let mut eng = vec![0x00, b'e', b'n', b'g', 0, eng_text.len() as u8];
+        eng.extend_from_slice(&eng_text);
+        let mut bytes = descriptor(0x4e, &jpn);
+        bytes.extend_from_slice(&descriptor(0x4e, &eng));
+        let parsed = parse_event_descriptors(&bytes);
+        assert_eq!(parsed.extended_description, "JP");
+        assert_eq!(parsed.extended_texts.len(), 2);
+        assert_eq!(parsed.extended_texts[0].language_code, "jpn");
+        assert_eq!(parsed.extended_texts[0].text, "JP");
+        assert_eq!(parsed.extended_texts[1].language_code, "eng");
+        assert_eq!(parsed.extended_texts[1].text, "EN");
+        assert!(!parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.parse_status == DescriptorParseStatus::InvalidSequence));
+
+        let mut incomplete_eng = eng.clone();
+        incomplete_eng[0] = 0x11;
+        let mut bytes = descriptor(0x4e, &jpn);
+        bytes.extend_from_slice(&descriptor(0x4e, &incomplete_eng));
+        let parsed = parse_event_descriptors(&bytes);
+        assert_eq!(parsed.extended_description, "JP");
+        assert!(parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("language=eng")));
+    }
+
+    #[test]
+    fn extended_event_strict_decode_failure_is_not_promoted() {
+        let malformed_text = [0x1b, b'('];
+        let mut body = vec![0x00, b'j', b'p', b'n', 0, malformed_text.len() as u8];
+        body.extend_from_slice(&malformed_text);
+        let parsed = parse_event_descriptors(&descriptor(0x4e, &body));
+        assert!(parsed.extended_description.is_empty());
+        assert!(parsed.diagnostics.iter().any(|diagnostic| {
+            diagnostic.parse_status == DescriptorParseStatus::UnsupportedValue
+                && diagnostic.message.contains("language=jpn")
+                && diagnostic.message.contains("field=text")
+                && diagnostic.message.contains("field_offset=")
+        }));
+    }
+
+    #[test]
+    fn lossy_text_fields_publish_replacement_diagnostics_with_input_prefix() {
+        let malformed_text = [0x1b, b'$', b'X'];
+        let mut short = vec![b'j', b'p', b'n', malformed_text.len() as u8];
+        short.extend_from_slice(&malformed_text);
+        short.push(0);
+        let mut component = vec![0x01, 0x02, 0x03, b'j', b'p', b'n'];
+        component.extend_from_slice(&malformed_text);
+        let mut audio = vec![0x02, 0x03, 0x04, 0x0f, 0x00, 0x40, b'j', b'p', b'n'];
+        audio.extend_from_slice(&malformed_text);
+        let mut series = vec![0x12, 0x34, 0x00, 0x0f, 0xff, 0x00, 0x01, 0x00, 0x02];
+        series.extend_from_slice(&malformed_text);
+
+        let mut bytes = descriptor(0x4d, &short);
+        bytes.extend_from_slice(&descriptor(0x50, &component));
+        bytes.extend_from_slice(&descriptor(0xc4, &audio));
+        bytes.extend_from_slice(&descriptor(0xd5, &series));
+        let parsed = parse_event_descriptors(&bytes);
+
+        for field in ["eventName", "text", "seriesName"] {
+            assert!(parsed.diagnostics.iter().any(|diagnostic| {
+                diagnostic.message.contains(&format!("field={}", field))
+                    && diagnostic.message.contains("replacement_count=1")
+                    && diagnostic.message.contains("input_prefix_hex:1b2458")
+            }));
+        }
+        assert_eq!(parsed.title, "�");
+        assert_eq!(parsed.components[0].text, "�");
+        assert_eq!(parsed.audio_components[0].text, "�");
+        assert_eq!(parsed.series[0].series_name, "�");
+    }
+
     #[test]
     fn audio_component_sampling_rate_ignores_reserved_lsb() {
-        let body = [0x20, 0x03, 0x08, 0x0f, 0x00, 0b1101_1111, b'j', b'p', b'n'];
-        let parsed = parse_audio_component_descriptor(&body).unwrap();
+        let body = [0x20, 0x03, 0x08, 0x0f, 0x00, 0b0101_1111, b'j', b'p', b'n'];
+        let mut diagnostics = EventDescriptors::default();
+        let parsed =
+            parse_audio_component_descriptor(&body, &mut diagnostics, 0xc4, 0, body.len()).unwrap();
         assert_eq!(parsed.quality_indicator, 1);
         assert_eq!(parsed.sampling_rate, 7);
+        assert!(diagnostics.diagnostics.is_empty());
     }
 
     #[test]
     fn parental_rating_keeps_full_rating_byte_and_reports_bad_length() {
         let desc = parse_event_descriptors(&[0x55, 0x05, b'J', b'P', b'N', 0x8f, 0xaa]);
-        assert_eq!(desc.parental_ratings[0].rating_value, 0x8f);
         assert_eq!(desc.parental_ratings[0].raw_rating_byte, 0x8f);
         assert!(desc
             .diagnostics
@@ -1422,6 +1984,37 @@ mod r51_descriptor_coverage_tests {
         let parsed = parse_event_descriptors(&descriptor(0x4d, &body));
         assert_eq!(parsed.title, "AB");
         assert_eq!(parsed.description, "CD");
+        assert_eq!(parsed.short_events.len(), 1);
+        assert_eq!(parsed.short_events[0].language_code, "jpn");
+
+        let mut english = b"eng".to_vec();
+        let english_title = arib_alnum(b"EF");
+        let english_text = arib_alnum(b"GH");
+        english.push(english_title.len() as u8);
+        english.extend_from_slice(&english_title);
+        english.push(english_text.len() as u8);
+        english.extend_from_slice(&english_text);
+        let mut multilingual = descriptor(0x4d, &body);
+        multilingual.extend_from_slice(&descriptor(0x4d, &english));
+        let parsed = parse_event_descriptors(&multilingual);
+        assert_eq!(parsed.title, "AB");
+        assert_eq!(parsed.description, "CD");
+        assert_eq!(parsed.short_events.len(), 2);
+        assert_eq!(parsed.short_events[1].language_code, "eng");
+        assert_eq!(parsed.short_events[1].title, "EF");
+        assert_eq!(parsed.short_events[1].text, "GH");
+
+        let mut duplicate = descriptor(0x4d, &body);
+        duplicate.extend_from_slice(&descriptor(0x4d, &body));
+        let parsed = parse_event_descriptors(&duplicate);
+        assert_eq!(parsed.short_events.len(), 1);
+        assert!(parsed
+            .diagnostics
+            .iter()
+            .any(
+                |diagnostic| diagnostic.parse_status == DescriptorParseStatus::InvalidSequence
+                    && diagnostic.message.contains("language=jpn")
+            ));
     }
 
     #[test]
@@ -1438,7 +2031,7 @@ mod r51_descriptor_coverage_tests {
     #[test]
     fn component_descriptor_keeps_language_and_text() {
         let mut body = vec![0x11, 0xb3, 0x07, b'j', b'p', b'n'];
-        body.extend_from_slice(&arib_alnum(b'V'));
+        body.extend_from_slice(&arib_alnum(b"V"));
         let parsed = parse_event_descriptors(&descriptor(0x50, &body));
         assert_eq!(parsed.components.len(), 1);
         assert_eq!(parsed.components[0].stream_content, 1);
@@ -1471,6 +2064,17 @@ mod r51_descriptor_coverage_tests {
     }
 
     #[test]
+    fn series_descriptor_keeps_valid_flag_and_full_mjd() {
+        let body = [0x12, 0x34, 0x2b, 0xe1, 0x23, 0x00, 0x03, 0x00, 0x0c];
+        let parsed = parse_event_descriptors(&descriptor(0xd5, &body));
+        let series = parsed.series.first().expect("series descriptor");
+        assert!(series.expire_date_valid);
+        assert_eq!(series.expire_date, 0xe123);
+        assert_eq!(series.repeat_label, 2);
+        assert_eq!(series.program_pattern, 3);
+    }
+
+    #[test]
     fn unknown_descriptor_is_preserved_for_diagnostics() {
         let parsed = parse_event_descriptors(&descriptor(0xfe, &[0x12, 0x34, 0x56]));
         assert_eq!(parsed.unknown, vec![(0xfe, vec![0x12, 0x34, 0x56])]);
@@ -1488,7 +2092,7 @@ mod r51_descriptor_coverage_tests {
         assert_eq!(parsed.parental_ratings.len(), 1);
         let json = event_descriptors_to_json(&parsed);
         assert!(json.contains("\"country\":\"JPN\""));
-        assert!(json.contains("\"ratingValue\":12"));
+        assert!(json.contains("\"rawRatingByte\":12"));
         let android_domain = format!("{}.{}", "com.android", "tv");
         let isdb_rating = format!("{}{}", "IS", "DB_12");
         let old_rating_system = format!("{}{}", "AR", "IB_JP");
@@ -1574,7 +2178,7 @@ mod r51_descriptor_coverage_tests {
         assert!(parsed.diagnostics.iter().any(|d| d.descriptor_tag == 0xc4
             && d.parse_status == DescriptorParseStatus::MalformedLength));
 
-        let parsed = parse_event_descriptors(&descriptor(0xd6, &[0x10, 0x00]));
+        let parsed = parse_event_descriptors(&descriptor(0xd6, &[0x40, 0x00]));
         assert!(parsed.event_groups.is_empty());
         assert!(parsed.diagnostics.iter().any(|d| d.descriptor_tag == 0xd6
             && d.parse_status == DescriptorParseStatus::MalformedLength));
@@ -1603,9 +2207,71 @@ mod r51_descriptor_coverage_tests {
         assert!(json.contains("\"descriptor\":{"));
         assert!(json.contains("\"parseStatus\":\"MalformedLength\""));
         assert!(json.contains("\"tag\":77"));
-        assert!(json.contains("\"rawPrefixHex\":\"4d06"));
+        assert!(json.contains("\"rawPrefixHex\":\"4d08"));
         assert!(json.contains("\"actualRemainingLength\":"));
         assert!(!json.contains("diagnosticCode"));
         assert!(!json.contains("descriptorOffset"));
+    }
+}
+
+#[cfg(test)]
+mod event_group_structure_tests {
+    use super::*;
+
+    #[test]
+    fn non_other_network_group_preserves_private_data() {
+        let body = [0x21, 0x00, 0x65, 0x00, 0xca, 0xde, 0xad, 0xbe];
+        let group = parse_event_group_descriptor(&body).expect("valid group type 2");
+        assert_eq!(group.group_type, 2);
+        assert_eq!(group.events.len(), 1);
+        assert_eq!(group.events[0].service_id, 101);
+        assert_eq!(group.events[0].event_id, 202);
+        assert!(group.other_network_events.is_empty());
+        assert_eq!(group.private_data, vec![0xde, 0xad, 0xbe]);
+    }
+
+    #[test]
+    fn other_network_group_uses_eight_byte_references() {
+        let body = [
+            0x41, 0x00, 0x65, 0x00, 0xca, 0x00, 0x06, 0x40, 0x74, 0x00, 0x68, 0x01, 0xca,
+        ];
+        let group = parse_event_group_descriptor(&body).expect("valid group type 4");
+        assert_eq!(group.group_type, 4);
+        assert_eq!(group.events.len(), 1);
+        assert_eq!(group.other_network_events.len(), 1);
+        let related = &group.other_network_events[0];
+        assert_eq!(related.original_network_id, 6);
+        assert_eq!(related.transport_stream_id, 0x4074);
+        assert_eq!(related.service_id, 104);
+        assert_eq!(related.event_id, 458);
+        assert!(group.private_data.is_empty());
+    }
+
+    #[test]
+    fn other_network_group_rejects_trailing_partial_reference() {
+        let body = [0x40, 0x00];
+        assert!(parse_event_group_descriptor(&body).is_none());
+    }
+}
+
+#[cfg(test)]
+mod component_group_structure_tests {
+    use super::*;
+
+    #[test]
+    fn mvtv_main_group_preserves_component_tags() {
+        // type=0 (MVTV), total_bit_rate_flag=0, one group; group id=0, one CA unit;
+        // CA_unit_id=1 with video/audio/caption component tags; empty text.
+        let body = [0x01, 0x01, 0x13, 0x00, 0x10, 0x30, 0x00];
+        let mut bytes = vec![0xd9, body.len() as u8];
+        bytes.extend_from_slice(&body);
+        let parsed = parse_event_descriptors(&bytes);
+        assert!(parsed.diagnostics.is_empty());
+        assert_eq!(parsed.component_groups.len(), 1);
+        let descriptor = &parsed.component_groups[0];
+        assert_eq!(descriptor.component_group_type, 0);
+        assert_eq!(descriptor.groups.len(), 1);
+        assert_eq!(descriptor.groups[0].component_group_id, 0);
+        assert_eq!(descriptor.groups[0].component_tags, vec![0x00, 0x10, 0x30]);
     }
 }

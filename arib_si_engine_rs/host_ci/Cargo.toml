@@ -1,0 +1,16 @@
+[package]
+name = "maleicacid-arib-si-engine-host-ci"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "maleicacid_arib_si_engine_jni"
+path = "../src/lib.rs"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+jni = "=0.21.1"
+maleicacid_arib_si_engine_core = { path = "core" }
+serde = { version = "=1.0.219", features = ["derive"] }
+serde_json = "=1.0.140"

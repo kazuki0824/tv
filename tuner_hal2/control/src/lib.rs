@@ -14,8 +14,8 @@ pub enum WorkerRuntimePoll<T, E> {
     OwnerFailure(WorkerRuntimeOwnerFailure),
 }
 
-/// Opaque physical result/join authority issued only by `WorkerRuntime`.
-/// It owns no independent generation, retry policy, reaper registry, or domain state.
+/// `WorkerRuntime`だけが発行するopaqueな物理result/join権限。
+/// 独自generation、retry policy、reaper registry、domain stateは所有しない。
 pub struct WorkerHandle<T, E> {
     result: std::sync::Arc<std::sync::Mutex<Option<Result<T, E>>>>,
     owner_failure: std::sync::Arc<std::sync::Mutex<Option<WorkerRuntimeOwnerFailure>>>,
@@ -192,8 +192,8 @@ pub enum WorkerTerminalResult<T> {
     PanicOrJoinFailure,
 }
 
-/// Canonical generic worker lifecycle owner shared by device and service layers.
-/// All thread creation and all subordinate reaper/supervisor handles originate here.
+/// device層とservice層が共有するgeneric worker lifecycleの正規owner。
+/// 全thread生成と従属reaper/supervisor handleはここから発行する。
 pub struct WorkerRuntime<T = ()> {
     owner_id: i64,
     generation: u64,
@@ -362,7 +362,7 @@ impl WorkerRuntime<()> {
     }
 }
 
-/// Opaque bounded reaper handle issued by `WorkerRuntime`.
+/// `WorkerRuntime`が発行するopaqueなbounded reaper handle。
 pub struct WorkerRuntimeReaperQueue<K, V, J> {
     sender: std::sync::mpsc::SyncSender<J>,
     pending: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<K, V>>>,
@@ -482,7 +482,7 @@ where
     }
 }
 
-/// Opaque active/reaping registry handle issued by `WorkerRuntime`.
+/// `WorkerRuntime`が発行するopaqueなactive/reaping registry handle。
 pub struct WorkerRuntimeSupervisor<K, A, R> {
     capacity: usize,
     deadline: std::time::Duration,

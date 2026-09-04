@@ -1,4 +1,4 @@
-//! Device-domain adapter over the canonical control-core worker result owner.
+//! 正規control-core worker result ownerに対するdevice-domain adapter。
 
 use std::time::Instant;
 

@@ -12,5 +12,6 @@ class LanguageCodeNormalizerTest {
         check(LanguageCodeNormalizer.normalizeForTvTrackLanguage("ja") == "jpn")
         check(LanguageCodeNormalizer.normalizeForTvTrackLanguage("fre") == "fra")
         check(LanguageCodeNormalizer.normalizeForTvTrackLanguage("ger") == "deu")
+        check(LanguageCodeNormalizer.normalizeForTvTrackLanguage("haw") == "haw")
     }
 }

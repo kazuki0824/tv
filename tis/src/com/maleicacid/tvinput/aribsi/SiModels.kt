@@ -16,12 +16,19 @@ object SiStatus {
     const val INDEX_OUT_OF_RANGE = -5
     const val JNI_ERROR = -6
     const val INTERNAL_ERROR = -7
+    const val INVALID_DISCOVERY_PROFILE = -8
 }
 
 object SiDiscoveryStage {
     const val INCOMPLETE = 0
     const val PARTIAL = 1
     const val COMPLETE = 2
+}
+
+object SiDiscoveryProfile {
+    const val ISDB_T: Int = 0
+    const val BS: Int = 1
+    const val CS110: Int = 2
 }
 
 data class SiIngestResult(
@@ -67,6 +74,9 @@ data class AribElementaryStream(
     val streamContent: Int?,
     val languageCodes: List<String> = emptyList(),
     val dataComponentId: Int? = null,
+    val captionDmf: Int? = null,
+    val captionTiming: Int? = null,
+    val automaticPresentationOnReception: Boolean? = null,
     val isCaption: Boolean = false,
     val isSuperimpose: Boolean = false,
 )
@@ -80,13 +90,20 @@ data class AribService(
     val pcrPid: TsPid? = null,
     val freeCaMode: Boolean? = null,
     val streams: List<AribElementaryStream> = emptyList(),
-    val hasProgramCaDescriptor: Boolean = false,
-    val hasEsCaDescriptor: Boolean = false,
     val serviceScopedCaDescriptors: List<CaDescriptor> = emptyList(),
-    val components: AribComponents = AribComponents(),
 ) {
-    val requiresCas: Boolean get() = hasProgramCaDescriptor || hasEsCaDescriptor
+    val hasProgramCaDescriptor: Boolean
+        get() = serviceScopedCaDescriptors.any { it.scope == CaDescriptorScope.PROGRAM }
+    val hasEsCaDescriptor: Boolean
+        get() = serviceScopedCaDescriptors.any { it.scope == CaDescriptorScope.ES }
+    val requiresCas: Boolean get() = serviceScopedCaDescriptors.isNotEmpty() || freeCaMode == true
 }
+
+data class AribBroadcastClockFact(
+    val tableId: Int,
+    val mjd: Int,
+    val millisOfDay: Long,
+)
 
 data class AribTransport(
     val originalNetwork: NetworkId16,
@@ -100,15 +117,27 @@ data class AribTransport(
 }
 
 data class AribExtendedItem(
+    val languageCode: String,
     val itemDescription: String,
     val itemText: String,
 )
 
+data class AribShortEventText(
+    val languageCode: String,
+    val title: String,
+    val text: String,
+    val parseStatus: String = "OK",
+)
+
+data class AribExtendedEventText(
+    val languageCode: String,
+    val text: String,
+    val parseStatus: String = "OK",
+)
+
 data class AribParentalRating(
     val countryCode: String,
-    val ratingValue: Int,
     val rawRatingByte: Int,
-    val supported: Boolean,
     val parseStatus: String = "OK",
 )
 
@@ -121,24 +150,47 @@ data class AribContentGenre(
 )
 
 
-data class AribRelatedItem(
-    val kind: String,
-    val groupType: Int,
-    val originalNetwork: NetworkId16?,
-    val transportStream: TransportStreamId16?,
+data class AribEventGroupReference(
     val service: ServiceId16,
     val eventId: Int,
-    val parseStatus: String = "OK",
 ) {
-    val originalNetworkId: Int? get() = originalNetwork?.value
-    val transportStreamId: Int? get() = transportStream?.value
     val serviceId: Int get() = service.value
 }
+
+data class AribOtherNetworkEventGroupReference(
+    val originalNetwork: NetworkId16,
+    val transportStream: TransportStreamId16,
+    val service: ServiceId16,
+    val eventId: Int,
+) {
+    val originalNetworkId: Int get() = originalNetwork.value
+    val transportStreamId: Int get() = transportStream.value
+    val serviceId: Int get() = service.value
+}
+
+data class AribEventGroup(
+    val groupType: Int,
+    val events: List<AribEventGroupReference> = emptyList(),
+    val otherNetworkEvents: List<AribOtherNetworkEventGroupReference> = emptyList(),
+    val privateDataHex: String = "",
+    val parseStatus: String = "OK",
+)
+
+data class AribComponentGroup(
+    val componentGroupId: Int,
+    val componentTags: List<Int> = emptyList(),
+)
+
+data class AribComponentGroupDescriptor(
+    val componentGroupType: Int,
+    val groups: List<AribComponentGroup> = emptyList(),
+    val parseStatus: String = "OK",
+)
 
 data class AribLinkage(
     val linkageType: Int,
     val serviceKey: ServiceKey,
-    val privateDataHex: String = "",
+    val privateDataPrefixHex: String = "",
     val parseStatus: String = "OK",
 ) {
     val originalNetworkId: Int get() = serviceKey.originalNetworkId
@@ -149,7 +201,6 @@ data class AribLinkage(
 data class AribFreeCaMode(
     val raw: Int?,
     val scrambled: Boolean?,
-    val text: String?,
     val parseStatus: String = "OK",
 )
 
@@ -166,26 +217,26 @@ data class AribSeries(
 )
 
 data class AribComponentEntry(
-    val esPid: TsPid,
+    val esPid: TsPid?,
     val streamType: Int? = null,
+    val streamContent: Int? = null,
     val componentTag: Int? = null,
     val componentType: Int? = null,
     val codec: String? = null,
     val language: String? = null,
     val secondLanguage: String? = null,
     val channelConfiguration: String? = null,
+    val simulcastGroupTag: Int? = null,
+    val samplingRate: Int? = null,
     val samplingInfo: String? = null,
+    val text: String? = null,
     val sourceDescriptor: String? = null,
     val resolution: String? = null,
     val scan: String? = null,
     val aspect: String? = null,
     val profileLevel: String? = null,
     val dataComponentId: Int? = null,
-    val trackId: String? = null,
     val captionServiceKind: String? = null,
-    val r51PlaybackSupported: Boolean? = null,
-    val liveViewableClaim: Boolean? = null,
-    val diagnosticCode: String? = null,
     val main: Boolean? = null,
     val multiLingual: Boolean? = null,
     val qualityIndicator: Int? = null,
@@ -214,20 +265,19 @@ data class AribProgramSource(
 )
 
 data class AribEventDescriptors(
+    val shortEvents: List<AribShortEventText> = emptyList(),
+    val extendedTexts: List<AribExtendedEventText> = emptyList(),
     val extendedItems: List<AribExtendedItem> = emptyList(),
     val componentText: String? = null,
     val audioComponentText: String? = null,
-    val audioLanguage: String? = null,
     val contentGenres: List<AribContentGenre> = emptyList(),
     val broadcastGenre: String? = null,
     val genreSupplementText: String? = null,
-    val relatedItems: List<AribRelatedItem> = emptyList(),
+    val eventGroups: List<AribEventGroup> = emptyList(),
+    val componentGroups: List<AribComponentGroupDescriptor> = emptyList(),
     val linkage: List<AribLinkage> = emptyList(),
     val scrambled: Boolean? = null,
     val freeCaMode: AribFreeCaMode? = null,
-    val seriesId: Int? = null,
-    val episodeNumber: Int? = null,
-    val lastEpisodeNumber: Int? = null,
     val series: AribSeries? = null,
     val parentalRatings: List<AribParentalRating> = emptyList(),
     val components: AribComponents = AribComponents(),
@@ -238,6 +288,9 @@ data class AribEvent(
     val serviceKey: ServiceKey,
     val stableIdentity: String,
     val eventId: Int,
+    val timingState: String = "DEFINED",
+    val rawStartTimeHex: String = "",
+    val rawDurationHex: String = "",
     val startTimeMillis: Long,
     val durationMillis: Long,
     val title: String,
@@ -309,6 +362,33 @@ data class ParserDiagnostic(
     val severity: String? = null,
 )
 
+data class SmdSemanticFacts(
+    val descriptorPresent: Boolean,
+    val syntaxValid: Boolean,
+    val systemManagementId: Int?,
+    val broadcastingFlag: Int?,
+    val broadcastingIdentifier: Int?,
+    val additionalBroadcastingIdentification: Int?,
+    val additionalIdentificationInfoHex: String,
+    val semanticState: String,
+    val diagnostic: String?,
+)
+
+data class ServiceSemanticFacts(
+    val serviceKey: ServiceKey,
+    val serviceType: Int?,
+    val pmtPidResolved: Boolean,
+    val pmtParsed: Boolean,
+    val pcrPidResolved: Boolean,
+    val elementaryStreams: List<AribElementaryStream>,
+    val requiresCas: Boolean,
+    val caDescriptorsResolved: Boolean,
+    val freeCaMode: Boolean?,
+    val smd: SmdSemanticFacts,
+    val missingComponents: List<String>,
+    val semanticDiagnostics: List<String>,
+)
+
 data class MalformedCaDescriptorDiagnostic(
     val pid: TsPid,
     val tableId: Int,
@@ -334,26 +414,35 @@ data class TransportKey(
 }
 
 data class ProgramPublishSnapshot(
-    val snapshotGeneration: Long,
     val ingestSequence: Long,
     val events: List<AribEvent>,
     val updateWindows: List<EpgUpdateWindow>,
-    val publishabilityByServiceKey: Map<ServiceKey, ProgramPublishability>,
+    val semanticFactsByServiceKey: Map<ServiceKey, ServiceSemanticFacts>,
     val descriptorDiagnostics: List<DescriptorDiagnostic>,
     val parserDiagnostics: List<ParserDiagnostic>,
     val malformedCaDescriptorCountByServiceId: Map<ServiceId16, Int> = emptyMap(),
 )
 
+data class TableRequirementStatus(
+    val component: String,
+    val originalNetworkId: Int?,
+    val transportStreamId: Int?,
+    val serviceId: Int?,
+    val required: Boolean,
+    val complete: Boolean,
+)
+
 data class ServiceRegistrationSnapshot(
-    val snapshotGeneration: Long,
+    val discoveryStage: Int,
+    val tableRequirements: List<TableRequirementStatus>,
     val services: List<AribService>,
     val actualTransports: Set<TransportKey>,
-    val publishabilityByServiceKey: Map<ServiceKey, ProgramPublishability>,
+    val actualTransportMetadata: List<AribTransport>,
+    val semanticFactsByServiceKey: Map<ServiceKey, ServiceSemanticFacts>,
     val diagnostics: List<ParserDiagnostic>,
 )
 
 data class CasDiscoverySnapshot(
-    val snapshotGeneration: Long,
     val services: List<AribService>,
     val caMetadata: List<CaMetadata>,
     val pmtPids: Map<ServiceKey, TsPid>,
@@ -363,36 +452,27 @@ data class CasDiscoverySnapshot(
 )
 
 data class LivePlaybackSnapshot(
-    val snapshotGeneration: Long,
     val ingestSequence: Long,
     val services: List<AribService>,
-    val servicesForCasDiscovery: List<AribService>,
-    val caMetadataForCasDiscovery: List<CaMetadata>,
+    val caMetadata: List<CaMetadata>,
     val pmtPids: Map<ServiceKey, TsPid>,
     val catEmmPids: List<TsPid>,
-    val publishabilityByServiceKey: Map<ServiceKey, ProgramPublishability>,
+    val semanticFactsByServiceKey: Map<ServiceKey, ServiceSemanticFacts>,
     val descriptorDiagnostics: List<DescriptorDiagnostic>,
     val parserDiagnostics: List<ParserDiagnostic>,
     val malformedCaDescriptorDiagnostics: List<MalformedCaDescriptorDiagnostic> = emptyList(),
 )
 
-data class ServicePublishabilityDiagnostic(
+data class ServicePolicyDecision(
     val serviceKey: ServiceKey,
-    val publishable: Boolean,
-    val channelRegistrationReady: Boolean,
-    val epgPublishable: Boolean,
-    val clearLivePlaybackSupported: Boolean,
+    val registrationReady: Boolean,
     val requiresCas: Boolean,
-    val unsupportedCas: Boolean,
-    val pmtPidResolved: Boolean = false,
-    val pmtParsed: Boolean = false,
-    val caStateResolved: Boolean = false,
-    val freeCaModeResolved: Boolean = false,
-    val missingComponents: List<String>,
     val reasons: List<String>,
-    val registrationReasons: List<String>,
-    val epgReasons: List<String>,
-)
+) {
+    val clearLivePlaybackSupported: Boolean get() = registrationReady && !requiresCas
+}
+
+typealias ServicePublishabilityDiagnostic = ServicePolicyDecision
 
 enum class CaMetadataSource { PROGRAM, ELEMENTARY_STREAM, CAT }
 
@@ -429,25 +509,6 @@ data class CaMetadata(
         result = 31 * result + (elementaryPid?.value ?: 0)
         result = 31 * result + privateData.contentHashCode()
         result = 31 * result + source.hashCode()
-        return result
-    }
-}
-
-data class PrivateSection(
-    val pid: TsPid,
-    val tableId: Int,
-    val bytes: ByteArray,
-) {
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (other !is PrivateSection) return false
-        return pid == other.pid && tableId == other.tableId && bytes.contentEquals(other.bytes)
-    }
-
-    override fun hashCode(): Int {
-        var result = pid.value
-        result = 31 * result + tableId
-        result = 31 * result + bytes.contentHashCode()
         return result
     }
 }

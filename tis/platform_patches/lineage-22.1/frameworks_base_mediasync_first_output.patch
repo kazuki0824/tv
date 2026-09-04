@@ -1,0 +1,303 @@
+diff --git a/media/java/android/media/MediaSync.java b/media/java/android/media/MediaSync.java
+index 799f4bf4f..c43c3458c 100644
+--- a/media/java/android/media/MediaSync.java
++++ b/media/java/android/media/MediaSync.java
+@@ -162,6 +162,16 @@ public final class MediaSync {
+         void onError(@NonNull MediaSync sync, int what, int extra);
+     }
+ 
++    /**
++     * Listener for the first video frame successfully queued by MediaSync to its output surface
++     * after an explicit arm operation.
++     *
++     * @hide
++     */
++    public interface OnFirstVideoFrameQueuedToOutputListener {
++        void onFirstVideoFrameQueuedToOutput(@NonNull MediaSync sync, long armSequence);
++    }
++
+     private static final String TAG = "MediaSync";
+ 
+     private static final int EVENT_CALLBACK = 1;
+@@ -190,6 +200,11 @@ public final class MediaSync {
+     private Handler mOnErrorListenerHandler = null;
+     private MediaSync.OnErrorListener mOnErrorListener = null;
+ 
++    private final Object mOnFirstVideoFrameQueuedToOutputListenerLock = new Object();
++    private Handler mOnFirstVideoFrameQueuedToOutputListenerHandler = null;
++    private MediaSync.OnFirstVideoFrameQueuedToOutputListener
++            mOnFirstVideoFrameQueuedToOutputListener = null;
++
+     private Thread mAudioThread = null;
+     // Created on mAudioThread when mAudioThread is started. When used on user thread, they should
+     // be guarded by checking mAudioThread.
+@@ -233,6 +248,7 @@ public final class MediaSync {
+             }
+         }
+         setCallback(null, null);
++        setOnFirstVideoFrameQueuedToOutputListener(0L, null, null);
+         native_release();
+     }
+ 
+@@ -303,6 +319,67 @@ public final class MediaSync {
+         }
+     }
+ 
++    /**
++     * Arms a one-shot callback for the first video frame that MediaSync successfully queues to
++     * its current output surface. The arm sequence is opaque to MediaSync and is returned unchanged
++     * with the callback so a platform-coupled client can reject a stale delayed event after re-arm.
++     *
++     * <p>This observes successful queueing to MediaSync's output surface. It does not indicate
++     * compositor presentation or present-fence completion.</p>
++     *
++     * @param armSequence positive identifier scoped by the caller to this MediaSync instance
++     * @param listener callback to arm, or {@code null} to disarm
++     * @param handler handler used to deliver the callback, or {@code null} for the current/main
++     *                looper
++     * @hide
++     */
++    public void setOnFirstVideoFrameQueuedToOutputListener(
++            long armSequence,
++            @Nullable OnFirstVideoFrameQueuedToOutputListener listener,
++            @Nullable Handler handler) {
++        if (listener != null && armSequence <= 0) {
++            throw new IllegalArgumentException("armSequence must be positive when armed");
++        }
++
++        synchronized (mOnFirstVideoFrameQueuedToOutputListenerLock) {
++            if (listener == null) {
++                mOnFirstVideoFrameQueuedToOutputListenerHandler = null;
++                mOnFirstVideoFrameQueuedToOutputListener = null;
++            } else {
++                if (handler != null) {
++                    mOnFirstVideoFrameQueuedToOutputListenerHandler = handler;
++                } else {
++                    Looper looper = Looper.myLooper();
++                    if (looper == null) {
++                        looper = Looper.getMainLooper();
++                    }
++                    mOnFirstVideoFrameQueuedToOutputListenerHandler =
++                            looper == null ? null : new Handler(looper);
++                }
++                mOnFirstVideoFrameQueuedToOutputListener = listener;
++            }
++        }
++
++        native_setFirstVideoFrameQueuedToOutputArm(listener != null, armSequence);
++    }
++
++    private void postFirstVideoFrameQueuedToOutputFromNative(long armSequence) {
++        final OnFirstVideoFrameQueuedToOutputListener listener;
++        final Handler handler;
++        synchronized (mOnFirstVideoFrameQueuedToOutputListenerLock) {
++            listener = mOnFirstVideoFrameQueuedToOutputListener;
++            handler = mOnFirstVideoFrameQueuedToOutputListenerHandler;
++        }
++        if (listener == null || handler == null) {
++            return;
++        }
++        final MediaSync sync = this;
++        handler.post(() -> listener.onFirstVideoFrameQueuedToOutput(sync, armSequence));
++    }
++
++    private native void native_setFirstVideoFrameQueuedToOutputArm(
++            boolean armed, long armSequence);
++
+     /**
+      * Sets the output surface for MediaSync.
+      * <p>
+diff --git a/media/jni/android_media_MediaSync.cpp b/media/jni/android_media_MediaSync.cpp
+index d1ce30a3e..3069477a1 100644
+--- a/media/jni/android_media_MediaSync.cpp
++++ b/media/jni/android_media_MediaSync.cpp
+@@ -46,6 +46,7 @@ struct fields_t {
+     jfieldID mediaTimestampMediaTimeUsID;
+     jfieldID mediaTimestampNanoTimeID;
+     jfieldID mediaTimestampClockRateID;
++    jmethodID postFirstVideoFrameQueuedToOutputID;
+ };
+ 
+ static fields_t gFields;
+@@ -54,11 +55,81 @@ static SyncParams::fields_t gSyncParamsFields;
+ 
+ ////////////////////////////////////////////////////////////////////////////////
+ 
+-JMediaSync::JMediaSync() {
++JMediaSync::JMediaSync(JNIEnv* env, jobject thiz)
++      : mJavaVm(nullptr),
++        mJavaObject(nullptr) {
++    CHECK_EQ(env->GetJavaVM(&mJavaVm), JNI_OK);
++    mJavaObject = env->NewWeakGlobalRef(thiz);
++    CHECK(mJavaObject != nullptr);
+     mSync = MediaSync::create();
+ }
+ 
+ JMediaSync::~JMediaSync() {
++    mSync->setFirstVideoFrameQueuedToOutputCallback({});
++    if (mJavaObject == nullptr || mJavaVm == nullptr) {
++        return;
++    }
++
++    JNIEnv* env = nullptr;
++    bool attached = false;
++    if (mJavaVm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
++        if (mJavaVm->AttachCurrentThread(&env, nullptr) != JNI_OK) {
++            ALOGE("failed to attach JNI thread while releasing MediaSync callback");
++            return;
++        }
++        attached = true;
++    }
++    env->DeleteWeakGlobalRef(mJavaObject);
++    mJavaObject = nullptr;
++    if (attached) {
++        mJavaVm->DetachCurrentThread();
++    }
++}
++
++void JMediaSync::initializeFirstVideoFrameQueuedToOutputCallback() {
++    wp<JMediaSync> weakThis(this);
++    mSync->setFirstVideoFrameQueuedToOutputCallback(
++            [weakThis](int64_t armSequence) {
++                sp<JMediaSync> strongThis = weakThis.promote();
++                if (strongThis != nullptr) {
++                    strongThis->notifyFirstVideoFrameQueuedToOutput(armSequence);
++                }
++            });
++}
++
++void JMediaSync::setFirstVideoFrameQueuedToOutputArm(bool armed, int64_t armSequence) {
++    mSync->setFirstVideoFrameQueuedToOutputArm(armed, armSequence);
++}
++
++void JMediaSync::notifyFirstVideoFrameQueuedToOutput(int64_t armSequence) {
++    if (mJavaObject == nullptr || mJavaVm == nullptr) {
++        return;
++    }
++
++    JNIEnv* env = nullptr;
++    bool attached = false;
++    if (mJavaVm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
++        if (mJavaVm->AttachCurrentThread(&env, nullptr) != JNI_OK) {
++            ALOGE("failed to attach JNI thread for MediaSync first-output callback");
++            return;
++        }
++        attached = true;
++    }
++
++    jobject thiz = env->NewLocalRef(mJavaObject);
++    if (thiz != nullptr) {
++        env->CallVoidMethod(
++                thiz, gFields.postFirstVideoFrameQueuedToOutputID, static_cast<jlong>(armSequence));
++        if (env->ExceptionCheck()) {
++            ALOGE("exception delivering MediaSync first-output callback");
++            env->ExceptionDescribe();
++            env->ExceptionClear();
++        }
++        env->DeleteLocalRef(thiz);
++    }
++    if (attached) {
++        mJavaVm->DetachCurrentThread();
++    }
+ }
+ 
+ status_t JMediaSync::setSurface(const sp<IGraphicBufferProducer> &bufferProducer) {
+@@ -231,6 +302,24 @@ static void android_media_MediaSync_native_setAudioTrack(
+     }
+ }
+ 
++static void android_media_MediaSync_native_setFirstVideoFrameQueuedToOutputArm(
++        JNIEnv *env, jobject thiz, jboolean armed, jlong armSequence) {
++    sp<JMediaSync> sync = getMediaSync(env, thiz);
++    if (sync == NULL) {
++        // Disarm is part of release cleanup and remains harmless after native_release().
++        if (armed == JNI_FALSE) {
++            return;
++        }
++        throwExceptionAsNecessary(env, INVALID_OPERATION);
++        return;
++    }
++    if (armed == JNI_TRUE && armSequence <= 0) {
++        throwExceptionAsNecessary(env, BAD_VALUE, "armSequence must be positive when armed");
++        return;
++    }
++    sync->setFirstVideoFrameQueuedToOutputArm(armed == JNI_TRUE, armSequence);
++}
++
+ static jobject android_media_MediaSync_createInputSurface(
+         JNIEnv* env, jobject thiz) {
+     ALOGV("android_media_MediaSync_createInputSurface");
+@@ -485,6 +574,10 @@ static void android_media_MediaSync_native_init(JNIEnv *env) {
+     gFields.context = env->GetFieldID(clazz.get(), "mNativeContext", "J");
+     CHECK(gFields.context != NULL);
+ 
++    gFields.postFirstVideoFrameQueuedToOutputID = env->GetMethodID(
++            clazz.get(), "postFirstVideoFrameQueuedToOutputFromNative", "(J)V");
++    CHECK(gFields.postFirstVideoFrameQueuedToOutputID != NULL);
++
+     clazz.reset(env->FindClass("android/media/MediaTimestamp"));
+     CHECK(clazz.get() != NULL);
+ 
+@@ -505,9 +598,10 @@ static void android_media_MediaSync_native_init(JNIEnv *env) {
+ }
+ 
+ static void android_media_MediaSync_native_setup(JNIEnv *env, jobject thiz) {
+-    sp<JMediaSync> sync = new JMediaSync();
++    sp<JMediaSync> sync = new JMediaSync(env, thiz);
+ 
+     setMediaSync(env, thiz, sync);
++    sync->initializeFirstVideoFrameQueuedToOutputCallback();
+ }
+ 
+ static void android_media_MediaSync_native_finalize(JNIEnv *env, jobject thiz) {
+@@ -523,6 +617,10 @@ static JNINativeMethod gMethods[] = {
+       "(Landroid/media/AudioTrack;)V",
+       (void *)android_media_MediaSync_native_setAudioTrack },
+ 
++    { "native_setFirstVideoFrameQueuedToOutputArm",
++      "(ZJ)V",
++      (void *)android_media_MediaSync_native_setFirstVideoFrameQueuedToOutputArm },
++
+     { "createInputSurface", "()Landroid/view/Surface;",
+       (void *)android_media_MediaSync_createInputSurface },
+ 
+diff --git a/media/jni/android_media_MediaSync.h b/media/jni/android_media_MediaSync.h
+index 09d69d115..59f6f62c5 100644
+--- a/media/jni/android_media_MediaSync.h
++++ b/media/jni/android_media_MediaSync.h
+@@ -17,6 +17,8 @@
+ #ifndef _ANDROID_MEDIA_MEDIASYNC_H_
+ #define _ANDROID_MEDIA_MEDIASYNC_H_
+ 
++#include <jni.h>
++
+ #include <media/AudioResamplerPublic.h>
+ #include <media/stagefright/foundation/ABase.h>
+ #include <media/stagefright/MediaSync.h>
+@@ -31,7 +33,7 @@ struct MediaClock;
+ class MediaSync;
+ 
+ struct JMediaSync : public RefBase {
+-    JMediaSync();
++    JMediaSync(JNIEnv* env, jobject thiz);
+ 
+     status_t setSurface(const sp<IGraphicBufferProducer> &bufferProducer);
+     status_t setAudioTrack(const sp<AudioTrack> &audioTrack);
+@@ -53,11 +55,17 @@ struct JMediaSync : public RefBase {
+ 
+     sp<const MediaClock> getMediaClock();
+ 
++    void initializeFirstVideoFrameQueuedToOutputCallback();
++    void setFirstVideoFrameQueuedToOutputArm(bool armed, int64_t armSequence);
++    void notifyFirstVideoFrameQueuedToOutput(int64_t armSequence);
++
+ protected:
+     virtual ~JMediaSync();
+ 
+ private:
+     sp<MediaSync> mSync;
++    JavaVM* mJavaVm;
++    jweak mJavaObject;
+ 
+     DISALLOW_EVIL_CONSTRUCTORS(JMediaSync);
+ };

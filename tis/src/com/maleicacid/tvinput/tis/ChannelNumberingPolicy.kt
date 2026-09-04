@@ -11,17 +11,21 @@ import com.maleicacid.tvinput.db.ChannelRecord
 object ChannelNumberingPolicy {
     fun displayNumber(service: AribService, remoteKey: Int?, candidate: ScanCandidate): String {
         val base = when (candidate.deliverySystem) {
-            ChannelRecord.DELIVERY_SYSTEM_ISDB_T -> terrestrialBase(service, remoteKey, candidate)
+            ChannelRecord.DELIVERY_SYSTEM_ISDB_T -> terrestrialBase(service, remoteKey)
             ChannelRecord.DELIVERY_SYSTEM_ISDB_S -> satelliteBase(service, candidate)
             else -> candidate.displayChannel.ifBlank { service.serviceKey.serviceId.toString() }
         }
         return base.replace(Regex("[^0-9A-Za-z_.-]"), "-")
     }
 
-    private fun terrestrialBase(service: AribService, remoteKey: Int?, candidate: ScanCandidate): String {
-        val key = remoteKey ?: candidate.physicalChannel ?: return service.serviceKey.serviceId.toString()
-        val ordinal = stableServiceOrdinal(service.serviceKey.serviceId)
-        return if (ordinal == 0) key.toString() else "$key.$ordinal"
+    private fun terrestrialBase(service: AribService, remoteKey: Int?): String {
+        val key = remoteKey?.takeIf { it in 1..12 } ?: return service.serviceKey.serviceId.toString()
+        val serviceId = service.serviceKey.serviceId
+        // ARIB TR-B14 Vol.7 encodes service type in b8..b7 and service number in b2..b0.
+        val serviceType = (serviceId ushr 7) and 0x03
+        val serviceNumber = serviceId and 0x07
+        val threeDigitNumber = serviceType * 200 + key * 10 + (serviceNumber + 1)
+        return threeDigitNumber.toString().padStart(3, '0')
     }
 
     private fun satelliteBase(service: AribService, candidate: ScanCandidate): String {
@@ -33,8 +37,4 @@ object ChannelNumberingPolicy {
         return "$prefix-${service.serviceKey.serviceId}"
     }
 
-    private fun stableServiceOrdinal(serviceId: Int): Int {
-        val suffix = serviceId % 100
-        return if (suffix == 0) 0 else suffix
-    }
 }

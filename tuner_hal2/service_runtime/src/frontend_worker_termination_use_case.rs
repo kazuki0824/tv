@@ -13,8 +13,8 @@ use crate::frontend_worker_txn::{
 };
 use crate::worker_failure_classifier::WorkerFailureClassifier;
 
-/// Call-local frontend-specific terminal orchestration. Generic stop, wake,
-/// join, and reaping state remains owned by `WorkerRuntime`.
+/// frontend固有terminal処理をまとめるcall-local orchestration。
+/// genericなstop、wake、join、reaping stateは`WorkerRuntime`が引き続き所有する。
 pub struct FrontendWorkerTerminationUseCase;
 
 impl FrontendWorkerTerminationUseCase {

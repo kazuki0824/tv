@@ -12,8 +12,6 @@ object LanguageCodeNormalizer {
         runCatching { iso2.lowercase(Locale.ROOT) to Locale(iso2).getISO3Language().lowercase(Locale.ROOT) }.getOrNull()
     }.toMap()
 
-    private val iso3T: Set<String> = iso2ToIso3T.values.toSet()
-
     private val bibliographicAliases = mapOf(
         "alb" to "sqi",
         "arm" to "hye",
@@ -41,7 +39,7 @@ object LanguageCodeNormalizer {
         val code = value?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotBlank() } ?: return null
         return when (code.length) {
             2 -> iso2ToIso3T[code]
-            3 -> bibliographicAliases[code] ?: code.takeIf { it in iso3T }
+            3 -> bibliographicAliases[code] ?: code.takeIf { it.all { ch -> ch in 'a'..'z' } }
             else -> null
         }
     }

@@ -8,17 +8,15 @@
     "schema",
     "schemaVersion",
     "programKey",
-    "serviceKey",
     "timing",
     "source",
     "cas",
     "ratings",
     "genres",
     "series",
-    "relatedItems",
+    "eventGroups",
     "linkage",
     "freeCaMode",
-    "audioLanguages",
     "extendedItems",
     "components",
     "diagnostics"
@@ -32,9 +30,6 @@
     },
     "programKey": {
       "$ref": "#/$defs/programKey"
-    },
-    "serviceKey": {
-      "$ref": "#/$defs/serviceKey"
     },
     "timing": {
       "$ref": "#/$defs/timing"
@@ -67,10 +62,10 @@
         }
       ]
     },
-    "relatedItems": {
+    "eventGroups": {
       "type": "array",
       "items": {
-        "$ref": "#/$defs/relatedItem"
+        "$ref": "#/$defs/eventGroup"
       }
     },
     "linkage": {
@@ -89,10 +84,16 @@
         }
       ]
     },
-    "audioLanguages": {
+    "shortEvents": {
       "type": "array",
       "items": {
-        "$ref": "#/$defs/audioLanguage"
+        "$ref": "#/$defs/shortEvent"
+      }
+    },
+    "extendedTexts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/extendedText"
       }
     },
     "extendedItems": {
@@ -110,8 +111,16 @@
   },
   "not": {
     "anyOf": [
-      { "required": ["audio"] },
-      { "required": ["video"] }
+      {
+        "required": [
+          "audio"
+        ]
+      },
+      {
+        "required": [
+          "video"
+        ]
+      }
     ]
   },
   "$defs": {
@@ -146,7 +155,7 @@
     },
     "programKey": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "kind",
         "originalNetworkId",
@@ -172,39 +181,15 @@
         }
       }
     },
-    "serviceKey": {
-      "type": "object",
-      "additionalProperties": true,
-      "required": [
-        "originalNetworkId",
-        "transportStreamId",
-        "serviceId"
-      ],
-      "properties": {
-        "originalNetworkId": {
-          "$ref": "#/$defs/uint16"
-        },
-        "transportStreamId": {
-          "$ref": "#/$defs/uint16"
-        },
-        "serviceId": {
-          "$ref": "#/$defs/uint16"
-        }
-      }
-    },
     "timing": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "startUtcMillis",
-        "endUtcMillis",
         "durationMillis"
       ],
       "properties": {
         "startUtcMillis": {
-          "type": "integer"
-        },
-        "endUtcMillis": {
           "type": "integer"
         },
         "durationMillis": {
@@ -215,7 +200,7 @@
     },
     "source": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "pid",
         "tableId",
@@ -245,7 +230,7 @@
     },
     "cas": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "requiresCas",
         "source"
@@ -261,20 +246,39 @@
       },
       "not": {
         "anyOf": [
-          { "required": ["unsupportedCas"] },
-          { "required": ["clearLivePlaybackSupported"] },
-          { "required": ["channelRegistrationReady"] },
-          { "required": ["epgPublishable"] },
-          { "required": ["publishStateSource"] }
+          {
+            "required": [
+              "unsupportedCas"
+            ]
+          },
+          {
+            "required": [
+              "clearLivePlaybackSupported"
+            ]
+          },
+          {
+            "required": [
+              "channelRegistrationReady"
+            ]
+          },
+          {
+            "required": [
+              "epgPublishable"
+            ]
+          },
+          {
+            "required": [
+              "publishStateSource"
+            ]
+          }
         ]
       }
     },
     "rating": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "countryCode",
-        "ratingValue",
         "rawRatingByte",
         "parseStatus"
       ],
@@ -283,11 +287,6 @@
           "type": "string",
           "minLength": 3,
           "maxLength": 3
-        },
-        "ratingValue": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 255
         },
         "rawRatingByte": {
           "type": "integer",
@@ -300,14 +299,22 @@
       },
       "not": {
         "anyOf": [
-          { "required": ["supported"] },
-          { "required": ["mappedTvContentRating"] }
+          {
+            "required": [
+              "supported"
+            ]
+          },
+          {
+            "required": [
+              "mappedTvContentRating"
+            ]
+          }
         ]
       }
     },
     "genre": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "level1",
         "level2",
@@ -329,7 +336,7 @@
         "userNibble": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 15
+          "maximum": 255
         },
         "aribName": {
           "type": "string"
@@ -340,15 +347,27 @@
       },
       "not": {
         "anyOf": [
-          { "required": ["unmappedReason"] },
-          { "required": ["canonicalGenre"] },
-          { "required": ["mappedCanonicalGenre"] }
+          {
+            "required": [
+              "unmappedReason"
+            ]
+          },
+          {
+            "required": [
+              "canonicalGenre"
+            ]
+          },
+          {
+            "required": [
+              "mappedCanonicalGenre"
+            ]
+          }
         ]
       }
     },
     "series": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "seriesId",
         "repeatLabel",
@@ -378,9 +397,13 @@
           "type": "boolean"
         },
         "expireDate": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint16"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "episodeNumber": {
@@ -402,53 +425,39 @@
         "parseStatus": {
           "$ref": "#/$defs/parseStatus"
         }
-      }
-    },
-    "relatedItem": {
-      "type": "object",
-      "additionalProperties": true,
-      "required": [
-        "kind",
-        "groupType",
-        "originalNetworkId",
-        "transportStreamId",
-        "serviceId",
-        "eventId",
-        "parseStatus"
-      ],
-      "properties": {
-        "kind": {
-          "enum": [
-            "shared",
-            "relay",
-            "movement"
-          ]
-        },
-        "groupType": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 15
-        },
-        "originalNetworkId": {
-          "$ref": "#/$defs/uint16"
-        },
-        "transportStreamId": {
-          "$ref": "#/$defs/uint16"
-        },
-        "serviceId": {
-          "$ref": "#/$defs/uint16"
-        },
-        "eventId": {
-          "$ref": "#/$defs/uint16"
-        },
-        "parseStatus": {
-          "$ref": "#/$defs/parseStatus"
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "expireDateValid": {
+                "const": true
+              }
+            },
+            "required": [
+              "expireDateValid"
+            ]
+          },
+          "then": {
+            "properties": {
+              "expireDate": {
+                "$ref": "#/$defs/uint16"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "expireDate": {
+                "type": "null"
+              }
+            }
+          }
         }
-      }
+      ]
     },
     "linkage": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "transportStreamId",
         "originalNetworkId",
@@ -482,7 +491,7 @@
     },
     "freeCaMode": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "raw",
         "scrambled",
@@ -502,36 +511,19 @@
         }
       }
     },
-    "audioLanguage": {
-      "type": "object",
-      "additionalProperties": true,
-      "required": [
-        "language",
-        "source",
-        "parseStatus"
-      ],
-      "properties": {
-        "language": {
-          "$ref": "#/$defs/iso639"
-        },
-        "source": {
-          "type": "string",
-          "minLength": 1
-        },
-        "parseStatus": {
-          "$ref": "#/$defs/parseStatus"
-        }
-      }
-    },
     "extendedItem": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
+        "languageCode",
         "description",
         "text",
         "parseStatus"
       ],
       "properties": {
+        "languageCode": {
+          "$ref": "#/$defs/iso639"
+        },
         "parseStatus": {
           "$ref": "#/$defs/parseStatus"
         },
@@ -545,7 +537,7 @@
     },
     "videoComponent": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "esPid",
         "streamType",
@@ -556,20 +548,75 @@
       ],
       "properties": {
         "esPid": {
-          "$ref": "#/$defs/uint13"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint13"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "streamType": {
-          "$ref": "#/$defs/uint8"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint8"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "streamContent": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 15
         },
         "componentTag": {
-          "$ref": "#/$defs/uint8"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint8"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "componentType": {
-          "$ref": "#/$defs/uint8"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint8"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "codec": {
-          "type": "string",
-          "minLength": 1
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "language": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "resolution": {
           "type": [
@@ -603,10 +650,6 @@
         },
         "parseStatus": {
           "$ref": "#/$defs/parseStatus"
-        },
-        "diagnosticCode": {
-          "type": "string",
-          "minLength": 1
         }
       },
       "not": {
@@ -626,7 +669,7 @@
     },
     "audioComponent": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "esPid",
         "streamType",
@@ -634,27 +677,88 @@
         "componentType",
         "codec",
         "language",
+        "secondLanguage",
         "parseStatus"
       ],
       "properties": {
         "esPid": {
-          "$ref": "#/$defs/uint13"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint13"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "streamType": {
-          "$ref": "#/$defs/uint8"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint8"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "streamContent": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 15
         },
         "componentTag": {
-          "$ref": "#/$defs/uint8"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint8"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "componentType": {
-          "$ref": "#/$defs/uint8"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint8"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "codec": {
-          "type": "string",
-          "minLength": 1
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "language": {
-          "$ref": "#/$defs/iso639"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/iso639"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "secondLanguage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/iso639"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "channelConfiguration": {
           "type": [
@@ -662,11 +766,53 @@
             "null"
           ]
         },
+        "simulcastGroupTag": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 255
+        },
+        "samplingRate": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 7
+        },
         "samplingInfo": {
           "type": [
             "string",
             "null"
           ]
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "main": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "multiLingual": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "qualityIndicator": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 3
         },
         "sourceDescriptor": {
           "type": [
@@ -676,10 +822,6 @@
         },
         "parseStatus": {
           "$ref": "#/$defs/parseStatus"
-        },
-        "diagnosticCode": {
-          "type": "string",
-          "minLength": 1
         }
       },
       "not": {
@@ -699,7 +841,7 @@
     },
     "subtitleComponent": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "esPid",
         "componentTag",
@@ -710,16 +852,44 @@
       ],
       "properties": {
         "esPid": {
-          "$ref": "#/$defs/uint13"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint13"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "componentTag": {
-          "$ref": "#/$defs/uint8"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint8"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "dataComponentId": {
-          "$ref": "#/$defs/uint16"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint16"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "language": {
-          "$ref": "#/$defs/iso639"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/iso639"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "captionServiceKind": {
           "type": "string",
@@ -730,12 +900,14 @@
         }
       },
       "not": {
-        "required": ["trackId"]
+        "required": [
+          "trackId"
+        ]
       }
     },
     "dataComponent": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "esPid",
         "componentTag",
@@ -745,16 +917,44 @@
       ],
       "properties": {
         "esPid": {
-          "$ref": "#/$defs/uint13"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint13"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "componentTag": {
-          "$ref": "#/$defs/uint8"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint8"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "dataComponentId": {
-          "$ref": "#/$defs/uint16"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint16"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "componentType": {
-          "$ref": "#/$defs/uint8"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uint8"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "parseStatus": {
           "$ref": "#/$defs/parseStatus"
@@ -763,7 +963,7 @@
     },
     "components": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "video",
         "audio",
@@ -799,7 +999,7 @@
     },
     "diagnosticItem": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "code",
         "message"
@@ -819,7 +1019,7 @@
     },
     "diagnostics": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "descriptorDiagnostics",
         "publishDiagnostics",
@@ -874,6 +1074,24 @@
           "type": "integer",
           "minimum": 0
         },
+        "providerDataDroppedCounts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "providerDataOriginalBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "providerDataFinalBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "providerDataTruncationCode": {
+          "const": "PROVIDER_DATA_TRUNCATED"
+        },
         "malformedCaDescriptorCount": {
           "type": "integer",
           "minimum": 0
@@ -883,6 +1101,157 @@
         "required": [
           "currentProgram"
         ]
+      }
+    },
+    "eventGroupReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "serviceId",
+        "eventId"
+      ],
+      "properties": {
+        "serviceId": {
+          "$ref": "#/$defs/uint16"
+        },
+        "eventId": {
+          "$ref": "#/$defs/uint16"
+        }
+      }
+    },
+    "otherNetworkEventReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "originalNetworkId",
+        "transportStreamId",
+        "serviceId",
+        "eventId"
+      ],
+      "properties": {
+        "originalNetworkId": {
+          "$ref": "#/$defs/uint16"
+        },
+        "transportStreamId": {
+          "$ref": "#/$defs/uint16"
+        },
+        "serviceId": {
+          "$ref": "#/$defs/uint16"
+        },
+        "eventId": {
+          "$ref": "#/$defs/uint16"
+        }
+      }
+    },
+    "eventGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "groupType",
+        "events",
+        "otherNetworkEvents",
+        "privateDataHex",
+        "parseStatus"
+      ],
+      "properties": {
+        "groupType": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 15
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/eventGroupReference"
+          }
+        },
+        "otherNetworkEvents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/otherNetworkEventReference"
+          }
+        },
+        "privateDataHex": {
+          "$ref": "#/$defs/hex"
+        },
+        "parseStatus": {
+          "$ref": "#/$defs/parseStatus"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "groupType": {
+                "enum": [
+                  4,
+                  5
+                ]
+              }
+            },
+            "required": [
+              "groupType"
+            ]
+          },
+          "then": {
+            "properties": {
+              "privateDataHex": {
+                "const": ""
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "otherNetworkEvents": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      ]
+    },
+    "shortEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "languageCode",
+        "title",
+        "text",
+        "parseStatus"
+      ],
+      "properties": {
+        "languageCode": {
+          "$ref": "#/$defs/iso639"
+        },
+        "title": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "parseStatus": {
+          "$ref": "#/$defs/parseStatus"
+        }
+      }
+    },
+    "extendedText": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "languageCode",
+        "text",
+        "parseStatus"
+      ],
+      "properties": {
+        "languageCode": {
+          "$ref": "#/$defs/iso639"
+        },
+        "text": {
+          "type": "string"
+        },
+        "parseStatus": {
+          "$ref": "#/$defs/parseStatus"
+        }
       }
     }
   }
