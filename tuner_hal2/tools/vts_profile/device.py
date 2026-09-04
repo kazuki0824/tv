@@ -14,6 +14,9 @@ DEFAULT_REMOTE_AGENT = "/vendor/bin/maleicacid_tuner_hal2_vts_agent"
 PUSHED_REMOTE_AGENT = "/data/local/tmp/maleicacid_tuner_hal2_vts_agent"
 DEFAULT_SI_HOST = "maleicacid_arib_si_engine_vts_host"
 
+_VIDEO_STREAM_TYPES = {0x01, 0x02, 0x10, 0x1B, 0x24}
+_AUDIO_STREAM_TYPES = {0x03, 0x04, 0x0F, 0x11}
+
 
 def _frequencies(profile: dict[str, Any], candidate_index: int | None) -> list[int]:
     candidates = profile.get("region", {}).get("candidates", []) if profile.get("region") else []
@@ -289,11 +292,19 @@ def _resolve_frequency(
     return selected
 
 
+def _single_stream(streams: list[dict[str, Any]], accepted_types: set[int], label: str) -> dict[str, Any]:
+    matches = [item for item in streams if int(item.get("stream_type", -1)) in accepted_types]
+    if not matches:
+        raise ProfileError(f"resolved PMT has no supported {label} elementary stream")
+    return sorted(matches, key=lambda item: int(item.get("pid", 0x2000)))[0]
+
+
 def _apply(profile: dict[str, Any], resolved: dict[str, Any]) -> dict[str, Any]:
     updated = deepcopy(profile)
     frequency = int(resolved.get("frequency_hz", 0))
     service_id = int(resolved.get("service_id", 0))
-    validate_pid(resolved.get("pmt_pid"), "resolved PMT pid")
+    pmt_pid = validate_pid(resolved.get("pmt_pid"), "resolved PMT pid")
+    pcr_pid = validate_pid(resolved.get("pcr_pid"), "resolved PCR pid")
     streams = resolved.get("streams")
     if frequency <= 0 or not 1 <= service_id <= 0xFFFF:
         raise ProfileError("resolved frequency/service is invalid")
@@ -311,12 +322,21 @@ def _apply(profile: dict[str, Any], resolved: dict[str, Any]) -> dict[str, Any]:
             record["pid"] = elementary_pids[0]
         elif validate_pid(chosen, "configured record pid") not in elementary_pids:
             raise ProfileError("configured record PID is not present in arib_si_engine_rs PMT result")
-    if updated["flows"]["clear_live"]["enabled"]:
-        raise ProfileError(
-            "clear_live is not satisfiable by the current tuner_hal2 capability; "
-            "when AV filters become a product capability, the host arib_si_engine_rs adapter "
-            "must export its canonical AV component classification before resolve-device can "
-            "populate AV PIDs"
+
+    live = updated["flows"]["clear_live"]
+    if live["enabled"]:
+        typed_streams = [dict(item) for item in streams if isinstance(item, dict)]
+        audio = _single_stream(typed_streams, _AUDIO_STREAM_TYPES, "audio")
+        video = _single_stream(typed_streams, _VIDEO_STREAM_TYPES, "video")
+        live.update(
+            {
+                "audio_pid": validate_pid(audio.get("pid"), "resolved audio pid"),
+                "video_pid": validate_pid(video.get("pid"), "resolved video pid"),
+                "audio_stream_type": int(audio["stream_type"]),
+                "video_stream_type": int(video["stream_type"]),
+                "pcr_pid": pcr_pid,
+                "section_pid": pmt_pid,
+            }
         )
     validate_profile(updated, require_resolved=True)
     return updated
