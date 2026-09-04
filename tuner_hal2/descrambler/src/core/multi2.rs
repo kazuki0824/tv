@@ -351,9 +351,9 @@ mod tests {
 
     #[test]
     fn matches_libarib_bxx_multi2_known_answer_vectors() {
-        // Provenance: kazuki0824/libarib-bxx@af77dac51f197a039b046b40471598358b227f15
-        // tests/multi2_kat.cc. Type 0x03 uses the first 8-byte scramble key;
-        // type 0x02 uses the second 8-byte scramble key in that implementation.
+        // 出典: kazuki0824/libarib-bxx@af77dac51f197a039b046b40471598358b227f15
+        // tests/multi2_kat.cc。同実装ではtype 0x03が先頭8-byte scramble key、
+        // type 0x02が2番目の8-byte scramble keyを使用する。
         assert_kat(EVEN_DATA_KEY, &CIPHERTEXT_17);
         assert_kat(ODD_DATA_KEY, &CIPHERTEXT_184);
     }

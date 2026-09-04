@@ -1,3 +1,61 @@
+# 未リリース
+
+- helper追加: `MediaSyncFirstOutputBridge`を追加し、platform-privateな`MediaSync.OnFirstVideoFrameQueuedToOutputListener`型とsetterを実行時reflectionで解決して呼び出す。stock platformへの静的hidden API型依存は持たない。
+- 公開到達経路: private listener経路が呼び出し可能な場合はExact modeを使用し、API不存在、reflection解決失敗、登録setter呼出し失敗などを含めprivate listener経路を呼び出せない場合は公開APIの`MediaCodec.OnFrameRenderedListener`を型付きで`setOnFrameRenderedListener()`へ登録してCompatibility modeへfallbackする。current codec、playback generation、待機開始時刻、Surface、MediaSync surface errorを確認し、Exact modeとCompatibility modeは診断上区別してCompatibility modeをfinal-output成功と同値には扱わない。
+- platform差分: `frameworks_av_mediasync_first_output.patch`と`frameworks_base_mediasync_first_output.patch`の本文は変更せず、Exact modeの正規platform実装として維持する。
+- 文書追従: Exact/Compatibilityのruntime契約を`DESIGN_JA.md`、platform patch適用、target build、実機確認を`INTEGRATION.md`へ集約した。`tis/platform_patches/lineage-22.1/README.md`の統合手順は`INTEGRATION.md`へ移し、許可外Markdownを削除した。
+- テスト期待値・host境界: host用`MediaSync` stubからprivate listener/setterを削除し、TIS production sourceがstock platform APIだけで静的compileできる境界へ変更した。
+- 検証: TIS host CIでKotlin production compile、host tests、caption関連、XML contractを確認する。Android/Soong target build、atest、VTS、platform patch適用後の実機late-drop非通知・final-output one-shot・stale sequence棄却は未実施であり、`INTEGRATION.md`の製品統合gateとして残す。
+
+# r50ef_review_followup_7
+
+- `MediaEvent.getPts()`をproducer確定済みのauthoritative metadataとしてTISがopaqueに受理する責務を明記した。HAL producer側のcodec header構造検証、PES横断bounded residual、first-AU位置、actual sample rate、exact sample countによるassociationを、TIS側で禁止するgenericな0／前値／PCR／wallclock補間と明確に分離した。
+- TISはproducer側codec parser／associationを再実行・複製せず、`isPtsPresent`を元PES headerのprovenanceとして維持し、`isPtsPresent=false`でもauthoritative `getPts()`を既存consumer pathへ透過する。producer個別実装の完成をTIS文書から主張せず、consumer責務だけを固定したため、新しいstate owner、parser、queue、clockは追加していない。
+- 文書差分のみで、production Kotlin、公開schema、AOSP API、ARIB parser、future_work、`RELEASE_VERSION`は変更していない。`git diff --check`を実施し、Android/Soong build、atest、CTS/VTS、実機確認は未実施。
+
+# r50ef_review_followup_6
+
+- 音声track切替のrestart失敗でも新playback generationをLiveSessionへ反映し、旧`Started` stateを残さず`Failed`へ遷移するようにした。restart前の入力拒否ではcurrent stateを維持する。
+- audio-only serviceの旧generation failureをstate、字幕generation、外部unavailable通知の全境界で破棄するようにした。
+- PMT側に同じ`component_tag`が無い場合も、有効なEIT component/audio-component descriptor事実をcanonical componentsへ保持するようにした。
+- 上記generation/current-stale/ARIB descriptor保持のbehavior testを追加し、Kotlin host test固定件数を127件へ更新した。
+- Android/Soong build、atest、CTS、VTS、実機確認は未実施。本commitのKotlin host compile/testはPR checksを正とする。
+
+# r50ef_review_followup_5
+
+- 音声track切替で再生成したplayback generationとfirst-output待機状態をLiveSessionおよび字幕controllerへ伝播し、旧generationをStartedとして保持しないようにした。
+- audio-only serviceのfatal audio失敗をcurrent generationのFailed遷移へ接続し、停止済みPipelineをStartedとして残さないようにした。audio-video serviceのvideo-only fallbackは従来どおり映像unavailable通知から分離する。
+- 新しい選局要求ではfrontend settings構築前に旧PlaybackPipeline、section filter、CAS状態を破棄し、settings構築失敗時にも旧live stateを残さないようにした。
+- audio switchのgeneration遷移、first-output待機、current/stale generationのfatal失敗をbehavior testへ追加した。
+- Kotlin host testの固定件数を追加した2件に合わせて125件へ更新した。Android/Soong build、atest、CTS、VTS、実機確認は未実施。本commitのKotlin host compile/testはPR checksを正とする。
+
+# r50ef_review_followup_4
+
+- Rust bulk snapshotのEIT component/audio-component descriptor事実をPMT streamへcomponent_tagで結合し、TvProvider Program provider-dataまで損失なく運ぶ経路を追加した。
+- `freeCaMode.text`と`diagnosticCode`をcanonical保存境界から除去し、表示文言と現行releaseの再生可否をTIS process-local派生へ戻した。
+- linkage private-data wire fieldを`privateDataPrefixHex`へ統一し、seriesの有効な16-bit MJDと合わせてRust bulk snapshotからprovider-dataまで確認するhost testを追加した。
+- Android/Soong build、atest、CTS、VTS、実機確認は未実施。本commitのRust/Kotlin host検証はPR checksを正とする。
+
+# r50ef_review_followup_3
+
+- Program provider-dataは、TvProviderへpublishする時点でKotlinのtyped requestからRust/Serde canonicalizerを呼ぶ責務境界へ戻した。bulk snapshotの`providerDataCanonicalJson`、`AribEvent` / `ProgramRecord`のshadow field、test-only Kotlin保存schema fixtureは削除した。
+- この境界ではTISがAndroid列投影とpublish判断、Rustが保存schema・検証・canonical encodeを所有し、同じruntime stateの二重ownerを作らない。
+- Android/Soong build、atest、CTS、VTS、実機確認は未実施。本commitのRust/Kotlin host検証はPR checksを正とする。
+
+# r50ef_review_followup_2
+
+- Rust bulk transaction内で生成したProgram provider-data canonical JSONを`AribEvent` / `ProgramRecord`がopaqueに運び、TvProviderへ同じUTF-8 bytesを書き込む形へ変更した。KotlinのProgram `JSONObject` builderとRustへの戻りJNIは削除した。
+- AOSP Tuner Resource Managerへ申告するuse caseを`ScanPurpose`から一意に決め、setup scanは`SCAN`、boot EPG syncとbackground maintenanceは`BACKGROUND`、live sessionは既存どおり`LIVE`に固定した。
+- Android/Soong build、atest、CTS、VTS、実機確認は未実施。本commitのRust/Kotlin host検証はPR checksを正とする。
+
+# r50ef_review_followup
+
+- service policy、provider-data入力、TvProvider列、Direct Boot pending、scan task、AV playback、字幕presentationの各状態ownerを一つへ整理し、派生値と失効判定だけを投影境界へ残した。
+- Program publish失敗queueを`ServiceKey + updateWindow + notBeforeMs`の単一有界LRUへ縮小し、段階backoff、jitter、attempt、retention、ServiceKey別上限を削除した。最終`ContentValues`の単一SHA-256 fingerprintは更新抑止用に維持した。
+- 字幕renderer結果をone-shot packed JNI resultへ変更してframe handle registryを削除し、decoder/scheduler/UI失効を単一presentation epochへ統合した。AV開始lifecycleもSession所有のsealed state一つへ統合した。
+- Rust bulk transactionのdiscovery stage/table requirementを同一readへ含め、read回数generation、CAS用重複service/metadata、別stage JNI readを削除した。service componentはcanonical streamから投影し、secondary audio languageも保持する。
+- Android/Soong build、Rust unit test、atest、CTS、VTS、実機確認は未実施。静的差分・schema fixture一致・構文参照検査のみ実施する。
+
 # r50ee99_review_wording_precision
 
 - AOSP frozen Tuner AIDLで`RELATIVE_STREAM_NUMBER`が合法なselector種別であることを明示し、永続channel tune identityでは採用しないという製品設計理由へ表現を修正した。

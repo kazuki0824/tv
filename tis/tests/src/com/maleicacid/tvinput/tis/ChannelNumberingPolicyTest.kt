@@ -11,8 +11,14 @@ import org.junit.Test
 class ChannelNumberingPolicyTest {
     @Test fun terrestrialUsesRemoteKeyAndStableBranch() {
         val candidate = ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_T, FrequencyHz(473_142_857L), displayChannel = "13", physicalChannel = 13)
+        val service = AribService(ServiceKey(1, 2, 0x0400), "svc")
+        check(ChannelNumberingPolicy.displayNumber(service, 1, candidate) == "011")
+    }
+
+    @Test fun terrestrialWithoutRemoteKeyFallsBackToServiceId() {
+        val candidate = ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_T, FrequencyHz(473_142_857L), displayChannel = "13", physicalChannel = 13)
         val service = AribService(ServiceKey(1, 2, 101), "svc")
-        check(ChannelNumberingPolicy.displayNumber(service, 1, candidate) == "1.1")
+        check(ChannelNumberingPolicy.displayNumber(service, null, candidate) == "101")
     }
 
     @Test fun satelliteUsesBandAndServiceIdWithoutCsStreamSelector() {

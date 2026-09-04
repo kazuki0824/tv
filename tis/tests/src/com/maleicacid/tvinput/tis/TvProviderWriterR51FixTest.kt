@@ -23,8 +23,13 @@ class TvProviderWriterR51FixTest {
     @Test fun optionalProgramColumnsAreClearedByMergeUpdate() {
         val store = MergeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
-        val rating15 = requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 15, 15, true)))
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
+        val rating15 = requireNotNull(
+            AribRatingMapper.toTvContentRatingString(
+                AribParentalRating("JPN", 15),
+                AribRatingMapper.BroadcastProfile.BS_CS,
+            ),
+        )
         val p = ProgramRecord(
             key, 1, "p1", 1_700_000_000_000L, 1_800_000L, "title", "desc",
             canonicalGenres = listOf("NEWS"),
@@ -32,7 +37,7 @@ class TvProviderWriterR51FixTest {
                 contentGenres = listOf(AribContentGenre(0x0, 0x0, aribName = "ニュース/報道/定時・総合")),
                 broadcastGenre = "ARIB(0x0/0x0):ニュース/報道/定時・総合",
                 scrambled = false,
-                freeCaMode = AribFreeCaMode(raw = 0, scrambled = false, text = "無料放送"),
+                freeCaMode = AribFreeCaMode(raw = 0, scrambled = false),
                 series = AribSeries(seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12, name = null),
                 components = AribComponents(audio = listOf(AribComponentEntry(esPid = TsPid(256), streamType = 0x0f, componentTag = 1, componentType = 3, codec = "AAC", language = "jpn", parseStatus = "OK"))),
             ),
@@ -48,7 +53,7 @@ class TvProviderWriterR51FixTest {
         check(values.get(TvProviderWriter.COLUMN_SCRAMBLED) == null)
         check(values.get(TvProviderWriter.COLUMN_SERIES_ID) == null)
         check(values.get(TvProviderWriter.COLUMN_EPISODE_DISPLAY_NUMBER) == null)
-        check(values.get(TvProviderWriter.COLUMN_ITEM_COUNT) == null)
+        check(values.get("item_count") == null)
     }
 
     private class MergeStore : TvProviderWriter.ChannelStore {
@@ -59,7 +64,6 @@ class TvProviderWriterR51FixTest {
         override fun findExistingChannelId(key: ServiceKey): Result<Long?> = Result.success(channels.keys.firstOrNull())
         override fun insertChannel(values: ContentValues): Result<Long?> { val id = nextChannelId++; channels[id] = ContentValues(values); return Result.success(id) }
         override fun updateChannel(channelId: Long, values: ContentValues): Result<Int> { channels[channelId]?.putAll(values); return Result.success(1) }
-        override fun findExistingProgramId(channelId: Long, programKey: String): Result<Long?> = Result.success(programs.entries.firstOrNull { (_, v) -> TvProviderWriter.parseProgramKey(v.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)) == programKey }?.key)
         override fun indexExistingProgramsForWindow(channelId: Long, windowStartMs: Long, windowEndMs: Long): Result<Map<String, Long>> = Result.success(
             programs.entries.mapNotNull { (id, v) ->
                 val key = TvProviderWriter.parseProgramKey(v.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)) ?: return@mapNotNull null

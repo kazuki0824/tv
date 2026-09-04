@@ -35,6 +35,11 @@
             android:exported="false"
             android:directBootAware="true" />
 
+        <service
+            android:name=".tis.BootEpgSyncJobService"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
         <activity
             android:name=".tis.SetupActivity"
             android:exported="true"

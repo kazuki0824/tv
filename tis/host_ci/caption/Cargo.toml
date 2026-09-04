@@ -1,0 +1,17 @@
+[package]
+name = "maleicacid-arib-caption-host-ci"
+version = "0.1.0"
+edition = "2021"
+publish = false
+build = "build.rs"
+
+[lib]
+name = "maleicacid_arib_caption_jni"
+path = "../../arib_caption_jni/src/lib.rs"
+crate-type = ["rlib"]
+
+[dependencies]
+jni = "=0.21.1"
+
+[build-dependencies]
+cc = "=1.2.16"

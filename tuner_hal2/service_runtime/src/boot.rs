@@ -91,8 +91,8 @@ use crate::registry::{
 use crate::ServiceState;
 use maleicacid_tuner_hal2_resource_ledger::{LedgerGeneration, LedgerId};
 
-// Operation implementations are boot child modules so they can use
-// TunerServiceRuntime private state without widening field visibility.
+// operation実装はboot child moduleに置き、field visibilityを広げず
+// TunerServiceRuntimeのprivate stateを使用できるようにする。
 mod query_api;
 pub use query_api::DvrStatusPollSnapshot;
 pub(crate) use query_api::{

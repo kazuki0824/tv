@@ -6,14 +6,17 @@ import com.maleicacid.tvinput.aribsi.AribFreeCaMode
 import com.maleicacid.tvinput.aribsi.AribLinkage
 import com.maleicacid.tvinput.aribsi.AribParentalRating
 import com.maleicacid.tvinput.aribsi.AribProgramSource
-import com.maleicacid.tvinput.aribsi.AribRelatedItem
+import com.maleicacid.tvinput.aribsi.AribEventGroup
 import com.maleicacid.tvinput.aribsi.AribSeries
+import com.maleicacid.tvinput.aribsi.AribShortEventText
+import com.maleicacid.tvinput.aribsi.AribExtendedEventText
 import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.StreamSelector
 
 data class ChannelRecord(
     val serviceKey: ServiceKey,
+    val serviceType: Int,
     val displayNumber: String,
     val displayName: String,
     val frequencyHz: FrequencyHz,
@@ -25,11 +28,6 @@ data class ChannelRecord(
     val satelliteBand: String? = null,
     val remoteControlKeyId: Int? = null,
     val requiresCas: Boolean = false,
-    val unsupportedCas: Boolean = false,
-    val clearLivePlaybackSupported: Boolean = false,
-    val channelRegistrationReady: Boolean = false,
-    val epgPublishable: Boolean = false,
-    val inputId: String? = null,
 ) {
     companion object {
         const val DELIVERY_SYSTEM_ISDB_T = "ISDB_T"
@@ -38,20 +36,18 @@ data class ChannelRecord(
 }
 
 data class ProgramDescriptors(
+    val shortEvents: List<AribShortEventText> = emptyList(),
+    val extendedTexts: List<AribExtendedEventText> = emptyList(),
     val extendedItems: List<com.maleicacid.tvinput.aribsi.AribExtendedItem> = emptyList(),
     val componentText: String? = null,
     val audioComponentText: String? = null,
-    val audioLanguage: String? = null,
     val contentGenres: List<AribContentGenre> = emptyList(),
     val broadcastGenre: String? = null,
     val genreSupplementText: String? = null,
-    val relatedItems: List<AribRelatedItem> = emptyList(),
+    val eventGroups: List<AribEventGroup> = emptyList(),
     val linkage: List<AribLinkage> = emptyList(),
     val scrambled: Boolean? = null,
     val freeCaMode: AribFreeCaMode? = null,
-    val seriesId: Int? = null,
-    val episodeNumber: Int? = null,
-    val lastEpisodeNumber: Int? = null,
     val series: AribSeries? = null,
     val descriptorDiagnosticsCanonicalJson: String = "[]",
     val parentalRatings: List<AribParentalRating> = emptyList(),
@@ -71,19 +67,11 @@ data class ProgramRecord(
     val descriptors: ProgramDescriptors = ProgramDescriptors(),
     val source: AribProgramSource = AribProgramSource(),
     val requiresCas: Boolean = false,
-    val unsupportedCas: Boolean = false,
-    val clearLivePlaybackSupported: Boolean = false,
-    val channelRegistrationReady: Boolean = false,
-    val epgPublishable: Boolean = false,
-    val publishStateSource: String = "NONE",
     val diagnosticText: String = "",
     val contentRatings: List<String> = emptyList(),
     val videoWidth: Int? = null,
     val videoHeight: Int? = null,
     val videoFormat: String? = null,
     val malformedCaDescriptorCount: Int = 0,
-    // Program provider-data 診断。ProgramPublishCoordinator が所有する
-    // process内だけの再試行状態であり、process再起動時にresetされる。
-    val droppedRetryWindowCount: Int = 0,
     val tvProviderProgramId: Long? = null,
 )

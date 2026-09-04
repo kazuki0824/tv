@@ -19,6 +19,7 @@ class SetupActivity : Activity(), ChannelScanManager.Listener {
         super.onCreate(savedInstanceState)
         inputId = resolveInputId()
         invalidInputId = inputId.isNullOrBlank() || !isOwnInputId(inputId)
+        setupGeneration = savedInstanceState?.getInt(STATE_SETUP_GENERATION)?.takeIf { it > 0 }
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 32, 32, 32)
@@ -59,6 +60,11 @@ class SetupActivity : Activity(), ChannelScanManager.Listener {
         if (invalidInputId) {
             setResult(RESULT_CANCELED)
         }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        setupGeneration?.let { outState.putInt(STATE_SETUP_GENERATION, it) }
+        super.onSaveInstanceState(outState)
     }
 
     private fun resolveInputId(): String? {
@@ -133,6 +139,7 @@ class SetupActivity : Activity(), ChannelScanManager.Listener {
     }
 
     companion object {
+        private const val STATE_SETUP_GENERATION = "maleicacid.setupGeneration"
         fun scanStartAllowedForTest(candidateInputId: String?, isOwnInputId: Boolean): Boolean =
             !candidateInputId.isNullOrBlank() && isOwnInputId
 

@@ -1,5 +1,5 @@
-mod arib_jis_x0208_table;
 mod arib_string;
+mod broadcast_clock;
 mod ca_descriptor;
 mod descriptors;
 mod discovery_requirements;
@@ -8,23 +8,27 @@ pub(crate) mod provider_data;
 mod sections;
 mod service_discovery;
 
+use broadcast_clock::{parse_broadcast_clock, BroadcastClockFact};
 use ca_descriptor::{CaDescriptor, MalformedCaDescriptorDiagnostic};
 use descriptors::{
     event_descriptor_diagnostic, event_descriptor_diagnostics_array_json_scoped,
     event_provider_fields, json_escape, DescriptorSectionScope,
 };
+use discovery_requirements::DiscoveryProfile;
 use eit::{EitEvent, EitStableEventIdentity, EitUpdateWindow};
 use jni::objects::{JByteArray, JObject, JString};
-use jni::sys::{jboolean, jbyteArray, jint, jlong, jstring};
+use jni::sys::{jint, jlong, jstring};
 use jni::JNIEnv;
 use provider_data as provider_data_api;
 use sections::{parse_section_header, section_crc_valid};
+use serde::Serialize;
 use service_discovery::{
-    DiscoveredElementaryStream, DiscoveredService, DiscoveredTransport, DiscoveryPublishStage,
-    EsCaMetadata, ServiceDiscoveryCollector, ServicePublishability,
+    DiscoveredElementaryStream, DiscoveredService, DiscoveryPublishStage,
+    ServiceDiscoveryCollector, ServiceSemanticFacts, TableRequirementStatus,
 };
 use std::collections::BTreeMap;
 use std::ptr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 const STATUS_OK: jint = 0;
@@ -33,30 +37,37 @@ const STATUS_INVALID_HANDLE: jint = -1;
 const STATUS_INVALID_PID: jint = -2;
 const STATUS_INVALID_SECTION: jint = -3;
 const STATUS_MALFORMED_DESCRIPTOR: jint = -4;
-const STATUS_INDEX_OUT_OF_RANGE: jint = -5;
 const STATUS_JNI_ERROR: jint = -6;
 const STATUS_INTERNAL_ERROR: jint = -7;
+const STATUS_INVALID_DISCOVERY_PROFILE: jint = -8;
 
 const DISCOVERY_STAGE_INCOMPLETE: jint = 0;
 const DISCOVERY_STAGE_PARTIAL: jint = 1;
 const DISCOVERY_STAGE_COMPLETE: jint = 2;
 
-const MAX_RETAINED_PRIVATE_SECTIONS: usize = 256;
+const SI_REGISTRY_LOCK_NAME: &str = "arib_si_registry";
+const SI_PARSER_LOCK_NAME: &str = "arib_si_parser_state";
+static SI_MODULE_ABNORMAL: AtomicBool = AtomicBool::new(false);
+static SI_MUTEX_POISON_COUNT: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct PrivateSectionRecord {
-    pid: u16,
-    table_id: u8,
-    bytes: Vec<u8>,
+fn record_si_mutex_poison(lock_name: &'static str) {
+    let count = SI_MUTEX_POISON_COUNT
+        .fetch_add(1, Ordering::Relaxed)
+        .saturating_add(1);
+    SI_MODULE_ABNORMAL.store(true, Ordering::Release);
+    eprintln!("ARIB SI mutex汚染: lock={lock_name} poison_count={count}");
+}
+
+fn si_module_is_healthy() -> bool {
+    !SI_MODULE_ABNORMAL.load(Ordering::Acquire)
 }
 
 #[derive(Default)]
 struct ParserState {
     collector: ServiceDiscoveryCollector,
-    private_sections: Vec<PrivateSectionRecord>,
     sections_seen: u64,
-    snapshot_generation: u64,
     last_status: jint,
+    latest_broadcast_clock: Option<BroadcastClockFact>,
 }
 
 impl ParserState {
@@ -66,7 +77,7 @@ impl ParserState {
     }
 
     fn ingest_section(&mut self, pid: u16, section: &[u8]) -> jint {
-        let Some(header) = parse_section_header(section, 12) else {
+        let Some(header) = parse_section_header(section) else {
             self.last_status = STATUS_INVALID_SECTION;
             return STATUS_INVALID_SECTION;
         };
@@ -77,12 +88,21 @@ impl ParserState {
 
         self.sections_seen = self.sections_seen.saturating_add(1);
         let table_id = header.table_id;
+        if pid == 0x0014 && matches!(table_id, 0x70 | 0x73) {
+            let Some(clock) = parse_broadcast_clock(section) else {
+                self.last_status = STATUS_INVALID_SECTION;
+                return STATUS_INVALID_SECTION;
+            };
+            self.latest_broadcast_clock = Some(clock);
+            self.last_status = STATUS_OK;
+            return STATUS_OK;
+        }
         if self.is_section_for_discovery(pid, table_id) {
             if header.current_next_indicator == Some(false) {
                 self.last_status = STATUS_IGNORED_UNSUPPORTED_PID_OR_TABLE;
                 return STATUS_IGNORED_UNSUPPORTED_PID_OR_TABLE;
             }
-            if header.syntax && !section_crc_valid(section, 12) {
+            if header.syntax && !section_crc_valid(section) {
                 self.last_status = STATUS_INVALID_SECTION;
                 return STATUS_INVALID_SECTION;
             }
@@ -102,67 +122,19 @@ impl ParserState {
             };
             self.last_status
         } else {
-            self.retain_private_section(PrivateSectionRecord {
-                pid,
-                table_id,
-                bytes: section.to_vec(),
-            });
             self.last_status = STATUS_IGNORED_UNSUPPORTED_PID_OR_TABLE;
             STATUS_IGNORED_UNSUPPORTED_PID_OR_TABLE
         }
     }
 
-    fn retain_private_section(&mut self, record: PrivateSectionRecord) {
-        if self
-            .private_sections
-            .iter()
-            .any(|existing| existing == &record)
-        {
-            return;
-        }
-        if self.private_sections.len() >= MAX_RETAINED_PRIVATE_SECTIONS {
-            self.private_sections.remove(0);
-        }
-        self.private_sections.push(record);
-    }
-
+    #[cfg(test)]
     fn snapshot(&self) -> service_discovery::DiscoverySnapshot {
-        self.collector
-            .state()
-            .registration_ready_snapshot()
-            .unwrap_or_default()
-    }
-
-    fn raw_snapshot_for_debug(&self) -> service_discovery::DiscoverySnapshot {
         self.collector.state().snapshot
     }
 
-    fn pmt_pids_for_section_filters(&self) -> Vec<u16> {
-        self.collector.pmt_pids_for_section_filters()
-    }
-
-    fn cas_discovery_services(&self) -> Vec<DiscoveredService> {
-        self.raw_snapshot_for_debug().services
-    }
-
-    fn raw_cat_ca_descriptors(&self) -> Vec<CaDescriptor> {
-        self.raw_snapshot_for_debug().cat_ca.descriptors
-    }
-
-    fn publishability(&self) -> Vec<ServicePublishability> {
-        self.collector.state().publishability_by_service
-    }
-
+    #[cfg(test)]
     fn services(&self) -> Vec<DiscoveredService> {
         self.snapshot().services
-    }
-
-    fn transports(&self) -> Vec<DiscoveredTransport> {
-        self.snapshot().transports
-    }
-
-    fn discovery_stage(&self) -> DiscoveryPublishStage {
-        self.collector.state().publish_stage()
     }
 
     fn events(&self) -> Vec<EitEvent> {
@@ -175,10 +147,6 @@ impl ParserState {
 
     fn sdt_actual_transport_keys(&self) -> Vec<(u16, u16)> {
         self.collector.sdt_actual_transport_keys()
-    }
-
-    fn clear_epg_update_windows(&mut self) {
-        self.collector.clear_epg_update_windows()
     }
 }
 
@@ -194,307 +162,191 @@ fn json_string(value: &str) -> String {
     format!("\"{}\"", json_escape(value))
 }
 
-fn json_opt_string(value: Option<&str>) -> String {
-    match value {
-        Some(v) if !v.is_empty() => json_string(v),
-        _ => "null".to_string(),
-    }
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ElementaryStreamDto {
+    elementary_pid: u16,
+    stream_type: u8,
+    component_tag: Option<u8>,
+    component_type: Option<u8>,
+    stream_content: Option<u8>,
+    language_codes: Vec<String>,
+    data_component_id: Option<u16>,
+    caption_dmf: Option<u8>,
+    caption_timing: Option<u8>,
+    automatic_presentation_on_reception: Option<bool>,
+    is_caption: bool,
+    is_superimpose: bool,
 }
 
-fn json_opt_u16(value: Option<u16>) -> String {
-    value
-        .map(|v| v.to_string())
-        .unwrap_or_else(|| "null".to_string())
-}
-
-fn json_opt_u8(value: Option<u8>) -> String {
-    value
-        .map(|v| v.to_string())
-        .unwrap_or_else(|| "null".to_string())
-}
-
-fn json_bool(value: bool) -> &'static str {
-    if value {
-        "true"
-    } else {
-        "false"
-    }
-}
-
-fn json_array(items: Vec<String>) -> String {
-    format!("[{}]", items.join(","))
-}
-
-fn string_array_json(items: &[String]) -> String {
-    json_array(items.iter().map(|v| json_string(v)).collect())
-}
-
-fn str_array_json(items: &[&'static str]) -> String {
-    json_array(items.iter().map(|v| json_string(v)).collect())
-}
-
-fn ca_descriptor_json(ca: &CaDescriptor, scope: &str, es_pid: Option<u16>) -> String {
-    format!(
-        "{{\"caSystemId\":{},\"caPid\":{},\"scope\":{},\"esPid\":{},\"rawDescriptorHex\":{},\"privateDataHex\":{}}}",
-        ca.ca_system_id,
-        ca.ca_pid,
-        json_string(scope),
-        json_opt_u16(es_pid),
-        json_string(&hex_lower(&ca.raw_descriptor)),
-        json_string(&hex_lower(&ca.private_data)),
-    )
-}
-
-fn elementary_stream_json(stream: &DiscoveredElementaryStream) -> String {
-    format!(
-        "{{\"elementaryPid\":{},\"streamType\":{},\"componentTag\":{},\"componentType\":{},\"streamContent\":{},\"languageCodes\":{},\"dataComponentId\":{},\"isCaption\":{},\"isSuperimpose\":{}}}",
-        stream.elementary_pid,
-        stream.stream_type,
-        json_opt_u8(stream.component_tag),
-        json_opt_u8(stream.component_type),
-        json_opt_u8(stream.stream_content),
-        string_array_json(&stream.language_codes),
-        json_opt_u16(stream.data_component_id),
-        json_bool(stream.is_caption),
-        json_bool(stream.is_superimpose),
-    )
-}
-
-fn stream_component_tag(stream: &DiscoveredElementaryStream) -> u8 {
-    stream.component_tag.unwrap_or(0)
-}
-fn stream_component_type(stream: &DiscoveredElementaryStream) -> u8 {
-    stream.component_type.unwrap_or(0)
-}
-fn stream_language(stream: &DiscoveredElementaryStream) -> String {
-    stream
-        .language_codes
-        .iter()
-        .find(|v| !v.is_empty())
-        .cloned()
-        .unwrap_or_else(|| "jpn".to_string())
-}
-
-fn video_codec_name(stream_type: u8) -> Option<(&'static str, bool)> {
-    match stream_type {
-        0x02 => Some(("MPEG-2", true)),
-        0x1b => Some(("H.264", true)),
-        0x24 => Some(("HEVC", false)),
-        _ => None,
-    }
-}
-
-fn audio_codec_name(stream_type: u8) -> Option<(&'static str, bool)> {
-    match stream_type {
-        0x03 | 0x04 => Some(("MPEG-Audio", true)),
-        0x0f => Some(("AAC", true)),
-        0x11 => Some(("MPEG-4-AAC-LATM", false)),
-        _ => None,
-    }
-}
-
-fn stream_video_component_json(
-    stream: &DiscoveredElementaryStream,
-    codec: &str,
-    r51_supported: bool,
-) -> String {
-    format!(
-        "{{\"esPid\":{},\"streamType\":{},\"componentTag\":{},\"componentType\":{},\"codec\":{},\"r51PlaybackSupported\":{},\"liveViewableClaim\":{},\"diagnosticCode\":{},\"parseStatus\":{}}}",
-        stream.elementary_pid,
-        stream.stream_type,
-        stream_component_tag(stream),
-        stream_component_type(stream),
-        json_string(codec),
-        json_bool(r51_supported),
-        json_bool(r51_supported),
-        json_string(if r51_supported { "OK" } else { "UNSUPPORTED_R51_CODEC" }),
-        json_string(if r51_supported { "OK" } else { "UNSUPPORTED_R51" }),
-    )
-}
-
-fn stream_audio_component_json(
-    stream: &DiscoveredElementaryStream,
-    codec: &str,
-    r51_supported: bool,
-) -> String {
-    format!(
-        "{{\"esPid\":{},\"streamType\":{},\"componentTag\":{},\"componentType\":{},\"codec\":{},\"language\":{},\"r51PlaybackSupported\":{},\"liveViewableClaim\":{},\"diagnosticCode\":{},\"parseStatus\":{}}}",
-        stream.elementary_pid,
-        stream.stream_type,
-        stream_component_tag(stream),
-        stream_component_type(stream),
-        json_string(codec),
-        json_string(&stream_language(stream)),
-        json_bool(r51_supported),
-        json_bool(r51_supported),
-        json_string(if r51_supported { "OK" } else { "UNSUPPORTED_R51_CODEC" }),
-        json_string(if r51_supported { "OK" } else { "UNSUPPORTED_R51" }),
-    )
-}
-
-fn stream_subtitle_component_json(stream: &DiscoveredElementaryStream) -> String {
-    let data_component_id = stream.data_component_id.unwrap_or(0x0008);
-    let tag = stream_component_tag(stream);
-    let kind = if stream.is_superimpose {
-        "superimpose"
-    } else if data_component_id == 0x0012 {
-        "one-seg-caption"
-    } else {
-        "caption"
-    };
-    format!(
-        "{{\"esPid\":{},\"componentTag\":{},\"dataComponentId\":{},\"language\":{},\"trackId\":{},\"captionServiceKind\":{},\"parseStatus\":\"OK\"}}",
-        stream.elementary_pid,
-        tag,
-        data_component_id,
-        json_string(&stream_language(stream)),
-        json_string(&format!("subtitle:{}:{}", stream.elementary_pid, tag)),
-        json_string(kind),
-    )
-}
-
-fn stream_data_component_json(stream: &DiscoveredElementaryStream) -> String {
-    format!(
-        "{{\"esPid\":{},\"componentTag\":{},\"dataComponentId\":{},\"componentType\":{},\"parseStatus\":\"OK\"}}",
-        stream.elementary_pid,
-        stream_component_tag(stream),
-        stream.data_component_id.unwrap_or(0),
-        stream_component_type(stream),
-    )
-}
-
-fn service_components_json(service: &DiscoveredService) -> String {
-    let mut video = Vec::new();
-    let mut audio = Vec::new();
-    let mut subtitle = Vec::new();
-    let mut data = Vec::new();
-    for stream in &service.streams {
-        if let Some((codec, supported)) = video_codec_name(stream.stream_type) {
-            video.push(stream_video_component_json(stream, codec, supported));
-        } else if let Some((codec, supported)) = audio_codec_name(stream.stream_type) {
-            audio.push(stream_audio_component_json(stream, codec, supported));
-        } else if stream.is_caption || matches!(stream.data_component_id, Some(0x0008 | 0x0012)) {
-            subtitle.push(stream_subtitle_component_json(stream));
-        } else if stream.data_component_id.is_some() {
-            data.push(stream_data_component_json(stream));
+impl From<&DiscoveredElementaryStream> for ElementaryStreamDto {
+    fn from(stream: &DiscoveredElementaryStream) -> Self {
+        Self {
+            elementary_pid: stream.elementary_pid,
+            stream_type: stream.stream_type,
+            component_tag: stream.component_tag,
+            component_type: stream.component_type,
+            stream_content: stream.stream_content,
+            language_codes: stream.language_codes.clone(),
+            data_component_id: stream.data_component_id,
+            caption_dmf: stream.caption_dmf,
+            caption_timing: stream.caption_timing,
+            automatic_presentation_on_reception: stream.automatic_presentation_on_reception,
+            is_caption: stream.is_caption,
+            is_superimpose: stream.is_superimpose,
         }
     }
-    format!(
-        "{{\"video\":{},\"audio\":{},\"subtitle\":{},\"data\":{}}}",
-        json_array(video),
-        json_array(audio),
-        json_array(subtitle),
-        json_array(data),
-    )
 }
 
-fn service_json(service: &DiscoveredService) -> String {
-    let mut ca = Vec::new();
-    ca.extend(
-        service
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServiceCaDescriptorDto {
+    ca_system_id: u16,
+    ca_pid: u16,
+    scope: &'static str,
+    es_pid: Option<u16>,
+    raw_descriptor_hex: String,
+    private_data_hex: String,
+}
+
+fn service_ca_descriptor_dto(
+    ca: &CaDescriptor,
+    scope: &'static str,
+    es_pid: Option<u16>,
+) -> ServiceCaDescriptorDto {
+    ServiceCaDescriptorDto {
+        ca_system_id: ca.ca_system_id,
+        ca_pid: ca.ca_pid,
+        scope,
+        es_pid,
+        raw_descriptor_hex: hex_lower(&ca.raw_descriptor),
+        private_data_hex: hex_lower(&ca.private_data),
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServiceDto {
+    original_network_id: u16,
+    transport_stream_id: u16,
+    service_id: u16,
+    name: String,
+    provider_name: String,
+    service_type: Option<u8>,
+    pmt_pid: Option<u16>,
+    pcr_pid: Option<u16>,
+    free_ca_mode: Option<bool>,
+    streams: Vec<ElementaryStreamDto>,
+    service_scoped_ca_descriptors: Vec<ServiceCaDescriptorDto>,
+}
+
+impl From<&DiscoveredService> for ServiceDto {
+    fn from(service: &DiscoveredService) -> Self {
+        let mut ca = service
             .program_ca_descriptors
             .iter()
-            .map(|d| ca_descriptor_json(d, "PROGRAM", None)),
-    );
-    for group in &service.es_ca_descriptors {
-        ca.extend(
-            group
-                .descriptors
+            .map(|descriptor| service_ca_descriptor_dto(descriptor, "PROGRAM", None))
+            .collect::<Vec<_>>();
+        for group in &service.es_ca_descriptors {
+            ca.extend(group.descriptors.iter().map(|descriptor| {
+                service_ca_descriptor_dto(descriptor, "ES", Some(group.elementary_pid))
+            }));
+        }
+        Self {
+            original_network_id: service.original_network_id,
+            transport_stream_id: service.transport_stream_id,
+            service_id: service.service_id,
+            name: service.service_name.clone().unwrap_or_default(),
+            provider_name: service.provider_name.clone().unwrap_or_default(),
+            service_type: service.service_type,
+            pmt_pid: service.pmt_pid,
+            pcr_pid: service.pcr_pid,
+            free_ca_mode: service.free_ca_mode,
+            streams: service
+                .streams
                 .iter()
-                .map(|d| ca_descriptor_json(d, "ES", Some(group.elementary_pid))),
-        );
+                .map(ElementaryStreamDto::from)
+                .collect(),
+            service_scoped_ca_descriptors: ca,
+        }
     }
-    format!(
-        "{{\"originalNetworkId\":{},\"transportStreamId\":{},\"serviceId\":{},\"name\":{},\"providerName\":{},\"serviceType\":{},\"pmtPid\":{},\"pcrPid\":{},\"freeCaMode\":{},\"streams\":{},\"components\":{},\"hasProgramCaDescriptor\":{},\"hasEsCaDescriptor\":{},\"serviceScopedCaDescriptors\":{}}}",
-        service.original_network_id,
-        service.transport_stream_id,
-        service.service_id,
-        json_string(service.service_name.as_deref().unwrap_or("")),
-        json_string(service.provider_name.as_deref().unwrap_or("")),
-        json_opt_u8(service.service_type),
-        json_opt_u16(service.pmt_pid),
-        json_opt_u16(service.pcr_pid),
-        service.free_ca_mode.map(json_bool).unwrap_or("null"),
-        json_array(service.streams.iter().map(elementary_stream_json).collect()),
-        service_components_json(service),
-        json_bool(!service.program_ca_descriptors.is_empty()),
-        json_bool(!service.es_ca_descriptors.is_empty()),
-        json_array(ca),
-    )
 }
 
-fn transport_json(transport: &DiscoveredTransport) -> String {
-    format!(
-        "{{\"originalNetworkId\":{},\"transportStreamId\":{},\"networkName\":{},\"transportStreamName\":{},\"remoteControlKeyId\":{}}}",
-        transport.original_network_id,
-        transport.transport_stream_id,
-        json_string(transport.network_name.as_deref().unwrap_or("")),
-        json_string(transport.ts_name.as_deref().unwrap_or("")),
-        json_opt_u8(transport.remote_control_key_id),
-    )
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServiceKeyDto {
+    original_network_id: u16,
+    transport_stream_id: u16,
+    service_id: u16,
 }
 
-fn transport_key_json(onid: u16, tsid: u16) -> String {
-    format!(
-        "{{\"originalNetworkId\":{},\"transportStreamId\":{}}}",
-        onid, tsid
-    )
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TransportKeyDto {
+    original_network_id: u16,
+    transport_stream_id: u16,
 }
 
-fn pmt_mapping_json(mapping: &crate::service_discovery::PmtPidMapping) -> String {
-    format!(
-        "{{\"originalNetworkId\":{},\"transportStreamId\":{},\"serviceId\":{},\"pmtPid\":{}}}",
-        mapping.original_network_id,
-        mapping.transport_stream_id,
-        mapping.service_id,
-        mapping.pmt_pid,
-    )
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PmtPidMappingDto {
+    original_network_id: u16,
+    transport_stream_id: u16,
+    service_id: u16,
+    pmt_pid: u16,
 }
 
-fn ca_metadata_json(
-    service_key: Option<(u16, u16, u16)>,
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CaMetadataDto {
+    service_key: Option<ServiceKeyDto>,
+    ca_system_id: u16,
+    ecm_pid: Option<u16>,
+    emm_pid: Option<u16>,
+    elementary_pid: Option<u16>,
+    private_data_hex: String,
+    source: &'static str,
+}
+
+fn ca_metadata_dto(
+    service_key: Option<ServiceKeyDto>,
     ca: &CaDescriptor,
     ecm_pid: Option<u16>,
     emm_pid: Option<u16>,
     elementary_pid: Option<u16>,
-    source: &str,
-) -> String {
-    let service_key_json = match service_key {
-        Some((onid, tsid, sid)) => format!(
-            "{{\"originalNetworkId\":{},\"transportStreamId\":{},\"serviceId\":{}}}",
-            onid, tsid, sid
-        ),
-        None => "null".to_string(),
-    };
-    format!(
-        "{{\"serviceKey\":{},\"caSystemId\":{},\"ecmPid\":{},\"emmPid\":{},\"elementaryPid\":{},\"privateDataHex\":{},\"source\":{}}}",
-        service_key_json,
-        ca.ca_system_id,
-        json_opt_u16(ecm_pid),
-        json_opt_u16(emm_pid),
-        json_opt_u16(elementary_pid),
-        json_string(&hex_lower(&ca.private_data)),
-        json_string(source),
-    )
+    source: &'static str,
+) -> CaMetadataDto {
+    CaMetadataDto {
+        service_key,
+        ca_system_id: ca.ca_system_id,
+        ecm_pid,
+        emm_pid,
+        elementary_pid,
+        private_data_hex: hex_lower(&ca.private_data),
+        source,
+    }
 }
 
-fn ca_metadata_from_services_json(services: &[DiscoveredService], cat: &[CaDescriptor]) -> String {
+fn ca_metadata_from_services(
+    services: &[DiscoveredService],
+    cat: &[CaDescriptor],
+) -> Vec<CaMetadataDto> {
     let mut out = Vec::new();
     for service in services {
-        let key = Some((
-            service.original_network_id,
-            service.transport_stream_id,
-            service.service_id,
-        ));
+        let key = Some(ServiceKeyDto {
+            original_network_id: service.original_network_id,
+            transport_stream_id: service.transport_stream_id,
+            service_id: service.service_id,
+        });
         out.extend(
             service
                 .program_ca_descriptors
                 .iter()
-                .map(|ca| ca_metadata_json(key, ca, Some(ca.ca_pid), None, None, "PROGRAM")),
+                .map(|ca| ca_metadata_dto(key, ca, Some(ca.ca_pid), None, None, "PROGRAM")),
         );
         for group in &service.es_ca_descriptors {
             out.extend(group.descriptors.iter().map(|ca| {
-                ca_metadata_json(
+                ca_metadata_dto(
                     key,
                     ca,
                     Some(ca.ca_pid),
@@ -507,73 +359,112 @@ fn ca_metadata_from_services_json(services: &[DiscoveredService], cat: &[CaDescr
     }
     out.extend(
         cat.iter()
-            .map(|ca| ca_metadata_json(None, ca, None, Some(ca.ca_pid), None, "CAT")),
+            .map(|ca| ca_metadata_dto(None, ca, None, Some(ca.ca_pid), None, "CAT")),
     );
-    json_array(out)
+    out
 }
 
-fn malformed_ca_descriptor_diagnostic_json(d: &MalformedCaDescriptorDiagnostic) -> String {
-    format!(
-        "{{\"pid\":{},\"tableId\":{},\"tableIdExtension\":{},\"serviceId\":{},\"elementaryPid\":{},\"scope\":{},\"offset\":{},\"declaredLength\":{},\"actualRemainingLength\":{},\"reason\":{},\"rawPrefixHex\":{}}}",
-        d.pid,
-        d.table_id,
-        json_opt_u16(d.table_id_extension),
-        json_opt_u16(d.service_id),
-        json_opt_u16(d.elementary_pid),
-        json_string(d.scope),
-        d.offset,
-        d.declared_length,
-        d.actual_remaining_length,
-        json_string(d.reason),
-        json_string(&d.raw_prefix_hex),
-    )
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MalformedCaDescriptorDiagnosticDto {
+    pid: u16,
+    table_id: u8,
+    table_id_extension: Option<u16>,
+    service_id: Option<u16>,
+    elementary_pid: Option<u16>,
+    scope: &'static str,
+    offset: usize,
+    declared_length: usize,
+    actual_remaining_length: usize,
+    reason: &'static str,
+    raw_prefix_hex: String,
 }
 
-fn malformed_ca_descriptor_diagnostics_json(
+impl From<&MalformedCaDescriptorDiagnostic> for MalformedCaDescriptorDiagnosticDto {
+    fn from(diagnostic: &MalformedCaDescriptorDiagnostic) -> Self {
+        Self {
+            pid: diagnostic.pid,
+            table_id: diagnostic.table_id,
+            table_id_extension: diagnostic.table_id_extension,
+            service_id: diagnostic.service_id,
+            elementary_pid: diagnostic.elementary_pid,
+            scope: diagnostic.scope,
+            offset: diagnostic.offset,
+            declared_length: diagnostic.declared_length,
+            actual_remaining_length: diagnostic.actual_remaining_length,
+            reason: diagnostic.reason,
+            raw_prefix_hex: diagnostic.raw_prefix_hex.clone(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MalformedCaDescriptorCountDto {
+    service_id: u16,
+    count: usize,
+}
+
+fn malformed_ca_descriptor_counts(
     diagnostics: &[MalformedCaDescriptorDiagnostic],
-) -> String {
-    json_array(
-        diagnostics
-            .iter()
-            .map(malformed_ca_descriptor_diagnostic_json)
-            .collect(),
-    )
-}
-
-fn malformed_ca_descriptor_counts_json(diagnostics: &[MalformedCaDescriptorDiagnostic]) -> String {
+) -> Vec<MalformedCaDescriptorCountDto> {
     let mut counts: BTreeMap<u16, usize> = BTreeMap::new();
     for d in diagnostics.iter().filter(|d| d.service_id.is_some()) {
         *counts.entry(d.service_id.unwrap_or_default()).or_insert(0) += 1;
     }
-    json_array(
-        counts
-            .into_iter()
-            .map(|(sid, count)| format!("{{\"serviceId\":{},\"count\":{}}}", sid, count,))
+    counts
+        .into_iter()
+        .map(|(service_id, count)| MalformedCaDescriptorCountDto { service_id, count })
+        .collect()
+}
+
+fn short_events_value(event: &EitEvent) -> serde_json::Value {
+    serde_json::Value::Array(
+        event
+            .descriptors
+            .short_events
+            .iter()
+            .map(|candidate| {
+                serde_json::json!({
+                    "languageCode": candidate.language_code,
+                    "title": candidate.title,
+                    "text": candidate.text,
+                    "parseStatus": "OK",
+                })
+            })
             .collect(),
     )
 }
 
-fn private_section_json(section: &PrivateSectionRecord) -> String {
-    format!(
-        "{{\"pid\":{},\"tableId\":{},\"bytesHex\":{}}}",
-        section.pid,
-        section.table_id,
-        json_string(&hex_lower(&section.bytes))
+fn extended_texts_value(event: &EitEvent) -> serde_json::Value {
+    serde_json::Value::Array(
+        event
+            .descriptors
+            .extended_texts
+            .iter()
+            .map(|candidate| {
+                serde_json::json!({
+                    "languageCode": candidate.language_code,
+                    "text": candidate.text,
+                    "parseStatus": "OK",
+                })
+            })
+            .collect(),
     )
 }
 
-fn extended_items_json(event: &EitEvent) -> String {
-    json_array(
+fn extended_items_value(event: &EitEvent) -> serde_json::Value {
+    serde_json::Value::Array(
         event
             .descriptors
             .extended_items
             .iter()
             .map(|item| {
-                format!(
-                    "{{\"description\":{},\"text\":{}}}",
-                    json_string(&item.item_description),
-                    json_string(&item.item_text)
-                )
+                serde_json::json!({
+                    "languageCode": item.language_code,
+                    "description": item.item_description,
+                    "text": item.item_text,
+                })
             })
             .collect(),
     )
@@ -616,66 +507,112 @@ fn event_audio_language(event: &EitEvent) -> String {
     langs.join(",")
 }
 
-fn event_primary_series_json(event: &EitEvent) -> String {
+fn event_primary_series_value(event: &EitEvent) -> serde_json::Value {
     let Some(series) = event.descriptors.series.first() else {
-        return "null".to_string();
+        return serde_json::Value::Null;
     };
-    let expire_date_valid = series.expire_date != 0x1fff;
-    format!(
-        "{{\"seriesId\":{},\"repeatLabel\":{},\"programPattern\":{},\"expireDateValid\":{},\"expireDate\":null,\"episodeNumber\":{},\"lastEpisodeNumber\":{},\"name\":{},\"parseStatus\":\"OK\"}}",
-        series.series_id,
-        series.repeat_label,
-        series.program_pattern,
-        json_bool(expire_date_valid),
-        series.episode_number,
-        series.last_episode_number,
-        if series.series_name.is_empty() { "null".to_string() } else { json_string(&series.series_name) },
+    serde_json::json!({
+        "seriesId": series.series_id,
+        "repeatLabel": series.repeat_label,
+        "programPattern": series.program_pattern,
+        "expireDateValid": series.expire_date_valid,
+        "expireDate": if series.expire_date_valid {
+            serde_json::json!(series.expire_date)
+        } else {
+            serde_json::Value::Null
+        },
+        "episodeNumber": series.episode_number,
+        "lastEpisodeNumber": series.last_episode_number,
+        "name": if series.series_name.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::Value::String(series.series_name.clone())
+        },
+        "parseStatus": "OK",
+    })
+}
+
+fn event_groups_value(event: &EitEvent) -> serde_json::Value {
+    serde_json::Value::Array(
+        event
+            .descriptors
+            .event_groups
+            .iter()
+            .map(|group| {
+                let events = group
+                    .events
+                    .iter()
+                    .map(|related| {
+                        serde_json::json!({
+                            "serviceId": related.service_id,
+                            "eventId": related.event_id,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let other_network_events = group
+                    .other_network_events
+                    .iter()
+                    .map(|related| {
+                        serde_json::json!({
+                            "originalNetworkId": related.original_network_id,
+                            "transportStreamId": related.transport_stream_id,
+                            "serviceId": related.service_id,
+                            "eventId": related.event_id,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                serde_json::json!({
+                    "groupType": group.group_type,
+                    "events": events,
+                    "otherNetworkEvents": other_network_events,
+                    "privateDataHex": hex_lower(&group.private_data),
+                    "parseStatus": "OK",
+                })
+            })
+            .collect(),
     )
 }
 
-fn event_related_items_json(event: &EitEvent) -> String {
-    let mut items = Vec::new();
-    for group in &event.descriptors.event_groups {
-        let kind = match group.group_type {
-            0x2 | 0x4 => "relay",
-            0x3 | 0x5 => "movement",
-            _ => "shared",
-        };
-        for related in &group.events {
-            items.push(format!(
-                "{{\"kind\":{},\"groupType\":{},\"originalNetworkId\":{},\"transportStreamId\":{},\"serviceId\":{},\"eventId\":{},\"parseStatus\":\"OK\"}}",
-                json_string(kind),
-                group.group_type,
-                event.original_network_id,
-                event.transport_stream_id,
-                related.service_id,
-                related.event_id,
-            ));
-        }
-        for related in &group.other_network_events {
-            items.push(format!(
-                "{{\"kind\":{},\"groupType\":{},\"originalNetworkId\":{},\"transportStreamId\":{},\"serviceId\":{},\"eventId\":{},\"parseStatus\":\"OK\"}}",
-                json_string(kind),
-                group.group_type,
-                related.original_network_id.unwrap_or(event.original_network_id),
-                related.transport_stream_id.unwrap_or(event.transport_stream_id),
-                related.service_id,
-                related.event_id,
-            ));
-        }
-    }
-    json_array(items)
+fn event_component_groups_value(event: &EitEvent) -> serde_json::Value {
+    serde_json::Value::Array(
+        event
+            .descriptors
+            .component_groups
+            .iter()
+            .map(|descriptor| {
+                serde_json::json!({
+                    "componentGroupType": descriptor.component_group_type,
+                    "groups": descriptor.groups.iter().map(|group| {
+                        serde_json::json!({
+                            "componentGroupId": group.component_group_id,
+                            "componentTags": group.component_tags,
+                        })
+                    }).collect::<Vec<_>>(),
+                    "parseStatus": "OK",
+                })
+            })
+            .collect(),
+    )
 }
 
-fn event_linkage_json(event: &EitEvent) -> String {
-    json_array(event.descriptors.linkages.iter().map(|l| format!(
-        "{{\"transportStreamId\":{},\"originalNetworkId\":{},\"serviceId\":{},\"linkageType\":{},\"privateDataPrefixHex\":{},\"parseStatus\":\"OK\"}}",
-        l.transport_stream_id,
-        l.original_network_id,
-        l.service_id,
-        l.linkage_type,
-        json_string(&hex_prefix(&l.private_data, 16)),
-    )).collect())
+fn event_linkage_value(event: &EitEvent) -> serde_json::Value {
+    serde_json::Value::Array(
+        event
+            .descriptors
+            .linkages
+            .iter()
+            .map(|linkage| {
+                serde_json::json!({
+                    "transportStreamId": linkage.transport_stream_id,
+                    "originalNetworkId": linkage.original_network_id,
+                    "serviceId": linkage.service_id,
+                    "linkageType": linkage.linkage_type,
+                    "privateDataPrefixHex": hex_prefix(&linkage.private_data, 16),
+                    "parseStatus": "OK",
+                })
+            })
+            .collect(),
+    )
 }
 
 fn hex_prefix(bytes: &[u8], max_len: usize) -> String {
@@ -687,20 +624,20 @@ fn hex_prefix(bytes: &[u8], max_len: usize) -> String {
         .join("")
 }
 
-fn event_content_genres_json(event: &EitEvent) -> String {
-    json_array(
+fn event_content_genres_value(event: &EitEvent) -> serde_json::Value {
+    serde_json::Value::Array(
         event
             .descriptors
             .contents
             .iter()
-            .map(|c| {
-                format!(
-        "{{\"level1\":{},\"level2\":{},\"userNibble\":{},\"aribName\":{},\"parseStatus\":\"OK\"}}",
-        c.content_nibble_level_1,
-        c.content_nibble_level_2,
-        ((c.user_nibble_1 as u16) << 4) | c.user_nibble_2 as u16,
-        json_string(&c.arib_display_name),
-    )
+            .map(|content| {
+                serde_json::json!({
+                    "level1": content.content_nibble_level_1,
+                    "level2": content.content_nibble_level_2,
+                    "userNibble": ((content.user_nibble_1 as u16) << 4) | content.user_nibble_2 as u16,
+                    "aribName": content.arib_display_name,
+                    "parseStatus": "OK",
+                })
             })
             .collect(),
     )
@@ -711,7 +648,7 @@ fn event_genre_supplement_text(event: &EitEvent) -> String {
         .descriptors
         .contents
         .iter()
-        .map(|c| arib_content_to_ui_text(c.content_nibble_level_1, c.content_nibble_level_2))
+        .map(|c| c.arib_display_name.clone())
         .collect::<Vec<_>>()
         .join("、")
 }
@@ -720,57 +657,171 @@ fn event_diagnostic_text(event: &EitEvent) -> String {
     let d = event.descriptors.clone();
     let diagnostic = event_descriptor_diagnostic(&d);
     format!(
-        "content={:?} component={:?} audio={:?} parental={:?} series={:?} eventGroupCount={} linkageCount={} unknownCount={}",
+        "content={:?} component={:?} audio={:?} parental={:?} series={:?} eventGroupCount={} componentGroupCount={} linkageCount={} unknownCount={}",
         d.contents.iter().map(|c| (c.content_nibble_level_1, c.content_nibble_level_2)).collect::<Vec<_>>(),
         d.components.iter().map(|c| (c.stream_content, c.component_type, c.component_tag, c.language_code.clone())).collect::<Vec<_>>(),
         d.audio_components.iter().map(|a| (a.stream_content, a.component_type, a.component_tag, a.stream_type, a.language_code.clone(), a.language_code_2.clone())).collect::<Vec<_>>(),
-        d.parental_ratings.iter().map(|r| (r.country_code.clone(), r.rating_value, r.raw_rating_byte)).collect::<Vec<_>>(),
+        d.parental_ratings.iter().map(|r| (r.country_code.clone(), r.raw_rating_byte)).collect::<Vec<_>>(),
         d.series.iter().map(|s| (s.series_id, s.episode_number, s.last_episode_number, s.series_name.clone())).collect::<Vec<_>>(),
         diagnostic.event_group_count,
+        diagnostic.component_group_count,
         diagnostic.linkage_count,
         diagnostic.unknown_count,
     )
 }
 
-fn parental_ratings_json(event: &EitEvent) -> String {
-    json_array(event.descriptors.parental_ratings.iter().map(|r| format!(
-        "{{\"countryCode\":{},\"ratingValue\":{},\"rawRatingByte\":{},\"supported\":{},\"parseStatus\":\"OK\"}}",
-        json_string(&r.country_code), r.rating_value, r.raw_rating_byte, json_bool(r.country_code == "JPN" && r.rating_value != 0)
-    )).collect())
-}
-
-fn event_video_components_json(_event: &EitEvent) -> String {
-    "[]".to_string()
-}
-
-fn event_audio_components_json(_event: &EitEvent) -> String {
-    "[]".to_string()
-}
-
-fn event_components_json(event: &EitEvent) -> String {
-    format!(
-        "{{\"video\":{},\"audio\":{},\"subtitle\":[],\"data\":[]}}",
-        event_video_components_json(event),
-        event_audio_components_json(event)
+fn parental_ratings_value(event: &EitEvent) -> serde_json::Value {
+    serde_json::Value::Array(
+        event
+            .descriptors
+            .parental_ratings
+            .iter()
+            .map(|rating| {
+                serde_json::json!({
+                    "countryCode": rating.country_code,
+                    "rawRatingByte": rating.raw_rating_byte,
+                    "parseStatus": "OK",
+                })
+            })
+            .collect(),
     )
 }
 
-fn stable_identity_string(id: EitStableEventIdentity) -> String {
+fn video_component_semantics(
+    stream_content: u8,
+    component_type: u8,
+) -> (
+    Option<&'static str>,
+    Option<&'static str>,
+    Option<&'static str>,
+) {
+    if stream_content != 0x01 {
+        return (None, None, None);
+    }
+    let (resolution, scan) = match component_type {
+        0x01..=0x04 => (Some("480"), Some("interlaced")),
+        0xa1..=0xa4 => (Some("480"), Some("progressive")),
+        0xb1..=0xb4 => (Some("1080"), Some("interlaced")),
+        0xc1..=0xc4 => (Some("720"), Some("progressive")),
+        0xd1..=0xd4 => (Some("240"), Some("progressive")),
+        _ => (None, None),
+    };
+    let aspect = if resolution.is_some() {
+        match component_type & 0x0f {
+            0x01 => Some("4:3"),
+            0x02 | 0x03 => Some("16:9"),
+            0x04 => Some(">16:9"),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    (resolution, scan, aspect)
+}
+
+fn audio_channel_configuration(stream_content: u8, component_type: u8) -> Option<&'static str> {
+    if stream_content != 0x02 {
+        return None;
+    }
+    match component_type {
+        0x01 => Some("1/0"),
+        0x02 => Some("1/0+1/0"),
+        0x03 => Some("2/0"),
+        0x04 => Some("2/1"),
+        0x05 => Some("3/0"),
+        0x06 => Some("2/2"),
+        0x07 => Some("3/1"),
+        0x08 => Some("3/2"),
+        0x09 => Some("3/2+LFE"),
+        _ => None,
+    }
+}
+
+fn audio_sampling_info(sampling_rate: u8) -> Option<&'static str> {
+    match sampling_rate {
+        0x01 => Some("16kHz"),
+        0x02 => Some("22.05kHz"),
+        0x03 => Some("24kHz"),
+        0x05 => Some("32kHz"),
+        0x06 => Some("44.1kHz"),
+        0x07 => Some("48kHz"),
+        _ => None,
+    }
+}
+
+fn event_components_value(event: &EitEvent) -> serde_json::Value {
+    let video = event
+        .descriptors
+        .components
+        .iter()
+        .map(|component| {
+            let (resolution, scan, aspect) =
+                video_component_semantics(component.stream_content, component.component_type);
+            serde_json::json!({
+                "streamContent": component.stream_content,
+                "componentTag": component.component_tag,
+                "componentType": component.component_type,
+                "language": component.language_code,
+                "text": component.text,
+                "resolution": resolution,
+                "scan": scan,
+                "aspect": aspect,
+                "profileLevel": serde_json::Value::Null,
+                "sourceDescriptor": "component_descriptor",
+                "parseStatus": "OK",
+            })
+        })
+        .collect::<Vec<_>>();
+    let audio = event
+        .descriptors
+        .audio_components
+        .iter()
+        .map(|component| {
+            serde_json::json!({
+                "streamType": component.stream_type,
+                "streamContent": component.stream_content,
+                "componentTag": component.component_tag,
+                "componentType": component.component_type,
+                "language": component.language_code,
+                "secondLanguage": component.language_code_2,
+                "channelConfiguration": audio_channel_configuration(
+                    component.stream_content,
+                    component.component_type,
+                ),
+                "simulcastGroupTag": component.simulcast_group_tag,
+                "samplingRate": component.sampling_rate,
+                "samplingInfo": audio_sampling_info(component.sampling_rate),
+                "text": component.text,
+                "sourceDescriptor": "audio_component_descriptor",
+                "main": component.main_component_flag,
+                "multiLingual": component.es_multi_lingual_flag,
+                "qualityIndicator": component.quality_indicator,
+                "parseStatus": "OK",
+            })
+        })
+        .collect::<Vec<_>>();
     serde_json::json!({
-        "kind": "arib-event-v1",
-        "originalNetworkId": id.original_network_id,
-        "transportStreamId": id.transport_stream_id,
-        "serviceId": id.service_id,
-        "eventId": id.event_id,
+        "video": video,
+        "audio": audio,
+        "subtitle": [],
+        "data": [],
     })
-    .to_string()
+}
+
+fn stable_identity_string(id: EitStableEventIdentity) -> String {
+    provider_data_api::build_program_key(
+        i32::from(id.original_network_id),
+        i32::from(id.transport_stream_id),
+        i32::from(id.service_id),
+        i32::from(id.event_id),
+    )
 }
 
 fn json_value(text: String) -> serde_json::Value {
     serde_json::from_str(&text).unwrap_or(serde_json::Value::Null)
 }
 
-fn event_json(event: &EitEvent) -> String {
+fn event_value(event: &EitEvent) -> serde_json::Value {
     let provider = event_provider_fields(&event.descriptors);
     let descriptor_diagnostics = event_descriptor_diagnostics_array_json_scoped(
         &event.descriptors,
@@ -786,21 +837,29 @@ fn event_json(event: &EitEvent) -> String {
             event_id: Some(event.event_id),
         }),
     );
-    let model = serde_json::json!({
-        "programKey": {
+    let stable_identity = event.stable_identity();
+    let program_key = stable_identity.map(|_| {
+        serde_json::json!({
             "kind": "arib-event-v1",
             "originalNetworkId": event.original_network_id,
             "transportStreamId": event.transport_stream_id,
             "serviceId": event.service_id,
             "eventId": event.event_id,
-        },
+        })
+    });
+    serde_json::json!({
+        "programKey": program_key,
+        "eventId": event.event_id,
         "serviceKey": {
             "originalNetworkId": event.original_network_id,
             "transportStreamId": event.transport_stream_id,
             "serviceId": event.service_id,
         },
-        "stableIdentity": stable_identity_string(event.stable_identity()),
+        "stableIdentity": stable_identity.map(stable_identity_string),
         "timing": {
+            "state": event.timing_state.as_str(),
+            "rawStartTimeHex": hex_lower(&event.raw_start_time),
+            "rawDurationHex": hex_lower(&event.raw_duration),
             "startUtcMillis": event.start_time_millis,
             "endUtcMillis": event.start_time_millis.saturating_add(event.duration_millis),
             "durationMillis": event.duration_millis,
@@ -817,65 +876,212 @@ fn event_json(event: &EitEvent) -> String {
             "lastSectionNumber": event.last_section_number,
         },
         "descriptors": {
-            "extendedItems": json_value(extended_items_json(event)),
+            "shortEvents": short_events_value(event),
+            "extendedTexts": extended_texts_value(event),
+            "extendedItems": extended_items_value(event),
             "component": { "text": event_component_text(event) },
             "audio": { "componentText": event_audio_component_text(event), "language": event_audio_language(event) },
-            "genres": { "content": json_value(event_content_genres_json(event)), "genreSupplementText": event_genre_supplement_text(event) },
-            "relatedItems": json_value(event_related_items_json(event)),
-            "linkage": json_value(event_linkage_json(event)),
+            "genres": { "content": event_content_genres_value(event), "genreSupplementText": event_genre_supplement_text(event) },
+            "eventGroups": event_groups_value(event),
+            "componentGroups": event_component_groups_value(event),
+            "linkage": event_linkage_value(event),
             "freeCaMode": {
                 "raw": if event.free_ca_mode { 1 } else { 0 },
                 "scrambled": event.free_ca_mode,
-                "text": if event.free_ca_mode { "有料放送" } else { "無料放送" },
                 "parseStatus": "OK",
             },
-            "series": json_value(event_primary_series_json(event)),
-            "components": json_value(event_components_json(event)),
+            "series": event_primary_series_value(event),
+            "components": event_components_value(event),
             "diagnostics": {
                 "summary": event_diagnostic_text(event),
                 "descriptorDiagnostics": json_value(descriptor_diagnostics.clone()),
                 "descriptorDiagnosticsCanonicalJson": descriptor_diagnostics,
             },
-            "parentalRatings": json_value(parental_ratings_json(event)),
+            "parentalRatings": parental_ratings_value(event),
         }
-    });
-    serde_json::to_string(&model).unwrap_or_else(|_| "{}".to_string())
+    })
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EpgUpdateWindowDto {
+    original_network_id: u16,
+    transport_stream_id: u16,
+    service_id: u16,
+    window_start_millis: i64,
+    window_end_millis: i64,
+    valid_program_stable_identities: Vec<String>,
+    deletion_authoritative: bool,
+}
+
+impl From<&EitUpdateWindow> for EpgUpdateWindowDto {
+    fn from(window: &EitUpdateWindow) -> Self {
+        Self {
+            original_network_id: window.original_network_id,
+            transport_stream_id: window.transport_stream_id,
+            service_id: window.service_id,
+            window_start_millis: window.window_start_millis,
+            window_end_millis: window.window_end_millis,
+            valid_program_stable_identities: window
+                .valid_event_identities
+                .iter()
+                .map(|identity| stable_identity_string(*identity))
+                .collect(),
+            deletion_authoritative: window.deletion_authoritative,
+        }
+    }
+}
+
+#[cfg(test)]
 fn epg_update_window_json(window: &EitUpdateWindow) -> String {
-    format!(
-        "{{\"originalNetworkId\":{},\"transportStreamId\":{},\"serviceId\":{},\"windowStartMillis\":{},\"windowEndMillis\":{},\"validProgramStableIdentities\":{},\"deletionAuthoritative\":{}}}",
-        window.original_network_id,
-        window.transport_stream_id,
-        window.service_id,
-        window.window_start_millis,
-        window.window_end_millis,
-        json_array(window.valid_event_identities.iter().map(|id| json_string(&stable_identity_string(*id))).collect()),
-        json_bool(window.deletion_authoritative),
-    )
+    serde_json::to_string(&EpgUpdateWindowDto::from(window)).unwrap_or_default()
 }
 
-fn publishability_json(p: &ServicePublishability) -> String {
-    format!(
-        "{{\"originalNetworkId\":{},\"transportStreamId\":{},\"serviceId\":{},\"publishable\":{},\"channelRegistrationReady\":{},\"epgPublishable\":{},\"clearLivePlaybackSupported\":{},\"requiresCas\":{},\"unsupportedCas\":{},\"pmtPidResolved\":{},\"pmtParsed\":{},\"caStateResolved\":{},\"freeCaModeResolved\":{},\"missingComponents\":{},\"reasons\":{},\"registrationReasons\":{},\"epgReasons\":{}}}",
-        p.original_network_id, p.transport_stream_id, p.service_id,
-        json_bool(p.publishable), json_bool(p.channel_registration_ready), json_bool(p.epg_publishable), json_bool(p.clear_live_playback_supported), json_bool(p.requires_cas), json_bool(p.unsupported_cas), json_bool(p.pmt_pid_resolved), json_bool(p.pmt_parsed), json_bool(p.ca_state_resolved), json_bool(p.free_ca_mode_resolved),
-        str_array_json(&p.missing_components), str_array_json(&p.reasons), str_array_json(&p.registration_reasons), str_array_json(&p.epg_reasons),
-    )
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SystemManagementFactsDto {
+    descriptor_present: bool,
+    syntax_valid: bool,
+    system_management_id: Option<u16>,
+    broadcasting_flag: Option<u8>,
+    broadcasting_identifier: Option<u8>,
+    additional_broadcasting_identification: Option<u8>,
+    additional_identification_info_hex: String,
+    semantic_state: &'static str,
+    diagnostic: Option<&'static str>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServiceSemanticFactsDto {
+    original_network_id: u16,
+    transport_stream_id: u16,
+    service_id: u16,
+    service_type: Option<u8>,
+    pmt_pid_resolved: bool,
+    pmt_parsed: bool,
+    pcr_pid_resolved: bool,
+    elementary_streams: Vec<ElementaryStreamDto>,
+    requires_cas: bool,
+    ca_descriptors_resolved: bool,
+    free_ca_mode: Option<bool>,
+    smd: SystemManagementFactsDto,
+    missing_components: Vec<&'static str>,
+    semantic_diagnostics: Vec<&'static str>,
+}
+
+impl From<&ServiceSemanticFacts> for ServiceSemanticFactsDto {
+    fn from(facts: &ServiceSemanticFacts) -> Self {
+        Self {
+            original_network_id: facts.original_network_id,
+            transport_stream_id: facts.transport_stream_id,
+            service_id: facts.service_id,
+            service_type: facts.service_type,
+            pmt_pid_resolved: facts.pmt_pid_resolved,
+            pmt_parsed: facts.pmt_parsed,
+            pcr_pid_resolved: facts.pcr_pid_resolved,
+            elementary_streams: facts
+                .elementary_streams
+                .iter()
+                .map(ElementaryStreamDto::from)
+                .collect(),
+            requires_cas: facts.requires_cas,
+            ca_descriptors_resolved: facts.ca_descriptors_resolved,
+            free_ca_mode: facts.free_ca_mode,
+            smd: SystemManagementFactsDto {
+                descriptor_present: facts.system_management.descriptor_present,
+                syntax_valid: facts.system_management.syntax_valid,
+                system_management_id: facts.system_management.system_management_id,
+                broadcasting_flag: facts.system_management.broadcasting_flag,
+                broadcasting_identifier: facts.system_management.broadcasting_identifier,
+                additional_broadcasting_identification: facts
+                    .system_management
+                    .additional_broadcasting_identification,
+                additional_identification_info_hex: hex_lower(
+                    &facts.system_management.additional_identification_info,
+                ),
+                semantic_state: facts.system_management.semantic_state.as_str(),
+                diagnostic: facts.system_management.diagnostic,
+            },
+            missing_components: facts.missing_components.clone(),
+            semantic_diagnostics: facts.semantic_diagnostics.clone(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TableRequirementStatusDto {
+    component: &'static str,
+    original_network_id: Option<u16>,
+    transport_stream_id: Option<u16>,
+    service_id: Option<u16>,
+    required: bool,
+    complete: bool,
+}
+
+impl From<&TableRequirementStatus> for TableRequirementStatusDto {
+    fn from(status: &TableRequirementStatus) -> Self {
+        Self {
+            component: status.component,
+            original_network_id: status.original_network_id,
+            transport_stream_id: status.transport_stream_id,
+            service_id: status.service_id,
+            required: status.required,
+            complete: status.complete,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BulkSnapshot {
+    ingest_sequence: u64,
+    discovery_stage: jint,
+    broadcast_clock: Option<BroadcastClockFactDto>,
+    table_requirements: Vec<TableRequirementStatusDto>,
+    services: Vec<ServiceDto>,
+    ca_metadata: Vec<CaMetadataDto>,
+    malformed_ca_descriptor_diagnostics: Vec<MalformedCaDescriptorDiagnosticDto>,
+    malformed_ca_descriptor_counts: Vec<MalformedCaDescriptorCountDto>,
+    pmt_pid_mappings: Vec<PmtPidMappingDto>,
+    sdt_actual_transports: Vec<TransportKeyDto>,
+    events: Vec<serde_json::Value>,
+    epg_update_windows: Vec<EpgUpdateWindowDto>,
+    service_semantic_facts: Vec<ServiceSemanticFactsDto>,
+    parser_diagnostics: Vec<ParserDiagnosticDto>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BroadcastClockFactDto {
+    table_id: u8,
+    mjd: u16,
+    millis_of_day: u32,
+}
+
+impl From<BroadcastClockFact> for BroadcastClockFactDto {
+    fn from(value: BroadcastClockFact) -> Self {
+        Self {
+            table_id: value.table_id,
+            mjd: value.mjd,
+            millis_of_day: value.millis_of_day,
+        }
+    }
 }
 
 fn bulk_snapshot_json(state: &mut ParserState, take_update_windows: bool) -> String {
-    state.snapshot_generation = state.snapshot_generation.saturating_add(1);
-    let snapshot_generation = state.snapshot_generation;
     let ingest_sequence = state.sections_seen;
-    let parser_diagnostics = parser_diagnostics_json(state);
-    let snapshot = state.snapshot();
-    let services = snapshot.services;
-    let transports = snapshot.transports;
-    let pmt_mappings = snapshot.pmt_pids_by_service;
-    let cas_services = state.cas_discovery_services();
-    let cat_ca = snapshot.cat_ca.descriptors;
-    let cas_cat_ca = state.raw_cat_ca_descriptors();
+    let last_status = state.last_status;
+    let collection_state = state.collector.state();
+    let discovery_stage = collection_state.publish_stage();
+    let table_requirements = &collection_state.table_requirements;
+    let semantic_facts = &collection_state.semantic_facts_by_service;
+    let snapshot = &collection_state.snapshot;
+    let parser_diagnostics = parser_diagnostics(ingest_sequence, last_status, snapshot);
+    let services = &snapshot.services;
+    let pmt_mappings = &snapshot.pmt_pids_by_service;
+    let cat_ca = &snapshot.cat_ca.descriptors;
     // 更新区間は排出型一括APIだけで公開する。
     // 非排出型一括snapshotはEPG更新区間を返さない。これにより本番呼び出し側が
     // 同じ廃止削除区間を誤って再公開することを防ぐ。
@@ -884,65 +1090,112 @@ fn bulk_snapshot_json(state: &mut ParserState, take_update_windows: bool) -> Str
     } else {
         Vec::new()
     };
-    format!(
-        r#"{{"snapshotGeneration":{},"ingestSequence":{},"services":{},"servicesForCasDiscovery":{},"caMetadata":{},"caMetadataForCasDiscovery":{},"malformedCaDescriptorDiagnostics":{},"malformedCaDescriptorCounts":{},"pmtPidMappings":{},"pmtPidsForSectionFilters":{},"transports":{},"sdtActualTransports":{},"privateSections":{},"events":{},"epgUpdateWindows":{},"publishabilityDiagnostics":{},"parserDiagnostics":{}}}"#,
-        snapshot_generation,
+    serde_json::to_string(&BulkSnapshot {
         ingest_sequence,
-        json_array(services.iter().map(service_json).collect()),
-        json_array(cas_services.iter().map(service_json).collect()),
-        ca_metadata_from_services_json(&services, &cat_ca),
-        ca_metadata_from_services_json(&cas_services, &cas_cat_ca),
-        malformed_ca_descriptor_diagnostics_json(&snapshot.malformed_ca_descriptor_diagnostics),
-        malformed_ca_descriptor_counts_json(&snapshot.malformed_ca_descriptor_diagnostics),
-        json_array(pmt_mappings.iter().map(pmt_mapping_json).collect()),
-        json_array(
-            state
-                .pmt_pids_for_section_filters()
-                .iter()
-                .map(|pid| pid.to_string())
-                .collect()
+        discovery_stage: discovery_stage_to_jint(discovery_stage),
+        broadcast_clock: state
+            .latest_broadcast_clock
+            .map(BroadcastClockFactDto::from),
+        table_requirements: table_requirements
+            .iter()
+            .map(TableRequirementStatusDto::from)
+            .collect(),
+        services: services.iter().map(ServiceDto::from).collect(),
+        ca_metadata: ca_metadata_from_services(services, cat_ca),
+        malformed_ca_descriptor_diagnostics: snapshot
+            .malformed_ca_descriptor_diagnostics
+            .iter()
+            .map(MalformedCaDescriptorDiagnosticDto::from)
+            .collect(),
+        malformed_ca_descriptor_counts: malformed_ca_descriptor_counts(
+            &snapshot.malformed_ca_descriptor_diagnostics,
         ),
-        json_array(transports.iter().map(transport_json).collect()),
-        json_array(
-            state
-                .sdt_actual_transport_keys()
-                .iter()
-                .map(|(tsid, onid)| transport_key_json(*onid, *tsid))
-                .collect()
-        ),
-        json_array(
-            state
-                .private_sections
-                .iter()
-                .map(private_section_json)
-                .collect()
-        ),
-        json_array(state.events().iter().map(event_json).collect()),
-        json_array(epg_windows.iter().map(epg_update_window_json).collect()),
-        json_array(
-            state
-                .publishability()
-                .iter()
-                .map(publishability_json)
-                .collect()
-        ),
+        pmt_pid_mappings: pmt_mappings
+            .iter()
+            .map(|mapping| PmtPidMappingDto {
+                original_network_id: mapping.original_network_id,
+                transport_stream_id: mapping.transport_stream_id,
+                service_id: mapping.service_id,
+                pmt_pid: mapping.pmt_pid,
+            })
+            .collect(),
+        sdt_actual_transports: state
+            .sdt_actual_transport_keys()
+            .iter()
+            .map(|(tsid, onid)| TransportKeyDto {
+                original_network_id: *onid,
+                transport_stream_id: *tsid,
+            })
+            .collect(),
+        events: state.events().iter().map(event_value).collect(),
+        epg_update_windows: epg_windows.iter().map(EpgUpdateWindowDto::from).collect(),
+        service_semantic_facts: semantic_facts
+            .iter()
+            .map(ServiceSemanticFactsDto::from)
+            .collect(),
         parser_diagnostics,
-    )
+    })
+    .unwrap_or_default()
 }
 
-fn parser_diagnostics_json(state: &ParserState) -> String {
-    let message = format!(
-        "sectionsSeen={} lastStatus={}",
-        state.sections_seen, state.last_status
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ParserDiagnosticDto {
+    code: &'static str,
+    message: String,
+    severity: &'static str,
+}
+
+fn parser_diagnostics(
+    sections_seen: u64,
+    last_status: jint,
+    snapshot: &service_discovery::DiscoverySnapshot,
+) -> Vec<ParserDiagnosticDto> {
+    let message = format!("sectionsSeen={} lastStatus={}", sections_seen, last_status);
+    let mut diagnostics = vec![ParserDiagnosticDto {
+        code: "PARSER_STATE",
+        message,
+        severity: "info",
+    }];
+    let mut text_diagnostics = snapshot
+        .services
+        .iter()
+        .flat_map(|service| {
+            service.text_decode_diagnostics.iter().map(|diagnostic| {
+                format!(
+                    "service={}/{}/{} {}",
+                    service.original_network_id,
+                    service.transport_stream_id,
+                    service.service_id,
+                    diagnostic,
+                )
+            })
+        })
+        .chain(snapshot.transports.iter().flat_map(|transport| {
+            transport.text_decode_diagnostics.iter().map(|diagnostic| {
+                format!(
+                    "transport={}/{} {}",
+                    transport.original_network_id, transport.transport_stream_id, diagnostic,
+                )
+            })
+        }))
+        .collect::<Vec<_>>();
+    text_diagnostics.sort();
+    text_diagnostics.dedup();
+    diagnostics.extend(
+        text_diagnostics
+            .into_iter()
+            .map(|message| ParserDiagnosticDto {
+                code: "ARIB_SI_TEXT_REPLACED",
+                message,
+                severity: "warning",
+            }),
     );
-    format!(
-        "[{{\"code\":\"PARSER_STATE\",\"message\":{},\"severity\":\"info\"}}]",
-        json_string(&message),
-    )
+    diagnostics
 }
 
 fn section_body_end(section: &[u8]) -> Option<usize> {
-    let header = parse_section_header(section, 12)?;
+    let header = parse_section_header(section)?;
     if header.section_length < 4 || header.total_length > section.len() {
         return None;
     }
@@ -1139,6 +1392,7 @@ fn is_fixed_pid_si_table_for_discovery(pid: u16, table_id: u8) -> bool {
             | (0x0010, 0x40 | 0x41)
             | (0x0011, 0x42 | 0x46 | 0x4a)
             | (0x0012, 0x4e..=0x6f)
+            | (0x0014, 0x70 | 0x73)
     )
 }
 
@@ -1173,17 +1427,27 @@ fn registry() -> &'static Mutex<ParserRegistry> {
 }
 
 fn with_state<T>(handle: jlong, default_value: T, f: impl FnOnce(&ParserState) -> T) -> T {
+    if !si_module_is_healthy() {
+        return default_value;
+    }
     let parser = match registry().lock() {
         Ok(guard) => guard.get(handle),
-        Err(_) => return default_value,
+        Err(_) => {
+            record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
+            return default_value;
+        }
     };
     let Some(parser) = parser else {
         return default_value;
     };
-    match parser.lock() {
+    let result = match parser.lock() {
         Ok(guard) => f(&guard),
-        Err(_) => default_value,
-    }
+        Err(_) => {
+            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
+            default_value
+        }
+    };
+    result
 }
 
 fn with_state_mut(
@@ -1191,29 +1455,32 @@ fn with_state_mut(
     default_value: jint,
     f: impl FnOnce(&mut ParserState) -> jint,
 ) -> jint {
+    if !si_module_is_healthy() {
+        return STATUS_INTERNAL_ERROR;
+    }
     let parser = match registry().lock() {
         Ok(guard) => guard.get(handle),
-        Err(_) => return STATUS_INTERNAL_ERROR,
+        Err(_) => {
+            record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
+            return STATUS_INTERNAL_ERROR;
+        }
     };
     let Some(parser) = parser else {
         return default_value;
     };
-    match parser.lock() {
+    let result = match parser.lock() {
         Ok(mut guard) => f(&mut guard),
-        Err(_) => STATUS_INTERNAL_ERROR,
-    }
+        Err(_) => {
+            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
+            STATUS_INTERNAL_ERROR
+        }
+    };
+    result
 }
 
 fn java_string(env: &mut JNIEnv<'_>, value: Option<String>) -> jstring {
     match env.new_string(value.unwrap_or_default()) {
         Ok(s) => s.into_raw(),
-        Err(_) => ptr::null_mut(),
-    }
-}
-
-fn java_byte_array(env: &mut JNIEnv<'_>, value: &[u8]) -> jbyteArray {
-    match env.byte_array_from_slice(value) {
-        Ok(array) => array.into_raw(),
         Err(_) => ptr::null_mut(),
     }
 }
@@ -1233,16 +1500,25 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     handle: jlong,
     take_update_windows: jint,
 ) -> jstring {
+    if !si_module_is_healthy() {
+        return java_string(&mut env, Some("{}".to_string()));
+    }
     let parser = match registry().lock() {
         Ok(guard) => guard.get(handle),
-        Err(_) => return java_string(&mut env, Some("{}".to_string())),
+        Err(_) => {
+            record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
+            return java_string(&mut env, Some("{}".to_string()));
+        }
     };
     let Some(parser) = parser else {
         return java_string(&mut env, Some("{}".to_string()));
     };
     let json = match parser.lock() {
         Ok(mut guard) => bulk_snapshot_json(&mut guard, take_update_windows != 0),
-        Err(_) => "{}".to_string(),
+        Err(_) => {
+            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
+            "{}".to_string()
+        }
     };
     java_string(&mut env, Some(json))
 }
@@ -1257,10 +1533,9 @@ fn jbytearray_to_vec(env: &mut JNIEnv<'_>, value: JByteArray<'_>) -> Vec<u8> {
 
 fn provider_result_json(result: provider_data_api::ProviderDataResult) -> String {
     format!(
-        "{{\"success\":{},\"bytes\":{},\"signature\":{},\"schemaVersion\":{},\"truncated\":{},\"diagnosticsDroppedCount\":{},\"errorCode\":{},\"errorMessage\":{}}}",
+        "{{\"success\":{},\"bytes\":{},\"schemaVersion\":{},\"truncated\":{},\"diagnosticsDroppedCount\":{},\"errorCode\":{},\"errorMessage\":{}}}",
         if result.success { "true" } else { "false" },
         json_string(&result.json),
-        json_string(&result.signature),
         result.schema_version,
         if result.truncated { "true" } else { "false" },
         result.diagnostics_dropped_count,
@@ -1331,19 +1606,6 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeProgramProviderDataSignature(
-    mut env: JNIEnv<'_>,
-    _this: JObject<'_>,
-    provider_data: JByteArray<'_>,
-) -> jstring {
-    let data = jbytearray_to_vec(&mut env, provider_data);
-    java_string(
-        &mut env,
-        Some(provider_data_api::program_provider_data_signature(&data)),
-    )
-}
-
-#[no_mangle]
 pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeExtractProgramKeyResult(
     mut env: JNIEnv<'_>,
     _this: JObject<'_>,
@@ -1355,36 +1617,18 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeExtractChannelTuneKey(
-    mut env: JNIEnv<'_>,
-    _this: JObject<'_>,
-    provider_data: JString<'_>,
-) -> jstring {
-    let data = jstring_to_string(&mut env, provider_data).unwrap_or_default();
-    java_string(
-        &mut env,
-        Some(provider_data_api::extract_channel_tune_key(&data)),
-    )
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeAppendCurrentProgramDiagnostics(
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeDecodeChannelProviderData(
     mut env: JNIEnv<'_>,
     _this: JObject<'_>,
     provider_data: JByteArray<'_>,
-    overlap_count: jlong,
-    selected_program_id: jlong,
-    selection_rule: JString<'_>,
 ) -> jstring {
     let data = jbytearray_to_vec(&mut env, provider_data);
-    let rule = jstring_to_string(&mut env, selection_rule).unwrap_or_default();
-    let result = provider_data_api::append_current_program_diagnostics(
-        &data,
-        overlap_count,
-        selected_program_id,
-        &rule,
-    );
-    java_string(&mut env, Some(provider_result_json(result)))
+    java_string(
+        &mut env,
+        Some(provider_data_api::decode_channel_provider_data(
+            data.as_slice(),
+        )),
+    )
 }
 
 #[no_mangle]
@@ -1392,9 +1636,15 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     _env: JNIEnv<'_>,
     _this: JObject<'_>,
 ) -> jlong {
+    if !si_module_is_healthy() {
+        return 0;
+    }
     match registry().lock() {
         Ok(mut guard) => guard.create(),
-        Err(_) => 0,
+        Err(_) => {
+            record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
+            0
+        }
     }
 }
 
@@ -1415,13 +1665,16 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
                 STATUS_INVALID_HANDLE
             }
         }
-        Err(_) => STATUS_INTERNAL_ERROR,
+        Err(_) => {
+            record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
+            STATUS_INTERNAL_ERROR
+        }
     }
 }
 
 #[no_mangle]
 pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeIngestSection(
-    mut env: JNIEnv<'_>,
+    env: JNIEnv<'_>,
     _this: JObject<'_>,
     handle: jlong,
     pid: jint,
@@ -1449,13 +1702,21 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
 }
 
 #[no_mangle]
-pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeGetDiscoveryStage(
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeSetDiscoveryProfile(
     _env: JNIEnv<'_>,
     _this: JObject<'_>,
     handle: jlong,
+    profile: jint,
 ) -> jint {
-    with_state(handle, STATUS_INVALID_HANDLE, |state| {
-        discovery_stage_to_jint(state.discovery_stage())
+    let profile = match profile {
+        0 => DiscoveryProfile::IsdbT,
+        1 => DiscoveryProfile::Bs,
+        2 => DiscoveryProfile::Cs110,
+        _ => return STATUS_INVALID_DISCOVERY_PROFILE,
+    };
+    with_state_mut(handle, STATUS_INVALID_HANDLE, |state| {
+        state.collector.set_discovery_profile(profile);
+        STATUS_OK
     })
 }
 
@@ -1466,7 +1727,7 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     bytes: JByteArray<'_>,
 ) -> jstring {
     let decoded = match env.convert_byte_array(bytes) {
-        Ok(v) => arib_string::decode_arib_string_lossy(&v),
+        Ok(v) => arib_string::decode_arib_string_lossy(&v).0,
         Err(_) => String::new(),
     };
     java_string(&mut env, Some(decoded))
@@ -1479,7 +1740,7 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     bytes: JByteArray<'_>,
 ) -> jstring {
     let summary = match env.convert_byte_array(bytes) {
-        Ok(v) => arib_string::decode_arib_string_lossy_with_diagnostic(&v).1.summary(),
+        Ok(v) => arib_string::decode_arib_string_lossy(&v).1.summary(),
         Err(_) => String::from("scope=mirakc_scope_non_caption_si_epg_only replacement_count=0 unsupported_escape_count=0 truncated_escape_count=0 truncated_graphic_count=0 entries=[]"),
     };
     java_string(&mut env, Some(summary))
@@ -1502,11 +1763,15 @@ mod tests {
             table_id: 0x4e,
             version: 0,
             section_number: 0,
-            scope: crate::eit::EitScope::PresentFollowing,
+            last_section_number: 0,
+            scope: crate::eit::EitScope::PresentFollowingActual,
             service_id: 101,
             transport_stream_id: 16625,
             original_network_id: 4,
             event_id: 300,
+            timing_state: crate::eit::EitTimingState::Defined,
+            raw_start_time: [0; 5],
+            raw_duration: [0; 3],
             start_time_millis: 1,
             duration_millis: 1,
             free_ca_mode: false,
@@ -1516,10 +1781,9 @@ mod tests {
                     events: vec![crate::descriptors::EventGroupReference {
                         service_id: 101,
                         event_id,
-                        original_network_id: None,
-                        transport_stream_id: None,
                     }],
                     other_network_events: Vec::new(),
+                    private_data: vec![],
                 }],
                 ..crate::descriptors::EventDescriptors::default()
             },
@@ -1527,31 +1791,60 @@ mod tests {
     }
 
     #[test]
-    fn event_group_kind_mapping_matches_r51_design() {
-        let cases = [
-            (0x1, "shared"),
-            (0x2, "relay"),
-            (0x3, "movement"),
-            (0x4, "relay"),
-            (0x5, "movement"),
-        ];
-        for (group_type, kind) in cases {
-            let json = event_related_items_json(&minimal_event_for_related_items(
+    fn event_group_json_preserves_raw_group_type_without_derived_kind() {
+        for group_type in 1u8..=5 {
+            let value = event_groups_value(&minimal_event_for_related_items(
                 group_type,
                 0x0100 + group_type as u16,
             ));
-            assert!(
-                json.contains(&format!("\"kind\":\"{}\"", kind)),
-                "{} missing in {}",
-                kind,
-                json
-            );
-            assert!(
-                json.contains(&format!("\"groupType\":{}", group_type)),
-                "groupType missing in {}",
-                json
-            );
+            let group = &value[0];
+            assert_eq!(group["groupType"].as_u64(), Some(u64::from(group_type)));
+            assert!(group["events"].is_array());
+            assert!(group.get("kind").is_none());
         }
+    }
+
+    #[test]
+    fn event_component_json_keeps_arib_descriptor_facts_without_release_policy() {
+        let mut event = minimal_event_for_related_items(1, 0x0101);
+        event.descriptors.components = vec![crate::descriptors::ComponentDescriptor {
+            stream_content: 0x01,
+            component_type: 0xb3,
+            component_tag: 0x10,
+            language_code: "jpn".to_string(),
+            text: String::new(),
+        }];
+        event.descriptors.audio_components = vec![crate::descriptors::AudioComponentDescriptor {
+            stream_content: 0x02,
+            component_type: 0x02,
+            component_tag: 0x20,
+            stream_type: 0x0f,
+            simulcast_group_tag: 0xff,
+            es_multi_lingual_flag: true,
+            main_component_flag: true,
+            quality_indicator: 2,
+            sampling_rate: 7,
+            language_code: "jpn".to_string(),
+            language_code_2: Some("eng".to_string()),
+            text: String::new(),
+        }];
+
+        let components = event_components_value(&event);
+        assert_eq!(components["video"][0]["resolution"], "1080");
+        assert_eq!(components["video"][0]["scan"], "interlaced");
+        assert_eq!(components["video"][0]["aspect"], "16:9");
+        assert_eq!(
+            components["video"][0]["sourceDescriptor"],
+            "component_descriptor"
+        );
+        assert_eq!(components["audio"][0]["channelConfiguration"], "1/0+1/0");
+        assert_eq!(components["audio"][0]["samplingInfo"], "48kHz");
+        assert_eq!(
+            components["audio"][0]["sourceDescriptor"],
+            "audio_component_descriptor"
+        );
+        assert!(components["video"][0].get("diagnosticCode").is_none());
+        assert!(components["audio"][0].get("diagnosticCode").is_none());
     }
 
     #[test]
@@ -1570,6 +1863,41 @@ mod tests {
     }
 
     #[test]
+    fn event_identity_uses_the_same_canonical_key_as_provider_data() {
+        let identity = EitStableEventIdentity {
+            original_network_id: 4,
+            transport_stream_id: 16625,
+            service_id: 101,
+            event_id: 10,
+        };
+        assert_eq!(
+            stable_identity_string(identity),
+            provider_data_api::build_program_key(4, 16625, 101, 10)
+        );
+    }
+
+    #[test]
+    fn ingest_tot_updates_typed_broadcast_clock_snapshot() {
+        let mut state = ParserState::default();
+        let tot = section_with_crc(vec![
+            0x73, 0x70, 0x0b, 0xea, 0x60, 0x12, 0x34, 0x56, 0xf0, 0x00,
+        ]);
+        assert_eq!(state.ingest_section(0x0014, &tot), STATUS_OK);
+        assert_eq!(
+            state.latest_broadcast_clock,
+            Some(BroadcastClockFact {
+                table_id: 0x73,
+                mjd: 0xea60,
+                millis_of_day: (12 * 3_600 + 34 * 60 + 56) * 1_000,
+            })
+        );
+        let snapshot: serde_json::Value =
+            serde_json::from_str(&bulk_snapshot_json(&mut state, false)).unwrap();
+        assert_eq!(snapshot["broadcastClock"]["tableId"].as_u64(), Some(0x73));
+        assert_eq!(snapshot["broadcastClock"]["mjd"].as_u64(), Some(0xea60));
+    }
+
+    #[test]
     fn ingest_pat_updates_service_count_without_pointer_handles() {
         let mut state = ParserState::default();
         let pat = section_with_crc(vec![
@@ -1577,20 +1905,37 @@ mod tests {
         ]);
         assert_eq!(state.ingest_section(0x0000, &pat), STATUS_OK);
         assert_eq!(state.sections_seen, 1);
-        assert_eq!(state.raw_snapshot_for_debug().services.len(), 0);
+        assert_eq!(state.snapshot().services.len(), 0);
     }
 
     #[test]
-    fn unsupported_private_section_is_retained_for_cas_path() {
+    fn bulk_snapshot_exposes_arib_si_text_replacement_diagnostic() {
+        let mut state = ParserState::default();
+        let sdt = section_with_crc(vec![
+            0x42, 0xf0, 0x19, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x01, 0xfc,
+            0xe0, 0x08, 0x48, 0x06, 0x01, 0x00, 0x03, 0x1b, b'$', b'X',
+        ]);
+        assert_eq!(state.ingest_section(0x0011, &sdt), STATUS_OK);
+        let snapshot: serde_json::Value =
+            serde_json::from_str(&bulk_snapshot_json(&mut state, false)).unwrap();
+        let diagnostics = snapshot["parserDiagnostics"].as_array().unwrap();
+        let text_diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic["code"] == "ARIB_SI_TEXT_REPLACED")
+            .expect("ARIB SI text diagnostic");
+        let message = text_diagnostic["message"].as_str().unwrap();
+        assert!(message.contains("field=serviceName"), "{}", message);
+        assert!(message.contains("input_prefix_hex:1b2458"), "{}", message);
+    }
+
+    #[test]
+    fn unsupported_private_section_is_ignored_without_parallel_storage() {
         let mut state = ParserState::default();
         let section = vec![0x80, 0x00, 0x03, 0xaa, 0xbb, 0xcc];
         assert_eq!(
             state.ingest_section(0x0123, &section),
             STATUS_IGNORED_UNSUPPORTED_PID_OR_TABLE
         );
-        assert_eq!(state.private_sections.len(), 1);
-        assert_eq!(state.private_sections[0].pid, 0x0123);
-        assert_eq!(state.private_sections[0].table_id, 0x80);
     }
 
     #[test]
