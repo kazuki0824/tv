@@ -20,6 +20,15 @@ from vts_profile.schema import selected_xsd, validate_xml
 
 class VtsProfileTest(unittest.TestCase):
     def profile(self, *, resolved: bool = True) -> dict:
+        live = {
+            "enabled": True,
+            "audio_pid": 273 if resolved else None,
+            "video_pid": 272 if resolved else None,
+            "audio_stream_type": 0x0F if resolved else None,
+            "video_stream_type": 0x1B if resolved else None,
+            "pcr_pid": 272 if resolved else None,
+            "section_pid": 256 if resolved else None,
+        }
         return {
             "schema_version": 1,
             "target": {"hal": "tuner_hal2", "product": "default", "backend": "px4"},
@@ -32,24 +41,79 @@ class VtsProfileTest(unittest.TestCase):
             "flows": {
                 "scan": True,
                 "record": {"enabled": True, "pid": 272 if resolved else None},
-                "clear_live": {"enabled": False},
+                "clear_live": live,
+                "playback": {
+                    "enabled": True,
+                    "input_file_path": "/data/local/tmp/segment000000.ts",
+                },
             },
-            "queues": {"record_filter_bytes": 1048576, "record_dvr_bytes": 4194304},
+            "queues": {
+                "record_filter_bytes": 1048576,
+                "record_dvr_bytes": 4194304,
+                "audio_filter_bytes": 1048576,
+                "video_filter_bytes": 1048576,
+                "pcr_filter_bytes": 1048576,
+                "section_filter_bytes": 1048576,
+                "playback_dvr_bytes": 4194304,
+            },
         }
 
-    def test_record_only_xml_is_generated_without_device(self) -> None:
+    def probe_profile(self, *, resolved: bool = True) -> dict:
+        profile = self.profile(resolved=resolved)
+        profile["vts"]["variant"] = "record-filter-fmq"
+        profile["flows"]["clear_live"] = {"enabled": False}
+        profile["flows"]["playback"] = {"enabled": False}
+        profile["queues"] = {
+            "record_filter_bytes": 1048576,
+            "record_dvr_bytes": 4194304,
+        }
+        return profile
+
+    def test_canonical_xml_has_full_capability_reachability(self) -> None:
         xml = render_xml(self.profile())
         self.assertIn('frequency="557142857"', xml)
-        self.assertIn('pid="272"', xml)
         self.assertIn('subType="RECORD"', xml)
         self.assertIn('useFMQ="false"', xml)
+        self.assertIn('subType="AUDIO"', xml)
+        self.assertIn('subType="VIDEO"', xml)
+        self.assertIn('subType="PCR"', xml)
+        self.assertIn('subType="SECTION"', xml)
+        self.assertIn('pcrFilterConnection="FILTER_TS_PCR_0"', xml)
+        self.assertIn('sectionFilterConnection="FILTER_TS_SECTION_0"', xml)
+        self.assertIn('<dvrPlayback dvrConnection="DVR_PLAYBACK_0"', xml)
+        self.assertIn('inputFilePath="/data/local/tmp/segment000000.ts"', xml)
+
+    def test_canonical_missing_public_capability_flow_fails_closed(self) -> None:
+        for flow in ("record", "clear_live", "playback"):
+            with self.subTest(flow=flow):
+                profile = self.profile()
+                profile["flows"][flow] = {"enabled": False}
+                if flow == "record":
+                    profile["queues"].pop("record_filter_bytes")
+                    profile["queues"].pop("record_dvr_bytes")
+                elif flow == "clear_live":
+                    for key in (
+                        "audio_filter_bytes",
+                        "video_filter_bytes",
+                        "pcr_filter_bytes",
+                        "section_filter_bytes",
+                    ):
+                        profile["queues"].pop(key)
+                else:
+                    profile["queues"].pop("playback_dvr_bytes")
+                with self.assertRaisesRegex(ProfileError, "canonical VTS capability coverage is unreachable"):
+                    validate_profile(profile, require_resolved=True)
+        profile = self.profile()
+        profile["flows"]["scan"] = False
+        with self.assertRaisesRegex(ProfileError, "canonical VTS capability coverage is unreachable"):
+            validate_profile(profile, require_resolved=True)
 
     def test_record_filter_fmq_probe_variant_requests_filter_descriptor(self) -> None:
-        profile = self.profile()
-        profile["vts"]["variant"] = "record-filter-fmq"
-        xml = render_xml(profile)
+        xml = render_xml(self.probe_profile())
         self.assertIn('subType="RECORD"', xml)
         self.assertIn('useFMQ="true"', xml)
+        self.assertNotIn('subType="AUDIO"', xml)
+        self.assertNotIn('<dvrPlayback ', xml)
 
     def test_region_resolution_and_selection_update_same_profile(self) -> None:
         profile = self.profile(resolved=False)
@@ -86,11 +150,13 @@ class VtsProfileTest(unittest.TestCase):
         self.assertIn("validate_dependency_closures()", program)
         self.assertIn("CapacityLedger::default()", program)
         self.assertIn("reserve_filter(snapshot, 1, FilterOpenType::TsRecord, 1048576)", program)
-        self.assertIn("reserve_dvr(snapshot, 1, 4194304)", program)
-        self.assertIn(
-            "Self::TsRaw | Self::TsSection | Self::TsPes | Self::TsRecord",
-            program,
-        )
+        self.assertIn("FilterOpenType::TsAudio", program)
+        self.assertIn("FilterOpenType::TsVideo", program)
+        self.assertIn("FilterOpenType::TsPcr", program)
+        self.assertIn("FilterOpenType::TsSection", program)
+        self.assertIn("reserve_dvr(snapshot, 2, 4194304)", program)
+        self.assertIn("reserve_playback_processing(snapshot, 2, DvrKind::Playback, 4194304)", program)
+        self.assertIn("require_published_coverage(snapshot.num_playback", program)
 
     def test_resource_closure_is_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -104,14 +170,29 @@ class VtsProfileTest(unittest.TestCase):
                 with self.assertRaises(ProfileError):
                     validate_resource_closure(self.profile(), capability_source=capability, pes_source=pes)
 
-    def test_noninteractive_init_requires_explicit_inputs(self) -> None:
+    def test_noninteractive_init_builds_canonical_full_coverage(self) -> None:
         args = SimpleNamespace(
-            non_interactive=True, backend="px4", product="default", delivery_system="ISDBT",
-            vts_source_ref="aosp-commit", region=None, frequency_hz="557142857", service_id=None,
-            record="yes", record_pid="272", scan="yes", record_filter_bytes="1048576",
-            record_dvr_bytes="4194304", variant="",
+            non_interactive=True,
+            backend="px4",
+            product="default",
+            delivery_system="ISDBT",
+            vts_source_ref="aosp-commit",
+            region=None,
+            frequency_hz="557142857",
+            service_id=None,
+            record="yes",
+            record_pid="272",
+            scan="yes",
+            record_filter_bytes="1048576",
+            record_dvr_bytes="4194304",
+            playback_dvr_bytes=4194304,
+            playback_input_path="/data/local/tmp/segment000000.ts",
+            variant="",
         )
-        self.assertEqual(_new_profile(args)["vts"]["source_ref"], "aosp-commit")
+        profile = _new_profile(args)
+        self.assertEqual(profile["vts"]["source_ref"], "aosp-commit")
+        self.assertTrue(profile["flows"]["clear_live"]["enabled"])
+        self.assertTrue(profile["flows"]["playback"]["enabled"])
 
     def test_selected_xsd_requires_exact_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -169,6 +250,10 @@ class VtsProfileTest(unittest.TestCase):
             self.assertEqual(session.section.call_args_list, [call(0x0000, 0x00), call(0x0100, 0x02), call(0x0011, 0x42)])
             self.assertEqual(updated["service"]["service_id"], 100)
             self.assertEqual(updated["flows"]["record"]["pid"], 272)
+            self.assertEqual(updated["flows"]["clear_live"]["video_pid"], 272)
+            self.assertEqual(updated["flows"]["clear_live"]["audio_pid"], 273)
+            self.assertEqual(updated["flows"]["clear_live"]["pcr_pid"], 272)
+            self.assertEqual(updated["flows"]["clear_live"]["section_pid"], 256)
             self.assertEqual(json.loads(path.read_text())["flows"]["record"]["pid"], 272)
 
     def test_device_resolution_failure_does_not_modify_profile(self) -> None:
