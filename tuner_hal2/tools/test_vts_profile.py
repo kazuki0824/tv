@@ -4,6 +4,7 @@ import json
 import subprocess
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
@@ -24,8 +25,8 @@ class VtsProfileTest(unittest.TestCase):
             "enabled": True,
             "audio_pid": 273 if resolved else None,
             "video_pid": 272 if resolved else None,
-            "audio_stream_type": 0x0F if resolved else None,
-            "video_stream_type": 0x1B if resolved else None,
+            "audio_stream_type": 16 if resolved else None,
+            "video_stream_type": 5 if resolved else None,
             "pcr_pid": 272 if resolved else None,
             "section_pid": 256 if resolved else None,
         }
@@ -45,6 +46,11 @@ class VtsProfileTest(unittest.TestCase):
                 "playback": {
                     "enabled": True,
                     "input_file_path": "/data/local/tmp/segment000000.ts",
+                    "audio_pid": 257,
+                    "video_pid": 256,
+                    "section_pid": 257,
+                    "audio_stream_type": 2,
+                    "video_stream_type": 2,
                 },
             },
             "queues": {
@@ -74,14 +80,34 @@ class VtsProfileTest(unittest.TestCase):
         self.assertIn('frequency="557142857"', xml)
         self.assertIn('subType="RECORD"', xml)
         self.assertIn('useFMQ="false"', xml)
-        self.assertIn('subType="AUDIO"', xml)
-        self.assertIn('subType="VIDEO"', xml)
-        self.assertIn('subType="PCR"', xml)
-        self.assertIn('subType="SECTION"', xml)
-        self.assertIn('pcrFilterConnection="FILTER_TS_PCR_0"', xml)
-        self.assertIn('sectionFilterConnection="FILTER_TS_SECTION_0"', xml)
+        self.assertIn('id="FILTER_TS_AUDIO_LIVE_0"', xml)
+        self.assertIn('id="FILTER_TS_VIDEO_LIVE_0"', xml)
+        self.assertIn('id="FILTER_TS_PCR_LIVE_0"', xml)
+        self.assertIn('id="FILTER_TS_SECTION_LIVE_0"', xml)
+        self.assertIn('bitWidthOfLengthField="12"', xml)
+        self.assertIn('timeDelayInMs="100"', xml)
+        self.assertIn('pcrFilterConnection="FILTER_TS_PCR_LIVE_0"', xml)
+        self.assertIn('sectionFilterConnection="FILTER_TS_SECTION_LIVE_0"', xml)
         self.assertIn('<dvrPlayback dvrConnection="DVR_PLAYBACK_0"', xml)
         self.assertIn('inputFilePath="/data/local/tmp/segment000000.ts"', xml)
+        self.assertIn('id="FILTER_TS_VIDEO_PLAYBACK_0"', xml)
+        self.assertIn('id="FILTER_TS_AUDIO_PLAYBACK_0"', xml)
+        self.assertIn('id="FILTER_TS_SECTION_PLAYBACK_0"', xml)
+        self.assertIn('videoFilterConnection="FILTER_TS_VIDEO_PLAYBACK_0"', xml)
+        self.assertIn('audioFilterConnection="FILTER_TS_AUDIO_PLAYBACK_0"', xml)
+        self.assertIn('sectionFilterConnection="FILTER_TS_SECTION_PLAYBACK_0"', xml)
+        self.assertIn('pid="256" useFMQ="false"><avFilterSettings', xml)
+        self.assertIn('pid="257" useFMQ="false"><avFilterSettings', xml)
+
+    def test_playback_asset_filter_contract_is_independent_from_live_pids(self) -> None:
+        profile = self.profile()
+        profile["flows"]["clear_live"]["audio_pid"] = 300
+        profile["flows"]["clear_live"]["video_pid"] = 301
+        xml = render_xml(profile)
+        self.assertIn('id="FILTER_TS_AUDIO_LIVE_0" mainType="TS" subType="AUDIO" bufferSize="1048576" pid="300"', xml)
+        self.assertIn('id="FILTER_TS_VIDEO_LIVE_0" mainType="TS" subType="VIDEO" bufferSize="1048576" pid="301"', xml)
+        self.assertIn('id="FILTER_TS_AUDIO_PLAYBACK_0" mainType="TS" subType="AUDIO" bufferSize="1048576" pid="257"', xml)
+        self.assertIn('id="FILTER_TS_VIDEO_PLAYBACK_0" mainType="TS" subType="VIDEO" bufferSize="1048576" pid="256"', xml)
 
     def test_canonical_missing_public_capability_flow_fails_closed(self) -> None:
         for flow in ("record", "clear_live", "playback"):
@@ -92,13 +118,7 @@ class VtsProfileTest(unittest.TestCase):
                     profile["queues"].pop("record_filter_bytes")
                     profile["queues"].pop("record_dvr_bytes")
                 elif flow == "clear_live":
-                    for key in (
-                        "audio_filter_bytes",
-                        "video_filter_bytes",
-                        "pcr_filter_bytes",
-                        "section_filter_bytes",
-                    ):
-                        profile["queues"].pop(key)
+                    profile["queues"].pop("pcr_filter_bytes")
                 else:
                     profile["queues"].pop("playback_dvr_bytes")
                 with self.assertRaisesRegex(ProfileError, "canonical VTS capability coverage is unreachable"):
@@ -156,7 +176,20 @@ class VtsProfileTest(unittest.TestCase):
         self.assertIn("FilterOpenType::TsSection", program)
         self.assertIn("reserve_dvr(snapshot, 2, 4194304)", program)
         self.assertIn("reserve_playback_processing(snapshot, 2, DvrKind::Playback, 4194304)", program)
-        self.assertIn("require_published_coverage(snapshot.num_playback", program)
+        self.assertIn("require_published_coverage(snapshot.num_playback, true", program)
+        self.assertIn("PLAYBACK_CONSUME_CHUNK_PACKETS: usize = 256", program)
+        self.assertNotIn("let chunk = 188usize * 256usize", program)
+
+    def test_resource_closure_uses_profile_booleans_for_reverse_coverage(self) -> None:
+        profile = self.profile()
+        profile["flows"]["playback"] = {"enabled": False}
+        profile["queues"].pop("playback_dvr_bytes")
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "capability_snapshot.rs"
+            source.write_text("// fixture")
+            program = _program(profile, source, 1024 * 1024)
+        self.assertIn("require_published_coverage(snapshot.num_playback, false", program)
+        self.assertIn("require_published_coverage(snapshot.num_audio_filter, true", program)
 
     def test_resource_closure_is_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -193,6 +226,10 @@ class VtsProfileTest(unittest.TestCase):
         self.assertEqual(profile["vts"]["source_ref"], "aosp-commit")
         self.assertTrue(profile["flows"]["clear_live"]["enabled"])
         self.assertTrue(profile["flows"]["playback"]["enabled"])
+        self.assertEqual(profile["flows"]["playback"]["video_pid"], 256)
+        self.assertEqual(profile["flows"]["playback"]["audio_pid"], 257)
+        self.assertEqual(profile["flows"]["playback"]["video_stream_type"], 2)
+        self.assertEqual(profile["flows"]["playback"]["audio_stream_type"], 2)
 
     def test_selected_xsd_requires_exact_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -213,16 +250,25 @@ class VtsProfileTest(unittest.TestCase):
     def test_xsd_validator_and_product_variant_are_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            xsd = root / "schema.xsd"; xsd.write_text("<x/>")
-            ok = root / "ok"; ok.write_text("#!/bin/sh\nexit 0\n"); ok.chmod(0o755)
-            bad = root / "bad"; bad.write_text("#!/bin/sh\nexit 3\n"); bad.chmod(0o755)
+            xsd = root / "schema.xsd"
+            xsd.write_text("<x/>")
+            ok = root / "ok"
+            ok.write_text("#!/bin/sh\nexit 0\n")
+            ok.chmod(0o755)
+            bad = root / "bad"
+            bad.write_text("#!/bin/sh\nexit 3\n")
+            bad.chmod(0o755)
             validate_xml("<root/>", xsd, xmllint=str(ok))
             with self.assertRaises(ProfileError):
                 validate_xml("<root/>", xsd, xmllint=str(bad))
-            profile = self.profile(); profile["vts"]["variant"] = "lab"
+            profile = self.profile()
+            profile["vts"]["variant"] = "lab"
             output = write_product_artifacts(profile, "<validated/>", root)
             self.assertEqual(output.name, "tuner_vts_config_aidl_V1.lab.xml")
-            self.assertIn("ro.vendor.vts_tuner_configuration_variant=lab", (root / "vts_product_generated.mk").read_text())
+            self.assertIn(
+                "ro.vendor.vts_tuner_configuration_variant=lab",
+                (root / "vts_product_generated.mk").read_text(),
+            )
 
     def test_device_resolution_keeps_all_si_reads_in_one_tune_session(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -233,11 +279,20 @@ class VtsProfileTest(unittest.TestCase):
             pat_semantics = {"pmt_pids": [256], "services": []}
             full_semantics = {
                 "pmt_pids": [256],
-                "services": [{"original_network_id": 4, "transport_stream_id": 1, "service_id": 100,
-                              "pmt_pid": 256, "pcr_pid": 272,
-                              "streams": [{"pid": 272, "stream_type": 0x1B}, {"pid": 273, "stream_type": 0x0F}]}],
+                "services": [{
+                    "original_network_id": 4,
+                    "transport_stream_id": 1,
+                    "service_id": 100,
+                    "pmt_pid": 256,
+                    "pcr_pid": 272,
+                    "streams": [
+                        {"pid": 272, "stream_type": 0x1B},
+                        {"pid": 273, "stream_type": 0x0F},
+                    ],
+                }],
             }
-            session = MagicMock(); session.__enter__.return_value = session
+            session = MagicMock()
+            session.__enter__.return_value = session
             session.section.side_effect = [(0x0000, b"pat"), (0x0100, b"pmt"), (0x0011, b"sdt")]
             with (
                 patch("vts_profile.device._prepare_agent", return_value=("/data/local/tmp/agent", False)),
@@ -247,21 +302,64 @@ class VtsProfileTest(unittest.TestCase):
             ):
                 updated = resolve_device(path)
             session_type.assert_called_once()
-            self.assertEqual(session.section.call_args_list, [call(0x0000, 0x00), call(0x0100, 0x02), call(0x0011, 0x42)])
+            self.assertEqual(
+                session.section.call_args_list,
+                [call(0x0000, 0x00), call(0x0100, 0x02), call(0x0011, 0x42)],
+            )
             self.assertEqual(updated["service"]["service_id"], 100)
             self.assertEqual(updated["flows"]["record"]["pid"], 272)
             self.assertEqual(updated["flows"]["clear_live"]["video_pid"], 272)
             self.assertEqual(updated["flows"]["clear_live"]["audio_pid"], 273)
+            self.assertEqual(updated["flows"]["clear_live"]["video_stream_type"], 5)
+            self.assertEqual(updated["flows"]["clear_live"]["audio_stream_type"], 16)
             self.assertEqual(updated["flows"]["clear_live"]["pcr_pid"], 272)
             self.assertEqual(updated["flows"]["clear_live"]["section_pid"], 256)
+            self.assertEqual(updated["flows"]["playback"]["video_pid"], 256)
+            self.assertEqual(updated["flows"]["playback"]["audio_pid"], 257)
+            self.assertEqual(updated["flows"]["playback"]["video_stream_type"], 2)
+            self.assertEqual(updated["flows"]["playback"]["audio_stream_type"], 2)
             self.assertEqual(json.loads(path.read_text())["flows"]["record"]["pid"], 272)
+
+    def test_device_resolution_rejects_unsupported_live_codec_mapping(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "profile.json"
+            profile = self.profile(resolved=False)
+            profile["frontend"]["frequency_hz"] = 557142857
+            save_profile(path, profile)
+            pat_semantics = {"pmt_pids": [256], "services": []}
+            full_semantics = {
+                "pmt_pids": [256],
+                "services": [{
+                    "service_id": 100,
+                    "pmt_pid": 256,
+                    "pcr_pid": 272,
+                    "streams": [
+                        {"pid": 272, "stream_type": 0x24},
+                        {"pid": 273, "stream_type": 0x11},
+                    ],
+                }],
+            }
+            session = MagicMock()
+            session.__enter__.return_value = session
+            session.section.side_effect = [(0x0000, b"pat"), (0x0100, b"pmt"), (0x0011, b"sdt")]
+            with (
+                patch("vts_profile.device._prepare_agent", return_value=("/data/local/tmp/agent", False)),
+                patch("vts_profile.device._AgentSession", return_value=session),
+                patch("vts_profile.device._si_query", side_effect=[pat_semantics, full_semantics]),
+                patch("vts_profile.device._cleanup_agent"),
+            ):
+                with self.assertRaisesRegex(ProfileError, "no candidate resolved successfully"):
+                    resolve_device(path)
 
     def test_device_resolution_failure_does_not_modify_profile(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "profile.json"
-            original = self.profile(resolved=False); original["frontend"]["frequency_hz"] = 557142857
+            original = self.profile(resolved=False)
+            original["frontend"]["frequency_hz"] = 557142857
             save_profile(path, original)
-            session = MagicMock(); session.__enter__.return_value = session; session.section.side_effect = ProfileError("no lock")
+            session = MagicMock()
+            session.__enter__.return_value = session
+            session.section.side_effect = ProfileError("no lock")
             with (
                 patch("vts_profile.device._prepare_agent", return_value=("/data/local/tmp/agent", False)),
                 patch("vts_profile.device._AgentSession", return_value=session),
@@ -283,16 +381,24 @@ class VtsProfileTest(unittest.TestCase):
         test_product = (tuner_hal2 / "config/vts_test_agent_integration.mk").read_text()
         self.assertIn("DemuxTsFilterType::SECTION", agent)
         self.assertIn('.get("op")', agent)
-        self.assertNotIn("parse_pat", agent); self.assertNotIn("parse_pmt", agent); self.assertNotIn("SectionAssembler", agent)
-        self.assertIn("class _AgentSession", device); self.assertNotIn("_run_agent_payload", device)
-        self.assertIn("with _AgentSession(", device); self.assertIn("session.section(0x0011, 0x42)", device)
-        self.assertNotIn("include!", host); self.assertIn("maleicacid_arib_si_engine_core", host)
-        self.assertIn("ServiceDiscoveryCollector", host); self.assertIn("pmt_pids_for_section_filters", host)
+        self.assertNotIn("parse_pat", agent)
+        self.assertNotIn("parse_pmt", agent)
+        self.assertNotIn("SectionAssembler", agent)
+        self.assertIn("class _AgentSession", device)
+        self.assertNotIn("_run_agent_payload", device)
+        self.assertIn("with _AgentSession(", device)
+        self.assertIn("session.section(0x0011, 0x42)", device)
+        self.assertNotIn("include!", host)
+        self.assertIn("maleicacid_arib_si_engine_core", host)
+        self.assertIn("ServiceDiscoveryCollector", host)
+        self.assertIn("pmt_pids_for_section_filters", host)
         self.assertEqual(service_wrapper.strip(), "pub use maleicacid_arib_si_engine_core::service_discovery::*;")
         self.assertIn('name: "libmaleicacid_arib_si_engine_core"', arib_bp)
         self.assertGreaterEqual(arib_bp.count('"libmaleicacid_arib_si_engine_core"'), 3)
-        self.assertNotIn("maleicacid_tuner_hal2_vts_agent", product); self.assertIn("maleicacid_tuner_hal2_vts_agent", test_product)
-        self.assertTrue((tuner_hal2 / "tools/pyproject.toml").is_file()); self.assertTrue((tuner_hal2 / "tools/uv.lock").is_file())
+        self.assertNotIn("maleicacid_tuner_hal2_vts_agent", product)
+        self.assertIn("maleicacid_tuner_hal2_vts_agent", test_product)
+        self.assertTrue((tuner_hal2 / "tools/pyproject.toml").is_file())
+        self.assertTrue((tuner_hal2 / "tools/uv.lock").is_file())
 
 
 if __name__ == "__main__":
