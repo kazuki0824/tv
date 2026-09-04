@@ -9,6 +9,7 @@ from .integration import write_product_artifacts
 from .model import (
     FRONTEND_ID,
     ProfileError,
+    RECORD_FILTER_FMQ_PROBE_VARIANT,
     SCHEMA_VERSION,
     SUPPORTED_VTS_CONTRACT,
     load_json,
@@ -29,6 +30,11 @@ from .schema import selected_xsd, validate_xml
 DEFAULT_PROFILE = Path("tuner_hal2/config/vts_environment_profile.json")
 DEFAULT_RECORD_FILTER_BYTES = 16 * 1024 * 1024
 DEFAULT_RECORD_DVR_BYTES = 4 * 1024 * 1024
+DEFAULT_AV_FILTER_BYTES = 16 * 1024 * 1024
+DEFAULT_PCR_FILTER_BYTES = 16 * 1024 * 1024
+DEFAULT_SECTION_FILTER_BYTES = 16 * 1024 * 1024
+DEFAULT_PLAYBACK_DVR_BYTES = 4 * 1024 * 1024
+DEFAULT_PLAYBACK_INPUT_PATH = "/data/local/tmp/segment000000.ts"
 
 
 def _value(args: argparse.Namespace, name: str, label: str, *, optional: bool = False) -> str:
@@ -55,6 +61,9 @@ def _new_profile(args: argparse.Namespace) -> dict:
     record_pid = _value(args, "record_pid", "record PID (optional)", optional=True) if record_enabled else ""
     scan_enabled = _value(args, "scan", "scan flow (yes/no)").lower() in {"y", "yes", "true", "1"}
     service_id = _value(args, "service_id", "service ID (optional)", optional=True)
+    variant = args.variant or ""
+    full_coverage = variant != RECORD_FILTER_FMQ_PROBE_VARIANT
+
     queues: dict[str, int] = {}
     if record_enabled:
         queues["record_filter_bytes"] = positive_int(
@@ -65,15 +74,43 @@ def _new_profile(args: argparse.Namespace) -> dict:
             args.record_dvr_bytes if args.record_dvr_bytes is not None else DEFAULT_RECORD_DVR_BYTES,
             "record_dvr_bytes",
         )
+    if full_coverage:
+        queues.update(
+            {
+                "audio_filter_bytes": DEFAULT_AV_FILTER_BYTES,
+                "video_filter_bytes": DEFAULT_AV_FILTER_BYTES,
+                "pcr_filter_bytes": DEFAULT_PCR_FILTER_BYTES,
+                "section_filter_bytes": DEFAULT_SECTION_FILTER_BYTES,
+                "playback_dvr_bytes": positive_int(args.playback_dvr_bytes, "playback_dvr_bytes"),
+            }
+        )
+
     profile: dict = {
         "schema_version": SCHEMA_VERSION,
         "target": {"hal": "tuner_hal2", "product": product, "backend": backend},
-        "vts": {"contract": SUPPORTED_VTS_CONTRACT, "source_ref": source_ref, "variant": args.variant or ""},
+        "vts": {"contract": SUPPORTED_VTS_CONTRACT, "source_ref": source_ref, "variant": variant},
         "frontend": {"type": fe_type, "is_software_frontend": False, "frequency_hz": int(frequency) if frequency else None},
         "flows": {
             "scan": scan_enabled,
             "record": {"enabled": True, "pid": int(record_pid) if record_pid else None} if record_enabled else {"enabled": False},
-            "clear_live": {"enabled": False},
+            "clear_live": (
+                {
+                    "enabled": True,
+                    "audio_pid": None,
+                    "video_pid": None,
+                    "audio_stream_type": None,
+                    "video_stream_type": None,
+                    "pcr_pid": None,
+                    "section_pid": None,
+                }
+                if full_coverage
+                else {"enabled": False}
+            ),
+            "playback": (
+                {"enabled": True, "input_file_path": args.playback_input_path}
+                if full_coverage
+                else {"enabled": False}
+            ),
         },
         "queues": queues,
     }
@@ -201,6 +238,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_RECORD_DVR_BYTES,
         help=f"RECORD DVR buffer bytes (default: {DEFAULT_RECORD_DVR_BYTES})",
+    )
+    init.add_argument(
+        "--playback-dvr-bytes",
+        type=int,
+        default=DEFAULT_PLAYBACK_DVR_BYTES,
+        help=f"PLAYBACK DVR buffer bytes (default: {DEFAULT_PLAYBACK_DVR_BYTES})",
+    )
+    init.add_argument(
+        "--playback-input-path",
+        default=DEFAULT_PLAYBACK_INPUT_PATH,
+        help=f"device-side TS input file for DVR playback (default: {DEFAULT_PLAYBACK_INPUT_PATH})",
     )
     init.add_argument("--variant", default="")
     init.set_defaults(func=cmd_init)
