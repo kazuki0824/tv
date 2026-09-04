@@ -41,6 +41,9 @@ DEFAULT_PLAYBACK_AUDIO_PID = 257
 DEFAULT_PLAYBACK_SECTION_PID = 257
 DEFAULT_PLAYBACK_VIDEO_STREAM_TYPE = 2
 DEFAULT_PLAYBACK_AUDIO_STREAM_TYPE = 2
+DEFAULT_ISDBS_LNB_VOLTAGE = "NONE"
+DEFAULT_ISDBS_LNB_TONE = "NONE"
+DEFAULT_ISDBS_LNB_POSITION = "UNDEFINED"
 
 
 def _value(args: argparse.Namespace, name: str, label: str, *, optional: bool = False) -> str:
@@ -69,6 +72,8 @@ def _new_profile(args: argparse.Namespace) -> dict:
     service_id = _value(args, "service_id", "service ID (optional)", optional=True)
     variant = getattr(args, "variant", "") or ""
     full_coverage = variant != RECORD_FILTER_FMQ_PROBE_VARIANT
+    if not full_coverage:
+        scan_enabled = False
     playback_dvr_bytes = getattr(args, "playback_dvr_bytes", DEFAULT_PLAYBACK_DVR_BYTES)
     playback_input_path = getattr(args, "playback_input_path", DEFAULT_PLAYBACK_INPUT_PATH)
     playback_audio_pid = getattr(args, "playback_audio_pid", DEFAULT_PLAYBACK_AUDIO_PID)
@@ -139,6 +144,12 @@ def _new_profile(args: argparse.Namespace) -> dict:
         },
         "queues": queues,
     }
+    if fe_type == "ISDBS" and full_coverage:
+        profile["lnb"] = {
+            "voltage": DEFAULT_ISDBS_LNB_VOLTAGE,
+            "tone": DEFAULT_ISDBS_LNB_TONE,
+            "position": DEFAULT_ISDBS_LNB_POSITION,
+        }
     if region:
         profile["region"] = {"query": region, "candidates": []}
     if service_id:
