@@ -26,7 +26,7 @@ _CLEAR_LIVE = {
     "enabled", "audio_pid", "video_pid", "audio_stream_type", "video_stream_type",
     "pcr_pid", "section_pid",
 }
-_PLAYBACK = {"enabled"}
+_PLAYBACK = {"enabled", "input_file_path"}
 _QUEUES = {
     "record_filter_bytes", "record_dvr_bytes", "audio_filter_bytes", "video_filter_bytes",
     "pcr_filter_bytes", "section_filter_bytes", "playback_dvr_bytes",
@@ -210,6 +210,12 @@ def validate_profile(profile: dict[str, Any], *, require_resolved: bool = False)
     reject_unknown(playback, _PLAYBACK, "flows.playback")
     if not isinstance(playback.get("enabled"), bool):
         raise ProfileError("flows.playback.enabled must be boolean")
+    if playback["enabled"]:
+        path = playback.get("input_file_path")
+        if not isinstance(path, str) or not path.strip() or not path.startswith("/"):
+            raise ProfileError("flows.playback.input_file_path must be an absolute device path")
+    elif "input_file_path" in playback:
+        raise ProfileError("disabled flows.playback must not keep an input_file_path")
 
     if variant == RECORD_FILTER_FMQ_PROBE_VARIANT:
         if not record["enabled"]:
