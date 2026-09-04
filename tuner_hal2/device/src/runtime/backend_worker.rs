@@ -25,8 +25,8 @@ use crate::px4;
 use crate::px4::abi::{
     PtxFreq, PtxTmccTsidList, ERRNO_EAGAIN, ERRNO_EINVAL, ERRNO_ENOSYS, ERRNO_ENOTTY,
     PTXT_SET_LNB_VOLTAGE, PTX_DISABLE_LNB_POWER, PTX_ENABLE_LNB_POWER, PTX_GET_LOCK_STATUS,
-    PTX_GET_TMCC_PARTIAL_RECEPTION, PTX_GET_TMCC_TSID_LIST, PTX_SET_CHANNEL,
-    PTX_SET_SYSTEM_MODE, PTX_START_STREAMING, PTX_STOP_STREAMING,
+    PTX_GET_TMCC_PARTIAL_RECEPTION, PTX_GET_TMCC_TSID_LIST, PTX_SET_CHANNEL, PTX_SET_SYSTEM_MODE,
+    PTX_START_STREAMING, PTX_STOP_STREAMING,
 };
 use crate::px4::{classify_tmcc_tsid_read, decode_tmcc_tsid_list, Px4TmccTsidListObservation};
 use crate::runtime::{FrontendSignalState, FrontendWorkerContext};
@@ -129,14 +129,16 @@ impl FrontendBackendSession {
             })?;
         let mut txn = BackendTuneTxn::new(plan.frontend_id, plan.generation, plan.request.clone());
         match txn.apply(&mut executor) {
-            BackendTuneOutcome::Committed { .. } => executor
-                .into_session()
-                .map_err(|error| FrontendBackendSubmitFailure {
-                    generation: plan.generation,
-                    error,
-                    rollback_succeeded: true,
-                    step: None,
-                }),
+            BackendTuneOutcome::Committed { .. } => {
+                executor
+                    .into_session()
+                    .map_err(|error| FrontendBackendSubmitFailure {
+                        generation: plan.generation,
+                        error,
+                        rollback_succeeded: true,
+                        step: None,
+                    })
+            }
             BackendTuneOutcome::Failed {
                 step,
                 error,
@@ -942,6 +944,7 @@ impl FrontendBackendTuneExecutor {
                     "PTX_SET_SYSTEM_MODE",
                 )
             }
+            // DVBはdelivery-systemとchannel propertyをFE_SET_PROPERTY(DTV_TUNE)の1回のpacketとして適用する。
             FrontendBackendSessionKind::Dvb { .. } => Ok(()),
         }
     }
@@ -992,6 +995,7 @@ impl FrontendBackendTuneExecutor {
                 PTX_START_STREAMING,
                 "PTX_START_STREAMING",
             ),
+            // DVBはFE_SET_PROPERTY(DTV_TUNE)後に配送を開始するため、ここに別のuserspace start ioctlは置かない。
             FrontendBackendSessionKind::Dvb { .. } => Ok(()),
         }
     }
@@ -1142,6 +1146,7 @@ fn ioctl_ptr<T>(
     arg: &mut T,
     op: &'static str,
 ) -> Result<(), HalError> {
+    // 安全性: `fd` はFrontendBackendSession生成が所有し、`arg` は選択backend ABI用のC互換ioctl payloadを指す。
     let rc = unsafe { ioctl(fd, request, arg) };
     if rc < 0 {
         return Err(HalError::IoctlFailed {
@@ -1221,6 +1226,7 @@ fn ioctl_noarg(
     request: u64,
     op: &'static str,
 ) -> Result<(), HalError> {
+    // 安全性: 選択backend ABIに対する引数なしioctlである。
     let rc = unsafe { ioctl(fd, request) };
     if rc < 0 {
         return Err(HalError::IoctlFailed {
@@ -1543,8 +1549,10 @@ mod tests {
     #[test]
     fn px4_lnb_voltage_rejects_11v_before_ioctl() {
         let mut ops = FakePx4LnbOps::default();
+
         let error =
             apply_px4_lnb_voltage_with_ops(&mut ops, FrontendLnbVoltage::Voltage11V).unwrap_err();
+
         assert!(matches!(error, HalError::InvalidArgument { .. }));
         assert!(ops.legacy_calls.is_empty());
     }
