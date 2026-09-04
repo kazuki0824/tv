@@ -56,6 +56,12 @@ px4固有のTMCC TSID readbackは「機器適合」責務に閉じる。ABI mirr
 
 device-adaptation層は `FrontendRuntime`、AIDL object、callback artifactを直接変更しない。取得結果はtyped observationとしてservice_runtimeへ返すだけとし、persistent frontend generation/stateへ接続する場合は既存frontend ownerのtyped mutation pathを使う。driver readbackのために第二のdevice-open owner、固定BS TSID表、VTS/profile専用ioctl bypassを追加しない。
 
+### TMCC TSID observation の frontend owner 接続
+
+productionのpx4 ISDB-S TMCC observationは `service_runtime/src/frontend_worker_txn.rs` のfrontend workerだけがdevice-adaptation entryを呼び、persistent valueのownerは既存 `device/src/runtime/frontend_runtime.rs::FrontendRuntime` とする。workerは取得結果を直接mutationせず、既存の有限正規入口 `service_runtime/src/frontend_ops.rs::FrontendTuneScanTxn::accept_operation_event()` へtyped eventとして渡す。同entryがcurrent operation generationを再検証した後、`service_runtime/src/boot/frontend_txn.rs::FrontendTxn::record_frontend_stream_id_list()` から `FrontendRuntime::record_stream_id_list()` へ接続する。worker側に第二のlist cache、generation、retry registryを置かない。
+
+AIDL `STREAM_ID_LIST` queryは `ObjectMethodUseCase` のread-only query経路から `FrontendRuntime` snapshotを読むだけとし、query中にdriver I/O、worker起動、state mutationを行わない。scan `INPUT_STREAM_IDS` は同じcommitted valueから `FrontendScanNotification::InputStreamIds` を作り、既存 `FrontendTuneScanTxn::accept_operation_event` / callback delivery pathによるgeneration fenceを迂回しない。device pending (`EAGAIN`) はpersistent failure stateを新設せず未commitのまま扱い、公開semanticsは `../tuner_hal/DESIGN_JA.md` を正とする。
+
 ## 公開メソッドの接続規則
 
 静的inventory／capability参照メソッドはservice_runtimeのcapability/query ownerからAIDL応答変換へ接続し、動的な`IFrontend.getStatus()`／`getFrontendStatusReadiness()`はfrontend status query ownerからAIDL応答変換へ接続する。`CapabilitySnapshot`と`FrontendStatusSnapshot`の値、更新・無効化条件、同期/非同期read条件、公開statusは`../tuner_hal/DESIGN_JA.md`の該当契約を正とし、本書では再定義しない。

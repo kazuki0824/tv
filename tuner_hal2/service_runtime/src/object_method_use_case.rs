@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use crate::registry::LnbRegistryProfile;
 use maleicacid_tuner_hal2_binder_adapter::{AidlMethodAdapter, AidlMethodCall};
 use maleicacid_tuner_hal2_common::{
-    FrontendBackendKind, HalError, HalInternalKind, HalInvalidArgumentKind, HalInvalidStateKind,
+    FrontendBackendKind, FrontendSystem, HalError, HalInternalKind, HalInvalidArgumentKind, HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_device::{FrontendRuntimeState, FrontendSignalState};
 use maleicacid_tuner_hal2_domain_request::{
@@ -138,6 +138,7 @@ pub enum ObjectFrontendStatusReadinessValue {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ObjectFrontendStatusSnapshot {
     pub backend: FrontendBackendKind,
+    pub system: FrontendSystem,
     pub lnb_profile: Option<LnbRegistryProfile>,
     pub runtime_state: FrontendRuntimeState,
     pub signal_state: FrontendSignalState,
@@ -152,7 +153,7 @@ pub fn lnb_profile_supports_voltage_status(profile: Option<LnbRegistryProfile>) 
 }
 
 fn stream_id_list_supported(snapshot: ObjectFrontendStatusSnapshot) -> bool {
-    snapshot.backend == FrontendBackendKind::Px4CharDevice && snapshot.lnb_profile.is_some()
+    snapshot.backend == FrontendBackendKind::Px4CharDevice && snapshot.system == FrontendSystem::IsdbS
 }
 
 fn object_frontend_status_value(
@@ -203,9 +204,12 @@ fn object_frontend_status_value(
         ObjectFrontendStatusType::LnbVoltage => Err(HalError::Unsupported(
             "frontend LNB voltage status is unsupported",
         )),
-        ObjectFrontendStatusType::StreamIdList if stream_id_list_supported(snapshot) => Ok(
-            ObjectFrontendStatusValue::StreamIdList(stream_id_list.unwrap_or_default().to_vec()),
-        ),
+        ObjectFrontendStatusType::StreamIdList if stream_id_list_supported(snapshot) => {
+            let stream_ids = stream_id_list.ok_or(HalError::Unsupported(
+                "frontend stream-id list is not available for the current generation",
+            ))?;
+            Ok(ObjectFrontendStatusValue::StreamIdList(stream_ids.to_vec()))
+        }
         ObjectFrontendStatusType::StreamIdList => Err(HalError::Unsupported(
             "frontend stream-id list status is unsupported",
         )),
@@ -893,6 +897,7 @@ mod tests {
     ) -> ObjectFrontendStatusSnapshot {
         ObjectFrontendStatusSnapshot {
             backend: FrontendBackendKind::LinuxDvb,
+            system: FrontendSystem::IsdbT,
             lnb_profile,
             runtime_state,
             signal_state,
@@ -930,6 +935,7 @@ mod tests {
     fn stream_id_readiness_is_stable_only_after_px4_satellite_tmcc_commit() {
         let px4_satellite = ObjectFrontendStatusSnapshot {
             backend: FrontendBackendKind::Px4CharDevice,
+            system: FrontendSystem::IsdbS,
             lnb_profile: Some(LnbRegistryProfile::Px4Device15VOnly),
             runtime_state: FrontendRuntimeState::Tuning { generation: 7 },
             signal_state: FrontendSignalState::Locked,
@@ -943,6 +949,14 @@ mod tests {
             ),
             ObjectFrontendStatusReadinessValue::Unstable
         );
+        assert!(matches!(
+            object_frontend_status_value(
+                px4_satellite,
+                ObjectFrontendStatusType::StreamIdList,
+                None,
+            ),
+            Err(HalError::Unsupported(_))
+        ));
         assert_eq!(
             object_frontend_readiness_value(
                 px4_satellite,

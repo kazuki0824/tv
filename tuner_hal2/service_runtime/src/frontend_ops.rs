@@ -28,6 +28,9 @@ pub enum FrontendOperationEvent {
         notifier: FrontendScanNotifier,
         notification: FrontendScanNotification,
     },
+    StreamIdList {
+        stream_ids: Vec<i32>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -267,6 +270,26 @@ impl FrontendTuneScanTxn {
         operation_generation: u64,
         event: FrontendOperationEvent,
     ) -> Result<FrontendOperationEventAcceptance, HalError> {
+        if let FrontendOperationEvent::StreamIdList { stream_ids } = event {
+            let mut guard = runtime.lock().map_err(|_| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "service runtime lock poisoned while accepting TMCC stream IDs",
+                )
+            })?;
+            if guard.query().frontend_runtime_snapshot(frontend_id)?.generation
+                != operation_generation
+            {
+                return Ok(FrontendOperationEventAcceptance::DiscardedStale);
+            }
+            guard.frontend_txn().record_frontend_stream_id_list(
+                frontend_id,
+                operation_generation,
+                stream_ids,
+            )?;
+            return Ok(FrontendOperationEventAcceptance::Accepted);
+        }
+
         let is_current = runtime
             .lock()
             .map_err(|_| {
@@ -291,14 +314,16 @@ impl FrontendTuneScanTxn {
                 notifier,
                 notification,
             } => notifier(frontend_id, operation_generation, notification),
+            FrontendOperationEvent::StreamIdList { .. } => {
+                return Err(HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "TMCC stream-ID event escaped its canonical state-commit path",
+                ));
+            }
         };
         Ok(if delivery.is_ok() {
             FrontendOperationEventAcceptance::Accepted
         } else {
-            // The AIDL notifier already commits the classified post-commit callback
-            // failure through WorkerFailureClassifier -> PostCommitCallbackFailureTxn.
-            // Preserve the committed tune/scan operation and expose that delivery
-            // outcome explicitly instead of silently discarding it.
             FrontendOperationEventAcceptance::AcceptedCallbackFailure
         })
     }

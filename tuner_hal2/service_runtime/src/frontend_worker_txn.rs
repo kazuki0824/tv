@@ -2319,57 +2319,54 @@ fn frontend_uses_tmcc_stream_id_list(
     )
 }
 
-fn wait_for_and_record_frontend_stream_id_list(
+fn observe_and_record_frontend_stream_id_list(
     runtime: &SharedRuntime,
     ctx: &FrontendWorkerContext,
     session: &FrontendBackendSession,
-    backend: FrontendBackendKind,
     frontend_id: i32,
     generation: u64,
 ) -> Result<Option<Vec<i32>>, HalError> {
-    if !frontend_uses_tmcc_stream_id_list(runtime, frontend_id)? {
+    if !frontend_uses_tmcc_stream_id_list(runtime, frontend_id)? || ctx.cancel_requested() {
         return Ok(None);
     }
-    let started = Instant::now();
-    let deadline = frontend_terminal_deadline(backend);
-    loop {
-        if ctx.cancel_requested() {
+    {
+        let guard = lock_runtime(
+            runtime,
+            "service runtime lock poisoned while checking committed TMCC stream IDs",
+        )?;
+        if guard
+            .query()
+            .frontend_runtime_snapshot(frontend_id)?
+            .stream_id_list
+            .is_some()
+        {
             return Ok(None);
         }
-        match session.observe_tmcc_tsid_list()? {
-            FrontendTmccTsidListObservation::Pending => {}
-            FrontendTmccTsidListObservation::Available(stream_ids) => {
-                let stream_ids = stream_ids.into_iter().map(i32::from).collect::<Vec<_>>();
-                if ctx.cancel_requested() {
-                    return Ok(None);
-                }
-                let mut guard = lock_runtime(
-                    runtime,
-                    "service runtime lock poisoned while recording TMCC stream IDs",
-                )?;
-                if ctx.cancel_requested() {
-                    return Ok(None);
-                }
-                guard.frontend_txn().record_frontend_stream_id_list(
-                    frontend_id,
-                    generation,
-                    stream_ids.clone(),
-                )?;
-                return Ok(Some(stream_ids));
-            }
+    }
+    let FrontendTmccTsidListObservation::Available(stream_ids) = session.observe_tmcc_tsid_list()?
+    else {
+        return Ok(None);
+    };
+    if ctx.cancel_requested() {
+        return Ok(None);
+    }
+    let stream_ids = stream_ids.into_iter().map(i32::from).collect::<Vec<_>>();
+    match FrontendTuneScanTxn::accept_operation_event(
+        runtime,
+        frontend_id,
+        generation,
+        FrontendOperationEvent::StreamIdList {
+            stream_ids: stream_ids.clone(),
+        },
+    )? {
+        crate::frontend_ops::FrontendOperationEventAcceptance::Accepted => Ok(Some(stream_ids)),
+        crate::frontend_ops::FrontendOperationEventAcceptance::DiscardedStale => Ok(None),
+        crate::frontend_ops::FrontendOperationEventAcceptance::AcceptedCallbackFailure => {
+            Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "state-only TMCC stream-ID event reported callback failure",
+            ))
         }
-        if started.elapsed() >= deadline {
-            return Err(HalError::Io {
-                backend: "px4",
-                operation: "PTX_GET_TMCC_TSID_LIST",
-                path: None,
-                errno: Some(FRONTEND_BACKEND_SUBMIT_TIMEOUT_ERRNO),
-                detail: HalErrorDetail::new(
-                    "TMCC stream-id list did not become available before frontend deadline",
-                ),
-            });
-        }
-        thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -2550,11 +2547,10 @@ fn run_frontend_backend_tune_session_worker(
             generation,
         )? {
             FrontendLockWaitOutcome::Locked => {
-                let _ = wait_for_and_record_frontend_stream_id_list(
+                let _ = observe_and_record_frontend_stream_id_list(
                     &runtime,
                     ctx,
                     &session,
-                    backend,
                     frontend_id,
                     generation,
                 )?;
@@ -2602,16 +2598,17 @@ fn run_frontend_backend_tune_session_worker(
             if ctx.cancel_requested() {
                 break;
             }
+            if signal_state == FrontendSignalState::Locked {
+                let _ = observe_and_record_frontend_stream_id_list(
+                    &runtime,
+                    ctx,
+                    &session,
+                    frontend_id,
+                    generation,
+                )?;
+            }
             match frontend_lock_transition(lock_announced, signal_state, qualification) {
                 FrontendLockTransition::Locked => {
-                    let _ = wait_for_and_record_frontend_stream_id_list(
-                        &runtime,
-                        ctx,
-                        &session,
-                        backend,
-                        frontend_id,
-                        generation,
-                    )?;
                     if !record_frontend_tune_lock_qualification(
                         &runtime,
                         ctx,
@@ -3639,11 +3636,10 @@ fn run_frontend_backend_scan_session_worker(
             )? {
                 FrontendLockWaitOutcome::Locked => {
                     signal_state = FrontendSignalState::Locked;
-                    locked_stream_ids = wait_for_and_record_frontend_stream_id_list(
+                    locked_stream_ids = observe_and_record_frontend_stream_id_list(
                         &runtime,
                         ctx,
                         &session,
-                        backend,
                         ctx.frontend_id(),
                         ctx.generation(),
                     )?;

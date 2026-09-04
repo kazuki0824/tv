@@ -629,6 +629,7 @@ impl<'a> RuntimeQuery<'a> {
             .map(|lnb| lnb.backend_committed_state().voltage);
         Ok(ObjectFrontendStatusSnapshot {
             backend: entry.backend,
+            system: entry.system,
             lnb_profile: entry.lnb_profile,
             runtime_state: snapshot.state,
             signal_state: snapshot.signal_state,

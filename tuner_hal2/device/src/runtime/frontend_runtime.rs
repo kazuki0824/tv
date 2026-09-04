@@ -1315,9 +1315,7 @@ mod tests {
         runtime
             .record_signal_state(2, FrontendSignalState::Locked)
             .unwrap();
-        assert!(runtime
-            .record_stream_id_list(1, vec![0x4030])
-            .is_err());
+        assert!(runtime.record_stream_id_list(1, vec![0x4030]).is_err());
         runtime.record_stream_id_list(2, vec![0x4030]).unwrap();
         assert_eq!(runtime.stream_id_list(), Some(&[0x4030][..]));
         runtime.advance_scan_session_after_candidate(2).ok();
