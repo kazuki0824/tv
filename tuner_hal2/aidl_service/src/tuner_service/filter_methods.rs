@@ -325,8 +325,8 @@ impl IFilter for FilterAidlObject {
         )
     }
 
-    fn setDataSource(&self, filter: &Strong<dyn IFilter>) -> BinderResult<()> {
-        self.set_data_source_nullable_for_aidl(Some(filter))
+    fn setDataSource(&self, filter: Option<&Strong<dyn IFilter>>) -> BinderResult<()> {
+        self.set_data_source_nullable_for_aidl(filter)
     }
 
     fn setDelayHint(&self, hint: &FilterDelayHint) -> BinderResult<()> {
