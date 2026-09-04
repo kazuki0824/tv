@@ -212,7 +212,7 @@ def cmd_compile(args: argparse.Namespace) -> int:
     _validate_closure(profile, args)
     xml = render_xml(profile)
     xsd = selected_xsd(Path(args.hardware_interfaces_root), profile["vts"]["source_ref"])
-    validate_xml(xml, xsd, xmllint=args.xmllint)
+    validate_xml(xml, xsd, xmllint=args.aosp_consumer_validator)
     if args.product_integration_dir:
         if args.output:
             raise ProfileError("--output cannot be combined with --product-integration-dir")
@@ -323,7 +323,11 @@ def build_parser() -> argparse.ArgumentParser:
     compile_cmd.add_argument("profile")
     _add_closure_args(compile_cmd)
     compile_cmd.add_argument("--hardware-interfaces-root", required=True)
-    compile_cmd.add_argument("--xmllint", default="xmllint")
+    compile_cmd.add_argument(
+        "--aosp-consumer-validator",
+        required=True,
+        help="host executable built from the selected Android xsdc-generated Tuner config reader",
+    )
     compile_cmd.add_argument("--output")
     compile_cmd.add_argument("--output-dir", default="out/vts")
     compile_cmd.add_argument("--product-integration-dir")
