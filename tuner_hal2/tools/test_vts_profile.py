@@ -348,7 +348,10 @@ class VtsProfileTest(unittest.TestCase):
                 patch("vts_profile.device._si_query", side_effect=[pat_semantics, full_semantics]),
                 patch("vts_profile.device._cleanup_agent"),
             ):
-                with self.assertRaisesRegex(ProfileError, "no candidate resolved successfully"):
+                with self.assertRaisesRegex(
+                    ProfileError,
+                    "resolved PMT has no supported audio elementary stream",
+                ):
                     resolve_device(path)
 
     def test_device_resolution_failure_does_not_modify_profile(self) -> None:
