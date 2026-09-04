@@ -64,11 +64,11 @@ jobs:
           uv run --locked python - <<'PY'
           from pathlib import Path
           from test_vts_profile import VtsProfileTest
+          from test_vts_profile_isdbs_lnb import isdbs_profile
           from vts_profile.render import render_xml
           from vts_profile.schema import validate_xml
 
-          validate_xml(
-              render_xml(VtsProfileTest().profile()),
-              Path("/tmp/tuner_testing_dynamic_configuration.xsd"),
-          )
+          xsd = Path("/tmp/tuner_testing_dynamic_configuration.xsd")
+          validate_xml(render_xml(VtsProfileTest().profile()), xsd)
+          validate_xml(render_xml(isdbs_profile()), xsd)
           PY
