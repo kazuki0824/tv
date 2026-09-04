@@ -9,8 +9,9 @@ SCHEMA_VERSION = 1
 SUPPORTED_VTS_CONTRACT = "android14-aidl-v1"
 RECORD_FILTER_FMQ_PROBE_VARIANT = "record-filter-fmq"
 FRONTEND_ID = {"ISDBT": "FE_ISDBT_0", "ISDBS": "FE_ISDBS_0"}
+LNB_VOLTAGES = {"NONE", "VOLTAGE_11V", "VOLTAGE_15V"}
 
-_TOP = {"schema_version", "target", "vts", "frontend", "region", "service", "flows", "queues"}
+_TOP = {"schema_version", "target", "vts", "frontend", "region", "service", "flows", "queues", "lnb"}
 _TARGET = {"hal", "product", "backend"}
 _VTS = {"contract", "source_ref", "variant"}
 _FRONTEND = {
@@ -30,6 +31,7 @@ _PLAYBACK = {
     "enabled", "input_file_path", "audio_pid", "video_pid", "section_pid",
     "audio_stream_type", "video_stream_type",
 }
+_LNB = {"voltage", "tone", "position"}
 _QUEUES = {
     "record_filter_bytes", "record_dvr_bytes", "audio_filter_bytes", "video_filter_bytes",
     "pcr_filter_bytes", "section_filter_bytes", "playback_dvr_bytes",
@@ -233,11 +235,14 @@ def validate_profile(profile: dict[str, Any], *, require_resolved: bool = False)
         if leftovers:
             raise ProfileError("disabled flows.playback has unconsumed fields: " + ", ".join(leftovers))
 
+    lnb = profile.get("lnb")
     if variant == RECORD_FILTER_FMQ_PROBE_VARIANT:
         if not record["enabled"]:
             raise ProfileError("record-filter-fmq VTS variant requires flows.record.enabled=true")
-        if live["enabled"] or playback["enabled"]:
-            raise ProfileError("record-filter-fmq VTS variant must remain a RECORD-only descriptor probe")
+        if flows["scan"] or live["enabled"] or playback["enabled"] or lnb is not None:
+            raise ProfileError(
+                "record-filter-fmq VTS variant must remain a RECORD-only descriptor probe"
+            )
     else:
         missing_coverage: list[str] = []
         if not flows["scan"]:
@@ -252,6 +257,19 @@ def validate_profile(profile: dict[str, Any], *, require_resolved: bool = False)
             raise ProfileError(
                 "canonical VTS capability coverage is unreachable: " + ", ".join(missing_coverage)
             )
+        if fe_type == "ISDBS":
+            lnb = require_dict(lnb, "lnb")
+            reject_unknown(lnb, _LNB, "lnb")
+            if lnb.get("voltage") not in LNB_VOLTAGES:
+                raise ProfileError(
+                    "lnb.voltage must be NONE, VOLTAGE_11V, or VOLTAGE_15V for tuner_hal2"
+                )
+            if lnb.get("tone") != "NONE":
+                raise ProfileError("lnb.tone must be NONE for tuner_hal2")
+            if lnb.get("position") != "UNDEFINED":
+                raise ProfileError("lnb.position must be UNDEFINED for tuner_hal2")
+        elif lnb is not None:
+            raise ProfileError("ISDBT canonical profile must not contain an LNB configuration")
 
     queues = require_dict(profile.get("queues"), "queues")
     reject_unknown(queues, _QUEUES, "queues")
