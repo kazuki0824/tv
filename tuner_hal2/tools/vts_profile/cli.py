@@ -61,8 +61,10 @@ def _new_profile(args: argparse.Namespace) -> dict:
     record_pid = _value(args, "record_pid", "record PID (optional)", optional=True) if record_enabled else ""
     scan_enabled = _value(args, "scan", "scan flow (yes/no)").lower() in {"y", "yes", "true", "1"}
     service_id = _value(args, "service_id", "service ID (optional)", optional=True)
-    variant = args.variant or ""
+    variant = getattr(args, "variant", "") or ""
     full_coverage = variant != RECORD_FILTER_FMQ_PROBE_VARIANT
+    playback_dvr_bytes = getattr(args, "playback_dvr_bytes", DEFAULT_PLAYBACK_DVR_BYTES)
+    playback_input_path = getattr(args, "playback_input_path", DEFAULT_PLAYBACK_INPUT_PATH)
 
     queues: dict[str, int] = {}
     if record_enabled:
@@ -81,7 +83,7 @@ def _new_profile(args: argparse.Namespace) -> dict:
                 "video_filter_bytes": DEFAULT_AV_FILTER_BYTES,
                 "pcr_filter_bytes": DEFAULT_PCR_FILTER_BYTES,
                 "section_filter_bytes": DEFAULT_SECTION_FILTER_BYTES,
-                "playback_dvr_bytes": positive_int(args.playback_dvr_bytes, "playback_dvr_bytes"),
+                "playback_dvr_bytes": positive_int(playback_dvr_bytes, "playback_dvr_bytes"),
             }
         )
 
@@ -107,7 +109,7 @@ def _new_profile(args: argparse.Namespace) -> dict:
                 else {"enabled": False}
             ),
             "playback": (
-                {"enabled": True, "input_file_path": args.playback_input_path}
+                {"enabled": True, "input_file_path": playback_input_path}
                 if full_coverage
                 else {"enabled": False}
             ),
