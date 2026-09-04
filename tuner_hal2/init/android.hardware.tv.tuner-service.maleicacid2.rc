@@ -3,3 +3,4 @@ service vendor.maleicacid-tuner2 /vendor/bin/hw/android.hardware.tv.tuner-servic
     user system
     group system media drmrpc
     interface aidl android.hardware.tv.tuner.ITuner/default
+    socket maleicacid_key_provisioning stream 0660 media media

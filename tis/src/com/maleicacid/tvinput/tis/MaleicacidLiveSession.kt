@@ -410,30 +410,29 @@ class MaleicacidLiveSession(
             refreshCurrentProgramRatingState()
         }
         if (!decision.casDecisionReady) return
-        if (caMetadata.isNotEmpty()) {
-            val blockingCasError = casResult.diagnostics.any { it.state == CasController.State.ERROR }
-            if (blockingCasError) {
-                playbackState = PlaybackStartState.Stopped
-                tunerController.stopPlayback()
-                beginCaptionPresentationGeneration(-1L, false)
-                notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN)
-                return
-            }
-            if (serviceCaMetadata.isNotEmpty()) {
-                playbackState = PlaybackStartState.Stopped
-                tunerController.stopPlayback()
-                beginCaptionPresentationGeneration(-1L, false)
-                notifyVideoUnavailable(
-                    mapUnavailableReason(
-                        PlaybackPipeline.PlaybackUnavailable(
-                            PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY,
-                            "r51 CAS placeholder cannot provide real key token",
-                        ),
-                    ),
-                )
-                return
+        if (serviceCaMetadata.isNotEmpty()) {
+            when (casResult.readiness) {
+                CasController.Readiness.READY -> {
+                    Unit
+                }
+
+                CasController.Readiness.ERROR,
+                CasController.Readiness.CLOSED,
+                -> {
+                    stopPlaybackForCasWait()
+                    return
+                }
+
+                CasController.Readiness.WAITING_FOR_KEY,
+                CasController.Readiness.CLEAR,
+                -> {
+                    // 必要な key context がすべて紐付くまで暗号化 AV を開始しない。
+                    stopPlaybackForCasWait()
+                    return
+                }
             }
         }
+
         if (service != null) {
             updateTracks(service)
             maybeStartPlayback(service)
@@ -444,12 +443,23 @@ class MaleicacidLiveSession(
         com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
             .evaluateLive(latestLiveSnapshot, currentService)
 
+    private fun stopPlaybackForCasWait() {
+        playbackState = PlaybackStartState.Stopped
+        SectionFilterPolicy.completeCleanup(
+            { tunerController.stopPlayback() },
+            { beginCaptionPresentationGeneration(-1L, false) },
+            { notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN) },
+        )
+    }
+
     // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
     // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     @Suppress("CyclomaticComplexMethod", "LongMethod", "ReturnCount")
     private fun maybeStartPlayback(service: AribService): Boolean {
-        if (!currentServicePolicy().clearLivePlaybackStaticallyEligible) return false
+        val policy = currentServicePolicy()
+        if (!policy.casDecisionReady) return false
+        if (policy.requiresCas && casController.currentReadiness() != CasController.Readiness.READY) return false
         when (val decision = contentAccessDecision()) {
             is ContentAccessDecision.Block -> {
                 rememberBlockedContent(decision.blocked)
@@ -541,6 +551,7 @@ class MaleicacidLiveSession(
         if (PlaybackPolicy.isAudioOnlyService(service.serviceType) && selection.audio == null) return null
         if (!PlaybackPolicy.isAudioOnlyService(service.serviceType) && video == null) return null
         val audio = selection.audio
+        val casReadiness = casController.currentReadiness()
         return AvPlaybackSignature(
             serviceKey = service.serviceKey,
             pcrPid = selection.pcrPid,
@@ -555,8 +566,8 @@ class MaleicacidLiveSession(
             subtitleLanguageId = selection.subtitleLanguageId,
             superimposePid = selection.superimpose?.elementaryPid,
             superimposeDataComponentId = selection.superimpose?.dataComponentId,
-            clear = true,
-            keyTokenAvailable = false,
+            clear = casReadiness == CasController.Readiness.CLEAR,
+            keyTokenAvailable = casReadiness == CasController.Readiness.READY,
         )
     }
 

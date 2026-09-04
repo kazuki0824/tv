@@ -125,6 +125,7 @@ class TunerKeyToken private constructor(
 ) {
     init {
         require(bytes.size in TOKEN_LENGTH_RANGE) { "Tuner key token は 1..16 byte でなければなりません: ${bytes.size}" }
+        require(!(bytes.size == 1 && bytes[0] == 0.toByte())) { "Tuner key token に VOID [0x00] は使用できません" }
     }
 
     fun toByteArray(): ByteArray = bytes.copyOf()
@@ -142,7 +143,12 @@ class TunerKeyToken private constructor(
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")
-        fun fromOrNull(raw: ByteArray?): TunerKeyToken? = raw?.takeIf { it.size in TOKEN_LENGTH_RANGE }?.let(::TunerKeyToken)
+        fun fromOrNull(raw: ByteArray?): TunerKeyToken? =
+            raw
+                ?.takeIf {
+                    it.size in TOKEN_LENGTH_RANGE &&
+                        !(it.size == 1 && it[0] == 0.toByte())
+                }?.let(::TunerKeyToken)
     }
 }
 

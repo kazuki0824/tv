@@ -183,6 +183,7 @@ class PlaybackPipeline(
     ) {
         MPEG2(0x02, MediaFormat.MIMETYPE_VIDEO_MPEG2),
         AVC(0x1b, MediaFormat.MIMETYPE_VIDEO_AVC),
+        HEVC(0x24, MediaFormat.MIMETYPE_VIDEO_HEVC),
         ;
 
         companion object {
@@ -1600,6 +1601,7 @@ class PlaybackPipeline(
             when (kind) {
                 VideoCodecKind.MPEG2 -> EsHeaderParser.mpeg2VideoFormat(bytes)
                 VideoCodecKind.AVC -> EsHeaderParser.avcVideoFormat(bytes, codecFacts)
+                VideoCodecKind.HEVC -> EsHeaderParser.hevcVideoFormat(bytes)
             }?.also { format ->
                 onVideoFormatDiscovered(
                     generation,
@@ -2115,6 +2117,17 @@ class PlaybackPipeline(
                             2_000L,
                         )
                     }
+
+                    VideoCodecKind.HEVC -> {
+                        PlaybackBudget(
+                            16 * MIB,
+                            768 * KIB,
+                            QueueBudget(64L * MIB, 32, 2_500_000L),
+                            QueueBudget(96L * MIB, 64, 3_500_000L),
+                            5_000L,
+                            2_000L,
+                        )
+                    }
                 }
 
             // 設計で固定したcodec別のメモリ予算・待機時間を、この表で直接照合する。
@@ -2204,6 +2217,107 @@ class PlaybackPipeline(
             }
         }
 
+        fun hevcVideoFormat(bytes: ByteArray): MediaFormat? {
+            val vps = findHevcNal(bytes, 32) ?: return null
+            val sps = findHevcNal(bytes, 33) ?: return null
+            val pps = findHevcNal(bytes, 34) ?: return null
+            val dimensions = parseHevcSpsDimensions(sps) ?: return null
+            return MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_HEVC, dimensions.width, dimensions.height).apply {
+                setByteBuffer("csd-0", ByteBuffer.wrap(vps + sps + pps))
+            }
+        }
+
+        private fun parseHevcSpsDimensions(spsWithStartCode: ByteArray): VideoDimensions? =
+            runCatching {
+                val rbsp = hevcNalRbspPayload(spsWithStartCode)
+                val bits = BitReader(rbsp)
+                bits.readBits(4)
+                val maxSubLayersMinus1 = bits.readBits(3)
+                bits.readBit()
+                skipHevcProfileTierLevel(bits, maxSubLayersMinus1)
+                bits.readUE()
+                val chromaFormatIdc = bits.readUE()
+                val separateColourPlaneFlag = if (chromaFormatIdc == 3) bits.readBit() else 0
+                val width = bits.readUE()
+                val height = bits.readUE()
+                var left = 0
+                var right = 0
+                var top = 0
+                var bottom = 0
+                if (bits.readBit() == 1) {
+                    left = bits.readUE()
+                    right = bits.readUE()
+                    top = bits.readUE()
+                    bottom = bits.readUE()
+                }
+                val subWidthC =
+                    if (separateColourPlaneFlag == 1) {
+                        1
+                    } else if (chromaFormatIdc == 1 || chromaFormatIdc == 2) {
+                        2
+                    } else {
+                        1
+                    }
+                val subHeightC =
+                    if (separateColourPlaneFlag == 1) {
+                        1
+                    } else if (chromaFormatIdc == 1) {
+                        2
+                    } else {
+                        1
+                    }
+                VideoDimensions(
+                    (width - subWidthC * (left + right)).coerceAtLeast(1),
+                    (height - subHeightC * (top + bottom)).coerceAtLeast(1),
+                )
+            }.getOrNull()
+
+        private fun skipHevcProfileTierLevel(
+            bits: BitReader,
+            maxSubLayersMinus1: Int,
+        ) {
+            bits.skipBits(2 + 1 + 5 + 32 + 4 + 44 + 8)
+            val profilePresent = BooleanArray(maxSubLayersMinus1)
+            val levelPresent = BooleanArray(maxSubLayersMinus1)
+            repeat(maxSubLayersMinus1) { index ->
+                profilePresent[index] = bits.readBit() == 1
+                levelPresent[index] = bits.readBit() == 1
+            }
+            if (maxSubLayersMinus1 > 0) repeat(8 - maxSubLayersMinus1) { bits.skipBits(2) }
+            repeat(maxSubLayersMinus1) { index ->
+                if (profilePresent[index]) bits.skipBits(88)
+                if (levelPresent[index]) bits.skipBits(8)
+            }
+        }
+
+        private fun hevcNalRbspPayload(nalWithStartCode: ByteArray): ByteArray {
+            val prefix =
+                when {
+                    nalWithStartCode.size >= 6 && nalWithStartCode[0] == 0.toByte() && nalWithStartCode[1] == 0.toByte() &&
+                        nalWithStartCode[2] == 0.toByte() &&
+                        nalWithStartCode[3] == 1.toByte() -> 4
+
+                    nalWithStartCode.size >= 5 && nalWithStartCode[0] == 0.toByte() && nalWithStartCode[1] == 0.toByte() &&
+                        nalWithStartCode[2] == 1.toByte() -> 3
+
+                    else -> 0
+                }
+            val start = prefix + 2
+            require(start <= nalWithStartCode.size)
+            val out = ArrayList<Byte>(nalWithStartCode.size)
+            var zeros = 0
+            for (index in start until nalWithStartCode.size) {
+                val byte = nalWithStartCode[index]
+                if (zeros >= 2 && byte == 0x03.toByte()) {
+                    zeros = 0
+                    continue
+                }
+                out += byte
+                zeros = if (byte == 0.toByte()) zeros + 1 else 0
+            }
+            return out.toByteArray()
+        }
+
         // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
         // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
         @Suppress("MagicNumber", "ReturnCount")
@@ -2247,6 +2361,10 @@ class PlaybackPipeline(
                             dimensions.sarWidth.toDouble() /
                             (dimensions.height.toDouble() * dimensions.sarHeight.toDouble())
                     }
+                }
+
+                VideoCodecKind.HEVC -> {
+                    null
                 }
             }
         }
@@ -2426,6 +2544,10 @@ class PlaybackPipeline(
 
             fun readBit(): Int = readBits(1)
 
+            fun skipBits(count: Int) {
+                repeat(count) { readBit() }
+            }
+
             // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
             @Suppress("MagicNumber")
             fun readBits(count: Int): Int {
@@ -2598,6 +2720,40 @@ class PlaybackPipeline(
         ): Boolean =
             i + 2 < bytes.size && bytes[i] == 0.toByte() && bytes[i + 1] == 0.toByte() &&
                 (bytes[i + 2] == 1.toByte() || (i + 3 < bytes.size && bytes[i + 2] == 0.toByte() && bytes[i + 3] == 1.toByte()))
+
+        private fun findHevcNal(
+            bytes: ByteArray,
+            nalType: Int,
+        ): ByteArray? {
+            var index = 0
+            while (index < bytes.size - 4) {
+                val prefixLength =
+                    when {
+                        index + 4 < bytes.size && bytes[index] == 0.toByte() && bytes[index + 1] == 0.toByte() &&
+                            bytes[index + 2] == 0.toByte() &&
+                            bytes[index + 3] == 1.toByte() -> {
+                            4
+                        }
+
+                        bytes[index] == 0.toByte() && bytes[index + 1] == 0.toByte() && bytes[index + 2] == 1.toByte() -> {
+                            3
+                        }
+
+                        else -> {
+                            index++
+                            continue
+                        }
+                    }
+                if (index + prefixLength + 1 >= bytes.size) return null
+                val start = index
+                val type = (bytes[index + prefixLength].toInt() ushr 1) and 0x3f
+                index += prefixLength + 2
+                while (index < bytes.size - 3 && !isStartCode(bytes, index)) index++
+                val end = if (index < bytes.size - 3) index else bytes.size
+                if (type == nalType) return bytes.copyOfRange(start, end)
+            }
+            return null
+        }
     }
 
     private object PcmChannelMaskPolicy {
@@ -2659,6 +2815,7 @@ class PlaybackPipeline(
         when (streamType) {
             0x02 -> AvSettings.VIDEO_STREAM_TYPE_MPEG2
             0x1b -> AvSettings.VIDEO_STREAM_TYPE_AVC
+            0x24 -> AvSettings.VIDEO_STREAM_TYPE_HEVC
             else -> AvSettings.VIDEO_STREAM_TYPE_UNDEFINED
         }
 

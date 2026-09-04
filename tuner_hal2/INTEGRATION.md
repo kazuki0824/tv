@@ -78,6 +78,10 @@ vintf_fragments: tuner_hal2/manifest/android.hardware.tv.tuner-service.maleicaci
 
 init rc は `android.hardware.tv.tuner.ITuner/default` を登録する。VINTF fragmentも `ITuner/default` だけを宣言する。
 
+同じinit serviceは `maleicacid_cas_key_bridge` というmode `0660`、owner/group `media`のstream socketを生成し、Tuner HALへcontrol socket fdとして渡す。CAS HALは `/dev/socket/maleicacid_cas_key_bridge` へ接続し、session予約、key epoch publish、revokeだけをversioned bounded protocolで要求する。socket I/O中はTuner runtime lockを保持せず、decoded commandの適用中だけlockを取得する。CAS serviceとのSELinux接続許可は `../cas_hal/sepolicy` と同productで組み込む。
+
+wire requestはbig-endianの20 byte header `MCKR | version=1 | operation | reserved[2] | request_id:u64 | payload_len:u32`を使う。operationはping=1、publish=2、revoke=3、reserve=4である。reserve/revoke payloadは `session_len:u8 | session_id | ca_system_id:i32 | session_generation:u64`、publishは同じsession identityに `key_epoch:u64 | system_key[32] | cbc_initial_value[8] | even_ks[8] | odd_ks[8]`を持つ。responseは16 byteの `MCKS | version | typed_status | reserved[2] | request_id:u64`、最大request frameは160 byte、I/O deadlineは2秒とする。read/write双方のtimeout設定成功をframe read前の必須条件とし、どちらかの設定失敗時はdecode、journal、runtime mutationへ進まない。session IDは1〜16 byteで `[0x00]`を拒否し、予約なしpublish、identity不一致、非単調epochを成功へ丸めない。
+
 ## 5. 旧tuner_halの扱い
 
 旧 `tuner_hal` は参照用ソースである。次をproductへ入れてはならない。

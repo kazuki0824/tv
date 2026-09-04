@@ -1,4 +1,4 @@
-service vendor.maleicacid-cas-stub-default /vendor/bin/hw/maleicacid.tv.cas_hal-stub-service
+service vendor.maleicacid-cas-default /vendor/bin/hw/maleicacid.tv.cas_hal-service
     interface aidl android.hardware.cas.IMediaCasService/default
     class hal
     user media

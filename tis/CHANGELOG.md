@@ -1,3 +1,9 @@
+# r52_rebase_after_pr85_pr91
+
+- #85/#91マージ後のmainへr52 CAS/HEVC差分を統合した。context単位のSession/Descramblerに、current-generation transaction、退役時の配送遮断、全件cleanupと未解放資源の再試行を引き継いだ。
+- 実session IDによるkey readinessとregistration/CA事実gateを両立し、AVC codec facts・共通AAC解析・番組一時解除期限を維持した。
+- ホストKotlin本体/テストをコンパイルし、実SI JNIを用いる31クラス238件が成功。CAS/TunerホストRust unit testも成功。Android/Soong実体build、device atest、VTS、実機確認は未実施。
+
 # r51_tuner_hal2_audit_regressions
 
 - BS事前scanは`onLocked()`で同一scanを一度だけ継続し、`onScanStopped()`まで待機する。状態変更は既存の単一controller executorに限定し、追加の同期ロックを置かない。公開scan契約への接続を設計へ反映した。
@@ -126,6 +132,18 @@
 - TIS-008: listener設定が失敗したTunerをcloseし、cleanup失敗があれば元の例外へ保持する。TIS-036: 保存BLOBをgetBlobの結果のままRustへ渡し、文字列へ補修しない。
 - TIS-048: 既存channelの更新値からCOLUMN_TYPEを除く。TIS-050: short_event本文の未規定な256文字切詰めを除く。TIS-AUD-07/H-14: READMEの規約参照を実在する共通規約へ修正する。
 - CIと同じKotlin 1.9.22・Android 15入力で本番と試験をコンパイルし、実SI JNIを使用するhost JUnit 138件が成功した。既存のコンパイル警告は残る。Android実機のTuner/CAS/Provider統合試験は未実施。
+# r52_review_pid_link_state
+
+- `CasSessionState`でPMT由来のdesired PIDと、成功した`Descrambler.addPid()` / `removePid()`で確認できたlinked PIDを分離し、失敗した差分を同一metadata refreshで再試行できるようにした。
+- `READY`をkey接続済みかつdesired/linked一致に限定し、初回PID部分成功のrollbackも成功した操作だけを実状態へ反映するようにした。既存state ownerと単一executorの内側だけの変更で、別queue、worker、timerは追加していない。
+- add失敗、remove失敗、初回部分成功の3回帰試験を追加した。Kotlin 1.9.22/JDK 17でproduction/test compileとhost-compatible 128試験が成功した。Android/Soong build、instrumentation test、atest、VTS、実card/放送波確認は未実施である。
+
+# r52-cas-design
+
+- CAS正本をB25 `0x0005`のECM/EMMとB1 `0x0001`のECM-onlyへ更新し、B1 EMM filter/`processEmm()`を禁止した。
+- ECM成功後に `MediaCas.Session.getSessionId()` の同一bytesだけをTuner tokenへ渡し、vendor token合成とraw key受領を禁止した。
+- session/descrambler/PIDのgeneration境界、CAS failure reason、非SUCCESS Tuner結果のfail-closed契約を固定した。
+- この設計記録時点ではproduction CAS実装と各試験は未実施だった。後続のCAS→generic Tuner key provisioning実装は`../cas_hal/CHANGELOG.md`の`r52-implementation`と`../tuner_hal2/CHANGELOG.md`の`r52_key_provisioning_implementation`を正とし、Android/Soong build、instrumentation test、VTS、実機確認は引き続きproduct gateとして残る。
 
 # 未リリース
 

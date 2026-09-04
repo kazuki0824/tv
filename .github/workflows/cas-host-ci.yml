@@ -1,0 +1,56 @@
+name: CAS HAL host CI
+
+on:
+  pull_request:
+    paths:
+      - "cas_hal/**"
+      - "tuner_hal2/cas_key_bridge/**"
+      - "tuner_hal2/host_ci/cas_key_bridge/**"
+      - ".github/workflows/cas-host-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "cas_hal/**"
+      - "tuner_hal2/cas_key_bridge/**"
+      - "tuner_hal2/host_ci/cas_key_bridge/**"
+      - ".github/workflows/cas-host-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cas-hal-host-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rustfmt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: cas_hal/host_ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check Rust formatting
+        run: |
+          cargo fmt \
+            -p maleicacid-cas-hal-core \
+            -p maleicacid-cas-hal-transport \
+            -- --check
+
+  host-rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: cas_hal/host_ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Type-check host-compatible crates
+        run: cargo check --workspace --all-targets --locked
+      - name: Run host-compatible unit tests
+        run: cargo test --workspace --locked

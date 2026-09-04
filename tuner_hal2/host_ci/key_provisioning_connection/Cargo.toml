@@ -1,0 +1,10 @@
+[package]
+name = "maleicacid-tuner-hal2-key-provisioning-connection-host-ci"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+path = "../../aidl_service/src/key_provisioning_connection.rs"
+
+[dependencies]
+maleicacid_tuner_hal2_key_provisioning_bridge = { package = "maleicacid-tuner-hal2-key-provisioning-bridge-host-ci", path = "../key_provisioning_bridge" }
