@@ -2,32 +2,57 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
+rust_library {
+    name: "libmaleicacid_cas_hal_core",
+    vendor: true,
+    crate_name: "maleicacid_cas_hal_core",
+    crate_root: "src/lib.rs",
+    srcs: ["src/lib.rs"],
+    edition: "2021",
+}
+
 rust_binary {
-    name: "maleicacid.tv.cas_hal-stub-service",
+    name: "maleicacid.tv.cas_hal-service",
     relative_install_path: "hw",
     vendor: true,
+    crate_name: "maleicacid_cas_hal_service",
     crate_root: "src/main.rs",
-    srcs: ["src/*.rs"],
+    srcs: [
+        "src/main.rs",
+        "src/transport.rs",
+    ],
     edition: "2021",
-    init_rc: ["cas-hal-stub-service.rc"],
-    vintf_fragments: ["cas-hal-stub-service.xml"],
+    init_rc: ["cas-hal-service.rc"],
+    vintf_fragments: ["cas-hal-service.xml"],
     rustlibs: [
         "android.hardware.cas-V1-rust",
         "libbinder_rs",
+        "libmaleicacid_cas_hal_core",
+        "libmaleicacid_tuner_hal2_key_provisioning_bridge",
     ],
 }
 
+rust_test {
+    name: "maleicacid_cas_hal_core_test",
+    vendor: true,
+    crate_name: "maleicacid_cas_hal_core_test",
+    crate_root: "src/lib.rs",
+    srcs: ["src/lib.rs"],
+    edition: "2021",
+    auto_gen_config: true,
+    test_suites: ["general-tests"],
+}
 
 rust_test {
-    name: "maleicacid_cas_hal_placeholder_test",
+    name: "maleicacid_cas_hal_transport_test",
     vendor: true,
-    crate_name: "maleicacid_cas_hal_placeholder_test",
-    crate_root: "src/main.rs",
-    srcs: ["src/main.rs"],
+    crate_name: "maleicacid_cas_hal_transport_test",
+    crate_root: "src/transport.rs",
+    srcs: ["src/transport.rs"],
     edition: "2021",
     rustlibs: [
-        "android.hardware.cas-V1-rust",
-        "libbinder_rs",
+        "libmaleicacid_cas_hal_core",
+        "libmaleicacid_tuner_hal2_key_provisioning_bridge",
     ],
     auto_gen_config: true,
     test_suites: ["general-tests"],

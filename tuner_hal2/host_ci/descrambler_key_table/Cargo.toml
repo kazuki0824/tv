@@ -1,0 +1,10 @@
+[package]
+name = "maleicacid-tuner-hal2-descrambler-key-table-host-ci"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+path = "../../service_runtime/src/descrambler_key_table.rs"
+
+[dependencies]
+maleicacid_tuner_hal2_descrambler = { package = "maleicacid-tuner-hal2-descrambler-host-ci", path = "../descrambler" }

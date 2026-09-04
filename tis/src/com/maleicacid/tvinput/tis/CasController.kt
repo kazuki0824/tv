@@ -16,7 +16,7 @@ import java.util.concurrent.Executors
  * PMT/CAT の CA情報 は arib_si_engine_rs の snapshot から受ける。
  * ECM/EMM は完全な section として扱い、生 TS packet は扱わない。
  * カード I/O、CW 生成、鍵発行は MediaCas/CAS HAL 側の責務とする。
- * Tuner HAL には 不透明 トークン と ES PID 登録だけを渡す。
+ * Tuner HAL には opaque token と ES PID 登録だけを渡す。
  */
 @Suppress("TooManyFunctions")
 class CasController(
@@ -39,6 +39,8 @@ class CasController(
 
     enum class State { IDLE, ACTIVE, ERROR, CLOSED }
 
+    enum class Readiness { CLEAR, WAITING_FOR_KEY, READY, ERROR, CLOSED }
+
     data class Diagnostic(
         val state: State,
         val errorCode: ErrorCode = ErrorCode.NONE,
@@ -51,6 +53,7 @@ class CasController(
         val diagnostics: List<Diagnostic>,
         val ecmPids: Set<TsPid>,
         val emmPids: Set<TsPid>,
+        val readiness: Readiness = Readiness.CLEAR,
     )
 
     interface MediaCasBridgeFactory {
@@ -78,9 +81,16 @@ class CasController(
     interface TunerDescramblerBridge : AutoCloseable {
         fun setKeyToken(keyToken: TunerKeyToken): Result<Unit>
 
+        fun clearKeyToken(): Result<Unit> = Result.success(Unit)
+
         fun addPid(elementaryPid: TsPid): Result<Unit>
 
         fun removePid(elementaryPid: TsPid): Result<Unit>
+
+        fun newSibling(): Result<TunerDescramblerBridge> =
+            Result.failure(
+                UnsupportedOperationException("independent descrambler creation is unsupported"),
+            )
 
         override fun close()
     }
@@ -106,21 +116,30 @@ class CasController(
         val privateData: ByteArray,
     )
 
-    private data class CasSessionState(
+    /** 同じ鍵を使用する複数PIDを、一つのSessionとDescramblerへ結び付ける。 */
+    private data class DescrambleContextKey(
+        val serviceKeyText: String,
         val caSystemId: Int,
-        val cas: MediaCasBridge,
-        var session: MediaCasSessionBridge? = null,
-        val ecmPids: MutableSet<TsPid> = linkedSetOf(),
-        val elementaryPids: MutableSet<TsPid> = linkedSetOf(),
-        var retiring: Boolean = false,
-        var sessionClosed: Boolean = false,
-        var casClosed: Boolean = false,
+        val ecmPid: TsPid,
+        val privateData: List<Byte>,
     )
 
-    private class SessionProvisioningException(
-        val errorCode: ErrorCode,
-        cause: Throwable,
-    ) : IllegalStateException(cause.message, cause)
+    private data class ContextPlan(
+        val key: DescrambleContextKey,
+        val elementaryPids: Set<TsPid>,
+    )
+
+    private data class CasSessionState(
+        val key: DescrambleContextKey,
+        val session: MediaCasSessionBridge,
+        var descrambler: TunerDescramblerBridge? = null,
+        val desiredElementaryPids: MutableSet<TsPid> = linkedSetOf(),
+        val linkedElementaryPids: MutableSet<TsPid> = linkedSetOf(),
+        var keyLinked: Boolean = false,
+        var retiring: Boolean = false,
+        var sessionClosed: Boolean = false,
+        var descramblerClosed: Boolean = false,
+    )
 
     @Volatile private var executorThread: Thread? = null
     private val executor: ExecutorService =
@@ -137,42 +156,27 @@ class CasController(
         return executor.submit<T> { block() }.get()
     }
 
-    private val sessionsBySystemId = LinkedHashMap<Int, CasSessionState>()
-    private val ecmPidToSystems = LinkedHashMap<TsPid, MutableSet<Int>>()
+    private val pluginsBySystemId = LinkedHashMap<Int, MediaCasBridge>()
+    private val sessionsByContext = LinkedHashMap<DescrambleContextKey, CasSessionState>()
+    private val ecmPidToContexts = LinkedHashMap<TsPid, MutableSet<DescrambleContextKey>>()
     private val emmPidToSystems = LinkedHashMap<TsPid, MutableSet<Int>>()
-    private val elementaryPidToSystems = LinkedHashMap<TsPid, MutableSet<Int>>()
-    private var descrambler: TunerDescramblerBridge? = null
-    private var descramblerClosing = false
-
-    // addPid成功済みの物理所有。logical ownerが消えてもremove成功まで保持する。
-    private val descramblerPids = linkedSetOf<TsPid>()
+    private val retiringPlugins = linkedSetOf<Int>()
+    private var resourceLossCleanupPending = false
     private var closed = false
 
     @Volatile private var lastDiagnostic = Diagnostic(State.IDLE)
 
-    /** 所有bridgeを退役させ、解放失敗中はECM/EMMの配送対象から外す。 */
+    /** 解放失敗中の所有を保持し、旧ECM/EMMの配送を遮断する。 */
     fun clearForResourceLoss(): Unit = onExecutor { clearForResourceLossLocked() }
 
     private fun clearForResourceLossLocked() {
-        descramblerClosing = true
+        resourceLossCleanupPending = true
         try {
-            SectionFilterPolicy.completeCleanup(
-                { clearForClearServiceLocked() },
-                { closeDescramblerLocked() },
-            )
+            clearForClearServiceLocked()
+            resourceLossCleanupPending = false
         } finally {
-            ecmPidToSystems.clear()
-            emmPidToSystems.clear()
-            elementaryPidToSystems.clear()
+            invalidateMetadataLocked()
         }
-    }
-
-    private fun closeDescramblerLocked() {
-        descramblerClosing = true
-        descrambler?.close()
-        descrambler = null
-        descramblerPids.clear()
-        descramblerClosing = false
     }
 
     fun clearForClearService(): Unit = onExecutor { clearForClearServiceLocked() }
@@ -181,22 +185,38 @@ class CasController(
     @Suppress("SpreadOperator")
     private fun clearForClearServiceLocked() {
         invalidateMetadataLocked()
-        sessionsBySystemId.values.forEach { it.retiring = true }
+        sessionsByContext.values.forEach { it.retiring = true }
+        retiringPlugins += pluginsBySystemId.keys
+        retryRetiredResourcesLocked()
+        lastDiagnostic = Diagnostic(State.IDLE)
+    }
+
+    private fun retryRetiredResourcesLocked() {
         SectionFilterPolicy.completeCleanup(
             {
                 SectionFilterPolicy.completeCleanup(
-                    *sessionsBySystemId.keys
-                        .map { systemId ->
-                            { closeSystemLocked(systemId) }
-                        }.toTypedArray(),
+                    *sessionsByContext.values
+                        .filter { it.retiring }
+                        .map { state -> { closeContextLocked(state.key) } }
+                        .toTypedArray(),
                 )
             },
-            { if (!descramblerClosing) syncDescramblerPidsLocked(emptySet()) },
+            {
+                SectionFilterPolicy.completeCleanup(
+                    *retiringPlugins
+                        .toList()
+                        .map { systemId -> { closePluginLocked(systemId) } }
+                        .toTypedArray(),
+                )
+            },
         )
-        ecmPidToSystems.clear()
-        emmPidToSystems.clear()
-        elementaryPidToSystems.clear()
-        lastDiagnostic = Diagnostic(State.IDLE)
+    }
+
+    private fun closePluginLocked(systemId: Int) {
+        retiringPlugins += systemId
+        pluginsBySystemId[systemId]?.close()
+        pluginsBySystemId.remove(systemId)
+        retiringPlugins.remove(systemId)
     }
 
     // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
@@ -215,23 +235,18 @@ class CasController(
                     listOf(Diagnostic(State.CLOSED, ErrorCode.CLOSED, message = "CAS 制御は終了済みです")),
                     emptySet(),
                     emptySet(),
+                    Readiness.CLOSED,
                 )
             }
-            // 配送indexはmetadata全体の成功時だけ公開する。物理解放の途中でsurvivorを再公開しない。
+            // metadata全体と解放処理が成功するまで配送表を再公開しない。
             invalidateMetadataLocked()
             if (metadata.isEmpty()) {
                 clearForClearServiceLocked()
-                return@onExecutor UpdateResult(emptyList(), emptySet(), emptySet())
+                return@onExecutor UpdateResult(emptyList(), emptySet(), emptySet(), Readiness.CLEAR)
             }
-            if (descramblerClosing) clearForResourceLossLocked()
-            SectionFilterPolicy.completeCleanup(
-                *sessionsBySystemId.values
-                    .filter { it.retiring }
-                    .map { state ->
-                        { closeSystemLocked(state.caSystemId) }
-                    }.toTypedArray(),
-            )
-            if (descrambler == null && createDescrambler != null) descrambler = createDescrambler()
+            if (resourceLossCleanupPending) clearForResourceLossLocked()
+            retryRetiredResourcesLocked()
+
             val diagnostics = mutableListOf<Diagnostic>()
             val programBindings = mutableListOf<ProgramCaBinding>()
             val esBindings = mutableListOf<EsCaBinding>()
@@ -243,7 +258,7 @@ class CasController(
                             State.ERROR,
                             ErrorCode.UNSUPPORTED_SYSTEM_ID,
                             ca.caSystemId,
-                            (ca.ecmPid ?: ca.emmPid ?: ca.elementaryPid),
+                            ca.ecmPid ?: ca.emmPid ?: ca.elementaryPid,
                             "B25/B1 対象外の CA_system_id です",
                         )
                     return@forEach
@@ -252,14 +267,27 @@ class CasController(
                     CaMetadataSource.PROGRAM -> {
                         val serviceKey = ca.serviceKey ?: return@forEach
                         val ecmPid = ca.ecmPid ?: return@forEach
-                        programBindings += ProgramCaBinding(serviceKey.toString(), ca.caSystemId, ecmPid, ca.privateData.copyOf())
+                        programBindings +=
+                            ProgramCaBinding(
+                                serviceKey.toString(),
+                                ca.caSystemId,
+                                ecmPid,
+                                ca.privateData.copyOf(),
+                            )
                     }
 
                     CaMetadataSource.ELEMENTARY_STREAM -> {
                         val serviceKey = ca.serviceKey ?: return@forEach
                         val ecmPid = ca.ecmPid ?: return@forEach
                         val elementaryPid = ca.elementaryPid ?: return@forEach
-                        esBindings += EsCaBinding(serviceKey.toString(), ca.caSystemId, ecmPid, elementaryPid, ca.privateData.copyOf())
+                        esBindings +=
+                            EsCaBinding(
+                                serviceKey.toString(),
+                                ca.caSystemId,
+                                ecmPid,
+                                elementaryPid,
+                                ca.privateData.copyOf(),
+                            )
                     }
 
                     CaMetadataSource.CAT -> {
@@ -269,99 +297,61 @@ class CasController(
                     }
                 }
             }
-            val targetSystems =
-                (
-                    programBindings.map { it.caSystemId } + esBindings.map { it.caSystemId } +
-                        emmBindings.map { it.caSystemId }
-                ).toSet()
-            val obsolete = sessionsBySystemId.values.filter { it.caSystemId !in targetSystems }
+
+            val contextPlans =
+                esBindings.groupBy { it.contextKey() }.mapValues { (key, bindings) ->
+                    ContextPlan(key, bindings.map { it.elementaryPid }.toSet())
+                }
+            val requiresDescrambling = programBindings.isNotEmpty() || esBindings.isNotEmpty()
+
+            val obsolete = sessionsByContext.values.filter { it.key !in contextPlans }
             obsolete.forEach { it.retiring = true }
-            val sessionSystems = (programBindings.map { it.caSystemId } + esBindings.map { it.caSystemId }).toSet()
-            val sessionOnlyRetirements =
-                sessionsBySystemId.values.filter {
-                    !it.retiring && it.caSystemId !in sessionSystems &&
-                        it.session != null
-                }
-            SectionFilterPolicy.completeCleanup(
-                *(
-                    obsolete.map { state -> { closeSystemLocked(state.caSystemId) } } +
-                        sessionOnlyRetirements.map { state ->
-                            {
-                                try {
-                                    state.session?.close()
-                                    state.session = null
-                                    state.sessionClosed = true
-                                } catch (failure: Exception) {
-                                    state.retiring = true
-                                    throw failure
-                                }
-                            }
-                        }
-                ).toTypedArray(),
-            )
-            sessionsBySystemId.values.forEach { state ->
-                state.ecmPids.clear()
-                state.elementaryPids.clear()
-            }
-            (programBindings.map { it.caSystemId } + esBindings.map { it.caSystemId }).toSet().forEach { systemId ->
-                val result = ensureSessionLocked(systemId)
-                result.exceptionOrNull()?.let { failure ->
-                    diagnostics += sessionFailureDiagnostic(systemId, failure)
-                }
-            }
-            programBindings.forEach { binding ->
-                sessionsBySystemId[binding.caSystemId]?.takeUnless { it.retiring }?.let { state ->
-                    state.ecmPids += binding.ecmPid
-                    requireNotNull(state.session).setPrivateData(binding.privateData).onFailure { e ->
-                        diagnostics +=
-                            Diagnostic(State.ERROR, ErrorCode.PRIVATE_DATA_FAILED, binding.caSystemId, binding.ecmPid, e.message.orEmpty())
-                    }
-                }
-            }
-            esBindings.forEach { binding ->
-                sessionsBySystemId[binding.caSystemId]?.takeUnless { it.retiring }?.let { state ->
-                    state.ecmPids += binding.ecmPid
-                    state.elementaryPids += binding.elementaryPid
-                    requireNotNull(state.session).setPrivateData(binding.privateData).onFailure { e ->
-                        diagnostics +=
-                            Diagnostic(State.ERROR, ErrorCode.PRIVATE_DATA_FAILED, binding.caSystemId, binding.ecmPid, e.message.orEmpty())
-                    }
-                }
-            }
+            val targetSystems = contextPlans.keys.map { it.caSystemId }.toSet() + emmBindings.map { it.caSystemId }
+            retiringPlugins += pluginsBySystemId.keys.filter { it !in targetSystems }
+            retryRetiredResourcesLocked()
+            contextPlans.values.forEach { plan -> ensureContextLocked(plan, createDescrambler, diagnostics) }
+
             emmBindings.forEach { binding ->
-                ensureCasOnlyLocked(binding.caSystemId)
-                    .onSuccess { cas ->
-                        cas.setPrivateData(binding.privateData).onFailure { e ->
-                            diagnostics +=
-                                Diagnostic(
-                                    State.ERROR,
-                                    ErrorCode.PRIVATE_DATA_FAILED,
-                                    binding.caSystemId,
-                                    binding.emmPid,
-                                    e.message.orEmpty(),
-                                )
-                        }
-                    }.onFailure { failure ->
-                        diagnostics += sessionFailureDiagnostic(binding.caSystemId, failure, binding.emmPid)
+                val plugin = ensurePluginLocked(binding.caSystemId, diagnostics)
+                if (plugin != null) {
+                    plugin.setPrivateData(binding.privateData).onFailure { error ->
+                        diagnostics +=
+                            Diagnostic(
+                                State.ERROR,
+                                ErrorCode.PRIVATE_DATA_FAILED,
+                                binding.caSystemId,
+                                binding.emmPid,
+                                error.message.orEmpty(),
+                            )
                     }
-            }
-            val activePids =
-                sessionsBySystemId.values
-                    .filterNot { it.retiring }
-                    .flatMap { it.elementaryPids }
-                    .toSet()
-            runCatching { syncDescramblerPidsLocked(activePids) }.onFailure {
-                diagnostics += lastDiagnostic
+                }
             }
             if (diagnostics.isEmpty()) {
                 rebuildPidIndexesLocked()
-                emmBindings.filter { sessionsBySystemId[it.caSystemId]?.retiring == false }.forEach { binding ->
+                emmBindings.filter { it.caSystemId in pluginsBySystemId && it.caSystemId !in retiringPlugins }.forEach { binding ->
                     emmPidToSystems.getOrPut(binding.emmPid) { linkedSetOf() } += binding.caSystemId
                 }
             }
+            val ecmPids =
+                if (diagnostics.isEmpty()) {
+                    (programBindings.map { it.ecmPid } + esBindings.map { it.ecmPid }).toSet()
+                } else {
+                    emptySet()
+                }
+            val readiness = readinessLocked(requiresDescrambling, diagnostics)
             lastDiagnostic =
-                if (diagnostics.isEmpty()) Diagnostic(if (targetSystems.isEmpty()) State.IDLE else State.ACTIVE) else diagnostics.last()
-            UpdateResult(diagnostics, ecmPidToSystems.keys.toSet(), emmPidToSystems.keys.toSet())
+                when (readiness) {
+                    Readiness.ERROR -> diagnostics.lastOrNull() ?: Diagnostic(State.ERROR, message = "CAS 構成に失敗しました")
+
+                    Readiness.CLOSED -> Diagnostic(State.CLOSED)
+
+                    Readiness.CLEAR -> Diagnostic(State.IDLE)
+
+                    Readiness.WAITING_FOR_KEY,
+                    Readiness.READY,
+                    -> Diagnostic(State.ACTIVE)
+                }
+            UpdateResult(diagnostics, ecmPids, emmPidToSystems.keys.toSet(), readiness)
         }
 
     // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
@@ -373,64 +363,64 @@ class CasController(
         section: ByteArray,
     ): List<Diagnostic> =
         onExecutor {
-            if (closed) return@onExecutor listOf(Diagnostic(State.CLOSED, ErrorCode.CLOSED, pid = pid, message = "CAS 制御は終了済みです"))
-            val systems = ecmPidToSystems[pid].orEmpty()
-            if (systems.isEmpty()) return@onExecutor emptyList()
+            if (closed) {
+                return@onExecutor listOf(
+                    Diagnostic(State.CLOSED, ErrorCode.CLOSED, pid = pid, message = "CAS 制御は終了済みです"),
+                )
+            }
+            val contextKeys = ecmPidToContexts[pid].orEmpty().toList()
+            if (contextKeys.isEmpty()) return@onExecutor emptyList()
             val diagnostics = mutableListOf<Diagnostic>()
-            systems.forEach { systemId ->
-                val state = sessionsBySystemId[systemId]
-                if (state == null || state.retiring || state.session == null) {
-                    diagnostics += Diagnostic(State.ERROR, ErrorCode.SESSION_OPEN_FAILED, systemId, pid, "CAS session がありません")
-                    return@forEach
-                }
-                val tokenResult = requireNotNull(state.session).processEcm(section)
+            contextKeys.forEach { key ->
+                val state = sessionsByContext[key]?.takeUnless { it.retiring } ?: return@forEach
+                val tokenResult = state.session.processEcm(section)
                 if (tokenResult.isFailure) {
                     diagnostics +=
-                        Diagnostic(State.ERROR, ErrorCode.ECM_FAILED, systemId, pid, tokenResult.exceptionOrNull()?.message.orEmpty())
+                        Diagnostic(
+                            State.ERROR,
+                            ErrorCode.ECM_FAILED,
+                            key.caSystemId,
+                            pid,
+                            tokenResult.exceptionOrNull()?.message.orEmpty(),
+                        )
                     return@forEach
                 }
-                when (val ecmResult = tokenResult.getOrNull()) {
+                when (val result = tokenResult.getOrNull()) {
                     is EcmProcessResult.RealKeyToken -> {
-                        val token = ecmResult.token
-                        val setTokenResult =
-                            descrambler?.setKeyToken(token) ?: Result.failure(IllegalStateException("Tuner descrambler を利用できません"))
-                        if (setTokenResult.isFailure) {
-                            diagnostics +=
-                                Diagnostic(
-                                    State.ERROR,
-                                    ErrorCode.DESCRAMBLER_FAILED,
-                                    systemId,
-                                    pid,
-                                    setTokenResult.exceptionOrNull()?.message.orEmpty(),
-                                )
-                            return@forEach
-                        }
-                        state.elementaryPids.filter { it !in descramblerPids }.forEach { elementaryPid ->
-                            val addResult =
-                                descrambler?.addPid(elementaryPid) ?: Result.failure(IllegalStateException("Tuner descrambler を利用できません"))
-                            if (addResult.isFailure) {
-                                diagnostics +=
-                                    Diagnostic(
-                                        State.ERROR,
-                                        ErrorCode.DESCRAMBLER_FAILED,
-                                        systemId,
-                                        elementaryPid,
-                                        addResult.exceptionOrNull()?.message.orEmpty(),
-                                    )
-                            } else {
-                                descramblerPids += elementaryPid
-                            }
-                        }
+                        if (!state.keyLinked) linkContextKeyLocked(state, result.token, pid, diagnostics)
+                    }
+
+                    is EcmProcessResult.InvalidKeyToken -> {
+                        diagnostics +=
+                            Diagnostic(
+                                State.ERROR,
+                                ErrorCode.INVALID_KEY_TOKEN,
+                                key.caSystemId,
+                                pid,
+                                result.message,
+                            )
                     }
 
                     is EcmProcessResult.DiagnosticOnly -> {
                         diagnostics +=
-                            Diagnostic(State.ERROR, ErrorCode.KEY_TOKEN_MISSING, systemId, pid, ecmResult.message)
+                            Diagnostic(
+                                State.ERROR,
+                                ErrorCode.KEY_TOKEN_MISSING,
+                                key.caSystemId,
+                                pid,
+                                result.message,
+                            )
                     }
 
                     null -> {
                         diagnostics +=
-                            Diagnostic(State.ERROR, ErrorCode.KEY_TOKEN_MISSING, systemId, pid, "MediaCas session から実 key token を取得できません")
+                            Diagnostic(
+                                State.ERROR,
+                                ErrorCode.KEY_TOKEN_MISSING,
+                                key.caSystemId,
+                                pid,
+                                "MediaCas session から実 key token を取得できません",
+                            )
                     }
                 }
             }
@@ -445,136 +435,359 @@ class CasController(
         section: ByteArray,
     ): List<Diagnostic> =
         onExecutor {
-            if (closed) return@onExecutor listOf(Diagnostic(State.CLOSED, ErrorCode.CLOSED, pid = pid, message = "CAS 制御は終了済みです"))
-            val systems = emmPidToSystems[pid].orEmpty()
+            if (closed) {
+                return@onExecutor listOf(
+                    Diagnostic(State.CLOSED, ErrorCode.CLOSED, pid = pid, message = "CAS 制御は終了済みです"),
+                )
+            }
+            val systems = emmPidToSystems[pid].orEmpty().filter { it == SupportedCasSystemIds.ARIB_STD_B25 }
             if (systems.isEmpty()) return@onExecutor emptyList()
             val diagnostics = mutableListOf<Diagnostic>()
             systems.forEach { systemId ->
-                val cas =
-                    sessionsBySystemId[systemId]?.cas
-                        ?: ensureCasOnlyLocked(systemId).getOrElse { failure ->
-                            diagnostics += sessionFailureDiagnostic(systemId, failure, pid)
-                            return@forEach
-                        }
-                cas.processEmm(section).onFailure { e ->
+                val plugin = pluginsBySystemId[systemId]?.takeUnless { systemId in retiringPlugins }
+                if (plugin == null) {
                     diagnostics +=
-                        Diagnostic(State.ERROR, ErrorCode.EMM_FAILED, systemId, pid, e.message.orEmpty())
+                        Diagnostic(
+                            State.ERROR,
+                            ErrorCode.PLUGIN_UNAVAILABLE,
+                            systemId,
+                            pid,
+                            "MediaCas plugin を利用できません",
+                        )
+                    return@forEach
+                }
+                plugin.processEmm(section).onFailure { error ->
+                    diagnostics +=
+                        Diagnostic(
+                            State.ERROR,
+                            ErrorCode.EMM_FAILED,
+                            systemId,
+                            pid,
+                            error.message.orEmpty(),
+                        )
                 }
             }
+
             if (diagnostics.isNotEmpty()) lastDiagnostic = diagnostics.last()
             diagnostics
         }
 
     fun lastDiagnostic(): Diagnostic = lastDiagnostic
 
-    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
-    // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
-    @Suppress("ReturnCount", "TooGenericExceptionCaught")
-    private fun ensureSessionLocked(caSystemId: Int): Result<CasSessionState> {
-        val state = ensurePluginLocked(caSystemId).getOrElse { return Result.failure(it) }
-        if (state.session != null) return Result.success(state)
-        val session =
-            state.cas.openSession().getOrElse { failure ->
-                try {
-                    closeSystemLocked(caSystemId)
-                } catch (cleanup: Exception) {
-                    if (cleanup !== failure) failure.addSuppressed(cleanup)
-                }
-                return Result.failure(SessionProvisioningException(ErrorCode.SESSION_OPEN_FAILED, failure))
+    fun currentReadiness(): Readiness {
+        if (executor.isShutdown) return Readiness.CLOSED
+        return onExecutor {
+            when {
+                closed -> Readiness.CLOSED
+                sessionsByContext.isEmpty() -> Readiness.CLEAR
+                sessionsByContext.values.all { it.isFullyLinked() } -> Readiness.READY
+                else -> Readiness.WAITING_FOR_KEY
             }
-        state.session = session
-        state.sessionClosed = false
-        return Result.success(state)
-    }
-
-    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
-    @Suppress("ReturnCount")
-    private fun ensurePluginLocked(caSystemId: Int): Result<CasSessionState> {
-        sessionsBySystemId[caSystemId]?.let {
-            return if (it.retiring) Result.failure(IllegalStateException("CAS資源は解放再試行待ちです")) else Result.success(it)
         }
-        val cas =
-            mediaCasFactory.create(caSystemId).getOrElse { failure ->
-                return Result.failure(SessionProvisioningException(ErrorCode.PLUGIN_UNAVAILABLE, failure))
-            }
-        val state = CasSessionState(caSystemId, cas)
-        sessionsBySystemId[caSystemId] = state
-        return Result.success(state)
     }
 
-    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MaxLineLength")
-    private fun ensureCasOnlyLocked(caSystemId: Int): Result<MediaCasBridge> = ensurePluginLocked(caSystemId).map { it.cas }
-
-    private fun sessionFailureDiagnostic(
-        caSystemId: Int,
-        failure: Throwable,
-        pid: TsPid? = null,
-    ): Diagnostic {
-        val errorCode =
-            (failure as? SessionProvisioningException)?.errorCode
-                ?: ErrorCode.SESSION_OPEN_FAILED
-        return Diagnostic(State.ERROR, errorCode, caSystemId, pid, failure.message.orEmpty())
-    }
-
-    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    // 動的な引数列を既存の可変長APIへ渡すため、一時配列のコピーを許容する。
-    @Suppress("MaxLineLength", "SpreadOperator")
-    private fun syncDescramblerPidsLocked(activePids: Set<TsPid>) {
-        val bridge = descrambler ?: return
-        SectionFilterPolicy.completeCleanup(
-            *(descramblerPids - activePids)
-                .map { pid ->
-                    {
-                        bridge
-                            .removePid(pid)
-                            .onFailure { error ->
-                                lastDiagnostic =
-                                    Diagnostic(State.ERROR, ErrorCode.DESCRAMBLER_FAILED, pid = pid, message = error.message.orEmpty())
-                            }.getOrThrow()
-                        descramblerPids.remove(pid)
-                        Unit
-                    }
-                }.toTypedArray(),
+    private fun EsCaBinding.contextKey(): DescrambleContextKey =
+        DescrambleContextKey(
+            serviceKeyText,
+            caSystemId,
+            ecmPid,
+            privateData.toList(),
         )
+
+    private fun ensurePluginLocked(
+        caSystemId: Int,
+        diagnostics: MutableList<Diagnostic>,
+    ): MediaCasBridge? {
+        if (caSystemId in retiringPlugins) {
+            diagnostics +=
+                Diagnostic(
+                    State.ERROR,
+                    ErrorCode.PLUGIN_UNAVAILABLE,
+                    caSystemId,
+                    message = "CAS資源は解放再試行待ちです",
+                )
+            return null
+        }
+        pluginsBySystemId[caSystemId]?.let { return it }
+        val plugin =
+            mediaCasFactory.create(caSystemId).getOrElse { error ->
+                diagnostics +=
+                    Diagnostic(
+                        State.ERROR,
+                        ErrorCode.PLUGIN_UNAVAILABLE,
+                        caSystemId,
+                        message = error.message.orEmpty(),
+                    )
+                return null
+            }
+        pluginsBySystemId[caSystemId] = plugin
+        return plugin
     }
+
+    private fun ensureContextLocked(
+        plan: ContextPlan,
+        createDescrambler: (() -> TunerDescramblerBridge)?,
+        diagnostics: MutableList<Diagnostic>,
+    ) {
+        val existing = sessionsByContext[plan.key]
+        if (existing != null) {
+            check(!existing.retiring) { "CAS contextは解放再試行待ちです" }
+            syncContextPidsLocked(existing, plan.elementaryPids, diagnostics)
+            return
+        }
+        val plugin = ensurePluginLocked(plan.key.caSystemId, diagnostics) ?: return
+        val session =
+            plugin.openSession().getOrElse { error ->
+                if (sessionsByContext.keys.none { it.caSystemId == plan.key.caSystemId }) {
+                    try {
+                        closePluginLocked(plan.key.caSystemId)
+                    } catch (
+                        cleanup: Exception,
+                    ) {
+                        if (cleanup !== error) error.addSuppressed(cleanup)
+                    }
+                }
+                diagnostics +=
+                    Diagnostic(
+                        State.ERROR,
+                        ErrorCode.SESSION_OPEN_FAILED,
+                        plan.key.caSystemId,
+                        plan.key.ecmPid,
+                        error.message.orEmpty(),
+                    )
+                return
+            }
+        // 設定やDescrambler生成の例外より先に、取得したSessionの所有を確定する。
+        val state =
+            CasSessionState(
+                plan.key,
+                session,
+                desiredElementaryPids = plan.elementaryPids.toMutableSet(),
+            )
+        sessionsByContext[plan.key] = state
+        var failureCode = ErrorCode.PRIVATE_DATA_FAILED
+        try {
+            session.setPrivateData(plan.key.privateData.toByteArray()).getOrThrow()
+            failureCode = ErrorCode.DESCRAMBLER_FAILED
+            state.descrambler = requireNotNull(createDescrambler) { "Tuner descrambler を利用できません" }.invoke()
+        } catch (failure: Exception) {
+            state.retiring = true
+            try {
+                closeContextLocked(plan.key)
+            } catch (cleanup: Exception) {
+                if (cleanup !== failure) failure.addSuppressed(cleanup)
+            }
+            diagnostics +=
+                Diagnostic(
+                    State.ERROR,
+                    failureCode,
+                    plan.key.caSystemId,
+                    plan.key.ecmPid,
+                    failure.message.orEmpty(),
+                )
+        }
+    }
+
+    private fun syncContextPidsLocked(
+        state: CasSessionState,
+        targetPids: Set<TsPid>,
+        diagnostics: MutableList<Diagnostic>,
+    ) {
+        state.desiredElementaryPids.clear()
+        state.desiredElementaryPids += targetPids
+        (state.linkedElementaryPids - state.desiredElementaryPids).forEach { pid ->
+            val removeResult = requireNotNull(state.descrambler).removePid(pid)
+            if (removeResult.isSuccess) {
+                state.linkedElementaryPids.remove(pid)
+            } else {
+                val error = removeResult.exceptionOrNull()
+                diagnostics +=
+                    Diagnostic(
+                        State.ERROR,
+                        ErrorCode.DESCRAMBLER_FAILED,
+                        state.key.caSystemId,
+                        pid,
+                        error?.message.orEmpty(),
+                    )
+            }
+        }
+        if (state.keyLinked) {
+            (state.desiredElementaryPids - state.linkedElementaryPids).forEach { pid ->
+                val addResult = requireNotNull(state.descrambler).addPid(pid)
+                if (addResult.isSuccess) {
+                    state.linkedElementaryPids += pid
+                } else {
+                    val error = addResult.exceptionOrNull()
+                    diagnostics +=
+                        Diagnostic(
+                            State.ERROR,
+                            ErrorCode.DESCRAMBLER_FAILED,
+                            state.key.caSystemId,
+                            pid,
+                            error?.message.orEmpty(),
+                        )
+                }
+            }
+        }
+    }
+
+    private fun linkContextKeyLocked(
+        state: CasSessionState,
+        token: TunerKeyToken,
+        ecmPid: TsPid,
+        diagnostics: MutableList<Diagnostic>,
+    ) {
+        val tokenResult = requireNotNull(state.descrambler).setKeyToken(token)
+        if (tokenResult.isFailure) {
+            diagnostics +=
+                Diagnostic(
+                    State.ERROR,
+                    ErrorCode.DESCRAMBLER_FAILED,
+                    state.key.caSystemId,
+                    ecmPid,
+                    tokenResult.exceptionOrNull()?.message.orEmpty(),
+                )
+            return
+        }
+        state.keyLinked = true
+        var failed = false
+        (state.desiredElementaryPids - state.linkedElementaryPids).forEach { elementaryPid ->
+            val addResult = requireNotNull(state.descrambler).addPid(elementaryPid)
+            if (addResult.isFailure) {
+                failed = true
+                diagnostics +=
+                    Diagnostic(
+                        State.ERROR,
+                        ErrorCode.DESCRAMBLER_FAILED,
+                        state.key.caSystemId,
+                        elementaryPid,
+                        addResult.exceptionOrNull()?.message.orEmpty(),
+                    )
+            } else {
+                state.linkedElementaryPids += elementaryPid
+            }
+        }
+        if (failed) {
+            state.linkedElementaryPids.toList().forEach { pid ->
+                val removeResult = requireNotNull(state.descrambler).removePid(pid)
+                if (removeResult.isSuccess) {
+                    state.linkedElementaryPids.remove(pid)
+                } else {
+                    diagnostics +=
+                        Diagnostic(
+                            State.ERROR,
+                            ErrorCode.DESCRAMBLER_FAILED,
+                            state.key.caSystemId,
+                            pid,
+                            removeResult.exceptionOrNull()?.message.orEmpty(),
+                        )
+                }
+            }
+            val clearResult = requireNotNull(state.descrambler).clearKeyToken()
+            if (clearResult.isSuccess) {
+                state.keyLinked = false
+            } else {
+                diagnostics +=
+                    Diagnostic(
+                        State.ERROR,
+                        ErrorCode.DESCRAMBLER_FAILED,
+                        state.key.caSystemId,
+                        ecmPid,
+                        clearResult.exceptionOrNull()?.message.orEmpty(),
+                    )
+            }
+            return
+        }
+    }
+
+    private fun CasSessionState.isFullyLinked(): Boolean = !retiring && keyLinked && desiredElementaryPids == linkedElementaryPids
 
     private fun invalidateMetadataLocked() {
-        ecmPidToSystems.clear()
+        ecmPidToContexts.clear()
         emmPidToSystems.clear()
-        elementaryPidToSystems.clear()
     }
 
     private fun rebuildPidIndexesLocked() {
         invalidateMetadataLocked()
-        sessionsBySystemId.values.filterNot { it.retiring }.forEach { state ->
-            state.ecmPids.forEach { ecmPid -> ecmPidToSystems.getOrPut(ecmPid) { linkedSetOf() } += state.caSystemId }
-            state.elementaryPids.forEach { elementaryPid ->
-                elementaryPidToSystems.getOrPut(elementaryPid) { linkedSetOf() } +=
-                    state.caSystemId
-            }
+        sessionsByContext.values.filterNot { it.retiring }.forEach { state ->
+            ecmPidToContexts.getOrPut(state.key.ecmPid) { linkedSetOf() } += state.key
         }
     }
 
-    private fun closeSystemLocked(caSystemId: Int) {
-        val state = sessionsBySystemId[caSystemId] ?: return
+    private fun closeContextLocked(key: DescrambleContextKey) {
+        val state = sessionsByContext[key] ?: return
         state.retiring = true
+        ecmPidToContexts.values.forEach { it.remove(key) }
+        ecmPidToContexts.entries.removeAll { it.value.isEmpty() }
+        // PID、鍵、Descrambler、Sessionの順に全解放を試行し、失敗した所有だけを残す。
         SectionFilterPolicy.completeCleanup(
             {
+                SectionFilterPolicy.completeCleanup(
+                    *state.linkedElementaryPids
+                        .toList()
+                        .map { pid ->
+                            {
+                                requireNotNull(state.descrambler)
+                                    .removePid(pid)
+                                    .onFailure { failure ->
+                                        lastDiagnostic =
+                                            Diagnostic(
+                                                State.ERROR,
+                                                ErrorCode.DESCRAMBLER_FAILED,
+                                                key.caSystemId,
+                                                pid,
+                                                failure.message.orEmpty(),
+                                            )
+                                    }.getOrThrow()
+                                state.linkedElementaryPids.remove(pid)
+                                Unit
+                            }
+                        }.toTypedArray(),
+                )
+            },
+            {
+                if (state.keyLinked) {
+                    requireNotNull(state.descrambler).clearKeyToken().getOrThrow()
+                    state.keyLinked = false
+                }
+            },
+            {
+                if (!state.descramblerClosed) {
+                    state.descrambler?.close()
+                    state.descramblerClosed = true
+                    state.linkedElementaryPids.clear()
+                    state.keyLinked = false
+                }
+            },
+            {
                 if (!state.sessionClosed) {
-                    state.session?.close()
+                    state.session.close()
                     state.sessionClosed = true
                 }
             },
-            {
-                if (!state.casClosed) {
-                    state.cas.close()
-                    state.casClosed = true
-                }
-            },
         )
-        sessionsBySystemId.remove(caSystemId)
+        sessionsByContext.remove(key)
     }
+
+    private fun readinessLocked(
+        requiresDescrambling: Boolean,
+        diagnostics: List<Diagnostic>,
+    ): Readiness {
+        if (closed) return Readiness.CLOSED
+        if (diagnostics.any { it.isBlockingForPlayback() }) return Readiness.ERROR
+        if (!requiresDescrambling) return Readiness.CLEAR
+        if (sessionsByContext.isEmpty()) return Readiness.WAITING_FOR_KEY
+        return if (sessionsByContext.values.all { it.isFullyLinked() }) Readiness.READY else Readiness.WAITING_FOR_KEY
+    }
+
+    private fun Diagnostic.isBlockingForPlayback(): Boolean =
+        when (errorCode) {
+            ErrorCode.NONE,
+            ErrorCode.EMM_FAILED,
+            -> false
+
+            else -> state == State.ERROR
+        }
 
     override fun close() {
         if (executor.isShutdown) return
@@ -583,7 +796,7 @@ class CasController(
             clearForResourceLossLocked()
             lastDiagnostic = Diagnostic(State.CLOSED)
         }
-        // cleanup失敗時は所有とexecutorを残し、close()の再試行を許す。
+        // 解放失敗時は所有とexecutorを残し、close()を再試行できるようにする。
         executor.shutdown()
     }
 
@@ -601,6 +814,10 @@ class CasController(
 sealed class EcmProcessResult {
     data class RealKeyToken(
         val token: TunerKeyToken,
+    ) : EcmProcessResult()
+
+    data class InvalidKeyToken(
+        val message: String,
     ) : EcmProcessResult()
 
     data class DiagnosticOnly(
@@ -644,21 +861,20 @@ private class FrameworkMediaCasBridge(
 private class FrameworkMediaCasSessionBridge(
     private val session: android.media.MediaCas.Session,
 ) : CasController.MediaCasSessionBridge {
-    override fun setPrivateData(privateData: ByteArray): Result<Unit> =
-        runCatching {
-            session.setPrivateData(privateData)
-        }
+    override fun setPrivateData(privateData: ByteArray): Result<Unit> = runCatching { session.setPrivateData(privateData) }
 
-    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MaxLineLength")
     override fun processEcm(section: ByteArray): Result<EcmProcessResult> =
         runCatching {
             session.processEcm(section, 0, section.size)
-            EcmProcessResult.DiagnosticOnly("MediaCas 標準 API は ECM 投入完了を返すが、r51 の placeholder CAS では Tuner 用の実 key token を返しません")
+            val token = TunerKeyToken.fromOrNull(session.sessionId)
+            if (token == null) {
+                EcmProcessResult.InvalidKeyToken("MediaCas session ID は 1..16 byte かつ VOID [0x00] 以外でなければなりません")
+            } else {
+                EcmProcessResult.RealKeyToken(token)
+            }
         }
 
-    @Synchronized
-    override fun close() {
+    @Synchronized override fun close() {
         session.close()
     }
 }
@@ -680,6 +896,20 @@ class DirectTunerDescramblerBridge(
             val d = activeDescrambler()
             val result = d.setKeyToken(keyToken.toByteArray())
             require(result == Tuner.RESULT_SUCCESS) { "Descrambler.setKeyToken が失敗しました result=$result" }
+        }
+
+    override fun clearKeyToken(): Result<Unit> =
+        runCatching {
+            if (!descramblerHandle.isInitialized()) return@runCatching
+            val current = descramblerHandle.value ?: return@runCatching
+            val result = current.setKeyToken(Tuner.VOID_KEYTOKEN)
+            require(result == Tuner.RESULT_SUCCESS) { "Descrambler.setKeyToken(VOID) が失敗しました result=$result" }
+        }
+
+    override fun newSibling(): Result<CasController.TunerDescramblerBridge> =
+        runCatching {
+            check(!closing && !closed) { "退役済みのdescrambler bridgeは再利用できません" }
+            DirectTunerDescramblerBridge(tuner)
         }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。

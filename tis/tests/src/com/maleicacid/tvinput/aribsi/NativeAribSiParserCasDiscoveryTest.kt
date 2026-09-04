@@ -216,9 +216,10 @@ class NativeAribSiParserCasDiscoveryTest {
                         )
                 }
             com.maleicacid.tvinput.tis.CasController(mediaCasFactory = factory).use { cas ->
-                cas.updateFromCaMetadata(before.caMetadata)
+                cas.updateFromCaMetadata(before.caMetadata) { com.maleicacid.tvinput.tis.DirectTunerDescramblerBridge(null) }
                 val siPids = setOf(TsPid(PID_PAT), TsPid(PID_SDT), TsPid(PID_PMT), TsPid(PID_CAT), TsPid(PID_EIT))
-                val ecm = setOf(TsPid(ECM_PID_PROGRAM))
+                // このfixtureのvideo ESはprogram-levelとは別のECM contextを持つ。
+                val ecm = setOf(TsPid(ECM_PID_ES))
                 val emm = setOf(TsPid(0x01ee))
                 check((ecm + emm).intersect(siPids).isEmpty())
                 val payload = ByteArray(512)

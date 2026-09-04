@@ -28,7 +28,7 @@ class FrameworkCasCloseTest {
         f.reset()
         val controller = CasController()
         try {
-            controller.updateFromCaMetadata(metadata)
+            controller.updateFromCaMetadata(metadata) { DirectTunerDescramblerBridge(null) }
             f.sessionFailure = true
             f.pluginFailure = true
             check(runCatching { controller.close() }.isFailure)
@@ -55,14 +55,14 @@ class FrameworkCasCloseTest {
         try {
             f.openFailure = true
             f.pluginFailure = true
-            val result = controller.updateFromCaMetadata(metadata)
+            val result = controller.updateFromCaMetadata(metadata) { DirectTunerDescramblerBridge(null) }
             check(result.diagnostics.any { it.errorCode == CasController.ErrorCode.SESSION_OPEN_FAILED })
             check(result.ecmPids.isEmpty() && f.creates == 1 && f.pluginCloses == 1)
-            check(runCatching { controller.updateFromCaMetadata(metadata) }.isFailure)
+            check(runCatching { controller.updateFromCaMetadata(metadata) { DirectTunerDescramblerBridge(null) } }.isFailure)
             check(f.creates == 1 && f.pluginCloses == 2 && f.sessionCloses == 0)
             f.pluginFailure = false
             f.openFailure = false
-            controller.updateFromCaMetadata(metadata)
+            controller.updateFromCaMetadata(metadata) { DirectTunerDescramblerBridge(null) }
             check(f.pluginCloses == 3 && f.creates == 2)
             controller.close()
             check(f.pluginCloses == 4 && f.sessionCloses == 1)

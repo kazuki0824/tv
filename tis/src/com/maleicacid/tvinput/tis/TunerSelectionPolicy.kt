@@ -14,7 +14,10 @@ import com.maleicacid.tvinput.common.StreamSelectorType
 object TunerSelectionPolicy {
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
     @Suppress("MagicNumber")
-    private val videoStreamTypes = setOf(0x02, 0x1b)
+    private val r51VideoStreamTypes = setOf(0x02, 0x1b)
+
+    @Suppress("MagicNumber")
+    private val videoStreamTypes = r51VideoStreamTypes + 0x24
 
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
     @Suppress("MagicNumber")
@@ -64,6 +67,13 @@ object TunerSelectionPolicy {
     ): AribElementaryStream? = selectDefault(streams.filter(::isSuperimposeStream), DEFAULT_SUPERIMPOSE_COMPONENT_TAG, componentGroupTags)
 
     fun hasSupportedVideo(streams: List<AribElementaryStream>): Boolean = streams.any(::isSupportedVideoStream)
+
+    fun isR51SupportedVideoStreamTypeForTest(streamType: Int): Boolean = streamType in r51VideoStreamTypes
+
+    fun selectR51VideoForTest(streams: List<AribElementaryStream>): AribElementaryStream? =
+        streams.firstOrNull { it.streamType in r51VideoStreamTypes }
+
+    fun hasR51SupportedVideoForTest(streams: List<AribElementaryStream>): Boolean = streams.any { it.streamType in r51VideoStreamTypes }
 
     fun trackIdForVideo(stream: AribElementaryStream): String = "video:${stream.elementaryPid}"
 

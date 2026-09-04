@@ -1,0 +1,7 @@
+type maleicacid_key_provisioning_socket, file_type;
+type maleicacid_cas_config_file, file_type, vendor_file_type;
+
+allow hal_cas_default maleicacid_key_provisioning_socket:sock_file rw_file_perms;
+allow hal_cas_default hal_tv_tuner_default:unix_stream_socket connectto;
+allow hal_cas_default maleicacid_cas_config_file:dir r_dir_perms;
+allow hal_cas_default maleicacid_cas_config_file:file r_file_perms;
