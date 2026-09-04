@@ -1,7 +1,5 @@
 package com.maleicacid.tvinput.tis
 
-import android.content.ContentUris
-import android.content.ContentValues
 import android.content.Context
 import android.media.tv.TvContentRating
 import android.media.tv.TvContract
@@ -40,6 +38,7 @@ class CurrentProgramRatingResolver(private val context: Context) {
         fun ratingsForBlocking(): List<TvContentRating> = ratings.ifEmpty { listOf(AribRatingMapper.unrated()) }
 
         fun unblockKeyFor(rating: TvContentRating): String = unblockKey(
+            channelUriString = channelUriString,
             serviceKey = serviceKey,
             eventId = eventId,
             ratingString = rating.flattenToString(),
@@ -69,7 +68,7 @@ class CurrentProgramRatingResolver(private val context: Context) {
          * 意図的に unblock 不可とする。
          */
         fun exactUnblockKeyFor(rating: TvContentRating): String? {
-            if (programIdentityKey() == null) return null
+            if (programIdentityKey() == null || currentRowSelectionKey() == null) return null
             val requested = rating.flattenToString()
             val currentRatings = ratingsForBlocking().map { it.flattenToString() }.toSet()
             if (requested !in currentRatings) return null
@@ -77,12 +76,25 @@ class CurrentProgramRatingResolver(private val context: Context) {
         }
     }
 
+    data class CurrentProgramResolutionDiagnostic(
+        val selectionRule: String,
+        val overlapCount: Int,
+        val selectedProgramId: Long?,
+    )
+
+    @Volatile
+    private var currentProgramResolutionDiagnostic = CurrentProgramResolutionDiagnostic("", 0, null)
+
+    fun currentProgramResolutionDiagnosticForTest(): CurrentProgramResolutionDiagnostic =
+        currentProgramResolutionDiagnostic
+
     fun resolve(
         channelUri: Uri?,
         serviceKey: ServiceKey?,
         latestEvents: List<AribEvent>,
+        ratingProfile: AribRatingMapper.BroadcastProfile,
         nowMillis: Long = System.currentTimeMillis(),
-    ): CurrentProgramRatingSet = when (val result = resolveDetailed(channelUri, serviceKey, latestEvents, nowMillis)) {
+    ): CurrentProgramRatingSet = when (val result = resolveDetailed(channelUri, serviceKey, latestEvents, ratingProfile, nowMillis)) {
         is ResolveResult.Ratings -> result.ratingSet
         is ResolveResult.ProviderQueryFailed -> unresolvedRatingFallback(channelUri, serviceKey)
     }
@@ -91,21 +103,20 @@ class CurrentProgramRatingResolver(private val context: Context) {
         channelUri: Uri?,
         serviceKey: ServiceKey?,
         latestEvents: List<AribEvent>,
+        ratingProfile: AribRatingMapper.BroadcastProfile,
         nowMillis: Long = System.currentTimeMillis(),
     ): ResolveResult {
         return when (val tvProvider = fromTvProvider(channelUri, serviceKey, nowMillis)) {
             is TvProviderLookupResult.Success -> {
                 tvProvider.ratingSet?.let { ResolveResult.Ratings(it) }
-                    ?: fromLatestEit(channelUri, serviceKey, latestEvents, nowMillis)?.let { ResolveResult.Ratings(it) }
+                    ?: fromLatestEit(channelUri, serviceKey, latestEvents, ratingProfile, nowMillis)?.let { ResolveResult.Ratings(it) }
                     ?: ResolveResult.Ratings(unresolvedRatingFallback(channelUri, serviceKey))
             }
             is TvProviderLookupResult.QueryFailed -> {
-                fromLatestEit(channelUri, serviceKey, latestEvents, nowMillis)?.let { ResolveResult.Ratings(it) }
-                    ?: ResolveResult.ProviderQueryFailed(
-                        channelUriString = channelUri?.toString().orEmpty(),
-                        serviceKey = serviceKey,
-                        reason = tvProvider.reason,
-                    )
+                // DESIGN_JA: TvProvider current Program -> latest EIT -> UNRATED.
+                // Provider access failure does not authorize carrying a previous program/channel decision.
+                fromLatestEit(channelUri, serviceKey, latestEvents, ratingProfile, nowMillis)?.let { ResolveResult.Ratings(it) }
+                    ?: ResolveResult.Ratings(unresolvedRatingFallback(channelUri, serviceKey))
             }
         }
     }
@@ -139,7 +150,6 @@ class CurrentProgramRatingResolver(private val context: Context) {
             val start: Long,
             val end: Long,
             val flattenedRatings: String?,
-            val providerData: ByteArray?,
         )
         val candidates = mutableListOf<Candidate>()
         val cursor = try {
@@ -158,7 +168,6 @@ class CurrentProgramRatingResolver(private val context: Context) {
                             start = current.getLong(2),
                             end = current.getLong(3),
                             flattenedRatings = current.getString(4),
-                            providerData = providerData,
                         )
                     }
                 }
@@ -166,7 +175,16 @@ class CurrentProgramRatingResolver(private val context: Context) {
         } catch (e: RuntimeException) {
             return TvProviderLookupResult.QueryFailed(e.message ?: e.javaClass.name)
         }
-        val selected = candidates.firstOrNull() ?: return TvProviderLookupResult.Success(null)
+        val selected = candidates.firstOrNull()
+        if (selected == null) {
+            currentProgramResolutionDiagnostic = CurrentProgramResolutionDiagnostic("", 0, null)
+            return TvProviderLookupResult.Success(null)
+        }
+        currentProgramResolutionDiagnostic = CurrentProgramResolutionDiagnostic(
+            selectionRule = "START_DESC_END_ASC_ID_DESC",
+            overlapCount = candidates.size,
+            selectedProgramId = selected.rowId,
+        )
         val ratingSet = CurrentProgramRatingSet(
             ratings = AribRatingMapper.parseFlattenedList(selected.flattenedRatings),
             source = Source.TV_PROVIDER_CURRENT_PROGRAM,
@@ -176,19 +194,6 @@ class CurrentProgramRatingResolver(private val context: Context) {
             startTimeMillis = selected.start,
             endTimeMillis = selected.end,
         )
-        val selectionRule = "START_DESC_END_ASC_ID_DESC"
-        runCatching {
-            val updatedProviderData = TvProviderWriter.providerDataWithCurrentProgramDiagnostics(
-                providerData = selected.providerData,
-                overlapCount = candidates.size,
-                selectedProgramId = selected.rowId,
-                selectionRule = selectionRule,
-            )
-            val updateValues = ContentValues().apply {
-                put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA, updatedProviderData)
-            }
-            context.contentResolver.update(ContentUris.withAppendedId(TvContract.Programs.CONTENT_URI, selected.rowId), updateValues, null, null)
-        }
         return TvProviderLookupResult.Success(ratingSet)
     }
 
@@ -200,23 +205,29 @@ class CurrentProgramRatingResolver(private val context: Context) {
         channelUri: Uri?,
         serviceKey: ServiceKey?,
         latestEvents: List<AribEvent>,
+        ratingProfile: AribRatingMapper.BroadcastProfile,
         nowMillis: Long,
     ): CurrentProgramRatingSet? {
         val key = serviceKey ?: return null
-        val event = latestEvents
-            .filter { event -> event.serviceKey == key && nowMillis >= event.startTimeMillis && nowMillis < event.startTimeMillis + event.durationMillis }
-            .sortedWith(compareByDescending<com.maleicacid.tvinput.aribsi.AribEvent> { it.startTimeMillis }
-                .thenBy { it.startTimeMillis + it.durationMillis }
-                .thenByDescending { it.eventId })
+        val selected = latestEvents
+            .mapNotNull { event ->
+                val end = runCatching { Math.addExact(event.startTimeMillis, event.durationMillis) }.getOrNull()
+                    ?: return@mapNotNull null
+                (event to end).takeIf { event.serviceKey == key && nowMillis >= event.startTimeMillis && nowMillis < end }
+            }
+            .sortedWith(compareByDescending<Pair<com.maleicacid.tvinput.aribsi.AribEvent, Long>> { it.first.startTimeMillis }
+                .thenBy { it.second }
+                .thenByDescending { it.first.eventId })
             .firstOrNull() ?: return null
+        val event = selected.first
         return CurrentProgramRatingSet(
-            ratings = event.parentalRatings.mapNotNull { AribRatingMapper.toTvContentRating(it) },
+            ratings = event.descriptors.parentalRatings.mapNotNull { AribRatingMapper.toTvContentRating(it, ratingProfile) },
             source = Source.LATEST_EIT_CACHE,
             channelUriString = channelUri?.toString().orEmpty(),
             serviceKey = key,
             eventId = event.eventId,
             startTimeMillis = event.startTimeMillis,
-            endTimeMillis = event.startTimeMillis + event.durationMillis,
+            endTimeMillis = selected.second,
         )
     }
 
@@ -224,10 +235,12 @@ class CurrentProgramRatingResolver(private val context: Context) {
         fun stableProgramKey(serviceKey: ServiceKey, eventId: Int): String = ProviderDataBridge.buildProgramKey(serviceKey, eventId)
 
         fun unblockKey(
+            channelUriString: String,
             serviceKey: ServiceKey?,
             eventId: Int?,
             ratingString: String,
         ): String = listOf(
+            channelUriString,
             serviceKey?.let { stableProgramKey(it, eventId ?: -1) }.orEmpty(),
             ratingString,
         ).joinToString("|")

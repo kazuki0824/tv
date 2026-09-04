@@ -1,4 +1,4 @@
-# Character-device types used by tuner_hal2.
+# tuner_hal2が使用するcharacter device type。
 type dvb_frontend_device, dev_type;
 type dvb_demux_device, dev_type;
 type dvb_dvr_device, dev_type;

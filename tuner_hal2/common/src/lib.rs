@@ -298,10 +298,10 @@ impl TsPacketCompletionBuffer {
 }
 
 #[derive(Debug)]
-/// Collects the first error among cleanup steps.
+/// cleanup各stepで最初に発生したerrorを収集する。
 ///
-/// This type is not the source of truth for primary + cleanup failure composition;
-/// callers that already have a primary failure must preserve it separately.
+/// primary failureとcleanup failureを合成する正本ではない。
+/// primary failureを既に持つcallerは、その値を別に保持する。
 pub struct FirstErrorCollector<E> {
     first_error: Option<E>,
 }
@@ -341,11 +341,10 @@ impl<E> FirstErrorCollector<E> {
     }
 }
 
-/// Composes a primary failure with a cleanup/rollback failure.
+/// primary failureとcleanup/rollback failureを合成する。
 ///
-/// This is the shared primary+cleanup composition helper. It is distinct from
-/// `FirstErrorCollector`, which only decides the first failure among cleanup
-/// steps after cleanup has started.
+/// primaryとcleanupの失敗合成を共有するhelperである。
+/// cleanup開始後の複数stepから最初のfailureだけを選ぶ`FirstErrorCollector`とは責務が異なる。
 pub fn compose_primary_cleanup_failure(
     context: &'static str,
     primary: HalError,
@@ -354,11 +353,10 @@ pub fn compose_primary_cleanup_failure(
     HalError::composed_failure(context, primary, cleanup)
 }
 
-/// Finishes a cleanup/rollback attempt after a primary failure.
+/// primary failure後のcleanup/rollback試行を完了する。
 ///
-/// If cleanup succeeds, the original primary failure is returned. If cleanup
-/// fails, a composed failure retaining both primary and cleanup failures is
-/// returned.
+/// cleanup成功時は元のprimary failureを返す。
+/// cleanup失敗時はprimaryとcleanupの両failureを保持した合成failureを返す。
 pub fn finish_cleanup_after_primary_failure(
     context: &'static str,
     primary: HalError,
@@ -370,8 +368,7 @@ pub fn finish_cleanup_after_primary_failure(
     }
 }
 
-/// Converts a primary failure plus cleanup result into a result for callers that
-/// have no success value after the primary failure.
+/// primary failure後に成功値を持たないcaller向けに、primary failureとcleanup結果をResultへ変換する。
 pub fn fail_after_cleanup<T>(
     context: &'static str,
     primary: HalError,

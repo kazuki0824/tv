@@ -20,7 +20,7 @@ pub(crate) struct PcrClockAnchorStore {
 }
 
 #[derive(Debug)]
-#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+#[must_use = "この準備済み一回限り権限は型付き完了入口で消費する必要があります"]
 pub(crate) struct PreparedPcrInvalidation {
     filter_ids: Vec<i32>,
 }

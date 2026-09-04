@@ -2,6 +2,7 @@ package com.maleicacid.tvinput.tis
 
 import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.StreamSelectorType
+import com.maleicacid.tvinput.common.TransportStreamId16
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -27,16 +28,32 @@ class ScanPlanPolicyTest {
     }
 
     @Test
-    fun defaultScanIncludesCatvAndUsesOnlyTsidCandidatesForBs() {
+    fun defaultScanIncludesCatvAndUsesRfDiscoverySeedsForBs() {
         val scan = JapanIsdbScanPlan.defaultInitialScan()
         assertTrue(scan.any { it.kind == ScanCandidateKind.ISDB_T_CATV && it.displayChannel == "C13" })
-        assertTrue(scan.filter { it.kind == ScanCandidateKind.ISDB_S_BS }.all { it.streamSelector.type == StreamSelectorType.TSID })
+        val bs = scan.filter { it.kind == ScanCandidateKind.ISDB_S_BS }
+        assertTrue(bs.isNotEmpty())
+        assertTrue(bs.all { it.streamSelector.type == StreamSelectorType.NONE })
+        assertTrue(bs.all { it.backendHint == JapanIsdbScanPlan.BS_DISCOVERY_BACKEND_HINT })
     }
+
     @Test
-    fun defaultScanKeepsBsTsidAsFirstClassSelector() {
+    fun bsTsidTableRemainsExplicitCompatibilityFallback() {
         val bs = JapanIsdbScanPlan.isdbsBsTsidStreams()
         assertTrue(bs.isNotEmpty())
         assertTrue(bs.all { it.streamSelector.type == StreamSelectorType.TSID })
+        val seed = JapanIsdbScanPlan.isdbsBsBands().first()
+        assertTrue(JapanIsdbScanPlan.fallbackBsCandidates(seed).all { it.streamSelector.type == StreamSelectorType.TSID })
+    }
+
+    @Test
+    fun bs23CompatibilityFallbackTracksCurrentTransports() {
+        val bs23 = JapanIsdbScanPlan.isdbsBsTsidStreams()
+            .filter { it.physicalChannel == 23 }
+            .mapNotNull { it.streamSelector.value }
+            .toSet()
+        assertEquals(setOf(18288, 18801, 18803), bs23)
+        assertFalse(18802 in bs23)
     }
 
     @Test
@@ -51,7 +68,7 @@ class ScanPlanPolicyTest {
     fun cs110ServiceIdentityCandidateStillDoesNotCarryFrontendSelector() {
         val candidate = JapanIsdbScanPlan.isdbs110CsServiceIdentityCandidate(
             frequencyHz = FrequencyHz(1_613_000_000L),
-            tsid = 0x6020,
+            tsid = TransportStreamId16(0x6020),
             label = "CS-test",
             physical = 13,
         )

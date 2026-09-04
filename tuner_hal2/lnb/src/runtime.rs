@@ -10,8 +10,8 @@ pub enum LnbRuntimeState {
     Quarantined,
 }
 
-/// Typed result of one backend operation. `Rejected` proves that the
-/// physical state did not change; `Indeterminate` does not.
+/// backend operation 1回分の型付き結果。
+/// `Rejected`は物理stateが変化しなかったことを証明するが、`Indeterminate`は証明しない。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LnbBackendApplyOutcome {
     Applied,
@@ -167,7 +167,7 @@ impl LnbRuntime {
         )
     }
 
-    /// Completes a backend-confirmed apply without allocation or further I/O.
+    /// backend確認済みapplyをallocationや追加I/Oなしで完了する。
     pub(crate) fn commit_successful_apply(&mut self, state: LnbElectricalState, generation: u64) {
         self.backend_committed_state = state;
         self.registry_state = state;
@@ -224,7 +224,7 @@ impl LnbRuntime {
         }
     }
 
-    /// Completes a backend-confirmed close without allocation or further I/O.
+    /// backend確認済みcloseをallocationや追加I/Oなしで完了する。
     pub(crate) fn commit_successful_close(&mut self, state: LnbElectricalState) {
         self.backend_committed_state = state;
         self.registry_state = state;

@@ -102,7 +102,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Run source contracts
+      - name: ソース契約を確認
         run: cargo test -p maleicacid-tuner-hal2-compile-contract-host-ci --locked
 
       - name: Type-check production demux library and host crates

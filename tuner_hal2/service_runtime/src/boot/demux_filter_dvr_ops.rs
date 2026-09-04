@@ -363,7 +363,7 @@ impl TunerServiceRuntime {
     }
 }
 
-/// Call-local owner for child object allocation, registration, and rollback.
+/// child objectのallocation、registration、rollbackを所有するcall-local owner。
 pub struct ChildOpenTxn<'a> {
     pub(crate) runtime: &'a mut TunerServiceRuntime,
 }

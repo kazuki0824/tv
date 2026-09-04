@@ -8,14 +8,8 @@
     "serviceId": 101,
     "eventId": 12345
   },
-  "serviceKey": {
-    "originalNetworkId": 4,
-    "transportStreamId": 16400,
-    "serviceId": 101
-  },
   "timing": {
     "startUtcMillis": 1730000000000,
-    "endUtcMillis": 1730001800000,
     "durationMillis": 1800000
   },
   "source": {
@@ -40,14 +34,13 @@
     }
   ],
   "series": null,
-  "relatedItems": [],
+  "eventGroups": [],
   "linkage": [],
   "freeCaMode": {
     "raw": 0,
     "scrambled": false,
     "parseStatus": "OK"
   },
-  "audioLanguages": [],
   "extendedItems": [],
   "components": {
     "video": [],
