@@ -705,11 +705,19 @@ Live/AV経路、診断、recording メタデータ、VTS 判定では、scramble
 
 ## px4_drv ロック 方針
 
-px4_drv backendはRF/carrier lockを直接返すuserspace APIを持たないため、`RF_LOCK`をadvertiseしない。一方、product採用driverは `kazuki0824/px4_drv` `feat/android-ddk` commit `90d9c6506389ece3e47cced826326ccd1c6d22e8`（`Add PX4 demod status readbacks (#1)`）に固定し、同commitのUAPIはread-only `PTX_GET_LOCK_STATUS = _IOR(0x8d, 0x0c, __u32)`を持つ。driverはcurrent system未設定時を`-EAGAIN`とし、それ以外は既存`ops->check_lock()`で現在のdemodulator lockを観測し、I/O/device failureを正常unlocked値へ丸めずerrnoで返す。
+px4_drv backendはRF/carrier lockを直接返すuserspace APIを持たないため、`RF_LOCK`をadvertiseしない。一方、product採用driverは `kazuki0824/px4_drv` `feat/android-ddk` commit `c2236cc761d9d02e38a728f8cad0519610cd891b`（`px4_drv#3` merge。`PTX_GET_LOCK_STATUS` と `PTX_GET_TMCC_TSID_LIST` を含む）に固定し、同commitのUAPIはread-only `PTX_GET_LOCK_STATUS = _IOR(0x8d, 0x0c, __u32)`を持つ。driverはcurrent system未設定時を`-EAGAIN`とし、それ以外は既存`ops->check_lock()`で現在のdemodulator lockを観測し、I/O/device failureを正常unlocked値へ丸めずerrnoで返す。
 
 HALは同ABIを`device/src/px4/abi.rs::PTX_GET_LOCK_STATUS`として固定し、active backend sessionの`observe_signal_state()`から副作用なくcurrent lockを取得する。したがってpx4の`FrontendInfo.statusCaps`には`DEMOD_LOCK`をadvertiseし、`getStatus(DEMOD_LOCK)`およびtune/scan workerのlock/lost-lock/relock判定は同一generationのfresh readbackから導出する。`PTX_GET_CNR`、TS packet到達、過去の`PTX_SET_CHANNEL`成功履歴だけをcurrent `DEMOD_LOCK`の代替にしてはならない。readback I/O failure、`EAGAIN`、古いgenerationは正常な`false`へ捏造せず既存backend failure/pending契約へ接続する。
 
 `PTX_SET_CHANNEL`が選局時に内部`check_lock()`を使用する既存動作は維持するが、その一回の成功履歴は後続current statusの代替にしない。transport health（188-byte境界、sync、TEI、continuity、無受信時間等）も`DEMOD_LOCK`/`RF_LOCK`の真値へ写像しない。採用driver commitを変更する場合は、新commitに同等のread-only lock ABIとfailure分離が存在することをproduct integration証跡として更新するまでpx4 `DEMOD_LOCK` capabilityを維持してはならない。
+
+## px4_drv ISDB-S TMCC TSID list 方針
+
+product採用px4 driverは、ISDB-Sのcurrent TMCCからtransponder内TSID集合を取得するread-only UAPIとして `PTX_GET_TMCC_TSID_LIST = _IOR(0x8d, 0x0e, struct ptx_tmcc_tsid_list)` を持つ。UAPI payloadはpointer-free / fixed-sizeの `__u32 num; __u16 tsid[12];` とし、`num <= 12`、返却prefixの各TSIDは非0でなければならない。driverは既存 `tc90522_tmcc_get_tsid_s()` を唯一のTMCC authorityとして0..11のslotを読み、確定した非0 TSIDをTMCC slot順でcompactに返す。userspace側に固定BS TSID表または別TMCC parserを正本として持たない。
+
+HALのpx4 device-adaptation層は同ABIを `device/src/px4/abi.rs::PTX_GET_TMCC_TSID_LIST` として固定し、active `FrontendBackendSession` が既に所有するcontrol fdだけからreadbackする。同一exclusive chardevをTSID取得のために再openしてはならない。`num > 12`、compact prefix内の0、ABI shape不整合はfail-closedのbackend I/O/invariant failureとし、値をtruncation・補完・推測しない。driverの `EAGAIN` は「current TMCC list未確定」のtyped pending observation、その他のerrnoはbackend failureとして保持する。非ISDB-Sの `EOPNOTSUPP` を空listへ変換しない。
+
+このdevice observation自体は公開AIDL capabilityの別名ではない。`FrontendInfo.statusCaps`、`getStatus()`、`getFrontendStatusReadiness()`、scan callbackへ投影する場合は、current frontend generationの正本所有者へcommitした値だけを使用し、公開契約は本書のAOSP frontend status / scan契約に従う。VTS/profile tooling、TIS、host resolverがpx4 ioctlを直接呼ぶ経路は設けない。
 
 ## px4_drv chardev open / ライブ TS reader 方針
 

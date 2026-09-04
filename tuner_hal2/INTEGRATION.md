@@ -50,6 +50,22 @@ import /vendor/etc/ueventd.tuner_hal2.rc
 
 `ueventd.tuner_hal2.rc` はDVB / px4 / dma_heapのdevice node permissionを設定する。
 
+## 3.1 px4_drv readback ABI のproduct前提
+
+px4 backendをproductへ組み込む場合、採用kernel driverは `../開発規則.md` のpx4_drv product-level invariantを満たす版へ固定する。公開AIDLの意味、status capability、generation/readiness、scan callbackの規範値は `../tuner_hal/DESIGN_JA.md` を正とし、本節では再定義しない。
+
+product build / 実機VTSの前に、少なくとも次のABI接続を確認する。
+
+```text
+- include/ptx_ioctl.h に PTX_GET_LOCK_STATUS が存在すること
+- include/ptx_ioctl.h に pointer-free fixed-size PTX_GET_TMCC_TSID_LIST が存在すること
+- tuner_hal2/device の ABI mirror と ioctl number / payload size が一致すること
+- TMCC TSID readbackがactive frontend sessionの既存control fdを使い、同一px4 chardevを再openしないこと
+- VTS/profile toolingがdriver ioctlを直接呼ばず public Tuner AIDLだけを試験すること
+```
+
+これらを満たさないdriverでは、対応するpx4 frontend capabilityをproductで有効化したままVTS成功を宣言しない。
+
 ## 4. service登録
 
 `tuner_hal2/Android.bp` の `rust_binary` は次を持つ。
