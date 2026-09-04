@@ -12,11 +12,15 @@ pub fn decode_tmcc_tsid_list(
     path: &FrontendDevicePath,
     raw: PtxTmccTsidList,
 ) -> Result<Vec<u16>, HalError> {
-    let count = usize::try_from(raw.num).map_err(|_| malformed_tmcc_list(path, "num overflows usize"))?;
+    let count =
+        usize::try_from(raw.num).map_err(|_| malformed_tmcc_list(path, "num overflows usize"))?;
     if count > PTX_TMCC_TSID_MAX {
         return Err(malformed_tmcc_list(
             path,
-            format!("driver returned num={} above max={PTX_TMCC_TSID_MAX}", raw.num),
+            format!(
+                "driver returned num={} above max={PTX_TMCC_TSID_MAX}",
+                raw.num
+            ),
         ));
     }
     let values = raw.tsid[..count].to_vec();
@@ -58,8 +62,10 @@ mod tests {
     #[test]
     fn compact_tmcc_list_preserves_driver_slot_order() {
         let path = FrontendDevicePath::new("/dev/px4video0");
-        let mut raw = PtxTmccTsidList::default();
-        raw.num = 3;
+        let mut raw = PtxTmccTsidList {
+            num: 3,
+            ..PtxTmccTsidList::default()
+        };
         raw.tsid[..3].copy_from_slice(&[0x4010, 0x4011, 0x4030]);
         assert_eq!(
             decode_tmcc_tsid_list(&path, raw).unwrap(),
@@ -74,16 +80,24 @@ mod tests {
             num: 13,
             ..PtxTmccTsidList::default()
         };
-        assert!(matches!(decode_tmcc_tsid_list(&path, raw), Err(HalError::Io { .. })));
+        assert!(matches!(
+            decode_tmcc_tsid_list(&path, raw),
+            Err(HalError::Io { .. })
+        ));
     }
 
     #[test]
     fn zero_in_compact_list_fails_closed() {
         let path = FrontendDevicePath::new("/dev/px4video0");
-        let mut raw = PtxTmccTsidList::default();
-        raw.num = 2;
+        let mut raw = PtxTmccTsidList {
+            num: 2,
+            ..PtxTmccTsidList::default()
+        };
         raw.tsid[0] = 0x4010;
-        assert!(matches!(decode_tmcc_tsid_list(&path, raw), Err(HalError::Io { .. })));
+        assert!(matches!(
+            decode_tmcc_tsid_list(&path, raw),
+            Err(HalError::Io { .. })
+        ));
     }
 
     #[test]
@@ -102,6 +116,9 @@ mod tests {
             op: "PTX_GET_TMCC_TSID_LIST",
             errno: 5,
         }));
-        assert!(matches!(failure, Err(HalError::IoctlFailed { errno: 5, .. })));
+        assert!(matches!(
+            failure,
+            Err(HalError::IoctlFailed { errno: 5, .. })
+        ));
     }
 }
