@@ -26,7 +26,10 @@ _CLEAR_LIVE = {
     "enabled", "audio_pid", "video_pid", "audio_stream_type", "video_stream_type",
     "pcr_pid", "section_pid",
 }
-_PLAYBACK = {"enabled", "input_file_path"}
+_PLAYBACK = {
+    "enabled", "input_file_path", "audio_pid", "video_pid", "section_pid",
+    "audio_stream_type", "video_stream_type",
+}
 _QUEUES = {
     "record_filter_bytes", "record_dvr_bytes", "audio_filter_bytes", "video_filter_bytes",
     "pcr_filter_bytes", "section_filter_bytes", "playback_dvr_bytes",
@@ -93,6 +96,17 @@ def _require_resolved_pid(container: dict[str, Any], key: str, prefix: str, requ
             raise ProfileError(f"{prefix}.{key} is unresolved")
     else:
         validate_pid(value, f"{prefix}.{key}")
+
+
+def _require_resolved_non_negative(
+    container: dict[str, Any], key: str, prefix: str, require_resolved: bool
+) -> None:
+    value = container.get(key)
+    if value is None:
+        if require_resolved:
+            raise ProfileError(f"{prefix}.{key} is unresolved")
+    else:
+        positive_int(value, f"{prefix}.{key}", allow_zero=True)
 
 
 def validate_profile(profile: dict[str, Any], *, require_resolved: bool = False) -> None:
@@ -196,11 +210,7 @@ def validate_profile(profile: dict[str, Any], *, require_resolved: bool = False)
         for key in ("audio_pid", "video_pid", "pcr_pid", "section_pid"):
             _require_resolved_pid(live, key, "flows.clear_live", require_resolved)
         for key in ("audio_stream_type", "video_stream_type"):
-            if live.get(key) is None:
-                if require_resolved:
-                    raise ProfileError(f"flows.clear_live.{key} is unresolved")
-            else:
-                positive_int(live[key], f"flows.clear_live.{key}", allow_zero=True)
+            _require_resolved_non_negative(live, key, "flows.clear_live", require_resolved)
     else:
         leftovers = sorted(set(live) - {"enabled"})
         if leftovers:
@@ -214,8 +224,14 @@ def validate_profile(profile: dict[str, Any], *, require_resolved: bool = False)
         path = playback.get("input_file_path")
         if not isinstance(path, str) or not path.strip() or not path.startswith("/"):
             raise ProfileError("flows.playback.input_file_path must be an absolute device path")
-    elif "input_file_path" in playback:
-        raise ProfileError("disabled flows.playback must not keep an input_file_path")
+        for key in ("audio_pid", "video_pid", "section_pid"):
+            _require_resolved_pid(playback, key, "flows.playback", require_resolved)
+        for key in ("audio_stream_type", "video_stream_type"):
+            _require_resolved_non_negative(playback, key, "flows.playback", require_resolved)
+    else:
+        leftovers = sorted(set(playback) - {"enabled"})
+        if leftovers:
+            raise ProfileError("disabled flows.playback has unconsumed fields: " + ", ".join(leftovers))
 
     if variant == RECORD_FILTER_FMQ_PROBE_VARIANT:
         if not record["enabled"]:
@@ -247,7 +263,7 @@ def validate_profile(profile: dict[str, Any], *, require_resolved: bool = False)
             "audio_filter_bytes", "video_filter_bytes", "pcr_filter_bytes", "section_filter_bytes"
         }
     if playback["enabled"]:
-        required.add("playback_dvr_bytes")
+        required |= {"audio_filter_bytes", "video_filter_bytes", "section_filter_bytes", "playback_dvr_bytes"}
     missing = sorted(required - set(queues))
     extra = sorted(set(queues) - required)
     if missing:
