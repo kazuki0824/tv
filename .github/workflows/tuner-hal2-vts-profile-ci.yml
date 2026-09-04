@@ -48,16 +48,16 @@ jobs:
 
       - uses: astral-sh/setup-uv@v6
 
-      - name: Install XML schema validator
+      - name: Resolve locked host-tool dependencies
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libxml2-utils
+          uv lock
+          cat uv.lock
 
       - name: Run VTS profile unit tests
-        run: uv run python -m unittest discover -s . -p 'test_*.py'
+        run: uv run --locked python -m unittest discover -s . -p 'test_*.py'
 
       - name: Compile-check VTS profile Python
-        run: uv run python -m compileall -q .
+        run: uv run --locked python -m compileall -q .
 
       - name: Validate canonical XML against pinned Android 14 AOSP XSD
         env:
@@ -66,16 +66,14 @@ jobs:
           curl -fsSL \
             "https://android.googlesource.com/platform/hardware/interfaces/+/${AOSP_TUNER_CONFIG_REF}/tv/tuner/config/tuner_testing_dynamic_configuration.xsd?format=TEXT" \
             | base64 -d > /tmp/tuner_testing_dynamic_configuration.xsd
-          uv run python - <<'PY'
+          uv run --locked python - <<'PY'
           from pathlib import Path
           from test_vts_profile import VtsProfileTest
           from vts_profile.render import render_xml
+          from vts_profile.schema import validate_xml
 
-          Path("/tmp/tuner_vts_config_aidl_V1.xml").write_text(
+          validate_xml(
               render_xml(VtsProfileTest().profile()),
-              encoding="utf-8",
+              Path("/tmp/tuner_testing_dynamic_configuration.xsd"),
           )
           PY
-          xmllint --noout \
-            --schema /tmp/tuner_testing_dynamic_configuration.xsd \
-            /tmp/tuner_vts_config_aidl_V1.xml
