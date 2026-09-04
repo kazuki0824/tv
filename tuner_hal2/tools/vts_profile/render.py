@@ -1,4 +1,5 @@
 from __future__ import annotations
+from copy import deepcopy
 from typing import Any
 from xml.sax.saxutils import escape
 from .model import FRONTEND_ID, RECORD_FILTER_FMQ_PROBE_VARIANT, validate_profile
@@ -69,27 +70,30 @@ def _section_filter_xml(
 
 
 def render_xml(profile: dict[str, Any]) -> str:
-    validate_profile(profile, require_resolved=True)
-    flows = profile["flows"]
-    queues = profile["queues"]
-    hardware = ["    <frontends>", _frontend_xml(profile), "    </frontends>"]
+    rendered_profile = deepcopy(profile)
+    probe = rendered_profile["vts"].get("variant", "") == RECORD_FILTER_FMQ_PROBE_VARIANT
+    if probe:
+        # The descriptor probe is intentionally RECORD-only even if a caller copied a
+        # canonical profile that still had scan enabled.
+        rendered_profile["flows"]["scan"] = False
+    validate_profile(rendered_profile, require_resolved=True)
+    flows = rendered_profile["flows"]
+    queues = rendered_profile["queues"]
+    hardware = ["    <frontends>", _frontend_xml(rendered_profile), "    </frontends>"]
     filters: list[str] = []
     dvrs: list[str] = []
     data_flows: list[str] = []
-    frontend_id = FRONTEND_ID[profile["frontend"]["type"]]
+    frontend_id = FRONTEND_ID[rendered_profile["frontend"]["type"]]
 
     if flows["scan"]:
         data_flows.append(f'    <scan frontendConnection="{frontend_id}"/>')
 
     if flows["record"]["enabled"]:
         pid = int(flows["record"]["pid"])
-        record_filter_uses_fmq = (
-            profile["vts"].get("variant", "") == RECORD_FILTER_FMQ_PROBE_VARIANT
-        )
         filters.append(
             '      <filter id="FILTER_TS_RECORD_0" mainType="TS" subType="RECORD" '
             f'bufferSize="{int(queues["record_filter_bytes"])}" pid="{pid}" '
-            f'useFMQ="{"true" if record_filter_uses_fmq else "false"}">'
+            f'useFMQ="{"true" if probe else "false"}">'
             '<recordFilterSettings tsIndexMask="1" scIndexType="NONE"/></filter>'
         )
         dvr_size = int(queues["record_dvr_bytes"])
@@ -169,6 +173,23 @@ def render_xml(profile: dict[str, Any]) -> str:
             'videoFilterConnection="FILTER_TS_VIDEO_PLAYBACK_0" '
             'sectionFilterConnection="FILTER_TS_SECTION_PLAYBACK_0"/>'
         )
+
+    if rendered_profile["frontend"]["type"] == "ISDBS" and not probe:
+        lnb = rendered_profile["lnb"]
+        hardware.extend([
+            "    <lnbs>",
+            f'      <lnb id="LNB_0" voltage="{escape(str(lnb["voltage"]))}" '
+            f'tone="{escape(str(lnb["tone"]))}" position="{escape(str(lnb["position"]))}"/>',
+            "    </lnbs>",
+        ])
+        data_flows.extend([
+            f'    <lnbLive frontendConnection="{frontend_id}" '
+            'audioFilterConnection="FILTER_TS_AUDIO_LIVE_0" '
+            'videoFilterConnection="FILTER_TS_VIDEO_LIVE_0" lnbConnection="LNB_0"/>',
+            f'    <lnbRecord frontendConnection="{frontend_id}" '
+            'recordFilterConnection="FILTER_TS_RECORD_0" '
+            'dvrRecordConnection="DVR_RECORD_0" lnbConnection="LNB_0"/>',
+        ])
 
     if filters:
         hardware.extend(["    <filters>", *filters, "    </filters>"])
