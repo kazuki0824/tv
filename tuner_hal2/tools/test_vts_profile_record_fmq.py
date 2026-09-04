@@ -16,7 +16,7 @@ class RecordFilterFmqProfileTest(unittest.TestCase):
             "vts": {
                 "contract": "android14-aidl-v1",
                 "source_ref": "aosp-commit",
-                "variant": "",
+                "variant": "record-filter-fmq",
             },
             "frontend": {
                 "type": "ISDBT",
@@ -27,6 +27,7 @@ class RecordFilterFmqProfileTest(unittest.TestCase):
                 "scan": True,
                 "record": {"enabled": True, "pid": 272},
                 "clear_live": {"enabled": False},
+                "playback": {"enabled": False},
             },
             "queues": {
                 "record_filter_bytes": 1048576,
@@ -36,7 +37,6 @@ class RecordFilterFmqProfileTest(unittest.TestCase):
 
     def test_record_filter_fmq_probe_requires_record_flow(self) -> None:
         profile = self.profile()
-        profile["vts"]["variant"] = "record-filter-fmq"
         profile["flows"]["record"] = {"enabled": False}
         profile["queues"] = {}
 
