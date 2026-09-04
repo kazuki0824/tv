@@ -19,22 +19,24 @@ use crate::{
 };
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FrontendBackendKind, FrontendDevicePath,
-    FrontendIsdbtPartialReceptionRequirement, FrontendScanMode, FrontendTuneRequest, HalError,
-    HalErrorDetail, HalInternalKind, HalInvalidStateKind,
+    FrontendIsdbtPartialReceptionRequirement, FrontendScanMode, FrontendSystem,
+    FrontendTuneRequest, HalError, HalErrorDetail, HalInternalKind, HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackToken;
 use maleicacid_tuner_hal2_device::{
     FrontendBackendSession, FrontendBackendSubmitFailure, FrontendBackendSubmitTicket,
     FrontendBackendSubmitWait, FrontendBackendTunePlan, FrontendLivePumpJoinOutcome,
     FrontendLivePumpOwner, FrontendRuntimeSnapshot, FrontendScanPhase, FrontendSignalState,
-    FrontendTmccPartialReceptionObservation, FrontendWorkerCancelReason, FrontendWorkerContext,
-    FrontendWorkerKind, FrontendWorkerStartError, FrontendWorkerStopOutcome,
+    FrontendTmccPartialReceptionObservation, FrontendTmccTsidListObservation,
+    FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
+    FrontendWorkerStartError, FrontendWorkerStopOutcome,
     FrontendWorkerStopPoll, FrontendWorkerStopTicket,
 };
 use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FrontendScanNotification {
+    InputStreamIds(Vec<i32>),
     Locked,
     End,
 }
@@ -2297,6 +2299,80 @@ fn record_frontend_tune_lock_qualification(
     Ok(true)
 }
 
+fn frontend_uses_tmcc_stream_id_list(
+    runtime: &SharedRuntime,
+    frontend_id: i32,
+) -> Result<bool, HalError> {
+    let guard = lock_runtime(
+        runtime,
+        "service runtime lock poisoned while checking TMCC stream-id support",
+    )?;
+    let entry = guard.frontend_entry(frontend_id).ok_or_else(|| {
+        HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "frontend registry entry is missing while checking TMCC stream-id support",
+        )
+    })?;
+    Ok(
+        entry.backend == FrontendBackendKind::Px4CharDevice
+            && entry.system == FrontendSystem::IsdbS,
+    )
+}
+
+fn wait_for_and_record_frontend_stream_id_list(
+    runtime: &SharedRuntime,
+    ctx: &FrontendWorkerContext,
+    session: &FrontendBackendSession,
+    backend: FrontendBackendKind,
+    frontend_id: i32,
+    generation: u64,
+) -> Result<Option<Vec<i32>>, HalError> {
+    if !frontend_uses_tmcc_stream_id_list(runtime, frontend_id)? {
+        return Ok(None);
+    }
+    let started = Instant::now();
+    let deadline = frontend_terminal_deadline(backend);
+    loop {
+        if ctx.cancel_requested() {
+            return Ok(None);
+        }
+        match session.observe_tmcc_tsid_list()? {
+            FrontendTmccTsidListObservation::Pending => {}
+            FrontendTmccTsidListObservation::Available(stream_ids) => {
+                let stream_ids = stream_ids.into_iter().map(i32::from).collect::<Vec<_>>();
+                if ctx.cancel_requested() {
+                    return Ok(None);
+                }
+                let mut guard = lock_runtime(
+                    runtime,
+                    "service runtime lock poisoned while recording TMCC stream IDs",
+                )?;
+                if ctx.cancel_requested() {
+                    return Ok(None);
+                }
+                guard.frontend_txn().record_frontend_stream_id_list(
+                    frontend_id,
+                    generation,
+                    stream_ids.clone(),
+                )?;
+                return Ok(Some(stream_ids));
+            }
+        }
+        if started.elapsed() >= deadline {
+            return Err(HalError::Io {
+                backend: "px4",
+                operation: "PTX_GET_TMCC_TSID_LIST",
+                path: None,
+                errno: Some(FRONTEND_BACKEND_SUBMIT_TIMEOUT_ERRNO),
+                detail: HalErrorDetail::new(
+                    "TMCC stream-id list did not become available before frontend deadline",
+                ),
+            });
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
 fn wait_for_frontend_qualified_lock(
     runtime: &SharedRuntime,
     ctx: &FrontendWorkerContext,
@@ -2474,6 +2550,14 @@ fn run_frontend_backend_tune_session_worker(
             generation,
         )? {
             FrontendLockWaitOutcome::Locked => {
+                let _ = wait_for_and_record_frontend_stream_id_list(
+                    &runtime,
+                    ctx,
+                    &session,
+                    backend,
+                    frontend_id,
+                    generation,
+                )?;
                 if !record_frontend_tune_lock_qualification(&runtime, ctx, frontend_id, generation)?
                 {
                     return Ok(());
@@ -2520,6 +2604,14 @@ fn run_frontend_backend_tune_session_worker(
             }
             match frontend_lock_transition(lock_announced, signal_state, qualification) {
                 FrontendLockTransition::Locked => {
+                    let _ = wait_for_and_record_frontend_stream_id_list(
+                        &runtime,
+                        ctx,
+                        &session,
+                        backend,
+                        frontend_id,
+                        generation,
+                    )?;
                     if !record_frontend_tune_lock_qualification(
                         &runtime,
                         ctx,
@@ -3535,6 +3627,7 @@ fn run_frontend_backend_scan_session_worker(
             },
         };
         let mut signal_state = FrontendSignalState::NoSignal;
+        let mut locked_stream_ids = None;
         let body_result = (|| {
             match wait_for_frontend_qualified_lock(
                 &runtime,
@@ -3544,7 +3637,17 @@ fn run_frontend_backend_scan_session_worker(
                 ctx.frontend_id(),
                 ctx.generation(),
             )? {
-                FrontendLockWaitOutcome::Locked => signal_state = FrontendSignalState::Locked,
+                FrontendLockWaitOutcome::Locked => {
+                    signal_state = FrontendSignalState::Locked;
+                    locked_stream_ids = wait_for_and_record_frontend_stream_id_list(
+                        &runtime,
+                        ctx,
+                        &session,
+                        backend,
+                        ctx.frontend_id(),
+                        ctx.generation(),
+                    )?;
+                }
                 FrontendLockWaitOutcome::NoSignal | FrontendLockWaitOutcome::Cancelled => {}
             }
             Ok(())
@@ -3554,6 +3657,15 @@ fn run_frontend_backend_scan_session_worker(
             return Ok(());
         }
         if signal_state == FrontendSignalState::Locked {
+            if let Some(stream_ids) = locked_stream_ids {
+                deliver_committed_scan_notification(
+                    &runtime,
+                    &scan_notifier,
+                    ctx.frontend_id(),
+                    ctx.generation(),
+                    FrontendScanNotification::InputStreamIds(stream_ids),
+                )?;
+            }
             deliver_committed_scan_notification(
                 &runtime,
                 &scan_notifier,
