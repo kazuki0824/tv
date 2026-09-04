@@ -40,7 +40,7 @@ def _required_attributes(complex_type: ElementTree.Element | None) -> frozenset[
         return frozenset()
     return frozenset(
         attr.attrib["name"]
-        for attr in complex_type.findall(f".//{_XS}attribute")
+        for attr in complex_type.findall(f"{_XS}attribute")
         if attr.attrib.get("use") == "required" and "name" in attr.attrib
     )
 
@@ -117,7 +117,7 @@ def validate_xml(xml: str, xsd: Path, *, xmllint: str = "xmllint") -> None:
     # AOSP feeds this file to Soong xsd_config. It is XML-well-formed, but some
     # revisions are not legal W3C XSD and are rejected by generic validators.
     # The default host check therefore consumes the selected AOSP file itself and
-    # verifies every emitted element against its required-attribute contract.
+    # verifies every emitted element against its owning type's required attributes.
     # A non-default executable remains an explicit compatibility/test hook.
     if xmllint != "xmllint":
         _validate_with_external_command(xml, xsd, xmllint)
