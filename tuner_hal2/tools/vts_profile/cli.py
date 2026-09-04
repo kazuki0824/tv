@@ -23,6 +23,7 @@ from .render import output_filename, render_xml
 from .resource_closure import (
     DEFAULT_CAPABILITY_SOURCE,
     DEFAULT_PES_SOURCE,
+    DEFAULT_PLAYBACK_SOURCE,
     validate_resource_closure,
 )
 from .schema import selected_xsd, validate_xml
@@ -35,6 +36,11 @@ DEFAULT_PCR_FILTER_BYTES = 16 * 1024 * 1024
 DEFAULT_SECTION_FILTER_BYTES = 16 * 1024 * 1024
 DEFAULT_PLAYBACK_DVR_BYTES = 4 * 1024 * 1024
 DEFAULT_PLAYBACK_INPUT_PATH = "/data/local/tmp/segment000000.ts"
+DEFAULT_PLAYBACK_VIDEO_PID = 256
+DEFAULT_PLAYBACK_AUDIO_PID = 257
+DEFAULT_PLAYBACK_SECTION_PID = 257
+DEFAULT_PLAYBACK_VIDEO_STREAM_TYPE = 2
+DEFAULT_PLAYBACK_AUDIO_STREAM_TYPE = 2
 
 
 def _value(args: argparse.Namespace, name: str, label: str, *, optional: bool = False) -> str:
@@ -65,6 +71,15 @@ def _new_profile(args: argparse.Namespace) -> dict:
     full_coverage = variant != RECORD_FILTER_FMQ_PROBE_VARIANT
     playback_dvr_bytes = getattr(args, "playback_dvr_bytes", DEFAULT_PLAYBACK_DVR_BYTES)
     playback_input_path = getattr(args, "playback_input_path", DEFAULT_PLAYBACK_INPUT_PATH)
+    playback_audio_pid = getattr(args, "playback_audio_pid", DEFAULT_PLAYBACK_AUDIO_PID)
+    playback_video_pid = getattr(args, "playback_video_pid", DEFAULT_PLAYBACK_VIDEO_PID)
+    playback_section_pid = getattr(args, "playback_section_pid", DEFAULT_PLAYBACK_SECTION_PID)
+    playback_audio_stream_type = getattr(
+        args, "playback_audio_stream_type", DEFAULT_PLAYBACK_AUDIO_STREAM_TYPE
+    )
+    playback_video_stream_type = getattr(
+        args, "playback_video_stream_type", DEFAULT_PLAYBACK_VIDEO_STREAM_TYPE
+    )
 
     queues: dict[str, int] = {}
     if record_enabled:
@@ -109,7 +124,15 @@ def _new_profile(args: argparse.Namespace) -> dict:
                 else {"enabled": False}
             ),
             "playback": (
-                {"enabled": True, "input_file_path": playback_input_path}
+                {
+                    "enabled": True,
+                    "input_file_path": playback_input_path,
+                    "audio_pid": int(playback_audio_pid),
+                    "video_pid": int(playback_video_pid),
+                    "section_pid": int(playback_section_pid),
+                    "audio_stream_type": int(playback_audio_stream_type),
+                    "video_stream_type": int(playback_video_stream_type),
+                }
                 if full_coverage
                 else {"enabled": False}
             ),
@@ -159,6 +182,7 @@ def _validate_closure(profile: dict, args: argparse.Namespace) -> None:
         profile,
         capability_source=Path(args.capability_source),
         pes_source=Path(args.pes_source),
+        playback_source=Path(args.playback_source),
         rustc=args.rustc,
     )
 
@@ -210,6 +234,7 @@ def cmd_resolve_device(args: argparse.Namespace) -> int:
 def _add_closure_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--capability-source", default=str(DEFAULT_CAPABILITY_SOURCE))
     parser.add_argument("--pes-source", default=str(DEFAULT_PES_SOURCE))
+    parser.add_argument("--playback-source", default=str(DEFAULT_PLAYBACK_SOURCE))
     parser.add_argument("--rustc", default="rustc")
 
 
@@ -251,6 +276,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--playback-input-path",
         default=DEFAULT_PLAYBACK_INPUT_PATH,
         help=f"device-side TS input file for DVR playback (default: {DEFAULT_PLAYBACK_INPUT_PATH})",
+    )
+    init.add_argument("--playback-audio-pid", type=int, default=DEFAULT_PLAYBACK_AUDIO_PID)
+    init.add_argument("--playback-video-pid", type=int, default=DEFAULT_PLAYBACK_VIDEO_PID)
+    init.add_argument("--playback-section-pid", type=int, default=DEFAULT_PLAYBACK_SECTION_PID)
+    init.add_argument(
+        "--playback-audio-stream-type", type=int, default=DEFAULT_PLAYBACK_AUDIO_STREAM_TYPE
+    )
+    init.add_argument(
+        "--playback-video-stream-type", type=int, default=DEFAULT_PLAYBACK_VIDEO_STREAM_TYPE
     )
     init.add_argument("--variant", default="")
     init.set_defaults(func=cmd_init)
