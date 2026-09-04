@@ -454,6 +454,25 @@ impl<'a> FrontendTxn<'a> {
         runtime.record_signal_state(generation, signal_state)
     }
 
+    pub(crate) fn record_frontend_stream_id_list(
+        &mut self,
+        frontend_id: i32,
+        generation: u64,
+        stream_ids: Vec<i32>,
+    ) -> Result<(), HalError> {
+        let runtime = self
+            .runtime
+            .registry
+            .frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend runtime is missing for advertised frontend",
+                )
+            })?;
+        runtime.record_stream_id_list(generation, stream_ids)
+    }
+
     pub(crate) fn record_frontend_tune_lock_qualified(
         &mut self,
         frontend_id: i32,
