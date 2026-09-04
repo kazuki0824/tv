@@ -1,6 +1,6 @@
 # tuner_hal2 product integration
 
-この文書は、`tuner_hal2` を Android TV 14 系 product image の既定 Tuner HAL service として組み込むためのSSOTである。
+この文書は、`tuner_hal2` を LineageOS 22.1 / Android 15 product image の既定 Tuner HAL service として組み込むためのSSOTである。
 
 ## 0. 固定方針
 
@@ -278,3 +278,41 @@ px4系device nodeのprobe prefixは本節をproduct integration上のSSOTとす�
 - `tuner_hal2/sepolicy/file_contexts`その他のSELinux path設定で同device nodeを列挙する場合は、本節のprefix集合と一致させる。
 
 probe adapter、ueventd、SELinux側のいずれかだけに別prefixを追加してはならない。具体device pathの正本を実装helper名やPR履歴へ置かず、本節から一方向に同期する。
+
+## 9. LineageOS 22.1 nullable Tuner AIDL current 統合
+
+`tuner_hal/DESIGN_JA.md` の `nullable Binder 境界` が定義する公開意味論を Rust generated trait から到達可能にするため、本製品の LineageOS 22.1 / Android 15 統合では Tuner Stable AIDL の frozen V1/V2 を変更せず、unfrozen current（最新 frozen V2 に対する V3）へ nullable annotation を追加する。
+
+platform checkout には、通常ビルドの前に次の patch を `hardware/interfaces` へ適用する。
+
+```text
+vendor/maleicacid/tv/tuner_hal2/platform_patches/lineage-22.1/android_hardware_tv_tuner_nullable_current.patch
+```
+
+Android build root から適用する例は次のとおりとする。
+
+```bash
+git -C hardware/interfaces apply \
+  "$ANDROID_BUILD_TOP/vendor/maleicacid/tv/tuner_hal2/platform_patches/lineage-22.1/android_hardware_tv_tuner_nullable_current.patch"
+```
+
+patch は次だけを変更する。
+
+- `IFilter.setDataSource()` の filter を `@nullable` とする。
+- `IDescrambler.addPid()` / `removePid()` の optional source filter を `@nullable` とする。
+- `IFrontend.setCallback()` / `ILnb.setCallback()` の callback を `@nullable` とする。
+- LineageOS 22.1 の FCM 202404 で Tuner AIDL V3 を許容するため、framework compatibility matrix の version range を `1-3` とする。
+
+`aidl_api/android.hardware.tv.tuner/1` と `2` は変更しない。`android.hardware.tv.tuner-freeze-api` は実行せず、`versions_with_info` に V3 を追加しない。したがって nullable 版は current/unfrozen V3 のまま使用する。
+
+platform patch適用後、通常ビルドへ進む前に、そのLineageOS checkout上で次を一度実行して source AIDL と `aidl_api/android.hardware.tv.tuner/current/` snapshot を同期する。
+
+```bash
+m android.hardware.tv.tuner-update-api
+```
+
+`update-api` が生成する `aidl_api/.../current` の差分はこのplatform patchへ取り込まない。clean checkoutへplatform patchを新たに適用した場合は、そのcheckoutについて通常ビルド前に上記 `update-api` を実行する。一方、同じcheckoutでsource AIDLとcurrent snapshotが同期済みである限り、通常のproduct buildのたびに `update-api` を再実行してはならない。`aidl_api/.../current` を手編集してsource AIDLと独立に変更してもならない。
+
+`tuner_hal2` は current V3 Rust binding を `android.hardware.tv.tuner-V3-rust` として参照し、VINTF fragment も Tuner version 3 を宣言する。採用 build configuration では `RELEASE_AIDL_USE_UNFROZEN=true` が実効値でなければならない。`false` の構成では最新 unfrozen APIを製品契約として使用できないため、この nullable V3 統合の完了buildとして扱わない。
+
+この統合は LineageOS 22.1 / Android 15 checkout を前提とする。LineageOS 21.0 / Android 14 checkout は本節の V3 current、FCM、Rust generated trait 契約を満たさないため、この統合の入力として使用しない。
