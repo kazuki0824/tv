@@ -24,6 +24,15 @@ def _frontend_xml(profile: dict[str, Any]) -> str:
     return f'      <frontend {" ".join(attrs)}><isdbsFrontendSettings {settings_text}/></frontend>'
 
 
+def _dvr_xml(dvr_id: str, dvr_type: str, size: int, *, input_file_path: str | None = None) -> str:
+    input_attr = "" if input_file_path is None else f' inputFilePath="{escape(input_file_path)}"'
+    return (
+        f'      <dvr id="{dvr_id}" type="{dvr_type}" bufferSize="{size}" statusMask="15" '
+        f'lowThreshold="{size // 4}" highThreshold="{size * 3 // 4}" dataFormat="TS" '
+        f'packetSize="188"{input_attr}/>'
+    )
+
+
 def render_xml(profile: dict[str, Any]) -> str:
     validate_profile(profile, require_resolved=True)
     flows = profile["flows"]
@@ -33,8 +42,10 @@ def render_xml(profile: dict[str, Any]) -> str:
     dvrs: list[str] = []
     data_flows: list[str] = []
     frontend_id = FRONTEND_ID[profile["frontend"]["type"]]
+
     if flows["scan"]:
         data_flows.append(f'    <scan frontendConnection="{frontend_id}"/>')
+
     if flows["record"]["enabled"]:
         pid = int(flows["record"]["pid"])
         record_filter_uses_fmq = (
@@ -47,15 +58,12 @@ def render_xml(profile: dict[str, Any]) -> str:
             '<recordFilterSettings tsIndexMask="1" scIndexType="NONE"/></filter>'
         )
         dvr_size = int(queues["record_dvr_bytes"])
-        dvrs.append(
-            '      <dvr id="DVR_RECORD_0" type="RECORD" '
-            f'bufferSize="{dvr_size}" statusMask="15" lowThreshold="{dvr_size // 4}" '
-            f'highThreshold="{dvr_size * 3 // 4}" dataFormat="TS" packetSize="188"/>'
-        )
+        dvrs.append(_dvr_xml("DVR_RECORD_0", "RECORD", dvr_size))
         data_flows.append(
             f'    <dvrRecord hasFrontendConnection="true" frontendConnection="{frontend_id}" '
             'recordFilterConnection="FILTER_TS_RECORD_0" dvrRecordConnection="DVR_RECORD_0"/>'
         )
+
     if flows["clear_live"]["enabled"]:
         live = flows["clear_live"]
         filters.extend([
@@ -65,11 +73,35 @@ def render_xml(profile: dict[str, Any]) -> str:
             '      <filter id="FILTER_TS_VIDEO_0" mainType="TS" subType="VIDEO" '
             f'bufferSize="{int(queues["video_filter_bytes"])}" pid="{int(live["video_pid"])}" useFMQ="false">'
             f'<avFilterSettings isPassthrough="false" isSecureMemory="false"><videoStreamType>{int(live["video_stream_type"])}</videoStreamType></avFilterSettings></filter>',
+            '      <filter id="FILTER_TS_PCR_0" mainType="TS" subType="PCR" '
+            f'bufferSize="{int(queues["pcr_filter_bytes"])}" pid="{int(live["pcr_pid"])}" useFMQ="false"/>',
+            '      <filter id="FILTER_TS_SECTION_0" mainType="TS" subType="SECTION" '
+            f'bufferSize="{int(queues["section_filter_bytes"])}" pid="{int(live["section_pid"])}" useFMQ="true">'
+            '<sectionFilterSettings isCheckCrc="false" isRepeat="true" isRaw="false"/></filter>',
         ])
         data_flows.append(
             f'    <clearLiveBroadcast frontendConnection="{frontend_id}" '
-            'audioFilterConnection="FILTER_TS_AUDIO_0" videoFilterConnection="FILTER_TS_VIDEO_0"/>'
+            'audioFilterConnection="FILTER_TS_AUDIO_0" videoFilterConnection="FILTER_TS_VIDEO_0" '
+            'pcrFilterConnection="FILTER_TS_PCR_0" sectionFilterConnection="FILTER_TS_SECTION_0"/>'
         )
+
+    if flows["playback"]["enabled"]:
+        playback = flows["playback"]
+        dvr_size = int(queues["playback_dvr_bytes"])
+        dvrs.append(
+            _dvr_xml(
+                "DVR_PLAYBACK_0",
+                "PLAYBACK",
+                dvr_size,
+                input_file_path=str(playback["input_file_path"]),
+            )
+        )
+        data_flows.append(
+            '    <dvrPlayback dvrConnection="DVR_PLAYBACK_0" '
+            'audioFilterConnection="FILTER_TS_AUDIO_0" videoFilterConnection="FILTER_TS_VIDEO_0" '
+            'sectionFilterConnection="FILTER_TS_SECTION_0"/>'
+        )
+
     if filters:
         hardware.extend(["    <filters>", *filters, "    </filters>"])
     if dvrs:
