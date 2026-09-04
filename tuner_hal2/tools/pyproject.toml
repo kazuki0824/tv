@@ -2,9 +2,7 @@
 name = "maleicacid-tuner-hal2-vts-tools"
 version = "0.0.0"
 requires-python = ">=3.11"
-dependencies = [
-    "xmlschema==4.3.2",
-]
+dependencies = []
 
 [tool.uv]
 package = false
