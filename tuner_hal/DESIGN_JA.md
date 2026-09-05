@@ -120,7 +120,12 @@ TS PIDの構文上有効な値域は13 bitの`0x0000..0x1FFF`とする。`0xFFFF
 
 ### nullable Binder 境界
 
-AOSP意味論としてNULL binder入力を持つ境界は、`IFilter.setDataSource(filter)`の`filter == NULL`、`IDescrambler.addPid(pid, optionalSourceFilter)` / `removePid(pid, optionalSourceFilter)`の`optionalSourceFilter == NULL`、`IFrontend.setCallback(callback)`の`callback == NULL`、`ILnb.setCallback(callback)`の`callback == NULL`とする。`setDataSource`はdemux input復帰、`IDescrambler`のNULL filterは指定PIDについてdemux input全体を対象とする操作、callback NULLは登録解除である。これらはAOSP公開契約上の必須動作であり、NULL経路とnon-null経路の期待動作、状態遷移、戻り値、資源寿命、失敗時遷移は本書を唯一の契約正本とする。
+LineageOS 22.1 / Android 15 で採用する Tuner AIDL の null 入力は、API ごとに根拠と製品契約を分けて扱う。
+
+- `IFilter.setDataSource(filter)` は、Tuner HAL AIDL の説明が `filter == NULL` を demux 入力元への復帰と明記し、AIDL VTS も別 Filter を入力元に設定した後で `setDataSource(nullptr)` の成功を要求する。Rust 生成物でこの入力を表現できるよう、unfrozen current V3 では `filter` を `@nullable` とし、Rust 公開境界は `Option` で受ける。LineageOS 22.1 の `frameworks/base` と `frameworks/av` には null を HAL まで運べない箇所があるため、製品統合時に両方を補正する。
+- `IDescrambler.addPid()` / `removePid()` は、Tuner HAL AIDL が source Filter を optional と説明し、Java API が `@Nullable Filter` を受け、`frameworks/base` と `frameworks/av` が null を HAL まで保持し、AIDL VTS も `nullptr` での add/remove 成功を要求する。`optionalSourceFilter == null` は上流 Filter による入力元限定を付けない PID 登録・解除として扱う。unfrozen current V3 では当該 Filter 引数を `@nullable` とし、Rust 公開境界は `Option` で受ける。
+- `IFrontend.setCallback(callback)` は、AIDL コメントに null 可との記載がある一方、機械的 AIDL 宣言は非 null、LineageOS 22.1 の `frameworks/base` は非 null Binder callback を生成し、`frameworks/av` と AOSP 参照 HAL は null を `INVALID_ARGUMENT` とし、AIDL VTS も非 null 登録だけを要求する。本製品では `setCallback()` を非 null 登録契約とし、callback の寿命終了は `close()` に従う。V3 で `@nullable` を追加しない。
+- `ILnb.setCallback(callback)` は、AIDL コメントが null を許容し、AOSP 参照 HAL も null を保存して以後の callback 配送を停止する。一方、LineageOS 22.1 のフレームワーク経路と AIDL VTS は HAL への null 登録を使用しない。これはフレームワーク必須経路ではなく、Hardware AIDL の説明と参照 HAL に既に存在する null 値を Rust 実装でも表現するための補正として扱う。unfrozen current V3 では `callback` を `@nullable` とし、Rust 公開境界は `Option` で受ける。
 
 生成言語bindingの表現は公開契約ではない。実装適用状況そのものは実装を事実源とし、判定結果・未達理由は本書に保持せず`../タスク完了判定の実施方法.md`に従う判定側で管理する。実装状態を理由に本節のAOSP契約を弱めたり、frozen AIDLをvendor独自改変したりしてはならない。
 

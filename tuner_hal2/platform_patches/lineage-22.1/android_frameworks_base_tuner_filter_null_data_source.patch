@@ -1,0 +1,13 @@
+--- a/media/jni/tuner/FilterClient.cpp
++++ b/media/jni/tuner/FilterClient.cpp
+@@ -181,7 +181,9 @@
+ Result FilterClient::setDataSource(sp<FilterClient> filterClient){
+     Mutex::Autolock _l(mLock);
+     if (mTunerFilter != nullptr) {
+-        Status s = mTunerFilter->setDataSource(filterClient->getAidlFilter());
++        shared_ptr<ITunerFilter> aidlFilter =
++                (filterClient == nullptr) ? nullptr : filterClient->getAidlFilter();
++        Status s = mTunerFilter->setDataSource(aidlFilter);
+         return ClientHelper::getServiceSpecificErrorCode(s);
+     }
+ 
