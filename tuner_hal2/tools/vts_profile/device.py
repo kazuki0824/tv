@@ -378,29 +378,23 @@ def resolve_device(
         adb=adb, serial=serial, agent_binary=agent_binary, remote_agent=remote_agent
     )
     try:
-        successes: list[dict[str, Any]] = []
         errors: list[str] = []
         for frequency in _frequencies(original, candidate_index):
             try:
-                successes.append(
-                    _resolve_frequency(
-                        original,
-                        frequency,
-                        adb=adb,
-                        serial=serial,
-                        remote_agent=remote,
-                        timeout_ms=timeout_ms,
-                        si_host=si_host,
-                    )
+                resolved = _resolve_frequency(
+                    original,
+                    frequency,
+                    adb=adb,
+                    serial=serial,
+                    remote_agent=remote,
+                    timeout_ms=timeout_ms,
+                    si_host=si_host,
                 )
+                updated = _apply(original, resolved)
+                save_profile(profile_path, updated)
+                return updated
             except ProfileError as exc:
                 errors.append(f"{frequency}: {exc}")
-        if len(successes) != 1:
-            if not successes:
-                raise ProfileError("no candidate resolved successfully: " + "; ".join(errors))
-            raise ProfileError("multiple candidates resolved successfully; select one explicitly")
-        updated = _apply(original, successes[0])
-        save_profile(profile_path, updated)
-        return updated
+        raise ProfileError("no candidate resolved successfully: " + "; ".join(errors))
     finally:
         _cleanup_agent(adb=adb, serial=serial, pushed=pushed)

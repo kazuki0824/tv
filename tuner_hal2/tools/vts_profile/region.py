@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import math
 import re
 import urllib.parse
 import urllib.request
@@ -11,18 +12,27 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from .model import FRONTEND_ID, ProfileError, load_json, positive_int, reject_unknown, require_dict, validate_profile
+from .model import (
+    FRONTEND_ID,
+    ProfileError,
+    load_json,
+    positive_int,
+    reject_unknown,
+    require_dict,
+    validate_profile,
+)
 
 DEFAULT_REGION_DATASET = Path(__file__).resolve().parents[2] / "config/vts_channel_plan.japan.json"
 ISDBT_FIRST_CHANNEL = 13
 ISDBT_LAST_CHANNEL = 52
 ISDBT_CHANNEL_13_HZ = 473_142_857
 ISDBT_CHANNEL_STEP_HZ = 6_000_000
+MIN_DISTANCE_KM = 0.1
 JAPAN_POST_KEN_ALL_URL = "https://www.post.japanpost.jp/zipcode/dl/kogaki/zip/ken_all.zip"
 GSI_REVERSE_GEOCODER_URL = "https://mreversegeocoder.gsi.go.jp/reverse-geocoder/LonLatToAddress"
 GSI_ADDRESS_SEARCH_URL = "https://msearch.gsi.go.jp/address-search/AddressSearch"
 GSI_MUNICIPALITY_URL = "https://maps.gsi.go.jp/js/muni.js"
-HTTP_USER_AGENT = "maleicacid-tuner-hal2-vts-region-resolver/1"
+HTTP_USER_AGENT = "maleicacid-tuner-hal2-vts-region-resolver/3"
 JAPAN_PREFECTURES = (
     "北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県",
     "茨城県", "栃木県", "群馬県", "埼玉県", "千葉県", "東京都", "神奈川県",
@@ -175,8 +185,14 @@ def _coordinate_area(coordinate: tuple[float, float]) -> tuple[str, str]:
     return area
 
 
-def _region_coordinates(query: str) -> list[tuple[float, float]]:
+def _region_coordinates(query: str, *, allow_prefecture_only: bool = False) -> list[tuple[float, float]]:
     value = query.strip()
+    if value in JAPAN_PREFECTURES:
+        if allow_prefecture_only:
+            return []
+        raise ProfileError(
+            "prefecture-only region input is too coarse; provide a municipality, address, postal code, or coordinates"
+        )
     if value.lower().startswith("postal:"):
         return _postal_coordinates(value.split(":", 1)[1])
     if re.fullmatch(r"\d{3}-?\d{4}", value):
@@ -188,75 +204,247 @@ def _region_coordinates(query: str) -> list[tuple[float, float]]:
     return [_geocode_address(value)]
 
 
-def _channels_for_area(prefecture: str, municipality: str, prefectures: dict[str, Any]) -> tuple[set[int], str]:
-    prefecture_data = require_dict(prefectures.get(prefecture), f"dataset.prefectures[{prefecture!r}]")
-    reject_unknown(
-        prefecture_data,
-        {"source_url", "default_channels", "prefecture_channels", "areas"},
-        f"dataset.prefectures[{prefecture!r}]",
-    )
-    areas = require_dict(prefecture_data.get("areas"), f"dataset.prefectures[{prefecture!r}].areas")
-    matching_keys = sorted(
-        (key for key in areas if isinstance(key, str) and key and key in municipality),
-        key=lambda key: (-len(key), key),
-    )
-    if matching_keys:
-        max_length = len(matching_keys[0])
-        selected_keys = [key for key in matching_keys if len(key) == max_length]
-        channels = {
-            _current_channel(channel, f"dataset area {key} channel")
-            for key in selected_keys
-            for channel in areas[key]
-        }
-        return channels, "/".join(selected_keys)
-    channels = {
-        _current_channel(channel, f"dataset prefecture {prefecture} channel")
-        for channel in prefecture_data.get("prefecture_channels", [])
+def _distance_km(a: tuple[float, float], b: tuple[float, float]) -> float:
+    lat1, lon1 = map(math.radians, a)
+    lat2, lon2 = map(math.radians, b)
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    h = math.sin(dlat / 2.0) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2.0) ** 2
+    return 6371.0088 * 2.0 * math.asin(min(1.0, math.sqrt(h)))
+
+
+def _validate_transmitters(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list) or not raw:
+        raise ProfileError("dataset.transmitters must be a non-empty array")
+    transmitters: list[dict[str, Any]] = []
+    allowed = {
+        "id",
+        "prefecture",
+        "name",
+        "source_url",
+        "location_text",
+        "latitude",
+        "longitude",
+        "coordinate_source",
+        "coverage_texts",
+        "coverage_areas",
+        "services",
     }
-    return channels, prefecture
+    service_allowed = {
+        "name",
+        "remote_control_key_id",
+        "physical_channel",
+        "polarization",
+        "output_text",
+        "output_w",
+    }
+    for index, item in enumerate(raw):
+        transmitter = require_dict(item, f"dataset.transmitters[{index}]")
+        reject_unknown(transmitter, allowed, f"dataset.transmitters[{index}]")
+        for key in ("id", "prefecture", "name", "source_url"):
+            if not isinstance(transmitter.get(key), str) or not transmitter[key].strip():
+                raise ProfileError(f"dataset.transmitters[{index}].{key} is required")
+        location_text = transmitter.get("location_text", "")
+        if not isinstance(location_text, str):
+            raise ProfileError(f"dataset.transmitters[{index}].location_text must be a string")
+        latitude = transmitter.get("latitude")
+        longitude = transmitter.get("longitude")
+        if (latitude is None) != (longitude is None):
+            raise ProfileError(f"dataset.transmitters[{index}] must provide both coordinates or neither")
+        if latitude is not None:
+            try:
+                parsed_lat = float(latitude)
+                parsed_lon = float(longitude)
+            except (TypeError, ValueError) as exc:
+                raise ProfileError(f"dataset.transmitters[{index}] has invalid coordinates") from exc
+            if not -90.0 <= parsed_lat <= 90.0 or not -180.0 <= parsed_lon <= 180.0:
+                raise ProfileError(f"dataset.transmitters[{index}] coordinates are out of range")
+        coordinate_source = transmitter.get("coordinate_source")
+        if coordinate_source is not None and not isinstance(coordinate_source, str):
+            raise ProfileError(f"dataset.transmitters[{index}].coordinate_source must be string or null")
+        for key in ("coverage_texts", "coverage_areas"):
+            value = transmitter.get(key)
+            if not isinstance(value, list) or any(not isinstance(entry, str) for entry in value):
+                raise ProfileError(f"dataset.transmitters[{index}].{key} must be a string array")
+        services = transmitter.get("services")
+        if not isinstance(services, list) or not services:
+            raise ProfileError(f"dataset.transmitters[{index}].services must be a non-empty array")
+        for service_index, raw_service in enumerate(services):
+            service = require_dict(
+                raw_service,
+                f"dataset.transmitters[{index}].services[{service_index}]",
+            )
+            reject_unknown(
+                service,
+                service_allowed,
+                f"dataset.transmitters[{index}].services[{service_index}]",
+            )
+            if not isinstance(service.get("name"), str) or not service["name"].strip():
+                raise ProfileError(
+                    f"dataset.transmitters[{index}].services[{service_index}].name is required"
+                )
+            remote = positive_int(service.get("remote_control_key_id"), "remote_control_key_id")
+            if not 1 <= remote <= 12:
+                raise ProfileError("remote_control_key_id must be in 1..12")
+            _current_channel(service.get("physical_channel"), "physical_channel")
+            polarization = service.get("polarization")
+            if polarization is not None and not isinstance(polarization, str):
+                raise ProfileError("service polarization must be a string or null")
+            output_text = service.get("output_text", "")
+            if not isinstance(output_text, str):
+                raise ProfileError("service output_text must be a string")
+            output_w = service.get("output_w")
+            if output_w is not None:
+                try:
+                    parsed_output = float(output_w)
+                except (TypeError, ValueError) as exc:
+                    raise ProfileError("service output_w must be numeric or null") from exc
+                if not parsed_output > 0:
+                    raise ProfileError("service output_w must be positive when known")
+        transmitters.append(transmitter)
+    return transmitters
+
+
+def _dataset_transmitters(dataset: dict[str, Any], prefecture: str) -> list[dict[str, Any]]:
+    if dataset.get("schema_version") != 3:
+        raise ProfileError("region dataset schema_version must be 3")
+    source = require_dict(dataset.get("source"), "dataset.source")
+    reject_unknown(source, {"index_url", "source_notice"}, "dataset.source")
+    mode = dataset.get("mode")
+    if mode == "live-ina4n":
+        reject_unknown(
+            dataset,
+            {"schema_version", "mode", "source", "coordinate_overrides"},
+            "dataset",
+        )
+        overrides = dataset.get("coordinate_overrides", {})
+        if not isinstance(overrides, dict):
+            raise ProfileError("dataset.coordinate_overrides must be an object")
+        try:
+            from .ina4n_dataset import load_prefecture_with_overrides
+
+            raw = load_prefecture_with_overrides(prefecture, overrides)
+        except RuntimeError as exc:
+            raise ProfileError(str(exc)) from exc
+        return _validate_transmitters(raw)
+    if mode == "snapshot":
+        reject_unknown(dataset, {"schema_version", "mode", "source", "transmitters"}, "dataset")
+        return _validate_transmitters(dataset.get("transmitters"))
+    raise ProfileError("region dataset mode must be live-ina4n or snapshot")
+
+
+def _coverage_match(transmitter: dict[str, Any], municipality: str) -> bool:
+    keys = transmitter.get("coverage_areas", [])
+    return any(isinstance(key, str) and key and key in municipality for key in keys)
+
+
+def _probe_service(transmitter: dict[str, Any]) -> dict[str, Any]:
+    services = [dict(item) for item in transmitter["services"] if isinstance(item, dict)]
+    services.sort(
+        key=lambda item: (
+            0 if item.get("output_w") is not None else 1,
+            -float(item["output_w"]) if item.get("output_w") is not None else 0.0,
+            int(item["remote_control_key_id"]),
+            int(item["physical_channel"]),
+            str(item["name"]),
+        )
+    )
+    return services[0]
+
+
+def _ranked_candidates(
+    coordinate: tuple[float, float],
+    municipality: str,
+    transmitters: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    ranked: list[
+        tuple[
+            tuple[Any, ...],
+            dict[str, Any],
+            dict[str, Any],
+            float | None,
+            float | None,
+            bool,
+        ]
+    ] = []
+    for transmitter in transmitters:
+        latitude = transmitter.get("latitude")
+        longitude = transmitter.get("longitude")
+        distance: float | None = None
+        if latitude is not None and longitude is not None:
+            distance = _distance_km(coordinate, (float(latitude), float(longitude)))
+        service = _probe_service(transmitter)
+        raw_output = service.get("output_w")
+        score = (
+            float(raw_output) / max(distance, MIN_DISTANCE_KM) ** 2
+            if raw_output is not None and distance is not None
+            else None
+        )
+        coverage = _coverage_match(transmitter, municipality)
+        if coverage and score is not None:
+            rank_class = 0
+        elif coverage and distance is not None:
+            rank_class = 1
+        elif coverage:
+            rank_class = 2
+        elif score is not None:
+            rank_class = 3
+        elif distance is not None:
+            rank_class = 4
+        else:
+            rank_class = 5
+        rank = (
+            rank_class,
+            -score if score is not None else 0.0,
+            distance if distance is not None else float("inf"),
+            str(transmitter["id"]),
+        )
+        ranked.append((rank, transmitter, service, distance, score, coverage))
+    ranked.sort(key=lambda item: item[0])
+
+    candidates: list[dict[str, Any]] = []
+    seen_frequencies: set[int] = set()
+    for _, transmitter, service, distance, score, coverage in ranked:
+        channel = _current_channel(service["physical_channel"], "candidate physical_channel")
+        frequency = _frequency_for_channel(channel)
+        if frequency in seen_frequencies:
+            continue
+        seen_frequencies.add(frequency)
+        if score is not None:
+            basis = "coverage+inverse-square" if coverage else "inverse-square"
+            detail = f"{distance:.1f}km {basis} score={score:.6g}"
+        elif distance is not None:
+            basis = "coverage+distance-no-output" if coverage else "distance-no-output"
+            detail = f"{distance:.1f}km {basis}"
+        else:
+            basis = "coverage-no-coordinate" if coverage else "no-coordinate"
+            detail = basis
+        candidates.append(
+            {
+                "delivery_system": "ISDBT",
+                "physical_channel": channel,
+                "frequency_hz": frequency,
+                "label": f"{transmitter['name']} {service['name']} {detail}",
+            }
+        )
+    return candidates
 
 
 def _snapshot_candidates(profile: dict[str, Any], dataset: dict[str, Any]) -> list[dict[str, Any]]:
-    reject_unknown(dataset, {"schema_version", "source", "prefectures"}, "dataset")
-    if dataset.get("schema_version") != 2:
-        raise ProfileError("region dataset schema_version must be 2")
-    source = require_dict(dataset.get("source"), "dataset.source")
-    reject_unknown(source, {"index_url", "source_notice"}, "dataset.source")
-    prefectures = require_dict(dataset.get("prefectures"), "dataset.prefectures")
-
     region = require_dict(profile.get("region"), "region")
     query = region.get("query")
     if not isinstance(query, str) or not query.strip():
         raise ProfileError("region.query is required for resolve-region")
     if profile["frontend"]["type"] != "ISDBT":
-        raise ProfileError("regional channel dataset is only valid for ISDBT")
-
-    if query.strip() in JAPAN_PREFECTURES:
-        prefecture = query.strip()
-        prefecture_data = require_dict(prefectures.get(prefecture), f"dataset.prefectures[{prefecture!r}]")
-        channel_labels = {
-            _current_channel(channel, f"dataset prefecture {prefecture} channel"): {prefecture}
-            for channel in prefecture_data.get("prefecture_channels", [])
-        }
-    else:
-        channel_labels: dict[int, set[str]] = {}
-        for coordinate in _region_coordinates(query):
-            prefecture, municipality = _coordinate_area(coordinate)
-            channels, label = _channels_for_area(prefecture, municipality, prefectures)
-            for channel in channels:
-                channel_labels.setdefault(channel, set()).add(label)
-
-    if not channel_labels:
-        raise ProfileError(f"region dataset has no ISDBT channels for {query!r}")
-    return [
-        {
-            "delivery_system": "ISDBT",
-            "physical_channel": channel,
-            "frequency_hz": _frequency_for_channel(channel),
-            "label": f"{'/'.join(sorted(channel_labels[channel]))} ch{channel}",
-        }
-        for channel in sorted(channel_labels)
-    ]
+        raise ProfileError("regional transmitter dataset is only valid for ISDBT")
+    candidates_by_frequency: dict[int, dict[str, Any]] = {}
+    for coordinate in _region_coordinates(query):
+        prefecture, municipality = _coordinate_area(coordinate)
+        transmitters = _dataset_transmitters(dataset, prefecture)
+        for candidate in _ranked_candidates(coordinate, municipality, transmitters):
+            frequency = int(candidate["frequency_hz"])
+            candidates_by_frequency.setdefault(frequency, candidate)
+    return list(candidates_by_frequency.values())
 
 
 def resolve_region(
@@ -268,18 +456,13 @@ def resolve_region(
     query = region.get("query")
     if not isinstance(query, str) or not query.strip():
         raise ProfileError("region.query is required for resolve-region")
-
     if dataset is None:
         if not DEFAULT_REGION_DATASET.is_file():
             raise ProfileError(f"built-in region dataset is missing: {DEFAULT_REGION_DATASET}")
         dataset = load_json(DEFAULT_REGION_DATASET)
-
-    if dataset.get("schema_version") != 2:
-        raise ProfileError("dataset.schema_version must be 2")
     matches = _snapshot_candidates(profile, dataset)
     if not matches:
         raise ProfileError(f"no {profile['frontend']['type']} candidates found for region {query!r}")
-    matches.sort(key=lambda item: (item["frequency_hz"], item.get("physical_channel") or 0, item["label"]))
     region["candidates"] = matches
     if select_index is not None:
         select_candidate(profile, select_index)

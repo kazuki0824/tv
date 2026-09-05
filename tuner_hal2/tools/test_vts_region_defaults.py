@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import json
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 
-from vts_profile.cli import DEFAULT_RECORD_DVR_BYTES, DEFAULT_RECORD_FILTER_BYTES, _new_profile
 from vts_profile.model import ProfileError
-from vts_profile.region import DEFAULT_REGION_DATASET, resolve_region
+from vts_profile.region import DEFAULT_REGION_DATASET, _distance_km, resolve_region
 
 
 def _profile(region: str) -> dict:
@@ -46,120 +44,223 @@ def _profile(region: str) -> dict:
     }
 
 
-def _channels(profile: dict) -> list[int]:
-    return [item["physical_channel"] for item in profile["region"]["candidates"]]
+def _service(
+    name: str,
+    remote: int,
+    channel: int,
+    output_w: float | None,
+    *,
+    polarization: str | None = "水平",
+) -> dict:
+    return {
+        "name": name,
+        "remote_control_key_id": remote,
+        "physical_channel": channel,
+        "polarization": polarization,
+        "output_text": "" if output_w is None else f"{output_w}W",
+        "output_w": output_w,
+    }
+
+
+def _transmitter(
+    transmitter_id: str,
+    name: str,
+    latitude: float | None,
+    longitude: float | None,
+    channel: int,
+    output_w: float | None,
+    *,
+    coverage_areas: list[str] | None = None,
+    prefecture: str = "神奈川県",
+) -> dict:
+    return {
+        "id": transmitter_id,
+        "prefecture": prefecture,
+        "name": name,
+        "source_url": f"https://ina4n.example/{transmitter_id}",
+        "location_text": name,
+        "latitude": latitude,
+        "longitude": longitude,
+        "coordinate_source": "fixture" if latitude is not None else None,
+        "coverage_texts": list(coverage_areas or []),
+        "coverage_areas": list(coverage_areas or []),
+        "services": [_service("NHK総合", 1, channel, output_w)],
+    }
+
+
+def _dataset(*transmitters: dict) -> dict:
+    return {
+        "schema_version": 3,
+        "mode": "snapshot",
+        "source": {
+            "index_url": "https://ina4n.example/index",
+            "source_notice": "INA4N fixture",
+        },
+        "transmitters": list(transmitters),
+    }
 
 
 class VtsRegionDefaultsTest(unittest.TestCase):
-    def test_bundled_dataset_has_all_prefectures_and_current_channels_only(self) -> None:
+    def test_bundled_dataset_is_live_ina4n_descriptor(self) -> None:
         dataset = json.loads(DEFAULT_REGION_DATASET.read_text(encoding="utf-8"))
-        self.assertEqual(dataset["schema_version"], 2)
-        self.assertNotIn("dataset_version", dataset)
-        self.assertEqual(len(dataset["prefectures"]), 47)
-        for prefecture in dataset["prefectures"].values():
-            channels = prefecture["prefecture_channels"]
-            self.assertTrue(channels)
-            self.assertTrue(all(13 <= channel <= 52 for channel in channels))
+        self.assertEqual(dataset["schema_version"], 3)
+        self.assertEqual(dataset["mode"], "live-ina4n")
+        self.assertIn("INA4N", dataset["source"]["source_notice"])
+        self.assertEqual(dataset["coordinate_overrides"], {})
+        self.assertNotIn("prefecture_channels", json.dumps(dataset, ensure_ascii=False))
+        self.assertNotIn("transmitters", dataset)
 
-    def test_address_is_geocoded_to_coordinate_before_area_lookup(self) -> None:
-        profile = _profile("大阪府大阪市中央区大阪城1-1")
-        with (
-            patch("vts_profile.region._geocode_address", return_value=(34.6873, 135.5262)) as geocode,
-            patch("vts_profile.region._coordinate_area", return_value=("大阪府", "大阪市中央区")) as area,
-        ):
-            resolve_region(profile)
-        geocode.assert_called_once_with("大阪府大阪市中央区大阪城1-1")
-        area.assert_called_once_with((34.6873, 135.5262))
-        self.assertEqual(_channels(profile), [13, 14, 15, 16, 17, 18, 24])
-
-    def test_plain_coordinate_uses_same_area_lookup(self) -> None:
-        profile = _profile("34.6873,135.5262")
-        with patch("vts_profile.region._coordinate_area", return_value=("大阪府", "大阪市中央区")):
-            resolve_region(profile)
-        self.assertEqual(_channels(profile), [13, 14, 15, 16, 17, 18, 24])
-
-    def test_prefixed_coordinate_is_supported(self) -> None:
-        profile = _profile("latlon:34.6873,135.5262")
-        with patch("vts_profile.region._coordinate_area", return_value=("大阪府", "大阪市中央区")):
-            resolve_region(profile)
-        self.assertEqual(_channels(profile), [13, 14, 15, 16, 17, 18, 24])
-
-    def test_postal_code_is_geocoded_then_uses_same_area_lookup(self) -> None:
-        profile = _profile("540-0002")
-        with (
-            patch("vts_profile.region._postal_addresses", return_value={"5400002": {"大阪府大阪市中央区大阪城"}}),
-            patch("vts_profile.region._geocode_address", return_value=(34.6873, 135.5262)),
-            patch("vts_profile.region._coordinate_area", return_value=("大阪府", "大阪市中央区")),
-        ):
-            resolve_region(profile)
-        self.assertEqual(_channels(profile), [13, 14, 15, 16, 17, 18, 24])
-
-    def test_prefixed_postal_code_is_supported(self) -> None:
-        profile = _profile("postal:5400002")
-        with (
-            patch("vts_profile.region._postal_addresses", return_value={"5400002": {"大阪府大阪市中央区大阪城"}}),
-            patch("vts_profile.region._geocode_address", return_value=(34.6873, 135.5262)),
-            patch("vts_profile.region._coordinate_area", return_value=("大阪府", "大阪市中央区")),
-        ):
-            resolve_region(profile)
-        self.assertEqual(_channels(profile), [13, 14, 15, 16, 17, 18, 24])
-
-    def test_prefecture_only_input_uses_prefecture_union(self) -> None:
-        profile = _profile("大阪府")
-        dataset = json.loads(DEFAULT_REGION_DATASET.read_text(encoding="utf-8"))
-        expected = dataset["prefectures"]["大阪府"]["prefecture_channels"]
-        resolve_region(profile)
-        self.assertEqual(_channels(profile), expected)
-
-    def test_longest_coverage_area_match_is_used(self) -> None:
-        dataset = {
-            "schema_version": 2,
-            "source": {"index_url": "fixture", "source_notice": "fixture"},
-            "prefectures": {
-                "大阪府": {
-                    "source_url": "fixture",
-                    "default_channels": [13],
-                    "prefecture_channels": [13, 14, 15],
-                    "areas": {"大阪市": [13, 14], "大阪市中央区": [15]},
-                }
-            },
+    def test_live_descriptor_loads_only_resolved_prefecture(self) -> None:
+        profile = _profile("鹿児島県枕崎市")
+        live = {
+            "schema_version": 3,
+            "mode": "live-ina4n",
+            "source": {"index_url": "https://ina4n.example/index", "source_notice": "INA4N fixture"},
+            "coordinate_overrides": {},
         }
-        profile = _profile("34.6873,135.5262")
-        with patch("vts_profile.region._coordinate_area", return_value=("大阪府", "大阪市中央区")):
+        transmitters = [_transmitter("makurazaki", "枕崎局", 31.27, 130.30, 20, 10.0, prefecture="鹿児島県")]
+        with (
+            patch("vts_profile.region._geocode_address", return_value=(31.27, 130.30)),
+            patch("vts_profile.region._coordinate_area", return_value=("鹿児島県", "枕崎市")),
+            patch(
+                "vts_profile.ina4n_dataset.load_prefecture_with_overrides",
+                return_value=transmitters,
+            ) as loader,
+        ):
+            resolve_region(profile, live)
+        loader.assert_called_once_with("鹿児島県", {})
+        self.assertIn("枕崎局", profile["region"]["candidates"][0]["label"])
+
+    def test_prefecture_only_input_is_rejected_as_too_coarse(self) -> None:
+        with self.assertRaisesRegex(ProfileError, "prefecture-only region input is too coarse"):
+            resolve_region(
+                _profile("神奈川県"),
+                _dataset(_transmitter("tx", "局", 35.0, 139.0, 20, 1.0)),
+            )
+
+    def test_address_is_geocoded_then_coverage_evidence_wins(self) -> None:
+        profile = _profile("兵庫県神戸市北区鈴蘭台")
+        dataset = _dataset(
+            _transmitter(
+                "coverage",
+                "鈴蘭台近傍局",
+                34.75,
+                135.15,
+                21,
+                0.1,
+                coverage_areas=["神戸市"],
+                prefecture="兵庫県",
+            ),
+            _transmitter(
+                "power",
+                "大出力局",
+                34.80,
+                135.20,
+                22,
+                1000.0,
+                prefecture="大阪府",
+            ),
+        )
+        with (
+            patch("vts_profile.region._geocode_address", return_value=(34.73, 135.14)) as geocode,
+            patch("vts_profile.region._coordinate_area", return_value=("兵庫県", "神戸市北区")),
+        ):
             resolve_region(profile, dataset)
-        self.assertEqual(_channels(profile), [15])
+        geocode.assert_called_once_with("兵庫県神戸市北区鈴蘭台")
+        first = profile["region"]["candidates"][0]["label"]
+        self.assertIn("鈴蘭台近傍局", first)
+        self.assertIn("coverage+inverse-square", first)
+
+    def test_no_coverage_match_uses_inverse_square_order(self) -> None:
+        coordinate = (31.27, 130.30)
+        dataset = _dataset(
+            _transmitter("near-low", "近距離小出力", 31.28, 130.30, 20, 1.0, prefecture="鹿児島県"),
+            _transmitter("far-high", "遠距離大出力", 31.45, 130.30, 21, 1000.0, prefecture="熊本県"),
+        )
+        first_score = 1.0 / max(_distance_km(coordinate, (31.28, 130.30)), 0.1) ** 2
+        second_score = 1000.0 / max(_distance_km(coordinate, (31.45, 130.30)), 0.1) ** 2
+        expected_first = "遠距離大出力" if second_score > first_score else "近距離小出力"
+        ranked = _profile("31.27,130.30")
+        with patch("vts_profile.region._coordinate_area", return_value=("鹿児島県", "枕崎市")):
+            resolve_region(ranked, dataset)
+        self.assertIn(expected_first, ranked["region"]["candidates"][0]["label"])
+        self.assertIn("inverse-square", ranked["region"]["candidates"][0]["label"])
+
+    def test_unknown_output_is_retained_with_lower_priority_distance_basis(self) -> None:
+        profile = _profile("31.27,130.30")
+        dataset = _dataset(
+            _transmitter("known", "既知出力局", 31.30, 130.30, 20, 1.0, prefecture="鹿児島県"),
+            _transmitter("unknown", "出力不明局", 31.271, 130.30, 21, None, prefecture="鹿児島県"),
+        )
+        with patch("vts_profile.region._coordinate_area", return_value=("鹿児島県", "枕崎市")):
+            resolve_region(profile, dataset)
+        labels = [item["label"] for item in profile["region"]["candidates"]]
+        self.assertIn("既知出力局", labels[0])
+        self.assertTrue(any("出力不明局" in label and "distance-no-output" in label for label in labels))
+
+    def test_unknown_coordinate_is_retained_when_coverage_matches(self) -> None:
+        profile = _profile("34.73,135.14")
+        dataset = _dataset(
+            _transmitter(
+                "unknown-coordinate",
+                "座標不明局",
+                None,
+                None,
+                21,
+                1.0,
+                coverage_areas=["神戸市"],
+                prefecture="兵庫県",
+            )
+        )
+        with patch("vts_profile.region._coordinate_area", return_value=("兵庫県", "神戸市北区")):
+            resolve_region(profile, dataset)
+        self.assertIn("coverage-no-coordinate", profile["region"]["candidates"][0]["label"])
+
+    def test_one_probe_frequency_is_emitted_per_ranked_transmitter(self) -> None:
+        profile = _profile("35.0,139.0")
+        transmitter = _transmitter("multi", "多波局", 35.01, 139.0, 20, 10.0)
+        transmitter["services"] = [
+            _service("低出力", 1, 20, 1.0),
+            _service("高出力", 4, 21, 10.0),
+            _service("同出力優先順位後", 5, 22, 10.0),
+        ]
+        with patch("vts_profile.region._coordinate_area", return_value=("東京都", "千代田区")):
+            resolve_region(profile, _dataset(transmitter))
+        candidates = profile["region"]["candidates"]
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["physical_channel"], 21)
+        self.assertIn("高出力", candidates[0]["label"])
+
+    def test_duplicate_frequency_from_different_transmitters_is_probed_once(self) -> None:
+        profile = _profile("35.0,139.0")
+        dataset = _dataset(
+            _transmitter("a", "A局", 35.01, 139.0, 20, 10.0),
+            _transmitter("b", "B局", 35.02, 139.0, 20, 5.0),
+        )
+        with patch("vts_profile.region._coordinate_area", return_value=("東京都", "千代田区")):
+            resolve_region(profile, dataset)
+        self.assertEqual(len(profile["region"]["candidates"]), 1)
+        self.assertIn("A局", profile["region"]["candidates"][0]["label"])
+
+    def test_invalid_dataset_schema_is_fail_closed(self) -> None:
+        profile = _profile("35.0,139.0")
+        with patch("vts_profile.region._coordinate_area", return_value=("東京都", "千代田区")):
+            with self.assertRaisesRegex(ProfileError, "schema_version must be 3"):
+                resolve_region(profile, {"schema_version": 1, "source": {}, "transmitters": []})
 
     def test_invalid_postal_code_is_fail_closed(self) -> None:
         with self.assertRaises(ProfileError):
-            resolve_region(_profile("postal:123"))
+            resolve_region(
+                _profile("postal:123"),
+                _dataset(_transmitter("tx", "局", 35.0, 139.0, 20, 1.0)),
+            )
 
     def test_invalid_coordinates_are_fail_closed(self) -> None:
         with self.assertRaises(ProfileError):
-            resolve_region(_profile("latlon:91,135"))
-
-    def test_record_buffers_default_to_aosp_vts_sample_values(self) -> None:
-        args = SimpleNamespace(
-            non_interactive=True, backend="px4", product="default", delivery_system="ISDBT",
-            vts_source_ref="aosp-commit", region="大阪府大阪市中央区大阪城1-1", frequency_hz=None,
-            service_id=None, record="yes", record_pid=None, scan="yes", record_filter_bytes=None,
-            record_dvr_bytes=None, variant="",
-        )
-        profile = _new_profile(args)
-        self.assertEqual(profile["queues"]["record_filter_bytes"], DEFAULT_RECORD_FILTER_BYTES)
-        self.assertEqual(profile["queues"]["record_dvr_bytes"], DEFAULT_RECORD_DVR_BYTES)
-        self.assertEqual(DEFAULT_RECORD_FILTER_BYTES, 16 * 1024 * 1024)
-        self.assertEqual(DEFAULT_RECORD_DVR_BYTES, 4 * 1024 * 1024)
-
-    def test_record_buffer_defaults_can_be_overridden(self) -> None:
-        args = SimpleNamespace(
-            non_interactive=True, backend="px4", product="default", delivery_system="ISDBT",
-            vts_source_ref="aosp-commit", region="大阪府大阪市中央区大阪城1-1", frequency_hz=None,
-            service_id=None, record="yes", record_pid=None, scan="yes", record_filter_bytes=1_048_576,
-            record_dvr_bytes=2_097_152, variant="",
-        )
-        profile = _new_profile(args)
-        self.assertEqual(profile["queues"]["record_filter_bytes"], 1_048_576)
-        self.assertEqual(profile["queues"]["record_dvr_bytes"], 2_097_152)
+            resolve_region(
+                _profile("latlon:91,135"),
+                _dataset(_transmitter("tx", "局", 35.0, 139.0, 20, 1.0)),
+            )
 
 
 if __name__ == "__main__":

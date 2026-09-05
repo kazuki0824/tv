@@ -137,20 +137,56 @@ class VtsProfileTest(unittest.TestCase):
 
     def test_region_resolution_and_selection_update_same_profile(self) -> None:
         profile = self.profile(resolved=False)
-        profile["region"] = {"query": "大阪府", "candidates": []}
+        profile["region"] = {"query": "34.6873,135.5262", "candidates": []}
         dataset = {
-            "schema_version": 2,
-            "source": {"index_url": "fixture", "source_notice": "fixture"},
-            "prefectures": {
-                "大阪府": {
-                    "source_url": "fixture",
-                    "default_channels": [22, 27],
-                    "prefecture_channels": [22, 27],
-                    "areas": {"大阪市": [22, 27]},
-                }
-            },
+            "schema_version": 3,
+            "mode": "snapshot",
+            "source": {"index_url": "fixture", "source_notice": "INA4N fixture"},
+            "transmitters": [
+                {
+                    "id": "osaka/a",
+                    "prefecture": "大阪府",
+                    "name": "大阪A局",
+                    "source_url": "https://ina4n.example/a",
+                    "location_text": "大阪A局",
+                    "latitude": 34.6874,
+                    "longitude": 135.5262,
+                    "coordinate_source": "fixture",
+                    "coverage_texts": ["大阪市の一部"],
+                    "coverage_areas": ["大阪市"],
+                    "services": [{
+                        "name": "A放送",
+                        "remote_control_key_id": 1,
+                        "physical_channel": 22,
+                        "polarization": "水平",
+                        "output_text": "10W",
+                        "output_w": 10.0,
+                    }],
+                },
+                {
+                    "id": "osaka/b",
+                    "prefecture": "大阪府",
+                    "name": "大阪B局",
+                    "source_url": "https://ina4n.example/b",
+                    "location_text": "大阪B局",
+                    "latitude": 34.6973,
+                    "longitude": 135.5262,
+                    "coordinate_source": "fixture",
+                    "coverage_texts": ["大阪市の一部"],
+                    "coverage_areas": ["大阪市"],
+                    "services": [{
+                        "name": "B放送",
+                        "remote_control_key_id": 2,
+                        "physical_channel": 27,
+                        "polarization": "水平",
+                        "output_text": "1W",
+                        "output_w": 1.0,
+                    }],
+                },
+            ],
         }
-        resolve_region(profile, dataset)
+        with patch("vts_profile.region._coordinate_area", return_value=("大阪府", "大阪市中央区")):
+            resolve_region(profile, dataset)
         self.assertEqual(len(profile["region"]["candidates"]), 2)
         select_candidate(profile, 1)
         self.assertEqual(profile["frontend"]["frequency_hz"], 557142857)
