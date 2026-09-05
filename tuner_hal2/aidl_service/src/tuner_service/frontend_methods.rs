@@ -126,7 +126,9 @@ fn enforce_frontend_product_profile(
 fn validate_converted_frontend_request(
     converted: &FrontendSettingsRequest,
 ) -> Result<(), HalError> {
-    maleicacid_tuner_hal2_service_runtime::validate_frontend_request_semantics(&converted.request)?;
+    maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::validate_frontend_request_semantics(
+        &converted.request,
+    )?;
     enforce_frontend_product_profile(&converted.requested_settings)
 }
 
@@ -310,8 +312,7 @@ impl IFrontend for FrontendAidlObject {
         match execute_object_query_use_case(
             &self.runtime(),
             self.handle(),
-            ObjectQueryRequest::FrontendGetHardwareInfo {
-            },
+            ObjectQueryRequest::FrontendGetHardwareInfo,
         )? {
             ObjectQueryResponse::FrontendHardwareInfo(hardware_info) => Ok(hardware_info),
             _ => Err(status_unknown_error(
@@ -356,5 +357,43 @@ impl IFrontend for FrontendAidlObject {
                 "unexpected object query response for Frontend.getFrontendStatusReadiness",
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maleicacid_tuner_hal2_common::{
+        FrontendIsdbtLayerSetting, FrontendIsdbtPartialReceptionRequirement,
+        FrontendIsdbtSegmentRequest, FrontendSystem, FrontendTuneRequest,
+    };
+
+    #[test]
+    fn semantic_invalid_precedes_product_unavailable() {
+        let converted = FrontendSettingsRequest {
+            request: FrontendTuneRequest {
+                system: FrontendSystem::IsdbT,
+                frequency: 473_142_857,
+                end_frequency: None,
+                stream_id: None,
+                stream_id_kind: None,
+                bandwidth_hz: Some(6_000_000),
+                symbol_rate: None,
+                isdbt_layer_settings: vec![
+                    FrontendIsdbtLayerSetting {
+                        num_of_segment: FrontendIsdbtSegmentRequest::Unspecified,
+                    };
+                    4
+                ],
+                partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+            },
+            requested_settings: vec![FrontendRequestedSetting::IsdbtExplicitMode { value: 1 }],
+        };
+
+        let error = validate_converted_frontend_request(&converted).unwrap_err();
+        assert_eq!(
+            error.invalid_argument_kind(),
+            Some(HalInvalidArgumentKind::NumericRange)
+        );
     }
 }
