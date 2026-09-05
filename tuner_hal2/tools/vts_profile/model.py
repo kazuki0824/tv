@@ -7,6 +7,7 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 SUPPORTED_VTS_CONTRACT = "android14-aidl-v1"
+DEFAULT_TRANSMITTER_CANDIDATE_COUNT = 2
 RECORD_FILTER_FMQ_PROBE_VARIANT = "record-filter-fmq"
 FRONTEND_ID = {"ISDBT": "FE_ISDBT_0", "ISDBS": "FE_ISDBS_0"}
 LNB_VOLTAGES = {"NONE", "VOLTAGE_11V", "VOLTAGE_15V"}
@@ -18,7 +19,7 @@ _FRONTEND = {
     "type", "is_software_frontend", "frequency_hz", "physical_channel",
     "stream_id", "stream_id_type", "symbol_rate", "modulation", "coderate", "rolloff",
 }
-_REGION = {"query", "candidates"}
+_REGION = {"query", "transmitter_candidate_count", "candidates"}
 _CANDIDATE = {"delivery_system", "physical_channel", "frequency_hz", "label"}
 _SERVICE = {"service_id"}
 _FLOWS = {"scan", "record", "clear_live", "playback"}
@@ -71,6 +72,12 @@ def validate_pid(value: Any, name: str) -> int:
     if pid > 0x1FFF:
         raise ProfileError(f"{name} must be in 0..8191")
     return pid
+
+
+def natural_number(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ProfileError(f"{name} must be a natural number (integer >= 1)")
+    return value
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -167,6 +174,10 @@ def validate_profile(profile: dict[str, Any], *, require_resolved: bool = False)
         reject_unknown(region, _REGION, "region")
         if not isinstance(region.get("query"), str) or not region["query"].strip():
             raise ProfileError("region.query must be a non-empty string")
+        natural_number(
+            region.get("transmitter_candidate_count", DEFAULT_TRANSMITTER_CANDIDATE_COUNT),
+            "region.transmitter_candidate_count",
+        )
         candidates = region.get("candidates", [])
         if not isinstance(candidates, list):
             raise ProfileError("region.candidates must be an array")

@@ -172,6 +172,7 @@ init            対話入力から単一VtsEnvironmentProfileファイルを新�
 resolve-region  同じファイルの地域入力から受信候補集合を生成して同じファイルへ保存する
 resolve-device  public Tuner AIDLと受信TSを使って実機依存値を解決し同じファイルへ保存する
 compile         同じファイルだけを入力に検証しAOSP Tuner VTS XMLを生成する
+install-device  compile済みVTS XMLをadb root/remount可能な試験端末の解決済みvendor pathへ配置する
 ```
 
 `init` は実機接続を前提にしない。AOSP/VTS契約識別、対象backend/product、受信方式、明示入力または地域入力、要求するVTS flow、queue要求等、入力時点で確定できる値を対話的に取得し、未確定項目を架空値で埋めずにprofileを保存する。必要入力が揃っていないprofileは `../tuner_hal/DESIGN_JA.md` の `VTS-STATE-UNBOUND` 判定に従い、保存可能であっても静的VTS XMLをinstall可能とは扱わない。
@@ -182,17 +183,27 @@ CLIと生成profileのtargetはproduct defaultである`tuner_hal2`に固定す�
 
 ### 6.4 地域入力からの受信候補解決と実機解決
 
-`init`では具体的な受信チャンネルを必須入力にせず、地上波では地域指定から候補を導出できる。地域入力は住所、郵便番号、緯度経度を表現可能とし、都道府県等の粗い入力で複数候補が残る場合は候補集合を同じprofileファイルに保存して一意の周波数を捏造しない。
+`init`では具体的な受信チャンネルを必須入力にせず、地上波では住所、郵便番号、緯度経度から、実機VTS確認を開始するための少数の受信候補を導出する。都道府県名だけでは地点ごとの距離を一意に定められないため、県内全送信所の物理ch和集合へ拡大せずfail-closedで拒否する。
 
-住所と郵便番号はまず緯度経度へ解決し、緯度経度入力はその座標を直接使用する。都道府県だけを明示した粗い入力を除き、以後の地上波候補解決は座標を共通の中間表現とする。座標からGSI reverse geocoderで市区町村コードを取得し、そのコードに対応する行政エリアを放送エリア/チャンネル計画datasetの「主なカバーエリア」と照合して物理チャンネル候補を生成する。住所文字列を直接channel-planのarea keyへsubstring照合する経路、住所を町丁目・番地まで正規化してから再び文字列照合する経路は設けない。
+住所入力はGSIの全国市区町村表で行政区域をcanonicalizeしてからGSI AddressSearchへ渡す。都道府県名が省略され、入力先頭が`横浜市緑区`や`座間市`のような市区町村名と全国で一意に一致する場合は対応する都道府県名を補完する。`府中市`のように最長一致する市区町村名が複数都道府県に存在する場合は推測で選ばずfail-closedとし、都道府県名の入力を要求する。市区町村prefixが得られない自由形式住所は補完せず、その文字列をGSIへ渡し、GSIが一意の座標を返せない場合はfail-closedとする。
 
-地域resolverは、放送エリア/チャンネル計画datasetを入力とする。dataset versionの識別規格は設けず、`VtsEnvironmentProfile`にもdataset versionまたはdataset識別情報を永続化しない。resolverはその実行で使用するdatasetから受信候補を生成する。
+住所と郵便番号はGSIで緯度経度へ解決し、緯度経度入力はその座標を直接使用する。入力住所の都道府県を送信所探索境界にしてはならない。
 
-現在利用できる公開データは送信波の正確な受信可能polygonを提供するものではないため、行政エリアと「主なカバーエリア」の対応は候補生成だけに使用する。地上波の地域resolverが生成してよいのは、送信所または受信エリアに対応するdelivery system、物理チャンネル、frequency等の**受信候補**である。候補に含まれることを、その地点・アンテナ・配線・tunerで実際に受信可能である証明として扱わない。BS/110度CS等、地域による送信周波数候補の選択を必要としない方式では、地域情報を周波数選択の擬似根拠にせず、対象transport候補表から候補を構成する。
+地上波候補の放送情報正本はINA4Nの公開地上デジタル中継局ページに固定する。region resolverは47都道府県のINA4N周波数ページと送信所詳細ページを全国送信所集合として取得し、送信所名、詳細URL、放送局別物理ch、偏波、出力、INA4N記載の「主なカバーエリア」原文、所在地を送信所単位で保持する。県境を越えた受信を候補から除外しない。`prefecture_channels`のような県内全送信所の物理ch和集合を通常候補生成の正本にしてはならない。
 
-service ID、PMT PID、audio/video/record PID等のTS内識別値を地域情報から推定して確定してはならない。実機接続後、`resolve-device`はprofile内の候補frontend/frequencyへpublic Tuner AIDLでtuneし、LOCKEDを確認したTSからPATを取得してserviceとPMT PIDを解決し、PMTから要求flowに必要なES PIDを解決する。解決したfrequency、service、PAT/PMTに基づくPID等は同じ`VtsEnvironmentProfile`ファイルの対応項目へ保存し、別のresolutionファイルを生成しない。
+INA4Nで偏波または出力が空欄の場合はunknownのまま保持し、既定値を捏造しない。物理chが有効なのに出力・偏波だけがunknownという理由で送信所を候補datasetから削除してはならない。現行ISDB-T物理chを1件も持たない旧局等はVTS受信候補ではないため候補datasetから除外してよい。
 
-要求flowを満たすservice候補が1件ならそのserviceを採用してよい。複数存在する場合は対話CLIで選択させるか、profileに明示されたselectorで決定する。非対話実行で複数候補が残りselectorがない場合はfail-closedとし、偶然の列挙順からserviceを選ばない。
+送信所座標はINA4N詳細ページの地図リンクに埋め込まれた座標を第一選択とする。INA4Nに座標リンクがない場合は、同一局であることを人間が確認したA-PAB公開UIの局位置を`coordinate_overrides`へ明示して補完してよい。A-PABから物理ch、出力、偏波を取り込んではならない。A-PAB overrideがない場合はINA4N所在地文字列をGSIでgeocodeしてよい。これらでも座標が得られない場合、座標unknownのまま送信所を保持する。
+
+各送信所では、既知出力が最大のcurrent ISDB-T serviceを代表probe serviceとする。全serviceの出力がunknownならremote-control key、物理ch、service名の順で決定的に1件を選ぶ。region resolverは代表probe serviceのINA4N記載送信出力`P[W]`と入力地点から送信所までの大円距離`d[km]`について`P / max(d, 0.1)^2`を計算し、値が計算できる送信所をscore降順に並べる。出力unknownで座標既知の送信所は既知score群の後ろで距離昇順、座標unknownの送信所は最後尾とする。`P/d^2`と距離は実機確認の探索順を決めるheuristicに限定し、受信電界強度、ERP/EIRP、terrain、建物、アンテナ高を含む受信可能性の証明として扱わない。INA4N「主なカバーエリア」は順位付けに使用しない。
+
+`region.transmitter_candidate_count`はregion resolverが採用する送信所数`k`を表すresolver入力であり、自然数（1以上の整数）だけを受理する。既定値は`2`とする。`0`、負数、浮動小数、文字列その他の自然数でない値はfail-closedで拒否する。対話`init`は地域入力があるISDB-T profileで`k`を尋ね、未入力なら`2`を保存する。`resolve-region -k N`で明示的に上書きしてよい。
+
+region resolverは全国送信所を上記規則で順位付けした後、まず上位`k`送信所を確定し、その各送信所について代表probe serviceの物理chを1件ずつ候補化する。同一送信所の別物理chをfallback channelとして展開してはならない。上位`k`送信所の中で同一frequencyが重複した場合、同じTune操作を重複実行する意味がないため最初の1件だけを保持するが、その重複を埋めるために`k`位より下の送信所を繰り上げてはならない。したがって`k`は物理ch数や一意frequency数ではなく採用送信所数を表し、実際のTune候補数は`k`以下となる。
+
+`resolve-region`が生成するのはVTS実機確認を開始するための順位付き受信候補であり、service ID、PMT PID、audio/video/record PID等のTS内識別値を地域情報から推定して確定してはならない。実機接続後、`resolve-device`はpublic Tuner AIDLで候補frequencyを順位順にtuneし、LOCKEDを確認したTSからPATを取得してserviceとPMT PIDを解決し、PMTから要求flowに必要なES PIDを解決する。解決したfrequency、service、PAT/PMTに基づくPID等は同じ`VtsEnvironmentProfile`へ保存する。
+
+要求flowを満たすservice候補が1件ならそのserviceを採用してよい。複数存在する場合は対話CLIで選択させるか、profileに明示されたselectorで決定する。非対話実行で複数候補が残りselectorがない場合はfail-closedとし、偶然の列挙順からserviceを選ばない。service選択のambiguityは受信frequencyの失敗ではないため、別frequencyへ自動fallbackする理由にしてはならない。
 
 具体的なfrontend/frequency/PIDからXMLを生成した後、VTS preflight失敗を理由に別候補へ自動fallbackして同じ生成物の意味を変えてはならない。別候補を採用する場合は`resolve-device`で同じprofileファイルの解決値を更新し、その更新後profileからXMLを再生成する。
 
@@ -227,9 +238,13 @@ agentの論理責務・禁止責務、C++をFMQ descriptor import/read境界へ�
 
 ### 6.7 生成物とproduct配置
 
-生成されるAOSP Tuner VTS XMLはderived artifactであり、`VtsEnvironmentProfile`と同格の正本ではない。product integrationは、`../tuner_hal/DESIGN_JA.md`のfilename解決契約で得た解決済みfilenameを使用して、生成・検証済みXMLをproduct build graph経由でvendor imageへ正確に1個installする。`PRODUCT_COPY_FILES`、生成済みconfig moduleその他の具体的なbuild mechanismは、この一意なinstall契約を満たす限り実装詳細とする。
+生成されるAOSP Tuner VTS XMLはderived artifactであり、`VtsEnvironmentProfile`と同格の正本ではない。恒久的・再現可能なproduct imageへの配置は、`../tuner_hal/DESIGN_JA.md`のfilename解決契約で得た解決済みfilenameを使用し、生成・検証済みXMLをproduct build graph経由でvendor imageへ正確に1個installする。`PRODUCT_COPY_FILES`、生成済みconfig moduleその他の具体的なbuild mechanismは、この一意なinstall契約を満たす限り実装詳細とする。
 
-variantを使用する場合、variant propertyの値と生成XML filenameは同一`VtsEnvironmentProfile`の入力から導出し、product makefile側で別値を独立定義しない。variantを使用しない場合も、その判断は同じprofileから導出し、別のproduct設定面を設けない。
+実機VTSの反復確認では、compile後に必ずAndroidを再build/reflashすることを要求しない。対象端末で`adb root`後のadbdが実際にuid 0となり、`adb remount`でvendor側へ書き込み可能な状態を確立できる場合、`install-device`はcompile済みでprofileから解決されるfilenameと一致するXMLをadb経由で`/vendor/etc/<resolved-filename>`へ配置し、その配置内容を読み戻して一致確認した上でVTSへ進めてよい。このadb配置は試験端末上の反復用経路であり、product imageの恒久的・再現可能な構成をbuild graphから切り離す根拠にはしない。
+
+`install-device`はXMLを生成・補正・再解釈せず、完全解決済みprofileと既存compile成果物だけを受理する。profileから解決されるfilenameとartifact basenameが一致しない場合、`adb root`後もuid 0でない場合、`adb remount`が失敗する場合、push後の読み戻しが一致しない場合はfail-closedとし、未検証XMLを別pathへ配置して回避しない。root/remountできないuser build、AVB/verity構成その他の端末では、このadb経路を使用せずbuild graphへ生成物を接続して再build/reflashする。
+
+variantを使用する場合、variant propertyの値と生成XML filenameは同一`VtsEnvironmentProfile`の入力から導出し、product makefile側で別値を独立定義しない。`ro.vendor.vts_tuner_configuration_variant`はboot後に`install-device`が書き換える設定面にせず、adb配置前に実機のproperty値がprofileのvariantと完全一致することを確認する。不一致の場合はfail-closedとし、propertyをadbで上書きせず、必要なら一致するproduct imageをbuild/flashする。variantを使用しない場合も、実機propertyが空であることを同様に確認する。
 
 `config/product_integration.mk`は、`../tuner_hal/DESIGN_JA.md`のVTS状態契約に従って静的configをinstall可能と判定されたproductだけで、生成・検証済みVTS config artifactをvendor imageへのbuild graphへ接続できる構造にする。artifactを含めないproductでは、推測した既定XMLまたは旧`tuner_hal`のVTS XMLを代用しない。
 
@@ -245,6 +260,7 @@ variantを使用する場合、variant propertyの値と生成XML filenameは同
 - 環境依存値の人間編集入口が単一profileに集約され、生成XMLまたはproduct makefileに同じ値の独立正本がない。
 - AOSP VTS契約とのbuild-time照合、HAL capability/resource contractとの静的照合、AOSP schema検証が自動化されている。
 - 解決済みfilenameへのvendor image installがbuild graphに接続され、生成物が`tuner_hal2`のproduct integrationだけへ属する。
+- adb root/remount可能な試験端末では、同じ解決済みfilenameへcompile成果物を`install-device`で一時配置し、再build/reflashなしでVTS反復確認へ進める。root/remount不可またはvariant property不一致ならbuild graph経路を使用する。
 - VTS設定は`tuner_hal2`の試験設定にだけ使用され、HAL capability、frontend registry、backend probe結果または公開API成功範囲を書き換えない。
 - device preflightとTuner VTS実行手順が`タスク完了判定の実施方法.md`から一意に実行できる。
 

@@ -5,9 +5,12 @@ import os
 import sys
 from pathlib import Path
 
+from .compiler import validated_xml
 from .device import resolve_device
+from .install import install_device
 from .integration import write_product_artifacts
 from .model import (
+    DEFAULT_TRANSMITTER_CANDIDATE_COUNT,
     FRONTEND_ID,
     ProfileError,
     RECORD_FILTER_FMQ_PROBE_VARIANT,
@@ -15,19 +18,20 @@ from .model import (
     SUPPORTED_VTS_CONTRACT,
     load_json,
     load_profile,
+    natural_number,
     positive_int,
     save_profile,
     validate_profile,
 )
 from .region import resolve_region, select_candidate
-from .render import output_filename, render_xml
+from .render import output_filename
 from .resource_closure import (
     DEFAULT_CAPABILITY_SOURCE,
     DEFAULT_PES_SOURCE,
     DEFAULT_PLAYBACK_SOURCE,
     validate_resource_closure,
 )
-from .schema import checkout_commit, selected_xsd, validate_xml
+from .schema import checkout_commit
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_PROFILE = _REPO_ROOT / "tuner_hal2/config/vts_environment_profile.json"
@@ -96,6 +100,28 @@ def _optional_value(args: argparse.Namespace, name: str, label: str) -> str:
     if args.non_interactive:
         return ""
     return input(f"{label} (optional): ").strip()
+
+
+def _natural_number_option(
+    args: argparse.Namespace,
+    name: str,
+    label: str,
+    default: int,
+) -> int:
+    current = getattr(args, name, None)
+    if current is not None:
+        return natural_number(current, name)
+    if args.non_interactive:
+        return default
+    while True:
+        entered = input(f"{label} [{default}]: ").strip()
+        if not entered:
+            return default
+        if entered.isdigit():
+            value = int(entered)
+            if value >= 1:
+                return value
+        print(f"invalid selection: {entered}", file=sys.stderr)
 
 
 def _boolean_option(value: object, name: str, *, default: bool) -> bool:
@@ -180,6 +206,16 @@ def _new_profile(args: argparse.Namespace) -> dict:
         scan_enabled = False
 
     region = _optional_value(args, "region", "region address/postal/latitude,longitude")
+    transmitter_candidate_count = (
+        _natural_number_option(
+            args,
+            "transmitter_candidates",
+            "transmitter candidates",
+            DEFAULT_TRANSMITTER_CANDIDATE_COUNT,
+        )
+        if region and fe_type == "ISDBT"
+        else None
+    )
     frequency = _optional_value(args, "frequency_hz", "frequency Hz")
     service_id = _optional_value(args, "service_id", "service ID")
     record_pid = _optional_value(args, "record_pid", "record PID") if record_enabled else ""
@@ -262,6 +298,8 @@ def _new_profile(args: argparse.Namespace) -> dict:
         }
     if region:
         profile["region"] = {"query": region, "candidates": []}
+        if fe_type == "ISDBT":
+            profile["region"]["transmitter_candidate_count"] = transmitter_candidate_count
     if service_id:
         profile["service"] = {"service_id": int(service_id)}
     validate_profile(profile)
@@ -298,6 +336,13 @@ def cmd_resolve_region(args: argparse.Namespace) -> int:
     path = Path(args.profile)
     profile = load_profile(path)
     validate_profile(profile)
+    if args.transmitter_candidates is not None:
+        region = profile.get("region")
+        if not isinstance(region, dict):
+            raise ProfileError("region is required to override transmitter candidates")
+        region["transmitter_candidate_count"] = natural_number(
+            args.transmitter_candidates, "transmitter_candidates"
+        )
     dataset = load_json(Path(args.dataset)) if args.dataset else None
     resolve_region(profile, dataset, args.select_index)
     save_profile(path, profile)
@@ -335,17 +380,21 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
 def cmd_compile(args: argparse.Namespace) -> int:
     profile = load_profile(Path(args.profile))
-    validate_profile(profile, require_resolved=True)
-    _validate_closure(profile, args)
-    xml = render_xml(profile)
     hardware_interfaces_root = _hardware_interfaces_root(args)
     if hardware_interfaces_root is None:
         raise ProfileError(
             "cannot locate hardware/interfaces checkout; initialize the Android build environment "
             "or pass --hardware-interfaces-root"
         )
-    xsd = selected_xsd(hardware_interfaces_root, profile["vts"]["source_ref"])
-    validate_xml(xml, xsd, xmllint=args.xmllint)
+    xml = validated_xml(
+        profile,
+        hardware_interfaces_root=hardware_interfaces_root,
+        capability_source=Path(args.capability_source),
+        pes_source=Path(args.pes_source),
+        playback_source=Path(args.playback_source),
+        rustc=args.rustc,
+        xmllint=args.xmllint,
+    )
     if args.product_integration_dir:
         if args.output:
             raise ProfileError("--output cannot be combined with --product-integration-dir")
@@ -360,7 +409,47 @@ def cmd_compile(args: argparse.Namespace) -> int:
     return 0
 
 
+def _interactive_service_selector(services: list[dict]) -> int:
+    print("service:")
+    for index, service in enumerate(services, start=1):
+        service_id = int(service["service_id"])
+        pmt_pid = service.get("pmt_pid")
+        streams = service.get("streams")
+        stream_types = sorted(
+            {
+                int(item["stream_type"])
+                for item in streams
+                if isinstance(item, dict) and item.get("stream_type") is not None
+            }
+        ) if isinstance(streams, list) else []
+        print(
+            f"  {index}) service_id={service_id} "
+            f"pmt_pid={pmt_pid if pmt_pid is not None else '-'} "
+            f"stream_types={','.join(hex(value) for value in stream_types) or '-'}"
+        )
+    by_id = {int(item["service_id"]) for item in services}
+    while True:
+        try:
+            entered = input("select: ").strip()
+        except EOFError as exc:
+            raise ProfileError(
+                "service selection requires an interactive choice or --service-id"
+            ) from exc
+        if entered.isdigit():
+            value = int(entered)
+            if 1 <= value <= len(services):
+                return int(services[value - 1]["service_id"])
+            if value in by_id:
+                return value
+        print(f"invalid selection: {entered}", file=sys.stderr)
+
+
 def cmd_resolve_device(args: argparse.Namespace) -> int:
+    service_selector = (
+        _interactive_service_selector
+        if args.service_id is None and sys.stdin.isatty()
+        else None
+    )
     updated = resolve_device(
         Path(args.profile),
         adb=args.adb,
@@ -370,8 +459,33 @@ def cmd_resolve_device(args: argparse.Namespace) -> int:
         si_host=args.si_host,
         timeout_ms=args.timeout_ms,
         candidate_index=args.candidate_index,
+        service_id=args.service_id,
+        service_selector=service_selector,
     )
     print(updated["frontend"]["frequency_hz"])
+    return 0
+
+
+def cmd_install_device(args: argparse.Namespace) -> int:
+    hardware_interfaces_root = _hardware_interfaces_root(args)
+    if hardware_interfaces_root is None:
+        raise ProfileError(
+            "cannot locate hardware/interfaces checkout; initialize the Android build environment "
+            "or pass --hardware-interfaces-root"
+        )
+    remote_path = install_device(
+        Path(args.profile),
+        hardware_interfaces_root=hardware_interfaces_root,
+        adb=args.adb,
+        serial=args.serial,
+        artifact=Path(args.artifact) if args.artifact else None,
+        capability_source=Path(args.capability_source),
+        pes_source=Path(args.pes_source),
+        playback_source=Path(args.playback_source),
+        rustc=args.rustc,
+        xmllint=args.xmllint,
+    )
+    print(remote_path)
     return 0
 
 
@@ -396,6 +510,7 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--product")
     init.add_argument("--delivery-system", choices=sorted(FRONTEND_ID))
     init.add_argument("--region")
+    init.add_argument("-k", "--transmitter-candidates", type=int)
     init.add_argument("--frequency-hz")
     init.add_argument("--service-id")
     init.add_argument("--record")
@@ -449,9 +564,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--dataset",
         help=(
             "optional explicit region dataset; when omitted, ISDBT uses the "
-            "repository snapshot after resolving the region input through coordinates"
+            "built-in live INA4N descriptor and nationwide transmitter loader"
         ),
     )
+    region.add_argument("-k", "--transmitter-candidates", type=int)
     region.add_argument("--select-index", type=int)
     region.set_defaults(func=cmd_resolve_region)
     select = sub.add_parser("select-candidate")
@@ -472,6 +588,18 @@ def build_parser() -> argparse.ArgumentParser:
     compile_cmd.add_argument("--output-dir", default="out/vts")
     compile_cmd.add_argument("--product-integration-dir")
     compile_cmd.set_defaults(func=cmd_compile)
+    install = sub.add_parser("install-device")
+    _add_profile_arg(install)
+    _add_closure_args(install)
+    install.add_argument("--hardware-interfaces-root")
+    install.add_argument("--xmllint", default="xmllint")
+    install.add_argument("--adb", default="adb")
+    install.add_argument("--serial")
+    install.add_argument(
+        "--artifact",
+        help="compiled VTS XML; defaults to out/vts/<profile-resolved filename>",
+    )
+    install.set_defaults(func=cmd_install_device)
     device = sub.add_parser("resolve-device")
     _add_profile_arg(device)
     device.add_argument("--adb", default="adb")
@@ -482,6 +610,11 @@ def build_parser() -> argparse.ArgumentParser:
     device.add_argument("--si-host", default="maleicacid_arib_si_engine_vts_host")
     device.add_argument("--timeout-ms", type=int, default=5000)
     device.add_argument("--candidate-index", type=int)
+    device.add_argument(
+        "--service-id",
+        type=int,
+        help="explicit service selector for non-interactive or preselected resolution",
+    )
     device.set_defaults(func=cmd_resolve_device)
     return parser
 

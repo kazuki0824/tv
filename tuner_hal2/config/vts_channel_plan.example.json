@@ -1,17 +1,33 @@
 {
-  "schema_version": 2,
+  "mode": "snapshot",
+  "schema_version": 3,
   "source": {
     "index_url": "example-only",
-    "source_notice": "example-only-not-a-reception-claim"
+    "source_notice": "INA4N-shaped example-only-not-a-reception-claim"
   },
-  "prefectures": {
-    "大阪府": {
-      "source_url": "example-only",
-      "default_channels": [24],
-      "prefecture_channels": [24],
-      "areas": {
-        "大阪市": [24]
-      }
+  "transmitters": [
+    {
+      "coordinate_source": "INA4N-map",
+      "coverage_texts": [
+        "大阪市の一部"
+      ],
+      "id": "osaka/2000/example-d-tv.html",
+      "latitude": 34.6873,
+      "location_text": "大阪府大阪市例示地点",
+      "longitude": 135.5262,
+      "name": "大阪例示テレビ中継局",
+      "prefecture": "大阪府",
+      "services": [
+        {
+          "name": "例示放送",
+          "output_text": "10W",
+          "output_w": 10.0,
+          "physical_channel": 24,
+          "polarization": "水平",
+          "remote_control_key_id": 1
+        }
+      ],
+      "source_url": "https://ina4n.example/osaka/2000/example-d-tv.html"
     }
-  }
+  ]
 }
