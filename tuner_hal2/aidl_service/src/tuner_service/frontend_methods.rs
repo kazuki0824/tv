@@ -64,16 +64,19 @@ impl IFrontend for FrontendAidlObject {
             &self.runtime(),
             self.handle(),
             || {
-                let request =
+                let converted =
                     aidl_frontend_settings_to_request(settings).map_err(status_from_hal_error)?;
-                Ok((AidlMethodCall::FrontendTune(request.clone()), request))
+                Ok((
+                    AidlMethodCall::FrontendTune(converted.request.clone()),
+                    converted,
+                ))
             },
-            |runtime, handle, dispatch_proof, request| {
+            |runtime, handle, dispatch_proof, converted| {
                 FrontendTuneScanTxn::begin_tune(
                     runtime,
                     handle.object_id(),
                     handle.generation(),
-                    request,
+                    converted,
                     FrontendWorkerKind::Tune,
                     tune_notifier(self.context(), handle),
                     dispatch_proof,
@@ -110,19 +113,19 @@ impl IFrontend for FrontendAidlObject {
             self.handle(),
             || {
                 let scan_mode = aidl_scan_type_to_mode(scan_type).map_err(status_from_hal_error)?;
-                let request =
+                let converted =
                     aidl_frontend_settings_to_request(settings).map_err(status_from_hal_error)?;
                 Ok((
-                    AidlMethodCall::FrontendScan(request.clone()),
-                    (request, scan_mode),
+                    AidlMethodCall::FrontendScan(converted.request.clone()),
+                    (converted, scan_mode),
                 ))
             },
-            |runtime, handle, dispatch_proof, (request, scan_mode)| {
+            |runtime, handle, dispatch_proof, (converted, scan_mode)| {
                 FrontendTuneScanTxn::begin_scan(
                     runtime.clone(),
                     handle.object_id(),
                     handle.generation(),
-                    request,
+                    converted,
                     scan_mode,
                     scan_notifier(self.context(), handle),
                     dispatch_proof,

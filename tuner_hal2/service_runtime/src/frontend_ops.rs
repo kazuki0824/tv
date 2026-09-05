@@ -8,6 +8,7 @@ use crate::frontend_worker_txn::{
 use crate::object_method_use_case::ObjectMethodExecutionToken;
 use crate::registry::{FrontendRuntimeId, LnbRuntimeId, SatellitePowerTopology};
 use crate::worker_runtime::WorkerTerminalResult;
+use maleicacid_tuner_hal2_binder_adapter::FrontendSettingsRequest;
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FrontendScanMode, FrontendTuneRequest, HalError,
     HalInternalKind, LnbVoltageRequest,
@@ -156,19 +157,19 @@ impl FrontendTuneScanTxn {
         runtime: SharedFrontendRuntime,
         object_id: AidlObjectId,
         object_generation: AidlObjectGeneration,
-        request: FrontendTuneRequest,
+        converted: FrontendSettingsRequest,
         kind: FrontendWorkerKind,
         notifier: FrontendTuneNotifier,
         dispatch: ObjectMethodExecutionToken,
     ) -> Result<(), HalError> {
-        Self::preflight_begin(&runtime, object_id, object_generation, &request, None)?;
+        Self::preflight_begin(&runtime, object_id, object_generation, &converted, None)?;
         let fixed_power =
             Self::ensure_frontend_fixed_power_for_object(&runtime, object_id, object_generation)?;
         let result = start_frontend_backend_tune_worker(
             std::sync::Arc::clone(&runtime),
             object_id,
             object_generation,
-            request,
+            converted.request,
             kind,
             notifier,
             dispatch,
@@ -180,7 +181,7 @@ impl FrontendTuneScanTxn {
         runtime: SharedFrontendRuntime,
         object_id: AidlObjectId,
         object_generation: AidlObjectGeneration,
-        request: FrontendTuneRequest,
+        converted: FrontendSettingsRequest,
         scan_mode: FrontendScanMode,
         notifier: FrontendScanNotifier,
         dispatch: ObjectMethodExecutionToken,
@@ -189,7 +190,7 @@ impl FrontendTuneScanTxn {
             &runtime,
             object_id,
             object_generation,
-            &request,
+            &converted,
             Some(scan_mode),
         )?;
         let fixed_power =
@@ -198,7 +199,7 @@ impl FrontendTuneScanTxn {
             std::sync::Arc::clone(&runtime),
             object_id,
             object_generation,
-            request,
+            converted.request,
             scan_mode,
             notifier,
             dispatch,
@@ -648,7 +649,7 @@ impl FrontendTuneScanTxn {
         runtime: &SharedFrontendRuntime,
         object_id: AidlObjectId,
         object_generation: AidlObjectGeneration,
-        request: &FrontendTuneRequest,
+        converted: &FrontendSettingsRequest,
         scan_mode: Option<FrontendScanMode>,
     ) -> Result<(), HalError> {
         let guard = runtime.lock().map_err(|_| {
@@ -658,8 +659,13 @@ impl FrontendTuneScanTxn {
             )
         })?;
         let entry = guard.frontend_entry_for_aidl_object(object_id, object_generation)?;
-        let normalized = request.clone().normalized_for_non_blind_operation();
-        let validated = guard.validate_frontend_request_for_id(entry.id.0, &normalized)?;
+        let normalized = converted.request.clone().normalized_for_non_blind_operation();
+        let validated = guard.validate_frontend_begin_request_for_id(
+            entry.id.0,
+            &normalized,
+            &converted.requested_settings,
+            scan_mode,
+        )?;
         if let Some(scan_mode) = scan_mode {
             guard.scan_candidates_for_frontend_entry(&validated, &normalized, scan_mode)?;
         }

@@ -15,6 +15,7 @@ def _frontend_xml(profile: dict[str, Any]) -> str:
         f'id="{FRONTEND_ID[fe_type]}"',
         f'type="{fe_type}"',
         'isSoftwareFrontend="false"',
+        'supportBlindScan="false"',
         f'frequency="{int(fe["frequency_hz"])}"',
     ]
     if fe_type == "ISDBT":

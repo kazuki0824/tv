@@ -11,18 +11,84 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     FrontendSpectralInversion::FrontendSpectralInversion,
 };
 use maleicacid_tuner_hal2_common::{
-    is_japan_cs110_if_frequency_hz, FrontendIsdbtLayerSetting,
-    FrontendIsdbtPartialReceptionRequirement, FrontendIsdbtSegmentRequest, FrontendScanMode,
-    FrontendStreamIdKind, FrontendSystem, FrontendTuneRequest, HalError, HalInvalidArgumentKind,
+    FrontendIsdbtLayerSetting, FrontendIsdbtPartialReceptionRequirement,
+    FrontendIsdbtSegmentRequest, FrontendScanMode, FrontendStreamIdKind, FrontendSystem,
+    FrontendTuneRequest, HalError, HalInvalidArgumentKind,
 };
 
 const AOSP_TUNER_INVALID_STREAM_ID: i32 = 0xFFFF;
+
+/// AIDL上で構文的に既知だが、`FrontendTuneRequest` には直接表現されない値。
+/// 呼出し元が要求した内容を保持するための観測値であり、製品対応可否の判断ではない。
+/// 対応可否の方針はサービス調停が所有する。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrontendRequestedSetting {
+    IsdbtBandwidthAuto,
+    IsdbtExplicitBandwidth { bandwidth_hz: u32 },
+    IsdbtModeAuto,
+    IsdbtExplicitMode { value: i32 },
+    IsdbtExplicitInversion { value: i32 },
+    IsdbtGuardIntervalAuto,
+    IsdbtExplicitGuardInterval { value: i32 },
+    IsdbtServiceAreaId { value: i32 },
+    IsdbtPartialReceptionAuto,
+    IsdbtLayerModulationAuto { layer_index: usize },
+    IsdbtLayerModulation { layer_index: usize, value: i32 },
+    IsdbtLayerCoderateAuto { layer_index: usize },
+    IsdbtLayerCoderate { layer_index: usize, value: i32 },
+    IsdbtLayerTimeInterleaveAuto { layer_index: usize },
+    IsdbtLayerTimeInterleave { layer_index: usize, value: i32 },
+    IsdbtExplicitSegmentCount { layer_index: usize, count: i32 },
+    IsdbsModulationAuto,
+    IsdbsExplicitModulation { value: i32 },
+    IsdbsCoderateAuto,
+    IsdbsExplicitCoderate { value: i32 },
+    IsdbsExplicitRolloff { value: i32 },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrontendSettingsRequest {
+    pub request: FrontendTuneRequest,
+    pub requested_settings: Vec<FrontendRequestedSetting>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IsdbtKnownValue {
+    Unspecified,
+    Auto,
+    Explicit(i32),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IsdbsKnownValue {
+    Unspecified,
+    Auto,
+    Explicit(i32),
+}
 
 fn cast_u64_field(value: i64, field: &'static str) -> Result<u64, HalError> {
     u64::try_from(value).map_err(|_| {
         HalError::invalid_argument(
             HalInvalidArgumentKind::NumericRange,
             format!("{field} must be non-negative"),
+        )
+    })
+}
+
+fn optional_positive_symbol_rate(value: i32, field: &'static str) -> Result<Option<u32>, HalError> {
+    if value < 0 {
+        return Err(HalError::invalid_argument(
+            HalInvalidArgumentKind::UnsupportedSymbolRate,
+            format!("{field} must be non-negative"),
+        ));
+    }
+    if value == 0 {
+        return Ok(None);
+    }
+    u32::try_from(value).map(Some).map_err(|_| {
+        HalError::invalid_argument(
+            HalInvalidArgumentKind::UnsupportedSymbolRate,
+            format!("{field} does not fit u32"),
         )
     })
 }
@@ -40,93 +106,128 @@ fn is_single_known_enum_value(raw: i32, highest_known_bit: i32) -> bool {
     raw == 0 || (raw > 0 && raw <= highest_known_bit && raw.count_ones() == 1)
 }
 
-fn unsupported_frontend_setting<T>(
-    feature: &'static str,
-    detail: &'static str,
-) -> Result<T, HalError> {
-    Err(HalError::unsupported_detail(feature, detail))
-}
-
-fn invalid_frontend_setting<T>(detail: &'static str) -> Result<T, HalError> {
+fn invalid_frontend_setting<T>(detail: impl Into<String>) -> Result<T, HalError> {
     Err(HalError::invalid_argument(
         HalInvalidArgumentKind::NumericRange,
         detail,
     ))
 }
 
-fn validate_auto_only(
+fn isdbs_known_value(
     raw: i32,
     auto: i32,
     highest_known_bit: i32,
-    feature: &'static str,
-    detail: &'static str,
-) -> Result<(), HalError> {
+) -> Result<IsdbsKnownValue, HalError> {
+    if raw == 0 {
+        return Ok(IsdbsKnownValue::Unspecified);
+    }
     if raw == auto {
-        return Ok(());
+        return Ok(IsdbsKnownValue::Auto);
     }
     if is_single_known_enum_value(raw, highest_known_bit) {
-        return unsupported_frontend_setting(feature, detail);
+        return Ok(IsdbsKnownValue::Explicit(raw));
     }
-    invalid_frontend_setting("frontend setting contains a reserved enum value")
+    invalid_frontend_setting("ISDB-S setting contains a reserved enum value")
 }
 
-fn validate_isdbt_fixed_settings(
-    s: &android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::FrontendIsdbtSettings::FrontendIsdbtSettings,
-) -> Result<(), HalError> {
-    if !matches!(
-        s.bandwidth,
-        FrontendIsdbtBandwidth::AUTO | FrontendIsdbtBandwidth::BANDWIDTH_6MHZ
-    ) {
-        if is_single_known_enum_value(s.bandwidth.0, FrontendIsdbtBandwidth::BANDWIDTH_6MHZ.0) {
-            unsupported_frontend_setting(
-                "isdbt.bandwidth",
-                "known ISDB-T bandwidth is not supported by this product profile",
-            )?;
-        }
-        return invalid_frontend_setting("ISDB-T bandwidth contains a reserved enum value");
+fn isdbt_known_value(
+    raw: i32,
+    auto: i32,
+    highest_known_bit: i32,
+) -> Result<IsdbtKnownValue, HalError> {
+    if raw == 0 {
+        return Ok(IsdbtKnownValue::Unspecified);
     }
-    validate_auto_only(
+    if raw == auto {
+        return Ok(IsdbtKnownValue::Auto);
+    }
+    if is_single_known_enum_value(raw, highest_known_bit) {
+        return Ok(IsdbtKnownValue::Explicit(raw));
+    }
+    invalid_frontend_setting("ISDB-T setting contains a reserved enum value")
+}
+
+fn classify_isdbt_settings(
+    s: &android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::FrontendIsdbtSettings::FrontendIsdbtSettings,
+) -> Result<Vec<FrontendRequestedSetting>, HalError> {
+    let mut requested = Vec::new();
+
+    match s.bandwidth {
+        FrontendIsdbtBandwidth::UNDEFINED => {}
+        FrontendIsdbtBandwidth::AUTO => {
+            requested.push(FrontendRequestedSetting::IsdbtBandwidthAuto);
+        }
+        FrontendIsdbtBandwidth::BANDWIDTH_6MHZ => {
+            requested.push(FrontendRequestedSetting::IsdbtExplicitBandwidth {
+                bandwidth_hz: 6_000_000,
+            });
+        }
+        FrontendIsdbtBandwidth::BANDWIDTH_7MHZ => {
+            requested.push(FrontendRequestedSetting::IsdbtExplicitBandwidth {
+                bandwidth_hz: 7_000_000,
+            });
+        }
+        FrontendIsdbtBandwidth::BANDWIDTH_8MHZ => {
+            requested.push(FrontendRequestedSetting::IsdbtExplicitBandwidth {
+                bandwidth_hz: 8_000_000,
+            });
+        }
+        _ => {
+            return invalid_frontend_setting("ISDB-T bandwidth contains a reserved enum value");
+        }
+    }
+
+    match isdbt_known_value(
         s.mode.0,
         FrontendIsdbtMode::AUTO.0,
         FrontendIsdbtMode::MODE_3.0,
-        "isdbt.mode",
-        "explicit ISDB-T mode is not supported",
-    )?;
+    )? {
+        IsdbtKnownValue::Unspecified => {}
+        IsdbtKnownValue::Auto => requested.push(FrontendRequestedSetting::IsdbtModeAuto),
+        IsdbtKnownValue::Explicit(value) => {
+            requested.push(FrontendRequestedSetting::IsdbtExplicitMode { value });
+        }
+    }
+
     match s.inversion {
         FrontendSpectralInversion::UNDEFINED => {}
         FrontendSpectralInversion::NORMAL | FrontendSpectralInversion::INVERTED => {
-            unsupported_frontend_setting(
-                "isdbt.inversion",
-                "explicit ISDB-T spectral inversion is not supported",
-            )?;
+            requested.push(FrontendRequestedSetting::IsdbtExplicitInversion {
+                value: s.inversion.0,
+            });
         }
         _ => return invalid_frontend_setting("ISDB-T inversion contains a reserved enum value"),
     }
-    validate_auto_only(
+
+    match isdbt_known_value(
         s.guardInterval.0,
         FrontendIsdbtGuardInterval::AUTO.0,
         1 << 7,
-        "isdbt.guardInterval",
-        "explicit ISDB-T guard interval is not supported",
-    )?;
+    )? {
+        IsdbtKnownValue::Unspecified => {}
+        IsdbtKnownValue::Auto => {
+            requested.push(FrontendRequestedSetting::IsdbtGuardIntervalAuto);
+        }
+        IsdbtKnownValue::Explicit(value) => {
+            requested.push(FrontendRequestedSetting::IsdbtExplicitGuardInterval { value });
+        }
+    }
+
     if s.serviceAreaId < 0 {
         return invalid_frontend_setting("ISDB-T serviceAreaId must be non-negative");
     }
     if s.serviceAreaId > 0 {
-        unsupported_frontend_setting(
-            "isdbt.serviceAreaId",
-            "explicit ISDB-T serviceAreaId is not supported",
-        )?;
+        requested.push(FrontendRequestedSetting::IsdbtServiceAreaId {
+            value: s.serviceAreaId,
+        });
     }
+
     match s.partialReceptionFlag {
         FrontendIsdbtPartialReceptionFlag::UNDEFINED
         | FrontendIsdbtPartialReceptionFlag::FALSE
         | FrontendIsdbtPartialReceptionFlag::TRUE => {}
         FrontendIsdbtPartialReceptionFlag::AUTO => {
-            unsupported_frontend_setting(
-                "isdbt.partialReceptionFlag",
-                "ISDB-T partial reception AUTO is not supported",
-            )?;
+            requested.push(FrontendRequestedSetting::IsdbtPartialReceptionAuto);
         }
         _ => {
             return invalid_frontend_setting(
@@ -134,39 +235,65 @@ fn validate_isdbt_fixed_settings(
             )
         }
     }
-    if s.layerSettings.len() > 3 {
-        return invalid_frontend_setting("ISDB-T has at most three physical layer settings");
-    }
-    for layer in &s.layerSettings {
-        validate_auto_only(
+
+    // `FrontendIsdbtSettings.layerSettings` はAIDL上のベクタである。ARIBの物理階層は3層だが、
+    // AOSPはベクタ長そのものを不正なAIDL入力条件とはしていない。
+    // 各要素を検証し、呼出し元の順序を保持する。
+    for (layer_index, layer) in s.layerSettings.iter().enumerate() {
+        match isdbt_known_value(
             layer.modulation.0,
             FrontendIsdbtModulation::AUTO.0,
             FrontendIsdbtModulation::MOD_64QAM.0,
-            "isdbt.layer.modulation",
-            "explicit ISDB-T layer modulation is not supported",
-        )?;
-        validate_auto_only(
+        )? {
+            IsdbtKnownValue::Unspecified => {}
+            IsdbtKnownValue::Auto => requested.push(
+                FrontendRequestedSetting::IsdbtLayerModulationAuto { layer_index },
+            ),
+            IsdbtKnownValue::Explicit(value) => {
+                requested.push(FrontendRequestedSetting::IsdbtLayerModulation {
+                    layer_index,
+                    value,
+                });
+            }
+        }
+        match isdbt_known_value(
             layer.coderate.0,
             FrontendIsdbtCoderate::AUTO.0,
             FrontendIsdbtCoderate::CODERATE_8_9.0,
-            "isdbt.layer.coderate",
-            "explicit ISDB-T layer coderate is not supported",
-        )?;
-        validate_auto_only(
+        )? {
+            IsdbtKnownValue::Unspecified => {}
+            IsdbtKnownValue::Auto => requested.push(
+                FrontendRequestedSetting::IsdbtLayerCoderateAuto { layer_index },
+            ),
+            IsdbtKnownValue::Explicit(value) => {
+                requested.push(FrontendRequestedSetting::IsdbtLayerCoderate {
+                    layer_index,
+                    value,
+                });
+            }
+        }
+        match isdbt_known_value(
             layer.timeInterleave.0,
             FrontendIsdbtTimeInterleaveMode::AUTO.0,
             1 << 12,
-            "isdbt.layer.timeInterleave",
-            "explicit ISDB-T layer time interleave is not supported",
-        )?;
+        )? {
+            IsdbtKnownValue::Unspecified => {}
+            IsdbtKnownValue::Auto => requested.push(
+                FrontendRequestedSetting::IsdbtLayerTimeInterleaveAuto { layer_index },
+            ),
+            IsdbtKnownValue::Explicit(value) => {
+                requested.push(FrontendRequestedSetting::IsdbtLayerTimeInterleave {
+                    layer_index,
+                    value,
+                });
+            }
+        }
         match layer.numOfSegment {
             0 | 0xFF => {}
-            1..=13 => {
-                unsupported_frontend_setting(
-                    "isdbt.layer.numOfSegment",
-                    "explicit ISDB-T segment count is not supported",
-                )?;
-            }
+            1..=13 => requested.push(FrontendRequestedSetting::IsdbtExplicitSegmentCount {
+                layer_index,
+                count: layer.numOfSegment,
+            }),
             _ => {
                 return invalid_frontend_setting(
                     "ISDB-T numOfSegment must be 0, CTS AUTO 0xFF, or 1..=13",
@@ -174,7 +301,8 @@ fn validate_isdbt_fixed_settings(
             }
         }
     }
-    Ok(())
+
+    Ok(requested)
 }
 
 fn map_isdbt_layer_settings(
@@ -187,6 +315,9 @@ fn map_isdbt_layer_settings(
             let num_of_segment = match layer.numOfSegment {
                 0 => FrontendIsdbtSegmentRequest::Unspecified,
                 0xFF => FrontendIsdbtSegmentRequest::Auto,
+                // 明示された正確なsegment数は`FrontendRequestedSetting`へ保持し、
+                // backend呼出し前にサービス調停で解釈する。
+                1..=13 => FrontendIsdbtSegmentRequest::Unspecified,
                 _ => {
                     return invalid_frontend_setting(
                         "validated ISDB-T layer segment request changed before conversion",
@@ -211,51 +342,59 @@ fn map_isdbt_partial_reception(
         FrontendIsdbtPartialReceptionFlag::TRUE => {
             Ok(FrontendIsdbtPartialReceptionRequirement::Required(true))
         }
-        FrontendIsdbtPartialReceptionFlag::AUTO => unsupported_frontend_setting(
-            "isdbt.partialReceptionFlag",
-            "ISDB-T partial reception AUTO is not supported",
-        ),
+        // AUTOは構文的に既知の値である。正確な要求は`FrontendRequestedSetting`へ保持し、
+        // backend向け要求では未指定のままとする。
+        FrontendIsdbtPartialReceptionFlag::AUTO => {
+            Ok(FrontendIsdbtPartialReceptionRequirement::Unspecified)
+        }
         _ => invalid_frontend_setting("ISDB-T partialReceptionFlag contains a reserved enum value"),
     }
 }
 
-fn validate_isdbs_fixed_settings(
+fn classify_isdbs_settings(
     s: &android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::FrontendIsdbsSettings::FrontendIsdbsSettings,
-) -> Result<(), HalError> {
-    validate_auto_only(
+) -> Result<Vec<FrontendRequestedSetting>, HalError> {
+    let mut requested = Vec::new();
+    match isdbs_known_value(
         s.modulation.0,
         FrontendIsdbsModulation::AUTO.0,
         FrontendIsdbsModulation::MOD_TC8PSK.0,
-        "isdbs.modulation",
-        "explicit ISDB-S modulation is not supported",
-    )?;
-    validate_auto_only(
+    )? {
+        IsdbsKnownValue::Unspecified => {}
+        IsdbsKnownValue::Auto => requested.push(FrontendRequestedSetting::IsdbsModulationAuto),
+        IsdbsKnownValue::Explicit(value) => {
+            requested.push(FrontendRequestedSetting::IsdbsExplicitModulation { value });
+        }
+    }
+    match isdbs_known_value(
         s.coderate.0,
         FrontendIsdbsCoderate::AUTO.0,
         FrontendIsdbsCoderate::CODERATE_7_8.0,
-        "isdbs.coderate",
-        "explicit ISDB-S coderate is not supported",
-    )?;
+    )? {
+        IsdbsKnownValue::Unspecified => {}
+        IsdbsKnownValue::Auto => requested.push(FrontendRequestedSetting::IsdbsCoderateAuto),
+        IsdbsKnownValue::Explicit(value) => {
+            requested.push(FrontendRequestedSetting::IsdbsExplicitCoderate { value });
+        }
+    }
     if s.symbolRate < 0 {
         return invalid_frontend_setting("ISDB-S symbolRate must be non-negative");
     }
     match s.rolloff {
         FrontendIsdbsRolloff::UNDEFINED => {}
         FrontendIsdbsRolloff::ROLLOFF_0_35 => {
-            unsupported_frontend_setting(
-                "isdbs.rolloff",
-                "explicit ISDB-S rolloff is not supported",
-            )?;
+            requested.push(FrontendRequestedSetting::IsdbsExplicitRolloff {
+                value: s.rolloff.0,
+            });
         }
         _ => return invalid_frontend_setting("ISDB-S rolloff contains a reserved enum value"),
     }
-    Ok(())
+    Ok(requested)
 }
 
 fn map_isdbs_stream_selector(
     stream_id: i32,
     stream_id_type: FrontendIsdbsStreamIdType,
-    frequency_hz: u64,
 ) -> Result<(Option<u32>, Option<FrontendStreamIdKind>), HalError> {
     match stream_id_type {
         FrontendIsdbsStreamIdType::UNDEFINED => {
@@ -277,12 +416,6 @@ fn map_isdbs_stream_selector(
                     "negative ISDB-S stream selector",
                 ));
             }
-            if is_japan_cs110_if_frequency_hz(frequency_hz) {
-                return Err(HalError::invalid_argument(
-                    HalInvalidArgumentKind::UnsupportedStreamSelector,
-                    "CS110 tune must not carry TSID or relative stream selector",
-                ));
-            }
             let value = u32::try_from(stream_id).map_err(|_| {
                 HalError::invalid_argument(
                     HalInvalidArgumentKind::InvalidStreamIdRange,
@@ -296,12 +429,6 @@ fn map_isdbs_stream_selector(
                 return Err(HalError::invalid_argument(
                     HalInvalidArgumentKind::InvalidStreamIdRange,
                     "negative ISDB-S relative stream selector",
-                ));
-            }
-            if is_japan_cs110_if_frequency_hz(frequency_hz) {
-                return Err(HalError::invalid_argument(
-                    HalInvalidArgumentKind::UnsupportedStreamSelector,
-                    "CS110 tune must not carry TSID or relative stream selector",
                 ));
             }
             let value = u32::try_from(stream_id).map_err(|_| {
@@ -324,61 +451,86 @@ fn map_isdbs_stream_selector(
 
 pub fn aidl_frontend_settings_to_request(
     settings: &FrontendSettings,
-) -> Result<FrontendTuneRequest, HalError> {
+) -> Result<FrontendSettingsRequest, HalError> {
     match settings {
         FrontendSettings::Isdbt(s) => {
-            validate_isdbt_fixed_settings(s)?;
-            Ok(FrontendTuneRequest {
-                system: FrontendSystem::IsdbT,
-                frequency: cast_u64_field(s.frequency, "isdbt.frequency")?,
-                // endFrequency は blind scan 専用であり、
-                // tune/non-blind request へ保持しない。
-                end_frequency: None,
-                stream_id: None,
-                stream_id_kind: None,
-                bandwidth_hz: map_isdbt_bandwidth(s.bandwidth),
-                symbol_rate: None,
-                isdbt_layer_settings: map_isdbt_layer_settings(s)?,
-                partial_reception: map_isdbt_partial_reception(s.partialReceptionFlag)?,
+            let requested_settings = classify_isdbt_settings(s)?;
+            Ok(FrontendSettingsRequest {
+                request: FrontendTuneRequest {
+                    system: FrontendSystem::IsdbT,
+                    frequency: cast_u64_field(s.frequency, "isdbt.frequency")?,
+                    // endFrequency は blind scan 専用であり、
+                    // tune/non-blind request へ保持しない。
+                    end_frequency: None,
+                    stream_id: None,
+                    stream_id_kind: None,
+                    bandwidth_hz: map_isdbt_bandwidth(s.bandwidth),
+                    symbol_rate: None,
+                    isdbt_layer_settings: map_isdbt_layer_settings(s)?,
+                    partial_reception: map_isdbt_partial_reception(s.partialReceptionFlag)?,
+                },
+                requested_settings,
             })
         }
         FrontendSettings::Isdbs(s) => {
-            validate_isdbs_fixed_settings(s)?;
+            let requested_settings = classify_isdbs_settings(s)?;
             let frequency = cast_u64_field(s.frequency, "isdbs.frequency")?;
-            let symbol_rate = if s.symbolRate > 0 {
-                Some(u32::try_from(s.symbolRate).map_err(|_| {
-                    HalError::invalid_argument(
-                        HalInvalidArgumentKind::UnsupportedSymbolRate,
-                        "ISDB-S symbolRate does not fit u32",
-                    )
-                })?)
-            } else {
-                None
-            };
+            let symbol_rate = optional_positive_symbol_rate(s.symbolRate, "isdbs.symbolRate")?;
             let (stream_id, stream_id_kind) =
-                map_isdbs_stream_selector(s.streamId, s.streamIdType, frequency)?;
-            Ok(FrontendTuneRequest {
-                system: FrontendSystem::IsdbS,
-                frequency,
-                // endFrequency は blind scan 専用であり、
-                // tune/non-blind request へ保持しない。
-                end_frequency: None,
-                stream_id,
-                stream_id_kind,
-                bandwidth_hz: None,
-                symbol_rate,
-                isdbt_layer_settings: Vec::new(),
-                partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+                map_isdbs_stream_selector(s.streamId, s.streamIdType)?;
+            Ok(FrontendSettingsRequest {
+                request: FrontendTuneRequest {
+                    system: FrontendSystem::IsdbS,
+                    frequency,
+                    end_frequency: None,
+                    stream_id,
+                    stream_id_kind,
+                    bandwidth_hz: None,
+                    symbol_rate,
+                    isdbt_layer_settings: Vec::new(),
+                    partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+                },
+                requested_settings,
             })
         }
-        FrontendSettings::Isdbs3(_) => Err(HalError::Unsupported(
-            "ISDB-S3 is outside the r51 product scope",
-        )),
-        FrontendSettings::Dvbs(_) => Err(HalError::Unsupported(
-            "DVB-S is outside the r51 product scope",
-        )),
+        // これらのAIDL variantは現行製品では公開しないが、common domain modelには表現がある。
+        // そのため製品対応可否はAIDL変換境界ではなく、後段のservice/runtimeで判定する。
+        FrontendSettings::Isdbs3(s) => {
+            let frequency = cast_u64_field(s.frequency, "isdbs3.frequency")?;
+            let symbol_rate = optional_positive_symbol_rate(s.symbolRate, "isdbs3.symbolRate")?;
+            let (stream_id, stream_id_kind) =
+                map_isdbs_stream_selector(s.streamId, s.streamIdType)?;
+            Ok(FrontendSettingsRequest {
+                request: FrontendTuneRequest {
+                    system: FrontendSystem::IsdbS3,
+                    frequency,
+                    end_frequency: None,
+                    stream_id,
+                    stream_id_kind,
+                    bandwidth_hz: None,
+                    symbol_rate,
+                    isdbt_layer_settings: Vec::new(),
+                    partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+                },
+                requested_settings: Vec::new(),
+            })
+        }
+        FrontendSettings::Dvbs(s) => Ok(FrontendSettingsRequest {
+            request: FrontendTuneRequest {
+                system: FrontendSystem::DvbS,
+                frequency: cast_u64_field(s.frequency, "dvbs.frequency")?,
+                end_frequency: None,
+                stream_id: None,
+                stream_id_kind: None,
+                bandwidth_hz: None,
+                symbol_rate: optional_positive_symbol_rate(s.symbolRate, "dvbs.symbolRate")?,
+                isdbt_layer_settings: Vec::new(),
+                partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+            },
+            requested_settings: Vec::new(),
+        }),
         _ => Err(HalError::Unsupported(
-            "frontend setting is outside the r51 product scope",
+            "frontend setting variant has no tuner_hal2 domain representation",
         )),
     }
 }
@@ -386,15 +538,14 @@ pub fn aidl_frontend_settings_to_request(
 pub fn aidl_scan_type_to_mode(scan_type: FrontendScanType) -> Result<FrontendScanMode, HalError> {
     match scan_type {
         FrontendScanType::SCAN_AUTO => Ok(FrontendScanMode::Auto),
-        FrontendScanType::SCAN_BLIND => Err(HalError::Unsupported(
-            "blind scan is outside the r51 product scope; TIS must submit explicit candidates",
-        )),
+        FrontendScanType::SCAN_BLIND => Ok(FrontendScanMode::Blind),
         FrontendScanType::SCAN_UNDEFINED => Err(HalError::invalid_argument(
             HalInvalidArgumentKind::NumericRange,
             "scan type must be SCAN_AUTO or SCAN_BLIND",
         )),
-        _ => Err(HalError::Unsupported(
-            "frontend scan type is outside the r51 product scope",
+        _ => Err(HalError::invalid_argument(
+            HalInvalidArgumentKind::NumericRange,
+            "frontend scan type contains a reserved enum value",
         )),
     }
 }
@@ -411,15 +562,15 @@ mod tests {
     fn valid_isdbt_settings() -> FrontendIsdbtSettings {
         FrontendIsdbtSettings {
             inversion: FrontendSpectralInversion::UNDEFINED,
-            bandwidth: FrontendIsdbtBandwidth::AUTO,
-            mode: FrontendIsdbtMode::AUTO,
-            guardInterval: FrontendIsdbtGuardInterval::AUTO,
+            bandwidth: FrontendIsdbtBandwidth::UNDEFINED,
+            mode: FrontendIsdbtMode::UNDEFINED,
+            guardInterval: FrontendIsdbtGuardInterval::UNDEFINED,
             serviceAreaId: 0,
             partialReceptionFlag: FrontendIsdbtPartialReceptionFlag::UNDEFINED,
             layerSettings: vec![FrontendIsdbtLayerSettings {
-                modulation: FrontendIsdbtModulation::AUTO,
-                coderate: FrontendIsdbtCoderate::AUTO,
-                timeInterleave: FrontendIsdbtTimeInterleaveMode::AUTO,
+                modulation: FrontendIsdbtModulation::UNDEFINED,
+                coderate: FrontendIsdbtCoderate::UNDEFINED,
+                timeInterleave: FrontendIsdbtTimeInterleaveMode::UNDEFINED,
                 numOfSegment: 0,
             }],
             ..Default::default()
@@ -428,8 +579,8 @@ mod tests {
 
     fn valid_isdbs_settings() -> FrontendIsdbsSettings {
         FrontendIsdbsSettings {
-            modulation: FrontendIsdbsModulation::AUTO,
-            coderate: FrontendIsdbsCoderate::AUTO,
+            modulation: FrontendIsdbsModulation::UNDEFINED,
+            coderate: FrontendIsdbsCoderate::UNDEFINED,
             symbolRate: 0,
             rolloff: FrontendIsdbsRolloff::UNDEFINED,
             ..Default::default()
@@ -437,33 +588,79 @@ mod tests {
     }
 
     #[test]
-    fn isdbt_auto_segment_and_unspecified_constraints_are_accepted() {
-        assert_eq!(
-            validate_isdbt_fixed_settings(&valid_isdbt_settings()),
-            Ok(())
-        );
-        let request =
+    fn isdbt_unspecified_constraints_are_accepted() {
+        let converted =
             aidl_frontend_settings_to_request(&FrontendSettings::Isdbt(valid_isdbt_settings()))
                 .unwrap();
+        assert!(converted.requested_settings.is_empty());
         assert_eq!(
-            request.partial_reception,
+            converted.request.partial_reception,
             FrontendIsdbtPartialReceptionRequirement::Unspecified
         );
     }
 
     #[test]
-    fn isdbt_explicit_segment_is_unavailable_and_reserved_segment_is_invalid() {
+    fn isdbt_auto_constraints_are_distinguished_from_undefined() {
+        let mut settings = valid_isdbt_settings();
+        settings.bandwidth = FrontendIsdbtBandwidth::AUTO;
+        settings.mode = FrontendIsdbtMode::AUTO;
+        settings.guardInterval = FrontendIsdbtGuardInterval::AUTO;
+        settings.layerSettings[0].modulation = FrontendIsdbtModulation::AUTO;
+        settings.layerSettings[0].coderate = FrontendIsdbtCoderate::AUTO;
+        settings.layerSettings[0].timeInterleave = FrontendIsdbtTimeInterleaveMode::AUTO;
+        let converted =
+            aidl_frontend_settings_to_request(&FrontendSettings::Isdbt(settings)).unwrap();
+        assert_eq!(
+            converted.requested_settings,
+            vec![
+                FrontendRequestedSetting::IsdbtBandwidthAuto,
+                FrontendRequestedSetting::IsdbtModeAuto,
+                FrontendRequestedSetting::IsdbtGuardIntervalAuto,
+                FrontendRequestedSetting::IsdbtLayerModulationAuto { layer_index: 0 },
+                FrontendRequestedSetting::IsdbtLayerCoderateAuto { layer_index: 0 },
+                FrontendRequestedSetting::IsdbtLayerTimeInterleaveAuto { layer_index: 0 },
+            ]
+        );
+        assert_eq!(converted.request.bandwidth_hz, None);
+    }
+
+    #[test]
+    fn explicit_bandwidth_is_preserved_without_adapter_support_policy() {
+        for (bandwidth, bandwidth_hz) in [
+            (FrontendIsdbtBandwidth::BANDWIDTH_6MHZ, 6_000_000),
+            (FrontendIsdbtBandwidth::BANDWIDTH_7MHZ, 7_000_000),
+            (FrontendIsdbtBandwidth::BANDWIDTH_8MHZ, 8_000_000),
+        ] {
+            let mut settings = valid_isdbt_settings();
+            settings.bandwidth = bandwidth;
+            let converted =
+                aidl_frontend_settings_to_request(&FrontendSettings::Isdbt(settings)).unwrap();
+            assert_eq!(converted.request.bandwidth_hz, Some(bandwidth_hz));
+            assert_eq!(
+                converted.requested_settings,
+                vec![FrontendRequestedSetting::IsdbtExplicitBandwidth { bandwidth_hz }]
+            );
+        }
+    }
+
+    #[test]
+    fn isdbt_explicit_segment_is_classified_and_reserved_segment_is_invalid() {
         let mut explicit = valid_isdbt_settings();
         explicit.layerSettings[0].numOfSegment = 13;
-        assert!(matches!(
-            validate_isdbt_fixed_settings(&explicit),
-            Err(HalError::UnsupportedDetail { .. })
-        ));
+        let converted =
+            aidl_frontend_settings_to_request(&FrontendSettings::Isdbt(explicit)).unwrap();
+        assert_eq!(
+            converted.requested_settings,
+            vec![FrontendRequestedSetting::IsdbtExplicitSegmentCount {
+                layer_index: 0,
+                count: 13,
+            }]
+        );
 
         let mut reserved = valid_isdbt_settings();
         reserved.layerSettings[0].numOfSegment = 14;
         assert!(matches!(
-            validate_isdbt_fixed_settings(&reserved),
+            aidl_frontend_settings_to_request(&FrontendSettings::Isdbt(reserved)),
             Err(HalError::InvalidArgument { .. })
         ));
     }
@@ -472,14 +669,20 @@ mod tests {
     fn isdbt_cts_auto_segment_is_accepted() {
         let mut settings = valid_isdbt_settings();
         settings.layerSettings[0].numOfSegment = 0xFF;
-        assert_eq!(validate_isdbt_fixed_settings(&settings), Ok(()));
+        let converted =
+            aidl_frontend_settings_to_request(&FrontendSettings::Isdbt(settings)).unwrap();
+        assert!(converted.requested_settings.is_empty());
+        assert_eq!(
+            converted.request.isdbt_layer_settings[0].num_of_segment,
+            FrontendIsdbtSegmentRequest::Auto
+        );
     }
 
     #[test]
-    fn isdbt_accepts_zero_through_three_layers_and_preserves_order() {
+    fn isdbt_vector_cardinality_is_not_an_aidl_malformed_condition() {
         let mut template = valid_isdbt_settings();
         let layer = template.layerSettings.remove(0);
-        for count in 0..=3 {
+        for count in 0..=5 {
             let mut settings = valid_isdbt_settings();
             settings.layerSettings = (0..count)
                 .map(|index| {
@@ -488,69 +691,25 @@ mod tests {
                     entry
                 })
                 .collect();
-            let before = settings
-                .layerSettings
-                .iter()
-                .map(|entry| entry.numOfSegment)
-                .collect::<Vec<_>>();
-
-            assert_eq!(validate_isdbt_fixed_settings(&settings), Ok(()));
-            assert_eq!(
-                settings
-                    .layerSettings
-                    .iter()
-                    .map(|entry| entry.numOfSegment)
-                    .collect::<Vec<_>>(),
-                before
-            );
+            let converted =
+                aidl_frontend_settings_to_request(&FrontendSettings::Isdbt(settings)).unwrap();
+            assert!(converted.requested_settings.is_empty());
+            assert_eq!(converted.request.isdbt_layer_settings.len(), count);
         }
     }
 
     #[test]
-    fn isdbt_rejects_a_fourth_physical_layer() {
-        let mut template = valid_isdbt_settings();
-        let layer = template.layerSettings.remove(0);
+    fn known_explicit_isdbt_values_are_observed_not_rejected_by_adapter() {
         let mut settings = valid_isdbt_settings();
-        settings.layerSettings = vec![layer; 4];
-
-        assert!(matches!(
-            validate_isdbt_fixed_settings(&settings),
-            Err(HalError::InvalidArgument { .. })
-        ));
-    }
-
-    #[test]
-    fn end_frequency_is_not_retained_in_non_blind_request() {
-        let mut isdbt = valid_isdbt_settings();
-        isdbt.frequency = 473_142_857;
-        isdbt.endFrequency = -1;
-        let request = aidl_frontend_settings_to_request(&FrontendSettings::Isdbt(isdbt)).unwrap();
-        assert_eq!(request.end_frequency, None);
-
-        let mut isdbs = valid_isdbs_settings();
-        isdbs.frequency = 1_049_480_000;
-        isdbs.endFrequency = 2_053_000_000;
-        isdbs.streamId = AOSP_TUNER_INVALID_STREAM_ID;
-        isdbs.streamIdType = FrontendIsdbsStreamIdType::STREAM_ID;
-        let request = aidl_frontend_settings_to_request(&FrontendSettings::Isdbs(isdbs)).unwrap();
-        assert_eq!(request.end_frequency, None);
-    }
-
-    #[test]
-    fn isdbt_explicit_inversion_and_auto_partial_reception_are_unavailable() {
-        let mut inversion = valid_isdbt_settings();
-        inversion.inversion = FrontendSpectralInversion::NORMAL;
-        assert!(matches!(
-            validate_isdbt_fixed_settings(&inversion),
-            Err(HalError::UnsupportedDetail { .. })
-        ));
-
-        let mut partial = valid_isdbt_settings();
-        partial.partialReceptionFlag = FrontendIsdbtPartialReceptionFlag::AUTO;
-        assert!(matches!(
-            validate_isdbt_fixed_settings(&partial),
-            Err(HalError::UnsupportedDetail { .. })
-        ));
+        settings.inversion = FrontendSpectralInversion::NORMAL;
+        let converted =
+            aidl_frontend_settings_to_request(&FrontendSettings::Isdbt(settings)).unwrap();
+        assert_eq!(
+            converted.requested_settings,
+            vec![FrontendRequestedSetting::IsdbtExplicitInversion {
+                value: FrontendSpectralInversion::NORMAL.0,
+            }]
+        );
     }
 
     #[test]
@@ -567,36 +726,67 @@ mod tests {
         ] {
             let mut settings = valid_isdbt_settings();
             settings.partialReceptionFlag = flag;
-            let request =
+            let converted =
                 aidl_frontend_settings_to_request(&FrontendSettings::Isdbt(settings)).unwrap();
-            assert_eq!(request.partial_reception, expected);
+            assert!(converted.requested_settings.is_empty());
+            assert_eq!(converted.request.partial_reception, expected);
         }
     }
 
     #[test]
-    fn isdbs_explicit_rolloff_is_unavailable() {
+    fn isdbs_undefined_constraints_are_unspecified() {
+        let mut settings = valid_isdbs_settings();
+        settings.frequency = 1_049_480_000;
+        let converted =
+            aidl_frontend_settings_to_request(&FrontendSettings::Isdbs(settings)).unwrap();
+        assert!(converted.requested_settings.is_empty());
+    }
+
+    #[test]
+    fn isdbs_auto_constraints_are_distinguished_from_undefined() {
+        let mut settings = valid_isdbs_settings();
+        settings.frequency = 1_049_480_000;
+        settings.modulation = FrontendIsdbsModulation::AUTO;
+        settings.coderate = FrontendIsdbsCoderate::AUTO;
+        let converted =
+            aidl_frontend_settings_to_request(&FrontendSettings::Isdbs(settings)).unwrap();
+        assert_eq!(
+            converted.requested_settings,
+            vec![
+                FrontendRequestedSetting::IsdbsModulationAuto,
+                FrontendRequestedSetting::IsdbsCoderateAuto,
+            ]
+        );
+    }
+
+    #[test]
+    fn isdbs_explicit_rolloff_is_observed_for_service_policy() {
         let mut settings = valid_isdbs_settings();
         settings.rolloff = FrontendIsdbsRolloff::ROLLOFF_0_35;
-        assert!(matches!(
-            validate_isdbs_fixed_settings(&settings),
-            Err(HalError::UnsupportedDetail { .. })
-        ));
+        let converted =
+            aidl_frontend_settings_to_request(&FrontendSettings::Isdbs(settings)).unwrap();
+        assert_eq!(
+            converted.requested_settings,
+            vec![FrontendRequestedSetting::IsdbsExplicitRolloff {
+                value: FrontendIsdbsRolloff::ROLLOFF_0_35.0,
+            }]
+        );
     }
 
     #[test]
     fn isdbs_symbol_rate_preserves_zero_sentinel_and_positive_value() {
         let mut unspecified = valid_isdbs_settings();
         unspecified.frequency = 1_049_480_000;
-        let request =
+        let converted =
             aidl_frontend_settings_to_request(&FrontendSettings::Isdbs(unspecified)).unwrap();
-        assert_eq!(request.symbol_rate, None);
+        assert_eq!(converted.request.symbol_rate, None);
 
         let mut explicit = valid_isdbs_settings();
         explicit.frequency = 1_049_480_000;
         explicit.symbolRate = 28_860_000;
-        let request =
+        let converted =
             aidl_frontend_settings_to_request(&FrontendSettings::Isdbs(explicit)).unwrap();
-        assert_eq!(request.symbol_rate, Some(28_860_000));
+        assert_eq!(converted.request.symbol_rate, Some(28_860_000));
 
         let mut negative = valid_isdbs_settings();
         negative.symbolRate = -1;
@@ -607,16 +797,39 @@ mod tests {
     }
 
     #[test]
+    fn cs110_stream_selector_is_preserved_for_runtime_policy() {
+        let mut settings = valid_isdbs_settings();
+        settings.frequency = 1_613_000_000;
+        settings.streamId = 1;
+        settings.streamIdType = FrontendIsdbsStreamIdType::STREAM_ID;
+        let converted =
+            aidl_frontend_settings_to_request(&FrontendSettings::Isdbs(settings)).unwrap();
+        assert_eq!(converted.request.stream_id, Some(1));
+        assert_eq!(
+            converted.request.stream_id_kind,
+            Some(FrontendStreamIdKind::AbsoluteStreamId)
+        );
+    }
+
+    #[test]
     fn isdbs_sdk_default_selector_is_unspecified_for_bs_and_cs110() {
         for frequency in [1_049_480_000, 1_613_000_000] {
             let mut settings = valid_isdbs_settings();
             settings.frequency = frequency;
             settings.streamId = AOSP_TUNER_INVALID_STREAM_ID;
             settings.streamIdType = FrontendIsdbsStreamIdType::STREAM_ID;
-            let request =
+            let converted =
                 aidl_frontend_settings_to_request(&FrontendSettings::Isdbs(settings)).unwrap();
-            assert_eq!(request.stream_id, None);
-            assert_eq!(request.stream_id_kind, None);
+            assert_eq!(converted.request.stream_id, None);
+            assert_eq!(converted.request.stream_id_kind, None);
         }
+    }
+
+    #[test]
+    fn blind_scan_is_typed_for_service_policy_instead_of_rejected_by_adapter() {
+        assert_eq!(
+            aidl_scan_type_to_mode(FrontendScanType::SCAN_BLIND),
+            Ok(FrontendScanMode::Blind)
+        );
     }
 }

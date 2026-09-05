@@ -103,6 +103,7 @@ class IsdbsLnbVtsProfileTest(unittest.TestCase):
 
     def test_isdbs_renderer_connects_lnb_live_and_record(self) -> None:
         xml = render_xml(isdbs_profile())
+        self.assertIn('supportBlindScan="false"', xml)
         self.assertIn('<lnb id="LNB_0" voltage="NONE" tone="NONE" position="UNDEFINED"/>', xml)
         self.assertIn('<lnbLive frontendConnection="FE_ISDBS_0"', xml)
         self.assertIn('audioFilterConnection="FILTER_TS_AUDIO_LIVE_0"', xml)
@@ -114,6 +115,7 @@ class IsdbsLnbVtsProfileTest(unittest.TestCase):
 
     def test_record_fmq_probe_renderer_suppresses_stale_scan(self) -> None:
         xml = render_xml(record_fmq_probe_with_stale_scan())
+        self.assertIn('supportBlindScan="false"', xml)
         self.assertNotIn("<scan ", xml)
         self.assertNotIn("<lnbs>", xml)
         self.assertIn('subType="RECORD"', xml)
