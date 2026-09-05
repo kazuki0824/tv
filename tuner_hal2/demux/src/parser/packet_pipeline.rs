@@ -906,7 +906,9 @@ impl PacketPipeline {
     }
 
     #[cfg(test)]
-    pub fn validate_packet(bytes: &[u8]) -> Result<ValidatedTsPacket<'_>, TsPacketValidationError> {
+    pub(crate) fn validate_packet(
+        bytes: &[u8],
+    ) -> Result<ValidatedTsPacket<'_>, TsPacketValidationError> {
         ValidatedTsPacket::validate(bytes)
     }
 

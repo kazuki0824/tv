@@ -29,8 +29,8 @@ use maleicacid_tuner_hal2_device::{
     FrontendLivePumpOwner, FrontendRuntimeSnapshot, FrontendScanPhase, FrontendSignalState,
     FrontendTmccPartialReceptionObservation, FrontendTmccTsidListObservation,
     FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
-    FrontendWorkerStartError, FrontendWorkerStopOutcome,
-    FrontendWorkerStopPoll, FrontendWorkerStopTicket,
+    FrontendWorkerStartError, FrontendWorkerStopOutcome, FrontendWorkerStopPoll,
+    FrontendWorkerStopTicket,
 };
 use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 
@@ -2343,7 +2343,8 @@ fn observe_and_record_frontend_stream_id_list(
             return Ok(None);
         }
     }
-    let FrontendTmccTsidListObservation::Available(stream_ids) = session.observe_tmcc_tsid_list()?
+    let FrontendTmccTsidListObservation::Available(stream_ids) =
+        session.observe_tmcc_tsid_list()?
     else {
         return Ok(None);
     };
@@ -4296,7 +4297,7 @@ pub(crate) fn start_frontend_backend_scan_session_worker(
 }
 
 #[cfg(test)]
-pub fn stop_frontend_worker(
+pub(crate) fn stop_frontend_worker(
     runtime: SharedRuntime,
     frontend_id: i32,
     kind: FrontendWorkerKind,
@@ -4755,7 +4756,7 @@ pub(crate) fn cleanup_frontend_object_after_close_begin(
 }
 
 #[cfg(test)]
-pub fn close_frontend_workers_and_live_data(
+pub(crate) fn close_frontend_workers_and_live_data(
     runtime: SharedRuntime,
     frontend_id: i32,
     reason: FrontendWorkerCancelReason,
