@@ -93,7 +93,9 @@ jobs:
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
 
       - name: ホスト互換単体テストを実行
-        run: cargo +"$RUST_TOOLCHAIN" test --locked
+        run: |
+          cargo +"$RUST_TOOLCHAIN" test --locked
+          cargo +"$RUST_TOOLCHAIN" test --manifest-path core/Cargo.toml
 
   provider-data-contract:
     runs-on: ubuntu-latest
