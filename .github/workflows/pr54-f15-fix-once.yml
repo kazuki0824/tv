@@ -18,11 +18,13 @@ jobs:
           fetch-depth: 0
       - name: 修正を適用
         run: python3 .github/scripts/pr54_f15_fix.py
-      - name: Rust 1.81で変更Rust sourceを検証
+      - name: Rust 1.81で変更Rust sourceを整形
+        run: |
+          rustup toolchain install 1.81.0 --profile minimal --component rustfmt
+          rustfmt +1.81.0 --edition 2021 tuner_hal2/service_runtime/src/frontend_request_txn.rs
+      - name: HAL host harnessを検証
         working-directory: tuner_hal2/host_ci
         run: |
-          rustup toolchain install 1.81.0 --profile minimal --component rustfmt --component clippy
-          rustfmt +1.81.0 --edition 2021 --check ../service_runtime/src/frontend_request_txn.rs
           cargo +1.81.0 check --workspace --lib --locked
           cargo +1.81.0 test --workspace --lib --locked
       - name: 差分を検査
