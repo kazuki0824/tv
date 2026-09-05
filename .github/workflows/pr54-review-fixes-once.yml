@@ -25,7 +25,9 @@ jobs:
         run: rustup toolchain install 1.81.0 --profile minimal --component rustfmt --component clippy
 
       - name: 第二段の大規模部分修正を適用
-        run: python3 .github/scripts/pr54_review_fixes_phase2_once.py
+        run: |
+          python3 .github/scripts/pr54_review_fixes_phase2_once.py
+          python3 .github/scripts/pr54_review_fixes_phase2_regression_once.py
 
       - name: Rust検証
         working-directory: arib_si_engine_rs/host_ci
