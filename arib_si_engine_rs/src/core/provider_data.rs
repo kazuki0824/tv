@@ -504,31 +504,13 @@ pub fn build_program_key(onid: i32, tsid: i32, sid: i32, event_id: i32) -> Strin
     .unwrap_or_default()
 }
 
-fn field_object_has_only(parent: &serde_json::Value, field: &str, known_keys: &[&str]) -> bool {
-    parent
-        .get(field)
-        .map(|value| object_has_only(value, known_keys))
-        .unwrap_or(true)
-}
-
-fn object_has_only(value: &serde_json::Value, known_keys: &[&str]) -> bool {
-    value
-        .as_object()
-        .map(|object| {
-            object
-                .keys()
-                .all(|key| known_keys.iter().any(|known| *known == key))
-        })
-        .unwrap_or(false)
-}
-
 pub fn build_program_provider_data(request_json: &str) -> ProviderDataResult {
     let request = match serde_json::from_str::<ProgramProviderDataRequestV1>(request_json) {
         Ok(request) => request,
         Err(err) => {
             return failure_result(
                 "PROGRAM_REQUEST_PARSE_FAILED",
-                format!("Program provider-data request JSON parse failed: {err}"),
+                format!("Program provider-data request JSONの解析に失敗しました: {err}"),
                 PROVIDER_SCHEMA_VERSION,
             )
         }
@@ -536,7 +518,7 @@ pub fn build_program_provider_data(request_json: &str) -> ProviderDataResult {
     let Some(data) = program_data_from_request(request) else {
         return failure_result(
             "PROGRAM_REQUEST_INVALID",
-            "Program provider-data request did not satisfy schema v1 invariants".to_string(),
+            "Program provider-data requestがschema v1の不変条件を満たしません".to_string(),
             PROVIDER_SCHEMA_VERSION,
         );
     };
@@ -549,7 +531,7 @@ pub fn build_channel_provider_data(request_json: &str) -> ProviderDataResult {
         Err(err) => {
             return failure_result(
                 "CHANNEL_REQUEST_PARSE_FAILED",
-                format!("Channel provider-data request JSON parse failed: {err}"),
+                format!("Channel provider-data request JSONの解析に失敗しました: {err}"),
                 CHANNEL_SCHEMA_VERSION,
             )
         }
@@ -557,7 +539,7 @@ pub fn build_channel_provider_data(request_json: &str) -> ProviderDataResult {
     let Some(data) = channel_data_from_request(request) else {
         return failure_result(
             "CHANNEL_REQUEST_INVALID",
-            "Channel provider-data request did not satisfy schema v1 invariants".to_string(),
+            "Channel provider-data requestがschema v1の不変条件を満たしません".to_string(),
             CHANNEL_SCHEMA_VERSION,
         );
     };
@@ -570,36 +552,32 @@ pub fn normalize_program_provider_data(raw_bytes: &[u8]) -> ProviderDataResult {
         Err(err) => {
             return failure_result(
                 "PROGRAM_PROVIDER_DATA_UTF8_FAILED",
-                format!("Program provider-data is not UTF-8: {err}"),
+                format!("Program provider-dataがUTF-8ではありません: {err}"),
                 PROVIDER_SCHEMA_VERSION,
             )
         }
     };
-    let raw_value = match serde_json::from_str::<serde_json::Value>(text.trim()) {
-        Ok(value) => value,
-        Err(err) => {
-            return failure_result(
-                "PROGRAM_PROVIDER_DATA_PARSE_FAILED",
-                format!("Program provider-data JSON parse failed: {err}"),
-                PROVIDER_SCHEMA_VERSION,
-            )
-        }
-    };
-    let data = match serde_json::from_value::<ProgramProviderDataV1>(raw_value.clone()) {
+    let data = match serde_json::from_str::<ProgramProviderDataV1>(text.trim()) {
         Ok(data) => data,
         Err(err) => {
-            return failure_result(
-                "PROGRAM_PROVIDER_DATA_SCHEMA_FAILED",
-                format!("Program provider-data JSON v1 schema parse failed: {err}"),
-                PROVIDER_SCHEMA_VERSION,
-            )
+            let (code, message) = match err.classify() {
+                serde_json::error::Category::Syntax | serde_json::error::Category::Eof => (
+                    "PROGRAM_PROVIDER_DATA_PARSE_FAILED",
+                    format!("Program provider-data JSONの構文解析に失敗しました: {err}"),
+                ),
+                serde_json::error::Category::Data | serde_json::error::Category::Io => (
+                    "PROGRAM_PROVIDER_DATA_SCHEMA_FAILED",
+                    format!("Program provider-data JSON v1の型契約に適合しません: {err}"),
+                ),
+            };
+            return failure_result(code, message, PROVIDER_SCHEMA_VERSION);
         }
     };
-    let data = normalize_program_extensions(data, Some(&raw_value));
+    let data = normalize_program_extensions(data);
     if !valid_program_provider_data(&data) {
         return failure_result(
             "PROGRAM_PROVIDER_DATA_INVALID",
-            "Program provider-data JSON v1 invariants failed".to_string(),
+            "Program provider-data JSON v1の不変条件を満たしません".to_string(),
             PROVIDER_SCHEMA_VERSION,
         );
     }
@@ -630,13 +608,10 @@ pub fn decode_channel_provider_data(provider_data: &[u8]) -> String {
     let Ok(text) = std::str::from_utf8(provider_data) else {
         return String::new();
     };
-    let Ok(raw_value) = serde_json::from_str::<serde_json::Value>(text.trim()) else {
+    let Ok(data) = serde_json::from_str::<ChannelProviderDataV1>(text.trim()) else {
         return String::new();
     };
-    let Ok(data) = serde_json::from_value::<ChannelProviderDataV1>(raw_value.clone()) else {
-        return String::new();
-    };
-    let data = normalize_channel_extensions(data, Some(&raw_value));
+    let data = normalize_channel_extensions(data);
     if !valid_channel_provider_data(&data) {
         return String::new();
     }
@@ -751,10 +726,7 @@ fn channel_data_from_request(
     valid_channel_provider_data(&data).then_some(data)
 }
 
-fn normalize_program_extensions(
-    mut data: ProgramProviderDataV1,
-    raw_value: Option<&serde_json::Value>,
-) -> ProgramProviderDataV1 {
+fn normalize_program_extensions(mut data: ProgramProviderDataV1) -> ProgramProviderDataV1 {
     data.diagnostics
         .raw_provider_data_extensions
         .retain(|extension| !forbidden_program_extension(&extension.key));
@@ -767,30 +739,10 @@ fn normalize_program_extensions(
             .raw_provider_data_extensions
             .push(RawProviderDataExtensionV1 { key, value });
     }
-    if let Some(raw) = raw_value {
-        let mut nested = Vec::new();
-        collect_program_unknown_extensions(raw, &mut nested);
-        for extension in nested {
-            if !forbidden_program_extension(&extension.key)
-                && !data
-                    .diagnostics
-                    .raw_provider_data_extensions
-                    .iter()
-                    .any(|existing| existing.key == extension.key)
-            {
-                data.diagnostics
-                    .raw_provider_data_extensions
-                    .push(extension);
-            }
-        }
-    }
     data
 }
 
-fn normalize_channel_extensions(
-    mut data: ChannelProviderDataV1,
-    raw_value: Option<&serde_json::Value>,
-) -> ChannelProviderDataV1 {
+fn normalize_channel_extensions(mut data: ChannelProviderDataV1) -> ChannelProviderDataV1 {
     data.tune.legacy_display_name = None;
     data.diagnostics
         .raw_provider_data_extensions
@@ -803,23 +755,6 @@ fn normalize_channel_extensions(
         data.diagnostics
             .raw_provider_data_extensions
             .push(RawProviderDataExtensionV1 { key, value });
-    }
-    if let Some(raw) = raw_value {
-        let mut nested = Vec::new();
-        collect_channel_unknown_extensions(raw, &mut nested);
-        for extension in nested {
-            if !forbidden_channel_extension(&extension.key)
-                && !data
-                    .diagnostics
-                    .raw_provider_data_extensions
-                    .iter()
-                    .any(|existing| existing.key == extension.key)
-            {
-                data.diagnostics
-                    .raw_provider_data_extensions
-                    .push(extension);
-            }
-        }
     }
     data
 }
@@ -907,439 +842,6 @@ fn indexed_field_is_forbidden(key: &str, collection: &str, fields: &[&str]) -> b
     !index.is_empty()
         && index.bytes().all(|byte| byte.is_ascii_digit())
         && fields.iter().any(|forbidden| *forbidden == field)
-}
-
-fn collect_channel_unknown_extensions(
-    raw: &serde_json::Value,
-    out: &mut Vec<RawProviderDataExtensionV1>,
-) {
-    collect_object_unknown(
-        raw,
-        "",
-        &[
-            "schema",
-            "schemaVersion",
-            "serviceKey",
-            "tune",
-            "cas",
-            "diagnostics",
-        ],
-        out,
-    );
-    collect_object_unknown(
-        raw.get("serviceKey").unwrap_or(&serde_json::Value::Null),
-        "serviceKey",
-        &["originalNetworkId", "transportStreamId", "serviceId"],
-        out,
-    );
-    collect_object_unknown(
-        raw.get("tune").unwrap_or(&serde_json::Value::Null),
-        "tune",
-        &[
-            "displayName",
-            "deliverySystem",
-            "frequencyHz",
-            "streamId",
-            "streamIdType",
-            "physicalChannel",
-            "satelliteBand",
-            "remoteControlKeyId",
-        ],
-        out,
-    );
-    collect_object_unknown(
-        raw.get("cas").unwrap_or(&serde_json::Value::Null),
-        "cas",
-        &["requiresCas"],
-        out,
-    );
-    if let Some(diagnostics) = raw.get("diagnostics") {
-        collect_object_unknown(
-            diagnostics,
-            "diagnostics",
-            &[
-                "rawProviderDataExtensions",
-                "providerDataTruncated",
-                "providerDataHardLimitBytes",
-                "providerDataSoftLimitBytes",
-                "providerDataDroppedCount",
-                "providerDataDroppedCounts",
-                "providerDataOriginalBytes",
-                "providerDataFinalBytes",
-                "providerDataTruncationCode",
-            ],
-            out,
-        );
-        collect_array_unknown(
-            diagnostics
-                .get("rawProviderDataExtensions")
-                .unwrap_or(&serde_json::Value::Null),
-            "diagnostics.rawProviderDataExtensions",
-            &["key", "value"],
-            out,
-        );
-    }
-}
-
-fn collect_program_unknown_extensions(
-    raw: &serde_json::Value,
-    out: &mut Vec<RawProviderDataExtensionV1>,
-) {
-    collect_object_unknown(
-        raw,
-        "",
-        &[
-            "schema",
-            "schemaVersion",
-            "programKey",
-            "serviceKey",
-            "timing",
-            "source",
-            "cas",
-            "ratings",
-            "genres",
-            "series",
-            "eventGroups",
-            "linkage",
-            "freeCaMode",
-            "audioLanguages",
-            "shortEvents",
-            "extendedTexts",
-            "extendedItems",
-            "components",
-            "diagnostics",
-        ],
-        out,
-    );
-    collect_object_unknown(
-        raw.get("programKey").unwrap_or(&serde_json::Value::Null),
-        "programKey",
-        &[
-            "kind",
-            "originalNetworkId",
-            "transportStreamId",
-            "serviceId",
-            "eventId",
-        ],
-        out,
-    );
-    collect_object_unknown(
-        raw.get("serviceKey").unwrap_or(&serde_json::Value::Null),
-        "serviceKey",
-        &["originalNetworkId", "transportStreamId", "serviceId"],
-        out,
-    );
-    collect_object_unknown(
-        raw.get("timing").unwrap_or(&serde_json::Value::Null),
-        "timing",
-        &["startUtcMillis", "endUtcMillis", "durationMillis"],
-        out,
-    );
-    collect_object_unknown(
-        raw.get("source").unwrap_or(&serde_json::Value::Null),
-        "source",
-        &[
-            "pid",
-            "tableId",
-            "version",
-            "sectionNumber",
-            "lastSectionNumber",
-        ],
-        out,
-    );
-    collect_object_unknown(
-        raw.get("cas").unwrap_or(&serde_json::Value::Null),
-        "cas",
-        &["requiresCas", "source"],
-        out,
-    );
-    collect_array_unknown(
-        raw.get("ratings").unwrap_or(&serde_json::Value::Null),
-        "ratings",
-        &["countryCode", "rawRatingByte", "parseStatus"],
-        out,
-    );
-    collect_array_unknown(
-        raw.get("genres").unwrap_or(&serde_json::Value::Null),
-        "genres",
-        &["level1", "level2", "userNibble", "aribName", "parseStatus"],
-        out,
-    );
-    collect_object_unknown(
-        raw.get("series").unwrap_or(&serde_json::Value::Null),
-        "series",
-        &[
-            "seriesId",
-            "repeatLabel",
-            "programPattern",
-            "expireDateValid",
-            "expireDate",
-            "episodeNumber",
-            "lastEpisodeNumber",
-            "name",
-            "parseStatus",
-        ],
-        out,
-    );
-    collect_event_group_unknown_extensions(
-        raw.get("eventGroups").unwrap_or(&serde_json::Value::Null),
-        out,
-    );
-    collect_array_unknown(
-        raw.get("linkage").unwrap_or(&serde_json::Value::Null),
-        "linkage",
-        &[
-            "transportStreamId",
-            "originalNetworkId",
-            "serviceId",
-            "linkageType",
-            "privateDataPrefixHex",
-            "parseStatus",
-        ],
-        out,
-    );
-    collect_object_unknown(
-        raw.get("freeCaMode").unwrap_or(&serde_json::Value::Null),
-        "freeCaMode",
-        &["raw", "scrambled", "parseStatus"],
-        out,
-    );
-    collect_array_unknown(
-        raw.get("audioLanguages")
-            .unwrap_or(&serde_json::Value::Null),
-        "audioLanguages",
-        &["language", "source", "parseStatus"],
-        out,
-    );
-    collect_array_unknown(
-        raw.get("shortEvents").unwrap_or(&serde_json::Value::Null),
-        "shortEvents",
-        &["languageCode", "title", "text", "parseStatus"],
-        out,
-    );
-    collect_array_unknown(
-        raw.get("extendedTexts").unwrap_or(&serde_json::Value::Null),
-        "extendedTexts",
-        &["languageCode", "text", "parseStatus"],
-        out,
-    );
-    collect_array_unknown(
-        raw.get("extendedItems").unwrap_or(&serde_json::Value::Null),
-        "extendedItems",
-        &["languageCode", "description", "text", "parseStatus"],
-        out,
-    );
-    if let Some(components) = raw.get("components") {
-        collect_object_unknown(
-            components,
-            "components",
-            &["video", "audio", "subtitle", "data"],
-            out,
-        );
-        collect_array_unknown(
-            components.get("video").unwrap_or(&serde_json::Value::Null),
-            "components.video",
-            &[
-                "esPid",
-                "streamType",
-                "streamContent",
-                "componentTag",
-                "componentType",
-                "codec",
-                "language",
-                "text",
-                "resolution",
-                "scan",
-                "aspect",
-                "profileLevel",
-                "sourceDescriptor",
-                "parseStatus",
-            ],
-            out,
-        );
-        collect_array_unknown(
-            components.get("audio").unwrap_or(&serde_json::Value::Null),
-            "components.audio",
-            &[
-                "esPid",
-                "streamType",
-                "streamContent",
-                "componentTag",
-                "componentType",
-                "codec",
-                "language",
-                "secondLanguage",
-                "channelConfiguration",
-                "simulcastGroupTag",
-                "samplingRate",
-                "samplingInfo",
-                "text",
-                "sourceDescriptor",
-                "main",
-                "multiLingual",
-                "qualityIndicator",
-                "parseStatus",
-            ],
-            out,
-        );
-        collect_array_unknown(
-            components
-                .get("subtitle")
-                .unwrap_or(&serde_json::Value::Null),
-            "components.subtitle",
-            &[
-                "esPid",
-                "componentTag",
-                "dataComponentId",
-                "captionDmf",
-                "captionTiming",
-                "automaticPresentationOnReception",
-                "language",
-                "captionServiceKind",
-                "parseStatus",
-            ],
-            out,
-        );
-        collect_array_unknown(
-            components.get("data").unwrap_or(&serde_json::Value::Null),
-            "components.data",
-            &[
-                "esPid",
-                "componentTag",
-                "dataComponentId",
-                "componentType",
-                "parseStatus",
-            ],
-            out,
-        );
-    }
-    if let Some(diagnostics) = raw.get("diagnostics") {
-        collect_object_unknown(
-            diagnostics,
-            "diagnostics",
-            &[
-                "descriptorDiagnostics",
-                "publishDiagnostics",
-                "parserDiagnostics",
-                "rawProviderDataExtensions",
-                "providerDataTruncated",
-                "providerDataHardLimitBytes",
-                "providerDataSoftLimitBytes",
-                "providerDataDroppedCount",
-                "providerDataDroppedCounts",
-                "providerDataOriginalBytes",
-                "providerDataFinalBytes",
-                "providerDataTruncationCode",
-                "malformedCaDescriptorCount",
-            ],
-            out,
-        );
-        collect_array_unknown(
-            diagnostics
-                .get("publishDiagnostics")
-                .unwrap_or(&serde_json::Value::Null),
-            "diagnostics.publishDiagnostics",
-            &["code", "message", "severity"],
-            out,
-        );
-        collect_array_unknown(
-            diagnostics
-                .get("parserDiagnostics")
-                .unwrap_or(&serde_json::Value::Null),
-            "diagnostics.parserDiagnostics",
-            &["code", "message", "severity"],
-            out,
-        );
-        collect_array_unknown(
-            diagnostics
-                .get("rawProviderDataExtensions")
-                .unwrap_or(&serde_json::Value::Null),
-            "diagnostics.rawProviderDataExtensions",
-            &["key", "value"],
-            out,
-        );
-    }
-}
-
-fn collect_event_group_unknown_extensions(
-    value: &serde_json::Value,
-    out: &mut Vec<RawProviderDataExtensionV1>,
-) {
-    let Some(groups) = value.as_array() else {
-        return;
-    };
-    for (index, group) in groups.iter().enumerate() {
-        let base = format!("eventGroups[{}]", index);
-        collect_object_unknown(
-            group,
-            &base,
-            &[
-                "groupType",
-                "events",
-                "otherNetworkEvents",
-                "privateDataHex",
-                "parseStatus",
-            ],
-            out,
-        );
-        collect_array_unknown(
-            group.get("events").unwrap_or(&serde_json::Value::Null),
-            &format!("{}.events", base),
-            &["serviceId", "eventId"],
-            out,
-        );
-        collect_array_unknown(
-            group
-                .get("otherNetworkEvents")
-                .unwrap_or(&serde_json::Value::Null),
-            &format!("{}.otherNetworkEvents", base),
-            &[
-                "originalNetworkId",
-                "transportStreamId",
-                "serviceId",
-                "eventId",
-            ],
-            out,
-        );
-    }
-}
-
-fn collect_array_unknown(
-    value: &serde_json::Value,
-    path: &str,
-    known_keys: &[&str],
-    out: &mut Vec<RawProviderDataExtensionV1>,
-) {
-    let Some(items) = value.as_array() else {
-        return;
-    };
-    for (index, item) in items.iter().enumerate() {
-        collect_object_unknown(item, &format!("{}[{}]", path, index), known_keys, out);
-    }
-}
-
-fn collect_object_unknown(
-    value: &serde_json::Value,
-    path: &str,
-    known_keys: &[&str],
-    out: &mut Vec<RawProviderDataExtensionV1>,
-) {
-    let Some(object) = value.as_object() else {
-        return;
-    };
-    for (key, value) in object {
-        if !known_keys.iter().any(|known| *known == key) {
-            let full_key = if path.is_empty() {
-                key.clone()
-            } else {
-                format!("{}.{}", path, key)
-            };
-            out.push(RawProviderDataExtensionV1 {
-                key: full_key,
-                value: value.clone(),
-            });
-        }
-    }
 }
 
 fn note_drop(counts: &mut BTreeMap<String, i64>, kind: &str, count: i64) {
@@ -1499,62 +1001,12 @@ fn serialize_channel_with_truncation_metadata(
 }
 
 fn parse_descriptor_diagnostics(text: &str) -> Option<Vec<DescriptorDiagnosticV1>> {
-    let raw = serde_json::from_str::<serde_json::Value>(text).ok()?;
-    if !descriptor_diagnostics_have_only_known_fields(&raw) {
-        return None;
-    }
-    let items = serde_json::from_value::<Vec<DescriptorDiagnosticV1>>(raw).ok()?;
+    let items = serde_json::from_str::<Vec<DescriptorDiagnosticV1>>(text).ok()?;
     if items.iter().all(valid_descriptor_diagnostic) {
         Some(items)
     } else {
         None
     }
-}
-
-fn descriptor_diagnostics_have_only_known_fields(value: &serde_json::Value) -> bool {
-    let Some(items) = value.as_array() else {
-        return false;
-    };
-    items.iter().all(|item| {
-        object_has_only(
-            item,
-            &[
-                "schema",
-                "schemaVersion",
-                "severity",
-                "code",
-                "scope",
-                "descriptor",
-                "message",
-            ],
-        ) && field_object_has_only(
-            item,
-            "scope",
-            &[
-                "pid",
-                "tableId",
-                "tableIdExtension",
-                "version",
-                "sectionNumber",
-                "originalNetworkId",
-                "transportStreamId",
-                "serviceId",
-                "eventId",
-            ],
-        ) && field_object_has_only(
-            item,
-            "descriptor",
-            &[
-                "tag",
-                "name",
-                "offset",
-                "declaredLength",
-                "actualRemainingLength",
-                "parseStatus",
-                "rawPrefixHex",
-            ],
-        )
-    })
 }
 
 fn valid_descriptor_diagnostic(item: &DescriptorDiagnosticV1) -> bool {
@@ -1849,7 +1301,7 @@ fn finalize_program(mut data: ProgramProviderDataV1) -> ProviderDataResult {
     if !valid_program_provider_data(&data) {
         return failure_result(
             "PROGRAM_PROVIDER_DATA_INVALID",
-            "Program provider-data JSON v1 invariants failed".to_string(),
+            "Program provider-data JSON v1の不変条件を満たしません".to_string(),
             PROVIDER_SCHEMA_VERSION,
         );
     }
@@ -1858,7 +1310,7 @@ fn finalize_program(mut data: ProgramProviderDataV1) -> ProviderDataResult {
         Err(err) => {
             return failure_result(
                 "PROGRAM_PROVIDER_DATA_SERIALIZE_FAILED",
-                format!("Program provider-data serialization failed: {err}"),
+                format!("Program provider-dataのserializationに失敗しました: {err}"),
                 PROVIDER_SCHEMA_VERSION,
             )
         }
@@ -1881,7 +1333,7 @@ fn finalize_program(mut data: ProgramProviderDataV1) -> ProviderDataResult {
             Err(err) => {
                 return failure_result(
                     "PROGRAM_PROVIDER_DATA_SERIALIZE_FAILED",
-                    format!("Truncated program provider-data serialization failed: {err}"),
+                    format!("切詰め後Program provider-dataのserializationに失敗しました: {err}"),
                     PROVIDER_SCHEMA_VERSION,
                 )
             }
@@ -1948,7 +1400,7 @@ fn finalize_channel(mut data: ChannelProviderDataV1) -> ProviderDataResult {
     if !valid_channel_provider_data(&data) {
         return failure_result(
             "CHANNEL_PROVIDER_DATA_INVALID",
-            "Channel provider-data JSON v1 invariants failed".to_string(),
+            "Channel provider-data JSON v1の不変条件を満たしません".to_string(),
             CHANNEL_SCHEMA_VERSION,
         );
     }
@@ -1957,7 +1409,7 @@ fn finalize_channel(mut data: ChannelProviderDataV1) -> ProviderDataResult {
         Err(err) => {
             return failure_result(
                 "CHANNEL_PROVIDER_DATA_SERIALIZE_FAILED",
-                format!("Channel provider-data serialization failed: {err}"),
+                format!("Channel provider-dataのserializationに失敗しました: {err}"),
                 CHANNEL_SCHEMA_VERSION,
             )
         }
@@ -1980,7 +1432,7 @@ fn finalize_channel(mut data: ChannelProviderDataV1) -> ProviderDataResult {
             Err(err) => {
                 return failure_result(
                     "CHANNEL_PROVIDER_DATA_SERIALIZE_FAILED",
-                    format!("Truncated channel provider-data serialization failed: {err}"),
+                    format!("切詰め後Channel provider-dataのserializationに失敗しました: {err}"),
                     CHANNEL_SCHEMA_VERSION,
                 )
             }
@@ -2085,7 +1537,7 @@ mod provider_data_tests {
         assert!(result.success, "{}", result.error_message);
         let actual: serde_json::Value = serde_json::from_str(&result.json).unwrap();
         let expected: serde_json::Value = serde_json::from_str(include_str!(
-            "../testdata/program_provider_data_v1/minimal_clear_program.json"
+            "../../testdata/program_provider_data_v1/minimal_clear_program.json"
         ))
         .unwrap();
         assert_eq!(actual, expected);

@@ -104,9 +104,21 @@ libaribcaption rendererの設計正本は本節と`DESIGN_JA.md`に集約済み�
 
 ## Direct Boot の product 統合条件
 
-TIS は `directBootAware=true` を維持する。`AndroidManifest.xml` には `<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />` を宣言し、`BootReceiver` は `android:directBootAware="true"` とする。`BootReceiver` の intent filter は `ACTION_LOCKED_BOOT_COMPLETED` と `ACTION_BOOT_COMPLETED` を含める。`ACTION_USER_UNLOCKED` は manifest receiver の対象にしない。
+TIS は `directBootAware=true` を維持する。`AndroidManifest.xml` には `<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />` を宣言し、`EpgBootSyncReceiver` は `android:directBootAware="true"` とする。`EpgBootSyncReceiver` の intent filter は `ACTION_LOCKED_BOOT_COMPLETED` と `ACTION_BOOT_COMPLETED` を含める。`ACTION_USER_UNLOCKED` は manifest receiver の対象にしない。
 
-`BootEpgSyncJobService` は `AndroidManifest.xml` に service として宣言し、`android.permission.BIND_JOB_SERVICE` で保護する。`BootReceiver`、`BootEpgSyncJobService`、`DirectBootEpgPending`、`BootEpgSyncCoordinator` の実行時役割、ジョブ登録・再試行、保留解除、開始条件、ライブセッションとの優先順位は `DESIGN_JA.md` を正とし、本書では状態遷移を再定義しない。
+`BootEpgSyncJobService` は `AndroidManifest.xml` に service として宣言し、`android.permission.BIND_JOB_SERVICE` で保護する。`EpgBootSyncReceiver`、`BootEpgSyncJobService`、`DirectBootGuard`、`BootEpgSyncScheduler` の実行時役割、ジョブ登録・再試行、保留解除、開始条件、ライブセッションとの優先順位は `DESIGN_JA.md` を正とし、本書では状態遷移を再定義しない。
+
+## System TV App exceptional rating policy統合
+
+JPN parental rating raw `0x12..0xFF` はTISで `com.maleicacid.tv.ratings / ARIB_EXCEPTIONAL / BROADCASTER_DEFINED` として保持する。blocked-rating policyのownerはSystem TV Appなので、LineageOS 22.1 / Android 15 product treeの `packages/apps/TV` へ `tis/platform_patches/lineage-22.1/packages_apps_TV_arib_exceptional_parental_policy.patch` を適用する。
+
+```bash
+cd packages/apps/TV
+git apply --check "$TV_REPO/tis/platform_patches/lineage-22.1/packages_apps_TV_arib_exceptional_parental_policy.patch"
+git apply "$TV_REPO/tis/platform_patches/lineage-22.1/packages_apps_TV_arib_exceptional_parental_policy.patch"
+```
+
+patchはparental controls有効かつglobal rating levelが`NONE`以外の場合だけ当該product固有ratingをblocked集合へ追加し、disabled/`NONE`では当該ratingだけを除去する。TISは`TvInputManager.isRatingBlocked()`をpolicy authorityとして使い続ける。製品統合ではpatch適用後のSystem TV App target compileとenable/disable、`NONE`/非`NONE`、PIN unblockを確認する。
 
 ## MediaSync Exact-mode platform統合
 

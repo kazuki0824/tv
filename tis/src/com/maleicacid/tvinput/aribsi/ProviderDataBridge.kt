@@ -41,10 +41,15 @@ object ProviderDataBridge {
     private val native by lazy { NativeAribSiParser() }
 
     fun buildChannelProviderData(channel: ChannelRecord): Result {
-        val selector = when (channel.streamSelector.type) {
-            com.maleicacid.tvinput.common.StreamSelectorType.RELATIVE -> StreamSelector.tsid(channel.serviceKey.transportStreamId)
-            else -> channel.streamSelector
+        require(channel.streamSelector.type != com.maleicacid.tvinput.common.StreamSelectorType.RELATIVE) {
+            "RELATIVE stream selectorはTvProvider永続identityとして保存できません"
         }
+        if (channel.streamSelector.type == com.maleicacid.tvinput.common.StreamSelectorType.TSID) {
+            require(channel.streamSelector.value == channel.serviceKey.transportStreamId) {
+                "保存TSID selectorはbroadcast service identityのTSIDと一致する必要があります"
+            }
+        }
+        val selector = channel.streamSelector
         val request = JSONObject()
             .put("schema", "maleicacid.tv.channelRequest")
             .put("schemaVersion", 1)

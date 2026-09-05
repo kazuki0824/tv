@@ -115,9 +115,11 @@ class ChannelScanController(
                 if (discovered.isNotEmpty()) {
                     discovered
                 } else {
-                    val fallback = JapanIsdbScanPlan.fallbackBsCandidates(candidate)
-                    diagnostics += ScanDiagnostic(candidate, "AOSP BS scanでstream IDを取得できないためversioned TSID fallbackを使用します result=${discovery.resultCode} message=${discovery.message} fallbackCount=${fallback.size}")
-                    fallback
+                    diagnostics += ScanDiagnostic(
+                        candidate,
+                        "BS dynamic stream-ID discoveryをfail-closedにします result=${discovery.resultCode} message=${discovery.message}",
+                    )
+                    emptyList()
                 }
             } else {
                 listOf(candidate)

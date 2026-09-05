@@ -1,0 +1,23 @@
+diff --git a/src/com/android/tv/parental/ParentalControlSettings.java b/src/com/android/tv/parental/ParentalControlSettings.java
+--- a/src/com/android/tv/parental/ParentalControlSettings.java
++++ b/src/com/android/tv/parental/ParentalControlSettings.java
+@@ -43,0 +44,3 @@
++    private static final TvContentRating MALEICACID_ARIB_EXCEPTIONAL_RATING =
++            TvContentRating.createRating(
++                    "com.maleicacid.tv.ratings", "ARIB_EXCEPTIONAL", "BROADCASTER_DEFINED");
+@@ -89,0 +93 @@
++        storeRatings();
+@@ -92,0 +97 @@
++        applyMaleicacidExceptionalRatingPolicy();
+@@ -102,0 +108,11 @@
++        }
++    }
++
++    private void applyMaleicacidExceptionalRatingPolicy() {
++        boolean shouldBlock =
++                mTvInputManager.isParentalControlsEnabled()
++                        && getContentRatingLevel() != TvSettings.CONTENT_RATING_LEVEL_NONE;
++        if (shouldBlock) {
++            mRatings.add(MALEICACID_ARIB_EXCEPTIONAL_RATING);
++        } else {
++            mRatings.remove(MALEICACID_ARIB_EXCEPTIONAL_RATING);

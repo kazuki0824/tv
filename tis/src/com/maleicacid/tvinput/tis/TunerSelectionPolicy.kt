@@ -7,7 +7,7 @@ import com.maleicacid.tvinput.aribsi.AribElementaryStream
 import com.maleicacid.tvinput.common.StreamSelector
 import com.maleicacid.tvinput.common.StreamSelectorType
 
-/** Pure stream and track selection policy. Android Tuner resources remain owned by [TunerController]. */
+/** stream/track選択の純粋policy。Android Tuner資源は[TunerController]が所有する。 */
 object TunerSelectionPolicy {
     private val videoStreamTypes = setOf(0x02, 0x1b)
     private val audioStreamTypes = setOf(0x03, 0x04, 0x0f)
@@ -100,9 +100,9 @@ object TunerSelectionPolicy {
 }
 
 /**
- * ARIB audio_component_descriptor facts to Android live-track metadata.
- * PMT stream_type remains the codec authority. Descriptor facts are used only when valid and
- * directly representable by TvTrackInfo; reserved/ambiguous values are left unset.
+ * ARIB audio_component_descriptorのfactをAndroid live-track metadataへ投影する。
+ * codecの正本はPMT stream_typeとし、有効かつTvTrackInfoへ直接表現できるfactだけを使う。
+ * reservedまたは曖昧な値は未設定のままにする。
  */
 object AudioTrackMetadataPolicy {
     data class Projection(
@@ -164,7 +164,7 @@ object AudioTrackMetadataPolicy {
     fun isHardOfHearing(componentType: Int): Boolean = ((componentType ushr 5) and 0x03) == 0x02
 }
 
-/** EIT component_descriptor facts that have a direct TvTrackInfo video representation. */
+/** EIT component_descriptorのうちTvTrackInfo videoへ直接表現できるfactだけを投影する。 */
 object VideoTrackMetadataPolicy {
     data class Projection(
         val description: String?,

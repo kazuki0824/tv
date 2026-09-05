@@ -38,22 +38,20 @@ class ScanPlanPolicyTest {
     }
 
     @Test
-    fun bsTsidTableRemainsExplicitCompatibilityFallback() {
-        val bs = JapanIsdbScanPlan.isdbsBsTsidStreams()
-        assertTrue(bs.isNotEmpty())
-        assertTrue(bs.all { it.streamSelector.type == StreamSelectorType.TSID })
+    fun bsDynamicDiscoveryUsesOnlyReportedStreamIds() {
         val seed = JapanIsdbScanPlan.isdbsBsBands().first()
-        assertTrue(JapanIsdbScanPlan.fallbackBsCandidates(seed).all { it.streamSelector.type == StreamSelectorType.TSID })
+        val discovered = JapanIsdbScanPlan.explicitBsCandidatesFromScan(
+            seed,
+            listOf(18288, 18801, 18803, 18803, -1, 0xffff),
+        )
+        assertEquals(setOf(18288, 18801, 18803), discovered.mapNotNull { it.streamSelector.value }.toSet())
+        assertTrue(discovered.all { it.streamSelector.type == StreamSelectorType.TSID })
     }
 
     @Test
-    fun bs23CompatibilityFallbackTracksCurrentTransports() {
-        val bs23 = JapanIsdbScanPlan.isdbsBsTsidStreams()
-            .filter { it.physicalChannel == 23 }
-            .mapNotNull { it.streamSelector.value }
-            .toSet()
-        assertEquals(setOf(18288, 18801, 18803), bs23)
-        assertFalse(18802 in bs23)
+    fun bsDynamicDiscoveryWithNoReportedStreamIdsIsEmpty() {
+        val seed = JapanIsdbScanPlan.isdbsBsBands().first()
+        assertTrue(JapanIsdbScanPlan.explicitBsCandidatesFromScan(seed, emptyList()).isEmpty())
     }
 
     @Test

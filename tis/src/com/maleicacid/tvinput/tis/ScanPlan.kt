@@ -72,11 +72,6 @@ object JapanIsdbScanPlan {
             )
         }
 
-    /** scan callbackがstream IDを返せないfrontend向けcompatibility fallback。 */
-    fun isdbsBsTsidStreams(backendHint: String = "earth_pt1"): List<ScanCandidate> = bsTsidEntries.map { entry ->
-        ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_S, entry.frequencyHz, streamSelector = StreamSelector.Tsid(entry.tsid), displayChannel = entry.label, physicalChannel = entry.physical, backendHint = backendHint, satelliteBand = "BS", kind = ScanCandidateKind.ISDB_S_BS)
-    }
-
     fun explicitBsCandidatesFromScan(seed: ScanCandidate, inputStreamIds: Collection<Int>): List<ScanCandidate> {
         require(seed.kind == ScanCandidateKind.ISDB_S_BS && seed.streamSelector.type == StreamSelectorType.NONE)
         return inputStreamIds
@@ -98,12 +93,6 @@ object JapanIsdbScanPlan {
             }
             .toList()
     }
-
-    fun fallbackBsCandidates(seed: ScanCandidate): List<ScanCandidate> = bsTsidEntries
-        .filter { it.frequencyHz == seed.frequencyHz && it.physical == seed.physicalChannel }
-        .map { entry ->
-            ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_S, entry.frequencyHz, StreamSelector.Tsid(entry.tsid), entry.label, entry.physical, "bs-tsid-fallback", "BS", ScanCandidateKind.ISDB_S_BS)
-        }
 
     fun isdbs110CsBands(): List<ScanCandidate> {
         val baseIf = (0 until 12).map { index -> FrequencyHz(1_613_000_000L + index * 40_000_000L) }

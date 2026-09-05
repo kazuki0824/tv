@@ -200,12 +200,45 @@ impl EitStore {
             .get(&section_key)
             .map(|old| old.event_keys.clone())
             .unwrap_or_default();
+        let obsolete_section_keys: BTreeSet<EitSectionKey> = if deletion_authoritative {
+            self.section_events
+                .iter()
+                .filter(|(key, old)| {
+                    key.table_id == header.table_id
+                        && key.service_id == service_id
+                        && key.transport_stream_id == transport_stream_id
+                        && key.original_network_id == original_network_id
+                        && old.version != version
+                        && key.section_number > header.last_section_number.unwrap_or(section_number)
+                })
+                .map(|(key, _)| *key)
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
+        let obsolete_event_keys: BTreeSet<EitEventKey> = obsolete_section_keys
+            .iter()
+            .filter_map(|key| self.section_events.get(key))
+            .flat_map(|old| old.event_keys.iter().copied())
+            .collect();
+        let surviving_section_references: BTreeSet<EitEventKey> = self
+            .section_events
+            .iter()
+            .filter(|(key, _)| **key != section_key && !obsolete_section_keys.contains(*key))
+            .flat_map(|(_, old)| old.event_keys.iter().copied())
+            .collect();
         let new_keys: BTreeSet<_> = parsed.iter().filter_map(stable_event_key).collect();
+        let removal_candidates: BTreeSet<EitEventKey> = previous_keys
+            .difference(&new_keys)
+            .copied()
+            .chain(obsolete_event_keys.iter().copied())
+            .collect();
         let removable_previous_keys: BTreeSet<_> = if deletion_authoritative {
-            previous_keys
-                .difference(&new_keys)
+            removal_candidates
+                .into_iter()
                 .filter(|old_key| !malformed_event_keys.contains(old_key))
-                .copied()
+                .filter(|old_key| !new_keys.contains(old_key))
+                .filter(|old_key| !surviving_section_references.contains(old_key))
                 .collect()
         } else {
             BTreeSet::new()
@@ -246,6 +279,10 @@ impl EitStore {
                 });
                 self.last_update_windows.push(window);
             }
+        }
+        for obsolete_section_key in &obsolete_section_keys {
+            self.section_events.remove(obsolete_section_key);
+            self.diagnostic_section_events.remove(obsolete_section_key);
         }
         for old_key in &removable_previous_keys {
             self.events.remove(old_key);
@@ -725,6 +762,38 @@ mod tests {
         assert!(events
             .iter()
             .any(|event| event.event_id == 2 && event.version == 1));
+    }
+
+    #[test]
+    fn version_update_shrinking_last_section_number_reclaims_obsolete_sections() {
+        let mut store = EitStore::default();
+        let start0 = [0xee, 0x00, 0x12, 0x00, 0x00];
+        let start1 = [0xee, 0x01, 0x13, 0x00, 0x00];
+        let start2 = [0xee, 0x02, 0x14, 0x00, 0x00];
+        for (section_number, event_id, start) in [
+            (0_u8, 1_u16, start0),
+            (1_u8, 2_u16, start1),
+            (2_u8, 3_u16, start2),
+        ] {
+            let mut section = eit_body(1, &[(event_id, start)]);
+            section[6] = section_number;
+            section[7] = 2;
+            store.upsert_section(&section_with_crc(section));
+        }
+        assert_eq!(store.section_count_for_diagnostic(), 3);
+        let mut new_section0 = eit_body(2, &[(1, start0)]);
+        new_section0[6] = 0;
+        new_section0[7] = 1;
+        store.upsert_section(&section_with_crc(new_section0));
+        let events = store.snapshot_present_following_actual();
+        assert_eq!(store.section_count_for_diagnostic(), 2);
+        assert!(events
+            .iter()
+            .any(|event| event.event_id == 1 && event.version == 2));
+        assert!(events
+            .iter()
+            .any(|event| event.event_id == 2 && event.version == 1));
+        assert!(!events.iter().any(|event| event.event_id == 3));
     }
 
     #[test]

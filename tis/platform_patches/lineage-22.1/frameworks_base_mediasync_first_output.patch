@@ -7,8 +7,8 @@ index 799f4bf4f..c43c3458c 100644
      }
  
 +    /**
-+     * Listener for the first video frame successfully queued by MediaSync to its output surface
-+     * after an explicit arm operation.
++     * MediaSyncがoutput surfaceへ正常queueした最初のvideo frameを通知するlistener
++     * 明示arm後のeventだけを対象とする。
 +     *
 +     * @hide
 +     */
@@ -44,16 +44,16 @@ index 799f4bf4f..c43c3458c 100644
      }
  
 +    /**
-+     * Arms a one-shot callback for the first video frame that MediaSync successfully queues to
-+     * its current output surface. The arm sequence is opaque to MediaSync and is returned unchanged
-+     * with the callback so a platform-coupled client can reject a stale delayed event after re-arm.
++     * MediaSyncがcurrent output surfaceへ正常queueした最初のvideo frameについてone-shot callbackをarmする。
++     * arm sequenceはMediaSyncではopaqueに扱い、callbackへそのまま返す。
++     * これによりplatform連携clientはre-arm前の遅延eventを拒否できる。
 +     *
-+     * <p>This observes successful queueing to MediaSync's output surface. It does not indicate
-+     * compositor presentation or present-fence completion.</p>
++     * <p>観測対象はMediaSync output surfaceへのqueue成功であり、
++     * compositor表示完了やpresent-fence完了を意味しない。</p>
 +     *
-+     * @param armSequence positive identifier scoped by the caller to this MediaSync instance
-+     * @param listener callback to arm, or {@code null} to disarm
-+     * @param handler handler used to deliver the callback, or {@code null} for the current/main
++     * @param armSequence callerがこのMediaSync instance内で割り当てる正の識別子
++     * @param listener armするcallback。{@code null}ならdisarmする
++     * @param handler callback配送用handler。{@code null}ならcurrent/main
 +     *                looper
 +     * @hide
 +     */
@@ -62,7 +62,7 @@ index 799f4bf4f..c43c3458c 100644
 +            @Nullable OnFirstVideoFrameQueuedToOutputListener listener,
 +            @Nullable Handler handler) {
 +        if (listener != null && armSequence <= 0) {
-+            throw new IllegalArgumentException("armSequence must be positive when armed");
++            throw new IllegalArgumentException("arm時のarmSequenceは正である必要があります");
 +        }
 +
 +        synchronized (mOnFirstVideoFrameQueuedToOutputListenerLock) {
@@ -210,7 +210,7 @@ index d1ce30a3e..3069477a1 100644
 +        JNIEnv *env, jobject thiz, jboolean armed, jlong armSequence) {
 +    sp<JMediaSync> sync = getMediaSync(env, thiz);
 +    if (sync == NULL) {
-+        // Disarm is part of release cleanup and remains harmless after native_release().
++        // disarmはrelease cleanupの一部であり、native_release()後でも無害に扱う。
 +        if (armed == JNI_FALSE) {
 +            return;
 +        }
@@ -218,7 +218,7 @@ index d1ce30a3e..3069477a1 100644
 +        return;
 +    }
 +    if (armed == JNI_TRUE && armSequence <= 0) {
-+        throwExceptionAsNecessary(env, BAD_VALUE, "armSequence must be positive when armed");
++        throwExceptionAsNecessary(env, BAD_VALUE, "arm時のarmSequenceは正である必要があります");
 +        return;
 +    }
 +    sync->setFirstVideoFrameQueuedToOutputArm(armed == JNI_TRUE, armSequence);
