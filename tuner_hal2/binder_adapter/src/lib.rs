@@ -16,7 +16,10 @@ pub use aidl_filter_config::{
     build_section_condition_kind, filter_main_type_supported, filter_open_type,
     normalize_pes_stream_id, validate_record_index_settings, validate_ts_pid,
 };
-pub use aidl_frontend_settings::{aidl_frontend_settings_to_request, aidl_scan_type_to_mode};
+pub use aidl_frontend_settings::{
+    aidl_frontend_settings_to_request, aidl_scan_type_to_mode, FrontendProfileRequirement,
+    FrontendSettingsRequest,
+};
 pub use aidl_method::{
     build_dvr_configure_request, build_dvr_open_request, build_filter_av_stream_type_request,
     build_filter_delay_hint_request, build_lnb_satellite_position_request, build_lnb_tone_request,
