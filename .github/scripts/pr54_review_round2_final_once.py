@@ -419,7 +419,7 @@ if text.count(marker) != 1:
 text = text.replace(marker, test + marker, 1)
 p.write_text(text)
 
-# F07: PR追加の英語Javadoc/comment/exceptionを日本語化する。
+# F07: 既知の英語コメントだけ先行で日本語化する。全差分走査は後続で行う。
 p = Path("tis/platform_patches/lineage-22.1/frameworks_base_mediasync_first_output.patch")
 text = p.read_text()
 for a, b in {
@@ -505,22 +505,6 @@ modified = modified.replace(
     1,
 )
 modified = modified.replace(
-    '''    public void setParentalControlsEnabled(boolean enabled) {
-        mTvInputManager.setParentalControlsEnabled(enabled);
-    }
-''',
-    '''    public void setParentalControlsEnabled(boolean enabled) {
-        mTvInputManager.setParentalControlsEnabled(enabled);
-        if (mRatings == null) {
-            loadRatings();
-        } else {
-            storeRatings();
-        }
-    }
-''',
-    1,
-)
-modified = modified.replace(
     '''    public void loadRatings() {
         mRatings = new HashSet<>(mTvInputManager.getBlockedRatings());
     }
@@ -554,8 +538,17 @@ if anchor not in modified:
     raise SystemExit("System TV App patch anchorがありません")
 modified = modified.replace(anchor, helper + anchor, 1)
 rel = "src/com/android/tv/parental/ParentalControlSettings.java"
-patch = f"diff --git a/{rel} b/{rel}\n" + "".join(difflib.unified_diff(original.splitlines(True), modified.splitlines(True), fromfile=f"a/{rel}", tofile=f"b/{rel}"))
-patch = "\n".join(line.rstrip() for line in patch.splitlines()).rstrip() + "\n"
+patch = f"diff --git a/{rel} b/{rel}\n" + "".join(
+    difflib.unified_diff(
+        original.splitlines(True),
+        modified.splitlines(True),
+        fromfile=f"a/{rel}",
+        tofile=f"b/{rel}",
+        n=0,
+    )
+)
+if not patch.endswith("\n"):
+    patch += "\n"
 out = Path("tis/platform_patches/lineage-22.1/packages_apps_TV_arib_exceptional_parental_policy.patch")
 out.write_text(patch)
 
