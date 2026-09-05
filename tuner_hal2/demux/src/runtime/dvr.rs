@@ -171,11 +171,11 @@ pub struct DvrRuntimeSnapshot {
     pub status_check_interval_ms: u64,
     pub queue_present: bool,
     #[cfg(test)]
-    pub playback_assembler_present: bool,
+    pub(crate) playback_assembler_present: bool,
     #[cfg(test)]
-    pub playback_completion: TsPacketCompletionBuffer,
+    pub(crate) playback_completion: TsPacketCompletionBuffer,
     #[cfg(test)]
-    pub playback_processing_buffer: Vec<u8>,
+    pub(crate) playback_processing_buffer: Vec<u8>,
     pub playback_stats: PlaybackStats,
     pub playback_flush_diagnostic: PlaybackFlushDiagnostic,
     pub attached_record_filters: BTreeSet<i32>,
@@ -379,19 +379,19 @@ impl DvrRuntime {
     }
 
     #[cfg(test)]
-    pub fn push_playback_bytes(&mut self, data: &[u8]) -> TsPacketBufferDrain {
+    pub(crate) fn push_playback_bytes(&mut self, data: &[u8]) -> TsPacketBufferDrain {
         self.playback_completion.push(data)
     }
     #[cfg(test)]
-    pub fn take_playback_processing_buffer(&mut self) -> Vec<u8> {
+    pub(crate) fn take_playback_processing_buffer(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.playback_processing_buffer)
     }
     #[cfg(test)]
-    pub fn restore_playback_processing_buffer(&mut self, buffer: Vec<u8>) {
+    pub(crate) fn restore_playback_processing_buffer(&mut self, buffer: Vec<u8>) {
         self.playback_processing_buffer = buffer;
     }
     #[cfg(test)]
-    pub fn drain_playback_completion_for_boundary(&mut self) -> usize {
+    pub(crate) fn drain_playback_completion_for_boundary(&mut self) -> usize {
         let drain = self.playback_completion.drain_for_boundary();
         drain
             .packets

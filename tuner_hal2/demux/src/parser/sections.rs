@@ -142,12 +142,12 @@ impl SectionAssembler {
     }
 
     #[cfg(test)]
-    pub fn oversized_section_drops(&self) -> u64 {
+    pub(crate) fn oversized_section_drops(&self) -> u64 {
         self.oversized_section_drops
     }
 
     #[cfg(test)]
-    pub fn stale_partial_section_discards(&self) -> u64 {
+    pub(crate) fn stale_partial_section_discards(&self) -> u64 {
         self.stale_partial_section_discards
     }
 
