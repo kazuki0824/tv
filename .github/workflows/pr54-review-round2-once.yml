@@ -7,8 +7,7 @@ on:
       - agent/implement-tis-arib-si-design-pr53
     paths:
       - .github/workflows/pr54-review-round2-once.yml
-      - .github/scripts/pr54_review_round2_once.py
-      - .github/scripts/pr54_review_round2_prepatch.py
+      - .github/scripts/pr54_review_round2_final_once.py
 
 permissions:
   contents: write
@@ -35,13 +34,8 @@ jobs:
           curl --fail --location --retry 3 --retry-all-errors "https://raw.githubusercontent.com/aosp-mirror-neo/platform_packages_apps_TV/android-15.0.0_r14/src/com/android/tv/parental/ParentalControlSettings.java" --output "$RUNNER_TEMP/aosp-tv/src/com/android/tv/parental/ParentalControlSettings.java"
           echo "AOSP_PARENTAL_SOURCE=$RUNNER_TEMP/aosp-tv/src/com/android/tv/parental/ParentalControlSettings.java" >> "$GITHUB_ENV"
 
-      - name: 一時scriptのhelper削除境界を補正
-        run: python3 .github/scripts/pr54_review_round2_prepatch.py
-
       - name: production design test修正を適用
-        run: |
-          python3 .github/scripts/pr54_review_round2_once.py
-          sed -i 's#"../testdata/program_provider_data_v1/#"../../testdata/program_provider_data_v1/#g' arib_si_engine_rs/src/core/provider_data.rs
+        run: python3 .github/scripts/pr54_review_round2_final_once.py
 
       - name: Rustとpatch契約を検証
         run: |
