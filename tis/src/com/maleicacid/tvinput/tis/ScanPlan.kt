@@ -72,6 +72,28 @@ object JapanIsdbScanPlan {
             )
         }
 
+    fun versionedBsCandidatesForUnsupportedDynamicDiscovery(seed: ScanCandidate): List<ScanCandidate> {
+        require(seed.kind == ScanCandidateKind.ISDB_S_BS && seed.streamSelector.type == StreamSelectorType.NONE)
+        return bsTsidEntries
+            .asSequence()
+            .filter { entry ->
+                entry.frequencyHz == seed.frequencyHz && entry.physical == seed.physicalChannel
+            }
+            .map { entry ->
+                ScanCandidate(
+                    deliverySystem = ChannelRecord.DELIVERY_SYSTEM_ISDB_S,
+                    frequencyHz = entry.frequencyHz,
+                    streamSelector = StreamSelector.tsid(entry.tsid.value),
+                    displayChannel = entry.label,
+                    physicalChannel = entry.physical,
+                    backendHint = "jp-bs-versioned-tsid",
+                    satelliteBand = "BS",
+                    kind = ScanCandidateKind.ISDB_S_BS,
+                )
+            }
+            .toList()
+    }
+
     fun explicitBsCandidatesFromScan(seed: ScanCandidate, inputStreamIds: Collection<Int>): List<ScanCandidate> {
         require(seed.kind == ScanCandidateKind.ISDB_S_BS && seed.streamSelector.type == StreamSelectorType.NONE)
         return inputStreamIds

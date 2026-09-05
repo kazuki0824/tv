@@ -2,6 +2,7 @@ package com.maleicacid.tvinput.tis
 
 import android.content.Context
 import android.media.tv.TvInputService
+import android.media.tv.tuner.Tuner
 import android.util.Log
 import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.AribSiEngine
@@ -114,10 +115,17 @@ class ChannelScanController(
                 val discovered = JapanIsdbScanPlan.explicitBsCandidatesFromScan(candidate, discovery.streamIds)
                 if (discovered.isNotEmpty()) {
                     discovered
+                } else if (discovery.resultCode == Tuner.RESULT_UNAVAILABLE) {
+                    val versioned = JapanIsdbScanPlan.versionedBsCandidatesForUnsupportedDynamicDiscovery(candidate)
+                    diagnostics += ScanDiagnostic(
+                        candidate,
+                        "このfrontendはBS dynamic stream-ID discovery非対応のためversioned TSID tune候補を使用します candidates=${versioned.size}",
+                    )
+                    versioned
                 } else {
                     diagnostics += ScanDiagnostic(
                         candidate,
-                        "BS dynamic stream-ID discoveryをfail-closedにします result=${discovery.resultCode} message=${discovery.message}",
+                        "BS dynamic stream-ID discovery失敗をfail-closedにします result=${discovery.resultCode} message=${discovery.message}",
                     )
                     emptyList()
                 }

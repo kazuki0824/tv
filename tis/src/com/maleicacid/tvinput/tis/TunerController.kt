@@ -316,7 +316,7 @@ class TunerController(
         val directExecutor = java.util.concurrent.Executor { command -> command.run() }
         val result = runCatching { tunerInstance.scan(settings, Tuner.SCAN_TYPE_AUTO, directExecutor, callback) }
             .getOrElse { error ->
-                return StreamIdDiscoveryResult(false, emptySet(), Tuner.RESULT_UNAVAILABLE, error.message.orEmpty())
+                return StreamIdDiscoveryResult(false, emptySet(), Tuner.RESULT_UNKNOWN_ERROR, error.message.orEmpty())
             }
         if (result != Tuner.RESULT_SUCCESS) {
             runCatching { tunerInstance.cancelScanning() }

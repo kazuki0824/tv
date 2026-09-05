@@ -80,10 +80,9 @@ fn validate_frontend_requested_settings_against_product_profile(
                 "isdbs.coderate",
                 "explicit ISDB-S coderate is not supported",
             )),
-            FrontendRequestedSetting::IsdbsExplicitRolloff { .. } => Some((
-                "isdbs.rolloff",
-                "explicit ISDB-S rolloff is not supported",
-            )),
+            FrontendRequestedSetting::IsdbsExplicitRolloff { .. } => {
+                Some(("isdbs.rolloff", "explicit ISDB-S rolloff is not supported"))
+            }
         };
         if let Some((feature, detail)) = unsupported {
             return Err(HalError::unsupported_detail(feature, detail));
@@ -181,10 +180,11 @@ fn validate_frontend_request_invalid_arguments_against_entry(
                 request.frequency,
             )
             .is_some();
-            let is_cs110 = maleicacid_tuner_hal2_device::px4::normalize_japan_cs110_if_frequency_hz(
-                request.frequency,
-            )
-            .is_some();
+            let is_cs110 =
+                maleicacid_tuner_hal2_device::px4::normalize_japan_cs110_if_frequency_hz(
+                    request.frequency,
+                )
+                .is_some();
             if !is_bs && !is_cs110 {
                 return Err(HalError::invalid_argument(
                     HalInvalidArgumentKind::UnsupportedFrequency,
@@ -277,6 +277,26 @@ fn validate_frontend_request_availability_against_entry(
     Ok(())
 }
 
+fn validate_dynamic_isdbs_stream_id_scan_availability(
+    entry: &FrontendRegistryEntry,
+    request: &FrontendTuneRequest,
+    scan_mode: Option<FrontendScanMode>,
+) -> Result<(), HalError> {
+    if scan_mode.is_none()
+        || entry.backend != FrontendBackendKind::LinuxDvb
+        || request.system != FrontendSystem::IsdbS
+        || request.stream_id.is_some()
+        || maleicacid_tuner_hal2_device::px4::normalize_japan_bs_if_frequency_hz(request.frequency)
+            .is_none()
+    {
+        return Ok(());
+    }
+    Err(HalError::unsupported_detail(
+        "frontend.scan.inputStreamIds",
+        "Linux DVB does not expose authoritative BS TMCC TSID enumeration; use explicit absolute STREAM_ID tune candidates",
+    ))
+}
+
 fn validate_frontend_begin_contract(
     entry: &FrontendRegistryEntry,
     request: &FrontendTuneRequest,
@@ -287,6 +307,7 @@ fn validate_frontend_begin_contract(
     // 構文上有効だが製品/profileで利用不可な要求を判定する。
     validate_frontend_request_invalid_arguments_against_entry(entry, request)?;
     validate_frontend_requested_settings_against_product_profile(requested_settings)?;
+    validate_dynamic_isdbs_stream_id_scan_availability(entry, request, scan_mode)?;
     validate_frontend_request_availability_against_entry(entry, request)?;
     if let Some(scan_mode) = scan_mode {
         validate_scan_mode_against_product_profile(scan_mode)?;
@@ -459,7 +480,12 @@ mod tests {
         min_symbol_rate: i32,
         max_symbol_rate: i32,
     ) -> FrontendRegistryEntry {
-        entry(backend, FrontendSystem::IsdbS, min_symbol_rate, max_symbol_rate)
+        entry(
+            backend,
+            FrontendSystem::IsdbS,
+            min_symbol_rate,
+            max_symbol_rate,
+        )
     }
 
     fn isdbs_request(symbol_rate: Option<u32>) -> FrontendTuneRequest {
@@ -497,18 +523,47 @@ mod tests {
     }
 
     #[test]
+    fn selectorless_bs_dynamic_stream_id_scan_is_px4_only() {
+        let linux = isdbs_entry(FrontendBackendKind::LinuxDvb, 1, 100_000_000);
+        let px4 = isdbs_entry(FrontendBackendKind::Px4CharDevice, 1, 100_000_000);
+        let seed = isdbs_request(None);
+
+        assert!(validate_dynamic_isdbs_stream_id_scan_availability(
+            &linux,
+            &seed,
+            Some(FrontendScanMode::Auto),
+        )
+        .is_err());
+        assert!(validate_dynamic_isdbs_stream_id_scan_availability(
+            &px4,
+            &seed,
+            Some(FrontendScanMode::Auto),
+        )
+        .is_ok());
+
+        let mut explicit = isdbs_request(None);
+        explicit.stream_id = Some(16_400);
+        explicit.stream_id_kind = Some(FrontendStreamIdKind::AbsoluteStreamId);
+        assert!(validate_dynamic_isdbs_stream_id_scan_availability(
+            &linux,
+            &explicit,
+            Some(FrontendScanMode::Auto),
+        )
+        .is_ok());
+    }
+
+    #[test]
     fn isdbt_physical_layer_cardinality_is_validated_after_aidl_conversion() {
         for layer_count in 0..=3 {
-            assert!(validate_frontend_request_semantics(&isdbt_request_with_layer_count(
-                layer_count
-            ))
-            .is_ok());
+            assert!(
+                validate_frontend_request_semantics(&isdbt_request_with_layer_count(layer_count))
+                    .is_ok()
+            );
         }
         for layer_count in 4..=5 {
-            let error = validate_frontend_request_semantics(&isdbt_request_with_layer_count(
-                layer_count,
-            ))
-            .unwrap_err();
+            let error =
+                validate_frontend_request_semantics(&isdbt_request_with_layer_count(layer_count))
+                    .unwrap_err();
             assert_eq!(
                 error.invalid_argument_kind(),
                 Some(HalInvalidArgumentKind::NumericRange)
@@ -518,22 +573,29 @@ mod tests {
 
     #[test]
     fn isdbt_auto_observations_are_supported_by_product_profile() {
-        assert!(validate_frontend_requested_settings_against_product_profile(&[
-            FrontendRequestedSetting::IsdbtBandwidthAuto,
-            FrontendRequestedSetting::IsdbtModeAuto,
-            FrontendRequestedSetting::IsdbtGuardIntervalAuto,
-            FrontendRequestedSetting::IsdbtLayerModulationAuto { layer_index: 0 },
-            FrontendRequestedSetting::IsdbtLayerCoderateAuto { layer_index: 0 },
-            FrontendRequestedSetting::IsdbtLayerTimeInterleaveAuto { layer_index: 0 },
-        ])
-        .is_ok());
+        assert!(
+            validate_frontend_requested_settings_against_product_profile(&[
+                FrontendRequestedSetting::IsdbtBandwidthAuto,
+                FrontendRequestedSetting::IsdbtModeAuto,
+                FrontendRequestedSetting::IsdbtGuardIntervalAuto,
+                FrontendRequestedSetting::IsdbtLayerModulationAuto { layer_index: 0 },
+                FrontendRequestedSetting::IsdbtLayerCoderateAuto { layer_index: 0 },
+                FrontendRequestedSetting::IsdbtLayerTimeInterleaveAuto { layer_index: 0 },
+            ])
+            .is_ok()
+        );
     }
 
     #[test]
     fn semantic_invalid_precedes_product_unavailable() {
         let request = isdbt_request_with_layer_count(4);
         let error = validate_frontend_begin_contract(
-            &entry(FrontendBackendKind::Px4CharDevice, FrontendSystem::IsdbT, 0, 0),
+            &entry(
+                FrontendBackendKind::Px4CharDevice,
+                FrontendSystem::IsdbT,
+                0,
+                0,
+            ),
             &request,
             &[FrontendRequestedSetting::IsdbtExplicitMode { value: 2 }],
             None,
@@ -550,7 +612,12 @@ mod tests {
         let mut request = isdbt_request_with_layer_count(1);
         request.frequency = 1;
         let error = validate_frontend_begin_contract(
-            &entry(FrontendBackendKind::Px4CharDevice, FrontendSystem::IsdbT, 0, 0),
+            &entry(
+                FrontendBackendKind::Px4CharDevice,
+                FrontendSystem::IsdbT,
+                0,
+                0,
+            ),
             &request,
             &[FrontendRequestedSetting::IsdbtExplicitMode { value: 2 }],
             None,
@@ -607,11 +674,7 @@ mod tests {
             request.stream_id_kind = Some(FrontendStreamIdKind::AbsoluteStreamId);
             assert!(matches!(
                 validate_frontend_begin_contract(
-                    &isdbs_entry(
-                        FrontendBackendKind::Px4CharDevice,
-                        28_860_000,
-                        28_860_000,
-                    ),
+                    &isdbs_entry(FrontendBackendKind::Px4CharDevice, 28_860_000, 28_860_000,),
                     &request,
                     &[],
                     None,
@@ -683,16 +746,21 @@ mod tests {
 
     #[test]
     fn isdbs_auto_constraints_are_supported_by_product_profile() {
-        assert!(validate_frontend_requested_settings_against_product_profile(&[
-            FrontendRequestedSetting::IsdbsModulationAuto,
-            FrontendRequestedSetting::IsdbsCoderateAuto,
-        ])
-        .is_ok());
+        assert!(
+            validate_frontend_requested_settings_against_product_profile(&[
+                FrontendRequestedSetting::IsdbsModulationAuto,
+                FrontendRequestedSetting::IsdbsCoderateAuto,
+            ])
+            .is_ok()
+        );
     }
 
     #[test]
     fn explicit_partial_reception_is_unavailable_for_both_current_backends() {
-        for backend in [FrontendBackendKind::Px4CharDevice, FrontendBackendKind::LinuxDvb] {
+        for backend in [
+            FrontendBackendKind::Px4CharDevice,
+            FrontendBackendKind::LinuxDvb,
+        ] {
             for required in [false, true] {
                 let mut request = isdbt_request_with_layer_count(1);
                 request.partial_reception =

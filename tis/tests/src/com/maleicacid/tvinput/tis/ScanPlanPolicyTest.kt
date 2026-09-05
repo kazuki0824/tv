@@ -38,6 +38,17 @@ class ScanPlanPolicyTest {
     }
 
     @Test
+    fun versionedBsCandidatesAreExplicitTsidsForOneUnsupportedRfSeed() {
+        val seed = JapanIsdbScanPlan.isdbsBsBands().first()
+        val candidates = JapanIsdbScanPlan.versionedBsCandidatesForUnsupportedDynamicDiscovery(seed)
+        assertTrue(candidates.isNotEmpty())
+        assertTrue(candidates.all { it.frequencyHz == seed.frequencyHz })
+        assertTrue(candidates.all { it.physicalChannel == seed.physicalChannel })
+        assertTrue(candidates.all { it.streamSelector.type == StreamSelectorType.TSID })
+        assertEquals(setOf(16400, 16401, 16402), candidates.mapNotNull { it.streamSelector.value }.toSet())
+    }
+
+    @Test
     fun bsDynamicDiscoveryUsesOnlyReportedStreamIds() {
         val seed = JapanIsdbScanPlan.isdbsBsBands().first()
         val discovered = JapanIsdbScanPlan.explicitBsCandidatesFromScan(
