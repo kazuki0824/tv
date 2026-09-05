@@ -20,6 +20,7 @@ fn object_frontend_status_type_from_aidl(
         FrontendStatusType::DEMOD_LOCK => ObjectFrontendStatusType::DemodLock,
         FrontendStatusType::RF_LOCK => ObjectFrontendStatusType::RfLock,
         FrontendStatusType::LNB_VOLTAGE => ObjectFrontendStatusType::LnbVoltage,
+        FrontendStatusType::STREAM_ID_LIST => ObjectFrontendStatusType::StreamIdList,
         _ => ObjectFrontendStatusType::Unsupported,
     }
 }
@@ -36,6 +37,9 @@ fn frontend_status_from_query_value(value: ObjectFrontendStatusValue) -> Fronten
         }
         ObjectFrontendStatusValue::LnbVoltage15V => {
             FrontendStatus::LnbVoltage(super::LnbVoltage::VOLTAGE_15V)
+        }
+        ObjectFrontendStatusValue::StreamIdList(stream_ids) => {
+            FrontendStatus::StreamIdList(stream_ids)
         }
     }
 }

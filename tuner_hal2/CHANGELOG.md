@@ -1,3 +1,12 @@
+# r50eo84_pr74_isdbs_stream_id_reporting
+
+- px4 ISDB-S frontendだけに `FrontendStatusType::STREAM_ID_LIST` capabilityを公開し、current locked generationでTMCCからcommitした同一の非0 16-bit TSID列を `getStatus(STREAM_ID_LIST)` と readinessへ投影した。list未確定時は空配列を観測済み値として捏造せず `getStatus` を `UNAVAILABLE`、進行中generationのreadinessを `UNSTABLE`、commit済みだけを `STABLE` とする。
+- TMCC listをgeneration変更、lock loss、scan candidate遷移、stop、close、backend/fatal failureで失効させる。support判定はLNB有無の間接推定ではなく `Px4CharDevice + IsdbS` に固定し、px4 ISDB-T / Linux DVBへ横展開しない。
+- workerのTMCC取得結果は `FrontendRuntime` を直接mutationせず、既存の有限正規入口 `FrontendTuneScanTxn::accept_operation_event()` でoperation generationを再検証してから `FrontendTxn::record_frontend_stream_id_list()` / `FrontendRuntime::record_stream_id_list()` へcommitする。第二のowner、generation、retry registry、scan state machineは追加していない。
+- scanではlistを同candidateで取得できた場合だけ `INPUT_STREAM_IDS` を同じcommitted valueから `LOCKED` より前に配送する。`EAGAIN` pendingは追加messageを省略して既存の最低保証 `LOCKED` を遅延・失敗させず、tune中は既存worker監視周期で再観測する。その他のdriver/I/O failureは正常pendingへ丸めない。
+- 公開capability / status / readiness / scan callback / 失効条件を `tuner_hal/DESIGN_JA.md`、実装owner接続を `tuner_hal2/DESIGN_JA.md` へ反映し、公開AIDL意味論を実装文書へ重複定義していない。既存rustfmt failureも解消した。
+- Rust 1.81.0でcombined stackのhost workspace 169 tests、Clippy `-D warnings`、rustfmt check、`git diff --check`が成功した。標準PR workflowはbot pushに対するGitHubの実行承認待ち (`action_required`) で未実行。Android/Soong build、atest、VTS、CTS、実機TMCC/`STREAM_ID_LIST`/`INPUT_STREAM_IDS`確認は未実施である。
+
 # r50eo84_pr73_px4_tmcc_tsid_readback
 
 - product採用 `px4_drv` 基準を merged `px4_drv#3` (`c2236cc761d9d02e38a728f8cad0519610cd891b`) へ更新し、pointer-free fixed-size `PTX_GET_TMCC_TSID_LIST` (`num + tsid[12]`) を `tuner_hal2` PX4 ABIへmirrorした。28-byte layout / ioctl numberを固定し、`num > 12` またはcompact prefix内0をfail-closed、`EAGAIN`をTMCC未確定のtyped `Pending`、その他errnoをbackend failureとして保持する。

@@ -378,6 +378,11 @@ fn frontend_status_caps_for_snapshot(
     if lnb_profile_supports_voltage_status(snapshot.lnb_profile) {
         caps.push(FrontendStatusType::LNB_VOLTAGE);
     }
+    if snapshot.backend == FrontendBackendKind::Px4CharDevice
+        && snapshot.system == FrontendSystem::IsdbS
+    {
+        caps.push(FrontendStatusType::STREAM_ID_LIST);
+    }
     caps
 }
 

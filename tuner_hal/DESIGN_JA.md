@@ -719,6 +719,18 @@ HALのpx4 device-adaptation層は同ABIを `device/src/px4/abi.rs::PTX_GET_TMCC_
 
 このdevice observation自体は公開AIDL capabilityの別名ではない。`FrontendInfo.statusCaps`、`getStatus()`、`getFrontendStatusReadiness()`、scan callbackへ投影する場合は、current frontend generationの正本所有者へcommitした値だけを使用し、公開契約は本書のAOSP frontend status / scan契約に従う。VTS/profile tooling、TIS、host resolverがpx4 ioctlを直接呼ぶ経路は設けない。
 
+### px4 ISDB-S `STREAM_ID_LIST` / `INPUT_STREAM_IDS` 公開契約
+
+px4 ISDB-S frontendは、上記TMCC TSID readbackをproductionで利用できる構成に限り `FrontendInfo.statusCaps`へ `FrontendStatusType::STREAM_ID_LIST` をadvertiseする。px4 ISDB-T、Linux DVB、または同readbackを持たないbackendへこのcapabilityを横展開しない。公開listはcurrent frontend generationでdemod lock成立後にdriver TMCCから取得し `FrontendRuntime`へcommitした同一の非0 16-bit TSID列だけを正とし、固定表、前generation、別frontend、tune request中のselectorをlistの代用品にしない。
+
+`getFrontendStatusReadiness(STREAM_ID_LIST)` は、未広告frontendでは `UNSUPPORTED`、current tune/scan generationが進行中でlist未確定なら `UNSTABLE`、current generationがlockedかつlist commit済みの場合だけ `STABLE` とする。操作外、lock loss後、stop/close/failure後は `UNAVAILABLE` とする。`getStatus(STREAM_ID_LIST)` はcommit済みlistがある場合だけそのlistを返し、advertise済みだがcurrent list未確定の場合に空配列を観測済み値として捏造せず、既存getStatus契約どおり要求全体を `UNAVAILABLE` とする。
+
+listはgeneration変更、lock loss、scan candidate遷移、`stopTune()` / `stopScan()`、close、backend/fatal failureで失効させる。失効後の旧listを新generationのreadinessまたはstatusへ再利用しない。
+
+ISDB-S scanでcurrent locked candidateのTMCC listをauthoritativeに取得・commitできた場合は、同一listを `FrontendScanMessageType::INPUT_STREAM_IDS` / 対応union tagとして、そのcandidateの `LOCKED(isLocked=true)` より先に配送する。TMCC readbackが `EAGAIN` pendingの間は固定値・空listを生成せず、`INPUT_STREAM_IDS` のためだけに `LOCKED` を遅延・失敗させない。pendingのままcandidate lockが成立した場合は追加messageを省略して既存の最低保証 `LOCKED` 契約を維持し、追加message専用の第二scan state machineを設けない。
+
+tune中はlock後の既存worker監視周期でpendingを再観測してよいが、pendingだけをtune failureへ昇格させない。`EAGAIN`以外のdriver/I/O failureは空listや正常pendingへ丸めず、既存backend failure契約へ接続する。VTS/profile toolingはこの値を得るためにpx4 ioctlを直接呼ばずpublic AIDLを試験する。
+
 ## px4_drv chardev open / ライブ TS reader 方針
 
 px4_drv の legacy chardev は同一 device node の二重 open を許さないため、px4 backend は control 用 fd と ライブ TS reader 用 fd を別々に `open()` してはならない。`/dev/px4video*` family は `PTX_SET_SYSTEM_MODE`、`PTX_SET_CHANNEL`、`PTX_START_STREAMING`、TS read を同一 open instance から扱う前提にする。

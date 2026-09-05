@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use crate::registry::LnbRegistryProfile;
 use maleicacid_tuner_hal2_binder_adapter::{AidlMethodAdapter, AidlMethodCall};
 use maleicacid_tuner_hal2_common::{
-    FrontendBackendKind, HalError, HalInternalKind, HalInvalidArgumentKind, HalInvalidStateKind,
+    FrontendBackendKind, FrontendSystem, HalError, HalInternalKind, HalInvalidArgumentKind, HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_device::{FrontendRuntimeState, FrontendSignalState};
 use maleicacid_tuner_hal2_domain_request::{
@@ -113,16 +113,18 @@ pub enum ObjectFrontendStatusType {
     DemodLock,
     RfLock,
     LnbVoltage,
+    StreamIdList,
     Unsupported,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ObjectFrontendStatusValue {
     DemodLocked(bool),
     RfLocked(bool),
     LnbVoltageNone,
     LnbVoltage11V,
     LnbVoltage15V,
+    StreamIdList(Vec<i32>),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -136,6 +138,7 @@ pub enum ObjectFrontendStatusReadinessValue {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ObjectFrontendStatusSnapshot {
     pub backend: FrontendBackendKind,
+    pub system: FrontendSystem,
     pub lnb_profile: Option<LnbRegistryProfile>,
     pub runtime_state: FrontendRuntimeState,
     pub signal_state: FrontendSignalState,
@@ -149,9 +152,14 @@ pub fn lnb_profile_supports_voltage_status(profile: Option<LnbRegistryProfile>) 
     )
 }
 
+fn stream_id_list_supported(snapshot: ObjectFrontendStatusSnapshot) -> bool {
+    snapshot.backend == FrontendBackendKind::Px4CharDevice && snapshot.system == FrontendSystem::IsdbS
+}
+
 fn object_frontend_status_value(
     snapshot: ObjectFrontendStatusSnapshot,
     status_type: ObjectFrontendStatusType,
+    stream_id_list: Option<&[i32]>,
 ) -> Result<ObjectFrontendStatusValue, HalError> {
     if matches!(
         snapshot.runtime_state,
@@ -196,6 +204,15 @@ fn object_frontend_status_value(
         ObjectFrontendStatusType::LnbVoltage => Err(HalError::Unsupported(
             "frontend LNB voltage status is unsupported",
         )),
+        ObjectFrontendStatusType::StreamIdList if stream_id_list_supported(snapshot) => {
+            let stream_ids = stream_id_list.ok_or(HalError::Unsupported(
+                "frontend stream-id list is not available for the current generation",
+            ))?;
+            Ok(ObjectFrontendStatusValue::StreamIdList(stream_ids.to_vec()))
+        }
+        ObjectFrontendStatusType::StreamIdList => Err(HalError::Unsupported(
+            "frontend stream-id list status is unsupported",
+        )),
         ObjectFrontendStatusType::Unsupported => {
             Err(HalError::Unsupported("frontend status type is unsupported"))
         }
@@ -205,9 +222,15 @@ fn object_frontend_status_value(
 fn object_frontend_readiness_value(
     snapshot: ObjectFrontendStatusSnapshot,
     status_type: ObjectFrontendStatusType,
+    stream_id_list: Option<&[i32]>,
 ) -> ObjectFrontendStatusReadinessValue {
     if matches!(status_type, ObjectFrontendStatusType::LnbVoltage)
         && !lnb_profile_supports_voltage_status(snapshot.lnb_profile)
+    {
+        return ObjectFrontendStatusReadinessValue::Unsupported;
+    }
+    if matches!(status_type, ObjectFrontendStatusType::StreamIdList)
+        && !stream_id_list_supported(snapshot)
     {
         return ObjectFrontendStatusReadinessValue::Unsupported;
     }
@@ -227,6 +250,18 @@ fn object_frontend_readiness_value(
         ObjectFrontendStatusType::LnbVoltage => {
             if snapshot.lnb_voltage.is_some() {
                 ObjectFrontendStatusReadinessValue::Stable
+            } else {
+                ObjectFrontendStatusReadinessValue::Unavailable
+            }
+        }
+        ObjectFrontendStatusType::StreamIdList => {
+            if snapshot.signal_state == FrontendSignalState::Locked && stream_id_list.is_some() {
+                ObjectFrontendStatusReadinessValue::Stable
+            } else if matches!(
+                snapshot.runtime_state,
+                FrontendRuntimeState::Tuning { .. } | FrontendRuntimeState::Scanning { .. }
+            ) {
+                ObjectFrontendStatusReadinessValue::Unstable
             } else {
                 ObjectFrontendStatusReadinessValue::Unavailable
             }
@@ -260,6 +295,18 @@ pub enum ObjectQueryResponse {
 enum ObjectQueryExecution {
     Immediate(ObjectQueryResponse),
     QueueDescriptor(QueueDescriptorExportPlan),
+}
+
+fn frontend_runtime_stream_id_list(
+    query: &crate::boot::RuntimeQuery<'_>,
+    target: ObjectMethodUseCaseTarget,
+) -> Result<Option<Vec<i32>>, HalError> {
+    let frontend_id = query.public_runtime_id_for_object_method(
+        target.object_id(),
+        target.generation(),
+        AidlObjectKind::Frontend,
+    )?;
+    Ok(query.frontend_runtime_snapshot(frontend_id)?.stream_id_list)
 }
 
 fn prepare_object_query_request(
@@ -300,6 +347,7 @@ fn prepare_object_query_request(
         ObjectQueryRequest::FrontendGetStatus { status_types } => {
             let snapshot = query
                 .frontend_status_query_for_aidl_object(target.object_id(), target.generation())?;
+            let stream_id_list = frontend_runtime_stream_id_list(query, target)?;
             Ok(ObjectQueryExecution::Immediate(
                 ObjectQueryResponse::FrontendStatus(
                     status_types
@@ -310,8 +358,16 @@ fn prepare_object_query_request(
                                     && snapshot.backend == FrontendBackendKind::LinuxDvb
                                 || matches!(status_type, ObjectFrontendStatusType::LnbVoltage)
                                     && lnb_profile_supports_voltage_status(snapshot.lnb_profile)
+                                || matches!(status_type, ObjectFrontendStatusType::StreamIdList)
+                                    && stream_id_list_supported(snapshot)
                         })
-                        .map(|status_type| object_frontend_status_value(snapshot, status_type))
+                        .map(|status_type| {
+                            object_frontend_status_value(
+                                snapshot,
+                                status_type,
+                                stream_id_list.as_deref(),
+                            )
+                        })
                         .collect::<Result<Vec<_>, _>>()?,
                 ),
             ))
@@ -333,11 +389,18 @@ fn prepare_object_query_request(
         ObjectQueryRequest::FrontendGetFrontendStatusReadiness { status_types } => {
             let snapshot = query
                 .frontend_status_query_for_aidl_object(target.object_id(), target.generation())?;
+            let stream_id_list = frontend_runtime_stream_id_list(query, target)?;
             Ok(ObjectQueryExecution::Immediate(
                 ObjectQueryResponse::FrontendStatusReadiness(
                     status_types
                         .into_iter()
-                        .map(|status_type| object_frontend_readiness_value(snapshot, status_type))
+                        .map(|status_type| {
+                            object_frontend_readiness_value(
+                                snapshot,
+                                status_type,
+                                stream_id_list.as_deref(),
+                            )
+                        })
                         .collect(),
                 ),
             ))
@@ -626,11 +689,6 @@ where
     Ok((plan, request))
 }
 
-/// Canonical call-local owner for object-method validation, planning, dispatch,
-/// and one-shot execution authority issuance.
-///
-/// The type is intentionally stateless: all persistent state remains in the
-/// object table and the corresponding domain owners.
 pub struct ObjectMethodUseCase;
 
 impl ObjectMethodUseCase {
@@ -839,6 +897,7 @@ mod tests {
     ) -> ObjectFrontendStatusSnapshot {
         ObjectFrontendStatusSnapshot {
             backend: FrontendBackendKind::LinuxDvb,
+            system: FrontendSystem::IsdbT,
             lnb_profile,
             runtime_state,
             signal_state,
@@ -848,23 +907,15 @@ mod tests {
 
     #[test]
     fn frontend_status_value_uses_dto_snapshot_without_registry_entry() {
-        let locked = snapshot(
-            None,
-            FrontendRuntimeState::Idle,
-            FrontendSignalState::Locked,
-        );
-        let unlocked = snapshot(
-            None,
-            FrontendRuntimeState::Idle,
-            FrontendSignalState::NoSignal,
-        );
+        let locked = snapshot(None, FrontendRuntimeState::Idle, FrontendSignalState::Locked);
+        let unlocked = snapshot(None, FrontendRuntimeState::Idle, FrontendSignalState::NoSignal);
 
         assert_eq!(
-            object_frontend_status_value(locked, ObjectFrontendStatusType::DemodLock),
+            object_frontend_status_value(locked, ObjectFrontendStatusType::DemodLock, None),
             Ok(ObjectFrontendStatusValue::DemodLocked(true))
         );
         assert_eq!(
-            object_frontend_status_value(unlocked, ObjectFrontendStatusType::DemodLock),
+            object_frontend_status_value(unlocked, ObjectFrontendStatusType::DemodLock, None),
             Ok(ObjectFrontendStatusValue::DemodLocked(false))
         );
     }
@@ -872,16 +923,56 @@ mod tests {
     #[test]
     fn frontend_status_rejects_unsupported_without_shortening_response() {
         let error = object_frontend_status_value(
-            snapshot(
-                None,
-                FrontendRuntimeState::Idle,
-                FrontendSignalState::Locked,
-            ),
+            snapshot(None, FrontendRuntimeState::Idle, FrontendSignalState::Locked),
             ObjectFrontendStatusType::Unsupported,
+            None,
         )
         .expect_err("unsupported frontend status must not be silently dropped");
-
         assert!(matches!(error, HalError::Unsupported(_)));
+    }
+
+    #[test]
+    fn stream_id_readiness_is_stable_only_after_px4_satellite_tmcc_commit() {
+        let px4_satellite = ObjectFrontendStatusSnapshot {
+            backend: FrontendBackendKind::Px4CharDevice,
+            system: FrontendSystem::IsdbS,
+            lnb_profile: Some(LnbRegistryProfile::Px4Device15VOnly),
+            runtime_state: FrontendRuntimeState::Tuning { generation: 7 },
+            signal_state: FrontendSignalState::Locked,
+            lnb_voltage: Some(maleicacid_tuner_hal2_lnb::LnbVoltage::Voltage15V),
+        };
+        assert_eq!(
+            object_frontend_readiness_value(
+                px4_satellite,
+                ObjectFrontendStatusType::StreamIdList,
+                None,
+            ),
+            ObjectFrontendStatusReadinessValue::Unstable
+        );
+        assert!(matches!(
+            object_frontend_status_value(
+                px4_satellite,
+                ObjectFrontendStatusType::StreamIdList,
+                None,
+            ),
+            Err(HalError::Unsupported(_))
+        ));
+        assert_eq!(
+            object_frontend_readiness_value(
+                px4_satellite,
+                ObjectFrontendStatusType::StreamIdList,
+                Some(&[0x4010, 0x4011]),
+            ),
+            ObjectFrontendStatusReadinessValue::Stable
+        );
+        assert_eq!(
+            object_frontend_status_value(
+                px4_satellite,
+                ObjectFrontendStatusType::StreamIdList,
+                Some(&[0x4010, 0x4011]),
+            ),
+            Ok(ObjectFrontendStatusValue::StreamIdList(vec![0x4010, 0x4011]))
+        );
     }
 
     #[test]
@@ -939,11 +1030,8 @@ mod tests {
                     },
                 )
                 .expect("PCR filter configure succeeds");
-            guard
-                .start_filter_runtime(pcr_open.filter_id)
-                .expect("PCR filter start succeeds");
+            guard.start_filter_runtime(pcr_open.filter_id).unwrap();
         }
-
         let response = ObjectMethodUseCase::execute_query_after_live(
             &runtime,
             demux_entry.object_id(),
@@ -953,22 +1041,17 @@ mod tests {
                 av_sync_hw_id: pcr_open.filter_id,
             },
         )
-        .expect("valid PCR sync id succeeds before first PCR observation");
-
+        .unwrap();
         assert!(matches!(response, ObjectQueryResponse::AvSyncTime(-1)));
     }
 
     #[test]
     fn frontend_readiness_reports_unsupported_lnb_voltage_from_dto_snapshot() {
         let value = object_frontend_readiness_value(
-            snapshot(
-                None,
-                FrontendRuntimeState::Idle,
-                FrontendSignalState::Locked,
-            ),
+            snapshot(None, FrontendRuntimeState::Idle, FrontendSignalState::Locked),
             ObjectFrontendStatusType::LnbVoltage,
+            None,
         );
-
         assert_eq!(value, ObjectFrontendStatusReadinessValue::Unsupported);
     }
 
@@ -981,7 +1064,7 @@ mod tests {
         );
         value.lnb_voltage = Some(maleicacid_tuner_hal2_lnb::LnbVoltage::Voltage15V);
         assert_eq!(
-            object_frontend_status_value(value, ObjectFrontendStatusType::LnbVoltage),
+            object_frontend_status_value(value, ObjectFrontendStatusType::LnbVoltage, None),
             Ok(ObjectFrontendStatusValue::LnbVoltage15V)
         );
     }
@@ -999,11 +1082,11 @@ mod tests {
             FrontendSignalState::NoSignal,
         );
         assert_eq!(
-            object_frontend_status_value(carrier, ObjectFrontendStatusType::RfLock),
+            object_frontend_status_value(carrier, ObjectFrontendStatusType::RfLock, None),
             Ok(ObjectFrontendStatusValue::RfLocked(true))
         );
         assert_eq!(
-            object_frontend_status_value(no_signal, ObjectFrontendStatusType::RfLock),
+            object_frontend_status_value(no_signal, ObjectFrontendStatusType::RfLock, None),
             Ok(ObjectFrontendStatusValue::RfLocked(false))
         );
     }
@@ -1017,13 +1100,12 @@ mod tests {
             signal_state: FrontendSignalState::Locked,
             lnb_voltage: None,
         };
-
         assert_eq!(
-            object_frontend_status_value(px4, ObjectFrontendStatusType::DemodLock),
+            object_frontend_status_value(px4, ObjectFrontendStatusType::DemodLock, None),
             Ok(ObjectFrontendStatusValue::DemodLocked(true))
         );
         assert_eq!(
-            object_frontend_readiness_value(px4, ObjectFrontendStatusType::DemodLock),
+            object_frontend_readiness_value(px4, ObjectFrontendStatusType::DemodLock, None),
             ObjectFrontendStatusReadinessValue::Stable
         );
     }

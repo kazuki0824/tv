@@ -57,7 +57,7 @@ fn finish_frontend_scan_end_delivery_failure(
     primary: HalError,
 ) -> Result<(), HalError> {
     let runtime = context.runtime();
-    let result = match runtime.lock() {
+    match runtime.lock() {
         Ok(mut guard) => guard.finish_callback_delivery_failure_use_case(
             CallbackDeliveryFailureReport::frontend_scan_end(
                 handle.object_id(),
@@ -87,8 +87,7 @@ fn finish_frontend_scan_end_delivery_failure(
                 ),
             }
         }
-    };
-    result
+    }
 }
 
 fn deliver_scan_callback(
@@ -99,6 +98,11 @@ fn deliver_scan_callback(
     notification: FrontendScanNotification,
 ) -> Result<(), HalError> {
     let (message_type, message, method) = match notification {
+        FrontendScanNotification::InputStreamIds(stream_ids) => (
+            FrontendScanMessageType::INPUT_STREAM_IDS,
+            FrontendScanMessage::InputStreamIds(stream_ids),
+            "IFrontendCallback.onScanMessage(INPUT_STREAM_IDS)",
+        ),
         FrontendScanNotification::Locked => (
             FrontendScanMessageType::LOCKED,
             FrontendScanMessage::IsLocked(true),

@@ -19,22 +19,24 @@ use crate::{
 };
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FrontendBackendKind, FrontendDevicePath,
-    FrontendIsdbtPartialReceptionRequirement, FrontendScanMode, FrontendTuneRequest, HalError,
-    HalErrorDetail, HalInternalKind, HalInvalidStateKind,
+    FrontendIsdbtPartialReceptionRequirement, FrontendScanMode, FrontendSystem,
+    FrontendTuneRequest, HalError, HalErrorDetail, HalInternalKind, HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackToken;
 use maleicacid_tuner_hal2_device::{
     FrontendBackendSession, FrontendBackendSubmitFailure, FrontendBackendSubmitTicket,
     FrontendBackendSubmitWait, FrontendBackendTunePlan, FrontendLivePumpJoinOutcome,
     FrontendLivePumpOwner, FrontendRuntimeSnapshot, FrontendScanPhase, FrontendSignalState,
-    FrontendTmccPartialReceptionObservation, FrontendWorkerCancelReason, FrontendWorkerContext,
-    FrontendWorkerKind, FrontendWorkerStartError, FrontendWorkerStopOutcome,
+    FrontendTmccPartialReceptionObservation, FrontendTmccTsidListObservation,
+    FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
+    FrontendWorkerStartError, FrontendWorkerStopOutcome,
     FrontendWorkerStopPoll, FrontendWorkerStopTicket,
 };
 use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FrontendScanNotification {
+    InputStreamIds(Vec<i32>),
     Locked,
     End,
 }
@@ -2297,6 +2299,77 @@ fn record_frontend_tune_lock_qualification(
     Ok(true)
 }
 
+fn frontend_uses_tmcc_stream_id_list(
+    runtime: &SharedRuntime,
+    frontend_id: i32,
+) -> Result<bool, HalError> {
+    let guard = lock_runtime(
+        runtime,
+        "service runtime lock poisoned while checking TMCC stream-id support",
+    )?;
+    let entry = guard.frontend_entry(frontend_id).ok_or_else(|| {
+        HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "frontend registry entry is missing while checking TMCC stream-id support",
+        )
+    })?;
+    Ok(
+        entry.backend == FrontendBackendKind::Px4CharDevice
+            && entry.system == FrontendSystem::IsdbS,
+    )
+}
+
+fn observe_and_record_frontend_stream_id_list(
+    runtime: &SharedRuntime,
+    ctx: &FrontendWorkerContext,
+    session: &FrontendBackendSession,
+    frontend_id: i32,
+    generation: u64,
+) -> Result<Option<Vec<i32>>, HalError> {
+    if !frontend_uses_tmcc_stream_id_list(runtime, frontend_id)? || ctx.cancel_requested() {
+        return Ok(None);
+    }
+    {
+        let guard = lock_runtime(
+            runtime,
+            "service runtime lock poisoned while checking committed TMCC stream IDs",
+        )?;
+        if guard
+            .query()
+            .frontend_runtime_snapshot(frontend_id)?
+            .stream_id_list
+            .is_some()
+        {
+            return Ok(None);
+        }
+    }
+    let FrontendTmccTsidListObservation::Available(stream_ids) = session.observe_tmcc_tsid_list()?
+    else {
+        return Ok(None);
+    };
+    if ctx.cancel_requested() {
+        return Ok(None);
+    }
+    let stream_ids = stream_ids.into_iter().map(i32::from).collect::<Vec<_>>();
+    match FrontendTuneScanTxn::accept_operation_event(
+        runtime,
+        frontend_id,
+        generation,
+        FrontendOperationEvent::StreamIdList {
+            stream_ids: stream_ids.clone(),
+        },
+    )? {
+        crate::frontend_ops::FrontendOperationEventAcceptance::Accepted => Ok(Some(stream_ids)),
+        crate::frontend_ops::FrontendOperationEventAcceptance::DiscardedStale => Ok(None),
+        crate::frontend_ops::FrontendOperationEventAcceptance::AcceptedCallbackFailure => {
+            Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "state-only TMCC stream-ID event reported callback failure",
+            ))
+        }
+    }
+}
+
 fn wait_for_frontend_qualified_lock(
     runtime: &SharedRuntime,
     ctx: &FrontendWorkerContext,
@@ -2474,6 +2547,13 @@ fn run_frontend_backend_tune_session_worker(
             generation,
         )? {
             FrontendLockWaitOutcome::Locked => {
+                let _ = observe_and_record_frontend_stream_id_list(
+                    &runtime,
+                    ctx,
+                    &session,
+                    frontend_id,
+                    generation,
+                )?;
                 if !record_frontend_tune_lock_qualification(&runtime, ctx, frontend_id, generation)?
                 {
                     return Ok(());
@@ -2517,6 +2597,15 @@ fn run_frontend_backend_tune_session_worker(
             )?;
             if ctx.cancel_requested() {
                 break;
+            }
+            if signal_state == FrontendSignalState::Locked {
+                let _ = observe_and_record_frontend_stream_id_list(
+                    &runtime,
+                    ctx,
+                    &session,
+                    frontend_id,
+                    generation,
+                )?;
             }
             match frontend_lock_transition(lock_announced, signal_state, qualification) {
                 FrontendLockTransition::Locked => {
@@ -3535,6 +3624,7 @@ fn run_frontend_backend_scan_session_worker(
             },
         };
         let mut signal_state = FrontendSignalState::NoSignal;
+        let mut locked_stream_ids = None;
         let body_result = (|| {
             match wait_for_frontend_qualified_lock(
                 &runtime,
@@ -3544,7 +3634,16 @@ fn run_frontend_backend_scan_session_worker(
                 ctx.frontend_id(),
                 ctx.generation(),
             )? {
-                FrontendLockWaitOutcome::Locked => signal_state = FrontendSignalState::Locked,
+                FrontendLockWaitOutcome::Locked => {
+                    signal_state = FrontendSignalState::Locked;
+                    locked_stream_ids = observe_and_record_frontend_stream_id_list(
+                        &runtime,
+                        ctx,
+                        &session,
+                        ctx.frontend_id(),
+                        ctx.generation(),
+                    )?;
+                }
                 FrontendLockWaitOutcome::NoSignal | FrontendLockWaitOutcome::Cancelled => {}
             }
             Ok(())
@@ -3554,6 +3653,15 @@ fn run_frontend_backend_scan_session_worker(
             return Ok(());
         }
         if signal_state == FrontendSignalState::Locked {
+            if let Some(stream_ids) = locked_stream_ids {
+                deliver_committed_scan_notification(
+                    &runtime,
+                    &scan_notifier,
+                    ctx.frontend_id(),
+                    ctx.generation(),
+                    FrontendScanNotification::InputStreamIds(stream_ids),
+                )?;
+            }
             deliver_committed_scan_notification(
                 &runtime,
                 &scan_notifier,
