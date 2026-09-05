@@ -5,12 +5,12 @@ use super::{
     execute_shared_object_runtime_use_case_with_request_builder,
     plan_unavailable_object_method_use_case, scan_notifier, set_frontend_lnb_object_use_case,
     status_from_hal_error, status_unknown_error, tune_notifier, AidlApi, AidlMethodCall,
-    AidlObjectKind, BinderResult, FrontendAidlObject, FrontendRequestedSetting, FrontendScanType,
-    FrontendSettings, FrontendStatus, FrontendStatusReadiness, FrontendStatusType,
-    FrontendTuneScanTxn, IFrontend, IFrontendCallback, ObjectFrontendStatusReadinessValue,
-    ObjectFrontendStatusType, ObjectFrontendStatusValue, ObjectQueryRequest, ObjectQueryResponse,
-    Strong,
+    AidlObjectKind, BinderResult, FrontendAidlObject, FrontendScanType, FrontendSettings,
+    FrontendStatus, FrontendStatusReadiness, FrontendStatusType, FrontendTuneScanTxn, IFrontend,
+    IFrontendCallback, ObjectFrontendStatusReadinessValue, ObjectFrontendStatusType,
+    ObjectFrontendStatusValue, ObjectQueryRequest, ObjectQueryResponse, Strong,
 };
+use maleicacid_tuner_hal2_binder_adapter::{FrontendRequestedSetting, FrontendSettingsRequest};
 use maleicacid_tuner_hal2_common::{HalError, HalInvalidArgumentKind};
 use maleicacid_tuner_hal2_device::{FrontendWorkerCancelReason, FrontendWorkerKind};
 
@@ -124,7 +124,7 @@ fn enforce_frontend_product_profile(
 }
 
 fn validate_converted_frontend_request(
-    converted: &super::FrontendSettingsRequest,
+    converted: &FrontendSettingsRequest,
 ) -> Result<(), HalError> {
     maleicacid_tuner_hal2_service_runtime::validate_frontend_request_semantics(&converted.request)?;
     enforce_frontend_product_profile(&converted.requested_settings)
@@ -310,7 +310,8 @@ impl IFrontend for FrontendAidlObject {
         match execute_object_query_use_case(
             &self.runtime(),
             self.handle(),
-            ObjectQueryRequest::FrontendGetHardwareInfo,
+            ObjectQueryRequest::FrontendGetHardwareInfo {
+            },
         )? {
             ObjectQueryResponse::FrontendHardwareInfo(hardware_info) => Ok(hardware_info),
             _ => Err(status_unknown_error(
