@@ -68,6 +68,7 @@ jobs:
           git add arib_si_engine_rs/src/core/provider_data.rs arib_si_engine_rs/src/core/eit.rs arib_si_engine_rs/Android.bp
           git add tis/src/com/maleicacid/tvinput/aribsi/ProviderDataBridge.kt
           git add tis/src/com/maleicacid/tvinput/tis/ChannelScanController.kt tis/src/com/maleicacid/tvinput/tis/ScanPlan.kt tis/src/com/maleicacid/tvinput/tis/TunerSelectionPolicy.kt
+          git add tis/tests/src/com/maleicacid/tvinput/tis/ScanPlanPolicyTest.kt tis/tests/src/com/maleicacid/tvinput/tis/TisR51FixedPlanAcceptanceTest.kt
           git add tis/DESIGN_JA.md tis/INTEGRATION.md
           git add tis/platform_patches/lineage-22.1/frameworks_base_mediasync_first_output.patch tis/platform_patches/lineage-22.1/packages_apps_TV_arib_exceptional_parental_policy.patch
           git add .github/workflows/tis-host-ci.yml .github/workflows/arib-si-engine-host-ci.yml
