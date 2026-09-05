@@ -93,7 +93,7 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: 固定KotlinとAndroid 14入力を準備
+      - name: 固定KotlinとAndroid 15入力を準備
         shell: bash
         run: |
           tools_dir="$RUNNER_TEMP/tis-kotlin-compile"
@@ -102,10 +102,10 @@ jobs:
             "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip" \
             --output "$tools_dir/kotlin-compiler.zip"
           curl --fail --location --retry 3 --retry-all-errors \
-            "https://repo.maven.apache.org/maven2/org/robolectric/android-all/14-robolectric-10818077/android-all-14-robolectric-10818077.jar" \
+            "https://repo.maven.apache.org/maven2/org/robolectric/android-all/15-robolectric-13954326/android-all-15-robolectric-13954326.jar" \
             --output "$tools_dir/android-all.jar"
           echo "88b39213506532c816ff56348c07bbeefe0c8d18943bffbad11063cf97cac3e6  $tools_dir/kotlin-compiler.zip" | sha256sum --check
-          echo "6be2218c6a53fe3c57bc22ebdc723edcb7270a8a6f187545708aa5c0ed813977  $tools_dir/android-all.jar" | sha256sum --check
+          echo "e17105f6c432357e6bb278a527f8e848d01fc56ccee01be77725bea23d871990  $tools_dir/android-all.jar" | sha256sum --check
           unzip -q "$tools_dir/kotlin-compiler.zip" -d "$tools_dir/compiler"
           echo "TIS_KOTLIN_HOME=$tools_dir/compiler/kotlinc" >> "$GITHUB_ENV"
           echo "TIS_ANDROID_ALL_JAR=$tools_dir/android-all.jar" >> "$GITHUB_ENV"
@@ -145,7 +145,7 @@ jobs:
       - name: ホストテスト用の実SI JNI libraryをビルド
         run: cargo +"$RUST_TOOLCHAIN" build --lib --locked --manifest-path arib_si_engine_rs/host_ci/Cargo.toml
 
-      - name: 固定Kotlin・Android・JUnit入力を準備
+      - name: 固定Kotlin・Android 15・JUnit入力を準備
         shell: bash
         run: |
           tools_dir="$RUNNER_TEMP/tis-kotlin-test"
@@ -154,7 +154,7 @@ jobs:
             "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip" \
             --output "$tools_dir/kotlin-compiler.zip"
           curl --fail --location --retry 3 --retry-all-errors \
-            "https://repo.maven.apache.org/maven2/org/robolectric/android-all/14-robolectric-10818077/android-all-14-robolectric-10818077.jar" \
+            "https://repo.maven.apache.org/maven2/org/robolectric/android-all/15-robolectric-13954326/android-all-15-robolectric-13954326.jar" \
             --output "$tools_dir/android-all.jar"
           curl --fail --location --retry 3 --retry-all-errors \
             "https://repo.maven.apache.org/maven2/junit/junit/4.13.2/junit-4.13.2.jar" \
@@ -163,7 +163,7 @@ jobs:
             "https://repo.maven.apache.org/maven2/org/hamcrest/hamcrest-core/1.3/hamcrest-core-1.3.jar" \
             --output "$tools_dir/hamcrest-core.jar"
           echo "88b39213506532c816ff56348c07bbeefe0c8d18943bffbad11063cf97cac3e6  $tools_dir/kotlin-compiler.zip" | sha256sum --check
-          echo "6be2218c6a53fe3c57bc22ebdc723edcb7270a8a6f187545708aa5c0ed813977  $tools_dir/android-all.jar" | sha256sum --check
+          echo "e17105f6c432357e6bb278a527f8e848d01fc56ccee01be77725bea23d871990  $tools_dir/android-all.jar" | sha256sum --check
           echo "8e495b634469d64fb8acfa3495a065cbacc8a0fff55ce1e31007be4c16dc57d3  $tools_dir/junit.jar" | sha256sum --check
           echo "66fdef91e9739348df7a096aa384a5685f4e875584cce89386a7a47251c4d8e9  $tools_dir/hamcrest-core.jar" | sha256sum --check
           unzip -q "$tools_dir/kotlin-compiler.zip" -d "$tools_dir/compiler"
