@@ -1,6 +1,6 @@
 package com.maleicacid.tvinput.tis
 
-/** Pure live-playback decisions. Session lifecycle and Android resources stay in MaleicacidLiveSession. */
+/** ライブ再生の純粋判定。Session lifecycleとAndroid資源はMaleicacidLiveSessionが所有する。 */
 object PlaybackPolicy {
     private const val SERVICE_TYPE_DIGITAL_AUDIO = 0x02
 
