@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from vts_profile.model import ProfileError, validate_profile
+from vts_profile.render import render_xml
 from vts_profile.resource_closure import _program
 
 
@@ -45,6 +46,15 @@ class RecordFilterFmqProfileTest(unittest.TestCase):
             "record-filter-fmq VTS variant requires flows.record.enabled=true",
         ):
             validate_profile(profile, require_resolved=True)
+
+    def test_isdbt_renderer_emits_hal_accepted_android14_settings(self) -> None:
+        xml = render_xml(self.profile())
+        self.assertIn(
+            '<isdbtFrontendSettings serviceAreaId="0" inversion="0" bandwidth="1" '
+            'mode="1" guardInterval="1" partialReceptionFlag="0"/>',
+            xml,
+        )
+        self.assertNotIn("<FrontendIsdbtLayerSettings", xml)
 
     def test_resource_checker_uses_supplied_filter_config_source(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
