@@ -5,7 +5,7 @@ import com.maleicacid.tvinput.aribsi.EventModelMapper
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.db.ProgramRecord
 
-/** Pure merge rules for decoder-observed video metadata. */
+/** decoderで観測したvideo metadataをProgramへ反映する純粋なmerge規則。 */
 object ProgramVideoMetadataPolicy {
     fun currentProgramsWithMetadata(
         events: List<AribEvent>,
