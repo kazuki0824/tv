@@ -268,10 +268,29 @@ def _new_profile(args: argparse.Namespace) -> dict:
     return profile
 
 
+def _print_region_candidates(profile: dict) -> None:
+    for index, candidate in enumerate(profile["region"]["candidates"]):
+        channel = candidate.get("physical_channel")
+        print(
+            f"[{index}] {candidate['frequency_hz']} Hz "
+            f"ch={channel if channel is not None else '-'} {candidate.get('label', '')}".rstrip()
+        )
+
+
 def cmd_init(args: argparse.Namespace) -> int:
+    path = Path(args.profile)
     profile = _new_profile(args)
-    save_profile(Path(args.profile), profile)
+    # initの入力はresolverとは独立したcheckpointとして先に保存する。
+    save_profile(path, profile)
     print(args.profile)
+    if (
+        not args.non_interactive
+        and profile["frontend"]["type"] == "ISDBT"
+        and "region" in profile
+    ):
+        resolve_region(profile)
+        save_profile(path, profile)
+        _print_region_candidates(profile)
     return 0
 
 
@@ -282,9 +301,7 @@ def cmd_resolve_region(args: argparse.Namespace) -> int:
     dataset = load_json(Path(args.dataset)) if args.dataset else None
     resolve_region(profile, dataset, args.select_index)
     save_profile(path, profile)
-    for index, candidate in enumerate(profile["region"]["candidates"]):
-        channel = candidate.get("physical_channel")
-        print(f"[{index}] {candidate['frequency_hz']} Hz ch={channel if channel is not None else '-'} {candidate.get('label', '')}".rstrip())
+    _print_region_candidates(profile)
     return 0
 
 
