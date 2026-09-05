@@ -2,6 +2,7 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
+// AOSP TIF標準のrating-system providerとしてTV Appから発見されるproduct extension。
 android_app {
     name: "AribContentRatings",
     product_specific: true,
