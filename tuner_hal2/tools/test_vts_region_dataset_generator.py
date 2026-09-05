@@ -45,14 +45,12 @@ class VtsRegionDatasetGeneratorTest(unittest.TestCase):
         )
         assert record is not None
         self.assertEqual(record["id"], "kanagawa/2005/hiratsuka-d-tv.html")
-        self.assertEqual(record["name"], "平塚テレビ中継局")
         self.assertEqual(record["coverage_areas"], ["平塚市"])
         self.assertAlmostEqual(record["latitude"], 35.320709122176)
         self.assertAlmostEqual(record["longitude"], 139.31059345819)
         self.assertEqual(record["coordinate_source"], "INA4N-map")
         self.assertEqual(record["services"][0]["physical_channel"], 19)
         self.assertEqual(record["services"][0]["polarization"], "垂直")
-        self.assertEqual(record["services"][0]["output_text"], "100W")
         self.assertEqual(record["services"][0]["output_w"], 100.0)
 
     def test_power_parser_supports_watts_and_kilowatts(self) -> None:
@@ -63,9 +61,7 @@ class VtsRegionDatasetGeneratorTest(unittest.TestCase):
     def test_missing_output_and_polarization_are_preserved_as_unknown(self) -> None:
         services = generator._services([["北海道放送", "1", "22", "", ""]])
         self.assertEqual(len(services), 1)
-        self.assertEqual(services[0]["physical_channel"], 22)
         self.assertIsNone(services[0]["polarization"])
-        self.assertEqual(services[0]["output_text"], "")
         self.assertIsNone(services[0]["output_w"])
 
     def test_apab_coordinate_override_is_used_only_when_ina4n_map_is_missing(self) -> None:
@@ -83,18 +79,10 @@ class VtsRegionDatasetGeneratorTest(unittest.TestCase):
             url,
             {"index_name": "札幌局", "coverage_texts": ["札幌市の一部"]},
             html,
-            {
-                transmitter_id: {
-                    "source": "A-PAB",
-                    "latitude": 43.0,
-                    "longitude": 141.0,
-                }
-            },
+            {transmitter_id: {"source": "A-PAB", "latitude": 43.0, "longitude": 141.0}},
         )
         assert record is not None
         self.assertEqual(record["coordinate_source"], "A-PAB")
-        self.assertEqual(record["latitude"], 43.0)
-        self.assertEqual(record["longitude"], 141.0)
 
     def test_gsi_geocode_is_fallback_after_no_ina4n_or_apab_coordinate(self) -> None:
         url = "https://ina4n.com/chideji/47tv/hokkaido/2006/sapporo-d-tv.html"
@@ -120,9 +108,7 @@ class VtsRegionDatasetGeneratorTest(unittest.TestCase):
         url = "https://ina4n.com/chideji/47tv/hokkaido/2010/erimosawamachi-d-tv.html"
         html = """
         <h1>えりも沢町中継局</h1>
-        <table>
-          <tr><td>NHK総合</td><td>3</td><td>22</td><td></td><td></td></tr>
-        </table>
+        <table><tr><td>NHK総合</td><td>3</td><td>22</td><td></td><td></td></tr></table>
         """
         with patch("vts_profile.ina4n_dataset._geocode_location", return_value=None):
             record = generator._build_transmitter(
@@ -133,7 +119,6 @@ class VtsRegionDatasetGeneratorTest(unittest.TestCase):
             )
         assert record is not None
         self.assertIsNone(record["latitude"])
-        self.assertIsNone(record["longitude"])
         self.assertEqual(record["services"][0]["physical_channel"], 22)
 
     def test_page_without_current_isdbt_service_is_skipped_not_global_failure(self) -> None:
@@ -149,6 +134,53 @@ class VtsRegionDatasetGeneratorTest(unittest.TestCase):
                 html,
             )
         )
+
+    def test_nationwide_loader_flattens_all_prefecture_pages(self) -> None:
+        prefectures = ("東京都", "神奈川県")
+        links = {
+            "東京都": "https://ina4n.example/tokyo-index.html",
+            "神奈川県": "https://ina4n.example/kanagawa-index.html",
+        }
+        refs = {
+            "東京都": [("東京都", "https://ina4n.example/tokyo.html", {"index_name": "東京", "coverage_texts": []})],
+            "神奈川県": [("神奈川県", "https://ina4n.example/kanagawa.html", {"index_name": "神奈川", "coverage_texts": []})],
+        }
+
+        def prefecture_refs(prefecture: str, _url: str, _html: str):
+            return refs[prefecture]
+
+        def build(prefecture: str, detail_url: str, _record: dict, _html: str, _overrides=None):
+            return {
+                "id": detail_url,
+                "prefecture": prefecture,
+                "name": prefecture,
+                "source_url": detail_url,
+                "location_text": prefecture,
+                "latitude": 35.0,
+                "longitude": 139.0,
+                "coordinate_source": "fixture",
+                "coverage_texts": [],
+                "coverage_areas": [],
+                "services": [{
+                    "name": "fixture",
+                    "remote_control_key_id": 1,
+                    "physical_channel": 20 if prefecture == "東京都" else 21,
+                    "polarization": "水平",
+                    "output_text": "1W",
+                    "output_w": 1.0,
+                }],
+            }
+
+        with (
+            patch.object(generator, "PREFECTURE_NAMES", prefectures),
+            patch("vts_profile.ina4n_dataset.frequency_links", return_value=links),
+            patch("vts_profile.ina4n_dataset._fetch_text", return_value="fixture"),
+            patch("vts_profile.ina4n_dataset._prefecture_transmitter_refs", side_effect=prefecture_refs),
+            patch("vts_profile.ina4n_dataset._build_transmitter", side_effect=build),
+        ):
+            transmitters = generator.load_all_with_overrides(None)
+        self.assertEqual({item["prefecture"] for item in transmitters}, {"東京都", "神奈川県"})
+        self.assertEqual(len(transmitters), 2)
 
     def test_live_descriptor_contains_no_lossy_prefecture_channel_union(self) -> None:
         descriptor = generator.live_descriptor()

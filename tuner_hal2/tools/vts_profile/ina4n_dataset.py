@@ -472,6 +472,46 @@ def load_prefecture_with_overrides(
     return transmitters
 
 
+@lru_cache(maxsize=1)
+def load_all() -> tuple[dict[str, Any], ...]:
+    return tuple(load_all_with_overrides(None))
+
+
+def load_all_with_overrides(
+    coordinate_overrides: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    links = frequency_links()
+
+    def fetch_prefecture(prefecture: str) -> list[tuple[str, str, dict[str, Any]]]:
+        page_url = links[prefecture]
+        return _prefecture_transmitter_refs(
+            prefecture,
+            page_url,
+            _fetch_text(page_url),
+        )
+
+    with ThreadPoolExecutor(max_workers=MAX_FETCH_WORKERS) as executor:
+        grouped = list(executor.map(fetch_prefecture, PREFECTURE_NAMES))
+    refs = [ref for group in grouped for ref in group]
+
+    def fetch_one(ref: tuple[str, str, dict[str, Any]]) -> dict[str, Any] | None:
+        prefecture, detail_url, index_record = ref
+        return _build_transmitter(
+            prefecture,
+            detail_url,
+            index_record,
+            _fetch_text(detail_url),
+            coordinate_overrides,
+        )
+
+    with ThreadPoolExecutor(max_workers=MAX_FETCH_WORKERS) as executor:
+        raw = list(executor.map(fetch_one, refs))
+    transmitters = [item for item in raw if item is not None]
+    transmitters.sort(key=lambda item: item["id"])
+    if not transmitters:
+        raise RuntimeError("INA4N has no current nationwide ISDB-T transmitter data")
+    return transmitters
+
 def live_descriptor() -> dict[str, Any]:
     return {
         "schema_version": 3,

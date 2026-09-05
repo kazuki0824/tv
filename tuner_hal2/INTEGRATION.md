@@ -182,31 +182,27 @@ CLIと生成profileのtargetはproduct defaultである`tuner_hal2`に固定す�
 
 ### 6.4 地域入力からの受信候補解決と実機解決
 
-`init`では具体的な受信チャンネルを必須入力にせず、地上波では住所、郵便番号、緯度経度から、実機確認を開始できる可能性が高い順に少数の受信候補を導出する。都道府県名だけでは地点ごとの受信可能性を順位付けできないため、県内全送信所の物理ch和集合へ拡大せずfail-closedで拒否する。
+`init`では具体的な受信チャンネルを必須入力にせず、地上波では住所、郵便番号、緯度経度から、実機確認を開始できる可能性が高い順に受信候補を導出する。都道府県名だけでは地点ごとの受信可能性を順位付けできないため、県内全送信所の物理ch和集合へ拡大せずfail-closedで拒否する。
 
-地上波候補の放送情報正本はINA4Nの公開地上デジタル中継局ページに固定する。checked-in `vts_channel_plan.japan.json` は県内channel unionを保持する静的snapshotではなく、`mode=live-ina4n` のsource descriptorとする。region resolverはGSIで入力地点の都道府県・市区町村を確定した後、その都道府県のINA4N周波数ページと送信所詳細ページから、その実行時点の送信所名、詳細URL、放送局別物理ch、偏波、出力、「主なカバーエリア」、所在地を送信所単位で取得する。`prefecture_channels`のような県内全送信所の物理ch和集合を通常候補生成の正本にしてはならない。
+住所入力はGSIの全国市区町村表で行政区域をcanonicalizeしてからGSI AddressSearchへ渡す。都道府県名が省略され、入力先頭が`横浜市緑区`や`座間市`のような市区町村名と全国で一意に一致する場合は対応する都道府県名を補完する。`府中市`のように最長一致する市区町村名が複数都道府県に存在する場合は推測で選ばずfail-closedとし、都道府県名の入力を要求する。市区町村prefixが得られない自由形式住所は補完せず、その文字列をGSIへ渡し、GSIが一意の座標を返せない場合はfail-closedとする。
+
+住所と郵便番号はGSIで緯度経度へ解決し、緯度経度入力はその座標を直接使用する。GSI reverse geocoderから得た市区町村はINA4Nの「主なカバーエリア」に対するcoverage evidenceの判定に使用する。入力住所の都道府県、またはreverse geocoderで得た都道府県を送信所探索境界にしてはならない。
+
+地上波候補の放送情報正本はINA4Nの公開地上デジタル中継局ページに固定する。region resolverは47都道府県のINA4N周波数ページと送信所詳細ページを全国送信所集合として取得し、送信所名、詳細URL、放送局別物理ch、偏波、出力、「主なカバーエリア」、所在地を送信所単位で保持する。県境を越えた受信を候補から除外しない。`prefecture_channels`のような県内全送信所の物理ch和集合を通常候補生成の正本にしてはならない。
 
 INA4Nで偏波または出力が空欄の場合はunknownのまま保持し、既定値を捏造しない。物理chが有効なのに出力・偏波だけがunknownという理由で送信所を候補datasetから削除してはならない。現行ISDB-T物理chを1件も持たない旧局等はVTS受信候補ではないため候補datasetから除外してよい。
 
-送信所座標はINA4N詳細ページの地図リンクに埋め込まれた座標を第一選択とする。INA4Nに座標リンクがない場合は、同一局であることを人間が確認したA-PAB公開UIの局位置を`coordinate_overrides`へ明示して補完してよい。A-PABからcoverage polygon、物理ch、出力、偏波を取り込んではならない。A-PAB overrideがない場合はINA4N所在地文字列をGSIでgeocodeしてよい。これらでも座標が得られない場合、座標unknownのまま送信所を保持し、INA4Nの「主なカバーエリア」と市区町村が一致する場合はcoverage根拠だけで低優先候補に残してよい。
+送信所座標はINA4N詳細ページの地図リンクに埋め込まれた座標を第一選択とする。INA4Nに座標リンクがない場合は、同一局であることを人間が確認したA-PAB公開UIの局位置を`coordinate_overrides`へ明示して補完してよい。A-PABからcoverage polygon、物理ch、出力、偏波を取り込んではならない。A-PAB overrideがない場合はINA4N所在地文字列をGSIでgeocodeしてよい。これらでも座標が得られない場合、座標unknownのまま送信所を保持する。
 
-住所と郵便番号はまずGSIで緯度経度へ解決し、緯度経度入力はその座標を直接使用する。GSI reverse geocoderから得た都道府県・市区町村は、INA4Nから読み込む都道府県ページの選択と「主なカバーエリア」一致判定に使用する。住所文字列を直接INA4Nのarea文字列へsubstring照合してはならない。
+全国の各送信所について、入力地点との大円距離`d[km]`、INA4N記載送信出力`P[W]`から得る`P / max(d, 0.1)^2`、およびINA4N「主なカバーエリア」と入力地点市区町村のcoverage evidenceを計算する。coverage evidenceは、市区町村完全一致を`exact`、`横浜市`に対する`横浜市緑区`のような親市区町村一致を`coarse`、一致なしを`none`として区別し、単純substring一致を完全一致と同格に扱わない。
 
-候補順位は次の優先クラスに固定する。
+送信所順位はcoverage evidenceを`exact > coarse > none`の順に優先し、同じevidence内では出力と座標が既知なら`P / max(d, 0.1)^2`の降順、出力unknown・座標既知なら距離昇順、座標unknownならその群の最後尾とする。`P/d^2`および距離は実機確認の探索順を決めるheuristicに限定し、受信電界強度、ERP/EIRP、terrain、建物、アンテナ高を含む受信可能性の証明またはcoverage polygonとして扱わない。較正されていないscore threshold、k-NNの固定`k`、その他の固定件数上限で候補を捨ててはならない。
 
-1. INA4Nの「主なカバーエリア」が入力地点の市区町村と一致し、送信出力と座標の両方が既知なら、同群を`P / max(d, 0.1)^2`の降順にする。
-2. coverage一致で座標は既知だが出力がunknownなら、既知出力群より後ろで距離昇順にする。
-3. coverage一致だが座標がunknownなら、そのcoverage一致群のさらに後ろに残す。
-4. coverage一致がない場合、出力と座標が既知の送信所を`P / max(d, 0.1)^2`の降順にする。
-5. coverage一致がなく出力unknown・座標既知なら距離昇順とする。座標もunknownなら最後尾とする。
+各送信所では既知出力が最大のサービスをfirst probe channelとする。全サービスの出力がunknownならremote-control key、物理ch、サービス名で決定的にfirst probeを選ぶ。同一送信所の残りのcurrent ISDB-T物理chは同じ順序規則でfallback channelsとしてfirst probe直後に並べる。これにより`resolve-device`は有望な送信所についてfirst probeを試し、それが成立しない場合も同局の別物理chを試してから次の送信所へ進める。同一frequencyはTune操作として重複するため、全国候補列では最初に現れた1回だけを保持してよい。
 
-ここで`P[W]`はINA4N記載の送信出力、`d[km]`は入力地点から送信所座標までの大円距離である。`P/d^2`および距離fallbackは実機確認の探索順を決めるheuristicに限定し、受信電界強度、ERP/EIRP、terrain、建物、アンテナ高を含む受信可能性の証明またはcoverage polygonとして扱わない。
+`resolve-region`が生成するのはVTS実機確認を開始するための順位付き受信候補であり、service ID、PMT PID、audio/video/record PID等のTS内識別値を地域情報から推定して確定してはならない。実機接続後、`resolve-device`はpublic Tuner AIDLで候補frequencyを順位順にtuneし、LOCKEDを確認したTSからPATを取得してserviceとPMT PIDを解決し、PMTから要求flowに必要なES PIDを解決する。解決したfrequency、service、PAT/PMTに基づくPID等は同じ`VtsEnvironmentProfile`へ保存する。
 
-各送信所からは既知出力が最大のサービスをprobe frequencyとして1つ選ぶ。全サービスの出力がunknownならremote-control key、物理ch、サービス名で決定的に1サービスを選ぶ。同一frequencyは重複probeせず、根拠なく候補数を固定上限で切り捨てない。候補labelには送信所名、サービス名、および`coverage+inverse-square`、`coverage+distance-no-output`、`coverage-no-coordinate`、`inverse-square`、`distance-no-output`、`no-coordinate`のいずれかの探索根拠を残す。
-
-`resolve-region`が生成するのはVTS実機確認を開始するための順位付き受信候補であり、service ID、PMT PID、audio/video/record PID等のTS内識別値を地域情報から推定して確定してはならない。実機接続後、`resolve-device`はpublic Tuner AIDLで候補frequencyをtuneし、LOCKEDを確認したTSからPATを取得してserviceとPMT PIDを解決し、PMTから要求flowに必要なES PIDを解決する。解決したfrequency、service、PAT/PMTに基づくPID等は同じ`VtsEnvironmentProfile`へ保存する。
-
-要求flowを満たすservice候補が1件ならそのserviceを採用してよい。複数存在する場合は対話CLIで選択させるか、profileに明示されたselectorで決定する。非対話実行で複数候補が残りselectorがない場合はfail-closedとし、偶然の列挙順からserviceを選ばない。
+要求flowを満たすservice候補が1件ならそのserviceを採用してよい。複数存在する場合は対話CLIで選択させるか、profileに明示されたselectorで決定する。非対話実行で複数候補が残りselectorがない場合はfail-closedとし、偶然の列挙順からserviceを選ばない。service選択のambiguityは受信frequencyの失敗ではないため、別frequencyへ自動fallbackする理由にしてはならない。
 
 具体的なfrontend/frequency/PIDからXMLを生成した後、VTS preflight失敗を理由に別候補へ自動fallbackして同じ生成物の意味を変えてはならない。別候補を採用する場合は`resolve-device`で同じprofileファイルの解決値を更新し、その更新後profileからXMLを再生成する。
 
