@@ -722,6 +722,9 @@ private fun parseLinkage(array: JSONArray?): List<AribLinkage> = (0 until (array
                         esPid = stream.elementaryPid,
                         componentTag = stream.componentTag,
                         dataComponentId = stream.dataComponentId,
+                        captionDmf = stream.captionDmf,
+                        captionTiming = stream.captionTiming,
+                        automaticPresentationOnReception = stream.automaticPresentationOnReception,
                         language = null,
                         captionServiceKind = when {
                             stream.isSuperimpose -> "superimpose"

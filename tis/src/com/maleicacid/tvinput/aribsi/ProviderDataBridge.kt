@@ -364,6 +364,9 @@ private fun toLinkageArray(items: List<AribLinkage>): JSONArray = JSONArray().ap
                     .put("esPid", entry.esPid?.value ?: JSONObject.NULL)
                     .put("componentTag", entry.componentTag ?: JSONObject.NULL)
                     .put("dataComponentId", entry.dataComponentId ?: JSONObject.NULL)
+                    .put("captionDmf", entry.captionDmf ?: JSONObject.NULL)
+                    .put("captionTiming", entry.captionTiming ?: JSONObject.NULL)
+                    .put("automaticPresentationOnReception", entry.automaticPresentationOnReception ?: JSONObject.NULL)
                     .put("language", entry.language?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
                     .put(
                         "captionServiceKind",

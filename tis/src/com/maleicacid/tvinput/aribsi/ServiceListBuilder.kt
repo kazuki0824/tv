@@ -12,7 +12,7 @@ class ServiceListBuilder(private val engine: AribSiEngine) {
     ) {
         val serviceKey: ServiceKey get() = decision.serviceKey
         val registrationReady: Boolean get() = decision.registrationReady
-        val clearLivePlaybackSupported: Boolean get() = decision.clearLivePlaybackSupported
+        val clearLivePlaybackStaticallyEligible: Boolean get() = decision.clearLivePlaybackStaticallyEligible
         val requiresCas: Boolean get() = decision.requiresCas
         val reasons: List<String> get() = decision.reasons
         fun signatureToken(): String = listOf(
@@ -29,12 +29,12 @@ class ServiceListBuilder(private val engine: AribSiEngine) {
         val completeness: List<ServiceCompleteness>,
     ) {
         val totalKeys: Set<ServiceKey> get() = completeness.mapTo(linkedSetOf()) { it.serviceKey }
-        val clearLivePlaybackSupportedKeys: Set<ServiceKey>
-            get() = completeness.filterTo(mutableListOf()) { it.clearLivePlaybackSupported }.mapTo(linkedSetOf()) { it.serviceKey }
+        val clearLivePlaybackStaticallyEligibleKeys: Set<ServiceKey>
+            get() = completeness.filterTo(mutableListOf()) { it.clearLivePlaybackStaticallyEligible }.mapTo(linkedSetOf()) { it.serviceKey }
         val registrationReadyKeys: Set<ServiceKey>
             get() = completeness.filterTo(mutableListOf()) { it.registrationReady }.mapTo(linkedSetOf()) { it.serviceKey }
         val total: Int get() = totalKeys.size
-        val clearLivePlaybackSupported: Int get() = clearLivePlaybackSupportedKeys.size
+        val clearLivePlaybackStaticallyEligible: Int get() = clearLivePlaybackStaticallyEligibleKeys.size
         val registrationReady: Int get() = registrationReadyKeys.size
         fun stableSignature(): String = completeness
             .sortedWith(compareBy<ServiceCompleteness> { it.serviceKey.originalNetworkId }
@@ -63,11 +63,11 @@ class ServiceListBuilder(private val engine: AribSiEngine) {
         }
     }
 
-    fun clearLivePlaybackSupportedSnapshot(): List<AribService> {
+    fun clearLivePlaybackStaticallyEligibleSnapshot(): List<AribService> {
         val transaction = engine.serviceRegistrationSnapshot()
         return transaction.services.filter { service ->
             ServicePolicyEvaluator.evaluate(transaction.semanticFactsByServiceKey[service.serviceKey])
-                .clearLivePlaybackSupported
+                .clearLivePlaybackStaticallyEligible
         }
     }
 

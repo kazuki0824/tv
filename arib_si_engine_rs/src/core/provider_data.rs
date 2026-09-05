@@ -280,6 +280,9 @@ struct SubtitleComponentV1 {
     es_pid: Option<i64>,
     component_tag: Option<i64>,
     data_component_id: Option<i64>,
+    caption_dmf: Option<i64>,
+    caption_timing: Option<i64>,
+    automatic_presentation_on_reception: Option<bool>,
     language: Option<String>,
     caption_service_kind: String,
     parse_status: String,
@@ -1188,6 +1191,9 @@ fn collect_program_unknown_extensions(
                 "esPid",
                 "componentTag",
                 "dataComponentId",
+                "captionDmf",
+                "captionTiming",
+                "automaticPresentationOnReception",
                 "language",
                 "captionServiceKind",
                 "parseStatus",
@@ -1787,6 +1793,12 @@ fn valid_subtitle_component(v: &SubtitleComponentV1) -> bool {
         && valid_optional_u8(v.component_tag)
         && (v.es_pid.is_some() || v.component_tag.is_some())
         && valid_optional_u16(v.data_component_id)
+        && v.caption_dmf
+            .map(|value| (0..=15).contains(&value))
+            .unwrap_or(true)
+        && v.caption_timing
+            .map(|value| (0..=3).contains(&value))
+            .unwrap_or(true)
         && valid_optional_iso639(&v.language)
         && nonempty(&v.caption_service_kind)
         && nonempty(&v.parse_status)
@@ -2087,6 +2099,30 @@ mod provider_data_tests {
         let result = build_program_provider_data(&request.to_string());
         assert!(!result.success);
         assert_eq!(result.error_code, "PROGRAM_REQUEST_PARSE_FAILED");
+    }
+
+    #[test]
+    fn subtitle_component_preserves_data_component_presentation_facts() {
+        let mut request = minimal_program_request_value();
+        request["components"]["subtitle"] = serde_json::json!([{
+            "esPid": 0x123,
+            "componentTag": 0x30,
+            "dataComponentId": 0x0008,
+            "captionDmf": 0x0c,
+            "captionTiming": 0x02,
+            "automaticPresentationOnReception": true,
+            "language": "jpn",
+            "captionServiceKind": "superimpose",
+            "parseStatus": "OK"
+        }]);
+
+        let result = build_program_provider_data(&request.to_string());
+        assert!(result.success, "{}", result.error_message);
+        let canonical: serde_json::Value = serde_json::from_str(&result.json).unwrap();
+        let subtitle = &canonical["components"]["subtitle"][0];
+        assert_eq!(subtitle["captionDmf"], 0x0c);
+        assert_eq!(subtitle["captionTiming"], 0x02);
+        assert_eq!(subtitle["automaticPresentationOnReception"], true);
     }
 
     #[test]

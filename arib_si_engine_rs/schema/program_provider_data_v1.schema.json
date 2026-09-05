@@ -848,7 +848,10 @@
         "dataComponentId",
         "language",
         "captionServiceKind",
-        "parseStatus"
+        "parseStatus",
+        "captionDmf",
+        "captionTiming",
+        "automaticPresentationOnReception"
       ],
       "properties": {
         "esPid": {
@@ -897,6 +900,28 @@
         },
         "parseStatus": {
           "$ref": "#/$defs/parseStatus"
+        },
+        "captionDmf": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 15
+        },
+        "captionTiming": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 3
+        },
+        "automaticPresentationOnReception": {
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "not": {

@@ -96,7 +96,7 @@ data class AribService(
         get() = serviceScopedCaDescriptors.any { it.scope == CaDescriptorScope.PROGRAM }
     val hasEsCaDescriptor: Boolean
         get() = serviceScopedCaDescriptors.any { it.scope == CaDescriptorScope.ES }
-    val requiresCas: Boolean get() = serviceScopedCaDescriptors.isNotEmpty() || freeCaMode == true
+    val requiresCas: Boolean get() = serviceScopedCaDescriptors.isNotEmpty()
 }
 
 data class AribBroadcastClockFact(
@@ -236,6 +236,9 @@ data class AribComponentEntry(
     val aspect: String? = null,
     val profileLevel: String? = null,
     val dataComponentId: Int? = null,
+    val captionDmf: Int? = null,
+    val captionTiming: Int? = null,
+    val automaticPresentationOnReception: Boolean? = null,
     val captionServiceKind: String? = null,
     val main: Boolean? = null,
     val multiLingual: Boolean? = null,
@@ -469,7 +472,7 @@ data class ServicePolicyDecision(
     val requiresCas: Boolean,
     val reasons: List<String>,
 ) {
-    val clearLivePlaybackSupported: Boolean get() = registrationReady && !requiresCas
+    val clearLivePlaybackStaticallyEligible: Boolean get() = registrationReady && !requiresCas
 }
 
 typealias ServicePublishabilityDiagnostic = ServicePolicyDecision

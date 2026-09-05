@@ -40,8 +40,8 @@ class ChannelScanController(
     data class SiCollectionResult(
         val outcome: SiCollectionOutcome,
         val diagnostic: ScanDiagnostic?,
-        val clearLivePlaybackSupportedServices: Int,
-        val registrationReadyServices: Int = clearLivePlaybackSupportedServices,
+        val clearLivePlaybackStaticallyEligibleServices: Int,
+        val registrationReadyServices: Int = clearLivePlaybackStaticallyEligibleServices,
     ) {
         val mayPublishChannels: Boolean
             get() = outcome != SiCollectionOutcome.CANCELLED &&
@@ -65,7 +65,7 @@ class ChannelScanController(
     private data class ServiceCounts(
         val discoveryStage: Int,
         val total: Int,
-        val clearLivePlaybackSupported: Int,
+        val clearLivePlaybackStaticallyEligible: Int,
         val registrationReady: Int,
         val signature: String,
         val incompleteReasons: Map<ServiceKey, List<String>>,
@@ -135,7 +135,7 @@ class ChannelScanController(
             val collection = collectSiForCandidate(candidate)
             collection.diagnostic?.let { diagnostics += it }
             if (!collection.mayPublishChannels) {
-                Log.w(LogTags.TIS, "SI discovery 未完了のため TvProvider channel 登録を省略します candidate=$candidate outcome=${collection.outcome} registrationReady=${collection.registrationReadyServices} clearLivePlaybackSupported=${collection.clearLivePlaybackSupportedServices} diagnostic=${collection.diagnostic?.message}")
+                Log.w(LogTags.TIS, "SI discovery 未完了のため TvProvider channel 登録を省略します candidate=$candidate outcome=${collection.outcome} registrationReady=${collection.registrationReadyServices} clearLivePlaybackStaticallyEligible=${collection.clearLivePlaybackStaticallyEligibleServices} diagnostic=${collection.diagnostic?.message}")
                 return@forEach
             }
             val publishResult = publishCurrentServiceSnapshot(PublishMode.SETUP_SCAN)
@@ -381,7 +381,7 @@ class ChannelScanController(
         return ServiceCounts(
             discoveryStage = transaction.discoveryStage,
             total = summary.total,
-            clearLivePlaybackSupported = summary.clearLivePlaybackSupported,
+            clearLivePlaybackStaticallyEligible = summary.clearLivePlaybackStaticallyEligible,
             registrationReady = summary.registrationReady,
             signature = summary.stableSignature(),
             incompleteReasons = completeness
@@ -438,13 +438,13 @@ class ChannelScanController(
         val message = if (outcome == SiCollectionOutcome.COMPLETE) {
             null
         } else {
-            "SI 収集が完全完了していません outcome=$outcome stage=${finalCounts.discoveryStage} services=${finalCounts.total} clearLivePlaybackSupportedServices=${finalCounts.clearLivePlaybackSupported} registrationReadyServices=${finalCounts.registrationReady} incomplete=${finalCounts.incompleteReasons} sections=${ingestController.diagnosticSummary()} elapsedMs=$elapsed"
+            "SI 収集が完全完了していません outcome=$outcome stage=${finalCounts.discoveryStage} services=${finalCounts.total} clearLivePlaybackStaticallyEligibleServices=${finalCounts.clearLivePlaybackStaticallyEligible} registrationReadyServices=${finalCounts.registrationReady} incomplete=${finalCounts.incompleteReasons} sections=${ingestController.diagnosticSummary()} elapsedMs=$elapsed"
         }
         Log.i(LogTags.TIS, "scan 候補の SI 収集結果 candidate=$candidate outcome=$outcome complete=$complete counts=$finalCounts message=$message")
         return SiCollectionResult(
             outcome = outcome,
             diagnostic = message?.let { ScanDiagnostic(candidate, it) },
-            clearLivePlaybackSupportedServices = finalCounts.clearLivePlaybackSupported,
+            clearLivePlaybackStaticallyEligibleServices = finalCounts.clearLivePlaybackStaticallyEligible,
             registrationReadyServices = finalCounts.registrationReady,
         )
     }
