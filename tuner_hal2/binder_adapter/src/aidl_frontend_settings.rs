@@ -109,7 +109,7 @@ fn explicit_known_value(
     auto: i32,
     highest_known_bit: i32,
 ) -> Result<Option<i32>, HalError> {
-    if raw == auto {
+    if raw == 0 || raw == auto {
         return Ok(None);
     }
     if is_single_known_enum_value(raw, highest_known_bit) {
@@ -559,8 +559,8 @@ mod tests {
 
     fn valid_isdbs_settings() -> FrontendIsdbsSettings {
         FrontendIsdbsSettings {
-            modulation: FrontendIsdbsModulation::AUTO,
-            coderate: FrontendIsdbsCoderate::AUTO,
+            modulation: FrontendIsdbsModulation::UNDEFINED,
+            coderate: FrontendIsdbsCoderate::UNDEFINED,
             symbolRate: 0,
             rolloff: FrontendIsdbsRolloff::UNDEFINED,
             ..Default::default()
@@ -711,6 +711,15 @@ mod tests {
             assert!(converted.requested_settings.is_empty());
             assert_eq!(converted.request.partial_reception, expected);
         }
+    }
+
+    #[test]
+    fn isdbs_undefined_constraints_are_unspecified() {
+        let mut settings = valid_isdbs_settings();
+        settings.frequency = 1_049_480_000;
+        let converted =
+            aidl_frontend_settings_to_request(&FrontendSettings::Isdbs(settings)).unwrap();
+        assert!(converted.requested_settings.is_empty());
     }
 
     #[test]
