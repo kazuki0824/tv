@@ -19,9 +19,13 @@ def _git_commit(root: Path, ref: str) -> str:
     return result.stdout.strip()
 
 
+def checkout_commit(root: Path) -> str:
+    return _git_commit(root.resolve(), "HEAD")
+
+
 def selected_xsd(hardware_interfaces_root: Path, source_ref: str) -> Path:
     root = hardware_interfaces_root.resolve()
-    if _git_commit(root, "HEAD") != _git_commit(root, source_ref):
+    if checkout_commit(root) != _git_commit(root, source_ref):
         raise ProfileError("hardware/interfaces checkout HEAD does not match profile vts.source_ref")
     xsd = root / XSD_RELATIVE_PATH
     if not xsd.is_file():
