@@ -1,0 +1,59 @@
+name: temporary PR78 ISDB-S undefined patch
+
+on:
+  push:
+    branches: [fix/tuner-hal2-contract-boundaries]
+    paths:
+      - ".github/workflows/tmp-pr78-isdbs-undefined-patch.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tuner-hal2-contract-boundaries
+          fetch-depth: 0
+
+      - name: Apply exact ISDB-S undefined patch
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("tuner_hal2/binder_adapter/src/aidl_frontend_settings.rs")
+          text = path.read_text(encoding="utf-8")
+
+          old = """    if raw == auto {\n        return Ok(None);\n    }\n"""
+          new = """    if raw == 0 || raw == auto {\n        return Ok(None);\n    }\n"""
+          if text.count(old) != 1:
+              raise SystemExit(f"explicit_known_value patch target count={text.count(old)}")
+          text = text.replace(old, new, 1)
+
+          old = """    fn valid_isdbs_settings() -> FrontendIsdbsSettings {\n        FrontendIsdbsSettings {\n            modulation: FrontendIsdbsModulation::AUTO,\n            coderate: FrontendIsdbsCoderate::AUTO,\n            symbolRate: 0,\n            rolloff: FrontendIsdbsRolloff::UNDEFINED,\n            ..Default::default()\n        }\n    }\n"""
+          new = """    fn valid_isdbs_settings() -> FrontendIsdbsSettings {\n        FrontendIsdbsSettings {\n            modulation: FrontendIsdbsModulation::UNDEFINED,\n            coderate: FrontendIsdbsCoderate::UNDEFINED,\n            symbolRate: 0,\n            rolloff: FrontendIsdbsRolloff::UNDEFINED,\n            ..Default::default()\n        }\n    }\n"""
+          if text.count(old) != 1:
+              raise SystemExit(f"ISDB-S fixture patch target count={text.count(old)}")
+          text = text.replace(old, new, 1)
+
+          marker = """    #[test]\n    fn isdbs_explicit_rolloff_is_observed_for_service_policy() {\n"""
+          test = """    #[test]\n    fn isdbs_undefined_constraints_are_unspecified() {\n        let mut settings = valid_isdbs_settings();\n        settings.frequency = 1_049_480_000;\n        let converted =\n            aidl_frontend_settings_to_request(&FrontendSettings::Isdbs(settings)).unwrap();\n        assert!(converted.requested_settings.is_empty());\n    }\n\n"""
+          if text.count(marker) != 1:
+              raise SystemExit(f"ISDB-S test insertion marker count={text.count(marker)}")
+          text = text.replace(marker, test + marker, 1)
+
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          git diff --check
+
+      - name: Commit patch and remove temporary workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/tmp-pr78-isdbs-undefined-patch.yml
+          git add tuner_hal2/binder_adapter/src/aidl_frontend_settings.rs
+          git commit -m "fix(tuner): accept ISDB-S undefined defaults"
+          git push origin HEAD:fix/tuner-hal2-contract-boundaries
