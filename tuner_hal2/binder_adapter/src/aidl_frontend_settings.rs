@@ -18,9 +18,9 @@ use maleicacid_tuner_hal2_common::{
 
 const AOSP_TUNER_INVALID_STREAM_ID: i32 = 0xFFFF;
 
-/// Syntactically known AIDL values that are not represented directly in
-/// `FrontendTuneRequest`. These are observations about what the caller asked
-/// for, not product-support decisions. Service mediation owns support policy.
+/// AIDL上で構文的に既知だが、`FrontendTuneRequest` には直接表現されない値。
+/// 呼出し元が要求した内容を保持するための観測値であり、製品対応可否の判断ではない。
+/// 対応可否の方針はサービス調停が所有する。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrontendRequestedSetting {
     IsdbtExplicitBandwidth { bandwidth_hz: u32 },
@@ -181,9 +181,9 @@ fn classify_isdbt_settings(
         }
     }
 
-    // FrontendIsdbtSettings.layerSettings is an AIDL vector. ARIB has three
-    // physical layers, but AOSP does not make vector cardinality a malformed
-    // AIDL-input condition. Validate each entry and preserve caller order.
+    // `FrontendIsdbtSettings.layerSettings` はAIDL上のベクタである。ARIBの物理階層は3層だが、
+    // AOSPはベクタ長そのものを不正なAIDL入力条件とはしていない。
+    // 各要素を検証し、呼出し元の順序を保持する。
     for (layer_index, layer) in s.layerSettings.iter().enumerate() {
         if let Some(value) = explicit_known_value(
             layer.modulation.0,
@@ -242,8 +242,8 @@ fn map_isdbt_layer_settings(
             let num_of_segment = match layer.numOfSegment {
                 0 => FrontendIsdbtSegmentRequest::Unspecified,
                 0xFF => FrontendIsdbtSegmentRequest::Auto,
-                // Exact explicit counts are retained in FrontendRequestedSetting
-                // and are interpreted by service mediation before backend dispatch.
+                // 明示された正確なsegment数は`FrontendRequestedSetting`へ保持し、
+                // backend呼出し前にサービス調停で解釈する。
                 1..=13 => FrontendIsdbtSegmentRequest::Unspecified,
                 _ => {
                     return invalid_frontend_setting(
@@ -269,8 +269,8 @@ fn map_isdbt_partial_reception(
         FrontendIsdbtPartialReceptionFlag::TRUE => {
             Ok(FrontendIsdbtPartialReceptionRequirement::Required(true))
         }
-        // AUTO is a syntactically known value. Its exact request is retained in
-        // FrontendRequestedSetting; the backend request remains unspecified.
+        // AUTOは構文的に既知の値である。正確な要求は`FrontendRequestedSetting`へ保持し、
+        // backend向け要求では未指定のままとする。
         FrontendIsdbtPartialReceptionFlag::AUTO => {
             Ok(FrontendIsdbtPartialReceptionRequirement::Unspecified)
         }
@@ -378,8 +378,8 @@ pub fn aidl_frontend_settings_to_request(
                 request: FrontendTuneRequest {
                     system: FrontendSystem::IsdbT,
                     frequency: cast_u64_field(s.frequency, "isdbt.frequency")?,
-                    // endFrequency is a blind-scan field. tune/non-blind
-                    // request construction does not retain it.
+                    // endFrequency は blind scan 専用であり、
+                    // tune/non-blind request へ保持しない。
                     end_frequency: None,
                     stream_id: None,
                     stream_id_kind: None,
@@ -412,10 +412,8 @@ pub fn aidl_frontend_settings_to_request(
                 requested_settings,
             })
         }
-        // These AIDL variants are represented in the common domain model even
-        // though the current product does not export them. Product support is
-        // therefore decided later by the service/runtime, not at the AIDL
-        // conversion boundary.
+        // これらのAIDL variantは現行製品では公開しないが、common domain modelには表現がある。
+        // そのため製品対応可否はAIDL変換境界ではなく、後段のservice/runtimeで判定する。
         FrontendSettings::Isdbs3(s) => {
             let frequency = cast_u64_field(s.frequency, "isdbs3.frequency")?;
             let symbol_rate = optional_positive_symbol_rate(s.symbolRate, "isdbs3.symbolRate")?;
