@@ -185,7 +185,7 @@ struct LinkageV1 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct SectionScopeV1 {
     pub(crate) pid: Option<i64>,
     pub(crate) table_id: Option<i64>,
@@ -199,7 +199,7 @@ pub(crate) struct SectionScopeV1 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct DescriptorScopeV1 {
     pub(crate) tag: i64,
     pub(crate) name: Option<String>,
@@ -211,7 +211,7 @@ pub(crate) struct DescriptorScopeV1 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct DescriptorDiagnosticV1 {
     pub(crate) schema: String,
     pub(crate) schema_version: i64,
@@ -1228,12 +1228,6 @@ fn collect_program_unknown_extensions(
             ],
             out,
         );
-        collect_descriptor_diagnostic_unknown(
-            diagnostics
-                .get("descriptorDiagnostics")
-                .unwrap_or(&serde_json::Value::Null),
-            out,
-        );
         collect_array_unknown(
             diagnostics
                 .get("publishDiagnostics")
@@ -1301,66 +1295,6 @@ fn collect_event_group_unknown_extensions(
             ],
             out,
         );
-    }
-}
-
-fn collect_descriptor_diagnostic_unknown(
-    value: &serde_json::Value,
-    out: &mut Vec<RawProviderDataExtensionV1>,
-) {
-    let Some(items) = value.as_array() else {
-        return;
-    };
-    for (index, item) in items.iter().enumerate() {
-        let base = format!("diagnostics.descriptorDiagnostics[{}]", index);
-        collect_object_unknown(
-            item,
-            &base,
-            &[
-                "schema",
-                "schemaVersion",
-                "severity",
-                "code",
-                "scope",
-                "descriptor",
-                "message",
-            ],
-            out,
-        );
-        if let Some(scope) = item.get("scope") {
-            collect_object_unknown(
-                scope,
-                &format!("{}.scope", base),
-                &[
-                    "pid",
-                    "tableId",
-                    "tableIdExtension",
-                    "version",
-                    "sectionNumber",
-                    "originalNetworkId",
-                    "transportStreamId",
-                    "serviceId",
-                    "eventId",
-                ],
-                out,
-            );
-        }
-        if let Some(descriptor) = item.get("descriptor") {
-            collect_object_unknown(
-                descriptor,
-                &format!("{}.descriptor", base),
-                &[
-                    "tag",
-                    "name",
-                    "offset",
-                    "declaredLength",
-                    "actualRemainingLength",
-                    "parseStatus",
-                    "rawPrefixHex",
-                ],
-                out,
-            );
-        }
     }
 }
 

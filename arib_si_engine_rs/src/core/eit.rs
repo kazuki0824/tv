@@ -195,38 +195,11 @@ impl EitStore {
             original_network_id,
             section_number,
         };
-        let scope_section_keys: Vec<EitSectionKey> = self
+        let previous_keys: BTreeSet<EitEventKey> = self
             .section_events
-            .keys()
-            .filter(|key| {
-                key.table_id == header.table_id
-                    && key.service_id == service_id
-                    && key.transport_stream_id == transport_stream_id
-                    && key.original_network_id == original_network_id
-            })
-            .cloned()
-            .collect();
-        let scope_version_changed = scope_section_keys.iter().any(|key| {
-            self.section_events
-                .get(key)
-                .map(|old| old.version != version)
-                .unwrap_or(false)
-        });
-        let mut previous_keys: BTreeSet<EitEventKey> = BTreeSet::new();
-        if scope_version_changed {
-            for key in scope_section_keys {
-                if let Some(old) = self.section_events.remove(&key) {
-                    previous_keys.extend(old.event_keys);
-                }
-                self.diagnostic_section_events.remove(&key);
-            }
-        } else {
-            previous_keys = self
-                .section_events
-                .get(&section_key)
-                .map(|old| old.event_keys.clone())
-                .unwrap_or_default();
-        }
+            .get(&section_key)
+            .map(|old| old.event_keys.clone())
+            .unwrap_or_default();
         let new_keys: BTreeSet<_> = parsed.iter().filter_map(stable_event_key).collect();
         let removable_previous_keys: BTreeSet<_> = if deletion_authoritative {
             previous_keys
@@ -722,6 +695,36 @@ mod tests {
         let events = store.snapshot_present_following_actual();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_id, 2);
+    }
+
+    #[test]
+    fn version_update_replaces_only_matching_section_number() {
+        let mut store = EitStore::default();
+        let start1 = [0xee, 0x00, 0x12, 0x00, 0x00];
+        let start2 = [0xee, 0x01, 0x13, 0x00, 0x00];
+        let mut section0 = eit_body(1, &[(1, start1)]);
+        section0[6] = 0;
+        section0[7] = 1;
+        let mut section1 = eit_body(1, &[(2, start2)]);
+        section1[6] = 1;
+        section1[7] = 1;
+        store.upsert_section(&section_with_crc(section0));
+        store.upsert_section(&section_with_crc(section1));
+        assert_eq!(store.snapshot_present_following_actual().len(), 2);
+
+        let mut new_section0 = eit_body(2, &[(1, start1)]);
+        new_section0[6] = 0;
+        new_section0[7] = 1;
+        store.upsert_section(&section_with_crc(new_section0));
+
+        let events = store.snapshot_present_following_actual();
+        assert_eq!(events.len(), 2);
+        assert!(events
+            .iter()
+            .any(|event| event.event_id == 1 && event.version == 2));
+        assert!(events
+            .iter()
+            .any(|event| event.event_id == 2 && event.version == 1));
     }
 
     #[test]

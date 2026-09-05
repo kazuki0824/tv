@@ -3,7 +3,7 @@
   "$id": "https://maleicacid.local/schema/descriptor_diagnostic_v1.schema.json",
   "title": "Maleicacid DescriptorDiagnosticV1",
   "type": "object",
-  "additionalProperties": true,
+  "additionalProperties": false,
   "required": [
     "schema",
     "schemaVersion",
@@ -42,7 +42,7 @@
   "$defs": {
     "sectionScope": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "properties": {
         "pid": {
           "type": [
@@ -120,7 +120,7 @@
     },
     "descriptorScope": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "tag",
         "offset",

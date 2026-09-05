@@ -1,4 +1,5 @@
 include!("arib_jis_x0208_table.rs");
+include!("arib_extended_graphic_table.rs");
 
 pub const ARIB_STRING_DECODER_SCOPE: &str = "mirakc_scope_non_caption_si_epg_only";
 
@@ -101,6 +102,9 @@ enum GraphicSet {
     Hiragana,
     Katakana,
     Kanji,
+    JisPlane1,
+    JisPlane2,
+    AdditionalSymbols,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -142,18 +146,17 @@ fn decode_single_shift(
         GraphicSet::Alnum => (first as char).to_string(),
         GraphicSet::Hiragana => map_hiragana(first).to_string(),
         GraphicSet::Katakana => map_katakana(first).to_string(),
-        GraphicSet::Kanji => {
+        GraphicSet::Kanji
+        | GraphicSet::JisPlane1
+        | GraphicSet::JisPlane2
+        | GraphicSet::AdditionalSymbols => {
             let second = *bytes
                 .get(index + 2)
                 .ok_or(AribStringDecodeError::TruncatedGraphic)?;
-            map_kanji(first, second).to_string()
+            map_two_byte_graphic(set, first, second).to_string()
         }
     };
-    let consumed_after_control = if matches!(set, GraphicSet::Kanji) {
-        2
-    } else {
-        1
-    };
+    let consumed_after_control = if is_two_byte_graphic(set) { 2 } else { 1 };
     Ok((value, consumed_after_control))
 }
 
@@ -259,11 +262,7 @@ fn decode_arib_string_with_policy(
                         true,
                     );
                     out.push('�');
-                    index += if matches!(set, GraphicSet::Kanji) {
-                        3
-                    } else {
-                        2
-                    };
+                    index += if is_two_byte_graphic(set) { 3 } else { 2 };
                     continue;
                 }
                 match decode_single_shift(set, bytes, index) {
@@ -382,7 +381,7 @@ fn decode_arib_string_with_policy(
                     true,
                 );
                 out.push('�');
-                if matches!(state.gl, GraphicSet::Kanji) && bytes.get(index + 1).is_some() {
+                if is_two_byte_graphic(state.gl) && bytes.get(index + 1).is_some() {
                     index += 1;
                 }
             }
@@ -390,7 +389,10 @@ fn decode_arib_string_with_policy(
                 GraphicSet::Alnum => out.push(byte as char),
                 GraphicSet::Hiragana => out.push_str(map_hiragana(byte)),
                 GraphicSet::Katakana => out.push_str(map_katakana(byte)),
-                GraphicSet::Kanji => {
+                GraphicSet::Kanji
+                | GraphicSet::JisPlane1
+                | GraphicSet::JisPlane2
+                | GraphicSet::AdditionalSymbols => {
                     let Some(next) = bytes.get(index + 1).copied() else {
                         if error_policy == ErrorPolicy::Strict {
                             return Err(AribStringDecodeError::TruncatedGraphic);
@@ -418,7 +420,7 @@ fn decode_arib_string_with_policy(
                         diagnostic.record_entry(bytes, index, "GL/Kanji", "不正な2バイト目", true);
                         out.push('�');
                     } else {
-                        out.push_str(map_kanji(byte, next));
+                        out.push_str(map_two_byte_graphic(state.gl, byte, next));
                         index += 1;
                     }
                 }
@@ -436,7 +438,7 @@ fn decode_arib_string_with_policy(
                     true,
                 );
                 out.push('�');
-                if matches!(state.gr, GraphicSet::Kanji) && bytes.get(index + 1).is_some() {
+                if is_two_byte_graphic(state.gr) && bytes.get(index + 1).is_some() {
                     index += 1;
                 }
             }
@@ -446,7 +448,10 @@ fn decode_arib_string_with_policy(
                     GraphicSet::Alnum => out.push(normalized as char),
                     GraphicSet::Hiragana => out.push_str(map_hiragana(normalized)),
                     GraphicSet::Katakana => out.push_str(map_katakana(normalized)),
-                    GraphicSet::Kanji => {
+                    GraphicSet::Kanji
+                    | GraphicSet::JisPlane1
+                    | GraphicSet::JisPlane2
+                    | GraphicSet::AdditionalSymbols => {
                         let Some(next) = bytes.get(index + 1).copied() else {
                             if error_policy == ErrorPolicy::Strict {
                                 return Err(AribStringDecodeError::TruncatedGraphic);
@@ -480,7 +485,7 @@ fn decode_arib_string_with_policy(
                             );
                             out.push('�');
                         } else {
-                            out.push_str(map_kanji(normalized, next & 0x7f));
+                            out.push_str(map_two_byte_graphic(state.gr, normalized, next & 0x7f));
                             index += 1;
                         }
                     }
@@ -600,26 +605,34 @@ fn apply_escape(state: &mut InvocationState, bytes: &[u8]) -> Result<usize, Arib
                     state.g3 = GraphicSet::Hiragana;
                     3
                 }
-                (b'$', b'B') => {
-                    state.g0 = GraphicSet::Kanji;
+                (b'$', final_byte @ (b'B' | b'@' | b'9' | b':' | b';')) => {
+                    state.g0 = two_byte_graphic_set(final_byte)?;
                     state.gl = state.g0;
                     3
                 }
-                (b'$', b'(') if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@') => {
-                    state.g0 = GraphicSet::Kanji;
+                (b'$', b'(')
+                    if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@' | b'9' | b':' | b';') =>
+                {
+                    state.g0 = two_byte_graphic_set(bytes[3])?;
                     state.gl = state.g0;
                     4
                 }
-                (b'$', b')') if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@') => {
-                    state.g1 = GraphicSet::Kanji;
+                (b'$', b')')
+                    if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@' | b'9' | b':' | b';') =>
+                {
+                    state.g1 = two_byte_graphic_set(bytes[3])?;
                     4
                 }
-                (b'$', b'*') if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@') => {
-                    state.g2 = GraphicSet::Kanji;
+                (b'$', b'*')
+                    if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@' | b'9' | b':' | b';') =>
+                {
+                    state.g2 = two_byte_graphic_set(bytes[3])?;
                     4
                 }
-                (b'$', b'+') if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@') => {
-                    state.g3 = GraphicSet::Kanji;
+                (b'$', b'+')
+                    if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@' | b'9' | b':' | b';') =>
+                {
+                    state.g3 = two_byte_graphic_set(bytes[3])?;
                     4
                 }
                 _ => return Err(AribStringDecodeError::UnsupportedEscape),
@@ -627,6 +640,36 @@ fn apply_escape(state: &mut InvocationState, bytes: &[u8]) -> Result<usize, Arib
         }
     };
     Ok(consumed)
+}
+
+fn is_two_byte_graphic(set: GraphicSet) -> bool {
+    matches!(
+        set,
+        GraphicSet::Kanji
+            | GraphicSet::JisPlane1
+            | GraphicSet::JisPlane2
+            | GraphicSet::AdditionalSymbols
+    )
+}
+
+fn two_byte_graphic_set(final_byte: u8) -> Result<GraphicSet, AribStringDecodeError> {
+    match final_byte {
+        b'B' | b'@' => Ok(GraphicSet::Kanji),
+        b'9' => Ok(GraphicSet::JisPlane1),
+        b':' => Ok(GraphicSet::JisPlane2),
+        b';' => Ok(GraphicSet::AdditionalSymbols),
+        _ => Err(AribStringDecodeError::UnsupportedEscape),
+    }
+}
+
+fn map_two_byte_graphic(set: GraphicSet, first: u8, second: u8) -> &'static str {
+    match set {
+        GraphicSet::Kanji => map_kanji(first, second),
+        GraphicSet::JisPlane1 => map_jis_x0213_plane1(first, second),
+        GraphicSet::JisPlane2 => map_jis_x0213_plane2(first, second),
+        GraphicSet::AdditionalSymbols => map_arib_additional_symbol(first, second),
+        _ => "�",
+    }
 }
 
 fn map_hiragana(byte: u8) -> &'static str {
@@ -690,6 +733,30 @@ mod tests {
         let bytes = [0x1b, b'$', b'(', b'B', 0x46, 0x7c];
         let out = decode_arib_string_lossy(&bytes).0;
         assert!(!out.is_empty());
+    }
+
+    #[test]
+    fn arib_string_decodes_jis_compatible_plane1_without_replacement() {
+        let bytes = [0x1b, b'$', b'(', b'9', 0x21, 0x21];
+        let (decoded, diagnostic) = decode_arib_string_lossy(&bytes);
+        assert_ne!(decoded, "�");
+        assert_eq!(diagnostic.replacement_count, 0);
+    }
+
+    #[test]
+    fn arib_string_decodes_jis_compatible_plane2_without_replacement() {
+        let bytes = [0x1b, b'$', b'(', b':', 0x21, 0x21];
+        let (decoded, diagnostic) = decode_arib_string_lossy(&bytes);
+        assert_ne!(decoded, "�");
+        assert_eq!(diagnostic.replacement_count, 0);
+    }
+
+    #[test]
+    fn arib_string_decodes_additional_symbol_without_replacement() {
+        let bytes = [0x1b, b'$', b'(', b';', 0x75, 0x21];
+        let (decoded, diagnostic) = decode_arib_string_lossy(&bytes);
+        assert_eq!(decoded, "\u{3402}");
+        assert_eq!(diagnostic.replacement_count, 0);
     }
 
     #[test]
