@@ -360,7 +360,47 @@ def cmd_compile(args: argparse.Namespace) -> int:
     return 0
 
 
+def _interactive_service_selector(services: list[dict]) -> int:
+    print("service:")
+    for index, service in enumerate(services, start=1):
+        service_id = int(service["service_id"])
+        pmt_pid = service.get("pmt_pid")
+        streams = service.get("streams")
+        stream_types = sorted(
+            {
+                int(item["stream_type"])
+                for item in streams
+                if isinstance(item, dict) and item.get("stream_type") is not None
+            }
+        ) if isinstance(streams, list) else []
+        print(
+            f"  {index}) service_id={service_id} "
+            f"pmt_pid={pmt_pid if pmt_pid is not None else '-'} "
+            f"stream_types={','.join(hex(value) for value in stream_types) or '-'}"
+        )
+    by_id = {int(item["service_id"]) for item in services}
+    while True:
+        try:
+            entered = input("select: ").strip()
+        except EOFError as exc:
+            raise ProfileError(
+                "service selection requires an interactive choice or --service-id"
+            ) from exc
+        if entered.isdigit():
+            value = int(entered)
+            if 1 <= value <= len(services):
+                return int(services[value - 1]["service_id"])
+            if value in by_id:
+                return value
+        print(f"invalid selection: {entered}", file=sys.stderr)
+
+
 def cmd_resolve_device(args: argparse.Namespace) -> int:
+    service_selector = (
+        _interactive_service_selector
+        if args.service_id is None and sys.stdin.isatty()
+        else None
+    )
     updated = resolve_device(
         Path(args.profile),
         adb=args.adb,
@@ -370,10 +410,11 @@ def cmd_resolve_device(args: argparse.Namespace) -> int:
         si_host=args.si_host,
         timeout_ms=args.timeout_ms,
         candidate_index=args.candidate_index,
+        service_id=args.service_id,
+        service_selector=service_selector,
     )
     print(updated["frontend"]["frequency_hz"])
     return 0
-
 
 def _add_profile_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("profile", nargs="?", default=str(DEFAULT_PROFILE))
@@ -482,6 +523,11 @@ def build_parser() -> argparse.ArgumentParser:
     device.add_argument("--si-host", default="maleicacid_arib_si_engine_vts_host")
     device.add_argument("--timeout-ms", type=int, default=5000)
     device.add_argument("--candidate-index", type=int)
+    device.add_argument(
+        "--service-id",
+        type=int,
+        help="explicit service selector for non-interactive or preselected resolution",
+    )
     device.set_defaults(func=cmd_resolve_device)
     return parser
 

@@ -6,7 +6,7 @@ import subprocess
 import threading
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .model import ProfileError, save_profile, validate_pid, validate_profile
 
@@ -263,6 +263,87 @@ def _pmt_pids(semantics: dict[str, Any]) -> list[int]:
     return pids
 
 
+class ServiceSelectionRequired(ProfileError):
+    pass
+
+
+def _requested_service_id(profile: dict[str, Any], explicit: int | None) -> int | None:
+    configured = profile.get("service", {}).get("service_id") if profile.get("service") else None
+    if explicit is not None:
+        if not 1 <= int(explicit) <= 0xFFFF:
+            raise ProfileError("service_id must be in 1..65535")
+        if configured is not None and int(configured) != int(explicit):
+            raise ProfileError(
+                f"--service-id {explicit} conflicts with profile service.service_id {configured}"
+            )
+        return int(explicit)
+    return int(configured) if configured is not None else None
+
+
+def _service_id(service: dict[str, Any]) -> int:
+    try:
+        service_id = int(service.get("service_id", 0))
+    except (TypeError, ValueError) as exc:
+        raise ProfileError("resolved service has an invalid service_id") from exc
+    if not 1 <= service_id <= 0xFFFF:
+        raise ProfileError("resolved service has an invalid service_id")
+    return service_id
+
+
+def _select_service_for_flows(
+    profile: dict[str, Any],
+    services: list[Any],
+    frequency: int,
+    *,
+    requested_service_id: int | None,
+    service_selector: Callable[[list[dict[str, Any]]], int] | None,
+) -> dict[str, Any]:
+    candidates = [dict(item) for item in services if isinstance(item, dict)]
+    if requested_service_id is not None:
+        candidates = [item for item in candidates if _service_id(item) == requested_service_id]
+        if not candidates:
+            raise ProfileError(
+                f"requested service_id {requested_service_id} is not present on this TS"
+            )
+
+    compatible: list[dict[str, Any]] = []
+    rejected: list[str] = []
+    for candidate in candidates:
+        candidate["frequency_hz"] = frequency
+        try:
+            _apply(profile, candidate)
+        except (ProfileError, TypeError, ValueError) as exc:
+            rejected.append(f"{candidate.get('service_id', '?')}: {exc}")
+            continue
+        compatible.append(candidate)
+
+    compatible.sort(key=_service_id)
+    if not compatible:
+        detail = "; ".join(rejected)
+        suffix = f": {detail}" if detail else ""
+        raise ProfileError("no service satisfies the requested VTS flows" + suffix)
+    if len(compatible) == 1:
+        return compatible[0]
+    if requested_service_id is not None:
+        raise ProfileError(
+            f"service_id {requested_service_id} resolved to multiple service records"
+        )
+    if service_selector is None:
+        ids = ",".join(str(_service_id(item)) for item in compatible)
+        raise ServiceSelectionRequired(
+            "multiple services satisfy the requested VTS flows "
+            f"({ids}); use an interactive terminal or --service-id"
+        )
+
+    selected_id = int(service_selector([dict(item) for item in compatible]))
+    selected = [item for item in compatible if _service_id(item) == selected_id]
+    if len(selected) != 1:
+        raise ProfileError(
+            f"selected service_id {selected_id} is not one of the compatible services"
+        )
+    return selected[0]
+
+
 def _resolve_frequency(
     profile: dict[str, Any],
     frequency: int,
@@ -272,6 +353,8 @@ def _resolve_frequency(
     remote_agent: str,
     timeout_ms: int,
     si_host: str,
+    requested_service_id: int | None,
+    service_selector: Callable[[list[dict[str, Any]]], int] | None,
 ) -> dict[str, Any]:
     with _AgentSession(
         profile,
@@ -290,16 +373,13 @@ def _resolve_frequency(
     services = semantics.get("services")
     if not isinstance(services, list) or not services:
         raise ProfileError("arib_si_engine_rs produced no service with a parsed PMT")
-    requested = profile.get("service", {}).get("service_id") if profile.get("service") else None
-    if requested is not None:
-        services = [item for item in services if int(item.get("service_id", -1)) == int(requested)]
-    if len(services) != 1:
-        ids = ",".join(str(item.get("service_id")) for item in services)
-        raise ProfileError(f"service selection is ambiguous ({ids}); specify service_id")
-    selected = dict(services[0])
-    selected["frequency_hz"] = frequency
-    return selected
-
+    return _select_service_for_flows(
+        profile,
+        services,
+        frequency,
+        requested_service_id=requested_service_id,
+        service_selector=service_selector,
+    )
 
 def _single_stream(
     streams: list[dict[str, Any]], mapping: dict[int, int], label: str
@@ -369,11 +449,14 @@ def resolve_device(
     si_host: str = DEFAULT_SI_HOST,
     timeout_ms: int = 5000,
     candidate_index: int | None = None,
+    service_id: int | None = None,
+    service_selector: Callable[[list[dict[str, Any]]], int] | None = None,
 ) -> dict[str, Any]:
     from .model import load_profile
 
     original = load_profile(profile_path)
     validate_profile(original)
+    requested_service_id = _requested_service_id(original, service_id)
     remote, pushed = _prepare_agent(
         adb=adb, serial=serial, agent_binary=agent_binary, remote_agent=remote_agent
     )
@@ -389,10 +472,14 @@ def resolve_device(
                     remote_agent=remote,
                     timeout_ms=timeout_ms,
                     si_host=si_host,
+                    requested_service_id=requested_service_id,
+                    service_selector=service_selector,
                 )
                 updated = _apply(original, resolved)
                 save_profile(profile_path, updated)
                 return updated
+            except ServiceSelectionRequired:
+                raise
             except ProfileError as exc:
                 errors.append(f"{frequency}: {exc}")
         raise ProfileError("no candidate resolved successfully: " + "; ".join(errors))
