@@ -23,14 +23,20 @@ const AOSP_TUNER_INVALID_STREAM_ID: i32 = 0xFFFF;
 /// 対応可否の方針はサービス調停が所有する。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrontendRequestedSetting {
+    IsdbtBandwidthAuto,
     IsdbtExplicitBandwidth { bandwidth_hz: u32 },
+    IsdbtModeAuto,
     IsdbtExplicitMode { value: i32 },
     IsdbtExplicitInversion { value: i32 },
+    IsdbtGuardIntervalAuto,
     IsdbtExplicitGuardInterval { value: i32 },
     IsdbtServiceAreaId { value: i32 },
     IsdbtPartialReceptionAuto,
+    IsdbtLayerModulationAuto { layer_index: usize },
     IsdbtLayerModulation { layer_index: usize, value: i32 },
+    IsdbtLayerCoderateAuto { layer_index: usize },
     IsdbtLayerCoderate { layer_index: usize, value: i32 },
+    IsdbtLayerTimeInterleaveAuto { layer_index: usize },
     IsdbtLayerTimeInterleave { layer_index: usize, value: i32 },
     IsdbtExplicitSegmentCount { layer_index: usize, count: i32 },
     IsdbsExplicitModulation { value: i32 },
@@ -42,6 +48,13 @@ pub enum FrontendRequestedSetting {
 pub struct FrontendSettingsRequest {
     pub request: FrontendTuneRequest,
     pub requested_settings: Vec<FrontendRequestedSetting>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IsdbtKnownValue {
+    Unspecified,
+    Auto,
+    Explicit(i32),
 }
 
 fn cast_u64_field(value: i64, field: &'static str) -> Result<u64, HalError> {
@@ -105,13 +118,33 @@ fn explicit_known_value(
     invalid_frontend_setting("frontend setting contains a reserved enum value")
 }
 
+fn isdbt_known_value(
+    raw: i32,
+    auto: i32,
+    highest_known_bit: i32,
+) -> Result<IsdbtKnownValue, HalError> {
+    if raw == 0 {
+        return Ok(IsdbtKnownValue::Unspecified);
+    }
+    if raw == auto {
+        return Ok(IsdbtKnownValue::Auto);
+    }
+    if is_single_known_enum_value(raw, highest_known_bit) {
+        return Ok(IsdbtKnownValue::Explicit(raw));
+    }
+    invalid_frontend_setting("ISDB-T setting contains a reserved enum value")
+}
+
 fn classify_isdbt_settings(
     s: &android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::FrontendIsdbtSettings::FrontendIsdbtSettings,
 ) -> Result<Vec<FrontendRequestedSetting>, HalError> {
     let mut requested = Vec::new();
 
     match s.bandwidth {
-        FrontendIsdbtBandwidth::AUTO => {}
+        FrontendIsdbtBandwidth::UNDEFINED => {}
+        FrontendIsdbtBandwidth::AUTO => {
+            requested.push(FrontendRequestedSetting::IsdbtBandwidthAuto);
+        }
         FrontendIsdbtBandwidth::BANDWIDTH_6MHZ => {
             requested.push(FrontendRequestedSetting::IsdbtExplicitBandwidth {
                 bandwidth_hz: 6_000_000,
@@ -132,12 +165,16 @@ fn classify_isdbt_settings(
         }
     }
 
-    if let Some(value) = explicit_known_value(
+    match isdbt_known_value(
         s.mode.0,
         FrontendIsdbtMode::AUTO.0,
         FrontendIsdbtMode::MODE_3.0,
     )? {
-        requested.push(FrontendRequestedSetting::IsdbtExplicitMode { value });
+        IsdbtKnownValue::Unspecified => {}
+        IsdbtKnownValue::Auto => requested.push(FrontendRequestedSetting::IsdbtModeAuto),
+        IsdbtKnownValue::Explicit(value) => {
+            requested.push(FrontendRequestedSetting::IsdbtExplicitMode { value });
+        }
     }
 
     match s.inversion {
@@ -150,12 +187,18 @@ fn classify_isdbt_settings(
         _ => return invalid_frontend_setting("ISDB-T inversion contains a reserved enum value"),
     }
 
-    if let Some(value) = explicit_known_value(
+    match isdbt_known_value(
         s.guardInterval.0,
         FrontendIsdbtGuardInterval::AUTO.0,
         1 << 7,
     )? {
-        requested.push(FrontendRequestedSetting::IsdbtExplicitGuardInterval { value });
+        IsdbtKnownValue::Unspecified => {}
+        IsdbtKnownValue::Auto => {
+            requested.push(FrontendRequestedSetting::IsdbtGuardIntervalAuto);
+        }
+        IsdbtKnownValue::Explicit(value) => {
+            requested.push(FrontendRequestedSetting::IsdbtExplicitGuardInterval { value });
+        }
     }
 
     if s.serviceAreaId < 0 {
@@ -185,35 +228,53 @@ fn classify_isdbt_settings(
     // AOSPはベクタ長そのものを不正なAIDL入力条件とはしていない。
     // 各要素を検証し、呼出し元の順序を保持する。
     for (layer_index, layer) in s.layerSettings.iter().enumerate() {
-        if let Some(value) = explicit_known_value(
+        match isdbt_known_value(
             layer.modulation.0,
             FrontendIsdbtModulation::AUTO.0,
             FrontendIsdbtModulation::MOD_64QAM.0,
         )? {
-            requested.push(FrontendRequestedSetting::IsdbtLayerModulation {
-                layer_index,
-                value,
-            });
+            IsdbtKnownValue::Unspecified => {}
+            IsdbtKnownValue::Auto => requested.push(
+                FrontendRequestedSetting::IsdbtLayerModulationAuto { layer_index },
+            ),
+            IsdbtKnownValue::Explicit(value) => {
+                requested.push(FrontendRequestedSetting::IsdbtLayerModulation {
+                    layer_index,
+                    value,
+                });
+            }
         }
-        if let Some(value) = explicit_known_value(
+        match isdbt_known_value(
             layer.coderate.0,
             FrontendIsdbtCoderate::AUTO.0,
             FrontendIsdbtCoderate::CODERATE_8_9.0,
         )? {
-            requested.push(FrontendRequestedSetting::IsdbtLayerCoderate {
-                layer_index,
-                value,
-            });
+            IsdbtKnownValue::Unspecified => {}
+            IsdbtKnownValue::Auto => requested.push(
+                FrontendRequestedSetting::IsdbtLayerCoderateAuto { layer_index },
+            ),
+            IsdbtKnownValue::Explicit(value) => {
+                requested.push(FrontendRequestedSetting::IsdbtLayerCoderate {
+                    layer_index,
+                    value,
+                });
+            }
         }
-        if let Some(value) = explicit_known_value(
+        match isdbt_known_value(
             layer.timeInterleave.0,
             FrontendIsdbtTimeInterleaveMode::AUTO.0,
             1 << 12,
         )? {
-            requested.push(FrontendRequestedSetting::IsdbtLayerTimeInterleave {
-                layer_index,
-                value,
-            });
+            IsdbtKnownValue::Unspecified => {}
+            IsdbtKnownValue::Auto => requested.push(
+                FrontendRequestedSetting::IsdbtLayerTimeInterleaveAuto { layer_index },
+            ),
+            IsdbtKnownValue::Explicit(value) => {
+                requested.push(FrontendRequestedSetting::IsdbtLayerTimeInterleave {
+                    layer_index,
+                    value,
+                });
+            }
         }
         match layer.numOfSegment {
             0 | 0xFF => {}
@@ -481,15 +542,15 @@ mod tests {
     fn valid_isdbt_settings() -> FrontendIsdbtSettings {
         FrontendIsdbtSettings {
             inversion: FrontendSpectralInversion::UNDEFINED,
-            bandwidth: FrontendIsdbtBandwidth::AUTO,
-            mode: FrontendIsdbtMode::AUTO,
-            guardInterval: FrontendIsdbtGuardInterval::AUTO,
+            bandwidth: FrontendIsdbtBandwidth::UNDEFINED,
+            mode: FrontendIsdbtMode::UNDEFINED,
+            guardInterval: FrontendIsdbtGuardInterval::UNDEFINED,
             serviceAreaId: 0,
             partialReceptionFlag: FrontendIsdbtPartialReceptionFlag::UNDEFINED,
             layerSettings: vec![FrontendIsdbtLayerSettings {
-                modulation: FrontendIsdbtModulation::AUTO,
-                coderate: FrontendIsdbtCoderate::AUTO,
-                timeInterleave: FrontendIsdbtTimeInterleaveMode::AUTO,
+                modulation: FrontendIsdbtModulation::UNDEFINED,
+                coderate: FrontendIsdbtCoderate::UNDEFINED,
+                timeInterleave: FrontendIsdbtTimeInterleaveMode::UNDEFINED,
                 numOfSegment: 0,
             }],
             ..Default::default()
@@ -516,6 +577,31 @@ mod tests {
             converted.request.partial_reception,
             FrontendIsdbtPartialReceptionRequirement::Unspecified
         );
+    }
+
+    #[test]
+    fn isdbt_auto_constraints_are_distinguished_from_undefined() {
+        let mut settings = valid_isdbt_settings();
+        settings.bandwidth = FrontendIsdbtBandwidth::AUTO;
+        settings.mode = FrontendIsdbtMode::AUTO;
+        settings.guardInterval = FrontendIsdbtGuardInterval::AUTO;
+        settings.layerSettings[0].modulation = FrontendIsdbtModulation::AUTO;
+        settings.layerSettings[0].coderate = FrontendIsdbtCoderate::AUTO;
+        settings.layerSettings[0].timeInterleave = FrontendIsdbtTimeInterleaveMode::AUTO;
+        let converted =
+            aidl_frontend_settings_to_request(&FrontendSettings::Isdbt(settings)).unwrap();
+        assert_eq!(
+            converted.requested_settings,
+            vec![
+                FrontendRequestedSetting::IsdbtBandwidthAuto,
+                FrontendRequestedSetting::IsdbtModeAuto,
+                FrontendRequestedSetting::IsdbtGuardIntervalAuto,
+                FrontendRequestedSetting::IsdbtLayerModulationAuto { layer_index: 0 },
+                FrontendRequestedSetting::IsdbtLayerCoderateAuto { layer_index: 0 },
+                FrontendRequestedSetting::IsdbtLayerTimeInterleaveAuto { layer_index: 0 },
+            ]
+        );
+        assert_eq!(converted.request.bandwidth_hz, None);
     }
 
     #[test]
