@@ -69,4 +69,10 @@ actual_genre = '''    private fun broadcastGenreText(genres: List<AribContentGen
 if expected_genre not in text:
     raise SystemExit('genre main script置換対象が見つかりません')
 text = text.replace(expected_genre, actual_genre, 1)
+
+expected_writer = '        program.descriptors.broadcastGenre?.let { put(TvContract.Programs.COLUMN_BROADCAST_GENRE, TvContract.Programs.Genres.encode(it)) }\n'
+actual_writer = '        if (program.descriptors.broadcastGenre.isNullOrBlank()) putNull(TvContract.Programs.COLUMN_BROADCAST_GENRE) else put(TvContract.Programs.COLUMN_BROADCAST_GENRE, TvContract.Programs.Genres.encode(program.descriptors.broadcastGenre))\n'
+if expected_writer not in text:
+    raise SystemExit('genre writer main script置換対象が見つかりません')
+text = text.replace(expected_writer, actual_writer, 1)
 p.write_text(text)
