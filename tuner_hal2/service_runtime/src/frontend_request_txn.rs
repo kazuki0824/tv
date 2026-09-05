@@ -275,8 +275,8 @@ fn validate_frontend_begin_contract(
     requested_settings: &[FrontendRequestedSetting],
     scan_mode: Option<FrontendScanMode>,
 ) -> Result<(), HalError> {
-    // Canonical precedence: all malformed/semantic INVALID_ARGUMENT decisions
-    // are completed before any valid-but-unavailable product/profile decision.
+    // 正規の優先順位として、malformed/semanticな`INVALID_ARGUMENT`判定をすべて完了してから、
+    // 構文上有効だが製品/profileで利用不可な要求を判定する。
     validate_frontend_request_invalid_arguments_against_entry(entry, request)?;
     validate_frontend_requested_settings_against_product_profile(requested_settings)?;
     validate_frontend_request_availability_against_entry(entry, request)?;
