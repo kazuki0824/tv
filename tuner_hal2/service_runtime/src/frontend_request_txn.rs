@@ -1,5 +1,6 @@
 use crate::registry::{FrontendRegistryEntry, SatellitePowerTopology};
 use crate::TunerServiceRuntime;
+use maleicacid_tuner_hal2_binder_adapter::FrontendRequestedSetting;
 use maleicacid_tuner_hal2_common::{
     is_japan_isdbt_frequency_contract_hz, FrontendBackendKind,
     FrontendIsdbtPartialReceptionRequirement, FrontendScanMode, FrontendSystem,
@@ -16,6 +17,73 @@ fn validate_frontend_request_semantics(request: &FrontendTuneRequest) -> Result<
     Ok(())
 }
 
+fn validate_frontend_requested_settings_against_product_profile(
+    requested_settings: &[FrontendRequestedSetting],
+) -> Result<(), HalError> {
+    for setting in requested_settings {
+        let unsupported = match setting {
+            FrontendRequestedSetting::IsdbtExplicitBandwidth {
+                bandwidth_hz: 6_000_000,
+            } => None,
+            FrontendRequestedSetting::IsdbtExplicitBandwidth { .. } => Some((
+                "isdbt.bandwidth",
+                "known ISDB-T bandwidth is not supported by this product profile",
+            )),
+            FrontendRequestedSetting::IsdbtExplicitMode { .. } => {
+                Some(("isdbt.mode", "explicit ISDB-T mode is not supported"))
+            }
+            FrontendRequestedSetting::IsdbtExplicitInversion { .. } => Some((
+                "isdbt.inversion",
+                "explicit ISDB-T spectral inversion is not supported",
+            )),
+            FrontendRequestedSetting::IsdbtExplicitGuardInterval { .. } => Some((
+                "isdbt.guardInterval",
+                "explicit ISDB-T guard interval is not supported",
+            )),
+            FrontendRequestedSetting::IsdbtServiceAreaId { .. } => Some((
+                "isdbt.serviceAreaId",
+                "explicit ISDB-T serviceAreaId is not supported",
+            )),
+            FrontendRequestedSetting::IsdbtPartialReceptionAuto => Some((
+                "isdbt.partialReceptionFlag",
+                "ISDB-T partial reception AUTO is not supported",
+            )),
+            FrontendRequestedSetting::IsdbtLayerModulation { .. } => Some((
+                "isdbt.layer.modulation",
+                "explicit ISDB-T layer modulation is not supported",
+            )),
+            FrontendRequestedSetting::IsdbtLayerCoderate { .. } => Some((
+                "isdbt.layer.coderate",
+                "explicit ISDB-T layer coderate is not supported",
+            )),
+            FrontendRequestedSetting::IsdbtLayerTimeInterleave { .. } => Some((
+                "isdbt.layer.timeInterleave",
+                "explicit ISDB-T layer time interleave is not supported",
+            )),
+            FrontendRequestedSetting::IsdbtExplicitSegmentCount { .. } => Some((
+                "isdbt.layer.numOfSegment",
+                "explicit ISDB-T segment count is not supported",
+            )),
+            FrontendRequestedSetting::IsdbsExplicitModulation { .. } => Some((
+                "isdbs.modulation",
+                "explicit ISDB-S modulation is not supported",
+            )),
+            FrontendRequestedSetting::IsdbsExplicitCoderate { .. } => Some((
+                "isdbs.coderate",
+                "explicit ISDB-S coderate is not supported",
+            )),
+            FrontendRequestedSetting::IsdbsExplicitRolloff { .. } => Some((
+                "isdbs.rolloff",
+                "explicit ISDB-S rolloff is not supported",
+            )),
+        };
+        if let Some((feature, detail)) = unsupported {
+            return Err(HalError::unsupported_detail(feature, detail));
+        }
+    }
+    Ok(())
+}
+
 fn validate_scan_mode_against_product_profile(scan_mode: FrontendScanMode) -> Result<(), HalError> {
     if scan_mode == FrontendScanMode::Blind {
         return Err(HalError::unsupported_detail(
@@ -26,7 +94,7 @@ fn validate_scan_mode_against_product_profile(scan_mode: FrontendScanMode) -> Re
     Ok(())
 }
 
-fn validate_frontend_request_against_entry(
+fn validate_frontend_request_invalid_arguments_against_entry(
     entry: &FrontendRegistryEntry,
     request: &FrontendTuneRequest,
 ) -> Result<(), HalError> {
@@ -45,23 +113,6 @@ fn validate_frontend_request_against_entry(
 
     match request.system {
         FrontendSystem::IsdbT => {
-            if matches!(
-                request.partial_reception,
-                FrontendIsdbtPartialReceptionRequirement::Required(_)
-            ) {
-                let detail = match entry.backend {
-                    FrontendBackendKind::Px4CharDevice => {
-                        "px4 does not expose current TMCC partial reception readback"
-                    }
-                    FrontendBackendKind::LinuxDvb => {
-                        "earth_pt1 does not expose current TMCC partial reception readback"
-                    }
-                };
-                return Err(HalError::unsupported_detail(
-                    "isdbt.partialReceptionFlag",
-                    detail,
-                ));
-            }
             if !is_japan_isdbt_frequency_contract_hz(request.frequency) {
                 return Err(HalError::invalid_argument(
                     HalInvalidArgumentKind::UnsupportedFrequency,
@@ -82,8 +133,14 @@ fn validate_frontend_request_against_entry(
                     "ISDB-S tune must not carry an ISDB-T partial reception requirement",
                 ));
             }
-            let is_bs = maleicacid_tuner_hal2_device::px4::normalize_japan_bs_if_frequency_hz(request.frequency).is_some();
-            let is_cs110 = maleicacid_tuner_hal2_device::px4::normalize_japan_cs110_if_frequency_hz(request.frequency).is_some();
+            let is_bs = maleicacid_tuner_hal2_device::px4::normalize_japan_bs_if_frequency_hz(
+                request.frequency,
+            )
+            .is_some();
+            let is_cs110 = maleicacid_tuner_hal2_device::px4::normalize_japan_cs110_if_frequency_hz(
+                request.frequency,
+            )
+            .is_some();
             if !is_bs && !is_cs110 {
                 return Err(HalError::invalid_argument(
                     HalInvalidArgumentKind::UnsupportedFrequency,
@@ -112,11 +169,58 @@ fn validate_frontend_request_against_entry(
                 }
             }
         }
+        FrontendSystem::IsdbS3 | FrontendSystem::DvbS => {}
+    }
+    Ok(())
+}
+
+fn validate_frontend_request_availability_against_entry(
+    entry: &FrontendRegistryEntry,
+    request: &FrontendTuneRequest,
+) -> Result<(), HalError> {
+    match request.system {
+        FrontendSystem::IsdbT => {
+            if matches!(
+                request.partial_reception,
+                FrontendIsdbtPartialReceptionRequirement::Required(_)
+            ) {
+                let detail = match entry.backend {
+                    FrontendBackendKind::Px4CharDevice => {
+                        "px4 does not expose current TMCC partial reception readback"
+                    }
+                    FrontendBackendKind::LinuxDvb => {
+                        "earth_pt1 does not expose current TMCC partial reception readback"
+                    }
+                };
+                return Err(HalError::unsupported_detail(
+                    "isdbt.partialReceptionFlag",
+                    detail,
+                ));
+            }
+        }
+        FrontendSystem::IsdbS => {}
         FrontendSystem::IsdbS3 | FrontendSystem::DvbS => {
             return Err(HalError::Unsupported(
                 "frontend system is outside the r51 product scope",
             ));
         }
+    }
+    Ok(())
+}
+
+fn validate_frontend_begin_contract(
+    entry: &FrontendRegistryEntry,
+    request: &FrontendTuneRequest,
+    requested_settings: &[FrontendRequestedSetting],
+    scan_mode: Option<FrontendScanMode>,
+) -> Result<(), HalError> {
+    // Canonical precedence: all malformed/semantic INVALID_ARGUMENT decisions
+    // are completed before any valid-but-unavailable product/profile decision.
+    validate_frontend_request_invalid_arguments_against_entry(entry, request)?;
+    validate_frontend_requested_settings_against_product_profile(requested_settings)?;
+    validate_frontend_request_availability_against_entry(entry, request)?;
+    if let Some(scan_mode) = scan_mode {
+        validate_scan_mode_against_product_profile(scan_mode)?;
     }
     Ok(())
 }
@@ -171,10 +275,21 @@ fn validate_backend_tune_preflight(
 }
 
 impl TunerServiceRuntime {
-    pub fn validate_frontend_request_semantics(
+    pub fn validate_frontend_begin_request_for_id(
+        &self,
+        frontend_id: i32,
         request: &FrontendTuneRequest,
-    ) -> Result<(), HalError> {
-        validate_frontend_request_semantics(request)
+        requested_settings: &[FrontendRequestedSetting],
+        scan_mode: Option<FrontendScanMode>,
+    ) -> Result<FrontendRegistryEntry, HalError> {
+        let entry = self
+            .frontend_entry(frontend_id)
+            .ok_or(HalError::Unsupported(
+                "frontend runtime entry is not available",
+            ))?;
+        validate_frontend_begin_contract(&entry, request, requested_settings, scan_mode)?;
+        validate_frontend_lnb_candidate(self, &entry, request)?;
+        Ok(entry)
     }
 
     pub fn validate_frontend_request_for_id(
@@ -187,7 +302,8 @@ impl TunerServiceRuntime {
             .ok_or(HalError::Unsupported(
                 "frontend runtime entry is not available",
             ))?;
-        validate_frontend_request_against_entry(&entry, request)?;
+        validate_frontend_request_invalid_arguments_against_entry(&entry, request)?;
+        validate_frontend_request_availability_against_entry(&entry, request)?;
         validate_frontend_lnb_candidate(self, &entry, request)?;
         Ok(entry)
     }
@@ -207,7 +323,7 @@ impl TunerServiceRuntime {
                 maleicacid_tuner_hal2_device::dvb::dvb_scan_requests(request, scan_mode)?
             }
         };
-        for candidate in candidates.iter() {
+        for candidate in &candidates {
             validate_backend_tune_preflight(entry, candidate)?;
         }
         Ok(candidates)
@@ -229,6 +345,7 @@ mod tests {
     use crate::registry::{
         FrontendCapabilitySnapshot, FrontendRuntimeId, FrontendScalarCapability,
     };
+    use maleicacid_tuner_hal2_common::FrontendStreamIdKind;
     use std::path::PathBuf;
 
     fn entry(
@@ -332,6 +449,58 @@ mod tests {
     }
 
     #[test]
+    fn semantic_invalid_precedes_product_unavailable() {
+        let request = isdbt_request_with_layer_count(4);
+        let error = validate_frontend_begin_contract(
+            &entry(FrontendBackendKind::Px4CharDevice, FrontendSystem::IsdbT, 0, 0),
+            &request,
+            &[FrontendRequestedSetting::IsdbtExplicitMode { value: 1 }],
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.invalid_argument_kind(),
+            Some(HalInvalidArgumentKind::NumericRange)
+        );
+    }
+
+    #[test]
+    fn invalid_frequency_precedes_product_unavailable() {
+        let mut request = isdbt_request_with_layer_count(1);
+        request.frequency = 1;
+        let error = validate_frontend_begin_contract(
+            &entry(FrontendBackendKind::Px4CharDevice, FrontendSystem::IsdbT, 0, 0),
+            &request,
+            &[FrontendRequestedSetting::IsdbtExplicitMode { value: 1 }],
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.invalid_argument_kind(),
+            Some(HalInvalidArgumentKind::UnsupportedFrequency)
+        );
+    }
+
+    #[test]
+    fn invalid_cs110_selector_precedes_product_unavailable() {
+        let mut request = isdbs_request(Some(28_860_000));
+        request.frequency = 1_613_000_000;
+        request.stream_id = Some(1);
+        request.stream_id_kind = Some(FrontendStreamIdKind::AbsoluteStreamId);
+        let error = validate_frontend_begin_contract(
+            &isdbs_entry(FrontendBackendKind::Px4CharDevice, 28_860_000, 28_860_000),
+            &request,
+            &[FrontendRequestedSetting::IsdbsExplicitRolloff { value: 1 }],
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.invalid_argument_kind(),
+            Some(HalInvalidArgumentKind::UnsupportedStreamSelector)
+        );
+    }
+
+    #[test]
     fn explicit_partial_reception_is_unavailable_for_both_current_backends() {
         for backend in [FrontendBackendKind::Px4CharDevice, FrontendBackendKind::LinuxDvb] {
             for required in [false, true] {
@@ -339,9 +508,11 @@ mod tests {
                 request.partial_reception =
                     FrontendIsdbtPartialReceptionRequirement::Required(required);
                 assert!(matches!(
-                    validate_frontend_request_against_entry(
+                    validate_frontend_begin_contract(
                         &entry(backend, FrontendSystem::IsdbT, 0, 0),
                         &request,
+                        &[],
+                        None,
                     ),
                     Err(HalError::UnsupportedDetail {
                         feature: "isdbt.partialReceptionFlag",
@@ -367,13 +538,21 @@ mod tests {
     #[test]
     fn px4_symbol_rate_acceptance_matches_fixed_advertised_capability() {
         let entry = isdbs_entry(FrontendBackendKind::Px4CharDevice, 28_860_000, 28_860_000);
-        assert!(validate_frontend_request_against_entry(&entry, &isdbs_request(None)).is_ok());
-        assert!(
-            validate_frontend_request_against_entry(&entry, &isdbs_request(Some(28_860_000)))
-                .is_ok()
-        );
+        assert!(validate_frontend_request_invalid_arguments_against_entry(
+            &entry,
+            &isdbs_request(None)
+        )
+        .is_ok());
+        assert!(validate_frontend_request_invalid_arguments_against_entry(
+            &entry,
+            &isdbs_request(Some(28_860_000))
+        )
+        .is_ok());
         assert!(matches!(
-            validate_frontend_request_against_entry(&entry, &isdbs_request(Some(28_859_999))),
+            validate_frontend_request_invalid_arguments_against_entry(
+                &entry,
+                &isdbs_request(Some(28_859_999))
+            ),
             Err(HalError::InvalidArgument { .. })
         ));
     }
@@ -382,15 +561,18 @@ mod tests {
     fn dvb_symbol_rate_acceptance_matches_fixed_earth_pt1_capability() {
         let entry = isdbs_entry(FrontendBackendKind::LinuxDvb, 28_860_000, 28_860_000);
         for symbol_rate in [None, Some(28_860_000)] {
-            assert!(
-                validate_frontend_request_against_entry(&entry, &isdbs_request(symbol_rate))
-                    .is_ok()
-            );
+            assert!(validate_frontend_request_invalid_arguments_against_entry(
+                &entry,
+                &isdbs_request(symbol_rate)
+            )
+            .is_ok());
         }
         for symbol_rate in [28_859_999, 28_860_001] {
-            let error =
-                validate_frontend_request_against_entry(&entry, &isdbs_request(Some(symbol_rate)))
-                    .unwrap_err();
+            let error = validate_frontend_request_invalid_arguments_against_entry(
+                &entry,
+                &isdbs_request(Some(symbol_rate)),
+            )
+            .unwrap_err();
             assert_eq!(
                 error.invalid_argument_kind(),
                 Some(HalInvalidArgumentKind::UnsupportedSymbolRate)
