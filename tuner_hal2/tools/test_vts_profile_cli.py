@@ -92,7 +92,7 @@ class VtsProfileCliTest(unittest.TestCase):
             patch("vts_profile.cli._source_ref", return_value="aosp-commit"),
             patch(
                 "builtins.input",
-                side_effect=["", "", "神奈川県座間市", "", "", ""],
+                side_effect=["", "", "鹿児島県枕崎市", "", "", ""],
             ) as user_input,
             patch.dict(os.environ, {}, clear=True),
         ):
@@ -101,7 +101,7 @@ class VtsProfileCliTest(unittest.TestCase):
         self.assertEqual(profile["target"]["product"], cli.DEFAULT_PRODUCT)
         self.assertEqual(profile["target"]["backend"], "px4")
         self.assertEqual(profile["frontend"]["type"], "ISDBT")
-        self.assertEqual(profile["region"]["query"], "神奈川県座間市")
+        self.assertEqual(profile["region"]["query"], "鹿児島県枕崎市")
         self.assertTrue(profile["flows"]["scan"])
         self.assertTrue(profile["flows"]["record"]["enabled"])
         self.assertEqual(
@@ -121,19 +121,19 @@ class VtsProfileCliTest(unittest.TestCase):
             path = Path(directory) / "profile.json"
             profile = {
                 "frontend": {"type": "ISDBT", "frequency_hz": None},
-                "region": {"query": "神奈川県座間市", "candidates": []},
+                "region": {"query": "兵庫県神戸市北区鈴蘭台", "candidates": []},
             }
             args = SimpleNamespace(profile=str(path), non_interactive=False)
 
             def resolve(profile_to_resolve: dict) -> None:
                 checkpoint = json.loads(path.read_text(encoding="utf-8"))
-                self.assertEqual(checkpoint["region"]["query"], "神奈川県座間市")
+                self.assertEqual(checkpoint["region"]["query"], "兵庫県神戸市北区鈴蘭台")
                 self.assertEqual(checkpoint["region"]["candidates"], [])
                 profile_to_resolve["region"]["candidates"] = [
                     {
                         "frequency_hz": 515142857,
                         "physical_channel": 20,
-                        "label": "座間市 ch20",
+                        "label": "神戸市北区鈴蘭台 ch20",
                     }
                 ]
 
@@ -153,7 +153,7 @@ class VtsProfileCliTest(unittest.TestCase):
             path = Path(directory) / "profile.json"
             profile = {
                 "frontend": {"type": "ISDBT", "frequency_hz": None},
-                "region": {"query": "神奈川県座間市", "candidates": []},
+                "region": {"query": "鹿児島県枕崎市", "candidates": []},
             }
             args = SimpleNamespace(profile=str(path), non_interactive=False)
             with (
@@ -167,7 +167,7 @@ class VtsProfileCliTest(unittest.TestCase):
                     cli.cmd_init(args)
 
             saved = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(saved["region"]["query"], "神奈川県座間市")
+            self.assertEqual(saved["region"]["query"], "鹿児島県枕崎市")
             self.assertEqual(saved["region"]["candidates"], [])
 
     def test_noninteractive_init_preserves_explicit_region_resolution_phase(self) -> None:
@@ -175,7 +175,7 @@ class VtsProfileCliTest(unittest.TestCase):
             path = Path(directory) / "profile.json"
             profile = {
                 "frontend": {"type": "ISDBT", "frequency_hz": None},
-                "region": {"query": "神奈川県座間市", "candidates": []},
+                "region": {"query": "兵庫県神戸市北区鈴蘭台", "candidates": []},
             }
             args = SimpleNamespace(profile=str(path), non_interactive=True)
             with (
@@ -190,7 +190,7 @@ class VtsProfileCliTest(unittest.TestCase):
             path = Path(directory) / "profile.json"
             profile = {
                 "frontend": {"type": "ISDBS", "frequency_hz": None},
-                "region": {"query": "神奈川県座間市", "candidates": []},
+                "region": {"query": "鹿児島県枕崎市", "candidates": []},
             }
             args = SimpleNamespace(profile=str(path), non_interactive=False)
             with (
