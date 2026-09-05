@@ -23,11 +23,12 @@ use crate::dvb::abi::{
 };
 use crate::px4;
 use crate::px4::abi::{
-    PtxFreq, ERRNO_EAGAIN, ERRNO_EINVAL, ERRNO_ENOSYS, ERRNO_ENOTTY, PTXT_SET_LNB_VOLTAGE,
-    PTX_DISABLE_LNB_POWER, PTX_ENABLE_LNB_POWER, PTX_GET_LOCK_STATUS,
-    PTX_GET_TMCC_PARTIAL_RECEPTION, PTX_SET_CHANNEL, PTX_SET_SYSTEM_MODE, PTX_START_STREAMING,
-    PTX_STOP_STREAMING,
+    PtxFreq, PtxTmccTsidList, ERRNO_EAGAIN, ERRNO_EINVAL, ERRNO_ENOSYS, ERRNO_ENOTTY,
+    PTXT_SET_LNB_VOLTAGE, PTX_DISABLE_LNB_POWER, PTX_ENABLE_LNB_POWER, PTX_GET_LOCK_STATUS,
+    PTX_GET_TMCC_PARTIAL_RECEPTION, PTX_GET_TMCC_TSID_LIST, PTX_SET_CHANNEL, PTX_SET_SYSTEM_MODE,
+    PTX_START_STREAMING, PTX_STOP_STREAMING,
 };
+use crate::px4::{classify_tmcc_tsid_read, decode_tmcc_tsid_list, Px4TmccTsidListObservation};
 use crate::runtime::{FrontendSignalState, FrontendWorkerContext};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -81,6 +82,8 @@ pub enum FrontendTmccPartialReceptionObservation {
     Pending,
     Available(bool),
 }
+
+pub type FrontendTmccTsidListObservation = Px4TmccTsidListObservation;
 
 pub struct FrontendBackendSession {
     kind: FrontendBackendSessionKind,
@@ -212,6 +215,25 @@ impl FrontendBackendSession {
             PTX_GET_TMCC_PARTIAL_RECEPTION,
             "PTX_GET_TMCC_PARTIAL_RECEPTION",
         ))
+    }
+
+    pub fn observe_tmcc_tsid_list(&self) -> Result<FrontendTmccTsidListObservation, HalError> {
+        let FrontendBackendSessionKind::Px4 { control_path } = &self.kind else {
+            return Err(HalError::Unsupported(
+                "TMCC TSID list readback is available only on px4",
+            ));
+        };
+        let mut raw = PtxTmccTsidList::default();
+        let read = ioctl_ptr(
+            "px4",
+            Some(control_path.as_path().to_path_buf()),
+            self.file.as_raw_fd(),
+            PTX_GET_TMCC_TSID_LIST,
+            &mut raw,
+            "PTX_GET_TMCC_TSID_LIST",
+        )
+        .and_then(|()| decode_tmcc_tsid_list(control_path, raw));
+        classify_tmcc_tsid_read(read)
     }
 
     pub fn open_live_reader(

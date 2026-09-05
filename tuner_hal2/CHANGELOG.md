@@ -1,3 +1,10 @@
+# r50eo84_pr73_px4_tmcc_tsid_readback
+
+- product採用 `px4_drv` 基準を merged `px4_drv#3` (`c2236cc761d9d02e38a728f8cad0519610cd891b`) へ更新し、pointer-free fixed-size `PTX_GET_TMCC_TSID_LIST` (`num + tsid[12]`) を `tuner_hal2` PX4 ABIへmirrorした。28-byte layout / ioctl numberを固定し、`num > 12` またはcompact prefix内0をfail-closed、`EAGAIN`をTMCC未確定のtyped `Pending`、その他errnoをbackend failureとして保持する。
+- TMCC TSID listは既存 `tc90522_tmcc_get_tsid_s()` / driver UAPIを唯一のreadback authorityとし、active `FrontendBackendSession` の既存control fdを再利用する。固定BS TSID表、別TMCC parser、exclusive px4 chardevの再open、VTS/profileからのioctl bypassは追加していない。
+- product-level invariantを `開発規則.md`、公開Tuner HAL側のdevice-readback方針を `tuner_hal/DESIGN_JA.md`、実装owner/anchorを `tuner_hal2/DESIGN_JA.md`、product統合前提を `tuner_hal2/INTEGRATION.md` へ責務分担どおり反映した。#73単体では `STREAM_ID_LIST` / scan callbackの公開capabilityを追加せず、公開投影は後続PRの責務として分離した。
+- Rust 1.81.0の既存host CIで実装headのrustfmt / Clippy / host testsが成功済みであり、後続#74とのcombined stackでもhost workspace 169 tests、Clippy `-D warnings`、rustfmt check、`git diff --check`を成功させた。Android/Soong build、atest、VTS、CTS、実機TMCC readback・実放送波確認は未実施である。
+
 # r50eo84_pr53_earth_pt1_fixed_symbol_rate_followup
 
 - Linux v6.6 `tc90522`のISDB-S `FE_GET_INFO`がsymbol-rate rangeを0/0で返すため、現行earth-pt1製品profileの能力証跡をprobe rangeから固定28,860,000 sym/sへ修正した。ISDB-S frontendは0/0を理由に抑止せず、`FrontendInfo.minSymbolRate=maxSymbolRate=28,860,000`として公開する。

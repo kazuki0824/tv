@@ -50,6 +50,12 @@ flowchart TD
 | 資源台帳 | 予約・確定・解放要求 | object数、FMQ、PES、AV、DVR、descrambler、workerの使用権 | 公開能力値の独自算出 |
 | 後片付け管理 | 閉鎖、所有者消滅、失敗した解放 | `../tuner_hal/DESIGN_JA.md`のcleanup契約を実装ownerへ接続するtyped cleanup entry mapping | 通常操作への復帰判断、未完手順・retry authority・quarantine semanticsの独自定義 |
 
+### px4 TMCC TSID list device-adaptation境界
+
+px4固有のTMCC TSID readbackは「機器適合」責務に閉じる。ABI mirrorの実装anchorは `device/src/px4/abi.rs::PtxTmccTsidList` / `PTX_GET_TMCC_TSID_LIST`、raw resultのshape検証と `EAGAIN` のtyped pending化は `device/src/px4/tmcc_tsid.rs`、exclusive device-open resourceを再利用するread entryは `device/src/runtime/backend_worker.rs::FrontendBackendSession::observe_tmcc_tsid_list()` とする。公開値、readiness、scan callbackの規範意味は `../tuner_hal/DESIGN_JA.md` を正とし、本節で再定義しない。
+
+device-adaptation層は `FrontendRuntime`、AIDL object、callback artifactを直接変更しない。取得結果はtyped observationとしてservice_runtimeへ返すだけとし、persistent frontend generation/stateへ接続する場合は既存frontend ownerのtyped mutation pathを使う。driver readbackのために第二のdevice-open owner、固定BS TSID表、VTS/profile専用ioctl bypassを追加しない。
+
 ## 公開メソッドの接続規則
 
 静的inventory／capability参照メソッドはservice_runtimeのcapability/query ownerからAIDL応答変換へ接続し、動的な`IFrontend.getStatus()`／`getFrontendStatusReadiness()`はfrontend status query ownerからAIDL応答変換へ接続する。`CapabilitySnapshot`と`FrontendStatusSnapshot`の値、更新・無効化条件、同期/非同期read条件、公開statusは`../tuner_hal/DESIGN_JA.md`の該当契約を正とし、本書では再定義しない。
