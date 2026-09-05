@@ -6,7 +6,7 @@ use maleicacid_tuner_hal2_common::{
     FrontendTuneRequest, HalError, HalInternalKind, HalInvalidArgumentKind,
 };
 
-fn validate_frontend_request_semantics(request: &FrontendTuneRequest) -> Result<(), HalError> {
+pub fn validate_frontend_request_semantics(request: &FrontendTuneRequest) -> Result<(), HalError> {
     if request.system == FrontendSystem::IsdbT && request.isdbt_layer_settings.len() > 3 {
         return Err(HalError::invalid_argument(
             HalInvalidArgumentKind::NumericRange,
@@ -48,11 +48,18 @@ fn validate_frontend_request_against_entry(
             if matches!(
                 request.partial_reception,
                 FrontendIsdbtPartialReceptionRequirement::Required(_)
-            ) && entry.backend == FrontendBackendKind::LinuxDvb
-            {
+            ) {
+                let detail = match entry.backend {
+                    FrontendBackendKind::Px4CharDevice => {
+                        "px4 does not expose current TMCC partial reception readback"
+                    }
+                    FrontendBackendKind::LinuxDvb => {
+                        "earth_pt1 does not expose current TMCC partial reception readback"
+                    }
+                };
                 return Err(HalError::unsupported_detail(
                     "isdbt.partialReceptionFlag",
-                    "earth_pt1 does not expose current TMCC partial reception readback",
+                    detail,
                 ));
             }
             if !is_japan_isdbt_frequency_contract_hz(request.frequency) {
@@ -218,20 +225,29 @@ mod tests {
     };
     use std::path::PathBuf;
 
-    fn isdbs_entry(
+    fn entry(
         backend: FrontendBackendKind,
+        system: FrontendSystem,
         min_symbol_rate: i32,
         max_symbol_rate: i32,
     ) -> FrontendRegistryEntry {
         FrontendRegistryEntry {
             id: FrontendRuntimeId(1),
             backend,
-            system: FrontendSystem::IsdbS,
+            system,
             device_path: PathBuf::from("/dev/frontend-test"),
             capability: FrontendCapabilitySnapshot {
                 scalar: FrontendScalarCapability {
-                    min_frequency_hz: 1_049_480_000,
-                    max_frequency_hz: 2_053_000_000,
+                    min_frequency_hz: if system == FrontendSystem::IsdbT {
+                        111_142_857
+                    } else {
+                        1_049_480_000
+                    },
+                    max_frequency_hz: if system == FrontendSystem::IsdbT {
+                        767_142_857
+                    } else {
+                        2_053_000_000
+                    },
                     min_symbol_rate,
                     max_symbol_rate,
                     acquire_range_hz: 0,
@@ -245,6 +261,14 @@ mod tests {
             lnb_profile: None,
             satellite_power_topology: SatellitePowerTopology::ExternalOrShared,
         }
+    }
+
+    fn isdbs_entry(
+        backend: FrontendBackendKind,
+        min_symbol_rate: i32,
+        max_symbol_rate: i32,
+    ) -> FrontendRegistryEntry {
+        entry(backend, FrontendSystem::IsdbS, min_symbol_rate, max_symbol_rate)
     }
 
     fn isdbs_request(symbol_rate: Option<u32>) -> FrontendTuneRequest {
@@ -298,6 +322,27 @@ mod tests {
                 error.invalid_argument_kind(),
                 Some(HalInvalidArgumentKind::NumericRange)
             );
+        }
+    }
+
+    #[test]
+    fn explicit_partial_reception_is_unavailable_for_both_current_backends() {
+        for backend in [FrontendBackendKind::Px4CharDevice, FrontendBackendKind::LinuxDvb] {
+            for required in [false, true] {
+                let mut request = isdbt_request_with_layer_count(1);
+                request.partial_reception =
+                    FrontendIsdbtPartialReceptionRequirement::Required(required);
+                assert!(matches!(
+                    validate_frontend_request_against_entry(
+                        &entry(backend, FrontendSystem::IsdbT, 0, 0),
+                        &request,
+                    ),
+                    Err(HalError::UnsupportedDetail {
+                        feature: "isdbt.partialReceptionFlag",
+                        ..
+                    })
+                ));
+            }
         }
     }
 
