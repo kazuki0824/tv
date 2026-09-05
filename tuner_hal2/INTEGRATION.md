@@ -172,6 +172,7 @@ init            対話入力から単一VtsEnvironmentProfileファイルを新�
 resolve-region  同じファイルの地域入力から受信候補集合を生成して同じファイルへ保存する
 resolve-device  public Tuner AIDLと受信TSを使って実機依存値を解決し同じファイルへ保存する
 compile         同じファイルだけを入力に検証しAOSP Tuner VTS XMLを生成する
+install-device  compile済みVTS XMLをadb root/remount可能な試験端末の解決済みvendor pathへ配置する
 ```
 
 `init` は実機接続を前提にしない。AOSP/VTS契約識別、対象backend/product、受信方式、明示入力または地域入力、要求するVTS flow、queue要求等、入力時点で確定できる値を対話的に取得し、未確定項目を架空値で埋めずにprofileを保存する。必要入力が揃っていないprofileは `../tuner_hal/DESIGN_JA.md` の `VTS-STATE-UNBOUND` 判定に従い、保存可能であっても静的VTS XMLをinstall可能とは扱わない。
@@ -237,9 +238,13 @@ agentの論理責務・禁止責務、C++をFMQ descriptor import/read境界へ�
 
 ### 6.7 生成物とproduct配置
 
-生成されるAOSP Tuner VTS XMLはderived artifactであり、`VtsEnvironmentProfile`と同格の正本ではない。product integrationは、`../tuner_hal/DESIGN_JA.md`のfilename解決契約で得た解決済みfilenameを使用して、生成・検証済みXMLをproduct build graph経由でvendor imageへ正確に1個installする。`PRODUCT_COPY_FILES`、生成済みconfig moduleその他の具体的なbuild mechanismは、この一意なinstall契約を満たす限り実装詳細とする。
+生成されるAOSP Tuner VTS XMLはderived artifactであり、`VtsEnvironmentProfile`と同格の正本ではない。恒久的・再現可能なproduct imageへの配置は、`../tuner_hal/DESIGN_JA.md`のfilename解決契約で得た解決済みfilenameを使用し、生成・検証済みXMLをproduct build graph経由でvendor imageへ正確に1個installする。`PRODUCT_COPY_FILES`、生成済みconfig moduleその他の具体的なbuild mechanismは、この一意なinstall契約を満たす限り実装詳細とする。
 
-variantを使用する場合、variant propertyの値と生成XML filenameは同一`VtsEnvironmentProfile`の入力から導出し、product makefile側で別値を独立定義しない。variantを使用しない場合も、その判断は同じprofileから導出し、別のproduct設定面を設けない。
+実機VTSの反復確認では、compile後に必ずAndroidを再build/reflashすることを要求しない。対象端末で`adb root`後のadbdが実際にuid 0となり、`adb remount`でvendor側へ書き込み可能な状態を確立できる場合、`install-device`はcompile済みでprofileから解決されるfilenameと一致するXMLをadb経由で`/vendor/etc/<resolved-filename>`へ配置し、その配置内容を読み戻して一致確認した上でVTSへ進めてよい。このadb配置は試験端末上の反復用経路であり、product imageの恒久的・再現可能な構成をbuild graphから切り離す根拠にはしない。
+
+`install-device`はXMLを生成・補正・再解釈せず、完全解決済みprofileと既存compile成果物だけを受理する。profileから解決されるfilenameとartifact basenameが一致しない場合、`adb root`後もuid 0でない場合、`adb remount`が失敗する場合、push後の読み戻しが一致しない場合はfail-closedとし、未検証XMLを別pathへ配置して回避しない。root/remountできないuser build、AVB/verity構成その他の端末では、このadb経路を使用せずbuild graphへ生成物を接続して再build/reflashする。
+
+variantを使用する場合、variant propertyの値と生成XML filenameは同一`VtsEnvironmentProfile`の入力から導出し、product makefile側で別値を独立定義しない。`ro.vendor.vts_tuner_configuration_variant`はboot後に`install-device`が書き換える設定面にせず、adb配置前に実機のproperty値がprofileのvariantと完全一致することを確認する。不一致の場合はfail-closedとし、propertyをadbで上書きせず、必要なら一致するproduct imageをbuild/flashする。variantを使用しない場合も、実機propertyが空であることを同様に確認する。
 
 `config/product_integration.mk`は、`../tuner_hal/DESIGN_JA.md`のVTS状態契約に従って静的configをinstall可能と判定されたproductだけで、生成・検証済みVTS config artifactをvendor imageへのbuild graphへ接続できる構造にする。artifactを含めないproductでは、推測した既定XMLまたは旧`tuner_hal`のVTS XMLを代用しない。
 
@@ -255,6 +260,7 @@ variantを使用する場合、variant propertyの値と生成XML filenameは同
 - 環境依存値の人間編集入口が単一profileに集約され、生成XMLまたはproduct makefileに同じ値の独立正本がない。
 - AOSP VTS契約とのbuild-time照合、HAL capability/resource contractとの静的照合、AOSP schema検証が自動化されている。
 - 解決済みfilenameへのvendor image installがbuild graphに接続され、生成物が`tuner_hal2`のproduct integrationだけへ属する。
+- adb root/remount可能な試験端末では、同じ解決済みfilenameへcompile成果物を`install-device`で一時配置し、再build/reflashなしでVTS反復確認へ進める。root/remount不可またはvariant property不一致ならbuild graph経路を使用する。
 - VTS設定は`tuner_hal2`の試験設定にだけ使用され、HAL capability、frontend registry、backend probe結果または公開API成功範囲を書き換えない。
 - device preflightとTuner VTS実行手順が`タスク完了判定の実施方法.md`から一意に実行できる。
 
