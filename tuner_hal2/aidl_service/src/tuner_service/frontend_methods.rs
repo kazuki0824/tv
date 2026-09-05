@@ -5,7 +5,7 @@ use super::{
     execute_shared_object_runtime_use_case_with_request_builder,
     plan_unavailable_object_method_use_case, scan_notifier, set_frontend_lnb_object_use_case,
     status_from_hal_error, status_unknown_error, tune_notifier, AidlApi, AidlMethodCall,
-    AidlObjectKind, BinderResult, FrontendAidlObject, FrontendProfileRequirement, FrontendScanType,
+    AidlObjectKind, BinderResult, FrontendAidlObject, FrontendRequestedSetting, FrontendScanType,
     FrontendSettings, FrontendStatus, FrontendStatusReadiness, FrontendStatusType,
     FrontendTuneScanTxn, IFrontend, IFrontendCallback, ObjectFrontendStatusReadinessValue,
     ObjectFrontendStatusType, ObjectFrontendStatusValue, ObjectQueryRequest, ObjectQueryResponse,
@@ -57,64 +57,77 @@ fn frontend_readiness_from_query_value(
 }
 
 fn enforce_frontend_product_profile(
-    requirements: &[FrontendProfileRequirement],
+    requested_settings: &[FrontendRequestedSetting],
 ) -> Result<(), HalError> {
-    let Some(requirement) = requirements.first() else {
-        return Ok(());
-    };
-    let (feature, detail) = match requirement {
-        FrontendProfileRequirement::IsdbtUnsupportedBandwidth => (
-            "isdbt.bandwidth",
-            "known ISDB-T bandwidth is not supported by this product profile",
-        ),
-        FrontendProfileRequirement::IsdbtExplicitMode => {
-            ("isdbt.mode", "explicit ISDB-T mode is not supported")
+    for setting in requested_settings {
+        let unsupported = match setting {
+            FrontendRequestedSetting::IsdbtExplicitBandwidth {
+                bandwidth_hz: 6_000_000,
+            } => None,
+            FrontendRequestedSetting::IsdbtExplicitBandwidth { .. } => Some((
+                "isdbt.bandwidth",
+                "known ISDB-T bandwidth is not supported by this product profile",
+            )),
+            FrontendRequestedSetting::IsdbtExplicitMode { .. } => {
+                Some(("isdbt.mode", "explicit ISDB-T mode is not supported"))
+            }
+            FrontendRequestedSetting::IsdbtExplicitInversion { .. } => Some((
+                "isdbt.inversion",
+                "explicit ISDB-T spectral inversion is not supported",
+            )),
+            FrontendRequestedSetting::IsdbtExplicitGuardInterval { .. } => Some((
+                "isdbt.guardInterval",
+                "explicit ISDB-T guard interval is not supported",
+            )),
+            FrontendRequestedSetting::IsdbtServiceAreaId { .. } => Some((
+                "isdbt.serviceAreaId",
+                "explicit ISDB-T serviceAreaId is not supported",
+            )),
+            FrontendRequestedSetting::IsdbtPartialReceptionAuto => Some((
+                "isdbt.partialReceptionFlag",
+                "ISDB-T partial reception AUTO is not supported",
+            )),
+            FrontendRequestedSetting::IsdbtLayerModulation { .. } => Some((
+                "isdbt.layer.modulation",
+                "explicit ISDB-T layer modulation is not supported",
+            )),
+            FrontendRequestedSetting::IsdbtLayerCoderate { .. } => Some((
+                "isdbt.layer.coderate",
+                "explicit ISDB-T layer coderate is not supported",
+            )),
+            FrontendRequestedSetting::IsdbtLayerTimeInterleave { .. } => Some((
+                "isdbt.layer.timeInterleave",
+                "explicit ISDB-T layer time interleave is not supported",
+            )),
+            FrontendRequestedSetting::IsdbtExplicitSegmentCount { .. } => Some((
+                "isdbt.layer.numOfSegment",
+                "explicit ISDB-T segment count is not supported",
+            )),
+            FrontendRequestedSetting::IsdbsExplicitModulation { .. } => Some((
+                "isdbs.modulation",
+                "explicit ISDB-S modulation is not supported",
+            )),
+            FrontendRequestedSetting::IsdbsExplicitCoderate { .. } => Some((
+                "isdbs.coderate",
+                "explicit ISDB-S coderate is not supported",
+            )),
+            FrontendRequestedSetting::IsdbsExplicitRolloff { .. } => Some((
+                "isdbs.rolloff",
+                "explicit ISDB-S rolloff is not supported",
+            )),
+        };
+        if let Some((feature, detail)) = unsupported {
+            return Err(HalError::unsupported_detail(feature, detail));
         }
-        FrontendProfileRequirement::IsdbtExplicitInversion => (
-            "isdbt.inversion",
-            "explicit ISDB-T spectral inversion is not supported",
-        ),
-        FrontendProfileRequirement::IsdbtExplicitGuardInterval => (
-            "isdbt.guardInterval",
-            "explicit ISDB-T guard interval is not supported",
-        ),
-        FrontendProfileRequirement::IsdbtServiceAreaId => (
-            "isdbt.serviceAreaId",
-            "explicit ISDB-T serviceAreaId is not supported",
-        ),
-        FrontendProfileRequirement::IsdbtPartialReceptionAuto => (
-            "isdbt.partialReceptionFlag",
-            "ISDB-T partial reception AUTO is not supported",
-        ),
-        FrontendProfileRequirement::IsdbtLayerModulation => (
-            "isdbt.layer.modulation",
-            "explicit ISDB-T layer modulation is not supported",
-        ),
-        FrontendProfileRequirement::IsdbtLayerCoderate => (
-            "isdbt.layer.coderate",
-            "explicit ISDB-T layer coderate is not supported",
-        ),
-        FrontendProfileRequirement::IsdbtLayerTimeInterleave => (
-            "isdbt.layer.timeInterleave",
-            "explicit ISDB-T layer time interleave is not supported",
-        ),
-        FrontendProfileRequirement::IsdbtExplicitSegmentCount { .. } => (
-            "isdbt.layer.numOfSegment",
-            "explicit ISDB-T segment count is not supported",
-        ),
-        FrontendProfileRequirement::IsdbsExplicitModulation => (
-            "isdbs.modulation",
-            "explicit ISDB-S modulation is not supported",
-        ),
-        FrontendProfileRequirement::IsdbsExplicitCoderate => (
-            "isdbs.coderate",
-            "explicit ISDB-S coderate is not supported",
-        ),
-        FrontendProfileRequirement::IsdbsExplicitRolloff => {
-            ("isdbs.rolloff", "explicit ISDB-S rolloff is not supported")
-        }
-    };
-    Err(HalError::unsupported_detail(feature, detail))
+    }
+    Ok(())
+}
+
+fn validate_converted_frontend_request(
+    converted: &super::FrontendSettingsRequest,
+) -> Result<(), HalError> {
+    maleicacid_tuner_hal2_service_runtime::validate_frontend_request_semantics(&converted.request)?;
+    enforce_frontend_product_profile(&converted.requested_settings)
 }
 
 impl IFrontend for FrontendAidlObject {
@@ -128,8 +141,7 @@ impl IFrontend for FrontendAidlObject {
             || {
                 let converted =
                     aidl_frontend_settings_to_request(settings).map_err(status_from_hal_error)?;
-                enforce_frontend_product_profile(&converted.profile_requirements)
-                    .map_err(status_from_hal_error)?;
+                validate_converted_frontend_request(&converted).map_err(status_from_hal_error)?;
                 Ok((
                     AidlMethodCall::FrontendTune(converted.request.clone()),
                     converted.request,
@@ -179,8 +191,7 @@ impl IFrontend for FrontendAidlObject {
                 let scan_mode = aidl_scan_type_to_mode(scan_type).map_err(status_from_hal_error)?;
                 let converted =
                     aidl_frontend_settings_to_request(settings).map_err(status_from_hal_error)?;
-                enforce_frontend_product_profile(&converted.profile_requirements)
-                    .map_err(status_from_hal_error)?;
+                validate_converted_frontend_request(&converted).map_err(status_from_hal_error)?;
                 Ok((
                     AidlMethodCall::FrontendScan(converted.request.clone()),
                     (converted.request, scan_mode),
