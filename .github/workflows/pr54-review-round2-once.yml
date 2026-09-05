@@ -39,7 +39,9 @@ jobs:
         run: python3 .github/scripts/pr54_review_round2_prepatch.py
 
       - name: production design test修正を適用
-        run: python3 .github/scripts/pr54_review_round2_once.py
+        run: |
+          python3 .github/scripts/pr54_review_round2_once.py
+          sed -i 's#"../testdata/program_provider_data_v1/#"../../testdata/program_provider_data_v1/#g' arib_si_engine_rs/src/core/provider_data.rs
 
       - name: Rustとpatch契約を検証
         run: |
