@@ -1,0 +1,129 @@
+name: PR54第2レビュー大規模部分編集
+
+on:
+  push:
+    branches:
+      - agent/implement-tis-arib-si-design-pr53
+    paths:
+      - .github/workflows/pr54-review-round2-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/implement-tis-arib-si-design-pr53
+          persist-credentials: true
+          fetch-depth: 0
+
+      - name: Rust 1.81を導入
+        run: rustup toolchain install 1.81.0 --profile minimal --component rustfmt --component clippy
+
+      - name: Android 15 host入力とAOSP TV正本を準備
+        run: |
+          curl --fail --location --retry 3 --retry-all-errors \
+            "https://repo.maven.apache.org/maven2/org/robolectric/android-all/15-robolectric-13954326/android-all-15-robolectric-13954326.jar" \
+            --output "$RUNNER_TEMP/android-all-15.jar"
+          echo "ANDROID15_SHA256=$(sha256sum "$RUNNER_TEMP/android-all-15.jar" | cut -d' ' -f1)" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/aosp-tv/src/com/android/tv/parental"
+          curl --fail --location --retry 3 --retry-all-errors \
+            "https://raw.githubusercontent.com/aosp-mirror-neo/platform_packages_apps_TV/android-15.0.0_r14/src/com/android/tv/parental/ParentalControlSettings.java" \
+            --output "$RUNNER_TEMP/aosp-tv/src/com/android/tv/parental/ParentalControlSettings.java"
+          echo "AOSP_PARENTAL_SOURCE=$RUNNER_TEMP/aosp-tv/src/com/android/tv/parental/ParentalControlSettings.java" >> "$GITHUB_ENV"
+
+      - name: 一時scriptの既知path補正と追加回帰を準備
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.github/scripts/pr54_review_round2_once.py')
+          text = p.read_text()
+          start_marker = 'p = Path("tis/src/com/maleicacid/tvinput/tis/PlaybackPipeline.kt")\ntext = p.read_text()\n# AvStreamSelectionにcaptionDiscoveryを追加する。\n'
+          start = text.index(start_marker)
+          next_marker = "old = '''        val subtitle = selection.subtitle"
+          next_pos = text.index(next_marker, start)
+          block = text[start:next_pos]
+          fixed = block.replace(
+              'p = Path("tis/src/com/maleicacid/tvinput/tis/PlaybackPipeline.kt")',
+              'p = Path("tis/src/com/maleicacid/tvinput/tis/TunerController.kt")',
+              1,
+          ) + 'p.write_text(text)\n\np = Path("tis/src/com/maleicacid/tvinput/tis/PlaybackPipeline.kt")\ntext = p.read_text()\n'
+          text = text[:start] + fixed + text[next_pos:]
+          text = text.replace('!obsolete_section_keys.contains(key)', '!obsolete_section_keys.contains(*key)')
+          old = '        check(JapanIsdbScanPlan.explicitBsCandidatesFromScan(bsSeed, emptyList()).isEmpty())\\n'
+          new = old + '''        val relativeStoredChannel = ChannelRecord(
+            serviceKey = key,
+            serviceType = 0x01,
+            displayNumber = "101",
+            displayName = "BS relative",
+            frequencyHz = bsSeed.frequencyHz,
+            deliverySystem = ChannelRecord.DELIVERY_SYSTEM_ISDB_S,
+            streamSelector = StreamSelector.relative(0),
+            physicalChannel = bsSeed.physicalChannel,
+            satelliteBand = "BS",
+        )
+        check(runCatching {
+            com.maleicacid.tvinput.aribsi.ProviderDataBridge.buildChannelProviderData(relativeStoredChannel)
+        }.isFailure)
+'''
+          if old not in text:
+              raise SystemExit('F08 test挿入位置が見つかりません')
+          text = text.replace(old, new, 1)
+          p.write_text(text)
+          PY
+
+      - name: production/design/test修正を適用
+        run: python3 .github/scripts/pr54_review_round2_once.py
+
+      - name: Rustとpatch契約を検証
+        run: |
+          (cd arib_si_engine_rs/host_ci && cargo +1.81.0 fmt --all)
+          (cd arib_si_engine_rs/host_ci && cargo +1.81.0 check --all-targets --locked)
+          (cd arib_si_engine_rs/host_ci && cargo +1.81.0 test --locked)
+          cargo +1.81.0 test --manifest-path arib_si_engine_rs/host_ci/core/Cargo.toml
+          (cd arib_si_engine_rs/host_ci && cargo +1.81.0 clippy --all-targets --locked -- -D warnings)
+          (cd "$RUNNER_TEMP/aosp-tv" && git apply --check "$GITHUB_WORKSPACE/tis/platform_patches/lineage-22.1/packages_apps_TV_arib_exceptional_parental_policy.patch")
+          python3 -m json.tool arib_si_engine_rs/schema/program_provider_data_v1.schema.json >/dev/null
+          python3 -m json.tool arib_si_engine_rs/schema/channel_provider_data_v1.schema.json >/dev/null
+          git diff --check
+
+      - name: 指摘契約の静的整合を確認
+        run: |
+          ! grep -q 'collect_program_unknown_extensions\|collect_channel_unknown_extensions\|descriptor_diagnostics_have_only_known_fields' arib_si_engine_rs/src/core/provider_data.rs
+          ! grep -q 'normalize_program_extensions(data, Some\|normalize_channel_extensions(data, Some' arib_si_engine_rs/src/core/provider_data.rs
+          test "$(grep -c 'src/core/arib_extended_graphic_table.rs' arib_si_engine_rs/Android.bp)" -eq 2
+          ! grep -E 'Android 14|LineageOS 21([^0-9.]|$)' tis/DESIGN_JA.md
+          ! grep -R 'fallbackBsCandidates\|isdbsBsTsidStreams' tis/src tis/tests/src
+          ! grep -R 'BootReceiver\|DirectBootEpgPending\|BootEpgSyncCoordinator' tis/INTEGRATION.md
+          git diff --check
+
+      - name: 通常sourceだけをcommitしてpush
+        run: |
+          git add arib_si_engine_rs/src/core/provider_data.rs
+          git add arib_si_engine_rs/src/core/eit.rs
+          git add arib_si_engine_rs/Android.bp
+          git add tis/src/com/maleicacid/tvinput/aribsi/ProviderDataBridge.kt
+          git add tis/src/com/maleicacid/tvinput/aribsi/EventModelMapper.kt
+          git add tis/src/com/maleicacid/tvinput/db/TvInputModels.kt
+          git add tis/src/com/maleicacid/tvinput/tis/TvProviderWriter.kt
+          git add tis/src/com/maleicacid/tvinput/tis/TunerSelectionPolicy.kt
+          git add tis/src/com/maleicacid/tvinput/tis/TunerController.kt
+          git add tis/src/com/maleicacid/tvinput/tis/PlaybackPipeline.kt
+          git add tis/src/com/maleicacid/tvinput/tis/MaleicacidLiveSession.kt
+          git add tis/src/com/maleicacid/tvinput/tis/ChannelScanController.kt
+          git add tis/src/com/maleicacid/tvinput/tis/ScanPlan.kt
+          git add tis/tests/src/com/maleicacid/tvinput/tis/TisR51FixedPlanAcceptanceTest.kt
+          git add tis/tests/src/com/maleicacid/tvinput/tis/TvProviderWriterR51FixTest.kt
+          git add tis/DESIGN_JA.md tis/INTEGRATION.md
+          git add tis/platform_patches/lineage-22.1/frameworks_base_mediasync_first_output.patch
+          git add tis/platform_patches/lineage-22.1/packages_apps_TV_arib_exceptional_parental_policy.patch
+          git add .github/workflows/tis-host-ci.yml .github/workflows/arib-si-engine-host-ci.yml
+          git diff --cached --check
+          git config user.name 'OpenAI Codex'
+          git config user.email 'codex@openai.com'
+          git commit -m 'fix(tis): 第2レビューの契約不整合を補正'
+          git push origin HEAD:agent/implement-tis-arib-si-design-pr53
