@@ -19,19 +19,7 @@ def _frontend_xml(profile: dict[str, Any]) -> str:
         f'frequency="{int(fe["frequency_hz"])}"',
     ]
     if fe_type == "ISDBT":
-        # Android 14 AIDL V1 uses 0 for UNDEFINED and 1 for AUTO for these
-        # ISDB-T enums.  Do not omit this block: the AOSP VTS reader otherwise
-        # sends frequency plus UNDEFINED defaults, while the product contract
-        # accepts AUTO for bandwidth/mode/guard and UNDEFINED for the remaining
-        # optional settings.
-        settings_text = (
-            'serviceAreaId="0" inversion="0" bandwidth="1" mode="1" '
-            'guardInterval="1" partialReceptionFlag="0"'
-        )
-        return (
-            f'      <frontend {" ".join(attrs)}>'
-            f'<isdbtFrontendSettings {settings_text}/></frontend>'
-        )
+        return f'      <frontend {" ".join(attrs)}/>'
     settings = {
         "streamId": fe["stream_id"], "streamIdType": fe["stream_id_type"],
         "modulation": fe["modulation"], "coderate": fe["coderate"],
