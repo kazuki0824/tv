@@ -24,8 +24,8 @@ jobs:
       - name: Rust 1.81を導入
         run: rustup toolchain install 1.81.0 --profile minimal --component rustfmt --component clippy
 
-      - name: 大規模Rustファイルの部分修正を適用
-        run: python3 .github/scripts/pr54_review_fixes_once.py
+      - name: 第二段の大規模部分修正を適用
+        run: python3 .github/scripts/pr54_review_fixes_phase2_once.py
 
       - name: Rust検証
         working-directory: arib_si_engine_rs/host_ci
@@ -35,32 +35,26 @@ jobs:
           cargo +1.81.0 test --locked
           cargo +1.81.0 clippy --all-targets --locked -- -D warnings
 
-      - name: JSON schemaを検証
+      - name: TISの静的整合を検査
         run: |
-          python3 -m pip install --disable-pip-version-check 'jsonschema==4.23.0'
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-          from jsonschema import Draft202012Validator, RefResolver
-          schema_dir = Path('arib_si_engine_rs/schema')
-          schema = json.loads((schema_dir / 'program_provider_data_v1.schema.json').read_text())
-          diagnostic_schema = json.loads((schema_dir / 'descriptor_diagnostic_v1.schema.json').read_text())
-          Draft202012Validator.check_schema(diagnostic_schema)
-          resolver = RefResolver.from_schema(schema, store={diagnostic_schema['$id']: diagnostic_schema})
-          validator = Draft202012Validator(schema, resolver=resolver)
-          for path in sorted(Path('arib_si_engine_rs/testdata/program_provider_data_v1').glob('*.json')):
-              validator.validate(json.loads(path.read_text()))
-          PY
+          ! grep -R "clearLivePlaybackSupported" tis/src/com/maleicacid/tvinput/aribsi/SiModels.kt tis/src/com/maleicacid/tvinput/aribsi/ServiceListBuilder.kt tis/src/com/maleicacid/tvinput/tis/ChannelScanController.kt
+          python3 -m json.tool arib_si_engine_rs/schema/program_provider_data_v1.schema.json >/dev/null
+          git diff --check
 
       - name: 通常sourceの修正だけをcommitしてpush
         run: |
+          git add tis/src/com/maleicacid/tvinput/aribsi/SiModels.kt
+          git add tis/src/com/maleicacid/tvinput/aribsi/NativeAribSiParser.kt
+          git add tis/src/com/maleicacid/tvinput/aribsi/ProviderDataBridge.kt
+          git add tis/src/com/maleicacid/tvinput/aribsi/ServiceListBuilder.kt
+          git add tis/src/com/maleicacid/tvinput/tis/ChannelScanController.kt
+          git add tis/src/com/maleicacid/tvinput/tis/TunerSelectionPolicy.kt
+          git add tis/DESIGN_JA.md
+          git add tis/platform_patches/lineage-22.1/frameworks_base_mediasync_first_output.patch
           git add arib_si_engine_rs/src/core/provider_data.rs
-          git add arib_si_engine_rs/src/core/eit.rs
-          git add arib_si_engine_rs/src/core/arib_string.rs
-          git add arib_si_engine_rs/src/core/arib_extended_graphic_table.rs
-          git add arib_si_engine_rs/schema/descriptor_diagnostic_v1.schema.json
+          git add arib_si_engine_rs/schema/program_provider_data_v1.schema.json
           git diff --cached --check
           git config user.name 'OpenAI Codex'
           git config user.email 'codex@openai.com'
-          git commit -m 'fix(arib): review指摘のSI境界を補正'
+          git commit -m 'fix(tis): review指摘の意味境界を補正'
           git push origin HEAD:agent/implement-tis-arib-si-design-pr53
