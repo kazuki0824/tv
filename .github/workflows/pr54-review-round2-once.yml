@@ -7,6 +7,8 @@ on:
       - agent/implement-tis-arib-si-design-pr53
     paths:
       - .github/workflows/pr54-review-round2-once.yml
+      - .github/scripts/pr54_review_round2_once.py
+      - .github/scripts/pr54_review_round2_prepatch.py
 
 permissions:
   contents: write
