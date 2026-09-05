@@ -6,6 +6,26 @@ use maleicacid_tuner_hal2_common::{
     FrontendTuneRequest, HalError, HalInternalKind, HalInvalidArgumentKind,
 };
 
+fn validate_frontend_request_semantics(request: &FrontendTuneRequest) -> Result<(), HalError> {
+    if request.system == FrontendSystem::IsdbT && request.isdbt_layer_settings.len() > 3 {
+        return Err(HalError::invalid_argument(
+            HalInvalidArgumentKind::NumericRange,
+            "ISDB-T tune must not request more than the three physical hierarchical layers A/B/C",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_scan_mode_against_product_profile(scan_mode: FrontendScanMode) -> Result<(), HalError> {
+    if scan_mode == FrontendScanMode::Blind {
+        return Err(HalError::unsupported_detail(
+            "frontend.scan.blind",
+            "blind scan is not supported by the current product profile",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_frontend_request_against_entry(
     entry: &FrontendRegistryEntry,
     request: &FrontendTuneRequest,
@@ -20,6 +40,8 @@ fn validate_frontend_request_against_entry(
             ),
         ));
     }
+
+    validate_frontend_request_semantics(request)?;
 
     match request.system {
         FrontendSystem::IsdbT => {
@@ -163,6 +185,7 @@ impl TunerServiceRuntime {
         request: &FrontendTuneRequest,
         scan_mode: FrontendScanMode,
     ) -> Result<Vec<FrontendTuneRequest>, HalError> {
+        validate_scan_mode_against_product_profile(scan_mode)?;
         let candidates = match entry.backend {
             FrontendBackendKind::Px4CharDevice => {
                 maleicacid_tuner_hal2_device::px4::px4_scan_requests(request)?
@@ -236,6 +259,58 @@ mod tests {
             isdbt_layer_settings: Vec::new(),
             partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
         }
+    }
+
+    fn isdbt_request_with_layer_count(layer_count: usize) -> FrontendTuneRequest {
+        FrontendTuneRequest {
+            system: FrontendSystem::IsdbT,
+            frequency: 473_142_857,
+            end_frequency: None,
+            stream_id: None,
+            stream_id_kind: None,
+            bandwidth_hz: Some(6_000_000),
+            symbol_rate: None,
+            isdbt_layer_settings: vec![
+                maleicacid_tuner_hal2_common::FrontendIsdbtLayerSetting {
+                    num_of_segment:
+                        maleicacid_tuner_hal2_common::FrontendIsdbtSegmentRequest::Unspecified,
+                };
+                layer_count
+            ],
+            partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+        }
+    }
+
+    #[test]
+    fn isdbt_physical_layer_cardinality_is_validated_after_aidl_conversion() {
+        for layer_count in 0..=3 {
+            assert!(validate_frontend_request_semantics(&isdbt_request_with_layer_count(
+                layer_count
+            ))
+            .is_ok());
+        }
+        for layer_count in 4..=5 {
+            let error = validate_frontend_request_semantics(&isdbt_request_with_layer_count(
+                layer_count,
+            ))
+            .unwrap_err();
+            assert_eq!(
+                error.invalid_argument_kind(),
+                Some(HalInvalidArgumentKind::NumericRange)
+            );
+        }
+    }
+
+    #[test]
+    fn blind_scan_is_rejected_by_product_profile_before_backend_dispatch() {
+        assert!(validate_scan_mode_against_product_profile(FrontendScanMode::Auto).is_ok());
+        assert!(matches!(
+            validate_scan_mode_against_product_profile(FrontendScanMode::Blind),
+            Err(HalError::UnsupportedDetail {
+                feature: "frontend.scan.blind",
+                ..
+            })
+        ));
     }
 
     #[test]
