@@ -1,0 +1,41 @@
+--- a/services/tuner/aidl/android/media/tv/tuner/ITunerFilter.aidl
++++ b/services/tuner/aidl/android/media/tv/tuner/ITunerFilter.aidl
+@@ -79,7 +79,7 @@
+     /**
+      * Set the filter's data source.
+      */
+-    void setDataSource(ITunerFilter filter);
++    void setDataSource(@nullable ITunerFilter filter);
+ 
+     /**
+      * Start the filter.
+--- a/services/tuner/TunerFilter.cpp
++++ b/services/tuner/TunerFilter.cpp
+@@ -149,18 +149,15 @@
+ 
+ ::ndk::ScopedAStatus TunerFilter::setDataSource(const shared_ptr<ITunerFilter>& filter) {
+     Mutex::Autolock _l(mLock);
+-    if (filter == nullptr) {
+-        return ::ndk::ScopedAStatus::fromServiceSpecificError(
+-                static_cast<int32_t>(Result::INVALID_ARGUMENT));
+-    }
+-
+-    if (mShared) {
+-        ALOGD("%s is called on a shared filter", __FUNCTION__);
+-        return ::ndk::ScopedAStatus::fromServiceSpecificError(
+-                static_cast<int32_t>(Result::INVALID_STATE));
+-    }
+-
+-    shared_ptr<IFilter> halFilter = static_cast<TunerFilter*>(filter.get())->getHalFilter();
++    if (mShared) {
++        ALOGD("%s is called on a shared filter", __FUNCTION__);
++        return ::ndk::ScopedAStatus::fromServiceSpecificError(
++                static_cast<int32_t>(Result::INVALID_STATE));
++    }
++
++    shared_ptr<IFilter> halFilter =
++            (filter == nullptr) ? nullptr
++                                : static_cast<TunerFilter*>(filter.get())->getHalFilter();
+     return mFilter->setDataSource(halFilter);
+ }
+ 

@@ -31,18 +31,6 @@ diff --git a/tv/tuner/aidl/android/hardware/tv/tuner/IDescrambler.aidl b/tv/tune
  
      /**
       * Release the descrambler instance
-diff --git a/tv/tuner/aidl/android/hardware/tv/tuner/IFrontend.aidl b/tv/tuner/aidl/android/hardware/tv/tuner/IFrontend.aidl
---- a/tv/tuner/aidl/android/hardware/tv/tuner/IFrontend.aidl
-+++ b/tv/tuner/aidl/android/hardware/tv/tuner/IFrontend.aidl
-@@ -40,7 +40,7 @@ interface IFrontend {
-      *        The previously registered callback must be replaced with this one.
-      *        It can be null.
-      */
--    void setCallback(in IFrontendCallback callback);
-+    void setCallback(in @nullable IFrontendCallback callback);
- 
-     /**
-      * Tunes the frontend to using the settings given.
 diff --git a/tv/tuner/aidl/android/hardware/tv/tuner/ILnb.aidl b/tv/tuner/aidl/android/hardware/tv/tuner/ILnb.aidl
 --- a/tv/tuner/aidl/android/hardware/tv/tuner/ILnb.aidl
 +++ b/tv/tuner/aidl/android/hardware/tv/tuner/ILnb.aidl
