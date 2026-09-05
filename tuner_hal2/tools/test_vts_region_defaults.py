@@ -230,7 +230,7 @@ class VtsRegionDefaultsTest(unittest.TestCase):
         self.assertEqual(len(profile["region"]["candidates"]), 1)
         self.assertIn("A局", profile["region"]["candidates"][0]["label"])
 
-    def test_duplicate_frequency_is_skipped_before_top_k_is_filled(self) -> None:
+    def test_duplicate_frequency_does_not_replace_a_top_k_transmitter(self) -> None:
         profile = _profile("35.0,139.0")
         dataset = _dataset(
             _transmitter("a", "A局", 35.001, 139.0, 20, 10.0),
@@ -239,9 +239,9 @@ class VtsRegionDefaultsTest(unittest.TestCase):
         )
         resolve_region(profile, dataset)
         candidates = profile["region"]["candidates"]
-        self.assertEqual(len(candidates), 2)
+        self.assertEqual(len(candidates), 1)
         self.assertIn("A局", candidates[0]["label"])
-        self.assertIn("C局", candidates[1]["label"])
+        self.assertNotIn("C局", candidates[0]["label"])
 
     def test_non_natural_candidate_counts_are_rejected(self) -> None:
         for invalid in (0, -1, 1.5, "2", True):

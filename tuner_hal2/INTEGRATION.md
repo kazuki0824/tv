@@ -198,7 +198,7 @@ INA4Nで偏波または出力が空欄の場合はunknownのまま保持し、�
 
 `region.transmitter_candidate_count`はregion resolverが採用する送信所数`k`を表すresolver入力であり、自然数（1以上の整数）だけを受理する。既定値は`2`とする。`0`、負数、浮動小数、文字列その他の自然数でない値はfail-closedで拒否する。対話`init`は地域入力があるISDB-T profileで`k`を尋ね、未入力なら`2`を保存する。`resolve-region -k N`で明示的に上書きしてよい。
 
-region resolverは全国送信所を上記規則で順位付けした後、上位`k`送信所について代表probe serviceの物理chを1件ずつ候補化する。同一送信所の別物理chをfallback channelとして展開してはならない。同一frequencyが複数送信所から選ばれた場合、同じTune操作を重複実行する意味がないため最初の1件だけを保持し、必要なら次順位の送信所で最大`k`個の一意なfrequency候補を満たす。したがって通常のTune試行回数は最大`k`回である。
+region resolverは全国送信所を上記規則で順位付けした後、まず上位`k`送信所を確定し、その各送信所について代表probe serviceの物理chを1件ずつ候補化する。同一送信所の別物理chをfallback channelとして展開してはならない。上位`k`送信所の中で同一frequencyが重複した場合、同じTune操作を重複実行する意味がないため最初の1件だけを保持するが、その重複を埋めるために`k`位より下の送信所を繰り上げてはならない。したがって`k`は物理ch数や一意frequency数ではなく採用送信所数を表し、実際のTune候補数は`k`以下となる。
 
 `resolve-region`が生成するのはVTS実機確認を開始するための順位付き受信候補であり、service ID、PMT PID、audio/video/record PID等のTS内識別値を地域情報から推定して確定してはならない。実機接続後、`resolve-device`はpublic Tuner AIDLで候補frequencyを順位順にtuneし、LOCKEDを確認したTSからPATを取得してserviceとPMT PIDを解決し、PMTから要求flowに必要なES PIDを解決する。解決したfrequency、service、PAT/PMTに基づくPID等は同じ`VtsEnvironmentProfile`へ保存する。
 

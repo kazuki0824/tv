@@ -405,7 +405,7 @@ def _ranked_candidates(
 
     candidates: list[dict[str, Any]] = []
     seen_frequencies: set[int] = set()
-    for _, transmitter, service, distance, score in ranked:
+    for _, transmitter, service, distance, score in ranked[:candidate_count]:
         channel = _current_channel(service["physical_channel"], "candidate physical_channel")
         frequency = _frequency_for_channel(channel)
         if frequency in seen_frequencies:
@@ -425,8 +425,6 @@ def _ranked_candidates(
                 "label": f"{transmitter['name']} {service['name']} {detail}",
             }
         )
-        if len(candidates) >= candidate_count:
-            break
     return candidates
 
 
