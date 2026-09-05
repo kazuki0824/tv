@@ -220,20 +220,15 @@ fn validate_frontend_request_availability_against_entry(
     match request.system {
         FrontendSystem::IsdbT => {
             if matches!(
-                request.partial_reception,
-                FrontendIsdbtPartialReceptionRequirement::Required(_)
+                (request.partial_reception, entry.backend),
+                (
+                    FrontendIsdbtPartialReceptionRequirement::Required(_),
+                    FrontendBackendKind::LinuxDvb,
+                )
             ) {
-                let detail = match entry.backend {
-                    FrontendBackendKind::Px4CharDevice => {
-                        "px4 does not expose current TMCC partial reception readback"
-                    }
-                    FrontendBackendKind::LinuxDvb => {
-                        "earth_pt1 does not expose current TMCC partial reception readback"
-                    }
-                };
                 return Err(HalError::unsupported_detail(
                     "isdbt.partialReceptionFlag",
-                    detail,
+                    "earth_pt1 does not expose current TMCC partial reception readback",
                 ));
             }
         }
@@ -756,28 +751,41 @@ mod tests {
     }
 
     #[test]
-    fn explicit_partial_reception_is_unavailable_for_both_current_backends() {
-        for backend in [
-            FrontendBackendKind::Px4CharDevice,
-            FrontendBackendKind::LinuxDvb,
-        ] {
-            for required in [false, true] {
-                let mut request = isdbt_request_with_layer_count(1);
-                request.partial_reception =
-                    FrontendIsdbtPartialReceptionRequirement::Required(required);
-                assert!(matches!(
-                    validate_frontend_begin_contract(
-                        &entry(backend, FrontendSystem::IsdbT, 0, 0),
-                        &request,
-                        &[],
-                        None,
+    fn explicit_partial_reception_is_available_only_for_px4() {
+        for required in [false, true] {
+            let mut request = isdbt_request_with_layer_count(1);
+            request.partial_reception =
+                FrontendIsdbtPartialReceptionRequirement::Required(required);
+
+            assert!(validate_frontend_begin_contract(
+                &entry(
+                    FrontendBackendKind::Px4CharDevice,
+                    FrontendSystem::IsdbT,
+                    0,
+                    0,
+                ),
+                &request,
+                &[],
+                None,
+            )
+            .is_ok());
+            assert!(matches!(
+                validate_frontend_begin_contract(
+                    &entry(
+                        FrontendBackendKind::LinuxDvb,
+                        FrontendSystem::IsdbT,
+                        0,
+                        0,
                     ),
-                    Err(HalError::UnsupportedDetail {
-                        feature: "isdbt.partialReceptionFlag",
-                        ..
-                    })
-                ));
-            }
+                    &request,
+                    &[],
+                    None,
+                ),
+                Err(HalError::UnsupportedDetail {
+                    feature: "isdbt.partialReceptionFlag",
+                    ..
+                })
+            ));
         }
     }
 
