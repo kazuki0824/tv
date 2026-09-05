@@ -25,6 +25,6 @@ fn assert_lnb_nullable_signature<T: ILnb>() {
 
 #[test]
 fn nullable_tuner_aidl_v3_signatures_are_type_checked() {
-    // The assertions above are compile-time contracts. This runtime test keeps
-    // the crate visible to the normal Android test inventory.
+    // 上記の検査はコンパイル時契約である。この実行時テストにより、
+    // 通常のAndroidテスト一覧にこのクレートを含める。
 }
