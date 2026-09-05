@@ -17,7 +17,7 @@ pub use aidl_filter_config::{
     normalize_pes_stream_id, validate_record_index_settings, validate_ts_pid,
 };
 pub use aidl_frontend_settings::{
-    aidl_frontend_settings_to_request, aidl_scan_type_to_mode, FrontendProfileRequirement,
+    aidl_frontend_settings_to_request, aidl_scan_type_to_mode, FrontendRequestedSetting,
     FrontendSettingsRequest,
 };
 pub use aidl_method::{
