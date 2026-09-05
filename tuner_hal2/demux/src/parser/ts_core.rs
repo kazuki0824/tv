@@ -184,7 +184,7 @@ fn parse_pes_header_status(bytes: &[u8]) -> PesHeaderParseStatus {
     if bytes.len() < 6 {
         return PesHeaderParseStatus::Incomplete;
     }
-    if &bytes[..3] != [0x00, 0x00, 0x01] {
+    if bytes[..3] != [0x00, 0x00, 0x01] {
         return PesHeaderParseStatus::Malformed;
     }
     let stream_id = bytes[3];
@@ -610,11 +610,7 @@ mod pes_flush_tests {
             .push(packet_pid_for_test(0x0100), true, &first)
             .is_empty());
 
-        let packets = assembler.push(
-            packet_pid_for_test(0x0100),
-            true,
-            &[0x00, 0x00, 0x01, 0xe1],
-        );
+        let packets = assembler.push(packet_pid_for_test(0x0100), true, &[0x00, 0x00, 0x01, 0xe1]);
         assert_eq!(packets.len(), 1);
         assert_eq!(packets[0].stream_id, 0xe0);
         assert_eq!(packets[0].payload, vec![0xaa, 0xbb]);
@@ -623,9 +619,7 @@ mod pes_flush_tests {
     #[test]
     fn length_zero_non_video_pes_is_malformed() {
         let mut assembler = PesAssembler::default();
-        let private_stream = [
-            0x00, 0x00, 0x01, 0xbd, 0x00, 0x00, 0x80, 0x00, 0x00, 0xaa,
-        ];
+        let private_stream = [0x00, 0x00, 0x01, 0xbd, 0x00, 0x00, 0x80, 0x00, 0x00, 0xaa];
 
         assert!(assembler
             .push(packet_pid_for_test(0x0100), true, &private_stream)

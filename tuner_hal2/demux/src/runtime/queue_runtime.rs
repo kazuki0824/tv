@@ -287,13 +287,6 @@ impl DvrQueueDrainCommitError {
             Self::EpochCommit | Self::EpochCommitRollbackFailed => Self::EpochCommitRollbackFailed,
         }
     }
-
-    pub(crate) const fn rollback_failed(self) -> bool {
-        matches!(
-            self,
-            Self::QueueClearRollbackFailed | Self::EpochCommitRollbackFailed
-        )
-    }
 }
 
 impl Drop for QueueEpochDrainTxn {

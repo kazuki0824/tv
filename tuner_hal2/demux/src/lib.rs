@@ -42,10 +42,9 @@ impl TsInputOrigin {
 }
 
 pub use av::{
-    AvDataId, AvDataIdAllocator, AvFileIdentity, AvHandleReleaseDescriptor,
-    AvHandleReleaseOutcome, AvMediaEventDescriptor, AvMediaEventMetadata,
-    AvPayloadDeliveryOutcome, AvRuntimeBudget, AvSharedBacking, AvSharedBackingError,
-    AvSharedHandleExport, AvSlotId,
+    AvDataId, AvDataIdAllocator, AvFileIdentity, AvHandleReleaseDescriptor, AvHandleReleaseOutcome,
+    AvMediaEventDescriptor, AvMediaEventMetadata, AvPayloadDeliveryOutcome, AvRuntimeBudget,
+    AvSharedBacking, AvSharedBackingError, AvSharedHandleExport, AvSlotId,
     DEFAULT_AV_MAX_EVENT_BYTES, DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
     DEFAULT_AV_PER_FILTER_LIVE_BYTES,
 };
@@ -56,56 +55,50 @@ pub use config::{
 };
 pub use parser::packet_pipeline::{
     PacketDescramblePolicyFailure, PacketPid, PipelineAssemblySuppressionReason,
-    PipelineBoundaryReason, PipelineDeliveryAction, PipelineDiagnostic,
-    PipelineDiagnosticCounters, PipelineDiagnosticPidContext, PipelineGeneratedEvent,
-    PipelineReport, PipelineResetReport, TsPacketValidationError, ValidatedTsPacket,
+    PipelineBoundaryReason, PipelineDeliveryAction, PipelineDiagnostic, PipelineDiagnosticCounters,
+    PipelineDiagnosticPidContext, PipelineGeneratedEvent, PipelineReport, PipelineResetReport,
+    TsPacketValidationError, ValidatedTsPacket,
 };
-pub use parser::ts_core::MAX_PES_BUFFER_BYTES;
 pub use parser::record_index::{
-    supported_record_sc_index_mask, supported_record_ts_index_mask, AVC_SC_B_SLICE, AVC_SC_I_SLICE,
-    AVC_SC_P_SLICE, AVC_SC_SI_SLICE, AVC_SC_SP_SLICE, DEMUX_TS_INDEX_ADAPTATION_EXTENSION,
-    DEMUX_TS_INDEX_CHANGE_TO_EVEN_SCRAMBLED, DEMUX_TS_INDEX_CHANGE_TO_NOT_SCRAMBLED,
-    DEMUX_TS_INDEX_CHANGE_TO_ODD_SCRAMBLED, DEMUX_TS_INDEX_DISCONTINUITY,
-    DEMUX_TS_INDEX_FIRST_PACKET, DEMUX_TS_INDEX_OPCR, DEMUX_TS_INDEX_PAYLOAD_UNIT_START,
-    DEMUX_TS_INDEX_PCR, DEMUX_TS_INDEX_PRIORITY, DEMUX_TS_INDEX_PRIVATE_DATA,
-    DEMUX_TS_INDEX_RANDOM_ACCESS, DEMUX_TS_INDEX_SPLICING_POINT, HEVC_SC_AUD, HEVC_SC_BLA_N_LP,
-    HEVC_SC_BLA_W_LP, HEVC_SC_BLA_W_RADL, HEVC_SC_IDR_N_LP, HEVC_SC_IDR_W_RADL, HEVC_SC_SPS,
-    HEVC_SC_TRAIL_CRA, RECORD_SC_TYPE_NONE, RECORD_SC_TYPE_SC, RECORD_SC_TYPE_SC_AVC,
-    RECORD_SC_TYPE_SC_HEVC, RECORD_SC_TYPE_SC_VVC, TsRecordEventData, VVC_SC_AUD, VVC_SC_CRA,
+    supported_record_sc_index_mask, supported_record_ts_index_mask, TsRecordEventData,
+    AVC_SC_B_SLICE, AVC_SC_I_SLICE, AVC_SC_P_SLICE, AVC_SC_SI_SLICE, AVC_SC_SP_SLICE,
+    DEMUX_TS_INDEX_ADAPTATION_EXTENSION, DEMUX_TS_INDEX_CHANGE_TO_EVEN_SCRAMBLED,
+    DEMUX_TS_INDEX_CHANGE_TO_NOT_SCRAMBLED, DEMUX_TS_INDEX_CHANGE_TO_ODD_SCRAMBLED,
+    DEMUX_TS_INDEX_DISCONTINUITY, DEMUX_TS_INDEX_FIRST_PACKET, DEMUX_TS_INDEX_OPCR,
+    DEMUX_TS_INDEX_PAYLOAD_UNIT_START, DEMUX_TS_INDEX_PCR, DEMUX_TS_INDEX_PRIORITY,
+    DEMUX_TS_INDEX_PRIVATE_DATA, DEMUX_TS_INDEX_RANDOM_ACCESS, DEMUX_TS_INDEX_SPLICING_POINT,
+    HEVC_SC_AUD, HEVC_SC_BLA_N_LP, HEVC_SC_BLA_W_LP, HEVC_SC_BLA_W_RADL, HEVC_SC_IDR_N_LP,
+    HEVC_SC_IDR_W_RADL, HEVC_SC_SPS, HEVC_SC_TRAIL_CRA, RECORD_SC_TYPE_NONE, RECORD_SC_TYPE_SC,
+    RECORD_SC_TYPE_SC_AVC, RECORD_SC_TYPE_SC_HEVC, RECORD_SC_TYPE_SC_VVC, VVC_SC_AUD, VVC_SC_CRA,
     VVC_SC_GDR, VVC_SC_IDR_N_LP, VVC_SC_IDR_W_RADL, VVC_SC_SPS, VVC_SC_VPS,
 };
 pub use parser::sections::normalize_length_field_bits;
+pub use parser::ts_core::MAX_PES_BUFFER_BYTES;
 pub use runtime::{
-    CommittedDvrQueueCleanup, CommittedFilterQueueCleanup, DemuxStreamBoundaryRequest,
-    DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind,
-    DemuxRuntimeQuarantineRequest, DemuxRuntimeRollbackCommitRequest,
+    CommittedDvrQueueCleanup, CommittedFilterQueueCleanup, DemuxRuntime, DemuxRuntimeError,
+    DemuxRuntimeErrorKind, DemuxRuntimeQuarantineRequest, DemuxRuntimeRollbackCommitRequest,
     DemuxRuntimeRollbackRestoreRequest, DemuxRuntimeRollbackToken,
     DemuxRuntimeRollbackTokenPrepareRequest, DemuxRuntimeSnapshot, DemuxRuntimeState,
-    DemuxStreamGeneration, DvrConfigureOutcome, DvrConfigureReport, DvrConfigureStep,
-    DvrDataFormat, DvrFilterLinkRequest, DvrKind, DvrQueueCleanupCommitError,
-    DvrQueueCleanupOutcome, DvrQueueCleanupPlan, DvrQueueCleanupReport,
-    DvrQueueCleanupSkipReason, DvrQueueCleanupStep, DvrQueueCleanupStepOutcome,
-    DvrRuntimeConfigureRequest, DvrRuntimeOperationRequest,
-    DvrRuntimeRegistrationRequest, DvrRuntimeSnapshot, DvrRuntimeState, DvrStatusEvent,
-    DvrStatusIntervalRuntimeRequest, DvrStatusReportingRequest,
-    FilterAvHandleReleaseRequest,
-    FilterAvStreamTypeRuntimeRequest, FilterConfigureOutcome, FilterConfigureReport,
-    FilterConfigureStep, FilterDelayHintRuntimeRequest, FilterRuntimeConfigureRequest,
-    FilterQueueCleanupPlan, FilterQueuePayloadCleanupOutcome,
+    DemuxStreamBoundaryRequest, DemuxStreamGeneration, DvrConfigureOutcome, DvrConfigureReport,
+    DvrConfigureStep, DvrDataFormat, DvrFilterLinkRequest, DvrKind, DvrQueueCleanupCommitError,
+    DvrQueueCleanupOutcome, DvrQueueCleanupPlan, DvrQueueCleanupReport, DvrQueueCleanupSkipReason,
+    DvrQueueCleanupStep, DvrQueueCleanupStepOutcome, DvrRuntimeConfigureRequest,
+    DvrRuntimeOperationRequest, DvrRuntimeRegistrationRequest, DvrRuntimeSnapshot, DvrRuntimeState,
+    DvrStatusEvent, DvrStatusIntervalRuntimeRequest, DvrStatusReportingRequest,
+    FilterAvHandleReleaseRequest, FilterAvStreamTypeRuntimeRequest, FilterConfigureOutcome,
+    FilterConfigureReport, FilterConfigureStep, FilterDelayHintRuntimeRequest,
+    FilterQueueCleanupPlan, FilterQueuePayloadCleanupOutcome, FilterRuntimeConfigureRequest,
     FilterRuntimeOperationKind, FilterRuntimeOperationOutcome, FilterRuntimeOperationReport,
     FilterRuntimeOperationRequest, FilterRuntimeOperationSkipReason, FilterRuntimeOperationStep,
     FilterRuntimeOperationStepOutcome, FilterRuntimeRegistrationRequest, FilterRuntimeSnapshot,
     FilterRuntimeState, FilterSourceConnectRequest, FilterSourceDisconnectRequest,
-    StreamBoundaryReport, PlaybackConsumeReport, PlaybackFlushDiagnostic,
-    PlaybackQueueReadTxn, PlaybackStats, PreparedDvrFilterRelation,
-    PreparedStreamBoundary,
-    QueueDescriptorExportPlan, QueueDescriptorExportTarget, QueueDescriptorQueryError,
-    QueueDescriptorSnapshot, QueueGrantorDescriptorSnapshot, QueueRuntimeError,
-    QueueRuntimeErrorKind, RecordDvrFilterRelationState, SourceBoundaryOutcome,
-    SourceBoundaryReport, SourceBoundaryStep,
-    FilterStatusEvent, WatermarkClassifier, WatermarkDecision, WatermarkPolicy,
-    WatermarkQueueSnapshot,
-    ValidatedPacketIngressRequest,
+    FilterStatusEvent, PlaybackConsumeReport, PlaybackFlushDiagnostic, PlaybackQueueReadTxn,
+    PlaybackStats, PreparedDvrFilterRelation, PreparedStreamBoundary, QueueDescriptorExportPlan,
+    QueueDescriptorExportTarget, QueueDescriptorQueryError, QueueDescriptorSnapshot,
+    QueueGrantorDescriptorSnapshot, QueueRuntimeError, QueueRuntimeErrorKind,
+    RecordDvrFilterRelationState, SourceBoundaryOutcome, SourceBoundaryReport, SourceBoundaryStep,
+    StreamBoundaryReport, ValidatedPacketIngressRequest, WatermarkClassifier, WatermarkDecision,
+    WatermarkPolicy, WatermarkQueueSnapshot,
 };
 
 #[cfg(test)]
@@ -123,137 +116,6 @@ mod tests {
     };
     use std::os::unix::fs::MetadataExt;
     use std::{thread, time::Duration};
-
-    trait DemuxRuntimeTestMutationExt {
-        fn start_filter_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError>;
-        fn stop_filter_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError>;
-        fn flush_filter_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError>;
-        fn configure_filter_av_stream_type(
-            &mut self,
-            filter_id: i32,
-            config: AvStreamTypeConfig,
-        ) -> Result<(), DemuxRuntimeError>;
-        fn set_filter_delay_hint(
-            &mut self,
-            filter_id: i32,
-            hint: FilterDelayHint,
-        ) -> Result<(), DemuxRuntimeError>;
-        fn release_filter_av_handle(
-            &mut self,
-            filter_id: i32,
-            descriptor: AvHandleReleaseDescriptor,
-            av_data_id: i64,
-        ) -> Result<AvHandleReleaseOutcome, DemuxRuntimeError>;
-        fn set_dvr_status_check_interval(
-            &mut self,
-            dvr_id: i32,
-            interval_ms: u64,
-        ) -> Result<(), DemuxRuntimeError>;
-        fn mark_dvr_callback_unhealthy(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError>;
-        fn attach_dvr_filter(
-            &mut self,
-            dvr_id: i32,
-            filter_id: i32,
-        ) -> Result<(), DemuxRuntimeError>;
-        fn detach_dvr_filter(
-            &mut self,
-            dvr_id: i32,
-            filter_id: i32,
-        ) -> Result<(), DemuxRuntimeError>;
-        fn start_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError>;
-        fn stop_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError>;
-        fn flush_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError>;
-        fn set_filter_source_non_null(
-            &mut self,
-            sink_filter_id: i32,
-            source_filter_id: i32,
-        ) -> Result<PipelineResetReport, DemuxRuntimeError>;
-        fn remove_filter(
-            &mut self,
-            filter_id: i32,
-        ) -> Result<FilterRuntimeSnapshot, DemuxRuntimeError>;
-    }
-
-    impl DemuxRuntimeTestMutationExt for DemuxRuntime {
-        fn start_filter_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError> {
-            self.start_filter_runtime(filter_id)
-        }
-        fn stop_filter_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError> {
-            self.stop_filter_runtime(filter_id)
-        }
-        fn flush_filter_runtime(&mut self, filter_id: i32) -> Result<(), DemuxRuntimeError> {
-            self.flush_filter_runtime(filter_id)
-        }
-        fn configure_filter_av_stream_type(
-            &mut self,
-            filter_id: i32,
-            config: AvStreamTypeConfig,
-        ) -> Result<(), DemuxRuntimeError> {
-            self.configure_filter_av_stream_type(filter_id, config)
-        }
-        fn set_filter_delay_hint(
-            &mut self,
-            filter_id: i32,
-            hint: FilterDelayHint,
-        ) -> Result<(), DemuxRuntimeError> {
-            self.set_filter_delay_hint(filter_id, hint)
-        }
-        fn release_filter_av_handle(
-            &mut self,
-            filter_id: i32,
-            descriptor: AvHandleReleaseDescriptor,
-            av_data_id: i64,
-        ) -> Result<AvHandleReleaseOutcome, DemuxRuntimeError> {
-            self.release_filter_av_handle(filter_id, descriptor, av_data_id)
-        }
-        fn set_dvr_status_check_interval(
-            &mut self,
-            dvr_id: i32,
-            interval_ms: u64,
-        ) -> Result<(), DemuxRuntimeError> {
-            self.set_dvr_status_check_interval(dvr_id, interval_ms)
-        }
-        fn mark_dvr_callback_unhealthy(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
-            self.mark_dvr_callback_unhealthy(dvr_id)
-        }
-        fn attach_dvr_filter(
-            &mut self,
-            dvr_id: i32,
-            filter_id: i32,
-        ) -> Result<(), DemuxRuntimeError> {
-            self.attach_dvr_filter(dvr_id, filter_id)
-        }
-        fn detach_dvr_filter(
-            &mut self,
-            dvr_id: i32,
-            filter_id: i32,
-        ) -> Result<(), DemuxRuntimeError> {
-            self.detach_dvr_filter(dvr_id, filter_id)
-        }
-        fn start_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
-            self.start_dvr_runtime(dvr_id)
-        }
-        fn stop_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
-            self.stop_dvr_runtime(dvr_id)
-        }
-        fn flush_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), DemuxRuntimeError> {
-            self.flush_dvr_runtime(dvr_id)
-        }
-        fn set_filter_source_non_null(
-            &mut self,
-            sink_filter_id: i32,
-            source_filter_id: i32,
-        ) -> Result<PipelineResetReport, DemuxRuntimeError> {
-            self.set_filter_source_non_null(sink_filter_id, source_filter_id)
-                .1
-        }
-        fn remove_filter(
-            &mut self,
-            filter_id: i32,
-        ) -> Result<FilterRuntimeSnapshot, DemuxRuntimeError> {
-            self.remove_filter(filter_id)
-        }
-    }
 
     fn packet_pid(pid: i32) -> PacketPid {
         PacketPid::from_config_pid(ConfigInputPid::validate_tpid(pid).expect("valid test pid"))
@@ -368,11 +230,7 @@ mod tests {
         packet
     }
 
-    fn pcr_payload_packet(
-        pid: u16,
-        continuity_counter: u8,
-        pcr_base_90khz: u64,
-    ) -> [u8; 188] {
+    fn pcr_payload_packet(pid: u16, continuity_counter: u8, pcr_base_90khz: u64) -> [u8; 188] {
         let mut packet = pcr_packet(pid, continuity_counter, pcr_base_90khz);
         packet[3] = 0x30 | (continuity_counter & 0x0f);
         packet
@@ -498,7 +356,9 @@ mod tests {
         );
         assert_eq!(report.accepted_packets, 1);
         assert!(report.generated_events.is_empty());
-        assert!(demux.pcr_clock_time_90khz(filter_id).is_some_and(|value| value >= base));
+        assert!(demux
+            .pcr_clock_time_90khz(filter_id)
+            .is_some_and(|value| value >= base));
 
         demux.flush_filter_runtime(filter_id).unwrap();
         assert_eq!(demux.pcr_clock_time_90khz(filter_id), None);
@@ -613,9 +473,7 @@ mod tests {
         demux.start_filter_runtime(filter_id).unwrap();
         let first = pcr_payload_packet(pid as u16, 0, 90_000);
         demux.push_ts_packet_from_origin(&first, TsInputOrigin::frontend(1));
-        let clean_anchor = demux
-            .pcr_anchor_observation_for_test(filter_id)
-            .unwrap();
+        let clean_anchor = demux.pcr_anchor_observation_for_test(filter_id).unwrap();
 
         demux.push_ts_packet_from_origin(&first, TsInputOrigin::frontend(1));
         assert_eq!(
@@ -712,10 +570,7 @@ mod tests {
         ] {
             demux
                 .register_filter(open_filter_runtime_with_queue(
-                    filter_id,
-                    1,
-                    open_type,
-                    None,
+                    filter_id, 1, open_type, None,
                 ))
                 .unwrap();
             demux
@@ -937,12 +792,8 @@ mod tests {
 
     #[test]
     fn undefined_ts_uses_the_same_raw_pipeline_kind_as_ts_linkcap_sinks() {
-        let filter = DemuxRuntime::open_filter_runtime_typed(
-            71,
-            1,
-            FilterOpenType::TsUndefined,
-            None,
-        );
+        let filter =
+            DemuxRuntime::open_filter_runtime_typed(71, 1, FilterOpenType::TsUndefined, None);
         assert_eq!(filter.snapshot().open_type, FilterOpenType::TsUndefined);
         assert_eq!(filter.open_kind(), PipelineOpenKind::Raw);
     }
@@ -1051,7 +902,10 @@ mod tests {
         demux.flush_filter_runtime(54).unwrap();
         let new_source_generation = demux.filter(54).unwrap().generation();
         assert_eq!(new_source_generation, old_source_generation + 1);
-        assert_eq!(demux.filter(55).unwrap().state(), FilterRuntimeState::Started);
+        assert_eq!(
+            demux.filter(55).unwrap().state(),
+            FilterRuntimeState::Started
+        );
         assert_eq!(
             demux.filter(55).unwrap().snapshot().source,
             FilterSource::SourceFilter {
@@ -1072,7 +926,10 @@ mod tests {
         );
 
         demux.remove_filter(54).unwrap();
-        assert_eq!(demux.filter(55).unwrap().state(), FilterRuntimeState::Started);
+        assert_eq!(
+            demux.filter(55).unwrap().state(),
+            FilterRuntimeState::Started
+        );
         assert_eq!(
             demux.filter(55).unwrap().snapshot().source,
             FilterSource::DemuxInput
@@ -1197,7 +1054,10 @@ mod tests {
         let error = demux.set_filter_source_non_null(59, 60).1.unwrap_err();
 
         assert_eq!(error.kind, DemuxRuntimeErrorKind::SelfReference);
-        assert_eq!(demux.filter(59).unwrap().snapshot().source, FilterSource::DemuxInput);
+        assert_eq!(
+            demux.filter(59).unwrap().snapshot().source,
+            FilterSource::DemuxInput
+        );
     }
 
     #[test]
@@ -1222,7 +1082,10 @@ mod tests {
         let error = demux.flush_filter_runtime(63).unwrap_err();
 
         assert_eq!(error.kind, DemuxRuntimeErrorKind::GenerationExhausted);
-        assert_eq!(demux.filter(63).unwrap().state(), FilterRuntimeState::Failed);
+        assert_eq!(
+            demux.filter(63).unwrap().state(),
+            FilterRuntimeState::Failed
+        );
         assert_eq!(
             demux.filter(64).unwrap().state(),
             FilterRuntimeState::Configured
@@ -2299,8 +2162,7 @@ mod tests {
         demux.start_dvr_runtime(89).unwrap();
 
         let first = raw_ts_packet(0x0100, 0, &[1, 2, 3, 4]);
-        let first_report =
-            demux.push_ts_packet_from_origin(&first, TsInputOrigin::frontend(1));
+        let first_report = demux.push_ts_packet_from_origin(&first, TsInputOrigin::frontend(1));
         assert!(first_report.generated_events.iter().any(|event| matches!(
             event,
             PipelineGeneratedEvent::RecordIndex { filter_id: 88, data }
@@ -2311,14 +2173,16 @@ mod tests {
         collision[20] ^= 0x01;
         let collision_report =
             demux.push_ts_packet_from_origin(&collision, TsInputOrigin::frontend(1));
-        assert!(collision_report.generated_events.iter().all(|event| !matches!(
-            event,
-            PipelineGeneratedEvent::RecordIndex { filter_id: 88, .. }
-        )));
+        assert!(collision_report
+            .generated_events
+            .iter()
+            .all(|event| !matches!(
+                event,
+                PipelineGeneratedEvent::RecordIndex { filter_id: 88, .. }
+            )));
 
         let third = raw_ts_packet(0x0100, 1, &[5, 6, 7, 8]);
-        let third_report =
-            demux.push_ts_packet_from_origin(&third, TsInputOrigin::frontend(1));
+        let third_report = demux.push_ts_packet_from_origin(&third, TsInputOrigin::frontend(1));
         assert!(third_report.generated_events.iter().any(|event| matches!(
             event,
             PipelineGeneratedEvent::RecordIndex { filter_id: 88, data }
@@ -2348,8 +2212,7 @@ mod tests {
                     tpid: Some(0x0100),
                     raw: false,
                     record_index: Some(RecordIndexSettings {
-                        ts_index_mask: DEMUX_TS_INDEX_PCR
-                            | DEMUX_TS_INDEX_CHANGE_TO_EVEN_SCRAMBLED,
+                        ts_index_mask: DEMUX_TS_INDEX_PCR | DEMUX_TS_INDEX_CHANGE_TO_EVEN_SCRAMBLED,
                         sc_index_type: RECORD_SC_TYPE_NONE,
                         sc_index_mask: 0,
                     }),
@@ -2373,11 +2236,14 @@ mod tests {
         let adaptation_only = pcr_packet(0x0100, 0, 90_000);
         let adaptation_report =
             demux.push_ts_packet_from_origin(&adaptation_only, TsInputOrigin::frontend(1));
-        assert!(adaptation_report.generated_events.iter().any(|event| matches!(
-            event,
-            PipelineGeneratedEvent::RecordIndex { filter_id: 90, data }
-                if data.byte_number == 0 && data.ts_index_mask == DEMUX_TS_INDEX_PCR
-        )));
+        assert!(adaptation_report
+            .generated_events
+            .iter()
+            .any(|event| matches!(
+                event,
+                PipelineGeneratedEvent::RecordIndex { filter_id: 90, data }
+                    if data.byte_number == 0 && data.ts_index_mask == DEMUX_TS_INDEX_PCR
+            )));
 
         let mut scrambled = raw_ts_packet(0x0100, 0, &[1, 2, 3, 4]);
         scrambled[3] = 0x90;
@@ -2386,12 +2252,15 @@ mod tests {
         assert!(scrambled_report
             .assembly_suppression_reasons
             .contains(&PipelineAssemblySuppressionReason::KeylessScrambledWithoutDescrambler));
-        assert!(scrambled_report.generated_events.iter().any(|event| matches!(
-            event,
-            PipelineGeneratedEvent::RecordIndex { filter_id: 90, data }
-                if data.byte_number == 188
-                    && data.ts_index_mask == DEMUX_TS_INDEX_CHANGE_TO_EVEN_SCRAMBLED
-        )));
+        assert!(scrambled_report
+            .generated_events
+            .iter()
+            .any(|event| matches!(
+                event,
+                PipelineGeneratedEvent::RecordIndex { filter_id: 90, data }
+                    if data.byte_number == 188
+                        && data.ts_index_mask == DEMUX_TS_INDEX_CHANGE_TO_EVEN_SCRAMBLED
+            )));
         assert_eq!(
             demux.read_record_dvr_queue_bytes_for_test(91).unwrap(),
             [adaptation_only.to_vec(), scrambled.to_vec()].concat()
@@ -2448,10 +2317,10 @@ mod tests {
             }
         ));
         assert!(demux.dvr(37).unwrap().snapshot().pending_overflow);
-        assert!(report.generated_events.iter().all(|event| !matches!(
-            event,
-            PipelineGeneratedEvent::RecordIndex { .. }
-        )));
+        assert!(report
+            .generated_events
+            .iter()
+            .all(|event| !matches!(event, PipelineGeneratedEvent::RecordIndex { .. })));
         demux.stop_dvr_runtime(37).unwrap();
         demux.flush_dvr_runtime(37).unwrap();
         assert!(!demux.dvr(37).unwrap().snapshot().pending_overflow);
@@ -2467,12 +2336,7 @@ mod tests {
         assert_eq!(report.accepted_packets, 0);
         assert_eq!(report.dropped_packets, 1);
         assert_eq!(report.malformed_packets, 1);
-        assert_eq!(
-            demux
-                .pipeline_diagnostic_counters()
-                .malformed_ts_packets,
-            1
-        );
+        assert_eq!(demux.pipeline_diagnostic_counters().malformed_ts_packets, 1);
         assert!(report
             .drop_reasons
             .contains(&crate::packet_pipeline::PipelineDropReason::MalformedPacket));
@@ -3273,15 +3137,16 @@ mod tests {
             .unwrap();
         demux.create_filter_queue(72).unwrap();
 
-        assert_eq!(demux.take_pending_filter_start_id(72).unwrap(), None);
+        assert_eq!(demux.pending_filter_start_id(72).unwrap(), None);
         demux.start_filter_runtime(72).unwrap();
         demux.stop_filter_runtime(72).unwrap();
         FilterConfigureTxn::new(72)
             .configure(&mut demux, PipelineOpenKind::Raw, config.clone())
             .1
             .unwrap();
-        assert_eq!(demux.take_pending_filter_start_id(72).unwrap(), Some(1));
-        assert_eq!(demux.take_pending_filter_start_id(72).unwrap(), None);
+        assert_eq!(demux.pending_filter_start_id(72).unwrap(), Some(1));
+        assert!(demux.commit_pending_filter_start_id(72, 1).unwrap());
+        assert_eq!(demux.pending_filter_start_id(72).unwrap(), None);
 
         demux.start_filter_runtime(72).unwrap();
         demux.stop_filter_runtime(72).unwrap();
@@ -3289,7 +3154,8 @@ mod tests {
             .configure(&mut demux, PipelineOpenKind::Raw, config)
             .1
             .unwrap();
-        assert_eq!(demux.take_pending_filter_start_id(72).unwrap(), Some(2));
+        assert_eq!(demux.pending_filter_start_id(72).unwrap(), Some(2));
+        assert!(demux.commit_pending_filter_start_id(72, 2).unwrap());
 
         demux.start_filter_runtime(72).unwrap();
         demux.stop_filter_runtime(72).unwrap();
@@ -3307,7 +3173,7 @@ mod tests {
             .unwrap();
         demux.start_filter_runtime(72).unwrap();
         demux.flush_filter_runtime(72).unwrap();
-        assert_eq!(demux.take_pending_filter_start_id(72).unwrap(), None);
+        assert_eq!(demux.pending_filter_start_id(72).unwrap(), None);
     }
 
     #[test]
@@ -3417,11 +3283,7 @@ mod tests {
         let mut continuation = first_frame[split_at..].to_vec();
         continuation.extend_from_slice(&second_frame);
         let associated = demux.push_ts_packet_from_origin(
-            &pes_start_packet(
-                pid as u16,
-                1,
-                &bounded_audio_pes(&continuation, None),
-            ),
+            &pes_start_packet(pid as u16, 1, &bounded_audio_pes(&continuation, None)),
             TsInputOrigin::frontend(1),
         );
         let descriptors = av_descriptors(&associated, filter_id);
@@ -3478,11 +3340,7 @@ mod tests {
         payload.extend_from_slice(&frame);
 
         let events = demux.push_ts_packet_from_origin(
-            &pes_start_packet(
-                pid as u16,
-                0,
-                &bounded_audio_pes(&payload, Some(90_000)),
-            ),
+            &pes_start_packet(pid as u16, 0, &bounded_audio_pes(&payload, Some(90_000))),
             TsInputOrigin::frontend(1),
         );
         let descriptors = av_descriptors(&events, filter_id);
@@ -3525,11 +3383,7 @@ mod tests {
         let mut continuation = first_frame[split_at..].to_vec();
         continuation.extend_from_slice(&second_frame);
         let still_deferred = demux.push_ts_packet_from_origin(
-            &pes_start_packet(
-                pid as u16,
-                1,
-                &bounded_audio_pes(&continuation, None),
-            ),
+            &pes_start_packet(pid as u16, 1, &bounded_audio_pes(&continuation, None)),
             TsInputOrigin::frontend(1),
         );
         assert!(av_descriptors(&still_deferred, filter_id).is_empty());
@@ -3864,11 +3718,7 @@ mod tests {
         );
         assert_eq!(
             demux
-                .release_filter_av_handle(
-                    21,
-                    AvHandleReleaseDescriptor::Empty,
-                    stale_data_id.0,
-                )
+                .release_filter_av_handle(21, AvHandleReleaseDescriptor::Empty, stale_data_id.0,)
                 .unwrap(),
             AvHandleReleaseOutcome::SlotReleased {
                 data_id: stale_data_id
@@ -3876,11 +3726,7 @@ mod tests {
         );
         assert_eq!(
             demux
-                .release_filter_av_handle(
-                    21,
-                    AvHandleReleaseDescriptor::Empty,
-                    stale_data_id.0,
-                )
+                .release_filter_av_handle(21, AvHandleReleaseDescriptor::Empty, stale_data_id.0,)
                 .unwrap(),
             AvHandleReleaseOutcome::UnknownDataId
         );

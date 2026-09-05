@@ -88,6 +88,11 @@ impl<'a> TsPacketView<'a> {
 pub struct PacketPid(TransportStreamPid);
 
 impl PacketPid {
+    #[cfg(test)]
+    fn from_test_pid(pid: i32) -> Self {
+        Self(TransportStreamPid::validate_i32(pid).expect("valid test TS PID"))
+    }
+
     pub const fn to_i32_for_aidl_boundary(self) -> i32 {
         self.0.to_i32_for_aidl_boundary()
     }
@@ -1119,8 +1124,10 @@ impl PacketPipeline {
     ) -> PipelineReport {
         let view = packet.view();
         let pid = packet.pid();
-        let mut report = PipelineReport::default();
-        report.accepted_packets = 1;
+        let mut report = PipelineReport {
+            accepted_packets: 1,
+            ..PipelineReport::default()
+        };
         report
             .delivery_actions
             .extend(self.plan_packet_delivery(pid, origin, filters));
@@ -1292,7 +1299,7 @@ impl PacketPipeline {
                         report.drop_reasons.push(PipelineDropReason::AssemblyDrop);
                         report
                             .diagnostics
-                            .push(PipelineDiagnostic::SectionAssemblyDrop { pid: pid });
+                            .push(PipelineDiagnostic::SectionAssemblyDrop { pid });
                     }
                     for section in outcome.sections {
                         report
@@ -2186,8 +2193,8 @@ mod adaptation_payload_boundary_tests {
         let origin = crate::TsInputOrigin::frontend(1);
         let pid = 0x0100u16;
         let other_pid = 0x0101i32;
-        let pid_key = PacketPid::from_validated_pid(pid as i32);
-        let other_pid_key = PacketPid::from_validated_pid(other_pid);
+        let pid_key = PacketPid::from_test_pid(pid as i32);
+        let other_pid_key = PacketPid::from_test_pid(other_pid);
         let mut pipeline = PacketPipeline::default();
         pipeline.test_seed_section_for_pid(origin, pid_key, 10);
         pipeline.test_seed_section_for_pid(origin, other_pid_key, 12);
@@ -2214,8 +2221,8 @@ mod adaptation_payload_boundary_tests {
         let origin = crate::TsInputOrigin::frontend(1);
         let pid = 0x0100u16;
         let other_pid = 0x0101i32;
-        let pid_key = PacketPid::from_validated_pid(pid as i32);
-        let other_pid_key = PacketPid::from_validated_pid(other_pid);
+        let pid_key = PacketPid::from_test_pid(pid as i32);
+        let other_pid_key = PacketPid::from_test_pid(other_pid);
         let mut pipeline = PacketPipeline::default();
         pipeline.test_seed_pes_for_pid(origin, pid_key, 11);
         pipeline.test_seed_pes_for_pid(origin, other_pid_key, 13);
@@ -2240,8 +2247,8 @@ mod adaptation_payload_boundary_tests {
         let origin = crate::TsInputOrigin::frontend(1);
         let pid = 0x0100u16;
         let other_pid = 0x0101i32;
-        let pid_key = PacketPid::from_validated_pid(pid as i32);
-        let other_pid_key = PacketPid::from_validated_pid(other_pid);
+        let pid_key = PacketPid::from_test_pid(pid as i32);
+        let other_pid_key = PacketPid::from_test_pid(other_pid);
         let mut pipeline = PacketPipeline::default();
         pipeline.test_seed_section_for_pid(origin, pid_key, 10);
         pipeline.test_seed_pes_for_pid(origin, pid_key, 11);
@@ -2676,40 +2683,40 @@ mod resync_boundary_tests {
             source_filter_id: 42,
             source_filter_generation: 3,
         };
-        pipeline.test_seed_section_for_pid(frontend, PacketPid::from_validated_pid(0x0100), 7);
-        pipeline.test_seed_section_for_pid(source, PacketPid::from_validated_pid(0x0100), 7);
-        pipeline.test_seed_pes_for_pid(frontend, PacketPid::from_validated_pid(0x0100), 8);
-        pipeline.test_seed_pes_for_pid(source, PacketPid::from_validated_pid(0x0100), 8);
+        pipeline.test_seed_section_for_pid(frontend, PacketPid::from_test_pid(0x0100), 7);
+        pipeline.test_seed_section_for_pid(source, PacketPid::from_test_pid(0x0100), 7);
+        pipeline.test_seed_pes_for_pid(frontend, PacketPid::from_test_pid(0x0100), 8);
+        pipeline.test_seed_pes_for_pid(source, PacketPid::from_test_pid(0x0100), 8);
 
         pipeline.remove_section_for_filter_ids_origin_pid(
             source,
-            PacketPid::from_validated_pid(0x0100),
+            PacketPid::from_test_pid(0x0100),
             &[7],
         );
         pipeline.remove_pes_for_filter_ids_origin_pid(
             source,
-            PacketPid::from_validated_pid(0x0100),
+            PacketPid::from_test_pid(0x0100),
             &[8],
         );
 
         assert!(pipeline.section_assemblers.contains_key(&(
             frontend,
-            PacketPid::from_validated_pid(0x0100),
+            PacketPid::from_test_pid(0x0100),
             7
         )));
         assert!(!pipeline.section_assemblers.contains_key(&(
             source,
-            PacketPid::from_validated_pid(0x0100),
+            PacketPid::from_test_pid(0x0100),
             7
         )));
         assert!(pipeline.pes_assemblers.contains_key(&(
             frontend,
-            PacketPid::from_validated_pid(0x0100),
+            PacketPid::from_test_pid(0x0100),
             8
         )));
         assert!(!pipeline.pes_assemblers.contains_key(&(
             source,
-            PacketPid::from_validated_pid(0x0100),
+            PacketPid::from_test_pid(0x0100),
             8
         )));
     }
@@ -2722,47 +2729,47 @@ mod resync_boundary_tests {
             source_filter_id: 42,
             source_filter_generation: 0,
         };
-        pipeline.test_seed_section_for_pid(frontend, PacketPid::from_validated_pid(0x0100), 7);
-        pipeline.test_seed_section_for_pid(source, PacketPid::from_validated_pid(0x0100), 7);
-        pipeline.test_seed_pes_for_pid(frontend, PacketPid::from_validated_pid(0x0100), 8);
-        pipeline.test_seed_pes_for_pid(source, PacketPid::from_validated_pid(0x0100), 8);
+        pipeline.test_seed_section_for_pid(frontend, PacketPid::from_test_pid(0x0100), 7);
+        pipeline.test_seed_section_for_pid(source, PacketPid::from_test_pid(0x0100), 7);
+        pipeline.test_seed_pes_for_pid(frontend, PacketPid::from_test_pid(0x0100), 8);
+        pipeline.test_seed_pes_for_pid(source, PacketPid::from_test_pid(0x0100), 8);
         assert_eq!(
-            pipeline.bump_section_generation(frontend, PacketPid::from_validated_pid(0x0100)),
+            pipeline.bump_section_generation(frontend, PacketPid::from_test_pid(0x0100)),
             Some(1)
         );
         assert_eq!(
-            pipeline.bump_section_generation(source, PacketPid::from_validated_pid(0x0100)),
+            pipeline.bump_section_generation(source, PacketPid::from_test_pid(0x0100)),
             Some(1)
         );
 
-        pipeline.reset_assembly_for_origin_pid(source, PacketPid::from_validated_pid(0x0100));
+        pipeline.reset_assembly_for_origin_pid(source, PacketPid::from_test_pid(0x0100));
 
         assert!(pipeline.section_assemblers.contains_key(&(
             frontend,
-            PacketPid::from_validated_pid(0x0100),
+            PacketPid::from_test_pid(0x0100),
             7
         )));
         assert!(!pipeline.section_assemblers.contains_key(&(
             source,
-            PacketPid::from_validated_pid(0x0100),
+            PacketPid::from_test_pid(0x0100),
             7
         )));
         assert!(pipeline.pes_assemblers.contains_key(&(
             frontend,
-            PacketPid::from_validated_pid(0x0100),
+            PacketPid::from_test_pid(0x0100),
             8
         )));
         assert!(!pipeline.pes_assemblers.contains_key(&(
             source,
-            PacketPid::from_validated_pid(0x0100),
+            PacketPid::from_test_pid(0x0100),
             8
         )));
         assert_eq!(
-            pipeline.current_section_generation(frontend, PacketPid::from_validated_pid(0x0100)),
+            pipeline.current_section_generation(frontend, PacketPid::from_test_pid(0x0100)),
             1
         );
         assert_eq!(
-            pipeline.current_section_generation(source, PacketPid::from_validated_pid(0x0100)),
+            pipeline.current_section_generation(source, PacketPid::from_test_pid(0x0100)),
             0
         );
     }
@@ -3135,8 +3142,8 @@ mod keyless_scrambled_policy_tests {
         ];
         let origin = crate::TsInputOrigin::frontend(1);
         let mut pipeline = PacketPipeline::default();
-        pipeline.test_seed_section_for_pid(origin, PacketPid::from_validated_pid(0x0100), 2);
-        pipeline.test_seed_pes_for_pid(origin, PacketPid::from_validated_pid(0x0100), 3);
+        pipeline.test_seed_section_for_pid(origin, PacketPid::from_test_pid(0x0100), 2);
+        pipeline.test_seed_pes_for_pid(origin, PacketPid::from_test_pid(0x0100), 3);
 
         let report = pipeline.plan_and_assemble_ts_packet_report_after_preflight(
             &validated,
@@ -3150,12 +3157,12 @@ mod keyless_scrambled_policy_tests {
             .contains(&PipelineAssemblySuppressionReason::KeylessScrambledWithoutDescrambler));
         assert!(!pipeline.section_assemblers.contains_key(&(
             origin,
-            PacketPid::from_validated_pid(0x0100),
+            PacketPid::from_test_pid(0x0100),
             2
         )));
         assert!(!pipeline.pes_assemblers.contains_key(&(
             origin,
-            PacketPid::from_validated_pid(0x0100),
+            PacketPid::from_test_pid(0x0100),
             3
         )));
     }
