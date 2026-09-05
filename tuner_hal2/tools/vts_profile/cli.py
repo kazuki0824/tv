@@ -5,6 +5,7 @@ import os
 import sys
 from pathlib import Path
 
+from .compiler import validated_xml
 from .device import resolve_device
 from .install import install_device
 from .integration import write_product_artifacts
@@ -23,14 +24,14 @@ from .model import (
     validate_profile,
 )
 from .region import resolve_region, select_candidate
-from .render import output_filename, render_xml
+from .render import output_filename
 from .resource_closure import (
     DEFAULT_CAPABILITY_SOURCE,
     DEFAULT_PES_SOURCE,
     DEFAULT_PLAYBACK_SOURCE,
     validate_resource_closure,
 )
-from .schema import checkout_commit, selected_xsd, validate_xml
+from .schema import checkout_commit
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_PROFILE = _REPO_ROOT / "tuner_hal2/config/vts_environment_profile.json"
@@ -379,17 +380,21 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
 def cmd_compile(args: argparse.Namespace) -> int:
     profile = load_profile(Path(args.profile))
-    validate_profile(profile, require_resolved=True)
-    _validate_closure(profile, args)
-    xml = render_xml(profile)
     hardware_interfaces_root = _hardware_interfaces_root(args)
     if hardware_interfaces_root is None:
         raise ProfileError(
             "cannot locate hardware/interfaces checkout; initialize the Android build environment "
             "or pass --hardware-interfaces-root"
         )
-    xsd = selected_xsd(hardware_interfaces_root, profile["vts"]["source_ref"])
-    validate_xml(xml, xsd, xmllint=args.xmllint)
+    xml = validated_xml(
+        profile,
+        hardware_interfaces_root=hardware_interfaces_root,
+        capability_source=Path(args.capability_source),
+        pes_source=Path(args.pes_source),
+        playback_source=Path(args.playback_source),
+        rustc=args.rustc,
+        xmllint=args.xmllint,
+    )
     if args.product_integration_dir:
         if args.output:
             raise ProfileError("--output cannot be combined with --product-integration-dir")
@@ -462,11 +467,23 @@ def cmd_resolve_device(args: argparse.Namespace) -> int:
 
 
 def cmd_install_device(args: argparse.Namespace) -> int:
+    hardware_interfaces_root = _hardware_interfaces_root(args)
+    if hardware_interfaces_root is None:
+        raise ProfileError(
+            "cannot locate hardware/interfaces checkout; initialize the Android build environment "
+            "or pass --hardware-interfaces-root"
+        )
     remote_path = install_device(
         Path(args.profile),
+        hardware_interfaces_root=hardware_interfaces_root,
         adb=args.adb,
         serial=args.serial,
         artifact=Path(args.artifact) if args.artifact else None,
+        capability_source=Path(args.capability_source),
+        pes_source=Path(args.pes_source),
+        playback_source=Path(args.playback_source),
+        rustc=args.rustc,
+        xmllint=args.xmllint,
     )
     print(remote_path)
     return 0
@@ -547,7 +564,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--dataset",
         help=(
             "optional explicit region dataset; when omitted, ISDBT uses the "
-            "repository snapshot after resolving the region input through coordinates"
+            "built-in live INA4N descriptor and nationwide transmitter loader"
         ),
     )
     region.add_argument("-k", "--transmitter-candidates", type=int)
@@ -573,6 +590,9 @@ def build_parser() -> argparse.ArgumentParser:
     compile_cmd.set_defaults(func=cmd_compile)
     install = sub.add_parser("install-device")
     _add_profile_arg(install)
+    _add_closure_args(install)
+    install.add_argument("--hardware-interfaces-root")
+    install.add_argument("--xmllint", default="xmllint")
     install.add_argument("--adb", default="adb")
     install.add_argument("--serial")
     install.add_argument(

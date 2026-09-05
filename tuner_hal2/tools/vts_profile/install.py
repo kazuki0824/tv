@@ -3,8 +3,14 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from .model import ProfileError, load_profile, validate_profile
+from .compiler import validated_xml
+from .model import ProfileError, load_profile
 from .render import output_filename
+from .resource_closure import (
+    DEFAULT_CAPABILITY_SOURCE,
+    DEFAULT_PES_SOURCE,
+    DEFAULT_PLAYBACK_SOURCE,
+)
 
 DEFAULT_COMPILED_DIR = Path("out/vts")
 VENDOR_CONFIG_DIR = "/vendor/etc"
@@ -59,12 +65,26 @@ def _run_adb_bytes(adb: str, serial: str | None, *args: str) -> bytes:
 def install_device(
     profile_path: Path,
     *,
+    hardware_interfaces_root: Path,
     adb: str = "adb",
     serial: str | None = None,
     artifact: Path | None = None,
+    capability_source: Path = DEFAULT_CAPABILITY_SOURCE,
+    pes_source: Path = DEFAULT_PES_SOURCE,
+    playback_source: Path = DEFAULT_PLAYBACK_SOURCE,
+    rustc: str = "rustc",
+    xmllint: str = "xmllint",
 ) -> str:
     profile = load_profile(profile_path)
-    validate_profile(profile, require_resolved=True)
+    expected = validated_xml(
+        profile,
+        hardware_interfaces_root=hardware_interfaces_root,
+        capability_source=capability_source,
+        pes_source=pes_source,
+        playback_source=playback_source,
+        rustc=rustc,
+        xmllint=xmllint,
+    ).encode("utf-8")
     filename = output_filename(profile)
     artifact_path = artifact if artifact is not None else DEFAULT_COMPILED_DIR / filename
     if artifact_path.name != filename:
@@ -72,9 +92,14 @@ def install_device(
             f"compiled artifact filename must be {filename}, got {artifact_path.name}"
         )
     try:
-        expected = artifact_path.read_bytes()
+        compiled = artifact_path.read_bytes()
     except OSError as exc:
         raise ProfileError(f"failed to read compiled VTS artifact {artifact_path}: {exc}") from exc
+    if compiled != expected:
+        raise ProfileError(
+            "compiled VTS artifact does not match the current fully validated profile; "
+            "run compile again before install-device"
+        )
 
     expected_variant = str(profile["vts"].get("variant", ""))
     actual_variant = _run_adb_text(
