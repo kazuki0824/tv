@@ -22,6 +22,12 @@ fn validate_frontend_requested_settings_against_product_profile(
 ) -> Result<(), HalError> {
     for setting in requested_settings {
         let unsupported = match setting {
+            FrontendRequestedSetting::IsdbtBandwidthAuto
+            | FrontendRequestedSetting::IsdbtModeAuto
+            | FrontendRequestedSetting::IsdbtGuardIntervalAuto
+            | FrontendRequestedSetting::IsdbtLayerModulationAuto { .. }
+            | FrontendRequestedSetting::IsdbtLayerCoderateAuto { .. }
+            | FrontendRequestedSetting::IsdbtLayerTimeInterleaveAuto { .. } => None,
             FrontendRequestedSetting::IsdbtExplicitBandwidth {
                 bandwidth_hz: 6_000_000,
             } => None,
@@ -509,12 +515,25 @@ mod tests {
     }
 
     #[test]
+    fn isdbt_auto_observations_are_supported_by_product_profile() {
+        assert!(validate_frontend_requested_settings_against_product_profile(&[
+            FrontendRequestedSetting::IsdbtBandwidthAuto,
+            FrontendRequestedSetting::IsdbtModeAuto,
+            FrontendRequestedSetting::IsdbtGuardIntervalAuto,
+            FrontendRequestedSetting::IsdbtLayerModulationAuto { layer_index: 0 },
+            FrontendRequestedSetting::IsdbtLayerCoderateAuto { layer_index: 0 },
+            FrontendRequestedSetting::IsdbtLayerTimeInterleaveAuto { layer_index: 0 },
+        ])
+        .is_ok());
+    }
+
+    #[test]
     fn semantic_invalid_precedes_product_unavailable() {
         let request = isdbt_request_with_layer_count(4);
         let error = validate_frontend_begin_contract(
             &entry(FrontendBackendKind::Px4CharDevice, FrontendSystem::IsdbT, 0, 0),
             &request,
-            &[FrontendRequestedSetting::IsdbtExplicitMode { value: 1 }],
+            &[FrontendRequestedSetting::IsdbtExplicitMode { value: 2 }],
             None,
         )
         .unwrap_err();
@@ -531,7 +550,7 @@ mod tests {
         let error = validate_frontend_begin_contract(
             &entry(FrontendBackendKind::Px4CharDevice, FrontendSystem::IsdbT, 0, 0),
             &request,
-            &[FrontendRequestedSetting::IsdbtExplicitMode { value: 1 }],
+            &[FrontendRequestedSetting::IsdbtExplicitMode { value: 2 }],
             None,
         )
         .unwrap_err();
