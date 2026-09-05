@@ -77,9 +77,7 @@ impl AvRuntimeBudget {
     }
 
     fn release_after_owner_drop(&self, bytes: usize) {
-        if self.release(bytes) {
-            return;
-        }
+        let _ = self.release(bytes);
         // Dropから公開エラーは返せない。release()が台帳をcorruptへ固定し、
         // 後続claimをfail-closedにする。
     }
@@ -286,10 +284,7 @@ impl AvSharedBacking {
     }
 
     pub fn with_layout(slot_count: usize, slot_size: usize) -> Self {
-        let per_filter_live_bytes = match slot_count.checked_mul(slot_size) {
-            Some(bytes) => bytes,
-            None => 0,
-        };
+        let per_filter_live_bytes = slot_count.checked_mul(slot_size).unwrap_or_default();
         Self::with_profile_limits(
             slot_count,
             slot_size,
@@ -760,10 +755,8 @@ impl AvSharedBacking {
                     }
                     self.event_local_allocations.remove(&data_id);
                     self.event_local_bytes = next_live_bytes;
-                } else {
-                    if !self.release_slot(data_id) {
-                        return AvHandleReleaseOutcome::RegistryFailure;
-                    }
+                } else if !self.release_slot(data_id) {
+                    return AvHandleReleaseOutcome::RegistryFailure;
                 }
             }
             _ => {}

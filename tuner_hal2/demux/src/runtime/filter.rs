@@ -9,10 +9,10 @@ use crate::config::{
 use crate::packet_pipeline::{
     FilterPipelineConfig, PacketPid, PipelineFilterView, PipelineOpenKind,
 };
-use crate::sections::{parse_raw_section_framing, parse_section_header, section_crc_valid};
 use crate::runtime::{
     WatermarkClassifier, WatermarkDecision, WatermarkPolicy, WatermarkQueueSnapshot,
 };
+use crate::sections::{parse_raw_section_framing, parse_section_header, section_crc_valid};
 use crate::ts_core::PesPacket;
 use crate::TsInputOrigin;
 use std::time::{Duration, Instant};
@@ -144,9 +144,7 @@ fn mark_section_delivered(delivered: &mut [u64; 4], section_number: u8) {
 }
 
 fn all_sections_delivered(delivered: &[u64; 4], last_section_number: u8) -> bool {
-    (0..=last_section_number).all(|section_number| {
-        section_was_delivered(delivered, section_number)
-    })
+    (0..=last_section_number).all(|section_number| section_was_delivered(delivered, section_number))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -404,6 +402,7 @@ impl FilterRuntime {
         }
     }
 
+    #[cfg(test)]
     pub fn restore(&mut self, snapshot: FilterRuntimeSnapshot) {
         self.state = snapshot.state;
         self.generation = snapshot.generation;
@@ -454,14 +453,6 @@ impl FilterRuntime {
         self.delivery_not_before = None;
         self.last_watermark_status = None;
         self.state = FilterRuntimeState::Configured;
-    }
-
-    pub(crate) fn configured_matches(
-        &self,
-        config: &FilterPipelineConfig,
-        pes_stream_id: Option<i32>,
-    ) -> bool {
-        self.pipeline_config.as_ref() == Some(config) && self.pes_stream_id == pes_stream_id
     }
 
     pub(crate) fn set_section_runtime_config(&mut self, config: Option<SectionRuntimeConfig>) {
@@ -717,10 +708,12 @@ impl FilterRuntime {
         Some(status)
     }
 
+    #[cfg(test)]
     pub const fn source_relation_generation(&self) -> u64 {
         self.source_relation_generation
     }
 
+    #[cfg(test)]
     pub(crate) fn prepare_next_source_relation_generation(&self) -> Option<u64> {
         self.source_relation_generation
             .checked_add(1)
@@ -786,18 +779,6 @@ impl FilterRuntime {
     #[cfg(test)]
     pub(crate) fn set_source_relation_generation_for_test(&mut self, generation: u64) {
         self.source_relation_generation = generation;
-    }
-
-    pub fn clear_queue_marker(&mut self) -> bool {
-        let had_queue = self.queue_present;
-        self.queue_present = false;
-        had_queue
-    }
-
-    pub fn clear_av_backing_marker(&mut self) -> bool {
-        let had_backing = self.av_backing_present;
-        self.av_backing_present = false;
-        had_backing
     }
 
     pub fn pipeline_view(&self) -> PipelineFilterView {
@@ -1072,7 +1053,6 @@ mod tests {
         );
     }
 }
-
 
 #[cfg(test)]
 mod video_pts_contract_tests {
