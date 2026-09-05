@@ -39,7 +39,9 @@ pub enum FrontendRequestedSetting {
     IsdbtLayerTimeInterleaveAuto { layer_index: usize },
     IsdbtLayerTimeInterleave { layer_index: usize, value: i32 },
     IsdbtExplicitSegmentCount { layer_index: usize, count: i32 },
+    IsdbsModulationAuto,
     IsdbsExplicitModulation { value: i32 },
+    IsdbsCoderateAuto,
     IsdbsExplicitCoderate { value: i32 },
     IsdbsExplicitRolloff { value: i32 },
 }
@@ -52,6 +54,13 @@ pub struct FrontendSettingsRequest {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum IsdbtKnownValue {
+    Unspecified,
+    Auto,
+    Explicit(i32),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IsdbsKnownValue {
     Unspecified,
     Auto,
     Explicit(i32),
@@ -104,18 +113,21 @@ fn invalid_frontend_setting<T>(detail: impl Into<String>) -> Result<T, HalError>
     ))
 }
 
-fn explicit_known_value(
+fn isdbs_known_value(
     raw: i32,
     auto: i32,
     highest_known_bit: i32,
-) -> Result<Option<i32>, HalError> {
-    if raw == 0 || raw == auto {
-        return Ok(None);
+) -> Result<IsdbsKnownValue, HalError> {
+    if raw == 0 {
+        return Ok(IsdbsKnownValue::Unspecified);
+    }
+    if raw == auto {
+        return Ok(IsdbsKnownValue::Auto);
     }
     if is_single_known_enum_value(raw, highest_known_bit) {
-        return Ok(Some(raw));
+        return Ok(IsdbsKnownValue::Explicit(raw));
     }
-    invalid_frontend_setting("frontend setting contains a reserved enum value")
+    invalid_frontend_setting("ISDB-S setting contains a reserved enum value")
 }
 
 fn isdbt_known_value(
@@ -343,19 +355,27 @@ fn classify_isdbs_settings(
     s: &android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::FrontendIsdbsSettings::FrontendIsdbsSettings,
 ) -> Result<Vec<FrontendRequestedSetting>, HalError> {
     let mut requested = Vec::new();
-    if let Some(value) = explicit_known_value(
+    match isdbs_known_value(
         s.modulation.0,
         FrontendIsdbsModulation::AUTO.0,
         FrontendIsdbsModulation::MOD_TC8PSK.0,
     )? {
-        requested.push(FrontendRequestedSetting::IsdbsExplicitModulation { value });
+        IsdbsKnownValue::Unspecified => {}
+        IsdbsKnownValue::Auto => requested.push(FrontendRequestedSetting::IsdbsModulationAuto),
+        IsdbsKnownValue::Explicit(value) => {
+            requested.push(FrontendRequestedSetting::IsdbsExplicitModulation { value });
+        }
     }
-    if let Some(value) = explicit_known_value(
+    match isdbs_known_value(
         s.coderate.0,
         FrontendIsdbsCoderate::AUTO.0,
         FrontendIsdbsCoderate::CODERATE_7_8.0,
     )? {
-        requested.push(FrontendRequestedSetting::IsdbsExplicitCoderate { value });
+        IsdbsKnownValue::Unspecified => {}
+        IsdbsKnownValue::Auto => requested.push(FrontendRequestedSetting::IsdbsCoderateAuto),
+        IsdbsKnownValue::Explicit(value) => {
+            requested.push(FrontendRequestedSetting::IsdbsExplicitCoderate { value });
+        }
     }
     if s.symbolRate < 0 {
         return invalid_frontend_setting("ISDB-S symbolRate must be non-negative");
@@ -720,6 +740,23 @@ mod tests {
         let converted =
             aidl_frontend_settings_to_request(&FrontendSettings::Isdbs(settings)).unwrap();
         assert!(converted.requested_settings.is_empty());
+    }
+
+    #[test]
+    fn isdbs_auto_constraints_are_distinguished_from_undefined() {
+        let mut settings = valid_isdbs_settings();
+        settings.frequency = 1_049_480_000;
+        settings.modulation = FrontendIsdbsModulation::AUTO;
+        settings.coderate = FrontendIsdbsCoderate::AUTO;
+        let converted =
+            aidl_frontend_settings_to_request(&FrontendSettings::Isdbs(settings)).unwrap();
+        assert_eq!(
+            converted.requested_settings,
+            vec![
+                FrontendRequestedSetting::IsdbsModulationAuto,
+                FrontendRequestedSetting::IsdbsCoderateAuto,
+            ]
+        );
     }
 
     #[test]

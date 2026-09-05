@@ -954,9 +954,9 @@ AOSP側はこの配列の物理layer数上限を定義しない。Frameworkの `
 ### ISDB-T validation
 
 - `frequency`はtarget channel mappingへ変換可能な値だけを受け付ける。
-- `bandwidth`は`AUTO`または`BANDWIDTH_6MHZ`を受け付ける。
-- `mode`、layer `modulation`、layer `codeRate`、`guardInterval`、layer `timeInterleave`は`AUTO`だけをadvertise・受理する。
-- 上記のAUTO専用項目に指定された既知の具体値は`UNAVAILABLE`、unionまたは値域が不正な入力は`INVALID_ARGUMENT`とし、バックエンドと直前の要求を変更しない。
+- `bandwidth=UNDEFINED`はcallerがbandwidth制約を指定していないAOSP sentinelとして成功させ、capability bitとしてadvertiseしない。`AUTO`または`BANDWIDTH_6MHZ`は対応値として受理し、既知の`BANDWIDTH_7MHZ` / `BANDWIDTH_8MHZ`は`UNAVAILABLE`とする。予約値・未知値は`INVALID_ARGUMENT`とする。
+- `mode`、layer `modulation`、layer `codeRate`、`guardInterval`、layer `timeInterleave`の`UNDEFINED`はcaller constraintなしとして成功させ、capability bitとしてadvertiseしない。`AUTO`だけを対応値としてadvertise・受理し、既知の具体値は`UNAVAILABLE`とする。予約値・未知値は`INVALID_ARGUMENT`とする。
+- `UNDEFINED`と`AUTO`を同義に正規化してはならない。`UNDEFINED`は制約なし、`AUTO`はhardwareによる自動検出・設定を要求する既知の明示値としてtyped requestで区別し、拒否時はバックエンドと直前の要求を変更しない。
 - `inversion`は未指定・自動を表すAIDL値だけを、明示制約なしとして成功させる。本製品の対象backendは明示inversionを設定または固定値検証する能力を採用しないため、規格上有効な明示inversionは`UNAVAILABLE`とする。予約値・未知値は`INVALID_ARGUMENT`とする。
 - `serviceAreaId=0`は未指定として成功させる。本製品の対象backendは正の`serviceAreaId`をbackend requestまたは選局結果検証へ反映する能力を採用しないため、構文上有効な正の値は`UNAVAILABLE`、負値は`INVALID_ARGUMENT`とする。
 - `partialReceptionFlag`は未指定を表すAIDL値を明示制約なしとして成功させる。`TRUE` / `FALSE`は規格上有効な明示要求である。blocker解消後の`IFrontend.tune()`同期戻り値は、要求の構文・capability・資源・backend開始可否を検証して選局処理を受理できたことだけを表し、lock後のTMCC照合結果を後から同期戻り値へ反映しない。対象demodulatorが自動判定した同一tune generationのfreshなTMCC readbackが要求値と一致した場合だけ、その要求で指定されたsignalへlockしたものとして`FrontendEventType::LOCKED`を通知する。不一致は要求されたsignalへlockできなかったものとして`NO_SIGNAL`とし、readback未確定・I/O失敗・古いgenerationでは`LOCKED`を捏造せず既存のbackend failure契約に従う。scanでは同じfresh readback一致を当該candidateの成立条件とし、不一致または未確定をlock済みcandidateとして通知しない。earth_pt1 / TC90522は`future_work/r51/earth_pt1_tc90522_tmcc_readback_error_propagation_blocker.md`、px4は`future_work/r51/px4_tmcc_partial_reception_readback_blocker.md`が未解決の間、readback成立を偽装せず明示`TRUE` / `FALSE`を`UNAVAILABLE`とする。予約値・未知値は`INVALID_ARGUMENT`とする。
@@ -973,7 +973,7 @@ ARIB STD-B31 2.2-E1は、モードを2.3、内符号化率を3.8と3.15.6.6、�
 
 - public settingsの`symbolRate=0`はAOSPの未指定sentinelとして成功させ、広告する`minSymbolRate..maxSymbolRate`の値域外であっても拒否しない。正値は、同じ不変`CapabilitySnapshot`が広告する範囲内であり、かつbackendへ適用する経路がある場合だけ成功させる。px4と現行Linux DVB / earth_pt1の製品profileは固定値28,860,000だけを広告・受理する。Linux v6.6 `tc90522_ops_sat.info`はsymbol-rate capabilityを設定せず`FE_GET_INFO`では0/0となる一方、同driverのISDB-S readbackと採用`qm1d1b0004` module経路は28,860,000を固定の実効値とするため、earth_pt1の`CapabilitySnapshot`はdriver名・完全topology・周波数範囲のprobe成功を前提に`minSymbolRate=maxSymbolRate=28,860,000`を製品profile証跡として確定する。public入力0はBinder境界で未指定のまま保持し、backend mappingで固定実効値へ正規化して`DTV_SYMBOL_RATE=28,860,000`を必ず投影する。その他の正値または`u32`へ収まらない値はbackend副作用、旧request、generationの変更前に`INVALID_ARGUMENT`とする。AOSPの`IsdbsFrontendSettings.Builder.setSymbolRate()`と`FrontendInfo.minSymbolRate/maxSymbolRate`はこの明示値経路を公開しており、CDD/VTSに`0`限定の契約は置かれていない。将来`FE_GET_INFO`由来へ戻す条件とupstream改善候補は`../future_work/not_planned/linux_tc90522_isdbs_symbol_rate_capability_metadata.md`に記録し、現行runtime契約の根拠にはしない。
 - AOSP SDK defaultの`STREAM_ID + INVALID_STREAM_ID(0xFFFF)`は、BS/CS110を問わず明示TSIDの値域検証より先に`Unspecified`へ正規化する。通常の日本向けBS scan、channel保存、ライブ再選局ではTISが検出・保存したabsolute TSIDを明示し、`Unspecified` fallbackをサービス選択に使用しない。px4 BSの`Unspecified`は現行ABI上の互換fallbackとしてrelative slot `0`へ写像するが、callerがslot 0を指定したとは扱わない。Linux DVB / earth_pt1の`Unspecified`は`DTV_STREAM_ID=NO_STREAM_ID_FILTER`へ明示写像し、前回のselectorをproperty cacheへ残さない。CS110は従来どおりselectorなしのfrequency-only選局を使用する。
-- modulationとcodeRateは`AUTO`だけをadvertise・受理し、既知具体値は`UNAVAILABLE`、malformed値は`INVALID_ARGUMENT`とする。
+- modulationとcodeRateの`UNDEFINED`はcallerが当該制約を指定していないAOSP sentinelとして成功させ、capability bitとしてadvertiseしない。`AUTO`はhardwareによる自動検出・設定を求める既知の明示要求としてtyped requestに保持し、対応値としてadvertise・受理する。既知具体値は`UNAVAILABLE`、予約値・未知値は`INVALID_ARGUMENT`とする。
 - `rolloff`は未指定を表すAIDL値を明示制約なしとして成功させる。本製品の対象backend/deviceは明示rolloffを設定または固定値検証する能力を採用しないため、規格上有効な明示rolloffは`UNAVAILABLE`、予約値・未知値は`INVALID_ARGUMENT`とする。入力`rolloff`をbackend requestから捨てたまま成功してはならず、拒否時は旧tune/scan、backend、generationを変更しない。
 - blind scanは`UNAVAILABLE`とする。
 

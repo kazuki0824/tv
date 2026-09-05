@@ -27,7 +27,9 @@ fn validate_frontend_requested_settings_against_product_profile(
             | FrontendRequestedSetting::IsdbtGuardIntervalAuto
             | FrontendRequestedSetting::IsdbtLayerModulationAuto { .. }
             | FrontendRequestedSetting::IsdbtLayerCoderateAuto { .. }
-            | FrontendRequestedSetting::IsdbtLayerTimeInterleaveAuto { .. } => None,
+            | FrontendRequestedSetting::IsdbtLayerTimeInterleaveAuto { .. }
+            | FrontendRequestedSetting::IsdbsModulationAuto
+            | FrontendRequestedSetting::IsdbsCoderateAuto => None,
             FrontendRequestedSetting::IsdbtExplicitBandwidth {
                 bandwidth_hz: 6_000_000,
             } => None,
@@ -676,6 +678,15 @@ mod tests {
             &[],
             None,
         )
+        .is_ok());
+    }
+
+    #[test]
+    fn isdbs_auto_constraints_are_supported_by_product_profile() {
+        assert!(validate_frontend_requested_settings_against_product_profile(&[
+            FrontendRequestedSetting::IsdbsModulationAuto,
+            FrontendRequestedSetting::IsdbsCoderateAuto,
+        ])
         .is_ok());
     }
 
