@@ -6,7 +6,7 @@ use maleicacid_tuner_hal2_common::{
     FrontendTuneRequest, HalError, HalInternalKind, HalInvalidArgumentKind,
 };
 
-pub fn validate_frontend_request_semantics(request: &FrontendTuneRequest) -> Result<(), HalError> {
+fn validate_frontend_request_semantics(request: &FrontendTuneRequest) -> Result<(), HalError> {
     if request.system == FrontendSystem::IsdbT && request.isdbt_layer_settings.len() > 3 {
         return Err(HalError::invalid_argument(
             HalInvalidArgumentKind::NumericRange,
@@ -171,6 +171,12 @@ fn validate_backend_tune_preflight(
 }
 
 impl TunerServiceRuntime {
+    pub fn validate_frontend_request_semantics(
+        request: &FrontendTuneRequest,
+    ) -> Result<(), HalError> {
+        validate_frontend_request_semantics(request)
+    }
+
     pub fn validate_frontend_request_for_id(
         &self,
         frontend_id: i32,
