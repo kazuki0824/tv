@@ -7,27 +7,25 @@ from unittest.mock import call, patch
 
 from vts_profile.model import ProfileError
 from vts_profile.schema import (
-    AOSP_VALIDATOR_TARGET,
-    _build_aosp_consumer,
+    AOSP_XSDC_TARGET,
+    _build_aosp_xsdc,
+    _validate_with_selected_aosp_consumer,
     validate_xml_with_aosp_consumer,
 )
 
 
 class AospConsumerValidationTest(unittest.TestCase):
-    def test_validator_is_built_from_same_aosp_tree(self) -> None:
+    def test_selected_ref_and_validator_are_bound_to_same_aosp_tree(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             interfaces = root / "hardware/interfaces"
             xsd = interfaces / "tv/tuner/config/tuner_testing_dynamic_configuration.xsd"
             xsd.parent.mkdir(parents=True)
             xsd.write_text("<x/>", encoding="utf-8")
-            validator = root / "validator"
-            validator.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-            validator.chmod(0o755)
 
             with (
                 patch("vts_profile.schema._git_commit", return_value="same"),
-                patch("vts_profile.schema._build_aosp_consumer", return_value=validator),
+                patch("vts_profile.schema._validate_with_selected_aosp_consumer") as validate,
             ):
                 validate_xml_with_aosp_consumer(
                     "<root/>",
@@ -35,6 +33,10 @@ class AospConsumerValidationTest(unittest.TestCase):
                     hardware_interfaces_root=interfaces,
                     source_ref="selected-ref",
                 )
+
+            validate.assert_called_once_with(
+                "<root/>", aosp_root=root.resolve(), xsd=xsd.resolve()
+            )
 
     def test_validator_rejects_interfaces_from_another_tree(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -50,31 +52,34 @@ class AospConsumerValidationTest(unittest.TestCase):
                     source_ref="selected-ref",
                 )
 
-    def test_build_uses_repository_soong_target_and_host_out(self) -> None:
+    def test_xsdc_is_built_from_selected_aosp_tree(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            soong_ui = root / "build/soong/soong_ui.bash"
+            soong_ui.parent.mkdir(parents=True)
+            soong_ui.write_text("#!/bin/sh\n", encoding="utf-8")
             host_out = root / "out/host/linux-x86/bin"
             host_out.mkdir(parents=True)
-            validator = host_out / AOSP_VALIDATOR_TARGET
-            validator.write_text("binary", encoding="utf-8")
+            xsdc = host_out / AOSP_XSDC_TARGET
+            xsdc.write_text("binary", encoding="utf-8")
 
             with patch(
-                "vts_profile.schema._run_aosp_build_command",
+                "vts_profile.schema._run_checked",
                 side_effect=["", str(host_out)],
             ) as run:
-                self.assertEqual(_build_aosp_consumer(root), validator)
+                self.assertEqual(_build_aosp_xsdc(root), xsdc)
 
             self.assertEqual(
                 run.call_args_list,
                 [
                     call(
-                        root.resolve(),
-                        ["--make-mode", AOSP_VALIDATOR_TARGET],
-                        label="failed to build AOSP xsdc Tuner config validator",
+                        [str(soong_ui), "--make-mode", AOSP_XSDC_TARGET],
+                        cwd=root.resolve(),
+                        label="failed to build AOSP xsdc",
                     ),
                     call(
-                        root.resolve(),
-                        ["--dumpvar-mode", "HOST_OUT_EXECUTABLES"],
+                        [str(soong_ui), "--dumpvar-mode", "HOST_OUT_EXECUTABLES"],
+                        cwd=root.resolve(),
                         label="failed to resolve AOSP HOST_OUT_EXECUTABLES",
                     ),
                 ],
@@ -83,24 +88,19 @@ class AospConsumerValidationTest(unittest.TestCase):
     def test_consumer_rejection_is_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            interfaces = root / "hardware/interfaces"
-            xsd = interfaces / "tv/tuner/config/tuner_testing_dynamic_configuration.xsd"
+            xsd = root / "hardware/interfaces/tv/tuner/config/tuner_testing_dynamic_configuration.xsd"
             xsd.parent.mkdir(parents=True)
             xsd.write_text("<x/>", encoding="utf-8")
             validator = root / "validator"
             validator.write_text("#!/bin/sh\necho rejected >&2\nexit 1\n", encoding="utf-8")
             validator.chmod(0o755)
 
-            with (
-                patch("vts_profile.schema._git_commit", return_value="same"),
-                patch("vts_profile.schema._build_aosp_consumer", return_value=validator),
+            with patch(
+                "vts_profile.schema._compile_selected_aosp_consumer", return_value=validator
             ):
                 with self.assertRaisesRegex(ProfileError, "rejected"):
-                    validate_xml_with_aosp_consumer(
-                        "<root/>",
-                        aosp_root=root,
-                        hardware_interfaces_root=interfaces,
-                        source_ref="selected-ref",
+                    _validate_with_selected_aosp_consumer(
+                        "<root/>", aosp_root=root, xsd=xsd
                     )
 
 
