@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -90,7 +92,7 @@ class VtsProfileCliTest(unittest.TestCase):
             patch("vts_profile.cli._source_ref", return_value="aosp-commit"),
             patch(
                 "builtins.input",
-                side_effect=["", "", "神奈川県座間市", "", "", ""],
+                side_effect=["", "", "鹿児島県枕崎市", "", "", ""],
             ) as user_input,
             patch.dict(os.environ, {}, clear=True),
         ):
@@ -99,7 +101,7 @@ class VtsProfileCliTest(unittest.TestCase):
         self.assertEqual(profile["target"]["product"], cli.DEFAULT_PRODUCT)
         self.assertEqual(profile["target"]["backend"], "px4")
         self.assertEqual(profile["frontend"]["type"], "ISDBT")
-        self.assertEqual(profile["region"]["query"], "神奈川県座間市")
+        self.assertEqual(profile["region"]["query"], "鹿児島県枕崎市")
         self.assertTrue(profile["flows"]["scan"])
         self.assertTrue(profile["flows"]["record"]["enabled"])
         self.assertEqual(
@@ -113,6 +115,90 @@ class VtsProfileCliTest(unittest.TestCase):
                 call("record PID (optional): "),
             ],
         )
+
+    def test_interactive_init_auto_resolves_isdbt_region_after_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "profile.json"
+            profile = {
+                "frontend": {"type": "ISDBT", "frequency_hz": None},
+                "region": {"query": "兵庫県神戸市北区鈴蘭台", "candidates": []},
+            }
+            args = SimpleNamespace(profile=str(path), non_interactive=False)
+
+            def resolve(profile_to_resolve: dict) -> None:
+                checkpoint = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(checkpoint["region"]["query"], "兵庫県神戸市北区鈴蘭台")
+                self.assertEqual(checkpoint["region"]["candidates"], [])
+                profile_to_resolve["region"]["candidates"] = [
+                    {
+                        "frequency_hz": 515142857,
+                        "physical_channel": 20,
+                        "label": "神戸市北区鈴蘭台 ch20",
+                    }
+                ]
+
+            with (
+                patch("vts_profile.cli._new_profile", return_value=profile),
+                patch("vts_profile.cli.resolve_region", side_effect=resolve) as resolver,
+                patch("vts_profile.cli._print_region_candidates"),
+            ):
+                self.assertEqual(cli.cmd_init(args), 0)
+
+            resolver.assert_called_once_with(profile)
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["region"]["candidates"][0]["physical_channel"], 20)
+
+    def test_interactive_init_keeps_checkpoint_if_region_resolution_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "profile.json"
+            profile = {
+                "frontend": {"type": "ISDBT", "frequency_hz": None},
+                "region": {"query": "鹿児島県枕崎市", "candidates": []},
+            }
+            args = SimpleNamespace(profile=str(path), non_interactive=False)
+            with (
+                patch("vts_profile.cli._new_profile", return_value=profile),
+                patch(
+                    "vts_profile.cli.resolve_region",
+                    side_effect=ProfileError("regional lookup unavailable"),
+                ),
+            ):
+                with self.assertRaisesRegex(ProfileError, "regional lookup unavailable"):
+                    cli.cmd_init(args)
+
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["region"]["query"], "鹿児島県枕崎市")
+            self.assertEqual(saved["region"]["candidates"], [])
+
+    def test_noninteractive_init_preserves_explicit_region_resolution_phase(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "profile.json"
+            profile = {
+                "frontend": {"type": "ISDBT", "frequency_hz": None},
+                "region": {"query": "兵庫県神戸市北区鈴蘭台", "candidates": []},
+            }
+            args = SimpleNamespace(profile=str(path), non_interactive=True)
+            with (
+                patch("vts_profile.cli._new_profile", return_value=profile),
+                patch("vts_profile.cli.resolve_region") as resolver,
+            ):
+                self.assertEqual(cli.cmd_init(args), 0)
+            resolver.assert_not_called()
+
+    def test_interactive_isdbs_init_does_not_invoke_terrestrial_region_resolver(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "profile.json"
+            profile = {
+                "frontend": {"type": "ISDBS", "frequency_hz": None},
+                "region": {"query": "鹿児島県枕崎市", "candidates": []},
+            }
+            args = SimpleNamespace(profile=str(path), non_interactive=False)
+            with (
+                patch("vts_profile.cli._new_profile", return_value=profile),
+                patch("vts_profile.cli.resolve_region") as resolver,
+            ):
+                self.assertEqual(cli.cmd_init(args), 0)
+            resolver.assert_not_called()
 
     def test_all_profile_commands_default_to_the_single_ssot_path(self) -> None:
         parser = cli.build_parser()
