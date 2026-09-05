@@ -5,12 +5,10 @@ use super::watermark_classifier::{
     WatermarkClassifier, WatermarkDecision, WatermarkPolicy, WatermarkQueueSnapshot,
 };
 
-#[cfg(test)]
-use maleicacid_tuner_hal2_common::{
-    TsPacketBufferDrain, TsPacketCompletionBuffer, TS_PACKET_SIZE,
-};
 #[cfg(not(test))]
 use maleicacid_tuner_hal2_common::TS_PACKET_SIZE;
+#[cfg(test)]
+use maleicacid_tuner_hal2_common::{TsPacketBufferDrain, TsPacketCompletionBuffer, TS_PACKET_SIZE};
 
 const DVR_STATUS_BIT_0: i32 = 1 << 0;
 const DVR_STATUS_BIT_1: i32 = 1 << 1;
@@ -139,11 +137,7 @@ pub struct PlaybackFlushDiagnostic {
 impl PlaybackFlushDiagnostic {
     fn record(&mut self, dropped_bytes: usize) {
         let dropped_bytes = u64::try_from(dropped_bytes).unwrap_or(u64::MAX);
-        PlaybackStats::add_counter(
-            &mut self.flush_count,
-            1,
-            &mut self.counter_saturated,
-        );
+        PlaybackStats::add_counter(&mut self.flush_count, 1, &mut self.counter_saturated);
         PlaybackStats::add_counter(
             &mut self.total_dropped_bytes,
             dropped_bytes,
@@ -291,9 +285,6 @@ impl DvrRuntime {
     pub fn buffer_size(&self) -> i32 {
         self.buffer_size
     }
-    pub fn queue_present(&self) -> bool {
-        self.queue_present
-    }
     pub fn allows_queue_desc(&self) -> bool {
         matches!(
             self.state,
@@ -387,12 +378,6 @@ impl DvrRuntime {
         self.playback_processing_buffer = buffer;
     }
 
-    pub fn clear_queue_marker(&mut self) -> bool {
-        let had_queue = self.queue_present;
-        self.queue_present = false;
-        had_queue
-    }
-
     #[cfg(test)]
     pub fn push_playback_bytes(&mut self, data: &[u8]) -> TsPacketBufferDrain {
         self.playback_completion.push(data)
@@ -416,9 +401,6 @@ impl DvrRuntime {
     }
     pub fn playback_stats(&self) -> PlaybackStats {
         self.playback_stats
-    }
-    pub fn playback_flush_diagnostic(&self) -> PlaybackFlushDiagnostic {
-        self.playback_flush_diagnostic
     }
     pub fn note_playback_consume(
         &mut self,

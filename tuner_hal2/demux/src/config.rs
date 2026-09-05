@@ -20,10 +20,7 @@ pub enum FilterOpenType {
 
 impl FilterOpenType {
     pub const fn is_media_filter(self) -> bool {
-        match self {
-            Self::TsAudio | Self::TsVideo => true,
-            _ => false,
-        }
+        matches!(self, Self::TsAudio | Self::TsVideo)
     }
 
     pub const fn has_filter_fmq(self) -> bool {
@@ -323,7 +320,9 @@ mod tests {
             buffer_size: 4096,
             callback_present: true,
         };
-        demux.register_filter_from_open_request(1, &request).unwrap();
+        demux
+            .register_filter_from_open_request(1, &request)
+            .unwrap();
         demux
             .configure_filter_runtime(
                 1,
