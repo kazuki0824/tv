@@ -14,6 +14,9 @@ fixed = block.replace(
 ).replace(
     'val audioComponentType: Int? = audio?.componentType,',
     'val audioComponentType: Int? = null,',
+).replace(
+    'val dualMonoPresentation: DualMonoPresentation = DualMonoPresentation.MAIN,',
+    'val dualMonoPresentation: PlaybackPipeline.DualMonoPresentation = PlaybackPipeline.DualMonoPresentation.MAIN,',
 )
 fixed += 'p.write_text(text)\n\np = Path("tis/src/com/maleicacid/tvinput/tis/PlaybackPipeline.kt")\ntext = p.read_text()\n'
 text = text[:start] + fixed + text[next_pos:]
