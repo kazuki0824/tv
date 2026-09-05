@@ -4,6 +4,35 @@
   "vts": {"contract": "android14-aidl-v1", "source_ref": "REPLACE_WITH_SELECTED_AOSP_VTS_TAG_OR_COMMIT", "variant": ""},
   "frontend": {"type": "ISDBT", "is_software_frontend": false, "frequency_hz": null},
   "region": {"query": "REPLACE_WITH_REGION_KEY", "candidates": []},
-  "flows": {"scan": true, "record": {"enabled": true, "pid": null}, "clear_live": {"enabled": false}},
-  "queues": {"record_filter_bytes": 1048576, "record_dvr_bytes": 4194304}
+  "flows": {
+    "scan": true,
+    "record": {"enabled": true, "pid": null},
+    "clear_live": {
+      "enabled": true,
+      "audio_pid": null,
+      "video_pid": null,
+      "audio_stream_type": null,
+      "video_stream_type": null,
+      "pcr_pid": null,
+      "section_pid": null
+    },
+    "playback": {
+      "enabled": true,
+      "input_file_path": "/data/local/tmp/segment000000.ts",
+      "audio_pid": 257,
+      "video_pid": 256,
+      "section_pid": 257,
+      "audio_stream_type": 2,
+      "video_stream_type": 2
+    }
+  },
+  "queues": {
+    "record_filter_bytes": 16777216,
+    "record_dvr_bytes": 4194304,
+    "audio_filter_bytes": 16777216,
+    "video_filter_bytes": 16777216,
+    "pcr_filter_bytes": 16777216,
+    "section_filter_bytes": 16777216,
+    "playback_dvr_bytes": 4194304
+  }
 }
