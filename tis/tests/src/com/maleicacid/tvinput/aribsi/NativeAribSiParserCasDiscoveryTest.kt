@@ -42,7 +42,7 @@ class NativeAribSiParserCasDiscoveryTest {
                 it.serviceKey.serviceId == SERVICE_ID
             }
             val diagnostic = ServicePolicyEvaluator.evaluate(facts)
-            check(!diagnostic.clearLivePlaybackSupported)
+            check(!diagnostic.clearLivePlaybackStaticallyEligible)
             check(diagnostic.requiresCas && diagnostic.reasons.contains("CAS_NOT_IMPLEMENTED")) {
                 "CAS検出対象サービスは非スクランブルlive未対応診断を保持する必要があります: ${diagnostic.reasons}"
             }

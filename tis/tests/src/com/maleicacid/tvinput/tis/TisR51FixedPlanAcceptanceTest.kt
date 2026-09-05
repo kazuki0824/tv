@@ -328,7 +328,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(cas.getBoolean("requiresCas"))
         check(cas.getString("source") == "SI_SEMANTICS")
         check(!cas.has("unsupportedCas"))
-        check(!providerData.has("clearLivePlaybackSupported"))
+        check(!providerData.has("clearLivePlaybackStaticallyEligible"))
         check(!providerData.has("channelRegistrationReady"))
         check(!providerData.has("epgPublishable"))
         check(!providerData.has("publishStateSource"))
@@ -365,13 +365,13 @@ class TisR51FixedPlanAcceptanceTest {
             streams = listOf(es(TsPid(0x101), 0x1b)),
         )
         val clearFacts = semanticFacts(elementaryStreams = clearService.streams)
-        check(ServiceListBuilder.completenessForModel(clearService, clearFacts).clearLivePlaybackSupported)
+        check(ServiceListBuilder.completenessForModel(clearService, clearFacts).clearLivePlaybackStaticallyEligible)
         check(ServiceListBuilder.completenessForModel(clearService, clearFacts).registrationReady)
 
-        check(!ServiceListBuilder.completenessForModel(clearService, clearFacts.copy(pcrPidResolved = false)).clearLivePlaybackSupported)
-        check(!ServiceListBuilder.completenessForModel(clearService, clearFacts.copy(elementaryStreams = emptyList())).clearLivePlaybackSupported)
-        check(!ServiceListBuilder.completenessForModel(clearService, clearFacts.copy(requiresCas = true)).clearLivePlaybackSupported)
-        check(ServiceListBuilder.completenessForModel(clearService, clearFacts.copy(freeCaMode = true)).clearLivePlaybackSupported)
+        check(!ServiceListBuilder.completenessForModel(clearService, clearFacts.copy(pcrPidResolved = false)).clearLivePlaybackStaticallyEligible)
+        check(!ServiceListBuilder.completenessForModel(clearService, clearFacts.copy(elementaryStreams = emptyList())).clearLivePlaybackStaticallyEligible)
+        check(!ServiceListBuilder.completenessForModel(clearService, clearFacts.copy(requiresCas = true)).clearLivePlaybackStaticallyEligible)
+        check(ServiceListBuilder.completenessForModel(clearService, clearFacts.copy(freeCaMode = true)).clearLivePlaybackStaticallyEligible)
     }
 
     @Test fun scrambledCasPlaceholderServiceCanRegisterAndPublishEpgButNotClearLive() {
@@ -388,7 +388,7 @@ class TisR51FixedPlanAcceptanceTest {
         )
         val completeness = ServiceListBuilder.completenessForModel(scrambledService, facts)
         check(completeness.registrationReady)
-        check(!completeness.clearLivePlaybackSupported)
+        check(!completeness.clearLivePlaybackStaticallyEligible)
         check(completeness.requiresCas)
 
         val event = aribEvent()
@@ -397,7 +397,7 @@ class TisR51FixedPlanAcceptanceTest {
         val providerData = JSONObject(TvProviderWriter.programProviderDataForTest(record))
         check(providerData.getJSONObject("cas").getBoolean("requiresCas"))
         check(!providerData.getJSONObject("cas").has("unsupportedCas"))
-        check(!providerData.has("clearLivePlaybackSupported"))
+        check(!providerData.has("clearLivePlaybackStaticallyEligible"))
         check(!providerData.has("channelRegistrationReady"))
         check(!providerData.has("epgPublishable"))
         check(!providerData.has("publishStateSource"))
@@ -423,10 +423,10 @@ class TisR51FixedPlanAcceptanceTest {
     }
 
     @Test fun partialSiDiscoveryPublishesOnlyRegistrationReadySnapshotServices() {
-        check(ChannelScanController.SiCollectionResult(ChannelScanController.SiCollectionOutcome.STABLE_PARTIAL, null, clearLivePlaybackSupportedServices = 0, registrationReadyServices = 1).mayPublishChannels)
-        check(ChannelScanController.SiCollectionResult(ChannelScanController.SiCollectionOutcome.TIMEOUT_PARTIAL, null, clearLivePlaybackSupportedServices = 0, registrationReadyServices = 1).mayPublishChannels)
-        check(!ChannelScanController.SiCollectionResult(ChannelScanController.SiCollectionOutcome.TIMEOUT_PARTIAL, null, clearLivePlaybackSupportedServices = 0, registrationReadyServices = 0).mayPublishChannels)
-        check(!ChannelScanController.SiCollectionResult(ChannelScanController.SiCollectionOutcome.CANCELLED, null, clearLivePlaybackSupportedServices = 0, registrationReadyServices = 1).mayPublishChannels)
+        check(ChannelScanController.SiCollectionResult(ChannelScanController.SiCollectionOutcome.STABLE_PARTIAL, null, clearLivePlaybackStaticallyEligibleServices = 0, registrationReadyServices = 1).mayPublishChannels)
+        check(ChannelScanController.SiCollectionResult(ChannelScanController.SiCollectionOutcome.TIMEOUT_PARTIAL, null, clearLivePlaybackStaticallyEligibleServices = 0, registrationReadyServices = 1).mayPublishChannels)
+        check(!ChannelScanController.SiCollectionResult(ChannelScanController.SiCollectionOutcome.TIMEOUT_PARTIAL, null, clearLivePlaybackStaticallyEligibleServices = 0, registrationReadyServices = 0).mayPublishChannels)
+        check(!ChannelScanController.SiCollectionResult(ChannelScanController.SiCollectionOutcome.CANCELLED, null, clearLivePlaybackStaticallyEligibleServices = 0, registrationReadyServices = 1).mayPublishChannels)
     }
 
     @Test fun setupScanPublishesEventsForRegisteredServicesOnly() {
