@@ -3,8 +3,8 @@ use crate::TunerServiceRuntime;
 use maleicacid_tuner_hal2_binder_adapter::FrontendRequestedSetting;
 use maleicacid_tuner_hal2_common::{
     is_japan_isdbt_frequency_contract_hz, FrontendBackendKind,
-    FrontendIsdbtPartialReceptionRequirement, FrontendScanMode, FrontendSystem,
-    FrontendTuneRequest, HalError, HalInternalKind, HalInvalidArgumentKind,
+    FrontendIsdbtPartialReceptionRequirement, FrontendScanMode, FrontendStreamIdKind,
+    FrontendSystem, FrontendTuneRequest, HalError, HalInternalKind, HalInvalidArgumentKind,
 };
 
 fn validate_frontend_request_semantics(request: &FrontendTuneRequest) -> Result<(), HalError> {
@@ -94,6 +94,42 @@ fn validate_scan_mode_against_product_profile(scan_mode: FrontendScanMode) -> Re
     Ok(())
 }
 
+fn validate_isdbs_selector_invalid_arguments(
+    request: &FrontendTuneRequest,
+    is_bs: bool,
+    is_cs110: bool,
+) -> Result<(), HalError> {
+    if is_cs110 && (request.stream_id.is_some() || request.stream_id_kind.is_some()) {
+        return Err(HalError::invalid_argument(
+            HalInvalidArgumentKind::UnsupportedStreamSelector,
+            "CS110 tune must not carry TSID or relative stream selector",
+        ));
+    }
+    if !is_bs {
+        return Ok(());
+    }
+    let Some(stream_id) = request.stream_id else {
+        return Ok(());
+    };
+    if stream_id > 65_534 {
+        return Err(HalError::invalid_argument(
+            HalInvalidArgumentKind::InvalidStreamIdRange,
+            "ISDB-S STREAM_ID must be in 0..=65534 after AOSP INVALID_STREAM_ID normalization",
+        ));
+    }
+    if matches!(
+        request.stream_id_kind,
+        Some(FrontendStreamIdKind::RelativeStreamNumber)
+    ) && stream_id > 7
+    {
+        return Err(HalError::invalid_argument(
+            HalInvalidArgumentKind::InvalidStreamIdRange,
+            "ISDB-S RELATIVE_STREAM_NUMBER must be in 0..=7",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_frontend_request_invalid_arguments_against_entry(
     entry: &FrontendRegistryEntry,
     request: &FrontendTuneRequest,
@@ -147,12 +183,7 @@ fn validate_frontend_request_invalid_arguments_against_entry(
                     "ISDB-S frequency cannot be normalized unambiguously to the Japan BS/CS110 raster",
                 ));
             }
-            if is_cs110 && (request.stream_id.is_some() || request.stream_id_kind.is_some()) {
-                return Err(HalError::invalid_argument(
-                    HalInvalidArgumentKind::UnsupportedStreamSelector,
-                    "CS110 tune must not carry TSID or relative stream selector",
-                ));
-            }
+            validate_isdbs_selector_invalid_arguments(request, is_bs, is_cs110)?;
             if let Some(symbol_rate) = request.symbol_rate {
                 let symbol_rate = i32::try_from(symbol_rate).map_err(|_| {
                     HalError::invalid_argument(
@@ -198,7 +229,37 @@ fn validate_frontend_request_availability_against_entry(
                 ));
             }
         }
-        FrontendSystem::IsdbS => {}
+        FrontendSystem::IsdbS => {
+            let is_bs = maleicacid_tuner_hal2_device::px4::normalize_japan_bs_if_frequency_hz(
+                request.frequency,
+            )
+            .is_some();
+            if is_bs {
+                match (entry.backend, request.stream_id, request.stream_id_kind) {
+                    (
+                        FrontendBackendKind::Px4CharDevice,
+                        Some(0..=11),
+                        Some(FrontendStreamIdKind::AbsoluteStreamId) | None,
+                    ) => {
+                        return Err(HalError::unsupported_detail(
+                            "isdbs.streamId",
+                            "px4 legacy slot ABI cannot distinguish absolute STREAM_ID 0..=11 from relative stream numbers",
+                        ));
+                    }
+                    (
+                        FrontendBackendKind::LinuxDvb,
+                        Some(_),
+                        Some(FrontendStreamIdKind::RelativeStreamNumber),
+                    ) => {
+                        return Err(HalError::unsupported_detail(
+                            "isdbs.relativeStreamNumber",
+                            "earth_pt1/Linux DVB does not implement AOSP relative stream-number selection",
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+        }
         FrontendSystem::IsdbS3 | FrontendSystem::DvbS => {
             return Err(HalError::Unsupported(
                 "frontend system is outside the r51 product scope",
@@ -345,7 +406,6 @@ mod tests {
     use crate::registry::{
         FrontendCapabilitySnapshot, FrontendRuntimeId, FrontendScalarCapability,
     };
-    use maleicacid_tuner_hal2_common::FrontendStreamIdKind;
     use std::path::PathBuf;
 
     fn entry(
@@ -498,6 +558,106 @@ mod tests {
             error.invalid_argument_kind(),
             Some(HalInvalidArgumentKind::UnsupportedStreamSelector)
         );
+    }
+
+    #[test]
+    fn invalid_bs_relative_selector_precedes_product_unavailable() {
+        let mut request = isdbs_request(Some(28_860_000));
+        request.stream_id = Some(8);
+        request.stream_id_kind = Some(FrontendStreamIdKind::RelativeStreamNumber);
+        let error = validate_frontend_begin_contract(
+            &isdbs_entry(FrontendBackendKind::Px4CharDevice, 28_860_000, 28_860_000),
+            &request,
+            &[FrontendRequestedSetting::IsdbsExplicitRolloff { value: 1 }],
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.invalid_argument_kind(),
+            Some(HalInvalidArgumentKind::InvalidStreamIdRange)
+        );
+    }
+
+    #[test]
+    fn px4_bs_absolute_tsid_0_through_11_is_canonical_unavailable() {
+        for stream_id in [0, 11] {
+            let mut request = isdbs_request(Some(28_860_000));
+            request.stream_id = Some(stream_id);
+            request.stream_id_kind = Some(FrontendStreamIdKind::AbsoluteStreamId);
+            assert!(matches!(
+                validate_frontend_begin_contract(
+                    &isdbs_entry(
+                        FrontendBackendKind::Px4CharDevice,
+                        28_860_000,
+                        28_860_000,
+                    ),
+                    &request,
+                    &[],
+                    None,
+                ),
+                Err(HalError::UnsupportedDetail {
+                    feature: "isdbs.streamId",
+                    ..
+                })
+            ));
+        }
+    }
+
+    #[test]
+    fn linux_dvb_bs_relative_selector_is_canonical_unavailable() {
+        for stream_id in [0, 7] {
+            let mut request = isdbs_request(Some(28_860_000));
+            request.stream_id = Some(stream_id);
+            request.stream_id_kind = Some(FrontendStreamIdKind::RelativeStreamNumber);
+            assert!(matches!(
+                validate_frontend_begin_contract(
+                    &isdbs_entry(FrontendBackendKind::LinuxDvb, 28_860_000, 28_860_000),
+                    &request,
+                    &[],
+                    None,
+                ),
+                Err(HalError::UnsupportedDetail {
+                    feature: "isdbs.relativeStreamNumber",
+                    ..
+                })
+            ));
+        }
+    }
+
+    #[test]
+    fn supported_bs_selector_boundaries_pass_canonical_preflight() {
+        let mut px4_relative = isdbs_request(Some(28_860_000));
+        px4_relative.stream_id = Some(7);
+        px4_relative.stream_id_kind = Some(FrontendStreamIdKind::RelativeStreamNumber);
+        assert!(validate_frontend_begin_contract(
+            &isdbs_entry(FrontendBackendKind::Px4CharDevice, 28_860_000, 28_860_000),
+            &px4_relative,
+            &[],
+            None,
+        )
+        .is_ok());
+
+        let mut px4_absolute = isdbs_request(Some(28_860_000));
+        px4_absolute.stream_id = Some(12);
+        px4_absolute.stream_id_kind = Some(FrontendStreamIdKind::AbsoluteStreamId);
+        assert!(validate_frontend_begin_contract(
+            &isdbs_entry(FrontendBackendKind::Px4CharDevice, 28_860_000, 28_860_000),
+            &px4_absolute,
+            &[],
+            None,
+        )
+        .is_ok());
+
+        let mut dvb_absolute = isdbs_request(Some(28_860_000));
+        dvb_absolute.stream_id = Some(0);
+        dvb_absolute.stream_id_kind = Some(FrontendStreamIdKind::AbsoluteStreamId);
+        assert!(validate_frontend_begin_contract(
+            &isdbs_entry(FrontendBackendKind::LinuxDvb, 28_860_000, 28_860_000),
+            &dvb_absolute,
+            &[],
+            None,
+        )
+        .is_ok());
     }
 
     #[test]
