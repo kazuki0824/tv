@@ -8,6 +8,7 @@ on:
     paths:
       - .github/workflows/pr54-review-round2-once.yml
       - .github/scripts/pr54_review_round2_once.py
+      - .github/scripts/pr54_review_round2_prepatch.py
 
 permissions:
   contents: write
@@ -33,6 +34,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/aosp-tv/src/com/android/tv/parental"
           curl --fail --location --retry 3 --retry-all-errors "https://raw.githubusercontent.com/aosp-mirror-neo/platform_packages_apps_TV/android-15.0.0_r14/src/com/android/tv/parental/ParentalControlSettings.java" --output "$RUNNER_TEMP/aosp-tv/src/com/android/tv/parental/ParentalControlSettings.java"
           echo "AOSP_PARENTAL_SOURCE=$RUNNER_TEMP/aosp-tv/src/com/android/tv/parental/ParentalControlSettings.java" >> "$GITHUB_ENV"
+
+      - name: 一時scriptのhelper削除境界を補正
+        run: python3 .github/scripts/pr54_review_round2_prepatch.py
 
       - name: production design test修正を適用
         run: python3 .github/scripts/pr54_review_round2_once.py
