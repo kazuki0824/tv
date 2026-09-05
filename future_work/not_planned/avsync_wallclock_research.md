@@ -2,7 +2,7 @@
 
 ## 位置付け
 
-この文書は、A/V sync のうち本製品で採用しない高度な clock discipline と、その判断に使った調査結果を記録する未解決条件資料である。現行設計判断、戻り値、状態遷移、対応宣言条件の正本ではない。現行の `getAvSyncHwId()` / `getAvSyncTime()` 契約は `tuner_contract/DESIGN_JA.md` を正とする。
+この文書は、A/V sync のうち本製品で採用しない高度な clock discipline と、その判断に使った調査結果を記録する未解決条件資料である。現行設計判断、戻り値、状態遷移、対応宣言条件の正本ではない。現行の `getAvSyncHwId()` / `getAvSyncTime()` 契約は `tuner_hal/DESIGN_JA.md` を正とする。
 
 この文書に記載する先行例、外部OSS、調査URLは、再検討時に参照するための根拠情報であり、そのまま製品へ組み込む計画または対応宣言を意味しない。
 
@@ -22,7 +22,7 @@ wallclock 補間は、最後に観測した PCR と、その PCR を観測した
 estimated_90khz = last_pcr_90khz + elapsed_monotonic_ns * 90000 / 1_000_000_000
 ```
 
-現行設計では、PCR 由来の source clock が存在しない段階で valid A/V sync ID を先出ししない。valid A/V sync ID を返す場合は、対応する `getAvSyncTime(id)` が有効 timestamp を返せる状態に限る。この現行契約は `tuner_contract/DESIGN_JA.md` の A/V sync 節を正とし、本ファイルでは再定義しない。
+現行設計では、PCR 由来の source clock が存在しない段階で valid A/V sync ID を先出ししない。valid A/V sync ID を返す場合は、対応する `getAvSyncTime(id)` が有効 timestamp を返せる状態に限る。この現行契約は `tuner_hal/DESIGN_JA.md` の A/V sync 節を正とし、本ファイルでは再定義しない。
 
 ## 先行例
 
@@ -109,7 +109,7 @@ libdvbpsi は MPEG TS / DVB PSI の decode / generation library で、PSI/SI 解
 
 AOSP Tuner HAL の `getAvSyncTime()` は current A/V sync timestamp を要求するが、上記の高度な clock discipline は非スクランブル平文ライブ視聴、VTS 接続確認、最小 A/V sync 契約を成立させるための必須条件ではない。
 
-これらを実装済み扱いにする場合は、`tuner_contract/DESIGN_JA.md` に clock source、PCR PID、jitter、drift、reset 条件、戻り値、診断、実機確認条件を吸収してから扱う。本ファイルを根拠に現行リリースで対応宣言してはならない。
+これらを実装済み扱いにする場合は、`tuner_hal/DESIGN_JA.md` に clock source、PCR PID、jitter、drift、reset 条件、戻り値、診断、実機確認条件を吸収してから扱う。本ファイルを根拠に現行リリースで対応宣言してはならない。
 
 ## 参照 URL
 

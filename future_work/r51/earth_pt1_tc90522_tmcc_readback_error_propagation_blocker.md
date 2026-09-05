@@ -6,7 +6,7 @@
 
 ## 背景
 
-`tuner_contract/DESIGN_JA.md` は、earth_pt1 / TC90522 の ISDB-T について、明示 `partialReceptionFlag=TRUE/FALSE` と layer `numOfSegment=1..13` を、lock 後に Linux DVB から読み戻した TMCC の partial-reception 状態および layer segment count と照合して要求適合を判定する設計とする。この設計自体は変更しない。
+`tuner_hal/DESIGN_JA.md` は、earth_pt1 / TC90522 の ISDB-T について、明示 `partialReceptionFlag=TRUE/FALSE` と layer `numOfSegment=1..13` を、lock 後に Linux DVB から読み戻した TMCC の partial-reception 状態および layer segment count と照合して要求適合を判定する設計とする。この設計自体は変更しない。
 
 しかし、現行 Linux DVB TC90522 driver の `get_frontend()` は TMCC register の読み出しに失敗した場合でも、その失敗を userspace が確実に識別できる形で返さない経路を持つ。TMCC read に成功した場合だけ `isdbt_partial_reception` と各 layer の `segment_count` が更新されるため、userspace からは今回の選局に対する新しい正常 readback と、read failure 後に残った既存値または初期値とを確実に区別できない。
 
@@ -39,7 +39,7 @@
 
 ## 非対象
 
-- `tuner_contract/DESIGN_JA.md` の earth_pt1 / TC90522 に対する最終的な frontend settings 契約の変更
+- `tuner_hal/DESIGN_JA.md` の earth_pt1 / TC90522 に対する最終的な frontend settings 契約の変更
 - TC90522 の復調方式そのものの変更
 - ARIB の partial reception または segment 構成仕様の変更
 - Android Tuner AIDL の変更

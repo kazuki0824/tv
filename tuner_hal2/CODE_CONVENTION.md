@@ -1,6 +1,6 @@
 # Tuner HAL2 コーディング規則
 
-この文書は `tuner_hal2` 固有の**実装規約**だけを定める。公開契約、状態遷移、戻り値、capability / profile、資源寿命、transaction の phase / commit / rollback、cleanup / quarantine の意味、worker / callback / source boundary / descrambler の論理契約は `../tuner_contract/DESIGN_JA.md` を唯一の正本とする。実装 owner、module anchor、許可 entry point は `DESIGN_JA.md` の「共通transaction / use-caseの規範実装アンカー」を唯一の正本とする。プロジェクト全体の Rust 規約、no-`panic`、mutex汚染、一般worker、FFI、parser、ロック / callback、テスト自己参照禁止は`../GLOBAL_CODE_CONVENTION.md`を正とし、本書へ重複定義しない。旧 `../tuner_hal/CODE_CONVENTION.md` は旧参照実装だけの規約であり、`tuner_hal2` の現行実装規約の正本として参照しない。
+この文書は `tuner_hal2` 固有の**実装規約**だけを定める。公開契約、状態遷移、戻り値、capability / profile、資源寿命、transaction の phase / commit / rollback、cleanup / quarantine の意味、worker / callback / source boundary / descrambler の論理契約は `../tuner_hal/DESIGN_JA.md` を唯一の正本とする。実装 owner、module anchor、許可 entry point は `DESIGN_JA.md` の「共通transaction / use-caseの規範実装アンカー」を唯一の正本とする。プロジェクト全体の Rust 規約、no-`panic`、mutex汚染、一般worker、FFI、parser、ロック / callback、テスト自己参照禁止は`../GLOBAL_CODE_CONVENTION.md`を正とし、本書へ重複定義しない。旧 `../tuner_hal/CODE_CONVENTION.md` は旧参照実装だけの規約であり、`tuner_hal2` の現行実装規約の正本として参照しない。
 
 本書は論理状態名、commit point、rollback policy、quarantine 条件を第二の正本として定義しない。以下で論理契約名を記す場合も、その意味を再定義するのではなく、**実装が正本 owner / typed entry を迂回しないための禁止規約**を示すだけである。
 
@@ -40,7 +40,7 @@
 
 ## 3. transaction owner / typed entry を迂回しない
 
-状態・寿命・failure transition の論理契約は `../tuner_contract/DESIGN_JA.md`、実装 owner / anchor / allowed entry は `DESIGN_JA.md` の「共通transaction / use-caseの規範実装アンカー」を正とする。本書はこれらの owner 表、phase order、commit / rollback / quarantine 条件を複製しない。
+状態・寿命・failure transition の論理契約は `../tuner_hal/DESIGN_JA.md`、実装 owner / anchor / allowed entry は `DESIGN_JA.md` の「共通transaction / use-caseの規範実装アンカー」を正とする。本書はこれらの owner 表、phase order、commit / rollback / quarantine 条件を複製しない。
 
 - 規範実装アンカーに owner として列挙されていない module は、当該 state / registry / generation / cleanup authority を直接変更しない。
 - service-level orchestration は、正本 owner から受け取った typed request / token / command / result を接続するだけとし、domain-private state を直接書き戻さない。
@@ -54,7 +54,7 @@
 - `transaction_registry.rs` は dispatch target の実装表に限定し、ownership、coverage、接続済み判定、公開 status semantics を第二の表として持たせない。
 - 静的検査は directory 名や `*_ops.rs` / `*_txn.rs` suffix だけで owner を判定せず、規範アンカーにない module が owner state を直接 mutation していないことと typed entry を迂回していないことを検査する。
 - A分類は、呼出し終了後も残り後続呼出しが正本として参照・変更するpersistent stateのcanonical ownerとする。persistent fieldはAの正規状態所有型または同型だけが直接所有するprivate内部型に置き、同義shadow stateを別ownerへ置かない。
-- B分類はpersistent stateへの複数段階mutation手順を所有してよいが、persistent storageの第二正本を持たない。`../tuner_contract/DESIGN_JA.md`でBが「所有する状態」と記載される場合も、変更責任の所有を意味し、B instanceを呼出し越しのstate ownerにしない。
+- B分類はpersistent stateへの複数段階mutation手順を所有してよいが、persistent storageの第二正本を持たない。`../tuner_hal/DESIGN_JA.md`でBが「所有する状態」と記載される場合も、変更責任の所有を意味し、B instanceを呼出し越しのstate ownerにしない。
 - Bはcall-local variable、immutable plan/result enum、typed snapshot、prepared mutation、one-shot authorityを使用してよいが、`Arc<Mutex<BState>>`等でmutable進行状態を外部呼出し越しに保持しない。共有persistent stateが必要になった場合は、既存Aへ状態を置くか、論理owner境界を設計側で再判定する。
 - Bのretryable pending stateは`ObjectCloseTxn`、demux invalidation owner、`WorkerRuntime`等のpersistent canonical ownerへtyped resultとして返し、B instance自体をretry正本として保持しない。
 
@@ -90,7 +90,7 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 - 一回実行権限が、失敗し得る外部副作用を開始し、かつ同一の永続義務について後続の一回実行権限を再発行できる種類である場合は、外部副作用の開始直前に正本所有者の正規入口へ再入場し、世代・義務識別子・試行識別子を検証して当該試行を唯一の実行中試行として不可分に確定する。失効済みの権限、または別試行が既に実行中である権限は、外部副作用を開始する前に拒否する。
 - 前項の一回実行権限が実行中確定前に失われた場合は、論理契約が未完義務の継続を要求する限り後続権限を発行できる。実行中確定後に結果が失われ、外部副作用が開始済みか不明な場合は、権限喪失だけを根拠に同じ外部処理を再実行しない。再実行してよいのは、対象処理が論理契約上安全に反復可能である場合、外部実状態を再確認して処理未完を確定できる場合、または世代・義務識別子等で旧試行の副作用を遮断できる場合に限る。それらを確認できない場合は、正本論理契約の結果不明時の扱いへ接続する。
 - 遅れて返った試行結果は、正本所有者への取込み前に世代・義務識別子・試行識別子を再検証し、現在の実行中試行に一致しない結果から完了を確定しない。
-- `ObjectCloseTxn`の`CloseCleanupAuthority`は、失敗し得る外部副作用を伴い同一の未完後片付け義務について再発行され得る場合、直前3項の一般規則を適用する。`ObjectCloseTxn`固有の未完手順、再試行、回収移管、完了確定、結果不明時の状態遷移は`../tuner_contract/DESIGN_JA.md`の同名論理契約を正とし、本書では再定義しない。
+- `ObjectCloseTxn`の`CloseCleanupAuthority`は、失敗し得る外部副作用を伴い同一の未完後片付け義務について再発行され得る場合、直前3項の一般規則を適用する。`ObjectCloseTxn`固有の未完手順、再試行、回収移管、完了確定、結果不明時の状態遷移は`../tuner_hal/DESIGN_JA.md`の同名論理契約を正とし、本書では再定義しない。
 - 再利用可能な値は token と分離した read-only descriptor にする。clone可能なread-only handleとone-shot mutation authorityが同じ型に混在して権限を複製しないよう、必要に応じて別型へ分離する。
 - lifetime ID / generation / epoch / tokenは意味ごとのnewtypeまたは同等の型境界で区別し、異なるnamespaceの裸の整数を同じmutation APIへ渡せる形を正規形にしない。
 - single-variant enum や未使用 variant で状態機械を装わない。
@@ -117,11 +117,11 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 - packet descramble path が raw key-slot id、raw key table、registry entry を直接取得しない。registry owner が解決した snapshot / predicate を渡す。
 - diagnostic record を kind + 多数の optional field から意味復元する field bag にしない。variant-specific typed context を使う。
 - public `HalError` detail と typed diagnostic record を併用する場合、typed record を正本として保存し、文字列だけを唯一の診断情報にしない。
-- 診断専用 counter は `../tuner_contract/DESIGN_JA.md` の診断 counter 飽和契約に従い、business API の成功/失敗判定や lifetime / generation 発行に使わない。
+- 診断専用 counter は `../tuner_hal/DESIGN_JA.md` の診断 counter 飽和契約に従い、business API の成功/失敗判定や lifetime / generation 発行に使わない。
 
 ## 8. public nullable / close / frontend count の実装入口
 
-- public nullable API、public close、frontend count の公開意味は `../tuner_contract/DESIGN_JA.md` の該当API契約を正とする。本書では状態名、戻り値、phase を再定義しない。
+- public nullable API、public close、frontend count の公開意味は `../tuner_hal/DESIGN_JA.md` の該当API契約を正とする。本書では状態名、戻り値、phase を再定義しない。
 - nullable Binder 引数を helper 内で非 nullable に潰さず、`None` を正本 use-case へ到達させる。
 - AIDL façade は close / callback unregister / demux-input PID claim / frontend count の意味論を再定義せず、service_runtime use-case と Binder status bridge に限定する。
 - input conversion helper は未対応値の丸め込みや独自戻り値 policy を持たず、validated request / command DTO へ接続する。
@@ -139,7 +139,7 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 
 ## 10. callback delivery failure boundary
 
-- callback artifact lookup failure と Binder delivery failure の公開意味は `../tuner_contract/DESIGN_JA.md` を正とする。delivery module は phase を保持した typed primary error を service_runtime completion use-case へ渡すだけにする。
+- callback artifact lookup failure と Binder delivery failure の公開意味は `../tuner_hal/DESIGN_JA.md` を正とする。delivery module は phase を保持した typed primary error を service_runtime completion use-case へ渡すだけにする。
 - runtime lock poison 等で finish use-case に到達できない場合は、service-context owned typed fallback diagnostic store へ記録し、記録不能も counter へ表面化する。
 - production code から callback artifact store を raw owner handle または all-artifact helper で直接 clear しない。runtime owner が発行する command bridge に限定する。
 - artifact bridge は runtime callback registry を mutation しない。registry mutation と primary + cleanup failure composition は service_runtime owner に置く。
@@ -157,8 +157,8 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 
 ## 12. runtime failure / capability inventory の実装境界
 
-- service publication前のstartup validationでは、AIDL service registration不能、VINTF instance不整合、必須profile / 静的設定の解析不能、stable AIDL / service名 / init設定の自己矛盾をtyped startup failureとして確定し、明示診断を残して未公開のまま終了させる。service publication後のruntime failureをこのfail-fast経路へ流用しない。公開可否・capability意味論は`../tuner_contract/DESIGN_JA.md`、product統合条件は`INTEGRATION.md`を正とする。
-- device node 不在、open不可、permission不足、probe不成立と、device存在下の runtime ioctl / read / pump failure を別の typed domain error として保持する。公開結果と状態遷移は `../tuner_contract/DESIGN_JA.md` を正とする。
+- service publication前のstartup validationでは、AIDL service registration不能、VINTF instance不整合、必須profile / 静的設定の解析不能、stable AIDL / service名 / init設定の自己矛盾をtyped startup failureとして確定し、明示診断を残して未公開のまま終了させる。service publication後のruntime failureをこのfail-fast経路へ流用しない。公開可否・capability意味論は`../tuner_hal/DESIGN_JA.md`、product統合条件は`INTEGRATION.md`を正とする。
+- device node 不在、open不可、permission不足、probe不成立と、device存在下の runtime ioctl / read / pump failure を別の typed domain error として保持する。公開結果と状態遷移は `../tuner_hal/DESIGN_JA.md` を正とする。
 - product runtime の frontend / backend inventory は、正本 capability owner が probe 成功と必要情報の確定を確認した entry だけから構成する。実体のない degraded frontend entry、診断専用 phantom entry、成功扱いの代替entryを生成しない。
 - capability / resource query は正本 snapshot / ledger だけを参照し、未対応機能、存在しないresource、確保不能resourceを helper 層の成功 no-op で補償しない。
 - client入力の不正、未対応、lifecycle不整合、resource unavailable、backend/internal failureを文字列または一個のgeneric errorへ早期に丸めず、`aidl_service::error_bridge`まで typed classification を保持する。
@@ -167,7 +167,7 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 
 - FMQのcurrent implementation boundaryは、write success、short write、overflow、native write failure、EventFlag wake failureを区別する typed result を返す。write failureを0 byte成功、空queue、overflow、normal wakeへ丸めない。
 - framework callback / Binder callback の戻り値を `let _ = ...`、`drop(result)`、ログだけで破棄しない。typed delivery failureを `WorkerFailureClassifier` / `PostCommitCallbackFailureTxn` の正本entryへ接続する。
-- worker bodyは通常停止、停止要求、runtime failure、panic/join failureを区別できる typed terminal resultをownerへ返し、無言停止しない。terminal meaning自体は `../tuner_contract/DESIGN_JA.md` を正とする。
+- worker bodyは通常停止、停止要求、runtime failure、panic/join failureを区別できる typed terminal resultをownerへ返し、無言停止しない。terminal meaning自体は `../tuner_hal/DESIGN_JA.md` を正とする。
 - worker runtime failureとpanic / join failureは別のtyped diagnostic categoryとして記録し、単一の「worker stopped」診断へ潰さない。counterを持つ場合もerror系とpanic/join系を別集計とし、診断名・counter値から公開状態を逆算しない。
 - workerの待機はstop/wakeで解除可能なprimitiveを使い、client指定intervalをそのまま `thread::sleep()` してclose / Drop / shutdownを妨げない。
 - generic worker生成・停止・wake・joinは `DESIGN_JA.md` の `WorkerRuntime` 規範アンカーへ接続する。`WorkerHandle`は同ownerに従属するopaque handle / authorityとしてのみ使用し、規範owner外から `std::thread::spawn`、独自`JoinHandle` lifecycle、silent joinを追加しない。
@@ -177,12 +177,12 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 - public AIDL method、façade、worker、backend adapterが、正本transactionのvalidation / prepare / commit / rollback / cleanupを分解して別ownerとして再実装しない。正本ownerのtyped entryへ接続する。
 - destructive mutationより前に検証できる条件、容量、ID / generation候補、rollback準備を完了させる。失敗し得るpreflightを旧resource破棄後へ送らない。
 - critical cleanup、unregister、backend stop、token release、worker join、queue cleanupをbest-effort helperへ流して沈黙させない。失敗を直接返せない場所でもtyped diagnosticに対象と段階を残す。
-- 同一条件の非破壊最適化は `../tuner_contract/DESIGN_JA.md` が許可する公開意味を変えず、正本transaction owner内で破壊的処理より前にだけ適用する。façadeやhelperが独自のsame-condition state machineを持たない。
+- 同一条件の非破壊最適化は `../tuner_hal/DESIGN_JA.md` が許可する公開意味を変えず、正本transaction owner内で破壊的処理より前にだけ適用する。façadeやhelperが独自のsame-condition state machineを持たない。
 
 ## 15. lifetime ID / generation / token の実装規約
 
 - lifetime ID、generation、worker signal generation、token、`startId`等の再利用禁止識別子の発行に `saturating_add()` またはwrapを許す `fetch_add()` を使用しない。
-- 正本ownerは `checked_add()` 等で発行可能性を確定し、発行不能時の公開結果・局所failure / quarantineは `../tuner_contract/DESIGN_JA.md` の各契約へ接続する。wrapまたは予約値への回帰で処理継続しない。
+- 正本ownerは `checked_add()` 等で発行可能性を確定し、発行不能時の公開結果・局所failure / quarantineは `../tuner_hal/DESIGN_JA.md` の各契約へ接続する。wrapまたは予約値への回帰で処理継続しない。
 - 0、負値、予約値を通常発行IDとして使用しない。失効・revoke後のtoken保持要否は正本key/token ownerの契約に従い、診断目的だけで復号可能なactive entryとして残さない。
 
 ## 16. backend 診断名前空間
@@ -192,9 +192,9 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 
 ## 17. source filter / packet pipeline 実装規約
 
-- source filter relationの対応可否と公開結果は `../tuner_contract/DESIGN_JA.md` を正とし、実装は `SourceBoundaryTxn` のtyped entryを迂回しない。未対応組合せを成功no-opにしない。
+- source filter relationの対応可否と公開結果は `../tuner_hal/DESIGN_JA.md` を正とし、実装は `SourceBoundaryTxn` のtyped entryを迂回しない。未対応組合せを成功no-opにしない。
 - raw TS source由来packetも通常demux inputと同じ `PacketPipeline` の検証済みpacket経路へ接続し、TEI、continuity、discontinuity、duplicate、stream / parser generation処理を別実装にしない。
-- section / PES / AV / record payloadをraw TS source packetへ再解釈して別filterへ直接redispatchする経路を追加しない。公開source契約の変更が必要な場合は先に `../tuner_contract/DESIGN_JA.md` を変更する。
+- section / PES / AV / record payloadをraw TS source packetへ再解釈して別filterへ直接redispatchする経路を追加しない。公開source契約の変更が必要な場合は先に `../tuner_hal/DESIGN_JA.md` を変更する。
 
 ## 18. px4 single-open backend 実装規約
 

@@ -351,7 +351,7 @@ EIT `free_CA_mode` の規範対象は、地上デジタルについて現行日�
 
 Tuner HALは汎用的なMPEG-TS sectionの伝送処理（ペイロード抽出、sectionの区切り、宣言長の検査、任意のCRC検査、フィルター照合、queueまたはFMQへの配送、伝送診断）だけを担当する。PAT、CAT、PMT、NIT、SDT、BAT、EIT、TDT、TOT、BIT、NBIT、LDT、CDT、PCAT、SDTT、AIT、AMTを含む表固有の意味解析、正規化、複数sectionの集約、意味オブジェクトの生成は`arib_si_engine_rs`とTISが担当し、Tuner HALへ戻さない。
 
-TSの伝送構文、`table_id`別のsection長上限、CRCとraw配送条件、公開フィルター状態は`../tuner_contract/DESIGN_JA.md`の「セクションフィルターの条件幅とsection長上限」を正とする。本crateは、それらの条件を満たして上位から入力されたsectionについてだけ、次表の意味解釈を担当する。予約済み、未割り当て、私用、外部所有の`table_id`を型付き意味オブジェクトとして推測しない。
+TSの伝送構文、`table_id`別のsection長上限、CRCとraw配送条件、公開フィルター状態は`../tuner_hal/DESIGN_JA.md`の「セクションフィルターの条件幅とsection長上限」を正とする。本crateは、それらの条件を満たして上位から入力されたsectionについてだけ、次表の意味解釈を担当する。予約済み、未割り当て、私用、外部所有の`table_id`を型付き意味オブジェクトとして推測しない。
 
 ### 意味解釈の責務
 | 対象 | 主なtable ID | 意味解釈の責務 | Tuner HALの処理 | 配送規則 | 禁止事項 | 理由 |

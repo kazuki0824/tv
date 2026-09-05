@@ -52,7 +52,7 @@ import /vendor/etc/ueventd.tuner_hal2.rc
 
 ## 3.1 px4_drv readback ABI のproduct前提
 
-px4 backendをproductへ組み込む場合、採用kernel driverは `../開発規則.md` のpx4_drv product-level invariantを満たす版へ固定する。公開AIDLの意味、status capability、generation/readiness、scan callbackの規範値は `../tuner_contract/DESIGN_JA.md` を正とし、本節では再定義しない。
+px4 backendをproductへ組み込む場合、採用kernel driverは `../開発規則.md` のpx4_drv product-level invariantを満たす版へ固定する。公開AIDLの意味、status capability、generation/readiness、scan callbackの規範値は `../tuner_hal/DESIGN_JA.md` を正とし、本節では再定義しない。
 
 product build / 実機VTSの前に、少なくとも次のABI接続を確認する。
 
@@ -92,9 +92,9 @@ init rc は `android.hardware.tv.tuner.ITuner/default` を登録する。VINTF f
 
 ## 6. VTS / product config policy
 
-VTS / product config の公開契約、capability、`VtsEnvironmentProfile`の入力、状態、`VTS-STATE-BOUND` / `VTS-STATE-REJECTED`の意味は `../tuner_contract/DESIGN_JA.md` の`製品スコープ / AOSP capability / VTS profile 境界`、`CapabilitySnapshot`、`ProductProfile`、`VTS環境に関する設計保留`を正とする。本節は、それらをproduct buildと実機VTSへ接続する配置・生成・検証経路だけを所有し、profile入力の規範値、HAL capability、公開API戻り値、VTS状態を再定義しない。
+VTS / product config の公開契約、capability、`VtsEnvironmentProfile`の入力、状態、`VTS-STATE-BOUND` / `VTS-STATE-REJECTED`の意味は `../tuner_hal/DESIGN_JA.md` の`製品スコープ / AOSP capability / VTS profile 境界`、`CapabilitySnapshot`、`ProductProfile`、`VTS環境に関する設計保留`を正とする。本節は、それらをproduct buildと実機VTSへ接続する配置・生成・検証経路だけを所有し、profile入力の規範値、HAL capability、公開API戻り値、VTS状態を再定義しない。
 
-本製品は monitor event feature を製品能力として採用せず、静的VTS/product configでも同featureを要求・広告する構成にしない。monitor event の公開API戻り値とcapability契約は `../tuner_contract/DESIGN_JA.md` を正とし、本書では重複定義しない。本書のproduct integration設定を、未定義の将来profileでmonitor eventを有効化するための切替点として扱ってはならない。
+本製品は monitor event feature を製品能力として採用せず、静的VTS/product configでも同featureを要求・広告する構成にしない。monitor event の公開API戻り値とcapability契約は `../tuner_hal/DESIGN_JA.md` を正とし、本書では重複定義しない。本書のproduct integration設定を、未定義の将来profileでmonitor eventを有効化するための切替点として扱ってはならない。
 
 ### 6.1 単一VtsEnvironmentProfileファイルと依存方向
 
@@ -102,7 +102,7 @@ VTS / product config の公開契約、capability、`VtsEnvironmentProfile`の�
 
 対話CLIはこの同一ファイルを生成・読み込み・更新する。地域から生成した受信候補、実機接続後に解決したfrequency / service / PAT / PMT / PIDに由来する具体値も、別のderived-resolution設定ファイルへ分離せず、同じ`VtsEnvironmentProfile`ファイルへ保存する。生成AOSP Tuner VTS XMLはderived artifactであり、この設定ファイルと同格の正本ではない。
 
-Tuner HALのcapability、公開個数、FMQ/PES/AV/DVR/worker等の製品資源上限、frontend probe結果を`VtsEnvironmentProfile`の独立した規範値として複製してはならない。これらは`../tuner_contract/DESIGN_JA.md`の`ProductProfile` / `CapabilitySnapshot`と`tuner_hal2`の実機probeを正本とする。profile compilerが静的照合に必要とするHAL側情報は、同じ正本から機械的に取得したread-only contractとして入力してよいが、人間編集設定として保存せず、HALのruntime能力を変更する入力にも使用しない。
+Tuner HALのcapability、公開個数、FMQ/PES/AV/DVR/worker等の製品資源上限、frontend probe結果を`VtsEnvironmentProfile`の独立した規範値として複製してはならない。これらは`../tuner_hal/DESIGN_JA.md`の`ProductProfile` / `CapabilitySnapshot`と`tuner_hal2`の実機probeを正本とする。profile compilerが静的照合に必要とするHAL側情報は、同じ正本から機械的に取得したread-only contractとして入力してよいが、人間編集設定として保存せず、HALのruntime能力を変更する入力にも使用しない。
 
 依存方向は次に固定する。
 
@@ -174,7 +174,7 @@ resolve-device  public Tuner AIDLと受信TSを使って実機依存値を解決
 compile         同じファイルだけを入力に検証しAOSP Tuner VTS XMLを生成する
 ```
 
-`init` は実機接続を前提にしない。AOSP/VTS契約識別、対象backend/product、受信方式、明示入力または地域入力、要求するVTS flow、queue要求等、入力時点で確定できる値を対話的に取得し、未確定項目を架空値で埋めずにprofileを保存する。必要入力が揃っていないprofileは `../tuner_contract/DESIGN_JA.md` の `VTS-STATE-UNBOUND` 判定に従い、保存可能であっても静的VTS XMLをinstall可能とは扱わない。
+`init` は実機接続を前提にしない。AOSP/VTS契約識別、対象backend/product、受信方式、明示入力または地域入力、要求するVTS flow、queue要求等、入力時点で確定できる値を対話的に取得し、未確定項目を架空値で埋めずにprofileを保存する。必要入力が揃っていないprofileは `../tuner_hal/DESIGN_JA.md` の `VTS-STATE-UNBOUND` 判定に従い、保存可能であっても静的VTS XMLをinstall可能とは扱わない。
 
 CLIと生成profileのtargetはproduct defaultである`tuner_hal2`に固定する。profile compiler、生成XML module、variant設定、vendor imageへの配置は`tuner_hal2`のproduct integrationだけへ接続し、旧`tuner_hal`の`profiles/`、`tools/render_vts_config.py`、`config/tuner_vts_config_*`、旧service packageを更新・参照・fallback先にしてはならない。旧`tuner_hal`に存在するprofile rendererは設計参考として読めても、このCLIの実行対象または生成先にはしない。
 
@@ -200,12 +200,12 @@ service ID、PMT PID、audio/video/record PID等のTS内識別値を地域情報
 
 VTS用静的XMLは手編集正本にせず、単一`VtsEnvironmentProfile`ファイルだけをprofile入力としてbuild-timeのcompiler / validatorで生成する。compiler / validatorは少なくとも次の順序でfail-closedに検証する。
 
-1. profile自体のschema、必須項目、型、ID参照、および全profile fieldに6.2の消費経路があることを検証する。profileが保存可能でも、`../tuner_contract/DESIGN_JA.md`が静的XMLに要求する具体入力が未解決ならXML生成へ進めない。
-2. `../tuner_contract/DESIGN_JA.md` が要求するVTS契約識別入力と、実際にbuild/testへ使用するAOSP Tuner VTS契約を照合する。一意に一致しない場合はXMLを生成・installしない。
-3. profileのfrontend設定、flow、filter種別、DVR種別、PID、queue容量が`../tuner_contract/DESIGN_JA.md`で成功対応として認めた公開契約と矛盾しないことを検証する。
+1. profile自体のschema、必須項目、型、ID参照、および全profile fieldに6.2の消費経路があることを検証する。profileが保存可能でも、`../tuner_hal/DESIGN_JA.md`が静的XMLに要求する具体入力が未解決ならXML生成へ進めない。
+2. `../tuner_hal/DESIGN_JA.md` が要求するVTS契約識別入力と、実際にbuild/testへ使用するAOSP Tuner VTS契約を照合する。一意に一致しない場合はXMLを生成・installしない。
+3. profileのfrontend設定、flow、filter種別、DVR種別、PID、queue容量が`../tuner_hal/DESIGN_JA.md`で成功対応として認めた公開契約と矛盾しないことを検証する。
 4. `tuner_hal2`の同一product capability正本から機械的に取得したread-only contractと照合し、VTSが要求するfilter / DVR個数、FMQ / processing bufferその他の静的資源claimが製品上限を超えないことを依存閉包単位で検証する。VTS合格のためにHAL側の能力値を上書きまたは縮退させてはならない。
 5. 選択したAOSP Tuner VTS schemaで生成XMLを検証する。
-6. `../tuner_contract/DESIGN_JA.md` のfilename解決契約に従い、選択したVTS loaderとvariant入力からinstall先を一意に解決する。
+6. `../tuner_hal/DESIGN_JA.md` のfilename解決契約に従い、選択したVTS loaderとvariant入力からinstall先を一意に解決する。
 
 いずれかが失敗した場合は、推測値、既定PID、既定周波数、sample XML値、別profileへのfallbackで補完せず、VTS config artifactを成立させない。生成済みXMLを直接修正してvalidatorを迂回してはならない。
 
@@ -227,15 +227,15 @@ agentの論理責務・禁止責務、C++をFMQ descriptor import/read境界へ�
 
 ### 6.7 生成物とproduct配置
 
-生成されるAOSP Tuner VTS XMLはderived artifactであり、`VtsEnvironmentProfile`と同格の正本ではない。product integrationは、`../tuner_contract/DESIGN_JA.md`のfilename解決契約で得た解決済みfilenameを使用して、生成・検証済みXMLをproduct build graph経由でvendor imageへ正確に1個installする。`PRODUCT_COPY_FILES`、生成済みconfig moduleその他の具体的なbuild mechanismは、この一意なinstall契約を満たす限り実装詳細とする。
+生成されるAOSP Tuner VTS XMLはderived artifactであり、`VtsEnvironmentProfile`と同格の正本ではない。product integrationは、`../tuner_hal/DESIGN_JA.md`のfilename解決契約で得た解決済みfilenameを使用して、生成・検証済みXMLをproduct build graph経由でvendor imageへ正確に1個installする。`PRODUCT_COPY_FILES`、生成済みconfig moduleその他の具体的なbuild mechanismは、この一意なinstall契約を満たす限り実装詳細とする。
 
 variantを使用する場合、variant propertyの値と生成XML filenameは同一`VtsEnvironmentProfile`の入力から導出し、product makefile側で別値を独立定義しない。variantを使用しない場合も、その判断は同じprofileから導出し、別のproduct設定面を設けない。
 
-`config/product_integration.mk`は、`../tuner_contract/DESIGN_JA.md`のVTS状態契約に従って静的configをinstall可能と判定されたproductだけで、生成・検証済みVTS config artifactをvendor imageへのbuild graphへ接続できる構造にする。artifactを含めないproductでは、推測した既定XMLまたは旧`tuner_hal`のVTS XMLを代用しない。
+`config/product_integration.mk`は、`../tuner_hal/DESIGN_JA.md`のVTS状態契約に従って静的configをinstall可能と判定されたproductだけで、生成・検証済みVTS config artifactをvendor imageへのbuild graphへ接続できる構造にする。artifactを含めないproductでは、推測した既定XMLまたは旧`tuner_hal`のVTS XMLを代用しない。
 
 ### 6.8 統合完了条件への接続
 
-本節は`VTS-STATE-BOUND`等の状態意味を追加定義しない。`../tuner_contract/DESIGN_JA.md`で静的VTS configをinstall可能と判定されたprofileについて、product integrationとしては次が成立していることを要求する。
+本節は`VTS-STATE-BOUND`等の状態意味を追加定義しない。`../tuner_hal/DESIGN_JA.md`で静的VTS configをinstall可能と判定されたprofileについて、product integrationとしては次が成立していることを要求する。
 
 - `VtsEnvironmentProfile`が実在する単一設定ファイルとして存在し、CLIがその同一ファイルを生成・更新する。
 - 実機なしでも地域等から受信候補を同じprofileへ保存でき、未解決値を架空値で埋めない。
@@ -252,7 +252,7 @@ variantを使用する場合、variant propertyの値と生成XML filenameは同
 
 ## 7. section filter runtime契約の参照
 
-`TableInfo repeat=false`を含むsection filterの公開意味、first-instance解決、停止条件、`repeat=true`との使い分け、未知の全instance集合の終端をHALが推測しない契約は`../tuner_contract/DESIGN_JA.md`を正とする。複数table instanceのinstance別完成・更新・寿命は`../arib_si_engine_rs/DESIGN_JA.md`の「複数table instanceの完成・更新・寿命」、操作ごとの必要instance集合と完成時の明示`stop()`は`../tis/DESIGN_JA.md`の「複数table instance収集と停止」を正とする。
+`TableInfo repeat=false`を含むsection filterの公開意味、first-instance解決、停止条件、`repeat=true`との使い分け、未知の全instance集合の終端をHALが推測しない契約は`../tuner_hal/DESIGN_JA.md`を正とする。複数table instanceのinstance別完成・更新・寿命は`../arib_si_engine_rs/DESIGN_JA.md`の「複数table instanceの完成・更新・寿命」、操作ごとの必要instance集合と完成時の明示`stop()`は`../tis/DESIGN_JA.md`の「複数table instance収集と停止」を正とする。
 
 本書が所有するのはproduct統合だけであり、VINTF/init/package/VTS設定の配置によって上記runtime契約を変更または再定義してはならない。
 

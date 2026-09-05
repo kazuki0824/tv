@@ -4,14 +4,14 @@
 - TMCC listをgeneration変更、lock loss、scan candidate遷移、stop、close、backend/fatal failureで失効させる。support判定はLNB有無の間接推定ではなく `Px4CharDevice + IsdbS` に固定し、px4 ISDB-T / Linux DVBへ横展開しない。
 - workerのTMCC取得結果は `FrontendRuntime` を直接mutationせず、既存の有限正規入口 `FrontendTuneScanTxn::accept_operation_event()` でoperation generationを再検証してから `FrontendTxn::record_frontend_stream_id_list()` / `FrontendRuntime::record_stream_id_list()` へcommitする。第二のowner、generation、retry registry、scan state machineは追加していない。
 - scanではlistを同candidateで取得できた場合だけ `INPUT_STREAM_IDS` を同じcommitted valueから `LOCKED` より前に配送する。`EAGAIN` pendingは追加messageを省略して既存の最低保証 `LOCKED` を遅延・失敗させず、tune中は既存worker監視周期で再観測する。その他のdriver/I/O failureは正常pendingへ丸めない。
-- 公開capability / status / readiness / scan callback / 失効条件を `tuner_contract/DESIGN_JA.md`、実装owner接続を `tuner_hal2/DESIGN_JA.md` へ反映し、公開AIDL意味論を実装文書へ重複定義していない。既存rustfmt failureも解消した。
+- 公開capability / status / readiness / scan callback / 失効条件を `tuner_hal/DESIGN_JA.md`、実装owner接続を `tuner_hal2/DESIGN_JA.md` へ反映し、公開AIDL意味論を実装文書へ重複定義していない。既存rustfmt failureも解消した。
 - Rust 1.81.0でcombined stackのhost workspace 169 tests、Clippy `-D warnings`、rustfmt check、`git diff --check`が成功した。標準PR workflowはbot pushに対するGitHubの実行承認待ち (`action_required`) で未実行。Android/Soong build、atest、VTS、CTS、実機TMCC/`STREAM_ID_LIST`/`INPUT_STREAM_IDS`確認は未実施である。
 
 # r50eo84_pr73_px4_tmcc_tsid_readback
 
 - product採用 `px4_drv` 基準を merged `px4_drv#3` (`c2236cc761d9d02e38a728f8cad0519610cd891b`) へ更新し、pointer-free fixed-size `PTX_GET_TMCC_TSID_LIST` (`num + tsid[12]`) を `tuner_hal2` PX4 ABIへmirrorした。28-byte layout / ioctl numberを固定し、`num > 12` またはcompact prefix内0をfail-closed、`EAGAIN`をTMCC未確定のtyped `Pending`、その他errnoをbackend failureとして保持する。
 - TMCC TSID listは既存 `tc90522_tmcc_get_tsid_s()` / driver UAPIを唯一のreadback authorityとし、active `FrontendBackendSession` の既存control fdを再利用する。固定BS TSID表、別TMCC parser、exclusive px4 chardevの再open、VTS/profileからのioctl bypassは追加していない。
-- product-level invariantを `開発規則.md`、公開Tuner HAL側のdevice-readback方針を `tuner_contract/DESIGN_JA.md`、実装owner/anchorを `tuner_hal2/DESIGN_JA.md`、product統合前提を `tuner_hal2/INTEGRATION.md` へ責務分担どおり反映した。#73単体では `STREAM_ID_LIST` / scan callbackの公開capabilityを追加せず、公開投影は後続PRの責務として分離した。
+- product-level invariantを `開発規則.md`、公開Tuner HAL側のdevice-readback方針を `tuner_hal/DESIGN_JA.md`、実装owner/anchorを `tuner_hal2/DESIGN_JA.md`、product統合前提を `tuner_hal2/INTEGRATION.md` へ責務分担どおり反映した。#73単体では `STREAM_ID_LIST` / scan callbackの公開capabilityを追加せず、公開投影は後続PRの責務として分離した。
 - Rust 1.81.0の既存host CIで実装headのrustfmt / Clippy / host testsが成功済みであり、後続#74とのcombined stackでもhost workspace 169 tests、Clippy `-D warnings`、rustfmt check、`git diff --check`を成功させた。Android/Soong build、atest、VTS、CTS、実機TMCC readback・実放送波確認は未実施である。
 
 # r50eo84_pr53_earth_pt1_fixed_symbol_rate_followup
@@ -64,7 +64,7 @@
 - ARIB TR-B15 4.6-E1 Fascicle 3 4.2.2のPES/audio-frame non-synchronizationとH.222.0のfirst-AU PTS対応へ合わせ、filter開始後の最初のPESが「先行AUのcontinuation + 当該PESで最初に開始するAU + explicit PTS」である場合のbounded cold-start sync acquisitionを既存`AudioTimestampAssociation`へ追加した。`data_alignment_indicator=true`ではpayload先頭以外を探索しない。
 - 探索はADTSの13-bit frame length上限未満に閉じ、対応codecの完全header、宣言frame length、観測可能な次frame境界を検査する。次境界まで確認できる候補をheader-only候補より優先し、syncword一致だけのlock、上限なし走査、payload copy、第二buffer、queue、worker、clockは追加していないため、既存`FilterRuntime`従属状態の最小拡張に留まる。
 - continuation prefixからのexplicit anchorと後続PTS-sparse event、次PESへ跨ぐ最初のAU、偽sync候補、先行header-only候補より確認済み境界を優先するケース、`data_alignment_indicator=true`のfail-closedをunit testへ追加し、公開demux AV配送経路にもcold-start回帰試験を追加した。PCR、wallclock、nominal rateへのfallbackと`isPtsPresent` provenanceの偽装は行わない。
-- `tuner_contract/DESIGN_JA.md`と`tuner_hal2/DESIGN_JA.md`をcold-startの成功条件、誤同期防止、上限、責務境界へ同期した。公開AIDL/VINTF、capability値、future_work、`RELEASE_VERSION`は変更していない。
+- `tuner_hal/DESIGN_JA.md`と`tuner_hal2/DESIGN_JA.md`をcold-startの成功条件、誤同期防止、上限、責務境界へ同期した。公開AIDL/VINTF、capability値、future_work、`RELEASE_VERSION`は変更していない。
 - Rust 1.81.0で製品demux sourceの`cargo check --all-targets`、対象moduleの17 unit testsとClippy `-D warnings`、変更Rust 2ファイルのtree-sitter構文解析、`git diff --check`を実施した。Android/Soong build、atest、VTS、実機・実放送波確認は未実施。
 
 # r50eo84_pr53_cross_pes_audio_frame_residual_followup
@@ -72,7 +72,7 @@
 - ARIB TR-B15 4.6-E1 Fascicle 3 4.2.2がBS／広帯域CSのMPEG-2 AACで許容するPES packet／audio frame non-synchronizationへ合わせ、既存`AudioTimestampAssociation`をPES横断の有限frame walkerへ更新した。H.222.0どおり明示PTSを当該PES内で開始する最初のAUへanchorし、PTS-sparse PESは継続frame後に最初に開始するAU、continuation-only PESはその先頭byteを含むAUの時刻をexact sample countから確定する。
 - 残余は同一`FilterRuntime`内の未完了header最大7 byte、またはADTSの13-bit frame length上限8191 byte以内の残りbyte数1件だけとした。payload本体の再構成・copy、新しいstate owner、queue、worker、clock、ledger、TIS側codec parserは追加していない。既存のTEI、continuity gap、scramble/drop、flush、source/generation、stop/failure fenceはanchorと残余を同時に破棄する。
 - ADTSのframe body／header途中とMPEG audioのframe body途中にPES境界を置くunit test、公開demux AV配送経路で`explicit PTS + mid-frame boundary -> PTS-sparse PES`が`isPtsPresent=false`のまま次の開始AU時刻を配送する回帰試験を追加した。unsupported／malformed header、未anchor、未通知parameter変更では従来どおりfail-closedとし、PCR／wallclock／nominal rateへfallbackしない。
-- `tuner_contract/DESIGN_JA.md`と`tuner_hal2/DESIGN_JA.md`をH.222.0のfirst-AU対応、TR-B15のnon-synchronization許容、有限残余上限、成功／失敗境界へ同期した。TR-B15の根拠は公式英訳4.6-E1の精読範囲であり、現行日本語版8.9との差分は未証明のままとした。公開AIDL/VINTF、capability値、future_work、`RELEASE_VERSION`は変更していない。
+- `tuner_hal/DESIGN_JA.md`と`tuner_hal2/DESIGN_JA.md`をH.222.0のfirst-AU対応、TR-B15のnon-synchronization許容、有限残余上限、成功／失敗境界へ同期した。TR-B15の根拠は公式英訳4.6-E1の精読範囲であり、現行日本語版8.9との差分は未証明のままとした。公開AIDL/VINTF、capability値、future_work、`RELEASE_VERSION`は変更していない。
 - GitHub Actions `tuner_hal2 host Rust CI` run 33278079105でRust 1.81.0のrustfmt、Clippy（`-D warnings`）、全target type-check、workspace unit testが成功した。Android/Soong build、atest、VTS、実機・実放送波確認は未実施。
 
 # r50eo84_pr53_audio_timestamp_association_followup
@@ -81,7 +81,7 @@
 - 未anchor、partial/unsupported frame、未通知parameter変更、overflowではAV eventを配送せず型付き診断を生成する。anchorは既存`TsInputOrigin`を含み、別frontend / playback queue epochへ再利用しない。TEI、continuity gap、scramble/PES drop、filter/DVR flush、source/generation境界、stop/failureでは該当anchorを破棄する。状態は既存`FilterRuntime`に従属するO(1)値だけで、独立owner、queue、worker、clockは追加していない。
 - 製品既定snapshotをTS AUDIO=1、TS VIDEO=1とし、両filterの未解放payload上限を閉じる有限AV runtime予算へ更新した。TS AUDIOが公開demux open-filter use-caseを通る試験、explicit/sparse ADTSのAIDL provenance/value、exact sample duration、33-bit wrap、MPEG audio、missing anchor、parameter変更、flush/discontinuity fenceの試験を追加した。
 - demux test targetに残っていた削除済み`PacketPid::from_config()`呼出4箇所を現行`from_config_pid()`へ更新し、今回追加したaudio timestamp試験を含む`--all-targets`の型検査を妨げていた既存test harnessのAPIずれを同じPR内で解消した。製品経路に互換aliasは追加していない。全filter能力を0へ落とす既存capacity fixtureも、AV能力と同時にAV byte予算を0へ落として検査軸を自己完結させた。
-- `tuner_contract/DESIGN_JA.md`へH.222.0のaudio PTS/access-unit対応、ARIB STD-B32 3.11-E1 Fascicle 2のADTS frame条件とparameter切替PTS条件、producer-side associationの成功/抑止境界を反映し、`tuner_hal2/DESIGN_JA.md`へ物理owner mappingを追加した。現行日本語版4.1との差分未証明、公開AIDL/VINTF、future_work、`RELEASE_VERSION`は変更していない。
+- `tuner_hal/DESIGN_JA.md`へH.222.0のaudio PTS/access-unit対応、ARIB STD-B32 3.11-E1 Fascicle 2のADTS frame条件とparameter切替PTS条件、producer-side associationの成功/抑止境界を反映し、`tuner_hal2/DESIGN_JA.md`へ物理owner mappingを追加した。現行日本語版4.1との差分未証明、公開AIDL/VINTF、future_work、`RELEASE_VERSION`は変更していない。
 - ローカルでは`git diff --check`、変更Rust 9ファイルのtree-sitter構文解析、Rust 1.81による新規moduleのrustfmt check、製品demux sourceそのままの`cargo check --all-targets`、Clippy通常実行、audio timestamp対象8試験、`CapabilitySnapshot`全8試験を実施した。新規audio moduleにClippy警告はないが、`-D warnings`は既存demux警告があるため成功扱いにしていない。Android/Soong build、atest、VTS、loom、実機・実放送波確認は未実施。
 
 # r50eo83_pr53_media_event_metadata_video_capability_followup
@@ -89,7 +89,7 @@
 - PES parserが確定した`stream_id`、PTS/DTSのheader presenceと33-bit 90 kHz値を`AvMediaEventMetadata`としてAV allocation descriptorへ保持し、`DemuxFilterMediaEvent`の`streamId`、`isPtsPresent` / `pts`、`isDtsPresent` / `dts`へ無損失に投影するよう変更した。PTS/DTSやwallclockを推測生成する時刻源、永続state、queue、workerは追加していない。
 - 製品対象のMPEG-2 Video、AVC、HEVCでは今回精読したARIB STD-B32 3.11-E1 Fascicle 1がvideo PES headerへのPTS明示を要求することに基づき、製品既定snapshotのTS VIDEO filterを1件と有限AV byte予算で有効化した。全audio PESへの同等のPTS明示保証とauthoritative event timestamp sourceはないため、TS AUDIO filterは0件を維持した。
 - 明示PTS、明示PTS+DTS、PTS/DTSなしPES、PES header由来ではないauthoritative PTSのpresence/value分離のAIDL投影試験、video-only AV capability closure試験、製品既定profileのTS VIDEOが公開demux open-filter use-caseを通る試験を追加した。
-- `tuner_contract/DESIGN_JA.md`のSTD-B32証拠本文台帳とMediaEvent timestamp契約をFascicle 1・2の精読結果、video/audioの別capability判断、audioを将来有効化する具体条件、`getAvSyncTime()`用wallclockを個別event PTSへ流用しない境界へ同期した。現行日本語版4.1との差分未証明は維持し、future_workと`RELEASE_VERSION`は変更していない。
+- `tuner_hal/DESIGN_JA.md`のSTD-B32証拠本文台帳とMediaEvent timestamp契約をFascicle 1・2の精読結果、video/audioの別capability判断、audioを将来有効化する具体条件、`getAvSyncTime()`用wallclockを個別event PTSへ流用しない境界へ同期した。現行日本語版4.1との差分未証明は維持し、future_workと`RELEASE_VERSION`は変更していない。
 - ローカルでは`git diff --check`、全`AvMediaEventDescriptor`構築箇所と`allocate_payload_bytes()`呼出箇所、製品snapshotのAV依存閉包を静的確認した。添付tree-sitter CLIはRust grammar設定がなく構文解析を実行できず、添付rustfmtは`librustc_driver`を含まない。rustfmt、Rust compile/unit/loom、Android/Soong build、atest、VTS、実機・実放送波確認はローカル環境では未実施。
 
 # r50eo83_pr53_dvr_queue_cleanup_failure_semantics_followup
@@ -121,7 +121,7 @@
 - Section/PESの完成payload eventへ設定時の`raw`属性を保持し、FMQ commit後のcallback投影で`raw=true`をtyped Section/PES eventへ変換しないようにした。既存のcommit後`DATA_READY` status配送は維持した。
 - raw Section/PESそれぞれについて、完成payloadのFMQ commit後に`DATA_READY`が投影され、typed Section/PES eventが0件であることを実runtime経路で確認する単体テストを追加した。既存のraw section parser testも完成eventの`raw=true`保持を確認するよう更新した。
 - 公開契約文書、実装規約、product統合文書、future_work、`RELEASE_VERSION`は変更していない。
-- Source-static checks performed: AOSP Tuner frameworkのraw Section/PES event表、`tuner_contract/DESIGN_JA.md`のraw callback行列、generated-eventからservice callback投影までのdata flow、`git diff --check`。ローカル環境ではrustfmt、rustc/cargo、Soong build、unit/loom、atest、VTS、実機・実放送波検証を実行していない。
+- Source-static checks performed: AOSP Tuner frameworkのraw Section/PES event表、`tuner_hal/DESIGN_JA.md`のraw callback行列、generated-eventからservice callback投影までのdata flow、`git diff --check`。ローカル環境ではrustfmt、rustc/cargo、Soong build、unit/loom、atest、VTS、実機・実放送波検証を実行していない。
 
 # r50eo80_customer26_followup_design_boundary_impl_recheck_source_static_unverified_v41
 
@@ -1500,7 +1500,7 @@
 - `linkCaps` が TS→TS を広告する場合の `IFilter.setDataSource(source)` 契約を、`TsRaw` sink だけでなく `TsRecord` sink へも拡張した。
 - `TsRaw` source → `TsRecord` sink は、同一 demux / lifecycle / PID 条件を満たす限り sink subtype として拒否しない。
 - source filter origin の TS packet delivery が、source filter を持つ downstream sink を正しく対象にするよう、`PipelineFilterView` の source matching を明示化した。record sink は record index / record DVR mirror の対象にする。
-- `tuner_hal2/DESIGN_JA.md` の `TsRecord` sink 記載を、`tuner_contract/DESIGN_JA.md` の成功セルと整合させた。
+- `tuner_hal2/DESIGN_JA.md` の `TsRecord` sink 記載を、`tuner_hal/DESIGN_JA.md` の成功セルと整合させた。
 - Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargoは未実行。
 
 # r50eo8
@@ -1512,7 +1512,7 @@
 
 # r50eo7
 
-- `tuner_contract/DESIGN_JA.md` の `IFrontend.tune()` 同一tune判定補正に合わせ、release version を更新した。
+- `tuner_hal/DESIGN_JA.md` の `IFrontend.tune()` 同一tune判定補正に合わせ、release version を更新した。
 - `tuner_hal2/DESIGN_JA.md` 本文と Rust実装は変更していない。
 - Android/Soong build、Rust unit test、atest、VTS、実機確認、rustfmt、rustc、cargoは未実行。
 
@@ -1940,7 +1940,7 @@
 
 # r50ei69_common_component_contract_hardening
 
-- Added common-component definition rules to `tuner_contract/DESIGN_JA.md` and `tuner_hal2/DESIGN_JA.md`: logical contract, implementation owner, owned state, phase order, failure behavior, allowed callers, forbidden callers, and minimum tests must be defined before a helper is treated as a transaction/common component.
+- Added common-component definition rules to `tuner_hal/DESIGN_JA.md` and `tuner_hal2/DESIGN_JA.md`: logical contract, implementation owner, owned state, phase order, failure behavior, allowed callers, forbidden callers, and minimum tests must be defined before a helper is treated as a transaction/common component.
 - Classified `tuner_hal2` common structures into transaction owners, phase helpers, lock helpers, façades, and adapters so `method_execution` and thin `*_ops.rs` wrappers are not mistaken for transaction owners.
 - Fixed callback registration precedence by checking object live/generation before callback retain in both immediate registration and runtime-use-case registration paths.
 - Fixed `IFilter.setDataSource(source)` service_runtime precedence: sink/source lifetime and owner demux are validated before same-demux and self-source input validation, and cross-demux source filters are rejected before dispatch/commit.
@@ -1951,7 +1951,7 @@
 
 # r50ei68_filter_datasource_same_demux_design_docs
 
-- Documented the `IFilter.setDataSource(source)` same-demux ownership rule in `tuner_contract/DESIGN_JA.md` and the corresponding `tuner_hal2` service_runtime validation responsibility in `tuner_hal2/DESIGN_JA.md`.
+- Documented the `IFilter.setDataSource(source)` same-demux ownership rule in `tuner_hal/DESIGN_JA.md` and the corresponding `tuner_hal2` service_runtime validation responsibility in `tuner_hal2/DESIGN_JA.md`.
 - Recorded the checked AOSP basis: AIDL VTS `SetFilterLinkage` opens the source and sink filters from the same demux before calling `setDataSource()`, and the checked VTS path does not require a cross-demux source filter success case.
 - Recorded the AOSP API boundary: `IFilter.setDataSource()` / framework `Filter.setDataSource()` allow another filter output as source and NULL/demux fallback, but do not require cross-demux filter graph ownership.
 - Kept historical/VTS confirmation detail in this CHANGELOG entry only; DESIGN_JA.md entries state the current product contract and implementation responsibility without release-history wording.
@@ -2421,7 +2421,7 @@
 
 - QG-04: Hid the single-object quarantine transition behind a private `RuntimeObjectTable` helper and kept `quarantine_cascade()` as the public object lifecycle entry point.
 - QG-04: Added a shared AIDL runtime unregister helper used by both explicit close and Drop-leak quarantine paths.
-- QG-04: Added `tuner_hal2/DESIGN_JA.md` section 5 as a structure-difference mapping to the existing `tuner_contract/DESIGN_JA.md` close / Drop leak / quarantine contract. This does not add a new design contract.
+- QG-04: Added `tuner_hal2/DESIGN_JA.md` section 5 as a structure-difference mapping to the existing `tuner_hal/DESIGN_JA.md` close / Drop leak / quarantine contract. This does not add a new design contract.
 - Build / rustfmt / rust unit / atest / VTS / device validation: not executed in this environment.
 
 ## r50ei9_qg03_qg04_drop_quarantine_transaction_gate
@@ -2556,7 +2556,7 @@
 # r50ee94_nullable_future_work_reference_fix
 
 - R1として `future_work/r51/android14_aidl_rust_nullable_filter_boundary_blocker.md` の正本性表現を是正した。
-- future_work側を後続検討資料とし、現行 r51 設計判断・実装済み範囲・完了判定の正本を `tuner_contract/DESIGN_JA.md` とアーカイブ外○×表へ戻した。
+- future_work側を後続検討資料とし、現行 r51 設計判断・実装済み範囲・完了判定の正本を `tuner_hal/DESIGN_JA.md` とアーカイブ外○×表へ戻した。
 - tuner_hal2 実装コードは変更していない。
 - build / unit / atest / VTS / 実機確認は未実行。
 
@@ -2651,7 +2651,7 @@
 
 # r50ee78_ssot_quality_rework
 
-- `tuner_hal2/DESIGN_JA.md` を、既存 `tuner_contract/DESIGN_JA.md` との差分構造だけを書く文書へ縮小した。完了判定、未達理由、実装規約、product統合手順、変更履歴は他文書へ重複配置しない。
+- `tuner_hal2/DESIGN_JA.md` を、既存 `tuner_hal/DESIGN_JA.md` との差分構造だけを書く文書へ縮小した。完了判定、未達理由、実装規約、product統合手順、変更履歴は他文書へ重複配置しない。
 - `CODE_CONVENTION.md` を実装規約だけに整理し、WorkerExit / WorkerFailureClassifier / ScanSessionTxn の契約再定義を削除した。
 - `README_JA.md` を使い始め入口に限定し、設計責務表や統合手順を重複させない形へ戻した。
 - アーカイブ外の○×表から過去経緯本文を削り、WP/完了条件/判定だけをSSOT化した。
@@ -2667,7 +2667,7 @@
 
 # r50ee76_design_name_alignment
 
-- `tuner_hal2/DESIGN_JA.md` を、既存 `tuner_contract/DESIGN_JA.md` と異なる、または既存文書に存在しない tuner_hal2 固有事項だけを書く方針へ改訂した。
+- `tuner_hal2/DESIGN_JA.md` を、既存 `tuner_hal/DESIGN_JA.md` と異なる、または既存文書に存在しない tuner_hal2 固有事項だけを書く方針へ改訂した。
 - `WorkerExit` / `WorkerFailureClassifier` は旧`tuner_hal`の単なる参照概念ではなく、tuner_hal2でも契約名として維持する方針へ修正した。
 - `FrontendWorkerStopOutcome` はworker終了分類の正本ではなく、停止要求APIの操作結果に限定した。`Completed` には `WorkerExit` を含めるよう実装を改めた。
 - `control/src/lib.rs` に `WorkerFailureClassifier` / `WorkerFailureDomain` を追加し、自由文字列分類やモジュール固有の別名分類器を作らないようにした。
@@ -2676,7 +2676,7 @@
 # r50ee75_quality_boundary_fix
 
 - `tuner_hal2/DESIGN_JA.md` を追加し、tuner_hal2固有の worker / ScanSession / live pump / 旧`tuner_hal`参照境界を同モジュール内の設計正本へ移した。
-- 旧`tuner_contract/DESIGN_JA.md` 末尾に混入していた tuner_hal2 固有の品質再構築追補を削除した。
+- 旧`tuner_hal/DESIGN_JA.md` 末尾に混入していた tuner_hal2 固有の品質再構築追補を削除した。
 - `WorkerFailureClassifier` / `WorkerExit` は旧`tuner_hal`側の参照概念であり、tuner_hal2では `FrontendWorkerRegistry` / `FrontendWorkerStopOutcome` を正本とすることを固定した。
 - リリース物規則に反する `tuner_hal2/COMPLETION_MATRIX.md` をアーカイブから除外し、○×表は配布補助成果物としてアーカイブ外に置く方針へ戻した。
 
@@ -2697,7 +2697,7 @@
 
 # r50ee68_quality_rework
 
-- WP-R05品質是正。旧`tuner_hal`は丸ごと移植せず、`WorkerLifecycleTxn` / `WorkerExit` / `ScanSessionTxn` / `backend_submit_tune()` / live pump stop/join方針を設計参照として採用することを `tuner_contract/DESIGN_JA.md` に固定した。
+- WP-R05品質是正。旧`tuner_hal`は丸ごと移植せず、`WorkerLifecycleTxn` / `WorkerExit` / `ScanSessionTxn` / `backend_submit_tune()` / live pump stop/join方針を設計参照として採用することを `tuner_hal/DESIGN_JA.md` に固定した。
 - `run_frontend_backend_scan_worker()` と `FrontendBackendScanPlan` を削除した。これは最初に成功したcandidateをbackend tuneし、cancelまで待つだけでScanSession、candidate progression、scan END callback delivery、callback failure診断を持たず、scan実装として不適切だったためである。
 - `IFrontend.scan()` はsettings変換、frontend境界validate、backend candidate生成までは行うが、ScanSession正本が未実装のため `UNAVAILABLE` を返す。tune-backed scan placeholderによる成功no-opを禁止する。
 - `LiveReader` / `LiveReaderKind` を `FrontendLiveReaderDescriptor` / `FrontendLiveReaderDescriptorKind` へ改名した。descriptorだけをlive pump完了条件の根拠にしない。
@@ -3035,7 +3035,7 @@
 
 ## r50ee1
 
-- r50ed16を基準に、`tuner_contract/DESIGN_JA.md` と `tuner_hal2` 配下の `#[test]` 単体テストの準拠関係を全件再監査した。
+- r50ed16を基準に、`tuner_hal/DESIGN_JA.md` と `tuner_hal2` 配下の `#[test]` 単体テストの準拠関係を全件再監査した。
 - DESIGN_JA.mdと矛盾する単体テストは検出されなかったため、単体テスト削除は行っていない。
 - r50ed16の健全性根拠は、未接続runtime handlerを成功扱いせず `RuntimeHandlerError::NotConnected` として失敗させる点にある。
 - r50ee1はテスト削除結果のリリースであり、公開AIDL実装、runtime実処理、worker、callback、VTS対応範囲を新規完了扱いにしない。
@@ -3047,7 +3047,7 @@
 - generation mismatch、missing object、owner/kind mismatch は `RuntimeObjectTableError` / `RuntimeHandlerError` として返し、成功扱いしない。
 - `RuntimeHandlerCoverage` により全 `RuntimeTransactionName` を `Connected` / `NotConnected` / `UnsupportedByDesign` のいずれかへ分類する。
 - r50ed16時点では実runtime handler接続はまだ行わず、未接続handlerは `RuntimeHandlerError::NotConnected` として型付き失敗に固定する。
-- WP-R2はAIDL公開契約やARIB構文処理を新規定義せず、既存 `tuner_contract/DESIGN_JA.md` の境界に合わせる内部object table / dispatch handler実体化に限定する。
+- WP-R2はAIDL公開契約やARIB構文処理を新規定義せず、既存 `tuner_hal/DESIGN_JA.md` の境界に合わせる内部object table / dispatch handler実体化に限定する。
 
 ## r50ed15
 
@@ -3056,7 +3056,7 @@
 - AIDL objectは `AidlObjectHandle` だけを保持し、runtime状態を複製しない構造にした。
 - `aidl_service` は `device`、`demux`、`descrambler`、`lnb` の内部runtime型やdriver ABIへ直接依存しない。
 - Android 14 Tuner AIDL生成crate、`binder_adapter`、`service_runtime` への依存をSoong定義へ追加した。
-- WP-R1はAIDL公開契約やARIB構文処理を新規定義せず、既存 `tuner_contract/DESIGN_JA.md` と Android 14 Tuner AIDL を正とする外側骨格追加に限定する。
+- WP-R1はAIDL公開契約やARIB構文処理を新規定義せず、既存 `tuner_hal/DESIGN_JA.md` と Android 14 Tuner AIDL を正とする外側骨格追加に限定する。
 
 ## r50ed14
 
@@ -3074,7 +3074,7 @@
 - `RuntimeRegistry` は export対象frontendだけを `FrontendRegistryEntry` として保持する。
 - `SERVICE_RUNTIME_DISPATCH_TABLE` により `binder_adapter` の `RuntimeTransactionName` から service runtime dispatch target を追跡可能にした。
 - `maleicacid_tuner_hal2_service_runtime_test` をSoong test moduleとして追加した。
-- WP-09はAIDL公開API契約やARIB構文処理を新規定義せず、既存 `tuner_contract/DESIGN_JA.md` の境界に合わせるservice runtime内部の実体化に限定する。
+- WP-09はAIDL公開API契約やARIB構文処理を新規定義せず、既存 `tuner_hal/DESIGN_JA.md` の境界に合わせるservice runtime内部の実体化に限定する。
 
 ## r50ed12
 
@@ -3086,7 +3086,7 @@
 - 各AIDL API相当のdomain commandは `CommandPlan` により呼び出すruntime transactionを型付きで追跡できる。
 - `AidlStatusMapper` は `HalError` のkindから `TunerStatusCode` へ写像し、表示文字列には依存しない。
 - `binder_adapter` は driver ABI、FMQ shim、device/demux/descrambler/lnb runtime crateへ直接依存しない構造にした。
-- WP-07/08はAIDL公開API契約やARIB構文処理を新規定義せず、既存 `tuner_contract/DESIGN_JA.md` の境界に合わせる内部runtime / adapter前段の実体化に限定する。
+- WP-07/08はAIDL公開API契約やARIB構文処理を新規定義せず、既存 `tuner_hal/DESIGN_JA.md` の境界に合わせる内部runtime / adapter前段の実体化に限定する。
 ## r50ed11
 
 - WP-06を実施し、`descrambler/src/runtime` の session / key token / PID claim / cleanup transactionを実体化した。
@@ -3094,7 +3094,7 @@
 - `DescramblerKeyTable` は unknown token と expired token を型付きで分ける。raw CWは保持・出力しない。
 - `DescramblerSessionTxn` が demux binding、key replacement、PID claim、cleanupを所有し、unknown token時のrollbackとclose時の一括cleanupをテストで固定した。
 - `DescramblerPidClaim` は source filter id と generation を型付きで保持し、NULL source filter経路は現行Android 14 Rust AIDL境界の実装対象外として型付き拒否する。
-- WP-06はIDescrambler公開API契約を新規定義せず、既存 `tuner_contract/DESIGN_JA.md` の境界に合わせる内部runtime実体化に限定する。
+- WP-06はIDescrambler公開API契約を新規定義せず、既存 `tuner_hal/DESIGN_JA.md` の境界に合わせる内部runtime実体化に限定する。
 
 ## r50ed10
 
@@ -3125,7 +3125,7 @@
 ## r50ed7
 
 - `README_JA.md` から r50ed5 / r50ed6 固有の補足を削除し、現行構造の使い始め説明に限定した。
-- `tuner_hal2` の設計正本は既存 `tuner_contract/DESIGN_JA.md` と tv 直下 `開発規則.md` であり、README は履歴・設計判断の正本ではないことを明確化した。
+- `tuner_hal2` の設計正本は既存 `tuner_hal/DESIGN_JA.md` と tv 直下 `開発規則.md` であり、README は履歴・設計判断の正本ではないことを明確化した。
 
 ## r50ed6
 
@@ -3142,7 +3142,7 @@
 - `soft_demux` のトップレベルcrateを廃止し、parser断片を `demux/src/parser`、新しいruntime骨格を `demux/src/runtime`、AV共有メモリ骨格を `demux/src/av` へ集約した。
 - `descrambler` は `core` と `runtime` を同一module内に置き、`descrambler_runtime` というトップレベル横並びmoduleを作らない構造にした。
 - `resource_ledger`、`binder_adapter`、`service_runtime`、`lnb` の新規骨格を追加した。
-- `tuner_hal2/DESIGN_JA.md` は引き続き置かない。設計正本は既存 `tuner_contract/DESIGN_JA.md` と tv 直下 `開発規則.md` とする。
+- `tuner_hal2/DESIGN_JA.md` は引き続き置かない。設計正本は既存 `tuner_hal/DESIGN_JA.md` と tv 直下 `開発規則.md` とする。
 
 ## r50ed4
 
@@ -3168,7 +3168,7 @@
 
 ## r50ed2 copy-complete
 
-- `tuner_hal2/DESIGN_JA.md` を削除した。`tuner_hal2` は新しい設計正本を持たず、既存 `tuner_contract/DESIGN_JA.md` と tv 直下の `開発規則.md` を正とする。
+- `tuner_hal2/DESIGN_JA.md` を削除した。`tuner_hal2` は新しい設計正本を持たず、既存 `tuner_hal/DESIGN_JA.md` と tv 直下の `開発規則.md` を正とする。
 - r50ed2で不足していた DVB explicit scan 境界と DVB tune property mapping 断片を追加した。
 - common に POSIX poll/ioctl/read ABI、Japan frequency helper、FrontendScanMode を追加した。
 - `Android.bp` に追加断片を反映した。

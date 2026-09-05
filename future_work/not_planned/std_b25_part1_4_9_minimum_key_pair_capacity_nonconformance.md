@@ -4,7 +4,7 @@
 
 本書は、ARIB STD-B25 Part 1 §4.9 が受信機システムに要求する最小8鍵組容量について、本製品が採用している恒久的な非適合方針を `future_work/not_planned` の既知差分として記録する。
 
-この文書は現行の規範値、Tuner HAL公開契約、capability、資源寿命、戻り値、状態遷移を独立に定義しない。製品レベルの規範判断は `開発規則.md` の「STD-B25 Part 1 §4.9 最小鍵組容量の製品適合方針」、Tuner HAL内部の `StdB25DecodeCapability`、`DescramblerCapacityPool`、受付・解放・失敗時契約は `tuner_contract/DESIGN_JA.md` を正とする。
+この文書は現行の規範値、Tuner HAL公開契約、capability、資源寿命、戻り値、状態遷移を独立に定義しない。製品レベルの規範判断は `開発規則.md` の「STD-B25 Part 1 §4.9 最小鍵組容量の製品適合方針」、Tuner HAL内部の `StdB25DecodeCapability`、`DescramblerCapacityPool`、受付・解放・失敗時契約は `tuner_hal/DESIGN_JA.md` を正とする。
 
 ## 既知の非適合
 
@@ -16,7 +16,7 @@ STD-B25 Part 1 §4.9 の受信機システム最小8鍵組容量は、本製品�
 - 実鍵組数または実PID数だけを根拠とする Part 1 CAS-R 全体への適合。
 - 限定した `StdB25DecodeCapability` を根拠とする STD-B25 全面準拠。
 
-本製品が個別の物理tuner/backend復号経路について実際に成立させる TS payload decode 能力は、`tuner_contract/DESIGN_JA.md` の `StdB25DecodeCapability` に記録する限定された製品能力として扱い、§4.9 適合へ読み替えない。
+本製品が個別の物理tuner/backend復号経路について実際に成立させる TS payload decode 能力は、`tuner_hal/DESIGN_JA.md` の `StdB25DecodeCapability` に記録する限定された製品能力として扱い、§4.9 適合へ読み替えない。
 
 ## AOSP / Tuner HAL 公開境界との関係
 
@@ -40,7 +40,7 @@ AOSP/VTS契約を満たすために本件のARIB非適合を隠蔽してはな�
 - 製品アーキテクチャの変更により、受信機システムとして同条項を満たす別の正当な資源構成が成立した場合。
 - 適用するARIB規格の要求が変更され、本件の前提が変化した場合。
 
-再評価で適合方針を変更する場合は、まず `開発規則.md` の製品レベル方針を更新し、必要に応じて `tuner_contract/DESIGN_JA.md` の能力・資源契約を同一変更で更新する。本書だけを変更して現行規範を変更した扱いにしてはならない。
+再評価で適合方針を変更する場合は、まず `開発規則.md` の製品レベル方針を更新し、必要に応じて `tuner_hal/DESIGN_JA.md` の能力・資源契約を同一変更で更新する。本書だけを変更して現行規範を変更した扱いにしてはならない。
 
 ## 監査上の扱い
 

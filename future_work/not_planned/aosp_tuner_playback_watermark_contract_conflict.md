@@ -4,7 +4,7 @@
 
 本書は、Android 14 Tuner HAL の Playback DVR watermark について、frozen Stable AIDL の `PlaybackSettings` 文面と、AOSP default HAL / VTS が前提とする実挙動を同時には満たせない上流契約競合を `future_work/not_planned` の既知差分として記録する。
 
-この文書は Playback DVR の公開status、threshold値、queue状態、callback順序を独立に定義しない。現行製品で採用する具体的なPlayback status判定は `tuner_contract/DESIGN_JA.md` の「DVR playback status のAOSP互換判定」と `DvrSettings configure 完全契約` を正とする。
+この文書は Playback DVR の公開status、threshold値、queue状態、callback順序を独立に定義しない。現行製品で採用する具体的なPlayback status判定は `tuner_hal/DESIGN_JA.md` の「DVR playback status のAOSP互換判定」と `DvrSettings configure 完全契約` を正とする。
 
 ## 上流契約の競合
 
@@ -48,7 +48,7 @@ AOSP branch、tagまたはcommitが変わった場合は、同じ相対path名�
 - Android 14向けcompatibility testまたは公式backportで、Playback thresholdの測定量と比較方向が一意に固定された場合。
 - 製品の対象Android世代を変更し、その世代ではAIDL文面・参照HAL・VTSが同じ意味へ収束していることを確認できた場合。
 
-再評価で製品判定式を変更する場合は、まず `tuner_contract/DESIGN_JA.md` のPlayback watermark正本を更新し、`tuner_hal2/DESIGN_JA.md` はその公開意味論を複製せず実装接続だけを追従させる。
+再評価で製品判定式を変更する場合は、まず `tuner_hal/DESIGN_JA.md` のPlayback watermark正本を更新し、`tuner_hal2/DESIGN_JA.md` はその公開意味論を複製せず実装接続だけを追従させる。
 
 ## 監査上の扱い
 

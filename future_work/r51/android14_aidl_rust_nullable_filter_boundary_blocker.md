@@ -15,7 +15,7 @@
 | `IFrontend.setCallback()` | `callback == null` で callback 解除 | Rust generated trait が non-null `Strong<dyn IFrontendCallback>` として現れ、Rust HAL public method だけでは null を受け取れない |
 | `ILnb.setCallback()` | `callback == null` で callback 解除 | Rust generated trait が non-null `Strong<dyn ILnbCallback>` として現れ、Rust HAL public method だけでは null を受け取れない |
 
-nullable Binder 境界の同根課題を追加する場合は、現行リリース設計の正本である `tuner_contract/DESIGN_JA.md` へ吸収してから扱う。本ファイルは未解決条件の記録であり、現行設計判断、完了判定、実装済み範囲の正本ではない。
+nullable Binder 境界の同根課題を追加する場合は、現行リリース設計の正本である `tuner_hal/DESIGN_JA.md` へ吸収してから扱う。本ファイルは未解決条件の記録であり、現行設計判断、完了判定、実装済み範囲の正本ではない。
 
 ## 2. 対象 Android バージョン
 
@@ -88,7 +88,7 @@ C++ / ネイティブ薄層を認める例外は、FMQ / EventFlag / dma-buf な
 
 ## 7. 現行リリース側との関係
 
-Rust generated trait で到達できる non-null filter 経路の現行処理、error mapping、state cleanup、regression 防止条件は `tuner_contract/DESIGN_JA.md` を正とする。
+Rust generated trait で到達できる non-null filter 経路の現行処理、error mapping、state cleanup、regression 防止条件は `tuner_hal/DESIGN_JA.md` を正とする。
 
 一方、本ファイルは次の境界について、Android 14 AIDL / Rust generated trait 上の未解決点と解決条件を記録する。
 
@@ -97,7 +97,7 @@ Rust generated trait で到達できる non-null filter 経路の現行処理、
 - `IFrontend.setCallback(null)` を callback 解除として受ける実装可否。
 - `ILnb.setCallback(null)` を callback 解除として受ける実装可否。
 
-上記境界の現行設計判断、capability / profile 方針、実装済み範囲、戻り値、状態遷移は `tuner_contract/DESIGN_JA.md` を正とする。本ファイルを現行リリース契約の正本として参照してはならない。
+上記境界の現行設計判断、capability / profile 方針、実装済み範囲、戻り値、状態遷移は `tuner_hal/DESIGN_JA.md` を正とする。本ファイルを現行リリース契約の正本として参照してはならない。
 
 AOSP の意味論として上記境界は存在する。ただし Android 14 AIDL / Rust generated trait 境界で null filter を受け取る経路が未固定であるため、現行方針では次を実装済みとして扱わない。
 
@@ -124,7 +124,7 @@ AOSP の意味論として上記境界は存在する。ただし Android 14 AID
 
 ## 9. 未解決条件記録としての扱い
 
-本ファイルは現行リリースの完了判定正本ではない。完了判定では、`tuner_contract/DESIGN_JA.md` に定義された現行実装済み範囲と、アーカイブ外の○×表を正とする。
+本ファイルは現行リリースの完了判定正本ではない。完了判定では、`tuner_hal/DESIGN_JA.md` に定義された現行実装済み範囲と、アーカイブ外の○×表を正とする。
 
 本ファイルは、nullable Binder 境界を実装済み扱いに戻すための未解決条件を記録するためにだけ使う。本ファイルで確認対象として扱えるのは、Rust generated trait で到達できる non-null filter 経路の実装、error mapping、state cleanup、regression 防止に限定する。
 
@@ -139,4 +139,4 @@ AOSP 契約完全達成を主張するには、次をすべて満たす必要が
 - 上記のために開発規則で禁止された C++ / NDK ラッパー、vendor 独自 AIDL、Rust raw Binder transaction parser を無断追加していない。
 - nullable 経路を実機または AOSP service 経路で確認できる。
 
-上記を満たす実装方式が固定されるまで、現行リリース側の設計判断は `tuner_contract/DESIGN_JA.md` を正とし、本ファイルは未解決条件記録としてだけ扱う。
+上記を満たす実装方式が固定されるまで、現行リリース側の設計判断は `tuner_hal/DESIGN_JA.md` を正とし、本ファイルは未解決条件記録としてだけ扱う。
