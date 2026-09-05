@@ -24,6 +24,7 @@ const AOSP_TUNER_INVALID_STREAM_ID: i32 = 0xFFFF;
 /// profile decision.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrontendProfileRequirement {
+    IsdbtUnsupportedBandwidth,
     IsdbtExplicitMode,
     IsdbtExplicitInversion,
     IsdbtExplicitGuardInterval,
@@ -113,14 +114,14 @@ fn classify_isdbt_settings(
 ) -> Result<Vec<FrontendProfileRequirement>, HalError> {
     let mut requirements = Vec::new();
 
-    if !matches!(
-        s.bandwidth,
-        FrontendIsdbtBandwidth::AUTO
-            | FrontendIsdbtBandwidth::BANDWIDTH_6MHZ
-            | FrontendIsdbtBandwidth::BANDWIDTH_7MHZ
-            | FrontendIsdbtBandwidth::BANDWIDTH_8MHZ
-    ) {
-        return invalid_frontend_setting("ISDB-T bandwidth contains a reserved enum value");
+    match s.bandwidth {
+        FrontendIsdbtBandwidth::AUTO | FrontendIsdbtBandwidth::BANDWIDTH_6MHZ => {}
+        FrontendIsdbtBandwidth::BANDWIDTH_7MHZ | FrontendIsdbtBandwidth::BANDWIDTH_8MHZ => {
+            requirements.push(FrontendProfileRequirement::IsdbtUnsupportedBandwidth);
+        }
+        _ => {
+            return invalid_frontend_setting("ISDB-T bandwidth contains a reserved enum value");
+        }
     }
 
     classify_auto_only(
@@ -195,12 +196,10 @@ fn classify_isdbt_settings(
         )?;
         match layer.numOfSegment {
             0 | 0xFF => {}
-            1..=13 => requirements.push(
-                FrontendProfileRequirement::IsdbtExplicitSegmentCount {
-                    layer_index,
-                    count: layer.numOfSegment,
-                },
-            ),
+            1..=13 => requirements.push(FrontendProfileRequirement::IsdbtExplicitSegmentCount {
+                layer_index,
+                count: layer.numOfSegment,
+            }),
             _ => {
                 return invalid_frontend_setting(
                     "ISDB-T numOfSegment must be 0, CTS AUTO 0xFF, or 1..=13",

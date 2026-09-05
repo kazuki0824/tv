@@ -358,12 +358,21 @@ impl TunerAidlService {
     }
 }
 
-fn frontend_type_from_snapshot(snapshot: &RootFrontendInfoSnapshot) -> FrontendType {
-    match snapshot.system {
-        FrontendSystem::IsdbT => FrontendType::ISDBT,
-        FrontendSystem::IsdbS => FrontendType::ISDBS,
-        FrontendSystem::IsdbS3 | FrontendSystem::DvbS => FrontendType::ISDBT,
+fn frontend_type_from_system(system: FrontendSystem) -> Result<FrontendType, HalError> {
+    match system {
+        FrontendSystem::IsdbT => Ok(FrontendType::ISDBT),
+        FrontendSystem::IsdbS => Ok(FrontendType::ISDBS),
+        FrontendSystem::IsdbS3 | FrontendSystem::DvbS => Err(HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "unsupported frontend system escaped the immutable capability snapshot",
+        )),
     }
+}
+
+fn frontend_type_from_snapshot(
+    snapshot: &RootFrontendInfoSnapshot,
+) -> Result<FrontendType, HalError> {
+    frontend_type_from_system(snapshot.system)
 }
 
 fn frontend_status_caps_for_snapshot(
@@ -411,9 +420,11 @@ fn isdbs_coderate_caps() -> i32 {
     FrontendIsdbsCoderate::AUTO.0
 }
 
-fn frontend_caps_for_snapshot(snapshot: &RootFrontendInfoSnapshot) -> FrontendCapabilities {
-    match frontend_type_from_snapshot(snapshot) {
-        FrontendType::ISDBT => FrontendCapabilities::IsdbtCaps(FrontendIsdbtCapabilities {
+fn frontend_caps_for_snapshot(
+    snapshot: &RootFrontendInfoSnapshot,
+) -> Result<FrontendCapabilities, HalError> {
+    match frontend_type_from_snapshot(snapshot)? {
+        FrontendType::ISDBT => Ok(FrontendCapabilities::IsdbtCaps(FrontendIsdbtCapabilities {
             modeCap: isdbt_mode_caps(),
             bandwidthCap: isdbt_bandwidth_caps(),
             modulationCap: isdbt_modulation_caps(),
@@ -428,19 +439,26 @@ fn frontend_caps_for_snapshot(snapshot: &RootFrontendInfoSnapshot) -> FrontendCa
                 .capability
                 .isdbt_segment
                 .is_some_and(|capability| capability.is_full_segment),
-        }),
-        FrontendType::ISDBS => FrontendCapabilities::IsdbsCaps(FrontendIsdbsCapabilities {
+        })),
+        FrontendType::ISDBS => Ok(FrontendCapabilities::IsdbsCaps(FrontendIsdbsCapabilities {
             modulationCap: isdbs_modulation_caps(),
             coderateCap: isdbs_coderate_caps(),
-        }),
-        _ => Default::default(),
+        })),
+        _ => Err(HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "unsupported AIDL frontend type escaped the capability projection",
+        )),
     }
 }
 
-fn frontend_info_from_snapshot(snapshot: &RootFrontendInfoSnapshot) -> FrontendInfo {
+fn frontend_info_from_snapshot(
+    snapshot: &RootFrontendInfoSnapshot,
+) -> Result<FrontendInfo, HalError> {
     let scalar = snapshot.capability.scalar;
-    FrontendInfo {
-        r#type: frontend_type_from_snapshot(snapshot),
+    let frontend_type = frontend_type_from_snapshot(snapshot)?;
+    let frontend_caps = frontend_caps_for_snapshot(snapshot)?;
+    Ok(FrontendInfo {
+        r#type: frontend_type,
         minFrequency: scalar.min_frequency_hz,
         maxFrequency: scalar.max_frequency_hz,
         minSymbolRate: scalar.min_symbol_rate,
@@ -448,8 +466,8 @@ fn frontend_info_from_snapshot(snapshot: &RootFrontendInfoSnapshot) -> FrontendI
         acquireRange: scalar.acquire_range_hz,
         exclusiveGroupId: snapshot.capability.exclusive_group_id,
         statusCaps: frontend_status_caps_for_snapshot(snapshot),
-        frontendCaps: frontend_caps_for_snapshot(snapshot),
-    }
+        frontendCaps: frontend_caps,
+    })
 }
 
 impl ITuner for TunerAidlService {
@@ -528,7 +546,9 @@ impl ITuner for TunerAidlService {
             .execute_root_query(RootQueryRequest::FrontendInfo { frontend_id })
             .map_err(status_from_hal_error)?
         {
-            RootQueryResponse::FrontendInfo(snapshot) => Ok(frontend_info_from_snapshot(&snapshot)),
+            RootQueryResponse::FrontendInfo(snapshot) => {
+                frontend_info_from_snapshot(&snapshot).map_err(status_from_hal_error)
+            }
             _ => Err(status_unknown_error(
                 "unexpected root query response for getFrontendInfo",
             )),
@@ -675,6 +695,19 @@ mod tests {
     use super::*;
     use maleicacid_tuner_hal2_binder_adapter::{DvrOpenKind, OpenDvrRequest};
     use maleicacid_tuner_hal2_service_runtime::{ObjectMethodUseCase, RuntimeOwnerRelation};
+
+    #[test]
+    fn unsupported_frontend_system_never_falls_back_to_isdbt() {
+        for system in [FrontendSystem::IsdbS3, FrontendSystem::DvbS] {
+            assert!(matches!(
+                frontend_type_from_system(system),
+                Err(HalError::Internal {
+                    kind: HalInternalKind::InvariantViolation,
+                    ..
+                })
+            ));
+        }
+    }
 
     #[test]
     fn configure_ip_cid_returns_unavailable_for_any_value() {

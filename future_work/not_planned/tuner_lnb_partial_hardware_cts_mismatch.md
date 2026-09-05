@@ -4,7 +4,7 @@
 
 この文書は、`earth_pt1` / `px4_drv` が実機・driverとして提供する LNB 制御能力と、Android CTS が non-null の `Lnb` に要求する基礎操作一式の粒度が一致しない問題について、採用理由、比較した代替案、既知 compatibility delta、再評価条件を記録する。
 
-部分 LNB 能力を公開する product-level 判断の規範正本は `開発規則.md` の「LNB部分能力公開の製品例外」とする。LNB endpoint の公開条件、operation / value ごとの能力、戻り値、資源寿命、callback、rollback / cleanup その他の Tuner HAL 公開契約の規範正本は `tuner_hal/DESIGN_JA.md` とする。この文書はそれらの規範値・状態遷移・製品判断を独立に再定義しない。
+部分 LNB 能力を公開する product-level 判断の規範正本は `開発規則.md` の「LNB部分能力公開の製品例外」とする。LNB endpoint の公開条件、operation / value ごとの能力、戻り値、資源寿命、callback、rollback / cleanup その他の Tuner HAL 公開契約の規範正本は `tuner_contract/DESIGN_JA.md` とする。この文書はそれらの規範値・状態遷移・製品判断を独立に再定義しない。
 
 ## AOSP / CTS / VTS 側の事実
 
@@ -21,7 +21,7 @@ Android CTS の `android.media.tv.tuner.cts.TunerTest#testLnb()` は、`Tuner.op
 
 Android 14 AIDL Tuner VTS も LNB live profile を有効にした場合、LNB を open して callback を設定した後、設定済み voltage、tone、satellite position を適用し、DiSEqC message を送信する一連の LNB 試験を実行する。したがって、同じ部分 LNB endpoint を VTS の LNB live profile から到達可能にすると、未対応 operation を含む試験で VTS も失敗し得る。これは CTS と別の実装不具合を示すものではなく、operation 単位 capability を公開できない AIDL/VTS 試験粒度と、本製品が採用した部分能力公開の粒度との同じ compatibility delta である。
 
-`VtsEnvironmentProfile` を使って公開済み LNB endpoint を試験から隠すことで合格扱いにすることは、この delta の解消とは扱わない。VTS profile / capability の規範は `tuner_hal/DESIGN_JA.md` を正とし、本書では VTS XML の入力・除外規則を再定義しない。
+`VtsEnvironmentProfile` を使って公開済み LNB endpoint を試験から隠すことで合格扱いにすることは、この delta の解消とは扱わない。VTS profile / capability の規範は `tuner_contract/DESIGN_JA.md` を正とし、本書では VTS XML の入力・除外規則を再定義しない。
 
 参照:
 
@@ -34,7 +34,7 @@ Android 14 AIDL Tuner VTS も LNB live profile を有効にした場合、LNB �
 
 Product Owner は、対象 hardware / driver が実際に有する LNB 制御能力を framework から利用可能にすることを、Android 14 CTS の LNB 試験合格より優先する判断を採用した。規範としての当該 product-level 判断は `開発規則.md` を参照する。
 
-この判断で重視した点は、hardware / driver の実能力と framework から観測できる能力の乖離を避けること、および CTS 合格のためだけに実処理していない操作を成功したように見せないことである。個々の operation / value をどのように公開し、どの結果を返すかは本書では定義せず、`tuner_hal/DESIGN_JA.md` を参照する。
+この判断で重視した点は、hardware / driver の実能力と framework から観測できる能力の乖離を避けること、および CTS 合格のためだけに実処理していない操作を成功したように見せないことである。個々の operation / value をどのように公開し、どの結果を返すかは本書では定義せず、`tuner_contract/DESIGN_JA.md` を参照する。
 
 ## 採用時に比較した代替案
 
@@ -58,4 +58,4 @@ Product Owner は、対象 hardware / driver が実際に有する LNB 制御能
 - 対象 hardware / driver が Android CTS の LNB 基礎操作一式を実処理できるようになった場合。
 - 対象 CTS / VTS / CDD の LNB 要求または VTS configuration schema / data-flow 契約が変更され、現在記録している不一致が解消または変質した場合。
 
-再評価で product-level 判断を変更する場合は `開発規則.md` を更新し、公開 API 契約を変更する場合は `tuner_hal/DESIGN_JA.md` を更新する。本書はその決定理由と compatibility delta の記録を追従させる。
+再評価で product-level 判断を変更する場合は `開発規則.md` を更新し、公開 API 契約を変更する場合は `tuner_contract/DESIGN_JA.md` を更新する。本書はその決定理由と compatibility delta の記録を追従させる。

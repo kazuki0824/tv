@@ -4,7 +4,7 @@
 
 この文書は、upstream Linuxの`tc90522` ISDB-S frontendが固定symbol rateを使用する一方、`FE_GET_INFO`用のcapability metadataへその値を公開していない点について、上流改善の調査候補と再評価条件を記録する。
 
-現行製品のcapability、public settings受付、backend投影の規範正本は`../../tuner_hal/DESIGN_JA.md`とし、本書を現行仕様、実装済み範囲、対応宣言または完了判定の根拠にしない。現行製品runtimeはupstream変更へ依存せず、pinned earth-pt1 / tc90522 / qm1d1b0004 profileの固定28,860,000 sym/s契約だけで完結する。
+現行製品のcapability、public settings受付、backend投影の規範正本は`../../tuner_contract/DESIGN_JA.md`とし、本書を現行仕様、実装済み範囲、対応宣言または完了判定の根拠にしない。現行製品runtimeはupstream変更へ依存せず、pinned earth-pt1 / tc90522 / qm1d1b0004 profileの固定28,860,000 sym/s契約だけで完結する。
 
 ## 現状
 

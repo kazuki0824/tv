@@ -2,7 +2,7 @@
 
 ## 位置付け
 
-この文書は、現行製品で採用しない将来拡張範囲を記録する。現行製品の Tuner HAL は MPEG-2 TS 系の日本向け放送を対象とし、demux capability / filter capability / VTS profile は TS-only とする。この方針の正本は `tuner_hal/DESIGN_JA.md` および製品スコープを定める文書であり、本書は現行仕様を再定義しない。
+この文書は、現行製品で採用しない将来拡張範囲を記録する。現行製品の Tuner HAL は MPEG-2 TS 系の日本向け放送を対象とし、demux capability / filter capability / VTS profile は TS-only とする。この方針の正本は `tuner_contract/DESIGN_JA.md` および製品スコープを定める文書であり、本書は現行仕様を再定義しない。
 
 日本の現行2K放送が終了すること自体を確定済みの移行条件とはしない。将来、製品対象を高度広帯域衛星デジタル放送（ISDB-S3）または高度地上デジタルテレビジョン放送へ拡張し、あるいは現行TS系の対象をそれらへ置き換える場合に、本項目を再評価する。
 
