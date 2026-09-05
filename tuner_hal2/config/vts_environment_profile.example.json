@@ -3,7 +3,7 @@
   "target": {"hal": "tuner_hal2", "product": "default", "backend": "px4"},
   "vts": {"contract": "android14-aidl-v1", "source_ref": "REPLACE_WITH_SELECTED_AOSP_VTS_TAG_OR_COMMIT", "variant": ""},
   "frontend": {"type": "ISDBT", "is_software_frontend": false, "frequency_hz": null},
-  "region": {"query": "REPLACE_WITH_REGION_KEY", "candidates": []},
+  "region": {"query": "REPLACE_WITH_REGION_KEY", "transmitter_candidate_count": 2, "candidates": []},
   "flows": {
     "scan": true,
     "record": {"enabled": true, "pid": null},

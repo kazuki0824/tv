@@ -8,6 +8,7 @@ from pathlib import Path
 from .device import resolve_device
 from .integration import write_product_artifacts
 from .model import (
+    DEFAULT_TRANSMITTER_CANDIDATE_COUNT,
     FRONTEND_ID,
     ProfileError,
     RECORD_FILTER_FMQ_PROBE_VARIANT,
@@ -15,6 +16,7 @@ from .model import (
     SUPPORTED_VTS_CONTRACT,
     load_json,
     load_profile,
+    natural_number,
     positive_int,
     save_profile,
     validate_profile,
@@ -96,6 +98,28 @@ def _optional_value(args: argparse.Namespace, name: str, label: str) -> str:
     if args.non_interactive:
         return ""
     return input(f"{label} (optional): ").strip()
+
+
+def _natural_number_option(
+    args: argparse.Namespace,
+    name: str,
+    label: str,
+    default: int,
+) -> int:
+    current = getattr(args, name, None)
+    if current is not None:
+        return natural_number(current, name)
+    if args.non_interactive:
+        return default
+    while True:
+        entered = input(f"{label} [{default}]: ").strip()
+        if not entered:
+            return default
+        if entered.isdigit():
+            value = int(entered)
+            if value >= 1:
+                return value
+        print(f"invalid selection: {entered}", file=sys.stderr)
 
 
 def _boolean_option(value: object, name: str, *, default: bool) -> bool:
@@ -180,6 +204,16 @@ def _new_profile(args: argparse.Namespace) -> dict:
         scan_enabled = False
 
     region = _optional_value(args, "region", "region address/postal/latitude,longitude")
+    transmitter_candidate_count = (
+        _natural_number_option(
+            args,
+            "transmitter_candidates",
+            "transmitter candidates",
+            DEFAULT_TRANSMITTER_CANDIDATE_COUNT,
+        )
+        if region and fe_type == "ISDBT"
+        else None
+    )
     frequency = _optional_value(args, "frequency_hz", "frequency Hz")
     service_id = _optional_value(args, "service_id", "service ID")
     record_pid = _optional_value(args, "record_pid", "record PID") if record_enabled else ""
@@ -262,6 +296,8 @@ def _new_profile(args: argparse.Namespace) -> dict:
         }
     if region:
         profile["region"] = {"query": region, "candidates": []}
+        if fe_type == "ISDBT":
+            profile["region"]["transmitter_candidate_count"] = transmitter_candidate_count
     if service_id:
         profile["service"] = {"service_id": int(service_id)}
     validate_profile(profile)
@@ -298,6 +334,13 @@ def cmd_resolve_region(args: argparse.Namespace) -> int:
     path = Path(args.profile)
     profile = load_profile(path)
     validate_profile(profile)
+    if args.transmitter_candidates is not None:
+        region = profile.get("region")
+        if not isinstance(region, dict):
+            raise ProfileError("region is required to override transmitter candidates")
+        region["transmitter_candidate_count"] = natural_number(
+            args.transmitter_candidates, "transmitter_candidates"
+        )
     dataset = load_json(Path(args.dataset)) if args.dataset else None
     resolve_region(profile, dataset, args.select_index)
     save_profile(path, profile)
@@ -437,6 +480,7 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--product")
     init.add_argument("--delivery-system", choices=sorted(FRONTEND_ID))
     init.add_argument("--region")
+    init.add_argument("-k", "--transmitter-candidates", type=int)
     init.add_argument("--frequency-hz")
     init.add_argument("--service-id")
     init.add_argument("--record")
@@ -493,6 +537,7 @@ def build_parser() -> argparse.ArgumentParser:
             "repository snapshot after resolving the region input through coordinates"
         ),
     )
+    region.add_argument("-k", "--transmitter-candidates", type=int)
     region.add_argument("--select-index", type=int)
     region.set_defaults(func=cmd_resolve_region)
     select = sub.add_parser("select-candidate")

@@ -153,7 +153,6 @@ class VtsProfileTest(unittest.TestCase):
                     "longitude": 135.5262,
                     "coordinate_source": "fixture",
                     "coverage_texts": ["大阪市の一部"],
-                    "coverage_areas": ["大阪市"],
                     "services": [{
                         "name": "A放送",
                         "remote_control_key_id": 1,
@@ -173,7 +172,6 @@ class VtsProfileTest(unittest.TestCase):
                     "longitude": 135.5262,
                     "coordinate_source": "fixture",
                     "coverage_texts": ["大阪市の一部"],
-                    "coverage_areas": ["大阪市"],
                     "services": [{
                         "name": "B放送",
                         "remote_control_key_id": 2,
@@ -185,8 +183,7 @@ class VtsProfileTest(unittest.TestCase):
                 },
             ],
         }
-        with patch("vts_profile.region._coordinate_area", return_value=("大阪府", "大阪市中央区")):
-            resolve_region(profile, dataset)
+        resolve_region(profile, dataset)
         self.assertEqual(len(profile["region"]["candidates"]), 2)
         select_candidate(profile, 1)
         self.assertEqual(profile["frontend"]["frequency_hz"], 557142857)

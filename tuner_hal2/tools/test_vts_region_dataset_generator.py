@@ -45,7 +45,6 @@ class VtsRegionDatasetGeneratorTest(unittest.TestCase):
         )
         assert record is not None
         self.assertEqual(record["id"], "kanagawa/2005/hiratsuka-d-tv.html")
-        self.assertEqual(record["coverage_areas"], ["平塚市"])
         self.assertAlmostEqual(record["latitude"], 35.320709122176)
         self.assertAlmostEqual(record["longitude"], 139.31059345819)
         self.assertEqual(record["coordinate_source"], "INA4N-map")
@@ -160,7 +159,6 @@ class VtsRegionDatasetGeneratorTest(unittest.TestCase):
                 "longitude": 139.0,
                 "coordinate_source": "fixture",
                 "coverage_texts": [],
-                "coverage_areas": [],
                 "services": [{
                     "name": "fixture",
                     "remote_control_key_id": 1,

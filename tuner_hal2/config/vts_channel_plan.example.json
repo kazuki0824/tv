@@ -8,9 +8,6 @@
   "transmitters": [
     {
       "coordinate_source": "INA4N-map",
-      "coverage_areas": [
-        "大阪市"
-      ],
       "coverage_texts": [
         "大阪市の一部"
       ],

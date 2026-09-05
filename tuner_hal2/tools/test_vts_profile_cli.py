@@ -77,6 +77,7 @@ class VtsProfileCliTest(unittest.TestCase):
             vts_source_ref=None,
             hardware_interfaces_root=None,
             region=None,
+            transmitter_candidates=None,
             frequency_hz=None,
             service_id=None,
             record=None,
@@ -92,7 +93,7 @@ class VtsProfileCliTest(unittest.TestCase):
             patch("vts_profile.cli._source_ref", return_value="aosp-commit"),
             patch(
                 "builtins.input",
-                side_effect=["", "", "鹿児島県枕崎市", "", "", ""],
+                side_effect=["", "", "鹿児島県枕崎市", "", "", "", ""],
             ) as user_input,
             patch.dict(os.environ, {}, clear=True),
         ):
@@ -102,6 +103,7 @@ class VtsProfileCliTest(unittest.TestCase):
         self.assertEqual(profile["target"]["backend"], "px4")
         self.assertEqual(profile["frontend"]["type"], "ISDBT")
         self.assertEqual(profile["region"]["query"], "鹿児島県枕崎市")
+        self.assertEqual(profile["region"]["transmitter_candidate_count"], 2)
         self.assertTrue(profile["flows"]["scan"])
         self.assertTrue(profile["flows"]["record"]["enabled"])
         self.assertEqual(
@@ -110,6 +112,7 @@ class VtsProfileCliTest(unittest.TestCase):
                 call("select [1]: "),
                 call("select [1]: "),
                 call("region address/postal/latitude,longitude (optional): "),
+                call("transmitter candidates [2]: "),
                 call("frequency Hz (optional): "),
                 call("service ID (optional): "),
                 call("record PID (optional): "),
@@ -199,6 +202,19 @@ class VtsProfileCliTest(unittest.TestCase):
             ):
                 self.assertEqual(cli.cmd_init(args), 0)
             resolver.assert_not_called()
+
+
+    def test_transmitter_candidate_count_rejects_non_natural_values(self) -> None:
+        args = SimpleNamespace(non_interactive=True, transmitter_candidates=0)
+        with self.assertRaisesRegex(ProfileError, "must be a natural number"):
+            cli._natural_number_option(args, "transmitter_candidates", "transmitter candidates", 2)
+        args.transmitter_candidates = -1
+        with self.assertRaisesRegex(ProfileError, "must be a natural number"):
+            cli._natural_number_option(args, "transmitter_candidates", "transmitter candidates", 2)
+
+    def test_resolve_region_parser_accepts_positive_k(self) -> None:
+        args = cli.build_parser().parse_args(["resolve-region", "-k", "3"])
+        self.assertEqual(args.transmitter_candidates, 3)
 
     def test_all_profile_commands_default_to_the_single_ssot_path(self) -> None:
         parser = cli.build_parser()

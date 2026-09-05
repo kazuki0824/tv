@@ -216,21 +216,6 @@ def frequency_links() -> dict[str, str]:
     return _frequency_links(_fetch_text(INDEX_URL))
 
 
-def _area_keys(coverage: str) -> list[str]:
-    normalized = coverage.replace("の一部", " ").replace("全域", " ")
-    normalized = re.sub(r"[、，,・/／()（）]", " ", normalized)
-    keys: set[str] = set()
-    for city, ward in re.findall(
-        r"([一-龯々ヶヵぁ-んァ-ヶー]{1,20}市)([一-龯々ヶヵぁ-んァ-ヶー]{1,20}区)",
-        normalized,
-    ):
-        keys.add(city)
-        keys.add(city + ward)
-    for key in re.findall(r"[一-龯々ヶヵぁ-んァ-ヶー]{1,24}(?:市|区|町|村)", normalized):
-        keys.add(key)
-    return sorted(keys, key=lambda item: (-len(item), item))
-
-
 def _parse_power_w(value: str) -> float:
     match = re.fullmatch(r"\s*([0-9]+(?:\.[0-9]+)?)\s*([kK]?[wW])\s*", value)
     if not match:
@@ -410,7 +395,6 @@ def _build_transmitter(
     coverage_texts = sorted(
         {str(item).strip() for item in index_record.get("coverage_texts", []) if str(item).strip()}
     )
-    coverage_areas = sorted({key for text in coverage_texts for key in _area_keys(text)})
     name = parser.title or str(index_record.get("index_name") or transmitter_id)
     return {
         "id": transmitter_id,
@@ -422,7 +406,6 @@ def _build_transmitter(
         "longitude": longitude,
         "coordinate_source": coordinate_source,
         "coverage_texts": coverage_texts,
-        "coverage_areas": coverage_areas,
         "services": services,
     }
 

@@ -235,7 +235,7 @@ class _AgentSession:
     def __enter__(self) -> "_AgentSession":
         return self
 
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+    def __exit__(self, _exc_type: Any, _exc: Any, _tb: Any) -> None:
         self.close()
 
 
