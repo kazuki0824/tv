@@ -3,7 +3,7 @@ package com.maleicacid.tvinput.aribsi
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-/** STD-B24 binary parsing is owned by the Rust caption JNI; Kotlin only decodes this private typed packet. */
+/** STD-B24のbinary parseはRust caption JNIが所有し、Kotlinはこのprivate typed packetのdecodeだけを担当する。 */
 class NativeAribCaptionFactParser(
     superimpose: Boolean,
 ) : AutoCloseable {
@@ -79,8 +79,7 @@ class NativeAribCaptionFactParser(
         internal fun decodePacket(packet: ByteArray): FactBatch? {
             if (packet.size < 3) return null
             val buffer = ByteBuffer.wrap(packet).order(ByteOrder.LITTLE_ENDIAN)
-            if (buffer.get().toInt() and 0xff != PACKET_VERSION) return null
-            val flags = buffer.get().toInt() and 0xff
+            if ((buffer.get().toInt() and 0xff) != PACKET_VERSION) return null
             val disposition = when (buffer.get().toInt() and 0xff) {
                 0 -> Disposition.NONE
                 1 -> Disposition.FRAGMENT_PENDING
@@ -90,51 +89,52 @@ class NativeAribCaptionFactParser(
                 5 -> Disposition.INVALID
                 else -> return null
             }
-            var statementTime: StatementTime? = null
-            if (flags and FLAG_STATEMENT_TIME != 0) {
-                if (buffer.remaining() < 5) return null
-                val tmd = buffer.get().toInt() and 0xff
-                val millisOfDay = buffer.int.toLong() and 0xffff_ffffL
-                if (millisOfDay >= 24L * 60L * 60L * 1_000L) return null
-                statementTime = StatementTime(tmd, millisOfDay)
-            }
-            var management: Management? = null
-            if (flags and FLAG_MANAGEMENT != 0) {
-                if (buffer.remaining() < 2) return null
-                val tmd = buffer.get().toInt() and 0xff
-                val count = buffer.get().toInt() and 0xff
-                if (count > 8 || buffer.remaining() < count * LANGUAGE_BYTES) return null
-                val languages = ArrayList<Language>(count)
+            val flags = buffer.get().toInt() and 0xff
+            val management = if ((flags and FLAG_MANAGEMENT) != 0) decodeManagement(buffer) else null
+            val statement = if ((flags and FLAG_STATEMENT_TIME) != 0) decodeStatementTime(buffer) else null
+            if (buffer.hasRemaining()) return null
+            return FactBatch(disposition, management, statement)
+        }
+
+        private fun decodeManagement(buffer: ByteBuffer): Management? {
+            if (buffer.remaining() < 2) return null
+            val tmd = buffer.get().toInt() and 0xff
+            val count = buffer.get().toInt() and 0xff
+            if (buffer.remaining() < count * LANGUAGE_BYTES) return null
+            val languages = buildList {
                 repeat(count) {
-                    val languageTag = buffer.get().toInt() and 0xff
+                    val tag = buffer.get().toInt() and 0xff
                     val dmf = buffer.get().toInt() and 0xff
-                    val automatic = buffer.get().toInt() and 0xff
-                    val dcRaw = buffer.get().toInt() and 0xff
+                    val automatic = (buffer.get().toInt() and 0xff) != 0
+                    val displayRaw = buffer.get().toInt() and 0xff
+                    val languageBytes = ByteArray(3)
+                    buffer.get(languageBytes)
+                    val iso639 = languageBytes.toString(Charsets.US_ASCII)
                     val format = buffer.get().toInt() and 0xff
                     val tcs = buffer.get().toInt() and 0xff
                     val rollup = buffer.get().toInt() and 0xff
-                    val iso = ByteArray(3)
-                    buffer.get(iso)
-                    if (languageTag !in 0..7 || automatic !in 0..1 || !iso.all { byte ->
-                            val value = byte.toInt() and 0xff
-                            value in 'A'.code..'Z'.code || value in 'a'.code..'z'.code
-                        }) return null
-                    languages += Language(
-                        languageTag = languageTag,
-                        iso639LanguageCode = iso.toString(Charsets.ISO_8859_1).lowercase(),
-                        dmf = dmf,
-                        automaticPresentationOnReception = automatic != 0,
-                        displayCondition = dcRaw.takeUnless { it == 0xff },
-                        format = format,
-                        tcs = tcs,
-                        rollupMode = rollup,
+                    add(
+                        Language(
+                            languageTag = tag,
+                            iso639LanguageCode = iso639,
+                            dmf = dmf,
+                            automaticPresentationOnReception = automatic,
+                            displayCondition = displayRaw.takeUnless { it == 0xff },
+                            format = format,
+                            tcs = tcs,
+                            rollupMode = rollup,
+                        ),
                     )
                 }
-                management = Management(tmd, languages.sortedBy { it.languageTag })
             }
-            if (buffer.hasRemaining()) return null
-            if (disposition == Disposition.STATEMENT_TIMED && statementTime == null) return null
-            return FactBatch(disposition = disposition, management = management, statementTime = statementTime)
+            return Management(tmd, languages)
+        }
+
+        private fun decodeStatementTime(buffer: ByteBuffer): StatementTime? {
+            if (buffer.remaining() < 9) return null
+            val tmd = buffer.get().toInt() and 0xff
+            val millis = buffer.long
+            return StatementTime(tmd, millis)
         }
     }
 }
