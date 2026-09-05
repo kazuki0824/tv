@@ -24,8 +24,6 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          # #6: preserve the previous UNAVAILABLE classification for known but
-          # unsupported ISDB-T bandwidths while keeping the adapter decision-free.
           p = Path('tuner_hal2/binder_adapter/src/aidl_frontend_settings.rs')
           s = p.read_text()
           old = '''    IsdbtExplicitMode,\n    IsdbtExplicitInversion,'''
@@ -46,8 +44,6 @@ jobs:
           s = s.replace(old, new, 1)
           p.write_text(s)
 
-          # #8: an impossible capability snapshot must fail closed instead of
-          # being published as an ISDB-T frontend.
           p = Path('tuner_hal2/aidl_service/src/tuner_service.rs')
           s = p.read_text()
           old = '''fn frontend_type_from_snapshot(snapshot: &RootFrontendInfoSnapshot) -> FrontendType {\n    match snapshot.system {\n        FrontendSystem::IsdbT => FrontendType::ISDBT,\n        FrontendSystem::IsdbS => FrontendType::ISDBS,\n        FrontendSystem::IsdbS3 | FrontendSystem::DvbS => FrontendType::ISDBT,\n    }\n}\n'''
@@ -76,8 +72,6 @@ jobs:
           s = s.replace(marker, insert + marker, 1)
           p.write_text(s)
 
-          # #14: move the public Tuner contract SSOT out of the legacy
-          # implementation tree. Keep historical changelog wording untouched.
           src = Path('tuner_hal/DESIGN_JA.md')
           dst = Path('tuner_contract/DESIGN_JA.md')
           dst.parent.mkdir(exist_ok=True)
@@ -86,7 +80,10 @@ jobs:
           for path in Path('.').rglob('*'):
               if not path.is_file() or '.git' in path.parts:
                   continue
-              if path.as_posix() == 'tuner_hal/CHANGELOG.md':
+              if path.as_posix() in {
+                  'tuner_hal/CHANGELOG.md',
+                  '.github/workflows/tuner-hal2-contract-boundary-repair.yml',
+              }:
                   continue
               try:
                   text = path.read_text()
@@ -94,10 +91,6 @@ jobs:
                   continue
               if 'tuner_hal/DESIGN_JA.md' in text:
                   path.write_text(text.replace('tuner_hal/DESIGN_JA.md', 'tuner_contract/DESIGN_JA.md'))
-
-          # The old implementation directory must no longer own the canonical
-          # public contract. A short pointer preserves discoverability without
-          # creating a second normative copy.
           Path('tuner_hal/DESIGN_JA.md').write_text('''# Tuner HAL 公開契約の移動\n\nTuner HAL の公開AIDL契約、capability、状態遷移、資源寿命、transaction意味論の規範正本は `../tuner_contract/DESIGN_JA.md` へ移動した。\n\nこのファイルは旧 `tuner_hal` 実装treeからの案内だけを目的とし、規範値を所有しない。\n''')
           PY
 
@@ -115,7 +108,7 @@ jobs:
       - name: Commit production changes and remove helper
         shell: bash
         run: |
-          git rm .github/workflows/tuner-hal2-contract-boundary-repair.yml
+          git rm -f .github/workflows/tuner-hal2-contract-boundary-repair.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
