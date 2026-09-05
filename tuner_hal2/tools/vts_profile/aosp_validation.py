@@ -4,13 +4,14 @@ import argparse
 import sys
 from pathlib import Path
 
-from .model import ProfileError, load_profile
+from .model import ProfileError, load_profile, validate_profile
 from .render import render_xml
 from .schema import validate_xml_with_aosp_consumer
 
 
 def validate_profile_xml(profile_path: Path, aosp_root: Path) -> None:
     profile = load_profile(profile_path)
+    validate_profile(profile, require_resolved=True)
     source_ref = str(profile["vts"]["source_ref"])
     validate_xml_with_aosp_consumer(
         render_xml(profile),
