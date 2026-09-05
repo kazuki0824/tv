@@ -5,10 +5,11 @@ use super::{
     execute_shared_object_runtime_use_case_with_request_builder,
     plan_unavailable_object_method_use_case, scan_notifier, set_frontend_lnb_object_use_case,
     status_from_hal_error, status_unknown_error, tune_notifier, AidlApi, AidlMethodCall,
-    AidlObjectKind, BinderResult, FrontendAidlObject, FrontendScanType, FrontendSettings,
-    FrontendStatus, FrontendStatusReadiness, FrontendStatusType, FrontendTuneScanTxn, IFrontend,
-    IFrontendCallback, ObjectFrontendStatusReadinessValue, ObjectFrontendStatusType,
-    ObjectFrontendStatusValue, ObjectQueryRequest, ObjectQueryResponse, Strong,
+    AidlObjectKind, BinderResult, FrontendAidlObject, FrontendProfileRequirement,
+    FrontendScanType, FrontendSettings, FrontendStatus, FrontendStatusReadiness,
+    FrontendStatusType, FrontendTuneScanTxn, IFrontend, IFrontendCallback,
+    ObjectFrontendStatusReadinessValue, ObjectFrontendStatusType, ObjectFrontendStatusValue,
+    ObjectQueryRequest, ObjectQueryResponse, Strong,
 };
 use maleicacid_tuner_hal2_common::{HalError, HalInvalidArgumentKind};
 use maleicacid_tuner_hal2_device::{FrontendWorkerCancelReason, FrontendWorkerKind};
@@ -55,6 +56,63 @@ fn frontend_readiness_from_query_value(
     }
 }
 
+fn enforce_frontend_product_profile(
+    requirements: &[FrontendProfileRequirement],
+) -> Result<(), HalError> {
+    let Some(requirement) = requirements.first() else {
+        return Ok(());
+    };
+    let (feature, detail) = match requirement {
+        FrontendProfileRequirement::IsdbtExplicitMode => {
+            ("isdbt.mode", "explicit ISDB-T mode is not supported")
+        }
+        FrontendProfileRequirement::IsdbtExplicitInversion => (
+            "isdbt.inversion",
+            "explicit ISDB-T spectral inversion is not supported",
+        ),
+        FrontendProfileRequirement::IsdbtExplicitGuardInterval => (
+            "isdbt.guardInterval",
+            "explicit ISDB-T guard interval is not supported",
+        ),
+        FrontendProfileRequirement::IsdbtServiceAreaId => (
+            "isdbt.serviceAreaId",
+            "explicit ISDB-T serviceAreaId is not supported",
+        ),
+        FrontendProfileRequirement::IsdbtPartialReceptionAuto => (
+            "isdbt.partialReceptionFlag",
+            "ISDB-T partial reception AUTO is not supported",
+        ),
+        FrontendProfileRequirement::IsdbtLayerModulation => (
+            "isdbt.layer.modulation",
+            "explicit ISDB-T layer modulation is not supported",
+        ),
+        FrontendProfileRequirement::IsdbtLayerCoderate => (
+            "isdbt.layer.coderate",
+            "explicit ISDB-T layer coderate is not supported",
+        ),
+        FrontendProfileRequirement::IsdbtLayerTimeInterleave => (
+            "isdbt.layer.timeInterleave",
+            "explicit ISDB-T layer time interleave is not supported",
+        ),
+        FrontendProfileRequirement::IsdbtExplicitSegmentCount { .. } => (
+            "isdbt.layer.numOfSegment",
+            "explicit ISDB-T segment count is not supported",
+        ),
+        FrontendProfileRequirement::IsdbsExplicitModulation => (
+            "isdbs.modulation",
+            "explicit ISDB-S modulation is not supported",
+        ),
+        FrontendProfileRequirement::IsdbsExplicitCoderate => (
+            "isdbs.coderate",
+            "explicit ISDB-S coderate is not supported",
+        ),
+        FrontendProfileRequirement::IsdbsExplicitRolloff => {
+            ("isdbs.rolloff", "explicit ISDB-S rolloff is not supported")
+        }
+    };
+    Err(HalError::unsupported_detail(feature, detail))
+}
+
 impl IFrontend for FrontendAidlObject {
     fn setCallback(&self, callback: &Strong<dyn IFrontendCallback>) -> BinderResult<()> {
         self.set_callback_nullable_for_aidl(Some(callback))
@@ -64,9 +122,14 @@ impl IFrontend for FrontendAidlObject {
             &self.runtime(),
             self.handle(),
             || {
-                let request =
+                let converted =
                     aidl_frontend_settings_to_request(settings).map_err(status_from_hal_error)?;
-                Ok((AidlMethodCall::FrontendTune(request.clone()), request))
+                enforce_frontend_product_profile(&converted.profile_requirements)
+                    .map_err(status_from_hal_error)?;
+                Ok((
+                    AidlMethodCall::FrontendTune(converted.request.clone()),
+                    converted.request,
+                ))
             },
             |runtime, handle, dispatch_proof, request| {
                 FrontendTuneScanTxn::begin_tune(
@@ -110,11 +173,13 @@ impl IFrontend for FrontendAidlObject {
             self.handle(),
             || {
                 let scan_mode = aidl_scan_type_to_mode(scan_type).map_err(status_from_hal_error)?;
-                let request =
+                let converted =
                     aidl_frontend_settings_to_request(settings).map_err(status_from_hal_error)?;
+                enforce_frontend_product_profile(&converted.profile_requirements)
+                    .map_err(status_from_hal_error)?;
                 Ok((
-                    AidlMethodCall::FrontendScan(request.clone()),
-                    (request, scan_mode),
+                    AidlMethodCall::FrontendScan(converted.request.clone()),
+                    (converted.request, scan_mode),
                 ))
             },
             |runtime, handle, dispatch_proof, (request, scan_mode)| {
