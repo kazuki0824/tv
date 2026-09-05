@@ -403,7 +403,7 @@ impl FilterRuntime {
     }
 
     #[cfg(test)]
-    pub fn restore(&mut self, snapshot: FilterRuntimeSnapshot) {
+    pub(crate) fn restore(&mut self, snapshot: FilterRuntimeSnapshot) {
         self.state = snapshot.state;
         self.generation = snapshot.generation;
         self.open_type = snapshot.open_type;
@@ -709,7 +709,7 @@ impl FilterRuntime {
     }
 
     #[cfg(test)]
-    pub const fn source_relation_generation(&self) -> u64 {
+    pub(crate) const fn source_relation_generation(&self) -> u64 {
         self.source_relation_generation
     }
 
@@ -760,7 +760,7 @@ impl FilterRuntime {
     }
 
     #[cfg(test)]
-    pub fn set_source_filter_for_test(
+    pub(crate) fn set_source_filter_for_test(
         &mut self,
         source_filter_id: i32,
         source_filter_generation: u64,
