@@ -179,46 +179,41 @@ impl TsPacketCompletionBuffer {
         }
         let last_start = buf.len() - TS_RESYNC_CONFIRM_BYTES;
         (0..=last_start).find(|&offset| {
-            buf[offset] == 0x47
-                && buf[offset + TS_PACKET_SIZE] == 0x47
-                && buf[offset + TS_PACKET_SIZE * 2] == 0x47
+            (0..TS_RESYNC_CONFIRM_PACKETS)
+                .all(|packet_index| buf[offset + packet_index * TS_PACKET_SIZE] == 0x47)
         })
-    }
-
-    fn retain_unconfirmed_tail(&mut self, malformed_bytes: &mut usize) {
-        if self.buf.len() <= TS_RESYNC_TAIL_BYTES {
-            return;
-        }
-        let discard = self.buf.len() - TS_RESYNC_TAIL_BYTES;
-        self.buf.drain(..discard);
-        let mut saturated = false;
-        Self::add_local_malformed(malformed_bytes, discard, &mut saturated);
-        if saturated {
-            self.malformed_bytes_saturated = true;
-        }
     }
 
     pub fn push(&mut self, data: &[u8]) -> TsPacketBufferDrain {
         self.buf.extend_from_slice(data);
-        let mut packets = Vec::new();
         let mut malformed_bytes = 0usize;
+        let mut local_malformed_saturated = false;
         loop {
-            if self.resync_required || self.buf.first().copied() != Some(0x47) {
+            if self.resync_required {
                 let Some(offset) = Self::confirmed_sync_offset(&self.buf) else {
-                    self.resync_required = true;
-                    self.retain_unconfirmed_tail(&mut malformed_bytes);
+                    if self.buf.len() > TS_RESYNC_TAIL_BYTES {
+                        let discard = self.buf.len() - TS_RESYNC_TAIL_BYTES;
+                        self.buf.drain(..discard);
+                        Self::add_local_malformed(
+                            &mut malformed_bytes,
+                            discard,
+                            &mut local_malformed_saturated,
+                        );
+                    }
                     break;
                 };
                 if offset > 0 {
                     self.buf.drain(..offset);
-                    let mut saturated = false;
-                    Self::add_local_malformed(&mut malformed_bytes, offset, &mut saturated);
-                    if saturated {
-                        self.malformed_bytes_saturated = true;
-                    }
+                    Self::add_local_malformed(
+                        &mut malformed_bytes,
+                        offset,
+                        &mut local_malformed_saturated,
+                    );
                 }
                 self.resync_required = false;
+                continue;
             }
+
             if self.buf.len() < TS_PACKET_SIZE {
                 break;
             }
@@ -229,9 +224,15 @@ impl TsPacketCompletionBuffer {
             let mut packet = [0u8; TS_PACKET_SIZE];
             packet.copy_from_slice(&self.buf[..TS_PACKET_SIZE]);
             self.buf.drain(..TS_PACKET_SIZE);
-            packets.push(packet);
+            self.completed.push_back(packet);
         }
-        self.add_malformed_bytes(malformed_bytes);
+        if malformed_bytes > 0 {
+            self.add_malformed_bytes(malformed_bytes);
+        }
+        if local_malformed_saturated {
+            self.malformed_bytes_saturated = true;
+        }
+        let packets = self.drain_completed(usize::MAX);
         TsPacketBufferDrain {
             packets,
             malformed_bytes,
@@ -270,6 +271,7 @@ impl TsPacketCompletionBuffer {
         self.completed.clear();
         self.resync_required = false;
     }
+
     pub fn tail_len(&self) -> usize {
         self.buf.len()
     }
@@ -380,13 +382,72 @@ pub fn fail_after_cleanup<T>(
     ))
 }
 
+#[derive(Debug)]
+pub struct IdExhausted {
+    pub last_attempted: i32,
+}
+
+#[derive(Debug)]
+pub struct IdAllocator {
+    next: AtomicI32,
+    max: i32,
+}
+
+impl IdAllocator {
+    pub const fn new(start: i32) -> Self {
+        Self {
+            next: AtomicI32::new(start),
+            max: i32::MAX,
+        }
+    }
+
+    pub const fn new_bounded(start: i32, max: i32) -> Self {
+        Self {
+            next: AtomicI32::new(start),
+            max,
+        }
+    }
+
+    pub fn try_allocate(&self) -> Result<i32, IdExhausted> {
+        loop {
+            let current = self.next.load(Ordering::SeqCst);
+            if current > self.max {
+                return Err(IdExhausted {
+                    last_attempted: current,
+                });
+            }
+            let Some(next) = current.checked_add(1) else {
+                return Err(IdExhausted {
+                    last_attempted: current,
+                });
+            };
+            match self
+                .next
+                .compare_exchange(current, next, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => return Ok(current),
+                Err(_) => continue,
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrontendBackendKind {
     Px4CharDevice,
     LinuxDvb,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+impl FrontendBackendKind {
+    pub const fn as_hint(self) -> &'static str {
+        match self {
+            Self::Px4CharDevice => "px4",
+            Self::LinuxDvb => "dvb",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum FrontendSystem {
     IsdbT,
     IsdbS,
@@ -411,13 +472,30 @@ pub enum FrontendStreamIdKind {
     RelativeStreamNumber,
 }
 
+pub const JAPAN_CATV_C13_CENTER_HZ: u64 = 111_142_857;
+pub const JAPAN_UHF_62_CENTER_HZ: u64 = 767_142_857;
+pub const JAPAN_ISDBT_TUNE_TOLERANCE_HZ: u64 = 500_000;
+
+pub fn japan_isdbt_frequency_contract_range_hz() -> (u64, u64, u64) {
+    (
+        JAPAN_CATV_C13_CENTER_HZ.saturating_sub(JAPAN_ISDBT_TUNE_TOLERANCE_HZ),
+        JAPAN_UHF_62_CENTER_HZ.saturating_add(JAPAN_ISDBT_TUNE_TOLERANCE_HZ),
+        JAPAN_ISDBT_TUNE_TOLERANCE_HZ,
+    )
+}
+
 pub fn is_japan_isdbt_frequency_contract_hz(frequency_hz: u64) -> bool {
-    const FIRST: u64 = 111_142_857;
-    const LAST: u64 = 767_142_857;
-    if frequency_hz < FIRST || frequency_hz > LAST {
+    let (min_hz, max_hz, _) = japan_isdbt_frequency_contract_range_hz();
+    frequency_hz >= min_hz && frequency_hz <= max_hz
+}
+
+pub fn is_japan_bs_if_frequency_hz(if_frequency_hz: u64) -> bool {
+    let first = 1_049_480_000_u64;
+    let last = 1_471_440_000_u64;
+    if if_frequency_hz < first || if_frequency_hz > last {
         return false;
     }
-    (frequency_hz - FIRST) % 6_000_000 == 0
+    (if_frequency_hz - first) % 38_360_000 == 0
 }
 
 pub fn is_japan_cs110_if_frequency_hz(if_frequency_hz: u64) -> bool {
@@ -482,32 +560,6 @@ pub struct FrontendTuneRequest {
     pub partial_reception: FrontendIsdbtPartialReceptionRequirement,
 }
 
-/// Syntactically known frontend values that are not represented directly in
-/// `FrontendTuneRequest`. Values are retained losslessly so service/runtime
-/// policy can decide support without re-reading AIDL objects.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FrontendRequestedSetting {
-    IsdbtExplicitBandwidth { bandwidth_hz: u32 },
-    IsdbtExplicitMode { value: i32 },
-    IsdbtExplicitInversion { value: i32 },
-    IsdbtExplicitGuardInterval { value: i32 },
-    IsdbtServiceAreaId { value: i32 },
-    IsdbtPartialReceptionAuto,
-    IsdbtLayerModulation { layer_index: usize, value: i32 },
-    IsdbtLayerCoderate { layer_index: usize, value: i32 },
-    IsdbtLayerTimeInterleave { layer_index: usize, value: i32 },
-    IsdbtExplicitSegmentCount { layer_index: usize, count: i32 },
-    IsdbsExplicitModulation { value: i32 },
-    IsdbsExplicitCoderate { value: i32 },
-    IsdbsExplicitRolloff { value: i32 },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FrontendSettingsRequest {
-    pub request: FrontendTuneRequest,
-    pub requested_settings: Vec<FrontendRequestedSetting>,
-}
-
 impl FrontendTuneRequest {
     /// tune と non-blind scan では endFrequency を選局条件に含めない。
     pub fn normalized_for_non_blind_operation(mut self) -> Self {
@@ -560,7 +612,7 @@ pub enum HalError {
         detail: HalErrorDetail,
     },
     PermissionDenied {
-        path: Option<PathBuf>,
+        path: PathBuf,
         detail: HalErrorDetail,
     },
     Busy {
@@ -765,7 +817,7 @@ impl fmt::Display for HalError {
                 } else {
                     write!(f, "device busy: {}", detail.detail)
                 }
-            },
+            }
             HalError::IoctlFailed {
                 backend,
                 path,
@@ -811,32 +863,40 @@ impl fmt::Display for HalError {
                 cleanup,
             } => write!(
                 f,
-                "{context}: primary=({primary}); cleanup=({cleanup})"
+                "composed failure: context={} primary=({}) cleanup=({})",
+                context, primary, cleanup
             ),
-            HalError::InvalidArgument { kind, detail } => {
-                write!(f, "invalid argument ({kind:?}): {}", detail.detail)
-            },
+            HalError::InvalidArgument { kind, detail } => write!(
+                f,
+                "invalid argument: kind={kind:?} detail={}",
+                detail.detail
+            ),
             HalError::InvalidState { kind, detail } => {
-                write!(f, "invalid state ({kind:?}): {}", detail.detail)
-            },
+                write!(f, "invalid state: kind={kind:?} detail={}", detail.detail)
+            }
             HalError::Io {
                 backend,
                 operation,
                 path,
                 errno,
                 detail,
-            } => write!(
-                f,
-                "I/O error: backend={} operation={} path={} errno={} detail={}",
-                backend,
-                operation,
-                display_path(path),
-                errno.map(errno_name).unwrap_or("none"),
-                detail.detail
-            ),
+            } => {
+                if let Some(errno) = errno {
+                    write!(f, "io failed: backend={} operation={} device_path={} errno={} errno_name={} detail={}", backend, operation, display_path(path), errno, errno_name(*errno), detail.detail)
+                } else {
+                    write!(
+                        f,
+                        "io failed: backend={} operation={} device_path={} detail={}",
+                        backend,
+                        operation,
+                        display_path(path),
+                        detail.detail
+                    )
+                }
+            }
             HalError::Internal { kind, detail } => {
-                write!(f, "internal error ({kind:?}): {}", detail.detail)
-            },
+                write!(f, "internal error: kind={kind:?} detail={}", detail.detail)
+            }
             HalError::Unsupported(feature) => write!(f, "unsupported feature: {feature}"),
             HalError::UnsupportedDetail { feature, detail } => {
                 write!(f, "unsupported feature: {feature}: {}", detail.detail)
