@@ -55,4 +55,18 @@ actual_bs = '''                val discovered = JapanIsdbScanPlan.explicitBsCand
 if old_bs not in text:
     raise SystemExit('F15 main script置換対象が見つかりません')
 text = text.replace(old_bs, actual_bs, 1)
+
+expected_genre = '''    private fun broadcastGenreText(genres: List<AribContentGenre>): String? = genres
+        .filter { it.parseStatus == "OK" }
+        .takeIf { it.isNotEmpty() }
+        ?.joinToString("、") { "ARIB(0x${it.level1.toString(16)}/0x${it.level2.toString(16)}):${it.aribName}" }
+'''
+actual_genre = '''    private fun broadcastGenreText(genres: List<AribContentGenre>): String? = genres.takeIf { it.isNotEmpty() }?.joinToString("、") { genre ->
+        val name = genre.aribName.takeIf { it.isNotBlank() } ?: ""
+        "ARIB(0x${genre.level1.toString(16)}/0x${genre.level2.toString(16)}):$name"
+    }
+'''
+if expected_genre not in text:
+    raise SystemExit('genre main script置換対象が見つかりません')
+text = text.replace(expected_genre, actual_genre, 1)
 p.write_text(text)
