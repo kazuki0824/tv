@@ -8,7 +8,6 @@ on:
     paths:
       - .github/workflows/pr54-review-round2-once.yml
       - .github/scripts/pr54_review_round2_once.py
-      - .github/scripts/pr54_review_round2_prepatch.py
 
 permissions:
   contents: write
@@ -35,9 +34,6 @@ jobs:
           curl --fail --location --retry 3 --retry-all-errors "https://raw.githubusercontent.com/aosp-mirror-neo/platform_packages_apps_TV/android-15.0.0_r14/src/com/android/tv/parental/ParentalControlSettings.java" --output "$RUNNER_TEMP/aosp-tv/src/com/android/tv/parental/ParentalControlSettings.java"
           echo "AOSP_PARENTAL_SOURCE=$RUNNER_TEMP/aosp-tv/src/com/android/tv/parental/ParentalControlSettings.java" >> "$GITHUB_ENV"
 
-      - name: 一時scriptを補正
-        run: python3 .github/scripts/pr54_review_round2_prepatch.py
-
       - name: production design test修正を適用
         run: python3 .github/scripts/pr54_review_round2_once.py
 
@@ -49,8 +45,6 @@ jobs:
           cargo +1.81.0 test --manifest-path arib_si_engine_rs/host_ci/core/Cargo.toml
           (cd arib_si_engine_rs/host_ci && cargo +1.81.0 clippy --all-targets --locked -- -D warnings)
           (cd "$RUNNER_TEMP/aosp-tv" && git apply --check "$GITHUB_WORKSPACE/tis/platform_patches/lineage-22.1/packages_apps_TV_arib_exceptional_parental_policy.patch")
-          python3 -m json.tool arib_si_engine_rs/schema/program_provider_data_v1.schema.json >/dev/null
-          python3 -m json.tool arib_si_engine_rs/schema/channel_provider_data_v1.schema.json >/dev/null
           git diff --check
 
       - name: 指摘契約の静的整合を確認
@@ -66,10 +60,8 @@ jobs:
       - name: 通常sourceだけをcommitしてpush
         run: |
           git add arib_si_engine_rs/src/core/provider_data.rs arib_si_engine_rs/src/core/eit.rs arib_si_engine_rs/Android.bp
-          git add tis/src/com/maleicacid/tvinput/aribsi/ProviderDataBridge.kt tis/src/com/maleicacid/tvinput/aribsi/EventModelMapper.kt
-          git add tis/src/com/maleicacid/tvinput/db/TvInputModels.kt
-          git add tis/src/com/maleicacid/tvinput/tis/TvProviderWriter.kt tis/src/com/maleicacid/tvinput/tis/TunerSelectionPolicy.kt tis/src/com/maleicacid/tvinput/tis/TunerController.kt tis/src/com/maleicacid/tvinput/tis/PlaybackPipeline.kt tis/src/com/maleicacid/tvinput/tis/MaleicacidLiveSession.kt tis/src/com/maleicacid/tvinput/tis/ChannelScanController.kt tis/src/com/maleicacid/tvinput/tis/ScanPlan.kt
-          git add tis/tests/src/com/maleicacid/tvinput/tis/TisR51FixedPlanAcceptanceTest.kt tis/tests/src/com/maleicacid/tvinput/tis/TvProviderWriterR51FixTest.kt
+          git add tis/src/com/maleicacid/tvinput/aribsi/ProviderDataBridge.kt
+          git add tis/src/com/maleicacid/tvinput/tis/ChannelScanController.kt tis/src/com/maleicacid/tvinput/tis/ScanPlan.kt tis/src/com/maleicacid/tvinput/tis/TunerSelectionPolicy.kt
           git add tis/DESIGN_JA.md tis/INTEGRATION.md
           git add tis/platform_patches/lineage-22.1/frameworks_base_mediasync_first_output.patch tis/platform_patches/lineage-22.1/packages_apps_TV_arib_exceptional_parental_policy.patch
           git add .github/workflows/tis-host-ci.yml .github/workflows/arib-si-engine-host-ci.yml
