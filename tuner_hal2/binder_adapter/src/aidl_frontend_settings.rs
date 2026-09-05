@@ -112,11 +112,19 @@ fn classify_isdbt_settings(
 
     match s.bandwidth {
         FrontendIsdbtBandwidth::AUTO => {}
-        FrontendIsdbtBandwidth::BANDWIDTH_6MHZ
-        | FrontendIsdbtBandwidth::BANDWIDTH_7MHZ
-        | FrontendIsdbtBandwidth::BANDWIDTH_8MHZ => {
+        FrontendIsdbtBandwidth::BANDWIDTH_6MHZ => {
             requested.push(FrontendRequestedSetting::IsdbtExplicitBandwidth {
-                bandwidth_hz: map_isdbt_bandwidth(s.bandwidth).expect("known ISDB-T bandwidth"),
+                bandwidth_hz: 6_000_000,
+            });
+        }
+        FrontendIsdbtBandwidth::BANDWIDTH_7MHZ => {
+            requested.push(FrontendRequestedSetting::IsdbtExplicitBandwidth {
+                bandwidth_hz: 7_000_000,
+            });
+        }
+        FrontendIsdbtBandwidth::BANDWIDTH_8MHZ => {
+            requested.push(FrontendRequestedSetting::IsdbtExplicitBandwidth {
+                bandwidth_hz: 8_000_000,
             });
         }
         _ => {
