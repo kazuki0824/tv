@@ -15,6 +15,7 @@ class EventModelMapper {
         return events.mapNotNull { event ->
             if (event.source.tableId != 0x4e || event.timingState != "DEFINED") return@mapNotNull null
             val semanticFacts = semanticFactsByServiceKey[event.serviceKey]
+            if (semanticFactsByServiceKey.isNotEmpty() && semanticFacts == null) return@mapNotNull null
             val end = runCatching { Math.addExact(event.startTimeMillis, event.durationMillis) }
                 .getOrElse { return@mapNotNull null }
             if (event.startTimeMillis <= 0L || end <= event.startTimeMillis) null else ProgramRecord(
@@ -46,7 +47,7 @@ class EventModelMapper {
                     components = event.descriptors.components,
                 ),
                 source = event.source,
-                requiresCas = semanticFacts?.requiresCas ?: event.descriptors.scrambled == true,
+                requiresCas = semanticFacts?.requiresCas ?: false,
                 diagnosticText = event.descriptors.diagnostics.summary,
                 contentRatings = event.descriptors.parentalRatings.mapNotNull {
                     AribRatingMapper.toTvContentRatingString(
