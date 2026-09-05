@@ -1,6 +1,6 @@
 package com.maleicacid.tvinput.tis
 
-/** Pure section-filter decisions, independent from Android Tuner resource ownership. */
+/** Android Tuner資源所有から独立したsection-filterの純粋判定。 */
 object SectionFilterPolicy {
     const val MAX_SECTION_EVENT_BYTES = 4096L
 
