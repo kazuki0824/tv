@@ -17,8 +17,32 @@ def _profile(region: str) -> dict:
         "vts": {"contract": "android14-aidl-v1", "source_ref": "aosp-commit", "variant": ""},
         "frontend": {"type": "ISDBT", "is_software_frontend": False, "frequency_hz": None},
         "region": {"query": region, "candidates": []},
-        "flows": {"scan": True, "record": {"enabled": False}, "clear_live": {"enabled": False}},
-        "queues": {},
+        "flows": {
+            "scan": True,
+            "record": {"enabled": True, "pid": None},
+            "clear_live": {
+                "enabled": True,
+                "audio_pid": None,
+                "video_pid": None,
+                "audio_stream_type": None,
+                "video_stream_type": None,
+                "pcr_pid": None,
+                "section_pid": None,
+            },
+            "playback": {
+                "enabled": True,
+                "input_file_path": "/data/local/tmp/segment000000.ts",
+            },
+        },
+        "queues": {
+            "record_filter_bytes": 16 * 1024 * 1024,
+            "record_dvr_bytes": 4 * 1024 * 1024,
+            "audio_filter_bytes": 16 * 1024 * 1024,
+            "video_filter_bytes": 16 * 1024 * 1024,
+            "pcr_filter_bytes": 16 * 1024 * 1024,
+            "section_filter_bytes": 16 * 1024 * 1024,
+            "playback_dvr_bytes": 4 * 1024 * 1024,
+        },
     }
 
 

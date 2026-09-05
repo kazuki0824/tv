@@ -456,7 +456,7 @@ impl CapacityLedger {
             ));
         }
         let requested_buffer_size = Self::request_bytes(buffer_size, "filter")?;
-        let fmq = if open_type.supports_normal_fmq_queue() {
+        let fmq = if open_type.has_filter_fmq() {
             requested_buffer_size
         } else {
             0
@@ -683,9 +683,9 @@ mod tests {
     }
 
     #[test]
-    fn payloadless_and_record_filters_do_not_claim_normal_fmq_bytes() {
+    fn record_filter_claims_filter_fmq_bytes_while_payloadless_filter_does_not() {
         let snapshot = CapabilitySnapshot {
-            fmq_runtime_budget_bytes: 1,
+            fmq_runtime_budget_bytes: 4096,
             ..CapabilitySnapshot::product_default()
         };
         let mut ledger = CapacityLedger::default();
@@ -696,10 +696,14 @@ mod tests {
         ledger
             .reserve_filter(snapshot, 2, FilterOpenType::TsRecord, 4096)
             .unwrap();
-        ledger.release_filter(2).unwrap();
         assert!(ledger
-            .reserve_filter(snapshot, 3, FilterOpenType::TsRaw, 4096)
+            .reserve_filter(snapshot, 3, FilterOpenType::TsRaw, 1)
             .is_err());
+        ledger.release_filter(2).unwrap();
+        ledger
+            .reserve_filter(snapshot, 3, FilterOpenType::TsRaw, 4096)
+            .unwrap();
+        ledger.release_filter(3).unwrap();
     }
 
     #[test]

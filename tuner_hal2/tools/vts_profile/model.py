@@ -7,9 +7,11 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 SUPPORTED_VTS_CONTRACT = "android14-aidl-v1"
+RECORD_FILTER_FMQ_PROBE_VARIANT = "record-filter-fmq"
 FRONTEND_ID = {"ISDBT": "FE_ISDBT_0", "ISDBS": "FE_ISDBS_0"}
+LNB_VOLTAGES = {"NONE", "VOLTAGE_11V", "VOLTAGE_15V"}
 
-_TOP = {"schema_version", "target", "vts", "frontend", "region", "service", "flows", "queues"}
+_TOP = {"schema_version", "target", "vts", "frontend", "region", "service", "flows", "queues", "lnb"}
 _TARGET = {"hal", "product", "backend"}
 _VTS = {"contract", "source_ref", "variant"}
 _FRONTEND = {
@@ -19,10 +21,21 @@ _FRONTEND = {
 _REGION = {"query", "candidates"}
 _CANDIDATE = {"delivery_system", "physical_channel", "frequency_hz", "label"}
 _SERVICE = {"service_id"}
-_FLOWS = {"scan", "record", "clear_live"}
+_FLOWS = {"scan", "record", "clear_live", "playback"}
 _RECORD = {"enabled", "pid"}
-_CLEAR_LIVE = {"enabled", "audio_pid", "video_pid", "audio_stream_type", "video_stream_type"}
-_QUEUES = {"record_filter_bytes", "record_dvr_bytes", "audio_filter_bytes", "video_filter_bytes"}
+_CLEAR_LIVE = {
+    "enabled", "audio_pid", "video_pid", "audio_stream_type", "video_stream_type",
+    "pcr_pid", "section_pid",
+}
+_PLAYBACK = {
+    "enabled", "input_file_path", "audio_pid", "video_pid", "section_pid",
+    "audio_stream_type", "video_stream_type",
+}
+_LNB = {"voltage", "tone", "position"}
+_QUEUES = {
+    "record_filter_bytes", "record_dvr_bytes", "audio_filter_bytes", "video_filter_bytes",
+    "pcr_filter_bytes", "section_filter_bytes", "playback_dvr_bytes",
+}
 
 
 class ProfileError(ValueError):
@@ -76,6 +89,26 @@ def save_profile(path: Path, profile: dict[str, Any]) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     tmp.replace(path)
+
+
+def _require_resolved_pid(container: dict[str, Any], key: str, prefix: str, require_resolved: bool) -> None:
+    value = container.get(key)
+    if value is None:
+        if require_resolved:
+            raise ProfileError(f"{prefix}.{key} is unresolved")
+    else:
+        validate_pid(value, f"{prefix}.{key}")
+
+
+def _require_resolved_non_negative(
+    container: dict[str, Any], key: str, prefix: str, require_resolved: bool
+) -> None:
+    value = container.get(key)
+    if value is None:
+        if require_resolved:
+            raise ProfileError(f"{prefix}.{key} is unresolved")
+    else:
+        positive_int(value, f"{prefix}.{key}", allow_zero=True)
 
 
 def validate_profile(profile: dict[str, Any], *, require_resolved: bool = False) -> None:
@@ -161,16 +194,13 @@ def validate_profile(profile: dict[str, Any], *, require_resolved: bool = False)
     reject_unknown(flows, _FLOWS, "flows")
     if not isinstance(flows.get("scan"), bool):
         raise ProfileError("flows.scan must be boolean")
+
     record = require_dict(flows.get("record"), "flows.record")
     reject_unknown(record, _RECORD, "flows.record")
     if not isinstance(record.get("enabled"), bool):
         raise ProfileError("flows.record.enabled must be boolean")
     if record["enabled"]:
-        if record.get("pid") is None:
-            if require_resolved:
-                raise ProfileError("flows.record.pid is unresolved")
-        else:
-            validate_pid(record["pid"], "flows.record.pid")
+        _require_resolved_pid(record, "pid", "flows.record", require_resolved)
     elif "pid" in record:
         raise ProfileError("disabled flows.record must not keep an unconsumed pid")
 
@@ -179,22 +209,67 @@ def validate_profile(profile: dict[str, Any], *, require_resolved: bool = False)
     if not isinstance(live.get("enabled"), bool):
         raise ProfileError("flows.clear_live.enabled must be boolean")
     if live["enabled"]:
-        for key in ("audio_pid", "video_pid"):
-            if live.get(key) is None:
-                if require_resolved:
-                    raise ProfileError(f"flows.clear_live.{key} is unresolved")
-            else:
-                validate_pid(live[key], f"flows.clear_live.{key}")
+        for key in ("audio_pid", "video_pid", "pcr_pid", "section_pid"):
+            _require_resolved_pid(live, key, "flows.clear_live", require_resolved)
         for key in ("audio_stream_type", "video_stream_type"):
-            if live.get(key) is None:
-                if require_resolved:
-                    raise ProfileError(f"flows.clear_live.{key} is unresolved")
-            else:
-                positive_int(live[key], f"flows.clear_live.{key}", allow_zero=True)
+            _require_resolved_non_negative(live, key, "flows.clear_live", require_resolved)
     else:
         leftovers = sorted(set(live) - {"enabled"})
         if leftovers:
             raise ProfileError("disabled flows.clear_live has unconsumed fields: " + ", ".join(leftovers))
+
+    playback = require_dict(flows.get("playback"), "flows.playback")
+    reject_unknown(playback, _PLAYBACK, "flows.playback")
+    if not isinstance(playback.get("enabled"), bool):
+        raise ProfileError("flows.playback.enabled must be boolean")
+    if playback["enabled"]:
+        path = playback.get("input_file_path")
+        if not isinstance(path, str) or not path.strip() or not path.startswith("/"):
+            raise ProfileError("flows.playback.input_file_path must be an absolute device path")
+        for key in ("audio_pid", "video_pid", "section_pid"):
+            _require_resolved_pid(playback, key, "flows.playback", require_resolved)
+        for key in ("audio_stream_type", "video_stream_type"):
+            _require_resolved_non_negative(playback, key, "flows.playback", require_resolved)
+    else:
+        leftovers = sorted(set(playback) - {"enabled"})
+        if leftovers:
+            raise ProfileError("disabled flows.playback has unconsumed fields: " + ", ".join(leftovers))
+
+    lnb = profile.get("lnb")
+    if variant == RECORD_FILTER_FMQ_PROBE_VARIANT:
+        if not record["enabled"]:
+            raise ProfileError("record-filter-fmq VTS variant requires flows.record.enabled=true")
+        if flows["scan"] or live["enabled"] or playback["enabled"] or lnb is not None:
+            raise ProfileError(
+                "record-filter-fmq VTS variant must remain a RECORD-only descriptor probe"
+            )
+    else:
+        missing_coverage: list[str] = []
+        if not flows["scan"]:
+            missing_coverage.append("scan")
+        if not record["enabled"]:
+            missing_coverage.append("record")
+        if not live["enabled"]:
+            missing_coverage.append("clear_live(A/V+PCR+SECTION)")
+        if not playback["enabled"]:
+            missing_coverage.append("playback")
+        if missing_coverage:
+            raise ProfileError(
+                "canonical VTS capability coverage is unreachable: " + ", ".join(missing_coverage)
+            )
+        if fe_type == "ISDBS":
+            lnb = require_dict(lnb, "lnb")
+            reject_unknown(lnb, _LNB, "lnb")
+            if lnb.get("voltage") not in LNB_VOLTAGES:
+                raise ProfileError(
+                    "lnb.voltage must be NONE, VOLTAGE_11V, or VOLTAGE_15V for tuner_hal2"
+                )
+            if lnb.get("tone") != "NONE":
+                raise ProfileError("lnb.tone must be NONE for tuner_hal2")
+            if lnb.get("position") != "UNDEFINED":
+                raise ProfileError("lnb.position must be UNDEFINED for tuner_hal2")
+        elif lnb is not None:
+            raise ProfileError("ISDBT canonical profile must not contain an LNB configuration")
 
     queues = require_dict(profile.get("queues"), "queues")
     reject_unknown(queues, _QUEUES, "queues")
@@ -202,7 +277,11 @@ def validate_profile(profile: dict[str, Any], *, require_resolved: bool = False)
     if record["enabled"]:
         required |= {"record_filter_bytes", "record_dvr_bytes"}
     if live["enabled"]:
-        required |= {"audio_filter_bytes", "video_filter_bytes"}
+        required |= {
+            "audio_filter_bytes", "video_filter_bytes", "pcr_filter_bytes", "section_filter_bytes"
+        }
+    if playback["enabled"]:
+        required |= {"audio_filter_bytes", "video_filter_bytes", "section_filter_bytes", "playback_dvr_bytes"}
     missing = sorted(required - set(queues))
     extra = sorted(set(queues) - required)
     if missing:

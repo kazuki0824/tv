@@ -83,6 +83,7 @@ VTS XML/profileで使用する機能とcapabilityで宣言する機能は一致�
 | monitor event | 本製品のTS-only `ProductProfile`では対応宣言しない | `configureMonitorEvent(0)`だけを監視停止として成功させ、非0 maskは`UNAVAILABLE`とする。monitor event用の状態、worker、queue、能力値を生成しない |
 | AV passthrough | 対応宣言しない | profileでは `isPassthrough=false` に固定する |
 | `linkCaps` | main type 粒度 | 広告した main type pair は VTS が生成する subtype `UNDEFINED` 接続も成功対象に含める。成功させない pair は広告しない |
+| TS `RECORD` Filter FMQ | canonical RECORD data-flow profileは `useFMQ=false` とする。Filter FMQ descriptorを明示検査する `record-filter-fmq` probe variantだけ `useFMQ=true` を使用できる | `useFMQ=true` は `IFilter.getQueueDesc()` のdescriptor取得coverageだけを追加し、RECORD payloadの配送先をFilter FMQへ変更しない。実record payloadはRecord DVR FMQへ正確に1回だけ配送し、Filter FMQへ二重配送しない |
 
 
 #### `DemuxCapabilities.linkCaps` / `numBytesInSectionFilter` 固定契約
@@ -239,11 +240,25 @@ VTS製品設定の`canConnectToCiCam`は`false`に固定する。CI CAM系APIは
 
 | API | Live objectでの成功条件と結果 | 非対応 / failure |
 |---|---|---|
-| `IFilter.getQueueDesc()` | open時filter種別が通常payload FMQを持つ場合、`configure()`前後を問わずopen時に確保した同一FMQ descriptorを返す | 通常payload FMQを持たないfilterは`UNAVAILABLE`とし、FMQ descriptorを後付け生成しない |
+| `IFilter.getQueueDesc()` | open時filter種別がFilter FMQ resourceを所有する場合、`configure()`前後を問わずopen時に確保した同一FMQ descriptorを返す | Filter FMQ resourceを所有しないfilterは`UNAVAILABLE`とし、FMQ descriptorを後付け生成しない |
 | `IFilter.getId()` / `getId64Bit()` | open時に確定したdemux-local filter IDを対応するAIDL返却型で返す。両queryは同じfilter object identityを表す | 読み取り専用queryとして別IDを再発行せず、状態を変更しない |
 | `IDvr.getQueueDesc()` | record / playbackとも、`configure()`前後およびstart/stop状態を問わず、open時に確保した同一DVR FMQ descriptorを返す | `configure()`または再設定でqueue identity、容量、descriptorを置換しない |
 
-通常payload FMQを持つFilterは、未configureを理由に`getQueueDesc()`を拒否しない。Record FilterのpayloadはRecord DVR FMQへ、audio/video mediaは`MediaEvent`の共有領域またはイベント固有fdへ配送し、PCRその他callback-only eventには通常payload FMQを設けない。DVR FMQは`openDvr()`の`bufferSize`から生成し、`configure()`はしきい値等のDVR設定だけを変更する。
+Filter FMQ resourceを所有するFilterは、未configureを理由に`getQueueDesc()`を拒否しない。Filter FMQ resourceの所有とpayload data planeとしての使用は次の契約で分離する。audio/video mediaは`MediaEvent`の共有領域またはイベント固有fdへ配送し、PCRその他callback-only eventにはFilter FMQ resourceを設けない。DVR FMQは`openDvr()`の`bufferSize`から生成し、`configure()`はしきい値等のDVR設定だけを変更する。
+
+#### Filter FMQ ownership / payload data-plane 分離契約
+
+Filter FMQの「Filter objectがresourceとして所有し`IFilter.getQueueDesc()`でdescriptorをexportできること」と、「そのFMQを当該Filterのpayload data planeとして使用すること」は独立した2軸とする。resource ownershipをpayload配送能力の別名として扱わない。
+
+現行TS-only profileでは、TS `TS`（raw TS）、`SECTION`、`PES`、`RECORD` Filterがopen時にFilter FMQ resourceを所有する。これらは有効な`openFilter(type, bufferSize, callback)`の`bufferSize`をFilter FMQ byte容量として`CapabilitySnapshot.fmqRuntimeBudgetBytes`から予約し、Filter object lifetime中は同じqueue identity / descriptorを維持する。`AUDIO`、`VIDEO`、`PCR`、`UNDEFINED`はFilter FMQ resourceを所有せず、`IFilter.getQueueDesc()`は`UNAVAILABLE`とする。
+
+Filter FMQをpayload data planeとして使用するのはTS `TS`、`SECTION`、`PES`だけとする。これらのpayload commit、EventFlag wake、`DATA_READY` / `LOW_WATER` / `HIGH_WATER` / `OVERFLOW`は後段の通常Filter status契約を正とする。
+
+TS `RECORD` FilterはFilter FMQ resourceを所有しdescriptorをexportできるが、RECORD TS payloadをそのFilter FMQへ書き込まない。RECORD Filterの実payload data planeは、`RecordDvrFilterRelationTxn`でattachされたRecord DVRのRecord DVR FMQだけとし、同じ188-byte TS packetをRECORD Filter FMQとRecord DVR FMQへ二重配送してはならない。RECORD Filter FMQのread/write position、occupancy、EventFlagはRECORD payload、Record status、`record_output_byte_offset`、`DemuxFilterTsRecordEvent.byteNumber`の入力にしない。
+
+RECORDの`record_output_byte_offset`と`DemuxFilterTsRecordEvent.byteNumber`は「TS RECORD filter settings / event 固定契約」と0-S-3Bの`FilterProducerDrainGate`を正とし、Record DVR FMQへの実output commit成功時だけ実commit byte数に従って進める。Record DVR output commit失敗時、RECORD Filter FMQのdescriptor取得、Filter FMQのqueue position変化だけでは進めない。
+
+VTS/profileの`useFMQ`はこのownership/data-plane境界を変更しない。canonical RECORD data-flow profileはAOSPのRECORD経路に合わせ`useFMQ=false`とし、`record-filter-fmq` probe variantの`useFMQ=true`は`IFilter.getQueueDesc()` descriptor contractを追加検査するためだけに使用する。probe variantでもRECORD payloadの唯一のdata planeはRecord DVR FMQのままとする。
 
 ### Filter / DVR lifecycle API 固定契約
 
@@ -302,7 +317,7 @@ Record DVRの`attachFilter()` / `detachFilter()`は、Record DVRがLiveであれ
 | TS | `AUDIO` | AV filterの公開能力と既存child-open資源条件が成立する場合に成功 | `av` | `MediaEvent`。通常Filter FMQなし |
 | TS | `VIDEO` | AV filterの公開能力と既存child-open資源条件が成立する場合に成功 | `av` | `MediaEvent`。通常Filter FMQなし |
 | TS | `PCR` | 成功 | `noinit` | callback-only。通常Filter FMQなし |
-| TS | `RECORD` | 成功 | `record` | payloadはRecord DVR FMQ、index metadataはcallback |
+| TS | `RECORD` | 成功 | `record` | Filter FMQ resourceをopen時に所有し`getQueueDesc()`でexport可能。payloadはRecord DVR FMQ、index metadataはcallback。Filter FMQへRECORD payloadを二重配送しない |
 | TS | `TEMI` | `UNAVAILABLE` | なし | 本製品はTEMI処理能力を採用せず、object / queue / workerを生成しない |
 | MMTP / IP / TLV / ALP | AIDL上の任意の既知subtype | `UNAVAILABLE` | なし | TS-only `ProductProfile`の固定能力外。main-type objectを生成しない |
 
@@ -768,7 +783,7 @@ Filter runtimeとRecord DVR runtimeは、drop原因を通常のmalformed/CRC rej
 
 ## 通常Filter status 公開方針
 
-通常payload FMQを持つFilterの `IFilterCallback.onFilterStatus()` は、Android 14 AIDL V2がfilter buffer statusとして定義する `DATA_READY`、`LOW_WATER`、`HIGH_WATER`、`OVERFLOW` を生成対象とする。`DATA_READY` は各payload/event契約の成功commit条件、`OVERFLOW` は本書のqueue full / allocation overflow契約を正とし、LOW/HIGH watermarkを理由に既存のcommit / drop契約を変更しない。
+Filter FMQをpayload data planeとして使用するFilter（現行TS-only profileではTS raw / `SECTION` / `PES`）の `IFilterCallback.onFilterStatus()` は、Android 14 AIDL V2がfilter buffer statusとして定義する `DATA_READY`、`LOW_WATER`、`HIGH_WATER`、`OVERFLOW` を生成対象とする。`DATA_READY` は各payload/event契約の成功commit条件、`OVERFLOW` は本書のqueue full / allocation overflow契約を正とし、LOW/HIGH watermarkを理由に既存のcommit / drop契約を変更しない。TS `RECORD`はFilter FMQ resourceを所有していてもpayload data planeには使用しないため、このFilter FMQ status / watermarkの生成対象に含めず、Record statusはRecord DVR FMQの契約だけを正とする。
 
 `LOW_WATER` / `HIGH_WATER` はAIDLが規定する既定25% / 75%水位をそのまま用いる。open時のFilter FMQ byte容量を `capacity`、clientから現在読み出し可能なbyte数を `available` とし、`low = ceil(capacity * 0.25)`、`high = ceil(capacity * 0.75)` とする。同一queue snapshotに対して `available < low` なら `LOW_WATER`、`available > high` なら `HIGH_WATER` とし、`available == low` / `available == high` では新たなLOW/HIGH遷移を生成しない。これはAOSP default Tuner HALの既定watermark計算と比較境界に合わせる。LOW/HIGH判定は`FilterQueueBacking`が持つ既存FMQ occupancy snapshotから導出し、独立したwatermark owner / queue / worker / timerを追加しない。重複callback抑止に必要な直前のderived watermark statusはFilter callback配送の補助状態に限り、payload ownership、lifecycle、generation、queue positionを変更しない。
 
@@ -1372,9 +1387,11 @@ release AIDL経路からテスト専用入口へ到達してはならず、テ�
 | T-AOSP-66 | AV secure-memory input | non-started AVで`isSecureMemory=false && isPassthrough=false`だけを通常能力判定へ進め、`isSecureMemory=true`または`isPassthrough=true`は`UNAVAILABLE`かつ旧settings/backing/hint/relationを維持。Startedはlifecycle契約を優先 |
 | T-AOSP-67 | scan callback union | candidate成立は`LOCKED + isLocked=true`、正常終了は`END + isEnd=true`をcurrent generationだけから生成する。その他のAIDL定義済みmessageはcurrent generationのauthoritativeな実値を一意に構成できる場合に対応tagで生成可能とし、未取得/推測値、type/tag/value不一致、false variant、stale generation、重複ENDを公開しない。blind scanを将来広告する場合はVTSが要求する`FREQUENCY`等のclosureも同時に満たす |
 | T-AOSP-68 | ISDB-T `layerSettings[]` | AOSPはvector長を制限せず全要素を保持することを確認する。空配列はlayer制約なしで成功し、1〜3要素は入力順を保持する。通常13-segment ISDB-Tの最大3階層は現行省令第21条を根拠とし、4要素以上は存在しない4番目以降の物理階層要求として`INVALID_ARGUMENT`。全要素を既存field契約で原子的に検証し、unsupported explicit valueを無視成功しない |
-| T-AOSP-69 | normal Filter status set | 通常payload FMQ Filterは`DATA_READY` / `LOW_WATER` / `HIGH_WATER` / `OVERFLOW`を生成対象とする。LOW/HIGHはFMQ容量の`ceil(25%)` / `ceil(75%)`を既定thresholdとし、`available < low` / `available > high`だけで遷移し、等値では新規遷移しない。`NO_DATA`はAIDL未定義の独自inactivity timeoutを設けず、`available == 0`だけでは生成しない。DVR watermark contractには波及させない |
+| T-AOSP-69 | normal Filter status set | Filter FMQをpayload data planeとして使うTS raw / SECTION / PESだけを`DATA_READY` / `LOW_WATER` / `HIGH_WATER` / `OVERFLOW`の生成対象とする。LOW/HIGHはFMQ容量の`ceil(25%)` / `ceil(75%)`を既定thresholdとし、`available < low` / `available > high`だけで遷移し、等値では新規遷移しない。`NO_DATA`はAIDL未定義の独自inactivity timeoutを設けず、`available == 0`だけでは生成しない。Filter FMQを所有するだけのRECORDとDVR watermark contractには波及させない |
 | T-AOSP-70 | TS RECORD settings/event closure | `tsIndexMask`、`scIndexType`、union tag/maskを原子的に検証し、known unsupportedは`UNAVAILABLE`、malformed/unknownは`INVALID_ARGUMENT`。eventのPID/mask/PTS/firstMb/byteNumberを同一generationの実検出・成功commitに一致させる |
 | T-AOSP-71 | `openFilter()` acceptance matrix | TSのUNDEFINED/SECTION/PES/TS/AUDIO/VIDEO/PCR/RECORDは表の条件で開き、TEMIおよびMMTP/IP/TLV/ALPは`UNAVAILABLE`。wrong main/subtype/unionと未知値を`INVALID_ARGUMENT`とし、拒否時にobject/queue/leaseを生成しない |
+| T-AOSP-72 | RECORD Filter FMQ ownership / data-plane split | RECORD Filterはopen時にFilter FMQ resourceを所有し`getQueueDesc()`で有効descriptorを返す。一方、RECORD TS投入でFilter FMQ payloadは増加せず、attach済みRecord DVR FMQへ正確に1回だけ188-byte packetをcommitする。`record_output_byte_offset` / `byteNumber`はRecord DVR output commitだけから進む |
+| T-AOSP-73 | RECORD VTS canonical / probe variant | canonical RECORD profileは`useFMQ=false`、`record-filter-fmq` probe variantだけ`useFMQ=true`とする。probe variantでも`useFMQ`はFilter descriptor取得coverageだけを変更し、RECORD payload routeはRecord DVR FMQのまま維持する |
 
 `close()` 以外の公開メソッドでは、`LogicalClosed`、`InvalidArgument`、`WrongLifecycle`、`ResourceUnavailable`、`BackendFailure`、`Success` の順で判定を優先する。`close()` 自体の結果はこの共通優先順位で決めず、0-S-4の公開close契約に従う。遅延して呼ばれる `IFilter.releaseAvHandle()` はAV解放台帳に従う独立操作であり、閉鎖後の共通メソッドとして扱わない。
 

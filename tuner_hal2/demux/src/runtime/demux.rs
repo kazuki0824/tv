@@ -1903,6 +1903,14 @@ impl DemuxRuntime {
         &mut self,
         filter_id: i32,
     ) -> Result<Vec<PipelineGeneratedEvent>, DemuxRuntimeError> {
+        let uses_filter_fmq_for_payload = self
+            .filters
+            .get(&filter_id)
+            .ok_or_else(|| DemuxRuntimeError::filter_missing(filter_id))?
+            .uses_filter_fmq_for_payload();
+        if !uses_filter_fmq_for_payload {
+            return Ok(Vec::new());
+        }
         let queue = self
             .filter_queue_runtimes
             .get(&filter_id)
@@ -2153,7 +2161,7 @@ impl DemuxRuntime {
                 .filters
                 .get(&filter_id)
                 .ok_or(DemuxRuntimeError::filter_missing(filter_id))?;
-            let queue_present = filter.supports_normal_fmq_queue() && filter.buffer_size() > 0;
+            let queue_present = filter.has_filter_fmq() && filter.buffer_size() > 0;
             if queue_present
                 && !self
                     .filter_queue_runtimes
@@ -4736,7 +4744,7 @@ impl DemuxRuntime {
 
     fn should_keep_filter_queue_runtime(filter: &FilterRuntime) -> bool {
         !filter.state().is_closed_or_failed()
-            && filter.supports_normal_fmq_queue()
+            && filter.has_filter_fmq()
             && filter.buffer_size() > 0
     }
 
@@ -5136,6 +5144,28 @@ impl DemuxRuntime {
                     continue;
                 }
             };
+            if payload.is_some() {
+                let uses_filter_fmq_for_payload = match self.filters.get(&filter_id) {
+                    Some(filter) => filter.uses_filter_fmq_for_payload(),
+                    None => {
+                        diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(
+                            pid,
+                            filter_id,
+                            DemuxRuntimeError::filter_missing(filter_id),
+                        ));
+                        continue;
+                    }
+                };
+                if !uses_filter_fmq_for_payload {
+                    self.quarantine_filter_runtime(filter_id);
+                    diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(
+                        pid,
+                        filter_id,
+                        DemuxRuntimeError::queue_runtime_failure(filter_id),
+                    ));
+                    continue;
+                }
+            }
             let gate = match self.filter_producer_gates.get(&filter_id).cloned() {
                 Some(gate) => gate,
                 None => {
