@@ -18,12 +18,13 @@ jobs:
           fetch-depth: 0
       - name: 修正を適用
         run: python3 .github/scripts/pr54_f15_fix.py
-      - name: Rust 1.81でHALを検証
+      - name: Rust 1.81でHAL変更を検証
+        working-directory: tuner_hal2/host_ci
         run: |
           rustup toolchain install 1.81.0 --profile minimal --component rustfmt --component clippy
-          cargo +1.81.0 fmt --manifest-path tuner_hal2/Cargo.toml --all -- --check
-          cargo +1.81.0 check --manifest-path tuner_hal2/Cargo.toml --workspace --lib --locked
-          cargo +1.81.0 test --manifest-path tuner_hal2/Cargo.toml --workspace --lib --locked
+          cargo +1.81.0 fmt --all -- --check
+          cargo +1.81.0 check --workspace --lib --locked
+          cargo +1.81.0 test --workspace --lib --locked
       - name: 差分を検査
         run: git diff --check
       - name: 通常sourceをcommit
