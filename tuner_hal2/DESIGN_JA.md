@@ -136,7 +136,7 @@ A/B/Cの分類と`Txn` / `UseCase` / `Context`の命名判定は別である。B
 
 #### `Txn` / `UseCase` / `Context` の物理名称境界
 
-`Txn` の論理上の成立条件は `../tuner_hal/DESIGN_JA.md` の共通部品命名規則を正とする。本書では、その判定結果を物理アンカーへ反映する。取引境界を所有しない共通調停手順は `UseCase`、正規手順所有者ではない呼出し単位の非公開補助型は `Context` とし、実装都合だけで `Txn` を付けない。
+`Txn` の論理上の成立条件は `../tuner_hal/DESIGN_JA.md` の共通部品命名規則を正とする。本書では、その判定結果を物理アンカーへ反映する。取引境界を所有しない共通調停手順は `UseCase`、正規手順所有者ではない呼出し単位の非公開補助型は `Context` とし、実装都合だけで`Txn`を付けない。
 
 #### 共通transaction / use-caseの規範実装アンカー
 
@@ -166,9 +166,9 @@ A/B/Cの分類と`Txn` / `UseCase` / `Context`の命名判定は別である。B
 | `QueueCleanupUseCase` | `service_runtime/src/queue_cleanup_use_case.rs::QueueCleanupUseCase` | Filter/DVR `flush()` object use-case | 下位protocol内部への直接アクセス、API別orchestrator |
 | `PlaybackConsumeTxn` | `service_runtime/src/playback_consume_txn.rs` | playback workerのtyped consume入口 | worker/FMQ/packet helperによる別consume owner |
 | `WatermarkClassifier` | `demux/src/runtime/watermark_classifier.rs::{WatermarkClassifier, WatermarkPolicy, WatermarkDecision}` | Filter / Record DVR / Playback DVRのstatus評価が、commit済み契約値からexactly-oneの変更不能`WatermarkPolicy`を構成してconstructorへ渡し、同一評価のqueue snapshotだけを分類入口へ渡す | API / domain別のwatermark classifier、分類入口へのpolicy再注入、classifier内部のAIDL status生成、statusMask・callback状態・queue所有、domain種別tagによる分岐 |
-| `FrontendTuneScanTxn` | `service_runtime/src/frontend_ops.rs::FrontendTuneScanTxn`がpreflight、固定給電準備、worker start/stop、rollback、operation event / terminal acceptanceを直接所有する。第二の`Context` ownerを置かない | `FrontendTuneScanTxn`の有限正規入口集合 `begin_tune` / `begin_scan` / `stop_tune` / `stop_scan` / `accept_operation_event` / `accept_worker_terminal`。AIDL境界は`begin_*` / `stop_*`だけ、ワーカー・下位機器処理の完了通知橋渡しは`accept_*`だけを呼ぶ | ワーカー・機器層・コールバック層によるフロントエンド所有者の迂回、Demux所有者の吸収、第二の正規所有者化、有限正規入口集合外での選局・走査進行の再実装 |
+| `FrontendTuneScanTxn` | `service_runtime/src/frontend_ops.rs::FrontendTuneScanTxn`が、AIDL外形検証済みtyped requestを受けた後のcanonical preflight、固定給電準備、worker start/stop、rollback、operation event / terminal acceptanceを直接所有する。product-profile / backend availabilityの第二ownerをAIDL serviceまたはdevice mapperへ置かない | `FrontendTuneScanTxn`の有限正規入口集合 `begin_tune` / `begin_scan` / `stop_tune` / `stop_scan` / `accept_operation_event` / `accept_worker_terminal`。AIDL境界はAIDL外形検証・typed変換後に`begin_*` / `stop_*`だけを呼び、ワーカー・下位機器処理の完了通知橋渡しは`accept_*`だけを呼ぶ | AIDL serviceによるproduct-profile / backend availability判定、worker・機器層・callback層によるcanonical preflightの迂回、Demux所有者の吸収、第二の正規所有者化、有限正規入口集合外での選局・走査進行の再実装 |
 | `AvSyncRegistry` | `demux/src/runtime/av_sync_registry.rs::AvSyncRegistry` | filter configure/unregister/close、demux closeからのtyped relation入口 | API/filter wrapper/`StreamBoundaryTxn`からのregistry直接変更、PCR ownerとの統合 |
-| `PcrClockAnchorStore` | `demux/src/runtime/pcr_clock_anchor.rs::PcrClockAnchorStore` | PCR観測、stream boundary側のtyped invalidation入口 | APIまたは`StreamBoundaryTxn`からのstore内部直接変更、A/V sync ownerとの統合 |
+| `PcrClockAnchorStore` | `demux/src/runtime/pcr_clock_anchor.rs::PcrClockAnchorStore` | PCR観測、stream boundary側のtyped invalidation入口 | APIまたは`StreamBoundaryTxn`からのstore内部直接変更、PCR ownerとの統合 |
 | `WorkerRuntime` | `control/src/lib.rs::{WorkerRuntime, WorkerHandle, WorkerRuntimeReaperQueue, WorkerRuntimeSupervisor}` がgeneric worker生成・停止・wake・join/result-completionと、同ownerが発行するbounded reaper/pending/supervisor従属handleの唯一の物理canonical A state owner。`service_runtime/src/worker_runtime.rs`は同型のre-export、service failure-classification接続、product定数だけを持ちpersistent generic stateを所有しない。`WorkerHandle` / reaper / supervisorはconstructorを公開せず`WorkerRuntime`のtyped factoryからのみ発行し、独自generation/retry/reaper正本を持たない。domain固有stop ticket群のpoll/wait、domain completion/deadline actionなど、1件のWorkerRuntime-managed job実行中だけ存在して外部呼出し越しの別registry/queue/retry正本を形成しないcall-local進行状態はdomain typed jobに保持してよい | 各domain worker ownerの`WorkerRuntime`正規入口。必要な場合に同ownerが発行・管理するopaque従属handleを使用する | 従属handleによる独立したgeneration / retry / reaper state所有、別generic lifecycle owner、domain start/stop ownerの吸収 |
 | `WorkerFailureClassifier` | `service_runtime/src/worker_failure_classifier.rs` | worker owner / cleanup manager / callback・backend failure ownerからのtyped入口 | owner側の別classifier、classifierによるdomain ownerの置換 |
 | `FrontendWorkerTerminationUseCase` | 正規手順所有者・入口は`FrontendWorkerTerminationUseCase`名を持つ。`service_runtime/src/frontend_worker_termination_use_case.rs`はフロントエンド固有終了の補助処理、`device/src/runtime/frontend_worker.rs::FrontendWorkerRegistry`は既存の状態所有者として扱う。汎用の停止・起床authorityと、呼出し越しに残るreaper queue / pending registry / active-reaping registryのcanonical state ownerは`WorkerRuntime`であり、`WorkerHandle`は従属する物理要素。frontend固有stop ticketのpoll/wait loopとcompletion/deadline actionはWorkerRuntime-managed job内のcall-local手順であり、独立queue・pending map・retry scheduler・generationを所有しない限り第二A ownerとは扱わない | `service_runtime/src/frontend_ops.rs`、`ObjectCloseTxn`からの型付き後始末接続 | ワーカー・AIDL層による所有者登録解除、リース、終了待ち・回収処理、失敗分類器の直接代替、汎用寿命管理の所有責務の吸収、別のフロントエンド終了手順所有者 |
@@ -233,7 +233,7 @@ AIDL/Binder等の外部API・実行基盤が、境界に現れる型へ`Send` / 
 | 21 | `ObjectMethodUseCase` | B | B共有lockを持たず、object / relation / resource ownerのsnapshotとtyped入口を使う | 一回性実行権限をconsume-by-valueで消費する | 通常制御 |
 | 22 | `RootOpenTxn` | B | B共有lockを持たず、resource / runtime registry / Binder artifact ownerのprepared入口を使う | prepared reservation / registrationを一回だけcommitまたはabortする | 通常制御 |
 | 23 | `ChildOpenTxn` | B | B共有lockを持たず、parent / resource / runtime / Binder ownerのprepared入口を使う | parent generation + prepared reservation / registrationを一回だけ消費する | 通常制御 |
-| 24 | `FrontendTuneScanTxn` | B | B共有進行状態を持たず、フロントエンド実行時状態、`WorkerRuntime`、各`StreamBoundaryTxn`の正規同期入口を調停する | 要求指紋 / フロントエンド操作世代 / 準備済み境界を既存所有者から取得し、第二の走査世代を発行しない | 有限正規入口集合から毎回呼出し内で再入場し、入口終了時にB自身の可変進行状態を残さない |
+| 24 | `FrontendTuneScanTxn` | B | B共有進行状態を持たず、AIDL外形検証済みtyped requestをservice_runtime canonical preflightで検証してから、フロントエンド実行時状態、`WorkerRuntime`、各`StreamBoundaryTxn`の正規同期入口を調停する | 要求指紋 / フロントエンド操作世代 / 準備済み境界を既存所有者から取得し、第二の走査世代を発行しない | 有限正規入口集合から毎回呼出し内で再入場し、入口終了時にB自身の可変進行状態を残さない |
 | 25 | `FrontendWorkerTerminationUseCase` | B | B共有lockを持たず、`WorkerRuntime`とfrontend固有ownerのtyped入口を使う | `WorkerRuntime`のowner generation / terminal resultを使用し、独自worker generationを発行しない | 通常制御 |
 | 26 | `PacketPipeline` | A | demuxごとの単一packet mutation ownerを基本とし、boundaryとの競合はtyped generation fence / commandで同期する。packetごとの外側mutexを標準形にしない | typed `TsInputOrigin`のgenerationとstream boundary generationを使用し、第二の同義generation namespaceを持たない | — |
 | 27 | `WatermarkClassifier` | C | なし | なし | — |
@@ -277,14 +277,15 @@ flowchart LR
 
 | 入口 | 呼出元 | 入力 | 分類Bが行うこと | 永続化先 |
 |---|---|---|---|---|
-| `begin_tune` | `IFrontend.tune()`のオブジェクトメソッド境界 | 検証済み選局要求、フロントエンド世代 | 要求指紋・世代候補を準備し、`WorkerRuntime`・下位機器処理・`StreamBoundaryTxn`の型付き準備結果を集約する | `FrontendRuntime`の現行操作状態、`WorkerRuntime`、各`StreamBoundaryTxn` |
-| `begin_scan` | `IFrontend.scan()`のオブジェクトメソッド境界 | 検証済み走査要求、フロントエンド世代 | 走査要求指紋を確定し、ワーカー・下位機器処理・境界処理を準備し、初期コールバック配送予約へ世代遮断条件を設定する | `FrontendRuntime`の現行操作・コールバック配送状態、`WorkerRuntime` |
+| `begin_tune` | `IFrontend.tune()`のオブジェクトメソッド境界 | AIDL外形検証済みのtyped `FrontendSettingsRequest`、フロントエンド世代 | service_runtimeのcanonical preflightで公開契約の`INVALID_ARGUMENT`条件、product-profile / backend availabilityを検証し、全検証成功後に要求指紋・世代候補を準備して`WorkerRuntime`・下位機器処理・`StreamBoundaryTxn`の型付き準備結果を集約する | `FrontendRuntime`の現行操作状態、`WorkerRuntime`、各`StreamBoundaryTxn` |
+| `begin_scan` | `IFrontend.scan()`のオブジェクトメソッド境界 | AIDL外形検証済みのtyped `FrontendSettingsRequest`、scan mode、フロントエンド世代 | service_runtimeのcanonical preflightで公開契約の`INVALID_ARGUMENT`条件、product-profile / backend availability、scan policyを検証し、全検証成功後に走査要求指紋を確定してワーカー・下位機器処理・境界処理を準備し、初期コールバック配送予約へ世代遮断条件を設定する | `FrontendRuntime`の現行操作・コールバック配送状態、`WorkerRuntime` |
 | `stop_tune` | `IFrontend.stopTune()`のオブジェクトメソッド境界 | 現在のフロントエンド世代 | 対象選局世代を遮断し、ワーカー・下位機器処理の停止と必要な境界処理結果を集約する | `FrontendRuntime`の現行操作状態、`WorkerRuntime`、各`StreamBoundaryTxn` |
 | `stop_scan` | `IFrontend.stopScan()`のオブジェクトメソッド境界 | 現在のフロントエンド世代 | 対象走査世代を遮断し、ワーカー・下位機器処理の停止と必要な境界処理結果を集約する | `FrontendRuntime`の現行操作状態、`WorkerRuntime`、各`StreamBoundaryTxn` |
 | `accept_operation_event` | ワーカー・下位機器処理の完了通知橋渡し | 操作世代 + 型付きフロントエンド事象・結果 | 世代を再検証し、失効事象を拒否し、現世代に対するコールバック配送予約とドメイン完了処理を調停する | `FrontendRuntime`の現行操作・コールバック配送状態 |
 | `accept_worker_terminal` | `WorkerRuntime`の完了通知橋渡し | ワーカー所有者世代 + 型付き終了結果 | 操作世代との対応を再検証し、フロントエンド固有の終了結果を`FrontendWorkerTerminationUseCase`と失敗分類へ接続する | `FrontendRuntime`の現行操作状態、`WorkerRuntime`、公開`close()`の未完義務がある場合の`ObjectCloseTxn` |
 
-- `begin_*` / `stop_*`はAIDL境界だけから、`accept_*`はワーカー・下位機器処理の完了通知橋渡しだけから呼ぶ。コールバック配送境界自身は`FrontendTuneScanTxn`へ再入場せず、予約済みの型付きコールバックを配送し、配送失敗は`PostCommitCallbackFailureTxn`へ接続する。
+- `begin_*` / `stop_*`はAIDL境界だけから、`accept_*`はワーカー・下位機器処理の完了通知橋渡しだけから呼ぶ。AIDL境界はAIDL union/tag、reserved enum、負値、型変換その他の外形検証だけを完了し、known-but-unsupportedなproduct-profile、backend availability、ISDB-S selectorのbackend別表現可否、blind scan可否を判定しない。コールバック配送境界自身は`FrontendTuneScanTxn`へ再入場せず、予約済みの型付きコールバックを配送し、配送失敗は`PostCommitCallbackFailureTxn`へ接続する。
+- `begin_*`のcanonical preflightは、`../tuner_hal/DESIGN_JA.md`の公開status precedenceを実装へ接続し、同書が`INVALID_ARGUMENT`と定めるsemantic/range/selector条件をすべて先に確定した後、known-but-unsupportedなproduct-profile、backend固有の表現不能条件、blind scan等の`UNAVAILABLE`条件を判定する。その後にLNB候補・backend mappingの事前確認へ進み、固定給電準備、worker start、generation変更その他の副作用はcanonical preflight成功前に開始しない。device mapperは同じ条件を防御的に再検証してよいが、公開status precedenceの第二正本になってはならない。
 - 各入口は開始時に正本所有者から状態の写し・世代・一回実行権限を取得し、外部処理後に世代を再検証する。旧世代の`accept_operation_event` / `accept_worker_terminal`は状態変更またはコールバック予約を行わず、失効結果として破棄・診断する。
 - `FrontendTuneScanTxn`用の`Arc<Mutex<...>>`、共有可変段階状態、独自再試行キュー、独自走査世代を設けない。複数呼出しにまたがる情報が必要なら上表の永続化先へ置く。
 - 上記6入口を複数のRust関数へ分割してよいが、正規名称標識から同じ入口役割へ追跡可能にし、実装都合だけで第7の入口役割を追加しない。新たな外部非同期入力種別が必要になった場合は、この有限集合と正本所有者境界を設計更新してから入口を追加する。
