@@ -18,31 +18,30 @@ use maleicacid_tuner_hal2_common::{
 
 const AOSP_TUNER_INVALID_STREAM_ID: i32 = 0xFFFF;
 
-/// A syntactically valid AIDL request can still ask for a feature that the
-/// current product profile does not expose. The AIDL adapter records that fact
-/// instead of deciding product support itself. Service mediation owns the
-/// profile decision.
+/// Syntactically known AIDL values that are not represented directly in
+/// `FrontendTuneRequest`. These are observations about what the caller asked
+/// for, not product-support decisions. Service mediation owns support policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FrontendProfileRequirement {
-    IsdbtUnsupportedBandwidth,
-    IsdbtExplicitMode,
-    IsdbtExplicitInversion,
-    IsdbtExplicitGuardInterval,
-    IsdbtServiceAreaId,
+pub enum FrontendRequestedSetting {
+    IsdbtExplicitBandwidth { bandwidth_hz: u32 },
+    IsdbtExplicitMode { value: i32 },
+    IsdbtExplicitInversion { value: i32 },
+    IsdbtExplicitGuardInterval { value: i32 },
+    IsdbtServiceAreaId { value: i32 },
     IsdbtPartialReceptionAuto,
-    IsdbtLayerModulation,
-    IsdbtLayerCoderate,
-    IsdbtLayerTimeInterleave,
+    IsdbtLayerModulation { layer_index: usize, value: i32 },
+    IsdbtLayerCoderate { layer_index: usize, value: i32 },
+    IsdbtLayerTimeInterleave { layer_index: usize, value: i32 },
     IsdbtExplicitSegmentCount { layer_index: usize, count: i32 },
-    IsdbsExplicitModulation,
-    IsdbsExplicitCoderate,
-    IsdbsExplicitRolloff,
+    IsdbsExplicitModulation { value: i32 },
+    IsdbsExplicitCoderate { value: i32 },
+    IsdbsExplicitRolloff { value: i32 },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FrontendSettingsRequest {
     pub request: FrontendTuneRequest,
-    pub profile_requirements: Vec<FrontendProfileRequirement>,
+    pub requested_settings: Vec<FrontendRequestedSetting>,
 }
 
 fn cast_u64_field(value: i64, field: &'static str) -> Result<u64, HalError> {
@@ -92,67 +91,72 @@ fn invalid_frontend_setting<T>(detail: impl Into<String>) -> Result<T, HalError>
     ))
 }
 
-fn classify_auto_only(
+fn explicit_known_value(
     raw: i32,
     auto: i32,
     highest_known_bit: i32,
-    requirement: FrontendProfileRequirement,
-    requirements: &mut Vec<FrontendProfileRequirement>,
-) -> Result<(), HalError> {
+) -> Result<Option<i32>, HalError> {
     if raw == auto {
-        return Ok(());
+        return Ok(None);
     }
     if is_single_known_enum_value(raw, highest_known_bit) {
-        requirements.push(requirement);
-        return Ok(());
+        return Ok(Some(raw));
     }
     invalid_frontend_setting("frontend setting contains a reserved enum value")
 }
 
 fn classify_isdbt_settings(
     s: &android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::FrontendIsdbtSettings::FrontendIsdbtSettings,
-) -> Result<Vec<FrontendProfileRequirement>, HalError> {
-    let mut requirements = Vec::new();
+) -> Result<Vec<FrontendRequestedSetting>, HalError> {
+    let mut requested = Vec::new();
 
     match s.bandwidth {
-        FrontendIsdbtBandwidth::AUTO | FrontendIsdbtBandwidth::BANDWIDTH_6MHZ => {}
-        FrontendIsdbtBandwidth::BANDWIDTH_7MHZ | FrontendIsdbtBandwidth::BANDWIDTH_8MHZ => {
-            requirements.push(FrontendProfileRequirement::IsdbtUnsupportedBandwidth);
+        FrontendIsdbtBandwidth::AUTO => {}
+        FrontendIsdbtBandwidth::BANDWIDTH_6MHZ
+        | FrontendIsdbtBandwidth::BANDWIDTH_7MHZ
+        | FrontendIsdbtBandwidth::BANDWIDTH_8MHZ => {
+            requested.push(FrontendRequestedSetting::IsdbtExplicitBandwidth {
+                bandwidth_hz: map_isdbt_bandwidth(s.bandwidth).expect("known ISDB-T bandwidth"),
+            });
         }
         _ => {
             return invalid_frontend_setting("ISDB-T bandwidth contains a reserved enum value");
         }
     }
 
-    classify_auto_only(
+    if let Some(value) = explicit_known_value(
         s.mode.0,
         FrontendIsdbtMode::AUTO.0,
         FrontendIsdbtMode::MODE_3.0,
-        FrontendProfileRequirement::IsdbtExplicitMode,
-        &mut requirements,
-    )?;
+    )? {
+        requested.push(FrontendRequestedSetting::IsdbtExplicitMode { value });
+    }
 
     match s.inversion {
         FrontendSpectralInversion::UNDEFINED => {}
         FrontendSpectralInversion::NORMAL | FrontendSpectralInversion::INVERTED => {
-            requirements.push(FrontendProfileRequirement::IsdbtExplicitInversion);
+            requested.push(FrontendRequestedSetting::IsdbtExplicitInversion {
+                value: s.inversion.0,
+            });
         }
         _ => return invalid_frontend_setting("ISDB-T inversion contains a reserved enum value"),
     }
 
-    classify_auto_only(
+    if let Some(value) = explicit_known_value(
         s.guardInterval.0,
         FrontendIsdbtGuardInterval::AUTO.0,
         1 << 7,
-        FrontendProfileRequirement::IsdbtExplicitGuardInterval,
-        &mut requirements,
-    )?;
+    )? {
+        requested.push(FrontendRequestedSetting::IsdbtExplicitGuardInterval { value });
+    }
 
     if s.serviceAreaId < 0 {
         return invalid_frontend_setting("ISDB-T serviceAreaId must be non-negative");
     }
     if s.serviceAreaId > 0 {
-        requirements.push(FrontendProfileRequirement::IsdbtServiceAreaId);
+        requested.push(FrontendRequestedSetting::IsdbtServiceAreaId {
+            value: s.serviceAreaId,
+        });
     }
 
     match s.partialReceptionFlag {
@@ -160,7 +164,7 @@ fn classify_isdbt_settings(
         | FrontendIsdbtPartialReceptionFlag::FALSE
         | FrontendIsdbtPartialReceptionFlag::TRUE => {}
         FrontendIsdbtPartialReceptionFlag::AUTO => {
-            requirements.push(FrontendProfileRequirement::IsdbtPartialReceptionAuto);
+            requested.push(FrontendRequestedSetting::IsdbtPartialReceptionAuto);
         }
         _ => {
             return invalid_frontend_setting(
@@ -173,30 +177,39 @@ fn classify_isdbt_settings(
     // physical layers, but AOSP does not make vector cardinality a malformed
     // AIDL-input condition. Validate each entry and preserve caller order.
     for (layer_index, layer) in s.layerSettings.iter().enumerate() {
-        classify_auto_only(
+        if let Some(value) = explicit_known_value(
             layer.modulation.0,
             FrontendIsdbtModulation::AUTO.0,
             FrontendIsdbtModulation::MOD_64QAM.0,
-            FrontendProfileRequirement::IsdbtLayerModulation,
-            &mut requirements,
-        )?;
-        classify_auto_only(
+        )? {
+            requested.push(FrontendRequestedSetting::IsdbtLayerModulation {
+                layer_index,
+                value,
+            });
+        }
+        if let Some(value) = explicit_known_value(
             layer.coderate.0,
             FrontendIsdbtCoderate::AUTO.0,
             FrontendIsdbtCoderate::CODERATE_8_9.0,
-            FrontendProfileRequirement::IsdbtLayerCoderate,
-            &mut requirements,
-        )?;
-        classify_auto_only(
+        )? {
+            requested.push(FrontendRequestedSetting::IsdbtLayerCoderate {
+                layer_index,
+                value,
+            });
+        }
+        if let Some(value) = explicit_known_value(
             layer.timeInterleave.0,
             FrontendIsdbtTimeInterleaveMode::AUTO.0,
             1 << 12,
-            FrontendProfileRequirement::IsdbtLayerTimeInterleave,
-            &mut requirements,
-        )?;
+        )? {
+            requested.push(FrontendRequestedSetting::IsdbtLayerTimeInterleave {
+                layer_index,
+                value,
+            });
+        }
         match layer.numOfSegment {
             0 | 0xFF => {}
-            1..=13 => requirements.push(FrontendProfileRequirement::IsdbtExplicitSegmentCount {
+            1..=13 => requested.push(FrontendRequestedSetting::IsdbtExplicitSegmentCount {
                 layer_index,
                 count: layer.numOfSegment,
             }),
@@ -208,7 +221,7 @@ fn classify_isdbt_settings(
         }
     }
 
-    Ok(requirements)
+    Ok(requested)
 }
 
 fn map_isdbt_layer_settings(
@@ -221,10 +234,8 @@ fn map_isdbt_layer_settings(
             let num_of_segment = match layer.numOfSegment {
                 0 => FrontendIsdbtSegmentRequest::Unspecified,
                 0xFF => FrontendIsdbtSegmentRequest::Auto,
-                // 1..=13 is carried by FrontendProfileRequirement and is
-                // rejected by the current service profile before this request
-                // can reach a backend. Keep the common request representable
-                // without inventing a backend semantic.
+                // Exact explicit counts are retained in FrontendRequestedSetting
+                // and are interpreted by service mediation before backend dispatch.
                 1..=13 => FrontendIsdbtSegmentRequest::Unspecified,
                 _ => {
                     return invalid_frontend_setting(
@@ -250,8 +261,8 @@ fn map_isdbt_partial_reception(
         FrontendIsdbtPartialReceptionFlag::TRUE => {
             Ok(FrontendIsdbtPartialReceptionRequirement::Required(true))
         }
-        // AUTO is a syntactically known value. Product support is recorded
-        // separately by classify_isdbt_settings().
+        // AUTO is a syntactically known value. Its exact request is retained in
+        // FrontendRequestedSetting; the backend request remains unspecified.
         FrontendIsdbtPartialReceptionFlag::AUTO => {
             Ok(FrontendIsdbtPartialReceptionRequirement::Unspecified)
         }
@@ -261,33 +272,35 @@ fn map_isdbt_partial_reception(
 
 fn classify_isdbs_settings(
     s: &android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::FrontendIsdbsSettings::FrontendIsdbsSettings,
-) -> Result<Vec<FrontendProfileRequirement>, HalError> {
-    let mut requirements = Vec::new();
-    classify_auto_only(
+) -> Result<Vec<FrontendRequestedSetting>, HalError> {
+    let mut requested = Vec::new();
+    if let Some(value) = explicit_known_value(
         s.modulation.0,
         FrontendIsdbsModulation::AUTO.0,
         FrontendIsdbsModulation::MOD_TC8PSK.0,
-        FrontendProfileRequirement::IsdbsExplicitModulation,
-        &mut requirements,
-    )?;
-    classify_auto_only(
+    )? {
+        requested.push(FrontendRequestedSetting::IsdbsExplicitModulation { value });
+    }
+    if let Some(value) = explicit_known_value(
         s.coderate.0,
         FrontendIsdbsCoderate::AUTO.0,
         FrontendIsdbsCoderate::CODERATE_7_8.0,
-        FrontendProfileRequirement::IsdbsExplicitCoderate,
-        &mut requirements,
-    )?;
+    )? {
+        requested.push(FrontendRequestedSetting::IsdbsExplicitCoderate { value });
+    }
     if s.symbolRate < 0 {
         return invalid_frontend_setting("ISDB-S symbolRate must be non-negative");
     }
     match s.rolloff {
         FrontendIsdbsRolloff::UNDEFINED => {}
         FrontendIsdbsRolloff::ROLLOFF_0_35 => {
-            requirements.push(FrontendProfileRequirement::IsdbsExplicitRolloff);
+            requested.push(FrontendRequestedSetting::IsdbsExplicitRolloff {
+                value: s.rolloff.0,
+            });
         }
         _ => return invalid_frontend_setting("ISDB-S rolloff contains a reserved enum value"),
     }
-    Ok(requirements)
+    Ok(requested)
 }
 
 fn map_isdbs_stream_selector(
@@ -352,7 +365,7 @@ pub fn aidl_frontend_settings_to_request(
 ) -> Result<FrontendSettingsRequest, HalError> {
     match settings {
         FrontendSettings::Isdbt(s) => {
-            let profile_requirements = classify_isdbt_settings(s)?;
+            let requested_settings = classify_isdbt_settings(s)?;
             Ok(FrontendSettingsRequest {
                 request: FrontendTuneRequest {
                     system: FrontendSystem::IsdbT,
@@ -367,11 +380,11 @@ pub fn aidl_frontend_settings_to_request(
                     isdbt_layer_settings: map_isdbt_layer_settings(s)?,
                     partial_reception: map_isdbt_partial_reception(s.partialReceptionFlag)?,
                 },
-                profile_requirements,
+                requested_settings,
             })
         }
         FrontendSettings::Isdbs(s) => {
-            let profile_requirements = classify_isdbs_settings(s)?;
+            let requested_settings = classify_isdbs_settings(s)?;
             let frequency = cast_u64_field(s.frequency, "isdbs.frequency")?;
             let symbol_rate = optional_positive_symbol_rate(s.symbolRate, "isdbs.symbolRate")?;
             let (stream_id, stream_id_kind) =
@@ -388,7 +401,7 @@ pub fn aidl_frontend_settings_to_request(
                     isdbt_layer_settings: Vec::new(),
                     partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
                 },
-                profile_requirements,
+                requested_settings,
             })
         }
         // These AIDL variants are represented in the common domain model even
@@ -412,7 +425,7 @@ pub fn aidl_frontend_settings_to_request(
                     isdbt_layer_settings: Vec::new(),
                     partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
                 },
-                profile_requirements: Vec::new(),
+                requested_settings: Vec::new(),
             })
         }
         FrontendSettings::Dvbs(s) => Ok(FrontendSettingsRequest {
@@ -427,7 +440,7 @@ pub fn aidl_frontend_settings_to_request(
                 isdbt_layer_settings: Vec::new(),
                 partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
             },
-            profile_requirements: Vec::new(),
+            requested_settings: Vec::new(),
         }),
         _ => Err(HalError::Unsupported(
             "frontend setting variant has no tuner_hal2 domain representation",
@@ -492,11 +505,30 @@ mod tests {
         let converted =
             aidl_frontend_settings_to_request(&FrontendSettings::Isdbt(valid_isdbt_settings()))
                 .unwrap();
-        assert!(converted.profile_requirements.is_empty());
+        assert!(converted.requested_settings.is_empty());
         assert_eq!(
             converted.request.partial_reception,
             FrontendIsdbtPartialReceptionRequirement::Unspecified
         );
+    }
+
+    #[test]
+    fn explicit_bandwidth_is_preserved_without_adapter_support_policy() {
+        for (bandwidth, bandwidth_hz) in [
+            (FrontendIsdbtBandwidth::BANDWIDTH_6MHZ, 6_000_000),
+            (FrontendIsdbtBandwidth::BANDWIDTH_7MHZ, 7_000_000),
+            (FrontendIsdbtBandwidth::BANDWIDTH_8MHZ, 8_000_000),
+        ] {
+            let mut settings = valid_isdbt_settings();
+            settings.bandwidth = bandwidth;
+            let converted =
+                aidl_frontend_settings_to_request(&FrontendSettings::Isdbt(settings)).unwrap();
+            assert_eq!(converted.request.bandwidth_hz, Some(bandwidth_hz));
+            assert_eq!(
+                converted.requested_settings,
+                vec![FrontendRequestedSetting::IsdbtExplicitBandwidth { bandwidth_hz }]
+            );
+        }
     }
 
     #[test]
@@ -506,8 +538,8 @@ mod tests {
         let converted =
             aidl_frontend_settings_to_request(&FrontendSettings::Isdbt(explicit)).unwrap();
         assert_eq!(
-            converted.profile_requirements,
-            vec![FrontendProfileRequirement::IsdbtExplicitSegmentCount {
+            converted.requested_settings,
+            vec![FrontendRequestedSetting::IsdbtExplicitSegmentCount {
                 layer_index: 0,
                 count: 13,
             }]
@@ -527,7 +559,7 @@ mod tests {
         settings.layerSettings[0].numOfSegment = 0xFF;
         let converted =
             aidl_frontend_settings_to_request(&FrontendSettings::Isdbt(settings)).unwrap();
-        assert!(converted.profile_requirements.is_empty());
+        assert!(converted.requested_settings.is_empty());
         assert_eq!(
             converted.request.isdbt_layer_settings[0].num_of_segment,
             FrontendIsdbtSegmentRequest::Auto
@@ -549,20 +581,22 @@ mod tests {
                 .collect();
             let converted =
                 aidl_frontend_settings_to_request(&FrontendSettings::Isdbt(settings)).unwrap();
-            assert!(converted.profile_requirements.is_empty());
+            assert!(converted.requested_settings.is_empty());
             assert_eq!(converted.request.isdbt_layer_settings.len(), count);
         }
     }
 
     #[test]
-    fn known_explicit_isdbt_values_are_classified_not_rejected_by_adapter() {
+    fn known_explicit_isdbt_values_are_observed_not_rejected_by_adapter() {
         let mut settings = valid_isdbt_settings();
         settings.inversion = FrontendSpectralInversion::NORMAL;
         let converted =
             aidl_frontend_settings_to_request(&FrontendSettings::Isdbt(settings)).unwrap();
         assert_eq!(
-            converted.profile_requirements,
-            vec![FrontendProfileRequirement::IsdbtExplicitInversion]
+            converted.requested_settings,
+            vec![FrontendRequestedSetting::IsdbtExplicitInversion {
+                value: FrontendSpectralInversion::NORMAL.0,
+            }]
         );
     }
 
@@ -582,20 +616,22 @@ mod tests {
             settings.partialReceptionFlag = flag;
             let converted =
                 aidl_frontend_settings_to_request(&FrontendSettings::Isdbt(settings)).unwrap();
-            assert!(converted.profile_requirements.is_empty());
+            assert!(converted.requested_settings.is_empty());
             assert_eq!(converted.request.partial_reception, expected);
         }
     }
 
     #[test]
-    fn isdbs_explicit_rolloff_is_classified_for_service_policy() {
+    fn isdbs_explicit_rolloff_is_observed_for_service_policy() {
         let mut settings = valid_isdbs_settings();
         settings.rolloff = FrontendIsdbsRolloff::ROLLOFF_0_35;
         let converted =
             aidl_frontend_settings_to_request(&FrontendSettings::Isdbs(settings)).unwrap();
         assert_eq!(
-            converted.profile_requirements,
-            vec![FrontendProfileRequirement::IsdbsExplicitRolloff]
+            converted.requested_settings,
+            vec![FrontendRequestedSetting::IsdbsExplicitRolloff {
+                value: FrontendIsdbsRolloff::ROLLOFF_0_35.0,
+            }]
         );
     }
 
