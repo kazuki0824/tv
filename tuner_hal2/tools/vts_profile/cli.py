@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from .device import resolve_device
+from .install import install_device
 from .integration import write_product_artifacts
 from .model import (
     DEFAULT_TRANSMITTER_CANDIDATE_COUNT,
@@ -459,6 +460,18 @@ def cmd_resolve_device(args: argparse.Namespace) -> int:
     print(updated["frontend"]["frequency_hz"])
     return 0
 
+
+def cmd_install_device(args: argparse.Namespace) -> int:
+    remote_path = install_device(
+        Path(args.profile),
+        adb=args.adb,
+        serial=args.serial,
+        artifact=Path(args.artifact) if args.artifact else None,
+    )
+    print(remote_path)
+    return 0
+
+
 def _add_profile_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("profile", nargs="?", default=str(DEFAULT_PROFILE))
 
@@ -558,6 +571,15 @@ def build_parser() -> argparse.ArgumentParser:
     compile_cmd.add_argument("--output-dir", default="out/vts")
     compile_cmd.add_argument("--product-integration-dir")
     compile_cmd.set_defaults(func=cmd_compile)
+    install = sub.add_parser("install-device")
+    _add_profile_arg(install)
+    install.add_argument("--adb", default="adb")
+    install.add_argument("--serial")
+    install.add_argument(
+        "--artifact",
+        help="compiled VTS XML; defaults to out/vts/<profile-resolved filename>",
+    )
+    install.set_defaults(func=cmd_install_device)
     device = sub.add_parser("resolve-device")
     _add_profile_arg(device)
     device.add_argument("--adb", default="adb")
