@@ -858,21 +858,6 @@ impl DescramblerSessionCleanupTxn<'_> {
                 );
                 Err(hal_error)
             }
-            Err(DescramblerCleanupTxnError::ReleaseKeyAndSession { release, session }) => {
-                let release_error = descrambler_key_release_error_to_hal(release);
-                let session_error = descrambler_session_failure_to_hal(session.kind);
-                self.record_descrambler_diagnostic(
-                    DescramblerDiagnosticRecord::cleanup_release_failed(id, release_error.clone()),
-                );
-                self.record_descrambler_diagnostic(
-                    DescramblerDiagnosticRecord::cleanup_release_failed(id, session_error.clone()),
-                );
-                Err(compose_primary_cleanup_failure(
-                    "descrambler cleanup key release plus session cleanup",
-                    release_error,
-                    session_error,
-                ))
-            }
         }
     }
 }

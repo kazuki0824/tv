@@ -22,11 +22,14 @@ use maleicacid_tuner_hal2_common::{
     FrontendIsdbtPartialReceptionRequirement, FrontendScanMode, FrontendSystem,
     FrontendTuneRequest, HalError, HalErrorDetail, HalInternalKind, HalInvalidStateKind,
 };
+#[cfg(test)]
 use maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackToken;
+#[cfg(test)]
+use maleicacid_tuner_hal2_device::FrontendRuntimeSnapshot;
 use maleicacid_tuner_hal2_device::{
     FrontendBackendSession, FrontendBackendSubmitFailure, FrontendBackendSubmitTicket,
     FrontendBackendSubmitWait, FrontendBackendTunePlan, FrontendLivePumpJoinOutcome,
-    FrontendLivePumpOwner, FrontendRuntimeSnapshot, FrontendScanPhase, FrontendSignalState,
+    FrontendLivePumpOwner, FrontendScanPhase, FrontendSignalState,
     FrontendTmccPartialReceptionObservation, FrontendTmccTsidListObservation,
     FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
     FrontendWorkerStartError, FrontendWorkerStopOutcome, FrontendWorkerStopPoll,
@@ -400,7 +403,9 @@ fn ensure_frontend_worker_reaper(
     Ok(candidate)
 }
 
+#[cfg(test)]
 type DemuxRollbackTokenList = Vec<(crate::registry::DemuxRuntimeId, DemuxRuntimeRollbackToken)>;
+#[cfg(test)]
 type SharedDemuxRollbackTokenList = Arc<Mutex<Option<DemuxRollbackTokenList>>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -632,6 +637,8 @@ impl FrontendWorkerCleanupStepOutcome {
         Self::RestoreFrontendSnapshot { target, result }
     }
 
+#[cfg(test)]
+    #[cfg(test)]
     fn take_demux_rollback_tokens(
         target: FrontendWorkerCleanupTarget,
         result: Result<(), HalError>,
@@ -639,6 +646,7 @@ impl FrontendWorkerCleanupStepOutcome {
         Self::TakeDemuxRollbackTokens { target, result }
     }
 
+#[cfg(test)]
     fn restore_bound_demuxes(
         target: FrontendWorkerCleanupTarget,
         result: Result<(), HalError>,
@@ -922,10 +930,12 @@ fn record_frontend_cleanup_diagnostic_after_terminal(
 
 type BoundDemuxGenerationSnapshot = Vec<(crate::registry::DemuxRuntimeId, u64)>;
 
+#[cfg(test)]
 fn share_demux_rollback_tokens(tokens: DemuxRollbackTokenList) -> SharedDemuxRollbackTokenList {
     Arc::new(Mutex::new(Some(tokens)))
 }
 
+#[cfg(test)]
 fn take_demux_rollback_tokens(
     tokens: &SharedDemuxRollbackTokenList,
     context: &'static str,
@@ -1002,6 +1012,7 @@ fn frontend_worker_stop_outcome_generation(outcome: &FrontendWorkerStopOutcome) 
     }
 }
 
+#[cfg(test)]
 fn bound_demux_generation_snapshot(
     tokens: &DemuxRollbackTokenList,
 ) -> BoundDemuxGenerationSnapshot {
@@ -1037,6 +1048,7 @@ fn bound_demux_generations_are_fenced_at_or_after(
     })
 }
 
+#[cfg(test)]
 fn ensure_frontend_join_snapshot_still_matches(
     guard: &TunerServiceRuntime,
     frontend_id: i32,
@@ -1395,100 +1407,6 @@ fn finish_frontend_worker_rollback_report(
             public_error,
             record_error,
         ),
-    }
-}
-
-fn restore_frontend_state_after_primary_failure(
-    guard: &mut TunerServiceRuntime,
-    frontend_id: i32,
-    frontend_snapshot: FrontendRuntimeSnapshot,
-    demux_rollback_tokens: DemuxRollbackTokenList,
-    primary: HalError,
-    context: &'static str,
-    kind: FrontendWorkerCleanupDiagnosticKind,
-    target: FrontendWorkerCleanupTarget,
-    replacement_context: Option<FrontendWorkerReplacementRollbackContext>,
-) -> HalError {
-    let sink = Ok(guard.frontend_worker_cleanup_diagnostic_sink());
-    let mut report = FrontendWorkerCleanupExecutionReport::new();
-    if let Some(replacement_context) = replacement_context {
-        report.push(FrontendWorkerCleanupStepOutcome::complete_replacement(
-            target,
-            replacement_context.worker_kind,
-            replacement_context.stopped_worker_generation,
-            replacement_context.new_worker_generation,
-            Ok(()),
-        ));
-    }
-    let restore_frontend_result = guard
-        .frontend_txn()
-        .restore_frontend_runtime_snapshot(frontend_id, frontend_snapshot);
-    report.push(FrontendWorkerCleanupStepOutcome::restore_frontend_snapshot(
-        target,
-        restore_frontend_result,
-    ));
-    let restore_demux_result = guard
-        .frontend_txn()
-        .restore_bound_demux_runtime_rollback_tokens(demux_rollback_tokens);
-    report.push(FrontendWorkerCleanupStepOutcome::restore_bound_demuxes(
-        target,
-        restore_demux_result,
-    ));
-    finish_frontend_worker_rollback_report(sink, kind, target, report, primary, context)
-}
-
-fn restore_frontend_state_after_primary_failure_with_shared_demux_tokens(
-    guard: &mut TunerServiceRuntime,
-    frontend_id: i32,
-    frontend_snapshot: FrontendRuntimeSnapshot,
-    demux_rollback_tokens: &SharedDemuxRollbackTokenList,
-    primary: HalError,
-    context: &'static str,
-    kind: FrontendWorkerCleanupDiagnosticKind,
-    target: FrontendWorkerCleanupTarget,
-    replacement_context: Option<FrontendWorkerReplacementRollbackContext>,
-) -> HalError {
-    match take_demux_rollback_tokens(
-        demux_rollback_tokens,
-        "demux rollback token list was already consumed",
-    ) {
-        Ok(tokens) => restore_frontend_state_after_primary_failure(
-            guard,
-            frontend_id,
-            frontend_snapshot,
-            tokens,
-            primary,
-            context,
-            kind,
-            target,
-            replacement_context,
-        ),
-        Err(take_error) => {
-            let mut report = FrontendWorkerCleanupExecutionReport::new();
-            if let Some(replacement_context) = replacement_context {
-                report.push(FrontendWorkerCleanupStepOutcome::complete_replacement(
-                    target,
-                    replacement_context.worker_kind,
-                    replacement_context.stopped_worker_generation,
-                    replacement_context.new_worker_generation,
-                    Ok(()),
-                ));
-            }
-            report.push(
-                FrontendWorkerCleanupStepOutcome::take_demux_rollback_tokens(
-                    target,
-                    Err(take_error.clone()),
-                ),
-            );
-            finish_frontend_worker_rollback_report(
-                Ok(guard.frontend_worker_cleanup_diagnostic_sink()),
-                kind,
-                target,
-                report,
-                primary,
-                context,
-            )
-        }
     }
 }
 
@@ -1852,28 +1770,10 @@ fn frontend_worker_stop_failure(outcome: &FrontendWorkerStopOutcome) -> Option<H
     }
 }
 
-fn frontend_worker_stop_result(
-    outcome: &Result<FrontendWorkerStopOutcome, HalError>,
-) -> Result<(), HalError> {
-    match outcome {
-        Ok(outcome) => frontend_worker_stop_failure(outcome).map_or(Ok(()), Err),
-        Err(error) => Err(error.clone()),
-    }
-}
-
 fn frontend_worker_stop_result_from_outcome(
     outcome: &FrontendWorkerStopOutcome,
 ) -> Result<(), HalError> {
     frontend_worker_stop_failure(outcome).map_or(Ok(()), Err)
-}
-
-fn frontend_worker_stop_result_generation(
-    outcome: &Result<FrontendWorkerStopOutcome, HalError>,
-) -> Option<u64> {
-    outcome
-        .as_ref()
-        .ok()
-        .and_then(frontend_worker_stop_outcome_generation)
 }
 
 fn compose_frontend_worker_cleanup_finish_result(
@@ -1892,15 +1792,7 @@ fn compose_frontend_worker_cleanup_finish_result(
     }
 }
 
-fn finish_frontend_worker_cleanup_report(
-    sink: Result<SharedFrontendWorkerCleanupDiagnostics, HalError>,
-    record: FrontendWorkerCleanupDiagnosticRecord,
-) -> Result<(), HalError> {
-    let cleanup_result = record.report().clone().into_result();
-    let record_result = sink.and_then(|sink| sink.record(record));
-    compose_frontend_worker_cleanup_finish_result(cleanup_result, record_result)
-}
-
+#[cfg(test)]
 fn build_frontend_worker_replacement_stop_report(
     target: FrontendWorkerCleanupTarget,
     worker_kind: FrontendWorkerKind,
@@ -1924,6 +1816,7 @@ fn build_frontend_worker_replacement_stop_report(
     report
 }
 
+#[cfg(test)]
 fn record_frontend_worker_replacement_stop_diagnostic(
     sink: SharedFrontendWorkerCleanupDiagnostics,
     kind: FrontendWorkerCleanupDiagnosticKind,
@@ -1954,27 +1847,6 @@ fn record_frontend_worker_replacement_stop_diagnostic(
         };
     let record = FrontendWorkerCleanupDiagnosticRecord::new(kind, target, report, public_error);
     sink.record(record)
-}
-
-fn record_frontend_worker_replacement_stop_report(
-    sink: SharedFrontendWorkerCleanupDiagnostics,
-    kind: FrontendWorkerCleanupDiagnosticKind,
-    target: FrontendWorkerCleanupTarget,
-    worker_kind: FrontendWorkerKind,
-    stop_outcome: &FrontendWorkerStopOutcome,
-    scan_cancel_result: Option<Result<(), HalError>>,
-) -> Result<(), HalError> {
-    let report = build_frontend_worker_replacement_stop_report(
-        target,
-        worker_kind,
-        stop_outcome,
-        scan_cancel_result,
-    );
-    let cleanup_result = report.clone().into_result();
-    let public_error = cleanup_result.clone().err();
-    let record = FrontendWorkerCleanupDiagnosticRecord::new(kind, target, report, public_error);
-    let record_result = sink.record(record);
-    compose_frontend_worker_cleanup_finish_result(cleanup_result, record_result)
 }
 
 fn resolve_frontend_object_for_method(
@@ -2035,21 +1907,6 @@ fn record_scan_cancelled_from_stop_outcome_locked(
     runtime
         .frontend_txn()
         .cancel_frontend_scan_session(frontend_id, generation, reason)
-}
-
-fn mark_tune_worker_failed(
-    runtime: &SharedRuntime,
-    frontend_id: i32,
-    generation: u64,
-    error: HalError,
-) -> Result<(), HalError> {
-    let mut guard = lock_runtime(
-        runtime,
-        "service runtime lock poisoned while marking tune worker failure",
-    )?;
-    guard
-        .frontend_txn()
-        .mark_frontend_tune_worker_failed(frontend_id, generation, error)
 }
 
 #[cfg(test)]
@@ -2152,6 +2009,7 @@ fn rollback_started_tune_worker_after_commit_failure(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn request_tune_worker_replacement_stop(
     runtime: &mut TunerServiceRuntime,
     frontend_id: i32,
@@ -4722,16 +4580,6 @@ pub(crate) fn stop_frontend_scan_object(
         reason,
         dispatch,
     )
-}
-
-pub fn close_frontend_live_data_and_unbind(
-    runtime: SharedRuntime,
-    frontend_id: i32,
-) -> Result<(), HalError> {
-    lock_runtime(&runtime, "service runtime lock poisoned")?
-        .frontend_txn()
-        .close_frontend_live_data_and_unbind(frontend_id)
-        .map(|_| ())
 }
 
 pub(crate) fn cleanup_frontend_object_after_close_begin(

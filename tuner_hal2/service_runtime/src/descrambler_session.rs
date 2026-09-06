@@ -70,6 +70,7 @@ impl DescramblerSession {
     pub(crate) fn is_open(&self) -> bool {
         self.state == DescramblerSessionState::Open
     }
+    #[cfg(test)]
     pub(crate) fn is_quarantined(&self) -> bool {
         self.state == DescramblerSessionState::Quarantined
     }
@@ -707,6 +708,7 @@ impl<'a> DescramblerPidTxn<'a> {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn bind_demux_use_case(
     session: &mut DescramblerSession,
     demux_id: i32,
@@ -788,10 +790,6 @@ pub(crate) enum DescramblerClearKeyOutcome<ReleaseError> {
 pub(crate) enum DescramblerCleanupTxnError<ReleaseError> {
     Session(DescramblerSessionFailure),
     ReleaseKey(ReleaseError),
-    ReleaseKeyAndSession {
-        release: ReleaseError,
-        session: DescramblerSessionFailure,
-    },
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

@@ -11,12 +11,7 @@ pub enum WorkerFailureCategory {
     CallbackBinder,
     CallbackNotifierTerminal,
     CallbackCleanup,
-    StopSignal,
-    Wake,
     Join,
-    EventFlag,
-    Reaper,
-    BackendControl,
     Unknown,
 }
 
@@ -31,8 +26,6 @@ impl ClassifiedCallbackFailure {
         (self.report, self.category)
     }
 }
-
-
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ClassifiedWorkerTerminalResult<T> {
@@ -56,7 +49,6 @@ impl<T> ClassifiedWorkerTerminalResult<T> {
 pub struct WorkerFailureClassifier;
 
 impl WorkerFailureClassifier {
-
     pub(crate) fn classify_terminal<T>(
         result: WorkerTerminalResult<T>,
         panic_context: &'static str,
@@ -106,28 +98,8 @@ impl WorkerFailureClassifier {
         ClassifiedCallbackFailure { report, category }
     }
 
-    pub(crate) const fn classify_stop_failure() -> WorkerFailureCategory {
-        WorkerFailureCategory::StopSignal
-    }
-
-    pub(crate) const fn classify_wake_failure() -> WorkerFailureCategory {
-        WorkerFailureCategory::Wake
-    }
-
     pub(crate) const fn classify_join_failure() -> WorkerFailureCategory {
         WorkerFailureCategory::Join
-    }
-
-    pub(crate) const fn classify_event_flag_failure() -> WorkerFailureCategory {
-        WorkerFailureCategory::EventFlag
-    }
-
-    pub(crate) const fn classify_reaper_failure() -> WorkerFailureCategory {
-        WorkerFailureCategory::Reaper
-    }
-
-    pub(crate) const fn classify_backend_control_failure() -> WorkerFailureCategory {
-        WorkerFailureCategory::BackendControl
     }
 
     pub(crate) const fn classify_unknown(_error: &HalError) -> WorkerFailureCategory {
