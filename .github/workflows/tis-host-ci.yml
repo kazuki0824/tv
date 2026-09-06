@@ -1,257 +1,87 @@
-name: TIS ホストCI
+name: PR54 F11/F15 文書同期（一時）
 
 on:
   pull_request:
     paths:
       - "tis/**"
-      - "arib_si_engine_rs/src/**"
-      - "arib_si_engine_rs/host_ci/**"
       - ".github/workflows/tis-host-ci.yml"
-  push:
-    branches: [main]
-    paths:
-      - "tis/**"
-      - "arib_si_engine_rs/src/**"
-      - "arib_si_engine_rs/host_ci/**"
-      - ".github/workflows/tis-host-ci.yml"
+      - ".github/tmp/tis-host-ci.yml.orig"
 
 permissions:
-  contents: read
-
-concurrency:
-  group: tis-host-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
-env:
-  CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: 1.81.0
-  KOTLIN_VERSION: 1.9.22
+  contents: write
 
 jobs:
-  caption-rustfmt:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: tis/host_ci/caption
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: LineageOS 22.1のRust toolchainを導入
-        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
-
-      - name: 字幕JNIのRust整形を確認
-        run: cargo +"$RUST_TOOLCHAIN" fmt --all -- --check
-
-  caption-check:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: tis/host_ci/caption
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: LineageOS 22.1のRust toolchainを導入
-        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-
-      - name: 字幕JNIをホストABI stubで型検査
-        run: cargo +"$RUST_TOOLCHAIN" check --all-targets --locked
-
-  caption-test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: tis/host_ci/caption
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: LineageOS 22.1のRust toolchainを導入
-        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-
-      - name: 字幕JNIのホスト互換単体テストを実行
-        run: cargo +"$RUST_TOOLCHAIN" test --locked
-
-  kotlin-compile:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: JDK 17を使用
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: 固定KotlinとAndroid 15入力を準備
-        shell: bash
-        run: |
-          tools_dir="$RUNNER_TEMP/tis-kotlin-compile"
-          mkdir -p "$tools_dir"
-          curl --fail --location --retry 3 --retry-all-errors \
-            "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip" \
-            --output "$tools_dir/kotlin-compiler.zip"
-          curl --fail --location --retry 3 --retry-all-errors \
-            "https://repo.maven.apache.org/maven2/org/robolectric/android-all/15-robolectric-13954326/android-all-15-robolectric-13954326.jar" \
-            --output "$tools_dir/android-all.jar"
-          echo "88b39213506532c816ff56348c07bbeefe0c8d18943bffbad11063cf97cac3e6  $tools_dir/kotlin-compiler.zip" | sha256sum --check
-          echo "e17105f6c432357e6bb278a527f8e848d01fc56ccee01be77725bea23d871990  $tools_dir/android-all.jar" | sha256sum --check
-          unzip -q "$tools_dir/kotlin-compiler.zip" -d "$tools_dir/compiler"
-          echo "TIS_KOTLIN_HOME=$tools_dir/compiler/kotlinc" >> "$GITHUB_ENV"
-          echo "TIS_ANDROID_ALL_JAR=$tools_dir/android-all.jar" >> "$GITHUB_ENV"
-
-      - name: TIS本番Kotlinをコンパイル
-        shell: bash
-        run: |
-          output_dir="$RUNNER_TEMP/tis-kotlin-production"
-          mkdir -p "$output_dir"
-          mapfile -d '' -t sources < <(
-            find tis/src tis/host_ci/kotlin/stubs/android -type f -name '*.kt' -print0 | sort -z
-          )
-          "$TIS_KOTLIN_HOME/bin/kotlinc" \
-            -J-Xmx4g \
-            -jvm-target 17 \
-            -classpath "$TIS_ANDROID_ALL_JAR" \
-            -d "$output_dir" \
-            "${sources[@]}"
-
-  kotlin-host-tests:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: JDK 17を使用
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: LineageOS 22.1のRust toolchainを導入
-        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-
-      - name: ホストテスト用の実SI JNI libraryをビルド
-        run: cargo +"$RUST_TOOLCHAIN" build --lib --locked --manifest-path arib_si_engine_rs/host_ci/Cargo.toml
-
-      - name: 固定Kotlin・Android 15・JUnit入力を準備
-        shell: bash
-        run: |
-          tools_dir="$RUNNER_TEMP/tis-kotlin-test"
-          mkdir -p "$tools_dir"
-          curl --fail --location --retry 3 --retry-all-errors \
-            "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip" \
-            --output "$tools_dir/kotlin-compiler.zip"
-          curl --fail --location --retry 3 --retry-all-errors \
-            "https://repo.maven.apache.org/maven2/org/robolectric/android-all/15-robolectric-13954326/android-all-15-robolectric-13954326.jar" \
-            --output "$tools_dir/android-all.jar"
-          curl --fail --location --retry 3 --retry-all-errors \
-            "https://repo.maven.apache.org/maven2/junit/junit/4.13.2/junit-4.13.2.jar" \
-            --output "$tools_dir/junit.jar"
-          curl --fail --location --retry 3 --retry-all-errors \
-            "https://repo.maven.apache.org/maven2/org/hamcrest/hamcrest-core/1.3/hamcrest-core-1.3.jar" \
-            --output "$tools_dir/hamcrest-core.jar"
-          echo "88b39213506532c816ff56348c07bbeefe0c8d18943bffbad11063cf97cac3e6  $tools_dir/kotlin-compiler.zip" | sha256sum --check
-          echo "e17105f6c432357e6bb278a527f8e848d01fc56ccee01be77725bea23d871990  $tools_dir/android-all.jar" | sha256sum --check
-          echo "8e495b634469d64fb8acfa3495a065cbacc8a0fff55ce1e31007be4c16dc57d3  $tools_dir/junit.jar" | sha256sum --check
-          echo "66fdef91e9739348df7a096aa384a5685f4e875584cce89386a7a47251c4d8e9  $tools_dir/hamcrest-core.jar" | sha256sum --check
-          unzip -q "$tools_dir/kotlin-compiler.zip" -d "$tools_dir/compiler"
-          echo "TIS_KOTLIN_HOME=$tools_dir/compiler/kotlinc" >> "$GITHUB_ENV"
-          echo "TIS_ANDROID_ALL_JAR=$tools_dir/android-all.jar" >> "$GITHUB_ENV"
-          echo "TIS_JUNIT_JAR=$tools_dir/junit.jar" >> "$GITHUB_ENV"
-          echo "TIS_HAMCREST_JAR=$tools_dir/hamcrest-core.jar" >> "$GITHUB_ENV"
-
-      - name: 本番KotlinとテストKotlinをコンパイル
-        shell: bash
-        run: |
-          production_dir="$RUNNER_TEMP/tis-kotlin-production"
-          test_dir="$RUNNER_TEMP/tis-kotlin-tests"
-          mkdir -p "$production_dir" "$test_dir"
-          mapfile -d '' -t production_sources < <(
-            find tis/src tis/host_ci/kotlin/stubs/android -type f -name '*.kt' -print0 | sort -z
-          )
-          "$TIS_KOTLIN_HOME/bin/kotlinc" \
-            -J-Xmx4g \
-            -jvm-target 17 \
-            -classpath "$TIS_ANDROID_ALL_JAR" \
-            -d "$production_dir" \
-            "${production_sources[@]}"
-          test_classpath="$production_dir:$TIS_ANDROID_ALL_JAR:$TIS_JUNIT_JAR:$TIS_HAMCREST_JAR:$TIS_KOTLIN_HOME/lib/kotlin-test.jar:$TIS_KOTLIN_HOME/lib/kotlin-test-junit.jar"
-          mapfile -d '' -t test_sources < <(
-            find tis/tests/src tis/host_ci/kotlin/stubs/androidx -type f -name '*.kt' -print0 | sort -z
-          )
-          "$TIS_KOTLIN_HOME/bin/kotlinc" \
-            -J-Xmx4g \
-            -jvm-target 17 \
-            -Xfriend-paths="$production_dir" \
-            -classpath "$test_classpath" \
-            -d "$test_dir" \
-            "${test_sources[@]}"
-          echo "TIS_KOTLIN_PRODUCTION_DIR=$production_dir" >> "$GITHUB_ENV"
-          echo "TIS_KOTLIN_TEST_DIR=$test_dir" >> "$GITHUB_ENV"
-
-      - name: ホスト互換Kotlinテストを実行
-        shell: bash
-        run: |
-          mapfile -t discovered_classes < <(
-            find "$TIS_KOTLIN_TEST_DIR" -type f -name '*Test.class' -printf '%P\n' \
-              | sed 's#/#.#g; s#\.class$##' \
-              | sort
-          )
-          test_classes=()
-          for test_class in "${discovered_classes[@]}"; do
-            case "$test_class" in
-              com.maleicacid.tvinput.tis.DirectBootGuardR51FixTest|\
-              com.maleicacid.tvinput.tis.ProviderDataAssetsR51ContractTest|\
-              com.maleicacid.tvinput.tis.RecordingDisabledR51Test|\
-              com.maleicacid.tvinput.tis.TvProviderWriterDescriptorSchemaTest)
-                ;;
-              *)
-                test_classes+=("$test_class")
-                ;;
-            esac
-          done
-          test "${#discovered_classes[@]}" -eq 31
-          test "${#test_classes[@]}" -eq 27
-          runtime_classpath="$TIS_KOTLIN_PRODUCTION_DIR:$TIS_KOTLIN_TEST_DIR:$TIS_ANDROID_ALL_JAR:$TIS_JUNIT_JAR:$TIS_HAMCREST_JAR:$TIS_KOTLIN_HOME/lib/kotlin-stdlib.jar:$TIS_KOTLIN_HOME/lib/kotlin-stdlib-jdk7.jar:$TIS_KOTLIN_HOME/lib/kotlin-stdlib-jdk8.jar:$TIS_KOTLIN_HOME/lib/kotlin-test.jar:$TIS_KOTLIN_HOME/lib/kotlin-test-junit.jar"
-          java \
-            -Xmx4g \
-            -Djava.library.path=arib_si_engine_rs/host_ci/target/debug/deps \
-            -cp "$runtime_classpath" \
-            org.junit.runner.JUnitCore \
-            "${test_classes[@]}" \
-            | tee "$RUNNER_TEMP/tis-junit.log"
-          grep --fixed-strings "OK (135 tests)" "$RUNNER_TEMP/tis-junit.log"
-
-  xml-contract:
+  apply:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
-          persist-credentials: false
+          ref: agent/implement-tis-arib-si-design-pr53
+          fetch-depth: 1
+          persist-credentials: true
 
-      - name: TIS manifest・resource・permission XMLを解析
+      - name: F11/F15の設計・統合文書を部分更新
+        shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          from xml.etree import ElementTree
 
-          paths = sorted(Path("tis").rglob("*.xml"))
-          if not paths:
-              raise SystemExit("TIS XMLファイルがありません")
-          for path in paths:
-              ElementTree.parse(path)
-              print(path)
+          def replace_exact(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text()
+              if old not in text:
+                  raise SystemExit(f"置換対象が見つかりません: {path}")
+              p.write_text(text.replace(old, new, 1))
+
+          replace_exact(
+              "tis/DESIGN_JA.md",
+              "TISの物理候補表は製品scan実装データのSSOTであり、`開発規則.md`の規範値に従うRF候補を唯一保持する。BS setup/rescanは物理RFごとにstream selector未指定の`IsdbsFrontendSettings`でAOSP `Tuner.scan()`を実行し、`ScanCallback.onInputStreamIdsReported()`で得たcurrent stream IDをtyped `STREAM_ID` explicit tune candidateへ変換する。`Tuner.scan()`が失敗した場合、timeoutした場合、または完了してもstream IDが0件の場合は診断を分離してfail-closedとし、versioned TSID表を成功候補へ代入しない。受信後のservice identityはPAT/NIT/SDT由来ONID/TSID/SIDを正とする。TIS以外に日本向け候補表を重複保持せず、候補生成をHALのeffective capabilityやdriver名で分岐しない。driver固有slotまたはlegacy数値域への写像はTuner HALへ委ねる。",
+              "TISの物理候補表は製品scan実装データのSSOTであり、`開発規則.md`の規範値に従うRF候補を唯一保持する。BS setup/rescanは物理RFごとにstream selector未指定の`IsdbsFrontendSettings`でAOSP `Tuner.scan()`を実行し、`ScanCallback.onInputStreamIdsReported()`で得たcurrent stream IDをtyped `STREAM_ID` explicit tune candidateへ変換する。dynamic stream-ID discoveryが正常完了して1件以上のIDを報告した場合は、その報告IDだけを候補にする。scan開始後の失敗、timeout、または正常完了してもstream IDが0件の場合はfail-closedとし、versioned TSID表を代入しない。一方、frontend/HALがdynamic stream-ID discoveryという能力自体を提供しないことをframeworkの`Tuner.RESULT_UNAVAILABLE`として明示した場合に限り、`開発規則.md`のversioned BS TSID表を当該RFのexplicit `STREAM_ID` tune候補seedとして使用してよい。TISはbackend名、driver名、HAL内部のeffective capabilityを取得・推測してこの分岐を行わず、frameworkから返るtyped resultだけを判断入力にする。versioned TSID表はchannel登録事実ではなく選局候補に限定し、各候補を実際にtuneした後、PAT/NIT/SDT actualからONID/TSID/SIDとcurrent transportを確認できたserviceだけを登録・公開する。driver固有slotまたはlegacy数値域への写像はTuner HALへ委ねる。",
+          )
+
+          replace_exact(
+              "tis/DESIGN_JA.md",
+              "- ARIB exceptional ratingのpolicy ownerはLive TV Appとする。rating定義は独立`AribContentRatings` APKがTIF標準providerとして公開する。Android 15 / LineageOS 22.1 baselineではpartner customizationとRRO/product overlayはresource customizationに限定され、`ContentRatingLevelPolicy`またはblocked-rating projectionへ外部codeを注入する正式hookがないため、product integrationではLive TV Appの既存parental policy pathへ `ARIB_EXCEPTIONAL / BROADCASTER_DEFINED` 1件のprojectionだけを最小差分で統合する。第二policy APKを追加せず、TISや別APKからLive TV App privateの`NONE/HIGH/MEDIUM/LOW/CUSTOM` stateを読む設計にしない。parental controls無効またはglobal policy=`NONE`ではexceptional ratingをblocked集合へ入れず、parental controls有効かつ`HIGH/MEDIUM/LOW/CUSTOM`ではblocked集合へ反映する。PIN認証済みcurrent contentの `onUnblockContent()` 一時解除は維持し、第三者custom rating、CTS Verifier由来rating、他domain/ratingSystemへこのproduct policyを波及させない。TISはraw値から独自policyを実装せず `TvInputManager.isRatingBlocked()` の結果だけに従う。",
+              "- ARIB exceptional ratingのpolicy ownerはLive TV Appとする。rating定義は独立`AribContentRatings` APKがTIF標準providerとして公開し、System TV App本体へ直接patchを当てない。Android 15 / LineageOS 22.1の既存`ContentRatingLevelPolicy`はTIF rating-provider XMLの`contentAgeHint`を使い、`HIGH`は6以上、`MEDIUM`は12以上、`LOW`は各rating system内の最大値以上をblocked候補へ投影し、`NONE`は空集合にする。この既存extension pointへ合わせ、単一ratingである`ARIB_EXCEPTIONAL / BROADCASTER_DEFINED`にはproduct preset policy用の固定`contentAgeHint=12`を付与する。これはraw `parental_rating_descriptor.rating`を12歳または年齢値へ変換する意味ではなく、明示受信した`0x12..0xFF`は従来どおり全て同一canonical exceptional ratingへ写像する。`HIGH/MEDIUM/LOW`では既存TV App policyによりこの1件をblocked候補へ含め、`NONE`では外し、`CUSTOM`では通常のblocked-rating編集として同ratingを追加・削除できる。第二policy APK、TV App private state reader、System TV App source patchを追加せず、PIN認証済みcurrent contentの`onUnblockContent()`一時解除と他domain/ratingSystemのpolicyを変更しない。TISはraw値から独自policyを実装せず`TvInputManager.isRatingBlocked()`の結果だけに従う。",
+          )
+
+          start = "## ARIB exceptional ratingのLive TV App最小policy統合\n"
+          end = "## MediaSync Exact-mode platform統合\n"
+          p = Path("tis/INTEGRATION.md")
+          text = p.read_text()
+          i = text.find(start)
+          j = text.find(end)
+          if i < 0 or j < 0 or j <= i:
+              raise SystemExit("INTEGRATIONのF11節境界が見つかりません")
+          replacement = """## ARIB exceptional ratingのLive TV App標準extension統合
+
+JPN parental rating raw `0x12..0xFF` はTISで年齢値へ推測変換せず、`com.maleicacid.tv.ratings / ARIB_EXCEPTIONAL / BROADCASTER_DEFINED` へ写像する。rating定義とTV Appへの発見経路は独立`AribContentRatings` APKがTIF標準providerとして所有し、blocked-rating policyのownerはLive TV Appとする。System TV App本体へ直接patchを当てる方式は採用しない。
+
+Android 15 / LineageOS 22.1の既存`ContentRatingLevelPolicy`は、TIF rating-provider XMLの`contentAgeHint`を既存preset policyの入力として使用する。`HIGH`は6以上、`MEDIUM`は12以上、`LOW`はrating system内の最大値以上をblocked候補へ含め、`NONE`は空集合にする。そこで単一ratingである`BROADCASTER_DEFINED`へ固定`contentAgeHint=12`を与え、stock TV Appの既存policy pathへ標準metadataだけで接続する。`12`はproduct preset policy用のhintであり、ARIB raw `0x12..0xFF`の年齢解釈ではない。`CUSTOM`では通常のblocked-rating編集として同canonical ratingを追加・削除できる。第二policy APK、TV App private state reader、`packages/apps/TV` source patchは追加しない。
+
+製品buildでは`AribContentRatings`を組み込み、rating-provider receiverとXML metadataを発見可能にする。TV App側の動的境界はplatform-signed `AribContentRatingsTvAppIntegrationTests`を`LiveTv`へinstrumentし、同canonical `TvContentRating`を`TvInputManager.addBlockedRating()`でblock、`removeBlockedRating()`でunblockでき、`isRatingBlocked()`が追従することを確認する。試験後は開始時のblocked状態を復元する。
+
+```text
+m AribContentRatings AribContentRatingsTvAppIntegrationTests
+atest AribContentRatingsTvAppIntegrationTests
+```
+
+TISは引き続き`TvInputManager.isRatingBlocked()`だけをcurrent policy authorityとして扱う。既存のblocked-rating永続化、PIN認証後のsession-level `onUnblockContent()`、通常年齢rating、第三者custom ratingの扱いは変更しない。
+
+"""
+          p.write_text(text[:i] + replacement + text[j:])
           PY
+
+      - name: 元CIを復元して一時物を削除
+        shell: bash
+        run: |
+          cp .github/tmp/tis-host-ci.yml.orig .github/workflows/tis-host-ci.yml
+          rm .github/tmp/tis-host-ci.yml.orig
+          rm -f .github/workflows/pr54-f11-f15-doc-sync-once.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "docs(tis): F11/F15契約を実装へ同期"
+          git push origin HEAD:agent/implement-tis-arib-si-design-pr53
