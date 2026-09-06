@@ -108,24 +108,15 @@ TIS は `directBootAware=true` を維持する。`AndroidManifest.xml` には `<
 
 `BootEpgSyncJobService` は `AndroidManifest.xml` に service として宣言し、`android.permission.BIND_JOB_SERVICE` で保護する。`EpgBootSyncReceiver`、`BootEpgSyncJobService`、`DirectBootGuard`、`BootEpgSyncScheduler` の実行時役割、ジョブ登録・再試行、保留解除、開始条件、ライブセッションとの優先順位は `DESIGN_JA.md` を正とし、本書では状態遷移を再定義しない。
 
-## ARIB exceptional parental rating extension統合
+## ARIB exceptional ratingのLive TV App最小policy統合
 
-JPN parental rating raw `0x12..0xFF` はTISで年齢値へ推測変換せず、`com.maleicacid.tv.ratings / ARIB_EXCEPTIONAL / BROADCASTER_DEFINED` へ写像する。rating systemの公開とTV App parental-control UIへの発見経路は、`tis/arib_parental_rating/` の独立product extension `AribContentRatings` を正規経路とする。System TV App本体のsourceはpatchしない。
+JPN parental rating raw `0x12..0xFF` はTISで年齢値へ推測変換せず、`com.maleicacid.tv.ratings / ARIB_EXCEPTIONAL / BROADCASTER_DEFINED` へ写像する。rating定義とTV Appへの発見経路は独立`AribContentRatings` APKがTIF標準providerとして所有し、blocked-rating policyのownerはLive TV Appとする。
 
-`AribContentRatings` はAOSP TIF標準の `android.media.tv.action.QUERY_CONTENT_RATING_SYSTEMS` receiverと `android.media.tv.metadata.CONTENT_RATING_SYSTEMS` XMLだけを公開する。`BROADCASTER_DEFINED` は `contentAgeHint=0` とし、TV App側のrating-level policyが標準rating metadataからblocked-rating集合を構成できるようにする。TIS自身はblocked集合を変更せず、再生時は従来どおり `TvInputManager.isRatingBlocked()` を唯一のpolicy authorityとして使用する。
+Android 15 / LineageOS 22.1 baselineのpartner customization、RRO、product resource overlayはresource customizationに限定され、`ContentRatingLevelPolicy`またはblocked-rating projectionへ外部codeを注入する正式hookを持たない。そのため第二policy APKは追加せず、Live TV Appの既存parental policy pathへexceptional rating 1件のprojectionだけを最小product integrationとして加える。TISまたは別APKがLive TV App privateの`NONE/HIGH/MEDIUM/LOW/CUSTOM` stateを読む構成にはしない。実装差分は `tis/platform_patches/lineage-22.1/packages_apps_TV_arib_exceptional_parental_policy.patch` を正規product pathとする。
 
-product統合では `tis/config/product_integration.mk` を継承して `/product/app/AribContentRatings/AribContentRatings.apk` を組み込み、次を確認する。
+policy mappingは、parental controls無効またはglobal policy=`NONE`ならexceptional ratingをblocked集合へ入れず、parental controls有効かつ`HIGH/MEDIUM/LOW/CUSTOM`ならblocked集合へ反映する。既存のblocked-rating永続化、PIN認証後のsession-level `onUnblockContent()`、通常年齢rating、第三者custom ratingの扱いは変更しない。TISは `TvInputManager.isRatingBlocked()` を唯一のpolicy authorityとして使い続ける。
 
-```text
-- PackageManager/TvInputManager経由で com.maleicacid.tv.ratings / ARIB_EXCEPTIONAL / BROADCASTER_DEFINED が列挙される。
-- parental-control UIにARIB exceptional rating systemが表示される。
-- parental controls無効時はTISが当該ratingを独自blockしない。
-- TV App/TvInputManagerのblocked-rating集合に当該ratingがある場合だけ、TISの isRatingBlocked() 判定から notifyContentBlocked() へ到達する。
-- PINによる一時unblock後にTIS独自policyが再blockしない。
-- raw 0x12..0xFF を通常年齢ratingまたはUNRATEDへ変換しない。
-```
-
-このextensionはrating定義・発見だけを所有し、blocked-rating集合の所有権をTISへ移さない。そのためSystem TV Appのprivate stateやprivate APIへの依存、packages/apps/TV source patch、TIS内の第二parental policyを追加しない。
+製品統合ではpatch適用後のLive TV App target compileに加え、`AribContentRatings` discovery、parental controls無効、`NONE`、`HIGH/MEDIUM/LOW/CUSTOM`、PIN unblock、他domain/ratingSystem非干渉を確認する。
 
 ## MediaSync Exact-mode platform統合
 
