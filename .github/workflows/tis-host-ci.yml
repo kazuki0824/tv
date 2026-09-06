@@ -26,51 +26,51 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
-          def replace_exact(path: str, old: str, new: str) -> None:
-              p = Path(path)
-              text = p.read_text()
-              if old not in text:
-                  raise SystemExit(f"置換対象が見つかりません: {path}")
-              p.write_text(text.replace(old, new, 1))
+          design = Path("tis/DESIGN_JA.md")
+          text = design.read_text()
 
-          replace_exact(
-              "tis/DESIGN_JA.md",
-              "TISの物理候補表は製品scan実装データのSSOTであり、`開発規則.md`の規範値に従うRF候補を唯一保持する。BS setup/rescanは物理RFごとにstream selector未指定の`IsdbsFrontendSettings`でAOSP `Tuner.scan()`を実行し、`ScanCallback.onInputStreamIdsReported()`で得たcurrent stream IDをtyped `STREAM_ID` explicit tune candidateへ変換する。`Tuner.scan()`が失敗した場合、timeoutした場合、または完了してもstream IDが0件の場合は診断を分離してfail-closedとし、versioned TSID表を成功候補へ代入しない。受信後のservice identityはPAT/NIT/SDT由来ONID/TSID/SIDを正とする。TIS以外に日本向け候補表を重複保持せず、候補生成をHALのeffective capabilityやdriver名で分岐しない。driver固有slotまたはlegacy数値域への写像はTuner HALへ委ねる。",
-              "TISの物理候補表は製品scan実装データのSSOTであり、`開発規則.md`の規範値に従うRF候補を唯一保持する。BS setup/rescanは物理RFごとにstream selector未指定の`IsdbsFrontendSettings`でAOSP `Tuner.scan()`を実行し、`ScanCallback.onInputStreamIdsReported()`で得たcurrent stream IDをtyped `STREAM_ID` explicit tune candidateへ変換する。dynamic stream-ID discoveryが正常完了して1件以上のIDを報告した場合は、その報告IDだけを候補にする。scan開始後の失敗、timeout、または正常完了してもstream IDが0件の場合はfail-closedとし、versioned TSID表を代入しない。一方、frontend/HALがdynamic stream-ID discoveryという能力自体を提供しないことをframeworkの`Tuner.RESULT_UNAVAILABLE`として明示した場合に限り、`開発規則.md`のversioned BS TSID表を当該RFのexplicit `STREAM_ID` tune候補seedとして使用してよい。TISはbackend名、driver名、HAL内部のeffective capabilityを取得・推測してこの分岐を行わず、frameworkから返るtyped resultだけを判断入力にする。versioned TSID表はchannel登録事実ではなく選局候補に限定し、各候補を実際にtuneした後、PAT/NIT/SDT actualからONID/TSID/SIDとcurrent transportを確認できたserviceだけを登録・公開する。driver固有slotまたはlegacy数値域への写像はTuner HALへ委ねる。",
-          )
+          scan = re.compile(r"TISの物理候補表は製品scan実装データのSSOTであり、.*?driver固有slotまたはlegacy数値域への写像はTuner HALへ委ねる。", re.S)
+          scan_new = """TISの物理候補表は製品scan実装データのSSOTであり、`開発規則.md`の規範値に従うRF候補を唯一保持する。BS setup/rescanは物理RFごとにstream selector未指定の`IsdbsFrontendSettings`でAOSP `Tuner.scan()`を実行し、`ScanCallback.onInputStreamIdsReported()`で得たcurrent stream IDをtyped `STREAM_ID` explicit tune candidateへ変換する。dynamic stream-ID discoveryが正常完了して1件以上のIDを報告した場合は、その報告IDだけを候補にする。scan開始後の失敗、timeout、または正常完了してもstream IDが0件の場合はfail-closedとし、versioned TSID表を代入しない。一方、frontend/HALがdynamic stream-ID discoveryという能力自体を提供しないことをframeworkの`Tuner.RESULT_UNAVAILABLE`として明示した場合に限り、`開発規則.md`のversioned BS TSID表を当該RFのexplicit `STREAM_ID` tune候補seedとして使用してよい。TISはbackend名、driver名、HAL内部のeffective capabilityを取得・推測してこの分岐を行わず、frameworkから返るtyped resultだけを判断入力にする。versioned TSID表はchannel登録事実ではなく選局候補に限定し、各候補を実際にtuneした後、PAT/NIT/SDT actualからONID/TSID/SIDとcurrent transportを確認できたserviceだけを登録・公開する。driver固有slotまたはlegacy数値域への写像はTuner HALへ委ねる。"""
+          if "dynamic stream-ID discoveryという能力自体" not in text:
+              text, n = scan.subn(scan_new, text, count=1)
+              if n != 1:
+                  raise SystemExit("F15設計段落を置換できません")
 
-          replace_exact(
-              "tis/DESIGN_JA.md",
-              "- ARIB exceptional ratingのpolicy ownerはLive TV Appとする。rating定義は独立`AribContentRatings` APKがTIF標準providerとして公開する。Android 15 / LineageOS 22.1 baselineではpartner customizationとRRO/product overlayはresource customizationに限定され、`ContentRatingLevelPolicy`またはblocked-rating projectionへ外部codeを注入する正式hookがないため、product integrationではLive TV Appの既存parental policy pathへ `ARIB_EXCEPTIONAL / BROADCASTER_DEFINED` 1件のprojectionだけを最小差分で統合する。第二policy APKを追加せず、TISや別APKからLive TV App privateの`NONE/HIGH/MEDIUM/LOW/CUSTOM` stateを読む設計にしない。parental controls無効またはglobal policy=`NONE`ではexceptional ratingをblocked集合へ入れず、parental controls有効かつ`HIGH/MEDIUM/LOW/CUSTOM`ではblocked集合へ反映する。PIN認証済みcurrent contentの `onUnblockContent()` 一時解除は維持し、第三者custom rating、CTS Verifier由来rating、他domain/ratingSystemへこのproduct policyを波及させない。TISはraw値から独自policyを実装せず `TvInputManager.isRatingBlocked()` の結果だけに従う。",
-              "- ARIB exceptional ratingのpolicy ownerはLive TV Appとする。rating定義は独立`AribContentRatings` APKがTIF標準providerとして公開し、System TV App本体へ直接patchを当てない。Android 15 / LineageOS 22.1の既存`ContentRatingLevelPolicy`はTIF rating-provider XMLの`contentAgeHint`を使い、`HIGH`は6以上、`MEDIUM`は12以上、`LOW`は各rating system内の最大値以上をblocked候補へ投影し、`NONE`は空集合にする。この既存extension pointへ合わせ、単一ratingである`ARIB_EXCEPTIONAL / BROADCASTER_DEFINED`にはproduct preset policy用の固定`contentAgeHint=12`を付与する。これはraw `parental_rating_descriptor.rating`を12歳または年齢値へ変換する意味ではなく、明示受信した`0x12..0xFF`は従来どおり全て同一canonical exceptional ratingへ写像する。`HIGH/MEDIUM/LOW`では既存TV App policyによりこの1件をblocked候補へ含め、`NONE`では外し、`CUSTOM`では通常のblocked-rating編集として同ratingを追加・削除できる。第二policy APK、TV App private state reader、System TV App source patchを追加せず、PIN認証済みcurrent contentの`onUnblockContent()`一時解除と他domain/ratingSystemのpolicyを変更しない。TISはraw値から独自policyを実装せず`TvInputManager.isRatingBlocked()`の結果だけに従う。",
-          )
+          f11 = re.compile(r"- ARIB exceptional ratingのpolicy ownerはLive TV Appとする。.*?TISはraw値から独自policyを実装せず ?`TvInputManager\.isRatingBlocked\(\)` ?の結果だけに従う。", re.S)
+          f11_new = """- ARIB exceptional ratingのpolicy ownerはLive TV Appとする。rating定義は独立`AribContentRatings` APKがTIF標準providerとして公開し、System TV App本体へ直接patchを当てない。Android 15 / LineageOS 22.1系の既存`ContentRatingLevelPolicy`はTIF rating-provider XMLの`contentAgeHint`をpreset policyの入力として使い、`HIGH`は6以上、`MEDIUM`は12以上、`LOW`は各rating system内の最大age hint以上をblocked候補へ投影し、`NONE`は空集合にする。`ARIB_EXCEPTIONAL`は単一rating `BROADCASTER_DEFINED`を`contentAgeHint=18`で公開するため、既存policyでは`HIGH/MEDIUM/LOW`の各presetでblocked候補に含まれる。ここでの18はproduct preset policy分類用metadataであり、ARIB raw `parental_rating_descriptor.rating`を18歳へ解釈・変換した値ではない。明示受信した`0x12..0xFF`は従来どおり全て同一canonical exceptional ratingへ写像する。`CUSTOM`はstock TV Appの通常blocked-rating編集を正とし、このextensionがprivate stateを読んで強制上書きしない。第二policy APK、TV App private state reader、System TV App source patchを追加せず、PIN認証済みcurrent contentの`onUnblockContent()`一時解除と他domain/ratingSystemのpolicyを変更しない。TISはraw値から独自policyを実装せず`TvInputManager.isRatingBlocked()`の結果だけに従う。"""
+          if "System TV App本体へ直接patchを当てない" not in text:
+              text, n = f11.subn(f11_new, text, count=1)
+              if n != 1:
+                  raise SystemExit("F11設計段落を置換できません")
+          design.write_text(text)
 
-          start = "## ARIB exceptional ratingのLive TV App最小policy統合\n"
-          end = "## MediaSync Exact-mode platform統合\n"
           p = Path("tis/INTEGRATION.md")
           text = p.read_text()
-          i = text.find(start)
-          j = text.find(end)
-          if i < 0 or j < 0 or j <= i:
-              raise SystemExit("INTEGRATIONのF11節境界が見つかりません")
-          replacement = """## ARIB exceptional ratingのLive TV App標準extension統合
+          start = "## ARIB exceptional ratingのLive TV App最小policy統合\n"
+          end = "## MediaSync Exact-mode platform統合\n"
+          if "## ARIB exceptional ratingのLive TV App標準extension統合" not in text:
+              i = text.find(start)
+              j = text.find(end)
+              if i < 0 or j < 0 or j <= i:
+                  raise SystemExit("INTEGRATIONのF11節境界が見つかりません")
+              replacement = """## ARIB exceptional ratingのLive TV App標準extension統合
 
-JPN parental rating raw `0x12..0xFF` はTISで年齢値へ推測変換せず、`com.maleicacid.tv.ratings / ARIB_EXCEPTIONAL / BROADCASTER_DEFINED` へ写像する。rating定義とTV Appへの発見経路は独立`AribContentRatings` APKがTIF標準providerとして所有し、blocked-rating policyのownerはLive TV Appとする。System TV App本体へ直接patchを当てる方式は採用しない。
+JPN parental rating raw `0x12..0xFF` はTISで年齢値へ推測変換せず、`com.maleicacid.tv.ratings / ARIB_EXCEPTIONAL / BROADCASTER_DEFINED`へ写像する。rating定義とTV Appへの発見経路は独立`AribContentRatings` APKがTIF標準providerとして所有し、blocked-rating policyのownerはLive TV Appとする。System TV App本体へ直接patchを当てる方式は採用しない。
 
-Android 15 / LineageOS 22.1の既存`ContentRatingLevelPolicy`は、TIF rating-provider XMLの`contentAgeHint`を既存preset policyの入力として使用する。`HIGH`は6以上、`MEDIUM`は12以上、`LOW`はrating system内の最大値以上をblocked候補へ含め、`NONE`は空集合にする。そこで単一ratingである`BROADCASTER_DEFINED`へ固定`contentAgeHint=12`を与え、stock TV Appの既存policy pathへ標準metadataだけで接続する。`12`はproduct preset policy用のhintであり、ARIB raw `0x12..0xFF`の年齢解釈ではない。`CUSTOM`では通常のblocked-rating編集として同canonical ratingを追加・削除できる。第二policy APK、TV App private state reader、`packages/apps/TV` source patchは追加しない。
+Android 15 / LineageOS 22.1系の既存`ContentRatingLevelPolicy`はTIF rating-provider XMLの`contentAgeHint`をpreset policyの入力として使う。`HIGH`は6以上、`MEDIUM`は12以上、`LOW`はrating system内の最大age hint以上をblocked候補へ含め、`NONE`は空集合にする。単一ratingである`BROADCASTER_DEFINED`は既存XMLの`contentAgeHint=18`を維持するため、stock policyでは`HIGH/MEDIUM/LOW`の各presetでblocked候補になる。18はproduct preset policy分類用metadataであり、ARIB raw `0x12..0xFF`の年齢解釈ではない。`CUSTOM`ではstock TV Appの通常rating設定から同canonical ratingを追加・削除する。第二policy APK、TV App private state reader、`packages/apps/TV` source patchは追加しない。
 
-製品buildでは`AribContentRatings`を組み込み、rating-provider receiverとXML metadataを発見可能にする。TV App側の動的境界はplatform-signed `AribContentRatingsTvAppIntegrationTests`を`LiveTv`へinstrumentし、同canonical `TvContentRating`を`TvInputManager.addBlockedRating()`でblock、`removeBlockedRating()`でunblockでき、`isRatingBlocked()`が追従することを確認する。試験後は開始時のblocked状態を復元する。
+製品buildでは`AribContentRatings`とstock `LiveTv`を組み込み、rating-provider receiverとXML metadataを発見可能にする。repo内では`AribContentRatings`のpackage/action/meta-data、`ARIB_EXCEPTIONAL / BROADCASTER_DEFINED`、`contentAgeHint=18`を静的確認し、旧System TV App patchを正規経路として残さない。product tree / 実機では、rating provider discovery、parental controls無効、`NONE`、`HIGH/MEDIUM/LOW`、`CUSTOM`での標準blocked-rating編集、PIN unblock、他domain/ratingSystem非干渉を確認する。
 
 ```text
-m AribContentRatings AribContentRatingsTvAppIntegrationTests
-atest AribContentRatingsTvAppIntegrationTests
+m AribContentRatings LiveTv
 ```
 
-TISは引き続き`TvInputManager.isRatingBlocked()`だけをcurrent policy authorityとして扱う。既存のblocked-rating永続化、PIN認証後のsession-level `onUnblockContent()`、通常年齢rating、第三者custom ratingの扱いは変更しない。
+TISは引き続き`TvInputManager.isRatingBlocked()`だけをcurrent policy authorityとして扱う。既存のblocked-rating永続化、PIN認証後のsession-level`onUnblockContent()`、通常年齢rating、第三者custom ratingの扱いは変更しない。
 
 """
-          p.write_text(text[:i] + replacement + text[j:])
+              p.write_text(text[:i] + replacement + text[j:])
           PY
 
       - name: 元CIを復元して一時物を削除
@@ -83,5 +83,8 @@ TISは引き続き`TvInputManager.isRatingBlocked()`だけをcurrent policy auth
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git diff --cached --check
+          if git diff --cached --quiet; then
+            exit 0
+          fi
           git commit -m "docs(tis): F11/F15契約を実装へ同期"
           git push origin HEAD:agent/implement-tis-arib-si-design-pr53
