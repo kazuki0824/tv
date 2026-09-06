@@ -33,7 +33,16 @@ mod tests {
 
     fn syntax_section(table_id: u8, section_number: u8) -> Vec<u8> {
         // policy判定に必要なsyntax headerだけを持つ最小section。CRC妥当性は上位のingestで検証する。
-        vec![table_id, 0xb0, 0x05, 0x00, 0x01, 0xc1, section_number, section_number]
+        vec![
+            table_id,
+            0xb0,
+            0x05,
+            0x00,
+            0x01,
+            0xc1,
+            section_number,
+            section_number,
+        ]
     }
 
     #[test]
