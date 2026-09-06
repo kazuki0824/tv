@@ -42,8 +42,10 @@ class ChannelNumberingPolicyTest {
         check(failed)
     }
 
-    @Test fun px4BsAllowsRelativeSelector() {
-        val candidate = ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_S, FrequencyHz(1_318_000_000L), streamSelector = StreamSelector.relative(1), displayChannel = "BS15/1", satelliteBand = "BS", backendHint = "px4")
-        check(candidate.streamSelector.type == StreamSelectorType.RELATIVE)
+    @Test fun px4BsAlsoRejectsRelativeSelector() {
+        val failed = runCatching {
+            ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_S, FrequencyHz(1_318_000_000L), streamSelector = StreamSelector.relative(1), displayChannel = "BS15/1", satelliteBand = "BS", backendHint = "px4")
+        }.isFailure
+        check(failed)
     }
 }
