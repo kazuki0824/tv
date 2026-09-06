@@ -306,6 +306,13 @@ impl FrontendTuneScanTxn {
         if !is_current {
             return Ok(FrontendOperationEventAcceptance::DiscardedStale);
         }
+        let release_fixed_power_after_delivery = matches!(
+            &event,
+            FrontendOperationEvent::Scan {
+                notification: FrontendScanNotification::End,
+                ..
+            }
+        );
         let delivery = match event {
             FrontendOperationEvent::Tune {
                 notifier,
@@ -322,14 +329,21 @@ impl FrontendTuneScanTxn {
                 ));
             }
         };
-        Ok(if delivery.is_ok() {
+        let acceptance = if delivery.is_ok() {
             FrontendOperationEventAcceptance::Accepted
         } else {
             // AIDL notifierは分類済みpost-commit callback failureを
             // WorkerFailureClassifier -> PostCommitCallbackFailureTxn経由で既にcommitしている。
             // commit済みtune/scan operationを維持し、delivery outcomeを黙って破棄せず明示する。
             FrontendOperationEventAcceptance::AcceptedCallbackFailure
-        })
+        };
+        if release_fixed_power_after_delivery {
+            Self::release_fixed_power_if_operation_terminal(
+                runtime,
+                FrontendRuntimeId(frontend_id),
+            )?;
+        }
+        Ok(acceptance)
     }
 
     pub fn accept_worker_terminal(
@@ -346,7 +360,9 @@ impl FrontendTuneScanTxn {
             })?;
             FrontendWorkerTerminationUseCase::accept_worker_terminal(&mut guard, event)?
         };
-        Self::release_fixed_power_if_operation_terminal(runtime, frontend_id)?;
+        if acceptance == FrontendWorkerTerminalEventAcceptance::Accepted {
+            Self::release_fixed_power_if_operation_terminal(runtime, frontend_id)?;
+        }
         Ok(acceptance)
     }
 
@@ -535,7 +551,7 @@ impl FrontendTuneScanTxn {
         })
     }
 
-    fn release_frontend_fixed_power_after_operation(
+    pub(crate) fn release_frontend_fixed_power_after_operation(
         runtime: &SharedFrontendRuntime,
         frontend_id: FrontendRuntimeId,
     ) -> Result<(), HalError> {
