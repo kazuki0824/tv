@@ -2,6 +2,7 @@ package com.maleicacid.tvinput.tis
 
 import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.StreamSelectorType
+import com.maleicacid.tvinput.common.TransportStreamId16
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -27,16 +28,41 @@ class ScanPlanPolicyTest {
     }
 
     @Test
-    fun defaultScanIncludesCatvAndUsesOnlyTsidCandidatesForBs() {
+    fun defaultScanIncludesCatvAndUsesRfDiscoverySeedsForBs() {
         val scan = JapanIsdbScanPlan.defaultInitialScan()
         assertTrue(scan.any { it.kind == ScanCandidateKind.ISDB_T_CATV && it.displayChannel == "C13" })
-        assertTrue(scan.filter { it.kind == ScanCandidateKind.ISDB_S_BS }.all { it.streamSelector.type == StreamSelectorType.TSID })
-    }
-    @Test
-    fun defaultScanKeepsBsTsidAsFirstClassSelector() {
-        val bs = JapanIsdbScanPlan.isdbsBsTsidStreams()
+        val bs = scan.filter { it.kind == ScanCandidateKind.ISDB_S_BS }
         assertTrue(bs.isNotEmpty())
-        assertTrue(bs.all { it.streamSelector.type == StreamSelectorType.TSID })
+        assertTrue(bs.all { it.streamSelector.type == StreamSelectorType.NONE })
+        assertTrue(bs.all { it.backendHint == JapanIsdbScanPlan.BS_DISCOVERY_BACKEND_HINT })
+    }
+
+    @Test
+    fun versionedBsCandidatesAreExplicitTsidsForOneUnsupportedRfSeed() {
+        val seed = JapanIsdbScanPlan.isdbsBsBands().first()
+        val candidates = JapanIsdbScanPlan.versionedBsCandidatesForUnsupportedDynamicDiscovery(seed)
+        assertTrue(candidates.isNotEmpty())
+        assertTrue(candidates.all { it.frequencyHz == seed.frequencyHz })
+        assertTrue(candidates.all { it.physicalChannel == seed.physicalChannel })
+        assertTrue(candidates.all { it.streamSelector.type == StreamSelectorType.TSID })
+        assertEquals(setOf(16400, 16401, 16402), candidates.mapNotNull { it.streamSelector.value }.toSet())
+    }
+
+    @Test
+    fun bsDynamicDiscoveryUsesOnlyReportedStreamIds() {
+        val seed = JapanIsdbScanPlan.isdbsBsBands().first()
+        val discovered = JapanIsdbScanPlan.explicitBsCandidatesFromScan(
+            seed,
+            listOf(18288, 18801, 18803, 18803, -1, 0xffff),
+        )
+        assertEquals(setOf(18288, 18801, 18803), discovered.mapNotNull { it.streamSelector.value }.toSet())
+        assertTrue(discovered.all { it.streamSelector.type == StreamSelectorType.TSID })
+    }
+
+    @Test
+    fun bsDynamicDiscoveryWithNoReportedStreamIdsIsEmpty() {
+        val seed = JapanIsdbScanPlan.isdbsBsBands().first()
+        assertTrue(JapanIsdbScanPlan.explicitBsCandidatesFromScan(seed, emptyList()).isEmpty())
     }
 
     @Test
@@ -51,7 +77,7 @@ class ScanPlanPolicyTest {
     fun cs110ServiceIdentityCandidateStillDoesNotCarryFrontendSelector() {
         val candidate = JapanIsdbScanPlan.isdbs110CsServiceIdentityCandidate(
             frequencyHz = FrequencyHz(1_613_000_000L),
-            tsid = 0x6020,
+            tsid = TransportStreamId16(0x6020),
             label = "CS-test",
             physical = 13,
         )

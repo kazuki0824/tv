@@ -581,7 +581,7 @@ pub(crate) struct ObjectMethodDispatchProof {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+#[must_use = "この準備済み一回限り権限は型付き完了入口で消費する必要があります"]
 pub struct ObjectMethodExecutionToken {
     target: ObjectMethodUseCaseTarget,
 }
@@ -689,6 +689,9 @@ where
     Ok((plan, request))
 }
 
+/// object methodのvalidation、planning、dispatch、一回限り実行権限発行を所有する正規call-local owner。
+///
+/// この型は意図的にstatelessとし、永続stateはobject tableと対応domain ownerだけが保持する。
 pub struct ObjectMethodUseCase;
 
 impl ObjectMethodUseCase {

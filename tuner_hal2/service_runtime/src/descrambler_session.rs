@@ -421,7 +421,7 @@ impl DescramblerClearKeyPlan {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-#[must_use = "prepared descrambler clear-key authority must be consumed by commit"]
+#[must_use = "準備済みdescrambler clear-key権限はcommitで消費する必要があります"]
 struct PreparedDescramblerClearKey {
     plan: DescramblerClearKeyPlan,
 }
@@ -665,8 +665,7 @@ impl DescramblerTxnJournal {
     }
 }
 
-/// Owns only the demux-binding mutation. Key, PID and cleanup mutations have
-/// separate transaction owners below.
+/// demux-binding mutationだけを所有する。Key、PID、cleanup mutationは以下の別transaction ownerが所有する。
 struct DescramblerBindingTxn<'a> {
     session: &'a mut DescramblerSession,
 }
@@ -689,7 +688,7 @@ impl<'a> DescramblerBindingTxn<'a> {
     }
 }
 
-/// Canonical owner for normal descrambler PID relation mutations.
+/// 通常descrambler PID relation mutationの正規owner。
 pub(crate) struct DescramblerPidTxn<'a> {
     session: &'a mut DescramblerSession,
 }
@@ -812,7 +811,7 @@ pub(crate) enum DescramblerReplaceKeyOutcome<ReleaseError> {
     ReplacedWithOldKeyReleaseFailure { release_old: ReleaseError },
 }
 
-/// Canonical owner for key acquire/apply/session commit/old-reference release.
+/// key acquire/apply、session commit、旧reference releaseの正規owner。
 pub(crate) struct DescramblerKeyTxn<'a, KeyTable> {
     session: &'a mut DescramblerSession,
     key_table: &'a mut KeyTable,
@@ -892,8 +891,8 @@ where
     }
 }
 
-/// Canonical owner for terminal session cleanup. Normal PID and key mutation
-/// entry points never construct this owner.
+/// terminal session cleanupの正規owner。
+/// 通常PID/key mutation入口ではこのownerを生成しない。
 pub(crate) struct DescramblerSessionCleanupTxn<'a, KeyTable> {
     session: &'a mut DescramblerSession,
     key_table: &'a mut KeyTable,

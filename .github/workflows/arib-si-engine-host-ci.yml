@@ -1,0 +1,149 @@
+name: ARIB SIエンジン ホストCI
+
+on:
+  pull_request:
+    paths:
+      - "arib_si_engine_rs/**"
+      - "tis/tests/assets/descriptor_diagnostic_v1/**"
+      - "tis/tests/assets/program_provider_data_v1/**"
+      - ".github/workflows/arib-si-engine-host-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "arib_si_engine_rs/**"
+      - "tis/tests/assets/descriptor_diagnostic_v1/**"
+      - "tis/tests/assets/program_provider_data_v1/**"
+      - ".github/workflows/arib-si-engine-host-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arib-si-engine-host-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.81.0
+
+jobs:
+  rustfmt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: arib_si_engine_rs/host_ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: LineageOS 22.1のRust toolchainを導入
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
+
+      - name: Rust整形を確認
+        run: cargo +"$RUST_TOOLCHAIN" fmt --all -- --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: arib_si_engine_rs/host_ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: LineageOS 22.1のRust toolchainを導入
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy
+
+      - name: Clippyを実行
+        run: cargo +"$RUST_TOOLCHAIN" clippy --all-targets --locked -- -D warnings
+
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: arib_si_engine_rs/host_ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: LineageOS 22.1のRust toolchainを導入
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+
+      - name: ホストcrateを型検査
+        run: cargo +"$RUST_TOOLCHAIN" check --all-targets --locked
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: arib_si_engine_rs/host_ci
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: LineageOS 22.1のRust toolchainを導入
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+
+      - name: ホスト互換単体テストを実行
+        run: |
+          cargo +"$RUST_TOOLCHAIN" test --locked
+          cargo +"$RUST_TOOLCHAIN" test --manifest-path core/Cargo.toml
+
+  provider-data-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: schemaとfixtureをJSONとして解析
+        run: |
+          while IFS= read -r path; do
+            jq empty "$path"
+          done < <(find arib_si_engine_rs/schema arib_si_engine_rs/testdata tis/tests/assets \
+            -type f -name '*.json' -print | sort)
+
+      - name: Program provider-data fixtureを正規schemaで検証
+        run: |
+          python3 -m pip install --disable-pip-version-check 'jsonschema==4.23.0'
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          from jsonschema import Draft202012Validator, RefResolver
+
+          schema_dir = Path("arib_si_engine_rs/schema")
+          schema = json.loads((schema_dir / "program_provider_data_v1.schema.json").read_text())
+          diagnostic_schema = json.loads((schema_dir / "descriptor_diagnostic_v1.schema.json").read_text())
+          resolver = RefResolver.from_schema(
+              schema,
+              store={diagnostic_schema["$id"]: diagnostic_schema},
+          )
+          Draft202012Validator.check_schema(schema)
+          validator = Draft202012Validator(schema, resolver=resolver)
+          fixture_dir = Path("arib_si_engine_rs/testdata/program_provider_data_v1")
+          for path in sorted(fixture_dir.glob("*.json")):
+              validator.validate(json.loads(path.read_text()))
+              print(path)
+          PY
+
+      - name: 対応fixtureのbyte一致を確認
+        run: |
+          cmp \
+            arib_si_engine_rs/testdata/descriptor_diagnostic_v1/malformed_length.json \
+            tis/tests/assets/descriptor_diagnostic_v1/malformed_length.json
+          cmp \
+            arib_si_engine_rs/testdata/program_provider_data_v1/minimal_clear_program.json \
+            tis/tests/assets/program_provider_data_v1/minimal_clear_program.json
+          cmp \
+            arib_si_engine_rs/testdata/program_provider_data_v1/unsupported_codec_program.json \
+            tis/tests/assets/program_provider_data_v1/unsupported_codec_program.json

@@ -21,10 +21,10 @@ class ProgramPublishCoordinatorBk10CompletionTest {
     )
 
     @Test fun requiredQueryFailureDoesNotUpdateSignatureOrDeleteAndNextSuccessPublishes() {
-        val store = FakeStore(failServiceIndexOnce = true)
+        val store = FakeStore(failWindowIndexOnce = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
 
         val first = coordinator.publish(
             mode = ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
@@ -49,7 +49,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         val store = FakeStore(failInsertOnce = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
 
         val failed = coordinator.publish(ChannelScanController.PublishMode.SETUP_SCAN, listOf(program), allowedServiceKeys = null)
         check(failed.failures.any { it.operation == "program-insert" }) { failed.toString() }
@@ -59,11 +59,49 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         check(retried.inserted == 1) { "公開失敗時は同じ入力を未変更扱いしてはなりません: $retried" }
     }
 
+    @Test fun bootSyncDoesNotTreatFingerprintCacheAsCurrentTaskCommit() {
+        val store = FakeStore()
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        val coordinator = ProgramPublishCoordinator(writer)
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
+
+        val first = coordinator.publish(ChannelScanController.PublishMode.BOOT_EPG_SYNC, listOf(program), allowedServiceKeys = setOf(key))
+        val second = coordinator.publish(ChannelScanController.PublishMode.BOOT_EPG_SYNC, listOf(program), allowedServiceKeys = setOf(key))
+
+        check(first.inserted == 1 && first.hasCommittedTarget)
+        check(second.updated == 1 && second.hasCommittedTarget)
+        check(store.updatedPrograms == 1)
+    }
+
+    @Test fun nonAuthoritativeWindowWithoutProgramIsNotABootCommitTarget() {
+        val store = FakeStore()
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        val coordinator = ProgramPublishCoordinator(writer)
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
+        val window = ProgramPublishCoordinator.EpgUpdateWindow(
+            serviceKey = key,
+            windowStartMs = program.startTimeMillis,
+            windowEndMs = program.startTimeMillis + program.durationMillis,
+            validProgramKeys = setOf(TvProviderWriter.programKeyForTest(program)),
+            deletionAuthoritative = false,
+        )
+
+        val result = coordinator.publishWithUpdates(
+            mode = ChannelScanController.PublishMode.BOOT_EPG_SYNC,
+            allPrograms = emptyList(),
+            updateWindows = listOf(window),
+            allowedServiceKeys = setOf(key),
+        )
+
+        check(!result.hasCommittedTarget)
+        check(result.eligibleTargetCount == 0)
+    }
+
     @Test fun authoritativeDeleteFailureIsRetriedWithObsoleteDeleteClass() {
         val store = FakeStore(failDelete = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
         writer.upsertPrograms(listOf(program))
 
         val window = ProgramPublishCoordinator.EpgUpdateWindow(
@@ -83,28 +121,40 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         check(coordinator.retryFailureClassesForTest().contains(ProgramPublishCoordinator.FailureClass.OBSOLETE_DELETE_FAILED))
     }
 
-    @Test fun retryBackoffUsesFixedScheduleJitterAttemptsAndRetention() {
-        val one = ProgramPublishCoordinator.retryBackoffMsForTest(1, key, 1_700_000_000_000L, ProgramPublishCoordinator.FailureClass.PROGRAM_INSERT_FAILED)
-        val two = ProgramPublishCoordinator.retryBackoffMsForTest(2, key, 1_700_000_000_000L, ProgramPublishCoordinator.FailureClass.PROGRAM_INSERT_FAILED)
-        val three = ProgramPublishCoordinator.retryBackoffMsForTest(3, key, 1_700_000_000_000L, ProgramPublishCoordinator.FailureClass.PROGRAM_INSERT_FAILED)
-        val four = ProgramPublishCoordinator.retryBackoffMsForTest(4, key, 1_700_000_000_000L, ProgramPublishCoordinator.FailureClass.PROGRAM_INSERT_FAILED)
-        check(one in 48_000L..72_000L)
-        check(two in 240_000L..360_000L)
-        check(three in 720_000L..1_080_000L)
-        check(four in 2_880_000L..4_320_000L)
-        check(ProgramPublishCoordinator.MAX_RETRY_ATTEMPTS_FOR_TEST == 10)
-        check(ProgramPublishCoordinator.RETRY_RETENTION_MS_FOR_TEST == 24L * 60 * 60 * 1000)
-    }
-
-
-
-    @Test fun retryWindowLimitsMatchDesignAndTrimPerService() {
+    @Test fun retryUsesOneFixedCooldownAndKeepsFailureClassDiagnosticOnly() {
         val store = FakeStore(failDelete = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
+        val window = ProgramPublishCoordinator.EpgUpdateWindow(
+            serviceKey = key,
+            windowStartMs = program.startTimeMillis,
+            windowEndMs = program.startTimeMillis + program.durationMillis,
+            validProgramKeys = emptySet(),
+            deletionAuthoritative = true,
+        )
+        val before = System.currentTimeMillis()
+        coordinator.publishWithUpdates(
+            mode = ChannelScanController.PublishMode.SETUP_SCAN,
+            allPrograms = emptyList(),
+            updateWindows = listOf(window),
+            allowedServiceKeys = null,
+        )
+        val after = System.currentTimeMillis()
 
-        val windows = (0 until (ProgramPublishCoordinator.MAX_RETRY_WINDOWS_PER_SERVICE_FOR_TEST + 1)).map { i ->
+        val notBefore = coordinator.retryNotBeforeMillisForTest().single()
+        check(notBefore >= before + ProgramPublishCoordinator.RETRY_COOLDOWN_MS_FOR_TEST)
+        check(notBefore <= after + ProgramPublishCoordinator.RETRY_COOLDOWN_MS_FOR_TEST)
+        check(coordinator.retryFailureClassesForTest() == setOf(ProgramPublishCoordinator.FailureClass.OBSOLETE_DELETE_FAILED))
+    }
+
+    @Test fun dirtyWindowQueueHasOneBoundedLruLimit() {
+        val store = FakeStore(failDelete = true)
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        val coordinator = ProgramPublishCoordinator(writer)
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
+
+        val windows = (0 until (ProgramPublishCoordinator.MAX_DIRTY_WINDOWS_FOR_TEST + 1)).map { i ->
             ProgramPublishCoordinator.EpgUpdateWindow(
                 serviceKey = key,
                 windowStartMs = program.startTimeMillis + i * 60_000L,
@@ -119,43 +169,14 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             updateWindows = windows,
             allowedServiceKeys = null,
         )
-        check(coordinator.retryWindowCountForTest() == ProgramPublishCoordinator.MAX_RETRY_WINDOWS_PER_SERVICE_FOR_TEST) {
-            "service単位の再試行区間上限は設計値に固定する必要があります"
+        check(coordinator.retryWindowCountForTest() == ProgramPublishCoordinator.MAX_DIRTY_WINDOWS_FOR_TEST) {
+            "再試行区間は単一の有界LRUに収める必要があります"
         }
-        check(coordinator.droppedRetryWindowCountForTest(key) == 1)
-        check(ProgramPublishCoordinator.MAX_RETRY_WINDOWS_PER_SERVICE_FOR_TEST == 32)
-        check(ProgramPublishCoordinator.MAX_RETRY_WINDOWS_TOTAL_FOR_TEST == 512)
-    }
-
-    @Test fun expiredRetryWindowIsDroppedInsteadOfKept() {
-        val store = FakeStore(failDelete = true)
-        val writer = TvProviderWriter("input.test", store, testOnly = true)
-        val coordinator = ProgramPublishCoordinator(writer)
-        writer.upsertChannels(listOf(ChannelRecord(key, "101", "NHK", FrequencyHz(473_142_857L))))
-
-        val expiredFirstFailure = System.currentTimeMillis() - ProgramPublishCoordinator.RETRY_RETENTION_MS_FOR_TEST - 60_000L
-        val window = ProgramPublishCoordinator.EpgUpdateWindow(
-            serviceKey = key,
-            windowStartMs = program.startTimeMillis,
-            windowEndMs = program.startTimeMillis + program.durationMillis,
-            validProgramKeys = emptySet(),
-            deletionAuthoritative = true,
-            attempt = 1,
-            firstFailureAtMillis = expiredFirstFailure,
-            lastFailureAtMillis = expiredFirstFailure,
-        )
-        coordinator.publishWithUpdates(
-            mode = ChannelScanController.PublishMode.SETUP_SCAN,
-            allPrograms = emptyList(),
-            updateWindows = listOf(window),
-            allowedServiceKeys = null,
-        )
-        check(coordinator.retryWindowCountForTest() == 0) { "期限切れの再試行区間を保持してはなりません" }
         check(coordinator.droppedRetryWindowCountForTest(key) == 1)
     }
 
     private class FakeStore(
-        private var failServiceIndexOnce: Boolean = false,
+        private var failWindowIndexOnce: Boolean = false,
         private var failInsertOnce: Boolean = false,
         private val failDelete: Boolean = false,
     ) : TvProviderWriter.ChannelStore {
@@ -164,6 +185,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         private val channels = linkedMapOf<Long, ContentValues>()
         private val programs = linkedMapOf<Long, ContentValues>()
         var insertedPrograms = 0
+        var updatedPrograms = 0
         var deleteCalls = 0
 
         override fun findExistingChannelId(key: ServiceKey): Result<Long?> = Result.success(channels.keys.firstOrNull())
@@ -179,16 +201,16 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             return Result.success(if (channels.containsKey(channelId)) 1 else 0)
         }
 
-        override fun indexExistingProgramsForService(channelId: Long): Result<Map<String, Long>> {
-            if (failServiceIndexOnce) {
-                failServiceIndexOnce = false
+        override fun indexExistingProgramsForService(channelId: Long): Result<Map<String, Long>> =
+            Result.success(programIndex())
+
+        override fun indexExistingProgramsForWindow(channelId: Long, windowStartMs: Long, windowEndMs: Long): Result<Map<String, Long>> {
+            if (failWindowIndexOnce) {
+                failWindowIndexOnce = false
                 return Result.failure(IllegalStateException("null cursor"))
             }
             return Result.success(programIndex())
         }
-
-        override fun indexExistingProgramsForWindow(channelId: Long, windowStartMs: Long, windowEndMs: Long): Result<Map<String, Long>> =
-            Result.success(programIndex())
 
         override fun insertProgram(values: ContentValues): Result<Long?> {
             if (failInsertOnce) {
@@ -203,7 +225,9 @@ class ProgramPublishCoordinatorBk10CompletionTest {
 
         override fun updateProgram(programId: Long, values: ContentValues): Result<Int> {
             programs[programId]?.putAll(values)
-            return Result.success(if (programs.containsKey(programId)) 1 else 0)
+            val updated = if (programs.containsKey(programId)) 1 else 0
+            updatedPrograms += updated
+            return Result.success(updated)
         }
 
         override fun deleteObsoletePrograms(channelId: Long, validProgramKeys: Set<String>, windowStartMs: Long, windowEndMs: Long): Result<Int> {

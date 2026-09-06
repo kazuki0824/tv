@@ -62,6 +62,7 @@ value class TsPid(val value: Int) : Comparable<TsPid> {
         val NIT = TsPid(0x0010)
         val SDT_BAT = TsPid(0x0011)
         val EIT = TsPid(0x0012)
+        val TDT = TsPid(0x0014)
         fun fromOrNull(value: Int?): TsPid? = value?.takeIf { it in TS_PID_RANGE }?.let(::TsPid)
     }
 }

@@ -11,8 +11,14 @@ import org.junit.Test
 class ChannelNumberingPolicyTest {
     @Test fun terrestrialUsesRemoteKeyAndStableBranch() {
         val candidate = ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_T, FrequencyHz(473_142_857L), displayChannel = "13", physicalChannel = 13)
+        val service = AribService(ServiceKey(1, 2, 0x0400), "svc")
+        check(ChannelNumberingPolicy.displayNumber(service, 1, candidate) == "011")
+    }
+
+    @Test fun terrestrialWithoutRemoteKeyFallsBackToServiceId() {
+        val candidate = ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_T, FrequencyHz(473_142_857L), displayChannel = "13", physicalChannel = 13)
         val service = AribService(ServiceKey(1, 2, 101), "svc")
-        check(ChannelNumberingPolicy.displayNumber(service, 1, candidate) == "1.1")
+        check(ChannelNumberingPolicy.displayNumber(service, null, candidate) == "101")
     }
 
     @Test fun satelliteUsesBandAndServiceIdWithoutCsStreamSelector() {
@@ -36,8 +42,10 @@ class ChannelNumberingPolicyTest {
         check(failed)
     }
 
-    @Test fun px4BsAllowsRelativeSelector() {
-        val candidate = ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_S, FrequencyHz(1_318_000_000L), streamSelector = StreamSelector.relative(1), displayChannel = "BS15/1", satelliteBand = "BS", backendHint = "px4")
-        check(candidate.streamSelector.type == StreamSelectorType.RELATIVE)
+    @Test fun px4BsAlsoRejectsRelativeSelector() {
+        val failed = runCatching {
+            ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_S, FrequencyHz(1_318_000_000L), streamSelector = StreamSelector.relative(1), displayChannel = "BS15/1", satelliteBand = "BS", backendHint = "px4")
+        }.isFailure
+        check(failed)
     }
 }

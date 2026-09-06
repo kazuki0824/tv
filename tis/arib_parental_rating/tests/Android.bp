@@ -1,0 +1,18 @@
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+android_test {
+    name: "AribContentRatingsTvAppIntegrationTests",
+    product_specific: true,
+    srcs: ["src/**/*.kt"],
+    manifest: "AndroidManifest.xml",
+    platform_apis: true,
+    certificate: "platform",
+    instrumentation_for: "LiveTv",
+    static_libs: [
+        "androidx.test.ext.junit",
+        "androidx.test.runner",
+    ],
+    test_suites: ["device-tests"],
+}

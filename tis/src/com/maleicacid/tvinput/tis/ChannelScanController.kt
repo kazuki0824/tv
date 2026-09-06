@@ -2,16 +2,22 @@ package com.maleicacid.tvinput.tis
 
 import android.content.Context
 import android.media.tv.TvInputService
+import android.media.tv.tuner.Tuner
 import android.util.Log
 import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.AribSiEngine
+import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.EventModelMapper
 import com.maleicacid.tvinput.aribsi.PmtCatCaMetadataMapper
-import com.maleicacid.tvinput.aribsi.ProviderDataBridge
+import com.maleicacid.tvinput.aribsi.ServiceListBuilder
+import com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
 import com.maleicacid.tvinput.aribsi.TransportKey
 import com.maleicacid.tvinput.aribsi.SectionIngestController
+import com.maleicacid.tvinput.aribsi.SiDiscoveryStage
+import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
 import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.ServiceKey
+import com.maleicacid.tvinput.common.TsPid
 import com.maleicacid.tvinput.db.ChannelRecord
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -19,23 +25,29 @@ class ChannelScanController(
     private val context: Context,
     private val inputId: String,
     private val engine: AribSiEngine,
+    scanPurpose: ScanPurpose,
     private val cancelRequested: AtomicBoolean = AtomicBoolean(false),
 ) : AutoCloseable {
     data class ScanDiagnostic(val candidate: ScanCandidate, val message: String)
-    data class ScanResult(val scanned: Int, val published: Int, val diagnostics: List<ScanDiagnostic>, val successfulCandidates: Int = 0, val terminalCancelObserved: Boolean = false)
+    data class ScanResult(
+        val scanned: Int,
+        val published: Int,
+        val diagnostics: List<ScanDiagnostic>,
+        val successfulCandidates: Int = 0,
+        val terminalCancelObserved: Boolean = false,
+        val committedServiceKeys: Set<ServiceKey> = emptySet(),
+    )
     enum class SiCollectionOutcome { COMPLETE, STABLE_PARTIAL, TIMEOUT_PARTIAL, INCOMPLETE_NO_REGISTRATION_READY_SERVICE, CANCELLED }
     data class SiCollectionResult(
         val outcome: SiCollectionOutcome,
         val diagnostic: ScanDiagnostic?,
-        val countsSignature: String,
-        val clearLivePlaybackSupportedServices: Int,
-        val registrationReadyServices: Int = clearLivePlaybackSupportedServices,
-        val registrationReadySnapshotAvailable: Boolean = false,
+        val clearLivePlaybackStaticallyEligibleServices: Int,
+        val registrationReadyServices: Int = clearLivePlaybackStaticallyEligibleServices,
     ) {
         val mayPublishChannels: Boolean
             get() = outcome != SiCollectionOutcome.CANCELLED &&
                 outcome != SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE &&
-                registrationReadySnapshotAvailable
+                registrationReadyServices > 0
     }
     data class SiCollectionPolicy(
         val minWaitMs: Long = 2_000L,
@@ -52,9 +64,9 @@ class ChannelScanController(
         DIAGNOSTIC_ONLY,
     }
     private data class ServiceCounts(
+        val discoveryStage: Int,
         val total: Int,
-        val complete: Int,
-        val clearLivePlaybackSupported: Int,
+        val clearLivePlaybackStaticallyEligible: Int,
         val registrationReady: Int,
         val signature: String,
         val incompleteReasons: Map<ServiceKey, List<String>>,
@@ -63,19 +75,22 @@ class ChannelScanController(
     private data class PublishSnapshotResult(
         val changed: Int,
         val failures: List<TvProviderWriter.Diagnostic> = emptyList(),
+        val hasCommittedProgramTarget: Boolean = false,
+        val committedServiceKeys: Set<ServiceKey> = emptySet(),
     ) {
         val success: Boolean get() = failures.isEmpty()
     }
 
-    private val tunerController = TunerController(context, inputId, TvInputService.PRIORITY_HINT_USE_CASE_TYPE_SCAN)
+    private val tunerController = TunerController(
+        context,
+        inputId,
+        tunerPriorityHintUseCase(scanPurpose),
+    )
     private val ingestController = SectionIngestController(engine)
     private val tvProviderWriter = TvProviderWriter(context, inputId)
     private val programPublishCoordinator = ProgramPublishCoordinator(tvProviderWriter)
     private val caMapper = PmtCatCaMetadataMapper()
     private val casController = CasController()
-    // ChannelScanManager と共有する取消トークン。
-    // controller / engine close は manager executor 上に閉じる一方、scan実行中の
-    // collectSiForCandidate() には executor queue を待たず即時に取消を観測させる。
     private val cancelled = cancelRequested
     private var terminalCancelObserved: Boolean = false
     private var skippedUnresolvedTransportCount: Int = 0
@@ -94,9 +109,33 @@ class ChannelScanController(
         val diagnostics = mutableListOf<ScanDiagnostic>()
         var published = 0
         var successfulCandidates = 0
-        candidates.forEach { candidate ->
+        val executionCandidates = candidates.flatMap { candidate ->
+            if (candidate.kind == ScanCandidateKind.ISDB_S_BS && candidate.streamSelector == com.maleicacid.tvinput.common.StreamSelector.NONE) {
+                val discovery = tunerController.discoverIsdbsStreamIds(candidate)
+                val discovered = JapanIsdbScanPlan.explicitBsCandidatesFromScan(candidate, discovery.streamIds)
+                if (discovered.isNotEmpty()) {
+                    discovered
+                } else if (discovery.resultCode == Tuner.RESULT_UNAVAILABLE) {
+                    val versioned = JapanIsdbScanPlan.versionedBsCandidatesForUnsupportedDynamicDiscovery(candidate)
+                    diagnostics += ScanDiagnostic(
+                        candidate,
+                        "このfrontendはBS dynamic stream-ID discovery非対応のためversioned TSID tune候補を使用します candidates=${versioned.size}",
+                    )
+                    versioned
+                } else {
+                    diagnostics += ScanDiagnostic(
+                        candidate,
+                        "BS dynamic stream-ID discovery失敗をfail-closedにします result=${discovery.resultCode} message=${discovery.message}",
+                    )
+                    emptyList()
+                }
+            } else {
+                listOf(candidate)
+            }
+        }
+        executionCandidates.forEach { candidate ->
             if (cancelled.get()) return@forEach
-            engine.reset()
+            engine.reset(discoveryProfile(candidate.kind))
             currentCandidate = candidate
             val tune = tunerController.tuneForScan(candidate)
             if (!tune.success) {
@@ -106,7 +145,7 @@ class ChannelScanController(
             val collection = collectSiForCandidate(candidate)
             collection.diagnostic?.let { diagnostics += it }
             if (!collection.mayPublishChannels) {
-                Log.w(LogTags.TIS, "SI discovery 未完了のため TvProvider channel 登録を省略します candidate=$candidate outcome=${collection.outcome} registrationReady=${collection.registrationReadyServices} clearLivePlaybackSupported=${collection.clearLivePlaybackSupportedServices} diagnostic=${collection.diagnostic?.message}")
+                Log.w(LogTags.TIS, "SI discovery 未完了のため TvProvider channel 登録を省略します candidate=$candidate outcome=${collection.outcome} registrationReady=${collection.registrationReadyServices} clearLivePlaybackStaticallyEligible=${collection.clearLivePlaybackStaticallyEligibleServices} diagnostic=${collection.diagnostic?.message}")
                 return@forEach
             }
             val publishResult = publishCurrentServiceSnapshot(PublishMode.SETUP_SCAN)
@@ -114,31 +153,42 @@ class ChannelScanController(
             published += publishResult.changed
         }
         currentCandidate = null
-        return ScanResult(candidates.size, published, diagnostics, successfulCandidates = successfulCandidates, terminalCancelObserved = terminalCancelObserved)
+        return ScanResult(executionCandidates.size, published, diagnostics, successfulCandidates = successfulCandidates, terminalCancelObserved = terminalCancelObserved)
     }
 
-    fun startBootEpgSync(candidates: List<ScanCandidate> = bootEpgSyncCandidates()): ScanResult = runMaintenanceScan(
-        candidates = candidates,
+    fun startBootEpgSync(targetChannels: List<ChannelRecord>): ScanResult = runMaintenanceScan(
+        candidates = maintenanceCandidates(targetChannels),
         mode = PublishMode.BOOT_EPG_SYNC,
         failurePrefix = "boot後EPG同期",
+        allowedServiceKeys = targetChannels.map { it.serviceKey }.toSet(),
     )
 
-    fun startBackgroundChannelMaintenance(candidates: List<ScanCandidate> = backgroundMaintenanceCandidates()): ScanResult = runMaintenanceScan(
-        candidates = candidates,
-        mode = PublishMode.BACKGROUND_CHANNEL_MAINTENANCE,
-        failurePrefix = "background channel maintenance",
-    )
+    fun startBackgroundChannelMaintenance(): ScanResult {
+        val channels = existingMaintenanceChannels()
+        return runMaintenanceScan(
+            candidates = maintenanceCandidates(channels),
+            mode = PublishMode.BACKGROUND_CHANNEL_MAINTENANCE,
+            failurePrefix = "background channel maintenance",
+            allowedServiceKeys = channels.map { it.serviceKey }.toSet(),
+        )
+    }
 
-    private fun runMaintenanceScan(candidates: List<ScanCandidate>, mode: PublishMode, failurePrefix: String): ScanResult {
+    private fun runMaintenanceScan(
+        candidates: List<ScanCandidate>,
+        mode: PublishMode,
+        failurePrefix: String,
+        allowedServiceKeys: Set<ServiceKey>,
+    ): ScanResult {
         if (!cancelled.get()) cancelled.set(false)
         terminalCancelObserved = cancelled.get()
         skippedUnresolvedTransportCount = 0
         val diagnostics = mutableListOf<ScanDiagnostic>()
+        val committedServiceKeys = linkedSetOf<ServiceKey>()
         var updated = 0
         var successfulCandidates = 0
         candidates.forEach { candidate ->
             if (cancelled.get()) return@forEach
-            engine.reset()
+            engine.reset(discoveryProfile(candidate.kind))
             currentCandidate = candidate
             val tune = tunerController.tuneForScan(candidate)
             if (!tune.success) {
@@ -151,16 +201,20 @@ class ChannelScanController(
                 Log.w(LogTags.TIS, "${failurePrefix} SI discovery 未完了のため Programs publish/delete を省略します candidate=$candidate outcome=${collection.outcome} registrationReady=${collection.registrationReadyServices}")
                 return@forEach
             }
-            val publishResult = publishCurrentServiceSnapshot(mode)
-            // TvProvider問い合わせ失敗は公開失敗であり、チャンネル不在ではない。
-            // SI collection 自体が完了し 登録可能 サービスが存在しても、
-            // boot保留解除/成功診断に加算してはならない。
-            // Program件数は0の場合があるが、ここではprovider失敗だけが阻害要因である。
-            if (collection.outcome == SiCollectionOutcome.COMPLETE && collection.registrationReadyServices > 0 && publishResult.success) successfulCandidates++
+            val publishResult = publishCurrentServiceSnapshot(mode, allowedServiceKeys)
+            committedServiceKeys += publishResult.committedServiceKeys
+            if (collection.outcome == SiCollectionOutcome.COMPLETE && collection.registrationReadyServices > 0 && publishResult.success && publishResult.hasCommittedProgramTarget) successfulCandidates++
             updated += publishResult.changed
         }
         currentCandidate = null
-        return ScanResult(candidates.size, updated, diagnostics, successfulCandidates = successfulCandidates, terminalCancelObserved = terminalCancelObserved)
+        return ScanResult(
+            candidates.size,
+            updated,
+            diagnostics,
+            successfulCandidates = successfulCandidates,
+            terminalCancelObserved = terminalCancelObserved,
+            committedServiceKeys = committedServiceKeys,
+        )
     }
 
     fun cancelScan() {
@@ -182,7 +236,6 @@ class ChannelScanController(
         refreshDynamicSectionFilters()
         publishCurrentServiceSnapshot(PublishMode.LIVE_TUNE_REFRESH)
     }
-
     fun refreshDynamicSectionFilters() {
         val transaction = engine.casDiscoverySnapshot()
         val servicesForCas = transaction.services
@@ -204,22 +257,41 @@ class ChannelScanController(
         casController.updateFromCaMetadata(caMetadata, bridge)
     }
 
-    private fun publishCurrentServiceSnapshot(mode: PublishMode): PublishSnapshotResult {
+    private fun publishCurrentServiceSnapshot(
+        mode: PublishMode,
+        allowedServiceKeys: Set<ServiceKey>? = null,
+    ): PublishSnapshotResult {
         if (mode == PublishMode.DIAGNOSTIC_ONLY) return PublishSnapshotResult(0)
         if (mode == PublishMode.LIVE_TUNE_REFRESH || mode == PublishMode.BOOT_EPG_SYNC || mode == PublishMode.BACKGROUND_CHANNEL_MAINTENANCE) {
-            val result = publishProgramsForRegisteredServices(mode, allowedServiceKeys = null)
+            val result = publishProgramsForRegisteredServices(mode, allowedServiceKeys)
             Log.d(LogTags.TIS, "${mode} では新規 channel row を追加しません changed=${result.changed} skippedNoChannel=${result.skippedNoChannel} skippedUnchanged=${result.skippedUnchanged}")
-            return PublishSnapshotResult(result.changed, result.failures)
+            return PublishSnapshotResult(
+                changed = result.changed,
+                failures = result.failures,
+                hasCommittedProgramTarget = result.hasCommittedTarget,
+                committedServiceKeys = result.committedServiceKeys,
+            )
         }
         val candidate = currentCandidate ?: return PublishSnapshotResult(0)
         val transaction = engine.serviceRegistrationSnapshot()
-        val transportRemoteKeys = emptyMap<TransportKey, Int?>()
-        val diagnostics = transaction.publishabilityByServiceKey
+        val transportRemoteKeys = transaction.actualTransportMetadata.associate { transport ->
+            TransportKey(transport.originalNetwork, transport.transportStream) to transport.remoteControlKeyId
+        }
+        val diagnostics = transaction.semanticFactsByServiceKey.mapValues { (key, facts) ->
+            ServicePolicyEvaluator.evaluate(
+                facts = facts,
+                fallbackKey = key,
+                hasPhysicalTune = candidate.frequencyHz.value > 0L,
+                hasInternalTuneKey = candidate.streamSelector.value != null || candidate.streamSelector == com.maleicacid.tvinput.common.StreamSelector.NONE,
+                expectedSmdBroadcastingIdentifier = expectedSmdBroadcastingIdentifier(candidate),
+            )
+        }
         val registrationReadyServices = transaction.services.filter { service ->
-            diagnostics[service.serviceKey]?.channelRegistrationReady == true
+            diagnostics[service.serviceKey]?.registrationReady == true
         }
         val services = filterServicesForCurrentCandidate(registrationReadyServices, transaction.actualTransports)
-        val channels = services.map { service ->
+        val channels = services.mapNotNull { service ->
+            val serviceType = service.serviceType ?: return@mapNotNull null
             val remoteKey = transportRemoteKeys[TransportKey(service.serviceKey.originalNetwork, service.serviceKey.transportStream)]
             val diagnostic = diagnostics[service.serviceKey]
             ChannelRecord(
@@ -233,17 +305,14 @@ class ChannelScanController(
                 backendHint = candidate.backendHint,
                 satelliteBand = candidate.satelliteBand,
                 remoteControlKeyId = remoteKey,
+                serviceType = serviceType,
                 requiresCas = diagnostic?.requiresCas == true,
-                unsupportedCas = diagnostic?.unsupportedCas == true,
-                clearLivePlaybackSupported = diagnostic?.clearLivePlaybackSupported == true,
-                channelRegistrationReady = diagnostic?.channelRegistrationReady == true,
-                epgPublishable = diagnostic?.epgPublishable == true,
             )
         }
         if (channels.isEmpty()) {
-            val incomplete = diagnostics.filterValues { !it.channelRegistrationReady }
-                .mapValues { (_, d) -> (d.missingComponents + d.registrationReasons + d.reasons).distinct() }
-            Log.d(LogTags.TIS, "registration-ready なサービスがないため channel snapshot 登録を省略します candidate=$candidate stage=${engine.discoveryStage()} incomplete=$incomplete")
+            val incomplete = diagnostics.filterValues { !it.registrationReady }
+                .mapValues { (_, decision) -> decision.reasons }
+            Log.d(LogTags.TIS, "registration-ready なサービスがないため channel snapshot 登録を省略します candidate=$candidate stage=${transaction.discoveryStage} incomplete=$incomplete")
             return PublishSnapshotResult(0)
         }
         val channelResult = tvProviderWriter.upsertChannels(channels)
@@ -255,14 +324,10 @@ class ChannelScanController(
         )
     }
 
-
     private fun filterServicesForCurrentCandidate(
         services: List<AribService>,
         actualTransportKeys: Set<TransportKey>,
     ): List<AribService> {
-        // 登録は同一snapshot transaction内のSDT actualで確定した
-        // 現在TSのTransportKeyに完全一致するサービスだけに限定する。
-        // PMT mapping / SDT-other / NIT-other / BAT 由来transportは、現在candidateの物理情報へ紐づけない。
         val actualTransports = actualTransportKeys
         if (actualTransports.size != 1) {
             skippedUnresolvedTransportCount += services.size
@@ -275,91 +340,79 @@ class ChannelScanController(
         return filtered
     }
 
-    private fun publishProgramsForRegisteredServices(mode: PublishMode, allowedServiceKeys: Set<com.maleicacid.tvinput.common.ServiceKey>?): ProgramPublishCoordinator.ProgramPublishResult {
-        val channelFallbackResult = tvProviderWriter.existingChannelsResult()
-        if (channelFallbackResult.isFailure) {
-            val diagnostic = TvProviderWriter.Diagnostic(null, "existing-channels-query", channelFallbackResult.exceptionOrNull()?.message.orEmpty())
-            Log.w(LogTags.TIS, "既存 channel 復元失敗のため Programs publish を中止します mode=$mode diagnostic=$diagnostic")
-            return ProgramPublishCoordinator.ProgramPublishResult(0, 0, failures = listOf(diagnostic))
-        }
+    private fun publishProgramsForRegisteredServices(mode: PublishMode, allowedServiceKeys: Set<ServiceKey>?): ProgramPublishCoordinator.ProgramPublishResult {
         val transaction = engine.takeProgramPublishSnapshot()
-        val publishabilityByServiceKey = transaction.publishabilityByServiceKey
-        val channelFallbackByServiceKey = channelFallbackResult.getOrThrow().associateBy { it.serviceKey }
         val allPrograms = EventModelMapper().toProgramRecords(
             events = transaction.events,
-            publishabilityByServiceKey = publishabilityByServiceKey,
-            channelFallbackByServiceKey = channelFallbackByServiceKey,
+            semanticFactsByServiceKey = transaction.semanticFactsByServiceKey,
             malformedCaDescriptorCountByServiceId = transaction.malformedCaDescriptorCountByServiceId,
+            ratingProfileByServiceKey = transaction.events.associate { event ->
+                event.serviceKey to AribRatingMapper.profileForDeliverySystem(currentCandidate?.deliverySystem)
+            },
         )
         val updateWindows = transaction.updateWindows.map { update ->
-            val validProgramKeys = allPrograms
-                .filter { program ->
-                    program.serviceKey == update.serviceKey &&
-                        program.startTimeMillis < update.windowEndMillis &&
-                        program.startTimeMillis + program.durationMillis > update.windowStartMillis
-                }
-                .map { ProviderDataBridge.buildProgramKey(it) }
-                .toSet()
             ProgramPublishCoordinator.EpgUpdateWindow(
                 serviceKey = update.serviceKey,
                 windowStartMs = update.windowStartMillis,
                 windowEndMs = update.windowEndMillis,
-                validProgramKeys = validProgramKeys,
+                validProgramKeys = validProgramKeysForUpdate(update),
                 deletionAuthoritative = update.deletionAuthoritative,
             )
         }
-        // parser snapshotに新規event/区間がない場合でも、ProgramPublishCoordinator が
-        // 以前のprovider失敗由来のprocess内再試行区間を持つ可能性がある。
-        // 再試行状態を排出できるよう、必ずcoordinatorへ入る。
         val result = programPublishCoordinator.publishWithUpdates(mode, allPrograms, updateWindows, allowedServiceKeys)
-        // coordinatorが問い合わせ失敗とチャンネル不在を分離した後に、追加の
-        // TvProvider問い合わせを発行しない。ログだけを目的にした2回目の問い合わせ失敗は
-        // ProgramPublishResult.failuresを迂回し、boot保留解除がcandidateを
-        // 成功扱いする原因になる。
         if (result.skippedNoChannel > 0) Log.d(LogTags.TIS, "${mode} で未登録channelのeventをskipしました skipped=${result.skippedNoChannel}")
         if (result.failures.isNotEmpty()) Log.w(LogTags.TIS, "TvProvider program 登録失敗=${result.failures}")
         return result
     }
 
-    private fun serviceCounts(): ServiceCounts {
+    private fun expectedSmdBroadcastingIdentifier(candidate: ScanCandidate): Int = when (candidate.kind) {
+        ScanCandidateKind.ISDB_T_UHF, ScanCandidateKind.ISDB_T_CATV -> 0b000011
+        ScanCandidateKind.ISDB_S_BS -> 0b000010
+        ScanCandidateKind.ISDB_S_110CS -> 0b000100
+    }
+
+    private fun discoveryProfile(kind: ScanCandidateKind): Int = when (kind) {
+        ScanCandidateKind.ISDB_T_UHF, ScanCandidateKind.ISDB_T_CATV -> SiDiscoveryProfile.ISDB_T
+        ScanCandidateKind.ISDB_S_BS -> SiDiscoveryProfile.BS
+        ScanCandidateKind.ISDB_S_110CS -> SiDiscoveryProfile.CS110
+    }
+
+    private fun serviceCounts(candidate: ScanCandidate): ServiceCounts {
         val transaction = engine.serviceRegistrationSnapshot()
-        val publishability = transaction.publishabilityByServiceKey
+        val expectedSmdIdentifier = expectedSmdBroadcastingIdentifier(candidate)
         val completeness = transaction.services.map { service ->
-            ServiceListBuilder.completenessForModel(service, publishability[service.serviceKey])
+            ServiceListBuilder.completenessForModel(
+                service = service,
+                facts = transaction.semanticFactsByServiceKey[service.serviceKey],
+                expectedSmdBroadcastingIdentifier = expectedSmdIdentifier,
+            )
         }
-        val summary = ServiceListBuilder.ServiceSnapshotSummary(
-            totalKeys = completeness.map { it.serviceKey }.toSet(),
-            completeKeys = completeness.filter { it.isComplete }.map { it.serviceKey }.toSet(),
-            clearLivePlaybackSupportedKeys = completeness.filter { it.isClearLivePlaybackSupported }.map { it.serviceKey }.toSet(),
-            registrationReadyKeys = completeness.filter { it.isRegistrationReady }.map { it.serviceKey }.toSet(),
-            epgPublishableKeys = completeness.filter { it.isEpgPublishable }.map { it.serviceKey }.toSet(),
-            completeness = completeness,
-        )
+        val summary = ServiceListBuilder.ServiceSnapshotSummary(completeness)
         return ServiceCounts(
+            discoveryStage = transaction.discoveryStage,
             total = summary.total,
-            complete = summary.complete,
-            clearLivePlaybackSupported = summary.clearLivePlaybackSupported,
+            clearLivePlaybackStaticallyEligible = summary.clearLivePlaybackStaticallyEligible,
             registrationReady = summary.registrationReady,
             signature = summary.stableSignature(),
             incompleteReasons = completeness
-                .filter { !it.isRegistrationReady }
-                .associate { it.serviceKey to (it.missingComponents + it.registrationReasons + it.reasons).distinct() },
+                .filter { !it.registrationReady }
+                .associate { it.serviceKey to it.reasons },
         )
     }
 
     private fun collectSiForCandidate(candidate: ScanCandidate): SiCollectionResult {
         val policy = DEFAULT_SI_POLICY
         val startedAt = System.currentTimeMillis()
-        var lastStage = engine.discoveryStage()
-        var lastCounts = serviceCounts()
+        var lastCounts = serviceCounts(candidate)
+        var lastStage = lastCounts.discoveryStage
         var stableSince = startedAt
         var outcome = SiCollectionOutcome.TIMEOUT_PARTIAL
 
         while (!cancelled.get()) {
             refreshDynamicSectionFilters()
             val now = System.currentTimeMillis()
-            val stage = engine.discoveryStage()
-            val counts = serviceCounts()
+            val counts = serviceCounts(candidate)
+            val stage = counts.discoveryStage
             if (stage != lastStage || counts.signature != lastCounts.signature) {
                 lastStage = stage
                 lastCounts = counts
@@ -367,7 +420,7 @@ class ChannelScanController(
             }
             val elapsed = now - startedAt
             val stableFor = now - stableSince
-            if (engine.isDiscoveryComplete() && elapsed >= policy.minWaitMs) {
+            if (stage == SiDiscoveryStage.COMPLETE && elapsed >= policy.minWaitMs) {
                 outcome = SiCollectionOutcome.COMPLETE
                 break
             }
@@ -386,38 +439,43 @@ class ChannelScanController(
             terminalCancelObserved = true
             outcome = SiCollectionOutcome.CANCELLED
         }
-        val complete = engine.isDiscoveryComplete()
+        val finalCounts = serviceCounts(candidate)
+        val complete = finalCounts.discoveryStage == SiDiscoveryStage.COMPLETE
         if (!cancelled.get() && complete) outcome = SiCollectionOutcome.COMPLETE
-        val finalCounts = serviceCounts()
         val finalRegistrationReadySnapshotAvailable = finalCounts.registrationReady > 0
         if (outcome == SiCollectionOutcome.TIMEOUT_PARTIAL && !finalRegistrationReadySnapshotAvailable) outcome = SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE
         val elapsed = System.currentTimeMillis() - startedAt
         val message = if (outcome == SiCollectionOutcome.COMPLETE) {
             null
         } else {
-            "SI 収集が完全完了していません outcome=$outcome stage=${engine.discoveryStage()} services=${finalCounts.total} completeServices=${finalCounts.complete} clearLivePlaybackSupportedServices=${finalCounts.clearLivePlaybackSupported} registrationReadyServices=${finalCounts.registrationReady} incomplete=${finalCounts.incompleteReasons} sections=${ingestController.diagnosticSummary()} elapsedMs=$elapsed"
+            "SI 収集が完全完了していません outcome=$outcome stage=${finalCounts.discoveryStage} services=${finalCounts.total} clearLivePlaybackStaticallyEligibleServices=${finalCounts.clearLivePlaybackStaticallyEligible} registrationReadyServices=${finalCounts.registrationReady} incomplete=${finalCounts.incompleteReasons} sections=${ingestController.diagnosticSummary()} elapsedMs=$elapsed"
         }
         Log.i(LogTags.TIS, "scan 候補の SI 収集結果 candidate=$candidate outcome=$outcome complete=$complete counts=$finalCounts message=$message")
         return SiCollectionResult(
             outcome = outcome,
             diagnostic = message?.let { ScanDiagnostic(candidate, it) },
-            countsSignature = finalCounts.signature,
-            clearLivePlaybackSupportedServices = finalCounts.clearLivePlaybackSupported,
+            clearLivePlaybackStaticallyEligibleServices = finalCounts.clearLivePlaybackStaticallyEligible,
             registrationReadyServices = finalCounts.registrationReady,
-            registrationReadySnapshotAvailable = finalRegistrationReadySnapshotAvailable,
         )
     }
 
-
-    private fun bootEpgSyncCandidates(): List<ScanCandidate> {
-        val channels = tvProviderWriter.existingChannelsResult().getOrElse { error ->
+    private fun existingMaintenanceChannels(): List<ChannelRecord> =
+        tvProviderWriter.existingChannelsResult().getOrElse { error ->
             Log.w(LogTags.TIS, "既存 channel 復元失敗のため boot/background scan candidate を作成できません", error)
-            return emptyList()
+            emptyList()
         }
-        return channels.mapNotNull { channel -> scanCandidateFromChannel(channel) }
-    }
 
-    private fun backgroundMaintenanceCandidates(): List<ScanCandidate> = bootEpgSyncCandidates()
+    private fun maintenanceCandidates(channels: List<ChannelRecord>): List<ScanCandidate> = channels
+        .mapNotNull(::scanCandidateFromChannel)
+        .distinctBy { candidate ->
+            listOf(
+                candidate.deliverySystem,
+                candidate.frequencyHz.value,
+                candidate.streamSelector.type,
+                candidate.streamSelector.value,
+                candidate.satelliteBand,
+            )
+        }
 
     private fun scanCandidateFromChannel(channel: ChannelRecord): ScanCandidate? = runCatching {
         ScanCandidate(
@@ -453,22 +511,32 @@ class ChannelScanController(
             allowedServiceKeys: Set<ServiceKey>?,
         ): Set<ServiceKey> = ProgramPublishCoordinator.filterServiceKeysForMode(mode, allServiceKeys, existingServiceKeys, allowedServiceKeys)
 
+        fun validProgramKeysForUpdateForTest(update: com.maleicacid.tvinput.aribsi.AribEpgUpdateWindow): Set<String> =
+            validProgramKeysForUpdate(update)
+
+        private fun validProgramKeysForUpdate(update: com.maleicacid.tvinput.aribsi.AribEpgUpdateWindow): Set<String> =
+            update.validProgramStableIdentities.toSet()
+
         fun siCollectionOutcomeForTest(
             discoveryComplete: Boolean,
             cancelled: Boolean,
             elapsedMs: Long,
             stableForMs: Long,
-            clearLivePlaybackSupportedServices: Int,
+            registrationReadyServices: Int,
             policy: SiCollectionPolicy,
-            registrationReadyServices: Int = clearLivePlaybackSupportedServices,
-            registrationReadySnapshotAvailable: Boolean = false,
         ): SiCollectionOutcome = when {
             cancelled -> SiCollectionOutcome.CANCELLED
             discoveryComplete && elapsedMs >= policy.minWaitMs -> SiCollectionOutcome.COMPLETE
-            elapsedMs >= policy.minWaitMs && registrationReadySnapshotAvailable && stableForMs >= policy.stableWaitMs -> SiCollectionOutcome.STABLE_PARTIAL
-            elapsedMs >= policy.maxWaitMs && registrationReadySnapshotAvailable -> SiCollectionOutcome.TIMEOUT_PARTIAL
+            elapsedMs >= policy.minWaitMs && registrationReadyServices > 0 && stableForMs >= policy.stableWaitMs -> SiCollectionOutcome.STABLE_PARTIAL
+            elapsedMs >= policy.maxWaitMs && registrationReadyServices > 0 -> SiCollectionOutcome.TIMEOUT_PARTIAL
             elapsedMs >= policy.maxWaitMs -> SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE
             else -> SiCollectionOutcome.TIMEOUT_PARTIAL
         }
     }
+}
+
+internal fun tunerPriorityHintUseCase(purpose: ScanPurpose): Int = when (purpose) {
+    ScanPurpose.SETUP_SCAN -> TvInputService.PRIORITY_HINT_USE_CASE_TYPE_SCAN
+    ScanPurpose.BOOT_EPG_SYNC,
+    ScanPurpose.BACKGROUND_MAINTENANCE -> TvInputService.PRIORITY_HINT_USE_CASE_TYPE_BACKGROUND
 }

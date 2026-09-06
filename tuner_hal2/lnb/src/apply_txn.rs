@@ -18,7 +18,7 @@ pub struct LnbApplyOutcome {
     pub result: Result<LnbElectricalState, LnbFailureRecord>,
 }
 
-#[must_use = "a prepared LNB state change must consume exactly one backend result"]
+#[must_use = "準備済みLNB状態変更はbackend結果を正確に1件消費する必要があります"]
 #[derive(Debug, Eq, PartialEq)]
 pub struct PreparedLnbStateApply {
     lnb_id: i32,

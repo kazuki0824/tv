@@ -66,9 +66,9 @@ unsafe impl Sync for NativeFmqQueue {}
 
 impl NativeFmqQueue {
     fn create(num_bytes: usize, configure_event_flag: bool) -> Option<Self> {
-        // SAFETY: arguments are values; the shim returns an opaque pointer and retains no Rust reference.
+        // 安全性: 引数は値渡しで、shimはopaque pointerを返しRust参照を保持しない。
         let queue = unsafe { native_queue_create(num_bytes, configure_event_flag) };
-        // POSTCONDITION: null is rejected; a non-null queue becomes this wrapper's sole native owner.
+        // 事後条件: nullは拒否し、非null queueはこのwrapperが唯一のnative ownerになる。
         if queue.is_null() {
             None
         } else {
@@ -77,9 +77,9 @@ impl NativeFmqQueue {
     }
 
     pub(crate) fn available_to_read(&self) -> usize {
-        // SAFETY: self.queue is a live create-derived handle for the whole shared borrow.
+        // 安全性: self.queueは共有borrow全体でliveなcreate由来handleである。
         let value = unsafe { native_queue_available_to_read(self.queue) };
-        // POSTCONDITION: only detached scalar metadata is returned; ownership is unchanged.
+        // 事後条件: 分離済みscalar metadataだけを返し、所有権は変えない。
         value
     }
 
@@ -88,9 +88,9 @@ impl NativeFmqQueue {
     }
 
     pub(crate) fn available_to_write(&self) -> usize {
-        // SAFETY: self.queue is a live create-derived handle for the whole shared borrow.
+        // 安全性: self.queueは共有borrow全体でliveなcreate由来handleである。
         let value = unsafe { native_queue_available_to_write(self.queue) };
-        // POSTCONDITION: only detached scalar metadata is returned; ownership is unchanged.
+        // 事後条件: 分離済みscalar metadataだけを返し、所有権は変えない。
         value
     }
 
@@ -101,9 +101,9 @@ impl NativeFmqQueue {
         } else {
             (data.as_ptr(), data.len())
         };
-        // SAFETY: queue is live; ptr is readable for len bytes (or null when len==0), and written is a unique writable out-parameter.
+        // 安全性: queueはliveで、ptrはlen byte読取り可能（len==0ではnull可）、writtenは一意な書込み可能out parameterである。
         let status = unsafe { native_queue_write_checked(self.queue, ptr, len, &mut written) };
-        // POSTCONDITION: the shim retains neither pointer; written is interpreted only through status.
+        // 事後条件: shimはいずれのpointerも保持せず、writtenはstatusに従ってのみ解釈する。
         if status == 0 {
             Ok(written)
         } else {
@@ -115,9 +115,9 @@ impl NativeFmqQueue {
         if data.is_empty() {
             0
         } else {
-            // SAFETY: queue is live and data provides an exclusive writable data.len()-byte region for this call.
+            // 安全性: queueはliveで、dataはこのcall専用のdata.len() byte書込み可能領域を提供する。
             let read = unsafe { native_queue_read(self.queue, data.as_mut_ptr(), data.len()) };
-            // POSTCONDITION: native retains no buffer pointer; the returned count describes this call only.
+            // 事後条件: nativeはbuffer pointerを保持せず、返すcountはこのcallだけを表す。
             read
         }
     }
@@ -126,9 +126,9 @@ impl NativeFmqQueue {
         if data.is_empty() {
             return Ok(());
         }
-        // SAFETY: queue is live and data is an exclusive writable region of exactly data.len() bytes.
+        // 安全性: queueはliveで、dataは正確にdata.len() byteの一意な書込み可能領域である。
         let status = unsafe { native_queue_read_exact(self.queue, data.as_mut_ptr(), data.len()) };
-        // POSTCONDITION: status==0 is the only state treated as a complete exact read; no pointer escapes.
+        // 事後条件: status==0だけを完全なexact readとして扱い、pointerを外へ持ち出さない。
         if status == 0 {
             Ok(())
         } else {
@@ -137,40 +137,40 @@ impl NativeFmqQueue {
     }
 
     pub(crate) fn wake(&self, bits: u32) -> i32 {
-        // SAFETY: queue is live and bits is passed by value to the queue's EventFlag operation.
+        // 安全性: queueはliveで、bitsはqueueのEventFlag操作へ値渡しする。
         let status = unsafe { native_queue_wake(self.queue, bits) };
-        // POSTCONDITION: status is returned verbatim; queue ownership/lifetime is unchanged.
+        // 事後条件: statusをそのまま返し、queueの所有権とlifetimeは変えない。
         status
     }
 
     pub(crate) fn quantum(&self) -> i32 {
-        // SAFETY: queue is live; the shim reads descriptor metadata only.
+        // 安全性: queueはliveで、shimはdescriptor metadataだけを読む。
         let value = unsafe { native_queue_quantum(self.queue) };
-        // POSTCONDITION: only scalar descriptor metadata is returned.
+        // 事後条件: scalarなdescriptor metadataだけを返す。
         value
     }
 
     pub(crate) fn flags(&self) -> i32 {
-        // SAFETY: queue is live; the shim reads descriptor metadata only.
+        // 安全性: queueはliveで、shimはdescriptor metadataだけを読む。
         let value = unsafe { native_queue_flags(self.queue) };
-        // POSTCONDITION: only scalar descriptor metadata is returned.
+        // 事後条件: scalarなdescriptor metadataだけを返す。
         value
     }
 
     pub(crate) fn grantor_count(&self) -> usize {
-        // SAFETY: queue is live; the shim reads the descriptor grantor count only.
+        // 安全性: queueはliveで、shimはdescriptor grantor countだけを読む。
         let count = unsafe { native_queue_grantor_count(self.queue) };
-        // POSTCONDITION: count is detached metadata used as the later grantor index bound.
+        // 事後条件: countは後続grantor index上限に使う分離済みmetadataである。
         count
     }
 
     pub(crate) fn grantor_at(&self, index: usize) -> Option<(i32, i32, i64)> {
         let (mut fd_index, mut offset, mut extent) = (0i32, 0i32, 0i64);
-        // SAFETY: queue is live; native validates index, and all three out-pointers are unique writable locals.
+        // 安全性: queueはliveで、nativeがindexを検証し、3個のout pointerはいずれも一意な書込み可能localである。
         let ok = unsafe {
             native_queue_grantor_at(self.queue, index, &mut fd_index, &mut offset, &mut extent)
         };
-        // POSTCONDITION: out-values are observed only when true; false maps to None.
+        // 事後条件: trueの場合だけout値を観測し、falseはNoneへ写像する。
         if ok {
             Some((fd_index, offset, extent))
         } else {
@@ -179,31 +179,31 @@ impl NativeFmqQueue {
     }
 
     pub(crate) fn fd_count(&self) -> usize {
-        // SAFETY: queue is live; the shim reads the descriptor FD count only.
+        // 安全性: queueはliveで、shimはdescriptor FD countだけを読む。
         let count = unsafe { native_queue_fd_count(self.queue) };
-        // POSTCONDITION: count is detached metadata used as the later FD index bound.
+        // 事後条件: countは後続FD index上限に使う分離済みmetadataである。
         count
     }
 
     pub(crate) fn dup_fd_at(&self, index: usize) -> i32 {
-        // SAFETY: queue is live and native validates index against its FD table.
+        // 安全性: queueはliveで、nativeがFD tableに対してindexを検証する。
         let fd = unsafe { native_queue_dup_fd_at(self.queue, index) };
-        // POSTCONDITION: non-negative means a newly duplicated caller-owned FD; negative remains failure.
+        // 事後条件: 非負値は新規duplicateされたcaller-owned FDを意味し、負値はfailureのまま扱う。
         fd
     }
 
     pub(crate) fn int_count(&self) -> usize {
-        // SAFETY: queue is live; the shim reads the descriptor integer count only.
+        // 安全性: queueはliveで、shimはdescriptor integer countだけを読む。
         let count = unsafe { native_queue_int_count(self.queue) };
-        // POSTCONDITION: count is detached metadata used as the later integer index bound.
+        // 事後条件: countは後続integer index上限に使う分離済みmetadataである。
         count
     }
 
     pub(crate) fn int_at(&self, index: usize) -> Option<i32> {
         let mut value = 0i32;
-        // SAFETY: queue is live; native validates index and value is a unique writable out-parameter.
+        // 安全性: queueはliveで、nativeがindexを検証し、valueは一意な書込み可能out parameterである。
         let ok = unsafe { native_queue_int_at(self.queue, index, &mut value) };
-        // POSTCONDITION: value is observed only when true; false maps to None.
+        // 事後条件: trueの場合だけvalueを観測し、falseはNoneへ写像する。
         if ok {
             Some(value)
         } else {
@@ -214,9 +214,9 @@ impl NativeFmqQueue {
 
 impl Drop for NativeFmqQueue {
     fn drop(&mut self) {
-        // SAFETY: this wrapper is the sole owner of the live create-derived handle and Drop executes its unique destroy.
+        // 安全性: このwrapperはliveなcreate由来handleの唯一のownerで、Dropが一度だけdestroyする。
         unsafe { native_queue_destroy(self.queue) };
-        // POSTCONDITION: the native handle is lifetime-ended and is never used again.
+        // 事後条件: native handleのlifetimeは終了し、以後使用しない。
     }
 }
 

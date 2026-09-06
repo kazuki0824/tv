@@ -356,15 +356,15 @@ impl AvSharedBacking {
             .checked_mul(self.slots.len())
             .ok_or(AvSharedBackingError::AllocationFailed)?;
         if self.file.is_none() {
-            // SAFETY: size_bytes is checked above; allocator receives no Rust pointer and returns a fresh FD or negative error.
+            // 安全性: size_bytesは上で検査済みで、allocatorへRust pointerを渡さず、新規FDまたは負のerrorだけを受け取る。
             let raw_fd = unsafe { tuner_dmabuf_heap_alloc_system(size_bytes) };
-            // POSTCONDITION: only a non-negative fresh FD proceeds to the unique File ownership transfer.
+            // 事後条件: 非負の新規FDだけを一意なFile所有権へ移管する。
             if raw_fd < 0 {
                 return Err(AvSharedBackingError::AllocationFailed);
             }
-            // SAFETY: raw_fd is non-negative, fresh, and has no Rust owner; ownership transfers exactly once here.
+            // 安全性: raw_fdは非負かつ新規でRust ownerを持たず、ここで所有権を正確に1回だけ移管する。
             self.file = Some(unsafe { File::from_raw_fd(raw_fd) });
-            // POSTCONDITION: self.file is the sole Rust owner responsible for closing that FD.
+            // 事後条件: self.fileがFDのcloseを担当する唯一のRust ownerになる。
         }
         if self.shared_handle_identity.is_none() {
             self.shared_handle_identity = Some(AvFileIdentity::from_file(
@@ -405,7 +405,7 @@ impl AvSharedBacking {
             .slot_size
             .checked_mul(self.slots.len())
             .ok_or(AvSharedBackingError::MappingFailed)?;
-        // SAFETY: file is live, map_len is the checked full backing extent, offset is zero, and no Rust reference aliases the requested mapping.
+        // 安全性: fileはliveで、map_lenは検査済みの全backing範囲、offsetは0で、要求mappingとaliasするRust参照はない。
         let mapped = unsafe {
             mmap(
                 ptr::null_mut(),
@@ -416,11 +416,11 @@ impl AvSharedBacking {
                 0,
             )
         };
-        // POSTCONDITION: MAP_FAILED is rejected; otherwise mapped denotes map_len writable bytes until munmap.
+        // 事後条件: MAP_FAILEDは拒否し、それ以外のmappedはmunmapまでmap_len byteを書込み可能な領域を表す。
         if mapped == MAP_FAILED {
             return Err(AvSharedBackingError::MappingFailed);
         }
-        // SAFETY: slot validation proves offset + payload.len() <= map_len; source is readable, destination writable, and regions do not overlap.
+        // 安全性: slot検証でoffset + payload.len() <= map_lenを保証し、sourceは読取り可能、destinationは書込み可能で領域は重ならない。
         unsafe {
             ptr::copy_nonoverlapping(
                 payload.as_ptr(),
@@ -428,12 +428,12 @@ impl AvSharedBacking {
                 payload.len(),
             );
         }
-        // POSTCONDITION: exactly payload.len() bytes are copied into the selected mapped slot.
-        // SAFETY: mapped is the same successful mmap pointer and map_len is the identical mapping length; no mapped reference escapes.
+        // 事後条件: 選択したmapped slotへpayload.len() byteを正確にcopyする。
+        // 安全性: mappedは成功した同一mmap pointerで、map_lenも同一mapping長であり、mapped参照を外へ持ち出さない。
         if unsafe { munmap(mapped, map_len) } != 0 {
             return Err(AvSharedBackingError::UnmappingFailed);
         }
-        // POSTCONDITION: after munmap the mapping is treated as invalid and is never accessed again.
+        // 事後条件: munmap後はmappingを無効として扱い、再アクセスしない。
         let Some(data_id) = self.data_id_allocator.issue() else {
             return Ok(AvPayloadDeliveryOutcome::DataIdExhausted);
         };
@@ -496,16 +496,16 @@ impl AvSharedBacking {
         else {
             return Ok(AvPayloadDeliveryOutcome::NoFreeSlot);
         };
-        // SAFETY: payload is non-empty and len is passed by value; allocator returns a fresh FD or negative error.
+        // 安全性: payloadは非emptyでlenは値渡しし、allocatorは新規FDまたは負のerrorを返す。
         let raw_fd = unsafe { tuner_dmabuf_heap_alloc_system(payload.len()) };
-        // POSTCONDITION: only a non-negative fresh FD proceeds to unique File ownership transfer.
+        // 事後条件: 非負の新規FDだけを一意なFile所有権へ移管する。
         if raw_fd < 0 {
             return Err(AvSharedBackingError::AllocationFailed);
         }
-        // SAFETY: raw_fd is fresh, non-negative, and unowned by Rust; ownership transfers exactly once into File.
+        // 安全性: raw_fdは新規かつ非負でRust ownerを持たず、Fileへ所有権を正確に1回だけ移管する。
         let file = Arc::new(unsafe { File::from_raw_fd(raw_fd) });
-        // POSTCONDITION: the Arc<File> owns close responsibility; raw_fd is never wrapped or closed separately.
-        // SAFETY: file is live, payload.len() is a non-zero mapping extent, offset is zero, and no Rust reference aliases the requested mapping.
+        // 事後条件: Arc<File>がclose責務を所有し、raw_fdを別途wrapまたはcloseしない。
+        // 安全性: fileはliveで、payload.len()は非0のmapping範囲、offsetは0で、要求mappingとaliasするRust参照はない。
         let mapped = unsafe {
             mmap(
                 ptr::null_mut(),
@@ -516,20 +516,20 @@ impl AvSharedBacking {
                 0,
             )
         };
-        // POSTCONDITION: MAP_FAILED is rejected; otherwise mapped denotes payload.len() writable bytes until munmap.
+        // 事後条件: MAP_FAILEDは拒否し、それ以外のmappedはmunmapまでpayload.len() byteを書込み可能な領域を表す。
         if mapped == MAP_FAILED {
             return Err(AvSharedBackingError::MappingFailed);
         }
-        // SAFETY: payload is readable for len bytes, mapped is writable for the same len, and independent dmabuf storage cannot overlap the slice.
+        // 安全性: payloadはlen byte読取り可能、mappedは同じlenを書込み可能で、独立dmabuf storageはsliceと重ならない。
         unsafe {
             ptr::copy_nonoverlapping(payload.as_ptr(), mapped as *mut u8, payload.len());
         }
-        // POSTCONDITION: the complete event payload occupies the mapped dmabuf region.
-        // SAFETY: mapped is the same successful mmap pointer and payload.len() is the identical mapping length; no mapped reference escapes.
+        // 事後条件: 完全なevent payloadがmapped dmabuf領域を占有する。
+        // 安全性: mappedは成功した同一mmap pointerで、payload.len()も同一mapping長であり、mapped参照を外へ持ち出さない。
         if unsafe { munmap(mapped, payload.len()) } != 0 {
             return Err(AvSharedBackingError::UnmappingFailed);
         }
-        // POSTCONDITION: after munmap the event-local mapping is invalid and is never accessed again.
+        // 事後条件: munmap後はevent-local mappingを無効として扱い、再アクセスしない。
         let file_identity = AvFileIdentity::from_file(&file)?;
         let Some(data_id) = self.data_id_allocator.issue() else {
             return Ok(AvPayloadDeliveryOutcome::DataIdExhausted);

@@ -10,6 +10,6 @@
             android:name="BROADCASTER_DEFINED"
             android:title="@string/broadcaster_defined_title"
             android:description="@string/broadcaster_defined_description"
-            android:contentAgeHint="0" />
+            android:contentAgeHint="12" />
     </rating-system-definition>
 </rating-system-definitions>

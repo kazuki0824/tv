@@ -32,7 +32,7 @@ CAS HAL 仮実装は TIS 初回ビルド確認ゲートへ含めない。
 
 ## Treble partition / platform API 統合
 
-`MaleicacidTvInput` は、`DESIGN_JA.md` の MediaSync Framework-private final-output observation を同一platform sourceから型付き利用する platform-coupled component である。そのため `/product` へ配置せず、`system_ext_specific: true` かつ `platform_apis: true` の `/system_ext` priv-app として組み込む。reflection、hidden API allowlist回避、`/product` からのprivate API依存へ置き換えない。
+`MaleicacidTvInput` は、`DESIGN_JA.md` の MediaSync Framework-private final-output observation を正規製品で利用する platform-coupled component である。そのため `/product` へ配置せず、`system_ext_specific: true` かつ `platform_apis: true` の `/system_ext` priv-app として組み込む。MediaSyncの追加private listenerだけはstock LineageOSでも同一TISをbuild/runできるようruntime reflectionで解決して呼び出し、private listener経路が呼び出し可能な場合はExact modeを使う。API不存在、reflection解決失敗、登録setter呼出し失敗などを含めprivate listener経路を呼び出せない場合は、公開`MediaCodec.OnFrameRenderedListener`を型付きで使うCompatibility modeへfallbackする。その他のplatform APIをreflectionやHAL binder直呼びへ一般化してはならない。
 
 `privapp-permissions-maleicacid-tvinput` は `MaleicacidTvInput` と同じ `/system_ext` に配置する。TIS専用の `libmaleicacid_arib_si_engine_jni` と `libmaleicacid_arib_caption_jni` も `system_ext_specific: true` とし、TISから `/product` 専用native moduleへ逆向き依存を作らない。TIS専用 `libaribcaption` variantを正式統合する場合も、TISのnative依存closureから利用可能なsystem/system_ext側variantとして閉じ、product-only private dependencyにしない。
 
@@ -104,9 +104,72 @@ libaribcaption rendererの設計正本は本節と`DESIGN_JA.md`に集約済み�
 
 ## Direct Boot の product 統合条件
 
-TIS は `directBootAware=true` を維持する。`AndroidManifest.xml` には `<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />` を宣言し、`BootReceiver` は `android:directBootAware="true"` とする。`BootReceiver` の intent filter は `ACTION_LOCKED_BOOT_COMPLETED` と `ACTION_BOOT_COMPLETED` を含める。`ACTION_USER_UNLOCKED` は manifest receiver の対象にしない。
+TIS は `directBootAware=true` を維持する。`AndroidManifest.xml` には `<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />` を宣言し、`EpgBootSyncReceiver` は `android:directBootAware="true"` とする。`EpgBootSyncReceiver` の intent filter は `ACTION_LOCKED_BOOT_COMPLETED` と `ACTION_BOOT_COMPLETED` を含める。`ACTION_USER_UNLOCKED` は manifest receiver の対象にしない。
 
-`BootEpgSyncJobService` は `AndroidManifest.xml` に service として宣言し、`android.permission.BIND_JOB_SERVICE` で保護する。`BootReceiver`、`BootEpgSyncJobService`、`DirectBootEpgPending`、`BootEpgSyncCoordinator` の実行時役割、ジョブ登録・再試行、保留解除、開始条件、ライブセッションとの優先順位は `DESIGN_JA.md` を正とし、本書では状態遷移を再定義しない。
+`BootEpgSyncJobService` は `AndroidManifest.xml` に service として宣言し、`android.permission.BIND_JOB_SERVICE` で保護する。`EpgBootSyncReceiver`、`BootEpgSyncJobService`、`DirectBootGuard`、`BootEpgSyncScheduler` の実行時役割、ジョブ登録・再試行、保留解除、開始条件、ライブセッションとの優先順位は `DESIGN_JA.md` を正とし、本書では状態遷移を再定義しない。
+
+## ARIB exceptional ratingのLive TV App標準extension統合
+
+JPN parental rating raw `0x12..0xFF` はTISで年齢値へ推測変換せず、`com.maleicacid.tv.ratings / ARIB_EXCEPTIONAL / BROADCASTER_DEFINED`へ写像する。rating定義とTV Appへの発見経路は独立`AribContentRatings` APKがTIF標準providerとして所有し、blocked-rating policyのownerはLive TV Appとする。System TV App本体へ直接patchを当てる方式は採用しない。
+
+Android 15 / LineageOS 22.1系の既存`ContentRatingLevelPolicy`は、TIF rating-provider XMLの`contentAgeHint`をpreset policyの入力として使う。`HIGH`は6以上、`MEDIUM`は12以上、`LOW`はrating system内の最大age hint以上をblocked候補へ含め、`NONE`は空集合にする。単一ratingである`BROADCASTER_DEFINED`は`contentAgeHint=12`で公開し、stock policyでは`HIGH/MEDIUM/LOW`の各presetでblocked候補になる。12はproduct preset policy分類用metadataであり、ARIB raw `0x12..0xFF`の年齢解釈ではない。`CUSTOM`ではstock TV Appの通常rating設定から同canonical ratingを追加・削除する。第二policy APK、TV App private state reader、`packages/apps/TV` source patchは追加しない。
+
+製品buildでは`AribContentRatings`とstock `LiveTv`を組み込み、rating-provider receiverとXML metadataを発見可能にする。repo内の静的確認ではprovider package、`ACTION_QUERY_CONTENT_RATING_SYSTEMS`、`META_DATA_CONTENT_RATING_SYSTEMS`、`ARIB_EXCEPTIONAL / BROADCASTER_DEFINED`、`contentAgeHint=12`を確認し、System TV App本体へのARIB専用source patchを要求しない。product tree / 実機ではrating provider discovery、parental controls無効、`NONE`、`HIGH/MEDIUM/LOW`、`CUSTOM`での標準blocked-rating編集、PIN unblock、他domain/ratingSystem非干渉を確認する。
+
+```text
+m AribContentRatings LiveTv
+```
+
+TISは引き続き`TvInputManager.isRatingBlocked()`だけをcurrent policy authorityとして扱う。既存のblocked-rating永続化、PIN認証後のsession-level `onUnblockContent()`、通常年齢rating、第三者custom ratingの扱いは変更しない。
+## MediaSync Exact-mode platform統合
+
+この節をLineageOS 22.1向けMediaSync platform patchの適用手順と確認項目の正本とし、patch配下へ別のREADMEや重複手順書を置かない。
+
+TISは追加private APIを静的参照しない。private listener経路を呼び出せるplatformではExact modeを使用し、API不存在、reflection解決失敗、登録setter呼出し失敗などにより呼び出せない場合は公開`MediaCodec.OnFrameRenderedListener`を使うCompatibility modeで動作する。正規製品で`DESIGN_JA.md`のfinal-output成功意味論を満たす場合は、次の既存2patchをLineageOS 22.1 platform treeへ適用してprivate listener経路を提供する。patch本文はTIS側runtime変更とは独立した再現可能なplatform統合差分として維持する。
+
+```text
+tis/platform_patches/lineage-22.1/frameworks_av_mediasync_first_output.patch
+tis/platform_patches/lineage-22.1/frameworks_base_mediasync_first_output.patch
+```
+
+Android build rootから、まず適用可能性を確認してから適用する。
+
+```bash
+git -C frameworks/av apply --check \
+  "$ANDROID_BUILD_TOP/vendor/maleicacid/tv/tis/platform_patches/lineage-22.1/frameworks_av_mediasync_first_output.patch"
+git -C frameworks/base apply --check \
+  "$ANDROID_BUILD_TOP/vendor/maleicacid/tv/tis/platform_patches/lineage-22.1/frameworks_base_mediasync_first_output.patch"
+
+git -C frameworks/av apply \
+  "$ANDROID_BUILD_TOP/vendor/maleicacid/tv/tis/platform_patches/lineage-22.1/frameworks_av_mediasync_first_output.patch"
+git -C frameworks/base apply \
+  "$ANDROID_BUILD_TOP/vendor/maleicacid/tv/tis/platform_patches/lineage-22.1/frameworks_base_mediasync_first_output.patch"
+```
+
+対象baselineはLineageOS 22.1の次のplatform sourceである。
+
+```text
+frameworks/av:
+  media/libstagefright/include/media/stagefright/MediaSync.h
+  media/libstagefright/MediaSync.cpp
+
+frameworks/base:
+  media/java/android/media/MediaSync.java
+  media/jni/android_media_MediaSync.h
+  media/jni/android_media_MediaSync.cpp
+```
+
+追加callbackのlate-drop、`attachBuffer()` / `queueBuffer()`、one-shot arm、`armSequence`、mutex外配送などのruntime意味論は`DESIGN_JA.md`を正とし、本書では重複定義しない。public SDK、`@SystemApi`、`@TestApi`、Tuner AIDL/VINTFをこの統合のために変更しない。
+
+patch適用後は少なくとも次をtarget buildする。対象treeのmodule分割でmodule名が異なる場合は、`frameworks/base`のmedia JNI / framework Java、`frameworks/av`のMediaSync、TISを実際に再コンパイルする同等Soong targetを使用する。
+
+```bash
+m framework-minus-apex
+m libstagefright
+m MaleicacidTvInput
+```
+
+実機ではExact modeが選択されること、late-dropではavailabilityが成立しないこと、current final outputへのqueue成功で一回だけ通知されること、re-arm後の旧sequence eventが棄却されることを確認する。TIS host CIはstock APIでの静的compileとrepository内契約を確認するものであり、このplatform patchのJava/JNI/native型接続やnative実行時意味論を代替しない。未パッチplatformのCompatibility modeだけをもって正規製品のfinal-output意味論を確認済みとは扱わない。これらは未決設計ではなく製品統合・検証gateなので`future_work/r53`へ重複配置しない。
 
 ## flash 後の確認
 
@@ -127,7 +190,7 @@ adb shell dumpsys tv_input | grep -i Maleicacid
 
 AOSP system-defined `com.android.tv / ISDB / ISDB_4..ISDB_20` に加え、`AribContentRatings` が `com.maleicacid.tv.ratings / ARIB_EXCEPTIONAL / BROADCASTER_DEFINED` をTIF標準rating-provider機構から公開していることを確認する。TISは明示的なARIB `0x12..0xFF` をこのexceptional ratingへ写像し、rating情報そのものが存在しない場合だけ `TvContentRating.UNRATED` を使用する。
 
-System TV App本体は本repoの所有物ではないため、同等実装を本repoへ複製しない。製品platform統合ではSystem TV App側に、上記product固有exceptional ratingだけを対象とするpolicy patchを含めることを必須条件とする。parental controlsが有効でglobal policyが`NONE`以外の場合はこのratingをglobal blocked-rating集合へ反映する一方、PIN認証済みの現在コンテンツに対する `onUnblockContent()` 一時解除は維持する。第三者custom rating、CTS Verifierが提供するrating、他domain/ratingSystemのblock/unblock可否へこのpolicyを波及させない。
+System TV App本体へARIB専用source patchを追加しない。`AribContentRatings`のTIF標準rating-provider metadataをstock TV Appが読み込み、`contentAgeHint=12`を既存preset policyへ適用する。`HIGH/MEDIUM/LOW`ではexceptional ratingがblocked候補に含まれ、`NONE`では含まれない。`CUSTOM`はstock TV Appの通常blocked-rating編集を使う。PIN認証済みの現在コンテンツに対する`onUnblockContent()`一時解除を維持し、第三者custom rating、CTS Verifier由来rating、他domain/ratingSystemのblock/unblock可否へこのproduct metadataを波及させない。
 
 TIS自身はraw ARIB値から独自にAV blockを強制せず、現在コンテンツの `TvContentRating` を `TvInputManager.isRatingBlocked()` に渡した結果だけをpolicy判定として使用する。`notifyContentBlocked()` / `notifyContentAllowed()` とPIN解除のruntime意味論は `DESIGN_JA.md` を正とする。
 
@@ -195,6 +258,6 @@ adb shell dumpsys tv_input | grep -i Maleicacid
 - システムTVアプリから設定画面を起動できる。
 - setup 後に少なくとも1つの非スクランブル視聴可能チャンネルが TvContract.Channels に登録される。
 - system_ext image にTIS本体・privapp allowlist・TIS専用JNIが配置され、product image にlive_tv feature XMLとAribContentRatingsが配置される。
-- System TV AppのARIB exceptional policyが有効で、PINによる現在コンテンツ一時解除と第三者rating非干渉を維持する。
+- `AribContentRatings`がstock TV Appから発見され、既存preset/custom policyを通じてARIB exceptional ratingのblock/unblockとPIN一時解除、第三者rating非干渉が成立する。
 - android:canRecord="false" が product manifest metadata に反映される。
 ```

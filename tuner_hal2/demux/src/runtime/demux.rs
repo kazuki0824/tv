@@ -249,7 +249,7 @@ impl FilterRuntimeOperationReport {
 ///
 /// producer drain と snapshot は Demux 内部に閉じたまま、service 側の
 /// QueueCleanupUseCase が各 phase の呼び出し順序と結果集約を所有する。
-#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+#[must_use = "この準備済み一回限り権限は型付き完了入口で消費する必要があります"]
 pub struct FilterQueueCleanupPlan {
     filter_id: i32,
     snapshot: FilterRuntimeSnapshot,
@@ -258,7 +258,7 @@ pub struct FilterQueueCleanupPlan {
 }
 
 /// producer drain commit 済みであることを示す one-shot token。
-#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+#[must_use = "この準備済み一回限り権限は型付き完了入口で消費する必要があります"]
 pub struct CommittedFilterQueueCleanup {
     filter_id: i32,
     source_generation: Option<(u64, u64)>,
@@ -397,7 +397,7 @@ impl DvrQueueCleanupReport {
 ///
 /// queue epoch と drain transaction は Demux 内部に閉じたまま、service 側の
 /// QueueCleanupUseCase が各 phase の呼び出し順序と結果集約を所有する。
-#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+#[must_use = "この準備済み一回限り権限は型付き完了入口で消費する必要があります"]
 pub struct DvrQueueCleanupPlan {
     dvr_id: i32,
     kind: DvrKind,
@@ -414,7 +414,7 @@ impl DvrQueueCleanupPlan {
 }
 
 /// queue epoch commit 済みであることを示す one-shot cleanup token。
-#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+#[must_use = "この準備済み一回限り権限は型付き完了入口で消費する必要があります"]
 pub struct CommittedDvrQueueCleanup {
     dvr_id: i32,
     kind: DvrKind,
@@ -848,7 +848,7 @@ pub struct DvrFilterLinkRequest {
 }
 
 #[derive(Debug)]
-#[must_use = "this prepared/one-shot authority must be consumed by its typed completion entry"]
+#[must_use = "この準備済み一回限り権限は型付き完了入口で消費する必要があります"]
 pub struct PreparedDvrFilterRelation {
     dvr_id: i32,
     filter_id: i32,

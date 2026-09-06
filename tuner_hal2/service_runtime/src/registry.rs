@@ -162,8 +162,7 @@ impl LnbPhysicalIoAuthority {
     }
 }
 
-/// Canonical owner for persistent LNB state and per-physical-LNB I/O
-/// serialization authorities.
+/// 永続LNB stateと物理LNBごとのI/O直列化権限を所有する正規owner。
 #[derive(Debug, Default)]
 pub struct LnbRegistry {
     entries: BTreeMap<LnbRuntimeId, LnbRegistryEntry>,
@@ -463,7 +462,7 @@ struct LnbAssignmentLease {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-#[must_use = "prepared LNB assignment lease must be committed or aborted by value"]
+#[must_use = "準備済みLNB割当leaseはcommitまたはabortで消費する必要があります"]
 pub(crate) struct PreparedLnbAssignmentLease {
     frontend_id: FrontendRuntimeId,
     lnb_id: LnbRuntimeId,
@@ -473,7 +472,7 @@ pub(crate) struct PreparedLnbAssignmentLease {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-#[must_use = "LNB assignment cleanup authority must be completed by value"]
+#[must_use = "LNB割当cleanup権限は値として完了する必要があります"]
 pub(crate) struct LnbAssignmentCleanupRecord {
     frontend_id: FrontendRuntimeId,
     lnb_id: LnbRuntimeId,

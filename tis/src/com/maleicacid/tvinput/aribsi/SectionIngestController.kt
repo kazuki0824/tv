@@ -8,6 +8,7 @@ object WellKnownSectionPid {
     val NIT: TsPid = TsPid.NIT
     val SDT_BAT: TsPid = TsPid.SDT_BAT
     val EIT: TsPid = TsPid.EIT
+    val TDT: TsPid = TsPid.TDT
 }
 
 data class SectionIngestCounter(
@@ -37,6 +38,7 @@ class SectionIngestController(private val engine: AribSiEngine) {
         return result
     }
 
+    @Synchronized
     fun diagnostics(): List<SectionIngestCounter> = counters.map { (key, value) ->
         SectionIngestCounter(
             pid = key.first,
@@ -49,10 +51,13 @@ class SectionIngestController(private val engine: AribSiEngine) {
         )
     }
 
+    fun broadcastClockSnapshot(): AribBroadcastClockFact? = engine.broadcastClockSnapshot()
+
     fun diagnosticSummary(): String = diagnostics().joinToString("; ") { c ->
         "pid=${c.pid.value} table=${c.tableId} status=${c.status} ok=${c.acceptedCount} crc=${c.crcMismatchCount} malformed=${c.malformedCount} lastError=${c.lastErrorTimeMillis}"
     }
 
+    @Synchronized
     private fun record(pid: TsPid, tableId: Int, status: Int) {
         val counter = counters.getOrPut(Triple(pid, tableId, status)) { MutableCounter() }
         when (statusBucketForTest(status)) {
