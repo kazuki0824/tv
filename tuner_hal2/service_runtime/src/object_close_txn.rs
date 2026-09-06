@@ -615,11 +615,7 @@ impl ObjectCloseUseCasePlan {
         } = self;
         let key = runtime
             .object_table_mut()
-            .begin_close_cleanup_attempt(
-                authority.object_id,
-                authority.generation,
-                authority.key,
-            )
+            .begin_close_cleanup_attempt(authority.object_id, authority.generation, authority.key)
             .map_err(object_table_error_to_hal)?;
         Ok(ObjectCloseCleanupAttempt {
             completion: CloseCleanupAttemptCompletion {
@@ -1236,14 +1232,18 @@ fn finish_object_close_txn(
     let object_id = completion.object_id;
     let generation = completion.generation;
     if let Err(cleanup_failure) = cleanup_result {
-        match runtime.object_table_mut().finish_close_cleanup_attempt(
-            object_id,
-            generation,
-            completion.key,
-            CloseCleanupAttemptOutcome::Pending {
-                step: cleanup_failure.step(),
-            },
-        ).map_err(object_table_error_to_hal) {
+        match runtime
+            .object_table_mut()
+            .finish_close_cleanup_attempt(
+                object_id,
+                generation,
+                completion.key,
+                CloseCleanupAttemptOutcome::Pending {
+                    step: cleanup_failure.step(),
+                },
+            )
+            .map_err(object_table_error_to_hal)
+        {
             Ok(_) => return Err(cleanup_failure.into_error()),
             Err(mark_error) => {
                 return Err(compose_primary_cleanup_failure(
