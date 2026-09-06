@@ -122,7 +122,7 @@ impl BackendTuneTxn {
     }
 
     #[cfg(test)]
-    pub(crate) fn generation(&self) -> u64 {
+    pub(super) fn generation(&self) -> u64 {
         self.generation
     }
 
