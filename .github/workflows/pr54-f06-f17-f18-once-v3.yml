@@ -1,0 +1,61 @@
+name: PR54 F06 F17 F18 one-shot fix v3
+
+on:
+  push:
+    branches:
+      - agent/implement-tis-arib-si-design-pr53
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fixes:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/implement-tis-arib-si-design-pr53
+          fetch-depth: 0
+
+      - name: Reuse targeted edit script
+        shell: bash
+        run: |
+          sed -n "/python3 - <<'PY'/,/^          PY$/p" .github/workflows/pr54-f06-f17-f18-once-v2.yml \
+            | sed '1d;$d;s/^          //' > /tmp/pr54_fix.py
+          python3 /tmp/pr54_fix.py
+
+      - name: Install Rust 1.81 rustfmt
+        run: rustup toolchain install 1.81.0 --profile minimal --component rustfmt
+
+      - name: Format changed Rust
+        run: |
+          rustfmt +1.81.0 \
+            arib_si_engine_rs/src/core/arib_string.rs \
+            arib_si_engine_rs/src/core/service_discovery.rs \
+            arib_si_engine_rs/src/core/eit_publish_policy.rs \
+            arib_si_engine_rs/src/core/arib_jis_x0213_multiscalar.rs
+
+      - name: Validate focused fixes
+        run: |
+          cargo +1.81.0 check --manifest-path arib_si_engine_rs/host_ci/Cargo.toml
+          cargo +1.81.0 test --manifest-path arib_si_engine_rs/host_ci/Cargo.toml initial_si_graphic_set_is_jis_x0213_plane1_and_preserves_multiscalar
+          cargo +1.81.0 test --manifest-path arib_si_engine_rs/host_ci/Cargo.toml designated_jis_x0213_plane2_decodes_non_bmp_scalar
+          cargo +1.81.0 test --manifest-path arib_si_engine_rs/host_ci/Cargo.toml xcs_selects_alternative_only_for_unrenderable_source_graphic
+          cargo +1.81.0 test --manifest-path arib_si_engine_rs/host_ci/Cargo.toml satellite_pf_actual_allows_only_sections_zero_and_one
+          ! grep -q 'ForTest' tis/src/com/maleicacid/tvinput/aribsi/NativeAribSiParser.kt
+          ! grep -q 'NativeAribSiParser.*ForTest' tis/tests/src/com/maleicacid/tvinput/tis/TisR51FixedPlanAcceptanceTest.kt
+          grep -q 'AribComponentProjectionPolicy' tis/src/com/maleicacid/tvinput/aribsi/NativeAribSiParser.kt
+          git diff --check
+
+      - name: Commit fixes
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            tis/src/com/maleicacid/tvinput/aribsi/NativeAribSiParser.kt \
+            tis/tests/src/com/maleicacid/tvinput/tis/TisR51FixedPlanAcceptanceTest.kt \
+            arib_si_engine_rs/src/core/arib_string.rs \
+            arib_si_engine_rs/src/core/service_discovery.rs
+          git commit -m 'fix(pr54): close F06 F17 F18 review findings'
+          git push origin HEAD:agent/implement-tis-arib-si-design-pr53
