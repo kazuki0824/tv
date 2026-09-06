@@ -635,7 +635,7 @@ impl AidlServiceContext {
     }
 
     #[cfg(test)]
-    pub(crate) fn drop_leak_error_diagnostic_snapshot(
+    fn drop_leak_error_diagnostic_snapshot(
         &self,
     ) -> Result<DiagnosticSnapshot<DropLeakErrorRecord>, HalError> {
         let records = self.drop_leak_error_records.lock().map_err(|_| {

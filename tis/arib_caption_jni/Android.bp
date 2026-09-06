@@ -14,6 +14,10 @@ rust_ffi_shared {
     ],
     static_libs: [
         "libaribcaption",
+        "libft2.nodep",
+    ],
+    shared_libs: [
+        "libc++",
     ],
 }
 
@@ -28,6 +32,10 @@ rust_test {
     ],
     static_libs: [
         "libaribcaption",
+        "libft2.nodep",
+    ],
+    shared_libs: [
+        "libc++",
     ],
     auto_gen_config: true,
     test_suites: ["general-tests"],

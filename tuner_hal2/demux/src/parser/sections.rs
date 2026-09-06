@@ -142,12 +142,12 @@ impl SectionAssembler {
     }
 
     #[cfg(test)]
-    pub fn oversized_section_drops(&self) -> u64 {
+    fn oversized_section_drops(&self) -> u64 {
         self.oversized_section_drops
     }
 
     #[cfg(test)]
-    pub fn stale_partial_section_discards(&self) -> u64 {
+    fn stale_partial_section_discards(&self) -> u64 {
         self.stale_partial_section_discards
     }
 
@@ -213,7 +213,8 @@ impl SectionAssembler {
         }
     }
 
-    pub(crate) fn push_payload(
+    #[cfg(test)]
+    fn push_payload(
         &mut self,
         payload_unit_start: bool,
         payload: &[u8],
@@ -629,7 +630,11 @@ mod section_header_contract_tests {
         assert_eq!(parse_section_header(&tdt, 12).unwrap().section_length, 5);
 
         for section_length in [4usize, 6, 1021] {
-            let mut section = vec![0x70, 0x30 | ((section_length >> 8) as u8), section_length as u8];
+            let mut section = vec![
+                0x70,
+                0x30 | ((section_length >> 8) as u8),
+                section_length as u8,
+            ];
             section.resize(3 + section_length, 0);
             assert!(parse_section_header(&section, 12).is_none());
         }

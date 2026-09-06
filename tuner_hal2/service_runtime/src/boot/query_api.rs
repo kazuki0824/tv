@@ -247,10 +247,6 @@ impl TunerServiceRuntime {
         Ok(tokens)
     }
 
-    pub(crate) fn has_frontend_id(&self, id: i32) -> bool {
-        self.query().has_frontend_id(id)
-    }
-
     pub(crate) fn frontend_entry(&self, id: i32) -> Option<crate::registry::FrontendRegistryEntry> {
         self.query().frontend_entry(id)
     }
@@ -270,10 +266,6 @@ impl TunerServiceRuntime {
 
     pub(crate) fn has_lnb_id(&self, id: i32) -> bool {
         self.query().has_lnb_id(id)
-    }
-
-    pub(crate) fn lnb_id_by_name(&self, name: &str) -> Option<i32> {
-        self.query().lnb_id_by_name(name)
     }
 
     pub(crate) fn lnb_for_frontend_id(
@@ -586,10 +578,6 @@ impl<'a> RuntimeQuery<'a> {
             .collect()
     }
 
-    pub(crate) fn has_frontend_id(&self, id: i32) -> bool {
-        self.registry.frontend(FrontendRuntimeId(id)).is_some()
-    }
-
     pub(crate) fn frontend_entry(&self, id: i32) -> Option<crate::registry::FrontendRegistryEntry> {
         self.registry.frontend(FrontendRuntimeId(id)).cloned()
     }
@@ -637,14 +625,6 @@ impl<'a> RuntimeQuery<'a> {
         })
     }
 
-    pub(crate) fn demux_ids(&self) -> Vec<i32> {
-        self.registry
-            .demux_ids()
-            .into_iter()
-            .map(|id| id.0)
-            .collect()
-    }
-
     pub(crate) fn has_demux_id(&self, id: i32) -> bool {
         self.registry.demux(DemuxRuntimeId(id)).is_some()
     }
@@ -657,6 +637,7 @@ impl<'a> RuntimeQuery<'a> {
         self.registry.lnb(LnbRuntimeId(id)).is_some()
     }
 
+    #[cfg(test)]
     pub(crate) fn lnb_id_by_name(&self, name: &str) -> Option<i32> {
         self.registry.lnb_by_name(name).map(|entry| entry.id.0)
     }

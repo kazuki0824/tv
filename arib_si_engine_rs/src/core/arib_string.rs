@@ -1,6 +1,5 @@
 include!("arib_jis_x0208_table.rs");
 include!("arib_extended_graphic_table.rs");
-include!("arib_jis_x0213_multiscalar.rs");
 
 pub const ARIB_STRING_DECODER_SCOPE: &str = "mirakc_scope_non_caption_si_epg_only";
 
@@ -103,8 +102,6 @@ enum GraphicSet {
     Hiragana,
     Katakana,
     Kanji,
-    JisPlane1,
-    JisPlane2,
     AdditionalSymbols,
 }
 
@@ -121,14 +118,14 @@ struct InvocationState {
 
 impl Default for InvocationState {
     fn default() -> Self {
-        // ARIB TR-B15の衛星SI運用profileに合わせ、G0/GLはJIS互換漢字Plane 1を正本とする。
+        // SI運用profileの従来8単位符号初期状態に合わせ、G0/GLはKanjiとする。
         // G1は英数字、G2はひらがな、G3はカタカナ、GRはLS2R(G2)。
         Self {
-            g0: GraphicSet::JisPlane1,
+            g0: GraphicSet::Kanji,
             g1: GraphicSet::Alnum,
             g2: GraphicSet::Hiragana,
             g3: GraphicSet::Katakana,
-            gl: GraphicSet::JisPlane1,
+            gl: GraphicSet::Kanji,
             gr: GraphicSet::Hiragana,
             middle_size: false,
         }
@@ -147,10 +144,7 @@ fn decode_single_shift(
         GraphicSet::Alnum => (first as char).to_string(),
         GraphicSet::Hiragana => map_hiragana(first).to_string(),
         GraphicSet::Katakana => map_katakana(first).to_string(),
-        GraphicSet::Kanji
-        | GraphicSet::JisPlane1
-        | GraphicSet::JisPlane2
-        | GraphicSet::AdditionalSymbols => {
+        GraphicSet::Kanji | GraphicSet::AdditionalSymbols => {
             let second = *bytes
                 .get(index + 2)
                 .ok_or(AribStringDecodeError::TruncatedGraphic)?;
@@ -196,7 +190,7 @@ fn csi_xcs_marker(bytes: &[u8]) -> Result<(usize, Option<XcsMarker>), AribString
     Ok((consumed, marker))
 }
 
-fn consume_xcs_block(bytes: &[u8]) -> Result<Option<(usize, usize, usize)>, AribStringDecodeError> {
+fn consume_xcs_block(bytes: &[u8]) -> Result<Option<usize>, AribStringDecodeError> {
     let (start_len, marker) = csi_xcs_marker(bytes)?;
     if marker != Some(XcsMarker::Start) {
         return Ok(None);
@@ -209,7 +203,7 @@ fn consume_xcs_block(bytes: &[u8]) -> Result<Option<(usize, usize, usize)>, Arib
         }
         let (consumed, nested_marker) = csi_xcs_marker(&bytes[cursor..])?;
         match nested_marker {
-            Some(XcsMarker::End) => return Ok(Some((start_len, cursor, cursor + consumed))),
+            Some(XcsMarker::End) => return Ok(Some(cursor + consumed)),
             Some(XcsMarker::Start) => return Err(AribStringDecodeError::MalformedCsi),
             None => cursor += consumed,
         }
@@ -282,11 +276,7 @@ fn decode_arib_string_with_policy(
     let mut out = String::new();
     let mut diagnostic = AribStringDecodeDiagnostic::default();
     let mut index = 0usize;
-    let mut pending_xcs_at: Option<usize> = None;
     while index < bytes.len() {
-        if pending_xcs_at.is_some() && pending_xcs_at != Some(index) {
-            pending_xcs_at = None;
-        }
         let byte = bytes[index];
         match byte {
             0x00 => {}
@@ -314,7 +304,6 @@ fn decode_arib_string_with_policy(
                 match decode_single_shift(set, bytes, index) {
                     Ok((value, consumed)) => {
                         out.push_str(&value);
-                        pending_xcs_at = (value == "�").then_some(index + consumed + 1);
                         index += consumed;
                     }
                     Err(AribStringDecodeError::TruncatedGraphic) => {
@@ -398,39 +387,11 @@ fn decode_arib_string_with_policy(
             0x89 => state.middle_size = true,
             0x8a => state.middle_size = false,
             0x9b => match consume_xcs_block(&bytes[index..]) {
-                Ok(Some((content_start, content_end, consumed))) => {
-                    if pending_xcs_at == Some(index) {
-                        if out.ends_with('�') {
-                            out.pop();
-                        }
-                        let mut fallback_state = *state;
-                        let (fallback, fallback_diagnostic) = decode_arib_string_with_policy(
-                            &bytes[index + content_start..index + content_end],
-                            &mut fallback_state,
-                            error_policy,
-                        )?;
-                        *state = fallback_state;
-                        out.push_str(&fallback);
-                        diagnostic.replacement_count = diagnostic
-                            .replacement_count
-                            .saturating_add(fallback_diagnostic.replacement_count);
-                        diagnostic.unsupported_escape_count = diagnostic
-                            .unsupported_escape_count
-                            .saturating_add(fallback_diagnostic.unsupported_escape_count);
-                        diagnostic.truncated_escape_count = diagnostic
-                            .truncated_escape_count
-                            .saturating_add(fallback_diagnostic.truncated_escape_count);
-                        diagnostic.truncated_graphic_count = diagnostic
-                            .truncated_graphic_count
-                            .saturating_add(fallback_diagnostic.truncated_graphic_count);
-                        diagnostic.entries.extend(fallback_diagnostic.entries);
-                    }
-                    pending_xcs_at = None;
+                Ok(Some(consumed)) => {
                     index += consumed.saturating_sub(1);
                 }
                 Ok(None) => match consume_csi(&bytes[index..]) {
                     Ok(consumed) => {
-                        pending_xcs_at = None;
                         index += consumed.saturating_sub(1);
                     }
                     Err(error) => {
@@ -487,10 +448,7 @@ fn decode_arib_string_with_policy(
                 GraphicSet::Alnum => out.push(byte as char),
                 GraphicSet::Hiragana => out.push_str(map_hiragana(byte)),
                 GraphicSet::Katakana => out.push_str(map_katakana(byte)),
-                GraphicSet::Kanji
-                | GraphicSet::JisPlane1
-                | GraphicSet::JisPlane2
-                | GraphicSet::AdditionalSymbols => {
+                GraphicSet::Kanji | GraphicSet::AdditionalSymbols => {
                     let Some(next) = bytes.get(index + 1).copied() else {
                         if error_policy == ErrorPolicy::Strict {
                             return Err(AribStringDecodeError::TruncatedGraphic);
@@ -520,7 +478,6 @@ fn decode_arib_string_with_policy(
                     } else {
                         let mapped = map_two_byte_graphic(state.gl, byte, next);
                         out.push_str(mapped);
-                        pending_xcs_at = (mapped == "�").then_some(index + 2);
                         index += 1;
                     }
                 }
@@ -548,10 +505,7 @@ fn decode_arib_string_with_policy(
                     GraphicSet::Alnum => out.push(normalized as char),
                     GraphicSet::Hiragana => out.push_str(map_hiragana(normalized)),
                     GraphicSet::Katakana => out.push_str(map_katakana(normalized)),
-                    GraphicSet::Kanji
-                    | GraphicSet::JisPlane1
-                    | GraphicSet::JisPlane2
-                    | GraphicSet::AdditionalSymbols => {
+                    GraphicSet::Kanji | GraphicSet::AdditionalSymbols => {
                         let Some(next) = bytes.get(index + 1).copied() else {
                             if error_policy == ErrorPolicy::Strict {
                                 return Err(AribStringDecodeError::TruncatedGraphic);
@@ -587,7 +541,6 @@ fn decode_arib_string_with_policy(
                         } else {
                             let mapped = map_two_byte_graphic(state.gr, normalized, next & 0x7f);
                             out.push_str(mapped);
-                            pending_xcs_at = (mapped == "�").then_some(index + 2);
                             index += 1;
                         }
                     }
@@ -707,33 +660,25 @@ fn apply_escape(state: &mut InvocationState, bytes: &[u8]) -> Result<usize, Arib
                     state.g3 = GraphicSet::Hiragana;
                     3
                 }
-                (b'$', final_byte @ (b'B' | b'@' | b'9' | b':' | b';')) => {
+                (b'$', final_byte @ (b'B' | b'@' | b';')) => {
                     state.g0 = two_byte_graphic_set(final_byte)?;
                     state.gl = state.g0;
                     3
                 }
-                (b'$', b'(')
-                    if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@' | b'9' | b':' | b';') =>
-                {
+                (b'$', b'(') if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@' | b';') => {
                     state.g0 = two_byte_graphic_set(bytes[3])?;
                     state.gl = state.g0;
                     4
                 }
-                (b'$', b')')
-                    if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@' | b'9' | b':' | b';') =>
-                {
+                (b'$', b')') if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@' | b';') => {
                     state.g1 = two_byte_graphic_set(bytes[3])?;
                     4
                 }
-                (b'$', b'*')
-                    if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@' | b'9' | b':' | b';') =>
-                {
+                (b'$', b'*') if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@' | b';') => {
                     state.g2 = two_byte_graphic_set(bytes[3])?;
                     4
                 }
-                (b'$', b'+')
-                    if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@' | b'9' | b':' | b';') =>
-                {
+                (b'$', b'+') if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@' | b';') => {
                     state.g3 = two_byte_graphic_set(bytes[3])?;
                     4
                 }
@@ -745,20 +690,12 @@ fn apply_escape(state: &mut InvocationState, bytes: &[u8]) -> Result<usize, Arib
 }
 
 fn is_two_byte_graphic(set: GraphicSet) -> bool {
-    matches!(
-        set,
-        GraphicSet::Kanji
-            | GraphicSet::JisPlane1
-            | GraphicSet::JisPlane2
-            | GraphicSet::AdditionalSymbols
-    )
+    matches!(set, GraphicSet::Kanji | GraphicSet::AdditionalSymbols)
 }
 
 fn two_byte_graphic_set(final_byte: u8) -> Result<GraphicSet, AribStringDecodeError> {
     match final_byte {
         b'B' | b'@' => Ok(GraphicSet::Kanji),
-        b'9' => Ok(GraphicSet::JisPlane1),
-        b':' => Ok(GraphicSet::JisPlane2),
         b';' => Ok(GraphicSet::AdditionalSymbols),
         _ => Err(AribStringDecodeError::UnsupportedEscape),
     }
@@ -767,10 +704,6 @@ fn two_byte_graphic_set(final_byte: u8) -> Result<GraphicSet, AribStringDecodeEr
 fn map_two_byte_graphic(set: GraphicSet, first: u8, second: u8) -> &'static str {
     match set {
         GraphicSet::Kanji => map_kanji(first, second),
-        GraphicSet::JisPlane1 => map_jis_x0213_plane1_multiscalar(first, second)
-            .unwrap_or_else(|| map_jis_x0213_plane1(first, second)),
-        GraphicSet::JisPlane2 => map_jis_x0213_plane2_multiscalar(first, second)
-            .unwrap_or_else(|| map_jis_x0213_plane2(first, second)),
         GraphicSet::AdditionalSymbols => map_arib_additional_symbol(first, second),
         _ => "�",
     }
@@ -840,19 +773,19 @@ mod tests {
     }
 
     #[test]
-    fn arib_string_decodes_jis_compatible_plane1_without_replacement() {
-        let bytes = [0x1b, b'$', b'(', b'9', 0x21, 0x21];
-        let (decoded, diagnostic) = decode_arib_string_lossy(&bytes);
-        assert_ne!(decoded, "�");
-        assert_eq!(diagnostic.replacement_count, 0);
-    }
-
-    #[test]
-    fn arib_string_decodes_jis_compatible_plane2_without_replacement() {
-        let bytes = [0x1b, b'$', b'(', b':', 0x21, 0x21];
-        let (decoded, diagnostic) = decode_arib_string_lossy(&bytes);
-        assert_ne!(decoded, "�");
-        assert_eq!(diagnostic.replacement_count, 0);
+    fn jis_x0213_plane_designations_are_outside_si_profile() {
+        for bytes in [
+            &[0x1b, b'$', b'(', b'9', 0x21, 0x21][..],
+            &[0x1b, b'$', b'(', b':', 0x21, 0x21][..],
+        ] {
+            assert_eq!(
+                decode_arib_string(bytes),
+                Err(AribStringDecodeError::UnsupportedEscape)
+            );
+            let (_decoded, diagnostic) = decode_arib_string_lossy(bytes);
+            assert_eq!(diagnostic.unsupported_escape_count, 1);
+            assert!(diagnostic.replacement_count >= 1);
+        }
     }
 
     #[test]
@@ -1004,32 +937,22 @@ mod tests {
     }
 
     #[test]
-    fn initial_si_graphic_set_is_jis_x0213_plane1_and_preserves_multiscalar() {
-        assert_eq!(decode_arib_string(&[0x24, 0x77]), Ok("か゚".to_string()));
-    }
-
-    #[test]
-    fn designated_jis_x0213_plane2_decodes_non_bmp_scalar() {
-        let bytes = [0x1b, b'$', b'(', b':', 0x21, 0x21];
-        assert_eq!(decode_arib_string(&bytes), Ok("𠂉".to_string()));
-    }
-
-    #[test]
-    fn xcs_selects_alternative_only_for_unrenderable_source_graphic() {
-        let unsupported_with_fallback = [
-            0x24, 0x7c, 0x9b, b'0', 0x20, b'f', 0x19, 0x22, 0x9b, b'1', 0x20, b'f',
+    fn xcs_block_is_noop_and_preserves_invocation_state() {
+        let bytes = [
+            0x1b, b'(', b'B', b'A', 0x9b, b'0', 0x20, b'f', 0x1b, b'$', b'B', b'E', b'l', 0x9b,
+            b'1', 0x20, b'f', b'B',
         ];
-        assert_eq!(
-            decode_arib_string(&unsupported_with_fallback),
-            Ok("あ".to_string())
-        );
+        assert_eq!(decode_arib_string(&bytes), Ok("AB".to_string()));
 
-        let supported_with_fallback = [
-            0x24, 0x22, 0x9b, b'0', 0x20, b'f', 0x19, 0x24, 0x9b, b'1', 0x20, b'f',
-        ];
+        let malformed = [0x1b, b'(', b'B', b'A', 0x9b, b'0', 0x20, b'f', b'X'];
         assert_eq!(
-            decode_arib_string(&supported_with_fallback),
-            Ok("あ".to_string())
+            decode_arib_string(&malformed),
+            Err(AribStringDecodeError::MalformedCsi)
         );
+        let (lossy, diagnostic) = decode_arib_string_lossy(&malformed);
+        assert_eq!(lossy, "A�");
+        assert!(diagnostic.entries.iter().any(|entry| {
+            entry.code_set_or_control == "CSI/XCS" && entry.reason == "malformed_or_truncated_csi"
+        }));
     }
 }

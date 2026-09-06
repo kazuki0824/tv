@@ -1,7 +1,7 @@
 use crate::{registry::RegistryCommitError, RuntimeCommandDispatchError, RuntimeObjectTableError};
-use maleicacid_tuner_hal2_common::{
-    HalError, HalInternalKind, HalInvalidArgumentKind, HalInvalidStateKind,
-};
+#[cfg(test)]
+use maleicacid_tuner_hal2_common::HalInvalidArgumentKind;
+use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidStateKind};
 
 pub(crate) fn command_dispatch_error_to_hal(error: RuntimeCommandDispatchError) -> HalError {
     error.into_hal_error()
@@ -73,6 +73,7 @@ pub(crate) fn registry_commit_error_to_hal(
     context: &'static str,
 ) -> HalError {
     match error {
+        #[cfg(test)]
         RegistryCommitError::MissingFrontendId { .. }
         | RegistryCommitError::MissingLnbId { .. }
         | RegistryCommitError::LnbFrontendMismatch { .. } => {
