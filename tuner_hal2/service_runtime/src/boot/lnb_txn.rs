@@ -218,7 +218,8 @@ impl<'a> LnbMutationContext<'a> {
             .commit_prepared_lnb_assignment(prepared_lease)
         {
             Ok(cleanup) => cleanup,
-            Err(error) => {
+            Err(commit_error) => {
+                let (error, prepared_lease) = commit_error.into_parts();
                 if self
                     .runtime
                     .registry_mut()

@@ -471,6 +471,22 @@ pub(crate) struct PreparedLnbAssignmentLease {
     expected_lease: Option<LnbAssignmentLease>,
 }
 
+#[derive(Debug)]
+pub(crate) struct PreparedLnbAssignmentCommitError {
+    error: HalError,
+    prepared: PreparedLnbAssignmentLease,
+}
+
+impl PreparedLnbAssignmentCommitError {
+    fn new(error: HalError, prepared: PreparedLnbAssignmentLease) -> Self {
+        Self { error, prepared }
+    }
+
+    pub(crate) fn into_parts(self) -> (HalError, PreparedLnbAssignmentLease) {
+        (self.error, self.prepared)
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 #[must_use = "LNB割当cleanup権限は値として完了する必要があります"]
 pub(crate) struct LnbAssignmentCleanupRecord {
@@ -1315,7 +1331,7 @@ impl RuntimeRegistry {
     pub(crate) fn commit_prepared_lnb_assignment(
         &mut self,
         prepared: PreparedLnbAssignmentLease,
-    ) -> Result<Option<LnbAssignmentCleanupRecord>, HalError> {
+    ) -> Result<Option<LnbAssignmentCleanupRecord>, PreparedLnbAssignmentCommitError> {
         if self
             .lnb_registry
             .prepared_assignment_leases
@@ -1334,13 +1350,18 @@ impl RuntimeRegistry {
                 != prepared.expected_lease
             || !self.lnb_registry.runtimes.contains_key(&prepared.lnb_id)
         {
-            return Err(HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "prepared frontend/LNB assignment no longer matches its commit snapshot",
+            return Err(PreparedLnbAssignmentCommitError::new(
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "prepared frontend/LNB assignment no longer matches its commit snapshot",
+                ),
+                prepared,
             ));
         }
 
-        self.lnb_registry.retain_rail_reference(prepared.lnb_id)?;
+        if let Err(error) = self.lnb_registry.retain_rail_reference(prepared.lnb_id) {
+            return Err(PreparedLnbAssignmentCommitError::new(error, prepared));
+        }
         self.lnb_registry
             .prepared_assignment_leases
             .remove(&prepared.token);

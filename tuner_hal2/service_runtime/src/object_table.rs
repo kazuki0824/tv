@@ -293,6 +293,12 @@ impl RuntimeObjectTable {
                     changed.push(entry.clone());
                 }
                 RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined => {}
+                RuntimeObjectLifecycle::Prepared => {
+                    return Err(RuntimeObjectTableError::InvalidLifecycle {
+                        object_id: target_id,
+                        lifecycle: entry.lifecycle,
+                    });
+                }
             }
         }
         Ok(changed)
