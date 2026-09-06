@@ -232,7 +232,7 @@ jobs:
             org.junit.runner.JUnitCore \
             "${test_classes[@]}" \
             | tee "$RUNNER_TEMP/tis-junit.log"
-          grep --fixed-strings "OK (136 tests)" "$RUNNER_TEMP/tis-junit.log"
+          grep --fixed-strings "OK (141 tests)" "$RUNNER_TEMP/tis-junit.log"
 
   xml-contract:
     runs-on: ubuntu-latest

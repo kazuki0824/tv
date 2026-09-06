@@ -5,6 +5,7 @@ on:
     paths:
       - "tuner_hal2/aidl_service/**"
       - "tuner_hal2/Android.bp"
+      - "tuner_hal2/key_provisioning_bridge/**"
       - "tuner_hal2/common/**"
       - "tuner_hal2/compile_contract/**"
       - "tuner_hal2/control/**"
@@ -21,6 +22,7 @@ on:
     paths:
       - "tuner_hal2/aidl_service/**"
       - "tuner_hal2/Android.bp"
+      - "tuner_hal2/key_provisioning_bridge/**"
       - "tuner_hal2/common/**"
       - "tuner_hal2/compile_contract/**"
       - "tuner_hal2/control/**"

@@ -661,6 +661,9 @@ pub fn run_service() {
     {
         std::process::exit(1);
     }
+    if crate::key_provisioning_bridge_server::start_key_provisioning_bridge_server(context.clone()).is_err() {
+        std::process::exit(1);
+    }
     let tuner = match TunerAidlService::from_context(context) {
         Ok(tuner) => tuner,
         Err(_) => std::process::exit(1),

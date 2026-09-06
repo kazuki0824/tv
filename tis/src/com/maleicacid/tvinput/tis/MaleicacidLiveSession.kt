@@ -294,38 +294,56 @@ class MaleicacidLiveSession(
         )
         val serviceCaMetadata = expanded.filter { it.serviceKey == serviceKey }
         val caMetadata = expanded.filter { it.serviceKey == null || it.serviceKey == serviceKey }
-        val ecmPids = caMetadata.mapNotNull { it.ecmPid }.toSet()
-        val emmPids = caMetadata.mapNotNull { it.emmPid }.toSet()
-        tunerController.updateDynamicSectionFiltersForService(serviceKey, pmtPids, ecmPids, emmPids, currentGeneration)
+        val casResult = if (caMetadata.isEmpty()) {
+            casController.clearForClearService()
+            CasController.UpdateResult(emptyList(), emptySet(), emptySet(), CasController.Readiness.CLEAR)
+        } else {
+            val prototype = if (serviceScopedCa.isEmpty()) null else tunerController.createDescramblerBridge()
+            casController.updateFromCaMetadata(caMetadata, prototype)
+        }
+        // B25/B1 の実行方針は CasController が所有する。TunerController にはその filter plan だけを渡し、
+        // B1 の CAT metadata から EMM filter が誤って再開されないようにする。
+        tunerController.updateDynamicSectionFiltersForService(
+            serviceKey,
+            pmtPids,
+            casResult.ecmPids,
+            casResult.emmPids,
+            currentGeneration,
+        )
 
         publishLiveProgramsForCurrentService()
         refreshCurrentProgramRatingState()
-        if (caMetadata.isEmpty()) {
-            casController.clearForClearService()
-        } else {
-            val bridge = if (serviceScopedCa.isEmpty()) null else tunerController.createDescramblerBridge()
-            val casResult = casController.updateFromCaMetadata(caMetadata, bridge)
-            val blockingCasError = serviceCaMetadata.isNotEmpty() && casResult.diagnostics.any { it.state == CasController.State.ERROR }
-            if (blockingCasError) {
-                playbackState = PlaybackStartState.Stopped
-                tunerController.stopPlayback()
-                beginCaptionPresentationGeneration(-1L, false)
-                notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN)
-                return
-            }
-            if (serviceCaMetadata.isNotEmpty()) {
-                playbackState = PlaybackStartState.Stopped
-                tunerController.stopPlayback()
-                beginCaptionPresentationGeneration(-1L, false)
-                notifyVideoUnavailable(mapUnavailableReason(PlaybackPipeline.PlaybackUnavailable(PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY, "r51 CAS placeholder cannot provide real key token")))
-                return
+
+        if (serviceCaMetadata.isNotEmpty()) {
+            when (casResult.readiness) {
+                CasController.Readiness.READY -> Unit
+                CasController.Readiness.ERROR,
+                CasController.Readiness.CLOSED -> {
+                    stopPlaybackForCasWait()
+                    notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN)
+                    return
+                }
+                CasController.Readiness.WAITING_FOR_KEY,
+                CasController.Readiness.CLEAR -> {
+                    // 必要な key context がすべて紐付くまで暗号化 AV を開始しない。
+                    stopPlaybackForCasWait()
+                    notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN)
+                    return
+                }
             }
         }
+
         if (service != null) {
             latestService = service
             updateTracks(service)
             maybeStartPlayback(service)
         }
+    }
+
+    private fun stopPlaybackForCasWait() {
+        playbackState = PlaybackStartState.Stopped
+        tunerController.stopPlayback()
+        beginCaptionPresentationGeneration(-1L, false)
     }
 
     private fun maybeStartPlayback(service: AribService): Boolean {
@@ -414,6 +432,7 @@ class MaleicacidLiveSession(
         if (PlaybackPolicy.isAudioOnlyService(service.serviceType) && selection.audio == null) return null
         if (!PlaybackPolicy.isAudioOnlyService(service.serviceType) && video == null) return null
         val audio = selection.audio
+        val casReadiness = casController.currentReadiness()
         return AvPlaybackSignature(
             serviceKey = service.serviceKey,
             pcrPid = selection.pcrPid,
@@ -426,8 +445,8 @@ class MaleicacidLiveSession(
             subtitleLanguageId = selection.subtitleLanguageId,
             superimposePid = selection.superimpose?.elementaryPid,
             superimposeDataComponentId = selection.superimpose?.dataComponentId,
-            clear = true,
-            keyTokenAvailable = false,
+            clear = casReadiness == CasController.Readiness.CLEAR,
+            keyTokenAvailable = casReadiness == CasController.Readiness.READY,
         )
     }
 

@@ -50,13 +50,13 @@ class TisR51FixedPlanAcceptanceTest {
     }
 
     @Test fun hevcOnlyServiceIsNotR51VideoCandidate() {
-        check(!TunerSelectionPolicy.isSupportedVideoStreamType(0x24))
-        check(TunerSelectionPolicy.selectVideo(listOf(es(TsPid(0x120), 0x24))) == null)
+        check(!TunerSelectionPolicy.isR51SupportedVideoStreamTypeForTest(0x24))
+        check(TunerSelectionPolicy.selectR51VideoForTest(listOf(es(TsPid(0x120), 0x24))) == null)
     }
 
     @Test fun h264AndMpeg2RemainR51VideoCandidates() {
-        check(TunerSelectionPolicy.isSupportedVideoStreamType(0x02))
-        check(TunerSelectionPolicy.isSupportedVideoStreamType(0x1b))
+        check(TunerSelectionPolicy.isR51SupportedVideoStreamTypeForTest(0x02))
+        check(TunerSelectionPolicy.isR51SupportedVideoStreamTypeForTest(0x1b))
         check(TunerSelectionPolicy.selectVideo(listOf(es(TsPid(0x100), 0x1b)))?.streamType == 0x1b)
         check(TunerSelectionPolicy.selectVideo(listOf(es(TsPid(0x101), 0x02)))?.streamType == 0x02)
     }
@@ -85,7 +85,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(providerVideo.getString("codec") == "HEVC")
         check(!providerVideo.has("r51PlaybackSupported"))
         check(!providerVideo.has("liveViewableClaim"))
-        check(TunerSelectionPolicy.selectVideo(service.streams) == null)
+        check(TunerSelectionPolicy.selectR51VideoForTest(service.streams) == null)
         val bsSeed = JapanIsdbScanPlan.isdbsBsBands().first()
         check(bsSeed.streamSelector == com.maleicacid.tvinput.common.StreamSelector.NONE)
         val discoveredBs = JapanIsdbScanPlan.explicitBsCandidatesFromScan(bsSeed, listOf(18803, 18803, 0xffff, -1))
@@ -127,7 +127,7 @@ class TisR51FixedPlanAcceptanceTest {
     }
 
     @Test fun mixedH264AndHevcSelectsH264CapablePath() {
-        val selected = TunerSelectionPolicy.selectVideo(listOf(es(TsPid(0x200), 0x24), es(TsPid(0x201), 0x1b)))
+        val selected = TunerSelectionPolicy.selectR51VideoForTest(listOf(es(TsPid(0x200), 0x24), es(TsPid(0x201), 0x1b)))
         check(selected?.streamType == 0x1b)
     }
 
@@ -192,10 +192,10 @@ class TisR51FixedPlanAcceptanceTest {
         val selection = TunerController.AvStreamSelection(
             serviceKey = key,
             pcrPid = TsPid(0x100),
-            video = TunerSelectionPolicy.selectVideo(streams),
+            video = TunerSelectionPolicy.selectR51VideoForTest(streams),
             audio = null,
         )
-        check(!TunerSelectionPolicy.hasSupportedVideo(streams))
+        check(!TunerSelectionPolicy.hasR51SupportedVideoForTest(streams))
         check(PlaybackPolicy.shouldRejectSelection(0x01, selection))
     }
 

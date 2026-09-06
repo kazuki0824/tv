@@ -49,6 +49,15 @@ cc_library_static {
 }
 
 rust_library {
+    name: "libmaleicacid_tuner_hal2_key_provisioning_bridge",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_key_provisioning_bridge",
+    crate_root: "key_provisioning_bridge/src/lib.rs",
+    srcs: ["key_provisioning_bridge/src/lib.rs"],
+    edition: "2021",
+}
+
+rust_library {
     name: "libmaleicacid_tuner_hal2_common",
     vendor: true,
     crate_name: "maleicacid_tuner_hal2_common",
@@ -213,6 +222,7 @@ rust_library {
         "service_runtime/src/boot/child_open_context.rs",
         "service_runtime/src/boot/descrambler_txn.rs",
         "service_runtime/src/boot/lnb_txn.rs",
+        "service_runtime/src/key_provisioning_ops.rs",
         "service_runtime/src/dispatch.rs",
         "service_runtime/src/error_mapping.rs",
         "service_runtime/src/boot/demux_filter_dvr_ops.rs",
@@ -253,6 +263,7 @@ rust_library {
     ],
     edition: "2021",
     rustlibs: [
+        "libmaleicacid_tuner_hal2_key_provisioning_bridge",
         "libmaleicacid_tuner_hal2_common",
         "libmaleicacid_tuner_hal2_control_core",
         "libmaleicacid_tuner_hal2_binder_adapter",
@@ -310,6 +321,8 @@ rust_library {
     crate_root: "aidl_service/src/lib.rs",
     srcs: [
         "aidl_service/src/lib.rs",
+        "aidl_service/src/key_provisioning_connection.rs",
+        "aidl_service/src/key_provisioning_bridge_server.rs",
         "aidl_service/src/tuner_service.rs",
         "aidl_service/src/tuner_service/frontend_methods.rs",
         "aidl_service/src/tuner_service/demux_methods.rs",
@@ -343,6 +356,7 @@ rust_library {
         "android.hardware.common-V2-rust",
         "android.hardware.common.fmq-V1-rust",
         "libbinder_rs",
+        "libmaleicacid_tuner_hal2_key_provisioning_bridge",
         "libmaleicacid_tuner_hal2_common",
         "libmaleicacid_tuner_hal2_binder_adapter",
         "libmaleicacid_tuner_hal2_service_runtime",
@@ -366,6 +380,17 @@ rust_binary {
         "libmaleicacid_tuner_hal2_aidl_service",
         "libbinder_rs",
     ],
+}
+
+rust_test {
+    name: "maleicacid_tuner_hal2_key_provisioning_bridge_test",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_key_provisioning_bridge_test",
+    crate_root: "key_provisioning_bridge/src/lib.rs",
+    srcs: ["key_provisioning_bridge/src/lib.rs"],
+    edition: "2021",
+    auto_gen_config: true,
+    test_suites: ["general-tests"],
 }
 
 rust_test {
@@ -565,6 +590,7 @@ rust_test {
         "service_runtime/src/boot/child_open_context.rs",
         "service_runtime/src/boot/descrambler_txn.rs",
         "service_runtime/src/boot/lnb_txn.rs",
+        "service_runtime/src/key_provisioning_ops.rs",
         "service_runtime/src/dispatch.rs",
         "service_runtime/src/error_mapping.rs",
         "service_runtime/src/boot/demux_filter_dvr_ops.rs",
@@ -605,6 +631,7 @@ rust_test {
     ],
     edition: "2021",
     rustlibs: [
+        "libmaleicacid_tuner_hal2_key_provisioning_bridge",
         "libmaleicacid_tuner_hal2_common",
         "libmaleicacid_tuner_hal2_binder_adapter",
         "libmaleicacid_tuner_hal2_domain_request",
@@ -665,6 +692,8 @@ rust_test {
     crate_root: "aidl_service/src/lib.rs",
     srcs: [
         "aidl_service/src/lib.rs",
+        "aidl_service/src/key_provisioning_connection.rs",
+        "aidl_service/src/key_provisioning_bridge_server.rs",
         "aidl_service/src/failure_injection_tests.rs",
         "aidl_service/src/tuner_service.rs",
         "aidl_service/src/tuner_service/frontend_methods.rs",
@@ -699,6 +728,7 @@ rust_test {
         "android.hardware.common-V2-rust",
         "android.hardware.common.fmq-V1-rust",
         "libbinder_rs",
+        "libmaleicacid_tuner_hal2_key_provisioning_bridge",
         "libmaleicacid_tuner_hal2_common",
         "libmaleicacid_tuner_hal2_binder_adapter",
         "libmaleicacid_tuner_hal2_service_runtime",

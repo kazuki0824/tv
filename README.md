@@ -1,6 +1,6 @@
 # maleicacid Android TV components
 
-このディレクトリは、日本向け Android TV 14 系の製品ツリーに統合する Tuner HAL、TIS、ARIB SI engine、CAS HAL プレースホルダー、録画関連候補を保持する。
+このディレクトリは、日本向け Android TV 14 系の製品ツリーに統合する Tuner HAL、TIS、ARIB SI engine、CAS HAL、録画関連候補を保持する。
 
 この README は人間向けの入口であり、設計判断、完了判定、統合手順、変更履歴の正本ではない。
 
@@ -17,7 +17,7 @@
 - Tuner HAL product default 構成: `tuner_hal2/README_JA.md`
 - TIS: `tis/README_JA.md`
 - ARIB SI engine: `arib_si_engine_rs/README_JA.md`
-- CAS HAL プレースホルダー: `cas_hal/README_JA.md`
+- CAS HAL: `cas_hal/README_JA.md`
 - 録画関連候補: `rec/README_JA.md`
 
 ## Codex を使う場合

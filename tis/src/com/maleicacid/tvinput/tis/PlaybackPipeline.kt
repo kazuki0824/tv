@@ -149,7 +149,8 @@ class PlaybackPipeline(
 
     private enum class VideoCodecKind(val streamType: Int, val mime: String) {
         MPEG2(0x02, MediaFormat.MIMETYPE_VIDEO_MPEG2),
-        AVC(0x1b, MediaFormat.MIMETYPE_VIDEO_AVC);
+        AVC(0x1b, MediaFormat.MIMETYPE_VIDEO_AVC),
+        HEVC(0x24, MediaFormat.MIMETYPE_VIDEO_HEVC);
 
         companion object {
             fun fromStreamType(streamType: Int): VideoCodecKind? = values().firstOrNull { it.streamType == streamType }
@@ -985,6 +986,7 @@ class PlaybackPipeline(
         override fun formatFromBufferedHeader(bytes: ByteArray): MediaFormat? = when (kind) {
             VideoCodecKind.MPEG2 -> EsHeaderParser.mpeg2VideoFormat(bytes)
             VideoCodecKind.AVC -> EsHeaderParser.avcVideoFormat(bytes)
+            VideoCodecKind.HEVC -> EsHeaderParser.hevcVideoFormat(bytes)
         }?.also { format ->
             onVideoFormatDiscovered(generation, VideoFormatInfo(kind.streamType, kind.mime, getIntegerOrDefault(format, MediaFormat.KEY_WIDTH, 0), getIntegerOrDefault(format, MediaFormat.KEY_HEIGHT, 0), EsHeaderParser.displayAspectRatio(kind, bytes)))
         }
@@ -1246,6 +1248,7 @@ class PlaybackPipeline(
             fun forVideo(kind: VideoCodecKind): PlaybackBudget = when (kind) {
                 VideoCodecKind.MPEG2 -> PlaybackBudget(6 * MIB, 256 * KIB, QueueBudget(24L * MIB, 24, 2_000_000L), QueueBudget(36L * MIB, 48, 3_000_000L), 4_000L, 2_000L)
                 VideoCodecKind.AVC -> PlaybackBudget(12 * MIB, 512 * KIB, QueueBudget(48L * MIB, 32, 2_500_000L), QueueBudget(72L * MIB, 64, 3_500_000L), 5_000L, 2_000L)
+                VideoCodecKind.HEVC -> PlaybackBudget(16 * MIB, 768 * KIB, QueueBudget(64L * MIB, 32, 2_500_000L), QueueBudget(96L * MIB, 64, 3_500_000L), 5_000L, 2_000L)
             }
             fun forAudio(kind: AudioCodecKind): PlaybackBudget = when (kind) {
                 AudioCodecKind.AAC_ADTS -> PlaybackBudget(1 * MIB, 64 * KIB, QueueBudget(8L * MIB, 96, 2_000_000L), QueueBudget(12L * MIB, 192, 3_000_000L), 3_000L, 1_500L)
@@ -1272,6 +1275,79 @@ class PlaybackPipeline(
                 setByteBuffer("csd-0", ByteBuffer.wrap(sps)); setByteBuffer("csd-1", ByteBuffer.wrap(pps))
             }
         }
+        fun hevcVideoFormat(bytes: ByteArray): MediaFormat? {
+            val vps = findHevcNal(bytes, 32) ?: return null
+            val sps = findHevcNal(bytes, 33) ?: return null
+            val pps = findHevcNal(bytes, 34) ?: return null
+            val dimensions = parseHevcSpsDimensions(sps) ?: return null
+            return MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_HEVC, dimensions.width, dimensions.height).apply {
+                setByteBuffer("csd-0", ByteBuffer.wrap(vps + sps + pps))
+            }
+        }
+        private fun parseHevcSpsDimensions(spsWithStartCode: ByteArray): VideoDimensions? = runCatching {
+            val rbsp = hevcNalRbspPayload(spsWithStartCode)
+            val bits = BitReader(rbsp)
+            bits.readBits(4)
+            val maxSubLayersMinus1 = bits.readBits(3)
+            bits.readBit()
+            skipHevcProfileTierLevel(bits, maxSubLayersMinus1)
+            bits.readUE()
+            val chromaFormatIdc = bits.readUE()
+            val separateColourPlaneFlag = if (chromaFormatIdc == 3) bits.readBit() else 0
+            val width = bits.readUE()
+            val height = bits.readUE()
+            var left = 0
+            var right = 0
+            var top = 0
+            var bottom = 0
+            if (bits.readBit() == 1) {
+                left = bits.readUE()
+                right = bits.readUE()
+                top = bits.readUE()
+                bottom = bits.readUE()
+            }
+            val subWidthC = if (separateColourPlaneFlag == 1) 1 else if (chromaFormatIdc == 1 || chromaFormatIdc == 2) 2 else 1
+            val subHeightC = if (separateColourPlaneFlag == 1) 1 else if (chromaFormatIdc == 1) 2 else 1
+            VideoDimensions(
+                (width - subWidthC * (left + right)).coerceAtLeast(1),
+                (height - subHeightC * (top + bottom)).coerceAtLeast(1),
+            )
+        }.getOrNull()
+        private fun skipHevcProfileTierLevel(bits: BitReader, maxSubLayersMinus1: Int) {
+            bits.skipBits(2 + 1 + 5 + 32 + 4 + 44 + 8)
+            val profilePresent = BooleanArray(maxSubLayersMinus1)
+            val levelPresent = BooleanArray(maxSubLayersMinus1)
+            repeat(maxSubLayersMinus1) { index ->
+                profilePresent[index] = bits.readBit() == 1
+                levelPresent[index] = bits.readBit() == 1
+            }
+            if (maxSubLayersMinus1 > 0) repeat(8 - maxSubLayersMinus1) { bits.skipBits(2) }
+            repeat(maxSubLayersMinus1) { index ->
+                if (profilePresent[index]) bits.skipBits(88)
+                if (levelPresent[index]) bits.skipBits(8)
+            }
+        }
+        private fun hevcNalRbspPayload(nalWithStartCode: ByteArray): ByteArray {
+            val prefix = when {
+                nalWithStartCode.size >= 6 && nalWithStartCode[0] == 0.toByte() && nalWithStartCode[1] == 0.toByte() && nalWithStartCode[2] == 0.toByte() && nalWithStartCode[3] == 1.toByte() -> 4
+                nalWithStartCode.size >= 5 && nalWithStartCode[0] == 0.toByte() && nalWithStartCode[1] == 0.toByte() && nalWithStartCode[2] == 1.toByte() -> 3
+                else -> 0
+            }
+            val start = prefix + 2
+            require(start <= nalWithStartCode.size)
+            val out = ArrayList<Byte>(nalWithStartCode.size)
+            var zeros = 0
+            for (index in start until nalWithStartCode.size) {
+                val byte = nalWithStartCode[index]
+                if (zeros >= 2 && byte == 0x03.toByte()) {
+                    zeros = 0
+                    continue
+                }
+                out += byte
+                zeros = if (byte == 0.toByte()) zeros + 1 else 0
+            }
+            return out.toByteArray()
+        }
         fun displayAspectRatio(kind: VideoCodecKind, bytes: ByteArray): Double? {
             return when (kind) {
             VideoCodecKind.MPEG2 -> {
@@ -1282,6 +1358,7 @@ class PlaybackPipeline(
                 when ((bytes[pos + 7].toInt() ushr 4) and 0x0f) { 1 -> width.toDouble() / height.coerceAtLeast(1).toDouble(); 2 -> 4.0 / 3.0; 3 -> 16.0 / 9.0; 4 -> 2.21; else -> null }
             }
             VideoCodecKind.AVC -> findNal(bytes, 7)?.let(::parseAvcSpsDimensions)?.let { dimensions -> dimensions.width.toDouble() * dimensions.sarWidth.toDouble() / (dimensions.height.toDouble() * dimensions.sarHeight.toDouble()) }
+            VideoCodecKind.HEVC -> null
         }
         }
         data class VideoDimensions(val width: Int, val height: Int, val sarWidth: Int = 1, val sarHeight: Int = 1)
@@ -1315,12 +1392,30 @@ class PlaybackPipeline(
             return out.toByteArray()
         }
         private fun skipScalingList(bits: BitReader, size: Int) { var lastScale = 8; var nextScale = 8; repeat(size) { if (nextScale != 0) nextScale = (lastScale + bits.readSE() + 256) % 256; lastScale = if (nextScale == 0) lastScale else nextScale } }
-        private class BitReader(private val bytes: ByteArray) { private var bitOffset = 0; fun readBit(): Int = readBits(1); fun readBits(count: Int): Int { var value = 0; repeat(count) { val byteIndex = bitOffset / 8; require(byteIndex < bytes.size) { "SPS bitstream ended" }; val bitIndex = 7 - (bitOffset % 8); value = (value shl 1) or ((bytes[byteIndex].toInt() ushr bitIndex) and 1); bitOffset++ }; return value }; fun readUE(): Int { var zeros = 0; while (readBit() == 0) zeros++; return if (zeros == 0) 0 else ((1 shl zeros) - 1) + readBits(zeros) }; fun readSE(): Int { val codeNum = readUE(); val value = (codeNum + 1) / 2; return if (codeNum % 2 == 0) -value else value } }
+        private class BitReader(private val bytes: ByteArray) { private var bitOffset = 0; fun readBit(): Int = readBits(1); fun skipBits(count: Int) { repeat(count) { readBit() } }; fun readBits(count: Int): Int { var value = 0; repeat(count) { val byteIndex = bitOffset / 8; require(byteIndex < bytes.size) { "SPS bitstream ended" }; val bitIndex = 7 - (bitOffset % 8); value = (value shl 1) or ((bytes[byteIndex].toInt() ushr bitIndex) and 1); bitOffset++ }; return value }; fun readUE(): Int { var zeros = 0; while (readBit() == 0) zeros++; return if (zeros == 0) 0 else ((1 shl zeros) - 1) + readBits(zeros) }; fun readSE(): Int { val codeNum = readUE(); val value = (codeNum + 1) / 2; return if (codeNum % 2 == 0) -value else value } }
         fun adtsAacFormat(bytes: ByteArray): MediaFormat? { val header = findAdtsHeader(bytes) ?: return null; val sampleRate = sampleRates.getOrNull(header.frequencyIndex) ?: return null; val asc0 = ((2 shl 3) or (header.frequencyIndex ushr 1)).toByte(); val asc1 = (((header.frequencyIndex and 1) shl 7) or (header.channelConfig shl 3)).toByte(); return MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, header.channelConfig.coerceAtLeast(1)).apply { setInteger(MediaFormat.KEY_IS_ADTS, 1); setByteBuffer("csd-0", ByteBuffer.wrap(byteArrayOf(asc0, asc1))) } }
         fun mpegAudioFormat(bytes: ByteArray): MediaFormat? { val offset = (0 until bytes.size - 3).firstOrNull { i -> (bytes[i].toInt() and 0xff) == 0xff && (bytes[i + 1].toInt() and 0xe0) == 0xe0 } ?: return null; val b2 = bytes[offset + 2].toInt() and 0xff; val b3 = bytes[offset + 3].toInt() and 0xff; val version = (bytes[offset + 1].toInt() ushr 3) and 0x03; val sampleRateIndex = (b2 ushr 2) and 0x03; val channelMode = (b3 ushr 6) and 0x03; val base = when (sampleRateIndex) { 0 -> 44100; 1 -> 48000; 2 -> 32000; else -> return null }; val sampleRate = when (version) { 3 -> base; 2 -> base / 2; 0 -> base / 4; else -> base }; val channels = if (channelMode == 3) 1 else 2; return MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_MPEG, sampleRate, channels) }
         private data class AdtsHeader(val frequencyIndex: Int, val channelConfig: Int)
         private fun findAdtsHeader(bytes: ByteArray): AdtsHeader? { for (i in 0 until bytes.size - 7) if ((bytes[i].toInt() and 0xff) == 0xff && (bytes[i + 1].toInt() and 0xf0) == 0xf0) { val freqIndex = (bytes[i + 2].toInt() ushr 2) and 0x0f; val channelConfig = ((bytes[i + 2].toInt() and 0x01) shl 2) or ((bytes[i + 3].toInt() ushr 6) and 0x03); return AdtsHeader(freqIndex, channelConfig) }; return null }
         private fun findStartCode(bytes: ByteArray, code: Int): Int? { for (i in 0 until bytes.size - 4) if (bytes[i] == 0.toByte() && bytes[i + 1] == 0.toByte() && bytes[i + 2] == 1.toByte() && (bytes[i + 3].toInt() and 0xff) == code) return i; return null }
+        private fun findHevcNal(bytes: ByteArray, nalType: Int): ByteArray? {
+            var index = 0
+            while (index < bytes.size - 4) {
+                val prefixLength = when {
+                    index + 4 < bytes.size && bytes[index] == 0.toByte() && bytes[index + 1] == 0.toByte() && bytes[index + 2] == 0.toByte() && bytes[index + 3] == 1.toByte() -> 4
+                    bytes[index] == 0.toByte() && bytes[index + 1] == 0.toByte() && bytes[index + 2] == 1.toByte() -> 3
+                    else -> { index++; continue }
+                }
+                if (index + prefixLength + 1 >= bytes.size) return null
+                val start = index
+                val type = (bytes[index + prefixLength].toInt() ushr 1) and 0x3f
+                index += prefixLength + 2
+                while (index < bytes.size - 3 && !isStartCode(bytes, index)) index++
+                val end = if (index < bytes.size - 3) index else bytes.size
+                if (type == nalType) return bytes.copyOfRange(start, end)
+            }
+            return null
+        }
         private fun findNal(bytes: ByteArray, nalType: Int): ByteArray? { var i = 0; while (i + 3 < bytes.size) { val prefixLength = when { i + 3 < bytes.size && bytes[i] == 0.toByte() && bytes[i + 1] == 0.toByte() && bytes[i + 2] == 0.toByte() && bytes[i + 3] == 1.toByte() -> 4; i + 2 < bytes.size && bytes[i] == 0.toByte() && bytes[i + 1] == 0.toByte() && bytes[i + 2] == 1.toByte() -> 3; else -> { i++; continue } }; if (i + prefixLength >= bytes.size) return null; val start = i; val nalHeader = bytes[i + prefixLength].toInt() and 0x1f; i += prefixLength + 1; while (i < bytes.size && !isStartCode(bytes, i)) i++; if (nalHeader == nalType) return bytes.copyOfRange(start, i) }; return null }
         private fun isStartCode(bytes: ByteArray, i: Int): Boolean = i + 2 < bytes.size && bytes[i] == 0.toByte() && bytes[i + 1] == 0.toByte() && (bytes[i + 2] == 1.toByte() || (i + 3 < bytes.size && bytes[i + 2] == 0.toByte() && bytes[i + 3] == 1.toByte()))
     }
@@ -1361,7 +1456,7 @@ class PlaybackPipeline(
     }
 
     private fun getIntegerOrDefault(format: MediaFormat, key: String, defaultValue: Int): Int = if (format.containsKey(key)) format.getInteger(key) else defaultValue
-    private fun mapVideoStreamType(streamType: Int): Int = when (streamType) { 0x02 -> AvSettings.VIDEO_STREAM_TYPE_MPEG2; 0x1b -> AvSettings.VIDEO_STREAM_TYPE_AVC; else -> AvSettings.VIDEO_STREAM_TYPE_UNDEFINED }
+    private fun mapVideoStreamType(streamType: Int): Int = when (streamType) { 0x02 -> AvSettings.VIDEO_STREAM_TYPE_MPEG2; 0x1b -> AvSettings.VIDEO_STREAM_TYPE_AVC; 0x24 -> AvSettings.VIDEO_STREAM_TYPE_HEVC; else -> AvSettings.VIDEO_STREAM_TYPE_UNDEFINED }
     private fun mapAudioStreamType(streamType: Int): Int = when (streamType) { 0x03 -> AvSettings.AUDIO_STREAM_TYPE_MPEG1; 0x04 -> AvSettings.AUDIO_STREAM_TYPE_MPEG2; 0x0f -> AvSettings.AUDIO_STREAM_TYPE_AAC_ADTS; else -> AvSettings.AUDIO_STREAM_TYPE_UNDEFINED }
 
     fun stop() { runOnPlaybackExecutorBlocking { stopOnPlaybackExecutor() } }

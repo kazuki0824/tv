@@ -1,3 +1,17 @@
+# r52_key_provisioning_deadline_setup
+
+- generic key provisioning connectionでread/write双方の2秒timeout設定を必須setupとし、いずれかの設定失敗時はframe read、decode、replay journal、runtime command適用の前にfail-closedとした。
+- 接続I/O処理を既存AIDL service owner内の小さいmoduleへ分離し、timeout失敗を注入できるhost test境界を追加した。新規worker、queue、retry owner、protocol stateは追加していない。
+- read timeout失敗、write timeout失敗、双方成功の3回帰試験をhost workspaceへ追加した。Rust 1.81でrustfmt、全target check、Clippy `-D warnings`、workspace 171試験が成功した。Android/Soong build、atest、VTS、実card/放送波確認は未実施である。
+
+# r52_key_provisioning_implementation
+
+- init管理Unix socket上のversioned generic key provisioning bridgeを追加し、opaque key tokenの1〜16 byte/VOID除外、request ID、bounded frame、typed statusを検証する。
+- key providerの未解決entry予約、opaque provider ID/provider generation identity、単調key epoch、MULTI2 even/odd key contextのatomic publish、generation-fencedかつretry-idempotentなrevokeをTuner runtime registryへ接続した。Tuner側はCA system IDやB25/B1を解釈しない。
+- packet descramble責務をTuner HALだけに維持し、CAS HALから受け取ったraw materialはbridge境界でprepared key slotへ変換してpacket pathへraw key tableを公開しない。
+- raw/prepared MULTI2 keyのDebug表示をredactし、drop時のzeroizeを追加した。host CIへ鍵台帳単体test crateを追加した。
+- Rust 1.81 host workspaceでCAS鍵protocolとruntime registryのunit testを実行した。Android/Soong build、VTS、実card/放送波の結合確認は未実行である。
+
 # r50eo84_pr55_px4_partial_reception_availability_followup
 
 - px4 ISDB-Tの明示`partialReceptionFlag=TRUE/FALSE`を、採用済み`PTX_GET_TMCC_PARTIAL_RECEPTION`と同一generationのfresh readbackで検証する既存worker経路へ到達可能にした。availability gateはLinux DVB / earth_pt1だけを`UNAVAILABLE`として拒否し、px4を旧blocker状態へ戻さない。
