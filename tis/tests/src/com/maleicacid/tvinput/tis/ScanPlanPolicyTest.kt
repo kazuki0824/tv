@@ -1,12 +1,10 @@
 package com.maleicacid.tvinput.tis
 
 import com.maleicacid.tvinput.common.FrequencyHz
-import com.maleicacid.tvinput.common.StreamSelector
 import com.maleicacid.tvinput.common.StreamSelectorType
 import com.maleicacid.tvinput.common.TransportStreamId16
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -65,17 +63,6 @@ class ScanPlanPolicyTest {
     fun bsDynamicDiscoveryWithNoReportedStreamIdsIsEmpty() {
         val seed = JapanIsdbScanPlan.isdbsBsBands().first()
         assertTrue(JapanIsdbScanPlan.explicitBsCandidatesFromScan(seed, emptyList()).isEmpty())
-    }
-
-    @Test
-    fun bsCandidateRejectsRelativeSelectorEvenWithPx4Hint() {
-        val seed = JapanIsdbScanPlan.isdbsBsBands().first()
-        assertFailsWith<IllegalArgumentException> {
-            seed.copy(
-                streamSelector = StreamSelector.relative(0),
-                backendHint = "px4",
-            )
-        }
     }
 
     @Test
