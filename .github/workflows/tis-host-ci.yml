@@ -1,6 +1,9 @@
 name: PR54 F11/F15 最終文書補正（一時）
 
 on:
+  push:
+    branches:
+      - agent/implement-tis-arib-si-design-pr53
   pull_request:
     paths:
       - "tis/**"
@@ -27,7 +30,6 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          # F15は前段で反映済みであることを確認する。
           design = Path("tis/DESIGN_JA.md")
           text = design.read_text()
           required_f15 = "frontend/HALがdynamic stream-ID discoveryという能力自体を提供しないことをframeworkの`Tuner.RESULT_UNAVAILABLE`として明示した場合に限り"
@@ -84,7 +86,6 @@ TISは引き続き`TvInputManager.isRatingBlocked()`だけをcurrent policy auth
               raise SystemExit("F11合格条件の旧patch契約が見つかりません")
           integration.write_text(text)
 
-          # 実装factと文書契約の最低静的整合。
           from xml.etree import ElementTree
           ns = "{http://schemas.android.com/apk/res/android}"
           root = ElementTree.parse("tis/arib_parental_rating/res/xml/tv_content_rating_systems.xml").getroot()
@@ -99,7 +100,6 @@ TISは引き続き`TvInputManager.isRatingBlocked()`だけをcurrent policy auth
           if Path("tis/platform_patches/lineage-22.1/packages_apps_TV_arib_exceptional_parental_policy.patch").exists():
               raise SystemExit("旧System TV App直接patchが残っています")
           PY
-
           git diff --check
 
       - name: 通常TIS CIを復元して一時物を除去
