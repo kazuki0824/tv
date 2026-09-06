@@ -31,3 +31,5 @@ jobs:
           git add tis/DESIGN_JA.md tis/INTEGRATION.md
           git commit -m "docs(tis): fix ARIB parental policy integration design"
           git push origin HEAD:agent/implement-tis-arib-si-design-pr53
+
+# corrected trigger
