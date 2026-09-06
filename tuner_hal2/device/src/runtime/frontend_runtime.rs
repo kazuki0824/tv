@@ -203,7 +203,7 @@ impl FrontendRuntime {
         self.backend_kind
     }
     #[cfg(test)]
-    pub(crate) fn state(&self) -> FrontendRuntimeState {
+    fn state(&self) -> FrontendRuntimeState {
         self.state
     }
     pub fn generation(&self) -> u64 {
@@ -266,7 +266,7 @@ impl FrontendRuntime {
         self.stream_id_list.as_deref()
     }
     #[cfg(test)]
-    pub(crate) fn active_scan_session(&self) -> Option<&FrontendScanSession> {
+    fn active_scan_session(&self) -> Option<&FrontendScanSession> {
         self.scan_session.as_ref()
     }
     pub fn snapshot(&self) -> FrontendRuntimeSnapshot {
@@ -1081,7 +1081,7 @@ impl FrontendRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn next_generation(&mut self) -> Result<u64, HalError> {
+    fn next_generation(&mut self) -> Result<u64, HalError> {
         let next = self.checked_next_generation()?;
         self.generation = next;
         Ok(next)
