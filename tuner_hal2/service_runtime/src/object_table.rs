@@ -367,8 +367,7 @@ impl RuntimeObjectTable {
         let lifecycle = self.entry_checked_any(object_id, generation)?.lifecycle;
         if !matches!(
             lifecycle,
-            RuntimeObjectLifecycle::Closing { .. }
-                | RuntimeObjectLifecycle::CleanupPending { .. }
+            RuntimeObjectLifecycle::Closing { .. } | RuntimeObjectLifecycle::CleanupPending { .. }
         ) {
             return Err(RuntimeObjectTableError::InvalidLifecycle {
                 object_id,

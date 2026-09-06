@@ -56,10 +56,12 @@ impl WorkerFailureClassifier {
         match result {
             WorkerTerminalResult::Normal(value) => ClassifiedWorkerTerminalResult::Normal(value),
             WorkerTerminalResult::StopRequested => ClassifiedWorkerTerminalResult::StopRequested,
-            WorkerTerminalResult::RuntimeFailure(error) => ClassifiedWorkerTerminalResult::Failure {
-                category: Self::classify_unknown(&error),
-                error,
-            },
+            WorkerTerminalResult::RuntimeFailure(error) => {
+                ClassifiedWorkerTerminalResult::Failure {
+                    category: Self::classify_unknown(&error),
+                    error,
+                }
+            }
             WorkerTerminalResult::PanicOrJoinFailure => ClassifiedWorkerTerminalResult::Failure {
                 category: Self::classify_join_failure(),
                 error: HalError::internal(
@@ -91,9 +93,7 @@ impl WorkerFailureClassifier {
             CallbackDeliveryFailurePhase::NotifierTerminal => {
                 WorkerFailureCategory::CallbackNotifierTerminal
             }
-            CallbackDeliveryFailurePhase::NotifierCleanup => {
-                WorkerFailureCategory::CallbackCleanup
-            }
+            CallbackDeliveryFailurePhase::NotifierCleanup => WorkerFailureCategory::CallbackCleanup,
         };
         ClassifiedCallbackFailure { report, category }
     }

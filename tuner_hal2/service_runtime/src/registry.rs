@@ -1474,10 +1474,7 @@ impl RuntimeRegistry {
     }
 
     #[cfg(test)]
-    fn unbind_lnb_from_frontend(
-        &mut self,
-        frontend_id: FrontendRuntimeId,
-    ) -> Option<LnbRuntimeId> {
+    fn unbind_lnb_from_frontend(&mut self, frontend_id: FrontendRuntimeId) -> Option<LnbRuntimeId> {
         if let Some(lease) = self.lnb_registry.assignment_leases.remove(&frontend_id) {
             let _ = self.lnb_registry.release_rail_reference(lease.lnb_id);
         }
