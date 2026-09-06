@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::descrambler_key_table::DescramblerKeyLookupError;
+use crate::error_mapping::object_table_error_to_hal;
 #[cfg(test)]
 use crate::descrambler_key_table::DescramblerKeySlotId;
 use maleicacid_tuner_hal2_common::{
@@ -17,7 +18,7 @@ use maleicacid_tuner_hal2_demux::config::{
 };
 use maleicacid_tuner_hal2_demux::OpenFilterRequest;
 use maleicacid_tuner_hal2_demux::{
-    AvDataId, AvMediaEventDescriptor, AvSharedBacking, DemuxRuntimeError, DemuxRuntimeErrorKind,
+    AvMediaEventDescriptor, AvSharedBacking, DemuxRuntimeError, DemuxRuntimeErrorKind,
     DemuxRuntimeRollbackToken, DemuxRuntimeState, DvrKind, DvrRuntimeState, PipelineBoundaryReason,
     PipelineDiagnostic, PipelineReport, PipelineResetReport, StreamBoundaryReport, TsInputOrigin,
     TsPacketValidationError, ValidatedTsPacket,
@@ -30,9 +31,9 @@ use maleicacid_tuner_hal2_descrambler::{
 };
 use maleicacid_tuner_hal2_device::{
     FrontendLivePacketSink, FrontendLivePumpOwner, FrontendLivePumpReport,
-    FrontendLiveReaderDescriptor, FrontendRuntimeSnapshot, FrontendRuntimeState,
-    FrontendSignalState, FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
-    FrontendWorkerRegistry, FrontendWorkerStartError, FrontendWorkerStopOutcome,
+    FrontendLiveReaderDescriptor, FrontendRuntimeSnapshot, FrontendSignalState,
+    FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind, FrontendWorkerRegistry,
+    FrontendWorkerStartError, FrontendWorkerStopOutcome,
 };
 use maleicacid_tuner_hal2_domain_request::{
     AidlApi, AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan, DvrConfigureKind,
@@ -1689,8 +1690,8 @@ impl TunerServiceRuntime {
         runtime_id: i64,
         owner: RuntimeOwnerRelation,
     ) -> Result<RuntimeObjectEntry, RuntimeObjectTableError> {
-        let generation = self.object_table.next_generation()?;
-        let object_id = self.object_table.next_object_id()?;
+        let generation = self.allocate_aidl_generation()?;
+        let object_id = self.allocate_aidl_object_id()?;
         let entry = RuntimeObjectEntry {
             object_kind,
             object_id,
