@@ -1,6 +1,6 @@
 package com.maleicacid.tvinput.aribsi
 
-internal object AribComponentProjectionPolicy {
+object AribComponentProjectionPolicy {
     private val r51VideoCodecs = mapOf(0x02 to "MPEG-2", 0x1b to "H.264")
     private val recognizedVideoCodecs = r51VideoCodecs + mapOf(0x24 to "HEVC")
     private val r51AudioCodecs = mapOf(0x03 to "MPEG-Audio", 0x04 to "MPEG-Audio", 0x0f to "AAC")
