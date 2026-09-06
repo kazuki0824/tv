@@ -18,13 +18,13 @@ replace_once(
 
 integration = Path("tis/INTEGRATION.md")
 text = integration.read_text()
-start = text.index("## System TV App exceptional rating policy統合\n")
+start = text.index("## ARIB exceptional parental rating extension統合\n")
 end = text.index("## MediaSync Exact-mode platform統合\n", start)
 section = """## ARIB exceptional ratingのLive TV App最小policy統合
 
-JPN parental rating raw `0x12..0xFF` はTISで `com.maleicacid.tv.ratings / ARIB_EXCEPTIONAL / BROADCASTER_DEFINED` として保持し、rating定義は独立`AribContentRatings` APKがTIF標準providerとして公開する。blocked-rating policyのownerはLive TV Appとする。
+JPN parental rating raw `0x12..0xFF` はTISで年齢値へ推測変換せず、`com.maleicacid.tv.ratings / ARIB_EXCEPTIONAL / BROADCASTER_DEFINED` へ写像する。rating定義とTV Appへの発見経路は独立`AribContentRatings` APKがTIF標準providerとして所有し、blocked-rating policyのownerはLive TV Appとする。
 
-Android 15 / LineageOS 22.1 baselineのpartner customization、RRO、product resource overlayには `ContentRatingLevelPolicy` またはblocked-rating projectionへ外部codeを注入する正式hookがないため、第二policy APKは追加しない。Live TV Appの既存parental policy pathへexceptional rating 1件のprojectionだけを最小product integrationとして加える。TISまたは別APKがLive TV App privateの`NONE/HIGH/MEDIUM/LOW/CUSTOM` stateを読む構成にはしない。実装差分は `tis/platform_patches/lineage-22.1/packages_apps_TV_arib_exceptional_parental_policy.patch` を正規product pathとする。
+Android 15 / LineageOS 22.1 baselineのpartner customization、RRO、product resource overlayはresource customizationに限定され、`ContentRatingLevelPolicy`またはblocked-rating projectionへ外部codeを注入する正式hookを持たない。そのため第二policy APKは追加せず、Live TV Appの既存parental policy pathへexceptional rating 1件のprojectionだけを最小product integrationとして加える。TISまたは別APKがLive TV App privateの`NONE/HIGH/MEDIUM/LOW/CUSTOM` stateを読む構成にはしない。実装差分は `tis/platform_patches/lineage-22.1/packages_apps_TV_arib_exceptional_parental_policy.patch` を正規product pathとする。
 
 policy mappingは、parental controls無効またはglobal policy=`NONE`ならexceptional ratingをblocked集合へ入れず、parental controls有効かつ`HIGH/MEDIUM/LOW/CUSTOM`ならblocked集合へ反映する。既存のblocked-rating永続化、PIN認証後のsession-level `onUnblockContent()`、通常年齢rating、第三者custom ratingの扱いは変更しない。TISは `TvInputManager.isRatingBlocked()` を唯一のpolicy authorityとして使い続ける。
 
