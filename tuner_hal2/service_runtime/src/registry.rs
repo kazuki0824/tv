@@ -1072,7 +1072,7 @@ impl RuntimeRegistry {
     }
 
     #[cfg(test)]
-    pub(crate) fn lnb_runtime_mut(&mut self, id: LnbRuntimeId) -> Option<&mut LnbRuntime> {
+    fn lnb_runtime_mut(&mut self, id: LnbRuntimeId) -> Option<&mut LnbRuntime> {
         self.lnb_registry.runtimes.get_mut(&id)
     }
 
@@ -1451,7 +1451,7 @@ impl RuntimeRegistry {
     }
 
     #[cfg(test)]
-    pub(crate) fn unbind_lnb_from_frontend(
+    fn unbind_lnb_from_frontend(
         &mut self,
         frontend_id: FrontendRuntimeId,
     ) -> Option<LnbRuntimeId> {

@@ -1481,7 +1481,7 @@ impl TunerServiceRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn reserve_filter_capacity_for_test(
+    fn reserve_filter_capacity_for_test(
         &mut self,
         filter_id: i32,
         open_type: FilterOpenType,
@@ -1496,7 +1496,7 @@ impl TunerServiceRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn release_filter_capacity_for_test(
+    fn release_filter_capacity_for_test(
         &mut self,
         filter_id: i32,
     ) -> Result<(), HalError> {
@@ -1504,7 +1504,7 @@ impl TunerServiceRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn reserve_dvr_capacity_for_test(
+    fn reserve_dvr_capacity_for_test(
         &mut self,
         dvr_id: i32,
         buffer_size: i32,
@@ -1514,7 +1514,7 @@ impl TunerServiceRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn release_dvr_capacity_for_test(&mut self, dvr_id: i32) -> Result<(), HalError> {
+    fn release_dvr_capacity_for_test(&mut self, dvr_id: i32) -> Result<(), HalError> {
         self.capacity_ledger.release_dvr(dvr_id)
     }
 

@@ -4297,7 +4297,7 @@ pub(crate) fn start_frontend_backend_scan_session_worker(
 }
 
 #[cfg(test)]
-pub(crate) fn stop_frontend_worker(
+fn stop_frontend_worker(
     runtime: SharedRuntime,
     frontend_id: i32,
     kind: FrontendWorkerKind,

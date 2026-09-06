@@ -3523,7 +3523,7 @@ impl DemuxRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn consume_playback_dvr_queue(
+    fn consume_playback_dvr_queue(
         &mut self,
         dvr_id: i32,
     ) -> Result<PlaybackConsumeReport, DemuxRuntimeError> {
