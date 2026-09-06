@@ -18,7 +18,7 @@ impl RecordIndexParser {
     }
 
     #[cfg(test)]
-    pub(crate) fn processed_packets(&self) -> u64 {
+    fn processed_packets(&self) -> u64 {
         self.processed_packets
     }
 

@@ -906,14 +906,14 @@ impl PacketPipeline {
     }
 
     #[cfg(test)]
-    pub(crate) fn validate_packet(
+    fn validate_packet(
         bytes: &[u8],
     ) -> Result<ValidatedTsPacket<'_>, TsPacketValidationError> {
         ValidatedTsPacket::validate(bytes)
     }
 
     #[cfg(test)]
-    pub(crate) fn push_ts_packet(
+    fn push_ts_packet(
         &mut self,
         packet: &[u8],
         kind: PipelineInputKind,
@@ -1038,7 +1038,7 @@ impl PacketPipeline {
     }
 
     #[cfg(test)]
-    pub(crate) fn inspect_ts_packet<'a>(&self, packet: &'a [u8]) -> Option<ValidatedTsPacket<'a>> {
+    fn inspect_ts_packet<'a>(&self, packet: &'a [u8]) -> Option<ValidatedTsPacket<'a>> {
         Self::validate_packet(packet).ok()
     }
 

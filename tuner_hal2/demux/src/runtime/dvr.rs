@@ -173,9 +173,9 @@ pub struct DvrRuntimeSnapshot {
     #[cfg(test)]
     pub(crate) playback_assembler_present: bool,
     #[cfg(test)]
-    pub(crate) playback_completion: TsPacketCompletionBuffer,
+    playback_completion: TsPacketCompletionBuffer,
     #[cfg(test)]
-    pub(crate) playback_processing_buffer: Vec<u8>,
+    playback_processing_buffer: Vec<u8>,
     pub playback_stats: PlaybackStats,
     pub playback_flush_diagnostic: PlaybackFlushDiagnostic,
     pub attached_record_filters: BTreeSet<i32>,

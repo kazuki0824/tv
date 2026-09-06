@@ -714,7 +714,7 @@ impl FilterRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn prepare_next_source_relation_generation(&self) -> Option<u64> {
+    fn prepare_next_source_relation_generation(&self) -> Option<u64> {
         self.source_relation_generation
             .checked_add(1)
             .filter(|generation| *generation != 0)
