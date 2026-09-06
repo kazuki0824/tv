@@ -37,65 +37,68 @@ jobs:
           import re
 
           targets = {
-              'tuner_hal2/aidl_service/src/service_context.rs': [
-                  'drop_leak_error_diagnostic_snapshot',
-              ],
+              'tuner_hal2/aidl_service/src/service_context.rs': [('fn', 'drop_leak_error_diagnostic_snapshot')],
               'tuner_hal2/demux/src/parser/packet_pipeline.rs': [
-                  'validate_packet', 'push_ts_packet', 'inspect_ts_packet',
+                  ('fn', 'validate_packet'), ('fn', 'push_ts_packet'), ('fn', 'inspect_ts_packet'),
               ],
-              'tuner_hal2/demux/src/parser/record_index.rs': [
-                  'processed_packets',
-              ],
+              'tuner_hal2/demux/src/parser/record_index.rs': [('fn', 'processed_packets')],
               'tuner_hal2/demux/src/parser/sections.rs': [
-                  'oversized_section_drops', 'stale_partial_section_discards', 'push_payload',
+                  ('fn', 'oversized_section_drops'), ('fn', 'stale_partial_section_discards'), ('fn', 'push_payload'),
               ],
               'tuner_hal2/demux/src/runtime/demux.rs': [
-                  'register_filter_from_open_request', 'consume_playback_dvr_queue',
+                  ('fn', 'register_filter_from_open_request'), ('fn', 'consume_playback_dvr_queue'),
               ],
               'tuner_hal2/demux/src/runtime/dvr.rs': [
-                  'playback_completion', 'playback_processing_buffer',
+                  ('field', 'playback_completion'), ('field', 'playback_processing_buffer'),
               ],
-              'tuner_hal2/demux/src/runtime/filter.rs': [
-                  'prepare_next_source_relation_generation',
-              ],
+              'tuner_hal2/demux/src/runtime/filter.rs': [('fn', 'prepare_next_source_relation_generation')],
               'tuner_hal2/device/src/runtime/frontend_runtime.rs': [
-                  'state', 'active_scan_session', 'next_generation',
+                  ('fn', 'state'), ('fn', 'active_scan_session'), ('fn', 'next_generation'),
               ],
               'tuner_hal2/device/src/runtime/tune_txn.rs': [
-                  'attempted_steps', 'failure', 'completed_steps', 'TuneWorkerStart',
-                  'apply_with_worker', 'FrontendTuneOutcome', 'FrontendTuneTxn',
+                  ('fn', 'attempted_steps'), ('fn', 'failure'), ('fn', 'completed_steps'),
+                  ('struct', 'TuneWorkerStart'), ('fn', 'apply_with_worker'),
+                  ('enum', 'FrontendTuneOutcome'), ('struct', 'FrontendTuneTxn'),
               ],
               'tuner_hal2/service_runtime/src/boot.rs': [
-                  'reserve_filter_capacity_for_test', 'release_filter_capacity_for_test',
-                  'reserve_dvr_capacity_for_test', 'release_dvr_capacity_for_test',
+                  ('fn', 'reserve_filter_capacity_for_test'), ('fn', 'release_filter_capacity_for_test'),
+                  ('fn', 'reserve_dvr_capacity_for_test'), ('fn', 'release_dvr_capacity_for_test'),
               ],
-              'tuner_hal2/service_runtime/src/frontend_worker_txn.rs': [
-                  'stop_frontend_worker',
-              ],
+              'tuner_hal2/service_runtime/src/frontend_worker_txn.rs': [('fn', 'stop_frontend_worker')],
               'tuner_hal2/service_runtime/src/lnb_ops.rs': [
-                  'set_frontend_lnb', 'apply_lnb_voltage', 'apply_lnb_tone',
-                  'apply_lnb_satellite_position', 'send_lnb_diseqc',
+                  ('fn', 'set_frontend_lnb'), ('fn', 'apply_lnb_voltage'), ('fn', 'apply_lnb_tone'),
+                  ('fn', 'apply_lnb_satellite_position'), ('fn', 'send_lnb_diseqc'),
               ],
               'tuner_hal2/service_runtime/src/registry.rs': [
-                  'lnb_runtime_mut', 'unbind_lnb_from_frontend',
+                  ('fn', 'lnb_runtime_mut'), ('fn', 'unbind_lnb_from_frontend'),
               ],
           }
 
+          def declaration_pattern(kind, name):
+              n = re.escape(name)
+              if kind == 'fn':
+                  return re.compile(rf'\bpub\(crate\)\s+(?:(?:const|async|unsafe)\s+)*fn\s+{n}\b')
+              if kind == 'field':
+                  return re.compile(rf'\bpub\(crate\)\s+{n}\s*:')
+              if kind == 'struct':
+                  return re.compile(rf'\bpub\(crate\)\s+struct\s+{n}\b')
+              if kind == 'enum':
+                  return re.compile(rf'\bpub\(crate\)\s+enum\s+{n}\b')
+              raise ValueError(kind)
+
           changed = 0
-          for path, names in targets.items():
+          for path, declarations in targets.items():
               p = Path(path)
               lines = p.read_text().splitlines(keepends=True)
-              for name in names:
-                  matches = []
-                  for i, line in enumerate(lines):
-                      if 'pub(crate)' in line and re.search(rf'\b{re.escape(name)}\b', line):
-                          matches.append(i)
+              for kind, name in declarations:
+                  pattern = declaration_pattern(kind, name)
+                  matches = [i for i, line in enumerate(lines) if pattern.search(line)]
                   if len(matches) != 1:
-                      raise SystemExit(f'{path}: {name}: expected exactly one pub(crate) declaration line, got {matches}')
+                      raise SystemExit(f'{path}: {kind} {name}: expected exactly one declaration, got {matches}')
                   i = matches[0]
-                  context = ''.join(lines[max(0, i - 5):i + 1])
+                  context = ''.join(lines[max(0, i - 8):i + 1])
                   if '#[cfg(test)]' not in context:
-                      raise SystemExit(f'{path}: {name}: declaration is not guarded by nearby #[cfg(test)]')
+                      raise SystemExit(f'{path}: {kind} {name}: declaration is not guarded by nearby #[cfg(test)]')
                   lines[i] = lines[i].replace('pub(crate) ', '', 1)
                   changed += 1
               p.write_text(''.join(lines))
