@@ -225,7 +225,7 @@ impl From<AudioMediaFrame> for PreparedAvMediaPayload {
 
 impl FilterRuntime {
     #[cfg(test)]
-    pub(crate) fn new(filter_id: i32, generation: u64, open_kind: PipelineOpenKind) -> Self {
+    pub(super) fn new(filter_id: i32, generation: u64, open_kind: PipelineOpenKind) -> Self {
         let open_type = match open_kind {
             PipelineOpenKind::Other => FilterOpenType::TsUndefined,
             PipelineOpenKind::Raw => FilterOpenType::TsRaw,
@@ -777,7 +777,7 @@ impl FilterRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn set_source_relation_generation_for_test(&mut self, generation: u64) {
+    pub(super) fn set_source_relation_generation_for_test(&mut self, generation: u64) {
         self.source_relation_generation = generation;
     }
 

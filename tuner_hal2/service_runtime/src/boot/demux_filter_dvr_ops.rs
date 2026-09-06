@@ -259,7 +259,7 @@ impl TunerServiceRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn start_filter_runtime(&mut self, filter_id: i32) -> Result<(), HalError> {
+    pub(super) fn start_filter_runtime(&mut self, filter_id: i32) -> Result<(), HalError> {
         self.transact_start_filter_runtime(filter_id)
     }
 

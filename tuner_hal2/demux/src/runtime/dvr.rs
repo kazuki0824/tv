@@ -226,7 +226,7 @@ pub struct DvrRuntime {
 
 impl DvrRuntime {
     #[cfg(test)]
-    pub(crate) fn new(dvr_id: i32, kind: DvrKind, generation: u64) -> Self {
+    pub(super) fn new(dvr_id: i32, kind: DvrKind, generation: u64) -> Self {
         Self::new_open_request(dvr_id, kind, generation, 0, false)
     }
     pub(crate) fn new_open_request(
@@ -373,25 +373,25 @@ impl DvrRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn install_test_playback_processing_buffer(&mut self, buffer: Vec<u8>) {
+    pub(super) fn install_test_playback_processing_buffer(&mut self, buffer: Vec<u8>) {
         self.playback_assembler_present = matches!(self.kind, DvrKind::Playback);
         self.playback_processing_buffer = buffer;
     }
 
     #[cfg(test)]
-    pub(crate) fn push_playback_bytes(&mut self, data: &[u8]) -> TsPacketBufferDrain {
+    pub(super) fn push_playback_bytes(&mut self, data: &[u8]) -> TsPacketBufferDrain {
         self.playback_completion.push(data)
     }
     #[cfg(test)]
-    pub(crate) fn take_playback_processing_buffer(&mut self) -> Vec<u8> {
+    pub(super) fn take_playback_processing_buffer(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.playback_processing_buffer)
     }
     #[cfg(test)]
-    pub(crate) fn restore_playback_processing_buffer(&mut self, buffer: Vec<u8>) {
+    pub(super) fn restore_playback_processing_buffer(&mut self, buffer: Vec<u8>) {
         self.playback_processing_buffer = buffer;
     }
     #[cfg(test)]
-    pub(crate) fn drain_playback_completion_for_boundary(&mut self) -> usize {
+    pub(super) fn drain_playback_completion_for_boundary(&mut self) -> usize {
         let drain = self.playback_completion.drain_for_boundary();
         drain
             .packets
