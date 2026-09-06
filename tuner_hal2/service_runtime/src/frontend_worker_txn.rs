@@ -637,7 +637,6 @@ impl FrontendWorkerCleanupStepOutcome {
         Self::RestoreFrontendSnapshot { target, result }
     }
 
-#[cfg(test)]
     #[cfg(test)]
     fn take_demux_rollback_tokens(
         target: FrontendWorkerCleanupTarget,
@@ -646,7 +645,7 @@ impl FrontendWorkerCleanupStepOutcome {
         Self::TakeDemuxRollbackTokens { target, result }
     }
 
-#[cfg(test)]
+    #[cfg(test)]
     fn restore_bound_demuxes(
         target: FrontendWorkerCleanupTarget,
         result: Result<(), HalError>,
@@ -4857,10 +4856,7 @@ fn close_frontend_workers_and_live_data_with_sink(
                             frontend_worker_stop_result_from_outcome(&outcome),
                         ));
                     }
-                    let finalizer_result = match (
-                        terminal_acceptance_result,
-                        fixed_power_result,
-                    ) {
+                    let finalizer_result = match (terminal_acceptance_result, fixed_power_result) {
                         (Ok(()), Ok(())) => Ok(()),
                         (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
                         (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
