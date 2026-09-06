@@ -15,12 +15,14 @@ use maleicacid_tuner_hal2_demux::{
     DvrFilterLinkRequest, PipelineBoundaryReason, PipelineResetReport, PlaybackConsumeReport,
     StreamBoundaryReport,
 };
-use maleicacid_tuner_hal2_demux::{
-    FilterConfig, FilterOpenType, FilterRuntimeState, OpenFilterRequest,
-};
+use maleicacid_tuner_hal2_demux::{FilterConfig, FilterOpenType, FilterRuntimeState};
+#[cfg(test)]
+use maleicacid_tuner_hal2_demux::OpenFilterRequest;
 use maleicacid_tuner_hal2_domain_request::{
-    DvrConfigureRequest, FilterAvStreamTypeRequest, FilterDelayHintRequest, OpenDvrRequest,
+    DvrConfigureRequest, FilterAvStreamTypeRequest, FilterDelayHintRequest,
 };
+#[cfg(test)]
+use maleicacid_tuner_hal2_domain_request::OpenDvrRequest;
 
 pub(crate) struct DemuxFrontendSourceTxn {
     demux_id: DemuxRuntimeId,
