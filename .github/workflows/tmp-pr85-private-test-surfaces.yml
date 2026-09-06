@@ -31,35 +31,16 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import re
-
           targets = {
-            'tuner_hal2/demux/src/runtime/dvr.rs': [
-              'new',
-              'install_test_playback_processing_buffer',
-              'push_playback_bytes',
-              'take_playback_processing_buffer',
-              'restore_playback_processing_buffer',
-              'drain_playback_completion_for_boundary',
-            ],
-            'tuner_hal2/demux/src/runtime/filter.rs': [
-              'new',
-              'set_source_relation_generation_for_test',
-            ],
-            'tuner_hal2/demux/src/runtime/pcr_clock_anchor.rs': [
-              'observation_for_test',
-            ],
-            'tuner_hal2/device/src/runtime/tune_txn.rs': [
-              'generation',
-            ],
-            'tuner_hal2/service_runtime/src/boot/demux_filter_dvr_ops.rs': [
-              'start_filter_runtime',
-            ],
+            'tuner_hal2/demux/src/runtime/dvr.rs': ['new','install_test_playback_processing_buffer','push_playback_bytes','take_playback_processing_buffer','restore_playback_processing_buffer','drain_playback_completion_for_boundary'],
+            'tuner_hal2/demux/src/runtime/filter.rs': ['new','set_source_relation_generation_for_test'],
+            'tuner_hal2/demux/src/runtime/pcr_clock_anchor.rs': ['observation_for_test'],
+            'tuner_hal2/device/src/runtime/tune_txn.rs': ['generation'],
+            'tuner_hal2/service_runtime/src/boot/demux_filter_dvr_ops.rs': ['start_filter_runtime'],
           }
-
           def pattern(name):
             n = re.escape(name)
             return re.compile(rf'\bpub\(crate\)\s+(?:(?:const|async|unsafe)\s+)*fn\s+{n}\b')
-
           changed = 0
           for path, names in targets.items():
             p = Path(path)
@@ -70,19 +51,18 @@ jobs:
               if len(hits) != 1:
                 raise SystemExit(f'{path}: {name}: expected exactly one declaration, got {hits}')
               i = hits[0]
-              context = ''.join(lines[max(0, i - 8):i + 1])
-              if '#[cfg(test)]' not in context:
+              if '#[cfg(test)]' not in ''.join(lines[max(0, i - 8):i + 1]):
                 raise SystemExit(f'{path}: {name}: not guarded by nearby #[cfg(test)]')
               lines[i] = lines[i].replace('pub(crate) ', 'pub(super) ', 1)
               changed += 1
             p.write_text(''.join(lines))
-
           print('narrowed to pub(super):', changed)
           if changed != 11:
             raise SystemExit(f'expected 11, got {changed}')
           PY
           git diff --check
-          git diff --stat
+          git add tuner_hal2
+          git commit -m 'refactor(tuner-hal2): narrow shared test visibility to parent modules'
       - name: Validate visibility invariants
         run: |
           python3 - <<'PY'
@@ -115,3 +95,5 @@ jobs:
           cd tuner_hal2/host_ci
           cargo +1.81.0 check --workspace --lib --locked
           cargo +1.81.0 clippy --workspace --all-targets --locked -- -D warnings
+      - name: Publish PR branch
+        run: git push origin HEAD:fix/tuner-hal2-soong-clippy-hygiene
