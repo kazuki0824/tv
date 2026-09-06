@@ -1,0 +1,9 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.maleicacid.tv.ratings.tests">
+
+    <uses-permission android:name="android.permission.MODIFY_PARENTAL_CONTROLS" />
+
+    <instrumentation
+        android:name="androidx.test.runner.AndroidJUnitRunner"
+        android:targetPackage="com.android.tv" />
+</manifest>
