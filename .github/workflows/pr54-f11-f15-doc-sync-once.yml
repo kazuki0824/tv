@@ -1,0 +1,96 @@
+name: PR54 F11/F15 文書同期（一時）
+
+on:
+  push:
+    branches:
+      - agent/implement-tis-arib-si-design-pr53
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/implement-tis-arib-si-design-pr53
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: F11/F15の大規模文書とCI契約を部分更新
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text()
+              if old not in text:
+                  raise SystemExit(f"置換対象が見つかりません: {path}")
+              p.write_text(text.replace(old, new, 1))
+
+          replace_exact(
+              "tis/DESIGN_JA.md",
+              """TISの物理候補表は製品scan実装データのSSOTであり、`開発規則.md`の規範値に従うRF候補を唯一保持する。BS setup/rescanは物理RFごとにstream selector未指定の`IsdbsFrontendSettings`でAOSP `Tuner.scan()`を実行し、`ScanCallback.onInputStreamIdsReported()`で得たcurrent stream IDをtyped `STREAM_ID` explicit tune candidateへ変換する。`Tuner.scan()`が失敗した場合、timeoutした場合、または完了してもstream IDが0件の場合は診断を分離してfail-closedとし、versioned TSID表を成功候補へ代入しない。受信後のservice identityはPAT/NIT/SDT由来ONID/TSID/SIDを正とする。TIS以外に日本向け候補表を重複保持せず、候補生成をHALのeffective capabilityやdriver名で分岐しない。driver固有slotまたはlegacy数値域への写像はTuner HALへ委ねる。""",
+              """TISの物理候補表は製品scan実装データのSSOTであり、`開発規則.md`の規範値に従うRF候補を唯一保持する。BS setup/rescanは物理RFごとにstream selector未指定の`IsdbsFrontendSettings`でAOSP `Tuner.scan()`を実行し、`ScanCallback.onInputStreamIdsReported()`で得たcurrent stream IDをtyped `STREAM_ID` explicit tune candidateへ変換する。dynamic stream-ID discoveryが正常に完了して1件以上のIDを報告した場合は、その報告IDだけを候補にする。scan開始後の失敗、timeout、または正常完了してもstream IDが0件の場合はfail-closedとし、versioned TSID表を代入しない。一方、frontend/HALがdynamic stream-ID discoveryという能力自体を提供しないことをframeworkの`Tuner.RESULT_UNAVAILABLE`として明示した場合に限り、`開発規則.md`のversioned BS TSID表を当該RFのexplicit `STREAM_ID` tune候補seedとして使用してよい。TISはbackend名、driver名、HAL内部のeffective capabilityを取得・推測してこの分岐を行わず、frameworkから返るtyped resultだけを判断入力にする。versioned TSID表はchannel登録事実ではなく選局候補に限定し、各候補を実際にtuneした後、PAT/NIT/SDT actualからONID/TSID/SIDとcurrent transportを確認できたserviceだけを登録・公開する。driver固有slotまたはlegacy数値域への写像はTuner HALへ委ねる。""",
+          )
+
+          replace_exact(
+              "tis/DESIGN_JA.md",
+              """- ARIB exceptional ratingのpolicy ownerはLive TV Appとする。rating定義は独立`AribContentRatings` APKがTIF標準providerとして公開する。Android 15 / LineageOS 22.1 baselineではpartner customizationとRRO/product overlayはresource customizationに限定され、`ContentRatingLevelPolicy`またはblocked-rating projectionへ外部codeを注入する正式hookがないため、product integrationではLive TV Appの既存parental policy pathへ `ARIB_EXCEPTIONAL / BROADCASTER_DEFINED` 1件のprojectionだけを最小差分で統合する。第二policy APKを追加せず、TISや別APKからLive TV App privateの`NONE/HIGH/MEDIUM/LOW/CUSTOM` stateを読む設計にしない。parental controls無効またはglobal policy=`NONE`ではexceptional ratingをblocked集合へ入れず、parental controls有効かつ`HIGH/MEDIUM/LOW/CUSTOM`ではblocked集合へ反映する。PIN認証済みcurrent contentの `onUnblockContent()` 一時解除は維持し、第三者custom rating、CTS Verifier由来rating、他domain/ratingSystemへこのproduct policyを波及させない。TISはraw値から独自policyを実装せず `TvInputManager.isRatingBlocked()` の結果だけに従う。""",
+              """- ARIB exceptional ratingのpolicy ownerはLive TV Appとする。rating定義は独立`AribContentRatings` APKがTIF標準providerとして公開し、System TV App本体へ直接patchを当てない。Android 15 / LineageOS 22.1の既存`ContentRatingLevelPolicy`はTIF rating-provider XMLの`contentAgeHint`を使い、`HIGH`は6以上、`MEDIUM`は12以上、`LOW`は各rating system内の最大値以上をblocked候補へ投影し、`NONE`は空集合にする。この既存extension pointへ合わせ、単一ratingである`ARIB_EXCEPTIONAL / BROADCASTER_DEFINED`にはproduct preset policy用の固定`contentAgeHint=12`を付与する。これはraw `parental_rating_descriptor.rating`を12歳または年齢値へ変換する意味ではなく、明示受信した`0x12..0xFF`は従来どおり全て同一canonical exceptional ratingへ写像する。`HIGH/MEDIUM/LOW`では既存TV App policyによりこの1件をblocked候補へ含め、`NONE`では外し、`CUSTOM`では通常のblocked-rating編集として同ratingを追加・削除できる。第二policy APK、TV App private state reader、System TV App source patchを追加せず、PIN認証済みcurrent contentの`onUnblockContent()`一時解除と他domain/ratingSystemのpolicyを変更しない。TISはraw値から独自policyを実装せず`TvInputManager.isRatingBlocked()`の結果だけに従う。""",
+          )
+
+          replace_exact(
+              "tis/INTEGRATION.md",
+              """## ARIB exceptional ratingのLive TV App最小policy統合
+
+JPN parental rating raw `0x12..0xFF` はTISで年齢値へ推測変換せず、`com.maleicacid.tv.ratings / ARIB_EXCEPTIONAL / BROADCASTER_DEFINED` へ写像する。rating定義とTV Appへの発見経路は独立`AribContentRatings` APKがTIF標準providerとして所有し、blocked-rating policyのownerはLive TV Appとする。
+
+Android 15 / LineageOS 22.1 baselineのpartner customization、RRO、product resource overlayはresource customizationに限定され、`ContentRatingLevelPolicy`またはblocked-rating projectionへ外部codeを注入する正式hookを持たない。そのため第二policy APKは追加せず、Live TV Appの既存parental policy pathへexceptional rating 1件のprojectionだけを最小product integrationとして加える。TISまたは別APKがLive TV App privateの`NONE/HIGH/MEDIUM/LOW/CUSTOM` stateを読む構成にはしない。実装差分は `tis/platform_patches/lineage-22.1/packages_apps_TV_arib_exceptional_parental_policy.patch` を正規product pathとする。
+
+policy mappingは、parental controls無効またはglobal policy=`NONE`ならexceptional ratingをblocked集合へ入れず、parental controls有効かつ`HIGH/MEDIUM/LOW/CUSTOM`ならblocked集合へ反映する。既存のblocked-rating永続化、PIN認証後のsession-level `onUnblockContent()`、通常年齢rating、第三者custom ratingの扱いは変更しない。TISは `TvInputManager.isRatingBlocked()` を唯一のpolicy authorityとして使い続ける。
+
+製品統合ではpatch適用後のLive TV App target compileに加え、`AribContentRatings` discovery、parental controls無効、`NONE`、`HIGH/MEDIUM/LOW/CUSTOM`、PIN unblock、他domain/ratingSystem非干渉を確認する。
+""",
+              """## ARIB exceptional ratingのLive TV App標準extension統合
+
+JPN parental rating raw `0x12..0xFF` はTISで年齢値へ推測変換せず、`com.maleicacid.tv.ratings / ARIB_EXCEPTIONAL / BROADCASTER_DEFINED` へ写像する。rating定義とTV Appへの発見経路は独立`AribContentRatings` APKがTIF標準providerとして所有し、blocked-rating policyのownerはLive TV Appとする。System TV App本体へ直接patchを当てる方式は採用しない。
+
+Android 15 / LineageOS 22.1の既存`ContentRatingLevelPolicy`は、TIF rating-provider XMLの`contentAgeHint`を既存preset policyの入力として使用する。`HIGH`は6以上、`MEDIUM`は12以上、`LOW`はrating system内の最大値以上をblocked候補へ含め、`NONE`は空集合にする。そこで単一ratingである`BROADCASTER_DEFINED`へ固定`contentAgeHint=12`を与え、stock TV Appの既存policy pathへ標準metadataだけで接続する。`12`はproduct preset policy用のhintであり、ARIB raw `0x12..0xFF`の年齢解釈ではない。`CUSTOM`では通常のblocked-rating編集として同canonical ratingを追加・削除できる。第二policy APK、TV App private state reader、`packages/apps/TV` source patchは追加しない。
+
+製品buildでは`AribContentRatings`を組み込み、rating-provider receiverとXML metadataを発見可能にする。静的契約はTIS host CIのXML contractでpackage/action/meta-data、`ARIB_EXCEPTIONAL / BROADCASTER_DEFINED`、`contentAgeHint=12`、旧System TV App patch不存在を検査する。TV App側の動的境界はplatform-signed `AribContentRatingsTvAppIntegrationTests`を`LiveTv`へinstrumentし、同canonical `TvContentRating`を`TvInputManager.addBlockedRating()`でblock、`removeBlockedRating()`でunblockでき、`isRatingBlocked()`が追従することを確認する。試験後は開始時のblocked状態を復元する。
+
+```text
+m AribContentRatings AribContentRatingsTvAppIntegrationTests
+atest AribContentRatingsTvAppIntegrationTests
+```
+
+TISは引き続き`TvInputManager.isRatingBlocked()`だけをcurrent policy authorityとして扱う。既存のblocked-rating永続化、PIN認証後のsession-level `onUnblockContent()`、通常年齢rating、第三者custom ratingの扱いは変更しない。
+""",
+          )
+
+          workflow = Path(".github/workflows/tis-host-ci.yml")
+          workflow_text = workflow.read_text()
+          old = """          for path in paths:\n              ElementTree.parse(path)\n              print(path)\n          PY\n"""
+          new = """          for path in paths:\n              ElementTree.parse(path)\n              print(path)\n\n          android_ns = \"{http://schemas.android.com/apk/res/android}\"\n          rating_xml = Path(\"tis/arib_parental_rating/res/xml/tv_content_rating_systems.xml\")\n          rating_root = ElementTree.parse(rating_xml).getroot()\n          rating_system = rating_root.find(\"rating-system-definition\")\n          if rating_system is None or rating_system.get(android_ns + \"name\") != \"ARIB_EXCEPTIONAL\":\n              raise SystemExit(\"ARIB_EXCEPTIONAL rating-system-definitionがありません\")\n          rating = rating_system.find(\"rating-definition\")\n          if rating is None or rating.get(android_ns + \"name\") != \"BROADCASTER_DEFINED\":\n              raise SystemExit(\"BROADCASTER_DEFINED rating-definitionがありません\")\n          if rating.get(android_ns + \"contentAgeHint\") != \"12\":\n              raise SystemExit(\"ARIB exceptionalのproduct preset contentAgeHintは12である必要があります\")\n\n          provider_manifest = ElementTree.parse(\"tis/arib_parental_rating/AndroidManifest.xml\").getroot()\n          if provider_manifest.get(\"package\") != \"com.maleicacid.tv.ratings\":\n              raise SystemExit(\"rating provider packageがcanonical domainと一致しません\")\n          receiver = provider_manifest.find(\"application/receiver\")\n          if receiver is None:\n              raise SystemExit(\"rating provider receiverがありません\")\n          actions = {node.get(android_ns + \"name\") for node in receiver.findall(\"intent-filter/action\")}\n          if \"android.media.tv.action.QUERY_CONTENT_RATING_SYSTEMS\" not in actions:\n              raise SystemExit(\"QUERY_CONTENT_RATING_SYSTEMS actionがありません\")\n          metadata = receiver.find(\"meta-data\")\n          if metadata is None or metadata.get(android_ns + \"name\") != \"android.media.tv.metadata.CONTENT_RATING_SYSTEMS\":\n              raise SystemExit(\"CONTENT_RATING_SYSTEMS metadataがありません\")\n          if Path(\"tis/platform_patches/lineage-22.1/packages_apps_TV_arib_exceptional_parental_policy.patch\").exists():\n              raise SystemExit(\"System TV App直接patchをrating policyの正規経路にしてはなりません\")\n          PY\n"""
+          if old not in workflow_text:
+              raise SystemExit("TIS XML contract置換対象が見つかりません")
+          workflow.write_text(workflow_text.replace(old, new, 1))
+          PY
+
+      - name: 一時workflowを削除して通常commitへ確定
+        shell: bash
+        run: |
+          rm .github/workflows/pr54-f11-f15-doc-sync-once.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tis/DESIGN_JA.md tis/INTEGRATION.md .github/workflows/tis-host-ci.yml .github/workflows/pr54-f11-f15-doc-sync-once.yml
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "docs(tis): F11/F15契約を実装へ同期"
+          git push origin HEAD:agent/implement-tis-arib-si-design-pr53
