@@ -57,7 +57,7 @@ jobs:
               ],
               'tuner_hal2/device/src/runtime/tune_txn.rs': [
                   ('fn', 'attempted_steps'), ('fn', 'failure'), ('fn', 'completed_steps'),
-                  ('struct', 'TuneWorkerStart'), ('fn', 'apply_with_worker'),
+                  ('trait', 'TuneWorkerStart'), ('fn', 'apply_with_worker'),
                   ('enum', 'FrontendTuneOutcome'), ('struct', 'FrontendTuneTxn'),
               ],
               'tuner_hal2/service_runtime/src/boot.rs': [
@@ -84,6 +84,8 @@ jobs:
                   return re.compile(rf'\bpub\(crate\)\s+struct\s+{n}\b')
               if kind == 'enum':
                   return re.compile(rf'\bpub\(crate\)\s+enum\s+{n}\b')
+              if kind == 'trait':
+                  return re.compile(rf'\bpub\(crate\)\s+trait\s+{n}\b')
               raise ValueError(kind)
 
           changed = 0
