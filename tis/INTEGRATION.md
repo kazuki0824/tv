@@ -114,11 +114,10 @@ JPN parental rating raw `0x12..0xFF` はTISで年齢値へ推測変換せず、`
 
 Android 15 / LineageOS 22.1系の既存`ContentRatingLevelPolicy`は、TIF rating-provider XMLの`contentAgeHint`をpreset policyの入力として使う。`HIGH`は6以上、`MEDIUM`は12以上、`LOW`はrating system内の最大age hint以上をblocked候補へ含め、`NONE`は空集合にする。単一ratingである`BROADCASTER_DEFINED`は`contentAgeHint=12`で公開し、stock policyでは`HIGH/MEDIUM/LOW`の各presetでblocked候補になる。12はproduct preset policy分類用metadataであり、ARIB raw `0x12..0xFF`の年齢解釈ではない。`CUSTOM`ではstock TV Appの通常rating設定から同canonical ratingを追加・削除する。第二policy APK、TV App private state reader、`packages/apps/TV` source patchは追加しない。
 
-製品buildでは`AribContentRatings`とstock `LiveTv`を組み込み、rating-provider receiverとXML metadataを発見可能にする。product treeではplatform-signed `AribContentRatingsTvAppIntegrationTests`を`LiveTv`へinstrumentし、canonical ratingについて`TvInputManager.addBlockedRating()` / `removeBlockedRating()` / `isRatingBlocked()`が同一authorityで動作し、試験後にblocked状態を復元できることを確認する。
+製品buildでは`AribContentRatings`とstock `LiveTv`を組み込み、rating-provider receiverとXML metadataを発見可能にする。repo内の静的確認ではprovider package、`ACTION_QUERY_CONTENT_RATING_SYSTEMS`、`META_DATA_CONTENT_RATING_SYSTEMS`、`ARIB_EXCEPTIONAL / BROADCASTER_DEFINED`、`contentAgeHint=12`を確認し、System TV App本体へのARIB専用source patchを要求しない。product tree / 実機ではrating provider discovery、parental controls無効、`NONE`、`HIGH/MEDIUM/LOW`、`CUSTOM`での標準blocked-rating編集、PIN unblock、他domain/ratingSystem非干渉を確認する。
 
 ```text
-m AribContentRatings AribContentRatingsTvAppIntegrationTests
-atest AribContentRatingsTvAppIntegrationTests
+m AribContentRatings LiveTv
 ```
 
 TISは引き続き`TvInputManager.isRatingBlocked()`だけをcurrent policy authorityとして扱う。既存のblocked-rating永続化、PIN認証後のsession-level `onUnblockContent()`、通常年齢rating、第三者custom ratingの扱いは変更しない。
@@ -191,7 +190,7 @@ adb shell dumpsys tv_input | grep -i Maleicacid
 
 AOSP system-defined `com.android.tv / ISDB / ISDB_4..ISDB_20` に加え、`AribContentRatings` が `com.maleicacid.tv.ratings / ARIB_EXCEPTIONAL / BROADCASTER_DEFINED` をTIF標準rating-provider機構から公開していることを確認する。TISは明示的なARIB `0x12..0xFF` をこのexceptional ratingへ写像し、rating情報そのものが存在しない場合だけ `TvContentRating.UNRATED` を使用する。
 
-System TV App本体は本repoの所有物ではないため、同等実装を本repoへ複製しない。製品platform統合ではSystem TV App側に、上記product固有exceptional ratingだけを対象とするpolicy patchを含めることを必須条件とする。parental controlsが有効でglobal policyが`NONE`以外の場合はこのratingをglobal blocked-rating集合へ反映する一方、PIN認証済みの現在コンテンツに対する `onUnblockContent()` 一時解除は維持する。第三者custom rating、CTS Verifierが提供するrating、他domain/ratingSystemのblock/unblock可否へこのpolicyを波及させない。
+System TV App本体へARIB専用source patchを追加しない。`AribContentRatings`のTIF標準rating-provider metadataをstock TV Appが読み込み、`contentAgeHint=12`を既存preset policyへ適用する。`HIGH/MEDIUM/LOW`ではexceptional ratingがblocked候補に含まれ、`NONE`では含まれない。`CUSTOM`はstock TV Appの通常blocked-rating編集を使う。PIN認証済みの現在コンテンツに対する`onUnblockContent()`一時解除を維持し、第三者custom rating、CTS Verifier由来rating、他domain/ratingSystemのblock/unblock可否へこのproduct metadataを波及させない。
 
 TIS自身はraw ARIB値から独自にAV blockを強制せず、現在コンテンツの `TvContentRating` を `TvInputManager.isRatingBlocked()` に渡した結果だけをpolicy判定として使用する。`notifyContentBlocked()` / `notifyContentAllowed()` とPIN解除のruntime意味論は `DESIGN_JA.md` を正とする。
 
@@ -259,6 +258,6 @@ adb shell dumpsys tv_input | grep -i Maleicacid
 - システムTVアプリから設定画面を起動できる。
 - setup 後に少なくとも1つの非スクランブル視聴可能チャンネルが TvContract.Channels に登録される。
 - system_ext image にTIS本体・privapp allowlist・TIS専用JNIが配置され、product image にlive_tv feature XMLとAribContentRatingsが配置される。
-- System TV AppのARIB exceptional policyが有効で、PINによる現在コンテンツ一時解除と第三者rating非干渉を維持する。
+- `AribContentRatings`がstock TV Appから発見され、既存preset/custom policyを通じてARIB exceptional ratingのblock/unblockとPIN一時解除、第三者rating非干渉が成立する。
 - android:canRecord="false" が product manifest metadata に反映される。
 ```
