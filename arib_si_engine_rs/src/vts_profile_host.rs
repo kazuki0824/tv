@@ -35,7 +35,7 @@ fn resolution_json(payloads: &[(u16, Vec<u8>)]) -> Result<Value, String> {
     for (pid, bytes) in payloads {
         let mut offset = 0usize;
         while offset < bytes.len() {
-            let header = parse_section_header(&bytes[offset..], 12).ok_or_else(|| {
+            let header = parse_section_header(&bytes[offset..]).ok_or_else(|| {
                 format!("invalid section payload on PID {pid} at byte {offset}")
             })?;
             let end = offset
@@ -45,7 +45,7 @@ fn resolution_json(payloads: &[(u16, Vec<u8>)]) -> Result<Value, String> {
                 return Err(format!("truncated section payload on PID {pid}"));
             }
             let section = &bytes[offset..end];
-            if header.syntax && !section_crc_valid(section, 12) {
+            if header.syntax && !section_crc_valid(section) {
                 return Err(format!(
                     "CRC error on PID {pid} table_id {}",
                     header.table_id
