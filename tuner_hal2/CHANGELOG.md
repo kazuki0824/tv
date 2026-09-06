@@ -1,3 +1,10 @@
+# r50eo84_pr55_px4_partial_reception_availability_followup
+
+- px4 ISDB-Tの明示`partialReceptionFlag=TRUE/FALSE`を、採用済み`PTX_GET_TMCC_PARTIAL_RECEPTION`と同一generationのfresh readbackで検証する既存worker経路へ到達可能にした。availability gateはLinux DVB / earth_pt1だけを`UNAVAILABLE`として拒否し、px4を旧blocker状態へ戻さない。
+- service runtimeの回帰試験を、px4では`TRUE/FALSE`の受付成功、Linux DVBではtyped `UnsupportedDetail`となる非対称contractへ更新した。`UNDEFINED`の制約なし、`AUTO`の製品未対応、readback一致・不一致・pendingの既存worker契約は変更していない。
+- `tuner_hal/DESIGN_JA.md`のearth_pt1 / TC90522 blocker参照を、現行配置`future_work/not_planned/`へ修正した。公開AIDL/VINTF、capability値、worker、generation、device I/O ownerは追加・変更していない。
+- ローカル環境にはRust toolchainがないため、rustfmt、host Rust build / unit testは未実施である。Android/Soong build、atest、VTS、CTS、実機px4、実放送波確認も未実施である。
+
 # r50eo84_pr74_isdbs_stream_id_reporting
 
 - px4 ISDB-S frontendだけに `FrontendStatusType::STREAM_ID_LIST` capabilityを公開し、current locked generationでTMCCからcommitした同一の非0 16-bit TSID列を `getStatus(STREAM_ID_LIST)` と readinessへ投影した。list未確定時は空配列を観測済み値として捏造せず `getStatus` を `UNAVAILABLE`、進行中generationのreadinessを `UNSTABLE`、commit済みだけを `STABLE` とする。
