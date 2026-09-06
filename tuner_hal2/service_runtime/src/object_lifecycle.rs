@@ -63,7 +63,8 @@ pub fn aidl_object_closeable(
         | RuntimeObjectLifecycle::CleanupPending { .. } => {
             Ok(AidlObjectCloseability::BeginClose)
         }
-        RuntimeObjectLifecycle::Closed
+        RuntimeObjectLifecycle::Prepared
+        | RuntimeObjectLifecycle::Closed
         | RuntimeObjectLifecycle::Quarantined => Err(HalError::invalid_state(
             HalInvalidStateKind::InvalidLifecycle,
             "AIDL object is not closeable",
@@ -98,7 +99,8 @@ pub fn aidl_object_cleanup_dependency(
     match entry.lifecycle {
         RuntimeObjectLifecycle::Closing { step }
         | RuntimeObjectLifecycle::CleanupPending { step } => Ok(step),
-        RuntimeObjectLifecycle::Live
+        RuntimeObjectLifecycle::Prepared
+        | RuntimeObjectLifecycle::Live
         | RuntimeObjectLifecycle::Closed
         | RuntimeObjectLifecycle::Quarantined => Err(HalError::invalid_state(
             HalInvalidStateKind::InvalidLifecycle,
@@ -179,6 +181,10 @@ pub fn aidl_object_entry_for_close_cleanup(
         RuntimeObjectLifecycle::Live
         | RuntimeObjectLifecycle::Closing { .. }
         | RuntimeObjectLifecycle::CleanupPending { .. } => Ok(entry.clone()),
+        RuntimeObjectLifecycle::Prepared => Err(HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
+            "AIDL object is not live for close cleanup",
+        )),
         RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined => {
             Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
