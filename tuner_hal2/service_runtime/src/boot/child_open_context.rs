@@ -16,7 +16,7 @@ use crate::diagnostics::{
 use crate::error_mapping::{object_table_error_to_hal, registry_commit_error_to_hal};
 use crate::object_method_use_case::ObjectMethodExecutionToken;
 use crate::open_rollback::finish_open_rollback;
-use maleicacid_tuner_hal2_common::compose_primary_cleanup_failure;
+use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, FirstErrorCollector};
 use maleicacid_tuner_hal2_demux::{
     DvrDataFormat as RuntimeDvrDataFormat, FilterRuntimeState, SourceBoundaryReport,
 };
@@ -1053,8 +1053,13 @@ impl TunerServiceRuntime {
             .get_mut(&id)
             .map(|txn| txn.discard_for_boundary())
             .unwrap_or(0);
+        let mut cleanup_failures = FirstErrorCollector::new();
         if dropped_bytes > 0 {
-            let _ = demux_runtime.note_playback_consume_boundary_discard(id, dropped_bytes);
+            cleanup_failures.push_result(
+                demux_runtime
+                    .note_playback_consume_boundary_discard(id, dropped_bytes)
+                    .map_err(Self::map_dvr_runtime_error),
+            );
             eprintln!(
                 "maleicacid-tuner-hal2-dvr-playback-diagnostic: dvr_id={} boundary=close dropped_bytes={}",
                 id, dropped_bytes,
@@ -1069,17 +1074,28 @@ impl TunerServiceRuntime {
             demux_runtime.quarantine_runtime_from_typed_request(
                 maleicacid_tuner_hal2_demux::DemuxRuntimeQuarantineRequest::new(),
             );
-            return Err(HalError::cleanup_failed(
+            let primary = HalError::cleanup_failed(
                 "DVR runtime unregister owner cleanup",
                 format!("demux runtime rejected DVR removal during unregister: dvr_id={id} owner_demux_id={}", entry_ref.owner_demux_id),
-            ));
+            );
+            return match cleanup_failures.into_result() {
+                Ok(()) => Err(primary),
+                Err(cleanup) => Err(compose_primary_cleanup_failure(
+                    "DVR runtime unregister playback accounting failed",
+                    primary,
+                    cleanup,
+                )),
+            };
         }
         let removed = self.registry.unregister_dvr(DvrRuntimeId(id));
         if removed.is_some() {
-            self.capacity_ledger.release_dvr(id)?;
+            cleanup_failures.push_result(self.capacity_ledger.release_dvr(id));
             self.playback_consume_txns.remove(&id);
         }
-        Ok(removed)
+        match cleanup_failures.into_result() {
+            Ok(()) => Ok(removed),
+            Err(error) => Err(error),
+        }
     }
 
     pub(crate) fn transact_register_demux_dvr_runtime(
