@@ -10,13 +10,14 @@ use crate::registry::{FrontendRuntimeId, LnbRuntimeId, SatellitePowerTopology};
 use crate::worker_runtime::WorkerTerminalResult;
 use maleicacid_tuner_hal2_binder_adapter::FrontendSettingsRequest;
 use maleicacid_tuner_hal2_common::{
-    compose_primary_cleanup_failure, FrontendScanMode, FrontendTuneRequest, HalError,
-    HalInternalKind, LnbVoltageRequest,
+    compose_primary_cleanup_failure, FrontendScanMode, HalError, HalInternalKind,
 };
 use maleicacid_tuner_hal2_device::{
     FrontendRuntimeState, FrontendWorkerCancelReason, FrontendWorkerKind, FrontendWorkerStopOutcome,
 };
-use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
+use maleicacid_tuner_hal2_domain_request::{
+    AidlObjectGeneration, AidlObjectId, AidlObjectKind, LnbVoltageRequest,
+};
 
 pub type SharedFrontendRuntime = std::sync::Arc<std::sync::Mutex<TunerServiceRuntime>>;
 
@@ -226,7 +227,7 @@ impl FrontendTuneScanTxn {
                 .id
                 .0;
             let state = guard.query().frontend_runtime_snapshot(frontend_id)?.state;
-            if state == FrontendRuntimeState::Scanning {
+            if matches!(state, FrontendRuntimeState::Scanning { .. }) {
                 // AOSP T-AOSP-35: scanがfrontendを所有中のstopTune()は冪等成功とする。
                 // public method権限は消費するが、scan generationのfence、worker停止、
                 // live data clear、demux stream boundary更新は行わない。

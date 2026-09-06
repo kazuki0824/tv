@@ -1181,6 +1181,10 @@ impl TunerServiceRuntime {
                 "DVR source boundary rollback",
                 "demux runtime was quarantined after source boundary rollback failure",
             ),
+            DemuxRuntimeErrorKind::QueueRuntimeFailureRollbackFailed => HalError::cleanup_failed(
+                "playback queue read rollback",
+                "DVR was quarantined after playback queue transaction rollback failure",
+            ),
             DemuxRuntimeErrorKind::PipelineFailed
             | DemuxRuntimeErrorKind::RelationCommitUnknown
             | DemuxRuntimeErrorKind::QueueMissing

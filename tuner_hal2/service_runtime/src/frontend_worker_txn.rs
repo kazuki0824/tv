@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 #[cfg(test)]
 use std::sync::MutexGuard;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{mpsc, Arc, Mutex, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
