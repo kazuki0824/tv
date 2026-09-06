@@ -4,8 +4,8 @@ import android.media.tv.TvContentRating
 import android.media.tv.TvInputManager
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
