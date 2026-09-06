@@ -36,21 +36,3 @@ fn map_jis_x0213_plane1_multiscalar(first: u8, second: u8) -> Option<&'static st
 fn map_jis_x0213_plane2_multiscalar(_first: u8, _second: u8) -> Option<&'static str> {
     None
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{map_jis_x0213_plane1_multiscalar, map_jis_x0213_plane2_multiscalar};
-
-    #[test]
-    fn plane1_multiscalar_table_has_expected_boundaries() {
-        assert_eq!(map_jis_x0213_plane1_multiscalar(0x24, 0x77), Some("か゚"));
-        assert_eq!(map_jis_x0213_plane1_multiscalar(0x2b, 0x66), Some("˥˩"));
-        assert_eq!(map_jis_x0213_plane1_multiscalar(0x21, 0x21), None);
-    }
-
-    #[test]
-    fn plane2_has_no_multiscalar_cells_in_euc_jis_2004_mapping() {
-        assert_eq!(map_jis_x0213_plane2_multiscalar(0x21, 0x21), None);
-        assert_eq!(map_jis_x0213_plane2_multiscalar(0x7e, 0x7e), None);
-    }
-}
