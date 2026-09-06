@@ -10,6 +10,8 @@ pub mod descriptors;
 pub mod discovery_requirements;
 #[path = "core/eit.rs"]
 pub mod eit;
+#[path = "core/eit_publish_policy.rs"]
+pub mod eit_publish_policy;
 #[path = "core/provider_data.rs"]
 pub mod provider_data;
 #[path = "core/sections.rs"]
