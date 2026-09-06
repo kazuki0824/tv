@@ -190,7 +190,7 @@ fn csi_xcs_marker(bytes: &[u8]) -> Result<(usize, Option<XcsMarker>), AribString
     Ok((consumed, marker))
 }
 
-fn consume_xcs_block(bytes: &[u8]) -> Result<Option<(usize, usize, usize)>, AribStringDecodeError> {
+fn consume_xcs_block(bytes: &[u8]) -> Result<Option<usize>, AribStringDecodeError> {
     let (start_len, marker) = csi_xcs_marker(bytes)?;
     if marker != Some(XcsMarker::Start) {
         return Ok(None);
@@ -203,7 +203,7 @@ fn consume_xcs_block(bytes: &[u8]) -> Result<Option<(usize, usize, usize)>, Arib
         }
         let (consumed, nested_marker) = csi_xcs_marker(&bytes[cursor..])?;
         match nested_marker {
-            Some(XcsMarker::End) => return Ok(Some((start_len, cursor, cursor + consumed))),
+            Some(XcsMarker::End) => return Ok(Some(cursor + consumed)),
             Some(XcsMarker::Start) => return Err(AribStringDecodeError::MalformedCsi),
             None => cursor += consumed,
         }
@@ -276,11 +276,7 @@ fn decode_arib_string_with_policy(
     let mut out = String::new();
     let mut diagnostic = AribStringDecodeDiagnostic::default();
     let mut index = 0usize;
-    let mut pending_xcs_at: Option<usize> = None;
     while index < bytes.len() {
-        if pending_xcs_at.is_some() && pending_xcs_at != Some(index) {
-            pending_xcs_at = None;
-        }
         let byte = bytes[index];
         match byte {
             0x00 => {}
@@ -308,7 +304,6 @@ fn decode_arib_string_with_policy(
                 match decode_single_shift(set, bytes, index) {
                     Ok((value, consumed)) => {
                         out.push_str(&value);
-                        pending_xcs_at = (value == "�").then_some(index + consumed + 1);
                         index += consumed;
                     }
                     Err(AribStringDecodeError::TruncatedGraphic) => {
@@ -392,39 +387,11 @@ fn decode_arib_string_with_policy(
             0x89 => state.middle_size = true,
             0x8a => state.middle_size = false,
             0x9b => match consume_xcs_block(&bytes[index..]) {
-                Ok(Some((content_start, content_end, consumed))) => {
-                    if pending_xcs_at == Some(index) {
-                        if out.ends_with('�') {
-                            out.pop();
-                        }
-                        let mut fallback_state = *state;
-                        let (fallback, fallback_diagnostic) = decode_arib_string_with_policy(
-                            &bytes[index + content_start..index + content_end],
-                            &mut fallback_state,
-                            error_policy,
-                        )?;
-                        *state = fallback_state;
-                        out.push_str(&fallback);
-                        diagnostic.replacement_count = diagnostic
-                            .replacement_count
-                            .saturating_add(fallback_diagnostic.replacement_count);
-                        diagnostic.unsupported_escape_count = diagnostic
-                            .unsupported_escape_count
-                            .saturating_add(fallback_diagnostic.unsupported_escape_count);
-                        diagnostic.truncated_escape_count = diagnostic
-                            .truncated_escape_count
-                            .saturating_add(fallback_diagnostic.truncated_escape_count);
-                        diagnostic.truncated_graphic_count = diagnostic
-                            .truncated_graphic_count
-                            .saturating_add(fallback_diagnostic.truncated_graphic_count);
-                        diagnostic.entries.extend(fallback_diagnostic.entries);
-                    }
-                    pending_xcs_at = None;
+                Ok(Some(consumed)) => {
                     index += consumed.saturating_sub(1);
                 }
                 Ok(None) => match consume_csi(&bytes[index..]) {
                     Ok(consumed) => {
-                        pending_xcs_at = None;
                         index += consumed.saturating_sub(1);
                     }
                     Err(error) => {
@@ -511,7 +478,6 @@ fn decode_arib_string_with_policy(
                     } else {
                         let mapped = map_two_byte_graphic(state.gl, byte, next);
                         out.push_str(mapped);
-                        pending_xcs_at = (mapped == "�").then_some(index + 2);
                         index += 1;
                     }
                 }
@@ -575,7 +541,6 @@ fn decode_arib_string_with_policy(
                         } else {
                             let mapped = map_two_byte_graphic(state.gr, normalized, next & 0x7f);
                             out.push_str(mapped);
-                            pending_xcs_at = (mapped == "�").then_some(index + 2);
                             index += 1;
                         }
                     }
@@ -972,21 +937,22 @@ mod tests {
     }
 
     #[test]
-    fn xcs_selects_alternative_only_for_unrenderable_source_graphic() {
-        let unsupported_with_fallback = [
-            0x24, 0x7c, 0x9b, b'0', 0x20, b'f', 0x19, 0x22, 0x9b, b'1', 0x20, b'f',
+    fn xcs_block_is_noop_and_preserves_invocation_state() {
+        let bytes = [
+            0x1b, b'(', b'B', b'A', 0x9b, b'0', 0x20, b'f', 0x1b, b'$', b'B', b'E', b'l', 0x9b,
+            b'1', 0x20, b'f', b'B',
         ];
-        assert_eq!(
-            decode_arib_string(&unsupported_with_fallback),
-            Ok("あ".to_string())
-        );
+        assert_eq!(decode_arib_string(&bytes), Ok("AB".to_string()));
 
-        let supported_with_fallback = [
-            0x24, 0x22, 0x9b, b'0', 0x20, b'f', 0x19, 0x24, 0x9b, b'1', 0x20, b'f',
-        ];
+        let malformed = [0x1b, b'(', b'B', b'A', 0x9b, b'0', 0x20, b'f', b'X'];
         assert_eq!(
-            decode_arib_string(&supported_with_fallback),
-            Ok("あ".to_string())
+            decode_arib_string(&malformed),
+            Err(AribStringDecodeError::MalformedCsi)
         );
+        let (lossy, diagnostic) = decode_arib_string_lossy(&malformed);
+        assert_eq!(lossy, "A�");
+        assert!(diagnostic.entries.iter().any(|entry| {
+            entry.code_set_or_control == "CSI/XCS" && entry.reason == "malformed_or_truncated_csi"
+        }));
     }
 }
