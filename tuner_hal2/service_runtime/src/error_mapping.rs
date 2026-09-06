@@ -73,6 +73,7 @@ pub(crate) fn registry_commit_error_to_hal(
     context: &'static str,
 ) -> HalError {
     match error {
+        #[cfg(test)]
         RegistryCommitError::MissingFrontendId { .. }
         | RegistryCommitError::MissingLnbId { .. }
         | RegistryCommitError::LnbFrontendMismatch { .. } => {

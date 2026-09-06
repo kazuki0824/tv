@@ -10,6 +10,8 @@ use maleicacid_tuner_hal2_common::{
 use maleicacid_tuner_hal2_device::FrontendRuntimeState;
 
 use crate::queue_cleanup_use_case::QueueCleanupUseCase;
+#[cfg(test)]
+use maleicacid_tuner_hal2_demux::OpenFilterRequest;
 use maleicacid_tuner_hal2_demux::{
     DemuxRuntime, DemuxRuntimeError, DemuxStreamBoundaryRequest, DemuxStreamGeneration,
     DvrFilterLinkRequest, PipelineBoundaryReason, PipelineResetReport, PlaybackConsumeReport,
@@ -17,12 +19,10 @@ use maleicacid_tuner_hal2_demux::{
 };
 use maleicacid_tuner_hal2_demux::{FilterConfig, FilterOpenType, FilterRuntimeState};
 #[cfg(test)]
-use maleicacid_tuner_hal2_demux::OpenFilterRequest;
+use maleicacid_tuner_hal2_domain_request::OpenDvrRequest;
 use maleicacid_tuner_hal2_domain_request::{
     DvrConfigureRequest, FilterAvStreamTypeRequest, FilterDelayHintRequest,
 };
-#[cfg(test)]
-use maleicacid_tuner_hal2_domain_request::OpenDvrRequest;
 
 pub(crate) struct DemuxFrontendSourceTxn {
     demux_id: DemuxRuntimeId,
@@ -194,6 +194,7 @@ impl RecordDvrFilterRelationTxn {
 }
 
 impl TunerServiceRuntime {
+    #[cfg(test)]
     pub(crate) fn allocate_demux_runtime(
         &mut self,
     ) -> Result<DemuxRegistryEntry, RegistryCommitError> {

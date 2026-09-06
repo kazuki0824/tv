@@ -263,6 +263,7 @@ impl RuntimeObjectTable {
             .ok_or(RuntimeObjectTableError::MissingObject { object_id })
     }
 
+    #[cfg(test)]
     pub fn begin_close_cascade(
         &mut self,
         object_id: AidlObjectId,

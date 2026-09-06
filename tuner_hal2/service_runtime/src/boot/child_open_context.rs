@@ -202,6 +202,7 @@ impl TunerServiceRuntime {
         Ok((low_threshold, high_threshold))
     }
 
+    #[cfg(test)]
     pub(crate) fn transact_allocate_demux_runtime(
         &mut self,
     ) -> Result<crate::registry::DemuxRegistryEntry, RegistryCommitError> {

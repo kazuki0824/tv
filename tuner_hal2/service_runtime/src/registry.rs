@@ -784,12 +784,15 @@ pub enum RegistryCommitError {
     DuplicateLnbId {
         id: LnbRuntimeId,
     },
+    #[cfg(test)]
     MissingFrontendId {
         id: FrontendRuntimeId,
     },
+    #[cfg(test)]
     MissingLnbId {
         id: LnbRuntimeId,
     },
+    #[cfg(test)]
     LnbFrontendMismatch {
         frontend_id: FrontendRuntimeId,
         lnb_id: LnbRuntimeId,
@@ -810,7 +813,9 @@ pub enum RegistryCommitError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeRegistryKind {
+    #[cfg(test)]
     Demux,
+    #[cfg(test)]
     Lnb,
     Filter,
     Dvr,
@@ -836,6 +841,7 @@ pub struct RuntimeRegistry {
     av_max_event_bytes: usize,
     av_max_outstanding_events_per_filter: usize,
     av_per_filter_live_bytes: usize,
+    #[cfg(test)]
     next_demux_id: i32,
     next_lnb_id: i32,
     next_filter_id: i32,
@@ -863,6 +869,7 @@ impl Default for RuntimeRegistry {
             av_max_event_bytes: DEFAULT_AV_MAX_EVENT_BYTES,
             av_max_outstanding_events_per_filter: DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
             av_per_filter_live_bytes: DEFAULT_AV_PER_FILTER_LIVE_BYTES,
+            #[cfg(test)]
             next_demux_id: 1,
             next_lnb_id: 1,
             next_filter_id: 1,
@@ -923,7 +930,10 @@ impl RuntimeRegistry {
         self.descramblers.clear();
         self.descrambler_runtimes.clear();
         self.descrambler_key_table = DescramblerKeyTable::default();
-        self.next_demux_id = 1;
+        #[cfg(test)]
+        {
+            self.next_demux_id = 1;
+        }
         self.next_filter_id = 1;
         self.next_dvr_id = 1;
         self.next_descrambler_id = 1;
@@ -933,6 +943,7 @@ impl RuntimeRegistry {
         self.frontends.len()
     }
 
+    #[cfg(test)]
     pub fn allocate_demux(&mut self) -> Result<DemuxRegistryEntry, RegistryCommitError> {
         let id = DemuxRuntimeId(self.next_demux_id);
         let next = self
@@ -998,17 +1009,6 @@ impl RuntimeRegistry {
         self.demux_frontend_bindings.remove(&demux_id);
     }
 
-    pub fn unbind_frontend_demuxes(
-        &mut self,
-        frontend_id: FrontendRuntimeId,
-    ) -> Vec<DemuxRuntimeId> {
-        let demux_ids = self.frontend_bound_demux_ids(frontend_id);
-        for demux_id in &demux_ids {
-            self.demux_frontend_bindings.remove(demux_id);
-        }
-        demux_ids
-    }
-
     pub fn frontend_bound_demux_ids(&self, frontend_id: FrontendRuntimeId) -> Vec<DemuxRuntimeId> {
         self.demux_frontend_bindings
             .iter()
@@ -1061,6 +1061,7 @@ impl RuntimeRegistry {
         self.lnb_registry.entries.keys().copied().collect()
     }
 
+    #[cfg(test)]
     pub fn lnb_registry(&self) -> &LnbRegistry {
         &self.lnb_registry
     }
@@ -1076,6 +1077,7 @@ impl RuntimeRegistry {
             .find(|entry| entry.owner_frontend_id == frontend_id)
     }
 
+    #[cfg(test)]
     pub fn lnb_by_name(&self, name: &str) -> Option<&LnbRegistryEntry> {
         self.lnb_registry
             .entries
@@ -1553,14 +1555,6 @@ impl RuntimeRegistry {
 
     pub fn filter(&self, id: FilterRuntimeId) -> Option<&FilterRegistryEntry> {
         self.filters.get(&id)
-    }
-
-    pub fn filters_for_demux(&self, owner_demux_id: i32) -> Vec<FilterRegistryEntry> {
-        self.filters
-            .values()
-            .filter(|entry| entry.owner_demux_id == owner_demux_id)
-            .cloned()
-            .collect()
     }
 
     fn filter_open_type(&self, entry: &FilterRegistryEntry) -> Result<FilterOpenType, HalError> {

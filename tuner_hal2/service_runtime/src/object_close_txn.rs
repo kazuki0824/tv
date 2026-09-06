@@ -1330,6 +1330,7 @@ pub(crate) fn plan_and_begin_object_close_command_dispatch(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn begin_object_close_cascade(
     runtime: &mut TunerServiceRuntime,
     object_id: AidlObjectId,
@@ -1372,17 +1373,6 @@ pub(crate) fn object_close_cascade_entries(
     runtime
         .object_table()
         .close_cascade_entries(object_id, generation)
-        .map_err(object_table_error_to_hal)
-}
-
-pub(crate) fn commit_object_close_cascade(
-    runtime: &mut TunerServiceRuntime,
-    object_id: AidlObjectId,
-    generation: AidlObjectGeneration,
-) -> Result<Vec<RuntimeObjectEntry>, HalError> {
-    runtime
-        .object_table_mut()
-        .commit_close_cascade(object_id, generation)
         .map_err(object_table_error_to_hal)
 }
 
