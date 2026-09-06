@@ -1,6 +1,5 @@
 include!("arib_jis_x0208_table.rs");
 include!("arib_extended_graphic_table.rs");
-include!("arib_jis_x0213_multiscalar.rs");
 
 pub const ARIB_STRING_DECODER_SCOPE: &str = "mirakc_scope_non_caption_si_epg_only";
 
@@ -103,8 +102,6 @@ enum GraphicSet {
     Hiragana,
     Katakana,
     Kanji,
-    JisPlane1,
-    JisPlane2,
     AdditionalSymbols,
 }
 
@@ -121,14 +118,14 @@ struct InvocationState {
 
 impl Default for InvocationState {
     fn default() -> Self {
-        // ARIB TR-B15の衛星SI運用profileに合わせ、G0/GLはJIS互換漢字Plane 1を正本とする。
+        // SI運用profileの従来8単位符号初期状態に合わせ、G0/GLはKanjiとする。
         // G1は英数字、G2はひらがな、G3はカタカナ、GRはLS2R(G2)。
         Self {
-            g0: GraphicSet::JisPlane1,
+            g0: GraphicSet::Kanji,
             g1: GraphicSet::Alnum,
             g2: GraphicSet::Hiragana,
             g3: GraphicSet::Katakana,
-            gl: GraphicSet::JisPlane1,
+            gl: GraphicSet::Kanji,
             gr: GraphicSet::Hiragana,
             middle_size: false,
         }
@@ -147,10 +144,7 @@ fn decode_single_shift(
         GraphicSet::Alnum => (first as char).to_string(),
         GraphicSet::Hiragana => map_hiragana(first).to_string(),
         GraphicSet::Katakana => map_katakana(first).to_string(),
-        GraphicSet::Kanji
-        | GraphicSet::JisPlane1
-        | GraphicSet::JisPlane2
-        | GraphicSet::AdditionalSymbols => {
+        GraphicSet::Kanji | GraphicSet::AdditionalSymbols => {
             let second = *bytes
                 .get(index + 2)
                 .ok_or(AribStringDecodeError::TruncatedGraphic)?;
@@ -487,10 +481,7 @@ fn decode_arib_string_with_policy(
                 GraphicSet::Alnum => out.push(byte as char),
                 GraphicSet::Hiragana => out.push_str(map_hiragana(byte)),
                 GraphicSet::Katakana => out.push_str(map_katakana(byte)),
-                GraphicSet::Kanji
-                | GraphicSet::JisPlane1
-                | GraphicSet::JisPlane2
-                | GraphicSet::AdditionalSymbols => {
+                GraphicSet::Kanji | GraphicSet::AdditionalSymbols => {
                     let Some(next) = bytes.get(index + 1).copied() else {
                         if error_policy == ErrorPolicy::Strict {
                             return Err(AribStringDecodeError::TruncatedGraphic);
@@ -548,10 +539,7 @@ fn decode_arib_string_with_policy(
                     GraphicSet::Alnum => out.push(normalized as char),
                     GraphicSet::Hiragana => out.push_str(map_hiragana(normalized)),
                     GraphicSet::Katakana => out.push_str(map_katakana(normalized)),
-                    GraphicSet::Kanji
-                    | GraphicSet::JisPlane1
-                    | GraphicSet::JisPlane2
-                    | GraphicSet::AdditionalSymbols => {
+                    GraphicSet::Kanji | GraphicSet::AdditionalSymbols => {
                         let Some(next) = bytes.get(index + 1).copied() else {
                             if error_policy == ErrorPolicy::Strict {
                                 return Err(AribStringDecodeError::TruncatedGraphic);
@@ -707,33 +695,25 @@ fn apply_escape(state: &mut InvocationState, bytes: &[u8]) -> Result<usize, Arib
                     state.g3 = GraphicSet::Hiragana;
                     3
                 }
-                (b'$', final_byte @ (b'B' | b'@' | b'9' | b':' | b';')) => {
+                (b'$', final_byte @ (b'B' | b'@' | b';')) => {
                     state.g0 = two_byte_graphic_set(final_byte)?;
                     state.gl = state.g0;
                     3
                 }
-                (b'$', b'(')
-                    if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@' | b'9' | b':' | b';') =>
-                {
+                (b'$', b'(') if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@' | b';') => {
                     state.g0 = two_byte_graphic_set(bytes[3])?;
                     state.gl = state.g0;
                     4
                 }
-                (b'$', b')')
-                    if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@' | b'9' | b':' | b';') =>
-                {
+                (b'$', b')') if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@' | b';') => {
                     state.g1 = two_byte_graphic_set(bytes[3])?;
                     4
                 }
-                (b'$', b'*')
-                    if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@' | b'9' | b':' | b';') =>
-                {
+                (b'$', b'*') if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@' | b';') => {
                     state.g2 = two_byte_graphic_set(bytes[3])?;
                     4
                 }
-                (b'$', b'+')
-                    if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@' | b'9' | b':' | b';') =>
-                {
+                (b'$', b'+') if bytes.len() >= 4 && matches!(bytes[3], b'B' | b'@' | b';') => {
                     state.g3 = two_byte_graphic_set(bytes[3])?;
                     4
                 }
@@ -745,20 +725,12 @@ fn apply_escape(state: &mut InvocationState, bytes: &[u8]) -> Result<usize, Arib
 }
 
 fn is_two_byte_graphic(set: GraphicSet) -> bool {
-    matches!(
-        set,
-        GraphicSet::Kanji
-            | GraphicSet::JisPlane1
-            | GraphicSet::JisPlane2
-            | GraphicSet::AdditionalSymbols
-    )
+    matches!(set, GraphicSet::Kanji | GraphicSet::AdditionalSymbols)
 }
 
 fn two_byte_graphic_set(final_byte: u8) -> Result<GraphicSet, AribStringDecodeError> {
     match final_byte {
         b'B' | b'@' => Ok(GraphicSet::Kanji),
-        b'9' => Ok(GraphicSet::JisPlane1),
-        b':' => Ok(GraphicSet::JisPlane2),
         b';' => Ok(GraphicSet::AdditionalSymbols),
         _ => Err(AribStringDecodeError::UnsupportedEscape),
     }
@@ -767,10 +739,6 @@ fn two_byte_graphic_set(final_byte: u8) -> Result<GraphicSet, AribStringDecodeEr
 fn map_two_byte_graphic(set: GraphicSet, first: u8, second: u8) -> &'static str {
     match set {
         GraphicSet::Kanji => map_kanji(first, second),
-        GraphicSet::JisPlane1 => map_jis_x0213_plane1_multiscalar(first, second)
-            .unwrap_or_else(|| map_jis_x0213_plane1(first, second)),
-        GraphicSet::JisPlane2 => map_jis_x0213_plane2_multiscalar(first, second)
-            .unwrap_or_else(|| map_jis_x0213_plane2(first, second)),
         GraphicSet::AdditionalSymbols => map_arib_additional_symbol(first, second),
         _ => "�",
     }
@@ -840,19 +808,19 @@ mod tests {
     }
 
     #[test]
-    fn arib_string_decodes_jis_compatible_plane1_without_replacement() {
-        let bytes = [0x1b, b'$', b'(', b'9', 0x21, 0x21];
-        let (decoded, diagnostic) = decode_arib_string_lossy(&bytes);
-        assert_ne!(decoded, "�");
-        assert_eq!(diagnostic.replacement_count, 0);
-    }
-
-    #[test]
-    fn arib_string_decodes_jis_compatible_plane2_without_replacement() {
-        let bytes = [0x1b, b'$', b'(', b':', 0x21, 0x21];
-        let (decoded, diagnostic) = decode_arib_string_lossy(&bytes);
-        assert_ne!(decoded, "�");
-        assert_eq!(diagnostic.replacement_count, 0);
+    fn jis_x0213_plane_designations_are_outside_si_profile() {
+        for bytes in [
+            &[0x1b, b'$', b'(', b'9', 0x21, 0x21][..],
+            &[0x1b, b'$', b'(', b':', 0x21, 0x21][..],
+        ] {
+            assert_eq!(
+                decode_arib_string(bytes),
+                Err(AribStringDecodeError::UnsupportedEscape)
+            );
+            let (_decoded, diagnostic) = decode_arib_string_lossy(bytes);
+            assert_eq!(diagnostic.unsupported_escape_count, 1);
+            assert!(diagnostic.replacement_count >= 1);
+        }
     }
 
     #[test]
@@ -1001,17 +969,6 @@ mod tests {
         assert_eq!(diagnostic.entries[0].code_set_or_control, "ESC");
         assert_eq!(diagnostic.entries[0].reason, "unsupported_escape");
         assert!(diagnostic.entries[0].replacement_emitted);
-    }
-
-    #[test]
-    fn initial_si_graphic_set_is_jis_x0213_plane1_and_preserves_multiscalar() {
-        assert_eq!(decode_arib_string(&[0x24, 0x77]), Ok("か゚".to_string()));
-    }
-
-    #[test]
-    fn designated_jis_x0213_plane2_decodes_non_bmp_scalar() {
-        let bytes = [0x1b, b'$', b'(', b':', 0x21, 0x21];
-        assert_eq!(decode_arib_string(&bytes), Ok("𠂉".to_string()));
     }
 
     #[test]
