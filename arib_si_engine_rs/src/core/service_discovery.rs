@@ -5,6 +5,7 @@ use crate::ca_descriptor::{
 };
 use crate::discovery_requirements::{optional_table_requirement, DiscoveryProfile};
 use crate::eit::{EitEvent, EitStore, EitUpdateWindow};
+use crate::eit_publish_policy::is_program_publish_eit_section;
 use crate::sections::{parse_section_header, section_crc_valid};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1049,7 +1050,9 @@ impl ServiceDiscoveryCollector {
         }
         self.track_section(pid, section);
         self.track_transport_scopes(section);
-        self.engine.push_section(pid, section);
+        if is_program_publish_eit_section(self.discovery_profile, pid, section) {
+            self.engine.push_section(pid, section);
+        }
     }
 
     pub fn events(&self) -> Vec<EitEvent> {

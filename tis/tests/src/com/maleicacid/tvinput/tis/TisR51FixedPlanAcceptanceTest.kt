@@ -15,6 +15,7 @@ import com.maleicacid.tvinput.aribsi.AribParentalRating
 import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.EventModelMapper
+import com.maleicacid.tvinput.aribsi.AribComponentProjectionPolicy
 import com.maleicacid.tvinput.aribsi.NativeAribSiParser
 import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.ServiceListBuilder
@@ -61,8 +62,8 @@ class TisR51FixedPlanAcceptanceTest {
     }
 
     @Test fun unsupportedVideoCodecMetadataIsSeparatedFromR51PlaybackClaim() {
-        check(NativeAribSiParser.isRecognizedVideoCodecForTest(0x24))
-        check(!NativeAribSiParser.isR51PlaybackSupportedVideoCodecForTest(0x24))
+        check(AribComponentProjectionPolicy.isRecognizedVideoCodec(0x24))
+        check(!AribComponentProjectionPolicy.isR51PlaybackSupportedVideoCodec(0x24))
         val service = AribService(
             serviceKey = key,
             name = "HEVC service",
@@ -70,7 +71,7 @@ class TisR51FixedPlanAcceptanceTest {
             freeCaMode = false,
             streams = listOf(es(TsPid(0x120), 0x24, componentTag = 1)),
         )
-        val components = org.json.JSONObject(NativeAribSiParser.toComponentsObjectForServiceForTest(service))
+        val components = org.json.JSONObject(AribComponentProjectionPolicy.toComponentsObjectForService(service))
         val video = components.getJSONArray("video").getJSONObject(0)
         check(video.getString("codec") == "HEVC")
         check(video.getString("parseStatus") == "OK")
@@ -94,8 +95,8 @@ class TisR51FixedPlanAcceptanceTest {
     }
 
     @Test fun unsupportedAudioCodecMetadataDoesNotMakePlaybackUnsupportedWhenVideoIsSupported() {
-        check(NativeAribSiParser.isRecognizedAudioCodecForTest(0x11))
-        check(!NativeAribSiParser.isR51PlaybackSupportedAudioCodecForTest(0x11))
+        check(AribComponentProjectionPolicy.isRecognizedAudioCodec(0x11))
+        check(!AribComponentProjectionPolicy.isR51PlaybackSupportedAudioCodec(0x11))
         val service = AribService(
             serviceKey = key,
             name = "H264 with LATM audio",
@@ -103,7 +104,7 @@ class TisR51FixedPlanAcceptanceTest {
             freeCaMode = false,
             streams = listOf(es(TsPid(0x101), 0x1b), es(TsPid(0x111), 0x11, componentTag = 2, language = "jpn")),
         )
-        val components = org.json.JSONObject(NativeAribSiParser.toComponentsObjectForServiceForTest(service))
+        val components = org.json.JSONObject(AribComponentProjectionPolicy.toComponentsObjectForService(service))
         val audio = components.getJSONArray("audio").getJSONObject(0)
         check(audio.getString("codec") == "MPEG-4-AAC-LATM")
         check(audio.getString("parseStatus") == "OK")
@@ -147,7 +148,7 @@ class TisR51FixedPlanAcceptanceTest {
             sourceDescriptor = "audio_component_descriptor",
             parseStatus = "OK",
         )
-        val merged = NativeAribSiParser.mergeEventAndServiceComponentsForTest(
+        val merged = AribComponentProjectionPolicy.mergeEventAndServiceComponents(
             eventComponents = AribComponents(
                 video = listOf(videoComponent),
                 audio = listOf(audioComponent),

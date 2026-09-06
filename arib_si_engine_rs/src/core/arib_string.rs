@@ -1,5 +1,6 @@
 include!("arib_jis_x0208_table.rs");
 include!("arib_extended_graphic_table.rs");
+include!("arib_jis_x0213_multiscalar.rs");
 
 pub const ARIB_STRING_DECODER_SCOPE: &str = "mirakc_scope_non_caption_si_epg_only";
 
@@ -120,14 +121,14 @@ struct InvocationState {
 
 impl Default for InvocationState {
     fn default() -> Self {
-        // ARIB STD-B24 の SI/EPG 初期呼出し状態: G0 は漢字、G1 は英数字、
-        // G2 はひらがな、G3 はカタカナ、GL は LS0(G0)、GR は LS2R(G2)。
+        // ARIB TR-B15の衛星SI運用profileに合わせ、G0/GLはJIS互換漢字Plane 1を正本とする。
+        // G1は英数字、G2はひらがな、G3はカタカナ、GRはLS2R(G2)。
         Self {
-            g0: GraphicSet::Kanji,
+            g0: GraphicSet::JisPlane1,
             g1: GraphicSet::Alnum,
             g2: GraphicSet::Hiragana,
             g3: GraphicSet::Katakana,
-            gl: GraphicSet::Kanji,
+            gl: GraphicSet::JisPlane1,
             gr: GraphicSet::Hiragana,
             middle_size: false,
         }
@@ -170,6 +171,47 @@ fn consume_csi(bytes: &[u8]) -> Result<usize, AribStringDecodeError> {
         }
         if !(0x20..=0x3f).contains(&byte) {
             return Err(AribStringDecodeError::MalformedCsi);
+        }
+    }
+    Err(AribStringDecodeError::MalformedCsi)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum XcsMarker {
+    Start,
+    End,
+}
+
+fn csi_xcs_marker(bytes: &[u8]) -> Result<(usize, Option<XcsMarker>), AribStringDecodeError> {
+    let consumed = consume_csi(bytes)?;
+    let marker = if consumed == 4 && bytes.get(2) == Some(&0x20) && bytes.get(3) == Some(&b'f') {
+        match bytes.get(1) {
+            Some(b'0') => Some(XcsMarker::Start),
+            Some(b'1') => Some(XcsMarker::End),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    Ok((consumed, marker))
+}
+
+fn consume_xcs_block(bytes: &[u8]) -> Result<Option<(usize, usize, usize)>, AribStringDecodeError> {
+    let (start_len, marker) = csi_xcs_marker(bytes)?;
+    if marker != Some(XcsMarker::Start) {
+        return Ok(None);
+    }
+    let mut cursor = start_len;
+    while cursor < bytes.len() {
+        if bytes[cursor] != 0x9b {
+            cursor += 1;
+            continue;
+        }
+        let (consumed, nested_marker) = csi_xcs_marker(&bytes[cursor..])?;
+        match nested_marker {
+            Some(XcsMarker::End) => return Ok(Some((start_len, cursor, cursor + consumed))),
+            Some(XcsMarker::Start) => return Err(AribStringDecodeError::MalformedCsi),
+            None => cursor += consumed,
         }
     }
     Err(AribStringDecodeError::MalformedCsi)
@@ -240,7 +282,11 @@ fn decode_arib_string_with_policy(
     let mut out = String::new();
     let mut diagnostic = AribStringDecodeDiagnostic::default();
     let mut index = 0usize;
+    let mut pending_xcs_at: Option<usize> = None;
     while index < bytes.len() {
+        if pending_xcs_at.is_some() && pending_xcs_at != Some(index) {
+            pending_xcs_at = None;
+        }
         let byte = bytes[index];
         match byte {
             0x00 => {}
@@ -268,6 +314,7 @@ fn decode_arib_string_with_policy(
                 match decode_single_shift(set, bytes, index) {
                     Ok((value, consumed)) => {
                         out.push_str(&value);
+                        pending_xcs_at = (value == "�").then_some(index + consumed + 1);
                         index += consumed;
                     }
                     Err(AribStringDecodeError::TruncatedGraphic) => {
@@ -350,8 +397,59 @@ fn decode_arib_string_with_policy(
             0x20 => out.push(' '),
             0x89 => state.middle_size = true,
             0x8a => state.middle_size = false,
-            0x9b => match consume_csi(&bytes[index..]) {
-                Ok(consumed) => index += consumed.saturating_sub(1),
+            0x9b => match consume_xcs_block(&bytes[index..]) {
+                Ok(Some((content_start, content_end, consumed))) => {
+                    if pending_xcs_at == Some(index) {
+                        if out.ends_with('�') {
+                            out.pop();
+                        }
+                        let mut fallback_state = *state;
+                        let (fallback, fallback_diagnostic) = decode_arib_string_with_policy(
+                            &bytes[index + content_start..index + content_end],
+                            &mut fallback_state,
+                            error_policy,
+                        )?;
+                        *state = fallback_state;
+                        out.push_str(&fallback);
+                        diagnostic.replacement_count = diagnostic
+                            .replacement_count
+                            .saturating_add(fallback_diagnostic.replacement_count);
+                        diagnostic.unsupported_escape_count = diagnostic
+                            .unsupported_escape_count
+                            .saturating_add(fallback_diagnostic.unsupported_escape_count);
+                        diagnostic.truncated_escape_count = diagnostic
+                            .truncated_escape_count
+                            .saturating_add(fallback_diagnostic.truncated_escape_count);
+                        diagnostic.truncated_graphic_count = diagnostic
+                            .truncated_graphic_count
+                            .saturating_add(fallback_diagnostic.truncated_graphic_count);
+                        diagnostic.entries.extend(fallback_diagnostic.entries);
+                    }
+                    pending_xcs_at = None;
+                    index += consumed.saturating_sub(1);
+                }
+                Ok(None) => match consume_csi(&bytes[index..]) {
+                    Ok(consumed) => {
+                        pending_xcs_at = None;
+                        index += consumed.saturating_sub(1);
+                    }
+                    Err(error) => {
+                        if error_policy == ErrorPolicy::Strict {
+                            return Err(error);
+                        }
+                        diagnostic.replacement_count =
+                            diagnostic.replacement_count.saturating_add(1);
+                        diagnostic.record_entry(
+                            bytes,
+                            index,
+                            "CSI/XCS",
+                            "malformed_or_truncated_csi",
+                            true,
+                        );
+                        out.push('�');
+                        break;
+                    }
+                },
                 Err(error) => {
                     if error_policy == ErrorPolicy::Strict {
                         return Err(error);
@@ -420,7 +518,9 @@ fn decode_arib_string_with_policy(
                         diagnostic.record_entry(bytes, index, "GL/Kanji", "不正な2バイト目", true);
                         out.push('�');
                     } else {
-                        out.push_str(map_two_byte_graphic(state.gl, byte, next));
+                        let mapped = map_two_byte_graphic(state.gl, byte, next);
+                        out.push_str(mapped);
+                        pending_xcs_at = (mapped == "�").then_some(index + 2);
                         index += 1;
                     }
                 }
@@ -485,7 +585,9 @@ fn decode_arib_string_with_policy(
                             );
                             out.push('�');
                         } else {
-                            out.push_str(map_two_byte_graphic(state.gr, normalized, next & 0x7f));
+                            let mapped = map_two_byte_graphic(state.gr, normalized, next & 0x7f);
+                            out.push_str(mapped);
+                            pending_xcs_at = (mapped == "�").then_some(index + 2);
                             index += 1;
                         }
                     }
@@ -665,8 +767,10 @@ fn two_byte_graphic_set(final_byte: u8) -> Result<GraphicSet, AribStringDecodeEr
 fn map_two_byte_graphic(set: GraphicSet, first: u8, second: u8) -> &'static str {
     match set {
         GraphicSet::Kanji => map_kanji(first, second),
-        GraphicSet::JisPlane1 => map_jis_x0213_plane1(first, second),
-        GraphicSet::JisPlane2 => map_jis_x0213_plane2(first, second),
+        GraphicSet::JisPlane1 => map_jis_x0213_plane1_multiscalar(first, second)
+            .unwrap_or_else(|| map_jis_x0213_plane1(first, second)),
+        GraphicSet::JisPlane2 => map_jis_x0213_plane2_multiscalar(first, second)
+            .unwrap_or_else(|| map_jis_x0213_plane2(first, second)),
         GraphicSet::AdditionalSymbols => map_arib_additional_symbol(first, second),
         _ => "�",
     }
@@ -897,5 +1001,35 @@ mod tests {
         assert_eq!(diagnostic.entries[0].code_set_or_control, "ESC");
         assert_eq!(diagnostic.entries[0].reason, "unsupported_escape");
         assert!(diagnostic.entries[0].replacement_emitted);
+    }
+
+    #[test]
+    fn initial_si_graphic_set_is_jis_x0213_plane1_and_preserves_multiscalar() {
+        assert_eq!(decode_arib_string(&[0x24, 0x77]), Ok("か゚".to_string()));
+    }
+
+    #[test]
+    fn designated_jis_x0213_plane2_decodes_non_bmp_scalar() {
+        let bytes = [0x1b, b'$', b'(', b':', 0x21, 0x21];
+        assert_eq!(decode_arib_string(&bytes), Ok("𠂉".to_string()));
+    }
+
+    #[test]
+    fn xcs_selects_alternative_only_for_unrenderable_source_graphic() {
+        let unsupported_with_fallback = [
+            0x24, 0x7c, 0x9b, b'0', 0x20, b'f', 0x19, 0x22, 0x9b, b'1', 0x20, b'f',
+        ];
+        assert_eq!(
+            decode_arib_string(&unsupported_with_fallback),
+            Ok("あ".to_string())
+        );
+
+        let supported_with_fallback = [
+            0x24, 0x22, 0x9b, b'0', 0x20, b'f', 0x19, 0x24, 0x9b, b'1', 0x20, b'f',
+        ];
+        assert_eq!(
+            decode_arib_string(&supported_with_fallback),
+            Ok("あ".to_string())
+        );
     }
 }
