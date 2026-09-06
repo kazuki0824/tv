@@ -1,14 +1,9 @@
-name: PR54 F11/F15 最終文書補正（一時）
+name: PR54 F11/F15 文書補正（一時）
 
 on:
   push:
     branches:
       - agent/implement-tis-arib-si-design-pr53
-  pull_request:
-    paths:
-      - "tis/**"
-      - ".github/workflows/tis-host-ci.yml"
-      - ".github/tmp/tis-host-ci.yml.orig"
 
 permissions:
   contents: write
@@ -24,89 +19,16 @@ jobs:
           fetch-depth: 1
           persist-credentials: true
 
-      - name: F11/F15文書を最終契約へ補正
+      - name: F11/F15文書補正
+        run: python3 .github/scripts/pr54_f11_f15_cleanup.py
+
+      - name: 通常CI復元と一時物撤去
         shell: bash
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          design = Path("tis/DESIGN_JA.md")
-          text = design.read_text()
-          required_f15 = "frontend/HALがdynamic stream-ID discoveryという能力自体を提供しないことをframeworkの`Tuner.RESULT_UNAVAILABLE`として明示した場合に限り"
-          if required_f15 not in text:
-              raise SystemExit("F15のRESULT_UNAVAILABLE限定fallback契約が設計へ反映されていません")
-
-          old_f11 = "`ARIB_EXCEPTIONAL`は単一rating `BROADCASTER_DEFINED`を`contentAgeHint=12`で公開するため、既存policyでは`HIGH/MEDIUM/LOW`の各presetでblocked候補に含まれる。ここでの12はproduct preset policy分類用metadataであり、ARIB raw `parental_rating_descriptor.rating`を12歳へ解釈・変換した値ではない。"
-          new_f11 = "`ARIB_EXCEPTIONAL`は単一rating `BROADCASTER_DEFINED`を`contentAgeHint=18`で公開するため、既存policyでは`HIGH/MEDIUM/LOW`の各presetでblocked候補に含まれる。ここでの18はproduct preset policy分類用metadataであり、ARIB raw `parental_rating_descriptor.rating`を18歳へ解釈・変換した値ではない。"
-          if old_f11 in text:
-              text = text.replace(old_f11, new_f11, 1)
-          elif new_f11 not in text:
-              raise SystemExit("F11 contentAgeHint契約の置換対象が見つかりません")
-          design.write_text(text)
-
-          integration = Path("tis/INTEGRATION.md")
-          text = integration.read_text()
-          start = "## ARIB exceptional ratingのLive TV App最小policy統合\n"
-          end = "## MediaSync Exact-mode platform統合\n"
-          new_heading = "## ARIB exceptional ratingのLive TV App標準extension統合\n"
-          if new_heading not in text:
-              i = text.find(start)
-              j = text.find(end)
-              if i < 0 or j < 0 or j <= i:
-                  raise SystemExit("F11統合節の境界が見つかりません")
-              section = """## ARIB exceptional ratingのLive TV App標準extension統合
-
-JPN parental rating raw `0x12..0xFF` はTISで年齢値へ推測変換せず、`com.maleicacid.tv.ratings / ARIB_EXCEPTIONAL / BROADCASTER_DEFINED`へ写像する。rating定義とTV Appへの発見経路は独立`AribContentRatings` APKがTIF標準providerとして所有し、blocked-rating policyのownerはLive TV Appとする。System TV App本体へ直接patchを当てる方式は採用しない。
-
-Android 15 / LineageOS 22.1系の既存`ContentRatingLevelPolicy`はTIF rating-provider XMLの`contentAgeHint`をpreset policyの入力として使う。`HIGH`は6以上、`MEDIUM`は12以上、`LOW`はrating system内の最大age hint以上をblocked候補へ含め、`NONE`は空集合にする。単一ratingである`BROADCASTER_DEFINED`は既存XMLの`contentAgeHint=18`を維持するため、stock policyでは`HIGH/MEDIUM/LOW`の各presetでblocked候補になる。18はproduct preset policy分類用metadataであり、ARIB raw `0x12..0xFF`の年齢解釈ではない。`CUSTOM`ではstock TV Appの通常rating設定から同canonical ratingを追加・削除する。第二policy APK、TV App private state reader、`packages/apps/TV` source patchは追加しない。
-
-製品buildでは`AribContentRatings`とstock `LiveTv`を組み込み、rating-provider receiverとXML metadataを発見可能にする。repo内では`AribContentRatings`のpackage/action/meta-data、`ARIB_EXCEPTIONAL / BROADCASTER_DEFINED`、`contentAgeHint=18`を静的確認し、旧System TV App patchを正規経路として残さない。product tree / 実機では、rating provider discovery、parental controls無効、`NONE`、`HIGH/MEDIUM/LOW`、`CUSTOM`での標準blocked-rating編集、PIN unblock、他domain/ratingSystem非干渉を確認する。
-
-```text
-m AribContentRatings LiveTv
-```
-
-TISは引き続き`TvInputManager.isRatingBlocked()`だけをcurrent policy authorityとして扱う。既存のblocked-rating永続化、PIN認証後のsession-level `onUnblockContent()`、通常年齢rating、第三者custom ratingの扱いは変更しない。
-
-"""
-              text = text[:i] + section + text[j:]
-
-          old_check = """System TV App本体は本repoの所有物ではないため、同等実装を本repoへ複製しない。製品platform統合ではSystem TV App側に、上記product固有exceptional ratingだけを対象とするpolicy patchを含めることを必須条件とする。parental controlsが有効でglobal policyが`NONE`以外の場合はこのratingをglobal blocked-rating集合へ反映する一方、PIN認証済みの現在コンテンツに対する `onUnblockContent()` 一時解除は維持する。第三者custom rating、CTS Verifierが提供するrating、他domain/ratingSystemのblock/unblock可否へこのpolicyを波及させない。"""
-          new_check = """System TV App本体へARIB専用source patchを追加しない。`AribContentRatings`のTIF標準rating-provider metadataをstock TV Appが読み込み、`contentAgeHint=18`を既存preset policyへ適用する。`HIGH/MEDIUM/LOW`ではexceptional ratingがblocked候補に含まれ、`NONE`では含まれない。`CUSTOM`はstock TV Appの通常blocked-rating編集を使う。PIN認証済みの現在コンテンツに対する`onUnblockContent()`一時解除を維持し、第三者custom rating、CTS Verifier由来rating、他domain/ratingSystemのblock/unblock可否へこのproduct metadataを波及させない。"""
-          if old_check in text:
-              text = text.replace(old_check, new_check, 1)
-          elif new_check not in text:
-              raise SystemExit("視聴年齢制限統合確認の旧patch契約が見つかりません")
-
-          old_gate = "- System TV AppのARIB exceptional policyが有効で、PINによる現在コンテンツ一時解除と第三者rating非干渉を維持する。"
-          new_gate = "- `AribContentRatings`がstock TV Appから発見され、既存preset/custom policyを通じてARIB exceptional ratingのblock/unblockとPIN一時解除、第三者rating非干渉が成立する。"
-          if old_gate in text:
-              text = text.replace(old_gate, new_gate, 1)
-          elif new_gate not in text:
-              raise SystemExit("F11合格条件の旧patch契約が見つかりません")
-          integration.write_text(text)
-
-          from xml.etree import ElementTree
-          ns = "{http://schemas.android.com/apk/res/android}"
-          root = ElementTree.parse("tis/arib_parental_rating/res/xml/tv_content_rating_systems.xml").getroot()
-          system = root.find("rating-system-definition")
-          if system is None or system.get(ns + "name") != "ARIB_EXCEPTIONAL":
-              raise SystemExit("ARIB_EXCEPTIONAL rating systemがありません")
-          rating = system.find("rating-definition")
-          if rating is None or rating.get(ns + "name") != "BROADCASTER_DEFINED":
-              raise SystemExit("BROADCASTER_DEFINED ratingがありません")
-          if rating.get(ns + "contentAgeHint") != "18":
-              raise SystemExit("実XMLのcontentAgeHintが18ではありません")
-          if Path("tis/platform_patches/lineage-22.1/packages_apps_TV_arib_exceptional_parental_policy.patch").exists():
-              raise SystemExit("旧System TV App直接patchが残っています")
-          PY
-          git diff --check
-
-      - name: 通常TIS CIを復元して一時物を除去
-        shell: bash
-        run: |
+          set -euo pipefail
           cp .github/tmp/tis-host-ci.yml.orig .github/workflows/tis-host-ci.yml
           rm .github/tmp/tis-host-ci.yml.orig
+          rm .github/scripts/pr54_f11_f15_cleanup.py
           rm -f tis/.f11_f15_trigger
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
