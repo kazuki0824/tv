@@ -8,7 +8,7 @@ permissions:
   contents: write
 
 jobs:
-  privatize:
+  narrow:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -23,69 +23,94 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           rustup toolchain install 1.81.0 --profile minimal --component clippy
-      - name: Apply reviewed private surfaces
+      - name: Apply one-pass pub(super) narrowing
         run: |
           set -eux
           git checkout -B work origin/fix/tuner-hal2-soong-clippy-hygiene
-          test "$(git rev-parse HEAD)" = "7dce2746110a987bda13c4d8ffa8f56c2d42174f"
+          test "$(git rev-parse HEAD)" = "f59aad676cb68411f15a55c58c66c31723e791d0"
           python3 - <<'PY'
           from pathlib import Path
           import re
+
           targets = {
-            'tuner_hal2/aidl_service/src/service_context.rs': [('fn','drop_leak_error_diagnostic_snapshot')],
-            'tuner_hal2/demux/src/parser/packet_pipeline.rs': [('fn','validate_packet'),('fn','push_ts_packet'),('fn','inspect_ts_packet')],
-            'tuner_hal2/demux/src/parser/record_index.rs': [('fn','processed_packets')],
-            'tuner_hal2/demux/src/parser/sections.rs': [('fn','oversized_section_drops'),('fn','stale_partial_section_discards'),('fn','push_payload')],
-            'tuner_hal2/demux/src/runtime/demux.rs': [('fn','consume_playback_dvr_queue')],
-            'tuner_hal2/demux/src/runtime/dvr.rs': [('field','playback_completion'),('field','playback_processing_buffer')],
-            'tuner_hal2/demux/src/runtime/filter.rs': [('fn','prepare_next_source_relation_generation')],
-            'tuner_hal2/device/src/runtime/frontend_runtime.rs': [('fn','state'),('fn','active_scan_session'),('fn','next_generation')],
-            'tuner_hal2/device/src/runtime/tune_txn.rs': [('fn','attempted_steps'),('fn','failure'),('fn','completed_steps'),('trait','TuneWorkerStart'),('fn','apply_with_worker'),('enum','FrontendTuneOutcome'),('struct','FrontendTuneTxn')],
-            'tuner_hal2/service_runtime/src/boot.rs': [('fn','reserve_filter_capacity_for_test'),('fn','release_filter_capacity_for_test'),('fn','reserve_dvr_capacity_for_test'),('fn','release_dvr_capacity_for_test')],
-            'tuner_hal2/service_runtime/src/frontend_worker_txn.rs': [('fn','stop_frontend_worker')],
-            'tuner_hal2/service_runtime/src/lnb_ops.rs': [('fn','set_frontend_lnb'),('fn','apply_lnb_voltage'),('fn','apply_lnb_tone'),('fn','apply_lnb_satellite_position'),('fn','send_lnb_diseqc')],
-            'tuner_hal2/service_runtime/src/registry.rs': [('fn','lnb_runtime_mut'),('fn','unbind_lnb_from_frontend')],
+            'tuner_hal2/demux/src/runtime/dvr.rs': [
+              ('fn','new'),
+              ('fn','install_test_playback_processing_buffer'),
+              ('fn','push_playback_bytes'),
+              ('fn','take_playback_processing_buffer'),
+              ('fn','restore_playback_processing_buffer'),
+              ('fn','drain_playback_completion_for_boundary'),
+            ],
+            'tuner_hal2/demux/src/runtime/filter.rs': [
+              ('fn','new'),
+              ('fn','set_source_relation_generation_for_test'),
+              ('fn','restore'),
+            ],
+            'tuner_hal2/demux/src/runtime/pcr_clock_anchor.rs': [
+              ('fn','observation_for_test'),
+            ],
+            'tuner_hal2/device/src/runtime/tune_txn.rs': [
+              ('fn','generation'),
+            ],
+            'tuner_hal2/service_runtime/src/boot/demux_filter_dvr_ops.rs': [
+              ('fn','start_filter_runtime'),
+            ],
           }
-          def pat(kind,name):
-            n=re.escape(name)
-            return {
-              'fn': rf'\bpub\(crate\)\s+(?:(?:const|async|unsafe)\s+)*fn\s+{n}\b',
-              'field': rf'\bpub\(crate\)\s+{n}\s*:',
-              'struct': rf'\bpub\(crate\)\s+struct\s+{n}\b',
-              'enum': rf'\bpub\(crate\)\s+enum\s+{n}\b',
-              'trait': rf'\bpub\(crate\)\s+trait\s+{n}\b',
-            }[kind]
-          changed=0
-          for path,decls in targets.items():
-            p=Path(path); lines=p.read_text().splitlines(keepends=True)
-            for kind,name in decls:
-              rx=re.compile(pat(kind,name)); hits=[i for i,l in enumerate(lines) if rx.search(l)]
-              if len(hits)!=1: raise SystemExit(f'{path}: {kind} {name}: {hits}')
-              i=hits[0]
-              if '#[cfg(test)]' not in ''.join(lines[max(0,i-8):i+1]): raise SystemExit(f'not test-only: {path}: {name}')
-              lines[i]=lines[i].replace('pub(crate) ','',1); changed+=1
+
+          def pattern(kind, name):
+            n = re.escape(name)
+            if kind == 'fn':
+              return re.compile(rf'\bpub\(crate\)\s+(?:(?:const|async|unsafe)\s+)*fn\s+{n}\b')
+            raise ValueError(kind)
+
+          changed = 0
+          for path, decls in targets.items():
+            p = Path(path)
+            lines = p.read_text().splitlines(keepends=True)
+            for kind, name in decls:
+              rx = pattern(kind, name)
+              hits = [i for i, line in enumerate(lines) if rx.search(line)]
+              if len(hits) != 1:
+                raise SystemExit(f'{path}: {name}: expected exactly one declaration, got {hits}')
+              i = hits[0]
+              context = ''.join(lines[max(0, i - 8):i + 1])
+              if '#[cfg(test)]' not in context:
+                raise SystemExit(f'{path}: {name}: not guarded by nearby #[cfg(test)]')
+              lines[i] = lines[i].replace('pub(crate) ', 'pub(super) ', 1)
+              changed += 1
             p.write_text(''.join(lines))
-          print('privatized:',changed)
-          if changed!=34: raise SystemExit(f'expected 34, got {changed}')
+
+          print('narrowed to pub(super):', changed)
+          if changed != 12:
+            raise SystemExit(f'expected 12, got {changed}')
           PY
           git diff --check
           git add tuner_hal2
-          git commit -m 'refactor(tuner-hal2): privatize module-local test surfaces'
+          git commit -m 'refactor(tuner-hal2): narrow shared test visibility to parent modules'
       - name: Validate visibility invariants
         run: |
           python3 - <<'PY'
           from pathlib import Path
           import re
-          pc=re.compile(r'#\[cfg\(test\)\]\s*\n(?:\s*#\[[^\n]+\]\s*\n)*\s*pub\(crate\)\s+',re.M)
-          pp=re.compile(r'#\[cfg\(test\)\]\s*\n(?:\s*#\[[^\n]+\]\s*\n)*\s*pub\s+',re.M)
-          al=re.compile(r'#\s*!?\s*\[\s*allow\s*\(')
-          c=0; plain=[]; allows=[]
+          pc = re.compile(r'#\[cfg\(test\)\]\s*\n(?:\s*#\[[^\n]+\]\s*\n)*\s*pub\(crate\)\s+', re.M)
+          ps = re.compile(r'#\[cfg\(test\)\]\s*\n(?:\s*#\[[^\n]+\]\s*\n)*\s*pub\(super\)\s+', re.M)
+          pp = re.compile(r'#\[cfg\(test\)\]\s*\n(?:\s*#\[[^\n]+\]\s*\n)*\s*pub\s+', re.M)
+          al = re.compile(r'#\s*!?\s*\[\s*allow\s*\(')
+          c = s_count = 0
+          plain = []
+          allows = []
           for p in Path('tuner_hal2').rglob('*.rs'):
-            s=p.read_text(); c+=len(pc.findall(s))
-            if pp.search(s): plain.append(str(p))
-            if al.search(s): allows.append(str(p))
-          print(c,plain,allows)
-          if c!=83 or plain or allows: raise SystemExit(1)
+            text = p.read_text()
+            c += len(pc.findall(text))
+            s_count += len(ps.findall(text))
+            if pp.search(text): plain.append(str(p))
+            if al.search(text): allows.append(str(p))
+          print('cfg(test)+pub(crate):', c)
+          print('cfg(test)+pub(super):', s_count)
+          print('cfg(test)+plain pub:', plain)
+          print('allow hits:', allows)
+          if c != 71 or s_count < 12 or plain or allows:
+            raise SystemExit(1)
           PY
           git diff --check
       - name: Check Rust 1.81 host build and all-target Clippy
