@@ -27,7 +27,7 @@ data class ScanCandidate(
         if (kind == ScanCandidateKind.ISDB_S_110CS) require(streamSelector.type == StreamSelectorType.NONE) { "CS110 は TSID/relative stream selector による frontend 選局を行いません" }
         if (kind == ScanCandidateKind.ISDB_S_BS) {
             val discoverySeed = backendHint == JapanIsdbScanPlan.BS_DISCOVERY_BACKEND_HINT && streamSelector.type == StreamSelectorType.NONE
-            val explicitTune = streamSelector.type == StreamSelectorType.TSID || (backendHint == "px4" && streamSelector.type == StreamSelectorType.RELATIVE)
+            val explicitTune = streamSelector.type == StreamSelectorType.TSID
             require(discoverySeed || explicitTune) { "BS はscan discovery seed(NONE)または明示TSIDを使用します" }
         }
     }
