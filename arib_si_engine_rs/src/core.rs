@@ -1,5 +1,3 @@
-#[path = "core/arib_jis_x0208_table.rs"]
-pub mod arib_jis_x0208_table;
 #[path = "core/arib_string.rs"]
 pub mod arib_string;
 #[path = "core/ca_descriptor.rs"]
