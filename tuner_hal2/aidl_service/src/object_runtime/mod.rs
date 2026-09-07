@@ -18,7 +18,7 @@ use maleicacid_tuner_hal2_service_runtime::{
     CloseCleanupAttemptCompletion, FrontendWorkerTerminationUseCase, ObjectArtifactCleanupCommand,
     ObjectArtifactCleanupExecutor, ObjectCleanupDiagnosticRecord, ObjectCleanupExecutionReport,
     ObjectCloseCleanupAttempt, ObjectCloseCleanupFailure, ObjectCloseRuntimeExecutor,
-    ObjectCloseTxn, ObjectCloseUseCasePlan, ObjectDomainCleanupCommand,
+    ObjectCloseTxn, ObjectDomainCleanupCommand,
     ObjectDomainCleanupExecutor, ObjectMethodExecutionToken, ObjectMethodUseCase,
     ObjectMethodUseCaseBuildError, ObjectQueryRequest, ObjectQueryResponse,
     ObjectRuntimeCleanupCommand, OwnerCallbackCleanupArtifactCommand,

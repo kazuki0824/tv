@@ -1,7 +1,9 @@
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Condvar, Mutex, Weak,
+    Arc, Weak,
 };
+#[cfg(test)]
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -205,7 +207,7 @@ impl DvrStatusNotifierSupervisor {
         for job in state.reaping_mut().values_mut() {
             job.restart_requested = false;
         }
-        let active = core::mem::take(&mut state.active_mut());
+        let active = core::mem::take(state.active_mut());
         for (key, notifier) in active {
             signal_dvr_status_notifier_stop(&notifier);
             state.reaping_mut().insert(
@@ -916,7 +918,7 @@ fn mark_dvr_notifier_service_critical(context: &SharedAidlServiceContext) {
     let runtime = context.runtime();
     if let Ok(mut runtime) = runtime.lock() {
         runtime.mark_service_critical();
-    }
+    };
 }
 
 fn record_dvr_notifier_cleanup_control_failure(
@@ -935,8 +937,15 @@ fn fence_dvr_notifier_owner_after_cleanup_failure(
     if dvr_notifier_owner_generation_is_fenced(context, handle) {
         return;
     }
-    if let Err(error) = crate::object_runtime::drop_leak_object(context, handle) {
-        record_dvr_notifier_cleanup_control_failure(context, handle, error);
+    if let Err(status) = crate::object_runtime::drop_leak_object(context, handle) {
+        record_dvr_notifier_cleanup_control_failure(
+            context,
+            handle,
+            HalError::cleanup_failed(
+                "DVR notifier owner fencing",
+                format!("drop leak cleanup failed: {status:?}"),
+            ),
+        );
         return;
     }
     if !dvr_notifier_owner_generation_is_fenced(context, handle) {
