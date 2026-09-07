@@ -4376,6 +4376,18 @@ impl DemuxRuntime {
                             });
                     }
                     Some(Ok(outcome)) => {
+                        if matches!(
+                            &outcome,
+                            AvPayloadDeliveryOutcome::NoFreeSlot
+                                | AvPayloadDeliveryOutcome::PayloadOversized
+                        ) {
+                            report
+                                .generated_events
+                                .push(PipelineGeneratedEvent::FilterStatus {
+                                    filter_id,
+                                    status: FilterStatusEvent::Overflow,
+                                });
+                        }
                         if let Some(diagnostic) =
                             av_payload_delivery_outcome_diagnostic(outcome, pid, filter_id)
                         {
@@ -4383,7 +4395,14 @@ impl DemuxRuntime {
                         }
                     }
                     Some(Err(error)) => {
-                        if let Some(filter) = self.filters.get_mut(&filter_id) {
+                        if error.is_retryable_allocation_failure() {
+                            report
+                                .generated_events
+                                .push(PipelineGeneratedEvent::FilterStatus {
+                                    filter_id,
+                                    status: FilterStatusEvent::Overflow,
+                                });
+                        } else if let Some(filter) = self.filters.get_mut(&filter_id) {
                             filter.mark_failed();
                         }
                         report.diagnostics.push(

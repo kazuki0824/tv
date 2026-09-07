@@ -1,3 +1,9 @@
+# r51_pr85_av_allocation_retry
+
+- HAL-020: AV領域の割当・mapping等の一時失敗はOVERFLOWと元の診断を返し、filterをfailedへ遷移させない。空き枠不足・上限超過にもOVERFLOWを出す。次入力は再試行でき、失敗時に架空data IDを発行しない。
+- 容量台帳破損・計算overflow・必須backing欠落をInvariantViolationとして割当不足から分離する。これらとunmap失敗の局所failureは維持する。
+- 共有handle解放後のevent-local割当を失敗注入し、OVERFLOW・未発行ID・次PESでの正確な長さのFD-backed event生成を確認した。Rust host workspace451件とall-target Clippy（-D warnings）が成功した。Android実機のdma-buf不足試験は未実施。
+
 # r51_pr85_reaper_and_diagnostic_lifecycle
 
 - F-04: tune/scan置換のreaper取得失敗を結果集約の内側へ移し、既に発生したworker terminal acceptance失敗と完了診断を早期returnで失わない。

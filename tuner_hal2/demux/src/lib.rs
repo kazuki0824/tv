@@ -3490,6 +3490,64 @@ mod tests {
     }
 
     #[test]
+    fn av_allocation_failure_emits_overflow_and_retries_the_next_input() {
+        use std::os::unix::fs::MetadataExt;
+        let filter_id = 51;
+        let pid = 0x101;
+        let mut demux = started_audio_filter_runtime(filter_id, pid);
+        let shared = demux.export_filter_av_shared_handle(filter_id).unwrap();
+        let metadata = shared.file.metadata().unwrap();
+        assert_eq!(
+            demux
+                .release_filter_av_handle(
+                    filter_id,
+                    AvHandleReleaseDescriptor::File(AvFileIdentity::new(
+                        metadata.dev(),
+                        metadata.ino(),
+                        metadata.size()
+                    )),
+                    0
+                )
+                .unwrap(),
+            AvHandleReleaseOutcome::ClientHandleReleased
+        );
+        let frame = adts_aac_lc_frame_48khz(4);
+        let payload = [frame.as_slice(), frame.as_slice()].concat();
+        let failed = crate::av::shared_backing::with_failed_dmabuf_allocations_for_test(|| {
+            demux.push_ts_packet_from_origin(
+                &pes_start_packet(pid as u16, 0, &bounded_audio_pes(&payload, Some(90_000))),
+                TsInputOrigin::frontend(1),
+            )
+        });
+        assert!(av_descriptors(&failed, filter_id).is_empty());
+        assert!(failed.generated_events.iter().any(|event| matches!(event,
+            PipelineGeneratedEvent::FilterStatus { filter_id: id, status: FilterStatusEvent::Overflow } if *id == filter_id)));
+        assert!(failed.diagnostics.iter().any(|diagnostic| matches!(
+            diagnostic,
+            PipelineDiagnostic::AvSharedBackingFailure {
+                error: AvSharedBackingError::AllocationFailed,
+                ..
+            }
+        )));
+        assert!(!demux
+            .filter(filter_id)
+            .unwrap()
+            .state()
+            .is_closed_or_failed());
+        let retried = demux.push_ts_packet_from_origin(
+            &pes_start_packet(pid as u16, 1, &bounded_audio_pes(&payload, Some(180_000))),
+            TsInputOrigin::frontend(1),
+        );
+        let descriptors = av_descriptors(&retried, filter_id);
+        assert_eq!(descriptors.len(), 2);
+        assert!(descriptors.iter().all(|descriptor| descriptor.data_id.0 > 0
+            && descriptor.data_length == frame.len()
+            && descriptor.event_local_file.is_some()));
+        assert_eq!(descriptors[0].data_id.0, 1);
+        assert_eq!(descriptors[1].data_id.0, 2);
+    }
+
+    #[test]
     fn audio_timestamp_association_is_fenced_by_flush_and_transport_discontinuity() {
         let filter_id = 39;
         let pid = 0x0101;

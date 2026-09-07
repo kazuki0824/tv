@@ -41,13 +41,13 @@ impl AvRuntimeBudget {
 
     fn try_claim(&self, bytes: usize) -> Result<bool, AvSharedBackingError> {
         if self.corrupt.load(Ordering::Acquire) {
-            return Err(AvSharedBackingError::AllocationFailed);
+            return Err(AvSharedBackingError::InvariantViolation);
         }
         let mut current = self.used_bytes.load(Ordering::Acquire);
         loop {
             let next = current
                 .checked_add(bytes)
-                .ok_or(AvSharedBackingError::AllocationFailed)?;
+                .ok_or(AvSharedBackingError::InvariantViolation)?;
             if next > self.limit_bytes {
                 return Ok(false);
             }
@@ -148,11 +148,24 @@ pub struct AvSharedHandleExport {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AvSharedBackingError {
+    InvariantViolation,
     AllocationFailed,
     DuplicateFailed,
     IdentityFailed,
     MappingFailed,
     UnmappingFailed,
+}
+
+impl AvSharedBackingError {
+    pub(crate) const fn is_retryable_allocation_failure(self) -> bool {
+        matches!(
+            self,
+            Self::AllocationFailed
+                | Self::DuplicateFailed
+                | Self::IdentityFailed
+                | Self::MappingFailed
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -349,7 +362,7 @@ impl AvSharedBacking {
         let size_bytes = self
             .slot_size
             .checked_mul(self.slots.len())
-            .ok_or(AvSharedBackingError::AllocationFailed)?;
+            .ok_or(AvSharedBackingError::InvariantViolation)?;
         if self.file.is_none() {
             // 安全性: size_bytesは上で検査済みで、allocatorへRust pointerを渡さず、新規FDまたは負のerrorだけを受け取る。
             let raw_fd = unsafe { tuner_dmabuf_heap_alloc_system(size_bytes) };
@@ -365,13 +378,13 @@ impl AvSharedBacking {
             self.shared_handle_identity = Some(AvFileIdentity::from_file(
                 self.file
                     .as_ref()
-                    .ok_or(AvSharedBackingError::AllocationFailed)?,
+                    .ok_or(AvSharedBackingError::InvariantViolation)?,
             )?);
         }
         let file = self
             .file
             .as_ref()
-            .ok_or(AvSharedBackingError::AllocationFailed)?
+            .ok_or(AvSharedBackingError::InvariantViolation)?
             .try_clone()
             .map_err(|_| AvSharedBackingError::DuplicateFailed)?;
         self.mark_exported();
@@ -395,11 +408,11 @@ impl AvSharedBacking {
         let file = self
             .file
             .as_ref()
-            .ok_or(AvSharedBackingError::AllocationFailed)?;
+            .ok_or(AvSharedBackingError::InvariantViolation)?;
         let map_len = self
             .slot_size
             .checked_mul(self.slots.len())
-            .ok_or(AvSharedBackingError::MappingFailed)?;
+            .ok_or(AvSharedBackingError::InvariantViolation)?;
         // 安全性: fileはliveで、map_lenは検査済みの全backing範囲、offsetは0で、要求mappingとaliasするRust参照はない。
         let mapped = unsafe {
             mmap(
@@ -466,7 +479,7 @@ impl AvSharedBacking {
             .count();
         let active_count = active_shared_count
             .checked_add(self.event_local_allocations.len())
-            .ok_or(AvSharedBackingError::AllocationFailed)?;
+            .ok_or(AvSharedBackingError::InvariantViolation)?;
         if active_count >= self.max_outstanding_events {
             return Ok(AvPayloadDeliveryOutcome::NoFreeSlot);
         }
@@ -475,11 +488,11 @@ impl AvSharedBacking {
             .iter()
             .filter(|slot| slot.active_data_id.is_some())
             .try_fold(0usize, |total, slot| total.checked_add(slot.data_length))
-            .ok_or(AvSharedBackingError::AllocationFailed)?;
+            .ok_or(AvSharedBackingError::InvariantViolation)?;
         let next_live_bytes = active_shared_bytes
             .checked_add(self.event_local_bytes)
             .and_then(|total| total.checked_add(payload.len()))
-            .ok_or(AvSharedBackingError::AllocationFailed)?;
+            .ok_or(AvSharedBackingError::InvariantViolation)?;
         if next_live_bytes > self.per_filter_live_bytes {
             return Ok(AvPayloadDeliveryOutcome::NoFreeSlot);
         }
@@ -532,7 +545,7 @@ impl AvSharedBacking {
         self.event_local_bytes = self
             .event_local_bytes
             .checked_add(payload.len())
-            .ok_or(AvSharedBackingError::AllocationFailed)?;
+            .ok_or(AvSharedBackingError::InvariantViolation)?;
         self.event_local_allocations.insert(
             data_id,
             EventLocalAllocation {
@@ -816,8 +829,28 @@ extern "C" {
 }
 
 #[cfg(test)]
+std::thread_local! {
+    static FAIL_DMABUF_ALLOCATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_failed_dmabuf_allocations_for_test<T>(run: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            FAIL_DMABUF_ALLOCATION.set(self.0);
+        }
+    }
+    let _restore = Restore(FAIL_DMABUF_ALLOCATION.replace(true));
+    run()
+}
+
+#[cfg(test)]
 #[no_mangle]
 unsafe extern "C" fn tuner_dmabuf_heap_alloc_system(len: usize) -> i32 {
+    if FAIL_DMABUF_ALLOCATION.get() {
+        return -1;
+    }
     let Ok(length) = i64::try_from(len) else {
         return -1;
     };
