@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
 use maleicacid_tuner_hal2_control_core::{
-    WorkerHandle, WorkerRuntime, WorkerRuntimeOwnerFailure, WorkerRuntimePoll,
+    WorkerContext, WorkerHandle, WorkerRuntime, WorkerRuntimeOwnerFailure, WorkerRuntimePoll,
 };
 
 fn owner_failure_to_hal(error: WorkerRuntimeOwnerFailure, name: &'static str) -> HalError {
@@ -48,13 +48,25 @@ where
         name: &'static str,
         run: impl FnOnce() -> Result<T, HalError> + Send + 'static,
     ) -> Result<Self, HalError> {
-        let owner = WorkerRuntime::spawn_handle(name.to_owned(), run).map_err(|error| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                format!("{name}: thread spawn failed: {error}"),
-            )
-        })?;
+        Self::start_controlled(name, move |_| run())
+    }
+
+    pub(crate) fn start_controlled(
+        name: &'static str,
+        run: impl FnOnce(WorkerContext) -> Result<T, HalError> + Send + 'static,
+    ) -> Result<Self, HalError> {
+        let owner =
+            WorkerRuntime::spawn_controlled_handle(name.to_owned(), run).map_err(|error| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    format!("{name}: thread spawn failed: {error}"),
+                )
+            })?;
         Ok(Self { owner, name })
+    }
+
+    pub(crate) fn request_stop_and_wake(&self) -> Result<(), HalError> {
+        self.owner.request_stop_and_wake()
     }
 
     pub(crate) fn collect_if_finished(&mut self) -> ThreadResultPoll<T> {

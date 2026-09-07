@@ -22,17 +22,20 @@ pub struct WorkerHandle<T, E> {
     completion: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
     join: Option<std::thread::JoinHandle<()>>,
     collected: bool,
+    context: WorkerContext,
 }
 
 impl<T, E> WorkerHandle<T, E> {
     fn start(
         name: String,
-        run: impl FnOnce() -> Result<T, E> + Send + 'static,
+        run: impl FnOnce(WorkerContext) -> Result<T, E> + Send + 'static,
     ) -> std::io::Result<Self>
     where
         T: Send + 'static,
         E: Send + 'static,
     {
+        let context = WorkerContext::new();
+        let thread_context = context.clone();
         let result = std::sync::Arc::new(std::sync::Mutex::new(None));
         let owner_failure = std::sync::Arc::new(std::sync::Mutex::new(None));
         let completion =
@@ -41,7 +44,8 @@ impl<T, E> WorkerHandle<T, E> {
         let failure_for_thread = std::sync::Arc::clone(&owner_failure);
         let completion_for_thread = std::sync::Arc::clone(&completion);
         let join = std::thread::Builder::new().name(name).spawn(move || {
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
+            let outcome =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(thread_context)));
             match outcome {
                 Ok(outcome) => match result_for_thread.lock() {
                     Ok(mut slot) => *slot = Some(outcome),
@@ -77,6 +81,7 @@ impl<T, E> WorkerHandle<T, E> {
             completion,
             join: Some(join),
             collected: false,
+            context,
         })
     }
 
@@ -126,10 +131,15 @@ impl<T, E> WorkerHandle<T, E> {
             .unwrap_or(true)
     }
 
-    pub fn unpark(&self) {
-        if let Some(handle) = self.join.as_ref() {
-            handle.thread().unpark();
-        }
+    pub fn request_stop_and_wake(&self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+        self.context
+            .stop
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.context.wake.notify()
+    }
+
+    pub fn wake(&self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+        self.context.wake.notify()
     }
 
     pub fn wait_until_finished(
@@ -192,8 +202,26 @@ pub enum WorkerTerminalResult<T> {
     PanicOrJoinFailure,
 }
 
+impl<T, E> Drop for WorkerHandle<T, E> {
+    fn drop(&mut self) {
+        if self
+            .join
+            .as_ref()
+            .is_some_and(|thread| !thread.is_finished())
+        {
+            if let Err(error) = self.request_stop_and_wake() {
+                eprintln!(
+                    "worker handle drop wake failed: thread={:?} error={error}",
+                    self.join.as_ref().and_then(|thread| thread.thread().name())
+                );
+            }
+        }
+    }
+}
+
 /// 正規worker ownerが発行する待機権限。起床は専用の状態に保持する。
-pub struct WorkerWake {
+#[derive(Clone, Debug)]
+struct WorkerWake {
     pending: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
 }
 
@@ -212,7 +240,7 @@ impl WorkerWake {
         )
     }
 
-    pub fn wait_until(
+    fn wait_until(
         &self,
         deadline: Option<std::time::Instant>,
     ) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
@@ -238,79 +266,80 @@ impl WorkerWake {
     }
 }
 
+/// workerだけへ渡す停止観測・待機権限。停止状態は正規ownerだけが変更する。
+#[derive(Clone, Debug)]
+pub struct WorkerContext {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    wake: WorkerWake,
+}
+
+impl WorkerContext {
+    fn new() -> Self {
+        Self {
+            stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            wake: WorkerWake {
+                pending: std::sync::Arc::new((
+                    std::sync::Mutex::new(false),
+                    std::sync::Condvar::new(),
+                )),
+            },
+        }
+    }
+
+    pub fn stop_requested(&self) -> bool {
+        self.stop.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn wait_until(
+        &self,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+        if self.stop_requested() {
+            return Ok(());
+        }
+        self.wake.wait_until(deadline)
+    }
+}
+
 /// device層とservice層が共有するgeneric worker lifecycleの正規owner。
 /// 全thread生成と従属reaper/supervisor handleはここから発行する。
 pub struct WorkerRuntime<T = ()> {
     owner_id: i64,
     generation: u64,
-    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    stop_signalled: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    wake_signalled: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    wake: WorkerWake,
-    finished: std::sync::Arc<std::sync::atomic::AtomicBool>,
     handle: Option<WorkerHandle<WorkerTerminalResult<T>, ()>>,
 }
 
 impl<T> WorkerRuntime<T> {
     pub fn wake(&self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
-        self.wake.notify()
+        self.handle
+            .as_ref()
+            .ok_or(maleicacid_tuner_hal2_common::HalError::NotInitialized {
+                resource: "worker handle",
+            })?
+            .wake()
     }
     pub const fn owner_id(&self) -> i64 {
         self.owner_id
     }
-
     pub const fn generation(&self) -> u64 {
         self.generation
     }
-
-    pub fn stop_signal(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
-        std::sync::Arc::clone(&self.stop)
-    }
-
     pub fn is_finished(&self) -> bool {
-        self.finished.load(std::sync::atomic::Ordering::Acquire)
-            || self
-                .handle
-                .as_ref()
-                .map(|handle| handle.is_thread_finished())
-                .unwrap_or(true)
+        self.handle
+            .as_ref()
+            .map(|handle| handle.is_thread_finished())
+            .unwrap_or(true)
     }
-
     pub fn request_stop_and_wake(&self) {
-        if self
-            .stop_signalled
-            .compare_exchange(
-                false,
-                true,
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-            )
-            .is_ok()
-        {
-            self.stop.store(true, std::sync::atomic::Ordering::Release);
-        }
-        if self
-            .wake_signalled
-            .compare_exchange(
-                false,
-                true,
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-            )
-            .is_ok()
-        {
-            if let Err(error) = self.wake() {
+        if let Some(handle) = self.handle.as_ref() {
+            if let Err(error) = handle.request_stop_and_wake() {
                 eprintln!(
                     "worker stop wake failed: owner={} generation={} error={error}",
                     self.owner_id, self.generation
                 );
             }
-            if let Some(handle) = self.handle.as_ref() {
-                handle.unpark();
-            }
         }
     }
-
     pub fn join(mut self) -> WorkerTerminalResult<T> {
         let Some(handle) = self.handle.take() else {
             return WorkerTerminalResult::PanicOrJoinFailure;
@@ -345,48 +374,39 @@ impl WorkerRuntime<()> {
     ) -> std::io::Result<WorkerRuntime<T>>
     where
         T: Send + 'static,
-        F: FnOnce(
-                std::sync::Arc<std::sync::atomic::AtomicBool>,
-                WorkerWake,
-            ) -> Result<T, maleicacid_tuner_hal2_common::HalError>
+        F: FnOnce(WorkerContext) -> Result<T, maleicacid_tuner_hal2_common::HalError>
             + Send
             + 'static,
         C: FnOnce() + Send + 'static,
     {
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let thread_stop = std::sync::Arc::clone(&stop);
-        let pending =
-            std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
-        let thread_wake = WorkerWake {
-            pending: std::sync::Arc::clone(&pending),
-        };
-        let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let thread_finished = std::sync::Arc::clone(&finished);
-        let handle = Self::spawn_handle(thread_name, move || {
+        let handle = Self::spawn_controlled_handle(thread_name, move |context| {
             let terminal = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                worker(std::sync::Arc::clone(&thread_stop), thread_wake)
+                worker(context.clone())
             })) {
-                Ok(Ok(_result)) if thread_stop.load(std::sync::atomic::Ordering::Acquire) => {
-                    WorkerTerminalResult::StopRequested
-                }
+                Ok(Ok(_result)) if context.stop_requested() => WorkerTerminalResult::StopRequested,
                 Ok(Ok(result)) => WorkerTerminalResult::Normal(result),
                 Ok(Err(error)) => WorkerTerminalResult::RuntimeFailure(error),
                 Err(_) => WorkerTerminalResult::PanicOrJoinFailure,
             };
-            thread_finished.store(true, std::sync::atomic::Ordering::Release);
             completion_signal();
             Ok::<_, ()>(terminal)
         })?;
         Ok(WorkerRuntime {
             owner_id,
             generation,
-            stop,
-            stop_signalled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            wake_signalled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            wake: WorkerWake { pending },
-            finished,
             handle: Some(handle),
         })
+    }
+
+    pub fn spawn_controlled_handle<T, E>(
+        name: String,
+        run: impl FnOnce(WorkerContext) -> Result<T, E> + Send + 'static,
+    ) -> std::io::Result<WorkerHandle<T, E>>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+    {
+        WorkerHandle::start(name, run)
     }
 
     pub fn spawn_handle<T, E>(
@@ -397,7 +417,7 @@ impl WorkerRuntime<()> {
         T: Send + 'static,
         E: Send + 'static,
     {
-        WorkerHandle::start(name, run)
+        Self::spawn_controlled_handle(name, move |_| run())
     }
 
     pub fn start_reaper_queue<K, V, J>(
@@ -762,10 +782,10 @@ mod tests {
             "wake-before-wait".into(),
             1,
             1,
-            move |_, wake| {
+            move |context| {
                 ready_tx.send(()).unwrap();
                 continue_rx.recv().unwrap();
-                wake.wait_until(Some(
+                context.wait_until(Some(
                     std::time::Instant::now() + std::time::Duration::from_secs(10),
                 ))?;
                 done_tx.send(()).unwrap();
@@ -796,10 +816,10 @@ mod tests {
             "stop-parked".into(),
             2,
             1,
-            move |stop, wake| {
+            move |context| {
                 ready_tx.send(()).unwrap();
-                while !stop.load(std::sync::atomic::Ordering::Acquire) {
-                    wake.wait_until(None)?;
+                while !context.stop_requested() {
+                    context.wait_until(None)?;
                 }
                 done_tx.send(()).unwrap();
                 Ok(())

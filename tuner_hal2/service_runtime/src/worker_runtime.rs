@@ -1,6 +1,6 @@
 pub use maleicacid_tuner_hal2_control_core::{
-    WorkerHandle, WorkerRuntime, WorkerRuntimeReaperQueue, WorkerRuntimeSupervisor,
-    WorkerTerminalResult, WorkerWake,
+    WorkerContext, WorkerHandle, WorkerRuntime, WorkerRuntimeReaperQueue, WorkerRuntimeSupervisor,
+    WorkerTerminalResult,
 };
 
 pub const CLEANUP_RETRY_SCHEDULE_MS: &[u64] = &[0, 10, 100, 1_000];

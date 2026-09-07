@@ -1,3 +1,11 @@
+# r50eo84_pr85_frontend_cancellation_io
+
+- F-07/F-08/HAL-017: Frontend workerとlive pumpの取消状態を正規control ownerへ集約した。DVB readerとpx4 control fdを非ブロッキングで開き、WouldBlockの再待機とEINTR再試行の間で停止要求を観測する。EOF後に同じ入力を自動再開しない。
+- F-09: Frontend状態確認とDVR通知の待機を停止で解除可能にした。cleanup reaperの待機経路は別途確認中であり、この項目全体の完了とはしない。
+- HAL-016/HAL-041: DVBの通常終了・失敗回復はfd解放とし、DTV_CLEARは明示的な選局停止へ限定した。px4の終了ではstream停止を維持する。Frontendの失敗回復でruntime lockを解放してから機器I/Oを行い、再取得後に世代付き状態記録を行う。
+- HAL-047: live readの恒久障害へDVB/px4と実デバイスパスを保持する。
+- Rust 1.81のhost単体試験449件とClippyが成功した。無入力の実FD、WouldBlock/EINTR後の再開、backend別障害、DVB closeとpx4 closeの差を回帰確認した。Android/Soong build、atest、VTS、CTS、実機のdriver停止期限確認は未実施。
+
 # r50eo84_pr85_worker_wake_failure_boundaries
 
 - F-01/F-02/HAL-039: Filter遅延配送のグローバル起床状態と循環番号を廃止し、正規WorkerRuntimeが保持する専用の起床状態とCondvarへ接続した。通知が待機より先に到着しても保持し、停止要求でも待機を解除する。

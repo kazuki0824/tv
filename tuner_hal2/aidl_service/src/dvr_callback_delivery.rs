@@ -1,9 +1,6 @@
 #[cfg(test)]
 use std::sync::Mutex;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Weak,
-};
+use std::sync::{Arc, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -706,7 +703,7 @@ fn deliver_dvr_status_event(
 fn dvr_status_notifier_loop(
     context: SharedAidlServiceContext,
     handle: AidlObjectHandle,
-    cancel: Arc<AtomicBool>,
+    cancel: maleicacid_tuner_hal2_service_runtime::WorkerContext,
 ) -> Result<(), HalError> {
     let runtime = context.runtime();
     let initial_snapshot = dvr_status_metadata_snapshot(&runtime, handle)?;
@@ -722,7 +719,7 @@ fn dvr_status_notifier_loop(
         callback_delivery_active = !initial_preflight.should_skip_delivery();
     }
     loop {
-        if cancel.load(Ordering::Relaxed) {
+        if cancel.stop_requested() {
             return Ok(());
         }
         if initial_snapshot.is_playback {
@@ -769,14 +766,23 @@ fn dvr_status_notifier_loop(
         } else {
             snapshot.interval_ms
         };
-        thread::park_timeout(Duration::from_millis(interval_ms));
+        cancel.wait_until(Some(
+            Instant::now()
+                .checked_add(Duration::from_millis(interval_ms))
+                .ok_or_else(|| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "DVR status deadline overflow",
+                    )
+                })?,
+        ))?;
     }
 }
 
 fn run_dvr_status_notifier_with_terminal_diagnostic(
     context: SharedAidlServiceContext,
     handle: AidlObjectHandle,
-    cancel: Arc<AtomicBool>,
+    cancel: maleicacid_tuner_hal2_service_runtime::WorkerContext,
 ) -> Result<(), HalError> {
     let terminal_error = match dvr_status_notifier_loop(Arc::clone(&context), handle, cancel) {
         Ok(()) => {
@@ -883,7 +889,7 @@ fn spawn_dvr_status_notifier(
         ),
         handle.object_id().0,
         handle.generation().0,
-        move |cancel, _wake| {
+        move |cancel| {
             run_dvr_status_notifier_with_terminal_diagnostic(thread_context, handle, cancel)
         },
         move || {

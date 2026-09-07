@@ -1,9 +1,9 @@
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use maleicacid_tuner_hal2_common::os_abi::{ioctl, last_errno};
@@ -254,18 +254,29 @@ impl FrontendBackendSession {
                 FrontendBackendSessionKind::Dvb { .. },
                 FrontendLiveReaderDescriptorKind::DvbDvrDevice { dvr_path },
             ) => {
-                let file = File::open(dvr_path.as_path()).map_err(|error| {
-                    HalError::cleanup_failed(
-                        "dvb live dvr reader open",
-                        format!("{}: {error}", dvr_path.display()),
-                    )
-                })?;
+                let file = OpenOptions::new()
+                    .read(true)
+                    .custom_flags(dvb::abi::O_NONBLOCK)
+                    .open(dvr_path.as_path())
+                    .map_err(|error| {
+                        HalError::cleanup_failed(
+                            "dvb live dvr reader open",
+                            format!("{}: {error}", dvr_path.display()),
+                        )
+                    })?;
                 Ok(Box::new(file))
             }
             _ => Err(HalError::internal(
                 maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
                 "frontend backend session and live reader descriptor kind mismatch",
             )),
+        }
+    }
+
+    pub fn close(self) -> Result<(), HalError> {
+        match self.kind {
+            FrontendBackendSessionKind::Dvb { .. } => Ok(()),
+            FrontendBackendSessionKind::Px4 { .. } => self.stop(),
         }
     }
 
@@ -392,14 +403,14 @@ impl FrontendBackendSubmitTicket {
                         .send(FrontendBackendSubmitReady::Submitted)
                         .is_err()
                     {
-                        return Ok(FrontendBackendSubmitThreadOutcome::Aborted(session.stop()));
+                        return Ok(FrontendBackendSubmitThreadOutcome::Aborted(session.close()));
                     }
                     match disposition_receiver.recv() {
                         Ok(FrontendBackendSubmitDisposition::Claim) => {
                             Ok(FrontendBackendSubmitThreadOutcome::Claimed(session))
                         }
                         Ok(FrontendBackendSubmitDisposition::Abort) | Err(_) => {
-                            Ok(FrontendBackendSubmitThreadOutcome::Aborted(session.stop()))
+                            Ok(FrontendBackendSubmitThreadOutcome::Aborted(session.close()))
                         }
                     }
                 }
@@ -489,7 +500,7 @@ impl FrontendBackendSubmitTicket {
                         Ok(FrontendBackendSubmitWait::Completed(Err(failure)))
                     }
                     FrontendBackendSubmitThreadOutcome::Claimed(session) => {
-                        let stop_result = session.stop();
+                        let stop_result = session.close();
                         let error = stop_result.err().unwrap_or_else(|| {
                             HalError::internal(
                                 HalInternalKind::InvariantViolation,
@@ -543,7 +554,7 @@ impl FrontendBackendSubmitTicket {
                         Ok(FrontendBackendSubmitWait::Completed(Err(failure)))
                     }
                     FrontendBackendSubmitThreadOutcome::Claimed(session) => {
-                        let stop_error = session.stop().err().unwrap_or_else(|| {
+                        let stop_error = session.close().err().unwrap_or_else(|| {
                             HalError::internal(
                                 HalInternalKind::InvariantViolation,
                                 "frontend backend submit readiness disconnected after success",
@@ -652,7 +663,7 @@ fn frontend_backend_submit_cleanup_result(
             }
         }
         Ok(FrontendBackendSubmitThreadOutcome::Claimed(session)) => {
-            let stop_result = session.stop();
+            let stop_result = session.close();
             let invariant = HalError::internal(
                 HalInternalKind::InvariantViolation,
                 "frontend backend submit cleanup observed a claimed session",
@@ -1116,15 +1127,44 @@ pub fn run_frontend_backend_tune_worker_with_previous(
     plan.validate_worker_generation(ctx.generation())?;
     let session = FrontendBackendSession::open_and_submit_with_previous(&plan, previous_request)?;
     while !ctx.cancel_requested() {
-        thread::sleep(Duration::from_millis(20));
+        ctx.wait_until(Some(
+            Instant::now()
+                .checked_add(Duration::from_millis(20))
+                .ok_or_else(|| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "frontend poll deadline overflow",
+                    )
+                })?,
+        ))?;
     }
-    session.stop()
+    let reason = ctx.cancel_reason();
+    let completion = if matches!(
+        reason,
+        Ok(Some(
+            super::frontend_worker::FrontendWorkerCancelReason::StopRequested
+        ))
+    ) {
+        session.stop()
+    } else {
+        session.close()
+    };
+    match (reason, completion) {
+        (Ok(_), result) => result,
+        (Err(error), Ok(())) => Err(error),
+        (Err(primary), Err(cleanup)) => Err(compose_primary_cleanup_failure(
+            "frontend cancellation lookup and backend cleanup failed",
+            primary,
+            cleanup,
+        )),
+    }
 }
 
 fn open_rw(path: &FrontendDevicePath) -> Result<File, HalError> {
     OpenOptions::new()
         .read(true)
         .write(true)
+        .custom_flags(dvb::abi::O_NONBLOCK)
         .open(path.as_path())
         .map_err(|error| match error.kind() {
             std::io::ErrorKind::PermissionDenied => HalError::PermissionDenied {
@@ -1263,6 +1303,34 @@ fn ioctl_word(
 mod tests {
     use super::*;
     use maleicacid_tuner_hal2_common::{FrontendStreamIdKind, FrontendSystem};
+    use std::thread;
+
+    #[test]
+    fn dvb_close_does_not_require_a_tune_stop_ioctl() {
+        let session = FrontendBackendSession {
+            kind: FrontendBackendSessionKind::Dvb {
+                frontend_path: FrontendDevicePath::new("/dev/null"),
+            },
+            file: File::open("/dev/null").unwrap(),
+            initial_signal_state: FrontendSignalState::NoSignal,
+            partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+        };
+        assert!(session.stop().is_err());
+        assert!(session.close().is_ok());
+    }
+
+    #[test]
+    fn px4_close_retains_stream_stop_failure() {
+        let session = FrontendBackendSession {
+            kind: FrontendBackendSessionKind::Px4 {
+                control_path: FrontendDevicePath::new("/dev/null"),
+            },
+            file: File::open("/dev/null").unwrap(),
+            initial_signal_state: FrontendSignalState::NoSignal,
+            partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+        };
+        assert!(session.close().is_err());
+    }
 
     #[derive(Default)]
     struct FakePx4LnbOps {

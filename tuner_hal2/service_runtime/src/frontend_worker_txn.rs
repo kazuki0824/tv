@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
-#[cfg(test)]
 use std::sync::MutexGuard;
 use std::sync::{mpsc, Arc, Mutex, Weak};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::cleanup_execution::{
@@ -1437,9 +1435,28 @@ fn finish_frontend_state_restore_lock_failure_report(
 
 fn finish_backend_session_after_worker_body(
     session: FrontendBackendSession,
-    body_result: Result<(), HalError>,
+    mut body_result: Result<(), HalError>,
+    cancel_reason: Result<Option<FrontendWorkerCancelReason>, HalError>,
 ) -> Result<(), HalError> {
-    let stop_result = session.stop();
+    let explicit_stop = matches!(
+        cancel_reason,
+        Ok(Some(FrontendWorkerCancelReason::StopRequested))
+    );
+    if let Err(reason_error) = cancel_reason {
+        body_result = match body_result {
+            Ok(()) => Err(reason_error),
+            Err(primary) => Err(compose_frontend_cleanup_error(
+                "frontend cancellation reason lookup failed",
+                primary,
+                reason_error,
+            )),
+        };
+    }
+    let stop_result = if explicit_stop {
+        session.stop()
+    } else {
+        session.close()
+    };
     match (body_result, stop_result) {
         (Ok(()), Ok(())) => Ok(()),
         (Ok(()), Err(stop_error)) => Err(stop_error),
@@ -1453,18 +1470,33 @@ fn finish_backend_session_after_worker_body(
 }
 
 fn finish_backend_session_before_frontend_commit_failure(
-    guard: &mut TunerServiceRuntime,
+    runtime: &SharedRuntime,
+    guard: MutexGuard<'_, TunerServiceRuntime>,
     frontend_id: i32,
     generation: u64,
     session: FrontendBackendSession,
     primary: HalError,
     context: &'static str,
 ) -> HalError {
-    let stop_result = session.stop();
+    drop(guard);
+    let stop_result = session.close();
     let backend_stopped = stop_result.is_ok();
     let public_error = match stop_result {
         Ok(()) => primary,
         Err(stop_error) => compose_frontend_cleanup_error(context, primary, stop_error),
+    };
+    let mut guard = match lock_runtime(
+        runtime,
+        "service runtime lock poisoned after backend cleanup",
+    ) {
+        Ok(guard) => guard,
+        Err(lock_error) => {
+            return compose_frontend_cleanup_error(
+                "frontend backend cleanup state record lock failed",
+                public_error,
+                lock_error,
+            )
+        }
     };
     match guard
         .frontend_txn()
@@ -1484,18 +1516,33 @@ fn finish_backend_session_before_frontend_commit_failure(
 }
 
 fn finish_backend_session_after_frontend_commit_activation_failure(
-    guard: &mut TunerServiceRuntime,
+    runtime: &SharedRuntime,
+    guard: MutexGuard<'_, TunerServiceRuntime>,
     frontend_id: i32,
     generation: u64,
     session: FrontendBackendSession,
     primary: HalError,
     context: &'static str,
 ) -> HalError {
-    let stop_result = session.stop();
+    drop(guard);
+    let stop_result = session.close();
     let backend_stopped = stop_result.is_ok();
     let public_error = match stop_result {
         Ok(()) => primary,
         Err(stop_error) => compose_frontend_cleanup_error(context, primary, stop_error),
+    };
+    let mut guard = match lock_runtime(
+        runtime,
+        "service runtime lock poisoned after backend cleanup",
+    ) {
+        Ok(guard) => guard,
+        Err(lock_error) => {
+            return compose_frontend_cleanup_error(
+                "frontend backend cleanup state record lock failed",
+                public_error,
+                lock_error,
+            )
+        }
     };
     match guard
         .frontend_txn()
@@ -2268,7 +2315,16 @@ fn wait_for_frontend_qualified_lock(
         if started.elapsed() >= deadline {
             return Ok(FrontendLockWaitOutcome::NoSignal);
         }
-        thread::sleep(Duration::from_millis(20));
+        ctx.wait_until(Some(
+            Instant::now()
+                .checked_add(Duration::from_millis(20))
+                .ok_or_else(|| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "frontend poll deadline overflow",
+                    )
+                })?,
+        ))?;
     }
 }
 
@@ -2529,6 +2585,7 @@ fn run_frontend_backend_tune_session_worker(
                         Arc::clone(&runtime),
                         frontend_id,
                         reader,
+                        descriptor,
                     )?);
                 }
             }
@@ -2542,6 +2599,7 @@ fn run_frontend_backend_tune_session_worker(
             if let Some(result) = completed_live_pump {
                 live_pump = None;
                 let report = result?;
+                let input_closed = report.reached_eof;
                 let mut guard = lock_runtime(
                     &runtime,
                     "service runtime lock poisoned while recording completed live pump report",
@@ -2552,8 +2610,20 @@ fn run_frontend_backend_tune_session_worker(
                     report,
                     ctx.cancel_reason()?,
                 )?;
+                if input_closed {
+                    break;
+                }
             }
-            thread::sleep(Duration::from_millis(20));
+            ctx.wait_until(Some(
+                Instant::now()
+                    .checked_add(Duration::from_millis(20))
+                    .ok_or_else(|| {
+                        HalError::internal(
+                            HalInternalKind::InvariantViolation,
+                            "frontend poll deadline overflow",
+                        )
+                    })?,
+            ))?;
         }
         if let Some(owner) = live_pump.take() {
             let report = owner.join_after_stop()?;
@@ -2571,7 +2641,7 @@ fn run_frontend_backend_tune_session_worker(
         Ok(())
     })();
     stop_live_pump_after_worker_error(&mut live_pump, &mut body_result);
-    finish_backend_session_after_worker_body(session, body_result)
+    finish_backend_session_after_worker_body(session, body_result, ctx.cancel_reason())
 }
 
 struct CommittedTuneReplacement {
@@ -2910,7 +2980,8 @@ fn finish_committed_tune_replacement(
             },
         ) {
             return Err(finish_backend_session_before_frontend_commit_failure(
-                &mut guard,
+                runtime,
+                guard,
                 frontend_id,
                 generation,
                 session,
@@ -2933,7 +3004,8 @@ fn finish_committed_tune_replacement(
                     )
                 });
             let mut error = finish_backend_session_before_frontend_commit_failure(
-                &mut guard,
+                runtime,
+                guard,
                 frontend_id,
                 generation,
                 session,
@@ -2959,7 +3031,8 @@ fn finish_committed_tune_replacement(
                     );
                     Err(
                         finish_backend_session_after_frontend_commit_activation_failure(
-                            &mut guard,
+                            runtime,
+                            guard,
                             frontend_id,
                             generation,
                             session,
@@ -3528,7 +3601,7 @@ fn run_frontend_backend_scan_session_worker(
             }
             Ok(())
         })();
-        finish_backend_session_after_worker_body(session, body_result)?;
+        finish_backend_session_after_worker_body(session, body_result, ctx.cancel_reason())?;
         if ctx.cancel_requested() {
             return Ok(());
         }
@@ -3778,7 +3851,8 @@ fn finish_committed_scan_replacement(
             },
         ) {
             return Err(finish_backend_session_before_frontend_commit_failure(
-                &mut guard,
+                runtime,
+                guard,
                 frontend_id,
                 generation,
                 session,
@@ -3802,7 +3876,8 @@ fn finish_committed_scan_replacement(
                     )
                 });
             let mut error = finish_backend_session_before_frontend_commit_failure(
-                &mut guard,
+                runtime,
+                guard,
                 frontend_id,
                 generation,
                 session,
@@ -3828,7 +3903,8 @@ fn finish_committed_scan_replacement(
                     );
                     Err(
                         finish_backend_session_after_frontend_commit_activation_failure(
-                            &mut guard,
+                            runtime,
+                            guard,
                             frontend_id,
                             generation,
                             session,

@@ -19,7 +19,7 @@ use maleicacid_tuner_hal2_service_runtime::{
     CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport,
     FilterCallbackDeliveryDiagnosticPhase, FilterCallbackDeliveryDiagnosticRecord,
     FilterEventDelivery, FilterEventDeliverySnapshot, FilterEventDispatcher, TunerServiceRuntime,
-    WorkerRuntime, WorkerWake,
+    WorkerContext, WorkerRuntime,
 };
 
 use crate::object_handle::AidlObjectHandle;
@@ -51,7 +51,7 @@ impl AidlFilterEventDispatcher {
             "maleicacid-filter-delay-delivery".to_string(),
             0,
             1,
-            move |stop, wake| run_filter_delay_delivery(worker_context, stop, wake),
+            move |control| run_filter_delay_delivery(worker_context, control),
             || {},
         )
         .map_err(|error| {
@@ -95,11 +95,10 @@ pub(crate) fn dispatch_filter_event_snapshots(
 
 fn run_filter_delay_delivery(
     weak_context: Weak<AidlServiceContext>,
-    stop: Arc<std::sync::atomic::AtomicBool>,
-    wake: WorkerWake,
+    control: WorkerContext,
 ) -> Result<(), HalError> {
     loop {
-        if stop.load(std::sync::atomic::Ordering::Acquire) {
+        if control.stop_requested() {
             return Ok(());
         }
         let Some(context) = weak_context.upgrade() else {
@@ -121,10 +120,10 @@ fn run_filter_delay_delivery(
         }
         drop(runtime);
         drop(context);
-        if stop.load(std::sync::atomic::Ordering::Acquire) {
+        if control.stop_requested() {
             return Ok(());
         }
-        wake.wait_until(deadline)?;
+        control.wait_until(deadline)?;
     }
 }
 

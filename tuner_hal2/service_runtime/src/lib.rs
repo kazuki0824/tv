@@ -133,8 +133,8 @@ pub use root_method_txn::{
 pub use root_object_ops::RootOpenTxn;
 pub use worker_failure_classifier::{ClassifiedWorkerTerminalResult, WorkerFailureCategory};
 pub use worker_runtime::{
-    join_worker_classified, WorkerHandle, WorkerRuntime, WorkerRuntimeReaperQueue,
-    WorkerRuntimeSupervisor, WorkerTerminalResult, WorkerWake, CLEANUP_RETRY_SCHEDULE_MS,
+    join_worker_classified, WorkerContext, WorkerHandle, WorkerRuntime, WorkerRuntimeReaperQueue,
+    WorkerRuntimeSupervisor, WorkerTerminalResult, CLEANUP_RETRY_SCHEDULE_MS,
     CLEANUP_TERMINAL_DEADLINE_MS, WORKER_IO_DEADLINE_MS, WORKER_REAPER_DEADLINE_MS,
 };
 #[cfg(test)]
@@ -1297,6 +1297,10 @@ mod tests {
             Arc::clone(&runtime),
             1_000_000,
             reader,
+            maleicacid_tuner_hal2_device::FrontendLiveReaderDescriptor::dvb_dvr_device(
+                1_000_000,
+                FrontendDevicePath::new("/dev/dvb/adapter0/dvr0"),
+            ),
         )
         .unwrap();
         let report = {

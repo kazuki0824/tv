@@ -3,12 +3,13 @@
 //! descriptorだけのlive readerモデルを置き換える実装である。pumpはread loopとTS packet再同期を所有する。
 //! 明示的なpacket sinkを必須とし、demux bindingなしで完了に見える無処理成功sinkは提供しない。
 
+use super::reader::{FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind};
+use maleicacid_tuner_hal2_control_core::WorkerContext;
 use std::io::{self, Read};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use maleicacid_tuner_hal2_common::{
-    retry_after_interrupted_read_with_saturation, HalError, HalErrorDetail, HalInternalKind,
+    compose_primary_cleanup_failure, HalError, HalErrorDetail, HalInternalKind,
     TsPacketCompletionBuffer, TS_PACKET_SIZE,
 };
 
@@ -60,38 +61,30 @@ pub enum FrontendLivePumpJoinOutcome {
 impl core::fmt::Debug for FrontendLivePumpOwner {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("FrontendLivePumpOwner")
-            .field("cancelled", &self.cancel.load(Ordering::SeqCst))
             .field("thread_result", &self.thread_result)
             .finish()
     }
 }
 
 pub struct FrontendLivePumpOwner {
-    cancel: Arc<AtomicBool>,
     thread_result: ThreadResultOwner<FrontendLivePumpReport>,
 }
 
 impl FrontendLivePumpOwner {
     pub fn start(
+        descriptor: FrontendLiveReaderDescriptor,
         mut reader: Box<dyn Read + Send>,
         mut sink: Box<dyn FrontendLivePacketSink>,
     ) -> Result<Self, HalError> {
-        let cancel = Arc::new(AtomicBool::new(false));
-        let worker_cancel = Arc::clone(&cancel);
-        let thread_result = ThreadResultOwner::start("maleicacid-frontend-live-pump", move || {
-            run_frontend_live_pump(&mut reader, &mut sink, &worker_cancel)
-        })
-        .map_err(|error| {
-            HalError::cleanup_failed("frontend live pump spawn", format!("{error:?}"))
-        })?;
-        Ok(Self {
-            cancel,
-            thread_result,
-        })
+        let thread_result =
+            ThreadResultOwner::start_controlled("maleicacid-frontend-live-pump", move |control| {
+                run_frontend_live_pump(&mut reader, &mut sink, &control, &descriptor)
+            })?;
+        Ok(Self { thread_result })
     }
 
-    pub fn request_stop(&self) {
-        self.cancel.store(true, Ordering::SeqCst);
+    pub fn request_stop(&self) -> Result<(), HalError> {
+        self.thread_result.request_stop_and_wake()
     }
 
     pub fn collect_if_finished(&mut self) -> FrontendLivePumpJoinOutcome {
@@ -102,64 +95,69 @@ impl FrontendLivePumpOwner {
     }
 
     pub fn join_after_stop(self) -> Result<FrontendLivePumpReport, HalError> {
-        self.request_stop();
-        self.thread_result.join_after_stop()
+        let stop = self.request_stop();
+        let result = self.thread_result.join_after_stop();
+        match (stop, result) {
+            (Ok(()), result) => result,
+            (Err(error), Ok(_)) => Err(error),
+            (Err(primary), Err(cleanup)) => Err(compose_primary_cleanup_failure(
+                "live pump stop and join failed",
+                primary,
+                cleanup,
+            )),
+        }
     }
 }
 
-pub fn run_frontend_live_pump<R, S>(
+fn run_frontend_live_pump<R, S>(
     reader: &mut R,
     sink: &mut S,
-    cancel: &AtomicBool,
-) -> Result<FrontendLivePumpReport, HalError>
-where
-    R: Read,
-    S: FrontendLivePacketSink + ?Sized,
-{
-    run_frontend_live_pump_limited(reader, sink, cancel, None)
-}
-
-pub fn run_frontend_live_pump_limited<R, S>(
-    reader: &mut R,
-    sink: &mut S,
-    cancel: &AtomicBool,
-    max_iterations: Option<usize>,
+    control: &WorkerContext,
+    descriptor: &FrontendLiveReaderDescriptor,
 ) -> Result<FrontendLivePumpReport, HalError>
 where
     R: Read,
     S: FrontendLivePacketSink + ?Sized,
 {
     let mut report = FrontendLivePumpReport::default();
-    let retry_counter = AtomicU64::new(0);
-    let retry_counter_saturated = AtomicBool::new(false);
     let mut completion = TsPacketCompletionBuffer::default();
     let mut buf = [0u8; TS_PACKET_SIZE * 16];
-    let mut iterations = 0usize;
 
     loop {
-        if cancel.load(Ordering::SeqCst) {
+        if control.stop_requested() {
             report.stopped_by_cancel = true;
             break;
         }
-        if let Some(max) = max_iterations {
-            if iterations >= max {
-                break;
+        let read_len = match reader.read(&mut buf) {
+            Ok(length) => length,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                match report.read_retries.checked_add(1) {
+                    Some(count) => report.read_retries = count,
+                    None if !report.read_retry_counter_saturated => {
+                        report.read_retry_counter_saturated = true;
+                        eprintln!(
+                            "live read EINTR counter saturated: frontend={} reader={:?}",
+                            descriptor.frontend_id, descriptor.kind
+                        );
+                    }
+                    None => {}
+                }
+                continue;
             }
-        }
-        iterations = iterations.checked_add(1).ok_or_else(|| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "frontend live pump iteration counter overflow",
-            )
-        })?;
-
-        let read_len = retry_after_interrupted_read_with_saturation(
-            "frontend live pump read",
-            &retry_counter,
-            Some(&retry_counter_saturated),
-            || reader.read(&mut buf),
-        )
-        .map_err(|error| io_error_to_hal("read", error))?;
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                let deadline = Instant::now()
+                    .checked_add(Duration::from_millis(20))
+                    .ok_or_else(|| {
+                        HalError::internal(
+                            HalInternalKind::InvariantViolation,
+                            "live read retry deadline overflow",
+                        )
+                    })?;
+                control.wait_until(Some(deadline))?;
+                continue;
+            }
+            Err(error) => return Err(io_error_to_hal(descriptor, "read", error)),
+        };
 
         if read_len == 0 {
             report.reached_eof = true;
@@ -176,20 +174,30 @@ where
 
     let boundary = completion.drain_for_boundary();
     report.add_malformed(u64::try_from(boundary.malformed_bytes).unwrap_or(u64::MAX));
-    for packet in &boundary.packets {
-        sink.deliver_ts_packet(packet)?;
+    if !report.stopped_by_cancel {
+        for packet in &boundary.packets {
+            sink.deliver_ts_packet(packet)?;
+        }
+        report.add_packets(boundary.packets.len())?;
     }
-    report.add_packets(boundary.packets.len())?;
-    report.read_retries = retry_counter.load(Ordering::SeqCst);
-    report.read_retry_counter_saturated = retry_counter_saturated.load(Ordering::SeqCst);
     Ok(report)
 }
 
-fn io_error_to_hal(operation: &'static str, error: io::Error) -> HalError {
+fn io_error_to_hal(
+    descriptor: &FrontendLiveReaderDescriptor,
+    operation: &'static str,
+    error: io::Error,
+) -> HalError {
+    let (backend, path) = match &descriptor.kind {
+        FrontendLiveReaderDescriptorKind::Px4DuplicatedControlFd { control_path } => {
+            ("px4", control_path)
+        }
+        FrontendLiveReaderDescriptorKind::DvbDvrDevice { dvr_path } => ("dvb", dvr_path),
+    };
     HalError::Io {
-        backend: "frontend-live-pump",
+        backend,
         operation,
-        path: None,
+        path: Some(path.as_path().to_path_buf()),
         errno: error.raw_os_error(),
         detail: HalErrorDetail::new(error.to_string()),
     }
@@ -199,8 +207,26 @@ fn io_error_to_hal(operation: &'static str, error: io::Error) -> HalError {
 mod tests {
     use super::*;
     use std::io::Cursor;
-    use std::sync::Arc;
-    use std::time::Duration;
+
+    fn descriptor() -> FrontendLiveReaderDescriptor {
+        FrontendLiveReaderDescriptor::dvb_dvr_device(
+            7,
+            maleicacid_tuner_hal2_common::FrontendDevicePath::new("/dev/dvb/adapter0/dvr0"),
+        )
+    }
+
+    fn run<R: Read + Send + 'static, S: FrontendLivePacketSink + Send + 'static>(
+        mut reader: R,
+        mut sink: S,
+    ) -> (Result<FrontendLivePumpReport, HalError>, S) {
+        ThreadResultOwner::start_controlled("live-pump-test", move |control| {
+            let result = run_frontend_live_pump(&mut reader, &mut sink, &control, &descriptor());
+            Ok((result, sink))
+        })
+        .unwrap()
+        .join_after_stop()
+        .unwrap()
+    }
 
     #[derive(Default)]
     struct VecSink {
@@ -225,10 +251,8 @@ mod tests {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&packet(1));
         bytes.extend_from_slice(&packet(2));
-        let mut reader = Cursor::new(bytes);
-        let mut sink = VecSink::default();
-        let cancel = AtomicBool::new(false);
-        let report = run_frontend_live_pump(&mut reader, &mut sink, &cancel).unwrap();
+        let (result, sink) = run(Cursor::new(bytes), VecSink::default());
+        let report = result.unwrap();
         assert_eq!(report.packets_delivered, 2);
         assert_eq!(sink.packets.len(), 2);
         assert!(report.reached_eof);
@@ -248,10 +272,116 @@ mod tests {
                 ))
             }
         }
-        let mut reader = Cursor::new(packet(3).to_vec());
-        let mut sink = FailingSink;
-        let cancel = AtomicBool::new(false);
-        assert!(run_frontend_live_pump(&mut reader, &mut sink, &cancel).is_err());
+        assert!(run(Cursor::new(packet(3).to_vec()), FailingSink).0.is_err());
+    }
+
+    #[test]
+    fn interrupted_and_temporarily_empty_reads_preserve_stream_progress() {
+        struct IntermittentReader {
+            errors: std::collections::VecDeque<io::ErrorKind>,
+            bytes: Cursor<Vec<u8>>,
+        }
+        impl Read for IntermittentReader {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                match self.errors.pop_front() {
+                    Some(kind) => Err(io::Error::from(kind)),
+                    None => self.bytes.read(buffer),
+                }
+            }
+        }
+        let reader = IntermittentReader {
+            errors: [io::ErrorKind::Interrupted, io::ErrorKind::WouldBlock].into(),
+            bytes: Cursor::new(packet(9).to_vec()),
+        };
+        let (report, sink) = run(reader, VecSink::default());
+        let report = report.unwrap();
+        assert_eq!(report.read_retries, 1);
+        assert!(report.reached_eof);
+        assert_eq!(sink.packets, vec![packet(9)]);
+    }
+
+    #[test]
+    fn stop_finishes_a_pump_with_no_input_on_a_nonblocking_fd() {
+        let (reader, _writer) = std::os::unix::net::UnixStream::pair().unwrap();
+        reader.set_nonblocking(true).unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        struct ObservedReader {
+            reader: std::os::unix::net::UnixStream,
+            ready: Option<std::sync::mpsc::Sender<()>>,
+        }
+        impl Read for ObservedReader {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                let result = self.reader.read(buffer);
+                if let Some(ready) = self.ready.take() {
+                    ready.send(()).unwrap();
+                }
+                result
+            }
+        }
+        let owner = FrontendLivePumpOwner::start(
+            descriptor(),
+            Box::new(ObservedReader {
+                reader,
+                ready: Some(ready_tx),
+            }),
+            Box::new(VecSink::default()),
+        )
+        .unwrap();
+        ready_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        owner.request_stop().unwrap();
+        assert!(owner
+            .thread_result
+            .wait_until_finished(Some(Instant::now() + Duration::from_secs(1)))
+            .unwrap());
+        let report = owner.join_after_stop().unwrap();
+        assert!(report.stopped_by_cancel);
+        assert!(!report.reached_eof);
+    }
+
+    #[test]
+    fn permanent_read_failure_retains_each_backend_and_device_path() {
+        struct FailedReader;
+        impl Read for FailedReader {
+            fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::from_raw_os_error(5))
+            }
+        }
+        for (descriptor, expected_backend, expected_path) in [
+            (descriptor(), "dvb", "/dev/dvb/adapter0/dvr0"),
+            (
+                FrontendLiveReaderDescriptor::px4_from_control_fd(
+                    8,
+                    maleicacid_tuner_hal2_common::FrontendDevicePath::new("/dev/px4video0"),
+                ),
+                "px4",
+                "/dev/px4video0",
+            ),
+        ] {
+            let error = ThreadResultOwner::start_controlled("live-error-origin", move |control| {
+                run_frontend_live_pump(
+                    &mut FailedReader,
+                    &mut VecSink::default(),
+                    &control,
+                    &descriptor,
+                )
+            })
+            .unwrap()
+            .join_after_stop()
+            .unwrap_err();
+            match error {
+                HalError::Io {
+                    backend,
+                    path,
+                    errno,
+                    ..
+                } => {
+                    assert_eq!(backend, expected_backend);
+                    assert_eq!(path.unwrap(), std::path::PathBuf::from(expected_path));
+                    assert_eq!(errno, Some(5));
+                }
+                other => panic!("unexpected read failure: {other:?}"),
+            }
+        }
     }
 
     #[test]
@@ -259,6 +389,7 @@ mod tests {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&packet(4));
         let mut owner = FrontendLivePumpOwner::start(
+            descriptor(),
             Box::new(Cursor::new(bytes)),
             Box::new(VecSink::default()),
         )
@@ -289,9 +420,12 @@ mod tests {
                 ))
             }
         }
-        let mut owner =
-            FrontendLivePumpOwner::start(Box::new(FailingReader), Box::new(VecSink::default()))
-                .unwrap();
+        let mut owner = FrontendLivePumpOwner::start(
+            descriptor(),
+            Box::new(FailingReader),
+            Box::new(VecSink::default()),
+        )
+        .unwrap();
         let mut completed = false;
         for _ in 0..100 {
             if let FrontendLivePumpJoinOutcome::Completed(result) = owner.collect_if_finished() {
@@ -307,7 +441,6 @@ mod tests {
     #[test]
     fn live_pump_owner_missing_report_is_error() {
         let owner = FrontendLivePumpOwner {
-            cancel: Arc::new(AtomicBool::new(false)),
             thread_result: ThreadResultOwner::start(
                 "live-pump-owner-failure-test",
                 || -> Result<FrontendLivePumpReport, HalError> {
@@ -322,7 +455,6 @@ mod tests {
     #[test]
     fn live_pump_owner_missing_report_is_error_after_join() {
         let owner = FrontendLivePumpOwner {
-            cancel: Arc::new(AtomicBool::new(false)),
             thread_result: ThreadResultOwner::start(
                 "live-pump-owner-failure-test",
                 || -> Result<FrontendLivePumpReport, HalError> {

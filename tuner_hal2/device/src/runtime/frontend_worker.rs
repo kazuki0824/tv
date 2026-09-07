@@ -4,11 +4,12 @@
 //! worker slotは完了・取消・失敗状態だけを保持し、実operationの成功を代用しない。
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
-use maleicacid_tuner_hal2_control_core::{WorkerExit, WorkerFailureDomain, WorkerStopReason};
+use maleicacid_tuner_hal2_control_core::{
+    WorkerContext, WorkerExit, WorkerFailureDomain, WorkerStopReason,
+};
 
 use super::backend_worker::FrontendBackendSubmitTicket;
 use crate::runtime::thread_result_owner::{ThreadResultOwner, ThreadResultPoll};
@@ -275,7 +276,7 @@ pub struct FrontendWorkerContext {
     frontend_id: i32,
     kind: FrontendWorkerKind,
     generation: u64,
-    cancel: Arc<AtomicBool>,
+    control: WorkerContext,
     cancel_reason: Arc<Mutex<Option<FrontendWorkerCancelReason>>>,
 }
 
@@ -290,7 +291,10 @@ impl FrontendWorkerContext {
         self.generation
     }
     pub fn cancel_requested(&self) -> bool {
-        self.cancel.load(Ordering::SeqCst)
+        self.control.stop_requested()
+    }
+    pub fn wait_until(&self, deadline: Option<std::time::Instant>) -> Result<(), HalError> {
+        self.control.wait_until(deadline)
     }
     pub fn cancel_reason(&self) -> Result<Option<FrontendWorkerCancelReason>, HalError> {
         self.cancel_reason.lock().map(|guard| *guard).map_err(|_| {
@@ -305,13 +309,24 @@ impl FrontendWorkerContext {
 #[derive(Debug)]
 struct FrontendWorkerSlot {
     generation: u64,
-    cancel: Arc<AtomicBool>,
     cancel_reason: Arc<Mutex<Option<FrontendWorkerCancelReason>>>,
     thread_result: Option<ThreadResultOwner<(Result<(), HalError>, WorkerExit)>>,
     pending_completed: Option<(Result<(), HalError>, WorkerExit)>,
 }
 
 impl FrontendWorkerSlot {
+    fn request_stop_and_wake(&self) -> Result<(), HalError> {
+        self.thread_result
+            .as_ref()
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend worker stop owner missing",
+                )
+            })?
+            .request_stop_and_wake()
+    }
+
     fn is_running(&mut self) -> bool {
         if self.pending_completed.is_some() {
             return false;
@@ -412,39 +427,40 @@ impl FrontendWorkerRegistry {
             self.slots.remove(&key);
         }
 
-        let cancel = Arc::new(AtomicBool::new(false));
         let cancel_reason = Arc::new(Mutex::new(None));
-        let worker_cancel = Arc::clone(&cancel);
         let worker_cancel_reason = Arc::clone(&cancel_reason);
-        let context = FrontendWorkerContext {
-            frontend_id,
-            kind,
-            generation,
-            cancel: worker_cancel,
-            cancel_reason: Arc::clone(&worker_cancel_reason),
-        };
-
         let thread_name: &'static str = "maleicacid-frontend-worker";
-        let thread_result = ThreadResultOwner::start(thread_name, move || match job(context) {
-            Ok(()) => match worker_cancel_reason.lock() {
-                Ok(guard) => {
-                    let exit = (*guard)
-                        .map(|reason| WorkerExit::StopRequested(reason.to_worker_stop_reason()))
-                        .unwrap_or(WorkerExit::Normal);
-                    Ok((Ok(()), exit))
-                }
-                Err(_) => Ok((
-                    Err(HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "frontend worker cancel reason lock poisoned",
+        let thread_result = ThreadResultOwner::start_controlled(thread_name, move |control| {
+            let context = FrontendWorkerContext {
+                frontend_id,
+                kind,
+                generation,
+                control,
+                cancel_reason: Arc::clone(&worker_cancel_reason),
+            };
+            match job(context) {
+                Ok(()) => match worker_cancel_reason.lock() {
+                    Ok(guard) => {
+                        let exit = (*guard)
+                            .map(|reason| WorkerExit::StopRequested(reason.to_worker_stop_reason()))
+                            .unwrap_or(WorkerExit::Normal);
+                        Ok((Ok(()), exit))
+                    }
+                    Err(_) => Ok((
+                        Err(HalError::internal(
+                            HalInternalKind::InvariantViolation,
+                            "frontend worker cancel reason lock poisoned",
+                        )),
+                        WorkerExit::RuntimeFailure(
+                            WorkerFailureDomain::Signal.runtime_failure_kind(),
+                        ),
                     )),
-                    WorkerExit::RuntimeFailure(WorkerFailureDomain::Signal.runtime_failure_kind()),
+                },
+                Err(error) => Ok((
+                    Err(error),
+                    WorkerExit::RuntimeFailure(WorkerFailureDomain::Backend.runtime_failure_kind()),
                 )),
-            },
-            Err(error) => Ok((
-                Err(error),
-                WorkerExit::RuntimeFailure(WorkerFailureDomain::Backend.runtime_failure_kind()),
-            )),
+            }
         })
         .map_err(|error| FrontendWorkerStartError::SpawnFailed {
             detail: format!("{error:?}"),
@@ -454,7 +470,6 @@ impl FrontendWorkerRegistry {
             key,
             FrontendWorkerSlot {
                 generation,
-                cancel,
                 cancel_reason,
                 thread_result: Some(thread_result),
                 pending_completed: None,
@@ -500,7 +515,15 @@ impl FrontendWorkerRegistry {
         };
         *guard = Some(reason);
         drop(guard);
-        slot.cancel.store(true, Ordering::SeqCst);
+        if let Err(error) = slot.request_stop_and_wake() {
+            return FrontendWorkerStopOutcome::StopRequestFailed {
+                frontend_id,
+                kind,
+                generation,
+                reason,
+                error,
+            };
+        }
         FrontendWorkerStopOutcome::CancelRequested {
             frontend_id,
             kind,
@@ -552,7 +575,18 @@ impl FrontendWorkerRegistry {
         };
         *guard = Some(reason);
         drop(guard);
-        slot.cancel.store(true, Ordering::SeqCst);
+        if let Err(error) = slot.request_stop_and_wake() {
+            self.slots.insert(key, slot);
+            return FrontendWorkerStopTicket::immediate(
+                FrontendWorkerStopOutcome::StopRequestFailed {
+                    frontend_id,
+                    kind,
+                    generation,
+                    reason,
+                    error,
+                },
+            );
+        }
 
         FrontendWorkerStopTicket::join(FrontendWorkerDetachedJoin {
             frontend_id,
@@ -830,7 +864,6 @@ mod tests {
             key,
             FrontendWorkerSlot {
                 generation: 10,
-                cancel: Arc::new(AtomicBool::new(false)),
                 cancel_reason: Arc::new(Mutex::new(None)),
                 thread_result: Some(
                     ThreadResultOwner::start(

@@ -534,6 +534,7 @@ pub fn start_frontend_demux_live_pump_from_reader(
     runtime: Arc<Mutex<TunerServiceRuntime>>,
     frontend_id: i32,
     reader: Box<dyn Read + Send>,
+    descriptor: maleicacid_tuner_hal2_device::FrontendLiveReaderDescriptor,
 ) -> Result<FrontendLivePumpOwner, HalError> {
     let dispatcher = {
         let guard = runtime.lock().map_err(|_| {
@@ -552,7 +553,7 @@ pub fn start_frontend_demux_live_pump_from_reader(
         frontend_id,
         dispatcher,
     ));
-    FrontendLivePumpOwner::start(reader, sink)
+    FrontendLivePumpOwner::start(descriptor, reader, sink)
 }
 
 #[derive(Debug)]

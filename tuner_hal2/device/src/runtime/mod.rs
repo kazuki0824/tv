@@ -29,8 +29,8 @@ pub use frontend_worker::{
     FrontendWorkerStopOutcome, FrontendWorkerStopPoll, FrontendWorkerStopTicket,
 };
 pub use live_pump::{
-    run_frontend_live_pump, run_frontend_live_pump_limited, FrontendLivePacketSink,
-    FrontendLivePumpJoinOutcome, FrontendLivePumpOwner, FrontendLivePumpReport,
+    FrontendLivePacketSink, FrontendLivePumpJoinOutcome, FrontendLivePumpOwner,
+    FrontendLivePumpReport,
 };
 pub use reader::{FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind};
 pub use scan_session::{FrontendScanPhase, FrontendScanSession, FrontendScanTerminalReason};
