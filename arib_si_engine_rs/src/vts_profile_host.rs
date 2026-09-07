@@ -1,17 +1,20 @@
 use maleicacid_arib_si_engine_core::{
-    sections::{parse_section_header, section_crc_valid},
+    sections::{parse_section_header, section_crc_valid_with_header},
     service_discovery::ServiceDiscoveryCollector,
 };
 use serde_json::{json, Value};
 
 fn decode_hex(text: &str) -> Result<Vec<u8>, String> {
+    if !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("payloadに16進数以外の文字が含まれています".to_string());
+    }
     if text.len() % 2 != 0 {
-        return Err("payload hex length must be even".to_string());
+        return Err("payloadの16進文字列は偶数長である必要があります".to_string());
     }
     let mut out = Vec::with_capacity(text.len() / 2);
     for i in (0..text.len()).step_by(2) {
         let byte = u8::from_str_radix(&text[i..i + 2], 16)
-            .map_err(|_| "payload contains non-hex characters".to_string())?;
+            .map_err(|_| "payloadに16進数以外の文字が含まれています".to_string())?;
         out.push(byte);
     }
     Ok(out)
@@ -20,12 +23,12 @@ fn decode_hex(text: &str) -> Result<Vec<u8>, String> {
 fn parse_payload(value: &str) -> Result<(u16, Vec<u8>), String> {
     let (pid_text, hex) = value
         .split_once(':')
-        .ok_or_else(|| "--payload must be PID:HEX".to_string())?;
+        .ok_or_else(|| "--payloadはPID:HEX形式で指定してください".to_string())?;
     let pid = pid_text
         .parse::<u16>()
-        .map_err(|_| "payload PID is not an integer".to_string())?;
+        .map_err(|_| "payloadのPIDが整数ではありません".to_string())?;
     if pid > 0x1fff {
-        return Err("payload PID must be in 0..8191".to_string());
+        return Err("payloadのPIDは0..8191の範囲で指定してください".to_string());
     }
     Ok((pid, decode_hex(hex)?))
 }
@@ -35,18 +38,19 @@ fn resolution_json(payloads: &[(u16, Vec<u8>)]) -> Result<Value, String> {
     for (pid, bytes) in payloads {
         let mut offset = 0usize;
         while offset < bytes.len() {
-            let header = parse_section_header(&bytes[offset..])
-                .ok_or_else(|| format!("invalid section payload on PID {pid} at byte {offset}"))?;
+            let header = parse_section_header(&bytes[offset..]).ok_or_else(|| {
+                format!("PID {pid}のbyte位置{offset}に不正なsection payloadがあります")
+            })?;
             let end = offset
                 .checked_add(header.total_length)
-                .ok_or_else(|| "section length overflow".to_string())?;
+                .ok_or_else(|| "section長が上限を超えています".to_string())?;
             if end > bytes.len() {
-                return Err(format!("truncated section payload on PID {pid}"));
+                return Err(format!("PID {pid}のsection payloadが切断されています"));
             }
             let section = &bytes[offset..end];
-            if header.syntax && !section_crc_valid(section) {
+            if header.syntax && !section_crc_valid_with_header(section, &header) {
                 return Err(format!(
-                    "CRC error on PID {pid} table_id {}",
+                    "PID {pid}、table_id {}のCRCが不正です",
                     header.table_id
                 ));
             }
@@ -98,15 +102,15 @@ fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg != "--payload" {
-            return Err(format!("unknown argument: {arg}"));
+            return Err(format!("未対応の引数です: {arg}"));
         }
         let value = args
             .next()
-            .ok_or_else(|| "--payload requires PID:HEX".to_string())?;
+            .ok_or_else(|| "--payloadにはPID:HEXを指定してください".to_string())?;
         payloads.push(parse_payload(&value)?);
     }
     if payloads.is_empty() {
-        return Err("at least one --payload is required".to_string());
+        return Err("--payloadを一つ以上指定してください".to_string());
     }
     let value = resolution_json(&payloads)?;
     println!(
@@ -120,5 +124,18 @@ fn main() {
     if let Err(error) = run() {
         eprintln!("error: {error}");
         std::process::exit(2);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_payload;
+
+    #[test]
+    fn rejects_non_ascii_hex_without_slicing_inside_a_character() {
+        for payload in ["18:あa", "18:aあ", "18:gg", "18:f", "8192:00"] {
+            assert!(parse_payload(payload).is_err(), "{payload}");
+        }
+        assert_eq!(parse_payload("18:00aAfF"), Ok((18, vec![0, 0xaa, 0xff])));
     }
 }

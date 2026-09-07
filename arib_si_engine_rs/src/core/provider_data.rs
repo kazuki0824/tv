@@ -1485,7 +1485,7 @@ fn finalize_program(mut data: ProgramProviderDataV1) -> ProviderDataResult {
         return failure_result(
             "PROGRAM_PROVIDER_DATA_HARD_LIMIT_EXCEEDED",
             format!(
-                "Program provider-data cannot be reduced below {} bytes without dropping protected semantic fields (current={} bytes)",
+                "保護対象の意味情報を保持したままProgram provider-dataを{} byte以下にできません（現在{} byte）",
                 HARD_LIMIT_BYTES,
                 encoded.len()
             ),
@@ -1555,7 +1555,7 @@ fn finalize_channel(mut data: ChannelProviderDataV1) -> ProviderDataResult {
         return failure_result(
             "CHANNEL_PROVIDER_DATA_HARD_LIMIT_EXCEEDED",
             format!(
-                "Channel provider-data cannot be reduced below {} bytes without dropping protected tune or CAS fields (current={} bytes)",
+                "保護対象の選局/CAS情報を保持したままChannel provider-dataを{} byte以下にできません（現在{} byte）",
                 HARD_LIMIT_BYTES,
                 encoded.len()
             ),
