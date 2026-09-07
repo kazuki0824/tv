@@ -5,7 +5,7 @@ on:
     paths:
       - "arib_si_engine_rs/**/*.rs"
       - "arib_si_engine_rs/**/Cargo.toml"
-      - "arib_si_engine_rs/**/Cargo.lock"
+      - "arib_si_engine_rs/host_ci/Cargo.lock"
       - "arib_si_engine_rs/schema/**/*.json"
       - "arib_si_engine_rs/testdata/**/*.json"
       - "tis/tests/assets/descriptor_diagnostic_v1/**/*.json"
@@ -16,7 +16,7 @@ on:
     paths:
       - "arib_si_engine_rs/**/*.rs"
       - "arib_si_engine_rs/**/Cargo.toml"
-      - "arib_si_engine_rs/**/Cargo.lock"
+      - "arib_si_engine_rs/host_ci/Cargo.lock"
       - "arib_si_engine_rs/schema/**/*.json"
       - "arib_si_engine_rs/testdata/**/*.json"
       - "tis/tests/assets/descriptor_diagnostic_v1/**/*.json"
