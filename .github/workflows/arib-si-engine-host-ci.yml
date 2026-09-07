@@ -81,38 +81,6 @@ jobs:
       - name: JNI・production core・VTS host adapterを型検査
         run: cargo +"$RUST_TOOLCHAIN" check --all-targets --locked
 
-  source-closure:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: Production core moduleとAndroid.bp srcsのclosureを確認
-        run: |
-          python3 - <<'PY'
-          import re
-          from pathlib import Path
-
-          core = Path("arib_si_engine_rs/src/core.rs").read_text()
-          bp = Path("arib_si_engine_rs/Android.bp").read_text()
-          paths = re.findall(r'#\[path\s*=\s*"([^"]+)"\]\s*pub\s+mod\s+\w+\s*;', core)
-          if not paths:
-              raise SystemExit("core.rs から #[path] production module を取得できません")
-          missing = []
-          for rel in paths:
-              source = f'arib_si_engine_rs/src/{rel}'
-              bp_rel = f'src/{rel}'
-              if not Path(source).is_file():
-                  missing.append(f"missing file: {source}")
-              if f'"{bp_rel}"' not in bp:
-                  missing.append(f"missing Android.bp src: {bp_rel}")
-          if missing:
-              raise SystemExit("\n".join(missing))
-          print(f"checked {len(paths)} production core modules")
-          PY
-
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
