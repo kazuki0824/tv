@@ -956,24 +956,33 @@ class TunerController(
 
     private fun releaseOnController() {
         if (released) return
-        playbackPipeline.release()
-        closeSectionFiltersOnController()
+        var failure: Throwable? = null
+        fun release(action: () -> Unit) {
+            try {
+                action()
+            } catch (error: Throwable) {
+                val primary = failure
+                if (primary == null) failure = error else if (primary !== error) primary.addSuppressed(error)
+            }
+        }
+        release { playbackPipeline.release() }
+        release { closeSectionFiltersOnController() }
         captionLanguagesByPid.clear()
-        captionFactParsers.values.forEach { it.close() }
-        captionFactParsers.clear()
+        captionFactParsers.entries.toList().forEach { (pid, parser) ->
+            release { parser.close(); captionFactParsers.remove(pid, parser) }
+        }
         superimposeTimingByPid.clear()
         latestBroadcastClockAuthority = null
-        casController?.close()
-        casController = null
+        release { casController?.close(); casController = null }
         descramblerBridge = null
         sectionIngestController = null
         onSectionIngestedCallback = null
         onTuneEventCallback = null
-        runCatching { tuner?.clearOnTuneEventListener() }
+        release { tuner?.clearOnTuneEventListener() }
         currentTune = null
         tuneAccepted = false
-        tuner?.close()
-        tuner = null
+        release { tuner?.close(); tuner = null }
+        failure?.let { throw it }
         released = true
     }
 

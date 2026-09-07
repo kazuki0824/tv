@@ -1,3 +1,10 @@
+## r51_pr85_playback_stop_admission
+
+- TIS-040: 再生資源が確保されている pipeline を LiveSession 数とは独立して計数し、boot EPG / background scan の事前検査・受付後検査・実行直前検査へ接続した。最後の pipeline の停止確認時に保留ジョブを再評価する。
+- 解放に失敗した Filter、decoder、MediaSync、Surface、AudioTrack を再生 owner に保持し、次の停止処理で再試行する。全資源の解放が確認できるまで再生中の計数を下げない。
+- LiveSession / TunerController の終了は一件の失敗後も残る資源を解放し、失敗を合成する。終了未確認の LiveSession を件数から除かない。
+- 検証: Kotlin 本体・テストコンパイルと JUnit 151 件に成功。CI の発見 class 数を 32、実行 class 数を 29、成功件数を 151 へ更新。以前の CI は 149 件成功後に旧件数 147 のチェックで失敗していた。
+
 ## r51_pr85_filter_input_continuity
 
 - TIS-010: RestartEvent を MediaEvent と同じ順序で処理し、同じ再生構成の restart と OVERFLOW 後の通常 flush では未投入 MediaEvent と使用権だけを回収する。decoder、MediaSync、AudioTrack、PTS 基準、再生世代を保持する。

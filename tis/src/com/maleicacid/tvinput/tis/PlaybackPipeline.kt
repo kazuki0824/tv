@@ -92,6 +92,8 @@ class PlaybackPipeline(
     private var decoderBackpressureDrops: Int = 0
     private var subtitleMissingPtsSamples: Int = 0
     private val released = AtomicBoolean(false)
+    private val resourceCleanup = PlaybackResourceCleanup()
+    private var resourceActivityReported = false
 
     private enum class VideoAvailabilityMode {
         MEDIA_SYNC_FINAL_OUTPUT_EXACT,
@@ -331,6 +333,10 @@ class PlaybackPipeline(
         videoPathExpected = video != null && videoKind != null
         audioPathExpected = audioExpected
         ptsEpochCoordinator.reset()
+        if (!resourceActivityReported) {
+            ChannelScanManager.registerPlaybackPipeline()
+            resourceActivityReported = true
+        }
         val sync = createMediaSync(currentSurface?.takeIf { videoPathExpected }, startGeneration)
             ?: return StartResult.failedAfterRestart(startGeneration, listOf("MediaSync初期化失敗"))
         val videoDecoderLocal = if (video != null && videoKind != null) {
@@ -610,6 +616,7 @@ class PlaybackPipeline(
 
     private fun createMediaSync(outputSurface: Surface?, generation: Long): MediaSync? = runCatching {
         val sync = MediaSync()
+        mediaSync = sync
         nextAvailabilityArmSequence = 1L
         sync.setCallback(object : MediaSync.Callback() {
             override fun onAudioBufferConsumed(sync: MediaSync, audioBuffer: ByteBuffer, bufferId: Int) {
@@ -708,7 +715,7 @@ class PlaybackPipeline(
         releaseOutstandingAudioOutputs()
         audioDecoder?.close()
         audioDecoder = null
-        runCatching { audioTrack?.release() }
+        audioTrack?.let { track -> resourceCleanup.release("AudioTrack") { track.release() } }
         audioTrack = null
         audioPathExpected = false
         audioInputQueued = false
@@ -946,7 +953,7 @@ class PlaybackPipeline(
                 onDecoderConfigured(format)
                 return decoder
             } catch (error: RuntimeException) {
-                runCatching { decoder.release() }
+                resourceCleanup.release("decoder configuration rollback") { decoder.release() }
                 throw error
             }
         }
@@ -1001,7 +1008,7 @@ class PlaybackPipeline(
             codec = null
             if (decoder != null) {
                 runCatching { decoder.stop() }.onFailure { Log.w(LogTags.TIS, "decoder stop に失敗しました", it) }
-                runCatching { decoder.release() }.onFailure { Log.w(LogTags.TIS, "decoder release に失敗しました", it) }
+                resourceCleanup.release("decoder") { decoder.release() }
             }
         }
     }
@@ -1150,9 +1157,11 @@ class PlaybackPipeline(
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .setContext(requireNotNull(sessionContext) { "sessionContext is required for AudioTrack" })
             val created = builder.build()
+            audioTrack = created
             created.setVolume(volume)
             if (isDualMonoStream && !created.setDualMonoMode(audioTrackDualMonoMode(dualMonoPresentation))) {
-                created.release()
+                resourceCleanup.release("AudioTrack dual-mono rollback") { created.release() }
+                audioTrack = null
                 throw IllegalStateException("ARIB dual-mono presentationをAudioTrackへ設定できません componentType=$componentType")
             }
             requireNotNull(mediaSync).setAudioTrack(created)
@@ -1407,7 +1416,8 @@ class PlaybackPipeline(
 
     fun stop() { runOnPlaybackExecutorBlocking { stopOnPlaybackExecutor() } }
     private fun stopOnPlaybackExecutor() {
-        playbackGeneration++
+        resourceCleanup.retry()
+        playbackGeneration = Math.addExact(playbackGeneration, 1L)
         videoAvailableNotified.set(false)
         val previousVideoFilter = videoFilter; val previousAudioFilter = audioFilter; val previousSubtitleFilter = subtitleFilter; val previousSuperimposeFilter = superimposeFilter
         videoFilter = null; audioFilter = null; subtitleFilter = null; superimposeFilter = null
@@ -1415,15 +1425,30 @@ class PlaybackPipeline(
         releaseOutstandingAudioOutputs(); videoDecoder?.close(); audioDecoder?.close(); videoDecoder = null; audioDecoder = null; waitingAvailabilityArm = null
         val sync = mediaSync; mediaSync = null
         if (sync != null) { runCatching { sync.setPlaybackParams(PlaybackParams().setSpeed(0.0f)) }; runCatching { sync.setCallback(null, null) }; runCatching { sync.setOnErrorListener(null, null) } }
-        runCatching { mediaSyncInputSurface?.release() }; mediaSyncInputSurface = null; runCatching { sync?.release() }; runCatching { audioTrack?.release() }; audioTrack = null
+        mediaSyncInputSurface?.let { previous -> resourceCleanup.release("MediaSync input Surface") { previous.release() } }
+        mediaSyncInputSurface = null
+        sync?.let { previous -> resourceCleanup.release("MediaSync") { previous.release() } }
+        audioTrack?.let { previous -> resourceCleanup.release("AudioTrack") { previous.release() } }
+        audioTrack = null
         mediaSyncStarted = false; mediaSyncSurfaceFailed = false; videoAvailabilityMode = null; videoInputQueued = false; audioInputQueued = false; videoPathExpected = false; audioPathExpected = false
         activeChannel = null; activeTuner = null; activeSelection = null; ptsEpochCoordinator.reset()
+        resourceCleanup.requireComplete()
+        if (resourceActivityReported) {
+            ChannelScanManager.unregisterPlaybackPipeline(sessionContext)
+            resourceActivityReported = false
+        }
     }
     private fun releaseOutstandingAudioOutputs() { outstandingAudioOutputs.values.forEach { output -> runCatching { output.codec.releaseOutputBuffer(output.index, false) }.onFailure { Log.w(LogTags.TIS, "audio outputの回収に失敗しました index=${output.index}", it) } }; outstandingAudioOutputs.clear(); audioOutputBackpressureStartedAtMs = null }
-    private fun closeFilter(filter: Filter?) { if (filter == null) return; runCatching { filter.stop() }.onFailure { Log.w(LogTags.TIS, "AV filter stop に失敗しました", it) }; runCatching { filter.close() }.onFailure { Log.w(LogTags.TIS, "AV filter close に失敗しました", it) } }
+    private fun closeFilter(filter: Filter?) { if (filter == null) return; runCatching { filter.stop() }.onFailure { Log.w(LogTags.TIS, "AV filter stop に失敗しました", it) }; resourceCleanup.release("AV/PES Filter") { filter.close() } }
     private fun emitUnavailableForGeneration(generation: Long, reason: PlaybackUnavailableReason, detail: String = "") { if (generation != playbackGeneration) return; Log.w(LogTags.TIS, "映像を利用できません inputId=$inputId sessionId=$sessionId reason=$reason detail=$detail generation=$generation"); onVideoUnavailable(PlaybackUnavailable(reason, detail, generation)) }
     private fun emitUnavailable(reason: PlaybackUnavailableReason, detail: String = "") = emitUnavailableForGeneration(playbackGeneration, reason, detail)
-    fun release() { if (!released.compareAndSet(false, true)) return; runOnPlaybackExecutorBlocking { stopOnPlaybackExecutor() }; executor.shutdownNow(); codecCallbackThread.quitSafely() }
+    fun release() {
+        if (executor.isShutdown) return
+        released.set(true)
+        runOnPlaybackExecutorBlocking { stopOnPlaybackExecutor() }
+        executor.shutdownNow()
+        codecCallbackThread.quitSafely()
+    }
     override fun close() = release()
 
     companion object {

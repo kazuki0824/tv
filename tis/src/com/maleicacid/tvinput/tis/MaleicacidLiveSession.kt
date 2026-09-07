@@ -1036,27 +1036,31 @@ class MaleicacidLiveSession(
     }
 
     private fun releaseOnSessionExecutor() {
-        try {
-            surface = null
-            currentChannelUri = null
-            captionEnabled = false
-            selectedSubtitleTrackId = null
-            captionController.setEnabled(false)
-            captionController.selectTrack(null)
-            captionController.close()
-            superimposeController.setEnabled(false)
-            superimposeController.selectTrack(null)
-            superimposeController.close()
-            unblockedContentKeys.clear()
-            currentUnblockProgramIdentityKey = null
-            playbackState = PlaybackStartState.Stopped
-            unregisterParentalControlReceiver()
-            casController.close()
-            tunerController.release()
-            aribSiEngine.close()
-        } finally {
-            ChannelScanManager.unregisterLiveSession(appContext)
+        surface = null
+        currentChannelUri = null
+        captionEnabled = false
+        selectedSubtitleTrackId = null
+        unblockedContentKeys.clear()
+        currentUnblockProgramIdentityKey = null
+        playbackState = PlaybackStartState.Stopped
+        var failure: Throwable? = null
+        fun release(action: () -> Unit) {
+            try {
+                action()
+            } catch (error: Throwable) {
+                val primary = failure
+                if (primary == null) failure = error else if (primary !== error) primary.addSuppressed(error)
+            }
         }
+        release { captionController.close() }
+        release { superimposeController.close() }
+        release { unregisterParentalControlReceiver() }
+        release { casController.close() }
+        release { tunerController.release() }
+        release { aribSiEngine.close() }
+        // 解放未確認のsessionは使用中のまま保持し、EPG scanの受付を開かない。
+        failure?.let { throw it }
+        ChannelScanManager.unregisterLiveSession(appContext)
     }
 
     companion object {
