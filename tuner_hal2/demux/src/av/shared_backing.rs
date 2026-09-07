@@ -805,7 +805,14 @@ extern "C" {
         offset: i64,
     ) -> *mut std::ffi::c_void;
     fn munmap(addr: *mut std::ffi::c_void, length: usize) -> i32;
+    #[cfg(not(test))]
     fn tuner_dmabuf_heap_alloc_system(len: usize) -> i32;
+}
+
+#[cfg(test)]
+#[no_mangle]
+extern "C" fn tuner_dmabuf_heap_alloc_system(_len: usize) -> i32 {
+    -1
 }
 
 impl Default for AvSharedBacking {

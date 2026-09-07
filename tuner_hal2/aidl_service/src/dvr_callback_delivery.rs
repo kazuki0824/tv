@@ -1,9 +1,9 @@
+#[cfg(test)]
+use std::sync::Mutex;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Weak,
 };
-#[cfg(test)]
-use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
