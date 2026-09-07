@@ -3,9 +3,9 @@ use std::collections::BTreeMap;
 use crate::playback_consume_txn::required_playback_processing_bytes;
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidArgumentKind};
 use maleicacid_tuner_hal2_demux::{
-    DvrKind, FilterOpenType, MAX_PES_BUFFER_BYTES,
-    DEFAULT_AV_MAX_EVENT_BYTES, DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
-    DEFAULT_AV_PER_FILTER_LIVE_BYTES,
+    DvrKind, FilterOpenType, DEFAULT_AV_MAX_EVENT_BYTES,
+    DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER, DEFAULT_AV_PER_FILTER_LIVE_BYTES,
+    MAX_PES_BUFFER_BYTES,
 };
 
 const MIB: usize = 1024 * 1024;
@@ -85,8 +85,7 @@ impl CapabilitySnapshot {
             pes_runtime_budget_bytes: 6 * MIB,
             playback_processing_budget_bytes: 64 * MIB,
             av_max_event_bytes: DEFAULT_AV_MAX_EVENT_BYTES,
-            av_max_outstanding_events_per_filter:
-                DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
+            av_max_outstanding_events_per_filter: DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
             av_per_filter_live_bytes: DEFAULT_AV_PER_FILTER_LIVE_BYTES,
             av_runtime_budget_bytes: DEFAULT_AV_PER_FILTER_LIVE_BYTES * 2,
             cleanup_reaper_capacity: 160,
@@ -111,11 +110,7 @@ impl CapabilitySnapshot {
     }
 
     pub fn public_demuxes(&self) -> Result<Vec<PublicDemuxCapability>, HalError> {
-        let first_empty = match self
-            .public_demuxes
-            .iter()
-            .position(Option::is_none)
-        {
+        let first_empty = match self.public_demuxes.iter().position(Option::is_none) {
             Some(index) => index,
             None => self.public_demuxes.len(),
         };
@@ -166,10 +161,9 @@ impl CapabilitySnapshot {
             entry.id < 0
                 || entry.filter_types <= 0
                 || (entry.filter_types & !DEMUX_FILTER_MAIN_TYPE_TS) != 0
-        })
-            || public_demuxes
-                .windows(2)
-                .any(|entries| entries[0].id >= entries[1].id)
+        }) || public_demuxes
+            .windows(2)
+            .any(|entries| entries[0].id >= entries[1].id)
         {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
@@ -189,9 +183,8 @@ impl CapabilitySnapshot {
         ]
         .into_iter()
         .any(|count| count > 0);
-        let has_demux_dependent_capability = has_published_ts_filter
-            || self.num_record > 0
-            || self.num_playback > 0;
+        let has_demux_dependent_capability =
+            has_published_ts_filter || self.num_record > 0 || self.num_playback > 0;
         if public_demuxes.is_empty() && has_demux_dependent_capability {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
@@ -434,12 +427,15 @@ impl CapacityLedger {
     }
 
     fn request_bytes(buffer_size: i32, resource: &'static str) -> Result<usize, HalError> {
-        usize::try_from(buffer_size).ok().filter(|size| *size > 0).ok_or_else(|| {
-            HalError::invalid_argument(
-                HalInvalidArgumentKind::NumericRange,
-                format!("{resource} buffer size must be positive"),
-            )
-        })
+        usize::try_from(buffer_size)
+            .ok()
+            .filter(|size| *size > 0)
+            .ok_or_else(|| {
+                HalError::invalid_argument(
+                    HalInvalidArgumentKind::NumericRange,
+                    format!("{resource} buffer size must be positive"),
+                )
+            })
     }
 
     pub(crate) fn reserve_filter(
@@ -729,8 +725,12 @@ mod tests {
             ..CapabilitySnapshot::product_default()
         };
         let mut ledger = CapacityLedger::default();
-        ledger.reserve_dvr(snapshot, 7, queue_capacity as i32).unwrap();
-        ledger.reserve_dvr(snapshot, 8, queue_capacity as i32).unwrap();
+        ledger
+            .reserve_dvr(snapshot, 7, queue_capacity as i32)
+            .unwrap();
+        ledger
+            .reserve_dvr(snapshot, 8, queue_capacity as i32)
+            .unwrap();
         assert!(ledger
             .reserve_playback_processing(snapshot, 7, DvrKind::Playback, queue_capacity as i32)
             .is_ok());
@@ -770,8 +770,7 @@ mod tests {
             num_audio_filter: 0,
             num_video_filter: 1,
             av_max_event_bytes: DEFAULT_AV_MAX_EVENT_BYTES,
-            av_max_outstanding_events_per_filter:
-                DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
+            av_max_outstanding_events_per_filter: DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
             av_per_filter_live_bytes: DEFAULT_AV_PER_FILTER_LIVE_BYTES,
             av_runtime_budget_bytes: 1,
             ..CapabilitySnapshot::product_default()
@@ -793,10 +792,7 @@ mod tests {
         assert_eq!(snapshot.num_audio_filter, 1);
         assert_eq!(snapshot.num_video_filter, 1);
         assert_eq!(snapshot.num_pes_filter, 4);
-        assert!(
-            snapshot.pes_runtime_budget_bytes
-                >= snapshot.pes_max_bytes_per_filter * 6
-        );
+        assert!(snapshot.pes_runtime_budget_bytes >= snapshot.pes_max_bytes_per_filter * 6);
         snapshot
             .validate_dependency_closures()
             .expect("product AV capabilities must retain a closed finite byte budget");
