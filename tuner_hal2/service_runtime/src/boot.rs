@@ -5,9 +5,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::descrambler_key_table::DescramblerKeyLookupError;
-use crate::error_mapping::object_table_error_to_hal;
 #[cfg(test)]
 use crate::descrambler_key_table::DescramblerKeySlotId;
+use crate::error_mapping::object_table_error_to_hal;
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FirstErrorCollector, FrontendBackendKind, FrontendDevicePath,
     FrontendSystem, FrontendTuneRequest, HalError, HalInternalKind, HalInvalidArgumentKind,
@@ -1497,10 +1497,7 @@ impl TunerServiceRuntime {
     }
 
     #[cfg(test)]
-    fn release_filter_capacity_for_test(
-        &mut self,
-        filter_id: i32,
-    ) -> Result<(), HalError> {
+    fn release_filter_capacity_for_test(&mut self, filter_id: i32) -> Result<(), HalError> {
         self.capacity_ledger.release_filter(filter_id)
     }
 

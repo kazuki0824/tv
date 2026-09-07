@@ -6,8 +6,8 @@ use super::{
     PipelineBoundaryReason, PipelineReport, StreamBoundaryReport, TsInputOrigin,
     TsPacketValidationError, TunerServiceRuntime, ValidatedTsPacket, TS_PACKET_SIZE,
 };
-use maleicacid_tuner_hal2_demux::PlaybackConsumeReport;
 use crate::registry::ResolvedDescramblerPacketFlow;
+use maleicacid_tuner_hal2_demux::PlaybackConsumeReport;
 
 fn descramble_failure_for_ts_validation_error(error: TsPacketValidationError) -> DescrambleFailure {
     match error {
