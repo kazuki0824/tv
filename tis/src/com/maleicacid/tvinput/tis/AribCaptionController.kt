@@ -229,22 +229,35 @@ class AribCaptionController(
         )
         if (next == viewport) return
         cancelScheduledBoundary()
-        boundaries.clear()
         displayedFrameToken = null
         postClear()
         viewport = next
         if (next == null) {
             invalidViewportCount++
-            renderer?.close()
-            renderer = null
+            // 一時的な未確定viewportでdecoder continuityを破棄しない。
             return
         }
         val existing = renderer
         if (existing != null && !existing.setViewport(next.contentWidthPx, next.contentHeightPx)) {
-            existing.close()
-            renderer = null
+            viewport = null
+            invalidViewportCount++
+            return
         }
         ensureRenderer()
+        val currentFrame = renderCurrentFrame()
+        if (currentFrame != null) {
+            enqueueFrame(currentFrame, next)
+        } else {
+            armNextBoundary()
+        }
+    }
+
+    private fun renderCurrentFrame(): NativeAribCaptionRenderer.RenderedCaptionFrame? {
+        if (!enabled || !videoPathExpected || viewport == null) return null
+        val clock = mediaClock() ?: return null
+        return runCatching { renderer?.renderAt(currentMediaMillis(clock)) }
+            .onFailure { error -> Log.w(LogTags.TIS, "字幕の現在画像を再描画できません", error) }
+            .getOrNull()
     }
 
     private fun restartPresentation() {
@@ -329,7 +342,6 @@ class AribCaptionController(
         while (true) {
             val boundary = boundaries.peek() ?: return
             val snapshot = mediaClock() ?: return
-            if (snapshot.clockRate <= 0.0f) return
             val nowMediaMillis = currentMediaMillis(snapshot)
             val remainingMediaMillis = boundary.mediaTimeMillis - nowMediaMillis
             if (remainingMediaMillis <= 0L) {
@@ -337,6 +349,7 @@ class AribCaptionController(
                 applyBoundary(boundary)
                 continue
             }
+            if (snapshot.clockRate <= 0.0f) return
             val delayMillis = kotlin.math.ceil(remainingMediaMillis / snapshot.clockRate.toDouble()).toLong()
                 .coerceAtLeast(1L)
             val epochAtArm = presentationEpoch.get()
@@ -362,9 +375,13 @@ class AribCaptionController(
                 }
             }
             is Boundary.Display -> {
-                if (boundary.viewport != viewport) return
+                val currentViewport = viewport ?: return
+                if (boundary.viewport != currentViewport) {
+                    renderCurrentFrame()?.let { enqueueFrame(it, currentViewport) }
+                    return
+                }
                 displayedFrameToken = boundary.frameToken
-                postFrame(boundary.frame, boundary.viewport)
+                postFrame(boundary.frame, currentViewport)
             }
         }
     }

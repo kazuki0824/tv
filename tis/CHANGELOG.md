@@ -1,3 +1,9 @@
+## r51_pr85_caption_viewport_rerender
+
+- TIS-018: 同一再生世代の viewport 変更では字幕 decoder を維持し、libaribcaption の現在時刻での再描画を JNI へ接続した。現在の有効区間に属する画像だけを新しい描画領域へ戻し、古い bitmap を拡大縮小しない。
+- 一時的な不正・未確定領域でも復号状態を破棄せず表示を消去する。旧 viewport の予定画像は表示時に再描画し、停止中の時計でも現在時刻に到達した表示・消去を処理する。
+- 検証: 字幕 Rust 15 件、全 target Clippy、Kotlin コンパイルと JUnit 149 件に成功。実 libaribcaption の画素出力・実機表示確認は未実施。
+
 ## r51_pr85_provider_publication_bytes
 
 - TIS-033: 実際の channel ID と最終 ContentValues、更新区間を準備し、固定順の長さ付き byte 列全体から SHA-256 を計算する。同じ準備済み行を書き込み、成功時だけ処理内キャッシュへ反映する。行ごとの要約連結、仮 channel ID、余分な改行を公開経路から除いた。
