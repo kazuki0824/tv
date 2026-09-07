@@ -84,9 +84,57 @@ jobs:
           done
           exit "$failed"
 
-  clippy:
+  workspace-packages:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: tuner_hal2/host_ci
+    outputs:
+      clippy_packages: ${{ steps.packages.outputs.clippy_packages }}
+      unit_test_packages: ${{ steps.packages.outputs.unit_test_packages }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Cargo workspace package一覧を生成
+        id: packages
+        shell: bash
+        run: |
+          metadata="$(cargo metadata --no-deps --format-version 1 --locked)"
+          clippy_packages="$(jq -c '
+            . as $root
+            | [
+                $root.packages[]
+                | select(.id as $id | $root.workspace_members | index($id))
+                | .name
+              ]
+            | sort
+          ' <<<"$metadata")"
+          unit_test_packages="$(jq -c '
+            . as $root
+            | [
+                $root.packages[]
+                | select(.id as $id | $root.workspace_members | index($id))
+                | select(.name != "maleicacid-tuner-hal2-compile-contract-host-ci")
+                | .name
+              ]
+            | sort
+          ' <<<"$metadata")"
+          test "$(jq 'length' <<<"$clippy_packages")" -gt 0
+          test "$(jq 'length' <<<"$unit_test_packages")" -gt 0
+          echo "clippy_packages=$clippy_packages" >> "$GITHUB_OUTPUT"
+          echo "unit_test_packages=$unit_test_packages" >> "$GITHUB_OUTPUT"
+
+  clippy:
+    name: Clippy (${{ matrix.package }})
+    needs: workspace-packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJson(needs.workspace-packages.outputs.clippy_packages) }}
     defaults:
       run:
         working-directory: tuner_hal2/host_ci
@@ -95,8 +143,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Host workspace全体をClippyで検査
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: PackageをClippyで検査
+        run: cargo clippy -p "${{ matrix.package }}" --all-targets --locked --no-deps -- -D warnings
 
   compile-contract:
     runs-on: ubuntu-latest
@@ -125,8 +173,14 @@ jobs:
         run: cargo check --workspace --lib --locked
 
   unit-tests:
+    name: Unit tests (${{ matrix.package }})
+    needs: workspace-packages
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJson(needs.workspace-packages.outputs.unit_test_packages) }}
     defaults:
       run:
         working-directory: tuner_hal2/host_ci
@@ -134,8 +188,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Host workspace全体のunit testsを実行
-        run: cargo test --workspace --lib --locked --exclude maleicacid-tuner-hal2-compile-contract-host-ci
+      - name: Packageのunit testsを実行
+        run: cargo test -p "${{ matrix.package }}" --lib --locked
 
   demux-record-fmq:
     runs-on: ubuntu-latest
