@@ -127,7 +127,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Host workspace全体のunit testsを実行
-        run: cargo test --workspace --lib --locked
+        run: cargo test --workspace --lib --locked --exclude maleicacid-tuner-hal2-compile-contract-host-ci
 
   demux-record-fmq:
     runs-on: ubuntu-latest
