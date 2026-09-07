@@ -35,7 +35,7 @@ jobs:
       run:
         working-directory: tuner_hal2/host_ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -58,7 +58,7 @@ jobs:
       run:
         working-directory: tuner_hal2/host_ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -83,7 +83,7 @@ jobs:
       run:
         working-directory: tuner_hal2/host_ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -97,7 +97,7 @@ jobs:
       run:
         working-directory: tuner_hal2/host_ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: ソース契約を確認
@@ -110,7 +110,7 @@ jobs:
       run:
         working-directory: tuner_hal2/host_ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Type-check production Rust libraries and host crates
@@ -123,7 +123,7 @@ jobs:
       run:
         working-directory: tuner_hal2/host_ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Host workspace全体のunit testsを実行
@@ -136,7 +136,7 @@ jobs:
       run:
         working-directory: tuner_hal2/host_ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Run production demux Record FMQ integration test
