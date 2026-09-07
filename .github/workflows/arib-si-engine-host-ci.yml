@@ -40,7 +40,7 @@ jobs:
       run:
         working-directory: arib_si_engine_rs/host_ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: LineageOS 22.1のRust toolchainを導入
@@ -55,7 +55,7 @@ jobs:
       run:
         working-directory: arib_si_engine_rs/host_ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: LineageOS 22.1のRust toolchainを導入
@@ -70,7 +70,7 @@ jobs:
       run:
         working-directory: arib_si_engine_rs/host_ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: LineageOS 22.1のRust toolchainを導入
@@ -85,7 +85,7 @@ jobs:
       run:
         working-directory: arib_si_engine_rs/host_ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: LineageOS 22.1のRust toolchainを導入
@@ -100,7 +100,7 @@ jobs:
       run:
         working-directory: arib_si_engine_rs/host_ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: LineageOS 22.1のRust toolchainを導入
@@ -115,7 +115,7 @@ jobs:
       run:
         working-directory: arib_si_engine_rs/host_ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: LineageOS 22.1のRust toolchainを導入
@@ -130,7 +130,7 @@ jobs:
       run:
         working-directory: arib_si_engine_rs/host_ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: LineageOS 22.1のRust toolchainを導入
@@ -145,7 +145,7 @@ jobs:
       run:
         working-directory: arib_si_engine_rs/host_ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: LineageOS 22.1のRust toolchainを導入
@@ -157,7 +157,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
