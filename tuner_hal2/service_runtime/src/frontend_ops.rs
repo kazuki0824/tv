@@ -278,7 +278,10 @@ impl FrontendTuneScanTxn {
                     "service runtime lock poisoned while accepting TMCC stream IDs",
                 )
             })?;
-            if guard.query().frontend_runtime_snapshot(frontend_id)?.generation
+            if guard
+                .query()
+                .frontend_runtime_snapshot(frontend_id)?
+                .generation
                 != operation_generation
             {
                 return Ok(FrontendOperationEventAcceptance::DiscardedStale);
@@ -678,7 +681,10 @@ impl FrontendTuneScanTxn {
             )
         })?;
         let entry = guard.frontend_entry_for_aidl_object(object_id, object_generation)?;
-        let normalized = converted.request.clone().normalized_for_non_blind_operation();
+        let normalized = converted
+            .request
+            .clone()
+            .normalized_for_non_blind_operation();
         let validated = guard.validate_frontend_begin_request_for_id(
             entry.id.0,
             &normalized,
