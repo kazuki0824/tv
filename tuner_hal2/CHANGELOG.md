@@ -1,3 +1,12 @@
+# r50eo84_pr85_aidl_service_soong_dead_code_followup
+
+- Android Soongの製品向け`aidl_service`で検出された未使用コードを、警告抑止属性を追加せず整理した。Filter/DVR子objectのcallback登録は現行の`prepare`、Binder object生成、callback artifact確定、runtime確定の経路だけを残し、置換前の直接`retain`入口と中継関数を削除した。Frontend/LNBのcallback登録も、callback store lock下の現行複合transactionから使われない`AidlServiceContext`中継入口を削除した。
+- LNB callbackのBinder strong referenceは配送用の読取り値ではなく登録期間中の保持物であるため、`StoredCallback::Lnb`を保持目的が型に現れる名前付きfieldへ変更した。callback storeによる所有、置換、解除、close時解放の契約は変更していない。
+- cleanup reaperは未完義務の最新`CleanupStep`をpending registryへ保存し、各試行前にruntimeから再解決するため、`CleanupJob`に重複して保持され、参照されなかった初回dependency fieldを削除した。pending登録値と再解決処理は維持した。
+- 本番から到達せず単体試験だけが使用する旧callback失敗注入補助を`#[cfg(test)]`境界へ隔離した。DVR callback配送試験の直接登録補助も試験専用名と`#[cfg(test)]`境界へ限定した。
+- 監査台帳F-10で指摘された`compile_contract`の本体ソース文字列検査を削除し、`PreparedCallbackArtifactToken`が`Clone`/`Copy`でないことの型検査を所有moduleの単体試験へ移した。Soong testの`srcs`から文字列読取り目的だけの本体source列挙を除き、型検査用依存をAIDL service testへ追加した。
+- `git diff --check`と対象symbolの定義・参照検索を実施した。この環境にはRust toolchainとAndroid build treeがないため、Rust 1.81 rustfmt、host build/unit test/Clippy、Android/Soong build、atest、VTS、CTS、実機確認は未実施である。
+
 # r50eo84_pr55_px4_partial_reception_availability_followup
 
 - px4 ISDB-Tの明示`partialReceptionFlag=TRUE/FALSE`を、採用済み`PTX_GET_TMCC_PARTIAL_RECEPTION`と同一generationのfresh readbackで検証する既存worker経路へ到達可能にした。availability gateはLinux DVB / earth_pt1だけを`UNAVAILABLE`として拒否し、px4を旧blocker状態へ戻さない。
