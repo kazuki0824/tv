@@ -9,6 +9,10 @@ name = "maleicacid_arib_si_engine_jni"
 path = "../src/lib.rs"
 crate-type = ["rlib", "cdylib"]
 
+[[bin]]
+name = "maleicacid_arib_si_engine_vts_host"
+path = "../src/vts_profile_host.rs"
+
 [dependencies]
 jni = "=0.21.1"
 maleicacid_arib_si_engine_core = { path = "core" }
