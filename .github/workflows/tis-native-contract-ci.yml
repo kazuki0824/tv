@@ -1,0 +1,71 @@
+name: TIS native source contract CI
+
+on:
+  pull_request:
+    paths:
+      - "tis/arib_caption_jni/**"
+      - ".github/workflows/tis-native-contract-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "tis/arib_caption_jni/**"
+      - ".github/workflows/tis-native-contract-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tis-native-contract-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  caption-native-deps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Caption JNIのnative dependency closureを確認
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          text = Path("tis/arib_caption_jni/Android.bp").read_text()
+
+          def module_block(kind: str, name: str) -> str:
+              needle = f"{kind} {{"
+              start = 0
+              while True:
+                  start = text.find(needle, start)
+                  if start < 0:
+                      raise SystemExit(f"{kind} {name} が見つかりません")
+                  depth = 0
+                  end = start
+                  while end < len(text):
+                      if text[end] == "{":
+                          depth += 1
+                      elif text[end] == "}":
+                          depth -= 1
+                          if depth == 0:
+                              block = text[start:end + 1]
+                              if f'name: "{name}"' in block:
+                                  return block
+                              start = end + 1
+                              break
+                      end += 1
+                  else:
+                      raise SystemExit(f"{kind} block のbraceが閉じていません")
+
+          checks = (
+              ("rust_ffi_shared", "libmaleicacid_arib_caption_jni"),
+              ("rust_test", "libmaleicacid_arib_caption_jni_test"),
+          )
+          for kind, name in checks:
+              block = module_block(kind, name)
+              for dependency in ('"libaribcaption"', '"libft2.nodep"', '"libc++"'):
+                  if dependency not in block:
+                      raise SystemExit(f"{name}: native dependency {dependency} がありません")
+              print(f"{name}: native dependency closure OK")
+          PY
