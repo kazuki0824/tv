@@ -519,7 +519,7 @@ pub fn parse_eit_section(section: &[u8]) -> Vec<EitEvent> {
             diagnostics.push(EitEventDiagnostic {
                 event_identity: None,
                 parse_status: DescriptorParseStatus::InvalidSequence,
-                reason: "EIT start_time or duration contains malformed BCD/time fields".to_string(),
+                reason: "EITの開始時刻または継続時間に不正なBCD・時刻欄があります".to_string(),
                 malformed_descriptor_count: 0,
                 descriptor_diagnostics: Vec::new(),
             });
@@ -533,9 +533,9 @@ pub fn parse_eit_section(section: &[u8]) -> Vec<EitEvent> {
                     DescriptorParseStatus::MalformedLength
                 },
                 reason: if descriptor_truncated {
-                    "event descriptors_loop_length exceeds EIT section body".to_string()
+                    "イベント記述子長がEIT section本文を超えています".to_string()
                 } else {
-                    "event descriptor loop contains malformed descriptor".to_string()
+                    "イベント記述子ループに不正な記述子があります".to_string()
                 },
                 malformed_descriptor_count: descriptors.diagnostics.len(),
                 descriptor_diagnostics: descriptors.diagnostics.clone(),

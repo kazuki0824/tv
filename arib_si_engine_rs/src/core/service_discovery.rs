@@ -2023,7 +2023,7 @@ fn decode_si_text_lossy(field: &str, bytes: &[u8]) -> DecodedSiText {
         value,
         diagnostic: (diagnostic.replacement_count != 0).then(|| {
             format!(
-                "field={} used lossy ARIB SI decoding: {}",
+                "文字列を代替復号しました field={}: {}",
                 field,
                 diagnostic.summary(),
             )

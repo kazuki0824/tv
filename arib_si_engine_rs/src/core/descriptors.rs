@@ -151,7 +151,7 @@ pub fn event_descriptor_loop_truncated_diagnostic(
         declared_length,
         remaining_length,
         raw_prefix,
-        "EIT event descriptors_loop_length exceeds section body",
+        "EITのイベント記述子長がsection本文を超えています",
     )
 }
 
@@ -290,7 +290,7 @@ pub fn parse_event_descriptors(bytes: &[u8]) -> EventDescriptors {
                 0,
                 bytes.len().saturating_sub(cursor),
                 &bytes[cursor..],
-                "descriptor header is truncated",
+                "記述子ヘッダーが途中で切れています",
             ));
             break;
         }
@@ -305,7 +305,7 @@ pub fn parse_event_descriptors(bytes: &[u8]) -> EventDescriptors {
                 len,
                 bytes.len().saturating_sub(body_start),
                 &bytes[cursor..],
-                "descriptor length overflows usize",
+                "記述子長がusizeの範囲を超えています",
             ));
             break;
         };
@@ -317,7 +317,7 @@ pub fn parse_event_descriptors(bytes: &[u8]) -> EventDescriptors {
                 len,
                 bytes.len().saturating_sub(body_start),
                 &bytes[cursor..],
-                "descriptor body exceeds event descriptor loop",
+                "記述子本文がイベント記述子ループの範囲を超えています",
             ));
             if tag == 0x55 {
                 out.parental_rating_descriptors
@@ -348,7 +348,7 @@ pub fn parse_event_descriptors(bytes: &[u8]) -> EventDescriptors {
                     len,
                     body.len(),
                     body,
-                    "component_descriptor has invalid fixed fields or ISO 639 language",
+                    "component_descriptorの固定欄またはISO 639言語が不正です",
                 )),
             },
             0xc4 => match parse_audio_component_descriptor(body, &mut out, tag, cursor, len) {
@@ -360,7 +360,7 @@ pub fn parse_event_descriptors(bytes: &[u8]) -> EventDescriptors {
                     len,
                     body.len(),
                     body,
-                    "audio_component_descriptor has invalid fixed fields or ISO 639 language",
+                    "audio_component_descriptorの固定欄またはISO 639言語が不正です",
                 )),
             },
             0x55 => {
@@ -379,7 +379,7 @@ pub fn parse_event_descriptors(bytes: &[u8]) -> EventDescriptors {
                     len,
                     body.len(),
                     body,
-                    "series_descriptor is shorter than 9-byte fixed fields",
+                    "series_descriptorが9バイトの固定欄より短くなっています",
                 )),
             },
             0xd6 => {
@@ -393,7 +393,7 @@ pub fn parse_event_descriptors(bytes: &[u8]) -> EventDescriptors {
                         len,
                         body.len(),
                         body,
-                        "event_group_descriptor is malformed",
+                        "event_group_descriptorの構造が不正です",
                     ));
                 }
             }
@@ -408,7 +408,7 @@ pub fn parse_event_descriptors(bytes: &[u8]) -> EventDescriptors {
                         len,
                         body.len(),
                         body,
-                        "component_group_descriptor is malformed",
+                        "component_group_descriptorの構造が不正です",
                     ));
                 }
             }
@@ -423,7 +423,7 @@ pub fn parse_event_descriptors(bytes: &[u8]) -> EventDescriptors {
                         len,
                         body.len(),
                         body,
-                        "linkage_descriptor is shorter than fixed fields",
+                        "linkage_descriptorが固定欄より短くなっています",
                     ));
                 }
             }
@@ -436,7 +436,7 @@ pub fn parse_event_descriptors(bytes: &[u8]) -> EventDescriptors {
                     len,
                     body.len(),
                     body,
-                    "unknown descriptor is preserved for diagnostics only",
+                    "未知の記述子を診断用の事実として保持しています",
                 ));
             }
         }
@@ -461,7 +461,7 @@ fn parse_short_event(
             declared_length,
             body.len(),
             body,
-            "short_event_descriptor is shorter than fixed fields",
+            "short_event_descriptorが固定欄より短くなっています",
         ));
         return;
     }
@@ -475,7 +475,7 @@ fn parse_short_event(
             declared_length,
             body.len(),
             body,
-            "short_event_descriptor event_name length overflows",
+            "short_event_descriptorの番組名長が上限を超えています",
         ));
         return;
     };
@@ -487,7 +487,7 @@ fn parse_short_event(
             declared_length,
             body.len().saturating_sub(name_start),
             body,
-            "short_event_descriptor event_name length exceeds body",
+            "short_event_descriptorの番組名長が本文の範囲を超えています",
         ));
         return;
     }
@@ -499,7 +499,7 @@ fn parse_short_event(
             declared_length,
             0,
             body,
-            "short_event_descriptor text length byte is missing",
+            "short_event_descriptorの本文長バイトがありません",
         ));
         return;
     }
@@ -513,7 +513,7 @@ fn parse_short_event(
             declared_length,
             body.len(),
             body,
-            "short_event_descriptor text length overflows",
+            "short_event_descriptorの本文長が上限を超えています",
         ));
         return;
     };
@@ -525,7 +525,7 @@ fn parse_short_event(
             declared_length,
             body.len().saturating_sub(text_start),
             body,
-            "short_event_descriptor text length does not match body",
+            "short_event_descriptorの本文長が実際の本文と一致しません",
         ));
         return;
     }
@@ -538,7 +538,7 @@ fn parse_short_event(
             declared_length,
             body.len(),
             body,
-            "short_event_descriptor ISO_639_language_code is invalid",
+            "short_event_descriptorのISO_639_language_codeが不正です",
         ));
         return;
     }
@@ -554,7 +554,7 @@ fn parse_short_event(
             declared_length,
             body.len(),
             body,
-            &format!("short_event_descriptor is repeated for the same language={language_code}"),
+            &format!("short_event_descriptorが同じ言語で重複しています language={language_code}"),
         ));
         return;
     }
@@ -663,7 +663,7 @@ fn parse_extended_event_fragments(
                 first.declared_length,
                 first.raw_body.len(),
                 &first.raw_body,
-                &format!("extended_event_descriptor language={} fragment sequence has duplicate, missing, or inconsistent last_descriptor_number", language_code),
+                &format!("extended_event_descriptorの断片に重複・欠落・last_descriptor_number不一致があります language={}", language_code),
             ));
             continue;
         }
@@ -821,7 +821,7 @@ fn decode_extended_event_field(
                 fragment.raw_body.len(),
                 &fragment.raw_body,
                 &format!(
-                    "extended_event_descriptor language={} descriptor_number={} field={} field_offset={} strict decode failed: {:?}; {}",
+                    "extended_event_descriptorの厳密な文字復号に失敗しました language={} descriptor_number={} field={} field_offset={}: {:?}; {}",
                     language_code,
                     fragment.descriptor_number,
                     field_kind,
@@ -850,7 +850,7 @@ fn parse_extended_event_fragment(
             declared_length,
             body.len(),
             body,
-            "extended_event_descriptor is shorter than fixed fields",
+            "extended_event_descriptorが固定欄より短くなっています",
         ));
         return None;
     }
@@ -864,7 +864,7 @@ fn parse_extended_event_fragment(
             declared_length,
             body.len(),
             body,
-            "extended_event_descriptor ISO_639_language_code is invalid",
+            "extended_event_descriptorのISO_639_language_codeが不正です",
         ));
         return None;
     }
@@ -878,7 +878,7 @@ fn parse_extended_event_fragment(
             declared_length,
             body.len(),
             body,
-            "extended_event_descriptor items length overflows",
+            "extended_event_descriptorの項目長が上限を超えています",
         ));
         return None;
     };
@@ -890,7 +890,7 @@ fn parse_extended_event_fragment(
             declared_length,
             body.len().saturating_sub(cursor),
             body,
-            "extended_event_descriptor items length exceeds body or text length byte is missing",
+            "extended_event_descriptorの項目長が本文を超えているか本文長バイトがありません",
         ));
         return None;
     }
@@ -904,7 +904,7 @@ fn parse_extended_event_fragment(
                 declared_length,
                 items_end.saturating_sub(cursor),
                 body,
-                "extended_event_descriptor item description length is truncated",
+                "extended_event_descriptorの項目説明長が途中で切れています",
             ));
             return None;
         }
@@ -919,7 +919,7 @@ fn parse_extended_event_fragment(
                 declared_length,
                 items_end.saturating_sub(desc_start),
                 body,
-                "extended_event_descriptor item description length exceeds items area",
+                "extended_event_descriptorの項目説明長が項目領域を超えています",
             ));
             return None;
         }
@@ -934,7 +934,7 @@ fn parse_extended_event_fragment(
                 declared_length,
                 items_end.saturating_sub(item_start),
                 body,
-                "extended_event_descriptor item text length exceeds items area",
+                "extended_event_descriptorの項目本文長が項目領域を超えています",
             ));
             return None;
         }
@@ -958,7 +958,7 @@ fn parse_extended_event_fragment(
             declared_length,
             body.len().saturating_sub(text_start),
             body,
-            "extended_event_descriptor text length does not match body",
+            "extended_event_descriptorの本文長が実際の本文と一致しません",
         ));
         return None;
     }
@@ -990,7 +990,7 @@ fn parse_content_descriptor(
             declared_length,
             body.len(),
             body,
-            "content_descriptor has trailing byte",
+            "content_descriptorの末尾に余剰バイトがあります",
         ));
         return;
     }
@@ -1232,7 +1232,7 @@ fn parse_parental_rating_descriptor(
             declared_length,
             body.len(),
             body,
-            "parental_rating_descriptor body length is not a multiple of 4",
+            "parental_rating_descriptorの本文長が4の倍数ではありません",
         ));
         DescriptorParseStatus::MalformedLength
     } else {
@@ -1261,7 +1261,7 @@ fn parse_parental_rating_descriptor(
             declared_length,
             body.len(),
             body,
-            "parental_rating_descriptor has an unsupported country code",
+            "parental_rating_descriptorに未対応の国コードがあります",
         ));
     }
     let mut raw_descriptor_bytes = Vec::with_capacity(body.len() + 2);
@@ -1441,7 +1441,7 @@ fn decode_descriptor_text_lossy(
             descriptor_body.len(),
             descriptor_body,
             &format!(
-                "descriptor text field={} field_offset={} used lossy ARIB SI decoding: {}",
+                "記述子の文字列を代替復号しました field={} field_offset={}: {}",
                 field_kind,
                 field_offset,
                 diagnostic.summary(),

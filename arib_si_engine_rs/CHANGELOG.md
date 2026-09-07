@@ -1,5 +1,7 @@
 # r51_pr85_diagnostic_language
 
+- SI U-24の残存するEIT・記述子診断本文を日本語へ統一。構造化status・field名は維持し、保存経路と共通fixtureも同時更新する。
+
 - SI U-24: provider-data上限超過結果とVTS hostの入力エラーを日本語へ統一する。CLIの16進入力はASCII検証後に分割し、多byte文字の途中をsliceしてpanicしない。
 - VTS hostのCRC検査も既に解析したSectionHeaderを使用する。
 - Rust workspace全target試験が成功した（core150、JNI13、VTS host入力境界1）。Android実機試験は未実施。
