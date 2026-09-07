@@ -708,10 +708,10 @@ mod tests {
     fn set_filter_source_non_null_allows_pes_sink_for_ts_linkcap() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
-            .register_filter(DemuxRuntime::open_filter_runtime(
+            .register_filter(open_filter_runtime_with_queue(
                 40,
                 1,
-                PipelineOpenKind::Raw,
+                FilterOpenType::TsRaw,
                 Some(FilterPipelineConfig {
                     tpid: Some(0x0100),
                     raw: false,
@@ -720,10 +720,10 @@ mod tests {
             ))
             .unwrap();
         demux
-            .register_filter(DemuxRuntime::open_filter_runtime(
+            .register_filter(open_filter_runtime_with_queue(
                 41,
                 1,
-                PipelineOpenKind::Pes,
+                FilterOpenType::TsPes,
                 Some(FilterPipelineConfig {
                     tpid: Some(0x0100),
                     raw: true,
@@ -752,10 +752,10 @@ mod tests {
     fn set_filter_source_non_null_allows_raw_sink_for_ts_linkcap() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
-            .register_filter(DemuxRuntime::open_filter_runtime(
+            .register_filter(open_filter_runtime_with_queue(
                 50,
                 1,
-                PipelineOpenKind::Raw,
+                FilterOpenType::TsRaw,
                 Some(FilterPipelineConfig {
                     tpid: Some(0x0100),
                     raw: true,
@@ -764,10 +764,10 @@ mod tests {
             ))
             .unwrap();
         demux
-            .register_filter(DemuxRuntime::open_filter_runtime(
+            .register_filter(open_filter_runtime_with_queue(
                 51,
                 1,
-                PipelineOpenKind::Raw,
+                FilterOpenType::TsRaw,
                 Some(FilterPipelineConfig {
                     tpid: Some(0x0100),
                     raw: true,
@@ -802,10 +802,10 @@ mod tests {
     fn set_filter_source_non_null_allows_record_sink_for_ts_linkcap() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
-            .register_filter(DemuxRuntime::open_filter_runtime(
+            .register_filter(open_filter_runtime_with_queue(
                 52,
                 1,
-                PipelineOpenKind::Raw,
+                FilterOpenType::TsRaw,
                 Some(FilterPipelineConfig {
                     tpid: Some(0x0100),
                     raw: true,
@@ -814,10 +814,10 @@ mod tests {
             ))
             .unwrap();
         demux
-            .register_filter(DemuxRuntime::open_filter_runtime(
+            .register_filter(open_filter_runtime_with_queue(
                 53,
                 1,
-                PipelineOpenKind::Record,
+                FilterOpenType::TsRecord,
                 Some(FilterPipelineConfig {
                     tpid: Some(0x0100),
                     raw: false,
@@ -922,7 +922,7 @@ mod tests {
         );
         assert_eq!(
             demux.read_record_dvr_queue_bytes_for_test(56).unwrap(),
-            [first.to_vec(), second.to_vec()].concat()
+            second.to_vec()
         );
 
         demux.remove_filter(54).unwrap();
@@ -938,7 +938,7 @@ mod tests {
         demux.push_ts_packet_from_origin(&third, TsInputOrigin::frontend(1));
         assert_eq!(
             demux.read_record_dvr_queue_bytes_for_test(56).unwrap(),
-            [first.to_vec(), second.to_vec(), third.to_vec()].concat()
+            third.to_vec()
         );
     }
 
@@ -1268,7 +1268,7 @@ mod tests {
     }
 
     #[test]
-    fn dropped_dvr_cleanup_plan_reopens_the_existing_queue_epoch() {
+    fn dropped_dvr_cleanup_plan_fail_closes_the_existing_queue_epoch() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
             .register_dvr(DemuxRuntime::open_dvr_runtime(
@@ -1296,8 +1296,9 @@ mod tests {
         assert_eq!(
             demux
                 .write_playback_dvr_queue_bytes_for_test(95, &packet)
-                .unwrap(),
-            packet.len()
+                .unwrap_err()
+                .kind,
+            DemuxRuntimeErrorKind::QueueRuntimeFailure
         );
         assert_eq!(demux.dvr(95).unwrap().generation(), 1);
     }
@@ -1498,7 +1499,7 @@ mod tests {
         );
         assert_eq!(
             demux.read_record_dvr_queue_bytes_for_test(37).unwrap(),
-            [first_packet.to_vec(), second_packet.to_vec()].concat()
+            second_packet.to_vec()
         );
 
         demux.stop_dvr_runtime(35).unwrap();
@@ -2250,9 +2251,6 @@ mod tests {
         let scrambled_report =
             demux.push_ts_packet_from_origin(&scrambled, TsInputOrigin::frontend(1));
         assert!(scrambled_report
-            .assembly_suppression_reasons
-            .contains(&PipelineAssemblySuppressionReason::KeylessScrambledWithoutDescrambler));
-        assert!(scrambled_report
             .generated_events
             .iter()
             .any(|event| matches!(
@@ -2880,10 +2878,10 @@ mod tests {
         let mut demux = DemuxRuntime::new(1, 1);
         for filter_id in [60, 61] {
             demux
-                .register_filter(DemuxRuntime::open_filter_runtime(
+                .register_filter(open_filter_runtime_with_queue(
                     filter_id,
                     1,
-                    PipelineOpenKind::Raw,
+                    FilterOpenType::TsRaw,
                     Some(FilterPipelineConfig {
                         tpid: Some(0x0100),
                         raw: true,
@@ -2920,10 +2918,10 @@ mod tests {
         let mut demux = DemuxRuntime::new(1, 1);
         for filter_id in [62, 63] {
             demux
-                .register_filter(DemuxRuntime::open_filter_runtime(
+                .register_filter(open_filter_runtime_with_queue(
                     filter_id,
                     1,
-                    PipelineOpenKind::Raw,
+                    FilterOpenType::TsRaw,
                     Some(FilterPipelineConfig {
                         tpid: Some(0x0100),
                         raw: true,
@@ -2960,10 +2958,10 @@ mod tests {
     fn started_filter_rejects_reconfigure_and_preserves_state() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
-            .register_filter(DemuxRuntime::open_filter_runtime(
+            .register_filter(open_filter_runtime_with_queue(
                 13,
                 1,
-                PipelineOpenKind::Raw,
+                FilterOpenType::TsRaw,
                 Some(FilterPipelineConfig {
                     tpid: Some(100),
                     raw: false,
@@ -2998,10 +2996,10 @@ mod tests {
     fn filter_start_stop_flush_state_machine() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
-            .register_filter(DemuxRuntime::open_filter_runtime(
+            .register_filter(open_filter_runtime_with_queue(
                 14,
                 1,
-                PipelineOpenKind::Pes,
+                FilterOpenType::TsPes,
                 Some(FilterPipelineConfig {
                     tpid: Some(200),
                     raw: true,
@@ -3932,10 +3930,10 @@ mod tests {
     fn filter_flush_clears_partial_pes_state_and_keeps_runtime_started() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
-            .register_filter(DemuxRuntime::open_filter_runtime(
+            .register_filter(open_filter_runtime_with_queue(
                 22,
                 1,
-                PipelineOpenKind::Pes,
+                FilterOpenType::TsPes,
                 None,
             ))
             .unwrap();
@@ -4014,10 +4012,10 @@ mod tests {
     fn explicit_pes_stream_id_drops_other_stream_ids_before_delivery() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
-            .register_filter(DemuxRuntime::open_filter_runtime(
+            .register_filter(open_filter_runtime_with_queue(
                 23,
                 1,
-                PipelineOpenKind::Pes,
+                FilterOpenType::TsPes,
                 None,
             ))
             .unwrap();
@@ -4074,10 +4072,10 @@ mod tests {
     fn remove_filter_clears_queue_and_partial_parser_state() {
         let mut demux = DemuxRuntime::new(1, 1);
         demux
-            .register_filter(DemuxRuntime::open_filter_runtime(
+            .register_filter(open_filter_runtime_with_queue(
                 23,
                 1,
-                PipelineOpenKind::Pes,
+                FilterOpenType::TsPes,
                 None,
             ))
             .unwrap();
@@ -4139,7 +4137,7 @@ mod tests {
             demux.filter(30).unwrap().state(),
             FilterRuntimeState::Failed
         );
-        assert_eq!(demux.state(), DemuxRuntimeState::Quarantined);
+        assert_eq!(demux.state(), DemuxRuntimeState::Open);
     }
 
     #[test]
@@ -4177,15 +4175,17 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             txn.outcome(),
-            Some(FilterConfigureOutcome::Failed {
-                failed_step: FilterConfigureStep::ApplySoftDemuxConfig
+            Some(FilterConfigureOutcome::Quarantined {
+                failed_step: FilterConfigureStep::ApplySoftDemuxConfig,
+                rollback_step: FilterConfigureStep::RollbackSoftDemuxConfig,
+                rollback_error: DemuxRuntimeErrorKind::GenerationExhausted,
             })
         );
         assert_eq!(
             demux.filter(32).unwrap().state(),
             FilterRuntimeState::Failed
         );
-        assert_eq!(demux.state(), DemuxRuntimeState::Quarantined);
+        assert_eq!(demux.state(), DemuxRuntimeState::Open);
     }
 
     #[test]

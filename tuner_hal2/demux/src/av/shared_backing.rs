@@ -807,12 +807,29 @@ extern "C" {
     fn munmap(addr: *mut std::ffi::c_void, length: usize) -> i32;
     #[cfg(not(test))]
     fn tuner_dmabuf_heap_alloc_system(len: usize) -> i32;
+    #[cfg(test)]
+    fn memfd_create(name: *const std::ffi::c_char, flags: u32) -> i32;
+    #[cfg(test)]
+    fn ftruncate(fd: i32, length: i64) -> i32;
+    #[cfg(test)]
+    fn close(fd: i32) -> i32;
 }
 
 #[cfg(test)]
 #[no_mangle]
-extern "C" fn tuner_dmabuf_heap_alloc_system(_len: usize) -> i32 {
-    -1
+unsafe extern "C" fn tuner_dmabuf_heap_alloc_system(len: usize) -> i32 {
+    let Ok(length) = i64::try_from(len) else {
+        return -1;
+    };
+    let fd = memfd_create(b"maleicacid_tuner_hal2_av\0".as_ptr().cast(), 0);
+    if fd < 0 {
+        return -1;
+    }
+    if ftruncate(fd, length) != 0 {
+        let _ = close(fd);
+        return -1;
+    }
+    fd
 }
 
 impl Default for AvSharedBacking {
