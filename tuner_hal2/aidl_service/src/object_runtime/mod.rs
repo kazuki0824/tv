@@ -1,8 +1,10 @@
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::IFrontendCallback::IFrontendCallback;
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::ILnbCallback::ILnbCallback;
 use binder::{Result as BinderResult, Strong};
+#[cfg(test)]
+use maleicacid_tuner_hal2_binder_adapter::AidlApi;
 use maleicacid_tuner_hal2_binder_adapter::{
-    AidlApi, AidlFailureSource, AidlMethodCall, AidlStatusMapper, TunerStatusCode,
+    AidlFailureSource, AidlMethodCall, AidlStatusMapper, TunerStatusCode,
 };
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, HalError, HalInternalKind, HalInvalidArgumentKind,
