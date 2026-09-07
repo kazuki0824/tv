@@ -6,6 +6,7 @@ members = [
     "demux",
     "descrambler",
     "device",
+    "domain_request",
     "fmq",
     "lnb",
     "resource_ledger",
