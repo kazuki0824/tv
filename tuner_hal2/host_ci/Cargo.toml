@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "common",
+    "capability_selection",
     "compile_contract",
     "control",
     "demux",

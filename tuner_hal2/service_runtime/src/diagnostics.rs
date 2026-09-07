@@ -149,6 +149,7 @@ pub enum CapabilitySuppressionReason {
     DeviceFamilyDisabled,
     NoExportableFrontend,
     InvalidCapabilityProfile,
+    RuntimeCapacityExhausted,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

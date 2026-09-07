@@ -1,0 +1,9 @@
+[package]
+name = "maleicacid-tuner-hal2-capability-selection-host-ci"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "maleicacid_tuner_hal2_capability_selection"
+path = "../../service_runtime/src/capability_selection.rs"

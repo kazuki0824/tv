@@ -1,6 +1,7 @@
 mod boot;
 mod callback_registry;
 mod capability_profile;
+pub mod capability_selection;
 mod capability_snapshot;
 mod cleanup_execution;
 mod command_dispatch;

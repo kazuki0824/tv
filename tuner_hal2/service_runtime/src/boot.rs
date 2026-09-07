@@ -1434,8 +1434,7 @@ impl TunerServiceRuntime {
     }
 
     pub fn try_new() -> Result<Self, HalError> {
-        let capability_snapshot = CapabilitySnapshot::product_default();
-        capability_snapshot.validate_dependency_closures()?;
+        let (capability_snapshot, _) = CapabilitySnapshot::compose_for_frontends(&[])?;
         Ok(Self::from_capability_snapshot(capability_snapshot))
     }
 
@@ -2869,6 +2868,15 @@ impl TunerServiceRuntime {
     where
         I: IntoIterator<Item = FrontendProbeOutcome>,
     {
+        if self.state != ServiceState::Booting {
+            return (
+                ServiceBootOutcome::Degraded,
+                Err(HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "公開済みサービスの能力snapshotを再構成できません",
+                )),
+            );
+        }
         self.state = ServiceState::Booting;
         self.registry.clear_frontends();
         self.registry.clear_lnbs();
@@ -3052,6 +3060,85 @@ impl TunerServiceRuntime {
                 }
             }
         }
+
+        let probed_ids = self.registry.frontend_ids();
+        let composition = CapabilitySnapshot::compose_for_frontends(
+            &probed_ids.iter().map(|id| id.0).collect::<Vec<_>>(),
+        );
+        let (snapshot, retained_ids) = match composition {
+            Ok(composition) => composition,
+            Err(error) => {
+                self.state = ServiceState::Degraded;
+                let result = match diagnostic_clear_result {
+                    Ok(()) => Err(error),
+                    Err(cleanup) => Err(compose_primary_cleanup_failure(
+                        "起動能力の構成と診断初期化が失敗しました",
+                        error,
+                        cleanup,
+                    )),
+                };
+                return (ServiceBootOutcome::Degraded, result);
+            }
+        };
+        let entries = probed_ids
+            .iter()
+            .filter_map(|id| self.registry.frontend(*id).cloned())
+            .collect::<Vec<_>>();
+        let lnbs = self
+            .registry
+            .lnb_ids()
+            .iter()
+            .filter_map(|id| self.registry.lnb(*id))
+            .filter(|entry| retained_ids.contains(&entry.owner_frontend_id.0))
+            .cloned()
+            .collect::<Vec<_>>();
+        let commit_error = |message| {
+            let primary = HalError::internal(HalInternalKind::InvariantViolation, message);
+            match diagnostic_clear_result.clone() {
+                Ok(()) => primary,
+                Err(cleanup) => compose_primary_cleanup_failure(
+                    "起動能力の確定と診断初期化が失敗しました",
+                    primary,
+                    cleanup,
+                ),
+            }
+        };
+        let mut registry = RuntimeRegistry::with_av_runtime_limits(
+            snapshot.av_max_event_bytes,
+            snapshot.av_max_outstanding_events_per_filter,
+            snapshot.av_per_filter_live_bytes,
+            snapshot.av_runtime_budget_bytes,
+        );
+        for entry in entries {
+            if !retained_ids.contains(&entry.id.0) {
+                self.diagnostics
+                    .push(StartupDiagnosticRecord::capability_suppressed(
+                        entry.backend,
+                        entry.device_path,
+                        CapabilitySuppressionReason::RuntimeCapacityExhausted,
+                    ));
+                continue;
+            }
+            // この集合はprobe登録時にID一意性を検証済み。snapshot公開前に新registryへ一括移す。
+            if registry.register_frontend(entry).is_err() {
+                self.state = ServiceState::Degraded;
+                return (
+                    ServiceBootOutcome::Degraded,
+                    Err(commit_error("選択済みfrontendを確定できません")),
+                );
+            }
+        }
+        for lnb_entry in lnbs {
+            if registry.register_lnb(lnb_entry).is_err() {
+                self.state = ServiceState::Degraded;
+                return (
+                    ServiceBootOutcome::Degraded,
+                    Err(commit_error("選択済みLNBを確定できません")),
+                );
+            }
+        }
+        self.registry = registry;
+        self.capability_snapshot = snapshot;
 
         for system in [
             FrontendSystem::IsdbT,

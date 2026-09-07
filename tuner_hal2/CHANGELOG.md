@@ -1,3 +1,11 @@
+## r51_pr85_capability_closure_selection
+
+- HAL-030: frontend、demux base、filter/FMQ、PES、AV、用途別DVR、共有runtimeの依存関係を起動時の有限候補選択へ接続した。候補は固定優先順で共有worker/callback/reaper/cleanup枠、SECTION tracker数、FMQ/PES/AV/playback byte予算を仮予約し、全体検査が成功した場合だけsnapshotを確定する。
+- 候補の一部だけを採用せず、局所的な不足は依存先と後続の共有枠競合に限定する。横断検査失敗時は仮予約を逆順で返却し、起動を失敗として返す。公開済みserviceのsnapshot再構成を拒否する。
+- query/openは同じ選択済みsnapshotとfrontend集合を使用する。PES/DVRのdemux当たり上限を候補検査に含め、専用frontend reaperと汎用cleanup reaperを分けて計上した。
+- ホストCIへ実際の候補選択moduleを追加し、候補失敗後の予約量、無関係なDVRの保持、逆順返却、SECTION追跡枠、所有者別上限の入口を検査する。
+- 検証: HAL host unit 456件、全target Clippyに成功。実snapshotとplayback予算計算を読み込む追加host検証21件に成功（単独検証用の未使用項目warningあり）。Android/Soong全体と実機起動は未実施。
+
 # r51_pr85_av_allocation_retry
 
 - HAL-020: AV領域の割当・mapping等の一時失敗はOVERFLOWと元の診断を返し、filterをfailedへ遷移させない。空き枠不足・上限超過にもOVERFLOWを出す。次入力は再試行でき、失敗時に架空data IDを発行しない。
