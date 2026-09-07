@@ -48,6 +48,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "maleicacid-tuner-hal2-domain-request-host-ci"
+version = "0.0.0"
+dependencies = [
+ "maleicacid-tuner-hal2-common-host-ci",
+ "maleicacid-tuner-hal2-demux-host-ci",
+]
+
+[[package]]
 name = "maleicacid-tuner-hal2-fmq-host-ci"
 version = "0.0.0"
 

@@ -3,34 +3,18 @@ name: tuner_hal2 host Rust CI
 on:
   pull_request:
     paths:
-      - "tuner_hal2/aidl_service/**"
-      - "tuner_hal2/Android.bp"
-      - "tuner_hal2/common/**"
-      - "tuner_hal2/compile_contract/**"
-      - "tuner_hal2/control/**"
-      - "tuner_hal2/demux/**"
-      - "tuner_hal2/descrambler/**"
-      - "tuner_hal2/device/**"
-      - "tuner_hal2/lnb/**"
-      - "tuner_hal2/resource_ledger/**"
-      - "tuner_hal2/service_runtime/**"
-      - "tuner_hal2/host_ci/**"
+      - "tuner_hal2/**/*.rs"
+      - "tuner_hal2/**/Cargo.toml"
+      - "tuner_hal2/host_ci/Cargo.lock"
+      - "tuner_hal2/host_ci/rust-toolchain.toml"
       - ".github/workflows/tuner-hal2-host-rust-ci.yml"
   push:
     branches: [main]
     paths:
-      - "tuner_hal2/aidl_service/**"
-      - "tuner_hal2/Android.bp"
-      - "tuner_hal2/common/**"
-      - "tuner_hal2/compile_contract/**"
-      - "tuner_hal2/control/**"
-      - "tuner_hal2/demux/**"
-      - "tuner_hal2/descrambler/**"
-      - "tuner_hal2/device/**"
-      - "tuner_hal2/lnb/**"
-      - "tuner_hal2/resource_ledger/**"
-      - "tuner_hal2/service_runtime/**"
-      - "tuner_hal2/host_ci/**"
+      - "tuner_hal2/**/*.rs"
+      - "tuner_hal2/**/Cargo.toml"
+      - "tuner_hal2/host_ci/Cargo.lock"
+      - "tuner_hal2/host_ci/rust-toolchain.toml"
       - ".github/workflows/tuner-hal2-host-rust-ci.yml"
 
 permissions:
@@ -44,38 +28,53 @@ env:
   CARGO_TARGET_DIR: /tmp/tuner-hal2-host-ci-target
 
 jobs:
-  rustfmt:
+  host-rustfmt:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
       run:
         working-directory: tuner_hal2/host_ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - name: Check host harness formatting
+      - name: Host harness固有Rustの整形を確認
+        shell: bash
         run: |
-          cargo fmt \
-            -p maleicacid-tuner-hal2-common-host-ci \
-            -p maleicacid-tuner-hal2-compile-contract-host-ci \
-            -p maleicacid-tuner-hal2-control-host-ci \
-            -p maleicacid-tuner-hal2-descrambler-host-ci \
-            -p maleicacid-tuner-hal2-device-host-ci \
-            -p maleicacid-tuner-hal2-fmq-host-ci \
-            -p maleicacid-tuner-hal2-lnb-host-ci \
-            -p maleicacid-tuner-hal2-resource-ledger-host-ci \
-            -- --check
-          rustfmt --edition 2021 --check demux/tests/record_filter_fmq.rs
+          mapfile -d '' -t sources < <(find . -type f -name '*.rs' -print0 | sort -z)
+          if ((${#sources[@]} == 0)); then
+            echo "host_ci固有のRust sourceはありません"
+            exit 0
+          fi
+          for source in "${sources[@]}"; do
+            rustfmt --edition 2021 --check "$source"
+          done
 
-      - name: Check reviewed AIDL authority sources formatting
+  production-rustfmt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: tuner_hal2/host_ci
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: tuner_hal2のhost harness外Rust全体の整形を確認
+        shell: bash
         run: |
-          rustfmt --edition 2021 --check ../aidl_service/src/callback_store.rs
-          rustfmt --edition 2021 --check ../aidl_service/src/service_context.rs
-          rustfmt --edition 2021 --check ../aidl_service/src/object_runtime/mod.rs
-          rustfmt --edition 2021 --check ../aidl_service/src/child_object_open.rs
-          rustfmt --edition 2021 --check ../service_runtime/src/playback_consume_txn.rs
+          mapfile -d '' -t sources < <(
+            find .. \
+              -path '../host_ci' -prune -o \
+              -type f -name '*.rs' -print0 \
+              | sort -z
+          )
+          test "${#sources[@]}" -gt 0
+          for source in "${sources[@]}"; do
+            rustfmt --edition 2021 --check "$source"
+          done
 
   clippy:
     runs-on: ubuntu-latest
@@ -84,32 +83,61 @@ jobs:
       run:
         working-directory: tuner_hal2/host_ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - name: Run Clippy on existing host-compatible crates
-        run: cargo clippy --workspace --exclude maleicacid-tuner-hal2-demux-host-ci --all-targets --locked -- -D warnings
+      - name: Host workspace全体をClippyで検査
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-  host-rust:
+  compile-contract:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
       run:
         working-directory: tuner_hal2/host_ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-
       - name: ソース契約を確認
         run: cargo test -p maleicacid-tuner-hal2-compile-contract-host-ci --locked
 
-      - name: Type-check production demux library and host crates
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: tuner_hal2/host_ci
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Type-check production Rust libraries and host crates
         run: cargo check --workspace --lib --locked
 
-      - name: Run existing host-compatible unit tests
-        run: cargo test --workspace --exclude maleicacid-tuner-hal2-demux-host-ci --locked
+  unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: tuner_hal2/host_ci
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Host workspace全体のunit testsを実行
+        run: cargo test --workspace --lib --locked --exclude maleicacid-tuner-hal2-compile-contract-host-ci
 
+  demux-record-fmq:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: tuner_hal2/host_ci
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Run production demux Record FMQ integration test
         run: cargo test -p maleicacid-tuner-hal2-demux-host-ci --test record_filter_fmq --locked
