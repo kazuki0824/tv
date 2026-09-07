@@ -1,3 +1,8 @@
+# r50eo84_pr85_pes_completion_boundary
+
+- HAL-019: 長さ0のPESは、同一PIDの次PUSIに続く有効なPESヘッダーを検証してから完成させる。次ヘッダーの分割は最大264バイトの保留へ保持し、不正ヘッダー・別PID・未完成の次ヘッダーを完成根拠にしない。
+- 次ヘッダーの各分割位置、不正入力、別PID、正確な出力範囲を単体試験で確認した。Rust 1.81のhost workspace単体試験が成功した。Android/Soong build、atest、VTS、CTS、実機確認は未実施。
+
 # r50eo84_pr85_vts_install_cleanup
 
 - HAL-057: VTS XMLの配置前後に対象ディレクトリを確認し、別名の設定が共存する配置を拒否する。実機のvariantを変更せず、配置済み設定を推測で削除しない。

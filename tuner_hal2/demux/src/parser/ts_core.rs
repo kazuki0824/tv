@@ -298,6 +298,7 @@ pub struct PesAssembler {
     buf: Vec<u8>,
     expected_len: Option<usize>,
     unbounded_summary: Option<PesHeaderSummary>,
+    next_header: Option<Vec<u8>>,
     overflow_drop_count: u64,
     overflow_generation: u64,
     overflow_drop_counter_saturated: bool,
@@ -314,19 +315,50 @@ impl PesAssembler {
     ) -> Vec<PesPacket> {
         let mut out = Vec::new();
         if payload_unit_start {
-            if self.unbounded_summary.is_some() {
-                if let Some(packet) = self.take_completed() {
-                    out.push(packet);
+            if self.unbounded_summary.is_some()
+                && self.pid == Some(pid)
+                && self.next_header.is_none()
+            {
+                self.next_header = Some(Vec::new());
+            } else {
+                if self.unbounded_summary.is_some() {
+                    self.reset_with_drop(PesDropReason::MalformedPes);
+                } else {
+                    self.reset_state_only();
                 }
+                self.pid = Some(pid);
             }
-            self.reset_state_only();
-            self.pid = Some(pid);
         } else if self.pid != Some(pid) {
             self.reset_with_drop(PesDropReason::ContinuationWithoutStart);
             return out;
         }
 
-        self.buf.extend_from_slice(payload);
+        if let Some(mut header) = self.next_header.take() {
+            // 次のPESヘッダーが分割されても、検証前に旧PESを完成へ昇格しない。
+            // 固定9バイトと最大255バイトの追加ヘッダーだけを別に保持する。
+            let copied = (264 - header.len()).min(payload.len());
+            header.extend_from_slice(&payload[..copied]);
+            match parse_pes_header_status(&header) {
+                PesHeaderParseStatus::Incomplete => {
+                    self.next_header = Some(header);
+                    return out;
+                }
+                PesHeaderParseStatus::Malformed => {
+                    self.reset_with_drop(PesDropReason::MalformedPes);
+                    return out;
+                }
+                PesHeaderParseStatus::Complete(_) => {
+                    if let Some(packet) = self.take_completed() {
+                        out.push(packet);
+                    }
+                    self.pid = Some(pid);
+                    self.buf = header;
+                    self.buf.extend_from_slice(&payload[copied..]);
+                }
+            }
+        } else {
+            self.buf.extend_from_slice(payload);
+        }
         if self.expected_len.is_none() {
             match parse_pes_header_status(&self.buf) {
                 PesHeaderParseStatus::Complete(summary) => {
@@ -369,6 +401,7 @@ impl PesAssembler {
         self.buf.clear();
         self.expected_len = None;
         self.unbounded_summary = None;
+        self.next_header = None;
     }
 
     fn reset_with_drop(&mut self, reason: PesDropReason) {
@@ -610,7 +643,14 @@ mod pes_flush_tests {
             .push(packet_pid_for_test(0x0100), true, &first)
             .is_empty());
 
-        let packets = assembler.push(packet_pid_for_test(0x0100), true, &[0x00, 0x00, 0x01, 0xe1]);
+        assert!(assembler
+            .push(packet_pid_for_test(0x0100), true, &[0x00, 0x00, 0x01, 0xe1])
+            .is_empty());
+        let packets = assembler.push(
+            packet_pid_for_test(0x0100),
+            false,
+            &[0x00, 0x00, 0x80, 0x00, 0x00],
+        );
         assert_eq!(packets.len(), 1);
         assert_eq!(packets[0].stream_id, 0xe0);
         assert_eq!(packets[0].payload, vec![0xaa, 0xbb]);
@@ -822,6 +862,46 @@ mod pes_optional_header_contract_tests {
 #[cfg(test)]
 mod pes_boundary_tests {
     use super::{packet_pid_for_test, PesAssembler, PesDropReason};
+
+    #[test]
+    fn invalid_or_other_pid_start_does_not_complete_unbounded_pes() {
+        let first = [0, 0, 1, 0xe0, 0, 0, 0x80, 0, 0, 0xaa];
+        for (pid, next) in [
+            (0x0100, vec![0, 0, 2, 0xe0, 0, 0, 0x80, 0, 0]),
+            (0x0101, first.to_vec()),
+        ] {
+            let mut assembler = PesAssembler::default();
+            assert!(assembler
+                .push(packet_pid_for_test(0x0100), true, &first)
+                .is_empty());
+            assert!(assembler
+                .push(packet_pid_for_test(pid), true, &next)
+                .is_empty());
+            assert_eq!(
+                assembler.take_drop_diagnostic(),
+                Some((PesDropReason::MalformedPes, 1))
+            );
+        }
+    }
+
+    #[test]
+    fn every_next_header_split_preserves_order_and_exact_payloads() {
+        let first = [0, 0, 1, 0xe0, 0, 0, 0x80, 0, 0, 0xaa];
+        let next = [0, 0, 1, 0xe0, 0, 4, 0x80, 0, 0, 0xbb];
+        for split in 0..9 {
+            let mut assembler = PesAssembler::default();
+            assert!(assembler
+                .push(packet_pid_for_test(0x0100), true, &first)
+                .is_empty());
+            assert!(assembler
+                .push(packet_pid_for_test(0x0100), true, &next[..split])
+                .is_empty());
+            let packets = assembler.push(packet_pid_for_test(0x0100), false, &next[split..]);
+            assert_eq!(packets.len(), 2, "split={split}");
+            assert_eq!(packets[0].raw_bytes, first);
+            assert_eq!(packets[1].raw_bytes, next);
+        }
+    }
 
     #[test]
     fn unbounded_pes_is_discarded_on_flush_boundary() {
