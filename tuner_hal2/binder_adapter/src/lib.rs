@@ -28,10 +28,11 @@ pub use aidl_method::{
 pub use maleicacid_tuner_hal2_domain_request::{
     AidlApi, AidlDomainRequest, AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan,
     DemuxSetFrontendDataSourceRequest, DomainProfileSupport, DvrConfigureKind, DvrConfigureRequest,
-    DvrDataFormat, DvrFilterLinkRequest, DvrOpenKind, FilterAvStreamKind, FilterAvStreamTypeRequest,
-    FilterDelayHintKind, FilterDelayHintRequest, FilterReleaseAvHandleRequest,
-    FilterSetDataSourceRequest, LnbSetSatellitePositionRequest, LnbToneRequest, LnbVoltageRequest,
-    OpenDvrRequest, RuntimeExecutableRequest, RuntimeTransactionName, AIDL_TRANSACTION_TABLE,
+    DvrDataFormat, DvrFilterLinkRequest, DvrOpenKind, FilterAvStreamKind,
+    FilterAvStreamTypeRequest, FilterDelayHintKind, FilterDelayHintRequest,
+    FilterReleaseAvHandleRequest, FilterSetDataSourceRequest, LnbSetSatellitePositionRequest,
+    LnbToneRequest, LnbVoltageRequest, OpenDvrRequest, RuntimeExecutableRequest,
+    RuntimeTransactionName, AIDL_TRANSACTION_TABLE,
 };
 pub use status::{
     AidlFailureSource, AidlStatusMapper, ApiStatusPrecedence, DomainResult, StatusPrecedenceStep,
