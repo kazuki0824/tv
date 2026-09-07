@@ -1,3 +1,9 @@
+# r51_pr85_service_semantic_boundary
+
+- SI U-09/U-10/U-11: 通常JNI consumerをservice/transport意味snapshotへ統一する。CAS metadataとPMT索引は同じservice factsから導出し、CATとservice-scoped CAを混同しない。欠落名はnullのまま保持する。
+- SI U-13: component保存用codec名をRustから受け取り、Kotlin側のcodec命名表を除去する。既知の製品再生対応stream_type集合は製品policyとして維持する。
+- Kotlin本番/試験コンパイルとhost JUnit147件が成功した。Android実機試験は未実施。
+
 # r51_pr85_raw_descriptor_publication
 
 - SI U-03/U-19: Rust生成descriptor事実JSONをEvent/Programモデル経由でprovider-data builderへ透過返却する。Kotlinでcountry byte・descriptor解析状態・unknown rawを組み直さない。

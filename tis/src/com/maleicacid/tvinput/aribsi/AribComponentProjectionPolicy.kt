@@ -1,19 +1,19 @@
 package com.maleicacid.tvinput.aribsi
 
 object AribComponentProjectionPolicy {
-    private val r51VideoCodecs = mapOf(0x02 to "MPEG-2", 0x1b to "H.264")
-    private val recognizedVideoCodecs = r51VideoCodecs + mapOf(0x24 to "HEVC")
-    private val r51AudioCodecs = mapOf(0x03 to "MPEG-Audio", 0x04 to "MPEG-Audio", 0x0f to "AAC")
-    private val recognizedAudioCodecs = r51AudioCodecs + mapOf(0x11 to "MPEG-4-AAC-LATM")
+    private val r51VideoStreamTypes = setOf(0x02, 0x1b)
+    private val r51AudioStreamTypes = setOf(0x03, 0x04, 0x0f)
 
-    fun componentsForService(service: AribService): AribComponents {
+    fun componentsForService(service: AribService): AribComponents = componentsForStreams(service.streams)
+
+    fun componentsForStreams(streams: List<AribElementaryStream>): AribComponents {
         val video = mutableListOf<AribComponentEntry>()
         val audio = mutableListOf<AribComponentEntry>()
         val subtitle = mutableListOf<AribComponentEntry>()
         val data = mutableListOf<AribComponentEntry>()
-        service.streams.forEach { stream ->
-            val videoCodec = recognizedVideoCodecs[stream.streamType]
-            val audioCodec = recognizedAudioCodecs[stream.streamType]
+        streams.forEach { stream ->
+            val videoCodec = stream.codec.takeIf { stream.codecKind == "VIDEO" }
+            val audioCodec = stream.codec.takeIf { stream.codecKind == "AUDIO" }
             when {
                 videoCodec != null -> video += codecComponent(stream, videoCodec)
                 audioCodec != null -> audio += codecComponent(stream, audioCodec).copy(
@@ -62,13 +62,9 @@ object AribComponentProjectionPolicy {
     fun toComponentsObjectForService(service: AribService): String =
         ProviderDataBridge.toComponentsObject(componentsForService(service)).toString()
 
-    fun isR51PlaybackSupportedVideoCodec(streamType: Int): Boolean = r51VideoCodecs.containsKey(streamType)
+    fun isR51PlaybackSupportedVideoCodec(streamType: Int): Boolean = streamType in r51VideoStreamTypes
 
-    fun isRecognizedVideoCodec(streamType: Int): Boolean = recognizedVideoCodecs.containsKey(streamType)
-
-    fun isR51PlaybackSupportedAudioCodec(streamType: Int): Boolean = r51AudioCodecs.containsKey(streamType)
-
-    fun isRecognizedAudioCodec(streamType: Int): Boolean = recognizedAudioCodecs.containsKey(streamType)
+    fun isR51PlaybackSupportedAudioCodec(streamType: Int): Boolean = streamType in r51AudioStreamTypes
 
     private fun codecComponent(stream: AribElementaryStream, codec: String): AribComponentEntry = AribComponentEntry(
         esPid = stream.elementaryPid,

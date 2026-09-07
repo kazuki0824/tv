@@ -1,3 +1,10 @@
+# r51_pr85_service_semantic_boundary
+
+- SI U-09: 通常bulkのservices/CA/PMT対応表を廃止し、ServiceSemanticFactsへサービス名、Provider名、PMT/PCR値、service-scoped CA descriptorを集約する。CATはサービスに属さない独立fact、transportはmetadataとSDT actual範囲を持つ意味snapshotとして渡す。
+- SI U-10/U-11: NIT由来network/TS名・remote keyをJNIへ出し、service/provider/transport名の未取得nullを空文字へ変換しない。
+- SI U-13/SI-012の通常codec生成: PMT stream_typeから既存codec名とkindを求める処理をpure coreへ移す。decoderの製品対応判定はTISに残す。ALS等の追加signaling認識はこの変更の対象外。
+- Rust workspace全target check、SI core150件、JNI13件、Kotlin本番/試験コンパイルと実JNI host JUnit147件が成功した。SDT更新によるnull/空文字の差とNIT metadataの通常snapshotへの伝達を確認した。Android実機試験は未実施。
+
 # r51_pr85_raw_descriptor_publication
 
 - SI U-03: parental_ratingの長さ不正・切断では正常ratingを部分採用しない。未対応country byteを置換せずdescriptor単位のentries・raw全体・解析状態へ保持し、正常ratingへの昇格を抑止する。通常ratingのparseStatusも元のdescriptor状態から決める。

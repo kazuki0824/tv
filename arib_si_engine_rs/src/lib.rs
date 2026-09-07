@@ -25,8 +25,8 @@ use sections::{
 };
 use serde::Serialize;
 use service_discovery::{
-    DiscoveredElementaryStream, DiscoveredService, DiscoveryPublishStage,
-    ServiceDiscoveryCollector, ServiceSemanticFacts, TableRequirementStatus,
+    DiscoveredElementaryStream, DiscoveryPublishStage, ServiceDiscoveryCollector,
+    ServiceSemanticFacts, TableRequirementStatus,
 };
 use std::collections::BTreeMap;
 use std::ptr;
@@ -135,7 +135,7 @@ impl ParserState {
     }
 
     #[cfg(test)]
-    fn services(&self) -> Vec<DiscoveredService> {
+    fn services(&self) -> Vec<service_discovery::DiscoveredService> {
         self.snapshot().services
     }
 
@@ -167,6 +167,8 @@ fn json_string(value: &str) -> String {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ElementaryStreamDto {
+    codec: Option<&'static str>,
+    codec_kind: Option<&'static str>,
     elementary_pid: u16,
     stream_type: u8,
     component_tag: Option<u8>,
@@ -184,6 +186,8 @@ struct ElementaryStreamDto {
 impl From<&DiscoveredElementaryStream> for ElementaryStreamDto {
     fn from(stream: &DiscoveredElementaryStream) -> Self {
         Self {
+            codec: stream.codec_signaling().map(|(_, codec)| codec),
+            codec_kind: stream.codec_signaling().map(|(kind, _)| kind),
             elementary_pid: stream.elementary_pid,
             stream_type: stream.stream_type,
             component_tag: stream.component_tag,
@@ -226,54 +230,6 @@ fn service_ca_descriptor_dto(
     }
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ServiceDto {
-    original_network_id: u16,
-    transport_stream_id: u16,
-    service_id: u16,
-    name: String,
-    provider_name: String,
-    service_type: Option<u8>,
-    pmt_pid: Option<u16>,
-    pcr_pid: Option<u16>,
-    free_ca_mode: Option<bool>,
-    streams: Vec<ElementaryStreamDto>,
-    service_scoped_ca_descriptors: Vec<ServiceCaDescriptorDto>,
-}
-
-impl From<&DiscoveredService> for ServiceDto {
-    fn from(service: &DiscoveredService) -> Self {
-        let mut ca = service
-            .program_ca_descriptors
-            .iter()
-            .map(|descriptor| service_ca_descriptor_dto(descriptor, "PROGRAM", None))
-            .collect::<Vec<_>>();
-        for group in &service.es_ca_descriptors {
-            ca.extend(group.descriptors.iter().map(|descriptor| {
-                service_ca_descriptor_dto(descriptor, "ES", Some(group.elementary_pid))
-            }));
-        }
-        Self {
-            original_network_id: service.original_network_id,
-            transport_stream_id: service.transport_stream_id,
-            service_id: service.service_id,
-            name: service.service_name.clone().unwrap_or_default(),
-            provider_name: service.provider_name.clone().unwrap_or_default(),
-            service_type: service.service_type,
-            pmt_pid: service.pmt_pid,
-            pcr_pid: service.pcr_pid,
-            free_ca_mode: service.free_ca_mode,
-            streams: service
-                .streams
-                .iter()
-                .map(ElementaryStreamDto::from)
-                .collect(),
-            service_scoped_ca_descriptors: ca,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ServiceKeyDto {
@@ -284,18 +240,13 @@ struct ServiceKeyDto {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct TransportKeyDto {
+struct TransportSemanticFactsDto {
     original_network_id: u16,
     transport_stream_id: u16,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PmtPidMappingDto {
-    original_network_id: u16,
-    transport_stream_id: u16,
-    service_id: u16,
-    pmt_pid: u16,
+    network_name: Option<String>,
+    transport_stream_name: Option<String>,
+    remote_control_key_id: Option<u8>,
+    sdt_actual: bool,
 }
 
 #[derive(Serialize)]
@@ -327,43 +278,6 @@ fn ca_metadata_dto(
         private_data_hex: hex_lower(&ca.private_data),
         source,
     }
-}
-
-fn ca_metadata_from_services(
-    services: &[DiscoveredService],
-    cat: &[CaDescriptor],
-) -> Vec<CaMetadataDto> {
-    let mut out = Vec::new();
-    for service in services {
-        let key = Some(ServiceKeyDto {
-            original_network_id: service.original_network_id,
-            transport_stream_id: service.transport_stream_id,
-            service_id: service.service_id,
-        });
-        out.extend(
-            service
-                .program_ca_descriptors
-                .iter()
-                .map(|ca| ca_metadata_dto(key, ca, Some(ca.ca_pid), None, None, "PROGRAM")),
-        );
-        for group in &service.es_ca_descriptors {
-            out.extend(group.descriptors.iter().map(|ca| {
-                ca_metadata_dto(
-                    key,
-                    ca,
-                    Some(ca.ca_pid),
-                    None,
-                    Some(group.elementary_pid),
-                    "ELEMENTARY_STREAM",
-                )
-            }));
-        }
-    }
-    out.extend(
-        cat.iter()
-            .map(|ca| ca_metadata_dto(None, ca, None, Some(ca.ca_pid), None, "CAT")),
-    );
-    out
 }
 
 #[derive(Serialize)]
@@ -991,11 +905,31 @@ struct ServiceSemanticFactsDto {
     smd: SystemManagementFactsDto,
     missing_components: Vec<&'static str>,
     semantic_diagnostics: Vec<&'static str>,
+    name: Option<String>,
+    provider_name: Option<String>,
+    pmt_pid: Option<u16>,
+    pcr_pid: Option<u16>,
+    service_scoped_ca_descriptors: Vec<ServiceCaDescriptorDto>,
 }
 
 impl From<&ServiceSemanticFacts> for ServiceSemanticFactsDto {
     fn from(facts: &ServiceSemanticFacts) -> Self {
+        let mut ca = facts
+            .program_ca_descriptors
+            .iter()
+            .map(|descriptor| service_ca_descriptor_dto(descriptor, "PROGRAM", None))
+            .collect::<Vec<_>>();
+        for group in &facts.es_ca_descriptors {
+            ca.extend(group.descriptors.iter().map(|descriptor| {
+                service_ca_descriptor_dto(descriptor, "ES", Some(group.elementary_pid))
+            }));
+        }
         Self {
+            name: facts.name.clone(),
+            provider_name: facts.provider_name.clone(),
+            pmt_pid: facts.pmt_pid,
+            pcr_pid: facts.pcr_pid,
+            service_scoped_ca_descriptors: ca,
             original_network_id: facts.original_network_id,
             transport_stream_id: facts.transport_stream_id,
             service_id: facts.service_id,
@@ -1063,12 +997,10 @@ struct BulkSnapshot {
     discovery_stage: jint,
     broadcast_clock: Option<BroadcastClockFactDto>,
     table_requirements: Vec<TableRequirementStatusDto>,
-    services: Vec<ServiceDto>,
-    ca_metadata: Vec<CaMetadataDto>,
+    cat_ca_metadata: Vec<CaMetadataDto>,
     malformed_ca_descriptor_diagnostics: Vec<MalformedCaDescriptorDiagnosticDto>,
     malformed_ca_descriptor_counts: Vec<MalformedCaDescriptorCountDto>,
-    pmt_pid_mappings: Vec<PmtPidMappingDto>,
-    sdt_actual_transports: Vec<TransportKeyDto>,
+    transport_semantic_facts: Vec<TransportSemanticFactsDto>,
     events: Vec<serde_json::Value>,
     epg_update_windows: Vec<EpgUpdateWindowDto>,
     service_semantic_facts: Vec<ServiceSemanticFactsDto>,
@@ -1102,8 +1034,7 @@ fn bulk_snapshot_json(state: &mut ParserState, take_update_windows: bool) -> Str
     let semantic_facts = &collection_state.semantic_facts_by_service;
     let snapshot = &collection_state.snapshot;
     let parser_diagnostics = parser_diagnostics(ingest_sequence, last_status, snapshot);
-    let services = &snapshot.services;
-    let pmt_mappings = &snapshot.pmt_pids_by_service;
+    let actual_transport_keys = state.sdt_actual_transport_keys();
     let cat_ca = &snapshot.cat_ca.descriptors;
     // 更新区間は排出型一括APIだけで公開する。
     // 非排出型一括snapshotはEPG更新区間を返さない。これにより本番呼び出し側が
@@ -1123,8 +1054,10 @@ fn bulk_snapshot_json(state: &mut ParserState, take_update_windows: bool) -> Str
             .iter()
             .map(TableRequirementStatusDto::from)
             .collect(),
-        services: services.iter().map(ServiceDto::from).collect(),
-        ca_metadata: ca_metadata_from_services(services, cat_ca),
+        cat_ca_metadata: cat_ca
+            .iter()
+            .map(|ca| ca_metadata_dto(None, ca, None, Some(ca.ca_pid), None, "CAT"))
+            .collect(),
         malformed_ca_descriptor_diagnostics: snapshot
             .malformed_ca_descriptor_diagnostics
             .iter()
@@ -1133,21 +1066,17 @@ fn bulk_snapshot_json(state: &mut ParserState, take_update_windows: bool) -> Str
         malformed_ca_descriptor_counts: malformed_ca_descriptor_counts(
             &snapshot.malformed_ca_descriptor_diagnostics,
         ),
-        pmt_pid_mappings: pmt_mappings
+        transport_semantic_facts: snapshot
+            .transports
             .iter()
-            .map(|mapping| PmtPidMappingDto {
-                original_network_id: mapping.original_network_id,
-                transport_stream_id: mapping.transport_stream_id,
-                service_id: mapping.service_id,
-                pmt_pid: mapping.pmt_pid,
-            })
-            .collect(),
-        sdt_actual_transports: state
-            .sdt_actual_transport_keys()
-            .iter()
-            .map(|(tsid, onid)| TransportKeyDto {
-                original_network_id: *onid,
-                transport_stream_id: *tsid,
+            .map(|transport| TransportSemanticFactsDto {
+                original_network_id: transport.original_network_id,
+                transport_stream_id: transport.transport_stream_id,
+                network_name: transport.network_name.clone(),
+                transport_stream_name: transport.ts_name.clone(),
+                remote_control_key_id: transport.remote_control_key_id,
+                sdt_actual: actual_transport_keys
+                    .contains(&(transport.transport_stream_id, transport.original_network_id)),
             })
             .collect(),
         events: state.events().iter().map(event_value).collect(),

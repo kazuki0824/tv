@@ -51,6 +51,51 @@ class NativeAribSiParserCasDiscoveryTest {
         }
     }
 
+    @Test fun serviceNamesPreserveAbsentAndPresentEmptyValuesAcrossJni() {
+        val parser = NativeAribSiParser()
+        try {
+            check(parser.ingestSection(TsPid(PID_SDT), section(SDT_SCRAMBLED_SERVICE_BODY)) == SiStatus.OK)
+            val present = parser.serviceRegistrationSnapshot()
+            check(present.services.single().providerName == "")
+            check(present.semanticFactsByServiceKey.values.single().providerName == "")
+            val absentBody = mutableListOf(
+                0x42, 0xf0, 0, 0, 0x11, 0xc3, 0, 0, 0, 0x22, 0,
+                0, 1, 0xfc, 0x80, 0,
+            )
+            setSectionLength(absentBody, 0xf0)
+            check(parser.ingestSection(TsPid(PID_SDT), section(absentBody.toIntArray())) == SiStatus.OK)
+            val absent = parser.serviceRegistrationSnapshot()
+            check(absent.services.single().name == null)
+            check(absent.services.single().providerName == null)
+            check(absent.semanticFactsByServiceKey.values.single().name == null)
+        } finally {
+            parser.close()
+        }
+    }
+
+    @Test fun nitTransportMetadataSurvivesTheSemanticBoundary() {
+        val parser = NativeAribSiParser()
+        try {
+            val networkName = listOf(0x1b, 0x28, 0x42) + "Network".map { it.code }
+            val tsName = listOf(0x1b, 0x28, 0x42) + "Transport".map { it.code }
+            val networkDescriptor = listOf(0x40, networkName.size) + networkName
+            val tsDescriptor = listOf(0xcd, tsName.size + 2, 7, tsName.size shl 2) + tsName
+            val tsLoop = listOf(0, 0x11, 0, 0x22, 0xf0, tsDescriptor.size) + tsDescriptor
+            val nit = (listOf(0x40, 0xb0, 0, 0, 0x22, 0xc1, 0, 0, 0xf0, networkDescriptor.size) +
+                networkDescriptor + listOf(0xf0, tsLoop.size) + tsLoop).toMutableList()
+            setSectionLength(nit, 0xb0)
+            check(parser.ingestSection(TsPid(0x10), section(nit.toIntArray())) == SiStatus.OK)
+            check(parser.ingestSection(TsPid(PID_SDT), section(SDT_SCRAMBLED_SERVICE_BODY)) == SiStatus.OK)
+            val transport = parser.serviceRegistrationSnapshot().actualTransportMetadata.single()
+            check(transport.networkName == "Network")
+            check(transport.transportStreamName == "Transport")
+            check(transport.remoteControlKeyId == 7)
+            check(transport.sdtActual)
+        } finally {
+            parser.close()
+        }
+    }
+
     @Test fun eitDescriptorFactsSurviveBulkSnapshotAndProgramProviderData() {
         val parser = NativeAribSiParser()
         try {
@@ -63,6 +108,7 @@ class NativeAribSiParserCasDiscoveryTest {
             val video = event.descriptors.components.video.single()
             check(video.esPid == TsPid(VIDEO_PID))
             check(video.streamType == 0x1b)
+            check(video.codec == "H.264")
             check(video.componentType == 0xb3)
             check(video.resolution == "1080")
             check(video.scan == "interlaced")
@@ -72,6 +118,7 @@ class NativeAribSiParserCasDiscoveryTest {
             val audio = event.descriptors.components.audio.single()
             check(audio.esPid == TsPid(AUDIO_PID))
             check(audio.streamType == 0x0f)
+            check(audio.codec == "AAC")
             check(audio.componentType == 0x02)
             check(audio.language == "jpn")
             check(audio.secondLanguage == "eng")

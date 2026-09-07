@@ -297,7 +297,7 @@ class ChannelScanController(
             ChannelRecord(
                 serviceKey = service.serviceKey,
                 displayNumber = ChannelNumberingPolicy.displayNumber(service, remoteKey, candidate),
-                displayName = service.name.ifEmpty { "service-${service.serviceKey.originalNetworkId}-${service.serviceKey.transportStreamId}-${service.serviceKey.serviceId}" },
+                displayName = service.name?.takeIf { it.isNotEmpty() } ?: run { "service-${service.serviceKey.originalNetworkId}-${service.serviceKey.transportStreamId}-${service.serviceKey.serviceId}" },
                 frequencyHz = candidate.frequencyHz,
                 deliverySystem = candidate.deliverySystem,
                 streamSelector = candidate.streamSelector,

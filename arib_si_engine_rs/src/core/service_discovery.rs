@@ -27,6 +27,20 @@ pub struct DiscoveredElementaryStream {
     pub is_superimpose: bool,
 }
 
+impl DiscoveredElementaryStream {
+    pub fn codec_signaling(&self) -> Option<(&'static str, &'static str)> {
+        match self.stream_type {
+            0x02 => Some(("VIDEO", "MPEG-2")),
+            0x1b => Some(("VIDEO", "H.264")),
+            0x24 => Some(("VIDEO", "HEVC")),
+            0x03 | 0x04 => Some(("AUDIO", "MPEG-Audio")),
+            0x0f => Some(("AUDIO", "AAC")),
+            0x11 => Some(("AUDIO", "MPEG-4-AAC-LATM")),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SmdSemanticState {
     SupportedBroadcast,
@@ -165,6 +179,12 @@ pub struct ServiceSemanticFacts {
     pub system_management: SystemManagementFacts,
     pub missing_components: Vec<&'static str>,
     pub semantic_diagnostics: Vec<&'static str>,
+    pub name: Option<String>,
+    pub provider_name: Option<String>,
+    pub pmt_pid: Option<u16>,
+    pub pcr_pid: Option<u16>,
+    pub program_ca_descriptors: Vec<CaDescriptor>,
+    pub es_ca_descriptors: Vec<EsCaMetadata>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -1325,6 +1345,12 @@ impl ServiceDiscoveryCollector {
                 system_management: service.system_management.clone(),
                 missing_components: missing_for_service.clone(),
                 semantic_diagnostics,
+                name: service.service_name.clone(),
+                provider_name: service.provider_name.clone(),
+                pmt_pid: service.pmt_pid,
+                pcr_pid: service.pcr_pid,
+                program_ca_descriptors: service.program_ca_descriptors.clone(),
+                es_ca_descriptors: service.es_ca_descriptors.clone(),
             });
         }
 
