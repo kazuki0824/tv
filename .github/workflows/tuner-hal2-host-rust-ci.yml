@@ -6,6 +6,7 @@ on:
       - "tuner_hal2/**/*.rs"
       - "tuner_hal2/**/Cargo.toml"
       - "tuner_hal2/host_ci/Cargo.lock"
+      - "tuner_hal2/host_ci/rust-toolchain.toml"
       - ".github/workflows/tuner-hal2-host-rust-ci.yml"
   push:
     branches: [main]
@@ -13,6 +14,7 @@ on:
       - "tuner_hal2/**/*.rs"
       - "tuner_hal2/**/Cargo.toml"
       - "tuner_hal2/host_ci/Cargo.lock"
+      - "tuner_hal2/host_ci/rust-toolchain.toml"
       - ".github/workflows/tuner-hal2-host-rust-ci.yml"
 
 permissions:
@@ -24,7 +26,6 @@ concurrency:
 
 env:
   CARGO_TARGET_DIR: /tmp/tuner-hal2-host-ci-target
-  RUST_TOOLCHAIN: 1.81.0
 
 jobs:
   host-rustfmt:
@@ -38,9 +39,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: LineageOS 22.1のRust toolchainを導入
-        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
-
       - name: Host harness固有Rustの整形を確認
         shell: bash
         run: |
@@ -50,7 +48,7 @@ jobs:
             exit 0
           fi
           for source in "${sources[@]}"; do
-            rustfmt +"$RUST_TOOLCHAIN" --edition 2021 --check "$source"
+            rustfmt --edition 2021 --check "$source"
           done
 
   production-rustfmt:
@@ -64,9 +62,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: LineageOS 22.1のRust toolchainを導入
-        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
-
       - name: tuner_hal2のhost harness外Rust全体の整形を確認
         shell: bash
         run: |
@@ -78,7 +73,7 @@ jobs:
           )
           test "${#sources[@]}" -gt 0
           for source in "${sources[@]}"; do
-            rustfmt +"$RUST_TOOLCHAIN" --edition 2021 --check "$source"
+            rustfmt --edition 2021 --check "$source"
           done
 
   clippy:
@@ -92,11 +87,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: LineageOS 22.1のRust toolchainを導入
-        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy
-
       - name: Host workspace全体をClippyで検査
-        run: cargo +"$RUST_TOOLCHAIN" clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   compile-contract:
     runs-on: ubuntu-latest
@@ -108,10 +100,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: LineageOS 22.1のRust toolchainを導入
-        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
       - name: ソース契約を確認
-        run: cargo +"$RUST_TOOLCHAIN" test -p maleicacid-tuner-hal2-compile-contract-host-ci --locked
+        run: cargo test -p maleicacid-tuner-hal2-compile-contract-host-ci --locked
 
   check:
     runs-on: ubuntu-latest
@@ -123,10 +113,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: LineageOS 22.1のRust toolchainを導入
-        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
       - name: Type-check production Rust libraries and host crates
-        run: cargo +"$RUST_TOOLCHAIN" check --workspace --lib --locked
+        run: cargo check --workspace --lib --locked
 
   unit-tests:
     runs-on: ubuntu-latest
@@ -138,10 +126,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: LineageOS 22.1のRust toolchainを導入
-        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
       - name: Host workspace全体のunit testsを実行
-        run: cargo +"$RUST_TOOLCHAIN" test --workspace --lib --locked
+        run: cargo test --workspace --lib --locked
 
   demux-record-fmq:
     runs-on: ubuntu-latest
@@ -153,7 +139,5 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: LineageOS 22.1のRust toolchainを導入
-        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
       - name: Run production demux Record FMQ integration test
-        run: cargo +"$RUST_TOOLCHAIN" test -p maleicacid-tuner-hal2-demux-host-ci --test record_filter_fmq --locked
+        run: cargo test -p maleicacid-tuner-hal2-demux-host-ci --test record_filter_fmq --locked
