@@ -62,22 +62,47 @@ def _prepare_agent(
     if not agent_binary.is_file():
         raise ProfileError(f"VTS device agent binary does not exist: {agent_binary}")
     prefix = _adb_prefix(adb, serial)
-    pushed = _run(prefix + ["push", str(agent_binary), PUSHED_REMOTE_AGENT], timeout=30.0)
-    if pushed.returncode != 0:
-        raise ProfileError((pushed.stderr or pushed.stdout or "adb push failed").strip())
-    chmod = _run(prefix + ["shell", "chmod", "0755", PUSHED_REMOTE_AGENT], timeout=10.0)
-    if chmod.returncode != 0:
-        _run(prefix + ["shell", "rm", "-f", PUSHED_REMOTE_AGENT], timeout=10.0)
-        raise ProfileError((chmod.stderr or chmod.stdout or "chmod failed").strip())
+    try:
+        pushed = _run(prefix + ["push", str(agent_binary), PUSHED_REMOTE_AGENT], timeout=30.0)
+        if pushed.returncode != 0:
+            raise ProfileError((pushed.stderr or pushed.stdout or "adb pushが失敗しました").strip())
+        chmod = _run(prefix + ["shell", "chmod", "0755", PUSHED_REMOTE_AGENT], timeout=10.0)
+        if chmod.returncode != 0:
+            raise ProfileError((chmod.stderr or chmod.stdout or "chmodが失敗しました").strip())
+    except BaseException as operation_error:
+        _cleanup_after_operation(adb, serial, True, operation_error)
+        raise
     return PUSHED_REMOTE_AGENT, True
 
 
 def _cleanup_agent(*, adb: str, serial: str | None, pushed: bool) -> None:
     if pushed:
-        _run(
+        removed = _run(
             _adb_prefix(adb, serial) + ["shell", "rm", "-f", PUSHED_REMOTE_AGENT],
             timeout=10.0,
         )
+        if removed.returncode != 0:
+            raise ProfileError(
+                (removed.stderr or removed.stdout or "一時VTS補助プログラムを除去できません").strip()
+            )
+
+
+class AgentCleanupError(ProfileError):
+    def __init__(self, operation_error: BaseException, cleanup_error: ProfileError) -> None:
+        self.operation_error = operation_error
+        self.cleanup_error = cleanup_error
+        super().__init__(f"処理失敗: {operation_error}; 一時配置の除去失敗: {cleanup_error}")
+
+
+def _cleanup_after_operation(
+    adb: str, serial: str | None, pushed: bool, operation_error: BaseException | None
+) -> None:
+    try:
+        _cleanup_agent(adb=adb, serial=serial, pushed=pushed)
+    except ProfileError as cleanup_error:
+        if operation_error is not None:
+            raise AgentCleanupError(operation_error, cleanup_error) from operation_error
+        raise
 
 
 def _agent_start_command(
@@ -460,6 +485,7 @@ def resolve_device(
     remote, pushed = _prepare_agent(
         adb=adb, serial=serial, agent_binary=agent_binary, remote_agent=remote_agent
     )
+    operation_error: BaseException | None = None
     try:
         errors: list[str] = []
         for frequency in _frequencies(original, candidate_index):
@@ -476,12 +502,17 @@ def resolve_device(
                     service_selector=service_selector,
                 )
                 updated = _apply(original, resolved)
-                save_profile(profile_path, updated)
-                return updated
+                break
             except ServiceSelectionRequired:
                 raise
             except ProfileError as exc:
                 errors.append(f"{frequency}: {exc}")
-        raise ProfileError("no candidate resolved successfully: " + "; ".join(errors))
+        else:
+            raise ProfileError("no candidate resolved successfully: " + "; ".join(errors))
+    except BaseException as exc:
+        operation_error = exc
+        raise
     finally:
-        _cleanup_agent(adb=adb, serial=serial, pushed=pushed)
+        _cleanup_after_operation(adb, serial, pushed, operation_error)
+    save_profile(profile_path, updated)
+    return updated

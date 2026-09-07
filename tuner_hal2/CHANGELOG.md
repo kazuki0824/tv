@@ -1,3 +1,10 @@
+# r50eo84_pr85_vts_install_cleanup
+
+- HAL-057: VTS XMLの配置前後に対象ディレクトリを確認し、別名の設定が共存する配置を拒否する。実機のvariantを変更せず、配置済み設定を推測で削除しない。
+- 一時VTS補助プログラムの部分転送・権限設定・除去の失敗を伝播する。処理と除去が両方失敗した場合は双方の例外を保持し、除去完了後だけ解決済みprofileを保存する。
+- HAL-031: 未確定・上限超過profileは既存の検証でadb操作前に拒否することを回帰確認した。現行設計の「installしない」を、検証失敗時に既存端末設定を削除する契約へ拡張しない。
+- Python単体試験88件が成功した。Android/Soong build、atest、VTS、CTS、実機配置は未実施。
+
 # r50eo84_pr85_aidl_service_soong_dead_code_followup
 
 - Android Soongの製品向け`aidl_service`で検出された未使用コードを、警告抑止属性を追加せず整理した。Filter/DVR子objectのcallback登録は現行の`prepare`、Binder object生成、callback artifact確定、runtime確定の経路だけを残し、置換前の直接`retain`入口と中継関数を削除した。Frontend/LNBのcallback登録も、callback store lock下の現行複合transactionから使われない`AidlServiceContext`中継入口を削除した。

@@ -35,7 +35,7 @@ class VtsInstallDeviceTest(unittest.TestCase):
                 patch("vts_profile.install.validated_xml", return_value=_VALIDATED_XML) as validate,
                 patch(
                     "vts_profile.install._run_adb_text",
-                    side_effect=["", "", "", "0", "", ""],
+                    side_effect=["", "", "", "0", "", "", "", "/vendor/etc/tuner_vts_config_aidl_V1.xml"],
                 ) as adb_text,
                 patch(
                     "vts_profile.install._run_adb_bytes",
@@ -67,6 +67,8 @@ class VtsInstallDeviceTest(unittest.TestCase):
                 call("adb-custom", "SERIAL", "wait-for-device"),
                 call("adb-custom", "SERIAL", "shell", "id", "-u"),
                 call("adb-custom", "SERIAL", "remount"),
+                call("adb-custom", "SERIAL", "shell", "find", "/vendor/etc", "-maxdepth", "1",
+                     "-name", "'tuner_vts_config*.xml'", "-print"),
                 call(
                     "adb-custom",
                     "SERIAL",
@@ -74,6 +76,8 @@ class VtsInstallDeviceTest(unittest.TestCase):
                     str(artifact),
                     "/vendor/etc/tuner_vts_config_aidl_V1.xml",
                 ),
+                call("adb-custom", "SERIAL", "shell", "find", "/vendor/etc", "-maxdepth", "1",
+                     "-name", "'tuner_vts_config*.xml'", "-print"),
             ],
         )
         adb_bytes.assert_called_once_with(
@@ -172,7 +176,7 @@ class VtsInstallDeviceTest(unittest.TestCase):
                 patch("vts_profile.install.validated_xml", return_value=_VALIDATED_XML),
                 patch(
                     "vts_profile.install._run_adb_text",
-                    side_effect=["", "", "", "0", "", ""],
+                    side_effect=["", "", "", "0", "", "", ""],
                 ),
                 patch(
                     "vts_profile.install._run_adb_bytes",
@@ -185,6 +189,36 @@ class VtsInstallDeviceTest(unittest.TestCase):
                         hardware_interfaces_root=_HARDWARE_INTERFACES_ROOT,
                         artifact=artifact,
                     )
+
+    def test_other_variant_is_rejected_without_push(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "tuner_vts_config_aidl_V1.xml"
+            artifact.write_text(_VALIDATED_XML, encoding="utf-8")
+            with (
+                patch("vts_profile.install.load_profile", return_value=_profile()),
+                patch("vts_profile.install.validated_xml", return_value=_VALIDATED_XML),
+                patch("vts_profile.install._run_adb_text", side_effect=[
+                    "", "", "", "0", "", "/vendor/etc/tuner_vts_config_aidl_V1.old.xml",
+                ]) as adb_text,
+            ):
+                with self.assertRaisesRegex(ProfileError, "配置が一意ではありません"):
+                    install_device(Path("profile.json"),
+                                   hardware_interfaces_root=_HARDWARE_INTERFACES_ROOT,
+                                   artifact=artifact)
+        self.assertFalse(any("push" in args.args for args in adb_text.call_args_list))
+
+    def test_invalid_profile_is_rejected_without_device_mutation(self) -> None:
+        for reason in ("未確定", "資源上限超過"):
+            with (
+                self.subTest(reason=reason),
+                patch("vts_profile.install.load_profile", return_value=_profile()),
+                patch("vts_profile.install.validated_xml", side_effect=ProfileError(reason)),
+                patch("vts_profile.install._run_adb_text") as adb_text,
+            ):
+                with self.assertRaisesRegex(ProfileError, reason):
+                    install_device(Path("profile.json"),
+                                   hardware_interfaces_root=_HARDWARE_INTERFACES_ROOT)
+                adb_text.assert_not_called()
 
     def test_adb_execution_failure_is_reported(self) -> None:
         failed = subprocess.CompletedProcess(

@@ -125,8 +125,26 @@ def install_device(
     _run_adb_text(adb, serial, "remount")
 
     remote_path = f"{VENDOR_CONFIG_DIR}/{filename}"
+    _check_installed_configs(adb, serial, remote_path, require_present=False)
     _run_adb_text(adb, serial, "push", str(artifact_path), remote_path)
     observed = _run_adb_bytes(adb, serial, "exec-out", "cat", remote_path)
     if observed != expected:
         raise ProfileError(f"device readback does not match compiled artifact at {remote_path}")
+    _check_installed_configs(adb, serial, remote_path, require_present=True)
     return remote_path
+
+
+def _check_installed_configs(
+    adb: str, serial: str | None, remote_path: str, *, require_present: bool
+) -> None:
+    listing = _run_adb_text(
+        adb, serial, "shell", "find", VENDOR_CONFIG_DIR, "-maxdepth", "1",
+        "-name", "'tuner_vts_config*.xml'", "-print",
+    )
+    paths = set(listing.splitlines())
+    expected = {remote_path}
+    if not paths.issubset(expected) or (require_present and paths != expected):
+        raise ProfileError(
+            f"VTS設定XMLの配置が一意ではありません: expected={remote_path}, "
+            f"observed={sorted(paths)}"
+        )
