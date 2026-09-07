@@ -1118,6 +1118,7 @@ mod tests {
     fn px4_demod_lock_status_is_exposed_from_current_readback_snapshot() {
         let px4 = ObjectFrontendStatusSnapshot {
             backend: FrontendBackendKind::Px4CharDevice,
+            system: FrontendSystem::IsdbT,
             lnb_profile: None,
             runtime_state: FrontendRuntimeState::Tuning { generation: 7 },
             signal_state: FrontendSignalState::Locked,

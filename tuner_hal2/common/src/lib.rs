@@ -603,6 +603,9 @@ impl HalErrorDetail {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HalError {
+    NotInitialized {
+        resource: &'static str,
+    },
     DeviceMissing(PathBuf),
     OpenFailed {
         path: PathBuf,
@@ -795,6 +798,9 @@ fn display_path(path: &Option<PathBuf>) -> String {
 impl fmt::Display for HalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            HalError::NotInitialized { resource } => {
+                write!(f, "依存資源が未初期化です: {resource}")
+            }
             HalError::DeviceMissing(path) => write!(f, "device not found: {}", path.display()),
             HalError::OpenFailed { path, detail } => write!(
                 f,

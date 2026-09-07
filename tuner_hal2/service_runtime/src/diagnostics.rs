@@ -403,6 +403,7 @@ pub enum DvrPostCommitNotificationPhase {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DvrPostCommitNotificationFailureKind {
+    PostDeliveryCommit,
     CallbackArtifactLookup,
     RuntimePolicySkip,
     EventConversion,
@@ -1212,6 +1213,7 @@ impl CallbackArtifactRuntimeSplitDiagnosticRecord {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FilterCallbackDeliveryDiagnosticPhase {
+    PostDeliveryCommit,
     EventDelivery,
     CallbackRegistryAccounting,
     RuntimeCallbackAccounting,

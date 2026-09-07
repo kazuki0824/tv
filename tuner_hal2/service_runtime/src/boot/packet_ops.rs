@@ -159,7 +159,6 @@ impl TunerServiceRuntime {
             self.record_descrambler_packet_diagnostics(demux_id.0, demux_generation, &report);
             reports.push(report);
         }
-        crate::worker_runtime::notify_filter_delivery_change();
         Ok(reports)
     }
 

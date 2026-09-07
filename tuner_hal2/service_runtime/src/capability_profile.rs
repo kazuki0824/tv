@@ -79,6 +79,7 @@ pub fn failure_domain(error: &HalError) -> RuntimeFailureDomain {
         HalError::OutOfMemory { .. } => RuntimeFailureDomain::ResourceExhausted,
         HalError::InvalidArgument { .. } => RuntimeFailureDomain::ClientArgument,
         HalError::InvalidState { .. } => RuntimeFailureDomain::ObjectState,
+        HalError::NotInitialized { .. } => RuntimeFailureDomain::ObjectState,
         HalError::Unsupported(_) | HalError::UnsupportedDetail { .. } => {
             RuntimeFailureDomain::UnsupportedByDesign
         }

@@ -278,11 +278,27 @@ pub enum FilterEventDelivery {
 }
 
 pub trait FilterEventDispatcher: Send + Sync {
+    fn wake(&self) -> Result<(), HalError>;
     fn dispatch(
         &self,
         runtime: &Arc<Mutex<TunerServiceRuntime>>,
         events: Vec<FilterEventDeliverySnapshot>,
     ) -> Result<(), HalError>;
+}
+
+pub fn notify_filter_delivery_change(
+    runtime: &Arc<Mutex<TunerServiceRuntime>>,
+) -> Result<(), HalError> {
+    let dispatcher = runtime
+        .lock()
+        .map_err(|_| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "Filter配送の起床先取得時にruntime lockがpoisonされています",
+            )
+        })?
+        .filter_event_dispatcher()?;
+    dispatcher.wake()
 }
 
 #[derive(Clone)]
@@ -339,10 +355,20 @@ impl FrontendLivePacketSink for FrontendDemuxPacketSink {
                 runtime.push_frontend_ts_packet_to_bound_demuxes(self.frontend_id, packet)?;
             runtime.filter_event_delivery_snapshots(&reports)
         };
-        if events.is_empty() {
-            return Ok(());
+        let wake_result = self.dispatcher.wake();
+        let delivery_result = if events.is_empty() {
+            Ok(())
+        } else {
+            self.dispatcher.dispatch(&self.runtime, events)
+        };
+        match (wake_result, delivery_result) {
+            (Ok(()), result) | (result, Ok(())) => result,
+            (Err(wake_error), Err(delivery_error)) => Err(compose_primary_cleanup_failure(
+                "filter worker wake and immediate delivery failed",
+                wake_error,
+                delivery_error,
+            )),
         }
-        self.dispatcher.dispatch(&self.runtime, events)
     }
 }
 
@@ -702,6 +728,7 @@ impl CallbackRegistrationArtifactOutcome {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CallbackDeliveryFailurePhase {
+    PostDeliveryCommit,
     CallbackArtifactLookup,
     RuntimePolicySkip,
     EventConversion,
@@ -827,6 +854,9 @@ pub(crate) fn filter_callback_failure_diagnostic_phase(
     phase: CallbackDeliveryFailurePhase,
 ) -> FilterCallbackDeliveryDiagnosticPhase {
     match phase {
+        CallbackDeliveryFailurePhase::PostDeliveryCommit => {
+            FilterCallbackDeliveryDiagnosticPhase::PostDeliveryCommit
+        }
         CallbackDeliveryFailurePhase::CallbackArtifactLookup
         | CallbackDeliveryFailurePhase::RuntimePolicySkip
         | CallbackDeliveryFailurePhase::NotifierCleanup
@@ -847,6 +877,9 @@ pub(crate) fn frontend_callback_failure_diagnostic_phase(
     phase: CallbackDeliveryFailurePhase,
 ) -> FrontendCallbackDeliveryDiagnosticPhase {
     match phase {
+        CallbackDeliveryFailurePhase::PostDeliveryCommit => {
+            FrontendCallbackDeliveryDiagnosticPhase::ScanSessionAccounting
+        }
         CallbackDeliveryFailurePhase::CallbackArtifactLookup
         | CallbackDeliveryFailurePhase::RuntimePolicySkip
         | CallbackDeliveryFailurePhase::NotifierCleanup
@@ -867,6 +900,9 @@ pub(crate) fn dvr_post_commit_notification_failure_kind(
     phase: CallbackDeliveryFailurePhase,
 ) -> DvrPostCommitNotificationFailureKind {
     match phase {
+        CallbackDeliveryFailurePhase::PostDeliveryCommit => {
+            DvrPostCommitNotificationFailureKind::PostDeliveryCommit
+        }
         CallbackDeliveryFailurePhase::CallbackArtifactLookup => {
             DvrPostCommitNotificationFailureKind::CallbackArtifactLookup
         }
@@ -1821,11 +1857,8 @@ impl TunerServiceRuntime {
         self.filter_event_dispatcher
             .as_ref()
             .map(FilterEventDispatcherHandle::dispatcher)
-            .ok_or_else(|| {
-                HalError::callback_failed(
-                    "IFilterCallback.onFilterEvent",
-                    "filter event dispatcher is not installed for this runtime",
-                )
+            .ok_or(HalError::NotInitialized {
+                resource: "Filter event dispatcher",
             })
     }
 

@@ -5,6 +5,7 @@ use crate::worker_runtime::WorkerTerminalResult;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkerFailureCategory {
+    CallbackCommit,
     CallbackArtifact,
     CallbackPolicy,
     CallbackConversion,
@@ -75,6 +76,9 @@ impl WorkerFailureClassifier {
         report: CallbackDeliveryFailureReport,
     ) -> ClassifiedCallbackFailure {
         let category = match report.phase() {
+            CallbackDeliveryFailurePhase::PostDeliveryCommit => {
+                WorkerFailureCategory::CallbackCommit
+            }
             CallbackDeliveryFailurePhase::CallbackArtifactLookup => {
                 WorkerFailureCategory::CallbackArtifact
             }

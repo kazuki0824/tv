@@ -7,6 +7,7 @@ pub enum TunerStatusCode {
     Ok,
     InvalidArgument,
     InvalidState,
+    NotInitialized,
     Unavailable,
     OutOfMemory,
     UnknownError,
@@ -120,6 +121,7 @@ impl AidlStatusMapper {
             HalError::ComposedFailure { primary, .. } => Self::map_error(primary),
             HalError::InvalidArgument { .. } => TunerStatusCode::InvalidArgument,
             HalError::InvalidState { .. } => TunerStatusCode::InvalidState,
+            HalError::NotInitialized { .. } => TunerStatusCode::NotInitialized,
             HalError::Unsupported(_) | HalError::UnsupportedDetail { .. } => {
                 TunerStatusCode::Unavailable
             }
@@ -307,6 +309,41 @@ mod tests {
                 AidlApi::FilterConfigure,
                 &failures,
                 true
+            ),
+            Some(TunerStatusCode::InvalidState)
+        );
+    }
+
+    #[test]
+    fn dependency_initialization_has_its_own_status_and_preserves_lifetime_precedence() {
+        let missing = HalError::NotInitialized {
+            resource: "依存資源",
+        };
+        assert_eq!(
+            AidlStatusMapper::map_error(&missing),
+            TunerStatusCode::NotInitialized
+        );
+        let composed = HalError::composed_failure(
+            "依存初期化",
+            missing.clone(),
+            HalError::cleanup_failed("資源", "後始末失敗"),
+        );
+        assert_eq!(
+            AidlStatusMapper::map_error(&composed),
+            TunerStatusCode::NotInitialized
+        );
+        let closed = HalError::invalid_state(
+            maleicacid_tuner_hal2_common::HalInvalidStateKind::InvalidLifecycle,
+            "閉鎖済み",
+        );
+        assert_eq!(
+            AidlStatusMapper::resolve_failure_by_precedence(
+                AidlApi::FilterConfigure,
+                &[
+                    AidlFailureSource::RuntimeDispatch(missing),
+                    AidlFailureSource::ObjectLifetime(closed)
+                ],
+                false,
             ),
             Some(TunerStatusCode::InvalidState)
         );

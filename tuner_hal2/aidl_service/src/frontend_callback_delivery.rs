@@ -22,6 +22,15 @@ fn frontend_scan_end_fallback_record(
     primary: HalError,
 ) -> FrontendCallbackDeliveryDiagnosticRecord {
     match phase {
+        CallbackDeliveryFailurePhase::PostDeliveryCommit => {
+            FrontendCallbackDeliveryDiagnosticRecord::scan_session_accounting(
+                handle.object_id(),
+                handle.generation(),
+                frontend_id,
+                scan_generation,
+                primary,
+            )
+        }
         CallbackDeliveryFailurePhase::CallbackArtifactLookup
         | CallbackDeliveryFailurePhase::RuntimePolicySkip
         | CallbackDeliveryFailurePhase::NotifierCleanup

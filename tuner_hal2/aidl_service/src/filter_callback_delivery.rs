@@ -16,11 +16,10 @@ use maleicacid_tuner_hal2_demux::{
     RECORD_SC_TYPE_SC_HEVC, RECORD_SC_TYPE_SC_VVC,
 };
 use maleicacid_tuner_hal2_service_runtime::{
-    filter_delivery_wake_sequence, notify_filter_delivery_change, wait_filter_delivery_change,
     CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport,
     FilterCallbackDeliveryDiagnosticPhase, FilterCallbackDeliveryDiagnosticRecord,
     FilterEventDelivery, FilterEventDeliverySnapshot, FilterEventDispatcher, TunerServiceRuntime,
-    WorkerRuntime,
+    WorkerRuntime, WorkerWake,
 };
 
 use crate::object_handle::AidlObjectHandle;
@@ -52,8 +51,8 @@ impl AidlFilterEventDispatcher {
             "maleicacid-filter-delay-delivery".to_string(),
             0,
             1,
-            move |stop| run_filter_delay_delivery(worker_context, stop),
-            notify_filter_delivery_change,
+            move |stop, wake| run_filter_delay_delivery(worker_context, stop, wake),
+            || {},
         )
         .map_err(|error| {
             HalError::internal(
@@ -79,7 +78,6 @@ impl Drop for AidlFilterEventDispatcher {
     fn drop(&mut self) {
         if let Some(worker) = self.delay_worker.as_ref() {
             worker.request_stop_and_wake();
-            notify_filter_delivery_change();
         }
     }
 }
@@ -98,12 +96,12 @@ pub(crate) fn dispatch_filter_event_snapshots(
 fn run_filter_delay_delivery(
     weak_context: Weak<AidlServiceContext>,
     stop: Arc<std::sync::atomic::AtomicBool>,
+    wake: WorkerWake,
 ) -> Result<(), HalError> {
     loop {
         if stop.load(std::sync::atomic::Ordering::Acquire) {
             return Ok(());
         }
-        let observed = filter_delivery_wake_sequence();
         let Some(context) = weak_context.upgrade() else {
             return Ok(());
         };
@@ -126,7 +124,7 @@ fn run_filter_delay_delivery(
         if stop.load(std::sync::atomic::Ordering::Acquire) {
             return Ok(());
         }
-        let _ = wait_filter_delivery_change(observed, deadline);
+        wake.wait_until(deadline)?;
     }
 }
 
@@ -285,6 +283,9 @@ fn filter_callback_diagnostic_phase(
     phase: CallbackDeliveryFailurePhase,
 ) -> FilterCallbackDeliveryDiagnosticPhase {
     match phase {
+        CallbackDeliveryFailurePhase::PostDeliveryCommit => {
+            FilterCallbackDeliveryDiagnosticPhase::PostDeliveryCommit
+        }
         CallbackDeliveryFailurePhase::CallbackArtifactLookup
         | CallbackDeliveryFailurePhase::RuntimePolicySkip
         | CallbackDeliveryFailurePhase::NotifierCleanup
@@ -339,6 +340,15 @@ fn finish_filter_callback_delivery_failure(
 }
 
 impl FilterEventDispatcher for AidlFilterEventDispatcher {
+    fn wake(&self) -> Result<(), HalError> {
+        self.delay_worker
+            .as_ref()
+            .ok_or(HalError::NotInitialized {
+                resource: "Filter delay worker",
+            })?
+            .wake()
+    }
+
     fn dispatch(
         &self,
         runtime: &Arc<Mutex<TunerServiceRuntime>>,
@@ -462,7 +472,13 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
                         )
                     });
                 if let Err(error) = commit_result {
-                    failures.push_error(error);
+                    failures.push_result(finish_filter_callback_delivery_failure(
+                        &context,
+                        runtime,
+                        handle,
+                        CallbackDeliveryFailurePhase::PostDeliveryCommit,
+                        error,
+                    ));
                     start_id_blocked.insert(delivery_key);
                 }
             }
@@ -478,6 +494,46 @@ mod tests {
     use maleicacid_tuner_hal2_demux::{
         AvDataId, AvMediaEventDescriptor, AvMediaEventMetadata, AvSlotId,
     };
+
+    #[test]
+    fn post_delivery_commit_failure_survives_runtime_poison_in_fallback_diagnostics() {
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let context = AidlServiceContext::from_shared_runtime_for_test(Arc::clone(&runtime));
+        let poisoned = Arc::clone(&runtime);
+        assert!(std::thread::spawn(move || {
+            let _guard = poisoned.lock().unwrap();
+            panic!("状態確定時のpoisonを注入");
+        })
+        .join()
+        .is_err());
+        let handle = AidlObjectHandle::new(
+            AidlObjectKind::Filter,
+            AidlObjectId(31),
+            AidlObjectGeneration(4),
+        );
+        let primary = HalError::internal(HalInternalKind::InvariantViolation, "startId確定失敗");
+        let error = finish_filter_callback_delivery_failure(
+            &context,
+            &runtime,
+            handle,
+            CallbackDeliveryFailurePhase::PostDeliveryCommit,
+            primary.clone(),
+        )
+        .unwrap_err();
+        assert_eq!(error, primary);
+        let snapshot = context
+            .filter_callback_delivery_diagnostic_snapshot()
+            .unwrap();
+        assert_eq!(snapshot.records().len(), 1);
+        assert_eq!(
+            snapshot.records()[0].phase,
+            FilterCallbackDeliveryDiagnosticPhase::PostDeliveryCommit
+        );
+        assert_eq!(snapshot.records()[0].object_id, handle.object_id());
+        assert_eq!(snapshot.records()[0].generation, handle.generation());
+        assert_eq!(snapshot.records()[0].error, primary);
+        assert!(runtime.is_poisoned());
+    }
 
     fn snapshot(event: FilterEventDelivery) -> FilterEventDeliverySnapshot {
         FilterEventDeliverySnapshot {

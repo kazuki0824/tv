@@ -1,3 +1,10 @@
+# r50eo84_pr85_worker_wake_failure_boundaries
+
+- F-01/F-02/HAL-039: Filter遅延配送のグローバル起床状態と循環番号を廃止し、正規WorkerRuntimeが保持する専用の起床状態とCondvarへ接続した。通知が待機より先に到着しても保持し、停止要求でも待機を解除する。
+- F-03: queueのpoisonを解除せず受付を拒否する。F-06: 配送後startId確定の失敗を、runtimeがpoisonされた場合もfallback診断へ残す。
+- HAL-005: 未初期化依存をNOT_INITIALIZEDへ写像する。HAL-046: DescramblerPidTxnからraw runtimeへ到達するDeref/DerefMutを除いた。
+- Rust 1.81のhost workspace単体試験444件、Clippyが成功した。実status moduleを用いた9件の試験も成功した。Android/Soong build、atest、VTS、CTS、実機確認は未実施。
+
 # r50eo84_pr85_pes_completion_boundary
 
 - HAL-019: 長さ0のPESは、同一PIDの次PUSIに続く有効なPESヘッダーを検証してから完成させる。次ヘッダーの分割は最大264バイトの保留へ保持し、不正ヘッダー・別PID・未完成の次ヘッダーを完成根拠にしない。

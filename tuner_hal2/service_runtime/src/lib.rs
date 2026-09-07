@@ -35,6 +35,7 @@ mod transaction_registry;
 mod worker_failure_classifier;
 mod worker_runtime;
 
+pub use boot::notify_filter_delivery_change;
 pub use boot::{
     start_frontend_demux_live_pump_from_reader, CallbackArtifactCleanupResult,
     CallbackArtifactResetCommand, CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport,
@@ -132,9 +133,8 @@ pub use root_method_txn::{
 pub use root_object_ops::RootOpenTxn;
 pub use worker_failure_classifier::{ClassifiedWorkerTerminalResult, WorkerFailureCategory};
 pub use worker_runtime::{
-    filter_delivery_wake_sequence, join_worker_classified, notify_filter_delivery_change,
-    wait_filter_delivery_change, WorkerHandle, WorkerRuntime, WorkerRuntimeReaperQueue,
-    WorkerRuntimeSupervisor, WorkerTerminalResult, CLEANUP_RETRY_SCHEDULE_MS,
+    join_worker_classified, WorkerHandle, WorkerRuntime, WorkerRuntimeReaperQueue,
+    WorkerRuntimeSupervisor, WorkerTerminalResult, WorkerWake, CLEANUP_RETRY_SCHEDULE_MS,
     CLEANUP_TERMINAL_DEADLINE_MS, WORKER_IO_DEADLINE_MS, WORKER_REAPER_DEADLINE_MS,
 };
 #[cfg(test)]
@@ -295,6 +295,10 @@ mod tests {
     struct NoopFilterEventDispatcher;
 
     impl FilterEventDispatcher for NoopFilterEventDispatcher {
+        fn wake(&self) -> Result<(), HalError> {
+            Ok(())
+        }
+
         fn dispatch(
             &self,
             _runtime: &Arc<Mutex<TunerServiceRuntime>>,

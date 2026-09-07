@@ -442,7 +442,7 @@ fn consume_playback_dvr_once(
             guard.consume_playback_dvr_for_object(handle.object_id(), handle.generation())?;
         guard.filter_event_delivery_snapshots_for_playback_report(&report)
     };
-    maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change();
+    maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change(&runtime)?;
     let _recorded_failure = dispatch_filter_event_snapshots(context, events);
     Ok(())
 }
@@ -883,7 +883,7 @@ fn spawn_dvr_status_notifier(
         ),
         handle.object_id().0,
         handle.generation().0,
-        move |cancel| {
+        move |cancel, _wake| {
             run_dvr_status_notifier_with_terminal_diagnostic(thread_context, handle, cancel)
         },
         move || {
