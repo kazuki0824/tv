@@ -35,9 +35,8 @@ fn resolution_json(payloads: &[(u16, Vec<u8>)]) -> Result<Value, String> {
     for (pid, bytes) in payloads {
         let mut offset = 0usize;
         while offset < bytes.len() {
-            let header = parse_section_header(&bytes[offset..]).ok_or_else(|| {
-                format!("invalid section payload on PID {pid} at byte {offset}")
-            })?;
+            let header = parse_section_header(&bytes[offset..])
+                .ok_or_else(|| format!("invalid section payload on PID {pid} at byte {offset}"))?;
             let end = offset
                 .checked_add(header.total_length)
                 .ok_or_else(|| "section length overflow".to_string())?;

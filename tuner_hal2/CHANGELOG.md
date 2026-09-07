@@ -5,6 +5,7 @@
 - cleanup reaperは未完義務の最新`CleanupStep`をpending registryへ保存し、各試行前にruntimeから再解決するため、`CleanupJob`に重複して保持され、参照されなかった初回dependency fieldを削除した。pending登録値と再解決処理は維持した。
 - 本番から到達せず単体試験だけが使用する旧callback失敗注入補助を`#[cfg(test)]`境界へ隔離した。DVR callback配送試験の直接登録補助も試験専用名と`#[cfg(test)]`境界へ限定した。
 - 監査台帳F-10で指摘された`compile_contract`の本体ソース文字列検査を削除し、`PreparedCallbackArtifactToken`が`Clone`/`Copy`でないことの型検査を所有moduleの単体試験へ移した。Soong testの`srcs`から文字列読取り目的だけの本体source列挙を除き、型検査用依存をAIDL service testへ追加した。
+- #88で拡張されたhost workspace全体の単体試験が製品demuxの単体試験binaryもlinkするようになったため、Androidでは`fmq_shim`が提供する`dmabuf_heap`確保関数について、単体試験時だけ失敗を返すhost定義を追加した。integration testが持つ同じ失敗定義と役割を合わせ、製品buildとintegration testの外部関数解決は変更していない。
 - `git diff --check`と対象symbolの定義・参照検索を実施した。この環境にはRust toolchainとAndroid build treeがないため、Rust 1.81 rustfmt、host build/unit test/Clippy、Android/Soong build、atest、VTS、CTS、実機確認は未実施である。
 
 # r50eo84_pr55_px4_partial_reception_availability_followup
