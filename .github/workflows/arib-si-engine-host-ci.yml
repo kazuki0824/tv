@@ -8,8 +8,7 @@ on:
       - "arib_si_engine_rs/host_ci/Cargo.lock"
       - "arib_si_engine_rs/schema/**/*.json"
       - "arib_si_engine_rs/testdata/**/*.json"
-      - "tis/tests/assets/descriptor_diagnostic_v1/**/*.json"
-      - "tis/tests/assets/program_provider_data_v1/**/*.json"
+      - "tis/tests/assets/**/*.json"
       - ".github/workflows/arib-si-engine-host-ci.yml"
   push:
     branches: [main]
@@ -19,8 +18,7 @@ on:
       - "arib_si_engine_rs/host_ci/Cargo.lock"
       - "arib_si_engine_rs/schema/**/*.json"
       - "arib_si_engine_rs/testdata/**/*.json"
-      - "tis/tests/assets/descriptor_diagnostic_v1/**/*.json"
-      - "tis/tests/assets/program_provider_data_v1/**/*.json"
+      - "tis/tests/assets/**/*.json"
       - ".github/workflows/arib-si-engine-host-ci.yml"
 
 permissions:
