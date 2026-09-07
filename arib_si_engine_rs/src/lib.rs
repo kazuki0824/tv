@@ -20,7 +20,9 @@ use jni::objects::{JByteArray, JObject, JString};
 use jni::sys::{jint, jlong, jstring};
 use jni::JNIEnv;
 use provider_data as provider_data_api;
-use sections::{parse_section_header, section_crc_valid};
+use sections::{
+    parse_section_header, section_crc_valid_with_header, section_has_malformed_descriptor_loop,
+};
 use serde::Serialize;
 use service_discovery::{
     DiscoveredElementaryStream, DiscoveredService, DiscoveryPublishStage,
@@ -89,7 +91,7 @@ impl ParserState {
         self.sections_seen = self.sections_seen.saturating_add(1);
         let table_id = header.table_id;
         if pid == 0x0014 && matches!(table_id, 0x70 | 0x73) {
-            let Some(clock) = parse_broadcast_clock(section) else {
+            let Some(clock) = parse_broadcast_clock(section, &header) else {
                 self.last_status = STATUS_INVALID_SECTION;
                 return STATUS_INVALID_SECTION;
             };
@@ -102,7 +104,7 @@ impl ParserState {
                 self.last_status = STATUS_IGNORED_UNSUPPORTED_PID_OR_TABLE;
                 return STATUS_IGNORED_UNSUPPORTED_PID_OR_TABLE;
             }
-            if header.syntax && !section_crc_valid(section) {
+            if header.syntax && !section_crc_valid_with_header(section, &header) {
                 self.last_status = STATUS_INVALID_SECTION;
                 return STATUS_INVALID_SECTION;
             }
@@ -1192,196 +1194,6 @@ fn parser_diagnostics(
             }),
     );
     diagnostics
-}
-
-fn section_body_end(section: &[u8]) -> Option<usize> {
-    let header = parse_section_header(section)?;
-    if header.section_length < 4 || header.total_length > section.len() {
-        return None;
-    }
-    Some(3 + header.section_length - 4)
-}
-
-fn descriptor_loop_well_formed(bytes: &[u8]) -> bool {
-    let mut cursor = 0usize;
-    while cursor < bytes.len() {
-        if cursor + 2 > bytes.len() {
-            return false;
-        }
-        let len = bytes[cursor + 1] as usize;
-        let Some(next) = cursor.checked_add(2).and_then(|v| v.checked_add(len)) else {
-            return false;
-        };
-        if next > bytes.len() {
-            return false;
-        }
-        cursor = next;
-    }
-    true
-}
-
-fn section_has_malformed_descriptor_loop(
-    pid: u16,
-    table_id: u8,
-    section: &[u8],
-    known_pmt_pid: bool,
-) -> bool {
-    let Some(body_end) = section_body_end(section) else {
-        return true;
-    };
-    match (pid, table_id) {
-        (0x0001, 0x01) => {
-            section.len() < 8 || body_end < 8 || !descriptor_loop_well_formed(&section[8..body_end])
-        }
-        (_, 0x02) if known_pmt_pid => {
-            if section.len() < 12 || body_end < 12 || body_end > section.len() {
-                return true;
-            }
-            let program_info_length = (((section[10] & 0x0f) as usize) << 8) | section[11] as usize;
-            let Some(program_info_end) = 12usize.checked_add(program_info_length) else {
-                return true;
-            };
-            if program_info_end > body_end
-                || !descriptor_loop_well_formed(&section[12..program_info_end])
-            {
-                return true;
-            }
-            let mut cursor = program_info_end;
-            while cursor < body_end {
-                if cursor + 5 > body_end {
-                    return true;
-                }
-                let es_info_length =
-                    (((section[cursor + 3] & 0x0f) as usize) << 8) | section[cursor + 4] as usize;
-                let Some(desc_start) = cursor.checked_add(5) else {
-                    return true;
-                };
-                let Some(desc_end) = desc_start.checked_add(es_info_length) else {
-                    return true;
-                };
-                if desc_end > body_end
-                    || !descriptor_loop_well_formed(&section[desc_start..desc_end])
-                {
-                    return true;
-                }
-                cursor = desc_end;
-            }
-            false
-        }
-        (0x0010, 0x40) | (0x0010, 0x41) => {
-            if section.len() < 10 || body_end < 10 {
-                return true;
-            }
-            let descriptors_length = (((section[8] & 0x0f) as usize) << 8) | section[9] as usize;
-            let Some(network_desc_end) = 10usize.checked_add(descriptors_length) else {
-                return true;
-            };
-            if network_desc_end > body_end
-                || !descriptor_loop_well_formed(&section[10..network_desc_end])
-            {
-                return true;
-            }
-            if network_desc_end + 2 > body_end {
-                return true;
-            }
-            let transport_loop_length = (((section[network_desc_end] & 0x0f) as usize) << 8)
-                | section[network_desc_end + 1] as usize;
-            let mut cursor = network_desc_end + 2;
-            let Some(transport_end) = cursor.checked_add(transport_loop_length) else {
-                return true;
-            };
-            if transport_end > body_end {
-                return true;
-            }
-            while cursor < transport_end {
-                if cursor + 6 > transport_end {
-                    return true;
-                }
-                let desc_len =
-                    (((section[cursor + 4] & 0x0f) as usize) << 8) | section[cursor + 5] as usize;
-                let desc_start = cursor + 6;
-                let Some(desc_end) = desc_start.checked_add(desc_len) else {
-                    return true;
-                };
-                if desc_end > transport_end
-                    || !descriptor_loop_well_formed(&section[desc_start..desc_end])
-                {
-                    return true;
-                }
-                cursor = desc_end;
-            }
-            false
-        }
-        (0x0011, 0x42) | (0x0011, 0x46) => {
-            if section.len() < 11 || body_end < 11 {
-                return true;
-            }
-            let mut cursor = 11usize;
-            while cursor < body_end {
-                if cursor + 5 > body_end {
-                    return true;
-                }
-                let desc_len =
-                    (((section[cursor + 3] & 0x0f) as usize) << 8) | section[cursor + 4] as usize;
-                let desc_start = cursor + 5;
-                let Some(desc_end) = desc_start.checked_add(desc_len) else {
-                    return true;
-                };
-                if desc_end > body_end
-                    || !descriptor_loop_well_formed(&section[desc_start..desc_end])
-                {
-                    return true;
-                }
-                cursor = desc_end;
-            }
-            false
-        }
-        (0x0011, 0x4a) => {
-            if section.len() < 10 || body_end < 10 {
-                return true;
-            }
-            let bouquet_desc_len = (((section[8] & 0x0f) as usize) << 8) | section[9] as usize;
-            let Some(bouquet_desc_end) = 10usize.checked_add(bouquet_desc_len) else {
-                return true;
-            };
-            if bouquet_desc_end > body_end
-                || !descriptor_loop_well_formed(&section[10..bouquet_desc_end])
-            {
-                return true;
-            }
-            if bouquet_desc_end + 2 > body_end {
-                return true;
-            }
-            let transport_loop_length = (((section[bouquet_desc_end] & 0x0f) as usize) << 8)
-                | section[bouquet_desc_end + 1] as usize;
-            let mut cursor = bouquet_desc_end + 2;
-            let Some(transport_end) = cursor.checked_add(transport_loop_length) else {
-                return true;
-            };
-            if transport_end > body_end {
-                return true;
-            }
-            while cursor < transport_end {
-                if cursor + 6 > transport_end {
-                    return true;
-                }
-                let desc_len =
-                    (((section[cursor + 4] & 0x0f) as usize) << 8) | section[cursor + 5] as usize;
-                let desc_start = cursor + 6;
-                let Some(desc_end) = desc_start.checked_add(desc_len) else {
-                    return true;
-                };
-                if desc_end > transport_end
-                    || !descriptor_loop_well_formed(&section[desc_start..desc_end])
-                {
-                    return true;
-                }
-                cursor = desc_end;
-            }
-            false
-        }
-        _ => false,
-    }
 }
 
 fn is_fixed_pid_si_table_for_discovery(pid: u16, table_id: u8) -> bool {

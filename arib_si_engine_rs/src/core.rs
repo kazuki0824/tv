@@ -1,5 +1,7 @@
 #[path = "core/arib_string.rs"]
 pub mod arib_string;
+#[path = "core/broadcast_clock.rs"]
+pub mod broadcast_clock;
 #[path = "core/ca_descriptor.rs"]
 pub mod ca_descriptor;
 #[path = "core/descriptors.rs"]

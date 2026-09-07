@@ -1,3 +1,10 @@
+# r51_pr85_pmt_and_clock_facts
+
+- SI U-08: descriptor loop構文検査をpure coreへ移し、JNIとPMT解析で共有する。不正PMTの部分ES/PCR/CAを正常snapshotへ昇格せず、required PMT完了はPCR有無から独立したPMT構文状態で判定する。
+- SI U-12: PMTが構文的に成立してもprogram/ESの不正CA descriptorがあればcaDescriptorsResolvedをfalseとし、原因診断を残す。SI U-06: Data Component Timing=11のraw値を保持し、reserved診断を意味snapshotへ渡す。
+- SI U-22/SI-015: TDT/TOT解析をpure coreへ移し、JNI入口で得た共通SectionHeaderを長さ・CRC検証まで共有する。TOTのdescriptor loop構文も検証し、壊れた時計事実を公開しない。
+- SI core単体試験149件、JNI単体試験13件が成功した（時計試験3件をJNIからcoreへ移動し、回帰試験5件を追加）。Android実機試験は未実施。
+
 # r51_pr85_provider_boundary_corpus
 
 - SI U-14の既知欄: descriptor診断のmessage文字数、rawPrefixHexの長さ・16進形式、SectionScope識別子の値域を保存境界で検証する。生成側もmessage上限を守る。未知scope keyの設計変更は別のstacked PRで扱う。
