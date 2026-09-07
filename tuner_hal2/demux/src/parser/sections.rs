@@ -214,11 +214,7 @@ impl SectionAssembler {
     }
 
     #[cfg(test)]
-    fn push_payload(
-        &mut self,
-        payload_unit_start: bool,
-        payload: &[u8],
-    ) -> Vec<Vec<u8>> {
+    fn push_payload(&mut self, payload_unit_start: bool, payload: &[u8]) -> Vec<Vec<u8>> {
         self.push_payload_with_reserved_bit_policy(payload_unit_start, payload, true)
     }
 

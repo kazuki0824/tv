@@ -258,8 +258,7 @@ impl SourceBoundaryTxn {
         }
 
         self.record_step(SourceBoundaryStep::StreamBoundary);
-        let stream_boundary_result =
-            demux.apply_filter_source_stream_boundary(self.sink_filter_id);
+        let stream_boundary_result = demux.apply_filter_source_stream_boundary(self.sink_filter_id);
         match stream_boundary_result {
             Ok(reset_report) => self.reset_report = Some(reset_report),
             Err(err) => {
