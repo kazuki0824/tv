@@ -1,3 +1,12 @@
+# r51_pr85_discovery_cas_provider_fixes
+
+- TIS-AUD-01/B-06: BS探索が期限内に完了した場合だけ報告済みstream IDを採用し、呼出し側でも成功判定を確認する。TIS-AUD-06/B-11: backend名に依存するselector拒否を除き、公開Tunerの結果で判定する。
+- TIS-AUD-02/D-08: background maintenanceの既存channel照会失敗を例外としてscan managerへ返す。空の正常結果へ変換しない。
+- TIS-AUD-03/G-05/TIS-047のB1項目: EMM PID収集・登録をB25へ限定し、B1 CATだけでCASを作成しない。B1のECM処理は維持する。
+- TIS-008: listener設定が失敗したTunerをcloseし、cleanup失敗があれば元の例外へ保持する。TIS-036: 保存BLOBをgetBlobの結果のままRustへ渡し、文字列へ補修しない。
+- TIS-048: 既存channelの更新値からCOLUMN_TYPEを除く。TIS-050: short_event本文の未規定な256文字切詰めを除く。TIS-AUD-07/H-14: READMEの規約参照を実在する共通規約へ修正する。
+- CIと同じKotlin 1.9.22・Android 15入力で本番と試験をコンパイルし、実SI JNIを使用するhost JUnit 138件が成功した。既存のコンパイル警告は残る。Android実機のTuner/CAS/Provider統合試験は未実施。
+
 # 未リリース
 
 - helper追加: `MediaSyncFirstOutputBridge`を追加し、platform-privateな`MediaSync.OnFirstVideoFrameQueuedToOutputListener`型とsetterを実行時reflectionで解決して呼び出す。stock platformへの静的hidden API型依存は持たない。

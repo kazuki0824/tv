@@ -168,15 +168,21 @@ class TunerController(
     private val sectionOversizedCounters = linkedMapOf<TsPid, Int>()
     private val playbackPipeline = PlaybackPipeline(inputId, tvInputSessionId, sessionContext)
 
-    private fun createTuner(): Tuner? = try {
-        Tuner(context, tvInputSessionId, useCase).also { created ->
+    private fun createTuner(): Tuner? {
+        var created: Tuner? = null
+        return try {
+            created = Tuner(context, tvInputSessionId, useCase)
             created.setResourceLostListener(sectionExecutor) { callbackTuner ->
                 if (callbackTuner === tuner && !released) handleTunerResourceLostOnController()
             }
+            created
+        } catch (error: RuntimeException) {
+            runCatching { created?.close() }.exceptionOrNull()?.let { cleanup ->
+                if (cleanup !== error) error.addSuppressed(cleanup)
+            }
+            Log.w(LogTags.TIS, "Tuner を利用できません inputId=$inputId tvInputSessionId=$tvInputSessionId useCase=$useCase", error)
+            null
         }
-    } catch (e: RuntimeException) {
-        Log.w(LogTags.TIS, "Tuner を利用できません inputId=$inputId tvInputSessionId=$tvInputSessionId useCase=$useCase", e)
-        null
     }
 
     fun setSectionIngestController(controller: SectionIngestController?) = callOnController { sectionIngestController = controller }
@@ -325,8 +331,8 @@ class TunerController(
         val completed = runCatching { terminal.await(timeoutMs.coerceAtLeast(1L), TimeUnit.MILLISECONDS) }.getOrDefault(false)
         runCatching { tunerInstance.cancelScanning() }
         val snapshot = synchronized(ids) { ids.toSet() }
-        return if (snapshot.isNotEmpty()) {
-            StreamIdDiscoveryResult(true, snapshot, result, if (completed) "" else "scan callback timeout後に報告済みstream IDを採用")
+        return if (completed && snapshot.isNotEmpty()) {
+            StreamIdDiscoveryResult(true, snapshot, result)
         } else {
             StreamIdDiscoveryResult(false, emptySet(), result, if (completed) "stream ID報告なし" else "scan callback timeout")
         }
@@ -836,7 +842,7 @@ class TunerController(
             val displayNumber = cursor.getString(5) ?: key.serviceId.toString()
             val serviceType = cursor.getString(6)?.toIntOrNull()?.takeIf { it in 0..0xff }
                 ?: error("channelのARIB service_typeが不正です")
-            val providerData = providerDataBytes(cursor, 7)
+            val providerData = cursor.getBlob(7)
             val decoded = ProviderDataBridge.decodeChannelProviderData(providerData)
                 ?: error("channel provider data JSON v1を復元できません")
             require(decoded.serviceKey == key) { "channel rowとprovider dataのservice keyが一致しません" }
@@ -864,7 +870,6 @@ class TunerController(
                 .setBandwidth(IsdbtFrontendSettings.BANDWIDTH_6MHZ)
                 .build()
             ChannelRecord.DELIVERY_SYSTEM_ISDB_S -> {
-                require(channel.backendHint != "earth_pt1" || channel.streamSelector.type != StreamSelectorType.RELATIVE) { "earth_pt1 BS では相対 TS 番号を使えません" }
                 require(channel.satelliteBand != "110CS" || channel.streamSelector.type == StreamSelectorType.NONE) { "CS110 は TSID/relative stream selector による frontend 選局を行いません" }
                 IsdbsFrontendSettings.builder()
                 .setFrequencyLong(channel.frequencyHz.value)
@@ -887,9 +892,6 @@ class TunerController(
         }
     }
 
-    private fun providerDataBytes(cursor: android.database.Cursor, index: Int): ByteArray? =
-        runCatching { cursor.getBlob(index) }.getOrNull()
-            ?: runCatching { cursor.getString(index)?.toByteArray(Charsets.UTF_8) }.getOrNull()
 
     fun release() {
         if (released) return

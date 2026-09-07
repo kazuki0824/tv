@@ -42,6 +42,39 @@ class CasControllerStateTest {
         check(controller.lastDiagnostic().state == CasController.State.IDLE)
     }
 
+    @Test fun b1CatDoesNotCreateCasOrEmmBinding() {
+        val factory = FakeMediaCasBridgeFactory()
+        CasController(mediaCasFactory = factory).use { controller ->
+            val metadata = b25Metadata(TsPid(0x101), TsPid(0x123), TsPid(0x010))
+                .filter { it.source == CaMetadataSource.CAT }
+                .map { it.copy(caSystemId = CasController.SupportedCasSystemIds.ARIB_STD_B1) }
+            val update = controller.updateFromCaMetadata(metadata)
+            check(update.emmPids.isEmpty())
+            check(update.diagnostics.isEmpty())
+            check(controller.onEmmSection(TsPid(0x010), byteArrayOf(0x82.toByte())).isEmpty())
+            check(factory.created.isEmpty())
+        }
+    }
+
+    @Test fun sharedEmmPidOnlyDispatchesToB25WhileB1EcmRemainsUsable() {
+        val factory = FakeMediaCasBridgeFactory()
+        val descrambler = FakeTunerDescramblerBridge()
+        CasController(mediaCasFactory = factory).use { controller ->
+            val b1 = b25Metadata(TsPid(0x102), TsPid(0x124), TsPid(0x010))
+                .map { it.copy(caSystemId = CasController.SupportedCasSystemIds.ARIB_STD_B1) }
+            val update = controller.updateFromCaMetadata(
+                b25Metadata(TsPid(0x101), TsPid(0x123), TsPid(0x010)) + b1,
+                descrambler,
+            )
+            check(update.diagnostics.isEmpty())
+            check(controller.onEmmSection(TsPid(0x010), byteArrayOf(0x82.toByte())).isEmpty())
+            check(factory.created.getValue(CasController.SupportedCasSystemIds.ARIB_STD_B25).processedEmmCount == 1)
+            check(factory.created.getValue(CasController.SupportedCasSystemIds.ARIB_STD_B1).processedEmmCount == 0)
+            check(controller.onEcmSection(TsPid(0x124), byteArrayOf(0x80.toByte())).isEmpty())
+            check(0x102 in descrambler.addedPids)
+        }
+    }
+
     @Test fun unsupportedSystemIdIsError() {
         val controller = CasController(mediaCasFactory = FakeMediaCasBridgeFactory())
         val result = controller.updateFromCaMetadata(

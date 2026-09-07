@@ -160,7 +160,7 @@ class CurrentProgramRatingResolver(private val context: Context) {
         try {
             cursor.use { current ->
                 while (current.moveToNext()) {
-                    val providerData = providerDataBytes(current, 5)
+                    val providerData = current.getBlob(5)
                     if (TvProviderWriter.providerDataMatchesService(providerData, serviceKey)) {
                         candidates += Candidate(
                             rowId = current.getLong(0),
@@ -197,9 +197,6 @@ class CurrentProgramRatingResolver(private val context: Context) {
         return TvProviderLookupResult.Success(ratingSet)
     }
 
-    private fun providerDataBytes(cursor: android.database.Cursor, index: Int): ByteArray? =
-        runCatching { cursor.getBlob(index) }.getOrNull()
-            ?: runCatching { cursor.getString(index)?.toByteArray(Charsets.UTF_8) }.getOrNull()
 
     private fun fromLatestEit(
         channelUri: Uri?,

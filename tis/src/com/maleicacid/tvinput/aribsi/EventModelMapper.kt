@@ -26,7 +26,7 @@ class EventModelMapper {
                 durationMillis = event.durationMillis,
                 title = event.title,
                 description = providerDescription(event),
-                shortDescription = event.description.take(256),
+                shortDescription = event.description,
                 canonicalGenres = canonicalGenresFromContentGenres(event.descriptors.contentGenres),
                 descriptors = ProgramDescriptors(
                     shortEvents = event.descriptors.shortEvents,

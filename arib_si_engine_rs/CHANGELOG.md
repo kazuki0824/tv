@@ -1,3 +1,8 @@
+# r51_pr85_convention_reference
+
+- SI U-23: READMEから存在しないmodule固有CODE_CONVENTION.mdへの参照を除き、実在するGLOBAL_CODE_CONVENTION.mdへ接続する。
+- 参照先が実在することを確認した。
+
 # r50ef_review_followup_4
 
 - Program provider-dataから派生表示値`freeCaMode.text`とrelease固有component診断を除去し、production builder出力とschema検証fixtureを同じ値へ固定した。

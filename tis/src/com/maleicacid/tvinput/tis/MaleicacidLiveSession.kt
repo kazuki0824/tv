@@ -295,7 +295,7 @@ class MaleicacidLiveSession(
         val serviceCaMetadata = expanded.filter { it.serviceKey == serviceKey }
         val caMetadata = expanded.filter { it.serviceKey == null || it.serviceKey == serviceKey }
         val ecmPids = caMetadata.mapNotNull { it.ecmPid }.toSet()
-        val emmPids = caMetadata.mapNotNull { it.emmPid }.toSet()
+        val emmPids = caMetadata.filter { CasController.SupportedCasSystemIds.supportsEmm(it.caSystemId) }.mapNotNull { it.emmPid }.toSet()
         tunerController.updateDynamicSectionFiltersForService(serviceKey, pmtPids, ecmPids, emmPids, currentGeneration)
 
         publishLiveProgramsForCurrentService()

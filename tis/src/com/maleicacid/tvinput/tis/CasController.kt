@@ -110,6 +110,7 @@ class CasController(
                     esBindings += EsCaBinding(serviceKey.toString(), ca.caSystemId, ecmPid, elementaryPid, ca.privateData.copyOf())
                 }
                 CaMetadataSource.CAT -> {
+                    if (!SupportedCasSystemIds.supportsEmm(ca.caSystemId)) return@forEach
                     val emmPid = ca.emmPid ?: return@forEach
                     emmBindings += EmmBinding(ca.caSystemId, emmPid, ca.privateData.copyOf())
                 }
@@ -266,6 +267,7 @@ class CasController(
         const val ARIB_STD_B25 = 0x0005
         const val ARIB_STD_B1 = 0x0001
         val B25_B1: Set<Int> = setOf(ARIB_STD_B25, ARIB_STD_B1)
+        fun supportsEmm(caSystemId: Int): Boolean = caSystemId == ARIB_STD_B25
     }
 }
 

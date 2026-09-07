@@ -69,6 +69,7 @@ class TvProviderWriter private constructor(
                 if (insertedIdResult.isFailure) { failures += Diagnostic(channel.serviceKey, "insert", insertedIdResult.exceptionOrNull()?.message.orEmpty()); return@forEach }
                 if (insertedIdResult.getOrNull() == null) failures += Diagnostic(channel.serviceKey, "insert", "provider が null URI を返しました") else inserted++
             } else {
+                values.remove(TvContract.Channels.COLUMN_TYPE)
                 val updateResult = channelStore.updateChannel(existingId, values)
                 if (updateResult.isFailure) { failures += Diagnostic(channel.serviceKey, "update", updateResult.exceptionOrNull()?.message.orEmpty()); return@forEach }
                 if (updateResult.getOrNull() == null || updateResult.getOrNull()!! <= 0) failures += Diagnostic(channel.serviceKey, "update", "provider 更新対象行なし id=$existingId") else updated++
