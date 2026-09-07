@@ -1,3 +1,9 @@
+# r51_pr85_provider_boundary_corpus
+
+- SI U-14の既知欄: descriptor診断のmessage文字数、rawPrefixHexの長さ・16進形式、SectionScope識別子の値域を保存境界で検証する。生成側もmessage上限を守る。未知scope keyの設計変更は別のstacked PRで扱う。
+- SI-014: 不正UTF-8、JSON破損、必須欄欠落、禁止派生欄、診断上限、識別子・周波数・CS110 selectorの15ケースをRust、実JNIを使用するKotlin、JSON Schemaで共用し、fixtureのbyte一致をCIで検査する。
+- SI core単体試験141件、JNI単体試験16件、共通corpusのJSON Schema検証15件、TIS host JUnit144件が成功した。Android実機試験は未実施。
+
 # r51_pr85_descriptor_language_channel_validation
 
 - SI U-25: component/audio componentのISO 639固定欄を3文字のASCII英字として検証する。不正な主・副言語は正常metadataへ昇格せず、元のdescriptor範囲とUnsupportedValue診断を残す。長さ不正とは区別する。

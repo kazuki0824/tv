@@ -1,3 +1,8 @@
+# r51_pr85_provider_boundary_corpus
+
+- SI-014: provider-data共通境界fixtureを実JNI経由で検証し、Program正規化・キー抽出・Channel復号の拒否条件をRustとJSON Schemaへ合わせる。既存のasset契約試験もhost CIへ追加する。
+- Kotlin本番/試験コンパイルとhost JUnit144件が成功した。Android実機試験は未実施。
+
 # r51_pr85_clock_section_crc
 
 - TIS-AUD-04/F-02: PID 0x14をTDT(table_id=0x70)とTOT(0x73)の完全一致filterへ分割し、TDTだけCRC検証を無効とする。TOTはTunerのCRC検証とRust側検証を両方通す。

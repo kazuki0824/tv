@@ -1614,7 +1614,7 @@ fn descriptor_diagnostic_model(
             parse_status: d.parse_status.as_str().to_string(),
             raw_prefix_hex: hex_prefix(&d.raw_prefix, 16),
         },
-        message: d.message.clone(),
+        message: d.message.chars().take(256).collect(),
     }
 }
 

@@ -1021,6 +1021,27 @@ fn valid_descriptor_diagnostic(item: &DescriptorDiagnosticV1) -> bool {
         && item.descriptor.declared_length <= 255
         && item.descriptor.actual_remaining_length >= 0
         && !item.descriptor.parse_status.is_empty()
+        && item.message.chars().count() <= 256
+        && item.descriptor.raw_prefix_hex.len() <= 128
+        && valid_hex(&item.descriptor.raw_prefix_hex)
+        && valid_section_scope(&item.scope)
+}
+
+fn valid_section_scope(scope: &SectionScopeV1) -> bool {
+    let bounded = |value: Option<i64>, maximum| {
+        value
+            .map(|value| (0..=maximum).contains(&value))
+            .unwrap_or(true)
+    };
+    bounded(scope.pid, 8191)
+        && bounded(scope.table_id, 255)
+        && bounded(scope.table_id_extension, 65535)
+        && bounded(scope.version, 31)
+        && bounded(scope.section_number, 255)
+        && bounded(scope.original_network_id, 65535)
+        && bounded(scope.transport_stream_id, 65535)
+        && bounded(scope.service_id, 65535)
+        && bounded(scope.event_id, 65535)
 }
 
 fn valid_program_provider_data(data: &ProgramProviderDataV1) -> bool {
@@ -1471,6 +1492,50 @@ fn finalize_channel(mut data: ChannelProviderDataV1) -> ProviderDataResult {
 #[cfg(test)]
 mod provider_data_tests {
     use super::*;
+
+    #[test]
+    fn shared_boundary_corpus_matches_normalization_and_key_extraction() {
+        #[derive(Deserialize)]
+        struct Case {
+            name: String,
+            boundary: String,
+            encoding: String,
+            data: String,
+            accepted: bool,
+        }
+        let cases: Vec<Case> = serde_json::from_str(include_str!(
+            "../../testdata/provider_data_boundary_v1/cases.json"
+        ))
+        .unwrap();
+        for case in cases {
+            let bytes = match case.encoding.as_str() {
+                "UTF8" => case.data.as_bytes().to_vec(),
+                "HEX" => case
+                    .data
+                    .as_bytes()
+                    .chunks_exact(2)
+                    .map(|chunk| {
+                        u8::from_str_radix(std::str::from_utf8(chunk).unwrap(), 16).unwrap()
+                    })
+                    .collect(),
+                other => panic!("未知のfixture符号化: {other}"),
+            };
+            let accepted = match case.boundary.as_str() {
+                "PROGRAM" => {
+                    assert_eq!(
+                        extract_program_key_result(&bytes).is_some(),
+                        case.accepted,
+                        "{}: key extraction",
+                        case.name
+                    );
+                    normalize_program_provider_data(&bytes).success
+                }
+                "CHANNEL" => !decode_channel_provider_data(&bytes).is_empty(),
+                other => panic!("未知のfixture境界: {other}"),
+            };
+            assert_eq!(accepted, case.accepted, "{}", case.name);
+        }
+    }
 
     fn minimal_channel_request(extra_top_level: &str, stream_id: i64) -> String {
         format!(
