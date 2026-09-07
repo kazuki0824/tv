@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[workspace]
+members = ["core"]
+resolver = "2"
+
 [lib]
 name = "maleicacid_arib_si_engine_jni"
 path = "../src/lib.rs"
