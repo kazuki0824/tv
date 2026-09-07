@@ -104,10 +104,7 @@ mod tests {
     fn filter_delivery_wait_returns_at_deadline_without_a_notification() {
         let observed = filter_delivery_wake_sequence();
         let started = Instant::now();
-        let next = wait_filter_delivery_change(
-            observed,
-            Some(started + Duration::from_millis(5)),
-        );
+        let next = wait_filter_delivery_change(observed, Some(started + Duration::from_millis(5)));
         assert_eq!(next, observed);
         assert!(started.elapsed() >= Duration::from_millis(5));
     }

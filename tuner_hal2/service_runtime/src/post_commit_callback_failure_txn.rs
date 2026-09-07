@@ -1,10 +1,8 @@
 use maleicacid_tuner_hal2_common::HalError;
 
-use crate::boot::TunerServiceRuntime;
 use crate::boot::CallbackDeliveryFailureReport;
-use crate::worker_failure_classifier::{
-    ClassifiedCallbackFailure, WorkerFailureCategory,
-};
+use crate::boot::TunerServiceRuntime;
+use crate::worker_failure_classifier::{ClassifiedCallbackFailure, WorkerFailureCategory};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CallbackHealthEffect {
@@ -45,10 +43,7 @@ impl<'a> PostCommitCallbackFailureTxn<'a> {
         Self { runtime }
     }
 
-    pub(crate) fn execute(
-        self,
-        classified: ClassifiedCallbackFailure,
-    ) -> Result<(), HalError> {
+    pub(crate) fn execute(self, classified: ClassifiedCallbackFailure) -> Result<(), HalError> {
         let (report, category) = classified.into_parts();
         let health_effect = callback_health_effect(&report, category);
         self.runtime

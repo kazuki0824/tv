@@ -17,11 +17,7 @@ use crate::boot::TunerServiceRuntime;
 
 impl TunerServiceRuntime {
     #[cfg(test)]
-    fn set_frontend_lnb(
-        &mut self,
-        frontend_id: i32,
-        lnb_id: i32,
-    ) -> Result<(), HalError> {
+    fn set_frontend_lnb(&mut self, frontend_id: i32, lnb_id: i32) -> Result<(), HalError> {
         let authority = self
             .registry()
             .lnb_physical_io_authority(LnbRuntimeId(lnb_id))
@@ -46,11 +42,7 @@ impl TunerServiceRuntime {
     }
 
     #[cfg(test)]
-    fn apply_lnb_tone(
-        &mut self,
-        lnb_id: i32,
-        request: LnbToneRequest,
-    ) -> Result<(), HalError> {
+    fn apply_lnb_tone(&mut self, lnb_id: i32, request: LnbToneRequest) -> Result<(), HalError> {
         self.execute_lnb_control_for_test(lnb_id, |txn| txn.prepare_tone(lnb_id, request))
     }
 
