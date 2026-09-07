@@ -324,19 +324,99 @@ pub fn parse_event_descriptors(bytes: &[u8]) -> EventDescriptors {
         let body = &bytes[body_start..body_end];
         match tag {
             0x4d => parse_short_event(body, &mut out, tag, cursor, len),
-            0x4e => extended_event_bodies.push(RawExtendedEventDescriptor { body: body.to_vec(), tag, offset: cursor, declared_length: len }),
+            0x4e => extended_event_bodies.push(RawExtendedEventDescriptor {
+                body: body.to_vec(),
+                tag,
+                offset: cursor,
+                declared_length: len,
+            }),
             0x54 => parse_content_descriptor(body, &mut out, tag, cursor, len),
-            0x50 => match parse_component_descriptor(body, &mut out, tag, cursor, len) { Some(v) => out.components.push(v), None => out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, cursor, len, body.len(), body, "component_descriptor is shorter than its fixed fields")), },
-            0xc4 => match parse_audio_component_descriptor(body, &mut out, tag, cursor, len) { Some(v) => out.audio_components.push(v), None => out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, cursor, len, body.len(), body, "audio_component_descriptor is shorter than its fixed fields or second language is truncated")), },
+            0x50 => match parse_component_descriptor(body, &mut out, tag, cursor, len) {
+                Ok(v) => out.components.push(v),
+                Err(status) => out.diagnostics.push(descriptor_diagnostic(
+                    status,
+                    tag,
+                    cursor,
+                    len,
+                    body.len(),
+                    body,
+                    "component_descriptor has invalid fixed fields or ISO 639 language",
+                )),
+            },
+            0xc4 => match parse_audio_component_descriptor(body, &mut out, tag, cursor, len) {
+                Ok(v) => out.audio_components.push(v),
+                Err(status) => out.diagnostics.push(descriptor_diagnostic(
+                    status,
+                    tag,
+                    cursor,
+                    len,
+                    body.len(),
+                    body,
+                    "audio_component_descriptor has invalid fixed fields or ISO 639 language",
+                )),
+            },
             0x55 => {
                 let descriptor = parse_parental_rating_descriptor(body, &mut out, tag, cursor, len);
                 out.parental_ratings.extend(descriptor.entries.clone());
                 out.parental_rating_descriptors.push(descriptor);
+            }
+            0xd5 => match parse_series_descriptor(body, &mut out, tag, cursor, len) {
+                Some(v) => out.series.push(v),
+                None => out.diagnostics.push(descriptor_diagnostic(
+                    DescriptorParseStatus::MalformedLength,
+                    tag,
+                    cursor,
+                    len,
+                    body.len(),
+                    body,
+                    "series_descriptor is shorter than 9-byte fixed fields",
+                )),
             },
-            0xd5 => match parse_series_descriptor(body, &mut out, tag, cursor, len) { Some(v) => out.series.push(v), None => out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, cursor, len, body.len(), body, "series_descriptor is shorter than 9-byte fixed fields")), },
-            0xd6 => if let Some(v) = parse_event_group_descriptor(body) { out.event_groups.push(v); } else { out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, cursor, len, body.len(), body, "event_group_descriptor is malformed")); },
-            0xd9 => if let Some(v) = parse_component_group_descriptor(body) { out.component_groups.push(v); } else { out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, cursor, len, body.len(), body, "component_group_descriptor is malformed")); },
-            0x4a => if let Some(v) = parse_linkage_descriptor(body) { out.linkages.push(v); } else { out.diagnostics.push(descriptor_diagnostic(DescriptorParseStatus::MalformedLength, tag, cursor, len, body.len(), body, "linkage_descriptor is shorter than fixed fields")); },
+            0xd6 => {
+                if let Some(v) = parse_event_group_descriptor(body) {
+                    out.event_groups.push(v);
+                } else {
+                    out.diagnostics.push(descriptor_diagnostic(
+                        DescriptorParseStatus::MalformedLength,
+                        tag,
+                        cursor,
+                        len,
+                        body.len(),
+                        body,
+                        "event_group_descriptor is malformed",
+                    ));
+                }
+            }
+            0xd9 => {
+                if let Some(v) = parse_component_group_descriptor(body) {
+                    out.component_groups.push(v);
+                } else {
+                    out.diagnostics.push(descriptor_diagnostic(
+                        DescriptorParseStatus::MalformedLength,
+                        tag,
+                        cursor,
+                        len,
+                        body.len(),
+                        body,
+                        "component_group_descriptor is malformed",
+                    ));
+                }
+            }
+            0x4a => {
+                if let Some(v) = parse_linkage_descriptor(body) {
+                    out.linkages.push(v);
+                } else {
+                    out.diagnostics.push(descriptor_diagnostic(
+                        DescriptorParseStatus::MalformedLength,
+                        tag,
+                        cursor,
+                        len,
+                        body.len(),
+                        body,
+                        "linkage_descriptor is shorter than fixed fields",
+                    ));
+                }
+            }
             _ => {
                 out.unknown.push((tag, body.to_vec()));
                 out.diagnostics.push(descriptor_diagnostic(
@@ -348,7 +428,7 @@ pub fn parse_event_descriptors(bytes: &[u8]) -> EventDescriptors {
                     body,
                     "unknown descriptor is preserved for diagnostics only",
                 ));
-            },
+            }
         }
         cursor = body_end;
     }
@@ -1041,21 +1121,30 @@ fn arib_content_to_display_name(level1: u8, level2: u8) -> String {
     )
 }
 
+fn validated_language(bytes: &[u8]) -> Result<String, DescriptorParseStatus> {
+    if bytes.len() != 3 || !bytes.iter().all(u8::is_ascii_alphabetic) {
+        return Err(DescriptorParseStatus::UnsupportedValue);
+    }
+    std::str::from_utf8(bytes)
+        .map(str::to_owned)
+        .map_err(|_| DescriptorParseStatus::UnsupportedValue)
+}
+
 fn parse_component_descriptor(
     body: &[u8],
     out: &mut EventDescriptors,
     tag: u8,
     offset: usize,
     declared_length: usize,
-) -> Option<ComponentDescriptor> {
+) -> Result<ComponentDescriptor, DescriptorParseStatus> {
     if body.len() < 6 {
-        return None;
+        return Err(DescriptorParseStatus::MalformedLength);
     }
-    Some(ComponentDescriptor {
+    Ok(ComponentDescriptor {
         stream_content: body[0] & 0x0f,
         component_type: body[1],
         component_tag: body[2],
-        language_code: language(&body[3..6]),
+        language_code: validated_language(&body[3..6])?,
         text: decode_descriptor_text_lossy(
             &body[6..],
             out,
@@ -1076,23 +1165,23 @@ fn parse_audio_component_descriptor(
     tag: u8,
     offset: usize,
     declared_length: usize,
-) -> Option<AudioComponentDescriptor> {
+) -> Result<AudioComponentDescriptor, DescriptorParseStatus> {
     if body.len() < 9 {
-        return None;
+        return Err(DescriptorParseStatus::MalformedLength);
     }
     let flags = body[5];
     let second_language = (flags & 0x80) != 0;
     let mut cursor = 9usize;
     if second_language && body.len() < 12 {
-        return None;
+        return Err(DescriptorParseStatus::MalformedLength);
     }
     let lang2 = if second_language {
         cursor = 12;
-        Some(language(&body[9..12]))
+        Some(validated_language(&body[9..12])?)
     } else {
         None
     };
-    Some(AudioComponentDescriptor {
+    Ok(AudioComponentDescriptor {
         stream_content: body[0] & 0x0f,
         component_type: body[1],
         component_tag: body[2],
@@ -1102,7 +1191,7 @@ fn parse_audio_component_descriptor(
         main_component_flag: (flags & 0x40) != 0,
         quality_indicator: (flags >> 4) & 0x03,
         sampling_rate: (flags >> 1) & 0x07,
-        language_code: language(&body[6..9]),
+        language_code: validated_language(&body[6..9])?,
         language_code_2: lang2,
         text: decode_descriptor_text_lossy(
             body.get(cursor..).unwrap_or(&[]),
@@ -2039,6 +2128,41 @@ mod r51_descriptor_coverage_tests {
         assert_eq!(parsed.components[0].component_tag, 7);
         assert_eq!(parsed.components[0].language_code, "jpn");
         assert_eq!(parsed.components[0].text, "V");
+    }
+
+    #[test]
+    fn invalid_component_language_is_diagnostic_only_and_next_descriptor_survives() {
+        for invalid in [[0xff, b'p', b'n'], [b' ', b'p', b'n'], [b'e', b'n', b'1']] {
+            let mut body = vec![0x11, 0xb3, 0x07];
+            body.extend_from_slice(&invalid);
+            let mut bytes = descriptor(0x50, &body);
+            bytes.extend_from_slice(&descriptor(0x50, &[0x11, 0xb3, 0x08, b'j', b'p', b'n']));
+            let parsed = parse_event_descriptors(&bytes);
+            assert_eq!(parsed.components.len(), 1);
+            assert_eq!(parsed.components[0].component_tag, 8);
+            assert_eq!(
+                parsed.diagnostics[0].parse_status,
+                DescriptorParseStatus::UnsupportedValue
+            );
+            assert_eq!(parsed.diagnostics[0].descriptor_tag, 0x50);
+        }
+    }
+
+    #[test]
+    fn invalid_primary_or_secondary_audio_language_cannot_be_promoted() {
+        for language_start in [6, 9] {
+            let mut body = vec![
+                0x12, 0x03, 0x10, 0x0f, 0, 0x80, b'j', b'p', b'n', b'e', b'n', b'g',
+            ];
+            body[language_start] = 0xff;
+            let parsed = parse_event_descriptors(&descriptor(0xc4, &body));
+            assert!(parsed.audio_components.is_empty());
+            assert_eq!(
+                parsed.diagnostics[0].parse_status,
+                DescriptorParseStatus::UnsupportedValue
+            );
+            assert_eq!(parsed.diagnostics[0].descriptor_tag, 0xc4);
+        }
     }
 
     #[test]

@@ -62,6 +62,15 @@
       "allOf": [
         {
           "if": {
+            "properties": {"satelliteBand": {"const": "110CS"}},
+            "required": ["satelliteBand"]
+          },
+          "then": {
+            "properties": {"streamIdType": {"const": "NONE"}, "streamId": {"type": "null"}}
+          }
+        },
+        {
+          "if": {
             "properties": {"streamIdType": {"const": "NONE"}},
             "required": ["streamIdType"]
           },

@@ -1098,6 +1098,8 @@ fn valid_channel_provider_data(data: &ChannelProviderDataV1) -> bool {
         && in_u16(data.service_key.service_id)
         && !data.tune.delivery_system.is_empty()
         && data.tune.frequency_hz > 0
+        && (data.tune.satellite_band.as_deref() != Some("110CS")
+            || data.tune.stream_id_type == "NONE")
         && matches!(data.tune.stream_id_type.as_str(), "NONE" | "TSID")
         && (if data.tune.stream_id_type == "NONE" {
             data.tune.stream_id.is_none()
@@ -1483,6 +1485,22 @@ mod provider_data_tests {
         }}"#,
             stream_id, extra_top_level
         )
+    }
+
+    #[test]
+    fn cs110_rejects_tsid_in_both_request_and_stored_boundaries() {
+        let mut request: serde_json::Value =
+            serde_json::from_str(&minimal_channel_request("", 16400)).unwrap();
+        request["tune"]["deliverySystem"] = serde_json::json!("ISDB_S");
+        request["tune"]["satelliteBand"] = serde_json::json!("110CS");
+        assert!(!build_channel_provider_data(&request.to_string()).success);
+        request["schema"] = serde_json::json!(CHANNEL_SCHEMA_NAME);
+        assert!(decode_channel_provider_data(request.to_string().as_bytes()).is_empty());
+        request["tune"]["streamIdType"] = serde_json::json!("NONE");
+        request["tune"]["streamId"] = serde_json::Value::Null;
+        assert!(!decode_channel_provider_data(request.to_string().as_bytes()).is_empty());
+        request["schema"] = serde_json::json!("maleicacid.tv.channelRequest");
+        assert!(build_channel_provider_data(&request.to_string()).success);
     }
 
     fn minimal_program_json(extra_top_level: &str) -> String {

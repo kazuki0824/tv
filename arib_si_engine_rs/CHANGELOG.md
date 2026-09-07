@@ -1,3 +1,9 @@
+# r51_pr85_descriptor_language_channel_validation
+
+- SI U-25: component/audio componentのISO 639固定欄を3文字のASCII英字として検証する。不正な主・副言語は正常metadataへ昇格せず、元のdescriptor範囲とUnsupportedValue診断を残す。長さ不正とは区別する。
+- SI U-18: CS110のstream selectorをNONE/nullへ限定し、TSIDとの組合せをrequest・stored境界とJSON Schemaで拒否する。
+- Rust 1.81のSI core単体試験140件、JNI側単体試験16件が成功した。Android実機試験は未実施。
+
 # r51_pr85_convention_reference
 
 - SI U-23: READMEから存在しないmodule固有CODE_CONVENTION.mdへの参照を除き、実在するGLOBAL_CODE_CONVENTION.mdへ接続する。
