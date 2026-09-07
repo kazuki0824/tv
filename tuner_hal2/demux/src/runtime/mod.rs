@@ -12,34 +12,31 @@ mod generation_boundary;
 mod pcr_clock_anchor;
 mod queue_runtime;
 pub(crate) mod source_boundary;
-mod watermark_classifier;
 #[cfg(test)]
 mod transaction_contract_tests;
+mod watermark_classifier;
 
 pub use configure_txn::{
     DvrConfigureOutcome, DvrConfigureReport, DvrConfigureStep, FilterConfigureOutcome,
     FilterConfigureReport, FilterConfigureStep,
 };
 pub use demux::{
-    CommittedDvrQueueCleanup, CommittedFilterQueueCleanup, DemuxStreamBoundaryRequest,
-    DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind,
-    DemuxRuntimeQuarantineRequest, DemuxRuntimeRollbackCommitRequest,
+    CommittedDvrQueueCleanup, CommittedFilterQueueCleanup, DemuxRuntime, DemuxRuntimeError,
+    DemuxRuntimeErrorKind, DemuxRuntimeQuarantineRequest, DemuxRuntimeRollbackCommitRequest,
     DemuxRuntimeRollbackRestoreRequest, DemuxRuntimeRollbackToken,
     DemuxRuntimeRollbackTokenPrepareRequest, DemuxRuntimeSnapshot, DemuxRuntimeState,
-    DvrFilterLinkRequest, DvrQueueCleanupCommitError, DvrQueueCleanupOutcome,
-    DvrQueueCleanupPlan, DvrQueueCleanupReport, DvrQueueCleanupSkipReason,
-    DvrQueueCleanupStep, DvrQueueCleanupStepOutcome,
-    DvrRuntimeConfigureRequest, DvrRuntimeOperationRequest, DvrRuntimeRegistrationRequest,
-    DvrStatusIntervalRuntimeRequest, DvrStatusReportingRequest,
-    FilterAvHandleReleaseRequest, FilterAvStreamTypeRuntimeRequest, FilterDelayHintRuntimeRequest,
-    FilterQueueCleanupPlan, FilterQueuePayloadCleanupOutcome, FilterRuntimeConfigureRequest,
-    FilterRuntimeOperationKind, FilterRuntimeOperationOutcome,
+    DemuxStreamBoundaryRequest, DvrFilterLinkRequest, DvrQueueCleanupCommitError,
+    DvrQueueCleanupOutcome, DvrQueueCleanupPlan, DvrQueueCleanupReport, DvrQueueCleanupSkipReason,
+    DvrQueueCleanupStep, DvrQueueCleanupStepOutcome, DvrRuntimeConfigureRequest,
+    DvrRuntimeOperationRequest, DvrRuntimeRegistrationRequest, DvrStatusIntervalRuntimeRequest,
+    DvrStatusReportingRequest, FilterAvHandleReleaseRequest, FilterAvStreamTypeRuntimeRequest,
+    FilterDelayHintRuntimeRequest, FilterQueueCleanupPlan, FilterQueuePayloadCleanupOutcome,
+    FilterRuntimeConfigureRequest, FilterRuntimeOperationKind, FilterRuntimeOperationOutcome,
     FilterRuntimeOperationReport, FilterRuntimeOperationRequest, FilterRuntimeOperationSkipReason,
     FilterRuntimeOperationStep, FilterRuntimeOperationStepOutcome,
     FilterRuntimeRegistrationRequest, FilterSourceConnectRequest, FilterSourceDisconnectRequest,
     PlaybackConsumeReport, PlaybackQueueReadTxn, PreparedDvrFilterRelation,
-    QueueDescriptorQueryError,
-    ValidatedPacketIngressRequest,
+    QueueDescriptorQueryError, ValidatedPacketIngressRequest,
 };
 pub use dvr::{
     DvrDataFormat, DvrKind, DvrRuntimeSnapshot, DvrRuntimeState, DvrStatusEvent,
@@ -47,7 +44,7 @@ pub use dvr::{
 };
 pub use filter::{FilterRuntimeSnapshot, FilterRuntimeState, FilterStatusEvent};
 pub use generation_boundary::{
-    DemuxStreamGeneration, StreamBoundaryReport, PreparedStreamBoundary,
+    DemuxStreamGeneration, PreparedStreamBoundary, StreamBoundaryReport,
 };
 pub use queue_runtime::{
     QueueDescriptorExportPlan, QueueDescriptorExportTarget, QueueDescriptorSnapshot,

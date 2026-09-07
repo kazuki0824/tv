@@ -47,9 +47,7 @@ impl StreamBoundaryTxn {
     }
 
     pub(crate) fn prepare_next_generation(&self) -> Option<DemuxStreamGeneration> {
-        self.generation
-            .checked_add(1)
-            .map(DemuxStreamGeneration)
+        self.generation.checked_add(1).map(DemuxStreamGeneration)
     }
 
     pub(super) fn prepare_filter_source_boundary(
