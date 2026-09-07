@@ -7,6 +7,7 @@
 - 監査台帳F-10で指摘された`compile_contract`の本体ソース文字列検査を削除し、`PreparedCallbackArtifactToken`が`Clone`/`Copy`でないことの型検査を所有moduleの単体試験へ移した。Soong testの`srcs`から文字列読取り目的だけの本体source列挙を除き、型検査用依存をAIDL service testへ追加した。
 - #88で拡張されたhost workspace全体の単体試験が製品demuxの単体試験binaryもlinkするため、Androidでは`fmq_shim`が提供する`dmabuf_heap`確保関数に、単体試験専用の`memfd_create`/`ftruncate`実装を追加した。試験でも実FDをmmap/exportするAV backing契約を検証し、製品buildとintegration testの外部関数解決は変更していない。
 - 拡張CIが露出させたdemux未達として、callback異常を記録したDVRの再start拒否、FMQを持つsinkのsource boundary前queue存在検証、Record DVR commit後のindex eventをcallback queueと同期reportの双方へ同値投影する処理を補完した。
+- host `--all-targets`ではtest helperが使用するため検出されなかった`object_runtime`の`AidlApi` importを`#[cfg(test)]`境界へ分離し、Android/Soong製品compileの`-D warnings`でも未使用importを残さないようにした。
 - PES packet length外byteをpayloadとみなしていた期待値、消費型Record DVR queue読取りをsnapshotとみなしていた期待値、one-shot cleanup authorityの未消費Dropを通常rollbackとみなしていた期待値、局所filter quarantineをdemux全体quarantineとみなしていた期待値を現行契約へ合わせた。queue依存試験は正のbuffer sizeを持つ`OpenFilterRequest`を使用する。
 - `git diff --check`と対象symbolの定義・参照検索を実施した。この環境にはRust toolchainとAndroid build treeがないため、ローカルでのRust 1.81 rustfmt、host build/unit test/Clippy、Android/Soong build、atest、VTS、CTS、実機確認は未実施である。
 
