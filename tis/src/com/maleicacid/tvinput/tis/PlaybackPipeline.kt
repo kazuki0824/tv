@@ -15,6 +15,7 @@ import android.media.tv.tuner.filter.Filter
 import android.media.tv.tuner.filter.FilterCallback
 import android.media.tv.tuner.filter.FilterEvent
 import android.media.tv.tuner.filter.MediaEvent
+import android.media.tv.tuner.filter.RestartEvent
 import android.media.tv.tuner.filter.PesEvent
 import android.media.tv.tuner.filter.PesSettings
 import android.media.tv.tuner.filter.TsFilterConfiguration
@@ -58,6 +59,7 @@ class PlaybackPipeline(
     private var onVideoUnavailable: (PlaybackUnavailable) -> Unit = {}
     private var onVideoFormatDiscovered: (Long, VideoFormatInfo) -> Unit = { _, _ -> }
     private var onSubtitlePes: (Long, String, ByteArray, CaptionTimestamp) -> Unit = { _, _, _, _ -> }
+    private var onSubtitleContinuityLost: (Long, String) -> Unit = { _, _ -> }
     private var onVideoOnlyFallbackRestarted: (VideoOnlyFallbackRestart) -> Unit = {}
     private var videoFilter: Filter? = null
     private var audioFilter: Filter? = null
@@ -247,6 +249,10 @@ class PlaybackPipeline(
 
     fun setOnSubtitlePesCallback(callback: (Long, String, ByteArray, CaptionTimestamp) -> Unit) {
         runOnPlaybackExecutorBlocking { onSubtitlePes = callback }
+    }
+
+    fun setOnSubtitleContinuityLostCallback(callback: (Long, String) -> Unit) {
+        runOnPlaybackExecutorBlocking { onSubtitleContinuityLost = callback }
     }
 
     fun setOnVideoOnlyFallbackRestartedCallback(callback: (VideoOnlyFallbackRestart) -> Unit) {
@@ -453,8 +459,14 @@ class PlaybackPipeline(
         val filter = tuner.openFilter(Filter.TYPE_TS, subtype, AV_FILTER_BUFFER_BYTES, executor, object : FilterCallback {
             override fun onFilterEvent(filter: Filter, events: Array<FilterEvent>) {
                 runCatching {
-                    if (!sourceIsCurrent(filter)) return
-                    for (event in events.filterIsInstance<MediaEvent>()) {
+                    for (event in events) {
+                        if (event is RestartEvent) {
+                            if (sourceIsCurrent(filter)) {
+                                (if (isAudio) targetAudioDecoder else targetVideoDecoder)?.discardPendingInput()
+                            }
+                            continue
+                        }
+                        if (event !is MediaEvent) continue
                         if (!sourceIsCurrent(filter)) {
                             releaseMediaEvent(event)
                             continue
@@ -485,6 +497,13 @@ class PlaybackPipeline(
             }
             override fun onFilterStatusChanged(filter: Filter, status: Int) {
                 Log.d(LogTags.TIS, "AV filter 状態 inputId=$inputId pid=$pid isAudio=$isAudio status=$status")
+                if (sourceIsCurrent(filter) && status and Filter.STATUS_OVERFLOW != 0) {
+                    (if (isAudio) targetAudioDecoder else targetVideoDecoder)?.discardPendingInput()
+                    val result = filter.flush()
+                    if (result != Tuner.RESULT_SUCCESS) {
+                        emitUnavailableForGeneration(filterGeneration, PlaybackUnavailableReason.UNKNOWN, "AV filter flush failed result=$result")
+                    }
+                }
             }
         }) ?: error("openFilter が null を返しました pid=$pid isAudio=$isAudio")
         val settingsBuilder = AvSettings.builder(Filter.TYPE_TS, isAudio).setPassthrough(false)
@@ -529,14 +548,19 @@ class PlaybackPipeline(
             override fun onFilterEvent(filter: Filter, events: Array<FilterEvent>) {
                 runCatching {
                     if (!sourceIsCurrent(filter)) return
-                    for (event in events.filterIsInstance<PesEvent>()) {
+                    for (event in events) {
                         if (!sourceIsCurrent(filter)) continue
+                        if (event is RestartEvent) {
+                            onSubtitleContinuityLost(filterGeneration, trackId)
+                            continue
+                        }
+                        if (event !is PesEvent) continue
                         val dataLength = event.dataLength
-                        if (dataLength <= 0 || dataLength > MAX_SUBTITLE_PES_BYTES) continue
+                        require(dataLength in 1..MAX_SUBTITLE_PES_BYTES) { "字幕PES長が不正です length=$dataLength" }
                         val buffer = ByteArray(dataLength)
                         val read = filter.read(buffer, 0, dataLength.toLong())
-                        if (read <= 0) continue
-                        val pes = if (read == buffer.size) buffer else buffer.copyOf(read)
+                        check(read == buffer.size) { "字幕PESの読取りが不足しています expected=${buffer.size} actual=$read" }
+                        val pes = buffer
                         val captionSample = captionSampleFromPes(pes, superimpose) ?: continue
                         if (!sourceIsCurrent(filter)) continue
                         onSubtitlePes(
@@ -548,10 +572,20 @@ class PlaybackPipeline(
                     }
                 }.onFailure { error ->
                     Log.w(LogTags.TIS, "caption PES filter callback に失敗しました inputId=$inputId pid=$pid superimpose=$superimpose", error)
+                    if (sourceIsCurrent(filter)) {
+                        onSubtitleContinuityLost(filterGeneration, trackId)
+                        runCatching { check(filter.flush() == Tuner.RESULT_SUCCESS) { "字幕Filterをflushできません" } }
+                            .onFailure { cleanup -> Log.w(LogTags.TIS, "字幕Filterの入力回収に失敗しました", cleanup) }
+                    }
                 }
             }
             override fun onFilterStatusChanged(filter: Filter, status: Int) {
                 Log.d(LogTags.TIS, "caption PES filter 状態 inputId=$inputId pid=$pid superimpose=$superimpose status=$status")
+                if (sourceIsCurrent(filter) && status and Filter.STATUS_OVERFLOW != 0) {
+                    onSubtitleContinuityLost(filterGeneration, trackId)
+                    runCatching { check(filter.flush() == Tuner.RESULT_SUCCESS) { "字幕Filterをflushできません" } }
+                        .onFailure { error -> Log.w(LogTags.TIS, "字幕Filterのoverflow回収に失敗しました", error) }
+                }
             }
         }) ?: error("openFilter が null を返しました caption pid=$pid")
         val settings = PesSettings.builder(Filter.TYPE_TS)
@@ -948,6 +982,13 @@ class PlaybackPipeline(
         protected abstract fun onCodecConfigTimeout()
         protected abstract fun onBackpressureDeadline(detail: String)
         protected open fun onSampleRejected(reason: String) { Log.w(LogTags.TIS, "decoder sampleを拒否しました reason=$reason") }
+
+        fun discardPendingInput() {
+            clearPending()
+            if (codec == null) configBytes.reset()
+            backpressureStartedAtMs = null
+            // input index、codec、初回出力状態、時刻基準は同じ再生世代に保持する。
+        }
 
         private fun clearPending() {
             while (pendingSamples.isNotEmpty()) releaseMediaEvent(pendingSamples.removeFirst().event)

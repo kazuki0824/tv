@@ -111,6 +111,17 @@ class MaleicacidLiveSession(
         tunerController.setOnVideoFormatDiscoveredCallback { generation, info ->
             enqueueSessionAction { updateCurrentProgramVideoMetadata(generation, info) }
         }
+        tunerController.setOnSubtitleContinuityLostCallback { generation, trackId ->
+            enqueueSessionAction {
+                if (PlaybackStartTransitions.acceptsGeneration(playbackState, generation)) {
+                    if (trackId.startsWith("superimpose:")) {
+                        superimposeController.flushForSubtitleContinuityLoss()
+                    } else {
+                        captionController.flushForSubtitleContinuityLoss()
+                    }
+                }
+            }
+        }
         tunerController.setOnSubtitlePesCallback { generation, trackId, pesData, timestamp, broadcastStatementTime ->
             enqueueSessionAction {
                 if (PlaybackStartTransitions.acceptsGeneration(playbackState, generation)) {

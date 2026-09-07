@@ -785,6 +785,17 @@ class TunerController(
         return playbackPipeline.start(tunerInstance, channel, selection)
     }
 
+    fun setOnSubtitleContinuityLostCallback(callback: (Long, String) -> Unit) {
+        playbackPipeline.setOnSubtitleContinuityLostCallback { generation, trackId ->
+            val pid = trackId.substringAfter(':', "").substringBefore(':').toIntOrNull()?.let(TsPid::fromOrNull)
+            if (pid != null) {
+                captionFactParsers[pid]?.reset()
+                captionLanguagesByPid.remove(pid)
+            }
+            callback(generation, trackId)
+        }
+    }
+
     fun setOnSubtitlePesCallback(callback: (Long, String, ByteArray, CaptionTimestamp, AribBroadcastClock.StatementTime?) -> Unit) {
         playbackPipeline.setOnSubtitlePesCallback { generation, trackId, pesData, timestamp ->
             val pid = trackId.substringAfter(':', "").substringBefore(':').toIntOrNull()?.let(TsPid::fromOrNull)

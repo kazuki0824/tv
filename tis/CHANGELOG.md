@@ -1,3 +1,10 @@
+## r51_pr85_filter_input_continuity
+
+- TIS-010: RestartEvent を MediaEvent と同じ順序で処理し、同じ再生構成の restart と OVERFLOW 後の通常 flush では未投入 MediaEvent と使用権だけを回収する。decoder、MediaSync、AudioTrack、PTS 基準、再生世代を保持する。
+- TIS-021: 字幕 Filter の restart、overflow、短い PES 読取りを字幕連続性喪失へ接続し、native 字幕 facts、字幕 decoder、表示・予約を初期化する。AV の通常 flush はこの初期化を呼ばない。
+- 旧 Filter から遅延した MediaEvent も所有権を回収して破棄する。
+- 検証: Android 15 の RestartEvent 契約を一次資料で確認。Kotlin 本体・テストのコンパイルと JUnit 149 件に成功。Android Filter の実 callback による統合試験は未実施。
+
 ## r51_pr85_caption_viewport_rerender
 
 - TIS-018: 同一再生世代の viewport 変更では字幕 decoder を維持し、libaribcaption の現在時刻での再描画を JNI へ接続した。現在の有効区間に属する画像だけを新しい描画領域へ戻し、古い bitmap を拡大縮小しない。
