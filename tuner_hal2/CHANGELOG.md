@@ -1,3 +1,11 @@
+# r51_pr85_reaper_and_diagnostic_lifecycle
+
+- F-04: tune/scan置換のreaper取得失敗を結果集約の内側へ移し、既に発生したworker terminal acceptance失敗と完了診断を早期returnで失わない。
+- F-09: cleanup reaper laneもWorkerRuntimeが発行する停止/起床権限で生成し、最後のqueue ownerまでhandleを保持する。AIDL cleanup retryのraw sleepを停止解除可能な待機へ変更し、待機中はserviceの強参照を持たない。
+- HAL-028: dropped_count/record_failure_countが上限へ到達した時点でdiagnostic_counter_saturatedをcounter種別・owner型・instance付きで記録する。飽和後もrecord置換と元の処理結果を維持する。
+- HAL-046: PID transactionに続き、鍵/cleanup transactionからもDeref/DerefMutを除き、正規入口だけを公開する。
+- Rust host workspace450件とall-target Clippy（-D warnings）が成功した。queue cloneを一つ破棄してもworkerが継続し、最後のownerの破棄で1時間待機が解除される試験を追加した。service_runtime/aidl_serviceはhost workspace対象外であり、追加したdiagnostic飽和試験を含むAndroid/Soong build・atest・実機試験は未実施。
+
 # r50eo84_pr85_frontend_cancellation_io
 
 - F-07/F-08/HAL-017: Frontend workerとlive pumpの取消状態を正規control ownerへ集約した。DVB readerとpx4 control fdを非ブロッキングで開き、WouldBlockの再待機とEINTR再試行の間で停止要求を観測する。EOF後に同じ入力を自動再開しない。

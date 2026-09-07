@@ -328,7 +328,8 @@ impl FrontendWorkerReaperHandle {
             move |job: FrontendWorkerReaperJob,
                   pending: Arc<
                 Mutex<BTreeMap<(i32, FrontendWorkerKind), Option<FrontendWorkerKind>>>,
-            >| {
+            >,
+                  _worker: crate::worker_runtime::WorkerContext| {
                 job.run(&runtime, pending.as_ref(), deadline);
             },
         );
@@ -2848,8 +2849,8 @@ fn finish_committed_tune_replacement(
         transition.object_id,
         transition.object_generation,
     );
-    let reaper = ensure_frontend_worker_reaper(runtime)?;
     let mut result = (|| {
+        let reaper = ensure_frontend_worker_reaper(runtime)?;
         if deadline_elapsed {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
@@ -3687,8 +3688,8 @@ fn finish_committed_scan_replacement(
         stopped_worker_generation,
         new_worker_generation: generation,
     });
-    let reaper = ensure_frontend_worker_reaper(runtime)?;
     let mut result = (|| {
+        let reaper = ensure_frontend_worker_reaper(runtime)?;
         if deadline_elapsed {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,

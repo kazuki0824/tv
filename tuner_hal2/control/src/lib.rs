@@ -359,7 +359,7 @@ impl<T> Drop for WorkerRuntime<T> {
     }
 }
 
-type WorkerReaperRunner<K, V, J> = dyn Fn(J, std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<K, V>>>)
+type WorkerReaperRunner<K, V, J> = dyn Fn(J, std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<K, V>>>, WorkerContext)
     + Send
     + Sync
     + 'static;
@@ -447,6 +447,7 @@ impl WorkerRuntime<()> {
 
 /// `WorkerRuntime`が発行するopaqueなbounded reaper handle。
 pub struct WorkerRuntimeReaperQueue<K, V, J> {
+    lanes: std::sync::Arc<Vec<WorkerHandle<(), maleicacid_tuner_hal2_common::HalError>>>,
     sender: std::sync::mpsc::SyncSender<J>,
     pending: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<K, V>>>,
 }
@@ -454,6 +455,7 @@ pub struct WorkerRuntimeReaperQueue<K, V, J> {
 impl<K, V, J> Clone for WorkerRuntimeReaperQueue<K, V, J> {
     fn clone(&self) -> Self {
         Self {
+            lanes: std::sync::Arc::clone(&self.lanes),
             sender: self.sender.clone(),
             pending: std::sync::Arc::clone(&self.pending),
         }
@@ -475,30 +477,45 @@ where
         let (sender, receiver) = std::sync::mpsc::sync_channel(capacity);
         let pending = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
         let receiver = std::sync::Arc::new(std::sync::Mutex::new(receiver));
+        let mut lanes = Vec::with_capacity(capacity);
         for lane in 0..capacity {
             let receiver = std::sync::Arc::clone(&receiver);
             let runner = std::sync::Arc::clone(&runner);
             let pending_for_lane = std::sync::Arc::clone(&pending);
-            std::thread::Builder::new()
-                .name(format!("{thread_prefix}-{lane}"))
-                .spawn(move || loop {
-                    let job = match receiver.lock() {
+            let lane =
+                WorkerRuntime::spawn_controlled_handle(
+                    format!("{thread_prefix}-{lane}"),
+                    move |context| loop {
+                        let job = match receiver.lock() {
                         Ok(receiver) => receiver.recv(),
-                        Err(_) => return,
+                        Err(_) => return Err(maleicacid_tuner_hal2_common::HalError::internal(
+                            maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                            "worker reaper receiver lock poisoned",
+                        )),
                     };
-                    match job {
-                        Ok(job) => runner(job, std::sync::Arc::clone(&pending_for_lane)),
-                        Err(_) => return,
-                    }
-                })
+                        match job {
+                            Ok(job) => runner(
+                                job,
+                                std::sync::Arc::clone(&pending_for_lane),
+                                context.clone(),
+                            ),
+                            Err(_) => return Ok(()),
+                        }
+                    },
+                )
                 .map_err(|error| {
                     maleicacid_tuner_hal2_common::HalError::internal(
                         maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
                         format!("worker reaper lane spawn failed: {error}"),
                     )
                 })?;
+            lanes.push(lane);
         }
-        Ok(Self { sender, pending })
+        Ok(Self {
+            lanes: std::sync::Arc::new(lanes),
+            sender,
+            pending,
+        })
     }
 
     pub fn enqueue_reserved(
@@ -773,6 +790,34 @@ impl FmqDeliveryTxn {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reaper_wait_is_cancelled_only_after_the_last_queue_owner_is_dropped() {
+        use std::sync::{mpsc, Arc, Mutex};
+        use std::time::{Duration, Instant};
+        let (started_tx, started_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let runner = Arc::new(
+            move |(),
+                  _pending: Arc<Mutex<std::collections::BTreeMap<u32, u32>>>,
+                  context: super::WorkerContext| {
+                started_tx.send(()).unwrap();
+                context
+                    .wait_until(Instant::now().checked_add(Duration::from_secs(3_600)))
+                    .unwrap();
+                finished_tx.send(context.stop_requested()).unwrap();
+            },
+        );
+        let queue =
+            super::WorkerRuntime::start_reaper_queue(1, "test-reaper-cancel", runner).unwrap();
+        let remaining_owner = queue.clone();
+        queue.enqueue_reserved((), [(1, 1)]).unwrap();
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        drop(queue);
+        assert_eq!(finished_rx.try_recv(), Err(mpsc::TryRecvError::Empty));
+        drop(remaining_owner);
+        assert!(finished_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+    }
+
     #[test]
     fn wake_before_wait_is_retained_by_the_worker() {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
