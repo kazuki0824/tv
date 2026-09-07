@@ -5,14 +5,14 @@ on:
     paths:
       - "tuner_hal2/**/*.rs"
       - "tuner_hal2/**/Cargo.toml"
-      - "tuner_hal2/**/Cargo.lock"
+      - "tuner_hal2/host_ci/Cargo.lock"
       - ".github/workflows/tuner-hal2-host-rust-ci.yml"
   push:
     branches: [main]
     paths:
       - "tuner_hal2/**/*.rs"
       - "tuner_hal2/**/Cargo.toml"
-      - "tuner_hal2/**/Cargo.lock"
+      - "tuner_hal2/host_ci/Cargo.lock"
       - ".github/workflows/tuner-hal2-host-rust-ci.yml"
 
 permissions:
