@@ -4,33 +4,29 @@
 //! filter open / configure 検証の本番正本である。
 
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
-    DemuxAlpFilterType::DemuxAlpFilterType,
-    DemuxFilterMainType::DemuxFilterMainType, DemuxFilterScIndexMask::DemuxFilterScIndexMask,
-    DemuxFilterSectionBits::DemuxFilterSectionBits,
+    DemuxAlpFilterType::DemuxAlpFilterType, DemuxFilterMainType::DemuxFilterMainType,
+    DemuxFilterScIndexMask::DemuxFilterScIndexMask, DemuxFilterSectionBits::DemuxFilterSectionBits,
     DemuxFilterSectionSettings::DemuxFilterSectionSettings,
     DemuxFilterSectionSettingsCondition::DemuxFilterSectionSettingsCondition,
     DemuxFilterSectionSettingsConditionTableInfo::DemuxFilterSectionSettingsConditionTableInfo,
     DemuxFilterSettings::DemuxFilterSettings, DemuxFilterSubType::DemuxFilterSubType,
     DemuxFilterType::DemuxFilterType, DemuxIpFilterType::DemuxIpFilterType,
-    DemuxMmtpFilterType::DemuxMmtpFilterType,
-    DemuxTlvFilterType::DemuxTlvFilterType,
-    DemuxTsIndex::DemuxTsIndex,
+    DemuxMmtpFilterType::DemuxMmtpFilterType, DemuxTlvFilterType::DemuxTlvFilterType,
     DemuxTsFilterSettingsFilterSettings::DemuxTsFilterSettingsFilterSettings,
-    DemuxTsFilterType::DemuxTsFilterType,
+    DemuxTsFilterType::DemuxTsFilterType, DemuxTsIndex::DemuxTsIndex,
 };
 use maleicacid_tuner_hal2_common::{HalError, HalInvalidArgumentKind};
 use maleicacid_tuner_hal2_demux::config::{
     AvSettings, FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest, PesSettings,
     RecordIndexSettings, SectionCondition, SectionConditionKind,
 };
-use maleicacid_tuner_hal2_demux::{
-    normalize_length_field_bits, supported_record_sc_index_mask, supported_record_ts_index_mask,
-    PES_STREAM_ID_WILDCARD,
-    RECORD_SC_TYPE_NONE, RECORD_SC_TYPE_SC, RECORD_SC_TYPE_SC_AVC, RECORD_SC_TYPE_SC_HEVC,
-    RECORD_SC_TYPE_SC_VVC,
-};
 #[cfg(test)]
 use maleicacid_tuner_hal2_demux::HEVC_SC_AUD;
+use maleicacid_tuner_hal2_demux::{
+    normalize_length_field_bits, supported_record_sc_index_mask, supported_record_ts_index_mask,
+    PES_STREAM_ID_WILDCARD, RECORD_SC_TYPE_NONE, RECORD_SC_TYPE_SC, RECORD_SC_TYPE_SC_AVC,
+    RECORD_SC_TYPE_SC_HEVC, RECORD_SC_TYPE_SC_VVC,
+};
 
 const MAX_SECTION_FILTER_BYTES: usize = 16;
 
@@ -48,9 +44,7 @@ pub fn filter_open_type(filter_type: &DemuxFilterType) -> Result<FilterOpenType,
             DemuxFilterSubType::TsFilterType(DemuxTsFilterType::UNDEFINED) => {
                 Ok(FilterOpenType::TsUndefined)
             }
-            DemuxFilterSubType::TsFilterType(DemuxTsFilterType::TS) => {
-                Ok(FilterOpenType::TsRaw)
-            }
+            DemuxFilterSubType::TsFilterType(DemuxTsFilterType::TS) => Ok(FilterOpenType::TsRaw),
             DemuxFilterSubType::TsFilterType(DemuxTsFilterType::AUDIO) => {
                 Ok(FilterOpenType::TsAudio)
             }
@@ -60,22 +54,20 @@ pub fn filter_open_type(filter_type: &DemuxFilterType) -> Result<FilterOpenType,
             DemuxFilterSubType::TsFilterType(DemuxTsFilterType::SECTION) => {
                 Ok(FilterOpenType::TsSection)
             }
-            DemuxFilterSubType::TsFilterType(DemuxTsFilterType::PES) => {
-                Ok(FilterOpenType::TsPes)
-            }
+            DemuxFilterSubType::TsFilterType(DemuxTsFilterType::PES) => Ok(FilterOpenType::TsPes),
             DemuxFilterSubType::TsFilterType(DemuxTsFilterType::RECORD) => {
                 Ok(FilterOpenType::TsRecord)
             }
-            DemuxFilterSubType::TsFilterType(DemuxTsFilterType::PCR) => {
-                Ok(FilterOpenType::TsPcr)
-            }
+            DemuxFilterSubType::TsFilterType(DemuxTsFilterType::PCR) => Ok(FilterOpenType::TsPcr),
             DemuxFilterSubType::TsFilterType(DemuxTsFilterType::TEMI) => Err(
                 HalError::unsupported_detail("filter.subType", "TS TEMI filter is unavailable"),
             ),
             DemuxFilterSubType::TsFilterType(_) => {
                 Err(invalid("TS filter subtype contains a reserved enum value"))
             }
-            _ => Err(invalid("filter main type and subtype union arm do not match")),
+            _ => Err(invalid(
+                "filter main type and subtype union arm do not match",
+            )),
         },
         DemuxFilterMainType::MMTP => match &filter_type.subType {
             DemuxFilterSubType::MmtpFilterType(value)
@@ -89,14 +81,19 @@ pub fn filter_open_type(filter_type: &DemuxFilterType) -> Result<FilterOpenType,
                         | DemuxMmtpFilterType::VIDEO
                         | DemuxMmtpFilterType::RECORD
                         | DemuxMmtpFilterType::DOWNLOAD
-                ) => Err(HalError::unsupported_detail(
-                "filter.mainType",
-                "MMTP filter is unavailable in the TS-only product profile",
-            )),
+                ) =>
+            {
+                Err(HalError::unsupported_detail(
+                    "filter.mainType",
+                    "MMTP filter is unavailable in the TS-only product profile",
+                ))
+            }
             DemuxFilterSubType::MmtpFilterType(_) => Err(invalid(
                 "MMTP filter subtype contains a reserved enum value",
             )),
-            _ => Err(invalid("filter main type and subtype union arm do not match")),
+            _ => Err(invalid(
+                "filter main type and subtype union arm do not match",
+            )),
         },
         DemuxFilterMainType::IP => match &filter_type.subType {
             DemuxFilterSubType::IpFilterType(value)
@@ -108,14 +105,19 @@ pub fn filter_open_type(filter_type: &DemuxFilterType) -> Result<FilterOpenType,
                         | DemuxIpFilterType::IP_PAYLOAD
                         | DemuxIpFilterType::IP
                         | DemuxIpFilterType::PAYLOAD_THROUGH
-                ) => Err(HalError::unsupported_detail(
-                "filter.mainType",
-                "IP filter is unavailable in the TS-only product profile",
-            )),
+                ) =>
+            {
+                Err(HalError::unsupported_detail(
+                    "filter.mainType",
+                    "IP filter is unavailable in the TS-only product profile",
+                ))
+            }
             DemuxFilterSubType::IpFilterType(_) => {
                 Err(invalid("IP filter subtype contains a reserved enum value"))
             }
-            _ => Err(invalid("filter main type and subtype union arm do not match")),
+            _ => Err(invalid(
+                "filter main type and subtype union arm do not match",
+            )),
         },
         DemuxFilterMainType::TLV => match &filter_type.subType {
             DemuxFilterSubType::TlvFilterType(value)
@@ -125,14 +127,19 @@ pub fn filter_open_type(filter_type: &DemuxFilterType) -> Result<FilterOpenType,
                         | DemuxTlvFilterType::SECTION
                         | DemuxTlvFilterType::TLV
                         | DemuxTlvFilterType::PAYLOAD_THROUGH
-                ) => Err(HalError::unsupported_detail(
-                "filter.mainType",
-                "TLV filter is unavailable in the TS-only product profile",
-            )),
+                ) =>
+            {
+                Err(HalError::unsupported_detail(
+                    "filter.mainType",
+                    "TLV filter is unavailable in the TS-only product profile",
+                ))
+            }
             DemuxFilterSubType::TlvFilterType(_) => {
                 Err(invalid("TLV filter subtype contains a reserved enum value"))
             }
-            _ => Err(invalid("filter main type and subtype union arm do not match")),
+            _ => Err(invalid(
+                "filter main type and subtype union arm do not match",
+            )),
         },
         DemuxFilterMainType::ALP => match &filter_type.subType {
             DemuxFilterSubType::AlpFilterType(value)
@@ -142,14 +149,19 @@ pub fn filter_open_type(filter_type: &DemuxFilterType) -> Result<FilterOpenType,
                         | DemuxAlpFilterType::SECTION
                         | DemuxAlpFilterType::PTP
                         | DemuxAlpFilterType::PAYLOAD_THROUGH
-                ) => Err(HalError::unsupported_detail(
-                "filter.mainType",
-                "ALP filter is unavailable in the TS-only product profile",
-            )),
+                ) =>
+            {
+                Err(HalError::unsupported_detail(
+                    "filter.mainType",
+                    "ALP filter is unavailable in the TS-only product profile",
+                ))
+            }
             DemuxFilterSubType::AlpFilterType(_) => {
                 Err(invalid("ALP filter subtype contains a reserved enum value"))
             }
-            _ => Err(invalid("filter main type and subtype union arm do not match")),
+            _ => Err(invalid(
+                "filter main type and subtype union arm do not match",
+            )),
         },
         DemuxFilterMainType::UNDEFINED => Err(invalid("filter main type must not be UNDEFINED")),
         _ => Err(invalid("filter main type contains a reserved enum value")),
@@ -298,9 +310,7 @@ pub fn validate_record_index_settings(
         if variant_type == RECORD_SC_TYPE_SC && mask_bits == 0 {
             return Ok(0);
         }
-        return Err(invalid(
-            "record.scIndexType NONE requires ScIndex(0)",
-        ));
+        return Err(invalid("record.scIndexType NONE requires ScIndex(0)"));
     }
     if !matches!(
         sc_index_type,
@@ -426,12 +436,10 @@ pub fn build_filter_summary_for_open_type(
 mod tests {
     use super::*;
     use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
-        DemuxFilterMainType::DemuxFilterMainType,
-        DemuxFilterSectionBits::DemuxFilterSectionBits,
+        DemuxFilterMainType::DemuxFilterMainType, DemuxFilterSectionBits::DemuxFilterSectionBits,
         DemuxFilterSectionSettingsCondition::DemuxFilterSectionSettingsCondition,
         DemuxFilterSubType::DemuxFilterSubType, DemuxFilterType::DemuxFilterType,
-        DemuxMmtpFilterType::DemuxMmtpFilterType,
-        DemuxTsFilterType::DemuxTsFilterType,
+        DemuxMmtpFilterType::DemuxMmtpFilterType, DemuxTsFilterType::DemuxTsFilterType,
     };
     #[test]
     fn invalid_pid_is_invalid_argument() {
