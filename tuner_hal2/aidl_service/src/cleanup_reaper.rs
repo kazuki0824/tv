@@ -57,7 +57,6 @@ impl CleanupJobKey {
 #[derive(Clone, Copy, Debug)]
 struct CleanupJob {
     handle: AidlObjectHandle,
-    dependency: CleanupStep,
     registered_at: Instant,
 }
 
@@ -138,7 +137,6 @@ impl CleanupReaperQueue {
         runtime.enqueue_reserved(
             CleanupJob {
                 handle,
-                dependency,
                 registered_at: Instant::now(),
             },
             [(key, dependency)],

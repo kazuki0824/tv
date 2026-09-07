@@ -706,6 +706,7 @@ rust_test {
         "libmaleicacid_tuner_hal2_demux",
         "libmaleicacid_tuner_hal2_fmq",
         "libmaleicacid_tuner_hal2_resource_ledger",
+        "libstatic_assertions",
     ],
     static_libs: ["libmaleicacid_tuner_hal2_fmq_shim_static"],
     shared_libs: [
@@ -746,13 +747,7 @@ rust_test {
     vendor: true,
     crate_name: "maleicacid_tuner_hal2_compile_contract_test",
     crate_root: "compile_contract/src/lib.rs",
-    srcs: [
-        "compile_contract/src/lib.rs",
-        "aidl_service/src/callback_store.rs",
-        "aidl_service/src/service_context.rs",
-        "aidl_service/src/object_runtime/mod.rs",
-        "aidl_service/src/child_object_open.rs",
-    ],
+    srcs: ["compile_contract/src/lib.rs"],
     edition: "2021",
     rustlibs: [
         "libmaleicacid_tuner_hal2_device",

@@ -1377,7 +1377,9 @@ mod tests {
         let state = Arc::new(CallbackState::default());
         let callback = new_test_callback(Arc::clone(&state));
         context.clear_owner_callbacks_for_test(handle).unwrap();
-        context.retain_dvr_callback(handle, &callback).unwrap();
+        context
+            .retain_dvr_callback_for_test(handle, &callback)
+            .unwrap();
         record_dvr_callback_registration_for_test(&runtime, handle);
 
         deliver_started_dvr_status(&context, handle).unwrap();
@@ -1402,7 +1404,9 @@ mod tests {
         state.fail_delivery.store(true, Ordering::Relaxed);
         let callback = new_test_callback(Arc::clone(&state));
         context.clear_owner_callbacks_for_test(handle).unwrap();
-        context.retain_dvr_callback(handle, &callback).unwrap();
+        context
+            .retain_dvr_callback_for_test(handle, &callback)
+            .unwrap();
         record_dvr_callback_registration_for_test(&runtime, handle);
 
         assert!(deliver_started_dvr_status(&context, handle).is_err());

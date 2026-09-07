@@ -10,12 +10,14 @@ use maleicacid_tuner_hal2_common::{
 use maleicacid_tuner_hal2_demux::AvHandleReleaseDescriptor;
 use maleicacid_tuner_hal2_device::FrontendWorkerCancelReason;
 use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
+#[cfg(test)]
+use maleicacid_tuner_hal2_service_runtime::CallbackRegistrationArtifactOutcome;
 use maleicacid_tuner_hal2_service_runtime::{
     close_lnb_explicit_after_object_close_begin_use_case, close_object_use_case,
     finish_object_close_use_case, CallbackArtifactCleanupResult,
     CallbackArtifactRuntimeSplitDiagnosticRecord, CallbackArtifactRuntimeSplitOutcome,
-    CallbackArtifactRuntimeSplitPhase, CallbackRegistrationArtifactOutcome,
-    CloseCleanupAttemptCompletion, FrontendWorkerTerminationUseCase, ObjectArtifactCleanupCommand,
+    CallbackArtifactRuntimeSplitPhase, CloseCleanupAttemptCompletion,
+    FrontendWorkerTerminationUseCase, ObjectArtifactCleanupCommand,
     ObjectArtifactCleanupExecutor, ObjectCleanupDiagnosticRecord, ObjectCleanupExecutionReport,
     ObjectCloseCleanupAttempt, ObjectCloseCleanupFailure, ObjectCloseRuntimeExecutor,
     ObjectCloseTxn, ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor,
@@ -63,6 +65,7 @@ fn abort_prepared_callback_artifact_bridge(
         .map_err(|error| error.into_hal_error(command.cleanup_failure_message()))
 }
 
+#[cfg(test)]
 fn commit_prepared_callback_artifact_bridge(
     context: &SharedAidlServiceContext,
     outcome: &CallbackRegistrationArtifactOutcome,
@@ -178,6 +181,7 @@ fn callback_artifact_registration_runtime_lock_failure_error(
     }
 }
 
+#[cfg(test)]
 fn callback_registration_finish_runtime_lock_failure_error(
     context: &SharedAidlServiceContext,
     command: OwnerCallbackCleanupArtifactCommand,
@@ -239,6 +243,7 @@ pub(crate) fn finish_owner_callback_cleanup_outcome<T>(
     guard.finish_owner_callback_cleanup_outcome(outcome, artifact_cleanup_result)
 }
 
+#[cfg(test)]
 fn finish_callback_registration_artifact_outcome(
     context: &SharedAidlServiceContext,
     outcome: CallbackRegistrationArtifactOutcome,
@@ -300,7 +305,8 @@ fn finish_callback_registration_artifact_outcome(
     guard.finish_callback_registration_after_artifact_result_use_case(outcome, rollback_result)
 }
 
-pub(crate) fn finish_callback_artifact_registration_after_owner_ready_hal(
+#[cfg(test)]
+fn finish_callback_artifact_registration_after_owner_ready_hal(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
     api: AidlApi,
