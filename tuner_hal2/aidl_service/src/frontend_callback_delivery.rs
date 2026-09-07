@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
-    FrontendEventType::FrontendEventType,
-    FrontendScanMessage::FrontendScanMessage, FrontendScanMessageType::FrontendScanMessageType,
+    FrontendEventType::FrontendEventType, FrontendScanMessage::FrontendScanMessage,
+    FrontendScanMessageType::FrontendScanMessageType,
 };
 use maleicacid_tuner_hal2_common::HalError;
 use maleicacid_tuner_hal2_service_runtime::{
@@ -118,8 +118,7 @@ fn deliver_scan_callback(
     let callback = match context.frontend_callback_for_owner(handle) {
         Ok(Some(callback)) => callback,
         Ok(None) => {
-            let primary =
-                HalError::callback_failed(method, "frontend callback is not registered");
+            let primary = HalError::callback_failed(method, "frontend callback is not registered");
             return finish_frontend_scan_end_delivery_failure(
                 context,
                 handle,
