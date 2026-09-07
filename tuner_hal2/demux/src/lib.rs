@@ -1280,6 +1280,7 @@ mod tests {
             ))
             .unwrap();
         demux.configure_dvr_runtime(95).unwrap();
+        let configured_generation = demux.dvr(95).unwrap().generation();
         let packet = raw_ts_packet(0x0100, 0, &[1, 2, 3, 4]);
         let plan = demux
             .prepare_dvr_queue_cleanup(DvrRuntimeOperationRequest::new(95))
@@ -1300,7 +1301,7 @@ mod tests {
                 .kind,
             DemuxRuntimeErrorKind::QueueRuntimeFailure
         );
-        assert_eq!(demux.dvr(95).unwrap().generation(), 1);
+        assert_eq!(demux.dvr(95).unwrap().generation(), configured_generation);
     }
 
     #[test]
@@ -1805,7 +1806,7 @@ mod tests {
             )));
 
         demux.flush_dvr_runtime(87).unwrap();
-        let second = raw_ts_packet(0x0100, 0, &[5, 6, 7, 8]);
+        let second = raw_ts_packet(0x0100, 1, &[5, 6, 7, 8]);
         demux
             .write_playback_dvr_queue_bytes_for_test(87, &second)
             .unwrap();
