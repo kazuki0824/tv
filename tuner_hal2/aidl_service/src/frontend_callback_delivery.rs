@@ -57,7 +57,7 @@ fn finish_frontend_scan_end_delivery_failure(
     primary: HalError,
 ) -> Result<(), HalError> {
     let runtime = context.runtime();
-    match runtime.lock() {
+    let result = match runtime.lock() {
         Ok(mut guard) => guard.finish_callback_delivery_failure_use_case(
             CallbackDeliveryFailureReport::frontend_scan_end(
                 handle.object_id(),
@@ -87,7 +87,8 @@ fn finish_frontend_scan_end_delivery_failure(
                 ),
             }
         }
-    }
+    };
+    result
 }
 
 fn deliver_scan_callback(
@@ -177,7 +178,7 @@ fn finish_frontend_event_delivery_failure(
         CallbackDeliveryFailurePhase::BinderDelivery
     };
     let runtime = context.runtime();
-    match runtime.lock() {
+    let result = match runtime.lock() {
         Ok(mut guard) => guard.finish_callback_delivery_failure_use_case(
             CallbackDeliveryFailureReport::frontend_event(
                 handle.object_id(),
@@ -215,7 +216,8 @@ fn finish_frontend_event_delivery_failure(
                 ),
             }
         }
-    }
+    };
+    result
 }
 
 fn deliver_tune_event_callback(

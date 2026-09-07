@@ -3,11 +3,10 @@ use std::time::{Duration, Instant};
 
 use maleicacid_tuner_hal2_binder_adapter::AidlMethodCall;
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
-use maleicacid_tuner_hal2_domain_request::AidlObjectKind;
 use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
 use maleicacid_tuner_hal2_service_runtime::CapabilitySnapshot;
 
-use crate::object_handle::AidlObjectHandle;
+use crate::object_handle::{AidlObjectHandle, AidlObjectKind};
 use crate::service_context::AidlServiceContext;
 
 #[derive(Clone, Copy, Debug)]
@@ -182,7 +181,7 @@ fn mark_cleanup_reaper_critical(context: &AidlServiceContext) {
     let shared_runtime = context.runtime();
     if let Ok(mut runtime) = shared_runtime.lock() {
         runtime.mark_service_critical();
-    }
+    };
 }
 
 fn run_cleanup_job(
