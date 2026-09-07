@@ -116,7 +116,7 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
         val eligibleTargetCount = programs.size + authoritativeWindows.size
         val eligibleTargetServiceKeys = (programs.map { it.serviceKey } + authoritativeWindows.map { it.serviceKey }).toSet()
 
-        val signature = runCatching { plannedInputSignature(programs, windows) }.getOrElse { error ->
+        val publication = runCatching { tvProviderWriter.prepareProgramPublication(programs, windows) }.getOrElse { error ->
             enqueueRetryWindows(windows, failureClass = FailureClass.SIGNATURE_BUILD_FAILED)
             return ProgramPublishResult(
                 0,
@@ -124,7 +124,8 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
                 failures = listOf(TvProviderWriter.Diagnostic(null, "program-signature", error.message.orEmpty())),
             )
         }
-        if (mode != ChannelScanController.PublishMode.BOOT_EPG_SYNC && lastProgramSignatureByMode[mode] == signature) {
+        val signature = publication.fingerprint
+        if (signature != null && mode != ChannelScanController.PublishMode.BOOT_EPG_SYNC && lastProgramSignatureByMode[mode] == signature) {
             return ProgramPublishResult(
                 0,
                 0,
@@ -134,7 +135,7 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
                 committedServiceKeys = eligibleTargetServiceKeys,
             )
         }
-        val result = tvProviderWriter.upsertProgramsForWindows(programs, windows)
+        val result = tvProviderWriter.upsertPreparedPrograms(publication)
         val failedServiceKeys = result.failures.mapNotNull { it.serviceKey }.toSet()
         val failedWindows = if (result.failures.any { it.serviceKey == null }) {
             windows
@@ -150,7 +151,7 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
             }
         }
         removeRetryWindows(succeededWindows)
-        if (result.failures.isEmpty()) {
+        if (result.failures.isEmpty() && signature != null) {
             lastProgramSignatureByMode[mode] = signature
         } else {
             enqueueFailedWindows(failedWindows, result.failures)
@@ -227,27 +228,6 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
             droppedDirtyWindowCountByService[oldest.serviceKey] =
                 (droppedDirtyWindowCountByService[oldest.serviceKey] ?: 0) + 1
         }
-    }
-
-    private fun plannedInputSignature(programs: List<ProgramRecord>, windows: List<EpgUpdateWindow>): String {
-        val programPart = programSignatureForTest(programs)
-        val windowPart = windows.sortedWith(compareBy<EpgUpdateWindow> { it.serviceKey.originalNetworkId }
-            .thenBy { it.serviceKey.transportStreamId }
-            .thenBy { it.serviceKey.serviceId }
-            .thenBy { it.windowStartMs }
-            .thenBy { it.windowEndMs })
-            .joinToString("|") { window ->
-                listOf(
-                    window.serviceKey.originalNetworkId,
-                    window.serviceKey.transportStreamId,
-                    window.serviceKey.serviceId,
-                    window.windowStartMs,
-                    window.windowEndMs,
-                    window.validProgramKeys.sorted().joinToString(","),
-                    window.deletionAuthoritative,
-                ).joinToString(":")
-            }
-        return "programs=$programPart#windows=$windowPart"
     }
 
     private fun windowsFromPrograms(programs: List<ProgramRecord>): List<EpgUpdateWindow> = programs.groupBy { it.serviceKey }.map { (key, values) ->

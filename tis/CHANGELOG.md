@@ -1,3 +1,10 @@
+## r51_pr85_provider_publication_bytes
+
+- TIS-033: 実際の channel ID と最終 ContentValues、更新区間を準備し、固定順の長さ付き byte 列全体から SHA-256 を計算する。同じ準備済み行を書き込み、成功時だけ処理内キャッシュへ反映する。行ごとの要約連結、仮 channel ID、余分な改行を公開経路から除いた。
+- TIS-026: TIS が直接設定した canonical genre と TvProvider 書込み後の読戻し値を独立した診断として保持する。読戻し失敗は診断に残し、成功済みの公開を失敗へ変更しない。
+- TIS-036: TvProviderWriter の provider-data 読取りも blob に統一し、文字列からの修復を除いた。
+- 検証: Kotlin 本体・テストのコンパイルと実 JNI を使う JUnit 149 件に成功。実機 TvProvider の補完動作確認は未実施。
+
 # r51_pr85_service_semantic_boundary
 
 - SI U-09/U-10/U-11: 通常JNI consumerをservice/transport意味snapshotへ統一する。CAS metadataとPMT索引は同じservice factsから導出し、CATとservice-scoped CAを混同しない。欠落名はnullのまま保持する。
