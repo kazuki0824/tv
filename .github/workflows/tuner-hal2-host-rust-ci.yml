@@ -47,9 +47,13 @@ jobs:
             echo "host_ci固有のRust sourceはありません"
             exit 0
           fi
+          failed=0
           for source in "${sources[@]}"; do
-            rustfmt --edition 2021 --check "$source"
+            if ! rustfmt --edition 2021 --check "$source"; then
+              failed=1
+            fi
           done
+          exit "$failed"
 
   production-rustfmt:
     runs-on: ubuntu-latest
@@ -72,9 +76,13 @@ jobs:
               | sort -z
           )
           test "${#sources[@]}" -gt 0
+          failed=0
           for source in "${sources[@]}"; do
-            rustfmt --edition 2021 --check "$source"
+            if ! rustfmt --edition 2021 --check "$source"; then
+              failed=1
+            fi
           done
+          exit "$failed"
 
   clippy:
     runs-on: ubuntu-latest
