@@ -1759,7 +1759,8 @@ mod tests {
                     tpid: Some(0x0100),
                     raw: false,
                     record_index: Some(RecordIndexSettings {
-                        ts_index_mask: DEMUX_TS_INDEX_FIRST_PACKET,
+                        ts_index_mask: DEMUX_TS_INDEX_FIRST_PACKET
+                            | DEMUX_TS_INDEX_PAYLOAD_UNIT_START,
                         sc_index_type: RECORD_SC_TYPE_NONE,
                         sc_index_mask: 0,
                     }),
