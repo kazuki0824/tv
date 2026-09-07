@@ -107,13 +107,18 @@ impl RootOpenTxn<'_> {
                 "frontend id is already leased by a live object",
             ));
         }
-        if self.runtime.has_active_frontend_group_lease(frontend.capability.exclusive_group_id) {
+        if self
+            .runtime
+            .has_active_frontend_group_lease(frontend.capability.exclusive_group_id)
+        {
             return Err(HalError::Unsupported(
                 "frontend physical group is already leased by a live object",
             ));
         }
         if self.runtime.active_frontend_lease_count(frontend.system)
-            >= self.runtime.current_max_number_of_frontends(frontend.system)
+            >= self
+                .runtime
+                .current_max_number_of_frontends(frontend.system)
         {
             return Err(HalError::Unsupported(
                 "frontend lease limit is reached for this frontend type",
@@ -144,11 +149,7 @@ impl RootOpenTxn<'_> {
             .map_err(|error| {
                 registry_commit_error_to_hal(error, "demux runtime allocation failed")
             })?;
-        match register_root_object(
-            self.runtime,
-            AidlObjectKind::Demux,
-            i64::from(entry.id.0),
-        ) {
+        match register_root_object(self.runtime, AidlObjectKind::Demux, i64::from(entry.id.0)) {
             Ok(object_entry) => Ok(object_entry),
             Err(error) => {
                 match unregister_demux_runtime_for_open_rollback(
@@ -212,9 +213,12 @@ impl RootOpenTxn<'_> {
         method: AidlMethodCall,
     ) -> Result<RuntimeObjectEntry, HalError> {
         preflight_root_method_dispatch(self.runtime, method)?;
-        let entry = self.runtime.allocate_descrambler_runtime().map_err(|error| {
-            registry_commit_error_to_hal(error, "descrambler runtime allocation failed")
-        })?;
+        let entry = self
+            .runtime
+            .allocate_descrambler_runtime()
+            .map_err(|error| {
+                registry_commit_error_to_hal(error, "descrambler runtime allocation failed")
+            })?;
         match register_root_object(
             self.runtime,
             AidlObjectKind::Descrambler,
@@ -255,7 +259,9 @@ impl RootOpenTxn<'_> {
             .runtime
             .object_table()
             .active_public_runtime_ids(AidlObjectKind::Lnb)
-            .contains(&maleicacid_tuner_hal2_resource_ledger::LedgerId(i64::from(lnb_id)))
+            .contains(&maleicacid_tuner_hal2_resource_ledger::LedgerId(i64::from(
+                lnb_id,
+            )))
             || !self
                 .runtime
                 .registry()

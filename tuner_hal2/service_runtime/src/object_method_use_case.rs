@@ -3,7 +3,8 @@ use std::sync::{Arc, Mutex};
 use crate::registry::LnbRegistryProfile;
 use maleicacid_tuner_hal2_binder_adapter::{AidlMethodAdapter, AidlMethodCall};
 use maleicacid_tuner_hal2_common::{
-    FrontendBackendKind, FrontendSystem, HalError, HalInternalKind, HalInvalidArgumentKind, HalInvalidStateKind,
+    FrontendBackendKind, FrontendSystem, HalError, HalInternalKind, HalInvalidArgumentKind,
+    HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_device::{FrontendRuntimeState, FrontendSignalState};
 use maleicacid_tuner_hal2_domain_request::{
@@ -153,7 +154,8 @@ pub fn lnb_profile_supports_voltage_status(profile: Option<LnbRegistryProfile>) 
 }
 
 fn stream_id_list_supported(snapshot: ObjectFrontendStatusSnapshot) -> bool {
-    snapshot.backend == FrontendBackendKind::Px4CharDevice && snapshot.system == FrontendSystem::IsdbS
+    snapshot.backend == FrontendBackendKind::Px4CharDevice
+        && snapshot.system == FrontendSystem::IsdbS
 }
 
 fn object_frontend_status_value(
@@ -910,8 +912,16 @@ mod tests {
 
     #[test]
     fn frontend_status_value_uses_dto_snapshot_without_registry_entry() {
-        let locked = snapshot(None, FrontendRuntimeState::Idle, FrontendSignalState::Locked);
-        let unlocked = snapshot(None, FrontendRuntimeState::Idle, FrontendSignalState::NoSignal);
+        let locked = snapshot(
+            None,
+            FrontendRuntimeState::Idle,
+            FrontendSignalState::Locked,
+        );
+        let unlocked = snapshot(
+            None,
+            FrontendRuntimeState::Idle,
+            FrontendSignalState::NoSignal,
+        );
 
         assert_eq!(
             object_frontend_status_value(locked, ObjectFrontendStatusType::DemodLock, None),
@@ -926,7 +936,11 @@ mod tests {
     #[test]
     fn frontend_status_rejects_unsupported_without_shortening_response() {
         let error = object_frontend_status_value(
-            snapshot(None, FrontendRuntimeState::Idle, FrontendSignalState::Locked),
+            snapshot(
+                None,
+                FrontendRuntimeState::Idle,
+                FrontendSignalState::Locked,
+            ),
             ObjectFrontendStatusType::Unsupported,
             None,
         )
@@ -974,7 +988,9 @@ mod tests {
                 ObjectFrontendStatusType::StreamIdList,
                 Some(&[0x4010, 0x4011]),
             ),
-            Ok(ObjectFrontendStatusValue::StreamIdList(vec![0x4010, 0x4011]))
+            Ok(ObjectFrontendStatusValue::StreamIdList(vec![
+                0x4010, 0x4011
+            ]))
         );
     }
 
@@ -1051,7 +1067,11 @@ mod tests {
     #[test]
     fn frontend_readiness_reports_unsupported_lnb_voltage_from_dto_snapshot() {
         let value = object_frontend_readiness_value(
-            snapshot(None, FrontendRuntimeState::Idle, FrontendSignalState::Locked),
+            snapshot(
+                None,
+                FrontendRuntimeState::Idle,
+                FrontendSignalState::Locked,
+            ),
             ObjectFrontendStatusType::LnbVoltage,
             None,
         );

@@ -60,9 +60,7 @@ pub fn aidl_object_closeable(
     match entry.lifecycle {
         RuntimeObjectLifecycle::Live
         | RuntimeObjectLifecycle::Closing { .. }
-        | RuntimeObjectLifecycle::CleanupPending { .. } => {
-            Ok(AidlObjectCloseability::BeginClose)
-        }
+        | RuntimeObjectLifecycle::CleanupPending { .. } => Ok(AidlObjectCloseability::BeginClose),
         RuntimeObjectLifecycle::Prepared
         | RuntimeObjectLifecycle::Closed
         | RuntimeObjectLifecycle::Quarantined => Err(HalError::invalid_state(

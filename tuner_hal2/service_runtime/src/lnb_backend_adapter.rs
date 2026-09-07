@@ -39,11 +39,7 @@ impl ServiceRuntimeLnbBackendSnapshot {
         target_lnb_id: LnbRuntimeId,
         pending_frontend_id: FrontendRuntimeId,
     ) -> Result<Self, LnbFailureKind> {
-        Self::new_with_optional_pending_frontend(
-            registry,
-            target_lnb_id,
-            Some(pending_frontend_id),
-        )
+        Self::new_with_optional_pending_frontend(registry, target_lnb_id, Some(pending_frontend_id))
     }
 
     fn new_with_optional_pending_frontend(
@@ -70,9 +66,8 @@ impl ServiceRuntimeLnbBackendSnapshot {
                     return Err(LnbFailureKind::BackendApplyFailed);
                 }
                 Some(_) => {}
-                None
-                    if pending_frontend_id != Some(frontend_id)
-                        && frontend_id != entry.owner_frontend_id =>
+                None if pending_frontend_id != Some(frontend_id)
+                    && frontend_id != entry.owner_frontend_id =>
                 {
                     return Err(LnbFailureKind::BackendApplyFailed);
                 }
@@ -147,9 +142,7 @@ impl LnbBackendOps for ServiceRuntimeLnbProfileAdapter<'_, '_> {
             match apply_frontend_backend_lnb_voltage_classified(&plan) {
                 FrontendBackendLnbApplyOutcome::Applied => {}
                 FrontendBackendLnbApplyOutcome::Rejected(_) => {
-                    return LnbBackendApplyOutcome::Rejected(
-                        LnbFailureKind::BackendApplyFailed,
-                    );
+                    return LnbBackendApplyOutcome::Rejected(LnbFailureKind::BackendApplyFailed);
                 }
                 FrontendBackendLnbApplyOutcome::Indeterminate(_) => {
                     return LnbBackendApplyOutcome::Indeterminate(

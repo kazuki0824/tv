@@ -1,8 +1,6 @@
 use crate::boot::TunerServiceRuntime;
 use crate::method_dispatch::plan_object_method_dispatch;
-use crate::registry::{
-    FrontendCapabilitySnapshot, FrontendRegistryEntry, LnbRegistryProfile,
-};
+use crate::registry::{FrontendCapabilitySnapshot, FrontendRegistryEntry, LnbRegistryProfile};
 use maleicacid_tuner_hal2_binder_adapter::{AidlMethodAdapter, AidlMethodCall};
 use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem};
 use maleicacid_tuner_hal2_common::{HalError, HalInvalidArgumentKind};
@@ -215,21 +213,23 @@ impl TunerServiceRuntime {
                     )
                 }),
             RootQueryRequest::LnbIds => Ok(RootQueryResponse::LnbIds(query.lnb_ids())),
-            RootQueryRequest::DemuxIds => Ok(RootQueryResponse::DemuxIds(
-                published_demux_ids(self.capability_snapshot())?,
-            )),
+            RootQueryRequest::DemuxIds => Ok(RootQueryResponse::DemuxIds(published_demux_ids(
+                self.capability_snapshot(),
+            )?)),
             RootQueryRequest::DemuxInfo { demux_id } => {
                 root_demux_info_snapshot(self.capability_snapshot(), demux_id)?
                     .map(RootQueryResponse::DemuxInfo)
-                    .ok_or_else(|| HalError::invalid_argument(
-                        HalInvalidArgumentKind::NumericRange,
-                        "demux id is not published by the capability snapshot",
-                    ))
+                    .ok_or_else(|| {
+                        HalError::invalid_argument(
+                            HalInvalidArgumentKind::NumericRange,
+                            "demux id is not published by the capability snapshot",
+                        )
+                    })
             }
-            RootQueryRequest::DemuxCapabilities => root_demux_capabilities_snapshot(
-                self.capability_snapshot(),
-            )
-            .map(RootQueryResponse::DemuxCapabilities),
+            RootQueryRequest::DemuxCapabilities => {
+                root_demux_capabilities_snapshot(self.capability_snapshot())
+                    .map(RootQueryResponse::DemuxCapabilities)
+            }
             RootQueryRequest::MaxNumberOfFrontends { frontend_system } => {
                 Ok(RootQueryResponse::MaxNumberOfFrontends(
                     self.current_max_number_of_frontends(frontend_system),
