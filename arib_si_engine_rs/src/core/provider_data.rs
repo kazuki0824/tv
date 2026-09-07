@@ -309,6 +309,28 @@ struct ComponentsV1 {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RawDescriptorV1 {
+    tag: i64,
+    raw_descriptor_hex: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ParentalRatingDescriptorV1 {
+    entries: Vec<RatingV1>,
+    raw_descriptor_hex: String,
+    parse_status: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DescriptorFactsV1 {
+    parental_rating_descriptors: Vec<ParentalRatingDescriptorV1>,
+    unknown_descriptors: Vec<RawDescriptorV1>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DiagnosticItemV1 {
     code: String,
     message: String,
@@ -325,6 +347,8 @@ struct RawProviderDataExtensionV1 {
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct DiagnosticsV1 {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    descriptor_facts: Option<DescriptorFactsV1>,
     descriptor_diagnostics: Vec<DescriptorDiagnosticV1>,
     publish_diagnostics: Vec<DiagnosticItemV1>,
     parser_diagnostics: Vec<DiagnosticItemV1>,
@@ -380,6 +404,7 @@ struct ProgramProviderDataV1 {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ProgramRequestDiagnosticsV1 {
     descriptor_diagnostics_canonical_json: String,
+    descriptor_facts_canonical_json: Option<String>,
     publish_diagnostics: Vec<DiagnosticItemV1>,
     parser_diagnostics: Vec<DiagnosticItemV1>,
 }
@@ -676,6 +701,10 @@ fn program_data_from_request(
         extended_items: request.extended_items,
         components: request.components,
         diagnostics: DiagnosticsV1 {
+            descriptor_facts: match request.diagnostics.descriptor_facts_canonical_json {
+                Some(json) => Some(serde_json::from_str(&json).ok()?),
+                None => None,
+            },
             descriptor_diagnostics,
             publish_diagnostics: request.diagnostics.publish_diagnostics,
             parser_diagnostics: request.diagnostics.parser_diagnostics,
@@ -1096,6 +1125,12 @@ fn valid_program_provider_data(data: &ProgramProviderDataV1) -> bool {
         && valid_components(&data.components)
         && data
             .diagnostics
+            .descriptor_facts
+            .as_ref()
+            .map(valid_descriptor_facts)
+            .unwrap_or(true)
+        && data
+            .diagnostics
             .descriptor_diagnostics
             .iter()
             .all(valid_descriptor_diagnostic)
@@ -1141,6 +1176,36 @@ fn nonempty(s: &str) -> bool {
 fn valid_iso639(s: &str) -> bool {
     s.len() == 3 && s.bytes().all(|byte| byte.is_ascii_alphabetic())
 }
+fn valid_raw_descriptor_hex(raw: &str, tag: i64) -> bool {
+    (0..=255).contains(&tag)
+        && (4..=514).contains(&raw.len())
+        && valid_hex(raw)
+        && u8::from_str_radix(&raw[..2], 16).ok().map(i64::from) == Some(tag)
+}
+
+fn valid_descriptor_facts(facts: &DescriptorFactsV1) -> bool {
+    facts
+        .unknown_descriptors
+        .iter()
+        .all(|item| valid_raw_descriptor_hex(&item.raw_descriptor_hex, item.tag))
+        && facts.parental_rating_descriptors.iter().all(|item| {
+            valid_raw_descriptor_hex(&item.raw_descriptor_hex, 0x55)
+                && matches!(
+                    item.parse_status.as_str(),
+                    "OK" | "MalformedLength" | "TruncatedDescriptor" | "UnsupportedValue"
+                )
+                && item.entries.iter().all(|entry| {
+                    entry.country_code.chars().count() == 3
+                        && entry.country_code.chars().all(|ch| u32::from(ch) <= 255)
+                        && (0..=255).contains(&entry.raw_rating_byte)
+                        && entry.parse_status == item.parse_status
+                })
+                && (item.parse_status == "OK"
+                    || item.parse_status == "UnsupportedValue"
+                    || item.entries.is_empty())
+        })
+}
+
 fn valid_rating(v: &RatingV1) -> bool {
     valid_iso639(&v.country_code)
         && (0..=255).contains(&v.raw_rating_byte)
@@ -1378,6 +1443,16 @@ fn finalize_program(mut data: ProgramProviderDataV1) -> ProviderDataResult {
         {
             note_drop(&mut counts, "rawProviderDataExtensions", 1);
             continue;
+        }
+        if let Some(facts) = data.diagnostics.descriptor_facts.as_mut() {
+            if facts.unknown_descriptors.pop().is_some() {
+                note_drop(&mut counts, "unknownDescriptors", 1);
+                continue;
+            }
+            if facts.parental_rating_descriptors.pop().is_some() {
+                note_drop(&mut counts, "parentalRatingDescriptors", 1);
+                continue;
+            }
         }
         if data.diagnostics.descriptor_diagnostics.pop().is_some() {
             note_drop(&mut counts, "descriptorDiagnostics", 1);

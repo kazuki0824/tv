@@ -1120,6 +1120,9 @@
         "malformedCaDescriptorCount": {
           "type": "integer",
           "minimum": 0
+        },
+        "descriptorFacts": {
+          "$ref": "#/$defs/descriptorFacts"
         }
       },
       "not": {
@@ -1276,6 +1279,164 @@
         },
         "parseStatus": {
           "$ref": "#/$defs/parseStatus"
+        }
+      }
+    },
+    "descriptorFacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "parentalRatingDescriptors",
+        "unknownDescriptors"
+      ],
+      "properties": {
+        "parentalRatingDescriptors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "entries",
+              "rawDescriptorHex",
+              "parseStatus"
+            ],
+            "properties": {
+              "entries": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "countryCode",
+                    "rawRatingByte",
+                    "parseStatus"
+                  ],
+                  "properties": {
+                    "countryCode": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 3,
+                      "pattern": "^[\\u0000-\\u00ff]{3}$"
+                    },
+                    "rawRatingByte": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 255
+                    },
+                    "parseStatus": {
+                      "enum": [
+                        "OK",
+                        "UnsupportedValue"
+                      ]
+                    }
+                  }
+                }
+              },
+              "rawDescriptorHex": {
+                "type": "string",
+                "minLength": 4,
+                "maxLength": 514,
+                "pattern": "^55(?:[0-9a-fA-F]{2})+$"
+              },
+              "parseStatus": {
+                "enum": [
+                  "OK",
+                  "MalformedLength",
+                  "TruncatedDescriptor",
+                  "UnsupportedValue"
+                ]
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "parseStatus": {
+                      "enum": [
+                        "MalformedLength",
+                        "TruncatedDescriptor"
+                      ]
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "entries": {
+                      "maxItems": 0
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "parseStatus": {
+                      "const": "OK"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "entries": {
+                      "items": {
+                        "properties": {
+                          "parseStatus": {
+                            "const": "OK"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "parseStatus": {
+                      "const": "UnsupportedValue"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "entries": {
+                      "items": {
+                        "properties": {
+                          "parseStatus": {
+                            "const": "UnsupportedValue"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "unknownDescriptors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "tag",
+              "rawDescriptorHex"
+            ],
+            "properties": {
+              "tag": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 255
+              },
+              "rawDescriptorHex": {
+                "type": "string",
+                "minLength": 4,
+                "maxLength": 514,
+                "pattern": "^(?:[0-9a-fA-F]{2})+$"
+              }
+            }
+          }
         }
       }
     }

@@ -1,3 +1,8 @@
+# r51_pr85_raw_descriptor_publication
+
+- SI U-03/U-19: Rust生成descriptor事実JSONをEvent/Programモデル経由でprovider-data builderへ透過返却する。Kotlinでcountry byte・descriptor解析状態・unknown rawを組み直さない。
+- Kotlin本番/試験コンパイルとhost JUnit145件が成功した。実JNIのEIT入力から保存・再正規化まで、正常ratingだけの昇格と診断raw全体の保持を検証した。Android実機試験は未実施。
+
 # r51_pr85_provider_boundary_corpus
 
 - SI-014: provider-data共通境界fixtureを実JNI経由で検証し、Program正規化・キー抽出・Channel復号の拒否条件をRustとJSON Schemaへ合わせる。既存のasset契約試験もhost CIへ追加する。

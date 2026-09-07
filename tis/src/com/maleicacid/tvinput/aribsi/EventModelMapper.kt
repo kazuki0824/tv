@@ -43,6 +43,7 @@ class EventModelMapper {
                     freeCaMode = event.descriptors.freeCaMode,
                     series = event.descriptors.series,
                     descriptorDiagnosticsCanonicalJson = event.descriptors.diagnostics.descriptorDiagnosticsCanonicalJson,
+                    descriptorFactsCanonicalJson = event.descriptors.diagnostics.descriptorFactsCanonicalJson,
                     parentalRatings = event.descriptors.parentalRatings,
                     components = event.descriptors.components,
                 ),

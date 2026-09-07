@@ -656,37 +656,57 @@ fn event_genre_supplement_text(event: &EitEvent) -> String {
 }
 
 fn event_diagnostic_text(event: &EitEvent) -> String {
-    let d = event.descriptors.clone();
-    let diagnostic = event_descriptor_diagnostic(&d);
+    let d = &event.descriptors;
+    let counts = event_descriptor_diagnostic(d);
     format!(
-        "content={:?} component={:?} audio={:?} parental={:?} series={:?} eventGroupCount={} componentGroupCount={} linkageCount={} unknownCount={}",
-        d.contents.iter().map(|c| (c.content_nibble_level_1, c.content_nibble_level_2)).collect::<Vec<_>>(),
-        d.components.iter().map(|c| (c.stream_content, c.component_type, c.component_tag, c.language_code.clone())).collect::<Vec<_>>(),
-        d.audio_components.iter().map(|a| (a.stream_content, a.component_type, a.component_tag, a.stream_type, a.language_code.clone(), a.language_code_2.clone())).collect::<Vec<_>>(),
-        d.parental_ratings.iter().map(|r| (r.country_code.clone(), r.raw_rating_byte)).collect::<Vec<_>>(),
-        d.series.iter().map(|s| (s.series_id, s.episode_number, s.last_episode_number, s.series_name.clone())).collect::<Vec<_>>(),
-        diagnostic.event_group_count,
-        diagnostic.component_group_count,
-        diagnostic.linkage_count,
-        diagnostic.unknown_count,
+        "contentCount={} content={:?} componentCount={} component={:?} audioCount={} audio={:?} parentalCount={} parental={:?} seriesCount={} series={:?} eventGroupCount={} eventGroups={:?} componentGroupCount={} componentGroups={:?} linkageCount={} linkage={:?} unknownCount={} unknown={:?} textDiagnostics={}",
+        counts.content_count, d.contents, counts.component_count, d.components,
+        counts.audio_component_count, d.audio_components,
+        d.parental_rating_descriptors.len(), d.parental_rating_descriptors,
+        counts.series_count, d.series, counts.event_group_count, d.event_groups,
+        counts.component_group_count, d.component_groups, counts.linkage_count, d.linkages,
+        counts.unknown_count, d.unknown,
+        d.diagnostics.iter().map(|diagnostic| diagnostic.message.as_str()).collect::<Vec<_>>().join("; "),
     )
+}
+
+fn rating_entries_value(
+    descriptor: &descriptors::ParentalRatingDescriptor,
+) -> Vec<serde_json::Value> {
+    descriptor.entries.iter().map(|rating| serde_json::json!({
+        "countryCode": rating.country_code,
+        "rawRatingByte": rating.raw_rating_byte,
+        "parseStatus": if descriptor.parse_status == descriptors::DescriptorParseStatus::Ok { "OK" } else { descriptor.parse_status.as_str() },
+    })).collect()
 }
 
 fn parental_ratings_value(event: &EitEvent) -> serde_json::Value {
     serde_json::Value::Array(
         event
             .descriptors
-            .parental_ratings
+            .parental_rating_descriptors
             .iter()
-            .map(|rating| {
-                serde_json::json!({
-                    "countryCode": rating.country_code,
-                    "rawRatingByte": rating.raw_rating_byte,
-                    "parseStatus": "OK",
-                })
-            })
+            .filter(|descriptor| descriptor.parse_status == descriptors::DescriptorParseStatus::Ok)
+            .flat_map(rating_entries_value)
             .collect(),
     )
+}
+
+fn descriptor_facts_value(event: &EitEvent) -> serde_json::Value {
+    serde_json::json!({
+        "parentalRatingDescriptors": event.descriptors.parental_rating_descriptors.iter().map(|descriptor| {
+            serde_json::json!({
+                "entries": rating_entries_value(descriptor),
+                "rawDescriptorHex": hex_lower(&descriptor.raw_descriptor_bytes),
+                "parseStatus": if descriptor.parse_status == descriptors::DescriptorParseStatus::Ok { "OK" } else { descriptor.parse_status.as_str() },
+            })
+        }).collect::<Vec<_>>(),
+        "unknownDescriptors": event.descriptors.unknown.iter().map(|(tag, body)| {
+            let mut raw = vec![*tag, body.len() as u8];
+            raw.extend_from_slice(body);
+            serde_json::json!({ "tag": tag, "rawDescriptorHex": hex_lower(&raw) })
+        }).collect::<Vec<_>>(),
+    })
 }
 
 fn video_component_semantics(
@@ -898,6 +918,7 @@ fn event_value(event: &EitEvent) -> serde_json::Value {
                 "summary": event_diagnostic_text(event),
                 "descriptorDiagnostics": json_value(descriptor_diagnostics.clone()),
                 "descriptorDiagnosticsCanonicalJson": descriptor_diagnostics,
+                "descriptorFactsCanonicalJson": descriptor_facts_value(event).to_string(),
             },
             "parentalRatings": parental_ratings_value(event),
         }

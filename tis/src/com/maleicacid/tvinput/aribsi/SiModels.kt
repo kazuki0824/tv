@@ -256,6 +256,7 @@ data class AribComponents(
 data class AribEventDiagnostics(
     val summary: String = "",
     val descriptorDiagnosticsCanonicalJson: String = "[]",
+    val descriptorFactsCanonicalJson: String? = null,
     val textDiagnostics: List<String> = emptyList(),
 )
 

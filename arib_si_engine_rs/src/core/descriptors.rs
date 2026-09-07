@@ -319,6 +319,14 @@ pub fn parse_event_descriptors(bytes: &[u8]) -> EventDescriptors {
                 &bytes[cursor..],
                 "descriptor body exceeds event descriptor loop",
             ));
+            if tag == 0x55 {
+                out.parental_rating_descriptors
+                    .push(ParentalRatingDescriptor {
+                        entries: Vec::new(),
+                        raw_descriptor_bytes: bytes[cursor..].to_vec(),
+                        parse_status: DescriptorParseStatus::TruncatedDescriptor,
+                    });
+            }
             break;
         }
         let body = &bytes[body_start..body_end];
@@ -357,7 +365,9 @@ pub fn parse_event_descriptors(bytes: &[u8]) -> EventDescriptors {
             },
             0x55 => {
                 let descriptor = parse_parental_rating_descriptor(body, &mut out, tag, cursor, len);
-                out.parental_ratings.extend(descriptor.entries.clone());
+                if descriptor.parse_status == DescriptorParseStatus::Ok {
+                    out.parental_ratings.extend(descriptor.entries.clone());
+                }
                 out.parental_rating_descriptors.push(descriptor);
             }
             0xd5 => match parse_series_descriptor(body, &mut out, tag, cursor, len) {
@@ -1214,7 +1224,7 @@ fn parse_parental_rating_descriptor(
     offset: usize,
     declared_length: usize,
 ) -> ParentalRatingDescriptor {
-    let parse_status = if body.len() % 4 != 0 {
+    let mut parse_status = if body.len() % 4 != 0 {
         out.diagnostics.push(descriptor_diagnostic(
             DescriptorParseStatus::MalformedLength,
             tag,
@@ -1228,13 +1238,32 @@ fn parse_parental_rating_descriptor(
     } else {
         DescriptorParseStatus::Ok
     };
-    let entries = body
-        .chunks_exact(4)
-        .map(|chunk| ParentalRating {
-            country_code: language(&chunk[0..3]),
-            raw_rating_byte: chunk[3],
-        })
-        .collect();
+    let entries = if parse_status == DescriptorParseStatus::Ok {
+        body.chunks_exact(4)
+            .map(|chunk| {
+                if !chunk[..3].iter().all(u8::is_ascii_alphabetic) {
+                    parse_status = DescriptorParseStatus::UnsupportedValue;
+                }
+                ParentalRating {
+                    country_code: chunk[..3].iter().map(|byte| char::from(*byte)).collect(),
+                    raw_rating_byte: chunk[3],
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if parse_status == DescriptorParseStatus::UnsupportedValue {
+        out.diagnostics.push(descriptor_diagnostic(
+            parse_status,
+            tag,
+            offset,
+            declared_length,
+            body.len(),
+            body,
+            "parental_rating_descriptor has an unsupported country code",
+        ));
+    }
     let mut raw_descriptor_bytes = Vec::with_capacity(body.len() + 2);
     raw_descriptor_bytes.push(tag);
     raw_descriptor_bytes.push(declared_length as u8);
@@ -2020,7 +2049,12 @@ mod mirakc_scope_extended_event_tests {
     #[test]
     fn parental_rating_keeps_full_rating_byte_and_reports_bad_length() {
         let desc = parse_event_descriptors(&[0x55, 0x05, b'J', b'P', b'N', 0x8f, 0xaa]);
-        assert_eq!(desc.parental_ratings[0].raw_rating_byte, 0x8f);
+        assert!(desc.parental_ratings.is_empty());
+        assert!(desc.parental_rating_descriptors[0].entries.is_empty());
+        assert_eq!(
+            desc.parental_rating_descriptors[0].raw_descriptor_bytes,
+            [0x55, 0x05, b'J', b'P', b'N', 0x8f, 0xaa]
+        );
         assert!(desc
             .diagnostics
             .iter()
@@ -2208,6 +2242,28 @@ mod r51_descriptor_coverage_tests {
         assert!(json.contains("unknownDescriptors"));
         assert!(json.contains("\"schema\":\"maleicacid.tv.descriptorDiagnostic\""));
         assert!(json.contains("\"code\":\"UNKNOWN_DESCRIPTOR\""));
+    }
+
+    #[test]
+    fn unsupported_country_bytes_remain_in_descriptor_facts_without_normal_rating_promotion() {
+        let raw = descriptor(0x55, &[b'J', b'P', b'N', 12, 0xff, 0, b'X', 0x8f]);
+        let parsed = parse_event_descriptors(&raw);
+        assert!(parsed.parental_ratings.is_empty());
+        let descriptor = &parsed.parental_rating_descriptors[0];
+        assert_eq!(
+            descriptor.parse_status,
+            DescriptorParseStatus::UnsupportedValue
+        );
+        assert_eq!(descriptor.raw_descriptor_bytes, raw);
+        assert_eq!(descriptor.entries[1].raw_rating_byte, 0x8f);
+        assert_eq!(
+            descriptor.entries[1]
+                .country_code
+                .chars()
+                .map(u32::from)
+                .collect::<Vec<_>>(),
+            [255, 0, 88]
+        );
     }
 
     #[test]

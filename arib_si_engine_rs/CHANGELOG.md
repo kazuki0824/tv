@@ -1,3 +1,10 @@
+# r51_pr85_raw_descriptor_publication
+
+- SI U-03: parental_ratingの長さ不正・切断では正常ratingを部分採用しない。未対応country byteを置換せずdescriptor単位のentries・raw全体・解析状態へ保持し、正常ratingへの昇格を抑止する。通常ratingのparseStatusも元のdescriptor状態から決める。
+- SI U-19: parental/unknown descriptor全体の構造化事実をRust生成JSONとしてbulk、Kotlin、provider-dataまで透過保持する。Rust型とJSON Schemaで値域・raw長・構造を検証し、容量上限時には診断として削除数を残す。
+- SI-001: event診断要約に各descriptor群の数と主要値を出し、event group/linkage/unknownを件数だけに縮約しない。
+- SI core150件、JNI13件、JSON Schema共通corpus16件、実JNIを使うKotlin JUnit145件が成功した。正常・不正長・未対応country・切断を混在させた実EITと80-byte未知descriptorの保存/再正規化を確認した。Android実機試験は未実施。
+
 # r51_pr85_pmt_and_clock_facts
 
 - SI U-08: descriptor loop構文検査をpure coreへ移し、JNIとPMT解析で共有する。不正PMTの部分ES/PCR/CAを正常snapshotへ昇格せず、required PMT完了はPCR有無から独立したPMT構文状態で判定する。

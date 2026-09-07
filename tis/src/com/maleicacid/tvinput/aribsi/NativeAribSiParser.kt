@@ -400,6 +400,7 @@ class NativeAribSiParser : AutoCloseable {
                 diagnostics = AribEventDiagnostics(
                     summary = diagnostics.optString("summary"),
                     descriptorDiagnosticsCanonicalJson = descriptorDiagnosticsCanonicalJson,
+                    descriptorFactsCanonicalJson = optStringOrNull(diagnostics, "descriptorFactsCanonicalJson"),
                     textDiagnostics = parseTextDiagnosticSummary(diagnostics.optString("summary")),
                 ),
             ),

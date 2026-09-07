@@ -103,5 +103,12 @@
     "encoding": "UTF8",
     "data": "{\"schema\":\"maleicacid.tv.channel\",\"schemaVersion\":1,\"serviceKey\":{\"originalNetworkId\":4,\"transportStreamId\":16400,\"serviceId\":101},\"tune\":{\"deliverySystem\":\"ISDB_S\",\"frequencyHz\":0,\"streamId\":null,\"streamIdType\":\"NONE\",\"satelliteBand\":\"110CS\"},\"cas\":{\"requiresCas\":false},\"diagnostics\":{}}",
     "accepted": false
+  },
+  {
+    "name": "raw_descriptor_facts_preserve_unsupported_country",
+    "boundary": "PROGRAM",
+    "encoding": "UTF8",
+    "data": "{\"schema\": \"maleicacid.tv.program\", \"schemaVersion\": 1, \"programKey\": {\"kind\": \"arib-event-v1\", \"originalNetworkId\": 4, \"transportStreamId\": 16400, \"serviceId\": 101, \"eventId\": 12345}, \"timing\": {\"startUtcMillis\": 1730000000000, \"durationMillis\": 1800000}, \"source\": {\"pid\": 18, \"tableId\": 78, \"version\": 12, \"sectionNumber\": 0, \"lastSectionNumber\": 1}, \"cas\": {\"requiresCas\": false, \"source\": \"SI_SEMANTICS\"}, \"ratings\": [], \"genres\": [{\"level1\": 0, \"level2\": 0, \"userNibble\": 0, \"aribName\": \"ニュース／報道\", \"parseStatus\": \"OK\"}], \"series\": null, \"eventGroups\": [], \"linkage\": [], \"freeCaMode\": {\"raw\": 0, \"scrambled\": false, \"parseStatus\": \"OK\"}, \"extendedItems\": [], \"components\": {\"video\": [], \"audio\": [], \"subtitle\": [], \"data\": []}, \"diagnostics\": {\"descriptorDiagnostics\": [], \"publishDiagnostics\": [], \"parserDiagnostics\": [], \"descriptorFacts\": {\"parentalRatingDescriptors\": [{\"entries\": [{\"countryCode\": \"ÿ\\u0000X\", \"rawRatingByte\": 143, \"parseStatus\": \"UnsupportedValue\"}], \"rawDescriptorHex\": \"5504ff00588f\", \"parseStatus\": \"UnsupportedValue\"}], \"unknownDescriptors\": [{\"tag\": 254, \"rawDescriptorHex\": \"fe03123456\"}]}}}",
+    "accepted": true
   }
 ]

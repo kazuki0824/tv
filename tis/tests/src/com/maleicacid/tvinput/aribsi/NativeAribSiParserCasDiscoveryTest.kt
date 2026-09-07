@@ -110,6 +110,57 @@ class NativeAribSiParserCasDiscoveryTest {
         }
     }
 
+    @Test fun rejectedRatingsAndFullUnknownDescriptorsSurviveProductionPublication() {
+        val parser = NativeAribSiParser()
+        try {
+            val valid = listOf(0x55, 4, 0x4a, 0x50, 0x4e, 12)
+            val malformed = listOf(0x55, 5, 0x4a, 0x50, 0x4e, 15, 0xaa)
+            val unsupported = listOf(0x55, 4, 0xff, 0, 0x58, 0x8f)
+            val unknown = listOf(0xfe, 80) + (0 until 80).toList()
+            val truncated = listOf(0x55, 4, 0x4a, 0x50)
+            val body = eitWithDescriptors(valid + malformed + unsupported + unknown + truncated)
+            check(parser.ingestSection(TsPid(PID_EIT), section(body)) == SiStatus.OK)
+            val event = parser.programStateSnapshot().events.single()
+            check(event.descriptors.parentalRatings == listOf(AribParentalRating("JPN", 12)))
+            val facts = JSONObject(requireNotNull(event.descriptors.diagnostics.descriptorFactsCanonicalJson))
+            val ratings = facts.getJSONArray("parentalRatingDescriptors")
+            check(ratings.length() == 4)
+            check(ratings.getJSONObject(0).getString("parseStatus") == "OK")
+            check(ratings.getJSONObject(1).getString("parseStatus") == "MalformedLength")
+            check(ratings.getJSONObject(1).getJSONArray("entries").length() == 0)
+            check(ratings.getJSONObject(2).getString("rawDescriptorHex") == "5504ff00588f")
+            check(ratings.getJSONObject(2).getJSONArray("entries").getJSONObject(0).getString("countryCode").map { it.code } == listOf(255, 0, 88))
+            check(ratings.getJSONObject(3).getString("parseStatus") == "TruncatedDescriptor")
+            val rawUnknown = facts.getJSONArray("unknownDescriptors").getJSONObject(0).getString("rawDescriptorHex")
+            check(rawUnknown.length == 164 && rawUnknown.endsWith("4d4e4f"))
+            val program = EventModelMapper().toProgramRecords(listOf(event)).single()
+            val stored = ProviderDataBridge.buildProgramProviderData(program).json
+            val canonical = JSONObject(stored)
+            check(canonical.getJSONArray("ratings").length() == 1)
+            val savedFacts = canonical.getJSONObject("diagnostics").getJSONObject("descriptorFacts")
+            val savedRatings = savedFacts.getJSONArray("parentalRatingDescriptors")
+            check(savedRatings.length() == ratings.length())
+            for (index in 0 until ratings.length()) {
+                val before = ratings.getJSONObject(index)
+                val after = savedRatings.getJSONObject(index)
+                check(after.getString("rawDescriptorHex") == before.getString("rawDescriptorHex"))
+                check(after.getString("parseStatus") == before.getString("parseStatus"))
+                val beforeEntries = before.getJSONArray("entries")
+                val afterEntries = after.getJSONArray("entries")
+                check(beforeEntries.length() == afterEntries.length())
+                for (entryIndex in 0 until beforeEntries.length()) {
+                    for (key in listOf("countryCode", "rawRatingByte", "parseStatus")) {
+                        check(beforeEntries.getJSONObject(entryIndex).get(key) == afterEntries.getJSONObject(entryIndex).get(key))
+                    }
+                }
+            }
+            check(savedFacts.getJSONArray("unknownDescriptors").getJSONObject(0).getString("rawDescriptorHex") == rawUnknown)
+            check(ProviderDataBridge.normalizeProgramProviderData(stored.toByteArray(Charsets.UTF_8)).json == stored)
+        } finally {
+            parser.close()
+        }
+    }
+
     @Test fun eitDescriptorWithoutMatchingPmtTagRemainsCanonicalProviderData() {
         val parser = NativeAribSiParser()
         try {
@@ -196,6 +247,10 @@ class NativeAribSiParserCasDiscoveryTest {
                 0xd5, 0x09, 0x12, 0x34, 0x2b, 0xe1, 0x23, 0x00, 0x03, 0x00, 0x0c,
                 0x4a, 0x09, 0x00, 0x11, 0x00, 0x22, 0x00, 0x01, 0x0d, 0xaa, 0xbb,
             )
+            return eitWithDescriptors(descriptors)
+        }
+
+        private fun eitWithDescriptors(descriptors: List<Int>): IntArray {
             val descriptorLength = descriptors.size
             val body = mutableListOf(
                 0x4e, 0xf0, 0x00, 0x00, 0x01, 0xc1, 0x00, 0x00,
