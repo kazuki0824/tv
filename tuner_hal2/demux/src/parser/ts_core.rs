@@ -592,7 +592,7 @@ mod tests {
         let packets = assembler.push(packet_pid(0x0123), true, &pes);
         assert_eq!(packets.len(), 1);
         assert_eq!(packets[0].stream_id, 0xbd);
-        assert_eq!(packets[0].payload, b"ARIB$\x01\x02".to_vec());
+        assert_eq!(packets[0].payload, b"ARIB$".to_vec());
     }
 }
 

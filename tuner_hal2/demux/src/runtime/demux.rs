@@ -1706,13 +1706,17 @@ impl DemuxRuntime {
         if !self.filter_producer_gates.contains_key(&filter_id) {
             return Err(DemuxRuntimeError::queue_runtime_failure(filter_id));
         }
-        if filter.queue_present()
-            && !self
+        if filter.has_filter_fmq() {
+            if !filter.queue_present() || !self.filter_queue_runtimes.contains_key(&filter_id) {
+                return Err(DemuxRuntimeError::queue_missing(filter_id));
+            }
+            if !self
                 .filter_queue_runtimes
                 .get(&filter_id)
                 .is_some_and(|queue| queue.capacity_matches_buffer_size(filter.buffer_size()))
-        {
-            return Err(DemuxRuntimeError::queue_runtime_failure(filter_id));
+            {
+                return Err(DemuxRuntimeError::queue_runtime_failure(filter_id));
+            }
         }
         if filter.open_kind() == PipelineOpenKind::Av
             && !self.filter_av_backings.contains_key(&filter_id)
@@ -2930,6 +2934,9 @@ impl DemuxRuntime {
         let snapshot = self.dvr_snapshot(dvr_id)?;
         match snapshot.state {
             super::dvr::DvrRuntimeState::Configured | super::dvr::DvrRuntimeState::Stopped => {
+                if snapshot.callback_unhealthy {
+                    return Err(DemuxRuntimeError::invalid_state(dvr_id));
+                }
                 if snapshot.queue_present && !self.dvr_queue_runtimes.contains_key(&dvr_id) {
                     return Err(DemuxRuntimeError::queue_missing(dvr_id));
                 }
@@ -4720,7 +4727,7 @@ impl DemuxRuntime {
         record_index_commit_mode: RecordIndexCommitMode,
     ) -> (Vec<PipelineDiagnostic>, Vec<PipelineGeneratedEvent>) {
         let mut diagnostics = Vec::new();
-        let generated_events = Vec::new();
+        let mut generated_events = Vec::new();
         let mut matched_filter_ids = BTreeSet::new();
         for action in delivery_actions {
             let PipelineDeliveryAction::DvrMirror { dvr_id: filter_id } = *action else {
@@ -4891,6 +4898,7 @@ impl DemuxRuntime {
                     None
                 }
             };
+            let report_event = event.clone();
             if permit.commit_record_output(TS_PACKET_SIZE, event).is_err() {
                 self.quarantine_filter_runtime(filter_id);
                 diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(
@@ -4899,6 +4907,9 @@ impl DemuxRuntime {
                     DemuxRuntimeError::queue_runtime_failure(filter_id),
                 ));
                 continue;
+            }
+            if let Some(event) = report_event {
+                generated_events.push(event);
             }
             if let Some(filter) = self.filters.get_mut(&filter_id) {
                 filter.note_payload_queued(TS_PACKET_SIZE);

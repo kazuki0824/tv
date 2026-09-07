@@ -1,14 +1,13 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, Weak};
 
+use android_hardware_common::aidl::android::hardware::common::NativeHandle::NativeHandle;
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     DemuxFilterEvent::DemuxFilterEvent, DemuxFilterMediaEvent::DemuxFilterMediaEvent,
     DemuxFilterPesEvent::DemuxFilterPesEvent, DemuxFilterScIndexMask::DemuxFilterScIndexMask,
-    DemuxFilterSectionEvent::DemuxFilterSectionEvent,
-    DemuxFilterStatus::DemuxFilterStatus,
+    DemuxFilterSectionEvent::DemuxFilterSectionEvent, DemuxFilterStatus::DemuxFilterStatus,
     DemuxFilterTsRecordEvent::DemuxFilterTsRecordEvent, DemuxPid::DemuxPid,
 };
-use android_hardware_common::aidl::android::hardware::common::NativeHandle::NativeHandle;
 use binder::ParcelFileDescriptor;
 use maleicacid_tuner_hal2_binder_adapter::AidlObjectKind;
 use maleicacid_tuner_hal2_common::{FirstErrorCollector, HalError, HalInternalKind};
@@ -166,14 +165,14 @@ fn event_from_snapshot(
         FilterEventDelivery::StartId(start_id) => Ok(AidlFilterCallbackDelivery::Event(
             DemuxFilterEvent::StartId(start_id),
         )),
-        FilterEventDelivery::Status(status) => Ok(AidlFilterCallbackDelivery::Status(
-            match status {
+        FilterEventDelivery::Status(status) => {
+            Ok(AidlFilterCallbackDelivery::Status(match status {
                 FilterStatusEvent::DataReady => DemuxFilterStatus::DATA_READY,
                 FilterStatusEvent::LowWater => DemuxFilterStatus::LOW_WATER,
                 FilterStatusEvent::HighWater => DemuxFilterStatus::HIGH_WATER,
                 FilterStatusEvent::Overflow => DemuxFilterStatus::OVERFLOW,
-            },
-        )),
+            }))
+        }
         FilterEventDelivery::Media(event) => {
             let data_length = i64::try_from(event.data_length).map_err(|_| {
                 HalError::internal(
@@ -199,29 +198,33 @@ fn event_from_snapshot(
             )?;
             let av_memory = match event.event_local_file {
                 Some(file) => NativeHandle {
-                    fds: vec![ParcelFileDescriptor::new(file.try_clone().map_err(|_| {
-                        HalError::internal(
-                            HalInternalKind::InvariantViolation,
-                            "event-local AV handle duplication failed",
-                        )
-                    })?)],
+                    fds: vec![ParcelFileDescriptor::new(file.try_clone().map_err(
+                        |_| {
+                            HalError::internal(
+                                HalInternalKind::InvariantViolation,
+                                "event-local AV handle duplication failed",
+                            )
+                        },
+                    )?)],
                     ints: vec![0],
                 },
                 None => Default::default(),
             };
-            Ok(AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Media(DemuxFilterMediaEvent {
-                streamId: i32::from(event.metadata.stream_id),
-                isPtsPresent: event.metadata.is_pts_present,
-                pts,
-                isDtsPresent: event.metadata.is_dts_present,
-                dts,
-                dataLength: data_length,
-                offset,
-                avDataId: event.data_id.0,
-                avMemory: av_memory,
-                isPesPrivateData: event.metadata.is_pes_private_data,
-                ..Default::default()
-            })))
+            Ok(AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Media(
+                DemuxFilterMediaEvent {
+                    streamId: i32::from(event.metadata.stream_id),
+                    isPtsPresent: event.metadata.is_pts_present,
+                    pts,
+                    isDtsPresent: event.metadata.is_dts_present,
+                    dts,
+                    dataLength: data_length,
+                    offset,
+                    avDataId: event.data_id.0,
+                    avMemory: av_memory,
+                    isPesPrivateData: event.metadata.is_pes_private_data,
+                    ..Default::default()
+                },
+            )))
         }
         FilterEventDelivery::Section { data_length } => {
             let data_length = i64::try_from(data_length).map_err(|_| {
@@ -230,10 +233,12 @@ fn event_from_snapshot(
                     "filter section event length does not fit i64",
                 )
             })?;
-            Ok(AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Section(DemuxFilterSectionEvent {
-                dataLength: data_length,
-                ..Default::default()
-            })))
+            Ok(AidlFilterCallbackDelivery::Event(
+                DemuxFilterEvent::Section(DemuxFilterSectionEvent {
+                    dataLength: data_length,
+                    ..Default::default()
+                }),
+            ))
         }
         FilterEventDelivery::Pes {
             stream_id,
@@ -245,11 +250,13 @@ fn event_from_snapshot(
                     "filter PES event length does not fit i32",
                 )
             })?;
-            Ok(AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Pes(DemuxFilterPesEvent {
-                streamId: stream_id,
-                dataLength: data_length,
-                ..Default::default()
-            })))
+            Ok(AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Pes(
+                DemuxFilterPesEvent {
+                    streamId: stream_id,
+                    dataLength: data_length,
+                    ..Default::default()
+                },
+            )))
         }
         FilterEventDelivery::RecordIndex(event) => Ok(AidlFilterCallbackDelivery::Event(
             DemuxFilterEvent::TsRecord(DemuxFilterTsRecordEvent {
@@ -423,10 +430,8 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
                 AidlFilterCallbackDelivery::Status(status) => callback.onFilterStatus(status),
             };
             if let Err(error) = delivery_result {
-                let primary = HalError::callback_failed(
-                    operation,
-                    format!("binder failure: {error:?}"),
-                );
+                let primary =
+                    HalError::callback_failed(operation, format!("binder failure: {error:?}"));
                 failures.push_result(finish_filter_callback_delivery_failure(
                     &context,
                     runtime,
@@ -511,9 +516,10 @@ mod tests {
                 .unwrap();
         assert!(matches!(
             section,
-            AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Section(
-                DemuxFilterSectionEvent { dataLength: 64, .. }
-            ))
+            AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Section(DemuxFilterSectionEvent {
+                dataLength: 64,
+                ..
+            }))
         ));
 
         let pes = event_from_snapshot(snapshot(FilterEventDelivery::Pes {
@@ -595,8 +601,7 @@ mod tests {
     #[test]
     fn media_event_preserves_legal_pes_timestamp_absence() {
         let event =
-            projected_media_event(AvMediaEventMetadata::from_pes(0xc0, None, None, false))
-                .unwrap();
+            projected_media_event(AvMediaEventMetadata::from_pes(0xc0, None, None, false)).unwrap();
 
         assert_eq!(event.streamId, 0xc0);
         assert!(!event.isPtsPresent);
@@ -638,8 +643,8 @@ mod tests {
             (FilterStatusEvent::HighWater, DemuxFilterStatus::HIGH_WATER),
             (FilterStatusEvent::Overflow, DemuxFilterStatus::OVERFLOW),
         ] {
-            let delivery = event_from_snapshot(snapshot(FilterEventDelivery::Status(status)))
-                .unwrap();
+            let delivery =
+                event_from_snapshot(snapshot(FilterEventDelivery::Status(status))).unwrap();
             assert!(matches!(
                 delivery,
                 AidlFilterCallbackDelivery::Status(actual) if actual == expected
