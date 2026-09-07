@@ -1,3 +1,9 @@
+# r51_pr85_clock_section_crc
+
+- TIS-AUD-04/F-02: PID 0x14をTDT(table_id=0x70)とTOT(0x73)の完全一致filterへ分割し、TDTだけCRC検証を無効とする。TOTはTunerのCRC検証とRust側検証を両方通す。
+- 同じPIDに属するfilter群を一つの所有権で回収し、callbackの発生元を各実filterとtune世代で検査する。準備途中の失敗では作成済みfilterをすべてcloseし、close失敗の所有物と例外を保持する。
+- 実Android設定型で256通りのtable IDの非重複選択とCRC設定を確認した。本番/試験Kotlinのコンパイルとhost JUnit140件が成功した。Android実機でのFilter同時開設とCRC不正TOT入力の試験は未実施。
+
 # r51_pr85_discovery_cas_provider_fixes
 
 - TIS-AUD-01/B-06: BS探索が期限内に完了した場合だけ報告済みstream IDを採用し、呼出し側でも成功判定を確認する。TIS-AUD-06/B-11: backend名に依存するselector拒否を除き、公開Tunerの結果で判定する。
