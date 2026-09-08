@@ -112,7 +112,20 @@ class CasControllerStateTest {
         val controller = CasController(mediaCasFactory = UnavailableMediaCasBridgeFactory())
         val descrambler = FakeTunerDescramblerBridge()
         val update = controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), descrambler)
+        check(update.diagnostics.any { it.errorCode == CasController.ErrorCode.PLUGIN_UNAVAILABLE }) { update.diagnostics.toString() }
+        check(descrambler.keyTokens.isEmpty())
+        check(descrambler.addedPids.isEmpty())
+    }
+
+    @Test fun sessionOpenFailureIsDistinctFromPluginUnavailable() {
+        val factory = SessionFailureMediaCasBridgeFactory()
+        val controller = CasController(mediaCasFactory = factory)
+        val descrambler = FakeTunerDescramblerBridge()
+        val update = controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), descrambler)
+
         check(update.diagnostics.any { it.errorCode == CasController.ErrorCode.SESSION_OPEN_FAILED }) { update.diagnostics.toString() }
+        check(update.diagnostics.none { it.errorCode == CasController.ErrorCode.PLUGIN_UNAVAILABLE }) { update.diagnostics.toString() }
+        check(factory.bridge.closed)
         check(descrambler.keyTokens.isEmpty())
         check(descrambler.addedPids.isEmpty())
     }
@@ -158,6 +171,20 @@ class CasControllerStateTest {
     private class UnavailableMediaCasBridgeFactory : CasController.MediaCasBridgeFactory {
         override fun create(caSystemId: Int): Result<CasController.MediaCasBridge> =
             Result.failure(IllegalStateException("placeholder CAS plugin は利用できません"))
+    }
+
+    private class SessionFailureMediaCasBridgeFactory : CasController.MediaCasBridgeFactory {
+        val bridge = SessionFailureMediaCasBridge()
+        override fun create(caSystemId: Int): Result<CasController.MediaCasBridge> = Result.success(bridge)
+    }
+
+    private class SessionFailureMediaCasBridge : CasController.MediaCasBridge {
+        var closed = false
+        override fun setPrivateData(privateData: ByteArray): Result<Unit> = Result.success(Unit)
+        override fun openSession(): Result<CasController.MediaCasSessionBridge> =
+            Result.failure(IllegalStateException("CAS session を開始できません"))
+        override fun processEmm(section: ByteArray): Result<Unit> = Result.success(Unit)
+        override fun close() { closed = true }
     }
 
     private class FakeMediaCasBridgeFactory : CasController.MediaCasBridgeFactory {

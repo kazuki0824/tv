@@ -34,6 +34,10 @@ class CasController(
     private data class ProgramCaBinding(val serviceKeyText: String, val caSystemId: Int, val ecmPid: TsPid, val privateData: ByteArray)
     private data class EmmBinding(val caSystemId: Int, val emmPid: TsPid, val privateData: ByteArray)
     private data class CasSessionState(val caSystemId: Int, val cas: MediaCasBridge, val session: MediaCasSessionBridge, val ecmPids: MutableSet<TsPid> = linkedSetOf(), val elementaryPids: MutableSet<TsPid> = linkedSetOf())
+    private class SessionProvisioningException(
+        val errorCode: ErrorCode,
+        cause: Throwable,
+    ) : IllegalStateException(cause.message, cause)
 
     @Volatile private var executorThread: Thread? = null
     private val executor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
@@ -121,7 +125,9 @@ class CasController(
         sessionsBySystemId.values.forEach { state -> state.ecmPids.clear(); state.elementaryPids.clear() }
         (programBindings.map { it.caSystemId } + esBindings.map { it.caSystemId }).toSet().forEach { systemId ->
             val result = ensureSessionLocked(systemId)
-            if (result.isFailure) diagnostics += Diagnostic(State.ERROR, ErrorCode.SESSION_OPEN_FAILED, systemId, message = result.exceptionOrNull()?.message.orEmpty())
+            result.exceptionOrNull()?.let { failure ->
+                diagnostics += sessionFailureDiagnostic(systemId, failure)
+            }
         }
         programBindings.forEach { binding ->
             sessionsBySystemId[binding.caSystemId]?.let { state ->
@@ -137,9 +143,11 @@ class CasController(
             }
         }
         emmBindings.forEach { binding ->
-            ensureCasOnlyLocked(binding.caSystemId)?.let { cas ->
+            ensureCasOnlyLocked(binding.caSystemId).onSuccess { cas ->
                 cas.setPrivateData(binding.privateData).onFailure { e -> diagnostics += Diagnostic(State.ERROR, ErrorCode.PRIVATE_DATA_FAILED, binding.caSystemId, binding.emmPid, e.message.orEmpty()) }
-            } ?: run { diagnostics += Diagnostic(State.ERROR, ErrorCode.PLUGIN_UNAVAILABLE, binding.caSystemId, binding.emmPid, "MediaCas plugin を利用できません") }
+            }.onFailure { failure ->
+                diagnostics += sessionFailureDiagnostic(binding.caSystemId, failure, binding.emmPid)
+            }
         }
         rebuildPidIndexesLocked()
         emmBindings.forEach { binding -> emmPidToSystems.getOrPut(binding.emmPid) { linkedSetOf() } += binding.caSystemId }
@@ -192,11 +200,11 @@ class CasController(
         if (systems.isEmpty()) return@onExecutor emptyList()
         val diagnostics = mutableListOf<Diagnostic>()
         systems.forEach { systemId ->
-            val cas = sessionsBySystemId[systemId]?.cas ?: ensureCasOnlyLocked(systemId)
-            if (cas == null) {
-                diagnostics += Diagnostic(State.ERROR, ErrorCode.PLUGIN_UNAVAILABLE, systemId, pid, "MediaCas plugin を利用できません")
-                return@forEach
-            }
+            val cas = sessionsBySystemId[systemId]?.cas
+                ?: ensureCasOnlyLocked(systemId).getOrElse { failure ->
+                    diagnostics += sessionFailureDiagnostic(systemId, failure, pid)
+                    return@forEach
+                }
             cas.processEmm(section).onFailure { e -> diagnostics += Diagnostic(State.ERROR, ErrorCode.EMM_FAILED, systemId, pid, e.message.orEmpty()) }
         }
         if (diagnostics.isNotEmpty()) lastDiagnostic = diagnostics.last()
@@ -207,16 +215,31 @@ class CasController(
 
     private fun ensureSessionLocked(caSystemId: Int): Result<CasSessionState> {
         sessionsBySystemId[caSystemId]?.let { return Result.success(it) }
-        val cas = mediaCasFactory.create(caSystemId).getOrElse { return Result.failure(it) }
-        val session = cas.openSession().getOrElse { cas.close(); return Result.failure(it) }
+        val cas = mediaCasFactory.create(caSystemId).getOrElse { failure ->
+            return Result.failure(SessionProvisioningException(ErrorCode.PLUGIN_UNAVAILABLE, failure))
+        }
+        val session = cas.openSession().getOrElse { failure ->
+            cas.close()
+            return Result.failure(SessionProvisioningException(ErrorCode.SESSION_OPEN_FAILED, failure))
+        }
         val state = CasSessionState(caSystemId, cas, session)
         sessionsBySystemId[caSystemId] = state
         return Result.success(state)
     }
 
-    private fun ensureCasOnlyLocked(caSystemId: Int): MediaCasBridge? {
-        sessionsBySystemId[caSystemId]?.let { return it.cas }
-        return ensureSessionLocked(caSystemId).getOrNull()?.cas
+    private fun ensureCasOnlyLocked(caSystemId: Int): Result<MediaCasBridge> {
+        sessionsBySystemId[caSystemId]?.let { return Result.success(it.cas) }
+        return ensureSessionLocked(caSystemId).map { it.cas }
+    }
+
+    private fun sessionFailureDiagnostic(
+        caSystemId: Int,
+        failure: Throwable,
+        pid: TsPid? = null,
+    ): Diagnostic {
+        val errorCode = (failure as? SessionProvisioningException)?.errorCode
+            ?: ErrorCode.SESSION_OPEN_FAILED
+        return Diagnostic(State.ERROR, errorCode, caSystemId, pid, failure.message.orEmpty())
     }
 
     private fun syncDescramblerPidsLocked(previousPids: Set<TsPid>, activePids: Set<TsPid>, diagnostics: MutableList<Diagnostic>) {

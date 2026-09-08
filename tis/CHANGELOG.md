@@ -1,3 +1,9 @@
+## r51_pr85_cas_session_diagnostics
+
+- TIS-047: MediaCas plugin 自体を生成できない失敗を `PLUGIN_UNAVAILABLE`、plugin 生成後に session を開始できない失敗を `SESSION_OPEN_FAILED` として区別する。B25 の EMM 経路も同じ型付き分類を使用する。
+- session 開始に失敗した MediaCas bridge を直ちに close し、どちらの失敗でも key token や elementary PID を descrambler へ接続しない。
+- host Kotlin 状態遷移試験で plugin 未接続と session 開始失敗を別々に固定し、CI の成功件数を 152 件へ更新する。実 CAS HAL、Tuner HAL 診断相関、実機 descramble は r51 の完了対象に含めない。
+
 ## r51_pr85_playback_stop_admission
 
 - TIS-040: 再生資源が確保されている pipeline を LiveSession 数とは独立して計数し、boot EPG / background scan の事前検査・受付後検査・実行直前検査へ接続した。最後の pipeline の停止確認時に保留ジョブを再評価する。
