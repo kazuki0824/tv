@@ -219,7 +219,8 @@ class NativeAribSiParser : AutoCloseable {
             )
         }
     private fun optIntOrNull(obj: JSONObject, key: String): Int? = if (obj.isNull(key)) null else obj.optInt(key)
-    private fun optStringOrNull(obj: JSONObject, key: String): String? = obj.optString(key).takeIf { it.isNotBlank() }
+    private fun optStringOrNull(obj: JSONObject, key: String): String? =
+        if (obj.isNull(key)) null else obj.getString(key).takeIf { it.isNotBlank() }
     private fun optBoolOrNull(obj: JSONObject, key: String): Boolean? = if (obj.isNull(key)) null else obj.optBoolean(key)
 
     private fun hexToBytes(hex: String): ByteArray {
@@ -392,6 +393,7 @@ class NativeAribSiParser : AutoCloseable {
                 scrambled = if (freeCaMode.isNull("scrambled")) null else freeCaMode.optBoolean("scrambled"),
                 freeCaMode = parseFreeCaMode(freeCaMode),
                 series = parseSeries(series),
+                seriesCandidatesCanonicalJson = optStringOrNull(descriptorsObj, "seriesCandidatesCanonicalJson"),
                 parentalRatings = parseParentalRatings(descriptorsObj.optJSONArray("parentalRatings")),
                 components = parseComponents(descriptorsObj.optJSONObject("components")) ?: AribComponents(),
                 diagnostics = AribEventDiagnostics(

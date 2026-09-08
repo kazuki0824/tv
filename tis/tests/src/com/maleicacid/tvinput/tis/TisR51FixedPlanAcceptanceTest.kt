@@ -340,6 +340,23 @@ class TisR51FixedPlanAcceptanceTest {
         check(!providerData.has("publishStateSource"))
     }
 
+    @Test fun ambiguousSeriesPreservesBothRecordsAndClearsStandardColumns() {
+        val candidates = """[{"seriesId":1,"repeatLabel":0,"programPattern":0,"expireDateValid":false,"expireDate":null,"episodeNumber":1,"lastEpisodeNumber":2,"name":"系列A","parseStatus":"OK"},{"seriesId":2,"repeatLabel":0,"programPattern":0,"expireDateValid":false,"expireDate":null,"episodeNumber":3,"lastEpisodeNumber":4,"name":"系列B","parseStatus":"OK"}]"""
+        val event = aribEvent()
+        val record = EventModelMapper().toProgramRecords(listOf(event.copy(
+            descriptors = event.descriptors.copy(series = null, seriesCandidatesCanonicalJson = candidates),
+        ))).single()
+        val data = JSONObject(TvProviderWriter.programProviderDataForTest(record))
+        check(data.isNull("series"))
+        val facts = data.getJSONObject("diagnostics").getJSONArray("rawProviderDataExtensions").getJSONObject(0)
+        check(facts.getString("key") == "seriesDescriptorFacts")
+        check(facts.getJSONArray("value").getJSONObject(1).getInt("episodeNumber") == 3)
+        val values = TvProviderWriter("input.test", FakeStore(), testOnly = true).programValuesForTest(1L, record)
+        check(values.getAsString(TvProviderWriter.COLUMN_SERIES_ID) == null)
+        check(values.getAsString(TvProviderWriter.COLUMN_MULTI_SERIES_ID) == null)
+        check(values.getAsString(TvContract.Programs.COLUMN_EPISODE_DISPLAY_NUMBER) == null)
+    }
+
     @Test fun contentRatingWrittenToPrograms() {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)

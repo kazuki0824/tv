@@ -108,6 +108,7 @@ object ProviderDataBridge {
             .put("linkage", toLinkageArray(descriptors.linkage))
             .put("freeCaMode", toFreeCaModeObject(descriptors))
             .put("series", toSeriesObject(descriptors))
+            .put("seriesCandidatesCanonicalJson", descriptors.seriesCandidatesCanonicalJson ?: JSONObject.NULL)
             .put("shortEvents", toShortEventsArray(descriptors.shortEvents))
             .put("extendedTexts", toExtendedTextsArray(descriptors.extendedTexts))
             .put("diagnostics", JSONObject()

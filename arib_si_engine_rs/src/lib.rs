@@ -424,9 +424,13 @@ fn event_audio_language(event: &EitEvent) -> String {
 }
 
 fn event_primary_series_value(event: &EitEvent) -> serde_json::Value {
-    let Some(series) = event.descriptors.series.first() else {
-        return serde_json::Value::Null;
-    };
+    match event.descriptors.series.as_slice() {
+        [series] => series_value(series),
+        _ => serde_json::Value::Null,
+    }
+}
+
+fn series_value(series: &crate::descriptors::SeriesDescriptor) -> serde_json::Value {
     serde_json::json!({
         "seriesId": series.series_id,
         "repeatLabel": series.repeat_label,
@@ -445,6 +449,13 @@ fn event_primary_series_value(event: &EitEvent) -> serde_json::Value {
             serde_json::Value::String(series.series_name.clone())
         },
         "parseStatus": "OK",
+    })
+}
+
+fn series_candidates_canonical_json(event: &EitEvent) -> Option<String> {
+    (event.descriptors.series.len() > 1).then(|| {
+        serde_json::Value::Array(event.descriptors.series.iter().map(series_value).collect())
+            .to_string()
     })
 }
 
@@ -827,6 +838,7 @@ fn event_value(event: &EitEvent) -> serde_json::Value {
                 "parseStatus": "OK",
             },
             "series": event_primary_series_value(event),
+            "seriesCandidatesCanonicalJson": series_candidates_canonical_json(event),
             "components": event_components_value(event),
             "diagnostics": {
                 "summary": event_diagnostic_text(event),
@@ -1553,6 +1565,24 @@ mod tests {
                 ..crate::descriptors::EventDescriptors::default()
             },
         }
+    }
+
+    #[test]
+    fn multiple_series_keeps_every_fact_without_selecting_a_primary() {
+        let mut event = minimal_event_for_related_items(1, 0x100);
+        let bytes = [
+            0xd5, 9, 0, 1, 0, 0, 0, 0, 1, 0, 2, 0xd5, 9, 0, 2, 0, 0, 0, 0, 3, 0, 4,
+        ];
+        event.descriptors = crate::descriptors::parse_event_descriptors(&bytes);
+        assert!(event_primary_series_value(&event).is_null());
+        let candidates: serde_json::Value =
+            serde_json::from_str(&series_candidates_canonical_json(&event).unwrap()).unwrap();
+        assert_eq!(candidates.as_array().unwrap().len(), 2);
+        assert_eq!(candidates[0]["seriesId"], 1);
+        assert_eq!(candidates[1]["seriesId"], 2);
+        event.descriptors.series.pop();
+        assert_eq!(event_primary_series_value(&event)["seriesId"], 1);
+        assert!(series_candidates_canonical_json(&event).is_none());
     }
 
     #[test]

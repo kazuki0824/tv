@@ -1,3 +1,7 @@
+# r51_pr85_stack_unique_series_projection
+
+- #87 D06/D07 / TIS-053: v1の単一series契約を正式に固定し、複数記述子の先頭を採用しない。通常seriesはnull、全候補は同じRust型で検証して診断拡張へ保存する。TISは候補JSONを透過保持し、系列ID・話数を勝手に関連付けない。
+
 # r51_pr85_stack_cas_evidence
 
 - #87 D10 / SI U-17・SI-007: PMT/CA解析状態とprogram/ESのCA根拠を、Rust所有のcasFacts containerとしてProgram/Channel両方へ保存する。Kotlinにはcanonical JSONを透過保持し、既存cas DTOと旧v1の読込互換を維持する。保存値をcurrent policyの代替元へ使わない。

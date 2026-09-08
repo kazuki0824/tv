@@ -526,6 +526,7 @@ struct ProgramProviderDataRequestV1 {
     ratings: Vec<RatingV1>,
     genres: Vec<GenreV1>,
     series: Option<SeriesV1>,
+    series_candidates_canonical_json: Option<String>,
     event_groups: Vec<EventGroupV1>,
     linkage: Vec<LinkageV1>,
     free_ca_mode: Option<FreeCaModeV1>,
@@ -787,6 +788,22 @@ fn program_data_from_request(
     }
     let descriptor_diagnostics =
         parse_descriptor_diagnostics(&request.diagnostics.descriptor_diagnostics_canonical_json)?;
+    let series_extensions = match request.series_candidates_canonical_json.as_deref() {
+        None => Vec::new(),
+        Some(raw) => {
+            let candidates: Vec<SeriesV1> = serde_json::from_str(raw).ok()?;
+            if request.series.is_some()
+                || candidates.len() < 2
+                || !candidates.iter().all(valid_series)
+            {
+                return None;
+            }
+            vec![RawProviderDataExtensionV1 {
+                key: "seriesDescriptorFacts".to_string(),
+                value: serde_json::to_value(candidates).ok()?,
+            }]
+        }
+    };
     let data = ProgramProviderDataV1 {
         schema: PROGRAM_SCHEMA_NAME.to_string(),
         schema_version: PROVIDER_SCHEMA_VERSION,
@@ -822,7 +839,7 @@ fn program_data_from_request(
             descriptor_diagnostics,
             publish_diagnostics: request.diagnostics.publish_diagnostics,
             parser_diagnostics: request.diagnostics.parser_diagnostics,
-            raw_provider_data_extensions: Vec::new(),
+            raw_provider_data_extensions: series_extensions,
             provider_data_truncated: None,
             provider_data_hard_limit_bytes: None,
             provider_data_soft_limit_bytes: None,

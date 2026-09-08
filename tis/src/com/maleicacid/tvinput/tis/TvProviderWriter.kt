@@ -339,7 +339,7 @@ class TvProviderWriter private constructor(
         }
         val seriesId = program.descriptors.series?.seriesId
         if (seriesId == null) putNull(COLUMN_SERIES_ID) else put(COLUMN_SERIES_ID, seriesId)
-        // ARIB series descriptor はこのモデルでは単一系列なので、複数系列用列には投影しない。
+        // 投影契約は一意な単一series。複数記述子は根拠を保存し、ID・話数を選択しない。
         putNull(COLUMN_MULTI_SERIES_ID)
         val episodeNumber = program.descriptors.series?.episodeNumber
         if (episodeNumber == null || episodeNumber <= 0) putNull(COLUMN_EPISODE_DISPLAY_NUMBER) else put(COLUMN_EPISODE_DISPLAY_NUMBER, episodeNumber.toString())
