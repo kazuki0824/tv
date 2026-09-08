@@ -77,7 +77,10 @@ pub enum DescriptorParseStatus {
 
 impl DescriptorParseStatus {
     pub fn is_structural_error(self) -> bool {
-        matches!(self, Self::MalformedLength | Self::TruncatedDescriptor | Self::InvalidSequence)
+        matches!(
+            self,
+            Self::MalformedLength | Self::TruncatedDescriptor | Self::InvalidSequence
+        )
     }
 
     pub fn as_str(self) -> &'static str {

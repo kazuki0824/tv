@@ -15,11 +15,11 @@ use descriptors::{
     event_provider_fields, json_escape, DescriptorSectionScope,
 };
 use discovery_requirements::DiscoveryProfile;
-use maleicacid_arib_si_engine_core::eit_instances::{EitInstances, EitInstanceState};
 use eit::{EitEvent, EitStableEventIdentity, EitUpdateWindow};
 use jni::objects::{JByteArray, JObject, JString};
 use jni::sys::{jint, jlong, jstring};
 use jni::JNIEnv;
+use maleicacid_arib_si_engine_core::eit_instances::{EitInstanceState, EitInstances};
 use provider_data as provider_data_api;
 use sections::{
     parse_section_header, section_crc_valid_with_header, section_has_malformed_descriptor_loop,
@@ -90,7 +90,9 @@ impl ParserState {
             return STATUS_INVALID_SECTION;
         }
 
-        if pid == 0x0012 { self.eit_instances.ingest(section); }
+        if pid == 0x0012 {
+            self.eit_instances.ingest(section);
+        }
         self.sections_seen = self.sections_seen.saturating_add(1);
         let table_id = header.table_id;
         if pid == 0x0014 && matches!(table_id, 0x70 | 0x73) {

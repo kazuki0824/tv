@@ -182,7 +182,11 @@ impl EitStore {
         let deletion_authoritative = header.table_id == 0x4e
             && malformed_event_keys.is_empty()
             && parsed.iter().all(|event| {
-                event.timing_state.has_stable_identity() && event.diagnostics.iter().all(|diagnostic| !diagnostic.parse_status.is_structural_error())
+                event.timing_state.has_stable_identity()
+                    && event
+                        .diagnostics
+                        .iter()
+                        .all(|diagnostic| !diagnostic.parse_status.is_structural_error())
             });
         if parsed.is_empty() && !malformed_event_keys.is_empty() {
             // 不正 event だけの EIT section は、同じ section 内の既存有効 event を
@@ -533,7 +537,9 @@ pub fn parse_eit_section(section: &[u8]) -> Vec<EitEvent> {
                 event_identity: identity,
                 parse_status: diagnostic.parse_status,
                 reason: diagnostic.message.clone(),
-                malformed_descriptor_count: usize::from(diagnostic.parse_status.is_structural_error()),
+                malformed_descriptor_count: usize::from(
+                    diagnostic.parse_status.is_structural_error(),
+                ),
                 descriptor_diagnostics: vec![diagnostic.clone()],
             });
         }
@@ -712,7 +718,10 @@ mod tests {
         body[2] = (body.len() - 3 + 4) as u8;
         let section = section_with_crc(body);
         let events = parse_eit_section(&section);
-        assert_eq!(events[0].diagnostics[0].parse_status, DescriptorParseStatus::UnsupportedValue);
+        assert_eq!(
+            events[0].diagnostics[0].parse_status,
+            DescriptorParseStatus::UnsupportedValue
+        );
         assert_eq!(events[0].diagnostics[0].malformed_descriptor_count, 0);
         let mut store = EitStore::default();
         store.upsert_section(&section);

@@ -8,10 +8,10 @@ pub mod ca_descriptor;
 pub mod descriptors;
 #[path = "core/discovery_requirements.rs"]
 pub mod discovery_requirements;
-#[path = "core/eit_instances.rs"]
-pub mod eit_instances;
 #[path = "core/eit.rs"]
 pub mod eit;
+#[path = "core/eit_instances.rs"]
+pub mod eit_instances;
 #[path = "core/provider_data.rs"]
 pub mod provider_data;
 #[path = "core/sections.rs"]

@@ -236,7 +236,9 @@ impl DiscoveryCollectionState {
     }
 
     pub fn is_partially_complete(&self) -> bool {
-        self.table_requirements.iter().any(|status| status.required && status.complete)
+        self.table_requirements
+            .iter()
+            .any(|status| status.required && status.complete)
     }
 
     pub fn publish_stage(&self) -> DiscoveryPublishStage {
@@ -1205,17 +1207,30 @@ impl ServiceDiscoveryCollector {
                 });
             }
         }
-        let bat_scopes: BTreeSet<_> = self.bat_transport_scopes.values().flatten().copied().collect();
+        let bat_scopes: BTreeSet<_> = self
+            .bat_transport_scopes
+            .values()
+            .flatten()
+            .copied()
+            .collect();
         if bat_scopes.is_empty() {
             table_requirements.push(TableRequirementStatus {
-                component: "BAT", original_network_id: None, transport_stream_id: None,
-                service_id: None, required: false, complete: bat_complete,
+                component: "BAT",
+                original_network_id: None,
+                transport_stream_id: None,
+                service_id: None,
+                required: false,
+                complete: bat_complete,
             });
         } else {
             for (tsid, onid) in bat_scopes {
                 table_requirements.push(TableRequirementStatus {
-                    component: "BAT", original_network_id: Some(onid), transport_stream_id: Some(tsid),
-                    service_id: None, required: false, complete: self.bat_complete_for_transport(onid, tsid),
+                    component: "BAT",
+                    original_network_id: Some(onid),
+                    transport_stream_id: Some(tsid),
+                    service_id: None,
+                    required: false,
+                    complete: self.bat_complete_for_transport(onid, tsid),
                 });
             }
         }
@@ -2049,7 +2064,10 @@ fn retain_text_decode_diagnostic(diagnostics: &mut Vec<String>, diagnostic: Opti
 
 #[cfg(test)]
 mod tests {
-    use super::{DiscoveryPublishStage, ServiceDiscoveryCollector, ServiceDiscoveryEngine};
+    use super::{
+        DiscoveryCollectionState, DiscoveryPublishStage, ServiceDiscoveryCollector,
+        ServiceDiscoveryEngine, TableRequirementStatus,
+    };
     use crate::discovery_requirements::DiscoveryProfile;
     use crate::sections::crc32_mpeg;
 
@@ -2057,10 +2075,22 @@ mod tests {
     fn partial_stage_is_derived_from_required_tables_without_services() {
         let mut state = DiscoveryCollectionState::default();
         state.table_requirements = vec![
-            TableRequirementStatus { component: "PAT", original_network_id: None, transport_stream_id: None,
-                service_id: None, required: true, complete: true },
-            TableRequirementStatus { component: "PMT", original_network_id: None, transport_stream_id: None,
-                service_id: None, required: true, complete: false },
+            TableRequirementStatus {
+                component: "PAT",
+                original_network_id: None,
+                transport_stream_id: None,
+                service_id: None,
+                required: true,
+                complete: true,
+            },
+            TableRequirementStatus {
+                component: "PMT",
+                original_network_id: None,
+                transport_stream_id: None,
+                service_id: None,
+                required: true,
+                complete: false,
+            },
         ];
         assert_eq!(state.publish_stage(), DiscoveryPublishStage::Partial);
         state.table_requirements[0].required = false;
