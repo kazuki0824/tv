@@ -20,7 +20,7 @@ use eit::{EitEvent, EitStableEventIdentity};
 use jni::objects::{JByteArray, JObject, JString};
 use jni::sys::{jint, jlong, jstring};
 use jni::JNIEnv;
-use product_policy::{EitStore, EitUpdateWindow};
+use product_policy::{EitInstanceState, EitStore, EitUpdateWindow};
 use provider_data as provider_data_api;
 use sections::{
     parse_section_header, section_crc_valid_with_header, section_has_malformed_descriptor_loop,
@@ -69,7 +69,6 @@ fn si_module_is_healthy() -> bool {
 #[derive(Default)]
 struct ParserState {
     epg_store: EitStore,
-    discovery_profile: DiscoveryProfile,
     collector: ServiceDiscoveryCollector,
     sections_seen: u64,
     last_status: jint,
@@ -121,13 +120,7 @@ impl ParserState {
             // 不正descriptor loopは診断付き入力として扱い、意味解析前に
             // section全体を破棄する理由にはしない。復旧不能なsection length / CRC errorは上で拒否する。
             if pid == 0x0012 && (0x4e..=0x6f).contains(&table_id) {
-                if product_policy::is_program_publish_eit_section(
-                    self.discovery_profile,
-                    pid,
-                    section,
-                ) {
-                    self.epg_store.upsert_section(section);
-                }
+                self.epg_store.upsert_section(section);
             } else {
                 self.collector.push_section(pid, section);
             }
@@ -1033,6 +1026,7 @@ struct BulkSnapshot {
     transport_semantic_facts: Vec<TransportSemanticFactsDto>,
     events: Vec<serde_json::Value>,
     epg_update_windows: Vec<EpgUpdateWindowDto>,
+    eit_instances: Vec<EitInstanceState>,
     service_semantic_facts: Vec<ServiceSemanticFactsDto>,
     parser_diagnostics: Vec<ParserDiagnosticDto>,
 }
@@ -1110,6 +1104,7 @@ fn bulk_snapshot_json(state: &mut ParserState, take_update_windows: bool) -> Str
             })
             .collect(),
         events: state.events().iter().map(event_value).collect(),
+        eit_instances: state.epg_store.instance_states(),
         epg_update_windows: epg_windows.iter().map(EpgUpdateWindowDto::from).collect(),
         service_semantic_facts: semantic_facts
             .iter()
@@ -1507,7 +1502,7 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
         _ => return STATUS_INVALID_DISCOVERY_PROFILE,
     };
     with_state_mut(handle, STATUS_INVALID_HANDLE, |state| {
-        state.discovery_profile = profile;
+        state.epg_store.set_discovery_profile(profile);
         state.collector.set_discovery_profile(profile);
         STATUS_OK
     })

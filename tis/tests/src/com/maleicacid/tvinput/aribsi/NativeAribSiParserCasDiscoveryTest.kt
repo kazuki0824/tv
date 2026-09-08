@@ -5,6 +5,35 @@ import org.json.JSONObject
 import org.junit.Test
 
 class NativeAribSiParserCasDiscoveryTest {
+    @Test fun eitInstanceCompletionKeepsTransportScopesAndVersionsSeparate() {
+        NativeAribSiParser().use { parser ->
+            fun body(number: Int, tsid: Int = 0x11, version: Int = 31): IntArray =
+                eitWithDescriptors(emptyList()).also {
+                    it[5] = 0xc1 or (version shl 1)
+                    it[6] = number
+                    it[7] = 1
+                    it[9] = tsid
+                    it[15] = 0x34 + number
+                }
+            check(parser.ingestSection(TsPid(0x12), section(body(0))) == SiStatus.OK)
+            check(parser.ingestSection(TsPid(0x12), section(body(1, tsid = 0x12))) == SiStatus.OK)
+            val partial = parser.serviceRegistrationSnapshot().eitInstances
+            check(partial.size == 2 && partial.none { it.complete })
+            check(partial.first().receivedSections == listOf(0))
+            check(partial.first().missingSections == listOf(1))
+            check(parser.takeProgramPublishSnapshot().updateWindows.isEmpty())
+            check(parser.ingestSection(TsPid(0x12), section(body(1))) == SiStatus.OK)
+            val complete = parser.takeProgramPublishSnapshot()
+            check(complete.eitInstances.count { it.complete } == 1)
+            check(complete.updateWindows.single().deletionAuthoritative)
+            check(parser.ingestSection(TsPid(0x12), section(body(0, version = 0))) == SiStatus.OK)
+            check(parser.ingestSection(TsPid(0x12), section(body(0, version = 31))) == SiStatus.OK)
+            val newer = parser.serviceRegistrationSnapshot().eitInstances.first()
+            check(newer.version == 0 && !newer.complete)
+            check(parser.takeProgramPublishSnapshot().updateWindows.isEmpty())
+        }
+    }
+
     @Test fun caDiscoveryDoesNotDependOnClearLivePlaybackSnapshot() {
         val parser = NativeAribSiParser()
         try {

@@ -92,19 +92,29 @@ pub fn classify_table_id(table_id: u8) -> EitScope {
     }
 }
 
+#[derive(Default)]
+pub struct EitSectionFacts {
+    pub events: Vec<EitEvent>,
+    pub event_loop_complete: bool,
+}
+
 pub fn parse_eit_section(section: &[u8]) -> Vec<EitEvent> {
+    parse_eit_section_facts(section).events
+}
+
+pub fn parse_eit_section_facts(section: &[u8]) -> EitSectionFacts {
     let Some(header) = parse_section_header(section) else {
-        return Vec::new();
+        return EitSectionFacts::default();
     };
     if !(0x4e..=0x6f).contains(&header.table_id)
         || header.total_length > section.len()
         || header.section_length < 4
     {
-        return Vec::new();
+        return EitSectionFacts::default();
     }
     let body_end = 3 + header.section_length - 4;
-    if section.len() < 14 || body_end <= 14 {
-        return Vec::new();
+    if section.len() < 14 || body_end < 14 {
+        return EitSectionFacts::default();
     }
     let service_id = u16_at(section, 3);
     let tsid = u16_at(section, 8);
@@ -199,7 +209,10 @@ pub fn parse_eit_section(section: &[u8]) -> Vec<EitEvent> {
         }
         cursor = desc_end;
     }
-    out
+    EitSectionFacts {
+        events: out,
+        event_loop_complete: cursor == body_end,
+    }
 }
 
 pub(crate) fn u16_at(bytes: &[u8], offset: usize) -> u16 {

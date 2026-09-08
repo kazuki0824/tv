@@ -5,7 +5,7 @@ use crate::ca_descriptor::{
 };
 use crate::discovery_requirements::{optional_table_requirement, DiscoveryProfile};
 use crate::sections::{
-    parse_section_header, section_crc_valid, section_has_malformed_descriptor_loop,
+    parse_section_header, section_crc_valid, section_has_malformed_descriptor_loop, SectionTracker,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -235,7 +235,9 @@ impl DiscoveryCollectionState {
     }
 
     pub fn is_partially_complete(&self) -> bool {
-        !self.snapshot.services.is_empty()
+        self.table_requirements
+            .iter()
+            .any(|status| status.required && status.complete)
     }
 
     pub fn publish_stage(&self) -> DiscoveryPublishStage {
@@ -250,7 +252,11 @@ impl DiscoveryCollectionState {
 
     #[cfg(test)]
     pub fn partial_snapshot(&self) -> Option<DiscoverySnapshot> {
-        (!self.snapshot.services.is_empty()).then(|| self.snapshot.clone())
+        (self
+            .table_requirements
+            .iter()
+            .any(|status| status.required && status.complete))
+        .then(|| self.snapshot.clone())
     }
 
     #[cfg(test)]
@@ -282,48 +288,6 @@ struct PendingPmtInfo {
     streams: Vec<DiscoveredElementaryStream>,
     program_ca_descriptors: Vec<CaDescriptor>,
     es_ca_descriptors: Vec<EsCaMetadata>,
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-struct SectionTracker {
-    version: Option<u8>,
-    last_section_number: Option<u8>,
-    seen_sections: BTreeSet<u8>,
-    inconsistent: bool,
-}
-
-impl SectionTracker {
-    fn mark_seen(&mut self, version: u8, section_number: u8, last_section_number: u8) {
-        if self.version != Some(version) {
-            self.version = Some(version);
-            self.last_section_number = None;
-            self.seen_sections.clear();
-            self.inconsistent = false;
-        }
-        if section_number > last_section_number {
-            self.inconsistent = true;
-            return;
-        }
-        match self.last_section_number {
-            Some(expected) if expected != last_section_number => {
-                self.inconsistent = true;
-                return;
-            }
-            None => self.last_section_number = Some(last_section_number),
-            Some(_) => {}
-        }
-        self.seen_sections.insert(section_number);
-    }
-
-    fn is_complete(&self) -> bool {
-        if self.inconsistent {
-            return false;
-        }
-        let Some(last) = self.last_section_number else {
-            return false;
-        };
-        (0..=last).all(|section_number| self.seen_sections.contains(&section_number))
-    }
 }
 
 #[derive(Default)]
@@ -1062,10 +1026,15 @@ impl ServiceDiscoveryCollector {
         if !valid_current_section(section) {
             return;
         }
+        if !self.accepts_section_version(pid, section) {
+            return;
+        }
         if self.section_version_changed(pid, section) {
             self.invalidate_changed_table(pid, section);
         }
-        self.track_section(pid, section);
+        if !self.track_section(pid, section) {
+            return;
+        }
         self.track_transport_scopes(section);
         self.engine.push_section(pid, section);
     }
@@ -1183,14 +1152,33 @@ impl ServiceDiscoveryCollector {
                 });
             }
         }
-        table_requirements.push(TableRequirementStatus {
-            component: "BAT",
-            original_network_id: None,
-            transport_stream_id: None,
-            service_id: None,
-            required: false,
-            complete: bat_complete,
-        });
+        let bat_scopes: BTreeSet<_> = self
+            .bat_transport_scopes
+            .values()
+            .flatten()
+            .copied()
+            .collect();
+        if bat_scopes.is_empty() {
+            table_requirements.push(TableRequirementStatus {
+                component: "BAT",
+                original_network_id: None,
+                transport_stream_id: None,
+                service_id: None,
+                required: false,
+                complete: bat_complete,
+            });
+        } else {
+            for (tsid, onid) in bat_scopes {
+                table_requirements.push(TableRequirementStatus {
+                    component: "BAT",
+                    original_network_id: Some(onid),
+                    transport_stream_id: Some(tsid),
+                    service_id: None,
+                    required: false,
+                    complete: self.bat_complete_for_transport(onid, tsid),
+                });
+            }
+        }
         if snapshot.services.is_empty() && snapshot.pmt_pids_by_service.is_empty() {
             table_requirements.push(TableRequirementStatus {
                 component: "PMT",
@@ -1404,30 +1392,36 @@ impl ServiceDiscoveryCollector {
             .is_some_and(|old_version| old_version != version)
     }
 
-    fn track_section(&mut self, pid: u16, section: &[u8]) {
+    fn accepts_section_version(&self, pid: u16, section: &[u8]) -> bool {
         let Some(header) = parse_section_header(section) else {
-            return;
+            return false;
         };
-        if header.current_next_indicator != Some(true) {
-            return;
-        }
-        let Some(table_extension) = header.table_id_extension else {
-            return;
+        let (Some(extension), Some(version)) = (header.table_id_extension, header.version) else {
+            return false;
         };
-        let Some(version) = header.version else {
-            return;
-        };
-        let Some(section_number) = header.section_number else {
-            return;
-        };
-        let Some(last_section_number) = header.last_section_number else {
-            return;
-        };
-        let scope_extension = tracker_scope_extension(section).unwrap_or(TRACKER_GLOBAL_SCOPE);
+        let scope = tracker_scope_extension(section).unwrap_or(TRACKER_GLOBAL_SCOPE);
         self.section_trackers
-            .entry((pid, header.table_id, table_extension, scope_extension))
+            .get(&(pid, header.table_id, extension, scope))
+            .map_or(true, |tracker| tracker.accepts_version(version))
+    }
+
+    fn track_section(&mut self, pid: u16, section: &[u8]) -> bool {
+        let Some(header) = parse_section_header(section) else {
+            return false;
+        };
+        let (Some(extension), Some(version), Some(number), Some(last)) = (
+            header.table_id_extension,
+            header.version,
+            header.section_number,
+            header.last_section_number,
+        ) else {
+            return false;
+        };
+        let scope = tracker_scope_extension(section).unwrap_or(TRACKER_GLOBAL_SCOPE);
+        self.section_trackers
+            .entry((pid, header.table_id, extension, scope))
             .or_default()
-            .mark_seen(version, section_number, last_section_number);
+            .observe(version, number, last, section)
     }
 
     fn track_transport_scopes(&mut self, section: &[u8]) {
@@ -1536,7 +1530,6 @@ impl ServiceDiscoveryCollector {
             })
     }
 
-    #[cfg(test)]
     fn bat_complete_for_transport(
         &self,
         original_network_id: u16,
@@ -2053,6 +2046,16 @@ mod tests {
             .insert(0x0004, std::collections::BTreeSet::from([(0x4010, 0x0004)]));
         assert!(collector.bat_complete_for_transport(0x0004, 0x4010));
         assert!(!collector.bat_complete_for_transport(0x0004, 0x4020));
+        let state = collector.state();
+        let bat = state
+            .table_requirements
+            .iter()
+            .find(|status| status.component == "BAT")
+            .unwrap();
+        assert_eq!(bat.original_network_id, Some(0x0004));
+        assert_eq!(bat.transport_stream_id, Some(0x4010));
+        assert!(bat.complete);
+        assert!(!bat.required);
     }
 
     #[test]

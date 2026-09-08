@@ -56,7 +56,13 @@ XCS の実装方針は、実装上の先例として `xtne6f/EDCB` の `work-plu
 
 ### 複数table instanceの完成・更新・寿命
 
-`repeat=true`で継続配送されたsectionについて、本crateは`table_id_extension`、actual version、`current_next_indicator`、`section_number`、`last_section_number`に基づいてtable instanceを区別し、instance別の完成・更新・寿命を管理する。
+`repeat=true`で継続配送されたsectionについて、一般SIはPID/table ID/extension/SDTのONID、EITはtable ID/ONID/TSID/SIDを表のscopeとする。current_next_indicator=0は現在の収集・公開・削除根拠へ入れない。共通`SectionTracker`が現在版・last_section_number・受信番号・同一sectionのbyte一致を保持する。初回の有効版を採用し、同じ版の同じbyte列は再処理しない。同一版の同一番号で内容またはlast_section_numberが矛盾した場合、その版の完成を取り消す。
+
+版交替は受信側の保守的規則として `(new + 32 - old) % 32` が1..15の場合だけ許可し、31→0を前進として扱う。16..31の差は逆行または判別不能として保留し、次の明示的collection resetで再同期する。これはARIBが15版以下の欠落しか許さないという適合主張ではない。一般SIは採用新版のscopeだけを無効化・再構成する。EITは前回完成したp/f actualの事実を旧更新区間の計算用に保持し、新版の未完成sectionと混ぜて現在の公開事実にしない。
+
+EITの通常bulk `eitInstances[]` はtable ID・ONID/TSID/SID・version・current_next_indicator・last_section_number・requiredLastSectionNumber・receivedSections・missingSections・complete・inconsistent・deletionAuthoritativeを返す。p/fは0..lastの全sectionを基本とし、BS/110CSのp/f actualは受信側の無視規則に従って0..min(last,1)を必要集合とする。rawのlastと受信に必要な最終番号は別fieldで返す。scheduleは8番号のsegmentごとの先頭から観測したsegment_last_section_numberまでを必要集合とし、segment間の未使用番号を欠落扱いしない。未観測segmentは先頭section不足として残す。構文的な空event loopも受信済みsectionであり、event数を完成条件にしない。segment構成の根拠は[ARIB公式TR-B15 4.6-E1 第4編13.3.1–13.3.2（誌面4-73–4-74）](https://www.arib.or.jp/english/html/overview/doc/8-TR-B15v4_6-2p4-E1.pdf)で、現行日本語原文との差は未証明のままとする。
+
+EITの削除権限は同一表の採用版が完成し、全sectionのevent loop・時刻・記述子に削除を妨げる不正がない場合だけ付与する。新版のlast_section_number縮小だけで未完成段階に旧sectionの番組を消さない。更新区間のvalid identity集合は同じ完成版の全sectionから作る。未排出区間はServiceごとに一区間へ併合し、次版が未完成または矛盾した場合は排出を保留する。旧区間を失わず次の完成版へ引き継ぐ。現在版のraw意味事実と前回公開用事実をbulkで混在させない。
 
 本crateは、製品または個別操作が必要とするinstance集合そのものを決定せず、instance別の完成・更新・寿命状態をTISへ返す。どの集合の完成でfilterを停止するかはTISのruntime責務とする。
 
@@ -128,7 +134,7 @@ MPEG-2 PSI / ARIB SIのlong-form section headerにある`section_length`は12 bi
 
 PAT/PMT/SDT/NIT/BAT/EIT の version 更新では collector 全体を捨てない。table 単位、section 単位、サービス 単位で差分更新する。
 
-EIT は section version 更新で消えた event を削除候補として扱う。ただし TvProvider / TIS 側へ stable identity として `original_network_id / transport_stream_id / service_id / event_id` を提供できるのは `DEFINED` または `UNDEFINED_TIME` の event に限る。`BOTH_TIMING_UNDEFINED` は本製品の保守的ポリシーとしてvalid event identity setに含めず、既存Programの削除根拠にも後続具体eventとの自動相関根拠にも使わない。section 更新後の stable event set が空になった場合も no-op として破棄せず、サービスキー、更新区間、空の valid event identity set を JNI/TIS へ返す。TIS は、Rust parser が `deletionAuthoritative=true` と判定した snapshot だけを obsolete Programs delete に使う。
+EIT は同じ表の新版全sectionが完成して消えた event を削除候補として扱う。ただし TvProvider / TIS 側へ stable identity として `original_network_id / transport_stream_id / service_id / event_id` を提供できるのは `DEFINED` または `UNDEFINED_TIME` の event に限る。`BOTH_TIMING_UNDEFINED` は本製品の保守的ポリシーとしてvalid event identity setに含めず、既存Programの削除根拠にも後続具体eventとの自動相関根拠にも使わない。完成版のstable event setが空で以前の有効区間がある場合は、サービスキー、更新区間、空のvalid event identity setをJNI/TISへ返す。初回から空で有効区間がない場合は、時刻を捏造せず完成instance状態を返す。TIS は、TIS product policy が `deletionAuthoritative=true` と判定した snapshot だけを obsolete Programs delete に使う。
 
 EIT event fixed フィールド、start_time BCD、duration BCD、descriptor_loop_length が不正な event を含む section は、既存 event 削除用の authoritative valid-event-set として扱わない。不正 event は Programs から消すのではなく、既存正常 event を保持したまま診断情報に記録する。
 

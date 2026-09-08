@@ -1,5 +1,7 @@
 # r51_pr85_stack_epg_policy_boundary
 
+- 表scope別の完成・版逆行・同一版矛盾を追跡し、EITの未完成新版による誤削除を防止。通常bulkへinstance状態を追加し、BAT scopeとPartial判定をrequired集合へ統一。
+
 - CAS保存根拠の16進表現を既存CA共通処理へ集約し、core Clippyの警告を解消。
 
 - #87 D12/D03 / SI U-01・TIS-025: TIS向けEPG保存policyをpure EIT解析・サービス解析から独立させ、JNI facadeで組み合わせる。永続identity採用・公開scope・削除判断をproduct_policyに集約する。

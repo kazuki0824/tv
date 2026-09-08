@@ -1,9 +1,10 @@
 //! TIS専用のEPG保存policy。放送由来factのpure parserとは別の責務を持つ。
 use crate::discovery_requirements::DiscoveryProfile;
 use crate::eit::{
-    classify_timing, parse_eit_section, u16_at, EitEvent, EitStableEventIdentity, EitTimingState,
+    parse_eit_section_facts, u16_at, EitEvent, EitStableEventIdentity, EitTimingState,
 };
-use crate::sections::parse_section_header;
+use crate::sections::{parse_section_header, section_crc_valid_with_header, SectionTracker};
+use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Program publishへ渡してよいEIT sectionかを媒体profile込みで判定する。
@@ -80,188 +81,294 @@ fn stable_event_key(event: &EitEvent) -> Option<EitEventKey> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct EitSectionKey {
+struct EitTableKey {
     table_id: u8,
-    service_id: u16,
-    transport_stream_id: u16,
     original_network_id: u16,
-    section_number: u8,
+    transport_stream_id: u16,
+    service_id: u16,
+}
+
+impl EitTableKey {
+    fn owns(&self, event: &EitEvent) -> bool {
+        self.table_id == event.table_id
+            && self.original_network_id == event.original_network_id
+            && self.transport_stream_id == event.transport_stream_id
+            && self.service_id == event.service_id
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-struct VersionedEventSet {
-    version: u8,
-    event_keys: BTreeSet<EitEventKey>,
+struct EitInstance {
+    tracker: SectionTracker,
+    sections: BTreeMap<u8, Vec<EitEvent>>,
+    safe_sections: BTreeSet<u8>,
+    segment_ends: BTreeMap<u8, u8>,
+    required_last_section_number: Option<u8>,
+}
+
+impl EitInstance {
+    fn required_sections(&self, table_id: u8) -> BTreeSet<u8> {
+        let Some(last) = self.required_last_section_number else {
+            return BTreeSet::new();
+        };
+        if table_id < 0x50 {
+            return (0..=last).collect();
+        }
+        (0..=last)
+            .step_by(8)
+            .flat_map(|start| {
+                let end = self.segment_ends.get(&start).copied().unwrap_or(start);
+                start..=end
+            })
+            .collect()
+    }
+
+    fn is_complete(&self, table_id: u8) -> bool {
+        self.tracker.last_section_number.is_some()
+            && !self.tracker.inconsistent
+            && self
+                .required_sections(table_id)
+                .iter()
+                .all(|number| self.tracker.seen_sections.contains(number))
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EitInstanceState {
+    pub table_id: u8,
+    pub original_network_id: u16,
+    pub transport_stream_id: u16,
+    pub service_id: u16,
+    pub version: u8,
+    pub current_next_indicator: bool,
+    pub last_section_number: Option<u8>,
+    pub required_last_section_number: Option<u8>,
+    pub received_sections: Vec<u8>,
+    pub missing_sections: Vec<u8>,
+    pub complete: bool,
+    pub inconsistent: bool,
+    pub deletion_authoritative: bool,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EitStore {
+    discovery_profile: DiscoveryProfile,
+    // 前回完成した公開用事実。新版の未完成sectionと混ぜず、削除・移動区間の旧側だけに使う。
     events: BTreeMap<EitEventKey, EitEvent>,
-    section_events: BTreeMap<EitSectionKey, VersionedEventSet>,
+    instances: BTreeMap<EitTableKey, EitInstance>,
     last_update_windows: Vec<EitUpdateWindow>,
-    diagnostic_section_events: BTreeMap<EitSectionKey, Vec<EitEvent>>,
 }
 
 impl EitStore {
+    pub fn set_discovery_profile(&mut self, profile: DiscoveryProfile) {
+        if self.discovery_profile != profile {
+            *self = Self {
+                discovery_profile: profile,
+                ..Self::default()
+            };
+        }
+    }
+
     pub fn upsert_section(&mut self, section: &[u8]) {
         let Some(header) = parse_section_header(section) else {
             return;
         };
-        let (Some(version), Some(section_number)) = (header.version, header.section_number) else {
+        if !(0x4e..=0x6f).contains(&header.table_id)
+            || header.total_length != section.len()
+            || section.len() < 18
+            || header.current_next_indicator != Some(true)
+            || !section_crc_valid_with_header(section, &header)
+        {
+            return;
+        }
+        let (Some(version), Some(number), Some(last)) = (
+            header.version,
+            header.section_number,
+            header.last_section_number,
+        ) else {
             return;
         };
-        if section.len() < 14 {
-            return;
-        }
-        let service_id = u16_at(section, 3);
-        let transport_stream_id = u16_at(section, 8);
-        let original_network_id = u16_at(section, 10);
-        let malformed_event_keys = malformed_eit_event_keys(section);
-        let parsed = parse_eit_section(section);
-        let deletion_authoritative = header.table_id == 0x4e
-            && malformed_event_keys.is_empty()
-            && parsed.iter().all(|event| {
-                has_stable_identity(event.timing_state) && event.diagnostics.is_empty()
-            });
-        if parsed.is_empty() && !malformed_event_keys.is_empty() {
-            // 不正 event だけの EIT section は、同じ section 内の既存有効 event を
-            // すべて削除する根拠として扱わない。既存の VersionedEventSet と保存済み event を維持する。
-            return;
-        }
-        let section_key = EitSectionKey {
+        let key = EitTableKey {
             table_id: header.table_id,
-            service_id,
-            transport_stream_id,
-            original_network_id,
-            section_number,
+            service_id: u16_at(section, 3),
+            transport_stream_id: u16_at(section, 8),
+            original_network_id: u16_at(section, 10),
         };
-        let previous_keys: BTreeSet<EitEventKey> = self
-            .section_events
-            .get(&section_key)
-            .map(|old| old.event_keys.clone())
-            .unwrap_or_default();
-        let obsolete_section_keys: BTreeSet<EitSectionKey> = if deletion_authoritative {
-            self.section_events
-                .iter()
-                .filter(|(key, old)| {
-                    key.table_id == header.table_id
-                        && key.service_id == service_id
-                        && key.transport_stream_id == transport_stream_id
-                        && key.original_network_id == original_network_id
-                        && old.version != version
-                        && key.section_number > header.last_section_number.unwrap_or(section_number)
-                })
-                .map(|(key, _)| *key)
-                .collect()
-        } else {
-            BTreeSet::new()
-        };
-        let obsolete_event_keys: BTreeSet<EitEventKey> = obsolete_section_keys
-            .iter()
-            .filter_map(|key| self.section_events.get(key))
-            .flat_map(|old| old.event_keys.iter().copied())
-            .collect();
-        let surviving_section_references: BTreeSet<EitEventKey> = self
-            .section_events
-            .iter()
-            .filter(|(key, _)| **key != section_key && !obsolete_section_keys.contains(*key))
-            .flat_map(|(_, old)| old.event_keys.iter().copied())
-            .collect();
-        let new_keys: BTreeSet<_> = parsed.iter().filter_map(stable_event_key).collect();
-        let removal_candidates: BTreeSet<EitEventKey> = previous_keys
-            .difference(&new_keys)
-            .copied()
-            .chain(obsolete_event_keys.iter().copied())
-            .collect();
-        let removable_previous_keys: BTreeSet<_> = if deletion_authoritative {
-            removal_candidates
-                .into_iter()
-                .filter(|old_key| !malformed_event_keys.contains(old_key))
-                .filter(|old_key| !new_keys.contains(old_key))
-                .filter(|old_key| !surviving_section_references.contains(old_key))
-                .collect()
-        } else {
-            BTreeSet::new()
-        };
-        let mut window_events: Vec<EitEvent> = parsed.clone();
-        for old_key in previous_keys.union(&removable_previous_keys) {
-            if let Some(old_event) = self.events.get(old_key) {
-                window_events.push(old_event.clone());
-            }
+        if !is_program_publish_eit_section(self.discovery_profile, 0x0012, section) {
+            return;
         }
-        if header.table_id == 0x4e && (!previous_keys.is_empty() || !new_keys.is_empty()) {
-            let pf_actual_window_events: Vec<_> = window_events
-                .iter()
-                .filter(|event| {
-                    event.table_id == 0x4e && event.timing_state == EitTimingState::Defined
-                })
-                .cloned()
-                .collect();
-            let pf_actual_current_events: Vec<_> = parsed
-                .iter()
-                .filter(|event| event.table_id == 0x4e && program_identity(event).is_some())
-                .cloned()
-                .collect();
-            if let Some(window) = build_update_window(
-                original_network_id,
-                transport_stream_id,
-                service_id,
-                &pf_actual_window_events,
-                &pf_actual_current_events,
-                deletion_authoritative,
+        let required_last = if key.table_id == 0x4e
+            && matches!(
+                self.discovery_profile,
+                DiscoveryProfile::Bs | DiscoveryProfile::Cs110
             ) {
-                self.last_update_windows.retain(|existing| {
-                    !(existing.original_network_id == window.original_network_id
-                        && existing.transport_stream_id == window.transport_stream_id
-                        && existing.service_id == window.service_id
-                        && existing.window_start_millis == window.window_start_millis
-                        && existing.window_end_millis == window.window_end_millis)
-                });
-                self.last_update_windows.push(window);
+            last.min(1)
+        } else {
+            last
+        };
+        let instance = self.instances.entry(key).or_default();
+        if !instance.tracker.accepts_version(version) {
+            return;
+        }
+        if instance.tracker.version != Some(version) {
+            instance.sections.clear();
+            instance.safe_sections.clear();
+            instance.segment_ends.clear();
+        }
+        if !instance.tracker.observe(version, number, last, section) {
+            if instance.tracker.inconsistent && key.table_id == 0x4e {
+                for window in self
+                    .last_update_windows
+                    .iter_mut()
+                    .filter(|window| same_service(window, key))
+                {
+                    window.deletion_authoritative = false;
+                }
             }
+            return;
         }
-        for obsolete_section_key in &obsolete_section_keys {
-            self.section_events.remove(obsolete_section_key);
-            self.diagnostic_section_events.remove(obsolete_section_key);
+        if key.table_id >= 0x50 {
+            let segment_start = number & 0xf8;
+            let segment_end = section[12];
+            if segment_end < number
+                || segment_end > last
+                || (segment_end & 0xf8) != segment_start
+                || instance
+                    .segment_ends
+                    .get(&segment_start)
+                    .is_some_and(|previous| *previous != segment_end)
+            {
+                instance.tracker.inconsistent = true;
+                return;
+            }
+            instance.segment_ends.insert(segment_start, segment_end);
         }
-        for old_key in &removable_previous_keys {
-            self.events.remove(old_key);
+        instance.required_last_section_number = Some(required_last);
+        let facts = parse_eit_section_facts(section);
+        if facts.event_loop_complete
+            && facts.events.iter().all(|event| {
+                has_stable_identity(event.timing_state) && event.diagnostics.is_empty()
+            })
+        {
+            instance.safe_sections.insert(number);
         }
-        self.diagnostic_section_events
-            .insert(section_key, parsed.clone());
+        instance.sections.insert(number, facts.events);
+        if !instance.is_complete(key.table_id) {
+            // 未完成新版が来た時点で、未排出の旧版の削除権限も無効にする。
+            if key.table_id == 0x4e {
+                for window in self
+                    .last_update_windows
+                    .iter_mut()
+                    .filter(|window| same_service(window, key))
+                {
+                    window.deletion_authoritative = false;
+                }
+            }
+            return;
+        }
+        let parsed: Vec<_> = instance.sections.values().flatten().cloned().collect();
+        let new_keys: BTreeSet<_> = parsed.iter().filter_map(stable_event_key).collect();
+        let deletion_authoritative =
+            key.table_id == 0x4e && instance.safe_sections.len() == instance.sections.len();
+        if key.table_id != 0x4e {
+            return;
+        }
+        let old_events: Vec<_> = self
+            .events
+            .values()
+            .filter(|event| key.owns(event))
+            .cloned()
+            .collect();
+        let window_events: Vec<_> = old_events
+            .iter()
+            .chain(&parsed)
+            .filter(|event| event.timing_state == EitTimingState::Defined)
+            .cloned()
+            .collect();
+        if let Some(mut window) = build_update_window(
+            key.original_network_id,
+            key.transport_stream_id,
+            key.service_id,
+            &window_events,
+            &parsed,
+            deletion_authoritative,
+        ) {
+            // 排出間に複数の完成版を受けてもServiceごとに一区間だけを保持する。
+            for previous in self
+                .last_update_windows
+                .iter()
+                .filter(|old| same_service(old, key))
+            {
+                window.window_start_millis =
+                    window.window_start_millis.min(previous.window_start_millis);
+                window.window_end_millis = window.window_end_millis.max(previous.window_end_millis);
+            }
+            self.last_update_windows
+                .retain(|old| !same_service(old, key));
+            self.last_update_windows.push(window);
+        }
+        if deletion_authoritative {
+            self.events
+                .retain(|event_key, event| !key.owns(event) || new_keys.contains(event_key));
+        }
         for event in parsed {
-            if let Some(key) = stable_event_key(&event) {
-                self.events.insert(key, event);
+            if let Some(event_key) = stable_event_key(&event) {
+                // 時刻未定で以前の有効区間を失わず、現在の事実はsectionsから公開する。
+                if event.timing_state == EitTimingState::Defined
+                    || !self.events.contains_key(&event_key)
+                {
+                    self.events.insert(event_key, event);
+                }
             }
         }
-        self.section_events.insert(
-            section_key,
-            VersionedEventSet {
-                version,
-                event_keys: new_keys,
-            },
-        );
+    }
+
+    pub fn instance_states(&self) -> Vec<EitInstanceState> {
+        self.instances
+            .iter()
+            .map(|(key, instance)| {
+                let tracker = &instance.tracker;
+                EitInstanceState {
+                    table_id: key.table_id,
+                    original_network_id: key.original_network_id,
+                    transport_stream_id: key.transport_stream_id,
+                    service_id: key.service_id,
+                    version: tracker.version.unwrap_or(0),
+                    current_next_indicator: true,
+                    last_section_number: tracker.last_section_number,
+                    required_last_section_number: instance.required_last_section_number,
+                    received_sections: tracker.seen_sections.iter().copied().collect(),
+                    missing_sections: instance
+                        .required_sections(key.table_id)
+                        .difference(&tracker.seen_sections)
+                        .copied()
+                        .collect(),
+                    complete: instance.is_complete(key.table_id),
+                    inconsistent: tracker.inconsistent,
+                    deletion_authoritative: key.table_id == 0x4e
+                        && instance.is_complete(key.table_id)
+                        && instance.safe_sections.len() == instance.sections.len(),
+                }
+            })
+            .collect()
     }
 
     pub fn take_present_following_actual_update_windows(&mut self) -> Vec<EitUpdateWindow> {
-        let mut out: Vec<_> = self
-            .last_update_windows
-            .drain(..)
-            .filter(|window| window.window_end_millis > window.window_start_millis)
-            .collect();
-        out.sort_by_key(|w| {
-            (
-                w.original_network_id,
-                w.transport_stream_id,
-                w.service_id,
-                w.window_start_millis,
-                w.window_end_millis,
-            )
-        });
+        let (mut out, pending): (Vec<_>, Vec<_>) = std::mem::take(&mut self.last_update_windows)
+            .into_iter()
+            .partition(|window| {
+                self.instances.iter().any(|(key, instance)| {
+                    key.table_id == 0x4e
+                        && same_service(window, *key)
+                        && instance.is_complete(key.table_id)
+                })
+            });
+        self.last_update_windows = pending;
+        out.sort_by_key(|w| (w.original_network_id, w.transport_stream_id, w.service_id));
         out
     }
 
-    #[cfg(test)]
     pub fn snapshot_present_following_actual(&self) -> Vec<EitEvent> {
         let mut out: Vec<_> = self
             .events
@@ -282,62 +389,26 @@ impl EitStore {
     }
 
     pub fn snapshot_all_for_diagnostic(&self) -> Vec<EitEvent> {
-        self.diagnostic_section_events
+        self.instances
             .values()
-            .flatten()
-            .cloned()
+            .filter(|instance| !instance.tracker.inconsistent)
+            .flat_map(|instance| instance.sections.values().flatten().cloned())
             .collect()
     }
 
     #[cfg(test)]
     pub fn section_count_for_diagnostic(&self) -> usize {
-        self.section_events.len()
+        self.instances
+            .values()
+            .map(|instance| instance.sections.len())
+            .sum()
     }
 }
 
-fn malformed_eit_event_keys(section: &[u8]) -> BTreeSet<EitEventKey> {
-    let mut malformed = BTreeSet::new();
-    let Some(header) = parse_section_header(section) else {
-        return malformed;
-    };
-    if !(0x4e..=0x6f).contains(&header.table_id)
-        || header.total_length > section.len()
-        || header.section_length < 4
-    {
-        return malformed;
-    }
-    let body_end = 3 + header.section_length - 4;
-    if section.len() < 14 || body_end <= 14 {
-        return malformed;
-    }
-    let service_id = u16_at(section, 3);
-    let tsid = u16_at(section, 8);
-    let onid = u16_at(section, 10);
-    let mut cursor = 14usize;
-    while cursor + 12 <= body_end {
-        let event_id = u16_at(section, cursor);
-        let (timing_state, _, _) = classify_timing(section, cursor + 2, cursor + 7);
-        let desc_len =
-            (((section[cursor + 10] & 0x0f) as usize) << 8) | section[cursor + 11] as usize;
-        let desc_start = cursor + 12;
-        let Some(desc_end) = desc_start.checked_add(desc_len) else {
-            break;
-        };
-        if timing_state == EitTimingState::MalformedTiming {
-            malformed.insert(EitEventKey {
-                table_id: header.table_id,
-                original_network_id: onid,
-                transport_stream_id: tsid,
-                service_id,
-                event_id,
-            });
-        }
-        if desc_end > body_end {
-            break;
-        }
-        cursor = desc_end;
-    }
-    malformed
+fn same_service(window: &EitUpdateWindow, key: EitTableKey) -> bool {
+    window.original_network_id == key.original_network_id
+        && window.transport_stream_id == key.transport_stream_id
+        && window.service_id == key.service_id
 }
 
 fn build_update_window(
@@ -388,7 +459,7 @@ fn build_update_window(
 mod tests {
     use super::*;
     use crate::descriptors::{DescriptorParseStatus, EventDescriptors};
-    use crate::eit::EitScope;
+    use crate::eit::{parse_eit_section, EitScope};
     use crate::sections::crc32_mpeg;
 
     fn section_with_crc(mut body: Vec<u8>) -> Vec<u8> {
@@ -430,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn same_version_update_removes_events_absent_from_new_section() {
+    fn conflicting_same_version_keeps_the_previous_events_and_revokes_deletion() {
         let mut store = EitStore::default();
         let start1 = [0xee, 0x00, 0x12, 0x00, 0x00];
         let start2 = [0xee, 0x01, 0x13, 0x00, 0x00];
@@ -438,8 +509,12 @@ mod tests {
         assert_eq!(store.snapshot_present_following_actual().len(), 2);
         store.upsert_section(&section_with_crc(eit_body(1, &[(1, start1)])));
         let events = store.snapshot_present_following_actual();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].event_id, 1);
+        assert_eq!(events.len(), 2);
+        assert!(store.instance_states()[0].inconsistent);
+        assert!(!store.instance_states()[0].complete);
+        assert!(store
+            .take_present_following_actual_update_windows()
+            .is_empty());
     }
 
     #[test]
@@ -456,7 +531,7 @@ mod tests {
     }
 
     #[test]
-    fn version_update_replaces_only_matching_section_number() {
+    fn incomplete_new_version_keeps_old_baseline_without_mixing_publication_facts() {
         let mut store = EitStore::default();
         let start1 = [0xee, 0x00, 0x12, 0x00, 0x00];
         let start2 = [0xee, 0x01, 0x13, 0x00, 0x00];
@@ -475,14 +550,33 @@ mod tests {
         new_section0[7] = 1;
         store.upsert_section(&section_with_crc(new_section0));
 
-        let events = store.snapshot_present_following_actual();
-        assert_eq!(events.len(), 2);
-        assert!(events
+        assert!(store
+            .snapshot_present_following_actual()
             .iter()
-            .any(|event| event.event_id == 1 && event.version == 2));
-        assert!(events
+            .all(|event| event.version == 1));
+        assert!(store
+            .snapshot_all_for_diagnostic()
             .iter()
-            .any(|event| event.event_id == 2 && event.version == 1));
+            .all(|event| event.version == 2));
+        let state = &store.instance_states()[0];
+        assert_eq!(state.received_sections, vec![0]);
+        assert_eq!(state.missing_sections, vec![1]);
+        assert!(!state.complete);
+        assert!(store
+            .take_present_following_actual_update_windows()
+            .is_empty());
+        let mut new_section1 = eit_body(2, &[(2, start2)]);
+        new_section1[6] = 1;
+        new_section1[7] = 1;
+        store.upsert_section(&section_with_crc(new_section1));
+        assert!(store
+            .snapshot_present_following_actual()
+            .iter()
+            .all(|event| event.version == 2));
+        assert!(store.instance_states()[0].complete);
+        let windows = store.take_present_following_actual_update_windows();
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].valid_event_identities.len(), 2);
     }
 
     #[test]
@@ -506,15 +600,89 @@ mod tests {
         new_section0[6] = 0;
         new_section0[7] = 1;
         store.upsert_section(&section_with_crc(new_section0));
+        assert_eq!(store.section_count_for_diagnostic(), 1);
+        assert_eq!(store.snapshot_present_following_actual().len(), 3);
+        assert!(store
+            .take_present_following_actual_update_windows()
+            .is_empty());
+        let mut new_section1 = eit_body(2, &[(2, start1)]);
+        new_section1[6] = 1;
+        new_section1[7] = 1;
+        store.upsert_section(&section_with_crc(new_section1));
         let events = store.snapshot_present_following_actual();
-        assert_eq!(store.section_count_for_diagnostic(), 2);
-        assert!(events
-            .iter()
-            .any(|event| event.event_id == 1 && event.version == 2));
-        assert!(events
-            .iter()
-            .any(|event| event.event_id == 2 && event.version == 1));
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|event| event.version == 2));
         assert!(!events.iter().any(|event| event.event_id == 3));
+    }
+
+    #[test]
+    fn satellite_completion_does_not_wait_for_ignored_pf_sections() {
+        for profile in [DiscoveryProfile::Bs, DiscoveryProfile::Cs110] {
+            let mut store = EitStore::default();
+            store.set_discovery_profile(profile);
+            for number in [0, 1, 2] {
+                let mut body = eit_body(1, &[]);
+                body[6] = number;
+                body[7] = 7;
+                store.upsert_section(&section_with_crc(body));
+            }
+            let states = store.instance_states();
+            assert_eq!(states[0].last_section_number, Some(7));
+            assert_eq!(states[0].required_last_section_number, Some(1));
+            assert_eq!(states[0].received_sections, vec![0, 1]);
+            assert!(states[0].complete);
+        }
+    }
+
+    #[test]
+    fn schedule_segment_gaps_are_not_missing_sections() {
+        let mut store = EitStore::default();
+        for (number, end) in [(0, 1), (1, 1), (8, 8)] {
+            let mut body = eit_body_with_table_id(0x50, 1, &[]);
+            body[6] = number;
+            body[7] = 8;
+            body[12] = end;
+            store.upsert_section(&section_with_crc(body));
+        }
+        let states = store.instance_states();
+        assert_eq!(states[0].received_sections, vec![0, 1, 8]);
+        assert!(states[0].missing_sections.is_empty());
+        assert!(states[0].complete);
+        assert!(!states[0].deletion_authoritative);
+    }
+
+    #[test]
+    fn version_rollover_rejects_older_and_ambiguous_versions_until_reset() {
+        let mut store = EitStore::default();
+        let start = [0xee, 0x00, 0x12, 0x00, 0x00];
+        for version in [31, 0, 31, 16] {
+            store.upsert_section(&section_with_crc(eit_body(version, &[(1, start)])));
+        }
+        assert_eq!(store.instance_states()[0].version, 0);
+        assert_eq!(store.snapshot_all_for_diagnostic()[0].version, 0);
+        assert_eq!(
+            store.take_present_following_actual_update_windows().len(),
+            1
+        );
+    }
+
+    #[test]
+    fn next_table_and_truncated_event_tail_never_authorize_deletion() {
+        let mut store = EitStore::default();
+        let mut next = eit_body(1, &[]);
+        next[5] &= !1;
+        store.upsert_section(&section_with_crc(next));
+        assert!(store.instance_states().is_empty());
+        let mut truncated = eit_body(1, &[]);
+        truncated.push(0x12);
+        truncated[2] += 1;
+        store.upsert_section(&section_with_crc(truncated));
+        let states = store.instance_states();
+        assert!(states[0].complete);
+        assert!(!states[0].deletion_authoritative);
+        assert!(store
+            .take_present_following_actual_update_windows()
+            .is_empty());
     }
 
     #[test]

@@ -20,6 +20,7 @@ class NativeAribSiParser : AutoCloseable {
         val transportSemanticFacts: List<AribTransport>,
         val events: List<AribEvent>,
         val epgUpdateWindows: List<AribEpgUpdateWindow>,
+        val eitInstances: List<EitInstanceState>,
         val serviceSemanticFacts: List<ServiceSemanticFacts>,
         val parserDiagnostics: List<ParserDiagnostic>,
     ) {
@@ -86,6 +87,7 @@ class NativeAribSiParser : AutoCloseable {
             actualTransportMetadata = snapshot.actualTransports,
             semanticFactsByServiceKey = snapshot.serviceSemanticFacts.associateBy { it.serviceKey },
             diagnostics = snapshot.parserDiagnostics,
+            eitInstances = snapshot.eitInstances,
         )
     }
 
@@ -122,6 +124,7 @@ class NativeAribSiParser : AutoCloseable {
         ingestSequence = snapshot.ingestSequence,
         events = snapshot.events,
         updateWindows = snapshot.epgUpdateWindows,
+        eitInstances = snapshot.eitInstances,
         semanticFactsByServiceKey = snapshot.serviceSemanticFacts.associateBy { it.serviceKey },
         descriptorDiagnostics = descriptorDiagnosticsFromEvents(snapshot.events),
         parserDiagnostics = snapshot.parserDiagnostics,
@@ -197,12 +200,39 @@ class NativeAribSiParser : AutoCloseable {
             transportSemanticFacts = parseTransports(root.optJSONArray("transportSemanticFacts")),
             events = attachServiceComponentsToEvents(parseEvents(root.optJSONArray("events")), serviceFacts),
             epgUpdateWindows = parseEpgUpdateWindows(root.optJSONArray("epgUpdateWindows")),
+            eitInstances = parseEitInstances(root.optJSONArray("eitInstances")),
             serviceSemanticFacts = serviceFacts,
             parserDiagnostics = parseParserDiagnostics(root.optJSONArray("parserDiagnostics")),
         )
     }
 
     private fun parseStringArray(array: JSONArray?): List<String> = (0 until (array?.length() ?: 0)).mapNotNull { index -> array!!.optString(index).takeIf { it.isNotBlank() } }
+
+    private fun parseEitInstances(array: JSONArray?): List<EitInstanceState> =
+        (0 until (array?.length() ?: 0)).map { index ->
+            val obj = array!!.getJSONObject(index)
+            fun numbers(key: String): List<Int> {
+                val values = obj.getJSONArray(key)
+                return (0 until values.length()).map { values.getInt(it) }
+            }
+            EitInstanceState(
+                tableId = obj.getInt("tableId"),
+                serviceKey = ServiceKey(
+                    obj.getInt("originalNetworkId"),
+                    obj.getInt("transportStreamId"),
+                    obj.getInt("serviceId"),
+                ),
+                version = obj.getInt("version"),
+                currentNextIndicator = obj.getBoolean("currentNextIndicator"),
+                lastSectionNumber = optIntOrNull(obj, "lastSectionNumber"),
+                requiredLastSectionNumber = optIntOrNull(obj, "requiredLastSectionNumber"),
+                receivedSections = numbers("receivedSections"),
+                missingSections = numbers("missingSections"),
+                complete = obj.getBoolean("complete"),
+                inconsistent = obj.getBoolean("inconsistent"),
+                deletionAuthoritative = obj.getBoolean("deletionAuthoritative"),
+            )
+        }
 
     private fun parseTableRequirements(array: JSONArray?): List<TableRequirementStatus> =
         (0 until (array?.length() ?: 0)).mapNotNull { index ->

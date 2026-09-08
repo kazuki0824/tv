@@ -429,6 +429,20 @@ data class TransportKey(
     val transportStreamId: Int get() = transportStream.value
 }
 
+data class EitInstanceState(
+    val tableId: Int,
+    val serviceKey: ServiceKey,
+    val version: Int,
+    val currentNextIndicator: Boolean,
+    val lastSectionNumber: Int?,
+    val requiredLastSectionNumber: Int?,
+    val receivedSections: List<Int>,
+    val missingSections: List<Int>,
+    val complete: Boolean,
+    val inconsistent: Boolean,
+    val deletionAuthoritative: Boolean,
+)
+
 data class ProgramPublishSnapshot(
     val ingestSequence: Long,
     val events: List<AribEvent>,
@@ -437,6 +451,7 @@ data class ProgramPublishSnapshot(
     val descriptorDiagnostics: List<DescriptorDiagnostic>,
     val parserDiagnostics: List<ParserDiagnostic>,
     val malformedCaDescriptorCountByServiceId: Map<ServiceId16, Int> = emptyMap(),
+    val eitInstances: List<EitInstanceState> = emptyList(),
 )
 
 data class TableRequirementStatus(
@@ -456,6 +471,7 @@ data class ServiceRegistrationSnapshot(
     val actualTransportMetadata: List<AribTransport>,
     val semanticFactsByServiceKey: Map<ServiceKey, ServiceSemanticFacts>,
     val diagnostics: List<ParserDiagnostic>,
+    val eitInstances: List<EitInstanceState> = emptyList(),
 )
 
 data class CasDiscoverySnapshot(
