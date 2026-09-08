@@ -359,7 +359,18 @@ class ChannelScanController(
                 deletionAuthoritative = update.deletionAuthoritative,
             )
         }
-        val result = programPublishCoordinator.publishWithUpdates(mode, allPrograms, updateWindows, allowedServiceKeys)
+        val verifiedEmptyServiceKeys = transaction.eitInstances.filter { instance ->
+            instance.tableId == 0x4e && instance.currentNextIndicator && instance.complete &&
+                !instance.inconsistent && instance.deletionAuthoritative &&
+                transaction.events.none { it.source.tableId == 0x4e && it.serviceKey == instance.serviceKey } &&
+                ServicePolicyEvaluator.evaluate(
+                    facts = transaction.semanticFactsByServiceKey[instance.serviceKey],
+                    expectedSmdBroadcastingIdentifier = currentCandidate?.let(::expectedSmdBroadcastingIdentifier),
+                ).registrationReady
+        }.mapTo(linkedSetOf()) { it.serviceKey }
+        val result = programPublishCoordinator.publishWithUpdates(
+            mode, allPrograms, updateWindows, allowedServiceKeys, verifiedEmptyServiceKeys,
+        )
         if (result.skippedNoChannel > 0) Log.d(LogTags.TIS, "${mode} で未登録channelのeventをskipしました skipped=${result.skippedNoChannel}")
         if (result.failures.isNotEmpty()) Log.w(LogTags.TIS, "TvProvider program 登録失敗=${result.failures}")
         return result

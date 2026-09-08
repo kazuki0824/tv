@@ -122,11 +122,12 @@ class TvProviderWriter private constructor(
     internal fun prepareProgramPublication(
         programs: List<ProgramRecord>,
         windows: List<ProgramPublishCoordinator.EpgUpdateWindow>,
+        verifiedEmptyServiceKeys: Set<ServiceKey> = emptySet(),
     ): PreparedProgramPublication {
         val failures = mutableListOf<Diagnostic>()
         val programsByService = programs.groupBy { it.serviceKey }
         val windowsByService = windows.groupBy { it.serviceKey }
-        val services = (programsByService.keys + windowsByService.keys).mapNotNull { key ->
+        val services = (programsByService.keys + windowsByService.keys + verifiedEmptyServiceKeys).mapNotNull { key ->
             val channelId = channelStore.findExistingChannelId(key).getOrElse { error ->
                 failures += Diagnostic(key, "program-channel-query", error.message.orEmpty())
                 return@mapNotNull null
@@ -164,6 +165,13 @@ class TvProviderWriter private constructor(
             val failureCountBeforeService = failures.size
             val preparationFailed = publication.failures.any { it.serviceKey == serviceKey }
             val serviceWindows = service.windows
+            if (!preparationFailed && service.programs.isEmpty() && serviceWindows.isEmpty()) {
+                val existingPrograms = channelStore.indexExistingProgramsForService(channelId)
+                if (existingPrograms.isFailure) {
+                    failures += Diagnostic(serviceKey, "program-index-query", existingPrograms.exceptionOrNull()?.message.orEmpty())
+                }
+                // 完成した空EITでも区間を捏造しない。所有channelとProgram問い合わせだけを確認し、既存行を保持する。
+            }
             service.programs.sortedBy { it.first.startTimeMillis }.forEach { (program, values) ->
                 val key = programIdentity(program)
                 val programEnd = checkedProgramEndTimeMillis(program)

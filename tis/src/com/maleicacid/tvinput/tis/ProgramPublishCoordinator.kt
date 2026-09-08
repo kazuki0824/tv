@@ -80,6 +80,7 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
         allPrograms: List<ProgramRecord>,
         updateWindows: List<EpgUpdateWindow>,
         allowedServiceKeys: Set<ServiceKey>?,
+        verifiedEmptyServiceKeys: Set<ServiceKey> = emptySet(),
     ): ProgramPublishResult {
         if (mode == ChannelScanController.PublishMode.DIAGNOSTIC_ONLY) {
             return ProgramPublishResult(0, 0, skippedUnchanged = allPrograms.size)
@@ -88,8 +89,8 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
         // これを確認する前に早期returnしてはならない。EPG区間排出API後の
         // provider失敗で、排出済み区間を失うことを防ぐ。
         val retryServiceKeys = dirtyWindows.keys.map { it.serviceKey }
-        val allServiceKeys = (allPrograms.map { it.serviceKey } + updateWindows.map { it.serviceKey } + retryServiceKeys).toSet()
-        if (allPrograms.isEmpty() && updateWindows.isEmpty() && dirtyWindows.isEmpty()) {
+        val allServiceKeys = (allPrograms.map { it.serviceKey } + updateWindows.map { it.serviceKey } + retryServiceKeys + verifiedEmptyServiceKeys).toSet()
+        if (allPrograms.isEmpty() && updateWindows.isEmpty() && dirtyWindows.isEmpty() && verifiedEmptyServiceKeys.isEmpty()) {
             return ProgramPublishResult(0, 0, skippedUnchanged = 0)
         }
         val existingServiceKeys = if (mode == ChannelScanController.PublishMode.LIVE_TUNE_REFRESH || mode == ChannelScanController.PublishMode.BOOT_EPG_SYNC || mode == ChannelScanController.PublishMode.BACKGROUND_CHANNEL_MAINTENANCE) {
@@ -104,6 +105,7 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
             emptySet()
         }
         val allowed = filterServiceKeysForMode(mode, allServiceKeys, existingServiceKeys, allowedServiceKeys)
+        val verifiedEmptyForAllowed = verifiedEmptyServiceKeys.intersect(allowed)
         val retryForAllowed = drainRetryWindowsFor(allowed)
         val programs = allPrograms
             .filter { it.serviceKey in allowed }
@@ -111,12 +113,12 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
             DirtyWindowKey(it.serviceKey, it.windowStartMs, it.windowEndMs)
         }
             .filter { it.serviceKey in allowed && it.windowEndMs > it.windowStartMs }
-        if (programs.isEmpty() && windows.isEmpty()) return ProgramPublishResult(0, 0, skippedNoChannel = allServiceKeys.size)
+        if (programs.isEmpty() && windows.isEmpty() && verifiedEmptyForAllowed.isEmpty()) return ProgramPublishResult(0, 0, skippedNoChannel = allServiceKeys.size)
         val authoritativeWindows = windows.filter { it.deletionAuthoritative }
-        val eligibleTargetCount = programs.size + authoritativeWindows.size
-        val eligibleTargetServiceKeys = (programs.map { it.serviceKey } + authoritativeWindows.map { it.serviceKey }).toSet()
+        val eligibleTargetCount = programs.size + authoritativeWindows.size + verifiedEmptyForAllowed.size
+        val eligibleTargetServiceKeys = (programs.map { it.serviceKey } + authoritativeWindows.map { it.serviceKey } + verifiedEmptyForAllowed).toSet()
 
-        val publication = runCatching { tvProviderWriter.prepareProgramPublication(programs, windows) }.getOrElse { error ->
+        val publication = runCatching { tvProviderWriter.prepareProgramPublication(programs, windows, verifiedEmptyForAllowed) }.getOrElse { error ->
             enqueueRetryWindows(windows, failureClass = FailureClass.SIGNATURE_BUILD_FAILED)
             return ProgramPublishResult(
                 0,

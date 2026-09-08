@@ -6,6 +6,8 @@
 
 ## r51_pr85_stack_independent_startup_deadline
 
+- 完成した正常空EITを対象Serviceごとの確認済み空更新として扱い、所有channelとProgramの必須問い合わせ成功後だけboot同期完了へ算入。区間なしの削除は実行しない。
+
 - 走査期限を単調時計へ変更し、SI collection上限の失敗statusを定義。
 
 - EIT instanceの完成・不足section・版状態を通常の登録用／EPG用snapshotで透過的に受け取る。

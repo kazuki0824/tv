@@ -20,6 +20,52 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         description = "desc",
     )
 
+    @Test fun verifiedEmptyEitCommitsOnlyAfterQueriesAndPreservesExistingRows() {
+        val store = FakeStore()
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        val coordinator = ProgramPublishCoordinator(writer)
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
+        check(coordinator.publish(ChannelScanController.PublishMode.BOOT_EPG_SYNC, listOf(program), setOf(key)).hasCommittedTarget)
+        val before = store.serviceIndexQueries
+        repeat(2) {
+            val result = coordinator.publishWithUpdates(
+                ChannelScanController.PublishMode.BOOT_EPG_SYNC, emptyList(), emptyList(), setOf(key),
+                verifiedEmptyServiceKeys = setOf(key),
+            )
+            check(result.hasCommittedTarget && result.committedServiceKeys == setOf(key))
+            check(result.changed == 0)
+        }
+        check(store.serviceIndexQueries == before + 2)
+        check(store.insertedPrograms == 1 && store.updatedPrograms == 0 && store.deleteCalls == 0)
+    }
+
+    @Test fun verifiedEmptyEitDoesNotCommitARequiredProgramQueryFailure() {
+        val store = FakeStore(failServiceIndexOnce = true)
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        val coordinator = ProgramPublishCoordinator(writer)
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
+        fun publish() = coordinator.publishWithUpdates(
+            ChannelScanController.PublishMode.BOOT_EPG_SYNC, emptyList(), emptyList(), setOf(key),
+            verifiedEmptyServiceKeys = setOf(key),
+        )
+        val failed = publish()
+        check(!failed.hasCommittedTarget && failed.committedServiceKeys.isEmpty())
+        check(failed.failures.single().operation == "program-index-query")
+        check(publish().hasCommittedTarget)
+        check(store.serviceIndexQueries == 2 && store.deleteCalls == 0)
+    }
+
+    @Test fun emptyEitForANonexistentOwnedChannelIsNotACommitTarget() {
+        val store = FakeStore()
+        val coordinator = ProgramPublishCoordinator(TvProviderWriter("input.test", store, testOnly = true))
+        val result = coordinator.publishWithUpdates(
+            ChannelScanController.PublishMode.BOOT_EPG_SYNC, emptyList(), emptyList(), setOf(key),
+            verifiedEmptyServiceKeys = setOf(key),
+        )
+        check(!result.hasCommittedTarget && result.committedServiceKeys.isEmpty())
+        check(store.serviceIndexQueries == 0 && store.deleteCalls == 0)
+    }
+
     @Test fun requiredQueryFailureDoesNotUpdateSignatureOrDeleteAndNextSuccessPublishes() {
         val store = FakeStore(failWindowIndexOnce = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
@@ -179,6 +225,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         private var failWindowIndexOnce: Boolean = false,
         private var failInsertOnce: Boolean = false,
         private val failDelete: Boolean = false,
+        private var failServiceIndexOnce: Boolean = false,
     ) : TvProviderWriter.ChannelStore {
         private var nextChannelId = 1L
         private var nextProgramId = 100L
@@ -187,6 +234,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         var insertedPrograms = 0
         var updatedPrograms = 0
         var deleteCalls = 0
+        var serviceIndexQueries = 0
 
         override fun findExistingChannelId(key: ServiceKey): Result<Long?> = Result.success(channels.keys.firstOrNull())
 
@@ -201,8 +249,14 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             return Result.success(if (channels.containsKey(channelId)) 1 else 0)
         }
 
-        override fun indexExistingProgramsForService(channelId: Long): Result<Map<String, Long>> =
-            Result.success(programIndex())
+        override fun indexExistingProgramsForService(channelId: Long): Result<Map<String, Long>> {
+            serviceIndexQueries++
+            if (failServiceIndexOnce) {
+                failServiceIndexOnce = false
+                return Result.failure(IllegalStateException("Program問い合わせ失敗"))
+            }
+            return Result.success(programIndex())
+        }
 
         override fun indexExistingProgramsForWindow(channelId: Long, windowStartMs: Long, windowEndMs: Long): Result<Map<String, Long>> {
             if (failWindowIndexOnce) {
