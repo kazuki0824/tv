@@ -2,7 +2,8 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-// PSI/SI共通Rust部品。放送由来factとprovider-data正規化だけを所有する。
+// PSI/SI共通Rust部品。構文・意味解析による放送事実とprovider-data正規化を所有する。
+// EPG公開範囲・Program行採用・削除可否の製品判断はTISが所有する。
 // Android JNIとhost側VTS adapterはいずれもこのlibraryをlinkし、独立したPAT/PMT parserを持たない。
 rust_library {
     name: "libmaleicacid_arib_si_engine_core",

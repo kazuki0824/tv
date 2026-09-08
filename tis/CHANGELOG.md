@@ -1,3 +1,9 @@
+# r51_pr91_review_publication_boundaries
+
+- 構造検査に失敗したsectionのeventをProgram候補から除き、診断は通常snapshotに残す。Mapperへ実際の収集profileを渡し、媒体の暗黙固定を除去する。
+- 再試行区間全体を現在のauthoritative区間で確認し、現在のキーを使用する。再試行がある場合はfingerprint一致で省略しない。重複した旧retry設計を正本参照へ統一する。
+- 回帰試験4件を追加。検証結果はPRに記録する。Android/Soong実体build、device atest、実機VTSは未実施。
+
 # r51_pr91_review_publication_failure
 
 - EPG公開policyをKotlinへ集約し、dirty retryはServiceKey/時刻区間の再検証要求だけを保持する。現行の完全EITがなければ保留する。ProviderDataResultをSuccess/Failureへ閉じ、失敗serviceの書込み・削除・fingerprint・Direct Boot完了を止める。current EIT ratingはprovider query前に採用する。

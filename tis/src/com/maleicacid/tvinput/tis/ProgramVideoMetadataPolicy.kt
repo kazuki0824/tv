@@ -10,6 +10,7 @@ import com.maleicacid.tvinput.db.ProgramRecord
 object ProgramVideoMetadataPolicy {
     fun currentProgramsWithMetadata(
         events: List<AribEvent>,
+        profile: Int,
         serviceKey: ServiceKey,
         nowMillis: Long,
         info: PlaybackPipeline.VideoFormatInfo,
@@ -17,6 +18,7 @@ object ProgramVideoMetadataPolicy {
     ): List<ProgramRecord> {
         val records = EventModelMapper().toProgramRecords(
             events.filter { event -> eventContainsTime(event, serviceKey, nowMillis) },
+            profile = profile,
             semanticFactsByServiceKey = semanticFactsByServiceKey,
         )
         return merge(records, records.associate { key(it) to info })

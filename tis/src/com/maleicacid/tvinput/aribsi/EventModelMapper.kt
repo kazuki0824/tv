@@ -8,12 +8,13 @@ import com.maleicacid.tvinput.db.ProgramRecord
 class EventModelMapper {
     fun toProgramRecords(
         events: List<AribEvent>,
+        profile: Int,
         semanticFactsByServiceKey: Map<ServiceKey, ServiceSemanticFacts> = emptyMap(),
         malformedCaDescriptorCountByServiceId: Map<ServiceId16, Int> = emptyMap(),
         ratingProfileByServiceKey: Map<ServiceKey, AribRatingMapper.BroadcastProfile> = emptyMap(),
     ): List<ProgramRecord> {
         return events.mapNotNull { event ->
-            if (!EpgPublicationPolicy.isProgramRow(event)) return@mapNotNull null
+            if (!EpgPublicationPolicy.isProgramRow(profile, event)) return@mapNotNull null
             val semanticFacts = semanticFactsByServiceKey[event.serviceKey]
             if (semanticFactsByServiceKey.isNotEmpty() && semanticFacts == null) return@mapNotNull null
             val end = runCatching { Math.addExact(event.startTimeMillis, event.durationMillis) }

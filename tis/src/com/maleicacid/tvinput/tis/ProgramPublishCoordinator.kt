@@ -88,7 +88,6 @@ class ProgramPublishCoordinator(
         updateWindows: List<EpgUpdateWindow>,
         allowedServiceKeys: Set<ServiceKey>?,
         verifiedEmptyServiceKeys: Set<ServiceKey> = emptySet(),
-        authoritativeProgramKeysByService: Map<ServiceKey, Set<String>> = emptyMap(),
     ): ProgramPublishResult {
         if (mode == ChannelScanController.PublishMode.DIAGNOSTIC_ONLY) {
             return ProgramPublishResult(0, 0, skippedUnchanged = allPrograms.size)
@@ -114,7 +113,7 @@ class ProgramPublishCoordinator(
         }
         val allowed = filterServiceKeysForMode(mode, allServiceKeys, existingServiceKeys, allowedServiceKeys)
         val verifiedEmptyForAllowed = verifiedEmptyServiceKeys.intersect(allowed)
-        val retryForAllowed = revalidateRetryWindows(allowed, authoritativeProgramKeysByService)
+        val retryForAllowed = revalidateRetryWindows(allowed, updateWindows)
         val programs = allPrograms
             .filter { it.serviceKey in allowed }
         val windows = (updateWindows + retryForAllowed).distinctBy {
@@ -135,7 +134,7 @@ class ProgramPublishCoordinator(
             )
         }
         val signature = publication.fingerprint
-        if (signature != null && mode != ChannelScanController.PublishMode.BOOT_EPG_SYNC && lastProgramSignatureByMode[mode] == signature) {
+        if (retryForAllowed.isEmpty() && signature != null && mode != ChannelScanController.PublishMode.BOOT_EPG_SYNC && lastProgramSignatureByMode[mode] == signature) {
             return ProgramPublishResult(
                 0,
                 0,
@@ -177,16 +176,19 @@ class ProgramPublishCoordinator(
         )
     }
 
-    /** 失敗時に保持した区間を、現在の完全なEITから得たキーで再検証する。未完成なら保留。 */
+    /** 旧要求区間の全体を現在のauthoritative区間が覆う場合だけ、現在のキーで再試行する。 */
     private fun revalidateRetryWindows(
         allowed: Set<ServiceKey>,
-        authoritativeProgramKeysByService: Map<ServiceKey, Set<String>>,
+        currentWindows: List<EpgUpdateWindow>,
     ): List<EpgUpdateWindow> {
         val now = nowMillis()
         return dirtyWindows.mapNotNull { (key, request) ->
             if (key.serviceKey !in allowed || request.notBeforeMs > now) return@mapNotNull null
-            val currentKeys = authoritativeProgramKeysByService[key.serviceKey] ?: return@mapNotNull null
-            EpgUpdateWindow(key.serviceKey, key.windowStartMs, key.windowEndMs, currentKeys, true)
+            val current = currentWindows.firstOrNull { window ->
+                window.deletionAuthoritative && window.serviceKey == key.serviceKey &&
+                    window.windowStartMs <= key.windowStartMs && window.windowEndMs >= key.windowEndMs
+            } ?: return@mapNotNull null
+            EpgUpdateWindow(key.serviceKey, key.windowStartMs, key.windowEndMs, current.validProgramKeys, true)
         }
     }
 

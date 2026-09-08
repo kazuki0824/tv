@@ -362,7 +362,7 @@ TvProvider query failure と channel なしは別状態として扱う。既存 
 
 TvProvider query は必須問い合わせと任意問い合わせを区別する。チャンネル・番組の追加または更新、廃止行削除、既存チャンネル・番組検索、Direct Boot準備完了判定に使う query は必須問い合わせとする。必須問い合わせで `ContentResolver.query()` が null cursor を返した場合は `TvProviderQueryFailure` とし、empty resultとみなさない。`TvProviderQueryFailure` が発生したサービス/windowでは channel insert、program insert/update、廃止行削除、publish fingerprint cache更新、`DirectBootEpgPending`解除に進まず、再試行区間を保持する。provider-dataはcurrent policyのfallback sourceにしないため、policy判定のためのprovider-data代替参照queryを設けない。
 
-Programs publish/delete が provider failure になった場合は、`ProgramPublishCoordinator`のprocess-local queueに`ServiceKey + windowStartMs + windowEndMs`の再検証要求を保持する。entryはnotBeforeMsと診断用failure classだけを持ち、旧EpgUpdateWindow・旧validProgramKeys・旧deletionAuthoritativeを保存しない。固定cooldownは60秒。次回publish entrypointで期限到達した要求を取り出し、同じ入力snapshotの`authoritativeProgramKeysByService`に同一ServiceKeyがある場合だけ現在のキー集合から削除可否を再構成する。未完成・不整合・期限切れcollectionなどで現行の根拠がなければ削除せず要求を保持する。entrypointなしにwake-upしない。成功したkeyは削除、失敗したkeyは固定cooldownで末尾へ戻す。attempt段階、jitter、retention timer、failure class別queueは設けない。process restart時は破棄し、boot/background syncの再収集を正とする。失敗をpublish fingerprint更新や`DirectBootEpgPending`解除の根拠にしない。
+Programs publish/delete が provider failure になった場合は、`ProgramPublishCoordinator`のprocess-local queueに`ServiceKey + windowStartMs + windowEndMs`の再検証要求を保持する。entryはnotBeforeMsと診断用failure classだけを持ち、旧EpgUpdateWindow・旧validProgramKeys・旧deletionAuthoritativeを保存しない。固定cooldownは60秒。次回publish entrypointで期限到達した要求を取り出し、同じ入力snapshotのauthoritativeな更新区間が同一ServiceKeyの旧要求区間全体を含む場合だけ、その更新区間の現在のキー集合から削除権限を再構成する。ServiceKey単位のキー集合だけでは旧区間の範囲を証明できないため再試行しない。実行可能な再試行がある場合、過去のpublish fingerprintとの一致による早期終了を禁止し、provider処理の成功後に要求を除去する。未完成・不整合・期限切れcollectionなどで現行の根拠がなければ削除せず要求を保持する。entrypointなしにwake-upしない。成功したkeyは削除、失敗したkeyは固定cooldownで末尾へ戻す。attempt段階、jitter、retention timer、failure class別queueは設けない。process restart時は破棄し、boot/background syncの再収集を正とする。失敗をpublish fingerprint更新や`DirectBootEpgPending`解除の根拠にしない。
 
 dirty-window queueは全体上限512 windowsの単一LRUとする。超過時は最古entryを破棄し、ServiceKey別`droppedRetryWindowCount`を加算する。ServiceKeyごとの第二上限は設けない。process restart後はcounterを0に戻す。
 
@@ -572,7 +572,7 @@ TIS は `nativeSnapshotBulkJson()` と provider-data JNI API を通常境界と�
 
 ### Program publish retry
 
-Program publish retry queue は現行仕様ではprocess-localとする。process death後のretry永続化は行わず、boot/background scanによる再収集を正とする。keyは`ServiceKey + updateWindow`、entryはauthoritative windowと`notBeforeMs`だけを持ち、固定60秒cooldownを適用する。failure classは診断値であってkeyやbackoff入力ではない。queueは単一の有界LRU 512件とし、attempt段階、jitter、retention timer、ServiceKey別上限、retry専用schedulerを持たない。
+再試行の所有者、key、entry、現在の更新区間による再検証、cooldown、容量、破棄条件は本書「TvProvider failure semantics」を唯一の正本とする。本節に独立したqueue契約を定義しない。
 
 Provider 必須問い合わせ failure、Program insert/update failure、廃止行削除 failure、publish fingerprint build failureではpublish fingerprint cache更新と `DirectBootEpgPending`解除に進まない。廃止行削除は `deletionAuthoritative=true` の更新区間でのみ実行する。
 

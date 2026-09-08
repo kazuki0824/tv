@@ -1,3 +1,9 @@
+# r51_pr91_review_publication_boundaries
+
+- 構造検査に失敗したsectionのeventをProgram候補から除き、診断は通常snapshotに残す。Mapperへ実際の収集profileを渡し、媒体の暗黙固定を除去する。
+- 再試行区間全体を現在のauthoritative区間で確認し、現在のキーを使用する。再試行がある場合はfingerprint一致で省略しない。重複した旧retry設計を正本参照へ統一する。
+- 回帰試験4件を追加。検証結果はPRに記録する。Android/Soong実体build、device atest、実機VTSは未実施。
+
 # r51_pr91_review_fact_boundary
 
 - EITの公開window/削除判断をRustからKotlinへ移し、共通SectionTrackerを使うcurrent/next別受信事実とcollection世代だけをbulkへ出す。CAS根拠は現行buildで必須、旧保存値normalizeではnullableを維持。countryCode/video.languageのschema境界をRustと共有corpusに揃える。

@@ -949,6 +949,7 @@ class MaleicacidLiveSession(
         val now = System.currentTimeMillis()
         val transaction = aribSiEngine.programStateSnapshot()
         val records = eventModelMapper.toProgramRecords(
+            profile = transaction.discoveryProfile,
             events = transaction.events.filter { event ->
                 ProgramVideoMetadataPolicy.eventContainsTime(event, key, now)
             },
@@ -977,6 +978,7 @@ class MaleicacidLiveSession(
         val key = currentService ?: return
         val transaction = aribSiEngine.programStateSnapshot()
         val records = eventModelMapper.toProgramRecords(
+            profile = transaction.discoveryProfile,
             events = transaction.events.filter { it.serviceKey == key },
             semanticFactsByServiceKey = transaction.semanticFactsByServiceKey,
             malformedCaDescriptorCountByServiceId = transaction.malformedCaDescriptorCountByServiceId,
@@ -1005,7 +1007,6 @@ class MaleicacidLiveSession(
             updateWindows = snapshot.updateWindows.filter { it.serviceKey == key }
                 .map(ProgramPublishCoordinator::EpgUpdateWindow),
             allowedServiceKeys = setOf(key),
-            authoritativeProgramKeysByService = snapshot.authoritativeProgramKeysByService,
         )
         if (result.failures.isNotEmpty()) {
             android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "live Programs 更新失敗=${result.failures}")

@@ -462,6 +462,7 @@ data class TransportKey(
 }
 
 data class ProgramPublishSnapshot(
+    val discoveryProfile: Int,
     val authoritativeProgramKeysByService: Map<ServiceKey, Set<String>> = emptyMap(),
     val ingestSequence: Long,
     val events: List<AribEvent>,

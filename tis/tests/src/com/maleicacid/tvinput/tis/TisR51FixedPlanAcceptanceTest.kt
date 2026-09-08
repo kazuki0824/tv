@@ -142,7 +142,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(!video.has("r51PlaybackSupported"))
         check(!video.has("liveViewableClaim"))
         val providerData = org.json.JSONObject(TvProviderWriter.programProviderDataForTest(
-            EventModelMapper().toProgramRecords(listOf(aribEvent().withComponents(componentsFromJson(components))), semanticFactsByServiceKey = mapOf(key to semanticFacts())).single(),
+            EventModelMapper().toProgramRecords(listOf(aribEvent().withComponents(componentsFromJson(components))), semanticFactsByServiceKey = mapOf(key to semanticFacts()), profile = SiDiscoveryProfile.ISDB_T).single(),
         ))
         val providerVideo = providerData.getJSONObject("components").getJSONArray("video").getJSONObject(0)
         check(providerVideo.getString("codec") == "HEVC")
@@ -172,7 +172,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(audio.getString("parseStatus") == "OK")
         check(!audio.has("r51PlaybackSupported"))
         val providerData = org.json.JSONObject(TvProviderWriter.programProviderDataForTest(
-            EventModelMapper().toProgramRecords(listOf(aribEvent().withComponents(componentsFromJson(components))), semanticFactsByServiceKey = mapOf(key to semanticFacts())).single(),
+            EventModelMapper().toProgramRecords(listOf(aribEvent().withComponents(componentsFromJson(components))), semanticFactsByServiceKey = mapOf(key to semanticFacts()), profile = SiDiscoveryProfile.ISDB_T).single(),
         ))
         val providerAudio = providerData.getJSONObject("components").getJSONArray("audio").getJSONObject(0)
         check(providerAudio.getString("codec") == "MPEG-4-AAC-LATM")
@@ -226,7 +226,7 @@ class TisR51FixedPlanAcceptanceTest {
         }
 
         val program = EventModelMapper()
-            .toProgramRecords(listOf(aribEvent().withComponents(merged)), semanticFactsByServiceKey = mapOf(key to semanticFacts()))
+            .toProgramRecords(listOf(aribEvent().withComponents(merged)), semanticFactsByServiceKey = mapOf(key to semanticFacts()), profile = SiDiscoveryProfile.ISDB_T)
             .single()
         val providerData = JSONObject(TvProviderWriter.programProviderDataForTest(program))
         val providerVideo = providerData.getJSONObject("components").getJSONArray("video").getJSONObject(0)
@@ -295,7 +295,7 @@ class TisR51FixedPlanAcceptanceTest {
         writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
         val record = EventModelMapper().toProgramRecords(
             events = listOf(aribEvent(parentalRatings = listOf(AribParentalRating("JPN", 0x12)))),
-            ratingProfileByServiceKey = mapOf(key to AribRatingMapper.BroadcastProfile.BS_CS), semanticFactsByServiceKey = mapOf(key to semanticFacts())).single()
+            ratingProfileByServiceKey = mapOf(key to AribRatingMapper.BroadcastProfile.BS_CS), semanticFactsByServiceKey = mapOf(key to semanticFacts()), profile = SiDiscoveryProfile.ISDB_T).single()
         writer.upsertPrograms(listOf(record))
         val contentRating = store.programs.values.single().getAsString(TvContract.Programs.COLUMN_CONTENT_RATING)
         check(contentRating != null)
@@ -311,7 +311,7 @@ class TisR51FixedPlanAcceptanceTest {
 
     @Test fun unsupportedRatingRemainsRawWithoutProductDiagnostics() {
         val event = aribEvent(parentalRatings = listOf(AribParentalRating("USA", 15)))
-        val record = EventModelMapper().toProgramRecords(listOf(event), semanticFactsByServiceKey = mapOf(key to semanticFacts())).single()
+        val record = EventModelMapper().toProgramRecords(listOf(event), semanticFactsByServiceKey = mapOf(key to semanticFacts()), profile = SiDiscoveryProfile.ISDB_T).single()
         check(record.contentRatings.isEmpty())
         val ratingEntry = record.descriptors.parentalRatings.single()
         check(ratingEntry.countryCode == "USA")
@@ -338,7 +338,7 @@ class TisR51FixedPlanAcceptanceTest {
         )
         val records = EventModelMapper().toProgramRecords(
             events = listOf(malformed, truncated),
-            ratingProfileByServiceKey = mapOf(key to AribRatingMapper.BroadcastProfile.BS_CS), semanticFactsByServiceKey = mapOf(key to semanticFacts()))
+            ratingProfileByServiceKey = mapOf(key to AribRatingMapper.BroadcastProfile.BS_CS), semanticFactsByServiceKey = mapOf(key to semanticFacts()), profile = SiDiscoveryProfile.ISDB_T)
         check(records.size == 2)
         records.forEach { record ->
             check(record.contentRatings.isEmpty())
@@ -358,7 +358,7 @@ class TisR51FixedPlanAcceptanceTest {
                 AribParentalRating("USA", 12),
                 AribParentalRating("JPN", 12),
             )),
-        ), semanticFactsByServiceKey = mapOf(key to semanticFacts())).single()
+        ), semanticFactsByServiceKey = mapOf(key to semanticFacts()), profile = SiDiscoveryProfile.ISDB_T).single()
         writer.upsertPrograms(listOf(unsupported))
         val values = store.programs.values.single()
         check(values.getAsString(TvContract.Programs.COLUMN_CONTENT_RATING) == null)
@@ -383,8 +383,7 @@ class TisR51FixedPlanAcceptanceTest {
         val basis = """{"pmtPid":256,"parseStatus":"CA_UNRESOLVED","sdtFreeCaMode":true,"descriptors":[{"scope":"ES","esPid":273,"caSystemId":5,"caPid":500,"rawDescriptorHex":"09040005e1f4"}]}"""
         val record = EventModelMapper().toProgramRecords(
             events = listOf(aribEvent()),
-            semanticFactsByServiceKey = mapOf(key to semanticFacts(requiresCas = true).copy(casFactsCanonicalJson = basis)),
-        ).single()
+            semanticFactsByServiceKey = mapOf(key to semanticFacts(requiresCas = true).copy(casFactsCanonicalJson = basis)), profile = SiDiscoveryProfile.ISDB_T).single()
         val providerData = JSONObject(TvProviderWriter.programProviderDataForTest(record))
         val cas = providerData.getJSONObject("cas")
         check(providerData.getJSONObject("casFacts").getString("parseStatus") == "CA_UNRESOLVED")
@@ -407,7 +406,7 @@ class TisR51FixedPlanAcceptanceTest {
         val event = aribEvent()
         val record = EventModelMapper().toProgramRecords(listOf(event.copy(
             descriptors = event.descriptors.copy(series = null, seriesCandidatesCanonicalJson = candidates),
-        )), semanticFactsByServiceKey = mapOf(key to semanticFacts())).single()
+        )), semanticFactsByServiceKey = mapOf(key to semanticFacts()), profile = SiDiscoveryProfile.ISDB_T).single()
         val data = JSONObject(TvProviderWriter.programProviderDataForTest(record))
         check(data.isNull("series"))
         val facts = data.getJSONObject("diagnostics").getJSONArray("rawProviderDataExtensions").getJSONObject(0)
@@ -477,7 +476,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(completeness.requiresCas)
 
         val event = aribEvent()
-        val record = EventModelMapper().toProgramRecords(listOf(event), mapOf(event.serviceKey to facts)).single()
+        val record = EventModelMapper().toProgramRecords(listOf(event), semanticFactsByServiceKey = mapOf(event.serviceKey to facts), profile = SiDiscoveryProfile.ISDB_T).single()
         check(record.requiresCas)
         val providerData = JSONObject(TvProviderWriter.programProviderDataForTest(record))
         check(providerData.getJSONObject("cas").getBoolean("requiresCas"))
@@ -639,6 +638,16 @@ class TisR51FixedPlanAcceptanceTest {
         check(missing is CurrentProgramRatingResolver.ResolveResult.ProviderQueryFailed && queries == 1)
     }
 
+    @Test fun mapperUsesTheActualBroadcastProfileAtItsOwnBoundary() {
+        val event = aribEvent().let { it.copy(source = it.source.copy(sectionNumber = 2, lastSectionNumber = 2)) }
+        val mapper = EventModelMapper()
+        check(mapper.toProgramRecords(listOf(event), SiDiscoveryProfile.ISDB_T).size == 1)
+        for (profile in listOf(SiDiscoveryProfile.BS, SiDiscoveryProfile.CS110)) {
+            check(mapper.toProgramRecords(listOf(event), profile).isEmpty())
+            check(mapper.toProgramRecords(listOf(event.copy(source = event.source.copy(sectionNumber = 1))), profile).size == 1)
+        }
+    }
+
     @Test fun epgPolicyUsesCurrentCollectionAndPreservesUndefinedTimeIdentity() {
         val policy = com.maleicacid.tvinput.aribsi.EpgPublicationPolicy()
         val event = aribEvent().let { it.copy(source = it.source.copy(version = 1)) }
@@ -655,7 +664,7 @@ class TisR51FixedPlanAcceptanceTest {
         val reset = policy.project(SiDiscoveryProfile.ISDB_T, 2, emptyList(), listOf(complete))
         check(reset.windows.isEmpty() && reset.authoritativeProgramKeysByService[key] == emptySet<String>())
         val unsafe = policy.project(SiDiscoveryProfile.ISDB_T, 2, listOf(event), listOf(complete.copy(safeSections = emptyList())))
-        check(!unsafe.windows.single().deletionAuthoritative)
+        check(unsafe.events.isEmpty() && unsafe.windows.isEmpty())
         val satellite = complete.copy(lastSectionNumber = 7, missingSections = (2..7).toList(), complete = false)
         check(policy.project(SiDiscoveryProfile.BS, 3, listOf(event), listOf(satellite)).windows.single().deletionAuthoritative)
     }
@@ -689,6 +698,7 @@ class TisR51FixedPlanAcceptanceTest {
     @Test fun videoHeaderMetadataIsProjectedIntoCurrentProgramRecord() {
         val info = PlaybackPipeline.VideoFormatInfo(0x1b, "video/avc", 1280, 720)
         val records = ProgramVideoMetadataPolicy.currentProgramsWithMetadata(
+            profile = SiDiscoveryProfile.ISDB_T,
             events = listOf(aribEvent()),
             serviceKey = key,
             nowMillis = 1_700_000_000_100L,
@@ -706,6 +716,7 @@ class TisR51FixedPlanAcceptanceTest {
     @Test fun videoHeaderMetadataIgnoresNonCurrentEvent() {
         val info = PlaybackPipeline.VideoFormatInfo(0x1b, "video/avc", 1280, 720)
         val records = ProgramVideoMetadataPolicy.currentProgramsWithMetadata(
+            profile = SiDiscoveryProfile.ISDB_T,
             events = listOf(aribEvent().copy(startTimeMillis = 1_600_000_000_000L)),
             serviceKey = key,
             nowMillis = 1_700_000_000_100L,

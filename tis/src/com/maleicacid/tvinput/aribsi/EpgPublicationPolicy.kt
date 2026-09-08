@@ -26,7 +26,8 @@ internal class EpgPublicationPolicy {
         val selected = events.filter { event ->
             EpgSectionPolicy.accepts(profile, event.source.tableId, event.source.sectionNumber) &&
                 instances.any { it.currentNextIndicator && !it.inconsistent && it.tableId == event.source.tableId &&
-                    it.serviceKey == event.serviceKey && it.version == event.source.version }
+                    it.serviceKey == event.serviceKey && it.version == event.source.version &&
+                    event.source.sectionNumber in it.safeSections }
         }
         val byService = selected.groupBy { it.serviceKey }
         val authoritative = linkedMapOf<ServiceKey, Set<String>>()
@@ -39,7 +40,7 @@ internal class EpgPublicationPolicy {
                 current.all { preservesIdentity(it) }
             val keys = current.filter(::preservesIdentity).map { identity(it) }.toSet()
             if (safe) authoritative[instance.serviceKey] = keys
-            val timed = current.filter(::isProgramRow).mapNotNull { event ->
+            val timed = current.filter { isProgramRow(profile, it) }.mapNotNull { event ->
                 runCatching { Math.addExact(event.startTimeMillis, event.durationMillis) }.getOrNull()
                     ?.takeIf { it > event.startTimeMillis && event.startTimeMillis > 0L }
                     ?.let { event.startTimeMillis to it }
@@ -64,8 +65,8 @@ internal class EpgPublicationPolicy {
     }
 
     companion object {
-        fun isProgramRow(event: AribEvent): Boolean =
-            EpgSectionPolicy.accepts(SiDiscoveryProfile.ISDB_T, event.source.tableId, event.source.sectionNumber) && event.timingState == "DEFINED"
+        fun isProgramRow(profile: Int, event: AribEvent): Boolean =
+            EpgSectionPolicy.accepts(profile, event.source.tableId, event.source.sectionNumber) && event.timingState == "DEFINED"
 
         private fun preservesIdentity(event: AribEvent): Boolean =
             event.timingState == "DEFINED" || event.timingState == "UNDEFINED_TIME"

@@ -186,7 +186,7 @@ class NativeAribSiParserCasDiscoveryTest {
             check(event.descriptors.series?.expireDate == 0xe123)
             check(event.descriptors.linkage.single().privateDataPrefixHex == "aabb")
 
-            val program = EventModelMapper().toProgramRecords(listOf(event)).single().copy(casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts())
+            val program = EventModelMapper().toProgramRecords(listOf(event), profile = SiDiscoveryProfile.ISDB_T).single().copy(casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts())
             val providerData = JSONObject((ProviderDataBridge.buildProgramProviderData(program) as ProviderDataBridge.Success).json)
             val providerVideo = providerData.getJSONObject("components").getJSONArray("video").getJSONObject(0)
             check(providerVideo.getString("resolution") == "1080")
@@ -213,30 +213,48 @@ class NativeAribSiParserCasDiscoveryTest {
         }
     }
 
+    @Test fun malformedEitCannotBecomeAProgramButItsDiagnosticsRemainVisible() {
+        val malformedBodies = listOf(
+            eitWithDescriptors(listOf(0x55, 5, 0x4a, 0x50, 0x4e, 15, 0xaa)),
+            eitWithDescriptors(listOf(0x55, 4, 0x4a, 0x50)),
+            eitWithDescriptors(emptyList()).also { it[25] = 4 },
+        )
+        for (body in malformedBodies) {
+            NativeAribSiParser().use { parser ->
+                check(parser.ingestSection(TsPid(PID_EIT), section(eitWithDescriptors(emptyList()))) == SiStatus.OK)
+                val valid = parser.programStateSnapshot()
+                check(EventModelMapper().toProgramRecords(valid.events, valid.discoveryProfile).size == 1)
+                body[5] = 0xc3
+                check(parser.ingestSection(TsPid(PID_EIT), section(body)) == SiStatus.OK)
+                val invalid = parser.programStateSnapshot()
+                check(invalid.events.isEmpty())
+                check(EventModelMapper().toProgramRecords(invalid.events, invalid.discoveryProfile).isEmpty())
+                check(invalid.updateWindows.none { it.deletionAuthoritative })
+                check(invalid.descriptorDiagnostics.isNotEmpty() || invalid.parserDiagnostics.isNotEmpty())
+                check(invalid.eitInstances.single().safeSections.isEmpty())
+            }
+        }
+    }
+
     @Test fun rejectedRatingsAndFullUnknownDescriptorsSurviveProductionPublication() {
         val parser = NativeAribSiParser()
         try {
             val valid = listOf(0x55, 4, 0x4a, 0x50, 0x4e, 12)
-            val malformed = listOf(0x55, 5, 0x4a, 0x50, 0x4e, 15, 0xaa)
             val unsupported = listOf(0x55, 4, 0xff, 0, 0x58, 0x8f)
             val unknown = listOf(0xfe, 80) + (0 until 80).toList()
-            val truncated = listOf(0x55, 4, 0x4a, 0x50)
-            val body = eitWithDescriptors(valid + malformed + unsupported + unknown + truncated)
+            val body = eitWithDescriptors(valid + unsupported + unknown)
             check(parser.ingestSection(TsPid(PID_EIT), section(body)) == SiStatus.OK)
             val event = parser.programStateSnapshot().events.single()
             check(event.descriptors.parentalRatings == listOf(AribParentalRating("JPN", 12)))
             val facts = JSONObject(requireNotNull(event.descriptors.diagnostics.descriptorFactsCanonicalJson))
             val ratings = facts.getJSONArray("parentalRatingDescriptors")
-            check(ratings.length() == 4)
+            check(ratings.length() == 2)
             check(ratings.getJSONObject(0).getString("parseStatus") == "OK")
-            check(ratings.getJSONObject(1).getString("parseStatus") == "MalformedLength")
-            check(ratings.getJSONObject(1).getJSONArray("entries").length() == 0)
-            check(ratings.getJSONObject(2).getString("rawDescriptorHex") == "5504ff00588f")
-            check(ratings.getJSONObject(2).getJSONArray("entries").getJSONObject(0).getString("countryCode").map { it.code } == listOf(255, 0, 88))
-            check(ratings.getJSONObject(3).getString("parseStatus") == "TruncatedDescriptor")
+            check(ratings.getJSONObject(1).getString("rawDescriptorHex") == "5504ff00588f")
+            check(ratings.getJSONObject(1).getJSONArray("entries").getJSONObject(0).getString("countryCode").map { it.code } == listOf(255, 0, 88))
             val rawUnknown = facts.getJSONArray("unknownDescriptors").getJSONObject(0).getString("rawDescriptorHex")
             check(rawUnknown.length == 164 && rawUnknown.endsWith("4d4e4f"))
-            val program = EventModelMapper().toProgramRecords(listOf(event)).single().copy(casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts())
+            val program = EventModelMapper().toProgramRecords(listOf(event), profile = SiDiscoveryProfile.ISDB_T).single().copy(casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts())
             val stored = (ProviderDataBridge.buildProgramProviderData(program) as ProviderDataBridge.Success).json
             val canonical = JSONObject(stored)
             check(canonical.getJSONArray("ratings").length() == 1)
@@ -278,7 +296,7 @@ class NativeAribSiParserCasDiscoveryTest {
             check(eitOnlyVideo.streamType == null)
             check(eitOnlyVideo.codec == null)
 
-            val program = EventModelMapper().toProgramRecords(listOf(event)).single().copy(casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts())
+            val program = EventModelMapper().toProgramRecords(listOf(event), profile = SiDiscoveryProfile.ISDB_T).single().copy(casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts())
             val providerData = JSONObject((ProviderDataBridge.buildProgramProviderData(program) as ProviderDataBridge.Success).json)
             val videoArray = providerData.getJSONObject("components").getJSONArray("video")
             val providerVideo = (0 until videoArray.length())

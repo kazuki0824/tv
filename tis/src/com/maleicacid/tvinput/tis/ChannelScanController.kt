@@ -390,6 +390,7 @@ class ChannelScanController(
     private fun publishProgramsForRegisteredServices(mode: PublishMode, allowedServiceKeys: Set<ServiceKey>?): ProgramPublishCoordinator.ProgramPublishResult {
         val transaction = engine.takeProgramPublishSnapshot()
         val allPrograms = EventModelMapper().toProgramRecords(
+            profile = transaction.discoveryProfile,
             events = transaction.events,
             semanticFactsByServiceKey = transaction.semanticFactsByServiceKey,
             malformedCaDescriptorCountByServiceId = transaction.malformedCaDescriptorCountByServiceId,
@@ -408,7 +409,6 @@ class ChannelScanController(
         }.mapTo(linkedSetOf()) { it.serviceKey }
         val result = programPublishCoordinator.publishWithUpdates(
             mode, allPrograms, updateWindows, allowedServiceKeys, verifiedEmptyServiceKeys,
-            transaction.authoritativeProgramKeysByService,
         )
         if (result.skippedNoChannel > 0) Log.d(LogTags.TIS, "${mode} で未登録channelのeventをskipしました skipped=${result.skippedNoChannel}")
         if (result.failures.isNotEmpty()) Log.w(LogTags.TIS, "TvProvider program 登録失敗=${result.failures}")

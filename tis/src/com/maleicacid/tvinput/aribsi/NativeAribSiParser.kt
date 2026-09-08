@@ -128,6 +128,7 @@ class NativeAribSiParser : AutoCloseable {
             discoveryProfile, snapshot.collectionGeneration, snapshot.events, snapshot.eitInstances,
         )
         return ProgramPublishSnapshot(
+            discoveryProfile = discoveryProfile,
             ingestSequence = snapshot.ingestSequence,
             events = publication.events,
             updateWindows = publication.windows,
