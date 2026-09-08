@@ -4,6 +4,7 @@ mod ca_descriptor;
 mod descriptors;
 mod discovery_requirements;
 mod eit;
+mod product_policy;
 pub(crate) mod provider_data;
 mod sections;
 mod service_discovery;
@@ -15,10 +16,11 @@ use descriptors::{
     event_provider_fields, json_escape, DescriptorSectionScope,
 };
 use discovery_requirements::DiscoveryProfile;
-use eit::{EitEvent, EitStableEventIdentity, EitUpdateWindow};
+use eit::{EitEvent, EitStableEventIdentity};
 use jni::objects::{JByteArray, JObject, JString};
 use jni::sys::{jint, jlong, jstring};
 use jni::JNIEnv;
+use product_policy::{EitStore, EitUpdateWindow};
 use provider_data as provider_data_api;
 use sections::{
     parse_section_header, section_crc_valid_with_header, section_has_malformed_descriptor_loop,
@@ -66,6 +68,8 @@ fn si_module_is_healthy() -> bool {
 
 #[derive(Default)]
 struct ParserState {
+    epg_store: EitStore,
+    discovery_profile: DiscoveryProfile,
     collector: ServiceDiscoveryCollector,
     sections_seen: u64,
     last_status: jint,
@@ -116,7 +120,17 @@ impl ParserState {
             );
             // 不正descriptor loopは診断付き入力として扱い、意味解析前に
             // section全体を破棄する理由にはしない。復旧不能なsection length / CRC errorは上で拒否する。
-            self.collector.push_section(pid, section);
+            if pid == 0x0012 && (0x4e..=0x6f).contains(&table_id) {
+                if product_policy::is_program_publish_eit_section(
+                    self.discovery_profile,
+                    pid,
+                    section,
+                ) {
+                    self.epg_store.upsert_section(section);
+                }
+            } else {
+                self.collector.push_section(pid, section);
+            }
             self.last_status = if malformed_descriptor_loop {
                 STATUS_MALFORMED_DESCRIPTOR
             } else {
@@ -140,11 +154,12 @@ impl ParserState {
     }
 
     fn events(&self) -> Vec<EitEvent> {
-        self.collector.events()
+        self.epg_store.snapshot_all_for_diagnostic()
     }
 
     fn take_epg_update_windows(&mut self) -> Vec<EitUpdateWindow> {
-        self.collector.take_epg_update_windows()
+        self.epg_store
+            .take_present_following_actual_update_windows()
     }
 
     fn sdt_actual_transport_keys(&self) -> Vec<(u16, u16)> {
@@ -784,7 +799,7 @@ fn event_value(event: &EitEvent) -> serde_json::Value {
             event_id: Some(event.event_id),
         }),
     );
-    let stable_identity = event.stable_identity();
+    let stable_identity = product_policy::program_identity(event);
     let program_key = stable_identity.map(|_| {
         serde_json::json!({
             "kind": "arib-event-v1",
@@ -1492,6 +1507,7 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
         _ => return STATUS_INVALID_DISCOVERY_PROFILE,
     };
     with_state_mut(handle, STATUS_INVALID_HANDLE, |state| {
+        state.discovery_profile = profile;
         state.collector.set_discovery_profile(profile);
         STATUS_OK
     })

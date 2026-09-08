@@ -1,5 +1,11 @@
 # arib_si_engine_rs 設計判断
 
+### 解析coreとTIS向け保存policyの境界
+
+本crateの`src/core/eit.rs`はEITのraw識別子・時刻状態・記述子・構文診断を解析する。TIS固有の永続キー採用、r51の公開scope、旧Program保護、更新・削除区間生成は独立した`src/tis_product/epg.rs`が所有する。`ServiceDiscoveryEngine` / `ServiceDiscoveryCollector`へEPG保存stateや公開gateを置かない。JNIのTIS向けfacadeは両componentを組み合わせ、pure parserを直接利用する別consumerにはこの保存判断を適用しない。host wrapperは両componentを同時に試験するが、保存policyの試験をARIB規格の要求と読み替えない。
+
+以下の永続key・廃止行削除・present/following actual公開規則は、このTIS向けproduct_policyの契約であり、EIT意味解析coreの契約ではない。両時刻未定義でもcoreがraw event_idを無意味として捨てることはない。保存用identityへ採用するかはproduct_policyで決める。更新区間は同一安定キーの開始時刻移動を含め、変更対象の旧区間と新区間のunionにする。
+
 ## 責務
 
 `arib_si_engine_rs` は、Tuner HAL → framework/JNI/Tuner SDK API → TIS → arib_si_engine_rs という経路で渡された PSI/SI section payload と TIS 側 メタデータを入力として、PSI/SI/EIT descriptor の構文・意味解析を Rust で実装する。PMT/CAT の CA_descriptor から得られる CA_system_id、ECM PID、EMM PID と、SDT 等から得られる free_CA_mode / scrambling flag、サービス識別子補助情報を含むCA情報 / サービスメタデータ意味モデルも本crateの責務とする。raw TS packet demux、PID filter、section assembly、section payload delivery は Tuner HAL の責務であり、本crateに重複実装しない。Tuner HAL を CA情報 / サービスメタデータ意味モデルの生成者またはSSOTにしない。

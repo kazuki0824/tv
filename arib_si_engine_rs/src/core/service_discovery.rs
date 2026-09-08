@@ -4,8 +4,6 @@ use crate::ca_descriptor::{
     MalformedCaDescriptorDiagnostic,
 };
 use crate::discovery_requirements::{optional_table_requirement, DiscoveryProfile};
-use crate::eit::{EitEvent, EitStore, EitUpdateWindow};
-use crate::eit_publish_policy::is_program_publish_eit_section;
 use crate::sections::{
     parse_section_header, section_crc_valid, section_has_malformed_descriptor_loop,
 };
@@ -348,7 +346,6 @@ pub struct ServiceDiscoveryEngine {
     pending_pmts: BTreeMap<(u16, u16, u16, u16), PendingPmtInfo>,
     cat_ca: CatCaMetadata,
     malformed_ca_descriptor_diagnostics: Vec<MalformedCaDescriptorDiagnostic>,
-    eit_store: EitStore,
 }
 
 impl ServiceDiscoveryEngine {
@@ -365,20 +362,8 @@ impl ServiceDiscoveryEngine {
             Some(0x40 | 0x41) if pid == 0x0010 => self.parse_nit(section),
             Some(0x4a) if pid == 0x0011 => self.parse_bat(section),
             Some(0x42 | 0x46) if pid == 0x0011 => self.parse_sdt(section),
-            Some(table) if pid == 0x0012 && (0x4e..=0x6f).contains(&table) => {
-                self.eit_store.upsert_section(section)
-            }
             _ => {}
         }
-    }
-
-    pub fn events(&self) -> Vec<EitEvent> {
-        self.eit_store.snapshot_all_for_diagnostic()
-    }
-
-    pub fn take_epg_update_windows(&mut self) -> Vec<EitUpdateWindow> {
-        self.eit_store
-            .take_present_following_actual_update_windows()
     }
 
     pub fn is_known_pmt_pid(&self, pid: u16) -> bool {
@@ -1082,17 +1067,7 @@ impl ServiceDiscoveryCollector {
         }
         self.track_section(pid, section);
         self.track_transport_scopes(section);
-        if is_program_publish_eit_section(self.discovery_profile, pid, section) {
-            self.engine.push_section(pid, section);
-        }
-    }
-
-    pub fn events(&self) -> Vec<EitEvent> {
-        self.engine.events()
-    }
-
-    pub fn take_epg_update_windows(&mut self) -> Vec<EitUpdateWindow> {
-        self.engine.take_epg_update_windows()
+        self.engine.push_section(pid, section);
     }
 
     pub fn is_known_pmt_pid(&self, pid: u16) -> bool {

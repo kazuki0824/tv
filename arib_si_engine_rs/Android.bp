@@ -2,7 +2,7 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-// PSI/SIの構文・意味解析を所有するcanonicalなpure-Rust core。
+// PSI/SI共通Rust部品。pure解析coreとTIS専用product_policyは別moduleで所有する。
 // Android JNIとhost側VTS adapterはいずれもこのlibraryをlinkし、独立したPAT/PMT parserを持たない。
 rust_library {
     name: "libmaleicacid_arib_si_engine_core",
@@ -18,7 +18,7 @@ rust_library {
         "src/core/descriptors.rs",
         "src/core/discovery_requirements.rs",
         "src/core/eit.rs",
-        "src/core/eit_publish_policy.rs",
+        "src/tis_product/epg.rs",
         "src/core/provider_data.rs",
         "src/core/sections.rs",
         "src/core/service_discovery.rs",
@@ -72,7 +72,7 @@ rust_test {
         "src/core/descriptors.rs",
         "src/core/discovery_requirements.rs",
         "src/core/eit.rs",
-        "src/core/eit_publish_policy.rs",
+        "src/tis_product/epg.rs",
         "src/core/provider_data.rs",
         "src/core/sections.rs",
         "src/core/service_discovery.rs",

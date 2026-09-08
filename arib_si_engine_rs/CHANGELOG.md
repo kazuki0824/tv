@@ -1,3 +1,8 @@
+# r51_pr85_stack_epg_policy_boundary
+
+- #87 D12/D03 / SI U-01・TIS-025: TIS向けEPG保存policyをpure EIT解析・サービス解析から独立させ、JNI facadeで組み合わせる。永続identity採用・公開scope・削除判断をproduct_policyに集約する。
+- 同一event IDの開始時刻移動で旧区間が欠落しないようunionを修正し、以前の区間から新しい区間までを更新する試験を追加する。Channel登録済みのサービスへ初回Programを作成できるよう設計の前提を統一する。
+
 # r51_pr85_stack_unique_series_projection
 
 - #87 D06/D07 / TIS-053: v1の単一series契約を正式に固定し、複数記述子の先頭を採用しない。通常seriesはnull、全候補は同じRust型で検証して診断拡張へ保存する。TISは候補JSONを透過保持し、系列ID・話数を勝手に関連付けない。
