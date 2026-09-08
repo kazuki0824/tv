@@ -132,10 +132,12 @@ freeCA / isFree UI補足:
 | event_group_descriptor | JSON v1 `internal_provider_data.eventGroups` にraw `groupType`、`events`、`otherNetworkEvents`、`privateDataHex`、`parseStatus`を構造化保存し、現行仕様では標準列・一般 UI・予約追従へ接続しない。予約追従へ接続する場合は、event identity と authoritative 条件を設計正本へ固定してから扱う。 | Android標準列には自然対応しないが、予約追従に必要なARIB-native構造であるため |
 | multi-lingual event text の候補列 | `short_event_descriptor` はdescriptor順で最初に受理した言語を標準 `TITLE` / `SHORT_DESCRIPTION` の選択言語とし、同じ言語の `extended_event_descriptor` / extended itemだけを `LONG_DESCRIPTION` へ使う。short候補がない場合はextended候補、さらにない場合はextended itemの先頭言語を選択する。異なる言語を1文字列へ連結しない。候補列は `shortEvents[] / extendedTexts[] / extendedItems[]` として JSON v1 `internal_provider_data` に保存する。 | Android標準title/descriptionは単一表示値である一方、ARIBは異なる言語のshort/extended descriptorを複数許可するため |
 | 復号診断 | JSON v1 `diagnostics.parserDiagnostics` または `diagnostics.descriptorDiagnostics` に保存し、標準列へは出さない。 | 一般ユーザー向けUI情報ではないため |
-| 公開可否診断 | JSON v1 `diagnostics.publishDiagnostics` に保存し、標準列へは出さない。 | 一般ユーザー向けUI情報ではないため |
+| 公開可否診断 | 現在のTIS実行中診断へ保持し、provider-data・標準列へ保存しない。 | 放送事実と現在の製品判断を分離するため |
 | 元記述子バイト列 | JSON v1 診断情報の `rawPrefixHex` または descriptor 構造に上限内で保存し、標準列へは出さない。 | UI表示情報ではなく、標準列を肥大化させるため |
 
-この表は「現行仕様で標準列非投影または部分投影にするもの」の一覧である。`internal_provider_data` の schema 名、JSON key 名、BLOB サイズ上限、診断情報キー名、`LONG_DESCRIPTION` 最大長、長文切り詰め方針は `arib_si_engine_rs/DESIGN_JA.md` と schema ファイル側で固定し、この表に含めてはならない。
+`LONG_DESCRIPTION`標準列には本書の順序で組み立てた追加本文の全長を投影し、独自の文字数・byte上限による切詰めを行わない。provider-data BLOBの32 KiB上限を標準列へ適用しない。TvProvider書込みが拒否された場合は既存の書込み失敗・再試行処理へ渡す。
+
+この表は「現行仕様で標準列非投影または部分投影にするもの」の一覧である。`internal_provider_data` の schema 名、JSON key 名、BLOB サイズ上限、診断情報キー名、provider-data内部の長文切り詰め方針は `arib_si_engine_rs/DESIGN_JA.md` と schema ファイル側で固定し、この表に含めてはならない。
 
 ## 6. 実装契約
 

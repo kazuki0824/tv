@@ -547,7 +547,7 @@ SetupActivity は自分が開始した `SETUP_SCAN` purpose かつ同一 scan ge
 
 `TvContract.Channels/Programs.COLUMN_INTERNAL_PROVIDER_DATA` の新規書き込みは `arib_si_engine_rs` の provider-data JNI API が返す JSON v1 bytes をそのまま保存する。TIS Kotlin は TvProvider 標準列を詰める接着層であり、provider-data 本体、program stable key、descriptor 診断情報 schema、provider-data digestまたは署名を独自JSON schemaとして再構築してはならない。
 
-Channel provider-data の新規書き込み・読み取り正形式は JSON v1 のみとする。`key=value;...` 形式、旧 flat provider-data、旧 provider-data 断片は読み取り互換入力としても残さない。JSON v1 は `schema="maleicacid.tv.channel"` / `schemaVersion=1` を持ち、channel tune復元に必要な物理選局情報、ONID / TSID / service_id、表示名、放送由来CAS意味事実をRust provider-data API由来の構造として保存する。`inputId`はprovider-dataへ重複保存せず、channel rowのrequired `TvContract.Channels.COLUMN_INPUT_ID`をSSOTとする。`channelRegistrationReady`、`epgPublishable`、`unsupportedCas`、`clearLivePlaybackSupported`等のTIS policyを保存しない。
+Channel provider-data の新規書き込み・読み取り正形式は JSON v1 のみとする。`key=value;...` 形式、旧 flat provider-data、旧 provider-data 断片は読み取り互換入力としても残さない。JSON v1 は `schema="maleicacid.tv.channel"` / `schemaVersion=1` を持ち、保存項目と正規化は`arib_si_engine_rs/DESIGN_JA.md`とRust provider-data APIを正とする。表示名の正本は`Channels.COLUMN_DISPLAY_NAME`とし、provider-dataへ重複保存しない。`inputId`はprovider-dataへ重複保存せず、channel rowのrequired `TvContract.Channels.COLUMN_INPUT_ID`をSSOTとする。`channelRegistrationReady`、`epgPublishable`、`unsupportedCas`、`clearLivePlaybackSupported`等のTIS policyを保存しない。
 
 ### 旧 indexed JNI / 廃止経路の禁止
 

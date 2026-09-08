@@ -1,5 +1,7 @@
 # r51_pr85_stack_epg_policy_boundary
 
+- 字幕言語をnull予約欄へ限定し、現在の公開判断を保存境界から除外した。Rust/schema/共有境界資料を同時更新。
+
 - TIS向けcollectionに60秒・4MiB・8192入力sectionの上限を設定。容量超過時に事実を破棄して明示的失敗を返し、期限時にprofileを維持して再収集。
 
 - 表scope別の完成・版逆行・同一版矛盾を追跡し、EITの未完成新版による誤削除を防止。通常bulkへinstance状態を追加し、BAT scopeとPartial判定をrequired集合へ統一。

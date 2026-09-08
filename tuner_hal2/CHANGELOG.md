@@ -1,5 +1,7 @@
 ## r51_pr85_capability_closure_selection
 
+- 音声PESの明示PTS対応先を最初のAUに限定し、後続AUと継続AUの時刻契約の矛盾を解消した。
+
 - HAL-030: frontend、demux base、filter/FMQ、PES、AV、用途別DVR、共有runtimeの依存関係を起動時の有限候補選択へ接続した。候補は固定優先順で共有worker/callback/reaper/cleanup枠、SECTION tracker数、FMQ/PES/AV/playback byte予算を仮予約し、全体検査が成功した場合だけsnapshotを確定する。
 - 候補の一部だけを採用せず、局所的な不足は依存先と後続の共有枠競合に限定する。横断検査失敗時は仮予約を逆順で返却し、起動を失敗として返す。公開済みserviceのsnapshot再構成を拒否する。
 - query/openは同じ選択済みsnapshotとfrontend集合を使用する。PES/DVRのdemux当たり上限を候補検査に含め、専用frontend reaperと汎用cleanup reaperを分けて計上した。

@@ -720,6 +720,7 @@ pub fn normalize_program_provider_data(raw_bytes: &[u8]) -> ProviderDataResult {
 pub fn extract_program_key_result(raw_bytes: &[u8]) -> Option<ProgramKeyResult> {
     let text = std::str::from_utf8(raw_bytes).ok()?;
     let data = serde_json::from_str::<ProgramProviderDataV1>(text.trim()).ok()?;
+    let data = normalize_program_extensions(data);
     if !valid_program_provider_data(&data) {
         return None;
     }
@@ -892,6 +893,8 @@ fn channel_data_from_request(
 }
 
 fn normalize_program_extensions(mut data: ProgramProviderDataV1) -> ProgramProviderDataV1 {
+    // 旧v1の公開判断を現在の製品判断として再利用せず、正規出力から除去する。
+    data.diagnostics.publish_diagnostics.clear();
     data.diagnostics
         .raw_provider_data_extensions
         .retain(|extension| !forbidden_program_extension(&extension.key));
@@ -1271,11 +1274,7 @@ fn valid_program_provider_data(data: &ProgramProviderDataV1) -> bool {
             .descriptor_diagnostics
             .iter()
             .all(valid_descriptor_diagnostic)
-        && data
-            .diagnostics
-            .publish_diagnostics
-            .iter()
-            .all(valid_diagnostic_item)
+        && data.diagnostics.publish_diagnostics.is_empty()
         && data
             .diagnostics
             .parser_diagnostics
@@ -1477,7 +1476,7 @@ fn valid_subtitle_component(v: &SubtitleComponentV1) -> bool {
         && v.caption_timing
             .map(|value| (0..=3).contains(&value))
             .unwrap_or(true)
-        && valid_optional_iso639(&v.language)
+        && v.language.is_none()
         && nonempty(&v.caption_service_kind)
         && nonempty(&v.parse_status)
 }
@@ -1596,10 +1595,6 @@ fn finalize_program(mut data: ProgramProviderDataV1) -> ProviderDataResult {
             note_drop(&mut counts, "descriptorDiagnostics", 1);
             continue;
         }
-        if data.diagnostics.publish_diagnostics.pop().is_some() {
-            note_drop(&mut counts, "publishDiagnostics", 1);
-            continue;
-        }
         if data.extended_items.pop().is_some() {
             note_drop(&mut counts, "extendedItems", 1);
             continue;
@@ -1695,6 +1690,43 @@ fn finalize_channel(mut data: ChannelProviderDataV1) -> ProviderDataResult {
 #[cfg(test)]
 mod provider_data_tests {
     use super::*;
+
+    #[test]
+    fn runtime_publish_judgement_is_rejected_by_builder_and_removed_from_legacy_data() {
+        let diagnostic =
+            serde_json::json!([{"code":"OLD_POLICY","message":"旧公開判断","severity":null}]);
+        let mut request = minimal_program_request_value();
+        request["diagnostics"]["publishDiagnostics"] = diagnostic.clone();
+        assert!(!build_program_provider_data(&request.to_string()).success);
+        let mut stored: serde_json::Value =
+            serde_json::from_str(&minimal_program_json("")).unwrap();
+        stored["diagnostics"]["publishDiagnostics"] = diagnostic;
+        let result = normalize_program_provider_data(stored.to_string().as_bytes());
+        assert!(result.success);
+        let canonical: serde_json::Value = serde_json::from_str(&result.json).unwrap();
+        assert_eq!(
+            canonical["diagnostics"]["publishDiagnostics"],
+            serde_json::json!([])
+        );
+        assert!(extract_program_key_result(stored.to_string().as_bytes()).is_some());
+        assert_eq!(
+            normalize_program_provider_data(result.json.as_bytes()).json,
+            result.json
+        );
+    }
+
+    #[test]
+    fn subtitle_language_reserved_field_rejects_pmt_or_pes_language_input() {
+        let mut request = minimal_program_request_value();
+        request["components"]["subtitle"] = serde_json::json!([{
+            "esPid":300,"componentTag":48,"dataComponentId":8,"captionDmf":null,
+            "captionTiming":null,"automaticPresentationOnReception":null,
+            "language":null,"captionServiceKind":"CAPTION","parseStatus":"OK"
+        }]);
+        assert!(build_program_provider_data(&request.to_string()).success);
+        request["components"]["subtitle"][0]["language"] = serde_json::json!("jpn");
+        assert!(!build_program_provider_data(&request.to_string()).success);
+    }
 
     #[test]
     fn stored_cas_basis_preserves_parse_state_and_rejects_inconsistent_claims() {
@@ -1913,7 +1945,7 @@ mod provider_data_tests {
             "captionDmf": 0x0c,
             "captionTiming": 0x02,
             "automaticPresentationOnReception": true,
-            "language": "jpn",
+            "language": null,
             "captionServiceKind": "superimpose",
             "parseStatus": "OK"
         }]);
@@ -1925,6 +1957,7 @@ mod provider_data_tests {
         assert_eq!(subtitle["captionDmf"], 0x0c);
         assert_eq!(subtitle["captionTiming"], 0x02);
         assert_eq!(subtitle["automaticPresentationOnReception"], true);
+        assert!(subtitle["language"].is_null());
     }
 
     #[test]

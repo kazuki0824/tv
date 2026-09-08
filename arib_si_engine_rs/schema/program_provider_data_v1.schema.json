@@ -897,14 +897,7 @@
           ]
         },
         "language": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/iso639"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "type": "null"
         },
         "captionServiceKind": {
           "type": "string",
@@ -1073,7 +1066,8 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/diagnosticItem"
-          }
+          },
+          "maxItems": 0
         },
         "parserDiagnostics": {
           "type": "array",
