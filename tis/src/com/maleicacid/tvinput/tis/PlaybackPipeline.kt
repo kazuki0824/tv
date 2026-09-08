@@ -5,6 +5,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.media.MediaCodec
+import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.media.MediaSync
 import android.media.MediaTimestamp
@@ -26,6 +27,8 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
+import com.maleicacid.tvinput.aribsi.AribAvcSignaling
+import com.maleicacid.tvinput.aribsi.AribCodecFacts
 import com.maleicacid.tvinput.common.CaptionTimestamp
 import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.PesPts90k
@@ -311,7 +314,8 @@ class PlaybackPipeline(
         val video = selection.video
         val videoKind = video?.let { VideoCodecKind.fromStreamType(it.streamType) }
         val audio = selection.audio
-        val audioKind = audio?.let { stream -> AudioCodecKind.fromStreamType(stream.streamType) }
+        val audioKind = audio?.takeIf(TunerSelectionPolicy::isSupportedAudioStream)
+            ?.let { stream -> AudioCodecKind.fromStreamType(stream.streamType) }
         if (!audioOnly && (video == null || videoKind == null)) {
             emitUnavailable(PlaybackUnavailableReason.UNSUPPORTED_VIDEO_STREAM, "audio-video service の対応video PIDがありません service=${selection.serviceKey}")
             return StartResult.failedAfterRestart(startGeneration, listOf("SERVICE_TYPE_PMT_MISMATCH"))
@@ -340,7 +344,7 @@ class PlaybackPipeline(
         val sync = createMediaSync(currentSurface?.takeIf { videoPathExpected }, startGeneration)
             ?: return StartResult.failedAfterRestart(startGeneration, listOf("MediaSync初期化失敗"))
         val videoDecoderLocal = if (video != null && videoKind != null) {
-            VideoDecoderPipeline(videoKind, requireNotNull(mediaSyncInputSurface), startGeneration) { reason, detail ->
+            VideoDecoderPipeline(videoKind, video.codecFacts, requireNotNull(mediaSyncInputSurface), startGeneration) { reason, detail ->
                 emitUnavailableForGeneration(startGeneration, reason, detail)
             }.also { videoDecoder = it }
         } else {
@@ -938,7 +942,13 @@ class PlaybackPipeline(
         }
 
         private fun createBlockModelDecoder(format: MediaFormat): MediaCodec {
-            val decoder = MediaCodec.createDecoderByType(codecMime())
+            val decoderName = MediaCodecList(MediaCodecList.REGULAR_CODECS).findDecoderForFormat(format)
+                ?: throw UnsupportedCodecFormat("指定されたcodec/profile/level/寸法/音声構成に対応するdecoderがありません: $format")
+            val decoder = try {
+                MediaCodec.createByCodecName(decoderName)
+            } catch (error: java.io.IOException) {
+                throw IllegalStateException("decoder生成に失敗しました: $decoderName", error)
+            }
             decoder.setCallback(object : MediaCodec.Callback() {
                 override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {
                     enqueuePlaybackAction {
@@ -1046,6 +1056,7 @@ class PlaybackPipeline(
 
     private inner class VideoDecoderPipeline(
         private val kind: VideoCodecKind,
+        private val codecFacts: AribCodecFacts,
         private val outputSurface: Surface,
         override val generation: Long,
         private val errorSink: (PlaybackUnavailableReason, String) -> Unit,
@@ -1063,11 +1074,13 @@ class PlaybackPipeline(
         }
         override fun formatFromBufferedHeader(bytes: ByteArray): MediaFormat? = when (kind) {
             VideoCodecKind.MPEG2 -> EsHeaderParser.mpeg2VideoFormat(bytes)
-            VideoCodecKind.AVC -> EsHeaderParser.avcVideoFormat(bytes)
+            VideoCodecKind.AVC -> EsHeaderParser.avcVideoFormat(bytes, codecFacts)
         }?.also { format ->
             onVideoFormatDiscovered(generation, VideoFormatInfo(kind.streamType, kind.mime, getIntegerOrDefault(format, MediaFormat.KEY_WIDTH, 0), getIntegerOrDefault(format, MediaFormat.KEY_HEIGHT, 0), EsHeaderParser.displayAspectRatio(kind, bytes)))
         }
-        override fun onDecoderFailure(error: RuntimeException) { errorSink(PlaybackUnavailableReason.VIDEO_CODEC_ERROR, error.message.orEmpty()) }
+        override fun onDecoderFailure(error: RuntimeException) {
+            errorSink(if (error is UnsupportedCodecFormat) PlaybackUnavailableReason.UNSUPPORTED_VIDEO_STREAM else PlaybackUnavailableReason.VIDEO_CODEC_ERROR, error.message.orEmpty())
+        }
         override fun onCodecConfigTimeout() { errorSink(PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT, "video decoder 構成に必要な ES header が見つかりません") }
         override fun onBackpressureDeadline(detail: String) { errorSink(PlaybackUnavailableReason.VIDEO_CODEC_ERROR, "DECODER_BACKPRESSURE_TIMEOUT $detail") }
         override fun onOutput(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
@@ -1345,11 +1358,15 @@ class PlaybackPipeline(
             val height = ((bytes[pos + 5].toInt() and 0x0f) shl 8) or (bytes[pos + 6].toInt() and 0xff)
             return MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_MPEG2, width.coerceAtLeast(1), height.coerceAtLeast(1))
         }
-        fun avcVideoFormat(bytes: ByteArray): MediaFormat? {
+        fun avcVideoFormat(bytes: ByteArray, codecFacts: AribCodecFacts = AribCodecFacts()): MediaFormat? {
             val sps = findNal(bytes, 7) ?: return null
             val pps = findNal(bytes, 8) ?: return null
             val dimensions = parseAvcSpsDimensions(sps) ?: return null
+            val rbsp = nalRbspPayload(sps)
+            if (rbsp.size < 3) return null
+            val signaling = AribAvcSignaling(rbsp[0].toInt() and 0xff, rbsp[1].toInt() and 0xff, rbsp[2].toInt() and 0xff)
             return MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, dimensions.width, dimensions.height).apply {
+                CodecFormatPolicy.configureAvc(this, codecFacts, signaling)
                 setByteBuffer("csd-0", ByteBuffer.wrap(sps)); setByteBuffer("csd-1", ByteBuffer.wrap(pps))
             }
         }

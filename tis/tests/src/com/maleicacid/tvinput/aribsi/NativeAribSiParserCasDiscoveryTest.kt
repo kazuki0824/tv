@@ -5,6 +5,33 @@ import org.json.JSONObject
 import org.junit.Test
 
 class NativeAribSiParserCasDiscoveryTest {
+    @Test fun codecDescriptorsSurviveNormalSnapshotAndProviderProjection() {
+        NativeAribSiParser().use { parser ->
+            val body = mutableListOf(
+                0x02, 0xb0, 0, 0, 1, 0xc1, 0, 0, 0xe1, 1, 0xf0, 0,
+                0x1b, 0xe1, 1, 0xf0, 6, 0x28, 4, 100, 0, 40, 0x3f,
+                0x1c, 0xe1, 2, 0xf0, 7, 0x1c, 1, 0xff, 0x2e, 2, 0x71, 0x5a,
+                0x0f, 0xe1, 3, 0xf0, 6, 0x2e, 4, 0xf0, 2, 0x11, 0x90,
+            )
+            setSectionLength(body, 0xb0)
+            check(parser.ingestSection(TsPid(PID_PAT), section(PAT_BODY)) == SiStatus.OK)
+            check(parser.ingestSection(TsPid(PID_SDT), section(SDT_SCRAMBLED_SERVICE_BODY)) == SiStatus.OK)
+            check(parser.ingestSection(TsPid(PID_PMT), section(body.toIntArray())) == SiStatus.OK)
+            val service = parser.livePlaybackSnapshot().services.single()
+            val avc = service.streams.first()
+            check(avc.codecFacts.avc == AribAvcSignaling(100, 0, 40))
+            check(service.streams[1].codec == "MPEG-4-ALS")
+            val aac = service.streams[2]
+            check(aac.codec == "AAC-LC" && aac.codecFacts.audioConfigHex == "1190")
+            check(aac.codecFacts.audioConfigHeader?.samplingFrequency == 48000)
+            val components = ProviderDataBridge.toComponentsObject(AribComponentProjectionPolicy.componentsForService(service))
+            check(components.getJSONArray("video").getJSONObject(0).getString("profileLevel").contains("level_idc=40"))
+            val audio = components.getJSONArray("audio")
+            check(audio.getJSONObject(0).getString("codec") == "MPEG-4-ALS")
+            check(audio.getJSONObject(1).getString("sourceDescriptor").contains("1190"))
+        }
+    }
+
     @Test fun eitInstanceCompletionKeepsTransportScopesAndVersionsSeparate() {
         NativeAribSiParser().use { parser ->
             fun body(number: Int, tsid: Int = 0x11, version: Int = 31): IntArray =

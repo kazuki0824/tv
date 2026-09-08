@@ -69,6 +69,25 @@ data class CaDescriptor(
     }
 }
 
+data class AribAvcSignaling(val profileIdc: Int, val constraintFlags: Int, val levelIdc: Int)
+
+data class AribAudioConfigHeader(
+    val audioObjectType: Int,
+    val samplingFrequency: Int,
+    val channelConfiguration: Int,
+    val extensionSamplingFrequency: Int?,
+    val coreAudioObjectType: Int?,
+)
+
+data class AribCodecFacts(
+    val avc: AribAvcSignaling? = null,
+    val audioConfigHex: String? = null,
+    val audioConfigHeader: AribAudioConfigHeader? = null,
+    val rawDescriptorsHex: String? = null,
+    val profileLevel: String? = null,
+    val resolved: Boolean = true,
+)
+
 data class AribElementaryStream(
     val elementaryPid: TsPid,
     val streamType: Int,
@@ -84,6 +103,7 @@ data class AribElementaryStream(
     val isSuperimpose: Boolean = false,
     val codec: String? = null,
     val codecKind: String? = null,
+    val codecFacts: AribCodecFacts = AribCodecFacts(),
 )
 
 data class AribService(

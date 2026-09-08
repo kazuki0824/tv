@@ -406,6 +406,12 @@ TSの伝送構文、`table_id`別のsection長上限、CRCとraw配送条件、�
 
 ### codec capability・欠損値・CA cross-check・section整合性
 
+PMT ESのAVC video descriptor、MPEG-4 audio descriptor、MPEG-4 audio extension descriptorは`CodecDescriptorFacts`に集約し、通常のES snapshotで渡す。AVCはprofile_idc・constraint flags・level_idc、音声は通常記述子のprofile値・拡張記述子のprofile値列・ASC原bytes・ASC共通先頭部を別々に保持する。同じtagの矛盾、長さ不正、予約bit不正、0xff指定時の拡張記述子欠落を正常profileへ昇格しない。ASC共通先頭部の解釈はcodec固有config全体の検証を意味しない。未知のMPEG-4音声をAACと推測しない。
+
+根拠は[STD-B10 5.13-E1 6.2.47/50/51](https://www.arib.or.jp/english/html/overview/doc/6-STD-B10v5_13-E1.pdf)、[H.222.0 (2006) Amendment 1 Table 2-71・2.6.72/73](https://www.itu.int/rec/dologin_pub.asp?id=T-REC-H.222.0-200701-S%21Amd1%21PDF-E&lang=e&type=items)、[STD-B32 3.11-E1 Part 2 Chapter 6/7・Description 3](https://www.arib.or.jp/english/html/overview/doc/6-STD-B32v3_11-2p3-E1.pdf)とする。通常記述子の0x5aはHE-AAC、拡張記述子の0x5aはALS L2であり、数値体系を混同しない。ALSの拡張profileは0x3c/0x5a/0x5b/0x5cを認識する。これは取得済み英訳の根拠であり、現行日本語版との全条項差を解消したという宣言ではない。
+
+provider-dataの既存`profileLevel`へ名前付きの放送値、`sourceDescriptor`へ`PMT:`に続けた対象記述子のTLV全体の小文字hexを渡す。音声ASCの原bytesもそのTLVに含める。EITと統合する場合はPMT根拠を捨てず、`;EIT:`と既存のEIT根拠名を追記する。PMT根拠のない旧EIT表現は維持する。長さ制限は共通provider-dataの規則だけを適用する。
+
 - `stream_type`やdescriptorから導出できるcodec名は放送事実として保持する。SI engineはHEVC等を製品releaseの再生可否へ変換せず、codec capability判定はTIS/MediaCodec側のpolicyとする。
 - optional descriptor値が存在しない場合は合法的absenceとして`null`を保持し、syntax破損による取得不能とはtyped diagnosticで区別する。
 - `free_CA_mode`はCA descriptorの代用品ではない。PMT解析完了後に`free_CA_mode=1`なのにCA descriptorを観測できない場合はbroadcast fact間の不整合として診断し、`requires_cas`をSI flagだけで上書きしない。

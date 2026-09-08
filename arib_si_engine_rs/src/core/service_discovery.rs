@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DiscoveredElementaryStream {
+    pub codec_facts: crate::codec_signaling::CodecDescriptorFacts,
     pub elementary_pid: u16,
     pub stream_type: u8,
     pub component_tag: Option<u8>,
@@ -32,8 +33,22 @@ impl DiscoveredElementaryStream {
             0x1b => Some(("VIDEO", "H.264")),
             0x24 => Some(("VIDEO", "HEVC")),
             0x03 | 0x04 => Some(("AUDIO", "MPEG-Audio")),
-            0x0f => Some(("AUDIO", "AAC")),
-            0x11 => Some(("AUDIO", "MPEG-4-AAC-LATM")),
+            0x0f => Some((
+                "AUDIO",
+                self.codec_facts.audio_codec().unwrap_or(
+                    if self.codec_facts.mpeg4_audio_profile_and_level.is_some()
+                        || self.codec_facts.audio_extension.is_some()
+                    {
+                        "MPEG-4-Audio"
+                    } else {
+                        "AAC"
+                    },
+                ),
+            )),
+            0x11 | 0x1c => Some((
+                "AUDIO",
+                self.codec_facts.audio_codec().unwrap_or("MPEG-4-Audio"),
+            )),
             _ => None,
         }
     }
@@ -707,6 +722,7 @@ impl ServiceDiscoveryEngine {
                 break;
             };
             let mut stream = DiscoveredElementaryStream {
+                codec_facts: Default::default(),
                 elementary_pid,
                 stream_type,
                 component_tag: None,
@@ -1794,6 +1810,7 @@ fn apply_es_descriptors(stream: &mut DiscoveredElementaryStream, descriptors: &[
             break;
         };
         let body = &descriptors[body_start..body_end];
+        stream.codec_facts.observe(tag, body);
         match tag {
             0x52 if !body.is_empty() => stream.component_tag = Some(body[0]),
             0x50 if body.len() >= 5 => {

@@ -72,7 +72,13 @@ object AribComponentProjectionPolicy {
         componentTag = stream.componentTag,
         componentType = stream.componentType,
         codec = codec,
-        parseStatus = "OK",
+        profileLevel = stream.codecFacts.profileLevel,
+        sourceDescriptor = stream.codecFacts.rawDescriptorsHex?.let { "PMT:$it" },
+        channelConfiguration = stream.codecFacts.audioConfigHeader?.channelConfiguration?.toString(),
+        samplingInfo = stream.codecFacts.audioConfigHeader?.let { header ->
+            "samplingFrequency=${header.samplingFrequency};extensionSamplingFrequency=${header.extensionSamplingFrequency}"
+        },
+        parseStatus = if (stream.codecFacts.resolved) "OK" else "UNRESOLVED",
     )
 
     private fun mergeComponentEntries(
@@ -107,7 +113,11 @@ object AribComponentProjectionPolicy {
         secondLanguage = eventEntry.secondLanguage ?: serviceEntry.secondLanguage,
         channelConfiguration = eventEntry.channelConfiguration ?: serviceEntry.channelConfiguration,
         samplingInfo = eventEntry.samplingInfo ?: serviceEntry.samplingInfo,
-        sourceDescriptor = eventEntry.sourceDescriptor ?: serviceEntry.sourceDescriptor,
+        sourceDescriptor = when {
+            serviceEntry.sourceDescriptor == null -> eventEntry.sourceDescriptor
+            eventEntry.sourceDescriptor == null -> serviceEntry.sourceDescriptor
+            else -> "${serviceEntry.sourceDescriptor};EIT:${eventEntry.sourceDescriptor}"
+        },
         resolution = eventEntry.resolution ?: serviceEntry.resolution,
         scan = eventEntry.scan ?: serviceEntry.scan,
         aspect = eventEntry.aspect ?: serviceEntry.aspect,

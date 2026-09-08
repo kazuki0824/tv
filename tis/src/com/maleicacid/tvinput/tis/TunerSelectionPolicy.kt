@@ -14,11 +14,14 @@ object TunerSelectionPolicy {
 
     fun isSupportedVideoStreamType(streamType: Int): Boolean = streamType in videoStreamTypes
     fun isSupportedAudioStreamType(streamType: Int): Boolean = streamType in audioStreamTypes
+    fun isSupportedAudioStream(stream: AribElementaryStream): Boolean =
+        isSupportedAudioStreamType(stream.streamType) && stream.codecFacts.resolved &&
+            stream.codec != "MPEG-4-ALS" && stream.codec != "MPEG-4-Audio"
     fun selectVideo(streams: List<AribElementaryStream>, componentGroupTags: Set<Int>? = null): AribElementaryStream? =
         selectDefault(streams.filter { isSupportedVideoStreamType(it.streamType) }, DEFAULT_VIDEO_COMPONENT_TAG, componentGroupTags)
 
     fun selectAudio(streams: List<AribElementaryStream>, componentGroupTags: Set<Int>? = null): AribElementaryStream? =
-        selectDefault(streams.filter { isSupportedAudioStreamType(it.streamType) }, DEFAULT_AUDIO_COMPONENT_TAG, componentGroupTags)
+        selectDefault(streams.filter(::isSupportedAudioStream), DEFAULT_AUDIO_COMPONENT_TAG, componentGroupTags)
 
     fun selectCaption(streams: List<AribElementaryStream>, componentGroupTags: Set<Int>? = null): AribElementaryStream? =
         selectDefault(streams.filter(::isCaptionStream), DEFAULT_CAPTION_COMPONENT_TAG, componentGroupTags)
@@ -72,7 +75,7 @@ object TunerSelectionPolicy {
     }
 
     fun orderedAudioStreams(streams: List<AribElementaryStream>, componentGroupTags: Set<Int>? = null): List<AribElementaryStream> =
-        orderedWithDefault(streams.filter { isSupportedAudioStreamType(it.streamType) }, selectAudio(streams, componentGroupTags))
+        orderedWithDefault(streams.filter(::isSupportedAudioStream), selectAudio(streams, componentGroupTags))
 
     fun orderedCaptionStreams(streams: List<AribElementaryStream>, componentGroupTags: Set<Int>? = null): List<AribElementaryStream> =
         orderedWithDefault(streams.filter(::isCaptionStream), selectCaption(streams, componentGroupTags))

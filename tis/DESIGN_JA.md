@@ -584,6 +584,8 @@ ARIB適合性の規範対象と検証証拠の分離は `../開発規則.md` を
 
 ### video codec
 
+AVCのPMT記述子とESのSPSが共にある場合はprofile_idc・constraint flags・level_idcの一致を要求する。PMT記述子がない場合はSPSの値を能力照合に使い、放送記述子があったとは扱わない。不正・矛盾した記述子、Androidへ変換できないprofile/level、必要なMediaFormatに対応するdecoderがない場合は`UNSUPPORTED_VIDEO_STREAM`とする。`MediaCodecList.findDecoderForFormat`へprofile/levelと寸法を渡し、返された名前でdecoderを生成する。音声も必要なsample rate・channel countを能力照合へ渡す。この照合成功は部分ESのブロック入力、実機の初回表示、機器別budgetの実測認定を代替しない。
+
 | codec | 追加認識時の扱い |
 |---|---|
 | MPEG-2 Video | 必須対応。PMT / component descriptor から codec、解像度、走査方式、aspect を認識し、MediaFormat、block model decoder起動、MediaSync first-frame gate、unsupported診断情報を固定する。 |

@@ -283,6 +283,28 @@ class NativeAribSiParser : AutoCloseable {
             isSuperimpose = obj.optBoolean("isSuperimpose"),
             codec = optStringOrNull(obj, "codec"),
             codecKind = optStringOrNull(obj, "codecKind"),
+            codecFacts = parseCodecFacts(obj),
+        )
+    }
+
+    private fun parseCodecFacts(stream: JSONObject): AribCodecFacts {
+        val facts = stream.optJSONObject("codecFacts") ?: return AribCodecFacts(resolved = false)
+        val avc = facts.optJSONObject("avc")?.let {
+            AribAvcSignaling(it.getInt("profileIdc"), it.getInt("constraintFlags"), it.getInt("levelIdc"))
+        }
+        val extension = facts.optJSONObject("audioExtension")
+        val header = extension?.optJSONObject("header")?.let {
+            AribAudioConfigHeader(it.getInt("audioObjectType"), it.getInt("samplingFrequency"),
+                it.getInt("channelConfiguration"), optIntOrNull(it, "extensionSamplingFrequency"),
+                optIntOrNull(it, "coreAudioObjectType"))
+        }
+        return AribCodecFacts(
+            avc = avc,
+            audioConfigHex = extension?.let { optStringOrNull(it, "audioSpecificConfigHex") },
+            audioConfigHeader = header,
+            rawDescriptorsHex = optStringOrNull(facts, "rawDescriptorsHex")?.takeIf { it.isNotEmpty() },
+            profileLevel = optStringOrNull(stream, "codecProfileLevel"),
+            resolved = stream.optBoolean("codecSignalingResolved", false),
         )
     }
 

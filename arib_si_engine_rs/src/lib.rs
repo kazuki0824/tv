@@ -240,6 +240,9 @@ fn json_string(value: &str) -> String {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ElementaryStreamDto {
+    codec_facts: maleicacid_arib_si_engine_core::codec_signaling::CodecDescriptorFacts,
+    codec_profile_level: Option<String>,
+    codec_signaling_resolved: bool,
     codec: Option<&'static str>,
     codec_kind: Option<&'static str>,
     elementary_pid: u16,
@@ -259,6 +262,9 @@ struct ElementaryStreamDto {
 impl From<&DiscoveredElementaryStream> for ElementaryStreamDto {
     fn from(stream: &DiscoveredElementaryStream) -> Self {
         Self {
+            codec_facts: stream.codec_facts.clone(),
+            codec_profile_level: stream.codec_facts.profile_level(),
+            codec_signaling_resolved: stream.codec_facts.is_resolved(),
             codec: stream.codec_signaling().map(|(_, codec)| codec),
             codec_kind: stream.codec_signaling().map(|(kind, _)| kind),
             elementary_pid: stream.elementary_pid,

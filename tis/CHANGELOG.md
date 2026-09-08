@@ -6,6 +6,8 @@
 
 ## r51_pr85_stack_independent_startup_deadline
 
+- AVC記述子とSPSの整合を検証し、MediaFormatのprofile/level・寸法・音声構成に対応する実decoderを選択。PMT codec根拠をEIT統合時にも保存し、ALS・未解決音声を再生選択から除外。
+
 - 表示名の正本と長文標準列の全長投影を明記し、公開可否診断を実行中に限定した。
 
 - 走査目的ごとの必要instance集合をTISで評価し、boot/backgroundでは物理候補ごとに固定した全ServiceのEIT完成を待つ。有限走査の全終了経路でsection filterを明示stop/closeし、ライブの継続監視と契約を分離。
