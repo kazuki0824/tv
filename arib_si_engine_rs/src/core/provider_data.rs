@@ -389,9 +389,9 @@ struct ProgramProviderDataV1 {
     event_groups: Vec<EventGroupV1>,
     linkage: Vec<LinkageV1>,
     free_ca_mode: Option<FreeCaModeV1>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     short_events: Vec<ShortEventV1>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     extended_texts: Vec<ExtendedTextV1>,
     extended_items: Vec<ExtendedItemV1>,
     components: ComponentsV1,
@@ -1466,16 +1466,6 @@ fn finalize_program(mut data: ProgramProviderDataV1) -> ProviderDataResult {
             note_drop(&mut counts, "extendedItems", 1);
             continue;
         }
-        if data.extended_texts.len() > 1 {
-            data.extended_texts.pop();
-            note_drop(&mut counts, "extendedTexts", 1);
-            continue;
-        }
-        if data.short_events.len() > 1 {
-            data.short_events.pop();
-            note_drop(&mut counts, "shortEvents", 1);
-            continue;
-        }
         let removed =
             shorten_program_long_text(&mut data, encoded.len().saturating_sub(HARD_LIMIT_BYTES));
         if removed > 0 {
@@ -1567,6 +1557,53 @@ fn finalize_channel(mut data: ChannelProviderDataV1) -> ProviderDataResult {
 #[cfg(test)]
 mod provider_data_tests {
     use super::*;
+
+    #[test]
+    fn legacy_missing_candidate_arrays_normalize_to_required_empty_arrays() {
+        let legacy = minimal_program_json("");
+        let normalized = normalize_program_provider_data(legacy.as_bytes());
+        assert!(normalized.success);
+        let value: serde_json::Value = serde_json::from_str(&normalized.json).unwrap();
+        assert_eq!(value["shortEvents"], serde_json::json!([]));
+        assert_eq!(value["extendedTexts"], serde_json::json!([]));
+        assert_eq!(
+            normalize_program_provider_data(normalized.json.as_bytes()).json,
+            normalized.json
+        );
+    }
+
+    #[test]
+    fn size_limit_shortens_text_without_removing_languages() {
+        let mut value: serde_json::Value = serde_json::from_str(&minimal_program_json("")).unwrap();
+        value["shortEvents"] = serde_json::json!([
+            {"parseStatus":"OK", "languageCode":"jpn","title":"日本語", "text":"本文".repeat(5000)},
+            {"parseStatus":"OK", "languageCode":"eng","title":"English", "text":"text".repeat(5000)}
+        ]);
+        value["extendedTexts"] = serde_json::json!([
+            {"parseStatus":"OK", "languageCode":"jpn","text":"長文".repeat(5000)},
+            {"parseStatus":"OK", "languageCode":"eng","text":"long".repeat(5000)}
+        ]);
+        let input = value.to_string();
+        let first = normalize_program_provider_data(input.as_bytes());
+        assert!(first.success && first.truncated, "{}", first.json);
+        assert!(first.json.len() <= HARD_LIMIT_BYTES);
+        assert_eq!(
+            normalize_program_provider_data(input.as_bytes()).json,
+            first.json
+        );
+        let output: serde_json::Value = serde_json::from_str(&first.json).unwrap();
+        for field in ["shortEvents", "extendedTexts"] {
+            assert_eq!(output[field].as_array().unwrap().len(), 2);
+            assert_eq!(output[field][0]["languageCode"], "jpn");
+            assert_eq!(output[field][1]["languageCode"], "eng");
+        }
+        assert_eq!(output["extendedTexts"][1]["text"], "");
+        assert_eq!(output["shortEvents"][0]["title"], "日本語");
+        assert_eq!(
+            normalize_program_provider_data(first.json.as_bytes()).json,
+            first.json
+        );
+    }
 
     #[test]
     fn shared_boundary_corpus_matches_normalization_and_key_extraction() {

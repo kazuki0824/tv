@@ -201,7 +201,7 @@ jobs:
                   accepted = (validator if case["boundary"] == "PROGRAM" else channel_validator).is_valid(data)
               except (UnicodeDecodeError, json.JSONDecodeError):
                   accepted = False
-              assert accepted == case["accepted"], case["name"]
+              assert accepted == case.get("schemaAccepted", case["accepted"]), case["name"]
           print(f"shared boundary cases: {len(corpus)}")
           PY
 

@@ -40,6 +40,8 @@ class ProviderDataAssetsR51ContractTest {
         check(!providerData.getJSONObject("timing").has("endUtcMillis"))
         check(providerData.getJSONObject("diagnostics").has("descriptorDiagnostics"))
         check(providerData.getJSONObject("components").has("subtitle"))
+        check(providerData.getJSONArray("shortEvents").length() == 0)
+        check(providerData.getJSONArray("extendedTexts").length() == 0)
         check(!providerData.has("skippedUnresolvedTransport"))
         check(!providerData.has("programKeyB64"))
         check(!providerData.has("eventGroupText"))

@@ -208,7 +208,7 @@ required field 欠落時に `0`、`false`、`jpn`、`UNKNOWN`、空文字で補�
 
 Programs / Channels のprovider-dataには、放送由来の意味事実だけを保存する。CASについて保存してよいのはCA descriptor/free_CA_mode等から導出した「CASを要する信号が存在するか」とその根拠・parse状態であり、`unsupportedCas`、`clearLivePlaybackSupported`、`channelRegistrationReady`、`epgPublishable`、`publishStateSource`のような現在の製品能力・TIF判断を保存しない。保存済みprovider-dataをcurrent policyのfallback sourceにしない。現在のchannel登録、EPG公開、CAS対応、ライブ再生可否はTISがcurrent `ServiceSemanticFacts`とcurrent product capabilityから決定する。
 
-provider-data 全体は canonical UTF-8で16 KiBを目安上限、32 KiBを絶対上限とする。絶対上限を超える場合は、各操作後にcanonical encodeし直してサイズを測りながら、`diagnostics.rawProviderDataExtensions`、`diagnostics.descriptorDiagnostics`、`diagnostics.publishDiagnostics`、`extendedItems`の順に配列末尾から要素を除く。最後に長文フィールドをUTF-8 scalar境界で末尾から短縮する。それでも32 KiB以下にならない場合はprovider-data生成を失敗させ、識別子、時刻、CAS意味事実、レーティングraw値を欠落させた結果を保存しない。切り詰めた結果には`PROVIDER_DATA_TRUNCATED`、種類別dropped count、短縮前後のbyte数を必ず保存する。この診断自体を加えた後にも再度32 KiB以下であることを検証する。
+provider-data 全体は canonical UTF-8で16 KiBを目安上限、32 KiBを絶対上限とする。絶対上限を超える場合は、各操作後にcanonical encodeし直してサイズを測りながら、`diagnostics.rawProviderDataExtensions`、`diagnostics.descriptorFacts.unknownDescriptors`、`diagnostics.descriptorFacts.parentalRatingDescriptors`、`diagnostics.descriptorDiagnostics`、`diagnostics.publishDiagnostics`、`extendedItems`の順に配列末尾から要素を除く。次に`extendedTexts[].text`、`shortEvents[].text / title`、`diagnostics.parserDiagnostics[].message`、`genres[].aribName`、`series.name`、`linkage[].privateDataPrefixHex`、`components.video[].sourceDescriptor / profileLevel / aspect / scan / resolution`、`components.audio[].sourceDescriptor / samplingInfo / channelConfiguration`の順に長文を短縮する。各配列は末尾要素から、同一要素内は記載フィールド順とする。1回の短縮は現在のcanonical byte超過量だけ末尾を除き、UTF-8 scalar境界まで切り下げる。parser messageは少なくとも1 scalar、hex prefixは偶数桁を保持する。各操作後に切詰め診断を含めて再encodeし、上限内になった時点で終了する。`shortEvents` / `extendedTexts`の言語候補そのものを削除して1言語へ縮約しない。それでも32 KiB以下にならない場合はprovider-data生成を失敗させ、識別子、時刻、CAS意味事実、レーティングraw値を欠落させた結果を保存しない。切り詰めた結果には`PROVIDER_DATA_TRUNCATED`、種類別dropped count、短縮前後のbyte数を必ず保存する。この診断自体を加えた後にも再度32 KiB以下であることを検証する。
 
 TIS Kotlin は provider-data schema を定義しない。TIS は Rust JNI が返す JSON bytes を `Programs.COLUMN_INTERNAL_PROVIDER_DATA` へ保存し、標準列用の値だけを `ARIB_SI_EPG_TvProvider投影方針.md` に従って `ContentValues` へ詰める。
 
@@ -232,6 +232,8 @@ pub struct ProgramProviderDataV1 {
     pub event_groups: Vec<EventGroupV1>,
     pub linkage: Vec<LinkageV1>,
     pub free_ca_mode: Option<FreeCaModeV1>,
+    pub short_events: Vec<ShortEventV1>,
+    pub extended_texts: Vec<ExtendedTextV1>,
     pub extended_items: Vec<ExtendedItemV1>,
     pub components: ComponentsV1,
     pub diagnostics: DiagnosticsV1,
@@ -254,7 +256,9 @@ pub struct ProgramKeyV1 {
 
 ### JSON 表現規則
 
-JSON は正規表現ではなく、Rust `serde` / Kotlin JSON parser / JSON Schema によって読み書き・検証する。`ProgramProviderDataV1` の canonical JSON では、任意の単一オブジェクトは値が無い場合 `null`、繰り返し要素は空の場合 `[]`、常設containerは空でもオブジェクトとして出力する。具体的には、`series`、`freeCaMode` は未取得時 `null`、`ratings`、`genres`、`eventGroups`、`linkage`、`extendedItems` は未取得時 `[]`、`components` は常にオブジェクトとし、内部の `video`、`audio`、`subtitle`、`data` は空でも `[]` とする。runtimeで選択したmain `audio` / `video`要約をtop-levelへ保存しない。
+JSON は正規表現ではなく、Rust `serde` / Kotlin JSON parser / JSON Schema によって読み書き・検証する。`ProgramProviderDataV1` の canonical JSON では、任意の単一オブジェクトは値が無い場合 `null`、繰り返し要素は空の場合 `[]`、常設containerは空でもオブジェクトとして出力する。具体的には、`series`、`freeCaMode` は未取得時 `null`、`ratings`、`genres`、`eventGroups`、`linkage`、`shortEvents`、`extendedTexts`、`extendedItems` は未取得時 `[]`、`components` は常にオブジェクトとし、内部の `video`、`audio`、`subtitle`、`data` は空でも `[]` とする。runtimeで選択したmain `audio` / `video`要約をtop-levelへ保存しない。
+
+保存用JSON Schemaはcanonical出力を検証し、`shortEvents`と`extendedTexts`を必須配列とする。旧v1保存値では空配列を省略していたため、正規化入力に限りこの2項目の欠落を空配列として読む。新出力から省略しない。旧入力の受理とcanonical Schema適合を混同せず、共通corpusでは旧入力のSchema不適合と正規化成功を別の期待値として検証する。これは既知の空候補表現の互換処理であり、必須識別子や未知nested値の補完を許可しない。
 
 未知のtop-level keyを読み込んだ場合は、無言で破棄せず`diagnostics.rawProviderDataExtensions[]`へ正規化する。version 1のnested DTOはclosedとし、未知nested keyはschema不一致として拒否する。これによりbuilder requestはstrict DTOへ1回だけdeserializeでき、`Value`走査による第二validatorを持たない。nested構造を拡張する場合はschema versionを更新する。`JSONObject` の手書き構築や文字列連結によるcanonical JSON生成を禁止する。
 

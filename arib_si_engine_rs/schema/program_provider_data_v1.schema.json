@@ -19,7 +19,9 @@
     "freeCaMode",
     "extendedItems",
     "components",
-    "diagnostics"
+    "diagnostics",
+    "shortEvents",
+    "extendedTexts"
   ],
   "properties": {
     "schema": {

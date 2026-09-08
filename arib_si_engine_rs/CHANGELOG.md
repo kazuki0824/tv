@@ -1,3 +1,8 @@
+# r51_pr85_stack_canonical_candidates_and_truncation
+
+- #87 D09/D14 / SI U-15: 多言語候補配列をcanonical出力とSchemaの必須要素にし、旧v1省略形は正規化入力としてのみ受理する。正式型・空配列規則・共通fixtureを同期する。
+- 上限超過時は言語候補を削除せず、設計へ列挙した順に本文をUTF-8境界で短縮する。切詰め後の上限、言語保持、繰返し生成と再正規化のbyte決定性を試験する。
+
 # r51_pr85_stack_closed_diagnostic_scope
 
 - #87 D08 / SI U-14: 診断scopeの未知key許可規定を、version 1のnested DTO閉鎖規則に統一する。Rust serde型・JSON Schemaの既存拒否動作と契約を一致させ、未知scope項目を含む共通境界入力をRust/JNI/Kotlin/Schemaの回帰試験へ追加する。
