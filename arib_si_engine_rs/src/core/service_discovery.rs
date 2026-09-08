@@ -2073,25 +2073,27 @@ mod tests {
 
     #[test]
     fn partial_stage_is_derived_from_required_tables_without_services() {
-        let mut state = DiscoveryCollectionState::default();
-        state.table_requirements = vec![
-            TableRequirementStatus {
-                component: "PAT",
-                original_network_id: None,
-                transport_stream_id: None,
-                service_id: None,
-                required: true,
-                complete: true,
-            },
-            TableRequirementStatus {
-                component: "PMT",
-                original_network_id: None,
-                transport_stream_id: None,
-                service_id: None,
-                required: true,
-                complete: false,
-            },
-        ];
+        let mut state = DiscoveryCollectionState {
+            table_requirements: vec![
+                TableRequirementStatus {
+                    component: "PAT",
+                    original_network_id: None,
+                    transport_stream_id: None,
+                    service_id: None,
+                    required: true,
+                    complete: true,
+                },
+                TableRequirementStatus {
+                    component: "PMT",
+                    original_network_id: None,
+                    transport_stream_id: None,
+                    service_id: None,
+                    required: true,
+                    complete: false,
+                },
+            ],
+            ..DiscoveryCollectionState::default()
+        };
         assert_eq!(state.publish_stage(), DiscoveryPublishStage::Partial);
         state.table_requirements[0].required = false;
         assert_eq!(state.publish_stage(), DiscoveryPublishStage::Incomplete);
