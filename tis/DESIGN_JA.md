@@ -406,10 +406,10 @@ TIS Kotlin は provider-data JSON を解釈せず、以下の Rust JNI API 相�
 ```kotlin
 // Kotlin facade。実JNIはclosed JSON result envelopeを返す。
 object ProviderDataBridge {
-    fun buildProgramProviderData(inputJson: String): ProviderDataResult
+    fun buildProgramProviderData(program: ProgramRecord): ProviderDataResult
     fun normalizeProgramProviderData(rawBytes: ByteArray): ProviderDataResult
-    fun extractProgramKey(rawBytes: ByteArray): ProgramKeyResult?
-    fun buildChannelProviderData(inputJson: String): ProviderDataResult
+    fun extractProgramKeyResult(rawBytes: ByteArray): ProgramKeyResult?
+    fun buildChannelProviderData(channel: ChannelRecord): ProviderDataResult
     fun decodeChannelProviderData(rawBytes: ByteArray): ChannelProviderDataResult?
 }
 

@@ -11,7 +11,7 @@ class ProviderDataAssetsR51ContractTest {
         check(rejected is com.maleicacid.tvinput.aribsi.ProviderDataBridge.Failure)
         check(rejected.errorCode.isNotBlank() && rejected.errorMessage.isNotBlank())
         val key = com.maleicacid.tvinput.common.ServiceKey(4, 0x4010, 101)
-        val program = com.maleicacid.tvinput.db.ProgramRecord(serviceKey = key, eventId = 1, stableIdentity = null, startTimeMillis = 1_700_000_000_000L, durationMillis = 1_800_000L, title = "test", description = "description")
+        val program = com.maleicacid.tvinput.db.ProgramRecord(serviceKey = key, eventId = 1, stableIdentity = "", startTimeMillis = 1_700_000_000_000L, durationMillis = 1_800_000L, title = "test", description = "description")
         check(bridge.buildProgramProviderData(program) is com.maleicacid.tvinput.aribsi.ProviderDataBridge.Failure)
         check(bridge.buildProgramProviderData(program.copy(casFactsCanonicalJson = testCasFacts())) is com.maleicacid.tvinput.aribsi.ProviderDataBridge.Success)
         val channel = com.maleicacid.tvinput.db.ChannelRecord(key, 1, "101", "test", com.maleicacid.tvinput.common.FrequencyHz(473_142_857L))
