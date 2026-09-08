@@ -1,7 +1,7 @@
 # r51_pr91_review_fact_boundary
 
 - EITの公開window/削除判断をRustからKotlinへ移し、共通SectionTrackerを使うcurrent/next別受信事実とcollection世代だけをbulkへ出す。CAS根拠は現行buildで必須、旧保存値normalizeではnullableを維持。countryCode/video.languageのschema境界をRustと共有corpusに揃える。
-- 検証: Kotlin production/test compileとCIのRust/Kotlin/境界試験で確認する。Android/Soong全体、AIDLサービス実体試験、実機VTSは未実施。
+- 検証: GitHub ActionsでSI host、TIS host（Kotlin 180件）、HAL hostのunit tests/Clippy/型検査、VTS profile検査が成功。production Rustの整形差分も反映した。Android/Soong全体、AIDLサービス実体試験、実機VTSは未実施。
 
 # r51_pr85_stack_provider_result_failure_contract
 

@@ -1,7 +1,7 @@
 # r51_pr91_review_publication_failure
 
 - EPG公開policyをKotlinへ集約し、dirty retryはServiceKey/時刻区間の再検証要求だけを保持する。現行の完全EITがなければ保留する。ProviderDataResultをSuccess/Failureへ閉じ、失敗serviceの書込み・削除・fingerprint・Direct Boot完了を止める。current EIT ratingはprovider query前に採用する。
-- 検証: Kotlin production/test compileとCIのRust/Kotlin/境界試験で確認する。Android/Soong全体、AIDLサービス実体試験、実機VTSは未実施。
+- 検証: GitHub ActionsでSI host、TIS host（Kotlin 180件）、HAL hostのunit tests/Clippy/型検査、VTS profile検査が成功。production Rustの整形差分も反映した。Android/Soong全体、AIDLサービス実体試験、実機VTSは未実施。
 
 # r51_pr85_stack_review_followup
 

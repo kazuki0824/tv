@@ -895,7 +895,9 @@ impl AidlServiceContext {
         &self,
         handle: AidlObjectHandle,
     ) -> Result<Option<FrontendCallbackDelivery>, AidlCallbackStoreError> {
-        let Some(registration) = self.callback_store_lock()?.frontend_callback_for_owner(handle)
+        let Some(registration) = self
+            .callback_store_lock()?
+            .frontend_callback_for_owner(handle)
         else {
             return Ok(None);
         };
