@@ -977,6 +977,7 @@ class TunerController(
         descramblerBridge = null
         sectionIngestController = null
         onSectionIngestedCallback = null
+        onTunerResourceLostCallback = null
         onTuneEventCallback = null
         release { tuner?.clearOnTuneEventListener() }
         currentTune = null

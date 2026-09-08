@@ -1,3 +1,12 @@
+# r51_pr85_stack_review_followup
+
+- TIF相対音量をsession所有・初期値1.0・0..1 clamp・AudioTrack再生成時再適用として設計正本へ固定した。既存実装のsession/playback executor境界を維持し、global volume ownerは追加しない。
+- scan用Tunerのresource-lost callbackをactive tune generationへ接続し、該当candidate以後のSI snapshot/TvProvider publishを拒否してtaskを失敗終了する。boot同期はpendingを維持し、既存schedulerへ再試行を返す。
+- current tune generationで受信したlatest EIT ratingを保存済みcurrent Programより優先し、同一eventの再時刻化またはevent切替で旧ratingを継承しない。TvProvider query失敗は情報不存在へ丸めず、上位の既存access-state保持へ返す。
+- Programs optional列を`SET/CLEAR/KEEP`へ分け、authoritative snapshotだけが不存在値をclearし、partial snapshotは旧正常値を保持する。insert時のKEEPは未設定/SQL NULLとする。
+- playback budgetをdecoder能力値ではなくcodec family別のTIS保持量policyとして固定し、実decoder適合は既存MediaCodec選択・configure・queue・deadlineでfail-closed判定する。実機qualificationはrelease証拠として残し、測定値をruntime profile入力に見せない。
+- Kotlin host回帰試験を1件追加し、CI期待値を173件へ更新した。Android/Soong build、device atest、CTS、実機Tuner/VTS/実波確認は未実行。
+
 # r51_pr85_stack_independent_startup_deadline
 
 - ADTS/PCEのstartup構成をRust共通部品へ統合し、二重音声を1chへ推測せず実PCEから設定する。JNI上限超過、PCE待ち、正しいASC byte alignmentをhostで検証する。

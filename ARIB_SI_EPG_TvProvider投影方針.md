@@ -139,6 +139,20 @@ freeCA / isFree UI補足:
 
 この表は「現行仕様で標準列非投影または部分投影にするもの」の一覧である。`internal_provider_data` の schema 名、JSON key 名、BLOB サイズ上限、診断情報キー名、provider-data内部の長文切り詰め方針は `arib_si_engine_rs/DESIGN_JA.md` と schema ファイル側で固定し、この表に含めてはならない。
 
+### optional列のContentValues操作契約
+
+Programsのoptional標準列は、値の有無と更新snapshotのauthorityから次の3操作へ一意に写像する。
+
+| 操作 | `ContentValues`表現 | insert時 | update時 |
+|---|---|---|---|
+| `SET(value)` | keyと非null valueを格納 | valueを保存 | 旧値をvalueへ置換 |
+| `CLEAR` | keyを`putNull()` | SQL `NULL`を保存 | 旧値をSQL `NULL`へ消去 |
+| `KEEP` | key自体を格納しない | provider既定値、通常はSQL `NULL` | 旧値を変更しない |
+
+完成し矛盾のないauthoritative EIT snapshotから得たoptional値が存在すれば`SET`、値が存在しないことまで確定した場合は`CLEAR`とする。不完全、矛盾、timeout partialなど値の不存在を確定できないsnapshotでは、既存行の正常値を破壊しないよう`KEEP`とする。同じ`ContentValues`をinsertへ使う場合、`KEEP`は過去値が存在しないため未設定/SQL `NULL`となる。required列とcanonical `internal_provider_data`はこのoptional列契約の対象外である。
+
+この一般則はtitle/description、video寸法、audio language、broadcast/canonical genre、content rating、scrambled、series id、multi-series id、episode display numberへ適用する。例として`episode_number=0`は未定義sentinelなので、authoritative updateでは話数列を`CLEAR`、非authoritative updateでは`KEEP`、insertでは未設定とする。複数seriesで単一series投影を確定的に禁止できるauthoritative snapshotはseries関連列を`CLEAR`するが、不完全snapshotだけを根拠に旧series値を消去しない。deletion authorityとoptional列のclear authorityは同じ完成snapshotから導出し、列ごとの独立した推測規則を設けない。
+
 ## 6. 実装契約
 
 現行の実装契約は次とする。

@@ -80,6 +80,7 @@ class CurrentProgramRatingResolver(private val context: Context) {
         val selectionRule: String,
         val overlapCount: Int,
         val selectedProgramId: Long?,
+        val ratingFreshnessRule: String = "",
     )
 
     @Volatile
@@ -106,18 +107,20 @@ class CurrentProgramRatingResolver(private val context: Context) {
         ratingProfile: AribRatingMapper.BroadcastProfile,
         nowMillis: Long = System.currentTimeMillis(),
     ): ResolveResult {
+        val latestEit = fromLatestEit(channelUri, serviceKey, latestEvents, ratingProfile, nowMillis)
         return when (val tvProvider = fromTvProvider(channelUri, serviceKey, nowMillis)) {
             is TvProviderLookupResult.Success -> {
-                tvProvider.ratingSet?.let { ResolveResult.Ratings(it) }
-                    ?: fromLatestEit(channelUri, serviceKey, latestEvents, ratingProfile, nowMillis)?.let { ResolveResult.Ratings(it) }
-                    ?: ResolveResult.Ratings(unresolvedRatingFallback(channelUri, serviceKey))
+                val selection = selectCurrentRating(tvProvider.ratingSet, latestEit)
+                currentProgramResolutionDiagnostic = currentProgramResolutionDiagnostic.copy(
+                    ratingFreshnessRule = selection.second,
+                )
+                ResolveResult.Ratings(selection.first ?: unresolvedRatingFallback(channelUri, serviceKey))
             }
-            is TvProviderLookupResult.QueryFailed -> {
-                // DESIGN_JA: TvProvider current Program -> latest EIT -> UNRATED.
-                // Provider access failure does not authorize carrying a previous program/channel decision.
-                fromLatestEit(channelUri, serviceKey, latestEvents, ratingProfile, nowMillis)?.let { ResolveResult.Ratings(it) }
-                    ?: ResolveResult.Ratings(unresolvedRatingFallback(channelUri, serviceKey))
-            }
+            is TvProviderLookupResult.QueryFailed -> ResolveResult.ProviderQueryFailed(
+                channelUriString = channelUri?.toString().orEmpty(),
+                serviceKey = serviceKey,
+                reason = tvProvider.reason,
+            )
         }
     }
 
@@ -229,6 +232,37 @@ class CurrentProgramRatingResolver(private val context: Context) {
     }
 
     companion object {
+        /**
+         * `latestEit` は現在のtune generationへboundされているため、永続Provider rowより
+         * 後の受信観測である。同一event/同一時刻ならrating refresh、同一eventの時刻変更
+         * またはevent変更なら旧row失効として、いずれもEITを優先する。
+         */
+        private fun selectCurrentRating(
+            provider: CurrentProgramRatingSet?,
+            latestEit: CurrentProgramRatingSet?,
+        ): Pair<CurrentProgramRatingSet?, String> = when {
+            latestEit == null && provider == null -> null to "NO_CURRENT_PROGRAM"
+            latestEit == null -> provider to "TV_PROVIDER_FALLBACK_NO_CURRENT_GENERATION_EIT"
+            provider == null -> latestEit to "LATEST_EIT_ONLY"
+            sameProgramOccurrence(provider, latestEit) -> latestEit to "LATEST_EIT_REFRESHED_SAME_OCCURRENCE"
+            sameStableProgram(provider, latestEit) -> latestEit to "LATEST_EIT_SUPERSEDES_RETIMED_EVENT"
+            else -> latestEit to "LATEST_EIT_SUPERSEDES_PROVIDER_EVENT"
+        }
+
+        private fun sameStableProgram(left: CurrentProgramRatingSet, right: CurrentProgramRatingSet): Boolean =
+            left.serviceKey != null && left.serviceKey == right.serviceKey &&
+                left.eventId != null && left.eventId == right.eventId
+
+        private fun sameProgramOccurrence(left: CurrentProgramRatingSet, right: CurrentProgramRatingSet): Boolean =
+            sameStableProgram(left, right) &&
+                left.startTimeMillis != null && left.startTimeMillis == right.startTimeMillis &&
+                left.endTimeMillis != null && left.endTimeMillis == right.endTimeMillis
+
+        internal fun selectCurrentRatingForTest(
+            provider: CurrentProgramRatingSet?,
+            latestEit: CurrentProgramRatingSet?,
+        ): CurrentProgramRatingSet? = selectCurrentRating(provider, latestEit).first
+
         fun stableProgramKey(serviceKey: ServiceKey, eventId: Int): String = ProviderDataBridge.buildProgramKey(serviceKey, eventId)
 
         fun unblockKey(

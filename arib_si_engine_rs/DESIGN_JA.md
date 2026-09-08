@@ -343,6 +343,22 @@ decodeChannelProviderData(rawBytes) -> ChannelProviderDataResult?
 
 `inputJson` は Rust builder への入力 DTO であり、TvProvider 保存 schema ではない。Rustは最終provider-data bytes、schema version、切り詰め結果、診断件数を返す。`ProviderDataResult`に`signature`または`contentDigest`フィールドを設けない。
 
+`ProviderDataResult`のJNI result envelopeは次のclosed field集合を正本とする。`bytes`はJNI上ではcanonical JSON UTF-8を保持するJSON stringであり、Kotlin facadeが`ByteArray`へ変換する。
+
+```text
+ProviderDataResult {
+  success: Boolean,
+  bytes: String,
+  schemaVersion: Int,
+  truncated: Boolean,
+  diagnosticsDroppedCount: Int,
+  errorCode: String,
+  errorMessage: String
+}
+```
+
+build/normalize成功時は`success=true`、`bytes`を非空canonical JSON、`schemaVersion`を対象schema version、`truncated`と`diagnosticsDroppedCount`を実処理結果、`errorCode/errorMessage`を空文字とする。UTF-8/JSON/schema/値域/32 KiB上限などの失敗時は`success=false`、`bytes=""`、`truncated=false`、`diagnosticsDroppedCount=0`とし、安定した非空`errorCode`と診断用の非空`errorMessage`を返す。失敗を`{}`、成功形の空bytes、panic、JNI nullへ丸めない。Kotlinは`success=false`を保存可能データとして扱わず、`errorCode/errorMessage`をprovider書込み失敗診断へ渡す。field追加・削除・意味変更はJNI契約変更としてRust/Kotlin/設計を同時更新する。
+
 `rawBytes` は任意バイナリではなく、既存 TvProvider に保存済みの JSON v1 UTF-8 バイト列を指す。JNI 呼び出し元は provider-data を `String` 化して渡してはならず、保存済み BLOB バイト列をそのまま渡す。互換上 TvProvider が文字列として返す場合も、呼び出し元は UTF-8 バイト列へ戻すだけに限定し、provider-data JSON を Kotlin 側で解釈・再構築しない。
 
 Rust は `rawBytes` が invalid UTF-8 または malformed JSON の場合、通常実行経路では panic せず、`ProviderDataResult` の失敗または key 抽出失敗へ落とす。provider-data bytesだけのdigest APIは設けない。同一公開内容の抑止判定はTISの行全体publish fingerprintを正とし、Rust builderの責務へ重複させない。

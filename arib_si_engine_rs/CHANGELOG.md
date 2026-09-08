@@ -1,3 +1,8 @@
+# r51_pr85_stack_provider_result_failure_contract
+
+- JNI `ProviderDataResult`のclosed field集合とsuccess/failure時の値制約を設計正本へ固定した。既存Rust/Kotlin wire形状と一致させ、第二failure protocolは追加していない。
+- production codeは変更していない。Rust test、Android/Soong build、device確認は未実行。
+
 # r51_pr85_stack_epg_policy_boundary
 
 - codec共通部品とCAS根拠schemaをAndroidのlibrary/test入力へ登録し、hostのみの入力追加で終わらないよう統合定義を補正する。

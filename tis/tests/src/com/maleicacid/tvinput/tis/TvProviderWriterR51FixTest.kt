@@ -20,7 +20,7 @@ import org.junit.Test
 class TvProviderWriterR51FixTest {
     private val key = ServiceKey(4, 16625, 101)
 
-    @Test fun optionalProgramColumnsAreClearedByMergeUpdate() {
+    @Test fun optionalProgramColumnsKeepPartialValuesAndClearAuthoritativeAbsence() {
         val store = MergeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
@@ -44,8 +44,35 @@ class TvProviderWriterR51FixTest {
             contentRatings = listOf(rating15),
         )
         writer.upsertPrograms(listOf(p))
-        writer.upsertPrograms(listOf(p.copy(canonicalGenres = emptyList(), descriptors = ProgramDescriptors(), contentRatings = emptyList())))
-        val values = store.programs.values.single()
+        val absentOptionalValues = p.copy(
+            title = "",
+            shortDescription = "",
+            description = "",
+            canonicalGenres = emptyList(),
+            descriptors = ProgramDescriptors(),
+            contentRatings = emptyList(),
+        )
+        writer.upsertPrograms(listOf(absentOptionalValues))
+        var values = store.programs.values.single()
+        check(values.getAsString(TvContract.Programs.COLUMN_TITLE) == "title")
+        check(values.getAsString(TvContract.Programs.COLUMN_SHORT_DESCRIPTION) == "desc")
+        check(values.getAsString(TvContract.Programs.COLUMN_AUDIO_LANGUAGE) == "jpn")
+        check(values.getAsString(TvContract.Programs.COLUMN_CANONICAL_GENRE) != null)
+        check(values.getAsString(TvContract.Programs.COLUMN_CONTENT_RATING) != null)
+        check(values.getAsInteger(TvProviderWriter.COLUMN_SERIES_ID) == 100)
+        check(values.getAsString(TvProviderWriter.COLUMN_EPISODE_DISPLAY_NUMBER) == "3")
+
+        val authoritativeWindow = ProgramPublishCoordinator.EpgUpdateWindow(
+            serviceKey = key,
+            windowStartMs = p.startTimeMillis,
+            windowEndMs = p.startTimeMillis + p.durationMillis,
+            validProgramKeys = setOf(TvProviderWriter.programKeyForTest(p)),
+            deletionAuthoritative = true,
+        )
+        writer.upsertProgramsForWindows(listOf(absentOptionalValues), listOf(authoritativeWindow))
+        values = store.programs.values.single()
+        check(values.get(TvContract.Programs.COLUMN_TITLE) == null)
+        check(values.get(TvContract.Programs.COLUMN_SHORT_DESCRIPTION) == null)
         check(values.get(TvContract.Programs.COLUMN_AUDIO_LANGUAGE) == null)
         check(values.get(TvContract.Programs.COLUMN_BROADCAST_GENRE) == null)
         check(values.get(TvContract.Programs.COLUMN_CANONICAL_GENRE) == null)

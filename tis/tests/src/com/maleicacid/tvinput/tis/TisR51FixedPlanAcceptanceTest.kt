@@ -507,6 +507,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(ChannelScanController.siCollectionOutcomeForTest(false, false, 1_000, 100, 1, policy) == ChannelScanController.SiCollectionOutcome.TIMEOUT_PARTIAL)
         check(ChannelScanController.siCollectionOutcomeForTest(false, false, 1_000, 250, 0, policy) == ChannelScanController.SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE)
         check(ChannelScanController.siCollectionOutcomeForTest(true, false, 100, 0, 0, policy) == ChannelScanController.SiCollectionOutcome.COMPLETE)
+        check(ChannelScanController.siCollectionOutcomeForTest(true, false, 100, 0, 1, policy, resourceLost = true) == ChannelScanController.SiCollectionOutcome.RESOURCE_LOST)
     }
 
     @Test fun partialSiDiscoveryPublishesOnlyRegistrationReadySnapshotServices() {
@@ -514,6 +515,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(ChannelScanController.SiCollectionResult(ChannelScanController.SiCollectionOutcome.TIMEOUT_PARTIAL, null, clearLivePlaybackStaticallyEligibleServices = 0, registrationReadyServices = 1).mayPublishChannels)
         check(!ChannelScanController.SiCollectionResult(ChannelScanController.SiCollectionOutcome.TIMEOUT_PARTIAL, null, clearLivePlaybackStaticallyEligibleServices = 0, registrationReadyServices = 0).mayPublishChannels)
         check(!ChannelScanController.SiCollectionResult(ChannelScanController.SiCollectionOutcome.CANCELLED, null, clearLivePlaybackStaticallyEligibleServices = 0, registrationReadyServices = 1).mayPublishChannels)
+        check(!ChannelScanController.SiCollectionResult(ChannelScanController.SiCollectionOutcome.RESOURCE_LOST, null, clearLivePlaybackStaticallyEligibleServices = 1, registrationReadyServices = 1).mayPublishChannels)
     }
 
     @Test fun setupScanPublishesEventsForRegisteredServicesOnly() {
@@ -619,6 +621,32 @@ class TisR51FixedPlanAcceptanceTest {
             endTimeMillis = null,
         )
         check(unratedFallback.exactUnblockKeyFor(TvContentRating.UNRATED) == null)
+    }
+
+    @Test fun generationBoundLatestEitSupersedesStoredCurrentProgramRating() {
+        val rating15 = requireNotNull(AribRatingMapper.parseFlattened(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 12), AribRatingMapper.BroadcastProfile.BS_CS))))
+        val rating18 = requireNotNull(AribRatingMapper.parseFlattened(requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 15), AribRatingMapper.BroadcastProfile.BS_CS))))
+        val stored = CurrentProgramRatingResolver.CurrentProgramRatingSet(
+            ratings = listOf(rating15),
+            source = CurrentProgramRatingResolver.Source.TV_PROVIDER_CURRENT_PROGRAM,
+            channelUriString = "content://android.media.tv/channel/1",
+            serviceKey = key,
+            eventId = 10,
+            startTimeMillis = 1_700_000_000_000L,
+            endTimeMillis = 1_700_001_800_000L,
+        )
+        val latestSameOccurrence = stored.copy(
+            ratings = listOf(rating18),
+            source = CurrentProgramRatingResolver.Source.LATEST_EIT_CACHE,
+        )
+        check(CurrentProgramRatingResolver.selectCurrentRatingForTest(stored, latestSameOccurrence) == latestSameOccurrence)
+
+        val latestRetimed = latestSameOccurrence.copy(
+            startTimeMillis = 1_700_000_060_000L,
+            endTimeMillis = 1_700_001_860_000L,
+        )
+        check(CurrentProgramRatingResolver.selectCurrentRatingForTest(stored, latestRetimed) == latestRetimed)
+        check(CurrentProgramRatingResolver.selectCurrentRatingForTest(stored, null) == stored)
     }
 
     @Test fun videoHeaderMetadataIsProjectedIntoCurrentProgramRecord() {

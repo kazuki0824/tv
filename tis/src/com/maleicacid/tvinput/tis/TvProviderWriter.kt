@@ -138,7 +138,16 @@ class TvProviderWriter private constructor(
             }
             val rows = programsByService[key].orEmpty().mapNotNull row@ { program ->
                 validate(program)?.let { failures += it; return@row null }
-                val values = runCatching { programValues(channelId, program) }.getOrElse { error ->
+                val values = runCatching {
+                    programValues(
+                        channelId,
+                        program,
+                        clearAbsentOptionalColumns = hasAuthoritativeOptionalColumnSnapshot(
+                            program,
+                            windowsByService[key].orEmpty(),
+                        ),
+                    )
+                }.getOrElse { error ->
                     failures += Diagnostic(key, "program-provider-data", error.message.orEmpty())
                     return@row null
                 }
@@ -274,7 +283,7 @@ class TvProviderWriter private constructor(
     fun validateForTest(channel: ChannelRecord): Diagnostic? = validate(channel)
     fun channelValuesForTest(channel: ChannelRecord): ContentValues = channelValues(channel)
     fun programValuesForTest(channelId: Long, program: ProgramRecord): ContentValues =
-        programValues(channelId, program)
+        programValues(channelId, program, clearAbsentOptionalColumns = true)
 
     private fun validate(channel: ChannelRecord): Diagnostic? {
         val key = channel.serviceKey
@@ -309,20 +318,30 @@ class TvProviderWriter private constructor(
         put(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA, channelProviderDataBytes(channel))
     }
 
-    private fun programValues(channelId: Long, program: ProgramRecord): ContentValues = ContentValues().apply {
+    private fun programValues(
+        channelId: Long,
+        program: ProgramRecord,
+        clearAbsentOptionalColumns: Boolean,
+    ): ContentValues = ContentValues().apply {
         put(TvContract.Programs.COLUMN_CHANNEL_ID, channelId)
-        if (program.title.isBlank()) putNull(TvContract.Programs.COLUMN_TITLE) else put(TvContract.Programs.COLUMN_TITLE, program.title)
+        if (program.title.isBlank()) {
+            if (clearAbsentOptionalColumns) putNull(TvContract.Programs.COLUMN_TITLE)
+        } else put(TvContract.Programs.COLUMN_TITLE, program.title)
         put(TvContract.Programs.COLUMN_EVENT_ID, program.eventId)
         put(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS, program.startTimeMillis)
         put(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS, Math.addExact(program.startTimeMillis, program.durationMillis))
-        put(TvContract.Programs.COLUMN_SHORT_DESCRIPTION, program.shortDescription)
-        if (program.description.isBlank()) putNull(TvContract.Programs.COLUMN_LONG_DESCRIPTION) else put(TvContract.Programs.COLUMN_LONG_DESCRIPTION, program.description)
+        if (program.shortDescription.isBlank()) {
+            if (clearAbsentOptionalColumns) putNull(TvContract.Programs.COLUMN_SHORT_DESCRIPTION)
+        } else put(TvContract.Programs.COLUMN_SHORT_DESCRIPTION, program.shortDescription)
+        if (program.description.isBlank()) {
+            if (clearAbsentOptionalColumns) putNull(TvContract.Programs.COLUMN_LONG_DESCRIPTION)
+        } else put(TvContract.Programs.COLUMN_LONG_DESCRIPTION, program.description)
         val videoWidth = program.videoWidth?.takeIf { it > 0 }
         val videoHeight = program.videoHeight?.takeIf { it > 0 }
         if (videoWidth != null && videoHeight != null) {
             put(TvContract.Programs.COLUMN_VIDEO_WIDTH, videoWidth)
             put(TvContract.Programs.COLUMN_VIDEO_HEIGHT, videoHeight)
-        } else {
+        } else if (clearAbsentOptionalColumns) {
             putNull(TvContract.Programs.COLUMN_VIDEO_WIDTH)
             putNull(TvContract.Programs.COLUMN_VIDEO_HEIGHT)
         }
@@ -332,26 +351,48 @@ class TvProviderWriter private constructor(
             .mapNotNull(LanguageCodeNormalizer::normalizeForTvTrackLanguage)
             .distinct()
             .toList()
-        if (audioLanguages.isEmpty()) {
+        if (audioLanguages.isEmpty() && clearAbsentOptionalColumns) {
             putNull(TvContract.Programs.COLUMN_AUDIO_LANGUAGE)
-        } else {
+        } else if (audioLanguages.isNotEmpty()) {
             put(TvContract.Programs.COLUMN_AUDIO_LANGUAGE, audioLanguages.joinToString(","))
         }
-        if (program.descriptors.broadcastGenre.isNullOrBlank()) putNull(TvContract.Programs.COLUMN_BROADCAST_GENRE) else put(TvContract.Programs.COLUMN_BROADCAST_GENRE, TvContract.Programs.Genres.encode(program.descriptors.broadcastGenre))
+        if (program.descriptors.broadcastGenre.isNullOrBlank()) {
+            if (clearAbsentOptionalColumns) putNull(TvContract.Programs.COLUMN_BROADCAST_GENRE)
+        } else put(TvContract.Programs.COLUMN_BROADCAST_GENRE, TvContract.Programs.Genres.encode(program.descriptors.broadcastGenre))
         val canonicalGenres = program.canonicalGenres.distinct().sorted()
-        if (canonicalGenres.isEmpty()) putNull(TvContract.Programs.COLUMN_CANONICAL_GENRE) else put(TvContract.Programs.COLUMN_CANONICAL_GENRE, TvContract.Programs.Genres.encode(*canonicalGenres.toTypedArray()))
-        if (program.contentRatings.isEmpty()) putNull(TvContract.Programs.COLUMN_CONTENT_RATING) else put(TvContract.Programs.COLUMN_CONTENT_RATING, program.contentRatings.distinct().sorted().joinToString(","))
+        if (canonicalGenres.isEmpty()) {
+            if (clearAbsentOptionalColumns) putNull(TvContract.Programs.COLUMN_CANONICAL_GENRE)
+        } else put(TvContract.Programs.COLUMN_CANONICAL_GENRE, TvContract.Programs.Genres.encode(*canonicalGenres.toTypedArray()))
+        if (program.contentRatings.isEmpty()) {
+            if (clearAbsentOptionalColumns) putNull(TvContract.Programs.COLUMN_CONTENT_RATING)
+        } else put(TvContract.Programs.COLUMN_CONTENT_RATING, program.contentRatings.distinct().sorted().joinToString(","))
         when (val scrambled = program.descriptors.scrambled) {
-            null -> putNull(COLUMN_SCRAMBLED)
+            null -> if (clearAbsentOptionalColumns) putNull(COLUMN_SCRAMBLED)
             else -> put(COLUMN_SCRAMBLED, if (scrambled) 1 else 0)
         }
         val seriesId = program.descriptors.series?.seriesId
-        if (seriesId == null) putNull(COLUMN_SERIES_ID) else put(COLUMN_SERIES_ID, seriesId)
+        if (seriesId == null) {
+            if (clearAbsentOptionalColumns) putNull(COLUMN_SERIES_ID)
+        } else put(COLUMN_SERIES_ID, seriesId)
         // 投影契約は一意な単一series。複数記述子は根拠を保存し、ID・話数を選択しない。
-        putNull(COLUMN_MULTI_SERIES_ID)
+        if (clearAbsentOptionalColumns) putNull(COLUMN_MULTI_SERIES_ID)
         val episodeNumber = program.descriptors.series?.episodeNumber
-        if (episodeNumber == null || episodeNumber <= 0) putNull(COLUMN_EPISODE_DISPLAY_NUMBER) else put(COLUMN_EPISODE_DISPLAY_NUMBER, episodeNumber.toString())
+        if (episodeNumber == null || episodeNumber <= 0) {
+            if (clearAbsentOptionalColumns) putNull(COLUMN_EPISODE_DISPLAY_NUMBER)
+        } else put(COLUMN_EPISODE_DISPLAY_NUMBER, episodeNumber.toString())
         put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA, ProviderDataBridge.buildProgramProviderData(program.copy(tvProviderProgramId = null)).bytes)
+    }
+
+    private fun hasAuthoritativeOptionalColumnSnapshot(
+        program: ProgramRecord,
+        windows: List<ProgramPublishCoordinator.EpgUpdateWindow>,
+    ): Boolean {
+        val programEnd = checkedProgramEndTimeMillis(program) ?: return false
+        val key = programIdentity(program)
+        return windows.any { window ->
+            window.deletionAuthoritative && key in window.validProgramKeys &&
+                program.startTimeMillis < window.windowEndMs && programEnd > window.windowStartMs
+        }
     }
 
     private fun programIdentity(program: ProgramRecord): String = ProviderDataBridge.buildProgramKey(program)
@@ -463,7 +504,9 @@ class TvProviderWriter private constructor(
                 override fun insertChannel(values: ContentValues): Result<Long?> = Result.success(channelId)
                 override fun updateChannel(channelId: Long, values: ContentValues): Result<Int> = Result.success(1)
             }, testOnly = true)
-            return signatureForContentValues(writer.programValues(channelId, program))
+            return signatureForContentValues(
+                writer.programValues(channelId, program, clearAbsentOptionalColumns = true),
+            )
         }
 
     }

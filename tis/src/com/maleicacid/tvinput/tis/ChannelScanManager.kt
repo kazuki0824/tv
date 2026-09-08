@@ -13,6 +13,8 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 object ChannelScanManager {
+    private const val TUNER_RESOURCE_LOST = "TUNER_RESOURCE_LOST"
+
     interface Listener { fun onScanStateChanged(state: ScanState) }
 
     data class BackgroundMaintenanceStartDecision(val allowed: Boolean, val reason: String?)
@@ -131,6 +133,8 @@ object ChannelScanManager {
                 if (scanResult != null) {
                     if (scanResult.terminalCancelObserved || isCancelledGeneration(generation)) {
                         setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, ScanPurpose.SETUP_SCAN))
+                    } else if (scanResult.terminalResourceLostObserved) {
+                        setTerminalStateIfCurrent(generation, ScanState.Failed(TUNER_RESOURCE_LOST, generation, ScanPurpose.SETUP_SCAN))
                     } else {
                         setTerminalStateIfCurrent(generation, ScanState.Completed(scanResult, generation, ScanPurpose.SETUP_SCAN))
                     }
@@ -207,18 +211,29 @@ object ChannelScanManager {
             result.onSuccess { scanResult ->
                 if (scanResult != null) {
                     val terminalCancel = scanResult.terminalCancelObserved || isCancelledGeneration(generation)
+                    val terminalResourceLost = scanResult.terminalResourceLostObserved
                     val allRequiredTargetsCommitted = requiredServiceKeys.isNotEmpty() &&
                         scanResult.committedServiceKeys.containsAll(requiredServiceKeys) &&
-                        !terminalCancel
+                        !terminalCancel &&
+                        !terminalResourceLost
                     if (allRequiredTargetsCommitted) {
                         DirectBootGuard.clearPending(appContext)
                         shouldScheduleBackgroundMaintenance = true
                         needsReschedule = false
                     } else {
-                        DirectBootGuard.deferPending(appContext, if (terminalCancel) "BOOT_EPG_CANCELLED" else "BOOT_EPG_INCOMPLETE_TARGET_SET")
+                        DirectBootGuard.deferPending(
+                            appContext,
+                            when {
+                                terminalCancel -> "BOOT_EPG_CANCELLED"
+                                terminalResourceLost -> TUNER_RESOURCE_LOST
+                                else -> "BOOT_EPG_INCOMPLETE_TARGET_SET"
+                            },
+                        )
                     }
                     if (terminalCancel) {
                         setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, ScanPurpose.BOOT_EPG_SYNC))
+                    } else if (terminalResourceLost) {
+                        setTerminalStateIfCurrent(generation, ScanState.Failed(TUNER_RESOURCE_LOST, generation, ScanPurpose.BOOT_EPG_SYNC))
                     } else {
                         setTerminalStateIfCurrent(generation, ScanState.Completed(scanResult, generation, ScanPurpose.BOOT_EPG_SYNC))
                     }
@@ -296,6 +311,8 @@ object ChannelScanManager {
                 if (scanResult != null) {
                     if (scanResult.terminalCancelObserved || isCancelledGeneration(generation)) {
                         setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, ScanPurpose.BACKGROUND_MAINTENANCE))
+                    } else if (scanResult.terminalResourceLostObserved) {
+                        setTerminalStateIfCurrent(generation, ScanState.Failed(TUNER_RESOURCE_LOST, generation, ScanPurpose.BACKGROUND_MAINTENANCE))
                     } else {
                         setTerminalStateIfCurrent(generation, ScanState.Completed(scanResult, generation, ScanPurpose.BACKGROUND_MAINTENANCE))
                     }

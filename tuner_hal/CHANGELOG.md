@@ -1,3 +1,9 @@
+# r50eo52
+
+- `FilterDelayHint`の時間起点を未通知`onFilterEvent()` batchの空→非空へ一本化し、Filter FMQ未読残量とは独立であることを明記した。
+- ARIB STD-B10 5.13-E1のtable定義5.2.4〜5.2.17の所属をPart 2へ訂正した。
+- production Rust codeは変更していない。Android/Soong build、VTS、実機確認は未実行。
+
 # r50eo51
 
 - `tuner_hal/DESIGN_JA.md` を、ユーザー添付の DESIGN_JA.md 改訂版へ差し替えた。
