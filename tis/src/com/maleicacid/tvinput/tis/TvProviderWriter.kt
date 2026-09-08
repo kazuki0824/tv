@@ -68,10 +68,14 @@ class TvProviderWriter private constructor(
         channels.forEach { channel ->
             val validation = validate(channel)
             if (validation != null) { failures += validation; return@forEach }
-            val values = runCatching { channelValues(channel) }.getOrElse { error ->
-                failures += Diagnostic(channel.serviceKey, "provider-data", error.message.orEmpty())
-                return@forEach
+            val providerData = when (val built = ProviderDataBridge.buildChannelProviderData(channel)) {
+                is ProviderDataBridge.Success -> built.bytes
+                is ProviderDataBridge.Failure -> {
+                    failures += Diagnostic(channel.serviceKey, "provider-data", "${built.errorCode}: ${built.errorMessage}")
+                    return@forEach
+                }
             }
+            val values = channelValues(channel, providerData)
             val existingIdResult = channelStore.findExistingChannelId(channel.serviceKey)
             if (existingIdResult.isFailure) { failures += Diagnostic(channel.serviceKey, "query", existingIdResult.exceptionOrNull()?.message.orEmpty()); return@forEach }
             val existingId = existingIdResult.getOrNull()
@@ -138,22 +142,22 @@ class TvProviderWriter private constructor(
             }
             val rows = programsByService[key].orEmpty().mapNotNull row@ { program ->
                 validate(program)?.let { failures += it; return@row null }
-                val values = runCatching {
-                    programValues(
-                        channelId,
-                        program,
-                        clearAbsentOptionalColumns = hasAuthoritativeOptionalColumnSnapshot(
-                            program,
-                            windowsByService[key].orEmpty(),
-                        ),
-                    )
-                }.getOrElse { error ->
-                    failures += Diagnostic(key, "program-provider-data", error.message.orEmpty())
-                    return@row null
+                val providerData = when (val built = ProviderDataBridge.buildProgramProviderData(program)) {
+                    is ProviderDataBridge.Success -> built.bytes
+                    is ProviderDataBridge.Failure -> {
+                        failures += Diagnostic(key, "program-provider-data", "${built.errorCode}: ${built.errorMessage}")
+                        return@row null
+                    }
                 }
+                val values = programValues(
+                    channelId, program,
+                    clearAbsentOptionalColumns = hasAuthoritativeOptionalColumnSnapshot(program, windowsByService[key].orEmpty()),
+                    providerData = providerData,
+                )
                 program to values
             }
-            PreparedServicePrograms(key, channelId, rows, windowsByService[key].orEmpty())
+            if (failures.any { it.serviceKey == key }) null
+            else PreparedServicePrograms(key, channelId, rows, windowsByService[key].orEmpty())
         }
         return PreparedProgramPublication(services, failures)
     }
@@ -281,9 +285,10 @@ class TvProviderWriter private constructor(
     fun existingChannelsForTestOnly(): List<ChannelRecord> = existingChannelsResult().getOrElse { emptyList() }
 
     fun validateForTest(channel: ChannelRecord): Diagnostic? = validate(channel)
-    fun channelValuesForTest(channel: ChannelRecord): ContentValues = channelValues(channel)
+    fun channelValuesForTest(channel: ChannelRecord): ContentValues =
+        channelValues(channel, (ProviderDataBridge.buildChannelProviderData(channel) as ProviderDataBridge.Success).bytes)
     fun programValuesForTest(channelId: Long, program: ProgramRecord): ContentValues =
-        programValues(channelId, program, clearAbsentOptionalColumns = true)
+        programValues(channelId, program, clearAbsentOptionalColumns = true, providerData = (ProviderDataBridge.buildProgramProviderData(program) as ProviderDataBridge.Success).bytes)
 
     private fun validate(channel: ChannelRecord): Diagnostic? {
         val key = channel.serviceKey
@@ -305,7 +310,7 @@ class TvProviderWriter private constructor(
         else -> null
     }
 
-    private fun channelValues(channel: ChannelRecord): ContentValues = ContentValues().apply {
+    private fun channelValues(channel: ChannelRecord, providerData: ByteArray): ContentValues = ContentValues().apply {
         put(TvContract.Channels.COLUMN_INPUT_ID, inputId)
         put(TvContract.Channels.COLUMN_TYPE, channelType(channel.deliverySystem))
         put(TvContract.Channels.COLUMN_SERVICE_TYPE, channel.serviceType.toString())
@@ -315,13 +320,14 @@ class TvProviderWriter private constructor(
         put(TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID, channel.serviceKey.transportStreamId)
         put(TvContract.Channels.COLUMN_SERVICE_ID, channel.serviceKey.serviceId)
         put(TvContract.Channels.COLUMN_SEARCHABLE, 1)
-        put(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA, channelProviderDataBytes(channel))
+        put(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA, providerData)
     }
 
     private fun programValues(
         channelId: Long,
         program: ProgramRecord,
         clearAbsentOptionalColumns: Boolean,
+        providerData: ByteArray,
     ): ContentValues = ContentValues().apply {
         put(TvContract.Programs.COLUMN_CHANNEL_ID, channelId)
         if (program.title.isBlank()) {
@@ -380,7 +386,7 @@ class TvProviderWriter private constructor(
         if (episodeNumber == null || episodeNumber <= 0) {
             if (clearAbsentOptionalColumns) putNull(COLUMN_EPISODE_DISPLAY_NUMBER)
         } else put(COLUMN_EPISODE_DISPLAY_NUMBER, episodeNumber.toString())
-        put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA, ProviderDataBridge.buildProgramProviderData(program.copy(tvProviderProgramId = null)).bytes)
+        put(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA, providerData)
     }
 
     private fun hasAuthoritativeOptionalColumnSnapshot(
@@ -436,7 +442,7 @@ class TvProviderWriter private constructor(
         fun programKeyForTest(program: ProgramRecord): String = ProviderDataBridge.buildProgramKey(program)
 
         fun programProviderDataForTest(program: ProgramRecord): String =
-            ProviderDataBridge.buildProgramProviderData(program).json
+            (ProviderDataBridge.buildProgramProviderData(program) as ProviderDataBridge.Success).json
 
         fun parseProgramKey(providerData: ByteArray?): String? = ProviderDataBridge.extractProgramKey(providerData)
 
@@ -505,7 +511,7 @@ class TvProviderWriter private constructor(
                 override fun updateChannel(channelId: Long, values: ContentValues): Result<Int> = Result.success(1)
             }, testOnly = true)
             return signatureForContentValues(
-                writer.programValues(channelId, program, clearAbsentOptionalColumns = true),
+                writer.programValues(channelId, program, clearAbsentOptionalColumns = true, providerData = (ProviderDataBridge.buildProgramProviderData(program) as ProviderDataBridge.Success).bytes),
             )
         }
 
@@ -518,9 +524,6 @@ class TvProviderWriter private constructor(
         ChannelRecord.DELIVERY_SYSTEM_ISDB_S -> TvContract.Channels.TYPE_ISDB_S
         else -> TvContract.Channels.TYPE_OTHER
     }
-
-    private fun channelProviderDataBytes(channel: ChannelRecord): ByteArray =
-        ProviderDataBridge.buildChannelProviderData(channel).bytes
 
     private class AndroidTvProviderChannelStore(private val context: Context, private val inputId: String) : ChannelStore {
         override fun findExistingChannelId(key: ServiceKey): Result<Long?> = runCatching {

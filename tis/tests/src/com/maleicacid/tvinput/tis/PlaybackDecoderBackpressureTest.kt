@@ -3,6 +3,14 @@ package com.maleicacid.tvinput.tis
 import org.junit.Test
 
 class PlaybackDecoderBackpressureTest {
+    @Test fun satelliteProgramPolicyDoesNotLimitTerrestrialOrParserFacts() {
+        val policy = com.maleicacid.tvinput.aribsi.EpgSectionPolicy
+        check(policy.accepts(0, 0x4e, 2))
+        check(policy.accepts(1, 0x4e, 1))
+        check(!policy.accepts(1, 0x4e, 2))
+        check(!policy.accepts(2, 0x4e, 2))
+        check(!policy.accepts(0, 0x50, 0))
+    }
     @Test fun directBlockModelRejectsInvalidRangesWithoutByteBufferSizingFallback() {
         check(
             PlaybackPipeline.mediaEventBoundsDecisionForTest(0, 16, 16) ==

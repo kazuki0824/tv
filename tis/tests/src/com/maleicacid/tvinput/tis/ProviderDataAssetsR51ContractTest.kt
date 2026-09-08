@@ -5,6 +5,32 @@ import org.json.JSONObject
 import org.junit.Test
 
 class ProviderDataAssetsR51ContractTest {
+    @Test fun providerDataFailureIsTypedAndCurrentRequestsRequireCasEvidence() {
+        val bridge = com.maleicacid.tvinput.aribsi.ProviderDataBridge
+        val rejected = bridge.normalizeProgramProviderData(byteArrayOf(0xff.toByte()))
+        check(rejected is com.maleicacid.tvinput.aribsi.ProviderDataBridge.Failure)
+        check(rejected.errorCode.isNotBlank() && rejected.errorMessage.isNotBlank())
+        val key = com.maleicacid.tvinput.common.ServiceKey(4, 0x4010, 101)
+        val program = com.maleicacid.tvinput.db.ProgramRecord(serviceKey = key, eventId = 1, stableIdentity = null, startTimeMillis = 1_700_000_000_000L, durationMillis = 1_800_000L, title = "test", description = "description")
+        check(bridge.buildProgramProviderData(program) is com.maleicacid.tvinput.aribsi.ProviderDataBridge.Failure)
+        check(bridge.buildProgramProviderData(program.copy(casFactsCanonicalJson = testCasFacts())) is com.maleicacid.tvinput.aribsi.ProviderDataBridge.Success)
+        val channel = com.maleicacid.tvinput.db.ChannelRecord(key, 1, "101", "test", com.maleicacid.tvinput.common.FrequencyHz(473_142_857L))
+        check(bridge.buildChannelProviderData(channel) is com.maleicacid.tvinput.aribsi.ProviderDataBridge.Failure)
+        check(bridge.buildChannelProviderData(channel.copy(casFactsCanonicalJson = testCasFacts())) is com.maleicacid.tvinput.aribsi.ProviderDataBridge.Success)
+    }
+
+    @Test fun providerResultEnvelopeRejectsUnknownFieldsAndMalformedFailure() {
+        val bridge = com.maleicacid.tvinput.aribsi.ProviderDataBridge
+        val failure = JSONObject().put("success", false).put("bytes", "").put("schemaVersion", 1)
+            .put("truncated", false).put("diagnosticsDroppedCount", 0)
+            .put("errorCode", "INVALID").put("errorMessage", "invalid input")
+        check((bridge.parseResult(failure.toString()) as com.maleicacid.tvinput.aribsi.ProviderDataBridge.Failure).errorCode == "INVALID")
+        failure.put("bytes", "{}")
+        check((bridge.parseResult(failure.toString()) as com.maleicacid.tvinput.aribsi.ProviderDataBridge.Failure).errorCode == "PROVIDER_DATA_RESULT_INVALID")
+        failure.put("bytes", "").put("unknown", 1)
+        check((bridge.parseResult(failure.toString()) as com.maleicacid.tvinput.aribsi.ProviderDataBridge.Failure).errorCode == "PROVIDER_DATA_RESULT_INVALID")
+    }
+
     @Test fun sharedBoundaryCorpusAgreesThroughTheProductionJniBridge() {
         val cases = org.json.JSONArray(assetText("provider_data_boundary_v1/cases.json"))
         for (index in 0 until cases.length()) {
@@ -19,7 +45,7 @@ class ProviderDataAssetsR51ContractTest {
             val accepted = when (val boundary = case.getString("boundary")) {
                 "PROGRAM" -> {
                     check((com.maleicacid.tvinput.aribsi.ProviderDataBridge.extractProgramKeyResult(bytes) != null) == expected) { case.getString("name") }
-                    runCatching { com.maleicacid.tvinput.aribsi.ProviderDataBridge.normalizeProgramProviderData(bytes) }.isSuccess
+                    com.maleicacid.tvinput.aribsi.ProviderDataBridge.normalizeProgramProviderData(bytes) is com.maleicacid.tvinput.aribsi.ProviderDataBridge.Success
                 }
                 "CHANNEL" -> com.maleicacid.tvinput.aribsi.ProviderDataBridge.decodeChannelProviderData(bytes) != null
                 else -> error("未知のfixture境界: $boundary")

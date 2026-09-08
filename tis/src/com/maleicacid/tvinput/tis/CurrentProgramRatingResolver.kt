@@ -108,6 +108,12 @@ class CurrentProgramRatingResolver(private val context: Context) {
         nowMillis: Long = System.currentTimeMillis(),
     ): ResolveResult {
         val latestEit = fromLatestEit(channelUri, serviceKey, latestEvents, ratingProfile, nowMillis)
+        if (latestEit != null) {
+            currentProgramResolutionDiagnostic = CurrentProgramResolutionDiagnostic(
+                "CURRENT_GENERATION_EIT", 0, null, "LATEST_EIT_BEFORE_PROVIDER_QUERY",
+            )
+            return ResolveResult.Ratings(latestEit)
+        }
         return when (val tvProvider = fromTvProvider(channelUri, serviceKey, nowMillis)) {
             is TvProviderLookupResult.Success -> {
                 val selection = selectCurrentRating(tvProvider.ratingSet, latestEit)

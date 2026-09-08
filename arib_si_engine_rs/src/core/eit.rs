@@ -168,21 +168,15 @@ pub fn parse_eit_section_facts(section: &[u8]) -> EitSectionFacts {
                 descriptor_diagnostics: Vec::new(),
             });
         }
-        if !descriptors.diagnostics.is_empty() {
+        for diagnostic in &descriptors.diagnostics {
             diagnostics.push(EitEventDiagnostic {
                 event_identity: identity,
-                parse_status: if descriptor_truncated {
-                    DescriptorParseStatus::TruncatedDescriptor
-                } else {
-                    DescriptorParseStatus::MalformedLength
-                },
-                reason: if descriptor_truncated {
-                    "イベント記述子長がEIT section本文を超えています".to_string()
-                } else {
-                    "イベント記述子ループに不正な記述子があります".to_string()
-                },
-                malformed_descriptor_count: descriptors.diagnostics.len(),
-                descriptor_diagnostics: descriptors.diagnostics.clone(),
+                parse_status: diagnostic.parse_status,
+                reason: diagnostic.message.clone(),
+                malformed_descriptor_count: usize::from(
+                    diagnostic.parse_status.is_structural_error(),
+                ),
+                descriptor_diagnostics: vec![diagnostic.clone()],
             });
         }
         out.push(EitEvent {

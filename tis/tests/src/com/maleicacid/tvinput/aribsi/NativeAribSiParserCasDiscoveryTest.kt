@@ -186,8 +186,8 @@ class NativeAribSiParserCasDiscoveryTest {
             check(event.descriptors.series?.expireDate == 0xe123)
             check(event.descriptors.linkage.single().privateDataPrefixHex == "aabb")
 
-            val program = EventModelMapper().toProgramRecords(listOf(event)).single()
-            val providerData = JSONObject(ProviderDataBridge.buildProgramProviderData(program).json)
+            val program = EventModelMapper().toProgramRecords(listOf(event)).single().copy(casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts())
+            val providerData = JSONObject((ProviderDataBridge.buildProgramProviderData(program) as ProviderDataBridge.Success).json)
             val providerVideo = providerData.getJSONObject("components").getJSONArray("video").getJSONObject(0)
             check(providerVideo.getString("resolution") == "1080")
             check(providerVideo.getString("scan") == "interlaced")
@@ -236,8 +236,8 @@ class NativeAribSiParserCasDiscoveryTest {
             check(ratings.getJSONObject(3).getString("parseStatus") == "TruncatedDescriptor")
             val rawUnknown = facts.getJSONArray("unknownDescriptors").getJSONObject(0).getString("rawDescriptorHex")
             check(rawUnknown.length == 164 && rawUnknown.endsWith("4d4e4f"))
-            val program = EventModelMapper().toProgramRecords(listOf(event)).single()
-            val stored = ProviderDataBridge.buildProgramProviderData(program).json
+            val program = EventModelMapper().toProgramRecords(listOf(event)).single().copy(casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts())
+            val stored = (ProviderDataBridge.buildProgramProviderData(program) as ProviderDataBridge.Success).json
             val canonical = JSONObject(stored)
             check(canonical.getJSONArray("ratings").length() == 1)
             val savedFacts = canonical.getJSONObject("diagnostics").getJSONObject("descriptorFacts")
@@ -258,7 +258,7 @@ class NativeAribSiParserCasDiscoveryTest {
                 }
             }
             check(savedFacts.getJSONArray("unknownDescriptors").getJSONObject(0).getString("rawDescriptorHex") == rawUnknown)
-            check(ProviderDataBridge.normalizeProgramProviderData(stored.toByteArray(Charsets.UTF_8)).json == stored)
+            check((ProviderDataBridge.normalizeProgramProviderData(stored.toByteArray(Charsets.UTF_8)) as ProviderDataBridge.Success).json == stored)
         } finally {
             parser.close()
         }
@@ -278,8 +278,8 @@ class NativeAribSiParserCasDiscoveryTest {
             check(eitOnlyVideo.streamType == null)
             check(eitOnlyVideo.codec == null)
 
-            val program = EventModelMapper().toProgramRecords(listOf(event)).single()
-            val providerData = JSONObject(ProviderDataBridge.buildProgramProviderData(program).json)
+            val program = EventModelMapper().toProgramRecords(listOf(event)).single().copy(casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts())
+            val providerData = JSONObject((ProviderDataBridge.buildProgramProviderData(program) as ProviderDataBridge.Success).json)
             val videoArray = providerData.getJSONObject("components").getJSONArray("video")
             val providerVideo = (0 until videoArray.length())
                 .map { videoArray.getJSONObject(it) }

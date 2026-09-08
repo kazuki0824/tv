@@ -627,19 +627,35 @@ fn execute_callback_registration_after_artifact_bridge(
         |runtime, token, (artifact_retain_bridge, registration_finish_lock_failure_command)| {
             let result = (|| {
                 let artifact_retain_result = artifact_retain_bridge.prepare(context, handle);
+                let mut guard = match lock_runtime(&runtime) {
+                    Ok(guard) => guard,
+                    Err(runtime_error) => {
+                        return Err(callback_artifact_registration_runtime_lock_failure_error(
+                            context,
+                            registration_finish_lock_failure_command,
+                            artifact_retain_result,
+                            runtime_error,
+                        ));
+                    }
+                };
                 let mut callback_store = context.callback_store_lock().map_err(|error| {
                     error.into_hal_error("callback artifact store lock failed during registration")
                 })?;
-                let artifact_retain_result = match artifact_retain_result {
-                    Ok(prepared)
-                        if callback_store
-                            .prepared_frontend_registration(handle, &prepared)
-                            .is_some_and(|registration| registration.is_dead()) =>
-                    {
-                        let primary = HalError::callback_failed(
-                            "linkToDeath",
-                            "準備中にcallbackが死亡しました",
-                        );
+                let prepared_registration = artifact_retain_result.as_ref().ok()
+                    .and_then(|prepared| callback_store.prepared_frontend_registration(handle, prepared));
+                let death_guard_result = prepared_registration.as_ref()
+                    .map(|registration| registration.lock_death_gate()).transpose();
+                let validation_error = match &death_guard_result {
+                    Err(error) => Some(error.clone().into_hal_error("callback死亡と登録の直列化")),
+                    Ok(_) if prepared_registration.as_ref().is_some_and(|registration| registration.is_dead()) => {
+                        Some(HalError::callback_failed("linkToDeath", "準備中にcallbackが死亡しました"))
+                    }
+                    Ok(_) => None,
+                };
+                // guardをruntimeとartifactの両commitまで保持する。失敗は通常の取消経路へ渡す。
+                let _death_guard = death_guard_result.ok();
+                let artifact_retain_result = match (artifact_retain_result, validation_error) {
+                    (Ok(prepared), Some(primary)) => {
                         match callback_store.abort_prepared_callback(handle, api, prepared) {
                             Ok(()) => Err(primary),
                             Err(cleanup) => Err(
@@ -651,19 +667,7 @@ fn execute_callback_registration_after_artifact_bridge(
                             ),
                         }
                     }
-                    other => other,
-                };
-                let mut guard = match lock_runtime(&runtime) {
-                    Ok(guard) => guard,
-                    Err(runtime_error) => {
-                        drop(callback_store);
-                        return Err(callback_artifact_registration_runtime_lock_failure_error(
-                            context,
-                            registration_finish_lock_failure_command,
-                            artifact_retain_result,
-                            runtime_error,
-                        ));
-                    }
+                    (other, _) => other,
                 };
                 let (artifact_result_for_runtime, prepared_token) = match artifact_retain_result {
                     Ok(prepared_token) => (Ok(()), Some(prepared_token)),

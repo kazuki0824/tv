@@ -9,14 +9,21 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 object ProviderDataBridge {
-    data class Result(
+    sealed interface ProviderDataResult
+    data class Success(
         val bytes: ByteArray,
         val schemaVersion: Int,
         val truncated: Boolean,
         val diagnosticsDroppedCount: Int,
-    ) {
+    ) : ProviderDataResult {
         val json: String get() = bytes.toString(Charsets.UTF_8)
     }
+    data class Failure(
+        val errorCode: String,
+        val errorMessage: String,
+        val schemaVersion: Int = 1,
+    ) : ProviderDataResult
+
     data class ProgramKeyResult(
         val serviceKey: ServiceKey,
         val eventId: Int,
@@ -40,7 +47,14 @@ object ProviderDataBridge {
 
     private val native by lazy { NativeAribSiParser() }
 
-    fun buildChannelProviderData(channel: ChannelRecord): Result {
+    fun buildChannelProviderData(channel: ChannelRecord): ProviderDataResult {
+        val request = runCatching { channelRequest(channel) }.getOrElse { error ->
+            return Failure("CHANNEL_REQUEST_INVALID", error.message ?: "Invalid channel request")
+        }
+        return parseResult(native.buildChannelProviderData(request))
+    }
+
+    private fun channelRequest(channel: ChannelRecord): String {
         require(channel.streamSelector.type != com.maleicacid.tvinput.common.StreamSelectorType.RELATIVE) {
             "RELATIVE stream selectorはTvProvider永続identityとして保存できません"
         }
@@ -69,7 +83,7 @@ object ProviderDataBridge {
                 .put("requiresCas", channel.requiresCas))
             .put("casFactsCanonicalJson", channel.casFactsCanonicalJson ?: JSONObject.NULL)
             .put("diagnostics", JSONObject())
-        return parseResult(native.buildChannelProviderData(request.toString()))
+        return request.toString()
     }
 
     fun buildProgramKey(program: ProgramRecord): String = buildProgramKey(program.serviceKey, program.eventId)
@@ -82,7 +96,14 @@ object ProviderDataBridge {
             eventId,
         )
 
-    fun buildProgramProviderData(program: ProgramRecord): Result {
+    fun buildProgramProviderData(program: ProgramRecord): ProviderDataResult {
+        val request = runCatching { programRequest(program) }.getOrElse { error ->
+            return Failure("PROGRAM_REQUEST_INVALID", error.message ?: "Invalid program request")
+        }
+        return parseResult(native.buildProgramProviderData(request))
+    }
+
+    private fun programRequest(program: ProgramRecord): String {
         val descriptors = program.descriptors
         runCatching { Math.addExact(program.startTimeMillis, program.durationMillis) }
             .getOrElse { error -> throw IllegalArgumentException("program timing overflow", error) }
@@ -125,10 +146,10 @@ object ProviderDataBridge {
                 .put("sectionNumber", program.source.sectionNumber)
                 .put("lastSectionNumber", program.source.lastSectionNumber))
             .put("malformedCaDescriptorCount", program.malformedCaDescriptorCount.coerceAtLeast(0))
-        return parseResult(native.buildProgramProviderData(request.toString()))
+        return request.toString()
     }
 
-    fun normalizeProgramProviderData(providerData: ByteArray?): Result =
+    fun normalizeProgramProviderData(providerData: ByteArray?): ProviderDataResult =
         parseResult(native.normalizeProgramProviderData(providerData ?: ByteArray(0)))
 
     fun extractProgramKeyResult(providerData: ByteArray?): ProgramKeyResult? {
@@ -224,23 +245,26 @@ object ProviderDataBridge {
             .put("parseStatus", series.parseStatus)
     } ?: JSONObject.NULL
 
-    private fun parseResult(raw: String): Result {
-        val obj = runCatching { JSONObject(raw) }.getOrElse { error ->
-            throw IllegalStateException("provider-data JNI result is not JSON", error)
+    internal fun parseResult(raw: String): ProviderDataResult {
+        val invalid = Failure("PROVIDER_DATA_RESULT_INVALID", "provider-data JNI result envelope is invalid")
+        val obj = runCatching { JSONObject(raw) }.getOrNull() ?: return invalid
+        val fields = setOf("success", "bytes", "schemaVersion", "truncated", "diagnosticsDroppedCount", "errorCode", "errorMessage")
+        if (obj.keys().asSequence().toSet() != fields) return invalid
+        val success = obj.opt("success") as? Boolean ?: return invalid
+        val json = obj.opt("bytes") as? String ?: return invalid
+        val version = obj.opt("schemaVersion") as? Int ?: return invalid
+        val truncated = obj.opt("truncated") as? Boolean ?: return invalid
+        val dropped = obj.opt("diagnosticsDroppedCount") as? Int ?: return invalid
+        val code = obj.opt("errorCode") as? String ?: return invalid
+        val message = obj.opt("errorMessage") as? String ?: return invalid
+        if (version != 1 || dropped < 0) return invalid
+        return if (success) {
+            if (json.isBlank() || json == "{}" || code.isNotEmpty() || message.isNotEmpty()) invalid
+            else Success(json.toByteArray(Charsets.UTF_8), version, truncated, dropped)
+        } else {
+            if (json.isNotEmpty() || truncated || dropped != 0 || code.isBlank() || message.isBlank()) invalid
+            else Failure(code, message, version)
         }
-        if (!obj.optBoolean("success", false)) {
-            val code = obj.optString("errorCode", "PROVIDER_DATA_FAILED")
-            val message = obj.optString("errorMessage", "provider-data generation failed")
-            throw IllegalStateException("$code: $message")
-        }
-        val json = obj.optString("bytes", "")
-        require(json.isNotBlank() && json != "{}") { "provider-data JNI result did not contain valid JSON v1 bytes" }
-        return Result(
-            bytes = json.toByteArray(Charsets.UTF_8),
-            schemaVersion = obj.optInt("schemaVersion", 1),
-            truncated = obj.optBoolean("truncated", false),
-            diagnosticsDroppedCount = obj.optInt("diagnosticsDroppedCount", 0),
-        )
     }
 
     private fun toShortEventsArray(items: List<AribShortEventText>): JSONArray = JSONArray().apply {

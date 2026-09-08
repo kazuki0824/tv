@@ -55,6 +55,7 @@ pub(crate) struct FrontendCallbackRegistration {
     callback: Strong<dyn IFrontendCallback>,
     dead: Arc<AtomicBool>,
     death_recipient: Mutex<DeathLinkState>,
+    death_gate: Arc<Mutex<()>>,
 }
 
 enum DeathLinkState {
@@ -65,7 +66,27 @@ enum DeathLinkState {
     Closed,
 }
 
+// 死亡通知の線形化点。poison時も死亡だけは記録し、登録側はpoisonを失敗として扱う。
+fn mark_callback_dead(dead: &AtomicBool, gate: &Mutex<()>) {
+    let _guard = gate.lock();
+    dead.store(true, Ordering::Release);
+}
+
+fn death_unlink_result(
+    generation: FrontendCallbackGeneration,
+    result: Result<(), StatusCode>,
+) -> Result<(), AidlCallbackStoreError> {
+    match result {
+        Ok(()) | Err(StatusCode::NAME_NOT_FOUND | StatusCode::DEAD_OBJECT) => Ok(()),
+        Err(status) => Err(AidlCallbackStoreError::DeathUnlink { generation, status }),
+    }
+}
+
 impl FrontendCallbackRegistration {
+    pub(crate) fn lock_death_gate(&self) -> Result<std::sync::MutexGuard<'_, ()>, AidlCallbackStoreError> {
+        self.death_gate.lock().map_err(|_| AidlCallbackStoreError::Poisoned)
+    }
+
     pub(crate) fn is_dead(&self) -> bool {
         self.dead.load(Ordering::Acquire)
     }
@@ -94,8 +115,11 @@ impl FrontendCallbackRegistration {
         }
         let dead = Arc::clone(&self.dead);
         let generation = self.generation;
+        let death_gate = Arc::clone(&self.death_gate);
         let mut recipient = DeathRecipient::new(move || {
-            dead.store(true, Ordering::Release);
+            // 複合commitと死亡の確定順を同じlockで直列化する。
+            // 死亡処理へ再入する前に解放し、runtime/storeとの逆順を作らない。
+            mark_callback_dead(&dead, &death_gate);
             on_death(generation);
         });
         let result = binder
@@ -113,9 +137,7 @@ impl FrontendCallbackRegistration {
                 self.dead.store(true, Ordering::Release);
                 let primary = AidlCallbackStoreError::Poisoned;
                 let cleanup = if result.is_ok() {
-                    binder.unlink_to_death(&mut recipient).map_err(|status| {
-                        AidlCallbackStoreError::DeathUnlink { generation, status }
-                    })
+                    death_unlink_result(generation, binder.unlink_to_death(&mut recipient))
                 } else {
                     result
                 };
@@ -153,18 +175,10 @@ impl FrontendCallbackRegistration {
                 DeathLinkState::Unlinking => return Err(AidlCallbackStoreError::RetirementPending),
             }
         };
-        let result = match self.callback.as_binder().unlink_to_death(&mut recipient) {
-            Ok(()) => Ok(()),
-            Err(StatusCode::NAME_NOT_FOUND | StatusCode::DEAD_OBJECT)
-                if self.dead.load(Ordering::Acquire) =>
-            {
-                Ok(())
-            }
-            Err(status) => Err(AidlCallbackStoreError::DeathUnlink {
-                generation: self.generation,
-                status,
-            }),
-        };
+        let result = death_unlink_result(
+            self.generation,
+            self.callback.as_binder().unlink_to_death(&mut recipient),
+        );
         match self.death_recipient.lock() {
             Ok(mut state) => {
                 if result.is_err() {
@@ -274,6 +288,7 @@ impl CallbackStore {
             callback: callback.clone(),
             dead: Arc::new(AtomicBool::new(false)),
             death_recipient: Mutex::new(DeathLinkState::Pending),
+            death_gate: Arc::new(Mutex::new(())),
         };
         self.prepared_callbacks.insert(
             key,
@@ -659,6 +674,40 @@ mod tests {
                     .store(owner.try_lock().is_ok(), Ordering::Release);
             }
         }
+    }
+
+    #[test]
+    fn death_waits_for_registration_commit_gate_and_is_seen_by_the_next_commit() {
+        let mut store = CallbackStore::default();
+        let handle = frontend_handle();
+        let callback = frontend_callback();
+        let token = store.prepare_frontend_callback(handle, &callback).unwrap();
+        let registration = store.prepared_frontend_registration(handle, &token).unwrap();
+        let guard = registration.lock_death_gate().unwrap();
+        let dying = Arc::clone(&registration);
+        let (started, observed) = std::sync::mpsc::channel();
+        let death = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            mark_callback_dead(&dying.dead, &dying.death_gate);
+        });
+        observed.recv().unwrap();
+        assert!(!registration.is_dead());
+        store.commit_prepared_callback(handle, AidlApi::FrontendSetCallback, token).unwrap();
+        drop(guard);
+        death.join().unwrap();
+        let _next_commit = registration.lock_death_gate().unwrap();
+        assert!(registration.is_dead());
+        assert!(store.retire_frontend_registration(handle, registration.generation()));
+    }
+
+    #[test]
+    fn already_unlinked_statuses_do_not_depend_on_death_notification_delivery() {
+        let generation = FrontendCallbackGeneration(1);
+        assert_eq!(death_unlink_result(generation, Ok(())), Ok(()));
+        assert_eq!(death_unlink_result(generation, Err(StatusCode::NAME_NOT_FOUND)), Ok(()));
+        assert_eq!(death_unlink_result(generation, Err(StatusCode::DEAD_OBJECT)), Ok(()));
+        assert!(matches!(death_unlink_result(generation, Err(StatusCode::INVALID_OPERATION)),
+            Err(AidlCallbackStoreError::DeathUnlink { .. })));
     }
 
     #[test]

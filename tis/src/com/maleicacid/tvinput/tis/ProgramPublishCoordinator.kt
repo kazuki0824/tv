@@ -8,7 +8,10 @@ import com.maleicacid.tvinput.aribsi.ProviderDataBridge
  * TvProvider Programs への反映を公開modeごとに制御する。
  * ライブ更新では既存channelだけを対象にし、同一内容の連続EITは過剰upsertしない。
  */
-class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) {
+class ProgramPublishCoordinator(
+    private val tvProviderWriter: TvProviderWriter,
+    private val nowMillis: () -> Long = System::currentTimeMillis,
+) {
     data class EpgUpdateWindow(
         val serviceKey: ServiceKey,
         val windowStartMs: Long,
@@ -40,7 +43,6 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
     )
 
     private data class DirtyWindow(
-        val window: EpgUpdateWindow,
         val notBeforeMs: Long,
         val failureClass: String,
     )
@@ -81,6 +83,7 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
         updateWindows: List<EpgUpdateWindow>,
         allowedServiceKeys: Set<ServiceKey>?,
         verifiedEmptyServiceKeys: Set<ServiceKey> = emptySet(),
+        authoritativeProgramKeysByService: Map<ServiceKey, Set<String>> = emptyMap(),
     ): ProgramPublishResult {
         if (mode == ChannelScanController.PublishMode.DIAGNOSTIC_ONLY) {
             return ProgramPublishResult(0, 0, skippedUnchanged = allPrograms.size)
@@ -106,7 +109,7 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
         }
         val allowed = filterServiceKeysForMode(mode, allServiceKeys, existingServiceKeys, allowedServiceKeys)
         val verifiedEmptyForAllowed = verifiedEmptyServiceKeys.intersect(allowed)
-        val retryForAllowed = drainRetryWindowsFor(allowed)
+        val retryForAllowed = revalidateRetryWindows(allowed, authoritativeProgramKeysByService)
         val programs = allPrograms
             .filter { it.serviceKey in allowed }
         val windows = (updateWindows + retryForAllowed).distinctBy {
@@ -169,18 +172,17 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
         )
     }
 
-    /**
-     * 次の公開入口用にprocess内再試行区間を返す。
-     * ここではqueueを削除しない。成功時にkeyを削除し、provider失敗時は
-     * 次の入口へ残す。
-     */
-    private fun drainRetryWindowsFor(allowed: Set<ServiceKey>): List<EpgUpdateWindow> {
-        val now = System.currentTimeMillis()
-        return dirtyWindows
-            .filterKeys { it.serviceKey in allowed }
-            .values
-            .filter { it.notBeforeMs <= now }
-            .map { it.window }
+    /** 失敗時に保持した区間を、現在の完全なEITから得たキーで再検証する。未完成なら保留。 */
+    private fun revalidateRetryWindows(
+        allowed: Set<ServiceKey>,
+        authoritativeProgramKeysByService: Map<ServiceKey, Set<String>>,
+    ): List<EpgUpdateWindow> {
+        val now = nowMillis()
+        return dirtyWindows.mapNotNull { (key, request) ->
+            if (key.serviceKey !in allowed || request.notBeforeMs > now) return@mapNotNull null
+            val currentKeys = authoritativeProgramKeysByService[key.serviceKey] ?: return@mapNotNull null
+            EpgUpdateWindow(key.serviceKey, key.windowStartMs, key.windowEndMs, currentKeys, true)
+        }
     }
 
     private fun removeRetryWindows(windows: List<EpgUpdateWindow>) {
@@ -208,14 +210,13 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
     }
 
     private fun enqueueRetryWindows(windows: List<EpgUpdateWindow>, failureClass: String = FailureClass.PROVIDER_UNAVAILABLE) {
-        val now = System.currentTimeMillis()
+        val now = nowMillis()
         windows.sortedWith(compareBy<EpgUpdateWindow> { it.serviceKey.originalNetworkId }.thenBy { it.serviceKey.transportStreamId }.thenBy { it.serviceKey.serviceId }.thenBy { it.windowStartMs }.thenBy { it.windowEndMs })
             .forEach { window ->
                 if (!window.deletionAuthoritative && failureClass == FailureClass.OBSOLETE_DELETE_FAILED) return@forEach
                 val key = DirtyWindowKey(window.serviceKey, window.windowStartMs, window.windowEndMs)
                 dirtyWindows.remove(key)
                 dirtyWindows[key] = DirtyWindow(
-                    window = window,
                     notBeforeMs = now + RETRY_COOLDOWN_MS,
                     failureClass = failureClass,
                 )

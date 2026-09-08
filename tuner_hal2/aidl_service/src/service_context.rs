@@ -785,18 +785,18 @@ impl AidlServiceContext {
         generation: FrontendCallbackGeneration,
     ) -> Result<(), HalError> {
         let result = (|| {
-            let mut store = self
-                .callback_store_lock()
-                .map_err(|error| error.into_hal_error("callback死亡の照合"))?;
-            if !store.frontend_registration_matches(handle, generation) {
-                return Ok(false);
-            }
             let mut runtime = self.runtime.lock().map_err(|_| {
                 HalError::internal(
                     HalInternalKind::InvariantViolation,
                     "callback死亡処理のruntime lockが汚染されています",
                 )
             })?;
+            let mut store = self
+                .callback_store_lock()
+                .map_err(|error| error.into_hal_error("callback死亡の照合"))?;
+            if !store.frontend_registration_matches(handle, generation) {
+                return Ok(false);
+            }
             let outcome = runtime
                 .begin_frontend_callback_death_use_case(handle.object_id(), handle.generation())?;
             let removed = store.retire_frontend_registration(handle, generation);
@@ -895,7 +895,6 @@ impl AidlServiceContext {
         &self,
         handle: AidlObjectHandle,
     ) -> Result<Option<FrontendCallbackDelivery>, AidlCallbackStoreError> {
-        let store = self.callback_store_lock()?;
         let runtime = self
             .runtime
             .lock()
@@ -903,7 +902,7 @@ impl AidlServiceContext {
         if !runtime.frontend_callback_delivery_ready(handle.object_id(), handle.generation()) {
             return Ok(None);
         }
-        Ok(store.frontend_callback_for_owner(handle))
+        Ok(self.callback_store_lock()?.frontend_callback_for_owner(handle))
     }
 
     pub(crate) fn filter_callback_for_owner(

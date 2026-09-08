@@ -298,7 +298,8 @@
         "countryCode": {
           "type": "string",
           "minLength": 3,
-          "maxLength": 3
+          "maxLength": 3,
+          "pattern": "^[A-Za-z]{3}$"
         },
         "rawRatingByte": {
           "type": "integer",
@@ -619,9 +620,13 @@
           ]
         },
         "language": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/iso639"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "text": {

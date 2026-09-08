@@ -86,7 +86,7 @@ class TisR51FixedPlanAcceptanceTest {
     }
 
     private fun eitInstance(serviceKey: ServiceKey) = EitInstanceState(
-        0x4e, serviceKey, 1, true, 1, 1, listOf(0, 1), emptyList(), true, false, true,
+        serviceKey, 0x4e, 1, true, 1, listOf(0, 1), emptyList(), listOf(0, 1), true, false,
     )
 
     private fun collectionSnapshot(keys: List<ServiceKey>): ServiceRegistrationSnapshot {
@@ -142,7 +142,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(!video.has("r51PlaybackSupported"))
         check(!video.has("liveViewableClaim"))
         val providerData = org.json.JSONObject(TvProviderWriter.programProviderDataForTest(
-            EventModelMapper().toProgramRecords(listOf(aribEvent().withComponents(componentsFromJson(components)))).single(),
+            EventModelMapper().toProgramRecords(listOf(aribEvent().withComponents(componentsFromJson(components))), semanticFactsByServiceKey = mapOf(key to semanticFacts())).single(),
         ))
         val providerVideo = providerData.getJSONObject("components").getJSONArray("video").getJSONObject(0)
         check(providerVideo.getString("codec") == "HEVC")
@@ -172,7 +172,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(audio.getString("parseStatus") == "OK")
         check(!audio.has("r51PlaybackSupported"))
         val providerData = org.json.JSONObject(TvProviderWriter.programProviderDataForTest(
-            EventModelMapper().toProgramRecords(listOf(aribEvent().withComponents(componentsFromJson(components)))).single(),
+            EventModelMapper().toProgramRecords(listOf(aribEvent().withComponents(componentsFromJson(components))), semanticFactsByServiceKey = mapOf(key to semanticFacts())).single(),
         ))
         val providerAudio = providerData.getJSONObject("components").getJSONArray("audio").getJSONObject(0)
         check(providerAudio.getString("codec") == "MPEG-4-AAC-LATM")
@@ -226,7 +226,7 @@ class TisR51FixedPlanAcceptanceTest {
         }
 
         val program = EventModelMapper()
-            .toProgramRecords(listOf(aribEvent().withComponents(merged)))
+            .toProgramRecords(listOf(aribEvent().withComponents(merged)), semanticFactsByServiceKey = mapOf(key to semanticFacts()))
             .single()
         val providerData = JSONObject(TvProviderWriter.programProviderDataForTest(program))
         val providerVideo = providerData.getJSONObject("components").getJSONArray("video").getJSONObject(0)
@@ -292,11 +292,10 @@ class TisR51FixedPlanAcceptanceTest {
     @Test fun explicitAribExceptionalRatingIsWrittenToProgramsContentRating() {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
         val record = EventModelMapper().toProgramRecords(
             events = listOf(aribEvent(parentalRatings = listOf(AribParentalRating("JPN", 0x12)))),
-            ratingProfileByServiceKey = mapOf(key to AribRatingMapper.BroadcastProfile.BS_CS),
-        ).single()
+            ratingProfileByServiceKey = mapOf(key to AribRatingMapper.BroadcastProfile.BS_CS), semanticFactsByServiceKey = mapOf(key to semanticFacts())).single()
         writer.upsertPrograms(listOf(record))
         val contentRating = store.programs.values.single().getAsString(TvContract.Programs.COLUMN_CONTENT_RATING)
         check(contentRating != null)
@@ -312,7 +311,7 @@ class TisR51FixedPlanAcceptanceTest {
 
     @Test fun unsupportedRatingRemainsRawWithoutProductDiagnostics() {
         val event = aribEvent(parentalRatings = listOf(AribParentalRating("USA", 15)))
-        val record = EventModelMapper().toProgramRecords(listOf(event)).single()
+        val record = EventModelMapper().toProgramRecords(listOf(event), semanticFactsByServiceKey = mapOf(key to semanticFacts())).single()
         check(record.contentRatings.isEmpty())
         val ratingEntry = record.descriptors.parentalRatings.single()
         check(ratingEntry.countryCode == "USA")
@@ -339,8 +338,7 @@ class TisR51FixedPlanAcceptanceTest {
         )
         val records = EventModelMapper().toProgramRecords(
             events = listOf(malformed, truncated),
-            ratingProfileByServiceKey = mapOf(key to AribRatingMapper.BroadcastProfile.BS_CS),
-        )
+            ratingProfileByServiceKey = mapOf(key to AribRatingMapper.BroadcastProfile.BS_CS), semanticFactsByServiceKey = mapOf(key to semanticFacts()))
         check(records.size == 2)
         records.forEach { record ->
             check(record.contentRatings.isEmpty())
@@ -354,13 +352,13 @@ class TisR51FixedPlanAcceptanceTest {
     @Test fun unsupportedParentalRatingsDoNotWriteProgramsContentRatingColumn() {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
         val unsupported = EventModelMapper().toProgramRecords(listOf(
             aribEvent(parentalRatings = listOf(
                 AribParentalRating("USA", 12),
                 AribParentalRating("JPN", 12),
             )),
-        )).single()
+        ), semanticFactsByServiceKey = mapOf(key to semanticFacts())).single()
         writer.upsertPrograms(listOf(unsupported))
         val values = store.programs.values.single()
         check(values.getAsString(TvContract.Programs.COLUMN_CONTENT_RATING) == null)
@@ -392,7 +390,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(providerData.getJSONObject("casFacts").getString("parseStatus") == "CA_UNRESOLVED")
         check(providerData.getJSONObject("casFacts").getJSONArray("descriptors").getJSONObject(0).getInt("caPid") == 500)
         val channel = ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), requiresCas = true, casFactsCanonicalJson = basis)
-        val channelBytes = com.maleicacid.tvinput.aribsi.ProviderDataBridge.buildChannelProviderData(channel).bytes
+        val channelBytes = (com.maleicacid.tvinput.aribsi.ProviderDataBridge.buildChannelProviderData(channel) as com.maleicacid.tvinput.aribsi.ProviderDataBridge.Success).bytes
         val channelData = JSONObject(String(channelBytes, Charsets.UTF_8))
         check(channelData.getJSONObject("casFacts").getString("parseStatus") == "CA_UNRESOLVED")
         check(cas.getBoolean("requiresCas"))
@@ -409,7 +407,7 @@ class TisR51FixedPlanAcceptanceTest {
         val event = aribEvent()
         val record = EventModelMapper().toProgramRecords(listOf(event.copy(
             descriptors = event.descriptors.copy(series = null, seriesCandidatesCanonicalJson = candidates),
-        ))).single()
+        )), semanticFactsByServiceKey = mapOf(key to semanticFacts())).single()
         val data = JSONObject(TvProviderWriter.programProviderDataForTest(record))
         check(data.isNull("series"))
         val facts = data.getJSONObject("diagnostics").getJSONArray("rawProviderDataExtensions").getJSONObject(0)
@@ -424,7 +422,7 @@ class TisR51FixedPlanAcceptanceTest {
     @Test fun contentRatingWrittenToPrograms() {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
         val rating = requireNotNull(AribRatingMapper.toTvContentRatingString(AribParentalRating("JPN", 12), AribRatingMapper.BroadcastProfile.BS_CS))
         writer.upsertPrograms(listOf(program(key, contentRatings = listOf(rating))))
         val values = store.programs.values.single()
@@ -621,6 +619,45 @@ class TisR51FixedPlanAcceptanceTest {
             endTimeMillis = null,
         )
         check(unratedFallback.exactUnblockKeyFor(TvContentRating.UNRATED) == null)
+    }
+
+    @Test fun latestEitBypassesUnavailableProviderAndMissingEitReportsQueryFailure() {
+        var queries = 0
+        val context = object : android.content.ContextWrapper(null) {
+            override fun getContentResolver(): android.content.ContentResolver {
+                queries++
+                throw IllegalStateException("provider unavailable")
+            }
+        }
+        val resolver = CurrentProgramRatingResolver(context)
+        val uri = android.net.Uri.parse("content://android.media.tv/channel/1")
+        val event = aribEvent(parentalRatings = listOf(AribParentalRating("JPN", 12)))
+        val current = resolver.resolveDetailed(uri, key, listOf(event), AribRatingMapper.BroadcastProfile.BS_CS, event.startTimeMillis + 1)
+        check(current is CurrentProgramRatingResolver.ResolveResult.Ratings)
+        check(current.ratingSet.source == CurrentProgramRatingResolver.Source.LATEST_EIT_CACHE && queries == 0)
+        val missing = resolver.resolveDetailed(uri, key, emptyList(), AribRatingMapper.BroadcastProfile.BS_CS, event.startTimeMillis + 1)
+        check(missing is CurrentProgramRatingResolver.ResolveResult.ProviderQueryFailed && queries == 1)
+    }
+
+    @Test fun epgPolicyUsesCurrentCollectionAndPreservesUndefinedTimeIdentity() {
+        val policy = com.maleicacid.tvinput.aribsi.EpgPublicationPolicy()
+        val event = aribEvent().let { it.copy(source = it.source.copy(version = 1)) }
+        val complete = eitInstance(key)
+        val first = policy.project(SiDiscoveryProfile.ISDB_T, 1, listOf(event), listOf(complete))
+        check(first.windows.single().deletionAuthoritative)
+        val incomplete = complete.copy(version = 2, receivedSections = listOf(0), missingSections = listOf(1), complete = false)
+        val pending = policy.project(SiDiscoveryProfile.ISDB_T, 1, emptyList(), listOf(incomplete))
+        check(pending.windows.isEmpty() && pending.authoritativeProgramKeysByService.isEmpty())
+        val undefined = event.copy(timingState = "UNDEFINED_TIME", startTimeMillis = 0, source = event.source.copy(version = 2))
+        val current = policy.project(SiDiscoveryProfile.ISDB_T, 1, listOf(undefined), listOf(complete.copy(version = 2)))
+        check(current.windows.single().deletionAuthoritative)
+        check(current.windows.single().validProgramStableIdentities.size == 1)
+        val reset = policy.project(SiDiscoveryProfile.ISDB_T, 2, emptyList(), listOf(complete))
+        check(reset.windows.isEmpty() && reset.authoritativeProgramKeysByService[key] == emptySet<String>())
+        val unsafe = policy.project(SiDiscoveryProfile.ISDB_T, 2, listOf(event), listOf(complete.copy(safeSections = emptyList())))
+        check(!unsafe.windows.single().deletionAuthoritative)
+        val satellite = complete.copy(lastSectionNumber = 7, missingSections = (2..7).toList(), complete = false)
+        check(policy.project(SiDiscoveryProfile.BS, 3, listOf(event), listOf(satellite)).windows.single().deletionAuthoritative)
     }
 
     @Test fun generationBoundLatestEitSupersedesStoredCurrentProgramRating() {
@@ -915,7 +952,7 @@ class TisR51FixedPlanAcceptanceTest {
             diagnostic = null,
         ),
         missingComponents = emptyList(),
-        semanticDiagnostics = emptyList(),
+        semanticDiagnostics = emptyList(), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(requiresCas),
     )
 
     private fun es(
@@ -1027,7 +1064,7 @@ class TisR51FixedPlanAcceptanceTest {
         durationMillis = 1_800_000L,
         title = "title",
         description = description,
-        contentRatings = contentRatings,
+        contentRatings = contentRatings, casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),
     )
 
     private fun makeSps(

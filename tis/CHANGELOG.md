@@ -1,3 +1,8 @@
+# r51_pr91_review_publication_failure
+
+- EPG公開policyをKotlinへ集約し、dirty retryはServiceKey/時刻区間の再検証要求だけを保持する。現行の完全EITがなければ保留する。ProviderDataResultをSuccess/Failureへ閉じ、失敗serviceの書込み・削除・fingerprint・Direct Boot完了を止める。current EIT ratingはprovider query前に採用する。
+- 検証: Kotlin production/test compileとCIのRust/Kotlin/境界試験で確認する。Android/Soong全体、AIDLサービス実体試験、実機VTSは未実施。
+
 # r51_pr85_stack_review_followup
 
 - TIF相対音量をsession所有・初期値1.0・0..1 clamp・AudioTrack再生成時再適用として設計正本へ固定した。既存実装のsession/playback executor境界を維持し、global volume ownerは追加しない。
@@ -29,6 +34,12 @@
 
 - #87 D04 / TIS-AUD-05: AV filter開始からcodec別の起動期限を独立に予約し、無入力・少量入力・構成済み無出力でも終了する。audio-onlyは利用不能、audio-videoのaudio失敗はvideo-only新世代へ移る。初回出力とcloseで期限を解除し、flushで期限を延長しない。
 - 起動段階、期限境界、初回出力、終了済み世代の回帰試験を追加する。
+## r51_pr85_review_20260909
+
+- AV filter開始時にcodecごとの起動期限を予約し、入力が途絶えても期限を判定する。最初の非空出力、終了、世代失効で解除する。既存#91から現行設計への実装追従部分だけを移した。
+- EIT公開section条件をTISへ置き、Rust bulkの表完成状態を通常Kotlin snapshotへ渡す。
+- Kotlin本番・全試験ソースのコンパイル、起動期限と公開条件のJUnit 5件が成功。CI全件数を156へ更新。実JNIとの試験、Android build、atest、CTS/VTS、実機確認は手元では未実施。
+
 ## r51_pr85_cas_session_diagnostics
 
 - TIS-047: MediaCas plugin 自体を生成できない失敗を `PLUGIN_UNAVAILABLE`、plugin 生成後に session を開始できない失敗を `SESSION_OPEN_FAILED` として区別する。B25 の EMM 経路も同じ型付き分類を使用する。

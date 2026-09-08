@@ -1,3 +1,8 @@
+# r51_pr91_review_callback_and_pts
+
+- Frontend callbackの同時lock順をruntime→storeへ統一し、死亡確定とruntime/artifact登録commitを登録ごとのgateで直列化する。解除済みNAME_NOT_FOUND/DEAD_OBJECTは通知flag非依存で受理する。audio AUのPTS値anchorと開始PESのpresenceを分離し、同一PES内の後続AUも元PTS presenceを保持する。
+- 検証: Kotlin production/test compileとCIのRust/Kotlin/境界試験で確認する。Android/Soong全体、AIDLサービス実体試験、実機VTSは未実施。
+
 ## r51_pr85_capability_closure_selection
 
 - Frontend callbackにchecked登録世代とBinder deathを接続。遅延死亡・配送結果を照合し、旧Strong/recipientを所有者lock外で解放する。null解除の設計矛盾と内部互換入口を除去。

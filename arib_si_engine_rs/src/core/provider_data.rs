@@ -815,12 +815,7 @@ fn program_data_from_request(
         },
         source: request.source,
         cas: request.cas,
-        cas_facts: request
-            .cas_facts_canonical_json
-            .as_deref()
-            .map(serde_json::from_str)
-            .transpose()
-            .ok()?,
+        cas_facts: Some(serde_json::from_str(request.cas_facts_canonical_json.as_deref()?).ok()?),
         ratings: request.ratings,
         genres: request.genres,
         series: request.series,
@@ -880,12 +875,7 @@ fn channel_data_from_request(
             remote_control_key_id: request.tune.remote_control_key_id,
         },
         cas: request.cas,
-        cas_facts: request
-            .cas_facts_canonical_json
-            .as_deref()
-            .map(serde_json::from_str)
-            .transpose()
-            .ok()?,
+        cas_facts: Some(serde_json::from_str(request.cas_facts_canonical_json.as_deref()?).ok()?),
         diagnostics: ChannelDiagnosticsV1::default(),
         extensions: serde_json::Map::new(),
     };
@@ -1844,6 +1834,7 @@ mod provider_data_tests {
             "serviceKey":{{"originalNetworkId":4,"transportStreamId":16400,"serviceId":101}},
             "tune":{{"deliverySystem":"ISDB_T","frequencyHz":473142857,"streamId":{},"streamIdType":"TSID","physicalChannel":13,"satelliteBand":null,"remoteControlKeyId":1}},
             "cas":{{"requiresCas":false}},
+            "casFactsCanonicalJson": "{{\"pmtPid\":null,\"parseStatus\":\"PMT_UNRESOLVED\",\"sdtFreeCaMode\":null,\"descriptors\":[]}}",
             "diagnostics":{{}}
             {}
         }}"#,
@@ -1895,6 +1886,7 @@ mod provider_data_tests {
         let mut value =
             serde_json::from_str::<serde_json::Value>(&minimal_program_json("")).unwrap();
         value["schema"] = serde_json::json!("maleicacid.tv.programRequest");
+        value["casFactsCanonicalJson"] = serde_json::json!(r#"{"pmtPid":null,"parseStatus":"PMT_UNRESOLVED","sdtFreeCaMode":null,"descriptors":[]}"#);
         value["diagnostics"] = serde_json::json!({
             "descriptorDiagnosticsCanonicalJson": "[]",
             "publishDiagnostics": [],
@@ -1902,6 +1894,19 @@ mod provider_data_tests {
         });
         value["malformedCaDescriptorCount"] = serde_json::json!(0);
         value
+    }
+
+    #[test]
+    fn current_requests_require_cas_evidence_but_legacy_normalization_does_not() {
+        let mut program = minimal_program_request_value();
+        program.as_object_mut().unwrap().remove("casFactsCanonicalJson");
+        assert!(!build_program_provider_data(&program.to_string()).success);
+        let mut channel: serde_json::Value = serde_json::from_str(&minimal_channel_request("", 16400)).unwrap();
+        channel.as_object_mut().unwrap().remove("casFactsCanonicalJson");
+        assert!(!build_channel_provider_data(&channel.to_string()).success);
+        assert!(normalize_program_provider_data(minimal_program_json("").as_bytes()).success);
+        assert!(build_program_provider_data(&minimal_program_request_value().to_string()).success);
+        assert!(build_channel_provider_data(&minimal_channel_request("", 16400)).success);
     }
 
     #[test]

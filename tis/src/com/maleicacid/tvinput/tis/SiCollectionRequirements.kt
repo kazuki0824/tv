@@ -1,5 +1,6 @@
 package com.maleicacid.tvinput.tis
 
+import com.maleicacid.tvinput.aribsi.EpgSectionPolicy
 import com.maleicacid.tvinput.aribsi.ServiceRegistrationSnapshot
 import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
 import com.maleicacid.tvinput.aribsi.TransportKey
@@ -68,9 +69,9 @@ internal class SiCollectionRequirements(
             requireTable("PMT", key.originalNetworkId, key.transportStreamId, key.serviceId)
             require(Key("SERVICE_FACTS", key.originalNetworkId, key.transportStreamId, key.serviceId), key in snapshot.semanticFactsByServiceKey)
             if (requiresEit) {
-                val instances = snapshot.eitInstances.filter { it.tableId == 0x4e && it.serviceKey == key }
+                val instances = snapshot.eitInstances.filter { it.tableId == 0x4e && it.serviceKey == key && it.currentNextIndicator }
                 require(Key("EIT_PF_ACTUAL", key.originalNetworkId, key.transportStreamId, key.serviceId),
-                    instances.isNotEmpty() && instances.all { it.currentNextIndicator && it.complete && !it.inconsistent })
+                    instances.isNotEmpty() && instances.all { EpgSectionPolicy.isComplete(profile, it) })
             }
         }
         return Status(result)

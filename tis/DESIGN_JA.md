@@ -332,7 +332,9 @@ TIS は `TvInputManager.ACTION_BLOCKED_RATINGS_CHANGED` と `TvInputManager.ACTI
 
 EIT 更新時の update/削除区間は、追加・変更・削除された event の既存 `[start,end)` と新 `[start,end)` の union とする。現行仕様では長期固定 lookahead window を導入しない。長期 EPG lookahead window を扱う場合は、EIT scope / version / event identity / authoritative 条件を設計正本へ固定してから併用する。EIT table scope の version 変更で既存 section が消えた場合は、消えた event の既存 window も廃止行削除対象に含める。
 
-ただし、廃止行削除の根拠にできる EIT section / table snapshot は `arib_si_engine_rs/src/tis_product/epg.rs`のTIS向け保存policyが`deletionAuthoritative=true`と判定したものに限る。start_time BCD、duration BCD、event descriptor_loop_length、event fixed フィールドが malformed の event を含む section は、既存 event 削除用の authoritative valid-event-set として扱わない。malformed event は既存正常 Program を消す根拠にせず、DescriptorDiagnosticV1 / ParserDiagnosticV1 に記録する。
+公開判断はKotlin `EpgPublicationPolicy`が所有し、`EpgSectionPolicy`の同じsection選択を収集完了判定と共有する。Rustのcurrent/next別instance事実からcurrent actual p/fを選び、地上波は0..last、BS/110CSは0..min(last,1)の受信・整合・safeSectionsを確認する。Program行の対象はDEFINED、削除のvalid identity集合にはDEFINEDとUNDEFINED_TIMEを採用する。両時刻未定義・構造破損・未完成・同版矛盾は削除権限を与えない。未知descriptorのUnsupportedValueだけでは削除を抑止せず、raw診断を保持する。`EventModelMapper`は同じpolicyの行採用判定を利用し、独立したscope/timing基準を持たない。
+
+policyはcollection内で観測した完成版の旧・新時刻境界だけをServiceKey別に保持する。windowはそのunionを使い、キー集合・deletionAuthoritativeは毎回current instanceから作り直す。collectionGeneration/profile変更時に旧境界を破棄し、未完成版ではwindowを返さない。時刻未定義は旧区間を保護するキーとして保持し、正常空EITはcurrent完全状態として扱うが、区間がないときに削除区間を捏造しない。`ProgramPublishSnapshot.authoritativeProgramKeysByService`は同じ判定を通った現在のキー集合で、再試行の再検証入力にする。
 
 Direct Boot保留の正式状態を`DirectBootEpgPending`とする。`DirectBootGuard`がdevice-protected storage上のこの状態を唯一所有し、boot EPG sync要求を受理した時点または未完了・失敗終了時に設定する。`ChannelScanManager`はJobSchedulerのschedule/cancelだけを担当し、pending、inputId、Contextのshadow stateを持たない。JobServiceは開始時に自TISのinputIdを再解決する。状態はprocess restartとuser unlockをまたいで保持し、background maintenanceは設定・解除しない。
 
@@ -360,7 +362,7 @@ TvProvider query failure と channel なしは別状態として扱う。既存 
 
 TvProvider query は必須問い合わせと任意問い合わせを区別する。チャンネル・番組の追加または更新、廃止行削除、既存チャンネル・番組検索、Direct Boot準備完了判定に使う query は必須問い合わせとする。必須問い合わせで `ContentResolver.query()` が null cursor を返した場合は `TvProviderQueryFailure` とし、empty resultとみなさない。`TvProviderQueryFailure` が発生したサービス/windowでは channel insert、program insert/update、廃止行削除、publish fingerprint cache更新、`DirectBootEpgPending`解除に進まず、再試行区間を保持する。provider-dataはcurrent policyのfallback sourceにしないため、policy判定のためのprovider-data代替参照queryを設けない。
 
-Programs publish/delete が provider failure になった場合は、`ProgramPublishCoordinator` の process-local dirty-window queue に `ServiceKey + updateWindow` をkeyとしてenqueueする。entryが持つ実行制御値はauthoritative windowと`notBeforeMs`だけとし、failure classは診断値に限定する。固定cooldownは60秒とする。次回 `publishLiveProgramsForCurrentService()`、boot EPG sync、background maintenance のpublish entrypoint先頭で、`now >= notBeforeMs`のentryだけを実行対象としてdrainする。entrypointが来ない限り時刻到達だけでwake-upしない。成功したkeyは削除し、失敗したkeyは同じ固定cooldownで末尾へ戻す。attempt段階、jitter、retention timer、failure class別queueを設けない。process restartではqueueを破棄し、boot/background syncによる再収集を正とする。provider failure時は廃止行削除、publish fingerprint更新、`DirectBootEpgPending`解除に進まない。
+Programs publish/delete が provider failure になった場合は、`ProgramPublishCoordinator`のprocess-local queueに`ServiceKey + windowStartMs + windowEndMs`の再検証要求を保持する。entryはnotBeforeMsと診断用failure classだけを持ち、旧EpgUpdateWindow・旧validProgramKeys・旧deletionAuthoritativeを保存しない。固定cooldownは60秒。次回publish entrypointで期限到達した要求を取り出し、同じ入力snapshotの`authoritativeProgramKeysByService`に同一ServiceKeyがある場合だけ現在のキー集合から削除可否を再構成する。未完成・不整合・期限切れcollectionなどで現行の根拠がなければ削除せず要求を保持する。entrypointなしにwake-upしない。成功したkeyは削除、失敗したkeyは固定cooldownで末尾へ戻す。attempt段階、jitter、retention timer、failure class別queueは設けない。process restart時は破棄し、boot/background syncの再収集を正とする。失敗をpublish fingerprint更新や`DirectBootEpgPending`解除の根拠にしない。
 
 dirty-window queueは全体上限512 windowsの単一LRUとする。超過時は最古entryを破棄し、ServiceKey別`droppedRetryWindowCount`を加算する。ServiceKeyごとの第二上限は設けない。process restart後はcounterを0に戻す。
 
@@ -402,20 +404,27 @@ malformed CA_descriptor の詳細診断は、CAS検出snapshotまたはサービ
 TIS Kotlin は provider-data JSON を解釈せず、以下の Rust JNI API 相当だけを使う。
 
 ```kotlin
-object NativeProviderData {
-    external fun buildProgramProviderData(inputJson: String): ProviderDataResult
-    external fun normalizeProgramProviderData(rawBytes: ByteArray): ProviderDataResult
-    external fun extractProgramKey(rawBytes: ByteArray): ProgramKeyResult?
-    external fun buildChannelProviderData(inputJson: String): ProviderDataResult
-    external fun decodeChannelProviderData(rawBytes: ByteArray): ChannelProviderDataResult?
+// Kotlin facade。実JNIはclosed JSON result envelopeを返す。
+object ProviderDataBridge {
+    fun buildProgramProviderData(inputJson: String): ProviderDataResult
+    fun normalizeProgramProviderData(rawBytes: ByteArray): ProviderDataResult
+    fun extractProgramKey(rawBytes: ByteArray): ProgramKeyResult?
+    fun buildChannelProviderData(inputJson: String): ProviderDataResult
+    fun decodeChannelProviderData(rawBytes: ByteArray): ChannelProviderDataResult?
 }
 
-data class ProviderDataResult(
+sealed interface ProviderDataResult
+data class Success(
     val bytes: ByteArray,
     val schemaVersion: Int,
     val truncated: Boolean,
     val diagnosticsDroppedCount: Int,
-)
+) : ProviderDataResult
+data class Failure(
+    val errorCode: String,
+    val errorMessage: String,
+    val schemaVersion: Int,
+) : ProviderDataResult
 
 data class ChannelProviderDataResult(
     val canonicalBytes: ByteArray,
@@ -425,6 +434,8 @@ data class ChannelProviderDataResult(
     val requiresCas: Boolean,
 )
 ```
+
+Rust JNIのclosed envelopeは`arib_si_engine_rs/DESIGN_JA.md`を正とし、facadeはfield集合・型・成功/失敗の整合を検査してSuccess/Failureへ変換する。入力不正・正規化失敗をIllegalStateExceptionに変換しない。現行requestのCAS根拠欠落もFailureとし、TvProviderWriterは当該serviceのchannel/program書込み・削除を開始せずerrorCode/errorMessageを診断へ渡す。失敗したprepared publicationのfingerprintはnull、commit対象サービスから除外し、Direct Boot完了根拠にしない。
 
 `ChannelTune` は `deliverySystem`、`frequencyHz`、`streamIdType`、`streamId`、`physicalChannel`、`satelliteBand`、`remoteControlKeyId` だけを持つtyped物理tune復元値とし、`inputId`、表示名、backend名、driver名、px4相対slot等を持たない。channelとTvInputServiceの関連付けはchannel rowのrequired fieldである`TvContract.Channels.COLUMN_INPUT_ID`を唯一のSSOTとする。tune復元前にrowの`COLUMN_INPUT_ID`がcurrent TISの`TvInputInfo.id`と一致することを検証し、不一致rowのprovider-dataを別inputの物理tuneとして使用しない。`decodeChannelProviderData()` は invalid UTF-8、malformed JSON、schema不整合を null または診断付き失敗へ落とす。現行String JNI surfaceではtyped resultを単一JSON envelopeで返し、Kotlinはこのresult envelopeだけを読む。保存済みprovider-data自体の解釈・修復やTAB/hexの第二wire protocolは設けない。
 

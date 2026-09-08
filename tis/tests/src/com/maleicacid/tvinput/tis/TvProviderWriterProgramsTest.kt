@@ -31,8 +31,8 @@ class TvProviderWriterProgramsTest {
     @Test fun insertAndUpdateProgram() {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
-        val p = ProgramRecord(key, 10, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":10}", 1_700_000_000_000L, 1_800_000L, "News", "desc")
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
+        val p = ProgramRecord(key, 10, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":10}", 1_700_000_000_000L, 1_800_000L, "News", "desc", casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)
         val first = writer.upsertPrograms(listOf(p))
         check(first.inserted == 1)
         val second = writer.upsertPrograms(listOf(p.copy(description = "updated", shortDescription = "updated")))
@@ -57,8 +57,8 @@ class TvProviderWriterProgramsTest {
     @Test fun sameEventWithMovedTimeUpdatesExistingRowOutsideNewWindow() {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
-        val original = ProgramRecord(key, 10, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":10}", 1_700_000_000_000L, 1_800_000L, "News", "desc")
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
+        val original = ProgramRecord(key, 10, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":10}", 1_700_000_000_000L, 1_800_000L, "News", "desc", casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)
         val first = writer.upsertPrograms(listOf(original))
         check(first.inserted == 1) { first.toString() }
 
@@ -82,7 +82,7 @@ class TvProviderWriterProgramsTest {
     @Test fun programTimingOverflowIsRejectedBeforeProviderWrite() {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
         val overflow = ProgramRecord(
             key,
             10,
@@ -90,7 +90,7 @@ class TvProviderWriterProgramsTest {
             Long.MAX_VALUE,
             1L,
             "News",
-            "desc",
+            "desc", casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),
         )
 
         val result = writer.upsertPrograms(listOf(overflow))
@@ -103,7 +103,7 @@ class TvProviderWriterProgramsTest {
     @Test fun programProviderDataContainsRawCasButNoProductReadinessState() {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
         val p = ProgramRecord(
             key,
             14,
@@ -112,7 +112,7 @@ class TvProviderWriterProgramsTest {
             1_800_000L,
             "Scrambled EPG",
             "desc",
-            requiresCas = true,
+            requiresCas = true, casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(true),
         )
         writer.upsertPrograms(listOf(p))
         val providerData = store.programs.values.single().getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)
@@ -127,7 +127,7 @@ class TvProviderWriterProgramsTest {
     @Test fun descriptorDetailsStayInInternalProviderData() {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
         val p = ProgramRecord(
             key, 11, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":11}", 1_700_000_000_000L, 1_800_000L,
             "News", "desc",
@@ -153,7 +153,7 @@ class TvProviderWriterProgramsTest {
                 series = AribSeries(seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12, name = "シリーズ"),
                 components = AribComponents(audio = listOf(AribComponentEntry(esPid = TsPid(256), streamType = 0x0f, componentTag = 1, componentType = 3, codec = "AAC", language = "jpn", secondLanguage = "eng", parseStatus = "OK"))),
             ),
-            diagnosticText = "unknownCount=0",
+            diagnosticText = "unknownCount=0", casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),
         )
         writer.upsertPrograms(listOf(p))
         val providerData = store.programs.values.single().getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)
@@ -195,12 +195,12 @@ class TvProviderWriterProgramsTest {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        val p = ProgramRecord(key, 12, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":12}", 1_700_000_000_000L, 1_800_000L, "News", "desc")
+        val p = ProgramRecord(key, 12, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":12}", 1_700_000_000_000L, 1_800_000L, "News", "desc", casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)
 
         val missingChannel = coordinator.publish(ChannelScanController.PublishMode.LIVE_TUNE_REFRESH, listOf(p), allowedServiceKeys = null)
         check(missingChannel.inserted == 0 && missingChannel.updated == 0 && store.programs.isEmpty())
 
-        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
         val first = coordinator.publish(ChannelScanController.PublishMode.LIVE_TUNE_REFRESH, listOf(p), allowedServiceKeys = null)
         check(first.inserted == 1)
 
@@ -237,11 +237,11 @@ class TvProviderWriterProgramsTest {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        val p = ProgramRecord(key, 13, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":13}", 1_700_000_000_000L, 1_800_000L, "News", "desc")
+        val p = ProgramRecord(key, 13, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":13}", 1_700_000_000_000L, 1_800_000L, "News", "desc", casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)
         val info = PlaybackPipeline.VideoFormatInfo(0x1b, "video/avc", 1280, 720)
         val metadata = mapOf(ProgramVideoMetadataPolicy.key(p) to info)
 
-        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
         val withVideoMetadata = ProgramVideoMetadataPolicy.merge(listOf(p), metadata)
         val first = coordinator.publish(ChannelScanController.PublishMode.LIVE_TUNE_REFRESH, withVideoMetadata, allowedServiceKeys = null)
         check(first.inserted == 1)
@@ -262,8 +262,8 @@ class TvProviderWriterProgramsTest {
     @Test fun reusedEventIdAfterAribGuardWindowInsertsDistinctProgramRow() {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
-        val first = ProgramRecord(key, 40, "first", 1_700_000_000_000L, 1_800_000L, "First", "desc")
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
+        val first = ProgramRecord(key, 40, "first", 1_700_000_000_000L, 1_800_000L, "First", "desc", casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)
         check(writer.upsertPrograms(listOf(first)).inserted == 1)
         val reused = first.copy(
             startTimeMillis = first.startTimeMillis + first.durationMillis + TvProviderWriter.EVENT_ID_REUSE_GUARD_MS + 1L,
@@ -277,10 +277,10 @@ class TvProviderWriterProgramsTest {
     @Test fun obsoleteProgramsInsideCurrentUpdateWindowAreDeletedOnlyWhenAuthoritative() {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
-        val p1 = ProgramRecord(key, 21, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":21}", 1_700_000_000_000L, 1_800_000L, "P1", "desc")
-        val p2 = ProgramRecord(key, 22, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":22}", 1_700_000_600_000L, 600_000L, "P2", "desc")
-        val p3 = ProgramRecord(key, 23, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":23}", 1_700_001_200_000L, 600_000L, "P3", "desc")
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
+        val p1 = ProgramRecord(key, 21, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":21}", 1_700_000_000_000L, 1_800_000L, "P1", "desc", casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)
+        val p2 = ProgramRecord(key, 22, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":22}", 1_700_000_600_000L, 600_000L, "P2", "desc", casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)
+        val p3 = ProgramRecord(key, 23, "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":23}", 1_700_001_200_000L, 600_000L, "P3", "desc", casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)
         val first = writer.upsertPrograms(listOf(p1, p2, p3))
         check(first.inserted == 3)
 
@@ -327,9 +327,9 @@ class TvProviderWriterProgramsTest {
     @Test fun authoritativeValidIdentityWithoutPublishableTimingProtectsExistingRow() {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
-        val defined = ProgramRecord(key, 31, "defined", 1_700_000_000_000L, 600_000L, "Defined", "desc")
-        val nowUndefined = ProgramRecord(key, 32, "now-undefined", 1_700_000_300_000L, 600_000L, "Undefined", "desc")
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
+        val defined = ProgramRecord(key, 31, "defined", 1_700_000_000_000L, 600_000L, "Defined", "desc", casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)
+        val nowUndefined = ProgramRecord(key, 32, "now-undefined", 1_700_000_300_000L, 600_000L, "Undefined", "desc", casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)
         check(writer.upsertPrograms(listOf(defined, nowUndefined)).inserted == 2)
 
         val result = writer.upsertProgramsForWindows(

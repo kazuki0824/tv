@@ -12,8 +12,8 @@ pub mod descriptors;
 pub mod discovery_requirements;
 #[path = "core/eit.rs"]
 pub mod eit;
-#[path = "tis_product/epg.rs"]
-pub mod product_policy;
+#[path = "core/eit_instances.rs"]
+pub mod eit_instances;
 #[path = "core/provider_data.rs"]
 pub mod provider_data;
 #[path = "core/sections.rs"]

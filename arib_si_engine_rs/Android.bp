@@ -2,7 +2,7 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-// PSI/SI共通Rust部品。pure解析coreとTIS専用product_policyは別moduleで所有する。
+// PSI/SI共通Rust部品。放送由来factとprovider-data正規化だけを所有する。
 // Android JNIとhost側VTS adapterはいずれもこのlibraryをlinkし、独立したPAT/PMT parserを持たない。
 rust_library {
     name: "libmaleicacid_arib_si_engine_core",
@@ -19,7 +19,7 @@ rust_library {
         "src/core/descriptors.rs",
         "src/core/discovery_requirements.rs",
         "src/core/eit.rs",
-        "src/tis_product/epg.rs",
+        "src/core/eit_instances.rs",
         "src/core/provider_data.rs",
         "src/core/sections.rs",
         "src/core/service_discovery.rs",
@@ -74,7 +74,7 @@ rust_test {
         "src/core/descriptors.rs",
         "src/core/discovery_requirements.rs",
         "src/core/eit.rs",
-        "src/tis_product/epg.rs",
+        "src/core/eit_instances.rs",
         "src/core/provider_data.rs",
         "src/core/sections.rs",
         "src/core/service_discovery.rs",

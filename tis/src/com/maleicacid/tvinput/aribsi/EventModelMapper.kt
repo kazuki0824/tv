@@ -13,7 +13,7 @@ class EventModelMapper {
         ratingProfileByServiceKey: Map<ServiceKey, AribRatingMapper.BroadcastProfile> = emptyMap(),
     ): List<ProgramRecord> {
         return events.mapNotNull { event ->
-            if (event.source.tableId != 0x4e || event.timingState != "DEFINED") return@mapNotNull null
+            if (!EpgPublicationPolicy.isProgramRow(event)) return@mapNotNull null
             val semanticFacts = semanticFactsByServiceKey[event.serviceKey]
             if (semanticFactsByServiceKey.isNotEmpty() && semanticFacts == null) return@mapNotNull null
             val end = runCatching { Math.addExact(event.startTimeMillis, event.durationMillis) }

@@ -1,3 +1,8 @@
+# r51_pr91_review_fact_boundary
+
+- EITの公開window/削除判断をRustからKotlinへ移し、共通SectionTrackerを使うcurrent/next別受信事実とcollection世代だけをbulkへ出す。CAS根拠は現行buildで必須、旧保存値normalizeではnullableを維持。countryCode/video.languageのschema境界をRustと共有corpusに揃える。
+- 検証: Kotlin production/test compileとCIのRust/Kotlin/境界試験で確認する。Android/Soong全体、AIDLサービス実体試験、実機VTSは未実施。
+
 # r51_pr85_stack_provider_result_failure_contract
 
 - JNI `ProviderDataResult`のclosed field集合とsuccess/failure時の値制約を設計正本へ固定した。既存Rust/Kotlin wire形状と一致させ、第二failure protocolは追加していない。
@@ -42,6 +47,13 @@
 # r51_pr85_stack_closed_diagnostic_scope
 
 - #87 D08 / SI U-14: 診断scopeの未知key許可規定を、version 1のnested DTO閉鎖規則に統一する。Rust serde型・JSON Schemaの既存拒否動作と契約を一致させ、未知scope項目を含む共通境界入力をRust/JNI/Kotlin/Schemaの回帰試験へ追加する。
+# r51_pr85_review_20260909
+
+- EITの媒体別公開条件をRustの受理経路から除き、TISの公開時判定へ移した。更新区間へ元section番号を渡し、衛星の除外sectionから番組削除を行わない。
+- EITの表識別子、版、現用・次表、受信済み・欠落section、構造検査結果、完成・不整合を通常bulk JNIへ追加した。現用と次表を分け、版更新時は前版の受信状態を継承しない。
+- 未知記述子のUnsupportedValueと構文破損を区別し、診断を元の分類のまま保持する。構文破損だけが削除を抑止する。
+- DiscoveryのPartialを必須TableRequirementStatusの完成有無から導出し、BATの観測済みtransport範囲を任意要件として返す。
+- 反例試験を追加。手元にRustコンパイラがなくRust試験は未実施。Android build、atest、CTS/VTS、実波も未実施。
 
 # r51_pr85_diagnostic_language
 
