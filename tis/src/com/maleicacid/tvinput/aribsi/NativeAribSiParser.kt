@@ -639,6 +639,7 @@ private fun parseLinkage(array: JSONArray?): List<AribLinkage> = (0 until (array
             elementaryStreams = parseStreams(obj.optJSONArray("elementaryStreams")),
             requiresCas = obj.optBoolean("requiresCas"),
             caDescriptorsResolved = obj.optBoolean("caDescriptorsResolved"),
+            casFactsCanonicalJson = if (obj.isNull("casFactsCanonicalJson")) null else obj.getString("casFactsCanonicalJson"),
             freeCaMode = optBoolOrNull(obj, "freeCaMode"),
             smd = SmdSemanticFacts(
                 descriptorPresent = smd.optBoolean("descriptorPresent"),

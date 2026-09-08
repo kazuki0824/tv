@@ -401,6 +401,7 @@ data class ServiceSemanticFacts(
     val pmtPid: TsPid? = null,
     val pcrPid: TsPid? = null,
     val serviceScopedCaDescriptors: List<CaDescriptor> = emptyList(),
+    val casFactsCanonicalJson: String? = null,
 )
 
 data class MalformedCaDescriptorDiagnostic(

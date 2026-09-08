@@ -318,12 +318,19 @@ class TisR51FixedPlanAcceptanceTest {
     }
 
     @Test fun programProviderDataKeepsOnlyBroadcastCasSemanticFact() {
+        val basis = """{"pmtPid":256,"parseStatus":"CA_UNRESOLVED","sdtFreeCaMode":true,"descriptors":[{"scope":"ES","esPid":273,"caSystemId":5,"caPid":500,"rawDescriptorHex":"09040005e1f4"}]}"""
         val record = EventModelMapper().toProgramRecords(
             events = listOf(aribEvent()),
-            semanticFactsByServiceKey = mapOf(key to semanticFacts(requiresCas = true)),
+            semanticFactsByServiceKey = mapOf(key to semanticFacts(requiresCas = true).copy(casFactsCanonicalJson = basis)),
         ).single()
         val providerData = JSONObject(TvProviderWriter.programProviderDataForTest(record))
         val cas = providerData.getJSONObject("cas")
+        check(providerData.getJSONObject("casFacts").getString("parseStatus") == "CA_UNRESOLVED")
+        check(providerData.getJSONObject("casFacts").getJSONArray("descriptors").getJSONObject(0).getInt("caPid") == 500)
+        val channel = ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), requiresCas = true, casFactsCanonicalJson = basis)
+        val channelBytes = com.maleicacid.tvinput.aribsi.ProviderDataBridge.buildChannelProviderData(channel).bytes
+        val channelData = JSONObject(String(channelBytes, Charsets.UTF_8))
+        check(channelData.getJSONObject("casFacts").getString("parseStatus") == "CA_UNRESOLVED")
         check(cas.getBoolean("requiresCas"))
         check(cas.getString("source") == "SI_SEMANTICS")
         check(!cas.has("unsupportedCas"))

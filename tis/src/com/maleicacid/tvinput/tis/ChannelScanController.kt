@@ -293,7 +293,6 @@ class ChannelScanController(
         val channels = services.mapNotNull { service ->
             val serviceType = service.serviceType ?: return@mapNotNull null
             val remoteKey = transportRemoteKeys[TransportKey(service.serviceKey.originalNetwork, service.serviceKey.transportStream)]
-            val diagnostic = diagnostics[service.serviceKey]
             ChannelRecord(
                 serviceKey = service.serviceKey,
                 displayNumber = ChannelNumberingPolicy.displayNumber(service, remoteKey, candidate),
@@ -306,7 +305,8 @@ class ChannelScanController(
                 satelliteBand = candidate.satelliteBand,
                 remoteControlKeyId = remoteKey,
                 serviceType = serviceType,
-                requiresCas = diagnostic?.requiresCas == true,
+                requiresCas = transaction.semanticFactsByServiceKey[service.serviceKey]?.requiresCas == true,
+                casFactsCanonicalJson = transaction.semanticFactsByServiceKey[service.serviceKey]?.casFactsCanonicalJson,
             )
         }
         if (channels.isEmpty()) {

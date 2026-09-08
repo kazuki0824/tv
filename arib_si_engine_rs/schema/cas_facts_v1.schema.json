@@ -1,0 +1,135 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "pmtPid": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8191
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "parseStatus": {
+      "enum": [
+        "OK",
+        "PMT_UNRESOLVED",
+        "CA_UNRESOLVED"
+      ]
+    },
+    "sdtFreeCaMode": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "descriptors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "scope": {
+            "enum": [
+              "PROGRAM",
+              "ES"
+            ]
+          },
+          "esPid": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 8191
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "caSystemId": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 65535
+          },
+          "caPid": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 8191
+          },
+          "rawDescriptorHex": {
+            "type": "string",
+            "pattern": "^(?:[0-9a-fA-F]{2})*$",
+            "maxLength": 514
+          }
+        },
+        "required": [
+          "scope",
+          "esPid",
+          "caSystemId",
+          "caPid",
+          "rawDescriptorHex"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "scope": {
+                  "const": "PROGRAM"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "esPid": {
+                  "type": "null"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "esPid": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 8191
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "required": [
+    "pmtPid",
+    "parseStatus",
+    "sdtFreeCaMode",
+    "descriptors"
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maleicacid.local/schema/cas_facts_v1.schema.json",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "parseStatus": {
+            "const": "OK"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "pmtPid": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 8191
+          }
+        }
+      }
+    }
+  ]
+}

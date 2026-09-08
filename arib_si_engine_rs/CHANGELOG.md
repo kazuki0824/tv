@@ -1,3 +1,7 @@
+# r51_pr85_stack_cas_evidence
+
+- #87 D10 / SI U-17・SI-007: PMT/CA解析状態とprogram/ESのCA根拠を、Rust所有のcasFacts containerとしてProgram/Channel両方へ保存する。Kotlinにはcanonical JSONを透過保持し、既存cas DTOと旧v1の読込互換を維持する。保存値をcurrent policyの代替元へ使わない。
+
 # r51_pr85_stack_canonical_candidates_and_truncation
 
 - #87 D09/D14 / SI U-15: 多言語候補配列をcanonical出力とSchemaの必須要素にし、旧v1省略形は正規化入力としてのみ受理する。正式型・空配列規則・共通fixtureを同期する。

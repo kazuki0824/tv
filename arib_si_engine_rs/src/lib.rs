@@ -900,6 +900,8 @@ struct ServiceSemanticFactsDto {
     pcr_pid_resolved: bool,
     elementary_streams: Vec<ElementaryStreamDto>,
     requires_cas: bool,
+    #[serde(serialize_with = "provider_data::serialize_cas_facts_json")]
+    cas_facts_canonical_json: provider_data::CasFactsV1,
     ca_descriptors_resolved: bool,
     free_ca_mode: Option<bool>,
     smd: SystemManagementFactsDto,
@@ -943,6 +945,7 @@ impl From<&ServiceSemanticFacts> for ServiceSemanticFactsDto {
                 .map(ElementaryStreamDto::from)
                 .collect(),
             requires_cas: facts.requires_cas,
+            cas_facts_canonical_json: provider_data::CasFactsV1::from(facts),
             ca_descriptors_resolved: facts.ca_descriptors_resolved,
             free_ca_mode: facts.free_ca_mode,
             smd: SystemManagementFactsDto {

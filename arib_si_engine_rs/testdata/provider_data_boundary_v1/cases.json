@@ -125,5 +125,12 @@
     "data": "{\"schema\":\"maleicacid.tv.program\",\"schemaVersion\":1,\"programKey\":{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16400,\"serviceId\":101,\"eventId\":12345},\"timing\":{\"startUtcMillis\":1730000000000,\"durationMillis\":1800000},\"source\":{\"pid\":18,\"tableId\":78,\"version\":12,\"sectionNumber\":0,\"lastSectionNumber\":1},\"cas\":{\"requiresCas\":false,\"source\":\"SI_SEMANTICS\"},\"ratings\":[],\"genres\":[{\"level1\":0,\"level2\":0,\"userNibble\":0,\"aribName\":\"ニュース／報道\",\"parseStatus\":\"OK\"}],\"series\":null,\"eventGroups\":[],\"linkage\":[],\"freeCaMode\":{\"raw\":0,\"scrambled\":false,\"parseStatus\":\"OK\"},\"extendedItems\":[],\"components\":{\"video\":[],\"audio\":[],\"subtitle\":[],\"data\":[]},\"diagnostics\":{\"descriptorDiagnostics\":[],\"publishDiagnostics\":[],\"parserDiagnostics\":[]}}",
     "accepted": true,
     "schemaAccepted": false
+  },
+  {
+    "name": "CASの根拠と未解決状態を保持",
+    "boundary": "PROGRAM",
+    "encoding": "UTF8",
+    "data": "{\"schema\":\"maleicacid.tv.program\",\"schemaVersion\":1,\"programKey\":{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16400,\"serviceId\":101,\"eventId\":12345},\"timing\":{\"startUtcMillis\":1730000000000,\"durationMillis\":1800000},\"source\":{\"pid\":18,\"tableId\":78,\"version\":12,\"sectionNumber\":0,\"lastSectionNumber\":1},\"cas\":{\"requiresCas\":true,\"source\":\"SI_SEMANTICS\"},\"ratings\":[],\"genres\":[{\"level1\":0,\"level2\":0,\"userNibble\":0,\"aribName\":\"ニュース／報道\",\"parseStatus\":\"OK\"}],\"series\":null,\"eventGroups\":[],\"linkage\":[],\"freeCaMode\":{\"raw\":0,\"scrambled\":false,\"parseStatus\":\"OK\"},\"extendedItems\":[],\"components\":{\"video\":[],\"audio\":[],\"subtitle\":[],\"data\":[]},\"diagnostics\":{\"descriptorDiagnostics\":[],\"publishDiagnostics\":[],\"parserDiagnostics\":[]},\"shortEvents\":[],\"extendedTexts\":[],\"casFacts\":{\"pmtPid\":256,\"parseStatus\":\"CA_UNRESOLVED\",\"sdtFreeCaMode\":true,\"descriptors\":[{\"scope\":\"ES\",\"esPid\":273,\"caSystemId\":5,\"caPid\":500,\"rawDescriptorHex\":\"09040005e1f4\"}]}}",
+    "accepted": true
   }
 ]

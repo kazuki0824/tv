@@ -109,6 +109,16 @@
     },
     "diagnostics": {
       "$ref": "#/$defs/diagnostics"
+    },
+    "casFacts": {
+      "anyOf": [
+        {
+          "$ref": "https://maleicacid.local/schema/cas_facts_v1.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "not": {

@@ -67,6 +67,7 @@ object ProviderDataBridge {
                 .put("remoteControlKeyId", channel.remoteControlKeyId ?: JSONObject.NULL))
             .put("cas", JSONObject()
                 .put("requiresCas", channel.requiresCas))
+            .put("casFactsCanonicalJson", channel.casFactsCanonicalJson ?: JSONObject.NULL)
             .put("diagnostics", JSONObject())
         return parseResult(native.buildChannelProviderData(request.toString()))
     }
@@ -100,6 +101,7 @@ object ProviderDataBridge {
             .put("cas", JSONObject()
                 .put("requiresCas", program.requiresCas)
                 .put("source", "SI_SEMANTICS"))
+            .put("casFactsCanonicalJson", program.casFactsCanonicalJson ?: JSONObject.NULL)
             .put("extendedItems", toExtendedItemsArray(descriptors.extendedItems))
             .put("genres", genresJson(program))
             .put("eventGroups", toEventGroupsArray(descriptors.eventGroups))

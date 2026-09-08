@@ -49,6 +49,7 @@ class EventModelMapper {
                 ),
                 source = event.source,
                 requiresCas = semanticFacts?.requiresCas ?: false,
+                casFactsCanonicalJson = semanticFacts?.casFactsCanonicalJson,
                 diagnosticText = event.descriptors.diagnostics.summary,
                 contentRatings = event.descriptors.parentalRatings.mapNotNull {
                     AribRatingMapper.toTvContentRatingString(

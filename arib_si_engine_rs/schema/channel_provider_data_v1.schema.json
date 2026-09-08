@@ -155,7 +155,8 @@
           {"required": ["clearLivePlaybackSupported"]}
         ]
       }
-    }
+    },
+    "casFacts": {"anyOf": [{"$ref": "https://maleicacid.local/schema/cas_facts_v1.schema.json"}, {"type": "null"}]}
   },
   "$defs": {
     "uint16": {

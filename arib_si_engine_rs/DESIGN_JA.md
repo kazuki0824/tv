@@ -208,6 +208,8 @@ required field 欠落時に `0`、`false`、`jpn`、`UNKNOWN`、空文字で補�
 
 Programs / Channels のprovider-dataには、放送由来の意味事実だけを保存する。CASについて保存してよいのはCA descriptor/free_CA_mode等から導出した「CASを要する信号が存在するか」とその根拠・parse状態であり、`unsupportedCas`、`clearLivePlaybackSupported`、`channelRegistrationReady`、`epgPublishable`、`publishStateSource`のような現在の製品能力・TIF判断を保存しない。保存済みprovider-dataをcurrent policyのfallback sourceにしない。現在のchannel登録、EPG公開、CAS対応、ライブ再生可否はTISがcurrent `ServiceSemanticFacts`とcurrent product capabilityから決定する。
 
+CAS根拠は独立したtop-level `casFacts` containerへ保存し、既存closed `cas` DTOのfieldを増やさない。`cas_facts_v1.schema.json`をProgram/Channel共通の形式正本とし、PMT PID、`OK / PMT_UNRESOLVED / CA_UNRESOLVED`の解析状態、SDT由来free_CA_mode、program/ES scopeごとのCA system ID・CA PID・ES PID・raw descriptorを保持する。`requiresCas`は有効CA descriptorの存在と一致させ、free_CA_modeだけからCAS方式や実スクランブル状態を推測しない。旧保存値で根拠が無い場合は`casFacts=null`とし、根拠や解析成功を捏造しない。この放送fact containerはRustのServiceSemanticFactsからcanonical JSONとして生成し、Kotlinは同じ文字列をpublication requestへ透過保持する。現在の登録・公開・再生判断はcurrent snapshotを使い、保存済みcasFactsをfallbackへ使わない。CAS事実は32 KiB切詰め時の保護対象である。
+
 provider-data 全体は canonical UTF-8で16 KiBを目安上限、32 KiBを絶対上限とする。絶対上限を超える場合は、各操作後にcanonical encodeし直してサイズを測りながら、`diagnostics.rawProviderDataExtensions`、`diagnostics.descriptorFacts.unknownDescriptors`、`diagnostics.descriptorFacts.parentalRatingDescriptors`、`diagnostics.descriptorDiagnostics`、`diagnostics.publishDiagnostics`、`extendedItems`の順に配列末尾から要素を除く。次に`extendedTexts[].text`、`shortEvents[].text / title`、`diagnostics.parserDiagnostics[].message`、`genres[].aribName`、`series.name`、`linkage[].privateDataPrefixHex`、`components.video[].sourceDescriptor / profileLevel / aspect / scan / resolution`、`components.audio[].sourceDescriptor / samplingInfo / channelConfiguration`の順に長文を短縮する。各配列は末尾要素から、同一要素内は記載フィールド順とする。1回の短縮は現在のcanonical byte超過量だけ末尾を除き、UTF-8 scalar境界まで切り下げる。parser messageは少なくとも1 scalar、hex prefixは偶数桁を保持する。各操作後に切詰め診断を含めて再encodeし、上限内になった時点で終了する。`shortEvents` / `extendedTexts`の言語候補そのものを削除して1言語へ縮約しない。それでも32 KiB以下にならない場合はprovider-data生成を失敗させ、識別子、時刻、CAS意味事実、レーティングraw値を欠落させた結果を保存しない。切り詰めた結果には`PROVIDER_DATA_TRUNCATED`、種類別dropped count、短縮前後のbyte数を必ず保存する。この診断自体を加えた後にも再度32 KiB以下であることを検証する。
 
 TIS Kotlin は provider-data schema を定義しない。TIS は Rust JNI が返す JSON bytes を `Programs.COLUMN_INTERNAL_PROVIDER_DATA` へ保存し、標準列用の値だけを `ARIB_SI_EPG_TvProvider投影方針.md` に従って `ContentValues` へ詰める。
@@ -226,6 +228,7 @@ pub struct ProgramProviderDataV1 {
     pub timing: ProgramTimingV1,
     pub source: ProgramSourceV1,
     pub cas: CasSemanticStateV1,
+    pub cas_facts: Option<CasFactsV1>,
     pub ratings: Vec<RatingV1>,
     pub genres: Vec<GenreV1>,
     pub series: Option<SeriesV1>,
