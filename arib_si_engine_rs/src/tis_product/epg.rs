@@ -362,10 +362,8 @@ fn build_update_window(
     if end <= start {
         return None;
     }
-    let mut valid_event_identities: Vec<_> = current_events
-        .iter()
-        .filter_map(|event| program_identity(event))
-        .collect();
+    let mut valid_event_identities: Vec<_> =
+        current_events.iter().filter_map(program_identity).collect();
     valid_event_identities.sort_by_key(|identity| {
         (
             identity.original_network_id,

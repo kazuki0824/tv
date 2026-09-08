@@ -1,5 +1,7 @@
 # r51_pr85_stack_epg_policy_boundary
 
+- CAS保存根拠の16進表現を既存CA共通処理へ集約し、core Clippyの警告を解消。
+
 - #87 D12/D03 / SI U-01・TIS-025: TIS向けEPG保存policyをpure EIT解析・サービス解析から独立させ、JNI facadeで組み合わせる。永続identity採用・公開scope・削除判断をproduct_policyに集約する。
 - 同一event IDの開始時刻移動で旧区間が欠落しないようunionを修正し、以前の区間から新しい区間までを更新する試験を追加する。Channel登録済みのサービスへ初回Programを作成できるよう設計の前提を統一する。
 

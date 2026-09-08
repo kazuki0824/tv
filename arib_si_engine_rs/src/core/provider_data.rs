@@ -109,11 +109,10 @@ impl From<&crate::service_discovery::ServiceSemanticFacts> for CasFactsV1 {
             es_pid: es_pid.map(i64::from),
             ca_system_id: i64::from(descriptor.ca_system_id),
             ca_pid: i64::from(descriptor.ca_pid),
-            raw_descriptor_hex: descriptor
-                .raw_descriptor
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect(),
+            raw_descriptor_hex: crate::ca_descriptor::hex_prefix(
+                &descriptor.raw_descriptor,
+                descriptor.raw_descriptor.len(),
+            ),
         };
         let mut descriptors = facts
             .program_ca_descriptors
@@ -165,7 +164,7 @@ fn valid_cas_facts(facts: &Option<CasFactsV1>, requires_cas: bool) -> bool {
             "OK" | "PMT_UNRESOLVED" | "CA_UNRESOLVED"
         )
         && (facts.parse_status != "OK" || facts.pmt_pid.is_some())
-        && requires_cas == !facts.descriptors.is_empty()
+        && requires_cas != facts.descriptors.is_empty()
         && facts.descriptors.iter().all(|descriptor| {
             let scope_valid = match descriptor.scope.as_str() {
                 "PROGRAM" => descriptor.es_pid.is_none(),
