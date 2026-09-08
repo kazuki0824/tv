@@ -406,6 +406,10 @@ TSの伝送構文、`table_id`別のsection長上限、CRCとraw配送条件、�
 
 ### codec capability・欠損値・CA cross-check・section整合性
 
+SI収集のactual TSは現在collectionで受理したPATのTSIDを基準にする。SDT actual / NIT actual / PMTの必須scopeはそのTSへ限定し、観測した他TSをSDT actualやPMTの必須対象にしない。profileが要求するSDT-otherは、NIT・SDT等から観測した他TS集合について評価する。必要な他TSをまだ観測していない場合も未完成を返す。NIT-otherは他networkの表であるため、現在TSを含むことを要求せず、少なくとも1 instanceを受信し、観測した全instanceが完成・無矛盾であることを要求する。未観測networkを含む全国の表の完全収集を意味しない。collectionの固定対象・期限はTISの操作契約で扱う。
+
+PMTの構文解析済み事実とsection instance完成は別条件とし、必要表の完成には両方を要求する。同一版の矛盾を検出した場合は旧PMTのES・CA事実も退役し、同じ版の再送で復帰させない。新しい受理可能な版で再解析・完成するまで未完成を保つ。
+
 PMT ESのAVC video descriptor、MPEG-4 audio descriptor、MPEG-4 audio extension descriptorは`CodecDescriptorFacts`に集約し、通常のES snapshotで渡す。AVCはprofile_idc・constraint flags・level_idc、音声は通常記述子のprofile値・拡張記述子のprofile値列・ASC原bytes・ASC共通先頭部を別々に保持する。同じtagの矛盾、長さ不正、予約bit不正、0xff指定時の拡張記述子欠落を正常profileへ昇格しない。ASC共通先頭部の解釈はcodec固有config全体の検証を意味しない。未知のMPEG-4音声をAACと推測しない。
 
 根拠は[STD-B10 5.13-E1 6.2.47/50/51](https://www.arib.or.jp/english/html/overview/doc/6-STD-B10v5_13-E1.pdf)、[H.222.0 (2006) Amendment 1 Table 2-71・2.6.72/73](https://www.itu.int/rec/dologin_pub.asp?id=T-REC-H.222.0-200701-S%21Amd1%21PDF-E&lang=e&type=items)、[STD-B32 3.11-E1 Part 2 Chapter 6/7・Description 3](https://www.arib.or.jp/english/html/overview/doc/6-STD-B32v3_11-2p3-E1.pdf)とする。通常記述子の0x5aはHE-AAC、拡張記述子の0x5aはALS L2であり、数値体系を混同しない。ALSの拡張profileは0x3c/0x5a/0x5b/0x5cを認識する。これは取得済み英訳の根拠であり、現行日本語版との全条項差を解消したという宣言ではない。

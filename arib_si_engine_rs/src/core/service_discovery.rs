@@ -1056,6 +1056,18 @@ impl ServiceDiscoveryCollector {
             self.invalidate_changed_table(pid, section);
         }
         if !self.track_section(pid, section) {
+            if let Some(header) = parse_section_header(section) {
+                if let Some(extension) = header.table_id_extension {
+                    if header.table_id == 0x02
+                        && self
+                            .section_trackers
+                            .get(&(pid, 0x02, extension, TRACKER_GLOBAL_SCOPE))
+                            .is_some_and(|tracker| tracker.inconsistent)
+                    {
+                        self.engine.invalidate_table(pid, 0x02, extension);
+                    }
+                }
+            }
             return;
         }
         self.track_transport_scopes(section);
@@ -1068,34 +1080,27 @@ impl ServiceDiscoveryCollector {
 
     pub fn state(&self) -> DiscoveryCollectionState {
         let snapshot = self.engine.snapshot();
-        let pat_complete = self.table_complete(0x0000, 0x00);
-        let sdt_complete = if snapshot.transports.is_empty() {
-            self.table_complete(0x0011, 0x42)
-        } else {
-            snapshot.transports.iter().all(|transport| {
-                self.sdt_actual_complete_for_transport(
-                    transport.original_network_id,
-                    transport.transport_stream_id,
-                )
-            })
-        };
-        let nit_complete = if snapshot.transports.is_empty() {
-            self.table_complete(0x0010, 0x40)
-        } else {
-            snapshot.transports.iter().all(|transport| {
-                self.nit_complete_for_transport(
-                    0x40,
-                    transport.original_network_id,
-                    transport.transport_stream_id,
-                )
-            })
-        };
-
+        let pat_complete = self.all_tables_complete(0x0000, 0x00);
+        let actual_tsids: BTreeSet<_> = self
+            .section_trackers
+            .keys()
+            .filter(|(pid, table, _, _)| *pid == 0 && *table == 0)
+            .map(|(_, _, tsid, _)| *tsid)
+            .collect();
+        let actual_transports: BTreeSet<_> = snapshot
+            .transports
+            .iter()
+            .filter(|transport| actual_tsids.contains(&transport.transport_stream_id))
+            .map(|transport| (transport.transport_stream_id, transport.original_network_id))
+            .collect();
+        let other_transports: BTreeSet<_> = snapshot
+            .transports
+            .iter()
+            .map(|transport| (transport.transport_stream_id, transport.original_network_id))
+            .filter(|scope| !actual_transports.contains(scope))
+            .collect();
         let req = optional_table_requirement(self.discovery_profile);
         let bat_complete = self.table_complete(0x0011, 0x4a);
-        let sdt_other_complete = self.table_complete(0x0011, 0x46);
-        let nit_other_complete = self.table_complete(0x0010, 0x41);
-
         let mut table_requirements = vec![TableRequirementStatus {
             component: "PAT",
             original_network_id: None,
@@ -1104,77 +1109,63 @@ impl ServiceDiscoveryCollector {
             required: true,
             complete: pat_complete,
         }];
-        if snapshot.transports.is_empty() {
-            table_requirements.push(TableRequirementStatus {
-                component: "SDT",
-                original_network_id: None,
-                transport_stream_id: None,
-                service_id: None,
-                required: true,
-                complete: sdt_complete,
-            });
-            table_requirements.push(TableRequirementStatus {
-                component: "NIT",
-                original_network_id: None,
-                transport_stream_id: None,
-                service_id: None,
-                required: true,
-                complete: nit_complete,
-            });
+        if actual_transports.is_empty() {
+            for component in ["SDT", "NIT"] {
+                table_requirements.push(TableRequirementStatus {
+                    component,
+                    original_network_id: None,
+                    transport_stream_id: None,
+                    service_id: None,
+                    required: true,
+                    complete: false,
+                });
+            }
+        }
+        for &(tsid, onid) in &actual_transports {
+            for (component, complete) in [
+                ("SDT", self.sdt_actual_complete_for_transport(onid, tsid)),
+                ("NIT", self.nit_complete_for_transport(0x40, onid, tsid)),
+            ] {
+                table_requirements.push(TableRequirementStatus {
+                    component,
+                    original_network_id: Some(onid),
+                    transport_stream_id: Some(tsid),
+                    service_id: None,
+                    required: true,
+                    complete,
+                });
+            }
+        }
+        // SDT-otherの必要集合は観測した他TS。現在TSを他TS表へ要求しない。
+        if other_transports.is_empty() {
             table_requirements.push(TableRequirementStatus {
                 component: "SDT-other",
                 original_network_id: None,
                 transport_stream_id: None,
                 service_id: None,
                 required: req.require_sdt_other,
-                complete: sdt_other_complete,
+                complete: false,
             });
-            table_requirements.push(TableRequirementStatus {
-                component: "NIT-other",
-                original_network_id: None,
-                transport_stream_id: None,
-                service_id: None,
-                required: req.require_nit_other,
-                complete: nit_other_complete,
-            });
-        } else {
-            for transport in &snapshot.transports {
-                let onid = transport.original_network_id;
-                let tsid = transport.transport_stream_id;
-                table_requirements.push(TableRequirementStatus {
-                    component: "SDT",
-                    original_network_id: Some(onid),
-                    transport_stream_id: Some(tsid),
-                    service_id: None,
-                    required: true,
-                    complete: self.sdt_actual_complete_for_transport(onid, tsid),
-                });
-                table_requirements.push(TableRequirementStatus {
-                    component: "NIT",
-                    original_network_id: Some(onid),
-                    transport_stream_id: Some(tsid),
-                    service_id: None,
-                    required: true,
-                    complete: self.nit_complete_for_transport(0x40, onid, tsid),
-                });
-                table_requirements.push(TableRequirementStatus {
-                    component: "SDT-other",
-                    original_network_id: Some(onid),
-                    transport_stream_id: Some(tsid),
-                    service_id: None,
-                    required: req.require_sdt_other,
-                    complete: self.sdt_other_complete_for_transport(onid, tsid),
-                });
-                table_requirements.push(TableRequirementStatus {
-                    component: "NIT-other",
-                    original_network_id: Some(onid),
-                    transport_stream_id: Some(tsid),
-                    service_id: None,
-                    required: req.require_nit_other,
-                    complete: self.nit_complete_for_transport(0x41, onid, tsid),
-                });
-            }
         }
+        for &(tsid, onid) in &other_transports {
+            table_requirements.push(TableRequirementStatus {
+                component: "SDT-other",
+                original_network_id: Some(onid),
+                transport_stream_id: Some(tsid),
+                service_id: None,
+                required: req.require_sdt_other,
+                complete: self.sdt_other_complete_for_transport(onid, tsid),
+            });
+        }
+        // NIT-otherは他networkの表であり、actual TSを含むことを条件にしない。
+        table_requirements.push(TableRequirementStatus {
+            component: "NIT-other",
+            original_network_id: None,
+            transport_stream_id: None,
+            service_id: None,
+            required: req.require_nit_other,
+            complete: self.all_tables_complete(0x0010, 0x41),
+        });
         let bat_scopes: BTreeSet<_> = self
             .bat_transport_scopes
             .values()
@@ -1218,8 +1209,12 @@ impl ServiceDiscoveryCollector {
                 original_network_id: Some(service.original_network_id),
                 transport_stream_id: Some(service.transport_stream_id),
                 service_id: Some(service.service_id),
-                required: true,
-                complete: service.pmt_parsed,
+                required: actual_transports
+                    .contains(&(service.transport_stream_id, service.original_network_id)),
+                complete: service.pmt_parsed
+                    && service.pmt_pid.is_some_and(|pid| {
+                        self.table_complete_for_extension(pid, 0x02, service.service_id)
+                    }),
             });
         }
         for mapping in &snapshot.pmt_pids_by_service {
@@ -1564,6 +1559,17 @@ impl ServiceDiscoveryCollector {
                 self.table_complete_for_extension(0x0011, 0x4a, *bouquet_id)
                     && transports.contains(&(transport_stream_id, original_network_id))
             })
+    }
+
+    fn all_tables_complete(&self, pid: u16, table_id: u8) -> bool {
+        let mut matching = self
+            .section_trackers
+            .iter()
+            .filter(|((tracked_pid, tracked_table, _, _), _)| {
+                *tracked_pid == pid && *tracked_table == table_id
+            })
+            .peekable();
+        matching.peek().is_some() && matching.all(|(_, tracker)| tracker.is_complete())
     }
 
     fn table_complete(&self, pid: u16, table_id: u8) -> bool {
@@ -2152,6 +2158,84 @@ mod tests {
             .table_requirements
             .iter()
             .any(|status| status.component == "PMT" && status.complete));
+    }
+
+    #[test]
+    fn actual_tables_and_other_tables_have_distinct_required_scopes() {
+        let mut collector = collector_with_pmt(&[], &[], 0x101);
+        collector.set_discovery_profile(DiscoveryProfile::Bs);
+        collector.push_section(
+            0x10,
+            &section_with_crc(vec![
+                0x40, 0xf0, 0x19, 0, 1, 0xc1, 0, 0, 0xf0, 0, 0xf0, 12, 0, 0x11, 0, 0x22, 0xf0, 0,
+                0, 0x12, 0, 0x22, 0xf0, 0,
+            ]),
+        );
+        assert!(!collector.state().is_complete());
+        collector.push_section(
+            0x11,
+            &section_with_crc(vec![
+                0x46, 0xf0, 0x18, 0, 0x12, 0xc1, 0, 0, 0, 0x22, 0, 0, 2, 0xfc, 0xe0, 7, 0x48, 5, 1,
+                0, 2, b'T', b'2',
+            ]),
+        );
+        let state = collector.state();
+        assert!(
+            state.is_complete(),
+            "{:?}",
+            state.missing_components_by_scope()
+        );
+        assert!(!state
+            .table_requirements
+            .iter()
+            .any(|row| row.component == "SDT-other" && row.transport_stream_id == Some(0x11)));
+        assert!(!state
+            .table_requirements
+            .iter()
+            .any(|row| row.component == "SDT" && row.transport_stream_id == Some(0x12)));
+        assert!(state
+            .table_requirements
+            .iter()
+            .any(|row| row.component == "PMT"
+                && row.transport_stream_id == Some(0x12)
+                && !row.required));
+        collector.set_discovery_profile(DiscoveryProfile::Cs110);
+        assert!(!collector.state().is_complete());
+        // 他networkのNITに現在TSの収録を要求しない。
+        collector.push_section(
+            0x10,
+            &section_with_crc(vec![0x41, 0xf0, 0x0d, 0, 2, 0xc1, 0, 0, 0xf0, 0, 0xf0, 0]),
+        );
+        assert!(collector.state().is_complete());
+        collector.push_section(
+            0x10,
+            &section_with_crc(vec![0x41, 0xf0, 0x0d, 0, 3, 0xc1, 0, 1, 0xf0, 0, 0xf0, 0]),
+        );
+        assert!(!collector.state().is_complete());
+    }
+
+    #[test]
+    fn conflicting_pmt_retires_old_streams_until_a_new_complete_version() {
+        let mut collector = collector_with_pmt(&[], &[0x1b, 0xe1, 1, 0xf0, 0], 0x101);
+        let body = vec![
+            0x02, 0xb0, 0x12, 0, 1, 0xc1, 0, 0, 0xe1, 1, 0xf0, 0, 0x1b, 0xe1, 1, 0xf0, 0,
+        ];
+        collector.push_section(0x100, &section_with_crc(body.clone()));
+        assert_eq!(collector.state().snapshot.services[0].streams.len(), 1);
+        let mut conflicting = body.clone();
+        conflicting[9] = 2;
+        collector.push_section(0x100, &section_with_crc(conflicting));
+        let state = collector.state();
+        assert!(state.snapshot.services[0].streams.is_empty());
+        assert!(!state.semantic_facts_by_service[0].pmt_parsed);
+        assert!(state.missing_components().contains(&"PMT"));
+        collector.push_section(0x100, &section_with_crc(body.clone()));
+        assert!(collector.state().snapshot.services[0].streams.is_empty());
+        let mut next = body;
+        next[5] = 0xc3;
+        collector.push_section(0x100, &section_with_crc(next));
+        assert!(collector.state().semantic_facts_by_service[0].pmt_parsed);
+        assert!(!collector.state().missing_components().contains(&"PMT"));
     }
 
     #[test]
