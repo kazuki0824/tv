@@ -6,6 +6,8 @@
 
 ## r51_pr85_stack_independent_startup_deadline
 
+- 走査目的ごとの必要instance集合をTISで評価し、boot/backgroundでは物理候補ごとに固定した全ServiceのEIT完成を待つ。有限走査の全終了経路でsection filterを明示stop/closeし、ライブの継続監視と契約を分離。
+
 - 完成した正常空EITを対象Serviceごとの確認済み空更新として扱い、所有channelとProgramの必須問い合わせ成功後だけboot同期完了へ算入。区間なしの削除は実行しない。
 
 - 走査期限を単調時計へ変更し、SI collection上限の失敗statusを定義。

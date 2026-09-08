@@ -65,6 +65,7 @@ class ChannelScanController(
     }
     private data class ServiceCounts(
         val discoveryStage: Int,
+        val collectionStatus: SiCollectionRequirements.Status,
         val total: Int,
         val clearLivePlaybackStaticallyEligible: Int,
         val registrationReady: Int,
@@ -142,7 +143,7 @@ class ChannelScanController(
                 diagnostics += ScanDiagnostic(candidate, "選局に失敗しました result=${tune.resultCode} ${tune.message}")
                 return@forEach
             }
-            val collection = collectSiForCandidate(candidate)
+            val collection = collectSiForCandidate(candidate, SiCollectionRequirements(PublishMode.SETUP_SCAN, discoveryProfile(candidate.kind)))
             collection.diagnostic?.let { diagnostics += it }
             if (!collection.mayPublishChannels) {
                 Log.w(LogTags.TIS, "SI discovery 未完了のため TvProvider channel 登録を省略します candidate=$candidate outcome=${collection.outcome} registrationReady=${collection.registrationReadyServices} clearLivePlaybackStaticallyEligible=${collection.clearLivePlaybackStaticallyEligibleServices} diagnostic=${collection.diagnostic?.message}")
@@ -157,28 +158,30 @@ class ChannelScanController(
     }
 
     fun startBootEpgSync(targetChannels: List<ChannelRecord>): ScanResult = runMaintenanceScan(
-        candidates = maintenanceCandidates(targetChannels),
+        targetChannels = targetChannels,
         mode = PublishMode.BOOT_EPG_SYNC,
         failurePrefix = "boot後EPG同期",
-        allowedServiceKeys = targetChannels.map { it.serviceKey }.toSet(),
     )
 
     fun startBackgroundChannelMaintenance(): ScanResult {
         val channels = tvProviderWriter.existingChannelsResult().getOrThrow()
         return runMaintenanceScan(
-            candidates = maintenanceCandidates(channels),
+            targetChannels = channels,
             mode = PublishMode.BACKGROUND_CHANNEL_MAINTENANCE,
             failurePrefix = "background channel maintenance",
-            allowedServiceKeys = channels.map { it.serviceKey }.toSet(),
         )
     }
 
     private fun runMaintenanceScan(
-        candidates: List<ScanCandidate>,
+        targetChannels: List<ChannelRecord>,
         mode: PublishMode,
         failurePrefix: String,
-        allowedServiceKeys: Set<ServiceKey>,
     ): ScanResult {
+        val allowedServiceKeys = targetChannels.map { it.serviceKey }.toSet()
+        val targetsByTune = targetChannels.mapNotNull { channel ->
+            scanCandidateFromChannel(channel)?.let { it to channel.serviceKey }
+        }.groupBy { it.first.tuneKey }
+        val candidates = targetsByTune.values.map { it.first().first }
         if (!cancelled.get()) cancelled.set(false)
         terminalCancelObserved = cancelled.get()
         skippedUnresolvedTransportCount = 0
@@ -195,7 +198,8 @@ class ChannelScanController(
                 diagnostics += ScanDiagnostic(candidate, "${failurePrefix}の選局に失敗しました result=${tune.resultCode} ${tune.message}")
                 return@forEach
             }
-            val collection = collectSiForCandidate(candidate)
+            val requiredServiceKeys = targetsByTune.getValue(candidate.tuneKey).mapTo(linkedSetOf()) { it.second }
+            val collection = collectSiForCandidate(candidate, SiCollectionRequirements(mode, discoveryProfile(candidate.kind), requiredServiceKeys))
             collection.diagnostic?.let { diagnostics += it }
             if (!collection.mayPublishChannels) {
                 Log.w(LogTags.TIS, "${failurePrefix} SI discovery 未完了のため Programs publish/delete を省略します candidate=$candidate outcome=${collection.outcome} registrationReady=${collection.registrationReadyServices}")
@@ -388,7 +392,7 @@ class ChannelScanController(
         ScanCandidateKind.ISDB_S_110CS -> SiDiscoveryProfile.CS110
     }
 
-    private fun serviceCounts(candidate: ScanCandidate): ServiceCounts {
+    private fun serviceCounts(candidate: ScanCandidate, requirements: SiCollectionRequirements): ServiceCounts {
         val transaction = engine.serviceRegistrationSnapshot()
         val expectedSmdIdentifier = expectedSmdBroadcastingIdentifier(candidate)
         val completeness = transaction.services.map { service ->
@@ -401,6 +405,7 @@ class ChannelScanController(
         val summary = ServiceListBuilder.ServiceSnapshotSummary(completeness)
         return ServiceCounts(
             discoveryStage = transaction.discoveryStage,
+            collectionStatus = requirements.evaluate(transaction),
             total = summary.total,
             clearLivePlaybackStaticallyEligible = summary.clearLivePlaybackStaticallyEligible,
             registrationReady = summary.registrationReady,
@@ -411,55 +416,57 @@ class ChannelScanController(
         )
     }
 
-    private fun collectSiForCandidate(candidate: ScanCandidate): SiCollectionResult {
+    private fun collectSiForCandidate(candidate: ScanCandidate, requirements: SiCollectionRequirements): SiCollectionResult {
         val policy = DEFAULT_SI_POLICY
         val startedAt = android.os.SystemClock.elapsedRealtime()
-        var lastCounts = serviceCounts(candidate)
-        var lastStage = lastCounts.discoveryStage
+        var lastCounts: ServiceCounts? = null
         var stableSince = startedAt
         var outcome = SiCollectionOutcome.TIMEOUT_PARTIAL
 
-        while (!cancelled.get()) {
-            refreshDynamicSectionFilters()
-            val now = android.os.SystemClock.elapsedRealtime()
-            val counts = serviceCounts(candidate)
-            val stage = counts.discoveryStage
-            if (stage != lastStage || counts.signature != lastCounts.signature) {
-                lastStage = stage
-                lastCounts = counts
-                stableSince = now
+        try {
+            while (!cancelled.get()) {
+                refreshDynamicSectionFilters()
+                val now = android.os.SystemClock.elapsedRealtime()
+                val counts = serviceCounts(candidate, requirements)
+                if (counts.discoveryStage != lastCounts?.discoveryStage || counts.signature != lastCounts?.signature || counts.collectionStatus != lastCounts?.collectionStatus) {
+                    lastCounts = counts
+                    stableSince = now
+                }
+                val elapsed = now - startedAt
+                val stableFor = now - stableSince
+                if (counts.collectionStatus.complete && elapsed >= policy.minWaitMs && stableFor >= policy.stableWaitMs) {
+                    outcome = SiCollectionOutcome.COMPLETE
+                    break
+                }
+                val registrationReadySnapshotAvailable = counts.registrationReady > 0
+                if (!requirements.requiresEit && elapsed >= policy.minWaitMs && registrationReadySnapshotAvailable && stableFor >= policy.stableWaitMs) {
+                    outcome = SiCollectionOutcome.STABLE_PARTIAL
+                    break
+                }
+                if (elapsed >= policy.maxWaitMs) {
+                    outcome = if (registrationReadySnapshotAvailable) SiCollectionOutcome.TIMEOUT_PARTIAL else SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE
+                    break
+                }
+                runCatching { Thread.sleep(policy.pollIntervalMs) }
             }
-            val elapsed = now - startedAt
-            val stableFor = now - stableSince
-            if (stage == SiDiscoveryStage.COMPLETE && elapsed >= policy.minWaitMs) {
-                outcome = SiCollectionOutcome.COMPLETE
-                break
-            }
-            val registrationReadySnapshotAvailable = counts.registrationReady > 0
-            if (elapsed >= policy.minWaitMs && registrationReadySnapshotAvailable && stableFor >= policy.stableWaitMs) {
-                outcome = SiCollectionOutcome.STABLE_PARTIAL
-                break
-            }
-            if (elapsed >= policy.maxWaitMs) {
-                outcome = if (registrationReadySnapshotAvailable) SiCollectionOutcome.TIMEOUT_PARTIAL else SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE
-                break
-            }
-            runCatching { Thread.sleep(policy.pollIntervalMs) }
+        } finally {
+            // 読取りcallbackを無効化して全section handleをstop/closeする。失敗を成功へ丸めない。
+            tunerController.closeSectionFilters()
         }
         if (cancelled.get()) {
             terminalCancelObserved = true
             outcome = SiCollectionOutcome.CANCELLED
         }
-        val finalCounts = serviceCounts(candidate)
-        val complete = finalCounts.discoveryStage == SiDiscoveryStage.COMPLETE
-        if (!cancelled.get() && complete) outcome = SiCollectionOutcome.COMPLETE
+        val finalCounts = serviceCounts(candidate, requirements)
+        val complete = finalCounts.collectionStatus.complete
+        if (outcome == SiCollectionOutcome.COMPLETE && !complete) outcome = SiCollectionOutcome.TIMEOUT_PARTIAL
         val finalRegistrationReadySnapshotAvailable = finalCounts.registrationReady > 0
         if (outcome == SiCollectionOutcome.TIMEOUT_PARTIAL && !finalRegistrationReadySnapshotAvailable) outcome = SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE
         val elapsed = android.os.SystemClock.elapsedRealtime() - startedAt
         val message = if (outcome == SiCollectionOutcome.COMPLETE) {
             null
         } else {
-            "SI 収集が完全完了していません outcome=$outcome stage=${finalCounts.discoveryStage} services=${finalCounts.total} clearLivePlaybackStaticallyEligibleServices=${finalCounts.clearLivePlaybackStaticallyEligible} registrationReadyServices=${finalCounts.registrationReady} incomplete=${finalCounts.incompleteReasons} sections=${ingestController.diagnosticSummary()} elapsedMs=$elapsed"
+            "SI 収集が完全完了していません outcome=$outcome stage=${finalCounts.discoveryStage} services=${finalCounts.total} clearLivePlaybackStaticallyEligibleServices=${finalCounts.clearLivePlaybackStaticallyEligible} registrationReadyServices=${finalCounts.registrationReady} incomplete=${finalCounts.incompleteReasons} missingInstances=${finalCounts.collectionStatus.missing} sections=${ingestController.diagnosticSummary()} elapsedMs=$elapsed"
         }
         Log.i(LogTags.TIS, "scan 候補の SI 収集結果 candidate=$candidate outcome=$outcome complete=$complete counts=$finalCounts message=$message")
         return SiCollectionResult(
@@ -469,18 +476,6 @@ class ChannelScanController(
             registrationReadyServices = finalCounts.registrationReady,
         )
     }
-
-    private fun maintenanceCandidates(channels: List<ChannelRecord>): List<ScanCandidate> = channels
-        .mapNotNull(::scanCandidateFromChannel)
-        .distinctBy { candidate ->
-            listOf(
-                candidate.deliverySystem,
-                candidate.frequencyHz.value,
-                candidate.streamSelector.type,
-                candidate.streamSelector.value,
-                candidate.satelliteBand,
-            )
-        }
 
     private fun scanCandidateFromChannel(channel: ChannelRecord): ScanCandidate? = runCatching {
         ScanCandidate(

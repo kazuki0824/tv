@@ -33,6 +33,16 @@ data class ScanCandidate(
     }
 }
 
+internal data class ScanTuneKey(
+    val deliverySystem: String,
+    val frequencyHz: FrequencyHz,
+    val streamSelector: StreamSelector,
+    val satelliteBand: String?,
+)
+
+internal val ScanCandidate.tuneKey: ScanTuneKey
+    get() = ScanTuneKey(deliverySystem, frequencyHz, streamSelector, satelliteBand)
+
 object JapanIsdbScanPlan {
     const val BS_DISCOVERY_BACKEND_HINT = "jp-bs-discovery"
     private data class BsTsidEntry(val frequencyHz: FrequencyHz, val tsid: TransportStreamId16, val label: String, val physical: Int)

@@ -104,7 +104,15 @@ TvProvider標準列への投影判断は tv 直下の `ARIB_SI_EPG_TvProvider投
 
 複数のtable instanceを包括的・継続的に取得する必要がある操作では、TISは`TableInfo repeat=true`を使用する。Tuner HALに未知の全instance集合の列挙や終端推測を要求しない。
 
-TISは、現在の操作目的と`開発規則.md`のrelease scopeから、その操作で必要なinstance集合を決定する。`arib_si_engine_rs`が返すinstance別の完成・更新・寿命状態を用い、必要な集合が完成した時点でfilterを明示的に`stop()`する。
+TISは`SiCollectionRequirements`で操作目的に応じた必要集合を作り、同一bulkのscope別table完成状態とEIT instance状態で判定する。global discoveryStageを操作完了の代理にしない。
+
+| 操作 | 対象集合と必要instance | 更新・終了条件 |
+|---|---|---|
+| setup / explicit rescan | 同じcandidateのSDT actualに属する現在観測サービス。profileの必須SI集合のうち対象transportのSDT/NIT、対象サービスのPMT、およびPAT・profile必須補完表。EITは初期channel登録の必須にしない | 収集中のサービス追加・消失で集合を更新し安定待ちをやり直す。最短2秒かつ集合・完成状態が1.2秒安定し全必要instanceが完成すれば終了。登録可能な部分集合の安定による終了はSTABLE_PARTIALとする |
+| boot EPG sync / background maintenance | 開始時に問い合わせた既存channelのServiceKeyをfrequency/deliverySystem/selector/satelliteBandの物理候補ごとに固定する。上記の対象SIと各ServiceKeyのp/f actual EITを必要にする。表示番号の違いで対象を落とさない | 対象の消失は未完成に残し、対象外サービスの到着で代用しない。EITを待たず安定部分終了せず、全必要instance完成または最大12秒で終了する。必要集合の完成とprovider transaction成功は別条件とする |
+| live | 現在の選局世代のServiceKeyについてPSI/SI・EPG・CAの継続変化を監視する | 初回snapshotの完成を視聴中の更新監視の終了条件にしない。repeat=trueで監視を続け、選局変更・資源喪失・解放時に既存の終了処理でstopする。解析器の内部保持は有限collection寿命に従う |
+
+有限走査では成功・timeout・cancel・例外のいずれでも、最終snapshotを使う前に全section filterをstop/closeして読取りcallbackを無効化する。stop/close失敗は伝播し、収集完了成功に読み替えない。timeoutの部分成果から開始時のrequired ServiceKey全件を完了扱いしない。受信中に版・必要集合・完成状態が変われば同じsnapshotから再評価する。
 
 ## 字幕・文字スーパー表示の責務
 

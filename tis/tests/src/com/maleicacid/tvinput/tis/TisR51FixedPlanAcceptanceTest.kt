@@ -21,6 +21,11 @@ import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.ServiceListBuilder
 import com.maleicacid.tvinput.aribsi.ServicePublishabilityDiagnostic
 import com.maleicacid.tvinput.aribsi.ServiceSemanticFacts
+import com.maleicacid.tvinput.aribsi.ServiceRegistrationSnapshot
+import com.maleicacid.tvinput.aribsi.TableRequirementStatus
+import com.maleicacid.tvinput.aribsi.TransportKey
+import com.maleicacid.tvinput.aribsi.EitInstanceState
+import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
 import com.maleicacid.tvinput.aribsi.SiStatus
 import com.maleicacid.tvinput.aribsi.SmdSemanticFacts
 import com.maleicacid.tvinput.common.CaptionTimestamp
@@ -37,6 +42,65 @@ import org.junit.Test
 class TisR51FixedPlanAcceptanceTest {
     private val key = ServiceKey(4, 0x4010, 101)
     private val otherKey = ServiceKey(4, 0x4010, 102)
+
+    @Test fun bootCollectionWaitsForEveryFixedServiceEitInstance() {
+        val requirements = SiCollectionRequirements(ChannelScanController.PublishMode.BOOT_EPG_SYNC,
+            SiDiscoveryProfile.ISDB_T, setOf(key, otherKey))
+        val snapshot = collectionSnapshot(listOf(key, otherKey))
+        check(!requirements.evaluate(snapshot.copy(eitInstances = listOf(eitInstance(key)))).complete)
+        check(requirements.evaluate(snapshot).complete)
+        check(!requirements.evaluate(snapshot.copy(eitInstances = listOf(eitInstance(key), eitInstance(otherKey).copy(inconsistent = true)))).complete)
+        check(!requirements.evaluate(snapshot.copy(eitInstances = listOf(eitInstance(key), eitInstance(otherKey).copy(currentNextIndicator = false)))).complete)
+    }
+
+    @Test fun collectionRejectsMissingSiRowsAndMissingTargetFacts() {
+        val requirements = SiCollectionRequirements(ChannelScanController.PublishMode.BOOT_EPG_SYNC,
+            SiDiscoveryProfile.ISDB_T, setOf(key))
+        val snapshot = collectionSnapshot(listOf(key))
+        for (component in listOf("PAT", "SDT", "NIT", "PMT")) {
+            check(!requirements.evaluate(snapshot.copy(tableRequirements = snapshot.tableRequirements.filter { it.component != component })).complete)
+        }
+        check(!requirements.evaluate(snapshot.copy(semanticFactsByServiceKey = emptyMap())).complete)
+        val unrelated = collectionSnapshot(listOf(otherKey))
+        check(!requirements.evaluate(unrelated).complete)
+    }
+
+    @Test fun setupCollectionUsesActualTransportAndProfileSupplementalTables() {
+        val snapshot = collectionSnapshot(listOf(key)).copy(eitInstances = emptyList())
+        val setup = SiCollectionRequirements(ChannelScanController.PublishMode.SETUP_SCAN, SiDiscoveryProfile.ISDB_T)
+        check(setup.evaluate(snapshot).complete)
+        val unrelated = TableRequirementStatus("SDT", 99, 100, null, true, false)
+        val optional = TableRequirementStatus("BAT", null, null, null, false, false)
+        check(setup.evaluate(snapshot.copy(tableRequirements = snapshot.tableRequirements + listOf(unrelated, optional))).complete)
+        check(!setup.evaluate(snapshot.copy(actualTransports = emptySet())).complete)
+        val bs = SiCollectionRequirements(ChannelScanController.PublishMode.SETUP_SCAN, SiDiscoveryProfile.BS)
+        check(!bs.evaluate(snapshot).complete)
+        val supplement = TableRequirementStatus("SDT-other", 4, 0x4020, null, true, true)
+        check(bs.evaluate(snapshot.copy(tableRequirements = snapshot.tableRequirements + supplement)).complete)
+    }
+
+    @Test fun physicalScanKeyDoesNotSplitServicesByDisplayNumber() {
+        val first = JapanIsdbScanPlan.isdbtUhf13To62().first()
+        check(first.tuneKey == first.copy(displayChannel = "102", physicalChannel = null).tuneKey)
+        check(first.tuneKey != first.copy(frequencyHz = FrequencyHz(first.frequencyHz.value + 6_000_000L)).tuneKey)
+    }
+
+    private fun eitInstance(serviceKey: ServiceKey) = EitInstanceState(
+        0x4e, serviceKey, 1, true, 1, 1, listOf(0, 1), emptyList(), true, false, true,
+    )
+
+    private fun collectionSnapshot(keys: List<ServiceKey>): ServiceRegistrationSnapshot {
+        val rows = mutableListOf(TableRequirementStatus("PAT", null, null, null, true, true))
+        for (transport in keys.map { TransportKey(it.originalNetwork, it.transportStream) }.distinct()) {
+            for (component in listOf("SDT", "NIT")) rows += TableRequirementStatus(component,
+                transport.originalNetworkId, transport.transportStreamId, null, true, true)
+        }
+        for (service in keys) rows += TableRequirementStatus("PMT", service.originalNetworkId, service.transportStreamId, service.serviceId, true, true)
+        return ServiceRegistrationSnapshot(0, rows,
+            keys.map { AribService(serviceKey = it, name = "試験サービス", pcrPid = TsPid(0x100), freeCaMode = false, streams = emptyList()) },
+            keys.mapTo(linkedSetOf()) { TransportKey(it.originalNetwork, it.transportStream) }, emptyList(),
+            keys.associateWith { semanticFacts().copy(serviceKey = it) }, emptyList(), keys.map(::eitInstance))
+    }
 
     @Test fun api30SessionIdIsPropagatedWithoutFallback() {
         val sessionId = "framework-session-123"
