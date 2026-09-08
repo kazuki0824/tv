@@ -1,16 +1,10 @@
-## r51_pr85_cas_session_diagnostics
-
-- TIS-047: MediaCas plugin 自体を生成できない失敗を `PLUGIN_UNAVAILABLE`、plugin 生成後に session を開始できない失敗を `SESSION_OPEN_FAILED` として区別する。B25 の EMM 経路も同じ型付き分類を使用する。
-- session 開始に失敗した MediaCas bridge を直ちに close し、どちらの失敗でも key token や elementary PID を descrambler へ接続しない。
-- host Kotlin 状態遷移試験で plugin 未接続と session 開始失敗を別々に固定し、CI の成功件数を 152 件へ更新する。実 CAS HAL、Tuner HAL 診断相関、実機 descramble は r51 の完了対象に含めない。
-
-## r51_pr85_stack_independent_startup_deadline
+# r51_pr85_stack_independent_startup_deadline
 
 - ADTS/PCEのstartup構成をRust共通部品へ統合し、二重音声を1chへ推測せず実PCEから設定する。JNI上限超過、PCE待ち、正しいASC byte alignmentをhostで検証する。
 
 - TIS-041/R07に関連するADTS設定を放送ASCへ接続し、HE-AAC拡張周波数・profileと8ch構成を正しく渡す。未解決PCEを1chへ捏造しない。decoder callback設定失敗も生成済みdecoderのrollbackへ含める。
 
-- TIS-025/N06に関連する一時解除の期限を受理時点へ固定。終了時刻変更・時計後退・event_id再使用で延命せず、期限時の実再評価とretune/releaseでのタイマー失効を接続した。
+- #87 N06に関連する一時解除の期限を受理時点へ固定。終了時刻変更・時計後退・event_id再使用で延命せず、期限時の実再評価とretune/releaseでのタイマー失効を接続した。
 
 - AVC記述子とSPSの整合を検証し、MediaFormatのprofile/level・寸法・音声構成に対応する実decoderを選択。PMT codec根拠をEIT統合時にも保存し、ALS・未解決音声を再生選択から除外。
 
@@ -26,6 +20,11 @@
 
 - #87 D04 / TIS-AUD-05: AV filter開始からcodec別の起動期限を独立に予約し、無入力・少量入力・構成済み無出力でも終了する。audio-onlyは利用不能、audio-videoのaudio失敗はvideo-only新世代へ移る。初回出力とcloseで期限を解除し、flushで期限を延長しない。
 - 起動段階、期限境界、初回出力、終了済み世代の回帰試験を追加する。
+## r51_pr85_cas_session_diagnostics
+
+- TIS-047: MediaCas plugin 自体を生成できない失敗を `PLUGIN_UNAVAILABLE`、plugin 生成後に session を開始できない失敗を `SESSION_OPEN_FAILED` として区別する。B25 の EMM 経路も同じ型付き分類を使用する。
+- session 開始に失敗した MediaCas bridge を直ちに close し、どちらの失敗でも key token や elementary PID を descrambler へ接続しない。
+- host Kotlin 状態遷移試験で plugin 未接続と session 開始失敗を別々に固定し、CI の成功件数を 152 件へ更新する。実 CAS HAL、Tuner HAL 診断相関、実機 descramble は r51 の完了対象に含めない。
 
 ## r51_pr85_playback_stop_admission
 
