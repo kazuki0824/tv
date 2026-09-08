@@ -1,3 +1,8 @@
+# r51_pr91_review_callback_failure_order
+
+- Frontendのscan/event配送失敗処理に残っていたstore→runtimeの逆順をruntime→storeへ修正する。旧登録の診断とruntime lock汚染時の診断は所有者lockを解放してから記録する。
+- 実登録世代の照合から局所的な失敗確定までを同時保護し、置換後の新登録へ旧結果を適用しない。Android/Soong実体build・device atest・実機VTSは未実施。
+
 # r51_pr91_review_callback_and_pts
 
 - Frontend callbackの同時lock順をruntime→storeへ統一し、死亡確定とruntime/artifact登録commitを登録ごとのgateで直列化する。解除済みNAME_NOT_FOUND/DEAD_OBJECTは通知flag非依存で受理する。audio AUのPTS値anchorと開始PESのpresenceを分離し、同一PES内の後続AUも元PTS presenceを保持する。

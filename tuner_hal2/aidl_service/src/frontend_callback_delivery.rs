@@ -83,6 +83,9 @@ fn finish_frontend_scan_end_delivery_failure(
     primary: HalError,
     registration: Option<FrontendCallbackGeneration>,
 ) -> Result<(), HalError> {
+    // 登録照合と失敗確定をruntime→store順で行い、外部診断への移行前には両方を解放する。
+    let runtime = context.runtime();
+    let runtime_lock = runtime.lock();
     let store = context.callback_store_lock().map_err(|error| {
         maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
             "callback結果の世代照合",
@@ -93,10 +96,12 @@ fn finish_frontend_scan_end_delivery_failure(
     if let Some(registration) = registration {
         if !store.frontend_registration_matches(handle, registration) {
             drop(store);
+            drop(runtime_lock);
             return record_retired_callback_failure(context, handle, registration, primary);
         }
     } else {
         drop(store);
+        drop(runtime_lock);
         let record = FrontendCallbackDeliveryDiagnosticRecord::callback_artifact_lookup(
             handle.object_id(),
             handle.generation(),
@@ -113,8 +118,7 @@ fn finish_frontend_scan_end_delivery_failure(
             ),
         };
     }
-    let runtime = context.runtime();
-    let result = match runtime.lock() {
+    let result = match runtime_lock {
         Ok(mut guard) => guard.finish_callback_delivery_failure_use_case(
             CallbackDeliveryFailureReport::frontend_scan_end(
                 handle.object_id(),
@@ -126,6 +130,7 @@ fn finish_frontend_scan_end_delivery_failure(
             ),
         ),
         Err(_) => {
+            drop(store);
             let record = frontend_scan_end_fallback_record(
                 handle,
                 frontend_id,
@@ -237,6 +242,9 @@ fn finish_frontend_event_delivery_failure(
     } else {
         CallbackDeliveryFailurePhase::BinderDelivery
     };
+    // 登録照合と失敗確定をruntime→store順で行い、外部診断への移行前には両方を解放する。
+    let runtime = context.runtime();
+    let runtime_lock = runtime.lock();
     let store = context.callback_store_lock().map_err(|error| {
         maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
             "callback結果の世代照合",
@@ -247,10 +255,12 @@ fn finish_frontend_event_delivery_failure(
     if let Some(registration) = registration {
         if !store.frontend_registration_matches(handle, registration) {
             drop(store);
+            drop(runtime_lock);
             return record_retired_callback_failure(context, handle, registration, primary);
         }
     } else {
         drop(store);
+        drop(runtime_lock);
         let record = FrontendCallbackDeliveryDiagnosticRecord::callback_artifact_lookup(
             handle.object_id(),
             handle.generation(),
@@ -267,8 +277,7 @@ fn finish_frontend_event_delivery_failure(
             ),
         };
     }
-    let runtime = context.runtime();
-    let result = match runtime.lock() {
+    let result = match runtime_lock {
         Ok(mut guard) => guard.finish_callback_delivery_failure_use_case(
             CallbackDeliveryFailureReport::frontend_event(
                 handle.object_id(),
@@ -280,6 +289,7 @@ fn finish_frontend_event_delivery_failure(
             ),
         ),
         Err(_) => {
+            drop(store);
             let record = if artifact_lookup {
                 FrontendCallbackDeliveryDiagnosticRecord::callback_artifact_lookup(
                     handle.object_id(),
