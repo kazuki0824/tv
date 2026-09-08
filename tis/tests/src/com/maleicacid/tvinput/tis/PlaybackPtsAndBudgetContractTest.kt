@@ -3,6 +3,22 @@ package com.maleicacid.tvinput.tis
 import org.junit.Test
 
 class PlaybackPtsAndBudgetContractTest {
+    @Test fun pceBootstrapsDualMonoThroughTheSharedNativeParser() {
+        fun bytes(hex: String) = hex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+        val adts = bytes("fff14c00021ffca0990000000201abe0")
+        val format = requireNotNull(CodecFormatPolicy.adtsAudioFormat(adts,
+            com.maleicacid.tvinput.aribsi.AribCodecFacts(), "AAC"))
+        check(format.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT) == 2)
+        check(format.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE) == 48000)
+        val config = requireNotNull(format.getByteBuffer("csd-0"))
+        val actual = ByteArray(config.remaining()).also(config::get)
+        check(actual.contentEquals(bytes("118004c80000001001ab")))
+        check(CodecFormatPolicy.adtsAudioFormat(adts.copyOf(13), com.maleicacid.tvinput.aribsi.AribCodecFacts(), "AAC") == null)
+        check(runCatching {
+            CodecFormatPolicy.adtsAudioFormat(ByteArray(65537), com.maleicacid.tvinput.aribsi.AribCodecFacts(), "AAC")
+        }.exceptionOrNull() is UnsupportedCodecFormat)
+    }
+
     @Test fun adtsConfigurationUsesExactAscAndAdvertisedHeAacProfile() {
         val bytes = byteArrayOf(0xff.toByte(), 0xf1.toByte(), 0x58, 0x80.toByte(), 1, 0x3f, 0xfc.toByte())
         val facts = com.maleicacid.tvinput.aribsi.AribCodecFacts(
@@ -14,18 +30,18 @@ class PlaybackPtsAndBudgetContractTest {
         check(format.getInteger(android.media.MediaFormat.KEY_PROFILE) == android.media.MediaCodecInfo.CodecProfileLevel.AACObjectHE)
         val csd = requireNotNull(format.getByteBuffer("csd-0"))
         check(csd.get() == 0x2b.toByte() && csd.get() == 0x11.toByte() && csd.get() == 0x88.toByte() && csd.get() == 0.toByte())
-        val mismatch = facts.copy(audioConfigHeader = facts.audioConfigHeader!!.copy(samplingFrequency = 44100))
+        val mismatch = facts.copy(audioConfigHex = "1210")
         check(runCatching { CodecFormatPolicy.adtsAudioFormat(bytes, mismatch, "HE-AAC") }.exceptionOrNull() is UnsupportedCodecFormat)
     }
 
-    @Test fun adtsSevenByteProbeKeepsEightChannelConfigAndRejectsUnknownPce() {
+    @Test fun adtsSevenByteProbeKeepsEightChannelConfigAndWaitsForPce() {
         val bytes = byteArrayOf(0xff.toByte(), 0xf1.toByte(), 0x4d, 0xc0.toByte(), 1, 0x3f, 0xfc.toByte())
         val facts = com.maleicacid.tvinput.aribsi.AribCodecFacts()
         val format = requireNotNull(CodecFormatPolicy.adtsAudioFormat(bytes, facts, "AAC"))
         check(format.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT) == 8)
         check(format.getInteger(android.media.MediaFormat.KEY_AAC_PROFILE) == android.media.MediaCodecInfo.CodecProfileLevel.AACObjectLC)
         val pce = bytes.copyOf().also { it[2] = 0x4c; it[3] = 0 }
-        check(runCatching { CodecFormatPolicy.adtsAudioFormat(pce, facts, "AAC") }.exceptionOrNull() is UnsupportedCodecFormat)
+        check(CodecFormatPolicy.adtsAudioFormat(pce, facts, "AAC") == null)
         check(CodecFormatPolicy.adtsAudioFormat(bytes.copyOf(6), facts, "AAC") == null)
         val reservedFrequency = bytes.copyOf().also { it[2] = 0x7d }
         check(CodecFormatPolicy.adtsAudioFormat(reservedFrequency, facts, "AAC") == null)

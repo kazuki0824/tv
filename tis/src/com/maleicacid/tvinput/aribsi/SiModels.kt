@@ -77,6 +77,16 @@ data class AribAudioConfigHeader(
     val channelConfiguration: Int,
     val extensionSamplingFrequency: Int?,
     val coreAudioObjectType: Int?,
+    val channelCount: Int? = null,
+)
+
+data class AribAacConfiguration(
+    val audioObjectType: Int,
+    val samplingFrequency: Int,
+    val extensionSamplingFrequency: Int?,
+    val channelConfiguration: Int,
+    val channelCount: Int,
+    val audioSpecificConfig: ByteArray,
 )
 
 data class AribCodecFacts(

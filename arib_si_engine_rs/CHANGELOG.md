@@ -1,5 +1,7 @@
 # r51_pr85_stack_epg_policy_boundary
 
+- TIS-041/R07のPCE構成をASCとADTSで共通解析し、二重音声のchannel countと元commentを保ったASCを取得する。SI収集stateに依存しない有限JNI probeを追加し、不完全入力と不正構成を区別する。
+
 - MPEG-4音声の拡張profile番号をISO原表で追加照合。階層的AAC profileの併存とASCのcore AOTを区別し、暗黙SBR/PSの不存在を推測しない。
 
 - TIS-015/U-07/N07に関連するactual/otherの必須scopeを修正。他TSのPMTや現在TSのSDT-otherを待ち続ける条件を除去し、NIT-otherは観測全instanceの完成を要求。同一版PMT矛盾では旧ES/CA事実も退役。

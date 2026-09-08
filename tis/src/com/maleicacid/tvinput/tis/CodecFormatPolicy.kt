@@ -61,68 +61,24 @@ internal object CodecFormatPolicy {
         format.setInteger(MediaFormat.KEY_LEVEL, profile.level)
     }
 
-    private data class AdtsHeader(val objectType: Int, val frequencyIndex: Int, val channelConfiguration: Int)
-    private val aacSampleRates = intArrayOf(96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350)
-
-    private fun adtsHeader(bytes: ByteArray): AdtsHeader? {
-        for (offset in 0..bytes.size - 7) {
-            if (bytes[offset].toInt() and 0xff != 0xff || bytes[offset + 1].toInt() and 0xf6 != 0xf0) continue
-            val protectionAbsent = bytes[offset + 1].toInt() and 1 != 0
-            val headerSize = if (protectionAbsent) 7 else 9
-            if (bytes.size - offset < headerSize) return null
-            val frameLength = ((bytes[offset + 3].toInt() and 3) shl 11) or
-                ((bytes[offset + 4].toInt() and 0xff) shl 3) or ((bytes[offset + 5].toInt() and 0xe0) ushr 5)
-            val frequencyIndex = (bytes[offset + 2].toInt() ushr 2) and 15
-            if (frameLength < headerSize || frequencyIndex !in aacSampleRates.indices) continue
-            return AdtsHeader(
-                ((bytes[offset + 2].toInt() ushr 6) and 3) + 1,
-                frequencyIndex,
-                ((bytes[offset + 2].toInt() and 1) shl 2) or ((bytes[offset + 3].toInt() ushr 6) and 3),
-            )
-        }
-        return null
-    }
-
     fun adtsAudioFormat(bytes: ByteArray, facts: AribCodecFacts, signaledCodec: String?): MediaFormat? {
-        val header = adtsHeader(bytes) ?: return null
-        if (!facts.resolved || header.objectType != CodecProfileLevel.AACObjectLC) {
-            throw UnsupportedCodecFormat("未対応または未解決のADTS audio object typeです")
-        }
-        val channelCount = when (header.channelConfiguration) {
-            in 1..6 -> header.channelConfiguration
-            7 -> 8
-            else -> throw UnsupportedCodecFormat("PCEによるADTS channel構成を確定できません")
-        }
-        val baseFrequency = aacSampleRates[header.frequencyIndex]
-        val ascHeader = facts.audioConfigHeader
-        if (ascHeader != null && (ascHeader.samplingFrequency != baseFrequency ||
-                ascHeader.channelConfiguration != header.channelConfiguration ||
-                ascHeader.audioObjectType !in setOf(2, 5) ||
-                (ascHeader.audioObjectType == 5 && ascHeader.coreAudioObjectType != 2))) {
-            throw UnsupportedCodecFormat("PMTのAudioSpecificConfigとADTSが不一致、または未対応です")
-        }
+        if (!facts.resolved) throw UnsupportedCodecFormat("未解決のAAC記述子です")
+        val config = try {
+            com.maleicacid.tvinput.aribsi.NativeAribSiParser.probeAacConfiguration(bytes, facts.audioConfigHex)
+        } catch (error: IllegalArgumentException) {
+            throw UnsupportedCodecFormat(error.message ?: "AAC構成が不正です")
+        } ?: return null
         val profile = when {
-            ascHeader?.audioObjectType == 5 || signaledCodec == "HE-AAC" -> CodecProfileLevel.AACObjectHE
-            signaledCodec == "HE-AAC-v2" -> throw UnsupportedCodecFormat("HE-AAC-v2の入力構成は未対応です")
+            config.audioObjectType == 29 || signaledCodec == "HE-AAC-v2" -> throw UnsupportedCodecFormat("HE-AAC-v2の入力構成は未対応です")
+            config.audioObjectType == 5 || signaledCodec == "HE-AAC" -> CodecProfileLevel.AACObjectHE
             else -> CodecProfileLevel.AACObjectLC
         }
-        val config = facts.audioConfigHex?.let { value ->
-            if (ascHeader == null || value.isEmpty() || value.length % 2 != 0) {
-                throw UnsupportedCodecFormat("AudioSpecificConfigが不正です")
-            }
-            value.chunked(2).map { pair ->
-                (pair.toIntOrNull(16) ?: throw UnsupportedCodecFormat("AudioSpecificConfigのhexが不正です")).toByte()
-            }.toByteArray()
-        } ?: byteArrayOf(
-            ((header.objectType shl 3) or (header.frequencyIndex ushr 1)).toByte(),
-            (((header.frequencyIndex and 1) shl 7) or (header.channelConfiguration shl 3)).toByte(),
-        )
         return MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC,
-            ascHeader?.extensionSamplingFrequency ?: baseFrequency, channelCount).apply {
+            config.extensionSamplingFrequency ?: config.samplingFrequency, config.channelCount).apply {
             setInteger(MediaFormat.KEY_IS_ADTS, 1)
             setInteger(MediaFormat.KEY_PROFILE, profile)
             setInteger(MediaFormat.KEY_AAC_PROFILE, profile)
-            setByteBuffer("csd-0", ByteBuffer.wrap(config))
+            setByteBuffer("csd-0", ByteBuffer.wrap(config.audioSpecificConfig))
         }
     }
 }

@@ -17,7 +17,7 @@ use descriptors::{
 };
 use discovery_requirements::DiscoveryProfile;
 use eit::{EitEvent, EitStableEventIdentity};
-use jni::objects::{JByteArray, JObject, JString};
+use jni::objects::{JByteArray, JClass, JObject, JString};
 use jni::sys::{jint, jlong, jstring};
 use jni::JNIEnv;
 use product_policy::{EitInstanceState, EitStore, EitUpdateWindow};
@@ -1397,6 +1397,47 @@ fn jstring_to_string(env: &mut JNIEnv<'_>, value: JString<'_>) -> Option<String>
 
 fn jbytearray_to_vec(env: &mut JNIEnv<'_>, value: JByteArray<'_>) -> Vec<u8> {
     env.convert_byte_array(value).unwrap_or_default()
+}
+
+fn bounded_codec_bytes(
+    env: &mut JNIEnv<'_>,
+    value: &JByteArray<'_>,
+    maximum: i32,
+) -> Result<Vec<u8>, &'static str> {
+    let length = env
+        .get_array_length(value)
+        .map_err(|_| "codec配列長を取得できません")?;
+    if length > maximum {
+        return Err("codec構成probeの入力上限を超過しました");
+    }
+    env.convert_byte_array(value)
+        .map_err(|_| "codec構成probeの入力を取得できません")
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeProbeAacConfiguration(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    adts: JByteArray<'_>,
+    asc: JByteArray<'_>,
+) -> jstring {
+    use maleicacid_arib_si_engine_core::codec_signaling::{
+        probe_adts_configuration, AacConfigurationProbe,
+    };
+    let input = bounded_codec_bytes(&mut env, &adts, 64 * 1024);
+    let config = if asc.is_null() {
+        Ok(None)
+    } else {
+        bounded_codec_bytes(&mut env, &asc, 255).map(Some)
+    };
+    let result = match (input, config) {
+        (Ok(input), Ok(config)) => probe_adts_configuration(&input, config.as_deref()),
+        (Err(reason), _) | (_, Err(reason)) => AacConfigurationProbe::Invalid { reason },
+    };
+    match serde_json::to_string(&result) {
+        Ok(json) => java_string(&mut env, Some(json)),
+        Err(_) => ptr::null_mut(),
+    }
 }
 
 fn provider_result_json(result: provider_data_api::ProviderDataResult) -> String {

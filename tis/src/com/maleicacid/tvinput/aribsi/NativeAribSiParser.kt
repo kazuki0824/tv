@@ -296,7 +296,7 @@ class NativeAribSiParser : AutoCloseable {
         val header = extension?.optJSONObject("header")?.let {
             AribAudioConfigHeader(it.getInt("audioObjectType"), it.getInt("samplingFrequency"),
                 it.getInt("channelConfiguration"), optIntOrNull(it, "extensionSamplingFrequency"),
-                optIntOrNull(it, "coreAudioObjectType"))
+                optIntOrNull(it, "coreAudioObjectType"), optIntOrNull(it, "channelCount"))
         }
         return AribCodecFacts(
             avc = avc,
@@ -753,6 +753,29 @@ private fun parseLinkage(array: JSONArray?): List<AribLinkage> = (0 until (array
     private external fun nativeDecodeAribStringDiagnosticSummary(bytes: ByteArray): String
 
     companion object {
+    private fun codecConfigBytes(value: String, maximumBytes: Int): ByteArray {
+        require(value.isNotEmpty() && value.length <= maximumBytes * 2 && value.length % 2 == 0 && value.all { it.digitToIntOrNull(16) != null }) {
+            "AudioSpecificConfigのhexが不正です"
+        }
+        return value.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+    }
+
+    internal fun probeAacConfiguration(adts: ByteArray, ascHex: String?): AribAacConfiguration? {
+        val result = JSONObject(nativeProbeAacConfiguration(adts, ascHex?.let { codecConfigBytes(it, 255) }))
+        return when (result.getString("status")) {
+            "PENDING" -> null
+            "INVALID" -> throw IllegalArgumentException(result.getString("reason"))
+            "READY" -> result.getJSONObject("configuration").let {
+                AribAacConfiguration(it.getInt("audioObjectType"), it.getInt("samplingFrequency"),
+                    if (it.isNull("extensionSamplingFrequency")) null else it.getInt("extensionSamplingFrequency"),
+                    it.getInt("channelConfiguration"), it.getInt("channelCount"), codecConfigBytes(it.getString("audioSpecificConfigHex"), 512))
+            }
+            else -> error("codec構成probeが未知の状態を返しました")
+        }
+    }
+
+    @JvmStatic private external fun nativeProbeAacConfiguration(adts: ByteArray, asc: ByteArray?): String
+
     init {
         System.loadLibrary("maleicacid_arib_si_engine_jni")
     }

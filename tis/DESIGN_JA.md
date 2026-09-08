@@ -598,7 +598,9 @@ ISO/IEC 14496-2 Visual、JPEG 2000、auxiliary video、SVC、MVC、3D additional
 
 ### audio codec
 
-ADTSの構成は有限header probeから読み、LCのobject type、周波数index、channel_configurationを検査する。PMTにASCがある場合は共通先頭部とADTSの周波数・channel_configurationを照合し、元のASC bytesを`csd-0`へ渡す。HE-AACの明示SBRは拡張周波数を使い、放送profileをMediaCodec能力照合へ渡す。ASC先頭がAOT=2であることだけを根拠に後続の暗黙SBR/PSが無いとは断定しない。channel_configuration=7は8ch、0はPCEによる構成未確定であり、1chへ丸めない。現在のTISはPCEからの構成抽出とHE-AAC-v2の入力設定を完了しておらず、明示unsupportedとして扱う。この制限をMPEG-4音声形式全体の再生成立・実機適合の合格根拠にしない。
+ADTSの構成は有限header probeから読み、LCのobject type、周波数index、channel_configurationを検査する。ASCとADTS/PCEの構文解析は`arib_si_engine_rs`のstatelessな共通部品`codec_signaling`へ集約し、TISで構文処理を複製しない。JNIへ渡すstartup入力は既存AAC probe予算の64 KiB以内、PMTのASCは記述子のsize欄の255 bytes以内とし、構成不正と構成待ちを区別する。PMTにASCがある場合はADTSの周波数・channel_configurationを照合し、元のASC bytesを`csd-0`へ渡す。HE-AACの明示SBRは拡張周波数を使い、放送profileをMediaCodec能力照合へ渡す。ASC先頭がAOT=2であることだけを根拠に後続の暗黙SBR/PSが無いとは断定しない。
+
+channel_configuration=7は8ch、0はPCEを構成根拠にする。PMTのASCに有効なPCEがあればそのchannel countを使う。帯域内PCEの場合はraw data block先頭のPCEを読み、SCE/CPE/LFEの参照からchannel countを算出し、PCE fieldと元commentをASC基準のbyte alignmentへ移して`csd-0`を構成する。PCEのprofile・周波数の不一致、要素参照の重複、完全に受信したPCEの長さ不正は構成不正とする。PCEがまだない場合は1chへ推測せず、既存の有限startup予算・期限の範囲で待つ。PCEのないframeは宣言長で送るが、queue用のframe/AUの再構成やpayloadコピーは行わない。HE-AAC-v2の入力設定は現行再生対象に含めない。構成probeのhost検証だけをdecoder実機適合の合格根拠にしない。
 
 | codec | 追加認識時の扱い |
 |---|---|
