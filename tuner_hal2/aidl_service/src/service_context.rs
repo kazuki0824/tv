@@ -23,7 +23,10 @@ use maleicacid_tuner_hal2_service_runtime::{
     SharedObjectCleanupDiagnostics, TunerServiceRuntime,
 };
 
-use crate::callback_store::{AidlCallbackStoreError, CallbackStore, PreparedCallbackArtifactToken};
+use crate::callback_store::{
+    AidlCallbackStoreError, CallbackStore, FrontendCallbackDelivery, FrontendCallbackGeneration,
+    PreparedCallbackArtifactToken,
+};
 use crate::cleanup_reaper::{start_cleanup_reaper, CleanupReaperQueue};
 use crate::dvr_callback_delivery::{start_dvr_status_notifier_reaper, DvrStatusNotifierSupervisor};
 use crate::object_handle::AidlObjectHandle;
@@ -676,7 +679,8 @@ impl AidlServiceContext {
         token: PreparedCallbackArtifactToken,
     ) -> Result<(), AidlCallbackStoreError> {
         self.callback_store_lock()?
-            .commit_prepared_callback(handle, registration_api, token)
+            .commit_prepared_callback(handle, registration_api, token)?;
+        self.release_retired_callbacks()
     }
 
     pub(crate) fn abort_prepared_callback(
@@ -686,7 +690,142 @@ impl AidlServiceContext {
         token: PreparedCallbackArtifactToken,
     ) -> Result<(), AidlCallbackStoreError> {
         self.callback_store_lock()?
-            .abort_prepared_callback(handle, registration_api, token)
+            .abort_prepared_callback(handle, registration_api, token)?;
+        self.release_retired_callbacks()
+    }
+
+    pub(crate) fn release_retired_callbacks(&self) -> Result<(), AidlCallbackStoreError> {
+        loop {
+            let retired = self.callback_store_lock()?.take_retired_callbacks()?;
+            let Some(retired) = retired else {
+                return Ok(());
+            };
+            let result = retired.release();
+            let finish = match self.callback_store_lock() {
+                Ok(mut store) => {
+                    let (released, finish) =
+                        store.finish_retired_callbacks(retired, result.is_ok());
+                    drop(store);
+                    // 最後のStrong/DeathRecipientはowner lock解放後に落とす。失敗batchはstoreに残る。
+                    drop(released);
+                    finish
+                }
+                Err(error) => Err(error),
+            };
+            match (result, finish) {
+                (Err(primary), Err(cleanup)) => {
+                    return Err(AidlCallbackStoreError::Composed {
+                        primary: Box::new(primary),
+                        cleanup: Box::new(cleanup),
+                    })
+                }
+                (Err(error), _) | (_, Err(error)) => return Err(error),
+                (Ok(()), Ok(())) => {}
+            }
+        }
+    }
+
+    pub(crate) fn prepare_frontend_callback(
+        self: &Arc<Self>,
+        handle: AidlObjectHandle,
+        callback: &Strong<dyn IFrontendCallback>,
+    ) -> Result<PreparedCallbackArtifactToken, HalError> {
+        let (token, registration) = {
+            let mut store = self
+                .callback_store_lock()
+                .map_err(|error| error.into_hal_error("callback準備"))?;
+            let token = store
+                .prepare_frontend_callback(handle, callback)
+                .map_err(|error| error.into_hal_error("callback準備"))?;
+            let registration = store
+                .prepared_frontend_registration(handle, &token)
+                .ok_or_else(|| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "準備したcallbackが存在しません",
+                    )
+                })?;
+            (token, registration)
+        };
+        let weak = Arc::downgrade(self);
+        let linked = registration.link_death(move |generation| {
+            if let Some(context) = weak.upgrade() {
+                if let Err(primary) = context.handle_frontend_callback_death(handle, generation) {
+                    let record = FrontendCallbackDeliveryDiagnosticRecord::callback_artifact_lookup(
+                        handle.object_id(),
+                        handle.generation(),
+                        primary,
+                    );
+                    if let Err(record_error) =
+                        context.record_frontend_callback_delivery_failure_fallback(record)
+                    {
+                        // 記録不能は同storeのrecord-failure counterにも残る。
+                        log::error!("frontend callback death diagnostic failure: {record_error:?}");
+                    }
+                }
+            }
+        });
+        if let Err(error) = linked {
+            let primary = error.into_hal_error("callback死亡通知の準備");
+            return match self.abort_prepared_callback(handle, AidlApi::FrontendSetCallback, token) {
+                Ok(()) => Err(primary),
+                Err(cleanup) => Err(compose_primary_cleanup_failure(
+                    "callback死亡通知準備の後始末",
+                    primary,
+                    cleanup.into_hal_error("callback準備取消し"),
+                )),
+            };
+        }
+        Ok(token)
+    }
+
+    fn handle_frontend_callback_death(
+        &self,
+        handle: AidlObjectHandle,
+        generation: FrontendCallbackGeneration,
+    ) -> Result<(), HalError> {
+        let result = (|| {
+            let mut store = self
+                .callback_store_lock()
+                .map_err(|error| error.into_hal_error("callback死亡の照合"))?;
+            if !store.frontend_registration_matches(handle, generation) {
+                return Ok(false);
+            }
+            let mut runtime = self.runtime.lock().map_err(|_| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "callback死亡処理のruntime lockが汚染されています",
+                )
+            })?;
+            let outcome = runtime
+                .begin_frontend_callback_death_use_case(handle.object_id(), handle.generation())?;
+            let removed = store.retire_frontend_registration(handle, generation);
+            runtime
+                .finish_owner_callback_cleanup_outcome(
+                    outcome,
+                    Ok(if removed {
+                        CallbackArtifactCleanupResult::Cleared
+                    } else {
+                        CallbackArtifactCleanupResult::NoArtifact
+                    }),
+                )
+                .map(|()| true)
+        })();
+        if matches!(result, Ok(false)) {
+            return Ok(());
+        }
+        let cleanup = self
+            .release_retired_callbacks()
+            .map_err(|error| error.into_hal_error("死亡callbackの解放"));
+        match (result, cleanup) {
+            (Err(primary), Err(cleanup)) => Err(compose_primary_cleanup_failure(
+                "callback死亡処理",
+                primary,
+                cleanup,
+            )),
+            (Err(error), _) | (_, Err(error)) => Err(error),
+            (Ok(_), Ok(())) => Ok(()),
+        }
     }
 
     #[cfg(test)]
@@ -704,7 +843,9 @@ impl AidlServiceContext {
         &self,
         handle: AidlObjectHandle,
     ) -> Result<usize, AidlCallbackStoreError> {
-        Ok(self.callback_store_lock()?.clear_owner_callbacks(handle))
+        let removed = self.callback_store_lock()?.clear_owner_callbacks(handle);
+        self.release_retired_callbacks()?;
+        Ok(removed)
     }
 
     #[cfg(test)]
@@ -716,7 +857,9 @@ impl AidlServiceContext {
     }
 
     fn clear_all_callback_artifacts_raw(&self) -> Result<usize, AidlCallbackStoreError> {
-        Ok(self.callback_store_lock()?.clear_all_callbacks())
+        let removed = self.callback_store_lock()?.clear_all_callbacks();
+        self.release_retired_callbacks()?;
+        Ok(removed)
     }
 
     pub(crate) fn clear_callback_artifact_reset_bridge(
@@ -751,10 +894,16 @@ impl AidlServiceContext {
     pub(crate) fn frontend_callback_for_owner(
         &self,
         handle: AidlObjectHandle,
-    ) -> Result<Option<Strong<dyn IFrontendCallback>>, AidlCallbackStoreError> {
-        Ok(self
-            .callback_store_lock()?
-            .frontend_callback_for_owner(handle))
+    ) -> Result<Option<FrontendCallbackDelivery>, AidlCallbackStoreError> {
+        let store = self.callback_store_lock()?;
+        let runtime = self
+            .runtime
+            .lock()
+            .map_err(|_| AidlCallbackStoreError::Poisoned)?;
+        if !runtime.frontend_callback_delivery_ready(handle.object_id(), handle.generation()) {
+            return Ok(None);
+        }
+        Ok(store.frontend_callback_for_owner(handle))
     }
 
     pub(crate) fn filter_callback_for_owner(

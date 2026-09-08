@@ -1974,6 +1974,36 @@ impl TunerServiceRuntime {
         OwnerCallbackCleanupUseCaseOutcome::new(command, primary_result)
     }
 
+    pub fn frontend_callback_delivery_ready(
+        &self,
+        owner_id: AidlObjectId,
+        owner_generation: AidlObjectGeneration,
+    ) -> bool {
+        aidl_object_live(self, owner_id, owner_generation, AidlObjectKind::Frontend).is_ok()
+            && self.has_callback_registration(
+                AidlObjectKind::Frontend,
+                owner_id,
+                owner_generation,
+                AidlApi::FrontendSetCallback,
+            )
+    }
+
+    pub fn begin_frontend_callback_death_use_case(
+        &mut self,
+        owner_id: AidlObjectId,
+        owner_generation: AidlObjectGeneration,
+    ) -> Result<OwnerCallbackCleanupUseCaseOutcome<()>, HalError> {
+        aidl_object_live(self, owner_id, owner_generation, AidlObjectKind::Frontend)?;
+        let command = self.plan_owner_callback_cleanup_artifact_command(
+            AidlObjectKind::Frontend,
+            owner_id,
+            owner_generation,
+            Some(AidlApi::FrontendSetCallback),
+            "死亡したfrontend callbackの解除に失敗しました",
+        );
+        Ok(OwnerCallbackCleanupUseCaseOutcome::new(command, Ok(())))
+    }
+
     pub fn execute_callback_unregistration_for_object_use_case(
         &mut self,
         owner_kind: AidlObjectKind,

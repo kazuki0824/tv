@@ -1,5 +1,7 @@
 ## r51_pr85_capability_closure_selection
 
+- Frontend callbackにchecked登録世代とBinder deathを接続。遅延死亡・配送結果を照合し、旧Strong/recipientを所有者lock外で解放する。null解除の設計矛盾と内部互換入口を除去。
+
 - 音声PESの明示PTS対応先を最初のAUに限定し、後続AUと継続AUの時刻契約の矛盾を解消した。
 
 - HAL-030: frontend、demux base、filter/FMQ、PES、AV、用途別DVR、共有runtimeの依存関係を起動時の有限候補選択へ接続した。候補は固定優先順で共有worker/callback/reaper/cleanup枠、SECTION tracker数、FMQ/PES/AV/playback byte予算を仮予約し、全体検査が成功した場合だけsnapshotを確定する。

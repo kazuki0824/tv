@@ -11,8 +11,25 @@ use maleicacid_tuner_hal2_service_runtime::{
     FrontendTuneNotification, FrontendTuneNotifier,
 };
 
+use crate::callback_store::FrontendCallbackGeneration;
 use crate::object_handle::AidlObjectHandle;
 use crate::service_context::SharedAidlServiceContext;
+
+fn record_retired_callback_failure(
+    context: &SharedAidlServiceContext,
+    handle: AidlObjectHandle,
+    generation: FrontendCallbackGeneration,
+    primary: HalError,
+) -> Result<(), HalError> {
+    context.record_frontend_callback_delivery_failure_fallback(
+        FrontendCallbackDeliveryDiagnosticRecord::RetiredRegistrationDelivery {
+            object_id: handle.object_id(),
+            generation: handle.generation(),
+            callback_generation: generation.diagnostic_value(),
+            error: primary,
+        },
+    )
+}
 
 fn frontend_scan_end_fallback_record(
     handle: AidlObjectHandle,
@@ -64,7 +81,38 @@ fn finish_frontend_scan_end_delivery_failure(
     scan_generation: u64,
     phase: CallbackDeliveryFailurePhase,
     primary: HalError,
+    registration: Option<FrontendCallbackGeneration>,
 ) -> Result<(), HalError> {
+    let store = context.callback_store_lock().map_err(|error| {
+        maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
+            "callback結果の世代照合",
+            primary.clone(),
+            error.into_hal_error("callback store lock"),
+        )
+    })?;
+    if let Some(registration) = registration {
+        if !store.frontend_registration_matches(handle, registration) {
+            drop(store);
+            return record_retired_callback_failure(context, handle, registration, primary);
+        }
+    } else {
+        drop(store);
+        let record = FrontendCallbackDeliveryDiagnosticRecord::callback_artifact_lookup(
+            handle.object_id(),
+            handle.generation(),
+            primary.clone(),
+        );
+        return match context.record_frontend_callback_delivery_failure_fallback(record) {
+            Ok(()) => Err(primary),
+            Err(cleanup) => Err(
+                maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
+                    "callback lookup診断",
+                    primary,
+                    cleanup,
+                ),
+            ),
+        };
+    }
     let runtime = context.runtime();
     let result = match runtime.lock() {
         Ok(mut guard) => guard.finish_callback_delivery_failure_use_case(
@@ -135,6 +183,7 @@ fn deliver_scan_callback(
                 generation,
                 CallbackDeliveryFailurePhase::CallbackArtifactLookup,
                 primary,
+                None,
             );
         }
         Err(_) => {
@@ -146,10 +195,11 @@ fn deliver_scan_callback(
                 generation,
                 CallbackDeliveryFailurePhase::CallbackArtifactLookup,
                 primary,
+                None,
             );
         }
     };
-    if let Err(err) = callback.onScanMessage(message_type, &message) {
+    if let Err(err) = callback.callback().onScanMessage(message_type, &message) {
         let primary = HalError::callback_failed(method, format!("binder failure: {err:?}"));
         return finish_frontend_scan_end_delivery_failure(
             context,
@@ -158,6 +208,7 @@ fn deliver_scan_callback(
             generation,
             CallbackDeliveryFailurePhase::BinderDelivery,
             primary,
+            Some(callback.generation()),
         );
     }
     Ok(())
@@ -179,12 +230,43 @@ fn finish_frontend_event_delivery_failure(
     frontend_generation: u64,
     artifact_lookup: bool,
     primary: HalError,
+    registration: Option<FrontendCallbackGeneration>,
 ) -> Result<(), HalError> {
     let phase = if artifact_lookup {
         CallbackDeliveryFailurePhase::CallbackArtifactLookup
     } else {
         CallbackDeliveryFailurePhase::BinderDelivery
     };
+    let store = context.callback_store_lock().map_err(|error| {
+        maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
+            "callback結果の世代照合",
+            primary.clone(),
+            error.into_hal_error("callback store lock"),
+        )
+    })?;
+    if let Some(registration) = registration {
+        if !store.frontend_registration_matches(handle, registration) {
+            drop(store);
+            return record_retired_callback_failure(context, handle, registration, primary);
+        }
+    } else {
+        drop(store);
+        let record = FrontendCallbackDeliveryDiagnosticRecord::callback_artifact_lookup(
+            handle.object_id(),
+            handle.generation(),
+            primary.clone(),
+        );
+        return match context.record_frontend_callback_delivery_failure_fallback(record) {
+            Ok(()) => Err(primary),
+            Err(cleanup) => Err(
+                maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
+                    "callback lookup診断",
+                    primary,
+                    cleanup,
+                ),
+            ),
+        };
+    }
     let runtime = context.runtime();
     let result = match runtime.lock() {
         Ok(mut guard) => guard.finish_callback_delivery_failure_use_case(
@@ -259,6 +341,7 @@ fn deliver_tune_event_callback(
                 generation,
                 true,
                 HalError::callback_failed(method, "frontend callback is not registered"),
+                None,
             );
         }
         Err(_) => {
@@ -269,10 +352,11 @@ fn deliver_tune_event_callback(
                 generation,
                 true,
                 HalError::callback_failed(method, "callback store lock poisoned"),
+                None,
             );
         }
     };
-    if let Err(error) = callback.onEvent(event) {
+    if let Err(error) = callback.callback().onEvent(event) {
         return finish_frontend_event_delivery_failure(
             context,
             handle,
@@ -280,6 +364,7 @@ fn deliver_tune_event_callback(
             generation,
             false,
             HalError::callback_failed(method, format!("binder failure: {error:?}")),
+            Some(callback.generation()),
         );
     }
     Ok(())

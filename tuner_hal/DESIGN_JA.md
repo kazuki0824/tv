@@ -131,16 +131,18 @@ LineageOS 22.1 / Android 15 で採用する Tuner AIDL の null 入力は、API 
 
 ### `IFrontend.setCallback()` 登録契約
 
-frontend runtimeはcallback slotを`Empty(callback_generation)`または`Registered(callback_identity, callback_generation)`として所有する。`callback_generation`は単調増加し、古い値を再利用しない。tune/scan workerはcallback実体を保持せず、frontend operation generationとeventだけを配送キューへ渡す。配送開始時に現在のcallback slotを解決し、置換または解除済みgenerationの未配送entryは配送しない。置換前にBinder配送を開始済みの呼出結果は診断へ記録し、新callbackへ重複配送しない。
+FrontendのBinder生成物所有者はcallback slotを`Empty`または`Registered(callback_identity, callback_generation)`として保持し、runtime登録簿との変更を`CallbackRegistrationUseCase`の複合確定で接続する。`callback_generation`は単調増加し、古い値を再利用しない。tune/scan workerはcallback実体を保持せず、frontend operation generationとeventだけを配送キューへ渡す。配送開始の受理点は生成物所有者lock下で現在の登録世代とStrong参照を一回分の配送権限へ解決した時点とする。この時点で死亡・解除済みのslotから配送権限を作らない。Binder呼出しはlock外で行う。既に配送開始を受理した旧登録の遅延結果は登録世代を再照合し、旧世代なら診断へ記録して新callbackのhealth・worker失敗へ適用せず、重複配送しない。
 
 | API / 入力状態 | AIDL戻り値 | 公開上の結果 | 失敗時の公開状態 |
 |---|---|---|---|
 | `setCallback(non-NULL)` / Live / `Empty` | 成功 | 新callbackを登録し、新generation以後の配送先とする | 登録失敗は`UNKNOWN_ERROR`とし、従前の`Empty`状態を維持 |
 | `setCallback(non-NULL)` / Live / `Registered(old)` | 成功 | 同一identityを含む再設定を受理し、新callbackへ置換する。置換後は旧generationへの新規配送を行わない | 登録失敗は`UNKNOWN_ERROR`とし、旧callbackを配送先として維持 |
-| `setCallback(NULL)` / Live | 成功 | callback登録を解除し、新generation以後の配送を停止する。既に`Empty`なら成功no-op | 解除失敗は`UNKNOWN_ERROR`とし、旧登録を維持 |
+| `setCallback(NULL)` | 非null AIDL境界で拒否 | 登録解除APIとして公開しない。通常の登録寿命終了はcloseによる | 既存callbackを変更しない |
 | `setCallback(any)` / LogicalClosed、CleanupPending、Quarantined | `INVALID_STATE` | 入力状態を維持 | callback状態を変更しない |
 
 Binder artifact、runtime registry、domain callback logical stateのprepare / composite commit / rollback、旧artifact cleanupは0-S-3Bの`CallbackRegistrationUseCase`を唯一の正本とし、本節では再定義しない。callback delivery failureは`PostCommitCallbackFailureTxn`に従う。
+
+リモートBinderのdeath recipient登録・解除はruntime/生成物所有者lock外で行う。同一プロセスのlocal Binderにはdeath linkを要求しない。準備中のlink失敗・死亡は旧登録を維持する。callback slotから外したStrong/recipientは、解放結果を所有者へ戻すまで所有者の退役batchに保持する。unlink失敗・結果未確定中は新たな登録準備を拒否し、成功結果だけでbatchを解放する。死亡済みBinderの自動unlinkによるNAME_NOT_FOUND/DEAD_OBJECTは解除済みとして扱う。NDKの死亡時自動unlinkとlocal BinderのINVALID_OPERATIONは`frameworks/native/libs/binder/ndk/include_ndk/android/binder_ibinder.h`の契約に従う。
 
 current callbackのBinder deathは、死亡したcallbackがcurrent registrationに対応する場合だけ登録解除として扱う。置換済みcallbackの遅延death通知は現在の登録へ影響させない。`close()`後は旧generation由来の未配送entryを配送せず、callback registrationのcleanupは`ObjectCloseTxn`から`CallbackRegistrationUseCase`のtyped cleanupへ接続する。
 
@@ -1352,7 +1354,7 @@ release AIDL経路からテスト専用入口へ到達してはならず、テ�
 | T-AOSP-28e | TsAudio + Video tag、TsVideo + Audio tagの`configureAvStreamType()` | `INVALID_ARGUMENT`、hintと全状態を維持 |
 | T-AOSP-28f | `setDemuxSource(invalid_or_unavailable)`後の再`setDemuxSource()` | 初回は原因別エラー、二回目は`INVALID_STATE`。closeして新objectをopenした場合だけ新たな初回呼出しが可能 |
 | T-AOSP-28g | `getDemuxIds()` / 全`getDemuxInfo()` / `getDemuxCaps()` | ID数が`numDemux`と一致し、全`filterTypes`のORが`filterCaps`と完全一致 |
-| T-AOSP-28h | `IFrontend.setCallback(non-NULL → non-NULL → NULL)` | 各呼出しが成功し、置換後の新規eventは新callbackだけへ配送。新callback準備失敗では旧callbackを維持 |
+| T-AOSP-28h | `IFrontend.setCallback(non-NULL → non-NULL)`、Binder death、close | 非null登録と置換を受理し、nullの解除APIを追加しない。準備失敗は旧登録を維持し、置換済み世代の遅延death・配送失敗が新登録を変更しない |
 | T-AOSP-29 | `getFrontendStatusReadiness()` 要求順・同長 | AIDL配列契約 |
 | T-AOSP-30a | 未公開の既知値または将来のstatus数値を含む`getStatus()` | 対応済み要素だけを要求順で返し、非対応要素を無視して成功 |
 | T-AOSP-30b | `getFrontendStatusReadiness()` unsupported status type | 要求順・同長で要素ごとにUNSUPPORTED |
