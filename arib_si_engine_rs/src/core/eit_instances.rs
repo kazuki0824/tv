@@ -201,7 +201,10 @@ mod tests {
         let mut store = EitInstances::default();
         store.ingest(&bytes);
         assert_eq!(store.states()[0].safe_sections, vec![0]);
-        assert_eq!(store.events()[0].diagnostics[0].parse_status, crate::descriptors::DescriptorParseStatus::UnsupportedValue);
+        assert_eq!(
+            store.events()[0].diagnostics[0].parse_status,
+            crate::descriptors::DescriptorParseStatus::UnsupportedValue
+        );
         bytes.truncate(bytes.len() - 4);
         bytes[5] = 0xc5;
         bytes[25] = 4;

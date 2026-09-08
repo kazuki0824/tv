@@ -397,15 +397,7 @@ class ChannelScanController(
                 event.serviceKey to AribRatingMapper.profileForDeliverySystem(currentCandidate?.deliverySystem)
             },
         )
-        val updateWindows = transaction.updateWindows.map { update ->
-            ProgramPublishCoordinator.EpgUpdateWindow(
-                serviceKey = update.serviceKey,
-                windowStartMs = update.windowStartMillis,
-                windowEndMs = update.windowEndMillis,
-                validProgramKeys = validProgramKeysForUpdate(update),
-                deletionAuthoritative = update.deletionAuthoritative,
-            )
-        }
+        val updateWindows = transaction.updateWindows.map(ProgramPublishCoordinator::EpgUpdateWindow)
         val verifiedEmptyServiceKeys = transaction.eitInstances.filter { instance ->
             instance.serviceKey in transaction.authoritativeProgramKeysByService &&
                 transaction.events.none { it.source.tableId == 0x4e && it.serviceKey == instance.serviceKey } &&

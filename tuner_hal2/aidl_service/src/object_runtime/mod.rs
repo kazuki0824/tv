@@ -641,14 +641,25 @@ fn execute_callback_registration_after_artifact_bridge(
                 let mut callback_store = context.callback_store_lock().map_err(|error| {
                     error.into_hal_error("callback artifact store lock failed during registration")
                 })?;
-                let prepared_registration = artifact_retain_result.as_ref().ok()
-                    .and_then(|prepared| callback_store.prepared_frontend_registration(handle, prepared));
-                let death_guard_result = prepared_registration.as_ref()
-                    .map(|registration| registration.lock_death_gate()).transpose();
+                let prepared_registration =
+                    artifact_retain_result.as_ref().ok().and_then(|prepared| {
+                        callback_store.prepared_frontend_registration(handle, prepared)
+                    });
+                let death_guard_result = prepared_registration
+                    .as_ref()
+                    .map(|registration| registration.lock_death_gate())
+                    .transpose();
                 let validation_error = match &death_guard_result {
                     Err(error) => Some(error.clone().into_hal_error("callback死亡と登録の直列化")),
-                    Ok(_) if prepared_registration.as_ref().is_some_and(|registration| registration.is_dead()) => {
-                        Some(HalError::callback_failed("linkToDeath", "準備中にcallbackが死亡しました"))
+                    Ok(_)
+                        if prepared_registration
+                            .as_ref()
+                            .is_some_and(|registration| registration.is_dead()) =>
+                    {
+                        Some(HalError::callback_failed(
+                            "linkToDeath",
+                            "準備中にcallbackが死亡しました",
+                        ))
                     }
                     Ok(_) => None,
                 };

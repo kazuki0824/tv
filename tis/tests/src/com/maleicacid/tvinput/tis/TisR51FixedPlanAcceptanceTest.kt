@@ -693,6 +693,7 @@ class TisR51FixedPlanAcceptanceTest {
             serviceKey = key,
             nowMillis = 1_700_000_000_100L,
             info = info,
+            semanticFactsByServiceKey = mapOf(key to semanticFacts()),
         )
         val record = records.single()
         check(record.videoWidth == 1280)
@@ -709,6 +710,7 @@ class TisR51FixedPlanAcceptanceTest {
             serviceKey = key,
             nowMillis = 1_700_000_000_100L,
             info = info,
+            semanticFactsByServiceKey = mapOf(key to semanticFacts()),
         )
         check(records.isEmpty())
     }

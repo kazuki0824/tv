@@ -83,8 +83,12 @@ fn death_unlink_result(
 }
 
 impl FrontendCallbackRegistration {
-    pub(crate) fn lock_death_gate(&self) -> Result<std::sync::MutexGuard<'_, ()>, AidlCallbackStoreError> {
-        self.death_gate.lock().map_err(|_| AidlCallbackStoreError::Poisoned)
+    pub(crate) fn lock_death_gate(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, ()>, AidlCallbackStoreError> {
+        self.death_gate
+            .lock()
+            .map_err(|_| AidlCallbackStoreError::Poisoned)
     }
 
     pub(crate) fn is_dead(&self) -> bool {
@@ -682,7 +686,9 @@ mod tests {
         let handle = frontend_handle();
         let callback = frontend_callback();
         let token = store.prepare_frontend_callback(handle, &callback).unwrap();
-        let registration = store.prepared_frontend_registration(handle, &token).unwrap();
+        let registration = store
+            .prepared_frontend_registration(handle, &token)
+            .unwrap();
         let guard = registration.lock_death_gate().unwrap();
         let dying = Arc::clone(&registration);
         let (started, observed) = std::sync::mpsc::channel();
@@ -692,7 +698,9 @@ mod tests {
         });
         observed.recv().unwrap();
         assert!(!registration.is_dead());
-        store.commit_prepared_callback(handle, AidlApi::FrontendSetCallback, token).unwrap();
+        store
+            .commit_prepared_callback(handle, AidlApi::FrontendSetCallback, token)
+            .unwrap();
         drop(guard);
         death.join().unwrap();
         let _next_commit = registration.lock_death_gate().unwrap();
@@ -704,10 +712,18 @@ mod tests {
     fn already_unlinked_statuses_do_not_depend_on_death_notification_delivery() {
         let generation = FrontendCallbackGeneration(1);
         assert_eq!(death_unlink_result(generation, Ok(())), Ok(()));
-        assert_eq!(death_unlink_result(generation, Err(StatusCode::NAME_NOT_FOUND)), Ok(()));
-        assert_eq!(death_unlink_result(generation, Err(StatusCode::DEAD_OBJECT)), Ok(()));
-        assert!(matches!(death_unlink_result(generation, Err(StatusCode::INVALID_OPERATION)),
-            Err(AidlCallbackStoreError::DeathUnlink { .. })));
+        assert_eq!(
+            death_unlink_result(generation, Err(StatusCode::NAME_NOT_FOUND)),
+            Ok(())
+        );
+        assert_eq!(
+            death_unlink_result(generation, Err(StatusCode::DEAD_OBJECT)),
+            Ok(())
+        );
+        assert!(matches!(
+            death_unlink_result(generation, Err(StatusCode::INVALID_OPERATION)),
+            Err(AidlCallbackStoreError::DeathUnlink { .. })
+        ));
     }
 
     #[test]

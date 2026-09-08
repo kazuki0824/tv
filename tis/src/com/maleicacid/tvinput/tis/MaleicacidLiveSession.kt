@@ -958,7 +958,7 @@ class MaleicacidLiveSession(
         )
         if (records.isEmpty()) return
         rememberVideoMetadata(records, info)
-        publishLivePrograms(applyLatestVideoMetadata(records))
+        publishLivePrograms(applyLatestVideoMetadata(records), transaction)
     }
 
     private fun refreshCurrentProgramRatingState() {
@@ -982,7 +982,7 @@ class MaleicacidLiveSession(
             malformedCaDescriptorCountByServiceId = transaction.malformedCaDescriptorCountByServiceId,
             ratingProfileByServiceKey = mapOf(key to currentRatingProfile),
         )
-        publishLivePrograms(applyLatestVideoMetadata(records))
+        publishLivePrograms(applyLatestVideoMetadata(records), transaction)
     }
 
     private fun rememberVideoMetadata(records: List<ProgramRecord>, info: PlaybackPipeline.VideoFormatInfo) {
@@ -994,12 +994,18 @@ class MaleicacidLiveSession(
     private fun applyLatestVideoMetadata(records: List<ProgramRecord>): List<ProgramRecord> =
         ProgramVideoMetadataPolicy.merge(records, latestVideoMetadataByProgramKey)
 
-    private fun publishLivePrograms(records: List<ProgramRecord>) {
-        if (records.isEmpty()) return
-        val result = programPublishCoordinator.publish(
+    private fun publishLivePrograms(
+        records: List<ProgramRecord>,
+        snapshot: com.maleicacid.tvinput.aribsi.ProgramPublishSnapshot,
+    ) {
+        val key = currentService ?: return
+        val result = programPublishCoordinator.publishWithUpdates(
             mode = ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
             allPrograms = records,
-            allowedServiceKeys = null,
+            updateWindows = snapshot.updateWindows.filter { it.serviceKey == key }
+                .map(ProgramPublishCoordinator::EpgUpdateWindow),
+            allowedServiceKeys = setOf(key),
+            authoritativeProgramKeysByService = snapshot.authoritativeProgramKeysByService,
         )
         if (result.failures.isNotEmpty()) {
             android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "live Programs 更新失敗=${result.failures}")

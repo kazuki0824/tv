@@ -2,6 +2,7 @@ package com.maleicacid.tvinput.tis
 
 import com.maleicacid.tvinput.aribsi.AribEvent
 import com.maleicacid.tvinput.aribsi.EventModelMapper
+import com.maleicacid.tvinput.aribsi.ServiceSemanticFacts
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.db.ProgramRecord
 
@@ -12,9 +13,11 @@ object ProgramVideoMetadataPolicy {
         serviceKey: ServiceKey,
         nowMillis: Long,
         info: PlaybackPipeline.VideoFormatInfo,
+        semanticFactsByServiceKey: Map<ServiceKey, ServiceSemanticFacts>,
     ): List<ProgramRecord> {
         val records = EventModelMapper().toProgramRecords(
             events.filter { event -> eventContainsTime(event, serviceKey, nowMillis) },
+            semanticFactsByServiceKey = semanticFactsByServiceKey,
         )
         return merge(records, records.associate { key(it) to info })
     }

@@ -895,6 +895,11 @@ impl AidlServiceContext {
         &self,
         handle: AidlObjectHandle,
     ) -> Result<Option<FrontendCallbackDelivery>, AidlCallbackStoreError> {
+        let Some(registration) = self.callback_store_lock()?.frontend_callback_for_owner(handle)
+        else {
+            return Ok(None);
+        };
+        // storeのsnapshot lockを解放してからruntimeへ入り、runtime→store順で世代を再照合する。
         let runtime = self
             .runtime
             .lock()
@@ -902,7 +907,10 @@ impl AidlServiceContext {
         if !runtime.frontend_callback_delivery_ready(handle.object_id(), handle.generation()) {
             return Ok(None);
         }
-        Ok(self.callback_store_lock()?.frontend_callback_for_owner(handle))
+        let current = self
+            .callback_store_lock()?
+            .frontend_registration_matches(handle, registration.generation());
+        Ok(current.then_some(registration))
     }
 
     pub(crate) fn filter_callback_for_owner(

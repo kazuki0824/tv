@@ -18,7 +18,12 @@ class ProgramPublishCoordinator(
         val windowEndMs: Long,
         val validProgramKeys: Set<String>,
         val deletionAuthoritative: Boolean = false,
-    )
+    ) {
+        constructor(window: com.maleicacid.tvinput.aribsi.AribEpgUpdateWindow) : this(
+            window.serviceKey, window.windowStartMillis, window.windowEndMillis,
+            window.validProgramStableIdentities.toSet(), window.deletionAuthoritative,
+        )
+    }
 
     data class ProgramPublishResult(
         val inserted: Int,
