@@ -319,6 +319,8 @@ TIS は `TvInputManager.ACTION_BLOCKED_RATINGS_CHANGED` と `TvInputManager.ACTI
 - Live session は現在番組ratingを `TvProvider current Program -> latest EIT cache -> TvContentRating.UNRATED` の順で解決する。ただし前二者からexceptional ratingを含む適用可能ratingが得られた場合はそれを使い、`UNRATED` はrating情報が得られなかった場合だけのfallbackとする。
 - parental blocked の通知は `notifyContentBlocked(rating)` と AV停止を主とし、parental block の通知手段として `notifyVideoUnavailable()` を呼ばない。
 - `onUnblockContent()` の解除範囲は同一 `channelUri + serviceKey + eventId + ratingString` の現在番組 / レーティングに限定する。start/end は stable identity ではなく、解除対象が現在表示中の同一 Program row であることを確認する補助条件としてのみ使ってよい。start/end/duration を provider-data `programKey`、unblock stable identity、または Program identity の SSOT にしてはならない。
+
+一時解除はSession executor内の`TemporaryContentUnblocks`だけが所有する。現在番組のstable identity変更、現在番組消滅、retune、releaseで失効する。解除の受理時点の番組終了UTCと、受理時の単調時計から換算した終了期限を固定し、いずれかに到達した時点で失効する。終了不明・期限算出overflow・既終了は解除を受理しない。番組時刻更新や同じ解除通知の重複では期限を延長しない。新たに観測した終了が早い場合は期限を短縮する。壁時計の後退でも単調期限を維持する。失効タイマーはsession executorへ再評価をenqueueし、旧タイマーは参照一致で除外する。期限通知を予約できない場合も解除を保持しない。これにより同一event_idの再使用に旧解除を引き継がず、開始時刻をstable identityへ追加する必要はない。終了後の延長番組を解除する場合は新たなframeworkの認証済み通知を必要とする。
 - CAS 未完成 / scrambled unsupported で再生成功にしない場合は `TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` を使う。具体的な CAS 状態 reason は CAS HAL 本実装まで使わない。
 - `requiresCas`はcurrent `ServiceSemanticFacts`のCA descriptor等から得る放送由来意味事実とし、`unsupportedCas` / `clearLivePlaybackSupported`はcurrent product/CAS capabilityからTISがその都度算出する。既存channel/Program `internal_provider_data`の旧policy値をcurrent policyの代替参照に使わない。
 

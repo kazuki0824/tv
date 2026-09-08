@@ -6,6 +6,8 @@
 
 ## r51_pr85_stack_independent_startup_deadline
 
+- TIS-025/N06に関連する一時解除の期限を受理時点へ固定。終了時刻変更・時計後退・event_id再使用で延命せず、期限時の実再評価とretune/releaseでのタイマー失効を接続した。
+
 - AVC記述子とSPSの整合を検証し、MediaFormatのprofile/level・寸法・音声構成に対応する実decoderを選択。PMT codec根拠をEIT統合時にも保存し、ALS・未解決音声を再生選択から除外。
 
 - 表示名の正本と長文標準列の全長投影を明記し、公開可否診断を実行中に限定した。

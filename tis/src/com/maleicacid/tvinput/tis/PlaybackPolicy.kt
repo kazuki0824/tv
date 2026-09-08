@@ -11,12 +11,4 @@ object PlaybackPolicy {
         selection: TunerController.AvStreamSelection,
     ): Boolean = if (isAudioOnlyService(serviceType)) selection.audio == null else selection.video == null
 
-    fun updateUnblockStateForProgramChange(
-        previousIdentityKey: String?,
-        nextIdentityKey: String?,
-        unblockedContentKeys: MutableSet<String>,
-    ): String? {
-        if (previousIdentityKey != nextIdentityKey) unblockedContentKeys.clear()
-        return nextIdentityKey
-    }
 }

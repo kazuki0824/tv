@@ -83,8 +83,9 @@ class MaleicacidLiveSession(
         allowNoPts = true,
         broadcastDeadline = { statementTime, generation -> tunerController.broadcastDeadlineUntil(statementTime, generation) },
     )
-    private val unblockedContentKeys = linkedSetOf<String>()
-    private var currentUnblockProgramIdentityKey: String? = null
+    private val temporaryUnblocks = TemporaryContentUnblocks()
+    private val unblockTimerHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var unblockExpiryTask: Runnable? = null
     private var lastParentalAccessState: ParentalAccessState = ParentalAccessState.UNKNOWN
     private var lastBlockedContent: BlockedContent? = null
     private data class BlockedContent(val rating: TvContentRating, val unblockKey: String)
@@ -243,8 +244,7 @@ class MaleicacidLiveSession(
         currentChannelUri = channelUri
         latestService = null
         latestVideoMetadataByProgramKey.clear()
-        unblockedContentKeys.clear()
-        currentUnblockProgramIdentityKey = null
+        clearTemporaryUnblocks()
         lastParentalAccessState = ParentalAccessState.UNKNOWN
         lastBlockedContent = null
         programPublishCoordinator.reset()
@@ -836,7 +836,7 @@ class MaleicacidLiveSession(
                 clearUnblocksIfCurrentProgramChanged(ratingSet)
                 ratingSet.ratingsForBlocking().firstNotNullOfOrNull { rating ->
                     val unblockKey = ratingSet.unblockKeyFor(rating)
-                    if (unblockKey !in unblockedContentKeys && manager.isRatingBlocked(rating)) BlockedContent(rating, unblockKey) else null
+                    if (!temporaryUnblocks.contains(unblockKey, System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime()) && manager.isRatingBlocked(rating)) BlockedContent(rating, unblockKey) else null
                 }?.let { ContentAccessDecision.Block(it) } ?: ContentAccessDecision.Allow
             }
             is CurrentProgramRatingResolver.ResolveResult.ProviderQueryFailed -> {
@@ -875,11 +875,40 @@ class MaleicacidLiveSession(
     }
 
     private fun clearUnblocksIfCurrentProgramChanged(ratingSet: CurrentProgramRatingResolver.CurrentProgramRatingSet) {
-        currentUnblockProgramIdentityKey = PlaybackPolicy.updateUnblockStateForProgramChange(
-            previousIdentityKey = currentUnblockProgramIdentityKey,
-            nextIdentityKey = ratingSet.currentRowSelectionKey(),
-            unblockedContentKeys = unblockedContentKeys,
-        )
+        temporaryUnblocks.updateProgram(ratingSet.programIdentityKey().takeIf { ratingSet.currentRowSelectionKey() != null })
+        ratingSet.endTimeMillis?.let {
+            temporaryUnblocks.restrictEnd(it, System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime())
+        }
+        armUnblockExpiration()
+    }
+
+    private fun clearTemporaryUnblocks() {
+        temporaryUnblocks.clear()
+        unblockExpiryTask?.let(unblockTimerHandler::removeCallbacks)
+        unblockExpiryTask = null
+    }
+
+    private fun armUnblockExpiration(): Boolean {
+        unblockExpiryTask?.let(unblockTimerHandler::removeCallbacks)
+        unblockExpiryTask = null
+        val delay = temporaryUnblocks.nextDelayMillis(System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime())
+            ?: return true
+        val task = object : Runnable {
+            override fun run() {
+                enqueueSessionAction {
+                    if (unblockExpiryTask !== this) return@enqueueSessionAction
+                    unblockExpiryTask = null
+                    temporaryUnblocks.expire(System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime())
+                    reevaluateParentalControls()
+                    armUnblockExpiration()
+                }
+            }
+        }
+        unblockExpiryTask = task
+        if (unblockTimerHandler.postDelayed(task, delay)) return true
+        clearTemporaryUnblocks()
+        android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "一時解除の失効通知を予約できないため解除を取り消します")
+        return false
     }
 
     private fun reevaluateParentalControls() {
@@ -1018,7 +1047,12 @@ class MaleicacidLiveSession(
             }
         }
         val unblockKey = ratingSet.exactUnblockKeyFor(rating) ?: return
-        unblockedContentKeys += unblockKey
+        val endTimeMillis = ratingSet.endTimeMillis ?: return
+        if (!temporaryUnblocks.grant(unblockKey, endTimeMillis, System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime())) return
+        if (!armUnblockExpiration()) {
+            reevaluateParentalControls()
+            return
+        }
         notifyContentAllowed()
         latestService?.let { service ->
             playbackState = PlaybackStartTransitions.allowRetry(playbackState)
@@ -1040,8 +1074,7 @@ class MaleicacidLiveSession(
         currentChannelUri = null
         captionEnabled = false
         selectedSubtitleTrackId = null
-        unblockedContentKeys.clear()
-        currentUnblockProgramIdentityKey = null
+        clearTemporaryUnblocks()
         playbackState = PlaybackStartState.Stopped
         var failure: Throwable? = null
         fun release(action: () -> Unit) {

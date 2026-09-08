@@ -796,31 +796,43 @@ class TisR51FixedPlanAcceptanceTest {
     }
 
     @Test fun currentProgramChangeClearsTemporaryUnblockKeys() {
-        val keys = linkedSetOf("old-unblock-key")
-        var identity = PlaybackPolicy.updateUnblockStateForProgramChange(
-            previousIdentityKey = "program-a",
-            nextIdentityKey = "program-a",
-            unblockedContentKeys = keys,
-        )
-        check(identity == "program-a")
-        check("old-unblock-key" in keys)
+        val grants = TemporaryContentUnblocks()
+        grants.updateProgram("program-a")
+        check(grants.grant("rating-key", 300, 100, 0))
+        grants.updateProgram("program-a")
+        check(grants.contains("rating-key", 101, 1))
+        grants.updateProgram("program-b")
+        check(!grants.contains("rating-key", 102, 2))
+        check(grants.grant("rating-key-b", 300, 102, 2))
+        grants.updateProgram(null)
+        check(!grants.contains("rating-key-b", 103, 3))
+    }
 
-        identity = PlaybackPolicy.updateUnblockStateForProgramChange(
-            previousIdentityKey = identity,
-            nextIdentityKey = "program-b",
-            unblockedContentKeys = keys,
-        )
-        check(identity == "program-b")
-        check(keys.isEmpty())
+    @Test fun reusedEventIdAndScheduleExtensionCannotExtendAnOldUnblock() {
+        val grants = TemporaryContentUnblocks()
+        grants.updateProgram("same-stable-program")
+        check(grants.grant("rating-key", 300, 100, 1000))
+        grants.updateProgram("same-stable-program")
+        check(grants.grant("rating-key", 900, 101, 1001))
+        check(grants.nextDelayMillis(299, 1199) == 1L)
+        check(!grants.contains("rating-key", 300, 1200))
+        grants.updateProgram("same-stable-program")
+        check(!grants.contains("rating-key", 600, 1500))
+    }
 
-        keys += "program-b-unblock"
-        identity = PlaybackPolicy.updateUnblockStateForProgramChange(
-            previousIdentityKey = identity,
-            nextIdentityKey = null,
-            unblockedContentKeys = keys,
-        )
-        check(identity == null)
-        check(keys.isEmpty())
+    @Test fun clockRollbackDoesNotRenewTemporaryUnblockAndInvalidExpiryIsRejected() {
+        val grants = TemporaryContentUnblocks()
+        grants.updateProgram("program")
+        check(grants.grant("rating-key", 300, 100, 1000))
+        check(!grants.contains("rating-key", 50, 1200))
+        check(!grants.grant("past", 100, 100, 1000))
+        check(!grants.grant("overflow", Long.MAX_VALUE, 0, 1000))
+        check(grants.nextDelayMillis(100, 1200) == null)
+        check(grants.grant("new-rating-key", 500, 100, 2000))
+        grants.restrictEnd(200, 100, 2000)
+        grants.restrictEnd(800, 101, 2001)
+        check(grants.contains("new-rating-key", 199, 2099))
+        check(!grants.contains("new-rating-key", 200, 2100))
     }
 
     private fun aribService(
