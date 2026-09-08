@@ -70,17 +70,19 @@ impl CodecDescriptorFacts {
     pub fn is_resolved(&self) -> bool {
         !self.malformed
             && (self.mpeg4_audio_profile_and_level != Some(0xff) || self.audio_extension.is_some())
-            && !matches!(self.audio_candidates(), (Some(left), Some(right)) if left != right)
+            && !matches!(self.audio_candidates(), (Some(left), Some(right))
+                if (left == "MPEG-4-ALS") != (right == "MPEG-4-ALS"))
     }
 
     pub fn audio_codec(&self) -> Option<&'static str> {
         if !self.is_resolved() {
             return None;
         }
-        match self.audio_candidates() {
-            (_, Some(codec)) | (Some(codec), _) => Some(codec),
-            _ => None,
-        }
+        let (base, extension) = self.audio_candidates();
+        [base, extension]
+            .into_iter()
+            .flatten()
+            .max_by_key(|codec| audio_codec_rank(codec))
     }
 
     fn audio_candidates(&self) -> (Option<&'static str>, Option<&'static str>) {
@@ -92,20 +94,37 @@ impl CodecDescriptorFacts {
             {
                 Some("MPEG-4-ALS")
             } else {
-                extension
-                    .header
-                    .and_then(|header| match header.audio_object_type {
-                        2 => Some("AAC-LC"),
-                        5 => Some("HE-AAC"),
-                        36 => Some("MPEG-4-ALS"),
+                let profile = extension
+                    .profile_level_indications
+                    .iter()
+                    .filter_map(|value| match value {
+                        0x28..=0x2b | 0x50..=0x51 => Some("AAC-LC"),
+                        0x2c..=0x2f | 0x52..=0x53 => Some("HE-AAC"),
+                        0x30..=0x33 | 0x54..=0x55 => Some("HE-AAC-v2"),
                         _ => None,
                     })
+                    .max_by_key(|codec| audio_codec_rank(codec));
+                let asc = extension
+                    .header
+                    .and_then(|header| match header.audio_object_type {
+                        // 共通先頭部だけでは後続の暗黙SBR/PS拡張が無いと断定しない。
+                        2 => Some("AAC"),
+                        5 => Some("HE-AAC"),
+                        29 => Some("HE-AAC-v2"),
+                        36 => Some("MPEG-4-ALS"),
+                        _ => None,
+                    });
+                [profile, asc]
+                    .into_iter()
+                    .flatten()
+                    .max_by_key(|codec| audio_codec_rank(codec))
             }
         });
         let descriptor_codec = match self.mpeg4_audio_profile_and_level {
-            Some(0x50..=0x53) => Some("AAC-LC"),
-            Some(0x58..=0x5b) => Some("HE-AAC"),
-            Some(0x60..=0x63) => Some("HE-AAC-v2"),
+            Some(0x50..=0x55) => Some("AAC-LC"),
+            Some(0x58..=0x5d) => Some("HE-AAC"),
+            Some(0x60..=0x65) => Some("HE-AAC-v2"),
+            Some(0x98) => Some("MPEG-4-ALS"),
             _ => None,
         };
         (descriptor_codec, extension_codec)
@@ -129,6 +148,16 @@ impl CodecDescriptorFacts {
             ));
         }
         (!facts.is_empty()).then(|| facts.join(";"))
+    }
+}
+
+fn audio_codec_rank(codec: &str) -> u8 {
+    match codec {
+        "AAC" => 0,
+        "AAC-LC" => 1,
+        "HE-AAC" => 2,
+        "HE-AAC-v2" => 3,
+        _ => 4,
     }
 }
 
@@ -165,10 +194,14 @@ fn parse_audio_extension(body: &[u8]) -> Option<Mpeg4AudioExtension> {
         Some(bytes) => Some(parse_asc_header(bytes)?),
         None => None,
     };
-    if profiles
+    let als_profile = profiles
         .iter()
-        .any(|value| matches!(value, 0x3c | 0x5a..=0x5c))
-        && header.is_some_and(|header| header.audio_object_type != 36)
+        .any(|value| matches!(value, 0x3c | 0x5a..=0x5c));
+    let aac_profile = profiles
+        .iter()
+        .any(|value| matches!(value, 0x28..=0x33 | 0x50..=0x55));
+    if (als_profile && (aac_profile || header.is_some_and(|header| header.audio_object_type != 36)))
+        || (aac_profile && header.is_some_and(|header| header.audio_object_type == 36))
     {
         return None;
     }
@@ -184,11 +217,12 @@ fn parse_asc_header(bytes: &[u8]) -> Option<AudioSpecificConfigHeader> {
     let audio_object_type = bits.object_type()?;
     let sampling_frequency = bits.frequency()?;
     let channel_configuration = bits.read(4)? as u8;
-    let (extension_sampling_frequency, core_audio_object_type) = if audio_object_type == 5 {
-        (Some(bits.frequency()?), Some(bits.object_type()?))
-    } else {
-        (None, None)
-    };
+    let (extension_sampling_frequency, core_audio_object_type) =
+        if matches!(audio_object_type, 5 | 29) {
+            (Some(bits.frequency()?), Some(bits.object_type()?))
+        } else {
+            (None, None)
+        };
     Some(AudioSpecificConfigHeader {
         audio_object_type,
         sampling_frequency,
@@ -263,12 +297,29 @@ mod tests {
             facts.observe(0x2e, &[0x71, profile]);
             assert_eq!(facts.audio_codec(), Some("MPEG-4-ALS"));
         }
+        for (profile, codec) in [
+            (0x28, "AAC-LC"),
+            (0x2c, "HE-AAC"),
+            (0x30, "HE-AAC-v2"),
+            (0x50, "AAC-LC"),
+            (0x53, "HE-AAC"),
+            (0x55, "HE-AAC-v2"),
+        ] {
+            let mut facts = extension.clone();
+            facts.observe(0x2e, &[0x71, profile]);
+            assert_eq!(facts.audio_codec(), Some(codec));
+        }
+        let mut conflict = extension;
+        conflict.observe(0x2e, &[0x72, 0x3c, 0x2c]);
+        assert!(!conflict.is_resolved());
     }
     #[test]
     fn asc_preserves_bytes_and_bounded_header_without_inventing_config() {
         let mut facts = CodecDescriptorFacts::default();
         facts.observe(0x2e, &[0xf0, 2, 0x11, 0x90]);
-        assert_eq!(facts.audio_codec(), Some("AAC-LC"));
+        assert_eq!(facts.audio_codec(), Some("AAC"));
+        facts.observe(0x1c, &[0x58]);
+        assert_eq!(facts.audio_codec(), Some("HE-AAC"));
         let extension = facts.audio_extension.unwrap();
         assert_eq!(extension.audio_specific_config_hex.as_deref(), Some("1190"));
         let header = extension.header.unwrap();
@@ -280,6 +331,16 @@ mod tests {
             assert!(parse_audio_extension(bytes).is_none());
         }
         assert!(parse_asc_header(&[0xff]).is_none());
+        let he = parse_asc_header(&[0x2b, 0x11, 0x88, 0]).unwrap();
+        assert_eq!(
+            (
+                he.audio_object_type,
+                he.sampling_frequency,
+                he.extension_sampling_frequency,
+                he.core_audio_object_type
+            ),
+            (5, 24000, Some(48000), Some(2))
+        );
     }
     #[test]
     fn unsupported_and_malformed_signaling_does_not_become_a_known_profile() {

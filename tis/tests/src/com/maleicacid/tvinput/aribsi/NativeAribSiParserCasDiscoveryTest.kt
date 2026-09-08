@@ -22,7 +22,7 @@ class NativeAribSiParserCasDiscoveryTest {
             check(avc.codecFacts.avc == AribAvcSignaling(100, 0, 40))
             check(service.streams[1].codec == "MPEG-4-ALS")
             val aac = service.streams[2]
-            check(aac.codec == "AAC-LC" && aac.codecFacts.audioConfigHex == "1190")
+            check(aac.codec == "AAC" && aac.codecFacts.audioConfigHex == "1190")
             check(aac.codecFacts.audioConfigHeader?.samplingFrequency == 48000)
             val components = ProviderDataBridge.toComponentsObject(AribComponentProjectionPolicy.componentsForService(service))
             check(components.getJSONArray("video").getJSONObject(0).getString("profileLevel").contains("level_idc=40"))

@@ -6,6 +6,8 @@
 
 ## r51_pr85_stack_independent_startup_deadline
 
+- TIS-041/R07に関連するADTS設定を放送ASCへ接続し、HE-AAC拡張周波数・profileと8ch構成を正しく渡す。未解決PCEを1chへ捏造しない。decoder callback設定失敗も生成済みdecoderのrollbackへ含める。
+
 - TIS-025/N06に関連する一時解除の期限を受理時点へ固定。終了時刻変更・時計後退・event_id再使用で延命せず、期限時の実再評価とretune/releaseでのタイマー失効を接続した。
 
 - AVC記述子とSPSの整合を検証し、MediaFormatのprofile/level・寸法・音声構成に対応する実decoderを選択。PMT codec根拠をEIT統合時にも保存し、ALS・未解決音声を再生選択から除外。

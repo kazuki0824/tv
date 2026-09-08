@@ -351,7 +351,7 @@ class PlaybackPipeline(
             null
         }
         if (audioExpected) {
-            audioDecoder = AudioDecoderPipeline(audioKind!!, selection.audioComponentType ?: requireNotNull(audio).componentType, selection.dualMonoPresentation, streamVolume, startGeneration) { reason, detail ->
+            audioDecoder = AudioDecoderPipeline(audioKind!!, requireNotNull(audio), selection.audioComponentType ?: requireNotNull(audio).componentType, selection.dualMonoPresentation, streamVolume, startGeneration) { reason, detail ->
                 if (startGeneration == playbackGeneration) handleAudioFailure(reason, detail, audioOnly)
             }
         }
@@ -949,41 +949,42 @@ class PlaybackPipeline(
             } catch (error: java.io.IOException) {
                 throw IllegalStateException("decoder生成に失敗しました: $decoderName", error)
             }
-            decoder.setCallback(object : MediaCodec.Callback() {
-                override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {
-                    enqueuePlaybackAction {
-                        if (generation != playbackGeneration || this@DecoderPipeline.codec !== codec) return@enqueuePlaybackAction
-                        availableInputIndexes.addLast(index)
-                        drainPendingInput()
-                    }
-                }
-                override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
-                    enqueuePlaybackAction {
-                        if (generation != playbackGeneration || this@DecoderPipeline.codec !== codec) {
-                            runCatching { codec.releaseOutputBuffer(index, false) }
-                            return@enqueuePlaybackAction
-                        }
-                        if (info.size > 0) {
-                            startupDeadline?.onFirstOutput()
-                            startupTimeout?.let(mainHandler::removeCallbacks)
-                            startupTimeout = null
-                            backpressureStartedAtMs = null
-                        }
-                        onOutput(codec, index, info)
-                    }
-                }
-                override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
-                    enqueuePlaybackAction {
-                        if (generation == playbackGeneration && this@DecoderPipeline.codec === codec) onOutputFormatChanged(format)
-                    }
-                }
-                override fun onError(codec: MediaCodec, error: MediaCodec.CodecException) {
-                    enqueuePlaybackAction {
-                        if (generation == playbackGeneration && this@DecoderPipeline.codec === codec) onDecoderFailure(error)
-                    }
-                }
-            }, codecCallbackHandler)
             try {
+                decoder.setCallback(object : MediaCodec.Callback() {
+                    override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {
+                        enqueuePlaybackAction {
+                            if (generation != playbackGeneration || this@DecoderPipeline.codec !== codec) return@enqueuePlaybackAction
+                            availableInputIndexes.addLast(index)
+                            drainPendingInput()
+                        }
+                    }
+                    override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
+                        enqueuePlaybackAction {
+                            if (generation != playbackGeneration || this@DecoderPipeline.codec !== codec) {
+                                runCatching { codec.releaseOutputBuffer(index, false) }
+                                return@enqueuePlaybackAction
+                            }
+                            if (info.size > 0) {
+                                startupDeadline?.onFirstOutput()
+                                startupTimeout?.let(mainHandler::removeCallbacks)
+                                startupTimeout = null
+                                backpressureStartedAtMs = null
+                            }
+                            onOutput(codec, index, info)
+                        }
+                    }
+                    override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
+                        enqueuePlaybackAction {
+                            if (generation == playbackGeneration && this@DecoderPipeline.codec === codec) onOutputFormatChanged(format)
+                        }
+                    }
+                    override fun onError(codec: MediaCodec, error: MediaCodec.CodecException) {
+                        enqueuePlaybackAction {
+                            if (generation == playbackGeneration && this@DecoderPipeline.codec === codec) onDecoderFailure(error)
+                        }
+                    }
+                }, codecCallbackHandler)
+
                 decoder.configure(format, decoderOutputSurface(), null, MediaCodec.CONFIGURE_FLAG_USE_BLOCK_MODEL)
                 onDecoderPrepared(decoder)
                 decoder.start()
@@ -1096,6 +1097,7 @@ class PlaybackPipeline(
 
     private inner class AudioDecoderPipeline(
         private val kind: AudioCodecKind,
+        private val stream: AribElementaryStream,
         private val componentType: Int?,
         initialDualMonoPresentation: DualMonoPresentation,
         initialVolume: Float,
@@ -1120,14 +1122,16 @@ class PlaybackPipeline(
         override fun codecMime(): String = kind.mime
         override fun decoderOutputSurface(): Surface? = null
         override fun formatFromBufferedHeader(bytes: ByteArray): MediaFormat? = when (kind) {
-            AudioCodecKind.AAC_ADTS -> EsHeaderParser.adtsAacFormat(bytes)
+            AudioCodecKind.AAC_ADTS -> CodecFormatPolicy.adtsAudioFormat(bytes, stream.codecFacts, stream.codec)
             AudioCodecKind.MPEG1, AudioCodecKind.MPEG2 -> EsHeaderParser.mpegAudioFormat(bytes)
         }
         override fun onDecoderConfigured(format: MediaFormat) {
             outputSampleRate = getIntegerOrDefault(format, MediaFormat.KEY_SAMPLE_RATE, DEFAULT_AUDIO_SAMPLE_RATE)
             outputChannels = getIntegerOrDefault(format, MediaFormat.KEY_CHANNEL_COUNT, DEFAULT_AUDIO_CHANNEL_COUNT)
         }
-        override fun onDecoderFailure(error: RuntimeException) { errorSink(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, error.message.orEmpty()) }
+        override fun onDecoderFailure(error: RuntimeException) {
+            errorSink(if (error is UnsupportedCodecFormat) PlaybackUnavailableReason.UNSUPPORTED_AUDIO_STREAM else PlaybackUnavailableReason.AUDIO_UNAVAILABLE, error.message.orEmpty())
+        }
         override fun onCodecConfigTimeout() { errorSink(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "audio decoder 構成に必要な ES header が見つかりません") }
         override fun onBackpressureDeadline(detail: String) { errorSink(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "DECODER_BACKPRESSURE_TIMEOUT $detail") }
         override fun onOutputFormatChanged(format: MediaFormat) {
@@ -1349,7 +1353,6 @@ class PlaybackPipeline(
     }
 
     private object EsHeaderParser {
-        private val sampleRates = intArrayOf(96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350)
         private val AVC_SAR_TABLE = mapOf(1 to (1 to 1), 2 to (12 to 11), 3 to (10 to 11), 4 to (16 to 11), 5 to (40 to 33), 6 to (24 to 11), 7 to (20 to 11), 8 to (32 to 11), 9 to (80 to 33), 10 to (18 to 11), 11 to (15 to 11), 12 to (64 to 33), 13 to (160 to 99), 14 to (4 to 3), 15 to (3 to 2), 16 to (2 to 1))
         fun mpeg2VideoFormat(bytes: ByteArray): MediaFormat? {
             val pos = findStartCode(bytes, 0xb3) ?: return null
@@ -1414,10 +1417,8 @@ class PlaybackPipeline(
         }
         private fun skipScalingList(bits: BitReader, size: Int) { var lastScale = 8; var nextScale = 8; repeat(size) { if (nextScale != 0) nextScale = (lastScale + bits.readSE() + 256) % 256; lastScale = if (nextScale == 0) lastScale else nextScale } }
         private class BitReader(private val bytes: ByteArray) { private var bitOffset = 0; fun readBit(): Int = readBits(1); fun readBits(count: Int): Int { var value = 0; repeat(count) { val byteIndex = bitOffset / 8; require(byteIndex < bytes.size) { "SPS bitstream ended" }; val bitIndex = 7 - (bitOffset % 8); value = (value shl 1) or ((bytes[byteIndex].toInt() ushr bitIndex) and 1); bitOffset++ }; return value }; fun readUE(): Int { var zeros = 0; while (readBit() == 0) zeros++; return if (zeros == 0) 0 else ((1 shl zeros) - 1) + readBits(zeros) }; fun readSE(): Int { val codeNum = readUE(); val value = (codeNum + 1) / 2; return if (codeNum % 2 == 0) -value else value } }
-        fun adtsAacFormat(bytes: ByteArray): MediaFormat? { val header = findAdtsHeader(bytes) ?: return null; val sampleRate = sampleRates.getOrNull(header.frequencyIndex) ?: return null; val asc0 = ((2 shl 3) or (header.frequencyIndex ushr 1)).toByte(); val asc1 = (((header.frequencyIndex and 1) shl 7) or (header.channelConfig shl 3)).toByte(); return MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, header.channelConfig.coerceAtLeast(1)).apply { setInteger(MediaFormat.KEY_IS_ADTS, 1); setByteBuffer("csd-0", ByteBuffer.wrap(byteArrayOf(asc0, asc1))) } }
         fun mpegAudioFormat(bytes: ByteArray): MediaFormat? { val offset = (0 until bytes.size - 3).firstOrNull { i -> (bytes[i].toInt() and 0xff) == 0xff && (bytes[i + 1].toInt() and 0xe0) == 0xe0 } ?: return null; val b2 = bytes[offset + 2].toInt() and 0xff; val b3 = bytes[offset + 3].toInt() and 0xff; val version = (bytes[offset + 1].toInt() ushr 3) and 0x03; val sampleRateIndex = (b2 ushr 2) and 0x03; val channelMode = (b3 ushr 6) and 0x03; val base = when (sampleRateIndex) { 0 -> 44100; 1 -> 48000; 2 -> 32000; else -> return null }; val sampleRate = when (version) { 3 -> base; 2 -> base / 2; 0 -> base / 4; else -> base }; val channels = if (channelMode == 3) 1 else 2; return MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_MPEG, sampleRate, channels) }
-        private data class AdtsHeader(val frequencyIndex: Int, val channelConfig: Int)
-        private fun findAdtsHeader(bytes: ByteArray): AdtsHeader? { for (i in 0 until bytes.size - 7) if ((bytes[i].toInt() and 0xff) == 0xff && (bytes[i + 1].toInt() and 0xf0) == 0xf0) { val freqIndex = (bytes[i + 2].toInt() ushr 2) and 0x0f; val channelConfig = ((bytes[i + 2].toInt() and 0x01) shl 2) or ((bytes[i + 3].toInt() ushr 6) and 0x03); return AdtsHeader(freqIndex, channelConfig) }; return null }
+
         private fun findStartCode(bytes: ByteArray, code: Int): Int? { for (i in 0 until bytes.size - 4) if (bytes[i] == 0.toByte() && bytes[i + 1] == 0.toByte() && bytes[i + 2] == 1.toByte() && (bytes[i + 3].toInt() and 0xff) == code) return i; return null }
         private fun findNal(bytes: ByteArray, nalType: Int): ByteArray? { var i = 0; while (i + 3 < bytes.size) { val prefixLength = when { i + 3 < bytes.size && bytes[i] == 0.toByte() && bytes[i + 1] == 0.toByte() && bytes[i + 2] == 0.toByte() && bytes[i + 3] == 1.toByte() -> 4; i + 2 < bytes.size && bytes[i] == 0.toByte() && bytes[i + 1] == 0.toByte() && bytes[i + 2] == 1.toByte() -> 3; else -> { i++; continue } }; if (i + prefixLength >= bytes.size) return null; val start = i; val nalHeader = bytes[i + prefixLength].toInt() and 0x1f; i += prefixLength + 1; while (i < bytes.size && !isStartCode(bytes, i)) i++; if (nalHeader == nalType) return bytes.copyOfRange(start, i) }; return null }
         private fun isStartCode(bytes: ByteArray, i: Int): Boolean = i + 2 < bytes.size && bytes[i] == 0.toByte() && bytes[i + 1] == 0.toByte() && (bytes[i + 2] == 1.toByte() || (i + 3 < bytes.size && bytes[i + 2] == 0.toByte() && bytes[i + 3] == 1.toByte()))

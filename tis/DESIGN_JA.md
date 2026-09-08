@@ -598,6 +598,8 @@ ISO/IEC 14496-2 Visual、JPEG 2000、auxiliary video、SVC、MVC、3D additional
 
 ### audio codec
 
+ADTSの構成は有限header probeから読み、LCのobject type、周波数index、channel_configurationを検査する。PMTにASCがある場合は共通先頭部とADTSの周波数・channel_configurationを照合し、元のASC bytesを`csd-0`へ渡す。HE-AACの明示SBRは拡張周波数を使い、放送profileをMediaCodec能力照合へ渡す。ASC先頭がAOT=2であることだけを根拠に後続の暗黙SBR/PSが無いとは断定しない。channel_configuration=7は8ch、0はPCEによる構成未確定であり、1chへ丸めない。現在のTISはPCEからの構成抽出とHE-AAC-v2の入力設定を完了しておらず、明示unsupportedとして扱う。この制限をMPEG-4音声形式全体の再生成立・実機適合の合格根拠にしない。
+
 | codec | 追加認識時の扱い |
 |---|---|
 | MPEG-2 AAC | 必須対応。ADTS / MPEG-2 AAC LC、channel count、sample rate、ISO639 language、main/sub、dual mono、音声モード、音質表示を保持する。 |

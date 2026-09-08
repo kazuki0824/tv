@@ -1,5 +1,7 @@
 # r51_pr85_stack_epg_policy_boundary
 
+- MPEG-4音声の拡張profile番号をISO原表で追加照合。階層的AAC profileの併存とASCのcore AOTを区別し、暗黙SBR/PSの不存在を推測しない。
+
 - TIS-015/U-07/N07に関連するactual/otherの必須scopeを修正。他TSのPMTや現在TSのSDT-otherを待ち続ける条件を除去し、NIT-otherは観測全instanceの完成を要求。同一版PMT矛盾では旧ES/CA事実も退役。
 
 - TIS-041/SI-012に関連するcodec記述子の型付き事実を追加。AVC profile/level、MPEG-4音声の別体系profile、ALS、ASC原bytesを通常snapshotとprovider投影へ接続し、不正・未知の音声をAACへ昇格しない。

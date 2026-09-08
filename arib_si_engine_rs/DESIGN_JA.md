@@ -406,6 +406,8 @@ TSの伝送構文、`table_id`別のsection長上限、CRCとraw配送条件、�
 
 ### codec capability・欠損値・CA cross-check・section整合性
 
+MPEG-4音声profileの追加認識値は[ISO/IEC 14496-3:2005 Amd.2 Table 1.12](https://cdn.standards.iteh.ai/samples/43026/aeba7c20bf6840adb0879f6ded05058c/ISO-IEC-14496-3-2005-Amd-2-2006.pdf)、[2009 Amd.4 Table 1.14](https://cdn.standards.iteh.ai/samples/63022/36daade44b0240feade0f9639666ebe5/ISO-IEC-14496-3-2009-Amd-4-2013.pdf)、通常記述子は[H.222.0 (2014) Amd.4 Table 2-72](https://www.itu.int/rec/dologin_pub.asp?id=T-REC-H.222.0-201607-S%21Amd4%21PDF-E&lang=e&type=items)を根拠とする。AAC/HE-AAC/HE-AAC-v2の階層的な複数profile表示は併存でき、最も具体的な認識名と原値列を保持する。ASC共通先頭部AOT=2単独では後続SBR/PSの不存在を証明しないため、外側profile不明時のcodec名はAACとする。ALSとAACの矛盾した同時指定は未解決にする。
+
 SI収集のactual TSは現在collectionで受理したPATのTSIDを基準にする。SDT actual / NIT actual / PMTの必須scopeはそのTSへ限定し、観測した他TSをSDT actualやPMTの必須対象にしない。profileが要求するSDT-otherは、NIT・SDT等から観測した他TS集合について評価する。必要な他TSをまだ観測していない場合も未完成を返す。NIT-otherは他networkの表であるため、現在TSを含むことを要求せず、少なくとも1 instanceを受信し、観測した全instanceが完成・無矛盾であることを要求する。未観測networkを含む全国の表の完全収集を意味しない。collectionの固定対象・期限はTISの操作契約で扱う。
 
 PMTの構文解析済み事実とsection instance完成は別条件とし、必要表の完成には両方を要求する。同一版の矛盾を検出した場合は旧PMTのES・CA事実も退役し、同じ版の再送で復帰させない。新しい受理可能な版で再解析・完成するまで未完成を保つ。

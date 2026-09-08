@@ -16,7 +16,7 @@ object TunerSelectionPolicy {
     fun isSupportedAudioStreamType(streamType: Int): Boolean = streamType in audioStreamTypes
     fun isSupportedAudioStream(stream: AribElementaryStream): Boolean =
         isSupportedAudioStreamType(stream.streamType) && stream.codecFacts.resolved &&
-            stream.codec != "MPEG-4-ALS" && stream.codec != "MPEG-4-Audio"
+            stream.codec != "MPEG-4-ALS" && stream.codec != "MPEG-4-Audio" && stream.codec != "HE-AAC-v2"
     fun selectVideo(streams: List<AribElementaryStream>, componentGroupTags: Set<Int>? = null): AribElementaryStream? =
         selectDefault(streams.filter { isSupportedVideoStreamType(it.streamType) }, DEFAULT_VIDEO_COMPONENT_TAG, componentGroupTags)
 
