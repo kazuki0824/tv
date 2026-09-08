@@ -360,6 +360,7 @@ class PlaybackPipeline(
                 return StartResult.failedAfterRestart(startGeneration, diagnostics)
             }
             videoFilter = openedVideo
+            videoDecoderLocal.armStartupDeadline()
             diagnostics += "videoPid=${video.elementaryPid}"
             diagnostics += "videoCodec=$videoKind"
         }
@@ -374,6 +375,7 @@ class PlaybackPipeline(
                 .getOrNull()
             if (openedAudio != null) {
                 audioFilter = openedAudio
+                audioDecoder?.armStartupDeadline()
                 audioStarted = true
                 diagnostics += "audioPid=${audio.elementaryPid}"
                 diagnostics += "audioCodec=$audioKind"
@@ -842,8 +844,31 @@ class PlaybackPipeline(
         private val availableInputIndexes = java.util.ArrayDeque<Int>()
         protected abstract val budget: PlaybackBudget
         protected abstract val generation: Long
-        private var firstOutputSeen = false
+        private var startupDeadline: DecoderStartupDeadline? = null
+        private var startupTimeout: Runnable? = null
         private var backpressureStartedAtMs: Long? = null
+
+        fun armStartupDeadline() {
+            check(startupDeadline == null)
+            val deadline = DecoderStartupDeadline(SystemClock.elapsedRealtime(), budget.decoderStartupDeadlineMs)
+            startupDeadline = deadline
+            val timeout = Runnable {
+                enqueuePlaybackAction {
+                    if (generation != playbackGeneration || startupDeadline !== deadline) return@enqueuePlaybackAction
+                    val expired = deadline.expire(SystemClock.elapsedRealtime()) ?: return@enqueuePlaybackAction
+                    val detail = "DECODER_STARTUP_TIMEOUT stage=$expired deadlineMs=${budget.decoderStartupDeadlineMs}"
+                    if (this@DecoderPipeline is AudioDecoderPipeline) {
+                        handleAudioFailure(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, detail, activeChannel?.serviceType == SERVICE_TYPE_DIGITAL_AUDIO)
+                    } else {
+                        val reason = if (expired == DecoderStartupDeadline.Stage.CONFIGURATION) PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT else PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT
+                        emitUnavailableForGeneration(generation, reason, detail)
+                        stopOnPlaybackExecutor()
+                    }
+                }
+            }
+            startupTimeout = timeout
+            check(mainHandler.postDelayed(timeout, budget.decoderStartupDeadlineMs)) { "decoder起動期限を予約できません" }
+        }
 
         fun queue(sample: MediaSample) {
             try {
@@ -859,7 +884,7 @@ class PlaybackPipeline(
                     releaseMediaEvent(sample.event)
                     val nowMs = SystemClock.elapsedRealtime()
                     val startedAtMs = backpressureStartedAtMs ?: nowMs.also { backpressureStartedAtMs = it }
-                    val deadlineMs = if (firstOutputSeen) budget.steadyBackpressureDeadlineMs else budget.decoderStartupDeadlineMs
+                    val deadlineMs = if (startupDeadline?.firstOutputSeen == true) budget.steadyBackpressureDeadlineMs else budget.decoderStartupDeadlineMs
                     val reason = "PENDING_QUEUE_FULL bytes=${pendingSamples.sumOf { it.size }} samples=${pendingSamples.size} blockedMs=${nowMs - startedAtMs} deadlineMs=$deadlineMs"
                     onSampleRejected(reason)
                     if (backpressureDeadlineReached(startedAtMs, nowMs, deadlineMs)) {
@@ -929,7 +954,9 @@ class PlaybackPipeline(
                             return@enqueuePlaybackAction
                         }
                         if (info.size > 0) {
-                            firstOutputSeen = true
+                            startupDeadline?.onFirstOutput()
+                            startupTimeout?.let(mainHandler::removeCallbacks)
+                            startupTimeout = null
                             backpressureStartedAtMs = null
                         }
                         onOutput(codec, index, info)
@@ -951,6 +978,7 @@ class PlaybackPipeline(
                 onDecoderPrepared(decoder)
                 decoder.start()
                 onDecoderConfigured(format)
+                startupDeadline?.onConfigured()
                 return decoder
             } catch (error: RuntimeException) {
                 resourceCleanup.release("decoder configuration rollback") { decoder.release() }
@@ -1002,6 +1030,9 @@ class PlaybackPipeline(
         }
 
         override fun close() {
+            startupDeadline?.close()
+            startupTimeout?.let(mainHandler::removeCallbacks)
+            startupTimeout = null
             clearPending()
             availableInputIndexes.clear()
             val decoder = codec

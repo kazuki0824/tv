@@ -355,6 +355,7 @@ data class DescriptorDiagnostic(
 )
 
 data class AribEpgUpdateWindow(
+    val sectionNumber: Int = 0,
     val serviceKey: ServiceKey,
     val windowStartMillis: Long,
     val windowEndMillis: Long,
@@ -428,6 +429,7 @@ data class TransportKey(
 }
 
 data class ProgramPublishSnapshot(
+    val eitInstanceStates: List<EitInstanceState> = emptyList(),
     val ingestSequence: Long,
     val events: List<AribEvent>,
     val updateWindows: List<EpgUpdateWindow>,
@@ -447,6 +449,7 @@ data class TableRequirementStatus(
 )
 
 data class ServiceRegistrationSnapshot(
+    val eitInstanceStates: List<EitInstanceState> = emptyList(),
     val discoveryStage: Int,
     val tableRequirements: List<TableRequirementStatus>,
     val services: List<AribService>,
@@ -526,3 +529,17 @@ data class CaMetadata(
         return result
     }
 }
+
+/** 収集世代に属する放送表の状態。公開する表の選択はTISが行う。 */
+data class EitInstanceState(
+    val serviceKey: ServiceKey,
+    val tableId: Int,
+    val version: Int,
+    val currentNextIndicator: Boolean,
+    val lastSectionNumber: Int,
+    val receivedSections: List<Int>,
+    val missingSections: List<Int>,
+    val safeSections: List<Int>,
+    val complete: Boolean,
+    val inconsistent: Boolean,
+)

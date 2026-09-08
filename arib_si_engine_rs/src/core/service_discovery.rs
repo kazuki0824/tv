@@ -5,7 +5,6 @@ use crate::ca_descriptor::{
 };
 use crate::discovery_requirements::{optional_table_requirement, DiscoveryProfile};
 use crate::eit::{EitEvent, EitStore, EitUpdateWindow};
-use crate::eit_publish_policy::is_program_publish_eit_section;
 use crate::sections::{
     parse_section_header, section_crc_valid, section_has_malformed_descriptor_loop,
 };
@@ -237,7 +236,7 @@ impl DiscoveryCollectionState {
     }
 
     pub fn is_partially_complete(&self) -> bool {
-        !self.snapshot.services.is_empty()
+        self.table_requirements.iter().any(|status| status.required && status.complete)
     }
 
     pub fn publish_stage(&self) -> DiscoveryPublishStage {
@@ -1082,9 +1081,7 @@ impl ServiceDiscoveryCollector {
         }
         self.track_section(pid, section);
         self.track_transport_scopes(section);
-        if is_program_publish_eit_section(self.discovery_profile, pid, section) {
-            self.engine.push_section(pid, section);
-        }
+        self.engine.push_section(pid, section);
     }
 
     pub fn events(&self) -> Vec<EitEvent> {
@@ -1208,14 +1205,20 @@ impl ServiceDiscoveryCollector {
                 });
             }
         }
-        table_requirements.push(TableRequirementStatus {
-            component: "BAT",
-            original_network_id: None,
-            transport_stream_id: None,
-            service_id: None,
-            required: false,
-            complete: bat_complete,
-        });
+        let bat_scopes: BTreeSet<_> = self.bat_transport_scopes.values().flatten().copied().collect();
+        if bat_scopes.is_empty() {
+            table_requirements.push(TableRequirementStatus {
+                component: "BAT", original_network_id: None, transport_stream_id: None,
+                service_id: None, required: false, complete: bat_complete,
+            });
+        } else {
+            for (tsid, onid) in bat_scopes {
+                table_requirements.push(TableRequirementStatus {
+                    component: "BAT", original_network_id: Some(onid), transport_stream_id: Some(tsid),
+                    service_id: None, required: false, complete: self.bat_complete_for_transport(onid, tsid),
+                });
+            }
+        }
         if snapshot.services.is_empty() && snapshot.pmt_pids_by_service.is_empty() {
             table_requirements.push(TableRequirementStatus {
                 component: "PMT",
@@ -1561,7 +1564,6 @@ impl ServiceDiscoveryCollector {
             })
     }
 
-    #[cfg(test)]
     fn bat_complete_for_transport(
         &self,
         original_network_id: u16,
@@ -2050,6 +2052,20 @@ mod tests {
     use super::{DiscoveryPublishStage, ServiceDiscoveryCollector, ServiceDiscoveryEngine};
     use crate::discovery_requirements::DiscoveryProfile;
     use crate::sections::crc32_mpeg;
+
+    #[test]
+    fn partial_stage_is_derived_from_required_tables_without_services() {
+        let mut state = DiscoveryCollectionState::default();
+        state.table_requirements = vec![
+            TableRequirementStatus { component: "PAT", original_network_id: None, transport_stream_id: None,
+                service_id: None, required: true, complete: true },
+            TableRequirementStatus { component: "PMT", original_network_id: None, transport_stream_id: None,
+                service_id: None, required: true, complete: false },
+        ];
+        assert_eq!(state.publish_stage(), DiscoveryPublishStage::Partial);
+        state.table_requirements[0].required = false;
+        assert_eq!(state.publish_stage(), DiscoveryPublishStage::Incomplete);
+    }
 
     #[test]
     fn scoped_table_completeness_does_not_mix_transport_scopes() {

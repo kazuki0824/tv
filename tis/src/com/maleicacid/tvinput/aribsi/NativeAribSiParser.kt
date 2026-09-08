@@ -10,6 +10,7 @@ import org.json.JSONObject
 
 class NativeAribSiParser : AutoCloseable {
     private data class NativeTransaction(
+        val eitInstanceStates: List<EitInstanceState>,
         val ingestSequence: Long,
         val discoveryStage: Int,
         val broadcastClock: AribBroadcastClockFact?,
@@ -48,6 +49,7 @@ class NativeAribSiParser : AutoCloseable {
     }
 
     private var handle: Long = nativeCreate()
+    private var discoveryProfile: Int = 0
 
     fun buildChannelProviderData(requestJson: String): String = nativeBuildChannelProviderData(requestJson)
     fun buildProgramProviderData(requestJson: String): String = nativeBuildProgramProviderData(requestJson)
@@ -68,6 +70,7 @@ class NativeAribSiParser : AutoCloseable {
         check(nativeSetDiscoveryProfile(handle, profile) == SiStatus.OK) {
             "SI discovery profileを設定できません profile=$profile"
         }
+        discoveryProfile = profile
     }
     @Synchronized
     fun takeProgramPublishSnapshot(): ProgramPublishSnapshot = buildProgramPublishSnapshot(readNativeTransaction(takeUpdateWindows = true))
@@ -79,6 +82,7 @@ class NativeAribSiParser : AutoCloseable {
     fun serviceRegistrationSnapshot(): ServiceRegistrationSnapshot {
         val snapshot = readNativeTransaction(takeUpdateWindows = false)
         return ServiceRegistrationSnapshot(
+            eitInstanceStates = snapshot.eitInstanceStates,
             discoveryStage = snapshot.discoveryStage,
             tableRequirements = snapshot.tableRequirements,
             services = snapshot.services,
@@ -120,8 +124,9 @@ class NativeAribSiParser : AutoCloseable {
 
     private fun buildProgramPublishSnapshot(snapshot: NativeTransaction): ProgramPublishSnapshot = ProgramPublishSnapshot(
         ingestSequence = snapshot.ingestSequence,
-        events = snapshot.events,
-        updateWindows = snapshot.epgUpdateWindows,
+        eitInstanceStates = snapshot.eitInstanceStates,
+        events = snapshot.events.filter { EpgSectionPolicy.accepts(discoveryProfile, it.source.tableId, it.source.sectionNumber) },
+        updateWindows = snapshot.epgUpdateWindows.filter { EpgSectionPolicy.accepts(discoveryProfile, 0x4e, it.sectionNumber) },
         semanticFactsByServiceKey = snapshot.serviceSemanticFacts.associateBy { it.serviceKey },
         descriptorDiagnostics = descriptorDiagnosticsFromEvents(snapshot.events),
         parserDiagnostics = snapshot.parserDiagnostics,
@@ -178,7 +183,7 @@ class NativeAribSiParser : AutoCloseable {
         val root = JSONObject(raw.ifBlank { "{}" })
         val serviceFacts = parseServiceSemanticFacts(root.optJSONArray("serviceSemanticFacts"))
         return NativeTransaction(
-            ingestSequence = root.optLong("ingestSequence", 0L),
+            eitInstanceStates = parseEitInstanceStates(root.optJSONArray("eitInstanceStates")),            ingestSequence = root.optLong("ingestSequence", 0L),
             discoveryStage = root.optInt("discoveryStage", SiDiscoveryStage.INCOMPLETE),
             broadcastClock = root.optJSONObject("broadcastClock")?.let { clock ->
                 val tableId = clock.optInt("tableId", -1)
@@ -607,12 +612,29 @@ private fun parseLinkage(array: JSONArray?): List<AribLinkage> = (0 until (array
         )
     }
 
+    private fun parseEitInstanceStates(array: JSONArray?): List<EitInstanceState> =
+        (0 until (array?.length() ?: 0)).map { index ->
+            val obj = array!!.getJSONObject(index)
+            fun numbers(name: String): List<Int> {
+                val values = obj.getJSONArray(name)
+                return (0 until values.length()).map(values::getInt)
+            }
+            EitInstanceState(
+                serviceKey = requireNotNull(serviceKeyFrom(obj)), tableId = obj.getInt("tableId"),
+                version = obj.getInt("version"), currentNextIndicator = obj.getBoolean("currentNextIndicator"),
+                lastSectionNumber = obj.getInt("lastSectionNumber"), receivedSections = numbers("receivedSections"),
+                missingSections = numbers("missingSections"), safeSections = numbers("safeSections"),
+                complete = obj.getBoolean("complete"), inconsistent = obj.getBoolean("inconsistent"),
+            )
+        }
+
     private fun parseEpgUpdateWindows(array: JSONArray?): List<AribEpgUpdateWindow> = (0 until (array?.length() ?: 0)).mapNotNull { index ->
         val obj = array!!.optJSONObject(index) ?: return@mapNotNull null
         val key = serviceKeyFrom(obj) ?: return@mapNotNull null
         val start = obj.optLong("windowStartMillis", -1L)
         val end = obj.optLong("windowEndMillis", -1L)
         if (start < 0L || end <= start) null else AribEpgUpdateWindow(
+            sectionNumber = obj.getInt("sectionNumber"),
             serviceKey = key,
             windowStartMillis = start,
             windowEndMillis = end,

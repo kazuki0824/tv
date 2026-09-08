@@ -89,6 +89,7 @@ pub struct EitEventDiagnostic {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EitUpdateWindow {
+    pub section_number: u8,
     pub original_network_id: u16,
     pub transport_stream_id: u16,
     pub service_id: u16,
@@ -181,7 +182,7 @@ impl EitStore {
         let deletion_authoritative = header.table_id == 0x4e
             && malformed_event_keys.is_empty()
             && parsed.iter().all(|event| {
-                event.timing_state.has_stable_identity() && event.diagnostics.is_empty()
+                event.timing_state.has_stable_identity() && event.diagnostics.iter().all(|diagnostic| !diagnostic.parse_status.is_structural_error())
             });
         if parsed.is_empty() && !malformed_event_keys.is_empty() {
             // 不正 event だけの EIT section は、同じ section 内の既存有効 event を
@@ -262,7 +263,7 @@ impl EitStore {
                 .filter(|event| event.table_id == 0x4e && event.stable_identity().is_some())
                 .cloned()
                 .collect();
-            if let Some(window) = build_update_window(
+            if let Some(mut window) = build_update_window(
                 original_network_id,
                 transport_stream_id,
                 service_id,
@@ -270,10 +271,12 @@ impl EitStore {
                 &pf_actual_current_events,
                 deletion_authoritative,
             ) {
+                window.section_number = section_number;
                 self.last_update_windows.retain(|existing| {
                     !(existing.original_network_id == window.original_network_id
                         && existing.transport_stream_id == window.transport_stream_id
                         && existing.service_id == window.service_id
+                        && existing.section_number == window.section_number
                         && existing.window_start_millis == window.window_start_millis
                         && existing.window_end_millis == window.window_end_millis)
                 });
@@ -436,6 +439,7 @@ fn build_update_window(
     });
     valid_event_identities.dedup();
     Some(EitUpdateWindow {
+        section_number: 0,
         original_network_id: onid,
         transport_stream_id: tsid,
         service_id: sid,
@@ -524,21 +528,13 @@ pub fn parse_eit_section(section: &[u8]) -> Vec<EitEvent> {
                 descriptor_diagnostics: Vec::new(),
             });
         }
-        if !descriptors.diagnostics.is_empty() {
+        for diagnostic in &descriptors.diagnostics {
             diagnostics.push(EitEventDiagnostic {
                 event_identity: identity,
-                parse_status: if descriptor_truncated {
-                    DescriptorParseStatus::TruncatedDescriptor
-                } else {
-                    DescriptorParseStatus::MalformedLength
-                },
-                reason: if descriptor_truncated {
-                    "イベント記述子長がEIT section本文を超えています".to_string()
-                } else {
-                    "イベント記述子ループに不正な記述子があります".to_string()
-                },
-                malformed_descriptor_count: descriptors.diagnostics.len(),
-                descriptor_diagnostics: descriptors.diagnostics.clone(),
+                parse_status: diagnostic.parse_status,
+                reason: diagnostic.message.clone(),
+                malformed_descriptor_count: usize::from(diagnostic.parse_status.is_structural_error()),
+                descriptor_diagnostics: vec![diagnostic.clone()],
             });
         }
         out.push(EitEvent {
@@ -706,6 +702,21 @@ mod tests {
         body[1] = 0xf0 | (((section_length >> 8) & 0x0f) as u8);
         body[2] = (section_length & 0xff) as u8;
         body
+    }
+
+    #[test]
+    fn unknown_descriptor_keeps_status_and_does_not_block_deletion() {
+        let mut body = eit_body(1, &[(1, [0xee, 0x00, 0x12, 0x00, 0x00])]);
+        body[25] = 3;
+        body.extend_from_slice(&[0x90, 1, 7]);
+        body[2] = (body.len() - 3 + 4) as u8;
+        let section = section_with_crc(body);
+        let events = parse_eit_section(&section);
+        assert_eq!(events[0].diagnostics[0].parse_status, DescriptorParseStatus::UnsupportedValue);
+        assert_eq!(events[0].diagnostics[0].malformed_descriptor_count, 0);
+        let mut store = EitStore::default();
+        store.upsert_section(&section);
+        assert!(store.take_present_following_actual_update_windows()[0].deletion_authoritative);
     }
 
     #[test]

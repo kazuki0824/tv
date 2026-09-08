@@ -1,3 +1,11 @@
+# r51_pr85_review_20260909
+
+- EITの媒体別公開条件をRustの受理経路から除き、TISの公開時判定へ移した。更新区間へ元section番号を渡し、衛星の除外sectionから番組削除を行わない。
+- EITの表識別子、版、現用・次表、受信済み・欠落section、構造検査結果、完成・不整合を通常bulk JNIへ追加した。現用と次表を分け、版更新時は前版の受信状態を継承しない。
+- 未知記述子のUnsupportedValueと構文破損を区別し、診断を元の分類のまま保持する。構文破損だけが削除を抑止する。
+- DiscoveryのPartialを必須TableRequirementStatusの完成有無から導出し、BATの観測済みtransport範囲を任意要件として返す。
+- 反例試験を追加。手元にRustコンパイラがなくRust試験は未実施。Android build、atest、CTS/VTS、実波も未実施。
+
 # r51_pr85_diagnostic_language
 
 - SI U-24の残存するEIT・記述子診断本文を日本語へ統一。構造化status・field名は維持し、保存経路と共通fixtureも同時更新する。

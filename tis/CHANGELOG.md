@@ -1,3 +1,9 @@
+## r51_pr85_review_20260909
+
+- AV filter開始時にcodecごとの起動期限を予約し、入力が途絶えても期限を判定する。最初の非空出力、終了、世代失効で解除する。既存#91から現行設計への実装追従部分だけを移した。
+- EIT公開section条件をTISへ置き、Rust bulkの表完成状態を通常Kotlin snapshotへ渡す。
+- Kotlin本番・全試験ソースのコンパイル、起動期限と公開条件のJUnit 5件が成功。CI全件数を156へ更新。実JNIとの試験、Android build、atest、CTS/VTS、実機確認は手元では未実施。
+
 ## r51_pr85_cas_session_diagnostics
 
 - TIS-047: MediaCas plugin 自体を生成できない失敗を `PLUGIN_UNAVAILABLE`、plugin 生成後に session を開始できない失敗を `SESSION_OPEN_FAILED` として区別する。B25 の EMM 経路も同じ型付き分類を使用する。

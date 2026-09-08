@@ -15,6 +15,7 @@ use descriptors::{
     event_provider_fields, json_escape, DescriptorSectionScope,
 };
 use discovery_requirements::DiscoveryProfile;
+use maleicacid_arib_si_engine_core::eit_instances::{EitInstances, EitInstanceState};
 use eit::{EitEvent, EitStableEventIdentity, EitUpdateWindow};
 use jni::objects::{JByteArray, JObject, JString};
 use jni::sys::{jint, jlong, jstring};
@@ -67,6 +68,7 @@ fn si_module_is_healthy() -> bool {
 #[derive(Default)]
 struct ParserState {
     collector: ServiceDiscoveryCollector,
+    eit_instances: EitInstances,
     sections_seen: u64,
     last_status: jint,
     latest_broadcast_clock: Option<BroadcastClockFact>,
@@ -88,6 +90,7 @@ impl ParserState {
             return STATUS_INVALID_SECTION;
         }
 
+        if pid == 0x0012 { self.eit_instances.ingest(section); }
         self.sections_seen = self.sections_seen.saturating_add(1);
         let table_id = header.table_id;
         if pid == 0x0014 && matches!(table_id, 0x70 | 0x73) {
@@ -842,6 +845,7 @@ fn event_value(event: &EitEvent) -> serde_json::Value {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct EpgUpdateWindowDto {
+    section_number: u8,
     original_network_id: u16,
     transport_stream_id: u16,
     service_id: u16,
@@ -854,6 +858,7 @@ struct EpgUpdateWindowDto {
 impl From<&EitUpdateWindow> for EpgUpdateWindowDto {
     fn from(window: &EitUpdateWindow) -> Self {
         Self {
+            section_number: window.section_number,
             original_network_id: window.original_network_id,
             transport_stream_id: window.transport_stream_id,
             service_id: window.service_id,
@@ -1003,6 +1008,7 @@ struct BulkSnapshot {
     transport_semantic_facts: Vec<TransportSemanticFactsDto>,
     events: Vec<serde_json::Value>,
     epg_update_windows: Vec<EpgUpdateWindowDto>,
+    eit_instance_states: Vec<EitInstanceState>,
     service_semantic_facts: Vec<ServiceSemanticFactsDto>,
     parser_diagnostics: Vec<ParserDiagnosticDto>,
 }
@@ -1080,6 +1086,7 @@ fn bulk_snapshot_json(state: &mut ParserState, take_update_windows: bool) -> Str
             })
             .collect(),
         events: state.events().iter().map(event_value).collect(),
+        eit_instance_states: state.eit_instances.states(),
         epg_update_windows: epg_windows.iter().map(EpgUpdateWindowDto::from).collect(),
         service_semantic_facts: semantic_facts
             .iter()
@@ -1612,6 +1619,7 @@ mod tests {
     #[test]
     fn epg_update_window_json_exports_deletion_authoritative_for_tis() {
         let window = EitUpdateWindow {
+            section_number: 0,
             original_network_id: 4,
             transport_stream_id: 16625,
             service_id: 101,
