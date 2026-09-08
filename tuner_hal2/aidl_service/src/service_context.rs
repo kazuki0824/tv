@@ -910,6 +910,7 @@ impl AidlServiceContext {
         let current = self
             .callback_store_lock()?
             .frontend_registration_matches(handle, registration.generation());
+        drop(runtime);
         Ok(current.then_some(registration))
     }
 
