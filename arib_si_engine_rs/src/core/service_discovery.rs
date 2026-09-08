@@ -1000,6 +1000,13 @@ impl ServiceDiscoveryEngine {
 }
 
 impl ServiceDiscoveryCollector {
+    pub fn reset_collection(&mut self) {
+        *self = Self {
+            discovery_profile: self.discovery_profile,
+            ..Self::default()
+        };
+    }
+
     pub fn set_discovery_profile(&mut self, profile: DiscoveryProfile) {
         self.discovery_profile = profile;
     }

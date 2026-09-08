@@ -6,6 +6,8 @@
 
 ## r51_pr85_stack_independent_startup_deadline
 
+- 走査期限を単調時計へ変更し、SI collection上限の失敗statusを定義。
+
 - EIT instanceの完成・不足section・版状態を通常の登録用／EPG用snapshotで透過的に受け取る。
 
 - #87 D04 / TIS-AUD-05: AV filter開始からcodec別の起動期限を独立に予約し、無入力・少量入力・構成済み無出力でも終了する。audio-onlyは利用不能、audio-videoのaudio失敗はvideo-only新世代へ移る。初回出力とcloseで期限を解除し、flushで期限を延長しない。

@@ -5,6 +5,10 @@
 TIS は `TvInputService` としてシステムTVアプリから呼ばれ、Tuner HAL には Tuner SDK API 経由でアクセスする。HAL binder を直接呼ばない。
 TIS の setup / boot EPG sync / user unlock drain は、固定文字列や package 名を inputId とみなしてはならない。`TvInputManager.tvInputList` から自 `MaleicacidTvInputService` に一致する `TvInputInfo.id` を一意に解決し、その inputId だけを scan / sync / TvProvider writer へ渡す。解決不能または複数一致の場合、boot EPG sync は pending のまま延期し、setup scan は開始しない。
 
+### SI収集の期限と失敗境界
+
+走査の待機時間・安定待ち・最大期限は`SystemClock.elapsedRealtime()`の差で測り、端末の時刻補正に依存させない。SI境界のcollectionは`../arib_si_engine_rs/DESIGN_JA.md`の有限寿命・入力上限に従う。上限時に破棄されたsnapshotから登録完了・EPG完了を導出しない。継続視聴のdecoder資源寿命はSI collectionの再同期とは独立している。
+
 ## BS と CS110 の選局契約
 
 BSはIF周波数とAOSP Tuner公開契約のtyped stream selectorを保持する。通常のscan候補、channel保存、再選局ではbackend種別に依存せず、`STREAM_ID`のTSID `0..65534`だけを使用する。TISはpx4の相対slot、Linux DVBの`DTV_STREAM_ID`、HAL内部のbackend capabilityを取得・推測・保存しない。CS110は周波数帯だけでscan candidateとtune selectorを作り、stream selectorを保存しない。

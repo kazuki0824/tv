@@ -17,6 +17,7 @@ object SiStatus {
     const val JNI_ERROR = -6
     const val INTERNAL_ERROR = -7
     const val INVALID_DISCOVERY_PROFILE = -8
+    const val COLLECTION_LIMIT_EXCEEDED = -9
 }
 
 object SiDiscoveryStage {

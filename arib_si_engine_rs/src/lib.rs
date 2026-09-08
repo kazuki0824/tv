@@ -34,6 +34,7 @@ use std::collections::BTreeMap;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 const STATUS_OK: jint = 0;
 const STATUS_IGNORED_UNSUPPORTED_PID_OR_TABLE: jint = 1;
@@ -44,6 +45,10 @@ const STATUS_MALFORMED_DESCRIPTOR: jint = -4;
 const STATUS_JNI_ERROR: jint = -6;
 const STATUS_INTERNAL_ERROR: jint = -7;
 const STATUS_INVALID_DISCOVERY_PROFILE: jint = -8;
+const STATUS_COLLECTION_LIMIT_EXCEEDED: jint = -9;
+const MAX_COLLECTION_BYTES: usize = 4 * 1024 * 1024;
+const MAX_COLLECTION_SECTIONS: usize = 8192;
+const MAX_COLLECTION_AGE: Duration = Duration::from_secs(60);
 
 const DISCOVERY_STAGE_INCOMPLETE: jint = 0;
 const DISCOVERY_STAGE_PARTIAL: jint = 1;
@@ -66,8 +71,11 @@ fn si_module_is_healthy() -> bool {
     !SI_MODULE_ABNORMAL.load(Ordering::Acquire)
 }
 
-#[derive(Default)]
 struct ParserState {
+    collection_started_at: Instant,
+    collection_bytes: usize,
+    collection_sections: usize,
+    collection_limit_exceeded: bool,
     epg_store: EitStore,
     collector: ServiceDiscoveryCollector,
     sections_seen: u64,
@@ -75,13 +83,70 @@ struct ParserState {
     latest_broadcast_clock: Option<BroadcastClockFact>,
 }
 
+impl Default for ParserState {
+    fn default() -> Self {
+        Self {
+            collection_started_at: Instant::now(),
+            collection_bytes: 0,
+            collection_sections: 0,
+            collection_limit_exceeded: false,
+            epg_store: EitStore::default(),
+            collector: ServiceDiscoveryCollector::default(),
+            sections_seen: 0,
+            last_status: STATUS_OK,
+            latest_broadcast_clock: None,
+        }
+    }
+}
+
 impl ParserState {
+    fn clear_collection_facts(&mut self) {
+        self.collector.reset_collection();
+        self.epg_store.reset_collection();
+        self.latest_broadcast_clock = None;
+    }
+
+    fn expire_collection_at(&mut self, now: Instant) {
+        if now.saturating_duration_since(self.collection_started_at) >= MAX_COLLECTION_AGE {
+            self.clear_collection_facts();
+            self.collection_started_at = now;
+            self.collection_bytes = 0;
+            self.collection_sections = 0;
+            self.collection_limit_exceeded = false;
+            self.last_status = STATUS_OK;
+        }
+    }
+
+    fn admit_section(&mut self, length: usize) -> bool {
+        if self.collection_limit_exceeded {
+            return false;
+        }
+        let Some(total_bytes) = self
+            .collection_bytes
+            .checked_add(length)
+            .filter(|total| *total <= MAX_COLLECTION_BYTES)
+            .filter(|_| self.collection_sections < MAX_COLLECTION_SECTIONS)
+        else {
+            self.collection_limit_exceeded = true;
+            self.clear_collection_facts();
+            return false;
+        };
+        self.collection_bytes = total_bytes;
+        self.collection_sections += 1;
+        true
+    }
+
     fn is_section_for_discovery(&self, pid: u16, table_id: u8) -> bool {
         is_fixed_pid_si_table_for_discovery(pid, table_id)
             || (table_id == 0x02 && self.collector.is_known_pmt_pid(pid))
     }
 
     fn ingest_section(&mut self, pid: u16, section: &[u8]) -> jint {
+        self.expire_collection_at(Instant::now());
+        if !self.admit_section(section.len()) {
+            self.last_status = STATUS_COLLECTION_LIMIT_EXCEEDED;
+            return self.last_status;
+        }
         let Some(header) = parse_section_header(section) else {
             self.last_status = STATUS_INVALID_SECTION;
             return STATUS_INVALID_SECTION;
@@ -1050,6 +1115,7 @@ impl From<BroadcastClockFact> for BroadcastClockFactDto {
 }
 
 fn bulk_snapshot_json(state: &mut ParserState, take_update_windows: bool) -> String {
+    state.expire_collection_at(Instant::now());
     let ingest_sequence = state.sections_seen;
     let last_status = state.last_status;
     let collection_state = state.collector.state();
@@ -1134,6 +1200,15 @@ fn parser_diagnostics(
         message,
         severity: "info",
     }];
+    if last_status == STATUS_COLLECTION_LIMIT_EXCEEDED {
+        diagnostics.push(ParserDiagnosticDto {
+            code: "COLLECTION_LIMIT_EXCEEDED",
+            severity: "error",
+            message:
+                "SI収集の入力上限に達したため事実と更新区間を破棄しました。次の収集開始を待ちます"
+                    .to_string(),
+        });
+    }
     let mut text_diagnostics = snapshot
         .services
         .iter()
@@ -1680,6 +1755,72 @@ mod tests {
             stable_identity_string(identity),
             provider_data_api::build_program_key(4, 16625, 101, 10)
         );
+    }
+
+    #[test]
+    fn collection_section_limit_clears_facts_and_refuses_following_input() {
+        let mut state = ParserState::default();
+        let tot = section_with_crc(vec![
+            0x73, 0x70, 0x0b, 0xea, 0x60, 0x12, 0x34, 0x56, 0xf0, 0x00,
+        ]);
+        for _ in 0..MAX_COLLECTION_SECTIONS {
+            assert_eq!(state.ingest_section(0x0014, &tot), STATUS_OK);
+        }
+        assert!(state.latest_broadcast_clock.is_some());
+        assert_eq!(
+            state.ingest_section(0x0014, &tot),
+            STATUS_COLLECTION_LIMIT_EXCEEDED
+        );
+        assert_eq!(
+            state.ingest_section(0x0014, &tot),
+            STATUS_COLLECTION_LIMIT_EXCEEDED
+        );
+        let snapshot: serde_json::Value =
+            serde_json::from_str(&bulk_snapshot_json(&mut state, true)).unwrap();
+        assert!(snapshot["broadcastClock"].is_null());
+        assert_eq!(snapshot["discoveryStage"], DISCOVERY_STAGE_INCOMPLETE);
+        assert!(snapshot["parserDiagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value["code"] == "COLLECTION_LIMIT_EXCEEDED"));
+    }
+
+    #[test]
+    fn collection_byte_limit_also_counts_rejected_input() {
+        let mut state = ParserState::default();
+        let bytes = vec![0; 4096];
+        for _ in 0..MAX_COLLECTION_BYTES / bytes.len() {
+            assert_eq!(state.ingest_section(0x0012, &bytes), STATUS_INVALID_SECTION);
+        }
+        assert_eq!(
+            state.ingest_section(0x0012, &bytes),
+            STATUS_COLLECTION_LIMIT_EXCEEDED
+        );
+        assert!(state.collection_limit_exceeded);
+        assert_eq!(state.collection_bytes, MAX_COLLECTION_BYTES);
+    }
+
+    #[test]
+    fn collection_expiry_removes_stale_epg_and_resynchronizes_versions_without_losing_profile() {
+        let mut state = ParserState::default();
+        state.epg_store.set_discovery_profile(DiscoveryProfile::Bs);
+        state.collector.set_discovery_profile(DiscoveryProfile::Bs);
+        let section = section_with_crc(vec![
+            0x4e, 0xf0, 0x0f, 0, 1, 0xff, 0, 0, 0, 0x11, 0, 0x22, 0, 0x4e,
+        ]);
+        assert_eq!(state.ingest_section(0x0012, &section), STATUS_OK);
+        assert_eq!(state.epg_store.instance_states()[0].version, 31);
+        state.expire_collection_at(state.collection_started_at + MAX_COLLECTION_AGE);
+        assert!(state.epg_store.instance_states().is_empty());
+        assert!(state.take_epg_update_windows().is_empty());
+        let next = section_with_crc(vec![
+            0x4e, 0xf0, 0x0f, 0, 1, 0xe1, 0, 7, 0, 0x11, 0, 0x22, 7, 0x4e,
+        ]);
+        assert_eq!(state.ingest_section(0x0012, &next), STATUS_OK);
+        let states = state.epg_store.instance_states();
+        assert_eq!(states[0].version, 16);
+        assert_eq!(states[0].required_last_section_number, Some(1));
     }
 
     #[test]

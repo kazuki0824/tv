@@ -402,7 +402,7 @@ class ChannelScanController(
 
     private fun collectSiForCandidate(candidate: ScanCandidate): SiCollectionResult {
         val policy = DEFAULT_SI_POLICY
-        val startedAt = System.currentTimeMillis()
+        val startedAt = android.os.SystemClock.elapsedRealtime()
         var lastCounts = serviceCounts(candidate)
         var lastStage = lastCounts.discoveryStage
         var stableSince = startedAt
@@ -410,7 +410,7 @@ class ChannelScanController(
 
         while (!cancelled.get()) {
             refreshDynamicSectionFilters()
-            val now = System.currentTimeMillis()
+            val now = android.os.SystemClock.elapsedRealtime()
             val counts = serviceCounts(candidate)
             val stage = counts.discoveryStage
             if (stage != lastStage || counts.signature != lastCounts.signature) {
@@ -444,7 +444,7 @@ class ChannelScanController(
         if (!cancelled.get() && complete) outcome = SiCollectionOutcome.COMPLETE
         val finalRegistrationReadySnapshotAvailable = finalCounts.registrationReady > 0
         if (outcome == SiCollectionOutcome.TIMEOUT_PARTIAL && !finalRegistrationReadySnapshotAvailable) outcome = SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE
-        val elapsed = System.currentTimeMillis() - startedAt
+        val elapsed = android.os.SystemClock.elapsedRealtime() - startedAt
         val message = if (outcome == SiCollectionOutcome.COMPLETE) {
             null
         } else {
