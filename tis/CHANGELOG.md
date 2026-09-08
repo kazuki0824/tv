@@ -4,6 +4,11 @@
 - session 開始に失敗した MediaCas bridge を直ちに close し、どちらの失敗でも key token や elementary PID を descrambler へ接続しない。
 - host Kotlin 状態遷移試験で plugin 未接続と session 開始失敗を別々に固定し、CI の成功件数を 152 件へ更新する。実 CAS HAL、Tuner HAL 診断相関、実機 descramble は r51 の完了対象に含めない。
 
+## r51_pr85_stack_independent_startup_deadline
+
+- #87 D04 / TIS-AUD-05: AV filter開始からcodec別の起動期限を独立に予約し、無入力・少量入力・構成済み無出力でも終了する。audio-onlyは利用不能、audio-videoのaudio失敗はvideo-only新世代へ移る。初回出力とcloseで期限を解除し、flushで期限を延長しない。
+- 起動段階、期限境界、初回出力、終了済み世代の回帰試験を追加する。
+
 ## r51_pr85_playback_stop_admission
 
 - TIS-040: 再生資源が確保されている pipeline を LiveSession 数とは独立して計数し、boot EPG / background scan の事前検査・受付後検査・実行直前検査へ接続した。最後の pipeline の停止確認時に保留ジョブを再評価する。
