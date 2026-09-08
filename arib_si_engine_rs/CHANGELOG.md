@@ -1,3 +1,7 @@
+# r51_pr85_stack_closed_diagnostic_scope
+
+- #87 D08 / SI U-14: 診断scopeの未知key許可規定を、version 1のnested DTO閉鎖規則に統一する。Rust serde型・JSON Schemaの既存拒否動作と契約を一致させ、未知scope項目を含む共通境界入力をRust/JNI/Kotlin/Schemaの回帰試験へ追加する。
+
 # r51_pr85_diagnostic_language
 
 - SI U-24の残存するEIT・記述子診断本文を日本語へ統一。構造化status・field名は維持し、保存経路と共通fixtureも同時更新する。

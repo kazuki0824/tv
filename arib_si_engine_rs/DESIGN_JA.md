@@ -294,7 +294,7 @@ pub struct DescriptorDiagnosticV1 {
 }
 ```
 
-`SectionScopeV1` は PID、table_id、table_id_extension、version、section_number、ONID、TSID、service_id、event_id を持てる構造とする。unknown numeric を `-1` へ潰さず、`Option`、`null`、または key omission とする。JSON Schema ではこれらの key を最小検証対象として定義し、未知 key は `additionalProperties: true` により保持可能にする。
+`SectionScopeV1` は PID、table_id、table_id_extension、version、section_number、ONID、TSID、service_id、event_id を持てる構造とする。unknown numeric を `-1` へ潰さず、`Option`、`null`、または key omission とする。version 1のnested DTO閉鎖規則を適用し、Rust serde型とJSON Schemaの両方で未知keyを拒否する（`deny_unknown_fields` / `additionalProperties: false`）。未知scope keyをtop-level extensionへ移動したり黙って破棄したりしない。将来scopeを拡張する場合はschema versionを更新する。
 
 `DescriptorScopeV1` は tag、name、offset、declared_length、actual_remaining_length、parse_status、raw_prefix_hex を持つ。`raw_prefix_hex` は最大64 bytes相当までとする。JSON Schema では tag、offset、declaredLength、actualRemainingLength、parseStatus、rawPrefixHex を必須最小フィールドとする。name は未知 descriptor で決定できないため任意フィールドとし、parseStatus は診断分類の根拠であるため必須フィールドとする。
 
