@@ -36,7 +36,7 @@ class NativeAribSiParserCasDiscoveryTest {
             check(parser.ingestSection(TsPid(PID_PAT), section(PAT_BODY)) == SiStatus.OK)
             check(parser.ingestSection(TsPid(PID_SDT), section(SDT_SCRAMBLED_SERVICE_BODY)) == SiStatus.OK)
             check(parser.ingestSection(TsPid(PID_PMT), section(PMT_WITH_PROGRAM_AND_ES_CA_BODY)) == SiStatus.OK)
-            check(parser.ingestSection(TsPid(PID_CAT), section(CAT_BODY)) == SiStatus.OK)
+            check(parser.ingestSection(TsPid(PID_CAT), section(CAT_BODY.copyOf().also { it[13] = 0xee })) == SiStatus.OK)
             check(parser.ingestSection(TsPid(PID_EIT), section(eitWithDescriptors(emptyList()))) == SiStatus.OK)
             val before = parser.livePlaybackSnapshot()
             var ecmCount = 0
@@ -64,7 +64,8 @@ class NativeAribSiParserCasDiscoveryTest {
                 cas.updateFromCaMetadata(before.caMetadata)
                 val siPids = setOf(TsPid(PID_PAT), TsPid(PID_SDT), TsPid(PID_PMT), TsPid(PID_CAT), TsPid(PID_EIT))
                 val ecm = setOf(TsPid(ECM_PID_PROGRAM))
-                val emm = setOf(TsPid(EMM_PID))
+                val emm = setOf(TsPid(0x01ee))
+                check((ecm + emm).intersect(siPids).isEmpty())
                 val payload = ByteArray(512)
                 repeat(9000) {
                     for (pid in ecm + emm) {
@@ -74,7 +75,9 @@ class NativeAribSiParserCasDiscoveryTest {
                     }
                 }
                 val after = parser.livePlaybackSnapshot()
-                check(ecmCount == 9000 && emmCount == 9000 && refreshCount == 0)
+                check(ecmCount == 9000 && emmCount == 9000 && refreshCount == 0) {
+                    "ECM=$ecmCount EMM=$emmCount SI refresh=$refreshCount"
+                }
                 check(after.collectionGeneration == before.collectionGeneration)
                 check(after.ingestSequence == before.ingestSequence)
                 check(after.services == before.services && after.programs == before.programs)
