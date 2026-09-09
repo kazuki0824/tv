@@ -293,6 +293,7 @@ class TunerController(
     }
 
     fun createDescramblerBridge(): CasController.TunerDescramblerBridge = callOnController {
+        check(tuneAccepted) { "失効済みの選局ではdescramblerを生成できません inputId=$inputId" }
         val existing = descramblerBridge
         if (existing != null) return@callOnController existing
         val created = DirectTunerDescramblerBridge(tuner)

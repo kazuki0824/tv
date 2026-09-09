@@ -272,6 +272,7 @@ class ChannelScanController(
         publishCurrentServiceSnapshot(PublishMode.LIVE_TUNE_REFRESH)
     }
     fun refreshDynamicSectionFilters() {
+        if (terminalResourceLostObserved) return
         val transaction = engine.casDiscoverySnapshot()
         val servicesForCas = transaction.services
         val allCaMetadata = if (ENABLE_CAS_ORCHESTRATION) transaction.caMetadata else emptyList()
@@ -282,6 +283,7 @@ class ChannelScanController(
         val ecmPids = caMetadata.mapNotNull { it.ecmPid }.toSet()
         val emmPids = caMetadata.filter { CasController.SupportedCasSystemIds.supportsEmm(it.caSystemId) }.mapNotNull { it.emmPid }.toSet()
         tunerController.openDynamicFiltersFromCurrentSi(pmtPids, ecmPids, emmPids)
+        if (terminalResourceLostObserved) return
         if (caMetadata.isEmpty()) {
             casController.clearForClearService()
             return
