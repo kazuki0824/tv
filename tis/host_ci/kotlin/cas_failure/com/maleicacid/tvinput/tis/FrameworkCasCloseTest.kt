@@ -9,7 +9,7 @@ import org.junit.Test
 
 class FrameworkCasCloseTest {
     private val metadata = listOf(CaMetadata(ServiceKey(4, 16625, 101), 5,
-        ecmPid = TsPid(0x123), elementaryPid = TsPid(0x101), source = CaMetadataSource.ELEMENTARY_STREAM))
+        ecmPid = TsPid(0x123), emmPid = null, elementaryPid = TsPid(0x101), source = CaMetadataSource.ELEMENTARY_STREAM))
 
     @Test fun underlyingSessionAndPluginCloseFailuresReachRealAdaptersAndOwner() {
         val f = MediaCas.Faults

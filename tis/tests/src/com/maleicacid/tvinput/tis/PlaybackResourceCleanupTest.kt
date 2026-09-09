@@ -75,7 +75,7 @@ class PlaybackResourceCleanupTest {
         )
         val failure = runCatching { initialize() }.exceptionOrNull()
         check(failure?.message == "initial filter start failed")
-        check(failure.suppressed.single().message == "filter rollback close failed")
+        check(requireNotNull(failure).suppressed.single().message == "filter rollback close failed")
         check(!accepted && committed == 0 && rollbackCalls == 1 && filterOwned)
         rejectClose = false
         check(runCatching { initialize() }.isFailure)
