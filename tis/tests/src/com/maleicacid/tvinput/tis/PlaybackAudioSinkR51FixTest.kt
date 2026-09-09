@@ -12,7 +12,7 @@ class PlaybackAudioSinkR51FixTest {
         var released = false
         var restarts = 0
         val gate = AudioRouteChangeGate(generation, oldTrack, null)
-        val restart = {
+        val restart: () -> Unit = {
             released = true
             currentTrack = null
             generation++
