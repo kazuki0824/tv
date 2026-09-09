@@ -93,8 +93,8 @@ class ProgramPublishCoordinator(
             return ProgramPublishResult(0, 0, skippedUnchanged = allPrograms.size)
         }
         // 再試行区間は公開入口入力の一部である。
-        // これを確認する前に早期returnしてはならない。EPG区間排出API後の
-        // provider失敗で、排出済み区間を失うことを防ぐ。
+        // これを確認する前に早期returnしてはならない。
+        // provider失敗後の再検証要求を通常公開の省略で失うことを防ぐ。
         val retryServiceKeys = dirtyWindows.keys.map { it.serviceKey }
         val allServiceKeys = (allPrograms.map { it.serviceKey } + updateWindows.map { it.serviceKey } + retryServiceKeys + verifiedEmptyServiceKeys).toSet()
         if (allPrograms.isEmpty() && updateWindows.isEmpty() && dirtyWindows.isEmpty() && verifiedEmptyServiceKeys.isEmpty()) {
@@ -151,7 +151,12 @@ class ProgramPublishCoordinator(
         } else {
             windows.filter { it.serviceKey in failedServiceKeys }
         }
-        val succeededWindows = windows.filter { it.serviceKey in result.succeededServiceKeys && it.serviceKey !in failedServiceKeys }
+        // 通常upsertの成功だけでは、旧要求の廃止行削除が完了したとはいえない。
+        val succeededWindows = if (result.failures.any { it.serviceKey == null }) {
+            emptyList()
+        } else {
+            authoritativeWindows.filter { it.serviceKey in result.succeededServiceKeys && it.serviceKey !in failedServiceKeys }
+        }
         val committedEligibleServiceKeys = if (result.failures.any { it.serviceKey == null }) {
             emptySet()
         } else {

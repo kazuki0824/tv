@@ -127,6 +127,7 @@ class NativeAribSiParser : AutoCloseable {
         val publication = epgPublication.project(
             discoveryProfile, snapshot.collectionGeneration, snapshot.events, snapshot.eitInstances,
         )
+        val publishedEvents = publication.events.toSet()
         return ProgramPublishSnapshot(
             discoveryProfile = discoveryProfile,
             ingestSequence = snapshot.ingestSequence,
@@ -134,6 +135,9 @@ class NativeAribSiParser : AutoCloseable {
             updateWindows = publication.windows,
             authoritativeProgramKeysByService = publication.authoritativeProgramKeysByService,
             eitInstances = snapshot.eitInstances,
+            excludedEventDescriptorFacts = snapshot.events.filter { it !in publishedEvents }.map { event ->
+                ExcludedEventDescriptorFacts(event.serviceKey, event.stableIdentity, event.eventId, event.source, event.descriptors)
+            },
             semanticFactsByServiceKey = snapshot.serviceSemanticFacts.associateBy { it.serviceKey },
             descriptorDiagnostics = descriptorDiagnosticsFromEvents(snapshot.events),
             parserDiagnostics = snapshot.parserDiagnostics,

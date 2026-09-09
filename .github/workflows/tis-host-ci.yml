@@ -234,7 +234,7 @@ jobs:
             "${test_classes[@]}" \
             | tee "$RUNNER_TEMP/tis-junit.log"
           # JUnitの成功だけでは試験数の減少を検知できない。試験追加/削除時に差分を確認して同じcommitで更新する。
-          grep --fixed-strings --line-regexp "OK (184 tests)" "$RUNNER_TEMP/tis-junit.log"
+          grep --fixed-strings --line-regexp "OK (186 tests)" "$RUNNER_TEMP/tis-junit.log"
 
   xml-contract:
     runs-on: ubuntu-latest

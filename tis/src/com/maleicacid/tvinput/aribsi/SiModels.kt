@@ -461,6 +461,15 @@ data class TransportKey(
     val transportStreamId: Int get() = transportStream.value
 }
 
+/** 公開対象外eventの完全な記述子事実。Program候補のAribEventとは区別する。 */
+data class ExcludedEventDescriptorFacts(
+    val serviceKey: ServiceKey,
+    val stableIdentity: String,
+    val eventId: Int,
+    val source: AribProgramSource,
+    val descriptors: AribEventDescriptors,
+)
+
 data class ProgramPublishSnapshot(
     val discoveryProfile: Int,
     val authoritativeProgramKeysByService: Map<ServiceKey, Set<String>> = emptyMap(),
@@ -472,6 +481,7 @@ data class ProgramPublishSnapshot(
     val parserDiagnostics: List<ParserDiagnostic>,
     val malformedCaDescriptorCountByServiceId: Map<ServiceId16, Int> = emptyMap(),
     val eitInstances: List<EitInstanceState> = emptyList(),
+    val excludedEventDescriptorFacts: List<ExcludedEventDescriptorFacts> = emptyList(),
 )
 
 data class TableRequirementStatus(

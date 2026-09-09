@@ -113,6 +113,7 @@ object AribComponentProjectionPolicy {
         secondLanguage = eventEntry.secondLanguage ?: serviceEntry.secondLanguage,
         channelConfiguration = eventEntry.channelConfiguration ?: serviceEntry.channelConfiguration,
         samplingInfo = eventEntry.samplingInfo ?: serviceEntry.samplingInfo,
+        // 診断表示用の文字列であり、分割してcodecやdescriptor事実を復元する入力ではない。
         sourceDescriptor = when {
             serviceEntry.sourceDescriptor == null -> eventEntry.sourceDescriptor
             eventEntry.sourceDescriptor == null -> serviceEntry.sourceDescriptor

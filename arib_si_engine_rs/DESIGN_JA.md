@@ -436,6 +436,8 @@ PMT ESのAVC video descriptor、MPEG-4 audio descriptor、MPEG-4 audio extension
 
 provider-dataの既存`profileLevel`へ名前付きの放送値、`sourceDescriptor`へ`PMT:`に続けた対象記述子のTLV全体の小文字hexを渡す。音声ASCの原bytesもそのTLVに含める。EITと統合する場合はPMT根拠を捨てず、`;EIT:`と既存のEIT根拠名を追記する。PMT根拠のない旧EIT表現は維持する。長さ制限は共通provider-dataの規則だけを適用する。
 
+この`sourceDescriptor`は診断表示用のopaqueな文字列であり、`;`を区切りとして再parseするwire protocolではない。codec選択・decoder構成・PMT/EIT照合には`ServiceSemanticFacts.elementaryStreams[].codecFacts`と型付きEIT事実（componentTag等）を使い、この文字列から放送事実を復元しない。PMTのTLV hexとEIT根拠名を一方向に整形して既存の診断欄へ保存するだけなので、別のsource配列schemaやescape/parserは導入しない。AOSPの`COLUMN_INTERNAL_PROVIDER_DATA`はTIS内部BLOBであり、この表記はARIB規定のdescriptor構文とは別の診断表現である。
+
 - `stream_type`やdescriptorから導出できるcodec名は放送事実として保持する。SI engineはHEVC等を製品releaseの再生可否へ変換せず、codec capability判定はTIS/MediaCodec側のpolicyとする。
 - optional descriptor値が存在しない場合は合法的absenceとして`null`を保持し、syntax破損による取得不能とはtyped diagnosticで区別する。
 - `free_CA_mode`はCA descriptorの代用品ではない。PMT解析完了後に`free_CA_mode=1`なのにCA descriptorを観測できない場合はbroadcast fact間の不整合として診断し、`requires_cas`をSI flagだけで上書きしない。

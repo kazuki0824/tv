@@ -334,7 +334,7 @@ EIT 更新時の update/削除区間は、追加・変更・削除された even
 
 公開判断はKotlin `EpgPublicationPolicy`が所有し、`EpgSectionPolicy`の同じsection選択を収集完了判定と共有する。Rustのcurrent/next別instance事実からcurrent actual p/fを選び、地上波は0..last、BS/110CSは0..min(last,1)の受信・整合・safeSectionsを確認する。Program行の対象はDEFINED、削除のvalid identity集合にはDEFINEDとUNDEFINED_TIMEを採用する。両時刻未定義・構造破損・未完成・同版矛盾は削除権限を与えない。未知descriptorのUnsupportedValueだけでは削除を抑止せず、raw診断を保持する。`EventModelMapper`は同じpolicyの行採用判定を利用し、独立したscope/timing基準を持たない。
 
-policyはcollection内で観測した完成版の旧・新時刻境界だけをServiceKey別に保持する。windowはそのunionを使い、キー集合・deletionAuthoritativeは毎回current instanceから作り直す。collectionGeneration/profile変更時に旧境界を破棄し、未完成版ではwindowを返さない。時刻未定義は旧区間を保護するキーとして保持し、正常空EITはcurrent完全状態として扱うが、区間がないときに削除区間を捏造しない。`ProgramPublishSnapshot.authoritativeProgramKeysByService`は同じ判定を通った現在のキー集合で、再試行の再検証入力にする。
+policyはcollection内で観測した完成版の旧・新時刻境界だけをServiceKey別に保持する。windowはそのunionを使い、キー集合・deletionAuthoritativeは毎回current instanceから作り直す。collectionGeneration/profile変更時に旧境界を破棄し、未完成版ではwindowを返さない。時刻未定義は旧区間を保護するキーとして保持し、正常空EITはcurrent完全状態として扱うが、区間がないときに削除区間を捏造しない。`ProgramPublishSnapshot.authoritativeProgramKeysByService`は同じ判定を通った現在のキー集合で、正常空EITの確認に使う。再試行の根拠は、旧要求区間全体を覆う現在のauthoritativeな`updateWindows`とする。
 
 Direct Boot保留の正式状態を`DirectBootEpgPending`とする。`DirectBootGuard`がdevice-protected storage上のこの状態を唯一所有し、boot EPG sync要求を受理した時点または未完了・失敗終了時に設定する。`ChannelScanManager`はJobSchedulerのschedule/cancelだけを担当し、pending、inputId、Contextのshadow stateを持たない。JobServiceは開始時に自TISのinputIdを再解決する。状態はprocess restartとuser unlockをまたいで保持し、background maintenanceは設定・解除しない。
 
@@ -362,7 +362,7 @@ TvProvider query failure と channel なしは別状態として扱う。既存 
 
 TvProvider query は必須問い合わせと任意問い合わせを区別する。チャンネル・番組の追加または更新、廃止行削除、既存チャンネル・番組検索、Direct Boot準備完了判定に使う query は必須問い合わせとする。必須問い合わせで `ContentResolver.query()` が null cursor を返した場合は `TvProviderQueryFailure` とし、empty resultとみなさない。`TvProviderQueryFailure` が発生したサービス/windowでは channel insert、program insert/update、廃止行削除、publish fingerprint cache更新、`DirectBootEpgPending`解除に進まず、再試行区間を保持する。provider-dataはcurrent policyのfallback sourceにしないため、policy判定のためのprovider-data代替参照queryを設けない。
 
-Programs publish/delete が provider failure になった場合は、`ProgramPublishCoordinator`のprocess-local queueに`ServiceKey + windowStartMs + windowEndMs`の再検証要求を保持する。entryはnotBeforeMsと診断用failure classだけを持ち、旧EpgUpdateWindow・旧validProgramKeys・旧deletionAuthoritativeを保存しない。固定cooldownは60秒。次回publish entrypointで期限到達した要求を取り出し、同じ入力snapshotのauthoritativeな更新区間が同一ServiceKeyの旧要求区間全体を含む場合だけ、その更新区間の現在のキー集合から削除権限を再構成する。ServiceKey単位のキー集合だけでは旧区間の範囲を証明できないため再試行しない。実行可能な再試行がある場合、過去のpublish fingerprintとの一致による早期終了を禁止し、provider処理の成功後に要求を除去する。未完成・不整合・期限切れcollectionなどで現行の根拠がなければ削除せず要求を保持する。entrypointなしにwake-upしない。成功したkeyは削除、失敗したkeyは固定cooldownで末尾へ戻す。attempt段階、jitter、retention timer、failure class別queueは設けない。process restart時は破棄し、boot/background syncの再収集を正とする。失敗をpublish fingerprint更新や`DirectBootEpgPending`解除の根拠にしない。
+Programs publish/delete が provider failure になった場合は、`ProgramPublishCoordinator`のprocess-local queueに`ServiceKey + windowStartMs + windowEndMs`の再検証要求を保持する。entryはnotBeforeMsと診断用failure classだけを持ち、旧EpgUpdateWindow・旧validProgramKeys・旧deletionAuthoritativeを保存しない。固定cooldownは60秒。次回publish entrypointで期限到達した要求を取り出し、同じ入力snapshotのauthoritativeな更新区間が同一ServiceKeyの旧要求区間全体を含む場合だけ、その更新区間の現在のキー集合から削除権限を再構成する。ServiceKey単位のキー集合だけでは旧区間の範囲を証明できないため再試行しない。実行可能な再試行がある場合、過去のpublish fingerprintとの一致による早期終了を禁止し、現在のauthoritative windowに対するprovider処理の成功後に、その区間と一致する要求を除去する。同一区間の非authoritativeな通常upsert成功では、未実行の廃止行削除要求を除去しない。未完成・不整合・期限切れcollectionなどで現行の根拠がなければ削除せず要求を保持する。entrypointなしにwake-upしない。成功したkeyは削除、失敗したkeyは固定cooldownで末尾へ戻す。attempt段階、jitter、retention timer、failure class別queueは設けない。process restart時は破棄し、boot/background syncの再収集を正とする。失敗をpublish fingerprint更新や`DirectBootEpgPending`解除の根拠にしない。
 
 dirty-window queueは全体上限512 windowsの単一LRUとする。超過時は最古entryを破棄し、ServiceKey別`droppedRetryWindowCount`を加算する。ServiceKeyごとの第二上限は設けない。process restart後はcounterを0に戻す。
 
@@ -459,17 +459,29 @@ TIS の PSI/SI section path は allocation 前に `SectionEvent.dataLength` を�
 
 ### transaction DTO API
 
-`AribSiEngine` 呼び出し側は複数 snapshot を合成してはならない。本番経路は以下の用途別bulk DTOを使う。engineから受け取るpolicy入力は`ServiceSemanticFacts`だけであり、`ProgramPublishability`等のTIS product policyをRust側DTOに持たせない。
+`AribSiEngine` 呼び出し側は複数 snapshot を合成してはならない。本番経路は以下の用途別bulk DTOを使う。engineから受け取るpolicy入力は`ServiceSemanticFacts`・event・EIT instanceの放送/受信事実であり、`ProgramPublishability`等のTIS product policyをRust側DTOに持たせない。
 
 ```kotlin
+data class ExcludedEventDescriptorFacts(
+    val serviceKey: ServiceKey,
+    val stableIdentity: String,
+    val eventId: Int,
+    val source: AribProgramSource,
+    val descriptors: AribEventDescriptors,
+)
+
 data class ProgramPublishSnapshot(
+    val discoveryProfile: Int,
+    val authoritativeProgramKeysByService: Map<ServiceKey, Set<String>> = emptyMap(),
     val ingestSequence: Long,
     val events: List<AribEvent>,
     val updateWindows: List<EpgUpdateWindow>,
-    val serviceFactsByServiceKey: Map<ServiceKey, ServiceSemanticFacts>,
+    val semanticFactsByServiceKey: Map<ServiceKey, ServiceSemanticFacts>,
     val descriptorDiagnostics: List<DescriptorDiagnostic>,
     val parserDiagnostics: List<ParserDiagnostic>,
-    val malformedCaDescriptorCountByServiceKey: Map<ServiceKey, Int>,
+    val malformedCaDescriptorCountByServiceId: Map<ServiceId16, Int> = emptyMap(),
+    val eitInstances: List<EitInstanceState> = emptyList(),
+    val excludedEventDescriptorFacts: List<ExcludedEventDescriptorFacts> = emptyList(),
 )
 
 fun takeProgramPublishSnapshot(): ProgramPublishSnapshot
@@ -491,8 +503,9 @@ data class ServiceRegistrationSnapshot(
     val services: List<AribService>,
     val actualTransports: Set<TransportKey>,
     val actualTransportMetadata: List<AribTransport>,
-    val serviceFactsByServiceKey: Map<ServiceKey, ServiceSemanticFacts>,
+    val semanticFactsByServiceKey: Map<ServiceKey, ServiceSemanticFacts>,
     val diagnostics: List<ParserDiagnostic>,
+    val eitInstances: List<EitInstanceState> = emptyList(),
 )
 
 fun serviceRegistrationSnapshot(): ServiceRegistrationSnapshot
@@ -502,10 +515,10 @@ fun serviceRegistrationSnapshot(): ServiceRegistrationSnapshot
 data class CasDiscoverySnapshot(
     val services: List<AribService>,
     val caMetadata: List<CaMetadata>,
-    val pmtPids: Map<ServiceKey, Int>,
-    val catEmmPids: List<Int>,
+    val pmtPids: Map<ServiceKey, TsPid>,
+    val catEmmPids: List<TsPid>,
     val diagnostics: List<DescriptorDiagnostic>,
-    val malformedCaDescriptorDiagnostics: List<MalformedCaDescriptorDiagnostic>,
+    val malformedCaDescriptorDiagnostics: List<MalformedCaDescriptorDiagnostic> = emptyList(),
 )
 
 fun casDiscoverySnapshot(): CasDiscoverySnapshot
@@ -515,7 +528,9 @@ fun casDiscoverySnapshot(): CasDiscoverySnapshot
 
 `MalformedCaDescriptorDiagnostic` は、少なくとも `pid`、`tableId`、`tableIdExtension`、`serviceId`、`elementaryPid`、`scope`、`offset`、`declaredLength`、`actualRemainingLength`、`reason`、`rawPrefixHex` を持つ。詳細診断の一次保存先は CAS discovery snapshot とし、Program provider-data は `malformedCaDescriptorCount` summary だけを保存する。
 
-`takeProgramPublishSnapshot()` は events / updateWindows / service semantic facts / 診断情報を同一ロック / 同一 native state から取得し、updateWindows の drain もこの API 内だけで行う。`snapshotEvents()` と `takeEpgUpdateWindows()` を本番経路呼び出し側で別々に呼ぶことは禁止する。LiveSessionの現在番組判定、視聴年齢制限判定、映像メタデータ補完のようにupdateWindowsを消費してはならないread-only参照は`programStateSnapshot()`を使い、drain型stateを返してはならない。
+`takeProgramPublishSnapshot()`と`programStateSnapshot()`は、同じロック内で一回取得したimmutable native transactionからevents / EIT instance / service semantic facts / 診断情報を読み、同じKotlin policyでupdateWindowsを投影する。区間queueのdrainは行わない。公開経路は前者、LiveSessionの現在番組判定・視聴年齢制限判定・映像メタデータ補完は後者を使う。`snapshotEvents()`と`takeEpgUpdateWindows()`を別々に呼んで合成する経路は設けない。
+
+`events`は公開policyを通過した候補だけとし、除外eventの完全な記述子事実は`excludedEventDescriptorFacts`へ保持する。この診断専用DTOは`AribEvent`ではなく、MapperのProgram入力へ渡さない。`descriptors.diagnostics.descriptorFactsCanonicalJson`はRustの構造化事実をそのまま保持し、不正parental descriptorの全raw bytes・entries・parse statusを64-byte診断prefixへ置き換えない。公開可否を再判定する第二policyや、診断専用の再parseは設けない。
 
 廃止 snapshot wrapper は本番経路・公開通常境界・product build に残してはならない。テスト専用に必要な入口は test source または test-only 可視性に隔離し、本番 APK / JNI API / release API から参照不能にする。
 

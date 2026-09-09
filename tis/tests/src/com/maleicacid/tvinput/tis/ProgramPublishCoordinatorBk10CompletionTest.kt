@@ -88,7 +88,7 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             allowedServiceKeys = null,
         )
         check(second.inserted == 1) { second.toString() }
-        check(coordinator.retryWindowCountForTest() == 0) { "公開成功時は再試行区間を消去する必要があります" }
+        check(coordinator.retryWindowCountForTest() == 1) { "通常upsert成功だけではauthoritative再検証要求を消去してはなりません" }
     }
 
     @Test fun failedInsertDoesNotCommitSignatureSoRetryCanPublishSameInput() {
@@ -241,6 +241,31 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         val retried = coordinator.publishWithUpdates(ChannelScanController.PublishMode.SETUP_SCAN, emptyList(), listOf(old.copy(validProgramKeys = setOf("current-key"))), setOf(key))
         check(retried.hasCommittedTarget && store.deleteCalls == 2)
         check(store.lastDeleteKeys == setOf("current-key"))
+        check(coordinator.retryWindowCountForTest() == 0)
+    }
+
+    @Test fun nonAuthoritativeSuccessKeepsFailedDeleteUntilAuthoritativeSuccess() {
+        val store = FakeStore(failDelete = true)
+        val writer = TvProviderWriter("input.test", store, testOnly = true)
+        var now = 1_000L
+        val coordinator = ProgramPublishCoordinator(writer) { now }
+        writer.upsertChannels(listOf(ChannelRecord(key, 1, "101", "test", FrequencyHz(473_142_857L), casFactsCanonicalJson = testCasFacts())))
+        val currentKey = TvProviderWriter.programKeyForTest(program)
+        val old = ProgramPublishCoordinator.EpgUpdateWindow(key, program.startTimeMillis,
+            program.startTimeMillis + program.durationMillis, setOf("old-key"), true)
+        val failed = coordinator.publishWithUpdates(ChannelScanController.PublishMode.SETUP_SCAN, emptyList(), listOf(old), setOf(key))
+        check(failed.failures.any { it.operation == "program-delete-obsolete" })
+        check(store.deleteCalls == 1 && coordinator.retryWindowCountForTest() == 1)
+        now += ProgramPublishCoordinator.RETRY_COOLDOWN_MS_FOR_TEST
+        store.failDelete = false
+        val partial = coordinator.publishWithUpdates(ChannelScanController.PublishMode.SETUP_SCAN, listOf(program),
+            listOf(old.copy(validProgramKeys = setOf(currentKey), deletionAuthoritative = false)), setOf(key))
+        check(partial.failures.isEmpty() && partial.inserted == 1)
+        check(store.deleteCalls == 1 && coordinator.retryWindowCountForTest() == 1)
+        val complete = coordinator.publishWithUpdates(ChannelScanController.PublishMode.SETUP_SCAN, listOf(program),
+            listOf(old.copy(validProgramKeys = setOf(currentKey))), setOf(key))
+        check(complete.failures.isEmpty() && complete.hasCommittedTarget)
+        check(store.deleteCalls == 2 && store.lastDeleteKeys == setOf(currentKey))
         check(coordinator.retryWindowCountForTest() == 0)
     }
 

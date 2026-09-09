@@ -1,3 +1,9 @@
+# r51_pr91_review_retry_and_diagnostic_facts
+
+- 非authoritativeな通常upsert成功による旧dirty削除要求の誤消去を防ぐ。現在のauthoritativeなprovider処理成功でのみ要求を除去する。
+- 除外eventの完全な記述子事実を診断専用DTOで通常bulkへ保持し、公開候補へは戻さない。transaction DTOのfield・key型とsnapshot取得契約を現行実装へ揃える。
+- 同一区間の非authoritative更新と、最大長のmalformed parental descriptorを実JNI経由で確認する回帰試験2件を追加。CIの期待件数を186件へ更新。検証結果はPRに記録する。Android/Soong実体build・device atest・実機VTSは未実施。
+
 # r51_pr91_review_publication_boundaries
 
 - 構造検査に失敗したsectionのeventをProgram候補から除き、診断は通常snapshotに残す。Mapperへ実際の収集profileを渡し、媒体の暗黙固定を除去する。

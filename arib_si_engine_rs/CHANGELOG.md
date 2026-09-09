@@ -1,3 +1,8 @@
+# r51_pr91_review_descriptor_source_text
+
+- provider-dataのsourceDescriptorを一方向の診断表記と明記。codec/descriptorの意味判断は既存の型付き事実を用い、セミコロン文字列を逆解析する第二protocolを設けない。
+- Rust実装の変更はない。TIS通常bulkでの除外eventの完全な記述子事実保持と検証結果はTIS変更履歴およびPRに記録する。
+
 # r51_pr91_review_publication_boundaries
 
 - 構造検査に失敗したsectionのeventをProgram候補から除き、診断は通常snapshotに残す。Mapperへ実際の収集profileを渡し、媒体の暗黙固定を除去する。

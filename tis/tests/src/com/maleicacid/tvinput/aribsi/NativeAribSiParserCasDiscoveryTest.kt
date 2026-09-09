@@ -236,6 +236,36 @@ class NativeAribSiParserCasDiscoveryTest {
         }
     }
 
+    @Test fun longMalformedParentalFactsRemainInNonPublishableBulk() {
+        NativeAribSiParser().use { parser ->
+            val valid = listOf(0x55, 4, 0x4a, 0x50, 0x4e, 12)
+            val malformed = listOf(0x55, 255) + (0 until 255).toList()
+            val expectedHex = malformed.joinToString("") { it.toString(16).padStart(2, '0') }
+            check(parser.ingestSection(TsPid(PID_EIT), section(eitWithDescriptors(valid + malformed))) == SiStatus.OK)
+            for (snapshot in listOf(parser.takeProgramPublishSnapshot(), parser.programStateSnapshot())) {
+                check(snapshot.events.isEmpty())
+                check(EventModelMapper().toProgramRecords(snapshot.events, snapshot.discoveryProfile).isEmpty())
+                check(snapshot.updateWindows.none { it.deletionAuthoritative })
+                check(snapshot.authoritativeProgramKeysByService.isEmpty())
+                val excluded = snapshot.excludedEventDescriptorFacts.single()
+                check(excluded.eventId == 0x1234 && excluded.source.tableId == 0x4e)
+                check(excluded.descriptors.parentalRatings == listOf(AribParentalRating("JPN", 12)))
+                val facts = JSONObject(requireNotNull(excluded.descriptors.diagnostics.descriptorFactsCanonicalJson))
+                val ratings = facts.getJSONArray("parentalRatingDescriptors")
+                check(ratings.length() == 2)
+                val validFact = ratings.getJSONObject(0)
+                check(validFact.getString("parseStatus") == "OK")
+                val entry = validFact.getJSONArray("entries").getJSONObject(0)
+                check(entry.getString("countryCode") == "JPN" && entry.getInt("rawRatingByte") == 12)
+                val malformedFact = ratings.getJSONObject(1)
+                check(malformedFact.getString("parseStatus") == "MalformedLength")
+                check(malformedFact.getJSONArray("entries").length() == 0)
+                check(malformedFact.getString("rawDescriptorHex") == expectedHex && expectedHex.length == 514)
+                check(snapshot.descriptorDiagnostics.isNotEmpty())
+            }
+        }
+    }
+
     @Test fun rejectedRatingsAndFullUnknownDescriptorsSurviveProductionPublication() {
         val parser = NativeAribSiParser()
         try {
