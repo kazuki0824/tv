@@ -222,8 +222,8 @@ jobs:
             esac
           done
           # 意図しない試験の削除・検出漏れを検知する固定値。クラス追加/削除時に除外一覧と併せて更新する。
-          test "${#discovered_classes[@]}" -eq 32
-          test "${#test_classes[@]}" -eq 29
+          test "${#discovered_classes[@]}" -eq 33
+          test "${#test_classes[@]}" -eq 30
           runtime_classpath="$TIS_KOTLIN_PRODUCTION_DIR:$TIS_KOTLIN_TEST_DIR:$TIS_ANDROID_ALL_JAR:$TIS_JUNIT_JAR:$TIS_HAMCREST_JAR:$TIS_KOTLIN_HOME/lib/kotlin-stdlib.jar:$TIS_KOTLIN_HOME/lib/kotlin-stdlib-jdk7.jar:$TIS_KOTLIN_HOME/lib/kotlin-stdlib-jdk8.jar:$TIS_KOTLIN_HOME/lib/kotlin-test.jar:$TIS_KOTLIN_HOME/lib/kotlin-test-junit.jar"
           java \
             -Xmx4g \
