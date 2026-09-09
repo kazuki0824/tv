@@ -230,8 +230,8 @@ class TunerController(
         playbackPipeline.setOnVideoFormatDiscoveredCallback(callback)
     }
 
-    fun setOnVideoOnlyFallbackRestartedCallback(callback: (PlaybackPipeline.VideoOnlyFallbackRestart) -> Unit) {
-        playbackPipeline.setOnVideoOnlyFallbackRestartedCallback(callback)
+    fun setOnPlaybackGenerationRestartedCallback(callback: (PlaybackPipeline.PlaybackGenerationRestart) -> Unit) {
+        playbackPipeline.setOnPlaybackGenerationRestartedCallback(callback)
     }
 
     private fun handleTunerResourceLostOnController() {
@@ -303,7 +303,11 @@ class TunerController(
         val streamIds: Set<Int>,
         val resultCode: Int,
         val message: String = "",
-    )
+    ) {
+        // runtime errorはfrontend capabilityを表さない。成功した現在のscan報告だけを採用する。
+        fun candidatesFor(seed: ScanCandidate): List<ScanCandidate> =
+            if (success) JapanIsdbScanPlan.explicitBsCandidatesFromScan(seed, streamIds) else emptyList()
+    }
 
     fun discoverIsdbsStreamIds(seed: ScanCandidate, timeoutMs: Long = BS_STREAM_ID_SCAN_TIMEOUT_MS): StreamIdDiscoveryResult =
         callOnController { discoverIsdbsStreamIdsOnController(seed, timeoutMs) }
@@ -657,48 +661,52 @@ class TunerController(
 
     private fun onSectionOnController(pid: TsPid, section: ByteArray, generation: Long = tuneGeneration) {
         if (generation != tuneGeneration) return
-        val receivedNanoTime = if (pid == WellKnownSectionPid.TDT) System.nanoTime() else 0L
-        val result = sectionIngestController?.onSection(pid, section)
-        if (pid == WellKnownSectionPid.TDT && result?.status == com.maleicacid.tvinput.aribsi.SiStatus.OK) {
-            sectionIngestController?.broadcastClockSnapshot()?.let { fact ->
-                val update = AribBroadcastClock.updateAuthority(
-                    latestBroadcastClockAuthority,
-                    AribBroadcastClock.SourceSample(
-                        tableId = fact.tableId,
-                        mjd = fact.mjd,
-                        millisOfDay = fact.millisOfDay,
-                        receivedNanoTime = receivedNanoTime,
-                    ),
-                )
-                if (update == null) {
-                    latestBroadcastClockAuthority = null
-                    Log.w(LogTags.TIS, "TDT/TOT clock factをauthorityへ昇格できないためfail-closedにします inputId=$inputId")
-                } else {
-                    latestBroadcastClockAuthority = update.authority
-                    if (update.discontinuity) {
-                        Log.w(
-                            LogTags.TIS,
-                            "TDT/TOT clock discontinuityを検出しました inputId=$inputId generation=${update.authority.generation}",
+        SectionFilterPolicy.dispatchSection(
+            pid, initialPids() + dynamicPmtPids, dynamicEcmPids, dynamicEmmPids,
+            onSi = {
+                val receivedNanoTime = if (pid == WellKnownSectionPid.TDT) System.nanoTime() else 0L
+                val result = sectionIngestController?.onSection(pid, section)
+                if (pid == WellKnownSectionPid.TDT && result?.status == com.maleicacid.tvinput.aribsi.SiStatus.OK) {
+                    sectionIngestController?.broadcastClockSnapshot()?.let { fact ->
+                        val update = AribBroadcastClock.updateAuthority(
+                            latestBroadcastClockAuthority,
+                            AribBroadcastClock.SourceSample(
+                                tableId = fact.tableId,
+                                mjd = fact.mjd,
+                                millisOfDay = fact.millisOfDay,
+                                receivedNanoTime = receivedNanoTime,
+                            ),
                         )
+                        if (update == null) {
+                            latestBroadcastClockAuthority = null
+                            Log.w(LogTags.TIS, "TDT/TOT clock factをauthorityへ昇格できないためfail-closedにします inputId=$inputId")
+                        } else {
+                            latestBroadcastClockAuthority = update.authority
+                            if (update.discontinuity) {
+                                Log.w(
+                                    LogTags.TIS,
+                                    "TDT/TOT clock discontinuityを検出しました inputId=$inputId generation=${update.authority.generation}",
+                                )
+                            }
+                        }
+                        onBroadcastClockUpdatedCallback?.invoke()
                     }
                 }
-                onBroadcastClockUpdatedCallback?.invoke()
-            }
-        }
-        if (pid in dynamicEcmPids) {
-            val diagnostics = casController?.onEcmSection(pid, section).orEmpty()
-            diagnostics.forEach { Log.w(LogTags.TIS, "ECM 処理診断 $it") }
-            if (diagnostics.any { it.state == CasController.State.ERROR }) {
-                playbackPipeline.reportUnavailable(PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY, diagnostics.joinToString())
-            }
-        }
-        if (pid in dynamicEmmPids) {
-            val diagnostics = casController?.onEmmSection(pid, section).orEmpty()
-            diagnostics.forEach { Log.w(LogTags.TIS, "EMM 処理診断 $it") }
-        }
-        onSectionIngestedCallback?.let { it() }
-        startPlaybackIfStreamsKnown()
-        Log.d(LogTags.TIS, "section 入力 inputId=$inputId pid=$pid size=${section.size} result=$result generation=$generation")
+                onSectionIngestedCallback?.invoke()
+                startPlaybackIfStreamsKnown()
+            },
+            onEcm = {
+                val diagnostics = casController?.onEcmSection(pid, section).orEmpty()
+                diagnostics.forEach { Log.w(LogTags.TIS, "ECM 処理診断 $it") }
+                if (diagnostics.any { it.state == CasController.State.ERROR }) {
+                    playbackPipeline.reportUnavailable(PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY, diagnostics.joinToString())
+                }
+            },
+            onEmm = {
+                val diagnostics = casController?.onEmmSection(pid, section).orEmpty()
+                diagnostics.forEach { Log.w(LogTags.TIS, "EMM 処理診断 $it") }
+            },
+        )
     }
 
     private fun startPlaybackIfStreamsKnown() {
@@ -718,7 +726,7 @@ class TunerController(
         dualMonoPresentation: PlaybackPipeline.DualMonoPresentation = PlaybackPipeline.DualMonoPresentation.MAIN,
     ): AvStreamSelection {
         val video = TunerSelectionPolicy.selectVideo(streams, defaultComponentGroupTags)
-        val audioCandidates = streams.filter { TunerSelectionPolicy.isSupportedAudioStreamType(it.streamType) }
+        val audioCandidates = streams.filter(TunerSelectionPolicy::isSupportedAudioStream)
         val audio = if (audioExplicitlyDisabled) null else preferredAudioTrackId?.let { wanted ->
             audioCandidates.firstOrNull { TunerSelectionPolicy.trackIdForAudio(it) == wanted }
         } ?: TunerSelectionPolicy.selectAudio(streams, defaultComponentGroupTags)

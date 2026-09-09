@@ -2,6 +2,20 @@ package com.maleicacid.tvinput.tis
 
 /** Android Tuner資源所有から独立したsection-filterの純粋判定。 */
 object SectionFilterPolicy {
+    fun dispatchSection(
+        pid: com.maleicacid.tvinput.common.TsPid,
+        siPids: Set<com.maleicacid.tvinput.common.TsPid>,
+        ecmPids: Set<com.maleicacid.tvinput.common.TsPid>,
+        emmPids: Set<com.maleicacid.tvinput.common.TsPid>,
+        onSi: () -> Unit,
+        onEcm: () -> Unit,
+        onEmm: () -> Unit,
+    ) {
+        if (pid in siPids) onSi()
+        if (pid in ecmPids) onEcm()
+        if (pid in emmPids) onEmm()
+    }
+
     const val MAX_SECTION_EVENT_BYTES = 4096L
 
     enum class ReadDecision { INGEST, SHORT_READ, READ_ERROR, STALE_SOURCE }

@@ -111,6 +111,8 @@ class NativeAribSiParser : AutoCloseable {
     fun livePlaybackSnapshot(): LivePlaybackSnapshot {
         val snapshot = readNativeTransaction()
         return LivePlaybackSnapshot(
+            collectionGeneration = snapshot.collectionGeneration,
+            programs = buildProgramPublishSnapshot(snapshot),
             ingestSequence = snapshot.ingestSequence,
             services = snapshot.services,
             caMetadata = snapshot.caMetadata,

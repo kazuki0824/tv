@@ -521,6 +521,8 @@ data class CasDiscoverySnapshot(
 )
 
 data class LivePlaybackSnapshot(
+    val collectionGeneration: Long,
+    val programs: ProgramPublishSnapshot,
     val ingestSequence: Long,
     val services: List<AribService>,
     val caMetadata: List<CaMetadata>,
@@ -530,7 +532,9 @@ data class LivePlaybackSnapshot(
     val descriptorDiagnostics: List<DescriptorDiagnostic>,
     val parserDiagnostics: List<ParserDiagnostic>,
     val malformedCaDescriptorDiagnostics: List<MalformedCaDescriptorDiagnostic> = emptyList(),
-)
+) {
+    fun pmtPidsFor(key: ServiceKey): Set<TsPid> = listOfNotNull(pmtPids[key]).toSet()
+}
 
 data class ServicePolicyDecision(
     val serviceKey: ServiceKey,

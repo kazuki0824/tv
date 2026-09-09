@@ -7,6 +7,30 @@ import org.junit.Test
 class PlaybackStartGateTest {
     private val key = ServiceKey(originalNetworkId = 4, transportStreamId = 0x4010, serviceId = 101)
 
+    @Test fun samePidCodecConfigurationChangesRestartButDiagnosticsDoNot() {
+        val video = com.maleicacid.tvinput.aribsi.AribElementaryStream(TsPid(0x101), 0x1b, null, null, null,
+            codec = "AVC", codecFacts = com.maleicacid.tvinput.aribsi.AribCodecFacts(
+                avc = com.maleicacid.tvinput.aribsi.AribAvcSignaling(100, 0, 40)))
+        val audio = video.copy(elementaryPid = TsPid(0x102), streamType = 0x0f, codec = "AAC",
+            codecFacts = com.maleicacid.tvinput.aribsi.AribCodecFacts(audioConfigHex = "1190"))
+        val original = signature(video.elementaryPid, audio.elementaryPid).copy(
+            videoConfiguration = DecoderConfigurationIdentity.from(video), audioConfiguration = DecoderConfigurationIdentity.from(audio))
+        val state = PlaybackStartState.Started(original, 7L)
+        val videoChanged = original.copy(videoConfiguration = DecoderConfigurationIdentity.from(video.copy(
+            codecFacts = video.codecFacts.copy(avc = com.maleicacid.tvinput.aribsi.AribAvcSignaling(100, 0, 41)))))
+        val audioChanged = original.copy(audioConfiguration = DecoderConfigurationIdentity.from(audio.copy(
+            codecFacts = audio.codecFacts.copy(audioConfigHex = "1210"))))
+        for (changed in listOf(videoChanged, audioChanged)) {
+            check(PlaybackStartTransitions.shouldAttempt(state, changed))
+            val restarted = PlaybackStartTransitions.afterSuccessfulRestart(changed, 8L, true)
+            check(PlaybackStartTransitions.acceptsGeneration(restarted, 8L))
+            check(!PlaybackStartTransitions.shouldAttempt(restarted, changed))
+        }
+        val diagnosticOnly = original.copy(videoConfiguration = DecoderConfigurationIdentity.from(video.copy(
+            codecFacts = video.codecFacts.copy(rawDescriptorsHex = "changed", profileLevel = "diagnostic only"))))
+        check(!PlaybackStartTransitions.shouldAttempt(state, diagnosticOnly))
+    }
+
     @Test fun repeatedSectionUpdatesAfterFailedStartDoNotRetrySameSignature() {
         val signature = signature(videoPid = TsPid(0x0101), audioPid = TsPid(0x0102))
         val state: PlaybackStartState = PlaybackStartState.Failed(signature, pipelineGeneration = null)

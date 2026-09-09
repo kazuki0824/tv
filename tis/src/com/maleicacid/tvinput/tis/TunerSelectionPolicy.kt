@@ -17,8 +17,11 @@ object TunerSelectionPolicy {
     fun isSupportedAudioStream(stream: AribElementaryStream): Boolean =
         isSupportedAudioStreamType(stream.streamType) && stream.codecFacts.resolved &&
             stream.codec != "MPEG-4-ALS" && stream.codec != "MPEG-4-Audio" && stream.codec != "HE-AAC-v2"
+    fun isSupportedVideoStream(stream: AribElementaryStream): Boolean =
+        isSupportedVideoStreamType(stream.streamType) && stream.codecFacts.resolved &&
+            (stream.streamType != 0x1b || stream.codecFacts.avc?.let { CodecFormatPolicy.avcProfileLevel(it) != null } != false)
     fun selectVideo(streams: List<AribElementaryStream>, componentGroupTags: Set<Int>? = null): AribElementaryStream? =
-        selectDefault(streams.filter { isSupportedVideoStreamType(it.streamType) }, DEFAULT_VIDEO_COMPONENT_TAG, componentGroupTags)
+        selectDefault(streams.filter(::isSupportedVideoStream), DEFAULT_VIDEO_COMPONENT_TAG, componentGroupTags)
 
     fun selectAudio(streams: List<AribElementaryStream>, componentGroupTags: Set<Int>? = null): AribElementaryStream? =
         selectDefault(streams.filter(::isSupportedAudioStream), DEFAULT_AUDIO_COMPONENT_TAG, componentGroupTags)
@@ -30,7 +33,7 @@ object TunerSelectionPolicy {
         selectDefault(streams.filter(::isSuperimposeStream), DEFAULT_SUPERIMPOSE_COMPONENT_TAG, componentGroupTags)
 
     fun hasSupportedVideo(streams: List<AribElementaryStream>): Boolean =
-        streams.any { isSupportedVideoStreamType(it.streamType) }
+        streams.any(::isSupportedVideoStream)
 
     fun trackIdForVideo(stream: AribElementaryStream): String = "video:${stream.elementaryPid}"
     fun trackIdForAudio(stream: AribElementaryStream): String =

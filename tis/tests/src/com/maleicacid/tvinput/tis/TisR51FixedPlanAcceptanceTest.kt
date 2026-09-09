@@ -43,6 +43,75 @@ class TisR51FixedPlanAcceptanceTest {
     private val key = ServiceKey(4, 0x4010, 101)
     private val otherKey = ServiceKey(4, 0x4010, 102)
 
+    @Test fun registrationAndSelectionShareStaticCodecFacts() {
+        val video = es(TsPid(0x101), 0x1b)
+        val audio = es(TsPid(0x102), 0x0f)
+        val badAudio = listOf(audio.copy(codec = "HE-AAC-v2"), audio.copy(codec = "MPEG-4-ALS"),
+            audio.copy(codec = "MPEG-4-Audio"), audio.copy(codecFacts = audio.codecFacts.copy(resolved = false)))
+        for (stream in badAudio) {
+            check(TunerSelectionPolicy.selectAudio(listOf(stream)) == null)
+            check(!com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator.evaluate(semanticFacts(0x02, listOf(stream))).registrationReady)
+            check(com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator.evaluate(semanticFacts(0x01, listOf(video, stream))).registrationReady)
+        }
+        for (stream in listOf(video.copy(codecFacts = video.codecFacts.copy(resolved = false)),
+            video.copy(codecFacts = video.codecFacts.copy(avc = com.maleicacid.tvinput.aribsi.AribAvcSignaling(100, 3, 40))))) {
+            check(TunerSelectionPolicy.selectVideo(listOf(stream)) == null)
+            check(!com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator.evaluate(semanticFacts(elementaryStreams = listOf(stream))).registrationReady)
+        }
+        check(com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator.evaluate(semanticFacts(0x02, listOf(audio))).registrationReady)
+        check(TunerSelectionPolicy.selectVideo(listOf(video)) == video) // descriptor不在時はSPS到着後にruntime検証
+    }
+
+    @Test fun livePolicyRejectsUnresolvedCaUnknownServiceAndDeliveryMismatch() {
+        NativeAribSiParser().use { parser ->
+            val initial = parser.livePlaybackSnapshot()
+            val clear = semanticFacts().let { it.copy(smd = it.smd.copy(broadcastingIdentifier = 3)) }
+            fun snapshot(facts: ServiceSemanticFacts) = initial.copy(semanticFactsByServiceKey = mapOf(key to facts),
+                programs = initial.programs.copy(discoveryProfile = SiDiscoveryProfile.ISDB_T))
+            val policy = com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
+            check(policy.evaluateLive(snapshot(clear), key).clearLivePlaybackStaticallyEligible)
+            for (facts in listOf(clear.copy(freeCaMode = true, caDescriptorsResolved = false),
+                clear.copy(serviceType = 0xa1), clear.copy(smd = clear.smd.copy(broadcastingIdentifier = 2)))) {
+                val rejected = policy.evaluateLive(snapshot(facts), key)
+                check(!rejected.registrationReady && !rejected.clearLivePlaybackStaticallyEligible)
+            }
+            check(!policy.evaluateLive(null, key).registrationReady)
+            val pids = initial.copy(pmtPids = mapOf(key to TsPid(0x100), otherKey to TsPid(0x200)))
+            check(pids.pmtPidsFor(key) == setOf(TsPid(0x100)))
+            check(pids.pmtPidsFor(ServiceKey(1, 2, 3)).isEmpty())
+        }
+    }
+
+    @Test fun authoritativeEmptyDoesNotReviveProviderRowButPartialEitUsesIt() {
+        val event = aribEvent()
+        val record = EventModelMapper().toProgramRecords(listOf(event), semanticFactsByServiceKey = mapOf(key to semanticFacts()),
+            profile = SiDiscoveryProfile.ISDB_T).single()
+        val data = TvProviderWriter.programProviderDataForTest(record).toByteArray()
+        var queries = 0
+        val resolver = CurrentProgramRatingResolver { _, columns, _, _, _ ->
+            queries++
+            android.database.MatrixCursor(columns).apply {
+                addRow(arrayOf(7L, event.eventId, event.startTimeMillis, event.startTimeMillis + event.durationMillis,
+                    TvContentRating.UNRATED.flattenToString(), data))
+            }
+        }
+        NativeAribSiParser().use { parser ->
+            val unobserved = parser.programStateSnapshot()
+            val empty = unobserved.copy(authoritativeProgramKeysByService = mapOf(key to emptySet()))
+            val uri = android.net.Uri.parse("content://android.media.tv/channel/1")
+            val absent = resolver.resolveDetailed(uri, key, emptyList(), AribRatingMapper.BroadcastProfile.BS_CS,
+                event.startTimeMillis + 1, resolver.eitAuthority(empty, key))
+            check(absent is CurrentProgramRatingResolver.ResolveResult.Ratings)
+            check(absent.ratingSet.source == CurrentProgramRatingResolver.Source.UNRATED_FALLBACK)
+            check(absent.ratingSet.eventId == null && queries == 0)
+            val partial = resolver.resolveDetailed(uri, key, emptyList(), AribRatingMapper.BroadcastProfile.BS_CS,
+                event.startTimeMillis + 1, resolver.eitAuthority(unobserved, key))
+            check(partial is CurrentProgramRatingResolver.ResolveResult.Ratings)
+            check(partial.ratingSet.source == CurrentProgramRatingResolver.Source.TV_PROVIDER_CURRENT_PROGRAM)
+            check(partial.ratingSet.eventId == event.eventId && queries == 1)
+        }
+    }
+
     @Test fun bootCollectionWaitsForEveryFixedServiceEitInstance() {
         val requirements = SiCollectionRequirements(ChannelScanController.PublishMode.BOOT_EPG_SYNC,
             SiDiscoveryProfile.ISDB_T, setOf(key, otherKey))

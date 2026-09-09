@@ -63,7 +63,7 @@ class PlaybackPipeline(
     private var onVideoFormatDiscovered: (Long, VideoFormatInfo) -> Unit = { _, _ -> }
     private var onSubtitlePes: (Long, String, ByteArray, CaptionTimestamp) -> Unit = { _, _, _, _ -> }
     private var onSubtitleContinuityLost: (Long, String) -> Unit = { _, _ -> }
-    private var onVideoOnlyFallbackRestarted: (VideoOnlyFallbackRestart) -> Unit = {}
+    private var onPlaybackGenerationRestarted: (PlaybackGenerationRestart) -> Unit = {}
     private var videoFilter: Filter? = null
     private var audioFilter: Filter? = null
     private var subtitleFilter: Filter? = null
@@ -73,6 +73,7 @@ class PlaybackPipeline(
     private var mediaSync: MediaSync? = null
     private var mediaSyncInputSurface: Surface? = null
     private var audioTrack: AudioTrack? = null
+    private var audioRoutingListener: android.media.AudioRouting.OnRoutingChangedListener? = null
     private var mediaSyncStarted = false
     private var mediaSyncSurfaceFailed = false
     private var videoInputQueued = false
@@ -139,9 +140,10 @@ class PlaybackPipeline(
         val generation: Long = -1L,
     )
 
-    data class VideoOnlyFallbackRestart(
+    data class PlaybackGenerationRestart(
         val originGeneration: Long,
         val result: StartResult,
+        val videoOnly: Boolean = false,
     )
 
     enum class DualMonoPresentation { MAIN, SUB, MAIN_SUB }
@@ -260,8 +262,8 @@ class PlaybackPipeline(
         runOnPlaybackExecutorBlocking { onSubtitleContinuityLost = callback }
     }
 
-    fun setOnVideoOnlyFallbackRestartedCallback(callback: (VideoOnlyFallbackRestart) -> Unit) {
-        runOnPlaybackExecutorBlocking { onVideoOnlyFallbackRestarted = callback }
+    fun setOnPlaybackGenerationRestartedCallback(callback: (PlaybackGenerationRestart) -> Unit) {
+        runOnPlaybackExecutorBlocking { onPlaybackGenerationRestarted = callback }
     }
 
     fun reportUnavailable(reason: PlaybackUnavailableReason, detail: String = "") {
@@ -713,6 +715,40 @@ class PlaybackPipeline(
         }
     }
 
+    private fun releaseAudioTrack() {
+        val track = audioTrack
+        val listener = audioRoutingListener
+        audioTrack = null
+        audioRoutingListener = null
+        if (track != null) {
+            if (listener != null) resourceCleanup.release("AudioTrack routing listener") { track.removeOnRoutingChangedListener(listener) }
+            resourceCleanup.release("AudioTrack") { track.release() }
+        }
+    }
+
+    private fun observeAudioRouting(track: AudioTrack, generation: Long) {
+        val gate = AudioRouteChangeGate(generation, track, track.routedDevice?.id)
+        val listener = android.media.AudioRouting.OnRoutingChangedListener { source ->
+            enqueuePlaybackAction {
+                if (source !== track || !gate.accepts(playbackGeneration, audioTrack)) return@enqueuePlaybackAction
+                gate.onRouteChanged(playbackGeneration, audioTrack, track.routedDevice?.id) {
+                    restartCurrentPlaybackGeneration(generation)
+                }
+            }
+        }
+        audioRoutingListener = listener
+        track.addOnRoutingChangedListener(listener, codecCallbackHandler)
+    }
+
+    private fun restartCurrentPlaybackGeneration(originGeneration: Long) {
+        if (originGeneration != playbackGeneration) return
+        val tuner = activeTuner ?: return
+        val channel = activeChannel ?: return
+        val selection = activeSelection ?: return
+        val restarted = startOnPlaybackExecutor(tuner, channel, selection)
+        onPlaybackGenerationRestarted(PlaybackGenerationRestart(originGeneration, restarted))
+    }
+
     private fun handleAudioFailure(reason: PlaybackUnavailableReason, detail: String, audioOnly: Boolean) {
         val originGeneration = playbackGeneration
         val restartTuner = activeTuner
@@ -721,8 +757,7 @@ class PlaybackPipeline(
         releaseOutstandingAudioOutputs()
         audioDecoder?.close()
         audioDecoder = null
-        audioTrack?.let { track -> resourceCleanup.release("AudioTrack") { track.release() } }
-        audioTrack = null
+        releaseAudioTrack()
         audioPathExpected = false
         audioInputQueued = false
         if (audioOnly) {
@@ -737,7 +772,7 @@ class PlaybackPipeline(
             return
         }
         val restarted = startOnPlaybackExecutor(restartTuner, restartChannel, restartSelection.copy(audio = null))
-        onVideoOnlyFallbackRestarted(VideoOnlyFallbackRestart(originGeneration, restarted))
+        onPlaybackGenerationRestarted(PlaybackGenerationRestart(originGeneration, restarted, videoOnly = true))
         if (restarted.generation < 0L || (!restarted.firstFramePending && !restarted.startedVideo)) emitUnavailable(reason, "$detail; video-only generation restart failed")
     }
 
@@ -1213,7 +1248,7 @@ class PlaybackPipeline(
                 throw IllegalStateException("ARIB dual-mono presentationをAudioTrackへ設定できません componentType=$componentType")
             }
             requireNotNull(mediaSync).setAudioTrack(created)
-            audioTrack = created
+            observeAudioRouting(created, generation)
             maybeStartMediaSync()
         }
 
@@ -1227,7 +1262,7 @@ class PlaybackPipeline(
                 return
             }
             Log.i(LogTags.TIS, "audio output format changed; rebuilding playback generation old=$previous new=$next")
-            startOnPlaybackExecutor(tuner, channel, selection)
+            restartCurrentPlaybackGeneration(generation)
         }
     }
 
@@ -1477,8 +1512,7 @@ class PlaybackPipeline(
         mediaSyncInputSurface?.let { previous -> resourceCleanup.release("MediaSync input Surface") { previous.release() } }
         mediaSyncInputSurface = null
         sync?.let { previous -> resourceCleanup.release("MediaSync") { previous.release() } }
-        audioTrack?.let { previous -> resourceCleanup.release("AudioTrack") { previous.release() } }
-        audioTrack = null
+        releaseAudioTrack()
         mediaSyncStarted = false; mediaSyncSurfaceFailed = false; videoAvailabilityMode = null; videoInputQueued = false; audioInputQueued = false; videoPathExpected = false; audioPathExpected = false
         activeChannel = null; activeTuner = null; activeSelection = null; ptsEpochCoordinator.reset()
         resourceCleanup.requireComplete()

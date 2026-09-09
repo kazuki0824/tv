@@ -5,6 +5,91 @@ import org.json.JSONObject
 import org.junit.Test
 
 class NativeAribSiParserCasDiscoveryTest {
+    @Test fun liveRefreshRetainsOneNativeTransactionAcrossPmtAndEitUpdates() {
+        NativeAribSiParser().use { parser ->
+            check(parser.ingestSection(TsPid(PID_PAT), section(PAT_BODY)) == SiStatus.OK)
+            check(parser.ingestSection(TsPid(PID_SDT), section(SDT_SCRAMBLED_SERVICE_BODY)) == SiStatus.OK)
+            check(parser.ingestSection(TsPid(PID_PMT), section(PMT_WITH_PROGRAM_AND_ES_CA_BODY)) == SiStatus.OK)
+            check(parser.ingestSection(TsPid(PID_EIT), section(eitWithDescriptors(emptyList()))) == SiStatus.OK)
+            val refresh = parser.livePlaybackSnapshot()
+            val oldPid = refresh.services.single().streams.first().elementaryPid
+            val oldEventId = refresh.programs.events.single().eventId
+            val nextPmt = PMT_WITH_PROGRAM_AND_ES_CA_BODY.copyOf().also { it[5] = 0xc3; it[20] = 0x11 }
+            val nextEit = eitWithDescriptors(emptyList()).also { it[5] = 0xc3; it[15] = 0x35 }
+            check(parser.ingestSection(TsPid(PID_PMT), section(nextPmt)) == SiStatus.OK)
+            check(parser.ingestSection(TsPid(PID_EIT), section(nextEit)) == SiStatus.OK)
+            // publish/rating/track/selectionは保持したrefreshのみを読む。
+            check(refresh.services.single().streams.first().elementaryPid == oldPid)
+            check(refresh.programs.events.single().eventId == oldEventId)
+            check(refresh.ingestSequence == refresh.programs.ingestSequence)
+            val nextRefresh = parser.livePlaybackSnapshot()
+            check(nextRefresh.services.single().streams.first().elementaryPid == TsPid(0x111))
+            check(nextRefresh.programs.events.single().eventId == 0x1235)
+            check(nextRefresh.ingestSequence == nextRefresh.programs.ingestSequence)
+            check(nextRefresh.ingestSequence > refresh.ingestSequence)
+            check(nextRefresh.semanticFactsByServiceKey == nextRefresh.programs.semanticFactsByServiceKey)
+        }
+    }
+
+    @Test fun casOnlyTrafficBypassesSiBudgetAndRefreshWhileReachingCasController() {
+        NativeAribSiParser().use { parser ->
+            check(parser.ingestSection(TsPid(PID_PAT), section(PAT_BODY)) == SiStatus.OK)
+            check(parser.ingestSection(TsPid(PID_SDT), section(SDT_SCRAMBLED_SERVICE_BODY)) == SiStatus.OK)
+            check(parser.ingestSection(TsPid(PID_PMT), section(PMT_WITH_PROGRAM_AND_ES_CA_BODY)) == SiStatus.OK)
+            check(parser.ingestSection(TsPid(PID_CAT), section(CAT_BODY)) == SiStatus.OK)
+            check(parser.ingestSection(TsPid(PID_EIT), section(eitWithDescriptors(emptyList()))) == SiStatus.OK)
+            val before = parser.livePlaybackSnapshot()
+            var ecmCount = 0
+            var emmCount = 0
+            var refreshCount = 0
+            val session = object : com.maleicacid.tvinput.tis.CasController.MediaCasSessionBridge {
+                override fun setPrivateData(privateData: ByteArray) = Result.success(Unit)
+                override fun processEcm(section: ByteArray): Result<com.maleicacid.tvinput.tis.EcmProcessResult> {
+                    check(section.size == 512)
+                    ecmCount++
+                    return Result.success(com.maleicacid.tvinput.tis.EcmProcessResult.DiagnosticOnly("test received"))
+                }
+                override fun close() = Unit
+            }
+            val factory = object : com.maleicacid.tvinput.tis.CasController.MediaCasBridgeFactory {
+                override fun create(caSystemId: Int): Result<com.maleicacid.tvinput.tis.CasController.MediaCasBridge> =
+                    Result.success(object : com.maleicacid.tvinput.tis.CasController.MediaCasBridge {
+                        override fun setPrivateData(privateData: ByteArray) = Result.success(Unit)
+                        override fun openSession() = Result.success(session)
+                        override fun processEmm(section: ByteArray): Result<Unit> { check(section.size == 512); emmCount++; return Result.success(Unit) }
+                        override fun close() = Unit
+                    })
+            }
+            com.maleicacid.tvinput.tis.CasController(mediaCasFactory = factory).use { cas ->
+                cas.updateFromCaMetadata(before.caMetadata)
+                val siPids = setOf(TsPid(PID_PAT), TsPid(PID_SDT), TsPid(PID_PMT), TsPid(PID_CAT), TsPid(PID_EIT))
+                val ecm = setOf(TsPid(ECM_PID_PROGRAM))
+                val emm = setOf(TsPid(EMM_PID))
+                val payload = ByteArray(512)
+                repeat(9000) {
+                    for (pid in ecm + emm) {
+                        com.maleicacid.tvinput.tis.SectionFilterPolicy.dispatchSection(pid, siPids, ecm, emm,
+                            onSi = { parser.ingestSection(pid, payload); refreshCount++ },
+                            onEcm = { cas.onEcmSection(pid, payload) }, onEmm = { cas.onEmmSection(pid, payload) })
+                    }
+                }
+                val after = parser.livePlaybackSnapshot()
+                check(ecmCount == 9000 && emmCount == 9000 && refreshCount == 0)
+                check(after.collectionGeneration == before.collectionGeneration)
+                check(after.ingestSequence == before.ingestSequence)
+                check(after.services == before.services && after.programs == before.programs)
+                // 不正SIは今もnative admissionを通り、反復でcollectionを失効させる。
+                repeat(9000) {
+                    com.maleicacid.tvinput.tis.SectionFilterPolicy.dispatchSection(TsPid(PID_EIT), siPids, ecm, emm,
+                        onSi = { parser.ingestSection(TsPid(PID_EIT), payload); refreshCount++ },
+                        onEcm = { error("not ECM") }, onEmm = { error("not EMM") })
+                }
+                check(refreshCount == 9000)
+                check(parser.livePlaybackSnapshot().programs.events.isEmpty())
+            }
+        }
+    }
+
     @Test fun codecDescriptorsSurviveNormalSnapshotAndProviderProjection() {
         NativeAribSiParser().use { parser ->
             val body = mutableListOf(

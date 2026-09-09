@@ -9,6 +9,10 @@ object PlaybackPolicy {
     fun shouldRejectSelection(
         serviceType: Int,
         selection: TunerController.AvStreamSelection,
-    ): Boolean = if (isAudioOnlyService(serviceType)) selection.audio == null else selection.video == null
+    ): Boolean = when (serviceType) {
+        0x01 -> selection.video == null
+        SERVICE_TYPE_DIGITAL_AUDIO -> selection.audio == null
+        else -> true
+    }
 
 }

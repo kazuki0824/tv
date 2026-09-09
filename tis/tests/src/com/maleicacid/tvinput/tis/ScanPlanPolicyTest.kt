@@ -11,6 +11,15 @@ import kotlin.test.assertTrue
 class ScanPlanPolicyTest {
 
     @Test
+    fun unavailableDynamicDiscoveryDoesNotInferUnsupportedCapability() {
+        val seed = JapanIsdbScanPlan.isdbsBsBands().first()
+        val failed = TunerController.StreamIdDiscoveryResult(false, setOf(16400), android.media.tv.tuner.Tuner.RESULT_UNAVAILABLE)
+        assertTrue(failed.candidatesFor(seed).isEmpty())
+        assertEquals(setOf(16400), failed.copy(success = true, resultCode = android.media.tv.tuner.Tuner.RESULT_SUCCESS)
+            .candidatesFor(seed).mapNotNull { it.streamSelector.value }.toSet())
+    }
+
+    @Test
     fun catvScanC13ToC63IsTisSideSsotAndDoesNotIncludeVhf() {
         val catv = JapanIsdbScanPlan.isdbtCatvC13ToC63()
         assertEquals(51, catv.size)

@@ -9,7 +9,12 @@ import com.maleicacid.tvinput.aribsi.ProviderDataBridge
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.common.ServiceKey
 
-class CurrentProgramRatingResolver(private val context: Context) {
+class CurrentProgramRatingResolver internal constructor(
+    private val queryPrograms: (Uri, Array<String>, String, Array<String>, String) -> android.database.Cursor?,
+) {
+    constructor(context: Context) : this({ uri, projection, selection, args, order ->
+        context.contentResolver.query(uri, projection, selection, args, order)
+    })
     enum class Source { TV_PROVIDER_CURRENT_PROGRAM, LATEST_EIT_CACHE, UNRATED_FALLBACK }
 
     sealed class ResolveResult {
@@ -100,13 +105,26 @@ class CurrentProgramRatingResolver(private val context: Context) {
         is ResolveResult.ProviderQueryFailed -> unresolvedRatingFallback(channelUri, serviceKey)
     }
 
+    enum class EitAuthority { UNCONFIRMED, AUTHORITATIVE_EMPTY }
+
+    fun eitAuthority(snapshot: com.maleicacid.tvinput.aribsi.ProgramPublishSnapshot?, key: ServiceKey?): EitAuthority =
+        if (snapshot?.authoritativeProgramKeysByService?.get(key)?.isEmpty() == true) EitAuthority.AUTHORITATIVE_EMPTY
+        else EitAuthority.UNCONFIRMED
+
     fun resolveDetailed(
         channelUri: Uri?,
         serviceKey: ServiceKey?,
         latestEvents: List<AribEvent>,
         ratingProfile: AribRatingMapper.BroadcastProfile,
         nowMillis: Long = System.currentTimeMillis(),
+        eitAuthority: EitAuthority = EitAuthority.UNCONFIRMED,
     ): ResolveResult {
+        if (eitAuthority == EitAuthority.AUTHORITATIVE_EMPTY) {
+            currentProgramResolutionDiagnostic = CurrentProgramResolutionDiagnostic(
+                "CURRENT_GENERATION_EMPTY_EIT", 0, null, "AUTHORITATIVE_EMPTY_BEFORE_PROVIDER_QUERY",
+            )
+            return ResolveResult.Ratings(unresolvedRatingFallback(channelUri, serviceKey))
+        }
         val latestEit = fromLatestEit(channelUri, serviceKey, latestEvents, ratingProfile, nowMillis)
         if (latestEit != null) {
             currentProgramResolutionDiagnostic = CurrentProgramResolutionDiagnostic(
@@ -162,7 +180,7 @@ class CurrentProgramRatingResolver(private val context: Context) {
         )
         val candidates = mutableListOf<Candidate>()
         val cursor = try {
-            context.contentResolver.query(TvContract.buildProgramsUriForChannel(channelUri), projection, selection, selectionArgs, sortOrder)
+            queryPrograms(TvContract.buildProgramsUriForChannel(channelUri), projection, selection, selectionArgs, sortOrder)
         } catch (e: RuntimeException) {
             return TvProviderLookupResult.QueryFailed(e.message ?: e.javaClass.name)
         } ?: return TvProviderLookupResult.QueryFailed("QUERY_RETURNED_NULL_CURSOR")

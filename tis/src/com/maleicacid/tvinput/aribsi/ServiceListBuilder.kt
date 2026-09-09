@@ -102,10 +102,21 @@ object ServicePolicyEvaluator {
     private const val SERVICE_TYPE_DIGITAL_TV = 0x01
     private const val SERVICE_TYPE_DIGITAL_AUDIO = 0x02
     private const val SUPPORTED_SMD = "SUPPORTED_BROADCAST"
-    private val SUPPORTED_VIDEO_STREAM_TYPES = setOf(0x02, 0x1b)
-    private val SUPPORTED_AUDIO_STREAM_TYPES = setOf(0x03, 0x04, 0x0f)
     private val RECOGNIZED_UNSUPPORTED_VIDEO_STREAM_TYPES = setOf(0x24)
     private val RECOGNIZED_UNSUPPORTED_AUDIO_STREAM_TYPES = setOf(0x11)
+
+    fun expectedSmdBroadcastingIdentifier(profile: Int): Int? = when (profile) {
+        SiDiscoveryProfile.ISDB_T -> 0b000011
+        SiDiscoveryProfile.BS -> 0b000010
+        SiDiscoveryProfile.CS110 -> 0b000100
+        else -> null
+    }
+
+    fun evaluateLive(snapshot: LivePlaybackSnapshot?, key: ServiceKey?): ServicePolicyDecision = evaluate(
+        facts = snapshot?.semanticFactsByServiceKey?.get(key),
+        fallbackKey = key,
+        expectedSmdBroadcastingIdentifier = snapshot?.programs?.discoveryProfile?.let(::expectedSmdBroadcastingIdentifier),
+    )
 
     fun evaluate(
         facts: ServiceSemanticFacts?,
@@ -134,14 +145,14 @@ object ServicePolicyEvaluator {
         if (!facts.pcrPidResolved) registrationReasons += "NO_PCR_PID"
         val streamTypes = facts.elementaryStreams.map { it.streamType }.toSet()
         when (facts.serviceType) {
-            SERVICE_TYPE_DIGITAL_TV -> if (streamTypes.none(SUPPORTED_VIDEO_STREAM_TYPES::contains)) {
+            SERVICE_TYPE_DIGITAL_TV -> if (facts.elementaryStreams.none(com.maleicacid.tvinput.tis.TunerSelectionPolicy::isSupportedVideoStream)) {
                 registrationReasons += if (streamTypes.any(RECOGNIZED_UNSUPPORTED_VIDEO_STREAM_TYPES::contains)) {
                     "NO_SUPPORTED_VIDEO_CODEC"
                 } else {
                     "NO_VIDEO_ES"
                 }
             }
-            SERVICE_TYPE_DIGITAL_AUDIO -> if (streamTypes.none(SUPPORTED_AUDIO_STREAM_TYPES::contains)) {
+            SERVICE_TYPE_DIGITAL_AUDIO -> if (facts.elementaryStreams.none(com.maleicacid.tvinput.tis.TunerSelectionPolicy::isSupportedAudioStream)) {
                 registrationReasons += if (streamTypes.any(RECOGNIZED_UNSUPPORTED_AUDIO_STREAM_TYPES::contains)) {
                     "NO_SUPPORTED_AUDIO_CODEC"
                 } else {
@@ -149,6 +160,7 @@ object ServicePolicyEvaluator {
                 }
             }
         }
+        if (!facts.caDescriptorsResolved) registrationReasons += "CA_DESCRIPTOR_UNRESOLVED"
         if (facts.smd.semanticState != SUPPORTED_SMD) {
             registrationReasons += facts.smd.semanticState
         } else if (

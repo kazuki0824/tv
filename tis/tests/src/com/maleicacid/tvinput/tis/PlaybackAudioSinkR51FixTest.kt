@@ -5,6 +5,32 @@ import android.media.tv.tuner.filter.AvSettings
 import org.junit.Test
 
 class PlaybackAudioSinkR51FixTest {
+    @Test fun routeChangeRestartsOnlyCurrentTrackAndGeneration() {
+        val oldTrack = Any()
+        var currentTrack: Any? = oldTrack
+        var generation = 7L
+        var released = false
+        var restarts = 0
+        val gate = AudioRouteChangeGate(generation, oldTrack, null)
+        val restart = {
+            released = true
+            currentTrack = null
+            generation++
+            check(released)
+            currentTrack = Any()
+            restarts++
+        }
+        gate.onRouteChanged(generation, currentTrack, 1, restart)
+        gate.onRouteChanged(generation, currentTrack, 1, restart)
+        check(restarts == 0)
+        gate.onRouteChanged(generation, currentTrack, 2, restart)
+        check(released && generation == 8L && currentTrack !== oldTrack && restarts == 1)
+        gate.onRouteChanged(generation, currentTrack, 3, restart)
+        gate.onRouteChanged(7L, currentTrack, 3, restart)
+        gate.onRouteChanged(generation, oldTrack, 3, restart)
+        check(restarts == 1)
+    }
+
     @Test fun r51SupportsAdtsAacButNotLatmLoasAudioStreamType() {
         check(PlaybackPipeline.isSupportedAudioStreamTypeForTest(0x0f))
         check(!PlaybackPipeline.isSupportedAudioStreamTypeForTest(0x11))

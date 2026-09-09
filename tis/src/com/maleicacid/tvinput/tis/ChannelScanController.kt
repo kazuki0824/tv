@@ -127,16 +127,9 @@ class ChannelScanController(
         val executionCandidates = candidates.flatMap { candidate ->
             if (candidate.kind == ScanCandidateKind.ISDB_S_BS && candidate.streamSelector == com.maleicacid.tvinput.common.StreamSelector.NONE) {
                 val discovery = tunerController.discoverIsdbsStreamIds(candidate)
-                val discovered = JapanIsdbScanPlan.explicitBsCandidatesFromScan(candidate, discovery.streamIds)
+                val discovered = discovery.candidatesFor(candidate)
                 if (discovery.success && discovered.isNotEmpty()) {
                     discovered
-                } else if (discovery.resultCode == Tuner.RESULT_UNAVAILABLE) {
-                    val versioned = JapanIsdbScanPlan.versionedBsCandidatesForUnsupportedDynamicDiscovery(candidate)
-                    diagnostics += ScanDiagnostic(
-                        candidate,
-                        "このfrontendはBS dynamic stream-ID discovery非対応のためversioned TSID tune候補を使用します candidates=${versioned.size}",
-                    )
-                    versioned
                 } else {
                     diagnostics += ScanDiagnostic(
                         candidate,
@@ -415,11 +408,8 @@ class ChannelScanController(
         return result
     }
 
-    private fun expectedSmdBroadcastingIdentifier(candidate: ScanCandidate): Int = when (candidate.kind) {
-        ScanCandidateKind.ISDB_T_UHF, ScanCandidateKind.ISDB_T_CATV -> 0b000011
-        ScanCandidateKind.ISDB_S_BS -> 0b000010
-        ScanCandidateKind.ISDB_S_110CS -> 0b000100
-    }
+    private fun expectedSmdBroadcastingIdentifier(candidate: ScanCandidate): Int =
+        requireNotNull(ServicePolicyEvaluator.expectedSmdBroadcastingIdentifier(discoveryProfile(candidate.kind)))
 
     private fun discoveryProfile(kind: ScanCandidateKind): Int = when (kind) {
         ScanCandidateKind.ISDB_T_UHF, ScanCandidateKind.ISDB_T_CATV -> SiDiscoveryProfile.ISDB_T
