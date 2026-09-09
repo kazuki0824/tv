@@ -131,6 +131,7 @@ object ServicePolicyEvaluator {
                 serviceKey = key,
                 registrationReady = false,
                 requiresCas = false,
+                caDescriptorsResolved = false,
                 reasons = listOf("NO_CURRENT_SERVICE_SEMANTIC_FACTS"),
             )
         }
@@ -160,7 +161,6 @@ object ServicePolicyEvaluator {
                 }
             }
         }
-        if (!facts.caDescriptorsResolved) registrationReasons += "CA_DESCRIPTOR_UNRESOLVED"
         if (facts.smd.semanticState != SUPPORTED_SMD) {
             registrationReasons += facts.smd.semanticState
         } else if (
@@ -177,9 +177,11 @@ object ServicePolicyEvaluator {
             serviceKey = key,
             registrationReady = registrationReady,
             requiresCas = facts.requiresCas,
+            caDescriptorsResolved = facts.caDescriptorsResolved,
             reasons = (
                 normalizedRegistrationReasons +
                     facts.semanticDiagnostics +
+                    (if (!facts.caDescriptorsResolved) listOf("CA_DESCRIPTOR_UNRESOLVED") else emptyList()) +
                     if (facts.requiresCas) listOf("CAS_NOT_IMPLEMENTED") else emptyList()
                 ).distinct().sorted(),
         )

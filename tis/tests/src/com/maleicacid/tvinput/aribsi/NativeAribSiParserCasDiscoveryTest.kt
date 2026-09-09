@@ -5,6 +5,32 @@ import org.json.JSONObject
 import org.junit.Test
 
 class NativeAribSiParserCasDiscoveryTest {
+    @Test fun presentEmptyAuthorityIsIndependentOfFollowingAndWholeTableCompletion() {
+        NativeAribSiParser().use { parser ->
+            val resolver = com.maleicacid.tvinput.tis.CurrentProgramRatingResolver { _, _, _, _, _ -> error("no provider query") }
+            val unknown = com.maleicacid.tvinput.tis.CurrentProgramRatingResolver.EitAuthority.UNCONFIRMED
+            val empty = com.maleicacid.tvinput.tis.CurrentProgramRatingResolver.EitAuthority.AUTHORITATIVE_EMPTY
+            val key = com.maleicacid.tvinput.common.ServiceKey(0x22, 0x11, 1)
+            val following = eitWithDescriptors(emptyList()).also { it[6] = 1; it[7] = 1; it[12] = 1 }
+            val present = following.take(14).toMutableList().also { it[6] = 0; setSectionLength(it, 0xf0) }.toIntArray()
+            check(parser.ingestSection(TsPid(PID_EIT), section(following)) == SiStatus.OK)
+            check(resolver.eitAuthority(parser.programStateSnapshot(), key) == unknown)
+            check(parser.ingestSection(TsPid(PID_EIT), section(present)) == SiStatus.OK)
+            val gap = parser.programStateSnapshot()
+            check(gap.events.single().source.sectionNumber == 1)
+            check(gap.authoritativeProgramKeysByService[key]?.isNotEmpty() == true)
+            check(resolver.eitAuthority(gap, key) == empty)
+            val nextPresent = present.copyOf().also { it[5] = 0xc3 }
+            check(parser.ingestSection(TsPid(PID_EIT), section(nextPresent)) == SiStatus.OK)
+            val partialFollowing = parser.programStateSnapshot()
+            check(!partialFollowing.eitInstances.single().complete)
+            check(resolver.eitAuthority(partialFollowing, key) == empty)
+            val nextFollowing = following.copyOf().also { it[5] = 0xc5 }
+            check(parser.ingestSection(TsPid(PID_EIT), section(nextFollowing)) == SiStatus.OK)
+            check(resolver.eitAuthority(parser.programStateSnapshot(), key) == unknown)
+        }
+    }
+
     @Test fun liveRefreshRetainsOneNativeTransactionAcrossPmtAndEitUpdates() {
         NativeAribSiParser().use { parser ->
             check(parser.ingestSection(TsPid(PID_PAT), section(PAT_BODY)) == SiStatus.OK)

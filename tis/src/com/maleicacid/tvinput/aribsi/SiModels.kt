@@ -540,9 +540,11 @@ data class ServicePolicyDecision(
     val serviceKey: ServiceKey,
     val registrationReady: Boolean,
     val requiresCas: Boolean,
+    val caDescriptorsResolved: Boolean,
     val reasons: List<String>,
 ) {
-    val clearLivePlaybackStaticallyEligible: Boolean get() = registrationReady && !requiresCas
+    val casDecisionReady: Boolean get() = registrationReady && caDescriptorsResolved
+    val clearLivePlaybackStaticallyEligible: Boolean get() = casDecisionReady && !requiresCas
 }
 
 typealias ServicePublishabilityDiagnostic = ServicePolicyDecision

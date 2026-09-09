@@ -43,6 +43,44 @@ class TisR51FixedPlanAcceptanceTest {
     private val key = ServiceKey(4, 0x4010, 101)
     private val otherKey = ServiceKey(4, 0x4010, 102)
 
+    @Test fun invalidCurrentPolicyClosesCasFiltersAndRejectsLateSections() {
+        val pmt = TsPid(0x100)
+        val ecm = TsPid(0x123)
+        val emm = TsPid(0x1ee)
+        val metadata = listOf(
+            com.maleicacid.tvinput.aribsi.CaMetadata(key, 5, ecm, null, TsPid(0x101)),
+            com.maleicacid.tvinput.aribsi.CaMetadata(null, 5, null, emm, null))
+        val valid = semanticFacts(requiresCas = true).let { it.copy(smd = it.smd.copy(broadcastingIdentifier = 3)) }
+        val invalid = listOf(valid.copy(caDescriptorsResolved = false),
+            valid.copy(smd = valid.smd.copy(broadcastingIdentifier = 2)), valid.copy(serviceType = 0xa1))
+        for (facts in invalid) {
+            val activeEcm = linkedSetOf<TsPid>()
+            val activeEmm = linkedSetOf<TsPid>()
+            val opened = mutableListOf<TsPid>()
+            val closed = mutableListOf<TsPid>()
+            fun apply(nextFacts: ServiceSemanticFacts) {
+                val decision = com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator.evaluate(nextFacts, expectedSmdBroadcastingIdentifier = 3)
+                val pids = SectionFilterPolicy.casPidsFor(decision, metadata)
+                for ((current, next) in listOf(activeEcm to pids.ecm, activeEmm to pids.emm)) {
+                    SectionFilterPolicy.replaceDynamicPids(current, next,
+                        close = { closed += it }, open = { opened += it; true })
+                }
+            }
+            apply(facts)
+            check(opened.isEmpty())
+            apply(valid)
+            check(activeEcm == setOf(ecm) && activeEmm == setOf(emm))
+            apply(facts)
+            check(closed.toSet() == setOf(ecm, emm) && activeEcm.isEmpty() && activeEmm.isEmpty())
+            var si = 0
+            for (pid in listOf(ecm, emm, pmt)) SectionFilterPolicy.dispatchSection(pid, setOf(pmt), activeEcm, activeEmm,
+                onSi = { si++ }, onEcm = { error("closed ECM delivered") }, onEmm = { error("closed EMM delivered") })
+            check(si == 1)
+            apply(valid)
+            check(opened.count { it == ecm } == 2 && opened.count { it == emm } == 2)
+        }
+    }
+
     @Test fun registrationAndSelectionShareStaticCodecFacts() {
         val video = es(TsPid(0x101), 0x1b)
         val audio = es(TsPid(0x102), 0x0f)
@@ -72,8 +110,12 @@ class TisR51FixedPlanAcceptanceTest {
                 programs = initial.programs.copy(discoveryProfile = SiDiscoveryProfile.ISDB_T))
             val policy = com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
             check(policy.evaluateLive(snapshot(clear), key).clearLivePlaybackStaticallyEligible)
-            for (facts in listOf(clear.copy(freeCaMode = true, caDescriptorsResolved = false),
-                clear.copy(serviceType = 0xa1), clear.copy(smd = clear.smd.copy(broadcastingIdentifier = 2)))) {
+            val unresolved = policy.evaluateLive(snapshot(clear.copy(freeCaMode = true, caDescriptorsResolved = false)), key)
+            check(unresolved.registrationReady && !unresolved.casDecisionReady && !unresolved.clearLivePlaybackStaticallyEligible)
+            check("CA_DESCRIPTOR_UNRESOLVED" in unresolved.reasons)
+            val scrambled = policy.evaluateLive(snapshot(clear.copy(requiresCas = true, freeCaMode = true)), key)
+            check(scrambled.registrationReady && scrambled.casDecisionReady && !scrambled.clearLivePlaybackStaticallyEligible)
+            for (facts in listOf(clear.copy(serviceType = 0xa1), clear.copy(smd = clear.smd.copy(broadcastingIdentifier = 2)))) {
                 val rejected = policy.evaluateLive(snapshot(facts), key)
                 check(!rejected.registrationReady && !rejected.clearLivePlaybackStaticallyEligible)
             }
@@ -99,18 +141,31 @@ class TisR51FixedPlanAcceptanceTest {
         }
         NativeAribSiParser().use { parser ->
             val unobserved = parser.programStateSnapshot()
-            val empty = unobserved.copy(authoritativeProgramKeysByService = mapOf(key to emptySet()))
+            val following = event.copy(eventId = 2, startTimeMillis = event.startTimeMillis + event.durationMillis,
+                source = event.source.copy(tableId = 0x4e, version = 1, sectionNumber = 1, lastSectionNumber = 1))
+            val empty = unobserved.copy(events = listOf(following), eitInstances = listOf(eitInstance(key)),
+                authoritativeProgramKeysByService = mapOf(key to setOf("following-key")))
             val uri = android.net.Uri.parse("content://android.media.tv/channel/1")
-            val absent = resolver.resolveDetailed(uri, key, emptyList(), AribRatingMapper.BroadcastProfile.BS_CS,
+            val absent = resolver.resolveDetailed(uri, key, empty.events, AribRatingMapper.BroadcastProfile.BS_CS,
                 event.startTimeMillis + 1, resolver.eitAuthority(empty, key))
             check(absent is CurrentProgramRatingResolver.ResolveResult.Ratings)
             check(absent.ratingSet.source == CurrentProgramRatingResolver.Source.UNRATED_FALLBACK)
             check(absent.ratingSet.eventId == null && queries == 0)
-            val partial = resolver.resolveDetailed(uri, key, emptyList(), AribRatingMapper.BroadcastProfile.BS_CS,
-                event.startTimeMillis + 1, resolver.eitAuthority(unobserved, key))
+            val missingPresent = empty.copy(eitInstances = listOf(eitInstance(key).copy(
+                receivedSections = listOf(1), missingSections = listOf(0), safeSections = listOf(1), complete = false)))
+            val partial = resolver.resolveDetailed(uri, key, missingPresent.events, AribRatingMapper.BroadcastProfile.BS_CS,
+                event.startTimeMillis + 1, resolver.eitAuthority(missingPresent, key))
             check(partial is CurrentProgramRatingResolver.ResolveResult.Ratings)
             check(partial.ratingSet.source == CurrentProgramRatingResolver.Source.TV_PROVIDER_CURRENT_PROGRAM)
             check(partial.ratingSet.eventId == event.eventId && queries == 1)
+            val unknown = CurrentProgramRatingResolver.EitAuthority.UNCONFIRMED
+            for (instance in listOf(eitInstance(key).copy(inconsistent = true), eitInstance(key).copy(safeSections = listOf(1)),
+                eitInstance(key).copy(currentNextIndicator = false), eitInstance(otherKey))) {
+                check(resolver.eitAuthority(empty.copy(eitInstances = listOf(instance)), key) == unknown)
+            }
+            val present = following.copy(source = following.source.copy(sectionNumber = 0))
+            check(resolver.eitAuthority(empty.copy(events = listOf(present)), key) == unknown)
+            check(resolver.eitAuthority(empty.copy(events = emptyList()), key) == CurrentProgramRatingResolver.EitAuthority.AUTHORITATIVE_EMPTY)
         }
     }
 
@@ -1006,6 +1061,7 @@ class TisR51FixedPlanAcceptanceTest {
         serviceKey = serviceKey,
         registrationReady = clearLive,
         requiresCas = false,
+        caDescriptorsResolved = true,
         reasons = reasons,
     )
 

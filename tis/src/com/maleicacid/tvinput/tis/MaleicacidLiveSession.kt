@@ -297,6 +297,7 @@ class MaleicacidLiveSession(
         latestLiveSnapshot = transaction
         val service = transaction.services.firstOrNull { it.serviceKey == serviceKey }
         val pmtPids = transaction.pmtPidsFor(serviceKey)
+        val decision = currentServicePolicy()
         val allCaMetadata = if (ENABLE_CAS_ORCHESTRATION) transaction.caMetadata else emptyList()
         val serviceScopedCa = allCaMetadata.filter {
             it.serviceKey == serviceKey && it.source != com.maleicacid.tvinput.aribsi.CaMetadataSource.CAT
@@ -308,20 +309,22 @@ class MaleicacidLiveSession(
         )
         val serviceCaMetadata = expanded.filter { it.serviceKey == serviceKey }
         val caMetadata = expanded.filter { it.serviceKey == null || it.serviceKey == serviceKey }
-        val ecmPids = caMetadata.mapNotNull { it.ecmPid }.toSet()
-        val emmPids = caMetadata.filter { CasController.SupportedCasSystemIds.supportsEmm(it.caSystemId) }.mapNotNull { it.emmPid }.toSet()
-        tunerController.updateDynamicSectionFiltersForService(serviceKey, pmtPids, ecmPids, emmPids, currentGeneration)
+        val casPids = SectionFilterPolicy.casPidsFor(decision, caMetadata)
+        // policy不成立時はPMTを維持し、旧ECM/EMM集合を空へ置換して配送を止める。
+        tunerController.updateDynamicSectionFiltersForService(serviceKey, pmtPids, casPids.ecm, casPids.emm, currentGeneration)
 
-        if (!currentServicePolicy().registrationReady) {
+        if (decision.registrationReady) {
+            publishLiveProgramsForCurrentService()
+            refreshCurrentProgramRatingState()
+        }
+        if (!decision.casDecisionReady) {
             casController.clearForClearService()
             playbackState = PlaybackStartState.Stopped
             tunerController.stopPlayback()
             beginCaptionPresentationGeneration(-1L, false)
-            notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+            notifyVideoUnavailable(if (decision.registrationReady) TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN else TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
             return
         }
-        publishLiveProgramsForCurrentService()
-        refreshCurrentProgramRatingState()
         if (caMetadata.isEmpty()) {
             casController.clearForClearService()
         } else {

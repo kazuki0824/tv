@@ -107,9 +107,20 @@ class CurrentProgramRatingResolver internal constructor(
 
     enum class EitAuthority { UNCONFIRMED, AUTHORITATIVE_EMPTY }
 
-    fun eitAuthority(snapshot: com.maleicacid.tvinput.aribsi.ProgramPublishSnapshot?, key: ServiceKey?): EitAuthority =
-        if (snapshot?.authoritativeProgramKeysByService?.get(key)?.isEmpty() == true) EitAuthority.AUTHORITATIVE_EMPTY
-        else EitAuthority.UNCONFIRMED
+    fun eitAuthority(snapshot: com.maleicacid.tvinput.aribsi.ProgramPublishSnapshot?, key: ServiceKey?): EitAuthority {
+        if (snapshot == null || key == null) return EitAuthority.UNCONFIRMED
+        val present = snapshot.eitInstances.singleOrNull {
+            it.serviceKey == key && it.tableId == 0x4e && it.currentNextIndicator
+        } ?: return EitAuthority.UNCONFIRMED
+        if (present.inconsistent || 0 !in present.receivedSections || 0 !in present.safeSections || 0 in present.missingSections) {
+            return EitAuthority.UNCONFIRMED
+        }
+        fun isPresent(source: com.maleicacid.tvinput.aribsi.AribProgramSource): Boolean =
+            source.tableId == 0x4e && source.version == present.version && source.sectionNumber == 0
+        val hasPresent = snapshot.events.any { it.serviceKey == key && isPresent(it.source) } ||
+            snapshot.excludedEventDescriptorFacts.any { it.serviceKey == key && isPresent(it.source) }
+        return if (hasPresent) EitAuthority.UNCONFIRMED else EitAuthority.AUTHORITATIVE_EMPTY
+    }
 
     fun resolveDetailed(
         channelUri: Uri?,

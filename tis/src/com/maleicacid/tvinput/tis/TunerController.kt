@@ -638,15 +638,10 @@ class TunerController(
     }
 
     private fun replaceDynamicPidSet(current: MutableSet<TsPid>, next: Set<TsPid>, opener: (TsPid) -> SectionFilterHandle) {
-        val sanitized = next
-        (current - sanitized).toList().forEach { pid ->
-            current.remove(pid)
-            if (pid !in initialPids()) closeSectionFilter(pid)
-        }
-        (sanitized - current).forEach { pid ->
-            val handle = opener(pid)
-            if (handle.isOpen) current += pid
-        }
+        SectionFilterPolicy.replaceDynamicPids(current, next,
+            close = { pid -> if (pid !in initialPids()) closeSectionFilter(pid) },
+            open = { pid -> opener(pid).isOpen },
+        )
     }
 
     private fun initialPids(): Set<TsPid> = setOf(WellKnownSectionPid.PAT, WellKnownSectionPid.CAT, WellKnownSectionPid.NIT, WellKnownSectionPid.SDT_BAT, WellKnownSectionPid.EIT, WellKnownSectionPid.TDT)
