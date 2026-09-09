@@ -11,6 +11,37 @@ import kotlin.test.assertTrue
 class ScanPlanPolicyTest {
 
     @Test
+    fun bsStartFailureSurvivesCleanupFailureAndRetainsOwnerForRetry() {
+        for (throws in listOf(false, true)) {
+            val operation = TunerController.StreamIdDiscoveryOperation(24L)
+            var owner: TunerController.StreamIdDiscoveryOperation? = operation
+            var cancelCalls = 0
+            operation.start {
+                if (throws) throw IllegalStateException("scan start exception")
+                android.media.tv.tuner.Tuner.RESULT_UNAVAILABLE
+            }
+            var diagnostics = 0
+            val result = operation.resultWithCleanup(operation.await(1), cleanup = {
+                if (owner === operation) {
+                    operation.cancel { cancelCalls++; android.media.tv.tuner.Tuner.RESULT_INVALID_STATE }
+                    owner = null
+                }
+            }, diagnose = { diagnostics++ })
+            assertEquals(operation, owner)
+            assertEquals(1, cancelCalls)
+            assertEquals(1, diagnostics)
+            assertFalse(result.success)
+            assertEquals(if (throws) android.media.tv.tuner.Tuner.RESULT_UNKNOWN_ERROR else android.media.tv.tuner.Tuner.RESULT_UNAVAILABLE, result.resultCode)
+            assertEquals(if (throws) "scan start exception" else "Tuner.scanに失敗しました result=${result.resultCode}", result.message)
+            assertEquals(result, operation.result(true))
+            operation.cancel { android.media.tv.tuner.Tuner.RESULT_SUCCESS }
+            owner = null
+            assertEquals(null, owner)
+            assertEquals(result, operation.result(true))
+        }
+    }
+
+    @Test
     fun bsProgressIsNotTerminalAndEveryTerminalRejectsLateIds() {
         val operation = TunerController.StreamIdDiscoveryOperation(21L)
         operation.reportProgress(100)

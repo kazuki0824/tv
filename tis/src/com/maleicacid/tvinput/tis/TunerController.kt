@@ -337,12 +337,11 @@ class TunerController(
             throw failure
         }
         return callOnController {
-            val result = operation.result(completed)
-            try { if (streamIdDiscovery === operation) cancelStreamIdDiscoveryOnController() } catch (cleanup: Exception) {
-                if (!result.resourceLost) throw cleanup
-                Log.w(LogTags.TIS, "BS資源喪失後のscan解放を再試行まで保持します", cleanup)
-            }
-            result
+            operation.resultWithCleanup(
+                completed,
+                cleanup = { if (streamIdDiscovery === operation) cancelStreamIdDiscoveryOnController() },
+                diagnose = { Log.w(LogTags.TIS, "BS探索失敗後のscan解放を再試行まで保持します", it) },
+            )
         }
     }
 
@@ -382,9 +381,7 @@ class TunerController(
             override fun onDvbcAnnexReported(dvbcAnnex: Int) = Unit
             override fun onDvbtCellIdsReported(dvbtCellIds: IntArray) = Unit
         }
-        val result = runCatching { tunerInstance.scan(settings, Tuner.SCAN_TYPE_AUTO, sectionExecutor, callback) }
-        result.onFailure { operation.startFailed(Tuner.RESULT_UNKNOWN_ERROR, it.message.orEmpty()) }
-            .onSuccess { code -> if (code != Tuner.RESULT_SUCCESS) operation.startFailed(code, "Tuner.scanに失敗しました result=$code") }
+        operation.start { tunerInstance.scan(settings, Tuner.SCAN_TYPE_AUTO, sectionExecutor, callback) }
         return operation
     }
 
@@ -414,6 +411,13 @@ class TunerController(
             terminal.countDown()
         }
         fun complete() { finish(Outcome.STOPPED) }
+        fun start(scan: () -> Int) {
+            val result = runCatching(scan)
+            val code = result.getOrDefault(Tuner.RESULT_UNKNOWN_ERROR)
+            if (result.isFailure || code != Tuner.RESULT_SUCCESS) {
+                startFailed(code, result.exceptionOrNull()?.message ?: "Tuner.scanに失敗しました result=$code")
+            }
+        }
         fun startFailed(code: Int, detail: String) {
             if (!active) return
             resultCode = code
@@ -431,6 +435,14 @@ class TunerController(
             finish(Outcome.CANCELLED)
         }
         fun await(timeoutMs: Long): Boolean = terminal.await(timeoutMs.coerceAtLeast(1L), TimeUnit.MILLISECONDS)
+        fun resultWithCleanup(completed: Boolean, cleanup: () -> Unit, diagnose: (Exception) -> Unit): StreamIdDiscoveryResult {
+            val result = result(completed)
+            try { cleanup() } catch (failure: Exception) {
+                if (!result.resourceLost && outcome != Outcome.START_FAILED) throw failure
+                diagnose(failure)
+            }
+            return result
+        }
         fun result(completed: Boolean): StreamIdDiscoveryResult {
             if (!completed) finish(Outcome.TIMED_OUT)
             check(!active) { "BS探索の終端前に結果を取得できません" }
