@@ -158,12 +158,14 @@ pub fn parse_eit_section_facts(section: &[u8]) -> EitSectionFacts {
                     &section[desc_start..body_end],
                 ));
         }
-        let identity = timing_state.has_stable_identity().then_some(EitStableEventIdentity {
-            original_network_id: onid,
-            transport_stream_id: tsid,
-            service_id,
-            event_id,
-        });
+        let identity = timing_state
+            .has_stable_identity()
+            .then_some(EitStableEventIdentity {
+                original_network_id: onid,
+                transport_stream_id: tsid,
+                service_id,
+                event_id,
+            });
         let mut diagnostics = Vec::new();
         if timing_state == EitTimingState::MalformedTiming {
             diagnostics.push(EitEventDiagnostic {
