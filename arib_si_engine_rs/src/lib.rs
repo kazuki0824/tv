@@ -859,7 +859,7 @@ fn event_value(event: &EitEvent) -> serde_json::Value {
             event_id: Some(event.event_id),
         }),
     );
-    let stable_identity = Some(EitStableEventIdentity {
+    let stable_identity = event.timing_state.has_stable_identity().then_some(EitStableEventIdentity {
         original_network_id: event.original_network_id,
         transport_stream_id: event.transport_stream_id,
         service_id: event.service_id,
@@ -921,6 +921,11 @@ fn event_value(event: &EitEvent) -> serde_json::Value {
             "seriesCandidatesCanonicalJson": series_candidates_canonical_json(event),
             "components": event_components_value(event),
             "diagnostics": {
+                "truncatedDescriptorLoop": event.descriptors.truncated_loop.as_ref().map(|facts| serde_json::json!({
+                    "declaredLength": facts.declared_length,
+                    "rawBytesHex": hex_lower(&facts.raw_bytes),
+                    "parseStatus": "TruncatedDescriptor",
+                })),
                 "summary": event_diagnostic_text(event),
                 "descriptorDiagnostics": json_value(descriptor_diagnostics.clone()),
                 "descriptorDiagnosticsCanonicalJson": descriptor_diagnostics,
@@ -1732,6 +1737,42 @@ mod tests {
         );
         assert!(components["video"][0].get("diagnosticCode").is_none());
         assert!(components["audio"][0].get("diagnosticCode").is_none());
+    }
+
+    #[test]
+    fn timing_state_controls_diagnostic_and_bulk_stable_identity() {
+        use crate::eit::{parse_eit_section, EitTimingState};
+        for state in [
+            EitTimingState::Defined,
+            EitTimingState::UndefinedTime,
+            EitTimingState::BothTimingUndefined,
+            EitTimingState::MalformedTiming,
+        ] {
+            let mut body = vec![
+                0x4e, 0xf0, 34, 0, 1, 0xc1, 0, 0, 0, 0x11, 0, 0x22, 0, 0x4e,
+                0x12, 0x34, 0xee, 0, 0x12, 0, 0, 0, 0x30, 0, 0x80, 7,
+                0x55, 5, 0x4a, 0x50, 0x4e, 12, 0xaa,
+            ];
+            match state {
+                EitTimingState::UndefinedTime => body[16..21].fill(0xff),
+                EitTimingState::BothTimingUndefined => body[16..24].fill(0xff),
+                EitTimingState::MalformedTiming => body[18] = 0xfa,
+                EitTimingState::Defined => {}
+            }
+            let events = parse_eit_section(&section_with_crc(body));
+            assert_eq!(events.len(), 1);
+            let event = &events[0];
+            assert_eq!(event.timing_state, state);
+            let expected = matches!(state, EitTimingState::Defined | EitTimingState::UndefinedTime);
+            assert!(!event.diagnostics.is_empty());
+            assert!(event.diagnostics.iter().all(|d| d.event_identity.is_some() == expected));
+            let value = event_value(event);
+            assert_eq!(!value["programKey"].is_null(), expected);
+            assert_eq!(!value["stableIdentity"].is_null(), expected);
+            assert_eq!(value["eventId"], 0x1234);
+            assert_eq!(value["serviceKey"]["serviceId"], 1);
+            assert!(!value["descriptors"]["diagnostics"]["descriptorFactsCanonicalJson"].is_null());
+        }
     }
 
     #[test]

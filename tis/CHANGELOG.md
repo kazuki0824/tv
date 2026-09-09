@@ -1,3 +1,9 @@
+# r51_pr91_review_truncated_loop_and_identity
+
+- 切断event loopの全受信bytes・宣言長・構造状態と、先行する正常descriptor事実を実JNIから診断専用DTOへ保持する。
+- 通常event/除外eventのstableIdentityをnullableにし、キーのないeventをMapperでProgramへ昇格させない。時刻状態ごとのキー有無と切断loopの回帰試験2件を追加し、CI期待件数を188件へ更新。
+- 検証結果はPRへ記録する。Android/Soong実体build・実機VTSは未実施。
+
 # r51_pr91_review_retry_and_diagnostic_facts
 
 - 非authoritativeな通常upsert成功による旧dirty削除要求の誤消去を防ぐ。現在のauthoritativeなprovider処理成功でのみ要求を除去する。

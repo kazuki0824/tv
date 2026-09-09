@@ -464,7 +464,7 @@ TIS の PSI/SI section path は allocation 前に `SectionEvent.dataLength` を�
 ```kotlin
 data class ExcludedEventDescriptorFacts(
     val serviceKey: ServiceKey,
-    val stableIdentity: String,
+    val stableIdentity: String?,
     val eventId: Int,
     val source: AribProgramSource,
     val descriptors: AribEventDescriptors,
@@ -531,6 +531,10 @@ fun casDiscoverySnapshot(): CasDiscoverySnapshot
 `takeProgramPublishSnapshot()`と`programStateSnapshot()`は、同じロック内で一回取得したimmutable native transactionからevents / EIT instance / service semantic facts / 診断情報を読み、同じKotlin policyでupdateWindowsを投影する。区間queueのdrainは行わない。公開経路は前者、LiveSessionの現在番組判定・視聴年齢制限判定・映像メタデータ補完は後者を使う。`snapshotEvents()`と`takeEpgUpdateWindows()`を別々に呼んで合成する経路は設けない。
 
 `events`は公開policyを通過した候補だけとし、除外eventの完全な記述子事実は`excludedEventDescriptorFacts`へ保持する。この診断専用DTOは`AribEvent`ではなく、MapperのProgram入力へ渡さない。`descriptors.diagnostics.descriptorFactsCanonicalJson`はRustの構造化事実をそのまま保持し、不正parental descriptorの全raw bytes・entries・parse statusを64-byte診断prefixへ置き換えない。公開可否を再判定する第二policyや、診断専用の再parseは設けない。
+
+eventの宣言descriptor loop長がsection残量を超える場合も、CRCを除く受信済みloop範囲を共通Rust parserで解析し、境界内で読める記述子事実を保持する。`descriptors.diagnostics.truncatedDescriptorLoop`はその場合だけ`AribTruncatedDescriptorLoop(declaredLength: Int, rawBytesHex: String, parseStatus: String)`を持つ。rawBytesHexは受信済みloop全体、parseStatusは`TruncatedDescriptor`とし、未受信bytesを補完しない。この診断専用情報から公開・削除権限を復元しない。
+
+通常bulkの`programKey` / `stableIdentity`とKotlin `AribEvent` / `ExcludedEventDescriptorFacts`のstableIdentityは、`DEFINED` / `UNDEFINED_TIME`だけに値を持ち、それ以外はnullとする。raw eventIdとServiceKey、記述子事実はキー不在でも保持する。MapperはキーがないeventをProgramへ昇格させず、raw eventIdから補完しない。
 
 廃止 snapshot wrapper は本番経路・公開通常境界・product build に残してはならない。テスト専用に必要な入口は test source または test-only 可視性に隔離し、本番 APK / JNI API / release API から参照不能にする。
 

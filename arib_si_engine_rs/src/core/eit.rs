@@ -1,6 +1,6 @@
 use crate::descriptors::{
     event_descriptor_loop_truncated_diagnostic, parse_event_descriptors, DescriptorDiagnostic,
-    DescriptorParseStatus, EventDescriptors,
+    DescriptorParseStatus, EventDescriptors, TruncatedDescriptorLoop,
 };
 use crate::sections::parse_section_header;
 
@@ -22,6 +22,10 @@ pub enum EitTimingState {
 }
 
 impl EitTimingState {
+    pub fn has_stable_identity(self) -> bool {
+        matches!(self, Self::Defined | Self::UndefinedTime)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Defined => "DEFINED",
@@ -137,12 +141,14 @@ pub fn parse_eit_section_facts(section: &[u8]) -> EitSectionFacts {
             break;
         };
         let descriptor_truncated = desc_end > body_end;
-        let mut descriptors = if descriptor_truncated {
-            EventDescriptors::default()
-        } else {
-            parse_event_descriptors(&section[desc_start..desc_end])
-        };
+        // CRC手前の受信範囲だけを共通parserへ渡し、読める記述子事実を保持する。
+        let available = &section[desc_start..desc_end.min(body_end)];
+        let mut descriptors = parse_event_descriptors(available);
         if descriptor_truncated {
+            descriptors.truncated_loop = Some(TruncatedDescriptorLoop {
+                declared_length: desc_len,
+                raw_bytes: available.to_vec(),
+            });
             descriptors
                 .diagnostics
                 .push(event_descriptor_loop_truncated_diagnostic(
@@ -152,7 +158,7 @@ pub fn parse_eit_section_facts(section: &[u8]) -> EitSectionFacts {
                     &section[desc_start..body_end],
                 ));
         }
-        let identity = Some(EitStableEventIdentity {
+        let identity = timing_state.has_stable_identity().then_some(EitStableEventIdentity {
             original_network_id: onid,
             transport_stream_id: tsid,
             service_id,

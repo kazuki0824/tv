@@ -236,6 +236,55 @@ class NativeAribSiParserCasDiscoveryTest {
         }
     }
 
+    @Test fun truncatedEventLoopRetainsCompleteDescriptorsAndAllAvailableBytes() {
+        NativeAribSiParser().use { parser ->
+            val valid = listOf(0x55, 4, 0x4a, 0x50, 0x4e, 12)
+            val truncated = listOf(0x55, 255) + (0 until 100).toList()
+            val available = valid + truncated
+            val body = eitWithDescriptors(available)
+            val declared = available.size + 155
+            body[24] = (body[24] and 0xf0) or (declared shr 8)
+            body[25] = declared and 0xff
+            check(parser.ingestSection(TsPid(PID_EIT), section(body)) == SiStatus.OK)
+            val snapshot = parser.takeProgramPublishSnapshot()
+            check(snapshot.events.isEmpty() && snapshot.authoritativeProgramKeysByService.isEmpty())
+            check(snapshot.updateWindows.none { it.deletionAuthoritative })
+            val excluded = snapshot.excludedEventDescriptorFacts.single()
+            check(excluded.descriptors.parentalRatings == listOf(AribParentalRating("JPN", 12)))
+            val loop = requireNotNull(excluded.descriptors.diagnostics.truncatedDescriptorLoop)
+            check(loop.declaredLength == declared && loop.parseStatus == "TruncatedDescriptor")
+            check(loop.rawBytesHex == available.joinToString("") { it.toString(16).padStart(2, '0') })
+            val facts = JSONObject(requireNotNull(excluded.descriptors.diagnostics.descriptorFactsCanonicalJson))
+            val ratings = facts.getJSONArray("parentalRatingDescriptors")
+            check(ratings.getJSONObject(0).getJSONArray("entries").getJSONObject(0).getInt("rawRatingByte") == 12)
+            check(ratings.getJSONObject(1).getString("parseStatus") == "TruncatedDescriptor")
+            check(ratings.getJSONObject(1).getString("rawDescriptorHex") == truncated.joinToString("") { it.toString(16).padStart(2, '0') })
+            check(snapshot.descriptorDiagnostics.isNotEmpty())
+        }
+    }
+
+    @Test fun timingIdentityIsNullableWithoutLosingRawEventFacts() {
+        for (state in listOf("DEFINED", "UNDEFINED_TIME", "BOTH_TIMING_UNDEFINED", "MALFORMED_TIMING")) {
+            NativeAribSiParser().use { parser ->
+                val body = eitWithDescriptors(listOf(0x55, 5, 0x4a, 0x50, 0x4e, 12, 0xaa))
+                when (state) {
+                    "UNDEFINED_TIME" -> for (index in 16..20) body[index] = 0xff
+                    "BOTH_TIMING_UNDEFINED" -> for (index in 16..23) body[index] = 0xff
+                    "MALFORMED_TIMING" -> body[18] = 0xfa
+                }
+                check(parser.ingestSection(TsPid(PID_EIT), section(body)) == SiStatus.OK)
+                val snapshot = parser.programStateSnapshot()
+                val excluded = snapshot.excludedEventDescriptorFacts.single()
+                check(excluded.eventId == 0x1234)
+                check((excluded.stableIdentity != null) == (state == "DEFINED" || state == "UNDEFINED_TIME"))
+                val facts = JSONObject(requireNotNull(excluded.descriptors.diagnostics.descriptorFactsCanonicalJson))
+                check(facts.getJSONArray("parentalRatingDescriptors").getJSONObject(0).getString("rawDescriptorHex") == "55054a504e0caa")
+                check(snapshot.descriptorDiagnostics.isNotEmpty())
+                check(snapshot.events.isEmpty() && snapshot.authoritativeProgramKeysByService.isEmpty())
+            }
+        }
+    }
+
     @Test fun longMalformedParentalFactsRemainInNonPublishableBulk() {
         NativeAribSiParser().use { parser ->
             val valid = listOf(0x55, 4, 0x4a, 0x50, 0x4e, 12)

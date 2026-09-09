@@ -15,6 +15,7 @@ class EventModelMapper {
     ): List<ProgramRecord> {
         return events.mapNotNull { event ->
             if (!EpgPublicationPolicy.isProgramRow(profile, event)) return@mapNotNull null
+            val stableIdentity = event.stableIdentity ?: return@mapNotNull null
             val semanticFacts = semanticFactsByServiceKey[event.serviceKey]
             if (semanticFactsByServiceKey.isNotEmpty() && semanticFacts == null) return@mapNotNull null
             val end = runCatching { Math.addExact(event.startTimeMillis, event.durationMillis) }
@@ -22,7 +23,7 @@ class EventModelMapper {
             if (event.startTimeMillis <= 0L || end <= event.startTimeMillis) null else ProgramRecord(
                 serviceKey = event.serviceKey,
                 eventId = event.eventId,
-                stableIdentity = event.stableIdentity,
+                stableIdentity = stableIdentity,
                 startTimeMillis = event.startTimeMillis,
                 durationMillis = event.durationMillis,
                 title = event.title,

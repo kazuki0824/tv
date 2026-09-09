@@ -402,7 +402,7 @@ class NativeAribSiParser : AutoCloseable {
         if (eventId < 0) return@mapNotNull null
         AribEvent(
             serviceKey = key,
-            stableIdentity = obj.optString("stableIdentity"),
+            stableIdentity = optStringOrNull(obj, "stableIdentity"),
             eventId = eventId,
             timingState = timingObj.optString("state", "MALFORMED_TIMING"),
             rawStartTimeHex = timingObj.optString("rawStartTimeHex"),
@@ -442,6 +442,9 @@ class NativeAribSiParser : AutoCloseable {
                     descriptorDiagnosticsCanonicalJson = descriptorDiagnosticsCanonicalJson,
                     descriptorFactsCanonicalJson = optStringOrNull(diagnostics, "descriptorFactsCanonicalJson"),
                     textDiagnostics = parseTextDiagnosticSummary(diagnostics.optString("summary")),
+                    truncatedDescriptorLoop = diagnostics.optJSONObject("truncatedDescriptorLoop")?.let { loop ->
+                        AribTruncatedDescriptorLoop(loop.getInt("declaredLength"), loop.getString("rawBytesHex"), loop.getString("parseStatus"))
+                    },
                 ),
             ),
         )

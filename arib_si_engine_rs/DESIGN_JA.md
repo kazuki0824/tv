@@ -130,6 +130,10 @@ EIT event の `start_time` と `duration` は、ARIB が各フィールドのall
 - `BOTH_TIMING_UNDEFINED`: `start_time=0xFFFFFFFFFF` かつ `duration=0xFFFFFF`。raw `event_id` はARIB fieldとして診断・raw意味objectに保持する。ARIBが`event_id`を無意味と規定したものとは扱わず、本製品の保守的ポリシーとして、具体時刻を持つeventとの誤相関または既存Programの誤削除を避けるため、persistent stable key、`ProgramKeyV1`、deletion-authoritativeなvalid-event-set、後続具体eventとの自動相関へ昇格させない。
 - `MALFORMED_TIMING`: 上記未定義値ではなく、BCDその他の構文規則に違反する。正常eventへ昇格せず診断に保持する。
 
+`EitEventDiagnostic.event_identity`と通常bulkの`programKey` / `stableIdentity`は、この同じ時刻状態判定を共有し、`DEFINED` / `UNDEFINED_TIME`以外ではnullとする。raw event_id・service識別子・記述子診断を保持するためにstable keyを生成してはならない。
+
+eventの`descriptors_loop_length`がsection内の残量を超える場合は、CRC手前までの受信済みbytesだけを共通descriptor parserへ渡し、完全に読める先行descriptorのtyped factを保持する。宣言長と受信済みloop全bytesは`EventDescriptors.truncated_loop`へ保持し、通常bulkの`descriptors.diagnostics.truncatedDescriptorLoop`へ`declaredLength / rawBytesHex / parseStatus=TruncatedDescriptor`として透過する。診断prefixは全bytesの代用ではない。event loopは未完成のままとし、公開・削除安全なsectionへ昇格させない。これは通常snapshotの診断情報であり、保存可能なProgramのprovider-data schemaを拡張するものではない。
+
 ## section 更新
 
 MPEG-2 PSI / ARIB SIのlong-form section headerにある`section_length`は12 bit固定として、parser内部の単一`parse_section_header(section)`で`0x0fff` maskを適用する。bit幅を呼び出し側引数にせず、0や別幅をlegacy互換として受理しない。宣言長、buffer境界、CRCの検査は同じheader結果を使う。

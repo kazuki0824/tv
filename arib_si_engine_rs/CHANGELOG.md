@@ -1,3 +1,9 @@
+# r51_pr91_review_truncated_loop_and_identity
+
+- event loopがsection残量を超えても、受信境界内の共通descriptor解析と全bytesの診断保持を行う。未受信部分を補完せず、構造不正状態を維持する。
+- 時刻状態のstable identity判定を診断とbulk出力で共有。DEFINED/UNDEFINED_TIMEだけがキーを持ち、不正時刻でもraw event_idと記述子事実は残す。実parserからbulk出力までの4状態の回帰試験を追加。
+- 検証結果はPRへ記録する。Android/Soong実体build・実機VTSは未実施。
+
 # r51_pr91_review_descriptor_source_text
 
 - provider-dataのsourceDescriptorを一方向の診断表記と明記。codec/descriptorの意味判断は既存の型付き事実を用い、セミコロン文字列を逆解析する第二protocolを設けない。

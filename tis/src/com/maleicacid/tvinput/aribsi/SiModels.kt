@@ -289,11 +289,18 @@ data class AribComponents(
     val data: List<AribComponentEntry> = emptyList(),
 )
 
+data class AribTruncatedDescriptorLoop(
+    val declaredLength: Int,
+    val rawBytesHex: String,
+    val parseStatus: String,
+)
+
 data class AribEventDiagnostics(
     val summary: String = "",
     val descriptorDiagnosticsCanonicalJson: String = "[]",
     val descriptorFactsCanonicalJson: String? = null,
     val textDiagnostics: List<String> = emptyList(),
+    val truncatedDescriptorLoop: AribTruncatedDescriptorLoop? = null,
 )
 
 data class AribProgramSource(
@@ -327,7 +334,7 @@ data class AribEventDescriptors(
 
 data class AribEvent(
     val serviceKey: ServiceKey,
-    val stableIdentity: String,
+    val stableIdentity: String?,
     val eventId: Int,
     val timingState: String = "DEFINED",
     val rawStartTimeHex: String = "",
@@ -344,7 +351,7 @@ data class AribEvent(
 
 data class AribEventDiagnostic(
     val serviceKey: ServiceKey,
-    val stableIdentity: String,
+    val stableIdentity: String?,
     val eventId: Int,
     val diagnosticText: String,
 )
@@ -464,7 +471,7 @@ data class TransportKey(
 /** 公開対象外eventの完全な記述子事実。Program候補のAribEventとは区別する。 */
 data class ExcludedEventDescriptorFacts(
     val serviceKey: ServiceKey,
-    val stableIdentity: String,
+    val stableIdentity: String?,
     val eventId: Int,
     val source: AribProgramSource,
     val descriptors: AribEventDescriptors,
