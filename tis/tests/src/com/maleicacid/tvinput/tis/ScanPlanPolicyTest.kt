@@ -11,6 +11,71 @@ import kotlin.test.assertTrue
 class ScanPlanPolicyTest {
 
     @Test
+    fun bsResourceLossWakesCallerAndRejectsCandidatesAndPublication() {
+        val controller = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val caller = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val fence = ChannelScanController.ResourceLossFence()
+        val operation = TunerController.StreamIdDiscoveryOperation(9L)
+        val waiting = java.util.concurrent.CountDownLatch(1)
+        var notifications = 0
+        var tuned = 0
+        var collected = 0
+        var published = 0
+        try {
+            val result = caller.submit<TunerController.StreamIdDiscoveryResult> {
+                waiting.countDown()
+                val completed = operation.await(5000)
+                controller.submit<TunerController.StreamIdDiscoveryResult> { operation.result(completed) }.get()
+            }
+            check(waiting.await(1, java.util.concurrent.TimeUnit.SECONDS))
+            controller.submit {
+                TunerController.completeResourceLoss(
+                    invalidate = { if (!operation.active) false else { operation.loseResources(); true } },
+                    cleanup = { operation.cancel() },
+                    notifyLost = { notifications++; fence.onLost(operation.generation) },
+                )
+                operation.reportIds(intArrayOf(16400)) // 喪失後の遅延報告を拒否する。
+            }.get(1, java.util.concurrent.TimeUnit.SECONDS)
+            val lost = result.get(1, java.util.concurrent.TimeUnit.SECONDS)
+            check(lost.resourceLost && !lost.success && lost.message == "TUNER_RESOURCE_LOST")
+            fence.activate(requireNotNull(lost.generation))
+            for (candidate in lost.candidatesFor(JapanIsdbScanPlan.isdbsBsBands().first())) { tuned++; collected++ }
+            fence.publishIfCurrent<Unit>(operation.generation) { published++ }
+            check(notifications == 1 && fence.terminalObserved && tuned == 0 && collected == 0 && published == 0)
+            val next = TunerController.StreamIdDiscoveryOperation(10L)
+            next.reportIds(intArrayOf(16400)); next.complete()
+            check(next.result(next.await(1)).success)
+        } finally { caller.shutdownNow(); controller.shutdownNow() }
+    }
+
+    @Test
+    fun scanReleaseRetryPreservesResourceLostTerminalAndRetainsOnlyFailedOwner() {
+        val context = android.content.ContextWrapper(null)
+        val task = ChannelScanManager.ActiveScanTask(1, ScanPurpose.SETUP_SCAN, context)
+        val owner = java.util.concurrent.atomic.AtomicReference<ChannelScanManager.ActiveScanTask?>(task)
+        val terminal = ScanState.Failed("TUNER_RESOURCE_LOST", 1, ScanPurpose.SETUP_SCAN)
+        // Managerの実stateを検査する。テスト用の本番mutation APIは追加しない。
+        val stateField = ChannelScanManager::class.java.getDeclaredField("state").apply { isAccessible = true }
+        val previousState = ChannelScanManager.currentState()
+        stateField.set(null, terminal)
+        var diagnostics = 0
+        var controllerCloses = 0
+        var engineCloses = 0
+        var reject = true
+        task.controller = AutoCloseable { controllerCloses++; if (reject) error("close failed") }
+        task.engine = AutoCloseable { engineCloses++ }
+        try {
+            check(!ChannelScanManager.finishScanRelease(task, owner) { diagnostics++ })
+            check(owner.get() === task && task.closing && task.controller != null && task.engine == null)
+            check(ChannelScanManager.currentState() === terminal && diagnostics == 1 && engineCloses == 1)
+            reject = false
+            check(ChannelScanManager.finishScanRelease(task, owner) { diagnostics++ })
+            check(owner.get() == null && controllerCloses == 2 && engineCloses == 1)
+            check(ChannelScanManager.currentState() === terminal && diagnostics == 1)
+        } finally { stateField.set(null, previousState) }
+    }
+
+    @Test
     fun unavailableDynamicDiscoveryDoesNotInferUnsupportedCapability() {
         val seed = JapanIsdbScanPlan.isdbsBsBands().first()
         val failed = TunerController.StreamIdDiscoveryResult(false, setOf(16400), android.media.tv.tuner.Tuner.RESULT_UNAVAILABLE)

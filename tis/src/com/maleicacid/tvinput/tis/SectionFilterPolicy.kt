@@ -2,18 +2,10 @@ package com.maleicacid.tvinput.tis
 
 /** Android Tuner資源の所有から分離したsection-filterの判定・集合更新・配送。 */
 object SectionFilterPolicy {
-    data class CasPids(
-        val ecm: Set<com.maleicacid.tvinput.common.TsPid>,
-        val emm: Set<com.maleicacid.tvinput.common.TsPid>,
-    )
-
-    fun casPidsFor(
-        decision: com.maleicacid.tvinput.aribsi.ServicePolicyDecision,
+    fun metadataForCasDecision(
+        ready: Boolean,
         metadata: List<com.maleicacid.tvinput.aribsi.CaMetadata>,
-    ): CasPids = if (!decision.casDecisionReady) CasPids(emptySet(), emptySet()) else CasPids(
-        metadata.mapNotNull { it.ecmPid }.toSet(),
-        metadata.filter { CasController.SupportedCasSystemIds.supportsEmm(it.caSystemId) }.mapNotNull { it.emmPid }.toSet(),
-    )
+    ): List<com.maleicacid.tvinput.aribsi.CaMetadata> = if (ready) metadata else emptyList()
 
     /** registryの所有はTunerControllerに残し、解放成功まで置換しない。 */
     internal fun openOwnedFilter(
@@ -58,17 +50,27 @@ object SectionFilterPolicy {
         failure?.let { throw it }
     }
 
-    fun updateFiltersAndStopOnFailure(
-        casDecisionReady: Boolean,
-        updateFilters: () -> Unit,
-        clearCas: () -> Unit,
-        stopPlayback: () -> Unit,
-    ) {
-        var updateFailed = false
-        completeCleanup(
-            { try { updateFilters() } catch (error: Exception) { updateFailed = true; throw error } },
-            { if (!casDecisionReady || updateFailed) completeCleanup(clearCas, stopPlayback) },
-        )
+    /** 同一controller executor内でmetadata成功後だけfilterを公開し、両方の失敗を清掃する。 */
+    internal fun commitCasAndFilters(
+        updateCas: () -> CasController.UpdateResult,
+        commitFilters: (CasController.UpdateResult) -> Unit,
+        reject: () -> Unit,
+    ): CasController.UpdateResult {
+        val result: CasController.UpdateResult
+        try {
+            result = updateCas()
+            if (result.diagnostics.none { it.state == CasController.State.ERROR }) {
+                commitFilters(result)
+                return result
+            }
+        } catch (failure: Exception) {
+            try { reject() } catch (cleanup: Exception) {
+                if (cleanup !== failure) failure.addSuppressed(cleanup)
+            }
+            throw failure
+        }
+        reject()
+        return result
     }
 
     fun dispatchSection(

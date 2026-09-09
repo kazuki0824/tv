@@ -162,13 +162,16 @@ class TisR51FixedPlanAcceptanceTest {
                 }
             }.isOpen },
             isOpen = { handles[it]?.isOpen == true })
-        for (ready in listOf(false, true)) {
+        repeat(2) {
             var casStopped = false
             var playbackStopped = false
-            val error = runCatching { SectionFilterPolicy.updateFiltersAndStopOnFailure(ready,
-                updateFilters = { apply(emptySet()) },
-                clearCas = { casStopped = true; throw casFailure },
-                stopPlayback = { playbackStopped = true; throw playbackFailure }) }.exceptionOrNull()
+            val error = runCatching { SectionFilterPolicy.commitCasAndFilters(
+                updateCas = { CasController.UpdateResult(emptyList(), emptySet(), emptySet()) },
+                commitFilters = { apply(emptySet()) },
+                reject = { SectionFilterPolicy.completeCleanup(
+                    { casStopped = true; throw casFailure },
+                    { playbackStopped = true; throw playbackFailure },
+                ) }) }.exceptionOrNull()
             check(error === failure && casStopped && playbackStopped)
             check(current == setOf(pid) && handles[pid] === old && !old.isOpen)
         }
@@ -246,8 +249,8 @@ class TisR51FixedPlanAcceptanceTest {
             val closed = mutableListOf<TsPid>()
             fun apply(nextFacts: ServiceSemanticFacts) {
                 val decision = com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator.evaluate(nextFacts, expectedSmdBroadcastingIdentifier = 3)
-                val pids = SectionFilterPolicy.casPidsFor(decision, metadata)
-                for ((current, next) in listOf(activeEcm to pids.ecm, activeEmm to pids.emm)) {
+                val accepted = SectionFilterPolicy.metadataForCasDecision(decision.casDecisionReady, metadata)
+                for ((current, next) in listOf(activeEcm to accepted.mapNotNull { it.ecmPid }.toSet(), activeEmm to accepted.mapNotNull { it.emmPid }.toSet())) {
                     SectionFilterPolicy.replaceDynamicPids(current, next,
                         close = { closed += it }, open = { opened += it; true }, isOpen = { it in current })
                 }

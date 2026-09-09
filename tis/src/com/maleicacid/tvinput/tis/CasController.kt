@@ -91,6 +91,8 @@ class CasController(
     fun clearForClearService(): Unit = onExecutor { clearForClearServiceLocked() }
 
     private fun clearForClearServiceLocked() {
+        invalidateMetadataLocked()
+        sessionsBySystemId.values.forEach { it.retiring = true }
         SectionFilterPolicy.completeCleanup(
             { SectionFilterPolicy.completeCleanup(*sessionsBySystemId.keys.map { systemId -> { closeSystemLocked(systemId) } }.toTypedArray()) },
             { if (!descramblerClosing) syncDescramblerPidsLocked(emptySet()) },
@@ -103,6 +105,8 @@ class CasController(
 
     internal fun updateFromCaMetadata(metadata: List<CaMetadata>, createDescrambler: (() -> TunerDescramblerBridge)? = null): UpdateResult = onExecutor {
         if (closed) return@onExecutor UpdateResult(listOf(Diagnostic(State.CLOSED, ErrorCode.CLOSED, message = "CAS 制御は終了済みです")), emptySet(), emptySet())
+        // 配送indexはmetadata全体の成功時だけ公開する。物理解放の途中でsurvivorを再公開しない。
+        invalidateMetadataLocked()
         if (metadata.isEmpty()) {
             clearForClearServiceLocked()
             return@onExecutor UpdateResult(emptyList(), emptySet(), emptySet())
@@ -139,7 +143,23 @@ class CasController(
             }
         }
         val targetSystems = (programBindings.map { it.caSystemId } + esBindings.map { it.caSystemId } + emmBindings.map { it.caSystemId }).toSet()
-        sessionsBySystemId.keys.filter { it !in targetSystems }.toList().forEach { closeSystemLocked(it) }
+        val obsolete = sessionsBySystemId.values.filter { it.caSystemId !in targetSystems }
+        obsolete.forEach { it.retiring = true }
+        val sessionSystems = (programBindings.map { it.caSystemId } + esBindings.map { it.caSystemId }).toSet()
+        val sessionOnlyRetirements = sessionsBySystemId.values.filter { !it.retiring && it.caSystemId !in sessionSystems && it.session != null }
+        SectionFilterPolicy.completeCleanup(*(
+            obsolete.map { state -> { closeSystemLocked(state.caSystemId) } } +
+            sessionOnlyRetirements.map { state -> {
+                try {
+                    state.session?.close()
+                    state.session = null
+                    state.sessionClosed = true
+                } catch (failure: Exception) {
+                    state.retiring = true
+                    throw failure
+                }
+            } }
+        ).toTypedArray())
         sessionsBySystemId.values.forEach { state -> state.ecmPids.clear(); state.elementaryPids.clear() }
         (programBindings.map { it.caSystemId } + esBindings.map { it.caSystemId }).toSet().forEach { systemId ->
             val result = ensureSessionLocked(systemId)
@@ -167,12 +187,15 @@ class CasController(
                 diagnostics += sessionFailureDiagnostic(binding.caSystemId, failure, binding.emmPid)
             }
         }
-        rebuildPidIndexesLocked()
-        emmBindings.filter { sessionsBySystemId[it.caSystemId]?.retiring == false }.forEach { binding ->
-            emmPidToSystems.getOrPut(binding.emmPid) { linkedSetOf() } += binding.caSystemId
-        }
-        runCatching { syncDescramblerPidsLocked(elementaryPidToSystems.keys) }.onFailure {
+        val activePids = sessionsBySystemId.values.filterNot { it.retiring }.flatMap { it.elementaryPids }.toSet()
+        runCatching { syncDescramblerPidsLocked(activePids) }.onFailure {
             diagnostics += lastDiagnostic
+        }
+        if (diagnostics.isEmpty()) {
+            rebuildPidIndexesLocked()
+            emmBindings.filter { sessionsBySystemId[it.caSystemId]?.retiring == false }.forEach { binding ->
+                emmPidToSystems.getOrPut(binding.emmPid) { linkedSetOf() } += binding.caSystemId
+            }
         }
         lastDiagnostic = if (diagnostics.isEmpty()) Diagnostic(if (targetSystems.isEmpty()) State.IDLE else State.ACTIVE) else diagnostics.last()
         UpdateResult(diagnostics, ecmPidToSystems.keys.toSet(), emmPidToSystems.keys.toSet())
@@ -236,28 +259,33 @@ class CasController(
     fun lastDiagnostic(): Diagnostic = lastDiagnostic
 
     private fun ensureSessionLocked(caSystemId: Int): Result<CasSessionState> {
-        sessionsBySystemId[caSystemId]?.let {
-            return if (it.retiring) Result.failure(IllegalStateException("CAS資源は解放再試行待ちです")) else Result.success(it)
-        }
-        val cas = mediaCasFactory.create(caSystemId).getOrElse { failure ->
-            return Result.failure(SessionProvisioningException(ErrorCode.PLUGIN_UNAVAILABLE, failure))
-        }
-        // openSessionより前にpluginのownerを確定する。rollback失敗でもローカル参照だけにしない。
-        val state = CasSessionState(caSystemId, cas)
-        sessionsBySystemId[caSystemId] = state
-        val session = cas.openSession().getOrElse { failure ->
+        val state = ensurePluginLocked(caSystemId).getOrElse { return Result.failure(it) }
+        if (state.session != null) return Result.success(state)
+        val session = state.cas.openSession().getOrElse { failure ->
             try { closeSystemLocked(caSystemId) } catch (cleanup: Exception) {
                 if (cleanup !== failure) failure.addSuppressed(cleanup)
             }
             return Result.failure(SessionProvisioningException(ErrorCode.SESSION_OPEN_FAILED, failure))
         }
         state.session = session
+        state.sessionClosed = false
         return Result.success(state)
     }
 
-    private fun ensureCasOnlyLocked(caSystemId: Int): Result<MediaCasBridge> {
-        return ensureSessionLocked(caSystemId).map { it.cas }
+    private fun ensurePluginLocked(caSystemId: Int): Result<CasSessionState> {
+        sessionsBySystemId[caSystemId]?.let {
+            return if (it.retiring) Result.failure(IllegalStateException("CAS資源は解放再試行待ちです")) else Result.success(it)
+        }
+        val cas = mediaCasFactory.create(caSystemId).getOrElse { failure ->
+            return Result.failure(SessionProvisioningException(ErrorCode.PLUGIN_UNAVAILABLE, failure))
+        }
+        val state = CasSessionState(caSystemId, cas)
+        sessionsBySystemId[caSystemId] = state
+        return Result.success(state)
     }
+
+    private fun ensureCasOnlyLocked(caSystemId: Int): Result<MediaCasBridge> =
+        ensurePluginLocked(caSystemId).map { it.cas }
 
     private fun sessionFailureDiagnostic(
         caSystemId: Int,
@@ -280,10 +308,14 @@ class CasController(
         } }.toTypedArray())
     }
 
-    private fun rebuildPidIndexesLocked() {
+    private fun invalidateMetadataLocked() {
         ecmPidToSystems.clear()
         emmPidToSystems.clear()
         elementaryPidToSystems.clear()
+    }
+
+    private fun rebuildPidIndexesLocked() {
+        invalidateMetadataLocked()
         sessionsBySystemId.values.filterNot { it.retiring }.forEach { state ->
             state.ecmPids.forEach { ecmPid -> ecmPidToSystems.getOrPut(ecmPid) { linkedSetOf() } += state.caSystemId }
             state.elementaryPids.forEach { elementaryPid -> elementaryPidToSystems.getOrPut(elementaryPid) { linkedSetOf() } += state.caSystemId }
@@ -293,7 +325,6 @@ class CasController(
     private fun closeSystemLocked(caSystemId: Int) {
         val state = sessionsBySystemId[caSystemId] ?: return
         state.retiring = true
-        rebuildPidIndexesLocked()
         SectionFilterPolicy.completeCleanup(
             { if (!state.sessionClosed) { state.session?.close(); state.sessionClosed = true } },
             { if (!state.casClosed) { state.cas.close(); state.casClosed = true } },

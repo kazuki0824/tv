@@ -312,31 +312,32 @@ class MaleicacidLiveSession(
         )
         val serviceCaMetadata = expanded.filter { it.serviceKey == serviceKey }
         val caMetadata = expanded.filter { it.serviceKey == null || it.serviceKey == serviceKey }
-        val casPids = SectionFilterPolicy.casPidsFor(decision, caMetadata)
-        // policy不成立時はPMTを維持し、旧ECM/EMM集合を空へ置換して配送を止める。
-        SectionFilterPolicy.updateFiltersAndStopOnFailure(
-            decision.casDecisionReady,
-            updateFilters = { tunerController.updateDynamicSectionFiltersForService(serviceKey, pmtPids, casPids.ecm, casPids.emm, currentGeneration) },
-            clearCas = { casController.clearForClearService() },
-            stopPlayback = {
-                playbackState = PlaybackStartState.Stopped
+        val casResult = try {
+            tunerController.updateCasMetadataAndFilters(caMetadata, pmtPids, currentGeneration, decision.casDecisionReady) ?: return
+        } catch (failure: Exception) {
+            playbackState = PlaybackStartState.Stopped
+            try {
                 SectionFilterPolicy.completeCleanup(
-                    { tunerController.stopPlayback() },
                     { beginCaptionPresentationGeneration(-1L, false) },
-                    { notifyVideoUnavailable(if (decision.registrationReady) TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN else TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN) },
+                    { notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN) },
                 )
-            },
-        )
+            } catch (cleanup: Exception) { if (cleanup !== failure) failure.addSuppressed(cleanup) }
+            throw failure
+        }
+        if (!decision.casDecisionReady) {
+            playbackState = PlaybackStartState.Stopped
+            SectionFilterPolicy.completeCleanup(
+                { beginCaptionPresentationGeneration(-1L, false) },
+                { notifyVideoUnavailable(if (decision.registrationReady) TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN else TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN) },
+            )
+        }
         if (decision.registrationReady) {
             publishLiveProgramsForCurrentService()
             refreshCurrentProgramRatingState()
         }
         if (!decision.casDecisionReady) return
-        if (caMetadata.isEmpty()) {
-            casController.clearForClearService()
-        } else {
-            val casResult = tunerController.updateCasMetadata(caMetadata, currentGeneration) ?: return
-            val blockingCasError = serviceCaMetadata.isNotEmpty() && casResult.diagnostics.any { it.state == CasController.State.ERROR }
+        if (caMetadata.isNotEmpty()) {
+            val blockingCasError = casResult.diagnostics.any { it.state == CasController.State.ERROR }
             if (blockingCasError) {
                 playbackState = PlaybackStartState.Stopped
                 tunerController.stopPlayback()

@@ -119,21 +119,26 @@ class ChannelScanController(
         val diagnostics = mutableListOf<ScanDiagnostic>()
         var published = 0
         var successfulCandidates = 0
-        val executionCandidates = candidates.flatMap { candidate ->
+        val executionCandidates = mutableListOf<ScanCandidate>()
+        for (candidate in candidates) {
+            if (cancelled.get() || terminalResourceLostObserved) break
             if (candidate.kind == ScanCandidateKind.ISDB_S_BS && candidate.streamSelector == com.maleicacid.tvinput.common.StreamSelector.NONE) {
                 val discovery = tunerController.discoverIsdbsStreamIds(candidate)
+                discovery.generation?.let { activateScanGeneration(it) }
+                if (discovery.resourceLost) {
+                    discovery.generation?.let { resourceLossFence.onLost(it) }
+                    diagnostics += ScanDiagnostic(candidate, "BS探索中のTUNER_RESOURCE_LOSTにより後続選局を停止します")
+                    break
+                }
+                discovery.generation?.let { clearActiveScanGeneration(it) }
                 val discovered = discovery.candidatesFor(candidate)
                 if (discovery.success && discovered.isNotEmpty()) {
-                    discovered
+                    executionCandidates += discovered
                 } else {
-                    diagnostics += ScanDiagnostic(
-                        candidate,
-                        "BS dynamic stream-ID discovery失敗をfail-closedにします result=${discovery.resultCode} message=${discovery.message}",
-                    )
-                    emptyList()
+                    diagnostics += ScanDiagnostic(candidate, "BS dynamic stream-ID discovery失敗 result=${discovery.resultCode} message=${discovery.message}")
                 }
             } else {
-                listOf(candidate)
+                executionCandidates += candidate
             }
         }
         for (candidate in executionCandidates) {
@@ -281,17 +286,9 @@ class ChannelScanController(
         val catCa = allCaMetadata.filter { it.source == com.maleicacid.tvinput.aribsi.CaMetadataSource.CAT }
         val caMetadata = caMapper.expandProgramLevelToElementaryStreams(serviceScopedCa + catCa, servicesForCas)
         val pmtPids = transaction.pmtPids.values.toSet()
-        val ecmPids = caMetadata.mapNotNull { it.ecmPid }.toSet()
-        val emmPids = caMetadata.filter { CasController.SupportedCasSystemIds.supportsEmm(it.caSystemId) }.mapNotNull { it.emmPid }.toSet()
-        tunerController.openDynamicFiltersFromCurrentSi(pmtPids, ecmPids, emmPids)
-        if (terminalResourceLostObserved) return
-        if (caMetadata.isEmpty()) {
-            casController.clearForClearService()
-            return
-        }
         val unsupported = caMapper.unsupportedForB25B1(caMetadata, CasController.SupportedCasSystemIds.B25_B1)
         unsupported.forEach { Log.w(LogTags.TIS, "対象外 CA情報 を無視します caSystemId=${it.caSystemId}") }
-        tunerController.updateCasMetadata(caMetadata, generation)
+        tunerController.updateCasMetadataAndFilters(caMetadata, pmtPids, generation, casDecisionReady = true)
     }
 
     private fun publishCurrentServiceSnapshot(

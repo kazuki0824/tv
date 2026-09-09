@@ -25,15 +25,15 @@ object ChannelScanManager {
     private val executor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "maleicacid-channel-scan-manager").apply { isDaemon = true }
     }
-    private class ActiveScanTask(
+    internal class ActiveScanTask(
         val generation: Int,
         val purpose: ScanPurpose,
         val context: Context,
     ) {
         @Volatile var closing = false
         val cancelRequested = AtomicBoolean(false)
-        @Volatile var controller: ChannelScanController? = null
-        @Volatile var engine: AribSiEngine? = null
+        @Volatile var controller: AutoCloseable? = null
+        @Volatile var engine: AutoCloseable? = null
     }
 
     private val listeners = CopyOnWriteArrayList<Listener>()
@@ -405,14 +405,24 @@ object ChannelScanManager {
 
     private fun finishScanIfCurrent(generation: Int): Boolean {
         val task = activeTask.get()?.takeIf { it.generation == generation } ?: return true
+        return finishScanRelease(task, activeTask) { error ->
+            Log.w(LogTags.TIS, "scan解放の所有を再試行まで保持します generation=$generation", error)
+        }
+    }
+
+    internal fun finishScanRelease(
+        task: ActiveScanTask,
+        owner: AtomicReference<ActiveScanTask?>,
+        reportFailure: (Exception) -> Unit,
+    ): Boolean {
         task.closing = true
         return try {
             closeController(task)
-            activeTask.compareAndSet(task, null)
+            owner.compareAndSet(task, null)
             true
         } catch (error: Exception) {
-            setTerminalStateIfCurrent(generation, ScanState.Failed("資源解放未完了: ${error.message}", generation, task.purpose))
-            Log.w(LogTags.TIS, "scan解放の所有を再試行まで保持します generation=$generation", error)
+            // semantic終端理由は維持する。未解放資源はtask.closingと所有参照で表す。
+            reportFailure(error)
             false
         }
     }
