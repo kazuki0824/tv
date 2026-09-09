@@ -146,14 +146,14 @@ object ServicePolicyEvaluator {
         val streamTypes = facts.elementaryStreams.map { it.streamType }.toSet()
         when (facts.serviceType) {
             SERVICE_TYPE_DIGITAL_TV -> if (facts.elementaryStreams.none(com.maleicacid.tvinput.tis.TunerSelectionPolicy::isSupportedVideoStream)) {
-                registrationReasons += if (streamTypes.any(RECOGNIZED_UNSUPPORTED_VIDEO_STREAM_TYPES::contains)) {
+                registrationReasons += if (streamTypes.any { com.maleicacid.tvinput.tis.TunerSelectionPolicy.isSupportedVideoStreamType(it) || it in RECOGNIZED_UNSUPPORTED_VIDEO_STREAM_TYPES }) {
                     "NO_SUPPORTED_VIDEO_CODEC"
                 } else {
                     "NO_VIDEO_ES"
                 }
             }
             SERVICE_TYPE_DIGITAL_AUDIO -> if (facts.elementaryStreams.none(com.maleicacid.tvinput.tis.TunerSelectionPolicy::isSupportedAudioStream)) {
-                registrationReasons += if (streamTypes.any(RECOGNIZED_UNSUPPORTED_AUDIO_STREAM_TYPES::contains)) {
+                registrationReasons += if (streamTypes.any { com.maleicacid.tvinput.tis.TunerSelectionPolicy.isSupportedAudioStreamType(it) || it in RECOGNIZED_UNSUPPORTED_AUDIO_STREAM_TYPES }) {
                     "NO_SUPPORTED_AUDIO_CODEC"
                 } else {
                     "NO_AUDIO_ES"

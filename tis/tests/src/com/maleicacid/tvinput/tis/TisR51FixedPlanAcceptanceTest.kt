@@ -50,13 +50,15 @@ class TisR51FixedPlanAcceptanceTest {
             audio.copy(codec = "MPEG-4-Audio"), audio.copy(codecFacts = audio.codecFacts.copy(resolved = false)))
         for (stream in badAudio) {
             check(TunerSelectionPolicy.selectAudio(listOf(stream)) == null)
-            check(!com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator.evaluate(semanticFacts(0x02, listOf(stream))).registrationReady)
+            val rejected = com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator.evaluate(semanticFacts(0x02, listOf(stream)))
+            check(!rejected.registrationReady && "NO_SUPPORTED_AUDIO_CODEC" in rejected.reasons)
             check(com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator.evaluate(semanticFacts(0x01, listOf(video, stream))).registrationReady)
         }
         for (stream in listOf(video.copy(codecFacts = video.codecFacts.copy(resolved = false)),
             video.copy(codecFacts = video.codecFacts.copy(avc = com.maleicacid.tvinput.aribsi.AribAvcSignaling(100, 3, 40))))) {
             check(TunerSelectionPolicy.selectVideo(listOf(stream)) == null)
-            check(!com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator.evaluate(semanticFacts(elementaryStreams = listOf(stream))).registrationReady)
+            val rejected = com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator.evaluate(semanticFacts(elementaryStreams = listOf(stream)))
+            check(!rejected.registrationReady && "NO_SUPPORTED_VIDEO_CODEC" in rejected.reasons)
         }
         check(com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator.evaluate(semanticFacts(0x02, listOf(audio))).registrationReady)
         check(TunerSelectionPolicy.selectVideo(listOf(video)) == video) // descriptor不在時はSPS到着後にruntime検証
