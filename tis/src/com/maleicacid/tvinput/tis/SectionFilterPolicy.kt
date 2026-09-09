@@ -15,17 +15,60 @@ object SectionFilterPolicy {
         metadata.filter { CasController.SupportedCasSystemIds.supportsEmm(it.caSystemId) }.mapNotNull { it.emmPid }.toSet(),
     )
 
+    /** registryの所有はTunerControllerに残し、解放成功まで置換しない。 */
+    internal fun openOwnedFilter(
+        pid: com.maleicacid.tvinput.common.TsPid,
+        handles: MutableMap<com.maleicacid.tvinput.common.TsPid, TunerController.SectionFilterHandle>,
+        create: () -> TunerController.SectionFilterHandle,
+    ): TunerController.SectionFilterHandle {
+        handles[pid]?.let { existing ->
+            if (existing.isOpen) return existing
+            existing.close()
+            handles.remove(pid)
+        }
+        val handle = create()
+        if (handle.isOpen) handles[pid] = handle
+        return handle
+    }
+
     fun replaceDynamicPids(
         current: MutableSet<com.maleicacid.tvinput.common.TsPid>,
         next: Set<com.maleicacid.tvinput.common.TsPid>,
         close: (com.maleicacid.tvinput.common.TsPid) -> Unit,
         open: (com.maleicacid.tvinput.common.TsPid) -> Boolean,
+        isOpen: (com.maleicacid.tvinput.common.TsPid) -> Boolean,
     ) {
-        (current - next).toList().forEach { pid ->
-            current.remove(pid)
+        completeCleanup(*(current - next).map { pid -> {
             close(pid)
+            current.remove(pid)
+            Unit
+        } }.toTypedArray())
+        next.filter { it !in current || !isOpen(it) }.forEach { pid -> if (open(pid)) current += pid }
+    }
+
+    /** 他の解放を省略せず、最初の失敗に後続失敗を添えて返す。 */
+    fun completeCleanup(vararg actions: () -> Unit) {
+        var failure: Exception? = null
+        for (action in actions) {
+            try { action() } catch (error: Exception) {
+                val primary = failure
+                if (primary == null) failure = error else if (primary !== error) primary.addSuppressed(error)
+            }
         }
-        (next - current).forEach { pid -> if (open(pid)) current += pid }
+        failure?.let { throw it }
+    }
+
+    fun updateFiltersAndStopOnFailure(
+        casDecisionReady: Boolean,
+        updateFilters: () -> Unit,
+        clearCas: () -> Unit,
+        stopPlayback: () -> Unit,
+    ) {
+        var updateFailed = false
+        completeCleanup(
+            { try { updateFilters() } catch (error: Exception) { updateFailed = true; throw error } },
+            { if (!casDecisionReady || updateFailed) completeCleanup(clearCas, stopPlayback) },
+        )
     }
 
     fun dispatchSection(

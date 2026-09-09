@@ -105,7 +105,11 @@ class CurrentProgramRatingResolver internal constructor(
         is ResolveResult.ProviderQueryFailed -> unresolvedRatingFallback(channelUri, serviceKey)
     }
 
-    enum class EitAuthority { UNCONFIRMED, AUTHORITATIVE_EMPTY }
+    sealed class EitAuthority {
+        object UNCONFIRMED : EitAuthority()
+        object AUTHORITATIVE_EMPTY : EitAuthority()
+        data class PresentObserved(val event: AribEvent?) : EitAuthority()
+    }
 
     fun eitAuthority(snapshot: com.maleicacid.tvinput.aribsi.ProgramPublishSnapshot?, key: ServiceKey?): EitAuthority {
         if (snapshot == null || key == null) return EitAuthority.UNCONFIRMED
@@ -117,9 +121,13 @@ class CurrentProgramRatingResolver internal constructor(
         }
         fun isPresent(source: com.maleicacid.tvinput.aribsi.AribProgramSource): Boolean =
             source.tableId == 0x4e && source.version == present.version && source.sectionNumber == 0
-        val hasPresent = snapshot.events.any { it.serviceKey == key && isPresent(it.source) } ||
-            snapshot.excludedEventDescriptorFacts.any { it.serviceKey == key && isPresent(it.source) }
-        return if (hasPresent) EitAuthority.UNCONFIRMED else EitAuthority.AUTHORITATIVE_EMPTY
+        val events = snapshot.events.filter { it.serviceKey == key && isPresent(it.source) }
+        val excluded = snapshot.excludedEventDescriptorFacts.any { it.serviceKey == key && isPresent(it.source) }
+        if (events.isEmpty() && !excluded) return EitAuthority.AUTHORITATIVE_EMPTY
+        // 診断専用eventや複数presentから現在番組を推測しないが、欠測にも戻さない。
+        return EitAuthority.PresentObserved(events.singleOrNull()?.takeIf {
+            !excluded && (it.timingState == "DEFINED" || it.timingState == "UNDEFINED_TIME")
+        })
     }
 
     fun resolveDetailed(
@@ -135,6 +143,14 @@ class CurrentProgramRatingResolver internal constructor(
                 "CURRENT_GENERATION_EMPTY_EIT", 0, null, "AUTHORITATIVE_EMPTY_BEFORE_PROVIDER_QUERY",
             )
             return ResolveResult.Ratings(unresolvedRatingFallback(channelUri, serviceKey))
+        }
+        if (eitAuthority is EitAuthority.PresentObserved) {
+            val event = eitAuthority.event?.takeIf { it.serviceKey == serviceKey }
+            currentProgramResolutionDiagnostic = CurrentProgramResolutionDiagnostic(
+                "CURRENT_GENERATION_PRESENT_EIT", 0, null, "PRESENT_OBSERVED_BEFORE_PROVIDER_QUERY",
+            )
+            return ResolveResult.Ratings(event?.let { ratingFromEvent(channelUri, it, ratingProfile) }
+                ?: unresolvedRatingFallback(channelUri, serviceKey))
         }
         val latestEit = fromLatestEit(channelUri, serviceKey, latestEvents, ratingProfile, nowMillis)
         if (latestEit != null) {
@@ -246,6 +262,7 @@ class CurrentProgramRatingResolver internal constructor(
         val key = serviceKey ?: return null
         val selected = latestEvents
             .mapNotNull { event ->
+                if (event.timingState != "DEFINED") return@mapNotNull null
                 val end = runCatching { Math.addExact(event.startTimeMillis, event.durationMillis) }.getOrNull()
                     ?: return@mapNotNull null
                 (event to end).takeIf { event.serviceKey == key && nowMillis >= event.startTimeMillis && nowMillis < end }
@@ -254,15 +271,25 @@ class CurrentProgramRatingResolver internal constructor(
                 .thenBy { it.second }
                 .thenByDescending { it.first.eventId })
             .firstOrNull() ?: return null
-        val event = selected.first
+        return ratingFromEvent(channelUri, selected.first, ratingProfile)
+    }
+
+    private fun ratingFromEvent(
+        channelUri: Uri?,
+        event: AribEvent,
+        ratingProfile: AribRatingMapper.BroadcastProfile,
+    ): CurrentProgramRatingSet {
+        val end = if (event.timingState == "DEFINED" && event.durationMillis > 0L) {
+            runCatching { Math.addExact(event.startTimeMillis, event.durationMillis) }.getOrNull()
+        } else null
         return CurrentProgramRatingSet(
             ratings = event.descriptors.parentalRatings.mapNotNull { AribRatingMapper.toTvContentRating(it, ratingProfile) },
             source = Source.LATEST_EIT_CACHE,
             channelUriString = channelUri?.toString().orEmpty(),
-            serviceKey = key,
+            serviceKey = event.serviceKey,
             eventId = event.eventId,
-            startTimeMillis = event.startTimeMillis,
-            endTimeMillis = selected.second,
+            startTimeMillis = event.startTimeMillis.takeIf { end != null },
+            endTimeMillis = end,
         )
     }
 

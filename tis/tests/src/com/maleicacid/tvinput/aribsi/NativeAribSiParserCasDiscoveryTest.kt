@@ -5,6 +5,26 @@ import org.json.JSONObject
 import org.junit.Test
 
 class NativeAribSiParserCasDiscoveryTest {
+    @Test fun nativeUntimedPresentRemainsRatingAuthority() {
+        for (undefinedRange in listOf(16..20, 21..23)) NativeAribSiParser().use { parser ->
+            val resolver = com.maleicacid.tvinput.tis.CurrentProgramRatingResolver { _, _, _, _, _ -> error("stale provider queried") }
+            val key = com.maleicacid.tvinput.common.ServiceKey(0x22, 0x11, 1)
+            val body = eitWithDescriptors(listOf(0x55, 4, 0x4a, 0x50, 0x4e, 0x0c))
+            for (index in undefinedRange) body[index] = 0xff
+            check(parser.ingestSection(TsPid(PID_EIT), section(body)) == SiStatus.OK)
+            val snapshot = parser.programStateSnapshot()
+            check(snapshot.events.single().timingState == "UNDEFINED_TIME")
+            val authority = resolver.eitAuthority(snapshot, key)
+            check(authority is com.maleicacid.tvinput.tis.CurrentProgramRatingResolver.EitAuthority.PresentObserved)
+            check(authority.event?.eventId == 0x1234)
+            val result = resolver.resolveDetailed(android.net.Uri.parse("content://android.media.tv/channel/1"), key,
+                snapshot.events, AribRatingMapper.BroadcastProfile.BS_CS, 1_700_000_000_000L, authority)
+                as com.maleicacid.tvinput.tis.CurrentProgramRatingResolver.ResolveResult.Ratings
+            check(result.ratingSet.eventId == 0x1234 && result.ratingSet.startTimeMillis == null && result.ratingSet.endTimeMillis == null)
+            check(result.ratingSet.ratings.single() == AribRatingMapper.toTvContentRating(AribParentalRating("JPN", 0x0c), AribRatingMapper.BroadcastProfile.BS_CS))
+        }
+    }
+
     @Test fun presentEmptyAuthorityIsIndependentOfFollowingAndWholeTableCompletion() {
         NativeAribSiParser().use { parser ->
             val resolver = com.maleicacid.tvinput.tis.CurrentProgramRatingResolver { _, _, _, _, _ -> error("no provider query") }

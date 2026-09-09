@@ -165,6 +165,7 @@ class TunerController(
         }
     }
     private val sectionFilterHandles = LinkedHashMap<TsPid, SectionFilterHandle>()
+    // 配送許可sourceだけを保持する。closing中の資源所有はsectionFilterHandlesに残る。
     private val sectionFilters = LinkedHashMap<TsPid, List<Filter>>()
     private val dynamicPmtPids = linkedSetOf<TsPid>()
     private val dynamicEcmPids = linkedSetOf<TsPid>()
@@ -473,16 +474,7 @@ class TunerController(
 
     private fun openSectionFilterOnController(pid: TsPid, generation: Long = tuneGeneration): SectionFilterHandle {
         if (!tuneAccepted) return UnavailableSectionFilterHandle(pid, "tune未受付")
-        sectionFilterHandles[pid]?.let { existing ->
-            if (existing.isOpen) return existing
-            existing.close()
-            sectionFilterHandles.remove(pid)
-        }
-        val handle = createSectionFilter(pid, generation)
-        if (handle.isOpen) {
-            sectionFilterHandles[pid] = handle
-        }
-        return handle
+        return SectionFilterPolicy.openOwnedFilter(pid, sectionFilterHandles) { createSectionFilter(pid, generation) }
     }
 
     private fun createSectionFilter(pid: TsPid, generation: Long): SectionFilterHandle {
@@ -590,9 +582,6 @@ class TunerController(
 
     private fun closeSectionFiltersOnController() {
         sectionFilters.clear()
-        dynamicPmtPids.clear()
-        dynamicEcmPids.clear()
-        dynamicEmmPids.clear()
         var failure: RuntimeException? = null
         for (pid in sectionFilterHandles.keys.toList()) {
             try { closeSectionFilterOnController(pid) } catch (error: RuntimeException) {
@@ -600,6 +589,9 @@ class TunerController(
                 if (primary == null) failure = error else if (primary !== error) primary.addSuppressed(error)
             }
         }
+        dynamicPmtPids.retainAll(sectionFilterHandles.keys)
+        dynamicEcmPids.retainAll(sectionFilterHandles.keys)
+        dynamicEmmPids.retainAll(sectionFilterHandles.keys)
         failure?.let { throw it }
     }
 
@@ -622,9 +614,11 @@ class TunerController(
 
     private fun updateDynamicSectionFiltersOnController(pmtPids: Set<TsPid>, ecmPids: Set<TsPid>, emmPids: Set<TsPid>, generation: Long = tuneGeneration) {
         if (!tuneAccepted || generation != tuneGeneration) return
-        replaceDynamicPidSet(dynamicPmtPids, pmtPids) { openProgramMapFilter(it) }
-        replaceDynamicPidSet(dynamicEcmPids, ecmPids) { openEcmFilter(it) }
-        replaceDynamicPidSet(dynamicEmmPids, emmPids) { openEmmFilter(it) }
+        SectionFilterPolicy.completeCleanup(
+            { replaceDynamicPidSet(dynamicPmtPids, pmtPids) { openProgramMapFilter(it) } },
+            { replaceDynamicPidSet(dynamicEcmPids, ecmPids) { openEcmFilter(it) } },
+            { replaceDynamicPidSet(dynamicEmmPids, emmPids) { openEmmFilter(it) } },
+        )
     }
 
     fun updateCasMetadata(metadata: List<CaMetadata>): CasController.UpdateResult? = callOnController {
@@ -641,6 +635,7 @@ class TunerController(
         SectionFilterPolicy.replaceDynamicPids(current, next,
             close = { pid -> if (pid !in initialPids()) closeSectionFilter(pid) },
             open = { pid -> opener(pid).isOpen },
+            isOpen = { pid -> sectionFilterHandles[pid]?.isOpen == true },
         )
     }
 
@@ -657,7 +652,9 @@ class TunerController(
     private fun onSectionOnController(pid: TsPid, section: ByteArray, generation: Long = tuneGeneration) {
         if (generation != tuneGeneration) return
         SectionFilterPolicy.dispatchSection(
-            pid, initialPids() + dynamicPmtPids, dynamicEcmPids, dynamicEmmPids,
+            pid, initialPids() + dynamicPmtPids,
+            dynamicEcmPids.filterTo(linkedSetOf()) { sectionFilterHandles[it]?.isOpen == true },
+            dynamicEmmPids.filterTo(linkedSetOf()) { sectionFilterHandles[it]?.isOpen == true },
             onSi = {
                 val receivedNanoTime = if (pid == WellKnownSectionPid.TDT) System.nanoTime() else 0L
                 val result = sectionIngestController?.onSection(pid, section)

@@ -311,15 +311,19 @@ class MaleicacidLiveSession(
         val caMetadata = expanded.filter { it.serviceKey == null || it.serviceKey == serviceKey }
         val casPids = SectionFilterPolicy.casPidsFor(decision, caMetadata)
         // policy不成立時はPMTを維持し、旧ECM/EMM集合を空へ置換して配送を止める。
-        tunerController.updateDynamicSectionFiltersForService(serviceKey, pmtPids, casPids.ecm, casPids.emm, currentGeneration)
-
-        if (!decision.casDecisionReady) {
-            casController.clearForClearService()
-            playbackState = PlaybackStartState.Stopped
-            tunerController.stopPlayback()
-            beginCaptionPresentationGeneration(-1L, false)
-            notifyVideoUnavailable(if (decision.registrationReady) TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN else TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
-        }
+        SectionFilterPolicy.updateFiltersAndStopOnFailure(
+            decision.casDecisionReady,
+            updateFilters = { tunerController.updateDynamicSectionFiltersForService(serviceKey, pmtPids, casPids.ecm, casPids.emm, currentGeneration) },
+            clearCas = { casController.clearForClearService() },
+            stopPlayback = {
+                playbackState = PlaybackStartState.Stopped
+                SectionFilterPolicy.completeCleanup(
+                    { tunerController.stopPlayback() },
+                    { beginCaptionPresentationGeneration(-1L, false) },
+                    { notifyVideoUnavailable(if (decision.registrationReady) TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN else TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN) },
+                )
+            },
+        )
         if (decision.registrationReady) {
             publishLiveProgramsForCurrentService()
             refreshCurrentProgramRatingState()
