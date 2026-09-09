@@ -1154,7 +1154,7 @@ LNB固有の安全状態復帰は後始末対象として`ObjectCloseTxn`へ型�
 
 ### STD-B25デコード能力台帳
 
-STD-B25デコード能力とSTD-B25 Part 1 §4.9への適合宣言を分離する。`開発規則.md` のproduct-level invariantに従い、Part 1 §4.9の受信機システム最小8鍵組容量は本製品全体として恒久的に適合対象外とし、同条項への適合を宣言しない。`StdB25DecodeCapability`、1鍵組の保証、実鍵組数または実PID数を根拠に、同条項適合、Part 1 CAS-R全体への適合、またはSTD-B25全面準拠と表現してはならない。
+STD-B25デコード能力とSTD-B25 Part 1 §4.9への適合宣言を分離する。`開発規則.md` のproduct-level invariantに従い、Part 1 §4.9の受信機システム最小鍵組容量は本製品全体として恒久的に適合対象外とし、同条項への適合を宣言しない。`StdB25DecodeCapability`、1鍵組の保証、実鍵組数または実PID数を根拠に、同条項適合、Part 1 CAS-R全体への適合、またはSTD-B25全面準拠と表現してはならない。
 
 実装がSTD-B25で定める対象方式のTS payloadを実際に復号できる場合は、限定した事実を`StdB25DecodeCapability`として製品profileへ記録してよい。この能力は、対応するPart・方式・payload処理、物理tuner/backend復号経路ごとの実同時鍵組数、実同時PID数、pool共有単位、枯渇時の`UNAVAILABLE`を一体で定義する。値が未確定、または復号経路が利用不能の場合は能力を公開しない。AOSPの`DemuxCapabilities`には鍵組数またはPID数の欄がなく、`IDescrambler`は1 sessionを1 key slotへ関連付けて複数PIDを登録する契約までなので、frozen AIDLへ独自fieldを追加しない。鍵組数を外部へ表示する必要がある場合は、AIDL能力ではなく製品profileの設計メタデータとして扱う。
 
@@ -1515,7 +1515,7 @@ PES filterは、外形検証の後に`stream_id`で通常optional-header構文�
 | T-B25-6 | bad token | `INVALID_ARGUMENT` / 診断 |
 | T-B25-8 | 復号成功 | scrambling_control clear |
 
-デスクランブラーとTS経路の失敗は、本書の「失敗影響範囲」に従って扱う。影響経路を隔離するのは、データ枠を管理する基盤が破損した場合に限る。不正TSはパケット単位で破棄し、TEIと連続性異常は各経路の規則に従う。構造上有効だがスクランブルが残るパケットはTS生データ経路と記録経路に残してよいが、復号済みの意味イベントを生成してはならない。ARIB STD-B25 6.7-E1 第1部の2.2.2.4、2.2.2.10〜2.2.2.11、3.1.5〜3.1.7、3.2.3〜3.2.4、4.3.3.3の表4-11〜4-14、4.8を精読基準とする。これらの条項から、TSペイロードをパケット単位でスクランブルすること、受信側でECMとEMMをCAモジュールへ渡すこと、Ksを受信側へ返すこと、スクランブル状態を検出することを、限定したSTD-B25デコード能力の設計条件とする。`開発規則.md` のproduct-level invariantどおり、Part 1 §4.9の受信機システム最小8鍵組容量は本製品全体として恒久的に適合対象外であり、実鍵組数と実PID数は製品profileの事実としてSTD-B25デコード能力台帳で予約・受付・解放を強制する。ECM、EMM、KsをTuner HALの公開面へ出さない境界は、AOSPの公開面と情報露出を最小化する設計から定めるものであり、STD-B25の文言そのものとは主張しない。HAL内部の隔離方法とエラー対応は、AOSP契約に基づく内部設計とする。
+デスクランブラーとTS経路の失敗は、本書の「失敗影響範囲」に従って扱う。影響経路を隔離するのは、データ枠を管理する基盤が破損した場合に限る。不正TSはパケット単位で破棄し、TEIと連続性異常は各経路の規則に従う。構造上有効だがスクランブルが残るパケットはTS生データ経路と記録経路に残してよいが、復号済みの意味イベントを生成してはならない。ARIB STD-B25 6.7-E1 第1部の2.2.2.4、2.2.2.10〜2.2.2.11、3.1.5〜3.1.7、3.2.3〜3.2.4、4.3.3.3の表4-11〜4-14、4.8を精読基準とする。これらの条項から、TSペイロードをパケット単位でスクランブルすること、受信側でECMとEMMをCAモジュールへ渡すこと、Ksを受信側へ返すこと、スクランブル状態を検出することを、限定したSTD-B25デコード能力の設計条件とする。`開発規則.md` のproduct-level invariantどおり、Part 1 §4.9の受信機システム最小鍵組容量は本製品全体として恒久的に適合対象外であり、実鍵組数と実PID数は製品profileの事実としてSTD-B25デコード能力台帳で予約・受付・解放を強制する。ECM、EMM、KsをTuner HALの公開面へ出さない境界は、AOSPの公開面と情報露出を最小化する設計から定めるものであり、STD-B25の文言そのものとは主張しない。HAL内部の隔離方法とエラー対応は、AOSP契約に基づく内部設計とする。
 
 
 | 番号 | 確認観点 | 目的 |
@@ -1539,10 +1539,12 @@ PES filterは、外形検証の後に`stream_id`で通常optional-header構文�
 - Filter / SharedFilter の producer drain は 0-S-3B の `FilterProducerDrainGate`、DVR の queue epoch / transaction token は `QueueEpochProtocol`、Filter / DVR `flush()` の共通 cleanup orchestration は `QueueCleanupUseCase` を唯一の正本とする。本節では対象 domain、公開結果、資源要求だけを定め、内部 state、permit / token、phase、commit / rollback を再定義しない。
 - demux、型別filter、DVRの個数とbyte予算は、frontend/backend/電源、demux base、main type別filter/FMQ、PES、AV、playback/record DVR、worker/callback/reaper/cleanup共有枠の`CapabilityClosure`ごとに原子的に検証・予約する。各閉包の失敗は、その閉包を必要とする能力だけを非公開にし、依存しないfrontend、filter種別、DVR種別へ波及させない。選択済み閉包を合成した後、query/openの同一性、`numDemux`、`filterCaps`、用途別個数、全byte台帳の横断不変条件を一括検証し、変更不能な`CapabilitySnapshot`として確定する。PES assemblerは全ての有効な明示PES `streamId` 0..255とwildcard `0xFFFF`を同じPES閉包で扱い、宣言長ありPESと映像stream IDの長さ0 PESを`MAX_PES_BUFFER_BYTES`および`pesRuntimeBudgetBytes`内で保持する。Tuner VTSは別途起動前環境へ結び付け、入力元、PID、経路、queue容量、memory予算が定義されるまで`DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED`とする。
 - AVの共有方式とイベント固有方式は、同じ実行時台帳を共有する。各filterでは`CapabilitySnapshot.avPerFilterLiveBytes`、サービス全体では`CapabilitySnapshot.avRuntimeBudgetBytes`を未解放payloadバイト数の上限とし、イベントの実サイズだけを割り当てる。`openFilter(type, bufferSize, cb)`の`bufferSize`はFMQ容量として別に予約する。固定スロット数や1 MiB単位をAOSPまたはコーデック上限として規範化せず、使用中の割り当てを追い出さない。
-- ARIB STD-B10 5.13-E1 Part 2 5.2.4〜5.2.17・Part 3 5.1.1〜5.1.3を表ごとのsection上限1021/4093の根拠とし、STD-B32 3.11-E1 Fascicle 3 Chapter 3 3.1をPES構文、Fascicle 1 Chapter 5 5.1.1・Attachment 2 Chapter 5 5.1・Attachment 5 Chapter 5 5.1.1を製品対象video PESのPTS明示、Fascicle 2 Chapter 5.2.2をMPEG-2 AAC LC ADTSのsampling frequencyと1 raw-data-block/frameというexact frame duration、Fascicle 2 Attachment Chapter 2 2.1をaudioでは特定境界の先頭frameにPTSを要求するだけで全PESへの明示保証ではないことの証拠本文とする。Fascicle 3がoptional PES headerを委ねるITU-T H.222.0 2.4.3.7は、audio PTSが当該PES内で開始する最初のaudio access unitへ対応することの根拠とする。B32を4093の独立した上限根拠として使用しない。B25は公式英訳6.7-E1全文を精読基準とするが、`開発規則.md` のproduct-level invariantどおり、Part 1 §4.9の受信機システム最小8鍵組容量は本製品全体として恒久的に適合対象外とし、同条項への適合を宣言しない。STD-B25デコード能力は、対応するPart・方式・payload処理と、物理tuner/backend復号経路ごとの実鍵組数、実PID数、pool共有単位、枯渇時の`UNAVAILABLE`を製品profileの事実として定義する。AOSPに公開欄は追加せず、session間で共有する同じ内部台帳で受付と解放を強制する。
+- ARIB STD-B10 5.13-E1 Part 2 5.2.4〜5.2.17・Part 3 5.1.1〜5.1.3を表ごとのsection上限1021/4093の根拠とし、STD-B32 3.11-E1 Fascicle 3 Chapter 3 3.1をPES構文、Fascicle 1 Chapter 5 5.1.1・Attachment 2 Chapter 5 5.1・Attachment 5 Chapter 5 5.1.1を製品対象video PESのPTS明示、Fascicle 2 Chapter 5.2.2をMPEG-2 AAC LC ADTSのsampling frequencyと1 raw-data-block/frameというexact frame duration、Fascicle 2 Attachment Chapter 2 2.1をaudioでは特定境界の先頭frameにPTSを要求するだけで全PESへの明示保証ではないことの証拠本文とする。Fascicle 3がoptional PES headerを委ねるITU-T H.222.0 2.4.3.7は、audio PTSが当該PES内で開始する最初のaudio access unitへ対応することの根拠とする。B32を4093の独立した上限根拠として使用しない。B25は公式英訳6.7-E1全文を精読基準とするが、`開発規則.md` のproduct-level invariantどおり、Part 1 §4.9の受信機システム最小鍵組容量は本製品全体として恒久的に適合対象外とし、同条項への適合を宣言しない。STD-B25デコード能力は、対応するPart・方式・payload処理と、物理tuner/backend復号経路ごとの実鍵組数、実PID数、pool共有単位、枯渇時の`UNAVAILABLE`を製品profileの事実として定義する。AOSPに公開欄は追加せず、session間で共有する同じ内部台帳で受付と解放を強制する。
 - 対象ドライバーと上流Linuxの証跡は、AOSP契約とは独立した根拠として扱う。
 
 ### ARIB規範本文との静的照合
+
+STD-B25 6.7-E1 Part 1 §4.10（本文147頁）は当該CASに12 PID以上の同時処理を要求し、§5.1はBS・広帯域CS・地上デジタル等の固定受信に第2〜4章を適用する。実PID数の台帳だけで適合が成立するわけではなく、CASを含む受信機全体との照合を要する。§4.9の非宣言方針を§4.10の免除へ流用しない。r51は実CAS未実装で復号成功を宣言せず、同条項適合も未証明とする。r52の実CAS統合では物理tuner/backend・共有pool・同時処理PIDの実証と適用原文を対応付ける。12 PIDの証拠は6.7-E1に限定し、現行日本語7.0との差分と実容量の確認は未完である。§4.9の要求値と製品方針の区別は `開発規則.md` を参照する。
 
 ARIB依存の規範主張は、**現行日本語版の版番号**と、**今回実際に条項本文を精読した証拠本文**を分離して管理する。証拠本文と現行日本語版の版が一致しない規格は`差分未証明`とし、その規格について現行版まで条項内容が同一である、または現行版へ完全適合を検証済みであるとは主張しない。改定概要・版一覧・紹介ページは版管理の一次資料として使えるが、条項本文の代替にはしない。
 
