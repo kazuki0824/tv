@@ -11,6 +11,63 @@ import kotlin.test.assertTrue
 class ScanPlanPolicyTest {
 
     @Test
+    fun bsProgressIsNotTerminalAndEveryTerminalRejectsLateIds() {
+        val operation = TunerController.StreamIdDiscoveryOperation(21L)
+        operation.reportProgress(100)
+        check(!operation.await(1) && operation.active)
+        operation.reportIds(intArrayOf(16400))
+        operation.complete()
+        check(operation.await(1))
+        val stopped = operation.result(true)
+        operation.reportIds(intArrayOf(16401))
+        operation.cancel { android.media.tv.tuner.Tuner.RESULT_SUCCESS }
+        operation.startFailed(1, "late failure")
+        operation.complete()
+        check(operation.result(true) == stopped && stopped.streamIds == setOf(16400))
+        for (end in listOf("timeout", "failure", "cancel", "lost")) {
+            val other = TunerController.StreamIdDiscoveryOperation(22L)
+            when (end) {
+                "timeout" -> other.result(false)
+                "failure" -> other.startFailed(1, "scan failed")
+                "cancel" -> other.cancel { android.media.tv.tuner.Tuner.RESULT_SUCCESS }
+                "lost" -> other.loseResources()
+            }
+            val before = other.result(true)
+            other.reportIds(intArrayOf(16400))
+            other.complete()
+            other.cancel { android.media.tv.tuner.Tuner.RESULT_SUCCESS }
+            check(other.result(true) == before && !before.success && before.streamIds.isEmpty())
+        }
+    }
+
+    @Test
+    fun bsFailedCancelRetainsResourceLossAdmissionAndTerminalOutcome() {
+        for (prior in listOf("scanning", "stopped", "timeout")) {
+            val operation = TunerController.StreamIdDiscoveryOperation(23L)
+            val fence = ChannelScanController.ResourceLossFence().apply { activate(23L) }
+            if (prior == "stopped") { operation.reportIds(intArrayOf(16400)); operation.complete() }
+            if (prior == "timeout") operation.result(false)
+            check(runCatching { operation.cancel { android.media.tv.tuner.Tuner.RESULT_UNAVAILABLE } }.isFailure)
+            check(operation.acceptsResourceLoss)
+            var notifications = 0
+            fun lose() = TunerController.completeResourceLoss(
+                invalidate = { if (!operation.acceptsResourceLoss) false else { operation.loseResources(); true } },
+                cleanup = { operation.cancel { android.media.tv.tuner.Tuner.RESULT_UNAVAILABLE } },
+                notifyLost = { notifications++; fence.onLost(operation.generation) },
+            )
+            check(runCatching { lose() }.isFailure)
+            lose()
+            check(notifications == 1 && fence.terminalObserved && operation.await(1))
+            val result = operation.result(true)
+            check(result.resourceLost == (prior == "scanning"))
+            operation.reportIds(intArrayOf(16401))
+            operation.cancel { android.media.tv.tuner.Tuner.RESULT_SUCCESS }
+            check(result == operation.result(true))
+            check(fence.publishIfCurrent<Unit>(23L) { error("lost owner published") } == null)
+        }
+    }
+
+    @Test
     fun bsResourceLossWakesCallerAndRejectsCandidatesAndPublication() {
         val controller = java.util.concurrent.Executors.newSingleThreadExecutor()
         val caller = java.util.concurrent.Executors.newSingleThreadExecutor()
@@ -30,8 +87,8 @@ class ScanPlanPolicyTest {
             check(waiting.await(1, java.util.concurrent.TimeUnit.SECONDS))
             controller.submit {
                 TunerController.completeResourceLoss(
-                    invalidate = { if (!operation.active) false else { operation.loseResources(); true } },
-                    cleanup = { operation.cancel() },
+                    invalidate = { if (!operation.acceptsResourceLoss) false else { operation.loseResources(); true } },
+                    cleanup = { operation.cancel { android.media.tv.tuner.Tuner.RESULT_SUCCESS } },
                     notifyLost = { notifications++; fence.onLost(operation.generation) },
                 )
                 operation.reportIds(intArrayOf(16400)) // 喪失後の遅延報告を拒否する。

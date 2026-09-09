@@ -240,7 +240,7 @@ class TunerController(
         try {
             completeResourceLoss(
                 invalidate = {
-                    if (!tuneAccepted && streamIdDiscovery?.active != true) false else {
+                    if (!tuneAccepted && streamIdDiscovery?.acceptsResourceLoss != true) false else {
                         streamIdDiscovery?.loseResources()
                         invalidateTuneOnController()
                         true
@@ -361,7 +361,7 @@ class TunerController(
             override fun onLocked() = Unit
             override fun onUnlocked() = Unit
             override fun onScanStopped() { if (streamIdDiscovery === operation) operation.complete() }
-            override fun onProgress(percent: Int) { if (streamIdDiscovery === operation && percent >= 100) operation.complete() }
+            override fun onProgress(percent: Int) { if (streamIdDiscovery === operation) operation.reportProgress(percent) }
             @Suppress("DEPRECATION")
             override fun onFrequenciesReported(frequencies: IntArray) = Unit
             override fun onFrequenciesLongReported(frequencies: LongArray) = Unit
@@ -390,9 +390,7 @@ class TunerController(
 
     private fun cancelStreamIdDiscoveryOnController() {
         val operation = streamIdDiscovery ?: return
-        operation.cancel()
-        val result = tuner?.cancelScanning() ?: Tuner.RESULT_SUCCESS
-        check(result == Tuner.RESULT_SUCCESS) { "BS scanの解放に失敗しました result=$result" }
+        operation.cancel { tuner?.cancelScanning() ?: Tuner.RESULT_SUCCESS }
         streamIdDiscovery = null
     }
 
@@ -400,23 +398,50 @@ class TunerController(
     internal class StreamIdDiscoveryOperation(val generation: Long) {
         private val terminal = CountDownLatch(1)
         private val ids = linkedSetOf<Int>()
-        private var lost = false
-        private var cancelled = false
+        private enum class Outcome { SCANNING, STOPPED, TIMED_OUT, START_FAILED, CANCELLED, LOST }
+        private var outcome = Outcome.SCANNING
+        // operationの受信結果と、未解放ownerに対する資源喪失通知は別の寿命を持つ。
+        private var resourceLossObserved = false
         private var resultCode = Tuner.RESULT_SUCCESS
         private var message = ""
-        val active: Boolean get() = !lost && !cancelled
+        val active: Boolean get() = outcome == Outcome.SCANNING
+        val acceptsResourceLoss: Boolean get() = !resourceLossObserved && outcome != Outcome.CANCELLED
         fun reportIds(values: IntArray) { if (active) values.filterTo(ids) { it in 0..0xfffe } }
-        fun complete() { terminal.countDown() }
-        fun startFailed(code: Int, detail: String) { resultCode = code; message = detail; complete() }
-        fun loseResources() { lost = true; complete() }
-        fun cancel() { cancelled = true; complete() }
+        fun reportProgress(@Suppress("UNUSED_PARAMETER") percent: Int) = Unit // 進捗は停止通知ではない。
+        private fun finish(next: Outcome) {
+            if (!active) return
+            outcome = next
+            terminal.countDown()
+        }
+        fun complete() { finish(Outcome.STOPPED) }
+        fun startFailed(code: Int, detail: String) {
+            if (!active) return
+            resultCode = code
+            message = detail
+            finish(Outcome.START_FAILED)
+        }
+        fun loseResources() {
+            resourceLossObserved = true
+            finish(Outcome.LOST)
+        }
+        fun cancel(stopScan: () -> Int) {
+            // 非SUCCESS/例外では結果もownerも解放済みにしない。
+            val result = stopScan()
+            check(result == Tuner.RESULT_SUCCESS) { "BS scanの解放に失敗しました result=$result" }
+            finish(Outcome.CANCELLED)
+        }
         fun await(timeoutMs: Long): Boolean = terminal.await(timeoutMs.coerceAtLeast(1L), TimeUnit.MILLISECONDS)
-        fun result(completed: Boolean): StreamIdDiscoveryResult = when {
-            lost -> StreamIdDiscoveryResult(false, emptySet(), Tuner.RESULT_UNAVAILABLE, "TUNER_RESOURCE_LOST", generation, true)
-            cancelled -> StreamIdDiscoveryResult(false, emptySet(), Tuner.RESULT_UNAVAILABLE, "BS scan cancelled", generation)
-            resultCode != Tuner.RESULT_SUCCESS -> StreamIdDiscoveryResult(false, emptySet(), resultCode, message, generation)
-            completed && ids.isNotEmpty() -> StreamIdDiscoveryResult(true, ids.toSet(), resultCode, generation = generation)
-            else -> StreamIdDiscoveryResult(false, emptySet(), resultCode, if (completed) "stream ID報告なし" else "scan callback timeout", generation)
+        fun result(completed: Boolean): StreamIdDiscoveryResult {
+            if (!completed) finish(Outcome.TIMED_OUT)
+            check(!active) { "BS探索の終端前に結果を取得できません" }
+            return when (outcome) {
+                Outcome.LOST -> StreamIdDiscoveryResult(false, emptySet(), Tuner.RESULT_UNAVAILABLE, "TUNER_RESOURCE_LOST", generation, true)
+                Outcome.CANCELLED -> StreamIdDiscoveryResult(false, emptySet(), Tuner.RESULT_UNAVAILABLE, "BS scan cancelled", generation)
+                Outcome.START_FAILED -> StreamIdDiscoveryResult(false, emptySet(), resultCode, message, generation)
+                Outcome.STOPPED -> StreamIdDiscoveryResult(ids.isNotEmpty(), ids.toSet(), resultCode, if (ids.isEmpty()) "stream ID報告なし" else "", generation)
+                Outcome.TIMED_OUT -> StreamIdDiscoveryResult(false, emptySet(), resultCode, "scan callback timeout", generation)
+                Outcome.SCANNING -> error("unreachable")
+            }
         }
     }
 

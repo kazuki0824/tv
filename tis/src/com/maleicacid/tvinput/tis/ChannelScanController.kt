@@ -125,7 +125,7 @@ class ChannelScanController(
             if (candidate.kind == ScanCandidateKind.ISDB_S_BS && candidate.streamSelector == com.maleicacid.tvinput.common.StreamSelector.NONE) {
                 val discovery = tunerController.discoverIsdbsStreamIds(candidate)
                 discovery.generation?.let { activateScanGeneration(it) }
-                if (discovery.resourceLost) {
+                if (discovery.resourceLost || terminalResourceLostObserved) {
                     discovery.generation?.let { resourceLossFence.onLost(it) }
                     diagnostics += ScanDiagnostic(candidate, "BS探索中のTUNER_RESOURCE_LOSTにより後続選局を停止します")
                     break
