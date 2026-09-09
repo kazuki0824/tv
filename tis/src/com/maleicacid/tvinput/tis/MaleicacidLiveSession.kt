@@ -1111,7 +1111,7 @@ class MaleicacidLiveSession(
             sessionExecutor.shutdown()
         }.onFailure { error ->
             // Managerのlive集合とexecutorを保持し、次の既存受付契機でも再試行する。
-            Log.w(LogTags.TIS, "live session解放を再試行まで保持します", error)
+            android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "live session解放を再試行まで保持します", error)
         }
     }
 
