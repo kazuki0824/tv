@@ -43,6 +43,99 @@ class TisR51FixedPlanAcceptanceTest {
     private val key = ServiceKey(4, 0x4010, 101)
     private val otherKey = ServiceKey(4, 0x4010, 102)
 
+    @Test fun resourceLossInvalidatesBeforeCleanupAndNotifiesDespiteFailures() {
+        for ((stopFails, filterFails) in listOf(true to false, false to true, true to true)) {
+            val generation = 7L
+            val fence = ChannelScanController.ResourceLossFence()
+            fence.activate(generation)
+            var accepted = true
+            var currentTune: Long? = generation
+            var descrambler: Long? = generation
+            var captionAuthority: Long? = generation
+            var callbacks = 0
+            val attempted = mutableListOf<String>()
+            val stopFailure = IllegalStateException("playback stop")
+            val filterFailure = IllegalStateException("filter close")
+            val callbackFailure = IllegalStateException("callback after fence")
+            var rejectFilterClose = filterFails
+            var closing = false
+            val pid = TsPid(0x123)
+            val old = object : TunerController.SectionFilterHandle {
+                override val pid = TsPid(0x123)
+                override val isOpen get() = !closing
+                override fun close() { closing = true; if (rejectFilterClose) throw filterFailure }
+            }
+            val handles = linkedMapOf<TsPid, TunerController.SectionFilterHandle>(pid to old)
+            val currentPids = linkedSetOf(pid)
+            fun closeFilters() = SectionFilterPolicy.replaceDynamicPids(currentPids, emptySet(),
+                close = { handles[it]?.close(); handles.remove(it) },
+                open = { error("lost tune must not open") }, isOpen = { handles[it]?.isOpen == true })
+            fun lost() = TunerController.completeResourceLoss(
+                invalidate = {
+                    if (!accepted) false else {
+                        accepted = false
+                        currentTune = null
+                        descrambler = null
+                        captionAuthority = null
+                        true
+                    }
+                },
+                cleanup = {
+                    check(!accepted && currentTune == null && descrambler == null && captionAuthority == null)
+                    SectionFilterPolicy.completeCleanup(
+                        { attempted += "playback"; if (stopFails) throw stopFailure },
+                        { attempted += "filters"; closeFilters() },
+                        { attempted += "cas" },
+                        { attempted += "caption" },
+                    )
+                },
+                notifyLost = {
+                    check(attempted == listOf("playback", "filters", "cas", "caption"))
+                    callbacks++
+                    fence.onLost(generation)
+                    throw callbackFailure
+                },
+            )
+            val primary = runCatching { lost() }.exceptionOrNull()
+            check(primary === if (stopFails) stopFailure else filterFailure)
+            if (stopFails && filterFails) check(filterFailure in stopFailure.suppressed)
+            check(callbackFailure in primary!!.suppressed)
+            check(!accepted && currentTune == null && descrambler == null && captionAuthority == null)
+            lost() // cleanup失敗・callback例外でも同じaccepted tuneを再通知しない。
+            check(callbacks == 1 && attempted.size == 4)
+            var publishes = 0
+            check(fence.publishIfCurrent(generation) { publishes++; 1 } == null && publishes == 0)
+            val retryFailure = runCatching { closeFilters() }.exceptionOrNull()
+            var reported: Throwable? = null
+            val outcome = fence.finishCollection(generation, retryFailure ?: primary) { reported = it }
+            check(outcome == ChannelScanController.SiCollectionOutcome.RESOURCE_LOST && fence.terminalObserved)
+            check(reported === (retryFailure ?: primary))
+            check(!ChannelScanController.SiCollectionResult(outcome!!, null, 1, 1).mayPublishChannels)
+            if (filterFails) {
+                check(handles[pid] === old && currentPids == setOf(pid))
+                var creates = 0
+                check(runCatching { SectionFilterPolicy.openOwnedFilter(pid, handles) { creates++; old } }.exceptionOrNull() === filterFailure)
+                check(creates == 0 && handles[pid] === old)
+                rejectFilterClose = false
+                closeFilters()
+            }
+            check(handles.isEmpty() && currentPids.isEmpty())
+            fence.reset()
+            fence.onLost(generation) // tune結果をscan側がactivateする前の通知も保持する。
+            fence.activate(generation)
+            check(fence.terminalObserved)
+            fence.reset()
+            fence.activate(generation + 1)
+            fence.onLost(generation)
+            check(!fence.terminalObserved && !fence.isLost(generation + 1))
+            check(fence.publishIfCurrent(generation + 1) { 42 } == 42)
+            check(runCatching { fence.finishCollection(generation + 1, stopFailure) { error("not lost") } }.exceptionOrNull() === stopFailure)
+            fence.onLost(generation + 1)
+            fence.onLost(generation)
+            check(fence.isLost(generation + 1) && fence.publishIfCurrent(generation + 1) { error("stale callback erased fence") } == null)
+        }
+    }
+
     @Test fun failedFilterCloseRetainsOwnershipAndStillStopsCasAndPlayback() {
         val pid = TsPid(0x123)
         val failure = IllegalStateException("filter close failed")

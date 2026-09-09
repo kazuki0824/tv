@@ -97,10 +97,8 @@ class ChannelScanController(
     private val casController = CasController()
     private val cancelled = cancelRequested
     private var terminalCancelObserved: Boolean = false
-    @Volatile private var terminalResourceLostObserved: Boolean = false
-    private val activeScanGeneration = AtomicLong(NO_TUNE_GENERATION)
-    private val resourceLostGeneration = AtomicLong(NO_TUNE_GENERATION)
-    private val scanPublicationLock = Any()
+    private val resourceLossFence = ResourceLossFence()
+    private val terminalResourceLostObserved: Boolean get() = resourceLossFence.terminalObserved
     private var skippedUnresolvedTransportCount: Int = 0
     private var currentCandidate: ScanCandidate? = null
 
@@ -109,10 +107,7 @@ class ChannelScanController(
         tunerController.setCasController(casController)
         tunerController.setOnSectionIngestedCallback { refreshDynamicSectionFilters() }
         tunerController.setOnTunerResourceLostCallback { lostGeneration ->
-            synchronized(scanPublicationLock) {
-                resourceLostGeneration.set(lostGeneration)
-                if (activeScanGeneration.get() == lostGeneration) terminalResourceLostObserved = true
-            }
+            resourceLossFence.onLost(lostGeneration)
         }
     }
 
@@ -452,39 +447,39 @@ class ChannelScanController(
         var stableSince = startedAt
         var outcome = SiCollectionOutcome.TIMEOUT_PARTIAL
 
-        try {
-            while (!cancelled.get() && !resourceLostFor(tuneGeneration)) {
-                refreshDynamicSectionFilters()
-                if (resourceLostFor(tuneGeneration)) break
-                val now = android.os.SystemClock.elapsedRealtime()
-                val counts = serviceCounts(candidate, requirements)
-                if (counts.discoveryStage != lastCounts?.discoveryStage || counts.signature != lastCounts?.signature || counts.collectionStatus != lastCounts?.collectionStatus) {
-                    lastCounts = counts
-                    stableSince = now
+        val collectionFailure = runCatching {
+            SectionFilterPolicy.completeCleanup({
+                while (!cancelled.get() && !resourceLostFor(tuneGeneration)) {
+                    refreshDynamicSectionFilters()
+                    if (resourceLostFor(tuneGeneration)) break
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    val counts = serviceCounts(candidate, requirements)
+                    if (counts.discoveryStage != lastCounts?.discoveryStage || counts.signature != lastCounts?.signature || counts.collectionStatus != lastCounts?.collectionStatus) {
+                        lastCounts = counts
+                        stableSince = now
+                    }
+                    val elapsed = now - startedAt
+                    val stableFor = now - stableSince
+                    if (counts.collectionStatus.complete && elapsed >= policy.minWaitMs && stableFor >= policy.stableWaitMs) {
+                        outcome = SiCollectionOutcome.COMPLETE
+                        break
+                    }
+                    val registrationReadySnapshotAvailable = counts.registrationReady > 0
+                    if (!requirements.requiresEit && elapsed >= policy.minWaitMs && registrationReadySnapshotAvailable && stableFor >= policy.stableWaitMs) {
+                        outcome = SiCollectionOutcome.STABLE_PARTIAL
+                        break
+                    }
+                    if (elapsed >= policy.maxWaitMs) {
+                        outcome = if (registrationReadySnapshotAvailable) SiCollectionOutcome.TIMEOUT_PARTIAL else SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE
+                        break
+                    }
+                    runCatching { Thread.sleep(policy.pollIntervalMs) }
                 }
-                val elapsed = now - startedAt
-                val stableFor = now - stableSince
-                if (counts.collectionStatus.complete && elapsed >= policy.minWaitMs && stableFor >= policy.stableWaitMs) {
-                    outcome = SiCollectionOutcome.COMPLETE
-                    break
-                }
-                val registrationReadySnapshotAvailable = counts.registrationReady > 0
-                if (!requirements.requiresEit && elapsed >= policy.minWaitMs && registrationReadySnapshotAvailable && stableFor >= policy.stableWaitMs) {
-                    outcome = SiCollectionOutcome.STABLE_PARTIAL
-                    break
-                }
-                if (elapsed >= policy.maxWaitMs) {
-                    outcome = if (registrationReadySnapshotAvailable) SiCollectionOutcome.TIMEOUT_PARTIAL else SiCollectionOutcome.INCOMPLETE_NO_REGISTRATION_READY_SERVICE
-                    break
-                }
-                runCatching { Thread.sleep(policy.pollIntervalMs) }
-            }
-        } finally {
-            // 読取りcallbackを無効化して全section handleをstop/closeする。失敗を成功へ丸めない。
-            tunerController.closeSectionFilters()
-        }
-        if (resourceLostFor(tuneGeneration)) {
-            terminalResourceLostObserved = true
+            }, { tunerController.closeSectionFilters() })
+        }.exceptionOrNull()
+        if (resourceLossFence.finishCollection(tuneGeneration, collectionFailure) { failure ->
+                Log.w(LogTags.TIS, "resource-lost後のSI collection cleanupに失敗しました generation=$tuneGeneration", failure)
+            } == SiCollectionOutcome.RESOURCE_LOST) {
             val counts = lastCounts
             val message = "Tuner resource lostによりscan generationを失効しました generation=$tuneGeneration; 以後のSI snapshot/publishを拒否します"
             Log.w(LogTags.TIS, "scan候補をresource lostで終了します candidate=$candidate $message")
@@ -543,35 +538,67 @@ class ChannelScanController(
     fun terminalResourceLostObservedForLastTask(): Boolean = terminalResourceLostObserved
     fun skippedUnresolvedTransportCountForDiagnostic(): Int = skippedUnresolvedTransportCount
 
-    private fun resetResourceLostState() {
-        terminalResourceLostObserved = false
-        activeScanGeneration.set(NO_TUNE_GENERATION)
-        resourceLostGeneration.set(NO_TUNE_GENERATION)
-    }
-
-    private fun activateScanGeneration(generation: Long) {
-        activeScanGeneration.set(generation)
-        if (resourceLostGeneration.get() == generation) terminalResourceLostObserved = true
-    }
-
-    private fun clearActiveScanGeneration(generation: Long) {
-        activeScanGeneration.compareAndSet(generation, NO_TUNE_GENERATION)
-    }
-
-    private fun resourceLostFor(generation: Long): Boolean = resourceLostGeneration.get() == generation
+    private fun resetResourceLostState() = resourceLossFence.reset()
+    private fun activateScanGeneration(generation: Long) = resourceLossFence.activate(generation)
+    private fun clearActiveScanGeneration(generation: Long) = resourceLossFence.clearActive(generation)
+    private fun resourceLostFor(generation: Long): Boolean = resourceLossFence.isLost(generation)
 
     private fun publishScanSnapshotIfCurrent(
         generation: Long,
         mode: PublishMode,
         allowedServiceKeys: Set<ServiceKey>? = null,
-    ): PublishSnapshotResult? = synchronized(scanPublicationLock) {
-        if (resourceLostFor(generation)) {
-            terminalResourceLostObserved = true
-            return@synchronized null
+    ): PublishSnapshotResult? = resourceLossFence.publishIfCurrent(generation) {
+        publishCurrentServiceSnapshot(mode, allowedServiceKeys)
+    }
+
+    /** scanが既に所有していたgenerationと公開lockをまとめる。別の世代は作らない。 */
+    internal class ResourceLossFence {
+        @Volatile var terminalObserved = false
+            private set
+        private val activeGeneration = AtomicLong(-1L)
+        private val lostGeneration = AtomicLong(-1L)
+        private val publicationLock = Any()
+
+        fun reset() {
+            terminalObserved = false
+            activeGeneration.set(-1L)
+            lostGeneration.set(-1L)
         }
-        val result = publishCurrentServiceSnapshot(mode, allowedServiceKeys)
-        if (resourceLostFor(generation)) terminalResourceLostObserved = true
-        result.takeUnless { terminalResourceLostObserved }
+
+        fun activate(generation: Long) {
+            activeGeneration.set(generation)
+            if (isLost(generation)) terminalObserved = true
+        }
+
+        fun clearActive(generation: Long) { activeGeneration.compareAndSet(generation, -1L) }
+        fun isLost(generation: Long): Boolean = lostGeneration.get() == generation
+
+        fun onLost(generation: Long) = synchronized(publicationLock) {
+            val active = activeGeneration.get()
+            if (active != -1L && active != generation) return@synchronized
+            lostGeneration.set(generation)
+            if (activeGeneration.get() == generation) terminalObserved = true
+        }
+
+        fun finishCollection(generation: Long, failure: Throwable?, reportFailure: (Throwable) -> Unit): SiCollectionOutcome? {
+            if (isLost(generation)) {
+                terminalObserved = true
+                failure?.let(reportFailure)
+                return SiCollectionOutcome.RESOURCE_LOST
+            }
+            failure?.let { throw it }
+            return null
+        }
+
+        fun <T> publishIfCurrent(generation: Long, publish: () -> T): T? = synchronized(publicationLock) {
+            if (isLost(generation)) {
+                terminalObserved = true
+                return@synchronized null
+            }
+            val result = publish()
+            if (isLost(generation)) terminalObserved = true
+            result.takeUnless { terminalObserved }
+        }
     }
 
     private fun resourceLostDiagnostic(candidate: ScanCandidate, generation: Long): ScanDiagnostic =
@@ -612,7 +639,6 @@ class ChannelScanController(
             else -> SiCollectionOutcome.TIMEOUT_PARTIAL
         }
 
-        private const val NO_TUNE_GENERATION = -1L
     }
 }
 

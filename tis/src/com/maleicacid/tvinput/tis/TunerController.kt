@@ -237,17 +237,38 @@ class TunerController(
 
     private fun handleTunerResourceLostOnController() {
         val lostGeneration = tuneGeneration
-        playbackPipeline.stop()
-        closeSectionFiltersOnController()
-        captionLanguagesByPid.clear()
-        captionFactParsers.values.forEach { it.close() }
-        captionFactParsers.clear()
-        superimposeTimingByPid.clear()
-        latestBroadcastClockAuthority = null
-        currentTune = null
-        tuneAccepted = false
-        descramblerBridge = null
-        onTunerResourceLostCallback?.invoke(lostGeneration)
+        try {
+            completeResourceLoss(
+                invalidate = {
+                    if (!tuneAccepted) false else {
+                        // logical失効を物理解放の成否へ従属させない。同世代の再通知も拒否する。
+                        tuneAccepted = false
+                        currentTune = null
+                        descramblerBridge = null
+                        captionLanguagesByPid.clear()
+                        superimposeTimingByPid.clear()
+                        latestBroadcastClockAuthority = null
+                        true
+                    }
+                },
+                cleanup = {
+                    SectionFilterPolicy.completeCleanup(
+                        { playbackPipeline.stop() },
+                        { closeSectionFiltersOnController() },
+                        { casController?.clearForClearService() },
+                        { SectionFilterPolicy.completeCleanup(*captionFactParsers.entries.map { (pid, parser) -> {
+                            parser.close()
+                            captionFactParsers.remove(pid, parser)
+                            Unit
+                        } }.toTypedArray()) },
+                    )
+                },
+                notifyLost = { onTunerResourceLostCallback?.invoke(lostGeneration) },
+            )
+        } catch (failure: Exception) {
+            // callback配送後にprimary/suppressedを診断へ残し、controller executorを維持する。
+            Log.w(LogTags.TIS, "resource-lost cleanupに失敗しました inputId=$inputId generation=$lostGeneration", failure)
+        }
     }
 
     private fun armTuneEventListener(tunerInstance: Tuner, generation: Long): Boolean {
@@ -546,7 +567,7 @@ class TunerController(
     }
 
     private fun isCurrentSectionFilter(pid: TsPid, generation: Long, filter: Filter): Boolean =
-        generation == tuneGeneration && sectionFilters[pid].orEmpty().any { it === filter }
+        tuneAccepted && generation == tuneGeneration && sectionFilters[pid].orEmpty().any { it === filter }
 
     private fun recordSectionShortRead(pid: TsPid, expected: Int, actual: Int) {
         sectionShortReadCounters[pid] = (sectionShortReadCounters[pid] ?: 0) + 1
@@ -650,7 +671,7 @@ class TunerController(
     }
 
     private fun onSectionOnController(pid: TsPid, section: ByteArray, generation: Long = tuneGeneration) {
-        if (generation != tuneGeneration) return
+        if (!tuneAccepted || generation != tuneGeneration) return
         SectionFilterPolicy.dispatchSection(
             pid, initialPids() + dynamicPmtPids,
             dynamicEcmPids.filterTo(linkedSetOf()) { sectionFilterHandles[it]?.isOpen == true },
@@ -990,6 +1011,16 @@ class TunerController(
     override fun close() = release()
 
     companion object {
+        /** 同一controller executorで失効を確定し、cleanup失敗でもlost通知を一度試行する。 */
+        internal fun completeResourceLoss(
+            invalidate: () -> Boolean,
+            cleanup: () -> Unit,
+            notifyLost: () -> Unit,
+        ) {
+            if (!invalidate()) return
+            SectionFilterPolicy.completeCleanup(cleanup, notifyLost)
+        }
+
         private const val SECTION_FILTER_BUFFER_BYTES = 64 * 1024L
         private const val BS_STREAM_ID_SCAN_TIMEOUT_MS = 2_500L
 
