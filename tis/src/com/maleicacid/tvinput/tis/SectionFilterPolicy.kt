@@ -1,6 +1,6 @@
 package com.maleicacid.tvinput.tis
 
-/** Android Tuner資源所有から独立したsection-filterの純粋判定。 */
+/** Android Tuner資源の所有から分離したsection-filterの判定・集合更新・配送。 */
 object SectionFilterPolicy {
     data class CasPids(
         val ecm: Set<com.maleicacid.tvinput.common.TsPid>,

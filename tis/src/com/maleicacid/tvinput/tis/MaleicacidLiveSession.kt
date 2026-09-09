@@ -313,18 +313,18 @@ class MaleicacidLiveSession(
         // policy不成立時はPMTを維持し、旧ECM/EMM集合を空へ置換して配送を止める。
         tunerController.updateDynamicSectionFiltersForService(serviceKey, pmtPids, casPids.ecm, casPids.emm, currentGeneration)
 
-        if (decision.registrationReady) {
-            publishLiveProgramsForCurrentService()
-            refreshCurrentProgramRatingState()
-        }
         if (!decision.casDecisionReady) {
             casController.clearForClearService()
             playbackState = PlaybackStartState.Stopped
             tunerController.stopPlayback()
             beginCaptionPresentationGeneration(-1L, false)
             notifyVideoUnavailable(if (decision.registrationReady) TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN else TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
-            return
         }
+        if (decision.registrationReady) {
+            publishLiveProgramsForCurrentService()
+            refreshCurrentProgramRatingState()
+        }
+        if (!decision.casDecisionReady) return
         if (caMetadata.isEmpty()) {
             casController.clearForClearService()
         } else {
