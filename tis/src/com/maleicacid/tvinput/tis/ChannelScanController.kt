@@ -532,7 +532,7 @@ class ChannelScanController(
 
     override fun close() {
         cancelScan()
-        casController.close()
+        // CASのcloseもTunerControllerが所有する。同じCASを二つのownerから閉じない。
         tunerController.release()
     }
 

@@ -151,6 +151,69 @@ class CasControllerStateTest {
         check(bridge.removePid(TsPid(0x101)).isFailure)
     }
 
+    @Test fun sharedElementaryPidSurvivesOneSystemRetirementAndRemovalFailure() {
+        val pid = TsPid(0x101)
+        val removed = mutableListOf<TsPid>()
+        val added = mutableListOf<TsPid>()
+        var rejectRemove = true
+        val bridge = object : CasController.TunerDescramblerBridge {
+            override fun setKeyToken(keyToken: TunerKeyToken) = Result.success(Unit)
+            override fun addPid(elementaryPid: TsPid): Result<Unit> { added += elementaryPid; return Result.success(Unit) }
+            override fun removePid(elementaryPid: TsPid): Result<Unit> {
+                removed += elementaryPid
+                return if (rejectRemove) Result.failure(IllegalStateException("removePid non-SUCCESS")) else Result.success(Unit)
+            }
+            override fun close() = Unit
+        }
+        CasController(mediaCasFactory = FakeMediaCasBridgeFactory()).use { controller ->
+            val b25 = b25Metadata(pid, TsPid(0x123), TsPid(0x010))
+            val b1 = b25.filter { it.source != CaMetadataSource.CAT }.map { it.copy(caSystemId = 1, ecmPid = TsPid(0x124)) }
+            controller.updateFromCaMetadata(b25 + b1) { bridge }
+            controller.onEcmSection(TsPid(0x123), byteArrayOf(1))
+            controller.onEcmSection(TsPid(0x124), byteArrayOf(1))
+            check(added == listOf(pid))
+            controller.updateFromCaMetadata(b25)
+            check(removed.isEmpty())
+            val updated = b25Metadata(TsPid(0x102), TsPid(0x125), TsPid(0x010))
+            val failure = controller.updateFromCaMetadata(updated)
+            check(failure.diagnostics.any { it.errorCode == CasController.ErrorCode.DESCRAMBLER_FAILED })
+            check(removed == listOf(pid))
+            rejectRemove = false
+            controller.updateFromCaMetadata(updated)
+            check(removed == listOf(pid, pid))
+            controller.updateFromCaMetadata(updated)
+            check(removed == listOf(pid, pid))
+        }
+    }
+
+    @Test fun clearServiceRetriesOnlyPidsWhoseRemovalFailed() {
+        val removed = mutableListOf<TsPid>()
+        val p1 = TsPid(0x101)
+        val p2 = TsPid(0x102)
+        var reject = true
+        val bridge = object : CasController.TunerDescramblerBridge {
+            override fun setKeyToken(keyToken: TunerKeyToken) = Result.success(Unit)
+            override fun addPid(elementaryPid: TsPid) = Result.success(Unit)
+            override fun removePid(elementaryPid: TsPid): Result<Unit> {
+                removed += elementaryPid
+                return if (reject && elementaryPid == p1) Result.failure(IllegalStateException("remove failed")) else Result.success(Unit)
+            }
+            override fun close() = Unit
+        }
+        CasController(mediaCasFactory = FakeMediaCasBridgeFactory()).use { controller ->
+            controller.updateFromCaMetadata(b25Metadata(p1, TsPid(0x123), TsPid(0x010)) +
+                b25Metadata(p2, TsPid(0x123), TsPid(0x010))) { bridge }
+            controller.onEcmSection(TsPid(0x123), byteArrayOf(1))
+            check(runCatching { controller.clearForClearService() }.isFailure)
+            check(removed == listOf(p1, p2))
+            check(controller.lastDiagnostic().errorCode == CasController.ErrorCode.DESCRAMBLER_FAILED)
+            check(controller.onEcmSection(TsPid(0x123), byteArrayOf(1)).isEmpty())
+            reject = false
+            controller.clearForClearService()
+            check(removed == listOf(p1, p2, p1))
+        }
+    }
+
     private class RecordingDescrambler : CasController.TunerDescramblerBridge {
         var closes = 0
         var tokens = 0

@@ -96,7 +96,7 @@ class PlaybackPipeline(
     private var decoderBackpressureDrops: Int = 0
     private var subtitleMissingPtsSamples: Int = 0
     private val released = AtomicBoolean(false)
-    private val resourceCleanup = PlaybackResourceCleanup()
+    private val resourceCleanup = ResourceCleanup()
     private var resourceActivityReported = false
 
     private enum class VideoAvailabilityMode {

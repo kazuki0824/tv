@@ -47,6 +47,8 @@ class MaleicacidLiveSession(
     private val currentProgramRatingResolver = CurrentProgramRatingResolver(appContext)
     private val programPublishCoordinator = ProgramPublishCoordinator(tvProviderWriter)
     private val releaseOnce = AtomicBoolean(false)
+    private var releaseCleanup: ResourceCleanup? = null
+    private var parentalReceiverRegistered = false
     @Volatile private var sessionExecutorThread: Thread? = null
     private val sessionExecutor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "maleicacid-live-session-$sessionId").also { thread ->
@@ -157,7 +159,7 @@ class MaleicacidLiveSession(
         }
         superimposeController.setEnabled(true)
         runCatching { setOverlayViewEnabled(true) }
-        ChannelScanManager.registerLiveSession()
+        ChannelScanManager.registerLiveSession(this)
         registerParentalControlReceiver()
     }
 
@@ -192,8 +194,8 @@ class MaleicacidLiveSession(
         }
     }
 
-    override fun onSetSurface(surface: Surface?): Boolean = runOnSessionExecutorBlocking {
-        onSetSurfaceOnSessionExecutor(surface)
+    override fun onSetSurface(surface: Surface?): Boolean = if (releaseOnce.get()) false else runOnSessionExecutorBlocking {
+        if (releaseOnce.get()) false else onSetSurfaceOnSessionExecutor(surface)
     }
 
     private fun onSetSurfaceOnSessionExecutor(surface: Surface?): Boolean {
@@ -230,7 +232,8 @@ class MaleicacidLiveSession(
         }
     }
 
-    override fun onTune(channelUri: Uri?): Boolean = runOnSessionExecutorBlocking {
+    override fun onTune(channelUri: Uri?): Boolean = if (releaseOnce.get()) false else runOnSessionExecutorBlocking {
+        if (releaseOnce.get()) return@runOnSessionExecutorBlocking false
         onTuneOnSessionExecutor(channelUri)
     }
 
@@ -479,7 +482,8 @@ class MaleicacidLiveSession(
         }
     }
 
-    override fun onSelectTrack(type: Int, trackId: String?): Boolean = runOnSessionExecutorBlocking {
+    override fun onSelectTrack(type: Int, trackId: String?): Boolean = if (releaseOnce.get()) false else runOnSessionExecutorBlocking {
+        if (releaseOnce.get()) return@runOnSessionExecutorBlocking false
         onSelectTrackOnSessionExecutor(type, trackId)
     }
 
@@ -1052,11 +1056,14 @@ class MaleicacidLiveSession(
                 @Suppress("DEPRECATION")
                 appContext.registerReceiver(parentalControlReceiver, filter)
             }
+            parentalReceiverRegistered = true
         }
     }
 
     private fun unregisterParentalControlReceiver() {
-        runCatching { appContext.unregisterReceiver(parentalControlReceiver) }
+        if (!parentalReceiverRegistered) return
+        appContext.unregisterReceiver(parentalControlReceiver)
+        parentalReceiverRegistered = false
     }
 
     override fun onUnblockContent(unblockedRating: TvContentRating?) {
@@ -1095,13 +1102,21 @@ class MaleicacidLiveSession(
         }
     }
 
+    @Synchronized
     override fun onRelease() {
-        if (!releaseOnce.compareAndSet(false, true)) return
-        try {
+        if (sessionExecutor.isShutdown) return
+        releaseOnce.set(true)
+        runCatching {
             runOnSessionExecutorBlocking { releaseOnSessionExecutor() }
-        } finally {
             sessionExecutor.shutdown()
+        }.onFailure { error ->
+            // Managerのlive集合とexecutorを保持し、次の既存受付契機でも再試行する。
+            Log.w(LogTags.TIS, "live session解放を再試行まで保持します", error)
         }
+    }
+
+    internal fun retryReleaseIfPending() {
+        if (releaseOnce.get()) onRelease()
     }
 
     private fun releaseOnSessionExecutor() {
@@ -1109,26 +1124,22 @@ class MaleicacidLiveSession(
         currentChannelUri = null
         captionEnabled = false
         selectedSubtitleTrackId = null
-        clearTemporaryUnblocks()
         playbackState = PlaybackStartState.Stopped
-        var failure: Throwable? = null
-        fun release(action: () -> Unit) {
-            try {
-                action()
-            } catch (error: Throwable) {
-                val primary = failure
-                if (primary == null) failure = error else if (primary !== error) primary.addSuppressed(error)
-            }
+        val pending = releaseCleanup
+        val cleanup = pending ?: ResourceCleanup().also { releaseCleanup = it }
+        if (pending == null) {
+            cleanup.release("temporary unblock") { clearTemporaryUnblocks() }
+            cleanup.release("caption") { captionController.close() }
+            cleanup.release("superimpose") { superimposeController.close() }
+            cleanup.release("parental receiver") { unregisterParentalControlReceiver() }
+            // TunerControllerがCASも閉じ、内部の失敗資源だけを保持する。
+            cleanup.release("tuner/CAS") { tunerController.release() }
+            cleanup.release("SI engine") { aribSiEngine.close() }
+        } else {
+            cleanup.retry()
         }
-        release { captionController.close() }
-        release { superimposeController.close() }
-        release { unregisterParentalControlReceiver() }
-        release { casController.close() }
-        release { tunerController.release() }
-        release { aribSiEngine.close() }
-        // 解放未確認のsessionは使用中のまま保持し、EPG scanの受付を開かない。
-        failure?.let { throw it }
-        ChannelScanManager.unregisterLiveSession(appContext)
+        cleanup.requireComplete()
+        ChannelScanManager.unregisterLiveSession(appContext, this)
     }
 
     companion object {

@@ -240,12 +240,7 @@ class TunerController(
             completeResourceLoss(
                 invalidate = {
                     if (!tuneAccepted) false else {
-                        // logical失効を物理解放の成否へ従属させない。同世代の再通知も拒否する。
-                        tuneAccepted = false
-                        currentTune = null
-                        captionLanguagesByPid.clear()
-                        superimposeTimingByPid.clear()
-                        latestBroadcastClockAuthority = null
+                        invalidateTuneOnController()
                         true
                     }
                 },
@@ -404,9 +399,7 @@ class TunerController(
         resetBeforeTune()
         val result = tunerInstance.tune(settings)
         if (result == Tuner.RESULT_SUCCESS) {
-            tuneAccepted = true
-            tuneGeneration++
-            beginSiIngestAfterTune()
+            initializeAcceptedTune(null, tuneGeneration + 1L)
         }
         return result
     }
@@ -428,10 +421,7 @@ class TunerController(
             return TuneOutcome(false, Tuner.RESULT_UNAVAILABLE, channel, tuneGeneration, e.message.orEmpty())
         }
         return if (result == Tuner.RESULT_SUCCESS) {
-            currentTune = channel
-            tuneAccepted = true
-            tuneGeneration = nextGeneration
-            beginSiIngestAfterTune()
+            initializeAcceptedTune(channel, nextGeneration)
             TuneOutcome(true, result, channel, tuneGeneration)
         } else {
             runCatching { tunerInstance.clearOnTuneEventListener() }
@@ -442,18 +432,39 @@ class TunerController(
         }
     }
 
-    private fun resetBeforeTune() {
-        playbackPipeline.stop()
-        runCatching { tuner?.clearOnTuneEventListener() }
-        closeSectionFilters()
-        casController?.clearForResourceLoss()
-        captionLanguagesByPid.clear()
-        captionFactParsers.values.forEach { it.close() }
-        captionFactParsers.clear()
-        superimposeTimingByPid.clear()
-        latestBroadcastClockAuthority = null
+    private fun invalidateTuneOnController() {
         currentTune = null
         tuneAccepted = false
+        captionLanguagesByPid.clear()
+        superimposeTimingByPid.clear()
+        latestBroadcastClockAuthority = null
+    }
+
+    private fun closeCaptionParsersOnController() {
+        SectionFilterPolicy.completeCleanup(*captionFactParsers.entries.map { (pid, parser) -> {
+            parser.close()
+            captionFactParsers.remove(pid, parser)
+            Unit
+        } }.toTypedArray())
+    }
+
+    private fun resetBeforeTune() = completeRetuneReset(
+        invalidate = { invalidateTuneOnController() },
+        { playbackPipeline.stop() },
+        { tuner?.clearOnTuneEventListener() },
+        { closeSectionFiltersOnController() },
+        { casController?.clearForResourceLoss() },
+        { closeCaptionParsersOnController() },
+    )
+
+    private fun initializeAcceptedTune(channel: ResolvedChannel?, generation: Long) {
+        // 準備に失敗したgenerationも再使用しない。配送・CAS受付はcommitまでfalse。
+        tuneGeneration = generation
+        completeTuneInitialization(
+            prepare = { prepareInitialSectionFiltersOnController(generation) },
+            commit = { currentTune = channel; tuneAccepted = true },
+            rollback = { resetBeforeTune() },
+        )
     }
 
     fun beginSiIngestAfterTune(): Boolean = callOnController { beginSiIngestAfterTuneOnController() }
@@ -471,8 +482,15 @@ class TunerController(
 
     private fun openInitialSectionFiltersOnController(generation: Long = tuneGeneration) {
         if (!tuneAccepted) return
+        prepareInitialSectionFiltersOnController(generation)
+    }
+
+    private fun prepareInitialSectionFiltersOnController(generation: Long) {
         listOf(WellKnownSectionPid.PAT, WellKnownSectionPid.CAT, WellKnownSectionPid.NIT, WellKnownSectionPid.SDT_BAT, WellKnownSectionPid.EIT, WellKnownSectionPid.TDT)
-            .forEach { openSectionFilterOnController(it, generation) }
+            .forEach { pid ->
+                val handle = SectionFilterPolicy.openOwnedFilter(pid, sectionFilterHandles) { createSectionFilter(pid, generation) }
+                check(handle.isOpen) { "初期section filterを開始できません pid=$pid" }
+            }
         Log.d(LogTags.TIS, "初期 section filter を開きます inputId=$inputId pids=${sectionFilterHandles.keys} generation=$generation")
     }
 
@@ -965,6 +983,7 @@ class TunerController(
 
     private fun releaseOnController() {
         if (released) return
+        invalidateTuneOnController()
         var failure: Throwable? = null
         fun release(action: () -> Unit) {
             try {
@@ -998,6 +1017,25 @@ class TunerController(
     override fun close() = release()
 
     companion object {
+        /** 既存controller executorで失効を先に確定し、解放失敗なら呼出元の新tuneへ進まない。 */
+        internal fun completeRetuneReset(invalidate: () -> Unit, vararg cleanup: () -> Unit) {
+            invalidate()
+            SectionFilterPolicy.completeCleanup(*cleanup)
+        }
+
+        /** 初期化が終わるまで成功を公開しない。rollbackの失敗も元の例外へ添える。 */
+        internal fun completeTuneInitialization(prepare: () -> Unit, commit: () -> Unit, rollback: () -> Unit) {
+            try {
+                prepare()
+                commit()
+            } catch (failure: Exception) {
+                try { rollback() } catch (cleanup: Exception) {
+                    if (cleanup !== failure) failure.addSuppressed(cleanup)
+                }
+                throw failure
+            }
+        }
+
         /** 呼出しからCAS attach完了まで同一controller executorを占有する。 */
         internal fun updateCasIfCurrent(
             requestedGeneration: Long,

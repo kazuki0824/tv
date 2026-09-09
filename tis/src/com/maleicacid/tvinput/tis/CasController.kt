@@ -33,7 +33,7 @@ class CasController(
     private data class EsCaBinding(val serviceKeyText: String, val caSystemId: Int, val ecmPid: TsPid, val elementaryPid: TsPid, val privateData: ByteArray)
     private data class ProgramCaBinding(val serviceKeyText: String, val caSystemId: Int, val ecmPid: TsPid, val privateData: ByteArray)
     private data class EmmBinding(val caSystemId: Int, val emmPid: TsPid, val privateData: ByteArray)
-    private data class CasSessionState(val caSystemId: Int, val cas: MediaCasBridge, val session: MediaCasSessionBridge, val ecmPids: MutableSet<TsPid> = linkedSetOf(), val elementaryPids: MutableSet<TsPid> = linkedSetOf(), var retiring: Boolean = false, var sessionClosed: Boolean = false, var casClosed: Boolean = false)
+    private data class CasSessionState(val caSystemId: Int, val cas: MediaCasBridge, var session: MediaCasSessionBridge? = null, val ecmPids: MutableSet<TsPid> = linkedSetOf(), val elementaryPids: MutableSet<TsPid> = linkedSetOf(), var retiring: Boolean = false, var sessionClosed: Boolean = false, var casClosed: Boolean = false)
     private class SessionProvisioningException(
         val errorCode: ErrorCode,
         cause: Throwable,
@@ -58,6 +58,8 @@ class CasController(
     private val elementaryPidToSystems = LinkedHashMap<TsPid, MutableSet<Int>>()
     private var descrambler: TunerDescramblerBridge? = null
     private var descramblerClosing = false
+    // addPid成功済みの物理所有。logical ownerが消えてもremove成功まで保持する。
+    private val descramblerPids = linkedSetOf<TsPid>()
     private var closed = false
     @Volatile private var lastDiagnostic = Diagnostic(State.IDLE)
 
@@ -82,13 +84,17 @@ class CasController(
         descramblerClosing = true
         descrambler?.close()
         descrambler = null
+        descramblerPids.clear()
         descramblerClosing = false
     }
 
     fun clearForClearService(): Unit = onExecutor { clearForClearServiceLocked() }
 
     private fun clearForClearServiceLocked() {
-        SectionFilterPolicy.completeCleanup(*sessionsBySystemId.keys.map { systemId -> { closeSystemLocked(systemId) } }.toTypedArray())
+        SectionFilterPolicy.completeCleanup(
+            { SectionFilterPolicy.completeCleanup(*sessionsBySystemId.keys.map { systemId -> { closeSystemLocked(systemId) } }.toTypedArray()) },
+            { if (!descramblerClosing) syncDescramblerPidsLocked(emptySet()) },
+        )
         ecmPidToSystems.clear()
         emmPidToSystems.clear()
         elementaryPidToSystems.clear()
@@ -101,10 +107,10 @@ class CasController(
             clearForClearServiceLocked()
             return@onExecutor UpdateResult(emptyList(), emptySet(), emptySet())
         }
-        if (descramblerClosing || sessionsBySystemId.values.any { it.retiring }) clearForResourceLossLocked()
+        if (descramblerClosing) clearForResourceLossLocked()
+        SectionFilterPolicy.completeCleanup(*sessionsBySystemId.values.filter { it.retiring }.map { state -> { closeSystemLocked(state.caSystemId) } }.toTypedArray())
         if (descrambler == null && createDescrambler != null) descrambler = createDescrambler()
         val diagnostics = mutableListOf<Diagnostic>()
-        val previousElementaryPids = elementaryPidToSystems.keys.toSet()
         val programBindings = mutableListOf<ProgramCaBinding>()
         val esBindings = mutableListOf<EsCaBinding>()
         val emmBindings = mutableListOf<EmmBinding>()
@@ -142,16 +148,16 @@ class CasController(
             }
         }
         programBindings.forEach { binding ->
-            sessionsBySystemId[binding.caSystemId]?.let { state ->
+            sessionsBySystemId[binding.caSystemId]?.takeUnless { it.retiring }?.let { state ->
                 state.ecmPids += binding.ecmPid
-                state.session.setPrivateData(binding.privateData).onFailure { e -> diagnostics += Diagnostic(State.ERROR, ErrorCode.PRIVATE_DATA_FAILED, binding.caSystemId, binding.ecmPid, e.message.orEmpty()) }
+                requireNotNull(state.session).setPrivateData(binding.privateData).onFailure { e -> diagnostics += Diagnostic(State.ERROR, ErrorCode.PRIVATE_DATA_FAILED, binding.caSystemId, binding.ecmPid, e.message.orEmpty()) }
             }
         }
         esBindings.forEach { binding ->
-            sessionsBySystemId[binding.caSystemId]?.let { state ->
+            sessionsBySystemId[binding.caSystemId]?.takeUnless { it.retiring }?.let { state ->
                 state.ecmPids += binding.ecmPid
                 state.elementaryPids += binding.elementaryPid
-                state.session.setPrivateData(binding.privateData).onFailure { e -> diagnostics += Diagnostic(State.ERROR, ErrorCode.PRIVATE_DATA_FAILED, binding.caSystemId, binding.ecmPid, e.message.orEmpty()) }
+                requireNotNull(state.session).setPrivateData(binding.privateData).onFailure { e -> diagnostics += Diagnostic(State.ERROR, ErrorCode.PRIVATE_DATA_FAILED, binding.caSystemId, binding.ecmPid, e.message.orEmpty()) }
             }
         }
         emmBindings.forEach { binding ->
@@ -162,9 +168,12 @@ class CasController(
             }
         }
         rebuildPidIndexesLocked()
-        emmBindings.forEach { binding -> emmPidToSystems.getOrPut(binding.emmPid) { linkedSetOf() } += binding.caSystemId }
-        val activePids = esBindings.map { it.elementaryPid }.toSet()
-        syncDescramblerPidsLocked(previousElementaryPids, activePids, diagnostics)
+        emmBindings.filter { sessionsBySystemId[it.caSystemId]?.retiring == false }.forEach { binding ->
+            emmPidToSystems.getOrPut(binding.emmPid) { linkedSetOf() } += binding.caSystemId
+        }
+        runCatching { syncDescramblerPidsLocked(elementaryPidToSystems.keys) }.onFailure {
+            diagnostics += lastDiagnostic
+        }
         lastDiagnostic = if (diagnostics.isEmpty()) Diagnostic(if (targetSystems.isEmpty()) State.IDLE else State.ACTIVE) else diagnostics.last()
         UpdateResult(diagnostics, ecmPidToSystems.keys.toSet(), emmPidToSystems.keys.toSet())
     }
@@ -176,11 +185,11 @@ class CasController(
         val diagnostics = mutableListOf<Diagnostic>()
         systems.forEach { systemId ->
             val state = sessionsBySystemId[systemId]
-            if (state == null) {
+            if (state == null || state.retiring || state.session == null) {
                 diagnostics += Diagnostic(State.ERROR, ErrorCode.SESSION_OPEN_FAILED, systemId, pid, "CAS session がありません")
                 return@forEach
             }
-            val tokenResult = state.session.processEcm(section)
+            val tokenResult = requireNotNull(state.session).processEcm(section)
             if (tokenResult.isFailure) {
                 diagnostics += Diagnostic(State.ERROR, ErrorCode.ECM_FAILED, systemId, pid, tokenResult.exceptionOrNull()?.message.orEmpty())
                 return@forEach
@@ -193,9 +202,10 @@ class CasController(
                         diagnostics += Diagnostic(State.ERROR, ErrorCode.DESCRAMBLER_FAILED, systemId, pid, setTokenResult.exceptionOrNull()?.message.orEmpty())
                         return@forEach
                     }
-                    state.elementaryPids.forEach { elementaryPid ->
+                    state.elementaryPids.filter { it !in descramblerPids }.forEach { elementaryPid ->
                         val addResult = descrambler?.addPid(elementaryPid) ?: Result.failure(IllegalStateException("Tuner descrambler を利用できません"))
                         if (addResult.isFailure) diagnostics += Diagnostic(State.ERROR, ErrorCode.DESCRAMBLER_FAILED, systemId, elementaryPid, addResult.exceptionOrNull()?.message.orEmpty())
+                        else descramblerPids += elementaryPid
                     }
                 }
                 is EcmProcessResult.DiagnosticOnly -> diagnostics += Diagnostic(State.ERROR, ErrorCode.KEY_TOKEN_MISSING, systemId, pid, ecmResult.message)
@@ -226,21 +236,26 @@ class CasController(
     fun lastDiagnostic(): Diagnostic = lastDiagnostic
 
     private fun ensureSessionLocked(caSystemId: Int): Result<CasSessionState> {
-        sessionsBySystemId[caSystemId]?.let { return Result.success(it) }
+        sessionsBySystemId[caSystemId]?.let {
+            return if (it.retiring) Result.failure(IllegalStateException("CAS資源は解放再試行待ちです")) else Result.success(it)
+        }
         val cas = mediaCasFactory.create(caSystemId).getOrElse { failure ->
             return Result.failure(SessionProvisioningException(ErrorCode.PLUGIN_UNAVAILABLE, failure))
         }
+        // openSessionより前にpluginのownerを確定する。rollback失敗でもローカル参照だけにしない。
+        val state = CasSessionState(caSystemId, cas)
+        sessionsBySystemId[caSystemId] = state
         val session = cas.openSession().getOrElse { failure ->
-            cas.close()
+            try { closeSystemLocked(caSystemId) } catch (cleanup: Exception) {
+                if (cleanup !== failure) failure.addSuppressed(cleanup)
+            }
             return Result.failure(SessionProvisioningException(ErrorCode.SESSION_OPEN_FAILED, failure))
         }
-        val state = CasSessionState(caSystemId, cas, session)
-        sessionsBySystemId[caSystemId] = state
+        state.session = session
         return Result.success(state)
     }
 
     private fun ensureCasOnlyLocked(caSystemId: Int): Result<MediaCasBridge> {
-        sessionsBySystemId[caSystemId]?.let { return Result.success(it.cas) }
         return ensureSessionLocked(caSystemId).map { it.cas }
     }
 
@@ -254,11 +269,15 @@ class CasController(
         return Diagnostic(State.ERROR, errorCode, caSystemId, pid, failure.message.orEmpty())
     }
 
-    private fun syncDescramblerPidsLocked(previousPids: Set<TsPid>, activePids: Set<TsPid>, diagnostics: MutableList<Diagnostic>) {
+    private fun syncDescramblerPidsLocked(activePids: Set<TsPid>) {
         val bridge = descrambler ?: return
-        (previousPids - activePids).forEach { pid ->
-            bridge.removePid(pid).onFailure { e -> diagnostics += Diagnostic(State.ERROR, ErrorCode.DESCRAMBLER_FAILED, pid = pid, message = e.message.orEmpty()) }
-        }
+        SectionFilterPolicy.completeCleanup(*(descramblerPids - activePids).map { pid -> {
+            bridge.removePid(pid).onFailure { error ->
+                lastDiagnostic = Diagnostic(State.ERROR, ErrorCode.DESCRAMBLER_FAILED, pid = pid, message = error.message.orEmpty())
+            }.getOrThrow()
+            descramblerPids.remove(pid)
+            Unit
+        } }.toTypedArray())
     }
 
     private fun rebuildPidIndexesLocked() {
@@ -276,8 +295,7 @@ class CasController(
         state.retiring = true
         rebuildPidIndexesLocked()
         SectionFilterPolicy.completeCleanup(
-            { if (!descramblerClosing) state.elementaryPids.forEach { pid -> descrambler?.removePid(pid) } },
-            { if (!state.sessionClosed) { state.session.close(); state.sessionClosed = true } },
+            { if (!state.sessionClosed) { state.session?.close(); state.sessionClosed = true } },
             { if (!state.casClosed) { state.cas.close(); state.casClosed = true } },
         )
         sessionsBySystemId.remove(caSystemId)
@@ -333,7 +351,7 @@ private class FrameworkMediaCasBridge(caSystemId: Int) : CasController.MediaCasB
 
     @Synchronized
     override fun close() {
-        runCatching { mediaCas.close() }
+        mediaCas.close()
     }
 }
 
@@ -351,7 +369,7 @@ private class FrameworkMediaCasSessionBridge(
 
     @Synchronized
     override fun close() {
-        runCatching { session.close() }
+        session.close()
     }
 }
 
