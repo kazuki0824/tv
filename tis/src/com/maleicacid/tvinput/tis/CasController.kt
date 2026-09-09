@@ -33,7 +33,7 @@ class CasController(
     private data class EsCaBinding(val serviceKeyText: String, val caSystemId: Int, val ecmPid: TsPid, val elementaryPid: TsPid, val privateData: ByteArray)
     private data class ProgramCaBinding(val serviceKeyText: String, val caSystemId: Int, val ecmPid: TsPid, val privateData: ByteArray)
     private data class EmmBinding(val caSystemId: Int, val emmPid: TsPid, val privateData: ByteArray)
-    private data class CasSessionState(val caSystemId: Int, val cas: MediaCasBridge, val session: MediaCasSessionBridge, val ecmPids: MutableSet<TsPid> = linkedSetOf(), val elementaryPids: MutableSet<TsPid> = linkedSetOf())
+    private data class CasSessionState(val caSystemId: Int, val cas: MediaCasBridge, val session: MediaCasSessionBridge, val ecmPids: MutableSet<TsPid> = linkedSetOf(), val elementaryPids: MutableSet<TsPid> = linkedSetOf(), var retiring: Boolean = false, var sessionClosed: Boolean = false, var casClosed: Boolean = false)
     private class SessionProvisioningException(
         val errorCode: ErrorCode,
         cause: Throwable,
@@ -57,40 +57,52 @@ class CasController(
     private val emmPidToSystems = LinkedHashMap<TsPid, MutableSet<Int>>()
     private val elementaryPidToSystems = LinkedHashMap<TsPid, MutableSet<Int>>()
     private var descrambler: TunerDescramblerBridge? = null
+    private var descramblerClosing = false
     private var closed = false
     @Volatile private var lastDiagnostic = Diagnostic(State.IDLE)
 
-    fun attachDescrambler(bridge: TunerDescramblerBridge?): Unit = onExecutor {
-        if (closed) {
-            bridge?.close()
-            lastDiagnostic = Diagnostic(State.CLOSED, ErrorCode.CLOSED, message = "CAS 制御は終了済みです")
-            return@onExecutor
+    /** 所有bridgeを退役させ、解放失敗中はECM/EMMの配送対象から外す。 */
+    fun clearForResourceLoss(): Unit = onExecutor { clearForResourceLossLocked() }
+
+    private fun clearForResourceLossLocked() {
+        descramblerClosing = true
+        try {
+            SectionFilterPolicy.completeCleanup(
+                { clearForClearServiceLocked() },
+                { closeDescramblerLocked() },
+            )
+        } finally {
+            ecmPidToSystems.clear()
+            emmPidToSystems.clear()
+            elementaryPidToSystems.clear()
         }
-        if (bridge === descrambler) return@onExecutor
+    }
+
+    private fun closeDescramblerLocked() {
+        descramblerClosing = true
         descrambler?.close()
-        descrambler = bridge
+        descrambler = null
+        descramblerClosing = false
     }
 
     fun clearForClearService(): Unit = onExecutor { clearForClearServiceLocked() }
 
     private fun clearForClearServiceLocked() {
-        sessionsBySystemId.keys.toList().forEach { closeSystemLocked(it) }
+        SectionFilterPolicy.completeCleanup(*sessionsBySystemId.keys.map { systemId -> { closeSystemLocked(systemId) } }.toTypedArray())
         ecmPidToSystems.clear()
         emmPidToSystems.clear()
         elementaryPidToSystems.clear()
         lastDiagnostic = Diagnostic(State.IDLE)
     }
 
-    fun updateFromCaMetadata(metadata: List<CaMetadata>, descramblerBridge: TunerDescramblerBridge? = null): UpdateResult = onExecutor {
+    internal fun updateFromCaMetadata(metadata: List<CaMetadata>, createDescrambler: (() -> TunerDescramblerBridge)? = null): UpdateResult = onExecutor {
         if (closed) return@onExecutor UpdateResult(listOf(Diagnostic(State.CLOSED, ErrorCode.CLOSED, message = "CAS 制御は終了済みです")), emptySet(), emptySet())
         if (metadata.isEmpty()) {
             clearForClearServiceLocked()
             return@onExecutor UpdateResult(emptyList(), emptySet(), emptySet())
         }
-        if (descramblerBridge != null && descramblerBridge !== descrambler) {
-            descrambler?.close()
-            descrambler = descramblerBridge
-        }
+        if (descramblerClosing || sessionsBySystemId.values.any { it.retiring }) clearForResourceLossLocked()
+        if (descrambler == null && createDescrambler != null) descrambler = createDescrambler()
         val diagnostics = mutableListOf<Diagnostic>()
         val previousElementaryPids = elementaryPidToSystems.keys.toSet()
         val programBindings = mutableListOf<ProgramCaBinding>()
@@ -253,35 +265,33 @@ class CasController(
         ecmPidToSystems.clear()
         emmPidToSystems.clear()
         elementaryPidToSystems.clear()
-        sessionsBySystemId.values.forEach { state ->
+        sessionsBySystemId.values.filterNot { it.retiring }.forEach { state ->
             state.ecmPids.forEach { ecmPid -> ecmPidToSystems.getOrPut(ecmPid) { linkedSetOf() } += state.caSystemId }
             state.elementaryPids.forEach { elementaryPid -> elementaryPidToSystems.getOrPut(elementaryPid) { linkedSetOf() } += state.caSystemId }
         }
     }
 
     private fun closeSystemLocked(caSystemId: Int) {
-        sessionsBySystemId.remove(caSystemId)?.let { state ->
-            state.elementaryPids.forEach { pid -> descrambler?.removePid(pid) }
-            state.session.close()
-            state.cas.close()
-        }
+        val state = sessionsBySystemId[caSystemId] ?: return
+        state.retiring = true
         rebuildPidIndexesLocked()
+        SectionFilterPolicy.completeCleanup(
+            { if (!descramblerClosing) state.elementaryPids.forEach { pid -> descrambler?.removePid(pid) } },
+            { if (!state.sessionClosed) { state.session.close(); state.sessionClosed = true } },
+            { if (!state.casClosed) { state.cas.close(); state.casClosed = true } },
+        )
+        sessionsBySystemId.remove(caSystemId)
     }
 
     override fun close() {
         if (executor.isShutdown) return
-        try {
-            onExecutor {
-                if (closed) return@onExecutor
-                closed = true
-                sessionsBySystemId.keys.toList().forEach { closeSystemLocked(it) }
-                ecmPidToSystems.clear(); emmPidToSystems.clear(); elementaryPidToSystems.clear()
-                descrambler?.close(); descrambler = null
-                lastDiagnostic = Diagnostic(State.CLOSED)
-            }
-        } finally {
-            executor.shutdown()
+        onExecutor {
+            closed = true
+            clearForResourceLossLocked()
+            lastDiagnostic = Diagnostic(State.CLOSED)
         }
+        // cleanup失敗時は所有とexecutorを残し、close()の再試行を許す。
+        executor.shutdown()
     }
 
     fun release() = close()
@@ -346,28 +356,41 @@ private class FrameworkMediaCasSessionBridge(
 }
 
 class DirectTunerDescramblerBridge(private val tuner: Tuner?) : CasController.TunerDescramblerBridge {
-    private val descrambler: Descrambler? by lazy { tuner?.openDescrambler() }
+    private val descramblerHandle = lazy { tuner?.openDescrambler() }
+    private var closing = false
+    private var closed = false
+
+    private fun activeDescrambler(): Descrambler {
+        check(!closing && !closed) { "退役済みのdescrambler bridgeは再利用できません" }
+        return requireNotNull(descramblerHandle.value) { "Tuner descrambler を利用できません" }
+    }
 
     override fun setKeyToken(keyToken: TunerKeyToken): Result<Unit> = runCatching {
-        val d = requireNotNull(descrambler) { "Tuner descrambler を利用できません" }
+        val d = activeDescrambler()
         val result = d.setKeyToken(keyToken.toByteArray())
         require(result == Tuner.RESULT_SUCCESS) { "Descrambler.setKeyToken が失敗しました result=$result" }
     }
 
     override fun addPid(elementaryPid: TsPid): Result<Unit> = runCatching {
-        val d = requireNotNull(descrambler) { "Tuner descrambler を利用できません" }
+        val d = activeDescrambler()
         val result = d.addPid(DESCRAMBLER_PID_TYPE_T, elementaryPid.value, null)
         require(result == Tuner.RESULT_SUCCESS) { "Descrambler.addPid が失敗しました pid=${elementaryPid.value} result=$result" }
     }
 
     override fun removePid(elementaryPid: TsPid): Result<Unit> = runCatching {
-        val d = requireNotNull(descrambler) { "Tuner descrambler を利用できません" }
+        val d = activeDescrambler()
         val result = d.removePid(DESCRAMBLER_PID_TYPE_T, elementaryPid.value, null)
         require(result == Tuner.RESULT_SUCCESS) { "Descrambler.removePid が失敗しました pid=${elementaryPid.value} result=$result" }
     }
 
     @Synchronized
-    override fun close() { runCatching { descrambler?.close() } }
+    override fun close() {
+        if (closed) return
+        closing = true
+        // closeのために未生成のAOSP handleを生成してはならない。
+        if (descramblerHandle.isInitialized()) descramblerHandle.value?.close()
+        closed = true
+    }
 
     companion object {
         // AOSP Descrambler.PID_TYPE_T

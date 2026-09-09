@@ -332,8 +332,7 @@ class MaleicacidLiveSession(
         if (caMetadata.isEmpty()) {
             casController.clearForClearService()
         } else {
-            val bridge = if (serviceScopedCa.isEmpty()) null else tunerController.createDescramblerBridge()
-            val casResult = casController.updateFromCaMetadata(caMetadata, bridge)
+            val casResult = tunerController.updateCasMetadata(caMetadata, currentGeneration) ?: return
             val blockingCasError = serviceCaMetadata.isNotEmpty() && casResult.diagnostics.any { it.state == CasController.State.ERROR }
             if (blockingCasError) {
                 playbackState = PlaybackStartState.Stopped

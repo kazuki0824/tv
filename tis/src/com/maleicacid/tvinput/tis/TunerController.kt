@@ -182,7 +182,6 @@ class TunerController(
     private var onBroadcastClockUpdatedCallback: (() -> Unit)? = null
     private val tvInputSessionId: String? = normalizedTvInputSessionId(sessionId)
     private var tuner: Tuner? = createTuner()
-    private var descramblerBridge: CasController.TunerDescramblerBridge? = null
     private var currentTune: ResolvedChannel? = null
     private var tuneAccepted = false
     private var tuneGeneration: Long = 0L
@@ -244,7 +243,6 @@ class TunerController(
                         // logical失効を物理解放の成否へ従属させない。同世代の再通知も拒否する。
                         tuneAccepted = false
                         currentTune = null
-                        descramblerBridge = null
                         captionLanguagesByPid.clear()
                         superimposeTimingByPid.clear()
                         latestBroadcastClockAuthority = null
@@ -255,7 +253,7 @@ class TunerController(
                     SectionFilterPolicy.completeCleanup(
                         { playbackPipeline.stop() },
                         { closeSectionFiltersOnController() },
-                        { casController?.clearForClearService() },
+                        { casController?.clearForResourceLoss() },
                         { SectionFilterPolicy.completeCleanup(*captionFactParsers.entries.map { (pid, parser) -> {
                             parser.close()
                             captionFactParsers.remove(pid, parser)
@@ -290,15 +288,6 @@ class TunerController(
             else -> return
         }
         onTuneEventCallback?.invoke(generation, event)
-    }
-
-    fun createDescramblerBridge(): CasController.TunerDescramblerBridge = callOnController {
-        check(tuneAccepted) { "失効済みの選局ではdescramblerを生成できません inputId=$inputId" }
-        val existing = descramblerBridge
-        if (existing != null) return@callOnController existing
-        val created = DirectTunerDescramblerBridge(tuner)
-        descramblerBridge = created
-        created
     }
 
     fun setSurface(surface: Surface?) {
@@ -457,7 +446,7 @@ class TunerController(
         playbackPipeline.stop()
         runCatching { tuner?.clearOnTuneEventListener() }
         closeSectionFilters()
-        casController?.clearForClearService()
+        casController?.clearForResourceLoss()
         captionLanguagesByPid.clear()
         captionFactParsers.values.forEach { it.close() }
         captionFactParsers.clear()
@@ -643,13 +632,11 @@ class TunerController(
         )
     }
 
-    fun updateCasMetadata(metadata: List<CaMetadata>): CasController.UpdateResult? = callOnController {
+    fun updateCasMetadata(metadata: List<CaMetadata>, generation: Long): CasController.UpdateResult? = callOnController {
         val controller = casController ?: return@callOnController null
-        if (metadata.isEmpty()) {
-            controller.clearForClearService()
-            CasController.UpdateResult(emptyList(), emptySet(), emptySet())
-        } else {
-            controller.updateFromCaMetadata(metadata, createDescramblerBridge())
+        updateCasIfCurrent(generation, tuneGeneration, tuneAccepted) {
+            val needsDescrambler = metadata.any { it.serviceKey != null && it.source != com.maleicacid.tvinput.aribsi.CaMetadataSource.CAT }
+            controller.updateFromCaMetadata(metadata, if (needsDescrambler) ({ DirectTunerDescramblerBridge(tuner) }) else null)
         }
     }
 
@@ -996,7 +983,6 @@ class TunerController(
         superimposeTimingByPid.clear()
         latestBroadcastClockAuthority = null
         release { casController?.close(); casController = null }
-        descramblerBridge = null
         sectionIngestController = null
         onSectionIngestedCallback = null
         onTunerResourceLostCallback = null
@@ -1012,6 +998,15 @@ class TunerController(
     override fun close() = release()
 
     companion object {
+        /** 呼出しからCAS attach完了まで同一controller executorを占有する。 */
+        internal fun updateCasIfCurrent(
+            requestedGeneration: Long,
+            currentGeneration: Long,
+            tuneAccepted: Boolean,
+            update: () -> CasController.UpdateResult,
+        ): CasController.UpdateResult? =
+            if (tuneAccepted && requestedGeneration == currentGeneration) update() else null
+
         /** 同一controller executorで失効を確定し、cleanup失敗でもlost通知を一度試行する。 */
         internal fun completeResourceLoss(
             invalidate: () -> Boolean,

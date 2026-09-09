@@ -273,6 +273,7 @@ class ChannelScanController(
     }
     fun refreshDynamicSectionFilters() {
         if (terminalResourceLostObserved) return
+        val generation = tunerController.currentGeneration()
         val transaction = engine.casDiscoverySnapshot()
         val servicesForCas = transaction.services
         val allCaMetadata = if (ENABLE_CAS_ORCHESTRATION) transaction.caMetadata else emptyList()
@@ -290,8 +291,7 @@ class ChannelScanController(
         }
         val unsupported = caMapper.unsupportedForB25B1(caMetadata, CasController.SupportedCasSystemIds.B25_B1)
         unsupported.forEach { Log.w(LogTags.TIS, "対象外 CA情報 を無視します caSystemId=${it.caSystemId}") }
-        val bridge = if (serviceScopedCa.isEmpty()) null else tunerController.createDescramblerBridge()
-        casController.updateFromCaMetadata(caMetadata, bridge)
+        tunerController.updateCasMetadata(caMetadata, generation)
     }
 
     private fun publishCurrentServiceSnapshot(
