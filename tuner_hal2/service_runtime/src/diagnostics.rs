@@ -13,10 +13,13 @@ use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, A
 
 pub const DEFAULT_DIAGNOSTIC_STORE_LIMIT: usize = 128;
 
-fn saturating_increment_atomic_u64(counter: &AtomicU64) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+fn saturating_increment_atomic_u64(counter: &AtomicU64, owner: &'static str) {
+    let previous = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
         Some(value.saturating_add(1))
     });
+    if matches!(previous, Ok(value) if value >= u64::MAX - 1) {
+        eprintln!("diagnostic_counter_saturated counter=record_failure_count owner={owner} instance={counter:p}");
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -37,14 +40,25 @@ impl<T> BoundedDiagnosticStore<T> {
 
     pub fn push(&mut self, record: T) {
         if self.limit == 0 {
-            self.dropped_count = self.dropped_count.saturating_add(1);
+            self.increment_dropped_count();
             return;
         }
         if self.records.len() >= self.limit {
             self.records.remove(0);
-            self.dropped_count = self.dropped_count.saturating_add(1);
+            self.increment_dropped_count();
         }
         self.records.push(record);
+    }
+
+    fn increment_dropped_count(&mut self) {
+        if self.dropped_count >= u64::MAX - 1 {
+            eprintln!(
+                "diagnostic_counter_saturated counter=dropped_count owner={} instance={:p}",
+                std::any::type_name::<Self>(),
+                self,
+            );
+        }
+        self.dropped_count = self.dropped_count.saturating_add(1);
     }
 
     pub fn as_slice(&self) -> &[T] {
@@ -135,6 +149,7 @@ pub enum CapabilitySuppressionReason {
     DeviceFamilyDisabled,
     NoExportableFrontend,
     InvalidCapabilityProfile,
+    RuntimeCapacityExhausted,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -403,6 +418,7 @@ pub enum DvrPostCommitNotificationPhase {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DvrPostCommitNotificationFailureKind {
+    PostDeliveryCommit,
     CallbackArtifactLookup,
     RuntimePolicySkip,
     EventConversion,
@@ -635,7 +651,10 @@ impl SharedDvrPostCommitNotificationDiagnostics {
                 Ok(())
             }
             Err(_) => {
-                saturating_increment_atomic_u64(&self.record_failure_count);
+                saturating_increment_atomic_u64(
+                    &self.record_failure_count,
+                    std::any::type_name::<Self>(),
+                );
                 Err(HalError::internal(
                     HalInternalKind::InvariantViolation,
                     "DVR post-commit notification diagnostic store lock poisoned",
@@ -698,7 +717,10 @@ impl SharedDvrStatusNotifierCleanupDiagnostics {
                 Ok(())
             }
             Err(_) => {
-                saturating_increment_atomic_u64(&self.record_failure_count);
+                saturating_increment_atomic_u64(
+                    &self.record_failure_count,
+                    std::any::type_name::<Self>(),
+                );
                 Err(HalError::internal(
                     HalInternalKind::InvariantViolation,
                     "DVR status notifier cleanup diagnostic store lock poisoned",
@@ -1212,6 +1234,7 @@ impl CallbackArtifactRuntimeSplitDiagnosticRecord {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FilterCallbackDeliveryDiagnosticPhase {
+    PostDeliveryCommit,
     EventDelivery,
     CallbackRegistryAccounting,
     RuntimeCallbackAccounting,
@@ -1691,5 +1714,25 @@ impl DemuxTransactionDiagnosticRecord {
             }
             Self::DvrQueueCleanup { .. } => DemuxTransactionDiagnosticKind::DvrQueueCleanup,
         }
+    }
+}
+
+#[cfg(test)]
+mod counter_saturation_tests {
+    use super::*;
+
+    #[test]
+    fn saturated_drop_count_does_not_stop_record_replacement() {
+        let mut records = BoundedDiagnosticStore::new(1);
+        records.push(1);
+        records.dropped_count = u64::MAX - 1;
+        records.push(2);
+        records.push(3);
+        assert_eq!(records.dropped_count(), u64::MAX);
+        assert_eq!(records.as_slice(), &[3]);
+        let failures = AtomicU64::new(u64::MAX - 1);
+        saturating_increment_atomic_u64(&failures, "test_owner");
+        saturating_increment_atomic_u64(&failures, "test_owner");
+        assert_eq!(failures.load(Ordering::Relaxed), u64::MAX);
     }
 }

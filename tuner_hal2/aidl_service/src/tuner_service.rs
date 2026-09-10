@@ -57,7 +57,7 @@ use maleicacid_tuner_hal2_binder_adapter::{
     build_filter_summary_for_open_type, build_lnb_satellite_position_request,
     build_lnb_tone_request, build_lnb_voltage_request, build_open_filter_request, AidlApi,
     AidlMethodCall, AidlObjectGeneration, AidlObjectId, AidlObjectKind, DvrFilterLinkRequest,
-    FilterReleaseAvHandleRequest, FilterSetDataSourceRequest,
+    FilterSetDataSourceRequest,
 };
 use maleicacid_tuner_hal2_common::{
     fail_after_cleanup, FrontendBackendKind, FrontendSystem, HalError, HalInternalKind,

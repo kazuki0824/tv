@@ -146,11 +146,16 @@ pub(crate) struct QueueEpochProtocol {
 
 impl QueueEpochProtocol {
     fn fail_close_unconsumed_authority(&self) {
-        let mut state = match self.state.lock() {
-            Ok(state) => state,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        state.state = QueueEpochState::Closed;
+        match self.state.lock() {
+            Ok(mut state) => state.state = QueueEpochState::Closed,
+            Err(_) => {
+                // poisonを解除せず、以後の全受付で既存の型付きlock失敗を返す。
+                eprintln!(
+                    "DVR queue epoch未消費権限の破棄: queue={:?}, lock poison",
+                    self.queue_identity
+                );
+            }
+        }
         self.drained.notify_all();
     }
 }
@@ -285,13 +290,6 @@ impl DvrQueueDrainCommitError {
             Self::QueueClear | Self::QueueClearRollbackFailed => Self::QueueClearRollbackFailed,
             Self::EpochCommit | Self::EpochCommitRollbackFailed => Self::EpochCommitRollbackFailed,
         }
-    }
-
-    pub(crate) const fn rollback_failed(self) -> bool {
-        matches!(
-            self,
-            Self::QueueClearRollbackFailed | Self::EpochCommitRollbackFailed
-        )
     }
 }
 
@@ -1437,7 +1435,7 @@ mod queue_epoch_authority_drop_contract_tests {
     }
 
     #[test]
-    fn fail_closed_drop_recovers_a_poisoned_protocol_lock_without_panicking() {
+    fn fail_closed_drop_preserves_poison_and_rejects_later_commits() {
         let protocol = protocol(QueueEpochState::Open, 13, 1);
         let poison_target = Arc::clone(&protocol);
         assert!(std::thread::spawn(move || {
@@ -1457,8 +1455,20 @@ mod queue_epoch_authority_drop_contract_tests {
         };
         drop(token);
 
-        let state = protocol.state.lock().unwrap_err().into_inner();
-        assert_eq!(state.state, QueueEpochState::Closed);
-        assert_eq!(state.epoch, 13);
+        assert!(protocol.state.is_poisoned());
+        let result = QueueEpochToken {
+            protocol: Arc::clone(&protocol),
+            queue_identity: Some(77),
+            epoch: 13,
+            direction: QueueTransactionDirection::Read,
+            reserved_bytes: 188,
+            active: true,
+        }
+        .commit();
+        assert_eq!(
+            result.unwrap_err().kind,
+            QueueRuntimeErrorKind::StructuralDescriptor
+        );
+        assert!(protocol.state.is_poisoned());
     }
 }

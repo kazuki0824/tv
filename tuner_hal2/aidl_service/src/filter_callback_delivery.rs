@@ -1,14 +1,13 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, Weak};
 
+use android_hardware_common::aidl::android::hardware::common::NativeHandle::NativeHandle;
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     DemuxFilterEvent::DemuxFilterEvent, DemuxFilterMediaEvent::DemuxFilterMediaEvent,
     DemuxFilterPesEvent::DemuxFilterPesEvent, DemuxFilterScIndexMask::DemuxFilterScIndexMask,
-    DemuxFilterSectionEvent::DemuxFilterSectionEvent,
-    DemuxFilterStatus::DemuxFilterStatus,
+    DemuxFilterSectionEvent::DemuxFilterSectionEvent, DemuxFilterStatus::DemuxFilterStatus,
     DemuxFilterTsRecordEvent::DemuxFilterTsRecordEvent, DemuxPid::DemuxPid,
 };
-use android_hardware_common::aidl::android::hardware::common::NativeHandle::NativeHandle;
 use binder::ParcelFileDescriptor;
 use maleicacid_tuner_hal2_binder_adapter::AidlObjectKind;
 use maleicacid_tuner_hal2_common::{FirstErrorCollector, HalError, HalInternalKind};
@@ -17,11 +16,10 @@ use maleicacid_tuner_hal2_demux::{
     RECORD_SC_TYPE_SC_HEVC, RECORD_SC_TYPE_SC_VVC,
 };
 use maleicacid_tuner_hal2_service_runtime::{
-    filter_delivery_wake_sequence, notify_filter_delivery_change, wait_filter_delivery_change,
     CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport,
     FilterCallbackDeliveryDiagnosticPhase, FilterCallbackDeliveryDiagnosticRecord,
     FilterEventDelivery, FilterEventDeliverySnapshot, FilterEventDispatcher, TunerServiceRuntime,
-    WorkerRuntime,
+    WorkerContext, WorkerRuntime,
 };
 
 use crate::object_handle::AidlObjectHandle;
@@ -53,8 +51,8 @@ impl AidlFilterEventDispatcher {
             "maleicacid-filter-delay-delivery".to_string(),
             0,
             1,
-            move |stop| run_filter_delay_delivery(worker_context, stop),
-            notify_filter_delivery_change,
+            move |control| run_filter_delay_delivery(worker_context, control),
+            || {},
         )
         .map_err(|error| {
             HalError::internal(
@@ -80,7 +78,6 @@ impl Drop for AidlFilterEventDispatcher {
     fn drop(&mut self) {
         if let Some(worker) = self.delay_worker.as_ref() {
             worker.request_stop_and_wake();
-            notify_filter_delivery_change();
         }
     }
 }
@@ -98,13 +95,12 @@ pub(crate) fn dispatch_filter_event_snapshots(
 
 fn run_filter_delay_delivery(
     weak_context: Weak<AidlServiceContext>,
-    stop: Arc<std::sync::atomic::AtomicBool>,
+    control: WorkerContext,
 ) -> Result<(), HalError> {
     loop {
-        if stop.load(std::sync::atomic::Ordering::Acquire) {
+        if control.stop_requested() {
             return Ok(());
         }
-        let observed = filter_delivery_wake_sequence();
         let Some(context) = weak_context.upgrade() else {
             return Ok(());
         };
@@ -124,10 +120,10 @@ fn run_filter_delay_delivery(
         }
         drop(runtime);
         drop(context);
-        if stop.load(std::sync::atomic::Ordering::Acquire) {
+        if control.stop_requested() {
             return Ok(());
         }
-        let _ = wait_filter_delivery_change(observed, deadline);
+        control.wait_until(deadline)?;
     }
 }
 
@@ -166,14 +162,14 @@ fn event_from_snapshot(
         FilterEventDelivery::StartId(start_id) => Ok(AidlFilterCallbackDelivery::Event(
             DemuxFilterEvent::StartId(start_id),
         )),
-        FilterEventDelivery::Status(status) => Ok(AidlFilterCallbackDelivery::Status(
-            match status {
+        FilterEventDelivery::Status(status) => {
+            Ok(AidlFilterCallbackDelivery::Status(match status {
                 FilterStatusEvent::DataReady => DemuxFilterStatus::DATA_READY,
                 FilterStatusEvent::LowWater => DemuxFilterStatus::LOW_WATER,
                 FilterStatusEvent::HighWater => DemuxFilterStatus::HIGH_WATER,
                 FilterStatusEvent::Overflow => DemuxFilterStatus::OVERFLOW,
-            },
-        )),
+            }))
+        }
         FilterEventDelivery::Media(event) => {
             let data_length = i64::try_from(event.data_length).map_err(|_| {
                 HalError::internal(
@@ -199,29 +195,33 @@ fn event_from_snapshot(
             )?;
             let av_memory = match event.event_local_file {
                 Some(file) => NativeHandle {
-                    fds: vec![ParcelFileDescriptor::new(file.try_clone().map_err(|_| {
-                        HalError::internal(
-                            HalInternalKind::InvariantViolation,
-                            "event-local AV handle duplication failed",
-                        )
-                    })?)],
+                    fds: vec![ParcelFileDescriptor::new(file.try_clone().map_err(
+                        |_| {
+                            HalError::internal(
+                                HalInternalKind::InvariantViolation,
+                                "event-local AV handle duplication failed",
+                            )
+                        },
+                    )?)],
                     ints: vec![0],
                 },
                 None => Default::default(),
             };
-            Ok(AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Media(DemuxFilterMediaEvent {
-                streamId: i32::from(event.metadata.stream_id),
-                isPtsPresent: event.metadata.is_pts_present,
-                pts,
-                isDtsPresent: event.metadata.is_dts_present,
-                dts,
-                dataLength: data_length,
-                offset,
-                avDataId: event.data_id.0,
-                avMemory: av_memory,
-                isPesPrivateData: event.metadata.is_pes_private_data,
-                ..Default::default()
-            })))
+            Ok(AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Media(
+                DemuxFilterMediaEvent {
+                    streamId: i32::from(event.metadata.stream_id),
+                    isPtsPresent: event.metadata.is_pts_present,
+                    pts,
+                    isDtsPresent: event.metadata.is_dts_present,
+                    dts,
+                    dataLength: data_length,
+                    offset,
+                    avDataId: event.data_id.0,
+                    avMemory: av_memory,
+                    isPesPrivateData: event.metadata.is_pes_private_data,
+                    ..Default::default()
+                },
+            )))
         }
         FilterEventDelivery::Section { data_length } => {
             let data_length = i64::try_from(data_length).map_err(|_| {
@@ -230,10 +230,12 @@ fn event_from_snapshot(
                     "filter section event length does not fit i64",
                 )
             })?;
-            Ok(AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Section(DemuxFilterSectionEvent {
-                dataLength: data_length,
-                ..Default::default()
-            })))
+            Ok(AidlFilterCallbackDelivery::Event(
+                DemuxFilterEvent::Section(DemuxFilterSectionEvent {
+                    dataLength: data_length,
+                    ..Default::default()
+                }),
+            ))
         }
         FilterEventDelivery::Pes {
             stream_id,
@@ -245,11 +247,13 @@ fn event_from_snapshot(
                     "filter PES event length does not fit i32",
                 )
             })?;
-            Ok(AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Pes(DemuxFilterPesEvent {
-                streamId: stream_id,
-                dataLength: data_length,
-                ..Default::default()
-            })))
+            Ok(AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Pes(
+                DemuxFilterPesEvent {
+                    streamId: stream_id,
+                    dataLength: data_length,
+                    ..Default::default()
+                },
+            )))
         }
         FilterEventDelivery::RecordIndex(event) => Ok(AidlFilterCallbackDelivery::Event(
             DemuxFilterEvent::TsRecord(DemuxFilterTsRecordEvent {
@@ -278,6 +282,9 @@ fn filter_callback_diagnostic_phase(
     phase: CallbackDeliveryFailurePhase,
 ) -> FilterCallbackDeliveryDiagnosticPhase {
     match phase {
+        CallbackDeliveryFailurePhase::PostDeliveryCommit => {
+            FilterCallbackDeliveryDiagnosticPhase::PostDeliveryCommit
+        }
         CallbackDeliveryFailurePhase::CallbackArtifactLookup
         | CallbackDeliveryFailurePhase::RuntimePolicySkip
         | CallbackDeliveryFailurePhase::NotifierCleanup
@@ -332,6 +339,15 @@ fn finish_filter_callback_delivery_failure(
 }
 
 impl FilterEventDispatcher for AidlFilterEventDispatcher {
+    fn wake(&self) -> Result<(), HalError> {
+        self.delay_worker
+            .as_ref()
+            .ok_or(HalError::NotInitialized {
+                resource: "Filter delay worker",
+            })?
+            .wake()
+    }
+
     fn dispatch(
         &self,
         runtime: &Arc<Mutex<TunerServiceRuntime>>,
@@ -423,10 +439,8 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
                 AidlFilterCallbackDelivery::Status(status) => callback.onFilterStatus(status),
             };
             if let Err(error) = delivery_result {
-                let primary = HalError::callback_failed(
-                    operation,
-                    format!("binder failure: {error:?}"),
-                );
+                let primary =
+                    HalError::callback_failed(operation, format!("binder failure: {error:?}"));
                 failures.push_result(finish_filter_callback_delivery_failure(
                     &context,
                     runtime,
@@ -457,7 +471,13 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
                         )
                     });
                 if let Err(error) = commit_result {
-                    failures.push_error(error);
+                    failures.push_result(finish_filter_callback_delivery_failure(
+                        &context,
+                        runtime,
+                        handle,
+                        CallbackDeliveryFailurePhase::PostDeliveryCommit,
+                        error,
+                    ));
                     start_id_blocked.insert(delivery_key);
                 }
             }
@@ -473,6 +493,46 @@ mod tests {
     use maleicacid_tuner_hal2_demux::{
         AvDataId, AvMediaEventDescriptor, AvMediaEventMetadata, AvSlotId,
     };
+
+    #[test]
+    fn post_delivery_commit_failure_survives_runtime_poison_in_fallback_diagnostics() {
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let context = AidlServiceContext::from_shared_runtime_for_test(Arc::clone(&runtime));
+        let poisoned = Arc::clone(&runtime);
+        assert!(std::thread::spawn(move || {
+            let _guard = poisoned.lock().unwrap();
+            panic!("状態確定時のpoisonを注入");
+        })
+        .join()
+        .is_err());
+        let handle = AidlObjectHandle::new(
+            AidlObjectKind::Filter,
+            AidlObjectId(31),
+            AidlObjectGeneration(4),
+        );
+        let primary = HalError::internal(HalInternalKind::InvariantViolation, "startId確定失敗");
+        let error = finish_filter_callback_delivery_failure(
+            &context,
+            &runtime,
+            handle,
+            CallbackDeliveryFailurePhase::PostDeliveryCommit,
+            primary.clone(),
+        )
+        .unwrap_err();
+        assert_eq!(error, primary);
+        let snapshot = context
+            .filter_callback_delivery_diagnostic_snapshot()
+            .unwrap();
+        assert_eq!(snapshot.records().len(), 1);
+        assert_eq!(
+            snapshot.records()[0].phase,
+            FilterCallbackDeliveryDiagnosticPhase::PostDeliveryCommit
+        );
+        assert_eq!(snapshot.records()[0].object_id, handle.object_id());
+        assert_eq!(snapshot.records()[0].generation, handle.generation());
+        assert_eq!(snapshot.records()[0].error, primary);
+        assert!(runtime.is_poisoned());
+    }
 
     fn snapshot(event: FilterEventDelivery) -> FilterEventDeliverySnapshot {
         FilterEventDeliverySnapshot {
@@ -511,9 +571,10 @@ mod tests {
                 .unwrap();
         assert!(matches!(
             section,
-            AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Section(
-                DemuxFilterSectionEvent { dataLength: 64, .. }
-            ))
+            AidlFilterCallbackDelivery::Event(DemuxFilterEvent::Section(DemuxFilterSectionEvent {
+                dataLength: 64,
+                ..
+            }))
         ));
 
         let pes = event_from_snapshot(snapshot(FilterEventDelivery::Pes {
@@ -595,8 +656,7 @@ mod tests {
     #[test]
     fn media_event_preserves_legal_pes_timestamp_absence() {
         let event =
-            projected_media_event(AvMediaEventMetadata::from_pes(0xc0, None, None, false))
-                .unwrap();
+            projected_media_event(AvMediaEventMetadata::from_pes(0xc0, None, None, false)).unwrap();
 
         assert_eq!(event.streamId, 0xc0);
         assert!(!event.isPtsPresent);
@@ -638,8 +698,8 @@ mod tests {
             (FilterStatusEvent::HighWater, DemuxFilterStatus::HIGH_WATER),
             (FilterStatusEvent::Overflow, DemuxFilterStatus::OVERFLOW),
         ] {
-            let delivery = event_from_snapshot(snapshot(FilterEventDelivery::Status(status)))
-                .unwrap();
+            let delivery =
+                event_from_snapshot(snapshot(FilterEventDelivery::Status(status))).unwrap();
             assert!(matches!(
                 delivery,
                 AidlFilterCallbackDelivery::Status(actual) if actual == expected

@@ -213,7 +213,6 @@ jobs:
           for test_class in "${discovered_classes[@]}"; do
             case "$test_class" in
               com.maleicacid.tvinput.tis.DirectBootGuardR51FixTest|\
-              com.maleicacid.tvinput.tis.ProviderDataAssetsR51ContractTest|\
               com.maleicacid.tvinput.tis.RecordingDisabledR51Test|\
               com.maleicacid.tvinput.tis.TvProviderWriterDescriptorSchemaTest)
                 ;;
@@ -222,17 +221,18 @@ jobs:
                 ;;
             esac
           done
-          test "${#discovered_classes[@]}" -eq 31
-          test "${#test_classes[@]}" -eq 27
+          test "${#discovered_classes[@]}" -eq 32
+          test "${#test_classes[@]}" -eq 29
           runtime_classpath="$TIS_KOTLIN_PRODUCTION_DIR:$TIS_KOTLIN_TEST_DIR:$TIS_ANDROID_ALL_JAR:$TIS_JUNIT_JAR:$TIS_HAMCREST_JAR:$TIS_KOTLIN_HOME/lib/kotlin-stdlib.jar:$TIS_KOTLIN_HOME/lib/kotlin-stdlib-jdk7.jar:$TIS_KOTLIN_HOME/lib/kotlin-stdlib-jdk8.jar:$TIS_KOTLIN_HOME/lib/kotlin-test.jar:$TIS_KOTLIN_HOME/lib/kotlin-test-junit.jar"
           java \
             -Xmx4g \
             -Djava.library.path=arib_si_engine_rs/host_ci/target/debug/deps \
+            -Dmaleicacid.tis.testAssetsRoot=tis/tests/assets \
             -cp "$runtime_classpath" \
             org.junit.runner.JUnitCore \
             "${test_classes[@]}" \
             | tee "$RUNNER_TEMP/tis-junit.log"
-          grep --fixed-strings "OK (136 tests)" "$RUNNER_TEMP/tis-junit.log"
+          grep --fixed-strings "OK (156 tests)" "$RUNNER_TEMP/tis-junit.log"
 
   xml-contract:
     runs-on: ubuntu-latest

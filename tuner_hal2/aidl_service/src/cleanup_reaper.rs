@@ -3,11 +3,10 @@ use std::time::{Duration, Instant};
 
 use maleicacid_tuner_hal2_binder_adapter::AidlMethodCall;
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
-use maleicacid_tuner_hal2_domain_request::AidlObjectKind;
 use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
 use maleicacid_tuner_hal2_service_runtime::CapabilitySnapshot;
 
-use crate::object_handle::AidlObjectHandle;
+use crate::object_handle::{AidlObjectHandle, AidlObjectKind};
 use crate::service_context::AidlServiceContext;
 
 #[derive(Clone, Copy, Debug)]
@@ -58,7 +57,6 @@ impl CleanupJobKey {
 #[derive(Clone, Copy, Debug)]
 struct CleanupJob {
     handle: AidlObjectHandle,
-    dependency: CleanupStep,
     registered_at: Instant,
 }
 
@@ -139,7 +137,6 @@ impl CleanupReaperQueue {
         runtime.enqueue_reserved(
             CleanupJob {
                 handle,
-                dependency,
                 registered_at: Instant::now(),
             },
             [(key, dependency)],
@@ -182,7 +179,7 @@ fn mark_cleanup_reaper_critical(context: &AidlServiceContext) {
     let shared_runtime = context.runtime();
     if let Ok(mut runtime) = shared_runtime.lock() {
         runtime.mark_service_critical();
-    }
+    };
 }
 
 fn run_cleanup_job(
@@ -190,14 +187,17 @@ fn run_cleanup_job(
     policy: CleanupReaperPolicy,
     job: CleanupJob,
     pending: Arc<Mutex<std::collections::BTreeMap<CleanupJobKey, CleanupStep>>>,
+    worker: maleicacid_tuner_hal2_service_runtime::WorkerContext,
 ) {
     let key = CleanupJobKey::from_handle(job.handle);
     let mut attempt = 0usize;
     loop {
+        if worker.stop_requested() {
+            return;
+        }
         let Some(context) = context.upgrade() else {
-            // The canonical service context is gone, so no owner remains that can
-            // truthfully mark this cleanup obligation complete. Keep it pending
-            // until the reaper state itself is destroyed.
+            // 正規service ownerの消滅後はcleanup完了を確定できない。
+            // reaper状態が破棄されるまで未完了の予約を保持する。
             return;
         };
         if job.registered_at.elapsed() >= policy.terminal_deadline {
@@ -259,7 +259,12 @@ fn run_cleanup_job(
         let remaining = policy
             .terminal_deadline
             .saturating_sub(job.registered_at.elapsed());
-        std::thread::sleep(delay.min(remaining));
+        let deadline = Instant::now().checked_add(delay.min(remaining));
+        drop(context);
+        if let Err(error) = worker.wait_until(deadline) {
+            eprintln!("cleanup reaper wait failed: {error:?}");
+            return;
+        }
     }
 }
 
@@ -269,8 +274,8 @@ pub(crate) fn start_cleanup_reaper(
 ) -> Result<(), HalError> {
     let policy = queue.policy;
     let runner_context = context;
-    let runner = Arc::new(move |job, pending| {
-        run_cleanup_job(runner_context.clone(), policy, job, pending);
+    let runner = Arc::new(move |job, pending, worker| {
+        run_cleanup_job(runner_context.clone(), policy, job, pending, worker);
     });
     let owner = maleicacid_tuner_hal2_service_runtime::WorkerRuntime::start_reaper_queue(
         policy.max_jobs,

@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     IDvrCallback::IDvrCallback, IFilterCallback::IFilterCallback,
-    IFrontendCallback::IFrontendCallback, ILnbCallback::ILnbCallback,
+    IFrontendCallback::IFrontendCallback,
 };
 use binder::{Status, Strong};
 use maleicacid_tuner_hal2_binder_adapter::{
@@ -635,7 +635,7 @@ impl AidlServiceContext {
     }
 
     #[cfg(test)]
-    pub(crate) fn drop_leak_error_diagnostic_snapshot(
+    fn drop_leak_error_diagnostic_snapshot(
         &self,
     ) -> Result<DiagnosticSnapshot<DropLeakErrorRecord>, HalError> {
         let records = self.drop_leak_error_records.lock().map_err(|_| {
@@ -669,24 +669,6 @@ impl AidlServiceContext {
         self.drop_leak_error_record_failures.load(Ordering::Relaxed)
     }
 
-    pub(crate) fn prepare_frontend_callback(
-        &self,
-        handle: AidlObjectHandle,
-        callback: &Strong<dyn IFrontendCallback>,
-    ) -> Result<PreparedCallbackArtifactToken, AidlCallbackStoreError> {
-        self.callback_store_lock()?
-            .prepare_frontend_callback(handle, callback)
-    }
-
-    pub(crate) fn prepare_lnb_callback(
-        &self,
-        handle: AidlObjectHandle,
-        callback: &Strong<dyn ILnbCallback>,
-    ) -> Result<PreparedCallbackArtifactToken, AidlCallbackStoreError> {
-        self.callback_store_lock()?
-            .prepare_lnb_callback(handle, callback)
-    }
-
     pub(crate) fn commit_prepared_callback(
         &self,
         handle: AidlObjectHandle,
@@ -707,23 +689,14 @@ impl AidlServiceContext {
             .abort_prepared_callback(handle, registration_api, token)
     }
 
-    pub(crate) fn retain_filter_callback(
-        &self,
-        handle: AidlObjectHandle,
-        callback: &Strong<dyn IFilterCallback>,
-    ) -> Result<(), AidlCallbackStoreError> {
-        self.callback_store_lock()?
-            .retain_filter_callback(handle, callback);
-        Ok(())
-    }
-
-    pub(crate) fn retain_dvr_callback(
+    #[cfg(test)]
+    pub(crate) fn retain_dvr_callback_for_test(
         &self,
         handle: AidlObjectHandle,
         callback: &Strong<dyn IDvrCallback>,
     ) -> Result<(), AidlCallbackStoreError> {
         self.callback_store_lock()?
-            .retain_dvr_callback(handle, callback);
+            .retain_dvr_callback_for_test(handle, callback);
         Ok(())
     }
 

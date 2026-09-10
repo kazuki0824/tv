@@ -51,6 +51,51 @@ class NativeAribSiParserCasDiscoveryTest {
         }
     }
 
+    @Test fun serviceNamesPreserveAbsentAndPresentEmptyValuesAcrossJni() {
+        val parser = NativeAribSiParser()
+        try {
+            check(parser.ingestSection(TsPid(PID_SDT), section(SDT_SCRAMBLED_SERVICE_BODY)) == SiStatus.OK)
+            val present = parser.serviceRegistrationSnapshot()
+            check(present.services.single().providerName == "")
+            check(present.semanticFactsByServiceKey.values.single().providerName == "")
+            val absentBody = mutableListOf(
+                0x42, 0xf0, 0, 0, 0x11, 0xc3, 0, 0, 0, 0x22, 0,
+                0, 1, 0xfc, 0x80, 0,
+            )
+            setSectionLength(absentBody, 0xf0)
+            check(parser.ingestSection(TsPid(PID_SDT), section(absentBody.toIntArray())) == SiStatus.OK)
+            val absent = parser.serviceRegistrationSnapshot()
+            check(absent.services.single().name == null)
+            check(absent.services.single().providerName == null)
+            check(absent.semanticFactsByServiceKey.values.single().name == null)
+        } finally {
+            parser.close()
+        }
+    }
+
+    @Test fun nitTransportMetadataSurvivesTheSemanticBoundary() {
+        val parser = NativeAribSiParser()
+        try {
+            val networkName = listOf(0x1b, 0x28, 0x42) + "Network".map { it.code }
+            val tsName = listOf(0x1b, 0x28, 0x42) + "Transport".map { it.code }
+            val networkDescriptor = listOf(0x40, networkName.size) + networkName
+            val tsDescriptor = listOf(0xcd, tsName.size + 2, 7, tsName.size shl 2) + tsName
+            val tsLoop = listOf(0, 0x11, 0, 0x22, 0xf0, tsDescriptor.size) + tsDescriptor
+            val nit = (listOf(0x40, 0xb0, 0, 0, 0x22, 0xc1, 0, 0, 0xf0, networkDescriptor.size) +
+                networkDescriptor + listOf(0xf0, tsLoop.size) + tsLoop).toMutableList()
+            setSectionLength(nit, 0xb0)
+            check(parser.ingestSection(TsPid(0x10), section(nit.toIntArray())) == SiStatus.OK)
+            check(parser.ingestSection(TsPid(PID_SDT), section(SDT_SCRAMBLED_SERVICE_BODY)) == SiStatus.OK)
+            val transport = parser.serviceRegistrationSnapshot().actualTransportMetadata.single()
+            check(transport.networkName == "Network")
+            check(transport.transportStreamName == "Transport")
+            check(transport.remoteControlKeyId == 7)
+            check(transport.sdtActual)
+        } finally {
+            parser.close()
+        }
+    }
+
     @Test fun eitDescriptorFactsSurviveBulkSnapshotAndProgramProviderData() {
         val parser = NativeAribSiParser()
         try {
@@ -63,6 +108,7 @@ class NativeAribSiParserCasDiscoveryTest {
             val video = event.descriptors.components.video.single()
             check(video.esPid == TsPid(VIDEO_PID))
             check(video.streamType == 0x1b)
+            check(video.codec == "H.264")
             check(video.componentType == 0xb3)
             check(video.resolution == "1080")
             check(video.scan == "interlaced")
@@ -72,6 +118,7 @@ class NativeAribSiParserCasDiscoveryTest {
             val audio = event.descriptors.components.audio.single()
             check(audio.esPid == TsPid(AUDIO_PID))
             check(audio.streamType == 0x0f)
+            check(audio.codec == "AAC")
             check(audio.componentType == 0x02)
             check(audio.language == "jpn")
             check(audio.secondLanguage == "eng")
@@ -105,6 +152,57 @@ class NativeAribSiParserCasDiscoveryTest {
             check(providerSeries.getInt("expireDate") == 0xe123)
             check(providerData.getJSONArray("linkage").getJSONObject(0).getString("privateDataPrefixHex") == "aabb")
             check(!providerData.getJSONObject("freeCaMode").has("text"))
+        } finally {
+            parser.close()
+        }
+    }
+
+    @Test fun rejectedRatingsAndFullUnknownDescriptorsSurviveProductionPublication() {
+        val parser = NativeAribSiParser()
+        try {
+            val valid = listOf(0x55, 4, 0x4a, 0x50, 0x4e, 12)
+            val malformed = listOf(0x55, 5, 0x4a, 0x50, 0x4e, 15, 0xaa)
+            val unsupported = listOf(0x55, 4, 0xff, 0, 0x58, 0x8f)
+            val unknown = listOf(0xfe, 80) + (0 until 80).toList()
+            val truncated = listOf(0x55, 4, 0x4a, 0x50)
+            val body = eitWithDescriptors(valid + malformed + unsupported + unknown + truncated)
+            check(parser.ingestSection(TsPid(PID_EIT), section(body)) == SiStatus.OK)
+            val event = parser.programStateSnapshot().events.single()
+            check(event.descriptors.parentalRatings == listOf(AribParentalRating("JPN", 12)))
+            val facts = JSONObject(requireNotNull(event.descriptors.diagnostics.descriptorFactsCanonicalJson))
+            val ratings = facts.getJSONArray("parentalRatingDescriptors")
+            check(ratings.length() == 4)
+            check(ratings.getJSONObject(0).getString("parseStatus") == "OK")
+            check(ratings.getJSONObject(1).getString("parseStatus") == "MalformedLength")
+            check(ratings.getJSONObject(1).getJSONArray("entries").length() == 0)
+            check(ratings.getJSONObject(2).getString("rawDescriptorHex") == "5504ff00588f")
+            check(ratings.getJSONObject(2).getJSONArray("entries").getJSONObject(0).getString("countryCode").map { it.code } == listOf(255, 0, 88))
+            check(ratings.getJSONObject(3).getString("parseStatus") == "TruncatedDescriptor")
+            val rawUnknown = facts.getJSONArray("unknownDescriptors").getJSONObject(0).getString("rawDescriptorHex")
+            check(rawUnknown.length == 164 && rawUnknown.endsWith("4d4e4f"))
+            val program = EventModelMapper().toProgramRecords(listOf(event)).single()
+            val stored = ProviderDataBridge.buildProgramProviderData(program).json
+            val canonical = JSONObject(stored)
+            check(canonical.getJSONArray("ratings").length() == 1)
+            val savedFacts = canonical.getJSONObject("diagnostics").getJSONObject("descriptorFacts")
+            val savedRatings = savedFacts.getJSONArray("parentalRatingDescriptors")
+            check(savedRatings.length() == ratings.length())
+            for (index in 0 until ratings.length()) {
+                val before = ratings.getJSONObject(index)
+                val after = savedRatings.getJSONObject(index)
+                check(after.getString("rawDescriptorHex") == before.getString("rawDescriptorHex"))
+                check(after.getString("parseStatus") == before.getString("parseStatus"))
+                val beforeEntries = before.getJSONArray("entries")
+                val afterEntries = after.getJSONArray("entries")
+                check(beforeEntries.length() == afterEntries.length())
+                for (entryIndex in 0 until beforeEntries.length()) {
+                    for (key in listOf("countryCode", "rawRatingByte", "parseStatus")) {
+                        check(beforeEntries.getJSONObject(entryIndex).get(key) == afterEntries.getJSONObject(entryIndex).get(key))
+                    }
+                }
+            }
+            check(savedFacts.getJSONArray("unknownDescriptors").getJSONObject(0).getString("rawDescriptorHex") == rawUnknown)
+            check(ProviderDataBridge.normalizeProgramProviderData(stored.toByteArray(Charsets.UTF_8)).json == stored)
         } finally {
             parser.close()
         }
@@ -196,6 +294,10 @@ class NativeAribSiParserCasDiscoveryTest {
                 0xd5, 0x09, 0x12, 0x34, 0x2b, 0xe1, 0x23, 0x00, 0x03, 0x00, 0x0c,
                 0x4a, 0x09, 0x00, 0x11, 0x00, 0x22, 0x00, 0x01, 0x0d, 0xaa, 0xbb,
             )
+            return eitWithDescriptors(descriptors)
+        }
+
+        private fun eitWithDescriptors(descriptors: List<Int>): IntArray {
             val descriptorLength = descriptors.size
             val body = mutableListOf(
                 0x4e, 0xf0, 0x00, 0x00, 0x01, 0xc1, 0x00, 0x00,

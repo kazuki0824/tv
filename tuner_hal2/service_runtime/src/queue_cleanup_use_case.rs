@@ -6,11 +6,11 @@ use crate::diagnostics::DemuxTransactionDiagnosticRecord;
 use crate::registry::{DemuxRuntimeId, DvrRuntimeId, FilterRuntimeId};
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidStateKind};
 use maleicacid_tuner_hal2_demux::{
-    DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind, DvrKind,
-    DvrQueueCleanupCommitError, DvrQueueCleanupOutcome, DvrQueueCleanupReport,
-    DvrQueueCleanupSkipReason, DvrQueueCleanupStep, DvrRuntimeOperationRequest,
-    FilterRuntimeOperationKind, FilterRuntimeOperationOutcome, FilterRuntimeOperationReport,
-    FilterRuntimeOperationRequest, FilterRuntimeOperationSkipReason, FilterRuntimeOperationStep,
+    DemuxRuntime, DemuxRuntimeError, DemuxRuntimeErrorKind, DvrKind, DvrQueueCleanupCommitError,
+    DvrQueueCleanupOutcome, DvrQueueCleanupReport, DvrQueueCleanupSkipReason, DvrQueueCleanupStep,
+    DvrRuntimeOperationRequest, FilterRuntimeOperationKind, FilterRuntimeOperationOutcome,
+    FilterRuntimeOperationReport, FilterRuntimeOperationRequest, FilterRuntimeOperationSkipReason,
+    FilterRuntimeOperationStep,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -132,12 +132,8 @@ impl<'a> QueueCleanupUseCase<'a> {
                 ));
             }
         };
-        let mut primary_failure = demux_failure.map(|(step, error)| {
-            (
-                step,
-                TunerServiceRuntime::map_dvr_runtime_error(error),
-            )
-        });
+        let mut primary_failure = demux_failure
+            .map(|(step, error)| (step, TunerServiceRuntime::map_dvr_runtime_error(error)));
 
         if kind == DvrKind::Record {
             report.skipped(
@@ -286,10 +282,8 @@ fn execute_dvr_demux_cleanup_protocol(
     };
 
     let runtime_state_result = demux.commit_dvr_runtime_state_for_queue_cleanup(&committed);
-    let playback_pipeline_reset =
-        demux.reset_dvr_playback_pipeline_for_queue_cleanup(&committed);
-    let playback_pcr_invalidated =
-        demux.invalidate_dvr_playback_pcr_for_queue_cleanup(&committed);
+    let playback_pipeline_reset = demux.reset_dvr_playback_pipeline_for_queue_cleanup(&committed);
+    let playback_pcr_invalidated = demux.invalidate_dvr_playback_pcr_for_queue_cleanup(&committed);
     let record_index_reset = demux.reset_dvr_record_index_for_queue_cleanup(&committed);
     let first_failure = record_dvr_post_commit_demux_results(
         &mut report,
@@ -313,10 +307,7 @@ fn record_dvr_queue_boundary_failure(
         }
         DvrQueueCleanupStep::QueueEpochCommit => {
             skip_dvr_queue_cleanup_steps(report, &[DvrQueueCleanupStep::QueueClear]);
-            report.failed(
-                DvrQueueCleanupStep::QueueEpochCommit,
-                error.error().kind,
-            );
+            report.failed(DvrQueueCleanupStep::QueueEpochCommit, error.error().kind);
         }
         failed_step => report.failed(failed_step, error.error().kind),
     }
@@ -344,10 +335,7 @@ fn record_dvr_queue_boundary_failure(
     );
 }
 
-fn skip_dvr_queue_cleanup_steps(
-    report: &mut DvrQueueCleanupReport,
-    steps: &[DvrQueueCleanupStep],
-) {
+fn skip_dvr_queue_cleanup_steps(report: &mut DvrQueueCleanupReport, steps: &[DvrQueueCleanupStep]) {
     for step in steps {
         report.skipped(*step, DvrQueueCleanupSkipReason::PrerequisiteFailed);
     }
@@ -453,39 +441,38 @@ fn execute_filter_cleanup_protocol(
 ) -> (FilterRuntimeOperationReport, Result<(), DemuxRuntimeError>) {
     let mut report =
         FilterRuntimeOperationReport::new(FilterRuntimeOperationKind::Flush, filter_id);
-    let mut plan = match demux
-        .prepare_filter_queue_cleanup(FilterRuntimeOperationRequest::new(filter_id))
-    {
-        Ok(plan) => {
-            report.succeeded(FilterRuntimeOperationStep::ValidateState);
-            plan
-        }
-        Err(error) => {
-            let (failed_step, outcome) = match error.kind {
-                DemuxRuntimeErrorKind::GenerationExhausted => (
-                    FilterRuntimeOperationStep::SourceGenerationRefresh,
-                    FilterRuntimeOperationOutcome::Isolated {
-                        failed_step: FilterRuntimeOperationStep::SourceGenerationRefresh,
-                    },
-                ),
-                DemuxRuntimeErrorKind::QueueRuntimeFailure => (
-                    FilterRuntimeOperationStep::ProducerDrainCommit,
-                    FilterRuntimeOperationOutcome::Isolated {
-                        failed_step: FilterRuntimeOperationStep::ProducerDrainCommit,
-                    },
-                ),
-                _ => (
-                    FilterRuntimeOperationStep::ValidateState,
-                    FilterRuntimeOperationOutcome::Failed {
-                        failed_step: FilterRuntimeOperationStep::ValidateState,
-                    },
-                ),
-            };
-            report.failed(failed_step, error.kind);
-            report.finish(outcome);
-            return (report, Err(error));
-        }
-    };
+    let mut plan =
+        match demux.prepare_filter_queue_cleanup(FilterRuntimeOperationRequest::new(filter_id)) {
+            Ok(plan) => {
+                report.succeeded(FilterRuntimeOperationStep::ValidateState);
+                plan
+            }
+            Err(error) => {
+                let (failed_step, outcome) = match error.kind {
+                    DemuxRuntimeErrorKind::GenerationExhausted => (
+                        FilterRuntimeOperationStep::SourceGenerationRefresh,
+                        FilterRuntimeOperationOutcome::Isolated {
+                            failed_step: FilterRuntimeOperationStep::SourceGenerationRefresh,
+                        },
+                    ),
+                    DemuxRuntimeErrorKind::QueueRuntimeFailure => (
+                        FilterRuntimeOperationStep::ProducerDrainCommit,
+                        FilterRuntimeOperationOutcome::Isolated {
+                            failed_step: FilterRuntimeOperationStep::ProducerDrainCommit,
+                        },
+                    ),
+                    _ => (
+                        FilterRuntimeOperationStep::ValidateState,
+                        FilterRuntimeOperationOutcome::Failed {
+                            failed_step: FilterRuntimeOperationStep::ValidateState,
+                        },
+                    ),
+                };
+                report.failed(failed_step, error.kind);
+                report.finish(outcome);
+                return (report, Err(error));
+            }
+        };
 
     demux.flush_filter_pipeline_for_queue_cleanup(&plan);
     report.succeeded(FilterRuntimeOperationStep::PipelineFlush);
@@ -563,7 +550,10 @@ fn execute_filter_cleanup_protocol(
             FilterRuntimeOperationSkipReason::NoSourceDownstreams,
         ),
         Err(error) => {
-            report.failed(FilterRuntimeOperationStep::SourceGenerationRefresh, error.kind);
+            report.failed(
+                FilterRuntimeOperationStep::SourceGenerationRefresh,
+                error.kind,
+            );
             report.finish(FilterRuntimeOperationOutcome::Isolated {
                 failed_step: FilterRuntimeOperationStep::SourceGenerationRefresh,
             });
@@ -603,12 +593,8 @@ mod tests {
                     step: DvrQueueCleanupStep::RuntimeStateCommit,
                     error: DemuxRuntimeErrorKind::DvrMissing,
                 },
-                DvrQueueCleanupStepOutcome::Succeeded(
-                    DvrQueueCleanupStep::PlaybackPipelineReset,
-                ),
-                DvrQueueCleanupStepOutcome::Succeeded(
-                    DvrQueueCleanupStep::PcrAnchorInvalidate,
-                ),
+                DvrQueueCleanupStepOutcome::Succeeded(DvrQueueCleanupStep::PlaybackPipelineReset,),
+                DvrQueueCleanupStepOutcome::Succeeded(DvrQueueCleanupStep::PcrAnchorInvalidate,),
                 DvrQueueCleanupStepOutcome::Skipped {
                     step: DvrQueueCleanupStep::RecordIndexReset,
                     reason: DvrQueueCleanupSkipReason::RecordOnly,

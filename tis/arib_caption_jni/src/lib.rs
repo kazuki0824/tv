@@ -314,6 +314,29 @@ impl CaptionEngine {
         // 事後条件: C側のrenderer queueとdecoder continuityはflush済みで、pointer所有権自体はSelfに残る。
     }
 
+    fn render_at(&mut self, media_time_millis: i64) -> Option<RenderedCaptionFrame> {
+        if media_time_millis < 0 || self.viewport.is_none() {
+            return None;
+        }
+        let mut result = AribccRenderResult::default();
+        // 事前条件: rendererはこのengineが単独所有する初期化済みpointerで、viewportは設定済み。
+        // 再描画ではdecoderへPESを再投入せず、rendererが保持するcaptionだけを現在時刻で照会する。
+        let status =
+            unsafe { aribcc_renderer_render(self.renderer, media_time_millis, &mut result) };
+        let copied = if matches!(
+            status,
+            ARIBCC_RENDER_STATUS_GOT_IMAGE | ARIBCC_RENDER_STATUS_GOT_IMAGE_UNCHANGED
+        ) && render_time_is_current(result.pts, result.duration, media_time_millis)
+        {
+            copy_render_result(&result, result.pts, result.duration, false)
+        } else {
+            None
+        };
+        cleanup_render_result_if_owned(&mut result);
+        // 事後条件: C画像は全経路でcleanup済み。復号状態とcaption時刻は変更していない。
+        copied
+    }
+
     fn decode_and_render(&mut self, pes: &[u8], pts_millis: jlong) -> Option<RenderedCaptionFrame> {
         if pes.is_empty()
             || (pts_millis < 0 && !(self.superimpose && pts_millis == ARIBCC_PTS_NOPTS))
@@ -393,6 +416,13 @@ impl CaptionEngine {
         });
         frame
     }
+}
+
+fn render_time_is_current(pts: i64, duration: i64, now: i64) -> bool {
+    pts >= 0
+        && pts <= now
+        && (duration == ARIBCC_DURATION_INDEFINITE
+            || (duration > 0 && pts.checked_add(duration).is_some_and(|end| now < end)))
 }
 
 fn validate_decoded_caption_timing(
@@ -892,6 +922,24 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribCaptionRende
 }
 
 #[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribCaptionRenderer_nativeRenderAt(
+    env: JNIEnv<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+    media_time_millis: jlong,
+) -> jbyteArray {
+    let Some(packet) = with_engine(handle, |engine| engine.render_at(media_time_millis))
+        .flatten()
+        .and_then(encode_rendered_frame)
+    else {
+        return ptr::null_mut();
+    };
+    env.byte_array_from_slice(&packet)
+        .map(|array| array.into_raw())
+        .unwrap_or(ptr::null_mut())
+}
+
+#[no_mangle]
 pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribCaptionRenderer_nativeFlush(
     _env: JNIEnv<'_>,
     _this: JObject<'_>,
@@ -921,6 +969,23 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribCaptionRende
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn viewport_rerender_requires_a_current_caption_interval() {
+        assert!(render_time_is_current(100, 25, 100));
+        assert!(render_time_is_current(100, 25, 124));
+        assert!(!render_time_is_current(100, 25, 125));
+        assert!(!render_time_is_current(100, 25, 99));
+        assert!(!render_time_is_current(ARIBCC_PTS_NOPTS, 25, 100));
+        assert!(!render_time_is_current(100, -1, 100));
+        assert!(!render_time_is_current(100, 0, 100));
+        assert!(!render_time_is_current(i64::MAX - 1, 10, i64::MAX));
+        assert!(render_time_is_current(
+            100,
+            ARIBCC_DURATION_INDEFINITE,
+            i64::MAX
+        ));
+    }
 
     #[test]
     fn public_c_api_constants_are_kept_exact() {

@@ -34,6 +34,7 @@ object ChannelScanManager {
 
     private val listeners = CopyOnWriteArrayList<Listener>()
     private val activeLiveSessions = AtomicInteger(0)
+    private val activePlaybackPipelines = AtomicInteger(0)
     private val sessionCreationsInProgress = AtomicInteger(0)
     private val nextGeneration = AtomicInteger(0)
     private val activeTask = AtomicReference<ActiveScanTask?>(null)
@@ -65,6 +66,18 @@ object ChannelScanManager {
         }
     }
 
+    internal fun registerPlaybackPipeline() {
+        activePlaybackPipelines.updateAndGet { Math.addExact(it, 1) }
+    }
+
+    internal fun unregisterPlaybackPipeline(context: Context?) {
+        val remaining = activePlaybackPipelines.updateAndGet {
+            check(it > 0) { "再生中pipelineの計数が不正です" }
+            it - 1
+        }
+        if (remaining == 0 && context != null) drainPendingBootEpgSyncIfIdle(context, "PLAYBACK_PIPELINE_STOPPED")
+    }
+
     fun activeLiveSessionCountForTest(): Int = activeLiveSessions.get()
     fun sessionCreationInProgressCountForTest(): Int = sessionCreationsInProgress.get()
 
@@ -84,8 +97,8 @@ object ChannelScanManager {
         }
     }
 
-    fun bootEpgSyncStartDecisionForTest(activeLiveSessionCount: Int, scanRunning: Boolean, sessionCreationInProgress: Boolean = false): BootEpgSyncStartDecision =
-        bootEpgSyncStartDecision(activeLiveSessionCount, scanRunning, sessionCreationInProgress)
+    fun bootEpgSyncStartDecisionForTest(activeLiveSessionCount: Int, scanRunning: Boolean, sessionCreationInProgress: Boolean = false, playbackPipelineRunning: Boolean = false): BootEpgSyncStartDecision =
+        bootEpgSyncStartDecision(activeLiveSessionCount, scanRunning, sessionCreationInProgress, playbackPipelineRunning)
 
     fun liveSessionPreemptDecisionForTest(scanRunning: Boolean, purpose: ScanPurpose?): LiveSessionPreemptDecision =
         liveSessionPreemptDecision(scanRunning, purpose)
@@ -145,7 +158,7 @@ object ChannelScanManager {
         val targetSnapshot = targetChannels.toList()
         val requiredServiceKeys = targetSnapshot.map { it.serviceKey }.toSet()
         val appContext = context.applicationContext
-        val precheck = bootEpgSyncStartDecision(activeLiveSessions.get(), isScanRunning(), sessionCreationsInProgress.get() > 0)
+        val precheck = bootEpgSyncStartDecision(activeLiveSessions.get(), isScanRunning(), sessionCreationsInProgress.get() > 0, activePlaybackPipelines.get() > 0)
         if (!precheck.allowed) {
             markBootEpgSyncDeferred(appContext, precheck.reason ?: "UNKNOWN")
             return null
@@ -156,14 +169,14 @@ object ChannelScanManager {
             return null
         }
         val generation = task.generation
-        if (activeLiveSessions.get() > 0 || sessionCreationsInProgress.get() > 0) {
+        if (activeLiveSessions.get() > 0 || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0) {
             setTerminalStateIfCurrent(generation, ScanState.Idle)
             finishScanIfCurrent(generation)
             markBootEpgSyncDeferred(appContext, "LIVE_SESSION_STARTING_OR_ACTIVE")
             return null
         }
         executor.execute {
-            if (activeLiveSessions.get() > 0 || sessionCreationsInProgress.get() > 0) {
+            if (activeLiveSessions.get() > 0 || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0) {
                 setTerminalStateIfCurrent(generation, ScanState.Idle)
                 finishScanIfCurrent(generation)
                 markBootEpgSyncDeferred(appContext, "LIVE_SESSION_STARTING_OR_ACTIVE")
@@ -234,7 +247,7 @@ object ChannelScanManager {
         inputId: String,
         source: String = "MANUAL",
     ): Boolean {
-        val precheck = backgroundMaintenanceStartDecision(activeLiveSessions.get(), isScanRunning(), sessionCreationsInProgress.get() > 0)
+        val precheck = backgroundMaintenanceStartDecision(activeLiveSessions.get(), isScanRunning(), sessionCreationsInProgress.get() > 0, activePlaybackPipelines.get() > 0)
         if (!precheck.allowed) {
             markBackgroundMaintenanceSkipped(precheck.reason ?: "UNKNOWN", source)
             return false
@@ -246,14 +259,14 @@ object ChannelScanManager {
             return false
         }
         val generation = task.generation
-        if (activeLiveSessions.get() > 0 || sessionCreationsInProgress.get() > 0) {
+        if (activeLiveSessions.get() > 0 || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0) {
             setTerminalStateIfCurrent(generation, ScanState.Idle)
             finishScanIfCurrent(generation)
             markBackgroundMaintenanceSkipped("LIVE_SESSION_STARTING_OR_ACTIVE", source)
             return false
         }
         executor.execute {
-            if (activeLiveSessions.get() > 0 || sessionCreationsInProgress.get() > 0) {
+            if (activeLiveSessions.get() > 0 || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0) {
                 setTerminalStateIfCurrent(generation, ScanState.Idle)
                 finishScanIfCurrent(generation)
                 markBackgroundMaintenanceSkipped("LIVE_SESSION_STARTING_OR_ACTIVE", source)
@@ -378,8 +391,9 @@ object ChannelScanManager {
         activeTask.compareAndSet(task, null)
     }
 
-    private fun bootEpgSyncStartDecision(activeLiveSessionCount: Int, scanRunning: Boolean, sessionCreationInProgress: Boolean): BootEpgSyncStartDecision = when {
+    private fun bootEpgSyncStartDecision(activeLiveSessionCount: Int, scanRunning: Boolean, sessionCreationInProgress: Boolean, playbackPipelineRunning: Boolean): BootEpgSyncStartDecision = when {
         activeLiveSessionCount > 0 || sessionCreationInProgress -> BootEpgSyncStartDecision(false, "LIVE_SESSION_STARTING_OR_ACTIVE")
+        playbackPipelineRunning -> BootEpgSyncStartDecision(false, "PLAYBACK_PIPELINE_RUNNING")
         scanRunning -> BootEpgSyncStartDecision(false, "SCAN_RUNNING")
         else -> BootEpgSyncStartDecision(true, null)
     }
@@ -390,7 +404,7 @@ object ChannelScanManager {
     }
 
     private fun drainPendingBootEpgSyncIfIdle(context: Context, source: String) {
-        if (activeLiveSessions.get() > 0 || sessionCreationsInProgress.get() > 0 || isScanRunning()) return
+        if (activeLiveSessions.get() > 0 || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0 || isScanRunning()) return
         Log.i(LogTags.TIS, "pending boot EPG 同期ジョブを再登録します source=$source")
         BootEpgSyncScheduler.scheduleIfEligible(context.applicationContext, source)
     }
@@ -417,12 +431,13 @@ object ChannelScanManager {
         listeners.forEach { listener -> runCatching { listener.onScanStateChanged(newState) } }
     }
 
-    private fun backgroundMaintenanceStartDecision(activeLiveSessionCount: Int, scanRunning: Boolean, sessionCreationInProgress: Boolean): BackgroundMaintenanceStartDecision = when {
+    private fun backgroundMaintenanceStartDecision(activeLiveSessionCount: Int, scanRunning: Boolean, sessionCreationInProgress: Boolean, playbackPipelineRunning: Boolean): BackgroundMaintenanceStartDecision = when {
         activeLiveSessionCount > 0 || sessionCreationInProgress -> BackgroundMaintenanceStartDecision(false, "LIVE_SESSION_STARTING_OR_ACTIVE")
+        playbackPipelineRunning -> BackgroundMaintenanceStartDecision(false, "PLAYBACK_PIPELINE_RUNNING")
         scanRunning -> BackgroundMaintenanceStartDecision(false, "SCAN_RUNNING")
         else -> BackgroundMaintenanceStartDecision(true, null)
     }
 
-    fun backgroundMaintenanceStartDecisionForTest(activeLiveSessionCount: Int, scanRunning: Boolean, sessionCreationInProgress: Boolean = false): BackgroundMaintenanceStartDecision =
-        backgroundMaintenanceStartDecision(activeLiveSessionCount, scanRunning, sessionCreationInProgress)
+    fun backgroundMaintenanceStartDecisionForTest(activeLiveSessionCount: Int, scanRunning: Boolean, sessionCreationInProgress: Boolean = false, playbackPipelineRunning: Boolean = false): BackgroundMaintenanceStartDecision =
+        backgroundMaintenanceStartDecision(activeLiveSessionCount, scanRunning, sessionCreationInProgress, playbackPipelineRunning)
 }

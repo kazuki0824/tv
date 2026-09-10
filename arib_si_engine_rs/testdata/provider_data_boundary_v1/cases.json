@@ -1,0 +1,114 @@
+[
+  {
+    "name": "正常Program",
+    "boundary": "PROGRAM",
+    "encoding": "UTF8",
+    "data": "{\"schema\":\"maleicacid.tv.program\",\"schemaVersion\":1,\"programKey\":{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16400,\"serviceId\":101,\"eventId\":12345},\"timing\":{\"startUtcMillis\":1730000000000,\"durationMillis\":1800000},\"source\":{\"pid\":18,\"tableId\":78,\"version\":12,\"sectionNumber\":0,\"lastSectionNumber\":1},\"cas\":{\"requiresCas\":false,\"source\":\"SI_SEMANTICS\"},\"ratings\":[],\"genres\":[{\"level1\":0,\"level2\":0,\"userNibble\":0,\"aribName\":\"ニュース／報道\",\"parseStatus\":\"OK\"}],\"series\":null,\"eventGroups\":[],\"linkage\":[],\"freeCaMode\":{\"raw\":0,\"scrambled\":false,\"parseStatus\":\"OK\"},\"extendedItems\":[],\"components\":{\"video\":[],\"audio\":[],\"subtitle\":[],\"data\":[]},\"diagnostics\":{\"descriptorDiagnostics\":[],\"publishDiagnostics\":[],\"parserDiagnostics\":[]}}",
+    "accepted": true
+  },
+  {
+    "name": "正常CS110",
+    "boundary": "CHANNEL",
+    "encoding": "UTF8",
+    "data": "{\"schema\":\"maleicacid.tv.channel\",\"schemaVersion\":1,\"serviceKey\":{\"originalNetworkId\":4,\"transportStreamId\":16400,\"serviceId\":101},\"tune\":{\"deliverySystem\":\"ISDB_S\",\"frequencyHz\":12413000000,\"streamId\":null,\"streamIdType\":\"NONE\",\"satelliteBand\":\"110CS\"},\"cas\":{\"requiresCas\":false},\"diagnostics\":{}}",
+    "accepted": true
+  },
+  {
+    "name": "不正UTF8",
+    "boundary": "PROGRAM",
+    "encoding": "HEX",
+    "data": "ff",
+    "accepted": false
+  },
+  {
+    "name": "途中で終わるJSON",
+    "boundary": "PROGRAM",
+    "encoding": "UTF8",
+    "data": "{\"schema\":",
+    "accepted": false
+  },
+  {
+    "name": "必須timing欠落",
+    "boundary": "PROGRAM",
+    "encoding": "UTF8",
+    "data": "{\"schema\":\"maleicacid.tv.program\",\"schemaVersion\":1,\"programKey\":{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16400,\"serviceId\":101,\"eventId\":12345},\"source\":{\"pid\":18,\"tableId\":78,\"version\":12,\"sectionNumber\":0,\"lastSectionNumber\":1},\"cas\":{\"requiresCas\":false,\"source\":\"SI_SEMANTICS\"},\"ratings\":[],\"genres\":[{\"level1\":0,\"level2\":0,\"userNibble\":0,\"aribName\":\"ニュース／報道\",\"parseStatus\":\"OK\"}],\"series\":null,\"eventGroups\":[],\"linkage\":[],\"freeCaMode\":{\"raw\":0,\"scrambled\":false,\"parseStatus\":\"OK\"},\"extendedItems\":[],\"components\":{\"video\":[],\"audio\":[],\"subtitle\":[],\"data\":[]},\"diagnostics\":{\"descriptorDiagnostics\":[],\"publishDiagnostics\":[],\"parserDiagnostics\":[]}}",
+    "accepted": false
+  },
+  {
+    "name": "eventId範囲外",
+    "boundary": "PROGRAM",
+    "encoding": "UTF8",
+    "data": "{\"schema\":\"maleicacid.tv.program\",\"schemaVersion\":1,\"programKey\":{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16400,\"serviceId\":101,\"eventId\":65536},\"timing\":{\"startUtcMillis\":1730000000000,\"durationMillis\":1800000},\"source\":{\"pid\":18,\"tableId\":78,\"version\":12,\"sectionNumber\":0,\"lastSectionNumber\":1},\"cas\":{\"requiresCas\":false,\"source\":\"SI_SEMANTICS\"},\"ratings\":[],\"genres\":[{\"level1\":0,\"level2\":0,\"userNibble\":0,\"aribName\":\"ニュース／報道\",\"parseStatus\":\"OK\"}],\"series\":null,\"eventGroups\":[],\"linkage\":[],\"freeCaMode\":{\"raw\":0,\"scrambled\":false,\"parseStatus\":\"OK\"},\"extendedItems\":[],\"components\":{\"video\":[],\"audio\":[],\"subtitle\":[],\"data\":[]},\"diagnostics\":{\"descriptorDiagnostics\":[],\"publishDiagnostics\":[],\"parserDiagnostics\":[]}}",
+    "accepted": false
+  },
+  {
+    "name": "放送事実に製品判断が混入",
+    "boundary": "PROGRAM",
+    "encoding": "UTF8",
+    "data": "{\"schema\":\"maleicacid.tv.program\",\"schemaVersion\":1,\"programKey\":{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16400,\"serviceId\":101,\"eventId\":12345},\"timing\":{\"startUtcMillis\":1730000000000,\"durationMillis\":1800000},\"source\":{\"pid\":18,\"tableId\":78,\"version\":12,\"sectionNumber\":0,\"lastSectionNumber\":1},\"cas\":{\"requiresCas\":false,\"source\":\"SI_SEMANTICS\"},\"ratings\":[],\"genres\":[{\"level1\":0,\"level2\":0,\"userNibble\":0,\"aribName\":\"ニュース／報道\",\"parseStatus\":\"OK\"}],\"series\":null,\"eventGroups\":[],\"linkage\":[],\"freeCaMode\":{\"raw\":0,\"scrambled\":false,\"parseStatus\":\"OK\"},\"extendedItems\":[],\"components\":{\"video\":[{\"esPid\":288,\"streamType\":36,\"componentTag\":1,\"componentType\":0,\"codec\":\"HEVC\",\"parseStatus\":\"OK\",\"r51PlaybackSupported\":true}],\"audio\":[{\"esPid\":273,\"streamType\":17,\"componentTag\":2,\"componentType\":0,\"codec\":\"MPEG-4-AAC-LATM\",\"language\":\"jpn\",\"secondLanguage\":null,\"parseStatus\":\"OK\"}],\"subtitle\":[],\"data\":[]},\"diagnostics\":{\"descriptorDiagnostics\":[],\"publishDiagnostics\":[],\"parserDiagnostics\":[]}}",
+    "accepted": false
+  },
+  {
+    "name": "診断message上限超過",
+    "boundary": "PROGRAM",
+    "encoding": "UTF8",
+    "data": "{\"schema\":\"maleicacid.tv.program\",\"schemaVersion\":1,\"programKey\":{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16400,\"serviceId\":101,\"eventId\":12345},\"timing\":{\"startUtcMillis\":1730000000000,\"durationMillis\":1800000},\"source\":{\"pid\":18,\"tableId\":78,\"version\":12,\"sectionNumber\":0,\"lastSectionNumber\":1},\"cas\":{\"requiresCas\":false,\"source\":\"SI_SEMANTICS\"},\"ratings\":[],\"genres\":[{\"level1\":0,\"level2\":0,\"userNibble\":0,\"aribName\":\"ニュース／報道\",\"parseStatus\":\"OK\"}],\"series\":null,\"eventGroups\":[],\"linkage\":[],\"freeCaMode\":{\"raw\":0,\"scrambled\":false,\"parseStatus\":\"OK\"},\"extendedItems\":[],\"components\":{\"video\":[],\"audio\":[],\"subtitle\":[],\"data\":[]},\"diagnostics\":{\"descriptorDiagnostics\":[{\"schema\":\"maleicacid.tv.descriptorDiagnostic\",\"schemaVersion\":1,\"severity\":\"error\",\"code\":\"MalformedLength\",\"scope\":{\"pid\":18,\"tableId\":78,\"tableIdExtension\":null,\"version\":null,\"sectionNumber\":0,\"originalNetworkId\":null,\"transportStreamId\":null,\"serviceId\":null,\"eventId\":null},\"descriptor\":{\"tag\":77,\"name\":\"short_event_descriptor\",\"offset\":0,\"declaredLength\":6,\"actualRemainingLength\":3,\"parseStatus\":\"MalformedLength\",\"rawPrefixHex\":\"4d06ffffff\"},\"message\":\"あああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああああ\"}],\"publishDiagnostics\":[],\"parserDiagnostics\":[]}}",
+    "accepted": false
+  },
+  {
+    "name": "診断rawPrefix上限超過",
+    "boundary": "PROGRAM",
+    "encoding": "UTF8",
+    "data": "{\"schema\":\"maleicacid.tv.program\",\"schemaVersion\":1,\"programKey\":{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16400,\"serviceId\":101,\"eventId\":12345},\"timing\":{\"startUtcMillis\":1730000000000,\"durationMillis\":1800000},\"source\":{\"pid\":18,\"tableId\":78,\"version\":12,\"sectionNumber\":0,\"lastSectionNumber\":1},\"cas\":{\"requiresCas\":false,\"source\":\"SI_SEMANTICS\"},\"ratings\":[],\"genres\":[{\"level1\":0,\"level2\":0,\"userNibble\":0,\"aribName\":\"ニュース／報道\",\"parseStatus\":\"OK\"}],\"series\":null,\"eventGroups\":[],\"linkage\":[],\"freeCaMode\":{\"raw\":0,\"scrambled\":false,\"parseStatus\":\"OK\"},\"extendedItems\":[],\"components\":{\"video\":[],\"audio\":[],\"subtitle\":[],\"data\":[]},\"diagnostics\":{\"descriptorDiagnostics\":[{\"schema\":\"maleicacid.tv.descriptorDiagnostic\",\"schemaVersion\":1,\"severity\":\"error\",\"code\":\"MalformedLength\",\"scope\":{\"pid\":18,\"tableId\":78,\"tableIdExtension\":null,\"version\":null,\"sectionNumber\":0,\"originalNetworkId\":null,\"transportStreamId\":null,\"serviceId\":null,\"eventId\":null},\"descriptor\":{\"tag\":77,\"name\":\"short_event_descriptor\",\"offset\":0,\"declaredLength\":6,\"actualRemainingLength\":3,\"parseStatus\":\"MalformedLength\",\"rawPrefixHex\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"message\":\"short_event_descriptorの番組名長が本文の範囲を超えています\"}],\"publishDiagnostics\":[],\"parserDiagnostics\":[]}}",
+    "accepted": false
+  },
+  {
+    "name": "診断rawPrefix非16進",
+    "boundary": "PROGRAM",
+    "encoding": "UTF8",
+    "data": "{\"schema\":\"maleicacid.tv.program\",\"schemaVersion\":1,\"programKey\":{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16400,\"serviceId\":101,\"eventId\":12345},\"timing\":{\"startUtcMillis\":1730000000000,\"durationMillis\":1800000},\"source\":{\"pid\":18,\"tableId\":78,\"version\":12,\"sectionNumber\":0,\"lastSectionNumber\":1},\"cas\":{\"requiresCas\":false,\"source\":\"SI_SEMANTICS\"},\"ratings\":[],\"genres\":[{\"level1\":0,\"level2\":0,\"userNibble\":0,\"aribName\":\"ニュース／報道\",\"parseStatus\":\"OK\"}],\"series\":null,\"eventGroups\":[],\"linkage\":[],\"freeCaMode\":{\"raw\":0,\"scrambled\":false,\"parseStatus\":\"OK\"},\"extendedItems\":[],\"components\":{\"video\":[],\"audio\":[],\"subtitle\":[],\"data\":[]},\"diagnostics\":{\"descriptorDiagnostics\":[{\"schema\":\"maleicacid.tv.descriptorDiagnostic\",\"schemaVersion\":1,\"severity\":\"error\",\"code\":\"MalformedLength\",\"scope\":{\"pid\":18,\"tableId\":78,\"tableIdExtension\":null,\"version\":null,\"sectionNumber\":0,\"originalNetworkId\":null,\"transportStreamId\":null,\"serviceId\":null,\"eventId\":null},\"descriptor\":{\"tag\":77,\"name\":\"short_event_descriptor\",\"offset\":0,\"declaredLength\":6,\"actualRemainingLength\":3,\"parseStatus\":\"MalformedLength\",\"rawPrefixHex\":\"zz\"},\"message\":\"short_event_descriptorの番組名長が本文の範囲を超えています\"}],\"publishDiagnostics\":[],\"parserDiagnostics\":[]}}",
+    "accepted": false
+  },
+  {
+    "name": "診断PID範囲外",
+    "boundary": "PROGRAM",
+    "encoding": "UTF8",
+    "data": "{\"schema\":\"maleicacid.tv.program\",\"schemaVersion\":1,\"programKey\":{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16400,\"serviceId\":101,\"eventId\":12345},\"timing\":{\"startUtcMillis\":1730000000000,\"durationMillis\":1800000},\"source\":{\"pid\":18,\"tableId\":78,\"version\":12,\"sectionNumber\":0,\"lastSectionNumber\":1},\"cas\":{\"requiresCas\":false,\"source\":\"SI_SEMANTICS\"},\"ratings\":[],\"genres\":[{\"level1\":0,\"level2\":0,\"userNibble\":0,\"aribName\":\"ニュース／報道\",\"parseStatus\":\"OK\"}],\"series\":null,\"eventGroups\":[],\"linkage\":[],\"freeCaMode\":{\"raw\":0,\"scrambled\":false,\"parseStatus\":\"OK\"},\"extendedItems\":[],\"components\":{\"video\":[],\"audio\":[],\"subtitle\":[],\"data\":[]},\"diagnostics\":{\"descriptorDiagnostics\":[{\"schema\":\"maleicacid.tv.descriptorDiagnostic\",\"schemaVersion\":1,\"severity\":\"error\",\"code\":\"MalformedLength\",\"scope\":{\"pid\":8192,\"tableId\":78,\"tableIdExtension\":null,\"version\":null,\"sectionNumber\":0,\"originalNetworkId\":null,\"transportStreamId\":null,\"serviceId\":null,\"eventId\":null},\"descriptor\":{\"tag\":77,\"name\":\"short_event_descriptor\",\"offset\":0,\"declaredLength\":6,\"actualRemainingLength\":3,\"parseStatus\":\"MalformedLength\",\"rawPrefixHex\":\"4d06ffffff\"},\"message\":\"short_event_descriptorの番組名長が本文の範囲を超えています\"}],\"publishDiagnostics\":[],\"parserDiagnostics\":[]}}",
+    "accepted": false
+  },
+  {
+    "name": "診断version範囲外",
+    "boundary": "PROGRAM",
+    "encoding": "UTF8",
+    "data": "{\"schema\":\"maleicacid.tv.program\",\"schemaVersion\":1,\"programKey\":{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16400,\"serviceId\":101,\"eventId\":12345},\"timing\":{\"startUtcMillis\":1730000000000,\"durationMillis\":1800000},\"source\":{\"pid\":18,\"tableId\":78,\"version\":12,\"sectionNumber\":0,\"lastSectionNumber\":1},\"cas\":{\"requiresCas\":false,\"source\":\"SI_SEMANTICS\"},\"ratings\":[],\"genres\":[{\"level1\":0,\"level2\":0,\"userNibble\":0,\"aribName\":\"ニュース／報道\",\"parseStatus\":\"OK\"}],\"series\":null,\"eventGroups\":[],\"linkage\":[],\"freeCaMode\":{\"raw\":0,\"scrambled\":false,\"parseStatus\":\"OK\"},\"extendedItems\":[],\"components\":{\"video\":[],\"audio\":[],\"subtitle\":[],\"data\":[]},\"diagnostics\":{\"descriptorDiagnostics\":[{\"schema\":\"maleicacid.tv.descriptorDiagnostic\",\"schemaVersion\":1,\"severity\":\"error\",\"code\":\"MalformedLength\",\"scope\":{\"pid\":18,\"tableId\":78,\"tableIdExtension\":null,\"version\":32,\"sectionNumber\":0,\"originalNetworkId\":null,\"transportStreamId\":null,\"serviceId\":null,\"eventId\":null},\"descriptor\":{\"tag\":77,\"name\":\"short_event_descriptor\",\"offset\":0,\"declaredLength\":6,\"actualRemainingLength\":3,\"parseStatus\":\"MalformedLength\",\"rawPrefixHex\":\"4d06ffffff\"},\"message\":\"short_event_descriptorの番組名長が本文の範囲を超えています\"}],\"publishDiagnostics\":[],\"parserDiagnostics\":[]}}",
+    "accepted": false
+  },
+  {
+    "name": "診断extension負数",
+    "boundary": "PROGRAM",
+    "encoding": "UTF8",
+    "data": "{\"schema\":\"maleicacid.tv.program\",\"schemaVersion\":1,\"programKey\":{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16400,\"serviceId\":101,\"eventId\":12345},\"timing\":{\"startUtcMillis\":1730000000000,\"durationMillis\":1800000},\"source\":{\"pid\":18,\"tableId\":78,\"version\":12,\"sectionNumber\":0,\"lastSectionNumber\":1},\"cas\":{\"requiresCas\":false,\"source\":\"SI_SEMANTICS\"},\"ratings\":[],\"genres\":[{\"level1\":0,\"level2\":0,\"userNibble\":0,\"aribName\":\"ニュース／報道\",\"parseStatus\":\"OK\"}],\"series\":null,\"eventGroups\":[],\"linkage\":[],\"freeCaMode\":{\"raw\":0,\"scrambled\":false,\"parseStatus\":\"OK\"},\"extendedItems\":[],\"components\":{\"video\":[],\"audio\":[],\"subtitle\":[],\"data\":[]},\"diagnostics\":{\"descriptorDiagnostics\":[{\"schema\":\"maleicacid.tv.descriptorDiagnostic\",\"schemaVersion\":1,\"severity\":\"error\",\"code\":\"MalformedLength\",\"scope\":{\"pid\":18,\"tableId\":78,\"tableIdExtension\":-1,\"version\":null,\"sectionNumber\":0,\"originalNetworkId\":null,\"transportStreamId\":null,\"serviceId\":null,\"eventId\":null},\"descriptor\":{\"tag\":77,\"name\":\"short_event_descriptor\",\"offset\":0,\"declaredLength\":6,\"actualRemainingLength\":3,\"parseStatus\":\"MalformedLength\",\"rawPrefixHex\":\"4d06ffffff\"},\"message\":\"short_event_descriptorの番組名長が本文の範囲を超えています\"}],\"publishDiagnostics\":[],\"parserDiagnostics\":[]}}",
+    "accepted": false
+  },
+  {
+    "name": "CS110のTSID選択",
+    "boundary": "CHANNEL",
+    "encoding": "UTF8",
+    "data": "{\"schema\":\"maleicacid.tv.channel\",\"schemaVersion\":1,\"serviceKey\":{\"originalNetworkId\":4,\"transportStreamId\":16400,\"serviceId\":101},\"tune\":{\"deliverySystem\":\"ISDB_S\",\"frequencyHz\":12413000000,\"streamId\":16400,\"streamIdType\":\"TSID\",\"satelliteBand\":\"110CS\"},\"cas\":{\"requiresCas\":false},\"diagnostics\":{}}",
+    "accepted": false
+  },
+  {
+    "name": "周波数0",
+    "boundary": "CHANNEL",
+    "encoding": "UTF8",
+    "data": "{\"schema\":\"maleicacid.tv.channel\",\"schemaVersion\":1,\"serviceKey\":{\"originalNetworkId\":4,\"transportStreamId\":16400,\"serviceId\":101},\"tune\":{\"deliverySystem\":\"ISDB_S\",\"frequencyHz\":0,\"streamId\":null,\"streamIdType\":\"NONE\",\"satelliteBand\":\"110CS\"},\"cas\":{\"requiresCas\":false},\"diagnostics\":{}}",
+    "accepted": false
+  },
+  {
+    "name": "raw_descriptor_facts_preserve_unsupported_country",
+    "boundary": "PROGRAM",
+    "encoding": "UTF8",
+    "data": "{\"schema\": \"maleicacid.tv.program\", \"schemaVersion\": 1, \"programKey\": {\"kind\": \"arib-event-v1\", \"originalNetworkId\": 4, \"transportStreamId\": 16400, \"serviceId\": 101, \"eventId\": 12345}, \"timing\": {\"startUtcMillis\": 1730000000000, \"durationMillis\": 1800000}, \"source\": {\"pid\": 18, \"tableId\": 78, \"version\": 12, \"sectionNumber\": 0, \"lastSectionNumber\": 1}, \"cas\": {\"requiresCas\": false, \"source\": \"SI_SEMANTICS\"}, \"ratings\": [], \"genres\": [{\"level1\": 0, \"level2\": 0, \"userNibble\": 0, \"aribName\": \"ニュース／報道\", \"parseStatus\": \"OK\"}], \"series\": null, \"eventGroups\": [], \"linkage\": [], \"freeCaMode\": {\"raw\": 0, \"scrambled\": false, \"parseStatus\": \"OK\"}, \"extendedItems\": [], \"components\": {\"video\": [], \"audio\": [], \"subtitle\": [], \"data\": []}, \"diagnostics\": {\"descriptorDiagnostics\": [], \"publishDiagnostics\": [], \"parserDiagnostics\": [], \"descriptorFacts\": {\"parentalRatingDescriptors\": [{\"entries\": [{\"countryCode\": \"ÿ\\u0000X\", \"rawRatingByte\": 143, \"parseStatus\": \"UnsupportedValue\"}], \"rawDescriptorHex\": \"5504ff00588f\", \"parseStatus\": \"UnsupportedValue\"}], \"unknownDescriptors\": [{\"tag\": 254, \"rawDescriptorHex\": \"fe03123456\"}]}}}",
+    "accepted": true
+  }
+]

@@ -3,10 +3,11 @@ use std::time::Instant;
 use super::{
     demux_runtime_error_to_hal, DescrambleFailure, DescramblePacketDecision, DescramblePacketFlow,
     FilterEventDeliverySnapshot, FrontendRuntimeId, HalError, HalInvalidStateKind,
-    PipelineBoundaryReason, PipelineReport, PlaybackConsumeReport, StreamBoundaryReport,
-    TsInputOrigin, TsPacketValidationError, TunerServiceRuntime, ValidatedTsPacket, TS_PACKET_SIZE,
+    PipelineBoundaryReason, PipelineReport, StreamBoundaryReport, TsInputOrigin,
+    TsPacketValidationError, TunerServiceRuntime, ValidatedTsPacket, TS_PACKET_SIZE,
 };
 use crate::registry::ResolvedDescramblerPacketFlow;
+use maleicacid_tuner_hal2_demux::PlaybackConsumeReport;
 
 fn descramble_failure_for_ts_validation_error(error: TsPacketValidationError) -> DescrambleFailure {
     match error {
@@ -158,7 +159,6 @@ impl TunerServiceRuntime {
             self.record_descrambler_packet_diagnostics(demux_id.0, demux_generation, &report);
             reports.push(report);
         }
-        crate::worker_runtime::notify_filter_delivery_change();
         Ok(reports)
     }
 

@@ -50,6 +50,7 @@ data class ProgramDescriptors(
     val freeCaMode: AribFreeCaMode? = null,
     val series: AribSeries? = null,
     val descriptorDiagnosticsCanonicalJson: String = "[]",
+    val descriptorFactsCanonicalJson: String? = null,
     val parentalRatings: List<AribParentalRating> = emptyList(),
     val components: AribComponents = AribComponents(),
 )

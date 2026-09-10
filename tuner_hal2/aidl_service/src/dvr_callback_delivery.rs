@@ -1,7 +1,6 @@
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Condvar, Mutex, Weak,
-};
+#[cfg(test)]
+use std::sync::Mutex;
+use std::sync::{Arc, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -205,7 +204,7 @@ impl DvrStatusNotifierSupervisor {
         for job in state.reaping_mut().values_mut() {
             job.restart_requested = false;
         }
-        let active = core::mem::take(&mut state.active_mut());
+        let active = core::mem::take(state.active_mut());
         for (key, notifier) in active {
             signal_dvr_status_notifier_stop(&notifier);
             state.reaping_mut().insert(
@@ -440,7 +439,7 @@ fn consume_playback_dvr_once(
             guard.consume_playback_dvr_for_object(handle.object_id(), handle.generation())?;
         guard.filter_event_delivery_snapshots_for_playback_report(&report)
     };
-    maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change();
+    maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change(&runtime)?;
     let _recorded_failure = dispatch_filter_event_snapshots(context, events);
     Ok(())
 }
@@ -704,7 +703,7 @@ fn deliver_dvr_status_event(
 fn dvr_status_notifier_loop(
     context: SharedAidlServiceContext,
     handle: AidlObjectHandle,
-    cancel: Arc<AtomicBool>,
+    cancel: maleicacid_tuner_hal2_service_runtime::WorkerContext,
 ) -> Result<(), HalError> {
     let runtime = context.runtime();
     let initial_snapshot = dvr_status_metadata_snapshot(&runtime, handle)?;
@@ -720,7 +719,7 @@ fn dvr_status_notifier_loop(
         callback_delivery_active = !initial_preflight.should_skip_delivery();
     }
     loop {
-        if cancel.load(Ordering::Relaxed) {
+        if cancel.stop_requested() {
             return Ok(());
         }
         if initial_snapshot.is_playback {
@@ -767,14 +766,23 @@ fn dvr_status_notifier_loop(
         } else {
             snapshot.interval_ms
         };
-        thread::park_timeout(Duration::from_millis(interval_ms));
+        cancel.wait_until(Some(
+            Instant::now()
+                .checked_add(Duration::from_millis(interval_ms))
+                .ok_or_else(|| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "DVR status deadline overflow",
+                    )
+                })?,
+        ))?;
     }
 }
 
 fn run_dvr_status_notifier_with_terminal_diagnostic(
     context: SharedAidlServiceContext,
     handle: AidlObjectHandle,
-    cancel: Arc<AtomicBool>,
+    cancel: maleicacid_tuner_hal2_service_runtime::WorkerContext,
 ) -> Result<(), HalError> {
     let terminal_error = match dvr_status_notifier_loop(Arc::clone(&context), handle, cancel) {
         Ok(()) => {
@@ -916,7 +924,7 @@ fn mark_dvr_notifier_service_critical(context: &SharedAidlServiceContext) {
     let runtime = context.runtime();
     if let Ok(mut runtime) = runtime.lock() {
         runtime.mark_service_critical();
-    }
+    };
 }
 
 fn record_dvr_notifier_cleanup_control_failure(
@@ -935,8 +943,15 @@ fn fence_dvr_notifier_owner_after_cleanup_failure(
     if dvr_notifier_owner_generation_is_fenced(context, handle) {
         return;
     }
-    if let Err(error) = crate::object_runtime::drop_leak_object(context, handle) {
-        record_dvr_notifier_cleanup_control_failure(context, handle, error);
+    if let Err(status) = crate::object_runtime::drop_leak_object(context, handle) {
+        record_dvr_notifier_cleanup_control_failure(
+            context,
+            handle,
+            HalError::cleanup_failed(
+                "DVR notifier owner fencing",
+                format!("drop leak cleanup failed: {status:?}"),
+            ),
+        );
         return;
     }
     if !dvr_notifier_owner_generation_is_fenced(context, handle) {
@@ -1368,7 +1383,9 @@ mod tests {
         let state = Arc::new(CallbackState::default());
         let callback = new_test_callback(Arc::clone(&state));
         context.clear_owner_callbacks_for_test(handle).unwrap();
-        context.retain_dvr_callback(handle, &callback).unwrap();
+        context
+            .retain_dvr_callback_for_test(handle, &callback)
+            .unwrap();
         record_dvr_callback_registration_for_test(&runtime, handle);
 
         deliver_started_dvr_status(&context, handle).unwrap();
@@ -1393,7 +1410,9 @@ mod tests {
         state.fail_delivery.store(true, Ordering::Relaxed);
         let callback = new_test_callback(Arc::clone(&state));
         context.clear_owner_callbacks_for_test(handle).unwrap();
-        context.retain_dvr_callback(handle, &callback).unwrap();
+        context
+            .retain_dvr_callback_for_test(handle, &callback)
+            .unwrap();
         record_dvr_callback_registration_for_test(&runtime, handle);
 
         assert!(deliver_started_dvr_status(&context, handle).is_err());

@@ -113,7 +113,7 @@ class ChannelScanController(
             if (candidate.kind == ScanCandidateKind.ISDB_S_BS && candidate.streamSelector == com.maleicacid.tvinput.common.StreamSelector.NONE) {
                 val discovery = tunerController.discoverIsdbsStreamIds(candidate)
                 val discovered = JapanIsdbScanPlan.explicitBsCandidatesFromScan(candidate, discovery.streamIds)
-                if (discovered.isNotEmpty()) {
+                if (discovery.success && discovered.isNotEmpty()) {
                     discovered
                 } else if (discovery.resultCode == Tuner.RESULT_UNAVAILABLE) {
                     val versioned = JapanIsdbScanPlan.versionedBsCandidatesForUnsupportedDynamicDiscovery(candidate)
@@ -164,7 +164,7 @@ class ChannelScanController(
     )
 
     fun startBackgroundChannelMaintenance(): ScanResult {
-        val channels = existingMaintenanceChannels()
+        val channels = tvProviderWriter.existingChannelsResult().getOrThrow()
         return runMaintenanceScan(
             candidates = maintenanceCandidates(channels),
             mode = PublishMode.BACKGROUND_CHANNEL_MAINTENANCE,
@@ -245,7 +245,7 @@ class ChannelScanController(
         val caMetadata = caMapper.expandProgramLevelToElementaryStreams(serviceScopedCa + catCa, servicesForCas)
         val pmtPids = transaction.pmtPids.values.toSet()
         val ecmPids = caMetadata.mapNotNull { it.ecmPid }.toSet()
-        val emmPids = caMetadata.mapNotNull { it.emmPid }.toSet()
+        val emmPids = caMetadata.filter { CasController.SupportedCasSystemIds.supportsEmm(it.caSystemId) }.mapNotNull { it.emmPid }.toSet()
         tunerController.openDynamicFiltersFromCurrentSi(pmtPids, ecmPids, emmPids)
         if (caMetadata.isEmpty()) {
             casController.clearForClearService()
@@ -297,7 +297,7 @@ class ChannelScanController(
             ChannelRecord(
                 serviceKey = service.serviceKey,
                 displayNumber = ChannelNumberingPolicy.displayNumber(service, remoteKey, candidate),
-                displayName = service.name.ifEmpty { "service-${service.serviceKey.originalNetworkId}-${service.serviceKey.transportStreamId}-${service.serviceKey.serviceId}" },
+                displayName = service.name?.takeIf { it.isNotEmpty() } ?: run { "service-${service.serviceKey.originalNetworkId}-${service.serviceKey.transportStreamId}-${service.serviceKey.serviceId}" },
                 frequencyHz = candidate.frequencyHz,
                 deliverySystem = candidate.deliverySystem,
                 streamSelector = candidate.streamSelector,
@@ -458,12 +458,6 @@ class ChannelScanController(
             registrationReadyServices = finalCounts.registrationReady,
         )
     }
-
-    private fun existingMaintenanceChannels(): List<ChannelRecord> =
-        tvProviderWriter.existingChannelsResult().getOrElse { error ->
-            Log.w(LogTags.TIS, "既存 channel 復元失敗のため boot/background scan candidate を作成できません", error)
-            emptyList()
-        }
 
     private fun maintenanceCandidates(channels: List<ChannelRecord>): List<ScanCandidate> = channels
         .mapNotNull(::scanCandidateFromChannel)

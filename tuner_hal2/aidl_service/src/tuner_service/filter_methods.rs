@@ -91,7 +91,8 @@ impl IFilter for FilterAidlObject {
             AidlMethodCall::FilterClose,
         );
         if result.is_ok() {
-            maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change();
+            maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change(&self.runtime())
+                .map_err(status_from_hal_error)?;
         }
         result
     }
@@ -113,7 +114,8 @@ impl IFilter for FilterAidlObject {
             },
         );
         if result.is_ok() {
-            maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change();
+            maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change(&self.runtime())
+                .map_err(status_from_hal_error)?;
         }
         result
     }
@@ -201,7 +203,8 @@ impl IFilter for FilterAidlObject {
             },
         );
         if result.is_ok() {
-            maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change();
+            maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change(&self.runtime())
+                .map_err(status_from_hal_error)?;
         }
         result
     }
@@ -220,7 +223,8 @@ impl IFilter for FilterAidlObject {
             },
         );
         if result.is_ok() {
-            maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change();
+            maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change(&self.runtime())
+                .map_err(status_from_hal_error)?;
         }
         result
     }
@@ -239,7 +243,8 @@ impl IFilter for FilterAidlObject {
             },
         );
         if result.is_ok() {
-            maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change();
+            maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change(&self.runtime())
+                .map_err(status_from_hal_error)?;
         }
         result
     }
@@ -348,7 +353,8 @@ impl IFilter for FilterAidlObject {
             },
         );
         if result.is_ok() {
-            maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change();
+            maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change(&self.runtime())
+                .map_err(status_from_hal_error)?;
         }
         result
     }

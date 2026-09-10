@@ -5,6 +5,29 @@ import org.json.JSONObject
 import org.junit.Test
 
 class ProviderDataAssetsR51ContractTest {
+    @Test fun sharedBoundaryCorpusAgreesThroughTheProductionJniBridge() {
+        val cases = org.json.JSONArray(assetText("provider_data_boundary_v1/cases.json"))
+        for (index in 0 until cases.length()) {
+            val case = cases.getJSONObject(index)
+            val data = case.getString("data")
+            val bytes = when (val encoding = case.getString("encoding")) {
+                "UTF8" -> data.toByteArray(Charsets.UTF_8)
+                "HEX" -> data.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+                else -> error("未知のfixture符号化: $encoding")
+            }
+            val expected = case.getBoolean("accepted")
+            val accepted = when (val boundary = case.getString("boundary")) {
+                "PROGRAM" -> {
+                    check((com.maleicacid.tvinput.aribsi.ProviderDataBridge.extractProgramKeyResult(bytes) != null) == expected) { case.getString("name") }
+                    runCatching { com.maleicacid.tvinput.aribsi.ProviderDataBridge.normalizeProgramProviderData(bytes) }.isSuccess
+                }
+                "CHANNEL" -> com.maleicacid.tvinput.aribsi.ProviderDataBridge.decodeChannelProviderData(bytes) != null
+                else -> error("未知のfixture境界: $boundary")
+            }
+            check(accepted == expected) { case.getString("name") }
+        }
+    }
+
     @Test fun minimalProviderDataFixtureKeepsProgramProviderDataV1Shape() {
         val providerData = providerDataAsset("minimal_clear_program.json")
 
@@ -58,9 +81,12 @@ class ProviderDataAssetsR51ContractTest {
     private fun providerDataAsset(name: String): JSONObject =
         JSONObject(assetText("program_provider_data_v1/$name"))
 
-    private fun assetText(path: String): String =
-        InstrumentationRegistry.getInstrumentation().context.assets
+    private fun assetText(path: String): String {
+        val hostAssets = System.getProperty("maleicacid.tis.testAssetsRoot")
+        if (hostAssets != null) return java.io.File(hostAssets, path).readText(Charsets.UTF_8)
+        return InstrumentationRegistry.getInstrumentation().context.assets
             .open(path)
             .bufferedReader(Charsets.UTF_8)
             .use { it.readText() }
+    }
 }

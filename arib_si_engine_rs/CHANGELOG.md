@@ -1,3 +1,57 @@
+# r51_pr85_review_20260909
+
+- EITの媒体別公開条件をRustの受理経路から除き、TISの公開時判定へ移した。更新区間へ元section番号を渡し、衛星の除外sectionから番組削除を行わない。
+- EITの表識別子、版、現用・次表、受信済み・欠落section、構造検査結果、完成・不整合を通常bulk JNIへ追加した。現用と次表を分け、版更新時は前版の受信状態を継承しない。
+- 未知記述子のUnsupportedValueと構文破損を区別し、診断を元の分類のまま保持する。構文破損だけが削除を抑止する。
+- DiscoveryのPartialを必須TableRequirementStatusの完成有無から導出し、BATの観測済みtransport範囲を任意要件として返す。
+- 反例試験を追加。手元にRustコンパイラがなくRust試験は未実施。Android build、atest、CTS/VTS、実波も未実施。
+
+# r51_pr85_diagnostic_language
+
+- SI U-24の残存するEIT・記述子診断本文を日本語へ統一。構造化status・field名は維持し、保存経路と共通fixtureも同時更新する。
+
+- SI U-24: provider-data上限超過結果とVTS hostの入力エラーを日本語へ統一する。CLIの16進入力はASCII検証後に分割し、多byte文字の途中をsliceしてpanicしない。
+- VTS hostのCRC検査も既に解析したSectionHeaderを使用する。
+- Rust workspace全target試験が成功した（core150、JNI13、VTS host入力境界1）。Android実機試験は未実施。
+
+# r51_pr85_service_semantic_boundary
+
+- SI U-09: 通常bulkのservices/CA/PMT対応表を廃止し、ServiceSemanticFactsへサービス名、Provider名、PMT/PCR値、service-scoped CA descriptorを集約する。CATはサービスに属さない独立fact、transportはmetadataとSDT actual範囲を持つ意味snapshotとして渡す。
+- SI U-10/U-11: NIT由来network/TS名・remote keyをJNIへ出し、service/provider/transport名の未取得nullを空文字へ変換しない。
+- SI U-13/SI-012の通常codec生成: PMT stream_typeから既存codec名とkindを求める処理をpure coreへ移す。decoderの製品対応判定はTISに残す。ALS等の追加signaling認識はこの変更の対象外。
+- Rust workspace全target check、SI core150件、JNI13件、Kotlin本番/試験コンパイルと実JNI host JUnit147件が成功した。SDT更新によるnull/空文字の差とNIT metadataの通常snapshotへの伝達を確認した。Android実機試験は未実施。
+
+# r51_pr85_raw_descriptor_publication
+
+- SI U-03: parental_ratingの長さ不正・切断では正常ratingを部分採用しない。未対応country byteを置換せずdescriptor単位のentries・raw全体・解析状態へ保持し、正常ratingへの昇格を抑止する。通常ratingのparseStatusも元のdescriptor状態から決める。
+- SI U-19: parental/unknown descriptor全体の構造化事実をRust生成JSONとしてbulk、Kotlin、provider-dataまで透過保持する。Rust型とJSON Schemaで値域・raw長・構造を検証し、容量上限時には診断として削除数を残す。
+- SI-001: event診断要約に各descriptor群の数と主要値を出し、event group/linkage/unknownを件数だけに縮約しない。
+- SI core150件、JNI13件、JSON Schema共通corpus16件、実JNIを使うKotlin JUnit145件が成功した。正常・不正長・未対応country・切断を混在させた実EITと80-byte未知descriptorの保存/再正規化を確認した。Android実機試験は未実施。
+
+# r51_pr85_pmt_and_clock_facts
+
+- SI U-08: descriptor loop構文検査をpure coreへ移し、JNIとPMT解析で共有する。不正PMTの部分ES/PCR/CAを正常snapshotへ昇格せず、required PMT完了はPCR有無から独立したPMT構文状態で判定する。
+- SI U-12: PMTが構文的に成立してもprogram/ESの不正CA descriptorがあればcaDescriptorsResolvedをfalseとし、原因診断を残す。SI U-06: Data Component Timing=11のraw値を保持し、reserved診断を意味snapshotへ渡す。
+- SI U-22/SI-015: TDT/TOT解析をpure coreへ移し、JNI入口で得た共通SectionHeaderを長さ・CRC検証まで共有する。TOTのdescriptor loop構文も検証し、壊れた時計事実を公開しない。
+- SI core単体試験149件、JNI単体試験13件が成功した（時計試験3件をJNIからcoreへ移動し、回帰試験5件を追加）。Android実機試験は未実施。
+
+# r51_pr85_provider_boundary_corpus
+
+- SI U-14の既知欄: descriptor診断のmessage文字数、rawPrefixHexの長さ・16進形式、SectionScope識別子の値域を保存境界で検証する。生成側もmessage上限を守る。未知scope keyの設計変更は別のstacked PRで扱う。
+- SI-014: 不正UTF-8、JSON破損、必須欄欠落、禁止派生欄、診断上限、識別子・周波数・CS110 selectorの15ケースをRust、実JNIを使用するKotlin、JSON Schemaで共用し、fixtureのbyte一致をCIで検査する。
+- SI core単体試験141件、JNI単体試験16件、共通corpusのJSON Schema検証15件、TIS host JUnit144件が成功した。Android実機試験は未実施。
+
+# r51_pr85_descriptor_language_channel_validation
+
+- SI U-25: component/audio componentのISO 639固定欄を3文字のASCII英字として検証する。不正な主・副言語は正常metadataへ昇格せず、元のdescriptor範囲とUnsupportedValue診断を残す。長さ不正とは区別する。
+- SI U-18: CS110のstream selectorをNONE/nullへ限定し、TSIDとの組合せをrequest・stored境界とJSON Schemaで拒否する。
+- Rust 1.81のSI core単体試験140件、JNI側単体試験16件が成功した。Android実機試験は未実施。
+
+# r51_pr85_convention_reference
+
+- SI U-23: READMEから存在しないmodule固有CODE_CONVENTION.mdへの参照を除き、実在するGLOBAL_CODE_CONVENTION.mdへ接続する。
+- 参照先が実在することを確認した。
+
 # r50ef_review_followup_4
 
 - Program provider-dataから派生表示値`freeCaMode.text`とrelease固有component診断を除去し、production builder出力とschema検証fixtureを同じ値へ固定した。

@@ -5,12 +5,10 @@ use super::watermark_classifier::{
     WatermarkClassifier, WatermarkDecision, WatermarkPolicy, WatermarkQueueSnapshot,
 };
 
-#[cfg(test)]
-use maleicacid_tuner_hal2_common::{
-    TsPacketBufferDrain, TsPacketCompletionBuffer, TS_PACKET_SIZE,
-};
 #[cfg(not(test))]
 use maleicacid_tuner_hal2_common::TS_PACKET_SIZE;
+#[cfg(test)]
+use maleicacid_tuner_hal2_common::{TsPacketBufferDrain, TsPacketCompletionBuffer, TS_PACKET_SIZE};
 
 const DVR_STATUS_BIT_0: i32 = 1 << 0;
 const DVR_STATUS_BIT_1: i32 = 1 << 1;
@@ -139,11 +137,7 @@ pub struct PlaybackFlushDiagnostic {
 impl PlaybackFlushDiagnostic {
     fn record(&mut self, dropped_bytes: usize) {
         let dropped_bytes = u64::try_from(dropped_bytes).unwrap_or(u64::MAX);
-        PlaybackStats::add_counter(
-            &mut self.flush_count,
-            1,
-            &mut self.counter_saturated,
-        );
+        PlaybackStats::add_counter(&mut self.flush_count, 1, &mut self.counter_saturated);
         PlaybackStats::add_counter(
             &mut self.total_dropped_bytes,
             dropped_bytes,
@@ -177,11 +171,11 @@ pub struct DvrRuntimeSnapshot {
     pub status_check_interval_ms: u64,
     pub queue_present: bool,
     #[cfg(test)]
-    pub playback_assembler_present: bool,
+    pub(crate) playback_assembler_present: bool,
     #[cfg(test)]
-    pub playback_completion: TsPacketCompletionBuffer,
+    playback_completion: TsPacketCompletionBuffer,
     #[cfg(test)]
-    pub playback_processing_buffer: Vec<u8>,
+    playback_processing_buffer: Vec<u8>,
     pub playback_stats: PlaybackStats,
     pub playback_flush_diagnostic: PlaybackFlushDiagnostic,
     pub attached_record_filters: BTreeSet<i32>,
@@ -232,7 +226,7 @@ pub struct DvrRuntime {
 
 impl DvrRuntime {
     #[cfg(test)]
-    pub(crate) fn new(dvr_id: i32, kind: DvrKind, generation: u64) -> Self {
+    pub(super) fn new(dvr_id: i32, kind: DvrKind, generation: u64) -> Self {
         Self::new_open_request(dvr_id, kind, generation, 0, false)
     }
     pub(crate) fn new_open_request(
@@ -290,9 +284,6 @@ impl DvrRuntime {
     }
     pub fn buffer_size(&self) -> i32 {
         self.buffer_size
-    }
-    pub fn queue_present(&self) -> bool {
-        self.queue_present
     }
     pub fn allows_queue_desc(&self) -> bool {
         matches!(
@@ -382,31 +373,25 @@ impl DvrRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn install_test_playback_processing_buffer(&mut self, buffer: Vec<u8>) {
+    pub(super) fn install_test_playback_processing_buffer(&mut self, buffer: Vec<u8>) {
         self.playback_assembler_present = matches!(self.kind, DvrKind::Playback);
         self.playback_processing_buffer = buffer;
     }
 
-    pub fn clear_queue_marker(&mut self) -> bool {
-        let had_queue = self.queue_present;
-        self.queue_present = false;
-        had_queue
-    }
-
     #[cfg(test)]
-    pub fn push_playback_bytes(&mut self, data: &[u8]) -> TsPacketBufferDrain {
+    pub(super) fn push_playback_bytes(&mut self, data: &[u8]) -> TsPacketBufferDrain {
         self.playback_completion.push(data)
     }
     #[cfg(test)]
-    pub fn take_playback_processing_buffer(&mut self) -> Vec<u8> {
+    pub(super) fn take_playback_processing_buffer(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.playback_processing_buffer)
     }
     #[cfg(test)]
-    pub fn restore_playback_processing_buffer(&mut self, buffer: Vec<u8>) {
+    pub(super) fn restore_playback_processing_buffer(&mut self, buffer: Vec<u8>) {
         self.playback_processing_buffer = buffer;
     }
     #[cfg(test)]
-    pub fn drain_playback_completion_for_boundary(&mut self) -> usize {
+    pub(super) fn drain_playback_completion_for_boundary(&mut self) -> usize {
         let drain = self.playback_completion.drain_for_boundary();
         drain
             .packets
@@ -416,9 +401,6 @@ impl DvrRuntime {
     }
     pub fn playback_stats(&self) -> PlaybackStats {
         self.playback_stats
-    }
-    pub fn playback_flush_diagnostic(&self) -> PlaybackFlushDiagnostic {
-        self.playback_flush_diagnostic
     }
     pub fn note_playback_consume(
         &mut self,

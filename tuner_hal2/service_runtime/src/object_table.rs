@@ -263,6 +263,7 @@ impl RuntimeObjectTable {
             .ok_or(RuntimeObjectTableError::MissingObject { object_id })
     }
 
+    #[cfg(test)]
     pub fn begin_close_cascade(
         &mut self,
         object_id: AidlObjectId,
@@ -293,6 +294,12 @@ impl RuntimeObjectTable {
                     changed.push(entry.clone());
                 }
                 RuntimeObjectLifecycle::Closed | RuntimeObjectLifecycle::Quarantined => {}
+                RuntimeObjectLifecycle::Prepared => {
+                    return Err(RuntimeObjectTableError::InvalidLifecycle {
+                        object_id: target_id,
+                        lifecycle: entry.lifecycle,
+                    });
+                }
             }
         }
         Ok(changed)
@@ -360,8 +367,7 @@ impl RuntimeObjectTable {
         let lifecycle = self.entry_checked_any(object_id, generation)?.lifecycle;
         if !matches!(
             lifecycle,
-            RuntimeObjectLifecycle::Closing { .. }
-                | RuntimeObjectLifecycle::CleanupPending { .. }
+            RuntimeObjectLifecycle::Closing { .. } | RuntimeObjectLifecycle::CleanupPending { .. }
         ) {
             return Err(RuntimeObjectTableError::InvalidLifecycle {
                 object_id,

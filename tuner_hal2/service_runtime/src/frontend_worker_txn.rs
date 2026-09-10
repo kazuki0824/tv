@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
-#[cfg(test)]
 use std::sync::MutexGuard;
-use std::sync::{Arc, Mutex, Weak};
-use std::thread;
+use std::sync::{mpsc, Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use crate::cleanup_execution::{
@@ -18,19 +16,22 @@ use crate::{
     start_frontend_demux_live_pump_from_reader, TunerServiceRuntime,
 };
 use maleicacid_tuner_hal2_common::{
-    compose_primary_cleanup_failure, FrontendBackendKind, FrontendDevicePath,
+    compose_primary_cleanup_failure, FirstErrorCollector, FrontendBackendKind, FrontendDevicePath,
     FrontendIsdbtPartialReceptionRequirement, FrontendScanMode, FrontendSystem,
     FrontendTuneRequest, HalError, HalErrorDetail, HalInternalKind, HalInvalidStateKind,
 };
+#[cfg(test)]
 use maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackToken;
+#[cfg(test)]
+use maleicacid_tuner_hal2_device::FrontendRuntimeSnapshot;
 use maleicacid_tuner_hal2_device::{
     FrontendBackendSession, FrontendBackendSubmitFailure, FrontendBackendSubmitTicket,
     FrontendBackendSubmitWait, FrontendBackendTunePlan, FrontendLivePumpJoinOutcome,
-    FrontendLivePumpOwner, FrontendRuntimeSnapshot, FrontendScanPhase, FrontendSignalState,
+    FrontendLivePumpOwner, FrontendScanPhase, FrontendSignalState,
     FrontendTmccPartialReceptionObservation, FrontendTmccTsidListObservation,
     FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
-    FrontendWorkerStartError, FrontendWorkerStopOutcome,
-    FrontendWorkerStopPoll, FrontendWorkerStopTicket,
+    FrontendWorkerStartError, FrontendWorkerStopOutcome, FrontendWorkerStopPoll,
+    FrontendWorkerStopTicket,
 };
 use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 
@@ -327,7 +328,8 @@ impl FrontendWorkerReaperHandle {
             move |job: FrontendWorkerReaperJob,
                   pending: Arc<
                 Mutex<BTreeMap<(i32, FrontendWorkerKind), Option<FrontendWorkerKind>>>,
-            >| {
+            >,
+                  _worker: crate::worker_runtime::WorkerContext| {
                 job.run(&runtime, pending.as_ref(), deadline);
             },
         );
@@ -400,7 +402,9 @@ fn ensure_frontend_worker_reaper(
     Ok(candidate)
 }
 
+#[cfg(test)]
 type DemuxRollbackTokenList = Vec<(crate::registry::DemuxRuntimeId, DemuxRuntimeRollbackToken)>;
+#[cfg(test)]
 type SharedDemuxRollbackTokenList = Arc<Mutex<Option<DemuxRollbackTokenList>>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -632,6 +636,7 @@ impl FrontendWorkerCleanupStepOutcome {
         Self::RestoreFrontendSnapshot { target, result }
     }
 
+    #[cfg(test)]
     fn take_demux_rollback_tokens(
         target: FrontendWorkerCleanupTarget,
         result: Result<(), HalError>,
@@ -639,6 +644,7 @@ impl FrontendWorkerCleanupStepOutcome {
         Self::TakeDemuxRollbackTokens { target, result }
     }
 
+    #[cfg(test)]
     fn restore_bound_demuxes(
         target: FrontendWorkerCleanupTarget,
         result: Result<(), HalError>,
@@ -922,10 +928,12 @@ fn record_frontend_cleanup_diagnostic_after_terminal(
 
 type BoundDemuxGenerationSnapshot = Vec<(crate::registry::DemuxRuntimeId, u64)>;
 
+#[cfg(test)]
 fn share_demux_rollback_tokens(tokens: DemuxRollbackTokenList) -> SharedDemuxRollbackTokenList {
     Arc::new(Mutex::new(Some(tokens)))
 }
 
+#[cfg(test)]
 fn take_demux_rollback_tokens(
     tokens: &SharedDemuxRollbackTokenList,
     context: &'static str,
@@ -1002,6 +1010,7 @@ fn frontend_worker_stop_outcome_generation(outcome: &FrontendWorkerStopOutcome) 
     }
 }
 
+#[cfg(test)]
 fn bound_demux_generation_snapshot(
     tokens: &DemuxRollbackTokenList,
 ) -> BoundDemuxGenerationSnapshot {
@@ -1037,6 +1046,7 @@ fn bound_demux_generations_are_fenced_at_or_after(
     })
 }
 
+#[cfg(test)]
 fn ensure_frontend_join_snapshot_still_matches(
     guard: &TunerServiceRuntime,
     frontend_id: i32,
@@ -1398,100 +1408,6 @@ fn finish_frontend_worker_rollback_report(
     }
 }
 
-fn restore_frontend_state_after_primary_failure(
-    guard: &mut TunerServiceRuntime,
-    frontend_id: i32,
-    frontend_snapshot: FrontendRuntimeSnapshot,
-    demux_rollback_tokens: DemuxRollbackTokenList,
-    primary: HalError,
-    context: &'static str,
-    kind: FrontendWorkerCleanupDiagnosticKind,
-    target: FrontendWorkerCleanupTarget,
-    replacement_context: Option<FrontendWorkerReplacementRollbackContext>,
-) -> HalError {
-    let sink = Ok(guard.frontend_worker_cleanup_diagnostic_sink());
-    let mut report = FrontendWorkerCleanupExecutionReport::new();
-    if let Some(replacement_context) = replacement_context {
-        report.push(FrontendWorkerCleanupStepOutcome::complete_replacement(
-            target,
-            replacement_context.worker_kind,
-            replacement_context.stopped_worker_generation,
-            replacement_context.new_worker_generation,
-            Ok(()),
-        ));
-    }
-    let restore_frontend_result = guard
-        .frontend_txn()
-        .restore_frontend_runtime_snapshot(frontend_id, frontend_snapshot);
-    report.push(FrontendWorkerCleanupStepOutcome::restore_frontend_snapshot(
-        target,
-        restore_frontend_result,
-    ));
-    let restore_demux_result = guard
-        .frontend_txn()
-        .restore_bound_demux_runtime_rollback_tokens(demux_rollback_tokens);
-    report.push(FrontendWorkerCleanupStepOutcome::restore_bound_demuxes(
-        target,
-        restore_demux_result,
-    ));
-    finish_frontend_worker_rollback_report(sink, kind, target, report, primary, context)
-}
-
-fn restore_frontend_state_after_primary_failure_with_shared_demux_tokens(
-    guard: &mut TunerServiceRuntime,
-    frontend_id: i32,
-    frontend_snapshot: FrontendRuntimeSnapshot,
-    demux_rollback_tokens: &SharedDemuxRollbackTokenList,
-    primary: HalError,
-    context: &'static str,
-    kind: FrontendWorkerCleanupDiagnosticKind,
-    target: FrontendWorkerCleanupTarget,
-    replacement_context: Option<FrontendWorkerReplacementRollbackContext>,
-) -> HalError {
-    match take_demux_rollback_tokens(
-        demux_rollback_tokens,
-        "demux rollback token list was already consumed",
-    ) {
-        Ok(tokens) => restore_frontend_state_after_primary_failure(
-            guard,
-            frontend_id,
-            frontend_snapshot,
-            tokens,
-            primary,
-            context,
-            kind,
-            target,
-            replacement_context,
-        ),
-        Err(take_error) => {
-            let mut report = FrontendWorkerCleanupExecutionReport::new();
-            if let Some(replacement_context) = replacement_context {
-                report.push(FrontendWorkerCleanupStepOutcome::complete_replacement(
-                    target,
-                    replacement_context.worker_kind,
-                    replacement_context.stopped_worker_generation,
-                    replacement_context.new_worker_generation,
-                    Ok(()),
-                ));
-            }
-            report.push(
-                FrontendWorkerCleanupStepOutcome::take_demux_rollback_tokens(
-                    target,
-                    Err(take_error.clone()),
-                ),
-            );
-            finish_frontend_worker_rollback_report(
-                Ok(guard.frontend_worker_cleanup_diagnostic_sink()),
-                kind,
-                target,
-                report,
-                primary,
-                context,
-            )
-        }
-    }
-}
-
 fn finish_frontend_state_restore_lock_failure_report(
     sink: SharedFrontendWorkerCleanupDiagnostics,
     primary: HalError,
@@ -1520,9 +1436,28 @@ fn finish_frontend_state_restore_lock_failure_report(
 
 fn finish_backend_session_after_worker_body(
     session: FrontendBackendSession,
-    body_result: Result<(), HalError>,
+    mut body_result: Result<(), HalError>,
+    cancel_reason: Result<Option<FrontendWorkerCancelReason>, HalError>,
 ) -> Result<(), HalError> {
-    let stop_result = session.stop();
+    let explicit_stop = matches!(
+        cancel_reason,
+        Ok(Some(FrontendWorkerCancelReason::StopRequested))
+    );
+    if let Err(reason_error) = cancel_reason {
+        body_result = match body_result {
+            Ok(()) => Err(reason_error),
+            Err(primary) => Err(compose_frontend_cleanup_error(
+                "frontend cancellation reason lookup failed",
+                primary,
+                reason_error,
+            )),
+        };
+    }
+    let stop_result = if explicit_stop {
+        session.stop()
+    } else {
+        session.close()
+    };
     match (body_result, stop_result) {
         (Ok(()), Ok(())) => Ok(()),
         (Ok(()), Err(stop_error)) => Err(stop_error),
@@ -1536,18 +1471,33 @@ fn finish_backend_session_after_worker_body(
 }
 
 fn finish_backend_session_before_frontend_commit_failure(
-    guard: &mut TunerServiceRuntime,
+    runtime: &SharedRuntime,
+    guard: MutexGuard<'_, TunerServiceRuntime>,
     frontend_id: i32,
     generation: u64,
     session: FrontendBackendSession,
     primary: HalError,
     context: &'static str,
 ) -> HalError {
-    let stop_result = session.stop();
+    drop(guard);
+    let stop_result = session.close();
     let backend_stopped = stop_result.is_ok();
     let public_error = match stop_result {
         Ok(()) => primary,
         Err(stop_error) => compose_frontend_cleanup_error(context, primary, stop_error),
+    };
+    let mut guard = match lock_runtime(
+        runtime,
+        "service runtime lock poisoned after backend cleanup",
+    ) {
+        Ok(guard) => guard,
+        Err(lock_error) => {
+            return compose_frontend_cleanup_error(
+                "frontend backend cleanup state record lock failed",
+                public_error,
+                lock_error,
+            )
+        }
     };
     match guard
         .frontend_txn()
@@ -1567,18 +1517,33 @@ fn finish_backend_session_before_frontend_commit_failure(
 }
 
 fn finish_backend_session_after_frontend_commit_activation_failure(
-    guard: &mut TunerServiceRuntime,
+    runtime: &SharedRuntime,
+    guard: MutexGuard<'_, TunerServiceRuntime>,
     frontend_id: i32,
     generation: u64,
     session: FrontendBackendSession,
     primary: HalError,
     context: &'static str,
 ) -> HalError {
-    let stop_result = session.stop();
+    drop(guard);
+    let stop_result = session.close();
     let backend_stopped = stop_result.is_ok();
     let public_error = match stop_result {
         Ok(()) => primary,
         Err(stop_error) => compose_frontend_cleanup_error(context, primary, stop_error),
+    };
+    let mut guard = match lock_runtime(
+        runtime,
+        "service runtime lock poisoned after backend cleanup",
+    ) {
+        Ok(guard) => guard,
+        Err(lock_error) => {
+            return compose_frontend_cleanup_error(
+                "frontend backend cleanup state record lock failed",
+                public_error,
+                lock_error,
+            )
+        }
     };
     match guard
         .frontend_txn()
@@ -1771,8 +1736,9 @@ fn enqueue_timed_out_frontend_backend_submit(
             );
         })),
         completion_action: Box::new(move |runtime, outcomes, deadline_elapsed| {
-            accept_frontend_worker_terminal_outcomes(runtime, &outcomes);
-            let recorded_error = if deadline_elapsed {
+            let terminal_acceptance_result =
+                accept_frontend_worker_terminal_outcomes(runtime, &outcomes);
+            let mut recorded_error = if deadline_elapsed {
                 compose_frontend_cleanup_error(
                     "frontend backend submit reaper deadline elapsed",
                     completion_error.clone(),
@@ -1784,6 +1750,13 @@ fn enqueue_timed_out_frontend_backend_submit(
             } else {
                 completion_error.clone()
             };
+            if let Err(cleanup) = terminal_acceptance_result {
+                recorded_error = compose_frontend_cleanup_error(
+                    "frontend backend submit terminal acceptance failed",
+                    recorded_error,
+                    cleanup,
+                );
+            }
             if record_aborted_frontend_replacement_after_reap(
                 completion_sink,
                 target,
@@ -1844,28 +1817,10 @@ fn frontend_worker_stop_failure(outcome: &FrontendWorkerStopOutcome) -> Option<H
     }
 }
 
-fn frontend_worker_stop_result(
-    outcome: &Result<FrontendWorkerStopOutcome, HalError>,
-) -> Result<(), HalError> {
-    match outcome {
-        Ok(outcome) => frontend_worker_stop_failure(outcome).map_or(Ok(()), Err),
-        Err(error) => Err(error.clone()),
-    }
-}
-
 fn frontend_worker_stop_result_from_outcome(
     outcome: &FrontendWorkerStopOutcome,
 ) -> Result<(), HalError> {
     frontend_worker_stop_failure(outcome).map_or(Ok(()), Err)
-}
-
-fn frontend_worker_stop_result_generation(
-    outcome: &Result<FrontendWorkerStopOutcome, HalError>,
-) -> Option<u64> {
-    outcome
-        .as_ref()
-        .ok()
-        .and_then(frontend_worker_stop_outcome_generation)
 }
 
 fn compose_frontend_worker_cleanup_finish_result(
@@ -1884,15 +1839,7 @@ fn compose_frontend_worker_cleanup_finish_result(
     }
 }
 
-fn finish_frontend_worker_cleanup_report(
-    sink: Result<SharedFrontendWorkerCleanupDiagnostics, HalError>,
-    record: FrontendWorkerCleanupDiagnosticRecord,
-) -> Result<(), HalError> {
-    let cleanup_result = record.report().clone().into_result();
-    let record_result = sink.and_then(|sink| sink.record(record));
-    compose_frontend_worker_cleanup_finish_result(cleanup_result, record_result)
-}
-
+#[cfg(test)]
 fn build_frontend_worker_replacement_stop_report(
     target: FrontendWorkerCleanupTarget,
     worker_kind: FrontendWorkerKind,
@@ -1916,6 +1863,7 @@ fn build_frontend_worker_replacement_stop_report(
     report
 }
 
+#[cfg(test)]
 fn record_frontend_worker_replacement_stop_diagnostic(
     sink: SharedFrontendWorkerCleanupDiagnostics,
     kind: FrontendWorkerCleanupDiagnosticKind,
@@ -1946,27 +1894,6 @@ fn record_frontend_worker_replacement_stop_diagnostic(
         };
     let record = FrontendWorkerCleanupDiagnosticRecord::new(kind, target, report, public_error);
     sink.record(record)
-}
-
-fn record_frontend_worker_replacement_stop_report(
-    sink: SharedFrontendWorkerCleanupDiagnostics,
-    kind: FrontendWorkerCleanupDiagnosticKind,
-    target: FrontendWorkerCleanupTarget,
-    worker_kind: FrontendWorkerKind,
-    stop_outcome: &FrontendWorkerStopOutcome,
-    scan_cancel_result: Option<Result<(), HalError>>,
-) -> Result<(), HalError> {
-    let report = build_frontend_worker_replacement_stop_report(
-        target,
-        worker_kind,
-        stop_outcome,
-        scan_cancel_result,
-    );
-    let cleanup_result = report.clone().into_result();
-    let public_error = cleanup_result.clone().err();
-    let record = FrontendWorkerCleanupDiagnosticRecord::new(kind, target, report, public_error);
-    let record_result = sink.record(record);
-    compose_frontend_worker_cleanup_finish_result(cleanup_result, record_result)
 }
 
 fn resolve_frontend_object_for_method(
@@ -2027,21 +1954,6 @@ fn record_scan_cancelled_from_stop_outcome_locked(
     runtime
         .frontend_txn()
         .cancel_frontend_scan_session(frontend_id, generation, reason)
-}
-
-fn mark_tune_worker_failed(
-    runtime: &SharedRuntime,
-    frontend_id: i32,
-    generation: u64,
-    error: HalError,
-) -> Result<(), HalError> {
-    let mut guard = lock_runtime(
-        runtime,
-        "service runtime lock poisoned while marking tune worker failure",
-    )?;
-    guard
-        .frontend_txn()
-        .mark_frontend_tune_worker_failed(frontend_id, generation, error)
 }
 
 #[cfg(test)]
@@ -2144,6 +2056,7 @@ fn rollback_started_tune_worker_after_commit_failure(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn request_tune_worker_replacement_stop(
     runtime: &mut TunerServiceRuntime,
     frontend_id: i32,
@@ -2343,7 +2256,8 @@ fn observe_and_record_frontend_stream_id_list(
             return Ok(None);
         }
     }
-    let FrontendTmccTsidListObservation::Available(stream_ids) = session.observe_tmcc_tsid_list()?
+    let FrontendTmccTsidListObservation::Available(stream_ids) =
+        session.observe_tmcc_tsid_list()?
     else {
         return Ok(None);
     };
@@ -2402,7 +2316,16 @@ fn wait_for_frontend_qualified_lock(
         if started.elapsed() >= deadline {
             return Ok(FrontendLockWaitOutcome::NoSignal);
         }
-        thread::sleep(Duration::from_millis(20));
+        ctx.wait_until(Some(
+            Instant::now()
+                .checked_add(Duration::from_millis(20))
+                .ok_or_else(|| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "frontend poll deadline overflow",
+                    )
+                })?,
+        ))?;
     }
 }
 
@@ -2663,6 +2586,7 @@ fn run_frontend_backend_tune_session_worker(
                         Arc::clone(&runtime),
                         frontend_id,
                         reader,
+                        descriptor,
                     )?);
                 }
             }
@@ -2676,6 +2600,7 @@ fn run_frontend_backend_tune_session_worker(
             if let Some(result) = completed_live_pump {
                 live_pump = None;
                 let report = result?;
+                let input_closed = report.reached_eof;
                 let mut guard = lock_runtime(
                     &runtime,
                     "service runtime lock poisoned while recording completed live pump report",
@@ -2686,8 +2611,20 @@ fn run_frontend_backend_tune_session_worker(
                     report,
                     ctx.cancel_reason()?,
                 )?;
+                if input_closed {
+                    break;
+                }
             }
-            thread::sleep(Duration::from_millis(20));
+            ctx.wait_until(Some(
+                Instant::now()
+                    .checked_add(Duration::from_millis(20))
+                    .ok_or_else(|| {
+                        HalError::internal(
+                            HalInternalKind::InvariantViolation,
+                            "frontend poll deadline overflow",
+                        )
+                    })?,
+            ))?;
         }
         if let Some(owner) = live_pump.take() {
             let report = owner.join_after_stop()?;
@@ -2705,7 +2642,7 @@ fn run_frontend_backend_tune_session_worker(
         Ok(())
     })();
     stop_live_pump_after_worker_error(&mut live_pump, &mut body_result);
-    finish_backend_session_after_worker_body(session, body_result)
+    finish_backend_session_after_worker_body(session, body_result, ctx.cancel_reason())
 }
 
 struct CommittedTuneReplacement {
@@ -2731,12 +2668,16 @@ fn first_reaped_worker_generation(
 fn accept_frontend_worker_terminal_outcomes(
     runtime: &SharedRuntime,
     outcomes: &[(FrontendWorkerKind, FrontendWorkerStopOutcome)],
-) {
+) -> Result<(), HalError> {
+    let mut failures = FirstErrorCollector::new();
     for (_, outcome) in outcomes {
         if let Some(event) = FrontendWorkerTerminalEvent::from_stop_outcome(outcome) {
-            let _ = FrontendTuneScanTxn::accept_worker_terminal(runtime, event);
+            failures.push_result(
+                FrontendTuneScanTxn::accept_worker_terminal(runtime, event).map(|_| ()),
+            );
         }
     }
+    failures.into_result()
 }
 
 fn record_frontend_reaper_completion(
@@ -2898,7 +2839,7 @@ fn finish_committed_tune_replacement(
     outcomes: Vec<(FrontendWorkerKind, FrontendWorkerStopOutcome)>,
     deadline_elapsed: bool,
 ) -> Result<(), HalError> {
-    accept_frontend_worker_terminal_outcomes(runtime, &outcomes);
+    let terminal_acceptance_result = accept_frontend_worker_terminal_outcomes(runtime, &outcomes);
     let frontend_id = transition.frontend_id;
     let generation = transition.generation;
     let replacement_kind = transition.kind;
@@ -2908,8 +2849,8 @@ fn finish_committed_tune_replacement(
         transition.object_id,
         transition.object_generation,
     );
-    let reaper = ensure_frontend_worker_reaper(runtime)?;
-    let result = (|| {
+    let mut result = (|| {
+        let reaper = ensure_frontend_worker_reaper(runtime)?;
         if deadline_elapsed {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
@@ -3040,7 +2981,8 @@ fn finish_committed_tune_replacement(
             },
         ) {
             return Err(finish_backend_session_before_frontend_commit_failure(
-                &mut guard,
+                runtime,
+                guard,
                 frontend_id,
                 generation,
                 session,
@@ -3063,7 +3005,8 @@ fn finish_committed_tune_replacement(
                     )
                 });
             let mut error = finish_backend_session_before_frontend_commit_failure(
-                &mut guard,
+                runtime,
+                guard,
                 frontend_id,
                 generation,
                 session,
@@ -3089,7 +3032,8 @@ fn finish_committed_tune_replacement(
                     );
                     Err(
                         finish_backend_session_after_frontend_commit_activation_failure(
-                            &mut guard,
+                            runtime,
+                            guard,
                             frontend_id,
                             generation,
                             session,
@@ -3105,6 +3049,16 @@ fn finish_committed_tune_replacement(
             },
         }
     })();
+    if let Err(cleanup) = terminal_acceptance_result {
+        result = match result {
+            Ok(()) => Err(cleanup),
+            Err(primary) => Err(compose_frontend_cleanup_error(
+                "frontend worker replacement terminal acceptance failed",
+                primary,
+                cleanup,
+            )),
+        };
+    }
     record_frontend_reaper_completion(
         completion_diagnostic_sink,
         target,
@@ -3648,7 +3602,7 @@ fn run_frontend_backend_scan_session_worker(
             }
             Ok(())
         })();
-        finish_backend_session_after_worker_body(session, body_result)?;
+        finish_backend_session_after_worker_body(session, body_result, ctx.cancel_reason())?;
         if ctx.cancel_requested() {
             return Ok(());
         }
@@ -3719,7 +3673,7 @@ fn finish_committed_scan_replacement(
     outcomes: Vec<(FrontendWorkerKind, FrontendWorkerStopOutcome)>,
     deadline_elapsed: bool,
 ) -> Result<(), HalError> {
-    accept_frontend_worker_terminal_outcomes(runtime, &outcomes);
+    let terminal_acceptance_result = accept_frontend_worker_terminal_outcomes(runtime, &outcomes);
     let frontend_id = transition.frontend_id;
     let generation = transition.generation;
     let completion_diagnostic_sink = transition.cleanup_diagnostic_sink.clone();
@@ -3734,8 +3688,8 @@ fn finish_committed_scan_replacement(
         stopped_worker_generation,
         new_worker_generation: generation,
     });
-    let reaper = ensure_frontend_worker_reaper(runtime)?;
-    let result = (|| {
+    let mut result = (|| {
+        let reaper = ensure_frontend_worker_reaper(runtime)?;
         if deadline_elapsed {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
@@ -3786,10 +3740,6 @@ fn finish_committed_scan_replacement(
                 frontend_id,
                 generation,
                 FrontendScanNotification::End,
-            )?;
-            crate::lnb_ops::release_frontend_fixed_power_after_operation(
-                runtime,
-                crate::registry::FrontendRuntimeId(frontend_id),
             )?;
             return Ok(());
         }
@@ -3902,7 +3852,8 @@ fn finish_committed_scan_replacement(
             },
         ) {
             return Err(finish_backend_session_before_frontend_commit_failure(
-                &mut guard,
+                runtime,
+                guard,
                 frontend_id,
                 generation,
                 session,
@@ -3926,7 +3877,8 @@ fn finish_committed_scan_replacement(
                     )
                 });
             let mut error = finish_backend_session_before_frontend_commit_failure(
-                &mut guard,
+                runtime,
+                guard,
                 frontend_id,
                 generation,
                 session,
@@ -3952,7 +3904,8 @@ fn finish_committed_scan_replacement(
                     );
                     Err(
                         finish_backend_session_after_frontend_commit_activation_failure(
-                            &mut guard,
+                            runtime,
+                            guard,
                             frontend_id,
                             generation,
                             session,
@@ -3968,6 +3921,16 @@ fn finish_committed_scan_replacement(
             },
         }
     })();
+    if let Err(cleanup) = terminal_acceptance_result {
+        result = match result {
+            Ok(()) => Err(cleanup),
+            Err(primary) => Err(compose_frontend_cleanup_error(
+                "frontend worker replacement terminal acceptance failed",
+                primary,
+                cleanup,
+            )),
+        };
+    }
     record_frontend_reaper_completion(
         completion_diagnostic_sink,
         target,
@@ -4296,7 +4259,7 @@ pub(crate) fn start_frontend_backend_scan_session_worker(
 }
 
 #[cfg(test)]
-pub fn stop_frontend_worker(
+fn stop_frontend_worker(
     runtime: SharedRuntime,
     frontend_id: i32,
     kind: FrontendWorkerKind,
@@ -4329,7 +4292,7 @@ fn record_frontend_stop_reaper_completion(
     outcomes: Vec<(FrontendWorkerKind, FrontendWorkerStopOutcome)>,
     deadline_elapsed: bool,
 ) {
-    accept_frontend_worker_terminal_outcomes(runtime, &outcomes);
+    let terminal_acceptance_result = accept_frontend_worker_terminal_outcomes(runtime, &outcomes);
     let outcome = outcomes
         .iter()
         .find(|(outcome_kind, _)| *outcome_kind == kind)
@@ -4346,6 +4309,16 @@ fn record_frontend_stop_reaper_completion(
             "frontend worker reaper deadline",
             "worker exit was observed only after the reaper deadline",
         ));
+    }
+    if let Err(cleanup) = terminal_acceptance_result {
+        result = match result {
+            Ok(()) => Err(cleanup),
+            Err(primary) => Err(compose_frontend_cleanup_error(
+                "frontend worker stop terminal acceptance failed",
+                primary,
+                cleanup,
+            )),
+        };
     }
     if deadline_elapsed || result.is_err() {
         if let (Some(object_id), Some(object_generation)) =
@@ -4685,16 +4658,6 @@ pub(crate) fn stop_frontend_scan_object(
     )
 }
 
-pub fn close_frontend_live_data_and_unbind(
-    runtime: SharedRuntime,
-    frontend_id: i32,
-) -> Result<(), HalError> {
-    lock_runtime(&runtime, "service runtime lock poisoned")?
-        .frontend_txn()
-        .close_frontend_live_data_and_unbind(frontend_id)
-        .map(|_| ())
-}
-
 pub(crate) fn cleanup_frontend_object_after_close_begin(
     runtime: SharedRuntime,
     object_id: AidlObjectId,
@@ -4755,7 +4718,7 @@ pub(crate) fn cleanup_frontend_object_after_close_begin(
 }
 
 #[cfg(test)]
-pub fn close_frontend_workers_and_live_data(
+pub(crate) fn close_frontend_workers_and_live_data(
     runtime: SharedRuntime,
     frontend_id: i32,
     reason: FrontendWorkerCancelReason,
@@ -4899,7 +4862,8 @@ fn close_frontend_workers_and_live_data_with_sink(
 
     match tickets {
         Ok(outcomes) => {
-            accept_frontend_worker_terminal_outcomes(&runtime, &outcomes);
+            let terminal_acceptance_result =
+                accept_frontend_worker_terminal_outcomes(&runtime, &outcomes);
             let mut terminal_result = Ok(());
             for (_, outcome) in outcomes {
                 if let Some(error) = frontend_worker_stop_failure(&outcome) {
@@ -4907,10 +4871,20 @@ fn close_frontend_workers_and_live_data_with_sink(
                     break;
                 }
             }
-            let fixed_power_result = crate::lnb_ops::release_frontend_fixed_power_after_operation(
-                &runtime,
-                crate::registry::FrontendRuntimeId(frontend_id),
-            );
+            terminal_result = match (terminal_result, terminal_acceptance_result) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+                (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
+                    "frontend worker termination and terminal acceptance both failed",
+                    primary,
+                    cleanup,
+                )),
+            };
+            let fixed_power_result =
+                FrontendTuneScanTxn::release_frontend_fixed_power_after_operation(
+                    &runtime,
+                    crate::registry::FrontendRuntimeId(frontend_id),
+                );
             match (terminal_result, fixed_power_result) {
                 (Ok(()), Ok(())) => Ok(()),
                 (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
@@ -4943,9 +4917,10 @@ fn close_frontend_workers_and_live_data_with_sink(
                     );
                 })),
                 completion_action: Box::new(move |runtime, outcomes, _deadline_elapsed| {
-                    accept_frontend_worker_terminal_outcomes(runtime, &outcomes);
+                    let terminal_acceptance_result =
+                        accept_frontend_worker_terminal_outcomes(runtime, &outcomes);
                     let fixed_power_result =
-                        crate::lnb_ops::release_frontend_fixed_power_after_operation(
+                        FrontendTuneScanTxn::release_frontend_fixed_power_after_operation(
                             runtime,
                             crate::registry::FrontendRuntimeId(frontend_id),
                         );
@@ -4958,7 +4933,16 @@ fn close_frontend_workers_and_live_data_with_sink(
                             frontend_worker_stop_result_from_outcome(&outcome),
                         ));
                     }
-                    if let Err(error) = fixed_power_result {
+                    let finalizer_result = match (terminal_acceptance_result, fixed_power_result) {
+                        (Ok(()), Ok(())) => Ok(()),
+                        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+                        (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
+                            "frontend terminal acceptance and fixed LNB power cleanup both failed",
+                            primary,
+                            cleanup,
+                        )),
+                    };
+                    if let Err(error) = finalizer_result {
                         report.push(
                             FrontendWorkerCleanupStepOutcome::close_frontend_workers_and_live_data(
                                 target,

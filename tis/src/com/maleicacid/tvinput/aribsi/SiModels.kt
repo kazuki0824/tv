@@ -49,11 +49,12 @@ data class CaDescriptor(
     val scope: CaDescriptorScope,
     val esPid: TsPid?,
     val rawDescriptor: ByteArray,
+    val privateData: ByteArray = ByteArray(0),
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is CaDescriptor) return false
-        return caSystemId == other.caSystemId && caPid == other.caPid && scope == other.scope && esPid == other.esPid && rawDescriptor.contentEquals(other.rawDescriptor)
+        return caSystemId == other.caSystemId && caPid == other.caPid && scope == other.scope && esPid == other.esPid && rawDescriptor.contentEquals(other.rawDescriptor) && privateData.contentEquals(other.privateData)
     }
 
     override fun hashCode(): Int {
@@ -62,6 +63,7 @@ data class CaDescriptor(
         result = 31 * result + scope.hashCode()
         result = 31 * result + (esPid?.value ?: 0)
         result = 31 * result + rawDescriptor.contentHashCode()
+        result = 31 * result + privateData.contentHashCode()
         return result
     }
 }
@@ -79,12 +81,14 @@ data class AribElementaryStream(
     val automaticPresentationOnReception: Boolean? = null,
     val isCaption: Boolean = false,
     val isSuperimpose: Boolean = false,
+    val codec: String? = null,
+    val codecKind: String? = null,
 )
 
 data class AribService(
     val serviceKey: ServiceKey,
-    val name: String,
-    val providerName: String = "",
+    val name: String?,
+    val providerName: String? = null,
     val serviceType: Int? = null,
     val pmtPid: TsPid? = null,
     val pcrPid: TsPid? = null,
@@ -108,8 +112,9 @@ data class AribBroadcastClockFact(
 data class AribTransport(
     val originalNetwork: NetworkId16,
     val transportStream: TransportStreamId16,
-    val networkName: String = "",
-    val transportStreamName: String = "",
+    val networkName: String? = null,
+    val transportStreamName: String? = null,
+    val sdtActual: Boolean = false,
     val remoteControlKeyId: Int? = null,
 ) {
     val originalNetworkId: Int get() = originalNetwork.value
@@ -256,6 +261,7 @@ data class AribComponents(
 data class AribEventDiagnostics(
     val summary: String = "",
     val descriptorDiagnosticsCanonicalJson: String = "[]",
+    val descriptorFactsCanonicalJson: String? = null,
     val textDiagnostics: List<String> = emptyList(),
 )
 
@@ -349,6 +355,7 @@ data class DescriptorDiagnostic(
 )
 
 data class AribEpgUpdateWindow(
+    val sectionNumber: Int = 0,
     val serviceKey: ServiceKey,
     val windowStartMillis: Long,
     val windowEndMillis: Long,
@@ -390,6 +397,11 @@ data class ServiceSemanticFacts(
     val smd: SmdSemanticFacts,
     val missingComponents: List<String>,
     val semanticDiagnostics: List<String>,
+    val name: String? = null,
+    val providerName: String? = null,
+    val pmtPid: TsPid? = null,
+    val pcrPid: TsPid? = null,
+    val serviceScopedCaDescriptors: List<CaDescriptor> = emptyList(),
 )
 
 data class MalformedCaDescriptorDiagnostic(
@@ -417,6 +429,7 @@ data class TransportKey(
 }
 
 data class ProgramPublishSnapshot(
+    val eitInstanceStates: List<EitInstanceState> = emptyList(),
     val ingestSequence: Long,
     val events: List<AribEvent>,
     val updateWindows: List<EpgUpdateWindow>,
@@ -436,6 +449,7 @@ data class TableRequirementStatus(
 )
 
 data class ServiceRegistrationSnapshot(
+    val eitInstanceStates: List<EitInstanceState> = emptyList(),
     val discoveryStage: Int,
     val tableRequirements: List<TableRequirementStatus>,
     val services: List<AribService>,
@@ -515,3 +529,17 @@ data class CaMetadata(
         return result
     }
 }
+
+/** 収集世代に属する放送表の状態。公開する表の選択はTISが行う。 */
+data class EitInstanceState(
+    val serviceKey: ServiceKey,
+    val tableId: Int,
+    val version: Int,
+    val currentNextIndicator: Boolean,
+    val lastSectionNumber: Int,
+    val receivedSections: List<Int>,
+    val missingSections: List<Int>,
+    val safeSections: List<Int>,
+    val complete: Boolean,
+    val inconsistent: Boolean,
+)

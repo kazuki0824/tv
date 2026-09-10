@@ -23,5 +23,5 @@
     "parseStatus": "MalformedLength",
     "rawPrefixHex": "4d06ffffff"
   },
-  "message": "short_event_descriptor event_name length exceeds body"
+  "message": "short_event_descriptorの番組名長が本文の範囲を超えています"
 }

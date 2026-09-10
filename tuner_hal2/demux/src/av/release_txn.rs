@@ -134,9 +134,7 @@ impl AvHandleReleaseTxn {
             }
 
             // AVH-007/015/016。不明または外部のfileでleaseやallocationを変更しない。
-            AvHandleReleaseKind::UnknownFile => {
-                AvHandleReleaseOutcome::InvalidHandleForSlotRelease
-            }
+            AvHandleReleaseKind::UnknownFile => AvHandleReleaseOutcome::InvalidHandleForSlotRelease,
         }
     }
 }

@@ -1,7 +1,7 @@
-#[path = "core/arib_jis_x0208_table.rs"]
-pub mod arib_jis_x0208_table;
 #[path = "core/arib_string.rs"]
 pub mod arib_string;
+#[path = "core/broadcast_clock.rs"]
+pub mod broadcast_clock;
 #[path = "core/ca_descriptor.rs"]
 pub mod ca_descriptor;
 #[path = "core/descriptors.rs"]
@@ -10,8 +10,8 @@ pub mod descriptors;
 pub mod discovery_requirements;
 #[path = "core/eit.rs"]
 pub mod eit;
-#[path = "core/eit_publish_policy.rs"]
-pub mod eit_publish_policy;
+#[path = "core/eit_instances.rs"]
+pub mod eit_instances;
 #[path = "core/provider_data.rs"]
 pub mod provider_data;
 #[path = "core/sections.rs"]

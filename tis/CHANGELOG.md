@@ -1,3 +1,73 @@
+## r51_pr85_review_20260909
+
+- AV filter開始時にcodecごとの起動期限を予約し、入力が途絶えても期限を判定する。最初の非空出力、終了、世代失効で解除する。既存#91から現行設計への実装追従部分だけを移した。
+- EIT公開section条件をTISへ置き、Rust bulkの表完成状態を通常Kotlin snapshotへ渡す。
+- Kotlin本番・全試験ソースのコンパイル、起動期限と公開条件のJUnit 5件が成功。CI全件数を156へ更新。実JNIとの試験、Android build、atest、CTS/VTS、実機確認は手元では未実施。
+
+## r51_pr85_cas_session_diagnostics
+
+- TIS-047: MediaCas plugin 自体を生成できない失敗を `PLUGIN_UNAVAILABLE`、plugin 生成後に session を開始できない失敗を `SESSION_OPEN_FAILED` として区別する。B25 の EMM 経路も同じ型付き分類を使用する。
+- session 開始に失敗した MediaCas bridge を直ちに close し、どちらの失敗でも key token や elementary PID を descrambler へ接続しない。
+- host Kotlin 状態遷移試験で plugin 未接続と session 開始失敗を別々に固定し、CI の成功件数を 152 件へ更新する。実 CAS HAL、Tuner HAL 診断相関、実機 descramble は r51 の完了対象に含めない。
+
+## r51_pr85_playback_stop_admission
+
+- TIS-040: 再生資源が確保されている pipeline を LiveSession 数とは独立して計数し、boot EPG / background scan の事前検査・受付後検査・実行直前検査へ接続した。最後の pipeline の停止確認時に保留ジョブを再評価する。
+- 解放に失敗した Filter、decoder、MediaSync、Surface、AudioTrack を再生 owner に保持し、次の停止処理で再試行する。全資源の解放が確認できるまで再生中の計数を下げない。
+- LiveSession / TunerController の終了は一件の失敗後も残る資源を解放し、失敗を合成する。終了未確認の LiveSession を件数から除かない。
+- 検証: Kotlin 本体・テストコンパイルと JUnit 151 件に成功。CI の発見 class 数を 32、実行 class 数を 29、成功件数を 151 へ更新。以前の CI は 149 件成功後に旧件数 147 のチェックで失敗していた。
+
+## r51_pr85_filter_input_continuity
+
+- TIS-010: RestartEvent を MediaEvent と同じ順序で処理し、同じ再生構成の restart と OVERFLOW 後の通常 flush では未投入 MediaEvent と使用権だけを回収する。decoder、MediaSync、AudioTrack、PTS 基準、再生世代を保持する。
+- TIS-021: 字幕 Filter の restart、overflow、短い PES 読取りを字幕連続性喪失へ接続し、native 字幕 facts、字幕 decoder、表示・予約を初期化する。AV の通常 flush はこの初期化を呼ばない。
+- 旧 Filter から遅延した MediaEvent も所有権を回収して破棄する。
+- 検証: Android 15 の RestartEvent 契約を一次資料で確認。Kotlin 本体・テストのコンパイルと JUnit 149 件に成功。Android Filter の実 callback による統合試験は未実施。
+
+## r51_pr85_caption_viewport_rerender
+
+- TIS-018: 同一再生世代の viewport 変更では字幕 decoder を維持し、libaribcaption の現在時刻での再描画を JNI へ接続した。現在の有効区間に属する画像だけを新しい描画領域へ戻し、古い bitmap を拡大縮小しない。
+- 一時的な不正・未確定領域でも復号状態を破棄せず表示を消去する。旧 viewport の予定画像は表示時に再描画し、停止中の時計でも現在時刻に到達した表示・消去を処理する。
+- 検証: 字幕 Rust 15 件、全 target Clippy、Kotlin コンパイルと JUnit 149 件に成功。実 libaribcaption の画素出力・実機表示確認は未実施。
+
+## r51_pr85_provider_publication_bytes
+
+- TIS-033: 実際の channel ID と最終 ContentValues、更新区間を準備し、固定順の長さ付き byte 列全体から SHA-256 を計算する。同じ準備済み行を書き込み、成功時だけ処理内キャッシュへ反映する。行ごとの要約連結、仮 channel ID、余分な改行を公開経路から除いた。
+- TIS-026: TIS が直接設定した canonical genre と TvProvider 書込み後の読戻し値を独立した診断として保持する。読戻し失敗は診断に残し、成功済みの公開を失敗へ変更しない。
+- TIS-036: TvProviderWriter の provider-data 読取りも blob に統一し、文字列からの修復を除いた。
+- 検証: Kotlin 本体・テストのコンパイルと実 JNI を使う JUnit 149 件に成功。実機 TvProvider の補完動作確認は未実施。
+
+# r51_pr85_service_semantic_boundary
+
+- SI U-09/U-10/U-11: 通常JNI consumerをservice/transport意味snapshotへ統一する。CAS metadataとPMT索引は同じservice factsから導出し、CATとservice-scoped CAを混同しない。欠落名はnullのまま保持する。
+- SI U-13: component保存用codec名をRustから受け取り、Kotlin側のcodec命名表を除去する。既知の製品再生対応stream_type集合は製品policyとして維持する。
+- Kotlin本番/試験コンパイルとhost JUnit147件が成功した。Android実機試験は未実施。
+
+# r51_pr85_raw_descriptor_publication
+
+- SI U-03/U-19: Rust生成descriptor事実JSONをEvent/Programモデル経由でprovider-data builderへ透過返却する。Kotlinでcountry byte・descriptor解析状態・unknown rawを組み直さない。
+- Kotlin本番/試験コンパイルとhost JUnit145件が成功した。実JNIのEIT入力から保存・再正規化まで、正常ratingだけの昇格と診断raw全体の保持を検証した。Android実機試験は未実施。
+
+# r51_pr85_provider_boundary_corpus
+
+- SI-014: provider-data共通境界fixtureを実JNI経由で検証し、Program正規化・キー抽出・Channel復号の拒否条件をRustとJSON Schemaへ合わせる。既存のasset契約試験もhost CIへ追加する。
+- Kotlin本番/試験コンパイルとhost JUnit144件が成功した。Android実機試験は未実施。
+
+# r51_pr85_clock_section_crc
+
+- TIS-AUD-04/F-02: PID 0x14をTDT(table_id=0x70)とTOT(0x73)の完全一致filterへ分割し、TDTだけCRC検証を無効とする。TOTはTunerのCRC検証とRust側検証を両方通す。
+- 同じPIDに属するfilter群を一つの所有権で回収し、callbackの発生元を各実filterとtune世代で検査する。準備途中の失敗では作成済みfilterをすべてcloseし、close失敗の所有物と例外を保持する。
+- 実Android設定型で256通りのtable IDの非重複選択とCRC設定を確認した。本番/試験Kotlinのコンパイルとhost JUnit140件が成功した。Android実機でのFilter同時開設とCRC不正TOT入力の試験は未実施。
+
+# r51_pr85_discovery_cas_provider_fixes
+
+- TIS-AUD-01/B-06: BS探索が期限内に完了した場合だけ報告済みstream IDを採用し、呼出し側でも成功判定を確認する。TIS-AUD-06/B-11: backend名に依存するselector拒否を除き、公開Tunerの結果で判定する。
+- TIS-AUD-02/D-08: background maintenanceの既存channel照会失敗を例外としてscan managerへ返す。空の正常結果へ変換しない。
+- TIS-AUD-03/G-05/TIS-047のB1項目: EMM PID収集・登録をB25へ限定し、B1 CATだけでCASを作成しない。B1のECM処理は維持する。
+- TIS-008: listener設定が失敗したTunerをcloseし、cleanup失敗があれば元の例外へ保持する。TIS-036: 保存BLOBをgetBlobの結果のままRustへ渡し、文字列へ補修しない。
+- TIS-048: 既存channelの更新値からCOLUMN_TYPEを除く。TIS-050: short_event本文の未規定な256文字切詰めを除く。TIS-AUD-07/H-14: READMEの規約参照を実在する共通規約へ修正する。
+- CIと同じKotlin 1.9.22・Android 15入力で本番と試験をコンパイルし、実SI JNIを使用するhost JUnit 138件が成功した。既存のコンパイル警告は残る。Android実機のTuner/CAS/Provider統合試験は未実施。
+
 # 未リリース
 
 - helper追加: `MediaSyncFirstOutputBridge`を追加し、platform-privateな`MediaSync.OnFirstVideoFrameQueuedToOutputListener`型とsetterを実行時reflectionで解決して呼び出す。stock platformへの静的hidden API型依存は持たない。

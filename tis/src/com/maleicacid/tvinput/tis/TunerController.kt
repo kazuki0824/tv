@@ -102,20 +102,43 @@ class TunerController(
         val automaticPresentationOnReception: Boolean? = null,
     )
 
+    private data class SectionFilterArtifact(val filter: Filter, var started: Boolean = false)
+
     private inner class TunerSectionFilterHandle(
         override val pid: TsPid,
-        private val filter: Filter,
+        private val artifacts: MutableList<SectionFilterArtifact>,
         private val generation: Long,
     ) : SectionFilterHandle {
-        private var closed = false
-        override val isOpen: Boolean get() = !closed
-        override fun close() {
-            if (closed) return
-            closed = true
-            runCatching { filter.stop() }.onFailure { Log.w(LogTags.TIS, "section filter stop に失敗しました pid=$pid", it) }
-            runCatching { filter.close() }.onFailure { Log.w(LogTags.TIS, "section filter close に失敗しました pid=$pid", it) }
+        private var closing = false
+        val isClosed: Boolean get() = artifacts.isEmpty()
+        override val isOpen: Boolean get() = !closing && artifacts.isNotEmpty() && artifacts.all { it.started }
+        override fun close(): Unit = callOnController {
+            closing = true
+            val remainingSources = sectionFilters[pid].orEmpty().filterNot { source -> artifacts.any { it.filter === source } }
+            if (remainingSources.isEmpty()) sectionFilters.remove(pid) else sectionFilters[pid] = remainingSources
+            var failure: RuntimeException? = null
+            fun retain(error: RuntimeException) {
+                val primary = failure
+                if (primary == null) failure = error else if (primary !== error) primary.addSuppressed(error)
+            }
+            val iterator = artifacts.iterator()
+            while (iterator.hasNext()) {
+                val artifact = iterator.next()
+                if (artifact.started) {
+                    try {
+                        val result = artifact.filter.stop()
+                        check(result == Tuner.RESULT_SUCCESS) { "section filter stopに失敗しました pid=$pid result=$result" }
+                        artifact.started = false
+                    } catch (error: RuntimeException) { retain(error) }
+                }
+                try {
+                    artifact.filter.close()
+                    iterator.remove()
+                } catch (error: RuntimeException) { retain(error) }
+            }
+            failure?.let { throw it }
         }
-        override fun toString(): String = "TunerSectionFilterHandle(pid=$pid, generation=$generation, closed=$closed)"
+        override fun toString(): String = "TunerSectionFilterHandle(pid=$pid, generation=$generation, filters=${artifacts.size}, closing=$closing)"
     }
 
     private inner class UnavailableSectionFilterHandle(
@@ -142,7 +165,7 @@ class TunerController(
         }
     }
     private val sectionFilterHandles = LinkedHashMap<TsPid, SectionFilterHandle>()
-    private val sectionFilters = LinkedHashMap<TsPid, Filter>()
+    private val sectionFilters = LinkedHashMap<TsPid, List<Filter>>()
     private val dynamicPmtPids = linkedSetOf<TsPid>()
     private val dynamicEcmPids = linkedSetOf<TsPid>()
     private val dynamicEmmPids = linkedSetOf<TsPid>()
@@ -168,15 +191,21 @@ class TunerController(
     private val sectionOversizedCounters = linkedMapOf<TsPid, Int>()
     private val playbackPipeline = PlaybackPipeline(inputId, tvInputSessionId, sessionContext)
 
-    private fun createTuner(): Tuner? = try {
-        Tuner(context, tvInputSessionId, useCase).also { created ->
+    private fun createTuner(): Tuner? {
+        var created: Tuner? = null
+        return try {
+            created = Tuner(context, tvInputSessionId, useCase)
             created.setResourceLostListener(sectionExecutor) { callbackTuner ->
                 if (callbackTuner === tuner && !released) handleTunerResourceLostOnController()
             }
+            created
+        } catch (error: RuntimeException) {
+            runCatching { created?.close() }.exceptionOrNull()?.let { cleanup ->
+                if (cleanup !== error) error.addSuppressed(cleanup)
+            }
+            Log.w(LogTags.TIS, "Tuner を利用できません inputId=$inputId tvInputSessionId=$tvInputSessionId useCase=$useCase", error)
+            null
         }
-    } catch (e: RuntimeException) {
-        Log.w(LogTags.TIS, "Tuner を利用できません inputId=$inputId tvInputSessionId=$tvInputSessionId useCase=$useCase", e)
-        null
     }
 
     fun setSectionIngestController(controller: SectionIngestController?) = callOnController { sectionIngestController = controller }
@@ -325,8 +354,8 @@ class TunerController(
         val completed = runCatching { terminal.await(timeoutMs.coerceAtLeast(1L), TimeUnit.MILLISECONDS) }.getOrDefault(false)
         runCatching { tunerInstance.cancelScanning() }
         val snapshot = synchronized(ids) { ids.toSet() }
-        return if (snapshot.isNotEmpty()) {
-            StreamIdDiscoveryResult(true, snapshot, result, if (completed) "" else "scan callback timeout後に報告済みstream IDを採用")
+        return if (completed && snapshot.isNotEmpty()) {
+            StreamIdDiscoveryResult(true, snapshot, result)
         } else {
             StreamIdDiscoveryResult(false, emptySet(), result, if (completed) "stream ID報告なし" else "scan callback timeout")
         }
@@ -442,6 +471,7 @@ class TunerController(
         if (!tuneAccepted) return UnavailableSectionFilterHandle(pid, "tune未受付")
         sectionFilterHandles[pid]?.let { existing ->
             if (existing.isOpen) return existing
+            existing.close()
             sectionFilterHandles.remove(pid)
         }
         val handle = createSectionFilter(pid, generation)
@@ -489,32 +519,38 @@ class TunerController(
                 Log.d(LogTags.TIS, "section filter 状態 inputId=$inputId pid=$pid status=$status generation=$generation")
             }
         }
-        val filter = tunerInstance.openFilter(Filter.TYPE_TS, Filter.SUBTYPE_SECTION, SECTION_FILTER_BUFFER_BYTES, sectionExecutor, callback)
-            ?: return UnavailableSectionFilterHandle(pid, "openFilterがnullを返しました")
-        val settings = SectionSettingsWithSectionBits.builder(Filter.TYPE_TS)
-            .setCrcEnabled(pid != WellKnownSectionPid.TDT)
-            .setRepeat(true)
-            .setRaw(false)
-            .setBitWidthOfLengthField(12)
-            .build()
-        val config = TsFilterConfiguration.builder().setTpid(pid.value).setSettings(settings).build()
-        val configureResult = filter.configure(config)
-        if (configureResult != Tuner.RESULT_SUCCESS) {
-            runCatching { filter.close() }
-            return UnavailableSectionFilterHandle(pid, "configure失敗-$configureResult")
+        val artifacts = mutableListOf<SectionFilterArtifact>()
+        val handle = TunerSectionFilterHandle(pid, artifacts, generation)
+        sectionFilterHandles[pid] = handle
+        try {
+            for (settings in sectionSettingsForPid(pid)) {
+                val filter = tunerInstance.openFilter(Filter.TYPE_TS, Filter.SUBTYPE_SECTION, SECTION_FILTER_BUFFER_BYTES, sectionExecutor, callback)
+                    ?: error("section openFilterがnullを返しました pid=$pid")
+                artifacts += SectionFilterArtifact(filter)
+                val config = TsFilterConfiguration.builder().setTpid(pid.value).setSettings(settings).build()
+                val configured = filter.configure(config)
+                check(configured == Tuner.RESULT_SUCCESS) { "section configureに失敗しました pid=$pid result=$configured" }
+            }
+            sectionFilters[pid] = artifacts.map { it.filter }
+            for (artifact in artifacts) {
+                val started = artifact.filter.start()
+                check(started == Tuner.RESULT_SUCCESS) { "section startに失敗しました pid=$pid result=$started" }
+                artifact.started = true
+            }
+            return handle
+        } catch (error: RuntimeException) {
+            try { handle.close() } catch (cleanup: RuntimeException) {
+                if (cleanup !== error) error.addSuppressed(cleanup)
+            }
+            if (!handle.isClosed) throw error
+            sectionFilterHandles.remove(pid)
+            Log.w(LogTags.TIS, "section filter群の準備に失敗しました inputId=$inputId pid=$pid", error)
+            return UnavailableSectionFilterHandle(pid, error.message.orEmpty())
         }
-        sectionFilters[pid] = filter
-        val startResult = filter.start()
-        if (startResult != Tuner.RESULT_SUCCESS) {
-            if (sectionFilters[pid] === filter) sectionFilters.remove(pid)
-            runCatching { filter.close() }
-            return UnavailableSectionFilterHandle(pid, "start失敗-$startResult")
-        }
-        return TunerSectionFilterHandle(pid, filter, generation)
     }
 
     private fun isCurrentSectionFilter(pid: TsPid, generation: Long, filter: Filter): Boolean =
-        generation == tuneGeneration && sectionFilters[pid] === filter
+        generation == tuneGeneration && sectionFilters[pid].orEmpty().any { it === filter }
 
     private fun recordSectionShortRead(pid: TsPid, expected: Int, actual: Int) {
         sectionShortReadCounters[pid] = (sectionShortReadCounters[pid] ?: 0) + 1
@@ -540,19 +576,27 @@ class TunerController(
 
     private fun closeSectionFilterOnController(pid: TsPid) {
         sectionFilters.remove(pid)
-        sectionFilterHandles.remove(pid)?.close()
+        val handle = sectionFilterHandles[pid] ?: return
+        try { handle.close() } finally {
+            if (handle is TunerSectionFilterHandle && handle.isClosed) sectionFilterHandles.remove(pid)
+        }
     }
 
     fun closeSectionFilters(): Unit = callOnController { closeSectionFiltersOnController() }
 
     private fun closeSectionFiltersOnController() {
-        val handles = sectionFilterHandles.values.toList()
-        sectionFilterHandles.clear()
         sectionFilters.clear()
         dynamicPmtPids.clear()
         dynamicEcmPids.clear()
         dynamicEmmPids.clear()
-        handles.forEach { it.close() }
+        var failure: RuntimeException? = null
+        for (pid in sectionFilterHandles.keys.toList()) {
+            try { closeSectionFilterOnController(pid) } catch (error: RuntimeException) {
+                val primary = failure
+                if (primary == null) failure = error else if (primary !== error) primary.addSuppressed(error)
+            }
+        }
+        failure?.let { throw it }
     }
 
     fun openDynamicFiltersFromCurrentSi(pmtPids: Iterable<TsPid>, ecmPids: Iterable<TsPid>, emmPids: Iterable<TsPid>) =
@@ -741,6 +785,17 @@ class TunerController(
         return playbackPipeline.start(tunerInstance, channel, selection)
     }
 
+    fun setOnSubtitleContinuityLostCallback(callback: (Long, String) -> Unit) {
+        playbackPipeline.setOnSubtitleContinuityLostCallback { generation, trackId ->
+            val pid = trackId.substringAfter(':', "").substringBefore(':').toIntOrNull()?.let(TsPid::fromOrNull)
+            if (pid != null) {
+                captionFactParsers[pid]?.reset()
+                captionLanguagesByPid.remove(pid)
+            }
+            callback(generation, trackId)
+        }
+    }
+
     fun setOnSubtitlePesCallback(callback: (Long, String, ByteArray, CaptionTimestamp, AribBroadcastClock.StatementTime?) -> Unit) {
         playbackPipeline.setOnSubtitlePesCallback { generation, trackId, pesData, timestamp ->
             val pid = trackId.substringAfter(':', "").substringBefore(':').toIntOrNull()?.let(TsPid::fromOrNull)
@@ -836,7 +891,7 @@ class TunerController(
             val displayNumber = cursor.getString(5) ?: key.serviceId.toString()
             val serviceType = cursor.getString(6)?.toIntOrNull()?.takeIf { it in 0..0xff }
                 ?: error("channelのARIB service_typeが不正です")
-            val providerData = providerDataBytes(cursor, 7)
+            val providerData = cursor.getBlob(7)
             val decoded = ProviderDataBridge.decodeChannelProviderData(providerData)
                 ?: error("channel provider data JSON v1を復元できません")
             require(decoded.serviceKey == key) { "channel rowとprovider dataのservice keyが一致しません" }
@@ -864,7 +919,6 @@ class TunerController(
                 .setBandwidth(IsdbtFrontendSettings.BANDWIDTH_6MHZ)
                 .build()
             ChannelRecord.DELIVERY_SYSTEM_ISDB_S -> {
-                require(channel.backendHint != "earth_pt1" || channel.streamSelector.type != StreamSelectorType.RELATIVE) { "earth_pt1 BS では相対 TS 番号を使えません" }
                 require(channel.satelliteBand != "110CS" || channel.streamSelector.type == StreamSelectorType.NONE) { "CS110 は TSID/relative stream selector による frontend 選局を行いません" }
                 IsdbsFrontendSettings.builder()
                 .setFrequencyLong(channel.frequencyHz.value)
@@ -887,9 +941,6 @@ class TunerController(
         }
     }
 
-    private fun providerDataBytes(cursor: android.database.Cursor, index: Int): ByteArray? =
-        runCatching { cursor.getBlob(index) }.getOrNull()
-            ?: runCatching { cursor.getString(index)?.toByteArray(Charsets.UTF_8) }.getOrNull()
 
     fun release() {
         if (released) return
@@ -905,24 +956,33 @@ class TunerController(
 
     private fun releaseOnController() {
         if (released) return
-        playbackPipeline.release()
-        closeSectionFiltersOnController()
+        var failure: Throwable? = null
+        fun release(action: () -> Unit) {
+            try {
+                action()
+            } catch (error: Throwable) {
+                val primary = failure
+                if (primary == null) failure = error else if (primary !== error) primary.addSuppressed(error)
+            }
+        }
+        release { playbackPipeline.release() }
+        release { closeSectionFiltersOnController() }
         captionLanguagesByPid.clear()
-        captionFactParsers.values.forEach { it.close() }
-        captionFactParsers.clear()
+        captionFactParsers.entries.toList().forEach { (pid, parser) ->
+            release { parser.close(); captionFactParsers.remove(pid, parser) }
+        }
         superimposeTimingByPid.clear()
         latestBroadcastClockAuthority = null
-        casController?.close()
-        casController = null
+        release { casController?.close(); casController = null }
         descramblerBridge = null
         sectionIngestController = null
         onSectionIngestedCallback = null
         onTuneEventCallback = null
-        runCatching { tuner?.clearOnTuneEventListener() }
+        release { tuner?.clearOnTuneEventListener() }
         currentTune = null
         tuneAccepted = false
-        tuner?.close()
-        tuner = null
+        release { tuner?.close(); tuner = null }
+        failure?.let { throw it }
         released = true
     }
 
@@ -931,6 +991,25 @@ class TunerController(
     companion object {
         private const val SECTION_FILTER_BUFFER_BYTES = 64 * 1024L
         private const val BS_STREAM_ID_SCAN_TIMEOUT_MS = 2_500L
+
+        internal fun sectionSettingsForPid(pid: TsPid): List<SectionSettingsWithSectionBits> {
+            val tableIds: List<Int?> = if (pid == WellKnownSectionPid.TDT) listOf(0x70, 0x73) else listOf(null)
+            return tableIds.map { tableId ->
+                SectionSettingsWithSectionBits.builder(Filter.TYPE_TS)
+                    .setCrcEnabled(tableId != 0x70)
+                    .setRepeat(true)
+                    .setRaw(false)
+                    .setBitWidthOfLengthField(12)
+                    .apply {
+                        if (tableId != null) {
+                            setFilter(byteArrayOf(tableId.toByte()))
+                            setMask(byteArrayOf(0xff.toByte()))
+                            setMode(byteArrayOf(0))
+                        }
+                    }
+                    .build()
+            }
+        }
 
         internal fun normalizedTvInputSessionId(sessionId: String?): String? =
             sessionId?.takeIf { it.isNotBlank() }

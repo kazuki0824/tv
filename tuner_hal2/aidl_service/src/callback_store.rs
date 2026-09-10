@@ -42,7 +42,9 @@ enum StoredCallback {
     Frontend(Strong<dyn IFrontendCallback>),
     Filter(Strong<dyn IFilterCallback>),
     Dvr(Strong<dyn IDvrCallback>),
-    Lnb(Strong<dyn ILnbCallback>),
+    Lnb {
+        _retained_callback: Strong<dyn ILnbCallback>,
+    },
     #[cfg(test)]
     TestMarker,
 }
@@ -83,8 +85,15 @@ impl CallbackStore {
             return Err(AidlCallbackStoreError::PreparedArtifactInFlight);
         }
         let token = self.next_prepared_token()?;
-        self.prepared_callbacks
-            .insert(key, (token.0, StoredCallback::Lnb(callback.clone())));
+        self.prepared_callbacks.insert(
+            key,
+            (
+                token.0,
+                StoredCallback::Lnb {
+                    _retained_callback: callback.clone(),
+                },
+            ),
+        );
         Ok(token)
     }
 
@@ -171,18 +180,8 @@ impl CallbackStore {
             .ok_or(AidlCallbackStoreError::PreparedArtifactAuthorityMismatch)
     }
 
-    pub(crate) fn retain_filter_callback(
-        &mut self,
-        handle: AidlObjectHandle,
-        callback: &Strong<dyn IFilterCallback>,
-    ) {
-        self.callbacks.insert(
-            CallbackStoreKey::new(handle, AidlApi::DemuxOpenFilter),
-            StoredCallback::Filter(callback.clone()),
-        );
-    }
-
-    pub(crate) fn retain_dvr_callback(
+    #[cfg(test)]
+    pub(crate) fn retain_dvr_callback_for_test(
         &mut self,
         handle: AidlObjectHandle,
         callback: &Strong<dyn IDvrCallback>,
@@ -284,6 +283,11 @@ impl CallbackStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_callback_artifact_token_is_single_use() {
+        static_assertions::assert_not_impl_any!(PreparedCallbackArtifactToken: Clone, Copy);
+    }
 
     fn frontend_handle() -> AidlObjectHandle {
         AidlObjectHandle::new(

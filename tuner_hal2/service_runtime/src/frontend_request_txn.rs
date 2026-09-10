@@ -771,12 +771,7 @@ mod tests {
             .is_ok());
             assert!(matches!(
                 validate_frontend_begin_contract(
-                    &entry(
-                        FrontendBackendKind::LinuxDvb,
-                        FrontendSystem::IsdbT,
-                        0,
-                        0,
-                    ),
+                    &entry(FrontendBackendKind::LinuxDvb, FrontendSystem::IsdbT, 0, 0,),
                     &request,
                     &[],
                     None,

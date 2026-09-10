@@ -1,11 +1,15 @@
 use std::collections::BTreeMap;
 
+use crate::capability_selection::{
+    select_capabilities, CapabilityCandidate, CapabilityClaims, CapabilityClosure,
+    CapabilityClosureProfile, CapabilityResource, ProductCapabilityProfile, SelectedCapabilities,
+};
 use crate::playback_consume_txn::required_playback_processing_bytes;
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidArgumentKind};
 use maleicacid_tuner_hal2_demux::{
-    DvrKind, FilterOpenType, MAX_PES_BUFFER_BYTES,
-    DEFAULT_AV_MAX_EVENT_BYTES, DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
-    DEFAULT_AV_PER_FILTER_LIVE_BYTES,
+    DvrKind, FilterOpenType, DEFAULT_AV_MAX_EVENT_BYTES,
+    DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER, DEFAULT_AV_PER_FILTER_LIVE_BYTES,
+    MAX_PES_BUFFER_BYTES,
 };
 
 const MIB: usize = 1024 * 1024;
@@ -85,8 +89,7 @@ impl CapabilitySnapshot {
             pes_runtime_budget_bytes: 6 * MIB,
             playback_processing_budget_bytes: 64 * MIB,
             av_max_event_bytes: DEFAULT_AV_MAX_EVENT_BYTES,
-            av_max_outstanding_events_per_filter:
-                DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
+            av_max_outstanding_events_per_filter: DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
             av_per_filter_live_bytes: DEFAULT_AV_PER_FILTER_LIVE_BYTES,
             av_runtime_budget_bytes: DEFAULT_AV_PER_FILTER_LIVE_BYTES * 2,
             cleanup_reaper_capacity: 160,
@@ -95,6 +98,289 @@ impl CapabilitySnapshot {
             worker_io_deadline_ms: 2_000,
             worker_reaper_deadline_ms: 10_000,
         }
+    }
+
+    pub(crate) fn compose_for_frontends(
+        frontend_ids: &[i32],
+    ) -> Result<(Self, Vec<i32>), HalError> {
+        use CapabilityClosure::*;
+        use CapabilityResource::*;
+        let requested = Self::product_default();
+        // 製品宣言の共有枠とbyte予算。個別APIで要求される実領域は起動時に先取りしない。
+        let available = CapabilityClaims::default()
+            .with(
+                Worker,
+                requested
+                    .cleanup_reaper_capacity
+                    .checked_mul(3)
+                    .ok_or_else(|| {
+                        HalError::internal(
+                            HalInternalKind::InvariantViolation,
+                            "worker上限がoverflowしました",
+                        )
+                    })?,
+            )
+            .with(Callback, requested.cleanup_reaper_capacity)
+            .with(
+                Reaper,
+                frontend_ids
+                    .len()
+                    .checked_mul(2)
+                    .and_then(|count| requested.cleanup_reaper_capacity.checked_add(count))
+                    .ok_or_else(|| {
+                        HalError::internal(
+                            HalInternalKind::InvariantViolation,
+                            "reaper上限がoverflowしました",
+                        )
+                    })?,
+            )
+            .with(Cleanup, requested.cleanup_reaper_capacity)
+            .with(SectionTracker, requested.num_section_filter as usize)
+            .with(FmqBytes, requested.fmq_runtime_budget_bytes)
+            .with(PesBytes, requested.pes_runtime_budget_bytes)
+            .with(AvBytes, requested.av_runtime_budget_bytes)
+            .with(PlaybackBytes, requested.playback_processing_budget_bytes);
+        let object = CapabilityClaims::default()
+            .with(Worker, 3)
+            .with(Callback, 1)
+            .with(Reaper, 2)
+            .with(Cleanup, 2);
+        let mut closures = Vec::new();
+        let mut ids = frontend_ids.to_vec();
+        ids.sort_unstable();
+        if ids.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "能力候補のfrontend IDが重複しています",
+            ));
+        }
+        for id in &ids {
+            closures.push(Self::closure_profile(
+                Frontend(*id),
+                1,
+                object.with(Worker, 6).with(Reaper, 4),
+                None,
+            )?);
+        }
+        closures.push(Self::closure_profile(
+            DemuxBase,
+            requested.public_demuxes().map(|entries| entries.len())?,
+            object,
+            None,
+        )?);
+        // TS/SECTION/PCR/PES/AV/playback/recordの順で共有枠を使用する。
+        // 非公開候補は暗黙の0件であり、正の候補を大きい順に1件刻みで試す。
+        for (closure, count, unit, count_limit) in [
+            (
+                TsFilter,
+                requested.num_ts_filter,
+                object.with(FmqBytes, 4 * MIB),
+                None,
+            ),
+            (
+                SectionFilter,
+                requested.num_section_filter,
+                object.with(FmqBytes, 4 * MIB).with(SectionTracker, 1),
+                None,
+            ),
+            (PcrFilter, requested.num_pcr_filter, object, None),
+            (
+                Pes,
+                requested.num_pes_filter,
+                object
+                    .with(FmqBytes, 8 * MIB)
+                    .with(PesBytes, requested.pes_max_bytes_per_filter),
+                Some((DemuxBase, 1)),
+            ),
+            (
+                AudioAv,
+                requested.num_audio_filter,
+                object
+                    .with(PesBytes, requested.pes_max_bytes_per_filter)
+                    .with(AvBytes, requested.av_per_filter_live_bytes),
+                None,
+            ),
+            (
+                VideoAv,
+                requested.num_video_filter,
+                object
+                    .with(PesBytes, requested.pes_max_bytes_per_filter)
+                    .with(AvBytes, requested.av_per_filter_live_bytes),
+                None,
+            ),
+            (
+                PlaybackDvr,
+                requested.num_playback,
+                object.with(FmqBytes, 4 * MIB).with(PlaybackBytes, 8 * MIB),
+                Some((DemuxBase, 1)),
+            ),
+            (
+                RecordDvr,
+                requested.num_record,
+                object.with(FmqBytes, 4 * MIB),
+                Some((DemuxBase, 1)),
+            ),
+        ] {
+            let count = usize::try_from(count).map_err(|_| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "能力候補の個数が負数です",
+                )
+            })?;
+            closures.push(Self::closure_profile(closure, count, unit, count_limit)?);
+        }
+        let profile = ProductCapabilityProfile {
+            shared_runtime_candidates: vec![available],
+            closures,
+        };
+        let selected = select_capabilities(&profile, available, |selection| {
+            let snapshot = Self::from_selection(requested, selection)
+                .map_err(|_| "能力候補の変換が不正です")?;
+            snapshot
+                .validate_dependency_closures()
+                .map_err(|_| "能力閉包の横断検査に失敗しました")?;
+            let filter_count = [TsFilter, SectionFilter, PcrFilter, Pes, AudioAv, VideoAv]
+                .iter()
+                .try_fold(0usize, |sum, kind| sum.checked_add(selection.count(*kind)))
+                .ok_or("filter個数がoverflowしました")?;
+            let frontend_count = ids
+                .iter()
+                .filter(|id| selection.count(Frontend(**id)) > 0)
+                .count();
+            let object_count = filter_count
+                .checked_add(frontend_count)
+                .and_then(|count| count.checked_add(selection.count(DemuxBase)))
+                .and_then(|count| count.checked_add(selection.count(PlaybackDvr)))
+                .and_then(|count| count.checked_add(selection.count(RecordDvr)))
+                .ok_or("object個数がoverflowしました")?;
+            let claims = selection.claims();
+            if claims.amount(Callback) < object_count
+                || claims.amount(Worker)
+                    < object_count
+                        .checked_add(frontend_count)
+                        .and_then(|count| count.checked_add(claims.amount(Reaper)))
+                        .ok_or("worker個数がoverflowしました")?
+                || claims.amount(Reaper)
+                    < object_count
+                        .checked_mul(2)
+                        .ok_or("reaper個数がoverflowしました")?
+                || claims.amount(Cleanup)
+                    < object_count
+                        .checked_mul(2)
+                        .ok_or("cleanup個数がoverflowしました")?
+                || claims.amount(SectionTracker) != selection.count(SectionFilter)
+            {
+                return Err("共有枠またはSECTION追跡領域が不足しています");
+            }
+            Ok(())
+        })
+        .map_err(|error| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                format!("{} 返却順={:?}", error.reason, error.returned_in_order),
+            )
+        })?;
+        let snapshot = Self::from_selection(requested, &selected)?;
+        let ids = ids
+            .into_iter()
+            .filter(|id| selected.count(Frontend(*id)) > 0)
+            .collect();
+        Ok((snapshot, ids))
+    }
+
+    fn closure_profile(
+        closure: CapabilityClosure,
+        maximum: usize,
+        unit: CapabilityClaims,
+        count_limit: Option<(CapabilityClosure, usize)>,
+    ) -> Result<CapabilityClosureProfile, HalError> {
+        let dependencies = match closure {
+            CapabilityClosure::Frontend(_) | CapabilityClosure::DemuxBase => Vec::new(),
+            _ => vec![CapabilityClosure::DemuxBase],
+        };
+        let candidates = (1..=maximum)
+            .rev()
+            .map(|count| {
+                let claims = unit.checked_scale(count).ok_or_else(|| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "能力候補の資源量がoverflowしました",
+                    )
+                })?;
+                Ok(CapabilityCandidate { count, claims })
+            })
+            .collect::<Result<Vec<_>, HalError>>()?;
+        Ok(CapabilityClosureProfile {
+            closure,
+            dependencies,
+            candidates,
+            count_limit,
+        })
+    }
+
+    fn from_selection(
+        mut snapshot: Self,
+        selected: &SelectedCapabilities,
+    ) -> Result<Self, HalError> {
+        use CapabilityClosure::*;
+        use CapabilityResource::*;
+        let count = |closure| {
+            i32::try_from(selected.count(closure)).map_err(|_| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "公開能力の個数が範囲外です",
+                )
+            })
+        };
+        snapshot.num_ts_filter = count(TsFilter)?;
+        snapshot.num_section_filter = count(SectionFilter)?;
+        snapshot.num_pcr_filter = count(PcrFilter)?;
+        snapshot.num_pes_filter = count(Pes)?;
+        snapshot.num_audio_filter = count(AudioAv)?;
+        snapshot.num_video_filter = count(VideoAv)?;
+        snapshot.num_playback = count(PlaybackDvr)?;
+        snapshot.num_record = count(RecordDvr)?;
+        let has_filters = [TsFilter, SectionFilter, PcrFilter, Pes, AudioAv, VideoAv]
+            .iter()
+            .any(|kind| selected.count(*kind) > 0);
+        for (index, entry) in snapshot.public_demuxes.iter_mut().enumerate() {
+            if index >= selected.count(DemuxBase) {
+                *entry = None;
+            } else if let Some(entry) = entry {
+                entry.filter_types = if has_filters {
+                    DEMUX_FILTER_MAIN_TYPE_TS
+                } else {
+                    0
+                };
+            }
+        }
+        let claims = selected.claims();
+        snapshot.fmq_runtime_budget_bytes = claims.amount(FmqBytes);
+        snapshot.pes_runtime_budget_bytes = claims.amount(PesBytes);
+        snapshot.av_runtime_budget_bytes = claims.amount(AvBytes);
+        snapshot.playback_processing_budget_bytes = claims.amount(PlaybackBytes);
+        snapshot.cleanup_reaper_capacity = selected
+            .frontend_count()
+            .checked_mul(2)
+            .and_then(|frontend_reapers| claims.amount(Reaper).checked_sub(frontend_reapers))
+            .ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend reaper分離が不整合です",
+                )
+            })?;
+        if !has_filters {
+            snapshot.filter_pending_event_capacity_per_filter = 0;
+        }
+        if snapshot.pes_runtime_budget_bytes == 0 {
+            snapshot.pes_max_bytes_per_filter = 0;
+        }
+        if snapshot.av_runtime_budget_bytes == 0 {
+            snapshot.av_max_event_bytes = 0;
+            snapshot.av_max_outstanding_events_per_filter = 0;
+            snapshot.av_per_filter_live_bytes = 0;
+        }
+        Ok(snapshot)
     }
 
     pub const fn filter_capacity(self, open_type: FilterOpenType) -> i32 {
@@ -111,11 +397,7 @@ impl CapabilitySnapshot {
     }
 
     pub fn public_demuxes(&self) -> Result<Vec<PublicDemuxCapability>, HalError> {
-        let first_empty = match self
-            .public_demuxes
-            .iter()
-            .position(Option::is_none)
-        {
+        let first_empty = match self.public_demuxes.iter().position(Option::is_none) {
             Some(index) => index,
             None => self.public_demuxes.len(),
         };
@@ -164,12 +446,11 @@ impl CapabilitySnapshot {
         let public_demuxes = self.public_demuxes()?;
         if public_demuxes.iter().any(|entry| {
             entry.id < 0
-                || entry.filter_types <= 0
+                || entry.filter_types < 0
                 || (entry.filter_types & !DEMUX_FILTER_MAIN_TYPE_TS) != 0
-        })
-            || public_demuxes
-                .windows(2)
-                .any(|entries| entries[0].id >= entries[1].id)
+        }) || public_demuxes
+            .windows(2)
+            .any(|entries| entries[0].id >= entries[1].id)
         {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
@@ -189,9 +470,8 @@ impl CapabilitySnapshot {
         ]
         .into_iter()
         .any(|count| count > 0);
-        let has_demux_dependent_capability = has_published_ts_filter
-            || self.num_record > 0
-            || self.num_playback > 0;
+        let has_demux_dependent_capability =
+            has_published_ts_filter || self.num_record > 0 || self.num_playback > 0;
         if public_demuxes.is_empty() && has_demux_dependent_capability {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
@@ -434,12 +714,15 @@ impl CapacityLedger {
     }
 
     fn request_bytes(buffer_size: i32, resource: &'static str) -> Result<usize, HalError> {
-        usize::try_from(buffer_size).ok().filter(|size| *size > 0).ok_or_else(|| {
-            HalError::invalid_argument(
-                HalInvalidArgumentKind::NumericRange,
-                format!("{resource} buffer size must be positive"),
-            )
-        })
+        usize::try_from(buffer_size)
+            .ok()
+            .filter(|size| *size > 0)
+            .ok_or_else(|| {
+                HalError::invalid_argument(
+                    HalInvalidArgumentKind::NumericRange,
+                    format!("{resource} buffer size must be positive"),
+                )
+            })
     }
 
     pub(crate) fn reserve_filter(
@@ -619,6 +902,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shared_cleanup_shortage_preserves_unrelated_capabilities() {
+        let (snapshot, ids) =
+            CapabilitySnapshot::compose_for_frontends(&[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
+        assert_eq!(ids, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(
+            (snapshot.num_ts_filter, snapshot.num_section_filter),
+            (32, 8)
+        );
+        assert_eq!(
+            (
+                snapshot.num_audio_filter,
+                snapshot.num_video_filter,
+                snapshot.num_pes_filter
+            ),
+            (1, 1, 4)
+        );
+        assert_eq!((snapshot.num_playback, snapshot.num_record), (8, 6));
+        assert_eq!(snapshot.cleanup_reaper_capacity, 160);
+        snapshot.validate_dependency_closures().unwrap();
+    }
+
+    #[test]
+    fn absent_frontend_does_not_suppress_demux_and_dvr() {
+        let (snapshot, ids) = CapabilitySnapshot::compose_for_frontends(&[]).unwrap();
+        assert!(ids.is_empty());
+        assert_eq!((snapshot.num_playback, snapshot.num_record), (8, 8));
+        assert_eq!(snapshot.fmq_runtime_budget_bytes, 256 * MIB);
+        snapshot.validate_dependency_closures().unwrap();
+    }
+
+    #[test]
     fn demux_dependent_capability_requires_a_published_demux() {
         let mut snapshot = CapabilitySnapshot::product_default();
         snapshot.public_demuxes = [None; 8];
@@ -729,8 +1043,12 @@ mod tests {
             ..CapabilitySnapshot::product_default()
         };
         let mut ledger = CapacityLedger::default();
-        ledger.reserve_dvr(snapshot, 7, queue_capacity as i32).unwrap();
-        ledger.reserve_dvr(snapshot, 8, queue_capacity as i32).unwrap();
+        ledger
+            .reserve_dvr(snapshot, 7, queue_capacity as i32)
+            .unwrap();
+        ledger
+            .reserve_dvr(snapshot, 8, queue_capacity as i32)
+            .unwrap();
         assert!(ledger
             .reserve_playback_processing(snapshot, 7, DvrKind::Playback, queue_capacity as i32)
             .is_ok());
@@ -770,8 +1088,7 @@ mod tests {
             num_audio_filter: 0,
             num_video_filter: 1,
             av_max_event_bytes: DEFAULT_AV_MAX_EVENT_BYTES,
-            av_max_outstanding_events_per_filter:
-                DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
+            av_max_outstanding_events_per_filter: DEFAULT_AV_MAX_OUTSTANDING_EVENTS_PER_FILTER,
             av_per_filter_live_bytes: DEFAULT_AV_PER_FILTER_LIVE_BYTES,
             av_runtime_budget_bytes: 1,
             ..CapabilitySnapshot::product_default()
@@ -793,10 +1110,7 @@ mod tests {
         assert_eq!(snapshot.num_audio_filter, 1);
         assert_eq!(snapshot.num_video_filter, 1);
         assert_eq!(snapshot.num_pes_filter, 4);
-        assert!(
-            snapshot.pes_runtime_budget_bytes
-                >= snapshot.pes_max_bytes_per_filter * 6
-        );
+        assert!(snapshot.pes_runtime_budget_bytes >= snapshot.pes_max_bytes_per_filter * 6);
         snapshot
             .validate_dependency_closures()
             .expect("product AV capabilities must retain a closed finite byte budget");

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
-    FrontendEventType::FrontendEventType,
-    FrontendScanMessage::FrontendScanMessage, FrontendScanMessageType::FrontendScanMessageType,
+    FrontendEventType::FrontendEventType, FrontendScanMessage::FrontendScanMessage,
+    FrontendScanMessageType::FrontendScanMessageType,
 };
 use maleicacid_tuner_hal2_common::HalError;
 use maleicacid_tuner_hal2_service_runtime::{
@@ -22,6 +22,15 @@ fn frontend_scan_end_fallback_record(
     primary: HalError,
 ) -> FrontendCallbackDeliveryDiagnosticRecord {
     match phase {
+        CallbackDeliveryFailurePhase::PostDeliveryCommit => {
+            FrontendCallbackDeliveryDiagnosticRecord::scan_session_accounting(
+                handle.object_id(),
+                handle.generation(),
+                frontend_id,
+                scan_generation,
+                primary,
+            )
+        }
         CallbackDeliveryFailurePhase::CallbackArtifactLookup
         | CallbackDeliveryFailurePhase::RuntimePolicySkip
         | CallbackDeliveryFailurePhase::NotifierCleanup
@@ -57,7 +66,7 @@ fn finish_frontend_scan_end_delivery_failure(
     primary: HalError,
 ) -> Result<(), HalError> {
     let runtime = context.runtime();
-    match runtime.lock() {
+    let result = match runtime.lock() {
         Ok(mut guard) => guard.finish_callback_delivery_failure_use_case(
             CallbackDeliveryFailureReport::frontend_scan_end(
                 handle.object_id(),
@@ -87,7 +96,8 @@ fn finish_frontend_scan_end_delivery_failure(
                 ),
             }
         }
-    }
+    };
+    result
 }
 
 fn deliver_scan_callback(
@@ -117,8 +127,7 @@ fn deliver_scan_callback(
     let callback = match context.frontend_callback_for_owner(handle) {
         Ok(Some(callback)) => callback,
         Ok(None) => {
-            let primary =
-                HalError::callback_failed(method, "frontend callback is not registered");
+            let primary = HalError::callback_failed(method, "frontend callback is not registered");
             return finish_frontend_scan_end_delivery_failure(
                 context,
                 handle,
@@ -177,7 +186,7 @@ fn finish_frontend_event_delivery_failure(
         CallbackDeliveryFailurePhase::BinderDelivery
     };
     let runtime = context.runtime();
-    match runtime.lock() {
+    let result = match runtime.lock() {
         Ok(mut guard) => guard.finish_callback_delivery_failure_use_case(
             CallbackDeliveryFailureReport::frontend_event(
                 handle.object_id(),
@@ -215,7 +224,8 @@ fn finish_frontend_event_delivery_failure(
                 ),
             }
         }
-    }
+    };
+    result
 }
 
 fn deliver_tune_event_callback(

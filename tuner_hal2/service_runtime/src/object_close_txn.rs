@@ -615,11 +615,7 @@ impl ObjectCloseUseCasePlan {
         } = self;
         let key = runtime
             .object_table_mut()
-            .begin_close_cleanup_attempt(
-                authority.object_id,
-                authority.generation,
-                authority.key,
-            )
+            .begin_close_cleanup_attempt(authority.object_id, authority.generation, authority.key)
             .map_err(object_table_error_to_hal)?;
         Ok(ObjectCloseCleanupAttempt {
             completion: CloseCleanupAttemptCompletion {
@@ -1236,14 +1232,18 @@ fn finish_object_close_txn(
     let object_id = completion.object_id;
     let generation = completion.generation;
     if let Err(cleanup_failure) = cleanup_result {
-        match runtime.object_table_mut().finish_close_cleanup_attempt(
-            object_id,
-            generation,
-            completion.key,
-            CloseCleanupAttemptOutcome::Pending {
-                step: cleanup_failure.step(),
-            },
-        ).map_err(object_table_error_to_hal) {
+        match runtime
+            .object_table_mut()
+            .finish_close_cleanup_attempt(
+                object_id,
+                generation,
+                completion.key,
+                CloseCleanupAttemptOutcome::Pending {
+                    step: cleanup_failure.step(),
+                },
+            )
+            .map_err(object_table_error_to_hal)
+        {
             Ok(_) => return Err(cleanup_failure.into_error()),
             Err(mark_error) => {
                 return Err(compose_primary_cleanup_failure(
@@ -1330,6 +1330,7 @@ pub(crate) fn plan_and_begin_object_close_command_dispatch(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn begin_object_close_cascade(
     runtime: &mut TunerServiceRuntime,
     object_id: AidlObjectId,
@@ -1372,17 +1373,6 @@ pub(crate) fn object_close_cascade_entries(
     runtime
         .object_table()
         .close_cascade_entries(object_id, generation)
-        .map_err(object_table_error_to_hal)
-}
-
-pub(crate) fn commit_object_close_cascade(
-    runtime: &mut TunerServiceRuntime,
-    object_id: AidlObjectId,
-    generation: AidlObjectGeneration,
-) -> Result<Vec<RuntimeObjectEntry>, HalError> {
-    runtime
-        .object_table_mut()
-        .commit_close_cascade(object_id, generation)
         .map_err(object_table_error_to_hal)
 }
 

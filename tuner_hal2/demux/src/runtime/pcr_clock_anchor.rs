@@ -129,7 +129,7 @@ impl PcrClockAnchorStore {
     }
 
     #[cfg(test)]
-    pub(crate) fn observation_for_test(&self, filter_id: i32) -> Option<(u64, u64)> {
+    pub(super) fn observation_for_test(&self, filter_id: i32) -> Option<(u64, u64)> {
         self.anchors
             .borrow()
             .get(&filter_id)

@@ -1,3 +1,65 @@
+## r51_pr85_capability_closure_selection
+
+- HAL-030: frontend、demux base、filter/FMQ、PES、AV、用途別DVR、共有runtimeの依存関係を起動時の有限候補選択へ接続した。候補は固定優先順で共有worker/callback/reaper/cleanup枠、SECTION tracker数、FMQ/PES/AV/playback byte予算を仮予約し、全体検査が成功した場合だけsnapshotを確定する。
+- 候補の一部だけを採用せず、局所的な不足は依存先と後続の共有枠競合に限定する。横断検査失敗時は仮予約を逆順で返却し、起動を失敗として返す。公開済みserviceのsnapshot再構成を拒否する。
+- query/openは同じ選択済みsnapshotとfrontend集合を使用する。PES/DVRのdemux当たり上限を候補検査に含め、専用frontend reaperと汎用cleanup reaperを分けて計上した。
+- ホストCIへ実際の候補選択moduleを追加し、候補失敗後の予約量、無関係なDVRの保持、逆順返却、SECTION追跡枠、所有者別上限の入口を検査する。
+- 検証: HAL host unit 456件、全target Clippyに成功。実snapshotとplayback予算計算を読み込む追加host検証21件に成功（単独検証用の未使用項目warningあり）。Android/Soong全体と実機起動は未実施。
+
+# r51_pr85_av_allocation_retry
+
+- HAL-020: AV領域の割当・mapping等の一時失敗はOVERFLOWと元の診断を返し、filterをfailedへ遷移させない。空き枠不足・上限超過にもOVERFLOWを出す。次入力は再試行でき、失敗時に架空data IDを発行しない。
+- 容量台帳破損・計算overflow・必須backing欠落をInvariantViolationとして割当不足から分離する。これらとunmap失敗の局所failureは維持する。
+- 共有handle解放後のevent-local割当を失敗注入し、OVERFLOW・未発行ID・次PESでの正確な長さのFD-backed event生成を確認した。Rust host workspace451件とall-target Clippy（-D warnings）が成功した。Android実機のdma-buf不足試験は未実施。
+
+# r51_pr85_reaper_and_diagnostic_lifecycle
+
+- F-04: tune/scan置換のreaper取得失敗を結果集約の内側へ移し、既に発生したworker terminal acceptance失敗と完了診断を早期returnで失わない。
+- F-09: cleanup reaper laneもWorkerRuntimeが発行する停止/起床権限で生成し、最後のqueue ownerまでhandleを保持する。AIDL cleanup retryのraw sleepを停止解除可能な待機へ変更し、待機中はserviceの強参照を持たない。
+- HAL-028: dropped_count/record_failure_countが上限へ到達した時点でdiagnostic_counter_saturatedをcounter種別・owner型・instance付きで記録する。飽和後もrecord置換と元の処理結果を維持する。
+- HAL-046: PID transactionに続き、鍵/cleanup transactionからもDeref/DerefMutを除き、正規入口だけを公開する。
+- Rust host workspace450件とall-target Clippy（-D warnings）が成功した。queue cloneを一つ破棄してもworkerが継続し、最後のownerの破棄で1時間待機が解除される試験を追加した。service_runtime/aidl_serviceはhost workspace対象外であり、追加したdiagnostic飽和試験を含むAndroid/Soong build・atest・実機試験は未実施。
+
+# r50eo84_pr85_frontend_cancellation_io
+
+- F-07/F-08/HAL-017: Frontend workerとlive pumpの取消状態を正規control ownerへ集約した。DVB readerとpx4 control fdを非ブロッキングで開き、WouldBlockの再待機とEINTR再試行の間で停止要求を観測する。EOF後に同じ入力を自動再開しない。
+- F-09: Frontend状態確認とDVR通知の待機を停止で解除可能にした。cleanup reaperの待機経路は別途確認中であり、この項目全体の完了とはしない。
+- HAL-016/HAL-041: DVBの通常終了・失敗回復はfd解放とし、DTV_CLEARは明示的な選局停止へ限定した。px4の終了ではstream停止を維持する。Frontendの失敗回復でruntime lockを解放してから機器I/Oを行い、再取得後に世代付き状態記録を行う。
+- HAL-047: live readの恒久障害へDVB/px4と実デバイスパスを保持する。
+- Rust 1.81のhost単体試験449件とClippyが成功した。無入力の実FD、WouldBlock/EINTR後の再開、backend別障害、DVB closeとpx4 closeの差を回帰確認した。Android/Soong build、atest、VTS、CTS、実機のdriver停止期限確認は未実施。
+
+# r50eo84_pr85_worker_wake_failure_boundaries
+
+- F-01/F-02/HAL-039: Filter遅延配送のグローバル起床状態と循環番号を廃止し、正規WorkerRuntimeが保持する専用の起床状態とCondvarへ接続した。通知が待機より先に到着しても保持し、停止要求でも待機を解除する。
+- F-03: queueのpoisonを解除せず受付を拒否する。F-06: 配送後startId確定の失敗を、runtimeがpoisonされた場合もfallback診断へ残す。
+- HAL-005: 未初期化依存をNOT_INITIALIZEDへ写像する。HAL-046: DescramblerPidTxnからraw runtimeへ到達するDeref/DerefMutを除いた。
+- Rust 1.81のhost workspace単体試験444件、Clippyが成功した。実status moduleを用いた9件の試験も成功した。Android/Soong build、atest、VTS、CTS、実機確認は未実施。
+
+# r50eo84_pr85_pes_completion_boundary
+
+- HAL-019: 長さ0のPESは、同一PIDの次PUSIに続く有効なPESヘッダーを検証してから完成させる。次ヘッダーの分割は最大264バイトの保留へ保持し、不正ヘッダー・別PID・未完成の次ヘッダーを完成根拠にしない。
+- 次ヘッダーの各分割位置、不正入力、別PID、正確な出力範囲を単体試験で確認した。Rust 1.81のhost workspace単体試験が成功した。Android/Soong build、atest、VTS、CTS、実機確認は未実施。
+
+# r50eo84_pr85_vts_install_cleanup
+
+- HAL-057: VTS XMLの配置前後に対象ディレクトリを確認し、別名の設定が共存する配置を拒否する。実機のvariantを変更せず、配置済み設定を推測で削除しない。
+- 一時VTS補助プログラムの部分転送・権限設定・除去の失敗を伝播する。処理と除去が両方失敗した場合は双方の例外を保持し、除去完了後だけ解決済みprofileを保存する。
+- HAL-031: 未確定・上限超過profileは既存の検証でadb操作前に拒否することを回帰確認した。現行設計の「installしない」を、検証失敗時に既存端末設定を削除する契約へ拡張しない。
+- Python単体試験88件が成功した。Android/Soong build、atest、VTS、CTS、実機配置は未実施。
+
+# r50eo84_pr85_aidl_service_soong_dead_code_followup
+
+- Android Soongの製品向け`aidl_service`で検出された未使用コードを、警告抑止属性を追加せず整理した。Filter/DVR子objectのcallback登録は現行の`prepare`、Binder object生成、callback artifact確定、runtime確定の経路だけを残し、置換前の直接`retain`入口と中継関数を削除した。Frontend/LNBのcallback登録も、callback store lock下の現行複合transactionから使われない`AidlServiceContext`中継入口を削除した。
+- LNB callbackのBinder strong referenceは配送用の読取り値ではなく登録期間中の保持物であるため、`StoredCallback::Lnb`を保持目的が型に現れる名前付きfieldへ変更した。callback storeによる所有、置換、解除、close時解放の契約は変更していない。
+- cleanup reaperは未完義務の最新`CleanupStep`をpending registryへ保存し、各試行前にruntimeから再解決するため、`CleanupJob`に重複して保持され、参照されなかった初回dependency fieldを削除した。pending登録値と再解決処理は維持した。
+- 本番から到達せず単体試験だけが使用する旧callback失敗注入補助を`#[cfg(test)]`境界へ隔離した。DVR callback配送試験の直接登録補助も試験専用名と`#[cfg(test)]`境界へ限定した。
+- 監査台帳F-10で指摘された`compile_contract`の本体ソース文字列検査を削除し、`PreparedCallbackArtifactToken`が`Clone`/`Copy`でないことの型検査を所有moduleの単体試験へ移した。Soong testの`srcs`から文字列読取り目的だけの本体source列挙を除き、型検査用依存をAIDL service testへ追加した。
+- #88で拡張されたhost workspace全体の単体試験が製品demuxの単体試験binaryもlinkするため、Androidでは`fmq_shim`が提供する`dmabuf_heap`確保関数に、単体試験専用の`memfd_create`/`ftruncate`実装を追加した。試験でも実FDをmmap/exportするAV backing契約を検証し、製品buildとintegration testの外部関数解決は変更していない。
+- 拡張CIが露出させたdemux未達として、callback異常を記録したDVRの再start拒否、FMQを持つsinkのsource boundary前queue存在検証、Record DVR commit後のindex eventをcallback queueと同期reportの双方へ同値投影する処理を補完した。
+- host `--all-targets`ではtest helperが使用するため検出されなかった`object_runtime`の`AidlApi` importを`#[cfg(test)]`境界へ分離し、Android/Soong製品compileの`-D warnings`でも未使用importを残さないようにした。
+- PES packet length外byteをpayloadとみなしていた期待値、消費型Record DVR queue読取りをsnapshotとみなしていた期待値、one-shot cleanup authorityの未消費Dropを通常rollbackとみなしていた期待値、局所filter quarantineをdemux全体quarantineとみなしていた期待値を現行契約へ合わせた。queue依存試験は正のbuffer sizeを持つ`OpenFilterRequest`を使用する。
+- `git diff --check`と対象symbolの定義・参照検索を実施した。この環境にはRust toolchainとAndroid build treeがないため、ローカルでのRust 1.81 rustfmt、host build/unit test/Clippy、Android/Soong build、atest、VTS、CTS、実機確認は未実施である。
+
 # r50eo84_pr55_px4_partial_reception_availability_followup
 
 - px4 ISDB-Tの明示`partialReceptionFlag=TRUE/FALSE`を、採用済み`PTX_GET_TMCC_PARTIAL_RECEPTION`と同一generationのfresh readbackで検証する既存worker経路へ到達可能にした。availability gateはLinux DVB / earth_pt1だけを`UNAVAILABLE`として拒否し、px4を旧blocker状態へ戻さない。

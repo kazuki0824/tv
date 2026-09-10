@@ -56,6 +56,13 @@ class NativeAribCaptionRenderer(
         return DecodeResult.Rendered(frame)
     }
 
+    fun renderAt(mediaTimeMillis: Long): RenderedCaptionFrame? {
+        val current = handle.takeIf { it != 0L } ?: return null
+        if (mediaTimeMillis < 0L) return null
+        val packet = nativeRenderAt(current, mediaTimeMillis) ?: return null
+        return decodeFramePacket(packet)
+    }
+
     fun flush() {
         handle.takeIf { it != 0L }?.let(::nativeFlush)
     }
@@ -69,6 +76,7 @@ class NativeAribCaptionRenderer(
     private external fun nativeCreateRenderer(dataComponentId: Int, superimpose: Boolean, languageId: Int): Long
     private external fun nativeSetViewport(handle: Long, width: Int, height: Int): Boolean
     private external fun nativeDecodeAndRender(handle: Long, pesData: ByteArray, ptsMillis: Long): ByteArray?
+    private external fun nativeRenderAt(handle: Long, mediaTimeMillis: Long): ByteArray?
     private external fun nativeFlush(handle: Long)
     private external fun nativeReleaseRenderer(handle: Long)
 

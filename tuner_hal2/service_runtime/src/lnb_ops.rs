@@ -17,11 +17,7 @@ use crate::boot::TunerServiceRuntime;
 
 impl TunerServiceRuntime {
     #[cfg(test)]
-    pub(crate) fn set_frontend_lnb(
-        &mut self,
-        frontend_id: i32,
-        lnb_id: i32,
-    ) -> Result<(), HalError> {
+    fn set_frontend_lnb(&mut self, frontend_id: i32, lnb_id: i32) -> Result<(), HalError> {
         let authority = self
             .registry()
             .lnb_physical_io_authority(LnbRuntimeId(lnb_id))
@@ -37,7 +33,7 @@ impl TunerServiceRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn apply_lnb_voltage(
+    fn apply_lnb_voltage(
         &mut self,
         lnb_id: i32,
         request: LnbVoltageRequest,
@@ -46,16 +42,12 @@ impl TunerServiceRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn apply_lnb_tone(
-        &mut self,
-        lnb_id: i32,
-        request: LnbToneRequest,
-    ) -> Result<(), HalError> {
+    fn apply_lnb_tone(&mut self, lnb_id: i32, request: LnbToneRequest) -> Result<(), HalError> {
         self.execute_lnb_control_for_test(lnb_id, |txn| txn.prepare_tone(lnb_id, request))
     }
 
     #[cfg(test)]
-    pub(crate) fn apply_lnb_satellite_position(
+    fn apply_lnb_satellite_position(
         &mut self,
         lnb_id: i32,
         request: LnbSetSatellitePositionRequest,
@@ -66,7 +58,7 @@ impl TunerServiceRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn send_lnb_diseqc(&mut self, lnb_id: i32, payload: &[u8]) -> Result<(), HalError> {
+    fn send_lnb_diseqc(&mut self, lnb_id: i32, payload: &[u8]) -> Result<(), HalError> {
         let authority = self
             .registry()
             .lnb_physical_io_authority(LnbRuntimeId(lnb_id))

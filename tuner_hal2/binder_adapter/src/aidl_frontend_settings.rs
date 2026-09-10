@@ -246,14 +246,12 @@ fn classify_isdbt_settings(
             FrontendIsdbtModulation::MOD_64QAM.0,
         )? {
             IsdbtKnownValue::Unspecified => {}
-            IsdbtKnownValue::Auto => requested.push(
-                FrontendRequestedSetting::IsdbtLayerModulationAuto { layer_index },
-            ),
+            IsdbtKnownValue::Auto => {
+                requested.push(FrontendRequestedSetting::IsdbtLayerModulationAuto { layer_index })
+            }
             IsdbtKnownValue::Explicit(value) => {
-                requested.push(FrontendRequestedSetting::IsdbtLayerModulation {
-                    layer_index,
-                    value,
-                });
+                requested
+                    .push(FrontendRequestedSetting::IsdbtLayerModulation { layer_index, value });
             }
         }
         match isdbt_known_value(
@@ -262,14 +260,11 @@ fn classify_isdbt_settings(
             FrontendIsdbtCoderate::CODERATE_8_9.0,
         )? {
             IsdbtKnownValue::Unspecified => {}
-            IsdbtKnownValue::Auto => requested.push(
-                FrontendRequestedSetting::IsdbtLayerCoderateAuto { layer_index },
-            ),
+            IsdbtKnownValue::Auto => {
+                requested.push(FrontendRequestedSetting::IsdbtLayerCoderateAuto { layer_index })
+            }
             IsdbtKnownValue::Explicit(value) => {
-                requested.push(FrontendRequestedSetting::IsdbtLayerCoderate {
-                    layer_index,
-                    value,
-                });
+                requested.push(FrontendRequestedSetting::IsdbtLayerCoderate { layer_index, value });
             }
         }
         match isdbt_known_value(
@@ -278,9 +273,8 @@ fn classify_isdbt_settings(
             1 << 12,
         )? {
             IsdbtKnownValue::Unspecified => {}
-            IsdbtKnownValue::Auto => requested.push(
-                FrontendRequestedSetting::IsdbtLayerTimeInterleaveAuto { layer_index },
-            ),
+            IsdbtKnownValue::Auto => requested
+                .push(FrontendRequestedSetting::IsdbtLayerTimeInterleaveAuto { layer_index }),
             IsdbtKnownValue::Explicit(value) => {
                 requested.push(FrontendRequestedSetting::IsdbtLayerTimeInterleave {
                     layer_index,
@@ -383,9 +377,7 @@ fn classify_isdbs_settings(
     match s.rolloff {
         FrontendIsdbsRolloff::UNDEFINED => {}
         FrontendIsdbsRolloff::ROLLOFF_0_35 => {
-            requested.push(FrontendRequestedSetting::IsdbsExplicitRolloff {
-                value: s.rolloff.0,
-            });
+            requested.push(FrontendRequestedSetting::IsdbsExplicitRolloff { value: s.rolloff.0 });
         }
         _ => return invalid_frontend_setting("ISDB-S rolloff contains a reserved enum value"),
     }

@@ -5,8 +5,9 @@ use crate::ca_descriptor::{
 };
 use crate::discovery_requirements::{optional_table_requirement, DiscoveryProfile};
 use crate::eit::{EitEvent, EitStore, EitUpdateWindow};
-use crate::eit_publish_policy::is_program_publish_eit_section;
-use crate::sections::{parse_section_header, section_crc_valid};
+use crate::sections::{
+    parse_section_header, section_crc_valid, section_has_malformed_descriptor_loop,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -23,6 +24,20 @@ pub struct DiscoveredElementaryStream {
     pub language_codes: Vec<String>,
     pub is_caption: bool,
     pub is_superimpose: bool,
+}
+
+impl DiscoveredElementaryStream {
+    pub fn codec_signaling(&self) -> Option<(&'static str, &'static str)> {
+        match self.stream_type {
+            0x02 => Some(("VIDEO", "MPEG-2")),
+            0x1b => Some(("VIDEO", "H.264")),
+            0x24 => Some(("VIDEO", "HEVC")),
+            0x03 | 0x04 => Some(("AUDIO", "MPEG-Audio")),
+            0x0f => Some(("AUDIO", "AAC")),
+            0x11 => Some(("AUDIO", "MPEG-4-AAC-LATM")),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -163,6 +178,12 @@ pub struct ServiceSemanticFacts {
     pub system_management: SystemManagementFacts,
     pub missing_components: Vec<&'static str>,
     pub semantic_diagnostics: Vec<&'static str>,
+    pub name: Option<String>,
+    pub provider_name: Option<String>,
+    pub pmt_pid: Option<u16>,
+    pub pcr_pid: Option<u16>,
+    pub program_ca_descriptors: Vec<CaDescriptor>,
+    pub es_ca_descriptors: Vec<EsCaMetadata>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -215,7 +236,9 @@ impl DiscoveryCollectionState {
     }
 
     pub fn is_partially_complete(&self) -> bool {
-        !self.snapshot.services.is_empty()
+        self.table_requirements
+            .iter()
+            .any(|status| status.required && status.complete)
     }
 
     pub fn publish_stage(&self) -> DiscoveryPublishStage {
@@ -257,6 +280,7 @@ impl DiscoveryCollectionState {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct PendingPmtInfo {
     pmt_pid: u16,
+    pmt_parsed: bool,
     pcr_pid: Option<u16>,
     streams: Vec<DiscoveredElementaryStream>,
     program_ca_descriptors: Vec<CaDescriptor>,
@@ -600,7 +624,7 @@ impl ServiceDiscoveryEngine {
         };
         let entry = self.service_entry_mut(tsid, onid, service_id);
         entry.pmt_pid = Some(pending.pmt_pid);
-        entry.pmt_parsed = true;
+        entry.pmt_parsed = pending.pmt_parsed;
         entry.pcr_pid = pending.pcr_pid;
         entry.streams = pending.streams;
         entry.program_ca_descriptors = pending.program_ca_descriptors;
@@ -696,6 +720,7 @@ impl ServiceDiscoveryEngine {
         if section.len() < 12 {
             return;
         }
+        let pmt_parsed = !section_has_malformed_descriptor_loop(pid, 0x02, section, true);
         let service_id = u16::from_be_bytes([section[3], section[4]]);
         let body_end = 3 + section_len(section) - 4;
         let raw_pcr_pid = (((section[8] & 0x1f) as u16) << 8) | section[9] as u16;
@@ -775,10 +800,19 @@ impl ServiceDiscoveryEngine {
         dedup_malformed_ca_diagnostics(&mut self.malformed_ca_descriptor_diagnostics);
         let pending = PendingPmtInfo {
             pmt_pid: pid,
-            pcr_pid,
-            streams: streams.clone(),
-            program_ca_descriptors: program_ca_descriptors.clone(),
-            es_ca_descriptors: service_es_ca_descriptors.clone(),
+            pmt_parsed,
+            pcr_pid: if pmt_parsed { pcr_pid } else { None },
+            streams: if pmt_parsed { streams } else { Vec::new() },
+            program_ca_descriptors: if pmt_parsed {
+                program_ca_descriptors
+            } else {
+                Vec::new()
+            },
+            es_ca_descriptors: if pmt_parsed {
+                service_es_ca_descriptors
+            } else {
+                Vec::new()
+            },
         };
         let candidate_tsids: Vec<u16> = self
             .pat_programs
@@ -1024,7 +1058,6 @@ impl ServiceDiscoveryCollector {
 
     /// サービスが r51 視聴可能になる前に PMTセクションフィルター を開く必要がある。
     /// サービス の公開可否や視聴可否に依存せず、PAT 由来の PMT PID を返す。
-    #[cfg(test)]
     pub fn pmt_pids_for_section_filters(&self) -> Vec<u16> {
         let mut pids: Vec<u16> = self.engine.pat_programs.values().copied().collect();
         pids.extend(
@@ -1050,9 +1083,7 @@ impl ServiceDiscoveryCollector {
         }
         self.track_section(pid, section);
         self.track_transport_scopes(section);
-        if is_program_publish_eit_section(self.discovery_profile, pid, section) {
-            self.engine.push_section(pid, section);
-        }
+        self.engine.push_section(pid, section);
     }
 
     pub fn events(&self) -> Vec<EitEvent> {
@@ -1176,14 +1207,33 @@ impl ServiceDiscoveryCollector {
                 });
             }
         }
-        table_requirements.push(TableRequirementStatus {
-            component: "BAT",
-            original_network_id: None,
-            transport_stream_id: None,
-            service_id: None,
-            required: false,
-            complete: bat_complete,
-        });
+        let bat_scopes: BTreeSet<_> = self
+            .bat_transport_scopes
+            .values()
+            .flatten()
+            .copied()
+            .collect();
+        if bat_scopes.is_empty() {
+            table_requirements.push(TableRequirementStatus {
+                component: "BAT",
+                original_network_id: None,
+                transport_stream_id: None,
+                service_id: None,
+                required: false,
+                complete: bat_complete,
+            });
+        } else {
+            for (tsid, onid) in bat_scopes {
+                table_requirements.push(TableRequirementStatus {
+                    component: "BAT",
+                    original_network_id: Some(onid),
+                    transport_stream_id: Some(tsid),
+                    service_id: None,
+                    required: false,
+                    complete: self.bat_complete_for_transport(onid, tsid),
+                });
+            }
+        }
         if snapshot.services.is_empty() && snapshot.pmt_pids_by_service.is_empty() {
             table_requirements.push(TableRequirementStatus {
                 component: "PMT",
@@ -1201,7 +1251,7 @@ impl ServiceDiscoveryCollector {
                 transport_stream_id: Some(service.transport_stream_id),
                 service_id: Some(service.service_id),
                 required: true,
-                complete: service.pmt_pid.is_some() && service.pcr_pid.is_some(),
+                complete: service.pmt_parsed,
             });
         }
         for mapping in &snapshot.pmt_pids_by_service {
@@ -1261,7 +1311,26 @@ impl ServiceDiscoveryCollector {
                     .es_ca_descriptors
                     .iter()
                     .any(|metadata| !metadata.descriptors.is_empty());
+            let ca_descriptors_resolved = service.pmt_parsed
+                && !snapshot
+                    .malformed_ca_descriptor_diagnostics
+                    .iter()
+                    .any(|diagnostic| {
+                        diagnostic.table_id == 0x02
+                            && Some(diagnostic.pid) == service.pmt_pid
+                            && diagnostic.service_id == Some(service.service_id)
+                    });
             let mut semantic_diagnostics = Vec::new();
+            if service.pmt_parsed && !ca_descriptors_resolved {
+                semantic_diagnostics.push("CA_DESCRIPTOR_UNRESOLVED");
+            }
+            if service
+                .streams
+                .iter()
+                .any(|stream| stream.caption_timing == Some(3))
+            {
+                semantic_diagnostics.push("RESERVED_DATA_COMPONENT_TIMING");
+            }
             if service.pmt_parsed && service.free_ca_mode == Some(true) && !semantic_requires_cas {
                 semantic_diagnostics.push("FREE_CA_MODE_WITHOUT_CA_DESCRIPTOR");
             }
@@ -1289,11 +1358,17 @@ impl ServiceDiscoveryCollector {
                 pcr_pid_resolved: service.pcr_pid.is_some(),
                 elementary_streams: service.streams.clone(),
                 requires_cas: semantic_requires_cas,
-                ca_descriptors_resolved: service.pmt_parsed,
+                ca_descriptors_resolved,
                 free_ca_mode: service.free_ca_mode,
                 system_management: service.system_management.clone(),
                 missing_components: missing_for_service.clone(),
                 semantic_diagnostics,
+                name: service.service_name.clone(),
+                provider_name: service.provider_name.clone(),
+                pmt_pid: service.pmt_pid,
+                pcr_pid: service.pcr_pid,
+                program_ca_descriptors: service.program_ca_descriptors.clone(),
+                es_ca_descriptors: service.es_ca_descriptors.clone(),
             });
         }
 
@@ -1504,7 +1579,6 @@ impl ServiceDiscoveryCollector {
             })
     }
 
-    #[cfg(test)]
     fn bat_complete_for_transport(
         &self,
         original_network_id: u16,
@@ -1966,7 +2040,7 @@ fn decode_si_text_lossy(field: &str, bytes: &[u8]) -> DecodedSiText {
         value,
         diagnostic: (diagnostic.replacement_count != 0).then(|| {
             format!(
-                "field={} used lossy ARIB SI decoding: {}",
+                "文字列を代替復号しました field={}: {}",
                 field,
                 diagnostic.summary(),
             )
@@ -1990,9 +2064,40 @@ fn retain_text_decode_diagnostic(diagnostics: &mut Vec<String>, diagnostic: Opti
 
 #[cfg(test)]
 mod tests {
-    use super::{DiscoveryPublishStage, ServiceDiscoveryCollector, ServiceDiscoveryEngine};
+    use super::{
+        DiscoveryCollectionState, DiscoveryPublishStage, ServiceDiscoveryCollector,
+        ServiceDiscoveryEngine, TableRequirementStatus,
+    };
     use crate::discovery_requirements::DiscoveryProfile;
     use crate::sections::crc32_mpeg;
+
+    #[test]
+    fn partial_stage_is_derived_from_required_tables_without_services() {
+        let mut state = DiscoveryCollectionState {
+            table_requirements: vec![
+                TableRequirementStatus {
+                    component: "PAT",
+                    original_network_id: None,
+                    transport_stream_id: None,
+                    service_id: None,
+                    required: true,
+                    complete: true,
+                },
+                TableRequirementStatus {
+                    component: "PMT",
+                    original_network_id: None,
+                    transport_stream_id: None,
+                    service_id: None,
+                    required: true,
+                    complete: false,
+                },
+            ],
+            ..DiscoveryCollectionState::default()
+        };
+        assert_eq!(state.publish_stage(), DiscoveryPublishStage::Partial);
+        state.table_requirements[0].required = false;
+        assert_eq!(state.publish_stage(), DiscoveryPublishStage::Incomplete);
+    }
 
     #[test]
     fn scoped_table_completeness_does_not_mix_transport_scopes() {
@@ -2042,6 +2147,112 @@ mod tests {
         let crc = crc32_mpeg(&body);
         body.extend_from_slice(&crc.to_be_bytes());
         body
+    }
+
+    fn collector_with_pmt(
+        program_descriptors: &[u8],
+        es_bytes: &[u8],
+        pcr_pid: u16,
+    ) -> ServiceDiscoveryCollector {
+        let pat = section_with_crc(vec![
+            0x00, 0xb0, 0x0d, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x01, 0xe1, 0x00,
+        ]);
+        let sdt = section_with_crc(vec![
+            0x42, 0xf0, 0x18, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x01, 0xfc,
+            0xe0, 0x07, 0x48, 0x05, 0x01, 0x00, 0x02, b'T', b'1',
+        ]);
+        let mut pmt = vec![
+            0x02,
+            0xb0,
+            0,
+            0,
+            1,
+            0xc1,
+            0,
+            0,
+            0xe0 | ((pcr_pid >> 8) as u8),
+            pcr_pid as u8,
+            0xf0,
+            program_descriptors.len() as u8,
+        ];
+        pmt.extend_from_slice(program_descriptors);
+        pmt.extend_from_slice(es_bytes);
+        let len = pmt.len() + 1;
+        pmt[1] |= (len >> 8) as u8;
+        pmt[2] = len as u8;
+        let mut collector = ServiceDiscoveryCollector::default();
+        collector.push_section(0, &pat);
+        collector.push_section(0x11, &sdt);
+        collector.push_section(0x100, &section_with_crc(pmt));
+        collector
+    }
+
+    #[test]
+    fn pmt_syntax_completion_is_independent_of_pcr_availability() {
+        let state = collector_with_pmt(&[], &[], 0x1fff).state();
+        let facts = &state.semantic_facts_by_service[0];
+        assert!(facts.pmt_parsed);
+        assert!(!facts.pcr_pid_resolved);
+        assert!(facts.ca_descriptors_resolved);
+        assert!(state
+            .table_requirements
+            .iter()
+            .any(|status| status.component == "PMT" && status.complete));
+    }
+
+    #[test]
+    fn malformed_pmt_loops_never_publish_a_partial_stream_list() {
+        let good_es = [0x1b, 0xe1, 0x01, 0xf0, 0];
+        for (program, suffix) in [
+            (vec![0x52], vec![]),
+            (vec![0x52, 2, 1], vec![]),
+            (vec![], vec![0x0f, 0xe1]),
+            (vec![], vec![0x0f, 0xe1, 2, 0xf0, 4, 0x52, 1, 1]),
+            (vec![], vec![0x0f, 0xe1, 2, 0xf0, 1, 0x52]),
+        ] {
+            let mut es = good_es.to_vec();
+            es.extend(suffix);
+            let state = collector_with_pmt(&program, &es, 0x101).state();
+            let facts = &state.semantic_facts_by_service[0];
+            assert!(!facts.pmt_parsed);
+            assert!(!facts.ca_descriptors_resolved);
+            assert!(facts.elementary_streams.is_empty());
+            assert!(state
+                .table_requirements
+                .iter()
+                .any(|status| status.component == "PMT" && !status.complete));
+        }
+    }
+
+    #[test]
+    fn malformed_ca_is_unresolved_even_when_the_pmt_loop_is_well_formed() {
+        for (program, es) in [
+            (vec![0x09, 3, 0, 5, 0xe1], vec![]),
+            (vec![], vec![0x1b, 0xe1, 1, 0xf0, 5, 0x09, 3, 0, 5, 0xe1]),
+        ] {
+            let state = collector_with_pmt(&program, &es, 0x101).state();
+            let facts = &state.semantic_facts_by_service[0];
+            assert!(facts.pmt_parsed);
+            assert!(!facts.ca_descriptors_resolved);
+            assert!(!facts.requires_cas);
+            assert!(facts
+                .semantic_diagnostics
+                .contains(&"CA_DESCRIPTOR_UNRESOLVED"));
+            assert_eq!(state.snapshot.malformed_ca_descriptor_diagnostics.len(), 1);
+        }
+    }
+
+    #[test]
+    fn reserved_data_component_timing_retains_raw_value_and_diagnostic() {
+        let state =
+            collector_with_pmt(&[], &[6, 0xe1, 1, 0xf0, 5, 0xfd, 3, 0, 8, 0x33], 0x101).state();
+        let facts = &state.semantic_facts_by_service[0];
+        assert_eq!(facts.elementary_streams[0].caption_timing, Some(3));
+        assert!(!facts.elementary_streams[0].is_caption);
+        assert!(!facts.elementary_streams[0].is_superimpose);
+        assert!(facts
+            .semantic_diagnostics
+            .contains(&"RESERVED_DATA_COMPONENT_TIMING"));
     }
 
     #[test]

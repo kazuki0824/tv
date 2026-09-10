@@ -16,10 +16,7 @@ use crate::dvr_object::DvrAidlObject;
 use crate::error_bridge::status_from_hal_error;
 use crate::filter_object::FilterAidlObject;
 use crate::object_handle::AidlObjectHandle;
-use crate::object_runtime::{
-    finish_callback_artifact_registration_after_owner_ready_hal,
-    finish_owner_callback_cleanup_outcome,
-};
+use crate::object_runtime::finish_owner_callback_cleanup_outcome;
 use crate::service_context::{SharedAidlServiceContext, SharedTunerRuntime};
 
 fn handle_from_runtime_entry(
@@ -183,38 +180,6 @@ fn cleanup_dvr_child_open_after_object_failure(
             dvr_id,
         );
     finish_owner_callback_cleanup_outcome(context, outcome)
-}
-
-fn retain_filter_child_callback(
-    context: &SharedAidlServiceContext,
-    handle: AidlObjectHandle,
-    callback: &Strong<dyn IFilterCallback>,
-) -> Result<(), HalError> {
-    let retain_result = context
-        .retain_filter_callback(handle, callback)
-        .map_err(|error| error.into_hal_error("filter callback store retain failed"));
-    finish_callback_artifact_registration_after_owner_ready_hal(
-        context,
-        handle,
-        AidlApi::DemuxOpenFilter,
-        retain_result,
-    )
-}
-
-fn retain_dvr_child_callback(
-    context: &SharedAidlServiceContext,
-    handle: AidlObjectHandle,
-    callback: &Strong<dyn IDvrCallback>,
-) -> Result<(), HalError> {
-    let retain_result = context
-        .retain_dvr_callback(handle, callback)
-        .map_err(|error| error.into_hal_error("DVR callback store retain failed"));
-    finish_callback_artifact_registration_after_owner_ready_hal(
-        context,
-        handle,
-        AidlApi::DemuxOpenDvr,
-        retain_result,
-    )
 }
 
 pub fn open_filter_child_for_owner_object_with_request_builder<Build>(

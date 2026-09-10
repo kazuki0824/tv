@@ -110,6 +110,7 @@ object ProviderDataBridge {
             .put("extendedTexts", toExtendedTextsArray(descriptors.extendedTexts))
             .put("diagnostics", JSONObject()
                 .put("descriptorDiagnosticsCanonicalJson", descriptors.descriptorDiagnosticsCanonicalJson)
+                .put("descriptorFactsCanonicalJson", descriptors.descriptorFactsCanonicalJson ?: JSONObject.NULL)
                 .put("publishDiagnostics", JSONArray())
                 .put("parserDiagnostics", JSONArray()))
             .put("ratings", ratingsJson(program))

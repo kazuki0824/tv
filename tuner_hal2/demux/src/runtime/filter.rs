@@ -9,10 +9,10 @@ use crate::config::{
 use crate::packet_pipeline::{
     FilterPipelineConfig, PacketPid, PipelineFilterView, PipelineOpenKind,
 };
-use crate::sections::{parse_raw_section_framing, parse_section_header, section_crc_valid};
 use crate::runtime::{
     WatermarkClassifier, WatermarkDecision, WatermarkPolicy, WatermarkQueueSnapshot,
 };
+use crate::sections::{parse_raw_section_framing, parse_section_header, section_crc_valid};
 use crate::ts_core::PesPacket;
 use crate::TsInputOrigin;
 use std::time::{Duration, Instant};
@@ -144,9 +144,7 @@ fn mark_section_delivered(delivered: &mut [u64; 4], section_number: u8) {
 }
 
 fn all_sections_delivered(delivered: &[u64; 4], last_section_number: u8) -> bool {
-    (0..=last_section_number).all(|section_number| {
-        section_was_delivered(delivered, section_number)
-    })
+    (0..=last_section_number).all(|section_number| section_was_delivered(delivered, section_number))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -227,7 +225,7 @@ impl From<AudioMediaFrame> for PreparedAvMediaPayload {
 
 impl FilterRuntime {
     #[cfg(test)]
-    pub(crate) fn new(filter_id: i32, generation: u64, open_kind: PipelineOpenKind) -> Self {
+    pub(super) fn new(filter_id: i32, generation: u64, open_kind: PipelineOpenKind) -> Self {
         let open_type = match open_kind {
             PipelineOpenKind::Other => FilterOpenType::TsUndefined,
             PipelineOpenKind::Raw => FilterOpenType::TsRaw,
@@ -404,7 +402,8 @@ impl FilterRuntime {
         }
     }
 
-    pub fn restore(&mut self, snapshot: FilterRuntimeSnapshot) {
+    #[cfg(test)]
+    pub(crate) fn restore(&mut self, snapshot: FilterRuntimeSnapshot) {
         self.state = snapshot.state;
         self.generation = snapshot.generation;
         self.open_type = snapshot.open_type;
@@ -454,14 +453,6 @@ impl FilterRuntime {
         self.delivery_not_before = None;
         self.last_watermark_status = None;
         self.state = FilterRuntimeState::Configured;
-    }
-
-    pub(crate) fn configured_matches(
-        &self,
-        config: &FilterPipelineConfig,
-        pes_stream_id: Option<i32>,
-    ) -> bool {
-        self.pipeline_config.as_ref() == Some(config) && self.pes_stream_id == pes_stream_id
     }
 
     pub(crate) fn set_section_runtime_config(&mut self, config: Option<SectionRuntimeConfig>) {
@@ -717,11 +708,13 @@ impl FilterRuntime {
         Some(status)
     }
 
-    pub const fn source_relation_generation(&self) -> u64 {
+    #[cfg(test)]
+    pub(crate) const fn source_relation_generation(&self) -> u64 {
         self.source_relation_generation
     }
 
-    pub(crate) fn prepare_next_source_relation_generation(&self) -> Option<u64> {
+    #[cfg(test)]
+    fn prepare_next_source_relation_generation(&self) -> Option<u64> {
         self.source_relation_generation
             .checked_add(1)
             .filter(|generation| *generation != 0)
@@ -767,7 +760,7 @@ impl FilterRuntime {
     }
 
     #[cfg(test)]
-    pub fn set_source_filter_for_test(
+    pub(crate) fn set_source_filter_for_test(
         &mut self,
         source_filter_id: i32,
         source_filter_generation: u64,
@@ -784,20 +777,8 @@ impl FilterRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn set_source_relation_generation_for_test(&mut self, generation: u64) {
+    pub(super) fn set_source_relation_generation_for_test(&mut self, generation: u64) {
         self.source_relation_generation = generation;
-    }
-
-    pub fn clear_queue_marker(&mut self) -> bool {
-        let had_queue = self.queue_present;
-        self.queue_present = false;
-        had_queue
-    }
-
-    pub fn clear_av_backing_marker(&mut self) -> bool {
-        let had_backing = self.av_backing_present;
-        self.av_backing_present = false;
-        had_backing
     }
 
     pub fn pipeline_view(&self) -> PipelineFilterView {
@@ -1072,7 +1053,6 @@ mod tests {
         );
     }
 }
-
 
 #[cfg(test)]
 mod video_pts_contract_tests {

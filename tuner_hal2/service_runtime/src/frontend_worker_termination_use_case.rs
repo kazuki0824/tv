@@ -46,17 +46,10 @@ impl FrontendWorkerTerminationUseCase {
                 match worker_kind {
                     FrontendWorkerKind::Tune => runtime
                         .frontend_txn()
-                        .mark_frontend_tune_worker_failed(
-                            frontend_id,
-                            owner_generation,
-                            error,
-                        )?,
+                        .mark_frontend_tune_worker_failed(frontend_id, owner_generation, error)?,
                     FrontendWorkerKind::Scan => runtime
                         .frontend_txn()
-                        .mark_frontend_scan_session_backend_failed(
-                            frontend_id,
-                            owner_generation,
-                        )?,
+                        .mark_frontend_scan_session_backend_failed(frontend_id, owner_generation)?,
                 }
             }
         }
@@ -69,11 +62,6 @@ impl FrontendWorkerTerminationUseCase {
         object_generation: AidlObjectGeneration,
         reason: FrontendWorkerCancelReason,
     ) -> Result<FrontendCloseCleanupReport, HalError> {
-        cleanup_frontend_object_after_close_begin(
-            runtime,
-            object_id,
-            object_generation,
-            reason,
-        )
+        cleanup_frontend_object_after_close_begin(runtime, object_id, object_generation, reason)
     }
 }

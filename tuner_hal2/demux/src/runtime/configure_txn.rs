@@ -147,8 +147,8 @@ impl FilterConfigureTxn {
         open_kind: PipelineOpenKind,
         config: FilterPipelineConfig,
     ) -> (Self, Result<FilterConfigureOutcome, DemuxRuntimeError>) {
-        let section_config = (open_kind == PipelineOpenKind::Section)
-            .then(SectionRuntimeConfig::match_all_repeat);
+        let section_config =
+            (open_kind == PipelineOpenKind::Section).then(SectionRuntimeConfig::match_all_repeat);
         self.configure_with_pes_stream_id(demux, open_kind, config, None, section_config)
     }
 
@@ -220,9 +220,7 @@ impl FilterConfigureTxn {
                 return (self, Err(DemuxRuntimeError::invalid_state(filter_id)));
             }
         }
-        if let Err(error) =
-            demux.validate_source_filter_reconfigure(self.filter_id, config.tpid)
-        {
+        if let Err(error) = demux.validate_source_filter_reconfigure(self.filter_id, config.tpid) {
             self.outcome = Some(FilterConfigureOutcome::Failed {
                 failed_step: FilterConfigureStep::ValidateSettings,
             });

@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use crate::descrambler_key_table::DescramblerKeyLookupError;
 #[cfg(test)]
 use crate::descrambler_key_table::DescramblerKeySlotId;
+use crate::error_mapping::object_table_error_to_hal;
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FirstErrorCollector, FrontendBackendKind, FrontendDevicePath,
     FrontendSystem, FrontendTuneRequest, HalError, HalInternalKind, HalInvalidArgumentKind,
@@ -17,7 +18,7 @@ use maleicacid_tuner_hal2_demux::config::{
 };
 use maleicacid_tuner_hal2_demux::OpenFilterRequest;
 use maleicacid_tuner_hal2_demux::{
-    AvDataId, AvMediaEventDescriptor, AvSharedBacking, DemuxRuntimeError, DemuxRuntimeErrorKind,
+    AvMediaEventDescriptor, AvSharedBacking, DemuxRuntimeError, DemuxRuntimeErrorKind,
     DemuxRuntimeRollbackToken, DemuxRuntimeState, DvrKind, DvrRuntimeState, PipelineBoundaryReason,
     PipelineDiagnostic, PipelineReport, PipelineResetReport, StreamBoundaryReport, TsInputOrigin,
     TsPacketValidationError, ValidatedTsPacket,
@@ -30,9 +31,9 @@ use maleicacid_tuner_hal2_descrambler::{
 };
 use maleicacid_tuner_hal2_device::{
     FrontendLivePacketSink, FrontendLivePumpOwner, FrontendLivePumpReport,
-    FrontendLiveReaderDescriptor, FrontendRuntimeSnapshot, FrontendRuntimeState,
-    FrontendSignalState, FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
-    FrontendWorkerRegistry, FrontendWorkerStartError, FrontendWorkerStopOutcome,
+    FrontendLiveReaderDescriptor, FrontendRuntimeSnapshot, FrontendSignalState,
+    FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind, FrontendWorkerRegistry,
+    FrontendWorkerStartError, FrontendWorkerStopOutcome,
 };
 use maleicacid_tuner_hal2_domain_request::{
     AidlApi, AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan, DvrConfigureKind,
@@ -277,11 +278,27 @@ pub enum FilterEventDelivery {
 }
 
 pub trait FilterEventDispatcher: Send + Sync {
+    fn wake(&self) -> Result<(), HalError>;
     fn dispatch(
         &self,
         runtime: &Arc<Mutex<TunerServiceRuntime>>,
         events: Vec<FilterEventDeliverySnapshot>,
     ) -> Result<(), HalError>;
+}
+
+pub fn notify_filter_delivery_change(
+    runtime: &Arc<Mutex<TunerServiceRuntime>>,
+) -> Result<(), HalError> {
+    let dispatcher = runtime
+        .lock()
+        .map_err(|_| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "Filter配送の起床先取得時にruntime lockがpoisonされています",
+            )
+        })?
+        .filter_event_dispatcher()?;
+    dispatcher.wake()
 }
 
 #[derive(Clone)]
@@ -338,10 +355,20 @@ impl FrontendLivePacketSink for FrontendDemuxPacketSink {
                 runtime.push_frontend_ts_packet_to_bound_demuxes(self.frontend_id, packet)?;
             runtime.filter_event_delivery_snapshots(&reports)
         };
-        if events.is_empty() {
-            return Ok(());
+        let wake_result = self.dispatcher.wake();
+        let delivery_result = if events.is_empty() {
+            Ok(())
+        } else {
+            self.dispatcher.dispatch(&self.runtime, events)
+        };
+        match (wake_result, delivery_result) {
+            (Ok(()), result) | (result, Ok(())) => result,
+            (Err(wake_error), Err(delivery_error)) => Err(compose_primary_cleanup_failure(
+                "filter worker wake and immediate delivery failed",
+                wake_error,
+                delivery_error,
+            )),
         }
-        self.dispatcher.dispatch(&self.runtime, events)
     }
 }
 
@@ -507,6 +534,7 @@ pub fn start_frontend_demux_live_pump_from_reader(
     runtime: Arc<Mutex<TunerServiceRuntime>>,
     frontend_id: i32,
     reader: Box<dyn Read + Send>,
+    descriptor: maleicacid_tuner_hal2_device::FrontendLiveReaderDescriptor,
 ) -> Result<FrontendLivePumpOwner, HalError> {
     let dispatcher = {
         let guard = runtime.lock().map_err(|_| {
@@ -525,7 +553,7 @@ pub fn start_frontend_demux_live_pump_from_reader(
         frontend_id,
         dispatcher,
     ));
-    FrontendLivePumpOwner::start(reader, sink)
+    FrontendLivePumpOwner::start(descriptor, reader, sink)
 }
 
 #[derive(Debug)]
@@ -701,6 +729,7 @@ impl CallbackRegistrationArtifactOutcome {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CallbackDeliveryFailurePhase {
+    PostDeliveryCommit,
     CallbackArtifactLookup,
     RuntimePolicySkip,
     EventConversion,
@@ -826,6 +855,9 @@ pub(crate) fn filter_callback_failure_diagnostic_phase(
     phase: CallbackDeliveryFailurePhase,
 ) -> FilterCallbackDeliveryDiagnosticPhase {
     match phase {
+        CallbackDeliveryFailurePhase::PostDeliveryCommit => {
+            FilterCallbackDeliveryDiagnosticPhase::PostDeliveryCommit
+        }
         CallbackDeliveryFailurePhase::CallbackArtifactLookup
         | CallbackDeliveryFailurePhase::RuntimePolicySkip
         | CallbackDeliveryFailurePhase::NotifierCleanup
@@ -846,6 +878,9 @@ pub(crate) fn frontend_callback_failure_diagnostic_phase(
     phase: CallbackDeliveryFailurePhase,
 ) -> FrontendCallbackDeliveryDiagnosticPhase {
     match phase {
+        CallbackDeliveryFailurePhase::PostDeliveryCommit => {
+            FrontendCallbackDeliveryDiagnosticPhase::ScanSessionAccounting
+        }
         CallbackDeliveryFailurePhase::CallbackArtifactLookup
         | CallbackDeliveryFailurePhase::RuntimePolicySkip
         | CallbackDeliveryFailurePhase::NotifierCleanup
@@ -866,6 +901,9 @@ pub(crate) fn dvr_post_commit_notification_failure_kind(
     phase: CallbackDeliveryFailurePhase,
 ) -> DvrPostCommitNotificationFailureKind {
     match phase {
+        CallbackDeliveryFailurePhase::PostDeliveryCommit => {
+            DvrPostCommitNotificationFailureKind::PostDeliveryCommit
+        }
         CallbackDeliveryFailurePhase::CallbackArtifactLookup => {
             DvrPostCommitNotificationFailureKind::CallbackArtifactLookup
         }
@@ -1396,8 +1434,7 @@ impl TunerServiceRuntime {
     }
 
     pub fn try_new() -> Result<Self, HalError> {
-        let capability_snapshot = CapabilitySnapshot::product_default();
-        capability_snapshot.validate_dependency_closures()?;
+        let (capability_snapshot, _) = CapabilitySnapshot::compose_for_frontends(&[])?;
         Ok(Self::from_capability_snapshot(capability_snapshot))
     }
 
@@ -1481,7 +1518,7 @@ impl TunerServiceRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn reserve_filter_capacity_for_test(
+    fn reserve_filter_capacity_for_test(
         &mut self,
         filter_id: i32,
         open_type: FilterOpenType,
@@ -1496,15 +1533,12 @@ impl TunerServiceRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn release_filter_capacity_for_test(
-        &mut self,
-        filter_id: i32,
-    ) -> Result<(), HalError> {
+    fn release_filter_capacity_for_test(&mut self, filter_id: i32) -> Result<(), HalError> {
         self.capacity_ledger.release_filter(filter_id)
     }
 
     #[cfg(test)]
-    pub(crate) fn reserve_dvr_capacity_for_test(
+    fn reserve_dvr_capacity_for_test(
         &mut self,
         dvr_id: i32,
         buffer_size: i32,
@@ -1514,7 +1548,7 @@ impl TunerServiceRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn release_dvr_capacity_for_test(&mut self, dvr_id: i32) -> Result<(), HalError> {
+    fn release_dvr_capacity_for_test(&mut self, dvr_id: i32) -> Result<(), HalError> {
         self.capacity_ledger.release_dvr(dvr_id)
     }
 
@@ -1689,8 +1723,8 @@ impl TunerServiceRuntime {
         runtime_id: i64,
         owner: RuntimeOwnerRelation,
     ) -> Result<RuntimeObjectEntry, RuntimeObjectTableError> {
-        let generation = self.object_table.next_generation()?;
-        let object_id = self.object_table.next_object_id()?;
+        let generation = self.allocate_aidl_generation()?;
+        let object_id = self.allocate_aidl_object_id()?;
         let entry = RuntimeObjectEntry {
             object_kind,
             object_id,
@@ -1823,11 +1857,8 @@ impl TunerServiceRuntime {
         self.filter_event_dispatcher
             .as_ref()
             .map(FilterEventDispatcherHandle::dispatcher)
-            .ok_or_else(|| {
-                HalError::callback_failed(
-                    "IFilterCallback.onFilterEvent",
-                    "filter event dispatcher is not installed for this runtime",
-                )
+            .ok_or(HalError::NotInitialized {
+                resource: "Filter event dispatcher",
             })
     }
 
@@ -2837,6 +2868,15 @@ impl TunerServiceRuntime {
     where
         I: IntoIterator<Item = FrontendProbeOutcome>,
     {
+        if self.state != ServiceState::Booting {
+            return (
+                ServiceBootOutcome::Degraded,
+                Err(HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "公開済みサービスの能力snapshotを再構成できません",
+                )),
+            );
+        }
         self.state = ServiceState::Booting;
         self.registry.clear_frontends();
         self.registry.clear_lnbs();
@@ -3020,6 +3060,85 @@ impl TunerServiceRuntime {
                 }
             }
         }
+
+        let probed_ids = self.registry.frontend_ids();
+        let composition = CapabilitySnapshot::compose_for_frontends(
+            &probed_ids.iter().map(|id| id.0).collect::<Vec<_>>(),
+        );
+        let (snapshot, retained_ids) = match composition {
+            Ok(composition) => composition,
+            Err(error) => {
+                self.state = ServiceState::Degraded;
+                let result = match diagnostic_clear_result {
+                    Ok(()) => Err(error),
+                    Err(cleanup) => Err(compose_primary_cleanup_failure(
+                        "起動能力の構成と診断初期化が失敗しました",
+                        error,
+                        cleanup,
+                    )),
+                };
+                return (ServiceBootOutcome::Degraded, result);
+            }
+        };
+        let entries = probed_ids
+            .iter()
+            .filter_map(|id| self.registry.frontend(*id).cloned())
+            .collect::<Vec<_>>();
+        let lnbs = self
+            .registry
+            .lnb_ids()
+            .iter()
+            .filter_map(|id| self.registry.lnb(*id))
+            .filter(|entry| retained_ids.contains(&entry.owner_frontend_id.0))
+            .cloned()
+            .collect::<Vec<_>>();
+        let commit_error = |message| {
+            let primary = HalError::internal(HalInternalKind::InvariantViolation, message);
+            match diagnostic_clear_result.clone() {
+                Ok(()) => primary,
+                Err(cleanup) => compose_primary_cleanup_failure(
+                    "起動能力の確定と診断初期化が失敗しました",
+                    primary,
+                    cleanup,
+                ),
+            }
+        };
+        let mut registry = RuntimeRegistry::with_av_runtime_limits(
+            snapshot.av_max_event_bytes,
+            snapshot.av_max_outstanding_events_per_filter,
+            snapshot.av_per_filter_live_bytes,
+            snapshot.av_runtime_budget_bytes,
+        );
+        for entry in entries {
+            if !retained_ids.contains(&entry.id.0) {
+                self.diagnostics
+                    .push(StartupDiagnosticRecord::capability_suppressed(
+                        entry.backend,
+                        entry.device_path,
+                        CapabilitySuppressionReason::RuntimeCapacityExhausted,
+                    ));
+                continue;
+            }
+            // この集合はprobe登録時にID一意性を検証済み。snapshot公開前に新registryへ一括移す。
+            if registry.register_frontend(entry).is_err() {
+                self.state = ServiceState::Degraded;
+                return (
+                    ServiceBootOutcome::Degraded,
+                    Err(commit_error("選択済みfrontendを確定できません")),
+                );
+            }
+        }
+        for lnb_entry in lnbs {
+            if registry.register_lnb(lnb_entry).is_err() {
+                self.state = ServiceState::Degraded;
+                return (
+                    ServiceBootOutcome::Degraded,
+                    Err(commit_error("選択済みLNBを確定できません")),
+                );
+            }
+        }
+        self.registry = registry;
+        self.capability_snapshot = snapshot;
 
         for system in [
             FrontendSystem::IsdbT,

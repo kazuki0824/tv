@@ -1,8 +1,10 @@
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::IFrontendCallback::IFrontendCallback;
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::ILnbCallback::ILnbCallback;
 use binder::{Result as BinderResult, Strong};
+#[cfg(test)]
+use maleicacid_tuner_hal2_binder_adapter::AidlApi;
 use maleicacid_tuner_hal2_binder_adapter::{
-    AidlApi, AidlFailureSource, AidlMethodCall, AidlStatusMapper, TunerStatusCode,
+    AidlFailureSource, AidlMethodCall, AidlStatusMapper, TunerStatusCode,
 };
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, HalError, HalInternalKind, HalInvalidArgumentKind,
@@ -10,17 +12,18 @@ use maleicacid_tuner_hal2_common::{
 use maleicacid_tuner_hal2_demux::AvHandleReleaseDescriptor;
 use maleicacid_tuner_hal2_device::FrontendWorkerCancelReason;
 use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
+#[cfg(test)]
+use maleicacid_tuner_hal2_service_runtime::CallbackRegistrationArtifactOutcome;
 use maleicacid_tuner_hal2_service_runtime::{
     close_lnb_explicit_after_object_close_begin_use_case, close_object_use_case,
     finish_object_close_use_case, CallbackArtifactCleanupResult,
     CallbackArtifactRuntimeSplitDiagnosticRecord, CallbackArtifactRuntimeSplitOutcome,
-    CallbackArtifactRuntimeSplitPhase, CallbackRegistrationArtifactOutcome,
-    CloseCleanupAttemptCompletion, FrontendWorkerTerminationUseCase, ObjectArtifactCleanupCommand,
-    ObjectArtifactCleanupExecutor, ObjectCleanupDiagnosticRecord, ObjectCleanupExecutionReport,
-    ObjectCloseCleanupAttempt, ObjectCloseCleanupFailure, ObjectCloseRuntimeExecutor,
-    ObjectCloseTxn, ObjectCloseUseCasePlan, ObjectDomainCleanupCommand,
-    ObjectDomainCleanupExecutor, ObjectMethodExecutionToken, ObjectMethodUseCase,
-    ObjectMethodUseCaseBuildError, ObjectQueryRequest, ObjectQueryResponse,
+    CallbackArtifactRuntimeSplitPhase, CloseCleanupAttemptCompletion,
+    FrontendWorkerTerminationUseCase, ObjectArtifactCleanupCommand, ObjectArtifactCleanupExecutor,
+    ObjectCleanupDiagnosticRecord, ObjectCleanupExecutionReport, ObjectCloseCleanupAttempt,
+    ObjectCloseCleanupFailure, ObjectCloseRuntimeExecutor, ObjectCloseTxn,
+    ObjectDomainCleanupCommand, ObjectDomainCleanupExecutor, ObjectMethodExecutionToken,
+    ObjectMethodUseCase, ObjectMethodUseCaseBuildError, ObjectQueryRequest, ObjectQueryResponse,
     ObjectRuntimeCleanupCommand, OwnerCallbackCleanupArtifactCommand,
     OwnerCallbackCleanupUseCaseOutcome, TunerServiceRuntime,
 };
@@ -64,6 +67,7 @@ fn abort_prepared_callback_artifact_bridge(
         .map_err(|error| error.into_hal_error(command.cleanup_failure_message()))
 }
 
+#[cfg(test)]
 fn commit_prepared_callback_artifact_bridge(
     context: &SharedAidlServiceContext,
     outcome: &CallbackRegistrationArtifactOutcome,
@@ -179,6 +183,7 @@ fn callback_artifact_registration_runtime_lock_failure_error(
     }
 }
 
+#[cfg(test)]
 fn callback_registration_finish_runtime_lock_failure_error(
     context: &SharedAidlServiceContext,
     command: OwnerCallbackCleanupArtifactCommand,
@@ -240,6 +245,7 @@ pub(crate) fn finish_owner_callback_cleanup_outcome<T>(
     guard.finish_owner_callback_cleanup_outcome(outcome, artifact_cleanup_result)
 }
 
+#[cfg(test)]
 fn finish_callback_registration_artifact_outcome(
     context: &SharedAidlServiceContext,
     outcome: CallbackRegistrationArtifactOutcome,
@@ -301,7 +307,8 @@ fn finish_callback_registration_artifact_outcome(
     guard.finish_callback_registration_after_artifact_result_use_case(outcome, rollback_result)
 }
 
-pub(crate) fn finish_callback_artifact_registration_after_owner_ready_hal(
+#[cfg(test)]
+fn finish_callback_artifact_registration_after_owner_ready_hal(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
     api: AidlApi,
