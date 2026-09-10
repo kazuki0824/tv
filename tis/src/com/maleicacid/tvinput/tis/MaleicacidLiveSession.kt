@@ -760,21 +760,19 @@ class MaleicacidLiveSession(
     }
 
     private fun handlePlaybackGenerationRestart(restart: PlaybackPipeline.PlaybackGenerationRestart) {
-        if (!PlaybackStartTransitions.acceptsGeneration(playbackState, restart.originGeneration)) return
-        val previousSignature = PlaybackStartTransitions.signature(playbackState) ?: return
-        val restartedSignature = if (restart.videoOnly) {
-            audioFallbackDisabled = true
-            previousSignature.copy(audioPid = null, audioStreamType = null, audioConfiguration = null)
-        } else previousSignature
-        playbackState = PlaybackStartTransitions.afterRestartResult(
+        acceptPlaybackGenerationRestart(
             playbackState,
-            restartedSignature,
-            restart.result.generation,
-            restart.result.firstFramePending,
-            restart.result.startedVideo || restart.result.startedAudio || restart.result.firstFramePending,
+            restart,
+            accept = { next ->
+                playbackState = next
+                if (restart.videoOnly) audioFallbackDisabled = true
+                if (next is PlaybackStartState.Failed) beginCaptionPresentationGeneration(-1L, false)
+                else beginCaptionPresentationGeneration(restart.result.generation,
+                    hasVideo = PlaybackStartTransitions.signature(next)?.videoPid != null)
+                onCaptionPlaybackClockChanged()
+            },
+            notifyUnavailable = { notifyVideoUnavailable(it) },
         )
-        beginCaptionPresentationGeneration(restart.result.generation, hasVideo = restartedSignature.videoPid != null)
-        onCaptionPlaybackClockChanged()
     }
 
     private fun handleTunerResourceLost(lostTuneGeneration: Long) {
@@ -1150,6 +1148,26 @@ class MaleicacidLiveSession(
     }
 
     companion object {
+        internal fun acceptPlaybackGenerationRestart(
+            current: PlaybackStartState,
+            restart: PlaybackPipeline.PlaybackGenerationRestart,
+            accept: (PlaybackStartState) -> Unit,
+            notifyUnavailable: (Int) -> Unit,
+        ) {
+            if (!PlaybackStartTransitions.acceptsGeneration(current, restart.originGeneration)) return
+            val previousSignature = PlaybackStartTransitions.signature(current) ?: return
+            val signature = if (restart.videoOnly) previousSignature.copy(
+                audioPid = null, audioStreamType = null, audioConfiguration = null,
+            ) else previousSignature
+            val result = restart.result
+            val next = PlaybackStartTransitions.afterRestartResult(
+                current, signature, result.generation, result.firstFramePending,
+                result.startedVideo || result.startedAudio || result.firstFramePending,
+            )
+            accept(next)
+            if (next is PlaybackStartState.Failed) notifyUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+        }
+
         private const val ENABLE_CAS_ORCHESTRATION = true
         const val ACTION_SET_DUAL_MONO_PRESENTATION = "com.maleicacid.tvinput.tis.action.SET_DUAL_MONO_PRESENTATION"
         const val EXTRA_DUAL_MONO_PRESENTATION = "presentation"

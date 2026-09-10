@@ -7,6 +7,82 @@ import org.junit.Test
 class PlaybackStartGateTest {
     private val key = ServiceKey(originalNetworkId = 4, transportStreamId = 0x4010, serviceId = 101)
 
+    @Test fun failedRestartResultCommitsSessionBeforeNotifyingUnavailable() {
+        for (waiting in listOf(false, true)) for (audioOnly in listOf(false, true)) {
+            val signature = signature(if (audioOnly) null else TsPid(0x101), TsPid(0x102))
+            var state: PlaybackStartState = if (waiting) PlaybackStartState.WaitingFirstOutput(signature, 7L)
+                else PlaybackStartState.Started(signature, 7L)
+            val calls = mutableListOf<String>()
+            val failure = PlaybackPipeline.StartResult.failedAfterRestart(9L,
+                listOf(if (audioOnly) "audio filter start failed" else "video filter start failed"))
+            // filter開始時の先行通知は旧Session世代には届かない。
+            check(!PlaybackStartTransitions.acceptsGeneration(state, failure.generation))
+            MaleicacidLiveSession.acceptPlaybackGenerationRestart(
+                state, PlaybackPipeline.PlaybackGenerationRestart(7L, failure),
+                accept = { state = it; calls += "commit" },
+                notifyUnavailable = {
+                    check(state == PlaybackStartState.Failed(signature, 9L))
+                    check(it == android.media.tv.TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+                    calls += "notify"
+                },
+            )
+            check(calls == listOf("commit", "notify"))
+            MaleicacidLiveSession.acceptPlaybackGenerationRestart(
+                state, PlaybackPipeline.PlaybackGenerationRestart(7L, failure),
+                accept = { error("stale restart accepted") },
+                notifyUnavailable = { error("stale restart notified") },
+            )
+            val success = PlaybackPipeline.StartResult(!audioOnly, audioOnly,
+                firstFramePending = !audioOnly, generation = 11L)
+            MaleicacidLiveSession.acceptPlaybackGenerationRestart(
+                state, PlaybackPipeline.PlaybackGenerationRestart(9L, success),
+                accept = { state = it },
+                notifyUnavailable = { error("successful restart notified unavailable") },
+            )
+            check(PlaybackStartTransitions.acceptsGeneration(state, 11L))
+            check(state !is PlaybackStartState.Failed)
+        }
+    }
+
+    @Test fun terminalCodecErrorsRetainCleanupAndNotifyOriginalGeneration() {
+        val signature = signature(TsPid(0x101), TsPid(0x102))
+        for ((reclaimed, recoverable, attempted) in listOf(
+            Triple(false, false, false), Triple(true, false, false), Triple(false, true, true),
+        )) for (waiting in listOf(false, true)) for (isAudio in listOf(false, true)) {
+            check(PlaybackPipeline.codecRecoveryDelay(reclaimed, recoverable, false, attempted) == null)
+            val cleanup = ResourceCleanup()
+            var owned = true
+            var reject = true
+            var generation = 7L
+            var newPlayback = 0
+            var notifications = 0
+            var state: PlaybackStartState = if (waiting) PlaybackStartState.WaitingFirstOutput(signature, 7L)
+                else PlaybackStartState.Started(signature, 7L)
+            val execution = runCatching {
+                PlaybackPipeline.completeCodecFailureAction(7L, onUnavailable = {
+                    check(it.reason == PlaybackPipeline.PlaybackUnavailableReason.CODEC_RECOVERY_FAILED)
+                    check(it.generation == 7L && generation != it.generation)
+                    check(PlaybackStartTransitions.acceptsGeneration(state, it.generation))
+                    state = PlaybackStartTransitions.failCurrentGeneration(state, it.generation)
+                    notifications++
+                }) {
+                    // 音声縮退のstart内、または映像終端のstop内での解放失敗。
+                    generation++
+                    cleanup.release("filter") { if (reject) error("filter close") else owned = false }
+                    cleanup.requireComplete()
+                    if (isAudio) newPlayback++
+                }
+            }
+            check(execution.isSuccess && newPlayback == 0 && notifications == 1)
+            check(state == PlaybackStartState.Failed(signature, 7L))
+            check(owned && cleanup.hasPending)
+            reject = false
+            cleanup.retry()
+            cleanup.requireComplete()
+            check(!owned && !cleanup.hasPending)
+        }
+    }
+
     @Test fun codecRecoveryCleanupFailureNotifiesOriginalSessionAndRetainsResources() {
         val signature = signature(TsPid(0x101), TsPid(0x102))
         for (waiting in listOf(false, true)) for (failedResource in listOf("filter", "decoder", "MediaSync")) {

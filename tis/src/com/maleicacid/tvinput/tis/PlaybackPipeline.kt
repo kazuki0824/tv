@@ -312,10 +312,12 @@ class PlaybackPipeline(
         val channel = activeChannel
         val selection = activeSelection
         if (retryDelay == null || tuner == null || channel == null || selection == null) {
-            if (isAudio) handleAudioFailure(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, error.diagnosticInfo, channel?.serviceType == SERVICE_TYPE_DIGITAL_AUDIO)
-            else {
-                emitUnavailableForGeneration(generation, PlaybackUnavailableReason.VIDEO_CODEC_ERROR, error.diagnosticInfo)
-                stopOnPlaybackExecutor()
+            completeCodecFailureAction(generation, onVideoUnavailable) {
+                if (isAudio) handleAudioFailure(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, error.diagnosticInfo, channel?.serviceType == SERVICE_TYPE_DIGITAL_AUDIO)
+                else {
+                    stopOnPlaybackExecutor()
+                    onVideoUnavailable(PlaybackUnavailable(PlaybackUnavailableReason.VIDEO_CODEC_ERROR, error.diagnosticInfo, generation))
+                }
             }
             return
         }
@@ -805,7 +807,7 @@ class PlaybackPipeline(
         }
         val restarted = startOnPlaybackExecutor(restartTuner, restartChannel, restartSelection.copy(audio = null))
         onPlaybackGenerationRestarted(PlaybackGenerationRestart(originGeneration, restarted, videoOnly = true))
-        if (restarted.generation < 0L || (!restarted.firstFramePending && !restarted.startedVideo)) emitUnavailable(reason, "$detail; video-only generation restart failed")
+        // 失敗StartResultの外部通知は、結果を受理して世代を更新するSessionが所有する。
     }
 
     private fun onCompressedInputQueued(sample: MediaSample) {
@@ -1581,6 +1583,20 @@ class PlaybackPipeline(
     override fun close() = release()
 
     companion object {
+        internal fun completeCodecFailureAction(
+            originGeneration: Long,
+            onUnavailable: (PlaybackUnavailable) -> Unit,
+            action: () -> Unit,
+        ) {
+            try {
+                action()
+            } catch (error: RuntimeException) {
+                // stopは既にgenerationを更新し得る。Sessionが保持する元世代へ通知する。
+                onUnavailable(PlaybackUnavailable(PlaybackUnavailableReason.CODEC_RECOVERY_FAILED,
+                    error.message.orEmpty(), originGeneration))
+            }
+        }
+
         internal fun recoverCodecGeneration(
             originGeneration: Long,
             stop: () -> Long,
@@ -1589,20 +1605,13 @@ class PlaybackPipeline(
             restart: () -> Unit,
             onUnavailable: (PlaybackUnavailable) -> Unit,
         ) {
-            fun failed(error: RuntimeException) {
-                // stopは既にgenerationを更新し得る。Sessionが保持する元世代へ通知する。
-                onUnavailable(PlaybackUnavailable(PlaybackUnavailableReason.CODEC_RECOVERY_FAILED,
-                    error.message.orEmpty(), originGeneration))
-            }
-            try {
+            completeCodecFailureAction(originGeneration, onUnavailable) {
                 val stoppedGeneration = stop()
                 check(schedule {
                     if (isCurrent(stoppedGeneration)) {
-                        try { restart() } catch (error: RuntimeException) { failed(error) }
+                        completeCodecFailureAction(originGeneration, onUnavailable, restart)
                     }
                 }) { "decoderの再生成を予約できません" }
-            } catch (error: RuntimeException) {
-                failed(error)
             }
         }
 
