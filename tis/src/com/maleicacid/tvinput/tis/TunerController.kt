@@ -165,6 +165,7 @@ class TunerController(
         }
     }
     private val sectionFilterHandles = LinkedHashMap<TsPid, SectionFilterHandle>()
+    // 配送許可sourceだけを保持する。closing中の資源所有はsectionFilterHandlesに残る。
     private val sectionFilters = LinkedHashMap<TsPid, List<Filter>>()
     private val dynamicPmtPids = linkedSetOf<TsPid>()
     private val dynamicEcmPids = linkedSetOf<TsPid>()
@@ -181,10 +182,10 @@ class TunerController(
     private var onBroadcastClockUpdatedCallback: (() -> Unit)? = null
     private val tvInputSessionId: String? = normalizedTvInputSessionId(sessionId)
     private var tuner: Tuner? = createTuner()
-    private var descramblerBridge: CasController.TunerDescramblerBridge? = null
     private var currentTune: ResolvedChannel? = null
     private var tuneAccepted = false
     private var tuneGeneration: Long = 0L
+    private var streamIdDiscovery: StreamIdDiscoveryOperation? = null
     private val sectionShortReadCounters = linkedMapOf<TsPid, Int>()
     private val sectionReadErrorCounters = linkedMapOf<TsPid, Int>()
     private val sectionMalformedCounters = linkedMapOf<TsPid, Int>()
@@ -230,23 +231,40 @@ class TunerController(
         playbackPipeline.setOnVideoFormatDiscoveredCallback(callback)
     }
 
-    fun setOnVideoOnlyFallbackRestartedCallback(callback: (PlaybackPipeline.VideoOnlyFallbackRestart) -> Unit) {
-        playbackPipeline.setOnVideoOnlyFallbackRestartedCallback(callback)
+    fun setOnPlaybackGenerationRestartedCallback(callback: (PlaybackPipeline.PlaybackGenerationRestart) -> Unit) {
+        playbackPipeline.setOnPlaybackGenerationRestartedCallback(callback)
     }
 
     private fun handleTunerResourceLostOnController() {
-        val lostGeneration = tuneGeneration
-        playbackPipeline.stop()
-        closeSectionFiltersOnController()
-        captionLanguagesByPid.clear()
-        captionFactParsers.values.forEach { it.close() }
-        captionFactParsers.clear()
-        superimposeTimingByPid.clear()
-        latestBroadcastClockAuthority = null
-        currentTune = null
-        tuneAccepted = false
-        descramblerBridge = null
-        onTunerResourceLostCallback?.invoke(lostGeneration)
+        val lostGeneration = streamIdDiscovery?.generation ?: tuneGeneration
+        try {
+            completeResourceLoss(
+                invalidate = {
+                    if (!tuneAccepted && streamIdDiscovery?.acceptsResourceLoss != true) false else {
+                        streamIdDiscovery?.loseResources()
+                        invalidateTuneOnController()
+                        true
+                    }
+                },
+                cleanup = {
+                    SectionFilterPolicy.completeCleanup(
+                        { playbackPipeline.stop() },
+                        { cancelStreamIdDiscoveryOnController() },
+                        { closeSectionFiltersOnController() },
+                        { casController?.clearForResourceLoss() },
+                        { SectionFilterPolicy.completeCleanup(*captionFactParsers.entries.map { (pid, parser) -> {
+                            parser.close()
+                            captionFactParsers.remove(pid, parser)
+                            Unit
+                        } }.toTypedArray()) },
+                    )
+                },
+                notifyLost = { onTunerResourceLostCallback?.invoke(lostGeneration) },
+            )
+        } catch (failure: Exception) {
+            // callback配送後にprimary/suppressedを診断へ残し、controller executorを維持する。
+            Log.w(LogTags.TIS, "resource-lost cleanupに失敗しました inputId=$inputId generation=$lostGeneration", failure)
+        }
     }
 
     private fun armTuneEventListener(tunerInstance: Tuner, generation: Long): Boolean {
@@ -268,14 +286,6 @@ class TunerController(
             else -> return
         }
         onTuneEventCallback?.invoke(generation, event)
-    }
-
-    fun createDescramblerBridge(): CasController.TunerDescramblerBridge = callOnController {
-        val existing = descramblerBridge
-        if (existing != null) return@callOnController existing
-        val created = DirectTunerDescramblerBridge(tuner)
-        descramblerBridge = created
-        created
     }
 
     fun setSurface(surface: Surface?) {
@@ -303,25 +313,54 @@ class TunerController(
         val streamIds: Set<Int>,
         val resultCode: Int,
         val message: String = "",
-    )
+        val generation: Long? = null,
+        val resourceLost: Boolean = false,
+    ) {
+        // runtime errorはfrontend capabilityを表さない。成功した現在のscan報告だけを採用する。
+        fun candidatesFor(seed: ScanCandidate): List<ScanCandidate> =
+            if (success) JapanIsdbScanPlan.explicitBsCandidatesFromScan(seed, streamIds) else emptyList()
+    }
 
-    fun discoverIsdbsStreamIds(seed: ScanCandidate, timeoutMs: Long = BS_STREAM_ID_SCAN_TIMEOUT_MS): StreamIdDiscoveryResult =
-        callOnController { discoverIsdbsStreamIdsOnController(seed, timeoutMs) }
+    fun discoverIsdbsStreamIds(seed: ScanCandidate, timeoutMs: Long = BS_STREAM_ID_SCAN_TIMEOUT_MS): StreamIdDiscoveryResult {
+        check(!Thread.currentThread().name.startsWith("maleicacid-tis-controller-$inputId")) {
+            "BS探索の待機はcontroller executor外で実行する必要があります"
+        }
+        val operation = callOnController { startStreamIdDiscoveryOnController(seed) }
+        val completed = try {
+            operation.await(timeoutMs)
+        } catch (failure: InterruptedException) {
+            try {
+                callOnController { if (streamIdDiscovery === operation) cancelStreamIdDiscoveryOnController() }
+            } catch (cleanup: Exception) {
+                if (cleanup !== failure) failure.addSuppressed(cleanup)
+            } finally { Thread.currentThread().interrupt() }
+            throw failure
+        }
+        return callOnController {
+            operation.resultWithCleanup(
+                completed,
+                cleanup = { if (streamIdDiscovery === operation) cancelStreamIdDiscoveryOnController() },
+                diagnose = { Log.w(LogTags.TIS, "BS探索失敗後のscan解放を再試行まで保持します", it) },
+            )
+        }
+    }
 
-    private fun discoverIsdbsStreamIdsOnController(seed: ScanCandidate, timeoutMs: Long): StreamIdDiscoveryResult {
+    private fun startStreamIdDiscoveryOnController(seed: ScanCandidate): StreamIdDiscoveryOperation {
         require(seed.kind == ScanCandidateKind.ISDB_S_BS && seed.streamSelector == StreamSelector.NONE)
-        val tunerInstance = tuner ?: return StreamIdDiscoveryResult(false, emptySet(), Tuner.RESULT_UNAVAILABLE, "Tunerを利用できません")
         resetBeforeTune()
-        val settings = IsdbsFrontendSettings.builder()
-            .setFrequencyLong(seed.frequencyHz.value)
-            .build()
-        val terminal = CountDownLatch(1)
-        val ids = linkedSetOf<Int>()
+        val operation = StreamIdDiscoveryOperation(++tuneGeneration)
+        val tunerInstance = tuner
+        if (tunerInstance == null) {
+            operation.startFailed(Tuner.RESULT_UNAVAILABLE, "Tunerを利用できません")
+            return operation
+        }
+        streamIdDiscovery = operation
+        val settings = IsdbsFrontendSettings.builder().setFrequencyLong(seed.frequencyHz.value).build()
         val callback = object : ScanCallback {
             override fun onLocked() = Unit
             override fun onUnlocked() = Unit
-            override fun onScanStopped() { terminal.countDown() }
-            override fun onProgress(percent: Int) { if (percent >= 100) terminal.countDown() }
+            override fun onScanStopped() { if (streamIdDiscovery === operation) operation.complete() }
+            override fun onProgress(percent: Int) { if (streamIdDiscovery === operation) operation.reportProgress(percent) }
             @Suppress("DEPRECATION")
             override fun onFrequenciesReported(frequencies: IntArray) = Unit
             override fun onFrequenciesLongReported(frequencies: LongArray) = Unit
@@ -329,7 +368,7 @@ class TunerController(
             override fun onPlpIdsReported(plpIds: IntArray) = Unit
             override fun onGroupIdsReported(groupIds: IntArray) = Unit
             override fun onInputStreamIdsReported(inputStreamIds: IntArray) {
-                synchronized(ids) { inputStreamIds.filterTo(ids) { it in 0..0xfffe } }
+                if (streamIdDiscovery === operation) operation.reportIds(inputStreamIds)
             }
             override fun onDvbsStandardReported(dvbsStandard: Int) = Unit
             override fun onDvbtStandardReported(dvbtStandard: Int) = Unit
@@ -342,22 +381,79 @@ class TunerController(
             override fun onDvbcAnnexReported(dvbcAnnex: Int) = Unit
             override fun onDvbtCellIdsReported(dvbtCellIds: IntArray) = Unit
         }
-        val directExecutor = java.util.concurrent.Executor { command -> command.run() }
-        val result = runCatching { tunerInstance.scan(settings, Tuner.SCAN_TYPE_AUTO, directExecutor, callback) }
-            .getOrElse { error ->
-                return StreamIdDiscoveryResult(false, emptySet(), Tuner.RESULT_UNKNOWN_ERROR, error.message.orEmpty())
-            }
-        if (result != Tuner.RESULT_SUCCESS) {
-            runCatching { tunerInstance.cancelScanning() }
-            return StreamIdDiscoveryResult(false, emptySet(), result, "Tuner.scanに失敗しました result=$result")
+        operation.start { tunerInstance.scan(settings, Tuner.SCAN_TYPE_AUTO, sectionExecutor, callback) }
+        return operation
+    }
+
+    private fun cancelStreamIdDiscoveryOnController() {
+        val operation = streamIdDiscovery ?: return
+        operation.cancel { tuner?.cancelScanning() ?: Tuner.RESULT_SUCCESS }
+        streamIdDiscovery = null
+    }
+
+    /** 世代と待機結果を一つに保持する。状態変更はcontroller executor、awaitだけ呼出元。 */
+    internal class StreamIdDiscoveryOperation(val generation: Long) {
+        private val terminal = CountDownLatch(1)
+        private val ids = linkedSetOf<Int>()
+        private enum class Outcome { SCANNING, STOPPED, TIMED_OUT, START_FAILED, CANCELLED, LOST }
+        private var outcome = Outcome.SCANNING
+        // operationの受信結果と、未解放ownerに対する資源喪失通知は別の寿命を持つ。
+        private var resourceLossObserved = false
+        private var resultCode = Tuner.RESULT_SUCCESS
+        private var message = ""
+        val active: Boolean get() = outcome == Outcome.SCANNING
+        val acceptsResourceLoss: Boolean get() = !resourceLossObserved && outcome != Outcome.CANCELLED
+        fun reportIds(values: IntArray) { if (active) values.filterTo(ids) { it in 0..0xfffe } }
+        fun reportProgress(@Suppress("UNUSED_PARAMETER") percent: Int) = Unit // 進捗は停止通知ではない。
+        private fun finish(next: Outcome) {
+            if (!active) return
+            outcome = next
+            terminal.countDown()
         }
-        val completed = runCatching { terminal.await(timeoutMs.coerceAtLeast(1L), TimeUnit.MILLISECONDS) }.getOrDefault(false)
-        runCatching { tunerInstance.cancelScanning() }
-        val snapshot = synchronized(ids) { ids.toSet() }
-        return if (completed && snapshot.isNotEmpty()) {
-            StreamIdDiscoveryResult(true, snapshot, result)
-        } else {
-            StreamIdDiscoveryResult(false, emptySet(), result, if (completed) "stream ID報告なし" else "scan callback timeout")
+        fun complete() { finish(Outcome.STOPPED) }
+        fun start(scan: () -> Int) {
+            val result = runCatching(scan)
+            val code = result.getOrDefault(Tuner.RESULT_UNKNOWN_ERROR)
+            if (result.isFailure || code != Tuner.RESULT_SUCCESS) {
+                startFailed(code, result.exceptionOrNull()?.message ?: "Tuner.scanに失敗しました result=$code")
+            }
+        }
+        fun startFailed(code: Int, detail: String) {
+            if (!active) return
+            resultCode = code
+            message = detail
+            finish(Outcome.START_FAILED)
+        }
+        fun loseResources() {
+            resourceLossObserved = true
+            finish(Outcome.LOST)
+        }
+        fun cancel(stopScan: () -> Int) {
+            // 非SUCCESS/例外では結果もownerも解放済みにしない。
+            val result = stopScan()
+            check(result == Tuner.RESULT_SUCCESS) { "BS scanの解放に失敗しました result=$result" }
+            finish(Outcome.CANCELLED)
+        }
+        fun await(timeoutMs: Long): Boolean = terminal.await(timeoutMs.coerceAtLeast(1L), TimeUnit.MILLISECONDS)
+        fun resultWithCleanup(completed: Boolean, cleanup: () -> Unit, diagnose: (Exception) -> Unit): StreamIdDiscoveryResult {
+            val result = result(completed)
+            try { cleanup() } catch (failure: Exception) {
+                if (!result.resourceLost && outcome != Outcome.START_FAILED) throw failure
+                diagnose(failure)
+            }
+            return result
+        }
+        fun result(completed: Boolean): StreamIdDiscoveryResult {
+            if (!completed) finish(Outcome.TIMED_OUT)
+            check(!active) { "BS探索の終端前に結果を取得できません" }
+            return when (outcome) {
+                Outcome.LOST -> StreamIdDiscoveryResult(false, emptySet(), Tuner.RESULT_UNAVAILABLE, "TUNER_RESOURCE_LOST", generation, true)
+                Outcome.CANCELLED -> StreamIdDiscoveryResult(false, emptySet(), Tuner.RESULT_UNAVAILABLE, "BS scan cancelled", generation)
+                Outcome.START_FAILED -> StreamIdDiscoveryResult(false, emptySet(), resultCode, message, generation)
+                Outcome.STOPPED -> StreamIdDiscoveryResult(ids.isNotEmpty(), ids.toSet(), resultCode, if (ids.isEmpty()) "stream ID報告なし" else "", generation)
+                Outcome.TIMED_OUT -> StreamIdDiscoveryResult(false, emptySet(), resultCode, "scan callback timeout", generation)
+                Outcome.SCANNING -> error("unreachable")
+            }
         }
     }
 
@@ -388,9 +484,7 @@ class TunerController(
         resetBeforeTune()
         val result = tunerInstance.tune(settings)
         if (result == Tuner.RESULT_SUCCESS) {
-            tuneAccepted = true
-            tuneGeneration++
-            beginSiIngestAfterTune()
+            initializeAcceptedTune(null, tuneGeneration + 1L)
         }
         return result
     }
@@ -412,10 +506,7 @@ class TunerController(
             return TuneOutcome(false, Tuner.RESULT_UNAVAILABLE, channel, tuneGeneration, e.message.orEmpty())
         }
         return if (result == Tuner.RESULT_SUCCESS) {
-            currentTune = channel
-            tuneAccepted = true
-            tuneGeneration = nextGeneration
-            beginSiIngestAfterTune()
+            initializeAcceptedTune(channel, nextGeneration)
             TuneOutcome(true, result, channel, tuneGeneration)
         } else {
             runCatching { tunerInstance.clearOnTuneEventListener() }
@@ -426,18 +517,40 @@ class TunerController(
         }
     }
 
-    private fun resetBeforeTune() {
-        playbackPipeline.stop()
-        runCatching { tuner?.clearOnTuneEventListener() }
-        closeSectionFilters()
-        casController?.clearForClearService()
-        captionLanguagesByPid.clear()
-        captionFactParsers.values.forEach { it.close() }
-        captionFactParsers.clear()
-        superimposeTimingByPid.clear()
-        latestBroadcastClockAuthority = null
+    private fun invalidateTuneOnController() {
         currentTune = null
         tuneAccepted = false
+        captionLanguagesByPid.clear()
+        superimposeTimingByPid.clear()
+        latestBroadcastClockAuthority = null
+    }
+
+    private fun closeCaptionParsersOnController() {
+        SectionFilterPolicy.completeCleanup(*captionFactParsers.entries.map { (pid, parser) -> {
+            parser.close()
+            captionFactParsers.remove(pid, parser)
+            Unit
+        } }.toTypedArray())
+    }
+
+    private fun resetBeforeTune() = completeRetuneReset(
+        invalidate = { invalidateTuneOnController() },
+        { playbackPipeline.stop() },
+        { tuner?.clearOnTuneEventListener() },
+        { cancelStreamIdDiscoveryOnController() },
+        { closeSectionFiltersOnController() },
+        { casController?.clearForResourceLoss() },
+        { closeCaptionParsersOnController() },
+    )
+
+    private fun initializeAcceptedTune(channel: ResolvedChannel?, generation: Long) {
+        // 準備に失敗したgenerationも再使用しない。配送・CAS受付はcommitまでfalse。
+        tuneGeneration = generation
+        completeTuneInitialization(
+            prepare = { prepareInitialSectionFiltersOnController(generation) },
+            commit = { currentTune = channel; tuneAccepted = true },
+            rollback = { resetBeforeTune() },
+        )
     }
 
     fun beginSiIngestAfterTune(): Boolean = callOnController { beginSiIngestAfterTuneOnController() }
@@ -455,8 +568,15 @@ class TunerController(
 
     private fun openInitialSectionFiltersOnController(generation: Long = tuneGeneration) {
         if (!tuneAccepted) return
+        prepareInitialSectionFiltersOnController(generation)
+    }
+
+    private fun prepareInitialSectionFiltersOnController(generation: Long) {
         listOf(WellKnownSectionPid.PAT, WellKnownSectionPid.CAT, WellKnownSectionPid.NIT, WellKnownSectionPid.SDT_BAT, WellKnownSectionPid.EIT, WellKnownSectionPid.TDT)
-            .forEach { openSectionFilterOnController(it, generation) }
+            .forEach { pid ->
+                val handle = SectionFilterPolicy.openOwnedFilter(pid, sectionFilterHandles) { createSectionFilter(pid, generation) }
+                check(handle.isOpen) { "初期section filterを開始できません pid=$pid" }
+            }
         Log.d(LogTags.TIS, "初期 section filter を開きます inputId=$inputId pids=${sectionFilterHandles.keys} generation=$generation")
     }
 
@@ -469,16 +589,7 @@ class TunerController(
 
     private fun openSectionFilterOnController(pid: TsPid, generation: Long = tuneGeneration): SectionFilterHandle {
         if (!tuneAccepted) return UnavailableSectionFilterHandle(pid, "tune未受付")
-        sectionFilterHandles[pid]?.let { existing ->
-            if (existing.isOpen) return existing
-            existing.close()
-            sectionFilterHandles.remove(pid)
-        }
-        val handle = createSectionFilter(pid, generation)
-        if (handle.isOpen) {
-            sectionFilterHandles[pid] = handle
-        }
-        return handle
+        return SectionFilterPolicy.openOwnedFilter(pid, sectionFilterHandles) { createSectionFilter(pid, generation) }
     }
 
     private fun createSectionFilter(pid: TsPid, generation: Long): SectionFilterHandle {
@@ -550,7 +661,7 @@ class TunerController(
     }
 
     private fun isCurrentSectionFilter(pid: TsPid, generation: Long, filter: Filter): Boolean =
-        generation == tuneGeneration && sectionFilters[pid].orEmpty().any { it === filter }
+        tuneAccepted && generation == tuneGeneration && sectionFilters[pid].orEmpty().any { it === filter }
 
     private fun recordSectionShortRead(pid: TsPid, expected: Int, actual: Int) {
         sectionShortReadCounters[pid] = (sectionShortReadCounters[pid] ?: 0) + 1
@@ -586,9 +697,6 @@ class TunerController(
 
     private fun closeSectionFiltersOnController() {
         sectionFilters.clear()
-        dynamicPmtPids.clear()
-        dynamicEcmPids.clear()
-        dynamicEmmPids.clear()
         var failure: RuntimeException? = null
         for (pid in sectionFilterHandles.keys.toList()) {
             try { closeSectionFilterOnController(pid) } catch (error: RuntimeException) {
@@ -596,53 +704,59 @@ class TunerController(
                 if (primary == null) failure = error else if (primary !== error) primary.addSuppressed(error)
             }
         }
+        dynamicPmtPids.retainAll(sectionFilterHandles.keys)
+        dynamicEcmPids.retainAll(sectionFilterHandles.keys)
+        dynamicEmmPids.retainAll(sectionFilterHandles.keys)
         failure?.let { throw it }
     }
 
-    fun openDynamicFiltersFromCurrentSi(pmtPids: Iterable<TsPid>, ecmPids: Iterable<TsPid>, emmPids: Iterable<TsPid>) =
-        updateDynamicSectionFilters(pmtPids.toSet(), ecmPids.toSet(), emmPids.toSet(), tuneGeneration)
-
-    fun updateDynamicSectionFiltersForService(
-        serviceKey: ServiceKey,
-        pmtPids: Set<TsPid>,
-        ecmPids: Set<TsPid>,
-        emmPids: Set<TsPid>,
-        generation: Long,
-    ): Unit = callOnController {
-        if (generation != tuneGeneration || currentTune?.serviceKey != serviceKey) return@callOnController
-        updateDynamicSectionFiltersOnController(pmtPids, ecmPids, emmPids, generation)
-    }
-
-    fun updateDynamicSectionFilters(pmtPids: Set<TsPid>, ecmPids: Set<TsPid>, emmPids: Set<TsPid>, generation: Long = tuneGeneration): Unit =
-        callOnController { updateDynamicSectionFiltersOnController(pmtPids, ecmPids, emmPids, generation) }
-
     private fun updateDynamicSectionFiltersOnController(pmtPids: Set<TsPid>, ecmPids: Set<TsPid>, emmPids: Set<TsPid>, generation: Long = tuneGeneration) {
         if (!tuneAccepted || generation != tuneGeneration) return
-        replaceDynamicPidSet(dynamicPmtPids, pmtPids) { openProgramMapFilter(it) }
-        replaceDynamicPidSet(dynamicEcmPids, ecmPids) { openEcmFilter(it) }
-        replaceDynamicPidSet(dynamicEmmPids, emmPids) { openEmmFilter(it) }
+        SectionFilterPolicy.completeCleanup(
+            { replaceDynamicPidSet(dynamicPmtPids, pmtPids) { openProgramMapFilter(it) } },
+            { replaceDynamicPidSet(dynamicEcmPids, ecmPids) { openEcmFilter(it) } },
+            { replaceDynamicPidSet(dynamicEmmPids, emmPids) { openEmmFilter(it) } },
+        )
     }
 
-    fun updateCasMetadata(metadata: List<CaMetadata>): CasController.UpdateResult? = callOnController {
+    fun updateCasMetadataAndFilters(
+        metadata: List<CaMetadata>,
+        pmtPids: Set<TsPid>,
+        generation: Long,
+        casDecisionReady: Boolean,
+    ): CasController.UpdateResult? = callOnController {
         val controller = casController ?: return@callOnController null
-        if (metadata.isEmpty()) {
-            controller.clearForClearService()
-            CasController.UpdateResult(emptyList(), emptySet(), emptySet())
-        } else {
-            controller.updateFromCaMetadata(metadata, createDescramblerBridge())
+        updateCasIfCurrent(generation, tuneGeneration, tuneAccepted) {
+            SectionFilterPolicy.commitCasAndFilters(
+                updateCas = {
+                    val acceptedMetadata = SectionFilterPolicy.metadataForCasDecision(casDecisionReady, metadata)
+                    val needsDescrambler = acceptedMetadata.any { it.serviceKey != null && it.source != com.maleicacid.tvinput.aribsi.CaMetadataSource.CAT }
+                    controller.updateFromCaMetadata(acceptedMetadata, if (needsDescrambler) ({ DirectTunerDescramblerBridge(tuner) }) else null)
+                },
+                commitFilters = { result ->
+                    updateDynamicSectionFiltersOnController(pmtPids, result.ecmPids, result.emmPids, generation)
+                    check((pmtPids + result.ecmPids + result.emmPids).all { sectionFilterHandles[it]?.isOpen == true }) {
+                        "CAS/SI filter集合を開始できません"
+                    }
+                    if (!casDecisionReady) playbackPipeline.stop()
+                },
+                reject = {
+                    SectionFilterPolicy.completeCleanup(
+                        { controller.clearForResourceLoss() },
+                        { updateDynamicSectionFiltersOnController(pmtPids, emptySet(), emptySet(), generation) },
+                        { playbackPipeline.stop() },
+                    )
+                },
+            )
         }
     }
 
     private fun replaceDynamicPidSet(current: MutableSet<TsPid>, next: Set<TsPid>, opener: (TsPid) -> SectionFilterHandle) {
-        val sanitized = next
-        (current - sanitized).toList().forEach { pid ->
-            current.remove(pid)
-            if (pid !in initialPids()) closeSectionFilter(pid)
-        }
-        (sanitized - current).forEach { pid ->
-            val handle = opener(pid)
-            if (handle.isOpen) current += pid
-        }
+        SectionFilterPolicy.replaceDynamicPids(current, next,
+            close = { pid -> if (pid !in initialPids()) closeSectionFilter(pid) },
+            open = { pid -> opener(pid).isOpen },
+            isOpen = { pid -> sectionFilterHandles[pid]?.isOpen == true },
+        )
     }
 
     private fun initialPids(): Set<TsPid> = setOf(WellKnownSectionPid.PAT, WellKnownSectionPid.CAT, WellKnownSectionPid.NIT, WellKnownSectionPid.SDT_BAT, WellKnownSectionPid.EIT, WellKnownSectionPid.TDT)
@@ -656,49 +770,55 @@ class TunerController(
     }
 
     private fun onSectionOnController(pid: TsPid, section: ByteArray, generation: Long = tuneGeneration) {
-        if (generation != tuneGeneration) return
-        val receivedNanoTime = if (pid == WellKnownSectionPid.TDT) System.nanoTime() else 0L
-        val result = sectionIngestController?.onSection(pid, section)
-        if (pid == WellKnownSectionPid.TDT && result?.status == com.maleicacid.tvinput.aribsi.SiStatus.OK) {
-            sectionIngestController?.broadcastClockSnapshot()?.let { fact ->
-                val update = AribBroadcastClock.updateAuthority(
-                    latestBroadcastClockAuthority,
-                    AribBroadcastClock.SourceSample(
-                        tableId = fact.tableId,
-                        mjd = fact.mjd,
-                        millisOfDay = fact.millisOfDay,
-                        receivedNanoTime = receivedNanoTime,
-                    ),
-                )
-                if (update == null) {
-                    latestBroadcastClockAuthority = null
-                    Log.w(LogTags.TIS, "TDT/TOT clock factをauthorityへ昇格できないためfail-closedにします inputId=$inputId")
-                } else {
-                    latestBroadcastClockAuthority = update.authority
-                    if (update.discontinuity) {
-                        Log.w(
-                            LogTags.TIS,
-                            "TDT/TOT clock discontinuityを検出しました inputId=$inputId generation=${update.authority.generation}",
+        if (!tuneAccepted || generation != tuneGeneration) return
+        SectionFilterPolicy.dispatchSection(
+            pid, initialPids() + dynamicPmtPids,
+            dynamicEcmPids.filterTo(linkedSetOf()) { sectionFilterHandles[it]?.isOpen == true },
+            dynamicEmmPids.filterTo(linkedSetOf()) { sectionFilterHandles[it]?.isOpen == true },
+            onSi = {
+                val receivedNanoTime = if (pid == WellKnownSectionPid.TDT) System.nanoTime() else 0L
+                val result = sectionIngestController?.onSection(pid, section)
+                if (pid == WellKnownSectionPid.TDT && result?.status == com.maleicacid.tvinput.aribsi.SiStatus.OK) {
+                    sectionIngestController?.broadcastClockSnapshot()?.let { fact ->
+                        val update = AribBroadcastClock.updateAuthority(
+                            latestBroadcastClockAuthority,
+                            AribBroadcastClock.SourceSample(
+                                tableId = fact.tableId,
+                                mjd = fact.mjd,
+                                millisOfDay = fact.millisOfDay,
+                                receivedNanoTime = receivedNanoTime,
+                            ),
                         )
+                        if (update == null) {
+                            latestBroadcastClockAuthority = null
+                            Log.w(LogTags.TIS, "TDT/TOT clock factをauthorityへ昇格できないためfail-closedにします inputId=$inputId")
+                        } else {
+                            latestBroadcastClockAuthority = update.authority
+                            if (update.discontinuity) {
+                                Log.w(
+                                    LogTags.TIS,
+                                    "TDT/TOT clock discontinuityを検出しました inputId=$inputId generation=${update.authority.generation}",
+                                )
+                            }
+                        }
+                        onBroadcastClockUpdatedCallback?.invoke()
                     }
                 }
-                onBroadcastClockUpdatedCallback?.invoke()
-            }
-        }
-        if (pid in dynamicEcmPids) {
-            val diagnostics = casController?.onEcmSection(pid, section).orEmpty()
-            diagnostics.forEach { Log.w(LogTags.TIS, "ECM 処理診断 $it") }
-            if (diagnostics.any { it.state == CasController.State.ERROR }) {
-                playbackPipeline.reportUnavailable(PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY, diagnostics.joinToString())
-            }
-        }
-        if (pid in dynamicEmmPids) {
-            val diagnostics = casController?.onEmmSection(pid, section).orEmpty()
-            diagnostics.forEach { Log.w(LogTags.TIS, "EMM 処理診断 $it") }
-        }
-        onSectionIngestedCallback?.let { it() }
-        startPlaybackIfStreamsKnown()
-        Log.d(LogTags.TIS, "section 入力 inputId=$inputId pid=$pid size=${section.size} result=$result generation=$generation")
+                onSectionIngestedCallback?.invoke()
+                startPlaybackIfStreamsKnown()
+            },
+            onEcm = {
+                val diagnostics = casController?.onEcmSection(pid, section).orEmpty()
+                diagnostics.forEach { Log.w(LogTags.TIS, "ECM 処理診断 $it") }
+                if (diagnostics.any { it.state == CasController.State.ERROR }) {
+                    playbackPipeline.reportUnavailable(PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY, diagnostics.joinToString())
+                }
+            },
+            onEmm = {
+                val diagnostics = casController?.onEmmSection(pid, section).orEmpty()
+                diagnostics.forEach { Log.w(LogTags.TIS, "EMM 処理診断 $it") }
+            },
+        )
     }
 
     private fun startPlaybackIfStreamsKnown() {
@@ -718,7 +838,7 @@ class TunerController(
         dualMonoPresentation: PlaybackPipeline.DualMonoPresentation = PlaybackPipeline.DualMonoPresentation.MAIN,
     ): AvStreamSelection {
         val video = TunerSelectionPolicy.selectVideo(streams, defaultComponentGroupTags)
-        val audioCandidates = streams.filter { TunerSelectionPolicy.isSupportedAudioStreamType(it.streamType) }
+        val audioCandidates = streams.filter(TunerSelectionPolicy::isSupportedAudioStream)
         val audio = if (audioExplicitlyDisabled) null else preferredAudioTrackId?.let { wanted ->
             audioCandidates.firstOrNull { TunerSelectionPolicy.trackIdForAudio(it) == wanted }
         } ?: TunerSelectionPolicy.selectAudio(streams, defaultComponentGroupTags)
@@ -956,6 +1076,7 @@ class TunerController(
 
     private fun releaseOnController() {
         if (released) return
+        invalidateTuneOnController()
         var failure: Throwable? = null
         fun release(action: () -> Unit) {
             try {
@@ -966,6 +1087,7 @@ class TunerController(
             }
         }
         release { playbackPipeline.release() }
+        release { cancelStreamIdDiscoveryOnController() }
         release { closeSectionFiltersOnController() }
         captionLanguagesByPid.clear()
         captionFactParsers.entries.toList().forEach { (pid, parser) ->
@@ -974,9 +1096,9 @@ class TunerController(
         superimposeTimingByPid.clear()
         latestBroadcastClockAuthority = null
         release { casController?.close(); casController = null }
-        descramblerBridge = null
         sectionIngestController = null
         onSectionIngestedCallback = null
+        onTunerResourceLostCallback = null
         onTuneEventCallback = null
         release { tuner?.clearOnTuneEventListener() }
         currentTune = null
@@ -989,6 +1111,44 @@ class TunerController(
     override fun close() = release()
 
     companion object {
+        /** 既存controller executorで失効を先に確定し、解放失敗なら呼出元の新tuneへ進まない。 */
+        internal fun completeRetuneReset(invalidate: () -> Unit, vararg cleanup: () -> Unit) {
+            invalidate()
+            SectionFilterPolicy.completeCleanup(*cleanup)
+        }
+
+        /** 初期化が終わるまで成功を公開しない。rollbackの失敗も元の例外へ添える。 */
+        internal fun completeTuneInitialization(prepare: () -> Unit, commit: () -> Unit, rollback: () -> Unit) {
+            try {
+                prepare()
+                commit()
+            } catch (failure: Exception) {
+                try { rollback() } catch (cleanup: Exception) {
+                    if (cleanup !== failure) failure.addSuppressed(cleanup)
+                }
+                throw failure
+            }
+        }
+
+        /** 呼出しからCAS attach完了まで同一controller executorを占有する。 */
+        internal fun updateCasIfCurrent(
+            requestedGeneration: Long,
+            currentGeneration: Long,
+            tuneAccepted: Boolean,
+            update: () -> CasController.UpdateResult,
+        ): CasController.UpdateResult? =
+            if (tuneAccepted && requestedGeneration == currentGeneration) update() else null
+
+        /** 同一controller executorで失効を確定し、cleanup失敗でもlost通知を一度試行する。 */
+        internal fun completeResourceLoss(
+            invalidate: () -> Boolean,
+            cleanup: () -> Unit,
+            notifyLost: () -> Unit,
+        ) {
+            if (!invalidate()) return
+            SectionFilterPolicy.completeCleanup(cleanup, notifyLost)
+        }
+
         private const val SECTION_FILTER_BUFFER_BYTES = 64 * 1024L
         private const val BS_STREAM_ID_SCAN_TIMEOUT_MS = 2_500L
 

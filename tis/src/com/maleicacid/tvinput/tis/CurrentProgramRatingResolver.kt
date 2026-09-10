@@ -9,7 +9,12 @@ import com.maleicacid.tvinput.aribsi.ProviderDataBridge
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.common.ServiceKey
 
-class CurrentProgramRatingResolver(private val context: Context) {
+class CurrentProgramRatingResolver internal constructor(
+    private val queryPrograms: (Uri, Array<String>, String, Array<String>, String) -> android.database.Cursor?,
+) {
+    constructor(context: Context) : this({ uri, projection, selection, args, order ->
+        context.contentResolver.query(uri, projection, selection, args, order)
+    })
     enum class Source { TV_PROVIDER_CURRENT_PROGRAM, LATEST_EIT_CACHE, UNRATED_FALLBACK }
 
     sealed class ResolveResult {
@@ -80,6 +85,7 @@ class CurrentProgramRatingResolver(private val context: Context) {
         val selectionRule: String,
         val overlapCount: Int,
         val selectedProgramId: Long?,
+        val ratingFreshnessRule: String = "",
     )
 
     @Volatile
@@ -99,25 +105,73 @@ class CurrentProgramRatingResolver(private val context: Context) {
         is ResolveResult.ProviderQueryFailed -> unresolvedRatingFallback(channelUri, serviceKey)
     }
 
+    sealed class EitAuthority {
+        object UNCONFIRMED : EitAuthority()
+        object AUTHORITATIVE_EMPTY : EitAuthority()
+        data class PresentObserved(val event: AribEvent?) : EitAuthority()
+    }
+
+    fun eitAuthority(snapshot: com.maleicacid.tvinput.aribsi.ProgramPublishSnapshot?, key: ServiceKey?): EitAuthority {
+        if (snapshot == null || key == null) return EitAuthority.UNCONFIRMED
+        val present = snapshot.eitInstances.singleOrNull {
+            it.serviceKey == key && it.tableId == 0x4e && it.currentNextIndicator
+        } ?: return EitAuthority.UNCONFIRMED
+        if (present.inconsistent || 0 !in present.receivedSections || 0 !in present.safeSections || 0 in present.missingSections) {
+            return EitAuthority.UNCONFIRMED
+        }
+        fun isPresent(source: com.maleicacid.tvinput.aribsi.AribProgramSource): Boolean =
+            source.tableId == 0x4e && source.version == present.version && source.sectionNumber == 0
+        val events = snapshot.events.filter { it.serviceKey == key && isPresent(it.source) }
+        val excluded = snapshot.excludedEventDescriptorFacts.any { it.serviceKey == key && isPresent(it.source) }
+        if (events.isEmpty() && !excluded) return EitAuthority.AUTHORITATIVE_EMPTY
+        // 診断専用eventや複数presentから現在番組を推測しないが、欠測にも戻さない。
+        return EitAuthority.PresentObserved(events.singleOrNull()?.takeIf {
+            !excluded && (it.timingState == "DEFINED" || it.timingState == "UNDEFINED_TIME")
+        })
+    }
+
     fun resolveDetailed(
         channelUri: Uri?,
         serviceKey: ServiceKey?,
         latestEvents: List<AribEvent>,
         ratingProfile: AribRatingMapper.BroadcastProfile,
         nowMillis: Long = System.currentTimeMillis(),
+        eitAuthority: EitAuthority = EitAuthority.UNCONFIRMED,
     ): ResolveResult {
+        if (eitAuthority == EitAuthority.AUTHORITATIVE_EMPTY) {
+            currentProgramResolutionDiagnostic = CurrentProgramResolutionDiagnostic(
+                "CURRENT_GENERATION_EMPTY_EIT", 0, null, "AUTHORITATIVE_EMPTY_BEFORE_PROVIDER_QUERY",
+            )
+            return ResolveResult.Ratings(unresolvedRatingFallback(channelUri, serviceKey))
+        }
+        if (eitAuthority is EitAuthority.PresentObserved) {
+            val event = eitAuthority.event?.takeIf { it.serviceKey == serviceKey }
+            currentProgramResolutionDiagnostic = CurrentProgramResolutionDiagnostic(
+                "CURRENT_GENERATION_PRESENT_EIT", 0, null, "PRESENT_OBSERVED_BEFORE_PROVIDER_QUERY",
+            )
+            return ResolveResult.Ratings(event?.let { ratingFromEvent(channelUri, it, ratingProfile) }
+                ?: unresolvedRatingFallback(channelUri, serviceKey))
+        }
+        val latestEit = fromLatestEit(channelUri, serviceKey, latestEvents, ratingProfile, nowMillis)
+        if (latestEit != null) {
+            currentProgramResolutionDiagnostic = CurrentProgramResolutionDiagnostic(
+                "CURRENT_GENERATION_EIT", 0, null, "LATEST_EIT_BEFORE_PROVIDER_QUERY",
+            )
+            return ResolveResult.Ratings(latestEit)
+        }
         return when (val tvProvider = fromTvProvider(channelUri, serviceKey, nowMillis)) {
             is TvProviderLookupResult.Success -> {
-                tvProvider.ratingSet?.let { ResolveResult.Ratings(it) }
-                    ?: fromLatestEit(channelUri, serviceKey, latestEvents, ratingProfile, nowMillis)?.let { ResolveResult.Ratings(it) }
-                    ?: ResolveResult.Ratings(unresolvedRatingFallback(channelUri, serviceKey))
+                val selection = selectCurrentRating(tvProvider.ratingSet, latestEit)
+                currentProgramResolutionDiagnostic = currentProgramResolutionDiagnostic.copy(
+                    ratingFreshnessRule = selection.second,
+                )
+                ResolveResult.Ratings(selection.first ?: unresolvedRatingFallback(channelUri, serviceKey))
             }
-            is TvProviderLookupResult.QueryFailed -> {
-                // DESIGN_JA: TvProvider current Program -> latest EIT -> UNRATED.
-                // Provider access failure does not authorize carrying a previous program/channel decision.
-                fromLatestEit(channelUri, serviceKey, latestEvents, ratingProfile, nowMillis)?.let { ResolveResult.Ratings(it) }
-                    ?: ResolveResult.Ratings(unresolvedRatingFallback(channelUri, serviceKey))
-            }
+            is TvProviderLookupResult.QueryFailed -> ResolveResult.ProviderQueryFailed(
+                channelUriString = channelUri?.toString().orEmpty(),
+                serviceKey = serviceKey,
+                reason = tvProvider.reason,
+            )
         }
     }
 
@@ -153,7 +207,7 @@ class CurrentProgramRatingResolver(private val context: Context) {
         )
         val candidates = mutableListOf<Candidate>()
         val cursor = try {
-            context.contentResolver.query(TvContract.buildProgramsUriForChannel(channelUri), projection, selection, selectionArgs, sortOrder)
+            queryPrograms(TvContract.buildProgramsUriForChannel(channelUri), projection, selection, selectionArgs, sortOrder)
         } catch (e: RuntimeException) {
             return TvProviderLookupResult.QueryFailed(e.message ?: e.javaClass.name)
         } ?: return TvProviderLookupResult.QueryFailed("QUERY_RETURNED_NULL_CURSOR")
@@ -208,6 +262,7 @@ class CurrentProgramRatingResolver(private val context: Context) {
         val key = serviceKey ?: return null
         val selected = latestEvents
             .mapNotNull { event ->
+                if (event.timingState != "DEFINED") return@mapNotNull null
                 val end = runCatching { Math.addExact(event.startTimeMillis, event.durationMillis) }.getOrNull()
                     ?: return@mapNotNull null
                 (event to end).takeIf { event.serviceKey == key && nowMillis >= event.startTimeMillis && nowMillis < end }
@@ -216,19 +271,60 @@ class CurrentProgramRatingResolver(private val context: Context) {
                 .thenBy { it.second }
                 .thenByDescending { it.first.eventId })
             .firstOrNull() ?: return null
-        val event = selected.first
+        return ratingFromEvent(channelUri, selected.first, ratingProfile)
+    }
+
+    private fun ratingFromEvent(
+        channelUri: Uri?,
+        event: AribEvent,
+        ratingProfile: AribRatingMapper.BroadcastProfile,
+    ): CurrentProgramRatingSet {
+        val end = if (event.timingState == "DEFINED" && event.durationMillis > 0L) {
+            runCatching { Math.addExact(event.startTimeMillis, event.durationMillis) }.getOrNull()
+        } else null
         return CurrentProgramRatingSet(
             ratings = event.descriptors.parentalRatings.mapNotNull { AribRatingMapper.toTvContentRating(it, ratingProfile) },
             source = Source.LATEST_EIT_CACHE,
             channelUriString = channelUri?.toString().orEmpty(),
-            serviceKey = key,
+            serviceKey = event.serviceKey,
             eventId = event.eventId,
-            startTimeMillis = event.startTimeMillis,
-            endTimeMillis = selected.second,
+            startTimeMillis = event.startTimeMillis.takeIf { end != null },
+            endTimeMillis = end,
         )
     }
 
     companion object {
+        /**
+         * `latestEit` は現在のtune generationへboundされているため、永続Provider rowより
+         * 後の受信観測である。同一event/同一時刻ならrating refresh、同一eventの時刻変更
+         * またはevent変更なら旧row失効として、いずれもEITを優先する。
+         */
+        private fun selectCurrentRating(
+            provider: CurrentProgramRatingSet?,
+            latestEit: CurrentProgramRatingSet?,
+        ): Pair<CurrentProgramRatingSet?, String> = when {
+            latestEit == null && provider == null -> null to "NO_CURRENT_PROGRAM"
+            latestEit == null -> provider to "TV_PROVIDER_FALLBACK_NO_CURRENT_GENERATION_EIT"
+            provider == null -> latestEit to "LATEST_EIT_ONLY"
+            sameProgramOccurrence(provider, latestEit) -> latestEit to "LATEST_EIT_REFRESHED_SAME_OCCURRENCE"
+            sameStableProgram(provider, latestEit) -> latestEit to "LATEST_EIT_SUPERSEDES_RETIMED_EVENT"
+            else -> latestEit to "LATEST_EIT_SUPERSEDES_PROVIDER_EVENT"
+        }
+
+        private fun sameStableProgram(left: CurrentProgramRatingSet, right: CurrentProgramRatingSet): Boolean =
+            left.serviceKey != null && left.serviceKey == right.serviceKey &&
+                left.eventId != null && left.eventId == right.eventId
+
+        private fun sameProgramOccurrence(left: CurrentProgramRatingSet, right: CurrentProgramRatingSet): Boolean =
+            sameStableProgram(left, right) &&
+                left.startTimeMillis != null && left.startTimeMillis == right.startTimeMillis &&
+                left.endTimeMillis != null && left.endTimeMillis == right.endTimeMillis
+
+        internal fun selectCurrentRatingForTest(
+            provider: CurrentProgramRatingSet?,
+            latestEit: CurrentProgramRatingSet?,
+        ): CurrentProgramRatingSet? = selectCurrentRating(provider, latestEit).first
+
         fun stableProgramKey(serviceKey: ServiceKey, eventId: Int): String = ProviderDataBridge.buildProgramKey(serviceKey, eventId)
 
         fun unblockKey(

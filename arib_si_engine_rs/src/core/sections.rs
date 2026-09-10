@@ -1,3 +1,74 @@
+use std::collections::BTreeSet;
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SectionTracker {
+    pub(crate) version: Option<u8>,
+    pub(crate) last_section_number: Option<u8>,
+    pub(crate) seen_sections: BTreeSet<u8>,
+    pub(crate) inconsistent: bool,
+    payloads: std::collections::BTreeMap<u8, Vec<u8>>,
+}
+
+impl SectionTracker {
+    /// 5bit版番号の半周未満の前進だけを採用し、逆行・半周差は収集resetまで保留する。
+    pub(crate) fn accepts_version(&self, version: u8) -> bool {
+        self.version.map_or(true, |old| {
+            (u16::from(version) + 32 - u16::from(old)) % 32 < 16
+        })
+    }
+
+    pub(crate) fn observe(&mut self, version: u8, section: u8, last: u8, bytes: &[u8]) -> bool {
+        if !self.accepts_version(version) {
+            return false;
+        }
+        self.mark_seen(version, section, last);
+        if let Some(previous) = self.payloads.get(&section) {
+            if previous != bytes {
+                self.inconsistent = true;
+            }
+            return false;
+        }
+        if self.inconsistent {
+            return false;
+        }
+        self.payloads.insert(section, bytes.to_vec());
+        true
+    }
+
+    pub(crate) fn mark_seen(&mut self, version: u8, section_number: u8, last_section_number: u8) {
+        if self.version != Some(version) {
+            self.version = Some(version);
+            self.last_section_number = None;
+            self.seen_sections.clear();
+            self.payloads.clear();
+            self.inconsistent = false;
+        }
+        if section_number > last_section_number {
+            self.inconsistent = true;
+            return;
+        }
+        match self.last_section_number {
+            Some(expected) if expected != last_section_number => {
+                self.inconsistent = true;
+                return;
+            }
+            None => self.last_section_number = Some(last_section_number),
+            Some(_) => {}
+        }
+        self.seen_sections.insert(section_number);
+    }
+
+    pub(crate) fn is_complete(&self) -> bool {
+        if self.inconsistent {
+            return false;
+        }
+        let Some(last) = self.last_section_number else {
+            return false;
+        };
+        (0..=last).all(|section_number| self.seen_sections.contains(&section_number))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SectionHeader {
     pub table_id: u8,

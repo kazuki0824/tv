@@ -19,7 +19,9 @@
     "freeCaMode",
     "extendedItems",
     "components",
-    "diagnostics"
+    "diagnostics",
+    "shortEvents",
+    "extendedTexts"
   ],
   "properties": {
     "schema": {
@@ -107,6 +109,16 @@
     },
     "diagnostics": {
       "$ref": "#/$defs/diagnostics"
+    },
+    "casFacts": {
+      "anyOf": [
+        {
+          "$ref": "https://maleicacid.local/schema/cas_facts_v1.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "not": {
@@ -286,7 +298,8 @@
         "countryCode": {
           "type": "string",
           "minLength": 3,
-          "maxLength": 3
+          "maxLength": 3,
+          "pattern": "^[A-Za-z]{3}$"
         },
         "rawRatingByte": {
           "type": "integer",
@@ -607,9 +620,13 @@
           ]
         },
         "language": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/iso639"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "text": {
@@ -885,14 +902,7 @@
           ]
         },
         "language": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/iso639"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "type": "null"
         },
         "captionServiceKind": {
           "type": "string",
@@ -1061,7 +1071,8 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/diagnosticItem"
-          }
+          },
+          "maxItems": 0
         },
         "parserDiagnostics": {
           "type": "array",

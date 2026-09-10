@@ -1275,6 +1275,12 @@ pub enum FrontendCallbackDeliveryDiagnosticPhase {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FrontendCallbackDeliveryDiagnosticRecord {
+    RetiredRegistrationDelivery {
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        callback_generation: u64,
+        error: HalError,
+    },
     CallbackArtifactLookup {
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
@@ -1389,6 +1395,9 @@ impl FrontendCallbackDeliveryDiagnosticRecord {
 
     pub const fn phase(&self) -> FrontendCallbackDeliveryDiagnosticPhase {
         match self {
+            Self::RetiredRegistrationDelivery { .. } => {
+                FrontendCallbackDeliveryDiagnosticPhase::FrontendEventDelivery
+            }
             Self::CallbackArtifactLookup { .. } => {
                 FrontendCallbackDeliveryDiagnosticPhase::CallbackArtifactLookup
             }

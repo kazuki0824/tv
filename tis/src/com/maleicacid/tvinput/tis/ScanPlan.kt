@@ -33,6 +33,16 @@ data class ScanCandidate(
     }
 }
 
+internal data class ScanTuneKey(
+    val deliverySystem: String,
+    val frequencyHz: FrequencyHz,
+    val streamSelector: StreamSelector,
+    val satelliteBand: String?,
+)
+
+internal val ScanCandidate.tuneKey: ScanTuneKey
+    get() = ScanTuneKey(deliverySystem, frequencyHz, streamSelector, satelliteBand)
+
 object JapanIsdbScanPlan {
     const val BS_DISCOVERY_BACKEND_HINT = "jp-bs-discovery"
     private data class BsTsidEntry(val frequencyHz: FrequencyHz, val tsid: TransportStreamId16, val label: String, val physical: Int)
@@ -71,28 +81,6 @@ object JapanIsdbScanPlan {
                 kind = ScanCandidateKind.ISDB_S_BS,
             )
         }
-
-    fun versionedBsCandidatesForUnsupportedDynamicDiscovery(seed: ScanCandidate): List<ScanCandidate> {
-        require(seed.kind == ScanCandidateKind.ISDB_S_BS && seed.streamSelector.type == StreamSelectorType.NONE)
-        return bsTsidEntries
-            .asSequence()
-            .filter { entry ->
-                entry.frequencyHz == seed.frequencyHz && entry.physical == seed.physicalChannel
-            }
-            .map { entry ->
-                ScanCandidate(
-                    deliverySystem = ChannelRecord.DELIVERY_SYSTEM_ISDB_S,
-                    frequencyHz = entry.frequencyHz,
-                    streamSelector = StreamSelector.tsid(entry.tsid.value),
-                    displayChannel = entry.label,
-                    physicalChannel = entry.physical,
-                    backendHint = "jp-bs-versioned-tsid",
-                    satelliteBand = "BS",
-                    kind = ScanCandidateKind.ISDB_S_BS,
-                )
-            }
-            .toList()
-    }
 
     fun explicitBsCandidatesFromScan(seed: ScanCandidate, inputStreamIds: Collection<Int>): List<ScanCandidate> {
         require(seed.kind == ScanCandidateKind.ISDB_S_BS && seed.streamSelector.type == StreamSelectorType.NONE)

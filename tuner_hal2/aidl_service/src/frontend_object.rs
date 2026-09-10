@@ -1,11 +1,9 @@
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::IFrontendCallback::IFrontendCallback;
 use binder::{Interface, Result as BinderResult, Strong};
-use maleicacid_tuner_hal2_binder_adapter::AidlMethodCall;
 
 use crate::object_handle::{AidlObjectHandle, AidlObjectHandleError, AidlObjectKind};
 use crate::object_runtime::{
-    drop_leak_object_from_drop, execute_callback_unregistration_runtime_use_case,
-    execute_frontend_callback_registration_runtime_use_case,
+    drop_leak_object_from_drop, execute_frontend_callback_registration_runtime_use_case,
 };
 use crate::service_context::{SharedAidlServiceContext, SharedTunerRuntime};
 
@@ -35,24 +33,6 @@ impl FrontendAidlObject {
 
     pub(crate) fn runtime(&self) -> SharedTunerRuntime {
         self.context.runtime()
-    }
-
-    pub(crate) fn set_callback_nullable_for_aidl(
-        &self,
-        callback: Option<&Strong<dyn IFrontendCallback>>,
-    ) -> BinderResult<()> {
-        match callback {
-            Some(callback) => self.set_callback_transaction(callback),
-            None => self.clear_callback_transaction(),
-        }
-    }
-
-    pub(crate) fn clear_callback_transaction(&self) -> BinderResult<()> {
-        execute_callback_unregistration_runtime_use_case(
-            &self.context,
-            self.handle,
-            AidlMethodCall::FrontendSetCallback,
-        )
     }
 
     pub(crate) fn set_callback_transaction(

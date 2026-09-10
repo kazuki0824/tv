@@ -11,6 +11,168 @@ import kotlin.test.assertTrue
 class ScanPlanPolicyTest {
 
     @Test
+    fun bsStartFailureSurvivesCleanupFailureAndRetainsOwnerForRetry() {
+        for (throws in listOf(false, true)) {
+            val operation = TunerController.StreamIdDiscoveryOperation(24L)
+            var owner: TunerController.StreamIdDiscoveryOperation? = operation
+            var cancelCalls = 0
+            operation.start {
+                if (throws) throw IllegalStateException("scan start exception")
+                android.media.tv.tuner.Tuner.RESULT_UNAVAILABLE
+            }
+            var diagnostics = 0
+            val result = operation.resultWithCleanup(operation.await(1), cleanup = {
+                if (owner === operation) {
+                    operation.cancel { cancelCalls++; android.media.tv.tuner.Tuner.RESULT_INVALID_STATE }
+                    owner = null
+                }
+            }, diagnose = { diagnostics++ })
+            assertEquals(operation, owner)
+            assertEquals(1, cancelCalls)
+            assertEquals(1, diagnostics)
+            assertFalse(result.success)
+            assertEquals(if (throws) android.media.tv.tuner.Tuner.RESULT_UNKNOWN_ERROR else android.media.tv.tuner.Tuner.RESULT_UNAVAILABLE, result.resultCode)
+            assertEquals(if (throws) "scan start exception" else "Tuner.scanに失敗しました result=${result.resultCode}", result.message)
+            assertEquals(result, operation.result(true))
+            operation.cancel { android.media.tv.tuner.Tuner.RESULT_SUCCESS }
+            owner = null
+            assertEquals(null, owner)
+            assertEquals(result, operation.result(true))
+        }
+    }
+
+    @Test
+    fun bsProgressIsNotTerminalAndEveryTerminalRejectsLateIds() {
+        val operation = TunerController.StreamIdDiscoveryOperation(21L)
+        operation.reportProgress(100)
+        check(!operation.await(1) && operation.active)
+        operation.reportIds(intArrayOf(16400))
+        operation.complete()
+        check(operation.await(1))
+        val stopped = operation.result(true)
+        operation.reportIds(intArrayOf(16401))
+        operation.cancel { android.media.tv.tuner.Tuner.RESULT_SUCCESS }
+        operation.startFailed(1, "late failure")
+        operation.complete()
+        check(operation.result(true) == stopped && stopped.streamIds == setOf(16400))
+        for (end in listOf("timeout", "failure", "cancel", "lost")) {
+            val other = TunerController.StreamIdDiscoveryOperation(22L)
+            when (end) {
+                "timeout" -> other.result(false)
+                "failure" -> other.startFailed(1, "scan failed")
+                "cancel" -> other.cancel { android.media.tv.tuner.Tuner.RESULT_SUCCESS }
+                "lost" -> other.loseResources()
+            }
+            val before = other.result(true)
+            other.reportIds(intArrayOf(16400))
+            other.complete()
+            other.cancel { android.media.tv.tuner.Tuner.RESULT_SUCCESS }
+            check(other.result(true) == before && !before.success && before.streamIds.isEmpty())
+        }
+    }
+
+    @Test
+    fun bsFailedCancelRetainsResourceLossAdmissionAndTerminalOutcome() {
+        for (prior in listOf("scanning", "stopped", "timeout")) {
+            val operation = TunerController.StreamIdDiscoveryOperation(23L)
+            val fence = ChannelScanController.ResourceLossFence().apply { activate(23L) }
+            if (prior == "stopped") { operation.reportIds(intArrayOf(16400)); operation.complete() }
+            if (prior == "timeout") operation.result(false)
+            check(runCatching { operation.cancel { android.media.tv.tuner.Tuner.RESULT_UNAVAILABLE } }.isFailure)
+            check(operation.acceptsResourceLoss)
+            var notifications = 0
+            fun lose() = TunerController.completeResourceLoss(
+                invalidate = { if (!operation.acceptsResourceLoss) false else { operation.loseResources(); true } },
+                cleanup = { operation.cancel { android.media.tv.tuner.Tuner.RESULT_UNAVAILABLE } },
+                notifyLost = { notifications++; fence.onLost(operation.generation) },
+            )
+            check(runCatching { lose() }.isFailure)
+            lose()
+            check(notifications == 1 && fence.terminalObserved && operation.await(1))
+            val result = operation.result(true)
+            check(result.resourceLost == (prior == "scanning"))
+            operation.reportIds(intArrayOf(16401))
+            operation.cancel { android.media.tv.tuner.Tuner.RESULT_SUCCESS }
+            check(result == operation.result(true))
+            check(fence.publishIfCurrent<Unit>(23L) { error("lost owner published") } == null)
+        }
+    }
+
+    @Test
+    fun bsResourceLossWakesCallerAndRejectsCandidatesAndPublication() {
+        val controller = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val caller = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val fence = ChannelScanController.ResourceLossFence()
+        val operation = TunerController.StreamIdDiscoveryOperation(9L)
+        val waiting = java.util.concurrent.CountDownLatch(1)
+        var notifications = 0
+        var tuned = 0
+        var collected = 0
+        var published = 0
+        try {
+            val result = caller.submit<TunerController.StreamIdDiscoveryResult> {
+                waiting.countDown()
+                val completed = operation.await(5000)
+                controller.submit<TunerController.StreamIdDiscoveryResult> { operation.result(completed) }.get()
+            }
+            check(waiting.await(1, java.util.concurrent.TimeUnit.SECONDS))
+            controller.submit {
+                TunerController.completeResourceLoss(
+                    invalidate = { if (!operation.acceptsResourceLoss) false else { operation.loseResources(); true } },
+                    cleanup = { operation.cancel { android.media.tv.tuner.Tuner.RESULT_SUCCESS } },
+                    notifyLost = { notifications++; fence.onLost(operation.generation) },
+                )
+                operation.reportIds(intArrayOf(16400)) // 喪失後の遅延報告を拒否する。
+            }.get(1, java.util.concurrent.TimeUnit.SECONDS)
+            val lost = result.get(1, java.util.concurrent.TimeUnit.SECONDS)
+            check(lost.resourceLost && !lost.success && lost.message == "TUNER_RESOURCE_LOST")
+            fence.activate(requireNotNull(lost.generation))
+            for (candidate in lost.candidatesFor(JapanIsdbScanPlan.isdbsBsBands().first())) { tuned++; collected++ }
+            fence.publishIfCurrent<Unit>(operation.generation) { published++ }
+            check(notifications == 1 && fence.terminalObserved && tuned == 0 && collected == 0 && published == 0)
+            val next = TunerController.StreamIdDiscoveryOperation(10L)
+            next.reportIds(intArrayOf(16400)); next.complete()
+            check(next.result(next.await(1)).success)
+        } finally { caller.shutdownNow(); controller.shutdownNow() }
+    }
+
+    @Test
+    fun scanReleaseRetryPreservesResourceLostTerminalAndRetainsOnlyFailedOwner() {
+        val context = android.content.ContextWrapper(null)
+        val task = ChannelScanManager.ActiveScanTask(1, ScanPurpose.SETUP_SCAN, context)
+        val owner = java.util.concurrent.atomic.AtomicReference<ChannelScanManager.ActiveScanTask?>(task)
+        val terminal = ScanState.Failed("TUNER_RESOURCE_LOST", 1, ScanPurpose.SETUP_SCAN)
+        // Managerの実stateを検査する。テスト用の本番mutation APIは追加しない。
+        val stateField = ChannelScanManager::class.java.getDeclaredField("state").apply { isAccessible = true }
+        val previousState = ChannelScanManager.currentState()
+        stateField.set(null, terminal)
+        var diagnostics = 0
+        var controllerCloses = 0
+        var engineCloses = 0
+        var reject = true
+        task.controller = AutoCloseable { controllerCloses++; if (reject) error("close failed") }
+        task.engine = AutoCloseable { engineCloses++ }
+        try {
+            check(!ChannelScanManager.finishScanRelease(task, owner) { diagnostics++ })
+            check(owner.get() === task && task.closing && task.controller != null && task.engine == null)
+            check(ChannelScanManager.currentState() === terminal && diagnostics == 1 && engineCloses == 1)
+            reject = false
+            check(ChannelScanManager.finishScanRelease(task, owner) { diagnostics++ })
+            check(owner.get() == null && controllerCloses == 2 && engineCloses == 1)
+            check(ChannelScanManager.currentState() === terminal && diagnostics == 1)
+        } finally { stateField.set(null, previousState) }
+    }
+
+    @Test
+    fun unavailableDynamicDiscoveryDoesNotInferUnsupportedCapability() {
+        val seed = JapanIsdbScanPlan.isdbsBsBands().first()
+        val failed = TunerController.StreamIdDiscoveryResult(false, setOf(16400), android.media.tv.tuner.Tuner.RESULT_UNAVAILABLE)
+        assertTrue(failed.candidatesFor(seed).isEmpty())
+        assertEquals(setOf(16400), failed.copy(success = true, resultCode = android.media.tv.tuner.Tuner.RESULT_SUCCESS)
+            .candidatesFor(seed).mapNotNull { it.streamSelector.value }.toSet())
+    }
+
+    @Test
     fun catvScanC13ToC63IsTisSideSsotAndDoesNotIncludeVhf() {
         val catv = JapanIsdbScanPlan.isdbtCatvC13ToC63()
         assertEquals(51, catv.size)
@@ -35,17 +197,6 @@ class ScanPlanPolicyTest {
         assertTrue(bs.isNotEmpty())
         assertTrue(bs.all { it.streamSelector.type == StreamSelectorType.NONE })
         assertTrue(bs.all { it.backendHint == JapanIsdbScanPlan.BS_DISCOVERY_BACKEND_HINT })
-    }
-
-    @Test
-    fun versionedBsCandidatesAreExplicitTsidsForOneUnsupportedRfSeed() {
-        val seed = JapanIsdbScanPlan.isdbsBsBands().first()
-        val candidates = JapanIsdbScanPlan.versionedBsCandidatesForUnsupportedDynamicDiscovery(seed)
-        assertTrue(candidates.isNotEmpty())
-        assertTrue(candidates.all { it.frequencyHz == seed.frequencyHz })
-        assertTrue(candidates.all { it.physicalChannel == seed.physicalChannel })
-        assertTrue(candidates.all { it.streamSelector.type == StreamSelectorType.TSID })
-        assertEquals(setOf(16400, 16401, 16402), candidates.mapNotNull { it.streamSelector.value }.toSet())
     }
 
     @Test

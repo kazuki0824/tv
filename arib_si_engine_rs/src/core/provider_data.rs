@@ -83,6 +83,107 @@ struct CasV1 {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CasFactsV1 {
+    pmt_pid: Option<i64>,
+    parse_status: String,
+    sdt_free_ca_mode: Option<bool>,
+    descriptors: Vec<CaBasisV1>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CaBasisV1 {
+    scope: String,
+    es_pid: Option<i64>,
+    ca_system_id: i64,
+    ca_pid: i64,
+    raw_descriptor_hex: String,
+}
+
+impl From<&crate::service_discovery::ServiceSemanticFacts> for CasFactsV1 {
+    fn from(facts: &crate::service_discovery::ServiceSemanticFacts) -> Self {
+        let basis = |descriptor: &crate::ca_descriptor::CaDescriptor,
+                     scope: &str,
+                     es_pid: Option<u16>| CaBasisV1 {
+            scope: scope.to_string(),
+            es_pid: es_pid.map(i64::from),
+            ca_system_id: i64::from(descriptor.ca_system_id),
+            ca_pid: i64::from(descriptor.ca_pid),
+            raw_descriptor_hex: crate::ca_descriptor::hex_prefix(
+                &descriptor.raw_descriptor,
+                descriptor.raw_descriptor.len(),
+            ),
+        };
+        let mut descriptors = facts
+            .program_ca_descriptors
+            .iter()
+            .map(|descriptor| basis(descriptor, "PROGRAM", None))
+            .collect::<Vec<_>>();
+        for group in &facts.es_ca_descriptors {
+            descriptors.extend(
+                group
+                    .descriptors
+                    .iter()
+                    .map(|descriptor| basis(descriptor, "ES", Some(group.elementary_pid))),
+            );
+        }
+        Self {
+            pmt_pid: facts.pmt_pid.map(i64::from),
+            parse_status: if !facts.pmt_parsed {
+                "PMT_UNRESOLVED"
+            } else if !facts.ca_descriptors_resolved {
+                "CA_UNRESOLVED"
+            } else {
+                "OK"
+            }
+            .to_string(),
+            sdt_free_ca_mode: facts.free_ca_mode,
+            descriptors,
+        }
+    }
+}
+
+pub fn serialize_cas_facts_json<S: serde::Serializer>(
+    facts: &CasFactsV1,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    let json = serde_json::to_string(facts).map_err(serde::ser::Error::custom)?;
+    serializer.serialize_str(&json)
+}
+
+fn valid_cas_facts(facts: &Option<CasFactsV1>, requires_cas: bool) -> bool {
+    let Some(facts) = facts else {
+        return true;
+    };
+    facts
+        .pmt_pid
+        .map(|pid| (0..=8191).contains(&pid))
+        .unwrap_or(true)
+        && matches!(
+            facts.parse_status.as_str(),
+            "OK" | "PMT_UNRESOLVED" | "CA_UNRESOLVED"
+        )
+        && (facts.parse_status != "OK" || facts.pmt_pid.is_some())
+        && requires_cas != facts.descriptors.is_empty()
+        && facts.descriptors.iter().all(|descriptor| {
+            let scope_valid = match descriptor.scope.as_str() {
+                "PROGRAM" => descriptor.es_pid.is_none(),
+                "ES" => descriptor
+                    .es_pid
+                    .map(|pid| (0..=8191).contains(&pid))
+                    .unwrap_or(false),
+                _ => false,
+            };
+            scope_valid
+                && in_u16(descriptor.ca_system_id)
+                && (0..=8191).contains(&descriptor.ca_pid)
+                && valid_hex(&descriptor.raw_descriptor_hex)
+                && descriptor.raw_descriptor_hex.len() <= 514
+        })
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RatingV1 {
     country_code: String,
     raw_rating_byte: i64,
@@ -383,15 +484,17 @@ struct ProgramProviderDataV1 {
     timing: TimingV1,
     source: SourceV1,
     cas: CasV1,
+    #[serde(default)]
+    cas_facts: Option<CasFactsV1>,
     ratings: Vec<RatingV1>,
     genres: Vec<GenreV1>,
     series: Option<SeriesV1>,
     event_groups: Vec<EventGroupV1>,
     linkage: Vec<LinkageV1>,
     free_ca_mode: Option<FreeCaModeV1>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     short_events: Vec<ShortEventV1>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     extended_texts: Vec<ExtendedTextV1>,
     extended_items: Vec<ExtendedItemV1>,
     components: ComponentsV1,
@@ -418,9 +521,11 @@ struct ProgramProviderDataRequestV1 {
     timing: ProgramRequestTimingV1,
     source: SourceV1,
     cas: CasV1,
+    cas_facts_canonical_json: Option<String>,
     ratings: Vec<RatingV1>,
     genres: Vec<GenreV1>,
     series: Option<SeriesV1>,
+    series_candidates_canonical_json: Option<String>,
     event_groups: Vec<EventGroupV1>,
     linkage: Vec<LinkageV1>,
     free_ca_mode: Option<FreeCaModeV1>,
@@ -498,6 +603,8 @@ struct ChannelProviderDataV1 {
     service_key: ServiceKeyV1,
     tune: ChannelTuneV1,
     cas: ChannelCasV1,
+    #[serde(default)]
+    cas_facts: Option<CasFactsV1>,
     diagnostics: ChannelDiagnosticsV1,
     #[serde(default, flatten)]
     extensions: serde_json::Map<String, serde_json::Value>,
@@ -515,6 +622,7 @@ struct ChannelProviderDataRequestV1 {
     service_key: ServiceKeyV1,
     tune: ChannelRequestTuneV1,
     cas: ChannelCasV1,
+    cas_facts_canonical_json: Option<String>,
     diagnostics: ChannelRequestDiagnosticsV1,
 }
 
@@ -612,6 +720,7 @@ pub fn normalize_program_provider_data(raw_bytes: &[u8]) -> ProviderDataResult {
 pub fn extract_program_key_result(raw_bytes: &[u8]) -> Option<ProgramKeyResult> {
     let text = std::str::from_utf8(raw_bytes).ok()?;
     let data = serde_json::from_str::<ProgramProviderDataV1>(text.trim()).ok()?;
+    let data = normalize_program_extensions(data);
     if !valid_program_provider_data(&data) {
         return None;
     }
@@ -679,6 +788,22 @@ fn program_data_from_request(
     }
     let descriptor_diagnostics =
         parse_descriptor_diagnostics(&request.diagnostics.descriptor_diagnostics_canonical_json)?;
+    let series_extensions = match request.series_candidates_canonical_json.as_deref() {
+        None => Vec::new(),
+        Some(raw) => {
+            let candidates: Vec<SeriesV1> = serde_json::from_str(raw).ok()?;
+            if request.series.is_some()
+                || candidates.len() < 2
+                || !candidates.iter().all(valid_series)
+            {
+                return None;
+            }
+            vec![RawProviderDataExtensionV1 {
+                key: "seriesDescriptorFacts".to_string(),
+                value: serde_json::to_value(candidates).ok()?,
+            }]
+        }
+    };
     let data = ProgramProviderDataV1 {
         schema: PROGRAM_SCHEMA_NAME.to_string(),
         schema_version: PROVIDER_SCHEMA_VERSION,
@@ -690,6 +815,7 @@ fn program_data_from_request(
         },
         source: request.source,
         cas: request.cas,
+        cas_facts: Some(serde_json::from_str(request.cas_facts_canonical_json.as_deref()?).ok()?),
         ratings: request.ratings,
         genres: request.genres,
         series: request.series,
@@ -708,7 +834,7 @@ fn program_data_from_request(
             descriptor_diagnostics,
             publish_diagnostics: request.diagnostics.publish_diagnostics,
             parser_diagnostics: request.diagnostics.parser_diagnostics,
-            raw_provider_data_extensions: Vec::new(),
+            raw_provider_data_extensions: series_extensions,
             provider_data_truncated: None,
             provider_data_hard_limit_bytes: None,
             provider_data_soft_limit_bytes: None,
@@ -749,6 +875,7 @@ fn channel_data_from_request(
             remote_control_key_id: request.tune.remote_control_key_id,
         },
         cas: request.cas,
+        cas_facts: Some(serde_json::from_str(request.cas_facts_canonical_json.as_deref()?).ok()?),
         diagnostics: ChannelDiagnosticsV1::default(),
         extensions: serde_json::Map::new(),
     };
@@ -756,6 +883,8 @@ fn channel_data_from_request(
 }
 
 fn normalize_program_extensions(mut data: ProgramProviderDataV1) -> ProgramProviderDataV1 {
+    // 旧v1の公開判断を現在の製品判断として再利用せず、正規出力から除去する。
+    data.diagnostics.publish_diagnostics.clear();
     data.diagnostics
         .raw_provider_data_extensions
         .retain(|extension| !forbidden_program_extension(&extension.key));
@@ -1109,6 +1238,7 @@ fn valid_program_provider_data(data: &ProgramProviderDataV1) -> bool {
         && data.source.last_section_number >= data.source.section_number
         && data.source.last_section_number <= 255
         && !data.cas.source.is_empty()
+        && valid_cas_facts(&data.cas_facts, data.cas.requires_cas)
         && data.ratings.iter().all(valid_rating)
         && data.genres.iter().all(valid_genre)
         && data.series.as_ref().map(valid_series).unwrap_or(true)
@@ -1134,11 +1264,7 @@ fn valid_program_provider_data(data: &ProgramProviderDataV1) -> bool {
             .descriptor_diagnostics
             .iter()
             .all(valid_descriptor_diagnostic)
-        && data
-            .diagnostics
-            .publish_diagnostics
-            .iter()
-            .all(valid_diagnostic_item)
+        && data.diagnostics.publish_diagnostics.is_empty()
         && data
             .diagnostics
             .parser_diagnostics
@@ -1152,6 +1278,7 @@ fn valid_channel_provider_data(data: &ChannelProviderDataV1) -> bool {
         && in_u16(data.service_key.original_network_id)
         && in_u16(data.service_key.transport_stream_id)
         && in_u16(data.service_key.service_id)
+        && valid_cas_facts(&data.cas_facts, data.cas.requires_cas)
         && !data.tune.delivery_system.is_empty()
         && data.tune.frequency_hz > 0
         && (data.tune.satellite_band.as_deref() != Some("110CS")
@@ -1339,7 +1466,7 @@ fn valid_subtitle_component(v: &SubtitleComponentV1) -> bool {
         && v.caption_timing
             .map(|value| (0..=3).contains(&value))
             .unwrap_or(true)
-        && valid_optional_iso639(&v.language)
+        && v.language.is_none()
         && nonempty(&v.caption_service_kind)
         && nonempty(&v.parse_status)
 }
@@ -1458,22 +1585,8 @@ fn finalize_program(mut data: ProgramProviderDataV1) -> ProviderDataResult {
             note_drop(&mut counts, "descriptorDiagnostics", 1);
             continue;
         }
-        if data.diagnostics.publish_diagnostics.pop().is_some() {
-            note_drop(&mut counts, "publishDiagnostics", 1);
-            continue;
-        }
         if data.extended_items.pop().is_some() {
             note_drop(&mut counts, "extendedItems", 1);
-            continue;
-        }
-        if data.extended_texts.len() > 1 {
-            data.extended_texts.pop();
-            note_drop(&mut counts, "extendedTexts", 1);
-            continue;
-        }
-        if data.short_events.len() > 1 {
-            data.short_events.pop();
-            note_drop(&mut counts, "shortEvents", 1);
             continue;
         }
         let removed =
@@ -1569,6 +1682,107 @@ mod provider_data_tests {
     use super::*;
 
     #[test]
+    fn runtime_publish_judgement_is_rejected_by_builder_and_removed_from_legacy_data() {
+        let diagnostic =
+            serde_json::json!([{"code":"OLD_POLICY","message":"旧公開判断","severity":null}]);
+        let mut request = minimal_program_request_value();
+        request["diagnostics"]["publishDiagnostics"] = diagnostic.clone();
+        assert!(!build_program_provider_data(&request.to_string()).success);
+        let mut stored: serde_json::Value =
+            serde_json::from_str(&minimal_program_json("")).unwrap();
+        stored["diagnostics"]["publishDiagnostics"] = diagnostic;
+        let result = normalize_program_provider_data(stored.to_string().as_bytes());
+        assert!(result.success);
+        let canonical: serde_json::Value = serde_json::from_str(&result.json).unwrap();
+        assert_eq!(
+            canonical["diagnostics"]["publishDiagnostics"],
+            serde_json::json!([])
+        );
+        assert!(extract_program_key_result(stored.to_string().as_bytes()).is_some());
+        assert_eq!(
+            normalize_program_provider_data(result.json.as_bytes()).json,
+            result.json
+        );
+    }
+
+    #[test]
+    fn subtitle_language_reserved_field_rejects_pmt_or_pes_language_input() {
+        let mut request = minimal_program_request_value();
+        request["components"]["subtitle"] = serde_json::json!([{
+            "esPid":300,"componentTag":48,"dataComponentId":8,"captionDmf":null,
+            "captionTiming":null,"automaticPresentationOnReception":null,
+            "language":null,"captionServiceKind":"CAPTION","parseStatus":"OK"
+        }]);
+        assert!(build_program_provider_data(&request.to_string()).success);
+        request["components"]["subtitle"][0]["language"] = serde_json::json!("jpn");
+        assert!(!build_program_provider_data(&request.to_string()).success);
+    }
+
+    #[test]
+    fn stored_cas_basis_preserves_parse_state_and_rejects_inconsistent_claims() {
+        let mut value: serde_json::Value = serde_json::from_str(&minimal_program_json("")).unwrap();
+        value["cas"]["requiresCas"] = serde_json::json!(true);
+        value["casFacts"] = serde_json::json!({"pmtPid":256,"parseStatus":"CA_UNRESOLVED","sdtFreeCaMode":true,
+            "descriptors":[{"scope":"ES","esPid":273,"caSystemId":5,"caPid":500,"rawDescriptorHex":"09040005e1f4"}]});
+        let normalized = normalize_program_provider_data(value.to_string().as_bytes());
+        assert!(normalized.success);
+        let output: serde_json::Value = serde_json::from_str(&normalized.json).unwrap();
+        assert_eq!(output["casFacts"], value["casFacts"]);
+        value["cas"]["requiresCas"] = serde_json::json!(false);
+        assert!(!normalize_program_provider_data(value.to_string().as_bytes()).success);
+        value["cas"]["requiresCas"] = serde_json::json!(true);
+        value["casFacts"]["descriptors"][0]["esPid"] = serde_json::Value::Null;
+        assert!(!normalize_program_provider_data(value.to_string().as_bytes()).success);
+    }
+
+    #[test]
+    fn legacy_missing_candidate_arrays_normalize_to_required_empty_arrays() {
+        let legacy = minimal_program_json("");
+        let normalized = normalize_program_provider_data(legacy.as_bytes());
+        assert!(normalized.success);
+        let value: serde_json::Value = serde_json::from_str(&normalized.json).unwrap();
+        assert_eq!(value["shortEvents"], serde_json::json!([]));
+        assert_eq!(value["extendedTexts"], serde_json::json!([]));
+        assert_eq!(
+            normalize_program_provider_data(normalized.json.as_bytes()).json,
+            normalized.json
+        );
+    }
+
+    #[test]
+    fn size_limit_shortens_text_without_removing_languages() {
+        let mut value: serde_json::Value = serde_json::from_str(&minimal_program_json("")).unwrap();
+        value["shortEvents"] = serde_json::json!([
+            {"parseStatus":"OK", "languageCode":"jpn","title":"日本語", "text":"本文".repeat(5000)},
+            {"parseStatus":"OK", "languageCode":"eng","title":"English", "text":"text".repeat(5000)}
+        ]);
+        value["extendedTexts"] = serde_json::json!([
+            {"parseStatus":"OK", "languageCode":"jpn","text":"長文".repeat(5000)},
+            {"parseStatus":"OK", "languageCode":"eng","text":"long".repeat(5000)}
+        ]);
+        let input = value.to_string();
+        let first = normalize_program_provider_data(input.as_bytes());
+        assert!(first.success && first.truncated, "{}", first.json);
+        assert!(first.json.len() <= HARD_LIMIT_BYTES);
+        assert_eq!(
+            normalize_program_provider_data(input.as_bytes()).json,
+            first.json
+        );
+        let output: serde_json::Value = serde_json::from_str(&first.json).unwrap();
+        for field in ["shortEvents", "extendedTexts"] {
+            assert_eq!(output[field].as_array().unwrap().len(), 2);
+            assert_eq!(output[field][0]["languageCode"], "jpn");
+            assert_eq!(output[field][1]["languageCode"], "eng");
+        }
+        assert_eq!(output["extendedTexts"][1]["text"], "");
+        assert_eq!(output["shortEvents"][0]["title"], "日本語");
+        assert_eq!(
+            normalize_program_provider_data(first.json.as_bytes()).json,
+            first.json
+        );
+    }
+
+    #[test]
     fn shared_boundary_corpus_matches_normalization_and_key_extraction() {
         #[derive(Deserialize)]
         struct Case {
@@ -1620,6 +1834,7 @@ mod provider_data_tests {
             "serviceKey":{{"originalNetworkId":4,"transportStreamId":16400,"serviceId":101}},
             "tune":{{"deliverySystem":"ISDB_T","frequencyHz":473142857,"streamId":{},"streamIdType":"TSID","physicalChannel":13,"satelliteBand":null,"remoteControlKeyId":1}},
             "cas":{{"requiresCas":false}},
+            "casFactsCanonicalJson": "{{\"pmtPid\":null,\"parseStatus\":\"PMT_UNRESOLVED\",\"sdtFreeCaMode\":null,\"descriptors\":[]}}",
             "diagnostics":{{}}
             {}
         }}"#,
@@ -1671,6 +1886,9 @@ mod provider_data_tests {
         let mut value =
             serde_json::from_str::<serde_json::Value>(&minimal_program_json("")).unwrap();
         value["schema"] = serde_json::json!("maleicacid.tv.programRequest");
+        value["casFactsCanonicalJson"] = serde_json::json!(
+            r#"{"pmtPid":null,"parseStatus":"PMT_UNRESOLVED","sdtFreeCaMode":null,"descriptors":[]}"#
+        );
         value["diagnostics"] = serde_json::json!({
             "descriptorDiagnosticsCanonicalJson": "[]",
             "publishDiagnostics": [],
@@ -1678,6 +1896,26 @@ mod provider_data_tests {
         });
         value["malformedCaDescriptorCount"] = serde_json::json!(0);
         value
+    }
+
+    #[test]
+    fn current_requests_require_cas_evidence_but_legacy_normalization_does_not() {
+        let mut program = minimal_program_request_value();
+        program
+            .as_object_mut()
+            .unwrap()
+            .remove("casFactsCanonicalJson");
+        assert!(!build_program_provider_data(&program.to_string()).success);
+        let mut channel: serde_json::Value =
+            serde_json::from_str(&minimal_channel_request("", 16400)).unwrap();
+        channel
+            .as_object_mut()
+            .unwrap()
+            .remove("casFactsCanonicalJson");
+        assert!(!build_channel_provider_data(&channel.to_string()).success);
+        assert!(normalize_program_provider_data(minimal_program_json("").as_bytes()).success);
+        assert!(build_program_provider_data(&minimal_program_request_value().to_string()).success);
+        assert!(build_channel_provider_data(&minimal_channel_request("", 16400)).success);
     }
 
     #[test]
@@ -1721,7 +1959,7 @@ mod provider_data_tests {
             "captionDmf": 0x0c,
             "captionTiming": 0x02,
             "automaticPresentationOnReception": true,
-            "language": "jpn",
+            "language": null,
             "captionServiceKind": "superimpose",
             "parseStatus": "OK"
         }]);
@@ -1733,6 +1971,7 @@ mod provider_data_tests {
         assert_eq!(subtitle["captionDmf"], 0x0c);
         assert_eq!(subtitle["captionTiming"], 0x02);
         assert_eq!(subtitle["automaticPresentationOnReception"], true);
+        assert!(subtitle["language"].is_null());
     }
 
     #[test]

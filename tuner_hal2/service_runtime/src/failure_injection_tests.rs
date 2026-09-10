@@ -174,6 +174,33 @@ fn record_runtime_callback_registration(
 }
 
 #[test]
+fn frontend_callback_death_clears_only_the_live_owner_registration() {
+    let mut runtime = TunerServiceRuntime::new();
+    let owner_id = AidlObjectId(94_030);
+    let generation = AidlObjectGeneration(1);
+    record_runtime_callback_registration(
+        &mut runtime,
+        AidlObjectKind::Frontend,
+        owner_id,
+        generation,
+        AidlApi::FrontendSetCallback,
+    );
+    assert!(runtime.frontend_callback_delivery_ready(owner_id, generation));
+    assert!(!runtime.frontend_callback_delivery_ready(owner_id, AidlObjectGeneration(2)));
+    assert!(runtime
+        .begin_frontend_callback_death_use_case(owner_id, AidlObjectGeneration(2))
+        .is_err());
+    assert!(runtime.frontend_callback_delivery_ready(owner_id, generation));
+    let outcome = runtime
+        .begin_frontend_callback_death_use_case(owner_id, generation)
+        .unwrap();
+    runtime
+        .finish_owner_callback_cleanup_outcome(outcome, Ok(CallbackArtifactCleanupResult::Cleared))
+        .unwrap();
+    assert!(!runtime.frontend_callback_delivery_ready(owner_id, generation));
+}
+
+#[test]
 fn owner_callback_cleanup_registry_missing_is_runtime_failure() {
     use crate::diagnostics::CallbackArtifactRuntimeSplitOutcome;
 

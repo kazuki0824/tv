@@ -28,6 +28,7 @@ data class ChannelRecord(
     val satelliteBand: String? = null,
     val remoteControlKeyId: Int? = null,
     val requiresCas: Boolean = false,
+    val casFactsCanonicalJson: String? = null,
 ) {
     companion object {
         const val DELIVERY_SYSTEM_ISDB_T = "ISDB_T"
@@ -49,6 +50,7 @@ data class ProgramDescriptors(
     val scrambled: Boolean? = null,
     val freeCaMode: AribFreeCaMode? = null,
     val series: AribSeries? = null,
+    val seriesCandidatesCanonicalJson: String? = null,
     val descriptorDiagnosticsCanonicalJson: String = "[]",
     val descriptorFactsCanonicalJson: String? = null,
     val parentalRatings: List<AribParentalRating> = emptyList(),
@@ -68,6 +70,7 @@ data class ProgramRecord(
     val descriptors: ProgramDescriptors = ProgramDescriptors(),
     val source: AribProgramSource = AribProgramSource(),
     val requiresCas: Boolean = false,
+    val casFactsCanonicalJson: String? = null,
     val diagnosticText: String = "",
     val contentRatings: List<String> = emptyList(),
     val videoWidth: Int? = null,

@@ -5,6 +5,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.media.MediaCodec
+import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.media.MediaSync
 import android.media.MediaTimestamp
@@ -26,6 +27,8 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
+import com.maleicacid.tvinput.aribsi.AribAvcSignaling
+import com.maleicacid.tvinput.aribsi.AribCodecFacts
 import com.maleicacid.tvinput.common.CaptionTimestamp
 import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.common.PesPts90k
@@ -60,7 +63,7 @@ class PlaybackPipeline(
     private var onVideoFormatDiscovered: (Long, VideoFormatInfo) -> Unit = { _, _ -> }
     private var onSubtitlePes: (Long, String, ByteArray, CaptionTimestamp) -> Unit = { _, _, _, _ -> }
     private var onSubtitleContinuityLost: (Long, String) -> Unit = { _, _ -> }
-    private var onVideoOnlyFallbackRestarted: (VideoOnlyFallbackRestart) -> Unit = {}
+    private var onPlaybackGenerationRestarted: (PlaybackGenerationRestart) -> Unit = {}
     private var videoFilter: Filter? = null
     private var audioFilter: Filter? = null
     private var subtitleFilter: Filter? = null
@@ -70,6 +73,7 @@ class PlaybackPipeline(
     private var mediaSync: MediaSync? = null
     private var mediaSyncInputSurface: Surface? = null
     private var audioTrack: AudioTrack? = null
+    private var audioRoutingListener: android.media.AudioRouting.OnRoutingChangedListener? = null
     private var mediaSyncStarted = false
     private var mediaSyncSurfaceFailed = false
     private var videoInputQueued = false
@@ -92,7 +96,7 @@ class PlaybackPipeline(
     private var decoderBackpressureDrops: Int = 0
     private var subtitleMissingPtsSamples: Int = 0
     private val released = AtomicBoolean(false)
-    private val resourceCleanup = PlaybackResourceCleanup()
+    private val resourceCleanup = ResourceCleanup()
     private var resourceActivityReported = false
 
     private enum class VideoAvailabilityMode {
@@ -102,7 +106,7 @@ class PlaybackPipeline(
 
     enum class PlaybackUnavailableReason {
         SURFACE_DETACHED, SURFACE_NOT_SET, VIDEO_FILTER_NOT_STARTED, AUDIO_FILTER_NOT_STARTED,
-        VIDEO_OUTPUT_RENDER_FAILED, VIDEO_CODEC_ERROR, CODEC_CONFIG_TIMEOUT, FIRST_FRAME_TIMEOUT, UNSUPPORTED_VIDEO_STREAM,
+        VIDEO_OUTPUT_RENDER_FAILED, VIDEO_CODEC_ERROR, PLAYBACK_RECOVERY_FAILED, CODEC_CONFIG_TIMEOUT, FIRST_FRAME_TIMEOUT, UNSUPPORTED_VIDEO_STREAM,
         UNSUPPORTED_AUDIO_STREAM, AUDIO_UNAVAILABLE, INVALID_MEDIA_TIMESTAMP, CAS_NO_KEY, UNKNOWN,
     }
 
@@ -136,9 +140,10 @@ class PlaybackPipeline(
         val generation: Long = -1L,
     )
 
-    data class VideoOnlyFallbackRestart(
+    data class PlaybackGenerationRestart(
         val originGeneration: Long,
         val result: StartResult,
+        val videoOnly: Boolean = false,
     )
 
     enum class DualMonoPresentation { MAIN, SUB, MAIN_SUB }
@@ -257,8 +262,8 @@ class PlaybackPipeline(
         runOnPlaybackExecutorBlocking { onSubtitleContinuityLost = callback }
     }
 
-    fun setOnVideoOnlyFallbackRestartedCallback(callback: (VideoOnlyFallbackRestart) -> Unit) {
-        runOnPlaybackExecutorBlocking { onVideoOnlyFallbackRestarted = callback }
+    fun setOnPlaybackGenerationRestartedCallback(callback: (PlaybackGenerationRestart) -> Unit) {
+        runOnPlaybackExecutorBlocking { onPlaybackGenerationRestarted = callback }
     }
 
     fun reportUnavailable(reason: PlaybackUnavailableReason, detail: String = "") {
@@ -293,7 +298,53 @@ class PlaybackPipeline(
         channel: TunerController.ResolvedChannel,
         selection: TunerController.AvStreamSelection,
     ): StartResult = runOnPlaybackExecutorBlocking {
+        codecRecoveryAttempted = false
+        startRequestedPlayback(tuner, channel, selection)
+    }
+
+    private fun startRequestedPlayback(
+        tuner: Tuner,
+        channel: TunerController.ResolvedChannel,
+        selection: TunerController.AvStreamSelection,
+    ): StartResult = try {
         startOnPlaybackExecutor(tuner, channel, selection)
+    } catch (error: RuntimeException) {
+        // 同期要求では呼出元Sessionが失敗結果を確定して通知する。
+        Log.w(LogTags.TIS, "playback start failed inputId=$inputId generation=$playbackGeneration", error)
+        StartResult.failedAfterRestart(playbackGeneration, listOf(error.message.orEmpty()))
+    }
+
+    private var codecRecoveryAttempted = false
+
+    private fun handleCodecError(error: MediaCodec.CodecException, generation: Long, isAudio: Boolean) {
+        if (generation != playbackGeneration) return
+        val retryDelay = codecRecoveryDelay(error.errorCode == MediaCodec.CodecException.ERROR_RECLAIMED,
+            error.isRecoverable, error.isTransient, codecRecoveryAttempted)
+        val tuner = activeTuner
+        val channel = activeChannel
+        val selection = activeSelection
+        if (retryDelay == null || tuner == null || channel == null || selection == null) {
+            completePlaybackFailureAction(generation, onVideoUnavailable) {
+                if (isAudio) handleAudioFailure(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, error.diagnosticInfo, channel?.serviceType == SERVICE_TYPE_DIGITAL_AUDIO)
+                else {
+                    stopOnPlaybackExecutor()
+                    onVideoUnavailable(PlaybackUnavailable(PlaybackUnavailableReason.VIDEO_CODEC_ERROR, error.diagnosticInfo, generation))
+                }
+            }
+            return
+        }
+        codecRecoveryAttempted = true
+        recoverCodecGeneration(
+            originGeneration = generation,
+            stop = { stopOnPlaybackExecutor(); playbackGeneration },
+            schedule = { retry -> mainHandler.postDelayed({ enqueuePlaybackAction(retry) }, retryDelay) },
+            isCurrent = { it == playbackGeneration },
+            restart = {
+                val restarted = startOnPlaybackExecutor(tuner, channel, selection)
+                onPlaybackGenerationRestarted(PlaybackGenerationRestart(generation, restarted))
+            },
+            onUnavailable = onVideoUnavailable,
+        )
     }
 
     private fun startOnPlaybackExecutor(
@@ -311,7 +362,8 @@ class PlaybackPipeline(
         val video = selection.video
         val videoKind = video?.let { VideoCodecKind.fromStreamType(it.streamType) }
         val audio = selection.audio
-        val audioKind = audio?.let { stream -> AudioCodecKind.fromStreamType(stream.streamType) }
+        val audioKind = audio?.takeIf(TunerSelectionPolicy::isSupportedAudioStream)
+            ?.let { stream -> AudioCodecKind.fromStreamType(stream.streamType) }
         if (!audioOnly && (video == null || videoKind == null)) {
             emitUnavailable(PlaybackUnavailableReason.UNSUPPORTED_VIDEO_STREAM, "audio-video service の対応video PIDがありません service=${selection.serviceKey}")
             return StartResult.failedAfterRestart(startGeneration, listOf("SERVICE_TYPE_PMT_MISMATCH"))
@@ -340,14 +392,14 @@ class PlaybackPipeline(
         val sync = createMediaSync(currentSurface?.takeIf { videoPathExpected }, startGeneration)
             ?: return StartResult.failedAfterRestart(startGeneration, listOf("MediaSync初期化失敗"))
         val videoDecoderLocal = if (video != null && videoKind != null) {
-            VideoDecoderPipeline(videoKind, requireNotNull(mediaSyncInputSurface), startGeneration) { reason, detail ->
+            VideoDecoderPipeline(videoKind, video.codecFacts, requireNotNull(mediaSyncInputSurface), startGeneration) { reason, detail ->
                 emitUnavailableForGeneration(startGeneration, reason, detail)
             }.also { videoDecoder = it }
         } else {
             null
         }
         if (audioExpected) {
-            audioDecoder = AudioDecoderPipeline(audioKind!!, selection.audioComponentType ?: requireNotNull(audio).componentType, selection.dualMonoPresentation, streamVolume, startGeneration) { reason, detail ->
+            audioDecoder = AudioDecoderPipeline(audioKind!!, requireNotNull(audio), selection.audioComponentType ?: requireNotNull(audio).componentType, selection.dualMonoPresentation, streamVolume, startGeneration) { reason, detail ->
                 if (startGeneration == playbackGeneration) handleAudioFailure(reason, detail, audioOnly)
             }
         }
@@ -446,7 +498,7 @@ class PlaybackPipeline(
             emitUnavailable(PlaybackUnavailableReason.UNSUPPORTED_AUDIO_STREAM, "未対応 audio stream_type=0x${audio.streamType.toString(16)}")
             return AudioSwitchResult(false, listOf("audio stream_type 未対応"))
         }
-        val restarted = startOnPlaybackExecutor(tuner, channel, selection)
+        val restarted = startRequestedPlayback(tuner, channel, selection)
         return AudioSwitchResult(
             switchedAudio = restarted.startedAudio,
             diagnostics = restarted.diagnostics + "MEDIASYNC_GENERATION_RECREATED_FOR_AUDIO_SWITCH",
@@ -514,26 +566,30 @@ class PlaybackPipeline(
                 }
             }
         }) ?: error("openFilter が null を返しました pid=$pid isAudio=$isAudio")
-        val settingsBuilder = AvSettings.builder(Filter.TYPE_TS, isAudio).setPassthrough(false)
-        if (isAudio) {
-            settingsBuilder.setAudioStreamType(mapAudioStreamType(stream.streamType))
-        } else {
-            settingsBuilder.setVideoStreamType(mapVideoStreamType(stream.streamType))
-        }
-        val config = TsFilterConfiguration.builder().setTpid(pidValue).setSettings(settingsBuilder.build()).build()
-        val configureResult = filter.configure(config)
-        if (configureResult != Tuner.RESULT_SUCCESS) {
-            closeFilter(filter)
-            error("AV filter configure failed result=$configureResult pid=$pid isAudio=$isAudio")
-        }
-        if (isAudio) audioFilter = filter else videoFilter = filter
-        val startResult = filter.start()
-        if (startResult != Tuner.RESULT_SUCCESS) {
-            if (isAudio && audioFilter === filter) audioFilter = null
-            if (!isAudio && videoFilter === filter) videoFilter = null
-            closeFilter(filter)
-            error("AV filter start failed result=$startResult pid=$pid isAudio=$isAudio")
-        }
+        preparePlaybackResource(
+            prepare = {
+                val settingsBuilder = AvSettings.builder(Filter.TYPE_TS, isAudio).setPassthrough(false)
+                if (isAudio) settingsBuilder.setAudioStreamType(mapAudioStreamType(stream.streamType))
+                else settingsBuilder.setVideoStreamType(mapVideoStreamType(stream.streamType))
+                val config = TsFilterConfiguration.builder().setTpid(pidValue).setSettings(settingsBuilder.build()).build()
+                val configureResult = filter.configure(config)
+                check(configureResult == Tuner.RESULT_SUCCESS) {
+                    "AV filter configure failed result=$configureResult pid=$pid isAudio=$isAudio"
+                }
+            },
+            commit = {
+                if (isAudio) audioFilter = filter else videoFilter = filter
+                val startResult = filter.start()
+                check(startResult == Tuner.RESULT_SUCCESS) {
+                    "AV filter start failed result=$startResult pid=$pid isAudio=$isAudio"
+                }
+            },
+            rollback = {
+                if (isAudio && audioFilter === filter) audioFilter = null
+                if (!isAudio && videoFilter === filter) videoFilter = null
+                closeFilter(filter)
+            },
+        )
         filter
     }
 
@@ -596,23 +652,30 @@ class PlaybackPipeline(
                 }
             }
         }) ?: error("openFilter が null を返しました caption pid=$pid")
-        val settings = PesSettings.builder(Filter.TYPE_TS)
-            .setStreamId(if (superimpose) PES_STREAM_ID_PRIVATE_STREAM_2 else PES_STREAM_ID_PRIVATE_STREAM_1)
-            .build()
-        val config = TsFilterConfiguration.builder().setTpid(pidValue).setSettings(settings).build()
-        val configureResult = filter.configure(config)
-        if (configureResult != Tuner.RESULT_SUCCESS) {
-            closeFilter(filter)
-            error("caption PES filter configure failed result=$configureResult pid=$pid")
-        }
-        if (superimpose) superimposeFilter = filter else subtitleFilter = filter
-        val startResult = filter.start()
-        if (startResult != Tuner.RESULT_SUCCESS) {
-            if (superimpose && superimposeFilter === filter) superimposeFilter = null
-            if (!superimpose && subtitleFilter === filter) subtitleFilter = null
-            closeFilter(filter)
-            error("caption PES filter start failed result=$startResult pid=$pid")
-        }
+        preparePlaybackResource(
+            prepare = {
+                val settings = PesSettings.builder(Filter.TYPE_TS)
+                    .setStreamId(if (superimpose) PES_STREAM_ID_PRIVATE_STREAM_2 else PES_STREAM_ID_PRIVATE_STREAM_1)
+                    .build()
+                val config = TsFilterConfiguration.builder().setTpid(pidValue).setSettings(settings).build()
+                val configureResult = filter.configure(config)
+                check(configureResult == Tuner.RESULT_SUCCESS) {
+                    "caption PES filter configure failed result=$configureResult pid=$pid"
+                }
+            },
+            commit = {
+                if (superimpose) superimposeFilter = filter else subtitleFilter = filter
+                val startResult = filter.start()
+                check(startResult == Tuner.RESULT_SUCCESS) {
+                    "caption PES filter start failed result=$startResult pid=$pid"
+                }
+            },
+            rollback = {
+                if (superimpose && superimposeFilter === filter) superimposeFilter = null
+                if (!superimpose && subtitleFilter === filter) subtitleFilter = null
+                closeFilter(filter)
+            },
+        )
         filter
     }
 
@@ -709,32 +772,64 @@ class PlaybackPipeline(
         }
     }
 
+    private fun releaseAudioTrack() {
+        val track = audioTrack
+        val listener = audioRoutingListener
+        audioTrack = null
+        audioRoutingListener = null
+        if (track != null) {
+            if (listener != null) resourceCleanup.release("AudioTrack routing listener") { track.removeOnRoutingChangedListener(listener) }
+            resourceCleanup.release("AudioTrack") { track.release() }
+        }
+    }
+
+    private fun observeAudioRouting(track: AudioTrack, generation: Long) {
+        val gate = AudioRouteChangeGate(generation, track, track.routedDevice?.id)
+        val listener = android.media.AudioRouting.OnRoutingChangedListener { source ->
+            enqueuePlaybackAction {
+                if (source !== track || !gate.accepts(playbackGeneration, audioTrack)) return@enqueuePlaybackAction
+                gate.onRouteChanged(playbackGeneration, audioTrack, track.routedDevice?.id) {
+                    restartCurrentPlaybackGeneration(generation)
+                }
+            }
+        }
+        audioRoutingListener = listener
+        track.addOnRoutingChangedListener(listener, codecCallbackHandler)
+    }
+
+    private fun restartCurrentPlaybackGeneration(originGeneration: Long) {
+        if (originGeneration != playbackGeneration) return
+        val tuner = activeTuner ?: return
+        val channel = activeChannel ?: return
+        val selection = activeSelection ?: return
+        completePlaybackFailureAction(originGeneration, onVideoUnavailable) {
+            val restarted = startOnPlaybackExecutor(tuner, channel, selection)
+            onPlaybackGenerationRestarted(PlaybackGenerationRestart(originGeneration, restarted))
+        }
+    }
+
     private fun handleAudioFailure(reason: PlaybackUnavailableReason, detail: String, audioOnly: Boolean) {
         val originGeneration = playbackGeneration
         val restartTuner = activeTuner
         val restartChannel = activeChannel
         val restartSelection = activeSelection
-        releaseOutstandingAudioOutputs()
-        audioDecoder?.close()
-        audioDecoder = null
-        audioTrack?.let { track -> resourceCleanup.release("AudioTrack") { track.release() } }
-        audioTrack = null
-        audioPathExpected = false
-        audioInputQueued = false
-        if (audioOnly) {
-            emitUnavailable(reason, detail)
-            stopOnPlaybackExecutor()
-            return
+        completePlaybackFailureAction(originGeneration, onVideoUnavailable) {
+            if (audioOnly) {
+                stopOnPlaybackExecutor()
+                onVideoUnavailable(PlaybackUnavailable(reason, detail, originGeneration))
+                return@completePlaybackFailureAction
+            }
+            logAudioUnavailable(reason, "$detail; recreating MediaSync generation for video-only fallback")
+            if (restartTuner == null || restartChannel == null || restartSelection?.video == null) {
+                stopOnPlaybackExecutor()
+                onVideoUnavailable(PlaybackUnavailable(PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED,
+                    "$detail; video-only restart context is unavailable", originGeneration))
+                return@completePlaybackFailureAction
+            }
+            val restarted = startOnPlaybackExecutor(restartTuner, restartChannel, restartSelection.copy(audio = null))
+            onPlaybackGenerationRestarted(PlaybackGenerationRestart(originGeneration, restarted, videoOnly = true))
+            // 失敗StartResultの外部通知は、結果を受理して世代を更新するSessionが所有する。
         }
-        logAudioUnavailable(reason, "$detail; recreating MediaSync generation for video-only fallback")
-        if (restartTuner == null || restartChannel == null || restartSelection?.video == null) {
-            emitUnavailable(reason, "$detail; video-only restart context is unavailable")
-            stopOnPlaybackExecutor()
-            return
-        }
-        val restarted = startOnPlaybackExecutor(restartTuner, restartChannel, restartSelection.copy(audio = null))
-        onVideoOnlyFallbackRestarted(VideoOnlyFallbackRestart(originGeneration, restarted))
-        if (restarted.generation < 0L || (!restarted.firstFramePending && !restarted.startedVideo)) emitUnavailable(reason, "$detail; video-only generation restart failed")
     }
 
     private fun onCompressedInputQueued(sample: MediaSample) {
@@ -938,42 +1033,56 @@ class PlaybackPipeline(
         }
 
         private fun createBlockModelDecoder(format: MediaFormat): MediaCodec {
-            val decoder = MediaCodec.createDecoderByType(codecMime())
-            decoder.setCallback(object : MediaCodec.Callback() {
-                override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {
-                    enqueuePlaybackAction {
-                        if (generation != playbackGeneration || this@DecoderPipeline.codec !== codec) return@enqueuePlaybackAction
-                        availableInputIndexes.addLast(index)
-                        drainPendingInput()
-                    }
-                }
-                override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
-                    enqueuePlaybackAction {
-                        if (generation != playbackGeneration || this@DecoderPipeline.codec !== codec) {
-                            runCatching { codec.releaseOutputBuffer(index, false) }
-                            return@enqueuePlaybackAction
-                        }
-                        if (info.size > 0) {
-                            startupDeadline?.onFirstOutput()
-                            startupTimeout?.let(mainHandler::removeCallbacks)
-                            startupTimeout = null
-                            backpressureStartedAtMs = null
-                        }
-                        onOutput(codec, index, info)
-                    }
-                }
-                override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
-                    enqueuePlaybackAction {
-                        if (generation == playbackGeneration && this@DecoderPipeline.codec === codec) onOutputFormatChanged(format)
-                    }
-                }
-                override fun onError(codec: MediaCodec, error: MediaCodec.CodecException) {
-                    enqueuePlaybackAction {
-                        if (generation == playbackGeneration && this@DecoderPipeline.codec === codec) onDecoderFailure(error)
-                    }
-                }
-            }, codecCallbackHandler)
+            val decoderName = MediaCodecList(MediaCodecList.REGULAR_CODECS).findDecoderForFormat(format)
+                ?: throw UnsupportedCodecFormat("指定されたcodec/profile/level/寸法/音声構成に対応するdecoderがありません: $format")
+            val decoder = try {
+                MediaCodec.createByCodecName(decoderName)
+            } catch (error: java.io.IOException) {
+                throw IllegalStateException("decoder生成に失敗しました: $decoderName", error)
+            }
             try {
+                decoder.setCallback(object : MediaCodec.Callback() {
+                    override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {
+                        enqueuePlaybackAction {
+                            if (generation != playbackGeneration || this@DecoderPipeline.codec !== codec) return@enqueuePlaybackAction
+                            availableInputIndexes.addLast(index)
+                            drainPendingInput()
+                        }
+                    }
+                    override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
+                        enqueuePlaybackAction {
+                            if (generation != playbackGeneration || this@DecoderPipeline.codec !== codec) {
+                                runCatching { codec.releaseOutputBuffer(index, false) }
+                                return@enqueuePlaybackAction
+                            }
+                            if (info.size > 0) {
+                                startupDeadline?.onFirstOutput()
+                                startupTimeout?.let(mainHandler::removeCallbacks)
+                                startupTimeout = null
+                                backpressureStartedAtMs = null
+                            }
+                            onOutput(codec, index, info)
+                        }
+                    }
+                    override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
+                        enqueuePlaybackAction {
+                            if (generation != playbackGeneration || this@DecoderPipeline.codec !== codec) return@enqueuePlaybackAction
+                            try {
+                                onOutputFormatChanged(format)
+                            } catch (error: RuntimeException) {
+                                onDecoderFailure(error)
+                            }
+                        }
+                    }
+                    override fun onError(codec: MediaCodec, error: MediaCodec.CodecException) {
+                        enqueuePlaybackAction {
+                            if (generation == playbackGeneration && this@DecoderPipeline.codec === codec) {
+                                handleCodecError(error, generation, this@DecoderPipeline is AudioDecoderPipeline)
+                            }
+                        }
+                    }
+                }, codecCallbackHandler)
+
                 decoder.configure(format, decoderOutputSurface(), null, MediaCodec.CONFIGURE_FLAG_USE_BLOCK_MODEL)
                 onDecoderPrepared(decoder)
                 decoder.start()
@@ -1046,6 +1155,7 @@ class PlaybackPipeline(
 
     private inner class VideoDecoderPipeline(
         private val kind: VideoCodecKind,
+        private val codecFacts: AribCodecFacts,
         private val outputSurface: Surface,
         override val generation: Long,
         private val errorSink: (PlaybackUnavailableReason, String) -> Unit,
@@ -1063,11 +1173,14 @@ class PlaybackPipeline(
         }
         override fun formatFromBufferedHeader(bytes: ByteArray): MediaFormat? = when (kind) {
             VideoCodecKind.MPEG2 -> EsHeaderParser.mpeg2VideoFormat(bytes)
-            VideoCodecKind.AVC -> EsHeaderParser.avcVideoFormat(bytes)
+            VideoCodecKind.AVC -> EsHeaderParser.avcVideoFormat(bytes, codecFacts)
         }?.also { format ->
             onVideoFormatDiscovered(generation, VideoFormatInfo(kind.streamType, kind.mime, getIntegerOrDefault(format, MediaFormat.KEY_WIDTH, 0), getIntegerOrDefault(format, MediaFormat.KEY_HEIGHT, 0), EsHeaderParser.displayAspectRatio(kind, bytes)))
         }
-        override fun onDecoderFailure(error: RuntimeException) { errorSink(PlaybackUnavailableReason.VIDEO_CODEC_ERROR, error.message.orEmpty()) }
+        override fun onDecoderFailure(error: RuntimeException) {
+            errorSink(if (error is UnsupportedCodecFormat) PlaybackUnavailableReason.UNSUPPORTED_VIDEO_STREAM else PlaybackUnavailableReason.VIDEO_CODEC_ERROR, error.message.orEmpty())
+            stopOnPlaybackExecutor()
+        }
         override fun onCodecConfigTimeout() { errorSink(PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT, "video decoder 構成に必要な ES header が見つかりません") }
         override fun onBackpressureDeadline(detail: String) { errorSink(PlaybackUnavailableReason.VIDEO_CODEC_ERROR, "DECODER_BACKPRESSURE_TIMEOUT $detail") }
         override fun onOutput(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
@@ -1083,6 +1196,7 @@ class PlaybackPipeline(
 
     private inner class AudioDecoderPipeline(
         private val kind: AudioCodecKind,
+        private val stream: AribElementaryStream,
         private val componentType: Int?,
         initialDualMonoPresentation: DualMonoPresentation,
         initialVolume: Float,
@@ -1107,14 +1221,16 @@ class PlaybackPipeline(
         override fun codecMime(): String = kind.mime
         override fun decoderOutputSurface(): Surface? = null
         override fun formatFromBufferedHeader(bytes: ByteArray): MediaFormat? = when (kind) {
-            AudioCodecKind.AAC_ADTS -> EsHeaderParser.adtsAacFormat(bytes)
+            AudioCodecKind.AAC_ADTS -> CodecFormatPolicy.adtsAudioFormat(bytes, stream.codecFacts, stream.codec)
             AudioCodecKind.MPEG1, AudioCodecKind.MPEG2 -> EsHeaderParser.mpegAudioFormat(bytes)
         }
         override fun onDecoderConfigured(format: MediaFormat) {
             outputSampleRate = getIntegerOrDefault(format, MediaFormat.KEY_SAMPLE_RATE, DEFAULT_AUDIO_SAMPLE_RATE)
             outputChannels = getIntegerOrDefault(format, MediaFormat.KEY_CHANNEL_COUNT, DEFAULT_AUDIO_CHANNEL_COUNT)
         }
-        override fun onDecoderFailure(error: RuntimeException) { errorSink(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, error.message.orEmpty()) }
+        override fun onDecoderFailure(error: RuntimeException) {
+            errorSink(if (error is UnsupportedCodecFormat) PlaybackUnavailableReason.UNSUPPORTED_AUDIO_STREAM else PlaybackUnavailableReason.AUDIO_UNAVAILABLE, error.message.orEmpty())
+        }
         override fun onCodecConfigTimeout() { errorSink(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "audio decoder 構成に必要な ES header が見つかりません") }
         override fun onBackpressureDeadline(detail: String) { errorSink(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, "DECODER_BACKPRESSURE_TIMEOUT $detail") }
         override fun onOutputFormatChanged(format: MediaFormat) {
@@ -1188,15 +1304,21 @@ class PlaybackPipeline(
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .setContext(requireNotNull(sessionContext) { "sessionContext is required for AudioTrack" })
             val created = builder.build()
-            audioTrack = created
-            created.setVolume(volume)
-            if (isDualMonoStream && !created.setDualMonoMode(audioTrackDualMonoMode(dualMonoPresentation))) {
-                resourceCleanup.release("AudioTrack dual-mono rollback") { created.release() }
-                audioTrack = null
-                throw IllegalStateException("ARIB dual-mono presentationをAudioTrackへ設定できません componentType=$componentType")
-            }
-            requireNotNull(mediaSync).setAudioTrack(created)
-            audioTrack = created
+            preparePlaybackResource(
+                prepare = {
+                    created.setVolume(volume)
+                    check(!isDualMonoStream || created.setDualMonoMode(audioTrackDualMonoMode(dualMonoPresentation))) {
+                        "ARIB dual-mono presentationをAudioTrackへ設定できません componentType=$componentType"
+                    }
+                    requireNotNull(mediaSync).setAudioTrack(created)
+                    observeAudioRouting(created, generation)
+                },
+                commit = { audioTrack = created },
+                rollback = {
+                    // 部分登録したlistenerも既存の所有者へ渡し、音声失敗経路で回収する。
+                    audioTrack = created
+                },
+            )
             maybeStartMediaSync()
         }
 
@@ -1210,7 +1332,7 @@ class PlaybackPipeline(
                 return
             }
             Log.i(LogTags.TIS, "audio output format changed; rebuilding playback generation old=$previous new=$next")
-            startOnPlaybackExecutor(tuner, channel, selection)
+            restartCurrentPlaybackGeneration(generation)
         }
     }
 
@@ -1336,7 +1458,6 @@ class PlaybackPipeline(
     }
 
     private object EsHeaderParser {
-        private val sampleRates = intArrayOf(96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350)
         private val AVC_SAR_TABLE = mapOf(1 to (1 to 1), 2 to (12 to 11), 3 to (10 to 11), 4 to (16 to 11), 5 to (40 to 33), 6 to (24 to 11), 7 to (20 to 11), 8 to (32 to 11), 9 to (80 to 33), 10 to (18 to 11), 11 to (15 to 11), 12 to (64 to 33), 13 to (160 to 99), 14 to (4 to 3), 15 to (3 to 2), 16 to (2 to 1))
         fun mpeg2VideoFormat(bytes: ByteArray): MediaFormat? {
             val pos = findStartCode(bytes, 0xb3) ?: return null
@@ -1345,11 +1466,15 @@ class PlaybackPipeline(
             val height = ((bytes[pos + 5].toInt() and 0x0f) shl 8) or (bytes[pos + 6].toInt() and 0xff)
             return MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_MPEG2, width.coerceAtLeast(1), height.coerceAtLeast(1))
         }
-        fun avcVideoFormat(bytes: ByteArray): MediaFormat? {
+        fun avcVideoFormat(bytes: ByteArray, codecFacts: AribCodecFacts = AribCodecFacts()): MediaFormat? {
             val sps = findNal(bytes, 7) ?: return null
             val pps = findNal(bytes, 8) ?: return null
             val dimensions = parseAvcSpsDimensions(sps) ?: return null
+            val rbsp = nalRbspPayload(sps)
+            if (rbsp.size < 3) return null
+            val signaling = AribAvcSignaling(rbsp[0].toInt() and 0xff, rbsp[1].toInt() and 0xff, rbsp[2].toInt() and 0xff)
             return MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, dimensions.width, dimensions.height).apply {
+                CodecFormatPolicy.configureAvc(this, codecFacts, signaling)
                 setByteBuffer("csd-0", ByteBuffer.wrap(sps)); setByteBuffer("csd-1", ByteBuffer.wrap(pps))
             }
         }
@@ -1397,10 +1522,8 @@ class PlaybackPipeline(
         }
         private fun skipScalingList(bits: BitReader, size: Int) { var lastScale = 8; var nextScale = 8; repeat(size) { if (nextScale != 0) nextScale = (lastScale + bits.readSE() + 256) % 256; lastScale = if (nextScale == 0) lastScale else nextScale } }
         private class BitReader(private val bytes: ByteArray) { private var bitOffset = 0; fun readBit(): Int = readBits(1); fun readBits(count: Int): Int { var value = 0; repeat(count) { val byteIndex = bitOffset / 8; require(byteIndex < bytes.size) { "SPS bitstream ended" }; val bitIndex = 7 - (bitOffset % 8); value = (value shl 1) or ((bytes[byteIndex].toInt() ushr bitIndex) and 1); bitOffset++ }; return value }; fun readUE(): Int { var zeros = 0; while (readBit() == 0) zeros++; return if (zeros == 0) 0 else ((1 shl zeros) - 1) + readBits(zeros) }; fun readSE(): Int { val codeNum = readUE(); val value = (codeNum + 1) / 2; return if (codeNum % 2 == 0) -value else value } }
-        fun adtsAacFormat(bytes: ByteArray): MediaFormat? { val header = findAdtsHeader(bytes) ?: return null; val sampleRate = sampleRates.getOrNull(header.frequencyIndex) ?: return null; val asc0 = ((2 shl 3) or (header.frequencyIndex ushr 1)).toByte(); val asc1 = (((header.frequencyIndex and 1) shl 7) or (header.channelConfig shl 3)).toByte(); return MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, header.channelConfig.coerceAtLeast(1)).apply { setInteger(MediaFormat.KEY_IS_ADTS, 1); setByteBuffer("csd-0", ByteBuffer.wrap(byteArrayOf(asc0, asc1))) } }
         fun mpegAudioFormat(bytes: ByteArray): MediaFormat? { val offset = (0 until bytes.size - 3).firstOrNull { i -> (bytes[i].toInt() and 0xff) == 0xff && (bytes[i + 1].toInt() and 0xe0) == 0xe0 } ?: return null; val b2 = bytes[offset + 2].toInt() and 0xff; val b3 = bytes[offset + 3].toInt() and 0xff; val version = (bytes[offset + 1].toInt() ushr 3) and 0x03; val sampleRateIndex = (b2 ushr 2) and 0x03; val channelMode = (b3 ushr 6) and 0x03; val base = when (sampleRateIndex) { 0 -> 44100; 1 -> 48000; 2 -> 32000; else -> return null }; val sampleRate = when (version) { 3 -> base; 2 -> base / 2; 0 -> base / 4; else -> base }; val channels = if (channelMode == 3) 1 else 2; return MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_MPEG, sampleRate, channels) }
-        private data class AdtsHeader(val frequencyIndex: Int, val channelConfig: Int)
-        private fun findAdtsHeader(bytes: ByteArray): AdtsHeader? { for (i in 0 until bytes.size - 7) if ((bytes[i].toInt() and 0xff) == 0xff && (bytes[i + 1].toInt() and 0xf0) == 0xf0) { val freqIndex = (bytes[i + 2].toInt() ushr 2) and 0x0f; val channelConfig = ((bytes[i + 2].toInt() and 0x01) shl 2) or ((bytes[i + 3].toInt() ushr 6) and 0x03); return AdtsHeader(freqIndex, channelConfig) }; return null }
+
         private fun findStartCode(bytes: ByteArray, code: Int): Int? { for (i in 0 until bytes.size - 4) if (bytes[i] == 0.toByte() && bytes[i + 1] == 0.toByte() && bytes[i + 2] == 1.toByte() && (bytes[i + 3].toInt() and 0xff) == code) return i; return null }
         private fun findNal(bytes: ByteArray, nalType: Int): ByteArray? { var i = 0; while (i + 3 < bytes.size) { val prefixLength = when { i + 3 < bytes.size && bytes[i] == 0.toByte() && bytes[i + 1] == 0.toByte() && bytes[i + 2] == 0.toByte() && bytes[i + 3] == 1.toByte() -> 4; i + 2 < bytes.size && bytes[i] == 0.toByte() && bytes[i + 1] == 0.toByte() && bytes[i + 2] == 1.toByte() -> 3; else -> { i++; continue } }; if (i + prefixLength >= bytes.size) return null; val start = i; val nalHeader = bytes[i + prefixLength].toInt() and 0x1f; i += prefixLength + 1; while (i < bytes.size && !isStartCode(bytes, i)) i++; if (nalHeader == nalType) return bytes.copyOfRange(start, i) }; return null }
         private fun isStartCode(bytes: ByteArray, i: Int): Boolean = i + 2 < bytes.size && bytes[i] == 0.toByte() && bytes[i + 1] == 0.toByte() && (bytes[i + 2] == 1.toByte() || (i + 3 < bytes.size && bytes[i + 2] == 0.toByte() && bytes[i + 3] == 1.toByte()))
@@ -1459,8 +1582,7 @@ class PlaybackPipeline(
         mediaSyncInputSurface?.let { previous -> resourceCleanup.release("MediaSync input Surface") { previous.release() } }
         mediaSyncInputSurface = null
         sync?.let { previous -> resourceCleanup.release("MediaSync") { previous.release() } }
-        audioTrack?.let { previous -> resourceCleanup.release("AudioTrack") { previous.release() } }
-        audioTrack = null
+        releaseAudioTrack()
         mediaSyncStarted = false; mediaSyncSurfaceFailed = false; videoAvailabilityMode = null; videoInputQueued = false; audioInputQueued = false; videoPathExpected = false; audioPathExpected = false
         activeChannel = null; activeTuner = null; activeSelection = null; ptsEpochCoordinator.reset()
         resourceCleanup.requireComplete()
@@ -1483,6 +1605,55 @@ class PlaybackPipeline(
     override fun close() = release()
 
     companion object {
+        internal fun completePlaybackFailureAction(
+            originGeneration: Long,
+            onUnavailable: (PlaybackUnavailable) -> Unit,
+            action: () -> Unit,
+        ) {
+            try {
+                action()
+            } catch (error: RuntimeException) {
+                // stopは既にgenerationを更新し得る。Sessionが保持する元世代へ通知する。
+                onUnavailable(PlaybackUnavailable(PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED,
+                    error.message.orEmpty(), originGeneration))
+            }
+        }
+
+        internal fun recoverCodecGeneration(
+            originGeneration: Long,
+            stop: () -> Long,
+            schedule: (() -> Unit) -> Boolean,
+            isCurrent: (Long) -> Boolean,
+            restart: () -> Unit,
+            onUnavailable: (PlaybackUnavailable) -> Unit,
+        ) {
+            completePlaybackFailureAction(originGeneration, onUnavailable) {
+                val stoppedGeneration = stop()
+                check(schedule {
+                    if (isCurrent(stoppedGeneration)) {
+                        completePlaybackFailureAction(originGeneration, onUnavailable, restart)
+                    }
+                }) { "decoderの再生成を予約できません" }
+            }
+        }
+
+        internal fun codecRecoveryDelay(reclaimed: Boolean, recoverable: Boolean, transient: Boolean, attempted: Boolean): Long? =
+            when {
+                reclaimed || attempted -> null
+                transient -> 100L
+                recoverable -> 0L
+                else -> null
+            }
+
+        internal fun preparePlaybackResource(prepare: () -> Unit, commit: () -> Unit, rollback: () -> Unit) {
+            try {
+                prepare()
+                commit()
+            } catch (error: RuntimeException) {
+                try { rollback() } catch (cleanup: RuntimeException) { error.addSuppressed(cleanup) }
+                throw error
+            }
+        }
         private fun isAribDualMonoComponentType(componentType: Int?): Boolean = componentType != null && (componentType and 0x1f) == 0x02
         private fun audioTrackDualMonoMode(presentation: DualMonoPresentation): Int = when (presentation) { DualMonoPresentation.MAIN -> AudioTrack.DUAL_MONO_MODE_LL; DualMonoPresentation.SUB -> AudioTrack.DUAL_MONO_MODE_RR; DualMonoPresentation.MAIN_SUB -> AudioTrack.DUAL_MONO_MODE_LR }
         fun isAribDualMonoComponentTypeForTest(componentType: Int?): Boolean = isAribDualMonoComponentType(componentType)

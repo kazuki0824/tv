@@ -28,7 +28,7 @@ use maleicacid_tuner_hal2_service_runtime::{
     OwnerCallbackCleanupUseCaseOutcome, TunerServiceRuntime,
 };
 
-use crate::callback_store::{CallbackStore, PreparedCallbackArtifactToken};
+use crate::callback_store::PreparedCallbackArtifactToken;
 use crate::dvr_callback_delivery::finish_dvr_status_notifier_cleanup;
 use crate::error_bridge::{status_from_hal_error, status_from_tuner_status, status_unknown_error};
 use crate::object_handle::AidlObjectHandle;
@@ -579,14 +579,14 @@ enum CallbackArtifactRetainBridge<'a> {
 impl<'a> CallbackArtifactRetainBridge<'a> {
     fn prepare(
         self,
-        store: &mut CallbackStore,
+        context: &SharedAidlServiceContext,
         handle: AidlObjectHandle,
     ) -> Result<PreparedCallbackArtifactToken, HalError> {
         match self {
-            Self::Frontend(callback) => store
-                .prepare_frontend_callback(handle, callback)
-                .map_err(|error| error.into_hal_error("frontend callback artifact prepare failed")),
-            Self::Lnb(callback) => store
+            Self::Frontend(callback) => context.prepare_frontend_callback(handle, callback),
+            Self::Lnb(callback) => context
+                .callback_store_lock()
+                .map_err(|error| error.into_hal_error("LNB callback準備のstore lock"))?
                 .prepare_lnb_callback(handle, callback)
                 .map_err(|error| error.into_hal_error("LNB callback artifact prepare failed")),
         }
@@ -625,94 +625,160 @@ fn execute_callback_registration_after_artifact_bridge(
             ))
         },
         |runtime, token, (artifact_retain_bridge, registration_finish_lock_failure_command)| {
-            let mut callback_store = context.callback_store_lock().map_err(|error| {
-                error.into_hal_error("callback artifact store lock failed during registration")
-            })?;
-            let artifact_retain_result =
-                artifact_retain_bridge.prepare(&mut callback_store, handle);
-            let mut guard = match lock_runtime(&runtime) {
-                Ok(guard) => guard,
-                Err(runtime_error) => {
-                    drop(callback_store);
-                    return Err(callback_artifact_registration_runtime_lock_failure_error(
-                        context,
-                        registration_finish_lock_failure_command,
-                        artifact_retain_result,
-                        runtime_error,
-                    ));
-                }
-            };
-            let (artifact_result_for_runtime, prepared_token) = match artifact_retain_result {
-                Ok(prepared_token) => (Ok(()), Some(prepared_token)),
-                Err(error) => (Err(error), None),
-            };
-            let outcome = guard
-                .execute_callback_registration_after_artifact_result_for_object_use_case(
-                    handle.object_kind(),
-                    handle.object_id(),
-                    handle.generation(),
-                    api,
-                    artifact_result_for_runtime,
-                    token,
-                );
-
-            if !outcome.requires_runtime_finish() {
-                let prepared_token = prepared_token.ok_or_else(|| {
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "successful callback registration omitted its prepared artifact token",
-                    )
+            let result = (|| {
+                let artifact_retain_result = artifact_retain_bridge.prepare(context, handle);
+                let mut guard = match lock_runtime(&runtime) {
+                    Ok(guard) => guard,
+                    Err(runtime_error) => {
+                        return Err(callback_artifact_registration_runtime_lock_failure_error(
+                            context,
+                            registration_finish_lock_failure_command,
+                            artifact_retain_result,
+                            runtime_error,
+                        ));
+                    }
+                };
+                let mut callback_store = context.callback_store_lock().map_err(|error| {
+                    error.into_hal_error("callback artifact store lock failed during registration")
                 })?;
-                let (owner_kind, owner_id, owner_generation, registration_api) =
-                    outcome.artifact_key();
-                let artifact_handle = AidlObjectHandle::new(owner_kind, owner_id, owner_generation);
-                callback_store
-                    .commit_prepared_callback(artifact_handle, registration_api, prepared_token)
-                    .map_err(|error| {
-                        error.into_hal_error(
-                            "prepared callback artifact commit failed during composite commit",
+                let prepared_registration =
+                    artifact_retain_result.as_ref().ok().and_then(|prepared| {
+                        callback_store.prepared_frontend_registration(handle, prepared)
+                    });
+                let death_guard_result = prepared_registration
+                    .as_ref()
+                    .map(|registration| registration.lock_death_gate())
+                    .transpose();
+                let validation_error = match &death_guard_result {
+                    Err(error) => Some(error.clone().into_hal_error("callback死亡と登録の直列化")),
+                    Ok(_)
+                        if prepared_registration
+                            .as_ref()
+                            .is_some_and(|registration| registration.is_dead()) =>
+                    {
+                        Some(HalError::callback_failed(
+                            "linkToDeath",
+                            "準備中にcallbackが死亡しました",
+                        ))
+                    }
+                    Ok(_) => None,
+                };
+                // guardをruntimeとartifactの両commitまで保持する。失敗は通常の取消経路へ渡す。
+                let _death_guard = death_guard_result.ok();
+                let artifact_retain_result = match (artifact_retain_result, validation_error) {
+                    (Ok(prepared), Some(primary)) => {
+                        match callback_store.abort_prepared_callback(handle, api, prepared) {
+                            Ok(()) => Err(primary),
+                            Err(cleanup) => Err(
+                                maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
+                                    "死亡callback準備の取消し",
+                                    primary,
+                                    cleanup.into_hal_error("callback準備取消し"),
+                                ),
+                            ),
+                        }
+                    }
+                    (other, _) => other,
+                };
+                let (artifact_result_for_runtime, prepared_token) = match artifact_retain_result {
+                    Ok(prepared_token) => (Ok(()), Some(prepared_token)),
+                    Err(error) => (Err(error), None),
+                };
+                let outcome = guard
+                    .execute_callback_registration_after_artifact_result_for_object_use_case(
+                        handle.object_kind(),
+                        handle.object_id(),
+                        handle.generation(),
+                        api,
+                        artifact_result_for_runtime,
+                        token,
+                    );
+
+                if !outcome.requires_runtime_finish() {
+                    let prepared_token = prepared_token.ok_or_else(|| {
+                        HalError::internal(
+                            HalInternalKind::InvariantViolation,
+                            "successful callback registration omitted its prepared artifact token",
                         )
                     })?;
-                return outcome.into_primary_result();
-            }
+                    let (owner_kind, owner_id, owner_generation, registration_api) =
+                        outcome.artifact_key();
+                    let artifact_handle =
+                        AidlObjectHandle::new(owner_kind, owner_id, owner_generation);
+                    callback_store
+                        .commit_prepared_callback(artifact_handle, registration_api, prepared_token)
+                        .map_err(|error| {
+                            error.into_hal_error(
+                                "prepared callback artifact commit failed during composite commit",
+                            )
+                        })?;
+                    return outcome.into_primary_result();
+                }
 
-            let rollback_result = outcome.rollback_command().map(|command| {
-                let Some(prepared_token) = prepared_token else {
-                    return Err(HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "callback registration rollback omitted its prepared artifact token",
-                    ));
-                };
-                let registration_api = command.registration_api().ok_or_else(|| {
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "prepared callback artifact rollback is missing its registration API",
-                    )
-                })?;
-                let artifact_handle = AidlObjectHandle::new(
-                    command.owner_kind(),
-                    command.owner_id(),
-                    command.owner_generation(),
-                );
-                callback_store
-                    .abort_prepared_callback(artifact_handle, registration_api, prepared_token)
-                    .map(|()| CallbackArtifactCleanupResult::Cleared)
-                    .map_err(|error| {
-                        error.into_hal_error(
+                let rollback_result = outcome.rollback_command().map(|command| {
+                    let Some(prepared_token) = prepared_token else {
+                        return Err(HalError::internal(
+                            HalInternalKind::InvariantViolation,
+                            "callback registration rollback omitted its prepared artifact token",
+                        ));
+                    };
+                    let registration_api = command.registration_api().ok_or_else(|| {
+                        HalError::internal(
+                            HalInternalKind::InvariantViolation,
+                            "prepared callback artifact rollback is missing its registration API",
+                        )
+                    })?;
+                    let artifact_handle = AidlObjectHandle::new(
+                        command.owner_kind(),
+                        command.owner_id(),
+                        command.owner_generation(),
+                    );
+                    callback_store
+                        .abort_prepared_callback(artifact_handle, registration_api, prepared_token)
+                        .map(|()| CallbackArtifactCleanupResult::Cleared)
+                        .map_err(|error| {
+                            error.into_hal_error(
                             "prepared callback artifact abort failed during registration rollback",
                         )
-                    })
-            });
-            guard.finish_callback_registration_after_artifact_result_use_case(
-                outcome,
-                rollback_result,
-            )
+                        })
+                });
+                guard.finish_callback_registration_after_artifact_result_use_case(
+                    outcome,
+                    rollback_result,
+                )
+            })();
+            let cleanup = context
+                .release_retired_callbacks()
+                .map_err(|error| error.into_hal_error("旧callbackの解放"));
+            callback_registration_result_after_cleanup(result, cleanup)
         },
     )
     .map_err(|error| match error {
         ObjectMethodUseCaseBuildError::Runtime(error) => status_from_hal_error(error),
         ObjectMethodUseCaseBuildError::Builder(status) => status,
     })
+}
+
+fn callback_registration_result_after_cleanup(
+    registration: Result<(), HalError>,
+    cleanup: Result<(), HalError>,
+) -> Result<(), HalError> {
+    match (registration, cleanup) {
+        (Err(primary), Err(cleanup)) => Err(
+            maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
+                "callback登録後の解放",
+                primary,
+                cleanup,
+            ),
+        ),
+        (Err(error), _) => Err(error),
+        (Ok(()), Err(cleanup)) => {
+            // 新登録はcommit済み。失敗batchはstoreに保持され、次回解放時に再試行する。
+            log::error!("callback登録成功後の旧callback解放が保留中です: {cleanup:?}");
+            Ok(())
+        }
+        (Ok(()), Ok(())) => Ok(()),
+    }
 }
 
 pub fn execute_frontend_callback_registration_runtime_use_case(
@@ -1083,6 +1149,14 @@ mod tests {
         RuntimeExecutableRequest,
     };
     use maleicacid_tuner_hal2_service_runtime::RuntimeOwnerRelation;
+
+    #[test]
+    fn callback_cleanup_failure_does_not_reverse_committed_success() {
+        let cleanup = HalError::callback_failed("unlinkToDeath", "injected failure");
+        assert!(callback_registration_result_after_cleanup(Ok(()), Err(cleanup)).is_ok());
+        let primary = HalError::callback_failed("linkToDeath", "injected failure");
+        assert!(callback_registration_result_after_cleanup(Err(primary), Ok(())).is_err());
+    }
 
     fn shared_runtime_with_live_object(
         kind: AidlObjectKind,

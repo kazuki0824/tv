@@ -417,15 +417,17 @@ class AribCaptionController(
     }
 
     override fun close() {
-        if (!released.compareAndSet(false, true)) return
+        if (executor.isShutdown) return
+        released.set(true)
         runBlocking {
-            cancelScheduledBoundary()
-            broadcastTimedPesScheduler.cancelAll()
-            boundaries.clear()
-            renderer?.flush()
-            renderer?.close()
-            renderer = null
-            postClear()
+            SectionFilterPolicy.completeCleanup(
+                { cancelScheduledBoundary() },
+                { broadcastTimedPesScheduler.cancelAll() },
+                { boundaries.clear() },
+                { renderer?.flush() },
+                { renderer?.close(); renderer = null },
+                { postClear() },
+            )
         }
         executor.shutdownNow()
     }

@@ -17,6 +17,7 @@ object SiStatus {
     const val JNI_ERROR = -6
     const val INTERNAL_ERROR = -7
     const val INVALID_DISCOVERY_PROFILE = -8
+    const val COLLECTION_LIMIT_EXCEEDED = -9
 }
 
 object SiDiscoveryStage {
@@ -68,6 +69,35 @@ data class CaDescriptor(
     }
 }
 
+data class AribAvcSignaling(val profileIdc: Int, val constraintFlags: Int, val levelIdc: Int)
+
+data class AribAudioConfigHeader(
+    val audioObjectType: Int,
+    val samplingFrequency: Int,
+    val channelConfiguration: Int,
+    val extensionSamplingFrequency: Int?,
+    val coreAudioObjectType: Int?,
+    val channelCount: Int? = null,
+)
+
+data class AribAacConfiguration(
+    val audioObjectType: Int,
+    val samplingFrequency: Int,
+    val extensionSamplingFrequency: Int?,
+    val channelConfiguration: Int,
+    val channelCount: Int,
+    val audioSpecificConfig: ByteArray,
+)
+
+data class AribCodecFacts(
+    val avc: AribAvcSignaling? = null,
+    val audioConfigHex: String? = null,
+    val audioConfigHeader: AribAudioConfigHeader? = null,
+    val rawDescriptorsHex: String? = null,
+    val profileLevel: String? = null,
+    val resolved: Boolean = true,
+)
+
 data class AribElementaryStream(
     val elementaryPid: TsPid,
     val streamType: Int,
@@ -83,6 +113,7 @@ data class AribElementaryStream(
     val isSuperimpose: Boolean = false,
     val codec: String? = null,
     val codecKind: String? = null,
+    val codecFacts: AribCodecFacts = AribCodecFacts(),
 )
 
 data class AribService(
@@ -258,11 +289,18 @@ data class AribComponents(
     val data: List<AribComponentEntry> = emptyList(),
 )
 
+data class AribTruncatedDescriptorLoop(
+    val declaredLength: Int,
+    val rawBytesHex: String,
+    val parseStatus: String,
+)
+
 data class AribEventDiagnostics(
     val summary: String = "",
     val descriptorDiagnosticsCanonicalJson: String = "[]",
     val descriptorFactsCanonicalJson: String? = null,
     val textDiagnostics: List<String> = emptyList(),
+    val truncatedDescriptorLoop: AribTruncatedDescriptorLoop? = null,
 )
 
 data class AribProgramSource(
@@ -288,6 +326,7 @@ data class AribEventDescriptors(
     val scrambled: Boolean? = null,
     val freeCaMode: AribFreeCaMode? = null,
     val series: AribSeries? = null,
+    val seriesCandidatesCanonicalJson: String? = null,
     val parentalRatings: List<AribParentalRating> = emptyList(),
     val components: AribComponents = AribComponents(),
     val diagnostics: AribEventDiagnostics = AribEventDiagnostics(),
@@ -295,7 +334,7 @@ data class AribEventDescriptors(
 
 data class AribEvent(
     val serviceKey: ServiceKey,
-    val stableIdentity: String,
+    val stableIdentity: String?,
     val eventId: Int,
     val timingState: String = "DEFINED",
     val rawStartTimeHex: String = "",
@@ -312,7 +351,7 @@ data class AribEvent(
 
 data class AribEventDiagnostic(
     val serviceKey: ServiceKey,
-    val stableIdentity: String,
+    val stableIdentity: String?,
     val eventId: Int,
     val diagnosticText: String,
 )
@@ -402,6 +441,7 @@ data class ServiceSemanticFacts(
     val pmtPid: TsPid? = null,
     val pcrPid: TsPid? = null,
     val serviceScopedCaDescriptors: List<CaDescriptor> = emptyList(),
+    val casFactsCanonicalJson: String? = null,
 )
 
 data class MalformedCaDescriptorDiagnostic(
@@ -428,8 +468,18 @@ data class TransportKey(
     val transportStreamId: Int get() = transportStream.value
 }
 
+/** 公開対象外eventの完全な記述子事実。Program候補のAribEventとは区別する。 */
+data class ExcludedEventDescriptorFacts(
+    val serviceKey: ServiceKey,
+    val stableIdentity: String?,
+    val eventId: Int,
+    val source: AribProgramSource,
+    val descriptors: AribEventDescriptors,
+)
+
 data class ProgramPublishSnapshot(
-    val eitInstanceStates: List<EitInstanceState> = emptyList(),
+    val discoveryProfile: Int,
+    val authoritativeProgramKeysByService: Map<ServiceKey, Set<String>> = emptyMap(),
     val ingestSequence: Long,
     val events: List<AribEvent>,
     val updateWindows: List<EpgUpdateWindow>,
@@ -437,6 +487,8 @@ data class ProgramPublishSnapshot(
     val descriptorDiagnostics: List<DescriptorDiagnostic>,
     val parserDiagnostics: List<ParserDiagnostic>,
     val malformedCaDescriptorCountByServiceId: Map<ServiceId16, Int> = emptyMap(),
+    val eitInstances: List<EitInstanceState> = emptyList(),
+    val excludedEventDescriptorFacts: List<ExcludedEventDescriptorFacts> = emptyList(),
 )
 
 data class TableRequirementStatus(
@@ -449,7 +501,6 @@ data class TableRequirementStatus(
 )
 
 data class ServiceRegistrationSnapshot(
-    val eitInstanceStates: List<EitInstanceState> = emptyList(),
     val discoveryStage: Int,
     val tableRequirements: List<TableRequirementStatus>,
     val services: List<AribService>,
@@ -457,6 +508,7 @@ data class ServiceRegistrationSnapshot(
     val actualTransportMetadata: List<AribTransport>,
     val semanticFactsByServiceKey: Map<ServiceKey, ServiceSemanticFacts>,
     val diagnostics: List<ParserDiagnostic>,
+    val eitInstances: List<EitInstanceState> = emptyList(),
 )
 
 data class CasDiscoverySnapshot(
@@ -469,6 +521,8 @@ data class CasDiscoverySnapshot(
 )
 
 data class LivePlaybackSnapshot(
+    val collectionGeneration: Long,
+    val programs: ProgramPublishSnapshot,
     val ingestSequence: Long,
     val services: List<AribService>,
     val caMetadata: List<CaMetadata>,
@@ -478,15 +532,19 @@ data class LivePlaybackSnapshot(
     val descriptorDiagnostics: List<DescriptorDiagnostic>,
     val parserDiagnostics: List<ParserDiagnostic>,
     val malformedCaDescriptorDiagnostics: List<MalformedCaDescriptorDiagnostic> = emptyList(),
-)
+) {
+    fun pmtPidsFor(key: ServiceKey): Set<TsPid> = listOfNotNull(pmtPids[key]).toSet()
+}
 
 data class ServicePolicyDecision(
     val serviceKey: ServiceKey,
     val registrationReady: Boolean,
     val requiresCas: Boolean,
+    val caDescriptorsResolved: Boolean,
     val reasons: List<String>,
 ) {
-    val clearLivePlaybackStaticallyEligible: Boolean get() = registrationReady && !requiresCas
+    val casDecisionReady: Boolean get() = registrationReady && caDescriptorsResolved
+    val clearLivePlaybackStaticallyEligible: Boolean get() = casDecisionReady && !requiresCas
 }
 
 typealias ServicePublishabilityDiagnostic = ServicePolicyDecision

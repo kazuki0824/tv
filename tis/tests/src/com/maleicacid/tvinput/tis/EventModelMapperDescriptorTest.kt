@@ -1,5 +1,7 @@
 package com.maleicacid.tvinput.tis
 
+import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
+
 import com.maleicacid.tvinput.aribsi.AribComponentEntry
 import com.maleicacid.tvinput.aribsi.AribComponents
 import com.maleicacid.tvinput.aribsi.AribContentGenre
@@ -54,7 +56,7 @@ class EventModelMapperDescriptorTest {
                 components = AribComponents(audio = listOf(AribComponentEntry(esPid = TsPid(256), streamType = 0x0f, componentTag = 1, componentType = 3, codec = "AAC", language = "jpn", parseStatus = "OK"))),
             ),
         )
-        val record = EventModelMapper().toProgramRecords(listOf(event)).single()
+        val record = EventModelMapper().toProgramRecords(listOf(event), profile = SiDiscoveryProfile.ISDB_T).single()
         check(record.shortDescription == "短い説明")
         check(!record.description.contains("短い説明"))
         check(record.description.contains("詳細説明"))

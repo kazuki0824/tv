@@ -1,3 +1,57 @@
+# r51_pr91_review_truncated_loop_and_identity
+
+- 切断event loopの全受信bytes・宣言長・構造状態と、先行する正常descriptor事実を実JNIから診断専用DTOへ保持する。
+- 通常event/除外eventのstableIdentityをnullableにし、キーのないeventをMapperでProgramへ昇格させない。時刻状態ごとのキー有無と切断loopの回帰試験2件を追加し、CI期待件数を188件へ更新。
+- 検証結果はPRへ記録する。Android/Soong実体build・実機VTSは未実施。
+
+# r51_pr91_review_retry_and_diagnostic_facts
+
+- 非authoritativeな通常upsert成功による旧dirty削除要求の誤消去を防ぐ。現在のauthoritativeなprovider処理成功でのみ要求を除去する。
+- 除外eventの完全な記述子事実を診断専用DTOで通常bulkへ保持し、公開候補へは戻さない。transaction DTOのfield・key型とsnapshot取得契約を現行実装へ揃える。
+- 同一区間の非authoritative更新と、最大長のmalformed parental descriptorを実JNI経由で確認する回帰試験2件を追加。CIの期待件数を186件へ更新。検証結果はPRに記録する。Android/Soong実体build・device atest・実機VTSは未実施。
+
+# r51_pr91_review_publication_boundaries
+
+- 構造検査に失敗したsectionのeventをProgram候補から除き、診断は通常snapshotに残す。Mapperへ実際の収集profileを渡し、媒体の暗黙固定を除去する。
+- 再試行区間全体を現在のauthoritative区間で確認し、現在のキーを使用する。再試行がある場合はfingerprint一致で省略しない。重複した旧retry設計を正本参照へ統一する。
+- 回帰試験4件を追加。検証結果はPRに記録する。Android/Soong実体build、device atest、実機VTSは未実施。
+
+# r51_pr91_review_publication_failure
+
+- EPG公開policyをKotlinへ集約し、dirty retryはServiceKey/時刻区間の再検証要求だけを保持する。現行の完全EITがなければ保留する。ProviderDataResultをSuccess/Failureへ閉じ、失敗serviceの書込み・削除・fingerprint・Direct Boot完了を止める。current EIT ratingはprovider query前に採用する。
+- 検証: GitHub ActionsでSI host、TIS host（Kotlin 180件）、HAL hostのunit tests/Clippy/型検査、VTS profile検査が成功。production Rustの整形差分も反映した。Android/Soong全体、AIDLサービス実体試験、実機VTSは未実施。
+
+# r51_pr85_stack_review_followup
+
+- TIF相対音量をsession所有・初期値1.0・0..1 clamp・AudioTrack再生成時再適用として設計正本へ固定した。既存実装のsession/playback executor境界を維持し、global volume ownerは追加しない。
+- scan用Tunerのresource-lost callbackをactive tune generationへ接続し、該当candidate以後のSI snapshot/TvProvider publishを拒否してtaskを失敗終了する。boot同期はpendingを維持し、既存schedulerへ再試行を返す。
+- current tune generationで受信したlatest EIT ratingを保存済みcurrent Programより優先し、同一eventの再時刻化またはevent切替で旧ratingを継承しない。TvProvider query失敗は情報不存在へ丸めず、上位の既存access-state保持へ返す。
+- Programs optional列を`SET/CLEAR/KEEP`へ分け、authoritative snapshotだけが不存在値をclearし、partial snapshotは旧正常値を保持する。insert時のKEEPは未設定/SQL NULLとする。
+- playback budgetをdecoder能力値ではなくcodec family別のTIS保持量policyとして固定し、実decoder適合は既存MediaCodec選択・configure・queue・deadlineでfail-closed判定する。実機qualificationはrelease証拠として残し、測定値をruntime profile入力に見せない。
+- Kotlin host回帰試験を1件追加し、CI期待値を173件へ更新した。Android/Soong build、device atest、CTS、実機Tuner/VTS/実波確認は未実行。
+
+# r51_pr85_stack_independent_startup_deadline
+
+- ADTS/PCEのstartup構成をRust共通部品へ統合し、二重音声を1chへ推測せず実PCEから設定する。JNI上限超過、PCE待ち、正しいASC byte alignmentをhostで検証する。
+
+- TIS-041/R07に関連するADTS設定を放送ASCへ接続し、HE-AAC拡張周波数・profileと8ch構成を正しく渡す。未解決PCEを1chへ捏造しない。decoder callback設定失敗も生成済みdecoderのrollbackへ含める。
+
+- #87 N06に関連する一時解除の期限を受理時点へ固定。終了時刻変更・時計後退・event_id再使用で延命せず、期限時の実再評価とretune/releaseでのタイマー失効を接続した。
+
+- AVC記述子とSPSの整合を検証し、MediaFormatのprofile/level・寸法・音声構成に対応する実decoderを選択。PMT codec根拠をEIT統合時にも保存し、ALS・未解決音声を再生選択から除外。
+
+- 表示名の正本と長文標準列の全長投影を明記し、公開可否診断を実行中に限定した。
+
+- 走査目的ごとの必要instance集合をTISで評価し、boot/backgroundでは物理候補ごとに固定した全ServiceのEIT完成を待つ。有限走査の全終了経路でsection filterを明示stop/closeし、ライブの継続監視と契約を分離。
+
+- 完成した正常空EITを対象Serviceごとの確認済み空更新として扱い、所有channelとProgramの必須問い合わせ成功後だけboot同期完了へ算入。区間なしの削除は実行しない。
+
+- 走査期限を単調時計へ変更し、SI collection上限の失敗statusを定義。
+
+- EIT instanceの完成・不足section・版状態を通常の登録用／EPG用snapshotで透過的に受け取る。
+
+- #87 D04 / TIS-AUD-05: AV filter開始からcodec別の起動期限を独立に予約し、無入力・少量入力・構成済み無出力でも終了する。audio-onlyは利用不能、audio-videoのaudio失敗はvideo-only新世代へ移る。初回出力とcloseで期限を解除し、flushで期限を延長しない。
+- 起動段階、期限境界、初回出力、終了済み世代の回帰試験を追加する。
 ## r51_pr85_review_20260909
 
 - AV filter開始時にcodecごとの起動期限を予約し、入力が途絶えても期限を判定する。最初の非空出力、終了、世代失効で解除する。既存#91から現行設計への実装追従部分だけを移した。

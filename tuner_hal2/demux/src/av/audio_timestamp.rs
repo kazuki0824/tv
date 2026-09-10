@@ -342,7 +342,7 @@ impl AudioTimestampAssociation {
                     expected_len: None,
                     frame_pts_90khz,
                     stream_id: chunk.stream_id,
-                    is_pts_present: reanchor,
+                    is_pts_present: chunk.pts_90khz.is_some(),
                     dts_90khz: dts_for_first_start.take(),
                     is_pes_private_data: chunk.is_pes_private_data,
                     reanchor,
@@ -995,8 +995,8 @@ mod tests {
             .unwrap();
         assert_eq!(pts(&confirmed), vec![90_000, 91_920, 93_840]);
         assert!(confirmed[0].metadata.is_pts_present);
-        assert!(!confirmed[1].metadata.is_pts_present);
-        assert!(!confirmed[2].metadata.is_pts_present);
+        assert!(confirmed[1].metadata.is_pts_present);
+        assert!(confirmed[2].metadata.is_pts_present);
     }
 
     #[test]

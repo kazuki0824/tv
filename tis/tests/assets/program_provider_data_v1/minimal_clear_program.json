@@ -52,5 +52,13 @@
     "descriptorDiagnostics": [],
     "publishDiagnostics": [],
     "parserDiagnostics": []
+  },
+  "shortEvents": [],
+  "extendedTexts": [],
+  "casFacts": {
+    "pmtPid": null,
+    "parseStatus": "PMT_UNRESOLVED",
+    "sdtFreeCaMode": null,
+    "descriptors": []
   }
 }

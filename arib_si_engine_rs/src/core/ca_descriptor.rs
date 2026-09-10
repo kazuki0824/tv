@@ -124,7 +124,7 @@ fn malformed_diagnostic(
     }
 }
 
-fn hex_prefix(bytes: &[u8], limit: usize) -> String {
+pub(crate) fn hex_prefix(bytes: &[u8], limit: usize) -> String {
     let mut out = String::new();
     for b in bytes.iter().take(limit) {
         out.push_str(&format!("{:02x}", b));

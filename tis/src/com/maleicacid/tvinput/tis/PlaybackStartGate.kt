@@ -3,6 +3,30 @@ package com.maleicacid.tvinput.tis
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.TsPid
 
+data class DecoderConfigurationIdentity(
+    val codec: String?,
+    val avc: com.maleicacid.tvinput.aribsi.AribAvcSignaling?,
+    val audioConfigHex: String?,
+    val audioConfigHeader: com.maleicacid.tvinput.aribsi.AribAudioConfigHeader?,
+    val componentType: Int?,
+) {
+    companion object {
+        fun from(
+            stream: com.maleicacid.tvinput.aribsi.AribElementaryStream,
+            audioComponentType: Int? = stream.componentType,
+        ): DecoderConfigurationIdentity {
+            val audio = TunerSelectionPolicy.isSupportedAudioStreamType(stream.streamType)
+            return DecoderConfigurationIdentity(
+                codec = stream.codec.takeIf { audio },
+                avc = stream.codecFacts.avc.takeIf { stream.streamType == 0x1b },
+                audioConfigHex = stream.codecFacts.audioConfigHex?.lowercase().takeIf { stream.streamType == 0x0f },
+                audioConfigHeader = stream.codecFacts.audioConfigHeader.takeIf { stream.streamType == 0x0f },
+                componentType = audioComponentType.takeIf { audio },
+            )
+        }
+    }
+}
+
 data class AvPlaybackSignature(
     val serviceKey: ServiceKey,
     val pcrPid: TsPid?,
@@ -17,6 +41,8 @@ data class AvPlaybackSignature(
     val subtitleLanguageId: Int? = null,
     val superimposePid: TsPid? = null,
     val superimposeDataComponentId: Int? = null,
+    val videoConfiguration: DecoderConfigurationIdentity? = null,
+    val audioConfiguration: DecoderConfigurationIdentity? = null,
 )
 
 /** LiveSession が一つだけ所有する AV 再生 lifecycle。 */
@@ -89,6 +115,10 @@ object PlaybackStartTransitions {
 
     fun acceptsGeneration(state: PlaybackStartState, generation: Long): Boolean =
         pipelineGeneration(state) == generation
+
+    fun acceptsUnavailable(state: PlaybackStartState, generation: Long): Boolean =
+        (generation <= 0L || acceptsGeneration(state, generation)) &&
+            !(state is PlaybackStartState.Failed && state.pipelineGeneration == generation)
 
     fun failCurrentGeneration(
         state: PlaybackStartState,

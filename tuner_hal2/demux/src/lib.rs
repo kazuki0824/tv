@@ -3352,8 +3352,8 @@ mod tests {
         assert_eq!(descriptors[1].metadata.pts_90khz, Some(91_920));
         assert_eq!(descriptors[2].metadata.pts_90khz, Some(93_840));
         assert!(descriptors[0].metadata.is_pts_present);
-        assert!(!descriptors[1].metadata.is_pts_present);
-        assert!(!descriptors[2].metadata.is_pts_present);
+        assert!(descriptors[1].metadata.is_pts_present);
+        assert!(descriptors[2].metadata.is_pts_present);
     }
 
     #[test]

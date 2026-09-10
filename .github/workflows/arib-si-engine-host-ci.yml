@@ -175,24 +175,25 @@ jobs:
           import json
           from pathlib import Path
 
-          from jsonschema import Draft202012Validator, RefResolver
+          from jsonschema import Draft202012Validator
+          from referencing import Registry, Resource
 
           schema_dir = Path("arib_si_engine_rs/schema")
           schema = json.loads((schema_dir / "program_provider_data_v1.schema.json").read_text())
           diagnostic_schema = json.loads((schema_dir / "descriptor_diagnostic_v1.schema.json").read_text())
-          resolver = RefResolver.from_schema(
-              schema,
-              store={diagnostic_schema["$id"]: diagnostic_schema},
+          registry = Registry().with_resources(
+              (item["$id"], Resource.from_contents(item))
+              for item in (json.loads(path.read_text()) for path in schema_dir.glob("*.schema.json"))
           )
           Draft202012Validator.check_schema(schema)
-          validator = Draft202012Validator(schema, resolver=resolver)
+          validator = Draft202012Validator(schema, registry=registry)
           fixture_dir = Path("arib_si_engine_rs/testdata/program_provider_data_v1")
           for path in sorted(fixture_dir.glob("*.json")):
               validator.validate(json.loads(path.read_text()))
               print(path)
           channel_schema = json.loads((schema_dir / "channel_provider_data_v1.schema.json").read_text())
           Draft202012Validator.check_schema(channel_schema)
-          channel_validator = Draft202012Validator(channel_schema)
+          channel_validator = Draft202012Validator(channel_schema, registry=registry)
           corpus = json.loads(Path("arib_si_engine_rs/testdata/provider_data_boundary_v1/cases.json").read_text())
           for case in corpus:
               raw = case["data"].encode("utf-8") if case["encoding"] == "UTF8" else bytes.fromhex(case["data"])
@@ -201,7 +202,7 @@ jobs:
                   accepted = (validator if case["boundary"] == "PROGRAM" else channel_validator).is_valid(data)
               except (UnicodeDecodeError, json.JSONDecodeError):
                   accepted = False
-              assert accepted == case["accepted"], case["name"]
+              assert accepted == case.get("schemaAccepted", case["accepted"]), case["name"]
           print(f"shared boundary cases: {len(corpus)}")
           PY
 

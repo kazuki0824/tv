@@ -20,10 +20,10 @@ import org.junit.Test
 class TvProviderWriterR51FixTest {
     private val key = ServiceKey(4, 16625, 101)
 
-    @Test fun optionalProgramColumnsAreClearedByMergeUpdate() {
+    @Test fun optionalProgramColumnsKeepPartialValuesAndClearAuthoritativeAbsence() {
         val store = MergeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
         val rating15 = requireNotNull(
             AribRatingMapper.toTvContentRatingString(
                 AribParentalRating("JPN", 15),
@@ -41,11 +41,38 @@ class TvProviderWriterR51FixTest {
                 series = AribSeries(seriesId = 100, episodeNumber = 3, lastEpisodeNumber = 12, name = null),
                 components = AribComponents(audio = listOf(AribComponentEntry(esPid = TsPid(256), streamType = 0x0f, componentTag = 1, componentType = 3, codec = "AAC", language = "jpn", parseStatus = "OK"))),
             ),
-            contentRatings = listOf(rating15),
+            contentRatings = listOf(rating15), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),
         )
         writer.upsertPrograms(listOf(p))
-        writer.upsertPrograms(listOf(p.copy(canonicalGenres = emptyList(), descriptors = ProgramDescriptors(), contentRatings = emptyList())))
-        val values = store.programs.values.single()
+        val absentOptionalValues = p.copy(
+            title = "",
+            shortDescription = "",
+            description = "",
+            canonicalGenres = emptyList(),
+            descriptors = ProgramDescriptors(),
+            contentRatings = emptyList(),
+        )
+        writer.upsertPrograms(listOf(absentOptionalValues))
+        var values = store.programs.values.single()
+        check(values.getAsString(TvContract.Programs.COLUMN_TITLE) == "title")
+        check(values.getAsString(TvContract.Programs.COLUMN_SHORT_DESCRIPTION) == "desc")
+        check(values.getAsString(TvContract.Programs.COLUMN_AUDIO_LANGUAGE) == "jpn")
+        check(values.getAsString(TvContract.Programs.COLUMN_CANONICAL_GENRE) != null)
+        check(values.getAsString(TvContract.Programs.COLUMN_CONTENT_RATING) != null)
+        check(values.getAsInteger(TvProviderWriter.COLUMN_SERIES_ID) == 100)
+        check(values.getAsString(TvProviderWriter.COLUMN_EPISODE_DISPLAY_NUMBER) == "3")
+
+        val authoritativeWindow = ProgramPublishCoordinator.EpgUpdateWindow(
+            serviceKey = key,
+            windowStartMs = p.startTimeMillis,
+            windowEndMs = p.startTimeMillis + p.durationMillis,
+            validProgramKeys = setOf(TvProviderWriter.programKeyForTest(p)),
+            deletionAuthoritative = true,
+        )
+        writer.upsertProgramsForWindows(listOf(absentOptionalValues), listOf(authoritativeWindow))
+        values = store.programs.values.single()
+        check(values.get(TvContract.Programs.COLUMN_TITLE) == null)
+        check(values.get(TvContract.Programs.COLUMN_SHORT_DESCRIPTION) == null)
         check(values.get(TvContract.Programs.COLUMN_AUDIO_LANGUAGE) == null)
         check(values.get(TvContract.Programs.COLUMN_BROADCAST_GENRE) == null)
         check(values.get(TvContract.Programs.COLUMN_CANONICAL_GENRE) == null)
@@ -59,8 +86,8 @@ class TvProviderWriterR51FixTest {
     @Test fun genreReadbackKeepsDirectProjectionSeparateFromProviderObservation() {
         val store = MergeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
-        val program = ProgramRecord(key, 1, "p1", 1_700_000_000_000L, 1_800_000L, "番組", "本文", canonicalGenres = listOf("NEWS"))
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
+        val program = ProgramRecord(key, 1, "p1", 1_700_000_000_000L, 1_800_000L, "番組", "本文", canonicalGenres = listOf("NEWS"), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)
         store.genreReadback = Result.success("MOVIES")
         val first = writer.upsertPrograms(listOf(program))
         check(first.inserted == 1 && first.failures.isEmpty())
@@ -77,8 +104,8 @@ class TvProviderWriterR51FixTest {
     @Test fun publicationFingerprintUsesActualChannelAndWindowAndWritesPreparedBytes() {
         val store = MergeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L))))
-        val program = ProgramRecord(key, 1, "p1", 1_700_000_000_000L, 1_800_000L, "番組", "本文")
+        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
+        val program = ProgramRecord(key, 1, "p1", 1_700_000_000_000L, 1_800_000L, "番組", "本文", casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)
         val window = ProgramPublishCoordinator.EpgUpdateWindow(key, program.startTimeMillis, program.startTimeMillis + program.durationMillis, setOf(TvProviderWriter.programKeyForTest(program)))
         val plan = writer.prepareProgramPublication(listOf(program), listOf(window))
         check(requireNotNull(plan.fingerprint).matches(Regex("[0-9a-f]{64}")))

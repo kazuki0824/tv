@@ -1,3 +1,69 @@
+# r51_pr91_review_truncated_loop_and_identity
+
+- event loopがsection残量を超えても、受信境界内の共通descriptor解析と全bytesの診断保持を行う。未受信部分を補完せず、構造不正状態を維持する。
+- 時刻状態のstable identity判定を診断とbulk出力で共有。DEFINED/UNDEFINED_TIMEだけがキーを持ち、不正時刻でもraw event_idと記述子事実は残す。実parserからbulk出力までの4状態の回帰試験を追加。
+- 検証結果はPRへ記録する。Android/Soong実体build・実機VTSは未実施。
+
+# r51_pr91_review_descriptor_source_text
+
+- provider-dataのsourceDescriptorを一方向の診断表記と明記。codec/descriptorの意味判断は既存の型付き事実を用い、セミコロン文字列を逆解析する第二protocolを設けない。
+- Rust実装の変更はない。TIS通常bulkでの除外eventの完全な記述子事実保持と検証結果はTIS変更履歴およびPRに記録する。
+
+# r51_pr91_review_publication_boundaries
+
+- 構造検査に失敗したsectionのeventをProgram候補から除き、診断は通常snapshotに残す。Mapperへ実際の収集profileを渡し、媒体の暗黙固定を除去する。
+- 再試行区間全体を現在のauthoritative区間で確認し、現在のキーを使用する。再試行がある場合はfingerprint一致で省略しない。重複した旧retry設計を正本参照へ統一する。
+- 回帰試験4件を追加。検証結果はPRに記録する。Android/Soong実体build、device atest、実機VTSは未実施。
+
+# r51_pr91_review_fact_boundary
+
+- EITの公開window/削除判断をRustからKotlinへ移し、共通SectionTrackerを使うcurrent/next別受信事実とcollection世代だけをbulkへ出す。CAS根拠は現行buildで必須、旧保存値normalizeではnullableを維持。countryCode/video.languageのschema境界をRustと共有corpusに揃える。
+- 検証: GitHub ActionsでSI host、TIS host（Kotlin 180件）、HAL hostのunit tests/Clippy/型検査、VTS profile検査が成功。production Rustの整形差分も反映した。Android/Soong全体、AIDLサービス実体試験、実機VTSは未実施。
+
+# r51_pr85_stack_provider_result_failure_contract
+
+- JNI `ProviderDataResult`のclosed field集合とsuccess/failure時の値制約を設計正本へ固定した。既存Rust/Kotlin wire形状と一致させ、第二failure protocolは追加していない。
+- production codeは変更していない。Rust test、Android/Soong build、device確認は未実行。
+
+# r51_pr85_stack_epg_policy_boundary
+
+- codec共通部品とCAS根拠schemaをAndroidのlibrary/test入力へ登録し、hostのみの入力追加で終わらないよう統合定義を補正する。
+
+- TIS-041/R07のPCE構成をASCとADTSで共通解析し、二重音声のchannel countと元commentを保ったASCを取得する。SI収集stateに依存しない有限JNI probeを追加し、不完全入力と不正構成を区別する。
+
+- MPEG-4音声の拡張profile番号をISO原表で追加照合。階層的AAC profileの併存とASCのcore AOTを区別し、暗黙SBR/PSの不存在を推測しない。
+
+- TIS-015/U-07/N07に関連するactual/otherの必須scopeを修正。他TSのPMTや現在TSのSDT-otherを待ち続ける条件を除去し、NIT-otherは観測全instanceの完成を要求。同一版PMT矛盾では旧ES/CA事実も退役。
+
+- TIS-041/SI-012に関連するcodec記述子の型付き事実を追加。AVC profile/level、MPEG-4音声の別体系profile、ALS、ASC原bytesを通常snapshotとprovider投影へ接続し、不正・未知の音声をAACへ昇格しない。
+
+- 字幕言語をnull予約欄へ限定し、現在の公開判断を保存境界から除外した。Rust/schema/共有境界資料を同時更新。
+
+- TIS向けcollectionに60秒・4MiB・8192入力sectionの上限を設定。容量超過時に事実を破棄して明示的失敗を返し、期限時にprofileを維持して再収集。
+
+- 表scope別の完成・版逆行・同一版矛盾を追跡し、EITの未完成新版による誤削除を防止。通常bulkへinstance状態を追加し、BAT scopeとPartial判定をrequired集合へ統一。
+
+- CAS保存根拠の16進表現を既存CA共通処理へ集約し、core Clippyの警告を解消。
+
+- #87 D12/D03 / SI U-01・TIS-025: TIS向けEPG保存policyをpure EIT解析・サービス解析から独立させ、JNI facadeで組み合わせる。永続identity採用・公開scope・削除判断をproduct_policyに集約する。
+- 同一event IDの開始時刻移動で旧区間が欠落しないようunionを修正し、以前の区間から新しい区間までを更新する試験を追加する。Channel登録済みのサービスへ初回Programを作成できるよう設計の前提を統一する。
+
+# r51_pr85_stack_unique_series_projection
+
+- #87 D06/D07 / TIS-053: v1の単一series契約を正式に固定し、複数記述子の先頭を採用しない。通常seriesはnull、全候補は同じRust型で検証して診断拡張へ保存する。TISは候補JSONを透過保持し、系列ID・話数を勝手に関連付けない。
+
+# r51_pr85_stack_cas_evidence
+
+- #87 D10 / SI U-17・SI-007: PMT/CA解析状態とprogram/ESのCA根拠を、Rust所有のcasFacts containerとしてProgram/Channel両方へ保存する。Kotlinにはcanonical JSONを透過保持し、既存cas DTOと旧v1の読込互換を維持する。保存値をcurrent policyの代替元へ使わない。
+
+# r51_pr85_stack_canonical_candidates_and_truncation
+
+- #87 D09/D14 / SI U-15: 多言語候補配列をcanonical出力とSchemaの必須要素にし、旧v1省略形は正規化入力としてのみ受理する。正式型・空配列規則・共通fixtureを同期する。
+- 上限超過時は言語候補を削除せず、設計へ列挙した順に本文をUTF-8境界で短縮する。切詰め後の上限、言語保持、繰返し生成と再正規化のbyte決定性を試験する。
+
+# r51_pr85_stack_closed_diagnostic_scope
+
+- #87 D08 / SI U-14: 診断scopeの未知key許可規定を、version 1のnested DTO閉鎖規則に統一する。Rust serde型・JSON Schemaの既存拒否動作と契約を一致させ、未知scope項目を含む共通境界入力をRust/JNI/Kotlin/Schemaの回帰試験へ追加する。
 # r51_pr85_review_20260909
 
 - EITの媒体別公開条件をRustの受理経路から除き、TISの公開時判定へ移した。更新区間へ元section番号を渡し、衛星の除外sectionから番組削除を行わない。

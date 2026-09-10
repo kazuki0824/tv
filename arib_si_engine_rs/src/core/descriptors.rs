@@ -3,6 +3,7 @@ use crate::provider_data::{DescriptorDiagnosticV1, DescriptorScopeV1, SectionSco
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EventDescriptors {
+    pub truncated_loop: Option<TruncatedDescriptorLoop>,
     pub diagnostics: Vec<DescriptorDiagnostic>,
     pub title: String,
     /// short_event_descriptor.text。TvProvider の SHORT_DESCRIPTION に対応する。
@@ -22,6 +23,13 @@ pub struct EventDescriptors {
     pub linkages: Vec<LinkageDescriptor>,
     pub extended_items: Vec<ExtendedEventItem>,
     pub unknown: Vec<(u8, Vec<u8>)>,
+}
+
+/// section境界で切れたevent loopの受信済みbytes。未受信部分を補完しない。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TruncatedDescriptorLoop {
+    pub declared_length: usize,
+    pub raw_bytes: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

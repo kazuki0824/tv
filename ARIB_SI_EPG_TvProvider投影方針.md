@@ -127,15 +127,31 @@ freeCA / isFree UI補足:
 | データ・判断 | 現行仕様の扱い | 境界を設ける理由 |
 |---|---|---|
 | series_descriptor series_name | JSON v1 `internal_provider_data` の series 構造に保存する。`COLUMN_TITLE` や `COLUMN_EPISODE_TITLE` へ機械的に入れない。 | EIT `event_name_char` の番組表表示名を壊さないため |
-| series episode/count / series id | `series_id` は `COLUMN_SERIES_ID` または、複数 series_id がある場合は `COLUMN_MULTI_SERIES_ID` へ出す。`episode_number=1..4095` は10進文字列として `COLUMN_EPISODE_DISPLAY_NUMBER` へ出し、`0` は話数未定義として列を設定しない。`last_episode_number` は通常の `Programs` に自然対応する標準列がないため標準列へ出さず、`0`（総話数未定）を含め JSON v1 `internal_provider_data` の series 構造に保持する。repeat_label、program_pattern、expire_date、series_name などの完全構造も同じ series 構造に保持する。 | ARIB の 0 sentinel を表示値へ誤投影せず、通常の `Programs` に存在しない `COLUMN_ITEM_COUNT` への投影を禁止するため |
+| series episode/count / series id | 構文的に有効なseries記述子が1件だけの場合、その`series_id`を`COLUMN_SERIES_ID`へ出す。現行v1は単一series投影とし、複数記述子の場合は`COLUMN_SERIES_ID`・`COLUMN_MULTI_SERIES_ID`・話数列をnullにする。先頭を選んだり、別seriesの話数を組み合わせたりしない。複数分の構造化事実はRust生成の`diagnostics.rawProviderDataExtensions`の`seriesDescriptorFacts`へ保存する。この保守的な保存・投影規則は複数記述子のARIB上の合法性を断定するものではない。`episode_number=1..4095` は10進文字列として `COLUMN_EPISODE_DISPLAY_NUMBER` へ出し、`0` は話数未定義として列を設定しない。`last_episode_number` は通常の `Programs` に自然対応する標準列がないため標準列へ出さず、`0`（総話数未定）を含め JSON v1 `internal_provider_data` の series 構造に保持する。repeat_label、program_pattern、expire_date、series_name などの完全構造も同じ series 構造に保持する。 | ARIB の 0 sentinel を表示値へ誤投影せず、通常の `Programs` に存在しない `COLUMN_ITEM_COUNT` への投影を禁止するため |
 | linkage_descriptor | JSON v1 `internal_provider_data.linkage[]` に `transportStreamId / originalNetworkId / serviceId / linkageType / parseStatus` と、保存上限を守る診断用 `privateDataPrefixHex` を保持する。private data全量を保存したとは表現しない。現行仕様では標準列・一般 UI・予約追従へ接続しない。予約追従へ接続する場合は、event identity と authoritative 条件を設計正本へ固定してから扱う。 | Android標準列に自然対応せず、ARIB-native identityとbounded diagnostic prefixを私的データとして明示的に分離するため |
 | event_group_descriptor | JSON v1 `internal_provider_data.eventGroups` にraw `groupType`、`events`、`otherNetworkEvents`、`privateDataHex`、`parseStatus`を構造化保存し、現行仕様では標準列・一般 UI・予約追従へ接続しない。予約追従へ接続する場合は、event identity と authoritative 条件を設計正本へ固定してから扱う。 | Android標準列には自然対応しないが、予約追従に必要なARIB-native構造であるため |
 | multi-lingual event text の候補列 | `short_event_descriptor` はdescriptor順で最初に受理した言語を標準 `TITLE` / `SHORT_DESCRIPTION` の選択言語とし、同じ言語の `extended_event_descriptor` / extended itemだけを `LONG_DESCRIPTION` へ使う。short候補がない場合はextended候補、さらにない場合はextended itemの先頭言語を選択する。異なる言語を1文字列へ連結しない。候補列は `shortEvents[] / extendedTexts[] / extendedItems[]` として JSON v1 `internal_provider_data` に保存する。 | Android標準title/descriptionは単一表示値である一方、ARIBは異なる言語のshort/extended descriptorを複数許可するため |
 | 復号診断 | JSON v1 `diagnostics.parserDiagnostics` または `diagnostics.descriptorDiagnostics` に保存し、標準列へは出さない。 | 一般ユーザー向けUI情報ではないため |
-| 公開可否診断 | JSON v1 `diagnostics.publishDiagnostics` に保存し、標準列へは出さない。 | 一般ユーザー向けUI情報ではないため |
+| 公開可否診断 | 現在のTIS実行中診断へ保持し、provider-data・標準列へ保存しない。 | 放送事実と現在の製品判断を分離するため |
 | 元記述子バイト列 | JSON v1 診断情報の `rawPrefixHex` または descriptor 構造に上限内で保存し、標準列へは出さない。 | UI表示情報ではなく、標準列を肥大化させるため |
 
-この表は「現行仕様で標準列非投影または部分投影にするもの」の一覧である。`internal_provider_data` の schema 名、JSON key 名、BLOB サイズ上限、診断情報キー名、`LONG_DESCRIPTION` 最大長、長文切り詰め方針は `arib_si_engine_rs/DESIGN_JA.md` と schema ファイル側で固定し、この表に含めてはならない。
+`LONG_DESCRIPTION`標準列には本書の順序で組み立てた追加本文の全長を投影し、独自の文字数・byte上限による切詰めを行わない。provider-data BLOBの32 KiB上限を標準列へ適用しない。TvProvider書込みが拒否された場合は既存の書込み失敗・再試行処理へ渡す。
+
+この表は「現行仕様で標準列非投影または部分投影にするもの」の一覧である。`internal_provider_data` の schema 名、JSON key 名、BLOB サイズ上限、診断情報キー名、provider-data内部の長文切り詰め方針は `arib_si_engine_rs/DESIGN_JA.md` と schema ファイル側で固定し、この表に含めてはならない。
+
+### optional列のContentValues操作契約
+
+Programsのoptional標準列は、値の有無と更新snapshotのauthorityから次の3操作へ一意に写像する。
+
+| 操作 | `ContentValues`表現 | insert時 | update時 |
+|---|---|---|---|
+| `SET(value)` | keyと非null valueを格納 | valueを保存 | 旧値をvalueへ置換 |
+| `CLEAR` | keyを`putNull()` | SQL `NULL`を保存 | 旧値をSQL `NULL`へ消去 |
+| `KEEP` | key自体を格納しない | provider既定値、通常はSQL `NULL` | 旧値を変更しない |
+
+完成し矛盾のないauthoritative EIT snapshotから得たoptional値が存在すれば`SET`、値が存在しないことまで確定した場合は`CLEAR`とする。不完全、矛盾、timeout partialなど値の不存在を確定できないsnapshotでは、既存行の正常値を破壊しないよう`KEEP`とする。同じ`ContentValues`をinsertへ使う場合、`KEEP`は過去値が存在しないため未設定/SQL `NULL`となる。required列とcanonical `internal_provider_data`はこのoptional列契約の対象外である。
+
+この一般則はtitle/description、video寸法、audio language、broadcast/canonical genre、content rating、scrambled、series id、multi-series id、episode display numberへ適用する。例として`episode_number=0`は未定義sentinelなので、authoritative updateでは話数列を`CLEAR`、非authoritative updateでは`KEEP`、insertでは未設定とする。複数seriesで単一series投影を確定的に禁止できるauthoritative snapshotはseries関連列を`CLEAR`するが、不完全snapshotだけを根拠に旧series値を消去しない。deletion authorityとoptional列のclear authorityは同じ完成snapshotから導出し、列ごとの独立した推測規則を設けない。
 
 ## 6. 実装契約
 

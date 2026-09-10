@@ -3,8 +3,44 @@ package com.maleicacid.tvinput.tis
 import org.junit.Test
 
 class PlaybackResourceCleanupTest {
+    @Test fun codecRecoveryIsBoundedAndReclaimedAlwaysTerminates() {
+        check(PlaybackPipeline.codecRecoveryDelay(false, true, false, false) == 0L)
+        check(PlaybackPipeline.codecRecoveryDelay(false, false, true, false) == 100L)
+        check(PlaybackPipeline.codecRecoveryDelay(false, false, false, false) == null)
+        for (recoverable in listOf(false, true)) for (transient in listOf(false, true)) {
+            check(PlaybackPipeline.codecRecoveryDelay(true, recoverable, transient, false) == null)
+            check(PlaybackPipeline.codecRecoveryDelay(false, recoverable, transient, true) == null)
+        }
+    }
+
+    @Test fun audioSinkAttachAndListenerFailureNeverCommitAndTransferCleanupOwnership() {
+        for (failure in listOf("volume", "attach", "listener")) {
+            val calls = mutableListOf<String>()
+            var published = false
+            var cleanupOwned = false
+            val error = runCatching {
+                PlaybackPipeline.preparePlaybackResource(
+                    prepare = {
+                        for (step in listOf("volume", "attach", "listener")) {
+                            calls += step
+                            if (step == failure) throw IllegalStateException(step)
+                        }
+                    },
+                    commit = { published = true },
+                    rollback = { cleanupOwned = true },
+                )
+            }.exceptionOrNull()
+            check(error?.message == failure)
+            check(!published && cleanupOwned)
+            check(calls.last() == failure)
+        }
+        val calls = mutableListOf<String>()
+        PlaybackPipeline.preparePlaybackResource({ calls += "attached" }, { calls += "committed" }, { error("unexpected rollback") })
+        check(calls == listOf("attached", "committed"))
+    }
+
     @Test fun failedReleaseRetainsResourceAndOtherReleasesStillRunBeforeRetry() {
-        val cleanup = PlaybackResourceCleanup()
+        val cleanup = ResourceCleanup()
         val calls = mutableListOf<String>()
         var fail = true
         cleanup.release("decoder") {
@@ -22,6 +58,66 @@ class PlaybackResourceCleanupTest {
         cleanup.requireComplete()
         check(!cleanup.hasPending)
         check(calls == listOf("decoder", "filter", "decoder"))
+    }
+
+    @Test fun retuneCleanupInvalidatesBeforeEveryFailureAndBlocksNextTuneUntilRetry() {
+        for (failedResource in listOf("playback", "filter", "CAS", "caption")) {
+            var accepted = true
+            var current: Long? = 1L
+            var newTunes = 0
+            var reject = true
+            val calls = mutableListOf<String>()
+            val owned = linkedSetOf("playback", "filter", "CAS", "caption")
+            fun reset() = TunerController.completeRetuneReset(
+                invalidate = { accepted = false; current = null },
+                *listOf("playback", "filter", "CAS", "caption").map { resource -> {
+                    check(!accepted && current == null)
+                    check(TunerController.updateCasIfCurrent(1, 1, accepted) { error("stale section/CAS accepted") } == null)
+                    calls += resource
+                    if (resource in owned) {
+                        if (reject && resource == failedResource) error(resource)
+                        owned.remove(resource)
+                    }
+                    Unit
+                } }.toTypedArray(),
+            )
+            check(runCatching { reset(); newTunes++ }.isFailure)
+            check(!accepted && current == null && newTunes == 0)
+            check(calls == listOf("playback", "filter", "CAS", "caption"))
+            check(owned == setOf(failedResource))
+            reject = false
+            reset()
+            newTunes++
+            check(owned.isEmpty() && newTunes == 1)
+        }
+    }
+
+    @Test fun initialFilterFailureNeverCommitsAndRetainsRollbackFailure() {
+        var accepted = false
+        var committed = 0
+        var rollbackCalls = 0
+        var filterOwned = true
+        var rejectClose = true
+        fun initialize() = TunerController.completeTuneInitialization(
+            prepare = { check(!accepted); error("initial filter start failed") },
+            commit = { accepted = true; committed++ },
+            rollback = {
+                rollbackCalls++
+                TunerController.completeRetuneReset(
+                    invalidate = { accepted = false },
+                    { if (rejectClose) error("filter rollback close failed") else filterOwned = false },
+                )
+            },
+        )
+        val failure = runCatching { initialize() }.exceptionOrNull()
+        check(failure?.message == "initial filter start failed")
+        check(requireNotNull(failure).suppressed.single().message == "filter rollback close failed")
+        check(!accepted && committed == 0 && rollbackCalls == 1 && filterOwned)
+        rejectClose = false
+        check(runCatching { initialize() }.isFailure)
+        check(!filterOwned && !accepted && committed == 0 && rollbackCalls == 2)
+        TunerController.completeTuneInitialization({}, { accepted = true; committed++ }, { error("unexpected rollback") })
+        check(accepted && committed == 1)
     }
 
     @Test fun scanAdmissionRequiresPlaybackStopIndependentlyOfLiveSessionCount() {

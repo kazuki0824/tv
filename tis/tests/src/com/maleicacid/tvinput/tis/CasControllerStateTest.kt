@@ -11,11 +11,361 @@ import org.junit.Test
 class CasControllerStateTest {
     private val serviceKey = ServiceKey(originalNetworkId = 4, transportStreamId = 16625, serviceId = 101)
 
+    @Test fun resourceLossClosesOwnedDescramblerAndRetainsFailuresForRetry() {
+        for (closeFails in listOf(false, true)) {
+            val old = RecordingDescrambler().apply { failClose = closeFails }
+            val next = RecordingDescrambler()
+            val controller = CasController(mediaCasFactory = FakeMediaCasBridgeFactory())
+            val metadata = b25Metadata(TsPid(0x101), TsPid(0x123), TsPid(0x010))
+            var accepted = true
+            var notifications = 0
+            var creates = 0
+            val fence = ChannelScanController.ResourceLossFence().apply { activate(1L) }
+            controller.updateFromCaMetadata(metadata) { creates++; old }
+            fun lose() = TunerController.completeResourceLoss(
+                invalidate = { if (!accepted) false else { accepted = false; true } },
+                cleanup = { controller.clearForResourceLoss() },
+                notifyLost = { notifications++; fence.onLost(1L) },
+            )
+            val failure = runCatching { lose() }.exceptionOrNull()
+            check((failure != null) == closeFails)
+            check(old.closes == 1 && notifications == 1 && creates == 1)
+            lose()
+            check(old.closes == 1 && notifications == 1)
+            check(fence.publishIfCurrent(1L) { error("lost generation published") } == null)
+            check(controller.onEcmSection(TsPid(0x123), byteArrayOf(0x80.toByte())).isEmpty())
+            check(old.tokens == 0)
+            if (closeFails) {
+                check(runCatching { controller.updateFromCaMetadata(metadata) { creates++; next } }.isFailure)
+                check(creates == 1 && old.closes == 2 && next.closes == 0)
+                old.failClose = false
+            }
+            controller.updateFromCaMetadata(metadata) { creates++; next }
+            controller.onEcmSection(TsPid(0x123), byteArrayOf(0x80.toByte()))
+            check(creates == 2 && next.tokens == 1 && old.tokens == 0)
+            next.failClose = true
+            check(runCatching { controller.close() }.isFailure)
+            next.failClose = false
+            controller.close() // close失敗でもexecutorと所有を保持し、再試行できる。
+            check(next.closes == 2)
+        }
+    }
+
+    @Test fun resourceLossRetriesOnlyUnreleasedCasArtifacts() {
+        var rejectSessionClose = true
+        var sessionCloses = 0
+        var pluginCloses = 0
+        val sessionFailure = IllegalStateException("session close failed")
+        val factory = object : CasController.MediaCasBridgeFactory {
+            override fun create(caSystemId: Int) = Result.success(object : CasController.MediaCasBridge {
+                override fun setPrivateData(privateData: ByteArray) = Result.success(Unit)
+                override fun processEmm(section: ByteArray) = Result.success(Unit)
+                override fun close() { pluginCloses++ }
+                override fun openSession() = Result.success(object : CasController.MediaCasSessionBridge {
+                    override fun setPrivateData(privateData: ByteArray) = Result.success(Unit)
+                    override fun processEcm(section: ByteArray) = Result.success<EcmProcessResult>(EcmProcessResult.DiagnosticOnly("test"))
+                    override fun close() { sessionCloses++; if (rejectSessionClose) throw sessionFailure }
+                })
+            })
+        }
+        val bridge = RecordingDescrambler().apply { failClose = true }
+        val controller = CasController(mediaCasFactory = factory)
+        controller.updateFromCaMetadata(b25Metadata(TsPid(0x101), TsPid(0x123), TsPid(0x010))) { bridge }
+        val failure = runCatching { controller.clearForResourceLoss() }.exceptionOrNull()
+        check(failure?.cause === sessionFailure && sessionFailure.suppressed.isNotEmpty())
+        check(sessionCloses == 1 && pluginCloses == 1 && bridge.closes == 1)
+        check(controller.onEcmSection(TsPid(0x123), byteArrayOf(1)).isEmpty())
+        rejectSessionClose = false
+        bridge.failClose = false
+        controller.clearForResourceLoss()
+        check(sessionCloses == 2 && pluginCloses == 1 && bridge.closes == 2)
+        controller.close()
+        check(sessionCloses == 2 && pluginCloses == 1 && bridge.closes == 2)
+    }
+
+    @Test fun casAttachAndResourceLossShareOneControllerTransaction() {
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val factoryEntered = java.util.concurrent.CountDownLatch(1)
+        val permitAttach = java.util.concurrent.CountDownLatch(1)
+        val controller = CasController(mediaCasFactory = FakeMediaCasBridgeFactory())
+        val old = RecordingDescrambler()
+        val next = RecordingDescrambler()
+        val metadata = b25Metadata(TsPid(0x101), TsPid(0x123), TsPid(0x010))
+        var generation = 1L
+        var accepted = true
+        var creates = 0
+        var notifications = 0
+        try {
+            val attaching = executor.submit<CasController.UpdateResult?> {
+                TunerController.updateCasIfCurrent(1L, generation, accepted) {
+                    controller.updateFromCaMetadata(metadata) {
+                        creates++
+                        factoryEntered.countDown()
+                        check(permitAttach.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                        old
+                    }
+                }
+            }
+            check(factoryEntered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            // factoryでbridge取得後にlostを要求しても、attach完了までcontrollerを明け渡さない。
+            val lost = executor.submit {
+                TunerController.completeResourceLoss(
+                    invalidate = { accepted = false; true },
+                    cleanup = { controller.clearForResourceLoss() },
+                    notifyLost = { notifications++ },
+                )
+            }
+            permitAttach.countDown()
+            check(attaching.get(5, java.util.concurrent.TimeUnit.SECONDS) != null)
+            lost.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            check(old.closes == 1 && notifications == 1)
+            val stale = executor.submit<CasController.UpdateResult?> {
+                TunerController.updateCasIfCurrent(1L, generation, accepted) {
+                    controller.updateFromCaMetadata(metadata) { creates++; old }
+                }
+            }.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            check(stale == null && creates == 1)
+            executor.submit {
+                generation = 2L
+                accepted = true
+                check(TunerController.updateCasIfCurrent(1L, generation, accepted) { error("old metadata reattached") } == null)
+                check(TunerController.updateCasIfCurrent(2L, generation, accepted) {
+                    controller.updateFromCaMetadata(metadata) { creates++; next }
+                } != null)
+            }.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            controller.onEcmSection(TsPid(0x123), byteArrayOf(0x80.toByte()))
+            check(creates == 2 && next.tokens == 1 && old.tokens == 0)
+        } finally {
+            permitAttach.countDown()
+            executor.shutdownNow()
+            controller.close()
+        }
+    }
+
+    @Test fun closingUnusedDirectDescramblerDoesNotReopenIt() {
+        val bridge = DirectTunerDescramblerBridge(null)
+        bridge.close()
+        bridge.close()
+        check(bridge.setKeyToken(TunerKeyToken(byteArrayOf(1))).exceptionOrNull()?.message?.contains("退役済み") == true)
+        check(bridge.addPid(TsPid(0x101)).isFailure)
+        check(bridge.removePid(TsPid(0x101)).isFailure)
+    }
+
+    @Test fun sharedElementaryPidSurvivesOneSystemRetirementAndRemovalFailure() {
+        val pid = TsPid(0x101)
+        val removed = mutableListOf<TsPid>()
+        val added = mutableListOf<TsPid>()
+        var rejectRemove = true
+        val bridge = object : CasController.TunerDescramblerBridge {
+            override fun setKeyToken(keyToken: TunerKeyToken) = Result.success(Unit)
+            override fun addPid(elementaryPid: TsPid): Result<Unit> { added += elementaryPid; return Result.success(Unit) }
+            override fun removePid(elementaryPid: TsPid): Result<Unit> {
+                removed += elementaryPid
+                return if (rejectRemove) Result.failure(IllegalStateException("removePid non-SUCCESS")) else Result.success(Unit)
+            }
+            override fun close() = Unit
+        }
+        CasController(mediaCasFactory = FakeMediaCasBridgeFactory()).use { controller ->
+            val b25 = b25Metadata(pid, TsPid(0x123), TsPid(0x010))
+            val b1 = b25.filter { it.source != CaMetadataSource.CAT }.map { it.copy(caSystemId = 1, ecmPid = TsPid(0x124)) }
+            controller.updateFromCaMetadata(b25 + b1) { bridge }
+            controller.onEcmSection(TsPid(0x123), byteArrayOf(1))
+            controller.onEcmSection(TsPid(0x124), byteArrayOf(1))
+            check(added == listOf(pid))
+            controller.updateFromCaMetadata(b25)
+            check(removed.isEmpty())
+            val updated = b25Metadata(TsPid(0x102), TsPid(0x125), TsPid(0x010))
+            val failure = controller.updateFromCaMetadata(updated)
+            check(failure.diagnostics.any { it.errorCode == CasController.ErrorCode.DESCRAMBLER_FAILED })
+            check(removed == listOf(pid))
+            rejectRemove = false
+            controller.updateFromCaMetadata(updated)
+            check(removed == listOf(pid, pid))
+            controller.updateFromCaMetadata(updated)
+            check(removed == listOf(pid, pid))
+        }
+    }
+
+    @Test fun clearServiceRetriesOnlyPidsWhoseRemovalFailed() {
+        val removed = mutableListOf<TsPid>()
+        val p1 = TsPid(0x101)
+        val p2 = TsPid(0x102)
+        var reject = true
+        val bridge = object : CasController.TunerDescramblerBridge {
+            override fun setKeyToken(keyToken: TunerKeyToken) = Result.success(Unit)
+            override fun addPid(elementaryPid: TsPid) = Result.success(Unit)
+            override fun removePid(elementaryPid: TsPid): Result<Unit> {
+                removed += elementaryPid
+                return if (reject && elementaryPid == p1) Result.failure(IllegalStateException("remove failed")) else Result.success(Unit)
+            }
+            override fun close() = Unit
+        }
+        CasController(mediaCasFactory = FakeMediaCasBridgeFactory()).use { controller ->
+            controller.updateFromCaMetadata(b25Metadata(p1, TsPid(0x123), TsPid(0x010)) +
+                b25Metadata(p2, TsPid(0x123), TsPid(0x010))) { bridge }
+            controller.onEcmSection(TsPid(0x123), byteArrayOf(1))
+            check(runCatching { controller.clearForClearService() }.isFailure)
+            check(removed == listOf(p1, p2))
+            check(controller.lastDiagnostic().errorCode == CasController.ErrorCode.DESCRAMBLER_FAILED)
+            check(controller.onEcmSection(TsPid(0x123), byteArrayOf(1)).isEmpty())
+            reject = false
+            controller.clearForClearService()
+            check(removed == listOf(p1, p2, p1))
+        }
+    }
+
+    @Test fun metadataFailureRejectsSurvivorAndEveryObsoleteSystemBeforeFilterCommit() {
+        var rejectClose = true
+        val pluginCloses = mutableListOf<Int>()
+        val deliveredPrivateData = mutableListOf<Int>()
+        val factory = object : CasController.MediaCasBridgeFactory {
+            override fun create(caSystemId: Int) = Result.success(object : CasController.MediaCasBridge {
+                override fun setPrivateData(privateData: ByteArray) = Result.success(Unit)
+                override fun processEmm(section: ByteArray) = Result.success(Unit)
+                override fun close() {
+                    pluginCloses += caSystemId
+                    if (rejectClose && caSystemId != 5) error("obsolete plugin close failed")
+                }
+                override fun openSession() = Result.success(object : CasController.MediaCasSessionBridge {
+                    var privateValue = -1
+                    override fun setPrivateData(privateData: ByteArray): Result<Unit> { privateValue = privateData.single().toInt(); return Result.success(Unit) }
+                    override fun processEcm(section: ByteArray): Result<EcmProcessResult> {
+                        deliveredPrivateData += privateValue
+                        return Result.success(EcmProcessResult.DiagnosticOnly("test"))
+                    }
+                    override fun close() = Unit
+                })
+            })
+        }
+        val controller = CasController(setOf(1, 5, 7), factory)
+        fun binding(system: Int, value: Int) = CaMetadata(serviceKey, system,
+            ecmPid = TsPid(0x123), emmPid = null, elementaryPid = TsPid(0x101), privateData = byteArrayOf(value.toByte()), source = CaMetadataSource.ELEMENTARY_STREAM)
+        var filters = setOf(TsPid(0x123))
+        var commits = 0
+        var stopped = false
+        try {
+            controller.updateFromCaMetadata(listOf(binding(5, 1), binding(1, 1), binding(7, 1)))
+            fun refresh() = SectionFilterPolicy.commitCasAndFilters(
+                updateCas = {
+                    try { controller.updateFromCaMetadata(listOf(binding(5, 2))) } catch (failure: Exception) {
+                        check(controller.onEcmSection(TsPid(0x123), byteArrayOf(1)).isEmpty())
+                        throw failure
+                    }
+                },
+                commitFilters = { filters = it.ecmPids; commits++ },
+                reject = { SectionFilterPolicy.completeCleanup(
+                    { controller.clearForResourceLoss() },
+                    { filters = emptySet() },
+                    { stopped = true },
+                ) },
+            )
+            check(runCatching { refresh() }.isFailure)
+            check(commits == 0 && filters.isEmpty() && stopped)
+            check(pluginCloses.containsAll(listOf(1, 7)))
+            check(controller.onEcmSection(TsPid(0x123), byteArrayOf(1)).isEmpty() && deliveredPrivateData.isEmpty())
+            rejectClose = false
+            refresh()
+            check(commits == 1 && filters == setOf(TsPid(0x123)))
+            controller.onEcmSection(TsPid(0x123), byteArrayOf(1))
+            check(deliveredPrivateData == listOf(2))
+        } finally { rejectClose = false; controller.close() }
+    }
+
+    @Test fun metadataDiagnosticAndFilterExceptionBothStopCasDelivery() {
+        for (failureStage in listOf("metadata", "filter")) {
+            var rejectData = failureStage == "metadata"
+            var rejected = 0
+            var commits = 0
+            var stopped = false
+            val factory = object : CasController.MediaCasBridgeFactory {
+                override fun create(caSystemId: Int) = Result.success(object : CasController.MediaCasBridge {
+                    override fun setPrivateData(privateData: ByteArray) = if (rejectData) Result.failure<Unit>(IllegalStateException("private data failed")) else Result.success(Unit)
+                    override fun processEmm(section: ByteArray) = Result.success(Unit)
+                    override fun openSession(): Result<CasController.MediaCasSessionBridge> = error("EMM does not open a session")
+                    override fun close() = Unit
+                })
+            }
+            CasController(mediaCasFactory = factory).use { controller ->
+                val metadata = b25Metadata(TsPid(0x101), TsPid(0x123), TsPid(0x010)).filter { it.source == CaMetadataSource.CAT }
+                val result = runCatching { SectionFilterPolicy.commitCasAndFilters(
+                    updateCas = { controller.updateFromCaMetadata(metadata) },
+                    commitFilters = { commits++; error("filter start failed") },
+                    reject = { rejected++; SectionFilterPolicy.completeCleanup({ controller.clearForResourceLoss() }, { stopped = true }) },
+                ) }
+                check((result.isFailure) == (failureStage == "filter"))
+                check(commits == if (failureStage == "filter") 1 else 0)
+                check(rejected == 1 && stopped)
+                check(controller.onEmmSection(TsPid(0x010), byteArrayOf(1)).isEmpty())
+                rejectData = false
+                SectionFilterPolicy.commitCasAndFilters(
+                    updateCas = { controller.updateFromCaMetadata(metadata) }, commitFilters = {}, reject = { error("retry rejected") },
+                )
+                check(controller.onEmmSection(TsPid(0x010), byteArrayOf(1)).isEmpty())
+            }
+        }
+    }
+
+    @Test fun emmOnlyUsesPluginAndPromotesExistingOwnerOnlyWhenEcmAppears() {
+        var creates = 0
+        var opens = 0
+        var emms = 0
+        var sessionCloses = 0
+        var pluginCloses = 0
+        var rejectOpen = true
+        val factory = object : CasController.MediaCasBridgeFactory {
+            override fun create(caSystemId: Int): Result<CasController.MediaCasBridge> {
+                creates++
+                return Result.success(object : CasController.MediaCasBridge {
+                    override fun setPrivateData(privateData: ByteArray) = Result.success(Unit)
+                    override fun processEmm(section: ByteArray): Result<Unit> { emms++; return Result.success(Unit) }
+                    override fun close() { pluginCloses++ }
+                    override fun openSession(): Result<CasController.MediaCasSessionBridge> {
+                        opens++
+                        if (rejectOpen) return Result.failure(IllegalStateException("no session resource"))
+                        return Result.success(object : CasController.MediaCasSessionBridge {
+                            override fun setPrivateData(privateData: ByteArray) = Result.success(Unit)
+                            override fun processEcm(section: ByteArray) = Result.success<EcmProcessResult>(EcmProcessResult.DiagnosticOnly("test"))
+                            override fun close() { sessionCloses++ }
+                        })
+                    }
+                })
+            }
+        }
+        CasController(mediaCasFactory = factory).use { controller ->
+            val full = b25Metadata(TsPid(0x101), TsPid(0x123), TsPid(0x010))
+            val cat = full.filter { it.source == CaMetadataSource.CAT }
+            check(controller.updateFromCaMetadata(cat).diagnostics.isEmpty())
+            controller.onEmmSection(TsPid(0x010), byteArrayOf(1))
+            controller.updateFromCaMetadata(cat)
+            check(creates == 1 && opens == 0 && emms == 1)
+            rejectOpen = false
+            controller.updateFromCaMetadata(full)
+            check(creates == 1 && opens == 1)
+            controller.updateFromCaMetadata(cat)
+            check(sessionCloses == 1 && pluginCloses == 0 && creates == 1)
+            controller.onEmmSection(TsPid(0x010), byteArrayOf(1))
+            check(emms == 2)
+            controller.updateFromCaMetadata(full)
+            check(opens == 2 && creates == 1)
+        }
+        check(pluginCloses == 1 && sessionCloses == 2)
+    }
+
+    private class RecordingDescrambler : CasController.TunerDescramblerBridge {
+        var closes = 0
+        var tokens = 0
+        var failClose = false
+        override fun setKeyToken(keyToken: TunerKeyToken): Result<Unit> { tokens++; return Result.success(Unit) }
+        override fun addPid(elementaryPid: TsPid) = Result.success(Unit)
+        override fun removePid(elementaryPid: TsPid) = Result.success(Unit)
+        override fun close() { closes++; if (failClose) error("descrambler close failed") }
+    }
+
     @Test fun pluginSelectionAndEcmEmmDispatch() {
         val factory = FakeMediaCasBridgeFactory()
         val descrambler = FakeTunerDescramblerBridge()
         val controller = CasController(mediaCasFactory = factory)
-        val update = controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), descrambler)
+        val update = controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), { descrambler })
         check(update.diagnostics.isEmpty()) { update.diagnostics.toString() }
         check(update.ecmPids == setOf(TsPid(0x123)))
         check(update.emmPids == setOf(TsPid(0x010)))
@@ -64,7 +414,7 @@ class CasControllerStateTest {
                 .map { it.copy(caSystemId = CasController.SupportedCasSystemIds.ARIB_STD_B1) }
             val update = controller.updateFromCaMetadata(
                 b25Metadata(TsPid(0x101), TsPid(0x123), TsPid(0x010)) + b1,
-                descrambler,
+                { descrambler },
             )
             check(update.diagnostics.isEmpty())
             check(controller.onEmmSection(TsPid(0x010), byteArrayOf(0x82.toByte())).isEmpty())
@@ -79,7 +429,7 @@ class CasControllerStateTest {
         val controller = CasController(mediaCasFactory = FakeMediaCasBridgeFactory())
         val result = controller.updateFromCaMetadata(
             listOf(CaMetadata(serviceKey, 0x7fff, ecmPid = TsPid(0x123), emmPid = null, elementaryPid = TsPid(0x101), source = CaMetadataSource.ELEMENTARY_STREAM)),
-            FakeTunerDescramblerBridge(),
+            { FakeTunerDescramblerBridge() },
         )
         check(result.diagnostics.any { it.errorCode == CasController.ErrorCode.UNSUPPORTED_SYSTEM_ID })
         check(result.ecmPids.isEmpty())
@@ -88,9 +438,9 @@ class CasControllerStateTest {
     @Test fun pmtUpdateRemovesOldPidAndAddsNewPid() {
         val controller = CasController(mediaCasFactory = FakeMediaCasBridgeFactory())
         val descrambler = FakeTunerDescramblerBridge()
-        controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), descrambler)
+        controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), { descrambler })
         controller.onEcmSection(TsPid(0x123), byteArrayOf(0x80.toByte()))
-        controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x102), ecmPid = TsPid(0x124), emmPid = TsPid(0x010)), descrambler)
+        controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x102), ecmPid = TsPid(0x124), emmPid = TsPid(0x010)), { descrambler })
         controller.onEcmSection(TsPid(0x124), byteArrayOf(0x80.toByte()))
         check(0x101 in descrambler.removedPids)
         check(0x102 in descrambler.addedPids)
@@ -99,7 +449,7 @@ class CasControllerStateTest {
     @Test fun diagnosticOnlyEcmDoesNotSetKeyTokenOrAddPid() {
         val controller = CasController(mediaCasFactory = DiagnosticOnlyMediaCasBridgeFactory())
         val descrambler = FakeTunerDescramblerBridge()
-        val update = controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), descrambler)
+        val update = controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), { descrambler })
         check(update.diagnostics.isEmpty()) { update.diagnostics.toString() }
 
         val ecmDiagnostics = controller.onEcmSection(TsPid(0x123), byteArrayOf(0x80.toByte()))
@@ -111,7 +461,7 @@ class CasControllerStateTest {
     @Test fun pluginUnavailableDoesNotAttachDescramblerToken() {
         val controller = CasController(mediaCasFactory = UnavailableMediaCasBridgeFactory())
         val descrambler = FakeTunerDescramblerBridge()
-        val update = controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), descrambler)
+        val update = controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), { descrambler })
         check(update.diagnostics.any { it.errorCode == CasController.ErrorCode.PLUGIN_UNAVAILABLE }) { update.diagnostics.toString() }
         check(descrambler.keyTokens.isEmpty())
         check(descrambler.addedPids.isEmpty())
@@ -121,7 +471,7 @@ class CasControllerStateTest {
         val factory = SessionFailureMediaCasBridgeFactory()
         val controller = CasController(mediaCasFactory = factory)
         val descrambler = FakeTunerDescramblerBridge()
-        val update = controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), descrambler)
+        val update = controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), { descrambler })
 
         check(update.diagnostics.any { it.errorCode == CasController.ErrorCode.SESSION_OPEN_FAILED }) { update.diagnostics.toString() }
         check(update.diagnostics.none { it.errorCode == CasController.ErrorCode.PLUGIN_UNAVAILABLE }) { update.diagnostics.toString() }
@@ -133,7 +483,7 @@ class CasControllerStateTest {
     @Test fun closeReleasesDescrambler() {
         val controller = CasController(mediaCasFactory = FakeMediaCasBridgeFactory())
         val descrambler = FakeTunerDescramblerBridge()
-        controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), descrambler)
+        controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), { descrambler })
         controller.close()
         controller.close()
         check(descrambler.closed)

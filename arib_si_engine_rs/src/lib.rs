@@ -15,8 +15,8 @@ use descriptors::{
     event_provider_fields, json_escape, DescriptorSectionScope,
 };
 use discovery_requirements::DiscoveryProfile;
-use eit::{EitEvent, EitStableEventIdentity, EitUpdateWindow};
-use jni::objects::{JByteArray, JObject, JString};
+use eit::{EitEvent, EitStableEventIdentity};
+use jni::objects::{JByteArray, JClass, JObject, JString};
 use jni::sys::{jint, jlong, jstring};
 use jni::JNIEnv;
 use maleicacid_arib_si_engine_core::eit_instances::{EitInstanceState, EitInstances};
@@ -33,6 +33,7 @@ use std::collections::BTreeMap;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 const STATUS_OK: jint = 0;
 const STATUS_IGNORED_UNSUPPORTED_PID_OR_TABLE: jint = 1;
@@ -43,6 +44,10 @@ const STATUS_MALFORMED_DESCRIPTOR: jint = -4;
 const STATUS_JNI_ERROR: jint = -6;
 const STATUS_INTERNAL_ERROR: jint = -7;
 const STATUS_INVALID_DISCOVERY_PROFILE: jint = -8;
+const STATUS_COLLECTION_LIMIT_EXCEEDED: jint = -9;
+const MAX_COLLECTION_BYTES: usize = 4 * 1024 * 1024;
+const MAX_COLLECTION_SECTIONS: usize = 8192;
+const MAX_COLLECTION_AGE: Duration = Duration::from_secs(60);
 
 const DISCOVERY_STAGE_INCOMPLETE: jint = 0;
 const DISCOVERY_STAGE_PARTIAL: jint = 1;
@@ -65,8 +70,12 @@ fn si_module_is_healthy() -> bool {
     !SI_MODULE_ABNORMAL.load(Ordering::Acquire)
 }
 
-#[derive(Default)]
 struct ParserState {
+    collection_started_at: Instant,
+    collection_bytes: usize,
+    collection_sections: usize,
+    collection_limit_exceeded: bool,
+    collection_generation: u64,
     collector: ServiceDiscoveryCollector,
     eit_instances: EitInstances,
     sections_seen: u64,
@@ -74,13 +83,72 @@ struct ParserState {
     latest_broadcast_clock: Option<BroadcastClockFact>,
 }
 
+impl Default for ParserState {
+    fn default() -> Self {
+        Self {
+            collection_started_at: Instant::now(),
+            collection_bytes: 0,
+            collection_sections: 0,
+            collection_limit_exceeded: false,
+            collection_generation: 0,
+            eit_instances: EitInstances::default(),
+            collector: ServiceDiscoveryCollector::default(),
+            sections_seen: 0,
+            last_status: STATUS_OK,
+            latest_broadcast_clock: None,
+        }
+    }
+}
+
 impl ParserState {
+    fn clear_collection_facts(&mut self) {
+        self.collector.reset_collection();
+        self.eit_instances = EitInstances::default();
+        self.collection_generation = self.collection_generation.saturating_add(1);
+        self.latest_broadcast_clock = None;
+    }
+
+    fn expire_collection_at(&mut self, now: Instant) {
+        if now.saturating_duration_since(self.collection_started_at) >= MAX_COLLECTION_AGE {
+            self.clear_collection_facts();
+            self.collection_started_at = now;
+            self.collection_bytes = 0;
+            self.collection_sections = 0;
+            self.collection_limit_exceeded = false;
+            self.last_status = STATUS_OK;
+        }
+    }
+
+    fn admit_section(&mut self, length: usize) -> bool {
+        if self.collection_limit_exceeded {
+            return false;
+        }
+        let Some(total_bytes) = self
+            .collection_bytes
+            .checked_add(length)
+            .filter(|total| *total <= MAX_COLLECTION_BYTES)
+            .filter(|_| self.collection_sections < MAX_COLLECTION_SECTIONS)
+        else {
+            self.collection_limit_exceeded = true;
+            self.clear_collection_facts();
+            return false;
+        };
+        self.collection_bytes = total_bytes;
+        self.collection_sections += 1;
+        true
+    }
+
     fn is_section_for_discovery(&self, pid: u16, table_id: u8) -> bool {
         is_fixed_pid_si_table_for_discovery(pid, table_id)
             || (table_id == 0x02 && self.collector.is_known_pmt_pid(pid))
     }
 
     fn ingest_section(&mut self, pid: u16, section: &[u8]) -> jint {
+        self.expire_collection_at(Instant::now());
+        if !self.admit_section(section.len()) {
+            self.last_status = STATUS_COLLECTION_LIMIT_EXCEEDED;
+            return self.last_status;
+        }
         let Some(header) = parse_section_header(section) else {
             self.last_status = STATUS_INVALID_SECTION;
             return STATUS_INVALID_SECTION;
@@ -145,11 +213,7 @@ impl ParserState {
     }
 
     fn events(&self) -> Vec<EitEvent> {
-        self.collector.events()
-    }
-
-    fn take_epg_update_windows(&mut self) -> Vec<EitUpdateWindow> {
-        self.collector.take_epg_update_windows()
+        self.eit_instances.events()
     }
 
     fn sdt_actual_transport_keys(&self) -> Vec<(u16, u16)> {
@@ -172,6 +236,9 @@ fn json_string(value: &str) -> String {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ElementaryStreamDto {
+    codec_facts: maleicacid_arib_si_engine_core::codec_signaling::CodecDescriptorFacts,
+    codec_profile_level: Option<String>,
+    codec_signaling_resolved: bool,
     codec: Option<&'static str>,
     codec_kind: Option<&'static str>,
     elementary_pid: u16,
@@ -191,6 +258,9 @@ struct ElementaryStreamDto {
 impl From<&DiscoveredElementaryStream> for ElementaryStreamDto {
     fn from(stream: &DiscoveredElementaryStream) -> Self {
         Self {
+            codec_facts: stream.codec_facts.clone(),
+            codec_profile_level: stream.codec_facts.profile_level(),
+            codec_signaling_resolved: stream.codec_facts.is_resolved(),
             codec: stream.codec_signaling().map(|(_, codec)| codec),
             codec_kind: stream.codec_signaling().map(|(kind, _)| kind),
             elementary_pid: stream.elementary_pid,
@@ -429,9 +499,13 @@ fn event_audio_language(event: &EitEvent) -> String {
 }
 
 fn event_primary_series_value(event: &EitEvent) -> serde_json::Value {
-    let Some(series) = event.descriptors.series.first() else {
-        return serde_json::Value::Null;
-    };
+    match event.descriptors.series.as_slice() {
+        [series] => series_value(series),
+        _ => serde_json::Value::Null,
+    }
+}
+
+fn series_value(series: &crate::descriptors::SeriesDescriptor) -> serde_json::Value {
     serde_json::json!({
         "seriesId": series.series_id,
         "repeatLabel": series.repeat_label,
@@ -450,6 +524,13 @@ fn event_primary_series_value(event: &EitEvent) -> serde_json::Value {
             serde_json::Value::String(series.series_name.clone())
         },
         "parseStatus": "OK",
+    })
+}
+
+fn series_candidates_canonical_json(event: &EitEvent) -> Option<String> {
+    (event.descriptors.series.len() > 1).then(|| {
+        serde_json::Value::Array(event.descriptors.series.iter().map(series_value).collect())
+            .to_string()
     })
 }
 
@@ -778,7 +859,16 @@ fn event_value(event: &EitEvent) -> serde_json::Value {
             event_id: Some(event.event_id),
         }),
     );
-    let stable_identity = event.stable_identity();
+    let stable_identity =
+        event
+            .timing_state
+            .has_stable_identity()
+            .then_some(EitStableEventIdentity {
+                original_network_id: event.original_network_id,
+                transport_stream_id: event.transport_stream_id,
+                service_id: event.service_id,
+                event_id: event.event_id,
+            });
     let program_key = stable_identity.map(|_| {
         serde_json::json!({
             "kind": "arib-event-v1",
@@ -832,8 +922,14 @@ fn event_value(event: &EitEvent) -> serde_json::Value {
                 "parseStatus": "OK",
             },
             "series": event_primary_series_value(event),
+            "seriesCandidatesCanonicalJson": series_candidates_canonical_json(event),
             "components": event_components_value(event),
             "diagnostics": {
+                "truncatedDescriptorLoop": event.descriptors.truncated_loop.as_ref().map(|facts| serde_json::json!({
+                    "declaredLength": facts.declared_length,
+                    "rawBytesHex": hex_lower(&facts.raw_bytes),
+                    "parseStatus": "TruncatedDescriptor",
+                })),
                 "summary": event_diagnostic_text(event),
                 "descriptorDiagnostics": json_value(descriptor_diagnostics.clone()),
                 "descriptorDiagnosticsCanonicalJson": descriptor_diagnostics,
@@ -842,43 +938,6 @@ fn event_value(event: &EitEvent) -> serde_json::Value {
             "parentalRatings": parental_ratings_value(event),
         }
     })
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct EpgUpdateWindowDto {
-    section_number: u8,
-    original_network_id: u16,
-    transport_stream_id: u16,
-    service_id: u16,
-    window_start_millis: i64,
-    window_end_millis: i64,
-    valid_program_stable_identities: Vec<String>,
-    deletion_authoritative: bool,
-}
-
-impl From<&EitUpdateWindow> for EpgUpdateWindowDto {
-    fn from(window: &EitUpdateWindow) -> Self {
-        Self {
-            section_number: window.section_number,
-            original_network_id: window.original_network_id,
-            transport_stream_id: window.transport_stream_id,
-            service_id: window.service_id,
-            window_start_millis: window.window_start_millis,
-            window_end_millis: window.window_end_millis,
-            valid_program_stable_identities: window
-                .valid_event_identities
-                .iter()
-                .map(|identity| stable_identity_string(*identity))
-                .collect(),
-            deletion_authoritative: window.deletion_authoritative,
-        }
-    }
-}
-
-#[cfg(test)]
-fn epg_update_window_json(window: &EitUpdateWindow) -> String {
-    serde_json::to_string(&EpgUpdateWindowDto::from(window)).unwrap_or_default()
 }
 
 #[derive(Serialize)]
@@ -907,6 +966,8 @@ struct ServiceSemanticFactsDto {
     pcr_pid_resolved: bool,
     elementary_streams: Vec<ElementaryStreamDto>,
     requires_cas: bool,
+    #[serde(serialize_with = "provider_data::serialize_cas_facts_json")]
+    cas_facts_canonical_json: provider_data::CasFactsV1,
     ca_descriptors_resolved: bool,
     free_ca_mode: Option<bool>,
     smd: SystemManagementFactsDto,
@@ -950,6 +1011,7 @@ impl From<&ServiceSemanticFacts> for ServiceSemanticFactsDto {
                 .map(ElementaryStreamDto::from)
                 .collect(),
             requires_cas: facts.requires_cas,
+            cas_facts_canonical_json: provider_data::CasFactsV1::from(facts),
             ca_descriptors_resolved: facts.ca_descriptors_resolved,
             free_ca_mode: facts.free_ca_mode,
             smd: SystemManagementFactsDto {
@@ -1009,8 +1071,8 @@ struct BulkSnapshot {
     malformed_ca_descriptor_counts: Vec<MalformedCaDescriptorCountDto>,
     transport_semantic_facts: Vec<TransportSemanticFactsDto>,
     events: Vec<serde_json::Value>,
-    epg_update_windows: Vec<EpgUpdateWindowDto>,
-    eit_instance_states: Vec<EitInstanceState>,
+    collection_generation: u64,
+    eit_instances: Vec<EitInstanceState>,
     service_semantic_facts: Vec<ServiceSemanticFactsDto>,
     parser_diagnostics: Vec<ParserDiagnosticDto>,
 }
@@ -1033,7 +1095,8 @@ impl From<BroadcastClockFact> for BroadcastClockFactDto {
     }
 }
 
-fn bulk_snapshot_json(state: &mut ParserState, take_update_windows: bool) -> String {
+fn bulk_snapshot_json(state: &mut ParserState) -> String {
+    state.expire_collection_at(Instant::now());
     let ingest_sequence = state.sections_seen;
     let last_status = state.last_status;
     let collection_state = state.collector.state();
@@ -1047,11 +1110,6 @@ fn bulk_snapshot_json(state: &mut ParserState, take_update_windows: bool) -> Str
     // 更新区間は排出型一括APIだけで公開する。
     // 非排出型一括snapshotはEPG更新区間を返さない。これにより本番呼び出し側が
     // 同じ廃止削除区間を誤って再公開することを防ぐ。
-    let epg_windows = if take_update_windows {
-        state.take_epg_update_windows()
-    } else {
-        Vec::new()
-    };
     serde_json::to_string(&BulkSnapshot {
         ingest_sequence,
         discovery_stage: discovery_stage_to_jint(discovery_stage),
@@ -1088,8 +1146,8 @@ fn bulk_snapshot_json(state: &mut ParserState, take_update_windows: bool) -> Str
             })
             .collect(),
         events: state.events().iter().map(event_value).collect(),
-        eit_instance_states: state.eit_instances.states(),
-        epg_update_windows: epg_windows.iter().map(EpgUpdateWindowDto::from).collect(),
+        eit_instances: state.eit_instances.states(),
+        collection_generation: state.collection_generation,
         service_semantic_facts: semantic_facts
             .iter()
             .map(ServiceSemanticFactsDto::from)
@@ -1118,6 +1176,15 @@ fn parser_diagnostics(
         message,
         severity: "info",
     }];
+    if last_status == STATUS_COLLECTION_LIMIT_EXCEEDED {
+        diagnostics.push(ParserDiagnosticDto {
+            code: "COLLECTION_LIMIT_EXCEEDED",
+            severity: "error",
+            message:
+                "SI収集の入力上限に達したため事実と更新区間を破棄しました。次の収集開始を待ちます"
+                    .to_string(),
+        });
+    }
     let mut text_diagnostics = snapshot
         .services
         .iter()
@@ -1269,7 +1336,6 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     mut env: JNIEnv<'_>,
     _this: JObject<'_>,
     handle: jlong,
-    take_update_windows: jint,
 ) -> jstring {
     if !si_module_is_healthy() {
         return java_string(&mut env, Some("{}".to_string()));
@@ -1285,7 +1351,7 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
         return java_string(&mut env, Some("{}".to_string()));
     };
     let json = match parser.lock() {
-        Ok(mut guard) => bulk_snapshot_json(&mut guard, take_update_windows != 0),
+        Ok(mut guard) => bulk_snapshot_json(&mut guard),
         Err(_) => {
             record_si_mutex_poison(SI_PARSER_LOCK_NAME);
             "{}".to_string()
@@ -1300,6 +1366,47 @@ fn jstring_to_string(env: &mut JNIEnv<'_>, value: JString<'_>) -> Option<String>
 
 fn jbytearray_to_vec(env: &mut JNIEnv<'_>, value: JByteArray<'_>) -> Vec<u8> {
     env.convert_byte_array(value).unwrap_or_default()
+}
+
+fn bounded_codec_bytes(
+    env: &mut JNIEnv<'_>,
+    value: &JByteArray<'_>,
+    maximum: i32,
+) -> Result<Vec<u8>, &'static str> {
+    let length = env
+        .get_array_length(value)
+        .map_err(|_| "codec配列長を取得できません")?;
+    if length > maximum {
+        return Err("codec構成probeの入力上限を超過しました");
+    }
+    env.convert_byte_array(value)
+        .map_err(|_| "codec構成probeの入力を取得できません")
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeProbeAacConfiguration(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    adts: JByteArray<'_>,
+    asc: JByteArray<'_>,
+) -> jstring {
+    use maleicacid_arib_si_engine_core::codec_signaling::{
+        probe_adts_configuration, AacConfigurationProbe,
+    };
+    let input = bounded_codec_bytes(&mut env, &adts, 64 * 1024);
+    let config = if asc.is_null() {
+        Ok(None)
+    } else {
+        bounded_codec_bytes(&mut env, &asc, 255).map(Some)
+    };
+    let result = match (input, config) {
+        (Ok(input), Ok(config)) => probe_adts_configuration(&input, config.as_deref()),
+        (Err(reason), _) | (_, Err(reason)) => AacConfigurationProbe::Invalid { reason },
+    };
+    match serde_json::to_string(&result) {
+        Ok(json) => java_string(&mut env, Some(json)),
+        Err(_) => ptr::null_mut(),
+    }
 }
 
 fn provider_result_json(result: provider_data_api::ProviderDataResult) -> String {
@@ -1562,6 +1669,24 @@ mod tests {
     }
 
     #[test]
+    fn multiple_series_keeps_every_fact_without_selecting_a_primary() {
+        let mut event = minimal_event_for_related_items(1, 0x100);
+        let bytes = [
+            0xd5, 9, 0, 1, 0, 0, 0, 0, 1, 0, 2, 0xd5, 9, 0, 2, 0, 0, 0, 0, 3, 0, 4,
+        ];
+        event.descriptors = crate::descriptors::parse_event_descriptors(&bytes);
+        assert!(event_primary_series_value(&event).is_null());
+        let candidates: serde_json::Value =
+            serde_json::from_str(&series_candidates_canonical_json(&event).unwrap()).unwrap();
+        assert_eq!(candidates.as_array().unwrap().len(), 2);
+        assert_eq!(candidates[0]["seriesId"], 1);
+        assert_eq!(candidates[1]["seriesId"], 2);
+        event.descriptors.series.pop();
+        assert_eq!(event_primary_series_value(&event)["seriesId"], 1);
+        assert!(series_candidates_canonical_json(&event).is_none());
+    }
+
+    #[test]
     fn event_group_json_preserves_raw_group_type_without_derived_kind() {
         for group_type in 1u8..=5 {
             let value = event_groups_value(&minimal_event_for_related_items(
@@ -1619,19 +1744,44 @@ mod tests {
     }
 
     #[test]
-    fn epg_update_window_json_exports_deletion_authoritative_for_tis() {
-        let window = EitUpdateWindow {
-            section_number: 0,
-            original_network_id: 4,
-            transport_stream_id: 16625,
-            service_id: 101,
-            window_start_millis: 1_700_000_000_000,
-            window_end_millis: 1_700_001_800_000,
-            valid_event_identities: Vec::new(),
-            deletion_authoritative: true,
-        };
-        let json = epg_update_window_json(&window);
-        assert!(json.contains("\"deletionAuthoritative\":true"), "{}", json);
+    fn timing_state_controls_diagnostic_and_bulk_stable_identity() {
+        use crate::eit::{parse_eit_section, EitTimingState};
+        for state in [
+            EitTimingState::Defined,
+            EitTimingState::UndefinedTime,
+            EitTimingState::BothTimingUndefined,
+            EitTimingState::MalformedTiming,
+        ] {
+            let mut body = vec![
+                0x4e, 0xf0, 34, 0, 1, 0xc1, 0, 0, 0, 0x11, 0, 0x22, 0, 0x4e, 0x12, 0x34, 0xee, 0,
+                0x12, 0, 0, 0, 0x30, 0, 0x80, 7, 0x55, 5, 0x4a, 0x50, 0x4e, 12, 0xaa,
+            ];
+            match state {
+                EitTimingState::UndefinedTime => body[16..21].fill(0xff),
+                EitTimingState::BothTimingUndefined => body[16..24].fill(0xff),
+                EitTimingState::MalformedTiming => body[18] = 0xfa,
+                EitTimingState::Defined => {}
+            }
+            let events = parse_eit_section(&section_with_crc(body));
+            assert_eq!(events.len(), 1);
+            let event = &events[0];
+            assert_eq!(event.timing_state, state);
+            let expected = matches!(
+                state,
+                EitTimingState::Defined | EitTimingState::UndefinedTime
+            );
+            assert!(!event.diagnostics.is_empty());
+            assert!(event
+                .diagnostics
+                .iter()
+                .all(|d| d.event_identity.is_some() == expected));
+            let value = event_value(event);
+            assert_eq!(!value["programKey"].is_null(), expected);
+            assert_eq!(!value["stableIdentity"].is_null(), expected);
+            assert_eq!(value["eventId"], 0x1234);
+            assert_eq!(value["serviceKey"]["serviceId"], 1);
+            assert!(!value["descriptors"]["diagnostics"]["descriptorFactsCanonicalJson"].is_null());
+        }
     }
 
     #[test]
@@ -1646,6 +1796,71 @@ mod tests {
             stable_identity_string(identity),
             provider_data_api::build_program_key(4, 16625, 101, 10)
         );
+    }
+
+    #[test]
+    fn collection_section_limit_clears_facts_and_refuses_following_input() {
+        let mut state = ParserState::default();
+        let tot = section_with_crc(vec![
+            0x73, 0x70, 0x0b, 0xea, 0x60, 0x12, 0x34, 0x56, 0xf0, 0x00,
+        ]);
+        for _ in 0..MAX_COLLECTION_SECTIONS {
+            assert_eq!(state.ingest_section(0x0014, &tot), STATUS_OK);
+        }
+        assert!(state.latest_broadcast_clock.is_some());
+        assert_eq!(
+            state.ingest_section(0x0014, &tot),
+            STATUS_COLLECTION_LIMIT_EXCEEDED
+        );
+        assert_eq!(
+            state.ingest_section(0x0014, &tot),
+            STATUS_COLLECTION_LIMIT_EXCEEDED
+        );
+        let snapshot: serde_json::Value =
+            serde_json::from_str(&bulk_snapshot_json(&mut state)).unwrap();
+        assert!(snapshot["broadcastClock"].is_null());
+        assert_eq!(snapshot["discoveryStage"], DISCOVERY_STAGE_INCOMPLETE);
+        assert!(snapshot["parserDiagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value["code"] == "COLLECTION_LIMIT_EXCEEDED"));
+    }
+
+    #[test]
+    fn collection_byte_limit_also_counts_rejected_input() {
+        let mut state = ParserState::default();
+        let bytes = vec![0; 4096];
+        for _ in 0..MAX_COLLECTION_BYTES / bytes.len() {
+            assert_eq!(state.ingest_section(0x0012, &bytes), STATUS_INVALID_SECTION);
+        }
+        assert_eq!(
+            state.ingest_section(0x0012, &bytes),
+            STATUS_COLLECTION_LIMIT_EXCEEDED
+        );
+        assert!(state.collection_limit_exceeded);
+        assert_eq!(state.collection_bytes, MAX_COLLECTION_BYTES);
+    }
+
+    #[test]
+    fn collection_expiry_removes_stale_epg_and_resynchronizes_versions_without_losing_profile() {
+        let mut state = ParserState::default();
+        state.collector.set_discovery_profile(DiscoveryProfile::Bs);
+        let section = section_with_crc(vec![
+            0x4e, 0xf0, 0x0f, 0, 1, 0xff, 0, 0, 0, 0x11, 0, 0x22, 0, 0x4e,
+        ]);
+        assert_eq!(state.ingest_section(0x0012, &section), STATUS_OK);
+        assert_eq!(state.eit_instances.states()[0].version, 31);
+        state.expire_collection_at(state.collection_started_at + MAX_COLLECTION_AGE);
+        assert!(state.eit_instances.states().is_empty());
+        assert_eq!(state.collection_generation, 1);
+        let next = section_with_crc(vec![
+            0x4e, 0xf0, 0x0f, 0, 1, 0xe1, 0, 7, 0, 0x11, 0, 0x22, 7, 0x4e,
+        ]);
+        assert_eq!(state.ingest_section(0x0012, &next), STATUS_OK);
+        let states = state.eit_instances.states();
+        assert_eq!(states[0].version, 16);
+        assert_eq!(states[0].last_section_number, 7);
     }
 
     #[test]
@@ -1664,7 +1879,7 @@ mod tests {
             })
         );
         let snapshot: serde_json::Value =
-            serde_json::from_str(&bulk_snapshot_json(&mut state, false)).unwrap();
+            serde_json::from_str(&bulk_snapshot_json(&mut state)).unwrap();
         assert_eq!(snapshot["broadcastClock"]["tableId"].as_u64(), Some(0x73));
         assert_eq!(snapshot["broadcastClock"]["mjd"].as_u64(), Some(0xea60));
     }
@@ -1689,7 +1904,7 @@ mod tests {
         ]);
         assert_eq!(state.ingest_section(0x0011, &sdt), STATUS_OK);
         let snapshot: serde_json::Value =
-            serde_json::from_str(&bulk_snapshot_json(&mut state, false)).unwrap();
+            serde_json::from_str(&bulk_snapshot_json(&mut state)).unwrap();
         let diagnostics = snapshot["parserDiagnostics"].as_array().unwrap();
         let text_diagnostic = diagnostics
             .iter()

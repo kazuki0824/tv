@@ -8,12 +8,14 @@ import com.maleicacid.tvinput.db.ProgramRecord
 class EventModelMapper {
     fun toProgramRecords(
         events: List<AribEvent>,
+        profile: Int,
         semanticFactsByServiceKey: Map<ServiceKey, ServiceSemanticFacts> = emptyMap(),
         malformedCaDescriptorCountByServiceId: Map<ServiceId16, Int> = emptyMap(),
         ratingProfileByServiceKey: Map<ServiceKey, AribRatingMapper.BroadcastProfile> = emptyMap(),
     ): List<ProgramRecord> {
         return events.mapNotNull { event ->
-            if (event.source.tableId != 0x4e || event.timingState != "DEFINED") return@mapNotNull null
+            if (!EpgPublicationPolicy.isProgramRow(profile, event)) return@mapNotNull null
+            val stableIdentity = event.stableIdentity ?: return@mapNotNull null
             val semanticFacts = semanticFactsByServiceKey[event.serviceKey]
             if (semanticFactsByServiceKey.isNotEmpty() && semanticFacts == null) return@mapNotNull null
             val end = runCatching { Math.addExact(event.startTimeMillis, event.durationMillis) }
@@ -21,7 +23,7 @@ class EventModelMapper {
             if (event.startTimeMillis <= 0L || end <= event.startTimeMillis) null else ProgramRecord(
                 serviceKey = event.serviceKey,
                 eventId = event.eventId,
-                stableIdentity = event.stableIdentity,
+                stableIdentity = stableIdentity,
                 startTimeMillis = event.startTimeMillis,
                 durationMillis = event.durationMillis,
                 title = event.title,
@@ -42,6 +44,7 @@ class EventModelMapper {
                     scrambled = event.descriptors.scrambled,
                     freeCaMode = event.descriptors.freeCaMode,
                     series = event.descriptors.series,
+                    seriesCandidatesCanonicalJson = event.descriptors.seriesCandidatesCanonicalJson,
                     descriptorDiagnosticsCanonicalJson = event.descriptors.diagnostics.descriptorDiagnosticsCanonicalJson,
                     descriptorFactsCanonicalJson = event.descriptors.diagnostics.descriptorFactsCanonicalJson,
                     parentalRatings = event.descriptors.parentalRatings,
@@ -49,6 +52,7 @@ class EventModelMapper {
                 ),
                 source = event.source,
                 requiresCas = semanticFacts?.requiresCas ?: false,
+                casFactsCanonicalJson = semanticFacts?.casFactsCanonicalJson,
                 diagnosticText = event.descriptors.diagnostics.summary,
                 contentRatings = event.descriptors.parentalRatings.mapNotNull {
                     AribRatingMapper.toTvContentRatingString(

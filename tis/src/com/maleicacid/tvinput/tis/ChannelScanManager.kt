@@ -5,6 +5,7 @@ import android.util.Log
 import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.db.ChannelRecord
+import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -13,6 +14,8 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 object ChannelScanManager {
+    private const val TUNER_RESOURCE_LOST = "TUNER_RESOURCE_LOST"
+
     interface Listener { fun onScanStateChanged(state: ScanState) }
 
     data class BackgroundMaintenanceStartDecision(val allowed: Boolean, val reason: String?)
@@ -22,18 +25,19 @@ object ChannelScanManager {
     private val executor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "maleicacid-channel-scan-manager").apply { isDaemon = true }
     }
-    private class ActiveScanTask(
+    internal class ActiveScanTask(
         val generation: Int,
         val purpose: ScanPurpose,
         val context: Context,
     ) {
+        @Volatile var closing = false
         val cancelRequested = AtomicBoolean(false)
-        @Volatile var controller: ChannelScanController? = null
-        @Volatile var engine: AribSiEngine? = null
+        @Volatile var controller: AutoCloseable? = null
+        @Volatile var engine: AutoCloseable? = null
     }
 
     private val listeners = CopyOnWriteArrayList<Listener>()
-    private val activeLiveSessions = AtomicInteger(0)
+    private val activeLiveSessions = CopyOnWriteArraySet<MaleicacidLiveSession>()
     private val activePlaybackPipelines = AtomicInteger(0)
     private val sessionCreationsInProgress = AtomicInteger(0)
     private val nextGeneration = AtomicInteger(0)
@@ -51,18 +55,21 @@ object ChannelScanManager {
         listeners -= listener
     }
 
-    fun registerLiveSession() {
-        activeLiveSessions.incrementAndGet()
+    fun registerLiveSession(session: MaleicacidLiveSession) {
+        activeLiveSessions += session
     }
 
-    fun unregisterLiveSession(context: Context) {
-        while (true) {
-            val current = activeLiveSessions.get()
-            if (current <= 0) return
-            if (activeLiveSessions.compareAndSet(current, current - 1)) {
-                if (current - 1 == 0) drainPendingBootEpgSyncIfIdle(context, "LIVE_SESSION_RELEASED")
-                return
-            }
+    fun unregisterLiveSession(context: Context, session: MaleicacidLiveSession) {
+        if (activeLiveSessions.remove(session) && activeLiveSessions.isEmpty()) {
+            drainPendingBootEpgSyncIfIdle(context, "LIVE_SESSION_RELEASED")
+        }
+    }
+
+    /** 新しいschedulerを設けず、既存のscan/live受付時に未完了の所有だけを再試行する。 */
+    private fun retryPendingRelease() {
+        executor.execute {
+            activeLiveSessions.forEach { it.retryReleaseIfPending() }
+            activeTask.get()?.takeIf { it.closing }?.let { finishScanIfCurrent(it.generation) }
         }
     }
 
@@ -78,10 +85,11 @@ object ChannelScanManager {
         if (remaining == 0 && context != null) drainPendingBootEpgSyncIfIdle(context, "PLAYBACK_PIPELINE_STOPPED")
     }
 
-    fun activeLiveSessionCountForTest(): Int = activeLiveSessions.get()
+    fun activeLiveSessionCountForTest(): Int = activeLiveSessions.size
     fun sessionCreationInProgressCountForTest(): Int = sessionCreationsInProgress.get()
 
     fun beginLiveSessionCreation() {
+        retryPendingRelease()
         sessionCreationsInProgress.incrementAndGet()
         preemptBootOrBackgroundScanForLiveSessionCreation()
     }
@@ -104,12 +112,14 @@ object ChannelScanManager {
         liveSessionPreemptDecision(scanRunning, purpose)
 
     fun startIfIdle(context: Context, inputId: String): Int? {
+        retryPendingRelease()
         val appContext = context.applicationContext
         val task = beginScan(ScanPurpose.SETUP_SCAN, appContext) ?: return null
         val generation = task.generation
         executor.execute {
             val result = runCatching {
                 val createdEngine = AribSiEngine(appContext)
+                task.engine = createdEngine
                 val createdController = ChannelScanController(
                     appContext,
                     inputId,
@@ -117,13 +127,8 @@ object ChannelScanManager {
                     task.purpose,
                     task.cancelRequested,
                 )
-                if (!isCurrentGeneration(generation)) {
-                    createdController.close()
-                    createdEngine.close()
-                    return@runCatching null
-                }
-                task.engine = createdEngine
                 task.controller = createdController
+                if (!isCurrentGeneration(generation)) return@runCatching null
                 if (isCancelledGeneration(generation)) createdController.cancelScan()
                 createdController.startInitialScan()
             }
@@ -131,6 +136,8 @@ object ChannelScanManager {
                 if (scanResult != null) {
                     if (scanResult.terminalCancelObserved || isCancelledGeneration(generation)) {
                         setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, ScanPurpose.SETUP_SCAN))
+                    } else if (scanResult.terminalResourceLostObserved) {
+                        setTerminalStateIfCurrent(generation, ScanState.Failed(TUNER_RESOURCE_LOST, generation, ScanPurpose.SETUP_SCAN))
                     } else {
                         setTerminalStateIfCurrent(generation, ScanState.Completed(scanResult, generation, ScanPurpose.SETUP_SCAN))
                     }
@@ -155,10 +162,11 @@ object ChannelScanManager {
         targetChannels: List<ChannelRecord>,
         onFinished: ((generation: Int, needsReschedule: Boolean) -> Unit)? = null,
     ): Int? {
+        retryPendingRelease()
         val targetSnapshot = targetChannels.toList()
         val requiredServiceKeys = targetSnapshot.map { it.serviceKey }.toSet()
         val appContext = context.applicationContext
-        val precheck = bootEpgSyncStartDecision(activeLiveSessions.get(), isScanRunning(), sessionCreationsInProgress.get() > 0, activePlaybackPipelines.get() > 0)
+        val precheck = bootEpgSyncStartDecision(activeLiveSessions.size, isScanRunning(), sessionCreationsInProgress.get() > 0, activePlaybackPipelines.get() > 0)
         if (!precheck.allowed) {
             markBootEpgSyncDeferred(appContext, precheck.reason ?: "UNKNOWN")
             return null
@@ -169,14 +177,14 @@ object ChannelScanManager {
             return null
         }
         val generation = task.generation
-        if (activeLiveSessions.get() > 0 || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0) {
+        if (activeLiveSessions.size > 0 || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0) {
             setTerminalStateIfCurrent(generation, ScanState.Idle)
             finishScanIfCurrent(generation)
             markBootEpgSyncDeferred(appContext, "LIVE_SESSION_STARTING_OR_ACTIVE")
             return null
         }
         executor.execute {
-            if (activeLiveSessions.get() > 0 || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0) {
+            if (activeLiveSessions.size > 0 || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0) {
                 setTerminalStateIfCurrent(generation, ScanState.Idle)
                 finishScanIfCurrent(generation)
                 markBootEpgSyncDeferred(appContext, "LIVE_SESSION_STARTING_OR_ACTIVE")
@@ -187,6 +195,7 @@ object ChannelScanManager {
             var needsReschedule = true
             val result = runCatching {
                 val createdEngine = AribSiEngine(appContext)
+                task.engine = createdEngine
                 val createdController = ChannelScanController(
                     appContext,
                     inputId,
@@ -194,31 +203,37 @@ object ChannelScanManager {
                     task.purpose,
                     task.cancelRequested,
                 )
-                if (!isCurrentGeneration(generation)) {
-                    createdController.close()
-                    createdEngine.close()
-                    return@runCatching null
-                }
-                task.engine = createdEngine
                 task.controller = createdController
+                if (!isCurrentGeneration(generation)) return@runCatching null
                 if (isCancelledGeneration(generation)) createdController.cancelScan()
                 createdController.startBootEpgSync(targetSnapshot)
             }
             result.onSuccess { scanResult ->
                 if (scanResult != null) {
                     val terminalCancel = scanResult.terminalCancelObserved || isCancelledGeneration(generation)
+                    val terminalResourceLost = scanResult.terminalResourceLostObserved
                     val allRequiredTargetsCommitted = requiredServiceKeys.isNotEmpty() &&
                         scanResult.committedServiceKeys.containsAll(requiredServiceKeys) &&
-                        !terminalCancel
+                        !terminalCancel &&
+                        !terminalResourceLost
                     if (allRequiredTargetsCommitted) {
                         DirectBootGuard.clearPending(appContext)
                         shouldScheduleBackgroundMaintenance = true
                         needsReschedule = false
                     } else {
-                        DirectBootGuard.deferPending(appContext, if (terminalCancel) "BOOT_EPG_CANCELLED" else "BOOT_EPG_INCOMPLETE_TARGET_SET")
+                        DirectBootGuard.deferPending(
+                            appContext,
+                            when {
+                                terminalCancel -> "BOOT_EPG_CANCELLED"
+                                terminalResourceLost -> TUNER_RESOURCE_LOST
+                                else -> "BOOT_EPG_INCOMPLETE_TARGET_SET"
+                            },
+                        )
                     }
                     if (terminalCancel) {
                         setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, ScanPurpose.BOOT_EPG_SYNC))
+                    } else if (terminalResourceLost) {
+                        setTerminalStateIfCurrent(generation, ScanState.Failed(TUNER_RESOURCE_LOST, generation, ScanPurpose.BOOT_EPG_SYNC))
                     } else {
                         setTerminalStateIfCurrent(generation, ScanState.Completed(scanResult, generation, ScanPurpose.BOOT_EPG_SYNC))
                     }
@@ -232,7 +247,11 @@ object ChannelScanManager {
                     setTerminalStateIfCurrent(generation, ScanState.Failed(e.message ?: "不明な例外", generation, ScanPurpose.BOOT_EPG_SYNC))
                 }
             }
-            finishScanIfCurrent(generation)
+            if (!finishScanIfCurrent(generation)) {
+                needsReschedule = true
+                shouldScheduleBackgroundMaintenance = false
+                DirectBootGuard.deferPending(appContext, "SCAN_RELEASE_PENDING")
+            }
             onFinished?.invoke(generation, needsReschedule)
             if (shouldScheduleBackgroundMaintenance) {
                 BackgroundChannelMaintenanceDiagnostics.scheduledAfterBootSyncCount.incrementAndGet()
@@ -247,7 +266,8 @@ object ChannelScanManager {
         inputId: String,
         source: String = "MANUAL",
     ): Boolean {
-        val precheck = backgroundMaintenanceStartDecision(activeLiveSessions.get(), isScanRunning(), sessionCreationsInProgress.get() > 0, activePlaybackPipelines.get() > 0)
+        retryPendingRelease()
+        val precheck = backgroundMaintenanceStartDecision(activeLiveSessions.size, isScanRunning(), sessionCreationsInProgress.get() > 0, activePlaybackPipelines.get() > 0)
         if (!precheck.allowed) {
             markBackgroundMaintenanceSkipped(precheck.reason ?: "UNKNOWN", source)
             return false
@@ -259,14 +279,14 @@ object ChannelScanManager {
             return false
         }
         val generation = task.generation
-        if (activeLiveSessions.get() > 0 || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0) {
+        if (activeLiveSessions.size > 0 || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0) {
             setTerminalStateIfCurrent(generation, ScanState.Idle)
             finishScanIfCurrent(generation)
             markBackgroundMaintenanceSkipped("LIVE_SESSION_STARTING_OR_ACTIVE", source)
             return false
         }
         executor.execute {
-            if (activeLiveSessions.get() > 0 || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0) {
+            if (activeLiveSessions.size > 0 || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0) {
                 setTerminalStateIfCurrent(generation, ScanState.Idle)
                 finishScanIfCurrent(generation)
                 markBackgroundMaintenanceSkipped("LIVE_SESSION_STARTING_OR_ACTIVE", source)
@@ -275,6 +295,7 @@ object ChannelScanManager {
             BackgroundChannelMaintenanceDiagnostics.startedCount.incrementAndGet()
             val result = runCatching {
                 val createdEngine = AribSiEngine(appContext)
+                task.engine = createdEngine
                 val createdController = ChannelScanController(
                     appContext,
                     inputId,
@@ -282,13 +303,8 @@ object ChannelScanManager {
                     task.purpose,
                     task.cancelRequested,
                 )
-                if (!isCurrentGeneration(generation)) {
-                    createdController.close()
-                    createdEngine.close()
-                    return@runCatching null
-                }
-                task.engine = createdEngine
                 task.controller = createdController
+                if (!isCurrentGeneration(generation)) return@runCatching null
                 if (isCancelledGeneration(generation)) createdController.cancelScan()
                 createdController.startBackgroundChannelMaintenance()
             }
@@ -296,6 +312,8 @@ object ChannelScanManager {
                 if (scanResult != null) {
                     if (scanResult.terminalCancelObserved || isCancelledGeneration(generation)) {
                         setTerminalStateIfCurrent(generation, ScanState.Cancelled(generation, ScanPurpose.BACKGROUND_MAINTENANCE))
+                    } else if (scanResult.terminalResourceLostObserved) {
+                        setTerminalStateIfCurrent(generation, ScanState.Failed(TUNER_RESOURCE_LOST, generation, ScanPurpose.BACKGROUND_MAINTENANCE))
                     } else {
                         setTerminalStateIfCurrent(generation, ScanState.Completed(scanResult, generation, ScanPurpose.BACKGROUND_MAINTENANCE))
                     }
@@ -385,10 +403,28 @@ object ChannelScanManager {
         }
     }
 
-    private fun finishScanIfCurrent(generation: Int) {
-        val task = activeTask.get()?.takeIf { it.generation == generation } ?: return
-        closeController(task)
-        activeTask.compareAndSet(task, null)
+    private fun finishScanIfCurrent(generation: Int): Boolean {
+        val task = activeTask.get()?.takeIf { it.generation == generation } ?: return true
+        return finishScanRelease(task, activeTask) { error ->
+            Log.w(LogTags.TIS, "scan解放の所有を再試行まで保持します generation=$generation", error)
+        }
+    }
+
+    internal fun finishScanRelease(
+        task: ActiveScanTask,
+        owner: AtomicReference<ActiveScanTask?>,
+        reportFailure: (Exception) -> Unit,
+    ): Boolean {
+        task.closing = true
+        return try {
+            closeController(task)
+            owner.compareAndSet(task, null)
+            true
+        } catch (error: Exception) {
+            // semantic終端理由は維持する。未解放資源はtask.closingと所有参照で表す。
+            reportFailure(error)
+            false
+        }
     }
 
     private fun bootEpgSyncStartDecision(activeLiveSessionCount: Int, scanRunning: Boolean, sessionCreationInProgress: Boolean, playbackPipelineRunning: Boolean): BootEpgSyncStartDecision = when {
@@ -400,11 +436,11 @@ object ChannelScanManager {
 
     private fun markBootEpgSyncDeferred(context: Context, reason: String) {
         DirectBootGuard.deferPending(context.applicationContext, reason)
-        Log.i(LogTags.TIS, "boot EPG 同期を開始しません reason=$reason activeLiveSessions=${activeLiveSessions.get()} sessionCreationsInProgress=${sessionCreationsInProgress.get()} scanRunning=${isScanRunning()}")
+        Log.i(LogTags.TIS, "boot EPG 同期を開始しません reason=$reason activeLiveSessions=${activeLiveSessions.size} sessionCreationsInProgress=${sessionCreationsInProgress.get()} scanRunning=${isScanRunning()}")
     }
 
     private fun drainPendingBootEpgSyncIfIdle(context: Context, source: String) {
-        if (activeLiveSessions.get() > 0 || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0 || isScanRunning()) return
+        if (activeLiveSessions.size > 0 || sessionCreationsInProgress.get() > 0 || activePlaybackPipelines.get() > 0 || isScanRunning()) return
         Log.i(LogTags.TIS, "pending boot EPG 同期ジョブを再登録します source=$source")
         BootEpgSyncScheduler.scheduleIfEligible(context.applicationContext, source)
     }
@@ -416,14 +452,14 @@ object ChannelScanManager {
             "SCAN_RUNNING" -> BackgroundChannelMaintenanceDiagnostics.skippedScanRunningCount.incrementAndGet()
             else -> BackgroundChannelMaintenanceDiagnostics.skippedOtherCount.incrementAndGet()
         }
-        Log.i(LogTags.TIS, "background channel maintenance を開始しません source=$source reason=$reason activeLiveSessions=${activeLiveSessions.get()} sessionCreationsInProgress=${sessionCreationsInProgress.get()} scanRunning=${isScanRunning()}")
+        Log.i(LogTags.TIS, "background channel maintenance を開始しません source=$source reason=$reason activeLiveSessions=${activeLiveSessions.size} sessionCreationsInProgress=${sessionCreationsInProgress.get()} scanRunning=${isScanRunning()}")
     }
 
     private fun closeController(task: ActiveScanTask) {
-        runCatching { task.controller?.close() }
-        runCatching { task.engine?.close() }
-        task.controller = null
-        task.engine = null
+        SectionFilterPolicy.completeCleanup(
+            { task.controller?.close(); task.controller = null },
+            { task.engine?.close(); task.engine = null },
+        )
     }
 
     private fun setState(newState: ScanState) {

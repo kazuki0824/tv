@@ -1,5 +1,5 @@
-use crate::eit::{parse_eit_section, EitEvent};
-use crate::sections::{parse_section_header, section_crc_valid_with_header};
+use crate::eit::{parse_eit_section_facts, EitEvent};
+use crate::sections::{parse_section_header, section_crc_valid_with_header, SectionTracker};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -8,9 +8,7 @@ struct TableKey(u8, u16, u16, u16, bool);
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct Instance {
-    version: u8,
-    last: u8,
-    inconsistent: bool,
+    tracker: SectionTracker,
     sections: BTreeMap<u8, Vec<EitEvent>>,
     safe: BTreeSet<u8>,
     segment_ends: BTreeMap<u8, u8>,
@@ -66,20 +64,17 @@ impl EitInstances {
             u16::from_be_bytes([section[3], section[4]]),
             current,
         );
-        let instance = self.instances.entry(key).or_insert_with(|| Instance {
-            version,
-            last,
-            ..Instance::default()
-        });
-        if instance.version != version {
-            *instance = Instance {
-                version,
-                last,
-                ..Instance::default()
-            };
+        let instance = self.instances.entry(key).or_default();
+        if !instance.tracker.accepts_version(version) {
+            return;
         }
-        if instance.last != last || number > last {
-            instance.inconsistent = true;
+        if instance.tracker.version != Some(version) {
+            instance.sections.clear();
+            instance.safe.clear();
+            instance.segment_ends.clear();
+        }
+        if !instance.tracker.observe(version, number, last, section) {
+            return;
         }
         if header.table_id >= 0x50 {
             let start = number & 0xf8;
@@ -92,20 +87,14 @@ impl EitInstances {
                     .get(&start)
                     .is_some_and(|old| *old != end)
             {
-                instance.inconsistent = true;
+                instance.tracker.inconsistent = true;
             }
             instance.segment_ends.insert(start, end);
         }
-        let events = parse_eit_section(section);
-        let body_end = section.len() - 4;
-        let mut cursor = 14;
-        while cursor + 12 <= body_end {
-            let length =
-                (((section[cursor + 10] & 15) as usize) << 8) | section[cursor + 11] as usize;
-            cursor += 12 + length;
-        }
+        let facts = parse_eit_section_facts(section);
+        let events = facts.events;
         instance.safe.remove(&number);
-        if cursor == body_end
+        if facts.event_loop_complete
             && events.iter().all(|event| {
                 event
                     .diagnostics
@@ -123,9 +112,9 @@ impl EitInstances {
             .iter()
             .map(|(key, value)| {
                 let required: BTreeSet<u8> = if key.0 < 0x50 {
-                    (0..=value.last).collect()
+                    (0..=value.tracker.last_section_number.unwrap_or(0)).collect()
                 } else {
-                    (0..=value.last)
+                    (0..=value.tracker.last_section_number.unwrap_or(0))
                         .step_by(8)
                         .flat_map(|start| {
                             start..=value.segment_ends.get(&start).copied().unwrap_or(start)
@@ -139,11 +128,11 @@ impl EitInstances {
                     original_network_id: key.1,
                     transport_stream_id: key.2,
                     service_id: key.3,
-                    version: value.version,
+                    version: value.tracker.version.unwrap_or(0),
                     current_next_indicator: key.4,
-                    last_section_number: value.last,
-                    complete: !value.inconsistent && missing.is_empty(),
-                    inconsistent: value.inconsistent,
+                    last_section_number: value.tracker.last_section_number.unwrap_or(0),
+                    complete: !value.tracker.inconsistent && missing.is_empty(),
+                    inconsistent: value.tracker.inconsistent,
                     received_sections: received.into_iter().collect(),
                     missing_sections: missing,
                     safe_sections: value.safe.iter().copied().collect(),
@@ -185,6 +174,67 @@ mod tests {
         bytes.extend_from_slice(&crc32_mpeg(&bytes).to_be_bytes());
         bytes
     }
+    #[test]
+    fn repeated_conflicting_payload_and_version_rollover_are_not_mixed() {
+        let mut store = EitInstances::default();
+        store.ingest(&section(31, true, 0, 0));
+        store.ingest(&section(0, true, 0, 1));
+        store.ingest(&section(31, true, 0, 0));
+        store.ingest(&section(16, true, 0, 0));
+        assert_eq!(store.states()[0].version, 0);
+        assert_eq!(store.states()[0].missing_sections, vec![1]);
+        let mut conflict = section(0, true, 0, 1);
+        conflict.truncate(conflict.len() - 4);
+        conflict[12] = 0;
+        conflict.extend_from_slice(&crc32_mpeg(&conflict).to_be_bytes());
+        store.ingest(&conflict);
+        assert!(store.states()[0].inconsistent);
+    }
+
+    #[test]
+    fn unknown_descriptor_is_safe_but_truncated_loop_is_not() {
+        let mut bytes = section(1, true, 0, 0);
+        bytes.truncate(14);
+        bytes.extend_from_slice(&[0, 1, 0xee, 0, 0x12, 0, 0, 0x01, 0, 0, 0xf0, 3, 0x90, 1, 0]);
+        bytes[2] = (bytes.len() + 1) as u8;
+        bytes.extend_from_slice(&crc32_mpeg(&bytes).to_be_bytes());
+        let mut store = EitInstances::default();
+        store.ingest(&bytes);
+        assert_eq!(store.states()[0].safe_sections, vec![0]);
+        assert_eq!(
+            store.events()[0].diagnostics[0].parse_status,
+            crate::descriptors::DescriptorParseStatus::UnsupportedValue
+        );
+        bytes.truncate(bytes.len() - 4);
+        bytes[5] = 0xc5;
+        bytes[25] = 4;
+        bytes.extend_from_slice(&crc32_mpeg(&bytes).to_be_bytes());
+        store.ingest(&bytes);
+        assert!(store.states()[0].safe_sections.is_empty());
+        assert!(store.states()[0].complete);
+    }
+
+    #[test]
+    fn schedule_segment_gap_and_shrinking_version_follow_wire_facts() {
+        let mut store = EitInstances::default();
+        for number in [0, 1, 8, 9] {
+            let mut bytes = section(1, true, number, 9);
+            bytes.truncate(14);
+            bytes[0] = 0x50;
+            bytes[12] = if number < 8 { 1 } else { 9 };
+            bytes.extend_from_slice(&crc32_mpeg(&bytes).to_be_bytes());
+            store.ingest(&bytes);
+        }
+        assert!(store.states()[0].complete);
+        assert!(store.states()[0].missing_sections.is_empty());
+        let mut bytes = section(2, true, 0, 0);
+        bytes.truncate(14);
+        bytes[0] = 0x50;
+        bytes.extend_from_slice(&crc32_mpeg(&bytes).to_be_bytes());
+        store.ingest(&bytes);
+        assert_eq!(store.states()[0].received_sections, vec![0]);
+    }
+
     #[test]
     fn versions_next_table_and_inconsistency_remain_distinct() {
         let mut store = EitInstances::default();

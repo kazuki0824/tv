@@ -47,6 +47,8 @@ class MaleicacidLiveSession(
     private val currentProgramRatingResolver = CurrentProgramRatingResolver(appContext)
     private val programPublishCoordinator = ProgramPublishCoordinator(tvProviderWriter)
     private val releaseOnce = AtomicBoolean(false)
+    private var releaseCleanup: ResourceCleanup? = null
+    private var parentalReceiverRegistered = false
     @Volatile private var sessionExecutorThread: Thread? = null
     private val sessionExecutor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "maleicacid-live-session-$sessionId").also { thread ->
@@ -62,7 +64,9 @@ class MaleicacidLiveSession(
     private var captionEnabled: Boolean = false
     private var streamVolume: Float = 1.0f
     private var playbackState: PlaybackStartState = PlaybackStartState.Idle
-    private var latestService: AribService? = null
+    private var latestLiveSnapshot: com.maleicacid.tvinput.aribsi.LivePlaybackSnapshot? = null
+    private val latestService: AribService?
+        get() = latestLiveSnapshot?.services?.firstOrNull { it.serviceKey == currentService }
     private val latestVideoMetadataByProgramKey = linkedMapOf<String, PlaybackPipeline.VideoFormatInfo>()
     private var preferredAudioTrackId: String? = null
     private var audioFallbackDisabled: Boolean = false
@@ -83,8 +87,9 @@ class MaleicacidLiveSession(
         allowNoPts = true,
         broadcastDeadline = { statementTime, generation -> tunerController.broadcastDeadlineUntil(statementTime, generation) },
     )
-    private val unblockedContentKeys = linkedSetOf<String>()
-    private var currentUnblockProgramIdentityKey: String? = null
+    private val temporaryUnblocks = TemporaryContentUnblocks()
+    private val unblockTimerHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var unblockExpiryTask: Runnable? = null
     private var lastParentalAccessState: ParentalAccessState = ParentalAccessState.UNKNOWN
     private var lastBlockedContent: BlockedContent? = null
     private data class BlockedContent(val rating: TvContentRating, val unblockKey: String)
@@ -143,8 +148,8 @@ class MaleicacidLiveSession(
         tunerController.setOnBroadcastClockUpdatedCallback {
             superimposeController.onBroadcastClockChanged()
         }
-        tunerController.setOnVideoOnlyFallbackRestartedCallback { restart ->
-            enqueueSessionAction { handleVideoOnlyFallbackRestart(restart) }
+        tunerController.setOnPlaybackGenerationRestartedCallback { restart ->
+            enqueueSessionAction { handlePlaybackGenerationRestart(restart) }
         }
         tunerController.setOnTunerResourceLostCallback { tuneGeneration ->
             enqueueSessionAction { handleTunerResourceLost(tuneGeneration) }
@@ -154,7 +159,7 @@ class MaleicacidLiveSession(
         }
         superimposeController.setEnabled(true)
         runCatching { setOverlayViewEnabled(true) }
-        ChannelScanManager.registerLiveSession()
+        ChannelScanManager.registerLiveSession(this)
         registerParentalControlReceiver()
     }
 
@@ -189,8 +194,8 @@ class MaleicacidLiveSession(
         }
     }
 
-    override fun onSetSurface(surface: Surface?): Boolean = runOnSessionExecutorBlocking {
-        onSetSurfaceOnSessionExecutor(surface)
+    override fun onSetSurface(surface: Surface?): Boolean = if (releaseOnce.get()) false else runOnSessionExecutorBlocking {
+        if (releaseOnce.get()) false else onSetSurfaceOnSessionExecutor(surface)
     }
 
     private fun onSetSurfaceOnSessionExecutor(surface: Surface?): Boolean {
@@ -227,7 +232,8 @@ class MaleicacidLiveSession(
         }
     }
 
-    override fun onTune(channelUri: Uri?): Boolean = runOnSessionExecutorBlocking {
+    override fun onTune(channelUri: Uri?): Boolean = if (releaseOnce.get()) false else runOnSessionExecutorBlocking {
+        if (releaseOnce.get()) return@runOnSessionExecutorBlocking false
         onTuneOnSessionExecutor(channelUri)
     }
 
@@ -241,10 +247,9 @@ class MaleicacidLiveSession(
         currentGeneration = 0L
         beginCaptionPresentationGeneration(-1L, false)
         currentChannelUri = channelUri
-        latestService = null
+        latestLiveSnapshot = null
         latestVideoMetadataByProgramKey.clear()
-        unblockedContentKeys.clear()
-        currentUnblockProgramIdentityKey = null
+        clearTemporaryUnblocks()
         lastParentalAccessState = ParentalAccessState.UNKNOWN
         lastBlockedContent = null
         programPublishCoordinator.reset()
@@ -292,8 +297,10 @@ class MaleicacidLiveSession(
     private fun refreshDynamicSiAndCasFilters() {
         val serviceKey = currentService ?: return
         val transaction = aribSiEngine.livePlaybackSnapshot()
+        latestLiveSnapshot = transaction
         val service = transaction.services.firstOrNull { it.serviceKey == serviceKey }
-        val pmtPids = transaction.pmtPids.values.toSet()
+        val pmtPids = transaction.pmtPidsFor(serviceKey)
+        val decision = currentServicePolicy()
         val allCaMetadata = if (ENABLE_CAS_ORCHESTRATION) transaction.caMetadata else emptyList()
         val serviceScopedCa = allCaMetadata.filter {
             it.serviceKey == serviceKey && it.source != com.maleicacid.tvinput.aribsi.CaMetadataSource.CAT
@@ -305,18 +312,32 @@ class MaleicacidLiveSession(
         )
         val serviceCaMetadata = expanded.filter { it.serviceKey == serviceKey }
         val caMetadata = expanded.filter { it.serviceKey == null || it.serviceKey == serviceKey }
-        val ecmPids = caMetadata.mapNotNull { it.ecmPid }.toSet()
-        val emmPids = caMetadata.filter { CasController.SupportedCasSystemIds.supportsEmm(it.caSystemId) }.mapNotNull { it.emmPid }.toSet()
-        tunerController.updateDynamicSectionFiltersForService(serviceKey, pmtPids, ecmPids, emmPids, currentGeneration)
-
-        publishLiveProgramsForCurrentService()
-        refreshCurrentProgramRatingState()
-        if (caMetadata.isEmpty()) {
-            casController.clearForClearService()
-        } else {
-            val bridge = if (serviceScopedCa.isEmpty()) null else tunerController.createDescramblerBridge()
-            val casResult = casController.updateFromCaMetadata(caMetadata, bridge)
-            val blockingCasError = serviceCaMetadata.isNotEmpty() && casResult.diagnostics.any { it.state == CasController.State.ERROR }
+        val casResult = try {
+            tunerController.updateCasMetadataAndFilters(caMetadata, pmtPids, currentGeneration, decision.casDecisionReady) ?: return
+        } catch (failure: Exception) {
+            playbackState = PlaybackStartState.Stopped
+            try {
+                SectionFilterPolicy.completeCleanup(
+                    { beginCaptionPresentationGeneration(-1L, false) },
+                    { notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN) },
+                )
+            } catch (cleanup: Exception) { if (cleanup !== failure) failure.addSuppressed(cleanup) }
+            throw failure
+        }
+        if (!decision.casDecisionReady) {
+            playbackState = PlaybackStartState.Stopped
+            SectionFilterPolicy.completeCleanup(
+                { beginCaptionPresentationGeneration(-1L, false) },
+                { notifyVideoUnavailable(if (decision.registrationReady) TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN else TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN) },
+            )
+        }
+        if (decision.registrationReady) {
+            publishLiveProgramsForCurrentService()
+            refreshCurrentProgramRatingState()
+        }
+        if (!decision.casDecisionReady) return
+        if (caMetadata.isNotEmpty()) {
+            val blockingCasError = casResult.diagnostics.any { it.state == CasController.State.ERROR }
             if (blockingCasError) {
                 playbackState = PlaybackStartState.Stopped
                 tunerController.stopPlayback()
@@ -333,13 +354,16 @@ class MaleicacidLiveSession(
             }
         }
         if (service != null) {
-            latestService = service
             updateTracks(service)
             maybeStartPlayback(service)
         }
     }
 
+    private fun currentServicePolicy() =
+        com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator.evaluateLive(latestLiveSnapshot, currentService)
+
     private fun maybeStartPlayback(service: AribService): Boolean {
+        if (!currentServicePolicy().clearLivePlaybackStaticallyEligible) return false
         when (val decision = contentAccessDecision()) {
             is ContentAccessDecision.Block -> {
                 rememberBlockedContent(decision.blocked)
@@ -396,25 +420,15 @@ class MaleicacidLiveSession(
         }
         playbackState = PlaybackStartState.Starting(signature)
         val result = tunerController.startPlayback(selection)
-        if (result == null) {
-            playbackState = PlaybackStartState.Failed(signature, pipelineGeneration = null)
-            notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
-            return false
-        }
-        beginCaptionPresentationGeneration(result.generation, hasVideo = !audioOnly)
-        onCaptionPlaybackClockChanged()
-        if (result.firstFramePending == true) {
-            playbackState = PlaybackStartState.WaitingFirstOutput(signature, result.generation)
-            return false
-        }
-        val started = if (audioOnly) result.startedAudio else result.startedVideo
-        if (started) {
-            playbackState = PlaybackStartState.Started(signature, result.generation)
-            if (audioOnly) notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY)
-            return true
-        }
-        playbackState = PlaybackStartState.Failed(signature, result.generation)
-        return false
+        val next = if (result == null) PlaybackStartState.Failed(signature, pipelineGeneration = null)
+            else PlaybackStartTransitions.afterRestartResult(
+                playbackState, signature, result.generation, result.firstFramePending,
+                result.firstFramePending || (if (audioOnly) result.startedAudio else result.startedVideo),
+            )
+        commitPlaybackStartResult(next, ::updatePlaybackStartState) { notifyVideoUnavailable(it) }
+        val started = next is PlaybackStartState.Started
+        if (started && audioOnly) notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY)
+        return started
     }
 
     private fun playbackSignatureFor(
@@ -432,6 +446,8 @@ class MaleicacidLiveSession(
             videoStreamType = video?.streamType,
             audioPid = audio?.elementaryPid,
             audioStreamType = audio?.streamType,
+            videoConfiguration = video?.let { DecoderConfigurationIdentity.from(it) },
+            audioConfiguration = audio?.let { DecoderConfigurationIdentity.from(it, selection.audioComponentType ?: it.componentType) },
             subtitlePid = selection.subtitle?.elementaryPid,
             subtitleDataComponentId = selection.subtitle?.dataComponentId,
             subtitleLanguageId = selection.subtitleLanguageId,
@@ -457,7 +473,8 @@ class MaleicacidLiveSession(
         }
     }
 
-    override fun onSelectTrack(type: Int, trackId: String?): Boolean = runOnSessionExecutorBlocking {
+    override fun onSelectTrack(type: Int, trackId: String?): Boolean = if (releaseOnce.get()) false else runOnSessionExecutorBlocking {
+        if (releaseOnce.get()) return@runOnSessionExecutorBlocking false
         onSelectTrackOnSessionExecutor(type, trackId)
     }
 
@@ -498,18 +515,14 @@ class MaleicacidLiveSession(
                 }
                 val switched = tunerController.switchAudioTrack(selection)
                 if (switched != null && switched.generation >= 0L) {
-                    playbackState = PlaybackStartTransitions.afterRestartResult(
+                    val next = PlaybackStartTransitions.afterRestartResult(
                         playbackState,
                         signature,
                         switched.generation,
                         switched.firstFramePending,
                         switched.switchedAudio,
                     )
-                    beginCaptionPresentationGeneration(
-                        switched.generation,
-                        hasVideo = !PlaybackPolicy.isAudioOnlyService(service.serviceType),
-                    )
-                    onCaptionPlaybackClockChanged()
+                    commitPlaybackStartResult(next, ::updatePlaybackStartState) { notifyVideoUnavailable(it) }
                 }
                 if (switched?.switchedAudio == true) {
                     notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, trackId)
@@ -556,7 +569,7 @@ class MaleicacidLiveSession(
     private fun currentProgramEvent(
         serviceKey: ServiceKey,
         nowMillis: Long = System.currentTimeMillis(),
-    ) = aribSiEngine.programStateSnapshot().events
+    ) = latestLiveSnapshot?.programs?.events.orEmpty()
         .asSequence()
         .filter { event -> event.serviceKey == serviceKey && event.durationMillis > 0L }
         .filter { event -> nowMillis >= event.startTimeMillis && nowMillis < event.startTimeMillis + event.durationMillis }
@@ -710,6 +723,16 @@ class MaleicacidLiveSession(
         superimposeController.onPlaybackClockChanged()
     }
 
+    private fun updatePlaybackStartState(next: PlaybackStartState) {
+        playbackState = next
+        if (next is PlaybackStartState.Failed) beginCaptionPresentationGeneration(-1L, false)
+        else beginCaptionPresentationGeneration(
+            PlaybackStartTransitions.pipelineGeneration(next) ?: -1L,
+            hasVideo = PlaybackStartTransitions.signature(next)?.videoPid != null,
+        )
+        onCaptionPlaybackClockChanged()
+    }
+
     private fun handleFirstFrameAvailable(generation: Long) {
         val state = playbackState as? PlaybackStartState.WaitingFirstOutput ?: return
         if (state.pipelineGeneration != generation) return
@@ -732,20 +755,16 @@ class MaleicacidLiveSession(
         }
     }
 
-    private fun handleVideoOnlyFallbackRestart(restart: PlaybackPipeline.VideoOnlyFallbackRestart) {
-        if (!PlaybackStartTransitions.acceptsGeneration(playbackState, restart.originGeneration)) return
-        val previousSignature = PlaybackStartTransitions.signature(playbackState) ?: return
-        val videoOnlySignature = previousSignature.copy(audioPid = null, audioStreamType = null)
-        audioFallbackDisabled = true
-        playbackState = PlaybackStartTransitions.afterRestartResult(
+    private fun handlePlaybackGenerationRestart(restart: PlaybackPipeline.PlaybackGenerationRestart) {
+        acceptPlaybackGenerationRestart(
             playbackState,
-            videoOnlySignature,
-            restart.result.generation,
-            restart.result.firstFramePending,
-            restart.result.startedVideo || restart.result.firstFramePending,
+            restart,
+            accept = { next ->
+                if (restart.videoOnly) audioFallbackDisabled = true
+                updatePlaybackStartState(next)
+            },
+            notifyUnavailable = { notifyVideoUnavailable(it) },
         )
-        beginCaptionPresentationGeneration(restart.result.generation, hasVideo = true)
-        onCaptionPlaybackClockChanged()
     }
 
     private fun handleTunerResourceLost(lostTuneGeneration: Long) {
@@ -776,8 +795,14 @@ class MaleicacidLiveSession(
     }
 
     private fun handlePlaybackUnavailable(reason: PlaybackPipeline.PlaybackUnavailable) {
-        if (reason.generation > 0L && !PlaybackStartTransitions.acceptsGeneration(playbackState, reason.generation)) {
-            android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "旧generationのplayback unavailableを破棄します reason=${reason.reason} generation=${reason.generation}")
+        if (!PlaybackStartTransitions.acceptsUnavailable(playbackState, reason.generation)) {
+            android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "旧世代または失敗確定済みの再生不能通知を破棄します reason=${reason.reason} generation=${reason.generation}")
+            return
+        }
+        if (reason.reason == PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED) {
+            playbackState = PlaybackStartTransitions.failCurrentGeneration(playbackState, reason.generation)
+            beginCaptionPresentationGeneration(-1L, false)
+            notifyVideoUnavailable(mapUnavailableReason(reason))
             return
         }
         val audioFailure = reason.reason == PlaybackPipeline.PlaybackUnavailableReason.AUDIO_UNAVAILABLE ||
@@ -828,7 +853,8 @@ class MaleicacidLiveSession(
         return when (val result = currentProgramRatingResolver.resolveDetailed(
             channelUri = currentChannelUri,
             serviceKey = currentService,
-            latestEvents = aribSiEngine.programStateSnapshot().events,
+            latestEvents = latestLiveSnapshot?.programs?.events.orEmpty(),
+            eitAuthority = currentProgramRatingResolver.eitAuthority(latestLiveSnapshot?.programs, currentService),
             ratingProfile = currentRatingProfile,
         )) {
             is CurrentProgramRatingResolver.ResolveResult.Ratings -> {
@@ -836,7 +862,7 @@ class MaleicacidLiveSession(
                 clearUnblocksIfCurrentProgramChanged(ratingSet)
                 ratingSet.ratingsForBlocking().firstNotNullOfOrNull { rating ->
                     val unblockKey = ratingSet.unblockKeyFor(rating)
-                    if (unblockKey !in unblockedContentKeys && manager.isRatingBlocked(rating)) BlockedContent(rating, unblockKey) else null
+                    if (!temporaryUnblocks.contains(unblockKey, System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime()) && manager.isRatingBlocked(rating)) BlockedContent(rating, unblockKey) else null
                 }?.let { ContentAccessDecision.Block(it) } ?: ContentAccessDecision.Allow
             }
             is CurrentProgramRatingResolver.ResolveResult.ProviderQueryFailed -> {
@@ -875,11 +901,40 @@ class MaleicacidLiveSession(
     }
 
     private fun clearUnblocksIfCurrentProgramChanged(ratingSet: CurrentProgramRatingResolver.CurrentProgramRatingSet) {
-        currentUnblockProgramIdentityKey = PlaybackPolicy.updateUnblockStateForProgramChange(
-            previousIdentityKey = currentUnblockProgramIdentityKey,
-            nextIdentityKey = ratingSet.currentRowSelectionKey(),
-            unblockedContentKeys = unblockedContentKeys,
-        )
+        temporaryUnblocks.updateProgram(ratingSet.programIdentityKey().takeIf { ratingSet.currentRowSelectionKey() != null })
+        ratingSet.endTimeMillis?.let {
+            temporaryUnblocks.restrictEnd(it, System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime())
+        }
+        armUnblockExpiration()
+    }
+
+    private fun clearTemporaryUnblocks() {
+        temporaryUnblocks.clear()
+        unblockExpiryTask?.let(unblockTimerHandler::removeCallbacks)
+        unblockExpiryTask = null
+    }
+
+    private fun armUnblockExpiration(): Boolean {
+        unblockExpiryTask?.let(unblockTimerHandler::removeCallbacks)
+        unblockExpiryTask = null
+        val delay = temporaryUnblocks.nextDelayMillis(System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime())
+            ?: return true
+        val task = object : Runnable {
+            override fun run() {
+                enqueueSessionAction {
+                    if (unblockExpiryTask !== this) return@enqueueSessionAction
+                    unblockExpiryTask = null
+                    temporaryUnblocks.expire(System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime())
+                    reevaluateParentalControls()
+                    armUnblockExpiration()
+                }
+            }
+        }
+        unblockExpiryTask = task
+        if (unblockTimerHandler.postDelayed(task, delay)) return true
+        clearTemporaryUnblocks()
+        android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "一時解除の失効通知を予約できないため解除を取り消します")
+        return false
     }
 
     private fun reevaluateParentalControls() {
@@ -918,8 +973,9 @@ class MaleicacidLiveSession(
         )
         val key = currentService ?: return
         val now = System.currentTimeMillis()
-        val transaction = aribSiEngine.programStateSnapshot()
+        val transaction = latestLiveSnapshot?.programs ?: return
         val records = eventModelMapper.toProgramRecords(
+            profile = transaction.discoveryProfile,
             events = transaction.events.filter { event ->
                 ProgramVideoMetadataPolicy.eventContainsTime(event, key, now)
             },
@@ -929,14 +985,15 @@ class MaleicacidLiveSession(
         )
         if (records.isEmpty()) return
         rememberVideoMetadata(records, info)
-        publishLivePrograms(applyLatestVideoMetadata(records))
+        publishLivePrograms(applyLatestVideoMetadata(records), transaction)
     }
 
     private fun refreshCurrentProgramRatingState() {
         when (val result = currentProgramRatingResolver.resolveDetailed(
             channelUri = currentChannelUri,
             serviceKey = currentService,
-            latestEvents = aribSiEngine.programStateSnapshot().events,
+            latestEvents = latestLiveSnapshot?.programs?.events.orEmpty(),
+            eitAuthority = currentProgramRatingResolver.eitAuthority(latestLiveSnapshot?.programs, currentService),
             ratingProfile = currentRatingProfile,
         )) {
             is CurrentProgramRatingResolver.ResolveResult.Ratings -> clearUnblocksIfCurrentProgramChanged(result.ratingSet)
@@ -946,14 +1003,15 @@ class MaleicacidLiveSession(
 
     private fun publishLiveProgramsForCurrentService() {
         val key = currentService ?: return
-        val transaction = aribSiEngine.programStateSnapshot()
+        val transaction = latestLiveSnapshot?.programs ?: return
         val records = eventModelMapper.toProgramRecords(
+            profile = transaction.discoveryProfile,
             events = transaction.events.filter { it.serviceKey == key },
             semanticFactsByServiceKey = transaction.semanticFactsByServiceKey,
             malformedCaDescriptorCountByServiceId = transaction.malformedCaDescriptorCountByServiceId,
             ratingProfileByServiceKey = mapOf(key to currentRatingProfile),
         )
-        publishLivePrograms(applyLatestVideoMetadata(records))
+        publishLivePrograms(applyLatestVideoMetadata(records), transaction)
     }
 
     private fun rememberVideoMetadata(records: List<ProgramRecord>, info: PlaybackPipeline.VideoFormatInfo) {
@@ -965,12 +1023,18 @@ class MaleicacidLiveSession(
     private fun applyLatestVideoMetadata(records: List<ProgramRecord>): List<ProgramRecord> =
         ProgramVideoMetadataPolicy.merge(records, latestVideoMetadataByProgramKey)
 
-    private fun publishLivePrograms(records: List<ProgramRecord>) {
-        if (records.isEmpty()) return
-        val result = programPublishCoordinator.publish(
+    private fun publishLivePrograms(
+        records: List<ProgramRecord>,
+        snapshot: com.maleicacid.tvinput.aribsi.ProgramPublishSnapshot,
+    ) {
+        val key = currentService ?: return
+        if (!currentServicePolicy().registrationReady) return
+        val result = programPublishCoordinator.publishWithUpdates(
             mode = ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
             allPrograms = records,
-            allowedServiceKeys = null,
+            updateWindows = snapshot.updateWindows.filter { it.serviceKey == key }
+                .map(ProgramPublishCoordinator::EpgUpdateWindow),
+            allowedServiceKeys = setOf(key),
         )
         if (result.failures.isNotEmpty()) {
             android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "live Programs 更新失敗=${result.failures}")
@@ -989,11 +1053,14 @@ class MaleicacidLiveSession(
                 @Suppress("DEPRECATION")
                 appContext.registerReceiver(parentalControlReceiver, filter)
             }
+            parentalReceiverRegistered = true
         }
     }
 
     private fun unregisterParentalControlReceiver() {
-        runCatching { appContext.unregisterReceiver(parentalControlReceiver) }
+        if (!parentalReceiverRegistered) return
+        appContext.unregisterReceiver(parentalControlReceiver)
+        parentalReceiverRegistered = false
     }
 
     override fun onUnblockContent(unblockedRating: TvContentRating?) {
@@ -1005,7 +1072,8 @@ class MaleicacidLiveSession(
         val ratingSet = when (val result = currentProgramRatingResolver.resolveDetailed(
             channelUri = currentChannelUri,
             serviceKey = currentService,
-            latestEvents = aribSiEngine.programStateSnapshot().events,
+            latestEvents = latestLiveSnapshot?.programs?.events.orEmpty(),
+            eitAuthority = currentProgramRatingResolver.eitAuthority(latestLiveSnapshot?.programs, currentService),
             ratingProfile = currentRatingProfile,
         )) {
             is CurrentProgramRatingResolver.ResolveResult.Ratings -> {
@@ -1018,7 +1086,12 @@ class MaleicacidLiveSession(
             }
         }
         val unblockKey = ratingSet.exactUnblockKeyFor(rating) ?: return
-        unblockedContentKeys += unblockKey
+        val endTimeMillis = ratingSet.endTimeMillis ?: return
+        if (!temporaryUnblocks.grant(unblockKey, endTimeMillis, System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime())) return
+        if (!armUnblockExpiration()) {
+            reevaluateParentalControls()
+            return
+        }
         notifyContentAllowed()
         latestService?.let { service ->
             playbackState = PlaybackStartTransitions.allowRetry(playbackState)
@@ -1026,13 +1099,21 @@ class MaleicacidLiveSession(
         }
     }
 
+    @Synchronized
     override fun onRelease() {
-        if (!releaseOnce.compareAndSet(false, true)) return
-        try {
+        if (sessionExecutor.isShutdown) return
+        releaseOnce.set(true)
+        runCatching {
             runOnSessionExecutorBlocking { releaseOnSessionExecutor() }
-        } finally {
             sessionExecutor.shutdown()
+        }.onFailure { error ->
+            // Managerのlive集合とexecutorを保持し、次の既存受付契機でも再試行する。
+            android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "live session解放を再試行まで保持します", error)
         }
+    }
+
+    internal fun retryReleaseIfPending() {
+        if (releaseOnce.get()) onRelease()
     }
 
     private fun releaseOnSessionExecutor() {
@@ -1040,30 +1121,53 @@ class MaleicacidLiveSession(
         currentChannelUri = null
         captionEnabled = false
         selectedSubtitleTrackId = null
-        unblockedContentKeys.clear()
-        currentUnblockProgramIdentityKey = null
         playbackState = PlaybackStartState.Stopped
-        var failure: Throwable? = null
-        fun release(action: () -> Unit) {
-            try {
-                action()
-            } catch (error: Throwable) {
-                val primary = failure
-                if (primary == null) failure = error else if (primary !== error) primary.addSuppressed(error)
-            }
+        val pending = releaseCleanup
+        val cleanup = pending ?: ResourceCleanup().also { releaseCleanup = it }
+        if (pending == null) {
+            cleanup.release("temporary unblock") { clearTemporaryUnblocks() }
+            cleanup.release("caption") { captionController.close() }
+            cleanup.release("superimpose") { superimposeController.close() }
+            cleanup.release("parental receiver") { unregisterParentalControlReceiver() }
+            // TunerControllerがCASも閉じ、内部の失敗資源だけを保持する。
+            cleanup.release("tuner/CAS") { tunerController.release() }
+            cleanup.release("SI engine") { aribSiEngine.close() }
+        } else {
+            cleanup.retry()
         }
-        release { captionController.close() }
-        release { superimposeController.close() }
-        release { unregisterParentalControlReceiver() }
-        release { casController.close() }
-        release { tunerController.release() }
-        release { aribSiEngine.close() }
-        // 解放未確認のsessionは使用中のまま保持し、EPG scanの受付を開かない。
-        failure?.let { throw it }
-        ChannelScanManager.unregisterLiveSession(appContext)
+        cleanup.requireComplete()
+        ChannelScanManager.unregisterLiveSession(appContext, this)
     }
 
     companion object {
+        internal fun commitPlaybackStartResult(
+            next: PlaybackStartState,
+            accept: (PlaybackStartState) -> Unit,
+            notifyUnavailable: (Int) -> Unit,
+        ) {
+            accept(next)
+            if (next is PlaybackStartState.Failed) notifyUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+        }
+
+        internal fun acceptPlaybackGenerationRestart(
+            current: PlaybackStartState,
+            restart: PlaybackPipeline.PlaybackGenerationRestart,
+            accept: (PlaybackStartState) -> Unit,
+            notifyUnavailable: (Int) -> Unit,
+        ) {
+            if (!PlaybackStartTransitions.acceptsGeneration(current, restart.originGeneration)) return
+            val previousSignature = PlaybackStartTransitions.signature(current) ?: return
+            val signature = if (restart.videoOnly) previousSignature.copy(
+                audioPid = null, audioStreamType = null, audioConfiguration = null,
+            ) else previousSignature
+            val result = restart.result
+            val next = PlaybackStartTransitions.afterRestartResult(
+                current, signature, result.generation, result.firstFramePending,
+                result.startedVideo || result.startedAudio || result.firstFramePending,
+            )
+            commitPlaybackStartResult(next, accept, notifyUnavailable)
+        }
+
         private const val ENABLE_CAS_ORCHESTRATION = true
         const val ACTION_SET_DUAL_MONO_PRESENTATION = "com.maleicacid.tvinput.tis.action.SET_DUAL_MONO_PRESENTATION"
         const val EXTRA_DUAL_MONO_PRESENTATION = "presentation"

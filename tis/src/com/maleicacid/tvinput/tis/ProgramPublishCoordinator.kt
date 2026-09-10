@@ -8,14 +8,22 @@ import com.maleicacid.tvinput.aribsi.ProviderDataBridge
  * TvProvider Programs への反映を公開modeごとに制御する。
  * ライブ更新では既存channelだけを対象にし、同一内容の連続EITは過剰upsertしない。
  */
-class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) {
+class ProgramPublishCoordinator(
+    private val tvProviderWriter: TvProviderWriter,
+    private val nowMillis: () -> Long = System::currentTimeMillis,
+) {
     data class EpgUpdateWindow(
         val serviceKey: ServiceKey,
         val windowStartMs: Long,
         val windowEndMs: Long,
         val validProgramKeys: Set<String>,
         val deletionAuthoritative: Boolean = false,
-    )
+    ) {
+        constructor(window: com.maleicacid.tvinput.aribsi.AribEpgUpdateWindow) : this(
+            window.serviceKey, window.windowStartMillis, window.windowEndMillis,
+            window.validProgramStableIdentities.toSet(), window.deletionAuthoritative,
+        )
+    }
 
     data class ProgramPublishResult(
         val inserted: Int,
@@ -40,7 +48,6 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
     )
 
     private data class DirtyWindow(
-        val window: EpgUpdateWindow,
         val notBeforeMs: Long,
         val failureClass: String,
     )
@@ -80,16 +87,17 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
         allPrograms: List<ProgramRecord>,
         updateWindows: List<EpgUpdateWindow>,
         allowedServiceKeys: Set<ServiceKey>?,
+        verifiedEmptyServiceKeys: Set<ServiceKey> = emptySet(),
     ): ProgramPublishResult {
         if (mode == ChannelScanController.PublishMode.DIAGNOSTIC_ONLY) {
             return ProgramPublishResult(0, 0, skippedUnchanged = allPrograms.size)
         }
         // 再試行区間は公開入口入力の一部である。
-        // これを確認する前に早期returnしてはならない。EPG区間排出API後の
-        // provider失敗で、排出済み区間を失うことを防ぐ。
+        // これを確認する前に早期returnしてはならない。
+        // provider失敗後の再検証要求を通常公開の省略で失うことを防ぐ。
         val retryServiceKeys = dirtyWindows.keys.map { it.serviceKey }
-        val allServiceKeys = (allPrograms.map { it.serviceKey } + updateWindows.map { it.serviceKey } + retryServiceKeys).toSet()
-        if (allPrograms.isEmpty() && updateWindows.isEmpty() && dirtyWindows.isEmpty()) {
+        val allServiceKeys = (allPrograms.map { it.serviceKey } + updateWindows.map { it.serviceKey } + retryServiceKeys + verifiedEmptyServiceKeys).toSet()
+        if (allPrograms.isEmpty() && updateWindows.isEmpty() && dirtyWindows.isEmpty() && verifiedEmptyServiceKeys.isEmpty()) {
             return ProgramPublishResult(0, 0, skippedUnchanged = 0)
         }
         val existingServiceKeys = if (mode == ChannelScanController.PublishMode.LIVE_TUNE_REFRESH || mode == ChannelScanController.PublishMode.BOOT_EPG_SYNC || mode == ChannelScanController.PublishMode.BACKGROUND_CHANNEL_MAINTENANCE) {
@@ -104,19 +112,20 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
             emptySet()
         }
         val allowed = filterServiceKeysForMode(mode, allServiceKeys, existingServiceKeys, allowedServiceKeys)
-        val retryForAllowed = drainRetryWindowsFor(allowed)
+        val verifiedEmptyForAllowed = verifiedEmptyServiceKeys.intersect(allowed)
+        val retryForAllowed = revalidateRetryWindows(allowed, updateWindows)
         val programs = allPrograms
             .filter { it.serviceKey in allowed }
         val windows = (updateWindows + retryForAllowed).distinctBy {
             DirtyWindowKey(it.serviceKey, it.windowStartMs, it.windowEndMs)
         }
             .filter { it.serviceKey in allowed && it.windowEndMs > it.windowStartMs }
-        if (programs.isEmpty() && windows.isEmpty()) return ProgramPublishResult(0, 0, skippedNoChannel = allServiceKeys.size)
+        if (programs.isEmpty() && windows.isEmpty() && verifiedEmptyForAllowed.isEmpty()) return ProgramPublishResult(0, 0, skippedNoChannel = allServiceKeys.size)
         val authoritativeWindows = windows.filter { it.deletionAuthoritative }
-        val eligibleTargetCount = programs.size + authoritativeWindows.size
-        val eligibleTargetServiceKeys = (programs.map { it.serviceKey } + authoritativeWindows.map { it.serviceKey }).toSet()
+        val eligibleTargetCount = programs.size + authoritativeWindows.size + verifiedEmptyForAllowed.size
+        val eligibleTargetServiceKeys = (programs.map { it.serviceKey } + authoritativeWindows.map { it.serviceKey } + verifiedEmptyForAllowed).toSet()
 
-        val publication = runCatching { tvProviderWriter.prepareProgramPublication(programs, windows) }.getOrElse { error ->
+        val publication = runCatching { tvProviderWriter.prepareProgramPublication(programs, windows, verifiedEmptyForAllowed) }.getOrElse { error ->
             enqueueRetryWindows(windows, failureClass = FailureClass.SIGNATURE_BUILD_FAILED)
             return ProgramPublishResult(
                 0,
@@ -125,7 +134,7 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
             )
         }
         val signature = publication.fingerprint
-        if (signature != null && mode != ChannelScanController.PublishMode.BOOT_EPG_SYNC && lastProgramSignatureByMode[mode] == signature) {
+        if (retryForAllowed.isEmpty() && signature != null && mode != ChannelScanController.PublishMode.BOOT_EPG_SYNC && lastProgramSignatureByMode[mode] == signature) {
             return ProgramPublishResult(
                 0,
                 0,
@@ -142,7 +151,12 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
         } else {
             windows.filter { it.serviceKey in failedServiceKeys }
         }
-        val succeededWindows = windows.filter { it.serviceKey in result.succeededServiceKeys && it.serviceKey !in failedServiceKeys }
+        // 通常upsertの成功だけでは、旧要求の廃止行削除が完了したとはいえない。
+        val succeededWindows = if (result.failures.any { it.serviceKey == null }) {
+            emptyList()
+        } else {
+            authoritativeWindows.filter { it.serviceKey in result.succeededServiceKeys && it.serviceKey !in failedServiceKeys }
+        }
         val committedEligibleServiceKeys = if (result.failures.any { it.serviceKey == null }) {
             emptySet()
         } else {
@@ -167,18 +181,20 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
         )
     }
 
-    /**
-     * 次の公開入口用にprocess内再試行区間を返す。
-     * ここではqueueを削除しない。成功時にkeyを削除し、provider失敗時は
-     * 次の入口へ残す。
-     */
-    private fun drainRetryWindowsFor(allowed: Set<ServiceKey>): List<EpgUpdateWindow> {
-        val now = System.currentTimeMillis()
-        return dirtyWindows
-            .filterKeys { it.serviceKey in allowed }
-            .values
-            .filter { it.notBeforeMs <= now }
-            .map { it.window }
+    /** 旧要求区間の全体を現在のauthoritative区間が覆う場合だけ、現在のキーで再試行する。 */
+    private fun revalidateRetryWindows(
+        allowed: Set<ServiceKey>,
+        currentWindows: List<EpgUpdateWindow>,
+    ): List<EpgUpdateWindow> {
+        val now = nowMillis()
+        return dirtyWindows.mapNotNull { (key, request) ->
+            if (key.serviceKey !in allowed || request.notBeforeMs > now) return@mapNotNull null
+            val current = currentWindows.firstOrNull { window ->
+                window.deletionAuthoritative && window.serviceKey == key.serviceKey &&
+                    window.windowStartMs <= key.windowStartMs && window.windowEndMs >= key.windowEndMs
+            } ?: return@mapNotNull null
+            EpgUpdateWindow(key.serviceKey, key.windowStartMs, key.windowEndMs, current.validProgramKeys, true)
+        }
     }
 
     private fun removeRetryWindows(windows: List<EpgUpdateWindow>) {
@@ -206,14 +222,13 @@ class ProgramPublishCoordinator(private val tvProviderWriter: TvProviderWriter) 
     }
 
     private fun enqueueRetryWindows(windows: List<EpgUpdateWindow>, failureClass: String = FailureClass.PROVIDER_UNAVAILABLE) {
-        val now = System.currentTimeMillis()
+        val now = nowMillis()
         windows.sortedWith(compareBy<EpgUpdateWindow> { it.serviceKey.originalNetworkId }.thenBy { it.serviceKey.transportStreamId }.thenBy { it.serviceKey.serviceId }.thenBy { it.windowStartMs }.thenBy { it.windowEndMs })
             .forEach { window ->
                 if (!window.deletionAuthoritative && failureClass == FailureClass.OBSOLETE_DELETE_FAILED) return@forEach
                 val key = DirtyWindowKey(window.serviceKey, window.windowStartMs, window.windowEndMs)
                 dirtyWindows.remove(key)
                 dirtyWindows[key] = DirtyWindow(
-                    window = window,
                     notBeforeMs = now + RETRY_COOLDOWN_MS,
                     failureClass = failureClass,
                 )
