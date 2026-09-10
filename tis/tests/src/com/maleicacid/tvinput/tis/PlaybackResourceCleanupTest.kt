@@ -3,6 +3,42 @@ package com.maleicacid.tvinput.tis
 import org.junit.Test
 
 class PlaybackResourceCleanupTest {
+    @Test fun codecRecoveryIsBoundedAndReclaimedAlwaysTerminates() {
+        check(PlaybackPipeline.codecRecoveryDelay(false, true, false, false) == 0L)
+        check(PlaybackPipeline.codecRecoveryDelay(false, false, true, false) == 100L)
+        check(PlaybackPipeline.codecRecoveryDelay(false, false, false, false) == null)
+        for (recoverable in listOf(false, true)) for (transient in listOf(false, true)) {
+            check(PlaybackPipeline.codecRecoveryDelay(true, recoverable, transient, false) == null)
+            check(PlaybackPipeline.codecRecoveryDelay(false, recoverable, transient, true) == null)
+        }
+    }
+
+    @Test fun audioSinkAttachAndListenerFailureNeverCommitAndTransferCleanupOwnership() {
+        for (failure in listOf("volume", "attach", "listener")) {
+            val calls = mutableListOf<String>()
+            var published = false
+            var cleanupOwned = false
+            val error = runCatching {
+                PlaybackPipeline.prepareAudioSink(
+                    prepare = {
+                        for (step in listOf("volume", "attach", "listener")) {
+                            calls += step
+                            if (step == failure) throw IllegalStateException(step)
+                        }
+                    },
+                    commit = { published = true },
+                    rollback = { cleanupOwned = true },
+                )
+            }.exceptionOrNull()
+            check(error?.message == failure)
+            check(!published && cleanupOwned)
+            check(calls.last() == failure)
+        }
+        val calls = mutableListOf<String>()
+        PlaybackPipeline.prepareAudioSink({ calls += "attached" }, { calls += "committed" }, { error("unexpected rollback") })
+        check(calls == listOf("attached", "committed"))
+    }
+
     @Test fun failedReleaseRetainsResourceAndOtherReleasesStillRunBeforeRetry() {
         val cleanup = ResourceCleanup()
         val calls = mutableListOf<String>()

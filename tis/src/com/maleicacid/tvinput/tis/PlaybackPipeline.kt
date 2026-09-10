@@ -298,7 +298,41 @@ class PlaybackPipeline(
         channel: TunerController.ResolvedChannel,
         selection: TunerController.AvStreamSelection,
     ): StartResult = runOnPlaybackExecutorBlocking {
+        codecRecoveryAttempted = false
         startOnPlaybackExecutor(tuner, channel, selection)
+    }
+
+    private var codecRecoveryAttempted = false
+
+    private fun handleCodecError(error: MediaCodec.CodecException, generation: Long, isAudio: Boolean) {
+        if (generation != playbackGeneration) return
+        val retryDelay = codecRecoveryDelay(error.errorCode == MediaCodec.CodecException.ERROR_RECLAIMED,
+            error.isRecoverable, error.isTransient, codecRecoveryAttempted)
+        val tuner = activeTuner
+        val channel = activeChannel
+        val selection = activeSelection
+        if (retryDelay == null || tuner == null || channel == null || selection == null) {
+            if (isAudio) handleAudioFailure(PlaybackUnavailableReason.AUDIO_UNAVAILABLE, error.diagnosticInfo, channel?.serviceType == SERVICE_TYPE_DIGITAL_AUDIO)
+            else {
+                emitUnavailableForGeneration(generation, PlaybackUnavailableReason.VIDEO_CODEC_ERROR, error.diagnosticInfo)
+                stopOnPlaybackExecutor()
+            }
+            return
+        }
+        codecRecoveryAttempted = true
+        // エラー状態のcodecと、そのcodecに結び付いたfilter/MediaSyncを再利用しない。
+        stopOnPlaybackExecutor()
+        val stoppedGeneration = playbackGeneration
+        val retry = Runnable {
+            enqueuePlaybackAction {
+                if (playbackGeneration != stoppedGeneration) return@enqueuePlaybackAction
+                val restarted = startOnPlaybackExecutor(tuner, channel, selection)
+                onPlaybackGenerationRestarted(PlaybackGenerationRestart(generation, restarted))
+            }
+        }
+        if (!mainHandler.postDelayed(retry, retryDelay)) {
+            emitUnavailable(PlaybackUnavailableReason.VIDEO_CODEC_ERROR, "decoderの再生成を予約できません")
+        }
     }
 
     private fun startOnPlaybackExecutor(
@@ -1010,12 +1044,19 @@ class PlaybackPipeline(
                     }
                     override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
                         enqueuePlaybackAction {
-                            if (generation == playbackGeneration && this@DecoderPipeline.codec === codec) onOutputFormatChanged(format)
+                            if (generation != playbackGeneration || this@DecoderPipeline.codec !== codec) return@enqueuePlaybackAction
+                            try {
+                                onOutputFormatChanged(format)
+                            } catch (error: RuntimeException) {
+                                onDecoderFailure(error)
+                            }
                         }
                     }
                     override fun onError(codec: MediaCodec, error: MediaCodec.CodecException) {
                         enqueuePlaybackAction {
-                            if (generation == playbackGeneration && this@DecoderPipeline.codec === codec) onDecoderFailure(error)
+                            if (generation == playbackGeneration && this@DecoderPipeline.codec === codec) {
+                                handleCodecError(error, generation, this@DecoderPipeline is AudioDecoderPipeline)
+                            }
                         }
                     }
                 }, codecCallbackHandler)
@@ -1116,6 +1157,7 @@ class PlaybackPipeline(
         }
         override fun onDecoderFailure(error: RuntimeException) {
             errorSink(if (error is UnsupportedCodecFormat) PlaybackUnavailableReason.UNSUPPORTED_VIDEO_STREAM else PlaybackUnavailableReason.VIDEO_CODEC_ERROR, error.message.orEmpty())
+            stopOnPlaybackExecutor()
         }
         override fun onCodecConfigTimeout() { errorSink(PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT, "video decoder 構成に必要な ES header が見つかりません") }
         override fun onBackpressureDeadline(detail: String) { errorSink(PlaybackUnavailableReason.VIDEO_CODEC_ERROR, "DECODER_BACKPRESSURE_TIMEOUT $detail") }
@@ -1240,15 +1282,21 @@ class PlaybackPipeline(
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .setContext(requireNotNull(sessionContext) { "sessionContext is required for AudioTrack" })
             val created = builder.build()
-            audioTrack = created
-            created.setVolume(volume)
-            if (isDualMonoStream && !created.setDualMonoMode(audioTrackDualMonoMode(dualMonoPresentation))) {
-                resourceCleanup.release("AudioTrack dual-mono rollback") { created.release() }
-                audioTrack = null
-                throw IllegalStateException("ARIB dual-mono presentationをAudioTrackへ設定できません componentType=$componentType")
-            }
-            requireNotNull(mediaSync).setAudioTrack(created)
-            observeAudioRouting(created, generation)
+            prepareAudioSink(
+                prepare = {
+                    created.setVolume(volume)
+                    check(!isDualMonoStream || created.setDualMonoMode(audioTrackDualMonoMode(dualMonoPresentation))) {
+                        "ARIB dual-mono presentationをAudioTrackへ設定できません componentType=$componentType"
+                    }
+                    requireNotNull(mediaSync).setAudioTrack(created)
+                    observeAudioRouting(created, generation)
+                },
+                commit = { audioTrack = created },
+                rollback = {
+                    // 部分登録したlistenerも既存の所有者へ渡し、音声失敗経路で回収する。
+                    audioTrack = created
+                },
+            )
             maybeStartMediaSync()
         }
 
@@ -1535,6 +1583,23 @@ class PlaybackPipeline(
     override fun close() = release()
 
     companion object {
+        internal fun codecRecoveryDelay(reclaimed: Boolean, recoverable: Boolean, transient: Boolean, attempted: Boolean): Long? =
+            when {
+                reclaimed || attempted -> null
+                transient -> 100L
+                recoverable -> 0L
+                else -> null
+            }
+
+        internal fun prepareAudioSink(prepare: () -> Unit, commit: () -> Unit, rollback: () -> Unit) {
+            try {
+                prepare()
+                commit()
+            } catch (error: RuntimeException) {
+                try { rollback() } catch (cleanup: RuntimeException) { error.addSuppressed(cleanup) }
+                throw error
+            }
+        }
         private fun isAribDualMonoComponentType(componentType: Int?): Boolean = componentType != null && (componentType and 0x1f) == 0x02
         private fun audioTrackDualMonoMode(presentation: DualMonoPresentation): Int = when (presentation) { DualMonoPresentation.MAIN -> AudioTrack.DUAL_MONO_MODE_LL; DualMonoPresentation.SUB -> AudioTrack.DUAL_MONO_MODE_RR; DualMonoPresentation.MAIN_SUB -> AudioTrack.DUAL_MONO_MODE_LR }
         fun isAribDualMonoComponentTypeForTest(componentType: Int?): Boolean = isAribDualMonoComponentType(componentType)

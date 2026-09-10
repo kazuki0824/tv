@@ -560,6 +560,10 @@ eventの宣言descriptor loop長がsection残量を超える場合も、CRCを�
 
 ### LiveSession / PlaybackPipeline / Scan の直列化
 
+非同期 `MediaCodec.Callback.onError()` は現行codec identityと再生generationが一致する場合だけ扱う。AOSP `CodecException` の `ERROR_RECLAIMED` は必ず解放し、回復不能なエラーも旧codecを再利用しない。回復可能なエラーでは既存の全再生generation終了・再生成を使い、transientの場合は100ms後、それ以外のrecoverableの場合は次のexecutor処理で再生成する。自動再生成は外部からの一回のstart要求につき一回までとし、再失敗は音声なら既存のvideo-only新generationへの移行（audio-onlyは再生不能）、映像なら再生不能通知と全generation終了へ渡す。待機中のstop・retune・releaseで再生成予約を無効にする。codec単体の独立した回復state machineや無限の再取得loopは設けない。この回数と待機時間はプロダクトの回復方針であり、CDD/ARIBが規定する値とは扱わない。
+
+AudioTrackの生成、音量・dual-mono設定、MediaSyncへの接続、routing listener登録は一つの初期化として扱い、全て成功した後だけ再生用AudioTrackを確定する。途中例外では生成済みtrackと部分登録listenerを既存cleanup所有者へ渡し、output-format callbackの例外境界から音声失敗処理へ進む。旧generationを終了してAVならvideo-only新generation、audio-onlyなら再生不能へ遷移し、解放失敗は既存ResourceCleanupに保持する。未接続のAudioTrackでcallback処理を継続しない。
+
 `MaleicacidLiveSession` は session-level serial executor を持ち、currentサービス、generation、track state、unblock state、latest videoメタデータ、`ProgramPublishCoordinator`へのアクセスを同一executorに閉じる。AV開始lifecycleはSessionが`Idle / Starting(signature) / WaitingFirstOutput(signature,generation) / Started(signature,generation) / Failed(signature,generation?) / Stopped`のsealed stateを一つだけ所有する。current/pending signature、last attempted/started gate、pipeline generationを並行して保持しない。遷移判定は状態を持たない純粋関数とする。TunerController、PlaybackPipeline、parental receiverのコールバックは直接state mutationせず、session executorにenqueueする。
 
 `PlaybackPipeline` は playback-level serial executor を持ち、`setSurface()`、`setVolume()`、`start()`、`switchAudio()`、`stop()`、`release()` の state mutation を同一 executor に閉じる。filter、block model decoder、MediaSync、MediaSync input Surface、AudioTrack、generation、surface、未返却audio buffer id、availability arm sequenceの変更を呼び出し元スレッドで直接行わない。release後のqueued taskはreleased flagとgenerationで破棄する。

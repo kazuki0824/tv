@@ -758,7 +758,12 @@ fn execute_callback_registration_after_artifact_bridge(
                         cleanup,
                     ),
                 ),
-                (Err(error), _) | (_, Err(error)) => Err(error),
+                (Err(error), _) => Err(error),
+                (Ok(()), Err(cleanup)) => {
+                    // 新登録はcommit済み。失敗batchはstoreに保持され、次回解放時に再試行する。
+                    log::error!("callback登録は成功しましたが旧callbackの解放が保留中です: {cleanup:?}");
+                    Ok(())
+                }
                 (Ok(()), Ok(())) => Ok(()),
             }
         },

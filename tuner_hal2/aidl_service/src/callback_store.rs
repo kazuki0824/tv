@@ -803,6 +803,47 @@ mod tests {
     }
 
     #[test]
+    fn retired_cleanup_failure_keeps_committed_replacement_current() {
+        let mut store = CallbackStore::default();
+        let handle = frontend_handle();
+        let callback = frontend_callback();
+        let old = store.prepare_frontend_callback(handle, &callback).unwrap();
+        store
+            .commit_prepared_callback(handle, AidlApi::FrontendSetCallback, old)
+            .unwrap();
+        let old_generation = store
+            .frontend_callback_for_owner(handle)
+            .unwrap()
+            .generation();
+        let new = store.prepare_frontend_callback(handle, &callback).unwrap();
+        store
+            .commit_prepared_callback(handle, AidlApi::FrontendSetCallback, new)
+            .unwrap();
+        let current_generation = store
+            .frontend_callback_for_owner(handle)
+            .unwrap()
+            .generation();
+        assert_ne!(old_generation, current_generation);
+        let batch = store.take_retired_callbacks().unwrap().unwrap();
+        let (released, result) = store.finish_retired_callbacks(batch, false);
+        assert!(result.is_ok());
+        drop(released);
+        assert_eq!(
+            store.frontend_callback_for_owner(handle).unwrap().generation(),
+            current_generation
+        );
+        assert_eq!(
+            store.prepare_frontend_callback(handle, &callback),
+            Err(AidlCallbackStoreError::RetirementPending)
+        );
+        release_retired(&mut store);
+        assert_eq!(
+            store.frontend_callback_for_owner(handle).unwrap().generation(),
+            current_generation
+        );
+    }
+
+    #[test]
     fn retired_artifact_is_retained_until_explicit_success_and_can_retry() {
         let mut store = CallbackStore::default();
         let handle = frontend_handle();
