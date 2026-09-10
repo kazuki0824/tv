@@ -7,6 +7,83 @@ import org.junit.Test
 class PlaybackStartGateTest {
     private val key = ServiceKey(originalNetworkId = 4, transportStreamId = 0x4010, serviceId = 101)
 
+    @Test fun codecRecoveryCleanupFailureNotifiesOriginalSessionAndRetainsResources() {
+        val signature = signature(TsPid(0x101), TsPid(0x102))
+        for (waiting in listOf(false, true)) for (failedResource in listOf("filter", "decoder", "MediaSync")) {
+            val cleanup = ResourceCleanup()
+            val owned = linkedSetOf("filter", "decoder", "MediaSync")
+            var rejectRelease = true
+            var generation = 7L
+            var contextPresent = true
+            var scheduled = 0
+            var restarted = 0
+            var notifications = 0
+            var state: PlaybackStartState = if (waiting) PlaybackStartState.WaitingFirstOutput(signature, 7L)
+                else PlaybackStartState.Started(signature, 7L)
+            val result = runCatching {
+                PlaybackPipeline.recoverCodecGeneration(
+                    originGeneration = 7L,
+                    stop = {
+                        generation++
+                        contextPresent = false
+                        for (resource in owned.toList()) cleanup.release(resource) {
+                            if (resource == failedResource && rejectRelease) error(resource)
+                            owned.remove(resource)
+                        }
+                        cleanup.requireComplete()
+                        generation
+                    },
+                    schedule = { scheduled++; true },
+                    isCurrent = { it == generation },
+                    restart = { restarted++ },
+                    onUnavailable = {
+                        notifications++
+                        check(it.reason == PlaybackPipeline.PlaybackUnavailableReason.CODEC_RECOVERY_FAILED)
+                        check(it.generation == 7L && it.generation != generation)
+                        check(PlaybackStartTransitions.acceptsGeneration(state, it.generation))
+                        state = PlaybackStartTransitions.failCurrentGeneration(state, it.generation)
+                    },
+                )
+            }
+            check(result.isSuccess && !contextPresent)
+            check(scheduled == 0 && restarted == 0 && notifications == 1)
+            check(state == PlaybackStartState.Failed(signature, 7L))
+            check(cleanup.hasPending && owned == setOf(failedResource))
+            rejectRelease = false
+            cleanup.retry()
+            cleanup.requireComplete()
+            check(owned.isEmpty() && !cleanup.hasPending)
+        }
+    }
+
+    @Test fun codecRecoveryReservationAndDeferredFailureUseOriginAndStaleRetryIsRejected() {
+        for (scenario in listOf("reservation failure", "restart failure", "stale", "success")) {
+            var generation = 7L
+            var pending: (() -> Unit)? = null
+            var restarted = 0
+            val failures = mutableListOf<PlaybackPipeline.PlaybackUnavailable>()
+            PlaybackPipeline.recoverCodecGeneration(
+                originGeneration = 7L,
+                stop = { ++generation },
+                schedule = { pending = it; scenario != "reservation failure" },
+                isCurrent = { it == generation },
+                restart = { restarted++; generation++; if (scenario == "restart failure") error("restart cleanup") },
+                onUnavailable = { failures += it },
+            )
+            if (scenario == "stale") generation++
+            if (scenario != "reservation failure") check(runCatching { requireNotNull(pending).invoke() }.isSuccess)
+            when (scenario) {
+                "reservation failure", "restart failure" -> {
+                    check(failures.single().generation == 7L)
+                    check(failures.single().reason == PlaybackPipeline.PlaybackUnavailableReason.CODEC_RECOVERY_FAILED)
+                    check(restarted == if (scenario == "restart failure") 1 else 0)
+                }
+                "stale" -> check(restarted == 0 && failures.isEmpty())
+                "success" -> check(restarted == 1 && failures.isEmpty())
+            }
+        }
+    }
+
     @Test fun samePidCodecConfigurationChangesRestartButDiagnosticsDoNot() {
         val video = com.maleicacid.tvinput.aribsi.AribElementaryStream(TsPid(0x101), 0x1b, null, null, null,
             codec = "AVC", codecFacts = com.maleicacid.tvinput.aribsi.AribCodecFacts(

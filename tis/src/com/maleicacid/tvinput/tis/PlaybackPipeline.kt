@@ -106,7 +106,7 @@ class PlaybackPipeline(
 
     enum class PlaybackUnavailableReason {
         SURFACE_DETACHED, SURFACE_NOT_SET, VIDEO_FILTER_NOT_STARTED, AUDIO_FILTER_NOT_STARTED,
-        VIDEO_OUTPUT_RENDER_FAILED, VIDEO_CODEC_ERROR, CODEC_CONFIG_TIMEOUT, FIRST_FRAME_TIMEOUT, UNSUPPORTED_VIDEO_STREAM,
+        VIDEO_OUTPUT_RENDER_FAILED, VIDEO_CODEC_ERROR, CODEC_RECOVERY_FAILED, CODEC_CONFIG_TIMEOUT, FIRST_FRAME_TIMEOUT, UNSUPPORTED_VIDEO_STREAM,
         UNSUPPORTED_AUDIO_STREAM, AUDIO_UNAVAILABLE, INVALID_MEDIA_TIMESTAMP, CAS_NO_KEY, UNKNOWN,
     }
 
@@ -320,19 +320,17 @@ class PlaybackPipeline(
             return
         }
         codecRecoveryAttempted = true
-        // エラー状態のcodecと、そのcodecに結び付いたfilter/MediaSyncを再利用しない。
-        stopOnPlaybackExecutor()
-        val stoppedGeneration = playbackGeneration
-        val retry = Runnable {
-            enqueuePlaybackAction {
-                if (playbackGeneration != stoppedGeneration) return@enqueuePlaybackAction
+        recoverCodecGeneration(
+            originGeneration = generation,
+            stop = { stopOnPlaybackExecutor(); playbackGeneration },
+            schedule = { retry -> mainHandler.postDelayed({ enqueuePlaybackAction(retry) }, retryDelay) },
+            isCurrent = { it == playbackGeneration },
+            restart = {
                 val restarted = startOnPlaybackExecutor(tuner, channel, selection)
                 onPlaybackGenerationRestarted(PlaybackGenerationRestart(generation, restarted))
-            }
-        }
-        if (!mainHandler.postDelayed(retry, retryDelay)) {
-            emitUnavailable(PlaybackUnavailableReason.VIDEO_CODEC_ERROR, "decoderの再生成を予約できません")
-        }
+            },
+            onUnavailable = onVideoUnavailable,
+        )
     }
 
     private fun startOnPlaybackExecutor(
@@ -1583,6 +1581,31 @@ class PlaybackPipeline(
     override fun close() = release()
 
     companion object {
+        internal fun recoverCodecGeneration(
+            originGeneration: Long,
+            stop: () -> Long,
+            schedule: (() -> Unit) -> Boolean,
+            isCurrent: (Long) -> Boolean,
+            restart: () -> Unit,
+            onUnavailable: (PlaybackUnavailable) -> Unit,
+        ) {
+            fun failed(error: RuntimeException) {
+                // stopは既にgenerationを更新し得る。Sessionが保持する元世代へ通知する。
+                onUnavailable(PlaybackUnavailable(PlaybackUnavailableReason.CODEC_RECOVERY_FAILED,
+                    error.message.orEmpty(), originGeneration))
+            }
+            try {
+                val stoppedGeneration = stop()
+                check(schedule {
+                    if (isCurrent(stoppedGeneration)) {
+                        try { restart() } catch (error: RuntimeException) { failed(error) }
+                    }
+                }) { "decoderの再生成を予約できません" }
+            } catch (error: RuntimeException) {
+                failed(error)
+            }
+        }
+
         internal fun codecRecoveryDelay(reclaimed: Boolean, recoverable: Boolean, transient: Boolean, attempted: Boolean): Long? =
             when {
                 reclaimed || attempted -> null

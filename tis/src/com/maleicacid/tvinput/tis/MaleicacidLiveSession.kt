@@ -809,6 +809,12 @@ class MaleicacidLiveSession(
             android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "旧generationのplayback unavailableを破棄します reason=${reason.reason} generation=${reason.generation}")
             return
         }
+        if (reason.reason == PlaybackPipeline.PlaybackUnavailableReason.CODEC_RECOVERY_FAILED) {
+            playbackState = PlaybackStartTransitions.failCurrentGeneration(playbackState, reason.generation)
+            beginCaptionPresentationGeneration(-1L, false)
+            notifyVideoUnavailable(mapUnavailableReason(reason))
+            return
+        }
         val audioFailure = reason.reason == PlaybackPipeline.PlaybackUnavailableReason.AUDIO_UNAVAILABLE ||
             reason.reason == PlaybackPipeline.PlaybackUnavailableReason.AUDIO_FILTER_NOT_STARTED ||
             reason.reason == PlaybackPipeline.PlaybackUnavailableReason.UNSUPPORTED_AUDIO_STREAM
