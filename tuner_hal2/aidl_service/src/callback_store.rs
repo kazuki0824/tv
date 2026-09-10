@@ -829,7 +829,10 @@ mod tests {
         assert!(result.is_ok());
         drop(released);
         assert_eq!(
-            store.frontend_callback_for_owner(handle).unwrap().generation(),
+            store
+                .frontend_callback_for_owner(handle)
+                .unwrap()
+                .generation(),
             current_generation
         );
         assert_eq!(
@@ -838,7 +841,10 @@ mod tests {
         );
         release_retired(&mut store);
         assert_eq!(
-            store.frontend_callback_for_owner(handle).unwrap().generation(),
+            store
+                .frontend_callback_for_owner(handle)
+                .unwrap()
+                .generation(),
             current_generation
         );
     }

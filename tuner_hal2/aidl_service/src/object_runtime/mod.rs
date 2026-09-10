@@ -750,28 +750,35 @@ fn execute_callback_registration_after_artifact_bridge(
             let cleanup = context
                 .release_retired_callbacks()
                 .map_err(|error| error.into_hal_error("旧callbackの解放"));
-            match (result, cleanup) {
-                (Err(primary), Err(cleanup)) => Err(
-                    maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
-                        "callback登録後の解放",
-                        primary,
-                        cleanup,
-                    ),
-                ),
-                (Err(error), _) => Err(error),
-                (Ok(()), Err(cleanup)) => {
-                    // 新登録はcommit済み。失敗batchはstoreに保持され、次回解放時に再試行する。
-                    log::error!("callback登録は成功しましたが旧callbackの解放が保留中です: {cleanup:?}");
-                    Ok(())
-                }
-                (Ok(()), Ok(())) => Ok(()),
-            }
+            callback_registration_result_after_cleanup(result, cleanup)
         },
     )
     .map_err(|error| match error {
         ObjectMethodUseCaseBuildError::Runtime(error) => status_from_hal_error(error),
         ObjectMethodUseCaseBuildError::Builder(status) => status,
     })
+}
+
+fn callback_registration_result_after_cleanup(
+    registration: Result<(), HalError>,
+    cleanup: Result<(), HalError>,
+) -> Result<(), HalError> {
+    match (registration, cleanup) {
+        (Err(primary), Err(cleanup)) => Err(
+            maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
+                "callback登録後の解放",
+                primary,
+                cleanup,
+            ),
+        ),
+        (Err(error), _) => Err(error),
+        (Ok(()), Err(cleanup)) => {
+            // 新登録はcommit済み。失敗batchはstoreに保持され、次回解放時に再試行する。
+            log::error!("callback登録成功後の旧callback解放が保留中です: {cleanup:?}");
+            Ok(())
+        }
+        (Ok(()), Ok(())) => Ok(()),
+    }
 }
 
 pub fn execute_frontend_callback_registration_runtime_use_case(
@@ -1142,6 +1149,14 @@ mod tests {
         RuntimeExecutableRequest,
     };
     use maleicacid_tuner_hal2_service_runtime::RuntimeOwnerRelation;
+
+    #[test]
+    fn callback_cleanup_failure_does_not_reverse_committed_success() {
+        let cleanup = HalError::callback_failed("unlinkToDeath", "injected failure");
+        assert!(callback_registration_result_after_cleanup(Ok(()), Err(cleanup)).is_ok());
+        let primary = HalError::callback_failed("linkToDeath", "injected failure");
+        assert!(callback_registration_result_after_cleanup(Err(primary), Ok(())).is_err());
+    }
 
     fn shared_runtime_with_live_object(
         kind: AidlObjectKind,
