@@ -189,7 +189,7 @@ jobs:
             "${production_sources[@]}"
           test_classpath="$production_dir:$TIS_ANDROID_ALL_JAR:$TIS_JUNIT_JAR:$TIS_HAMCREST_JAR:$TIS_KOTLIN_HOME/lib/kotlin-test.jar:$TIS_KOTLIN_HOME/lib/kotlin-test-junit.jar"
           mapfile -d '' -t test_sources < <(
-            find tis/tests/src tis/host_ci/kotlin/stubs/androidx tis/host_ci/kotlin/cas_failure -type f -name '*.kt' -print0 | sort -z
+            find tis/tests/src tis/host_ci/kotlin/stubs/androidx tis/host_ci/kotlin/cas_failure tis/host_ci/kotlin/playback_failure -type f -name '*.kt' -print0 | sort -z
           )
           "$TIS_KOTLIN_HOME/bin/kotlinc" \
             -J-Xmx4g \
@@ -200,6 +200,8 @@ jobs:
             "${test_sources[@]}"
           echo "TIS_KOTLIN_PRODUCTION_DIR=$production_dir" >> "$GITHUB_ENV"
           echo "TIS_KOTLIN_TEST_DIR=$test_dir" >> "$GITHUB_ENV"
+          # 本番/試験Kotlinの型照合後、ホスト実行時だけTunerのnative初期化を省く。
+          javac -d "$test_dir" tis/host_ci/kotlin/playback_failure/android/media/tv/tuner/Tuner.java
 
       - name: ホスト互換Kotlinテストを実行
         shell: bash
@@ -222,8 +224,8 @@ jobs:
             esac
           done
           # 意図しない試験の削除・検出漏れを検知する固定値。クラス追加/削除時に除外一覧と併せて更新する。
-          test "${#discovered_classes[@]}" -eq 33
-          test "${#test_classes[@]}" -eq 30
+          test "${#discovered_classes[@]}" -eq 34
+          test "${#test_classes[@]}" -eq 31
           runtime_classpath="$TIS_KOTLIN_PRODUCTION_DIR:$TIS_KOTLIN_TEST_DIR:$TIS_ANDROID_ALL_JAR:$TIS_JUNIT_JAR:$TIS_HAMCREST_JAR:$TIS_KOTLIN_HOME/lib/kotlin-stdlib.jar:$TIS_KOTLIN_HOME/lib/kotlin-stdlib-jdk7.jar:$TIS_KOTLIN_HOME/lib/kotlin-stdlib-jdk8.jar:$TIS_KOTLIN_HOME/lib/kotlin-test.jar:$TIS_KOTLIN_HOME/lib/kotlin-test-junit.jar"
           java \
             -Xmx4g \
@@ -234,7 +236,7 @@ jobs:
             "${test_classes[@]}" \
             | tee "$RUNNER_TEMP/tis-junit.log"
           # JUnitの成功だけでは試験数の減少を検知できない。試験追加/削除時に差分を確認して同じcommitで更新する。
-          grep --fixed-strings --line-regexp "OK (225 tests)" "$RUNNER_TEMP/tis-junit.log"
+          grep --fixed-strings --line-regexp "OK (231 tests)" "$RUNNER_TEMP/tis-junit.log"
 
   xml-contract:
     runs-on: ubuntu-latest

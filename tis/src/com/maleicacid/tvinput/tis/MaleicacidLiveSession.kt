@@ -420,25 +420,15 @@ class MaleicacidLiveSession(
         }
         playbackState = PlaybackStartState.Starting(signature)
         val result = tunerController.startPlayback(selection)
-        if (result == null) {
-            playbackState = PlaybackStartState.Failed(signature, pipelineGeneration = null)
-            notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
-            return false
-        }
-        beginCaptionPresentationGeneration(result.generation, hasVideo = !audioOnly)
-        onCaptionPlaybackClockChanged()
-        if (result.firstFramePending == true) {
-            playbackState = PlaybackStartState.WaitingFirstOutput(signature, result.generation)
-            return false
-        }
-        val started = if (audioOnly) result.startedAudio else result.startedVideo
-        if (started) {
-            playbackState = PlaybackStartState.Started(signature, result.generation)
-            if (audioOnly) notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY)
-            return true
-        }
-        playbackState = PlaybackStartState.Failed(signature, result.generation)
-        return false
+        val next = if (result == null) PlaybackStartState.Failed(signature, pipelineGeneration = null)
+            else PlaybackStartTransitions.afterRestartResult(
+                playbackState, signature, result.generation, result.firstFramePending,
+                result.firstFramePending || (if (audioOnly) result.startedAudio else result.startedVideo),
+            )
+        commitPlaybackStartResult(next, ::updatePlaybackStartState) { notifyVideoUnavailable(it) }
+        val started = next is PlaybackStartState.Started
+        if (started && audioOnly) notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY)
+        return started
     }
 
     private fun playbackSignatureFor(
@@ -525,18 +515,14 @@ class MaleicacidLiveSession(
                 }
                 val switched = tunerController.switchAudioTrack(selection)
                 if (switched != null && switched.generation >= 0L) {
-                    playbackState = PlaybackStartTransitions.afterRestartResult(
+                    val next = PlaybackStartTransitions.afterRestartResult(
                         playbackState,
                         signature,
                         switched.generation,
                         switched.firstFramePending,
                         switched.switchedAudio,
                     )
-                    beginCaptionPresentationGeneration(
-                        switched.generation,
-                        hasVideo = !PlaybackPolicy.isAudioOnlyService(service.serviceType),
-                    )
-                    onCaptionPlaybackClockChanged()
+                    commitPlaybackStartResult(next, ::updatePlaybackStartState) { notifyVideoUnavailable(it) }
                 }
                 if (switched?.switchedAudio == true) {
                     notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, trackId)
@@ -737,6 +723,16 @@ class MaleicacidLiveSession(
         superimposeController.onPlaybackClockChanged()
     }
 
+    private fun updatePlaybackStartState(next: PlaybackStartState) {
+        playbackState = next
+        if (next is PlaybackStartState.Failed) beginCaptionPresentationGeneration(-1L, false)
+        else beginCaptionPresentationGeneration(
+            PlaybackStartTransitions.pipelineGeneration(next) ?: -1L,
+            hasVideo = PlaybackStartTransitions.signature(next)?.videoPid != null,
+        )
+        onCaptionPlaybackClockChanged()
+    }
+
     private fun handleFirstFrameAvailable(generation: Long) {
         val state = playbackState as? PlaybackStartState.WaitingFirstOutput ?: return
         if (state.pipelineGeneration != generation) return
@@ -764,12 +760,8 @@ class MaleicacidLiveSession(
             playbackState,
             restart,
             accept = { next ->
-                playbackState = next
                 if (restart.videoOnly) audioFallbackDisabled = true
-                if (next is PlaybackStartState.Failed) beginCaptionPresentationGeneration(-1L, false)
-                else beginCaptionPresentationGeneration(restart.result.generation,
-                    hasVideo = PlaybackStartTransitions.signature(next)?.videoPid != null)
-                onCaptionPlaybackClockChanged()
+                updatePlaybackStartState(next)
             },
             notifyUnavailable = { notifyVideoUnavailable(it) },
         )
@@ -803,11 +795,11 @@ class MaleicacidLiveSession(
     }
 
     private fun handlePlaybackUnavailable(reason: PlaybackPipeline.PlaybackUnavailable) {
-        if (reason.generation > 0L && !PlaybackStartTransitions.acceptsGeneration(playbackState, reason.generation)) {
-            android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "旧generationのplayback unavailableを破棄します reason=${reason.reason} generation=${reason.generation}")
+        if (!PlaybackStartTransitions.acceptsUnavailable(playbackState, reason.generation)) {
+            android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "旧世代または失敗確定済みの再生不能通知を破棄します reason=${reason.reason} generation=${reason.generation}")
             return
         }
-        if (reason.reason == PlaybackPipeline.PlaybackUnavailableReason.CODEC_RECOVERY_FAILED) {
+        if (reason.reason == PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED) {
             playbackState = PlaybackStartTransitions.failCurrentGeneration(playbackState, reason.generation)
             beginCaptionPresentationGeneration(-1L, false)
             notifyVideoUnavailable(mapUnavailableReason(reason))
@@ -1148,6 +1140,15 @@ class MaleicacidLiveSession(
     }
 
     companion object {
+        internal fun commitPlaybackStartResult(
+            next: PlaybackStartState,
+            accept: (PlaybackStartState) -> Unit,
+            notifyUnavailable: (Int) -> Unit,
+        ) {
+            accept(next)
+            if (next is PlaybackStartState.Failed) notifyUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+        }
+
         internal fun acceptPlaybackGenerationRestart(
             current: PlaybackStartState,
             restart: PlaybackPipeline.PlaybackGenerationRestart,
@@ -1164,8 +1165,7 @@ class MaleicacidLiveSession(
                 current, signature, result.generation, result.firstFramePending,
                 result.startedVideo || result.startedAudio || result.firstFramePending,
             )
-            accept(next)
-            if (next is PlaybackStartState.Failed) notifyUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+            commitPlaybackStartResult(next, accept, notifyUnavailable)
         }
 
         private const val ENABLE_CAS_ORCHESTRATION = true

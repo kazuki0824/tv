@@ -116,6 +116,10 @@ object PlaybackStartTransitions {
     fun acceptsGeneration(state: PlaybackStartState, generation: Long): Boolean =
         pipelineGeneration(state) == generation
 
+    fun acceptsUnavailable(state: PlaybackStartState, generation: Long): Boolean =
+        (generation <= 0L || acceptsGeneration(state, generation)) &&
+            !(state is PlaybackStartState.Failed && state.pipelineGeneration == generation)
+
     fun failCurrentGeneration(
         state: PlaybackStartState,
         failedGeneration: Long,

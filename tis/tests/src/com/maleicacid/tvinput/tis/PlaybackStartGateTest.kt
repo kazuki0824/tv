@@ -7,6 +7,33 @@ import org.junit.Test
 class PlaybackStartGateTest {
     private val key = ServiceKey(originalNetworkId = 4, transportStreamId = 0x4010, serviceId = 101)
 
+    @Test fun requestedStartAndSwitchResultsCommitBeforeFailureNotification() {
+        val signature = signature(TsPid(0x101), TsPid(0x102))
+        for (next in listOf(
+            PlaybackStartState.Failed(signature, null),
+            PlaybackStartState.Failed(signature, 9L),
+            PlaybackStartState.WaitingFirstOutput(signature, 9L),
+            PlaybackStartState.Started(signature, 9L),
+        )) {
+            var state: PlaybackStartState = PlaybackStartState.Starting(signature)
+            val calls = mutableListOf<String>()
+            MaleicacidLiveSession.commitPlaybackStartResult(next,
+                accept = { state = it; calls += "commit" },
+                notifyUnavailable = {
+                    check(state == next && state is PlaybackStartState.Failed)
+                    check(it == android.media.tv.TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+                    calls += "notify"
+                },
+            )
+            check(state == next)
+            check(calls == if (next is PlaybackStartState.Failed) listOf("commit", "notify") else listOf("commit"))
+            if (PlaybackStartTransitions.pipelineGeneration(next) == 9L) {
+                check(PlaybackStartTransitions.acceptsUnavailable(next, 9L) == (next !is PlaybackStartState.Failed))
+                check(!PlaybackStartTransitions.acceptsUnavailable(next, 7L))
+            }
+        }
+    }
+
     @Test fun failedRestartResultCommitsSessionBeforeNotifyingUnavailable() {
         for (waiting in listOf(false, true)) for (audioOnly in listOf(false, true)) {
             val signature = signature(if (audioOnly) null else TsPid(0x101), TsPid(0x102))
@@ -59,8 +86,8 @@ class PlaybackStartGateTest {
             var state: PlaybackStartState = if (waiting) PlaybackStartState.WaitingFirstOutput(signature, 7L)
                 else PlaybackStartState.Started(signature, 7L)
             val execution = runCatching {
-                PlaybackPipeline.completeCodecFailureAction(7L, onUnavailable = {
-                    check(it.reason == PlaybackPipeline.PlaybackUnavailableReason.CODEC_RECOVERY_FAILED)
+                PlaybackPipeline.completePlaybackFailureAction(7L, onUnavailable = {
+                    check(it.reason == PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED)
                     check(it.generation == 7L && generation != it.generation)
                     check(PlaybackStartTransitions.acceptsGeneration(state, it.generation))
                     state = PlaybackStartTransitions.failCurrentGeneration(state, it.generation)
@@ -114,7 +141,7 @@ class PlaybackStartGateTest {
                     restart = { restarted++ },
                     onUnavailable = {
                         notifications++
-                        check(it.reason == PlaybackPipeline.PlaybackUnavailableReason.CODEC_RECOVERY_FAILED)
+                        check(it.reason == PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED)
                         check(it.generation == 7L && it.generation != generation)
                         check(PlaybackStartTransitions.acceptsGeneration(state, it.generation))
                         state = PlaybackStartTransitions.failCurrentGeneration(state, it.generation)
@@ -151,7 +178,7 @@ class PlaybackStartGateTest {
             when (scenario) {
                 "reservation failure", "restart failure" -> {
                     check(failures.single().generation == 7L)
-                    check(failures.single().reason == PlaybackPipeline.PlaybackUnavailableReason.CODEC_RECOVERY_FAILED)
+                    check(failures.single().reason == PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED)
                     check(restarted == if (scenario == "restart failure") 1 else 0)
                 }
                 "stale" -> check(restarted == 0 && failures.isEmpty())
