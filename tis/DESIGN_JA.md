@@ -574,6 +574,8 @@ MediaSync音声エラー、AudioTrack初期化失敗、音声decoderの入力・
 
 AudioTrackの生成、音量・dual-mono設定、MediaSyncへの接続、routing listener登録は一つの初期化として扱い、全て成功した後だけ再生用AudioTrackを確定する。途中例外では生成済みtrackと部分登録listenerを既存cleanup所有者へ渡し、output-format callbackの例外境界から音声失敗処理へ進む。旧generationを終了してAVならvideo-only新generation、audio-onlyなら再生不能へ遷移し、解放失敗は既存ResourceCleanupに保持する。未接続のAudioTrackでcallback処理を継続しない。
 
+AV・字幕・文字スーパーのFilterも、取得直後から設定・開始を同じ初期化処理で囲む。設定値の構築、configure、startの途中例外と失敗戻り値では、当該Filterのcallback受理用参照を先に外し、停止・解放を試行する。解放失敗は既存ResourceCleanupへ保持し、部分初期化したFilterを未所有のまま失わない。AudioTrackとFilterは同じ準備・確定・巻戻し処理を使用し、資源の所有者を追加しない。
+
 `MaleicacidLiveSession` は session-level serial executor を持ち、currentサービス、generation、track state、unblock state、latest videoメタデータ、`ProgramPublishCoordinator`へのアクセスを同一executorに閉じる。AV開始lifecycleはSessionが`Idle / Starting(signature) / WaitingFirstOutput(signature,generation) / Started(signature,generation) / Failed(signature,generation?) / Stopped`のsealed stateを一つだけ所有する。current/pending signature、last attempted/started gate、pipeline generationを並行して保持しない。遷移判定は状態を持たない純粋関数とする。TunerController、PlaybackPipeline、parental receiverのコールバックは直接state mutationせず、session executorにenqueueする。
 
 `PlaybackPipeline` は playback-level serial executor を持ち、`setSurface()`、`setVolume()`、`start()`、`switchAudio()`、`stop()`、`release()` の state mutation を同一 executor に閉じる。filter、block model decoder、MediaSync、MediaSync input Surface、AudioTrack、generation、surface、未返却audio buffer id、availability arm sequenceの変更を呼び出し元スレッドで直接行わない。release後のqueued taskはreleased flagとgenerationで破棄する。

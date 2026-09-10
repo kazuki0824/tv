@@ -566,26 +566,30 @@ class PlaybackPipeline(
                 }
             }
         }) ?: error("openFilter が null を返しました pid=$pid isAudio=$isAudio")
-        val settingsBuilder = AvSettings.builder(Filter.TYPE_TS, isAudio).setPassthrough(false)
-        if (isAudio) {
-            settingsBuilder.setAudioStreamType(mapAudioStreamType(stream.streamType))
-        } else {
-            settingsBuilder.setVideoStreamType(mapVideoStreamType(stream.streamType))
-        }
-        val config = TsFilterConfiguration.builder().setTpid(pidValue).setSettings(settingsBuilder.build()).build()
-        val configureResult = filter.configure(config)
-        if (configureResult != Tuner.RESULT_SUCCESS) {
-            closeFilter(filter)
-            error("AV filter configure failed result=$configureResult pid=$pid isAudio=$isAudio")
-        }
-        if (isAudio) audioFilter = filter else videoFilter = filter
-        val startResult = filter.start()
-        if (startResult != Tuner.RESULT_SUCCESS) {
-            if (isAudio && audioFilter === filter) audioFilter = null
-            if (!isAudio && videoFilter === filter) videoFilter = null
-            closeFilter(filter)
-            error("AV filter start failed result=$startResult pid=$pid isAudio=$isAudio")
-        }
+        preparePlaybackResource(
+            prepare = {
+                val settingsBuilder = AvSettings.builder(Filter.TYPE_TS, isAudio).setPassthrough(false)
+                if (isAudio) settingsBuilder.setAudioStreamType(mapAudioStreamType(stream.streamType))
+                else settingsBuilder.setVideoStreamType(mapVideoStreamType(stream.streamType))
+                val config = TsFilterConfiguration.builder().setTpid(pidValue).setSettings(settingsBuilder.build()).build()
+                val configureResult = filter.configure(config)
+                check(configureResult == Tuner.RESULT_SUCCESS) {
+                    "AV filter configure failed result=$configureResult pid=$pid isAudio=$isAudio"
+                }
+            },
+            commit = {
+                if (isAudio) audioFilter = filter else videoFilter = filter
+                val startResult = filter.start()
+                check(startResult == Tuner.RESULT_SUCCESS) {
+                    "AV filter start failed result=$startResult pid=$pid isAudio=$isAudio"
+                }
+            },
+            rollback = {
+                if (isAudio && audioFilter === filter) audioFilter = null
+                if (!isAudio && videoFilter === filter) videoFilter = null
+                closeFilter(filter)
+            },
+        )
         filter
     }
 
@@ -648,23 +652,30 @@ class PlaybackPipeline(
                 }
             }
         }) ?: error("openFilter が null を返しました caption pid=$pid")
-        val settings = PesSettings.builder(Filter.TYPE_TS)
-            .setStreamId(if (superimpose) PES_STREAM_ID_PRIVATE_STREAM_2 else PES_STREAM_ID_PRIVATE_STREAM_1)
-            .build()
-        val config = TsFilterConfiguration.builder().setTpid(pidValue).setSettings(settings).build()
-        val configureResult = filter.configure(config)
-        if (configureResult != Tuner.RESULT_SUCCESS) {
-            closeFilter(filter)
-            error("caption PES filter configure failed result=$configureResult pid=$pid")
-        }
-        if (superimpose) superimposeFilter = filter else subtitleFilter = filter
-        val startResult = filter.start()
-        if (startResult != Tuner.RESULT_SUCCESS) {
-            if (superimpose && superimposeFilter === filter) superimposeFilter = null
-            if (!superimpose && subtitleFilter === filter) subtitleFilter = null
-            closeFilter(filter)
-            error("caption PES filter start failed result=$startResult pid=$pid")
-        }
+        preparePlaybackResource(
+            prepare = {
+                val settings = PesSettings.builder(Filter.TYPE_TS)
+                    .setStreamId(if (superimpose) PES_STREAM_ID_PRIVATE_STREAM_2 else PES_STREAM_ID_PRIVATE_STREAM_1)
+                    .build()
+                val config = TsFilterConfiguration.builder().setTpid(pidValue).setSettings(settings).build()
+                val configureResult = filter.configure(config)
+                check(configureResult == Tuner.RESULT_SUCCESS) {
+                    "caption PES filter configure failed result=$configureResult pid=$pid"
+                }
+            },
+            commit = {
+                if (superimpose) superimposeFilter = filter else subtitleFilter = filter
+                val startResult = filter.start()
+                check(startResult == Tuner.RESULT_SUCCESS) {
+                    "caption PES filter start failed result=$startResult pid=$pid"
+                }
+            },
+            rollback = {
+                if (superimpose && superimposeFilter === filter) superimposeFilter = null
+                if (!superimpose && subtitleFilter === filter) subtitleFilter = null
+                closeFilter(filter)
+            },
+        )
         filter
     }
 
@@ -1293,7 +1304,7 @@ class PlaybackPipeline(
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .setContext(requireNotNull(sessionContext) { "sessionContext is required for AudioTrack" })
             val created = builder.build()
-            prepareAudioSink(
+            preparePlaybackResource(
                 prepare = {
                     created.setVolume(volume)
                     check(!isDualMonoStream || created.setDualMonoMode(audioTrackDualMonoMode(dualMonoPresentation))) {
@@ -1634,7 +1645,7 @@ class PlaybackPipeline(
                 else -> null
             }
 
-        internal fun prepareAudioSink(prepare: () -> Unit, commit: () -> Unit, rollback: () -> Unit) {
+        internal fun preparePlaybackResource(prepare: () -> Unit, commit: () -> Unit, rollback: () -> Unit) {
             try {
                 prepare()
                 commit()

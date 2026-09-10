@@ -2,6 +2,7 @@ package com.maleicacid.tvinput.tis
 
 import android.media.MediaSync
 import android.media.tv.tuner.Tuner
+import android.media.tv.tuner.filter.Filter
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
 import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.ServiceKey
@@ -12,6 +13,36 @@ import org.junit.Test
 import sun.misc.Unsafe
 
 class PlaybackFailureCallbacksTest {
+    @Test fun avAndCaptionFilterFactoriesRetainFailedConfigurationAndStartCleanup() {
+        for (kind in listOf("video", "audio", "subtitle", "superimpose")) {
+            for (phase in listOf("configure", "start")) for (failure in listOf(1, 2)) {
+                val fixture = Fixture(false, false, failCleanup = false)
+                val filter = fixture.allocate(Filter::class.java)
+                fun set(name: String, value: Any) { Filter::class.java.getField(name).set(filter, value) }
+                fun count(name: String) = Filter::class.java.getField(name).getInt(filter)
+                Tuner::class.java.getField("nextFilter").set(null, filter)
+                set("${phase}Failure", failure)
+                set("rejectClose", true)
+                val result = if (kind == "video" || kind == "audio") {
+                    fixture.invoke("createAndStartAvFilter", fixture.tuner,
+                        requireNotNull(if (kind == "audio") fixture.selection.audio else fixture.selection.video), kind == "audio")
+                } else {
+                    val stream = AribElementaryStream(TsPid(0x103), 0x06, null, null, null,
+                        isCaption = kind == "subtitle", isSuperimpose = kind == "superimpose")
+                    fixture.invoke("createAndStartCaptionPesFilter", fixture.tuner, stream, "test", kind == "superimpose")
+                }
+                check(result !is Filter)
+                check(count("configurations") == 1 && count("starts") == if (phase == "start") 1 else 0)
+                check(count("closes") == 1 && fixture.cleanup.hasPending)
+                check(PlaybackPipeline::class.java.getDeclaredField("${kind}Filter").apply { isAccessible = true }.get(fixture.pipeline) == null)
+                set("rejectClose", false)
+                fixture.pipeline.stop()
+                check(count("closes") == 2 && !fixture.cleanup.hasPending)
+                Tuner::class.java.getField("nextFilter").set(null, null)
+            }
+        }
+    }
+
     @Test fun mediaSyncAudioFailureRetainsResourcesAndNotifiesOriginalSession() {
         for (waiting in listOf(false, true)) for (audioOnly in listOf(false, true)) {
             val fixture = Fixture(waiting, audioOnly)
@@ -181,10 +212,11 @@ class PlaybackFailureCallbacksTest {
 
         fun set(name: String, value: Any?) { field(name).set(pipeline, value) }
         private fun field(name: String) = PlaybackPipeline::class.java.getDeclaredField(name).apply { isAccessible = true }
-        fun invoke(name: String, vararg args: Any) {
-            val method = PlaybackPipeline::class.java.declaredMethods.single { it.name == name }
+        fun <T> allocate(type: Class<T>): T = type.cast(unsafe.allocateInstance(type))
+        fun invoke(name: String, vararg args: Any): Any? {
+            val method = PlaybackPipeline::class.java.declaredMethods.single { it.name == name || it.name.startsWith("$name-") }
             method.isAccessible = true
-            method.invoke(pipeline, *args)
+            return method.invoke(pipeline, *args)
         }
     }
 }

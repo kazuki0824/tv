@@ -19,7 +19,7 @@ class PlaybackResourceCleanupTest {
             var published = false
             var cleanupOwned = false
             val error = runCatching {
-                PlaybackPipeline.prepareAudioSink(
+                PlaybackPipeline.preparePlaybackResource(
                     prepare = {
                         for (step in listOf("volume", "attach", "listener")) {
                             calls += step
@@ -35,7 +35,7 @@ class PlaybackResourceCleanupTest {
             check(calls.last() == failure)
         }
         val calls = mutableListOf<String>()
-        PlaybackPipeline.prepareAudioSink({ calls += "attached" }, { calls += "committed" }, { error("unexpected rollback") })
+        PlaybackPipeline.preparePlaybackResource({ calls += "attached" }, { calls += "committed" }, { error("unexpected rollback") })
         check(calls == listOf("attached", "committed"))
     }
 
