@@ -147,6 +147,7 @@ data class AribTransport(
     val transportStreamName: String? = null,
     val sdtActual: Boolean = false,
     val remoteControlKeyId: Int? = null,
+    val satelliteFrequencyHz: Long? = null,
 ) {
     val originalNetworkId: Int get() = originalNetwork.value
     val transportStreamId: Int get() = transportStream.value
@@ -509,6 +510,7 @@ data class ServiceRegistrationSnapshot(
     val semanticFactsByServiceKey: Map<ServiceKey, ServiceSemanticFacts>,
     val diagnostics: List<ParserDiagnostic>,
     val eitInstances: List<EitInstanceState> = emptyList(),
+    val networkTransportMetadata: List<AribTransport> = emptyList(),
 )
 
 data class CasDiscoverySnapshot(

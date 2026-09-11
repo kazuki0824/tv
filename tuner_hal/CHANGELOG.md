@@ -1,3 +1,8 @@
+# r51_tuner_hal2_audit_regressions
+
+- frontend/Playback DVR入力排他、ISDB-S dynamic stream-ID readback、scan callback前の`LockedReported`確定、A/V syncのcanonical PCR選択を公開設計へ反映した。
+- AV Filter FMQを所有しないAUDIO/VIDEOと、`min(FMQ容量, 188 * 256)`のPlayback処理予算に資源表を揃え、全object種別の再close結果を実装へ同期した。
+
 # r50eo52
 
 - `FilterDelayHint`の時間起点を未通知`onFilterEvent()` batchの空→非空へ一本化し、Filter FMQ未読残量とは独立であることを明記した。

@@ -357,7 +357,13 @@ class TunerController(
         streamIdDiscovery = operation
         val settings = IsdbsFrontendSettings.builder().setFrequencyLong(seed.frequencyHz.value).build()
         val callback = object : ScanCallback {
-            override fun onLocked() = Unit
+            override fun onLocked() {
+                if (streamIdDiscovery === operation) {
+                    operation.continueAfterLock {
+                        tunerInstance.scan(settings, Tuner.SCAN_TYPE_AUTO, sectionExecutor, this)
+                    }
+                }
+            }
             override fun onUnlocked() = Unit
             override fun onScanStopped() { if (streamIdDiscovery === operation) operation.complete() }
             override fun onProgress(percent: Int) { if (streamIdDiscovery === operation) operation.reportProgress(percent) }
@@ -391,7 +397,7 @@ class TunerController(
         streamIdDiscovery = null
     }
 
-    /** 世代と待機結果を一つに保持する。状態変更はcontroller executor、awaitだけ呼出元。 */
+    /** 世代と待機結果を一つに保持する。callback executorとの共有状態はこのobjectで直列化する。 */
     internal class StreamIdDiscoveryOperation(val generation: Long) {
         private val terminal = CountDownLatch(1)
         private val ids = linkedSetOf<Int>()
@@ -401,29 +407,51 @@ class TunerController(
         private var resourceLossObserved = false
         private var resultCode = Tuner.RESULT_SUCCESS
         private var message = ""
-        val active: Boolean get() = outcome == Outcome.SCANNING
-        val acceptsResourceLoss: Boolean get() = !resourceLossObserved && outcome != Outcome.CANCELLED
-        fun reportIds(values: IntArray) { if (active) values.filterTo(ids) { it in 0..0xfffe } }
+        private var continuationStarted = false
+        val active: Boolean get() = synchronized(this) { outcome == Outcome.SCANNING }
+        val acceptsResourceLoss: Boolean get() = synchronized(this) {
+            !resourceLossObserved && outcome != Outcome.CANCELLED
+        }
+        @Synchronized
+        fun reportIds(values: IntArray) {
+            if (outcome == Outcome.SCANNING) values.filterTo(ids) { it in 0..0xfffe }
+        }
         fun reportProgress(@Suppress("UNUSED_PARAMETER") percent: Int) = Unit // 進捗は停止通知ではない。
+        @Synchronized
         private fun finish(next: Outcome) {
-            if (!active) return
+            if (outcome != Outcome.SCANNING) return
             outcome = next
             terminal.countDown()
         }
         fun complete() { finish(Outcome.STOPPED) }
         fun start(scan: () -> Int) {
+            runScan(scan)
+        }
+        fun continueAfterLock(scan: () -> Int) {
+            val accepted = synchronized(this) {
+                if (outcome != Outcome.SCANNING || continuationStarted) false
+                else {
+                    continuationStarted = true
+                    true
+                }
+            }
+            if (accepted) runScan(scan)
+        }
+        private fun runScan(scan: () -> Int) {
             val result = runCatching(scan)
             val code = result.getOrDefault(Tuner.RESULT_UNKNOWN_ERROR)
             if (result.isFailure || code != Tuner.RESULT_SUCCESS) {
                 startFailed(code, result.exceptionOrNull()?.message ?: "Tuner.scanに失敗しました result=$code")
             }
         }
+        @Synchronized
         fun startFailed(code: Int, detail: String) {
-            if (!active) return
+            if (outcome != Outcome.SCANNING) return
             resultCode = code
             message = detail
             finish(Outcome.START_FAILED)
         }
+        @Synchronized
         fun loseResources() {
             resourceLossObserved = true
             finish(Outcome.LOST)
@@ -438,14 +466,17 @@ class TunerController(
         fun resultWithCleanup(completed: Boolean, cleanup: () -> Unit, diagnose: (Exception) -> Unit): StreamIdDiscoveryResult {
             val result = result(completed)
             try { cleanup() } catch (failure: Exception) {
-                if (!result.resourceLost && outcome != Outcome.START_FAILED) throw failure
+                if (!result.resourceLost && !startFailedOutcome()) throw failure
                 diagnose(failure)
             }
             return result
         }
+        @Synchronized
+        private fun startFailedOutcome(): Boolean = outcome == Outcome.START_FAILED
+        @Synchronized
         fun result(completed: Boolean): StreamIdDiscoveryResult {
             if (!completed) finish(Outcome.TIMED_OUT)
-            check(!active) { "BS探索の終端前に結果を取得できません" }
+            check(outcome != Outcome.SCANNING) { "BS探索の終端前に結果を取得できません" }
             return when (outcome) {
                 Outcome.LOST -> StreamIdDiscoveryResult(false, emptySet(), Tuner.RESULT_UNAVAILABLE, "TUNER_RESOURCE_LOST", generation, true)
                 Outcome.CANCELLED -> StreamIdDiscoveryResult(false, emptySet(), Tuner.RESULT_UNAVAILABLE, "BS scan cancelled", generation)

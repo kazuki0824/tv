@@ -290,12 +290,14 @@ Filter / DVR の `configure()` / `start()` / `stop()` / `flush()` と Record DVR
 | API / 条件 | `OpenUnconfigured` | `ConfiguredStopped` | `Started` | caller-visibleな確定内容 |
 |---|---|---|---|---|
 | `configure(valid same-kind settings)` | 成功 → `ConfiguredStopped` | 成功 → `ConfiguredStopped` | `INVALID_STATE`、状態不変 | `DvrSettings`契約で全fieldを一括validate / commitし、open時queue identity、FMQ read/write position、既存Record Filter relationをconfigureだけで置換・flushしない。record/playback settingsのDVR kind不一致は`INVALID_ARGUMENT`で状態不変 |
-| `start()` | `INVALID_STATE`、状態不変 | 成功 → `Started` | 成功、状態不変 | Record DVRはrecord Filter未attachでもstart自体を成功させ、attachされるまでdata productionがないだけとする。Playback DVRは既存queueを入力としてconsumeを開始する |
+| `start()` | `INVALID_STATE`、状態不変 | 成功 → `Started`。ただしPlayback DVRのowner demuxがfrontendに結合中なら`INVALID_STATE`、状態不変 | 成功、状態不変 | Record DVRはrecord Filter未attachでもstart自体を成功させ、attachされるまでdata productionがないだけとする。Playback DVRはfrontend入力と排他的であり、既存queueを入力としてconsumeを開始する |
 | `stop()` | 成功、状態不変 | 成功、状態不変 | 成功 → `ConfiguredStopped` | Recordは既にcommit済みの未消費Record DVR FMQと`record_output_byte_offset`を維持する。Playbackは未読FMQと`PlaybackConsumeTxn`が保持するprocessing buffer / parse-inject cursorを維持し、再startで継続可能にする。いずれも`stop()`でqueueをflushしない |
 | `flush()`（Record） | `INVALID_STATE`、状態不変 | 成功、lifecycle維持 | `INVALID_STATE`、`Started`維持 | 非開始時だけRecord DVR FMQのclient未消費byte列とRecord-pathの未確定partial / statsを破棄し、Filter relation、queue identity、Filter側`record_output_byte_offset`を維持する |
 | `flush()`（Playback） | `INVALID_STATE`、状態不変 | 成功、lifecycle維持 | 成功、`Started`維持 | `QueueEpochProtocol` / `QueueCleanupUseCase` / `PlaybackConsumeTxn`を通し、新規read commitをfenceして受付済みtokenを完了または取消した後、未読Playback DVR FMQと保持中processing / assembler residualを破棄する。relation、queue identityは維持する |
 
 Record DVRの`attachFilter()` / `detachFilter()`は、Record DVRがLiveであればconfigure前、`ConfiguredStopped`、`Started`のいずれでも受理対象とする。liveかつ同一demux・同一owner・record対応Filterへの初回attachは成功、同一Filterの重複attachは状態不変で成功、登録済みFilterのdetachは成功、未登録の同一Filterのdetachも状態不変で成功とする。Playback DVRに対するattach/detach、foreign owner、別demux、record非対応Filterは`INVALID_ARGUMENT`、同一サービス内で論理閉鎖済みのFilter引数は`INVALID_STATE`とする。relationのprepare / commit / abortとexactly-once route切替は`RecordDvrFilterRelationTxn`だけを正本とする。
+
+各demuxのactive TS入力元はfrontendまたはStarted状態のPlayback DVRの一方だけとする。frontend結合中にPlayback DVRを`start()`する要求、およびPlayback DVR開始中に`setFrontendDataSource()`する要求は、いずれも`INVALID_STATE`で既存relation、DVR lifecycle、queue内容、stream generationを変更しない。Playback DVRを停止した後はfrontendを結合でき、frontendをunbindした後はPlayback DVRを開始できる。この排他判定は`DemuxFrontendSourceTxn`とDVR start transactionのcommit前に同じdemux正本から行う。
 
 `IDvr.setStatusCheckIntervalHint(milliseconds)`はRecord / Playbackの全Live lifecycle状態で受理し、DVR lifecycle、queue内容、relationを変更しない。値0をproduct defaultへの独自resetと解釈せず、受理済みhintを以後のdata/status evaluation cadence決定へ使用する詳細は既存の「`IDvr.setStatusCheckIntervalHint()` 契約」を正とする。
 
@@ -534,7 +536,7 @@ commit前失敗では、成功戻りを返してはならない。commit後clean
 |---|---|---|---|---|
 | クライアント誤用 | 引数不正、owner不一致 | `INVALID_ARGUMENT` | 呼び出し対象のみ | backend/データ経路 failureへ昇格しない |
 
-公開 `close()` の状態別結果は本段落を正とする。`Live` objectへの最初の`close()`は0-S-3Bの`ObjectCloseTxn`へ接続し、logical close確定後は回復用入口を除く通常methodを拒否する。`LogicalClosed+CleanupComplete`では`IFrontend.close()` / `ILnb.close()`は状態を変えず`SUCCESS`、`IDvr.close()` / `IFilter.close()`は`INVALID_STATE`とし、Filterの遅延`releaseAvHandle()`は別の解放台帳操作として扱う。`LogicalClosed+CleanupPending`の再`close()`は`ObjectCloseTxn`のrecovery入口へ接続し、そのtyped resultを公開戻り値へ写像する。`CleanupPending` / `Quarantined`への遷移条件、未完cleanupのretry、authority handoff、reaper移管、quarantine判定は0-S-3Bの`ObjectCloseTxn`を唯一の正本とし、本節では再定義しない。
+公開 `close()` の状態別結果は本段落を正とする。`Live` objectへの最初の`close()`は0-S-3Bの`ObjectCloseTxn`へ接続し、logical close確定後は回復用入口を除く通常methodを拒否する。`LogicalClosed+CleanupComplete`では`IFrontend.close()` / `ILnb.close()`は状態を変えず`SUCCESS`、`IDemux.close()` / `IDescrambler.close()` / `IDvr.close()` / `IFilter.close()`は`INVALID_STATE`とし、Filterの遅延`releaseAvHandle()`は別の解放台帳操作として扱う。`LogicalClosed+CleanupPending`の再`close()`はobject種別を問わず`ObjectCloseTxn`のrecovery入口へ接続し、そのtyped resultを公開戻り値へ写像する。`CleanupPending` / `Quarantined`への遷移条件、未完cleanupのretry、authority handoff、reaper移管、quarantine判定は0-S-3Bの`ObjectCloseTxn`を唯一の正本とし、本節では再定義しない。
 
 
 | 失敗種別 | 例 | 戻り値 | 波及範囲 | 禁止事項 |
@@ -733,23 +735,25 @@ HALは同ABIを`device/src/px4/abi.rs::PTX_GET_LOCK_STATUS`として固定し、
 
 `PTX_SET_CHANNEL`が選局時に内部`check_lock()`を使用する既存動作は維持するが、その一回の成功履歴は後続current statusの代替にしない。transport health（188-byte境界、sync、TEI、continuity、無受信時間等）も`DEMOD_LOCK`/`RF_LOCK`の真値へ写像しない。採用driver commitを変更する場合は、新commitに同等のread-only lock ABIとfailure分離が存在することをproduct integration証跡として更新するまでpx4 `DEMOD_LOCK` capabilityを維持してはならない。
 
-## px4_drv ISDB-S TMCC TSID list 方針
+## ISDB-S dynamic stream-ID readback 方針
 
 product採用px4 driverは、ISDB-Sのcurrent TMCCからtransponder内TSID集合を取得するread-only UAPIとして `PTX_GET_TMCC_TSID_LIST = _IOR(0x8d, 0x0e, struct ptx_tmcc_tsid_list)` を持つ。UAPI payloadはpointer-free / fixed-sizeの `__u32 num; __u16 tsid[12];` とし、`num <= 12`、返却prefixの各TSIDは非0でなければならない。driverは既存 `tc90522_tmcc_get_tsid_s()` を唯一のTMCC authorityとして0..11のslotを読み、確定した非0 TSIDをTMCC slot順でcompactに返す。userspace側に固定BS TSID表または別TMCC parserを正本として持たない。
 
 HALのpx4 device-adaptation層は同ABIを `device/src/px4/abi.rs::PTX_GET_TMCC_TSID_LIST` として固定し、active `FrontendBackendSession` が既に所有するcontrol fdだけからreadbackする。同一exclusive chardevをTSID取得のために再openしてはならない。`num > 12`、compact prefix内の0、ABI shape不整合はfail-closedのbackend I/O/invariant failureとし、値をtruncation・補完・推測しない。driverの `EAGAIN` は「current TMCC list未確定」のtyped pending observation、その他のerrnoはbackend failureとして保持する。非ISDB-Sの `EOPNOTSUPP` を空listへ変換しない。
 
+Linux DVB / earth_pt1は、ISDB-S lock後にactive frontend fdへ`FE_GET_PROPERTY(DTV_STREAM_ID)`を発行し、tc90522 frontendがcurrent TMCCから読み戻した`0..65534`を同一generationのsingleton stream-ID listとして扱う。`NO_STREAM_ID_FILTER`は未確定のtyped pending observationとし、`65535`その他の値域外値をtruncateしない。標準DVB APIは同一RFの全TSID listを返さないため、HALで固定表を補完せず、TISがこのsingletonを最初の明示tune候補としてSIを収集し、NITの衛星分配記述子から同一networkの追加BS周波数/TSID候補を動的に展開する。
+
 このdevice observation自体は公開AIDL capabilityの別名ではない。`FrontendInfo.statusCaps`、`getStatus()`、`getFrontendStatusReadiness()`、scan callbackへ投影する場合は、current frontend generationの正本所有者へcommitした値だけを使用し、公開契約は本書のAOSP frontend status / scan契約に従う。VTS/profile tooling、TIS、host resolverがpx4 ioctlを直接呼ぶ経路は設けない。
 
-### px4 ISDB-S `STREAM_ID_LIST` / `INPUT_STREAM_IDS` 公開契約
+### ISDB-S `STREAM_ID_LIST` / `INPUT_STREAM_IDS` 公開契約
 
-px4 ISDB-S frontendは、上記TMCC TSID readbackをproductionで利用できる構成に限り `FrontendInfo.statusCaps`へ `FrontendStatusType::STREAM_ID_LIST` をadvertiseする。px4 ISDB-T、Linux DVB、または同readbackを持たないbackendへこのcapabilityを横展開しない。公開listはcurrent frontend generationでdemod lock成立後にdriver TMCCから取得し `FrontendRuntime`へcommitした同一の非0 16-bit TSID列だけを正とし、固定表、前generation、別frontend、tune request中のselectorをlistの代用品にしない。
+px4およびLinux DVB / earth_pt1のISDB-S frontendは、上記readbackをproductionで利用できる構成に限り `FrontendInfo.statusCaps`へ `FrontendStatusType::STREAM_ID_LIST` をadvertiseする。ISDB-Tまたはreadbackを持たないbackendへこのcapabilityを横展開しない。公開listはcurrent frontend generationでdemod lock成立後にdriverから取得し `FrontendRuntime`へcommitしたTSID列だけを正とする。px4はTMCCのcompactな全list、Linux DVB / earth_pt1はcurrent TMCCから得たsingletonであり、固定表、前generation、別frontend、tune request中のselectorをlistの代用品にしない。
 
 `getFrontendStatusReadiness(STREAM_ID_LIST)` は、未広告frontendでは `UNSUPPORTED`、current tune/scan generationが進行中でlist未確定なら `UNSTABLE`、current generationがlockedかつlist commit済みの場合だけ `STABLE` とする。操作外、lock loss後、stop/close/failure後は `UNAVAILABLE` とする。`getStatus(STREAM_ID_LIST)` はcommit済みlistがある場合だけそのlistを返し、advertise済みだがcurrent list未確定の場合に空配列を観測済み値として捏造せず、既存getStatus契約どおり要求全体を `UNAVAILABLE` とする。
 
 listはgeneration変更、lock loss、scan candidate遷移、`stopTune()` / `stopScan()`、close、backend/fatal failureで失効させる。失効後の旧listを新generationのreadinessまたはstatusへ再利用しない。
 
-ISDB-S scanでcurrent locked candidateのTMCC listをauthoritativeに取得・commitできた場合は、同一listを `FrontendScanMessageType::INPUT_STREAM_IDS` / 対応union tagとして、そのcandidateの `LOCKED(isLocked=true)` より先に配送する。TMCC readbackが `EAGAIN` pendingの間は固定値・空listを生成せず、`INPUT_STREAM_IDS` のためだけに `LOCKED` を遅延・失敗させない。pendingのままcandidate lockが成立した場合は追加messageを省略して既存の最低保証 `LOCKED` 契約を維持し、追加message専用の第二scan state machineを設けない。
+ISDB-S scanでcurrent locked candidateのstream-ID listをauthoritativeに取得・commitできた場合は、同一listを `FrontendScanMessageType::INPUT_STREAM_IDS` / 対応union tagとして、そのcandidateの `LOCKED(isLocked=true)` より先に配送する。lock成立後のreadbackは最大6回、各試行間20 msで同じscan worker内から観測する。typed pendingの間は固定値・空listを生成せず、6回目でもpendingなら追加messageを省略して既存の最低保証`LOCKED`を配送する。公開callbackへ入る前にcanonical scan sessionを`LockedReported`へcommitし、callbackからの同一`scan(K)`再入が確実に継続要求として判定されるようにする。追加message専用の第二scan state machineを設けない。
 
 tune中はlock後の既存worker監視周期でpendingを再観測してよいが、pendingだけをtune failureへ昇格させない。`EAGAIN`以外のdriver/I/O failureは空listや正常pendingへ丸めず、既存backend failure契約へ接続する。VTS/profile toolingはこの値を得るためにpx4 ioctlを直接呼ばずpublic AIDLを試験する。
 
@@ -1058,6 +1062,8 @@ AV sync hardware ID は `filter_id & 0xffff` のような media filter ID の単
 
 
 AV filterを対応宣言する demux は AOSP の `getAvSyncHwId(Filter)` と `getAvSyncTime(int)` の契約に沿って A/V sync ID と 90kHz timestamp を返す。`getAvSyncHwId(media filter)` は AV filter 固有IDではなく、対応する PCR filter ID を返す。section、PES、record、閉鎖済み filter、対応する PCR filter が存在しない media filter には契約に従った失敗を返す。
+
+同一demuxで複数PCR filterがconfigure済みの場合は、liveなPCR filter IDの最小値をcanonical hardware sync IDとし、全media filterをその一つへmany-to-oneで関連付ける。より小さいPCR filterの追加時は全media relationを同じtransaction候補内で付け替え、canonical PCRのclose/unregister時は次に小さいlive PCRへ付け替える。これによりfilter登録順からA/V clockを決めず、同一demuxに複数の暗黙clock domainを作らない。
 
 `getAvSyncHwId()` は、対象 media filter に対応する PCR filter が configure 済みであれば、PCR 観測前でもその PCR filter ID を返す。PCR 観測済みかどうかを sync ID 返却の前提にしない。PCR 未観測状態は `getAvSyncTime(id)` の戻り値側で未確定値として表現する。
 
@@ -1538,7 +1544,7 @@ PES filterは、外形検証の後に`stream_id`で通常optional-header構文�
 
 - Filter / SharedFilter の producer drain は 0-S-3B の `FilterProducerDrainGate`、DVR の queue epoch / transaction token は `QueueEpochProtocol`、Filter / DVR `flush()` の共通 cleanup orchestration は `QueueCleanupUseCase` を唯一の正本とする。本節では対象 domain、公開結果、資源要求だけを定め、内部 state、permit / token、phase、commit / rollback を再定義しない。
 - demux、型別filter、DVRの個数とbyte予算は、frontend/backend/電源、demux base、main type別filter/FMQ、PES、AV、playback/record DVR、worker/callback/reaper/cleanup共有枠の`CapabilityClosure`ごとに原子的に検証・予約する。各閉包の失敗は、その閉包を必要とする能力だけを非公開にし、依存しないfrontend、filter種別、DVR種別へ波及させない。選択済み閉包を合成した後、query/openの同一性、`numDemux`、`filterCaps`、用途別個数、全byte台帳の横断不変条件を一括検証し、変更不能な`CapabilitySnapshot`として確定する。PES assemblerは全ての有効な明示PES `streamId` 0..255とwildcard `0xFFFF`を同じPES閉包で扱い、宣言長ありPESと映像stream IDの長さ0 PESを`MAX_PES_BUFFER_BYTES`および`pesRuntimeBudgetBytes`内で保持する。Tuner VTSは別途起動前環境へ結び付け、入力元、PID、経路、queue容量、memory予算が定義されるまで`DESIGN_HOLD_VTS_ENVIRONMENT_UNDECLARED`とする。
-- AVの共有方式とイベント固有方式は、同じ実行時台帳を共有する。各filterでは`CapabilitySnapshot.avPerFilterLiveBytes`、サービス全体では`CapabilitySnapshot.avRuntimeBudgetBytes`を未解放payloadバイト数の上限とし、イベントの実サイズだけを割り当てる。`openFilter(type, bufferSize, cb)`の`bufferSize`はFMQ容量として別に予約する。固定スロット数や1 MiB単位をAOSPまたはコーデック上限として規範化せず、使用中の割り当てを追い出さない。
+- AVの共有方式とイベント固有方式は、同じ実行時台帳を共有する。各filterでは`CapabilitySnapshot.avPerFilterLiveBytes`、サービス全体では`CapabilitySnapshot.avRuntimeBudgetBytes`を未解放payloadバイト数の上限とし、イベントの実サイズだけを割り当てる。AUDIO/VIDEO Filterは通常Filter FMQを所有せず、`openFilter(type, bufferSize, cb)`の`bufferSize`をFMQ byte台帳へ予約しない。固定スロット数や1 MiB単位をAOSPまたはコーデック上限として規範化せず、使用中の割り当てを追い出さない。
 - ARIB STD-B10 5.13-E1 Part 2 5.2.4〜5.2.17・Part 3 5.1.1〜5.1.3を表ごとのsection上限1021/4093の根拠とし、STD-B32 3.11-E1 Fascicle 3 Chapter 3 3.1をPES構文、Fascicle 1 Chapter 5 5.1.1・Attachment 2 Chapter 5 5.1・Attachment 5 Chapter 5 5.1.1を製品対象video PESのPTS明示、Fascicle 2 Chapter 5.2.2をMPEG-2 AAC LC ADTSのsampling frequencyと1 raw-data-block/frameというexact frame duration、Fascicle 2 Attachment Chapter 2 2.1をaudioでは特定境界の先頭frameにPTSを要求するだけで全PESへの明示保証ではないことの証拠本文とする。Fascicle 3がoptional PES headerを委ねるITU-T H.222.0 2.4.3.7は、audio PTSが当該PES内で開始する最初のaudio access unitへ対応することの根拠とする。B32を4093の独立した上限根拠として使用しない。B25は公式英訳6.7-E1全文を精読基準とするが、`開発規則.md` のproduct-level invariantどおり、Part 1 §4.9の受信機システム最小鍵組容量は本製品全体として恒久的に適合対象外とし、同条項への適合を宣言しない。STD-B25デコード能力は、対応するPart・方式・payload処理と、物理tuner/backend復号経路ごとの実鍵組数、実PID数、pool共有単位、枯渇時の`UNAVAILABLE`を製品profileの事実として定義する。AOSPに公開欄は追加せず、session間で共有する同じ内部台帳で受付と解放を強制する。
 - 対象ドライバーと上流Linuxの証跡は、AOSP契約とは独立した根拠として扱う。
 
@@ -1597,11 +1603,11 @@ ARIB依存の規範主張は、**現行日本語版の版番号**と、**今回�
 | LIVE_DEMUX | サービス全体 | 8 | `CapabilitySnapshot`の値 | 0 | なし | 呼び出し側指定のFMQ容量はsnapshotの`fmqRuntimeBudgetBytes`から別transactionで予約する。 |
 | FILTER_TS | サービス全体 | 32 | `CapabilitySnapshot`の値 | 0 | なし | 呼び出し側指定のFMQ容量はsnapshotの`fmqRuntimeBudgetBytes`から別transactionで予約する。 |
 | FILTER_SECTION | サービス全体 | 8 | `CapabilitySnapshot`の値 | 0 | なし | FMQ容量に加え、各公開filterについて1個のtarget metadataと256-bit（32 byte）の配送済みbitmapをSECTION閉包から予約する。section payloadは逐次配送し、table全体のpayload領域を別途予約しない。 |
-| FILTER_AUDIO | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | FMQの`bufferSize`とは別に、実payloadをsnapshotの`avPerFilterLiveBytes`と`avRuntimeBudgetBytes`から割り当てる。物理領域の起動時先取りはしない。 |
-| FILTER_VIDEO | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | FMQの`bufferSize`とは別に、実payloadをsnapshotの`avPerFilterLiveBytes`と`avRuntimeBudgetBytes`から割り当てる。物理領域の起動時先取りはしない。 |
+| FILTER_AUDIO | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | 通常Filter FMQは所有しない。実payloadをsnapshotの`avPerFilterLiveBytes`と`avRuntimeBudgetBytes`から割り当て、物理領域は起動時に先取りしない。 |
+| FILTER_VIDEO | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | 通常Filter FMQは所有しない。実payloadをsnapshotの`avPerFilterLiveBytes`と`avRuntimeBudgetBytes`から割り当て、物理領域は起動時に先取りしない。 |
 | FILTER_PES | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | demux当たり1 | 有効な明示`streamId 0..255`とwildcard `0xFFFF`を同じPES capabilityで扱う。宣言長ありPESは宣言長+6 byteをPES実行時台帳からclaimし、映像`0xE0..0xEF`の長さ0 PESは`MAX_PES_BUFFER_BYTES`と同台帳の上限内で組み立てる。stream ID別の非公開capabilityを設けない。 |
 | FILTER_PCR | サービス全体 | 4 | `CapabilitySnapshot`の値 | 0 | なし | PCRは通常payload FMQを持たず、`openFilter()`の`bufferSize`を`fmqRuntimeBudgetBytes`から予約しない。固定資源にはstatus callbackとA/V sync / PCR clockに必要なgeneration-local state（`PcrClockAnchor`等）を含む。 |
-| DVR_PLAYBACK | サービス全体 | 8 | `CapabilitySnapshot`の値 | 0 | demux当たり1 | configure時にFMQと同容量の処理中バッファーをsnapshotの2台帳から同時予約する。`VtsEnvironmentProfile`が`UNBOUND`ならXML、モジュール、試験シナリオを選択しない。 |
+| DVR_PLAYBACK | サービス全体 | 8 | `CapabilitySnapshot`の値 | 0 | demux当たり1 | open時に全FMQ容量をFMQ台帳から予約し、configure時の処理中バッファーは`min(FMQ容量, 188 * 256)`だけをplayback処理台帳から予約する。`VtsEnvironmentProfile`が`UNBOUND`ならXML、モジュール、試験シナリオを選択しない。 |
 | DVR_RECORD | サービス全体 | 8 | `CapabilitySnapshot`の値 | 0 | demux当たり1 | `VtsEnvironmentProfile`が`UNBOUND`ならXML、モジュール、試験シナリオを選択しない。`BOUND`なら宣言済み静的設定のキュー容量だけを原子的に予約する。 |
 
 ### AV割り当て
@@ -1609,7 +1615,7 @@ ARIB依存の規範主張は、**現行日本語版の版番号**と、**今回�
 | 項目 | 値 | 範囲 | 設計根拠 | 動作 |
 |---|---|---|---|---|
 | transport_profile | DUAL_SHARED_PLUS_EVENT_LOCAL | AV filterの世代ごと | AOSPの`MediaEvent`とJNIの二重表現 | 共有領域とイベント専用領域は同じ実行時バイト台帳を使用する。 |
-| fmq_byte_budget | `openFilter(type, bufferSize, cb)`の`bufferSize` | filterの世代ごと | AOSP open要求 | FMQ容量としてだけ予約する。AV payload領域の上限または裏付けに流用しない。 |
+| fmq_byte_budget | 0 | AV filterの世代ごと | AVは通常Filter FMQを所有しない | `openFilter()`の`bufferSize`は入力として検証するがFMQを生成・予約しない。AV payloadはfilter/serviceのlive byte budgetだけから割り当てる。 |
 | filter_live_byte_budget | `CapabilitySnapshot.avPerFilterLiveBytes` | AV filterの世代ごと | 起動前に検証済みの製品メモリー予算 | 当該filterの未解放payload合計上限とする。FMQ領域とは別に数える。0ならAV能力を公開しない。 |
 | service_live_byte_budget | `CapabilitySnapshot.avRuntimeBudgetBytes` | サービスインスタンス | 起動前に検証済みの製品メモリー予算 | 起動時に物理領域を先取りせず、全AV filterの未解放実サイズ合計を上限以下に保つ。 |
 | allocation_size | イベントの実payloadバイト数 | 割り当てごと | MediaEvent payload | filter別残量とサービス全体残量の両方に収まる場合だけ正確なサイズを確保する。 |

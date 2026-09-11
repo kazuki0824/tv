@@ -82,6 +82,16 @@ impl DemuxFrontendSourceTxn {
                     | FrontendRuntimeState::Tuning { .. }
                     | FrontendRuntimeState::Scanning { .. } => {}
                 }
+                if runtime
+                    .registry
+                    .demux_runtime(self.demux_id)
+                    .is_some_and(DemuxRuntime::has_started_playback_dvr)
+                {
+                    return Err(HalError::invalid_state(
+                        HalInvalidStateKind::InvalidLifecycle,
+                        "demux cannot bind a frontend while its Playback DVR is started",
+                    ));
+                }
                 if runtime.registry.frontend_bound_to_demux(self.demux_id) == Some(next_frontend_id)
                 {
                     let generation = runtime

@@ -1491,6 +1491,28 @@ impl TunerServiceRuntime {
 
     pub(crate) fn transact_start_dvr_runtime(&mut self, dvr_id: i32) -> Result<(), HalError> {
         let owner_demux_id = self.owner_demux_id_for_dvr(dvr_id)?;
+        let dvr_snapshot = self
+            .registry
+            .demux_runtime(DemuxRuntimeId(owner_demux_id))
+            .ok_or_else(|| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "owner demux runtime is missing",
+                )
+            })?
+            .dvr_snapshot(dvr_id)
+            .map_err(Self::map_dvr_runtime_error)?;
+        if dvr_snapshot.kind == DvrKind::Playback
+            && self
+                .registry
+                .frontend_bound_to_demux(DemuxRuntimeId(owner_demux_id))
+                .is_some()
+        {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "Playback DVR cannot start while its demux is bound to a frontend",
+            ));
+        }
         let Some(demux_runtime) = self
             .registry
             .demux_runtime_mut(DemuxRuntimeId(owner_demux_id))

@@ -1,3 +1,9 @@
+# r51_tuner_hal2_audit_regressions
+
+- demuxのfrontend入力とStarted Playback DVR入力を相互排他にし、拒否時に既存relation・DVR状態を維持する。A/V sync relationは同一demuxの最小live PCR IDへ決定的に集約する。
+- scan lock stateをcallback前にcommitし、pending stream-ID readbackを同一workerで有限再観測する。px4のTMCC全listに加え、Linux DVB / earth_pt1は標準`FE_GET_PROPERTY(DTV_STREAM_ID)`からcurrent TSID singletonを公開する。
+- 回帰試験を追加。ローカル環境にcargoがないためRust compile/test、Android/Soong、実機earth_pt1/px4/実放送波は未実施。
+
 # r51_pr91_review_callback_failure_order
 
 - Frontendのscan/event配送失敗処理に残っていたstore→runtimeの逆順をruntime→storeへ修正する。旧登録の診断とruntime lock汚染時の診断は所有者lockを解放してから記録する。

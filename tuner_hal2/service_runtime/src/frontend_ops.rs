@@ -275,7 +275,7 @@ impl FrontendTuneScanTxn {
             let mut guard = runtime.lock().map_err(|_| {
                 HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned while accepting TMCC stream IDs",
+                    "service runtime lock poisoned while accepting frontend stream IDs",
                 )
             })?;
             if guard
@@ -328,7 +328,7 @@ impl FrontendTuneScanTxn {
             FrontendOperationEvent::StreamIdList { .. } => {
                 return Err(HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "TMCC stream-ID event escaped its canonical state-commit path",
+                    "frontend stream-ID event escaped its canonical state-commit path",
                 ));
             }
         };

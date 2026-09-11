@@ -51,18 +51,13 @@ impl AvSyncRegistry {
             return Err("PCR filter id must be non-negative");
         }
         self.pcr_filter_ids.insert(filter_id);
-        let unbound_media = self
-            .media_filter_ids
-            .iter()
-            .copied()
-            .filter(|media_filter_id| {
-                !self
-                    .hw_sync_id_by_media_filter_id
-                    .contains_key(media_filter_id)
-            })
-            .collect::<Vec<_>>();
-        for media_filter_id in unbound_media {
-            self.bind_media_filter(media_filter_id, filter_id);
+        let canonical_hw_sync_id = self.pcr_filter_ids.first().copied().ok_or(
+            "registered PCR filter must establish a canonical hardware sync id",
+        )?;
+        let media_filter_ids = self.media_filter_ids.iter().copied().collect::<Vec<_>>();
+        for media_filter_id in media_filter_ids {
+            self.remove_media_relation(media_filter_id);
+            self.bind_media_filter(media_filter_id, canonical_hw_sync_id);
         }
         Ok(())
     }
@@ -168,5 +163,29 @@ mod tests {
         registry.commit(remove);
         assert_eq!(registry.hw_sync_id_for_media_filter(10), None);
         assert_eq!(registry.hw_sync_id_for_media_filter(11), Some(4));
+    }
+
+    #[test]
+    fn smallest_live_pcr_is_the_single_demux_clock_for_every_media_filter() {
+        let mut registry = AvSyncRegistry::default();
+        for pcr_filter_id in [9, 4, 7] {
+            let prepared = registry
+                .prepare_register_pcr_filter(pcr_filter_id)
+                .unwrap();
+            registry.commit(prepared);
+        }
+        for media_filter_id in [10, 11] {
+            let prepared = registry
+                .prepare_register_media_filter(media_filter_id)
+                .unwrap();
+            registry.commit(prepared);
+        }
+        assert_eq!(registry.hw_sync_id_for_media_filter(10), Some(4));
+        assert_eq!(registry.hw_sync_id_for_media_filter(11), Some(4));
+
+        let remove = registry.prepare_unregister_filter(4);
+        registry.commit(remove);
+        assert_eq!(registry.hw_sync_id_for_media_filter(10), Some(7));
+        assert_eq!(registry.hw_sync_id_for_media_filter(11), Some(7));
     }
 }

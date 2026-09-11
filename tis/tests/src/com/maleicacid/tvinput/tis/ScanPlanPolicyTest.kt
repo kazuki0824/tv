@@ -1,6 +1,8 @@
 package com.maleicacid.tvinput.tis
 
+import com.maleicacid.tvinput.aribsi.AribTransport
 import com.maleicacid.tvinput.common.FrequencyHz
+import com.maleicacid.tvinput.common.NetworkId16
 import com.maleicacid.tvinput.common.StreamSelectorType
 import com.maleicacid.tvinput.common.TransportStreamId16
 import kotlin.test.Test
@@ -9,6 +11,34 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class ScanPlanPolicyTest {
+
+    @Test
+    fun bsLockContinuesTheSameScanExactlyOnceAndWaitsForStopped() {
+        val operation = TunerController.StreamIdDiscoveryOperation(25L)
+        var continuationCalls = 0
+        operation.reportIds(intArrayOf(16400))
+        repeat(2) {
+            operation.continueAfterLock {
+                continuationCalls++
+                android.media.tv.tuner.Tuner.RESULT_SUCCESS
+            }
+        }
+        assertEquals(1, continuationCalls)
+        assertFalse(operation.await(1))
+        operation.complete()
+        assertTrue(operation.await(1))
+        assertEquals(setOf(16400), operation.result(true).streamIds)
+    }
+
+    @Test
+    fun bsContinuationFailureIsTerminalAndKeepsTheFailureCode() {
+        val operation = TunerController.StreamIdDiscoveryOperation(26L)
+        operation.continueAfterLock { android.media.tv.tuner.Tuner.RESULT_UNAVAILABLE }
+        assertTrue(operation.await(1))
+        val result = operation.result(true)
+        assertFalse(result.success)
+        assertEquals(android.media.tv.tuner.Tuner.RESULT_UNAVAILABLE, result.resultCode)
+    }
 
     @Test
     fun bsStartFailureSurvivesCleanupFailureAndRetainsOwnerForRetry() {
@@ -197,6 +227,19 @@ class ScanPlanPolicyTest {
         assertTrue(bs.isNotEmpty())
         assertTrue(bs.all { it.streamSelector.type == StreamSelectorType.NONE })
         assertTrue(bs.all { it.backendHint == JapanIsdbScanPlan.BS_DISCOVERY_BACKEND_HINT })
+        assertEquals((1..23 step 2).toList(), bs.mapNotNull { it.physicalChannel })
+    }
+
+    @Test
+    fun bsNitSatelliteFrequencyExpandsDynamicTsidCandidates() {
+        val transports = listOf(
+            AribTransport(NetworkId16(4), TransportStreamId16(16400), satelliteFrequencyHz = 11_727_480_000L),
+            AribTransport(NetworkId16(4), TransportStreamId16(16401), satelliteFrequencyHz = 11_727_480_000L),
+            AribTransport(NetworkId16(6), TransportStreamId16(0x6020), satelliteFrequencyHz = 12_291_000_000L),
+        )
+        val candidates = JapanIsdbScanPlan.explicitBsCandidatesFromNit(transports)
+        assertEquals(listOf(16400, 16401), candidates.mapNotNull { it.streamSelector.value })
+        assertTrue(candidates.all { it.physicalChannel == 1 && it.frequencyHz.value == 1_049_480_000L })
     }
 
     @Test

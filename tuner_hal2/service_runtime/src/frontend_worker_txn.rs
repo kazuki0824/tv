@@ -28,7 +28,7 @@ use maleicacid_tuner_hal2_device::{
     FrontendBackendSession, FrontendBackendSubmitFailure, FrontendBackendSubmitTicket,
     FrontendBackendSubmitWait, FrontendBackendTunePlan, FrontendLivePumpJoinOutcome,
     FrontendLivePumpOwner, FrontendScanPhase, FrontendSignalState,
-    FrontendTmccPartialReceptionObservation, FrontendTmccTsidListObservation,
+    FrontendStreamIdListObservation, FrontendTmccPartialReceptionObservation,
     FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
     FrontendWorkerStartError, FrontendWorkerStopOutcome, FrontendWorkerStopPoll,
     FrontendWorkerStopTicket,
@@ -54,6 +54,9 @@ pub type FrontendTuneNotifier =
 
 pub type FrontendScanNotifier =
     Arc<dyn Fn(i32, u64, FrontendScanNotification) -> Result<(), HalError> + Send + Sync + 'static>;
+
+const SCAN_STREAM_ID_OBSERVATION_ATTEMPTS: usize = 6;
+const SCAN_STREAM_ID_RETRY_INTERVAL_MS: u64 = 20;
 
 fn deliver_committed_tune_notification(
     runtime: &SharedRuntime,
@@ -97,6 +100,40 @@ fn deliver_committed_scan_notification(
         | crate::frontend_ops::FrontendOperationEventAcceptance::AcceptedCallbackFailure
         | crate::frontend_ops::FrontendOperationEventAcceptance::DiscardedStale => Ok(()),
     }
+}
+
+fn commit_and_deliver_frontend_scan_lock(
+    runtime: &SharedRuntime,
+    notifier: &FrontendScanNotifier,
+    frontend_id: i32,
+    generation: u64,
+    stream_ids: Option<Vec<i32>>,
+) -> Result<(), HalError> {
+    {
+        let mut guard = lock_runtime(
+            runtime,
+            "service runtime lock poisoned while committing scan lock",
+        )?;
+        guard
+            .frontend_txn()
+            .mark_frontend_scan_session_locked_reported(frontend_id, generation)?;
+    }
+    if let Some(stream_ids) = stream_ids {
+        deliver_committed_scan_notification(
+            runtime,
+            notifier,
+            frontend_id,
+            generation,
+            FrontendScanNotification::InputStreamIds(stream_ids),
+        )?;
+    }
+    deliver_committed_scan_notification(
+        runtime,
+        notifier,
+        frontend_id,
+        generation,
+        FrontendScanNotification::Locked,
+    )
 }
 
 fn finish_frontend_worker_execution(
@@ -2212,7 +2249,7 @@ fn record_frontend_tune_lock_qualification(
     Ok(true)
 }
 
-fn frontend_uses_tmcc_stream_id_list(
+fn frontend_uses_dynamic_stream_id_list(
     runtime: &SharedRuntime,
     frontend_id: i32,
 ) -> Result<bool, HalError> {
@@ -2226,10 +2263,42 @@ fn frontend_uses_tmcc_stream_id_list(
             "frontend registry entry is missing while checking TMCC stream-id support",
         )
     })?;
-    Ok(
-        entry.backend == FrontendBackendKind::Px4CharDevice
-            && entry.system == FrontendSystem::IsdbS,
-    )
+    Ok(entry.system == FrontendSystem::IsdbS)
+}
+
+fn observe_stream_id_list_with_retry<Observe, Wait, Cancelled>(
+    attempts: usize,
+    mut observe: Observe,
+    mut wait: Wait,
+    cancelled: Cancelled,
+) -> Result<Option<Vec<u16>>, HalError>
+where
+    Observe: FnMut() -> Result<FrontendStreamIdListObservation, HalError>,
+    Wait: FnMut() -> Result<(), HalError>,
+    Cancelled: Fn() -> bool,
+{
+    if attempts == 0 {
+        return Err(HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "stream-ID observation requires at least one attempt",
+        ));
+    }
+    for attempt in 0..attempts {
+        if cancelled() {
+            return Ok(None);
+        }
+        match observe()? {
+            FrontendStreamIdListObservation::Available(stream_ids) => {
+                return Ok(Some(stream_ids));
+            }
+            FrontendStreamIdListObservation::Pending if attempt + 1 < attempts => wait()?,
+            FrontendStreamIdListObservation::Pending => return Ok(None),
+        }
+    }
+    Err(HalError::internal(
+        HalInternalKind::InvariantViolation,
+        "stream-ID observation exhausted without a terminal decision",
+    ))
 }
 
 fn observe_and_record_frontend_stream_id_list(
@@ -2238,14 +2307,15 @@ fn observe_and_record_frontend_stream_id_list(
     session: &FrontendBackendSession,
     frontend_id: i32,
     generation: u64,
+    observation_attempts: usize,
 ) -> Result<Option<Vec<i32>>, HalError> {
-    if !frontend_uses_tmcc_stream_id_list(runtime, frontend_id)? || ctx.cancel_requested() {
+    if !frontend_uses_dynamic_stream_id_list(runtime, frontend_id)? || ctx.cancel_requested() {
         return Ok(None);
     }
     {
         let guard = lock_runtime(
             runtime,
-            "service runtime lock poisoned while checking committed TMCC stream IDs",
+            "service runtime lock poisoned while checking committed stream IDs",
         )?;
         if guard
             .query()
@@ -2256,8 +2326,22 @@ fn observe_and_record_frontend_stream_id_list(
             return Ok(None);
         }
     }
-    let FrontendTmccTsidListObservation::Available(stream_ids) =
-        session.observe_tmcc_tsid_list()?
+    let Some(stream_ids) = observe_stream_id_list_with_retry(
+        observation_attempts,
+        || session.observe_stream_id_list(),
+        || {
+            let deadline = Instant::now()
+                .checked_add(Duration::from_millis(SCAN_STREAM_ID_RETRY_INTERVAL_MS))
+                .ok_or_else(|| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "stream-ID retry deadline overflowed",
+                    )
+                })?;
+            ctx.wait_until(Some(deadline))
+        },
+        || ctx.cancel_requested(),
+    )?
     else {
         return Ok(None);
     };
@@ -2476,6 +2560,7 @@ fn run_frontend_backend_tune_session_worker(
                     &session,
                     frontend_id,
                     generation,
+                    1,
                 )?;
                 if !record_frontend_tune_lock_qualification(&runtime, ctx, frontend_id, generation)?
                 {
@@ -2528,6 +2613,7 @@ fn run_frontend_backend_tune_session_worker(
                     &session,
                     frontend_id,
                     generation,
+                    1,
                 )?;
             }
             match frontend_lock_transition(lock_announced, signal_state, qualification) {
@@ -3596,6 +3682,7 @@ fn run_frontend_backend_scan_session_worker(
                         &session,
                         ctx.frontend_id(),
                         ctx.generation(),
+                        SCAN_STREAM_ID_OBSERVATION_ATTEMPTS,
                     )?;
                 }
                 FrontendLockWaitOutcome::NoSignal | FrontendLockWaitOutcome::Cancelled => {}
@@ -3607,29 +3694,13 @@ fn run_frontend_backend_scan_session_worker(
             return Ok(());
         }
         if signal_state == FrontendSignalState::Locked {
-            if let Some(stream_ids) = locked_stream_ids {
-                deliver_committed_scan_notification(
-                    &runtime,
-                    &scan_notifier,
-                    ctx.frontend_id(),
-                    ctx.generation(),
-                    FrontendScanNotification::InputStreamIds(stream_ids),
-                )?;
-            }
-            deliver_committed_scan_notification(
+            commit_and_deliver_frontend_scan_lock(
                 &runtime,
                 &scan_notifier,
                 ctx.frontend_id(),
                 ctx.generation(),
-                FrontendScanNotification::Locked,
+                locked_stream_ids,
             )?;
-            let mut guard = lock_runtime(
-                &runtime,
-                "service runtime lock poisoned while recording scan lock delivery",
-            )?;
-            guard
-                .frontend_txn()
-                .mark_frontend_scan_session_locked_reported(ctx.frontend_id(), ctx.generation())?;
             return Ok(());
         }
         let mut guard = lock_runtime(
@@ -4973,5 +5044,124 @@ fn close_frontend_workers_and_live_data_with_sink(
                 "frontend worker ownership transferred to the reaper",
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod scan_contract_tests {
+    use super::*;
+    use crate::boot::{FrontendProbeOutcome, ServiceBootOutcome};
+    use crate::registry::{
+        FrontendCapabilitySnapshot, FrontendRuntimeId, FrontendScalarCapability,
+        SatellitePowerTopology,
+    };
+    use std::collections::VecDeque;
+
+    #[test]
+    fn pending_stream_id_list_is_reobserved_within_the_same_scan_worker() {
+        let mut observations = VecDeque::from([
+            FrontendStreamIdListObservation::Pending,
+            FrontendStreamIdListObservation::Pending,
+            FrontendStreamIdListObservation::Available(vec![0x4010, 0x4011]),
+        ]);
+        let mut wait_calls = 0;
+        let result = observe_stream_id_list_with_retry(
+            SCAN_STREAM_ID_OBSERVATION_ATTEMPTS,
+            || Ok(observations.pop_front().expect("observation must exist")),
+            || {
+                wait_calls += 1;
+                Ok(())
+            },
+            || false,
+        )
+        .unwrap();
+        assert_eq!(result, Some(vec![0x4010, 0x4011]));
+        assert_eq!(wait_calls, 2);
+    }
+
+    #[test]
+    fn locked_phase_is_committed_before_the_callback_can_reenter() {
+        let frontend_id = 1_000_001;
+        let mut service = TunerServiceRuntime::new();
+        assert_eq!(
+            service.boot_from_probe_results([FrontendProbeOutcome::Available {
+                id: FrontendRuntimeId(frontend_id),
+                backend: FrontendBackendKind::Px4CharDevice,
+                system: FrontendSystem::IsdbS,
+                path: "/dev/px4video0".into(),
+                lnb_profile: Some(crate::registry::LnbRegistryProfile::Px4Device15VOnly),
+                satellite_power_topology: SatellitePowerTopology::InternalFixed15V,
+                capability: FrontendCapabilitySnapshot {
+                    scalar: FrontendScalarCapability {
+                        min_frequency_hz: 1_049_480_000,
+                        max_frequency_hz: 2_053_000_000,
+                        min_symbol_rate: 28_860_000,
+                        max_symbol_rate: 28_860_000,
+                        acquire_range_hz: 0,
+                    },
+                    exclusive_group_id: 0x1000_0000,
+                    isdbt_segment: None,
+                },
+            }]),
+            ServiceBootOutcome::Ready,
+        );
+        let request = FrontendTuneRequest {
+            system: FrontendSystem::IsdbS,
+            frequency: 1_049_480_000,
+            end_frequency: None,
+            stream_id: None,
+            stream_id_kind: None,
+            bandwidth_hz: None,
+            symbol_rate: Some(28_860_000),
+            isdbt_layer_settings: Vec::new(),
+            partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+        };
+        let generation = service
+            .frontend_txn()
+            .prepare_frontend_worker_replacement_generation(frontend_id, FrontendWorkerKind::Scan)
+            .unwrap();
+        service
+            .frontend_txn()
+            .fence_frontend_worker_replacement_generation(frontend_id, generation)
+            .unwrap();
+        service
+            .frontend_txn()
+            .commit_frontend_scan_after_fence(
+                frontend_id,
+                generation,
+                "same-scan".to_string(),
+                vec![request],
+            )
+            .unwrap();
+
+        let runtime = Arc::new(Mutex::new(service));
+        let callback_runtime = Arc::clone(&runtime);
+        let observed_phase = Arc::new(Mutex::new(None));
+        let callback_phase = Arc::clone(&observed_phase);
+        let notifier: FrontendScanNotifier = Arc::new(move |_, _, notification| {
+            if notification == FrontendScanNotification::Locked {
+                let phase = callback_runtime
+                    .lock()
+                    .unwrap()
+                    .query()
+                    .frontend_runtime_snapshot(frontend_id)?
+                    .scan_session
+                    .map(|session| session.phase());
+                *callback_phase.lock().unwrap() = phase;
+            }
+            Ok(())
+        });
+        commit_and_deliver_frontend_scan_lock(
+            &runtime,
+            &notifier,
+            frontend_id,
+            generation,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            *observed_phase.lock().unwrap(),
+            Some(FrontendScanPhase::LockedReported),
+        );
     }
 }

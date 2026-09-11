@@ -91,6 +91,7 @@ class NativeAribSiParser : AutoCloseable {
             semanticFactsByServiceKey = snapshot.serviceSemanticFacts.associateBy { it.serviceKey },
             diagnostics = snapshot.parserDiagnostics,
             eitInstances = snapshot.eitInstances,
+            networkTransportMetadata = snapshot.transportSemanticFacts,
         )
     }
 
@@ -240,6 +241,7 @@ class NativeAribSiParser : AutoCloseable {
             )
         }
     private fun optIntOrNull(obj: JSONObject, key: String): Int? = if (obj.isNull(key)) null else obj.optInt(key)
+    private fun optLongOrNull(obj: JSONObject, key: String): Long? = if (obj.isNull(key)) null else obj.optLong(key)
     private fun optStringOrNull(obj: JSONObject, key: String): String? =
         if (obj.isNull(key)) null else obj.getString(key).takeIf { it.isNotBlank() }
     private fun optBoolOrNull(obj: JSONObject, key: String): Boolean? = if (obj.isNull(key)) null else obj.optBoolean(key)
@@ -323,6 +325,7 @@ class NativeAribSiParser : AutoCloseable {
             transportStreamName = if (obj.isNull("transportStreamName")) null else obj.getString("transportStreamName"),
             sdtActual = obj.getBoolean("sdtActual"),
             remoteControlKeyId = optIntOrNull(obj, "remoteControlKeyId"),
+            satelliteFrequencyHz = optLongOrNull(obj, "satelliteFrequencyHz"),
         )
     }
 

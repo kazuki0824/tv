@@ -2058,6 +2058,13 @@ impl DemuxRuntime {
             .ok_or(DemuxRuntimeError::dvr_missing(dvr_id))
     }
 
+    pub fn has_started_playback_dvr(&self) -> bool {
+        self.dvrs.values().any(|dvr| {
+            dvr.kind() == DvrKind::Playback
+                && dvr.state() == super::dvr::DvrRuntimeState::Started
+        })
+    }
+
     pub(crate) fn restore_dvr_snapshot(
         &mut self,
         dvr_id: i32,

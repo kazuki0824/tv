@@ -154,8 +154,7 @@ pub fn lnb_profile_supports_voltage_status(profile: Option<LnbRegistryProfile>) 
 }
 
 fn stream_id_list_supported(snapshot: ObjectFrontendStatusSnapshot) -> bool {
-    snapshot.backend == FrontendBackendKind::Px4CharDevice
-        && snapshot.system == FrontendSystem::IsdbS
+    snapshot.system == FrontendSystem::IsdbS
 }
 
 fn object_frontend_status_value(
@@ -949,7 +948,7 @@ mod tests {
     }
 
     #[test]
-    fn stream_id_readiness_is_stable_only_after_px4_satellite_tmcc_commit() {
+    fn stream_id_readiness_is_stable_only_after_satellite_readback_commit() {
         let px4_satellite = ObjectFrontendStatusSnapshot {
             backend: FrontendBackendKind::Px4CharDevice,
             system: FrontendSystem::IsdbS,
@@ -991,6 +990,20 @@ mod tests {
             Ok(ObjectFrontendStatusValue::StreamIdList(vec![
                 0x4010, 0x4011
             ]))
+        );
+
+        let earth_satellite = ObjectFrontendStatusSnapshot {
+            backend: FrontendBackendKind::LinuxDvb,
+            lnb_profile: Some(LnbRegistryProfile::EarthPt1FixedLnb),
+            ..px4_satellite
+        };
+        assert_eq!(
+            object_frontend_status_value(
+                earth_satellite,
+                ObjectFrontendStatusType::StreamIdList,
+                Some(&[0x4010]),
+            ),
+            Ok(ObjectFrontendStatusValue::StreamIdList(vec![0x4010]))
         );
     }
 

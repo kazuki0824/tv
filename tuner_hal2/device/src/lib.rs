@@ -17,7 +17,7 @@ pub use runtime::{
     FrontendRuntime, FrontendRuntimeSnapshot, FrontendRuntimeState, FrontendScanPhase,
     FrontendScanSession, FrontendScanTerminalReason, FrontendSignalState, FrontendTerminalEvent,
     FrontendTerminalEventKind, FrontendTerminalEventReason,
-    FrontendTmccPartialReceptionObservation, FrontendTmccTsidListObservation,
+    FrontendStreamIdListObservation, FrontendTmccPartialReceptionObservation,
     FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerDetachedJoin,
     FrontendWorkerKind, FrontendWorkerRegistry, FrontendWorkerStartError,
     FrontendWorkerStopOutcome, FrontendWorkerStopPoll, FrontendWorkerStopTicket,

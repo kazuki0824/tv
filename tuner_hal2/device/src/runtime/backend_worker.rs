@@ -18,8 +18,9 @@ use super::thread_result_owner::{ThreadResultOwner, ThreadResultPoll};
 use super::tune_txn::{BackendTuneOps, BackendTuneOutcome, BackendTuneStep, BackendTuneTxn};
 use crate::dvb;
 use crate::dvb::abi::{
-    DtvProperties, DtvProperty, DTV_CLEAR, FE_HAS_CARRIER, FE_HAS_LOCK, FE_READ_STATUS,
-    FE_SET_PROPERTY, FE_SET_VOLTAGE, SEC_VOLTAGE_13, SEC_VOLTAGE_18, SEC_VOLTAGE_OFF,
+    DtvProperties, DtvProperty, DTV_CLEAR, DTV_STREAM_ID, FE_GET_PROPERTY, FE_HAS_CARRIER,
+    FE_HAS_LOCK, FE_READ_STATUS, FE_SET_PROPERTY, FE_SET_VOLTAGE, NO_STREAM_ID_FILTER,
+    SEC_VOLTAGE_13, SEC_VOLTAGE_18, SEC_VOLTAGE_OFF,
 };
 use crate::px4;
 use crate::px4::abi::{
@@ -83,7 +84,11 @@ pub enum FrontendTmccPartialReceptionObservation {
     Available(bool),
 }
 
-pub type FrontendTmccTsidListObservation = Px4TmccTsidListObservation;
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FrontendStreamIdListObservation {
+    Pending,
+    Available(Vec<u16>),
+}
 
 pub struct FrontendBackendSession {
     kind: FrontendBackendSessionKind,
@@ -217,23 +222,46 @@ impl FrontendBackendSession {
         ))
     }
 
-    pub fn observe_tmcc_tsid_list(&self) -> Result<FrontendTmccTsidListObservation, HalError> {
-        let FrontendBackendSessionKind::Px4 { control_path } = &self.kind else {
-            return Err(HalError::Unsupported(
-                "TMCC TSID list readback is available only on px4",
-            ));
-        };
-        let mut raw = PtxTmccTsidList::default();
-        let read = ioctl_ptr(
-            "px4",
-            Some(control_path.as_path().to_path_buf()),
-            self.file.as_raw_fd(),
-            PTX_GET_TMCC_TSID_LIST,
-            &mut raw,
-            "PTX_GET_TMCC_TSID_LIST",
-        )
-        .and_then(|()| decode_tmcc_tsid_list(control_path, raw));
-        classify_tmcc_tsid_read(read)
+    pub fn observe_stream_id_list(&self) -> Result<FrontendStreamIdListObservation, HalError> {
+        match &self.kind {
+            FrontendBackendSessionKind::Px4 { control_path } => {
+                let mut raw = PtxTmccTsidList::default();
+                let read = ioctl_ptr(
+                    "px4",
+                    Some(control_path.as_path().to_path_buf()),
+                    self.file.as_raw_fd(),
+                    PTX_GET_TMCC_TSID_LIST,
+                    &mut raw,
+                    "PTX_GET_TMCC_TSID_LIST",
+                )
+                .and_then(|()| decode_tmcc_tsid_list(control_path, raw));
+                classify_tmcc_tsid_read(read).map(|observation| match observation {
+                    Px4TmccTsidListObservation::Pending => {
+                        FrontendStreamIdListObservation::Pending
+                    }
+                    Px4TmccTsidListObservation::Available(stream_ids) => {
+                        FrontendStreamIdListObservation::Available(stream_ids)
+                    }
+                })
+            }
+            FrontendBackendSessionKind::Dvb { frontend_path } => {
+                let mut property = DtvProperty::with_data(DTV_STREAM_ID, NO_STREAM_ID_FILTER);
+                let mut properties = DtvProperties {
+                    num: 1,
+                    props: &mut property as *mut DtvProperty,
+                };
+                ioctl_ptr(
+                    "dvb",
+                    Some(frontend_path.as_path().to_path_buf()),
+                    self.file.as_raw_fd(),
+                    FE_GET_PROPERTY,
+                    &mut properties,
+                    "FE_GET_PROPERTY(DTV_STREAM_ID)",
+                )?;
+                let stream_id = property.read_data_unaligned();
+                classify_dvb_stream_id_read(frontend_path, stream_id)
+            }
+        }
     }
 
     pub fn open_live_reader(
@@ -1247,6 +1275,27 @@ fn classify_tmcc_partial_reception_read(
     }
 }
 
+fn classify_dvb_stream_id_read(
+    path: &FrontendDevicePath,
+    stream_id: u32,
+) -> Result<FrontendStreamIdListObservation, HalError> {
+    if stream_id == NO_STREAM_ID_FILTER {
+        return Ok(FrontendStreamIdListObservation::Pending);
+    }
+    if stream_id > u32::from(u16::MAX - 1) {
+        return Err(HalError::Io {
+            backend: "dvb",
+            operation: "FE_GET_PROPERTY(DTV_STREAM_ID)",
+            path: Some(path.as_path().to_path_buf()),
+            errno: None,
+            detail: HalErrorDetail::new(format!(
+                "driver returned an invalid ISDB-S stream id: {stream_id}"
+            )),
+        });
+    }
+    Ok(FrontendStreamIdListObservation::Available(vec![stream_id as u16]))
+}
+
 fn px4_signal_state_from_readback(
     result: Result<bool, HalError>,
 ) -> Result<FrontendSignalState, HalError> {
@@ -1362,6 +1411,23 @@ mod tests {
                 errno: None,
                 ..
             })
+        ));
+    }
+
+    #[test]
+    fn dvb_stream_id_readback_is_a_dynamic_singleton_or_pending() {
+        let path = FrontendDevicePath::new("/dev/dvb/adapter0/frontend0");
+        assert_eq!(
+            classify_dvb_stream_id_read(&path, 0x4010),
+            Ok(FrontendStreamIdListObservation::Available(vec![0x4010]))
+        );
+        assert_eq!(
+            classify_dvb_stream_id_read(&path, NO_STREAM_ID_FILTER),
+            Ok(FrontendStreamIdListObservation::Pending)
+        );
+        assert!(matches!(
+            classify_dvb_stream_id_read(&path, u32::from(u16::MAX)),
+            Err(HalError::Io { backend: "dvb", .. })
         ));
     }
 

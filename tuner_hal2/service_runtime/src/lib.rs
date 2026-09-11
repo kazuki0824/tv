@@ -1239,6 +1239,92 @@ mod tests {
             .any(|record| record.kind() == StartupDiagnosticKind::DuplicateFrontendId));
     }
 
+    fn configured_playback_dvr(runtime: &mut TunerServiceRuntime, demux_id: i32) -> i32 {
+        let dvr = runtime.allocate_dvr_runtime(demux_id).unwrap();
+        runtime
+            .register_demux_dvr_runtime(
+                demux_id,
+                dvr.id.0,
+                &OpenDvrRequest {
+                    kind: DvrOpenKind::Playback,
+                    buffer_size: 8192,
+                },
+                true,
+            )
+            .unwrap();
+        runtime
+            .configure_dvr_runtime_request(
+                dvr.id.0,
+                DvrConfigureRequest {
+                    kind: DvrConfigureKind::Playback,
+                    status_mask: 0,
+                    low_threshold_bytes: 0,
+                    high_threshold_bytes: 0,
+                    data_format: DvrDataFormat::Ts,
+                    packet_size: 188,
+                },
+            )
+            .unwrap();
+        dvr.id.0
+    }
+
+    #[test]
+    fn playback_dvr_start_is_rejected_while_frontend_is_the_demux_source() {
+        let mut runtime = TunerServiceRuntime::new();
+        runtime.boot_from_probe_results([available(
+            1_000_000,
+            FrontendBackendKind::Px4CharDevice,
+            FrontendSystem::IsdbT,
+            "/dev/px4video0",
+            None,
+        )]);
+        let demux = runtime.allocate_demux_runtime().unwrap();
+        runtime
+            .set_demux_frontend_data_source(demux.id.0, 1_000_000)
+            .unwrap();
+        let dvr_id = configured_playback_dvr(&mut runtime, demux.id.0);
+
+        assert!(matches!(
+            runtime.transact_start_dvr_runtime(dvr_id),
+            Err(HalError::InvalidState { .. })
+        ));
+        assert!(!runtime
+            .registry()
+            .demux_runtime(demux.id)
+            .unwrap()
+            .has_started_playback_dvr());
+    }
+
+    #[test]
+    fn frontend_bind_is_rejected_until_started_playback_dvr_stops() {
+        let mut runtime = TunerServiceRuntime::new();
+        runtime.boot_from_probe_results([available(
+            1_000_000,
+            FrontendBackendKind::Px4CharDevice,
+            FrontendSystem::IsdbT,
+            "/dev/px4video0",
+            None,
+        )]);
+        let demux = runtime.allocate_demux_runtime().unwrap();
+        let dvr_id = configured_playback_dvr(&mut runtime, demux.id.0);
+        runtime.transact_start_dvr_runtime(dvr_id).unwrap();
+
+        assert!(matches!(
+            runtime.set_demux_frontend_data_source(demux.id.0, 1_000_000),
+            Err(HalError::InvalidState { .. })
+        ));
+        assert_eq!(runtime.registry().frontend_bound_to_demux(demux.id), None);
+
+        runtime.transact_stop_dvr_runtime(dvr_id).unwrap();
+        runtime
+            .set_demux_frontend_data_source(demux.id.0, 1_000_000)
+            .unwrap();
+        assert_eq!(
+            runtime.registry().frontend_bound_to_demux(demux.id),
+            Some(FrontendRuntimeId(1_000_000))
+        );
+    }
+
     #[test]
     fn demux_frontend_data_source_binds_and_live_sink_reaches_demux_runtime() {
         use std::sync::{Arc, Mutex};
