@@ -22,7 +22,7 @@ TvProvider の channel internal provider data には JSON v1 `tune.streamIdType`
 
 製品scanの選局対象、周波数帯、CATV中心周波数、VHF除外、BS/CS110 selector境界を含む規範値は、tv直下の`開発規則.md`の「製品 scan 候補の規範値」を唯一の設計正本とする。
 
-TISの物理候補表は製品scan実装データのSSOTであり、`開発規則.md`の規範値に従うBS01〜BS23の奇数12 RF候補を保持する。BS setup/rescanは物理RFごとにstream selector未指定の`IsdbsFrontendSettings`でAOSP `Tuner.scan()`を実行し、`ScanCallback.onInputStreamIdsReported()`で得たcurrent stream IDをtyped `STREAM_ID` explicit tune candidateへ変換する。最初の明示候補でSIを収集した後は、`arib_si_engine_rs`がNITの衛星分配記述子から返すdownlink周波数をBS局発周波数10,678 MHzでIFへ変換し、同じNIT transportのTSIDを追加候補として重複なく走査する。HAL callbackが全TSIDを返すことや固定TSID表を前提にせず、未知の周波数、値域外TSID、CS110周波数をBS候補へ読み替えない。候補を実際にtuneした後、PAT/NIT/SDT actualからONID/TSID/SIDとcurrent transportを確認できたserviceだけを登録・公開する。driver固有slotまたはlegacy数値域への写像はTuner HALへ委ねる。
+TISの物理候補表は製品scan実装データのSSOTであり、`開発規則.md`の規範値に従うRF候補を唯一保持する。BS setup/rescanは物理RFごとにstream selector未指定の`IsdbsFrontendSettings`でAOSP `Tuner.scan()`を実行し、`ScanCallback.onInputStreamIdsReported()`で得たcurrent stream IDだけをtyped `STREAM_ID` explicit tune candidateへ変換する。fallback可否と将来の能力設定条件は、`開発規則.md`の「製品 scan 候補の規範値」に従い、TIS側では独立に定義しない。既存候補表はRF列挙に使用する。候補を実際にtuneした後、PAT/NIT/SDT actualからONID/TSID/SIDとcurrent transportを確認できたserviceだけを登録・公開する。driver固有slotまたはlegacy数値域への写像はTuner HALへ委ねる。
 
 ## サービス登録・公開・再生policy境界
 

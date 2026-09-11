@@ -1,8 +1,3 @@
-# r51_tuner_hal2_audit_regressions
-
-- NITの衛星分配記述子を検証し、8桁BCDの10 kHz単位downlink周波数をtransport意味事実へ追加した。不正BCDは周波数を生成せず、NIT version失効時は旧値を破棄する。
-- 正常値と不正BCDの回帰試験を追加。ローカル環境にcargoがないためRust compile/test、Android/Soong、実放送波は未実施。
-
 # r51_pr91_review_truncated_loop_and_identity
 
 - event loopがsection残量を超えても、受信境界内の共通descriptor解析と全bytesの診断保持を行う。未受信部分を補完せず、構造不正状態を維持する。

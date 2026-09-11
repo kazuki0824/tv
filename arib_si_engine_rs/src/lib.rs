@@ -321,8 +321,6 @@ struct TransportSemanticFactsDto {
     network_name: Option<String>,
     transport_stream_name: Option<String>,
     remote_control_key_id: Option<u8>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    satellite_frequency_hz: Option<u64>,
     sdt_actual: bool,
 }
 
@@ -1143,7 +1141,6 @@ fn bulk_snapshot_json(state: &mut ParserState) -> String {
                 network_name: transport.network_name.clone(),
                 transport_stream_name: transport.ts_name.clone(),
                 remote_control_key_id: transport.remote_control_key_id,
-                satellite_frequency_hz: transport.satellite_frequency_hz,
                 sdt_actual: actual_transport_keys
                     .contains(&(transport.transport_stream_id, transport.original_network_id)),
             })

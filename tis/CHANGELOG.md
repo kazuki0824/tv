@@ -1,8 +1,8 @@
 # r51_tuner_hal2_audit_regressions
 
-- BS事前scanは`onLocked()`で同一scanを一度だけ継続し、`onScanStopped()`まで待機する。重複LOCKED、継続開始失敗を回帰試験で固定した。
-- BS01〜BS23の奇数12 RFを固定TSIDなしで列挙し、HALが返す最初のTSIDからSI収集後、NITの衛星分配記述子で追加BS周波数/TSID候補を動的に走査する。earth_pt1を含め固定TSID fallbackは導入しない。
-- Kotlin host試験を3件追加し、CI期待件数を235件へ更新した。Android/Soong、実機earth_pt1/px4/実放送波は未実施。
+- BS事前scanは`onLocked()`で同一scanを一度だけ継続し、`onScanStopped()`まで待機する。状態変更は既存の単一controller executorに限定し、追加の同期ロックを置かない。公開scan契約への接続を設計へ反映した。
+- BS01〜BS23の奇数12 RFを固定TSIDなしで列挙する。NITによる候補展開と、そのためのSI解析・JNI/DTO追加は撤回し、ChannelScanControllerとSI境界をベースへ戻した。BS候補はHALの報告だけから作り、固定TSID fallbackは導入しない。
+- 重複LOCKED、継続開始失敗、終了後の遅延LOCKEDに対するKotlin host試験を3件追加し、CI期待件数を235件へ更新した。Android/Soong、実機earth_pt1/px4/実放送波は未実施。
 
 # r51_pr91_review_truncated_loop_and_identity
 

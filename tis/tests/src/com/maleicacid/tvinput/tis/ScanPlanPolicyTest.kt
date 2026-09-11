@@ -1,8 +1,6 @@
 package com.maleicacid.tvinput.tis
 
-import com.maleicacid.tvinput.aribsi.AribTransport
 import com.maleicacid.tvinput.common.FrequencyHz
-import com.maleicacid.tvinput.common.NetworkId16
 import com.maleicacid.tvinput.common.StreamSelectorType
 import com.maleicacid.tvinput.common.TransportStreamId16
 import kotlin.test.Test
@@ -231,15 +229,22 @@ class ScanPlanPolicyTest {
     }
 
     @Test
-    fun bsNitSatelliteFrequencyExpandsDynamicTsidCandidates() {
-        val transports = listOf(
-            AribTransport(NetworkId16(4), TransportStreamId16(16400), satelliteFrequencyHz = 11_727_480_000L),
-            AribTransport(NetworkId16(4), TransportStreamId16(16401), satelliteFrequencyHz = 11_727_480_000L),
-            AribTransport(NetworkId16(6), TransportStreamId16(0x6020), satelliteFrequencyHz = 12_291_000_000L),
-        )
-        val candidates = JapanIsdbScanPlan.explicitBsCandidatesFromNit(transports)
-        assertEquals(listOf(16400, 16401), candidates.mapNotNull { it.streamSelector.value })
-        assertTrue(candidates.all { it.physicalChannel == 1 && it.frequencyHz.value == 1_049_480_000L })
+    fun terminalBsDiscoveryDoesNotRestartOnLateLock() {
+        for (end in listOf("stopped", "timeout", "failure", "cancel", "lost")) {
+            val operation = TunerController.StreamIdDiscoveryOperation(27L)
+            when (end) {
+                "stopped" -> operation.complete()
+                "timeout" -> operation.result(false)
+                "failure" -> operation.startFailed(1, "scan failed")
+                "cancel" -> operation.cancel { android.media.tv.tuner.Tuner.RESULT_SUCCESS }
+                "lost" -> operation.loseResources()
+            }
+            val before = operation.result(true)
+            var calls = 0
+            operation.continueAfterLock { calls++; android.media.tv.tuner.Tuner.RESULT_SUCCESS }
+            assertEquals(0, calls)
+            assertEquals(before, operation.result(true))
+        }
     }
 
     @Test

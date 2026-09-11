@@ -735,25 +735,23 @@ HALは同ABIを`device/src/px4/abi.rs::PTX_GET_LOCK_STATUS`として固定し、
 
 `PTX_SET_CHANNEL`が選局時に内部`check_lock()`を使用する既存動作は維持するが、その一回の成功履歴は後続current statusの代替にしない。transport health（188-byte境界、sync、TEI、continuity、無受信時間等）も`DEMOD_LOCK`/`RF_LOCK`の真値へ写像しない。採用driver commitを変更する場合は、新commitに同等のread-only lock ABIとfailure分離が存在することをproduct integration証跡として更新するまでpx4 `DEMOD_LOCK` capabilityを維持してはならない。
 
-## ISDB-S dynamic stream-ID readback 方針
+## px4_drv ISDB-S TMCC TSID list 方針
 
 product採用px4 driverは、ISDB-Sのcurrent TMCCからtransponder内TSID集合を取得するread-only UAPIとして `PTX_GET_TMCC_TSID_LIST = _IOR(0x8d, 0x0e, struct ptx_tmcc_tsid_list)` を持つ。UAPI payloadはpointer-free / fixed-sizeの `__u32 num; __u16 tsid[12];` とし、`num <= 12`、返却prefixの各TSIDは非0でなければならない。driverは既存 `tc90522_tmcc_get_tsid_s()` を唯一のTMCC authorityとして0..11のslotを読み、確定した非0 TSIDをTMCC slot順でcompactに返す。userspace側に固定BS TSID表または別TMCC parserを正本として持たない。
 
 HALのpx4 device-adaptation層は同ABIを `device/src/px4/abi.rs::PTX_GET_TMCC_TSID_LIST` として固定し、active `FrontendBackendSession` が既に所有するcontrol fdだけからreadbackする。同一exclusive chardevをTSID取得のために再openしてはならない。`num > 12`、compact prefix内の0、ABI shape不整合はfail-closedのbackend I/O/invariant failureとし、値をtruncation・補完・推測しない。driverの `EAGAIN` は「current TMCC list未確定」のtyped pending observation、その他のerrnoはbackend failureとして保持する。非ISDB-Sの `EOPNOTSUPP` を空listへ変換しない。
 
-Linux DVB / earth_pt1は、ISDB-S lock後にactive frontend fdへ`FE_GET_PROPERTY(DTV_STREAM_ID)`を発行し、tc90522 frontendがcurrent TMCCから読み戻した`0..65534`を同一generationのsingleton stream-ID listとして扱う。`NO_STREAM_ID_FILTER`は未確定のtyped pending observationとし、`65535`その他の値域外値をtruncateしない。標準DVB APIは同一RFの全TSID listを返さないため、HALで固定表を補完せず、TISがこのsingletonを最初の明示tune候補としてSIを収集し、NITの衛星分配記述子から同一networkの追加BS周波数/TSID候補を動的に展開する。
-
 このdevice observation自体は公開AIDL capabilityの別名ではない。`FrontendInfo.statusCaps`、`getStatus()`、`getFrontendStatusReadiness()`、scan callbackへ投影する場合は、current frontend generationの正本所有者へcommitした値だけを使用し、公開契約は本書のAOSP frontend status / scan契約に従う。VTS/profile tooling、TIS、host resolverがpx4 ioctlを直接呼ぶ経路は設けない。
 
-### ISDB-S `STREAM_ID_LIST` / `INPUT_STREAM_IDS` 公開契約
+### px4 ISDB-S `STREAM_ID_LIST` / `INPUT_STREAM_IDS` 公開契約
 
-px4およびLinux DVB / earth_pt1のISDB-S frontendは、上記readbackをproductionで利用できる構成に限り `FrontendInfo.statusCaps`へ `FrontendStatusType::STREAM_ID_LIST` をadvertiseする。ISDB-Tまたはreadbackを持たないbackendへこのcapabilityを横展開しない。公開listはcurrent frontend generationでdemod lock成立後にdriverから取得し `FrontendRuntime`へcommitしたTSID列だけを正とする。px4はTMCCのcompactな全list、Linux DVB / earth_pt1はcurrent TMCCから得たsingletonであり、固定表、前generation、別frontend、tune request中のselectorをlistの代用品にしない。
+px4 ISDB-S frontendは、上記TMCC TSID readbackをproductionで利用できる構成に限り `FrontendInfo.statusCaps`へ `FrontendStatusType::STREAM_ID_LIST` をadvertiseする。px4 ISDB-T、Linux DVB、または同readbackを持たないbackendへこのcapabilityを横展開しない。公開listはcurrent frontend generationでdemod lock成立後にdriver TMCCから取得し `FrontendRuntime`へcommitした同一の非0 16-bit TSID列だけを正とし、固定表、前generation、別frontend、tune request中のselectorをlistの代用品にしない。
 
 `getFrontendStatusReadiness(STREAM_ID_LIST)` は、未広告frontendでは `UNSUPPORTED`、current tune/scan generationが進行中でlist未確定なら `UNSTABLE`、current generationがlockedかつlist commit済みの場合だけ `STABLE` とする。操作外、lock loss後、stop/close/failure後は `UNAVAILABLE` とする。`getStatus(STREAM_ID_LIST)` はcommit済みlistがある場合だけそのlistを返し、advertise済みだがcurrent list未確定の場合に空配列を観測済み値として捏造せず、既存getStatus契約どおり要求全体を `UNAVAILABLE` とする。
 
 listはgeneration変更、lock loss、scan candidate遷移、`stopTune()` / `stopScan()`、close、backend/fatal failureで失効させる。失効後の旧listを新generationのreadinessまたはstatusへ再利用しない。
 
-ISDB-S scanでcurrent locked candidateのstream-ID listをauthoritativeに取得・commitできた場合は、同一listを `FrontendScanMessageType::INPUT_STREAM_IDS` / 対応union tagとして、そのcandidateの `LOCKED(isLocked=true)` より先に配送する。lock成立後のreadbackは最大6回、各試行間20 msで同じscan worker内から観測する。typed pendingの間は固定値・空listを生成せず、6回目でもpendingなら追加messageを省略して既存の最低保証`LOCKED`を配送する。公開callbackへ入る前にcanonical scan sessionを`LockedReported`へcommitし、callbackからの同一`scan(K)`再入が確実に継続要求として判定されるようにする。追加message専用の第二scan state machineを設けない。
+ISDB-S scanでcurrent locked candidateのTMCC listをauthoritativeに取得・commitできた場合は、同一listを `FrontendScanMessageType::INPUT_STREAM_IDS` / 対応union tagとして、そのcandidateの `LOCKED(isLocked=true)` より先に配送する。px4のlock成立後にreadbackが`EAGAIN`なら、同じscan workerで最大6回、試行間20 msの取消し可能な待機を挟んで再観測する。この回数は待機上限であり、driverの確定時間を保証する値ではない。上限でもpendingなら固定値・空listを生成せず追加messageを省略し、最低保証の`LOCKED`を配送する。公開callbackより前にscan sessionを`LockedReported`へ確定し、callbackからの同一`scan(K)`再入を継続要求として扱う。追加message専用の第二scan state machineを設けない。
 
 tune中はlock後の既存worker監視周期でpendingを再観測してよいが、pendingだけをtune failureへ昇格させない。`EAGAIN`以外のdriver/I/O failureは空listや正常pendingへ丸めず、既存backend failure契約へ接続する。VTS/profile toolingはこの値を得るためにpx4 ioctlを直接呼ばずpublic AIDLを試験する。
 
@@ -1062,8 +1060,6 @@ AV sync hardware ID は `filter_id & 0xffff` のような media filter ID の単
 
 
 AV filterを対応宣言する demux は AOSP の `getAvSyncHwId(Filter)` と `getAvSyncTime(int)` の契約に沿って A/V sync ID と 90kHz timestamp を返す。`getAvSyncHwId(media filter)` は AV filter 固有IDではなく、対応する PCR filter ID を返す。section、PES、record、閉鎖済み filter、対応する PCR filter が存在しない media filter には契約に従った失敗を返す。
-
-同一demuxで複数PCR filterがconfigure済みの場合は、liveなPCR filter IDの最小値をcanonical hardware sync IDとし、全media filterをその一つへmany-to-oneで関連付ける。より小さいPCR filterの追加時は全media relationを同じtransaction候補内で付け替え、canonical PCRのclose/unregister時は次に小さいlive PCRへ付け替える。これによりfilter登録順からA/V clockを決めず、同一demuxに複数の暗黙clock domainを作らない。
 
 `getAvSyncHwId()` は、対象 media filter に対応する PCR filter が configure 済みであれば、PCR 観測前でもその PCR filter ID を返す。PCR 観測済みかどうかを sync ID 返却の前提にしない。PCR 未観測状態は `getAvSyncTime(id)` の戻り値側で未確定値として表現する。
 

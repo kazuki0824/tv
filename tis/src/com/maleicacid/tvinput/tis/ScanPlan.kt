@@ -1,6 +1,5 @@
 package com.maleicacid.tvinput.tis
 
-import com.maleicacid.tvinput.aribsi.AribTransport
 import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.StreamSelector
 import com.maleicacid.tvinput.common.TransportStreamId16
@@ -46,7 +45,6 @@ internal val ScanCandidate.tuneKey: ScanTuneKey
 
 object JapanIsdbScanPlan {
     const val BS_DISCOVERY_BACKEND_HINT = "jp-bs-discovery"
-    private const val BS_LOCAL_OSCILLATOR_HZ = 10_678_000_000L
     private const val BS_FIRST_IF_HZ = 1_049_480_000L
     private const val BS_TRANSPONDER_STEP_HZ = 38_360_000L
 
@@ -103,20 +101,6 @@ object JapanIsdbScanPlan {
                     kind = ScanCandidateKind.ISDB_S_BS,
                 )
             }
-            .toList()
-    }
-
-    /** NITの衛星分配記述子から、同じネットワークに属するBSの明示TSID候補を作る。 */
-    fun explicitBsCandidatesFromNit(transports: Collection<AribTransport>): List<ScanCandidate> {
-        val seedsByIf = isdbsBsBands().associateBy { it.frequencyHz.value }
-        return transports.asSequence()
-            .mapNotNull { transport ->
-                val downlinkHz = transport.satelliteFrequencyHz ?: return@mapNotNull null
-                val seed = seedsByIf[downlinkHz - BS_LOCAL_OSCILLATOR_HZ] ?: return@mapNotNull null
-                explicitBsCandidatesFromScan(seed, listOf(transport.transportStreamId)).singleOrNull()
-            }
-            .distinctBy { it.tuneKey }
-            .sortedWith(compareBy({ it.physicalChannel }, { it.streamSelector.value }))
             .toList()
     }
 

@@ -387,7 +387,9 @@ fn frontend_status_caps_for_snapshot(
     if lnb_profile_supports_voltage_status(snapshot.lnb_profile) {
         caps.push(FrontendStatusType::LNB_VOLTAGE);
     }
-    if snapshot.system == FrontendSystem::IsdbS {
+    if snapshot.backend == FrontendBackendKind::Px4CharDevice
+        && snapshot.system == FrontendSystem::IsdbS
+    {
         caps.push(FrontendStatusType::STREAM_ID_LIST);
     }
     caps
@@ -837,16 +839,10 @@ mod tests {
             backend: FrontendBackendKind::LinuxDvb,
             ..px4
         };
-        let earth_isdbs = RootFrontendInfoSnapshot {
-            system: FrontendSystem::IsdbS,
-            ..dvb
-        };
 
         assert!(frontend_status_caps_for_snapshot(&px4).contains(&FrontendStatusType::DEMOD_LOCK));
         assert!(frontend_status_caps_for_snapshot(&dvb).contains(&FrontendStatusType::DEMOD_LOCK));
         assert!(!frontend_status_caps_for_snapshot(&px4).contains(&FrontendStatusType::RF_LOCK));
         assert!(frontend_status_caps_for_snapshot(&dvb).contains(&FrontendStatusType::RF_LOCK));
-        assert!(frontend_status_caps_for_snapshot(&earth_isdbs)
-            .contains(&FrontendStatusType::STREAM_ID_LIST));
     }
 }

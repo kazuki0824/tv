@@ -27,10 +27,11 @@ use maleicacid_tuner_hal2_device::FrontendRuntimeSnapshot;
 use maleicacid_tuner_hal2_device::{
     FrontendBackendSession, FrontendBackendSubmitFailure, FrontendBackendSubmitTicket,
     FrontendBackendSubmitWait, FrontendBackendTunePlan, FrontendLivePumpJoinOutcome,
-    FrontendLivePumpOwner, FrontendScanPhase, FrontendSignalState, FrontendStreamIdListObservation,
-    FrontendTmccPartialReceptionObservation, FrontendWorkerCancelReason, FrontendWorkerContext,
-    FrontendWorkerKind, FrontendWorkerStartError, FrontendWorkerStopOutcome,
-    FrontendWorkerStopPoll, FrontendWorkerStopTicket,
+    FrontendLivePumpOwner, FrontendScanPhase, FrontendSignalState,
+    FrontendTmccPartialReceptionObservation, FrontendTmccTsidListObservation,
+    FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
+    FrontendWorkerStartError, FrontendWorkerStopOutcome, FrontendWorkerStopPoll,
+    FrontendWorkerStopTicket,
 };
 use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 
@@ -2248,7 +2249,7 @@ fn record_frontend_tune_lock_qualification(
     Ok(true)
 }
 
-fn frontend_uses_dynamic_stream_id_list(
+fn frontend_uses_tmcc_stream_id_list(
     runtime: &SharedRuntime,
     frontend_id: i32,
 ) -> Result<bool, HalError> {
@@ -2262,7 +2263,10 @@ fn frontend_uses_dynamic_stream_id_list(
             "frontend registry entry is missing while checking TMCC stream-id support",
         )
     })?;
-    Ok(entry.system == FrontendSystem::IsdbS)
+    Ok(
+        entry.backend == FrontendBackendKind::Px4CharDevice
+            && entry.system == FrontendSystem::IsdbS,
+    )
 }
 
 fn observe_stream_id_list_with_retry<Observe, Wait, Cancelled>(
@@ -2272,7 +2276,7 @@ fn observe_stream_id_list_with_retry<Observe, Wait, Cancelled>(
     cancelled: Cancelled,
 ) -> Result<Option<Vec<u16>>, HalError>
 where
-    Observe: FnMut() -> Result<FrontendStreamIdListObservation, HalError>,
+    Observe: FnMut() -> Result<FrontendTmccTsidListObservation, HalError>,
     Wait: FnMut() -> Result<(), HalError>,
     Cancelled: Fn() -> bool,
 {
@@ -2287,11 +2291,11 @@ where
             return Ok(None);
         }
         match observe()? {
-            FrontendStreamIdListObservation::Available(stream_ids) => {
+            FrontendTmccTsidListObservation::Available(stream_ids) => {
                 return Ok(Some(stream_ids));
             }
-            FrontendStreamIdListObservation::Pending if attempt + 1 < attempts => wait()?,
-            FrontendStreamIdListObservation::Pending => return Ok(None),
+            FrontendTmccTsidListObservation::Pending if attempt + 1 < attempts => wait()?,
+            FrontendTmccTsidListObservation::Pending => return Ok(None),
         }
     }
     Err(HalError::internal(
@@ -2308,13 +2312,13 @@ fn observe_and_record_frontend_stream_id_list(
     generation: u64,
     observation_attempts: usize,
 ) -> Result<Option<Vec<i32>>, HalError> {
-    if !frontend_uses_dynamic_stream_id_list(runtime, frontend_id)? || ctx.cancel_requested() {
+    if !frontend_uses_tmcc_stream_id_list(runtime, frontend_id)? || ctx.cancel_requested() {
         return Ok(None);
     }
     {
         let guard = lock_runtime(
             runtime,
-            "service runtime lock poisoned while checking committed stream IDs",
+            "service runtime lock poisoned while checking committed TMCC stream IDs",
         )?;
         if guard
             .query()
@@ -2327,7 +2331,7 @@ fn observe_and_record_frontend_stream_id_list(
     }
     let Some(stream_ids) = observe_stream_id_list_with_retry(
         observation_attempts,
-        || session.observe_stream_id_list(),
+        || session.observe_tmcc_tsid_list(),
         || {
             let deadline = Instant::now()
                 .checked_add(Duration::from_millis(SCAN_STREAM_ID_RETRY_INTERVAL_MS))
@@ -5059,9 +5063,9 @@ mod scan_contract_tests {
     #[test]
     fn pending_stream_id_list_is_reobserved_within_the_same_scan_worker() {
         let mut observations = VecDeque::from([
-            FrontendStreamIdListObservation::Pending,
-            FrontendStreamIdListObservation::Pending,
-            FrontendStreamIdListObservation::Available(vec![0x4010, 0x4011]),
+            FrontendTmccTsidListObservation::Pending,
+            FrontendTmccTsidListObservation::Pending,
+            FrontendTmccTsidListObservation::Available(vec![0x4010, 0x4011]),
         ]);
         let mut wait_calls = 0;
         let result = observe_stream_id_list_with_retry(
@@ -5076,6 +5080,77 @@ mod scan_contract_tests {
         .unwrap();
         assert_eq!(result, Some(vec![0x4010, 0x4011]));
         assert_eq!(wait_calls, 2);
+    }
+
+    #[test]
+    fn pending_stream_id_list_exhausts_the_budget_without_fabricating_ids() {
+        let mut observations = 0;
+        let mut waits = 0;
+        let result = observe_stream_id_list_with_retry(
+            SCAN_STREAM_ID_OBSERVATION_ATTEMPTS,
+            || {
+                observations += 1;
+                Ok(FrontendTmccTsidListObservation::Pending)
+            },
+            || {
+                waits += 1;
+                Ok(())
+            },
+            || false,
+        )
+        .unwrap();
+        assert_eq!(result, None);
+        assert_eq!(observations, SCAN_STREAM_ID_OBSERVATION_ATTEMPTS);
+        assert_eq!(waits, SCAN_STREAM_ID_OBSERVATION_ATTEMPTS - 1);
+    }
+
+    #[test]
+    fn cancellation_during_stream_id_wait_prevents_another_read() {
+        let cancelled = std::cell::Cell::new(false);
+        let mut observations = 0;
+        let result = observe_stream_id_list_with_retry(
+            SCAN_STREAM_ID_OBSERVATION_ATTEMPTS,
+            || {
+                observations += 1;
+                Ok(FrontendTmccTsidListObservation::Pending)
+            },
+            || {
+                cancelled.set(true);
+                Ok(())
+            },
+            || cancelled.get(),
+        )
+        .unwrap();
+        assert_eq!(result, None);
+        assert_eq!(observations, 1);
+    }
+
+    #[test]
+    fn stream_id_read_and_wait_failures_are_not_retried_as_pending() {
+        let failure = HalError::Unsupported("TMCC readback is not available");
+        for fail_on_read in [true, false] {
+            let mut observations = 0;
+            let mut waits = 0;
+            let result = observe_stream_id_list_with_retry(
+                SCAN_STREAM_ID_OBSERVATION_ATTEMPTS,
+                || {
+                    observations += 1;
+                    if fail_on_read {
+                        Err(failure.clone())
+                    } else {
+                        Ok(FrontendTmccTsidListObservation::Pending)
+                    }
+                },
+                || {
+                    waits += 1;
+                    Err(failure.clone())
+                },
+                || false,
+            );
+            assert_eq!(result, Err(failure.clone()));
+            assert_eq!(observations, 1);
+            assert_eq!(waits, if fail_on_read { 0 } else { 1 });
+        }
     }
 
     #[test]

@@ -17,7 +17,7 @@ pub use backend_worker::{
     FrontendBackendLnbApplyOutcome, FrontendBackendLnbApplyPlan, FrontendBackendSession,
     FrontendBackendSessionKind, FrontendBackendSubmitFailure, FrontendBackendSubmitTicket,
     FrontendBackendSubmitWait, FrontendBackendTunePlan, FrontendLnbVoltage,
-    FrontendStreamIdListObservation, FrontendTmccPartialReceptionObservation,
+    FrontendTmccPartialReceptionObservation, FrontendTmccTsidListObservation,
 };
 pub use frontend_runtime::{
     FrontendRuntime, FrontendRuntimeSnapshot, FrontendRuntimeState, FrontendSignalState,

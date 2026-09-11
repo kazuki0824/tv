@@ -131,7 +131,6 @@ pub struct DiscoveredTransport {
     pub network_name: Option<String>,
     pub ts_name: Option<String>,
     pub remote_control_key_id: Option<u8>,
-    pub satellite_frequency_hz: Option<u64>,
     pub system_management: SystemManagementFacts,
     pub services: BTreeSet<u16>,
     pub text_decode_diagnostics: Vec<String>,
@@ -461,7 +460,6 @@ impl ServiceDiscoveryEngine {
                 transport.network_name = None;
                 transport.ts_name = None;
                 transport.remote_control_key_id = None;
-                transport.satellite_frequency_hz = None;
                 transport.system_management = SystemManagementFacts::default();
                 transport.text_decode_diagnostics.clear();
             }
@@ -605,7 +603,6 @@ impl ServiceDiscoveryEngine {
                 network_name: None,
                 ts_name: None,
                 remote_control_key_id: None,
-                satellite_frequency_hz: None,
                 system_management: SystemManagementFacts::default(),
                 services: BTreeSet::new(),
                 text_decode_diagnostics: Vec::new(),
@@ -835,26 +832,21 @@ impl ServiceDiscoveryEngine {
             self.transport_entry_mut(tsid, onid);
             self.transport_entry_mut(tsid, onid).system_management =
                 parse_system_management_descriptor(network_descriptors);
-            let metadata = parse_nit_transport_metadata(&section[desc_start..desc_end]);
+            let (desc_network_name, ts_name, remote_control_key_id) =
+                parse_nit_transport_metadata(&section[desc_start..desc_end])
+                    .unwrap_or((None, None, None));
             let transport = self.transport_entry_mut(tsid, onid);
             if transport.network_name.is_none() {
-                transport.network_name = metadata
-                    .network_name
+                transport.network_name = desc_network_name
                     .as_ref()
                     .map(|decoded| decoded.value.clone())
                     .or_else(|| network_name.as_ref().map(|decoded| decoded.value.clone()));
             }
             if transport.ts_name.is_none() {
-                transport.ts_name = metadata
-                    .ts_name
-                    .as_ref()
-                    .map(|decoded| decoded.value.clone());
+                transport.ts_name = ts_name.as_ref().map(|decoded| decoded.value.clone());
             }
             if transport.remote_control_key_id.is_none() {
-                transport.remote_control_key_id = metadata.remote_control_key_id;
-            }
-            if transport.satellite_frequency_hz.is_none() {
-                transport.satellite_frequency_hz = metadata.satellite_frequency_hz;
+                transport.remote_control_key_id = remote_control_key_id;
             }
             retain_text_decode_diagnostic(
                 &mut transport.text_decode_diagnostics,
@@ -864,11 +856,11 @@ impl ServiceDiscoveryEngine {
             );
             retain_text_decode_diagnostic(
                 &mut transport.text_decode_diagnostics,
-                metadata.network_name.and_then(|decoded| decoded.diagnostic),
+                desc_network_name.and_then(|decoded| decoded.diagnostic),
             );
             retain_text_decode_diagnostic(
                 &mut transport.text_decode_diagnostics,
-                metadata.ts_name.and_then(|decoded| decoded.diagnostic),
+                ts_name.and_then(|decoded| decoded.diagnostic),
             );
             self.parse_service_list_descriptor(tsid, onid, &section[desc_start..desc_end]);
             if let Some(entry) = self.transports.get_mut(&(tsid, onid)) {
@@ -1766,30 +1758,12 @@ fn parse_system_management_descriptor(descriptors: &[u8]) -> SystemManagementFac
     })
 }
 
-#[derive(Debug, Default, Eq, PartialEq)]
-struct NitTransportMetadata {
-    network_name: Option<DecodedSiText>,
-    ts_name: Option<DecodedSiText>,
-    remote_control_key_id: Option<u8>,
-    satellite_frequency_hz: Option<u64>,
-}
-
-fn parse_bcd_frequency_hz(bytes: &[u8]) -> Option<u64> {
-    let mut value = 0u64;
-    for byte in bytes {
-        let high = byte >> 4;
-        let low = byte & 0x0f;
-        if high > 9 || low > 9 {
-            return None;
-        }
-        value = value.checked_mul(100)?;
-        value = value.checked_add(u64::from(high) * 10 + u64::from(low))?;
-    }
-    value.checked_mul(10_000)
-}
-
-fn parse_nit_transport_metadata(descriptors: &[u8]) -> NitTransportMetadata {
-    let mut metadata = NitTransportMetadata::default();
+fn parse_nit_transport_metadata(
+    descriptors: &[u8],
+) -> Option<(Option<DecodedSiText>, Option<DecodedSiText>, Option<u8>)> {
+    let mut network_name = None;
+    let mut ts_name = None;
+    let mut remote_control_key_id = None;
     let mut cursor = 0usize;
     while cursor + 2 <= descriptors.len() {
         let tag = descriptors[cursor];
@@ -1800,25 +1774,21 @@ fn parse_nit_transport_metadata(descriptors: &[u8]) -> NitTransportMetadata {
         };
         match tag {
             0x40 => {
-                metadata.network_name = Some(decode_si_text_lossy(
+                network_name = Some(decode_si_text_lossy(
                     "networkName",
                     &descriptors[body_start..body_end],
                 ))
             }
-            0x43 if body_end.saturating_sub(body_start) >= 4 => {
-                metadata.satellite_frequency_hz =
-                    parse_bcd_frequency_hz(&descriptors[body_start..body_start + 4]);
-            }
             0xcd => {
                 let body_len = body_end.saturating_sub(body_start);
                 if body_len >= 2 {
-                    metadata.remote_control_key_id = Some(descriptors[body_start]);
+                    remote_control_key_id = Some(descriptors[body_start]);
                     let ts_name_len = ((descriptors[body_start + 1] >> 2) & 0x3f) as usize;
                     let ts_name_start = body_start + 2;
                     let remaining = body_end.saturating_sub(ts_name_start);
                     if ts_name_len <= remaining {
                         let ts_name_end = ts_name_start + ts_name_len;
-                        metadata.ts_name = Some(decode_si_text_lossy(
+                        ts_name = Some(decode_si_text_lossy(
                             "transportStreamName",
                             &descriptors[ts_name_start..ts_name_end],
                         ));
@@ -1829,7 +1799,11 @@ fn parse_nit_transport_metadata(descriptors: &[u8]) -> NitTransportMetadata {
         }
         cursor = body_end;
     }
-    metadata
+    if network_name.is_none() && ts_name.is_none() && remote_control_key_id.is_none() {
+        None
+    } else {
+        Some((network_name, ts_name, remote_control_key_id))
+    }
 }
 
 fn apply_es_descriptors(stream: &mut DiscoveredElementaryStream, descriptors: &[u8]) {
@@ -2072,24 +2046,11 @@ fn retain_text_decode_diagnostic(diagnostics: &mut Vec<String>, diagnostic: Opti
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_nit_transport_metadata, DiscoveryCollectionState, DiscoveryPublishStage,
-        ServiceDiscoveryCollector, ServiceDiscoveryEngine, TableRequirementStatus,
+        DiscoveryCollectionState, DiscoveryPublishStage, ServiceDiscoveryCollector,
+        ServiceDiscoveryEngine, TableRequirementStatus,
     };
     use crate::discovery_requirements::DiscoveryProfile;
     use crate::sections::crc32_mpeg;
-
-    #[test]
-    fn satellite_delivery_descriptor_exposes_bcd_frequency_in_hz() {
-        let metadata = parse_nit_transport_metadata(&[
-            0x43, 0x0b, 0x01, 0x17, 0x27, 0x48, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        ]);
-        assert_eq!(metadata.satellite_frequency_hz, Some(11_727_480_000));
-
-        let malformed = parse_nit_transport_metadata(&[
-            0x43, 0x0b, 0x0a, 0x17, 0x27, 0x48, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        ]);
-        assert_eq!(malformed.satellite_frequency_hz, None);
-    }
 
     #[test]
     fn partial_stage_is_derived_from_required_tables_without_services() {

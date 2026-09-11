@@ -120,7 +120,6 @@ class ChannelScanController(
         var published = 0
         var successfulCandidates = 0
         val executionCandidates = mutableListOf<ScanCandidate>()
-        val scheduledTuneKeys = linkedSetOf<ScanTuneKey>()
         for (candidate in candidates) {
             if (cancelled.get() || terminalResourceLostObserved) break
             if (candidate.kind == ScanCandidateKind.ISDB_S_BS && candidate.streamSelector == com.maleicacid.tvinput.common.StreamSelector.NONE) {
@@ -134,17 +133,15 @@ class ChannelScanController(
                 discovery.generation?.let { clearActiveScanGeneration(it) }
                 val discovered = discovery.candidatesFor(candidate)
                 if (discovery.success && discovered.isNotEmpty()) {
-                    discovered.filterTo(executionCandidates) { scheduledTuneKeys.add(it.tuneKey) }
+                    executionCandidates += discovered
                 } else {
                     diagnostics += ScanDiagnostic(candidate, "BS dynamic stream-ID discovery失敗 result=${discovery.resultCode} message=${discovery.message}")
                 }
             } else {
-                if (scheduledTuneKeys.add(candidate.tuneKey)) executionCandidates += candidate
+                executionCandidates += candidate
             }
         }
-        var candidateIndex = 0
-        while (candidateIndex < executionCandidates.size) {
-            val candidate = executionCandidates[candidateIndex++]
+        for (candidate in executionCandidates) {
             if (cancelled.get() || terminalResourceLostObserved) break
             engine.reset(discoveryProfile(candidate.kind))
             currentCandidate = candidate
@@ -157,11 +154,6 @@ class ChannelScanController(
             try {
                 val collection = collectSiForCandidate(candidate, SiCollectionRequirements(PublishMode.SETUP_SCAN, discoveryProfile(candidate.kind)), tune.generation)
                 collection.diagnostic?.let { diagnostics += it }
-                if (candidate.kind == ScanCandidateKind.ISDB_S_BS) {
-                    JapanIsdbScanPlan
-                        .explicitBsCandidatesFromNit(engine.serviceRegistrationSnapshot().networkTransportMetadata)
-                        .filterTo(executionCandidates) { scheduledTuneKeys.add(it.tuneKey) }
-                }
                 if (!collection.mayPublishChannels) {
                     Log.w(LogTags.TIS, "SI discovery 未完了のため TvProvider channel 登録を省略します candidate=$candidate outcome=${collection.outcome} registrationReady=${collection.registrationReadyServices} clearLivePlaybackStaticallyEligible=${collection.clearLivePlaybackStaticallyEligibleServices} diagnostic=${collection.diagnostic?.message}")
                     if (collection.outcome == SiCollectionOutcome.RESOURCE_LOST) break
