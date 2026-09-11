@@ -2060,8 +2060,7 @@ impl DemuxRuntime {
 
     pub fn has_started_playback_dvr(&self) -> bool {
         self.dvrs.values().any(|dvr| {
-            dvr.kind() == DvrKind::Playback
-                && dvr.state() == super::dvr::DvrRuntimeState::Started
+            dvr.kind() == DvrKind::Playback && dvr.state() == super::dvr::DvrRuntimeState::Started
         })
     }
 

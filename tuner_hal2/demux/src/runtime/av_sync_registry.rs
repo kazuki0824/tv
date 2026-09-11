@@ -51,9 +51,11 @@ impl AvSyncRegistry {
             return Err("PCR filter id must be non-negative");
         }
         self.pcr_filter_ids.insert(filter_id);
-        let canonical_hw_sync_id = self.pcr_filter_ids.first().copied().ok_or(
-            "registered PCR filter must establish a canonical hardware sync id",
-        )?;
+        let canonical_hw_sync_id = self
+            .pcr_filter_ids
+            .first()
+            .copied()
+            .ok_or("registered PCR filter must establish a canonical hardware sync id")?;
         let media_filter_ids = self.media_filter_ids.iter().copied().collect::<Vec<_>>();
         for media_filter_id in media_filter_ids {
             self.remove_media_relation(media_filter_id);
@@ -169,9 +171,7 @@ mod tests {
     fn smallest_live_pcr_is_the_single_demux_clock_for_every_media_filter() {
         let mut registry = AvSyncRegistry::default();
         for pcr_filter_id in [9, 4, 7] {
-            let prepared = registry
-                .prepare_register_pcr_filter(pcr_filter_id)
-                .unwrap();
+            let prepared = registry.prepare_register_pcr_filter(pcr_filter_id).unwrap();
             registry.commit(prepared);
         }
         for media_filter_id in [10, 11] {

@@ -523,6 +523,7 @@ impl ServiceDiscoveryEngine {
                 network_name: None,
                 ts_name: None,
                 remote_control_key_id: None,
+                satellite_frequency_hz: None,
                 system_management: SystemManagementFacts::default(),
                 running_status: None,
                 free_ca_mode: None,
@@ -863,9 +864,7 @@ impl ServiceDiscoveryEngine {
             );
             retain_text_decode_diagnostic(
                 &mut transport.text_decode_diagnostics,
-                metadata
-                    .network_name
-                    .and_then(|decoded| decoded.diagnostic),
+                metadata.network_name.and_then(|decoded| decoded.diagnostic),
             );
             retain_text_decode_diagnostic(
                 &mut transport.text_decode_diagnostics,

@@ -236,9 +236,7 @@ impl FrontendBackendSession {
                 )
                 .and_then(|()| decode_tmcc_tsid_list(control_path, raw));
                 classify_tmcc_tsid_read(read).map(|observation| match observation {
-                    Px4TmccTsidListObservation::Pending => {
-                        FrontendStreamIdListObservation::Pending
-                    }
+                    Px4TmccTsidListObservation::Pending => FrontendStreamIdListObservation::Pending,
                     Px4TmccTsidListObservation::Available(stream_ids) => {
                         FrontendStreamIdListObservation::Available(stream_ids)
                     }
@@ -1293,7 +1291,9 @@ fn classify_dvb_stream_id_read(
             )),
         });
     }
-    Ok(FrontendStreamIdListObservation::Available(vec![stream_id as u16]))
+    Ok(FrontendStreamIdListObservation::Available(vec![
+        stream_id as u16,
+    ]))
 }
 
 fn px4_signal_state_from_readback(

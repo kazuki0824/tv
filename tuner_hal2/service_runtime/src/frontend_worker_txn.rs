@@ -27,11 +27,10 @@ use maleicacid_tuner_hal2_device::FrontendRuntimeSnapshot;
 use maleicacid_tuner_hal2_device::{
     FrontendBackendSession, FrontendBackendSubmitFailure, FrontendBackendSubmitTicket,
     FrontendBackendSubmitWait, FrontendBackendTunePlan, FrontendLivePumpJoinOutcome,
-    FrontendLivePumpOwner, FrontendScanPhase, FrontendSignalState,
-    FrontendStreamIdListObservation, FrontendTmccPartialReceptionObservation,
-    FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
-    FrontendWorkerStartError, FrontendWorkerStopOutcome, FrontendWorkerStopPoll,
-    FrontendWorkerStopTicket,
+    FrontendLivePumpOwner, FrontendScanPhase, FrontendSignalState, FrontendStreamIdListObservation,
+    FrontendTmccPartialReceptionObservation, FrontendWorkerCancelReason, FrontendWorkerContext,
+    FrontendWorkerKind, FrontendWorkerStartError, FrontendWorkerStopOutcome,
+    FrontendWorkerStopPoll, FrontendWorkerStopTicket,
 };
 use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 
@@ -5151,14 +5150,8 @@ mod scan_contract_tests {
             }
             Ok(())
         });
-        commit_and_deliver_frontend_scan_lock(
-            &runtime,
-            &notifier,
-            frontend_id,
-            generation,
-            None,
-        )
-        .unwrap();
+        commit_and_deliver_frontend_scan_lock(&runtime, &notifier, frontend_id, generation, None)
+            .unwrap();
         assert_eq!(
             *observed_phase.lock().unwrap(),
             Some(FrontendScanPhase::LockedReported),
