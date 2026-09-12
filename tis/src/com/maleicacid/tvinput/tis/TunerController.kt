@@ -394,6 +394,7 @@ class TunerController(
     private fun cancelStreamIdDiscoveryOnController() {
         val operation = streamIdDiscovery ?: return
         operation.cancel { tuner?.cancelScanning() ?: Tuner.RESULT_SUCCESS }
+        tuner?.closeFrontend()
         streamIdDiscovery = null
     }
 
