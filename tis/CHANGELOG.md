@@ -1,3 +1,10 @@
+# r52_pr57_cas_session_cleanup_order
+
+- Session.closeに失敗したCA systemの親MediaCasを保持し、次回cleanupでSession解放を再試行できるようにした。別CA systemのSession/MediaCas解放は継続する。既存のcontext所有表とcleanup経路を使用し、別の解放ownerは追加しない。
+- TIS設計正本へ親子の解放順序を明記し、Androidの親close後にSessionを操作できない寿命をhost fakeへ反映した。資源喪失後の再open、独立pluginの解放、既存Session解放失敗試験を更新した。
+- 検証: 本番/試験Kotlinコンパイルと実SI JNIを用いたhost JUnit 249件が成功。CI期待件数を249へ更新し、変更Kotlinのktlint検査が成功した。
+- Android/Soong実体build、device atest、CTS/VTS、実card/放送波確認は未実施。
+
 # r52_pr57_cas_readiness_and_hevc_regression
 
 - ECMの失敗/無効token/診断のみの結果でcontextのreadinessを下げ、PMT/CATの再通知ではREADYへ戻さない。新たなECM成功だけで回復する。鍵の所有状態とhealthを分け、解放再試行の所有は維持する。
