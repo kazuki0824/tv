@@ -169,4 +169,34 @@ mod tests {
         assert_eq!(registry.hw_sync_id_for_media_filter(10), None);
         assert_eq!(registry.hw_sync_id_for_media_filter(11), Some(4));
     }
+
+    #[test]
+    fn aborted_pcr_registration_preserves_existing_relation() {
+        let mut registry = AvSyncRegistry::default();
+        registry.register_pcr_filter(9).unwrap();
+        registry.register_media_filter(10).unwrap();
+        let prepared = registry.prepare_register_pcr_filter(4).unwrap();
+        drop(prepared);
+        assert_eq!(registry.hw_sync_id_for_media_filter(10), Some(9));
+        assert_eq!(registry.pcr_filter_id_for_hw_sync_id(4), None);
+    }
+
+    #[test]
+    fn aborted_unregister_preserves_relation_and_commit_rebinds_it() {
+        let mut registry = AvSyncRegistry::default();
+        registry.register_pcr_filter(9).unwrap();
+        registry.register_media_filter(10).unwrap();
+        registry.register_pcr_filter(4).unwrap();
+
+        let prepared = registry.prepare_unregister_filter(9);
+        drop(prepared);
+        assert_eq!(registry.hw_sync_id_for_media_filter(10), Some(9));
+        assert_eq!(registry.pcr_filter_id_for_hw_sync_id(9), Some(9));
+
+        let prepared = registry.prepare_unregister_filter(9);
+        registry.commit(prepared);
+        assert_eq!(registry.hw_sync_id_for_media_filter(10), Some(4));
+        assert_eq!(registry.pcr_filter_id_for_hw_sync_id(9), None);
+        assert_eq!(registry.pcr_filter_id_for_hw_sync_id(4), Some(4));
+    }
 }
