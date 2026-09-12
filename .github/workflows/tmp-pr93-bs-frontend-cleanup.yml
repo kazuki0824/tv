@@ -1,0 +1,59 @@
+name: Temporary PR93 BS frontend cleanup
+
+on:
+  push:
+    branches:
+      - fix/tuner-hal2-audit-gaps
+    paths:
+      - .github/workflows/tmp-pr93-bs-frontend-cleanup.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tuner-hal2-audit-gaps
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Close discovery frontend before clearing owner
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tis/src/com/maleicacid/tvinput/tis/TunerController.kt')
+          text = path.read_text(encoding='utf-8')
+          old = '''    private fun cancelStreamIdDiscoveryOnController() {
+        val operation = streamIdDiscovery ?: return
+        operation.cancel { tuner?.cancelScanning() ?: Tuner.RESULT_SUCCESS }
+        streamIdDiscovery = null
+    }
+'''
+          new = '''    private fun cancelStreamIdDiscoveryOnController() {
+        val operation = streamIdDiscovery ?: return
+        operation.cancel { tuner?.cancelScanning() ?: Tuner.RESULT_SUCCESS }
+        tuner?.closeFrontend()
+        streamIdDiscovery = null
+    }
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one cleanup block, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          git diff --check
+          git diff -- tis/src/com/maleicacid/tvinput/tis/TunerController.kt
+
+      - name: Commit focused fix and remove temporary workflow
+        shell: bash
+        run: |
+          rm .github/workflows/tmp-pr93-bs-frontend-cleanup.yml
+          git config user.name github-actions[bot]
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tis/src/com/maleicacid/tvinput/tis/TunerController.kt .github/workflows/tmp-pr93-bs-frontend-cleanup.yml
+          git commit -m 'fix(tis): release BS discovery frontend after scan'
+          git push origin HEAD:fix/tuner-hal2-audit-gaps
