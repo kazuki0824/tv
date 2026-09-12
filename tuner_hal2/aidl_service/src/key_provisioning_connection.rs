@@ -4,8 +4,7 @@ use std::time::Duration;
 
 use maleicacid_tuner_hal2_key_provisioning_bridge::{
     decode_command, encode_response, volatile_zeroize, KeyProvisioningCommand,
-    KeyProvisioningReplayJournal, KeyProvisioningResponse, KeyProvisioningStatus, ReplayLookup,
-    KEY_PROVISIONING_MAX_FRAME_BYTES,
+    KeyProvisioningResponse, KeyProvisioningStatus, KEY_PROVISIONING_MAX_FRAME_BYTES,
 };
 
 const CONNECTION_DEADLINE: Duration = Duration::from_secs(2);
@@ -27,7 +26,6 @@ impl KeyProvisioningConnection for UnixStream {
 
 pub fn process_key_provisioning_connection<Connection, Apply>(
     stream: &mut Connection,
-    journal: &mut KeyProvisioningReplayJournal,
     mut apply_command: Apply,
 ) -> io::Result<()>
 where
@@ -35,7 +33,7 @@ where
     Apply: FnMut(KeyProvisioningCommand) -> KeyProvisioningStatus,
 {
     // Both deadlines are mandatory transport setup. No frame byte may be read,
-    // decoded, journaled, or applied until both operations have succeeded.
+    // decoded or applied until both operations have succeeded.
     stream.configure_read_timeout(CONNECTION_DEADLINE)?;
     stream.configure_write_timeout(CONNECTION_DEADLINE)?;
 
@@ -50,19 +48,7 @@ where
     volatile_zeroize(&mut frame);
 
     let (request_id, status) = match decoded {
-        Some(Ok((request_id, command))) => {
-            let replay_key = command.replay_key();
-            let status = match journal.lookup_key(request_id, &replay_key) {
-                ReplayLookup::Hit(status) => status,
-                ReplayLookup::Conflict => KeyProvisioningStatus::BadRequest,
-                ReplayLookup::Miss => {
-                    let status = apply_command(command);
-                    journal.record_key(request_id, replay_key, status);
-                    status
-                }
-            };
-            (request_id, status)
-        }
+        Some(Ok((request_id, command))) => (request_id, apply_command(command)),
         Some(Err(_)) | None => (0, KeyProvisioningStatus::BadRequest),
     };
 
@@ -77,8 +63,8 @@ mod tests {
     use std::io::{Cursor, Read, Write};
 
     use maleicacid_tuner_hal2_key_provisioning_bridge::{
-        decode_response, encode_command, KeyProvisioningCommand, KeyProvisioningReplayJournal,
-        KeyProvisioningStatus, ProvisioningIdentity,
+        decode_response, encode_command, KeyProvisioningCommand, KeyProvisioningStatus,
+        ProvisioningIdentity,
     };
 
     use super::{process_key_provisioning_connection, KeyProvisioningConnection};
@@ -88,6 +74,7 @@ mod tests {
         output: Vec<u8>,
         fail_read_timeout: bool,
         fail_write_timeout: bool,
+        fail_response_write: bool,
         read_timeout_calls: Cell<usize>,
         write_timeout_calls: Cell<usize>,
         read_calls: usize,
@@ -100,6 +87,7 @@ mod tests {
                 output: Vec::new(),
                 fail_read_timeout: false,
                 fail_write_timeout: false,
+                fail_response_write: false,
                 read_timeout_calls: Cell::new(0),
                 write_timeout_calls: Cell::new(0),
                 read_calls: 0,
@@ -116,6 +104,12 @@ mod tests {
 
     impl Write for FakeConnection {
         fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            if self.fail_response_write {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "injected response loss",
+                ));
+            }
             self.output.extend_from_slice(buffer);
             Ok(buffer.len())
         }
@@ -162,13 +156,12 @@ mod tests {
     }
 
     #[test]
-    fn read_timeout_failure_skips_decode_journal_and_runtime_mutation() {
+    fn read_timeout_failure_skips_decode_and_runtime_mutation() {
         let mut stream = FakeConnection::new(reserve_frame());
         stream.fail_read_timeout = true;
-        let mut journal = KeyProvisioningReplayJournal::default();
         let mut runtime_mutations = 0usize;
 
-        let result = process_key_provisioning_connection(&mut stream, &mut journal, |_| {
+        let result = process_key_provisioning_connection(&mut stream, |_| {
             runtime_mutations = runtime_mutations.saturating_add(1);
             KeyProvisioningStatus::Ok
         });
@@ -178,18 +171,16 @@ mod tests {
         assert_eq!(stream.write_timeout_calls.get(), 0);
         assert_eq!(stream.read_calls, 0);
         assert!(stream.output.is_empty());
-        assert!(journal.is_empty());
         assert_eq!(runtime_mutations, 0);
     }
 
     #[test]
-    fn write_timeout_failure_skips_decode_journal_and_runtime_mutation() {
+    fn write_timeout_failure_skips_decode_and_runtime_mutation() {
         let mut stream = FakeConnection::new(reserve_frame());
         stream.fail_write_timeout = true;
-        let mut journal = KeyProvisioningReplayJournal::default();
         let mut runtime_mutations = 0usize;
 
-        let result = process_key_provisioning_connection(&mut stream, &mut journal, |_| {
+        let result = process_key_provisioning_connection(&mut stream, |_| {
             runtime_mutations = runtime_mutations.saturating_add(1);
             KeyProvisioningStatus::Ok
         });
@@ -199,17 +190,15 @@ mod tests {
         assert_eq!(stream.write_timeout_calls.get(), 1);
         assert_eq!(stream.read_calls, 0);
         assert!(stream.output.is_empty());
-        assert!(journal.is_empty());
         assert_eq!(runtime_mutations, 0);
     }
 
     #[test]
-    fn configured_deadlines_continue_through_decode_journal_and_runtime_apply() {
+    fn configured_deadlines_continue_through_decode_and_runtime_apply() {
         let mut stream = FakeConnection::new(reserve_frame());
-        let mut journal = KeyProvisioningReplayJournal::default();
         let mut runtime_mutations = 0usize;
 
-        process_key_provisioning_connection(&mut stream, &mut journal, |command| {
+        process_key_provisioning_connection(&mut stream, |command| {
             assert!(matches!(command, KeyProvisioningCommand::Reserve { .. }));
             runtime_mutations = runtime_mutations.saturating_add(1);
             KeyProvisioningStatus::Ok
@@ -219,10 +208,47 @@ mod tests {
         assert_eq!(stream.read_timeout_calls.get(), 1);
         assert_eq!(stream.write_timeout_calls.get(), 1);
         assert!(stream.read_calls > 0);
-        assert_eq!(journal.len(), 1);
         assert_eq!(runtime_mutations, 1);
         let response = decode_response(&stream.output).expect("valid response");
         assert_eq!(response.request_id, 91);
         assert_eq!(response.status, KeyProvisioningStatus::Ok);
+    }
+
+    #[test]
+    fn response_write_failure_does_not_repeat_runtime_mutation() {
+        let mut stream = FakeConnection::new(reserve_frame());
+        stream.fail_response_write = true;
+        let mut runtime_mutations = 0usize;
+
+        let result = process_key_provisioning_connection(&mut stream, |_| {
+            runtime_mutations = runtime_mutations.saturating_add(1);
+            KeyProvisioningStatus::Ok
+        });
+
+        assert!(result.is_err());
+        assert_eq!(runtime_mutations, 1);
+        assert!(stream.output.is_empty());
+    }
+
+    #[test]
+    fn reused_request_id_is_applied_as_a_new_connection() {
+        let mut first = FakeConnection::new(reserve_frame());
+        let mut second = FakeConnection::new(reserve_frame());
+        let mut runtime_mutations = 0usize;
+
+        for stream in [&mut first, &mut second] {
+            process_key_provisioning_connection(stream, |_| {
+                runtime_mutations = runtime_mutations.saturating_add(1);
+                KeyProvisioningStatus::Ok
+            })
+            .expect("each valid connection must be applied once");
+        }
+
+        assert_eq!(runtime_mutations, 2);
+        for output in [&first.output, &second.output] {
+            let response = decode_response(output).expect("valid response");
+            assert_eq!(response.request_id, 91);
+            assert_eq!(response.status, KeyProvisioningStatus::Ok);
+        }
     }
 }

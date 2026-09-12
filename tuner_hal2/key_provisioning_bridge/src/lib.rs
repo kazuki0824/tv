@@ -1,4 +1,3 @@
-use std::collections::{BTreeMap, VecDeque};
 use std::ptr;
 use std::sync::atomic::{compiler_fence, Ordering};
 
@@ -6,7 +5,6 @@ pub const KEY_PROVISIONING_SOCKET_NAME: &str = "maleicacid_key_provisioning";
 pub const KEY_PROVISIONING_SOCKET_PATH: &str = "/dev/socket/maleicacid_key_provisioning";
 pub const KEY_PROVISIONING_MAX_FRAME_BYTES: usize = 160;
 pub const DESCRAMBLER_KEY_TOKEN_MAX_BYTES: usize = 16;
-pub const KEY_PROVISIONING_REPLAY_ENTRIES: usize = 64;
 
 const REQUEST_MAGIC: [u8; 4] = *b"MKPR";
 const RESPONSE_MAGIC: [u8; 4] = *b"MKPS";
@@ -190,141 +188,6 @@ pub enum KeyProvisioningCommand {
         key_token: Vec<u8>,
         identity: ProvisioningIdentity,
     },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub enum KeyProvisioningCommandKey {
-    Ping,
-    Reserve {
-        key_token: Vec<u8>,
-        provider_id: u64,
-        provider_generation: u64,
-    },
-    Publish {
-        key_token: Vec<u8>,
-        provider_id: u64,
-        provider_generation: u64,
-        key_epoch: u64,
-    },
-    Revoke {
-        key_token: Vec<u8>,
-        provider_id: u64,
-        provider_generation: u64,
-    },
-}
-
-impl KeyProvisioningCommand {
-    pub fn replay_key(&self) -> KeyProvisioningCommandKey {
-        match self {
-            Self::Ping => KeyProvisioningCommandKey::Ping,
-            Self::Reserve {
-                key_token,
-                identity,
-            } => KeyProvisioningCommandKey::Reserve {
-                key_token: key_token.clone(),
-                provider_id: identity.provider_id(),
-                provider_generation: identity.provider_generation(),
-            },
-            Self::Publish {
-                key_token,
-                resource,
-            } => KeyProvisioningCommandKey::Publish {
-                key_token: key_token.clone(),
-                provider_id: resource.identity().provider_id(),
-                provider_generation: resource.identity().provider_generation(),
-                key_epoch: resource.key_epoch(),
-            },
-            Self::Revoke {
-                key_token,
-                identity,
-            } => KeyProvisioningCommandKey::Revoke {
-                key_token: key_token.clone(),
-                provider_id: identity.provider_id(),
-                provider_generation: identity.provider_generation(),
-            },
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ReplayLookup {
-    Miss,
-    Hit(KeyProvisioningStatus),
-    Conflict,
-}
-
-#[derive(Debug)]
-pub struct KeyProvisioningReplayJournal {
-    entries: BTreeMap<u64, (KeyProvisioningCommandKey, KeyProvisioningStatus)>,
-    order: VecDeque<u64>,
-    max_entries: usize,
-}
-
-impl Default for KeyProvisioningReplayJournal {
-    fn default() -> Self {
-        Self::new(KEY_PROVISIONING_REPLAY_ENTRIES)
-    }
-}
-
-impl KeyProvisioningReplayJournal {
-    pub fn new(max_entries: usize) -> Self {
-        Self {
-            entries: BTreeMap::new(),
-            order: VecDeque::new(),
-            max_entries,
-        }
-    }
-
-    pub fn lookup(&self, request_id: u64, command: &KeyProvisioningCommand) -> ReplayLookup {
-        self.lookup_key(request_id, &command.replay_key())
-    }
-
-    pub fn lookup_key(&self, request_id: u64, key: &KeyProvisioningCommandKey) -> ReplayLookup {
-        let Some((stored_key, status)) = self.entries.get(&request_id) else {
-            return ReplayLookup::Miss;
-        };
-        if stored_key == key {
-            ReplayLookup::Hit(*status)
-        } else {
-            ReplayLookup::Conflict
-        }
-    }
-
-    pub fn record(
-        &mut self,
-        request_id: u64,
-        command: &KeyProvisioningCommand,
-        status: KeyProvisioningStatus,
-    ) {
-        self.record_key(request_id, command.replay_key(), status);
-    }
-
-    pub fn record_key(
-        &mut self,
-        request_id: u64,
-        key: KeyProvisioningCommandKey,
-        status: KeyProvisioningStatus,
-    ) {
-        if self.max_entries == 0 || self.entries.contains_key(&request_id) {
-            return;
-        }
-        while self.entries.len() >= self.max_entries {
-            let Some(oldest) = self.order.pop_front() else {
-                break;
-            };
-            self.entries.remove(&oldest);
-        }
-        self.entries.insert(request_id, (key, status));
-        self.order.push_back(request_id);
-    }
-
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -685,59 +548,6 @@ mod tests {
         let first = ProvisioningIdentity::try_new(1, 9).unwrap();
         let second = ProvisioningIdentity::try_new(u64::MAX, 9).unwrap();
         assert_ne!(first.provider_id(), second.provider_id());
-    }
-
-    #[test]
-    fn replay_journal_returns_old_result_without_key_material() {
-        let mut journal = KeyProvisioningReplayJournal::new(2);
-        let command = KeyProvisioningCommand::Publish {
-            key_token: vec![9],
-            resource: resource(1),
-        };
-        journal.record(10, &command, KeyProvisioningStatus::Ok);
-        assert_eq!(
-            journal.lookup(10, &command),
-            ReplayLookup::Hit(KeyProvisioningStatus::Ok)
-        );
-        let debug = format!("{journal:?}");
-        assert!(!debug.contains("17, 17"));
-        assert!(!debug.contains("34, 34"));
-    }
-
-    #[test]
-    fn reused_request_id_for_different_command_is_conflict() {
-        let mut journal = KeyProvisioningReplayJournal::new(2);
-        let first = KeyProvisioningCommand::Reserve {
-            key_token: vec![1],
-            identity: identity(),
-        };
-        let second = KeyProvisioningCommand::Reserve {
-            key_token: vec![2],
-            identity: identity(),
-        };
-        journal.record(1, &first, KeyProvisioningStatus::Ok);
-        assert_eq!(journal.lookup(1, &second), ReplayLookup::Conflict);
-    }
-
-    #[test]
-    fn replay_journal_is_bounded() {
-        let mut journal = KeyProvisioningReplayJournal::new(1);
-        let first = KeyProvisioningCommand::Reserve {
-            key_token: vec![1],
-            identity: identity(),
-        };
-        let second = KeyProvisioningCommand::Reserve {
-            key_token: vec![2],
-            identity: identity(),
-        };
-        journal.record(1, &first, KeyProvisioningStatus::Ok);
-        journal.record(2, &second, KeyProvisioningStatus::Ok);
-        assert_eq!(journal.len(), 1);
-        assert_eq!(journal.lookup(1, &first), ReplayLookup::Miss);
-        assert_eq!(
-            journal.lookup(2, &second),
-            ReplayLookup::Hit(KeyProvisioningStatus::Ok)
-        );
     }
 
     #[test]
