@@ -1,6 +1,11 @@
+// テストの入力・期待値を本体の定数と独立した具体値で記述する。
+@file:Suppress("MagicNumber")
+
 package com.maleicacid.tvinput.tis
 
+import android.app.Application
 import android.content.Context
+import android.content.Intent
 import org.json.JSONObject
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -8,11 +13,9 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
-import java.nio.file.Files
-import java.nio.file.Path
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [35], manifest = Config.NONE)
+@Config(sdk = [35])
 class AndroidDependentRobolectricTest {
     @Test
     fun recordingDisabledContractRunsWithAndroidRuntime() {
@@ -23,11 +26,11 @@ class AndroidDependentRobolectricTest {
     @Test
     fun lockedBootStoresOnlyPendingState() {
         val context: Context = RuntimeEnvironment.getApplication()
-        DirectBootGuard.onLockedBootCompleted(context, 1234L, android.content.Intent.ACTION_LOCKED_BOOT_COMPLETED)
+        DirectBootGuard.onLockedBootCompleted(context, 1234L, Intent.ACTION_LOCKED_BOOT_COMPLETED)
         val state = DirectBootGuard.pendingStateForTest(context)
         check(state.pending)
         check(state.lastLockedBootReceivedAt == 1234L)
-        check(state.bootReason == android.content.Intent.ACTION_LOCKED_BOOT_COMPLETED)
+        check(state.bootReason == Intent.ACTION_LOCKED_BOOT_COMPLETED)
         check(state.lastSkippedReason == "LOCKED_BOOT_DEFERRED")
     }
 
@@ -38,6 +41,9 @@ class AndroidDependentRobolectricTest {
         check(diagnostic.getString("schema") == "maleicacid.tv.descriptorDiagnostic")
         check(diagnostic.getInt("schemaVersion") == 1)
         check(diagnostic.getString("code") == "MalformedLength")
+        check(diagnostic.has("scope"))
+        check(diagnostic.has("descriptor"))
+
         val descriptor = diagnostic.getJSONObject("descriptor")
         check(descriptor.getInt("tag") == 77)
         check(descriptor.getInt("declaredLength") == 6)
@@ -52,6 +58,7 @@ class AndroidDependentRobolectricTest {
         check(providerData.getString("schema") == "maleicacid.tv.program")
         check(providerData.getInt("schemaVersion") == 1)
         check(!providerData.has("descriptorDiagnostics"))
+
         val diagnostics = providerData.getJSONObject("diagnostics")
         check(diagnostics.has("descriptorDiagnostics"))
         check(diagnostics.getJSONArray("descriptorDiagnostics").length() == 0)
@@ -60,5 +67,10 @@ class AndroidDependentRobolectricTest {
     }
 
     private fun assetText(path: String): String =
-        Files.readString(Path.of("../../tests/assets", path))
+        RuntimeEnvironment
+            .getApplication<Application>()
+            .assets
+            .open(path)
+            .bufferedReader(Charsets.UTF_8)
+            .use { it.readText() }
 }

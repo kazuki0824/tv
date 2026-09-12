@@ -33,5 +33,10 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Gradle 8.9を使用
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
       - name: Android依存Kotlin契約をRobolectricで実行
-        run: mvn --batch-mode --no-transfer-progress -f tis/host_ci/robolectric/pom.xml test
+        run: gradle --no-daemon -p tis/host_ci/robolectric testDebugUnitTest
