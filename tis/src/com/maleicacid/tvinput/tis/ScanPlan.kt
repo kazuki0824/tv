@@ -195,6 +195,7 @@ object JapanIsdbScanPlan {
             .toCollection(linkedSetOf())
     }
 
+    @Suppress("MaxLineLength")
     fun staticBsCandidatesFor(seed: ScanCandidate): List<ScanCandidate> = explicitBsCandidatesFromScan(seed, staticBsStreamIdsFor(seed))
 
     fun explicitBsCandidatesFromScan(
@@ -261,5 +262,6 @@ object JapanIsdbScanPlan {
         )
     }
 
+    @Suppress("MaxLineLength")
     fun defaultInitialScan(): List<ScanCandidate> = isdbtUhf13To62() + isdbtCatvC13ToC63() + isdbsBsBands() + isdbs110CsBands()
 }
