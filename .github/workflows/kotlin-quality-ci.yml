@@ -52,7 +52,11 @@ jobs:
           mapfile -d '' -t files < <(
             git diff --name-only --diff-filter=ACMR -z "$base" HEAD -- '*.kt' '*.kts' | sort -z
           )
-          printf 'files=%s\n' "$(printf '%s\n' "${files[@]}" | jq -Rsc 'split("\n")[:-1]')" >> "$GITHUB_OUTPUT"
+          if ((${#files[@]} == 0)); then
+            echo 'files=[]' >> "$GITHUB_OUTPUT"
+          else
+            printf 'files=%s\n' "$(printf '%s\n' "${files[@]}" | jq -Rsc 'split("\n")[:-1]')" >> "$GITHUB_OUTPUT"
+          fi
 
   ktlint:
     name: ktlint format check
