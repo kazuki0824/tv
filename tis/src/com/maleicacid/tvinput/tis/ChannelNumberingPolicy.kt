@@ -9,16 +9,26 @@ import com.maleicacid.tvinput.db.ChannelRecord
  * BS/110CS は地上波と同じ リモコンキー 意味論を持たないため、scan 候補ラベルと service_id を使う。
  */
 object ChannelNumberingPolicy {
-    fun displayNumber(service: AribService, remoteKey: Int?, candidate: ScanCandidate): String {
-        val base = when (candidate.deliverySystem) {
-            ChannelRecord.DELIVERY_SYSTEM_ISDB_T -> terrestrialBase(service, remoteKey)
-            ChannelRecord.DELIVERY_SYSTEM_ISDB_S -> satelliteBase(service, candidate)
-            else -> candidate.displayChannel.ifBlank { service.serviceKey.serviceId.toString() }
-        }
+    fun displayNumber(
+        service: AribService,
+        remoteKey: Int?,
+        candidate: ScanCandidate,
+    ): String {
+        val base =
+            when (candidate.deliverySystem) {
+                ChannelRecord.DELIVERY_SYSTEM_ISDB_T -> terrestrialBase(service, remoteKey)
+                ChannelRecord.DELIVERY_SYSTEM_ISDB_S -> satelliteBase(service, candidate)
+                else -> candidate.displayChannel.ifBlank { service.serviceKey.serviceId.toString() }
+            }
         return base.replace(Regex("[^0-9A-Za-z_.-]"), "-")
     }
 
-    private fun terrestrialBase(service: AribService, remoteKey: Int?): String {
+    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
+    @Suppress("MagicNumber")
+    private fun terrestrialBase(
+        service: AribService,
+        remoteKey: Int?,
+    ): String {
         val key = remoteKey?.takeIf { it in 1..12 } ?: return service.serviceKey.serviceId.toString()
         val serviceId = service.serviceKey.serviceId
         // ARIB TR-B14 Vol.7 encodes service type in b8..b7 and service number in b2..b0.
@@ -28,13 +38,16 @@ object ChannelNumberingPolicy {
         return threeDigitNumber.toString().padStart(3, '0')
     }
 
-    private fun satelliteBase(service: AribService, candidate: ScanCandidate): String {
-        val prefix = when (candidate.satelliteBand) {
-            "BS" -> "BS"
-            "110CS" -> "CS"
-            else -> candidate.displayChannel.takeIf { it.isNotBlank() } ?: "SAT"
-        }
+    private fun satelliteBase(
+        service: AribService,
+        candidate: ScanCandidate,
+    ): String {
+        val prefix =
+            when (candidate.satelliteBand) {
+                "BS" -> "BS"
+                "110CS" -> "CS"
+                else -> candidate.displayChannel.takeIf { it.isNotBlank() } ?: "SAT"
+            }
         return "$prefix-${service.serviceKey.serviceId}"
     }
-
 }

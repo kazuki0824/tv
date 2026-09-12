@@ -1,3 +1,6 @@
+// テストの入力・期待値を本体の定数と独立した具体値で記述する。
+@file:Suppress("MagicNumber")
+
 package com.maleicacid.tvinput.tis
 
 import com.maleicacid.tvinput.aribsi.AribService
@@ -9,43 +12,80 @@ import com.maleicacid.tvinput.db.ChannelRecord
 import org.junit.Test
 
 class ChannelNumberingPolicyTest {
-    @Test fun terrestrialUsesRemoteKeyAndStableBranch() {
-        val candidate = ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_T, FrequencyHz(473_142_857L), displayChannel = "13", physicalChannel = 13)
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    @Test
+    fun terrestrialUsesRemoteKeyAndStableBranch() {
+        val candidate =
+            ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_T, FrequencyHz(473_142_857L), displayChannel = "13", physicalChannel = 13)
         val service = AribService(ServiceKey(1, 2, 0x0400), "svc")
         check(ChannelNumberingPolicy.displayNumber(service, 1, candidate) == "011")
     }
 
-    @Test fun terrestrialWithoutRemoteKeyFallsBackToServiceId() {
-        val candidate = ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_T, FrequencyHz(473_142_857L), displayChannel = "13", physicalChannel = 13)
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    @Test
+    fun terrestrialWithoutRemoteKeyFallsBackToServiceId() {
+        val candidate =
+            ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_T, FrequencyHz(473_142_857L), displayChannel = "13", physicalChannel = 13)
         val service = AribService(ServiceKey(1, 2, 101), "svc")
         check(ChannelNumberingPolicy.displayNumber(service, null, candidate) == "101")
     }
 
     @Test fun satelliteUsesBandAndServiceIdWithoutCsStreamSelector() {
-        val candidate = ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_S, FrequencyHz(1_613_000_000L), displayChannel = "CS1", satelliteBand = "110CS")
+        val candidate =
+            ScanCandidate(
+                ChannelRecord.DELIVERY_SYSTEM_ISDB_S,
+                FrequencyHz(1_613_000_000L),
+                displayChannel = "CS1",
+                satelliteBand = "110CS",
+            )
         val service = AribService(ServiceKey(1, 2, 333), "svc")
         check(candidate.streamSelector.type == StreamSelectorType.NONE)
         check(ChannelNumberingPolicy.displayNumber(service, null, candidate) == "CS-333")
     }
 
     @Test fun earthPt1BsRejectsRelativeSelector() {
-        val failed = runCatching {
-            ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_S, FrequencyHz(1_318_000_000L), streamSelector = StreamSelector.relative(1), displayChannel = "BS15/1", satelliteBand = "BS", backendHint = "earth_pt1")
-        }.isFailure
+        val failed =
+            runCatching {
+                ScanCandidate(
+                    ChannelRecord.DELIVERY_SYSTEM_ISDB_S,
+                    FrequencyHz(1_318_000_000L),
+                    streamSelector = StreamSelector.relative(1),
+                    displayChannel = "BS15/1",
+                    satelliteBand = "BS",
+                    backendHint = "earth_pt1",
+                )
+            }.isFailure
         check(failed)
     }
 
     @Test fun cs110RejectsStreamSelector() {
-        val failed = runCatching {
-            ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_S, FrequencyHz(1_613_000_000L), streamSelector = StreamSelector.tsid(16400), displayChannel = "CS1", satelliteBand = "110CS")
-        }.isFailure
+        val failed =
+            runCatching {
+                ScanCandidate(
+                    ChannelRecord.DELIVERY_SYSTEM_ISDB_S,
+                    FrequencyHz(1_613_000_000L),
+                    streamSelector = StreamSelector.tsid(16400),
+                    displayChannel = "CS1",
+                    satelliteBand = "110CS",
+                )
+            }.isFailure
         check(failed)
     }
 
     @Test fun px4BsAlsoRejectsRelativeSelector() {
-        val failed = runCatching {
-            ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_S, FrequencyHz(1_318_000_000L), streamSelector = StreamSelector.relative(1), displayChannel = "BS15/1", satelliteBand = "BS", backendHint = "px4")
-        }.isFailure
+        val failed =
+            runCatching {
+                ScanCandidate(
+                    ChannelRecord.DELIVERY_SYSTEM_ISDB_S,
+                    FrequencyHz(1_318_000_000L),
+                    streamSelector = StreamSelector.relative(1),
+                    displayChannel = "BS15/1",
+                    satelliteBand = "BS",
+                    backendHint = "px4",
+                )
+            }.isFailure
         check(failed)
     }
 }

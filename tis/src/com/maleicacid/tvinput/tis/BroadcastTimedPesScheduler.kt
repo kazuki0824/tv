@@ -1,5 +1,7 @@
 package com.maleicacid.tvinput.tis
 
+// 時計・配送・予約・取消しの独立した注入境界を既存の引数として明示する。
+
 /**
  * Timing=10文字スーパーのpending STMと遅延Runnableを単一所有する。
  *
@@ -7,6 +9,7 @@ package com.maleicacid.tvinput.tis
  * 同一pendingのre-arm時はarm sequenceを更新し、removeCallbacksと競合して旧Runnableが実行されても
  * current armを変更しない。
  */
+@Suppress("LongParameterList")
 internal class BroadcastTimedPesScheduler(
     private val resolveDeadline: (AribBroadcastClock.StatementTime, Long?) -> AribBroadcastClock.Deadline?,
     private val currentPlaybackGeneration: () -> Long,
@@ -42,13 +45,14 @@ internal class BroadcastTimedPesScheduler(
         if (currentTrackId() != trackId) return
         val deadline = resolveDeadline(statementTime, null) ?: return
         val token = nextToken()
-        pending[token] = Pending(
-            trackId = trackId,
-            pesData = pesData.copyOf(),
-            statementTime = statementTime,
-            playbackGeneration = currentPlaybackGeneration(),
-            clockGeneration = deadline.clockGeneration,
-        )
+        pending[token] =
+            Pending(
+                trackId = trackId,
+                pesData = pesData.copyOf(),
+                statementTime = statementTime,
+                playbackGeneration = currentPlaybackGeneration(),
+                clockGeneration = deadline.clockGeneration,
+            )
         arm(token, deadline)
     }
 
@@ -70,12 +74,17 @@ internal class BroadcastTimedPesScheduler(
         pending.clear()
     }
 
-    private fun arm(token: Long, deadline: AribBroadcastClock.Deadline) {
+    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+    @Suppress("ReturnCount")
+    private fun arm(
+        token: Long,
+        deadline: AribBroadcastClock.Deadline,
+    ) {
         armed.remove(token)?.let { removeCallbacks(it.runnable) }
         val item = pending[token] ?: return
-        if (item.playbackGeneration != currentPlaybackGeneration()
-            || item.clockGeneration != deadline.clockGeneration
-            || item.trackId != currentTrackId()
+        if (item.playbackGeneration != currentPlaybackGeneration() ||
+            item.clockGeneration != deadline.clockGeneration ||
+            item.trackId != currentTrackId()
         ) {
             pending.remove(token)
             return
@@ -88,20 +97,21 @@ internal class BroadcastTimedPesScheduler(
 
         val sequence = nextArmSequence()
         lateinit var runnable: Runnable
-        runnable = Runnable {
-            dispatch {
-                val currentArm = armed[token]
-                if (currentArm?.sequence != sequence || currentArm.runnable !== runnable) return@dispatch
-                armed.remove(token)
-                val current = pending[token] ?: return@dispatch
-                val remaining = resolveDeadline(current.statementTime, current.clockGeneration)
-                if (remaining == null) {
-                    pending.remove(token)
-                } else {
-                    arm(token, remaining)
+        runnable =
+            Runnable {
+                dispatch {
+                    val currentArm = armed[token]
+                    if (currentArm?.sequence != sequence || currentArm.runnable !== runnable) return@dispatch
+                    armed.remove(token)
+                    val current = pending[token] ?: return@dispatch
+                    val remaining = resolveDeadline(current.statementTime, current.clockGeneration)
+                    if (remaining == null) {
+                        pending.remove(token)
+                    } else {
+                        arm(token, remaining)
+                    }
                 }
             }
-        }
         armed[token] = Armed(sequence, runnable)
         postDelayed(runnable, deadline.delayMillis)
     }

@@ -6,9 +6,18 @@ import android.graphics.Canvas
 import android.view.View
 import com.maleicacid.tvinput.aribsi.NativeAribCaptionRenderer
 
+// 同じ状態・境界を扱う操作群を一つの所有者に保つ。
+
 /** libaribcaptionのRGBA imageをrenderer viewport原点からそのまま重ねる表示層。 */
-class CaptionOverlayView(context: Context) : View(context) {
-    data class BitmapImage(val bitmap: Bitmap, val dstX: Int, val dstY: Int)
+@Suppress("TooManyFunctions")
+class CaptionOverlayView(
+    context: Context,
+) : View(context) {
+    data class BitmapImage(
+        val bitmap: Bitmap,
+        val dstX: Int,
+        val dstY: Int,
+    )
 
     private data class Layer(
         val images: List<BitmapImage>,
@@ -19,10 +28,14 @@ class CaptionOverlayView(context: Context) : View(context) {
     private val layers = linkedMapOf<String, Layer>()
     private val sizeListeners = linkedMapOf<String, (Int, Int) -> Unit>()
 
-    fun setOnOverlaySizeChangedListener(listener: (Int, Int) -> Unit) =
-        setOnOverlaySizeChangedListener(DEFAULT_LAYER_ID, listener)
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    fun setOnOverlaySizeChangedListener(listener: (Int, Int) -> Unit) = setOnOverlaySizeChangedListener(DEFAULT_LAYER_ID, listener)
 
-    fun setOnOverlaySizeChangedListener(layerId: String, listener: (Int, Int) -> Unit) {
+    fun setOnOverlaySizeChangedListener(
+        layerId: String,
+        listener: (Int, Int) -> Unit,
+    ) {
         sizeListeners[layerId] = listener
         if (width > 0 && height > 0) listener(width, height)
     }
@@ -67,7 +80,12 @@ class CaptionOverlayView(context: Context) : View(context) {
         invalidate()
     }
 
-    override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
+    override fun onSizeChanged(
+        width: Int,
+        height: Int,
+        oldWidth: Int,
+        oldHeight: Int,
+    ) {
         super.onSizeChanged(width, height, oldWidth, oldHeight)
         sizeListeners.values.toList().forEach { listener -> listener(width, height) }
     }
@@ -98,6 +116,9 @@ class CaptionOverlayView(context: Context) : View(context) {
     companion object {
         private const val DEFAULT_LAYER_ID = "caption"
 
+        // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
+        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+        @Suppress("MagicNumber", "MaxLineLength")
         fun bitmapFromRgba(image: NativeAribCaptionRenderer.RenderedCaptionImage): Bitmap? {
             if (!NativeAribCaptionRenderer.validImageBuffer(image.width, image.height, image.stride, image.rgba8888.size)) {
                 return null

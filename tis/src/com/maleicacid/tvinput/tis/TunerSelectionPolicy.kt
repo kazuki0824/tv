@@ -7,39 +7,75 @@ import com.maleicacid.tvinput.aribsi.AribElementaryStream
 import com.maleicacid.tvinput.common.StreamSelector
 import com.maleicacid.tvinput.common.StreamSelectorType
 
+// 同じ状態・境界を扱う操作群を一つの所有者に保つ。
+
 /** stream/track選択の純粋policy。Android Tuner資源は[TunerController]が所有する。 */
+@Suppress("TooManyFunctions")
 object TunerSelectionPolicy {
+    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
+    @Suppress("MagicNumber")
     private val videoStreamTypes = setOf(0x02, 0x1b)
+
+    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
+    @Suppress("MagicNumber")
     private val audioStreamTypes = setOf(0x03, 0x04, 0x0f)
 
     fun isSupportedVideoStreamType(streamType: Int): Boolean = streamType in videoStreamTypes
+
     fun isSupportedAudioStreamType(streamType: Int): Boolean = streamType in audioStreamTypes
+
     fun isSupportedAudioStream(stream: AribElementaryStream): Boolean =
         isSupportedAudioStreamType(stream.streamType) && stream.codecFacts.resolved &&
             stream.codec != "MPEG-4-ALS" && stream.codec != "MPEG-4-Audio" && stream.codec != "HE-AAC-v2"
+
+    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MagicNumber", "MaxLineLength")
     fun isSupportedVideoStream(stream: AribElementaryStream): Boolean =
         isSupportedVideoStreamType(stream.streamType) && stream.codecFacts.resolved &&
             (stream.streamType != 0x1b || stream.codecFacts.avc?.let { CodecFormatPolicy.avcProfileLevel(it) != null } != false)
-    fun selectVideo(streams: List<AribElementaryStream>, componentGroupTags: Set<Int>? = null): AribElementaryStream? =
-        selectDefault(streams.filter(::isSupportedVideoStream), DEFAULT_VIDEO_COMPONENT_TAG, componentGroupTags)
 
-    fun selectAudio(streams: List<AribElementaryStream>, componentGroupTags: Set<Int>? = null): AribElementaryStream? =
-        selectDefault(streams.filter(::isSupportedAudioStream), DEFAULT_AUDIO_COMPONENT_TAG, componentGroupTags)
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    fun selectVideo(
+        streams: List<AribElementaryStream>,
+        componentGroupTags: Set<Int>? = null,
+    ): AribElementaryStream? = selectDefault(streams.filter(::isSupportedVideoStream), DEFAULT_VIDEO_COMPONENT_TAG, componentGroupTags)
 
-    fun selectCaption(streams: List<AribElementaryStream>, componentGroupTags: Set<Int>? = null): AribElementaryStream? =
-        selectDefault(streams.filter(::isCaptionStream), DEFAULT_CAPTION_COMPONENT_TAG, componentGroupTags)
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    fun selectAudio(
+        streams: List<AribElementaryStream>,
+        componentGroupTags: Set<Int>? = null,
+    ): AribElementaryStream? = selectDefault(streams.filter(::isSupportedAudioStream), DEFAULT_AUDIO_COMPONENT_TAG, componentGroupTags)
 
-    fun selectSuperimpose(streams: List<AribElementaryStream>, componentGroupTags: Set<Int>? = null): AribElementaryStream? =
-        selectDefault(streams.filter(::isSuperimposeStream), DEFAULT_SUPERIMPOSE_COMPONENT_TAG, componentGroupTags)
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    fun selectCaption(
+        streams: List<AribElementaryStream>,
+        componentGroupTags: Set<Int>? = null,
+    ): AribElementaryStream? = selectDefault(streams.filter(::isCaptionStream), DEFAULT_CAPTION_COMPONENT_TAG, componentGroupTags)
 
-    fun hasSupportedVideo(streams: List<AribElementaryStream>): Boolean =
-        streams.any(::isSupportedVideoStream)
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    fun selectSuperimpose(
+        streams: List<AribElementaryStream>,
+        componentGroupTags: Set<Int>? = null,
+    ): AribElementaryStream? = selectDefault(streams.filter(::isSuperimposeStream), DEFAULT_SUPERIMPOSE_COMPONENT_TAG, componentGroupTags)
+
+    fun hasSupportedVideo(streams: List<AribElementaryStream>): Boolean = streams.any(::isSupportedVideoStream)
 
     fun trackIdForVideo(stream: AribElementaryStream): String = "video:${stream.elementaryPid}"
+
     fun trackIdForAudio(stream: AribElementaryStream): String =
         stream.componentTag?.let { "audio:${stream.elementaryPid}:$it" } ?: "audio:${stream.elementaryPid}"
 
-    fun trackIdForSubtitle(stream: AribElementaryStream, languageId: Int = 1): String {
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    fun trackIdForSubtitle(
+        stream: AribElementaryStream,
+        languageId: Int = 1,
+    ): String {
         val base = stream.componentTag?.let { "subtitle:${stream.elementaryPid}:$it" } ?: "subtitle:${stream.elementaryPid}"
         return "$base:lang$languageId"
     }
@@ -49,27 +85,35 @@ object TunerSelectionPolicy {
 
     fun isSuperimposeStream(stream: AribElementaryStream): Boolean = stream.isSuperimpose
 
+    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
+    @Suppress("MagicNumber")
     fun isCaptionStream(stream: AribElementaryStream): Boolean =
         !stream.isSuperimpose && (stream.isCaption || stream.dataComponentId == 0x0012)
 
-    fun captionKind(stream: AribElementaryStream): String = when {
-        stream.isSuperimpose -> "superimpose"
-        stream.dataComponentId == 0x0012 -> "one-seg-caption"
-        else -> "caption"
-    }
+    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
+    @Suppress("MagicNumber")
+    fun captionKind(stream: AribElementaryStream): String =
+        when {
+            stream.isSuperimpose -> "superimpose"
+            stream.dataComponentId == 0x0012 -> "one-seg-caption"
+            else -> "caption"
+        }
 
-    fun isCs110SelectorAllowed(satelliteBand: String?, selector: StreamSelector): Boolean =
-        satelliteBand != "110CS" || selector.type == StreamSelectorType.NONE
+    fun isCs110SelectorAllowed(
+        satelliteBand: String?,
+        selector: StreamSelector,
+    ): Boolean = satelliteBand != "110CS" || selector.type == StreamSelectorType.NONE
 
     private fun selectDefault(
         candidates: List<AribElementaryStream>,
         defaultComponentTag: Int,
         componentGroupTags: Set<Int>?,
     ): AribElementaryStream? {
-        val grouped = componentGroupTags
-            ?.takeIf { it.isNotEmpty() }
-            ?.let { tags -> candidates.filter { stream -> stream.componentTag?.let(tags::contains) == true } }
-            ?.takeIf { it.isNotEmpty() }
+        val grouped =
+            componentGroupTags
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { tags -> candidates.filter { stream -> stream.componentTag?.let(tags::contains) == true } }
+                ?.takeIf { it.isNotEmpty() }
         if (grouped != null) {
             return grouped.minWithOrNull(componentTagOrder)
         }
@@ -77,27 +121,44 @@ object TunerSelectionPolicy {
             ?: candidates.minWithOrNull(componentTagOrder)
     }
 
-    fun orderedAudioStreams(streams: List<AribElementaryStream>, componentGroupTags: Set<Int>? = null): List<AribElementaryStream> =
-        orderedWithDefault(streams.filter(::isSupportedAudioStream), selectAudio(streams, componentGroupTags))
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    fun orderedAudioStreams(
+        streams: List<AribElementaryStream>,
+        componentGroupTags: Set<Int>? = null,
+    ): List<AribElementaryStream> = orderedWithDefault(streams.filter(::isSupportedAudioStream), selectAudio(streams, componentGroupTags))
 
-    fun orderedCaptionStreams(streams: List<AribElementaryStream>, componentGroupTags: Set<Int>? = null): List<AribElementaryStream> =
-        orderedWithDefault(streams.filter(::isCaptionStream), selectCaption(streams, componentGroupTags))
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    fun orderedCaptionStreams(
+        streams: List<AribElementaryStream>,
+        componentGroupTags: Set<Int>? = null,
+    ): List<AribElementaryStream> = orderedWithDefault(streams.filter(::isCaptionStream), selectCaption(streams, componentGroupTags))
 
-    private fun orderedWithDefault(candidates: List<AribElementaryStream>, selected: AribElementaryStream?): List<AribElementaryStream> =
+    private fun orderedWithDefault(
+        candidates: List<AribElementaryStream>,
+        selected: AribElementaryStream?,
+    ): List<AribElementaryStream> =
         buildList {
             selected?.let(::add)
             candidates.filterNot { it == selected }.sortedWith(componentTagOrder).forEach(::add)
         }
 
-    private val componentTagOrder = compareBy<AribElementaryStream> { it.componentTag ?: Int.MAX_VALUE }
-        .thenBy { it.elementaryPid.value }
+    private val componentTagOrder =
+        compareBy<AribElementaryStream> { it.componentTag ?: Int.MAX_VALUE }
+            .thenBy { it.elementaryPid.value }
 
-    fun isSelectableTrack(type: Int, trackId: String?, tracks: List<TunerController.TisTrack>): Boolean = when (type) {
-        TvTrackInfo.TYPE_AUDIO -> trackId != null && tracks.any { it.type == type && it.id == trackId }
-        TvTrackInfo.TYPE_VIDEO -> trackId != null && tracks.firstOrNull { it.type == type }?.id == trackId
-        TvTrackInfo.TYPE_SUBTITLE -> trackId != null && tracks.any { it.type == type && it.id == trackId }
-        else -> false
-    }
+    fun isSelectableTrack(
+        type: Int,
+        trackId: String?,
+        tracks: List<TunerController.TisTrack>,
+    ): Boolean =
+        when (type) {
+            TvTrackInfo.TYPE_AUDIO -> trackId != null && tracks.any { it.type == type && it.id == trackId }
+            TvTrackInfo.TYPE_VIDEO -> trackId != null && tracks.firstOrNull { it.type == type }?.id == trackId
+            TvTrackInfo.TYPE_SUBTITLE -> trackId != null && tracks.any { it.type == type && it.id == trackId }
+            else -> false
+        }
 
     private const val DEFAULT_VIDEO_COMPONENT_TAG = 0x00
     private const val DEFAULT_AUDIO_COMPONENT_TAG = 0x10
@@ -139,34 +200,48 @@ object AudioTrackMetadataPolicy {
         )
     }
 
-    fun encodingForPmtStreamType(streamType: Int): String? = when (streamType) {
-        0x03, 0x04 -> MediaFormat.MIMETYPE_AUDIO_MPEG
-        0x0f -> MediaFormat.MIMETYPE_AUDIO_AAC
-        else -> null
-    }
+    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
+    @Suppress("MagicNumber")
+    fun encodingForPmtStreamType(streamType: Int): String? =
+        when (streamType) {
+            0x03, 0x04 -> MediaFormat.MIMETYPE_AUDIO_MPEG
+            0x0f -> MediaFormat.MIMETYPE_AUDIO_AAC
+            else -> null
+        }
 
-    fun channelCountForComponentType(componentType: Int): Int? = when (componentType and 0x1f) {
-        0x01 -> 1
-        0x02 -> 2
-        0x03 -> 2
-        0x04, 0x05 -> 3
-        0x06, 0x07 -> 4
-        0x08 -> 5
-        0x09 -> 6
-        else -> null
-    }
+    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
+    @Suppress("MagicNumber")
+    fun channelCountForComponentType(componentType: Int): Int? =
+        when (componentType and 0x1f) {
+            0x01 -> 1
+            0x02 -> 2
+            0x03 -> 2
+            0x04, 0x05 -> 3
+            0x06, 0x07 -> 4
+            0x08 -> 5
+            0x09 -> 6
+            else -> null
+        }
 
-    fun sampleRateHz(rawSamplingRate: Int): Int? = when (rawSamplingRate) {
-        0x01 -> 16_000
-        0x02 -> 22_050
-        0x03 -> 24_000
-        0x05 -> 32_000
-        0x06 -> 44_100
-        0x07 -> 48_000
-        else -> null
-    }
+    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
+    @Suppress("MagicNumber")
+    fun sampleRateHz(rawSamplingRate: Int): Int? =
+        when (rawSamplingRate) {
+            0x01 -> 16_000
+            0x02 -> 22_050
+            0x03 -> 24_000
+            0x05 -> 32_000
+            0x06 -> 44_100
+            0x07 -> 48_000
+            else -> null
+        }
 
+    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
+    @Suppress("MagicNumber")
     fun isAudioDescription(componentType: Int): Boolean = ((componentType ushr 5) and 0x03) == 0x01
+
+    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
+    @Suppress("MagicNumber")
     fun isHardOfHearing(componentType: Int): Boolean = ((componentType ushr 5) and 0x03) == 0x02
 }
 
@@ -179,8 +254,9 @@ object VideoTrackMetadataPolicy {
     )
 
     fun project(component: AribComponentEntry?): Projection {
-        val valid = component?.takeIf { it.parseStatus.equals("OK", ignoreCase = true) }
-            ?: return Projection(null, null, null)
+        val valid =
+            component?.takeIf { it.parseStatus.equals("OK", ignoreCase = true) }
+                ?: return Projection(null, null, null)
         return Projection(
             description = valid.text?.takeIf { it.isNotBlank() },
             width = null,

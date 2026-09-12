@@ -3,36 +3,49 @@ package com.maleicacid.tvinput.aribsi
 import com.maleicacid.tvinput.common.TsPid
 
 class PmtCatCaMetadataMapper {
-    fun programLevel(metadata: List<CaMetadata>): List<CaMetadata> {
-        return metadata.filter { it.source == CaMetadataSource.PROGRAM && it.ecmPid != null && it.elementaryPid == null && it.serviceKey != null }
-    }
+    fun programLevel(metadata: List<CaMetadata>): List<CaMetadata> =
+        metadata.filter {
+            it.source == CaMetadataSource.PROGRAM && it.ecmPid != null && it.elementaryPid == null &&
+                it.serviceKey != null
+        }
 
-    fun elementaryStreamLevel(metadata: List<CaMetadata>): List<CaMetadata> {
-        return metadata.filter { it.source == CaMetadataSource.ELEMENTARY_STREAM && it.ecmPid != null && it.elementaryPid != null }
-    }
+    fun elementaryStreamLevel(metadata: List<CaMetadata>): List<CaMetadata> =
+        metadata.filter {
+            it.source == CaMetadataSource.ELEMENTARY_STREAM && it.ecmPid != null && it.elementaryPid != null
+        }
 
-    fun emm(metadata: List<CaMetadata>): List<CaMetadata> {
-        return metadata.filter { it.source == CaMetadataSource.CAT && it.emmPid != null }
-    }
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    fun emm(metadata: List<CaMetadata>): List<CaMetadata> = metadata.filter { it.source == CaMetadataSource.CAT && it.emmPid != null }
 
-    fun unsupportedForB25B1(metadata: List<CaMetadata>, supportedSystemIds: Set<Int>): List<CaMetadata> {
-        return metadata.filterNot { it.caSystemId in supportedSystemIds }
-    }
+    fun unsupportedForB25B1(
+        metadata: List<CaMetadata>,
+        supportedSystemIds: Set<Int>,
+    ): List<CaMetadata> =
+        metadata.filterNot {
+            it.caSystemId in supportedSystemIds
+        }
+
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
 
     /**
      * PMT の番組単位 CA_descriptor を ES PID 単位の束縛へ展開する。
      * 同じ サービス、CA_system_id、ECM PID の ES-level CA_descriptor がない場合に使う。
      * PMT/CAT の意味解釈は TIS 側 SI 解析器と制御部に留める。
      */
+    @Suppress("MaxLineLength")
     fun expandProgramLevelToElementaryStreams(
         metadata: List<CaMetadata>,
         services: List<AribService>,
     ): List<CaMetadata> {
         val serviceByKey = services.associateBy { it.serviceKey }
-        val existingEsKeys = metadata
-            .filter { it.source == CaMetadataSource.ELEMENTARY_STREAM && it.serviceKey != null && it.ecmPid != null && it.elementaryPid != null }
-            .map { EsBindingKey(it.serviceKey.toString(), it.caSystemId, it.ecmPid!!, it.elementaryPid!!) }
-            .toMutableSet()
+        val existingEsKeys =
+            metadata
+                .filter {
+                    it.source == CaMetadataSource.ELEMENTARY_STREAM && it.serviceKey != null && it.ecmPid != null &&
+                        it.elementaryPid != null
+                }.map { EsBindingKey(it.serviceKey.toString(), it.caSystemId, it.ecmPid!!, it.elementaryPid!!) }
+                .toMutableSet()
         val expanded = mutableListOf<CaMetadata>()
         programLevel(metadata).forEach { programCa ->
             val service = serviceByKey[programCa.serviceKey] ?: return@forEach
@@ -40,10 +53,11 @@ class PmtCatCaMetadataMapper {
             service.streams.forEach { stream ->
                 val key = EsBindingKey(programCa.serviceKey.toString(), programCa.caSystemId, ecmPid, stream.elementaryPid)
                 if (existingEsKeys.add(key)) {
-                    expanded += programCa.copy(
-                        elementaryPid = stream.elementaryPid,
-                        source = CaMetadataSource.ELEMENTARY_STREAM,
-                    )
+                    expanded +=
+                        programCa.copy(
+                            elementaryPid = stream.elementaryPid,
+                            source = CaMetadataSource.ELEMENTARY_STREAM,
+                        )
                 }
             }
         }

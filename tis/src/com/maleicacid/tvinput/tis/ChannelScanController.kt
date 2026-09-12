@@ -471,7 +471,8 @@ class ChannelScanController(
                     displayName =
                         service.name?.takeIf { it.isNotEmpty() }
                             ?: run {
-                                "service-${service.serviceKey.originalNetworkId}-${service.serviceKey.transportStreamId}-${service.serviceKey.serviceId}"
+                                "service-${service.serviceKey.originalNetworkId}-" +
+                                    "${service.serviceKey.transportStreamId}-${service.serviceKey.serviceId}"
                             },
                     frequencyHz = candidate.frequencyHz,
                     deliverySystem = candidate.deliverySystem,
@@ -492,7 +493,8 @@ class ChannelScanController(
                     .mapValues { (_, decision) -> decision.reasons }
             Log.d(
                 LogTags.TIS,
-                "registration-ready なサービスがないため channel snapshot 登録を省略します candidate=$candidate stage=${transaction.discoveryStage} incomplete=$incomplete",
+                "registration-ready なサービスがないため channel snapshot 登録を省略します candidate=" +
+                    "$candidate stage=${transaction.discoveryStage} incomplete=$incomplete",
             )
             return PublishSnapshotResult(0)
         }

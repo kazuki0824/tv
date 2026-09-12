@@ -6,5 +6,8 @@ import android.content.Intent
 
 /** PackageManager discovers the rating-system XML from manifest metadata. */
 class AribContentRatingReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) = Unit
+    override fun onReceive(
+        context: Context,
+        intent: Intent,
+    ) = Unit
 }

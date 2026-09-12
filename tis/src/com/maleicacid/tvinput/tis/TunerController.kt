@@ -1045,7 +1045,9 @@ class TunerController(
         sectionOversizedCounters[pid] = (sectionOversizedCounters[pid] ?: 0) + 1
         Log.w(
             LogTags.TIS,
-            "oversized section を allocation 前に破棄します inputId=$inputId pid=$pid dataLength=$dataLength max=${SectionFilterPolicy.MAX_SECTION_EVENT_BYTES} count=${sectionOversizedCounters[pid]}",
+            "oversized section を allocation 前に破棄します inputId=$inputId pid=$pid dataLength" +
+                "=$dataLength max=${SectionFilterPolicy.MAX_SECTION_EVENT_BYTES} count=" +
+                "${sectionOversizedCounters[pid]}",
         )
     }
 
@@ -1477,7 +1479,8 @@ class TunerController(
                     -> {
                         Log.w(
                             LogTags.TIS,
-                            "Timing=10 superimposeのinvalid/未分類data-groupをfail-closedで破棄します pid=$pid generation=$generation disposition=${facts?.disposition}",
+                            "Timing=10 superimposeのinvalid/未分類data-groupをfail-closedで破棄します pid=$pid gene" +
+                                "ration=$generation disposition=${facts?.disposition}",
                         )
                     }
                 }

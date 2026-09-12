@@ -13,22 +13,31 @@ object BootEpgSyncScheduler {
 
     enum class ScheduleResult { SCHEDULED, ALREADY_SCHEDULED, NO_PENDING, USER_LOCKED, UNAVAILABLE }
 
-    fun scheduleIfEligible(context: Context, source: String): ScheduleResult {
+    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+    @Suppress("ReturnCount")
+    fun scheduleIfEligible(
+        context: Context,
+        source: String,
+    ): ScheduleResult {
         val appContext = context.applicationContext
         if (!DirectBootGuard.isPending(appContext)) return ScheduleResult.NO_PENDING
         val userManager = appContext.getSystemService(UserManager::class.java)
         if (userManager == null || !userManager.isUserUnlocked) return ScheduleResult.USER_LOCKED
-        val scheduler = appContext.getSystemService(JobScheduler::class.java)
-            ?: return ScheduleResult.UNAVAILABLE
+        val scheduler =
+            appContext.getSystemService(JobScheduler::class.java)
+                ?: return ScheduleResult.UNAVAILABLE
         if (scheduler.getPendingJob(JOB_ID) != null) return ScheduleResult.ALREADY_SCHEDULED
-        val job = JobInfo.Builder(JOB_ID, ComponentName(appContext, BootEpgSyncJobService::class.java))
-            .setPersisted(false)
-            .build()
-        val result = if (scheduler.schedule(job) == JobScheduler.RESULT_SUCCESS) {
-            ScheduleResult.SCHEDULED
-        } else {
-            ScheduleResult.UNAVAILABLE
-        }
+        val job =
+            JobInfo
+                .Builder(JOB_ID, ComponentName(appContext, BootEpgSyncJobService::class.java))
+                .setPersisted(false)
+                .build()
+        val result =
+            if (scheduler.schedule(job) == JobScheduler.RESULT_SUCCESS) {
+                ScheduleResult.SCHEDULED
+            } else {
+                ScheduleResult.UNAVAILABLE
+            }
         Log.i(LogTags.TIS, "boot EPG job登録結果 source=$source result=$result")
         return result
     }

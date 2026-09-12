@@ -5,7 +5,7 @@ import org.junit.Test
 
 class TisScopeTest {
     @Test
-    fun r51では録画を広告しない() {
+    fun r51DoesNotAdvertiseRecording() {
         assertEquals("false", "false")
     }
 }

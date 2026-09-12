@@ -6,7 +6,9 @@ import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.db.ReservationRecord
 import com.maleicacid.tvinput.db.TvInputDatabase
 
-class ReservationController(private val context: Context) {
+class ReservationController(
+    private val context: Context,
+) {
     private val database = TvInputDatabase()
     private val scheduler = ReservationScheduler(context)
     private val recordingClientController = RecordingClientController(context)

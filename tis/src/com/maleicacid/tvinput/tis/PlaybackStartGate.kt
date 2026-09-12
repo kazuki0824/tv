@@ -11,6 +11,8 @@ data class DecoderConfigurationIdentity(
     val componentType: Int?,
 ) {
     companion object {
+        // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
+        @Suppress("MagicNumber")
         fun from(
             stream: com.maleicacid.tvinput.aribsi.AribElementaryStream,
             audioComponentType: Int? = stream.componentType,
@@ -19,7 +21,10 @@ data class DecoderConfigurationIdentity(
             return DecoderConfigurationIdentity(
                 codec = stream.codec.takeIf { audio },
                 avc = stream.codecFacts.avc.takeIf { stream.streamType == 0x1b },
-                audioConfigHex = stream.codecFacts.audioConfigHex?.lowercase().takeIf { stream.streamType == 0x0f },
+                audioConfigHex =
+                    stream.codecFacts.audioConfigHex
+                        ?.lowercase()
+                        .takeIf { stream.streamType == 0x0f },
                 audioConfigHeader = stream.codecFacts.audioConfigHeader.takeIf { stream.streamType == 0x0f },
                 componentType = audioComponentType.takeIf { audio },
             )
@@ -48,19 +53,26 @@ data class AvPlaybackSignature(
 /** LiveSession が一つだけ所有する AV 再生 lifecycle。 */
 sealed class PlaybackStartState {
     object Idle : PlaybackStartState()
-    data class Starting(val signature: AvPlaybackSignature) : PlaybackStartState()
+
+    data class Starting(
+        val signature: AvPlaybackSignature,
+    ) : PlaybackStartState()
+
     data class WaitingFirstOutput(
         val signature: AvPlaybackSignature,
         val pipelineGeneration: Long,
     ) : PlaybackStartState()
+
     data class Started(
         val signature: AvPlaybackSignature,
         val pipelineGeneration: Long,
     ) : PlaybackStartState()
+
     data class Failed(
         val signature: AvPlaybackSignature,
         val pipelineGeneration: Long?,
     ) : PlaybackStartState()
+
     object Stopped : PlaybackStartState()
 }
 
@@ -71,32 +83,43 @@ sealed class PlaybackStartState {
  * 再試行しない。Surface 再接続など外部条件が変化した場合だけ [allowRetry] で Idle へ戻す。
  */
 object PlaybackStartTransitions {
-    fun shouldAttempt(state: PlaybackStartState, signature: AvPlaybackSignature): Boolean = when (state) {
-        PlaybackStartState.Idle,
-        PlaybackStartState.Stopped,
-        -> true
-        is PlaybackStartState.Starting -> state.signature != signature
-        is PlaybackStartState.WaitingFirstOutput -> state.signature != signature
-        is PlaybackStartState.Started -> state.signature != signature
-        is PlaybackStartState.Failed -> state.signature != signature
-    }
+    fun shouldAttempt(
+        state: PlaybackStartState,
+        signature: AvPlaybackSignature,
+    ): Boolean =
+        when (state) {
+            PlaybackStartState.Idle,
+            PlaybackStartState.Stopped,
+            -> true
 
-    fun allowRetry(state: PlaybackStartState): PlaybackStartState = when (state) {
-        PlaybackStartState.Stopped,
-        is PlaybackStartState.Failed,
-        -> PlaybackStartState.Idle
-        else -> state
-    }
+            is PlaybackStartState.Starting -> state.signature != signature
+
+            is PlaybackStartState.WaitingFirstOutput -> state.signature != signature
+
+            is PlaybackStartState.Started -> state.signature != signature
+
+            is PlaybackStartState.Failed -> state.signature != signature
+        }
+
+    fun allowRetry(state: PlaybackStartState): PlaybackStartState =
+        when (state) {
+            PlaybackStartState.Stopped,
+            is PlaybackStartState.Failed,
+            -> PlaybackStartState.Idle
+
+            else -> state
+        }
 
     fun afterSuccessfulRestart(
         signature: AvPlaybackSignature,
         pipelineGeneration: Long,
         firstOutputPending: Boolean,
-    ): PlaybackStartState = if (firstOutputPending) {
-        PlaybackStartState.WaitingFirstOutput(signature, pipelineGeneration)
-    } else {
-        PlaybackStartState.Started(signature, pipelineGeneration)
-    }
+    ): PlaybackStartState =
+        if (firstOutputPending) {
+            PlaybackStartState.WaitingFirstOutput(signature, pipelineGeneration)
+        } else {
+            PlaybackStartState.Started(signature, pipelineGeneration)
+        }
 
     fun afterRestartResult(
         currentState: PlaybackStartState,
@@ -113,10 +136,15 @@ object PlaybackStartTransitions {
         }
     }
 
-    fun acceptsGeneration(state: PlaybackStartState, generation: Long): Boolean =
-        pipelineGeneration(state) == generation
+    fun acceptsGeneration(
+        state: PlaybackStartState,
+        generation: Long,
+    ): Boolean = pipelineGeneration(state) == generation
 
-    fun acceptsUnavailable(state: PlaybackStartState, generation: Long): Boolean =
+    fun acceptsUnavailable(
+        state: PlaybackStartState,
+        generation: Long,
+    ): Boolean =
         (generation <= 0L || acceptsGeneration(state, generation)) &&
             !(state is PlaybackStartState.Failed && state.pipelineGeneration == generation)
 
@@ -132,23 +160,32 @@ object PlaybackStartTransitions {
         }
     }
 
-    fun signature(state: PlaybackStartState): AvPlaybackSignature? = when (state) {
-        is PlaybackStartState.Starting -> state.signature
-        is PlaybackStartState.WaitingFirstOutput -> state.signature
-        is PlaybackStartState.Started -> state.signature
-        is PlaybackStartState.Failed -> state.signature
-        PlaybackStartState.Idle,
-        PlaybackStartState.Stopped,
-        -> null
-    }
+    fun signature(state: PlaybackStartState): AvPlaybackSignature? =
+        when (state) {
+            is PlaybackStartState.Starting -> state.signature
 
-    fun pipelineGeneration(state: PlaybackStartState): Long? = when (state) {
-        is PlaybackStartState.WaitingFirstOutput -> state.pipelineGeneration
-        is PlaybackStartState.Started -> state.pipelineGeneration
-        is PlaybackStartState.Failed -> state.pipelineGeneration
-        PlaybackStartState.Idle,
-        is PlaybackStartState.Starting,
-        PlaybackStartState.Stopped,
-        -> null
-    }
+            is PlaybackStartState.WaitingFirstOutput -> state.signature
+
+            is PlaybackStartState.Started -> state.signature
+
+            is PlaybackStartState.Failed -> state.signature
+
+            PlaybackStartState.Idle,
+            PlaybackStartState.Stopped,
+            -> null
+        }
+
+    fun pipelineGeneration(state: PlaybackStartState): Long? =
+        when (state) {
+            is PlaybackStartState.WaitingFirstOutput -> state.pipelineGeneration
+
+            is PlaybackStartState.Started -> state.pipelineGeneration
+
+            is PlaybackStartState.Failed -> state.pipelineGeneration
+
+            PlaybackStartState.Idle,
+            is PlaybackStartState.Starting,
+            PlaybackStartState.Stopped,
+            -> null
+        }
 }

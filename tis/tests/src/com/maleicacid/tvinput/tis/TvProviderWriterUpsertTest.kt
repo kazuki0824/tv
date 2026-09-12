@@ -1,3 +1,6 @@
+// テストの入力・期待値を本体の定数と独立した具体値で記述する。
+@file:Suppress("MagicNumber")
+
 package com.maleicacid.tvinput.tis
 
 import android.content.ContentValues
@@ -14,24 +17,77 @@ class TvProviderWriterUpsertTest {
     @Test fun insertNewChannel() {
         val store = FakeChannelStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        val result = writer.upsertChannels(listOf(ChannelRecord(key, serviceType = 0x01, displayNumber = "101", displayName = "NHK", frequencyHz = FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
+        val result =
+            writer.upsertChannels(
+                listOf(
+                    ChannelRecord(
+                        key,
+                        serviceType = 0x01,
+                        displayNumber = "101",
+                        displayName = "NHK",
+                        frequencyHz = FrequencyHz(473_142_857L),
+                        casFactsCanonicalJson =
+                            com.maleicacid.tvinput.tis
+                                .testCasFacts(false),
+                    ),
+                ),
+            )
         check(result.inserted == 1) { result.toString() }
         check(result.updated == 0)
         check(result.failures.isEmpty())
         check(store.rows.size == 1)
-        check(store.rows.values.single().get(TvContract.Channels.COLUMN_BROWSABLE) == null)
-        check(store.rows.values.single().getAsInteger(TvContract.Channels.COLUMN_SEARCHABLE) == 1)
+        check(
+            store.rows.values
+                .single()
+                .get(TvContract.Channels.COLUMN_BROWSABLE) == null,
+        )
+        check(
+            store.rows.values
+                .single()
+                .getAsInteger(TvContract.Channels.COLUMN_SEARCHABLE) == 1,
+        )
     }
 
     @Test fun updateExistingChannel() {
         val store = FakeChannelStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        writer.upsertChannels(listOf(ChannelRecord(key, serviceType = 0x01, displayNumber = "101", displayName = "NHK", frequencyHz = FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
-        val result = writer.upsertChannels(listOf(ChannelRecord(key, serviceType = 0x01, displayNumber = "101", displayName = "NHK G", frequencyHz = FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
+        writer.upsertChannels(
+            listOf(
+                ChannelRecord(
+                    key,
+                    serviceType = 0x01,
+                    displayNumber = "101",
+                    displayName = "NHK",
+                    frequencyHz = FrequencyHz(473_142_857L),
+                    casFactsCanonicalJson =
+                        com.maleicacid.tvinput.tis
+                            .testCasFacts(false),
+                ),
+            ),
+        )
+        val result =
+            writer.upsertChannels(
+                listOf(
+                    ChannelRecord(
+                        key,
+                        serviceType = 0x01,
+                        displayNumber = "101",
+                        displayName = "NHK G",
+                        frequencyHz = FrequencyHz(473_142_857L),
+                        casFactsCanonicalJson =
+                            com.maleicacid.tvinput.tis
+                                .testCasFacts(false),
+                    ),
+                ),
+            )
         check(result.inserted == 0) { result.toString() }
         check(result.updated == 1)
         check(store.rows.size == 1)
-        check(store.rows.values.single().getAsString(TvContract.Channels.COLUMN_DISPLAY_NAME) == "NHK G")
+        check(
+            store.rows.values
+                .single()
+                .getAsString(TvContract.Channels.COLUMN_DISPLAY_NAME) == "NHK G",
+        )
     }
 
     @Test fun invalidServiceKeyIsRejectedBeforeChannelRecordConstruction() {
@@ -41,22 +97,42 @@ class TvProviderWriterUpsertTest {
     @Test fun providerFailureIsDiagnostic() {
         val store = FakeChannelStore(failInsert = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
-        val result = writer.upsertChannels(listOf(ChannelRecord(key, serviceType = 0x01, displayNumber = "101", displayName = "NHK", frequencyHz = FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
+        val result =
+            writer.upsertChannels(
+                listOf(
+                    ChannelRecord(
+                        key,
+                        serviceType = 0x01,
+                        displayNumber = "101",
+                        displayName = "NHK",
+                        frequencyHz = FrequencyHz(473_142_857L),
+                        casFactsCanonicalJson =
+                            com.maleicacid.tvinput.tis
+                                .testCasFacts(false),
+                    ),
+                ),
+            )
         check(result.inserted == 0)
         check(result.failures.single().operation == "insert")
     }
 
-    private class FakeChannelStore(private val failInsert: Boolean = false) : TvProviderWriter.ChannelStore {
+    private class FakeChannelStore(
+        private val failInsert: Boolean = false,
+    ) : TvProviderWriter.ChannelStore {
         private var nextId = 1L
         val rows = LinkedHashMap<Long, ContentValues>()
 
-        override fun findExistingChannelId(key: ServiceKey): Result<Long?> = Result.success(
-            rows.entries.firstOrNull { (_, values) ->
-                values.getAsInteger(TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID) == key.originalNetworkId &&
-                    values.getAsInteger(TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID) == key.transportStreamId &&
-                    values.getAsInteger(TvContract.Channels.COLUMN_SERVICE_ID) == key.serviceId
-            }?.key,
-        )
+        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+        @Suppress("MaxLineLength")
+        override fun findExistingChannelId(key: ServiceKey): Result<Long?> =
+            Result.success(
+                rows.entries
+                    .firstOrNull { (_, values) ->
+                        values.getAsInteger(TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID) == key.originalNetworkId &&
+                            values.getAsInteger(TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID) == key.transportStreamId &&
+                            values.getAsInteger(TvContract.Channels.COLUMN_SERVICE_ID) == key.serviceId
+                    }?.key,
+            )
 
         override fun insertChannel(values: ContentValues): Result<Long?> {
             if (failInsert) return Result.failure(IllegalStateException("挿入失敗"))
@@ -65,7 +141,10 @@ class TvProviderWriterUpsertTest {
             return Result.success(id)
         }
 
-        override fun updateChannel(channelId: Long, values: ContentValues): Result<Int> {
+        override fun updateChannel(
+            channelId: Long,
+            values: ContentValues,
+        ): Result<Int> {
             if (!rows.containsKey(channelId)) return Result.success(0)
             rows[channelId] = ContentValues(values)
             return Result.success(1)

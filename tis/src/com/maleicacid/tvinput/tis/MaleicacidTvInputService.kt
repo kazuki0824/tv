@@ -26,22 +26,35 @@ class MaleicacidTvInputService : TvInputService() {
         return null
     }
 
-    override fun onCreateSession(inputId: String, sessionId: String): Session {
+    override fun onCreateSession(
+        inputId: String,
+        sessionId: String,
+    ): Session {
         Log.i(LogTags.TIS, "ライブセッションを作成します inputId=$inputId sessionId=$sessionId")
         return createLiveSession(inputId, sessionId, this)
     }
 
-    override fun onCreateSession(inputId: String, sessionId: String, tvAppAttributionSource: AttributionSource): Session {
+    override fun onCreateSession(
+        inputId: String,
+        sessionId: String,
+        tvAppAttributionSource: AttributionSource,
+    ): Session {
         Log.i(LogTags.TIS, "ライブセッションを作成します inputId=$inputId sessionId=$sessionId")
-        val sessionContext = createContext(
-            ContextParams.Builder()
-                .setNextAttributionSource(tvAppAttributionSource)
-                .build(),
-        )
+        val sessionContext =
+            createContext(
+                ContextParams
+                    .Builder()
+                    .setNextAttributionSource(tvAppAttributionSource)
+                    .build(),
+            )
         return createLiveSession(inputId, sessionId, sessionContext)
     }
 
-    private fun createLiveSession(inputId: String, tvInputSessionId: String, sessionContext: Context): Session {
+    private fun createLiveSession(
+        inputId: String,
+        tvInputSessionId: String,
+        sessionContext: Context,
+    ): Session {
         // TvInputService.onCreateSession()入口から MaleicacidLiveSession constructor が
         // active ライブセッション を登録するまでの短い区間で、boot / background maintenance を
         // 開始してはならない。この境界を明示し、session creation が完了または失敗するまで
@@ -80,8 +93,12 @@ class MaleicacidTvInputService : TvInputService() {
     }
 
     companion object {
-        fun api30SessionIdForTest(inputId: String, sessionId: String): String = sessionId.also {
-            require(inputId.isNotBlank()) { "inputId must not be blank" }
-        }
+        fun api30SessionIdForTest(
+            inputId: String,
+            sessionId: String,
+        ): String =
+            sessionId.also {
+                require(inputId.isNotBlank()) { "inputId must not be blank" }
+            }
     }
 }

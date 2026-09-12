@@ -23,7 +23,11 @@ class ReservationManagerService : Service() {
 
     override fun onBind(intent: Intent?): IBinder = LocalBinder()
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    override fun onStartCommand(
+        intent: Intent?,
+        flags: Int,
+        startId: Int,
+    ): Int {
         controller.restoreSchedules()
         return START_STICKY
     }

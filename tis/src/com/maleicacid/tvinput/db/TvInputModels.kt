@@ -2,14 +2,14 @@ package com.maleicacid.tvinput.db
 
 import com.maleicacid.tvinput.aribsi.AribComponents
 import com.maleicacid.tvinput.aribsi.AribContentGenre
+import com.maleicacid.tvinput.aribsi.AribEventGroup
+import com.maleicacid.tvinput.aribsi.AribExtendedEventText
 import com.maleicacid.tvinput.aribsi.AribFreeCaMode
 import com.maleicacid.tvinput.aribsi.AribLinkage
 import com.maleicacid.tvinput.aribsi.AribParentalRating
 import com.maleicacid.tvinput.aribsi.AribProgramSource
-import com.maleicacid.tvinput.aribsi.AribEventGroup
 import com.maleicacid.tvinput.aribsi.AribSeries
 import com.maleicacid.tvinput.aribsi.AribShortEventText
-import com.maleicacid.tvinput.aribsi.AribExtendedEventText
 import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.StreamSelector
@@ -57,6 +57,8 @@ data class ProgramDescriptors(
     val components: AribComponents = AribComponents(),
 )
 
+private const val DEFAULT_SHORT_DESCRIPTION_LENGTH = 256
+
 data class ProgramRecord(
     val serviceKey: ServiceKey,
     val eventId: Int,
@@ -65,7 +67,12 @@ data class ProgramRecord(
     val durationMillis: Long,
     val title: String,
     val description: String,
-    val shortDescription: String = description.lineSequence().firstOrNull()?.take(256).orEmpty(),
+    val shortDescription: String =
+        description
+            .lineSequence()
+            .firstOrNull()
+            ?.take(DEFAULT_SHORT_DESCRIPTION_LENGTH)
+            .orEmpty(),
     val canonicalGenres: List<String> = emptyList(),
     val descriptors: ProgramDescriptors = ProgramDescriptors(),
     val source: AribProgramSource = AribProgramSource(),

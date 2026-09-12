@@ -5,7 +5,9 @@ import android.util.Log
 import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.db.ReservationRecord
 
-class ReservationScheduler(private val context: Context) {
+class ReservationScheduler(
+    @Suppress("UNUSED_PARAMETER") context: Context,
+) {
     fun schedule(record: ReservationRecord) {
         Log.i(
             LogTags.RESERVATION,

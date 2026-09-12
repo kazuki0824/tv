@@ -6,10 +6,17 @@ internal class AudioRouteChangeGate(
     private val track: Any,
     private var routeId: Int?,
 ) {
-    fun accepts(currentGeneration: Long, currentTrack: Any?): Boolean =
-        generation == currentGeneration && track === currentTrack
+    fun accepts(
+        currentGeneration: Long,
+        currentTrack: Any?,
+    ): Boolean = generation == currentGeneration && track === currentTrack
 
-    fun onRouteChanged(currentGeneration: Long, currentTrack: Any?, nextRouteId: Int?, restart: () -> Unit) {
+    fun onRouteChanged(
+        currentGeneration: Long,
+        currentTrack: Any?,
+        nextRouteId: Int?,
+        restart: () -> Unit,
+    ) {
         if (!accepts(currentGeneration, currentTrack) || nextRouteId == null) return
         val previous = routeId
         routeId = nextRouteId

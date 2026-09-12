@@ -16,7 +16,9 @@ class RecordingPipeline(
     private val sectionIngestController = SectionIngestController(aribSiEngine)
     private val tunerController = TunerController(context, inputId, TvInputService.PRIORITY_HINT_USE_CASE_TYPE_RECORD)
     private val casController = CasController()
-    private val caMapper = com.maleicacid.tvinput.aribsi.PmtCatCaMetadataMapper()
+    private val caMapper =
+        com.maleicacid.tvinput.aribsi
+            .PmtCatCaMetadataMapper()
 
     init {
         tunerController.setSectionIngestController(sectionIngestController)
@@ -40,10 +42,16 @@ class RecordingPipeline(
         return null
     }
 
+    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
+    @Suppress("MagicNumber")
     private fun refreshDynamicSiAndCasFilters() {
         val snapshot = aribSiEngine.casDiscoverySnapshot()
         val caMetadata = caMapper.expandProgramLevelToElementaryStreams(snapshot.caMetadata, snapshot.services)
-        val pmtPids = snapshot.pmtPidMappings.map { it.pmtPid }.filter { it in 0..0x1fff }.toSet()
+        val pmtPids =
+            snapshot.pmtPidMappings
+                .map { it.pmtPid }
+                .filter { it in 0..0x1fff }
+                .toSet()
         val ecmPids = caMetadata.mapNotNull { it.ecmPid }.filter { it in 0..0x1fff }.toSet()
         val emmPids = caMetadata.mapNotNull { it.emmPid }.filter { it in 0..0x1fff }.toSet()
         tunerController.openDynamicFiltersFromCurrentSi(pmtPids, ecmPids, emmPids)

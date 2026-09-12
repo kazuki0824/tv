@@ -10,7 +10,10 @@ class SetupActivityBk10CompletionTest {
         check(SetupActivity.scanStartAllowedForTest("own.input", isOwnInputId = true))
     }
 
-    @Test fun onlyCurrentSetupGenerationCanFinishSetup() {
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    @Test
+    fun onlyCurrentSetupGenerationCanFinishSetup() {
         val result = ChannelScanController.ScanResult(scanned = 1, published = 1, diagnostics = emptyList(), successfulCandidates = 1)
         val current = ScanState.Completed(result, generation = 7, purpose = ScanPurpose.SETUP_SCAN)
         val stale = ScanState.Completed(result, generation = 6, purpose = ScanPurpose.SETUP_SCAN)
@@ -26,13 +29,16 @@ class SetupActivityBk10CompletionTest {
         check(!SetupActivity.shouldFinishSetupForStateForTest(current, activeSetupGeneration = null, invalidInputId = false))
         check(!SetupActivity.shouldFinishSetupForStateForTest(current, activeSetupGeneration = 7, invalidInputId = true))
     }
+
     @Test fun setupActivityDoesNotTreatForeignInputAsOwn() {
-        check(!TisInputIdResolver.isOwnInputInfoForTest(
-            infoId = "foreign.input",
-            servicePackageName = "foreign.package",
-            serviceName = "foreign.Service",
-            ownPackageName = "com.maleicacid.tvinput",
-            ownClassName = "com.maleicacid.tvinput.tis.MaleicacidTvInputService",
-        ))
+        check(
+            !TisInputIdResolver.isOwnInputInfoForTest(
+                infoId = "foreign.input",
+                servicePackageName = "foreign.package",
+                serviceName = "foreign.Service",
+                ownPackageName = "com.maleicacid.tvinput",
+                ownClassName = "com.maleicacid.tvinput.tis.MaleicacidTvInputService",
+            ),
+        )
     }
 }

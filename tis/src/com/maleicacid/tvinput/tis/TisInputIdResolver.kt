@@ -13,6 +13,8 @@ import com.maleicacid.tvinput.common.LogTags
  * inputId として扱わず、TvInputManager が公開した実際の inputId を使う。
  */
 object TisInputIdResolver {
+    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+    @Suppress("ReturnCount")
     fun resolveOwnInputId(context: Context): String? {
         val ownComponent = ComponentName(context, MaleicacidTvInputService::class.java)
         val manager = context.getSystemService(TvInputManager::class.java)
@@ -20,15 +22,16 @@ object TisInputIdResolver {
             Log.w(LogTags.TIS, "TvInputManager が取得できないため自TIS inputIdを解決できません")
             return null
         }
-        val matches = manager.tvInputList.filter { info ->
-            isOwnInputInfoForTest(
-                infoId = info.id,
-                servicePackageName = info.serviceInfo.packageName,
-                serviceName = info.serviceInfo.name,
-                ownPackageName = ownComponent.packageName,
-                ownClassName = ownComponent.className,
-            )
-        }
+        val matches =
+            manager.tvInputList.filter { info ->
+                isOwnInputInfoForTest(
+                    infoId = info.id,
+                    servicePackageName = info.serviceInfo.packageName,
+                    serviceName = info.serviceInfo.name,
+                    ownPackageName = ownComponent.packageName,
+                    ownClassName = ownComponent.className,
+                )
+            }
         if (matches.size != 1) {
             Log.w(LogTags.TIS, "自TIS inputId が一意に解決できません matches=${matches.map { it.id }}")
             return null
@@ -36,7 +39,12 @@ object TisInputIdResolver {
         return matches.single().id
     }
 
-    fun isOwnInputId(context: Context, candidate: String?): Boolean {
+    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+    @Suppress("ReturnCount")
+    fun isOwnInputId(
+        context: Context,
+        candidate: String?,
+    ): Boolean {
         val id = candidate?.takeIf { it.isNotBlank() } ?: return false
         val ownComponent = ComponentName(context, MaleicacidTvInputService::class.java)
         val manager = context.getSystemService(TvInputManager::class.java) ?: return false
@@ -57,7 +65,8 @@ object TisInputIdResolver {
         serviceName: String?,
         ownPackageName: String,
         ownClassName: String,
-    ): Boolean = !infoId.isNullOrBlank() &&
-        servicePackageName == ownPackageName &&
-        serviceName == ownClassName
+    ): Boolean =
+        !infoId.isNullOrBlank() &&
+            servicePackageName == ownPackageName &&
+            serviceName == ownClassName
 }

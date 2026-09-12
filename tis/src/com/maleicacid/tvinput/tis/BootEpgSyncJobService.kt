@@ -9,7 +9,10 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 class BootEpgSyncJobService : JobService() {
-    private data class ScanCompletion(val generation: Int, val needsReschedule: Boolean)
+    private data class ScanCompletion(
+        val generation: Int,
+        val needsReschedule: Boolean,
+    )
 
     private data class RunContext(
         val params: JobParameters,
@@ -22,6 +25,9 @@ class BootEpgSyncJobService : JobService() {
     private val activeRun = AtomicReference<RunContext?>(null)
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+    @Suppress("MaxLineLength", "ReturnCount")
     override fun onStartJob(params: JobParameters): Boolean {
         val run = RunContext(params)
         activeRun.set(run)
@@ -30,10 +36,16 @@ class BootEpgSyncJobService : JobService() {
                 activeRun.compareAndSet(run, null)
                 return false
             }
+
             DirectBootGuard.DrainDecision.SKIP_LOCKED,
             DirectBootGuard.DrainDecision.SKIP_TV_PROVIDER_UNAVAILABLE,
-            -> return finish(run, needsReschedule = true)
-            DirectBootGuard.DrainDecision.START_BOOT_EPG_SYNC -> Unit
+            -> {
+                return finish(run, needsReschedule = true)
+            }
+
+            DirectBootGuard.DrainDecision.START_BOOT_EPG_SYNC -> {
+                Unit
+            }
         }
         val inputId = TisInputIdResolver.resolveOwnInputId(applicationContext)
         if (inputId == null) {
@@ -51,16 +63,17 @@ class BootEpgSyncJobService : JobService() {
             activeRun.compareAndSet(run, null)
             return false
         }
-        val generation = ChannelScanManager.startBootEpgSyncIfIdle(applicationContext, inputId, targetChannels) { completedGeneration, needsReschedule ->
-            if (activeRun.get() !== run || run.stopped.get()) return@startBootEpgSyncIfIdle
-            val activeGeneration = run.scanGeneration.get()
-            if (activeGeneration == 0) {
-                run.earlyCompletion.compareAndSet(null, ScanCompletion(completedGeneration, needsReschedule))
-                return@startBootEpgSyncIfIdle
-            }
-            if (!run.scanGeneration.compareAndSet(completedGeneration, 0)) return@startBootEpgSyncIfIdle
-            finish(run, needsReschedule)
-        } ?: return finish(run, needsReschedule = true)
+        val generation =
+            ChannelScanManager.startBootEpgSyncIfIdle(applicationContext, inputId, targetChannels) { completedGeneration, needsReschedule ->
+                if (activeRun.get() !== run || run.stopped.get()) return@startBootEpgSyncIfIdle
+                val activeGeneration = run.scanGeneration.get()
+                if (activeGeneration == 0) {
+                    run.earlyCompletion.compareAndSet(null, ScanCompletion(completedGeneration, needsReschedule))
+                    return@startBootEpgSyncIfIdle
+                }
+                if (!run.scanGeneration.compareAndSet(completedGeneration, 0)) return@startBootEpgSyncIfIdle
+                finish(run, needsReschedule)
+            } ?: return finish(run, needsReschedule = true)
         run.scanGeneration.set(generation)
         run.earlyCompletion.getAndSet(null)?.takeIf { it.generation == generation }?.let { completion ->
             if (run.scanGeneration.compareAndSet(generation, 0)) finish(run, completion.needsReschedule)
@@ -82,7 +95,10 @@ class BootEpgSyncJobService : JobService() {
         return true
     }
 
-    private fun finish(run: RunContext, needsReschedule: Boolean): Boolean {
+    private fun finish(
+        run: RunContext,
+        needsReschedule: Boolean,
+    ): Boolean {
         if (run.completionDelivered.compareAndSet(false, true)) {
             mainHandler.post {
                 if (activeRun.get() === run && !run.stopped.get()) {
