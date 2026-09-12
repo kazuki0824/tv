@@ -109,15 +109,6 @@ fn commit_and_deliver_frontend_scan_lock(
     generation: u64,
     stream_ids: Option<Vec<i32>>,
 ) -> Result<(), HalError> {
-    {
-        let mut guard = lock_runtime(
-            runtime,
-            "service runtime lock poisoned while committing scan lock",
-        )?;
-        guard
-            .frontend_txn()
-            .mark_frontend_scan_session_locked_reported(frontend_id, generation)?;
-    }
     if let Some(stream_ids) = stream_ids {
         deliver_committed_scan_notification(
             runtime,
@@ -126,6 +117,15 @@ fn commit_and_deliver_frontend_scan_lock(
             generation,
             FrontendScanNotification::InputStreamIds(stream_ids),
         )?;
+    }
+    {
+        let mut guard = lock_runtime(
+            runtime,
+            "service runtime lock poisoned while committing scan lock",
+        )?;
+        guard
+            .frontend_txn()
+            .mark_frontend_scan_session_locked_reported(frontend_id, generation)?;
     }
     deliver_committed_scan_notification(
         runtime,
@@ -2304,50 +2304,13 @@ where
     ))
 }
 
-fn observe_and_record_frontend_stream_id_list(
+fn commit_observed_frontend_stream_id_list(
     runtime: &SharedRuntime,
     ctx: &FrontendWorkerContext,
-    session: &FrontendBackendSession,
     frontend_id: i32,
     generation: u64,
-    observation_attempts: usize,
+    stream_ids: Vec<u16>,
 ) -> Result<Option<Vec<i32>>, HalError> {
-    if !frontend_uses_tmcc_stream_id_list(runtime, frontend_id)? || ctx.cancel_requested() {
-        return Ok(None);
-    }
-    {
-        let guard = lock_runtime(
-            runtime,
-            "service runtime lock poisoned while checking committed TMCC stream IDs",
-        )?;
-        if guard
-            .query()
-            .frontend_runtime_snapshot(frontend_id)?
-            .stream_id_list
-            .is_some()
-        {
-            return Ok(None);
-        }
-    }
-    let Some(stream_ids) = observe_stream_id_list_with_retry(
-        observation_attempts,
-        || session.observe_tmcc_tsid_list(),
-        || {
-            let deadline = Instant::now()
-                .checked_add(Duration::from_millis(SCAN_STREAM_ID_RETRY_INTERVAL_MS))
-                .ok_or_else(|| {
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "stream-ID retry deadline overflowed",
-                    )
-                })?;
-            ctx.wait_until(Some(deadline))
-        },
-        || ctx.cancel_requested(),
-    )?
-    else {
-        return Ok(None);
-    };
     if ctx.cancel_requested() {
         return Ok(None);
     }
@@ -2369,6 +2332,87 @@ fn observe_and_record_frontend_stream_id_list(
             ))
         }
     }
+}
+
+fn stream_id_list_observation_needed(
+    runtime: &SharedRuntime,
+    ctx: &FrontendWorkerContext,
+    frontend_id: i32,
+) -> Result<bool, HalError> {
+    if !frontend_uses_tmcc_stream_id_list(runtime, frontend_id)? || ctx.cancel_requested() {
+        return Ok(false);
+    }
+    let guard = lock_runtime(
+        runtime,
+        "service runtime lock poisoned while checking committed TMCC stream IDs",
+    )?;
+    Ok(guard
+        .query()
+        .frontend_runtime_snapshot(frontend_id)?
+        .stream_id_list
+        .is_none())
+}
+
+fn observe_and_record_frontend_stream_id_list(
+    runtime: &SharedRuntime,
+    ctx: &FrontendWorkerContext,
+    session: &FrontendBackendSession,
+    frontend_id: i32,
+    generation: u64,
+) -> Result<Option<Vec<i32>>, HalError> {
+    if !stream_id_list_observation_needed(runtime, ctx, frontend_id)? {
+        return Ok(None);
+    }
+    let FrontendTmccTsidListObservation::Available(stream_ids) =
+        session.observe_tmcc_tsid_list()?
+    else {
+        return Ok(None);
+    };
+    commit_observed_frontend_stream_id_list(
+        runtime,
+        ctx,
+        frontend_id,
+        generation,
+        stream_ids,
+    )
+}
+
+fn observe_and_record_frontend_stream_id_list_for_scan(
+    runtime: &SharedRuntime,
+    ctx: &FrontendWorkerContext,
+    session: &FrontendBackendSession,
+    frontend_id: i32,
+    generation: u64,
+) -> Result<Option<Vec<i32>>, HalError> {
+    if !stream_id_list_observation_needed(runtime, ctx, frontend_id)? {
+        return Ok(None);
+    }
+    let Some(stream_ids) = observe_stream_id_list_with_retry(
+        SCAN_STREAM_ID_OBSERVATION_ATTEMPTS,
+        || session.observe_tmcc_tsid_list(),
+        || {
+            let deadline = Instant::now()
+                .checked_add(Duration::from_millis(SCAN_STREAM_ID_RETRY_INTERVAL_MS))
+                .ok_or_else(|| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "stream-ID retry deadline overflowed",
+                    )
+                })?;
+            ctx.wait_until(Some(deadline))
+        },
+        || ctx.cancel_requested(),
+    )?
+    else {
+        return Ok(None);
+    };
+    commit_observed_frontend_stream_id_list(
+        runtime,
+        ctx,
+        frontend_id,
+        generation,
+        stream_ids,
+    )
 }
 
 fn wait_for_frontend_qualified_lock(
@@ -2563,7 +2607,6 @@ fn run_frontend_backend_tune_session_worker(
                     &session,
                     frontend_id,
                     generation,
-                    1,
                 )?;
                 if !record_frontend_tune_lock_qualification(&runtime, ctx, frontend_id, generation)?
                 {
@@ -2616,7 +2659,6 @@ fn run_frontend_backend_tune_session_worker(
                     &session,
                     frontend_id,
                     generation,
-                    1,
                 )?;
             }
             match frontend_lock_transition(lock_announced, signal_state, qualification) {
@@ -3679,13 +3721,12 @@ fn run_frontend_backend_scan_session_worker(
             )? {
                 FrontendLockWaitOutcome::Locked => {
                     signal_state = FrontendSignalState::Locked;
-                    locked_stream_ids = observe_and_record_frontend_stream_id_list(
+                    locked_stream_ids = observe_and_record_frontend_stream_id_list_for_scan(
                         &runtime,
                         ctx,
                         &session,
                         ctx.frontend_id(),
                         ctx.generation(),
-                        SCAN_STREAM_ID_OBSERVATION_ATTEMPTS,
                     )?;
                 }
                 FrontendLockWaitOutcome::NoSignal | FrontendLockWaitOutcome::Cancelled => {}

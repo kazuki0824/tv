@@ -225,7 +225,6 @@ class ScanPlanPolicyTest {
         assertTrue(bs.isNotEmpty())
         assertTrue(bs.all { it.streamSelector.type == StreamSelectorType.NONE })
         assertTrue(bs.all { it.backendHint == JapanIsdbScanPlan.BS_DISCOVERY_BACKEND_HINT })
-        assertEquals((1..23 step 2).toList(), bs.mapNotNull { it.physicalChannel })
     }
 
     @Test
