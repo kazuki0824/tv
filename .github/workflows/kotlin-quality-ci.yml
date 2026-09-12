@@ -1,0 +1,100 @@
+name: Kotlin quality CI
+
+on:
+  pull_request:
+    paths:
+      - "**/*.kt"
+      - "**/*.kts"
+      - ".github/workflows/kotlin-quality-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/*.kt"
+      - "**/*.kts"
+      - ".github/workflows/kotlin-quality-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kotlin-quality-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  KTLINT_VERSION: 1.8.0
+  DETEKT_VERSION: 1.23.8
+
+jobs:
+  ktlint:
+    name: ktlint format check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: JDK 17を使用
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: ktlintを導入
+        shell: bash
+        run: |
+          tool="$RUNNER_TEMP/ktlint"
+          curl --fail --location --retry 3 --retry-all-errors \
+            "https://github.com/pinterest/ktlint/releases/download/${KTLINT_VERSION}/ktlint" \
+            --output "$tool"
+          chmod +x "$tool"
+          echo "KTLINT=$tool" >> "$GITHUB_ENV"
+          "$tool" --version
+
+      - name: Kotlin全体の整形を確認
+        shell: bash
+        run: |
+          mapfile -d '' -t sources < <(
+            find . -type f \( -name '*.kt' -o -name '*.kts' \) \
+              -not -path './.git/*' -print0 \
+              | sort -z
+          )
+          test "${#sources[@]}" -gt 0
+          "$KTLINT" "${sources[@]}"
+
+  detekt:
+    name: detekt lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: JDK 17を使用
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: detektを導入
+        shell: bash
+        run: |
+          tool="$RUNNER_TEMP/detekt-cli.jar"
+          curl --fail --location --retry 3 --retry-all-errors \
+            "https://github.com/detekt/detekt/releases/download/v${DETEKT_VERSION}/detekt-cli-${DETEKT_VERSION}-all.jar" \
+            --output "$tool"
+          echo "DETEKT=$tool" >> "$GITHUB_ENV"
+          java -jar "$tool" --version
+
+      - name: Kotlin全体をlint
+        shell: bash
+        run: |
+          mapfile -d '' -t sources < <(
+            find . -type f \( -name '*.kt' -o -name '*.kts' \) \
+              -not -path './.git/*' -print0 \
+              | sort -z
+          )
+          test "${#sources[@]}" -gt 0
+          input="$(IFS=,; printf '%s' "${sources[*]}")"
+          java -jar "$DETEKT" --input "$input"
