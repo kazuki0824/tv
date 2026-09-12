@@ -291,7 +291,6 @@ class ChannelScanController(
         "CyclomaticComplexMethod",
         "NestedBlockDepth",
         "LoopWithTooManyJumpStatements",
-        "ComplexCondition",
         "MaxLineLength",
     )
     private fun runMaintenanceScan(
@@ -349,12 +348,12 @@ class ChannelScanController(
                     break
                 }
                 committedServiceKeys += publishResult.committedServiceKeys
-                if (
+                val candidateSuccessfullyPublished =
                     collection.outcome == SiCollectionOutcome.COMPLETE &&
-                    collection.registrationReadyServices > 0 &&
-                    publishResult.success &&
-                    publishResult.hasCommittedProgramTarget
-                ) {
+                        collection.registrationReadyServices > 0 &&
+                        publishResult.success &&
+                        publishResult.hasCommittedProgramTarget
+                if (candidateSuccessfullyPublished) {
                     successfulCandidates++
                 }
                 updated += publishResult.changed
@@ -612,7 +611,7 @@ class ChannelScanController(
 
     // 安定待ち・期限・取消し・資源喪失の優先順位と、終了後のfilter解放を同じ収集処理で保持する。
     // 各breakは異なる終了理由を確定する。部分完了の4条件はEIT不要・最短待機・登録可能・安定待機の全てを要求する。
-    @Suppress("LongMethod", "CyclomaticComplexMethod", "LoopWithTooManyJumpStatements", "ComplexCondition", "MaxLineLength")
+    @Suppress("LongMethod", "CyclomaticComplexMethod", "LoopWithTooManyJumpStatements", "MaxLineLength")
     private fun collectSiForCandidate(
         candidate: ScanCandidate,
         requirements: SiCollectionRequirements,
@@ -645,9 +644,10 @@ class ChannelScanController(
                             break
                         }
                         val registrationReadySnapshotAvailable = counts.registrationReady > 0
-                        if (!requirements.requiresEit && elapsed >= policy.minWaitMs && registrationReadySnapshotAvailable &&
-                            stableFor >= policy.stableWaitMs
-                        ) {
+                        val stablePartialCollectionReady =
+                            !requirements.requiresEit && elapsed >= policy.minWaitMs && registrationReadySnapshotAvailable &&
+                                stableFor >= policy.stableWaitMs
+                        if (stablePartialCollectionReady) {
                             outcome = SiCollectionOutcome.STABLE_PARTIAL
                             break
                         }
