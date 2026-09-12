@@ -60,5 +60,5 @@ class AndroidDependentRobolectricTest {
     }
 
     private fun assetText(path: String): String =
-        Files.readString(Path.of("../../../tests/assets", path))
+        Files.readString(Path.of("../../tests/assets", path))
 }
