@@ -195,12 +195,11 @@ object JapanIsdbScanPlan {
             .toCollection(linkedSetOf())
     }
 
-    fun staticBsCandidatesFor(seed: ScanCandidate): List<ScanCandidate> {
-        return explicitBsCandidatesFromScan(
+    fun staticBsCandidatesFor(seed: ScanCandidate): List<ScanCandidate> =
+        explicitBsCandidatesFromScan(
             seed,
             staticBsStreamIdsFor(seed),
         )
-    }
 
     fun explicitBsCandidatesFromScan(
         seed: ScanCandidate,
@@ -266,10 +265,9 @@ object JapanIsdbScanPlan {
         )
     }
 
-    fun defaultInitialScan(): List<ScanCandidate> {
-        return isdbtUhf13To62() +
+    fun defaultInitialScan(): List<ScanCandidate> =
+        isdbtUhf13To62() +
             isdbtCatvC13ToC63() +
             isdbsBsBands() +
             isdbs110CsBands()
-    }
 }
