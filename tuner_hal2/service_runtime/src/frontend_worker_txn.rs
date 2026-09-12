@@ -2368,13 +2368,7 @@ fn observe_and_record_frontend_stream_id_list(
     else {
         return Ok(None);
     };
-    commit_observed_frontend_stream_id_list(
-        runtime,
-        ctx,
-        frontend_id,
-        generation,
-        stream_ids,
-    )
+    commit_observed_frontend_stream_id_list(runtime, ctx, frontend_id, generation, stream_ids)
 }
 
 fn observe_and_record_frontend_stream_id_list_for_scan(
@@ -2406,13 +2400,7 @@ fn observe_and_record_frontend_stream_id_list_for_scan(
     else {
         return Ok(None);
     };
-    commit_observed_frontend_stream_id_list(
-        runtime,
-        ctx,
-        frontend_id,
-        generation,
-        stream_ids,
-    )
+    commit_observed_frontend_stream_id_list(runtime, ctx, frontend_id, generation, stream_ids)
 }
 
 fn wait_for_frontend_qualified_lock(
