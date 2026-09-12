@@ -1,3 +1,7 @@
+# r51_pr93_av_sync
+
+- D3: 複数PCRでmediaとの対応が曖昧なgetAvSyncHwIdをINVALID_STATEへ接続する。PCRの複数利用と存続するIDのgetAvSyncTimeは維持し、別時計へのID読み替えを行わない。登録順、追加/解除、prepared mutationの中止を試験する。
+
 # r51_tuner_hal2_audit_regressions
 
 - demuxのfrontend入力とStarted Playback DVR入力を相互排他にし、拒否時に既存relation・DVR状態を維持する。既存のDemuxFrontendSourceTxnとDVR開始処理へ検査を接続し、両方向の回帰試験を追加した。

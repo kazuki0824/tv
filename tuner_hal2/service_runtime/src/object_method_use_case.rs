@@ -452,7 +452,7 @@ fn prepare_object_query_request(
                 .ok_or_else(|| {
                     HalError::invalid_state(
                         HalInvalidStateKind::InvalidLifecycle,
-                        "no live PCR filter is associated with this demux",
+                        "no unambiguous PCR filter is associated with this media filter",
                     )
                 })
                 .map(ObjectQueryResponse::AvSyncHwId)

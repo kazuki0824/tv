@@ -1,3 +1,7 @@
+# r51_pr93_av_sync
+
+- D3の曖昧な複数PCRに対するgetAvSyncHwIdのINVALID_STATEと、既存PCR IDの時計identity維持を定義した。
+
 # r51_tuner_hal2_audit_regressions
 
 - frontend/Playback DVR入力排他、px4 TMCC一覧の有限再観測、scan callback前の`LockedReported`確定を公開設計へ反映した。

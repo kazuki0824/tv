@@ -104,6 +104,11 @@ impl AvSyncRegistry {
     }
 
     pub(crate) fn hw_sync_id_for_media_filter(&self, filter_id: i32) -> Option<i32> {
+        // The public filter settings carry no media-to-PCR association. More than
+        // one configured PCR is ambiguous; filter IDs do not identify a service.
+        if self.pcr_filter_ids.len() != 1 {
+            return None;
+        }
         let hw_sync_id = *self.hw_sync_id_by_media_filter_id.get(&filter_id)?;
         self.pcr_filter_ids
             .contains(&hw_sync_id)
@@ -168,5 +173,45 @@ mod tests {
         registry.commit(remove);
         assert_eq!(registry.hw_sync_id_for_media_filter(10), None);
         assert_eq!(registry.hw_sync_id_for_media_filter(11), Some(4));
+    }
+
+    #[test]
+    fn multiple_pcr_filters_do_not_invent_a_media_clock_association() {
+        for pcr_first in [true, false] {
+            let mut registry = AvSyncRegistry::default();
+            if !pcr_first {
+                registry.register_media_filter(10).unwrap();
+            }
+            registry.register_pcr_filter(9).unwrap();
+            if pcr_first {
+                registry.register_media_filter(10).unwrap();
+            }
+            assert_eq!(registry.hw_sync_id_for_media_filter(10), Some(9));
+            registry.register_pcr_filter(4).unwrap();
+            registry.register_media_filter(11).unwrap();
+            assert_eq!(registry.hw_sync_id_for_media_filter(10), None);
+            assert_eq!(registry.hw_sync_id_for_media_filter(11), None);
+            // A previously returned ID continues to identify its own PCR.
+            assert_eq!(registry.pcr_filter_id_for_hw_sync_id(9), Some(9));
+            registry.unregister_filter(9);
+            assert_eq!(registry.pcr_filter_id_for_hw_sync_id(9), None);
+            assert_eq!(registry.hw_sync_id_for_media_filter(10), Some(4));
+            assert_eq!(registry.hw_sync_id_for_media_filter(11), Some(4));
+        }
+    }
+
+    #[test]
+    fn aborted_pcr_registration_does_not_make_the_clock_ambiguous() {
+        let mut registry = AvSyncRegistry::default();
+        registry.register_pcr_filter(9).unwrap();
+        registry.register_media_filter(10).unwrap();
+        drop(registry.prepare_register_pcr_filter(4).unwrap());
+        assert_eq!(registry.hw_sync_id_for_media_filter(10), Some(9));
+        let second = registry.prepare_register_pcr_filter(4).unwrap();
+        registry.commit(second);
+        assert_eq!(registry.hw_sync_id_for_media_filter(10), None);
+        let remove = registry.prepare_unregister_filter(4);
+        registry.commit(remove);
+        assert_eq!(registry.hw_sync_id_for_media_filter(10), Some(9));
     }
 }

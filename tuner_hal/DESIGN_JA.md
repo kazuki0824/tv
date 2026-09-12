@@ -1061,7 +1061,9 @@ AV sync hardware ID は `filter_id & 0xffff` のような media filter ID の単
 
 AV filterを対応宣言する demux は AOSP の `getAvSyncHwId(Filter)` と `getAvSyncTime(int)` の契約に沿って A/V sync ID と 90kHz timestamp を返す。`getAvSyncHwId(media filter)` は AV filter 固有IDではなく、対応する PCR filter ID を返す。section、PES、record、閉鎖済み filter、対応する PCR filter が存在しない media filter には契約に従った失敗を返す。
 
-`getAvSyncHwId()` は、対象 media filter に対応する PCR filter が configure 済みであれば、PCR 観測前でもその PCR filter ID を返す。PCR 観測済みかどうかを sync ID 返却の前提にしない。PCR 未観測状態は `getAvSyncTime(id)` の戻り値側で未確定値として表現する。
+`getAvSyncHwId()` の対応解決は、同じdemuxでconfigure済みのPCR filterが1件の場合だけ成功する。公開filter設定にはmediaとPCRの対応を指定する引数がないため、複数PCRが存在する場合に最小ID・登録順で番組の対応を推測せず、PCR不在と同じ`INVALID_STATE`を返す。PCR filterの複数作成・観測自体は拒否しない。PCRが1件に戻れば既存の登録・解除transactionに従って対応を解決する。クライアントはmediaと同じclock domainのPCRを用意する。HALはSI意味解析による番組対応を追加しない。
+
+対応するPCRが1件に確定していれば、PCR観測前でもそのPCR filter IDを返す。PCR未観測状態は`getAvSyncTime(id)`の戻り値側で未確定値として表現する。返却済みIDはそのPCR自身を示し、別PCRの追加・解除によって別の時計へ読み替えない。複数PCRによって新規media対応が曖昧でも、存続するPCR IDの`getAvSyncTime()`は既存契約を維持し、閉鎖したIDは`INVALID_ARGUMENT`になる。
 
 同一demuxに属する稼働中のPCRフィルターを示す有効なA/V同期IDについて、0-S-3Bの`PcrClockAnchorStore`に当該generationの有効anchorがない場合は`getAvSyncTime()`を成功させ、`Tuner.INVALID_TIMESTAMP`を返す。anchorの初回生成、後続PCRによる33-bit unwrap / 更新、discontinuity・PCR逆行・filter/source/stream/frontend/playback境界による無効化、stale generation拒否、時計逆行時の無効化は`PcrClockAnchorStore`だけを正本とし、本節ではmutationを再定義しない。
 
