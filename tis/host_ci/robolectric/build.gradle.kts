@@ -33,6 +33,7 @@ kotlin {
 }
 
 dependencies {
+    compileOnly("org.robolectric:android-all:15-robolectric-13954326")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.16.1")
 }
