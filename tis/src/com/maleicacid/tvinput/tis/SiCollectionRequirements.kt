@@ -32,10 +32,9 @@ internal class SiCollectionRequirements(
 
     // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
     // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
-    // 対象外入力の継続と処理終了を各発生点で明示し、追加の終了状態を持たない。
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("CyclomaticComplexMethod", "LongMethod", "LoopWithTooManyJumpStatements", "MagicNumber", "MaxLineLength")
+    @Suppress("CyclomaticComplexMethod", "LongMethod", "MagicNumber", "MaxLineLength")
     fun evaluate(snapshot: ServiceRegistrationSnapshot): Status {
         val targets =
             if (mode == ChannelScanController.PublishMode.SETUP_SCAN) {
@@ -92,13 +91,11 @@ internal class SiCollectionRequirements(
                         it.originalNetworkId == scope.first && it.transportStreamId == scope.second &&
                             it.serviceId == table.serviceId
                     }
-            if (pmtOutsideTargets) {
-                continue
-            }
             val transportOutsideTargets =
                 table.component in setOf("SDT", "NIT") && table.transportStreamId != null &&
                     transports.isNotEmpty() && scope !in transports
-            if (transportOutsideTargets) {
+            val outsideTargets = pmtOutsideTargets || transportOutsideTargets
+            if (outsideTargets) {
                 continue
             }
             require(Key(table.component, table.originalNetworkId, table.transportStreamId, table.serviceId), table.complete)

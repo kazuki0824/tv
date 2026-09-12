@@ -40,6 +40,14 @@ class CurrentProgramRatingResolver internal constructor(
         ) : TvProviderLookupResult()
     }
 
+    private data class Candidate(
+        val rowId: Long,
+        val eventId: Int,
+        val start: Long,
+        val end: Long,
+        val flattenedRatings: String?,
+    )
+
     data class CurrentProgramRatingSet(
         val ratings: List<TvContentRating>,
         val source: Source,
@@ -248,10 +256,9 @@ class CurrentProgramRatingResolver internal constructor(
     // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    // 候補の処理と入れ子の資源寿命を同じ手順内で確認できる構造を保つ。
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
-    @Suppress("LongMethod", "MagicNumber", "MaxLineLength", "NestedBlockDepth", "ReturnCount", "TooGenericExceptionCaught")
+    @Suppress("LongMethod", "MagicNumber", "MaxLineLength", "ReturnCount", "TooGenericExceptionCaught")
     private fun fromTvProvider(
         channelUri: Uri?,
         serviceKey: ServiceKey?,
@@ -274,39 +281,18 @@ class CurrentProgramRatingResolver internal constructor(
                 "${TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS} ASC, " +
                 "${TvContract.Programs._ID} DESC"
 
-        data class Candidate(
-            val rowId: Long,
-            val eventId: Int,
-            val start: Long,
-            val end: Long,
-            val flattenedRatings: String?,
-        )
-        val candidates = mutableListOf<Candidate>()
         val cursor =
             try {
                 queryPrograms(TvContract.buildProgramsUriForChannel(channelUri), projection, selection, selectionArgs, sortOrder)
             } catch (e: RuntimeException) {
                 return TvProviderLookupResult.QueryFailed(e.message ?: e.javaClass.name)
             } ?: return TvProviderLookupResult.QueryFailed("QUERY_RETURNED_NULL_CURSOR")
-        try {
-            cursor.use { current ->
-                while (current.moveToNext()) {
-                    val providerData = current.getBlob(5)
-                    if (TvProviderWriter.providerDataMatchesService(providerData, serviceKey)) {
-                        candidates +=
-                            Candidate(
-                                rowId = current.getLong(0),
-                                eventId = current.getInt(1),
-                                start = current.getLong(2),
-                                end = current.getLong(3),
-                                flattenedRatings = current.getString(4),
-                            )
-                    }
-                }
+        val candidates =
+            try {
+                readCandidates(cursor, serviceKey)
+            } catch (e: RuntimeException) {
+                return TvProviderLookupResult.QueryFailed(e.message ?: e.javaClass.name)
             }
-        } catch (e: RuntimeException) {
-            return TvProviderLookupResult.QueryFailed(e.message ?: e.javaClass.name)
-        }
         val selected = candidates.firstOrNull()
         if (selected == null) {
             currentProgramResolutionDiagnostic = CurrentProgramResolutionDiagnostic("", 0, null)
@@ -329,6 +315,33 @@ class CurrentProgramRatingResolver internal constructor(
                 endTimeMillis = selected.end,
             )
         return TvProviderLookupResult.Success(ratingSet)
+    }
+
+    private fun readCandidates(
+        cursor: android.database.Cursor,
+        serviceKey: ServiceKey?,
+    ): List<Candidate> {
+        val candidates = mutableListOf<Candidate>()
+        cursor.use { current ->
+            while (current.moveToNext()) {
+                candidateFromCurrentRow(current, serviceKey)?.let(candidates::add)
+            }
+        }
+        return candidates
+    }
+
+    private fun candidateFromCurrentRow(
+        cursor: android.database.Cursor,
+        serviceKey: ServiceKey?,
+    ): Candidate? {
+        if (!TvProviderWriter.providerDataMatchesService(cursor.getBlob(PROVIDER_DATA_COLUMN), serviceKey)) return null
+        return Candidate(
+            rowId = cursor.getLong(ROW_ID_COLUMN),
+            eventId = cursor.getInt(EVENT_ID_COLUMN),
+            start = cursor.getLong(START_TIME_COLUMN),
+            end = cursor.getLong(END_TIME_COLUMN),
+            flattenedRatings = cursor.getString(CONTENT_RATING_COLUMN),
+        )
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
@@ -383,6 +396,13 @@ class CurrentProgramRatingResolver internal constructor(
     }
 
     companion object {
+        private const val ROW_ID_COLUMN = 0
+        private const val EVENT_ID_COLUMN = 1
+        private const val START_TIME_COLUMN = 2
+        private const val END_TIME_COLUMN = 3
+        private const val CONTENT_RATING_COLUMN = 4
+        private const val PROVIDER_DATA_COLUMN = 5
+
         /**
          * `latestEit` は現在のtune generationへboundされているため、永続Provider rowより
          * 後の受信観測である。同一event/同一時刻ならrating refresh、同一eventの時刻変更

@@ -197,7 +197,7 @@ class MaleicacidLiveSession(
 
     // 失敗の発生点ごとに既存の例外種別と原因を保ち、判定順を変えない。
     // 同期executor境界ではRuntimeException/Errorを再送し、それ以外の原因だけを既存のRuntimeExceptionへ包む。
-    @Suppress("ThrowsCount", "TooGenericExceptionThrown")
+    @Suppress("TooGenericExceptionThrown")
     private fun <T> runOnSessionExecutorBlocking(action: () -> T): T {
         if (Thread.currentThread() == sessionExecutorThread) return action()
         val future = sessionExecutor.submit(Callable<T> { action() })
@@ -208,10 +208,10 @@ class MaleicacidLiveSession(
             throw RuntimeException("session executor interrupted", e)
         } catch (e: ExecutionException) {
             val cause = e.cause ?: e
-            when (cause) {
-                is RuntimeException -> throw cause
-                is Error -> throw cause
-                else -> throw RuntimeException(cause)
+            throw when (cause) {
+                is RuntimeException -> cause
+                is Error -> cause
+                else -> RuntimeException(cause)
             }
         }
     }

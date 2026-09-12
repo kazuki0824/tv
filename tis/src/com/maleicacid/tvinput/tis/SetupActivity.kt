@@ -22,7 +22,7 @@ class SetupActivity :
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         inputId = resolveInputId()
-        invalidInputId = inputId.isNullOrBlank() || !isOwnInputId(inputId)
+        invalidInputId = inputId.isNullOrBlank() || !TisInputIdResolver.isOwnInputId(this, inputId)
         setupGeneration = savedInstanceState?.getInt(STATE_SETUP_GENERATION)?.takeIf { it > 0 }
         val layout =
             LinearLayout(this).apply {
@@ -46,7 +46,7 @@ class SetupActivity :
                 isEnabled = !invalidInputId
                 setOnClickListener {
                     val resolved = inputId
-                    if (resolved.isNullOrBlank() || !isOwnInputId(resolved)) {
+                    if (resolved.isNullOrBlank() || !TisInputIdResolver.isOwnInputId(this@SetupActivity, resolved)) {
                         statusView.text = "不正な設定要求です。inputIdがないか、このTvInputServiceに属していません。"
                         setResult(RESULT_CANCELED)
                     } else {
@@ -83,37 +83,14 @@ class SetupActivity :
             ?: intent?.getStringExtra("inputId")
     }
 
-    private fun isOwnInputId(candidate: String?): Boolean = TisInputIdResolver.isOwnInputId(this, candidate)
-
-    // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
-    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("CyclomaticComplexMethod", "MaxLineLength")
     override fun onScanStateChanged(state: ScanState) {
         runOnUiThread {
+            val running = state is ScanState.Running
+            scanButton.isEnabled = !invalidInputId && !running
+            cancelButton.isEnabled = running
+            statusView.text = scanStatusText(state)
             when (state) {
-                is ScanState.Idle -> {
-                    scanButton.isEnabled = !invalidInputId
-                    cancelButton.isEnabled = false
-                    statusView.text = if (invalidInputId) "不正な設定要求です。inputIdがないか、このTvInputServiceに属していません。" else "チャンネルスキャンを開始できます。"
-                }
-
-                is ScanState.Running -> {
-                    scanButton.isEnabled = false
-                    cancelButton.isEnabled = true
-                    statusView.text =
-                        when (state.purpose) {
-                            ScanPurpose.SETUP_SCAN -> "チャンネルスキャン中です。"
-                            ScanPurpose.BOOT_EPG_SYNC -> "起動後EPG同期を実行中です。"
-                            ScanPurpose.BACKGROUND_MAINTENANCE -> "バックグラウンドチャンネル保守を実行中です。"
-                        }
-                }
-
                 is ScanState.Completed -> {
-                    scanButton.isEnabled = !invalidInputId
-                    cancelButton.isEnabled = false
-                    val diagnostics = state.result.diagnostics.joinToString("\n") { "${it.candidate.displayChannel}: ${it.message}" }
-                    statusView.text = "${purposeLabel(state.purpose)} 完了\nスキャン数=${state.result.scanned} 公開数=${state.result.published}" +
-                        if (diagnostics.isNotBlank()) "\n$diagnostics" else ""
                     if (shouldFinishSetupForStateForTest(state, setupGeneration, invalidInputId)) {
                         setResult(RESULT_OK)
                         finish()
@@ -121,25 +98,62 @@ class SetupActivity :
                 }
 
                 is ScanState.Failed -> {
-                    scanButton.isEnabled = !invalidInputId
-                    cancelButton.isEnabled = false
-                    statusView.text = "${purposeLabel(state.purpose)} 失敗: ${state.message}"
                     if (state.purpose == ScanPurpose.SETUP_SCAN && state.generation == setupGeneration) {
                         setResult(RESULT_CANCELED)
                     }
                 }
 
                 is ScanState.Cancelled -> {
-                    scanButton.isEnabled = !invalidInputId
-                    cancelButton.isEnabled = false
-                    statusView.text = "${purposeLabel(state.purpose)} 中止"
                     if (state.purpose == ScanPurpose.SETUP_SCAN && state.generation == setupGeneration) {
                         setResult(RESULT_CANCELED)
                     }
                 }
+
+                is ScanState.Idle,
+                is ScanState.Running,
+                -> {
+                    Unit
+                }
             }
         }
     }
+
+    private fun scanStatusText(state: ScanState): String =
+        when (state) {
+            is ScanState.Idle -> {
+                if (invalidInputId) {
+                    "不正な設定要求です。inputIdがないか、このTvInputServiceに属していません。"
+                } else {
+                    "チャンネルスキャンを開始できます。"
+                }
+            }
+
+            is ScanState.Running -> {
+                when (state.purpose) {
+                    ScanPurpose.SETUP_SCAN -> "チャンネルスキャン中です。"
+                    ScanPurpose.BOOT_EPG_SYNC -> "起動後EPG同期を実行中です。"
+                    ScanPurpose.BACKGROUND_MAINTENANCE -> "バックグラウンドチャンネル保守を実行中です。"
+                }
+            }
+
+            is ScanState.Completed -> {
+                val diagnostics =
+                    state.result.diagnostics.joinToString("\n") {
+                        "${it.candidate.displayChannel}: ${it.message}"
+                    }
+                "${purposeLabel(state.purpose)} 完了\n" +
+                    "スキャン数=${state.result.scanned} 公開数=${state.result.published}" +
+                    if (diagnostics.isNotBlank()) "\n$diagnostics" else ""
+            }
+
+            is ScanState.Failed -> {
+                "${purposeLabel(state.purpose)} 失敗: ${state.message}"
+            }
+
+            is ScanState.Cancelled -> {
+                "${purposeLabel(state.purpose)} 中止"
+            }
+        }
 
     private fun purposeLabel(purpose: ScanPurpose): String =
         when (purpose) {
