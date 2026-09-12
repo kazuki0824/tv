@@ -363,7 +363,7 @@ class TunerController(
                 Log.w(LogTags.TIS, "channel 解決に失敗しました inputId=$inputId uri=$channelUri", e)
                 return TuneOutcome(false, Tuner.RESULT_INVALID_ARGUMENT, null, tuneGeneration, e.message.orEmpty())
             }
-        return tuneResolvedChannel(resolved)
+        return tuneResolvedChannel(resolved, startPlayback = true)
     }
 
     internal data class BsFrontendSelectionResult(
@@ -729,7 +729,7 @@ class TunerController(
                 backendHint = candidate.backendHint,
                 satelliteBand = candidate.satelliteBand,
             )
-        return tuneResolvedChannel(synthetic)
+        return tuneResolvedChannel(synthetic, startPlayback = false)
     }
 
     @Suppress("MaxLineLength")
@@ -746,7 +746,10 @@ class TunerController(
     }
 
     @Suppress("ReturnCount", "MaxLineLength")
-    private fun tuneResolvedChannel(channel: ResolvedChannel): TuneOutcome {
+    private fun tuneResolvedChannel(
+        channel: ResolvedChannel,
+        startPlayback: Boolean,
+    ): TuneOutcome {
         resetBeforeTune()
         val tunerInstance = tuner ?: return TuneOutcome(false, Tuner.RESULT_UNAVAILABLE, channel, tuneGeneration, "Tuner を利用できません")
         val settings =
@@ -1233,6 +1236,8 @@ class TunerController(
                 if (diagnostics.any { it.state == CasController.State.ERROR }) {
                     playbackPipeline.reportUnavailable(PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY, diagnostics.joinToString())
                 }
+                // ECMの成功/失敗も同じ視聴可否gateへ即時に通知する。
+                onSectionIngestedCallback?.invoke()
             },
             onEmm = {
                 val diagnostics = casController?.onEmmSection(pid, section).orEmpty()

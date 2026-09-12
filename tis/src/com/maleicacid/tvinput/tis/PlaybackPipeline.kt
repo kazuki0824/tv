@@ -177,7 +177,7 @@ class PlaybackPipeline(
 
     // MPEG-TSのstream_typeとAndroid MIMEの対応表を直接照合する。
     @Suppress("MagicNumber")
-    private enum class VideoCodecKind(
+    internal enum class VideoCodecKind(
         val streamType: Int,
         val mime: String,
     ) {
@@ -2161,7 +2161,7 @@ class PlaybackPipeline(
 
     // 同じ状態・境界を扱う操作群を一つの所有者に保つ。
     @Suppress("TooManyFunctions")
-    private object EsHeaderParser {
+    internal object EsHeaderParser {
         // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
         @Suppress("MagicNumber")
         private val AVC_SAR_TABLE =
@@ -2233,10 +2233,12 @@ class PlaybackPipeline(
                 val bits = BitReader(rbsp)
                 bits.readBits(4)
                 val maxSubLayersMinus1 = bits.readBits(3)
+                require(maxSubLayersMinus1 <= 6)
                 bits.readBit()
                 skipHevcProfileTierLevel(bits, maxSubLayersMinus1)
-                bits.readUE()
+                require(bits.readUE() <= 15)
                 val chromaFormatIdc = bits.readUE()
+                require(chromaFormatIdc in 0..3)
                 val separateColourPlaneFlag = if (chromaFormatIdc == 3) bits.readBit() else 0
                 val width = bits.readUE()
                 val height = bits.readUE()
@@ -2266,10 +2268,10 @@ class PlaybackPipeline(
                     } else {
                         1
                     }
-                VideoDimensions(
-                    (width - subWidthC * (left + right)).coerceAtLeast(1),
-                    (height - subHeightC * (top + bottom)).coerceAtLeast(1),
-                )
+                val croppedWidth = width.toLong() - subWidthC * (left.toLong() + right)
+                val croppedHeight = height.toLong() - subHeightC * (top.toLong() + bottom)
+                require(croppedWidth in 1..Int.MAX_VALUE.toLong() && croppedHeight in 1..Int.MAX_VALUE.toLong())
+                VideoDimensions(croppedWidth.toInt(), croppedHeight.toInt())
             }.getOrNull()
 
         private fun skipHevcProfileTierLevel(
@@ -2570,6 +2572,7 @@ class PlaybackPipeline(
                     0
                 ) {
                     zeros++
+                    require(zeros <= 30) { "Exp-Golomb value exceeds signed Int" }
                 }
                 return if (zeros ==
                     0
@@ -2750,7 +2753,12 @@ class PlaybackPipeline(
                 index += prefixLength + 2
                 while (index < bytes.size - 3 && !isStartCode(bytes, index)) index++
                 val end = if (index < bytes.size - 3) index else bytes.size
-                if (type == nalType) return bytes.copyOfRange(start, end)
+                if (type == nalType) {
+                    val header = bytes[start + prefixLength].toInt() and 0xff
+                    val second = bytes[start + prefixLength + 1].toInt() and 0xff
+                    if (header and 0x80 != 0 || second and 0x07 == 0) return null
+                    return bytes.copyOfRange(start, end)
+                }
             }
             return null
         }

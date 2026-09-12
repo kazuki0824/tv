@@ -17,6 +17,58 @@ import org.junit.Test
 class CasControllerStateTest {
     private val serviceKey = ServiceKey(originalNetworkId = 4, transportStreamId = 16625, serviceId = 101)
 
+    @Test fun ecmFailureSurvivesMetadataRefreshUntilSuccessfulEcm() {
+        for (failure in listOf(
+            Result.failure<EcmProcessResult>(IllegalStateException("card unavailable")),
+            Result.success<EcmProcessResult>(EcmProcessResult.InvalidKeyToken("invalid")),
+            Result.success<EcmProcessResult>(EcmProcessResult.DiagnosticOnly("no key")),
+        )) {
+            val success = Result.success<EcmProcessResult>(EcmProcessResult.RealKeyToken(TunerKeyToken(byteArrayOf(1, 2, 3))))
+            var nextResult = success
+            val session =
+                object : CasController.MediaCasSessionBridge {
+                    override fun setPrivateData(privateData: ByteArray) = Result.success(Unit)
+
+                    override fun processEcm(section: ByteArray) = nextResult
+
+                    override fun close() = Unit
+                }
+            val factory =
+                object : CasController.MediaCasBridgeFactory {
+                    override fun create(caSystemId: Int) =
+                        Result.success(
+                            object : CasController.MediaCasBridge {
+                                override fun setPrivateData(privateData: ByteArray) = Result.success(Unit)
+
+                                override fun openSession() = Result.success(session)
+
+                                override fun processEmm(section: ByteArray) = Result.success(Unit)
+
+                                override fun close() = Unit
+                            },
+                        )
+                }
+            val controller = CasController(mediaCasFactory = factory)
+            try {
+                val metadata = b25Metadata(TsPid(0x101), TsPid(0x123), TsPid(0x010))
+                val descrambler = FakeTunerDescramblerBridge()
+                controller.updateFromCaMetadata(metadata) { descrambler }
+                controller.onEcmSection(TsPid(0x123), byteArrayOf(1))
+                check(controller.currentReadiness() == CasController.Readiness.READY)
+                nextResult = failure
+                check(controller.onEcmSection(TsPid(0x123), byteArrayOf(1)).isNotEmpty())
+                check(controller.currentReadiness() == CasController.Readiness.WAITING_FOR_KEY)
+                check(controller.updateFromCaMetadata(metadata) { descrambler }.readiness == CasController.Readiness.WAITING_FOR_KEY)
+                nextResult = success
+                check(controller.onEcmSection(TsPid(0x123), byteArrayOf(1)).isEmpty())
+                check(controller.currentReadiness() == CasController.Readiness.READY)
+                check(descrambler.keyTokens.size == 1)
+            } finally {
+                controller.close()
+            }
+        }
+    }
+
     @Test fun resourceLossClosesOwnedDescramblerAndRetainsFailuresForRetry() {
         for (closeFails in listOf(false, true)) {
             val old = RecordingDescrambler().apply { failClose = closeFails }
