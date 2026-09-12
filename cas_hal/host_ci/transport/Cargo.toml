@@ -7,5 +7,6 @@ edition = "2021"
 path = "../../src/transport.rs"
 
 [dependencies]
+libc = "=0.2.159"
 maleicacid-cas-hal-core = { path = "../core" }
 maleicacid-tuner-hal2-key-provisioning-bridge = { package = "maleicacid-tuner-hal2-key-provisioning-bridge-host-ci", path = "../../../tuner_hal2/host_ci/key_provisioning_bridge" }

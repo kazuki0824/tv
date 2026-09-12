@@ -28,6 +28,7 @@ rust_binary {
         "android.hardware.cas-V1-rust",
         "libbinder_rs",
         "libmaleicacid_cas_hal_core",
+        "liblibc",
         "libmaleicacid_tuner_hal2_key_provisioning_bridge",
     ],
 }
@@ -52,6 +53,7 @@ rust_test {
     edition: "2021",
     rustlibs: [
         "libmaleicacid_cas_hal_core",
+        "liblibc",
         "libmaleicacid_tuner_hal2_key_provisioning_bridge",
     ],
     auto_gen_config: true,

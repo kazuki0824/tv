@@ -63,7 +63,9 @@ system keyとCBC初期値のcredentialはvendor secure provisioningから取得�
 
 CAS serviceはB25 SmartCard adapterへ `/dev/socket/maleicacid_cas_b25_smartcard`、B1 SmartCard adapterへ `/dev/socket/maleicacid_cas_b1_smartcard`、任意のB25 Yakisoba daemonへ `/dev/socket/maleicacid_cas_yakisoba` で接続する。各要求はbig-endianのversion 1 frameで、32 byte header `MCAS | version | operation | system | path | request_id:u64 | session_generation:u64 | session_len:u8 | reserved[3] | payload_len:u32`、続いてsession IDとpayloadを持つ。operationはopen=1、session private data=2、ECM=3、EMM=4、close=5、systemはB25=1/B1=2、pathはSmartCard=1/Yakisoba=2とする。
 
-応答は20 byte header `MCAR | version | status | path | reserved | request_id:u64 | payload_len:u32`とpayloadである。statusは順にok=0、bad-value=1、cannot-handle=2、invalid-state=3、resource-busy=4、no-license=5、license-expired=6、not-provisioned=7、no-card=8、card-mute=9、card-invalid=10、I/O-unavailable=11、timeout=12、unknown=13とする。ECM成功payloadだけが `system_key[32] | cbc_initial_value[8] | even_ks[8] | odd_ks[8]` の56 byteを返し、他の成功応答は空とする。最大frameは4256 byte、I/O deadlineは2秒であり、version、reserved、request ID、path、長さの不一致を成功へ丸めない。
+応答は20 byte header `MCAR | version | status | path | reserved | request_id:u64 | payload_len:u32`とpayloadである。statusは順にok=0、bad-value=1、cannot-handle=2、invalid-state=3、resource-busy=4、no-license=5、license-expired=6、not-provisioned=7、no-card=8、card-mute=9、card-invalid=10、I/O-unavailable=11、timeout=12、unknown=13とする。ECM成功payloadだけが `system_key[32] | cbc_initial_value[8] | even_ks[8] | odd_ks[8]` の56 byteを返し、他の成功応答は空とする。最大frameは4256 byte、接続・全送受信を含むI/O deadlineは2秒であり、version、reserved、request ID、path、長さの不一致を成功へ丸めない。
+
+open応答の喪失時は同じsession ID/generationでcloseを再試行するため、adapterのcloseは未作成/終了済みの同じidentityにも冪等に成功すること。timeoutまたは送信後の切断では別pathを選択しない。
 
 adapterはpeer credentialとSELinux domainを検証し、同一card I/Oを直列化する。各socketのfile type、adapter domain、CAS domainからのconnect permissionは採用adapterのproduct sepolicyで定義する。repository内の基本sepolicyはCAS→Tuner鍵bridgeだけを許可し、未選定adapterへ広い接続権を先置きしない。
 
