@@ -40,14 +40,23 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: 全Rust一覧を生成
+      - name: rustfmt対象Rust一覧を生成
         id: files
         shell: bash
         run: |
+          # arib_extended_graphic_table.rs はlibaribcaption由来の自動生成表。
+          # 人手整形すると再生成時に戻るため、format gateでは生成元の表現を保持する。
+          generated='arib_si_engine_rs/src/core/arib_extended_graphic_table.rs'
           mapfile -d '' -t files < <(
-            git ls-files -z -- '*.rs' | sort -z
+            git ls-files -z -- '*.rs' |
+              while IFS= read -r -d '' source; do
+                if [[ "$source" != "$generated" ]]; then
+                  printf '%s\0' "$source"
+                fi
+              done |
+              sort -z
           )
-          printf 'Rust sources: %s\n' "${#files[@]}"
+          printf 'Rust sources checked by rustfmt: %s\n' "${#files[@]}"
           printf '%s\n' "${files[@]}"
           if ((${#files[@]} == 0)); then
             echo 'files=[]' >> "$GITHUB_OUTPUT"
@@ -70,7 +79,7 @@ jobs:
         shell: bash
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
 
-      - name: 全Rustの整形を確認
+      - name: Rustの整形を確認
         shell: bash
         env:
           FILES_JSON: ${{ needs.all-rust.outputs.files }}
