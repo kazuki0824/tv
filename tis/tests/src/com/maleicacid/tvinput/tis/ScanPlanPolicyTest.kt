@@ -5,6 +5,8 @@ package com.maleicacid.tvinput.tis
 import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.StreamSelectorType
 import com.maleicacid.tvinput.common.TransportStreamId16
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -177,9 +179,10 @@ class ScanPlanPolicyTest {
     }
 
     @Test
+    @Suppress("LongMethod")
     fun bsResourceLossWakesCallerAndRejectsCandidatesAndPublication() {
-        val controller = java.util.concurrent.Executors.newSingleThreadExecutor()
-        val caller = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val controller = Executors.newSingleThreadExecutor()
+        val caller = Executors.newSingleThreadExecutor()
         val fence = ChannelScanController.ResourceLossFence()
         val operation = TunerController.StreamIdDiscoveryOperation(9L)
         val waiting = java.util.concurrent.CountDownLatch(1)
@@ -248,7 +251,7 @@ class ScanPlanPolicyTest {
     fun scanReleaseRetryPreservesResourceLostTerminalAndRetainsOnlyFailedOwner() {
         val context = android.content.ContextWrapper(null)
         val task = ChannelScanManager.ActiveScanTask(1, ScanPurpose.SETUP_SCAN, context)
-        val owner = java.util.concurrent.atomic.AtomicReference<ChannelScanManager.ActiveScanTask?>(task)
+        val owner = AtomicReference<ChannelScanManager.ActiveScanTask?>(task)
         val terminal = ScanState.Failed("TUNER_RESOURCE_LOST", 1, ScanPurpose.SETUP_SCAN)
         // Managerの実stateを検査する。テスト用の本番mutation APIは追加しない。
         val stateField =
@@ -360,7 +363,8 @@ class ScanPlanPolicyTest {
             JapanIsdbScanPlan.staticBsStreamIdsFor(bs.first()),
         )
         assertTrue(
-            bs.filter { it.physicalChannel in setOf(7, 11, 17) }
+            bs
+                .filter { it.physicalChannel in setOf(7, 11, 17) }
                 .all { JapanIsdbScanPlan.staticBsStreamIdsFor(it).isEmpty() },
         )
     }
