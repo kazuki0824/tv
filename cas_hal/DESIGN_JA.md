@@ -41,6 +41,8 @@ Opening -> Active -> Closing -> Closed
 - 選択したpathはsession closeまで不変とし、card抜去やdaemon障害で別pathへ切り替えない。
 - `closeSession()` は最初に新規ECMとprivate-data更新を遮断し、registry entryをrevokeしてから下位sessionを閉じる。既に閉じたsessionまたは未知sessionは `ERROR_CAS_SESSION_NOT_OPENED` とする。
 - `release()` はpluginを論理closeし、全sessionのrevoke/close、listener解放を全件試行する。途中失敗を理由に残りのsessionを放置しない。release後の通常methodは `ERROR_CAS_INVALID_STATE` とする。
+- revokeと下位closeの成否をsessionごとに保持し、失敗したstepだけをclose/releaseで再試行する。全stepが完了するまでentryを消さない。open/ECM中のreleaseはI/O ownerの結果回収を待ち、回収後に失効・closeを完了する。
+- serviceの`CasCleanupOwner`はpluginのBinder artifact消滅後もruntimeを保持する。有限間隔でFailed/Closing sessionの未完了cleanupを再試行し、release済みかつ全I/O/cleanup完了時だけ所有を解放する。新規plugin数を256に制限し、未回収ownerを無制限に増やさない。
 - generationをwrapまたは再利用しない。次generationを発行できない対象plugin/sessionはfail-closedとし、stale callback、stale token、別sessionへの資源再利用を許可しない。
 
 ## B25/B1 ICas method契約

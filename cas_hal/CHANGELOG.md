@@ -1,3 +1,10 @@
+# r52_pr57_failure_recovery
+
+- AIDL CASのservice-specific statusを正の定数値へ修正し、結果不明のtimeoutをINVALID_STATEへ写像した。
+- revoke/下位closeの失敗をsessionに保持し、成功済みstepを繰り返さず再試行する。plugin破棄後もservice ownerが保持し、reaperで未完了cleanupを回収する。open/release競合とsession private dataのfatal failureも同じ失効経路へ接続した。
+- socket接続をnonblockingにし、送受信を含む有限deadlineを適用した。timeout/送信後切断をfallback条件から分離し、open結果不明時は試行したpathのcleanupを保持する。成功応答payload長もoperationごとに検証する。
+- 検証: CAS core 17件、transport 10件のhost unit testsに成功。実socketのtimeout/切断/過大応答、cleanup再試行、Binder owner消滅相当、open/release競合を含む。Android/Soong実体build、AIDL VTS、実card/放送波確認は未実施。
+
 # 変更履歴
 
 ## r52-implementation

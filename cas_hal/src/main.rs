@@ -14,8 +14,8 @@ use android_hardware_cas::aidl::android::hardware::cas::{
 };
 use binder::{BinderFeatures, Interface, Result as BinderResult, Status, Strong};
 use maleicacid_cas_hal_core::{
-    CasError, CasPluginRuntime, CasScramblingMode, CasSessionIntent, CasSystem, GenerationSource,
-    SessionIdGenerator,
+    CasCleanupOwner, CasError, CasPluginRuntime, CasScramblingMode, CasSessionIntent, CasSystem,
+    GenerationSource, SessionIdGenerator,
 };
 use transport::{
     AtomicGenerationSource, CapabilitySnapshot, UnixCasPathRouter, UnixTunerKeyPublisher,
@@ -149,10 +149,11 @@ struct MaleicacidMediaCasService {
     session_id_generator: Arc<dyn SessionIdGenerator>,
     generation_source: Arc<dyn GenerationSource>,
     plugin_drop_cleanup_failures: Arc<AtomicU64>,
+    cleanup_owner: Arc<CasCleanupOwner>,
 }
 
 impl MaleicacidMediaCasService {
-    fn new() -> Self {
+    fn new(cleanup_owner: Arc<CasCleanupOwner>) -> Self {
         let capabilities = match CapabilitySnapshot::load(CAS_CAPABILITY_PROFILE_PATH) {
             Ok(snapshot) => snapshot,
             Err(_) => CapabilitySnapshot::default(),
@@ -167,6 +168,7 @@ impl MaleicacidMediaCasService {
             session_id_generator: Arc::new(UrandomSessionIdGenerator),
             generation_source: Arc::new(AtomicGenerationSource::new()),
             plugin_drop_cleanup_failures: Arc::new(AtomicU64::new(0)),
+            cleanup_owner,
         }
     }
 
@@ -214,6 +216,9 @@ impl IMediaCasService for MaleicacidMediaCasService {
             )
             .map_err(binder_error)?,
         );
+        self.cleanup_owner
+            .track(runtime.clone())
+            .map_err(binder_error)?;
         Ok(BnCas::new_binder(
             MaleicacidCasPlugin {
                 runtime,
@@ -247,8 +252,25 @@ impl IMediaCasService for MaleicacidMediaCasService {
 
 fn main() {
     binder::ProcessState::start_thread_pool();
-    let cas_binder =
-        BnMediaCasService::new_binder(MaleicacidMediaCasService::new(), BinderFeatures::default());
+    let cleanup_owner = Arc::new(CasCleanupOwner::default());
+    let reaper_owner = cleanup_owner.clone();
+    if std::thread::Builder::new()
+        .name("cas-cleanup".to_owned())
+        .spawn(move || loop {
+            if let Err(error) = reaper_owner.retry_pending() {
+                // session ID、token、鍵素材を診断へ含めない。
+                eprintln!("cas cleanup pending: {error:?}");
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        })
+        .is_err()
+    {
+        std::process::exit(1);
+    }
+    let cas_binder = BnMediaCasService::new_binder(
+        MaleicacidMediaCasService::new(cleanup_owner),
+        BinderFeatures::default(),
+    );
     if binder::add_service(CAS_SERVICE_NAME, cas_binder.as_binder()).is_err() {
         std::process::exit(1);
     }
