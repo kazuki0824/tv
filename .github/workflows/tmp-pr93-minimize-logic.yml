@@ -1,0 +1,332 @@
+name: 一時PR93不要ロジック巻戻し
+
+on:
+  push:
+    branches:
+      - fix/tuner-hal2-audit-gaps
+
+permissions:
+  contents: write
+
+jobs:
+  edit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/tuner-hal2-audit-gaps
+          fetch-depth: 0
+      - name: PR93の不要な挙動変更を局所的に戻す
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=a05138947aa683e47479703f40d67491775bf43c
+
+          # D3とBS RF列挙はPRベースの既存挙動へ完全に戻す。
+          git checkout "$base" -- \
+            tuner_hal2/demux/src/runtime/av_sync_registry.rs \
+            tuner_hal2/service_runtime/src/object_method_use_case.rs \
+            tis/src/com/maleicacid/tvinput/tis/ScanPlan.kt
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          # frontend_worker_txn: scan限定retry、INPUT_STREAM_IDS→LockedReported→LOCKEDの順へ狭める。
+          p = Path('tuner_hal2/service_runtime/src/frontend_worker_txn.rs')
+          text = p.read_text()
+
+          start = text.index('fn commit_and_deliver_frontend_scan_lock(')
+          end = text.index('\nfn finish_frontend_worker_execution', start)
+          replacement = '''fn commit_and_deliver_frontend_scan_lock(
+              runtime: &SharedRuntime,
+              notifier: &FrontendScanNotifier,
+              frontend_id: i32,
+              generation: u64,
+              stream_ids: Option<Vec<i32>>,
+          ) -> Result<(), HalError> {
+              if let Some(stream_ids) = stream_ids {
+                  deliver_committed_scan_notification(
+                      runtime,
+                      notifier,
+                      frontend_id,
+                      generation,
+                      FrontendScanNotification::InputStreamIds(stream_ids),
+                  )?;
+              }
+              {
+                  let mut guard = lock_runtime(
+                      runtime,
+                      "service runtime lock poisoned while committing scan lock",
+                  )?;
+                  guard
+                      .frontend_txn()
+                      .mark_frontend_scan_session_locked_reported(frontend_id, generation)?;
+              }
+              deliver_committed_scan_notification(
+                  runtime,
+                  notifier,
+                  frontend_id,
+                  generation,
+                  FrontendScanNotification::Locked,
+              )
+          }
+          '''
+          text = text[:start] + replacement + text[end:]
+
+          start = text.index('fn observe_stream_id_list_with_retry<')
+          end = text.index('\nfn wait_for_frontend_qualified_lock', start)
+          retry_block = '''fn observe_stream_id_list_with_retry<Observe, Wait, Cancelled>(
+              attempts: usize,
+              mut observe: Observe,
+              mut wait: Wait,
+              cancelled: Cancelled,
+          ) -> Result<Option<Vec<u16>>, HalError>
+          where
+              Observe: FnMut() -> Result<FrontendTmccTsidListObservation, HalError>,
+              Wait: FnMut() -> Result<(), HalError>,
+              Cancelled: Fn() -> bool,
+          {
+              if attempts == 0 {
+                  return Err(HalError::internal(
+                      HalInternalKind::InvariantViolation,
+                      "stream-ID observation requires at least one attempt",
+                  ));
+              }
+              for attempt in 0..attempts {
+                  if cancelled() {
+                      return Ok(None);
+                  }
+                  match observe()? {
+                      FrontendTmccTsidListObservation::Available(stream_ids) => {
+                          return Ok(Some(stream_ids));
+                      }
+                      FrontendTmccTsidListObservation::Pending if attempt + 1 < attempts => wait()?,
+                      FrontendTmccTsidListObservation::Pending => return Ok(None),
+                  }
+              }
+              Err(HalError::internal(
+                  HalInternalKind::InvariantViolation,
+                  "stream-ID observation exhausted without a terminal decision",
+              ))
+          }
+
+          fn commit_observed_frontend_stream_id_list(
+              runtime: &SharedRuntime,
+              ctx: &FrontendWorkerContext,
+              frontend_id: i32,
+              generation: u64,
+              stream_ids: Vec<u16>,
+          ) -> Result<Option<Vec<i32>>, HalError> {
+              if ctx.cancel_requested() {
+                  return Ok(None);
+              }
+              let stream_ids = stream_ids.into_iter().map(i32::from).collect::<Vec<_>>();
+              match FrontendTuneScanTxn::accept_operation_event(
+                  runtime,
+                  frontend_id,
+                  generation,
+                  FrontendOperationEvent::StreamIdList {
+                      stream_ids: stream_ids.clone(),
+                  },
+              )? {
+                  crate::frontend_ops::FrontendOperationEventAcceptance::Accepted => Ok(Some(stream_ids)),
+                  crate::frontend_ops::FrontendOperationEventAcceptance::DiscardedStale => Ok(None),
+                  crate::frontend_ops::FrontendOperationEventAcceptance::AcceptedCallbackFailure => {
+                      Err(HalError::internal(
+                          HalInternalKind::InvariantViolation,
+                          "state-only TMCC stream-ID event reported callback failure",
+                      ))
+                  }
+              }
+          }
+
+          fn stream_id_list_observation_needed(
+              runtime: &SharedRuntime,
+              ctx: &FrontendWorkerContext,
+              frontend_id: i32,
+          ) -> Result<bool, HalError> {
+              if !frontend_uses_tmcc_stream_id_list(runtime, frontend_id)? || ctx.cancel_requested() {
+                  return Ok(false);
+              }
+              let guard = lock_runtime(
+                  runtime,
+                  "service runtime lock poisoned while checking committed TMCC stream IDs",
+              )?;
+              Ok(guard
+                  .query()
+                  .frontend_runtime_snapshot(frontend_id)?
+                  .stream_id_list
+                  .is_none())
+          }
+
+          fn observe_and_record_frontend_stream_id_list(
+              runtime: &SharedRuntime,
+              ctx: &FrontendWorkerContext,
+              session: &FrontendBackendSession,
+              frontend_id: i32,
+              generation: u64,
+          ) -> Result<Option<Vec<i32>>, HalError> {
+              if !stream_id_list_observation_needed(runtime, ctx, frontend_id)? {
+                  return Ok(None);
+              }
+              let FrontendTmccTsidListObservation::Available(stream_ids) =
+                  session.observe_tmcc_tsid_list()?
+              else {
+                  return Ok(None);
+              };
+              commit_observed_frontend_stream_id_list(
+                  runtime,
+                  ctx,
+                  frontend_id,
+                  generation,
+                  stream_ids,
+              )
+          }
+
+          fn observe_and_record_frontend_stream_id_list_for_scan(
+              runtime: &SharedRuntime,
+              ctx: &FrontendWorkerContext,
+              session: &FrontendBackendSession,
+              frontend_id: i32,
+              generation: u64,
+          ) -> Result<Option<Vec<i32>>, HalError> {
+              if !stream_id_list_observation_needed(runtime, ctx, frontend_id)? {
+                  return Ok(None);
+              }
+              let Some(stream_ids) = observe_stream_id_list_with_retry(
+                  SCAN_STREAM_ID_OBSERVATION_ATTEMPTS,
+                  || session.observe_tmcc_tsid_list(),
+                  || {
+                      let deadline = Instant::now()
+                          .checked_add(Duration::from_millis(SCAN_STREAM_ID_RETRY_INTERVAL_MS))
+                          .ok_or_else(|| {
+                              HalError::internal(
+                                  HalInternalKind::InvariantViolation,
+                                  "stream-ID retry deadline overflowed",
+                              )
+                          })?;
+                      ctx.wait_until(Some(deadline))
+                  },
+                  || ctx.cancel_requested(),
+              )?
+              else {
+                  return Ok(None);
+              };
+              commit_observed_frontend_stream_id_list(
+                  runtime,
+                  ctx,
+                  frontend_id,
+                  generation,
+                  stream_ids,
+              )
+          }
+          '''
+          text = text[:start] + retry_block + text[end:]
+
+          tune_old = '''observe_and_record_frontend_stream_id_list(
+                              &runtime,
+                              ctx,
+                              &session,
+                              frontend_id,
+                              generation,
+                              1,
+                          )?'''
+          tune_new = '''observe_and_record_frontend_stream_id_list(
+                              &runtime,
+                              ctx,
+                              &session,
+                              frontend_id,
+                              generation,
+                          )?'''
+          if text.count(tune_old) != 2:
+              raise SystemExit(f'tune TMCC call count mismatch: {text.count(tune_old)}')
+          text = text.replace(tune_old, tune_new)
+
+          scan_old = '''observe_and_record_frontend_stream_id_list(
+                                  &runtime,
+                                  ctx,
+                                  &session,
+                                  ctx.frontend_id(),
+                                  ctx.generation(),
+                                  SCAN_STREAM_ID_OBSERVATION_ATTEMPTS,
+                              )?'''
+          scan_new = '''observe_and_record_frontend_stream_id_list_for_scan(
+                                  &runtime,
+                                  ctx,
+                                  &session,
+                                  ctx.frontend_id(),
+                                  ctx.generation(),
+                              )?'''
+          if text.count(scan_old) != 1:
+              raise SystemExit(f'scan TMCC call count mismatch: {text.count(scan_old)}')
+          text = text.replace(scan_old, scan_new)
+          p.write_text(text)
+
+          # 12 RF拡張だけに依存していた試験assertを除去。I1の3試験は維持する。
+          p = Path('tis/tests/src/com/maleicacid/tvinput/tis/ScanPlanPolicyTest.kt')
+          text = p.read_text()
+          old = '        assertEquals((1..23 step 2).toList(), bs.mapNotNull { it.physicalChannel })\n'
+          if text.count(old) != 1:
+              raise SystemExit(f'BS 12RF assertion count mismatch: {text.count(old)}')
+          p.write_text(text.replace(old, '', 1))
+
+          # 公開設計: D3はbaseへ戻し、scan確定順だけ必要最小限にする。
+          p = Path('tuner_hal/DESIGN_JA.md')
+          text = p.read_text()
+          base = subprocess.check_output(['git', 'show', 'a05138947aa683e47479703f40d67491775bf43c:tuner_hal/DESIGN_JA.md'], text=True)
+          cur_start = text.index('`getAvSyncHwId()` の対応解決は')
+          cur_end = text.index('\n同一demuxに属する', cur_start)
+          base_start = base.index('`getAvSyncHwId()` は、対象 media filter')
+          base_end = base.index('\n同一demuxに属する', base_start)
+          text = text[:cur_start] + base[base_start:base_end] + text[cur_end:]
+          old = '公開callbackより前にscan sessionを`LockedReported`へ確定し、callbackからの同一`scan(K)`再入を継続要求として扱う。'
+          new = '`INPUT_STREAM_IDS`を配送した後、`LOCKED` callbackより前にscan sessionを`LockedReported`へ確定し、`LOCKED` callbackからの同一`scan(K)`再入を継続要求として扱う。'
+          if text.count(old) != 1:
+              raise SystemExit(f'scan order design text count mismatch: {text.count(old)}')
+          p.write_text(text.replace(old, new, 1))
+
+          # Changelogは最終diffだけを記述する。
+          p = Path('tuner_hal/CHANGELOG.md')
+          text = p.read_text()
+          av = '# r51_pr93_av_sync\n\n- D3の曖昧な複数PCRに対するgetAvSyncHwIdのINVALID_STATEと、既存PCR IDの時計identity維持を定義した。\n\n'
+          text = text.replace(av, '', 1)
+          old = '- earth_pt1のDTV_STREAM_ID読戻しと最小PCRへの一律再結合の設計追加は撤回した。前者はLinux v6.6のtc90522による5バイト読出しがPT1の4バイト制限で失敗し、要求キャッシュを実測値として扱えない。後者は異なる番組の時計の対応関係を解決しない。'
+          new = '- earth_pt1のDTV_STREAM_ID読戻しの設計追加は撤回した。Linux v6.6のtc90522による5バイト読出しがPT1の4バイト制限で失敗し、要求キャッシュを実測値として扱えない。'
+          if old in text:
+              text = text.replace(old, new, 1)
+          p.write_text(text)
+
+          p = Path('tuner_hal2/CHANGELOG.md')
+          text = p.read_text()
+          av = '# r51_pr93_av_sync\n\n- D3: 複数PCRでmediaとの対応が曖昧なgetAvSyncHwIdをINVALID_STATEへ接続する。PCRの複数利用と存続するIDのgetAvSyncTimeは維持し、別時計へのID読み替えを行わない。登録順、追加/解除、prepared mutationの中止を試験する。\n\n'
+          text = text.replace(av, '', 1)
+          old = '- earth_pt1のDTV_STREAM_ID読戻し追加と最小PCRへの一律再結合は撤回し、関連コード・試験・設計をベースへ戻した。earth_pt1のISDB-S公開と明示TSID選局は変更しない。earth_pt1のBS動的探索と複数時計の対応付けは、この変更で解決済みとは扱わない。'
+          new = '- earth_pt1のDTV_STREAM_ID読戻し追加は撤回し、関連コード・試験・設計をベースへ戻した。earth_pt1のISDB-S公開と明示TSID選局は変更しない。earth_pt1のBS動的探索は、この変更で解決済みとは扱わない。'
+          if old in text:
+              text = text.replace(old, new, 1)
+          p.write_text(text)
+
+          p = Path('tis/CHANGELOG.md')
+          text = p.read_text()
+          old = '- BS01〜BS23の奇数12 RFを固定TSIDなしで列挙する。NITによる候補展開と、そのためのSI解析・JNI/DTO追加は撤回し、ChannelScanControllerとSI境界をベースへ戻した。BS候補はHALの報告だけから作り、固定TSID fallbackは導入しない。\n'
+          if old in text:
+              text = text.replace(old, '', 1)
+          p.write_text(text)
+          PY
+
+          git diff --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            tuner_hal/DESIGN_JA.md tuner_hal/CHANGELOG.md \
+            tuner_hal2/CHANGELOG.md \
+            tuner_hal2/demux/src/runtime/av_sync_registry.rs \
+            tuner_hal2/service_runtime/src/object_method_use_case.rs \
+            tuner_hal2/service_runtime/src/frontend_worker_txn.rs \
+            tis/CHANGELOG.md \
+            tis/src/com/maleicacid/tvinput/tis/ScanPlan.kt \
+            tis/tests/src/com/maleicacid/tvinput/tis/ScanPlanPolicyTest.kt
+          git rm .github/workflows/tmp-pr93-minimize-logic.yml
+          git commit -m "fix: minimize PR93 behavior changes"
+          git push origin HEAD:fix/tuner-hal2-audit-gaps
