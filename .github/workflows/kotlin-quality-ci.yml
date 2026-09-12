@@ -25,8 +25,39 @@ env:
   DETEKT_VERSION: 1.23.8
 
 jobs:
+  changed-kotlin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      files: ${{ steps.files.outputs.files }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: 変更Kotlin一覧を生成
+        id: files
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base="$PR_BASE_SHA"
+          else
+            base="$PUSH_BEFORE_SHA"
+          fi
+          mapfile -d '' -t files < <(
+            git diff --name-only --diff-filter=ACMR -z "$base" HEAD -- '*.kt' '*.kts' | sort -z
+          )
+          printf 'files=%s\n' "$(printf '%s\n' "${files[@]}" | jq -Rsc 'split("\n")[:-1]')" >> "$GITHUB_OUTPUT"
+
   ktlint:
     name: ktlint format check
+    needs: changed-kotlin
+    if: ${{ needs.changed-kotlin.outputs.files != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -51,19 +82,18 @@ jobs:
           echo "KTLINT=$tool" >> "$GITHUB_ENV"
           "$tool" --version
 
-      - name: Kotlin全体の整形を確認
+      - name: 変更Kotlinの整形を確認
         shell: bash
+        env:
+          FILES_JSON: ${{ needs.changed-kotlin.outputs.files }}
         run: |
-          mapfile -d '' -t sources < <(
-            find . -type f \( -name '*.kt' -o -name '*.kts' \) \
-              -not -path './.git/*' -print0 \
-              | sort -z
-          )
-          test "${#sources[@]}" -gt 0
+          mapfile -t sources < <(jq -r '.[]' <<<"$FILES_JSON")
           "$KTLINT" "${sources[@]}"
 
   detekt:
     name: detekt lint
+    needs: changed-kotlin
+    if: ${{ needs.changed-kotlin.outputs.files != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -87,14 +117,11 @@ jobs:
           echo "DETEKT=$tool" >> "$GITHUB_ENV"
           java -jar "$tool" --version
 
-      - name: Kotlin全体をlint
+      - name: 変更Kotlinをlint
         shell: bash
+        env:
+          FILES_JSON: ${{ needs.changed-kotlin.outputs.files }}
         run: |
-          mapfile -d '' -t sources < <(
-            find . -type f \( -name '*.kt' -o -name '*.kts' \) \
-              -not -path './.git/*' -print0 \
-              | sort -z
-          )
-          test "${#sources[@]}" -gt 0
+          mapfile -t sources < <(jq -r '.[]' <<<"$FILES_JSON")
           input="$(IFS=,; printf '%s' "${sources[*]}")"
           java -jar "$DETEKT" --input "$input"
