@@ -11,7 +11,7 @@ TIS の setup / boot EPG sync / user unlock drain は、固定文字列や packa
 
 ## BS と CS110 の選局契約
 
-BSはIF周波数とAOSP Tuner公開契約のtyped stream selectorを保持する。通常のscan候補、channel保存、再選局ではbackend種別に依存せず、`STREAM_ID`のTSID `0..65534`だけを使用する。TISはpx4の相対slot、Linux DVBの`DTV_STREAM_ID`、HAL内部のbackend capabilityを取得・推測・保存しない。CS110は周波数帯だけでscan candidateとtune selectorを作り、stream selectorを保存しない。
+BSはIF周波数とAOSP Tuner公開契約のtyped stream selectorを保持する。通常のscan候補、channel保存、再選局ではbackend種別に依存せず、`STREAM_ID`のTSID `0..65534`だけを使用する。TISはpx4の相対slot、Linux DVBの`DTV_STREAM_ID`、HAL内部のbackend種別・能力を取得・推測・保存しない。一方、AOSP Tuner SDKが公開する`FrontendInfo.type`と`statusCapabilities`はfrontend選択とBS候補source選択に使用する。CS110は周波数帯だけでscan candidateとtune selectorを作り、stream selectorを保存しない。
 
 CS110のTIS内部モデルとTvProvider保存形式では、frontend stream selectorを`None`／`null`として保持する。Android 15 Tuner API builderへ変換するときは`streamId`と`streamIdType`のsetterをどちらも呼ばない。builderが生成する`STREAM_ID`と`INVALID_STREAM_ID(0xFFFF)`の組を、Tuner HALが公開契約境界で`NoSelector`へ正規化する。TISから`UNDEFINED`、0、TSID、relative番号を「selectorなし」の代用として明示設定しない。CS110 の ONID / TSID / service_id は channel identity / サービス識別子として保持してよいが、HAL frontend selectorへ転用してはならない。BSの通常製品経路はIF周波数と`STREAM_ID`のTSIDを使う。TISはdriver固有slotへ変換せず、typed selectorの検証とbackend ABIへの写像はTuner HALへ委ねる。
 
@@ -22,7 +22,7 @@ TvProvider の channel internal provider data には JSON v1 `tune.streamIdType`
 
 製品scanの選局対象、周波数帯、CATV中心周波数、VHF除外、BS/CS110 selector境界を含む規範値は、tv直下の`開発規則.md`の「製品 scan 候補の規範値」を唯一の設計正本とする。
 
-TISの物理候補表は製品scan実装データのSSOTであり、`開発規則.md`の規範値に従うRF候補を唯一保持する。BS setup/rescanは物理RFごとにstream selector未指定の`IsdbsFrontendSettings`でAOSP `Tuner.scan()`を実行し、`ScanCallback.onInputStreamIdsReported()`で得たcurrent stream IDだけをtyped `STREAM_ID` explicit tune candidateへ変換する。fallback可否と将来の能力設定条件は、`開発規則.md`の「製品 scan 候補の規範値」に従い、TIS側では独立に定義しない。既存候補表はRF列挙に使用する。候補を実際にtuneした後、PAT/NIT/SDT actualからONID/TSID/SIDとcurrent transportを確認できたserviceだけを登録・公開する。driver固有slotまたはlegacy数値域への写像はTuner HALへ委ねる。
+TISの物理候補表は製品scan実装データのSSOTであり、`開発規則.md`の規範値に従うRF候補と、dynamic discovery非対応frontend用の固定RF→absolute TSID候補を保持する。BS setup/rescanの候補source選択は`開発規則.md`の「製品 scan 候補の規範値」を正とする。TISは`Tuner.getAvailableFrontendInfos()`でISDB-S frontendを列挙し、`FrontendInfo.statusCapabilities`の`FRONTEND_STATUS_TYPE_STREAM_IDS`を持つ候補を優先して`Tuner.applyFrontend()`で確保する。確保したfrontendが同capabilityを持つ場合は物理RFごとにstream selector未指定の`IsdbsFrontendSettings`で`Tuner.scan()`を実行し、`ScanCallback.onInputStreamIdsReported()`で得たcurrent stream IDをtyped `STREAM_ID` explicit tune candidateへ変換する。 選択したfrontendはBS setup/rescanの候補source lifetime中保持し、RFごとの`cancelScanning()`後に`closeFrontend()`しない。explicit tuneと次RFのdynamic scanは同じ選択frontendを継続使用する。同capability frontendを確保できず、非対応frontendを確保できた場合は固定RF→absolute TSID候補を使う。dynamic scan開始後の失敗、timeout、空報告から固定候補へ切り替えない。候補を実際にtuneした後、PAT/NIT/SDT actualからONID/TSID/SIDとcurrent transportを確認できたserviceだけを登録・公開する。driver固有slotまたはlegacy数値域への写像はTuner HALへ委ねる。
 
 ## サービス登録・公開・再生policy境界
 
