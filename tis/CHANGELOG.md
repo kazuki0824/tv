@@ -1,3 +1,11 @@
+# r52_pr57_cas_readiness_and_hevc_regression
+
+- ECMの失敗/無効token/診断のみの結果でcontextのreadinessを下げ、PMT/CATの再通知ではREADYへ戻さない。新たなECM成功だけで回復する。鍵の所有状態とhealthを分け、解放再試行の所有は維持する。
+- ECM結果を既存のsection後視聴判定へ即時通知する。CAS_NO_KEYでは再生を停止し、遅延したfirst-outputでもCAS準備未完了なら映像可用通知を出さない。
+- r51専用の本番選択helperを削除し、現在のHEVC選択を試験する。実x265ヘッダーのMIME/1920x1080/CSD、VPS/SPS/PPS欠落、切断SPS、不正NAL header、chroma/sub-layer予約値、crop範囲を8件で検査する。SPSの不正寸法/整数overflowを最小寸法へ丸めない。
+- 検証: 本番/試験Kotlinコンパイルと実SI JNIを用いたhost JUnit 247件が成功。変更Kotlinのktlint整形を実施。detektの既存class構造・数値literal等の違反は残存。検査の無効化やbaselineによる隠蔽は行っていない。
+- Android/Soong実体build、device atest/VTS、MediaCodec/MediaSyncの実機HEVC first-output、実card/放送波は未実施。
+
 # r52_rebase_after_pr85_pr91
 
 - #85/#91マージ後のmainへr52 CAS/HEVC差分を統合した。context単位のSession/Descramblerに、current-generation transaction、退役時の配送遮断、全件cleanupと未解放資源の再試行を引き継いだ。

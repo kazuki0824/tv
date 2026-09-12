@@ -918,6 +918,10 @@ class MaleicacidLiveSession(
     private fun handleFirstFrameAvailable(generation: Long) {
         val state = playbackState as? PlaybackStartState.WaitingFirstOutput ?: return
         if (state.pipelineGeneration != generation) return
+        if (currentServicePolicy().requiresCas && casController.currentReadiness() != CasController.Readiness.READY) {
+            stopPlaybackForCasWait()
+            return
+        }
         playbackState = PlaybackStartState.Started(state.signature, state.pipelineGeneration)
         onCaptionPlaybackClockChanged()
         when (val decision = contentAccessDecision()) {
@@ -990,6 +994,10 @@ class MaleicacidLiveSession(
                 com.maleicacid.tvinput.common.LogTags.TIS,
                 "旧世代または失敗確定済みの再生不能通知を破棄します reason=${reason.reason} generation=${reason.generation}",
             )
+            return
+        }
+        if (reason.reason == PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY) {
+            stopPlaybackForCasWait()
             return
         }
         if (reason.reason == PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED) {

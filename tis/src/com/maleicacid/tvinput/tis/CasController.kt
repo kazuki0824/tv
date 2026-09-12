@@ -136,6 +136,7 @@ class CasController(
         val desiredElementaryPids: MutableSet<TsPid> = linkedSetOf(),
         val linkedElementaryPids: MutableSet<TsPid> = linkedSetOf(),
         var keyLinked: Boolean = false,
+        var ecmReady: Boolean = false,
         var retiring: Boolean = false,
         var sessionClosed: Boolean = false,
         var descramblerClosed: Boolean = false,
@@ -373,6 +374,8 @@ class CasController(
             val diagnostics = mutableListOf<Diagnostic>()
             contextKeys.forEach { key ->
                 val state = sessionsByContext[key]?.takeUnless { it.retiring } ?: return@forEach
+                // 鍵の所有と直近ECMの成否を分け、metadata再通知だけではREADYへ戻さない。
+                state.ecmReady = false
                 val tokenResult = state.session.processEcm(section)
                 if (tokenResult.isFailure) {
                     diagnostics +=
@@ -388,6 +391,7 @@ class CasController(
                 when (val result = tokenResult.getOrNull()) {
                     is EcmProcessResult.RealKeyToken -> {
                         if (!state.keyLinked) linkContextKeyLocked(state, result.token, pid, diagnostics)
+                        state.ecmReady = state.keyLinked
                     }
 
                     is EcmProcessResult.InvalidKeyToken -> {
@@ -700,7 +704,8 @@ class CasController(
         }
     }
 
-    private fun CasSessionState.isFullyLinked(): Boolean = !retiring && keyLinked && desiredElementaryPids == linkedElementaryPids
+    private fun CasSessionState.isFullyLinked(): Boolean =
+        !retiring && ecmReady && keyLinked && desiredElementaryPids == linkedElementaryPids
 
     private fun invalidateMetadataLocked() {
         ecmPidToContexts.clear()
