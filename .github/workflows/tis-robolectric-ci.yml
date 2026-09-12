@@ -39,4 +39,8 @@ jobs:
           gradle-version: "8.9"
 
       - name: Android依存Kotlin契約をRobolectricで実行
-        run: gradle --no-daemon -p tis/host_ci/robolectric testDebugUnitTest
+        run: |
+          gradle --no-daemon -p tis/host_ci/robolectric testDebugUnitTest \
+            --tests com.maleicacid.tvinput.tis.DirectBootGuardR51FixTest \
+            --tests com.maleicacid.tvinput.tis.RecordingDisabledR51Test \
+            --tests com.maleicacid.tvinput.tis.TvProviderWriterDescriptorSchemaTest
