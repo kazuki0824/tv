@@ -112,6 +112,7 @@ impl CasError {
                 | Self::CardMute
                 | Self::CardInvalid
                 | Self::IoUnavailable
+                | Self::Unknown
                 | Self::Timeout
                 | Self::PoisonedLock
                 | Self::GenerationExhausted

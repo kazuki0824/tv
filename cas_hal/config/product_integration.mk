@@ -1,2 +1,3 @@
 PRODUCT_PACKAGES += \
-    maleicacid.tv.cas_hal-service
+    maleicacid.tv.cas_hal-service \
+    libclearkeycasplugin

@@ -39,6 +39,7 @@ jobs:
             -p maleicacid-cas-hal-core \
             -p maleicacid-cas-hal-transport \
             -- --check
+          rustfmt --edition 2021 --check ../src/main.rs
 
   host-rust:
     runs-on: ubuntu-latest
