@@ -1087,10 +1087,10 @@ impl Default for SharedCallbackArtifactRuntimeSplitDiagnostics {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CallbackArtifactRuntimeSplitPhase {
-    OwnerCleanupFinish,
-    RegistrationRollbackFinish,
-    ObjectCloseCleanupFinish,
-    ServiceBootResetFinish,
+    OwnerCleanup,
+    RegistrationRollback,
+    ObjectCloseCleanup,
+    ServiceBootReset,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1225,7 +1225,7 @@ impl CallbackArtifactRuntimeSplitDiagnosticRecord {
 
     pub fn service_boot_reset(outcome: CallbackArtifactRuntimeSplitOutcome) -> Self {
         Self {
-            phase: CallbackArtifactRuntimeSplitPhase::ServiceBootResetFinish,
+            phase: CallbackArtifactRuntimeSplitPhase::ServiceBootReset,
             target: CallbackArtifactRuntimeSplitTarget::ServiceBootReset,
             outcome,
         }

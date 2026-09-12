@@ -6,6 +6,9 @@ use maleicacid_tuner_hal2_descrambler::{
     DescramblerKeySlot, DescramblerKeyToken, DescramblerPid, DescramblerPidClaim,
 };
 
+pub(crate) type DescramblerReplaceKeyResult<E> =
+    Result<DescramblerReplaceKeyOutcome<E>, DescramblerReplaceKeyTxnError<E, E>>;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum DescramblerSessionState {
     #[default]
@@ -846,10 +849,7 @@ where
     fn replace(
         &mut self,
         token: DescramblerKeyToken,
-    ) -> Result<
-        DescramblerReplaceKeyOutcome<KeyTable::LookupError>,
-        DescramblerReplaceKeyTxnError<KeyTable::LookupError, KeyTable::LookupError>,
-    > {
+    ) -> DescramblerReplaceKeyResult<KeyTable::LookupError> {
         let plan = plan_replace_key_use_case(self.session, &token)
             .map_err(DescramblerReplaceKeyTxnError::Session)?;
         if !plan.requires_replace() {
@@ -954,10 +954,7 @@ pub(crate) fn replace_key_use_case<KeyTable>(
     session: &mut DescramblerSession,
     key_table: &mut KeyTable,
     token: DescramblerKeyToken,
-) -> Result<
-    DescramblerReplaceKeyOutcome<KeyTable::LookupError>,
-    DescramblerReplaceKeyTxnError<KeyTable::LookupError, KeyTable::LookupError>,
->
+) -> DescramblerReplaceKeyResult<KeyTable::LookupError>
 where
     KeyTable: DescramblerKeyTxnOps,
 {

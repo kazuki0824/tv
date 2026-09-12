@@ -12,23 +12,25 @@ fn status_from_registry_error(error: KeyProvisioningRegistryError) -> KeyProvisi
         KeyProvisioningRegistryError::InvalidKeyToken(_) => KeyProvisioningStatus::InvalidToken,
         KeyProvisioningRegistryError::SlotIdExhausted => KeyProvisioningStatus::ResourceBusy,
         KeyProvisioningRegistryError::Registry(KeyProvisioningMutationError::ExpiredToken) => {
-  KeyProvisioningStatus::Revoked
+            KeyProvisioningStatus::Revoked
         }
         KeyProvisioningRegistryError::Registry(KeyProvisioningMutationError::StaleEpoch) => {
-  KeyProvisioningStatus::StaleEpoch
+            KeyProvisioningStatus::StaleEpoch
         }
         KeyProvisioningRegistryError::Registry(KeyProvisioningMutationError::ResourceExhausted) => {
-  KeyProvisioningStatus::ResourceBusy
+            KeyProvisioningStatus::ResourceBusy
         }
         KeyProvisioningRegistryError::Registry(
-  KeyProvisioningMutationError::UnknownToken
-  | KeyProvisioningMutationError::InvalidIdentity
-  | KeyProvisioningMutationError::IdentityMismatch,
+            KeyProvisioningMutationError::UnknownToken
+            | KeyProvisioningMutationError::InvalidIdentity
+            | KeyProvisioningMutationError::IdentityMismatch,
         ) => KeyProvisioningStatus::InvalidToken,
     }
 }
 
-fn prepare_key_slot(resource: &Multi2KeyResource) -> Result<DescramblerKeySlot, KeyProvisioningStatus> {
+fn prepare_key_slot(
+    resource: &Multi2KeyResource,
+) -> Result<DescramblerKeySlot, KeyProvisioningStatus> {
     let even = Multi2KeyMaterial::new(
         *resource.system_key(),
         *resource.cbc_initial_value(),
@@ -51,42 +53,51 @@ impl TunerServiceRuntime {
         command: KeyProvisioningCommand,
     ) -> KeyProvisioningStatus {
         match command {
-  KeyProvisioningCommand::Ping => KeyProvisioningStatus::Ok,
-  KeyProvisioningCommand::Reserve { key_token, identity } => self
-      .registry_mut()
-      .reserve_key_provisioning_resource(
-key_token,
-identity.provider_id(),
-identity.provider_generation(),
-      )
-      .map(|_| KeyProvisioningStatus::Ok)
-      .unwrap_or_else(status_from_registry_error),
-  KeyProvisioningCommand::Publish { key_token, resource } => {
-      let key_slot = match prepare_key_slot(&resource) {
-Ok(key_slot) => key_slot,
-Err(status) => return status,
-      };
-      let identity = resource.identity();
-      self.registry_mut()
-.publish_key_provisioning_resource(
-    key_token,
-    identity.provider_id(),
-    identity.provider_generation(),
-    resource.key_epoch(),
-    key_slot,
-)
-.map(|_| KeyProvisioningStatus::Ok)
-.unwrap_or_else(status_from_registry_error)
-  }
-  KeyProvisioningCommand::Revoke { key_token, identity } => self
-      .registry_mut()
-      .revoke_key_provisioning_resource(
-key_token,
-identity.provider_id(),
-identity.provider_generation(),
-      )
-      .map(|_| KeyProvisioningStatus::Ok)
-      .unwrap_or_else(status_from_registry_error),
+            KeyProvisioningCommand::Ping => KeyProvisioningStatus::Ok,
+            KeyProvisioningCommand::Reserve {
+                key_token,
+                identity,
+            } => self
+                .registry_mut()
+                .reserve_key_provisioning_resource(
+                    key_token,
+                    identity.provider_id(),
+                    identity.provider_generation(),
+                )
+                .map(|_| KeyProvisioningStatus::Ok)
+                .unwrap_or_else(status_from_registry_error),
+            KeyProvisioningCommand::Publish {
+                key_token,
+                resource,
+            } => {
+                let key_slot = match prepare_key_slot(&resource) {
+                    Ok(key_slot) => key_slot,
+                    Err(status) => return status,
+                };
+                let identity = resource.identity();
+                self.registry_mut()
+                    .publish_key_provisioning_resource(
+                        key_token,
+                        identity.provider_id(),
+                        identity.provider_generation(),
+                        resource.key_epoch(),
+                        key_slot,
+                    )
+                    .map(|_| KeyProvisioningStatus::Ok)
+                    .unwrap_or_else(status_from_registry_error)
+            }
+            KeyProvisioningCommand::Revoke {
+                key_token,
+                identity,
+            } => self
+                .registry_mut()
+                .revoke_key_provisioning_resource(
+                    key_token,
+                    identity.provider_id(),
+                    identity.provider_generation(),
+                )
+                .map(|_| KeyProvisioningStatus::Ok)
+                .unwrap_or_else(status_from_registry_error),
         }
     }
 }
@@ -94,23 +105,22 @@ identity.provider_generation(),
 #[cfg(test)]
 mod tests {
     use maleicacid_tuner_hal2_key_provisioning_bridge::{
-        KeyProvisioningCommand, KeyProvisioningStatus, Multi2KeyResource,
-        ProvisioningIdentity,
+        KeyProvisioningCommand, KeyProvisioningStatus, Multi2KeyResource, ProvisioningIdentity,
     };
 
     use crate::boot::TunerServiceRuntime;
 
-    const PROVIDER_ID: u64 = 41;
+    const PROVIDER_ID: u64 = 0x4d43_4153_4b45_5901;
 
     fn resource(epoch: u64) -> Multi2KeyResource {
         Multi2KeyResource::try_new(
-  PROVIDER_ID,
-  7,
-  epoch,
-  [0x10; 32],
-  [0x20; 8],
-  [0x30; 8],
-  [0x40; 8],
+            PROVIDER_ID,
+            7,
+            epoch,
+            [0x10; 32],
+            [0x20; 8],
+            [0x30; 8],
+            [0x40; 8],
         )
         .unwrap()
     }
@@ -124,39 +134,39 @@ mod tests {
         let mut runtime = TunerServiceRuntime::new();
         let token = vec![0x31, 0x32];
         assert_eq!(
-  runtime.apply_key_provisioning_command(KeyProvisioningCommand::Reserve {
-      key_token: token.clone(),
-      identity: identity(7),
-  }),
-  KeyProvisioningStatus::Ok
+            runtime.apply_key_provisioning_command(KeyProvisioningCommand::Reserve {
+                key_token: token.clone(),
+                identity: identity(7),
+            }),
+            KeyProvisioningStatus::Ok
         );
         assert_eq!(
-  runtime.apply_key_provisioning_command(KeyProvisioningCommand::Publish {
-      key_token: token.clone(),
-      resource: resource(1),
-  }),
-  KeyProvisioningStatus::Ok
+            runtime.apply_key_provisioning_command(KeyProvisioningCommand::Publish {
+                key_token: token.clone(),
+                resource: resource(1),
+            }),
+            KeyProvisioningStatus::Ok
         );
         assert_eq!(
-  runtime.apply_key_provisioning_command(KeyProvisioningCommand::Publish {
-      key_token: token.clone(),
-      resource: resource(1),
-  }),
-  KeyProvisioningStatus::StaleEpoch
+            runtime.apply_key_provisioning_command(KeyProvisioningCommand::Publish {
+                key_token: token.clone(),
+                resource: resource(1),
+            }),
+            KeyProvisioningStatus::StaleEpoch
         );
         assert_eq!(
-  runtime.apply_key_provisioning_command(KeyProvisioningCommand::Revoke {
-      key_token: token.clone(),
-      identity: identity(8),
-  }),
-  KeyProvisioningStatus::InvalidToken
+            runtime.apply_key_provisioning_command(KeyProvisioningCommand::Revoke {
+                key_token: token.clone(),
+                identity: identity(8),
+            }),
+            KeyProvisioningStatus::InvalidToken
         );
         assert_eq!(
-  runtime.apply_key_provisioning_command(KeyProvisioningCommand::Revoke {
-      key_token: token,
-      identity: identity(7),
-  }),
-  KeyProvisioningStatus::Ok
+            runtime.apply_key_provisioning_command(KeyProvisioningCommand::Revoke {
+                key_token: token,
+                identity: identity(7),
+            }),
+            KeyProvisioningStatus::Ok
         );
     }
 }
