@@ -61,7 +61,7 @@
             <configuration>
               <jvmTarget>17</jvmTarget>
               <sourceDirs>
-                <sourceDir>${project.basedir}/../../../src</sourceDir>
+                <sourceDir>${project.basedir}/../../src</sourceDir>
               </sourceDirs>
             </configuration>
           </execution>
