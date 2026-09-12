@@ -1,0 +1,131 @@
+name: Kotlin quality CI
+
+on:
+  pull_request:
+    paths:
+      - "**/*.kt"
+      - "**/*.kts"
+      - ".github/workflows/kotlin-quality-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/*.kt"
+      - "**/*.kts"
+      - ".github/workflows/kotlin-quality-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kotlin-quality-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  KTLINT_VERSION: 1.8.0
+  DETEKT_VERSION: 1.23.8
+
+jobs:
+  changed-kotlin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      files: ${{ steps.files.outputs.files }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: 変更Kotlin一覧を生成
+        id: files
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base="$PR_BASE_SHA"
+          else
+            base="$PUSH_BEFORE_SHA"
+          fi
+          mapfile -d '' -t files < <(
+            git diff --name-only --diff-filter=ACMR -z "$base" HEAD -- '*.kt' '*.kts' | sort -z
+          )
+          if ((${#files[@]} == 0)); then
+            echo 'files=[]' >> "$GITHUB_OUTPUT"
+          else
+            printf 'files=%s\n' "$(printf '%s\n' "${files[@]}" | jq -Rsc 'split("\n")[:-1]')" >> "$GITHUB_OUTPUT"
+          fi
+
+  ktlint:
+    name: ktlint format check
+    needs: changed-kotlin
+    if: ${{ needs.changed-kotlin.outputs.files != '[]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: JDK 17を使用
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: ktlintを導入
+        shell: bash
+        run: |
+          tool="$RUNNER_TEMP/ktlint"
+          curl --fail --location --retry 3 --retry-all-errors \
+            "https://github.com/pinterest/ktlint/releases/download/${KTLINT_VERSION}/ktlint" \
+            --output "$tool"
+          chmod +x "$tool"
+          echo "KTLINT=$tool" >> "$GITHUB_ENV"
+          "$tool" --version
+
+      - name: 変更Kotlinの整形を確認
+        shell: bash
+        env:
+          FILES_JSON: ${{ needs.changed-kotlin.outputs.files }}
+        run: |
+          mapfile -t sources < <(jq -r '.[]' <<<"$FILES_JSON")
+          "$KTLINT" "${sources[@]}"
+
+  detekt:
+    name: detekt lint
+    needs: changed-kotlin
+    if: ${{ needs.changed-kotlin.outputs.files != '[]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: JDK 17を使用
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: detektを導入
+        shell: bash
+        run: |
+          tool="$RUNNER_TEMP/detekt-cli.jar"
+          curl --fail --location --retry 3 --retry-all-errors \
+            "https://github.com/detekt/detekt/releases/download/v${DETEKT_VERSION}/detekt-cli-${DETEKT_VERSION}-all.jar" \
+            --output "$tool"
+          echo "DETEKT=$tool" >> "$GITHUB_ENV"
+          java -jar "$tool" --version
+
+      - name: 変更Kotlinをlint
+        shell: bash
+        env:
+          FILES_JSON: ${{ needs.changed-kotlin.outputs.files }}
+        run: |
+          mapfile -t sources < <(jq -r '.[]' <<<"$FILES_JSON")
+          input="$(IFS=,; printf '%s' "${sources[*]}")"
+          java -jar "$DETEKT" --input "$input"
