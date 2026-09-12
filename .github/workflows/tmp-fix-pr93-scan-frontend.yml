@@ -1,0 +1,86 @@
+name: temporary PR93 scan frontend fix
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/tmp-fix-pr93-scan-frontend.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.event.pull_request.head.ref == 'fix/tuner-hal2-audit-gaps'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          persist-credentials: true
+          fetch-depth: 0
+
+      - name: Release discovery frontend before candidate execution
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          controller = Path('tis/src/com/maleicacid/tvinput/tis/TunerController.kt')
+          text = controller.read_text()
+          anchor = '    fun setOnBroadcastClockUpdatedCallback(callback: (() -> Unit)?) = callOnController { onBroadcastClockUpdatedCallback = callback }\n\n'
+          addition = '''    /** Candidate準備中のBS discoveryが保持したfrontendを、実選局フェーズへ入る前に解放する。 */
+    internal fun closeFrontendAfterBsCandidatePreparation(): Unit = callOnController {
+        tuner?.closeFrontend()
+    }
+
+'''
+          if 'closeFrontendAfterBsCandidatePreparation' not in text:
+              if anchor not in text:
+                  raise SystemExit('TunerController insertion anchor not found')
+              text = text.replace(anchor, anchor + addition, 1)
+              controller.write_text(text)
+
+          scan = Path('tis/src/com/maleicacid/tvinput/tis/ChannelScanController.kt')
+          text = scan.read_text()
+          old = '        val executionCandidates = mutableListOf<ScanCandidate>()\n        for (candidate in candidates) {'
+          new = '        val executionCandidates = mutableListOf<ScanCandidate>()\n        var bsFrontendUsedDuringPreparation = false\n        for (candidate in candidates) {'
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif 'var bsFrontendUsedDuringPreparation = false' not in text:
+              raise SystemExit('executionCandidates anchor not found')
+
+          old = '            if (candidate.kind == ScanCandidateKind.ISDB_S_BS && candidate.streamSelector == com.maleicacid.tvinput.common.StreamSelector.NONE) {\n                val discovery = tunerController.discoverIsdbsStreamIds(candidate)'
+          new = '            if (candidate.kind == ScanCandidateKind.ISDB_S_BS && candidate.streamSelector == com.maleicacid.tvinput.common.StreamSelector.NONE) {\n                bsFrontendUsedDuringPreparation = true\n                val discovery = tunerController.discoverIsdbsStreamIds(candidate)'
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif 'bsFrontendUsedDuringPreparation = true' not in text:
+              raise SystemExit('BS discovery anchor not found')
+
+          old = '        }\n        for (candidate in executionCandidates) {\n'
+          new = '''        }
+        if (bsFrontendUsedDuringPreparation) {
+            tunerController.closeFrontendAfterBsCandidatePreparation()
+        }
+        for (candidate in executionCandidates) {
+'''
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif 'tunerController.closeFrontendAfterBsCandidatePreparation()' not in text:
+              raise SystemExit('execution-loop anchor not found')
+          scan.write_text(text)
+          PY
+
+          git diff --check
+          git diff --exit-code -- tis/src/com/maleicacid/tvinput/tis/TunerController.kt tis/src/com/maleicacid/tvinput/tis/ChannelScanController.kt && {
+            echo 'expected code changes were not produced' >&2
+            exit 1
+          } || true
+
+      - name: Commit and push focused fix
+        shell: bash
+        run: |
+          git config user.name maleicacid
+          git config user.email '4982384+kazuki0824@users.noreply.github.com'
+          git add tis/src/com/maleicacid/tvinput/tis/TunerController.kt tis/src/com/maleicacid/tvinput/tis/ChannelScanController.kt
+          git commit -m 'fix(tis): release BS discovery frontend before scan execution'
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
