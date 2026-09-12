@@ -12,6 +12,7 @@ use android_hardware_cas::aidl::android::hardware::cas::{
     ScramblingMode::ScramblingMode,
     SessionIntent::SessionIntent,
 };
+use binder::unstable_api::AsNative;
 use binder::{BinderFeatures, Interface, Result as BinderResult, Status, Strong};
 use maleicacid_cas_hal_core::{
     CasCleanupOwner, CasError, CasPluginRuntime, CasScramblingMode, CasSessionIntent, CasSystem,
@@ -22,7 +23,9 @@ use transport::{
     UrandomSessionIdGenerator, CAS_CAPABILITY_PROFILE_PATH,
 };
 
-const CAS_SERVICE_NAME: &str = "android.hardware.cas.IMediaCasService/default";
+extern "C" {
+    fn maleicacid_register_cas_service(service: *mut binder::unstable_api::AIBinder) -> i32;
+}
 const B25_PLUGIN_NAME: &str = "Maleicacid B25 CAS";
 const B1_PLUGIN_NAME: &str = "Maleicacid B1 CAS";
 
@@ -42,11 +45,10 @@ impl MaleicacidCasPlugin {
         let listener_result = self
             .listener
             .lock()
-            .map(|mut listener| {
-                listener.take();
-            })
+            .map(|mut listener| listener.take())
             .map_err(|_| CasError::InvalidState);
-        release_result.and(listener_result)
+        // Strongのdropはlistener lockを解放してから実行する。
+        release_result.and(listener_result.map(drop))
     }
 
     fn record_drop_cleanup_failure(&self) {
@@ -271,7 +273,10 @@ fn main() {
         MaleicacidMediaCasService::new(cleanup_owner),
         BinderFeatures::default(),
     );
-    if binder::add_service(CAS_SERVICE_NAME, cas_binder.as_binder()).is_err() {
+    let mut native_binder = cas_binder.as_binder();
+    // native_binderのstrong referenceを呼出完了まで保持する。
+    // C++境界が自分のstrong referenceを取得し、Rustへ例外/所有権を返さない。
+    if unsafe { maleicacid_register_cas_service(native_binder.as_native_mut()) } != 0 {
         std::process::exit(1);
     }
     binder::ProcessState::join_thread_pool();

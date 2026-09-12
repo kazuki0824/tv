@@ -1,3 +1,9 @@
+# r52_pr57_clearkey_boundary
+
+- AOSP `libcasexampleimpl`と`libclearkeycasplugin`を組み込み、ClearKeyとRust B25/B1を単一default serviceへ合成するNDK薄層を追加した。ClearKey欠落時はservice登録を拒否する。
+- 未知IDのplugin/descramblerとB25/B1 descramblerはAIDL成功/nullを返す。ClearKeyのprovision/ECM/event/descrambleはAOSPの実装へ委譲し、公開AIDL定義は変更しない。
+- Soongの境界unit testを追加した。Android/Soong build、追加native test、CAS AIDL VTSは実行環境がなく未実施。host Rust試験はAIDL/NDK実体検証を代替しない。
+
 # r52_pr57_failure_recovery
 
 - AIDL CASのservice-specific statusを正の定数値へ修正し、結果不明のtimeoutをINVALID_STATEへ写像した。

@@ -19,6 +19,12 @@ production product packageは論理的に次を含む。
 - userdebug/engで明示選択した場合だけYakisoba daemon
 ```
 
+## ClearKey compatibility boundary
+
+`libmaleicacid_cas_service_boundary`はAndroid 15 / LineageOS 22.1のAOSP `libcasexampleimpl`を同一processへlinkし、`libclearkeycasplugin`を`/vendor/lib[64]/mediacas`へ同梱する。RustのB25/B1 serviceは内側objectとしてだけ生成し、NDK境界がClearKey descriptorを合成した`IMediaCasService/default`を1個登録する。AOSPの別CAS service/APEXを同じproductへ追加しない。
+
+ClearKeyのplugin/descrambler処理はAOSP実装へ配送する。未知IDとB25/B1 descramblerの成功/nullはNDK境界で返し、V1 AIDLを独自変更しない。ClearKey実装が欠落したimageはservice登録に失敗する。境界のdevice unit testは`maleicacid_cas_service_boundary_test`、実際のClearKey provision/ECM/event/descrambleは`VtsHalCasAidlTargetTest`で確認する。
+
 ## build profile
 
 path profileはproduct image生成時に `/vendor/etc/maleicacid/cas_capabilities` として固定する。このfileはB25/B1の配布image能力manifestであり、起動後に変更する一般設定またはruntime切替点として扱わない。serviceは起動時に一度だけstrict parseし、欠落、不正、重複entryでは空のMaleicacid product capability snapshotへfail-closedする。このfail-closedはB25/B1だけに適用し、AOSP/VTS互換のClearKey `0xF6D8` capabilityを無効化しない。
@@ -80,6 +86,8 @@ daemonの設定とcredentialはvendor-private locationから最小権限で読�
 採用候補の `tsukumijima/libaribb25` repositoryはApache License 2.0を掲示しており、そのB1対応codeを参照・移植・linkする場合は、採用revisionを固定し、Apache-2.0本文、著作権表示、NOTICE条件、改変表示を配布物へ反映する。別のlibaribb1 sourceを採用する場合は、取り込み前にそのexact revisionのlicenseを再確認する。
 
 `tsunoda14/libyakisoba` はGPL-3.0である。binaryまたは改変版をimage/配布物へ含める場合は、GPL本文、著作権表示、対応する完全なソース、改変済みbuild/install情報など採用revisionに適用されるGPLv3の配布条件を満たす。daemon分離はCAS HALとのprocess/権限境界を明確にする設計であり、libyakisoba/daemon側のGPL義務を消す根拠にしない。配布条件を満たせないbuildではYakisoba moduleをproduct graphから除外する。
+
+参照調査したrevisionはlibaribb25 `3d4a9db608b972cb02aa2df5b09163d374564ded`、libyakisoba `03849e66ecb8e89fcdd0862eebcf43255d63794a`である。前者の既存card APIはPC/SC失敗を集約しており、後者は一般設定fileからのcredential検索を含むため、どちらもこのまま上記deadline・probe分類・secure provisioning契約を満たすadapterとして採用できない。現時点ではこのrepositoryにSmartCard/YakisobaのIPCサーバー本体を同梱していない。product側でadapterとcredential供給元を固定し、これらを修正・検証してから能力profileを追加する。hostのfake router成功をこのgateの代用にしない。
 
 third-party sourceは検証済みcommitへpinし、branch tipやdownload時点の未固定archiveをrelease入力にしない。Soong license metadataとNOTICE generationをbuild gateに含める。
 

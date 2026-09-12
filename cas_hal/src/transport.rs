@@ -446,10 +446,9 @@ impl UnixTunerKeyPublisher {
                         {
                             Err(CasError::TokenCollision)
                         }
-                        KeyProvisioningStatus::BadRequest | KeyProvisioningStatus::InvalidToken => {
-                            Err(CasError::BadValue)
-                        }
-                        KeyProvisioningStatus::StaleEpoch
+                        KeyProvisioningStatus::BadRequest => Err(CasError::BadValue),
+                        KeyProvisioningStatus::InvalidToken
+                        | KeyProvisioningStatus::StaleEpoch
                         | KeyProvisioningStatus::Revoked
                         | KeyProvisioningStatus::InvalidState => Err(CasError::InvalidState),
                         KeyProvisioningStatus::ResourceBusy => Err(CasError::ResourceBusy),

@@ -2,6 +2,21 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
+cc_library_shared {
+    name: "libmaleicacid_cas_service_boundary",
+    vendor: true,
+    srcs: ["native/service_boundary.cpp", "native/register_service.cpp"],
+    local_include_dirs: ["native/include"],
+    include_dirs: ["hardware/interfaces/cas/aidl/default"],
+    static_libs: ["libcasexampleimpl", "libaidlcommonsupport"],
+    shared_libs: [
+        "android.hardware.cas-V1-ndk", "libbinder_ndk", "libbase", "liblog",
+        "libutils", "libcutils", "libvndksupport",
+    ],
+    header_libs: ["media_plugin_headers", "libstagefright_foundation_headers"],
+    cflags: ["-Wall", "-Wextra", "-Werror"],
+}
+
 rust_library {
     name: "libmaleicacid_cas_hal_core",
     vendor: true,
@@ -22,6 +37,12 @@ rust_binary {
         "src/transport.rs",
     ],
     edition: "2021",
+    shared_libs: [
+        "libmaleicacid_cas_service_boundary",
+        "android.hardware.cas-V1-ndk", "libbinder_ndk", "libbase", "liblog",
+        "libutils", "libcutils", "libvndksupport", "libc++",
+    ],
+    required: ["libclearkeycasplugin"],
     init_rc: ["cas-hal-service.rc"],
     vintf_fragments: ["cas-hal-service.xml"],
     rustlibs: [
@@ -58,4 +79,14 @@ rust_test {
     ],
     auto_gen_config: true,
     test_suites: ["general-tests"],
+}
+
+cc_test {
+    name: "maleicacid_cas_service_boundary_test",
+    vendor: true,
+    srcs: ["tests/service_boundary_test.cpp", "native/service_boundary.cpp"],
+    local_include_dirs: ["native/include"],
+    shared_libs: ["android.hardware.cas-V1-ndk", "libbinder_ndk"],
+    test_suites: ["general-tests"],
+    cflags: ["-Wall", "-Wextra", "-Werror"],
 }
