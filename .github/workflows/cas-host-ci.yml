@@ -4,15 +4,15 @@ on:
   pull_request:
     paths:
       - "cas_hal/**"
-      - "tuner_hal2/cas_key_bridge/**"
-      - "tuner_hal2/host_ci/cas_key_bridge/**"
+      - "tuner_hal2/key_provisioning_bridge/**"
+      - "tuner_hal2/host_ci/key_provisioning_bridge/**"
       - ".github/workflows/cas-host-ci.yml"
   push:
     branches: [main]
     paths:
       - "cas_hal/**"
-      - "tuner_hal2/cas_key_bridge/**"
-      - "tuner_hal2/host_ci/cas_key_bridge/**"
+      - "tuner_hal2/key_provisioning_bridge/**"
+      - "tuner_hal2/host_ci/key_provisioning_bridge/**"
       - ".github/workflows/cas-host-ci.yml"
 
 permissions:

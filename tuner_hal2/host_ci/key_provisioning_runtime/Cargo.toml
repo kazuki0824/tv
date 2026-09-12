@@ -1,0 +1,14 @@
+[package]
+name = "maleicacid-tuner-hal2-key-provisioning-runtime-host-ci"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+maleicacid_tuner_hal2_common = { package = "maleicacid-tuner-hal2-common-host-ci", path = "../common" }
+maleicacid_tuner_hal2_demux = { package = "maleicacid-tuner-hal2-demux-host-ci", path = "../demux" }
+maleicacid_tuner_hal2_descrambler = { package = "maleicacid-tuner-hal2-descrambler-host-ci", path = "../descrambler" }
+maleicacid_tuner_hal2_device = { package = "maleicacid-tuner-hal2-device-host-ci", path = "../device" }
+maleicacid_tuner_hal2_lnb = { package = "maleicacid-tuner-hal2-lnb-host-ci", path = "../lnb" }
+maleicacid_tuner_hal2_domain_request = { package = "maleicacid-tuner-hal2-domain-request-host-ci", path = "../domain_request" }
+maleicacid_tuner_hal2_key_provisioning_bridge = { package = "maleicacid-tuner-hal2-key-provisioning-bridge-host-ci", path = "../key_provisioning_bridge" }

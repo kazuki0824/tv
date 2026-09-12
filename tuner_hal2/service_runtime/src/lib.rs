@@ -3,7 +3,6 @@ mod callback_registry;
 mod capability_profile;
 pub mod capability_selection;
 mod capability_snapshot;
-mod key_provisioning_ops;
 mod cleanup_execution;
 mod command_dispatch;
 mod descrambler_key_table;
@@ -16,6 +15,7 @@ mod frontend_ops;
 mod frontend_request_txn;
 mod frontend_worker_termination_use_case;
 mod frontend_worker_txn;
+mod key_provisioning_ops;
 mod lnb_backend_adapter;
 mod lnb_control_txn;
 mod lnb_ops;
@@ -2412,10 +2412,10 @@ mod tests {
         runtime
             .set_descrambler_demux_source(descrambler.id.0, demux.id.0)
             .unwrap();
-        runtime
-            .registry_mut_for_test()
-            .descrambler_key_table_mut()
-            .expire_test_key(&token);
+        // 既存参照が残った失効entryを、本番のacquire/revoke経路で作る。
+        let key_table = runtime.registry_mut_for_test().descrambler_key_table_mut();
+        key_table.acquire(&token).unwrap();
+        key_table.revoke_key_slot(&token, u64::MAX, 1).unwrap();
 
         let err = runtime
             .set_descrambler_key_token(descrambler.id.0, &token_bytes)

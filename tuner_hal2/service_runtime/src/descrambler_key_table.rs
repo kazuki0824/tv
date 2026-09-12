@@ -251,3 +251,252 @@ impl DescramblerKeyTable {
         Ok(())
     }
 }
+
+#[cfg(test)]
+impl DescramblerKeyTable {
+    pub(crate) fn insert_test_key_slot(
+        &mut self,
+        token: DescramblerKeyToken,
+        slot: DescramblerKeySlotId,
+        key_slot: DescramblerKeySlot,
+    ) -> Result<(), KeyProvisioningMutationError> {
+        let identity = KeyProvisioningIdentity {
+            provider_id: u64::MAX,
+            provider_generation: slot.0,
+            key_epoch: 1,
+        };
+        self.reserve_key_slot(
+            token.clone(),
+            slot,
+            identity.provider_id,
+            identity.provider_generation,
+        )?;
+        self.publish_key_slot(token, identity, key_slot).map(|_| ())
+    }
+
+    pub(crate) fn refcount_for_test(&self, token: &DescramblerKeyToken) -> Option<usize> {
+        self.slots.get(token).map(|state| state.refcount)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maleicacid_tuner_hal2_descrambler::Multi2KeyMaterial;
+
+    const PROVIDER: u64 = 0x4d43_4153_4b45_5901;
+    const GENERATION: u64 = 7;
+
+    fn token(value: u8) -> DescramblerKeyToken {
+        DescramblerKeyToken::try_from_bytes(vec![value; 16]).unwrap()
+    }
+
+    fn identity(epoch: u64) -> KeyProvisioningIdentity {
+        KeyProvisioningIdentity {
+            provider_id: PROVIDER,
+            provider_generation: GENERATION,
+            key_epoch: epoch,
+        }
+    }
+
+    fn keys(value: u8) -> DescramblerKeySlot {
+        DescramblerKeySlot::empty()
+            .try_with_even(Multi2KeyMaterial::new([value; 32], [value; 8], [value; 8]))
+            .unwrap()
+            .try_with_odd(Multi2KeyMaterial::new([value; 32], [value; 8], [value; 8]))
+            .unwrap()
+    }
+
+    fn reserve(table: &mut DescramblerKeyTable, value: u8) {
+        table
+            .reserve_key_slot(
+                token(value),
+                DescramblerKeySlotId(u64::from(value)),
+                PROVIDER,
+                GENERATION,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn reservation_is_unresolved_until_complete_publication() {
+        let mut table = DescramblerKeyTable::default();
+        reserve(&mut table, 1);
+        assert_eq!(
+            table.acquire(&token(1)),
+            Err(DescramblerKeyLookupError::UnknownToken)
+        );
+        assert_eq!(
+            table.publish_key_slot(token(1), identity(1), keys(1)),
+            Ok(DescramblerKeySlotId(1))
+        );
+        assert_eq!(table.acquire(&token(1)), Ok(DescramblerKeySlotId(1)));
+        assert_eq!(table.key_slot(DescramblerKeySlotId(1)), Some(keys(1)));
+    }
+
+    #[test]
+    fn retrying_reserve_keeps_original_slot_and_identity() {
+        let mut table = DescramblerKeyTable::default();
+        reserve(&mut table, 1);
+        table
+            .reserve_key_slot(token(1), DescramblerKeySlotId(99), PROVIDER, GENERATION)
+            .unwrap();
+        assert_eq!(
+            table.publish_key_slot(token(1), identity(1), keys(1)),
+            Ok(DescramblerKeySlotId(1))
+        );
+        assert_eq!(
+            table.reserve_key_slot(token(1), DescramblerKeySlotId(99), PROVIDER, GENERATION),
+            Err(KeyProvisioningMutationError::IdentityMismatch)
+        );
+    }
+
+    #[test]
+    fn colliding_provider_or_generation_cannot_replace_reservation() {
+        let mut table = DescramblerKeyTable::default();
+        reserve(&mut table, 1);
+        for (provider, generation) in [(PROVIDER + 1, GENERATION), (PROVIDER, GENERATION + 1)] {
+            assert_eq!(
+                table.reserve_key_slot(token(1), DescramblerKeySlotId(2), provider, generation),
+                Err(KeyProvisioningMutationError::IdentityMismatch)
+            );
+            let stale = KeyProvisioningIdentity {
+                provider_id: provider,
+                provider_generation: generation,
+                key_epoch: 1,
+            };
+            assert_eq!(
+                table.publish_key_slot(token(1), stale, keys(2)),
+                Err(KeyProvisioningMutationError::IdentityMismatch)
+            );
+            assert_eq!(
+                table.revoke_key_slot(&token(1), provider, generation),
+                Err(KeyProvisioningMutationError::IdentityMismatch)
+            );
+        }
+        assert_eq!(
+            table.publish_key_slot(token(1), identity(1), keys(1)),
+            Ok(DescramblerKeySlotId(1))
+        );
+    }
+
+    #[test]
+    fn stale_epoch_does_not_replace_current_keys() {
+        let mut table = DescramblerKeyTable::default();
+        reserve(&mut table, 1);
+        table
+            .publish_key_slot(token(1), identity(2), keys(2))
+            .unwrap();
+        for epoch in [1, 2] {
+            assert_eq!(
+                table.publish_key_slot(token(1), identity(epoch), keys(3)),
+                Err(KeyProvisioningMutationError::StaleEpoch)
+            );
+            assert_eq!(table.key_slot(DescramblerKeySlotId(1)), Some(keys(2)));
+        }
+        table
+            .publish_key_slot(token(1), identity(3), keys(3))
+            .unwrap();
+        assert_eq!(table.key_slot(DescramblerKeySlotId(1)), Some(keys(3)));
+    }
+
+    #[test]
+    fn revoke_blocks_resolve_and_reuse_until_last_reference_releases() {
+        let mut table = DescramblerKeyTable::default();
+        reserve(&mut table, 1);
+        table
+            .publish_key_slot(token(1), identity(1), keys(1))
+            .unwrap();
+        table.acquire(&token(1)).unwrap();
+        table.acquire(&token(1)).unwrap();
+        table
+            .revoke_key_slot(&token(1), PROVIDER, GENERATION)
+            .unwrap();
+        table
+            .revoke_key_slot(&token(1), PROVIDER, GENERATION)
+            .unwrap();
+        assert_eq!(
+            table.acquire(&token(1)),
+            Err(DescramblerKeyLookupError::ExpiredToken)
+        );
+        assert_eq!(table.key_slot(DescramblerKeySlotId(1)), None);
+        assert_eq!(
+            table.publish_key_slot(token(1), identity(2), keys(2)),
+            Err(KeyProvisioningMutationError::ExpiredToken)
+        );
+        assert_eq!(
+            table.reserve_key_slot(token(1), DescramblerKeySlotId(2), PROVIDER, GENERATION + 1),
+            Err(KeyProvisioningMutationError::IdentityMismatch)
+        );
+        table.release(&token(1)).unwrap();
+        assert_eq!(table.live_slot_count(), 1);
+        table.release(&token(1)).unwrap();
+        assert_eq!(table.live_slot_count(), 0);
+        assert_eq!(
+            table.acquire(&token(1)),
+            Err(DescramblerKeyLookupError::UnknownToken)
+        );
+    }
+
+    #[test]
+    fn unpublished_reservations_expire_but_published_keys_do_not() {
+        let mut table = DescramblerKeyTable::with_max_slots(2);
+        reserve(&mut table, 1);
+        reserve(&mut table, 2);
+        table
+            .publish_key_slot(token(2), identity(1), keys(2))
+            .unwrap();
+        assert_eq!(
+            table.reserve_key_slot(token(3), DescramblerKeySlotId(3), PROVIDER, GENERATION),
+            Err(KeyProvisioningMutationError::ResourceExhausted)
+        );
+        assert_eq!(
+            table.reap_unpublished_reservations_at(
+                Instant::now() + DEFAULT_UNPUBLISHED_RESERVATION_TTL,
+                DEFAULT_UNPUBLISHED_RESERVATION_TTL
+            ),
+            1
+        );
+        assert_eq!(
+            table.acquire(&token(1)),
+            Err(DescramblerKeyLookupError::UnknownToken)
+        );
+        assert_eq!(table.acquire(&token(2)), Ok(DescramblerKeySlotId(2)));
+        reserve(&mut table, 3);
+    }
+
+    #[test]
+    fn test_fixture_uses_production_reserve_publish_and_reference_accounting() {
+        let mut table = DescramblerKeyTable::default();
+        table
+            .insert_test_key_slot(token(1), DescramblerKeySlotId(1), keys(1))
+            .unwrap();
+        assert_eq!(table.refcount_for_test(&token(1)), Some(0));
+        table.acquire(&token(1)).unwrap();
+        assert_eq!(table.refcount_for_test(&token(1)), Some(1));
+        table.release(&token(1)).unwrap();
+        assert_eq!(table.refcount_for_test(&token(1)), Some(0));
+    }
+
+    #[test]
+    fn invalid_identity_and_unreserved_publish_are_rejected() {
+        let mut table = DescramblerKeyTable::default();
+        assert_eq!(
+            table.reserve_key_slot(token(1), DescramblerKeySlotId(1), 0, GENERATION),
+            Err(KeyProvisioningMutationError::InvalidIdentity)
+        );
+        assert_eq!(
+            table.reserve_key_slot(token(1), DescramblerKeySlotId(1), PROVIDER, 0),
+            Err(KeyProvisioningMutationError::InvalidIdentity)
+        );
+        assert_eq!(
+            table.publish_key_slot(token(1), identity(1), keys(1)),
+            Err(KeyProvisioningMutationError::UnknownToken)
+        );
+        reserve(&mut table, 1);
+        assert_eq!(
+            table.publish_key_slot(token(1), identity(0), keys(1)),
+            Err(KeyProvisioningMutationError::InvalidIdentity)
+        );
+    }
+}

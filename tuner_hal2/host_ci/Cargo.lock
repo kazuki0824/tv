@@ -7,17 +7,6 @@ name = "maleicacid-tuner-hal2-capability-selection-host-ci"
 version = "0.0.0"
 
 [[package]]
-name = "maleicacid-tuner-hal2-key-provisioning-bridge-host-ci"
-version = "0.0.0"
-
-[[package]]
-name = "maleicacid-tuner-hal2-key-provisioning-connection-host-ci"
-version = "0.0.0"
-dependencies = [
- "maleicacid-tuner-hal2-key-provisioning-bridge-host-ci",
-]
-
-[[package]]
 name = "maleicacid-tuner-hal2-common-host-ci"
 version = "0.0.0"
 
@@ -80,6 +69,30 @@ dependencies = [
 [[package]]
 name = "maleicacid-tuner-hal2-fmq-host-ci"
 version = "0.0.0"
+
+[[package]]
+name = "maleicacid-tuner-hal2-key-provisioning-bridge-host-ci"
+version = "0.0.0"
+
+[[package]]
+name = "maleicacid-tuner-hal2-key-provisioning-connection-host-ci"
+version = "0.0.0"
+dependencies = [
+ "maleicacid-tuner-hal2-key-provisioning-bridge-host-ci",
+]
+
+[[package]]
+name = "maleicacid-tuner-hal2-key-provisioning-runtime-host-ci"
+version = "0.0.0"
+dependencies = [
+ "maleicacid-tuner-hal2-common-host-ci",
+ "maleicacid-tuner-hal2-demux-host-ci",
+ "maleicacid-tuner-hal2-descrambler-host-ci",
+ "maleicacid-tuner-hal2-device-host-ci",
+ "maleicacid-tuner-hal2-domain-request-host-ci",
+ "maleicacid-tuner-hal2-key-provisioning-bridge-host-ci",
+ "maleicacid-tuner-hal2-lnb-host-ci",
+]
 
 [[package]]
 name = "maleicacid-tuner-hal2-lnb-host-ci"

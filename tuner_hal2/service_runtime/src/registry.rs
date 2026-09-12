@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::descrambler_key_table::{
-    DescramblerKeyLookupError, DescramblerKeySlotId, DescramblerKeyTable,
-    KeyProvisioningIdentity, KeyProvisioningMutationError,
+    DescramblerKeyLookupError, DescramblerKeySlotId, DescramblerKeyTable, KeyProvisioningIdentity,
+    KeyProvisioningMutationError,
 };
 use crate::descrambler_session::{
     DescramblerCleanupReport, DescramblerCleanupTxnError, DescramblerClearKeyOutcome,
@@ -910,7 +910,7 @@ impl RuntimeRegistry {
     pub(crate) fn reserve_key_provisioning_resource(
         &mut self,
         key_token: Vec<u8>,
-        provider_id: i32,
+        provider_id: u64,
         provider_generation: u64,
     ) -> Result<DescramblerKeySlotId, KeyProvisioningRegistryError> {
         let token = DescramblerKeyToken::try_from_bytes(key_token)
@@ -930,7 +930,7 @@ impl RuntimeRegistry {
     pub(crate) fn publish_key_provisioning_resource(
         &mut self,
         key_token: Vec<u8>,
-        provider_id: i32,
+        provider_id: u64,
         provider_generation: u64,
         key_epoch: u64,
         key_slot: DescramblerKeySlot,
@@ -950,19 +950,18 @@ impl RuntimeRegistry {
     pub(crate) fn revoke_key_provisioning_resource(
         &mut self,
         key_token: Vec<u8>,
-        provider_id: i32,
+        provider_id: u64,
         provider_generation: u64,
     ) -> Result<(), KeyProvisioningRegistryError> {
         let token = DescramblerKeyToken::try_from_bytes(key_token)
             .map_err(KeyProvisioningRegistryError::InvalidKeyToken)?;
-        match self.descrambler_key_table.revoke_key_slot(
-            &token,
-            provider_id,
-            provider_generation,
-        ) {
+        match self
+            .descrambler_key_table
+            .revoke_key_slot(&token, provider_id, provider_generation)
+        {
             Ok(())
-            | Err(DescramblerKeyLookupError::UnknownToken)
-            | Err(DescramblerKeyLookupError::ExpiredToken) => Ok(()),
+            | Err(KeyProvisioningMutationError::UnknownToken)
+            | Err(KeyProvisioningMutationError::ExpiredToken) => Ok(()),
             Err(error) => Err(KeyProvisioningRegistryError::Registry(error)),
         }
     }

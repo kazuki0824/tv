@@ -1,3 +1,10 @@
+# r52_pr57_key_provisioning_repair
+
+- 鍵bridgeの起動関数名、opaque provider IDのu64型、revokeのmutation error型を修正した。統合文書を実際のMKPR/MKPS protocolへ合わせた。
+- 削除されていた鍵table試験を予約・公開・epoch更新・失効・参照解放・予約期限の8件で補い、既存runtime試験のfixtureも本番の予約/公開/失効APIへ接続した。
+- 本番command、registry、key tableを同時にコンパイルするhost targetを追加。14件のunit testsとClippyに成功。新しく検査対象になった戻り値型と診断enumのlintも修正した。
+- production Rustの整形を修正。Android/Soong実体build、device atest、VTS、実card/放送波試験は未実施。
+
 # r51_tuner_hal2_audit_regressions
 
 - demuxのfrontend入力とStarted Playback DVR入力を相互排他にし、拒否時に既存relation・DVR状態を維持する。既存のDemuxFrontendSourceTxnとDVR開始処理へ検査を接続し、両方向の回帰試験を追加した。
