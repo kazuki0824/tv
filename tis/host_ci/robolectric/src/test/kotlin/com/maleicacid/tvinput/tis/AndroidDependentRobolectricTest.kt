@@ -1,12 +1,12 @@
 package com.maleicacid.tvinput.tis
 
 import android.content.Context
-import androidx.test.core.app.ApplicationProvider
 import org.json.JSONObject
 import org.junit.Assert.assertNull
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import java.nio.file.Files
 import java.nio.file.Path
@@ -22,7 +22,7 @@ class AndroidDependentRobolectricTest {
 
     @Test
     fun lockedBootStoresOnlyPendingState() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
+        val context: Context = RuntimeEnvironment.getApplication()
         DirectBootGuard.onLockedBootCompleted(context, 1234L, android.content.Intent.ACTION_LOCKED_BOOT_COMPLETED)
         val state = DirectBootGuard.pendingStateForTest(context)
         check(state.pending)
