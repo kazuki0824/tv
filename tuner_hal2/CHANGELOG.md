@@ -1,3 +1,10 @@
+# r52_pr57_remove_unused_key_replay_journal
+
+- CAS側が送信開始後のmutationを再送しない現行経路に合わせ、generic key provisioningの再送台帳、要求比較、保存済みstatus返却を削除した。request IDは一つの要求と応答の対応確認に限定し、Tuner側へ要求履歴や鍵素材を残さない。
+- 接続または送信準備の`IoUnavailable`再試行、同一identityのReserve冪等性、既に消滅/revoke済みtokenのRevoke冪等性、provider generation、単調key epochを維持した。送信開始後の結果未確定Publishは成功を表明せず、既存session cleanupから新しいrequest IDでRevokeする。
+- connection試験を、timeout設定失敗時のmutation 0件、正常時の1回適用、response write失敗時のserver内再実行なし、同じrequest IDを別接続で履歴照合しない契約へ更新した。
+- Rust 1.81でtuner_hal2 host workspaceの全target unit testとClippy `-D warnings`が成功し、CAS host 27件も成功した。CAS workspace全体のClippyは、今回未変更の`AtomicGenerationSource`と`UnixTunerKeyPublisher`に既存の`new_without_default`があるため未達。Android/Soong build、atest、CTS/VTS、実card/放送波確認は未実施。
+
 # r52_pr57_key_provisioning_repair
 
 - 鍵bridgeの起動関数名、opaque provider IDのu64型、revokeのmutation error型を修正した。統合文書を実際のMKPR/MKPS protocolへ合わせた。

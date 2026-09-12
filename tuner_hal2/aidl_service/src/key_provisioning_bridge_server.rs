@@ -6,7 +6,7 @@ use std::thread;
 use std::time::Duration;
 
 use maleicacid_tuner_hal2_key_provisioning_bridge::{
-    KeyProvisioningReplayJournal, KeyProvisioningStatus, KEY_PROVISIONING_SOCKET_NAME,
+    KeyProvisioningStatus, KEY_PROVISIONING_SOCKET_NAME,
 };
 
 use crate::key_provisioning_connection::process_key_provisioning_connection;
@@ -46,9 +46,8 @@ fn accept_error_is_fatal(error: &io::Error) -> bool {
 fn handle_connection(
     mut stream: UnixStream,
     context: &SharedAidlServiceContext,
-    journal: &mut KeyProvisioningReplayJournal,
 ) -> io::Result<()> {
-    process_key_provisioning_connection(&mut stream, journal, |command| {
+    process_key_provisioning_connection(&mut stream, |command| {
         match context.runtime().lock() {
             Ok(mut runtime) => runtime.apply_key_provisioning_command(command),
             Err(_) => KeyProvisioningStatus::InvalidState,
@@ -60,10 +59,9 @@ fn server_main(
     listener: UnixListener,
     context: SharedAidlServiceContext,
 ) -> Result<(), KeyProvisioningServerError> {
-    let mut journal = KeyProvisioningReplayJournal::default();
     loop {
         match listener.accept() {
-            Ok((stream, _)) => match handle_connection(stream, &context, &mut journal) {
+            Ok((stream, _)) => match handle_connection(stream, &context) {
                 Ok(()) => {}
                 Err(_) => continue,
             },
