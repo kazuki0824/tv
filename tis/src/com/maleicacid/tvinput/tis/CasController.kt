@@ -215,6 +215,10 @@ class CasController(
 
     private fun closePluginLocked(systemId: Int) {
         retiringPlugins += systemId
+        // MediaCas.close後はSession.closeを再試行できないため、未解放Sessionの親を保持する。
+        check(sessionsByContext.values.none { it.key.caSystemId == systemId && !it.sessionClosed }) {
+            "CAS Sessionは解放再試行待ちです"
+        }
         pluginsBySystemId[systemId]?.close()
         pluginsBySystemId.remove(systemId)
         retiringPlugins.remove(systemId)

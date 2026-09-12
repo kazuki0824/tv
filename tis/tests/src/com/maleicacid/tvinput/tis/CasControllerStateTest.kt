@@ -174,7 +174,7 @@ class CasControllerStateTest {
         controller.updateFromCaMetadata(b25Metadata(TsPid(0x101), TsPid(0x123), TsPid(0x010))) { bridge }
         val failure = runCatching { controller.clearForResourceLoss() }.exceptionOrNull()
         check(failure?.cause?.suppressed?.contains(sessionFailure) == true)
-        check(sessionCloses == 1 && pluginCloses == 1 && bridge.closes == 1)
+        check(sessionCloses == 1 && pluginCloses == 0 && bridge.closes == 1)
         check(controller.onEcmSection(TsPid(0x123), byteArrayOf(1)).isEmpty())
         rejectSessionClose = false
         bridge.failClose = false
