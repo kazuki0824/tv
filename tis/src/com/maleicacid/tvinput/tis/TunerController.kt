@@ -47,13 +47,6 @@ import java.util.concurrent.TimeUnit
     // Android Tuner資源の単一ownerとして状態遷移を直列化するため、機械的な責務分割は行わない。
     "LargeClass",
     "TooManyFunctions",
-    // cleanup境界ではprimary/suppressedを保持するため、例外型を狭められない箇所がある。
-    "TooGenericExceptionCaught",
-    // ARIB/AOSPのtable ID・stream ID・時刻/バッファ境界値をそのまま契約値として扱う。
-    "MagicNumber",
-    // ktlint 1.8.0の自動整形後にも残る診断文字列は分割すると診断性が落ちる。
-    "MaxLineLength",
-    "ktlint:standard:max-line-length",
 )
 class TunerController(
     private val context: Context,
@@ -121,6 +114,7 @@ class TunerController(
         var started: Boolean = false,
     )
 
+    @Suppress("TooGenericExceptionCaught", "MaxLineLength")
     private inner class TunerSectionFilterHandle(
         override val pid: TsPid,
         private val artifacts: MutableList<SectionFilterArtifact>,
@@ -229,6 +223,7 @@ class TunerController(
     private val sectionOversizedCounters = linkedMapOf<TsPid, Int>()
     private val playbackPipeline = PlaybackPipeline(inputId, tvInputSessionId, sessionContext)
 
+    @Suppress("TooGenericExceptionCaught", "MaxLineLength")
     private fun createTuner(): Tuner? {
         var created: Tuner? = null
         return try {
@@ -246,6 +241,7 @@ class TunerController(
         }
     }
 
+    @Suppress("MaxLineLength")
     fun setSectionIngestController(controller: SectionIngestController?) = callOnController { sectionIngestController = controller }
 
     fun setCasController(controller: CasController?) =
@@ -253,12 +249,16 @@ class TunerController(
             casController = controller
         }
 
+    @Suppress("MaxLineLength")
     fun setOnSectionIngestedCallback(callback: (() -> Unit)?) = callOnController { onSectionIngestedCallback = callback }
 
+    @Suppress("MaxLineLength")
     fun setOnTunerResourceLostCallback(callback: ((Long) -> Unit)?) = callOnController { onTunerResourceLostCallback = callback }
 
+    @Suppress("MaxLineLength")
     fun setOnTuneEventCallback(callback: ((Long, Int) -> Unit)?) = callOnController { onTuneEventCallback = callback }
 
+    @Suppress("MaxLineLength")
     fun setOnBroadcastClockUpdatedCallback(callback: (() -> Unit)?) = callOnController { onBroadcastClockUpdatedCallback = callback }
 
     fun setPlaybackCallbacks(
@@ -276,7 +276,7 @@ class TunerController(
         playbackPipeline.setOnPlaybackGenerationRestartedCallback(callback)
     }
 
-    @Suppress("SpreadOperator")
+    @Suppress("SpreadOperator", "TooGenericExceptionCaught", "MaxLineLength")
     private fun handleTunerResourceLostOnController() {
         val lostGeneration = streamIdDiscovery?.generation ?: tuneGeneration
         try {
@@ -464,6 +464,7 @@ class TunerController(
             if (success) JapanIsdbScanPlan.explicitBsCandidatesFromScan(seed, streamIds) else emptyList()
     }
 
+    @Suppress("TooGenericExceptionCaught", "MaxLineLength")
     fun discoverIsdbsStreamIds(
         seed: ScanCandidate,
         timeoutMs: Long = BS_STREAM_ID_SCAN_TIMEOUT_MS,
@@ -573,7 +574,7 @@ class TunerController(
     }
 
     /** 世代と待機結果を一つに保持する。状態変更はcontroller executor、awaitだけ呼出元。 */
-    @Suppress("TooManyFunctions")
+    @Suppress("TooManyFunctions", "MaxLineLength")
     internal class StreamIdDiscoveryOperation(
         val generation: Long,
     ) {
@@ -592,6 +593,7 @@ class TunerController(
         val active: Boolean get() = outcome == Outcome.SCANNING
         val acceptsResourceLoss: Boolean get() = !resourceLossObserved && outcome != Outcome.CANCELLED
 
+        @Suppress("MagicNumber")
         fun reportIds(values: IntArray) {
             if (active) values.filterTo(ids) { it in 0..0xfffe }
         }
@@ -648,6 +650,7 @@ class TunerController(
 
         fun await(timeoutMs: Long): Boolean = terminal.await(timeoutMs.coerceAtLeast(1L), TimeUnit.MILLISECONDS)
 
+        @Suppress("TooGenericExceptionCaught")
         fun resultWithCleanup(
             completed: Boolean,
             cleanup: () -> Unit,
@@ -707,6 +710,7 @@ class TunerController(
         }
     }
 
+    @Suppress("MaxLineLength")
     fun tuneForScan(candidate: ScanCandidate): TuneOutcome = callOnController { tuneForScanOnController(candidate) }
 
     private fun tuneForScanOnController(candidate: ScanCandidate): TuneOutcome {
@@ -728,6 +732,7 @@ class TunerController(
         return tuneResolvedChannel(synthetic)
     }
 
+    @Suppress("MaxLineLength")
     fun tuneAndBeginSiIngest(settings: FrontendSettings): Int = callOnController { tuneAndBeginSiIngestOnController(settings) }
 
     private fun tuneAndBeginSiIngestOnController(settings: FrontendSettings): Int {
@@ -740,7 +745,7 @@ class TunerController(
         return result
     }
 
-    @Suppress("ReturnCount")
+    @Suppress("ReturnCount", "MaxLineLength")
     private fun tuneResolvedChannel(channel: ResolvedChannel): TuneOutcome {
         resetBeforeTune()
         val tunerInstance = tuner ?: return TuneOutcome(false, Tuner.RESULT_UNAVAILABLE, channel, tuneGeneration, "Tuner を利用できません")
@@ -841,6 +846,7 @@ class TunerController(
         prepareInitialSectionFiltersOnController(generation)
     }
 
+    @Suppress("MaxLineLength")
     private fun prepareInitialSectionFiltersOnController(generation: Long) {
         listOf(
             WellKnownSectionPid.PAT,
@@ -872,6 +878,7 @@ class TunerController(
             openSectionFilterOnController(pid, generation)
         }
 
+    @Suppress("MaxLineLength")
     private fun openSectionFilterOnController(
         pid: TsPid,
         generation: Long = tuneGeneration,
@@ -880,7 +887,7 @@ class TunerController(
         return SectionFilterPolicy.openOwnedFilter(pid, sectionFilterHandles) { createSectionFilter(pid, generation) }
     }
 
-    @Suppress("ReturnCount")
+    @Suppress("ReturnCount", "TooGenericExceptionCaught", "MaxLineLength")
     private fun createSectionFilter(
         pid: TsPid,
         generation: Long,
@@ -996,6 +1003,7 @@ class TunerController(
         filter: Filter,
     ): Boolean = tuneAccepted && generation == tuneGeneration && sectionFilters[pid].orEmpty().any { it === filter }
 
+    @Suppress("MaxLineLength")
     private fun recordSectionShortRead(
         pid: TsPid,
         expected: Int,
@@ -1008,6 +1016,7 @@ class TunerController(
         )
     }
 
+    @Suppress("MaxLineLength")
     private fun recordSectionReadError(
         pid: TsPid,
         detail: String,
@@ -1016,6 +1025,7 @@ class TunerController(
         Log.w(LogTags.TIS, "section read 失敗を破棄します inputId=$inputId pid=$pid detail=$detail count=${sectionReadErrorCounters[pid]}")
     }
 
+    @Suppress("MaxLineLength")
     private fun recordSectionMalformedDrop(
         pid: TsPid,
         detail: String,
@@ -1027,6 +1037,7 @@ class TunerController(
         )
     }
 
+    @Suppress("MaxLineLength")
     private fun recordSectionOversizedDrop(
         pid: TsPid,
         dataLength: Long,
@@ -1052,6 +1063,7 @@ class TunerController(
 
     fun closeSectionFilters(): Unit = callOnController { closeSectionFiltersOnController() }
 
+    @Suppress("TooGenericExceptionCaught")
     private fun closeSectionFiltersOnController() {
         sectionFilters.clear()
         var failure: RuntimeException? = null
@@ -1087,6 +1099,7 @@ class TunerController(
         )
     }
 
+    @Suppress("MaxLineLength")
     fun updateCasMetadataAndFilters(
         metadata: List<CaMetadata>,
         pmtPids: Set<TsPid>,
@@ -1167,6 +1180,7 @@ class TunerController(
         onSectionOnController(pid, section, generation)
     }
 
+    @Suppress("MaxLineLength")
     private fun onSectionOnController(
         pid: TsPid,
         section: ByteArray,
@@ -1230,7 +1244,7 @@ class TunerController(
         // この hook は section 取り込み後の コールバック 用であり、視聴可能状態を主張しない。
     }
 
-    @Suppress("LongParameterList")
+    @Suppress("LongParameterList", "MaxLineLength")
     fun selectAvStreams(
         serviceKey: ServiceKey,
         pcrPid: TsPid?,
@@ -1418,6 +1432,7 @@ class TunerController(
         }
     }
 
+    @Suppress("MagicNumber", "MaxLineLength")
     fun setOnSubtitlePesCallback(callback: (Long, String, ByteArray, CaptionTimestamp, AribBroadcastClock.StatementTime?) -> Unit) {
         playbackPipeline.setOnSubtitlePesCallback { generation, trackId, pesData, timestamp ->
             val pid =
@@ -1504,6 +1519,7 @@ class TunerController(
 
     fun isTuneRequestAccepted(): Boolean = callOnController { tuneAccepted }
 
+    @Suppress("MagicNumber", "MaxLineLength")
     private fun resolveChannel(channelUri: Uri): Result<ResolvedChannel> =
         runCatching {
             val projection =
@@ -1549,6 +1565,7 @@ class TunerController(
             } ?: error("query が null cursor を返しました uri=$channelUri")
         }
 
+    @Suppress("MaxLineLength")
     private fun buildFrontendSettings(channel: ResolvedChannel): Result<FrontendSettings> =
         runCatching {
             when (channel.deliverySystem) {
@@ -1604,6 +1621,7 @@ class TunerController(
         Log.i(LogTags.TIS, "Tuner を解放します inputId=$inputId sessionId=$tvInputSessionId")
     }
 
+    @Suppress("TooGenericExceptionCaught")
     private fun releaseOnController() {
         if (released) return
         invalidateTuneOnController()
@@ -1665,6 +1683,7 @@ class TunerController(
         }
 
         /** 初期化が終わるまで成功を公開しない。rollbackの失敗も元の例外へ添える。 */
+        @Suppress("TooGenericExceptionCaught")
         internal fun completeTuneInitialization(
             prepare: () -> Unit,
             commit: () -> Unit,
@@ -1684,6 +1703,7 @@ class TunerController(
         }
 
         /** 呼出しからCAS attach完了まで同一controller executorを占有する。 */
+        @Suppress("MaxLineLength")
         internal fun updateCasIfCurrent(
             requestedGeneration: Long,
             currentGeneration: Long,
@@ -1704,6 +1724,7 @@ class TunerController(
         private const val SECTION_FILTER_BUFFER_BYTES = 64 * 1024L
         private const val BS_STREAM_ID_SCAN_TIMEOUT_MS = 2_500L
 
+        @Suppress("MagicNumber", "MaxLineLength")
         internal fun sectionSettingsForPid(pid: TsPid): List<SectionSettingsWithSectionBits> {
             val tableIds: List<Int?> = if (pid == WellKnownSectionPid.TDT) listOf(0x70, 0x73) else listOf(null)
             return tableIds.map { tableId ->
