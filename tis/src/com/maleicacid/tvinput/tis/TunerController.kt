@@ -473,7 +473,8 @@ class TunerController(
     private fun cancelStreamIdDiscoveryOnController() {
         val operation = streamIdDiscovery ?: return
         operation.cancel { tuner?.cancelScanning() ?: Tuner.RESULT_SUCCESS }
-        tuner?.closeFrontend()
+        // RFごとのscan終了ではapplyFrontend()で選んだBS frontendを保持する。
+        // ここでcloseすると次のRFでTRMが別ISDB-S frontendを割り当て得る。
         streamIdDiscovery = null
     }
 
