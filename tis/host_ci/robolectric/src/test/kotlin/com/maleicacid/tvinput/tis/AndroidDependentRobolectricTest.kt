@@ -3,7 +3,6 @@
 
 package com.maleicacid.tvinput.tis
 
-import android.app.Application
 import android.content.Context
 import android.content.Intent
 import org.json.JSONObject
@@ -68,7 +67,7 @@ class AndroidDependentRobolectricTest {
 
     private fun assetText(path: String): String =
         RuntimeEnvironment
-            .getApplication<Application>()
+            .getApplication()
             .assets
             .open(path)
             .bufferedReader(Charsets.UTF_8)
