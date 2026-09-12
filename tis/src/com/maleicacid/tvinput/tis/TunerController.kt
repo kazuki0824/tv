@@ -357,7 +357,13 @@ class TunerController(
         streamIdDiscovery = operation
         val settings = IsdbsFrontendSettings.builder().setFrequencyLong(seed.frequencyHz.value).build()
         val callback = object : ScanCallback {
-            override fun onLocked() = Unit
+            override fun onLocked() {
+                if (streamIdDiscovery === operation) {
+                    operation.continueAfterLock {
+                        tunerInstance.scan(settings, Tuner.SCAN_TYPE_AUTO, sectionExecutor, this)
+                    }
+                }
+            }
             override fun onUnlocked() = Unit
             override fun onScanStopped() { if (streamIdDiscovery === operation) operation.complete() }
             override fun onProgress(percent: Int) { if (streamIdDiscovery === operation) operation.reportProgress(percent) }
@@ -388,6 +394,7 @@ class TunerController(
     private fun cancelStreamIdDiscoveryOnController() {
         val operation = streamIdDiscovery ?: return
         operation.cancel { tuner?.cancelScanning() ?: Tuner.RESULT_SUCCESS }
+        tuner?.closeFrontend()
         streamIdDiscovery = null
     }
 
@@ -401,6 +408,7 @@ class TunerController(
         private var resourceLossObserved = false
         private var resultCode = Tuner.RESULT_SUCCESS
         private var message = ""
+        private var continuationStarted = false
         val active: Boolean get() = outcome == Outcome.SCANNING
         val acceptsResourceLoss: Boolean get() = !resourceLossObserved && outcome != Outcome.CANCELLED
         fun reportIds(values: IntArray) { if (active) values.filterTo(ids) { it in 0..0xfffe } }
@@ -411,6 +419,11 @@ class TunerController(
             terminal.countDown()
         }
         fun complete() { finish(Outcome.STOPPED) }
+        fun continueAfterLock(scan: () -> Int) {
+            if (!active || continuationStarted) return
+            continuationStarted = true
+            start(scan)
+        }
         fun start(scan: () -> Int) {
             val result = runCatching(scan)
             val code = result.getOrDefault(Tuner.RESULT_UNKNOWN_ERROR)

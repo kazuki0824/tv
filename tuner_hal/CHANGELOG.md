@@ -1,3 +1,9 @@
+# r51_tuner_hal2_audit_regressions
+
+- frontend/Playback DVR入力排他、px4 TMCC一覧の有限再観測、scan callback前の`LockedReported`確定を公開設計へ反映した。
+- earth_pt1のDTV_STREAM_ID読戻しの設計追加は撤回した。Linux v6.6のtc90522による5バイト読出しがPT1の4バイト制限で失敗し、要求キャッシュを実測値として扱えない。
+- AV Filter FMQを所有しないAUDIO/VIDEOと、`min(FMQ容量, 188 * 256)`のPlayback処理予算に資源表を揃え、全object種別の再close結果を実装へ同期した。
+
 # r50eo52
 
 - `FilterDelayHint`の時間起点を未通知`onFilterEvent()` batchの空→非空へ一本化し、Filter FMQ未読残量とは独立であることを明記した。

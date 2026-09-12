@@ -45,7 +45,8 @@ internal val ScanCandidate.tuneKey: ScanTuneKey
 
 object JapanIsdbScanPlan {
     const val BS_DISCOVERY_BACKEND_HINT = "jp-bs-discovery"
-    private data class BsTsidEntry(val frequencyHz: FrequencyHz, val tsid: TransportStreamId16, val label: String, val physical: Int)
+    private const val BS_FIRST_IF_HZ = 1_049_480_000L
+    private const val BS_TRANSPONDER_STEP_HZ = 38_360_000L
 
     fun isdbtUhf13To62(): List<ScanCandidate> = (13..62).map { ch ->
         ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_T, FrequencyHz(473_142_857L + (ch - 13) * 6_000_000L), displayChannel = ch.toString(), physicalChannel = ch, backendHint = "jp-uhf", kind = ScanCandidateKind.ISDB_T_UHF)
@@ -67,20 +68,19 @@ object JapanIsdbScanPlan {
     }
 
     /** AOSP frontend scan用。TSIDを事前決め打ちせず、BS物理RFだけを列挙する。 */
-    fun isdbsBsBands(): List<ScanCandidate> = bsTsidEntries
-        .distinctBy { entry -> entry.frequencyHz.value to entry.physical }
-        .map { entry ->
-            ScanCandidate(
-                ChannelRecord.DELIVERY_SYSTEM_ISDB_S,
-                entry.frequencyHz,
-                streamSelector = StreamSelector.NONE,
-                displayChannel = "BS${entry.physical.toString().padStart(2, '0')}",
-                physicalChannel = entry.physical,
-                backendHint = BS_DISCOVERY_BACKEND_HINT,
-                satelliteBand = "BS",
-                kind = ScanCandidateKind.ISDB_S_BS,
-            )
-        }
+    fun isdbsBsBands(): List<ScanCandidate> = (0 until 12).map { index ->
+        val physical = index * 2 + 1
+        ScanCandidate(
+            ChannelRecord.DELIVERY_SYSTEM_ISDB_S,
+            FrequencyHz(BS_FIRST_IF_HZ + index * BS_TRANSPONDER_STEP_HZ),
+            streamSelector = StreamSelector.NONE,
+            displayChannel = "BS${physical.toString().padStart(2, '0')}",
+            physicalChannel = physical,
+            backendHint = BS_DISCOVERY_BACKEND_HINT,
+            satelliteBand = "BS",
+            kind = ScanCandidateKind.ISDB_S_BS,
+        )
+    }
 
     fun explicitBsCandidatesFromScan(seed: ScanCandidate, inputStreamIds: Collection<Int>): List<ScanCandidate> {
         require(seed.kind == ScanCandidateKind.ISDB_S_BS && seed.streamSelector.type == StreamSelectorType.NONE)
@@ -119,15 +119,4 @@ object JapanIsdbScanPlan {
 
     fun defaultInitialScan(): List<ScanCandidate> = isdbtUhf13To62() + isdbtCatvC13ToC63() + isdbsBsBands() + isdbs110CsBands()
 
-    private val bsTsidEntries = listOf(
-        BsTsidEntry(FrequencyHz(1_049_480_000L), TransportStreamId16(16400), "BS01-16400", 1), BsTsidEntry(FrequencyHz(1_049_480_000L), TransportStreamId16(16401), "BS01-16401", 1), BsTsidEntry(FrequencyHz(1_049_480_000L), TransportStreamId16(16402), "BS01-16402", 1),
-        BsTsidEntry(FrequencyHz(1_087_840_000L), TransportStreamId16(16432), "BS03-16432", 3), BsTsidEntry(FrequencyHz(1_087_840_000L), TransportStreamId16(17969), "BS03-17969", 3), BsTsidEntry(FrequencyHz(1_087_840_000L), TransportStreamId16(17970), "BS03-17970", 3),
-        BsTsidEntry(FrequencyHz(1_126_200_000L), TransportStreamId16(17488), "BS05-17488", 5), BsTsidEntry(FrequencyHz(1_126_200_000L), TransportStreamId16(17489), "BS05-17489", 5),
-        BsTsidEntry(FrequencyHz(1_202_920_000L), TransportStreamId16(16528), "BS09-16528", 9), BsTsidEntry(FrequencyHz(1_202_920_000L), TransportStreamId16(16530), "BS09-16530", 9),
-        BsTsidEntry(FrequencyHz(1_279_640_000L), TransportStreamId16(16592), "BS13-16592", 13), BsTsidEntry(FrequencyHz(1_279_640_000L), TransportStreamId16(16593), "BS13-16593", 13), BsTsidEntry(FrequencyHz(1_279_640_000L), TransportStreamId16(18130), "BS13-18130", 13),
-        BsTsidEntry(FrequencyHz(1_318_000_000L), TransportStreamId16(16625), "BS15-16625", 15), BsTsidEntry(FrequencyHz(1_318_000_000L), TransportStreamId16(16626), "BS15-16626", 15), BsTsidEntry(FrequencyHz(1_318_000_000L), TransportStreamId16(18675), "BS15-18675", 15),
-        BsTsidEntry(FrequencyHz(1_394_720_000L), TransportStreamId16(18224), "BS19-18224", 19), BsTsidEntry(FrequencyHz(1_394_720_000L), TransportStreamId16(18225), "BS19-18225", 19), BsTsidEntry(FrequencyHz(1_394_720_000L), TransportStreamId16(18226), "BS19-18226", 19), BsTsidEntry(FrequencyHz(1_394_720_000L), TransportStreamId16(18227), "BS19-18227", 19),
-        BsTsidEntry(FrequencyHz(1_433_080_000L), TransportStreamId16(18256), "BS21-18256", 21), BsTsidEntry(FrequencyHz(1_433_080_000L), TransportStreamId16(18257), "BS21-18257", 21), BsTsidEntry(FrequencyHz(1_433_080_000L), TransportStreamId16(18258), "BS21-18258", 21),
-        BsTsidEntry(FrequencyHz(1_471_440_000L), TransportStreamId16(18288), "BS23-18288", 23), BsTsidEntry(FrequencyHz(1_471_440_000L), TransportStreamId16(18801), "BS23-18801", 23), BsTsidEntry(FrequencyHz(1_471_440_000L), TransportStreamId16(18803), "BS23-18803", 23),
-    )
 }

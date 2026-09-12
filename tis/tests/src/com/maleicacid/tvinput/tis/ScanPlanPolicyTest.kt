@@ -11,6 +11,34 @@ import kotlin.test.assertTrue
 class ScanPlanPolicyTest {
 
     @Test
+    fun bsLockContinuesTheSameScanExactlyOnceAndWaitsForStopped() {
+        val operation = TunerController.StreamIdDiscoveryOperation(25L)
+        var continuationCalls = 0
+        operation.reportIds(intArrayOf(16400))
+        repeat(2) {
+            operation.continueAfterLock {
+                continuationCalls++
+                android.media.tv.tuner.Tuner.RESULT_SUCCESS
+            }
+        }
+        assertEquals(1, continuationCalls)
+        assertFalse(operation.await(1))
+        operation.complete()
+        assertTrue(operation.await(1))
+        assertEquals(setOf(16400), operation.result(true).streamIds)
+    }
+
+    @Test
+    fun bsContinuationFailureIsTerminalAndKeepsTheFailureCode() {
+        val operation = TunerController.StreamIdDiscoveryOperation(26L)
+        operation.continueAfterLock { android.media.tv.tuner.Tuner.RESULT_UNAVAILABLE }
+        assertTrue(operation.await(1))
+        val result = operation.result(true)
+        assertFalse(result.success)
+        assertEquals(android.media.tv.tuner.Tuner.RESULT_UNAVAILABLE, result.resultCode)
+    }
+
+    @Test
     fun bsStartFailureSurvivesCleanupFailureAndRetainsOwnerForRetry() {
         for (throws in listOf(false, true)) {
             val operation = TunerController.StreamIdDiscoveryOperation(24L)
@@ -197,6 +225,26 @@ class ScanPlanPolicyTest {
         assertTrue(bs.isNotEmpty())
         assertTrue(bs.all { it.streamSelector.type == StreamSelectorType.NONE })
         assertTrue(bs.all { it.backendHint == JapanIsdbScanPlan.BS_DISCOVERY_BACKEND_HINT })
+        assertEquals((1..23 step 2).toList(), bs.mapNotNull { it.physicalChannel })
+    }
+
+    @Test
+    fun terminalBsDiscoveryDoesNotRestartOnLateLock() {
+        for (end in listOf("stopped", "timeout", "failure", "cancel", "lost")) {
+            val operation = TunerController.StreamIdDiscoveryOperation(27L)
+            when (end) {
+                "stopped" -> operation.complete()
+                "timeout" -> operation.result(false)
+                "failure" -> operation.startFailed(1, "scan failed")
+                "cancel" -> operation.cancel { android.media.tv.tuner.Tuner.RESULT_SUCCESS }
+                "lost" -> operation.loseResources()
+            }
+            val before = operation.result(true)
+            var calls = 0
+            operation.continueAfterLock { calls++; android.media.tv.tuner.Tuner.RESULT_SUCCESS }
+            assertEquals(0, calls)
+            assertEquals(before, operation.result(true))
+        }
     }
 
     @Test

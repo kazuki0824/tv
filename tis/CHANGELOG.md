@@ -1,3 +1,8 @@
+# r51_tuner_hal2_audit_regressions
+
+- BS事前scanは`onLocked()`で同一scanを一度だけ継続し、`onScanStopped()`まで待機する。状態変更は既存の単一controller executorに限定し、追加の同期ロックを置かない。公開scan契約への接続を設計へ反映した。
+- 重複LOCKED、継続開始失敗、終了後の遅延LOCKEDに対するKotlin host試験を3件追加し、CI期待件数を235件へ更新した。Android/Soong、実機earth_pt1/px4/実放送波は未実施。
+
 # r51_pr91_review_truncated_loop_and_identity
 
 - 切断event loopの全受信bytes・宣言長・構造状態と、先行する正常descriptor事実を実JNIから診断専用DTOへ保持する。
