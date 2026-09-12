@@ -11,6 +11,8 @@ import android.media.tv.tuner.filter.SectionEvent
 import android.media.tv.tuner.filter.SectionSettingsWithSectionBits
 import android.media.tv.tuner.filter.TsFilterConfiguration
 import android.media.tv.tuner.frontend.FrontendSettings
+import android.media.tv.tuner.frontend.FrontendInfo
+import android.media.tv.tuner.frontend.FrontendStatus
 import android.media.tv.tuner.frontend.OnTuneEventListener
 import android.media.tv.tuner.frontend.ScanCallback
 import android.media.tv.tuner.frontend.Atsc3PlpInfo
@@ -306,6 +308,83 @@ class TunerController(
             return TuneOutcome(false, Tuner.RESULT_INVALID_ARGUMENT, null, tuneGeneration, e.message.orEmpty())
         }
         return tuneResolvedChannel(resolved, startPlayback = true)
+    }
+
+    internal data class BsFrontendSelectionResult(
+        val source: BsCandidateSource?,
+        val resultCode: Int,
+        val message: String = "",
+    ) {
+        val success: Boolean get() = source != null && resultCode == Tuner.RESULT_SUCCESS
+    }
+
+    internal fun prepareBsCandidateSource(): BsFrontendSelectionResult = callOnController {
+        prepareBsCandidateSourceOnController()
+    }
+
+    private fun prepareBsCandidateSourceOnController(): BsFrontendSelectionResult {
+        resetBeforeTune()
+        val tunerInstance = tuner
+            ?: return BsFrontendSelectionResult(null, Tuner.RESULT_UNAVAILABLE, "Tunerを利用できません")
+        val closeFailure = runCatching { tunerInstance.closeFrontend() }.exceptionOrNull()
+        if (closeFailure != null) {
+            return BsFrontendSelectionResult(
+                null,
+                Tuner.RESULT_UNKNOWN_ERROR,
+                "既存frontendの解放に失敗しました: ${closeFailure.message}",
+            )
+        }
+        val infos = runCatching { tunerInstance.availableFrontendInfos.orEmpty() }.getOrElse { error ->
+            return BsFrontendSelectionResult(
+                null,
+                Tuner.RESULT_UNKNOWN_ERROR,
+                "利用可能frontend一覧の取得に失敗しました: ${error.message}",
+            )
+        }
+        val capabilities = infos.map { info ->
+            BsFrontendCapability(
+                frontendId = info.id,
+                isIsdbs = info.type == FrontendSettings.TYPE_ISDBS,
+                supportsStreamIdList = info.statusCapabilities.any {
+                    it == FrontendStatus.FRONTEND_STATUS_TYPE_STREAM_IDS
+                },
+            )
+        }
+        val byId = infos.associateBy(FrontendInfo::getId)
+        val ordered = BsFrontendSelectionPolicy.orderedCandidates(capabilities)
+        if (ordered.isEmpty()) {
+            return BsFrontendSelectionResult(null, Tuner.RESULT_UNAVAILABLE, "ISDB-S frontendがありません")
+        }
+        for (candidate in ordered) {
+            val info = byId[candidate.frontendId]
+                ?: return BsFrontendSelectionResult(
+                    null,
+                    Tuner.RESULT_UNKNOWN_ERROR,
+                    "frontend一覧と選択候補が一致しません id=${candidate.frontendId}",
+                )
+            val result = runCatching { tunerInstance.applyFrontend(info) }.getOrElse { error ->
+                return BsFrontendSelectionResult(
+                    null,
+                    Tuner.RESULT_UNKNOWN_ERROR,
+                    "frontend適用中に例外が発生しました id=${candidate.frontendId}: ${error.message}",
+                )
+            }
+            if (result == Tuner.RESULT_UNAVAILABLE) continue
+            if (result != Tuner.RESULT_SUCCESS) {
+                return BsFrontendSelectionResult(
+                    null,
+                    result,
+                    "frontend適用に失敗しました id=${candidate.frontendId} result=$result",
+                )
+            }
+            val source = BsFrontendSelectionPolicy.sourceFor(candidate)
+            return BsFrontendSelectionResult(source, Tuner.RESULT_SUCCESS)
+        }
+        return BsFrontendSelectionResult(
+            null,
+            Tuner.RESULT_UNAVAILABLE,
+            "利用可能なISDB-S frontendを確保できません",
+        )
     }
 
     data class StreamIdDiscoveryResult(

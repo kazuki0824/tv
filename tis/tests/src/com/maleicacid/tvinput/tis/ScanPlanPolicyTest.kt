@@ -198,6 +198,15 @@ class ScanPlanPolicyTest {
         assertTrue(failed.candidatesFor(seed).isEmpty())
         assertEquals(setOf(16400), failed.copy(success = true, resultCode = android.media.tv.tuner.Tuner.RESULT_SUCCESS)
             .candidatesFor(seed).mapNotNull { it.streamSelector.value }.toSet())
+        val staticFrontend = BsFrontendCapability(21, isIsdbs = true, supportsStreamIdList = false)
+        val dynamicFrontend = BsFrontendCapability(12, isIsdbs = true, supportsStreamIdList = true)
+        val nonIsdbs = BsFrontendCapability(10, isIsdbs = false, supportsStreamIdList = true)
+        assertEquals(
+            listOf(dynamicFrontend, staticFrontend),
+            BsFrontendSelectionPolicy.orderedCandidates(listOf(staticFrontend, nonIsdbs, dynamicFrontend)),
+        )
+        assertEquals(BsCandidateSource.DYNAMIC_STREAM_ID_LIST, BsFrontendSelectionPolicy.sourceFor(dynamicFrontend))
+        assertEquals(BsCandidateSource.STATIC_TSID_TABLE, BsFrontendSelectionPolicy.sourceFor(staticFrontend))
     }
 
     @Test
@@ -226,6 +235,15 @@ class ScanPlanPolicyTest {
         assertTrue(bs.all { it.streamSelector.type == StreamSelectorType.NONE })
         assertTrue(bs.all { it.backendHint == JapanIsdbScanPlan.BS_DISCOVERY_BACKEND_HINT })
         assertEquals((1..23 step 2).toList(), bs.mapNotNull { it.physicalChannel })
+        val staticCandidates = bs.flatMap(JapanIsdbScanPlan::staticBsCandidatesFor)
+        assertTrue(staticCandidates.isNotEmpty())
+        assertTrue(staticCandidates.all { it.streamSelector.type == StreamSelectorType.TSID })
+        assertTrue(staticCandidates.all { it.streamSelector.value in 12..0xfffe })
+        assertEquals(setOf(16400, 16401, 16402), JapanIsdbScanPlan.staticBsStreamIdsFor(bs.first()))
+        assertTrue(
+            bs.filter { it.physicalChannel in setOf(7, 11, 17) }
+                .all { JapanIsdbScanPlan.staticBsStreamIdsFor(it).isEmpty() },
+        )
     }
 
     @Test

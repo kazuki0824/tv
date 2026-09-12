@@ -48,6 +48,45 @@ object JapanIsdbScanPlan {
     private const val BS_FIRST_IF_HZ = 1_049_480_000L
     private const val BS_TRANSPONDER_STEP_HZ = 38_360_000L
 
+    private data class BsTsidEntry(
+        val physicalChannel: Int,
+        val frequencyHz: Long,
+        val tsid: Int,
+    )
+
+    /*
+     * STREAM_ID_LISTを公開しないfrontendでBSをexplicit tuneするための製品候補表。
+     * この表は選局候補だけを所有し、受信後のONID/TSID/SIDのauthorityにはしない。
+     */
+    private val bsStaticTsidEntries = listOf(
+        BsTsidEntry(1, 1_049_480_000L, 16400),
+        BsTsidEntry(1, 1_049_480_000L, 16401),
+        BsTsidEntry(1, 1_049_480_000L, 16402),
+        BsTsidEntry(3, 1_087_840_000L, 16432),
+        BsTsidEntry(3, 1_087_840_000L, 17969),
+        BsTsidEntry(3, 1_087_840_000L, 17970),
+        BsTsidEntry(5, 1_126_200_000L, 17488),
+        BsTsidEntry(5, 1_126_200_000L, 17489),
+        BsTsidEntry(9, 1_202_920_000L, 16528),
+        BsTsidEntry(9, 1_202_920_000L, 16530),
+        BsTsidEntry(13, 1_279_640_000L, 16592),
+        BsTsidEntry(13, 1_279_640_000L, 16593),
+        BsTsidEntry(13, 1_279_640_000L, 18130),
+        BsTsidEntry(15, 1_318_000_000L, 16625),
+        BsTsidEntry(15, 1_318_000_000L, 16626),
+        BsTsidEntry(15, 1_318_000_000L, 18675),
+        BsTsidEntry(19, 1_394_720_000L, 18224),
+        BsTsidEntry(19, 1_394_720_000L, 18225),
+        BsTsidEntry(19, 1_394_720_000L, 18226),
+        BsTsidEntry(19, 1_394_720_000L, 18227),
+        BsTsidEntry(21, 1_433_080_000L, 18256),
+        BsTsidEntry(21, 1_433_080_000L, 18257),
+        BsTsidEntry(21, 1_433_080_000L, 18258),
+        BsTsidEntry(23, 1_471_440_000L, 18288),
+        BsTsidEntry(23, 1_471_440_000L, 18801),
+        BsTsidEntry(23, 1_471_440_000L, 18803),
+    )
+
     fun isdbtUhf13To62(): List<ScanCandidate> = (13..62).map { ch ->
         ScanCandidate(ChannelRecord.DELIVERY_SYSTEM_ISDB_T, FrequencyHz(473_142_857L + (ch - 13) * 6_000_000L), displayChannel = ch.toString(), physicalChannel = ch, backendHint = "jp-uhf", kind = ScanCandidateKind.ISDB_T_UHF)
     }
@@ -81,6 +120,21 @@ object JapanIsdbScanPlan {
             kind = ScanCandidateKind.ISDB_S_BS,
         )
     }
+
+    fun staticBsStreamIdsFor(seed: ScanCandidate): Set<Int> {
+        require(seed.kind == ScanCandidateKind.ISDB_S_BS && seed.streamSelector.type == StreamSelectorType.NONE)
+        return bsStaticTsidEntries
+            .asSequence()
+            .filter { entry ->
+                entry.frequencyHz == seed.frequencyHz.value &&
+                    entry.physicalChannel == seed.physicalChannel
+            }
+            .map { it.tsid }
+            .toCollection(linkedSetOf())
+    }
+
+    fun staticBsCandidatesFor(seed: ScanCandidate): List<ScanCandidate> =
+        explicitBsCandidatesFromScan(seed, staticBsStreamIdsFor(seed))
 
     fun explicitBsCandidatesFromScan(seed: ScanCandidate, inputStreamIds: Collection<Int>): List<ScanCandidate> {
         require(seed.kind == ScanCandidateKind.ISDB_S_BS && seed.streamSelector.type == StreamSelectorType.NONE)

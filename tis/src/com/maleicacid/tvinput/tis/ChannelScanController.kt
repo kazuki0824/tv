@@ -120,22 +120,42 @@ class ChannelScanController(
         var published = 0
         var successfulCandidates = 0
         val executionCandidates = mutableListOf<ScanCandidate>()
+        var bsCandidateSource: BsCandidateSource? = null
         for (candidate in candidates) {
             if (cancelled.get() || terminalResourceLostObserved) break
             if (candidate.kind == ScanCandidateKind.ISDB_S_BS && candidate.streamSelector == com.maleicacid.tvinput.common.StreamSelector.NONE) {
-                val discovery = tunerController.discoverIsdbsStreamIds(candidate)
-                discovery.generation?.let { activateScanGeneration(it) }
-                if (discovery.resourceLost || terminalResourceLostObserved) {
-                    discovery.generation?.let { resourceLossFence.onLost(it) }
-                    diagnostics += ScanDiagnostic(candidate, "BS探索中のTUNER_RESOURCE_LOSTにより後続選局を停止します")
-                    break
+                if (bsCandidateSource == null) {
+                    val selection = tunerController.prepareBsCandidateSource()
+                    if (!selection.success) {
+                        diagnostics += ScanDiagnostic(
+                            candidate,
+                            "BS frontend選択に失敗しました result=${selection.resultCode} message=${selection.message}",
+                        )
+                        break
+                    }
+                    bsCandidateSource = requireNotNull(selection.source)
                 }
-                discovery.generation?.let { clearActiveScanGeneration(it) }
-                val discovered = discovery.candidatesFor(candidate)
-                if (discovery.success && discovered.isNotEmpty()) {
-                    executionCandidates += discovered
-                } else {
-                    diagnostics += ScanDiagnostic(candidate, "BS dynamic stream-ID discovery失敗 result=${discovery.resultCode} message=${discovery.message}")
+                when (bsCandidateSource) {
+                    BsCandidateSource.DYNAMIC_STREAM_ID_LIST -> {
+                        val discovery = tunerController.discoverIsdbsStreamIds(candidate)
+                        discovery.generation?.let { activateScanGeneration(it) }
+                        if (discovery.resourceLost || terminalResourceLostObserved) {
+                            discovery.generation?.let { resourceLossFence.onLost(it) }
+                            diagnostics += ScanDiagnostic(candidate, "BS探索中のTUNER_RESOURCE_LOSTにより後続選局を停止します")
+                            break
+                        }
+                        discovery.generation?.let { clearActiveScanGeneration(it) }
+                        val discovered = discovery.candidatesFor(candidate)
+                        if (discovery.success && discovered.isNotEmpty()) {
+                            executionCandidates += discovered
+                        } else {
+                            diagnostics += ScanDiagnostic(candidate, "BS dynamic stream-ID discovery失敗 result=${discovery.resultCode} message=${discovery.message}")
+                        }
+                    }
+                    BsCandidateSource.STATIC_TSID_TABLE -> {
+                        executionCandidates += JapanIsdbScanPlan.staticBsCandidatesFor(candidate)
+                    }
+                    null -> error("BS候補sourceが確定していません")
                 }
             } else {
                 executionCandidates += candidate
