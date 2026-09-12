@@ -20,13 +20,17 @@ data class ScanCandidate(
     val satelliteBand: String? = null,
     val kind: ScanCandidateKind =
         when (deliverySystem) {
-            ChannelRecord.DELIVERY_SYSTEM_ISDB_T -> ScanCandidateKind.ISDB_T_UHF
-            else ->
+            ChannelRecord.DELIVERY_SYSTEM_ISDB_T -> {
+                ScanCandidateKind.ISDB_T_UHF
+            }
+
+            else -> {
                 if (satelliteBand == "110CS") {
                     ScanCandidateKind.ISDB_S_110CS
                 } else {
                     ScanCandidateKind.ISDB_S_BS
                 }
+            }
         },
 ) {
     init {
@@ -191,8 +195,7 @@ object JapanIsdbScanPlan {
             .toCollection(linkedSetOf())
     }
 
-    fun staticBsCandidatesFor(seed: ScanCandidate): List<ScanCandidate> =
-        explicitBsCandidatesFromScan(seed, staticBsStreamIdsFor(seed))
+    fun staticBsCandidatesFor(seed: ScanCandidate): List<ScanCandidate> = explicitBsCandidatesFromScan(seed, staticBsStreamIdsFor(seed))
 
     fun explicitBsCandidatesFromScan(
         seed: ScanCandidate,
@@ -258,6 +261,5 @@ object JapanIsdbScanPlan {
         )
     }
 
-    fun defaultInitialScan(): List<ScanCandidate> =
-        isdbtUhf13To62() + isdbtCatvC13ToC63() + isdbsBsBands() + isdbs110CsBands()
+    fun defaultInitialScan(): List<ScanCandidate> = isdbtUhf13To62() + isdbtCatvC13ToC63() + isdbsBsBands() + isdbs110CsBands()
 }
