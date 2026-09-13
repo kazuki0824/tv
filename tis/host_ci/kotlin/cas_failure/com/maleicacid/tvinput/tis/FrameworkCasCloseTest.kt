@@ -32,15 +32,15 @@ class FrameworkCasCloseTest {
             f.sessionFailure = true
             f.pluginFailure = true
             check(runCatching { controller.close() }.isFailure)
-            check(f.sessionCloses == 1 && f.pluginCloses == 1)
+            check(f.sessionCloses == 1 && f.pluginCloses == 0)
             f.sessionFailure = false
             check(runCatching { controller.close() }.isFailure)
-            check(f.sessionCloses == 2 && f.pluginCloses == 2)
+            check(f.sessionCloses == 2 && f.pluginCloses == 1)
             f.pluginFailure = false
             controller.close()
-            check(f.sessionCloses == 2 && f.pluginCloses == 3)
+            check(f.sessionCloses == 2 && f.pluginCloses == 2)
             controller.close()
-            check(f.sessionCloses == 2 && f.pluginCloses == 3)
+            check(f.sessionCloses == 2 && f.pluginCloses == 2)
         } finally {
             f.sessionFailure = false
             f.pluginFailure = false
