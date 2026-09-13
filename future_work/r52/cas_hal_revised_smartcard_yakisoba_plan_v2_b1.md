@@ -1,64 +1,71 @@
-# CAS HAL 実装計画 改訂版 v3
-## AOSP Media CAS境界 + B25 SmartCard / Yakisoba / B1 SmartCard
+# CAS HAL 実装計画 改訂版 v4
+## AOSP Media CAS 境界 + B25 SmartCard / Yakisoba / B1 SmartCard
 
 ## 0. 設計原則
 
-AOSP公開面には標準 `IMediaCasService` / `ICas` だけを公開し、SmartCard、Yakisoba、credential取得、vendor IPC、KeySlotRegistry はvendor内部へ閉じる。AOSPが規定しない内部transport、slot table、retry方式を公開HAL契約へ昇格させない。
+AOSP 公開面には標準 `IMediaCasService` / `ICas` だけを公開し、SmartCard、Yakisoba、credential 取得、vendor IPC、KeySlotRegistry は vendor 内部へ閉じる。AOSP が規定しない内部 transport、slot table、retry 方式、generation/cookie の表現を公開 HAL 契約へ昇格させない。
 
-B25正式構成は `smartcard_only` / `yakisoba_only` / `prefer_smartcard_then_yakisoba`。B1は `smartcard_only` ECM-only。`yakisoba_only` は有効なB25構成でありSmartCard実装をadvertise条件にしない。
+B25 正式構成は `smartcard_only` / `yakisoba_only` / `prefer_smartcard_then_yakisoba`。B1 は `smartcard_only` ECM-only。`yakisoba_only` は有効な B25 構成であり、SmartCard 実装を advertise 条件にしない。
 
-ClearKeyはB25/B1 stateから分離したAOSP reference-compatible pathとして同じ `IMediaCasService/default` に合成する。Maleicacid固有profile/backend/key stateをClearKeyへ混在させない。
+ClearKey は B25/B1 state から分離した AOSP reference-compatible path として同じ `IMediaCasService/default` に合成する。Maleicacid 固有 profile/backend/key state を ClearKey へ混在させない。
 
-B25の規範は採用productで固定するARIB STD-B25日本語原本とする。本設計ではVersion 7.0を対象revisionとし、同時処理可能なスクランブル鍵/PID等の数値規定を本書へ複製せず、同revisionの該当条項をcapability gateのSSOTとして参照する。
+B25 の規範は採用 product で固定する ARIB STD-B25 日本語原本とする。本設計では Version 7.0 を対象 revision とし、同時処理可能なスクランブル鍵/PID 等の数値規定を本書へ複製せず、同 revision の該当条項を capability gate の SSOT として参照する。
 
-## 1. AOSP公開契約
+## 1. AOSP 公開契約
 
-`android.hardware.cas.IMediaCasService/default` を1個だけ公開し、同一CA system IDをbackend別に重複列挙しない。
+`android.hardware.cas.IMediaCasService/default` を1個だけ公開し、同一 CA system ID を backend 別に重複列挙しない。
 
-`enumeratePlugins()`、`isSystemIdSupported()`、`createPlugin()` は同じimmutable capability snapshotを使用し、同一service lifetime中に互いに矛盾する能力を返さない。
+`enumeratePlugins()`、`isSystemIdSupported()`、`createPlugin()` は同じ immutable capability snapshot を使用し、同一 service lifetime 中に互いに矛盾する能力を返さない。
 
-列挙されないsystem IDはAIDL transport成功のまま `isSystemIdSupported=false`、`isDescramblerSupported=false`、`createPlugin=null`、`createDescrambler=null` とする。
+列挙されない system ID は AIDL transport 成功のまま次を返す。
 
-B25/B1はMedia CAS側descramblerを公開せず、packet descrambleはTuner HAL `IDescrambler`だけが所有する。ClearKeyはAOSP/VTS互換plugin/session/descrambler semanticsに従う。
+```text
+isSystemIdSupported      -> false
+isDescramblerSupported   -> false
+createPlugin             -> null
+createDescrambler        -> null
+```
 
-採用AIDLにdefault-session methodが存在する場合、そのB25/B1既定sessionは `LIVE + MULTI2` とする。明示 `openSession(intent, mode)` は本製品が成功対応する `LIVE + MULTI2` だけを受理し、それ以外は状態不変のまま `ERROR_CAS_CANNOT_HANDLE` とする。AIDL revisionに存在しないmethodをvendor独自AIDLとして追加しない。
+B25/B1 は Media CAS 側 descrambler を公開せず、packet descramble は Tuner HAL `IDescrambler` だけが所有する。ClearKey は AOSP/VTS 互換 plugin/session/descrambler semantics に従う。
+
+採用 AIDL に default-session method が存在する場合、その B25/B1 既定 session は `LIVE + MULTI2` とする。明示 `openSession(intent, mode)` は本製品が成功対応する `LIVE + MULTI2` だけを受理し、それ以外は状態不変のまま `ERROR_CAS_CANNOT_HANDLE` とする。AIDL revision に存在しない method を vendor 独自 AIDL として追加しない。
 
 ## 2. capability profile / advertise gate
 
-capability profileはvendor imageで固定し、service起動時に1回だけsnapshot化する。runtime property、TIS入力、card挿抜、daemon healthで変更しない。入力のpath/serializationは内部実装だが、欠落・不正・重複・未知値をstrictに検出し、該当B25/B1 capabilityだけを非広告にする。ClearKeyには影響させない。
+capability profile は vendor image で固定し、service 起動時に1回だけ snapshot 化する。runtime property、TIS 入力、card 挿抜、daemon health で変更しない。入力の path/serialization は内部実装だが、欠落・不正・重複・未知値を検出し、該当 B25/B1 capability だけを非広告にする。ClearKey には影響させない。
 
-B25共通gate:
+B25 共通 gate:
 
 ```text
 - ICas lifecycle / AOSP status contract
 - ECM / EMM complete-section input contract
 - MediaCas session ID -> Tuner token bridge
-- complete MULTI2 context atomic publish / stable slot rotation
-- revoke / stale token拒否
-- ARIB STD-B25 Version 7.0 の同時key/PID処理能力条項を満たす
-- TIS -> MediaCas -> Tuner結合確認
+- complete MULTI2 material の atomic publish / stable-slot rotation
+- revoke / stale-token rejection
+- ARIB STD-B25 Version 7.0 の同時 key/PID 処理能力条項を満たす
+- TIS -> MediaCas -> Tuner 結合確認
 ```
 
-内部slot/PID table上限は実装詳細でよいが、B25を広告するproductのeffective capacityはARIB条項を下回ってはならない。
+内部 slot/PID table 上限は実装詳細でよいが、B25 を広告する product の effective capacity は ARIB 条項を下回ってはならない。
 
-profile別gate:
+profile 別 gate:
 
-- `smartcard_only`: SmartCard path、credential初期化、ECM/EMM、timeout、card抜去、close。
-- `yakisoba_only`: Yakisoba daemon/path、ECM/EMM、credential/access control、bounded authenticated IPC、timeout/切断/close、配布条件。
-- `prefer_smartcard_then_yakisoba`: 上記両gate + backend bind判定 + timeout非fallback。
+- `smartcard_only`: SmartCard path、credential 初期化、ECM/EMM、timeout、card 抜去、close。
+- `yakisoba_only`: Yakisoba daemon/path、ECM/EMM、credential/access control、bounded IPC、timeout/切断/close、配布条件。
+- `prefer_smartcard_then_yakisoba`: 上記両 gate + backend bind 判定 + timeout 非 fallback。
 
-したがって `yakisoba_only` build はSmartCard未搭載でもB25を広告できる。Yakisoba側gate未成立imageはB25を広告しない。
+したがって `yakisoba_only` build は SmartCard 未搭載でも B25 を広告できる。Yakisoba 側 gate 未成立 image は B25 を広告しない。
 
-B1 gateはB1 SmartCard ECM、B1 EMM明示拒否、Yakisoba非選択、generic MULTI2 key publish/rotation/revoke、closeの確認とする。
+B1 gate は B1 SmartCard ECM、B1 EMM 明示拒否、Yakisoba 非選択、generic MULTI2 key publish/rotation/revoke、close の確認とする。
 
 ## 3. B25 backend binding / plugin-wide ordering
 
-`ICas.processEmm()` はsession IDを持たないため、backendをsession単位に選択しない。各B25 plugin generationは `Unbound | SmartCard | Yakisoba` のbindingを1個だけ所有し、commit後はreleaseまで変更しない。全session、EMM、credential contextは同じbackendを使う。
+`ICas.processEmm()` は session ID を持たないため、backend を session 単位に選択しない。各 B25 plugin instance は `Unbound | SmartCard | Yakisoba` の binding を1個だけ所有し、commit 後は release まで変更しない。全 session、EMM、credential context は同じ backend を使う。
 
-binding選択はplugin ownerがatomicに直列化する。同時に複数の最初のbackend-dependent operationが到達してもprobe/bind transactionは1個だけ実行し、他operationはそのcommit結果または同じ失敗結果を観測する。半端なbindingを公開しない。
+binding 選択は plugin owner が atomic に直列化する。同時に複数の最初の backend-dependent operation が到達しても probe/bind transaction は1個だけ実行し、他 operation はその確定結果を観測する。半端な binding を公開しない。
 
-- `smartcard_only`: plugin生成時にSmartCardへbind。card不在等は操作失敗としYakisobaへ切り替えない。
-- `yakisoba_only`: plugin生成時にYakisobaへbind。SmartCard probeを行わずdaemon障害時もSmartCardへ切り替えない。
+- `smartcard_only`: plugin 生成時に SmartCard へ bind。card 不在等は操作失敗とし Yakisoba へ切り替えない。
+- `yakisoba_only`: plugin 生成時に Yakisoba へ bind。SmartCard probe を行わず daemon 障害時も SmartCard へ切り替えない。
 - `prefer_smartcard_then_yakisoba`: 最初の `openSession*()` または `processEmm()` で1回だけ判定する。
 
 ```text
@@ -68,13 +75,13 @@ CARD_ABSENT / CARD_INVALID / CARD_UNSUPPORTED
 CARD_UNKNOWN_TIMEOUT                            -> operation失敗、Unbound維持
 ```
 
-binding前timeoutではfallbackしない。binding後backend failureでも同plugin内でcross-backend fallbackしない。再判定にはpluginをreleaseして新plugin generationを作る。
+binding 前 timeout では fallback しない。binding 後 backend failure でも同 plugin 内で cross-backend fallback しない。再判定には現在の plugin を release して新しい plugin instance を生成する。
 
-`setPrivateData()`、backend binding、`processEmm()` はplugin-global stateとのorderingを持つ。binding transactionはprivate-data versionをsnapshotし選択backendへ適用してからcommitする。binding/private-data update競合後もbackendとplugin-local値を同じcommitted versionにする。
+`setPrivateData()`、backend binding、`processEmm()` は plugin-global state と一貫した ordering を持つ。binding は committed private-data snapshot を選択 backend へ適用してから確定し、同時更新と競合しても plugin-local state と backend state が異なる成功状態を公開しない。version counter の有無や形式は実装詳細とする。
 
-backendはEMMによるentitlement/work-key更新とECM処理の間にlinearizableなorderingを提供する。SmartCardではphysical card I/O serializationで、Yakisobaではdaemon内部state synchronizationで、ECMが半端なEMM更新stateを観測しないようにする。特定のthread/queue方式は規定しない。
+backend は EMM による entitlement/work-key 更新と ECM 処理の間に linearizable な ordering を提供し、ECM が半端な EMM 更新 state を観測しないようにする。SmartCard では card I/O serialization、Yakisoba では daemon 内部同期等で実現できるが、特定 thread/queue/version 方式を必須にしない。
 
-plugin/session/provider generationはwrap/reuseしない。次generationを安全に発行できない場合は新plugin/sessionを公開せずfail-closedとする。
+stale plugin/session operation が現行 state を上書きしてはならない。実装は object identity、opaque cookie、counter 等を利用してよいが、特定 generation field や no-wrap counter を公開・内部 resource の必須形式にしない。
 
 ## 4. lifecycle / concurrency / cleanup
 
@@ -91,55 +98,53 @@ Opening -> Active -> Closing -> Closed
                  \-> Failed -> Closing -> Closed
 ```
 
-`Closing` / `Releasing` はcallerから見て既に通常利用不能であり、key revoke確定待ちを表す。backend物理cleanupだけが残る場合は `Closed` / `Released` へ進め、別のservice-owned `CleanupPending` として保持できる。
+`Closing` / `Releasing` は caller から見て通常利用不能であり、key revoke 確定待ちを表す。backend 物理 cleanup だけが残る場合は `Closed` / `Released` へ進め、service-owned cleanup state として保持できる。cleanup worker/timer の具体方式は規定しない。
 
-`Opening` ではno-reuse session ID、registry reservation、backend open、private data適用をprepareし、全て成功した時だけActive session IDを公開する。
+`Opening` では collision-safe session ID、registry reservation、backend open、private data 適用を prepare し、全て成功した場合だけ Active session ID を公開する。
 
-各sessionはmutating backend I/Oを1件だけin-flightにする。外部I/O開始前にsession generation/lifecycleをsnapshotし、lockを外してI/Oし、応答後に同じgenerationがActiveであることを再検証してからprivate data/key epochをcommitする。
+各 session は mutating backend I/O を1件だけ in-flight にするか、同等の stale-completion 排除を行う。外部 I/O 開始前の session identity/lifecycle と、応答後の current state が一致し Active のままであることを確認してから private data/key material を commit する。
 
-close/releaseがI/O中に到達した場合は先にClosing/Releasingへ遷移して新規I/Oを遮断する。進行中I/Oのownerが結果を回収するまで内部recordを保持し、Closing/Releasing後に遅れて返ったECM/key結果をregistryへpublishしない。
+close/release が I/O 中に到達した場合は先に Closing/Releasing へ遷移して新規 I/O を遮断する。遅れて返った ECM/key 結果を Closed/Releasing state や別 session の registry slot へ publish しない。
 
-`processEmm()` はplugin-wide operationなので同一pluginで1件だけin-flightにする。release後に遅れて返った結果を新しいlive stateへ反映しない。
+`processEmm()` は plugin-wide mutation として他の EMM/backend-global state mutation と整合した ordering を持つ。release 後に遅れて返った結果を live state へ反映しない。
 
 ### 4.1 closeSession
 
-最初の `closeSession()` はsessionをClosingへ遷移させ、以後の通常session operationを拒否する。tokenの新規resolve revokeを確定できたらcaller-visible sessionをClosedへ進める。
+最初の `closeSession()` は session を Closing へ遷移させ、以後の通常 session operation を拒否する。token の新規 resolve revoke を確定できたら caller-visible session を Closed へ進める。
 
-- revoke未確定: close成功にしない。Closingを保持し、同じsessionへの後続 `closeSession()` またはservice-owned cleanupがrevokeを再試行する。
-- revoke確定後のbackend close失敗: caller-visible sessionはClosedのまま。backend cleanupだけを `CleanupPending` として再試行し、sessionをActiveへ戻さない。
-- Closed到達後の通常session operationは `ERROR_CAS_SESSION_NOT_OPENED`。
+- revoke 未確定: close 成功にしない。Closing を保持し、後続 `closeSession()` または service-owned cleanup が revoke を再試行する。
+- revoke 確定後の backend close 失敗: caller-visible session は Closed のまま。backend cleanup だけを継続し、session を Active へ戻さない。
+- Closed 到達後の通常 session operation は `ERROR_CAS_SESSION_NOT_OPENED`。
 
-close成功確定点はLogical close + token新規resolve revokeであり、backend物理close完了をBinder成功の必須条件にしない。ただしbackend closeは毎回全件試行し、失敗を診断/cleanup ownerへ引き渡す。
+close 成功確定点は logical close + token 新規 resolve revoke であり、backend 物理 close 完了を Binder 成功の必須条件にしない。
 
 ### 4.2 release
 
-最初の `release()` はpluginをReleasingへ遷移させ、新規method/callback deliveryを遮断し、全session tokenの新規resolve revokeを試行する。
+最初の `release()` は plugin を Releasing へ遷移させ、新規 method/callback delivery を遮断し、全 session token の新規 resolve revoke を試行する。
 
-- token revoke未確定entryが残る: release成功にせずReleasingを保持し、後続 `release()` / service-owned cleanupでrevokeを再試行する。
-- 全token revoke確定: Releasedへ進み、backend close失敗が残っていてもcaller-visible objectを再live化しない。物理cleanupはservice-owned `CleanupPending` で継続する。
-- Released後の `release()` はidempotentに成功してよい。その他通常methodは `ERROR_CAS_INVALID_STATE`。
+- token revoke 未確定 entry が残る: release 成功にせず Releasing を保持し、後続 `release()` / service-owned cleanup で revoke を再試行する。
+- 全 token revoke 確定: Released へ進み、backend close 失敗が残っていても caller-visible object を再 live 化しない。物理 cleanup は service-owned state で継続する。
+- Released 後の `release()` は idempotent に成功してよい。その他通常 method は `ERROR_CAS_INVALID_STATE`。
 
-AOSP referenceのrelease同様、backend recovery完了までBinder objectをliveに保つ設計にはしない。一方、外部key registryを持つ本構成ではsecurity boundaryであるtoken revokeだけはrelease成功前に確定させる。
+AOSP reference の release と同様、backend recovery 完了まで Binder object を live に保つ設計にはしない。一方、外部 key registry を持つ本構成では token の新規 resolve 遮断だけは release 成功前に確定させる。
 
-Binder artifact消滅後もReleasing/CleanupPending stateはservice寿命ownerが保持するが、worker/timer構成は実装詳細とする。
-
-live plugin/sessionとReleasing/CleanupPending ownershipの総量は有限にboundする。具体的な数値上限はproduct capacityとARIB gateを満たす実装詳細とするが、新しいplugin/sessionを受理すると上限を超える場合はbackend mutation前に `ERROR_CAS_RESOURCE_BUSY` として拒否し、cleanup失敗による無制限なstate増加を許さない。
+live plugin/session と未完了 cleanup ownership の総量は有限に bound する。具体的数値は product capacity と ARIB gate を満たす実装詳細とし、新規受理で安全に管理できる範囲を超える場合は backend mutation 前に `ERROR_CAS_RESOURCE_BUSY` として拒否する。
 
 ## 5. ICas method / input / error contract
 
-method成功確定点:
+method 成功確定点:
 
-- `setPrivateData()`: plugin-local値と、binding済みならbackend値のcommit完了。失敗時は旧値維持。
-- `setSessionPrivateData()`: backend成功後、generation/lifecycle再検証を通ってsession stateをcommit。失敗時は旧値維持。
-- `openSession*()`: backend open + registry reservation後にActive session ID公開。
-- `processEcm()`: backend応答後のgeneration/lifecycle再検証を通り、完全な新epochをstable slotへatomic publishし、既link descramblerを含め同session IDから新epoch取得可能。
-- `processEmm()`: bind済みB25 backendが成功し、release競合がないことを再検証。別backendへfallbackしない。
-- `closeSession()`: Closing→Closedに必要なtoken revoke確定。backend cleanupを全件起動済み。
-- `release()`: Releasing→Releasedに必要な全token revoke確定。backend cleanupを全件起動済み。
+- `setPrivateData()`: plugin-local 値と、binding 済みなら backend 値が同じ committed state になった時点。失敗時は旧値維持。
+- `setSessionPrivateData()`: backend 成功後、対象 session がまだ current Active session であることを確認して state を commit。失敗時は旧値維持。
+- `openSession*()`: backend open + registry reservation 後に Active session ID 公開。
+- `processEcm()`: backend 応答後の current-session/lifecycle 再確認を通り、complete new material を stable slot へ atomic publish し、既 link descrambler を含め同 session ID から取得可能になった時点。
+- `processEmm()`: bind 済み B25 backend が成功し、release 競合がないことを確認した時点。別 backend へ fallback しない。
+- `closeSession()`: Closing→Closed に必要な token revoke 確定。
+- `release()`: Releasing→Released に必要な全 token revoke 確定。
 
-ECM/EMMは完全なsection byte sequenceとしてCASへ渡す。TS packet、PID、demux bufferをCAS HALへ渡さない。empty、section framing/declared length不整合、対象CA systemとして処理不能な外形はbackend I/O前に拒否する。
+ECM/EMM は complete section byte sequence として CAS へ渡す。TS packet、PID、demux buffer を CAS HAL へ渡さない。empty、section framing/declared length 不整合、対象 CA system として処理不能な外形は backend I/O 前に拒否する。
 
-B1 `processEmm()`、B25/B1 `provision()`、`refreshEntitlements()`、未定義vendor eventは `ERROR_CAS_CANNOT_HANDLE` とする。
+B1 `processEmm()`、B25/B1 `provision()`、`refreshEntitlements()`、未定義 vendor event は `ERROR_CAS_CANNOT_HANDLE` とする。
 
 error mapping:
 
@@ -158,61 +163,78 @@ resource/concurrency exhaustion          -> ERROR_CAS_RESOURCE_BUSY
 その他の未知内部失敗                     -> ERROR_CAS_UNKNOWN
 ```
 
-backendがAOSP専用statusを判定できる場合は `ERROR_CAS_DEVICE_REVOKED`、`ERROR_CAS_NEED_ACTIVATION`、`ERROR_CAS_NEED_PAIRING` 等へ対応付けUNKNOWNへ潰さない。未実装を成功へ丸めない。
+backend が AOSP 専用 status を判定できる場合は `ERROR_CAS_DEVICE_REVOKED`、`ERROR_CAS_NEED_ACTIVATION`、`ERROR_CAS_NEED_PAIRING` 等へ対応付け UNKNOWN へ潰さない。未実装を成功へ丸めない。
 
-listenerはstate commit後かつ内部lock外で呼ぶ。listener failureでcommit済みstateをrollbackしない。現設計ではvendor scheme event番号を定義しないため、診断目的だけで `onEvent()` / `onSessionEvent()` を合成しない。将来AOSP listener methodを使用する場合はそのAIDL引数契約をそのまま守り、`onSessionEvent()` では正規のsession IDを渡す。ECM/EMM本文、private data、raw/prepared key materialをlistener dataへ含めない。
+listener は state commit 後かつ内部 lock 外で呼ぶ。listener failure で commit 済み state を rollback しない。現設計では vendor scheme event 番号を定義しないため、診断目的だけで `onEvent()` / `onSessionEvent()` を合成しない。AOSP listener method を使用する場合は AIDL 引数契約をそのまま守り、ECM/EMM 本文、private data、raw/prepared key material を listener data へ含めない。
 
 ## 6. SmartCard path
 
-同一physical cardへのI/Oは単一ownerが直列化し、card I/O lock中にBinder callbackを呼ばない。open/reset/APDUは有限deadlineを持つ。
+同一 physical card への I/O は単一 owner が直列化するか、同等に card state mutation の順序を一意化する。card I/O lock 中に Binder callback を呼ばない。open/reset/APDU は有限 deadline を持つ。
 
-binding前probe timeoutは `CARD_UNKNOWN_TIMEOUT` としてfallbackしない。binding後にrequestを送信して結果不明となったsessionはFailedとして新規処理を遮断し、token revoke/closeへ進む。同pluginでYakisobaへ切り替えない。
+binding 前 probe timeout は `CARD_UNKNOWN_TIMEOUT` として fallback しない。binding 後に request を送信して結果不明となった session は Failed として新規処理を遮断し、token revoke/close へ進む。同 plugin で Yakisoba へ切り替えない。
 
-bind済みSmartCardの抜去または恒久的card invalidationを検出した場合、そのcard/backend generationに依存するActive sessionをFailedへ遷移させ、新規resolveをrevokeする。同plugin内でYakisobaへ切り替えない。後続の新sessionを同じSmartCard bindingで受理する場合は、card probe/reset/credential初期化を再実行して新sessionとして成立させる。
+bind 済み SmartCard の抜去または恒久的 card invalidation を検出した場合、その card state に依存する Active session を Failed へ遷移させ、新規 resolve を revoke する。同 plugin 内で Yakisoba へ切り替えない。後続の新 session を同じ SmartCard binding で受理する場合は、card probe/reset/credential 初期化を再実行して新 session として成立させる。
 
-B25 system key/CBC初期値は検証済みcard初期化応答から取得する。B1は採用B1 protocolの検証済み応答から供給元を確定し、B25配置を推測して流用しない。
+B25 system key/CBC 初期値は検証済み card 初期化応答から取得する。B1 は採用 B1 protocol の検証済み応答から供給元を確定し、B25 配置を推測して流用しない。
+
+SmartCard I/O component は product の権限分離要件に応じて CAS service 内または別 vendor privilege domain に置ける。別 domain に分離する場合は CAS service へ不要な card-reader device access を付与せず、adapter 側へ必要最小限の権限を与える。別 process/socket 自体を AOSP 要件として必須化しない。
 
 ## 7. Yakisoba path
 
-CAS HALはlibyakisobaへ直接linkせず、vendor partition内の別daemonへB25 ECM/EMMをvendor-local IPCで要求する。B1 requestは拒否する。daemon endpoint/credentialを一般app、TIS、Tuner HAL、shellへ公開しない。
+CAS HAL は libyakisoba へ直接 link せず、vendor partition 内の別 daemon へ B25 ECM/EMM を vendor-local IPC で要求する。B1 request は拒否する。daemon endpoint/credential を一般 app、TIS、Tuner HAL、shell へ公開しない。
 
-IPCはversion/operation/B25 identity検証、request ID照合、session/plugin generationによるstale判定、bounded frame、peer credential/SELinux domain検証、connect/write/readを含むdeadline、malformed/mismatched response拒否、秘密情報の通常log禁止を満たす。wire byte layout/magic値は内部実装とし、CAS serviceとdaemonで共通定義を使う。
+IPC は次の意味契約を満たす。
 
-送信0 byteが確定した失敗だけをoperation未開始として扱う。1 byte以上送信後のtimeout/切断/response不整合はoutcome unknownとして自動再送・別backend fallbackをしない。
+```text
+- protocol version / operation / B25 identity を検証する
+- request と response を一意に対応付け、別requestのresponseを受理しない
+- stale session/plugin request を current state として受理しない
+- request/response sizeをboundedにする
+- 未許可主体がdaemonへ接続・mutationできないようにする
+- connect/write/readを含む有限deadlineを持つ
+- malformed/mismatched responseを成功へ丸めない
+- raw key / ECM / EMM / credentialを通常logへ出さない
+```
 
-- open outcome unknown: 同じsession identityをidempotent closeしsession IDを公開しない。
-- ECM outcome unknown: sessionをFailed、registry publishなし、revoke/close。
-- EMM outcome unknown: `ERROR_CAS_INVALID_STATE`、自動再送なし、binding維持。
+IPC access-control は product の threat model と Android process 構成に応じ、SELinux domain、socket ownership、peer credential 等の必要な仕組みで実現する。SELinux と peer credential の両方を無条件の必須条件にはしない。必要なのは許可された CAS service 以外が接続・mutationできないことである。
 
-Yakisoba closeは同じsession identityについて未作成/終了済みでもidempotentに扱う。`yakisoba_only` はSmartCard probeを行わず、daemon/credential一時利用不能時もdescriptor集合を変えず操作失敗とする。
+送信 0 byte が確定した失敗だけを operation 未開始として扱う。1 byte 以上送信後の timeout、切断、response 不整合は outcome unknown として自動再送・別 backend fallback をしない。
 
-Yakisoba daemonのdeath/restartを検出した場合、旧daemon incarnationに依存するActive sessionをFailedへ遷移させ、新規resolveをrevokeする。同plugin内でSmartCardへ切り替えない。後続の新sessionを同じYakisoba bindingで受理する場合は新daemon incarnationとのhandshakeとcommitted plugin private dataの再適用を完了してからopenする。旧sessionを新daemon incarnationへ引き継がない。
+- open outcome unknown: 同じ session identity を idempotent close し session ID を公開しない。
+- ECM outcome unknown: session を Failed、registry publish なし、revoke/close。
+- EMM outcome unknown: `ERROR_CAS_INVALID_STATE`、自動再送なし、binding 維持。
 
-Yakisobaから受領したkey materialはregistry commitに必要な最短寿命だけ保持し、一時response/encode bufferはcommitまたは失敗後にzeroizeする。
+Yakisoba close は同じ session identity について未作成/終了済みでも idempotent に扱う。`yakisoba_only` は SmartCard probe を行わず、daemon/credential 一時利用不能時も descriptor 集合を変えず操作失敗とする。
+
+Yakisoba daemon の death/restart を検出した場合、旧 daemon state に依存する Active session を Failed へ遷移させ、新規 resolve を revoke する。同 plugin 内で SmartCard へ切り替えない。後続の新 session を同じ Yakisoba binding で受理する場合は、新 daemon との接続確立と committed plugin private data の再適用を完了してから open する。旧 session を新 daemon へ引き継がない。restart/stale-owner の識別方式は connection lifetime、opaque cookie、service manager state 等の実装詳細とする。
+
+Yakisoba から受領した key material は registry commit に必要な最短寿命だけ保持し、一時 response/encode buffer は commit または失敗後に zeroize する。
 
 ## 8. KeySlotRegistry / Tuner boundary
 
-B25鍵詳細は `future_work/r52/b25_key_slot_registry_contract.md` を正本とする。B1もTuner側では同じgeneric MULTI2 stable-slot resourceとtoken lifetime/revoke規則を再利用し、B1 protocol/credential意味はCAS側adapterに閉じる。Tuner HALへB25/B1識別を要求しない。
+B25 鍵詳細は `future_work/r52/b25_key_slot_registry_contract.md` を正本とする。B1 も Tuner 側では同じ generic MULTI2 stable-slot semantics と token lifetime/revoke 規則を再利用し、B1 protocol/credential 意味は CAS 側 adapter に閉じる。Tuner HAL へ B25/B1 識別を要求しない。
 
-B25/B1公開Tuner tokenは `MediaCas.Session.getSessionId()` bytesそのものとし、1..16 bytes、opaque、raw key非包含、service process lifetime中no-reuseとする。ECM成功前はunresolvedでよく、ECM成功時はcomplete current epochを同session IDのstable linkから取得可能にする。close/release/provider death/fatal failureでは新規resource取得をrevokeする。
+B25/B1 公開 Tuner token は `MediaCas.Session.getSessionId()` bytes そのものとし、1..16 bytes、opaque、raw key 非包含とする。token は live/retired linkage が残る間は別 session へ再割当てしない。process lifetime 全体で no-reuse にする実装を選んでもよいが、必須契約にはしない。
 
-TISはbackend種別を解釈しない。Tuner HALはtoken→stable slot linkage、current resource取得、PID linkage、TS payload-only MULTI2だけを担当する。
+ECM 成功前は unresolved でよく、ECM 成功時は complete current material を同 session ID の stable link から取得可能にする。close/release/backend owner loss/fatal failure では新規 resource 取得を revoke する。
 
-MediaCas由来tokenを保持する全descramblerで `setKeyToken(VOID)` が成功した後にMediaCas sessionをcloseする。VOID成功を新規packet利用停止のlinearization pointとし、既取得内部key参照はdrain後zeroizeする。追加framework APIは導入しない。
+TIS は backend 種別を解釈しない。Tuner HAL は token→stable slot linkage、current material 取得、PID linkage、TS payload-only MULTI2 だけを担当する。
 
-具体的な `Reserve/Publish/Revoke` API名、TTL、slot上限、wire magic、retry回数は内部実装選択であり必須設計にしない。ただしeffective capacityは第2節ARIB gateを満たす。
+MediaCas 由来 token を保持する全 descrambler で `setKeyToken(VOID)` が成功した後に MediaCas session を close する。VOID 成功を新規 packet 利用停止の linearization point とし、既取得内部 key 参照は drain 後 zeroize する。追加 framework API は導入しない。
+
+具体的な `Reserve/Publish/Revoke` API 名、owner/generation counter、key epoch、TTL、slot 上限、wire magic、retry 回数は内部実装選択であり必須設計にしない。ただし effective capacity は第2節 ARIB gate を満たす。
 
 ## 9. product integration / license
 
-CAS service、SmartCard adapter、Yakisoba daemon、Tuner key bridgeはvendor partition内に置き、各processへ必要なSELinux permissionだけを与える。SmartCard adapterを別privilege domainに置く構成では、CAS serviceへcard reader device accessを直接付与せずadapterだけへ最小権限を与える。
+CAS service と Tuner key bridge は vendor 側へ閉じ、各 process/component へ必要な permission だけを与える。
 
-- `yakisoba_only`: Yakisoba daemon + credential + sepolicy + license成果物。SmartCard adapter不要。
-- `smartcard_only`: SmartCard adapter。Yakisoba daemon不要。
-- `prefer_smartcard_then_yakisoba`: 両backend。
+- `yakisoba_only`: Yakisoba daemon + credential + access-control policy + license 成果物。SmartCard component 不要。
+- `smartcard_only`: SmartCard path/component。Yakisoba daemon 不要。
+- `prefer_smartcard_then_yakisoba`: 両 backend。
 
-libyakisobaを同梱・改変する場合は採用revisionのGPL-3.0配布条件を満たす。daemon分離をGPL義務消滅の根拠にしない。B1参照実装を移植/linkする場合は採用revisionのlicense条件を固定する。
+libyakisoba を同梱・改変する場合は採用 revision の GPL-3.0 配布条件を満たす。daemon 分離を GPL 義務消滅の根拠にしない。B1 参照実装を移植/link する場合は採用 revision の license 条件を固定する。
 
-module名、socket path、wire field値等の内部名称はAOSP公開契約にせず採用実装内で一意に定義する。
+module 名、socket path、wire field 値、owner cookie/generation の形式等の内部名称・表現は AOSP 公開契約にせず採用実装内で一意に定義する。
 
 ## 10. validation
 
@@ -232,40 +254,43 @@ module名、socket path、wire field値等の内部名称はAOSP公開契約に�
 - revoke成功後backend close失敗時はClosed/Released維持 + cleanup retry
 - bounded admission / cleanup accumulation
 - release idempotence / post-release invalid-state
-- AOSP listener sessionId契約 / secret非露出
+- AOSP listener引数契約 / secret非露出
 - SmartCard抜去時session revoke
 - Yakisoba daemon restart時、旧session revoke + 新session再初期化
+- Yakisoba IPC access-controlを選択した機構で実証
 - listener failureでcommit済みstate非rollback
 - Yakisoba outcome-unknown / temporary-key zeroize
-- provider death revoke
+- backend owner loss時のstale mutation拒否
 - ARIB STD-B25 Version 7.0の同時key/PID能力gate
 - stable link上の連続ECM key rotation
+- stale ECM completionがcurrent materialを上書きしない
 - token revoke/ref drain/zeroize
 - VOID token -> MediaCas close
 ```
 
 ## 11. 最終固定事項
 
-1. `IMediaCasService/default` は1個だけ公開し、capability query/createは同一snapshotを使う。
-2. ClearKeyをB25/B1能力から分離する。
-3. B25は3profileを正式構成とし、`yakisoba_only` のadvertiseにSmartCard完成を要求しない。
-4. B1はSmartCard ECM-onlyとする。
-5. capability profileはimage固定・service lifetime中不変とする。
-6. backend差をAOSP descriptorへ露出しない。
-7. B25 backendはplugin generation単位でatomicに一度だけbindし全session/EMMで共有する。
-8. binding前SmartCard timeoutではfallbackしない。
-9. binding後backend failureでは同pluginを別backendへ切り替えない。
-10. packet descrambleはTuner HALだけが所有する。
-11. generationをwrap/reuseせず、mutating I/O後にgeneration/lifecycleを再検証してからcommitする。
-12. close/releaseと競合した遅延I/O結果をpublishしない。
-13. key revoke未確定とbackend物理cleanup失敗を区別し、revoke済みobject/sessionをcleanup失敗で再live化しない。
-14. live/cleanup ownershipをboundedにし、上限超過前にRESOURCE_BUSYでadmissionを拒否する。
-15. listener failureでcommit済みstateをrollbackせず、AOSP listenerの必須引数契約は狭めない。
-16. backend I/Oはboundedとし送信後結果不明を成功/fallbackへ丸めない。
-17. Tuner tokenはMediaCas session ID bytesでservice process lifetime中再利用しない。
-18. provider/backend deathでは影響sessionの新規resource取得を遮断する。
-19. `processEcm()`成功時にstable linkからcomplete current epochを取得可能にする。
-20. MediaCas close前にMediaCas由来tokenを全descramblerからVOIDで解除する。
-21. raw key materialをBinder、TIS、通常logへ出さない。
-22. B25 advertise時のeffective key/PID capacityはARIB STD-B25 Version 7.0の対象条項を満たす。
-23. CAS HALはTS demux / AV / DVRを担当しない。
+1. `IMediaCasService/default` は1個だけ公開し、capability query/create は同一 snapshot を使う。
+2. ClearKey を B25/B1 能力から分離する。
+3. B25 は3 profile を正式構成とし、`yakisoba_only` の advertise に SmartCard 完成を要求しない。
+4. B1 は SmartCard ECM-only とする。
+5. capability profile は image 固定・service lifetime 中不変とする。
+6. backend 差を AOSP descriptor へ露出しない。
+7. B25 backend は plugin instance 単位で atomic に一度だけ bind し全 session/EMM で共有する。
+8. binding 前 SmartCard timeout では fallback しない。
+9. binding 後 backend failure では同 plugin を別 backend へ切り替えない。
+10. packet descramble は Tuner HAL だけが所有する。
+11. stale operation/completion を current state として commit しない。識別方式は実装詳細とする。
+12. close/release と競合した遅延 I/O 結果を publish しない。
+13. key revoke 未確定と backend 物理 cleanup 失敗を区別し、revoke 済み object/session を cleanup 失敗で再 live 化しない。
+14. live/cleanup ownership を bounded にし、安全に管理できる範囲を超える新規受理を RESOURCE_BUSY で拒否する。
+15. listener failure で commit 済み state を rollback せず、AOSP listener の引数契約を狭めない。
+16. backend I/O は bounded とし送信後結果不明を成功/fallback へ丸めない。
+17. Tuner token は stale linkage が残る間、別 session へ再割当てしない。
+18. backend owner loss では影響 session の新規 resource 取得を遮断し、旧 owner の後着 mutation を拒否する。
+19. `processEcm()` 成功時に stable link から complete current material を取得可能にする。
+20. MediaCas close 前に MediaCas 由来 token を全 descrambler から VOID で解除する。
+21. raw key material を Binder、TIS、通常 log へ出さない。
+22. B25 advertise 時の effective key/PID capacity は ARIB STD-B25 Version 7.0 の対象条項を満たす。
+23. CAS HAL は TS demux / AV / DVR を担当しない。
+24. provider incarnation、key epoch、peer credential+SELinux の二重適用等の具体方式を、必要な意味契約より強い必須条件として固定しない。
