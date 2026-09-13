@@ -1,9 +1,11 @@
-# maleicacid CAS HAL プレースホルダー
+# Maleicacid CAS HAL
 
-このディレクトリは CAS HAL の配置場所を確保するためのプレースホルダーを含む。
+このディレクトリは、ARIB STD-B25/B1をAndroid Media CASとTuner descramblerへ接続するvendor CAS HALを含む。
 
-ビルド対象は `maleicacid.tv.cas_hal-stub-service` と、プレースホルダー動作を確認する単体テストである。
+## 文書案内
 
-## 現行境界
+- 公開契約、session、SmartCard/Yakisoba経路、鍵registryは `DESIGN_JA.md` を参照する。
+- product、VINTF、init、SELinux、外部依存、ライセンス条件は `INTEGRATION.md` を参照する。
+- 変更履歴と未実行確認は `CHANGELOG.md` を参照する。
 
-このプレースホルダーは B25/B1 を含む全 CAS system id について plugin / descrambler を広告しない。現行仕様では本番CAS復号成功を表明しない。
+現行コードはproduction CAS serviceとCAS/Tuner鍵bridgeを実装している。実機SmartCard adapter、secure credential、SELinux、VTS、放送波を検証したproductだけがimmutable capability profileを同梱してB25/B1を広告し、profileがないimageはfail-closedで全CA system IDを非対応とする。

@@ -158,7 +158,7 @@ fn callback_artifact_registration_runtime_lock_failure_error(
         if let Err(record_error) = context
             .record_callback_artifact_runtime_split_finish_lock_failure(
                 CallbackArtifactRuntimeSplitDiagnosticRecord::owner(
-                    CallbackArtifactRuntimeSplitPhase::RegistrationRollbackFinish,
+                    CallbackArtifactRuntimeSplitPhase::RegistrationRollback,
                     command.owner_kind(),
                     command.owner_id(),
                     command.owner_generation(),
@@ -198,7 +198,7 @@ fn callback_registration_finish_runtime_lock_failure_error(
         if let Err(record_error) = context
             .record_callback_artifact_runtime_split_finish_lock_failure(
                 CallbackArtifactRuntimeSplitDiagnosticRecord::owner(
-                    CallbackArtifactRuntimeSplitPhase::RegistrationRollbackFinish,
+                    CallbackArtifactRuntimeSplitPhase::RegistrationRollback,
                     command.owner_kind(),
                     command.owner_id(),
                     command.owner_generation(),
@@ -235,7 +235,7 @@ pub(crate) fn finish_owner_callback_cleanup_outcome<T>(
         Err(runtime_error) => {
             return Err(callback_artifact_runtime_finish_lock_failure_error(
                 context,
-                CallbackArtifactRuntimeSplitPhase::OwnerCleanupFinish,
+                CallbackArtifactRuntimeSplitPhase::OwnerCleanup,
                 command,
                 &artifact_cleanup_result,
                 runtime_error,
@@ -290,7 +290,7 @@ fn finish_callback_registration_artifact_outcome(
             {
                 return Err(callback_artifact_runtime_finish_lock_failure_error(
                     context,
-                    CallbackArtifactRuntimeSplitPhase::RegistrationRollbackFinish,
+                    CallbackArtifactRuntimeSplitPhase::RegistrationRollback,
                     command,
                     artifact_result,
                     runtime_error,
@@ -948,7 +948,7 @@ impl<'a> AidlObjectArtifactCleanupExecutor<'a> {
             Err(runtime_error) => {
                 let error = callback_artifact_runtime_finish_lock_failure_error(
                     self.context,
-                    CallbackArtifactRuntimeSplitPhase::ObjectCloseCleanupFinish,
+                    CallbackArtifactRuntimeSplitPhase::ObjectCloseCleanup,
                     owner_command,
                     &artifact_result,
                     runtime_error,

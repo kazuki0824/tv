@@ -1713,7 +1713,13 @@ impl TunerServiceRuntime {
     ) -> Result<(), HalError> {
         self.registry
             .descrambler_key_table_mut()
-            .insert_test_key_slot(token, DescramblerKeySlotId(1), key_slot);
+            .insert_test_key_slot(token, DescramblerKeySlotId(1), key_slot)
+            .map_err(|_| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "test key provisioning failed",
+                )
+            })?;
         Ok(())
     }
 
@@ -2174,7 +2180,7 @@ impl TunerServiceRuntime {
         artifact_cleanup_result: Result<CallbackArtifactCleanupResult, HalError>,
     ) -> Result<(), HalError> {
         self.finish_owner_callback_cleanup_use_case_with_phase(
-            CallbackArtifactRuntimeSplitPhase::ObjectCloseCleanupFinish,
+            CallbackArtifactRuntimeSplitPhase::ObjectCloseCleanup,
             command,
             Ok(()),
             artifact_cleanup_result,
@@ -2196,7 +2202,7 @@ impl TunerServiceRuntime {
                     ))
                 });
                 self.finish_owner_callback_cleanup_use_case_with_phase(
-                    CallbackArtifactRuntimeSplitPhase::RegistrationRollbackFinish,
+                    CallbackArtifactRuntimeSplitPhase::RegistrationRollback,
                     command,
                     primary_result,
                     cleanup_result,
@@ -2205,7 +2211,7 @@ impl TunerServiceRuntime {
             None => match primary_result {
                 Ok(()) => Ok(()),
                 Err(artifact_error) => Err(self.record_callback_artifact_cleanup_split_failure(
-                    CallbackArtifactRuntimeSplitPhase::RegistrationRollbackFinish,
+                    CallbackArtifactRuntimeSplitPhase::RegistrationRollback,
                     &finish_command,
                     artifact_error,
                 )),
@@ -2635,7 +2641,7 @@ impl TunerServiceRuntime {
         artifact_cleanup_result: Result<CallbackArtifactCleanupResult, HalError>,
     ) -> Result<T, HalError> {
         self.finish_owner_callback_cleanup_use_case_with_phase(
-            CallbackArtifactRuntimeSplitPhase::OwnerCleanupFinish,
+            CallbackArtifactRuntimeSplitPhase::OwnerCleanup,
             command,
             primary_result,
             artifact_cleanup_result,

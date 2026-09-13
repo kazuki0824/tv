@@ -9,6 +9,12 @@
 - `FilterDelayHint`の時間起点を未通知`onFilterEvent()` batchの空→非空へ一本化し、Filter FMQ未読残量とは独立であることを明記した。
 - ARIB STD-B10 5.13-E1のtable定義5.2.4〜5.2.17の所属をPart 2へ訂正した。
 - production Rust codeは変更していない。Android/Soong build、VTS、実機確認は未実行。
+# r52-cas-design
+
+- CAS/Tuner内部鍵資源の正本参照を`future_work/r52`から`cas_hal/DESIGN_JA.md`へ移した。
+- Tuner tokenはMediaCas session ID bytesであり、generation/key epoch/key materialはCAS内部registryが所有する責務境界へ統一した。
+- 現行製品で採用しないMMTP/TLV高度放送の重複文書を`future_work/r52`から削除し、従来TS限定の現行契約を`DESIGN_JA.md`の正本だけで管理する形へ戻した。
+- この設計記録時点ではTuner HAL実装と各試験は未実施だった。後続のCAS/Tuner鍵bridge実装とRust unit testは`../tuner_hal2/CHANGELOG.md`の`r52_cas_key_bridge_implementation`を正とし、Android/Soong build、atest、VTS、実機確認は引き続きproduct gateとして残る。
 
 # r50eo51
 

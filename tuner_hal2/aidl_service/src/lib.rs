@@ -10,6 +10,8 @@ pub(crate) mod filter_callback_delivery;
 pub(crate) mod filter_object;
 pub(crate) mod frontend_callback_delivery;
 pub(crate) mod frontend_object;
+pub(crate) mod key_provisioning_bridge_server;
+pub(crate) mod key_provisioning_connection;
 pub(crate) mod lnb_object;
 pub(crate) mod object_handle;
 pub(crate) mod object_runtime;

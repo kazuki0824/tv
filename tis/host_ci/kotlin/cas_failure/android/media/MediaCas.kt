@@ -1,10 +1,12 @@
 package android.media
 
-/** host専用。Androidの資源解放実装ではなく、adapterの例外伝播境界を検査する入力。 */
+/** host専用。公開例外と、親のclose後はSessionを操作できないAndroidの寿命を検査する入力。 */
 @Suppress("UNUSED_PARAMETER")
 class MediaCas(
-    caSystemId: Int,
+    private val caSystemId: Int,
 ) : AutoCloseable {
+    private var closed = false
+
     init {
         Faults.creates++
     }
@@ -24,10 +26,14 @@ class MediaCas(
 
     override fun close() {
         Faults.pluginCloses++
+        Faults.pluginCloseSystems += caSystemId
         if (Faults.pluginFailure) error("underlying plugin close failed")
+        closed = true
     }
 
-    class Session : AutoCloseable {
+    inner class Session : AutoCloseable {
+        private var sessionClosed = false
+
         fun setPrivateData(data: ByteArray) = Unit
 
         fun processEcm(
@@ -37,8 +43,13 @@ class MediaCas(
         ) = Unit
 
         override fun close() {
+            check(!closed && !sessionClosed) { "session is no longer usable" }
             Faults.sessionCloses++
-            if (Faults.sessionFailure) error("underlying session close failed")
+            val targetedSystem = Faults.failingSessionSystemId == null || Faults.failingSessionSystemId == caSystemId
+            if (Faults.sessionFailure && targetedSystem) {
+                error("underlying session close failed")
+            }
+            sessionClosed = true
         }
     }
 
@@ -49,6 +60,8 @@ class MediaCas(
         var openFailure = false
         var pluginFailure = false
         var sessionFailure = false
+        var failingSessionSystemId: Int? = null
+        val pluginCloseSystems = mutableListOf<Int>()
 
         fun reset() {
             creates = 0
@@ -57,6 +70,8 @@ class MediaCas(
             openFailure = false
             pluginFailure = false
             sessionFailure = false
+            failingSessionSystemId = null
+            pluginCloseSystems.clear()
         }
     }
 }

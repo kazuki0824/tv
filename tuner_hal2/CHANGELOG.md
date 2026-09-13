@@ -1,3 +1,22 @@
+# r52_pr57_rust_quality_format
+
+- `key_provisioning_bridge_server.rs`の関数宣言とクロージャをRust 1.81.0の標準書式へ整形した。要求の適用回数、ロック範囲、エラー処理は変更していない。
+- 検証: Rust quality CIと同じ生成表1ファイルの除外を用い、追跡対象Rust 220ファイルの`rustfmt --edition 2021 --check`が成功した。`git diff --check`も成功した。Android/Soong buildとdevice atest/VTSは未実施。
+
+# r52_pr57_remove_unused_key_replay_journal
+
+- CAS側が送信開始後のmutationを再送しない現行経路に合わせ、generic key provisioningの再送台帳、要求比較、保存済みstatus返却を削除した。request IDは一つの要求と応答の対応確認に限定し、Tuner側へ要求履歴や鍵素材を残さない。
+- 接続または送信準備の`IoUnavailable`再試行、同一identityのReserve冪等性、既に消滅/revoke済みtokenのRevoke冪等性、provider generation、単調key epochを維持した。送信開始後の結果未確定Publishは成功を表明せず、既存session cleanupから新しいrequest IDでRevokeする。
+- connection試験を、timeout設定失敗時のmutation 0件、正常時の1回適用、response write失敗時のserver内再実行なし、同じrequest IDを別接続で履歴照合しない契約へ更新した。
+- Rust 1.81でtuner_hal2 host workspaceの全target unit testとClippy `-D warnings`が成功し、CAS host 27件も成功した。CAS workspace全体のClippyは、今回未変更の`AtomicGenerationSource`と`UnixTunerKeyPublisher`に既存の`new_without_default`があるため未達。Android/Soong build、atest、CTS/VTS、実card/放送波確認は未実施。
+
+# r52_pr57_key_provisioning_repair
+
+- 鍵bridgeの起動関数名、opaque provider IDのu64型、revokeのmutation error型を修正した。統合文書を実際のMKPR/MKPS protocolへ合わせた。
+- 削除されていた鍵table試験を予約・公開・epoch更新・失効・参照解放・予約期限の8件で補い、既存runtime試験のfixtureも本番の予約/公開/失効APIへ接続した。
+- 本番command、registry、key tableを同時にコンパイルするhost targetを追加。14件のunit testsとClippyに成功。新しく検査対象になった戻り値型と診断enumのlintも修正した。
+- production Rustの整形を修正。Android/Soong実体build、device atest、VTS、実card/放送波試験は未実施。
+
 # r51_tuner_hal2_audit_regressions
 
 - demuxのfrontend入力とStarted Playback DVR入力を相互排他にし、拒否時に既存relation・DVR状態を維持する。既存のDemuxFrontendSourceTxnとDVR開始処理へ検査を接続し、両方向の回帰試験を追加した。
@@ -80,6 +99,19 @@
 - host `--all-targets`ではtest helperが使用するため検出されなかった`object_runtime`の`AidlApi` importを`#[cfg(test)]`境界へ分離し、Android/Soong製品compileの`-D warnings`でも未使用importを残さないようにした。
 - PES packet length外byteをpayloadとみなしていた期待値、消費型Record DVR queue読取りをsnapshotとみなしていた期待値、one-shot cleanup authorityの未消費Dropを通常rollbackとみなしていた期待値、局所filter quarantineをdemux全体quarantineとみなしていた期待値を現行契約へ合わせた。queue依存試験は正のbuffer sizeを持つ`OpenFilterRequest`を使用する。
 - `git diff --check`と対象symbolの定義・参照検索を実施した。この環境にはRust toolchainとAndroid build treeがないため、ローカルでのRust 1.81 rustfmt、host build/unit test/Clippy、Android/Soong build、atest、VTS、CTS、実機確認は未実施である。
+# r52_key_provisioning_deadline_setup
+
+- generic key provisioning connectionでread/write双方の2秒timeout設定を必須setupとし、いずれかの設定失敗時はframe read、decode、replay journal、runtime command適用の前にfail-closedとした。
+- 接続I/O処理を既存AIDL service owner内の小さいmoduleへ分離し、timeout失敗を注入できるhost test境界を追加した。新規worker、queue、retry owner、protocol stateは追加していない。
+- read timeout失敗、write timeout失敗、双方成功の3回帰試験をhost workspaceへ追加した。Rust 1.81でrustfmt、全target check、Clippy `-D warnings`、workspace 171試験が成功した。Android/Soong build、atest、VTS、実card/放送波確認は未実施である。
+
+# r52_key_provisioning_implementation
+
+- init管理Unix socket上のversioned generic key provisioning bridgeを追加し、opaque key tokenの1〜16 byte/VOID除外、request ID、bounded frame、typed statusを検証する。
+- key providerの未解決entry予約、opaque provider ID/provider generation identity、単調key epoch、MULTI2 even/odd key contextのatomic publish、generation-fencedかつretry-idempotentなrevokeをTuner runtime registryへ接続した。Tuner側はCA system IDやB25/B1を解釈しない。
+- packet descramble責務をTuner HALだけに維持し、CAS HALから受け取ったraw materialはbridge境界でprepared key slotへ変換してpacket pathへraw key tableを公開しない。
+- raw/prepared MULTI2 keyのDebug表示をredactし、drop時のzeroizeを追加した。host CIへ鍵台帳単体test crateを追加した。
+- Rust 1.81 host workspaceでCAS鍵protocolとruntime registryのunit testを実行した。Android/Soong build、VTS、実card/放送波の結合確認は未実行である。
 
 # r50eo84_pr55_px4_partial_reception_availability_followup
 

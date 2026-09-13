@@ -50,19 +50,58 @@ Video track metadataもPMTとEITの責務を混同しない。filter/decoderへ�
 
 `rec/` 配下の実装とテストは録画・予約作業用の準備領域であり、現行 product package、TIS manifest、boot receiver、release確認条件へ混ぜない。現行 product で起動してよい receiver / サービスは TIS のライブ視聴・setup・EPG publish に必要なものだけとする。
 
-## CAS / descrambler の現行境界
+## CAS / descrambler 境界
 
-現行 product では CAS HAL 本体はプレースホルダーのままにする。TIS は Tuner SDK API の filter 経由で PMT/CAT/SDT/ECM/EMM section payload を取得し、PMT/CAT から得た CA_descriptor と SDT 等から得た free_CA_mode / サービス識別子補助情報を arib_si_engine_rs の意味解析結果として受け取る。TIS はcurrent `ServiceSemanticFacts`とcurrent CAS capabilityに基づいて ECM/EMM セクションフィルターと MediaCas/CAS bridgeを型付きAPIで制御し、実keyトークンが得られた場合だけTuner descramblerへ不透明な参照値を渡す。仮実装や診断専用結果は復号成功を意味しないため、`setKeyToken()`へ渡さない。Tuner HALが未接続診断を返した場合も成功扱いにしない。
+TIS は Tuner SDK API の filter 経由で PMT/CAT/SDT/ECM/EMM section payload を取得し、PMT/CAT から得た CA_descriptor と SDT 等から得た free_CA_mode / サービス識別子補助情報を `arib_si_engine_rs` の意味解析結果として受け取る。CA system IDはB25 `0x0005`とB1 `0x0001`を区別し、current `ServiceSemanticFacts`とcurrent MediaCas capabilityからsession/filter構成を決める。CAS HALのpath選択、card I/O、ECM/EMM意味処理、鍵registryは `../cas_hal/DESIGN_JA.md` を正とし、TISへ複製しない。
+
+B25ではPMT/CAT由来のECM/EMM filterを開き、`MediaCas.Session.processEcm()`と`MediaCas.processEmm()`を呼ぶ。B1ではPMT由来のECM filterだけを開き、CAT由来のB1 EMM metadataをfilter起動対象にせず、`MediaCas.processEmm()`を呼ばない。CA system IDをまとめた共通集合だけでEMM可否を決めてはならない。B1 EMM、通電制御情報取得、契約更新、権利更新をTIS側で補完しない。
+
+ECM成功後にTunerへ渡すproduction tokenは、同じ `MediaCas.Session.getSessionId()` が返すbyte sequenceそのものである。`processEcm()`の戻り値からvendor tokenを得る、診断文字列をtoken化する、CA system ID/session generation/key epochをTISで符号化する、raw key materialを受け取る経路は設けない。session IDは1 byte以上16 byte以下で `[0x00]` ではないことを型付き境界で確認し、同じbytesを変更せず `Descrambler.setKeyToken()`へ渡す。ECM失敗、session ID不正、CAS registry未接続、診断専用結果では`setKeyToken()`を呼ばない。
+
+TISはdescramblerを同じTuner/demux generationに結合し、token成功後に当該CA descriptorが対象とするvideo/audio PIDだけを`addPid()`する。service/track更新では不要PIDを`removePid()`し、session close、retune、clear service遷移、CAS failureではdescramblerとMediaCas sessionを世代付きで閉じる。stale ECM/EMM callbackや旧session IDを新generationへ適用しない。Tuner HALが未接続、bad token、registry failure、descramble failureを返した場合も平文成功扱いにしない。
 
 descrambler bridgeの単一所有者はCasControllerとし、TunerControllerに同じbridgeをcacheしない。scan/liveは取得済みbridgeを持ち回らず、受信snapshotに対応するtune generationを必須入力とするTunerController.updateCasMetadataAndFilters()を使う。同controller executor内でtuneAcceptedとgenerationを照合し、CasControllerのfactoryによるbridge生成・attach・metadata更新と、成功結果のECM/EMM PIDを使うfilter更新完了まで待つ。metadata成功前に新filter集合を公開しない。resource-lostは同executorで直列化するため、取得とattachの間に割り込ませない。旧世代・失効済み要求はfactoryを呼ばず拒否する。
 
-metadata更新では配送indexを先に失効させ、全obsolete systemを物理解放前に退役させる。解放は全件試行し、survivorのprivateData・PID bindingとdescrambler PID更新が全て成功した場合だけ配送indexを公開する。途中失敗から旧bindingを再公開しない。metadata診断error・例外・filter更新失敗は同じcontroller transactionでCAS解放、ECM/EMM filterの空集合への置換、再生停止を全件試行する。PMTは判断更新用に維持し、caption終了と利用不能通知はLive sessionが行う。
+metadata更新では配送indexを先に失効させ、全obsolete contextと不要pluginを物理解放前に退役させる。解放は全件試行し、survivorのprivateData・PID bindingとdescrambler PID更新が全て成功した場合だけ配送indexを公開する。途中失敗から旧bindingを再公開しない。metadata診断error・例外・filter更新失敗は同じcontroller transactionでCAS解放、ECM/EMM filterの空集合への置換、再生停止を全件試行する。PMTは判断更新用に維持し、caption終了と利用不能通知はLive sessionが行う。
 
-resource-lostと再選局時はCasController.clearForResourceLoss()がCAS state清掃とbridge closeを全件試行する。close成功後だけ所有参照を落とし、失敗中はclosingとして保持してECM/EMMを配送しない。資源喪失時はbridge全体を閉じるため個別removePidで遅延生成を起こさない。CAS session/pluginも退役時に配送対象から外し、各closeの成功を記録して未解放資源だけを再試行する。次のbridge生成前またはclose()で退役資源の解放を再試行し、成功するまで新bridgeを生成・attachしない。失敗時に独立したretry queueや新しい世代は作らない。DirectTunerDescramblerBridge.close()は未生成handleを生成せず、実close失敗を伝播し、閉鎖開始後のsetKeyToken/addPid/removePidと再利用を拒否する。CAS全体のclose失敗でもexecutorと所有を残してclose再試行を可能にする。
+resource-lostと再選局時はCasController.clearForResourceLoss()がCAS state清掃とbridge closeを全件試行する。close成功後だけ所有参照を落とし、失敗中はclosingとして保持してECM/EMMを配送しない。終了するcontextのPID/key linkの解放はbridgeのcloseに集約し、その直前のremovePid列挙やVOID token設定を要求しない。未生成bridgeはPID/key linkを持たず、cleanupのためにhandleを遅延生成しない。CAS session/pluginも退役時に配送対象から外し、各closeの成功を記録して未解放資源だけを再試行する。次のbridge生成前またはclose()で退役資源の解放を再試行し、成功するまで新bridgeを生成・attachしない。失敗時に独立したretry queueや新しい世代は作らない。DirectTunerDescramblerBridge.close()は未生成handleを生成せず、実close失敗を伝播し、閉鎖開始後のsetKeyToken/addPid/removePidと再利用を拒否する。CAS全体のclose失敗でもexecutorと所有を残してclose再試行を可能にする。
 
-MediaCas Session/Plugin adapterは公開close()が返す例外をそのままCasControllerへ伝播する。CAT由来EMMだけのsystemは既存system台帳にpluginのみを所有し、processEmmにSession生成を要求しない。同systemにPROGRAM/ESのECM bindingが現れた時点で同じpluginからSessionを開く。ECMがなくなりCATだけ残る場合はSessionだけを閉じる。openSession失敗時も同じ台帳で退役・解放する。rollback close失敗は元のsession-open失敗へ添え、成功するまでpluginのownerを除去しない。Framework内部で握り潰され公開APIへ返らない失敗までTISが検出できるとは扱わない。
+MediaCas Session/Plugin adapterは公開close()が返す例外をそのままCasControllerへ伝播する。同じpluginの全Sessionについてclose成功を確認してから親のMediaCasを閉じる。AndroidのMediaCas.close()は親の内部参照を無効化し、以後のSession.close()を拒否するため、Session解放失敗中に親を閉じて再試行経路を失わせない。別systemのSession/pluginの解放は引き続き全件試行する。CAT由来EMMだけのsystemは既存system台帳にpluginのみを所有し、processEmmにSession生成を要求しない。同systemにESへ展開済みのECM bindingが現れた時点で同じpluginからcontext単位のSessionを開く。PROGRAM bindingだけで対象ESが未確定の間はREADYにしない。ECMがなくなりCATだけ残る場合はSessionだけを閉じる。openSession失敗時も同じ台帳で退役・解放する。rollback close失敗は元のsession-open失敗へ添え、成功するまでpluginのownerを除去しない。Framework内部で握り潰され公開APIへ返らない失敗までTISが検出できるとは扱わない。
 
-ES PIDのlogical ownerは全active CA systemの集合で照合する。別systemが同じPIDを使用している間はremoveしない。addPid成功済みのPIDだけをdescramblerPidsへ記録し、全owner消滅後のremovePid成功でのみ除去する。この集合とactive集合の差が未解放PIDであり、独立したpending集合を複製しない。非SUCCESSはCAS診断failureとして保持し、次のmetadata更新・clearで未解放分だけ再試行する。bridge全体のclose成功時はPID所有も解消する。
+ES PIDの所有は独立contextごとのDescramblerで管理し、別contextが同じPIDを使用していてもそのbindingとは混同しない。継続するcontextではdesired/linked PID集合の差をaddPid/removePidで更新し、成功した操作だけを反映する。非SUCCESSはCAS診断failureとして保持し、次のmetadata更新で未完了差分を再試行する。context終了時はDescrambler.close成功でPID/key所有をまとめて解消し、個別unlinkの再試行台帳を追加しない。初回key linkの部分成功を取り消す場合のremovePid/VOID key unlinkは維持する。
+
+### context・filter plan・readiness
+
+TISはMediaCas / MediaCas.SessionとTuner SDK Descramblerだけを使い、CAS/Tuner HAL binderやgeneric key provisioning socketを直接呼ばない。Tuner HALもCA system、ECM/EMM、MediaCas sessionの意味を解釈しない。
+
+独立descramble contextはservice identity、CA system ID、ECM PID、CA descriptor private dataと適用scopeに基づいて決め、一つのMediaCas.Session、そのopaque session ID/token、一つのDescrambler/key slot、その鍵で保護される一つ以上のES PIDを所有する。同じsystemのMediaCas pluginは共有してよいが、異なるECM/private dataや独立key contextを一つのSessionへ押し込まない。別bindingのsetPrivateDataで同じSessionを上書きして兼用しない。「1 CA system = 1 Session/Descrambler」「1 ES = 1 Descrambler」を固定規則にしない。
+
+Program-level descriptorは適用されるESへ展開してから同一service/system/ECM/private dataで束ね、別ECM/private dataを持つES-level descriptorは別contextにする。B25/B1固有のfilter可否はCasControllerが決め、UpdateResult.ecmPids / emmPidsを唯一のCAS filter planとする。LiveSessionはraw metadataからPID集合を再構成しない。B1 CAT metadataはSI事実として保持できるが、EMM filter/process対象にしない。
+
+readinessはCLEAR（context不要）、WAITING_FOR_KEY（contextは成立したがECM/key/PID link未完了）、READY（必要な全contextが準備済み）、ERROR（blocking failure）、CLOSED（終了済み）を区別する。WAITINGをclear playback成功へ写像しない。LiveSessionはsection ingest後にcurrent-stateを再評価し、READYで通常のmaybeStartPlayback gateへ進む。通常の後続ECM/CW rotationは同じkey slotを更新するため、link済みcontextのAV pipelineをECMごとに再生成しない。
+
+### 終了順序とexecutor寿命
+
+retune、clear service、context消滅、CAS fatal failure、session releaseでは対象contextをcurrent routingから先に退役させ、次の順で解放を試みる。
+
+1. Descrambler.close。PID/key linkの個別解除は重ねない。
+2. MediaCas.Session.close。
+3. 同じsystemの全Sessionが解放済みで、Session/EMM処理が不要になった場合だけMediaCas.close。
+
+途中の失敗で独立した後続解放を中止しない。contextのDescrambler/Sessionは各close成功を記録し、未解放資源だけを再試行する。metadata更新は退役資源の解放完了まで新routingを公開しない。TISはvendor registryへRevokeを送らず、Session closeに伴うprovider-side revokeはCAS HAL側に任せる。
+
+mutable状態の直列化境界はCasController専用single-thread executorである。内部executor判定はthread名ではなく生成したThread instanceのidentityで行う。closeは退役、解放、CLOSED診断確定を直列化し、全解放成功後だけexecutorをshutdownする。失敗中は所有とexecutorを保持する。closeは冪等で、終了後のmutationは拒否し、lastDiagnostic/currentReadinessは停止済みexecutorへworkを投入せずCLOSEDを返す。
+
+context/Descrambler factoryはcurrent Tuner/demux generationのCAS更新transactionに属する。retune/clear/release後の旧callback・旧tokenを新contextへ流用せず、READY/ERRORはcurrent context集合だけから判定する。
+
+### CAS orchestrationの最低試験
+
+- 同一system・同一ECM/private dataの複数PIDは同じcontext/Descramblerを共有し、異なるECMまたはprivate dataは独立する。
+- 一方のcontextのsetKeyTokenが他contextのkey linkを置換しない。
+- B1 CATからEMM filter planを作らず、scrambled serviceはECM前にWAITING、必要contextの成功後だけREADYになる。
+- 終了時は個別PID/key unlinkなしでDescrambler、Session、pluginの順に閉じ、close失敗時も後続解放を試行して未解放資源だけ再試行する。
+- closeを2回呼べ、終了後queryはCLOSED、新規mutationは拒否される。未生成Descramblerをcleanupで生成しない。
+- retune/clear後のstale ECMが旧token/PIDを新generationへ適用しない。継続contextのPID差分と初回link失敗rollbackは個別操作の成功・失敗を引き続き検証する。
 
 ## Tuner SDK API 呼び出し
 
@@ -252,7 +291,7 @@ TIS のライブplaybackは、Tuner AV filterのclear-memory `MediaEvent.getLine
 
 本productはnon-tunneled MediaCodec + MediaSync経路をarchitectureとして採用し、tunneled / platform passthrough playback capabilityを恒久的に提供しない。`notifyVideoAvailable()`は、Exact modeでは本書「MediaSync Framework-private final-output observation」で定義したcurrent availability epochのfinal-output成功eventだけをcommitにする。Compatibility modeでは公開`MediaCodec.OnFrameRenderedListener`のframe render時刻がcurrent arm時刻以後で、current codec/generation/Surface/error gateを満たす最初のeventを近似commitに使用する。Compatibility modeのeventはMediaSync input Surface到達の観測でありfinal-output成功とはみなさない。`MediaSync.getTimestamp()`のclock進行はどちらのmodeでもavailability根拠にしない。
 
-setup scan の channel registration は global discovery complete を必須条件にしない。ただし partial snapshot を無条件に channel insert に使ってはならない。TvProvider のサービス単位の登録可否は本書の「サービス登録・公開・再生policy境界」を唯一の正本とし、この節で video ES 必須などの追加 gate を重複定義しない。したがって `service_type=0x01` は同節の audio-video / video-only 条件、`service_type=0x02` は対応 audio ES を持つ audio-only 条件に従い、`0x02` の登録に video ES を要求しない。登録可能未満の partial snapshot は診断情報 / ライブ更新 / debugにのみ使い、channel insertしない。scrambled サービスはchannel登録してよいが、CAS仮実装のまま平文ライブ視聴成功対応宣言してはならない。
+setup scan の channel registration は global discovery complete を必須条件にしない。ただし partial snapshot を無条件に channel insert に使ってはならない。TvProvider のサービス単位の登録可否は本書の「サービス登録・公開・再生policy境界」を唯一の正本とし、この節で video ES 必須などの追加 gate を重複定義しない。したがって `service_type=0x01` は同節の audio-video / video-only 条件、`service_type=0x02` は対応 audio ES を持つ audio-only 条件に従い、`0x02` の登録に video ES を要求しない。登録可能未満の partial snapshot は診断情報 / ライブ更新 / debugにのみ使い、channel insertしない。scrambled サービスはchannel登録してよいが、current CAS capabilityとproduction tokenが成立しない状態を平文ライブ視聴成功として宣言してはならない。
 
 ## codec header / A-V sync / publish mode の固定
 
@@ -273,6 +312,12 @@ PMTからcodec family、audio/video種別、PIDを確定した後、AV filter開
 有限な`TisPlaybackBudgetSnapshot`を確定した後にAV filterを開始し、上限内の`MediaEvent`からdecoder構成に必要なcodec configuration metadataだけを取得して`MediaFormat`を構成する。r51ではMPEG-2 sequence header、H.264 SPS/PPS、AAC ADTS/AudioSpecificConfig、MPEG audio headerを対象とし、r52でHEVCを再生判定対象にする場合はHEVC VPS/SPS/PPSも同じheader収集契約へ追加する。header解析に必要な最小rangeだけ`LinearBlock.map()`でread-only参照してよいが、通常payloadのqueue境界を作るcodec parserやES/AU copyへ拡張しない。decoder構成成功後は同じsnapshotのsteady-state上限へ遷移し、startup queueの各`MediaEvent` / `LinearBlock`は元rangeのままblock model QueueRequestへ渡してqueue成功時にcodecへ所有権を移す。runtimeで観測したdecoder block capabilityは各eventの投入可否と製品profile検証の診断にだけ用い、開始済み世代のsnapshotを書き換えない。AOSP direct-input契約を満たさないdecoder/profileではfilterを停止し、保持中のHAL handleを解放して`DECODER_CAPACITY_MISMATCH`または`DIRECT_INPUT_UNSUPPORTED`を記録し、成功対応として表明しない。
 
 MediaEvent payloadは、`offset >= 0`、`dataLength > 0`、加算overflowなし、`offset + dataLength <= LinearBlock capacity`を満たす場合だけstartup queueまたはblock model QueueRequestへ渡す。TISは共有領域方式とイベント固有fd方式の両方を受け付け、HALの`avPerFilterLiveBytes`、`avRuntimeBudgetBytes`その他の未解放payload集約台帳を公開・複製・1イベント上限化しない。
+
+HEVCの起動用構成抽出は、Android APIと資源寿命を持たない`HevcConfigParser`へ分離する。入力は既存の有限header probeだけとし、通常ESのAU再構成には使用しない。`CodecBitReader`はAVCとHEVCで共有する。AOSP内部の`HevcParameterSets`は公開Java APIではなく、現在のTISはMedia3に依存していないため、起動時の寸法取得だけのためにnative接続やMedia3一式を追加しない。この選択は本プロジェクトの依存・保守範囲の判断であり、AOSPが独自解析器を要求しているという意味ではない。
+
+HEVCのVPS/SPS/PPSは、後続開始コードまで受信してNALの終端を確認してからCSDへ収録する。開始コードの途中、NALの途中、必要なparameter setの未到着は構成待ちとし、既存の起動予算・期限だけを適用する。区切りまで受信したNALのheader不正、空のparameter set、SPS寸法までの構文切断、不正escape、予約値、不正寸法は`IllegalArgumentException`で構成不正を返す。これは既存の`VIDEO_CODEC_ERROR`と再生停止・資源解放へ接続し、`CODEC_CONFIG_TIMEOUT`へ丸めない。入力の3/4 byte開始コードを受け入れ、CSDでは各parameter setの開始コードを`00 00 00 01`に統一してVPS・SPS・PPSの順に`csd-0`へ格納する。根拠は[MediaCodecのCodec-specific Data契約](https://developer.android.com/reference/android/media/MediaCodec#codec-specific-data)とする。
+
+このHEVC解析が保証する範囲は、NAL境界、収録するNAL header、SPSの寸法取得に必要な項目とcrop計算である。profile/tier/levelは寸法へ到達するため読み飛ばし、bit depth・VUI・全parameter set構文の適合判定は行わない。解析成功だけでMain10/HDR等の対応やHEVC全体への適合を表明しない。実decoderの選択・configure・入力・初回出力の結果を用いる既存の対応判定を維持する。
 
 TISは保持中の`MediaEvent`についてevent数、payload byte数、presentation timestamp spanをsnapshotの有限上限内に制限する。range検証後にsingle-eventまたはqueue上限を超えるeventは原因別に`SAMPLE_TOO_LARGE`または`PENDING_QUEUE_FULL`を記録してHAL handleを直ちに解放する。保持量はbounded queueから算出しても、同じqueueに従属するO(1) counterで管理してもよく、独立した資源台帳や別generationを設けることを要求しない。generation変更、stop、releaseでは保持中eventを解放して保持量を0へ戻す。TISはAU再構成用の追加bufferを持たず、HALの`avPerFilterLiveBytes`または`avRuntimeBudgetBytes`等のAV backing/resource ledgerを公開・複製しない。
 
@@ -339,7 +384,7 @@ TIS は `TvInputManager.ACTION_BLOCKED_RATINGS_CHANGED` と `TvInputManager.ACTI
 - `onUnblockContent()` の解除範囲は同一 `channelUri + serviceKey + eventId + ratingString` の現在番組 / レーティングに限定する。start/end は stable identity ではなく、解除対象が現在表示中の同一 Program row であることを確認する補助条件としてのみ使ってよい。start/end/duration を provider-data `programKey`、unblock stable identity、または Program identity の SSOT にしてはならない。
 
 一時解除はSession executor内の`TemporaryContentUnblocks`だけが所有する。現在番組のstable identity変更、現在番組消滅、retune、releaseで失効する。解除の受理時点の番組終了UTCと、受理時の単調時計から換算した終了期限を固定し、いずれかに到達した時点で失効する。終了不明・期限算出overflow・既終了は解除を受理しない。番組時刻更新や同じ解除通知の重複では期限を延長しない。新たに観測した終了が早い場合は期限を短縮する。壁時計の後退でも単調期限を維持する。失効タイマーはsession executorへ再評価をenqueueし、旧タイマーは参照一致で除外する。期限通知を予約できない場合も解除を保持しない。これにより同一event_idの再使用に旧解除を引き継がず、開始時刻をstable identityへ追加する必要はない。終了後の延長番組を解除する場合は新たなframeworkの認証済み通知を必要とする。
-- CAS 未完成 / scrambled unsupported で再生成功にしない場合は `TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` を使う。具体的な CAS 状態 reason は CAS HAL 本実装まで使わない。
+- CAS plugin/session/ECM/token/descramblerのいずれかが成立せず再生成功にしない場合は `TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` を使う。初回映像、filter、codec、audio等の非CAS failureをこのreasonへ丸めない。
 - `requiresCas`はcurrent `ServiceSemanticFacts`のCA descriptor等から得る放送由来意味事実とし、`unsupportedCas` / `clearLivePlaybackSupported`はcurrent product/CAS capabilityからTISがその都度算出する。既存channel/Program `internal_provider_data`の旧policy値をcurrent policyの代替参照に使わない。
 
 ## TIS / EPG 公開境界
@@ -366,13 +411,17 @@ Direct Boot保留の正式状態を`DirectBootEpgPending`とする。`DirectBoot
 
 登録可能サービスは、`ServiceKey`、物理選局情報へ戻せるchannel provider-data、`Channels.COLUMN_INPUT_ID`として保存する自TISのinputId、表示名が揃い、TvProvider channel insert/update に進めるサービスとする。input ownershipのSSOTはprovider-dataではなく`Channels.COLUMN_INPUT_ID`とする。表示名は `ChannelRecord.displayName` が nonblank ならそれを使い、なければ SDT service_name、さらに無ければ `service-<onid>-<tsid>-<sid>` を使う。この代替表示名は登録可能判定上の有効な表示名と扱う。
 
-## CAS 仮実装境界
+## CAS orchestration failure境界
 
-CAS HAL 仮実装のまま scrambled サービスを平文ライブ視聴再生成功として扱ってはならない。scrambled unsupported サービスでも、PMT/CAT/CA情報と診断を使って EPG / Programs / レーティング / provider-data は更新する。ただし CAS key トークンを提供できない状態では再生成功にせず、CAS起因の unavailable のみ `VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` へ map する。初回映像到達timeout、filter start failure、非対応stream、codec失敗、audio失敗はCAS unknownにmapしない。
+scrambled unsupportedサービスでも、PMT/CAT/CA情報と診断を使って EPG / Programs / レーティング / provider-data は更新する。ただしcurrent capabilityを持つMediaCas plugin、session、ECM成功、valid session ID token、Tuner descrambler接続がすべて成立しない限り再生成功にしない。CAS起因のunavailableだけを `VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` へmapし、初回映像到達timeout、filter start failure、非対応stream、codec失敗、audio失敗をCAS unknownにmapしない。
 
 CAS可否はcurrent `ServiceSemanticFacts`とcurrent CAS implementation/capabilityからTISが算出する。provider-dataに保存するのはCA descriptor/free_CA_mode等の意味事実だけであり、旧`unsupportedCas` / `clearLivePlaybackSupported` / `publishStateSource`をcurrent判定へ再利用しない。
 
 Descrambler API の `setKeyToken()`、`addPid()`、`removePid()` は戻り値が `Tuner.RESULT_SUCCESS` の場合だけ成功とする。非 SUCCESS result は CAS 診断 failure として扱い、成功扱いで握り潰してはならない。
+
+各`MediaCas.Session` / `Descrambler` contextは、current PMTから得た`desiredElementaryPids`と、`addPid()` / `removePid()`成功で確認できた`linkedElementaryPids`を分離して同じ`CasSessionState`内に保持する。metadata refreshはdesiredだけを置換し、成功したPID操作だけをlinkedへ反映する。失敗した差分は同一metadataの次回refreshでも残して再試行する。初回key linkの一部PID追加に失敗してrollbackする場合も、成功した`removePid()`だけをlinkedから除き、`clearKeyToken()`成功後だけ`keyLinked=false`とする。contextを`READY`とできるのは`ecmReady && keyLinked && desiredElementaryPids == linkedElementaryPids`のときだけであり、要求PIDの一部だけが実際に接続された状態を再生成功へ写像しない。直近ECMの失敗、無効token、診断のみの結果では`ecmReady=false`とする。metadata再通知だけでは回復させず、同一contextの新たなECM成功時だけ回復する。鍵の所有を表す`keyLinked`は解放成功まで保持し、readinessとは分離する。ECM結果も既存section後の判定へ即時通知し、未準備時はAVを停止する。遅延first-outputでREADY未成立の世代を可用通知しない。この状態は既存`CasSessionState`と単一executorの内側だけで所有し、別queue、worker、retry timerを設けない。
+
+最低確認観点は、B25でECM/EMM、B1でECM-onlyとなること、B1 CAT/EMMをfilter/process対象にしないこと、ECM成功後だけsession ID bytesを同一のままtokenへ使うこと、不正/VOID/診断tokenを拒否すること、retune/closeとECM callbackのraceでstale token/PIDを新generationへ適用しないこと、非SUCCESSのTuner結果でvideo availableを通知しないことを含む。PID差分については、add失敗後とremove失敗後に同一metadata refreshで再試行して成功後だけ`READY`になること、初回key/PID部分成功を`READY`にしないことを含む。
 
 ## TvProvider failure semantics
 

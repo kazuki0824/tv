@@ -1,11 +1,15 @@
 [workspace]
 members = [
+    "key_provisioning_bridge",
+    "key_provisioning_connection",
+    "key_provisioning_runtime",
     "common",
     "capability_selection",
     "compile_contract",
     "control",
     "demux",
     "descrambler",
+    "descrambler_key_table",
     "device",
     "domain_request",
     "fmq",

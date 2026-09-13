@@ -1233,6 +1233,8 @@ class TunerController(
                 if (diagnostics.any { it.state == CasController.State.ERROR }) {
                     playbackPipeline.reportUnavailable(PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY, diagnostics.joinToString())
                 }
+                // ECMの成功/失敗も同じ視聴可否gateへ即時に通知する。
+                onSectionIngestedCallback?.invoke()
             },
             onEmm = {
                 val diagnostics = casController?.onEmmSection(pid, section).orEmpty()

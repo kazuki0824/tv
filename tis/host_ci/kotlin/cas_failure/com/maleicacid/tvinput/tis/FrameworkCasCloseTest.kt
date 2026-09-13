@@ -28,22 +28,67 @@ class FrameworkCasCloseTest {
         f.reset()
         val controller = CasController()
         try {
-            controller.updateFromCaMetadata(metadata)
+            controller.updateFromCaMetadata(metadata) { DirectTunerDescramblerBridge(null) }
             f.sessionFailure = true
             f.pluginFailure = true
             check(runCatching { controller.close() }.isFailure)
-            check(f.sessionCloses == 1 && f.pluginCloses == 1)
+            check(f.sessionCloses == 1 && f.pluginCloses == 0)
             f.sessionFailure = false
             check(runCatching { controller.close() }.isFailure)
-            check(f.sessionCloses == 2 && f.pluginCloses == 2)
+            check(f.sessionCloses == 2 && f.pluginCloses == 1)
             f.pluginFailure = false
             controller.close()
-            check(f.sessionCloses == 2 && f.pluginCloses == 3)
+            check(f.sessionCloses == 2 && f.pluginCloses == 2)
             controller.close()
-            check(f.sessionCloses == 2 && f.pluginCloses == 3)
+            check(f.sessionCloses == 2 && f.pluginCloses == 2)
         } finally {
             f.sessionFailure = false
             f.pluginFailure = false
+            controller.close()
+        }
+    }
+
+    @Test fun resourceLossRetainsParentUntilSessionClosesBeforeReopening() {
+        val f = MediaCas.Faults
+        f.reset()
+        val controller = CasController()
+        try {
+            controller.updateFromCaMetadata(metadata) { DirectTunerDescramblerBridge(null) }
+            f.sessionFailure = true
+            check(runCatching { controller.clearForResourceLoss() }.isFailure)
+            check(f.sessionCloses == 1 && f.pluginCloses == 0)
+            check(controller.onEcmSection(TsPid(0x123), byteArrayOf(1)).isEmpty())
+            val retry = runCatching { controller.updateFromCaMetadata(metadata) { DirectTunerDescramblerBridge(null) } }
+            check(retry.isFailure)
+            check(f.creates == 1 && f.sessionCloses == 2 && f.pluginCloses == 0)
+            f.sessionFailure = false
+            val result = controller.updateFromCaMetadata(metadata) { DirectTunerDescramblerBridge(null) }
+            check(result.diagnostics.isEmpty())
+            check(f.creates == 2 && f.sessionCloses == 3 && f.pluginCloses == 1)
+            controller.close()
+            check(f.sessionCloses == 4 && f.pluginCloses == 2)
+        } finally {
+            f.sessionFailure = false
+            controller.close()
+        }
+    }
+
+    @Test fun failedSessionDoesNotPreventIndependentPluginCleanup() {
+        val f = MediaCas.Faults
+        f.reset()
+        val controller = CasController()
+        try {
+            val bothSystems = metadata + metadata.single().copy(caSystemId = 1, elementaryPid = TsPid(0x102))
+            controller.updateFromCaMetadata(bothSystems) { DirectTunerDescramblerBridge(null) }
+            f.sessionFailure = true
+            f.failingSessionSystemId = 5
+            check(runCatching { controller.close() }.isFailure)
+            check(f.sessionCloses == 2 && f.pluginCloseSystems == listOf(1))
+            f.sessionFailure = false
+            controller.close()
+            check(f.sessionCloses == 3 && f.pluginCloseSystems == listOf(1, 5))
+        } finally {
+            f.sessionFailure = false
             controller.close()
         }
     }
@@ -55,14 +100,15 @@ class FrameworkCasCloseTest {
         try {
             f.openFailure = true
             f.pluginFailure = true
-            val result = controller.updateFromCaMetadata(metadata)
+            val result = controller.updateFromCaMetadata(metadata) { DirectTunerDescramblerBridge(null) }
             check(result.diagnostics.any { it.errorCode == CasController.ErrorCode.SESSION_OPEN_FAILED })
             check(result.ecmPids.isEmpty() && f.creates == 1 && f.pluginCloses == 1)
-            check(runCatching { controller.updateFromCaMetadata(metadata) }.isFailure)
+            val retry = runCatching { controller.updateFromCaMetadata(metadata) { DirectTunerDescramblerBridge(null) } }
+            check(retry.isFailure)
             check(f.creates == 1 && f.pluginCloses == 2 && f.sessionCloses == 0)
             f.pluginFailure = false
             f.openFailure = false
-            controller.updateFromCaMetadata(metadata)
+            controller.updateFromCaMetadata(metadata) { DirectTunerDescramblerBridge(null) }
             check(f.pluginCloses == 3 && f.creates == 2)
             controller.close()
             check(f.pluginCloses == 4 && f.sessionCloses == 1)

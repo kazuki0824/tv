@@ -1,3 +1,62 @@
+# r52_pr57_cas_teardown_simplification
+
+- context終了時のPID列挙removePidとVOID key unlinkを除去し、Descrambler.closeへPID/key資源解放を集約した。close成功後だけ所有状態を消し、Session closeと独立資源の解放は途中失敗でも試行する。成功済みcloseの再実行防止、未解放資源の保持・再試行、親MediaCasの寿命、routing失効、未生成handleをcleanupで生成しない契約は維持した。
+- 継続contextのPID差分更新と初回key link部分成功のrollbackは変更していない。終了処理から動的PID引数列がなくなったため、closeContextLockedのSpreadOperator抑止も削除した。
+- teardown、close失敗の再試行、別systemの同一PIDを持つsurvivor、PMT変更によるcontext置換の4試験を更新した。PMT置換試験では閉鎖済みbridgeを再利用せず別bridgeを使う。個別remove/clearが失敗するfakeを置き、終了処理でそれらを呼ばずcloseだけ再試行すること、Session/pluginは重複closeしないことを確認した。
+- CAS orchestration補足文書の固有契約をDESIGN_JA.mdへ統合して補足文書を削除した。context多重度、filter plan正本、readiness、終了順序、executor寿命、generation fence、最低試験を保持し、旧単一Descrambler前提のPID所有記述をcontext単位へ修正した。
+- 検証: Kotlin 1.9.22 / Android 15入力で本番・全試験Kotlinをコンパイルし、JDK 17 compiler moduleで既存Java失敗注入stubをコンパイルした。Rust 1.81.0で実SI JNIをbuildし、既存ホスト対象32クラスのJUnit 257件が成功した（CAS関連3クラス32件も個別成功）。試験総数・CI除外一覧は変更していない。
+- 全Kotlin 128ファイルのktlint 1.8.0とdetekt 1.23.8、git diff --checkが成功した。CAS core/transportのRust 27件も成功。Android依存3クラスのRobolectric、Android/Soong build、device atest/CTS/VTS、実カード・Yakisoba・放送波は未実施。
+
+# r52_pr57_kotlin_quality_repair
+
+- mainの未使用引数削除を復元し、`tuneResolvedChannel`の`startPlayback`引数と呼出し2箇所で渡していた値を除去した。ECM処理後の通知は維持し、選局・再生の動作は変更していない。
+- CASの視聴可否判定を、CLOSED、診断ERROR、CLEAR、context待機、READYの優先順を保つ`when`式へ整理した。Session初期化、試験用bridge、解放失敗条件、検証式の長い行を整理した。
+- 次の抑止は既存PR #97で扱った種類に限定し、該当する宣言へ理由コメントを付けた。全体のdetekt設定、閾値、対象ファイル、テスト数は変更していない。
+
+| 抑止 | 今回の適用箇所 | 理由 |
+|---|---|---|
+| `LargeClass` | `CasController`、`CasControllerStateTest` | 単一executor下のCAS資源所有と、その状態遷移試験の集合を行数だけで分割しない |
+| `ReturnCount` | `ensurePluginLocked`、`ensureContextLocked` | 退役中、既存資源、取得失敗の早期終了を保ち、所有確定の順序を見通せる形にする |
+| `TooGenericExceptionCaught` | `ensureContextLocked` | 取得・初期化失敗時の後処理を取りこぼさず、元の失敗へ解放失敗を添え、未解放資源の所有を保持する |
+| `SpreadOperator` | `retryRetiredResourcesLocked`、`closeContextLocked` | 動的な解放対象を既存`SectionFilterPolicy.completeCleanup`へ渡し、全件試行と失敗集約を共有する。解放経路だけの配列コピーを許容し、移動元の不要な抑止は除去した |
+| `LongMethod` | `linkContextKeyLocked` | 鍵設定、PID追加、失敗時のPID・鍵解除を同じ所有状態に対する一連の手順として保つ |
+| `MagicNumber` | `HevcPlaybackTest`ファイル | 規格ビット列、不正入力、寸法の期待値を本体の定数と独立した具体値で保持する |
+| `TooManyFunctions` | `HevcPlaybackTest`クラス | HEVC構成契約の13シナリオと補助処理を同じ試験集合として維持する |
+
+- 検証: 全Kotlin 128ファイルのktlint 1.8.0とdetekt 1.23.8が成功し、detektの指摘は63件から0件になった。Kotlin 1.9.22/Android 15入力による本番・試験コンパイル、Java失敗注入stubのコンパイル、Rust 1.81.0でビルドした実SI JNIを使うホストJUnit 257件が成功した。同集合のCAS状態遷移・解放失敗30件も個別実行で成功した。`git diff --check`が成功した。
+- Gradle 8.9/AGP 8.7.0/Robolectric 4.16.1による既存のAndroid依存3クラス・4テストも成功し、失敗・除外は0件だった。この実行環境の一時プロキシをテスト用Javaプロセスへ渡す設定だけをリポジトリ外で追加し、試験内容とリポジトリのGradle設定は変更していない。Android/Soong build、device atest/CTS/VTS、実機・実波確認は未実施。
+
+# r52_pr57_hevc_configuration_review
+
+- `HevcConfigParser`へ起動時のNAL収集・SPS寸法取得・CSD構成を分離し、`PlaybackPipeline`は`MediaFormat`への接続を担当する。既存のビット読取りを`CodecBitReader`としてAVCと共有し、旧HEVC helperを削除した。外部依存やJNI入口は追加していない。
+- 後続開始コードで終端が確認できたVPS/SPS/PPSだけを収録する。3/4 byte開始コードを受け入れ、末尾のAnnex-B零バイトを除き、CSDの開始コードを4 byteへ統一する。途中のPPSをCSDへ投入しない。
+- 未到着・受信途中は既存起動予算内で待ち、受信済みNALのheader不正・空parameter set・SPS寸法までの構文切断・不正escape・予約値・寸法/crop不正は例外で返す。本番の既存`VIDEO_CODEC_ERROR`、停止・資源解放へ伝播し、構成待ちタイムアウトへ丸めない。
+- 解析の保証範囲、独自実装を残す依存・保守上の判断、MediaCodecのCSD契約を`DESIGN_JA.md`へ記載した。全HEVC構文、Main10/HDR、実機適合を寸法取得成功から推測しない。
+- 実x265ヘッダーの既存試験を更新し、各バイト位置での受信切断、PPS未到着時の不正SPS、空parameter set、不正escape、混在開始コードと末尾零バイトの5試験を追加した。CI期待値を252から257へ更新した。試験クラス数は35、ホスト対象は32のままとする。
+- 検証: Kotlin 1.9.22/Android 15入力による本番・全試験Kotlinコンパイル、HEVC 13件・入力範囲/保持量/時刻7件・AVC回帰5件の計25件が成功した。全Kotlinのktlint、分離した解析部品のdetekt、`git diff --check`が成功した。旧helperの残存検索、`queue`から`onDecoderFailure`と停止までの呼出し経路、Soong/ホスト/Robolectricのソース収集範囲を確認した。
+- 全体detektは63件の指摘で未合格。新たな抑止ルールは追加していない。ホスト257件全体は未実行であり、件数はJUnitの発見結果として確認した。実SI JNI/Rust試験、Android/Soong build、Robolectric実行、device atest/CTS/VTS、実MediaCodecによるHEVC初回出力は未検証である。
+
+# r52_pr57_cas_session_cleanup_order
+
+- Session.closeに失敗したCA systemの親MediaCasを保持し、次回cleanupでSession解放を再試行できるようにした。別CA systemのSession/MediaCas解放は継続する。既存のcontext所有表とcleanup経路を使用し、別の解放ownerは追加しない。
+- TIS設計正本へ親子の解放順序を明記し、Androidの親close後にSessionを操作できない寿命をhost fakeへ反映した。資源喪失後の再open、独立pluginの解放、既存Session解放失敗試験を更新した。
+- 検証: 本番/試験Kotlinコンパイルと実SI JNIを用いたhost JUnit 249件が成功。CI期待件数を249へ更新し、変更Kotlinのktlint検査が成功した。
+- Android/Soong実体build、device atest、CTS/VTS、実card/放送波確認は未実施。
+
+# r52_pr57_cas_readiness_and_hevc_regression
+
+- ECMの失敗/無効token/診断のみの結果でcontextのreadinessを下げ、PMT/CATの再通知ではREADYへ戻さない。新たなECM成功だけで回復する。鍵の所有状態とhealthを分け、解放再試行の所有は維持する。
+- ECM結果を既存のsection後視聴判定へ即時通知する。CAS_NO_KEYでは再生を停止し、遅延したfirst-outputでもCAS準備未完了なら映像可用通知を出さない。
+- r51専用の本番選択helperを削除し、現在のHEVC選択を試験する。実x265ヘッダーのMIME/1920x1080/CSD、VPS/SPS/PPS欠落、切断SPS、不正NAL header、chroma/sub-layer予約値、crop範囲を8件で検査する。SPSの不正寸法/整数overflowを最小寸法へ丸めない。
+- 検証: 本番/試験Kotlinコンパイルと実SI JNIを用いたhost JUnit 247件が成功。変更Kotlinのktlint整形を実施。detektの既存class構造・数値literal等の違反は残存。検査の無効化やbaselineによる隠蔽は行っていない。
+- Android/Soong実体build、device atest/VTS、MediaCodec/MediaSyncの実機HEVC first-output、実card/放送波は未実施。
+
+# r52_rebase_after_pr85_pr91
+
+- #85/#91マージ後のmainへr52 CAS/HEVC差分を統合した。context単位のSession/Descramblerに、current-generation transaction、退役時の配送遮断、全件cleanupと未解放資源の再試行を引き継いだ。
+- 実session IDによるkey readinessとregistration/CA事実gateを両立し、AVC codec facts・共通AAC解析・番組一時解除期限を維持した。
+- ホストKotlin本体/テストをコンパイルし、実SI JNIを用いる31クラス238件が成功。CAS/TunerホストRust unit testも成功。Android/Soong実体build、device atest、VTS、実機確認は未実施。
+
 # r51_tuner_hal2_audit_regressions
 
 - BS事前scanは`onLocked()`で同一scanを一度だけ継続し、`onScanStopped()`まで待機する。状態変更は既存の単一controller executorに限定し、追加の同期ロックを置かない。公開scan契約への接続を設計へ反映した。
@@ -126,6 +185,18 @@
 - TIS-008: listener設定が失敗したTunerをcloseし、cleanup失敗があれば元の例外へ保持する。TIS-036: 保存BLOBをgetBlobの結果のままRustへ渡し、文字列へ補修しない。
 - TIS-048: 既存channelの更新値からCOLUMN_TYPEを除く。TIS-050: short_event本文の未規定な256文字切詰めを除く。TIS-AUD-07/H-14: READMEの規約参照を実在する共通規約へ修正する。
 - CIと同じKotlin 1.9.22・Android 15入力で本番と試験をコンパイルし、実SI JNIを使用するhost JUnit 138件が成功した。既存のコンパイル警告は残る。Android実機のTuner/CAS/Provider統合試験は未実施。
+# r52_review_pid_link_state
+
+- `CasSessionState`でPMT由来のdesired PIDと、成功した`Descrambler.addPid()` / `removePid()`で確認できたlinked PIDを分離し、失敗した差分を同一metadata refreshで再試行できるようにした。
+- `READY`をkey接続済みかつdesired/linked一致に限定し、初回PID部分成功のrollbackも成功した操作だけを実状態へ反映するようにした。既存state ownerと単一executorの内側だけの変更で、別queue、worker、timerは追加していない。
+- add失敗、remove失敗、初回部分成功の3回帰試験を追加した。Kotlin 1.9.22/JDK 17でproduction/test compileとhost-compatible 128試験が成功した。Android/Soong build、instrumentation test、atest、VTS、実card/放送波確認は未実施である。
+
+# r52-cas-design
+
+- CAS正本をB25 `0x0005`のECM/EMMとB1 `0x0001`のECM-onlyへ更新し、B1 EMM filter/`processEmm()`を禁止した。
+- ECM成功後に `MediaCas.Session.getSessionId()` の同一bytesだけをTuner tokenへ渡し、vendor token合成とraw key受領を禁止した。
+- session/descrambler/PIDのgeneration境界、CAS failure reason、非SUCCESS Tuner結果のfail-closed契約を固定した。
+- この設計記録時点ではproduction CAS実装と各試験は未実施だった。後続のCAS→generic Tuner key provisioning実装は`../cas_hal/CHANGELOG.md`の`r52-implementation`と`../tuner_hal2/CHANGELOG.md`の`r52_key_provisioning_implementation`を正とし、Android/Soong build、instrumentation test、VTS、実機確認は引き続きproduct gateとして残る。
 
 # 未リリース
 
