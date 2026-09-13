@@ -52,17 +52,23 @@ Video track metadataもPMTとEITの責務を混同しない。filter/decoderへ�
 
 ## CAS / descrambler の現行境界
 
-現行 product では CAS HAL 本体はプレースホルダーのままにする。TIS は Tuner SDK API の filter 経由で PMT/CAT/SDT/ECM/EMM section payload を取得し、PMT/CAT から得た CA_descriptor と SDT 等から得た free_CA_mode / サービス識別子補助情報を arib_si_engine_rs の意味解析結果として受け取る。TIS はcurrent `ServiceSemanticFacts`とcurrent CAS capabilityに基づいて ECM/EMM セクションフィルターと MediaCas/CAS bridgeを型付きAPIで制御し、実keyトークンが得られた場合だけTuner descramblerへ不透明な参照値を渡す。仮実装や診断専用結果は復号成功を意味しないため、`setKeyToken()`へ渡さない。Tuner HALが未接続診断を返した場合も成功扱いにしない。
+CAS plugin内部のfactory/backend/key lifecycle契約は `../cas_plugin/DESIGN_JA.md` を正とし、本書ではTISからMediaCas/Tuner SDKへ接続するruntime境界だけを定義する。
 
-descrambler bridgeの単一所有者はCasControllerとし、TunerControllerに同じbridgeをcacheしない。scan/liveは取得済みbridgeを持ち回らず、受信snapshotに対応するtune generationを必須入力とするTunerController.updateCasMetadataAndFilters()を使う。同controller executor内でtuneAcceptedとgenerationを照合し、CasControllerのfactoryによるbridge生成・attach・metadata更新と、成功結果のECM/EMM PIDを使うfilter更新完了まで待つ。metadata成功前に新filter集合を公開しない。resource-lostは同executorで直列化するため、取得とattachの間に割り込ませない。旧世代・失効済み要求はfactoryを呼ばず拒否する。
+現行 product では CAS plugin 本体はプレースホルダーのままにする。TIS は Tuner SDK API の filter 経由で PMT/CAT/SDT/ECM/EMM section payload を取得し、PMT/CAT から得た CA_descriptor と SDT 等から得た free_CA_mode / サービス識別子補助情報を arib_si_engine_rs の意味解析結果として受け取る。TIS はcurrent `ServiceSemanticFacts`とcurrent CAS capabilityに基づいて ECM/EMM セクションフィルターと MediaCas/CAS bridgeを型付きAPIで制御し、実keyトークンが得られた場合だけTuner descramblerへ不透明な参照値を渡す。仮実装や診断専用結果は復号成功を意味しないため、`setKeyToken()`へ渡さない。Tuner HALが未接続診断を返した場合も成功扱いにしない。
+
+PROGRAM/ESのCA_descriptor `private_data_byte` はB25/B1をTIS側で解釈せず、対応するMediaCas Sessionの `setPrivateData()` へopaque bytesとして渡す。B1でもこのsession-private-data投入を通常のsession setupとして行い、成功後にECM配送へ進む。CAT由来private dataをMediaCas plugin-level `setPrivateData()`へ渡す経路はEMM対応CA systemだけに限定し、現行のB1では起動しない。CA方式固有のprivate data意味解釈はCAS plugin側の責務とし、TISにB1専用parserやprivate-data抑止分岐を追加しない。
+
+descrambler bridgeの単一所有者はCasControllerとし、TunerControllerにbridgeをcacheしない。AOSP `Descrambler` は1 instanceにつき1 key slotだけをlinkできるため、CasControllerは実key tokenを使うactive CA system/sessionごとに独立したDescrambler bridgeを所有し、異なるCA systemのtokenを同じDescramblerへ上書きしない。各bridgeへ登録するES PIDはそのCA systemのbindingだけとする。同一ES PIDが同じcurrent snapshotで複数のsupported CA systemへ同時にbindingされる場合、TISはCA systemの優先順位を推測せずambiguous inputとしてCAS attachをfail-closedにし、そのPIDを複数Descramblerへ二重登録しない。scan/liveは取得済みbridgeを持ち回らず、受信snapshotに対応するtune generationを必須入力とするTunerController.updateCasMetadataAndFilters()を使う。同controller executor内でtuneAcceptedとgenerationを照合し、CasControllerのfactoryによるCA system単位のbridge生成・attach・metadata更新と、成功結果のECM/EMM PIDを使うfilter更新完了まで待つ。metadata成功前に新filter集合を公開しない。resource-lostは同executorで直列化するため、取得とattachの間に割り込ませない。旧世代・失効済み要求はfactoryを呼ばず拒否する。
 
 metadata更新では配送indexを先に失効させ、全obsolete systemを物理解放前に退役させる。解放は全件試行し、survivorのprivateData・PID bindingとdescrambler PID更新が全て成功した場合だけ配送indexを公開する。途中失敗から旧bindingを再公開しない。metadata診断error・例外・filter更新失敗は同じcontroller transactionでCAS解放、ECM/EMM filterの空集合への置換、再生停止を全件試行する。PMTは判断更新用に維持し、caption終了と利用不能通知はLive sessionが行う。
 
-resource-lostと再選局時はCasController.clearForResourceLoss()がCAS state清掃とbridge closeを全件試行する。close成功後だけ所有参照を落とし、失敗中はclosingとして保持してECM/EMMを配送しない。資源喪失時はbridge全体を閉じるため個別removePidで遅延生成を起こさない。CAS session/pluginも退役時に配送対象から外し、各closeの成功を記録して未解放資源だけを再試行する。次のbridge生成前またはclose()で退役資源の解放を再試行し、成功するまで新bridgeを生成・attachしない。失敗時に独立したretry queueや新しい世代は作らない。DirectTunerDescramblerBridge.close()は未生成handleを生成せず、実close失敗を伝播し、閉鎖開始後のsetKeyToken/addPid/removePidと再利用を拒否する。CAS全体のclose失敗でもexecutorと所有を残してclose再試行を可能にする。
+resource-lostと再選局時はCasController.clearForResourceLoss()がCAS state清掃とbridge closeを行う。MediaCas session由来のcurrent key tokenがCA system専用descramblerへリンクされている場合、そのsystemのsession close前に同じbridgeへ `Tuner.VOID_KEYTOKEN` を渡してunlink成功を確認する。VOID失敗時は当該systemのsession/pluginを先にcloseせず、token link、session/plugin、descrambler/PID所有を保持して次のcleanupで再試行する。VOID成功後にsession close、session close成功後にplugin closeを行い、そのsystemの依存teardownが成功した後だけ対応Descrambler/PIDを解放する。別CA systemのbridge/token状態へは影響させない。
+
+close成功後だけ所有参照を落とし、失敗中はclosingとして保持してECM/EMMを配送しない。資源喪失時はbridge全体を閉じるため個別removePidで遅延生成を起こさない。CAS session/pluginも退役時に配送対象から外し、各closeの成功を記録して未解放資源だけを再試行する。次のbridge生成前またはclose()で退役資源の解放を再試行し、成功するまで新bridgeを生成・attachしない。失敗時に独立したretry queueや新しい世代は作らない。DirectTunerDescramblerBridge.close()は未生成handleを生成せず、実close失敗を伝播し、閉鎖開始後のsetKeyToken/addPid/removePidと再利用を拒否する。CAS全体のclose失敗でもexecutorと所有を残してclose再試行を可能にする。
 
 MediaCas Session/Plugin adapterは公開close()が返す例外をそのままCasControllerへ伝播する。CAT由来EMMだけのsystemは既存system台帳にpluginのみを所有し、processEmmにSession生成を要求しない。同systemにPROGRAM/ESのECM bindingが現れた時点で同じpluginからSessionを開く。ECMがなくなりCATだけ残る場合はSessionだけを閉じる。openSession失敗時も同じ台帳で退役・解放する。rollback close失敗は元のsession-open失敗へ添え、成功するまでpluginのownerを除去しない。Framework内部で握り潰され公開APIへ返らない失敗までTISが検出できるとは扱わない。
 
-ES PIDのlogical ownerは全active CA systemの集合で照合する。別systemが同じPIDを使用している間はremoveしない。addPid成功済みのPIDだけをdescramblerPidsへ記録し、全owner消滅後のremovePid成功でのみ除去する。この集合とactive集合の差が未解放PIDであり、独立したpending集合を複製しない。非SUCCESSはCAS診断failureとして保持し、次のmetadata更新・clearで未解放分だけ再試行する。bridge全体のclose成功時はPID所有も解消する。
+ES PIDの物理所有はCA system専用Descramblerごとに管理する。各DescramblerへaddPid成功済みのPIDだけを当該systemのdescramblerPidsへ記録し、そのsystemのbinding消滅後のremovePid成功でのみ除去する。同一ES PIDが同じcurrent snapshotで複数supported CA systemへbindingされる入力は前段のambiguous判定でfail-closedにするため、異なるDescrambler間で同一PIDの共有所有を作らない。descramblerPidsと当該systemのactive PID集合の差が未解放PIDであり、独立したpending集合を複製しない。非SUCCESSはCAS診断failureとして保持し、次のmetadata更新・clearで当該systemの未解放分だけ再試行する。bridge全体のclose成功時はそのsystemのPID所有も解消する。
 
 ## Tuner SDK API 呼び出し
 
@@ -339,7 +345,7 @@ TIS は `TvInputManager.ACTION_BLOCKED_RATINGS_CHANGED` と `TvInputManager.ACTI
 - `onUnblockContent()` の解除範囲は同一 `channelUri + serviceKey + eventId + ratingString` の現在番組 / レーティングに限定する。start/end は stable identity ではなく、解除対象が現在表示中の同一 Program row であることを確認する補助条件としてのみ使ってよい。start/end/duration を provider-data `programKey`、unblock stable identity、または Program identity の SSOT にしてはならない。
 
 一時解除はSession executor内の`TemporaryContentUnblocks`だけが所有する。現在番組のstable identity変更、現在番組消滅、retune、releaseで失効する。解除の受理時点の番組終了UTCと、受理時の単調時計から換算した終了期限を固定し、いずれかに到達した時点で失効する。終了不明・期限算出overflow・既終了は解除を受理しない。番組時刻更新や同じ解除通知の重複では期限を延長しない。新たに観測した終了が早い場合は期限を短縮する。壁時計の後退でも単調期限を維持する。失効タイマーはsession executorへ再評価をenqueueし、旧タイマーは参照一致で除外する。期限通知を予約できない場合も解除を保持しない。これにより同一event_idの再使用に旧解除を引き継がず、開始時刻をstable identityへ追加する必要はない。終了後の延長番組を解除する場合は新たなframeworkの認証済み通知を必要とする。
-- CAS 未完成 / scrambled unsupported で再生成功にしない場合は `TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` を使う。具体的な CAS 状態 reason は CAS HAL 本実装まで使わない。
+- CAS 未完成 / scrambled unsupported で再生成功にしない場合は `TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` を使う。具体的な CAS 状態 reason は CAS plugin 本実装まで使わない。
 - `requiresCas`はcurrent `ServiceSemanticFacts`のCA descriptor等から得る放送由来意味事実とし、`unsupportedCas` / `clearLivePlaybackSupported`はcurrent product/CAS capabilityからTISがその都度算出する。既存channel/Program `internal_provider_data`の旧policy値をcurrent policyの代替参照に使わない。
 
 ## TIS / EPG 公開境界
@@ -366,9 +372,9 @@ Direct Boot保留の正式状態を`DirectBootEpgPending`とする。`DirectBoot
 
 登録可能サービスは、`ServiceKey`、物理選局情報へ戻せるchannel provider-data、`Channels.COLUMN_INPUT_ID`として保存する自TISのinputId、表示名が揃い、TvProvider channel insert/update に進めるサービスとする。input ownershipのSSOTはprovider-dataではなく`Channels.COLUMN_INPUT_ID`とする。表示名は `ChannelRecord.displayName` が nonblank ならそれを使い、なければ SDT service_name、さらに無ければ `service-<onid>-<tsid>-<sid>` を使う。この代替表示名は登録可能判定上の有効な表示名と扱う。
 
-## CAS 仮実装境界
+## CAS plugin 仮実装境界
 
-CAS HAL 仮実装のまま scrambled サービスを平文ライブ視聴再生成功として扱ってはならない。scrambled unsupported サービスでも、PMT/CAT/CA情報と診断を使って EPG / Programs / レーティング / provider-data は更新する。ただし CAS key トークンを提供できない状態では再生成功にせず、CAS起因の unavailable のみ `VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` へ map する。初回映像到達timeout、filter start failure、非対応stream、codec失敗、audio失敗はCAS unknownにmapしない。
+CAS plugin 仮実装のまま scrambled サービスを平文ライブ視聴再生成功として扱ってはならない。scrambled unsupported サービスでも、PMT/CAT/CA情報と診断を使って EPG / Programs / レーティング / provider-data は更新する。ただし CAS key トークンを提供できない状態では再生成功にせず、CAS起因の unavailable のみ `VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` へ map する。初回映像到達timeout、filter start failure、非対応stream、codec失敗、audio失敗はCAS unknownにmapしない。
 
 CAS可否はcurrent `ServiceSemanticFacts`とcurrent CAS implementation/capabilityからTISが算出する。provider-dataに保存するのはCA descriptor/free_CA_mode等の意味事実だけであり、旧`unsupportedCas` / `clearLivePlaybackSupported` / `publishStateSource`をcurrent判定へ再利用しない。
 
