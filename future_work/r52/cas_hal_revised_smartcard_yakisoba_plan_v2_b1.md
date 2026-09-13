@@ -11,43 +11,9 @@
 1. スマートカードに対する読み書きにより、B25では ECM / EMM、B1では ECM のみを処理する経路
 2. Android 向けに一部フォークした `libyakisoba` を常駐プロセスとして起動し、B25 の ECM / EMM をCAS HALと送受信する経路。B1には使用しない
 
-ただし、B1 については本改訂で次を固定する。
+B1については、`B1SmartCardPath` / libaribb1 系参照の ECM-only 経路を正式対応とし、B1 EMM、EMMに依存する通電制御情報取得、契約更新、権利更新は対応しない。libyakisobaはB1 backendとして扱わない。
 
-```text
-B1 実装の参照元:
-  - 公開ソースとして CAS HAL へ移植・検証・保守できる実装は、実質的に libaribb1 系に集約されている。
-
-libyakisoba:
-  - B1 実装として扱わない。
-  - B1 backend として列挙しない。
-  - B1 の yakisoba fallback 対象にしない。
-
-B1 の実装範囲:
-  - B1SmartCardPath / libaribb1 系参照の ECM-only 経路を正式対応とする。
-  - B1 EMM 処理、EMMに依存する通電制御情報取得、契約更新、権利更新は恒久的に対応しない。
-```
-
-改訂後の基本方針は次のとおりである。
-
-```text
-AOSP から見える CAS plugin:
-  - B25 / B1 の CA system ID 単位で列挙する。
-  - B1 は B1SmartCardPath の ECM 処理が実装・検証できるまで列挙しない。
-
-AOSP から見える ICas:
-  - 単一の MaleicacidCasPlugin 実装に固定する。
-
-内部実装:
-  - B25:
-      SmartCardCasPath
-      YakisobaCasPath
-      のいずれかを session 開始時に選択する。
-  - B1:
-      B1SmartCardPath のみを使用する。
-      YakisobaCasPath には切り替えない。
-```
-
-同一 `caSystemId` に対して「スマートカード版 plugin」と「libyakisoba版 plugin」を別々に列挙する構成は採用しない。理由は、AOSP の `IMediaCasService.createPlugin()` が `caSystemId` を主キーとして plugin を生成する契約であり、同一 `caSystemId` の複数 plugin を標準 API 上で一意に選択する入力がないためである。
+AOSP/VTS互換のClearKey pathはB25/B1 product capabilityから分離して同じ `IMediaCasService/default` 配下に保持する。B25/B1実装の完成度やproduct capability profileを理由にClearKeyを無効化しない。
 
 ---
 
@@ -55,18 +21,21 @@ AOSP から見える ICas:
 
 ```text
 IMediaCasService/default
+  ├─ ClearKey compatibility path
   ├─ enumeratePlugins()
   ├─ isSystemIdSupported(caSystemId)
   ├─ isDescramblerSupported(caSystemId)
-  └─ createPlugin(caSystemId, listener)
-       └─ MaleicacidCasPlugin : ICas
-            ├─ SessionTable
-            ├─ CasPathSelector
-            ├─ SmartCardCasPath        # B25/B-CAS
-            ├─ B1SmartCardPath         # B1/libaribb1 系参照、ECM-only から開始
-            ├─ YakisobaCasPath         # B25 実験用のみ
-            ├─ KeySlotRegistry
-            └─ ICasListenerBridge
+  ├─ createPlugin(caSystemId, listener)
+  └─ createDescrambler(caSystemId)
+
+MaleicacidCasPlugin : ICas
+  ├─ SessionTable
+  ├─ CasPathSelector
+  ├─ SmartCardCasPath        # B25/B-CAS
+  ├─ B1SmartCardPath         # B1/libaribb1 系参照、ECM-only
+  ├─ YakisobaCasPath         # B25 実験用のみ
+  ├─ KeySlotRegistry adapter
+  └─ ICasListenerBridge
 
 vendor.maleicacid.yakisoba-casd
   ├─ libyakisoba wrapper
@@ -75,307 +44,179 @@ vendor.maleicacid.yakisoba-casd
   └─ health check / diagnostics
 ```
 
-`IMediaCasService` は1つだけ配置する。`ICas` 実装も `MaleicacidCasPlugin` に一本化する。
+`IMediaCasService` は1つだけ配置する。B25/B1向け `ICas` 実装は `MaleicacidCasPlugin` に一本化する。SmartCard/Yakisobaの差はplugin内部に閉じ、同一`caSystemId`をbackend別の複数descriptorとして列挙しない。
 
-B25では、スマートカード直結か libyakisoba 常駐プロセスかを `CasPathSelector` が選択する。B1では、`B1SmartCardPath` のみを選択対象とし、`YakisobaCasPath` は選択不可とする。
+B25/B1のCAS HAL自身はTS packetを復号しない。B25/B1について `isDescramblerSupported()` は `false`、`createDescrambler()` はAIDL呼出し成功かつ `null` とする。packet descramble ownerはTuner HALの`IDescrambler`だけである。ClearKey compatibility pathはこの制約の対象外とし、AOSP/VTS互換descramblerを提供する。
 
 ---
 
-## 2. plugin 列挙仕様
+## 2. plugin列挙・AOSP公開契約
 
-### 2.1 採用する列挙
+### 2.1 descriptor
 
 ```text
 enumeratePlugins():
+  - caSystemId = AOSP ClearKey 用 system ID
+    name       = ClearKey compatibility descriptor
+
   - caSystemId = B25/B-CAS 用 system ID
     name       = "Maleicacid B25 CAS"
+    ※B25 advertise gate成立時のみ
 
   - caSystemId = B1 用 system ID
     name       = "Maleicacid B1 CAS"
-    ※B1SmartCardPath の ECM 処理が実装・検証できた場合のみ
+    ※B1 advertise gate成立時のみ
 ```
 
-### 2.2 採用しない列挙
+同一`caSystemId`をSmartCard/Yakisoba別に重複列挙しない。標準APIは`caSystemId`を主キーとしてpluginを生成するため、backend差は`ICas`内部へ閉じる。
 
-次の形式は採用しない。
+### 2.2 unknown caSystemId
+
+列挙されないCA system IDについてはAIDL transport自体を成功させ、次を返す。
 
 ```text
-enumeratePlugins():
-  - caSystemId = B25
-    name       = "Maleicacid B25 SmartCard"
-  - caSystemId = B25
-    name       = "Maleicacid B25 Yakisoba"
-
-  - caSystemId = B1
-    name       = "Maleicacid B1 SmartCard"
-  - caSystemId = B1
-    name       = "Maleicacid B1 Yakisoba"
+isSystemIdSupported(unknown)      -> false
+isDescramblerSupported(unknown)   -> false
+createPlugin(unknown)             -> null
+createDescrambler(unknown)        -> null
 ```
 
-同一 `caSystemId` を重複列挙すると、標準の `createPlugin(caSystemId)` 呼び出しだけではどちらを生成するか一意に定まらない。そのため、plugin descriptor は CA system 単位に固定し、処理経路の差は `ICas` 内部に閉じ込める。
+unknown IDをservice-specific errorへ変換しない。
 
-### 2.3 B1 plugin advertise gate
+### 2.3 advertise gate
 
-B1 plugin は、次の条件を満たすまで `enumeratePlugins()` に出さない。
+B25 descriptorは、次が検証済みの場合だけ広告する。
 
 ```text
-- B1SmartCardPath の ECM 処理が実装済みである。
-- processEmm() は unsupported として明示実装されている。
-- B1 EMMに依存する通電制御情報取得、契約更新、権利更新は unsupported として明示実装されている。
-- YakisobaCasPath が B1 に対して選択されないことがテストで固定されている。
+- B25 SmartCard production path
+- ICas session lifecycle
+- B25 ECM / EMM
+- KeySlotRegistry連携
+- Tuner key token bridge
+- close / revoke
 ```
+
+B1 descriptorは、次が検証済みの場合だけ広告する。
+
+```text
+- B1SmartCardPath の ECM
+- B1 processEmm() の明示的unsupported
+- YakisobaCasPathがB1に選択されないこと
+- key token bridge
+- close / revoke
+```
+
+一時的なcard不在やprobe失敗を理由にdescriptor集合を動的増減させない。advertiseは製品能力、利用時card状態はsession利用結果として分離する。
 
 ---
 
 ## 3. 単一 `ICas` 実装
 
-### 3.1 実装クラス
+`MaleicacidCasPlugin` は次を所有する。
 
 ```text
-MaleicacidCasPlugin : ICas
+- session table
+- setPrivateData() / setSessionPrivateData()
+- openSessionDefault() / openSession()
+- closeSession()
+- processEcm()
+- processEmm()
+- release()
+- listener通知
+- registry adapter
 ```
 
-責務は次のとおりである。
-
-```text
-- session table 管理
-- setPrivateData() の受領
-- setSessionPrivateData() の受領
-- openSessionDefault() / openSession() の処理
-- closeSession() の処理
-- processEcm() の処理
-- processEmm() の処理
-- release() の処理
-- ICasListener への event / status 通知
-- KeySlotRegistry への key 登録
-- Tuner descrambler へ渡す opaque key token の生成
-```
-
-### 3.2 内部 trait
-
-`SmartCardCasPath`、`B1SmartCardPath`、`YakisobaCasPath` は、同一 trait を実装する。
+内部pathは共通境界を実装する。
 
 ```rust
 trait CasProcessingPath {
     fn probe(&mut self) -> ProbeResult;
-
-    fn open_session(
-        &mut self,
-        ca_system_id: i32,
-        intent: SessionIntent,
-        mode: ScramblingMode,
-    ) -> CasResult<InternalSession>;
-
+    fn open_session(&mut self, ca_system_id: i32, intent: SessionIntent, mode: ScramblingMode)
+        -> CasResult<InternalSession>;
     fn close_session(&mut self, session: &InternalSession) -> CasResult<()>;
-
     fn set_private_data(&mut self, data: &[u8]) -> CasResult<()>;
-
-    fn set_session_private_data(
-        &mut self,
-        session: &InternalSession,
-        data: &[u8],
-    ) -> CasResult<()>;
-
-    fn process_ecm(
-        &mut self,
-        session: &InternalSession,
-        ecm: &[u8],
-    ) -> CasResult<KeyUpdate>;
-
+    fn set_session_private_data(&mut self, session: &InternalSession, data: &[u8]) -> CasResult<()>;
+    fn process_ecm(&mut self, session: &InternalSession, ecm: &[u8]) -> CasResult<KeyUpdate>;
     fn process_emm(&mut self, emm: &[u8]) -> CasResult<EmmUpdate>;
 }
 ```
 
-`MaleicacidCasPlugin` は、この trait を通じて下位処理を呼ぶ。上位の `ICas` 契約は、スマートカード直結経路でも libyakisoba 経路でも変化しない。ただし、B1はECM-only能力として固定し、`process_emm()` は恒久的に unsupported を返す。TISはB1 sessionで `MediaCas.processEmm()` を呼ばない。
+一度sessionで選択したpathはcloseまで不変とし、card抜去・daemon障害時に同sessionを別backendへ切り替えない。
 
 ---
 
-## 4. SmartCardCasPath / B1SmartCardPath 仕様
+## 4. SmartCardCasPath / B1SmartCardPath
 
-### 4.1 目的
+### 4.1 B25
 
-`SmartCardCasPath` は、ARIB 資料に準拠したスマートカード I/O を担当する。CAS HAL から見た主処理は ECM / EMM の処理であり、TS demux や AV / DVR 出力は担当しない。
-
-B1については、`B1SmartCardPath` を別経路として実装する。B1の公開・移植可能な参照実装は実質的に `libaribb1` 系に集約されているため、B1は `libaribb1` 系の挙動を参照するECM-only経路だけを正式対応とする。
-
-### 4.2 実装対象
-
-B25 / B-CAS 系:
+B25 SmartCard pathは次を担当する。
 
 ```text
-- カードリーダー検出
-- カード挿入状態確認
-- reset / ATR 取得
-- カード種別確認
-- ARIB 準拠 APDU の生成
-- APDU transmit
-- APDU response status decode
-- ECM 処理
-- EMM 処理
-- 未契約 / カード未挿入 / カード不正 / I/O エラー分類
-- ECM 結果から odd/even CW 更新
-- KeySlotRegistry への key 登録
-- opaque key token 発行
+- card reader検出 / card存在確認
+- reset / ATR / card種別確認
+- ARIB準拠APDU生成・送受信・status検証
+- ECM / EMM
+- card不在・不正・unsupported・I/O失敗分類
+- B25 credential context取得
+- ECM結果からodd/even Ks更新
 ```
 
-B1 系:
+B25のsystem key / CBC初期値は、検証済みのcard初期化応答から取得する。このためだけの外部secure storeやfactory provisioningを必須にしない。初期化応答の形式・長さ・statusを検証する前にcredentialとして採用しない。
+
+ECM成功時はraw keyをBinder/TIS/logcatへ公開せず、完全なMULTI2 contextをregistryへcommitする。
+
+### 4.2 B1
+
+B1はECM-onlyとする。
 
 ```text
-- B1 caSystemId の扱い
-- B1カード probe
+- B1 caSystemId
+- B1 card probe
 - openSession / closeSession
-- PMT/CAT 由来 CA private data の保持
-- ECM section payload のカード投入
-- ECM 結果から key slot / opaque token 生成
-- Tuner HAL descrambler への token 連携
+- CA private data保持
+- ECM投入
+- ECM結果からkey context更新
+- Tuner token連携
 
-恒久的に非対応:
-  - B1 EMM 処理
-  - B1 EMMに依存する通電制御情報取得
-  - B1 EMMに依存する契約更新・権利更新を受信機側で完結させる処理
+非対応:
+- B1 EMM
+- EMM依存の通電制御情報取得
+- EMM依存の契約更新・権利更新
 ```
 
-### 4.3 完了条件
+B1のcredential sourceは採用するB1 protocol/参照実装の検証済み応答に基づいて確定し、B25応答配置を推測して流用しない。
 
-B25 / B-CAS 系:
+---
+
+## 5. YakisobaCasPath
+
+`YakisobaCasPath` はB25実験用backendであり、B1には使用しない。CAS HALはlibyakisobaへ直接リンクせず、別vendor daemonとの固定ローカルIPCでB25 ECM/EMMを要求する。
+
+Android統合では、Soong build、vendor配置、init、SELinux、bounded IPC、session混線防止、timeout、秘密情報ログ禁止を満たす。daemonから受け取るkey materialはCAS/vendor内部境界に限定し、registry commit用bufferへ移した後に一時bufferを破棄する。
+
+B1 requestはdaemon側でも明示的にunsupportedとする。
+
+### 5.1 B25 EMM owner
+
+AIDL `processEmm()` にはsession IDがないため、EMM routingを「呼出し時に任意sessionの選択backendへ送る」設計にはしない。
+
+B25でEMMを処理するbackend ownerは、plugin生成時に確定するB25 capability/path profileから一意に決める。1 plugin内でSmartCard系sessionとYakisoba系sessionを混在させ、そのsession集合からEMM送信先を推測してはならない。
 
 ```text
-- カード未挿入時、processEcm() が成功扱いにならない
-- カード不正時、CARD_INVALID として分類できる
-- 対象 caSystemId に非対応のカードは CARD_UNSUPPORTED として分類できる
-- ECM 成功時、raw CW を Binder / logcat / IPC に出さない
-- ECM 成功時、KeySlotRegistry に key を登録し、opaque token のみを返す
-- EMM 成功/失敗が diagnostics または ICasListener event として確認できる
-- session close 後、その session に対する processEcm() が失敗する
-```
+smartcard_only:
+  EMM owner = SmartCardCasPath
 
-B1 系:
+yakisoba_only:
+  EMM owner = YakisobaCasPath
 
-```text
-- B1カードまたは妥当なテストベクタで ECM 処理を検証できる
-- ECM 成功時、raw key を Binder / logcat / IPC に出さない
-- ECM 成功時、KeySlotRegistry に key を登録し、opaque token のみを返す
-- processEmm() は明示的に unsupported を返す
-- B1 EMMに依存する通電制御情報取得、契約更新、権利更新は明示的に unsupported として扱う
-- B1 で YakisobaCasPath が選択されない
-- B1 plugin advertise は上記確認後にのみ有効化される
+prefer_smartcard_then_yakisoba:
+  pluginのEMM ownerはopenSession結果ではなく、製品で明示した単一owner規則に固定する。
+  ownerが利用不能ならprocessEmm()を失敗させ、別backendへ暗黙fallbackしない。
 ```
 
 ---
 
-## 5. YakisobaCasPath 仕様
-
-### 5.1 目的
-
-`YakisobaCasPath` は、CAS HAL から libyakisoba 常駐プロセスへ ECM / EMM 処理を依頼する経路である。CAS HAL は libyakisoba に直接リンクしない。CAS HAL と libyakisoba 常駐プロセスは、固定したローカル IPC で接続する。
-
-`YakisobaCasPath` は B25 / B-CAS 系の実験用 backend として扱う。B1 backend としては扱わない。
-
-### 5.2 B1 非対応の固定
-
-```text
-YakisobaCasPath:
-  B25:
-    実験用 backend として実装可能。
-
-  B1:
-    未対応。
-    yakisoba_only の対象にしない。
-    prefer_smartcard_then_yakisoba の切替対象にしない。
-    B1SmartCardPath の代替 backend として扱わない。
-```
-
-理由:
-
-```text
-- libyakisoba は B1 実装として扱える公開根拠がない。
-- libyakisoba の公開 API は B-CAS / B25 系 ECM / EMM 処理を前提にしている。
-- 公開・移植可能な B1 実装は実質的に libaribb1 系に集約されている。
-- B1 の EMM 処理と通電制御情報取得は、libaribb1 系でも未対応制約がある。
-```
-
-### 5.3 Android 統合時に必要な libyakisoba 側改変
-
-| 項目 | 改変内容 |
-|---|---|
-| ビルド | AOSP/Soong で `cc_binary` または `cc_library_shared` としてビルドできるよう `Android.bp` を追加する。 |
-| インストール先 | Linux desktop 前提の `/usr/local` 依存を除去し、`/vendor/bin`、`/vendor/lib64`、`/vendor/etc` 等に固定する。 |
-| 設定探索 | home directory、任意パス、環境変数依存の鍵・設定探索をAndroid製品向けには無効化または明示設定化する。 |
-| daemon化 | `vendor.maleicacid.yakisoba-casd` として init rc から起動する。 |
-| IPC | CAS HAL からのみ接続できる Unix domain socket または Binder service を実装する。 |
-| SELinux | CAS HAL domain から daemon への接続のみ許可する。一般 app / TIS / Tuner HAL からの直接接続は禁止する。 |
-| 複数 session | daemon 側で session table または request queue を持ち、複数 session の ECM 処理が混線しないようにする。 |
-| timeout | ECM / EMM 処理に固定 timeout を設ける。CAS HAL binder thread を長時間塞がない。 |
-| ログ | ECM / EMM 本文、鍵値、内部鍵素材、token を logcat に出さない。 |
-| 結果形式 | libyakisoba の結果をそのまま外へ出さず、CAS HAL 側の KeySlotRegistry へ登録する入力に正規化する。 |
-
-### 5.4 daemon プロセス仕様
-
-```text
-プロセス名:
-  vendor.maleicacid.yakisoba-casd
-
-起動:
-  init rc で起動
-
-通信:
-  /dev/socket/maleicacid_yakisoba_casd
-  または vendor Binder service
-
-接続元:
-  CAS HAL domain のみ
-
-提供コマンド:
-  - HealthCheck
-  - ResetSession
-  - DecodeEcm
-  - ProcessEmm
-
-禁止:
-  - ECM / EMM 本文のログ出力
-  - 鍵値のログ出力
-  - 外部 storage 参照
-  - 任意パスからの設定ファイル探索
-  - shell property から鍵素材を読むこと
-  - 一般 app からの直接アクセス
-```
-
-### 5.5 IPC request / response
-
-```text
-DecodeEcmRequest:
-  - session_id
-  - ca_system_id
-  - ca_private_data_hash
-  - service_id
-  - ecm_pid
-  - scrambling_mode
-  - ecm_section_payload
-
-DecodeEcmResponse:
-  - status
-  - key_epoch
-  - odd_even_validity
-  - key_material_for_local_registry
-  - diagnostic_code
-
-ProcessEmmRequest:
-  - ca_system_id
-  - emm_section_payload
-
-ProcessEmmResponse:
-  - status
-  - entitlement_update_hint
-  - diagnostic_code
-```
-
-`key_material_for_local_registry` は CAS HAL 内部の `KeySlotRegistry` に登録するためだけに使う。Binder、logcat、TIS、Tuner HAL へ raw key として出してはならない。
-
----
-
-## 6. 処理経路選択仕様
-
-### 6.1 mode
+## 6. 処理経路選択
 
 ```text
 cas.path.mode:
@@ -384,464 +225,225 @@ cas.path.mode:
   - prefer_smartcard_then_yakisoba
 ```
 
-### 6.2 既定値
+B25の`prefer_smartcard_then_yakisoba`では、`CARD_VALID`ならSmartCardを選択する。`CARD_ABSENT / CARD_INVALID / CARD_UNSUPPORTED / CARD_IO_UNAVAILABLE`が確定した場合だけYakisobaを選択できる。`CARD_UNKNOWN_TIMEOUT`ではcard状態未確定なのでfallbackしない。
 
-```text
-userdebug / eng:
-  prefer_smartcard_then_yakisoba
+B1では`CARD_VALID`の場合だけB1SmartCardPathを選択し、全ての非valid結果で失敗する。Yakisobaへ切り替えない。
 
-user / release:
-  smartcard_only
-```
-
-本プロダクトは実験用であるため、`userdebug` / `eng` では、B25に限り、スマートカードが有効でないと確定した場合に libyakisoba 経路へ切り替える。製品版または配布版の既定値は `smartcard_only` とする。
-
-### 6.3 カード状態分類
-
-```text
-CARD_VALID:
-  - カードデバイスを開ける
-  - reset / 初期化に成功する
-  - カード種別確認に成功する
-  - 対象 caSystemId に利用可能
-  - fatal 状態ではない
-
-CARD_ABSENT:
-  - カードリーダーまたはカードが存在しない
-
-CARD_INVALID:
-  - カード応答はあるが、対象 CAS 処理に使えない
-
-CARD_UNSUPPORTED:
-  - カード種別が対象 caSystemId に対応しない
-
-CARD_IO_UNAVAILABLE:
-  - PC/SC または Android 側カード I/O が利用不能
-
-CARD_UNKNOWN_TIMEOUT:
-  - 応答待ちが固定 timeout を超え、有効/無効を確定できない
-```
-
-### 6.4 `prefer_smartcard_then_yakisoba` の固定動作
-
-B25:
-
-```text
-1. createPlugin(caSystemId) 時に MaleicacidCasPlugin を生成する。
-2. openSession() 前に SmartCardCasPath.probe() を実行する。
-3. probe 結果が CARD_VALID なら SmartCardCasPath を選択する。
-4. probe 結果が CARD_ABSENT / CARD_INVALID / CARD_UNSUPPORTED / CARD_IO_UNAVAILABLE なら YakisobaCasPath を選択する。
-5. probe 結果が CARD_UNKNOWN_TIMEOUT の場合、YakisobaCasPath へ切り替えない。
-6. CARD_UNKNOWN_TIMEOUT は CAS 一時失敗として上位へ返す。
-7. 一度 session で選択した処理経路は、その session を close するまで変更しない。
-8. session 中にカードが抜けた場合、その session は失敗扱いとする。
-9. session 中に SmartCardCasPath から YakisobaCasPath へ切り替えてはならない。
-10. 次回 openSession() で再度 probe し、条件を満たす場合だけ YakisobaCasPath を選択する。
-```
-
-B1:
-
-```text
-1. B1 では prefer_smartcard_then_yakisoba でも YakisobaCasPath を選択しない。
-2. B1SmartCardPath.probe() が CARD_VALID の場合のみ B1SmartCardPath を選択する。
-3. CARD_ABSENT / CARD_INVALID / CARD_UNSUPPORTED / CARD_IO_UNAVAILABLE / CARD_UNKNOWN_TIMEOUT のいずれでも YakisobaCasPath へ切り替えない。
-4. B1で有効カードがない場合は CAS 失敗として上位へ返す。
-```
-
-`CARD_UNKNOWN_TIMEOUT` で切り替えない理由は、カードが存在する可能性が残る状態で別経路へ切り替えると、カード権利状態と視聴成否が一致しない誤動作になるためである。
+session中にbackendを切り替えず、次回`openSession()`でのみ再判定する。
 
 ---
 
-## 7. KeySlotRegistry / token 仕様
+## 7. KeySlotRegistry / token
 
-### 7.1 基本方針
+### 7.1 公開token
 
-```text
-- raw CW は Binder に出さない
-- raw CW は logcat に出さない
-- raw CW は TIS に返さない
-- raw CW は Tuner HAL に直接渡さない
-- CAS HAL 内部の KeySlotRegistry に登録する
-- Tuner descrambler へ渡す値は opaque token のみとする
-```
-
-### 7.2 token
+Tuner key tokenは `MediaCas.Session.getSessionId()` が返すsession ID bytesそのものとする。別のTIS向けtokenを生成しない。
 
 ```text
 KeyToken:
-  - 16 bytes 以下
-  - key slot 参照
-  - caSystemId
-  - session generation
-  - odd/even key epoch
-  - integrity check 用 tag
+  - MediaCas session ID bytesと同一
+  - 1..16 bytes
+  - opaque
+  - raw key materialを含まない
 ```
 
-token は鍵値ではない。Tuner HAL の `IDescrambler.setKeyToken()` は、token を vendor shared registry で解決し、PID 単位の descramble stage に紐付ける。
+`caSystemId`、session generation、key epoch、integrity情報などを公開tokenの必須fieldとして規定しない。内部identity/generation/epochはregistry側で保持・検証し、token内容の解釈で代替しない。
+
+### 7.2 commit / resolve
+
+session IDはECM成功前でも公開され得る。その時点ではregistry上でidentity予約だけが成立していてよく、完全なkey contextがpublishされるまでresolve不可とする。
+
+`processEcm()`は新epoch materialをprepareし、credential contextと必要parityを検証した後、完全なcontextをatomic commitする。
+
+```text
+processEcm() success の確定点:
+  同じMediaCas session ID bytesから新epochを即時resolve可能になった時点
+```
+
+commit前の失敗では旧epochを維持する。incomplete、generation/epoch mismatch、revoke済みtokenを成功へ丸めない。
+
+session close、release、credential revoke、path fatal failure、registry corruptionでは新規resolveを遮断し、stale tokenを別sessionへ再利用しない。
 
 ---
 
-## 8. Tuner HAL との境界
+## 8. Tuner HAL / TISとの境界
 
-CAS HAL は TS packet path を持たない。TS packet payload の復号は Tuner HAL 側で行う。
-
-### 8.1 CAS HAL の責務
+### 8.1 CAS HAL
 
 ```text
 - CA system ID advertise
-- ICas session 管理
-- CA private data 受領
-- ECM 処理
-- EMM 処理
-- smartcard / yakisoba 経路選択
-- key slot 登録
-- opaque key token 発行
-- CAS event / status 通知
+- ICas session管理
+- CA private data
+- ECM / B25 EMM
+- path選択
+- key context登録
+- opaque session ID tokenとの対応
+- status / listener通知
 ```
 
-B1はECM-only能力として固定し、EMM処理を恒久的に対応しない。
+CAS HALはTS packet pathを持たない。
 
-### 8.2 Tuner HAL の責務
+### 8.2 Tuner HAL
 
 ```text
 - ITuner.openDescrambler()
-- Tuner IDescrambler.setKeyToken()
-- Tuner IDescrambler.addPid()
-- Tuner IDescrambler.removePid()
-- PID -> key token mapping
-- TS header / adaptation field を壊さない payload-only MULTI2 復号
-- 復号後 TS を既存 soft demux / DVR / AV path へ渡す
-- 復号失敗 / key 未設定 / PID 未登録の diagnostics
+- IDescrambler.setKeyToken()
+- addPid() / removePid()
+- PID -> token mapping
+- TS payload-only MULTI2復号
+- 復号後TSをsoft demux / DVR / AVへ渡す
+- bad token / unavailable key診断
 ```
 
-### 8.3 TIS の責務
+### 8.3 TIS
+
+B25ではPMT/CAT/ECM/EMM filterを開き、B1ではPMT/ECMのみを開く。CA descriptorから`caSystemId`を決定し、MediaCas sessionを生成してECMを処理する。ECM成功後、同じsession ID bytesをTuner descramblerへ渡す。
+
+MediaCas sessionをcloseする前にTuner側参照を解除する。
 
 ```text
-- B25では PMT / CAT / ECM / EMM filter を Tuner API 経由で開く
-- B1では PMT / ECM filter を Tuner API 経由で開き、EMM filterを起動しない
-- CA descriptor を解析し caSystemId を決定する
-- MediaCas(caSystemId) を生成する
-- setPrivateData() / setSessionPrivateData() を呼ぶ
-- B25では processEcm() / processEmm()、B1では processEcm() だけを呼ぶ
-- MediaCas session 由来の key token を Tuner descrambler へ渡す
-- addPid() で video/audio PID を復号対象にする
+1. 対象PIDのlinkを解除
+2. IDescrambler.setKeyToken(VOID key token)でcurrent tokenを解除
+3. Tuner側で新規利用されない状態を確定
+4. MediaCas sessionをclose
 ```
 
-B1では`MediaCas.processEmm()`を呼ばない。防御的にB1 pluginの`processEmm()`へ到達した場合も明示的unsupportedを返し、空成功にしない。
+cleanup失敗を成功済みに丸めない。
 
 ---
 
-## 9. GPL / ライセンス方針
+## 9. GPL / ライセンス
 
-### 9.1 前提
+`libyakisoba` を同梱・改変する場合はGPL-3.0の配布義務を前提に扱う。CAS HAL本体はlibyakisobaへ直接リンクせず、別process daemonとのIPCに分離する。ただしdaemon化自体がGPL義務を消すとは説明しない。
 
-`libyakisoba` は GPL-3.0 として配布されている。そのため、Android 製品イメージや配布物に `libyakisoba` またはその改変版を同梱する場合、GPL の配布義務を前提に扱う。
-
-B1参照元として扱う `libaribb1` 系についても、実際にソースを取り込む、リンクする、daemonへ組み込む、またはコードを移植する場合は、そのライセンス条件を別途確認し、配布義務を固定してから実装に入る。
-
-### 9.2 判例から言えること
-
-オープンソースライセンス条件は、単なる任意のお願いではなく、条件違反により著作権侵害または契約違反として問題になり得る。
-
-代表例:
-
-- `Jacobsen v. Katzer`: オープンソースライセンス条件が著作権上の条件として執行可能になり得ることを示した事案。
-- `Artifex v. Hancom`: GPL違反について契約違反および著作権侵害が争点となり、GPLに基づく金銭的救済の可能性が否定されなかった事案。
-
-ただし、別プロセス IPC で接続した場合に、呼び出し側プログラムへ GPL が絶対に波及しないと明確に判示した支配的判例があるわけではない。したがって、法務上は「リスク低減策」と「配布義務の明確化」を分けて扱う。
-
-### 9.3 形態別の扱い
-
-| 形態 | 扱い |
-|---|---|
-| libyakisoba を改変せず単体 daemon として同梱 | daemon / libyakisoba について GPL 本文、著作権表示、対応するソース提供が必要。 |
-| libyakisoba を Android 向けに改変して同梱 | 改変済み libyakisoba と daemon 部分の対応ソースを GPLv3 条件で提供する必要がある。 |
-| CAS HAL が libyakisoba.so に直接リンク | CAS HAL まで結合著作物と評価されるリスクが高い。採用しない。 |
-| CAS HAL と libyakisoba daemon が固定 IPC で通信 | CAS HAL 本体を別著作物として扱える余地が最も大きい。ただし daemon 側の GPL 配布義務は残る。 |
-| B1実装として libaribb1 系を参照・移植・リンクする | libaribb1 系のライセンス条件を確認し、その条件に従う。B1はyakisobaでは代替しない。 |
-
-### 9.4 固定する法務仕様
-
-```text
-- CAS HAL 本体は libyakisoba に直接リンクしない。
-- libyakisoba は別プロセス daemon に閉じ込める。
-- IPC は ECM / EMM 処理要求と結果 status の単純な要求応答に限定する。
-- libyakisoba 改変版を配布する場合、改変済みソースを提供する。
-- libyakisoba を改変しない場合でも、同梱配布する GPL プログラムとして必要なライセンス文、著作権表示、対応ソース提供を行う。
-- GPL 義務を消すために daemon 化した、という説明はしない。
-- daemon 化は CAS HAL 本体との結合リスクを下げるための構造分離策として扱う。
-- B1については libyakisoba を実装根拠にしない。
-- B1で libaribb1 系コードを参照・移植・リンクする場合、そのライセンス条件を実装前に固定する。
-```
+B1参照元としてlibaribb1系コードを実際に移植・リンク・組込みする場合は、そのライセンス条件を実装前に確認して固定する。
 
 ---
 
 ## 10. 実装フェーズ
 
-### Phase 1: CAS HAL 骨格
+### Phase 1: AOSP CAS service骨格
 
 ```text
-- IMediaCasService/default を実装する
-- VINTF manifest を追加する
-- init rc を追加する
-- SELinux domain を追加する
-- enumeratePlugins() を実装する
-- unsupported caSystemId の挙動を固定する
-- createPlugin(caSystemId) が MaleicacidCasPlugin を返す
+- IMediaCasService/default
+- VINTF / init / SELinux
+- ClearKey compatibility path
+- enumeratePlugins / support query
+- unknown caSystemIdのVTS戻り値
+- B25/B1 advertise gate
 ```
 
 完了条件:
 
 ```text
-- 同一 caSystemId の重複 descriptor がない
-- unknown caSystemId は unsupported として扱われる
-- createPlugin(B25) が ICas を返す
-- createPlugin(unknown) が成功扱いにならない
-- B1 は B1SmartCardPath が検証済みになるまで enumeratePlugins() に出ない
+- ClearKeyがB25/B1 profile非依存で利用可能
+- unknown IDはfalse / nullをAIDL成功で返す
+- 同一caSystemIdの重複descriptorなし
+- B25/B1は各gate成立前に広告されない
+- B25/B1 createDescrambler()はnull
 ```
 
-### Phase 2: 単一 ICas 実装
+### Phase 2: MaleicacidCasPlugin
 
 ```text
 - session table
-- openSessionDefault()
-- openSession()
-- closeSession()
-- setPrivateData()
-- setSessionPrivateData()
-- processEcm()
-- processEmm()
-- release()
-- ICasListenerBridge
-- KeySlotRegistry
+- open / close / release
+- private data
+- ECM / EMM contract
+- listener
+- session ID token予約・revoke
 ```
 
-完了条件:
+### Phase 3: B25 SmartCard
 
 ```text
-- session ID が一意
-- closeSession 後の session は無効
-- release 後に全 session / key slot が破棄される
-- processEcm() / processEmm() が未実装成功扱いにならない
-- B1 processEmm() は明示的 unsupported として固定されている
+- card probe / APDU
+- card初期化応答からcredential context取得
+- ECM / EMM
+- key context atomic commit
 ```
 
-### Phase 3: SmartCardCasPath
+### Phase 4: B1 SmartCard
 
 ```text
-- カード probe
-- CARD_VALID / CARD_ABSENT / CARD_INVALID / CARD_UNSUPPORTED / CARD_IO_UNAVAILABLE / CARD_UNKNOWN_TIMEOUT 分類
-- ARIB 準拠 APDU 処理
-- ECM 処理
-- EMM 処理
-- key 登録
-- token 発行
+- B1 probe / ECM
+- B1 credential source検証
+- B1 EMM明示unsupported
+- Yakisoba非選択
 ```
 
-完了条件:
+### Phase 5: Yakisoba
 
 ```text
-- 有効カードで ECM 処理が可能
-- カードなしを CARD_ABSENT として分類できる
-- 不正カードを CARD_INVALID として分類できる
-- timeout を CARD_UNKNOWN_TIMEOUT として分類できる
-- raw key が外部へ出ない
+- Android build / daemon / init / SELinux
+- bounded local IPC
+- B25 ECM / EMM
+- B1拒否
+- raw key / ECM / EMMログ禁止
 ```
 
-### Phase 4: B1SmartCardPath
+### Phase 6: path selection / EMM owner
 
 ```text
-- libaribb1 系公開実装の移植可能範囲を確認する
-- libaribb1 系のライセンス条件を確認する
-- B1 caSystemId を固定する
-- B1 card probe を実装する
-- B1 ECM 処理を実装する
-- B1 key token 発行を実装する
-- B1 processEmm() を unsupported として明示実装する
-- B1 EMMに依存する通電制御情報取得、契約更新、権利更新を unsupported として明示実装する
+- smartcard_only / yakisoba_only / prefer_smartcard_then_yakisoba
+- timeout非fallback
+- session中path不変
+- plugin単位のB25 EMM owner一意化
 ```
 
-完了条件:
+### Phase 7: Tuner接続
 
 ```text
-- B1 ECM 処理が実カードまたは妥当なテストベクタで確認できる
-- B1 EMM が空成功にならない
-- B1 EMMに依存する通電制御情報取得、契約更新、権利更新が空成功にならない
-- B1 で YakisobaCasPath が選択されない
-- B1 advertise gate を満たすまで plugin descriptor が出ない
-```
-
-### Phase 5: YakisobaCasPath / daemon
-
-```text
-- libyakisoba Android.bp 追加
-- daemon Android.bp 追加
-- daemon init rc 追加
-- daemon SELinux 追加
-- IPC protocol 実装
-- DecodeEcm 実装
-- ProcessEmm 実装
-- HealthCheck 実装
-- timeout 実装
-- ログ抑制
-```
-
-完了条件:
-
-```text
-- CAS HAL domain 以外から daemon に接続できない
-- daemon が B25 ECM 要求に status を返す
-- daemon が B25 EMM 要求に status を返す
-- B1 要求は unsupported になる
-- timeout 時に CAS HAL が binder thread を永久に塞がない
-- 鍵値・ECM本文・EMM本文が logcat に出ない
-```
-
-### Phase 6: 処理経路選択
-
-```text
-- cas.path.mode を実装する
-- smartcard_only を実装する
-- yakisoba_only を実装する
-- prefer_smartcard_then_yakisoba を実装する
-- userdebug / eng 既定値を prefer_smartcard_then_yakisoba にする
-- user / release 既定値を smartcard_only にする
-```
-
-完了条件:
-
-```text
-- B25 CARD_VALID では SmartCardCasPath が選ばれる
-- B25 CARD_ABSENT / CARD_INVALID / CARD_UNSUPPORTED / CARD_IO_UNAVAILABLE では YakisobaCasPath が選ばれる
-- B25 CARD_UNKNOWN_TIMEOUT では YakisobaCasPath が選ばれない
-- B1 では CARD_VALID の場合のみ B1SmartCardPath が選ばれる
-- B1 では YakisobaCasPath が選ばれない
-- session 中に経路が切り替わらない
-- 次回 openSession() で再判定される
-```
-
-### Phase 7: Tuner HAL 接続
-
-```text
-- CAS HAL が opaque key token を返す
-- Tuner HAL が setKeyToken() で token を解決する
-- addPid() / removePid() が PID 単位復号対象を管理する
-- 復号 stage が TS payload のみを処理する
-- 復号後 TS が既存 soft demux / DVR / AV へ流れる
-```
-
-完了条件:
-
-```text
-- token 未設定 PID は復号成功扱いにならない
-- key parity に応じて odd/even key が選択される
-- adaptation field / PCR / continuity counter が壊れない
-- 復号不能時に diagnostics が増える
+- MediaCas session ID bytesをopaque tokenとして使用
+- ECM成功前はunresolved
+- ECM success時に即resolve可能
+- addPid / removePid
+- payload-only MULTI2
+- VOID token -> MediaCas close のteardown順序
 ```
 
 ---
 
 ## 11. B1 実装対象判定
 
-### 11.1 B1 を実装対象に含める可否
-
-```text
-判定:
-  可能。
-
-条件:
-  - B1SmartCardPath の ECM-only 経路を正式対応とする。
-  - B1 EMM は恒久的に非対応とする。
-  - EMMに依存する通電制御情報取得は恒久的に非対応とする。
-  - B1 の公開参照実装は libaribb1 系を一次候補とする。
-```
-
-### 11.2 libyakisoba を B1 実装として扱えるか
-
-```text
-判定:
-  扱わない。
-
-理由:
-  - libyakisoba は B1 実装として扱える公開根拠がない。
-  - B1 の公開・移植可能な実装は実質的に libaribb1 系に集約されている。
-  - B1 で yakisoba fallback を行うと、未検証 backend による成功扱いが発生し得る。
-```
-
-### 11.3 その他の B1 実装
-
-```text
-判定:
-  CAS HAL へ移植・検証・保守できる独立した公開ソース実装は、現時点では確認できない。
-
-扱い:
-  - B1_p2c9 等の古いバイナリ・派生情報は、保守可能な公開ソース実装としては扱わない。
-  - B1Decoder.dll 等は libaribb1 系互換物・派生物として扱い、独立した実装根拠にはしない。
-```
+B1は実装対象に含める。ただし正式対応はB1SmartCardPathのECM-only経路であり、B1 EMM、EMM依存の通電制御情報取得、契約更新、権利更新は対応しない。libyakisobaをB1 fallback/backendとして扱わない。
 
 ---
 
 ## 12. 最終固定事項
 
 ```text
-1. IMediaCasService は1つだけ実装する。
-2. B25/B1 の plugin descriptor は caSystemId 単位で一意に列挙する。
-3. smartcard と yakisoba を同一 caSystemId の別 plugin として列挙しない。
-4. ICas 実装は MaleicacidCasPlugin に一本化する。
-5. SmartCardCasPath、B1SmartCardPath、YakisobaCasPath は ICas 内部の処理経路として扱う。
-6. userdebug / eng では、B25に限り、有効カードなしが確定した場合だけ YakisobaCasPath へ切り替える。
-7. B1では YakisobaCasPath へ切り替えない。
-8. B1では CARD_VALID の場合のみ B1SmartCardPath を選択する。
-9. CARD_UNKNOWN_TIMEOUT では YakisobaCasPath へ切り替えない。
-10. user / release の既定値は smartcard_only とする。
-11. CAS HAL は libyakisoba に直接リンクしない。
-12. libyakisoba は別プロセス daemon として統合する。
-13. libyakisoba daemon を同梱する場合、GPL 配布義務の対象として扱う。
-14. libyakisoba は B1 実装として扱わない。
-15. B1実装の公開参照元は libaribb1 系を一次候補とする。
-16. B1 EMM は恒久的に非対応とする。
-17. B1 EMMに依存する通電制御情報取得、契約更新、権利更新は恒久的に非対応とする。
-18. raw CW は Binder、logcat、TIS、Tuner HAL へ出さない。
-19. CAS HAL は TS demux / TS packet 復号 / AV / DVR を担当しない。
-20. TS payload 復号は Tuner HAL descrambler の責務とする。
+1. IMediaCasService/default は1つだけ実装する。
+2. ClearKey compatibility pathをB25/B1 product capabilityと分離して保持する。
+3. B25/B1 descriptorは各advertise gate成立後だけ列挙する。
+4. unknown caSystemIdはsupport=false、create*=nullをAIDL成功で返す。
+5. B25/B1のMedia CAS descramblerは提供せず、packet descrambleはTuner HALだけが所有する。
+6. B25/B1のICas実装はMaleicacidCasPluginに一本化する。
+7. SmartCard/Yakisobaを同一caSystemIdの別descriptorとして列挙しない。
+8. B25ではSmartCardまたはYakisobaを明示profileに従って選択し、session中は切り替えない。
+9. B1はB1SmartCardPathのみを使用し、Yakisobaへ切り替えない。
+10. CARD_UNKNOWN_TIMEOUTではfallbackしない。
+11. B25 SmartCardのsystem key / CBC初期値は検証済みcard初期化応答から取得する。
+12. B25 EMM ownerはplugin/profile単位で一意に固定し、session集合から推測しない。
+13. Tuner key tokenはMediaCas session ID bytesそのものとし、独自構造tokenを公開契約にしない。
+14. processEcm()成功時点で新epochが同じsession IDからresolve可能でなければならない。
+15. MediaCas session close前にTuner key token参照を解除する。
+16. raw key materialをBinder、TIS、logcatへ出さない。
+17. CAS HALはTS demux / TS packet復号 / AV / DVRを担当しない。
+18. libyakisobaは別process daemonとし、B1実装根拠にはしない。
 ```
 
 ---
 
 ## 13. 参考資料
 
-- Android Media CAS  
-  https://source.android.com/docs/devices/tv/media-cas
-
-- Android Tuner framework  
-  https://source.android.com/docs/devices/tv/tuner-framework
-
-- AIDL HAL / VINTF stability  
-  https://source.android.com/docs/core/architecture/aidl/aidl-hals
-
-- AOSP `IMediaCasService.aidl`  
-  https://android.googlesource.com/platform/hardware/interfaces/+/master/cas/aidl/android/hardware/cas/IMediaCasService.aidl
-
-- AOSP `ICas.aidl`  
-  https://android.googlesource.com/platform/hardware/interfaces/+/master/cas/aidl/android/hardware/cas/ICas.aidl
-
-- AOSP `AidlCasPluginDescriptor.aidl`  
-  https://android.googlesource.com/platform/hardware/interfaces/+/master/cas/aidl/android/hardware/cas/AidlCasPluginDescriptor.aidl
-
-- AOSP Tuner `Descrambler.java`  
-  https://android.googlesource.com/platform/frameworks/base/+/master/media/java/android/media/tv/tuner/Descrambler.java
-
-- libyakisoba  
-  https://github.com/tsunoda14/libyakisoba
-
-- libaribb25 / libaribb1  
-  https://github.com/tsukumijima/libaribb25
-
-- Jacobsen v. Katzer  
-  https://jolt.law.harvard.edu/digest/jacobsen-v-katzer
-
-- Artifex v. Hancom  
-  https://docs.justia.com/cases/federal/district-courts/california/candce/3:2016cv06982/305835/54
-
-- GNU GPL FAQ  
-  https://www.gnu.org/licenses/gpl-faq.html
+- Android Media CAS
+- Android Tuner framework
+- AIDL HAL / VINTF stability
+- AOSP `IMediaCasService.aidl`
+- AOSP `ICas.aidl`
+- AOSP `AidlCasPluginDescriptor.aidl`
+- AOSP Tuner `Descrambler.java`
+- libyakisoba
+- libaribb25 / libaribb1
+- GNU GPL FAQ
