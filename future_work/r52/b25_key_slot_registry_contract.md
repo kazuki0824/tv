@@ -30,7 +30,19 @@ CA system ID、MediaCas session generation、SmartCard/Yakisoba種別はCAS-doma
 
 `provider_incarnation` と `key_epoch` は比較・stale判定のための内部metadataであり、AOSP tokenへ公開しない。実装はsecure-memory object、key-ladder slot、opaque handle等へ置換できるが、token resolve後に同じprovider incarnation / epochの完全なMULTI2 contextを一意に取得できなければならない。
 
-## 3. 所有権と供給経路
+## 3. stable link と key rotation
+
+`IDescrambler.setKeyToken(token)` はtokenをその時点のkey bytesのsnapshotへ固定する操作ではなく、stableなregistry slot identityへlinkする操作とする。
+
+- 初回ECM成功後にtokenをdescramblerへ設定した後、同じMediaCas sessionの後続ECMでkey epochが更新されても、TISが同じtokenを設定し直す必要はない。
+- registryは同じstable slot identityのcurrent resourceをatomicに差し替える。既link descramblerの新規packet処理は更新後resourceを参照する。
+- epoch切替と競合して既にresource参照を取得済みのpacketは、その取得済みepochで完了してよい。1 packet処理中に旧/new epochのfieldを混在させない。
+- revoke/provider death後はstable linkが残っていても新規resource取得を拒否する。既取得参照だけをdrainする。
+- tokenを別slot identityへ付け替えない。slot/resource本体を回収しても同一tokenを別sessionへ再利用しない。
+
+このindirectionは継続的ECM key rotationを既存AOSP `setKeyToken()` linkageだけで成立させるための内部契約であり、AOSPへ更新APIを追加するものではない。
+
+## 4. 所有権と供給経路
 
 - system key / CBC初期値はplugin generationにbindされたCAS backendが所有する。B25実カードでは検証済みcard初期化応答から取得し、このためだけの外部secure store / factory provisioningを必須にしない。
 - Yakisoba等で外部credentialが必要な場合だけ、その供給元とaccess controlをproduct側で固定する。一般property、公開API、TIS、Tuner HAL、world-readable fileをcredential sourceにしない。
@@ -40,7 +52,7 @@ CA system ID、MediaCas session generation、SmartCard/Yakisoba種別はCAS-doma
 - transport/encode/decode用のraw-key一時bufferは必要最短寿命にし、commitまたは失敗後にzeroizeする。
 - 1つのB25 plugin generationでbackendをbindした後はreleaseまで切り替えず、異なるcredential sourceや別sessionのKsを混成しない。
 
-## 4. token identity と寿命
+## 5. token identity と寿命
 
 - MediaCas session IDは1..16 bytesのopaque valueとし、TunerのVOID key tokenと同一値を発行しない。
 - 同一CAS service process lifetime内でsession ID bytesを再利用しない。生成方式は公開契約にしない。
@@ -48,19 +60,19 @@ CA system ID、MediaCas session generation、SmartCard/Yakisoba種別はCAS-doma
 - provider incarnationをwrap/reuseしない。次incarnationを安全に発行できない場合は新providerを有効化しない。
 - key epochを同一live token内でwrap/reuseしない。次epochを発行できない場合はECM成功にせず、そのsessionを新規key publish不能として閉じる。
 - CAS provider/serviceのdeath/disconnectを検出した場合、そのincarnationに属するentryの新規resolveを一括遮断する。
-- revokeは最初に新規resolveを遮断する。既取得resource参照はそのpacket処理終了まで保持してよいが、新規packet処理へ再取得させない。
+- revokeは最初に新規resolveを遮断する。既にTuner packet pathが取得済みの内部resource参照はその処理終了まで保持してよいが、新規packet処理へ再取得させない。
 - 最後の取得済み参照解放後にraw key materialをzeroizeしresource本体を回収する。旧entryが残る間は同じtoken candidateの新規reservationを拒否する。
 
-## 5. commit / resolve / revoke 不変条件
+## 6. commit / resolve / revoke 不変条件
 
 - ECM前のsession IDはunresolvedでよい。不完全context、必要parity欠落、provider incarnation mismatch、epoch mismatchを成功へ丸めない。
-- ECM更新ではnew epoch materialをprepareし、system key/CBC初期値/odd/even Ksを含む完全contextを検証してから一括commitする。packet pathが旧/new epochのfieldを混在観測してはならない。
-- `processEcm()` 成功のlinearization pointは、新epochがregistryへcommit済みで、同じsession ID bytesから直ちにresolve可能になった時点とする。commit前失敗では旧epochを維持する。
-- session close、CAS release、provider death、credential revoke、backend fatal failure、registry corruptionでは新規resolveをrevokeする。
+- ECM更新ではnew epoch materialをprepareし、system key/CBC初期値/odd/even Ksを含む完全contextを検証してからstable slotのcurrent resourceを一括commitする。
+- `processEcm()` 成功のlinearization pointは、新epochがregistryへcommit済みで、同じsession ID bytesのstable linkから直ちに新epochを取得可能になった時点とする。commit前失敗では旧epochを維持する。
+- session close、CAS release、provider death、credential revoke、backend fatal failure、registry corruptionでは新規resolve/resource取得をrevokeする。
 - stale tokenを別provider/sessionのresourceへ再利用しない。
 - resolve failure、incomplete context、incarnation/epoch mismatch、revoke済みtokenを復号成功に丸めず、Tuner HALのbad-token / unavailable-key / registry-failure診断へ接続する。
 
-## 6. TIS / Tuner teardown
+## 7. TIS / Tuner teardown
 
 MediaCas由来tokenをTuner descramblerで使用した場合は、MediaCas sessionをcloseする前にそのtokenをdescramblerから解除する。
 
@@ -73,10 +85,10 @@ MediaCas由来tokenをTuner descramblerで使用した場合は、MediaCas sessi
 
 PID unlink失敗は診断へ残すが、token解除成功後にsession closeを不必要に保持しない。逆にVOID設定失敗のdescramblerが残る間は、そのtokenを使うMediaCas sessionをclose済み成功として扱わない。
 
-CAS側revoke後は新規resolveを拒否し、競合して既にresourceを取得済みのpacket処理だけを内部参照寿命で完了または破棄させ、最後の参照解放後にzeroizeする。追加の公開同期APIは設けない。
+CAS側revoke後は新規resolve/resource取得を拒否し、競合して既にresourceを取得済みのpacket処理だけを内部参照寿命で完了または破棄させ、最後の参照解放後にzeroizeする。追加の公開同期APIは設けない。
 
-## 7. Tuner HAL の責務
+## 8. Tuner HAL の責務
 
-Tuner HALは解決済みMULTI2 resourceを使い、TS packet payloadのMULTI2復号とscrambling-controlに基づくodd/even Ks選択だけを行う。ECM/EMM、card I/O、Yakisoba IPC、権利判定、credential取得をTuner HALへ移さない。
+Tuner HALはstable slotから取得したMULTI2 resourceを使い、TS packet payloadのMULTI2復号とscrambling-controlに基づくodd/even Ks選択だけを行う。ECM/EMM、card I/O、Yakisoba IPC、権利判定、credential取得をTuner HALへ移さない。
 
 AOSP/VTSはkey tokenをopaque linkageとして扱い、B25内部material layoutを規定しない。本契約はARIB STD-B25のMULTI2/Ksの意味を満たしながら、AOSP公開境界へraw materialやCAS方式固有identityを露出しないためのvendor内部契約である。
