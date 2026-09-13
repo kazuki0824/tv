@@ -4,7 +4,3 @@
 
 $(call inherit-product, vendor/maleicacid/tv/tuner_hal2/config/product_integration.mk)
 $(call inherit-product, vendor/maleicacid/tv/tis/config/product_integration.mk)
-
-# production CAS は PR #57 が所有する。mainには統合mkを置かないため無効のまま、
-# #57をcheckoutしたsource treeでは同PRのproduct integrationを自動で取り込む。
-$(call inherit-product-if-exists, vendor/maleicacid/tv/cas_hal/config/product_integration.mk)
