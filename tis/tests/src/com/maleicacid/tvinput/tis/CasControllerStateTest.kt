@@ -10,10 +10,10 @@ import com.maleicacid.tvinput.common.TsPid
 import com.maleicacid.tvinput.common.TunerKeyToken
 import org.junit.Test
 
-// 一つの契約の試験集合・時系列を保持し、検証シナリオを分断しない。
+// CAS所有と状態遷移の試験集合・時系列を保持し、行数や関数数だけで検証シナリオを分断しない。
 
 /** AndroidJUnitRunner から実行する CasController 状態遷移テスト。 */
-@Suppress("TooManyFunctions")
+@Suppress("TooManyFunctions", "LargeClass")
 class CasControllerStateTest {
     private val serviceKey = ServiceKey(originalNetworkId = 4, transportStreamId = 16625, serviceId = 101)
 
@@ -23,7 +23,10 @@ class CasControllerStateTest {
             Result.success<EcmProcessResult>(EcmProcessResult.InvalidKeyToken("invalid")),
             Result.success<EcmProcessResult>(EcmProcessResult.DiagnosticOnly("no key")),
         )) {
-            val success = Result.success<EcmProcessResult>(EcmProcessResult.RealKeyToken(TunerKeyToken(byteArrayOf(1, 2, 3))))
+            val success =
+                Result.success<EcmProcessResult>(
+                    EcmProcessResult.RealKeyToken(TunerKeyToken(byteArrayOf(1, 2, 3))),
+                )
             var nextResult = success
             val session =
                 object : CasController.MediaCasSessionBridge {
@@ -58,7 +61,8 @@ class CasControllerStateTest {
                 nextResult = failure
                 check(controller.onEcmSection(TsPid(0x123), byteArrayOf(1)).isNotEmpty())
                 check(controller.currentReadiness() == CasController.Readiness.WAITING_FOR_KEY)
-                check(controller.updateFromCaMetadata(metadata) { descrambler }.readiness == CasController.Readiness.WAITING_FOR_KEY)
+                val refreshed = controller.updateFromCaMetadata(metadata) { descrambler }
+                check(refreshed.readiness == CasController.Readiness.WAITING_FOR_KEY)
                 nextResult = success
                 check(controller.onEcmSection(TsPid(0x123), byteArrayOf(1)).isEmpty())
                 check(controller.currentReadiness() == CasController.Readiness.READY)
@@ -431,7 +435,8 @@ class CasControllerStateTest {
         var commits = 0
         var stopped = false
         try {
-            controller.updateFromCaMetadata(listOf(binding(5, 1), binding(1, 1), binding(7, 1))) { FakeTunerDescramblerBridge() }
+            val bindings = listOf(binding(5, 1), binding(1, 1), binding(7, 1))
+            controller.updateFromCaMetadata(bindings) { FakeTunerDescramblerBridge() }
 
             // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
             @Suppress("TooGenericExceptionCaught")
@@ -1013,7 +1018,10 @@ class CasControllerStateTest {
             )
 
     private class DiagnosticOnlyMediaCasBridgeFactory : CasController.MediaCasBridgeFactory {
-        override fun create(caSystemId: Int): Result<CasController.MediaCasBridge> = Result.success(DiagnosticOnlyMediaCasBridge())
+        override fun create(caSystemId: Int): Result<CasController.MediaCasBridge> {
+            val bridge = DiagnosticOnlyMediaCasBridge()
+            return Result.success(bridge)
+        }
     }
 
     private class DiagnosticOnlyMediaCasBridge : CasController.MediaCasBridge {
@@ -1197,7 +1205,10 @@ class CasControllerStateTest {
     private class ForkingDescramblerBridge : CasController.TunerDescramblerBridge {
         val children = mutableListOf<FakeTunerDescramblerBridge>()
 
-        override fun setKeyToken(keyToken: TunerKeyToken) = Result.failure<Unit>(IllegalStateException("prototype only"))
+        override fun setKeyToken(keyToken: TunerKeyToken): Result<Unit> {
+            val failure = IllegalStateException("prototype only")
+            return Result.failure(failure)
+        }
 
         override fun addPid(elementaryPid: TsPid) = Result.failure<Unit>(IllegalStateException("prototype only"))
 
@@ -1213,7 +1224,10 @@ class CasControllerStateTest {
     }
 
     private class MultiSessionMediaCasBridgeFactory : CasController.MediaCasBridgeFactory {
-        override fun create(caSystemId: Int): Result<CasController.MediaCasBridge> = Result.success(FakeMediaCasBridge())
+        override fun create(caSystemId: Int): Result<CasController.MediaCasBridge> {
+            val bridge = FakeMediaCasBridge()
+            return Result.success(bridge)
+        }
     }
 
     private class OrderedMediaCasBridgeFactory(

@@ -1,3 +1,22 @@
+# r52_pr57_kotlin_quality_repair
+
+- mainの未使用引数削除を復元し、`tuneResolvedChannel`の`startPlayback`引数と呼出し2箇所で渡していた値を除去した。ECM処理後の通知は維持し、選局・再生の動作は変更していない。
+- CASの視聴可否判定を、CLOSED、診断ERROR、CLEAR、context待機、READYの優先順を保つ`when`式へ整理した。Session初期化、試験用bridge、解放失敗条件、検証式の長い行を整理した。
+- 次の抑止は既存PR #97で扱った種類に限定し、該当する宣言へ理由コメントを付けた。全体のdetekt設定、閾値、対象ファイル、テスト数は変更していない。
+
+| 抑止 | 今回の適用箇所 | 理由 |
+|---|---|---|
+| `LargeClass` | `CasController`、`CasControllerStateTest` | 単一executor下のCAS資源所有と、その状態遷移試験の集合を行数だけで分割しない |
+| `ReturnCount` | `ensurePluginLocked`、`ensureContextLocked` | 退役中、既存資源、取得失敗の早期終了を保ち、所有確定の順序を見通せる形にする |
+| `TooGenericExceptionCaught` | `ensureContextLocked` | 取得・初期化失敗時の後処理を取りこぼさず、元の失敗へ解放失敗を添え、未解放資源の所有を保持する |
+| `SpreadOperator` | `retryRetiredResourcesLocked`、`closeContextLocked` | 動的な解放対象を既存`SectionFilterPolicy.completeCleanup`へ渡し、全件試行と失敗集約を共有する。解放経路だけの配列コピーを許容し、移動元の不要な抑止は除去した |
+| `LongMethod` | `linkContextKeyLocked` | 鍵設定、PID追加、失敗時のPID・鍵解除を同じ所有状態に対する一連の手順として保つ |
+| `MagicNumber` | `HevcPlaybackTest`ファイル | 規格ビット列、不正入力、寸法の期待値を本体の定数と独立した具体値で保持する |
+| `TooManyFunctions` | `HevcPlaybackTest`クラス | HEVC構成契約の13シナリオと補助処理を同じ試験集合として維持する |
+
+- 検証: 全Kotlin 128ファイルのktlint 1.8.0とdetekt 1.23.8が成功し、detektの指摘は63件から0件になった。Kotlin 1.9.22/Android 15入力による本番・試験コンパイル、Java失敗注入stubのコンパイル、Rust 1.81.0でビルドした実SI JNIを使うホストJUnit 257件が成功した。同集合のCAS状態遷移・解放失敗30件も個別実行で成功した。`git diff --check`が成功した。
+- Gradle 8.9/AGP 8.7.0/Robolectric 4.16.1による既存のAndroid依存3クラス・4テストも成功し、失敗・除外は0件だった。この実行環境の一時プロキシをテスト用Javaプロセスへ渡す設定だけをリポジトリ外で追加し、試験内容とリポジトリのGradle設定は変更していない。Android/Soong build、device atest/CTS/VTS、実機・実波確認は未実施。
+
 # r52_pr57_hevc_configuration_review
 
 - `HevcConfigParser`へ起動時のNAL収集・SPS寸法取得・CSD構成を分離し、`PlaybackPipeline`は`MediaFormat`への接続を担当する。既存のビット読取りを`CodecBitReader`としてAVCと共有し、旧HEVC helperを削除した。外部依存やJNI入口は追加していない。

@@ -9,7 +9,7 @@ import com.maleicacid.tvinput.common.TunerKeyToken
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
-// 同じ状態・境界を扱う操作群を一つの所有者に保つ。
+// Session、Descrambler、未解放資源の所有と変更を同じexecutorへ閉じ、行数だけで所有者を分割しない。
 
 /**
  * B25/B1 向け CAS 制御。
@@ -18,7 +18,7 @@ import java.util.concurrent.Executors
  * カード I/O、CW 生成、鍵発行は MediaCas/CAS HAL 側の責務とする。
  * Tuner HAL には opaque token と ES PID 登録だけを渡す。
  */
-@Suppress("TooManyFunctions")
+@Suppress("TooManyFunctions", "LargeClass")
 class CasController(
     private val supportedSystemIds: Set<Int> = SupportedCasSystemIds.B25_B1,
     private val mediaCasFactory: MediaCasBridgeFactory = FrameworkMediaCasBridgeFactory(),
@@ -182,8 +182,6 @@ class CasController(
 
     fun clearForClearService(): Unit = onExecutor { clearForClearServiceLocked() }
 
-    // 動的な引数列を既存の可変長APIへ渡すため、一時配列のコピーを許容する。
-    @Suppress("SpreadOperator")
     private fun clearForClearServiceLocked() {
         invalidateMetadataLocked()
         sessionsByContext.values.forEach { it.retiring = true }
@@ -192,6 +190,8 @@ class CasController(
         lastDiagnostic = Diagnostic(State.IDLE)
     }
 
+    // 解放経路だけの一時配列コピーを許容し、既存の全件試行・失敗集約を共有する。
+    @Suppress("SpreadOperator")
     private fun retryRetiredResourcesLocked() {
         SectionFilterPolicy.completeCleanup(
             {
@@ -502,6 +502,8 @@ class CasController(
             privateData.toList(),
         )
 
+    // 退役中・既存・生成失敗を早期に返し、成功時だけ所有表へ登録する順序を保つ。
+    @Suppress("ReturnCount")
     private fun ensurePluginLocked(
         caSystemId: Int,
         diagnostics: MutableList<Diagnostic>,
@@ -532,6 +534,9 @@ class CasController(
         return plugin
     }
 
+    // 既存contextと取得失敗の早期終了を保ち、取得・初期化失敗時の後処理例外を元の失敗へ添える。
+    // 呼出先の例外種別を狭めて、取得済み資源の解放や未解放所有の保持を飛ばさない。
+    @Suppress("ReturnCount", "TooGenericExceptionCaught")
     private fun ensureContextLocked(
         plan: ContextPlan,
         createDescrambler: (() -> TunerDescramblerBridge)?,
@@ -639,6 +644,8 @@ class CasController(
         }
     }
 
+    // 鍵設定、PID追加、失敗時のPID・鍵解除を同じ所有状態に対する一連の手順として保つ。
+    @Suppress("LongMethod")
     private fun linkContextKeyLocked(
         state: CasSessionState,
         token: TunerKeyToken,
@@ -723,6 +730,8 @@ class CasController(
         }
     }
 
+    // 動的なPID集合も既存の全件解放へ渡し、個々の失敗で後続解放を省略しない。
+    @Suppress("SpreadOperator")
     private fun closeContextLocked(key: DescrambleContextKey) {
         val state = sessionsByContext[key] ?: return
         state.retiring = true
@@ -781,13 +790,15 @@ class CasController(
     private fun readinessLocked(
         requiresDescrambling: Boolean,
         diagnostics: List<Diagnostic>,
-    ): Readiness {
-        if (closed) return Readiness.CLOSED
-        if (diagnostics.any { it.isBlockingForPlayback() }) return Readiness.ERROR
-        if (!requiresDescrambling) return Readiness.CLEAR
-        if (sessionsByContext.isEmpty()) return Readiness.WAITING_FOR_KEY
-        return if (sessionsByContext.values.all { it.isFullyLinked() }) Readiness.READY else Readiness.WAITING_FOR_KEY
-    }
+    ): Readiness =
+        when {
+            closed -> Readiness.CLOSED
+            diagnostics.any { it.isBlockingForPlayback() } -> Readiness.ERROR
+            !requiresDescrambling -> Readiness.CLEAR
+            sessionsByContext.isEmpty() -> Readiness.WAITING_FOR_KEY
+            sessionsByContext.values.all { it.isFullyLinked() } -> Readiness.READY
+            else -> Readiness.WAITING_FOR_KEY
+        }
 
     private fun Diagnostic.isBlockingForPlayback(): Boolean =
         when (errorCode) {
@@ -870,7 +881,10 @@ private class FrameworkMediaCasBridge(
 private class FrameworkMediaCasSessionBridge(
     private val session: android.media.MediaCas.Session,
 ) : CasController.MediaCasSessionBridge {
-    override fun setPrivateData(privateData: ByteArray): Result<Unit> = runCatching { session.setPrivateData(privateData) }
+    override fun setPrivateData(privateData: ByteArray): Result<Unit> =
+        runCatching {
+            session.setPrivateData(privateData)
+        }
 
     override fun processEcm(section: ByteArray): Result<EcmProcessResult> =
         runCatching {

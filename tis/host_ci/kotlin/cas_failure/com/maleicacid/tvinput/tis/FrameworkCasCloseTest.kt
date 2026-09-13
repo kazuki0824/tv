@@ -58,7 +58,8 @@ class FrameworkCasCloseTest {
             check(runCatching { controller.clearForResourceLoss() }.isFailure)
             check(f.sessionCloses == 1 && f.pluginCloses == 0)
             check(controller.onEcmSection(TsPid(0x123), byteArrayOf(1)).isEmpty())
-            check(runCatching { controller.updateFromCaMetadata(metadata) { DirectTunerDescramblerBridge(null) } }.isFailure)
+            val retry = runCatching { controller.updateFromCaMetadata(metadata) { DirectTunerDescramblerBridge(null) } }
+            check(retry.isFailure)
             check(f.creates == 1 && f.sessionCloses == 2 && f.pluginCloses == 0)
             f.sessionFailure = false
             val result = controller.updateFromCaMetadata(metadata) { DirectTunerDescramblerBridge(null) }
@@ -102,7 +103,8 @@ class FrameworkCasCloseTest {
             val result = controller.updateFromCaMetadata(metadata) { DirectTunerDescramblerBridge(null) }
             check(result.diagnostics.any { it.errorCode == CasController.ErrorCode.SESSION_OPEN_FAILED })
             check(result.ecmPids.isEmpty() && f.creates == 1 && f.pluginCloses == 1)
-            check(runCatching { controller.updateFromCaMetadata(metadata) { DirectTunerDescramblerBridge(null) } }.isFailure)
+            val retry = runCatching { controller.updateFromCaMetadata(metadata) { DirectTunerDescramblerBridge(null) } }
+            check(retry.isFailure)
             check(f.creates == 1 && f.pluginCloses == 2 && f.sessionCloses == 0)
             f.pluginFailure = false
             f.openFailure = false

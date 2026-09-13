@@ -45,7 +45,8 @@ class MediaCas(
         override fun close() {
             check(!closed && !sessionClosed) { "session is no longer usable" }
             Faults.sessionCloses++
-            if (Faults.sessionFailure && (Faults.failingSessionSystemId == null || Faults.failingSessionSystemId == caSystemId)) {
+            val targetedSystem = Faults.failingSessionSystemId == null || Faults.failingSessionSystemId == caSystemId
+            if (Faults.sessionFailure && targetedSystem) {
                 error("underlying session close failed")
             }
             sessionClosed = true

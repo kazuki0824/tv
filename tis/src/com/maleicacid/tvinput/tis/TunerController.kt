@@ -363,7 +363,7 @@ class TunerController(
                 Log.w(LogTags.TIS, "channel 解決に失敗しました inputId=$inputId uri=$channelUri", e)
                 return TuneOutcome(false, Tuner.RESULT_INVALID_ARGUMENT, null, tuneGeneration, e.message.orEmpty())
             }
-        return tuneResolvedChannel(resolved, startPlayback = true)
+        return tuneResolvedChannel(resolved)
     }
 
     internal data class BsFrontendSelectionResult(
@@ -729,7 +729,7 @@ class TunerController(
                 backendHint = candidate.backendHint,
                 satelliteBand = candidate.satelliteBand,
             )
-        return tuneResolvedChannel(synthetic, startPlayback = false)
+        return tuneResolvedChannel(synthetic)
     }
 
     @Suppress("MaxLineLength")
@@ -746,10 +746,7 @@ class TunerController(
     }
 
     @Suppress("ReturnCount", "MaxLineLength")
-    private fun tuneResolvedChannel(
-        channel: ResolvedChannel,
-        startPlayback: Boolean,
-    ): TuneOutcome {
+    private fun tuneResolvedChannel(channel: ResolvedChannel): TuneOutcome {
         resetBeforeTune()
         val tunerInstance = tuner ?: return TuneOutcome(false, Tuner.RESULT_UNAVAILABLE, channel, tuneGeneration, "Tuner を利用できません")
         val settings =

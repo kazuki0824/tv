@@ -1,3 +1,6 @@
+// 規格ビット列、不正入力、寸法の期待値を本体の定数と独立した具体値で記述する。
+@file:Suppress("MagicNumber")
+
 package com.maleicacid.tvinput.tis
 
 import android.media.MediaFormat
@@ -9,6 +12,8 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Test
 
+// 同じHEVC構成契約の各シナリオを独立したテストとして保ち、関数数だけで集合を分割しない。
+@Suppress("TooManyFunctions")
 class HevcPlaybackTest {
     // ffmpeg color=1920x1080:rate=25 / libx265 / 1 frameの実VPS/SPS/PPS。
     private fun headers(): List<ByteArray> {
