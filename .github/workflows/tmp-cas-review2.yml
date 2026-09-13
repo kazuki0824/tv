@@ -1,0 +1,41 @@
+name: Temporary CAS review2 patch
+on:
+  push:
+    branches: [design/aosp-mediacas-b25-plugin]
+    paths: [.github/workflows/tmp-cas-review2.yml]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: design/aosp-mediacas-b25-plugin
+      - shell: python
+        run: |
+          from pathlib import Path
+          p = Path('cas_plugin/DESIGN_JA.md')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace('Maleicacid B25 CasPlugin library', 'Maleicacid CAS plugin library')
+          s = s.replace('MaleicacidB25CasFactory', 'MaleicacidCasFactory')
+          old = 'B1は `B1SmartCardBackend` のECM-only経路が実装・検証され、B1 advertise gateを満たした場合だけ同じAOSP plugin modelへ追加する。B1は `yakisoba_only` の成立条件ではない。'
+          new = 'B1は同じ `MaleicacidCasFactory` が所有する第二のCA systemとして提供する。r52完了時にはfactoryのdescriptor queryがB25とB1の各descriptorを返し、B1 support queryをtrueとし、`createPlugin(B1)` が `MaleicacidB1CasPlugin` を生成できなければならない。`MaleicacidB1CasPlugin` は `B1SmartCardBackend` を使うECM-only plugin coreとし、B1 `processEmm()` はunsupportedを返す。B1の成立はB25 `yakisoba_only` backendの内部実装条件にはしないが、r52全体の完了条件には含める。'
+          assert old in s
+          s = s.replace(old, new, 1)
+          old = 'raw key、ECM、EMM、credentialを通常log、TIS、AOSP公開AIDLへ露出しない。'
+          new = 'raw key、Kw、Ks、credentialを通常log、TIS、AOSP公開AIDLへ露出しない。ECM/EMMはTISからAOSP標準 `processEcm()` / `processEmm()` 入力として受け取る正規経路を許可し、その入力を通常log、別AIDL、診断dump等へ不要に再公開しない。'
+          assert old in s
+          s = s.replace(old, new, 1)
+          old = '- raw key / ECM / EMM / credentialを通常logまたは公開AIDLへ露出しない'
+          new = '- raw key / Kw / Ks / credentialを通常log、TIS、公開AIDLへ露出しない\n- ECM/EMMは標準processEcm/processEmm入力としてのみ公開AIDLを通し、通常log・別AIDL・診断dump等へ不要に再公開しない'
+          assert old in s
+          s = s.replace(old, new, 1)
+          p.write_text(s, encoding='utf-8')
+      - run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add cas_plugin/DESIGN_JA.md
+          git diff --cached --check
+          git commit -m 'fix(cas): close B1 factory and ECM EMM contracts'
+          git push origin HEAD:design/aosp-mediacas-b25-plugin
