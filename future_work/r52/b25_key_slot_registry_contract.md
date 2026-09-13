@@ -88,6 +88,6 @@ CAS 側 revoke 後は新規 resolve/resource 取得を拒否し、競合して�
 
 ## 8. Tuner HAL の責務
 
-Tuner HAL は stable slot から取得した MULTI2 material を使い、TS packet payload の MULTI2 復号と scrambling-control に基づく odd/even Ks 選択だけを行う。ECM/EMM、card I/O、Yakisoba IPC、権利判定、credential 取得を Tuner HAL へ移さない。
+Tuner HAL は stable slot から取得した MULTI2 material を使い、TS packet payload の MULTI2 復号と scrambling-control に基づく odd/even Ks 選択だけを行う。ECM/EMM、card I/O、Yakisoba backend integration、権利判定、credential 取得を Tuner HAL へ移さない。
 
 AOSP/VTS は key token を opaque linkage として扱い、B25 内部 material layout を規定しない。本契約は ARIB STD-B25 の MULTI2/Ks の意味を満たしながら、AOSP 公開境界へ raw material や CAS 方式固有 identity を露出しないための vendor 内部契約である。
