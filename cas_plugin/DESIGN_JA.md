@@ -152,7 +152,7 @@ B25Backend
 
 backend種別は各B25 plugin instance内で一度だけ確定し、releaseまでそのpluginの全sessionとEMM処理で共有する。同じplugin instanceの途中でbackendを切り替えない。同じplugin instanceへ複数のbackend-dependent operationが並行して最初に到達しても、異なるbackendへ同時確定せずbinding結果を一意にする。具体的なlock/thread方式は規定しない。
 
-product TISは同一B25 CA system IDについて1個のlive MediaCas/CAS pluginを共有し、そのpluginから必要な複数ECM sessionを生成してEMMと同じbackendへ配送する。sessionの共有条件、ECM PIDとES PIDの対応、private data変更時の退役は `../tis/DESIGN_JA.md` を正とする。pluginを共有することからsessionや鍵slotまで1個に制限しない。AOSPが別clientによる独立plugin生成を許すことを理由に、HAL/service全体を横断するservice-global backend selectorを追加しない。
+TISのplugin/session所有単位は `../tis/DESIGN_JA.md` の「CAS / descrambler の現行境界」を正とする。同節のplugin共有は同一CasController内に限られ、別のTvInputService Sessionやscan contextとの共有を要求しない。本pluginは独立した複数client/plugin instanceを受け入れ、各instance内の複数ECM sessionとEMMを同じbackendへ帰属させる。sessionや鍵slotをCA system IDごとに1個へ制限することも、HAL/service全体を横断するbackend選択器を追加することも要求しない。
 
 `setPrivateData()` がbackend binding前に成功した場合、後続bindingはそのcommit済みplugin-local private dataと整合するbackend contextを生成する。binding後の `setPrivateData()` は、plugin-local stateとactive backend contextが異なる成功状態にならないよう一体として更新し、失敗時は直前の成功stateを維持する。version counter等の具体方式は必須化しない。
 
@@ -336,13 +336,27 @@ stale owner/updateの排除にgeneration、cookie、connection identity、versio
 
 - B25 base materialは当該pluginにbindされたbackendが所有する。
 - odd/even KsはsessionのECM/backend処理結果として所有し、ECM成功時に同じstable slotのcurrent materialへ反映する。
-- Tuner側registryへraw materialを運ぶ場合、current authorized CAS plugin ownerだけがpublish/rotate/revokeできるvendor内部境界を使用する。
+- Tuner側registryへのmaterial更新は、current authorized CAS plugin ownerだけがpublish/rotate/revokeできる§11.1のvendor内部境界を使用する。
 - TISや一般appがkey mutation endpointへ到達できてはならない。
-- vendor内部key bridgeは必要なpublish/rotate/revoke/stale-rejection semanticsだけを規範化し、API名、TTL、slot上限、wire magic、固定retry回数を本書で必須化しない。
+- vendor内部key bridgeの配置と通信の所有は§11.1を正とする。API名、TTL、slot上限、wire magic、固定retry回数を本書で必須化しない。
 - owner handover後の旧接続、旧request、revoke済みtokenへのmutationをcurrent updateとして受理しない。
 - backend owner loss/restart時は影響する旧sessionを失効させ、旧ownerから後着したECM/EMM/key mutationを新ownerのstateとして受理しない。owner identityの表現は実装詳細とする。
 - access controlは採用process/IPC構成に応じてSELinux、socket ownership、peer credential、Binder identity等から必要な手段を選ぶ。不要な二重機構を必須化しない。
 - raw keyの一時表現は必要期間を越えて保持・永続化しない。特定のzeroize APIやmemory primitiveを必須化しない。
+
+### 11.1 process間の鍵更新境界
+
+AOSP MediaCasServiceからCasPluginへの呼出しは同一process内のC++ ABI呼出しであり、CasPlugin ABI自体にIPCを追加しない。本節は、別processにあるTuner HALとの鍵共有に必要なvendor内部通信を定義する。
+
+r52では、Tuner HAL service process内のkey registryが鍵slotの唯一の保管・更新主体となる。同じprocess内に接続型Unix domain socketのserverを置き、AOSP MediaCasServiceにloadされたCAS plugin内のkey bridgeをclientとする。Yakisoba/SmartCard backendのprocess構成にかかわらず、backendからregistryへ直接書き込まず、当該CAS pluginを経由する。別の鍵管理daemonや独自MediaCasServiceを追加しない。
+
+このsocket境界をprocess外からのslot確保、publish/rotate/revokeの唯一の入口とし、registryの更新処理へ接続する。TISが使うAOSP Tuner `setKeyToken()` は参照の接続だけを行い、raw materialを受け取らない。endpointとserverへの接続はSELinuxで採用AOSP MediaCasService domainに限定する。許可されたprocess内でもslotを生成したpluginの接続に所有を結び付け、別接続から他ownerのslotを変更させない。client申告のPIDやsession IDだけを更新権限の根拠にしない。
+
+各pluginは自身の寿命に対応する接続を所有する。serverはその接続の切断・peer process死亡を検出すると、その接続のslotへの新規取得と後着mutationを拒否し、所有slotを一括revokeする。切断処理と鍵更新は同じregistry所有者が順序付け、切断前に受け付けた処理から鍵を復活させない。pluginの通常破棄は自身のslotをrevokeして接続を閉じる。process異常終了時はserver側の切断検出で同じrevokeに到達させ、TISからの通知やTTL満了には依存しない。検出前に全処理が止まっているとは保証せず、revoke後の既取得参照は§13に従う。
+
+serverはregistryへのcommit完了後にだけ成功を返し、pluginはその応答を§12の成功条件に用いる。接続断で結果が不明になった場合は成功とせず、その接続の所有を退役させる。Tuner HAL再起動・接続再生成を旧sessionの自動復元として扱わず、新規plugin/sessionとして再確立する。旧tokenの再割当て条件は§9・§13を維持する。
+
+Unix domain socketの採用は本製品の内部接続方式の選択であり、AOSPがCasPluginに要求する方式ではない。socketの配置、message framing、API名、wire形式、固定retry回数は統合・実装時に定める。ここで固定するのはserver/client、唯一のmutation入口、接続に対応するownerとrevoke責務であり、AOSP公開AIDLやMediaCas session IDへtransport情報を追加しない。
 
 ## 12. processEcm() commit契約
 
@@ -372,6 +386,8 @@ tokenはrevoke、必要なdescramblerからの参照解除、既取得内部参�
 MediaCas由来tokenを利用中のTuner descramblerで使用した場合、通常終了・再選局ではMediaCas session close前に `setKeyToken(VOID)` を成功させる。VOID失敗時は当該session/pluginと資源の所有を保持して再試行する。VOID成功後にsession closeと対応PID/descrambler解放へ進み、全sessionの解放後にplugin releaseへ進む。
 
 AOSP Tunerの資源回収は `releaseAll()` 内でdescramblerを閉じ、その後に `onResourceLost()` を通知する。この通知を受けた経路では、既に閉鎖されたdescramblerへのVOID成功を要求しない。閉鎖完了により新規packet処理からの参照がなくなったことをTIS側の所有管理へ反映し、MediaCas sessionのcloseへ進む。通常のVOID失敗、単なるtimeout、受信信号喪失を資源回収通知と同一視しない。TIS側の具体処理は `../tis/DESIGN_JA.md` を正とする。
+
+MediaCas側のTRM資源回収では、Frameworkが管理対象sessionへ `closeSession()` を呼んでから `MediaCas.EventListener.onResourceLost()` を通知する。この強制closeでは、TISによる先行VOIDを待たず、pluginはsession closeの確定点で当該slotをrevokeする。Tuner Descramblerがまだ旧tokenを保持していても、新規packet処理がそのslotから鍵を再取得できてはならない。TISの通知処理は残った参照の解消と受信停止を担い、revokeの開始条件にはしない。TIS側のTRM登録条件、通知後の所有処理、通常closeとの区別は `../tis/DESIGN_JA.md` の「r52のMediaCas資源回収」を正とする。
 
 backend物理cleanupのretry/reset/taint方式はbackend resource ownerの実装詳細とし、service-global `CleanupPending` worker/tableを必須化しない。
 
@@ -467,6 +483,11 @@ plugin libraryは `createCasFactory()` をexportし、AOSP `media/cas/CasAPI.h` 
 - AIDL releaseと実行中methodの競合では、局所参照解放までplugin破棄が遅延し得ることを検証する
 - 通常TIS終了で配送停止、descrambler参照解除、session close、MediaCas closeの順序を検証する
 - 通常終了のVOID unlinkと資源回収時のDescrambler閉鎖確認を区別し、§13の参照解除 / revoke契約を満たす
+- MediaCas TRMのsession close確定後、TIS通知前でも旧tokenの新規resolveが失敗する
+- TISのr52 MediaCas資源回収契約に従い、閉鎖済みsessionの再closeなしで配送停止・Descrambler閉鎖・plugin退役が完了する
+- 別CasControllerの同一CA systemが独立pluginとして動作し、一方の回収が他方のslotを失効させない
+- CAS plugin接続断・MediaCasService死亡とkey publishの競合で、当該接続のslotだけがrevokeされ、後着結果が復活させない
+- 未許可processからの接続、別ownerのslot更新、Tuner HAL再起動後の旧token使用を拒否する
 - ClearKey compatibility pathを破壊しない
 - B25/B1 Media CAS descramblerを追加しない
 - packet descramble ownerがTuner HALのままである
@@ -527,7 +548,9 @@ B1 ECM-onlyの最低完了条件は次とする。
 - AOSP `media/cas/CasAPI.h`
 - AOSP CAS AIDL default `MediaCasService`
 - AOSP CAS AIDL default `FactoryLoader`
-- AOSP Tuner `Descrambler` API
+- [AOSP Android 15 MediaCas](https://android.googlesource.com/platform/frameworks/base/+/android-15.0.0_r1/media/java/android/media/MediaCas.java): Context付きconstructor、typed openSession、TRM回収とEventListener
+- [AOSP Android 15 Tuner Descrambler](https://android.googlesource.com/platform/frameworks/base/+/android-15.0.0_r1/media/java/android/media/tv/tuner/Descrambler.java): key tokenの参照解除とclose
+- [AOSP Tuner framework](https://source.android.com/docs/devices/tv/tuner-framework): MediaCas/Tuner/TRMの責務分担
 - ARIB STD-B25
 - `libyakisoba-cross`
 - `libaribb25` / `libaribb1` はSmartCard挙動・B1挙動・MULTI2等の参照に使用し、製品B25の一体型TS→TS pipelineとしてリンクしない。

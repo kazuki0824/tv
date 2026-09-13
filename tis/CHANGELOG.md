@@ -1,3 +1,9 @@
+# pr108_cas_review_resource_boundaries
+
+- r52の設計として、TRM対応MediaCasの生成条件と、強制session close後の配送停止・Descrambler閉鎖・plugin退役を定義した。現行r51の診断用接続をr52対応済みとして扱わない。
+- plugin共有の範囲を同一CasController内に限定し、別のライブsession・scan contextを横断する共有要件を除いた。
+- AOSP Android 15のMediaCas/Tuner資源寿命と設計間の経路を照合。今回の変更は設計文書のみ。build、unit test、Android/Soong、atest、VTS、実機確認は未実施。
+
 # pr108_cas_session_ownership_and_reclaim
 
 - AOSP Tunerの資源回収通知を通常cleanupから分け、FrameworkによるDescrambler閉鎖後はVOIDを再投入せず、bridge閉鎖確認からMediaCas session/plugin解放へ進む。
