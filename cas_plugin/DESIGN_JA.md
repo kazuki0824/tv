@@ -35,6 +35,8 @@ ClearKeyはAOSP標準compatibility pathのままとし、Maleicacid B25/B1 backe
 
 `MaleicacidCasFactory` はB25/B1 CA system IDのsupport判定、B25/B1 plugin descriptor query、caSystemIdに対応するCasPlugin instance生成を所有する。AOSP `CasAPI.h` のpure virtual ABIに従い、`CasPluginCallback` 版と `CasPluginCallbackExt` 版の両 `createPlugin()` を実装する。両overloadは同じsystem-id dispatchを使い、B25なら `MaleicacidB25CasPlugin`、B1なら `MaleicacidB1CasPlugin` を生成し、callback形式だけをadapterで分ける。AIDL default `MediaCasService` はExt callback版を使用するが、legacy callback版も未実装のまま残さない。
 
+CA system IDの数値と方式の対応は`../開発規則.md`の「CA system IDの正本」を参照する。factoryのdescriptor・support query・両createPlugin()とTISの選択を同じ対応へ揃え、backendごとに別IDを割り当てない。
+
 同一CA system IDについてSmartCard版とYakisoba版を別descriptorとして列挙しない。backend差は1個のB25 plugin内部へ閉じる。
 
 最初にadvertiseするMaleicacid capabilityはB25 `yakisoba_only` とする。SmartCard未実装を `yakisoba_only` の成立条件にしない。
@@ -100,9 +102,19 @@ B1は同じ `MaleicacidCasFactory` が所有する第二のCA systemとして提
 
 `setStatusCallback()` はAOSP `MediaCasService` がplugin生成後に登録するstatus callbackを保持するABI面とする。factoryの `createPlugin()` で受け取った `appData` と組み合わせてstatus eventをservice側へ返す。callback登録前はstatus callbackを発行せず、plugin破棄開始後はcallbackを発行しない。callback invocationはcommit済みstateだけを通知し、callback中にplugin内部state lockを保持することを要求しない。AIDL release応答との関係は§4に従う。
 
+session数の通知方針は§3.1に従う。ClearKeyが試験用にintent/modeをstatus callbackへechoする動作をB25/B1へ複製しない。
+
 引数なしの `openSession(CasSessionId*)` はframeworkのdefault session openであり、B25/B1とも各CA方式のscheme-default MULTI2 sessionを生成する。typed `openSession(intent, mode, ...)` はB25/B1で `LIVE + MULTI2` を通常入力として受理する。これ以外の非対応intent/modeはstateを変更せずcannot-handle相当statusを返す。
 
 `processEcm()` の成功条件はB25/B1共通で、対象sessionのcurrent odd/even Ksのatomic更新が確定済みで、同じMediaCas session ID bytesから直ちに利用可能であることとする。固定値と更新対象の区別は§10、確定点は§12に従い、確定前にsuccessを返さない。close/releaseとの競合、late completion、revoke、callback orderingは§4および§12〜§13の共通契約に従う。
+
+### 3.1 Framework/TRMへのsession数通知
+
+本製品のB25全profileとB1は、`PLUGIN_SESSION_NUMBER_CHANGED`を通知しないAOSPの既定動作を採用する。初期化、backend binding、session open/close、card挿抜で独自のsession数を通知せず、plugin instanceごとの空き数をCA system全体の容量として送らない。通知方針の正本は本節とする。
+
+AOSP `StatusEvent`の既定はsession数を制限しない扱いであり、Android 15のTRMは未登録のCA systemを`Integer.MAX_VALUE`で管理する。これはbackendの物理容量を無限と宣言するものではない。各操作で必要となるsession表・backend資源の受付は既存のsession/backend resource ownerが実容量に従って確定し、同じ物理資源を共有するplugin間でも過剰割当てしない。必要資源を確保できない場合は`ERROR_CAS_RESOURCE_BUSY`を返し、session生成失敗でIDを公開せず、確定済みsession/鍵状態を変更しない。ECM確定前の失敗は§12に従う。
+
+有限session数の通知に基づくTRMの優先度回収を本profileの容量確保手段として期待しない。TISのTRM登録・session追跡と、実際に資源回収通知を受けたときの処理は`../tis/DESIGN_JA.md`を正とする。plugin内へ別の優先度調停器、service全体の容量集約器、容量通知用workerを追加しない。
 
 ## 4. plugin / session lifecycle
 
@@ -292,6 +304,7 @@ TIS向けに第二のvendor-private tokenを発行しない。MediaCas session I
 Tuner key token:
   - MediaCas.Session.getSessionId() bytes
   - 1..16 bytes
+  - AOSP Tunerの予約値 `[0x00]` ではない
   - opaque
   - raw keyを含めない
   - caSystemId / backend種別 / owner世代 / key更新番号を公開形式へ埋め込まない
@@ -299,7 +312,7 @@ Tuner key token:
 
 MediaCas session IDはECM成功前でも存在してよい。その時点ではidentityだけを予約し、復号に必要なKsが利用可能になるまでTuner側の鍵取得を成功させない。固定値だけが利用可能な状態を鍵成立として扱わない。
 
-session ID公開前に、live identityおよびstale linkage/retired referenceが残るidentityと衝突しないことを保証する。
+初回生成と再割当てのどちらでも、session ID公開前に長さ・予約値を検査し、live identityおよびstale linkage/retired referenceが残るidentityと衝突しないことを保証する。`[0x00]`はcurrent key解除のための値であり、正規sessionへ割り当てない。条件を満たすIDを確保できなければopenSessionを失敗させ、IDや部分的なsessionを公開しない。TIS側で別tokenへ変換して補正しない。
 
 process lifetime全体でtokenを永久に再利用しない実装を選んでもよいが必須ではない。必要なのは、stale tokenが別sessionのkey materialへ接続されないことである。
 
@@ -342,6 +355,24 @@ AOSP MediaCasServiceからCasPluginへの呼出しは同一process内のC++ ABI�
 - 所有者喪失または鍵状態の失効後に旧tokenを有効として扱わず、再起動後の遅延処理から旧鍵状態を復活させない。token再割当ては§9・§13に従う。
 
 内部共有方式のためにAOSP公開AIDLやMediaCas session IDへ鍵素材・transport情報を追加しない。raw Kw / Ksの扱いは`../開発規則.md`の責務境界に従う。
+
+### 11.2 操作と失効の責任主体
+
+動的鍵状態の正本はCAS側のsession所有に帰属する。§11.1の内部鍵状態の管理主体は、そのsession ownerの権限で状態を管理する既存のvendor内部処理を指す。独立したserviceや新しいclassの名前ではない。TunerはDescramblerの参照結合を所有し、CAS側の鍵更新権限を持たない。
+
+| 論理操作 | 責任主体 | 成功・失敗の意味 |
+|---|---|---|
+| session/tokenの登録 | CAS session owner | §9のIDを当該sessionへ一意に対応付ける。ECM前の登録だけでKs取得を成功させない |
+| `update(token, Ks)`相当 | ECMを処理するCAS session ownerが要求し、内部鍵状態の管理主体が認可・確定する | 対象session/ownerが有効で、当該操作の更新権限があり、失効・新しい更新に追い越されていない場合だけ§12でatomicに確定する。tokenの所持だけを権限にしない |
+| `resolve(token)`相当 | Tuner descramblerが参照を要求し、内部鍵状態の管理主体が有効性を判定する | 読取りを許可されたconsumerへ、そのsessionの確定済みKsの利用参照を返す。未成立・失効・参照先不明・内部障害なら鍵を返さない |
+| `revoke(token)`相当 | CAS session ownerがclose等で要求し、内部鍵状態の管理主体が確定する | §13の確定後は新規取得と後着更新を拒否する。取得済みpacket参照だけを同節に従ってdrainする |
+| CAS owner / MediaCasService喪失 | 内部鍵状態の管理主体 | 死亡したowner自身のcleanupやTIS通知を待たず、影響sessionの状態を無効として扱う。ownerの有効性を確認できない間も新規取得・更新を成功させない |
+| Tuner再起動 | TunerのDescrambler参照owner | 旧object・PID・token結合を引き継がず、新objectへの明示設定とCAS側の有効性確認を要求する。生存する別consumerのCAS状態まで一括失効させない |
+| 内部鍵状態自体の喪失・再起動 | 内部鍵状態の管理主体 | 失われたsession/tokenを有効として再構成せず、新規取得・後着更新を拒否する。Tunerの参照cacheから正本を復元しない |
+
+Tuner再起動が参照結合だけを失う場合と、採用した共有方式で鍵状態自体も失う場合を区別する。後者は表の鍵状態喪失規則も適用する。失効の検出・認可・確定をどのprocessへ配置しても、この責任をTISへ転嫁しない。
+
+表の操作名は説明用であり、追加の公開APIやwire methodを要求しない。`resolve`不能時の`setKeyToken()`戻り値・既存結合の維持・診断は`../tuner_hal/DESIGN_JA.md`のtoken契約へ写像する。packet処理で参照不能なら復号成功やscrambling_controlの平文化にせず、同正本の失敗診断・scrambled pass-through契約に従う。
 
 ## 12. processEcm() commit契約
 
@@ -458,6 +489,9 @@ plugin libraryは `createCasFactory()` をexportし、AOSP `media/cas/CasAPI.h` 
 
 ```text
 - AOSP MediaCasServiceがdefault instanceとして起動する
+- 開発規則のCA system ID対応とfactory descriptor・support query・両createPlugin()・TIS選択が一致する
+- 初回生成・再割当てでsession IDを1..16 bytesに限定し、`[0x00]`を除外する。空・長さ超過・予約値を公開しない
+- B25全profile/B1でsession数通知を行わず、実資源枯渇をERROR_CAS_RESOURCE_BUSYとして返す。失敗したopenでIDを公開しない
 - Maleicacid独自IMediaCasService serviceが製品経路に存在しない
 - effective architectureに応じてplugin `.so` が `/vendor/lib64/mediacas` または `/vendor/lib/mediacas` にinstallされる
 - AOSP plugin loaderがその探索directoryからMaleicacid createCasFactory()を発見する
@@ -472,12 +506,14 @@ plugin libraryは `createCasFactory()` をexportし、AOSP `media/cas/CasAPI.h` 
 - TISのr52 MediaCas資源回収契約に従い、閉鎖済みsessionの再closeなしで配送停止・Descrambler閉鎖・plugin退役が完了する
 - 別CasControllerの同一CA systemが独立pluginとして動作し、一方の回収が他方のslotを失効させない
 - 採用した共有方式でCAS所有者喪失・MediaCasService死亡とKs更新が競合しても、影響するsessionだけが失効し、後着結果が鍵状態を復活させない
+- Tuner再起動で旧参照結合を継承せず、内部鍵状態自体の喪失時には旧token/cacheから状態を復元しない
 - 未許可主体による状態変更、別ownerのsession更新、所有者喪失・失効後の旧token使用を拒否する
 - live session間およびtoken再割当て時に、別sessionのKsへの誤接続を起こさない
 - 固定値を実行時にCAS pluginからTuner HALへ渡さず、ECM由来のodd/even Ksだけを更新対象にして復号できる
 - ClearKey compatibility pathを破壊しない
 - B25/B1 Media CAS descramblerを追加しない
 - packet descramble ownerがTuner HALのままである
+- Tuner VTSの適用範囲はTuner設計の「r52のCAS試験profile境界」に従い、ClearKeyのMedia CAS試験をB25/B1の実復号証拠へ読み替えない
 - raw key / Kw / Ks / credentialを通常log、TIS、公開AIDLへ露出しない
 ```
 
@@ -532,7 +568,8 @@ B1 ECM-onlyの最低完了条件は次とする。
 
 ## 20. 参照
 
-- AOSP `media/cas/CasAPI.h`
+- AOSP [`media/cas/CasAPI.h`](https://android.googlesource.com/platform/frameworks/native/+/android-15.0.0_r1/headers/media_plugin/media/cas/CasAPI.h)
+- AOSP [`StatusEvent.aidl`](https://android.googlesource.com/platform/hardware/interfaces/+/android-15.0.0_r1/cas/aidl/android/hardware/cas/StatusEvent.aidl)と[`TunerResourceManagerService.java`](https://android.googlesource.com/platform/frameworks/base/+/android-15.0.0_r1/services/core/java/com/android/server/tv/tunerresourcemanager/TunerResourceManagerService.java)のsession数既定動作
 - AOSP CAS AIDL default `MediaCasService`
 - AOSP CAS AIDL default `FactoryLoader`
 - [AOSP Android 15 MediaCas](https://android.googlesource.com/platform/frameworks/base/+/android-15.0.0_r1/media/java/android/media/MediaCas.java): Context付きconstructor、typed openSession、TRM回収とEventListener

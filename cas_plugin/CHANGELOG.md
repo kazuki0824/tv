@@ -1,3 +1,11 @@
+# PR #108 token・鍵状態・TRM契約の補完
+
+- session IDの初回生成・再割当てでAOSP Tunerの予約値`[0x00]`を除外し、長さ・衝突検査を公開前の条件にした。
+- 動的鍵状態の登録・更新・参照・失効の責任主体と結果を明記し、CAS owner喪失、Tuner再起動、鍵状態自体の喪失を区別した。transportや追加serviceは固定していない。
+- B25全profile/B1のsession数通知をAOSPの通知なし既定動作へ固定し、実資源の枯渇拒否とTRMの役割を区別した。
+- CA system IDの対応を開発規則へ集約し、factory/TIS/結合検証の参照を同期した。Tuner VTSの適用範囲はTuner正本へ接続した。
+- AOSP Android 14/15のAPI・VTSソース、既存TIS定数・Tuner参照処理と文書を照合。設計のみの変更で、CAS実装、build、unit test、Soong、atest、VTS、実機確認は未実施。
+
 # PR #108 固定値・動的鍵状態の責務同期
 
 - 複数moduleに跨る固定MULTI2 parameterと動的Ks状態の製品方針を`../開発規則.md`へ集約した。CAS pluginはTuner HALへ直接依存せず、具体的な共有方式を必須化しない。

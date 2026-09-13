@@ -58,6 +58,8 @@ flowchart TD
 
 現行key tableの鍵登録helperはtest専用であり、r52の本番Ks更新経路の実装済み根拠にはしない。公開status・参照寿命は`../tuner_hal/DESIGN_JA.md`を正とし、以下の規範実装アンカーのowner・typed entryを維持する。
 
+CAS側の更新・参照・失効と、Tuner再起動時の参照結合破棄の責任主体は`../cas_plugin/DESIGN_JA.md` §11.2を参照する。Tunerの参照cacheをCAS鍵状態の正本や復元元にせず、参照結合の喪失と鍵状態自体の喪失を区別する。
+
 ### px4 TMCC TSID list device-adaptation境界
 
 px4固有のTMCC TSID readbackは「機器適合」責務に閉じる。ABI mirrorの実装anchorは `device/src/px4/abi.rs::PtxTmccTsidList` / `PTX_GET_TMCC_TSID_LIST`、raw resultのshape検証と `EAGAIN` のtyped pending化は `device/src/px4/tmcc_tsid.rs`、exclusive device-open resourceを再利用するread entryは `device/src/runtime/backend_worker.rs::FrontendBackendSession::observe_tmcc_tsid_list()` とする。公開値、readiness、scan callbackの規範意味は `../tuner_hal/DESIGN_JA.md` を正とし、本節で再定義しない。

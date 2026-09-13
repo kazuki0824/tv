@@ -1176,6 +1176,24 @@ STD-B25デコード能力とSTD-B25 Part 1 §4.9への適合宣言を分離す�
 VTS/lab config の descrambling flow は、`VTS profile / capability 対応契約`と`開発規則.md`のrelease到達点を正とする。r51ではCAS pluginがplaceholderで本番の実CAS tokenを成立させないため、VTS product profileで本番descrambling成功を表明するflowを宣言しない。r52の正式リリース到達点でMediaCas session由来のtokenと有効な内部鍵状態の対応が成立し、対象demuxの`StdB25DecodeCapability`を有効化し、使用するVTS artifact / variant / input / CAS system / filter / PID / queue / memory等の`VtsEnvironmentProfile`入力と必要資源を起動前に確定・予約できるprofileでは、AOSP VTSのdescrambling flowを到達可能にする。descrambler能力を宣言したprofileからflowを隠して検査を回避してはならない。Tuner HAL は PMT/CAT/SDT/ECM/EMM 等の section payload delivery、`IDescrambler`、`setKeyToken()`、`addPid()` / `removePid()`、token lookup境界、未接続・bad token・expired token診断を契約対象とする。本番経路スクランブル解除成功のrelease scopeと、CA情報 / service metadataの意味解析、ECM/EMM filter開始方針、MediaCas/CAS bridge呼出し、実token取得、Tuner descramblerへの接続判断、未接続診断の上位制御は`開発規則.md`を正とする。Tuner HALのpacket単位デスクランブル中核は単体テスト内で既知鍵を登録して確認してよい。
 
 
+### r52のCAS試験profile境界
+
+Media CAS互換試験、製品のB25/B1復号確認、Tuner VTSのdescrambling flowは、使用するCA systemと鍵成立条件を区別する。
+
+| 試験経路 | CAS側の所有 | tokenと鍵状態の条件 |
+|---|---|---|
+| AOSP Media CAS VTSのClearKey互換試験 | AOSP標準ClearKey plugin | AOSP ClearKeyの入力・session・descrambler契約を検証する。TunerのB25/B1鍵状態への接続を証明したとは扱わない |
+| r52のB25/B1製品結合試験 | 開発規則のCA system IDに対応するMaleicacid plugin | `LIVE + MULTI2`のsessionで実ECM処理を成功させ、同じsession IDからcurrent Ksを参照して実TSを復号する |
+| r52のB25/B1 Tuner VTS descrambling profile | 上記Maleicacid pluginと、呼出し契約が一致する選択済みVTS artifact | session IDの呼出し元への返却、対応mode、対象sessionへのECM投入、`setKeyToken()`結果の検査、対象PIDの復号確認までを成立させる。CA system名やXMLの変更だけでこの条件を満たしたとは扱わない |
+
+確認したAOSP `android-14.0.0_r1` / `android-15.0.0_r1`のAIDL Tuner VTSでは、`DescramblerTests::openCasSession()`が`LIVE + RESERVED`でsessionを開き、ECMを投入しない。さらにAIDL分岐内の局所`sessionId`が出力引数を隠し、取得したIDを呼出し元へ返さない。`scrambledBroadcastTest()`は`setKeyToken()`の検査結果も判定していない。この未変更artifactは本製品のB25/B1鍵連携の成立を検証するprofileとして採用しない。HIDL分岐のID返却とAIDL分岐を同一視しない。
+
+ClearKeyを選ぶだけでは、上記のID返却・検査結果・Tuner側の有効な鍵状態という問題は解消しない。本製品はClearKey専用のTuner鍵登録経路、無鍵tokenの復号成功、空tokenの受理を追加しない。B25/B1のECM前の鍵未成立、空tokenの`INVALID_ARGUMENT`、予約値`[0x00]`の解除契約を維持する。
+
+r52のdescrambling VTSを成立とするには、上表のB25/B1試験呼出しと一致するartifactを、必要な試験側修正も含めて`VtsEnvironmentProfile`のsource/tag/commitに固定し、実入力・資源とともに検証する。不一致のartifactを指定したprofileは拒否し、未選択なら環境未確定のままとする。必要な試験側修正の適用・実行と正式な適合判定への使用可否が未確認のまま、VTS成功またはr52完了を宣言しない。独自改変版の結果を無改変の公式VTS合格と呼ばず、製品結合試験だけをVTS合格と呼ばない。VTSの問題を理由にHAL capabilityを縮退させたり宣言済みflowを隠したりしない。
+
+根拠はAOSP [DescramblerTests.cpp（Android 15）](https://android.googlesource.com/platform/hardware/interfaces/+/android-15.0.0_r1/tv/tuner/aidl/vts/functional/DescramblerTests.cpp)、[VtsHalTvTunerTargetTest.cpp（Android 15）](https://android.googlesource.com/platform/hardware/interfaces/+/android-15.0.0_r1/tv/tuner/aidl/vts/functional/VtsHalTvTunerTargetTest.cpp)、[DescramblerTests.cpp（Android 14）](https://android.googlesource.com/platform/hardware/interfaces/+/android-14.0.0_r1/tv/tuner/aidl/vts/functional/DescramblerTests.cpp)とする。対象artifactの版を変更した場合は、その実体の呼出し・検査契約を照合する。
+
 ## IDescrambler optionalSourceFilter 境界
 
 AOSP意味論では、`IDescrambler.addPid(pid, optionalSourceFilter)` および `removePid(pid, optionalSourceFilter)` の `optionalSourceFilter == NULL` は demux input 全体に対する PID 登録 / 解除である。NULL経路は現行AOSP契約上の成功対象として扱う。non-null 経路は指定 filter output、すなわち upper stream を対象にした PID 登録 / 解除であり、source filter検証後に成功対象とする。

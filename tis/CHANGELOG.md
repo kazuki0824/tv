@@ -1,3 +1,8 @@
+# PR #108 CA system IDとsession数通知の正本参照
+
+- SupportedCasSystemIdsの数値対応は開発規則、Framework/TRMへのsession数通知と資源枯渇はCAS設計を正本として参照する。TISへ別の容量集約・通知責務を置かない。
+- 既存Kotlin定数と正本の対応を確認した。設計文書のみの変更で、production code、build、unit test、Soong、atest、VTS、実機確認は変更・実施していない。
+
 # pr108_cas_review_resource_boundaries
 
 - r52の設計として、TRM対応MediaCasの生成条件と、強制session close後の配送停止・Descrambler閉鎖・plugin退役を定義した。現行r51の診断用接続をr52対応済みとして扱わない。

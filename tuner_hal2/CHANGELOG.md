@@ -1,3 +1,9 @@
+# PR #108 CAS参照寿命と試験artifactの同期
+
+- CAS正本の責任主体表へ参照し、Tuner再起動による参照結合喪失と鍵状態自体の喪失を区別した。
+- r52 descrambling profile導入時のartifact照合をTuner公開設計へ接続した。現行生成器を本番CAS試験経路の実装済み根拠にしない。
+- 設計・統合文書のみの変更。既存Rust/Python実装、build、unit test、Soong、atest、VTS、実機確認は変更・実施していない。
+
 # PR #108 Tunerの鍵参照owner
 
 - 製品固定parameterと動的Ks状態の正本を参照し、Tunerをtoken参照・packet復号のconsumerとして明記した。

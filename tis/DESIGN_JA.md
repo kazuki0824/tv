@@ -54,6 +54,8 @@ Video track metadataもPMTとEITの責務を混同しない。filter/decoderへ�
 
 CAS plugin内部のfactory/backend/key lifecycle契約は `../cas_plugin/DESIGN_JA.md` を正とし、本書ではTISからMediaCas/Tuner SDKへ接続するruntime境界だけを定義する。
 
+CA system IDの数値と方式の対応は`../開発規則.md`の「CA system IDの正本」に従い、`CasController.SupportedCasSystemIds`はその実装表現とする。
+
 現行 product では CAS plugin 本体はプレースホルダーのままにする。TIS は Tuner SDK API の filter 経由で PMT/CAT/SDT/ECM/EMM section payload を取得し、PMT/CAT から得た CA_descriptor と SDT 等から得た free_CA_mode / サービス識別子補助情報を arib_si_engine_rs の意味解析結果として受け取る。TIS はcurrent `ServiceSemanticFacts`とcurrent CAS capabilityに基づいて ECM/EMM セクションフィルターと MediaCas/CAS bridgeを型付きAPIで制御し、実keyトークンが得られた場合だけTuner descramblerへ不透明な参照値を渡す。仮実装や診断専用結果は復号成功を意味しないため、`setKeyToken()`へ渡さない。Tuner HALが未接続診断を返した場合も成功扱いにしない。
 
 PROGRAM/ESのCA_descriptor `private_data_byte` はB25/B1をTIS側で解釈せず、対応するMediaCas Sessionの `setPrivateData()` へopaque bytesとして渡す。B1でもこのsession-private-data投入を通常のsession setupとして行い、成功後にECM配送へ進む。CAT由来private dataをMediaCas plugin-level `setPrivateData()`へ渡す経路はEMM対応CA systemだけに限定し、現行のB1では起動しない。CA方式固有のprivate data意味解釈はCAS plugin側の責務とし、TISにB1専用parserやprivate-data抑止分岐を追加しない。
@@ -81,6 +83,8 @@ ES PIDの物理所有はsession専用Descramblerごとに管理する。addPid�
 r52でB25/B1の実復号を有効化するTIS接続では、service Context、同じ受信contextのframework由来TvInputService session ID、用途に対応するpriority hint、EventListenerを指定するMediaCas constructorを使用し、TRM管理へ接続する。liveは対応するsession IDとLIVE priorityを渡す。scan contextにTIS session IDがなければnullとし、priorityは本書のScanPurpose写像を使う。アプリ独自IDをframework session IDとして捏造せず、登録失敗時に `MediaCas(caSystemId)` へ切り替えない。
 
 session生成には `openSession(SESSION_USAGE_LIVE, SCRAMBLING_MODE_MULTI2)` を使う。採用AOSPで生成sessionがMediaCasのTRM管理対象に記録されることを結合確認する。引数なしopenSessionをpluginが提供するABI契約と、TISがTRM管理用に選ぶ呼出しは別の判断とする。現行r51の診断用 `MediaCas(caSystemId)` / 引数なしopenSession経路はこのr52接続の実装完了を意味しない。
+
+Framework/TRMへのsession数通知方針とbackend枯渇時の結果は`../cas_plugin/DESIGN_JA.md` §3.1を正とする。TISがpluginごとの空き数を集約してTRMへ通知する経路や、独自の容量調停器を追加しない。
 
 FrameworkはTRM管理対象sessionを先にcloseしてから `EventListener.onResourceLost(mediaCas)` を通知する。通知を受けたTISは次の手順を行う。
 
