@@ -22,11 +22,15 @@ AOSP android.hardware.cas.IMediaCasService/default
 Maleicacid CAS plugin library
   |- extern "C" createCasFactory()
   |- MaleicacidCasFactory : android::CasFactory
-  `- MaleicacidB25CasPlugin  : android::CasPlugin
+  |- MaleicacidB25CasPlugin : android::CasPlugin
+  |    |- SessionTable
+  |    |- backend binding
+  |    |- YakisobaBackend
+  |    |- SmartCardBackend
+  |    `- Tuner key bridge
+  `- MaleicacidB1CasPlugin : android::CasPlugin
        |- SessionTable
-       |- backend binding
-       |- YakisobaBackend
-       |- SmartCardBackend
+       |- B1SmartCardBackend
        `- Tuner key bridge
 ```
 
@@ -40,7 +44,7 @@ ClearKeyはAOSP標準compatibility pathのままとし、Maleicacid B25/B1 backe
 
 ## 2. factory と plugin capability
 
-`MaleicacidCasFactory` はB25 CA system IDのsupport判定、plugin descriptor query、B25 CasPlugin instance生成を所有する。AOSP `CasAPI.h` のpure virtual ABIに従い、`CasPluginCallback` 版と `CasPluginCallbackExt` 版の両 `createPlugin()` を実装する。両overloadは同じB25 plugin coreを生成し、callback形式だけをadapterで分ける。AIDL default `MediaCasService` はExt callback版を使用するが、legacy callback版も未実装のまま残さない。
+`MaleicacidCasFactory` はB25/B1 CA system IDのsupport判定、B25/B1 plugin descriptor query、caSystemIdに対応するCasPlugin instance生成を所有する。AOSP `CasAPI.h` のpure virtual ABIに従い、`CasPluginCallback` 版と `CasPluginCallbackExt` 版の両 `createPlugin()` を実装する。両overloadは同じsystem-id dispatchを使い、B25なら `MaleicacidB25CasPlugin`、B1なら `MaleicacidB1CasPlugin` を生成し、callback形式だけをadapterで分ける。AIDL default `MediaCasService` はExt callback版を使用するが、legacy callback版も未実装のまま残さない。
 
 同一CA system IDについてSmartCard版とYakisoba版を別descriptorとして列挙しない。backend差は1個のB25 plugin内部へ閉じる。
 
