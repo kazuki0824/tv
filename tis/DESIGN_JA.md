@@ -56,6 +56,8 @@ CAS plugin内部のfactory/backend/key lifecycle契約は `../cas_plugin/DESIGN_
 
 現行 product では CAS plugin 本体はプレースホルダーのままにする。TIS は Tuner SDK API の filter 経由で PMT/CAT/SDT/ECM/EMM section payload を取得し、PMT/CAT から得た CA_descriptor と SDT 等から得た free_CA_mode / サービス識別子補助情報を arib_si_engine_rs の意味解析結果として受け取る。TIS はcurrent `ServiceSemanticFacts`とcurrent CAS capabilityに基づいて ECM/EMM セクションフィルターと MediaCas/CAS bridgeを型付きAPIで制御し、実keyトークンが得られた場合だけTuner descramblerへ不透明な参照値を渡す。仮実装や診断専用結果は復号成功を意味しないため、`setKeyToken()`へ渡さない。Tuner HALが未接続診断を返した場合も成功扱いにしない。
 
+PROGRAM/ESのCA_descriptor `private_data_byte` はB25/B1をTIS側で解釈せず、対応するMediaCas Sessionの `setPrivateData()` へopaque bytesとして渡す。B1でもこのsession-private-data投入を通常のsession setupとして行い、成功後にECM配送へ進む。CAT由来private dataをMediaCas plugin-level `setPrivateData()`へ渡す経路はEMM対応CA systemだけに限定し、現行のB1では起動しない。CA方式固有のprivate data意味解釈はCAS plugin側の責務とし、TISにB1専用parserやprivate-data抑止分岐を追加しない。
+
 descrambler bridgeの単一所有者はCasControllerとし、TunerControllerに同じbridgeをcacheしない。scan/liveは取得済みbridgeを持ち回らず、受信snapshotに対応するtune generationを必須入力とするTunerController.updateCasMetadataAndFilters()を使う。同controller executor内でtuneAcceptedとgenerationを照合し、CasControllerのfactoryによるbridge生成・attach・metadata更新と、成功結果のECM/EMM PIDを使うfilter更新完了まで待つ。metadata成功前に新filter集合を公開しない。resource-lostは同executorで直列化するため、取得とattachの間に割り込ませない。旧世代・失効済み要求はfactoryを呼ばず拒否する。
 
 metadata更新では配送indexを先に失効させ、全obsolete systemを物理解放前に退役させる。解放は全件試行し、survivorのprivateData・PID bindingとdescrambler PID更新が全て成功した場合だけ配送indexを公開する。途中失敗から旧bindingを再公開しない。metadata診断error・例外・filter更新失敗は同じcontroller transactionでCAS解放、ECM/EMM filterの空集合への置換、再生停止を全件試行する。PMTは判断更新用に維持し、caption終了と利用不能通知はLive sessionが行う。

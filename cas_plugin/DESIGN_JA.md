@@ -235,7 +235,7 @@ B1 pluginは§3の共通AOSP `CasPlugin` ABI契約と§4の共通lifecycle契約
 
 B1 `processEcm()` のsuccessは§3および§12の共通linearization契約に従い、complete current `Multi2KeyMaterial` が同じMediaCas session IDのstable slotへcommit済みで直ちに解決可能になった時点だけ返す。旧current materialとの新旧混在を許さず、late ECM completionでcurrent materialを巻き戻さない。
 
-B1 `processEmm()` はunsupportedとし、stateを変更せずcannot-handle相当statusを返す。r52のB1 ECM-only経路で意味を定義しない `setPrivateData()`、`setSessionPrivateData()`、`sendEvent()`、`sendSessionEvent()`、`provision()`、`refreshEntitlements()` も空successにせずcannot-handle相当statusを返す。`setStatusCallback()`、`closeSession()`、plugin release、stale completion rejection、Tuner key revoke、MediaCas close前のVOID unlinkはB25/B1共通契約に従う。
+B1 `processEmm()` はunsupportedとし、stateを変更せずcannot-handle相当statusを返す。B1のplugin-level `setPrivateData()` はCAT/EMM経路を持たないためunsupportedのままとし、空successにしない。一方 `setSessionPrivateData()` はPROGRAM/ESのCA descriptor private dataを受けるAOSP標準session入力として受理する。入力はCAS scheme-privateなopaque bytesとしてsession-localにcommitし、TISは内容を解釈しない。B1 ECM処理がその内容を必要としない実装でも、未使用であることだけを理由にこの標準入力を拒否しない。更新と `processEcm()` が競合する場合はhalf-committed private dataを観測させない。B1で意味を定義しない `sendEvent()`、`sendSessionEvent()`、`provision()`、`refreshEntitlements()` はstateを変更せずcannot-handle相当statusを返す。`setStatusCallback()`、`closeSession()`、plugin release、stale completion rejection、Tuner key revoke、MediaCas close前のVOID unlinkはB25/B1共通契約に従う。
 
 B1 plugin advertise gateは次を満たす。
 
@@ -459,7 +459,8 @@ B1 ECM-onlyの最低完了条件は次とする。
 - B1でYakisoba backendを選択しない
 - B1 processEcm() success後に同じMediaCas session ID tokenからcomplete current materialを解決できる
 - B1 processEmm() がstateを変更せずunsupported/cannot-handle相当statusを返す
-- B1で意味を定義しないprivate-data/event/provision/refresh operationが空successせずcannot-handle相当statusを返す
+- PROGRAM/ES CA metadataからB1 sessionへ `setSessionPrivateData()` を成功させ、その後のECM処理まで同じsessionで継続できる
+- B1 plugin-level `setPrivateData()` とB1で意味を定義しないevent/provision/refresh operationが空successせずcannot-handle相当statusを返す
 - B1 session close/releaseで新規key resolveを遮断し、revoke後のlate ECM結果がkey stateを復活させない
 - MediaCas close前のVOID unlink / revoke契約を満たす
 ```
