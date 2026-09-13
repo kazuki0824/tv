@@ -1,0 +1,28 @@
+name: Temporary CAS review9 patch
+
+on:
+  push:
+    branches:
+      - design/aosp-mediacas-b25-plugin
+    paths:
+      - .github/workflows/tmp-cas-review9.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: design/aosp-mediacas-b25-plugin
+          fetch-depth: 0
+      - run: python3 .github/tmp-cas-review9.py
+      - run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -- tis/src/com/maleicacid/tvinput/tis/CasController.kt tis/tests/src/com/maleicacid/tvinput/tis/CasControllerStateTest.kt tis/DESIGN_JA.md
+          git diff --cached --check
+          git commit -m "fix(tis): isolate descramblers by CA system"
+          git push origin HEAD:design/aosp-mediacas-b25-plugin
