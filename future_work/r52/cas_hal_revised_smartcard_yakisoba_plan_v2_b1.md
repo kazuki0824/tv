@@ -198,17 +198,17 @@ IPC は次の意味契約を満たす。
 
 IPC access-control は product の threat model と Android process 構成に応じ、SELinux domain、socket ownership、peer credential 等の必要な仕組みで実現する。SELinux と peer credential の両方を無条件の必須条件にはしない。必要なのは許可された CAS service 以外が接続・mutationできないことである。
 
-送信 0 byte が確定した失敗だけを operation 未開始として扱う。1 byte 以上送信後の timeout、切断、response 不整合は outcome unknown として自動再送・別 backend fallback をしない。
+送信後に response を受け取れない場合は、backend 側 mutation の成否を確定できない限り outcome unknown とする。同一 request identity に対する replay/idempotency を backend contract が保証し、二重 mutation が起きないことを検証できる実装では安全な再送を許してよい。保証がない場合は自動再送しない。outcome unknown のまま別 backend へ fallback して state を分岐させない。
 
-- open outcome unknown: 同じ session identity を idempotent close し session ID を公開しない。
-- ECM outcome unknown: session を Failed、registry publish なし、revoke/close。
-- EMM outcome unknown: `ERROR_CAS_INVALID_STATE`、自動再送なし、binding 維持。
+- open outcome unknown: session ID を公開せず、backend 側に残った可能性のある session を安全に破棄できる cleanup path を実行する。idempotent close はその実装方法の一つであり、唯一の必須方式にはしない。
+- ECM outcome unknown: session を Failed、registry publish なし、revoke/cleanup。replay-safe が保証される場合だけ同一 backend で再送を選べる。
+- EMM outcome unknown: state を成功扱いせず、replay-safe が保証されない限り自動再送しない。binding は維持する。
 
-Yakisoba close は同じ session identity について未作成/終了済みでも idempotent に扱う。`yakisoba_only` は SmartCard probe を行わず、daemon/credential 一時利用不能時も descriptor 集合を変えず操作失敗とする。
+`yakisoba_only` は SmartCard probe を行わず、daemon/credential 一時利用不能時も descriptor 集合を変えず操作失敗とする。
 
 Yakisoba daemon の death/restart を検出した場合、旧 daemon state に依存する Active session を Failed へ遷移させ、新規 resolve を revoke する。同 plugin 内で SmartCard へ切り替えない。後続の新 session を同じ Yakisoba binding で受理する場合は、新 daemon との接続確立と committed plugin private data の再適用を完了してから open する。旧 session を新 daemon へ引き継がない。restart/stale-owner の識別方式は connection lifetime、opaque cookie、service manager state 等の実装詳細とする。
 
-Yakisoba から受領した key material は registry commit に必要な最短寿命だけ保持し、一時 response/encode buffer は commit または失敗後に zeroize する。
+Yakisoba から受領した key material は必要期間を越えて保持・永続化しない。mutable raw buffer を所有する場合の消去、secure handle の destroy/release 等は表現に応じて行い、特定の zeroize primitive を必須化しない。
 
 ## 8. KeySlotRegistry / Tuner boundary
 
@@ -220,7 +220,7 @@ ECM 成功前は unresolved でよく、ECM 成功時は complete current materi
 
 TIS は backend 種別を解釈しない。Tuner HAL は token→stable slot linkage、current material 取得、PID linkage、TS payload-only MULTI2 だけを担当する。
 
-MediaCas 由来 token を保持する全 descrambler で `setKeyToken(VOID)` が成功した後に MediaCas session を close する。VOID 成功を新規 packet 利用停止の linearization point とし、既取得内部 key 参照は drain 後 zeroize する。追加 framework API は導入しない。
+MediaCas 由来 token を保持する全 descrambler で `setKeyToken(VOID)` が成功した後に MediaCas session を close する。VOID 成功を新規 packet 利用停止の linearization point とし、既取得内部 key 参照はその処理終了まで保持し、最後の参照解放後に material 表現に応じた秘密情報破棄を行う。追加 framework API は導入しない。
 
 具体的な `Reserve/Publish/Revoke` API 名、owner/generation counter、key epoch、TTL、slot 上限、wire magic、retry 回数は内部実装選択であり必須設計にしない。ただし effective capacity は第2節 ARIB gate を満たす。
 
@@ -258,13 +258,13 @@ module 名、socket path、wire field 値、owner cookie/generation の形式等
 - SmartCard抜去時session revoke
 - Yakisoba daemon restart時、旧session revoke + 新session再初期化
 - Yakisoba IPC access-controlを選択した機構で実証
-- listener failureでcommit済みstate非rollback
-- Yakisoba outcome-unknown / temporary-key zeroize
+- outcome-unknownで二重mutationを起こさないこと
+- replay-safeを実装する場合の同一request再送安全性
 - backend owner loss時のstale mutation拒否
 - ARIB STD-B25 Version 7.0の同時key/PID能力gate
 - stable link上の連続ECM key rotation
 - stale ECM completionがcurrent materialを上書きしない
-- token revoke/ref drain/zeroize
+- token revoke/ref drain/secret destruction
 - VOID token -> MediaCas close
 ```
 
@@ -285,12 +285,12 @@ module 名、socket path、wire field 値、owner cookie/generation の形式等
 13. key revoke 未確定と backend 物理 cleanup 失敗を区別し、revoke 済み object/session を cleanup 失敗で再 live 化しない。
 14. live/cleanup ownership を bounded にし、安全に管理できる範囲を超える新規受理を RESOURCE_BUSY で拒否する。
 15. listener failure で commit 済み state を rollback せず、AOSP listener の引数契約を狭めない。
-16. backend I/O は bounded とし送信後結果不明を成功/fallback へ丸めない。
+16. backend I/O は bounded とし、outcome unknown を成功扱いせず、再送は replay-safe が証明された場合だけ許す。
 17. Tuner token は stale linkage が残る間、別 session へ再割当てしない。
 18. backend owner loss では影響 session の新規 resource 取得を遮断し、旧 owner の後着 mutation を拒否する。
 19. `processEcm()` 成功時に stable link から complete current material を取得可能にする。
 20. MediaCas close 前に MediaCas 由来 token を全 descrambler から VOID で解除する。
-21. raw key material を Binder、TIS、通常 log へ出さない。
+21. raw key material を Binder、TIS、通常 log へ出さず、必要期間を越えて保持・永続化しない。
 22. B25 advertise 時の effective key/PID capacity は ARIB STD-B25 Version 7.0 の対象条項を満たす。
 23. CAS HAL は TS demux / AV / DVR を担当しない。
-24. provider incarnation、key epoch、peer credential+SELinux の二重適用等の具体方式を、必要な意味契約より強い必須条件として固定しない。
+24. provider incarnation、key epoch、固定no-wrap counter、peer credential+SELinuxの二重適用、idempotent-close方式等の具体方式を、必要な意味契約より強い必須条件として固定しない。
