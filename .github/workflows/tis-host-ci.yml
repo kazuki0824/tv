@@ -209,8 +209,8 @@ jobs:
             esac
           done
           # 意図しない試験の削除・検出漏れを検知する固定値。クラス追加/削除時に除外一覧と併せて更新する。
-          test "${#discovered_classes[@]}" -eq 34
-          test "${#test_classes[@]}" -eq 31
+          test "${#discovered_classes[@]}" -eq 35
+          test "${#test_classes[@]}" -eq 32
           runtime_classpath="$TIS_KOTLIN_PRODUCTION_DIR:$TIS_KOTLIN_TEST_DIR:$TIS_ANDROID_ALL_JAR:$TIS_JUNIT_JAR:$TIS_HAMCREST_JAR:$TIS_KOTLIN_HOME/lib/kotlin-stdlib.jar:$TIS_KOTLIN_HOME/lib/kotlin-stdlib-jdk7.jar:$TIS_KOTLIN_HOME/lib/kotlin-stdlib-jdk8.jar:$TIS_KOTLIN_HOME/lib/kotlin-test.jar:$TIS_KOTLIN_HOME/lib/kotlin-test-junit.jar"
           java \
             -Xmx4g \
@@ -221,7 +221,7 @@ jobs:
             "${test_classes[@]}" \
             | tee "$RUNNER_TEMP/tis-junit.log"
           # JUnitの成功だけでは試験数の減少を検知できない。試験追加/削除時に差分を確認して同じcommitで更新する。
-          grep --fixed-strings --line-regexp "OK (235 tests)" "$RUNNER_TEMP/tis-junit.log"
+          grep --fixed-strings --line-regexp "OK (248 tests)" "$RUNNER_TEMP/tis-junit.log"
 
   xml-contract:
     runs-on: ubuntu-latest

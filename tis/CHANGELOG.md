@@ -1,3 +1,14 @@
+# r52_hevc_extracted_from_pr57
+
+- PR #57の`6a874e47a35a2a1f1d4c0b5aae458542dbbb7220`からHEVC関連だけをmain `e12d62516443091e7bc68f77e256a9e21ef2b74c`へ抽出した。元の`ea7e4b3`、`5ee5810`、`a0d4801`、`6a874e4`に含まれるHEVC変更を最終差分へ統合し、CAS本体・TISのCAS制御・Tuner鍵供給・CAS試験の変更は含めない。
+- `TunerSelectionPolicy`の映像候補へHEVC `stream_type=0x24`を追加し、登録・既定映像選択・再生選択を既存の共通判定へ接続した。`PlaybackPipeline`へHEVC MIME、Tuner `AvSettings`の映像種別、起動時のメモリ・待機予算、映像形式通知を接続した。
+- `HevcConfigParser`に起動時のVPS/SPS/PPS収集、NAL境界・入力検証、SPS寸法・crop計算、`csd-0`構成を配置した。既存のビット読取りを`CodecBitReader`へ移し、AVCとHEVCで共有する。通常ESの受け渡し、MediaCodec・MediaSyncの所有と終了処理は既存経路を使う。
+- `DESIGN_JA.md`へHEVC解析の責務、受信途中と不正入力の区別、CSD構成、解析の保証範囲に関する元PRの3段落を抽出した。CAS関連の設計・統合条件・製品能力の記述はmainから変更していない。
+- HEVC試験13件と実x265ヘッダー素材を追加し、既存のHEVC選択試験の期待値を更新した。元PRのHEVC試験にある`MagicNumber`と`TooManyFunctions`の宣言単位の抑止・理由を引き継ぐ。CIの試験クラス数を34から35、ホスト実行対象を31から32、JUnit期待件数を235から248へ更新した。Soong・ホスト・Robolectricの既存ソース収集範囲に新規ファイルが含まれることを確認した。
+- 検証: Kotlin 1.9.22 / Android 15による本番・試験コンパイル、Java失敗注入stubのコンパイル、実SI JNIを使用するホストJUnit 248件が成功した。JNIは元PRの既存ビルドを使用し、`arib_si_engine_rs`のソースが抽出先mainと元PRで一致することを確認した。全Kotlin 128ファイルのktlint 1.8.0とdetekt 1.23.8が成功した。
+- Gradle 8.9 / AGP 8.7.0 / Robolectric 4.16.1による既存のAndroid依存3クラス・4試験が成功し、失敗・除外は0件だった。初回のSDK未設定を実行環境の`ANDROID_HOME`指定で解消した。プロキシ設定はリポジトリ外の実行環境だけに適用した。
+- Android/Soong build、device atest・CTS・VTS、実MediaCodecによるHEVC出力・実機・実波確認は、対象Androidツリーと端末がないため未実施である。ホスト試験の成功を製品リリースの完了判定には使用しない。
+
 # r51_tuner_hal2_audit_regressions
 
 - BS事前scanは`onLocked()`で同一scanを一度だけ継続し、`onScanStopped()`まで待機する。状態変更は既存の単一controller executorに限定し、追加の同期ロックを置かない。公開scan契約への接続を設計へ反映した。
