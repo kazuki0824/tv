@@ -730,45 +730,13 @@ class CasController(
         }
     }
 
-    // 動的なPID集合も既存の全件解放へ渡し、個々の失敗で後続解放を省略しない。
-    @Suppress("SpreadOperator")
     private fun closeContextLocked(key: DescrambleContextKey) {
         val state = sessionsByContext[key] ?: return
         state.retiring = true
         ecmPidToContexts.values.forEach { it.remove(key) }
         ecmPidToContexts.entries.removeAll { it.value.isEmpty() }
-        // PID、鍵、Descrambler、Sessionの順に全解放を試行し、失敗した所有だけを残す。
+        // 終了時のPID・鍵解放はDescrambler.closeへ集約し、失敗した所有だけを残す。
         SectionFilterPolicy.completeCleanup(
-            {
-                SectionFilterPolicy.completeCleanup(
-                    *state.linkedElementaryPids
-                        .toList()
-                        .map { pid ->
-                            {
-                                requireNotNull(state.descrambler)
-                                    .removePid(pid)
-                                    .onFailure { failure ->
-                                        lastDiagnostic =
-                                            Diagnostic(
-                                                State.ERROR,
-                                                ErrorCode.DESCRAMBLER_FAILED,
-                                                key.caSystemId,
-                                                pid,
-                                                failure.message.orEmpty(),
-                                            )
-                                    }.getOrThrow()
-                                state.linkedElementaryPids.remove(pid)
-                                Unit
-                            }
-                        }.toTypedArray(),
-                )
-            },
-            {
-                if (state.keyLinked) {
-                    requireNotNull(state.descrambler).clearKeyToken().getOrThrow()
-                    state.keyLinked = false
-                }
-            },
             {
                 if (!state.descramblerClosed) {
                     state.descrambler?.close()

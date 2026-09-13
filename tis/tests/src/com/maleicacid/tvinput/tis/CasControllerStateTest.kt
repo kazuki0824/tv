@@ -287,7 +287,7 @@ class CasControllerStateTest {
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MaxLineLength")
     @Test
-    fun sharedElementaryPidSurvivesOneSystemRetirementAndRemovalFailure() {
+    fun sharedElementaryPidSurvivesOneSystemRetirementAndCloseFailure() {
         val pid = TsPid(0x101)
         val survivor = FakeTunerDescramblerBridge()
         val removed = mutableListOf<TsPid>()
@@ -319,25 +319,25 @@ class CasControllerStateTest {
             controller.onEcmSection(TsPid(0x124), byteArrayOf(1))
             check(creates == 2 && survivor.addedPids == setOf(pid.value))
             check(runCatching { controller.updateFromCaMetadata(b25) }.isFailure)
-            check(removed == listOf(pid) && retiredCloses == 1)
+            check(removed.isEmpty() && retiredCloses == 1)
             check(survivor.removedPids.isEmpty() && !survivor.closed)
             check(controller.onEcmSection(TsPid(0x123), byteArrayOf(1)).isEmpty())
             reject = false
             val retried = controller.updateFromCaMetadata(b25)
             check(retried.diagnostics.isEmpty() && retried.readiness == CasController.Readiness.READY)
-            check(removed == listOf(pid, pid) && retiredCloses == 2)
+            check(removed.isEmpty() && retiredCloses == 2)
             check(survivor.removedPids.isEmpty() && !survivor.closed)
             controller.updateFromCaMetadata(b25)
-            check(removed == listOf(pid, pid) && retiredCloses == 2)
+            check(removed.isEmpty() && retiredCloses == 2)
         } finally {
             reject = false
             controller.close()
         }
-        check(survivor.removedPids == setOf(pid.value) && survivor.closed)
+        check(survivor.removedPids.isEmpty() && survivor.closed)
     }
 
-    @Test fun clearServiceRetriesOnlyPidsWhoseRemovalFailed() {
-        val removed = mutableListOf<TsPid>()
+    @Test fun clearServiceRetriesCloseWithoutSeparatePidOrKeyUnlink() {
+        val events = mutableListOf<String>()
         val p1 = TsPid(0x101)
         val p2 = TsPid(0x102)
         var reject = true
@@ -348,34 +348,34 @@ class CasControllerStateTest {
                 override fun addPid(elementaryPid: TsPid) = Result.success(Unit)
 
                 override fun removePid(elementaryPid: TsPid): Result<Unit> {
-                    removed += elementaryPid
-                    return if (reject &&
-                        elementaryPid == p1
-                    ) {
-                        Result.failure(IllegalStateException("remove failed"))
-                    } else {
-                        Result.success(Unit)
-                    }
+                    events += "remove:${elementaryPid.value}"
+                    return Result.failure(IllegalStateException("remove must not be called"))
+                }
+
+                override fun clearKeyToken(): Result<Unit> {
+                    events += "clear-key"
+                    return Result.failure(IllegalStateException("clear must not be called"))
                 }
 
                 override fun close() {
+                    events += "descrambler-close"
                     check(!reject) { "close failed" }
                 }
             }
-        CasController(mediaCasFactory = FakeMediaCasBridgeFactory()).use { controller ->
+        CasController(mediaCasFactory = OrderedMediaCasBridgeFactory(events)).use { controller ->
             controller.updateFromCaMetadata(
                 b25Metadata(p1, TsPid(0x123), TsPid(0x010)) +
                     b25Metadata(p2, TsPid(0x123), TsPid(0x010)),
             ) { bridge }
             controller.onEcmSection(TsPid(0x123), byteArrayOf(1))
             check(runCatching { controller.clearForClearService() }.isFailure)
-            check(removed == listOf(p1, p2))
-            check(controller.lastDiagnostic().errorCode == CasController.ErrorCode.DESCRAMBLER_FAILED)
+            check(events == listOf("descrambler-close", "session-close", "plugin-close"))
             check(controller.onEcmSection(TsPid(0x123), byteArrayOf(1)).isEmpty())
             reject = false
             controller.clearForClearService()
-            check(removed == listOf(p1, p2, p1))
+            check(events == listOf("descrambler-close", "session-close", "plugin-close", "descrambler-close"))
         }
+        check(events.size == 4)
     }
 
     @Test fun metadataFailureRejectsSurvivorAndEveryObsoleteSystemBeforeFilterCommit() {
@@ -723,15 +723,17 @@ class CasControllerStateTest {
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MaxLineLength")
     @Test
-    fun pmtUpdateRemovesOldPidAndAddsNewPid() {
+    fun pmtUpdateClosesOldContextAndLinksNewContext() {
         val controller = CasController(mediaCasFactory = FakeMediaCasBridgeFactory())
         val descrambler = FakeTunerDescramblerBridge()
+        val replacement = FakeTunerDescramblerBridge()
         controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), { descrambler })
         controller.onEcmSection(TsPid(0x123), byteArrayOf(0x80.toByte()))
-        controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x102), ecmPid = TsPid(0x124), emmPid = TsPid(0x010)), { descrambler })
+        controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x102), ecmPid = TsPid(0x124), emmPid = TsPid(0x010)), { replacement })
         controller.onEcmSection(TsPid(0x124), byteArrayOf(0x80.toByte()))
-        check(0x101 in descrambler.removedPids)
-        check(0x102 in descrambler.addedPids)
+        check(descrambler.closed && descrambler.removedPids.isEmpty())
+        check(0x102 in replacement.addedPids)
+        controller.close()
     }
 
     @Test fun failedPidAddRemainsPendingAndSameMetadataRetriesIt() {
@@ -884,7 +886,7 @@ class CasControllerStateTest {
         check(failure is IllegalStateException) { "close後の新規workは拒否されるべきです: $failure" }
     }
 
-    @Test fun closeUnlinksKeyBeforeClosingDescrambler() {
+    @Test fun closeReleasesDescramblerBeforeSessionWithoutSeparateUnlink() {
         val events = mutableListOf<String>()
         val controller = CasController(mediaCasFactory = OrderedMediaCasBridgeFactory(events))
         val descrambler = OrderedDescramblerBridge(events)
@@ -894,14 +896,9 @@ class CasControllerStateTest {
         )
         controller.onEcmSection(TsPid(0x123), byteArrayOf(0x80.toByte()))
         controller.close()
-        val remove = events.indexOf("remove:257")
-        val clear = events.indexOf("clear-key")
-        val descramblerClose = events.indexOf("descrambler-close")
-        val sessionClose = events.indexOf("session-close")
-        check(remove >= 0 && remove < clear)
-        check(clear < descramblerClose)
-        check(descramblerClose < sessionClose)
+        check(events == listOf("set-key", "add:257", "descrambler-close", "session-close", "plugin-close"))
         controller.close()
+        check(events.size == 5)
         check(controller.lastDiagnostic().state == CasController.State.CLOSED)
         check(controller.currentReadiness() == CasController.Readiness.CLOSED)
         val failure = runCatching { controller.updateFromCaMetadata(emptyList()) }.exceptionOrNull()

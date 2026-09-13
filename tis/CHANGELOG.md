@@ -1,3 +1,12 @@
+# r52_pr57_cas_teardown_simplification
+
+- context終了時のPID列挙removePidとVOID key unlinkを除去し、Descrambler.closeへPID/key資源解放を集約した。close成功後だけ所有状態を消し、Session closeと独立資源の解放は途中失敗でも試行する。成功済みcloseの再実行防止、未解放資源の保持・再試行、親MediaCasの寿命、routing失効、未生成handleをcleanupで生成しない契約は維持した。
+- 継続contextのPID差分更新と初回key link部分成功のrollbackは変更していない。終了処理から動的PID引数列がなくなったため、closeContextLockedのSpreadOperator抑止も削除した。
+- teardown、close失敗の再試行、別systemの同一PIDを持つsurvivor、PMT変更によるcontext置換の4試験を更新した。PMT置換試験では閉鎖済みbridgeを再利用せず別bridgeを使う。個別remove/clearが失敗するfakeを置き、終了処理でそれらを呼ばずcloseだけ再試行すること、Session/pluginは重複closeしないことを確認した。
+- CAS orchestration補足文書の固有契約をDESIGN_JA.mdへ統合して補足文書を削除した。context多重度、filter plan正本、readiness、終了順序、executor寿命、generation fence、最低試験を保持し、旧単一Descrambler前提のPID所有記述をcontext単位へ修正した。
+- 検証: Kotlin 1.9.22 / Android 15入力で本番・全試験Kotlinをコンパイルし、JDK 17 compiler moduleで既存Java失敗注入stubをコンパイルした。Rust 1.81.0で実SI JNIをbuildし、既存ホスト対象32クラスのJUnit 257件が成功した（CAS関連3クラス32件も個別成功）。試験総数・CI除外一覧は変更していない。
+- 全Kotlin 128ファイルのktlint 1.8.0とdetekt 1.23.8、git diff --checkが成功した。CAS core/transportのRust 27件も成功。Android依存3クラスのRobolectric、Android/Soong build、device atest/CTS/VTS、実カード・Yakisoba・放送波は未実施。
+
 # r52_pr57_kotlin_quality_repair
 
 - mainの未使用引数削除を復元し、`tuneResolvedChannel`の`startPlayback`引数と呼出し2箇所で渡していた値を除去した。ECM処理後の通知は維持し、選局・再生の動作は変更していない。
