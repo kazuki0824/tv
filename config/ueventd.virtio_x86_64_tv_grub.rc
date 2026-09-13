@@ -1,0 +1,3 @@
+# Import the tuner_hal2 device-node permissions installed by
+# maleicacid_tuner_hal2_ueventd_rc.
+import /vendor/etc/ueventd.tuner_hal2.rc
