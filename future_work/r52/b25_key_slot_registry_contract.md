@@ -57,7 +57,7 @@ CA system ID、MediaCas session generation、SmartCard/Yakisoba種別はCAS-doma
 - MediaCas session IDは1..16 bytesのopaque valueとし、TunerのVOID key tokenと同一値を発行しない。
 - 同一CAS service process lifetime内でsession ID bytesを再利用しない。生成方式は公開契約にしない。
 - session ID公開前にservice-global token namespaceでlive/retired identityと衝突しないことを保証する。reservation APIやtable layoutは実装詳細とする。
-- provider incarnationをwrap/reuseしない。次incarnationを安全に発行できない場合は新providerを有効化しない。
+- provider incarnationをwrap/reuseしない。新provider incarnationはregistryが保持するlive/retired incarnationと衝突してはならず、衝突時は別incarnationを生成するかprovider起動をfail-closedにする。生成方式自体は固定しない。
 - key epochを同一live token内でwrap/reuseしない。次epochを発行できない場合はECM成功にせず、そのsessionを新規key publish不能として閉じる。
 - CAS provider/serviceのdeath/disconnectを検出した場合、そのincarnationに属するentryの新規resolveを一括遮断する。
 - revokeは最初に新規resolveを遮断する。既にTuner packet pathが取得済みの内部resource参照はその処理終了まで保持してよいが、新規packet処理へ再取得させない。
