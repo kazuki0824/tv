@@ -15,7 +15,7 @@ import java.util.concurrent.Executors
  * B25/B1 向け CAS 制御。
  * PMT/CAT の CA情報 は arib_si_engine_rs の snapshot から受ける。
  * ECM/EMM は完全な section として扱い、生 TS packet は扱わない。
- * カード I/O、CW 生成、鍵発行は MediaCas/CAS HAL 側の責務とする。
+ * カード I/O、CW 生成、鍵発行は MediaCas/Maleicacid CAS plugin 側の責務とする。
  * Tuner HAL には 不透明 トークン と ES PID 登録だけを渡す。
  */
 @Suppress("TooManyFunctions")

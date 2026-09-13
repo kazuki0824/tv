@@ -52,7 +52,9 @@ Video track metadataもPMTとEITの責務を混同しない。filter/decoderへ�
 
 ## CAS / descrambler の現行境界
 
-現行 product では CAS HAL 本体はプレースホルダーのままにする。TIS は Tuner SDK API の filter 経由で PMT/CAT/SDT/ECM/EMM section payload を取得し、PMT/CAT から得た CA_descriptor と SDT 等から得た free_CA_mode / サービス識別子補助情報を arib_si_engine_rs の意味解析結果として受け取る。TIS はcurrent `ServiceSemanticFacts`とcurrent CAS capabilityに基づいて ECM/EMM セクションフィルターと MediaCas/CAS bridgeを型付きAPIで制御し、実keyトークンが得られた場合だけTuner descramblerへ不透明な参照値を渡す。仮実装や診断専用結果は復号成功を意味しないため、`setKeyToken()`へ渡さない。Tuner HALが未接続診断を返した場合も成功扱いにしない。
+CAS plugin内部のfactory/backend/key lifecycle契約は `../cas_plugin/DESIGN_JA.md` を正とし、本書ではTISからMediaCas/Tuner SDKへ接続するruntime境界だけを定義する。
+
+現行 product では CAS plugin 本体はプレースホルダーのままにする。TIS は Tuner SDK API の filter 経由で PMT/CAT/SDT/ECM/EMM section payload を取得し、PMT/CAT から得た CA_descriptor と SDT 等から得た free_CA_mode / サービス識別子補助情報を arib_si_engine_rs の意味解析結果として受け取る。TIS はcurrent `ServiceSemanticFacts`とcurrent CAS capabilityに基づいて ECM/EMM セクションフィルターと MediaCas/CAS bridgeを型付きAPIで制御し、実keyトークンが得られた場合だけTuner descramblerへ不透明な参照値を渡す。仮実装や診断専用結果は復号成功を意味しないため、`setKeyToken()`へ渡さない。Tuner HALが未接続診断を返した場合も成功扱いにしない。
 
 descrambler bridgeの単一所有者はCasControllerとし、TunerControllerに同じbridgeをcacheしない。scan/liveは取得済みbridgeを持ち回らず、受信snapshotに対応するtune generationを必須入力とするTunerController.updateCasMetadataAndFilters()を使う。同controller executor内でtuneAcceptedとgenerationを照合し、CasControllerのfactoryによるbridge生成・attach・metadata更新と、成功結果のECM/EMM PIDを使うfilter更新完了まで待つ。metadata成功前に新filter集合を公開しない。resource-lostは同executorで直列化するため、取得とattachの間に割り込ませない。旧世代・失効済み要求はfactoryを呼ばず拒否する。
 
@@ -339,7 +341,7 @@ TIS は `TvInputManager.ACTION_BLOCKED_RATINGS_CHANGED` と `TvInputManager.ACTI
 - `onUnblockContent()` の解除範囲は同一 `channelUri + serviceKey + eventId + ratingString` の現在番組 / レーティングに限定する。start/end は stable identity ではなく、解除対象が現在表示中の同一 Program row であることを確認する補助条件としてのみ使ってよい。start/end/duration を provider-data `programKey`、unblock stable identity、または Program identity の SSOT にしてはならない。
 
 一時解除はSession executor内の`TemporaryContentUnblocks`だけが所有する。現在番組のstable identity変更、現在番組消滅、retune、releaseで失効する。解除の受理時点の番組終了UTCと、受理時の単調時計から換算した終了期限を固定し、いずれかに到達した時点で失効する。終了不明・期限算出overflow・既終了は解除を受理しない。番組時刻更新や同じ解除通知の重複では期限を延長しない。新たに観測した終了が早い場合は期限を短縮する。壁時計の後退でも単調期限を維持する。失効タイマーはsession executorへ再評価をenqueueし、旧タイマーは参照一致で除外する。期限通知を予約できない場合も解除を保持しない。これにより同一event_idの再使用に旧解除を引き継がず、開始時刻をstable identityへ追加する必要はない。終了後の延長番組を解除する場合は新たなframeworkの認証済み通知を必要とする。
-- CAS 未完成 / scrambled unsupported で再生成功にしない場合は `TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` を使う。具体的な CAS 状態 reason は CAS HAL 本実装まで使わない。
+- CAS 未完成 / scrambled unsupported で再生成功にしない場合は `TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` を使う。具体的な CAS 状態 reason は CAS plugin 本実装まで使わない。
 - `requiresCas`はcurrent `ServiceSemanticFacts`のCA descriptor等から得る放送由来意味事実とし、`unsupportedCas` / `clearLivePlaybackSupported`はcurrent product/CAS capabilityからTISがその都度算出する。既存channel/Program `internal_provider_data`の旧policy値をcurrent policyの代替参照に使わない。
 
 ## TIS / EPG 公開境界
@@ -366,9 +368,9 @@ Direct Boot保留の正式状態を`DirectBootEpgPending`とする。`DirectBoot
 
 登録可能サービスは、`ServiceKey`、物理選局情報へ戻せるchannel provider-data、`Channels.COLUMN_INPUT_ID`として保存する自TISのinputId、表示名が揃い、TvProvider channel insert/update に進めるサービスとする。input ownershipのSSOTはprovider-dataではなく`Channels.COLUMN_INPUT_ID`とする。表示名は `ChannelRecord.displayName` が nonblank ならそれを使い、なければ SDT service_name、さらに無ければ `service-<onid>-<tsid>-<sid>` を使う。この代替表示名は登録可能判定上の有効な表示名と扱う。
 
-## CAS 仮実装境界
+## CAS plugin 仮実装境界
 
-CAS HAL 仮実装のまま scrambled サービスを平文ライブ視聴再生成功として扱ってはならない。scrambled unsupported サービスでも、PMT/CAT/CA情報と診断を使って EPG / Programs / レーティング / provider-data は更新する。ただし CAS key トークンを提供できない状態では再生成功にせず、CAS起因の unavailable のみ `VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` へ map する。初回映像到達timeout、filter start failure、非対応stream、codec失敗、audio失敗はCAS unknownにmapしない。
+CAS plugin 仮実装のまま scrambled サービスを平文ライブ視聴再生成功として扱ってはならない。scrambled unsupported サービスでも、PMT/CAT/CA情報と診断を使って EPG / Programs / レーティング / provider-data は更新する。ただし CAS key トークンを提供できない状態では再生成功にせず、CAS起因の unavailable のみ `VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` へ map する。初回映像到達timeout、filter start failure、非対応stream、codec失敗、audio失敗はCAS unknownにmapしない。
 
 CAS可否はcurrent `ServiceSemanticFacts`とcurrent CAS implementation/capabilityからTISが算出する。provider-dataに保存するのはCA descriptor/free_CA_mode等の意味事実だけであり、旧`unsupportedCas` / `clearLivePlaybackSupported` / `publishStateSource`をcurrent判定へ再利用しない。
 
