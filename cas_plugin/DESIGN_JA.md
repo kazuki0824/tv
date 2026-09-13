@@ -108,7 +108,7 @@ B1は同じ `MaleicacidCasFactory` が所有する第二のCA systemとして提
 
 採用AOSP plugin ABIに存在しないvendor独自public methodを追加しない。公開面を拡張せず、各CA方式で意味を持たないoperationは空successにせずAOSP既存のcannot-handle相当statusへ写像し、stateを変更しない。invalid/closed session、illegal argument等はAOSP既存statusの意味を保って返す。
 
-`setStatusCallback()` はAOSP `MediaCasService` がplugin生成後に登録するstatus callbackを保持するABI面とする。factoryの `createPlugin()` で受け取った `appData` と組み合わせてstatus eventをservice側へ返す。callback登録前はstatus callbackを発行せず、release確定後はcallbackを発行しない。callback invocationはcommit済みstateだけを通知し、callback中にplugin内部state lockを保持することを要求しない。
+`setStatusCallback()` はAOSP `MediaCasService` がplugin生成後に登録するstatus callbackを保持するABI面とする。factoryの `createPlugin()` で受け取った `appData` と組み合わせてstatus eventをservice側へ返す。callback登録前はstatus callbackを発行せず、plugin破棄開始後はcallbackを発行しない。callback invocationはcommit済みstateだけを通知し、callback中にplugin内部state lockを保持することを要求しない。AIDL release応答との関係は§4に従う。
 
 引数なしの `openSession(CasSessionId*)` はframeworkのdefault session openであり、B25/B1とも各CA方式のscheme-default MULTI2 sessionを生成する。typed `openSession(intent, mode, ...)` はB25/B1で `LIVE + MULTI2` を通常入力として受理する。これ以外の非対応intent/modeはstateを変更せずcannot-handle相当statusを返す。
 
@@ -124,11 +124,17 @@ session: Opening -> Active -> Closing -> Closed
                          \-> Failed -> Closing -> Closed
 ```
 
+pluginの `Releasing` はvendor CasPluginの破棄開始、`Released` は破棄完了を表す。AOSP AIDL `CasImpl::release()` の応答時点とは区別する。標準実装は `mPluginHolder` を空にして新規呼出しを拒否するが、実行中のmethodは局所的な `shared_ptr` を保持するため、そのmethodが参照を解放するまでplugin破棄は遅延し得る。AIDL release呼出しをvendor pluginへ通知する独自method、service改変、監視threadを追加しない。
+
+同期backend処理はplugin methodの参照寿命内で完了させる。AIDL releaseと競合して既に実行中のmethodは、その応答後に結果をcommitし得る。これをpluginが検知・拒否できるとは規定しない。session closeが先に確定した場合は、そのsessionへの後着commitを拒否する。通常のTIS終了ではECM/EMM配送停止、descrambler参照解除、各session close、MediaCas closeを直列に行い、この競合を発生させない。
+
+内部workerを採用する場合は、plugin破棄開始で新規処理とcallbackを停止し、既存処理を取消しまたは完了待ちして、sessionと鍵参照を失効させてから破棄を完了する。workerが自身の停止に必要なplugin寿命を循環参照で保持してはならない。`appData` はservice wrapper所有の借用値であり、plugin破棄後に使用しない。AIDL release応答時点で全worker、callback、鍵資源が既に破棄済みという強い保証は追加しない。
+
 具体的なclass名、mutex、thread、generation fieldは規定しない。必要な意味契約は次とする。
 
 - Released pluginを再利用しない。
 - Closed sessionに対するECM/private-data mutationを成功させない。
-- close/releaseと外部backend処理が競合した場合、遅れて返った結果をClosed/Releasing stateへcommitしない。
+- session closeまたはplugin破棄開始と外部backend処理が競合した場合、遅れて返った結果をClosed/Releasing stateへcommitしない。AIDL release応答だけをReleasingへの遷移とみなさない。
 - 古いECM completionが後から新しいcurrent key materialを上書きしない。
 - listener notificationはstate commit後に行い、listener failureでcommit済みstateをrollbackしない。AOSP listener契約がsession IDを正規引数として要求する場合はその契約に従い、raw/prepared key、ECM/EMM本文等の秘密materialをcallbackへ露出しない。
 - callbackからhalf-committed stateを観測可能にしない。
@@ -146,7 +152,7 @@ B25Backend
 
 backend種別は各B25 plugin instance内で一度だけ確定し、releaseまでそのpluginの全sessionとEMM処理で共有する。同じplugin instanceの途中でbackendを切り替えない。同じplugin instanceへ複数のbackend-dependent operationが並行して最初に到達しても、異なるbackendへ同時確定せずbinding結果を一意にする。具体的なlock/thread方式は規定しない。
 
-product TISは同一B25 CA system IDについて1個のlive MediaCas/CAS pluginを共有し、そのpluginへB25 ECM sessionとEMMを配送する。AOSPが別clientによる独立plugin生成を許すことを理由に、HAL/service全体を横断するservice-global backend selectorを追加しない。
+product TISは同一B25 CA system IDについて1個のlive MediaCas/CAS pluginを共有し、そのpluginから必要な複数ECM sessionを生成してEMMと同じbackendへ配送する。sessionの共有条件、ECM PIDとES PIDの対応、private data変更時の退役は `../tis/DESIGN_JA.md` を正とする。pluginを共有することからsessionや鍵slotまで1個に制限しない。AOSPが別clientによる独立plugin生成を許すことを理由に、HAL/service全体を横断するservice-global backend selectorを追加しない。
 
 `setPrivateData()` がbackend binding前に成功した場合、後続bindingはそのcommit済みplugin-local private dataと整合するbackend contextを生成する。binding後の `setPrivateData()` は、plugin-local stateとactive backend contextが異なる成功状態にならないよう一体として更新し、失敗時は直前の成功stateを維持する。version counter等の具体方式は必須化しない。
 
@@ -201,6 +207,38 @@ backend operationはcallerを無期限に占有しない。deadline、cancellati
 raw key、Kw、Ks、credentialを通常log、TIS、AOSP公開AIDLへ露出しない。ECM/EMMはTISからAOSP標準 `processEcm()` / `processEmm()` 入力として受け取る正規経路を許可し、その入力を通常log、別AIDL、診断dump等へ不要に再公開しない。
 
 Yakisobaを別vendor daemonへ分離する実装も禁止しない。daemonを採用する場合だけ、IPC schema互換性、request/response対応付け、size bound、access control、bounded I/O、stale request rejectionを満たす。daemon自体、明示version field、特定socket pathをAOSP要件として必須化しない。
+
+### 6.1 section入力とpayload抽出
+
+AOSP `processEcm()` / `processEmm()` のscheme-private入力は、本製品ではTISが取得した完全な1 sectionとする。TISは内容を解釈・切断せず、Maleicacid CAS pluginの入力adapterが次を行う。
+
+- 対応するECM/EMM table_id、sectionの構文、宣言長と実長、採用方式で必要なCRCを検証する。長さ不足、余剰byte、切れたmessage、不正CRCをbackendへ渡さない。
+- ECMはsection headerとCRC等の外枠を除き、暗号化ECM payloadの先頭からMAC末尾までを `bcas_decodeECM()` へ渡す。libyakisobaの256-byte上限と最小長を呼出し前に検証し、返却鍵は同APIのodd、even順に受け取る。
+- EMM section内のmessage境界と宛先を検証し、message単位で `bcas_decodeEMM()` へ渡す。`Individual` は対応するARIB message種別から決め、全EMMへ固定値を渡さない。各messageの長さと種別固有の最小長を検証し、256-byteを超える入力を渡さない。
+- EMMの出力bufferを確保し、復号後のcommand、宛先、長さ、更新番号、適用条件をbackendで検証する。TISへ復号本文を返さない。ECM/EMMの構文・command解釈はCAS側に閉じ、TS demuxやPSI/SI意味解析を複製しない。
+
+### 6.2 EMMの復号結果とwork key更新
+
+`bcas_decodeEMM()` の成功は復号・MAC検証の成功であり、entitlementやwork key台帳への更新完了ではない。YakisobaBackendが復号後commandの解釈と適用を所有し、対象外宛先の除外、重複更新の扱い、更新番号・権利条件の検証を経て、ECMが実際に参照するlibyakisobaのwork key台帳へ反映する。更新不能なcommandを復号成功だけで処理成功にしない。
+
+libyakisobaの公開された2個のdecode APIだけではwork key台帳を更新できない。初期統合では無改変のlibyakisobaをplugin内へ静的にリンクし、既存の内部 `Register()` と鍵初期化・参照処理へ接続する限定的な内部adapterを使用する。内部関数の宣言と型は採用sourceに合わせ、AOSP ABIや公開libyakisoba APIへ露出しない。共有libraryから未exportの関数を呼べるという前提を置かず、Soongの静的リンクとsymbol解決を検証する。
+
+libyakisobaのwork key台帳と初期化状態はprocess内で共有されるため、複数pluginにまたがる初期化、ECM参照、EMM更新は同じbackend resource ownerで直列化する。台帳の複製、pluginごとの別Kw cache、service全体のbackend選択器を追加しない。初期化前の登録が後続初期化で失われない順序を守る。内部 `Register()` の拒否を成功へ変換せず、同一内容の既適用更新と、未対応更新・状態不整合を区別する。
+
+EMM処理は適用対象messageごとに検証と更新を確定し、関連ECMが更新途中の台帳を観測しないようにする。複数messageの途中失敗では、既に適用した更新を未適用と偽らず、未適用分を成功扱いせず、対応する失敗を返す。後続再配送では既適用更新を重複適用しない。全sectionを巻き戻すための第二台帳は必須化しない。
+
+### 6.3 入力・backend結果の対応
+
+| 結果 | 公開結果と副作用 |
+|---|---|
+| section/messageの構文・長さ不正 | `BAD_VALUE`。当該messageは適用しない |
+| MAC検証失敗（`-EILSEQ`） | `ERROR_CAS_DECRYPT`。鍵・権利を更新しない |
+| ECMに必要なwork keyがない（`-ENOKEY`） | `ERROR_CAS_NO_LICENSE`。新しいKsを公開しない。初期設定自体の未成立が判明している場合は `ERROR_CAS_NOT_PROVISIONED` |
+| EMMの対象外宛先（`-ENOMSG`） | 当該messageを除外し、残りを処理する。鍵更新を実施したとは扱わない |
+| 解釈・適用できないcommand | `ERROR_CAS_CANNOT_HANDLE`。復号成功を更新成功へ置き換えない |
+| 適用対象の検証・更新が完了 | 成功。後続ECMが更新済み台帳を参照できる |
+
+初期Yakisoba構成の完了確認には、不正section、1 section内の複数EMM、対象外宛先、MAC不正、重複・拒否更新、EMMで得たwork keyを使う後続ECM、複数pluginからの同時初期化・処理を含める。
 
 ## 7. SmartCard backend
 
@@ -320,7 +358,7 @@ commit前に失敗した場合は旧current materialを維持する。new materi
 
 ```text
 - session close
-- plugin release
+- plugin破棄開始（AIDL release応答だけではなく§4の寿命に従う）
 - current CAS owner loss
 - credential revoke
 - backend fatal failure
@@ -329,9 +367,11 @@ commit前に失敗した場合は旧current materialを維持する。new materi
 
 revoke後に競合して既に取得済みの内部material参照は、そのpacket処理終了まで保持してよい。新規packet処理へ再取得させない。
 
-tokenはrevoke、必要なdescramblerからのVOID unlink、既取得内部参照drainが完了するまで別sessionへ再割当てしない。
+tokenはrevoke、必要なdescramblerからの参照解除、既取得内部参照drainが完了するまで別sessionへ再割当てしない。参照解除は、利用中のdescramblerへのVOID成功、または当該descramblerの閉鎖完了によって成立する。
 
-MediaCas由来tokenをTuner descramblerで使用した場合は、MediaCas sessionをcloseする前に、そのtokenを保持する全descramblerで `setKeyToken(VOID)` を成功させる。VOID成功を、そのdescramblerが以後の新規packet処理でtokenを使用しない確定点とする。VOID unlinkが失敗した場合は当該MediaCas session/pluginを先にclose/releaseせず、既存のtoken linkとresource ownershipを保持してcleanup再試行を可能にする。session close成功後にplugin close/revokeへ進み、その後にPID/descrambler cleanupを行う。
+MediaCas由来tokenを利用中のTuner descramblerで使用した場合、通常終了・再選局ではMediaCas session close前に `setKeyToken(VOID)` を成功させる。VOID失敗時は当該session/pluginと資源の所有を保持して再試行する。VOID成功後にsession closeと対応PID/descrambler解放へ進み、全sessionの解放後にplugin releaseへ進む。
+
+AOSP Tunerの資源回収は `releaseAll()` 内でdescramblerを閉じ、その後に `onResourceLost()` を通知する。この通知を受けた経路では、既に閉鎖されたdescramblerへのVOID成功を要求しない。閉鎖完了により新規packet処理からの参照がなくなったことをTIS側の所有管理へ反映し、MediaCas sessionのcloseへ進む。通常のVOID失敗、単なるtimeout、受信信号喪失を資源回収通知と同一視しない。TIS側の具体処理は `../tis/DESIGN_JA.md` を正とする。
 
 backend物理cleanupのretry/reset/taint方式はbackend resource ownerの実装詳細とし、service-global `CleanupPending` worker/tableを必須化しない。
 
@@ -409,7 +449,7 @@ AOSP標準MediaCasServiceを製品で有効にし、Maleicacid CAS plugin shared
 
 plugin libraryは `createCasFactory()` をexportし、AOSP `media/cas/CasAPI.h` の `android::CasFactory` / `android::CasPlugin` ABIと整合させる。`CasFactory` のlegacy/Ext両 `createPlugin()`、`CasPlugin` の `setStatusCallback()`、default/typed両 `openSession()` を含むpure virtual ABI面を全て実装する。
 
-最初の `yakisoba_only` 構成ではplugin libraryからSoong module `libyakisoba` を利用できるようdependencyを設定する。SmartCard componentを `yakisoba_only` のbuild/advertise条件にしない。
+最初の `yakisoba_only` 構成ではplugin libraryから§6.2のlibyakisoba静的リンクと内部adapterへのdependencyを設定する。SmartCard componentを `yakisoba_only` のbuild/advertise条件にしない。
 
 ## 18. validation
 
@@ -422,9 +462,11 @@ plugin libraryは `createCasFactory()` をexportし、AOSP `media/cas/CasAPI.h` 
 - AOSP plugin loaderがその探索directoryからMaleicacid createCasFactory()を発見する
 - CasFactoryのlegacy/Ext両createPlugin()がB25/B1とも対応するplugin coreを生成できる
 - AOSP MediaCasServiceがExt callback版createPlugin()後にsetStatusCallback()を登録できる
-- release確定後にplugin status/event callbackを発行しない
-- close/release後のlate resultがkey stateを復活させない
-- MediaCas close前のVOID unlink / revoke契約を満たす
+- plugin破棄開始後にplugin status/event callbackを発行しない
+- session closeまたはplugin破棄開始後のlate resultがkey stateを復活させない
+- AIDL releaseと実行中methodの競合では、局所参照解放までplugin破棄が遅延し得ることを検証する
+- 通常TIS終了で配送停止、descrambler参照解除、session close、MediaCas closeの順序を検証する
+- 通常終了のVOID unlinkと資源回収時のDescrambler閉鎖確認を区別し、§13の参照解除 / revoke契約を満たす
 - ClearKey compatibility pathを破壊しない
 - B25/B1 Media CAS descramblerを追加しない
 - packet descramble ownerがTuner HALのままである
@@ -459,8 +501,8 @@ B1 ECM-onlyの最低完了条件は次とする。
 - B1 processEmm() がstateを変更せずunsupported/cannot-handle相当statusを返す
 - PROGRAM/ES CA metadataからB1 sessionへ `setSessionPrivateData()` を成功させ、その後のECM処理まで同じsessionで継続できる
 - B1 plugin-level `setPrivateData()` とB1で意味を定義しないevent/provision/refresh operationが空successせずcannot-handle相当statusを返す
-- B1 session close/releaseで新規key resolveを遮断し、revoke後のlate ECM結果がkey stateを復活させない
-- MediaCas close前のVOID unlink / revoke契約を満たす
+- B1 session closeまたはplugin破棄開始で新規key resolveを遮断し、revoke後のlate ECM結果がkey stateを復活させない
+- 通常終了のVOID unlinkと資源回収時のDescrambler閉鎖確認を区別し、§13の参照解除 / revoke契約を満たす
 ```
 
 ## 19. 実装順序

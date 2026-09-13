@@ -82,7 +82,7 @@ class CasControllerStateTest {
         }
     }
 
-    @Test fun resourceLossRetriesVoidThenSessionThenPluginThenDescrambler() {
+    @Test fun normalCleanupRetriesVoidThenSessionThenDescramblerThenPlugin() {
         var rejectSessionClose = true
         var sessionCloses = 0
         var pluginCloses = 0
@@ -137,10 +137,10 @@ class CasControllerStateTest {
         check(runCatching { controller.clearForResourceLoss() }.isFailure)
         check(bridge.unlinks == 2 && sessionCloses == 1 && pluginCloses == 0 && bridge.closes == 0)
 
-        // session/plugin成功後だけdescrambler closeへ進む。
+        // session成功後にdescramblerを閉じ、全sessionの解放後にpluginを閉じる。
         rejectSessionClose = false
         check(runCatching { controller.clearForResourceLoss() }.isFailure)
-        check(bridge.unlinks == 2 && sessionCloses == 2 && pluginCloses == 1 && bridge.closes == 1)
+        check(bridge.unlinks == 2 && sessionCloses == 2 && pluginCloses == 0 && bridge.closes == 1)
 
         bridge.failClose = false
         controller.clearForResourceLoss()
@@ -667,13 +667,17 @@ class CasControllerStateTest {
     @Test
     fun pmtUpdateRemovesOldPidAndAddsNewPid() {
         val controller = CasController(mediaCasFactory = FakeMediaCasBridgeFactory())
-        val descrambler = FakeTunerDescramblerBridge()
-        controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), { descrambler })
+        val old = FakeTunerDescramblerBridge()
+        val next = FakeTunerDescramblerBridge()
+        controller.updateFromCaMetadata(b25Metadata(TsPid(0x101), TsPid(0x123), TsPid(0x010))) { old }
         controller.onEcmSection(TsPid(0x123), byteArrayOf(0x80.toByte()))
-        controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x102), ecmPid = TsPid(0x124), emmPid = TsPid(0x010)), { descrambler })
+        controller.updateFromCaMetadata(b25Metadata(TsPid(0x102), TsPid(0x124), TsPid(0x010))) { next }
+        check(old.closed)
+        check(old.keyTokens.last().contentEquals(byteArrayOf(0)))
+        check(controller.onEcmSection(TsPid(0x123), byteArrayOf(1)).isEmpty())
         controller.onEcmSection(TsPid(0x124), byteArrayOf(0x80.toByte()))
-        check(0x101 in descrambler.removedPids)
-        check(0x102 in descrambler.addedPids)
+        check(next.addedPids == setOf(0x102))
+        controller.close()
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。

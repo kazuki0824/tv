@@ -1,3 +1,10 @@
+# pr108_cas_session_ownership_and_reclaim
+
+- AOSP Tunerの資源回収通知を通常cleanupから分け、FrameworkによるDescrambler閉鎖後はVOIDを再投入せず、bridge閉鎖確認からMediaCas session/plugin解放へ進む。
+- CA systemごとに1個のMediaCas pluginを保ち、service・ECM PID・private dataごとにsessionとDescramblerを所有する。旧sessionの解放後に新sessionを生成し、存続sessionとEMM ownerを維持する。
+- 通常cleanupのVOID・session close・Descrambler close・plugin closeの順序と再試行を更新。資源回収、同一CA system内のsession分離のhost回帰試験を追加し、CI期待件数を237件、検出クラス数を35件へ更新した。
+- Kotlin本番・全試験ソースのhostコンパイルとCAS関連JUnit 23件、変更Kotlinのktlint/detektを確認。host試験全237件、Android/Soong build、device atest、VTS、実機確認は未実施。CAS plugin本体の実装完了を示すものではない。
+
 # r51_tuner_hal2_audit_regressions
 
 - BS事前scanは`onLocked()`で同一scanを一度だけ継続し、`onScanStopped()`まで待機する。状態変更は既存の単一controller executorに限定し、追加の同期ロックを置かない。公開scan契約への接続を設計へ反映した。

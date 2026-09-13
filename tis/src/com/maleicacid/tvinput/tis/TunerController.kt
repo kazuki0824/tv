@@ -295,7 +295,7 @@ class TunerController(
                         { playbackPipeline.stop() },
                         { cancelStreamIdDiscoveryOnController() },
                         { closeSectionFiltersOnController() },
-                        { casController?.clearForResourceLoss() },
+                        { casController?.onTunerResourcesReclaimed() },
                         {
                             SectionFilterPolicy.completeCleanup(
                                 *captionFactParsers.entries
