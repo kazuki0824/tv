@@ -1,3 +1,13 @@
+# r52_pr57_hevc_configuration_review
+
+- `HevcConfigParser`へ起動時のNAL収集・SPS寸法取得・CSD構成を分離し、`PlaybackPipeline`は`MediaFormat`への接続を担当する。既存のビット読取りを`CodecBitReader`としてAVCと共有し、旧HEVC helperを削除した。外部依存やJNI入口は追加していない。
+- 後続開始コードで終端が確認できたVPS/SPS/PPSだけを収録する。3/4 byte開始コードを受け入れ、末尾のAnnex-B零バイトを除き、CSDの開始コードを4 byteへ統一する。途中のPPSをCSDへ投入しない。
+- 未到着・受信途中は既存起動予算内で待ち、受信済みNALのheader不正・空parameter set・SPS寸法までの構文切断・不正escape・予約値・寸法/crop不正は例外で返す。本番の既存`VIDEO_CODEC_ERROR`、停止・資源解放へ伝播し、構成待ちタイムアウトへ丸めない。
+- 解析の保証範囲、独自実装を残す依存・保守上の判断、MediaCodecのCSD契約を`DESIGN_JA.md`へ記載した。全HEVC構文、Main10/HDR、実機適合を寸法取得成功から推測しない。
+- 実x265ヘッダーの既存試験を更新し、各バイト位置での受信切断、PPS未到着時の不正SPS、空parameter set、不正escape、混在開始コードと末尾零バイトの5試験を追加した。CI期待値を252から257へ更新した。試験クラス数は35、ホスト対象は32のままとする。
+- 検証: Kotlin 1.9.22/Android 15入力による本番・全試験Kotlinコンパイル、HEVC 13件・入力範囲/保持量/時刻7件・AVC回帰5件の計25件が成功した。全Kotlinのktlint、分離した解析部品のdetekt、`git diff --check`が成功した。旧helperの残存検索、`queue`から`onDecoderFailure`と停止までの呼出し経路、Soong/ホスト/Robolectricのソース収集範囲を確認した。
+- 全体detektは63件の指摘で未合格。新たな抑止ルールは追加していない。ホスト257件全体は未実行であり、件数はJUnitの発見結果として確認した。実SI JNI/Rust試験、Android/Soong build、Robolectric実行、device atest/CTS/VTS、実MediaCodecによるHEVC初回出力は未検証である。
+
 # r52_pr57_cas_session_cleanup_order
 
 - Session.closeに失敗したCA systemの親MediaCasを保持し、次回cleanupでSession解放を再試行できるようにした。別CA systemのSession/MediaCas解放は継続する。既存のcontext所有表とcleanup経路を使用し、別の解放ownerは追加しない。

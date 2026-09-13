@@ -2218,106 +2218,10 @@ class PlaybackPipeline(
         }
 
         fun hevcVideoFormat(bytes: ByteArray): MediaFormat? {
-            val vps = findHevcNal(bytes, 32) ?: return null
-            val sps = findHevcNal(bytes, 33) ?: return null
-            val pps = findHevcNal(bytes, 34) ?: return null
-            val dimensions = parseHevcSpsDimensions(sps) ?: return null
-            return MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_HEVC, dimensions.width, dimensions.height).apply {
-                setByteBuffer("csd-0", ByteBuffer.wrap(vps + sps + pps))
+            val config = HevcConfigParser.parse(bytes) ?: return null
+            return MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_HEVC, config.width, config.height).apply {
+                setByteBuffer("csd-0", ByteBuffer.wrap(config.csd))
             }
-        }
-
-        private fun parseHevcSpsDimensions(spsWithStartCode: ByteArray): VideoDimensions? =
-            runCatching {
-                val rbsp = hevcNalRbspPayload(spsWithStartCode)
-                val bits = BitReader(rbsp)
-                bits.readBits(4)
-                val maxSubLayersMinus1 = bits.readBits(3)
-                require(maxSubLayersMinus1 <= 6)
-                bits.readBit()
-                skipHevcProfileTierLevel(bits, maxSubLayersMinus1)
-                require(bits.readUE() <= 15)
-                val chromaFormatIdc = bits.readUE()
-                require(chromaFormatIdc in 0..3)
-                val separateColourPlaneFlag = if (chromaFormatIdc == 3) bits.readBit() else 0
-                val width = bits.readUE()
-                val height = bits.readUE()
-                var left = 0
-                var right = 0
-                var top = 0
-                var bottom = 0
-                if (bits.readBit() == 1) {
-                    left = bits.readUE()
-                    right = bits.readUE()
-                    top = bits.readUE()
-                    bottom = bits.readUE()
-                }
-                val subWidthC =
-                    if (separateColourPlaneFlag == 1) {
-                        1
-                    } else if (chromaFormatIdc == 1 || chromaFormatIdc == 2) {
-                        2
-                    } else {
-                        1
-                    }
-                val subHeightC =
-                    if (separateColourPlaneFlag == 1) {
-                        1
-                    } else if (chromaFormatIdc == 1) {
-                        2
-                    } else {
-                        1
-                    }
-                val croppedWidth = width.toLong() - subWidthC * (left.toLong() + right)
-                val croppedHeight = height.toLong() - subHeightC * (top.toLong() + bottom)
-                require(croppedWidth in 1..Int.MAX_VALUE.toLong() && croppedHeight in 1..Int.MAX_VALUE.toLong())
-                VideoDimensions(croppedWidth.toInt(), croppedHeight.toInt())
-            }.getOrNull()
-
-        private fun skipHevcProfileTierLevel(
-            bits: BitReader,
-            maxSubLayersMinus1: Int,
-        ) {
-            bits.skipBits(2 + 1 + 5 + 32 + 4 + 44 + 8)
-            val profilePresent = BooleanArray(maxSubLayersMinus1)
-            val levelPresent = BooleanArray(maxSubLayersMinus1)
-            repeat(maxSubLayersMinus1) { index ->
-                profilePresent[index] = bits.readBit() == 1
-                levelPresent[index] = bits.readBit() == 1
-            }
-            if (maxSubLayersMinus1 > 0) repeat(8 - maxSubLayersMinus1) { bits.skipBits(2) }
-            repeat(maxSubLayersMinus1) { index ->
-                if (profilePresent[index]) bits.skipBits(88)
-                if (levelPresent[index]) bits.skipBits(8)
-            }
-        }
-
-        private fun hevcNalRbspPayload(nalWithStartCode: ByteArray): ByteArray {
-            val prefix =
-                when {
-                    nalWithStartCode.size >= 6 && nalWithStartCode[0] == 0.toByte() && nalWithStartCode[1] == 0.toByte() &&
-                        nalWithStartCode[2] == 0.toByte() &&
-                        nalWithStartCode[3] == 1.toByte() -> 4
-
-                    nalWithStartCode.size >= 5 && nalWithStartCode[0] == 0.toByte() && nalWithStartCode[1] == 0.toByte() &&
-                        nalWithStartCode[2] == 1.toByte() -> 3
-
-                    else -> 0
-                }
-            val start = prefix + 2
-            require(start <= nalWithStartCode.size)
-            val out = ArrayList<Byte>(nalWithStartCode.size)
-            var zeros = 0
-            for (index in start until nalWithStartCode.size) {
-                val byte = nalWithStartCode[index]
-                if (zeros >= 2 && byte == 0x03.toByte()) {
-                    zeros = 0
-                    continue
-                }
-                out += byte
-                zeros = if (byte == 0.toByte()) zeros + 1 else 0
-            }
-            return out.toByteArray()
         }
 
         // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
@@ -2390,7 +2294,7 @@ class PlaybackPipeline(
         private fun parseAvcSpsDimensions(spsWithStartCode: ByteArray): VideoDimensions? =
             runCatching {
                 val rbsp = nalRbspPayload(spsWithStartCode)
-                val bits = BitReader(rbsp)
+                val bits = CodecBitReader(rbsp)
                 val profileIdc = bits.readBits(8)
                 bits.readBits(8)
                 bits.readBits(8)
@@ -2524,7 +2428,7 @@ class PlaybackPipeline(
         // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
         @Suppress("MagicNumber")
         private fun skipScalingList(
-            bits: BitReader,
+            bits: CodecBitReader,
             size: Int,
         ) {
             var lastScale = 8
@@ -2536,58 +2440,6 @@ class PlaybackPipeline(
                     nextScale = (lastScale + bits.readSE() + 256) % 256
                 }
                 ; lastScale = if (nextScale == 0) lastScale else nextScale
-            }
-        }
-
-        private class BitReader(
-            private val bytes: ByteArray,
-        ) {
-            private var bitOffset = 0
-
-            fun readBit(): Int = readBits(1)
-
-            fun skipBits(count: Int) {
-                repeat(count) { readBit() }
-            }
-
-            // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
-            @Suppress("MagicNumber")
-            fun readBits(count: Int): Int {
-                var value = 0
-                repeat(count) {
-                    val byteIndex =
-                        bitOffset / 8
-                    require(byteIndex < bytes.size) { "SPS bitstream ended" }
-                    val bitIndex =
-                        7 - (bitOffset % 8)
-                    value = (value shl 1) or ((bytes[byteIndex].toInt() ushr bitIndex) and 1)
-                    bitOffset++
-                }
-                return value
-            }
-
-            fun readUE(): Int {
-                var zeros = 0
-                while (readBit() ==
-                    0
-                ) {
-                    zeros++
-                    require(zeros <= 30) { "Exp-Golomb value exceeds signed Int" }
-                }
-                return if (zeros ==
-                    0
-                ) {
-                    0
-                } else {
-                    ((1 shl zeros) - 1) + readBits(zeros)
-                }
-            }
-
-            fun readSE(): Int {
-                val codeNum = readUE()
-                val value =
-                    (codeNum + 1) / 2
-                return if (codeNum % 2 == 0) -value else value
             }
         }
 
@@ -2723,45 +2575,6 @@ class PlaybackPipeline(
         ): Boolean =
             i + 2 < bytes.size && bytes[i] == 0.toByte() && bytes[i + 1] == 0.toByte() &&
                 (bytes[i + 2] == 1.toByte() || (i + 3 < bytes.size && bytes[i + 2] == 0.toByte() && bytes[i + 3] == 1.toByte()))
-
-        private fun findHevcNal(
-            bytes: ByteArray,
-            nalType: Int,
-        ): ByteArray? {
-            var index = 0
-            while (index < bytes.size - 4) {
-                val prefixLength =
-                    when {
-                        index + 4 < bytes.size && bytes[index] == 0.toByte() && bytes[index + 1] == 0.toByte() &&
-                            bytes[index + 2] == 0.toByte() &&
-                            bytes[index + 3] == 1.toByte() -> {
-                            4
-                        }
-
-                        bytes[index] == 0.toByte() && bytes[index + 1] == 0.toByte() && bytes[index + 2] == 1.toByte() -> {
-                            3
-                        }
-
-                        else -> {
-                            index++
-                            continue
-                        }
-                    }
-                if (index + prefixLength + 1 >= bytes.size) return null
-                val start = index
-                val type = (bytes[index + prefixLength].toInt() ushr 1) and 0x3f
-                index += prefixLength + 2
-                while (index < bytes.size - 3 && !isStartCode(bytes, index)) index++
-                val end = if (index < bytes.size - 3) index else bytes.size
-                if (type == nalType) {
-                    val header = bytes[start + prefixLength].toInt() and 0xff
-                    val second = bytes[start + prefixLength + 1].toInt() and 0xff
-                    if (header and 0x80 != 0 || second and 0x07 == 0) return null
-                    return bytes.copyOfRange(start, end)
-                }
-            }
-            return null
-        }
     }
 
     private object PcmChannelMaskPolicy {
