@@ -82,11 +82,10 @@ class CasControllerStateTest {
         }
     }
 
-    @Test fun resourceLossRetriesOnlyUnreleasedCasArtifacts() {
+    @Test fun resourceLossRetriesVoidThenSessionThenPluginThenDescrambler() {
         var rejectSessionClose = true
         var sessionCloses = 0
         var pluginCloses = 0
-        val sessionFailure = IllegalStateException("session close failed")
         val factory =
             object : CasController.MediaCasBridgeFactory {
                 override fun create(caSystemId: Int) =
@@ -106,30 +105,46 @@ class CasControllerStateTest {
                                         override fun setPrivateData(privateData: ByteArray) = Result.success(Unit)
 
                                         override fun processEcm(section: ByteArray) =
-                                            Result.success<EcmProcessResult>(EcmProcessResult.DiagnosticOnly("test"))
+                                            Result.success<EcmProcessResult>(
+                                                EcmProcessResult.RealKeyToken(TunerKeyToken(byteArrayOf(1))),
+                                            )
 
                                         override fun close() {
                                             sessionCloses++
-                                            if (rejectSessionClose) throw sessionFailure
+                                            if (rejectSessionClose) error("session close failed")
                                         }
                                     },
                                 )
                         },
                     )
             }
-        val bridge = RecordingDescrambler().apply { failClose = true }
+        val bridge = RecordingDescrambler().apply {
+            failUnlink = true
+            failClose = true
+        }
         val controller = CasController(mediaCasFactory = factory)
         controller.updateFromCaMetadata(b25Metadata(TsPid(0x101), TsPid(0x123), TsPid(0x010))) { bridge }
-        val failure = runCatching { controller.clearForResourceLoss() }.exceptionOrNull()
-        check(failure?.cause === sessionFailure && sessionFailure.suppressed.isNotEmpty())
-        check(sessionCloses == 1 && pluginCloses == 1 && bridge.closes == 1)
         check(controller.onEcmSection(TsPid(0x123), byteArrayOf(1)).isEmpty())
+
+        // VOID失敗時はMediaCas session/plugin/descramblerを先に閉じない。
+        check(runCatching { controller.clearForResourceLoss() }.isFailure)
+        check(bridge.unlinks == 1 && sessionCloses == 0 && pluginCloses == 0 && bridge.closes == 0)
+        check(controller.onEcmSection(TsPid(0x123), byteArrayOf(1)).isEmpty())
+
+        // VOID成功後にsession closeへ進み、session失敗時はplugin/descramblerを保持する。
+        bridge.failUnlink = false
+        check(runCatching { controller.clearForResourceLoss() }.isFailure)
+        check(bridge.unlinks == 2 && sessionCloses == 1 && pluginCloses == 0 && bridge.closes == 0)
+
+        // session/plugin成功後だけdescrambler closeへ進む。
         rejectSessionClose = false
+        check(runCatching { controller.clearForResourceLoss() }.isFailure)
+        check(bridge.unlinks == 2 && sessionCloses == 2 && pluginCloses == 1 && bridge.closes == 1)
+
         bridge.failClose = false
         controller.clearForResourceLoss()
-        check(sessionCloses == 2 && pluginCloses == 1 && bridge.closes == 2)
+        check(bridge.unlinks == 2 && sessionCloses == 2 && pluginCloses == 1 && bridge.closes == 2)
         controller.close()
-        check(sessionCloses == 2 && pluginCloses == 1 && bridge.closes == 2)
     }
 
     // 一つの契約の試験集合・時系列を保持し、検証シナリオを分断しない。
@@ -543,10 +558,17 @@ class CasControllerStateTest {
     private class RecordingDescrambler : CasController.TunerDescramblerBridge {
         var closes = 0
         var tokens = 0
+        var unlinks = 0
         var failClose = false
+        var failUnlink = false
 
         override fun setKeyToken(keyToken: TunerKeyToken): Result<Unit> {
-            tokens++
+            if (keyToken.toByteArray().contentEquals(byteArrayOf(0))) {
+                unlinks++
+                if (failUnlink) return Result.failure(IllegalStateException("VOID unlink failed"))
+            } else {
+                tokens++
+            }
             return Result.success(Unit)
         }
 

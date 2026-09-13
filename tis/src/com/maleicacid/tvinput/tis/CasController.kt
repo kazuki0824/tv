@@ -143,6 +143,8 @@ class CasController(
     private val elementaryPidToSystems = LinkedHashMap<TsPid, MutableSet<Int>>()
     private var descrambler: TunerDescramblerBridge? = null
     private var descramblerClosing = false
+    // AOSP Descrambler は1個のcurrent key slotだけを持つため、現在リンク中のMediaCas systemだけを保持する。
+    private var descramblerKeyOwnerSystemId: Int? = null
 
     // addPid成功済みの物理所有。logical ownerが消えてもremove成功まで保持する。
     private val descramblerPids = linkedSetOf<TsPid>()
@@ -156,10 +158,9 @@ class CasController(
     private fun clearForResourceLossLocked() {
         descramblerClosing = true
         try {
-            SectionFilterPolicy.completeCleanup(
-                { clearForClearServiceLocked() },
-                { closeDescramblerLocked() },
-            )
+            // MediaCas由来keyはVOID unlink後にだけsession/pluginを閉じ、その後でdescramblerを閉じる。
+            clearForClearServiceLocked()
+            closeDescramblerLocked()
         } finally {
             ecmPidToSystems.clear()
             emmPidToSystems.clear()
@@ -169,6 +170,7 @@ class CasController(
 
     private fun closeDescramblerLocked() {
         descramblerClosing = true
+        check(descramblerKeyOwnerSystemId == null) { "MediaCas key token がリンク中のdescramblerはcloseできません" }
         descrambler?.close()
         descrambler = null
         descramblerPids.clear()
@@ -182,17 +184,14 @@ class CasController(
     private fun clearForClearServiceLocked() {
         invalidateMetadataLocked()
         sessionsBySystemId.values.forEach { it.retiring = true }
+        // system同士は独立に全件cleanupを試すが、PID cleanupは全session/plugin teardown成功後だけ行う。
         SectionFilterPolicy.completeCleanup(
-            {
-                SectionFilterPolicy.completeCleanup(
-                    *sessionsBySystemId.keys
-                        .map { systemId ->
-                            { closeSystemLocked(systemId) }
-                        }.toTypedArray(),
-                )
-            },
-            { if (!descramblerClosing) syncDescramblerPidsLocked(emptySet()) },
+            *sessionsBySystemId.keys
+                .map { systemId ->
+                    { closeSystemLocked(systemId) }
+                }.toTypedArray(),
         )
+        if (!descramblerClosing) syncDescramblerPidsLocked(emptySet())
         ecmPidToSystems.clear()
         emmPidToSystems.clear()
         elementaryPidToSystems.clear()
@@ -288,6 +287,7 @@ class CasController(
                         sessionOnlyRetirements.map { state ->
                             {
                                 try {
+                                    unlinkDescramblerKeyIfOwnedByLocked(state.caSystemId)
                                     state.session?.close()
                                     state.session = null
                                     state.sessionClosed = true
@@ -405,6 +405,7 @@ class CasController(
                                 )
                             return@forEach
                         }
+                        descramblerKeyOwnerSystemId = systemId
                         state.elementaryPids.filter { it !in descramblerPids }.forEach { elementaryPid ->
                             val addResult =
                                 descrambler?.addPid(elementaryPid) ?: Result.failure(IllegalStateException("Tuner descrambler を利用できません"))
@@ -517,6 +518,23 @@ class CasController(
         return Diagnostic(State.ERROR, errorCode, caSystemId, pid, failure.message.orEmpty())
     }
 
+    private fun unlinkDescramblerKeyIfOwnedByLocked(caSystemId: Int) {
+        if (descramblerKeyOwnerSystemId != caSystemId) return
+        val bridge = requireNotNull(descrambler) { "MediaCas key token のownerに対応するdescramblerがありません" }
+        bridge
+            .setKeyToken(TunerKeyToken(Tuner.VOID_KEYTOKEN))
+            .onFailure { error ->
+                lastDiagnostic =
+                    Diagnostic(
+                        State.ERROR,
+                        ErrorCode.DESCRAMBLER_FAILED,
+                        caSystemId,
+                        message = "MediaCas session close前のVOID key-token unlinkに失敗しました: ${error.message.orEmpty()}",
+                    )
+            }.getOrThrow()
+        descramblerKeyOwnerSystemId = null
+    }
+
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // 動的な引数列を既存の可変長APIへ渡すため、一時配列のコピーを許容する。
     @Suppress("MaxLineLength", "SpreadOperator")
@@ -559,20 +577,16 @@ class CasController(
     private fun closeSystemLocked(caSystemId: Int) {
         val state = sessionsBySystemId[caSystemId] ?: return
         state.retiring = true
-        SectionFilterPolicy.completeCleanup(
-            {
-                if (!state.sessionClosed) {
-                    state.session?.close()
-                    state.sessionClosed = true
-                }
-            },
-            {
-                if (!state.casClosed) {
-                    state.cas.close()
-                    state.casClosed = true
-                }
-            },
-        )
+        // AOSP契約上、MediaCas session由来tokenはsession closeより先にVOIDでunlinkする。
+        unlinkDescramblerKeyIfOwnedByLocked(caSystemId)
+        if (!state.sessionClosed) {
+            state.session?.close()
+            state.sessionClosed = true
+        }
+        if (!state.casClosed) {
+            state.cas.close()
+            state.casClosed = true
+        }
         sessionsBySystemId.remove(caSystemId)
     }
 

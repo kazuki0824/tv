@@ -331,7 +331,7 @@ revoke後に競合して既に取得済みの内部material参照は、そのpac
 
 tokenはrevoke、必要なdescramblerからのVOID unlink、既取得内部参照drainが完了するまで別sessionへ再割当てしない。
 
-MediaCas由来tokenをTuner descramblerで使用した場合は、MediaCas sessionをcloseする前に、そのtokenを保持する全descramblerで `setKeyToken(VOID)` を成功させる。VOID成功を、そのdescramblerが以後の新規packet処理でtokenを使用しない確定点とする。
+MediaCas由来tokenをTuner descramblerで使用した場合は、MediaCas sessionをcloseする前に、そのtokenを保持する全descramblerで `setKeyToken(VOID)` を成功させる。VOID成功を、そのdescramblerが以後の新規packet処理でtokenを使用しない確定点とする。VOID unlinkが失敗した場合は当該MediaCas session/pluginを先にclose/releaseせず、既存のtoken linkとresource ownershipを保持してcleanup再試行を可能にする。session close成功後にplugin close/revokeへ進み、その後にPID/descrambler cleanupを行う。
 
 backend物理cleanupのretry/reset/taint方式はbackend resource ownerの実装詳細とし、service-global `CleanupPending` worker/tableを必須化しない。
 
