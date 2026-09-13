@@ -17,18 +17,32 @@ jobs:
           from pathlib import Path
           p = Path('cas_plugin/DESIGN_JA.md')
           s = p.read_text(encoding='utf-8')
-          s = s.replace('Maleicacid B25 CasPlugin library', 'Maleicacid CAS plugin library')
-          s = s.replace('MaleicacidB25CasFactory', 'MaleicacidCasFactory')
-          old = 'B1は `B1SmartCardBackend` のECM-only経路が実装・検証され、B1 advertise gateを満たした場合だけ同じAOSP plugin modelへ追加する。B1は `yakisoba_only` の成立条件ではない。'
-          new = 'B1は同じ `MaleicacidCasFactory` が所有する第二のCA systemとして提供する。r52完了時にはfactoryのdescriptor queryがB25とB1の各descriptorを返し、B1 support queryをtrueとし、`createPlugin(B1)` が `MaleicacidB1CasPlugin` を生成できなければならない。`MaleicacidB1CasPlugin` は `B1SmartCardBackend` を使うECM-only plugin coreとし、B1 `processEmm()` はunsupportedを返す。B1の成立はB25 `yakisoba_only` backendの内部実装条件にはしないが、r52全体の完了条件には含める。'
+          old = '''Maleicacid CAS plugin library
+            |- extern "C" createCasFactory()
+            |- MaleicacidCasFactory : android::CasFactory
+            `- MaleicacidB25CasPlugin  : android::CasPlugin
+                 |- SessionTable
+                 |- backend binding
+                 |- YakisobaBackend
+                 |- SmartCardBackend
+                 `- Tuner key bridge'''
+          new = '''Maleicacid CAS plugin library
+            |- extern "C" createCasFactory()
+            |- MaleicacidCasFactory : android::CasFactory
+            |- MaleicacidB25CasPlugin : android::CasPlugin
+            |    |- SessionTable
+            |    |- backend binding
+            |    |- YakisobaBackend
+            |    |- SmartCardBackend
+            |    `- Tuner key bridge
+            `- MaleicacidB1CasPlugin : android::CasPlugin
+                 |- SessionTable
+                 |- B1SmartCardBackend
+                 `- Tuner key bridge'''
           assert old in s
           s = s.replace(old, new, 1)
-          old = 'raw key、ECM、EMM、credentialを通常log、TIS、AOSP公開AIDLへ露出しない。'
-          new = 'raw key、Kw、Ks、credentialを通常log、TIS、AOSP公開AIDLへ露出しない。ECM/EMMはTISからAOSP標準 `processEcm()` / `processEmm()` 入力として受け取る正規経路を許可し、その入力を通常log、別AIDL、診断dump等へ不要に再公開しない。'
-          assert old in s
-          s = s.replace(old, new, 1)
-          old = '- raw key / ECM / EMM / credentialを通常logまたは公開AIDLへ露出しない'
-          new = '- raw key / Kw / Ks / credentialを通常log、TIS、公開AIDLへ露出しない\n- ECM/EMMは標準processEcm/processEmm入力としてのみ公開AIDLを通し、通常log・別AIDL・診断dump等へ不要に再公開しない'
+          old = '`MaleicacidCasFactory` はB25 CA system IDのsupport判定、plugin descriptor query、B25 CasPlugin instance生成を所有する。AOSP `CasAPI.h` のpure virtual ABIに従い、`CasPluginCallback` 版と `CasPluginCallbackExt` 版の両 `createPlugin()` を実装する。両overloadは同じB25 plugin coreを生成し、callback形式だけをadapterで分ける。AIDL default `MediaCasService` はExt callback版を使用するが、legacy callback版も未実装のまま残さない。'
+          new = '`MaleicacidCasFactory` はB25/B1 CA system IDのsupport判定、B25/B1 plugin descriptor query、caSystemIdに対応するCasPlugin instance生成を所有する。AOSP `CasAPI.h` のpure virtual ABIに従い、`CasPluginCallback` 版と `CasPluginCallbackExt` 版の両 `createPlugin()` を実装する。両overloadは同じsystem-id dispatchを使い、B25なら `MaleicacidB25CasPlugin`、B1なら `MaleicacidB1CasPlugin` を生成し、callback形式だけをadapterで分ける。AIDL default `MediaCasService` はExt callback版を使用するが、legacy callback版も未実装のまま残さない。'
           assert old in s
           s = s.replace(old, new, 1)
           p.write_text(s, encoding='utf-8')
@@ -37,5 +51,5 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add cas_plugin/DESIGN_JA.md
           git diff --cached --check
-          git commit -m 'fix(cas): close B1 factory and ECM EMM contracts'
+          git commit -m 'fix(cas): complete B1 factory ownership'
           git push origin HEAD:design/aosp-mediacas-b25-plugin
