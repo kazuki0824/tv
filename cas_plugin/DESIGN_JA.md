@@ -8,7 +8,7 @@
 
 `android.hardware.cas.IMediaCasService/default` はAOSP標準 `MediaCasService` を使用する。Maleicacidは独自 `IMediaCasService/default` serviceを実装しない。
 
-MaleicacidはAOSP Media CAS plugin ABIに従うvendor shared libraryを提供する。
+MaleicacidはAOSP Media CAS plugin ABIに従うvendor shared libraryを提供する。64-bit productでは `/vendor/lib64/mediacas`、32-bit productでは `/vendor/lib/mediacas` にinstallし、通常の `/vendor/lib[64]` 直下へ置かない。Soongではvendor shared libraryに `relative_install_path: "mediacas"` を指定するか、それと等価なinstall結果を成立させる。AOSP `FactoryLoader` が実際にこのpluginを列挙できることをproduct integrationの成立条件とする。
 
 ```text
 TIS / android.media.MediaCas
@@ -40,7 +40,7 @@ ClearKeyはAOSP標準compatibility pathのままとし、Maleicacid B25/B1 backe
 
 ## 2. factory と plugin capability
 
-`MaleicacidB25CasFactory` はB25 CA system IDのsupport判定、plugin descriptor query、B25 CasPlugin instance生成を所有する。
+`MaleicacidB25CasFactory` はB25 CA system IDのsupport判定、plugin descriptor query、B25 CasPlugin instance生成を所有する。AOSP `CasAPI.h` のpure virtual ABIに従い、`CasPluginCallback` 版と `CasPluginCallbackExt` 版の両 `createPlugin()` を実装する。両overloadは同じB25 plugin coreを生成し、callback形式だけをadapterで分ける。AIDL default `MediaCasService` はExt callback版を使用するが、legacy callback版も未実装のまま残さない。
 
 同一CA system IDについてSmartCard版とYakisoba版を別descriptorとして列挙しない。backend差は1個のB25 plugin内部へ閉じる。
 
@@ -88,8 +88,10 @@ B1は `B1SmartCardBackend` のECM-only経路が実装・検証され、B1 advert
 `MaleicacidB25CasPlugin` はAOSP `android::CasPlugin` 契約に従い、次を所有する。
 
 ```text
+- setStatusCallback(CasPluginStatusCallback)
 - setPrivateData()
-- openSession()
+- openSession(CasSessionId*)
+- openSession(intent, mode, CasSessionId*)
 - closeSession()
 - setSessionPrivateData()
 - processEcm()
@@ -103,7 +105,9 @@ B1は `B1SmartCardBackend` のECM-only経路が実装・検証され、B1 advert
 
 採用AOSP plugin ABIに存在しないvendor独自public methodを追加しない。公開面を拡張せず、対応できないoperationはAOSP既存statusへ写像する。
 
-r52で成功対応するsession modeは `LIVE + MULTI2` とする。非対応intent/modeはstateを変更せず既存のcannot-handle相当statusを返す。
+`setStatusCallback()` はAOSP `MediaCasService` がplugin生成後に登録するstatus callbackを保持するためのABI面とする。factoryの `createPlugin()` で受け取った `appData` と組み合わせてstatus eventをservice側へ返す。callback登録前はstatus callbackを発行せず、release確定後はcallbackを発行しない。callback invocationはcommit済みstateだけを通知し、callback中にplugin内部state lockを保持することを要求しない。
+
+引数なしの `openSession(CasSessionId*)` はframeworkのdefault session open用で、B25では `LIVE + scheme-default MULTI2` と同じsession semanticsを成立させる。typed `openSession(intent, mode, ...)` はB25で `LIVE + MULTI2` を通常入力として受理する。さらに、AOSP Tuner AIDL VTSがCAS sessionを `LIVE + RESERVED` で開くため、B25をそのdescrambling profileのCA systemとして使用する構成では `LIVE + RESERVED` をB25 scheme-defaultであるMULTI2への互換入力として受理し、default open / `LIVE + MULTI2` と同じB25 session coreを生成する。`RESERVED` を別のscrambling algorithmとして広告・実装しない。これ以外の非対応intent/modeはstateを変更せず既存のcannot-handle相当statusを返す。
 
 ## 4. plugin / session lifecycle
 
@@ -385,11 +389,11 @@ libyakisoba改変版を配布する場合は、GPLv3条件に従って対応す�
 
 ## 17. product integration方針
 
-目標構成ではMaleicacid独自のCAS AIDL service binary、CAS service用VINTF fragment、CAS service用init rcを製品経路へ追加しない。
+製品構成ではMaleicacid独自のCAS AIDL service binary、CAS service用VINTF fragment、CAS service用init rcを追加しない。本repositoryの `cas_plugin/` にも独自 `IMediaCasService/default` service artifactを置かない。
 
-AOSP標準MediaCasServiceを製品で有効にし、Maleicacid B25 CasPlugin shared libraryをAOSP MediaCas plugin loaderが探索するvendor plugin配置へ組み込む。
+AOSP標準MediaCasServiceを製品で有効にし、Maleicacid B25 CasPlugin shared libraryを64-bitでは `/vendor/lib64/mediacas`、32-bitでは `/vendor/lib/mediacas` へinstallする。AOSP `FactoryLoader` がその配置から `.so` を探索・loadすることを前提とし、Soongの実装は `relative_install_path: "mediacas"` または等価なinstall結果を持たせる。
 
-plugin libraryは `createCasFactory()` をexportし、AOSP `media/cas/CasAPI.h` の `android::CasFactory` / `android::CasPlugin` ABIと整合させる。
+plugin libraryは `createCasFactory()` をexportし、AOSP `media/cas/CasAPI.h` の `android::CasFactory` / `android::CasPlugin` ABIと整合させる。`CasFactory` のlegacy/Ext両 `createPlugin()`、`CasPlugin` の `setStatusCallback()`、default/typed両 `openSession()` を含むpure virtual ABI面を全て実装する。
 
 最初の `yakisoba_only` 構成ではplugin libraryからSoong module `libyakisoba` を利用できるようdependencyを設定する。SmartCard componentを `yakisoba_only` のbuild/advertise条件にしない。
 
@@ -400,7 +404,14 @@ B25 `yakisoba_only` の最低完了条件は次とする。
 ```text
 - AOSP MediaCasServiceがdefault instanceとして起動する
 - Maleicacid独自IMediaCasService serviceが製品経路に存在しない
-- AOSP plugin loaderがMaleicacid createCasFactory()を発見する
+- effective architectureに応じてplugin `.so` が `/vendor/lib64/mediacas` または `/vendor/lib/mediacas` にinstallされる
+- AOSP plugin loaderがその探索directoryからMaleicacid createCasFactory()を発見する
+- CasFactoryのlegacy/Ext両createPlugin()が同じB25 plugin coreを生成できる
+- AOSP MediaCasServiceがExt callback版createPlugin()後にsetStatusCallback()を登録できる
+- release確定後にplugin status/event callbackを発行しない
+- default openSessionがB25 scheme-default MULTI2 sessionを生成できる
+- typed `LIVE + MULTI2` が同じB25 session semanticsを生成できる
+- B25をTuner VTS descrambling profileに使う場合、typed `LIVE + RESERVED` がscheme-default MULTI2互換入力として成功する
 - B25 descriptorが1個だけ列挙される
 - B25 system ID support queryがtrue
 - createPlugin(B25)がMaleicacid CasPluginをAIDL ICasとして返す
