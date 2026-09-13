@@ -110,7 +110,7 @@ B1は同じ `MaleicacidCasFactory` が所有する第二のCA systemとして提
 
 `setStatusCallback()` はAOSP `MediaCasService` がplugin生成後に登録するstatus callbackを保持するABI面とする。factoryの `createPlugin()` で受け取った `appData` と組み合わせてstatus eventをservice側へ返す。callback登録前はstatus callbackを発行せず、release確定後はcallbackを発行しない。callback invocationはcommit済みstateだけを通知し、callback中にplugin内部state lockを保持することを要求しない。
 
-引数なしの `openSession(CasSessionId*)` はframeworkのdefault session openであり、B25/B1とも各CA方式のscheme-default MULTI2 sessionを生成する。typed `openSession(intent, mode, ...)` はB25/B1で `LIVE + MULTI2` を通常入力として受理する。AOSP Tuner AIDL VTSのdescrambling profileで当該CA systemを使用する場合は `LIVE + RESERVED` をscheme-default MULTI2への互換入力として受理し、default open / `LIVE + MULTI2` と同じsession coreを生成する。`RESERVED` を別のscrambling algorithmとして広告・実装しない。これ以外の非対応intent/modeはstateを変更せずcannot-handle相当statusを返す。
+引数なしの `openSession(CasSessionId*)` はframeworkのdefault session openであり、B25/B1とも各CA方式のscheme-default MULTI2 sessionを生成する。typed `openSession(intent, mode, ...)` はB25/B1で `LIVE + MULTI2` を通常入力として受理する。これ以外の非対応intent/modeはstateを変更せずcannot-handle相当statusを返す。
 
 `processEcm()` の成功条件はB25/B1共通で、対象sessionのcomplete current `Multi2KeyMaterial` が同じMediaCas session ID bytesのstable slotへcommit済みで直ちに解決可能であることとする。commit前にsuccessを返さない。close/releaseとの競合、late completion、revoke、callback orderingは§4および§12〜§13の共通契約に従う。
 
@@ -231,7 +231,7 @@ pluginがSmartCardへbind済みの状態でcard removalまたはfatal invalidati
 
 B1の正式対応は `MaleicacidB1CasPlugin` + `B1SmartCardBackend` のECM-only経路とする。Yakisoba backendはB1で使用しない。
 
-B1 pluginは§3の共通AOSP `CasPlugin` ABI契約と§4の共通lifecycle契約に従う。default `openSession(CasSessionId*)` はB1 scheme-default MULTI2 sessionを生成し、typed `openSession(intent, mode, ...)` は `LIVE + MULTI2` を受理する。AOSP Tuner AIDL VTSのdescrambling profileでB1を使用する場合は `LIVE + RESERVED` も同じB1 MULTI2 session coreへの互換入力として受理する。その他の非対応intent/modeはstateを変更せずcannot-handle相当statusを返す。
+B1 pluginは§3の共通AOSP `CasPlugin` ABI契約と§4の共通lifecycle契約に従う。default `openSession(CasSessionId*)` はB1 scheme-default MULTI2 sessionを生成し、typed `openSession(intent, mode, ...)` は `LIVE + MULTI2` を受理する。その他の非対応intent/modeはstateを変更せずcannot-handle相当statusを返す。
 
 B1 `processEcm()` のsuccessは§3および§12の共通linearization契約に従い、complete current `Multi2KeyMaterial` が同じMediaCas session IDのstable slotへcommit済みで直ちに解決可能になった時点だけ返す。旧current materialとの新旧混在を許さず、late ECM completionでcurrent materialを巻き戻さない。
 
@@ -439,7 +439,6 @@ B25 `yakisoba_only` の最低完了条件は次とする。
 - createPlugin(B25)がMaleicacidB25CasPluginをAIDL ICasとして返す
 - default openSessionがB25 scheme-default MULTI2 sessionを生成できる
 - typed `LIVE + MULTI2` が同じB25 session semanticsを生成できる
-- B25をTuner VTS descrambling profileに使う場合、typed `LIVE + RESERVED` がscheme-default MULTI2互換入力として成功する
 - yakisoba_onlyではSmartCard probeが発生しない
 - ECM/EMMがYakisoba backendへ到達する
 - processEcm() success後に同じMediaCas session ID tokenからcomplete current materialを解決できる
@@ -455,7 +454,6 @@ B1 ECM-onlyの最低完了条件は次とする。
 - createPlugin(B1)がMaleicacidB1CasPluginをAIDL ICasとして返す
 - default openSessionがB1 scheme-default MULTI2 sessionを生成できる
 - typed `LIVE + MULTI2` が同じB1 session semanticsを生成できる
-- B1をTuner VTS descrambling profileに使う場合、typed `LIVE + RESERVED` がscheme-default MULTI2互換入力として成功する
 - B1でYakisoba backendを選択しない
 - B1 processEcm() success後に同じMediaCas session ID tokenからcomplete current materialを解決できる
 - B1 processEmm() がstateを変更せずunsupported/cannot-handle相当statusを返す
