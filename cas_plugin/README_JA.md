@@ -1,6 +1,7 @@
 # Maleicacid CAS plugin
 
 CAS pluginの設計正本は `DESIGN_JA.md` とする。
+変更履歴は `CHANGELOG.md` を参照する。
 
 ## 現行境界
 
