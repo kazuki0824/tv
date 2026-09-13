@@ -41,14 +41,14 @@ registry は、token から stable slot を引き、その slot が現在有効�
 
 ## 4. 所有権と供給経路
 
-- system key / CBC 初期値は plugin instance に bind された CAS backend が所有する。B25 実カードでは検証済み card 初期化応答から取得し、このためだけの外部 secure store / factory provisioning を必須にしない。
+- system key / CBC 初期値は service lifetime 中に B25 用として一意に選択された backend 種別の下で、各 plugin/session の CAS context が所有する。B25 実カードでは検証済み card 初期化応答から取得し、このためだけの外部 secure store / factory provisioning を必須にしない。
 - Yakisoba 等で外部 credential が必要な場合だけ、その供給元と access control を product 側で固定する。一般 property、公開 API、TIS、Tuner HAL、world-readable file を credential source にしない。
 - odd/even Ks は CAS session が ECM/backend processing の結果として所有し、ECM 成功時に current material を更新する。
 - raw key material を CAS から Tuner 側 registry へ運ぶ必要がある実装では、許可された CAS 側 owner だけが mutation できる vendor 内部境界を使用する。TIS や一般 app が publish/revoke mutation endpoint へ到達できてはならない。
 - access-control の実装方式は product の process/IPC 構成に応じて決める。SELinux domain、socket ownership、peer credential、Binder caller identity 等のうち必要な仕組みを使用し、脅威モデル上不要な仕組みまで重複必須化しない。必要な性質は、未許可主体が接続・publish・revoke できないことである。
 - registry は current CAS owner からの mutation だけを受理し、owner handover 後の旧接続・旧 request・revoke 済み token への publish を拒否する。owner identity の具体表現を resource layout に固定しない。
 - raw-key の一時表現は必要期間を越えて保持・永続化しない。実装が mutable raw buffer を所有する場合は、その表現に適した消去処理を適用してから再利用/解放し、secure handle 等を使う場合は対応する destroy/release を行う。特定の zeroize API や memory primitive を必須化しない。
-- 1つの B25 plugin instance で backend を bind した後は release まで切り替えず、異なる credential source や別 session の Ks を混成しない。
+- 同一 service lifetime の B25 plugin instance 間で SmartCard/Yakisoba backend 種別を混在させない。plugin/session ごとの private data、session state、Ks は独立して保持してよいが、異なる backend 種別の credential context を同じ B25 service lifetime に併存させない。
 
 ## 5. token identity と寿命
 
