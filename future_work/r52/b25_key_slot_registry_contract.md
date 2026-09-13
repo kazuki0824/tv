@@ -47,7 +47,7 @@ registry は、token から stable slot を引き、その slot が現在有効�
 - raw key material を CAS から Tuner 側 registry へ運ぶ必要がある実装では、許可された CAS 側 owner だけが mutation できる vendor 内部境界を使用する。TIS や一般 app が publish/revoke mutation endpoint へ到達できてはならない。
 - access-control の実装方式は product の process/IPC 構成に応じて決める。SELinux domain、socket ownership、peer credential、Binder caller identity 等のうち必要な仕組みを使用し、脅威モデル上不要な仕組みまで重複必須化しない。必要な性質は、未許可主体が接続・publish・revoke できないことである。
 - registry は current CAS owner からの mutation だけを受理し、owner handover 後の旧接続・旧 request・revoke 済み token への publish を拒否する。owner identity の具体表現を resource layout に固定しない。
-- transport/encode/decode 用の raw-key 一時 buffer は必要最短寿命にし、commit または失敗後に zeroize する。
+- raw-key の一時表現は必要期間を越えて保持・永続化しない。実装が mutable raw buffer を所有する場合は、その表現に適した消去処理を適用してから再利用/解放し、secure handle 等を使う場合は対応する destroy/release を行う。特定の zeroize API や memory primitive を必須化しない。
 - 1つの B25 plugin instance で backend を bind した後は release まで切り替えず、異なる credential source や別 session の Ks を混成しない。
 
 ## 5. token identity と寿命
@@ -59,7 +59,7 @@ registry は、token から stable slot を引き、その slot が現在有効�
 - current CAS owner の death/disconnect を検出した場合、その owner に属する entry の新規 resolve を遮断する。新 owner を受け入れる場合は、旧 owner からの後着 mutation を新 owner の更新として受理しない境界を確立する。
 - owner handover や stale update 排除の実装には connection lifetime、opaque cookie、generation counter 等を使用してよいが、特定方式や no-wrap counter を必須設計にしない。
 - revoke は最初に新規 resolve を遮断する。既に Tuner packet path が取得済みの内部 material 参照はその処理終了まで保持してよいが、新規 packet 処理へ再取得させない。
-- 最後の取得済み参照解放後に raw key material を zeroize し resource 本体を回収する。
+- 最後の取得済み参照解放後は material を再利用可能な状態へ戻す前に、その表現に応じた秘密情報の破棄を行う。具体的な memory wipe/handle destruction の方式は実装詳細とする。
 
 ## 6. commit / resolve / revoke 不変条件
 
@@ -84,7 +84,7 @@ MediaCas 由来 token を Tuner descrambler で使用した場合は、MediaCas 
 
 PID unlink 失敗は診断へ残すが、token 解除成功後に session close を不必要に保持しない。逆に VOID 設定失敗の descrambler が残る間は、その token を使う MediaCas session を close 済み成功として扱わない。
 
-CAS 側 revoke 後は新規 resolve/resource 取得を拒否し、競合して既に resource を取得済みの packet 処理だけを内部参照寿命で完了または破棄させ、最後の参照解放後に zeroize する。追加の公開同期 API は設けない。
+CAS 側 revoke 後は新規 resolve/resource 取得を拒否し、競合して既に resource を取得済みの packet 処理だけを内部参照寿命で完了または破棄させる。最後の参照解放後の秘密 material 破棄方式は resource 表現に応じた実装詳細とする。追加の公開同期 API は設けない。
 
 ## 8. Tuner HAL の責務
 
