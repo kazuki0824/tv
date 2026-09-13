@@ -43,15 +43,10 @@ fn accept_error_is_fatal(error: &io::Error) -> bool {
     matches!(error.raw_os_error(), Some(9 | 22 | 88))
 }
 
-fn handle_connection(
-    mut stream: UnixStream,
-    context: &SharedAidlServiceContext,
-) -> io::Result<()> {
-    process_key_provisioning_connection(&mut stream, |command| {
-        match context.runtime().lock() {
-            Ok(mut runtime) => runtime.apply_key_provisioning_command(command),
-            Err(_) => KeyProvisioningStatus::InvalidState,
-        }
+fn handle_connection(mut stream: UnixStream, context: &SharedAidlServiceContext) -> io::Result<()> {
+    process_key_provisioning_connection(&mut stream, |command| match context.runtime().lock() {
+        Ok(mut runtime) => runtime.apply_key_provisioning_command(command),
+        Err(_) => KeyProvisioningStatus::InvalidState,
     })
 }
 

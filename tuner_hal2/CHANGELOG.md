@@ -1,3 +1,8 @@
+# r52_pr57_rust_quality_format
+
+- `key_provisioning_bridge_server.rs`の関数宣言とクロージャをRust 1.81.0の標準書式へ整形した。要求の適用回数、ロック範囲、エラー処理は変更していない。
+- 検証: Rust quality CIと同じ生成表1ファイルの除外を用い、追跡対象Rust 220ファイルの`rustfmt --edition 2021 --check`が成功した。`git diff --check`も成功した。Android/Soong buildとdevice atest/VTSは未実施。
+
 # r52_pr57_remove_unused_key_replay_journal
 
 - CAS側が送信開始後のmutationを再送しない現行経路に合わせ、generic key provisioningの再送台帳、要求比較、保存済みstatus返却を削除した。request IDは一つの要求と応答の対応確認に限定し、Tuner側へ要求履歴や鍵素材を残さない。
