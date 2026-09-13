@@ -269,7 +269,7 @@ class CasControllerStateTest {
         }
     }
 
-    @Test fun clearServiceRetriesOnlyPidsWhoseRemovalFailed() {
+    @Test fun metadataUpdateRetriesOnlyPidsWhoseRemovalFailed() {
         val removed = mutableListOf<TsPid>()
         val p1 = TsPid(0x101)
         val p2 = TsPid(0x102)
@@ -282,9 +282,7 @@ class CasControllerStateTest {
 
                 override fun removePid(elementaryPid: TsPid): Result<Unit> {
                     removed += elementaryPid
-                    return if (reject &&
-                        elementaryPid == p1
-                    ) {
+                    return if (reject && elementaryPid == p1) {
                         Result.failure(IllegalStateException("remove failed"))
                     } else {
                         Result.success(Unit)
@@ -299,13 +297,18 @@ class CasControllerStateTest {
                     b25Metadata(p2, TsPid(0x123), TsPid(0x010)),
             ) { bridge }
             controller.onEcmSection(TsPid(0x123), byteArrayOf(1))
-            check(runCatching { controller.clearForClearService() }.isFailure)
-            check(removed == listOf(p1, p2))
-            check(controller.lastDiagnostic().errorCode == CasController.ErrorCode.DESCRAMBLER_FAILED)
+
+            val failed = controller.updateFromCaMetadata(b25Metadata(p2, TsPid(0x123), TsPid(0x010))) { bridge }
+            check(failed.diagnostics.any { it.errorCode == CasController.ErrorCode.DESCRAMBLER_FAILED })
+            check(removed == listOf(p1))
             check(controller.onEcmSection(TsPid(0x123), byteArrayOf(1)).isEmpty())
+
             reject = false
-            controller.clearForClearService()
-            check(removed == listOf(p1, p2, p1))
+            val retried = controller.updateFromCaMetadata(b25Metadata(p2, TsPid(0x123), TsPid(0x010))) { bridge }
+            check(retried.diagnostics.isEmpty())
+            check(removed == listOf(p1, p1))
+            controller.updateFromCaMetadata(b25Metadata(p2, TsPid(0x123), TsPid(0x010))) { bridge }
+            check(removed == listOf(p1, p1))
         }
     }
 
@@ -358,7 +361,7 @@ class CasControllerStateTest {
             system,
             ecmPid = TsPid(0x123),
             emmPid = null,
-            elementaryPid = TsPid(0x101),
+            elementaryPid = TsPid(0x100 + system),
             privateData = byteArrayOf(value.toByte()),
             source = CaMetadataSource.ELEMENTARY_STREAM,
         )
