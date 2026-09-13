@@ -118,10 +118,11 @@ class CasControllerStateTest {
                         },
                     )
             }
-        val bridge = RecordingDescrambler().apply {
-            failUnlink = true
-            failClose = true
-        }
+        val bridge =
+            RecordingDescrambler().apply {
+                failUnlink = true
+                failClose = true
+            }
         val controller = CasController(mediaCasFactory = factory)
         controller.updateFromCaMetadata(b25Metadata(TsPid(0x101), TsPid(0x123), TsPid(0x010))) { bridge }
         check(controller.onEcmSection(TsPid(0x123), byteArrayOf(1)).isEmpty())

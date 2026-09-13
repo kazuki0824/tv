@@ -143,6 +143,7 @@ class CasController(
     private val elementaryPidToSystems = LinkedHashMap<TsPid, MutableSet<Int>>()
     private var descrambler: TunerDescramblerBridge? = null
     private var descramblerClosing = false
+
     // AOSP Descrambler は1個のcurrent key slotだけを持つため、現在リンク中のMediaCas systemだけを保持する。
     private var descramblerKeyOwnerSystemId: Int? = null
 
