@@ -1,0 +1,46 @@
+name: TIS Robolectric host CI
+
+on:
+  pull_request:
+    paths:
+      - "tis/**"
+      - ".github/workflows/tis-robolectric-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "tis/**"
+      - ".github/workflows/tis-robolectric-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tis-robolectric-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  robolectric:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: JDK 17を使用
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Gradle 8.9を使用
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Android依存Kotlin契約をRobolectricで実行
+        run: |
+          gradle --no-daemon -p tis/host_ci/robolectric testDebugUnitTest \
+            --tests com.maleicacid.tvinput.tis.DirectBootGuardR51FixTest \
+            --tests com.maleicacid.tvinput.tis.RecordingDisabledR51Test \
+            --tests com.maleicacid.tvinput.tis.TvProviderWriterDescriptorSchemaTest

@@ -3,10 +3,13 @@
 
 package com.maleicacid.tvinput.tis
 
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.json.JSONObject
 import org.junit.Test
+import org.junit.runner.RunWith
 
+@RunWith(AndroidJUnit4::class)
 class TvProviderWriterDescriptorSchemaTest {
     @Test fun descriptorDiagnosticAssetFixtureUsesCanonicalElementSchema() {
         val fixture = assetText("descriptor_diagnostic_v1/malformed_length.json")
