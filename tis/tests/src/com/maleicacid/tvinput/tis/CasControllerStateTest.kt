@@ -247,47 +247,25 @@ class CasControllerStateTest {
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MaxLineLength")
     @Test
-    fun sharedElementaryPidSurvivesOneSystemRetirementAndRemovalFailure() {
+    fun ambiguousElementaryPidAcrossCaSystemsFailsClosed() {
         val pid = TsPid(0x101)
-        val removed = mutableListOf<TsPid>()
-        val added = mutableListOf<TsPid>()
-        var rejectRemove = true
-        val bridge =
-            object : CasController.TunerDescramblerBridge {
-                override fun setKeyToken(keyToken: TunerKeyToken) = Result.success(Unit)
-
-                override fun addPid(elementaryPid: TsPid): Result<Unit> {
-                    added += elementaryPid
-                    return Result.success(Unit)
-                }
-
-                // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-                @Suppress("MaxLineLength")
-                override fun removePid(elementaryPid: TsPid): Result<Unit> {
-                    removed += elementaryPid
-                    return if (rejectRemove) Result.failure(IllegalStateException("removePid non-SUCCESS")) else Result.success(Unit)
-                }
-
-                override fun close() = Unit
-            }
+        var bridgeCreates = 0
         CasController(mediaCasFactory = FakeMediaCasBridgeFactory()).use { controller ->
             val b25 = b25Metadata(pid, TsPid(0x123), TsPid(0x010))
-            val b1 = b25.filter { it.source != CaMetadataSource.CAT }.map { it.copy(caSystemId = 1, ecmPid = TsPid(0x124)) }
-            controller.updateFromCaMetadata(b25 + b1) { bridge }
-            controller.onEcmSection(TsPid(0x123), byteArrayOf(1))
-            controller.onEcmSection(TsPid(0x124), byteArrayOf(1))
-            check(added == listOf(pid))
-            controller.updateFromCaMetadata(b25)
-            check(removed.isEmpty())
-            val updated = b25Metadata(TsPid(0x102), TsPid(0x125), TsPid(0x010))
-            val failure = controller.updateFromCaMetadata(updated)
-            check(failure.diagnostics.any { it.errorCode == CasController.ErrorCode.DESCRAMBLER_FAILED })
-            check(removed == listOf(pid))
-            rejectRemove = false
-            controller.updateFromCaMetadata(updated)
-            check(removed == listOf(pid, pid))
-            controller.updateFromCaMetadata(updated)
-            check(removed == listOf(pid, pid))
+            val b1 =
+                b25
+                    .filter { it.source != CaMetadataSource.CAT }
+                    .map { it.copy(caSystemId = 1, ecmPid = TsPid(0x124)) }
+            val update =
+                controller.updateFromCaMetadata(b25 + b1) {
+                    bridgeCreates++
+                    RecordingDescrambler()
+                }
+            check(update.diagnostics.any { it.errorCode == CasController.ErrorCode.DESCRAMBLER_FAILED && it.pid == pid })
+            check(update.ecmPids.isEmpty())
+            check(bridgeCreates == 0)
+            check(controller.onEcmSection(TsPid(0x123), byteArrayOf(1)).isEmpty())
+            check(controller.onEcmSection(TsPid(0x124), byteArrayOf(1)).isEmpty())
         }
     }
 
@@ -636,7 +614,7 @@ class CasControllerStateTest {
 
     @Test fun sharedEmmPidOnlyDispatchesToB25WhileB1EcmRemainsUsable() {
         val factory = FakeMediaCasBridgeFactory()
-        val descrambler = FakeTunerDescramblerBridge()
+        val descramblers = mutableListOf<FakeTunerDescramblerBridge>()
         CasController(mediaCasFactory = factory).use { controller ->
             val b1 =
                 b25Metadata(TsPid(0x102), TsPid(0x124), TsPid(0x010))
@@ -644,14 +622,20 @@ class CasControllerStateTest {
             val update =
                 controller.updateFromCaMetadata(
                     b25Metadata(TsPid(0x101), TsPid(0x123), TsPid(0x010)) + b1,
-                    { descrambler },
+                    {
+                        FakeTunerDescramblerBridge().also { descramblers += it }
+                    },
                 )
             check(update.diagnostics.isEmpty())
+            check(descramblers.size == 2)
             check(controller.onEmmSection(TsPid(0x010), byteArrayOf(0x82.toByte())).isEmpty())
             check(factory.created.getValue(CasController.SupportedCasSystemIds.ARIB_STD_B25).processedEmmCount == 1)
             check(factory.created.getValue(CasController.SupportedCasSystemIds.ARIB_STD_B1).processedEmmCount == 0)
+            check(controller.onEcmSection(TsPid(0x123), byteArrayOf(0x80.toByte())).isEmpty())
             check(controller.onEcmSection(TsPid(0x124), byteArrayOf(0x80.toByte())).isEmpty())
-            check(0x102 in descrambler.addedPids)
+            check(descramblers.count { 0x101 in it.addedPids } == 1)
+            check(descramblers.count { 0x102 in it.addedPids } == 1)
+            check(descramblers.none { 0x101 in it.addedPids && 0x102 in it.addedPids })
         }
     }
 
