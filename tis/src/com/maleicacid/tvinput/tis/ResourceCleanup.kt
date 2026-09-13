@@ -5,11 +5,21 @@ import com.maleicacid.tvinput.common.LogTags
 
 /** 呼出し元executorが所有し、解放成功まで対象資源と失敗を保持する。 */
 internal class ResourceCleanup {
-    private data class Pending(val name: String, val release: () -> Unit, val failure: Throwable)
+    private data class Pending(
+        val name: String,
+        val release: () -> Unit,
+        val failure: Throwable,
+    )
+
     private val pending = mutableListOf<Pending>()
     val hasPending: Boolean get() = pending.isNotEmpty()
 
-    fun release(name: String, action: () -> Unit) {
+    // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
+    @Suppress("TooGenericExceptionCaught")
+    fun release(
+        name: String,
+        action: () -> Unit,
+    ) {
         try {
             action()
         } catch (error: Throwable) {

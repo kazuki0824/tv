@@ -1,3 +1,6 @@
+// テストの入力・期待値を本体の定数と独立した具体値で記述する。
+@file:Suppress("MagicNumber")
+
 package com.maleicacid.tvinput.tis
 
 import androidx.test.platform.app.InstrumentationRegistry
@@ -38,7 +41,9 @@ class TvProviderWriterDescriptorSchemaTest {
     }
 
     private fun assetText(path: String): String =
-        InstrumentationRegistry.getInstrumentation().context.assets
+        InstrumentationRegistry
+            .getInstrumentation()
+            .context.assets
             .open(path)
             .bufferedReader(Charsets.UTF_8)
             .use { it.readText() }

@@ -33,36 +33,6 @@ env:
   RUST_TOOLCHAIN: 1.81.0
 
 jobs:
-  rustfmt:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: arib_si_engine_rs/host_ci
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - name: LineageOS 22.1のRust toolchainを導入
-        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
-      - name: JNIとVTS host adapterのRust整形を確認
-        run: cargo +"$RUST_TOOLCHAIN" fmt -p maleicacid-arib-si-engine-host-ci -- --check
-
-  core-rustfmt:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: arib_si_engine_rs/host_ci
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - name: LineageOS 22.1のRust toolchainを導入
-        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
-      - name: Production coreのRust整形を直接確認
-        run: cargo +"$RUST_TOOLCHAIN" fmt -p maleicacid_arib_si_engine_core -- --check
-
   clippy:
     runs-on: ubuntu-latest
     timeout-minutes: 10

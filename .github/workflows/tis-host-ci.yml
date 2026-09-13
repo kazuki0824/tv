@@ -28,23 +28,6 @@ env:
   KOTLIN_VERSION: 1.9.22
 
 jobs:
-  caption-rustfmt:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: tis/host_ci/caption
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: LineageOS 22.1のRust toolchainを導入
-        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
-
-      - name: 字幕JNIのRust整形を確認
-        run: cargo +"$RUST_TOOLCHAIN" fmt --all -- --check
-
   caption-check:
     runs-on: ubuntu-latest
     timeout-minutes: 10

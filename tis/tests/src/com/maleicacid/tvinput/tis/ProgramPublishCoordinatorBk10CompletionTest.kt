@@ -1,3 +1,6 @@
+// テストの入力・期待値を本体の定数と独立した具体値で記述する。
+@file:Suppress("MagicNumber")
+
 package com.maleicacid.tvinput.tis
 
 import android.content.ContentValues
@@ -8,30 +11,58 @@ import com.maleicacid.tvinput.db.ChannelRecord
 import com.maleicacid.tvinput.db.ProgramRecord
 import org.junit.Test
 
+// 一つの契約の試験集合・時系列を保持し、検証シナリオを分断しない。
+@Suppress("TooManyFunctions")
 class ProgramPublishCoordinatorBk10CompletionTest {
     private val key = ServiceKey(4, 16625, 101)
-    private val program = ProgramRecord(
-        serviceKey = key,
-        eventId = 10,
-        stableIdentity = "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":16625,\"serviceId\":101,\"eventId\":10}",
-        startTimeMillis = 1_700_000_000_000L,
-        durationMillis = 1_800_000L,
-        title = "News",
-        description = "desc", casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),
-    )
+    private val program =
+        ProgramRecord(
+            serviceKey = key,
+            eventId = 10,
+            stableIdentity =
+                "{\"kind\":\"arib-event-v1\",\"originalNetworkId\":4,\"transportStreamId\":1" +
+                    "6625,\"serviceId\":101,\"eventId\":10}",
+            startTimeMillis = 1_700_000_000_000L,
+            durationMillis = 1_800_000L,
+            title = "News",
+            description = "desc",
+            casFactsCanonicalJson =
+                com.maleicacid.tvinput.tis
+                    .testCasFacts(false),
+        )
 
-    @Test fun verifiedEmptyEitCommitsOnlyAfterQueriesAndPreservesExistingRows() {
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    @Test
+    fun verifiedEmptyEitCommitsOnlyAfterQueriesAndPreservesExistingRows() {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
+        writer.upsertChannels(
+            listOf(
+                ChannelRecord(
+                    key,
+                    0x01,
+                    "101",
+                    "NHK",
+                    FrequencyHz(473_142_857L),
+                    casFactsCanonicalJson =
+                        com.maleicacid.tvinput.tis
+                            .testCasFacts(false),
+                ),
+            ),
+        )
         check(coordinator.publish(ChannelScanController.PublishMode.BOOT_EPG_SYNC, listOf(program), setOf(key)).hasCommittedTarget)
         val before = store.serviceIndexQueries
         repeat(2) {
-            val result = coordinator.publishWithUpdates(
-                ChannelScanController.PublishMode.BOOT_EPG_SYNC, emptyList(), emptyList(), setOf(key),
-                verifiedEmptyServiceKeys = setOf(key),
-            )
+            val result =
+                coordinator.publishWithUpdates(
+                    ChannelScanController.PublishMode.BOOT_EPG_SYNC,
+                    emptyList(),
+                    emptyList(),
+                    setOf(key),
+                    verifiedEmptyServiceKeys = setOf(key),
+                )
             check(result.hasCommittedTarget && result.committedServiceKeys == setOf(key))
             check(result.changed == 0)
         }
@@ -43,11 +74,29 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         val store = FakeStore(failServiceIndexOnce = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
-        fun publish() = coordinator.publishWithUpdates(
-            ChannelScanController.PublishMode.BOOT_EPG_SYNC, emptyList(), emptyList(), setOf(key),
-            verifiedEmptyServiceKeys = setOf(key),
+        writer.upsertChannels(
+            listOf(
+                ChannelRecord(
+                    key,
+                    0x01,
+                    "101",
+                    "NHK",
+                    FrequencyHz(473_142_857L),
+                    casFactsCanonicalJson =
+                        com.maleicacid.tvinput.tis
+                            .testCasFacts(false),
+                ),
+            ),
         )
+
+        fun publish() =
+            coordinator.publishWithUpdates(
+                ChannelScanController.PublishMode.BOOT_EPG_SYNC,
+                emptyList(),
+                emptyList(),
+                setOf(key),
+                verifiedEmptyServiceKeys = setOf(key),
+            )
         val failed = publish()
         check(!failed.hasCommittedTarget && failed.committedServiceKeys.isEmpty())
         check(failed.failures.single().operation == "program-index-query")
@@ -58,44 +107,82 @@ class ProgramPublishCoordinatorBk10CompletionTest {
     @Test fun emptyEitForANonexistentOwnedChannelIsNotACommitTarget() {
         val store = FakeStore()
         val coordinator = ProgramPublishCoordinator(TvProviderWriter("input.test", store, testOnly = true))
-        val result = coordinator.publishWithUpdates(
-            ChannelScanController.PublishMode.BOOT_EPG_SYNC, emptyList(), emptyList(), setOf(key),
-            verifiedEmptyServiceKeys = setOf(key),
-        )
+        val result =
+            coordinator.publishWithUpdates(
+                ChannelScanController.PublishMode.BOOT_EPG_SYNC,
+                emptyList(),
+                emptyList(),
+                setOf(key),
+                verifiedEmptyServiceKeys = setOf(key),
+            )
         check(!result.hasCommittedTarget && result.committedServiceKeys.isEmpty())
         check(store.serviceIndexQueries == 0 && store.deleteCalls == 0)
     }
 
-    @Test fun requiredQueryFailureDoesNotUpdateSignatureOrDeleteAndNextSuccessPublishes() {
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    @Test
+    fun requiredQueryFailureDoesNotUpdateSignatureOrDeleteAndNextSuccessPublishes() {
         val store = FakeStore(failWindowIndexOnce = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
-
-        val first = coordinator.publish(
-            mode = ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
-            allPrograms = listOf(program),
-            allowedServiceKeys = null,
+        writer.upsertChannels(
+            listOf(
+                ChannelRecord(
+                    key,
+                    0x01,
+                    "101",
+                    "NHK",
+                    FrequencyHz(473_142_857L),
+                    casFactsCanonicalJson =
+                        com.maleicacid.tvinput.tis
+                            .testCasFacts(false),
+                ),
+            ),
         )
+
+        val first =
+            coordinator.publish(
+                mode = ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
+                allPrograms = listOf(program),
+                allowedServiceKeys = null,
+            )
         check(first.failures.isNotEmpty()) { first.toString() }
         check(store.insertedPrograms == 0) { "必須問い合わせ失敗時は挿入を止める必要があります" }
         check(store.deleteCalls == 0) { "必須問い合わせ失敗時は廃止行を削除してはなりません" }
         check(coordinator.retryFailureClassesForTest().contains(ProgramPublishCoordinator.FailureClass.REQUIRED_QUERY_FAILED))
 
-        val second = coordinator.publish(
-            mode = ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
-            allPrograms = listOf(program),
-            allowedServiceKeys = null,
-        )
+        val second =
+            coordinator.publish(
+                mode = ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
+                allPrograms = listOf(program),
+                allowedServiceKeys = null,
+            )
         check(second.inserted == 1) { second.toString() }
         check(coordinator.retryWindowCountForTest() == 1) { "通常upsert成功だけではauthoritative再検証要求を消去してはなりません" }
     }
 
-    @Test fun failedInsertDoesNotCommitSignatureSoRetryCanPublishSameInput() {
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    @Test
+    fun failedInsertDoesNotCommitSignatureSoRetryCanPublishSameInput() {
         val store = FakeStore(failInsertOnce = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
+        writer.upsertChannels(
+            listOf(
+                ChannelRecord(
+                    key,
+                    0x01,
+                    "101",
+                    "NHK",
+                    FrequencyHz(473_142_857L),
+                    casFactsCanonicalJson =
+                        com.maleicacid.tvinput.tis
+                            .testCasFacts(false),
+                ),
+            ),
+        )
 
         val failed = coordinator.publish(ChannelScanController.PublishMode.SETUP_SCAN, listOf(program), allowedServiceKeys = null)
         check(failed.failures.any { it.operation == "program-insert" }) { failed.toString() }
@@ -105,11 +192,27 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         check(retried.inserted == 1) { "公開失敗時は同じ入力を未変更扱いしてはなりません: $retried" }
     }
 
-    @Test fun bootSyncDoesNotTreatFingerprintCacheAsCurrentTaskCommit() {
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    @Test
+    fun bootSyncDoesNotTreatFingerprintCacheAsCurrentTaskCommit() {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
+        writer.upsertChannels(
+            listOf(
+                ChannelRecord(
+                    key,
+                    0x01,
+                    "101",
+                    "NHK",
+                    FrequencyHz(473_142_857L),
+                    casFactsCanonicalJson =
+                        com.maleicacid.tvinput.tis
+                            .testCasFacts(false),
+                ),
+            ),
+        )
 
         val first = coordinator.publish(ChannelScanController.PublishMode.BOOT_EPG_SYNC, listOf(program), allowedServiceKeys = setOf(key))
         val second = coordinator.publish(ChannelScanController.PublishMode.BOOT_EPG_SYNC, listOf(program), allowedServiceKeys = setOf(key))
@@ -123,62 +226,112 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
-        val window = ProgramPublishCoordinator.EpgUpdateWindow(
-            serviceKey = key,
-            windowStartMs = program.startTimeMillis,
-            windowEndMs = program.startTimeMillis + program.durationMillis,
-            validProgramKeys = setOf(TvProviderWriter.programKeyForTest(program)),
-            deletionAuthoritative = false,
+        writer.upsertChannels(
+            listOf(
+                ChannelRecord(
+                    key,
+                    0x01,
+                    "101",
+                    "NHK",
+                    FrequencyHz(473_142_857L),
+                    casFactsCanonicalJson =
+                        com.maleicacid.tvinput.tis
+                            .testCasFacts(false),
+                ),
+            ),
         )
+        val window =
+            ProgramPublishCoordinator.EpgUpdateWindow(
+                serviceKey = key,
+                windowStartMs = program.startTimeMillis,
+                windowEndMs = program.startTimeMillis + program.durationMillis,
+                validProgramKeys = setOf(TvProviderWriter.programKeyForTest(program)),
+                deletionAuthoritative = false,
+            )
 
-        val result = coordinator.publishWithUpdates(
-            mode = ChannelScanController.PublishMode.BOOT_EPG_SYNC,
-            allPrograms = emptyList(),
-            updateWindows = listOf(window),
-            allowedServiceKeys = setOf(key),
-        )
+        val result =
+            coordinator.publishWithUpdates(
+                mode = ChannelScanController.PublishMode.BOOT_EPG_SYNC,
+                allPrograms = emptyList(),
+                updateWindows = listOf(window),
+                allowedServiceKeys = setOf(key),
+            )
 
         check(!result.hasCommittedTarget)
         check(result.eligibleTargetCount == 0)
     }
 
-    @Test fun authoritativeDeleteFailureIsRetriedWithObsoleteDeleteClass() {
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    @Test
+    fun authoritativeDeleteFailureIsRetriedWithObsoleteDeleteClass() {
         val store = FakeStore(failDelete = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
+        writer.upsertChannels(
+            listOf(
+                ChannelRecord(
+                    key,
+                    0x01,
+                    "101",
+                    "NHK",
+                    FrequencyHz(473_142_857L),
+                    casFactsCanonicalJson =
+                        com.maleicacid.tvinput.tis
+                            .testCasFacts(false),
+                ),
+            ),
+        )
         writer.upsertPrograms(listOf(program))
 
-        val window = ProgramPublishCoordinator.EpgUpdateWindow(
-            serviceKey = key,
-            windowStartMs = program.startTimeMillis,
-            windowEndMs = program.startTimeMillis + program.durationMillis,
-            validProgramKeys = emptySet(),
-            deletionAuthoritative = true,
-        )
-        val result = coordinator.publishWithUpdates(
-            mode = ChannelScanController.PublishMode.SETUP_SCAN,
-            allPrograms = emptyList(),
-            updateWindows = listOf(window),
-            allowedServiceKeys = null,
-        )
+        val window =
+            ProgramPublishCoordinator.EpgUpdateWindow(
+                serviceKey = key,
+                windowStartMs = program.startTimeMillis,
+                windowEndMs = program.startTimeMillis + program.durationMillis,
+                validProgramKeys = emptySet(),
+                deletionAuthoritative = true,
+            )
+        val result =
+            coordinator.publishWithUpdates(
+                mode = ChannelScanController.PublishMode.SETUP_SCAN,
+                allPrograms = emptyList(),
+                updateWindows = listOf(window),
+                allowedServiceKeys = null,
+            )
         check(result.failures.any { it.operation == "program-delete-obsolete" }) { result.toString() }
         check(coordinator.retryFailureClassesForTest().contains(ProgramPublishCoordinator.FailureClass.OBSOLETE_DELETE_FAILED))
     }
 
-    @Test fun retryUsesOneFixedCooldownAndKeepsFailureClassDiagnosticOnly() {
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    @Test
+    fun retryUsesOneFixedCooldownAndKeepsFailureClassDiagnosticOnly() {
         val store = FakeStore(failDelete = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
-        val window = ProgramPublishCoordinator.EpgUpdateWindow(
-            serviceKey = key,
-            windowStartMs = program.startTimeMillis,
-            windowEndMs = program.startTimeMillis + program.durationMillis,
-            validProgramKeys = emptySet(),
-            deletionAuthoritative = true,
+        writer.upsertChannels(
+            listOf(
+                ChannelRecord(
+                    key,
+                    0x01,
+                    "101",
+                    "NHK",
+                    FrequencyHz(473_142_857L),
+                    casFactsCanonicalJson =
+                        com.maleicacid.tvinput.tis
+                            .testCasFacts(false),
+                ),
+            ),
         )
+        val window =
+            ProgramPublishCoordinator.EpgUpdateWindow(
+                serviceKey = key,
+                windowStartMs = program.startTimeMillis,
+                windowEndMs = program.startTimeMillis + program.durationMillis,
+                validProgramKeys = emptySet(),
+                deletionAuthoritative = true,
+            )
         val before = System.currentTimeMillis()
         coordinator.publishWithUpdates(
             mode = ChannelScanController.PublishMode.SETUP_SCAN,
@@ -198,17 +351,31 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         val store = FakeStore(failDelete = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        writer.upsertChannels(listOf(ChannelRecord(key, 0x01, "101", "NHK", FrequencyHz(473_142_857L), casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts(false),)))
+        writer.upsertChannels(
+            listOf(
+                ChannelRecord(
+                    key,
+                    0x01,
+                    "101",
+                    "NHK",
+                    FrequencyHz(473_142_857L),
+                    casFactsCanonicalJson =
+                        com.maleicacid.tvinput.tis
+                            .testCasFacts(false),
+                ),
+            ),
+        )
 
-        val windows = (0 until (ProgramPublishCoordinator.MAX_DIRTY_WINDOWS_FOR_TEST + 1)).map { i ->
-            ProgramPublishCoordinator.EpgUpdateWindow(
-                serviceKey = key,
-                windowStartMs = program.startTimeMillis + i * 60_000L,
-                windowEndMs = program.startTimeMillis + i * 60_000L + 30_000L,
-                validProgramKeys = emptySet(),
-                deletionAuthoritative = true,
-            )
-        }
+        val windows =
+            (0 until (ProgramPublishCoordinator.MAX_DIRTY_WINDOWS_FOR_TEST + 1)).map { i ->
+                ProgramPublishCoordinator.EpgUpdateWindow(
+                    serviceKey = key,
+                    windowStartMs = program.startTimeMillis + i * 60_000L,
+                    windowEndMs = program.startTimeMillis + i * 60_000L + 30_000L,
+                    validProgramKeys = emptySet(),
+                    deletionAuthoritative = true,
+                )
+            }
         coordinator.publishWithUpdates(
             mode = ChannelScanController.PublishMode.SETUP_SCAN,
             allPrograms = emptyList(),
@@ -221,14 +388,25 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         check(coordinator.droppedRetryWindowCountForTest(key) == 1)
     }
 
-    @Test fun retryRevalidatesKeysAndHoldsWithoutCurrentCompleteEit() {
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    @Test
+    fun retryRevalidatesKeysAndHoldsWithoutCurrentCompleteEit() {
         val store = FakeStore(failDelete = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         var now = 1_000L
         val coordinator = ProgramPublishCoordinator(writer) { now }
-        writer.upsertChannels(listOf(ChannelRecord(key, 1, "101", "test", FrequencyHz(473_142_857L), casFactsCanonicalJson = testCasFacts())))
-        val old = ProgramPublishCoordinator.EpgUpdateWindow(key, program.startTimeMillis,
-            program.startTimeMillis + program.durationMillis, setOf("old-key"), true)
+        writer.upsertChannels(
+            listOf(ChannelRecord(key, 1, "101", "test", FrequencyHz(473_142_857L), casFactsCanonicalJson = testCasFacts())),
+        )
+        val old =
+            ProgramPublishCoordinator.EpgUpdateWindow(
+                key,
+                program.startTimeMillis,
+                program.startTimeMillis + program.durationMillis,
+                setOf("old-key"),
+                true,
+            )
         coordinator.publishWithUpdates(ChannelScanController.PublishMode.SETUP_SCAN, emptyList(), listOf(old), setOf(key))
         check(store.deleteCalls == 1 && coordinator.retryWindowCountForTest() == 1)
         now += ProgramPublishCoordinator.RETRY_COOLDOWN_MS_FOR_TEST
@@ -238,61 +416,124 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             check(coordinator.retryWindowCountForTest() == 1)
         }
         store.failDelete = false
-        val retried = coordinator.publishWithUpdates(ChannelScanController.PublishMode.SETUP_SCAN, emptyList(), listOf(old.copy(validProgramKeys = setOf("current-key"))), setOf(key))
+        val retried =
+            coordinator.publishWithUpdates(
+                ChannelScanController.PublishMode.SETUP_SCAN,
+                emptyList(),
+                listOf(old.copy(validProgramKeys = setOf("current-key"))),
+                setOf(key),
+            )
         check(retried.hasCommittedTarget && store.deleteCalls == 2)
         check(store.lastDeleteKeys == setOf("current-key"))
         check(coordinator.retryWindowCountForTest() == 0)
     }
 
-    @Test fun nonAuthoritativeSuccessKeepsFailedDeleteUntilAuthoritativeSuccess() {
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    @Test
+    fun nonAuthoritativeSuccessKeepsFailedDeleteUntilAuthoritativeSuccess() {
         val store = FakeStore(failDelete = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         var now = 1_000L
         val coordinator = ProgramPublishCoordinator(writer) { now }
-        writer.upsertChannels(listOf(ChannelRecord(key, 1, "101", "test", FrequencyHz(473_142_857L), casFactsCanonicalJson = testCasFacts())))
+        writer.upsertChannels(
+            listOf(ChannelRecord(key, 1, "101", "test", FrequencyHz(473_142_857L), casFactsCanonicalJson = testCasFacts())),
+        )
         val currentKey = TvProviderWriter.programKeyForTest(program)
-        val old = ProgramPublishCoordinator.EpgUpdateWindow(key, program.startTimeMillis,
-            program.startTimeMillis + program.durationMillis, setOf("old-key"), true)
+        val old =
+            ProgramPublishCoordinator.EpgUpdateWindow(
+                key,
+                program.startTimeMillis,
+                program.startTimeMillis + program.durationMillis,
+                setOf("old-key"),
+                true,
+            )
         val failed = coordinator.publishWithUpdates(ChannelScanController.PublishMode.SETUP_SCAN, emptyList(), listOf(old), setOf(key))
         check(failed.failures.any { it.operation == "program-delete-obsolete" })
         check(store.deleteCalls == 1 && coordinator.retryWindowCountForTest() == 1)
         now += ProgramPublishCoordinator.RETRY_COOLDOWN_MS_FOR_TEST
         store.failDelete = false
-        val partial = coordinator.publishWithUpdates(ChannelScanController.PublishMode.SETUP_SCAN, listOf(program),
-            listOf(old.copy(validProgramKeys = setOf(currentKey), deletionAuthoritative = false)), setOf(key))
+        val partial =
+            coordinator.publishWithUpdates(
+                ChannelScanController.PublishMode.SETUP_SCAN,
+                listOf(program),
+                listOf(old.copy(validProgramKeys = setOf(currentKey), deletionAuthoritative = false)),
+                setOf(key),
+            )
         check(partial.failures.isEmpty() && partial.inserted == 1)
         check(store.deleteCalls == 1 && coordinator.retryWindowCountForTest() == 1)
-        val complete = coordinator.publishWithUpdates(ChannelScanController.PublishMode.SETUP_SCAN, listOf(program),
-            listOf(old.copy(validProgramKeys = setOf(currentKey))), setOf(key))
+        val complete =
+            coordinator.publishWithUpdates(
+                ChannelScanController.PublishMode.SETUP_SCAN,
+                listOf(program),
+                listOf(old.copy(validProgramKeys = setOf(currentKey))),
+                setOf(key),
+            )
         check(complete.failures.isEmpty() && complete.hasCommittedTarget)
         check(store.deleteCalls == 2 && store.lastDeleteKeys == setOf(currentKey))
         check(coordinator.retryWindowCountForTest() == 0)
     }
 
-    @Test fun invalidProviderDataCannotWriteDeleteOrCommitFingerprint() {
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    @Test
+    fun invalidProviderDataCannotWriteDeleteOrCommitFingerprint() {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         val coordinator = ProgramPublishCoordinator(writer)
-        writer.upsertChannels(listOf(ChannelRecord(key, 1, "101", "test", FrequencyHz(473_142_857L), casFactsCanonicalJson = testCasFacts())))
+        writer.upsertChannels(
+            listOf(ChannelRecord(key, 1, "101", "test", FrequencyHz(473_142_857L), casFactsCanonicalJson = testCasFacts())),
+        )
         val invalid = program.copy(casFactsCanonicalJson = null)
-        val window = ProgramPublishCoordinator.EpgUpdateWindow(key, program.startTimeMillis,
-            program.startTimeMillis + program.durationMillis, emptySet(), true)
-        val failed = coordinator.publishWithUpdates(ChannelScanController.PublishMode.BOOT_EPG_SYNC, listOf(invalid), listOf(window), setOf(key))
-        check(failed.failures.single().message.contains("PROGRAM_REQUEST_INVALID"))
+        val window =
+            ProgramPublishCoordinator.EpgUpdateWindow(
+                key,
+                program.startTimeMillis,
+                program.startTimeMillis + program.durationMillis,
+                emptySet(),
+                true,
+            )
+        val failed =
+            coordinator.publishWithUpdates(
+                ChannelScanController.PublishMode.BOOT_EPG_SYNC,
+                listOf(invalid),
+                listOf(window),
+                setOf(key),
+            )
+        check(
+            failed.failures
+                .single()
+                .message
+                .contains("PROGRAM_REQUEST_INVALID"),
+        )
         check(!failed.hasCommittedTarget && store.insertedPrograms == 0 && store.deleteCalls == 0)
-        val valid = coordinator.publishWithUpdates(ChannelScanController.PublishMode.BOOT_EPG_SYNC, listOf(program), listOf(window.copy(validProgramKeys = setOf(TvProviderWriter.programKeyForTest(program)))), setOf(key))
+        val valid =
+            coordinator.publishWithUpdates(
+                ChannelScanController.PublishMode.BOOT_EPG_SYNC,
+                listOf(program),
+                listOf(window.copy(validProgramKeys = setOf(TvProviderWriter.programKeyForTest(program)))),
+                setOf(key),
+            )
         check(valid.hasCommittedTarget && store.insertedPrograms == 1)
     }
 
-    @Test fun retryWaitsUntilCurrentWindowCoversTheWholeOldRequest() {
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    @Test
+    fun retryWaitsUntilCurrentWindowCoversTheWholeOldRequest() {
         val store = FakeStore(failDelete = true)
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         var now = 1_000L
         val coordinator = ProgramPublishCoordinator(writer) { now }
-        writer.upsertChannels(listOf(ChannelRecord(key, 1, "101", "test", FrequencyHz(473_142_857L), casFactsCanonicalJson = testCasFacts())))
+        writer.upsertChannels(
+            listOf(ChannelRecord(key, 1, "101", "test", FrequencyHz(473_142_857L), casFactsCanonicalJson = testCasFacts())),
+        )
         val old = ProgramPublishCoordinator.EpgUpdateWindow(key, 100, 200, setOf("old-key"), true)
-        fun publish(window: ProgramPublishCoordinator.EpgUpdateWindow) = coordinator.publishWithUpdates(
-            ChannelScanController.PublishMode.SETUP_SCAN, emptyList(), listOf(window), setOf(key))
+
+        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+        @Suppress("MaxLineLength")
+        fun publish(window: ProgramPublishCoordinator.EpgUpdateWindow) =
+            coordinator.publishWithUpdates(ChannelScanController.PublishMode.SETUP_SCAN, emptyList(), listOf(window), setOf(key))
         check(publish(old).failures.isNotEmpty())
         now += ProgramPublishCoordinator.RETRY_COOLDOWN_MS_FOR_TEST
         store.failDelete = false
@@ -308,16 +549,33 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         check(store.lastDeleteKeys == setOf("current-key") && coordinator.retryWindowCountForTest() == 0)
     }
 
-    @Test fun eligibleRetryBypassesPreviouslySuccessfulFingerprint() {
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    @Test
+    fun eligibleRetryBypassesPreviouslySuccessfulFingerprint() {
         val store = FakeStore()
         val writer = TvProviderWriter("input.test", store, testOnly = true)
         var now = 1_000L
         val coordinator = ProgramPublishCoordinator(writer) { now }
-        writer.upsertChannels(listOf(ChannelRecord(key, 1, "101", "test", FrequencyHz(473_142_857L), casFactsCanonicalJson = testCasFacts())))
-        val window = ProgramPublishCoordinator.EpgUpdateWindow(key, program.startTimeMillis,
-            program.startTimeMillis + program.durationMillis, setOf(TvProviderWriter.programKeyForTest(program)), true)
-        fun publish() = coordinator.publishWithUpdates(ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
-            listOf(program), listOf(window), setOf(key))
+        writer.upsertChannels(
+            listOf(ChannelRecord(key, 1, "101", "test", FrequencyHz(473_142_857L), casFactsCanonicalJson = testCasFacts())),
+        )
+        val window =
+            ProgramPublishCoordinator.EpgUpdateWindow(
+                key,
+                program.startTimeMillis,
+                program.startTimeMillis + program.durationMillis,
+                setOf(TvProviderWriter.programKeyForTest(program)),
+                true,
+            )
+
+        fun publish() =
+            coordinator.publishWithUpdates(
+                ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
+                listOf(program),
+                listOf(window),
+                setOf(key),
+            )
         check(publish().hasCommittedTarget)
         val before = store.deleteCalls
         store.failChannelQuery = true
@@ -349,8 +607,11 @@ class ProgramPublishCoordinatorBk10CompletionTest {
         var serviceIndexQueries = 0
 
         override fun findExistingChannelId(key: ServiceKey): Result<Long?> =
-            if (failChannelQuery) Result.failure(IllegalStateException("channel問い合わせ失敗"))
-            else Result.success(channels.keys.firstOrNull())
+            if (failChannelQuery) {
+                Result.failure(IllegalStateException("channel問い合わせ失敗"))
+            } else {
+                Result.success(channels.keys.firstOrNull())
+            }
 
         override fun insertChannel(values: ContentValues): Result<Long?> {
             val id = nextChannelId++
@@ -358,7 +619,10 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             return Result.success(id)
         }
 
-        override fun updateChannel(channelId: Long, values: ContentValues): Result<Int> {
+        override fun updateChannel(
+            channelId: Long,
+            values: ContentValues,
+        ): Result<Int> {
             channels[channelId]?.putAll(values)
             return Result.success(if (channels.containsKey(channelId)) 1 else 0)
         }
@@ -372,7 +636,11 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             return Result.success(programIndex())
         }
 
-        override fun indexExistingProgramsForWindow(channelId: Long, windowStartMs: Long, windowEndMs: Long): Result<Map<String, Long>> {
+        override fun indexExistingProgramsForWindow(
+            channelId: Long,
+            windowStartMs: Long,
+            windowEndMs: Long,
+        ): Result<Map<String, Long>> {
             if (failWindowIndexOnce) {
                 failWindowIndexOnce = false
                 return Result.failure(IllegalStateException("null cursor"))
@@ -391,30 +659,45 @@ class ProgramPublishCoordinatorBk10CompletionTest {
             return Result.success(id)
         }
 
-        override fun updateProgram(programId: Long, values: ContentValues): Result<Int> {
+        override fun updateProgram(
+            programId: Long,
+            values: ContentValues,
+        ): Result<Int> {
             programs[programId]?.putAll(values)
             val updated = if (programs.containsKey(programId)) 1 else 0
             updatedPrograms += updated
             return Result.success(updated)
         }
 
-        override fun deleteObsoletePrograms(channelId: Long, validProgramKeys: Set<String>, windowStartMs: Long, windowEndMs: Long): Result<Int> {
+        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+        @Suppress("MaxLineLength")
+        override fun deleteObsoletePrograms(
+            channelId: Long,
+            validProgramKeys: Set<String>,
+            windowStartMs: Long,
+            windowEndMs: Long,
+        ): Result<Int> {
             deleteCalls++
             deletedWindows += windowStartMs to windowEndMs
             lastDeleteKeys = validProgramKeys
             if (failDelete) return Result.failure(IllegalStateException("削除失敗"))
             val before = programs.size
-            val removeIds = programs.mapNotNull { (id, values) ->
-                val key = TvProviderWriter.parseProgramKey(values.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA))
-                if (key == null || key !in validProgramKeys) id else null
-            }
+            val removeIds =
+                programs.mapNotNull { (id, values) ->
+                    val key = TvProviderWriter.parseProgramKey(values.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA))
+                    if (key == null || key !in validProgramKeys) id else null
+                }
             removeIds.forEach { programs.remove(it) }
             return Result.success(before - programs.size)
         }
 
-        private fun programIndex(): Map<String, Long> = programs.mapNotNull { (id, values) ->
-            val key = TvProviderWriter.parseProgramKey(values.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA))
-            key?.let { it to id }
-        }.toMap()
+        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+        @Suppress("MaxLineLength")
+        private fun programIndex(): Map<String, Long> =
+            programs
+                .mapNotNull { (id, values) ->
+                    val key = TvProviderWriter.parseProgramKey(values.getAsByteArray(TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA))
+                    key?.let { it to id }
+                }.toMap()
     }
 }

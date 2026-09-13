@@ -6,7 +6,9 @@ import android.util.Log
 import com.maleicacid.tvinput.common.LogTags
 import com.maleicacid.tvinput.db.ReservationRecord
 
-class RecordingClientController(private val context: Context) {
+class RecordingClientController(
+    @Suppress("UNUSED_PARAMETER") context: Context,
+) {
     private var client: TvRecordingClient? = null
 
     fun start(record: ReservationRecord) {

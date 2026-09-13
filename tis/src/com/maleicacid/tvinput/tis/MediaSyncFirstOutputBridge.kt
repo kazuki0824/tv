@@ -26,20 +26,27 @@ internal object MediaSyncFirstOutputBridge {
     private val binding: Binding? by lazy(LazyThreadSafetyMode.PUBLICATION) {
         runCatching {
             val listenerClass = Class.forName(LISTENER_CLASS_NAME)
-            val setter = MediaSync::class.java.getMethod(
-                SETTER_NAME,
-                java.lang.Long.TYPE,
-                listenerClass,
-                Handler::class.java,
-            )
+            val setter =
+                MediaSync::class.java.getMethod(
+                    SETTER_NAME,
+                    java.lang.Long.TYPE,
+                    listenerClass,
+                    Handler::class.java,
+                )
             Binding(listenerClass, setter)
         }.onFailure { error ->
-            Log.i(LogTags.TIS, "MediaSync final-output private callback is unavailable; compatibility fallback will be used: ${error.javaClass.simpleName}")
+            Log.i(
+                LogTags.TIS,
+                "MediaSync final-output private callback is unavailable; compatibility fallb" +
+                    "ack will be used: ${error.javaClass.simpleName}",
+            )
         }.getOrNull()
     }
 
     fun isAvailable(): Boolean = binding != null
 
+    // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
+    @Suppress("TooGenericExceptionCaught")
     fun arm(
         sync: MediaSync,
         armSequence: Long,
@@ -47,29 +54,44 @@ internal object MediaSyncFirstOutputBridge {
         callback: (MediaSync, Long) -> Unit,
     ): Boolean {
         val resolved = binding ?: return false
-        val listener = Proxy.newProxyInstance(
-            resolved.listenerClass.classLoader ?: MediaSync::class.java.classLoader,
-            arrayOf(resolved.listenerClass),
-        ) { proxy, method, args ->
-            when (method.name) {
-                "onFirstVideoFrameQueuedToOutput" -> {
-                    val callbackSync = args?.getOrNull(0) as? MediaSync ?: return@newProxyInstance null
-                    val sequence = (args.getOrNull(1) as? Number)?.toLong() ?: return@newProxyInstance null
-                    callback(callbackSync, sequence)
-                    null
+        val listener =
+            Proxy.newProxyInstance(
+                resolved.listenerClass.classLoader ?: MediaSync::class.java.classLoader,
+                arrayOf(resolved.listenerClass),
+            ) { proxy, method, args ->
+                when (method.name) {
+                    "onFirstVideoFrameQueuedToOutput" -> {
+                        val callbackSync = args?.getOrNull(0) as? MediaSync ?: return@newProxyInstance null
+                        val sequence = (args.getOrNull(1) as? Number)?.toLong() ?: return@newProxyInstance null
+                        callback(callbackSync, sequence)
+                        null
+                    }
+
+                    "toString" -> {
+                        "MediaSyncFirstOutputListenerProxy"
+                    }
+
+                    "hashCode" -> {
+                        System.identityHashCode(proxy)
+                    }
+
+                    "equals" -> {
+                        proxy === args?.getOrNull(0)
+                    }
+
+                    else -> {
+                        null
+                    }
                 }
-                "toString" -> "MediaSyncFirstOutputListenerProxy"
-                "hashCode" -> System.identityHashCode(proxy)
-                "equals" -> proxy === args?.getOrNull(0)
-                else -> null
             }
-        }
         return try {
             resolved.setter.invoke(sync, armSequence, listener, handler)
             true
+        } catch (error: InvocationTargetException) {
+            Log.w(LogTags.TIS, "MediaSync final-output private callback arm failed", error.targetException ?: error)
+            false
         } catch (error: ReflectiveOperationException) {
-            val cause = if (error is InvocationTargetException) error.targetException ?: error else error
-            Log.w(LogTags.TIS, "MediaSync final-output private callback arm failed", cause)
+            Log.w(LogTags.TIS, "MediaSync final-output private callback arm failed", error)
             false
         } catch (error: RuntimeException) {
             Log.w(LogTags.TIS, "MediaSync final-output private callback arm failed", error)

@@ -8,8 +8,11 @@ import com.maleicacid.tvinput.db.ProgramRecord
 import org.json.JSONArray
 import org.json.JSONObject
 
+// 同じ状態・境界を扱う操作群を一つの所有者に保つ。
+@Suppress("TooManyFunctions")
 object ProviderDataBridge {
     sealed interface ProviderDataResult
+
     data class Success(
         val bytes: ByteArray,
         val schemaVersion: Int,
@@ -18,6 +21,7 @@ object ProviderDataBridge {
     ) : ProviderDataResult {
         val json: String get() = bytes.toString(Charsets.UTF_8)
     }
+
     data class Failure(
         val errorCode: String,
         val errorMessage: String,
@@ -29,6 +33,7 @@ object ProviderDataBridge {
         val eventId: Int,
         val key: String,
     )
+
     data class ChannelTune(
         val deliverySystem: String,
         val frequencyHz: FrequencyHz,
@@ -37,6 +42,7 @@ object ProviderDataBridge {
         val satelliteBand: String?,
         val remoteControlKeyId: Int?,
     )
+
     data class ChannelProviderDataResult(
         val canonicalBytes: ByteArray,
         val schemaVersion: Int,
@@ -48,9 +54,10 @@ object ProviderDataBridge {
     private val native by lazy { NativeAribSiParser() }
 
     fun buildChannelProviderData(channel: ChannelRecord): ProviderDataResult {
-        val request = runCatching { channelRequest(channel) }.getOrElse { error ->
-            return Failure("CHANNEL_REQUEST_INVALID", error.message ?: "Invalid channel request")
-        }
+        val request =
+            runCatching { channelRequest(channel) }.getOrElse { error ->
+                return Failure("CHANNEL_REQUEST_INVALID", error.message ?: "Invalid channel request")
+            }
         return parseResult(native.buildChannelProviderData(request))
     }
 
@@ -64,31 +71,41 @@ object ProviderDataBridge {
             }
         }
         val selector = channel.streamSelector
-        val request = JSONObject()
-            .put("schema", "maleicacid.tv.channelRequest")
-            .put("schemaVersion", 1)
-            .put("serviceKey", JSONObject()
-                .put("originalNetworkId", channel.serviceKey.originalNetworkId)
-                .put("transportStreamId", channel.serviceKey.transportStreamId)
-                .put("serviceId", channel.serviceKey.serviceId))
-            .put("tune", JSONObject()
-                .put("deliverySystem", channel.deliverySystem)
-                .put("frequencyHz", channel.frequencyHz.value)
-                .put("streamId", selector.value ?: JSONObject.NULL)
-                .put("streamIdType", selector.type.name)
-                .put("physicalChannel", channel.physicalChannel ?: JSONObject.NULL)
-                .put("satelliteBand", channel.satelliteBand ?: JSONObject.NULL)
-                .put("remoteControlKeyId", channel.remoteControlKeyId ?: JSONObject.NULL))
-            .put("cas", JSONObject()
-                .put("requiresCas", channel.requiresCas))
-            .put("casFactsCanonicalJson", channel.casFactsCanonicalJson ?: JSONObject.NULL)
-            .put("diagnostics", JSONObject())
+        val request =
+            JSONObject()
+                .put("schema", "maleicacid.tv.channelRequest")
+                .put("schemaVersion", 1)
+                .put(
+                    "serviceKey",
+                    JSONObject()
+                        .put("originalNetworkId", channel.serviceKey.originalNetworkId)
+                        .put("transportStreamId", channel.serviceKey.transportStreamId)
+                        .put("serviceId", channel.serviceKey.serviceId),
+                ).put(
+                    "tune",
+                    JSONObject()
+                        .put("deliverySystem", channel.deliverySystem)
+                        .put("frequencyHz", channel.frequencyHz.value)
+                        .put("streamId", selector.value ?: JSONObject.NULL)
+                        .put("streamIdType", selector.type.name)
+                        .put("physicalChannel", channel.physicalChannel ?: JSONObject.NULL)
+                        .put("satelliteBand", channel.satelliteBand ?: JSONObject.NULL)
+                        .put("remoteControlKeyId", channel.remoteControlKeyId ?: JSONObject.NULL),
+                ).put(
+                    "cas",
+                    JSONObject()
+                        .put("requiresCas", channel.requiresCas),
+                ).put("casFactsCanonicalJson", channel.casFactsCanonicalJson ?: JSONObject.NULL)
+                .put("diagnostics", JSONObject())
         return request.toString()
     }
 
     fun buildProgramKey(program: ProgramRecord): String = buildProgramKey(program.serviceKey, program.eventId)
 
-    fun buildProgramKey(serviceKey: ServiceKey, eventId: Int): String =
+    fun buildProgramKey(
+        serviceKey: ServiceKey,
+        eventId: Int,
+    ): String =
         native.buildProgramKey(
             serviceKey.originalNetworkId,
             serviceKey.transportStreamId,
@@ -97,61 +114,77 @@ object ProviderDataBridge {
         )
 
     fun buildProgramProviderData(program: ProgramRecord): ProviderDataResult {
-        val request = runCatching { programRequest(program) }.getOrElse { error ->
-            return Failure("PROGRAM_REQUEST_INVALID", error.message ?: "Invalid program request")
-        }
+        val request =
+            runCatching { programRequest(program) }.getOrElse { error ->
+                return Failure("PROGRAM_REQUEST_INVALID", error.message ?: "Invalid program request")
+            }
         return parseResult(native.buildProgramProviderData(request))
     }
 
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
     private fun programRequest(program: ProgramRecord): String {
         val descriptors = program.descriptors
         runCatching { Math.addExact(program.startTimeMillis, program.durationMillis) }
             .getOrElse { error -> throw IllegalArgumentException("program timing overflow", error) }
-        val request = JSONObject()
-            .put("schema", "maleicacid.tv.programRequest")
-            .put("schemaVersion", 1)
-            .put("programKey", JSONObject()
-                .put("kind", "arib-event-v1")
-                .put("originalNetworkId", program.serviceKey.originalNetworkId)
-                .put("transportStreamId", program.serviceKey.transportStreamId)
-                .put("serviceId", program.serviceKey.serviceId)
-                .put("eventId", program.eventId))
-            .put("timing", JSONObject()
-                .put("startUtcMillis", program.startTimeMillis)
-                .put("durationMillis", program.durationMillis))
-            .put("cas", JSONObject()
-                .put("requiresCas", program.requiresCas)
-                .put("source", "SI_SEMANTICS"))
-            .put("casFactsCanonicalJson", program.casFactsCanonicalJson ?: JSONObject.NULL)
-            .put("extendedItems", toExtendedItemsArray(descriptors.extendedItems))
-            .put("genres", genresJson(program))
-            .put("eventGroups", toEventGroupsArray(descriptors.eventGroups))
-            .put("linkage", toLinkageArray(descriptors.linkage))
-            .put("freeCaMode", toFreeCaModeObject(descriptors))
-            .put("series", toSeriesObject(descriptors))
-            .put("seriesCandidatesCanonicalJson", descriptors.seriesCandidatesCanonicalJson ?: JSONObject.NULL)
-            .put("shortEvents", toShortEventsArray(descriptors.shortEvents))
-            .put("extendedTexts", toExtendedTextsArray(descriptors.extendedTexts))
-            .put("diagnostics", JSONObject()
-                .put("descriptorDiagnosticsCanonicalJson", descriptors.descriptorDiagnosticsCanonicalJson)
-                .put("descriptorFactsCanonicalJson", descriptors.descriptorFactsCanonicalJson ?: JSONObject.NULL)
-                .put("publishDiagnostics", JSONArray())
-                .put("parserDiagnostics", JSONArray()))
-            .put("ratings", ratingsJson(program))
-            .put("components", toComponentsObject(descriptors.components))
-            .put("source", JSONObject()
-                .put("pid", program.source.pid.value)
-                .put("tableId", program.source.tableId)
-                .put("version", program.source.version)
-                .put("sectionNumber", program.source.sectionNumber)
-                .put("lastSectionNumber", program.source.lastSectionNumber))
-            .put("malformedCaDescriptorCount", program.malformedCaDescriptorCount.coerceAtLeast(0))
+        val request =
+            JSONObject()
+                .put("schema", "maleicacid.tv.programRequest")
+                .put("schemaVersion", 1)
+                .put(
+                    "programKey",
+                    JSONObject()
+                        .put("kind", "arib-event-v1")
+                        .put("originalNetworkId", program.serviceKey.originalNetworkId)
+                        .put("transportStreamId", program.serviceKey.transportStreamId)
+                        .put("serviceId", program.serviceKey.serviceId)
+                        .put("eventId", program.eventId),
+                ).put(
+                    "timing",
+                    JSONObject()
+                        .put("startUtcMillis", program.startTimeMillis)
+                        .put("durationMillis", program.durationMillis),
+                ).put(
+                    "cas",
+                    JSONObject()
+                        .put("requiresCas", program.requiresCas)
+                        .put("source", "SI_SEMANTICS"),
+                ).put("casFactsCanonicalJson", program.casFactsCanonicalJson ?: JSONObject.NULL)
+                .put("extendedItems", toExtendedItemsArray(descriptors.extendedItems))
+                .put("genres", genresJson(program))
+                .put("eventGroups", toEventGroupsArray(descriptors.eventGroups))
+                .put("linkage", toLinkageArray(descriptors.linkage))
+                .put("freeCaMode", toFreeCaModeObject(descriptors))
+                .put("series", toSeriesObject(descriptors))
+                .put("seriesCandidatesCanonicalJson", descriptors.seriesCandidatesCanonicalJson ?: JSONObject.NULL)
+                .put("shortEvents", toShortEventsArray(descriptors.shortEvents))
+                .put("extendedTexts", toExtendedTextsArray(descriptors.extendedTexts))
+                .put(
+                    "diagnostics",
+                    JSONObject()
+                        .put("descriptorDiagnosticsCanonicalJson", descriptors.descriptorDiagnosticsCanonicalJson)
+                        .put("descriptorFactsCanonicalJson", descriptors.descriptorFactsCanonicalJson ?: JSONObject.NULL)
+                        .put("publishDiagnostics", JSONArray())
+                        .put("parserDiagnostics", JSONArray()),
+                ).put("ratings", ratingsJson(program))
+                .put("components", toComponentsObject(descriptors.components))
+                .put(
+                    "source",
+                    JSONObject()
+                        .put("pid", program.source.pid.value)
+                        .put("tableId", program.source.tableId)
+                        .put("version", program.source.version)
+                        .put("sectionNumber", program.source.sectionNumber)
+                        .put("lastSectionNumber", program.source.lastSectionNumber),
+                ).put("malformedCaDescriptorCount", program.malformedCaDescriptorCount.coerceAtLeast(0))
         return request.toString()
     }
 
     fun normalizeProgramProviderData(providerData: ByteArray?): ProviderDataResult =
         parseResult(native.normalizeProgramProviderData(providerData ?: ByteArray(0)))
 
+    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+    @Suppress("ReturnCount")
     fun extractProgramKeyResult(providerData: ByteArray?): ProgramKeyResult? {
         val raw = native.extractProgramKeyResult(providerData ?: ByteArray(0)).takeIf { it.isNotBlank() } ?: return null
         val obj = JSONObject(raw)
@@ -160,17 +193,23 @@ object ProviderDataBridge {
         val sid = obj.optInt("serviceId", -1)
         val eventId = obj.optInt("eventId", -1)
         val key = obj.optString("key")
-        if (onid < 0 || tsid < 0 || sid < 0 || eventId < 0 || key.isBlank()) return null
+        val invalidProgramKey =
+            onid < 0 || tsid < 0 || sid < 0 || eventId < 0 || key.isBlank()
+        if (invalidProgramKey) return null
         return ProgramKeyResult(ServiceKey(onid, tsid, sid), eventId, key)
     }
 
-    fun extractProgramKey(providerData: ByteArray?): String? =
-        extractProgramKeyResult(providerData)?.key
+    fun extractProgramKey(providerData: ByteArray?): String? = extractProgramKeyResult(providerData)?.key
 
+    // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+    @Suppress("CyclomaticComplexMethod", "MaxLineLength", "ReturnCount")
     fun decodeChannelProviderData(providerData: ByteArray?): ChannelProviderDataResult? {
-        val root = runCatching {
-            JSONObject(native.decodeChannelProviderData(providerData ?: ByteArray(0)))
-        }.getOrNull() ?: return null
+        val root =
+            runCatching {
+                JSONObject(native.decodeChannelProviderData(providerData ?: ByteArray(0)))
+            }.getOrNull() ?: return null
         val canonical = root.optString("canonical").takeIf { it.isNotBlank() } ?: return null
         val schemaVersion = root.optInt("schemaVersion", -1).takeIf { it == 1 } ?: return null
         val serviceKey = root.optJSONObject("serviceKey") ?: return null
@@ -181,24 +220,27 @@ object ProviderDataBridge {
         val sid = serviceKey.optInt("serviceId", -1)
         val deliverySystem = tune.optString("deliverySystem").takeIf { it.isNotBlank() } ?: return null
         val frequencyHz = FrequencyHz.fromOrNull(tune.optLong("frequencyHz", -1L))
-        if (onid < 0 || tsid < 0 || sid < 0 || frequencyHz == null) return null
+        if (onid < 0 || tsid < 0 || sid < 0) return null
+        if (frequencyHz == null) return null
         return ChannelProviderDataResult(
             canonicalBytes = canonical.toByteArray(Charsets.UTF_8),
             schemaVersion = schemaVersion,
             serviceKey = ServiceKey(onid, tsid, sid),
-            tune = ChannelTune(
-                deliverySystem = deliverySystem,
-                frequencyHz = frequencyHz,
-                streamSelector = runCatching {
-                    StreamSelector.fromStored(
-                        tune.optString("streamIdType"),
-                        if (tune.isNull("streamId")) null else tune.optInt("streamId").toString(),
-                    )
-                }.getOrElse { return null },
-                physicalChannel = if (tune.isNull("physicalChannel")) null else tune.optInt("physicalChannel"),
-                satelliteBand = if (tune.isNull("satelliteBand")) null else tune.optString("satelliteBand"),
-                remoteControlKeyId = if (tune.isNull("remoteControlKeyId")) null else tune.optInt("remoteControlKeyId"),
-            ),
+            tune =
+                ChannelTune(
+                    deliverySystem = deliverySystem,
+                    frequencyHz = frequencyHz,
+                    streamSelector =
+                        runCatching {
+                            StreamSelector.fromStored(
+                                tune.optString("streamIdType"),
+                                if (tune.isNull("streamId")) null else tune.optInt("streamId").toString(),
+                            )
+                        }.getOrElse { return null },
+                    physicalChannel = if (tune.isNull("physicalChannel")) null else tune.optInt("physicalChannel"),
+                    satelliteBand = if (tune.isNull("satelliteBand")) null else tune.optString("satelliteBand"),
+                    remoteControlKeyId = if (tune.isNull("remoteControlKeyId")) null else tune.optInt("remoteControlKeyId"),
+                ),
             requiresCas = cas.optBoolean("requiresCas", false),
         )
     }
@@ -206,45 +248,56 @@ object ProviderDataBridge {
     private fun ratingsJson(program: ProgramRecord): JSONArray {
         val arr = JSONArray()
         program.descriptors.parentalRatings.forEach { rating ->
-            arr.put(JSONObject()
-                .put("countryCode", rating.countryCode)
-                .put("rawRatingByte", rating.rawRatingByte)
-                .put("parseStatus", rating.parseStatus))
+            arr.put(
+                JSONObject()
+                    .put("countryCode", rating.countryCode)
+                    .put("rawRatingByte", rating.rawRatingByte)
+                    .put("parseStatus", rating.parseStatus),
+            )
         }
         return arr
     }
 
-    private fun genresJson(program: ProgramRecord): JSONArray = JSONArray().apply {
-        program.descriptors.contentGenres.forEach { genre ->
-            put(JSONObject()
-                .put("level1", genre.level1)
-                .put("level2", genre.level2)
-                .put("userNibble", genre.userNibble)
-                .put("aribName", genre.aribName)
-                .put("parseStatus", genre.parseStatus))
+    private fun genresJson(program: ProgramRecord): JSONArray =
+        JSONArray().apply {
+            program.descriptors.contentGenres.forEach { genre ->
+                put(
+                    JSONObject()
+                        .put("level1", genre.level1)
+                        .put("level2", genre.level2)
+                        .put("userNibble", genre.userNibble)
+                        .put("aribName", genre.aribName)
+                        .put("parseStatus", genre.parseStatus),
+                )
+            }
         }
-    }
 
-    private fun toFreeCaModeObject(descriptors: com.maleicacid.tvinput.db.ProgramDescriptors): Any = descriptors.freeCaMode?.let { mode ->
-        JSONObject()
-            .put("raw", mode.raw ?: JSONObject.NULL)
-            .put("scrambled", mode.scrambled ?: JSONObject.NULL)
-            .put("parseStatus", mode.parseStatus)
-    } ?: JSONObject.NULL
+    private fun toFreeCaModeObject(descriptors: com.maleicacid.tvinput.db.ProgramDescriptors): Any =
+        descriptors.freeCaMode?.let { mode ->
+            JSONObject()
+                .put("raw", mode.raw ?: JSONObject.NULL)
+                .put("scrambled", mode.scrambled ?: JSONObject.NULL)
+                .put("parseStatus", mode.parseStatus)
+        } ?: JSONObject.NULL
 
-    private fun toSeriesObject(descriptors: com.maleicacid.tvinput.db.ProgramDescriptors): Any = descriptors.series?.let { series ->
-        JSONObject()
-            .put("seriesId", series.seriesId ?: JSONObject.NULL)
-            .put("repeatLabel", series.repeatLabel)
-            .put("programPattern", series.programPattern)
-            .put("expireDateValid", series.expireDateValid)
-            .put("expireDate", series.expireDate ?: JSONObject.NULL)
-            .put("episodeNumber", series.episodeNumber ?: JSONObject.NULL)
-            .put("lastEpisodeNumber", series.lastEpisodeNumber ?: JSONObject.NULL)
-            .put("name", series.name ?: JSONObject.NULL)
-            .put("parseStatus", series.parseStatus)
-    } ?: JSONObject.NULL
+    private fun toSeriesObject(descriptors: com.maleicacid.tvinput.db.ProgramDescriptors): Any =
+        descriptors.series?.let { series ->
+            JSONObject()
+                .put("seriesId", series.seriesId ?: JSONObject.NULL)
+                .put("repeatLabel", series.repeatLabel)
+                .put("programPattern", series.programPattern)
+                .put("expireDateValid", series.expireDateValid)
+                .put("expireDate", series.expireDate ?: JSONObject.NULL)
+                .put("episodeNumber", series.episodeNumber ?: JSONObject.NULL)
+                .put("lastEpisodeNumber", series.lastEpisodeNumber ?: JSONObject.NULL)
+                .put("name", series.name ?: JSONObject.NULL)
+                .put("parseStatus", series.parseStatus)
+        } ?: JSONObject.NULL
 
+    // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+    @Suppress("CyclomaticComplexMethod", "MaxLineLength", "ReturnCount")
     internal fun parseResult(raw: String): ProviderDataResult {
         val invalid = Failure("PROVIDER_DATA_RESULT_INVALID", "provider-data JNI result envelope is invalid")
         val obj = runCatching { JSONObject(raw) }.getOrNull() ?: return invalid
@@ -259,171 +312,209 @@ object ProviderDataBridge {
         val message = obj.opt("errorMessage") as? String ?: return invalid
         if (version != 1 || dropped < 0) return invalid
         return if (success) {
-            if (json.isBlank() || json == "{}" || code.isNotEmpty() || message.isNotEmpty()) invalid
-            else Success(json.toByteArray(Charsets.UTF_8), version, truncated, dropped)
+            val invalidSuccessEnvelope =
+                json.isBlank() || json == "{}" || code.isNotEmpty() || message.isNotEmpty()
+            if (invalidSuccessEnvelope) {
+                invalid
+            } else {
+                Success(json.toByteArray(Charsets.UTF_8), version, truncated, dropped)
+            }
         } else {
-            if (json.isNotEmpty() || truncated || dropped != 0 || code.isBlank() || message.isBlank()) invalid
-            else Failure(code, message, version)
+            val invalidFailureEnvelope =
+                json.isNotEmpty() || truncated || dropped != 0 || code.isBlank() || message.isBlank()
+            if (invalidFailureEnvelope) {
+                invalid
+            } else {
+                Failure(code, message, version)
+            }
         }
     }
 
-    private fun toShortEventsArray(items: List<AribShortEventText>): JSONArray = JSONArray().apply {
-        items.forEach { item ->
-            put(JSONObject()
-                .put("languageCode", item.languageCode)
-                .put("title", item.title)
-                .put("text", item.text)
-                .put("parseStatus", item.parseStatus))
+    private fun toShortEventsArray(items: List<AribShortEventText>): JSONArray =
+        JSONArray().apply {
+            items.forEach { item ->
+                put(
+                    JSONObject()
+                        .put("languageCode", item.languageCode)
+                        .put("title", item.title)
+                        .put("text", item.text)
+                        .put("parseStatus", item.parseStatus),
+                )
+            }
         }
-    }
 
-    private fun toExtendedTextsArray(items: List<AribExtendedEventText>): JSONArray = JSONArray().apply {
-        items.forEach { item ->
-            put(JSONObject()
-                .put("languageCode", item.languageCode)
-                .put("text", item.text)
-                .put("parseStatus", item.parseStatus))
+    private fun toExtendedTextsArray(items: List<AribExtendedEventText>): JSONArray =
+        JSONArray().apply {
+            items.forEach { item ->
+                put(
+                    JSONObject()
+                        .put("languageCode", item.languageCode)
+                        .put("text", item.text)
+                        .put("parseStatus", item.parseStatus),
+                )
+            }
         }
-    }
 
-    private fun toExtendedItemsArray(items: List<AribExtendedItem>): JSONArray = JSONArray().apply {
-        items.forEach { item ->
-            put(
-                JSONObject()
-                    .put("languageCode", item.languageCode)
-                    .put("description", item.itemDescription)
-                    .put("text", item.itemText)
-                    .put("parseStatus", "OK"),
-            )
+    private fun toExtendedItemsArray(items: List<AribExtendedItem>): JSONArray =
+        JSONArray().apply {
+            items.forEach { item ->
+                put(
+                    JSONObject()
+                        .put("languageCode", item.languageCode)
+                        .put("description", item.itemDescription)
+                        .put("text", item.itemText)
+                        .put("parseStatus", "OK"),
+                )
+            }
         }
-    }
 
-    private fun toEventGroupsArray(groups: List<AribEventGroup>): JSONArray = JSONArray().apply {
-    groups.forEach { group ->
-        put(
-  JSONObject()
-      .put("groupType", group.groupType)
-      .put("events", JSONArray().apply {
-group.events.forEach { event ->
-    put(JSONObject()
-        .put("serviceId", event.serviceId)
-        .put("eventId", event.eventId))
-}
-      })
-      .put("otherNetworkEvents", JSONArray().apply {
-group.otherNetworkEvents.forEach { event ->
-    put(JSONObject()
-        .put("originalNetworkId", event.originalNetworkId)
-        .put("transportStreamId", event.transportStreamId)
-        .put("serviceId", event.serviceId)
-        .put("eventId", event.eventId))
-}
-      })
-      .put("privateDataHex", group.privateDataHex)
-      .put("parseStatus", group.parseStatus),
-        )
-    }
-}
-
-private fun toLinkageArray(items: List<AribLinkage>): JSONArray = JSONArray().apply {
-        items.forEach { item ->
-            put(JSONObject()
-                .put("linkageType", item.linkageType)
-                .put("originalNetworkId", item.originalNetworkId)
-                .put("transportStreamId", item.transportStreamId)
-                .put("serviceId", item.serviceId)
-                .put("privateDataPrefixHex", item.privateDataPrefixHex)
-                .put("parseStatus", item.parseStatus))
+    private fun toEventGroupsArray(groups: List<AribEventGroup>): JSONArray =
+        JSONArray().apply {
+            groups.forEach { group ->
+                put(
+                    JSONObject()
+                        .put("groupType", group.groupType)
+                        .put(
+                            "events",
+                            JSONArray().apply {
+                                group.events.forEach { event ->
+                                    put(
+                                        JSONObject()
+                                            .put("serviceId", event.serviceId)
+                                            .put("eventId", event.eventId),
+                                    )
+                                }
+                            },
+                        ).put(
+                            "otherNetworkEvents",
+                            JSONArray().apply {
+                                group.otherNetworkEvents.forEach { event ->
+                                    put(
+                                        JSONObject()
+                                            .put("originalNetworkId", event.originalNetworkId)
+                                            .put("transportStreamId", event.transportStreamId)
+                                            .put("serviceId", event.serviceId)
+                                            .put("eventId", event.eventId),
+                                    )
+                                }
+                            },
+                        ).put("privateDataHex", group.privateDataHex)
+                        .put("parseStatus", group.parseStatus),
+                )
+            }
         }
-    }
 
-
-    fun toComponentsObject(components: AribComponents): JSONObject = JSONObject()
-        .put("video", videoComponentsJson(components.video))
-        .put("audio", audioComponentsJson(components.audio))
-        .put("subtitle", subtitleComponentsJson(components.subtitle))
-        .put("data", dataComponentsJson(components.data))
-
-    private fun videoComponentsJson(entries: List<AribComponentEntry>): JSONArray = JSONArray().apply {
-        entries.forEach { entry ->
-            val obj = JSONObject()
-                .put("esPid", entry.esPid?.value ?: JSONObject.NULL)
-                .put("streamType", entry.streamType ?: JSONObject.NULL)
-                .put("streamContent", entry.streamContent ?: JSONObject.NULL)
-                .put("componentTag", entry.componentTag ?: JSONObject.NULL)
-                .put("componentType", entry.componentType ?: JSONObject.NULL)
-                .put("codec", entry.codec?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
-                .put("language", entry.language?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
-                .put("text", entry.text?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
-                .put("parseStatus", entry.parseStatus)
-            entry.resolution?.let { obj.put("resolution", it) }
-            entry.scan?.let { obj.put("scan", it) }
-            entry.aspect?.let { obj.put("aspect", it) }
-            entry.profileLevel?.let { obj.put("profileLevel", it) }
-            entry.sourceDescriptor?.let { obj.put("sourceDescriptor", it) }
-            put(obj)
+    private fun toLinkageArray(items: List<AribLinkage>): JSONArray =
+        JSONArray().apply {
+            items.forEach { item ->
+                put(
+                    JSONObject()
+                        .put("linkageType", item.linkageType)
+                        .put("originalNetworkId", item.originalNetworkId)
+                        .put("transportStreamId", item.transportStreamId)
+                        .put("serviceId", item.serviceId)
+                        .put("privateDataPrefixHex", item.privateDataPrefixHex)
+                        .put("parseStatus", item.parseStatus),
+                )
+            }
         }
-    }
 
-    private fun audioComponentsJson(entries: List<AribComponentEntry>): JSONArray = JSONArray().apply {
-        entries.forEach { entry ->
-            val obj = JSONObject()
-                .put("esPid", entry.esPid?.value ?: JSONObject.NULL)
-                .put("streamType", entry.streamType ?: JSONObject.NULL)
-                .put("streamContent", entry.streamContent ?: JSONObject.NULL)
-                .put("componentTag", entry.componentTag ?: JSONObject.NULL)
-                .put("componentType", entry.componentType ?: JSONObject.NULL)
-                .put("codec", entry.codec?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
-                .put("language", entry.language?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
-                .put("secondLanguage", entry.secondLanguage?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
-                .put("simulcastGroupTag", entry.simulcastGroupTag ?: JSONObject.NULL)
-                .put("samplingRate", entry.samplingRate ?: JSONObject.NULL)
-                .put("text", entry.text?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
-                .put("main", entry.main ?: JSONObject.NULL)
-                .put("multiLingual", entry.multiLingual ?: JSONObject.NULL)
-                .put("qualityIndicator", entry.qualityIndicator ?: JSONObject.NULL)
-                .put("parseStatus", entry.parseStatus)
-            entry.channelConfiguration?.let { obj.put("channelConfiguration", it) }
-            entry.samplingInfo?.let { obj.put("samplingInfo", it) }
-            entry.sourceDescriptor?.let { obj.put("sourceDescriptor", it) }
-            put(obj)
+    fun toComponentsObject(components: AribComponents): JSONObject =
+        JSONObject()
+            .put("video", videoComponentsJson(components.video))
+            .put("audio", audioComponentsJson(components.audio))
+            .put("subtitle", subtitleComponentsJson(components.subtitle))
+            .put("data", dataComponentsJson(components.data))
+
+    // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
+    @Suppress("CyclomaticComplexMethod")
+    private fun videoComponentsJson(entries: List<AribComponentEntry>): JSONArray =
+        JSONArray().apply {
+            entries.forEach { entry ->
+                val obj =
+                    JSONObject()
+                        .put("esPid", entry.esPid?.value ?: JSONObject.NULL)
+                        .put("streamType", entry.streamType ?: JSONObject.NULL)
+                        .put("streamContent", entry.streamContent ?: JSONObject.NULL)
+                        .put("componentTag", entry.componentTag ?: JSONObject.NULL)
+                        .put("componentType", entry.componentType ?: JSONObject.NULL)
+                        .put("codec", entry.codec?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
+                        .put("language", entry.language?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
+                        .put("text", entry.text?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
+                        .put("parseStatus", entry.parseStatus)
+                entry.resolution?.let { obj.put("resolution", it) }
+                entry.scan?.let { obj.put("scan", it) }
+                entry.aspect?.let { obj.put("aspect", it) }
+                entry.profileLevel?.let { obj.put("profileLevel", it) }
+                entry.sourceDescriptor?.let { obj.put("sourceDescriptor", it) }
+                put(obj)
+            }
         }
-    }
 
-    private fun subtitleComponentsJson(entries: List<AribComponentEntry>): JSONArray = JSONArray().apply {
-        entries.forEach { entry ->
-            put(
-                JSONObject()
-                    .put("esPid", entry.esPid?.value ?: JSONObject.NULL)
-                    .put("componentTag", entry.componentTag ?: JSONObject.NULL)
-                    .put("dataComponentId", entry.dataComponentId ?: JSONObject.NULL)
-                    .put("captionDmf", entry.captionDmf ?: JSONObject.NULL)
-                    .put("captionTiming", entry.captionTiming ?: JSONObject.NULL)
-                    .put("automaticPresentationOnReception", entry.automaticPresentationOnReception ?: JSONObject.NULL)
-                    .put("language", entry.language?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
-                    .put(
-                        "captionServiceKind",
-                        requireNotNull(entry.captionServiceKind?.takeIf { it.isNotBlank() }) {
-                            "subtitle captionServiceKind is required"
-                        },
-                    )
-                    .put("parseStatus", entry.parseStatus),
-            )
+    // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
+    @Suppress("CyclomaticComplexMethod")
+    private fun audioComponentsJson(entries: List<AribComponentEntry>): JSONArray =
+        JSONArray().apply {
+            entries.forEach { entry ->
+                val obj =
+                    JSONObject()
+                        .put("esPid", entry.esPid?.value ?: JSONObject.NULL)
+                        .put("streamType", entry.streamType ?: JSONObject.NULL)
+                        .put("streamContent", entry.streamContent ?: JSONObject.NULL)
+                        .put("componentTag", entry.componentTag ?: JSONObject.NULL)
+                        .put("componentType", entry.componentType ?: JSONObject.NULL)
+                        .put("codec", entry.codec?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
+                        .put("language", entry.language?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
+                        .put("secondLanguage", entry.secondLanguage?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
+                        .put("simulcastGroupTag", entry.simulcastGroupTag ?: JSONObject.NULL)
+                        .put("samplingRate", entry.samplingRate ?: JSONObject.NULL)
+                        .put("text", entry.text?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
+                        .put("main", entry.main ?: JSONObject.NULL)
+                        .put("multiLingual", entry.multiLingual ?: JSONObject.NULL)
+                        .put("qualityIndicator", entry.qualityIndicator ?: JSONObject.NULL)
+                        .put("parseStatus", entry.parseStatus)
+                entry.channelConfiguration?.let { obj.put("channelConfiguration", it) }
+                entry.samplingInfo?.let { obj.put("samplingInfo", it) }
+                entry.sourceDescriptor?.let { obj.put("sourceDescriptor", it) }
+                put(obj)
+            }
         }
-    }
 
-    private fun dataComponentsJson(entries: List<AribComponentEntry>): JSONArray = JSONArray().apply {
-        entries.forEach { entry ->
-            put(
-                JSONObject()
-                    .put("esPid", entry.esPid?.value ?: JSONObject.NULL)
-                    .put("componentTag", entry.componentTag ?: JSONObject.NULL)
-                    .put("dataComponentId", entry.dataComponentId ?: JSONObject.NULL)
-                    .put("componentType", entry.componentType ?: JSONObject.NULL)
-                    .put("parseStatus", entry.parseStatus),
-            )
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    private fun subtitleComponentsJson(entries: List<AribComponentEntry>): JSONArray =
+        JSONArray().apply {
+            entries.forEach { entry ->
+                put(
+                    JSONObject()
+                        .put("esPid", entry.esPid?.value ?: JSONObject.NULL)
+                        .put("componentTag", entry.componentTag ?: JSONObject.NULL)
+                        .put("dataComponentId", entry.dataComponentId ?: JSONObject.NULL)
+                        .put("captionDmf", entry.captionDmf ?: JSONObject.NULL)
+                        .put("captionTiming", entry.captionTiming ?: JSONObject.NULL)
+                        .put("automaticPresentationOnReception", entry.automaticPresentationOnReception ?: JSONObject.NULL)
+                        .put("language", entry.language?.takeIf { it.isNotBlank() } ?: JSONObject.NULL)
+                        .put(
+                            "captionServiceKind",
+                            requireNotNull(entry.captionServiceKind?.takeIf { it.isNotBlank() }) {
+                                "subtitle captionServiceKind is required"
+                            },
+                        ).put("parseStatus", entry.parseStatus),
+                )
+            }
         }
-    }
 
-
+    private fun dataComponentsJson(entries: List<AribComponentEntry>): JSONArray =
+        JSONArray().apply {
+            entries.forEach { entry ->
+                put(
+                    JSONObject()
+                        .put("esPid", entry.esPid?.value ?: JSONObject.NULL)
+                        .put("componentTag", entry.componentTag ?: JSONObject.NULL)
+                        .put("dataComponentId", entry.dataComponentId ?: JSONObject.NULL)
+                        .put("componentType", entry.componentType ?: JSONObject.NULL)
+                        .put("parseStatus", entry.parseStatus),
+                )
+            }
+        }
 }

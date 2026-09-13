@@ -14,13 +14,15 @@ class AribContentRatingsTvAppIntegrationTest {
     @Test
     fun exceptionalRatingCanBeBlockedAndUnblockedThroughTifAuthority() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val manager = context.getSystemService(TvInputManager::class.java)
-            ?: error("TvInputManagerを取得できません")
-        val rating = TvContentRating.createRating(
-            "com.maleicacid.tv.ratings",
-            "ARIB_EXCEPTIONAL",
-            "BROADCASTER_DEFINED",
-        )
+        val manager =
+            context.getSystemService(TvInputManager::class.java)
+                ?: error("TvInputManagerを取得できません")
+        val rating =
+            TvContentRating.createRating(
+                "com.maleicacid.tv.ratings",
+                "ARIB_EXCEPTIONAL",
+                "BROADCASTER_DEFINED",
+            )
         val initiallyBlocked = manager.isRatingBlocked(rating)
 
         try {

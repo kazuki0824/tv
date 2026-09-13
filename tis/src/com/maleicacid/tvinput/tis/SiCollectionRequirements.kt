@@ -12,33 +12,59 @@ internal class SiCollectionRequirements(
     private val profile: Int,
     private val fixedServiceKeys: Set<ServiceKey> = emptySet(),
 ) {
-    data class Key(val component: String, val onid: Int?, val tsid: Int?, val sid: Int?)
-    data class Status(val requirements: Map<Key, Boolean>) {
+    data class Key(
+        val component: String,
+        val onid: Int?,
+        val tsid: Int?,
+        val sid: Int?,
+    )
+
+    data class Status(
+        val requirements: Map<Key, Boolean>,
+    ) {
         val complete: Boolean get() = requirements.isNotEmpty() && requirements.values.all { it }
         val missing: Set<Key> get() = requirements.filterValues { !it }.keys
     }
 
-    val requiresEit: Boolean get() = mode == ChannelScanController.PublishMode.BOOT_EPG_SYNC ||
-        mode == ChannelScanController.PublishMode.BACKGROUND_CHANNEL_MAINTENANCE
+    val requiresEit: Boolean get() =
+        mode == ChannelScanController.PublishMode.BOOT_EPG_SYNC ||
+            mode == ChannelScanController.PublishMode.BACKGROUND_CHANNEL_MAINTENANCE
 
+    // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
+    // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
+    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("CyclomaticComplexMethod", "LongMethod", "MagicNumber", "MaxLineLength")
     fun evaluate(snapshot: ServiceRegistrationSnapshot): Status {
-        val targets = if (mode == ChannelScanController.PublishMode.SETUP_SCAN) {
-            snapshot.services.map { it.serviceKey }.filterTo(linkedSetOf()) {
-                TransportKey(it.originalNetwork, it.transportStream) in snapshot.actualTransports
+        val targets =
+            if (mode == ChannelScanController.PublishMode.SETUP_SCAN) {
+                snapshot.services.map { it.serviceKey }.filterTo(linkedSetOf()) {
+                    TransportKey(it.originalNetwork, it.transportStream) in snapshot.actualTransports
+                }
+            } else {
+                fixedServiceKeys
             }
-        } else {
-            fixedServiceKeys
-        }
         val transports = targets.mapTo(linkedSetOf()) { it.originalNetworkId to it.transportStreamId }
         val result = linkedMapOf<Key, Boolean>()
-        fun require(key: Key, complete: Boolean) {
+
+        fun require(
+            key: Key,
+            complete: Boolean,
+        ) {
             result[key] = result[key] != false && complete
         }
-        fun requireTable(component: String, onid: Int? = null, tsid: Int? = null, sid: Int? = null) {
-            val rows = snapshot.tableRequirements.filter {
-                it.component == component && it.originalNetworkId == onid &&
-                    it.transportStreamId == tsid && it.serviceId == sid
-            }
+
+        fun requireTable(
+            component: String,
+            onid: Int? = null,
+            tsid: Int? = null,
+            sid: Int? = null,
+        ) {
+            val rows =
+                snapshot.tableRequirements.filter {
+                    it.component == component && it.originalNetworkId == onid &&
+                        it.transportStreamId == tsid && it.serviceId == sid
+                }
             require(Key(component, onid, tsid, sid), rows.isNotEmpty() && rows.all { it.complete })
         }
         requireTable("PAT")
@@ -46,32 +72,47 @@ internal class SiCollectionRequirements(
             requireTable("SDT", onid, tsid)
             requireTable("NIT", onid, tsid)
         }
-        val supplemental = when (profile) {
-            SiDiscoveryProfile.ISDB_T -> emptyList()
-            SiDiscoveryProfile.BS -> listOf("SDT-other")
-            SiDiscoveryProfile.CS110 -> listOf("SDT-other", "NIT-other")
-            else -> error("未対応のSI収集profileです: $profile")
-        }
+        val supplemental =
+            when (profile) {
+                SiDiscoveryProfile.ISDB_T -> emptyList()
+                SiDiscoveryProfile.BS -> listOf("SDT-other")
+                SiDiscoveryProfile.CS110 -> listOf("SDT-other", "NIT-other")
+                else -> error("未対応のSI収集profileです: $profile")
+            }
         for (component in supplemental) {
             val rows = snapshot.tableRequirements.filter { it.component == component && it.required }
             if (rows.isEmpty()) require(Key(component, null, null, null), false)
         }
         for (table in snapshot.tableRequirements.filter { it.required }) {
             val scope = table.originalNetworkId to table.transportStreamId
-            if (table.component == "PMT" && table.serviceId != null && targets.isNotEmpty() &&
-                targets.none { it.originalNetworkId == scope.first && it.transportStreamId == scope.second && it.serviceId == table.serviceId }) continue
-            if (table.component in setOf("SDT", "NIT") && table.transportStreamId != null &&
-                transports.isNotEmpty() && scope !in transports) continue
+            val pmtOutsideTargets =
+                table.component == "PMT" && table.serviceId != null && targets.isNotEmpty() &&
+                    targets.none {
+                        it.originalNetworkId == scope.first && it.transportStreamId == scope.second &&
+                            it.serviceId == table.serviceId
+                    }
+            val transportOutsideTargets =
+                table.component in setOf("SDT", "NIT") && table.transportStreamId != null &&
+                    transports.isNotEmpty() && scope !in transports
+            val outsideTargets = pmtOutsideTargets || transportOutsideTargets
+            if (outsideTargets) {
+                continue
+            }
             require(Key(table.component, table.originalNetworkId, table.transportStreamId, table.serviceId), table.complete)
         }
         if (targets.isEmpty()) require(Key("TARGET_SERVICE", null, null, null), false)
         for (key in targets) {
             requireTable("PMT", key.originalNetworkId, key.transportStreamId, key.serviceId)
-            require(Key("SERVICE_FACTS", key.originalNetworkId, key.transportStreamId, key.serviceId), key in snapshot.semanticFactsByServiceKey)
+            require(
+                Key("SERVICE_FACTS", key.originalNetworkId, key.transportStreamId, key.serviceId),
+                key in snapshot.semanticFactsByServiceKey,
+            )
             if (requiresEit) {
                 val instances = snapshot.eitInstances.filter { it.tableId == 0x4e && it.serviceKey == key && it.currentNextIndicator }
-                require(Key("EIT_PF_ACTUAL", key.originalNetworkId, key.transportStreamId, key.serviceId),
-                    instances.isNotEmpty() && instances.all { EpgSectionPolicy.isComplete(profile, it) })
+                require(
+                    Key("EIT_PF_ACTUAL", key.originalNetworkId, key.transportStreamId, key.serviceId),
+                    instances.isNotEmpty() && instances.all { EpgSectionPolicy.isComplete(profile, it) },
+                )
             }
         }
         return Status(result)

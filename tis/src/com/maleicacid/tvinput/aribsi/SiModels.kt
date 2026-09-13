@@ -55,7 +55,9 @@ data class CaDescriptor(
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is CaDescriptor) return false
-        return caSystemId == other.caSystemId && caPid == other.caPid && scope == other.scope && esPid == other.esPid && rawDescriptor.contentEquals(other.rawDescriptor) && privateData.contentEquals(other.privateData)
+        return caSystemId == other.caSystemId && caPid == other.caPid && scope == other.scope && esPid == other.esPid &&
+            rawDescriptor.contentEquals(other.rawDescriptor) &&
+            privateData.contentEquals(other.privateData)
     }
 
     override fun hashCode(): Int {
@@ -69,7 +71,11 @@ data class CaDescriptor(
     }
 }
 
-data class AribAvcSignaling(val profileIdc: Int, val constraintFlags: Int, val levelIdc: Int)
+data class AribAvcSignaling(
+    val profileIdc: Int,
+    val constraintFlags: Int,
+    val levelIdc: Int,
+)
 
 data class AribAudioConfigHeader(
     val audioObjectType: Int,
@@ -184,7 +190,6 @@ data class AribContentGenre(
     val aribName: String = "",
     val parseStatus: String = "OK",
 )
-
 
 data class AribEventGroupReference(
     val service: ServiceId16,
@@ -558,11 +563,12 @@ data class CaMetadata(
     val emmPid: TsPid?,
     val elementaryPid: TsPid?,
     val privateData: ByteArray = ByteArray(0),
-    val source: CaMetadataSource = when {
-        ecmPid != null && elementaryPid != null -> CaMetadataSource.ELEMENTARY_STREAM
-        ecmPid != null -> CaMetadataSource.PROGRAM
-        else -> CaMetadataSource.CAT
-    },
+    val source: CaMetadataSource =
+        when {
+            ecmPid != null && elementaryPid != null -> CaMetadataSource.ELEMENTARY_STREAM
+            ecmPid != null -> CaMetadataSource.PROGRAM
+            else -> CaMetadataSource.CAT
+        },
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true

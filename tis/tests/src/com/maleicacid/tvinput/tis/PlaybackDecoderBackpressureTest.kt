@@ -1,3 +1,6 @@
+// テストの入力・期待値を本体の定数と独立した具体値で記述する。
+@file:Suppress("MagicNumber")
+
 package com.maleicacid.tvinput.tis
 
 import org.junit.Test
@@ -11,6 +14,7 @@ class PlaybackDecoderBackpressureTest {
         check(!policy.accepts(2, 0x4e, 2))
         check(!policy.accepts(0, 0x50, 0))
     }
+
     @Test fun directBlockModelRejectsInvalidRangesWithoutByteBufferSizingFallback() {
         check(
             PlaybackPipeline.mediaEventBoundsDecisionForTest(0, 16, 16) ==
@@ -25,6 +29,7 @@ class PlaybackDecoderBackpressureTest {
                 PlaybackPipeline.MediaEventBoundsDecision.OVERSIZED,
         )
     }
+
     @Test fun noInputExpiresWithoutAnyQueuePressure() {
         val deadline = DecoderStartupDeadline(100L, 3_000L)
         check(deadline.expire(3_099L) == null)

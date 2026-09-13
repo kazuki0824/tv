@@ -4,7 +4,10 @@ import com.maleicacid.tvinput.common.CaptionTimestamp
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
+// 同じ状態・境界を扱う操作群を一つの所有者に保つ。
+
 /** libaribcaption decoder/rendererを一つの字幕generationに閉じ込めるJNI境界。 */
+@Suppress("TooManyFunctions")
 class NativeAribCaptionRenderer(
     dataComponentId: Int,
     private val superimpose: Boolean,
@@ -17,8 +20,12 @@ class NativeAribCaptionRenderer(
     private var handle: Long = nativeCreateRenderer(dataComponentId, superimpose, languageId)
 
     sealed interface DecodeResult {
-        data class Rendered(val frame: RenderedCaptionFrame) : DecodeResult
+        data class Rendered(
+            val frame: RenderedCaptionFrame,
+        ) : DecodeResult
+
         data object NoPtsRejected : DecodeResult
+
         data object NoOutput : DecodeResult
     }
 
@@ -37,25 +44,39 @@ class NativeAribCaptionRenderer(
         val rgba8888: ByteArray,
     )
 
-    fun setViewport(width: Int, height: Int): Boolean {
+    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+    @Suppress("ReturnCount")
+    fun setViewport(
+        width: Int,
+        height: Int,
+    ): Boolean {
         val current = handle.takeIf { it != 0L } ?: return false
         if (width <= 0 || height <= 0) return false
         return nativeSetViewport(current, width, height)
     }
 
-    fun decodePes(pesData: ByteArray, timestamp: CaptionTimestamp): DecodeResult {
-        val pts = when (timestamp) {
-            is CaptionTimestamp.Pts -> timestamp.ptsMillis.value
-            CaptionTimestamp.NoPts -> if (superimpose) NO_PTS_SENTINEL else return DecodeResult.NoPtsRejected
-        }
+    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+    @Suppress("ReturnCount")
+    fun decodePes(
+        pesData: ByteArray,
+        timestamp: CaptionTimestamp,
+    ): DecodeResult {
+        val pts =
+            when (timestamp) {
+                is CaptionTimestamp.Pts -> timestamp.ptsMillis.value
+                CaptionTimestamp.NoPts -> if (superimpose) NO_PTS_SENTINEL else return DecodeResult.NoPtsRejected
+            }
         val current = handle.takeIf { it != 0L } ?: return DecodeResult.NoOutput
         if (pesData.isEmpty()) return DecodeResult.NoOutput
-        val packet = nativeDecodeAndRender(current, pesData, pts)
-            ?: return DecodeResult.NoOutput
+        val packet =
+            nativeDecodeAndRender(current, pesData, pts)
+                ?: return DecodeResult.NoOutput
         val frame = decodeFramePacket(packet) ?: return DecodeResult.NoOutput
         return DecodeResult.Rendered(frame)
     }
 
+    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+    @Suppress("ReturnCount")
     fun renderAt(mediaTimeMillis: Long): RenderedCaptionFrame? {
         val current = handle.takeIf { it != 0L } ?: return null
         if (mediaTimeMillis < 0L) return null
@@ -73,11 +94,31 @@ class NativeAribCaptionRenderer(
         if (current != 0L) nativeReleaseRenderer(current)
     }
 
-    private external fun nativeCreateRenderer(dataComponentId: Int, superimpose: Boolean, languageId: Int): Long
-    private external fun nativeSetViewport(handle: Long, width: Int, height: Int): Boolean
-    private external fun nativeDecodeAndRender(handle: Long, pesData: ByteArray, ptsMillis: Long): ByteArray?
-    private external fun nativeRenderAt(handle: Long, mediaTimeMillis: Long): ByteArray?
+    private external fun nativeCreateRenderer(
+        dataComponentId: Int,
+        superimpose: Boolean,
+        languageId: Int,
+    ): Long
+
+    private external fun nativeSetViewport(
+        handle: Long,
+        width: Int,
+        height: Int,
+    ): Boolean
+
+    private external fun nativeDecodeAndRender(
+        handle: Long,
+        pesData: ByteArray,
+        ptsMillis: Long,
+    ): ByteArray?
+
+    private external fun nativeRenderAt(
+        handle: Long,
+        mediaTimeMillis: Long,
+    ): ByteArray?
+
     private external fun nativeFlush(handle: Long)
+
     private external fun nativeReleaseRenderer(handle: Long)
 
     companion object {
@@ -86,13 +127,18 @@ class NativeAribCaptionRenderer(
         private const val MAX_IMAGES_PER_FRAME = 256
         private const val NO_PTS_SENTINEL = Long.MIN_VALUE
 
+        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+        // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+        @Suppress("MaxLineLength", "ReturnCount")
         internal fun decodeFramePacket(packet: ByteArray): RenderedCaptionFrame? {
             if (packet.size < FRAME_HEADER_BYTES) return null
             val buffer = ByteBuffer.wrap(packet).order(ByteOrder.LITTLE_ENDIAN)
             val ptsMillis = buffer.getLong()
             val durationRaw = buffer.getLong()
             val imageCount = buffer.getInt()
-            if ((ptsMillis < 0L && ptsMillis != NO_PTS_SENTINEL) || durationRaw < -1L || imageCount !in 0..MAX_IMAGES_PER_FRAME) return null
+            val invalidFrameHeader =
+                (ptsMillis < 0L && ptsMillis != NO_PTS_SENTINEL) || durationRaw < -1L || imageCount !in 0..MAX_IMAGES_PER_FRAME
+            if (invalidFrameHeader) return null
             val images = ArrayList<RenderedCaptionImage>(imageCount)
             repeat(imageCount) {
                 if (buffer.remaining() < IMAGE_HEADER_BYTES) return null
@@ -104,7 +150,8 @@ class NativeAribCaptionRenderer(
                 val byteCount = buffer.getInt()
                 val requiredBytes = stride.toLong() * height.toLong()
                 if (!validImageBuffer(width, height, stride, byteCount) ||
-                    byteCount.toLong() != requiredBytes || buffer.remaining() < byteCount) {
+                    byteCount.toLong() != requiredBytes || buffer.remaining() < byteCount
+                ) {
                     return null
                 }
                 val rgba = ByteArray(byteCount)
@@ -119,8 +166,18 @@ class NativeAribCaptionRenderer(
             )
         }
 
-        fun validImageBuffer(width: Int, height: Int, stride: Int, byteCount: Int): Boolean {
-            if (width <= 0 || height <= 0 || stride <= 0 || byteCount <= 0) return false
+        // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
+        // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+        @Suppress("MagicNumber", "ReturnCount")
+        fun validImageBuffer(
+            width: Int,
+            height: Int,
+            stride: Int,
+            byteCount: Int,
+        ): Boolean {
+            val invalidImageDimensions =
+                width <= 0 || height <= 0 || stride <= 0 || byteCount <= 0
+            if (invalidImageDimensions) return false
             val minimumStride = width.toLong() * 4L
             if (stride.toLong() < minimumStride) return false
             val required = stride.toLong() * height.toLong()

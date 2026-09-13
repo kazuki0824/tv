@@ -1,3 +1,6 @@
+// テストの入力・期待値を本体の定数と独立した具体値で記述する。
+@file:Suppress("MagicNumber")
+
 package com.maleicacid.tvinput.tis
 
 import android.media.MediaSync
@@ -8,55 +11,91 @@ import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.StreamSelector
 import com.maleicacid.tvinput.common.TsPid
-import java.util.concurrent.atomic.AtomicBoolean
 import org.junit.Test
 import sun.misc.Unsafe
+import java.util.concurrent.atomic.AtomicBoolean
 
 class PlaybackFailureCallbacksTest {
-    @Test fun avAndCaptionFilterFactoriesRetainFailedConfigurationAndStartCleanup() {
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    // 候補の処理と入れ子の資源寿命を同じ手順内で確認できる構造を保つ。
+    @Suppress("MaxLineLength", "NestedBlockDepth")
+    @Test
+    fun avAndCaptionFilterFactoriesRetainFailedConfigurationAndStartCleanup() {
         for (kind in listOf("video", "audio", "subtitle", "superimpose")) {
-            for (phase in listOf("configure", "start")) for (failure in listOf(1, 2)) {
-                val fixture = Fixture(false, false, failCleanup = false)
-                val filter = fixture.allocate(Filter::class.java)
-                fun set(name: String, value: Any) { Filter::class.java.getField(name).set(filter, value) }
-                fun count(name: String) = Filter::class.java.getField(name).getInt(filter)
-                Tuner::class.java.getField("nextFilter").set(null, filter)
-                set("${phase}Failure", failure)
-                set("rejectClose", true)
-                val result = if (kind == "video" || kind == "audio") {
-                    fixture.invoke("createAndStartAvFilter", fixture.tuner,
-                        requireNotNull(if (kind == "audio") fixture.selection.audio else fixture.selection.video), kind == "audio")
-                } else {
-                    val stream = AribElementaryStream(TsPid(0x103), 0x06, null, null, null,
-                        isCaption = kind == "subtitle", isSuperimpose = kind == "superimpose")
-                    fixture.invoke("createAndStartCaptionPesFilter", fixture.tuner, stream, "test", kind == "superimpose")
+            for (phase in listOf("configure", "start")) {
+                for (failure in listOf(1, 2)) {
+                    val fixture = Fixture(false, false, failCleanup = false)
+                    val filter = fixture.allocate(Filter::class.java)
+
+                    fun set(
+                        name: String,
+                        value: Any,
+                    ) {
+                        Filter::class.java.getField(name).set(filter, value)
+                    }
+
+                    fun count(name: String) = Filter::class.java.getField(name).getInt(filter)
+                    Tuner::class.java.getField("nextFilter").set(null, filter)
+                    set("${phase}Failure", failure)
+                    set("rejectClose", true)
+                    val result =
+                        if (kind == "video" || kind == "audio") {
+                            fixture.invoke(
+                                "createAndStartAvFilter",
+                                fixture.tuner,
+                                requireNotNull(if (kind == "audio") fixture.selection.audio else fixture.selection.video),
+                                kind == "audio",
+                            )
+                        } else {
+                            val stream =
+                                AribElementaryStream(
+                                    TsPid(0x103),
+                                    0x06,
+                                    null,
+                                    null,
+                                    null,
+                                    isCaption = kind == "subtitle",
+                                    isSuperimpose = kind == "superimpose",
+                                )
+                            fixture.invoke("createAndStartCaptionPesFilter", fixture.tuner, stream, "test", kind == "superimpose")
+                        }
+                    check(result !is Filter)
+                    check(count("configurations") == 1 && count("starts") == if (phase == "start") 1 else 0)
+                    check(count("closes") == 1 && fixture.cleanup.hasPending)
+                    check(
+                        PlaybackPipeline::class.java
+                            .getDeclaredField("${kind}Filter")
+                            .apply { isAccessible = true }
+                            .get(fixture.pipeline) ==
+                            null,
+                    )
+                    set("rejectClose", false)
+                    fixture.pipeline.stop()
+                    check(count("closes") == 2 && !fixture.cleanup.hasPending)
+                    Tuner::class.java.getField("nextFilter").set(null, null)
                 }
-                check(result !is Filter)
-                check(count("configurations") == 1 && count("starts") == if (phase == "start") 1 else 0)
-                check(count("closes") == 1 && fixture.cleanup.hasPending)
-                check(PlaybackPipeline::class.java.getDeclaredField("${kind}Filter").apply { isAccessible = true }.get(fixture.pipeline) == null)
-                set("rejectClose", false)
-                fixture.pipeline.stop()
-                check(count("closes") == 2 && !fixture.cleanup.hasPending)
-                Tuner::class.java.getField("nextFilter").set(null, null)
             }
         }
     }
 
     @Test fun mediaSyncAudioFailureRetainsResourcesAndNotifiesOriginalSession() {
-        for (waiting in listOf(false, true)) for (audioOnly in listOf(false, true)) {
-            val fixture = Fixture(waiting, audioOnly)
-            val sync = MediaSync()
-            fixture.set("mediaSync", sync)
-            fixture.invoke("handleMediaSyncError", sync, 7L, MediaSync.MEDIASYNC_ERROR_AUDIOTRACK_FAIL, 0)
-            fixture.checkTerminalCleanupFailure()
+        for (waiting in listOf(false, true)) {
+            for (audioOnly in listOf(false, true)) {
+                val fixture = Fixture(waiting, audioOnly)
+                val sync = MediaSync()
+                fixture.set("mediaSync", sync)
+                fixture.invoke("handleMediaSyncError", sync, 7L, MediaSync.MEDIASYNC_ERROR_AUDIOTRACK_FAIL, 0)
+                fixture.checkTerminalCleanupFailure()
+            }
         }
     }
 
     @Test fun audioFailureAndRouteOrFormatRestartShareTerminalCleanupHandling() {
         for (waiting in listOf(false, true)) {
-            for (reason in listOf(PlaybackPipeline.PlaybackUnavailableReason.AUDIO_UNAVAILABLE,
-                PlaybackPipeline.PlaybackUnavailableReason.UNSUPPORTED_AUDIO_STREAM)) {
+            for (reason in listOf(
+                PlaybackPipeline.PlaybackUnavailableReason.AUDIO_UNAVAILABLE,
+                PlaybackPipeline.PlaybackUnavailableReason.UNSUPPORTED_AUDIO_STREAM,
+            )) {
                 val fixture = Fixture(waiting, false)
                 fixture.invoke("handleAudioFailure", reason, "audio output/configuration/deadline failure", false)
                 fixture.checkTerminalCleanupFailure()
@@ -85,8 +124,14 @@ class PlaybackFailureCallbacksTest {
             }
             check(generation == 8L && diagnostics.any { it.contains("injected filter") })
             check(fixture.failures.isEmpty() && fixture.notifications == 0)
-            val next = PlaybackStartTransitions.afterRestartResult(fixture.state, fixture.signature,
-                generation, firstOutputPending = false, started = false)
+            val next =
+                PlaybackStartTransitions.afterRestartResult(
+                    fixture.state,
+                    fixture.signature,
+                    generation,
+                    firstOutputPending = false,
+                    started = false,
+                )
             MaleicacidLiveSession.commitPlaybackStartResult(next, { fixture.state = it }) {
                 check(fixture.state == PlaybackStartState.Failed(fixture.signature, generation))
                 fixture.notifications++
@@ -99,8 +144,12 @@ class PlaybackFailureCallbacksTest {
     @Test fun audioOnlyStopsBeforeNotifyingAndFailedVideoOnlyResultReachesSession() {
         for (audioOnly in listOf(false, true)) {
             val fixture = Fixture(false, audioOnly, failCleanup = false)
-            fixture.invoke("handleAudioFailure", PlaybackPipeline.PlaybackUnavailableReason.AUDIO_UNAVAILABLE,
-                "audio output failure", audioOnly)
+            fixture.invoke(
+                "handleAudioFailure",
+                PlaybackPipeline.PlaybackUnavailableReason.AUDIO_UNAVAILABLE,
+                "audio output failure",
+                audioOnly,
+            )
             check(fixture.notifications == 1 && fixture.state is PlaybackStartState.Failed)
             if (audioOnly) {
                 check(fixture.restarts.isEmpty())
@@ -131,25 +180,55 @@ class PlaybackFailureCallbacksTest {
         fixture.cleanup.requireComplete()
     }
 
-    private class Fixture(waiting: Boolean, audioOnly: Boolean, failCleanup: Boolean = true) {
+    private class Fixture(
+        waiting: Boolean,
+        audioOnly: Boolean,
+        failCleanup: Boolean = true,
+    ) {
         // Androidのthread/native初期化だけを省く。本番の停止・開始・エラー処理を直接実行する。
-        private val unsafe = Unsafe::class.java.getDeclaredField("theUnsafe").run {
-            isAccessible = true
-            get(null) as Unsafe
-        }
+        private val unsafe =
+            Unsafe::class.java.getDeclaredField("theUnsafe").run {
+                isAccessible = true
+                get(null) as Unsafe
+            }
         val pipeline = unsafe.allocateInstance(PlaybackPipeline::class.java) as PlaybackPipeline
         val cleanup = ResourceCleanup()
         val tuner = unsafe.allocateInstance(Tuner::class.java) as Tuner
         private val key = ServiceKey(4, 0x4010, 101)
-        val channel = TunerController.ResolvedChannel(null, "test", key, if (audioOnly) 2 else 1,
-            "test", "1", "ISDB_T", FrequencyHz(473_000_000L), StreamSelector.NONE, null, null)
+        val channel =
+            TunerController.ResolvedChannel(
+                null,
+                "test",
+                key,
+                if (audioOnly) 2 else 1,
+                "test",
+                "1",
+                "ISDB_T",
+                FrequencyHz(473_000_000L),
+                StreamSelector.NONE,
+                null,
+                null,
+            )
         private val video = AribElementaryStream(TsPid(0x101), 0x1b, null, null, null)
         private val audio = AribElementaryStream(TsPid(0x102), 0x0f, null, null, null, codec = "AAC")
         val selection = TunerController.AvStreamSelection(key, TsPid(0x100), if (audioOnly) null else video, audio)
-        val signature = AvPlaybackSignature(key, TsPid(0x100), selection.video?.elementaryPid,
-            selection.video?.streamType, audio.elementaryPid, audio.streamType, true, false)
-        var state: PlaybackStartState = if (waiting) PlaybackStartState.WaitingFirstOutput(signature, 7L)
-            else PlaybackStartState.Started(signature, 7L)
+        val signature =
+            AvPlaybackSignature(
+                key,
+                TsPid(0x100),
+                selection.video?.elementaryPid,
+                selection.video?.streamType,
+                audio.elementaryPid,
+                audio.streamType,
+                true,
+                false,
+            )
+        var state: PlaybackStartState =
+            if (waiting) {
+                PlaybackStartState.WaitingFirstOutput(signature, 7L)
+            } else {
+                PlaybackStartState.Started(signature, 7L)
+            }
         val failures = mutableListOf<PlaybackPipeline.PlaybackUnavailable>()
         val restarts = mutableListOf<PlaybackPipeline.PlaybackGenerationRestart>()
         var notifications = 0
@@ -185,10 +264,12 @@ class PlaybackFailureCallbacksTest {
                     notifications++
                 }
             })
-            if (failCleanup) cleanup.release("injected filter") {
-                releaseAttempts++
-                if (rejectRelease) error("filter close rejected")
-                resourceOwned = false
+            if (failCleanup) {
+                cleanup.release("injected filter") {
+                    releaseAttempts++
+                    if (rejectRelease) error("filter close rejected")
+                    resourceOwned = false
+                }
             }
         }
 
@@ -210,10 +291,25 @@ class PlaybackFailureCallbacksTest {
             check(!cleanup.hasPending && !resourceOwned && releaseAttempts == 3)
         }
 
-        fun set(name: String, value: Any?) { field(name).set(pipeline, value) }
+        fun set(
+            name: String,
+            value: Any?,
+        ) {
+            field(name).set(pipeline, value)
+        }
+
+        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+        @Suppress("MaxLineLength")
         private fun field(name: String) = PlaybackPipeline::class.java.getDeclaredField(name).apply { isAccessible = true }
+
         fun <T> allocate(type: Class<T>): T = type.cast(unsafe.allocateInstance(type))
-        fun invoke(name: String, vararg args: Any): Any? {
+
+        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+        @Suppress("MaxLineLength")
+        fun invoke(
+            name: String,
+            vararg args: Any,
+        ): Any? {
             val method = PlaybackPipeline::class.java.declaredMethods.single { it.name == name || it.name.startsWith("$name-") }
             method.isAccessible = true
             return method.invoke(pipeline, *args)

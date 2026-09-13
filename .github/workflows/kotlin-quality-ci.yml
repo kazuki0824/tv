@@ -5,12 +5,22 @@ on:
     paths:
       - "**/*.kt"
       - "**/*.kts"
+      - "rec/Android.bp"
+      - "tis/Android.bp"
+      - "tis/arib_parental_rating/Android.bp"
+      - "tis/arib_parental_rating/tests/Android.bp"
+      - ".github/workflows/tis-host-ci.yml"
       - ".github/workflows/kotlin-quality-ci.yml"
   push:
     branches: [main]
     paths:
       - "**/*.kt"
       - "**/*.kts"
+      - "rec/Android.bp"
+      - "tis/Android.bp"
+      - "tis/arib_parental_rating/Android.bp"
+      - "tis/arib_parental_rating/tests/Android.bp"
+      - ".github/workflows/tis-host-ci.yml"
       - ".github/workflows/kotlin-quality-ci.yml"
 
 permissions:
@@ -25,7 +35,7 @@ env:
   DETEKT_VERSION: 1.23.8
 
 jobs:
-  changed-kotlin:
+  all-kotlin:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -34,34 +44,140 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-          fetch-depth: 0
 
-      - name: 変更Kotlin一覧を生成
+      - name: 全Kotlin一覧を生成
         id: files
         shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            base="$PR_BASE_SHA"
-          else
-            base="$PUSH_BEFORE_SHA"
-          fi
           mapfile -d '' -t files < <(
-            git diff --name-only --diff-filter=ACMR -z "$base" HEAD -- '*.kt' '*.kts' | sort -z
+            git ls-files -z -- '*.kt' '*.kts' | sort -z
           )
+          printf 'Kotlin sources: %s\n' "${#files[@]}"
+          printf '%s\n' "${files[@]}"
           if ((${#files[@]} == 0)); then
             echo 'files=[]' >> "$GITHUB_OUTPUT"
           else
             printf 'files=%s\n' "$(printf '%s\n' "${files[@]}" | jq -Rsc 'split("\n")[:-1]')" >> "$GITHUB_OUTPUT"
           fi
 
+  build-ownership:
+    name: build ownership check
+    needs: all-kotlin
+    if: ${{ needs.all-kotlin.outputs.files != '[]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: build owner定義を確認
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          checks = {
+              "tis/Android.bp": (
+                  'name: "MaleicacidTvInput"',
+                  'srcs: ["src/**/*.kt"]',
+                  'name: "MaleicacidTvInputAcceptanceTests"',
+                  'srcs: ["tests/src/**/*.kt"]',
+              ),
+              "tis/arib_parental_rating/Android.bp": (
+                  'name: "AribContentRatings"',
+                  'srcs: ["src/**/*.kt"]',
+              ),
+              "tis/arib_parental_rating/tests/Android.bp": (
+                  'name: "AribContentRatingsTvAppIntegrationTests"',
+                  'srcs: ["src/**/*.kt"]',
+              ),
+              "rec/Android.bp": (
+                  'name: "MaleicacidRecScopeTests"',
+                  '"tests/src/**/*.kt"',
+                  '"src/com/maleicacid/tvinput/db/TvInputDatabase.kt"',
+                  '"src/com/maleicacid/tvinput/reservation/ReservationPolicy.kt"',
+              ),
+              ".github/workflows/tis-host-ci.yml": (
+                  "find tis/src tis/host_ci/kotlin/stubs/android -type f -name '*.kt'",
+                  "find tis/tests/src tis/host_ci/kotlin/stubs/androidx tis/host_ci/kotlin/cas_failure tis/host_ci/kotlin/playback_failure -type f -name '*.kt'",
+              ),
+          }
+
+          missing = []
+          for path, needles in checks.items():
+              text = Path(path).read_text(encoding="utf-8")
+              for needle in needles:
+                  if needle not in text:
+                      missing.append(f"{path}: {needle}")
+
+          if missing:
+              print("Kotlin build owner定義が期待値と一致しません:")
+              for item in missing:
+                  print(f"  {item}")
+              raise SystemExit(1)
+          PY
+
+      - name: 全Kotlinのbuild ownershipを確認
+        shell: bash
+        env:
+          FILES_JSON: ${{ needs.all-kotlin.outputs.files }}
+        run: |
+          declare -A known_broken_rec=(
+            ["rec/src/com/maleicacid/tvinput/reservation/RecordingClientController.kt"]=1
+            ["rec/src/com/maleicacid/tvinput/reservation/ReservationAlarmReceiver.kt"]=1
+            ["rec/src/com/maleicacid/tvinput/reservation/ReservationBootReceiver.kt"]=1
+            ["rec/src/com/maleicacid/tvinput/reservation/ReservationController.kt"]=1
+            ["rec/src/com/maleicacid/tvinput/reservation/ReservationManagerService.kt"]=1
+            ["rec/src/com/maleicacid/tvinput/reservation/ReservationRepository.kt"]=1
+            ["rec/src/com/maleicacid/tvinput/reservation/ReservationScheduler.kt"]=1
+            ["rec/src/com/maleicacid/tvinput/reservation/ReservationState.kt"]=1
+            ["rec/src/com/maleicacid/tvinput/tis/MaleicacidRecordingSession.kt"]=1
+            ["rec/src/com/maleicacid/tvinput/tis/RecordingPipeline.kt"]=1
+          )
+
+          owned=0
+          known_broken=0
+          unknown=()
+          mapfile -t sources < <(jq -r '.[]' <<<"$FILES_JSON")
+          for source in "${sources[@]}"; do
+            case "$source" in
+              tis/src/*.kt|tis/tests/src/*.kt|\
+              tis/arib_parental_rating/src/*.kt|tis/arib_parental_rating/tests/src/*.kt|\
+              tis/host_ci/kotlin/*.kt|\
+              rec/tests/src/*.kt|\
+              rec/src/com/maleicacid/tvinput/db/TvInputDatabase.kt|\
+              rec/src/com/maleicacid/tvinput/reservation/ReservationPolicy.kt)
+                ((owned += 1))
+                ;;
+              rec/src/*.kt)
+                if [[ -n "${known_broken_rec[$source]+x}" ]]; then
+                  printf 'KNOWN-BROKEN rec: %s\n' "$source"
+                  ((known_broken += 1))
+                else
+                  unknown+=("$source")
+                fi
+                ;;
+              *)
+                unknown+=("$source")
+                ;;
+            esac
+          done
+
+          printf 'Build-owned Kotlin: %d\n' "$owned"
+          printf 'Known-broken rec exceptions: %d\n' "$known_broken"
+          test "$known_broken" -eq 10
+
+          if ((${#unknown[@]} != 0)); then
+            echo 'Build ownerを確認できないKotlinがあります:'
+            printf '  %s\n' "${unknown[@]}"
+            exit 1
+          fi
+
   ktlint:
     name: ktlint format check
-    needs: changed-kotlin
-    if: ${{ needs.changed-kotlin.outputs.files != '[]' }}
+    needs: all-kotlin
+    if: ${{ needs.all-kotlin.outputs.files != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -86,18 +202,18 @@ jobs:
           echo "KTLINT=$tool" >> "$GITHUB_ENV"
           "$tool" --version
 
-      - name: 変更Kotlinの整形を確認
+      - name: 全Kotlinの整形を確認
         shell: bash
         env:
-          FILES_JSON: ${{ needs.changed-kotlin.outputs.files }}
+          FILES_JSON: ${{ needs.all-kotlin.outputs.files }}
         run: |
           mapfile -t sources < <(jq -r '.[]' <<<"$FILES_JSON")
           "$KTLINT" "${sources[@]}"
 
   detekt:
     name: detekt lint
-    needs: changed-kotlin
-    if: ${{ needs.changed-kotlin.outputs.files != '[]' }}
+    needs: all-kotlin
+    if: ${{ needs.all-kotlin.outputs.files != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -121,10 +237,10 @@ jobs:
           echo "DETEKT=$tool" >> "$GITHUB_ENV"
           java -jar "$tool" --version
 
-      - name: 変更Kotlinをlint
+      - name: 全Kotlinをlint
         shell: bash
         env:
-          FILES_JSON: ${{ needs.changed-kotlin.outputs.files }}
+          FILES_JSON: ${{ needs.all-kotlin.outputs.files }}
         run: |
           mapfile -t sources < <(jq -r '.[]' <<<"$FILES_JSON")
           input="$(IFS=,; printf '%s' "${sources[*]}")"

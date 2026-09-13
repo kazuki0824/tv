@@ -1,3 +1,6 @@
+// テストの入力・期待値を本体の定数と独立した具体値で記述する。
+@file:Suppress("MagicNumber")
+
 package com.maleicacid.tvinput.tis
 
 import android.media.MediaCas
@@ -8,8 +11,17 @@ import com.maleicacid.tvinput.common.TsPid
 import org.junit.Test
 
 class FrameworkCasCloseTest {
-    private val metadata = listOf(CaMetadata(ServiceKey(4, 16625, 101), 5,
-        ecmPid = TsPid(0x123), emmPid = null, elementaryPid = TsPid(0x101), source = CaMetadataSource.ELEMENTARY_STREAM))
+    private val metadata =
+        listOf(
+            CaMetadata(
+                ServiceKey(4, 16625, 101),
+                5,
+                ecmPid = TsPid(0x123),
+                emmPid = null,
+                elementaryPid = TsPid(0x101),
+                source = CaMetadataSource.ELEMENTARY_STREAM,
+            ),
+        )
 
     @Test fun underlyingSessionAndPluginCloseFailuresReachRealAdaptersAndOwner() {
         val f = MediaCas.Faults
@@ -30,7 +42,8 @@ class FrameworkCasCloseTest {
             controller.close()
             check(f.sessionCloses == 2 && f.pluginCloses == 3)
         } finally {
-            f.sessionFailure = false; f.pluginFailure = false
+            f.sessionFailure = false
+            f.pluginFailure = false
             controller.close()
         }
     }
@@ -54,7 +67,8 @@ class FrameworkCasCloseTest {
             controller.close()
             check(f.pluginCloses == 4 && f.sessionCloses == 1)
         } finally {
-            f.pluginFailure = false; f.openFailure = false
+            f.pluginFailure = false
+            f.openFailure = false
             controller.close()
         }
     }

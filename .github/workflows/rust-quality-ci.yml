@@ -1,0 +1,94 @@
+name: Rust quality CI
+
+on:
+  pull_request:
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - "**/rust-toolchain"
+      - "**/rust-toolchain.toml"
+      - ".github/workflows/rust-quality-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - "**/rust-toolchain"
+      - "**/rust-toolchain.toml"
+      - ".github/workflows/rust-quality-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-quality-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_TOOLCHAIN: 1.81.0
+
+jobs:
+  all-rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      files: ${{ steps.files.outputs.files }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: rustfmt対象Rust一覧を生成
+        id: files
+        shell: bash
+        run: |
+          # arib_extended_graphic_table.rs はlibaribcaption由来の自動生成表。
+          # 人手整形すると再生成時に戻るため、format gateでは生成元の表現を保持する。
+          generated='arib_si_engine_rs/src/core/arib_extended_graphic_table.rs'
+          mapfile -d '' -t files < <(
+            git ls-files -z -- '*.rs' |
+              while IFS= read -r -d '' source; do
+                if [[ "$source" != "$generated" ]]; then
+                  printf '%s\0' "$source"
+                fi
+              done |
+              sort -z
+          )
+          printf 'Rust sources checked by rustfmt: %s\n' "${#files[@]}"
+          printf '%s\n' "${files[@]}"
+          if ((${#files[@]} == 0)); then
+            echo 'files=[]' >> "$GITHUB_OUTPUT"
+          else
+            printf 'files=%s\n' "$(printf '%s\n' "${files[@]}" | jq -Rsc 'split("\n")[:-1]')" >> "$GITHUB_OUTPUT"
+          fi
+
+  rustfmt:
+    name: rustfmt format check
+    needs: all-rust
+    if: ${{ needs.all-rust.outputs.files != '[]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: LineageOS 22.1のRust toolchainを導入
+        shell: bash
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
+
+      - name: Rustの整形を確認
+        shell: bash
+        env:
+          FILES_JSON: ${{ needs.all-rust.outputs.files }}
+        run: |
+          mapfile -t sources < <(jq -r '.[]' <<<"$FILES_JSON")
+          failed=0
+          for source in "${sources[@]}"; do
+            if ! rustfmt +"$RUST_TOOLCHAIN" --edition 2021 --check "$source"; then
+              failed=1
+            fi
+          done
+          exit "$failed"

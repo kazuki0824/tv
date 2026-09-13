@@ -8,33 +8,41 @@ import java.util.Locale
  * ISO 639-2/B alias の最小差分だけを使う。
  */
 object LanguageCodeNormalizer {
-    private val iso2ToIso3T: Map<String, String> = Locale.getISOLanguages().mapNotNull { iso2 ->
-        runCatching { iso2.lowercase(Locale.ROOT) to Locale(iso2).getISO3Language().lowercase(Locale.ROOT) }.getOrNull()
-    }.toMap()
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    private val iso2ToIso3T: Map<String, String> =
+        Locale
+            .getISOLanguages()
+            .mapNotNull { iso2 ->
+                runCatching { iso2.lowercase(Locale.ROOT) to Locale(iso2).getISO3Language().lowercase(Locale.ROOT) }.getOrNull()
+            }.toMap()
 
-    private val bibliographicAliases = mapOf(
-        "alb" to "sqi",
-        "arm" to "hye",
-        "baq" to "eus",
-        "bur" to "mya",
-        "chi" to "zho",
-        "cze" to "ces",
-        "dut" to "nld",
-        "fre" to "fra",
-        "geo" to "kat",
-        "ger" to "deu",
-        "gre" to "ell",
-        "ice" to "isl",
-        "mac" to "mkd",
-        "mao" to "mri",
-        "may" to "msa",
-        "per" to "fas",
-        "rum" to "ron",
-        "slo" to "slk",
-        "tib" to "bod",
-        "wel" to "cym",
-    )
+    private val bibliographicAliases =
+        mapOf(
+            "alb" to "sqi",
+            "arm" to "hye",
+            "baq" to "eus",
+            "bur" to "mya",
+            "chi" to "zho",
+            "cze" to "ces",
+            "dut" to "nld",
+            "fre" to "fra",
+            "geo" to "kat",
+            "ger" to "deu",
+            "gre" to "ell",
+            "ice" to "isl",
+            "mac" to "mkd",
+            "mao" to "mri",
+            "may" to "msa",
+            "per" to "fas",
+            "rum" to "ron",
+            "slo" to "slk",
+            "tib" to "bod",
+            "wel" to "cym",
+        )
 
+    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
+    @Suppress("MagicNumber")
     fun normalizeForTvTrackLanguage(value: String?): String? {
         val code = value?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotBlank() } ?: return null
         return when (code.length) {

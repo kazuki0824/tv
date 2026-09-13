@@ -1,43 +1,91 @@
+// テストの入力・期待値を本体の定数と独立した具体値で記述する。
+@file:Suppress("MagicNumber")
+
 package com.maleicacid.tvinput.aribsi
 
 import com.maleicacid.tvinput.common.TsPid
 import org.json.JSONObject
 import org.junit.Test
 
+// 一つの契約の試験集合・時系列を保持し、検証シナリオを分断しない。
+@Suppress("LargeClass", "TooManyFunctions")
 class NativeAribSiParserCasDiscoveryTest {
-    @Test fun nativeUntimedPresentRemainsRatingAuthority() {
-        for (undefinedRange in listOf(16..20, 21..23)) NativeAribSiParser().use { parser ->
-            val resolver = com.maleicacid.tvinput.tis.CurrentProgramRatingResolver { _, _, _, _, _ -> error("stale provider queried") }
-            val key = com.maleicacid.tvinput.common.ServiceKey(0x22, 0x11, 1)
-            val body = eitWithDescriptors(listOf(0x55, 4, 0x4a, 0x50, 0x4e, 0x0c))
-            for (index in undefinedRange) body[index] = 0xff
-            check(parser.ingestSection(TsPid(PID_EIT), section(body)) == SiStatus.OK)
-            val snapshot = parser.programStateSnapshot()
-            check(snapshot.events.single().timingState == "UNDEFINED_TIME")
-            val authority = resolver.eitAuthority(snapshot, key)
-            check(authority is com.maleicacid.tvinput.tis.CurrentProgramRatingResolver.EitAuthority.PresentObserved)
-            check(authority.event?.eventId == 0x1234)
-            val result = resolver.resolveDetailed(android.net.Uri.parse("content://android.media.tv/channel/1"), key,
-                snapshot.events, AribRatingMapper.BroadcastProfile.BS_CS, 1_700_000_000_000L, authority)
-                as com.maleicacid.tvinput.tis.CurrentProgramRatingResolver.ResolveResult.Ratings
-            check(result.ratingSet.eventId == 0x1234 && result.ratingSet.startTimeMillis == null && result.ratingSet.endTimeMillis == null)
-            check(result.ratingSet.ratings.single() == AribRatingMapper.toTvContentRating(AribParentalRating("JPN", 0x0c), AribRatingMapper.BroadcastProfile.BS_CS))
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    @Test
+    fun nativeUntimedPresentRemainsRatingAuthority() {
+        for (undefinedRange in listOf(16..20, 21..23)) {
+            NativeAribSiParser().use { parser ->
+                val resolver =
+                    com.maleicacid.tvinput.tis
+                        .CurrentProgramRatingResolver { _, _, _, _, _ -> error("stale provider queried") }
+                val key =
+                    com.maleicacid.tvinput.common
+                        .ServiceKey(0x22, 0x11, 1)
+                val body = eitWithDescriptors(listOf(0x55, 4, 0x4a, 0x50, 0x4e, 0x0c))
+                for (index in undefinedRange) body[index] = 0xff
+                check(parser.ingestSection(TsPid(PID_EIT), section(body)) == SiStatus.OK)
+                val snapshot = parser.programStateSnapshot()
+                check(snapshot.events.single().timingState == "UNDEFINED_TIME")
+                val authority = resolver.eitAuthority(snapshot, key)
+                check(authority is com.maleicacid.tvinput.tis.CurrentProgramRatingResolver.EitAuthority.PresentObserved)
+                check(authority.event?.eventId == 0x1234)
+                val result =
+                    resolver.resolveDetailed(
+                        android.net.Uri.parse("content://android.media.tv/channel/1"),
+                        key,
+                        snapshot.events,
+                        AribRatingMapper.BroadcastProfile.BS_CS,
+                        1_700_000_000_000L,
+                        authority,
+                    )
+                        as com.maleicacid.tvinput.tis.CurrentProgramRatingResolver.ResolveResult.Ratings
+                check(
+                    result.ratingSet.eventId == 0x1234 &&
+                        result.ratingSet.startTimeMillis == null &&
+                        result.ratingSet.endTimeMillis == null,
+                )
+                check(
+                    result.ratingSet.ratings.single() ==
+                        AribRatingMapper.toTvContentRating(AribParentalRating("JPN", 0x0c), AribRatingMapper.BroadcastProfile.BS_CS),
+                )
+            }
         }
     }
 
     @Test fun presentEmptyAuthorityIsIndependentOfFollowingAndWholeTableCompletion() {
         NativeAribSiParser().use { parser ->
-            val resolver = com.maleicacid.tvinput.tis.CurrentProgramRatingResolver { _, _, _, _, _ -> error("no provider query") }
-            val unknown = com.maleicacid.tvinput.tis.CurrentProgramRatingResolver.EitAuthority.UNCONFIRMED
-            val empty = com.maleicacid.tvinput.tis.CurrentProgramRatingResolver.EitAuthority.AUTHORITATIVE_EMPTY
-            val key = com.maleicacid.tvinput.common.ServiceKey(0x22, 0x11, 1)
-            val following = eitWithDescriptors(emptyList()).also { it[6] = 1; it[7] = 1; it[12] = 1 }
-            val present = following.take(14).toMutableList().also { it[6] = 0; setSectionLength(it, 0xf0) }.toIntArray()
+            val resolver =
+                com.maleicacid.tvinput.tis
+                    .CurrentProgramRatingResolver { _, _, _, _, _ -> error("no provider query") }
+            val unknown = com.maleicacid.tvinput.tis.CurrentProgramRatingResolver.EitAuthority.Unconfirmed
+            val empty = com.maleicacid.tvinput.tis.CurrentProgramRatingResolver.EitAuthority.AuthoritativeEmpty
+            val key =
+                com.maleicacid.tvinput.common
+                    .ServiceKey(0x22, 0x11, 1)
+            val following =
+                eitWithDescriptors(emptyList()).also {
+                    it[6] = 1
+                    it[7] = 1
+                    it[12] = 1
+                }
+            val present =
+                following
+                    .take(14)
+                    .toMutableList()
+                    .also {
+                        it[6] = 0
+                        setSectionLength(it, 0xf0)
+                    }.toIntArray()
             check(parser.ingestSection(TsPid(PID_EIT), section(following)) == SiStatus.OK)
             check(resolver.eitAuthority(parser.programStateSnapshot(), key) == unknown)
             check(parser.ingestSection(TsPid(PID_EIT), section(present)) == SiStatus.OK)
             val gap = parser.programStateSnapshot()
-            check(gap.events.single().source.sectionNumber == 1)
+            check(
+                gap.events
+                    .single()
+                    .source.sectionNumber == 1,
+            )
             check(gap.authoritativeProgramKeysByService[key]?.isNotEmpty() == true)
             check(resolver.eitAuthority(gap, key) == empty)
             val nextPresent = present.copyOf().also { it[5] = 0xc3 }
@@ -51,33 +99,76 @@ class NativeAribSiParserCasDiscoveryTest {
         }
     }
 
-    @Test fun liveRefreshRetainsOneNativeTransactionAcrossPmtAndEitUpdates() {
+    // 一つの契約の試験集合・時系列を保持し、検証シナリオを分断しない。
+    @Suppress("LongMethod")
+    @Test
+    fun liveRefreshRetainsOneNativeTransactionAcrossPmtAndEitUpdates() {
         NativeAribSiParser().use { parser ->
             check(parser.ingestSection(TsPid(PID_PAT), section(PAT_BODY)) == SiStatus.OK)
             check(parser.ingestSection(TsPid(PID_SDT), section(SDT_SCRAMBLED_SERVICE_BODY)) == SiStatus.OK)
             check(parser.ingestSection(TsPid(PID_PMT), section(PMT_WITH_PROGRAM_AND_ES_CA_BODY)) == SiStatus.OK)
             check(parser.ingestSection(TsPid(PID_EIT), section(eitWithDescriptors(emptyList()))) == SiStatus.OK)
             val refresh = parser.livePlaybackSnapshot()
-            val oldPid = refresh.services.single().streams.first().elementaryPid
-            val oldEventId = refresh.programs.events.single().eventId
-            val nextPmt = PMT_WITH_PROGRAM_AND_ES_CA_BODY.copyOf().also { it[5] = 0xc3; it[20] = 0x11 }
-            val nextEit = eitWithDescriptors(emptyList()).also { it[5] = 0xc3; it[15] = 0x35 }
+            val oldPid =
+                refresh.services
+                    .single()
+                    .streams
+                    .first()
+                    .elementaryPid
+            val oldEventId =
+                refresh.programs.events
+                    .single()
+                    .eventId
+            val nextPmt =
+                PMT_WITH_PROGRAM_AND_ES_CA_BODY.copyOf().also {
+                    it[5] = 0xc3
+                    it[20] = 0x11
+                }
+            val nextEit =
+                eitWithDescriptors(emptyList()).also {
+                    it[5] = 0xc3
+                    it[15] = 0x35
+                }
             check(parser.ingestSection(TsPid(PID_PMT), section(nextPmt)) == SiStatus.OK)
             check(parser.ingestSection(TsPid(PID_EIT), section(nextEit)) == SiStatus.OK)
             // publish/rating/track/selectionは保持したrefreshのみを読む。
-            check(refresh.services.single().streams.first().elementaryPid == oldPid)
-            check(refresh.programs.events.single().eventId == oldEventId)
+            check(
+                refresh.services
+                    .single()
+                    .streams
+                    .first()
+                    .elementaryPid == oldPid,
+            )
+            check(
+                refresh.programs.events
+                    .single()
+                    .eventId == oldEventId,
+            )
             check(refresh.ingestSequence == refresh.programs.ingestSequence)
             val nextRefresh = parser.livePlaybackSnapshot()
-            check(nextRefresh.services.single().streams.first().elementaryPid == TsPid(0x111))
-            check(nextRefresh.programs.events.single().eventId == 0x1235)
+            check(
+                nextRefresh.services
+                    .single()
+                    .streams
+                    .first()
+                    .elementaryPid == TsPid(0x111),
+            )
+            check(
+                nextRefresh.programs.events
+                    .single()
+                    .eventId == 0x1235,
+            )
             check(nextRefresh.ingestSequence == nextRefresh.programs.ingestSequence)
             check(nextRefresh.ingestSequence > refresh.ingestSequence)
             check(nextRefresh.semanticFactsByServiceKey == nextRefresh.programs.semanticFactsByServiceKey)
         }
     }
 
-    @Test fun casOnlyTrafficBypassesSiBudgetAndRefreshWhileReachingCasController() {
+    // 一つの契約の試験集合・時系列を保持し、検証シナリオを分断しない。
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("LongMethod", "MaxLineLength")
+    @Test
+    fun casOnlyTrafficBypassesSiBudgetAndRefreshWhileReachingCasController() {
         NativeAribSiParser().use { parser ->
             check(parser.ingestSection(TsPid(PID_PAT), section(PAT_BODY)) == SiStatus.OK)
             check(parser.ingestSection(TsPid(PID_SDT), section(SDT_SCRAMBLED_SERVICE_BODY)) == SiStatus.OK)
@@ -88,24 +179,42 @@ class NativeAribSiParserCasDiscoveryTest {
             var ecmCount = 0
             var emmCount = 0
             var refreshCount = 0
-            val session = object : com.maleicacid.tvinput.tis.CasController.MediaCasSessionBridge {
-                override fun setPrivateData(privateData: ByteArray) = Result.success(Unit)
-                override fun processEcm(section: ByteArray): Result<com.maleicacid.tvinput.tis.EcmProcessResult> {
-                    check(section.size == 512)
-                    ecmCount++
-                    return Result.success(com.maleicacid.tvinput.tis.EcmProcessResult.DiagnosticOnly("test received"))
+            val session =
+                object : com.maleicacid.tvinput.tis.CasController.MediaCasSessionBridge {
+                    override fun setPrivateData(privateData: ByteArray) = Result.success(Unit)
+
+                    override fun processEcm(section: ByteArray): Result<com.maleicacid.tvinput.tis.EcmProcessResult> {
+                        check(section.size == 512)
+                        ecmCount++
+                        return Result.success(
+                            com.maleicacid.tvinput.tis.EcmProcessResult
+                                .DiagnosticOnly("test received"),
+                        )
+                    }
+
+                    override fun close() = Unit
                 }
-                override fun close() = Unit
-            }
-            val factory = object : com.maleicacid.tvinput.tis.CasController.MediaCasBridgeFactory {
-                override fun create(caSystemId: Int): Result<com.maleicacid.tvinput.tis.CasController.MediaCasBridge> =
-                    Result.success(object : com.maleicacid.tvinput.tis.CasController.MediaCasBridge {
-                        override fun setPrivateData(privateData: ByteArray) = Result.success(Unit)
-                        override fun openSession() = Result.success(session)
-                        override fun processEmm(section: ByteArray): Result<Unit> { check(section.size == 512); emmCount++; return Result.success(Unit) }
-                        override fun close() = Unit
-                    })
-            }
+            val factory =
+                object : com.maleicacid.tvinput.tis.CasController.MediaCasBridgeFactory {
+                    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+                    @Suppress("MaxLineLength")
+                    override fun create(caSystemId: Int): Result<com.maleicacid.tvinput.tis.CasController.MediaCasBridge> =
+                        Result.success(
+                            object : com.maleicacid.tvinput.tis.CasController.MediaCasBridge {
+                                override fun setPrivateData(privateData: ByteArray) = Result.success(Unit)
+
+                                override fun openSession() = Result.success(session)
+
+                                override fun processEmm(section: ByteArray): Result<Unit> {
+                                    check(section.size == 512)
+                                    emmCount++
+                                    return Result.success(Unit)
+                                }
+
+                                override fun close() = Unit
+                            },
+                        )
+                }
             com.maleicacid.tvinput.tis.CasController(mediaCasFactory = factory).use { cas ->
                 cas.updateFromCaMetadata(before.caMetadata)
                 val siPids = setOf(TsPid(PID_PAT), TsPid(PID_SDT), TsPid(PID_PMT), TsPid(PID_CAT), TsPid(PID_EIT))
@@ -115,9 +224,18 @@ class NativeAribSiParserCasDiscoveryTest {
                 val payload = ByteArray(512)
                 repeat(9000) {
                     for (pid in ecm + emm) {
-                        com.maleicacid.tvinput.tis.SectionFilterPolicy.dispatchSection(pid, siPids, ecm, emm,
-                            onSi = { parser.ingestSection(pid, payload); refreshCount++ },
-                            onEcm = { cas.onEcmSection(pid, payload) }, onEmm = { cas.onEmmSection(pid, payload) })
+                        com.maleicacid.tvinput.tis.SectionFilterPolicy.dispatchSection(
+                            pid,
+                            siPids,
+                            ecm,
+                            emm,
+                            onSi = {
+                                parser.ingestSection(pid, payload)
+                                refreshCount++
+                            },
+                            onEcm = { cas.onEcmSection(pid, payload) },
+                            onEmm = { cas.onEmmSection(pid, payload) },
+                        )
                     }
                 }
                 val after = parser.livePlaybackSnapshot()
@@ -129,24 +247,85 @@ class NativeAribSiParserCasDiscoveryTest {
                 check(after.services == before.services && after.programs == before.programs)
                 // 不正SIは今もnative admissionを通り、反復でcollectionを失効させる。
                 repeat(9000) {
-                    com.maleicacid.tvinput.tis.SectionFilterPolicy.dispatchSection(TsPid(PID_EIT), siPids, ecm, emm,
-                        onSi = { parser.ingestSection(TsPid(PID_EIT), payload); refreshCount++ },
-                        onEcm = { error("not ECM") }, onEmm = { error("not EMM") })
+                    com.maleicacid.tvinput.tis.SectionFilterPolicy.dispatchSection(
+                        TsPid(PID_EIT),
+                        siPids,
+                        ecm,
+                        emm,
+                        onSi = {
+                            parser.ingestSection(TsPid(PID_EIT), payload)
+                            refreshCount++
+                        },
+                        onEcm = { error("not ECM") },
+                        onEmm = { error("not EMM") },
+                    )
                 }
                 check(refreshCount == 9000)
-                check(parser.livePlaybackSnapshot().programs.events.isEmpty())
+                check(
+                    parser
+                        .livePlaybackSnapshot()
+                        .programs.events
+                        .isEmpty(),
+                )
             }
         }
     }
 
-    @Test fun codecDescriptorsSurviveNormalSnapshotAndProviderProjection() {
+    // 一つの契約の試験集合・時系列を保持し、検証シナリオを分断しない。
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("LongMethod", "MaxLineLength")
+    @Test
+    fun codecDescriptorsSurviveNormalSnapshotAndProviderProjection() {
         NativeAribSiParser().use { parser ->
-            val body = mutableListOf(
-                0x02, 0xb0, 0, 0, 1, 0xc1, 0, 0, 0xe1, 1, 0xf0, 0,
-                0x1b, 0xe1, 1, 0xf0, 6, 0x28, 4, 100, 0, 40, 0x3f,
-                0x1c, 0xe1, 2, 0xf0, 7, 0x1c, 1, 0xff, 0x2e, 2, 0x71, 0x5a,
-                0x0f, 0xe1, 3, 0xf0, 6, 0x2e, 4, 0xf0, 2, 0x11, 0x90,
-            )
+            val body =
+                mutableListOf(
+                    0x02,
+                    0xb0,
+                    0,
+                    0,
+                    1,
+                    0xc1,
+                    0,
+                    0,
+                    0xe1,
+                    1,
+                    0xf0,
+                    0,
+                    0x1b,
+                    0xe1,
+                    1,
+                    0xf0,
+                    6,
+                    0x28,
+                    4,
+                    100,
+                    0,
+                    40,
+                    0x3f,
+                    0x1c,
+                    0xe1,
+                    2,
+                    0xf0,
+                    7,
+                    0x1c,
+                    1,
+                    0xff,
+                    0x2e,
+                    2,
+                    0x71,
+                    0x5a,
+                    0x0f,
+                    0xe1,
+                    3,
+                    0xf0,
+                    6,
+                    0x2e,
+                    4,
+                    0xf0,
+                    2,
+                    0x11,
+                    0x90,
+                )
             setSectionLength(body, 0xb0)
             check(parser.ingestSection(TsPid(PID_PAT), section(PAT_BODY)) == SiStatus.OK)
             check(parser.ingestSection(TsPid(PID_SDT), section(SDT_SCRAMBLED_SERVICE_BODY)) == SiStatus.OK)
@@ -159,7 +338,13 @@ class NativeAribSiParserCasDiscoveryTest {
             check(aac.codec == "AAC" && aac.codecFacts.audioConfigHex == "1190")
             check(aac.codecFacts.audioConfigHeader?.samplingFrequency == 48000)
             val components = ProviderDataBridge.toComponentsObject(AribComponentProjectionPolicy.componentsForService(service))
-            check(components.getJSONArray("video").getJSONObject(0).getString("profileLevel").contains("level_idc=40"))
+            check(
+                components
+                    .getJSONArray("video")
+                    .getJSONObject(0)
+                    .getString("profileLevel")
+                    .contains("level_idc=40"),
+            )
             val audio = components.getJSONArray("audio")
             check(audio.getJSONObject(0).getString("codec") == "MPEG-4-ALS")
             check(audio.getJSONObject(1).getString("sourceDescriptor").contains("1190"))
@@ -168,7 +353,11 @@ class NativeAribSiParserCasDiscoveryTest {
 
     @Test fun eitInstanceCompletionKeepsTransportScopesAndVersionsSeparate() {
         NativeAribSiParser().use { parser ->
-            fun body(number: Int, tsid: Int = 0x11, version: Int = 31): IntArray =
+            fun body(
+                number: Int,
+                tsid: Int = 0x11,
+                version: Int = 31,
+            ): IntArray =
                 eitWithDescriptors(emptyList()).also {
                     it[5] = 0xc1 or (version shl 1)
                     it[6] = number
@@ -195,7 +384,10 @@ class NativeAribSiParserCasDiscoveryTest {
         }
     }
 
-    @Test fun caDiscoveryDoesNotDependOnClearLivePlaybackSnapshot() {
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    @Test
+    fun caDiscoveryDoesNotDependOnClearLivePlaybackSnapshot() {
         val parser = NativeAribSiParser()
         try {
             check(parser.ingestSection(TsPid(PID_PAT), section(PAT_BODY)) == SiStatus.OK)
@@ -221,16 +413,22 @@ class NativeAribSiParserCasDiscoveryTest {
             check(metadata.any { it.source == CaMetadataSource.PROGRAM && it.ecmPid == TsPid(ECM_PID_PROGRAM) }) {
                 "番組単位CA_descriptorはCAS検出から見える必要があります"
             }
-            check(metadata.any { it.source == CaMetadataSource.ELEMENTARY_STREAM && it.elementaryPid == TsPid(VIDEO_PID) && it.ecmPid == TsPid(ECM_PID_ES) }) {
+            check(
+                metadata.any {
+                    it.source == CaMetadataSource.ELEMENTARY_STREAM && it.elementaryPid == TsPid(VIDEO_PID) &&
+                        it.ecmPid == TsPid(ECM_PID_ES)
+                },
+            ) {
                 "ES単位CA_descriptorはCAS検出から見える必要があります"
             }
             check(metadata.any { it.source == CaMetadataSource.CAT && it.serviceKey == null && it.emmPid == TsPid(EMM_PID) }) {
                 "CAT EMM PIDはサービス行公開と独立して見える必要があります"
             }
 
-            val facts = parser.serviceRegistrationSnapshot().semanticFactsByServiceKey.values.single {
-                it.serviceKey.serviceId == SERVICE_ID
-            }
+            val facts =
+                parser.serviceRegistrationSnapshot().semanticFactsByServiceKey.values.single {
+                    it.serviceKey.serviceId == SERVICE_ID
+                }
             val diagnostic = ServicePolicyEvaluator.evaluate(facts)
             check(!diagnostic.clearLivePlaybackStaticallyEligible)
             check(diagnostic.requiresCas && diagnostic.reasons.contains("CAS_NOT_IMPLEMENTED")) {
@@ -247,17 +445,40 @@ class NativeAribSiParserCasDiscoveryTest {
             check(parser.ingestSection(TsPid(PID_SDT), section(SDT_SCRAMBLED_SERVICE_BODY)) == SiStatus.OK)
             val present = parser.serviceRegistrationSnapshot()
             check(present.services.single().providerName == "")
-            check(present.semanticFactsByServiceKey.values.single().providerName == "")
-            val absentBody = mutableListOf(
-                0x42, 0xf0, 0, 0, 0x11, 0xc3, 0, 0, 0, 0x22, 0,
-                0, 1, 0xfc, 0x80, 0,
+            check(
+                present.semanticFactsByServiceKey.values
+                    .single()
+                    .providerName == "",
             )
+            val absentBody =
+                mutableListOf(
+                    0x42,
+                    0xf0,
+                    0,
+                    0,
+                    0x11,
+                    0xc3,
+                    0,
+                    0,
+                    0,
+                    0x22,
+                    0,
+                    0,
+                    1,
+                    0xfc,
+                    0x80,
+                    0,
+                )
             setSectionLength(absentBody, 0xf0)
             check(parser.ingestSection(TsPid(PID_SDT), section(absentBody.toIntArray())) == SiStatus.OK)
             val absent = parser.serviceRegistrationSnapshot()
             check(absent.services.single().name == null)
             check(absent.services.single().providerName == null)
-            check(absent.semanticFactsByServiceKey.values.single().name == null)
+            check(
+                absent.semanticFactsByServiceKey.values
+                    .single()
+                    .name == null,
+            )
         } finally {
             parser.close()
         }
@@ -271,8 +492,11 @@ class NativeAribSiParserCasDiscoveryTest {
             val networkDescriptor = listOf(0x40, networkName.size) + networkName
             val tsDescriptor = listOf(0xcd, tsName.size + 2, 7, tsName.size shl 2) + tsName
             val tsLoop = listOf(0, 0x11, 0, 0x22, 0xf0, tsDescriptor.size) + tsDescriptor
-            val nit = (listOf(0x40, 0xb0, 0, 0, 0x22, 0xc1, 0, 0, 0xf0, networkDescriptor.size) +
-                networkDescriptor + listOf(0xf0, tsLoop.size) + tsLoop).toMutableList()
+            val nit =
+                (
+                    listOf(0x40, 0xb0, 0, 0, 0x22, 0xc1, 0, 0, 0xf0, networkDescriptor.size) +
+                        networkDescriptor + listOf(0xf0, tsLoop.size) + tsLoop
+                ).toMutableList()
             setSectionLength(nit, 0xb0)
             check(parser.ingestSection(TsPid(0x10), section(nit.toIntArray())) == SiStatus.OK)
             check(parser.ingestSection(TsPid(PID_SDT), section(SDT_SCRAMBLED_SERVICE_BODY)) == SiStatus.OK)
@@ -286,7 +510,11 @@ class NativeAribSiParserCasDiscoveryTest {
         }
     }
 
-    @Test fun eitDescriptorFactsSurviveBulkSnapshotAndProgramProviderData() {
+    // 一つの契約の試験集合・時系列を保持し、検証シナリオを分断しない。
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("LongMethod", "MaxLineLength")
+    @Test
+    fun eitDescriptorFactsSurviveBulkSnapshotAndProgramProviderData() {
         val parser = NativeAribSiParser()
         try {
             check(parser.ingestSection(TsPid(PID_PAT), section(PAT_BODY)) == SiStatus.OK)
@@ -295,7 +523,9 @@ class NativeAribSiParserCasDiscoveryTest {
             check(parser.ingestSection(TsPid(PID_EIT), section(eitWithDescriptorFactsBody())) == SiStatus.OK)
 
             val event = parser.programStateSnapshot().events.single()
-            val video = event.descriptors.components.video.single()
+            val video =
+                event.descriptors.components.video
+                    .single()
             check(video.esPid == TsPid(VIDEO_PID))
             check(video.streamType == 0x1b)
             check(video.codec == "H.264")
@@ -305,7 +535,9 @@ class NativeAribSiParserCasDiscoveryTest {
             check(video.aspect == "16:9")
             check(video.sourceDescriptor == "component_descriptor")
 
-            val audio = event.descriptors.components.audio.single()
+            val audio =
+                event.descriptors.components.audio
+                    .single()
             check(audio.esPid == TsPid(AUDIO_PID))
             check(audio.streamType == 0x0f)
             check(audio.codec == "AAC")
@@ -318,9 +550,23 @@ class NativeAribSiParserCasDiscoveryTest {
 
             check(event.descriptors.series?.expireDateValid == true)
             check(event.descriptors.series?.expireDate == 0xe123)
-            check(event.descriptors.linkage.single().privateDataPrefixHex == "aabb")
+            check(
+                event.descriptors.linkage
+                    .single()
+                    .privateDataPrefixHex == "aabb",
+            )
 
-            val program = EventModelMapper().toProgramRecords(listOf(event), profile = SiDiscoveryProfile.ISDB_T).single().copy(casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts())
+            val program =
+                EventModelMapper()
+                    .toProgramRecords(
+                        listOf(event),
+                        profile = SiDiscoveryProfile.ISDB_T,
+                    ).single()
+                    .copy(
+                        casFactsCanonicalJson =
+                            com.maleicacid.tvinput.tis
+                                .testCasFacts(),
+                    )
             val providerData = JSONObject((ProviderDataBridge.buildProgramProviderData(program) as ProviderDataBridge.Success).json)
             val providerVideo = providerData.getJSONObject("components").getJSONArray("video").getJSONObject(0)
             check(providerVideo.getString("resolution") == "1080")
@@ -348,11 +594,12 @@ class NativeAribSiParserCasDiscoveryTest {
     }
 
     @Test fun malformedEitCannotBecomeAProgramButItsDiagnosticsRemainVisible() {
-        val malformedBodies = listOf(
-            eitWithDescriptors(listOf(0x55, 5, 0x4a, 0x50, 0x4e, 15, 0xaa)),
-            eitWithDescriptors(listOf(0x55, 4, 0x4a, 0x50)),
-            eitWithDescriptors(emptyList()).also { it[25] = 4 },
-        )
+        val malformedBodies =
+            listOf(
+                eitWithDescriptors(listOf(0x55, 5, 0x4a, 0x50, 0x4e, 15, 0xaa)),
+                eitWithDescriptors(listOf(0x55, 4, 0x4a, 0x50)),
+                eitWithDescriptors(emptyList()).also { it[25] = 4 },
+            )
         for (body in malformedBodies) {
             NativeAribSiParser().use { parser ->
                 check(parser.ingestSection(TsPid(PID_EIT), section(eitWithDescriptors(emptyList()))) == SiStatus.OK)
@@ -365,12 +612,20 @@ class NativeAribSiParserCasDiscoveryTest {
                 check(EventModelMapper().toProgramRecords(invalid.events, invalid.discoveryProfile).isEmpty())
                 check(invalid.updateWindows.none { it.deletionAuthoritative })
                 check(invalid.descriptorDiagnostics.isNotEmpty() || invalid.parserDiagnostics.isNotEmpty())
-                check(invalid.eitInstances.single().safeSections.isEmpty())
+                check(
+                    invalid.eitInstances
+                        .single()
+                        .safeSections
+                        .isEmpty(),
+                )
             }
         }
     }
 
-    @Test fun truncatedEventLoopRetainsCompleteDescriptorsAndAllAvailableBytes() {
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    @Test
+    fun truncatedEventLoopRetainsCompleteDescriptorsAndAllAvailableBytes() {
         NativeAribSiParser().use { parser ->
             val valid = listOf(0x55, 4, 0x4a, 0x50, 0x4e, 12)
             val truncated = listOf(0x55, 255) + (0 until 100).toList()
@@ -390,14 +645,24 @@ class NativeAribSiParserCasDiscoveryTest {
             check(loop.rawBytesHex == available.joinToString("") { it.toString(16).padStart(2, '0') })
             val facts = JSONObject(requireNotNull(excluded.descriptors.diagnostics.descriptorFactsCanonicalJson))
             val ratings = facts.getJSONArray("parentalRatingDescriptors")
-            check(ratings.getJSONObject(0).getJSONArray("entries").getJSONObject(0).getInt("rawRatingByte") == 12)
+            check(
+                ratings
+                    .getJSONObject(0)
+                    .getJSONArray("entries")
+                    .getJSONObject(0)
+                    .getInt("rawRatingByte") == 12,
+            )
             check(ratings.getJSONObject(1).getString("parseStatus") == "TruncatedDescriptor")
             check(ratings.getJSONObject(1).getString("rawDescriptorHex") == truncated.joinToString("") { it.toString(16).padStart(2, '0') })
             check(snapshot.descriptorDiagnostics.isNotEmpty())
         }
     }
 
-    @Test fun timingIdentityIsNullableWithoutLosingRawEventFacts() {
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    // 候補の処理と入れ子の資源寿命を同じ手順内で確認できる構造を保つ。
+    @Suppress("MaxLineLength", "NestedBlockDepth")
+    @Test
+    fun timingIdentityIsNullableWithoutLosingRawEventFacts() {
         for (state in listOf("DEFINED", "UNDEFINED_TIME", "BOTH_TIMING_UNDEFINED", "MALFORMED_TIMING")) {
             NativeAribSiParser().use { parser ->
                 val body = eitWithDescriptors(listOf(0x55, 5, 0x4a, 0x50, 0x4e, 12, 0xaa))
@@ -449,7 +714,12 @@ class NativeAribSiParserCasDiscoveryTest {
         }
     }
 
-    @Test fun rejectedRatingsAndFullUnknownDescriptorsSurviveProductionPublication() {
+    // 一つの契約の試験集合・時系列を保持し、検証シナリオを分断しない。
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    // 候補の処理と入れ子の資源寿命を同じ手順内で確認できる構造を保つ。
+    @Suppress("LongMethod", "MaxLineLength", "NestedBlockDepth")
+    @Test
+    fun rejectedRatingsAndFullUnknownDescriptorsSurviveProductionPublication() {
         val parser = NativeAribSiParser()
         try {
             val valid = listOf(0x55, 4, 0x4a, 0x50, 0x4e, 12)
@@ -464,10 +734,28 @@ class NativeAribSiParserCasDiscoveryTest {
             check(ratings.length() == 2)
             check(ratings.getJSONObject(0).getString("parseStatus") == "OK")
             check(ratings.getJSONObject(1).getString("rawDescriptorHex") == "5504ff00588f")
-            check(ratings.getJSONObject(1).getJSONArray("entries").getJSONObject(0).getString("countryCode").map { it.code } == listOf(255, 0, 88))
+            check(
+                ratings
+                    .getJSONObject(1)
+                    .getJSONArray("entries")
+                    .getJSONObject(0)
+                    .getString("countryCode")
+                    .map { it.code } ==
+                    listOf(255, 0, 88),
+            )
             val rawUnknown = facts.getJSONArray("unknownDescriptors").getJSONObject(0).getString("rawDescriptorHex")
             check(rawUnknown.length == 164 && rawUnknown.endsWith("4d4e4f"))
-            val program = EventModelMapper().toProgramRecords(listOf(event), profile = SiDiscoveryProfile.ISDB_T).single().copy(casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts())
+            val program =
+                EventModelMapper()
+                    .toProgramRecords(
+                        listOf(event),
+                        profile = SiDiscoveryProfile.ISDB_T,
+                    ).single()
+                    .copy(
+                        casFactsCanonicalJson =
+                            com.maleicacid.tvinput.tis
+                                .testCasFacts(),
+                    )
             val stored = (ProviderDataBridge.buildProgramProviderData(program) as ProviderDataBridge.Success).json
             val canonical = JSONObject(stored)
             check(canonical.getJSONArray("ratings").length() == 1)
@@ -489,13 +777,19 @@ class NativeAribSiParserCasDiscoveryTest {
                 }
             }
             check(savedFacts.getJSONArray("unknownDescriptors").getJSONObject(0).getString("rawDescriptorHex") == rawUnknown)
-            check((ProviderDataBridge.normalizeProgramProviderData(stored.toByteArray(Charsets.UTF_8)) as ProviderDataBridge.Success).json == stored)
+            check(
+                (ProviderDataBridge.normalizeProgramProviderData(stored.toByteArray(Charsets.UTF_8)) as ProviderDataBridge.Success).json ==
+                    stored,
+            )
         } finally {
             parser.close()
         }
     }
 
-    @Test fun eitDescriptorWithoutMatchingPmtTagRemainsCanonicalProviderData() {
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    @Test
+    fun eitDescriptorWithoutMatchingPmtTagRemainsCanonicalProviderData() {
         val parser = NativeAribSiParser()
         try {
             check(parser.ingestSection(TsPid(PID_PAT), section(PAT_BODY)) == SiStatus.OK)
@@ -504,17 +798,30 @@ class NativeAribSiParserCasDiscoveryTest {
             check(parser.ingestSection(TsPid(PID_EIT), section(eitWithDescriptorFactsBody())) == SiStatus.OK)
 
             val event = parser.programStateSnapshot().events.single()
-            val eitOnlyVideo = event.descriptors.components.video.single { it.componentTag == 0x10 }
+            val eitOnlyVideo =
+                event.descriptors.components.video
+                    .single { it.componentTag == 0x10 }
             check(eitOnlyVideo.esPid == null)
             check(eitOnlyVideo.streamType == null)
             check(eitOnlyVideo.codec == null)
 
-            val program = EventModelMapper().toProgramRecords(listOf(event), profile = SiDiscoveryProfile.ISDB_T).single().copy(casFactsCanonicalJson = com.maleicacid.tvinput.tis.testCasFacts())
+            val program =
+                EventModelMapper()
+                    .toProgramRecords(
+                        listOf(event),
+                        profile = SiDiscoveryProfile.ISDB_T,
+                    ).single()
+                    .copy(
+                        casFactsCanonicalJson =
+                            com.maleicacid.tvinput.tis
+                                .testCasFacts(),
+                    )
             val providerData = JSONObject((ProviderDataBridge.buildProgramProviderData(program) as ProviderDataBridge.Success).json)
             val videoArray = providerData.getJSONObject("components").getJSONArray("video")
-            val providerVideo = (0 until videoArray.length())
-                .map { videoArray.getJSONObject(it) }
-                .single { it.optInt("componentTag", -1) == 0x10 }
+            val providerVideo =
+                (0 until videoArray.length())
+                    .map { videoArray.getJSONObject(it) }
+                    .single { it.optInt("componentTag", -1) == 0x10 }
             check(providerVideo.isNull("esPid"))
             check(providerVideo.isNull("streamType"))
             check(providerVideo.isNull("codec"))
@@ -537,68 +844,232 @@ class NativeAribSiParserCasDiscoveryTest {
         private const val ECM_PID_ES = 0x0124
         private const val EMM_PID = 0x0100
 
-        private val PAT_BODY = intArrayOf(
-            0x00, 0xb0, 0x0d, 0x00, 0x11, 0xc1, 0x00, 0x00,
-            0x00, 0x01, 0xe1, 0x00,
-        )
+        private val PAT_BODY =
+            intArrayOf(
+                0x00,
+                0xb0,
+                0x0d,
+                0x00,
+                0x11,
+                0xc1,
+                0x00,
+                0x00,
+                0x00,
+                0x01,
+                0xe1,
+                0x00,
+            )
 
-        private val SDT_SCRAMBLED_SERVICE_BODY = intArrayOf(
-            0x42, 0xf0, 0x18, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x22, 0x00,
-            0x00, 0x01, 0xfc, 0xf0, 0x07,
-            0x48, 0x05, 0x01, 0x00, 0x02, 'T'.code, '1'.code,
-        )
+        private val SDT_SCRAMBLED_SERVICE_BODY =
+            intArrayOf(
+                0x42,
+                0xf0,
+                0x18,
+                0x00,
+                0x11,
+                0xc1,
+                0x00,
+                0x00,
+                0x00,
+                0x22,
+                0x00,
+                0x00,
+                0x01,
+                0xfc,
+                0xf0,
+                0x07,
+                0x48,
+                0x05,
+                0x01,
+                0x00,
+                0x02,
+                'T'.code,
+                '1'.code,
+            )
 
-        private val PMT_WITH_PROGRAM_AND_ES_CA_BODY = intArrayOf(
-            0x02, 0xb0, 0x23, 0x00, 0x01, 0xc1, 0x00, 0x00,
-            0xe1, 0x01, 0xf0, 0x06,
-            0x09, 0x04, 0x00, 0x05, 0xe1, 0x23,
-            0x1b, 0xe1, 0x01, 0xf0, 0x06,
-            0x09, 0x04, 0x00, 0x05, 0xe1, 0x24,
-            0x0f, 0xe1, 0x02, 0xf0, 0x00,
-        )
+        private val PMT_WITH_PROGRAM_AND_ES_CA_BODY =
+            intArrayOf(
+                0x02,
+                0xb0,
+                0x23,
+                0x00,
+                0x01,
+                0xc1,
+                0x00,
+                0x00,
+                0xe1,
+                0x01,
+                0xf0,
+                0x06,
+                0x09,
+                0x04,
+                0x00,
+                0x05,
+                0xe1,
+                0x23,
+                0x1b,
+                0xe1,
+                0x01,
+                0xf0,
+                0x06,
+                0x09,
+                0x04,
+                0x00,
+                0x05,
+                0xe1,
+                0x24,
+                0x0f,
+                0xe1,
+                0x02,
+                0xf0,
+                0x00,
+            )
 
-        private val CAT_BODY = intArrayOf(
-            0x01, 0xb0, 0x0f, 0x00, 0x01, 0xc1, 0x00, 0x00,
-            0x09, 0x04, 0x00, 0x05, 0xe1, 0x00,
-        )
+        private val CAT_BODY =
+            intArrayOf(
+                0x01,
+                0xb0,
+                0x0f,
+                0x00,
+                0x01,
+                0xc1,
+                0x00,
+                0x00,
+                0x09,
+                0x04,
+                0x00,
+                0x05,
+                0xe1,
+                0x00,
+            )
 
         private fun pmtWithComponentTagsBody(): IntArray {
-            val body = mutableListOf(
-                0x02, 0xb0, 0x00, 0x00, 0x01, 0xc1, 0x00, 0x00,
-                0xe1, 0x01, 0xf0, 0x00,
-                0x1b, 0xe1, 0x01, 0xf0, 0x03, 0x52, 0x01, 0x10,
-                0x0f, 0xe1, 0x02, 0xf0, 0x03, 0x52, 0x01, 0x20,
-            )
+            val body =
+                mutableListOf(
+                    0x02,
+                    0xb0,
+                    0x00,
+                    0x00,
+                    0x01,
+                    0xc1,
+                    0x00,
+                    0x00,
+                    0xe1,
+                    0x01,
+                    0xf0,
+                    0x00,
+                    0x1b,
+                    0xe1,
+                    0x01,
+                    0xf0,
+                    0x03,
+                    0x52,
+                    0x01,
+                    0x10,
+                    0x0f,
+                    0xe1,
+                    0x02,
+                    0xf0,
+                    0x03,
+                    0x52,
+                    0x01,
+                    0x20,
+                )
             setSectionLength(body, 0xb0)
             return body.toIntArray()
         }
 
         private fun eitWithDescriptorFactsBody(): IntArray {
-            val descriptors = mutableListOf(
-                0x50, 0x06, 0x01, 0xb3, 0x10, 'j'.code, 'p'.code, 'n'.code,
-                0xc4, 0x0c, 0x02, 0x02, 0x20, 0x0f, 0xff, 0xee,
-                'j'.code, 'p'.code, 'n'.code, 'e'.code, 'n'.code, 'g'.code,
-                0xd5, 0x09, 0x12, 0x34, 0x2b, 0xe1, 0x23, 0x00, 0x03, 0x00, 0x0c,
-                0x4a, 0x09, 0x00, 0x11, 0x00, 0x22, 0x00, 0x01, 0x0d, 0xaa, 0xbb,
-            )
+            val descriptors =
+                mutableListOf(
+                    0x50,
+                    0x06,
+                    0x01,
+                    0xb3,
+                    0x10,
+                    'j'.code,
+                    'p'.code,
+                    'n'.code,
+                    0xc4,
+                    0x0c,
+                    0x02,
+                    0x02,
+                    0x20,
+                    0x0f,
+                    0xff,
+                    0xee,
+                    'j'.code,
+                    'p'.code,
+                    'n'.code,
+                    'e'.code,
+                    'n'.code,
+                    'g'.code,
+                    0xd5,
+                    0x09,
+                    0x12,
+                    0x34,
+                    0x2b,
+                    0xe1,
+                    0x23,
+                    0x00,
+                    0x03,
+                    0x00,
+                    0x0c,
+                    0x4a,
+                    0x09,
+                    0x00,
+                    0x11,
+                    0x00,
+                    0x22,
+                    0x00,
+                    0x01,
+                    0x0d,
+                    0xaa,
+                    0xbb,
+                )
             return eitWithDescriptors(descriptors)
         }
 
         private fun eitWithDescriptors(descriptors: List<Int>): IntArray {
             val descriptorLength = descriptors.size
-            val body = mutableListOf(
-                0x4e, 0xf0, 0x00, 0x00, 0x01, 0xc1, 0x00, 0x00,
-                0x00, 0x11, 0x00, 0x22, 0x00, 0x4e,
-                0x12, 0x34, 0xee, 0x00, 0x12, 0x00, 0x00,
-                0x00, 0x30, 0x00,
-                0x80 or ((descriptorLength ushr 8) and 0x0f), descriptorLength and 0xff,
-            )
+            val body =
+                mutableListOf(
+                    0x4e,
+                    0xf0,
+                    0x00,
+                    0x00,
+                    0x01,
+                    0xc1,
+                    0x00,
+                    0x00,
+                    0x00,
+                    0x11,
+                    0x00,
+                    0x22,
+                    0x00,
+                    0x4e,
+                    0x12,
+                    0x34,
+                    0xee,
+                    0x00,
+                    0x12,
+                    0x00,
+                    0x00,
+                    0x00,
+                    0x30,
+                    0x00,
+                    0x80 or ((descriptorLength ushr 8) and 0x0f),
+                    descriptorLength and 0xff,
+                )
             body += descriptors
             setSectionLength(body, 0xf0)
             return body.toIntArray()
         }
 
-        private fun setSectionLength(body: MutableList<Int>, highBits: Int) {
+        private fun setSectionLength(
+            body: MutableList<Int>,
+            highBits: Int,
+        ) {
             val sectionLength = body.size - 3 + 4
             body[1] = highBits or ((sectionLength ushr 8) and 0x0f)
             body[2] = sectionLength and 0xff
@@ -619,11 +1090,12 @@ class NativeAribSiParserCasDiscoveryTest {
             for (b in bytes) {
                 crc = crc xor ((b.toLong() and 0xffL) shl 24)
                 repeat(8) {
-                    crc = if ((crc and 0x80000000L) != 0L) {
-                        ((crc shl 1) xor 0x04c11db7L) and 0xffffffffL
-                    } else {
-                        (crc shl 1) and 0xffffffffL
-                    }
+                    crc =
+                        if ((crc and 0x80000000L) != 0L) {
+                            ((crc shl 1) xor 0x04c11db7L) and 0xffffffffL
+                        } else {
+                            (crc shl 1) and 0xffffffffL
+                        }
                 }
             }
             return crc and 0xffffffffL

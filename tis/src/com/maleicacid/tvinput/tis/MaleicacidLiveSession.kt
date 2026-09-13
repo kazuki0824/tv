@@ -5,30 +5,33 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.media.tv.TvContentRating
-import android.media.tv.TvInputService
 import android.media.tv.TvInputManager
+import android.media.tv.TvInputService
 import android.media.tv.TvTrackInfo
+import android.media.tv.tuner.frontend.OnTuneEventListener
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.media.tv.tuner.frontend.OnTuneEventListener
 import android.view.Surface
 import android.view.View
-import java.util.concurrent.Callable
-import java.util.concurrent.ExecutionException
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
+import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.AribSiEngine
-import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.PmtCatCaMetadataMapper
 import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.SiDiscoveryProfile
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.db.ChannelRecord
 import com.maleicacid.tvinput.db.ProgramRecord
+import java.util.concurrent.Callable
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
+// 同じ所有者の状態と解放順を維持し、行数だけを理由に責務を分割しない。
+// 同じ状態・境界を扱う操作群を一つの所有者に保つ。
+@Suppress("LargeClass", "TooManyFunctions")
 class MaleicacidLiveSession(
     serviceContext: Context,
     private val sessionContext: Context,
@@ -39,23 +42,30 @@ class MaleicacidLiveSession(
     private val tvInputManager: TvInputManager? = appContext.getSystemService(TvInputManager::class.java)
     private val aribSiEngine = AribSiEngine(serviceContext)
     private val sectionIngestController = SectionIngestController(aribSiEngine)
+
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
     private val tunerController = TunerController(serviceContext, inputId, sessionId = sessionId, sessionContext = sessionContext)
     private val casController = CasController()
     private val caMapper = PmtCatCaMetadataMapper()
-    private val eventModelMapper = com.maleicacid.tvinput.aribsi.EventModelMapper()
+    private val eventModelMapper =
+        com.maleicacid.tvinput.aribsi
+            .EventModelMapper()
     private val tvProviderWriter = TvProviderWriter(serviceContext, inputId)
     private val currentProgramRatingResolver = CurrentProgramRatingResolver(appContext)
     private val programPublishCoordinator = ProgramPublishCoordinator(tvProviderWriter)
     private val releaseOnce = AtomicBoolean(false)
     private var releaseCleanup: ResourceCleanup? = null
     private var parentalReceiverRegistered = false
+
     @Volatile private var sessionExecutorThread: Thread? = null
-    private val sessionExecutor: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "maleicacid-live-session-$sessionId").also { thread ->
-            thread.isDaemon = true
-            sessionExecutorThread = thread
+    private val sessionExecutor: ExecutorService =
+        Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "maleicacid-live-session-$sessionId").also { thread ->
+                thread.isDaemon = true
+                sessionExecutorThread = thread
+            }
         }
-    }
     private var surface: Surface? = null
     private var currentChannelUri: Uri? = null
     private var currentService: ServiceKey? = null
@@ -76,34 +86,56 @@ class MaleicacidLiveSession(
     private var subtitleExplicitlyDisabled: Boolean = false
     private var currentTrackSignature: Set<String> = emptySet()
     private val captionOverlayView = CaptionOverlayView(appContext)
-    private val captionController = AribCaptionController(
-        captionOverlayView,
-        mediaClock = { tunerController.currentMediaClockSnapshot() },
-    )
-    private val superimposeController = AribCaptionController(
-        captionOverlayView,
-        { tunerController.currentMediaClockSnapshot() },
-        overlayLayerId = "superimpose",
-        allowNoPts = true,
-        broadcastDeadline = { statementTime, generation -> tunerController.broadcastDeadlineUntil(statementTime, generation) },
-    )
+    private val captionController =
+        AribCaptionController(
+            captionOverlayView,
+            mediaClock = { tunerController.currentMediaClockSnapshot() },
+        )
+
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    private val superimposeController =
+        AribCaptionController(
+            captionOverlayView,
+            { tunerController.currentMediaClockSnapshot() },
+            overlayLayerId = "superimpose",
+            allowNoPts = true,
+            broadcastDeadline = { statementTime, generation -> tunerController.broadcastDeadlineUntil(statementTime, generation) },
+        )
     private val temporaryUnblocks = TemporaryContentUnblocks()
     private val unblockTimerHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var unblockExpiryTask: Runnable? = null
     private var lastParentalAccessState: ParentalAccessState = ParentalAccessState.UNKNOWN
     private var lastBlockedContent: BlockedContent? = null
-    private data class BlockedContent(val rating: TvContentRating, val unblockKey: String)
+
+    private data class BlockedContent(
+        val rating: TvContentRating,
+        val unblockKey: String,
+    )
+
     private enum class ParentalAccessState { UNKNOWN, ALLOWED, BLOCKED }
+
     private sealed class ContentAccessDecision {
-        data class Block(val blocked: BlockedContent) : ContentAccessDecision()
+        data class Block(
+            val blocked: BlockedContent,
+        ) : ContentAccessDecision()
+
         object Allow : ContentAccessDecision()
-        data class HoldPrevious(val reason: String) : ContentAccessDecision()
+
+        data class HoldPrevious(
+            val reason: String,
+        ) : ContentAccessDecision()
     }
-    private val parentalControlReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            enqueueSessionAction { reevaluateParentalControls() }
+
+    private val parentalControlReceiver =
+        object : BroadcastReceiver() {
+            override fun onReceive(
+                context: Context?,
+                intent: Intent?,
+            ) {
+                enqueueSessionAction { reevaluateParentalControls() }
+            }
         }
-    }
 
     init {
         tunerController.setSectionIngestController(sectionIngestController)
@@ -163,6 +195,9 @@ class MaleicacidLiveSession(
         registerParentalControlReceiver()
     }
 
+    // 失敗の発生点ごとに既存の例外種別と原因を保ち、判定順を変えない。
+    // 同期executor境界ではRuntimeException/Errorを再送し、それ以外の原因だけを既存のRuntimeExceptionへ包む。
+    @Suppress("TooGenericExceptionThrown")
     private fun <T> runOnSessionExecutorBlocking(action: () -> T): T {
         if (Thread.currentThread() == sessionExecutorThread) return action()
         val future = sessionExecutor.submit(Callable<T> { action() })
@@ -173,10 +208,10 @@ class MaleicacidLiveSession(
             throw RuntimeException("session executor interrupted", e)
         } catch (e: ExecutionException) {
             val cause = e.cause ?: e
-            when (cause) {
-                is RuntimeException -> throw cause
-                is Error -> throw cause
-                else -> throw RuntimeException(cause)
+            throw when (cause) {
+                is RuntimeException -> cause
+                is Error -> cause
+                else -> RuntimeException(cause)
             }
         }
     }
@@ -194,9 +229,14 @@ class MaleicacidLiveSession(
         }
     }
 
-    override fun onSetSurface(surface: Surface?): Boolean = if (releaseOnce.get()) false else runOnSessionExecutorBlocking {
-        if (releaseOnce.get()) false else onSetSurfaceOnSessionExecutor(surface)
-    }
+    override fun onSetSurface(surface: Surface?): Boolean =
+        if (releaseOnce.get()) {
+            false
+        } else {
+            runOnSessionExecutorBlocking {
+                if (releaseOnce.get()) false else onSetSurfaceOnSessionExecutor(surface)
+            }
+        }
 
     private fun onSetSurfaceOnSessionExecutor(surface: Surface?): Boolean {
         this.surface = surface
@@ -228,15 +268,26 @@ class MaleicacidLiveSession(
         enqueueSessionAction {
             captionEnabled = enabled
             captionController.setEnabled(enabled)
-            latestService?.let { updateSubtitleSelection(tunerController.tracksFor(it.streams, currentDefaultComponentGroupTags(it.serviceKey))) }
+            latestService?.let {
+                updateSubtitleSelection(
+                    tunerController.tracksFor(it.streams, currentDefaultComponentGroupTags(it.serviceKey)),
+                )
+            }
         }
     }
 
-    override fun onTune(channelUri: Uri?): Boolean = if (releaseOnce.get()) false else runOnSessionExecutorBlocking {
-        if (releaseOnce.get()) return@runOnSessionExecutorBlocking false
-        onTuneOnSessionExecutor(channelUri)
-    }
+    override fun onTune(channelUri: Uri?): Boolean =
+        if (releaseOnce.get()) {
+            false
+        } else {
+            runOnSessionExecutorBlocking {
+                if (releaseOnce.get()) return@runOnSessionExecutorBlocking false
+                onTuneOnSessionExecutor(channelUri)
+            }
+        }
 
+    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+    @Suppress("ReturnCount")
     private fun onTuneOnSessionExecutor(channelUri: Uri?): Boolean {
         if (channelUri == null) return false
         notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_TUNING)
@@ -286,14 +337,24 @@ class MaleicacidLiveSession(
         return true
     }
 
-    private fun mapUnavailableReason(unavailable: PlaybackPipeline.PlaybackUnavailable): Int = when (unavailable.reason) {
-        PlaybackPipeline.PlaybackUnavailableReason.SURFACE_NOT_SET,
-        PlaybackPipeline.PlaybackUnavailableReason.SURFACE_DETACHED,
-        PlaybackPipeline.PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT -> TvInputManager.VIDEO_UNAVAILABLE_REASON_BUFFERING
-        PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY -> TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN
-        else -> TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN
-    }
+    private fun mapUnavailableReason(unavailable: PlaybackPipeline.PlaybackUnavailable): Int =
+        when (unavailable.reason) {
+            PlaybackPipeline.PlaybackUnavailableReason.SURFACE_NOT_SET,
+            PlaybackPipeline.PlaybackUnavailableReason.SURFACE_DETACHED,
+            PlaybackPipeline.PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT,
+            -> TvInputManager.VIDEO_UNAVAILABLE_REASON_BUFFERING
 
+            PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY -> TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN
+
+            else -> TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN
+        }
+
+    // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
+    // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+    // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
+    @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength", "ReturnCount", "TooGenericExceptionCaught")
     private fun refreshDynamicSiAndCasFilters() {
         val serviceKey = currentService ?: return
         val transaction = aribSiEngine.livePlaybackSnapshot()
@@ -302,33 +363,46 @@ class MaleicacidLiveSession(
         val pmtPids = transaction.pmtPidsFor(serviceKey)
         val decision = currentServicePolicy()
         val allCaMetadata = if (ENABLE_CAS_ORCHESTRATION) transaction.caMetadata else emptyList()
-        val serviceScopedCa = allCaMetadata.filter {
-            it.serviceKey == serviceKey && it.source != com.maleicacid.tvinput.aribsi.CaMetadataSource.CAT
-        }
+        val serviceScopedCa =
+            allCaMetadata.filter {
+                it.serviceKey == serviceKey && it.source != com.maleicacid.tvinput.aribsi.CaMetadataSource.CAT
+            }
         val catCa = allCaMetadata.filter { it.source == com.maleicacid.tvinput.aribsi.CaMetadataSource.CAT }
-        val expanded = caMapper.expandProgramLevelToElementaryStreams(
-            serviceScopedCa + catCa,
-            transaction.services,
-        )
+        val expanded =
+            caMapper.expandProgramLevelToElementaryStreams(
+                serviceScopedCa + catCa,
+                transaction.services,
+            )
         val serviceCaMetadata = expanded.filter { it.serviceKey == serviceKey }
         val caMetadata = expanded.filter { it.serviceKey == null || it.serviceKey == serviceKey }
-        val casResult = try {
-            tunerController.updateCasMetadataAndFilters(caMetadata, pmtPids, currentGeneration, decision.casDecisionReady) ?: return
-        } catch (failure: Exception) {
-            playbackState = PlaybackStartState.Stopped
+        val casResult =
             try {
-                SectionFilterPolicy.completeCleanup(
-                    { beginCaptionPresentationGeneration(-1L, false) },
-                    { notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN) },
-                )
-            } catch (cleanup: Exception) { if (cleanup !== failure) failure.addSuppressed(cleanup) }
-            throw failure
-        }
+                tunerController.updateCasMetadataAndFilters(caMetadata, pmtPids, currentGeneration, decision.casDecisionReady) ?: return
+            } catch (failure: Exception) {
+                playbackState = PlaybackStartState.Stopped
+                try {
+                    SectionFilterPolicy.completeCleanup(
+                        { beginCaptionPresentationGeneration(-1L, false) },
+                        { notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN) },
+                    )
+                } catch (cleanup: Exception) {
+                    if (cleanup !== failure) failure.addSuppressed(cleanup)
+                }
+                throw failure
+            }
         if (!decision.casDecisionReady) {
             playbackState = PlaybackStartState.Stopped
             SectionFilterPolicy.completeCleanup(
                 { beginCaptionPresentationGeneration(-1L, false) },
-                { notifyVideoUnavailable(if (decision.registrationReady) TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN else TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN) },
+                {
+                    notifyVideoUnavailable(
+                        if (decision.registrationReady) {
+                            TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN
+                        } else {
+                            TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN
+                        },
+                    )
+                },
             )
         }
         if (decision.registrationReady) {
@@ -349,7 +423,14 @@ class MaleicacidLiveSession(
                 playbackState = PlaybackStartState.Stopped
                 tunerController.stopPlayback()
                 beginCaptionPresentationGeneration(-1L, false)
-                notifyVideoUnavailable(mapUnavailableReason(PlaybackPipeline.PlaybackUnavailable(PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY, "r51 CAS placeholder cannot provide real key token")))
+                notifyVideoUnavailable(
+                    mapUnavailableReason(
+                        PlaybackPipeline.PlaybackUnavailable(
+                            PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY,
+                            "r51 CAS placeholder cannot provide real key token",
+                        ),
+                    ),
+                )
                 return
             }
         }
@@ -360,8 +441,13 @@ class MaleicacidLiveSession(
     }
 
     private fun currentServicePolicy() =
-        com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator.evaluateLive(latestLiveSnapshot, currentService)
+        com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
+            .evaluateLive(latestLiveSnapshot, currentService)
 
+    // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
+    // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
+    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+    @Suppress("CyclomaticComplexMethod", "LongMethod", "ReturnCount")
     private fun maybeStartPlayback(service: AribService): Boolean {
         if (!currentServicePolicy().clearLivePlaybackStaticallyEligible) return false
         when (val decision = contentAccessDecision()) {
@@ -370,46 +456,52 @@ class MaleicacidLiveSession(
                 stopPlaybackForBlockedContent(decision.blocked)
                 return false
             }
+
             ContentAccessDecision.Allow -> {
                 rememberAllowedContent()
                 notifyContentAllowed()
             }
+
             is ContentAccessDecision.HoldPrevious -> {
                 holdPreviousParentalAccessState(decision.reason)
                 return false
             }
         }
-        val initialSelection = tunerController.selectAvStreams(
-            service.serviceKey,
-            service.pcrPid,
-            service.streams,
-            preferredAudioTrackId,
-            selectedSubtitleTrackId,
-            audioExplicitlyDisabled = audioFallbackDisabled,
-            subtitleExplicitlyDisabled = subtitleExplicitlyDisabled,
-            defaultComponentGroupTags = currentDefaultComponentGroupTags(service.serviceKey),
-            dualMonoPresentation = dualMonoPresentation,
-        )
-        val selection = initialSelection.copy(
-            audioComponentType = currentAudioComponent(service.serviceKey, initialSelection.audio?.componentTag)?.componentType
-                ?: initialSelection.audio?.componentType,
-        )
+        val initialSelection =
+            tunerController.selectAvStreams(
+                service.serviceKey,
+                service.pcrPid,
+                service.streams,
+                preferredAudioTrackId,
+                selectedSubtitleTrackId,
+                audioExplicitlyDisabled = audioFallbackDisabled,
+                subtitleExplicitlyDisabled = subtitleExplicitlyDisabled,
+                defaultComponentGroupTags = currentDefaultComponentGroupTags(service.serviceKey),
+                dualMonoPresentation = dualMonoPresentation,
+            )
+        val selection =
+            initialSelection.copy(
+                audioComponentType =
+                    currentAudioComponent(service.serviceKey, initialSelection.audio?.componentTag)?.componentType
+                        ?: initialSelection.audio?.componentType,
+            )
         val audioOnly = PlaybackPolicy.isAudioOnlyService(service.serviceType)
         if (PlaybackPolicy.shouldRejectSelection(service.serviceType ?: -1, selection)) {
             playbackState = PlaybackStartState.Stopped
             tunerController.stopPlayback()
             beginCaptionPresentationGeneration(-1L, false)
-            val failure = if (audioOnly) {
-                PlaybackPipeline.PlaybackUnavailable(
-                    PlaybackPipeline.PlaybackUnavailableReason.UNSUPPORTED_AUDIO_STREAM,
-                    "audio-only serviceに現行対応のaudio ESがありません service=${service.serviceKey}",
-                )
-            } else {
-                PlaybackPipeline.PlaybackUnavailable(
-                    PlaybackPipeline.PlaybackUnavailableReason.UNSUPPORTED_VIDEO_STREAM,
-                    "audio-video serviceに現行対応のvideo ESがありません service=${service.serviceKey}",
-                )
-            }
+            val failure =
+                if (audioOnly) {
+                    PlaybackPipeline.PlaybackUnavailable(
+                        PlaybackPipeline.PlaybackUnavailableReason.UNSUPPORTED_AUDIO_STREAM,
+                        "audio-only serviceに現行対応のaudio ESがありません service=${service.serviceKey}",
+                    )
+                } else {
+                    PlaybackPipeline.PlaybackUnavailable(
+                        PlaybackPipeline.PlaybackUnavailableReason.UNSUPPORTED_VIDEO_STREAM,
+                        "audio-video serviceに現行対応のvideo ESがありません service=${service.serviceKey}",
+                    )
+                }
             notifyVideoUnavailable(mapUnavailableReason(failure))
             return false
         }
@@ -420,17 +512,27 @@ class MaleicacidLiveSession(
         }
         playbackState = PlaybackStartState.Starting(signature)
         val result = tunerController.startPlayback(selection)
-        val next = if (result == null) PlaybackStartState.Failed(signature, pipelineGeneration = null)
-            else PlaybackStartTransitions.afterRestartResult(
-                playbackState, signature, result.generation, result.firstFramePending,
-                result.firstFramePending || (if (audioOnly) result.startedAudio else result.startedVideo),
-            )
+        val next =
+            if (result == null) {
+                PlaybackStartState.Failed(signature, pipelineGeneration = null)
+            } else {
+                PlaybackStartTransitions.afterRestartResult(
+                    playbackState,
+                    signature,
+                    result.generation,
+                    result.firstFramePending,
+                    result.firstFramePending || (if (audioOnly) result.startedAudio else result.startedVideo),
+                )
+            }
         commitPlaybackStartResult(next, ::updatePlaybackStartState) { notifyVideoUnavailable(it) }
         val started = next is PlaybackStartState.Started
         if (started && audioOnly) notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_AUDIO_ONLY)
         return started
     }
 
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+    @Suppress("MaxLineLength", "ReturnCount")
     private fun playbackSignatureFor(
         service: AribService,
         selection: TunerController.AvStreamSelection,
@@ -458,27 +560,47 @@ class MaleicacidLiveSession(
         )
     }
 
-    override fun onAppPrivateCommand(action: String, data: Bundle?) {
+    override fun onAppPrivateCommand(
+        action: String,
+        data: Bundle?,
+    ) {
         enqueueSessionAction {
             if (action != ACTION_SET_DUAL_MONO_PRESENTATION) return@enqueueSessionAction
-            val presentation = when (data?.getString(EXTRA_DUAL_MONO_PRESENTATION)) {
-                DUAL_MONO_MAIN -> PlaybackPipeline.DualMonoPresentation.MAIN
-                DUAL_MONO_SUB -> PlaybackPipeline.DualMonoPresentation.SUB
-                DUAL_MONO_MAIN_SUB -> PlaybackPipeline.DualMonoPresentation.MAIN_SUB
-                else -> return@enqueueSessionAction
-            }
+            val presentation =
+                when (data?.getString(EXTRA_DUAL_MONO_PRESENTATION)) {
+                    DUAL_MONO_MAIN -> PlaybackPipeline.DualMonoPresentation.MAIN
+                    DUAL_MONO_SUB -> PlaybackPipeline.DualMonoPresentation.SUB
+                    DUAL_MONO_MAIN_SUB -> PlaybackPipeline.DualMonoPresentation.MAIN_SUB
+                    else -> return@enqueueSessionAction
+                }
             if (tunerController.setDualMonoPresentation(presentation)) {
                 dualMonoPresentation = presentation
             }
         }
     }
 
-    override fun onSelectTrack(type: Int, trackId: String?): Boolean = if (releaseOnce.get()) false else runOnSessionExecutorBlocking {
-        if (releaseOnce.get()) return@runOnSessionExecutorBlocking false
-        onSelectTrackOnSessionExecutor(type, trackId)
-    }
+    override fun onSelectTrack(
+        type: Int,
+        trackId: String?,
+    ): Boolean =
+        if (releaseOnce.get()) {
+            false
+        } else {
+            runOnSessionExecutorBlocking {
+                if (releaseOnce.get()) return@runOnSessionExecutorBlocking false
+                onSelectTrackOnSessionExecutor(type, trackId)
+            }
+        }
 
-    private fun onSelectTrackOnSessionExecutor(type: Int, trackId: String?): Boolean {
+    // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
+    // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+    @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength", "ReturnCount")
+    private fun onSelectTrackOnSessionExecutor(
+        type: Int,
+        trackId: String?,
+    ): Boolean {
         val service = latestService ?: return false
         val defaultComponentGroupTags = currentDefaultComponentGroupTags(service.serviceKey)
         val tracks = tunerController.tracksFor(service.streams, defaultComponentGroupTags)
@@ -492,36 +614,41 @@ class MaleicacidLiveSession(
                 preferredAudioTrackId = trackId
                 audioFallbackDisabled = false
                 if (trackId != previousAudioTrackId) dualMonoPresentation = PlaybackPipeline.DualMonoPresentation.MAIN
-                val initialSelection = tunerController.selectAvStreams(
-                    service.serviceKey,
-                    service.pcrPid,
-                    service.streams,
-                    preferredAudioTrackId,
-                    selectedSubtitleTrackId,
-                    audioExplicitlyDisabled = audioFallbackDisabled,
-                    subtitleExplicitlyDisabled = subtitleExplicitlyDisabled,
-                    defaultComponentGroupTags = defaultComponentGroupTags,
-                    dualMonoPresentation = dualMonoPresentation,
-                )
-                val selection = initialSelection.copy(
-                    audioComponentType = currentAudioComponent(service.serviceKey, initialSelection.audio?.componentTag)?.componentType
-                        ?: initialSelection.audio?.componentType,
-                )
-                val signature = playbackSignatureFor(service, selection) ?: run {
-                    preferredAudioTrackId = previousAudioTrackId
-                    audioFallbackDisabled = previousAudioFallbackDisabled
-                    dualMonoPresentation = previousDualMonoPresentation
-                    return false
-                }
+                val initialSelection =
+                    tunerController.selectAvStreams(
+                        service.serviceKey,
+                        service.pcrPid,
+                        service.streams,
+                        preferredAudioTrackId,
+                        selectedSubtitleTrackId,
+                        audioExplicitlyDisabled = audioFallbackDisabled,
+                        subtitleExplicitlyDisabled = subtitleExplicitlyDisabled,
+                        defaultComponentGroupTags = defaultComponentGroupTags,
+                        dualMonoPresentation = dualMonoPresentation,
+                    )
+                val selection =
+                    initialSelection.copy(
+                        audioComponentType =
+                            currentAudioComponent(service.serviceKey, initialSelection.audio?.componentTag)?.componentType
+                                ?: initialSelection.audio?.componentType,
+                    )
+                val signature =
+                    playbackSignatureFor(service, selection) ?: run {
+                        preferredAudioTrackId = previousAudioTrackId
+                        audioFallbackDisabled = previousAudioFallbackDisabled
+                        dualMonoPresentation = previousDualMonoPresentation
+                        return false
+                    }
                 val switched = tunerController.switchAudioTrack(selection)
                 if (switched != null && switched.generation >= 0L) {
-                    val next = PlaybackStartTransitions.afterRestartResult(
-                        playbackState,
-                        signature,
-                        switched.generation,
-                        switched.firstFramePending,
-                        switched.switchedAudio,
-                    )
+                    val next =
+                        PlaybackStartTransitions.afterRestartResult(
+                            playbackState,
+                            signature,
+                            switched.generation,
+                            switched.firstFramePending,
+                            switched.switchedAudio,
+                        )
                     commitPlaybackStartResult(next, ::updatePlaybackStartState) { notifyVideoUnavailable(it) }
                 }
                 if (switched?.switchedAudio == true) {
@@ -534,6 +661,7 @@ class MaleicacidLiveSession(
                     false
                 }
             }
+
             TvTrackInfo.TYPE_VIDEO -> {
                 if (trackId == null) return false
                 val currentVideo = tracks.firstOrNull { it.type == TvTrackInfo.TYPE_VIDEO }?.id
@@ -544,6 +672,7 @@ class MaleicacidLiveSession(
                     false
                 }
             }
+
             TvTrackInfo.TYPE_SUBTITLE -> {
                 if (trackId == null) {
                     selectedSubtitleTrackId = null
@@ -562,19 +691,30 @@ class MaleicacidLiveSession(
                     true
                 }
             }
-            else -> false
+
+            else -> {
+                false
+            }
         }
     }
 
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
     private fun currentProgramEvent(
         serviceKey: ServiceKey,
         nowMillis: Long = System.currentTimeMillis(),
-    ) = latestLiveSnapshot?.programs?.events.orEmpty()
+    ) = latestLiveSnapshot
+        ?.programs
+        ?.events
+        .orEmpty()
         .asSequence()
         .filter { event -> event.serviceKey == serviceKey && event.durationMillis > 0L }
         .filter { event -> nowMillis >= event.startTimeMillis && nowMillis < event.startTimeMillis + event.durationMillis }
         .minByOrNull { it.startTimeMillis }
 
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+    @Suppress("MaxLineLength", "ReturnCount")
     private fun currentAudioComponent(
         serviceKey: ServiceKey,
         componentTag: Int?,
@@ -586,6 +726,9 @@ class MaleicacidLiveSession(
             .firstOrNull { component -> component.parseStatus.equals("OK", ignoreCase = true) && component.componentTag == componentTag }
     }
 
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+    @Suppress("MaxLineLength", "ReturnCount")
     private fun currentVideoComponent(
         serviceKey: ServiceKey,
         componentTag: Int?,
@@ -597,7 +740,10 @@ class MaleicacidLiveSession(
             .firstOrNull { component -> component.parseStatus.equals("OK", ignoreCase = true) && component.componentTag == componentTag }
     }
 
-    private fun currentDefaultComponentGroupTags(serviceKey: ServiceKey, nowMillis: Long = System.currentTimeMillis()): Set<Int>? {
+    private fun currentDefaultComponentGroupTags(
+        serviceKey: ServiceKey,
+        nowMillis: Long = System.currentTimeMillis(),
+    ): Set<Int>? {
         val currentEvent = currentProgramEvent(serviceKey, nowMillis) ?: return null
         return currentEvent.descriptors.componentGroups
             .asSequence()
@@ -609,73 +755,85 @@ class MaleicacidLiveSession(
             ?.takeIf { it.isNotEmpty() }
     }
 
+    // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
+    // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength")
     private fun updateTracks(service: AribService) {
         val defaultComponentGroupTags = currentDefaultComponentGroupTags(service.serviceKey)
-        val tracks = tunerController.tracksFor(service.streams, defaultComponentGroupTags).filterNot { track ->
-            PlaybackPolicy.isAudioOnlyService(service.serviceType) && track.type == TvTrackInfo.TYPE_SUBTITLE
-        }
-        val audioMetadataByTrackId = tracks
-            .filter { it.type == TvTrackInfo.TYPE_AUDIO }
-            .associate { track ->
-                val component = currentAudioComponent(service.serviceKey, track.componentTag)
-                track.id to AudioTrackMetadataPolicy.project(track.streamType, track.language, component)
+        val tracks =
+            tunerController.tracksFor(service.streams, defaultComponentGroupTags).filterNot { track ->
+                PlaybackPolicy.isAudioOnlyService(service.serviceType) && track.type == TvTrackInfo.TYPE_SUBTITLE
             }
-        val videoMetadataByTrackId = tracks
-            .filter { it.type == TvTrackInfo.TYPE_VIDEO }
-            .associate { track ->
-                val component = currentVideoComponent(service.serviceKey, track.componentTag)
-                track.id to VideoTrackMetadataPolicy.project(component)
-            }
-        val signature = tracks.map { track ->
-            val audioMetadata = audioMetadataByTrackId[track.id]
-            val videoMetadata = videoMetadataByTrackId[track.id]
-            val subtitleDataComponentId = if (track.type == TvTrackInfo.TYPE_SUBTITLE) track.dataComponentId ?: -1 else -1
-            listOf(
-                track.id,
-                track.type.toString(),
-                track.pid.toString(),
-                track.streamType.toString(),
-                track.componentTag?.toString() ?: "-1",
-                audioMetadata?.language ?: track.language.orEmpty(),
-                audioMetadata?.encoding.orEmpty(),
-                audioMetadata?.channelCount?.toString() ?: "-1",
-                audioMetadata?.sampleRateHz?.toString() ?: "-1",
-                audioMetadata?.description.orEmpty(),
-                (audioMetadata?.audioDescription == true).toString(),
-                (audioMetadata?.hardOfHearing == true).toString(),
-                videoMetadata?.description.orEmpty(),
-                videoMetadata?.width?.toString() ?: "-1",
-                videoMetadata?.height?.toString() ?: "-1",
-                subtitleDataComponentId.toString(),
-            ).joinToString("|")
-        }.toSet()
+        val audioMetadataByTrackId =
+            tracks
+                .filter { it.type == TvTrackInfo.TYPE_AUDIO }
+                .associate { track ->
+                    val component = currentAudioComponent(service.serviceKey, track.componentTag)
+                    track.id to AudioTrackMetadataPolicy.project(track.streamType, track.language, component)
+                }
+        val videoMetadataByTrackId =
+            tracks
+                .filter { it.type == TvTrackInfo.TYPE_VIDEO }
+                .associate { track ->
+                    val component = currentVideoComponent(service.serviceKey, track.componentTag)
+                    track.id to VideoTrackMetadataPolicy.project(component)
+                }
+        val signature =
+            tracks
+                .map { track ->
+                    val audioMetadata = audioMetadataByTrackId[track.id]
+                    val videoMetadata = videoMetadataByTrackId[track.id]
+                    val subtitleDataComponentId = if (track.type == TvTrackInfo.TYPE_SUBTITLE) track.dataComponentId ?: -1 else -1
+                    listOf(
+                        track.id,
+                        track.type.toString(),
+                        track.pid.toString(),
+                        track.streamType.toString(),
+                        track.componentTag?.toString() ?: "-1",
+                        audioMetadata?.language ?: track.language.orEmpty(),
+                        audioMetadata?.encoding.orEmpty(),
+                        audioMetadata?.channelCount?.toString() ?: "-1",
+                        audioMetadata?.sampleRateHz?.toString() ?: "-1",
+                        audioMetadata?.description.orEmpty(),
+                        (audioMetadata?.audioDescription == true).toString(),
+                        (audioMetadata?.hardOfHearing == true).toString(),
+                        videoMetadata?.description.orEmpty(),
+                        videoMetadata?.width?.toString() ?: "-1",
+                        videoMetadata?.height?.toString() ?: "-1",
+                        subtitleDataComponentId.toString(),
+                    ).joinToString("|")
+                }.toSet()
         if (signature != currentTrackSignature) {
             currentTrackSignature = signature
-            notifyTracksChanged(tracks.map { track ->
-                val builder = TvTrackInfo.Builder(track.type, track.id)
-                val audioMetadata = audioMetadataByTrackId[track.id]
-                val videoMetadata = videoMetadataByTrackId[track.id]
-                val language = audioMetadata?.language ?: track.language
-                LanguageCodeNormalizer.normalizeForTvTrackLanguage(language)?.let(builder::setLanguage)
-                if (track.type == TvTrackInfo.TYPE_AUDIO && audioMetadata != null) {
-                    audioMetadata.encoding?.let(builder::setEncoding)
-                    audioMetadata.channelCount?.let(builder::setAudioChannelCount)
-                    audioMetadata.sampleRateHz?.let(builder::setAudioSampleRate)
-                    audioMetadata.description?.let(builder::setDescription)
-                    if (audioMetadata.audioDescription) builder.setAudioDescription(true)
-                    if (audioMetadata.hardOfHearing) builder.setHardOfHearing(true)
-                }
-                if (track.type == TvTrackInfo.TYPE_VIDEO && videoMetadata != null) {
-                    videoMetadata.description?.let(builder::setDescription)
-                    videoMetadata.width?.let(builder::setVideoWidth)
-                    videoMetadata.height?.let(builder::setVideoHeight)
-                }
-                builder.build()
-            })
+            notifyTracksChanged(
+                tracks.map { track ->
+                    val builder = TvTrackInfo.Builder(track.type, track.id)
+                    val audioMetadata = audioMetadataByTrackId[track.id]
+                    val videoMetadata = videoMetadataByTrackId[track.id]
+                    val language = audioMetadata?.language ?: track.language
+                    LanguageCodeNormalizer.normalizeForTvTrackLanguage(language)?.let(builder::setLanguage)
+                    if (track.type == TvTrackInfo.TYPE_AUDIO && audioMetadata != null) {
+                        audioMetadata.encoding?.let(builder::setEncoding)
+                        audioMetadata.channelCount?.let(builder::setAudioChannelCount)
+                        audioMetadata.sampleRateHz?.let(builder::setAudioSampleRate)
+                        audioMetadata.description?.let(builder::setDescription)
+                        if (audioMetadata.audioDescription) builder.setAudioDescription(true)
+                        if (audioMetadata.hardOfHearing) builder.setHardOfHearing(true)
+                    }
+                    if (track.type == TvTrackInfo.TYPE_VIDEO && videoMetadata != null) {
+                        videoMetadata.description?.let(builder::setDescription)
+                        videoMetadata.width?.let(builder::setVideoWidth)
+                        videoMetadata.height?.let(builder::setVideoHeight)
+                    }
+                    builder.build()
+                },
+            )
         }
         tracks.firstOrNull { it.type == TvTrackInfo.TYPE_VIDEO }?.let { notifyTrackSelected(TvTrackInfo.TYPE_VIDEO, it.id) }
-        val selectedAudio = preferredAudioTrackId?.let { wanted -> tracks.firstOrNull { it.id == wanted && it.type == TvTrackInfo.TYPE_AUDIO } }
-            ?: tracks.firstOrNull { it.type == TvTrackInfo.TYPE_AUDIO }
+        val selectedAudio =
+            preferredAudioTrackId?.let { wanted -> tracks.firstOrNull { it.id == wanted && it.type == TvTrackInfo.TYPE_AUDIO } }
+                ?: tracks.firstOrNull { it.type == TvTrackInfo.TYPE_AUDIO }
         selectedAudio?.let {
             preferredAudioTrackId = it.id
             notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, it.id)
@@ -684,6 +842,8 @@ class MaleicacidLiveSession(
         updateSuperimposeSelection(service)
     }
 
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
     private fun updateSubtitleSelection(tracks: List<TunerController.TisTrack>) {
         if (PlaybackPolicy.isAudioOnlyService(latestService?.serviceType)) {
             selectedSubtitleTrackId = null
@@ -697,13 +857,16 @@ class MaleicacidLiveSession(
             notifyTrackSelected(TvTrackInfo.TYPE_SUBTITLE, null)
             return
         }
-        val selected = selectedSubtitleTrackId?.let { wanted -> tracks.firstOrNull { it.type == TvTrackInfo.TYPE_SUBTITLE && it.id == wanted } }
-            ?: tracks.firstOrNull { it.type == TvTrackInfo.TYPE_SUBTITLE }
+        val selected =
+            selectedSubtitleTrackId?.let { wanted -> tracks.firstOrNull { it.type == TvTrackInfo.TYPE_SUBTITLE && it.id == wanted } }
+                ?: tracks.firstOrNull { it.type == TvTrackInfo.TYPE_SUBTITLE }
         selectedSubtitleTrackId = selected?.id
         captionController.selectTrack(selected)
         notifyTrackSelected(TvTrackInfo.TYPE_SUBTITLE, if (captionEnabled) selected?.id else null)
     }
 
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
     private fun updateSuperimposeSelection(service: AribService) {
         if (PlaybackPolicy.isAudioOnlyService(service.serviceType)) {
             superimposeController.selectTrack(null)
@@ -713,7 +876,10 @@ class MaleicacidLiveSession(
         superimposeController.selectTrack(track?.takeIf { it.automaticPresentationOnReception == true })
     }
 
-    private fun beginCaptionPresentationGeneration(generation: Long, hasVideo: Boolean) {
+    private fun beginCaptionPresentationGeneration(
+        generation: Long,
+        hasVideo: Boolean,
+    ) {
         captionController.beginPlaybackGeneration(generation, hasVideo)
         superimposeController.beginPlaybackGeneration(generation, hasVideo)
     }
@@ -725,14 +891,19 @@ class MaleicacidLiveSession(
 
     private fun updatePlaybackStartState(next: PlaybackStartState) {
         playbackState = next
-        if (next is PlaybackStartState.Failed) beginCaptionPresentationGeneration(-1L, false)
-        else beginCaptionPresentationGeneration(
-            PlaybackStartTransitions.pipelineGeneration(next) ?: -1L,
-            hasVideo = PlaybackStartTransitions.signature(next)?.videoPid != null,
-        )
+        if (next is PlaybackStartState.Failed) {
+            beginCaptionPresentationGeneration(-1L, false)
+        } else {
+            beginCaptionPresentationGeneration(
+                PlaybackStartTransitions.pipelineGeneration(next) ?: -1L,
+                hasVideo = PlaybackStartTransitions.signature(next)?.videoPid != null,
+            )
+        }
         onCaptionPlaybackClockChanged()
     }
 
+    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+    @Suppress("ReturnCount")
     private fun handleFirstFrameAvailable(generation: Long) {
         val state = playbackState as? PlaybackStartState.WaitingFirstOutput ?: return
         if (state.pipelineGeneration != generation) return
@@ -744,11 +915,13 @@ class MaleicacidLiveSession(
                 stopPlaybackForBlockedContent(decision.blocked)
                 return
             }
+
             ContentAccessDecision.Allow -> {
                 rememberAllowedContent()
                 notifyContentAllowed()
                 notifyVideoAvailable()
             }
+
             is ContentAccessDecision.HoldPrevious -> {
                 holdPreviousParentalAccessState(decision.reason)
             }
@@ -775,7 +948,10 @@ class MaleicacidLiveSession(
         notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
     }
 
-    private fun handleFrontendTuneEvent(tuneGeneration: Long, event: Int) {
+    private fun handleFrontendTuneEvent(
+        tuneGeneration: Long,
+        event: Int,
+    ) {
         if (tuneGeneration != currentGeneration) return
         when (event) {
             OnTuneEventListener.SIGNAL_NO_SIGNAL, OnTuneEventListener.SIGNAL_LOST_LOCK -> {
@@ -785,6 +961,7 @@ class MaleicacidLiveSession(
                 beginCaptionPresentationGeneration(-1L, false)
                 notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_WEAK_SIGNAL)
             }
+
             OnTuneEventListener.SIGNAL_LOCKED -> {
                 if (!frontendSignalUnavailable) return
                 frontendSignalUnavailable = false
@@ -794,9 +971,14 @@ class MaleicacidLiveSession(
         }
     }
 
+    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+    @Suppress("ReturnCount")
     private fun handlePlaybackUnavailable(reason: PlaybackPipeline.PlaybackUnavailable) {
         if (!PlaybackStartTransitions.acceptsUnavailable(playbackState, reason.generation)) {
-            android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "旧世代または失敗確定済みの再生不能通知を破棄します reason=${reason.reason} generation=${reason.generation}")
+            android.util.Log.w(
+                com.maleicacid.tvinput.common.LogTags.TIS,
+                "旧世代または失敗確定済みの再生不能通知を破棄します reason=${reason.reason} generation=${reason.generation}",
+            )
             return
         }
         if (reason.reason == PlaybackPipeline.PlaybackUnavailableReason.PLAYBACK_RECOVERY_FAILED) {
@@ -805,9 +987,10 @@ class MaleicacidLiveSession(
             notifyVideoUnavailable(mapUnavailableReason(reason))
             return
         }
-        val audioFailure = reason.reason == PlaybackPipeline.PlaybackUnavailableReason.AUDIO_UNAVAILABLE ||
-            reason.reason == PlaybackPipeline.PlaybackUnavailableReason.AUDIO_FILTER_NOT_STARTED ||
-            reason.reason == PlaybackPipeline.PlaybackUnavailableReason.UNSUPPORTED_AUDIO_STREAM
+        val audioFailure =
+            reason.reason == PlaybackPipeline.PlaybackUnavailableReason.AUDIO_UNAVAILABLE ||
+                reason.reason == PlaybackPipeline.PlaybackUnavailableReason.AUDIO_FILTER_NOT_STARTED ||
+                reason.reason == PlaybackPipeline.PlaybackUnavailableReason.UNSUPPORTED_AUDIO_STREAM
         if (audioFailure) {
             if (PlaybackPolicy.isAudioOnlyService(latestService?.serviceType)) {
                 if (!PlaybackStartTransitions.acceptsGeneration(playbackState, reason.generation)) {
@@ -822,19 +1005,25 @@ class MaleicacidLiveSession(
                 notifyVideoUnavailable(mapUnavailableReason(reason))
                 return
             }
-            android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "audio unavailable は video unavailable として通知しません reason=${reason.reason} detail=${reason.detail}")
+            android.util.Log.w(
+                com.maleicacid.tvinput.common.LogTags.TIS,
+                "audio unavailable は video unavailable として通知しません reason=${reason.reason} detail=${reason.detail}",
+            )
             return
         }
-        if (reason.reason == PlaybackPipeline.PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT ||
-            reason.reason == PlaybackPipeline.PlaybackUnavailableReason.VIDEO_CODEC_ERROR ||
-            reason.reason == PlaybackPipeline.PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT ||
-            reason.reason == PlaybackPipeline.PlaybackUnavailableReason.VIDEO_FILTER_NOT_STARTED) {
+        val videoStartupFailed =
+            reason.reason == PlaybackPipeline.PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT ||
+                reason.reason == PlaybackPipeline.PlaybackUnavailableReason.VIDEO_CODEC_ERROR ||
+                reason.reason == PlaybackPipeline.PlaybackUnavailableReason.CODEC_CONFIG_TIMEOUT ||
+                reason.reason == PlaybackPipeline.PlaybackUnavailableReason.VIDEO_FILTER_NOT_STARTED
+        if (videoStartupFailed) {
             val signature = PlaybackStartTransitions.signature(playbackState)
             if (signature != null) {
-                playbackState = PlaybackStartState.Failed(
-                    signature,
-                    PlaybackStartTransitions.pipelineGeneration(playbackState),
-                )
+                playbackState =
+                    PlaybackStartState.Failed(
+                        signature,
+                        PlaybackStartTransitions.pipelineGeneration(playbackState),
+                    )
             }
         }
         notifyVideoUnavailable(mapUnavailableReason(reason))
@@ -847,26 +1036,44 @@ class MaleicacidLiveSession(
         beginCaptionPresentationGeneration(-1L, false)
     }
 
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+    @Suppress("MaxLineLength", "ReturnCount")
     private fun contentAccessDecision(): ContentAccessDecision {
         val manager = tvInputManager ?: return ContentAccessDecision.Allow
         if (!manager.isParentalControlsEnabled) return ContentAccessDecision.Allow
-        return when (val result = currentProgramRatingResolver.resolveDetailed(
-            channelUri = currentChannelUri,
-            serviceKey = currentService,
-            latestEvents = latestLiveSnapshot?.programs?.events.orEmpty(),
-            eitAuthority = currentProgramRatingResolver.eitAuthority(latestLiveSnapshot?.programs, currentService),
-            ratingProfile = currentRatingProfile,
-        )) {
+        return when (
+            val result =
+                currentProgramRatingResolver.resolveDetailed(
+                    channelUri = currentChannelUri,
+                    serviceKey = currentService,
+                    latestEvents = latestLiveSnapshot?.programs?.events.orEmpty(),
+                    eitAuthority = currentProgramRatingResolver.eitAuthority(latestLiveSnapshot?.programs, currentService),
+                    ratingProfile = currentRatingProfile,
+                )
+        ) {
             is CurrentProgramRatingResolver.ResolveResult.Ratings -> {
                 val ratingSet = result.ratingSet
                 clearUnblocksIfCurrentProgramChanged(ratingSet)
-                ratingSet.ratingsForBlocking().firstNotNullOfOrNull { rating ->
-                    val unblockKey = ratingSet.unblockKeyFor(rating)
-                    if (!temporaryUnblocks.contains(unblockKey, System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime()) && manager.isRatingBlocked(rating)) BlockedContent(rating, unblockKey) else null
-                }?.let { ContentAccessDecision.Block(it) } ?: ContentAccessDecision.Allow
+                ratingSet
+                    .ratingsForBlocking()
+                    .firstNotNullOfOrNull { rating ->
+                        val unblockKey = ratingSet.unblockKeyFor(rating)
+                        if (!temporaryUnblocks.contains(unblockKey, System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime()) &&
+                            manager.isRatingBlocked(rating)
+                        ) {
+                            BlockedContent(rating, unblockKey)
+                        } else {
+                            null
+                        }
+                    }?.let { ContentAccessDecision.Block(it) } ?: ContentAccessDecision.Allow
             }
+
             is CurrentProgramRatingResolver.ResolveResult.ProviderQueryFailed -> {
-                android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "TvProvider current program rating query failure; keeping previous parental access state reason=${result.reason}")
+                android.util.Log.w(
+                    com.maleicacid.tvinput.common.LogTags.TIS,
+                    "TvProvider current program rating query failure; keeping previous parental access state reason=${result.reason}",
+                )
                 ContentAccessDecision.HoldPrevious(result.reason)
             }
         }
@@ -885,21 +1092,40 @@ class MaleicacidLiveSession(
     private fun holdPreviousParentalAccessState(reason: String) {
         when (lastParentalAccessState) {
             ParentalAccessState.ALLOWED -> {
-                android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "TvProvider rating query failure中のため、直前の許可状態を維持します reason=$reason")
+                android.util.Log.w(
+                    com.maleicacid.tvinput.common.LogTags.TIS,
+                    "TvProvider rating query failure中のため、直前の許可状態を維持します reason=$reason",
+                )
                 notifyVideoAvailable()
             }
+
             ParentalAccessState.BLOCKED -> {
                 val blocked = lastBlockedContent
-                android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "TvProvider rating query failure中のため、直前の遮断状態を維持します reason=$reason")
-                if (blocked != null) stopPlaybackForBlockedContent(blocked) else notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+                android.util.Log.w(
+                    com.maleicacid.tvinput.common.LogTags.TIS,
+                    "TvProvider rating query failure中のため、直前の遮断状態を維持します reason=$reason",
+                )
+                if (blocked !=
+                    null
+                ) {
+                    stopPlaybackForBlockedContent(blocked)
+                } else {
+                    notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+                }
             }
+
             ParentalAccessState.UNKNOWN -> {
-                android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "TvProvider rating query failure中で直前状態が無いため、許可通知を出さず映像不可にします reason=$reason")
+                android.util.Log.w(
+                    com.maleicacid.tvinput.common.LogTags.TIS,
+                    "TvProvider rating query failure中で直前状態が無いため、許可通知を出さず映像不可にします reason=$reason",
+                )
                 notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
             }
         }
     }
 
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
     private fun clearUnblocksIfCurrentProgramChanged(ratingSet: CurrentProgramRatingResolver.CurrentProgramRatingSet) {
         temporaryUnblocks.updateProgram(ratingSet.programIdentityKey().takeIf { ratingSet.currentRowSelectionKey() != null })
         ratingSet.endTimeMillis?.let {
@@ -914,22 +1140,26 @@ class MaleicacidLiveSession(
         unblockExpiryTask = null
     }
 
+    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+    @Suppress("ReturnCount")
     private fun armUnblockExpiration(): Boolean {
         unblockExpiryTask?.let(unblockTimerHandler::removeCallbacks)
         unblockExpiryTask = null
-        val delay = temporaryUnblocks.nextDelayMillis(System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime())
-            ?: return true
-        val task = object : Runnable {
-            override fun run() {
-                enqueueSessionAction {
-                    if (unblockExpiryTask !== this) return@enqueueSessionAction
-                    unblockExpiryTask = null
-                    temporaryUnblocks.expire(System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime())
-                    reevaluateParentalControls()
-                    armUnblockExpiration()
+        val delay =
+            temporaryUnblocks.nextDelayMillis(System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime())
+                ?: return true
+        val task =
+            object : Runnable {
+                override fun run() {
+                    enqueueSessionAction {
+                        if (unblockExpiryTask !== this) return@enqueueSessionAction
+                        unblockExpiryTask = null
+                        temporaryUnblocks.expire(System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime())
+                        reevaluateParentalControls()
+                        armUnblockExpiration()
+                    }
                 }
             }
-        }
         unblockExpiryTask = task
         if (unblockTimerHandler.postDelayed(task, delay)) return true
         clearTemporaryUnblocks()
@@ -943,6 +1173,7 @@ class MaleicacidLiveSession(
                 rememberBlockedContent(decision.blocked)
                 stopPlaybackForBlockedContent(decision.blocked)
             }
+
             ContentAccessDecision.Allow -> {
                 rememberAllowedContent()
                 notifyContentAllowed()
@@ -951,13 +1182,19 @@ class MaleicacidLiveSession(
                     maybeStartPlayback(service)
                 }
             }
+
             is ContentAccessDecision.HoldPrevious -> {
                 holdPreviousParentalAccessState(decision.reason)
             }
         }
     }
 
-    private fun updateCurrentProgramVideoMetadata(generation: Long, info: PlaybackPipeline.VideoFormatInfo) {
+    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+    @Suppress("ReturnCount")
+    private fun updateCurrentProgramVideoMetadata(
+        generation: Long,
+        info: PlaybackPipeline.VideoFormatInfo,
+    ) {
         if (!PlaybackStartTransitions.acceptsGeneration(playbackState, generation)) return
         captionController.updateVideoGeometry(
             generation,
@@ -974,47 +1211,66 @@ class MaleicacidLiveSession(
         val key = currentService ?: return
         val now = System.currentTimeMillis()
         val transaction = latestLiveSnapshot?.programs ?: return
-        val records = eventModelMapper.toProgramRecords(
-            profile = transaction.discoveryProfile,
-            events = transaction.events.filter { event ->
-                ProgramVideoMetadataPolicy.eventContainsTime(event, key, now)
-            },
-            semanticFactsByServiceKey = transaction.semanticFactsByServiceKey,
-            malformedCaDescriptorCountByServiceId = transaction.malformedCaDescriptorCountByServiceId,
-            ratingProfileByServiceKey = mapOf(key to currentRatingProfile),
-        )
+        val records =
+            eventModelMapper.toProgramRecords(
+                profile = transaction.discoveryProfile,
+                events =
+                    transaction.events.filter { event ->
+                        ProgramVideoMetadataPolicy.eventContainsTime(event, key, now)
+                    },
+                semanticFactsByServiceKey = transaction.semanticFactsByServiceKey,
+                malformedCaDescriptorCountByServiceId = transaction.malformedCaDescriptorCountByServiceId,
+                ratingProfileByServiceKey = mapOf(key to currentRatingProfile),
+            )
         if (records.isEmpty()) return
         rememberVideoMetadata(records, info)
         publishLivePrograms(applyLatestVideoMetadata(records), transaction)
     }
 
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
     private fun refreshCurrentProgramRatingState() {
-        when (val result = currentProgramRatingResolver.resolveDetailed(
-            channelUri = currentChannelUri,
-            serviceKey = currentService,
-            latestEvents = latestLiveSnapshot?.programs?.events.orEmpty(),
-            eitAuthority = currentProgramRatingResolver.eitAuthority(latestLiveSnapshot?.programs, currentService),
-            ratingProfile = currentRatingProfile,
-        )) {
-            is CurrentProgramRatingResolver.ResolveResult.Ratings -> clearUnblocksIfCurrentProgramChanged(result.ratingSet)
-            is CurrentProgramRatingResolver.ResolveResult.ProviderQueryFailed -> android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "TvProvider rating query failure中のため unblock 状態を更新しません reason=${result.reason}")
+        when (
+            val result =
+                currentProgramRatingResolver.resolveDetailed(
+                    channelUri = currentChannelUri,
+                    serviceKey = currentService,
+                    latestEvents = latestLiveSnapshot?.programs?.events.orEmpty(),
+                    eitAuthority = currentProgramRatingResolver.eitAuthority(latestLiveSnapshot?.programs, currentService),
+                    ratingProfile = currentRatingProfile,
+                )
+        ) {
+            is CurrentProgramRatingResolver.ResolveResult.Ratings -> {
+                clearUnblocksIfCurrentProgramChanged(result.ratingSet)
+            }
+
+            is CurrentProgramRatingResolver.ResolveResult.ProviderQueryFailed -> {
+                android.util.Log.w(
+                    com.maleicacid.tvinput.common.LogTags.TIS,
+                    "TvProvider rating query failure中のため unblock 状態を更新しません reason=${result.reason}",
+                )
+            }
         }
     }
 
     private fun publishLiveProgramsForCurrentService() {
         val key = currentService ?: return
         val transaction = latestLiveSnapshot?.programs ?: return
-        val records = eventModelMapper.toProgramRecords(
-            profile = transaction.discoveryProfile,
-            events = transaction.events.filter { it.serviceKey == key },
-            semanticFactsByServiceKey = transaction.semanticFactsByServiceKey,
-            malformedCaDescriptorCountByServiceId = transaction.malformedCaDescriptorCountByServiceId,
-            ratingProfileByServiceKey = mapOf(key to currentRatingProfile),
-        )
+        val records =
+            eventModelMapper.toProgramRecords(
+                profile = transaction.discoveryProfile,
+                events = transaction.events.filter { it.serviceKey == key },
+                semanticFactsByServiceKey = transaction.semanticFactsByServiceKey,
+                malformedCaDescriptorCountByServiceId = transaction.malformedCaDescriptorCountByServiceId,
+                ratingProfileByServiceKey = mapOf(key to currentRatingProfile),
+            )
         publishLivePrograms(applyLatestVideoMetadata(records), transaction)
     }
 
-    private fun rememberVideoMetadata(records: List<ProgramRecord>, info: PlaybackPipeline.VideoFormatInfo) {
+    private fun rememberVideoMetadata(
+        records: List<ProgramRecord>,
+        info: PlaybackPipeline.VideoFormatInfo,
+    ) {
         records.forEach { record ->
             latestVideoMetadataByProgramKey[ProgramVideoMetadataPolicy.key(record)] = info
         }
@@ -1029,23 +1285,29 @@ class MaleicacidLiveSession(
     ) {
         val key = currentService ?: return
         if (!currentServicePolicy().registrationReady) return
-        val result = programPublishCoordinator.publishWithUpdates(
-            mode = ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
-            allPrograms = records,
-            updateWindows = snapshot.updateWindows.filter { it.serviceKey == key }
-                .map(ProgramPublishCoordinator::EpgUpdateWindow),
-            allowedServiceKeys = setOf(key),
-        )
+        val result =
+            programPublishCoordinator.publishWithUpdates(
+                mode = ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
+                allPrograms = records,
+                updateWindows =
+                    snapshot.updateWindows
+                        .filter { it.serviceKey == key }
+                        .map(ProgramPublishCoordinator::EpgUpdateWindow),
+                allowedServiceKeys = setOf(key),
+            )
         if (result.failures.isNotEmpty()) {
             android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "live Programs 更新失敗=${result.failures}")
         }
     }
 
+    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
+    @Suppress("MagicNumber")
     private fun registerParentalControlReceiver() {
-        val filter = IntentFilter().apply {
-            addAction(TvInputManager.ACTION_BLOCKED_RATINGS_CHANGED)
-            addAction(TvInputManager.ACTION_PARENTAL_CONTROLS_ENABLED_CHANGED)
-        }
+        val filter =
+            IntentFilter().apply {
+                addAction(TvInputManager.ACTION_BLOCKED_RATINGS_CHANGED)
+                addAction(TvInputManager.ACTION_PARENTAL_CONTROLS_ENABLED_CHANGED)
+            }
         runCatching {
             if (Build.VERSION.SDK_INT >= 33) {
                 appContext.registerReceiver(parentalControlReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
@@ -1067,27 +1329,46 @@ class MaleicacidLiveSession(
         enqueueSessionAction { onUnblockContentOnSessionExecutor(unblockedRating) }
     }
 
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+    @Suppress("MaxLineLength", "ReturnCount")
     private fun onUnblockContentOnSessionExecutor(unblockedRating: TvContentRating?) {
         val rating = unblockedRating ?: return
-        val ratingSet = when (val result = currentProgramRatingResolver.resolveDetailed(
-            channelUri = currentChannelUri,
-            serviceKey = currentService,
-            latestEvents = latestLiveSnapshot?.programs?.events.orEmpty(),
-            eitAuthority = currentProgramRatingResolver.eitAuthority(latestLiveSnapshot?.programs, currentService),
-            ratingProfile = currentRatingProfile,
-        )) {
-            is CurrentProgramRatingResolver.ResolveResult.Ratings -> {
-                clearUnblocksIfCurrentProgramChanged(result.ratingSet)
-                result.ratingSet
+        val ratingSet =
+            when (
+                val result =
+                    currentProgramRatingResolver.resolveDetailed(
+                        channelUri = currentChannelUri,
+                        serviceKey = currentService,
+                        latestEvents = latestLiveSnapshot?.programs?.events.orEmpty(),
+                        eitAuthority = currentProgramRatingResolver.eitAuthority(latestLiveSnapshot?.programs, currentService),
+                        ratingProfile = currentRatingProfile,
+                    )
+            ) {
+                is CurrentProgramRatingResolver.ResolveResult.Ratings -> {
+                    clearUnblocksIfCurrentProgramChanged(result.ratingSet)
+                    result.ratingSet
+                }
+
+                is CurrentProgramRatingResolver.ResolveResult.ProviderQueryFailed -> {
+                    android.util.Log.w(
+                        com.maleicacid.tvinput.common.LogTags.TIS,
+                        "TvProvider rating query failure中のため unblock 状態を更新しません reason=${result.reason}",
+                    )
+                    return
+                }
             }
-            is CurrentProgramRatingResolver.ResolveResult.ProviderQueryFailed -> {
-                android.util.Log.w(com.maleicacid.tvinput.common.LogTags.TIS, "TvProvider rating query failure中のため unblock 状態を更新しません reason=${result.reason}")
-                return
-            }
-        }
         val unblockKey = ratingSet.exactUnblockKeyFor(rating) ?: return
         val endTimeMillis = ratingSet.endTimeMillis ?: return
-        if (!temporaryUnblocks.grant(unblockKey, endTimeMillis, System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime())) return
+        if (!temporaryUnblocks.grant(
+                unblockKey,
+                endTimeMillis,
+                System.currentTimeMillis(),
+                android.os.SystemClock.elapsedRealtime(),
+            )
+        ) {
+            return
+        }
         if (!armUnblockExpiration()) {
             reevaluateParentalControls()
             return
@@ -1157,14 +1438,25 @@ class MaleicacidLiveSession(
         ) {
             if (!PlaybackStartTransitions.acceptsGeneration(current, restart.originGeneration)) return
             val previousSignature = PlaybackStartTransitions.signature(current) ?: return
-            val signature = if (restart.videoOnly) previousSignature.copy(
-                audioPid = null, audioStreamType = null, audioConfiguration = null,
-            ) else previousSignature
+            val signature =
+                if (restart.videoOnly) {
+                    previousSignature.copy(
+                        audioPid = null,
+                        audioStreamType = null,
+                        audioConfiguration = null,
+                    )
+                } else {
+                    previousSignature
+                }
             val result = restart.result
-            val next = PlaybackStartTransitions.afterRestartResult(
-                current, signature, result.generation, result.firstFramePending,
-                result.startedVideo || result.startedAudio || result.firstFramePending,
-            )
+            val next =
+                PlaybackStartTransitions.afterRestartResult(
+                    current,
+                    signature,
+                    result.generation,
+                    result.firstFramePending,
+                    result.startedVideo || result.startedAudio || result.firstFramePending,
+                )
             commitPlaybackStartResult(next, accept, notifyUnavailable)
         }
 

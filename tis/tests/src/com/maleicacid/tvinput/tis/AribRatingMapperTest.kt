@@ -1,3 +1,6 @@
+// テストの入力・期待値を本体の定数と独立した具体値で記述する。
+@file:Suppress("MagicNumber")
+
 package com.maleicacid.tvinput.tis
 
 import android.media.tv.TvContentRating
@@ -5,8 +8,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.maleicacid.tvinput.aribsi.AribParentalRating
 import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -24,18 +27,23 @@ class AribRatingMapperTest {
         )
     }
 
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
     @Test
     fun explicitExceptionalValuesNeverCollapseToUnrated() {
-        val expected = TvContentRating.createRating(
-            AribRatingMapper.EXCEPTIONAL_DOMAIN,
-            AribRatingMapper.EXCEPTIONAL_RATING_SYSTEM,
-            AribRatingMapper.EXCEPTIONAL_RATING,
-        )
+        val expected =
+            TvContentRating.createRating(
+                AribRatingMapper.EXCEPTIONAL_DOMAIN,
+                AribRatingMapper.EXCEPTIONAL_RATING_SYSTEM,
+                AribRatingMapper.EXCEPTIONAL_RATING,
+            )
         assertEquals(expected, AribRatingMapper.toTvContentRating(rating(0x12), AribRatingMapper.BroadcastProfile.BS_CS))
         assertEquals(expected, AribRatingMapper.toTvContentRating(rating(0xff), AribRatingMapper.BroadcastProfile.BS_CS))
         assertNotEquals(TvContentRating.UNRATED, expected)
     }
 
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
     @Test
     fun undefinedOrForeignRatingsDoNotInventAndroidRatings() {
         assertNull(AribRatingMapper.toTvContentRating(rating(0x00), AribRatingMapper.BroadcastProfile.BS_CS))
@@ -43,7 +51,10 @@ class AribRatingMapperTest {
         assertNull(AribRatingMapper.toTvContentRating(rating(0x0f), AribRatingMapper.BroadcastProfile.TERRESTRIAL))
     }
 
-    private fun rating(raw: Int, country: String = "JPN") = AribParentalRating(
+    private fun rating(
+        raw: Int,
+        country: String = "JPN",
+    ) = AribParentalRating(
         countryCode = country,
         rawRatingByte = raw,
     )

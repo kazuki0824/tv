@@ -1,3 +1,6 @@
+// テストの入力・期待値を本体の定数と独立した具体値で記述する。
+@file:Suppress("MagicNumber")
+
 package com.maleicacid.tvinput.tis
 
 import com.maleicacid.tvinput.common.ServiceKey
@@ -6,13 +9,14 @@ import org.junit.Test
 
 class BootEpgSyncPublishCountR51FixTest {
     @Test fun changedCountIncludesDelete() {
-        val result = ProgramPublishCoordinator.ProgramPublishResult(
-            inserted = 1,
-            updated = 2,
-            deleted = 5,
-            skippedUnchanged = 3,
-            skippedNoChannel = 4,
-        )
+        val result =
+            ProgramPublishCoordinator.ProgramPublishResult(
+                inserted = 1,
+                updated = 2,
+                deleted = 5,
+                skippedUnchanged = 3,
+                skippedNoChannel = 4,
+            )
         check(result.changed == 8)
         check(result.deleted == 5)
     }

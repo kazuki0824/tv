@@ -7,6 +7,8 @@ import android.os.UserManager
 import android.util.Log
 import com.maleicacid.tvinput.common.LogTags
 
+// 同じ状態・境界を扱う操作群を一つの所有者に保つ。
+@Suppress("TooManyFunctions")
 object DirectBootGuard {
     data class DirectBootPendingState(
         val pending: Boolean,
@@ -28,9 +30,14 @@ object DirectBootGuard {
     private const val KEY_BOOT_REASON = "bootReason"
     private const val KEY_LAST_SKIPPED_REASON = "lastSkippedReason"
 
-    fun onLockedBootCompleted(context: Context, nowMillis: Long, bootReason: String) {
+    fun onLockedBootCompleted(
+        context: Context,
+        nowMillis: Long,
+        bootReason: String,
+    ) {
         val prefs = prefs(context)
-        prefs.edit()
+        prefs
+            .edit()
             .putBoolean(KEY_PENDING, true)
             .putLong(KEY_LAST_LOCKED_BOOT_RECEIVED_AT, nowMillis)
             .putString(KEY_BOOT_REASON, bootReason)
@@ -41,7 +48,13 @@ object DirectBootGuard {
         Log.i(LogTags.TIS, "Direct Boot 中の boot EPG 同期を延期しました reason=$bootReason")
     }
 
-    fun drainIfUserUnlocked(context: Context, source: String, nowMillis: Long): DrainDecision {
+    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+    @Suppress("ReturnCount")
+    fun drainIfUserUnlocked(
+        context: Context,
+        source: String,
+        nowMillis: Long,
+    ): DrainDecision {
         val prefs = prefs(context)
         if (!prefs.getBoolean(KEY_PENDING, false)) return DrainDecision.SKIP_NO_PENDING
         val userManager = context.getSystemService(UserManager::class.java)
@@ -66,8 +79,12 @@ object DirectBootGuard {
 
     fun isPending(context: Context): Boolean = prefs(context).getBoolean(KEY_PENDING, false)
 
-    fun deferPending(context: Context, reason: String) {
-        prefs(context).edit()
+    fun deferPending(
+        context: Context,
+        reason: String,
+    ) {
+        prefs(context)
+            .edit()
             .putBoolean(KEY_PENDING, true)
             .putString(KEY_LAST_SKIPPED_REASON, reason)
             .apply()
@@ -75,8 +92,12 @@ object DirectBootGuard {
         Log.i(LogTags.TIS, "boot EPG 同期を延期しました reason=$reason")
     }
 
-    fun markBootEpgSyncRequested(context: Context, reason: String) {
-        prefs(context).edit()
+    fun markBootEpgSyncRequested(
+        context: Context,
+        reason: String,
+    ) {
+        prefs(context)
+            .edit()
             .putBoolean(KEY_PENDING, true)
             .putString(KEY_BOOT_REASON, reason)
             .apply()
@@ -97,34 +118,46 @@ object DirectBootGuard {
         )
     }
 
-    private fun markSkipped(context: Context, reason: String) {
+    private fun markSkipped(
+        context: Context,
+        reason: String,
+    ) {
         prefs(context).edit().putString(KEY_LAST_SKIPPED_REASON, reason).apply()
         BootEpgSyncDiagnostics.lastSkippedReason = reason
         Log.w(LogTags.TIS, "boot EPG 同期 drain を延期します reason=$reason")
     }
 
+    // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
+    @Suppress("TooGenericExceptionCaught")
     private fun isTvProviderReady(context: Context): Boolean {
         return try {
-            val cursor = context.contentResolver.query(
-                TvContract.Channels.CONTENT_URI,
-                arrayOf(TvContract.Channels._ID),
-                null,
-                null,
-                null,
-            ) ?: return false
+            val cursor =
+                context.contentResolver.query(
+                    TvContract.Channels.CONTENT_URI,
+                    arrayOf(TvContract.Channels._ID),
+                    null,
+                    null,
+                    null,
+                ) ?: return false
             cursor.close()
             true
         } catch (e: SecurityException) {
+            Log.w(LogTags.TIS, "TvProvider readiness query failed", e)
             false
         } catch (e: IllegalStateException) {
+            Log.w(LogTags.TIS, "TvProvider readiness query failed", e)
             false
         } catch (e: SQLiteException) {
+            Log.w(LogTags.TIS, "TvProvider readiness query failed", e)
             false
         } catch (e: RuntimeException) {
+            Log.w(LogTags.TIS, "TvProvider readiness query failed", e)
             false
         }
     }
 
-    private fun prefs(context: Context) = context.createDeviceProtectedStorageContext()
-        .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    private fun prefs(context: Context) =
+        context
+            .createDeviceProtectedStorageContext()
+            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 }

@@ -1,26 +1,60 @@
 package com.maleicacid.tvinput.common
 
+// この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
+@Suppress("MagicNumber")
 private val UINT16_RANGE = 0x0000..0xffff
+
+// この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
+@Suppress("MagicNumber")
 private val TS_PID_RANGE = 0x0000..0x1fff
+
+// この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
+@Suppress("MagicNumber")
 private val TOKEN_LENGTH_RANGE = 1..16
+
+// この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
+@Suppress("MagicNumber")
 private val RELATIVE_STREAM_RANGE = 0..7
 
 @JvmInline
-value class NetworkId16(val value: Int) {
-    init { require(value in UINT16_RANGE) { "original_network_id は 0..0xffff でなければなりません: $value" } }
-    companion object { fun fromOrNull(value: Int?): NetworkId16? = value?.takeIf { it in UINT16_RANGE }?.let(::NetworkId16) }
+value class NetworkId16(
+    val value: Int,
+) {
+    init {
+        require(value in UINT16_RANGE) { "original_network_id は 0..0xffff でなければなりません: $value" }
+    }
+
+    companion object {
+        fun fromOrNull(value: Int?): NetworkId16? = value?.takeIf { it in UINT16_RANGE }?.let(::NetworkId16)
+    }
 }
 
 @JvmInline
-value class TransportStreamId16(val value: Int) {
-    init { require(value in UINT16_RANGE) { "transport_stream_id は 0..0xffff でなければなりません: $value" } }
-    companion object { fun fromOrNull(value: Int?): TransportStreamId16? = value?.takeIf { it in UINT16_RANGE }?.let(::TransportStreamId16) }
+value class TransportStreamId16(
+    val value: Int,
+) {
+    init {
+        require(value in UINT16_RANGE) { "transport_stream_id は 0..0xffff でなければなりません: $value" }
+    }
+
+    companion object {
+        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+        @Suppress("MaxLineLength")
+        fun fromOrNull(value: Int?): TransportStreamId16? = value?.takeIf { it in UINT16_RANGE }?.let(::TransportStreamId16)
+    }
 }
 
 @JvmInline
-value class ServiceId16(val value: Int) {
-    init { require(value in UINT16_RANGE) { "service_id は 0..0xffff でなければなりません: $value" } }
-    companion object { fun fromOrNull(value: Int?): ServiceId16? = value?.takeIf { it in UINT16_RANGE }?.let(::ServiceId16) }
+value class ServiceId16(
+    val value: Int,
+) {
+    init {
+        require(value in UINT16_RANGE) { "service_id は 0..0xffff でなければなりません: $value" }
+    }
+
+    companion object {
+        fun fromOrNull(value: Int?): ServiceId16? = value?.takeIf { it in UINT16_RANGE }?.let(::ServiceId16)
+    }
 }
 
 data class ServiceKey private constructor(
@@ -32,16 +66,28 @@ data class ServiceKey private constructor(
     val transportStreamId: Int get() = transportStream.value
     val serviceId: Int get() = service.value
 
-    override fun toString(): String = "ServiceKey(originalNetworkId=$originalNetworkId, transportStreamId=$transportStreamId, serviceId=$serviceId)"
+    override fun toString(): String =
+        "ServiceKey(originalNetworkId=$originalNetworkId, transportStreamId=$transportStreamId, serviceId=$serviceId)"
 
     companion object {
-        operator fun invoke(originalNetworkId: Int, transportStreamId: Int, serviceId: Int): ServiceKey = ServiceKey(
-            NetworkId16(originalNetworkId),
-            TransportStreamId16(transportStreamId),
-            ServiceId16(serviceId),
-        )
+        operator fun invoke(
+            originalNetworkId: Int,
+            transportStreamId: Int,
+            serviceId: Int,
+        ): ServiceKey =
+            ServiceKey(
+                NetworkId16(originalNetworkId),
+                TransportStreamId16(transportStreamId),
+                ServiceId16(serviceId),
+            )
 
-        fun fromOrNull(originalNetworkId: Int?, transportStreamId: Int?, serviceId: Int?): ServiceKey? {
+        // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+        @Suppress("ReturnCount")
+        fun fromOrNull(
+            originalNetworkId: Int?,
+            transportStreamId: Int?,
+            serviceId: Int?,
+        ): ServiceKey? {
             val onid = NetworkId16.fromOrNull(originalNetworkId) ?: return null
             val tsid = TransportStreamId16.fromOrNull(transportStreamId) ?: return null
             val sid = ServiceId16.fromOrNull(serviceId) ?: return null
@@ -51,9 +97,15 @@ data class ServiceKey private constructor(
 }
 
 @JvmInline
-value class TsPid(val value: Int) : Comparable<TsPid> {
-    init { require(value in TS_PID_RANGE) { "TS PID は 0x0000..0x1fff でなければなりません: $value" } }
+value class TsPid(
+    val value: Int,
+) : Comparable<TsPid> {
+    init {
+        require(value in TS_PID_RANGE) { "TS PID は 0x0000..0x1fff でなければなりません: $value" }
+    }
+
     override fun compareTo(other: TsPid): Int = value.compareTo(other.value)
+
     override fun toString(): String = value.toString()
 
     companion object {
@@ -63,35 +115,63 @@ value class TsPid(val value: Int) : Comparable<TsPid> {
         val SDT_BAT = TsPid(0x0011)
         val EIT = TsPid(0x0012)
         val TDT = TsPid(0x0014)
+
         fun fromOrNull(value: Int?): TsPid? = value?.takeIf { it in TS_PID_RANGE }?.let(::TsPid)
     }
 }
 
-class TunerKeyToken private constructor(private val bytes: ByteArray) {
-    init { require(bytes.size in TOKEN_LENGTH_RANGE) { "Tuner key token は 1..16 byte でなければなりません: ${bytes.size}" } }
+class TunerKeyToken private constructor(
+    private val bytes: ByteArray,
+) {
+    init {
+        require(bytes.size in TOKEN_LENGTH_RANGE) { "Tuner key token は 1..16 byte でなければなりません: ${bytes.size}" }
+    }
+
     fun toByteArray(): ByteArray = bytes.copyOf()
+
     val size: Int get() = bytes.size
 
     override fun equals(other: Any?): Boolean = other is TunerKeyToken && bytes.contentEquals(other.bytes)
+
     override fun hashCode(): Int = bytes.contentHashCode()
+
     override fun toString(): String = "TunerKeyToken(size=$size)"
 
     companion object {
         operator fun invoke(raw: ByteArray): TunerKeyToken = TunerKeyToken(raw.copyOf())
+
+        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+        @Suppress("MaxLineLength")
         fun fromOrNull(raw: ByteArray?): TunerKeyToken? = raw?.takeIf { it.size in TOKEN_LENGTH_RANGE }?.let(::TunerKeyToken)
     }
 }
 
 @JvmInline
-value class FrequencyHz(val value: Long) {
-    init { require(value > 0L) { "frequencyHz は正数でなければなりません: $value" } }
-    companion object { fun fromOrNull(value: Long?): FrequencyHz? = value?.takeIf { it > 0L }?.let(::FrequencyHz) }
+value class FrequencyHz(
+    val value: Long,
+) {
+    init {
+        require(value > 0L) { "frequencyHz は正数でなければなりません: $value" }
+    }
+
+    companion object {
+        fun fromOrNull(value: Long?): FrequencyHz? = value?.takeIf { it > 0L }?.let(::FrequencyHz)
+    }
 }
 
 @JvmInline
-value class RelativeStreamNumber(val value: Int) {
-    init { require(value in RELATIVE_STREAM_RANGE) { "相対ストリーム番号は 0..7 でなければなりません: $value" } }
-    companion object { fun fromOrNull(value: Int?): RelativeStreamNumber? = value?.takeIf { it in RELATIVE_STREAM_RANGE }?.let(::RelativeStreamNumber) }
+value class RelativeStreamNumber(
+    val value: Int,
+) {
+    init {
+        require(value in RELATIVE_STREAM_RANGE) { "相対ストリーム番号は 0..7 でなければなりません: $value" }
+    }
+
+    companion object {
+        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+        @Suppress("MaxLineLength")
+        fun fromOrNull(value: Int?): RelativeStreamNumber? = value?.takeIf { it in RELATIVE_STREAM_RANGE }?.let(::RelativeStreamNumber)
+    }
 }
 
 enum class StreamSelectorType { NONE, TSID, RELATIVE }
@@ -105,21 +185,33 @@ sealed class StreamSelector {
         override val value: Int? = null
     }
 
-    data class Tsid(val tsid: TransportStreamId16) : StreamSelector() {
+    data class Tsid(
+        val tsid: TransportStreamId16,
+    ) : StreamSelector() {
         override val type: StreamSelectorType = StreamSelectorType.TSID
         override val value: Int = tsid.value
     }
 
-    data class Relative(val number: RelativeStreamNumber) : StreamSelector() {
+    data class Relative(
+        val number: RelativeStreamNumber,
+    ) : StreamSelector() {
         override val type: StreamSelectorType = StreamSelectorType.RELATIVE
         override val value: Int = number.value
     }
 
     companion object {
         val NONE: StreamSelector = None
+
         fun tsid(value: Int): StreamSelector = Tsid(TransportStreamId16(value))
+
         fun relative(value: Int): StreamSelector = Relative(RelativeStreamNumber(value))
-        fun fromStored(typeName: String?, valueText: String?): StreamSelector {
+
+        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+        @Suppress("MaxLineLength")
+        fun fromStored(
+            typeName: String?,
+            valueText: String?,
+        ): StreamSelector {
             val type = runCatching { StreamSelectorType.valueOf(typeName.orEmpty()) }.getOrNull() ?: StreamSelectorType.NONE
             val value = valueText?.toIntOrNull()
             return when (type) {
@@ -132,18 +224,35 @@ sealed class StreamSelector {
 }
 
 @JvmInline
-value class PesPts90k(val value: Long) {
-    init { require(value >= 0L) { "PES PTS は 0 以上でなければなりません: $value" } }
+value class PesPts90k(
+    val value: Long,
+) {
+    init {
+        require(value >= 0L) { "PES PTS は 0 以上でなければなりません: $value" }
+    }
+
+    // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
+    @Suppress("MagicNumber")
     fun toCaptionPtsMillis(): CaptionPtsMillis = CaptionPtsMillis(value / 90L)
-    companion object { fun fromOrNull(value: Long?): PesPts90k? = value?.takeIf { it >= 0L }?.let(::PesPts90k) }
+
+    companion object {
+        fun fromOrNull(value: Long?): PesPts90k? = value?.takeIf { it >= 0L }?.let(::PesPts90k)
+    }
 }
 
 @JvmInline
-value class CaptionPtsMillis(val value: Long) {
-    init { require(value >= 0L) { "字幕 PTS millisecond は 0 以上でなければなりません: $value" } }
+value class CaptionPtsMillis(
+    val value: Long,
+) {
+    init {
+        require(value >= 0L) { "字幕 PTS millisecond は 0 以上でなければなりません: $value" }
+    }
 }
 
 sealed class CaptionTimestamp {
-    data class Pts(val ptsMillis: CaptionPtsMillis) : CaptionTimestamp()
+    data class Pts(
+        val ptsMillis: CaptionPtsMillis,
+    ) : CaptionTimestamp()
+
     object NoPts : CaptionTimestamp()
 }

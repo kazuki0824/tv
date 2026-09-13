@@ -8,5 +8,6 @@ object BootEpgSyncDiagnostics {
     val pendingDrainSkippedLockedCount = AtomicLong(0)
     val pendingDrainSkippedNoTunerCount = AtomicLong(0)
     val pendingDrainSkippedTvProviderUnavailableCount = AtomicLong(0)
+
     @Volatile var lastSkippedReason: String = ""
 }

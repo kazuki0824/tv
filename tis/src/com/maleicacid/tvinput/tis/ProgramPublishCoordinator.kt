@@ -1,13 +1,16 @@
 package com.maleicacid.tvinput.tis
 
+import com.maleicacid.tvinput.aribsi.ProviderDataBridge
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.db.ProgramRecord
-import com.maleicacid.tvinput.aribsi.ProviderDataBridge
+
+// 同じ状態・境界を扱う操作群を一つの所有者に保つ。
 
 /**
  * TvProvider Programs への反映を公開modeごとに制御する。
  * ライブ更新では既存channelだけを対象にし、同一内容の連続EITは過剰upsertしない。
  */
+@Suppress("TooManyFunctions")
 class ProgramPublishCoordinator(
     private val tvProviderWriter: TvProviderWriter,
     private val nowMillis: () -> Long = System::currentTimeMillis,
@@ -20,8 +23,11 @@ class ProgramPublishCoordinator(
         val deletionAuthoritative: Boolean = false,
     ) {
         constructor(window: com.maleicacid.tvinput.aribsi.AribEpgUpdateWindow) : this(
-            window.serviceKey, window.windowStartMillis, window.windowEndMillis,
-            window.validProgramStableIdentities.toSet(), window.deletionAuthoritative,
+            window.serviceKey,
+            window.windowStartMillis,
+            window.windowEndMillis,
+            window.validProgramStableIdentities.toSet(),
+            window.deletionAuthoritative,
         )
     }
 
@@ -75,13 +81,19 @@ class ProgramPublishCoordinator(
         mode: ChannelScanController.PublishMode,
         allPrograms: List<ProgramRecord>,
         allowedServiceKeys: Set<ServiceKey>?,
-    ): ProgramPublishResult = publishWithUpdates(
-        mode = mode,
-        allPrograms = allPrograms,
-        updateWindows = windowsFromPrograms(allPrograms),
-        allowedServiceKeys = allowedServiceKeys,
-    )
+    ): ProgramPublishResult =
+        publishWithUpdates(
+            mode = mode,
+            allPrograms = allPrograms,
+            updateWindows = windowsFromPrograms(allPrograms),
+            allowedServiceKeys = allowedServiceKeys,
+        )
 
+    // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
+    // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
+    @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength", "ReturnCount")
     fun publishWithUpdates(
         mode: ChannelScanController.PublishMode,
         allPrograms: List<ProgramRecord>,
@@ -96,45 +108,72 @@ class ProgramPublishCoordinator(
         // これを確認する前に早期returnしてはならない。
         // provider失敗後の再検証要求を通常公開の省略で失うことを防ぐ。
         val retryServiceKeys = dirtyWindows.keys.map { it.serviceKey }
-        val allServiceKeys = (allPrograms.map { it.serviceKey } + updateWindows.map { it.serviceKey } + retryServiceKeys + verifiedEmptyServiceKeys).toSet()
-        if (allPrograms.isEmpty() && updateWindows.isEmpty() && dirtyWindows.isEmpty() && verifiedEmptyServiceKeys.isEmpty()) {
+        val allServiceKeys =
+            (
+                allPrograms.map { it.serviceKey } + updateWindows.map { it.serviceKey } + retryServiceKeys +
+                    verifiedEmptyServiceKeys
+            ).toSet()
+        val noPublicationWork =
+            allPrograms.isEmpty() && updateWindows.isEmpty() && dirtyWindows.isEmpty() && verifiedEmptyServiceKeys.isEmpty()
+        if (noPublicationWork) {
             return ProgramPublishResult(0, 0, skippedUnchanged = 0)
         }
-        val existingServiceKeys = if (mode == ChannelScanController.PublishMode.LIVE_TUNE_REFRESH || mode == ChannelScanController.PublishMode.BOOT_EPG_SYNC || mode == ChannelScanController.PublishMode.BACKGROUND_CHANNEL_MAINTENANCE) {
-            when (val existingResult = tvProviderWriter.existingServiceKeysResult(allServiceKeys)) {
-                is TvProviderWriter.ExistingServiceKeysResult.Success -> existingResult.keys
-                is TvProviderWriter.ExistingServiceKeysResult.Failure -> {
-                    enqueueRetryWindows(updateWindows, failureClass = FailureClass.REQUIRED_QUERY_FAILED)
-                    return ProgramPublishResult(0, 0, failures = existingResult.diagnostics)
+        val existingServiceKeys =
+            if (mode == ChannelScanController.PublishMode.LIVE_TUNE_REFRESH ||
+                mode == ChannelScanController.PublishMode.BOOT_EPG_SYNC ||
+                mode == ChannelScanController.PublishMode.BACKGROUND_CHANNEL_MAINTENANCE
+            ) {
+                when (val existingResult = tvProviderWriter.existingServiceKeysResult(allServiceKeys)) {
+                    is TvProviderWriter.ExistingServiceKeysResult.Success -> {
+                        existingResult.keys
+                    }
+
+                    is TvProviderWriter.ExistingServiceKeysResult.Failure -> {
+                        enqueueRetryWindows(updateWindows, failureClass = FailureClass.REQUIRED_QUERY_FAILED)
+                        return ProgramPublishResult(0, 0, failures = existingResult.diagnostics)
+                    }
                 }
+            } else {
+                emptySet()
             }
-        } else {
-            emptySet()
-        }
         val allowed = filterServiceKeysForMode(mode, allServiceKeys, existingServiceKeys, allowedServiceKeys)
         val verifiedEmptyForAllowed = verifiedEmptyServiceKeys.intersect(allowed)
         val retryForAllowed = revalidateRetryWindows(allowed, updateWindows)
-        val programs = allPrograms
-            .filter { it.serviceKey in allowed }
-        val windows = (updateWindows + retryForAllowed).distinctBy {
-            DirtyWindowKey(it.serviceKey, it.windowStartMs, it.windowEndMs)
+        val programs =
+            allPrograms
+                .filter { it.serviceKey in allowed }
+        val windows =
+            (updateWindows + retryForAllowed)
+                .distinctBy {
+                    DirtyWindowKey(it.serviceKey, it.windowStartMs, it.windowEndMs)
+                }.filter { it.serviceKey in allowed && it.windowEndMs > it.windowStartMs }
+        if (programs.isEmpty() && windows.isEmpty() &&
+            verifiedEmptyForAllowed.isEmpty()
+        ) {
+            return ProgramPublishResult(0, 0, skippedNoChannel = allServiceKeys.size)
         }
-            .filter { it.serviceKey in allowed && it.windowEndMs > it.windowStartMs }
-        if (programs.isEmpty() && windows.isEmpty() && verifiedEmptyForAllowed.isEmpty()) return ProgramPublishResult(0, 0, skippedNoChannel = allServiceKeys.size)
         val authoritativeWindows = windows.filter { it.deletionAuthoritative }
         val eligibleTargetCount = programs.size + authoritativeWindows.size + verifiedEmptyForAllowed.size
-        val eligibleTargetServiceKeys = (programs.map { it.serviceKey } + authoritativeWindows.map { it.serviceKey } + verifiedEmptyForAllowed).toSet()
+        val eligibleTargetServiceKeys =
+            (
+                programs.map { it.serviceKey } + authoritativeWindows.map { it.serviceKey } +
+                    verifiedEmptyForAllowed
+            ).toSet()
 
-        val publication = runCatching { tvProviderWriter.prepareProgramPublication(programs, windows, verifiedEmptyForAllowed) }.getOrElse { error ->
-            enqueueRetryWindows(windows, failureClass = FailureClass.SIGNATURE_BUILD_FAILED)
-            return ProgramPublishResult(
-                0,
-                0,
-                failures = listOf(TvProviderWriter.Diagnostic(null, "program-signature", error.message.orEmpty())),
-            )
-        }
+        val publication =
+            runCatching { tvProviderWriter.prepareProgramPublication(programs, windows, verifiedEmptyForAllowed) }.getOrElse { error ->
+                enqueueRetryWindows(windows, failureClass = FailureClass.SIGNATURE_BUILD_FAILED)
+                return ProgramPublishResult(
+                    0,
+                    0,
+                    failures = listOf(TvProviderWriter.Diagnostic(null, "program-signature", error.message.orEmpty())),
+                )
+            }
         val signature = publication.fingerprint
-        if (retryForAllowed.isEmpty() && signature != null && mode != ChannelScanController.PublishMode.BOOT_EPG_SYNC && lastProgramSignatureByMode[mode] == signature) {
+        val publicationUnchanged =
+            retryForAllowed.isEmpty() && signature != null && mode != ChannelScanController.PublishMode.BOOT_EPG_SYNC &&
+                lastProgramSignatureByMode[mode] == signature
+        if (publicationUnchanged) {
             return ProgramPublishResult(
                 0,
                 0,
@@ -146,24 +185,27 @@ class ProgramPublishCoordinator(
         }
         val result = tvProviderWriter.upsertPreparedPrograms(publication)
         val failedServiceKeys = result.failures.mapNotNull { it.serviceKey }.toSet()
-        val failedWindows = if (result.failures.any { it.serviceKey == null }) {
-            windows
-        } else {
-            windows.filter { it.serviceKey in failedServiceKeys }
-        }
-        // 通常upsertの成功だけでは、旧要求の廃止行削除が完了したとはいえない。
-        val succeededWindows = if (result.failures.any { it.serviceKey == null }) {
-            emptyList()
-        } else {
-            authoritativeWindows.filter { it.serviceKey in result.succeededServiceKeys && it.serviceKey !in failedServiceKeys }
-        }
-        val committedEligibleServiceKeys = if (result.failures.any { it.serviceKey == null }) {
-            emptySet()
-        } else {
-            result.succeededServiceKeys.filterTo(linkedSetOf()) {
-                it in eligibleTargetServiceKeys && it !in failedServiceKeys
+        val failedWindows =
+            if (result.failures.any { it.serviceKey == null }) {
+                windows
+            } else {
+                windows.filter { it.serviceKey in failedServiceKeys }
             }
-        }
+        // 通常upsertの成功だけでは、旧要求の廃止行削除が完了したとはいえない。
+        val succeededWindows =
+            if (result.failures.any { it.serviceKey == null }) {
+                emptyList()
+            } else {
+                authoritativeWindows.filter { it.serviceKey in result.succeededServiceKeys && it.serviceKey !in failedServiceKeys }
+            }
+        val committedEligibleServiceKeys =
+            if (result.failures.any { it.serviceKey == null }) {
+                emptySet()
+            } else {
+                result.succeededServiceKeys.filterTo(linkedSetOf()) {
+                    it in eligibleTargetServiceKeys && it !in failedServiceKeys
+                }
+            }
         removeRetryWindows(succeededWindows)
         if (result.failures.isEmpty() && signature != null) {
             lastProgramSignatureByMode[mode] = signature
@@ -189,10 +231,11 @@ class ProgramPublishCoordinator(
         val now = nowMillis()
         return dirtyWindows.mapNotNull { (key, request) ->
             if (key.serviceKey !in allowed || request.notBeforeMs > now) return@mapNotNull null
-            val current = currentWindows.firstOrNull { window ->
-                window.deletionAuthoritative && window.serviceKey == key.serviceKey &&
-                    window.windowStartMs <= key.windowStartMs && window.windowEndMs >= key.windowEndMs
-            } ?: return@mapNotNull null
+            val current =
+                currentWindows.firstOrNull { window ->
+                    window.deletionAuthoritative && window.serviceKey == key.serviceKey &&
+                        window.windowStartMs <= key.windowStartMs && window.windowEndMs >= key.windowEndMs
+                } ?: return@mapNotNull null
             EpgUpdateWindow(key.serviceKey, key.windowStartMs, key.windowEndMs, current.validProgramKeys, true)
         }
     }
@@ -203,35 +246,54 @@ class ProgramPublishCoordinator(
         }
     }
 
-    private fun enqueueFailedWindows(windows: List<EpgUpdateWindow>, failures: List<TvProviderWriter.Diagnostic>) {
+    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+    @Suppress("MaxLineLength")
+    private fun enqueueFailedWindows(
+        windows: List<EpgUpdateWindow>,
+        failures: List<TvProviderWriter.Diagnostic>,
+    ) {
         val byService = failures.groupBy { it.serviceKey }
         windows.forEach { window ->
             val serviceFailures = byService[window.serviceKey].orEmpty() + byService[null].orEmpty()
-            val failureClass = serviceFailures.firstOrNull()?.operation?.let(::failureClassForOperation) ?: FailureClass.PROVIDER_UNAVAILABLE
+            val failureClass =
+                serviceFailures.firstOrNull()?.operation?.let(::failureClassForOperation) ?: FailureClass.PROVIDER_UNAVAILABLE
             enqueueRetryWindows(listOf(window), failureClass = failureClass)
         }
     }
 
-    private fun failureClassForOperation(operation: String): String = when (operation) {
-        "program-insert" -> FailureClass.PROGRAM_INSERT_FAILED
-        "program-update" -> FailureClass.PROGRAM_UPDATE_FAILED
-        "program-delete-obsolete" -> FailureClass.OBSOLETE_DELETE_FAILED
-        "program-channel-query", "program-index-query", "channel-query" -> FailureClass.REQUIRED_QUERY_FAILED
-        "program-signature" -> FailureClass.SIGNATURE_BUILD_FAILED
-        else -> FailureClass.PROVIDER_UNAVAILABLE
-    }
+    private fun failureClassForOperation(operation: String): String =
+        when (operation) {
+            "program-insert" -> FailureClass.PROGRAM_INSERT_FAILED
+            "program-update" -> FailureClass.PROGRAM_UPDATE_FAILED
+            "program-delete-obsolete" -> FailureClass.OBSOLETE_DELETE_FAILED
+            "program-channel-query", "program-index-query", "channel-query" -> FailureClass.REQUIRED_QUERY_FAILED
+            "program-signature" -> FailureClass.SIGNATURE_BUILD_FAILED
+            else -> FailureClass.PROVIDER_UNAVAILABLE
+        }
 
-    private fun enqueueRetryWindows(windows: List<EpgUpdateWindow>, failureClass: String = FailureClass.PROVIDER_UNAVAILABLE) {
+    private fun enqueueRetryWindows(
+        windows: List<EpgUpdateWindow>,
+        failureClass: String = FailureClass.PROVIDER_UNAVAILABLE,
+    ) {
         val now = nowMillis()
-        windows.sortedWith(compareBy<EpgUpdateWindow> { it.serviceKey.originalNetworkId }.thenBy { it.serviceKey.transportStreamId }.thenBy { it.serviceKey.serviceId }.thenBy { it.windowStartMs }.thenBy { it.windowEndMs })
-            .forEach { window ->
+        windows
+            .sortedWith(
+                compareBy<EpgUpdateWindow> {
+                    it.serviceKey.originalNetworkId
+                }.thenBy {
+                    it.serviceKey.transportStreamId
+                }.thenBy { it.serviceKey.serviceId }
+                    .thenBy { it.windowStartMs }
+                    .thenBy { it.windowEndMs },
+            ).forEach { window ->
                 if (!window.deletionAuthoritative && failureClass == FailureClass.OBSOLETE_DELETE_FAILED) return@forEach
                 val key = DirtyWindowKey(window.serviceKey, window.windowStartMs, window.windowEndMs)
                 dirtyWindows.remove(key)
-                dirtyWindows[key] = DirtyWindow(
-                    notBeforeMs = now + RETRY_COOLDOWN_MS,
-                    failureClass = failureClass,
-                )
+                dirtyWindows[key] =
+                    DirtyWindow(
+                        notBeforeMs = now + RETRY_COOLDOWN_MS,
+                        failureClass = failureClass,
+                    )
                 trimDirtyWindows()
             }
     }
@@ -245,16 +307,19 @@ class ProgramPublishCoordinator(
         }
     }
 
-    private fun windowsFromPrograms(programs: List<ProgramRecord>): List<EpgUpdateWindow> = programs.groupBy { it.serviceKey }.map { (key, values) ->
-        EpgUpdateWindow(
-            serviceKey = key,
-            windowStartMs = values.minOf { it.startTimeMillis },
-            windowEndMs = values.mapNotNull { program ->
-                runCatching { Math.addExact(program.startTimeMillis, program.durationMillis) }.getOrNull()
-            }.maxOrNull() ?: values.maxOf { it.startTimeMillis },
-            validProgramKeys = values.map { programIdentityForCoordinator(it) }.toSet(),
-        )
-    }
+    private fun windowsFromPrograms(programs: List<ProgramRecord>): List<EpgUpdateWindow> =
+        programs.groupBy { it.serviceKey }.map { (key, values) ->
+            EpgUpdateWindow(
+                serviceKey = key,
+                windowStartMs = values.minOf { it.startTimeMillis },
+                windowEndMs =
+                    values
+                        .mapNotNull { program ->
+                            runCatching { Math.addExact(program.startTimeMillis, program.durationMillis) }.getOrNull()
+                        }.maxOrNull() ?: values.maxOf { it.startTimeMillis },
+                validProgramKeys = values.map { programIdentityForCoordinator(it) }.toSet(),
+            )
+        }
 
     fun retryWindowCountForTest(): Int = dirtyWindows.size
 
@@ -262,8 +327,7 @@ class ProgramPublishCoordinator(
 
     fun retryNotBeforeMillisForTest(): List<Long> = dirtyWindows.values.map { it.notBeforeMs }
 
-    fun droppedRetryWindowCountForTest(serviceKey: ServiceKey): Int =
-        droppedDirtyWindowCountByService[serviceKey] ?: 0
+    fun droppedRetryWindowCountForTest(serviceKey: ServiceKey): Int = droppedDirtyWindowCountByService[serviceKey] ?: 0
 
     companion object {
         const val RETRY_COOLDOWN_MS_FOR_TEST: Long = 60_000L
@@ -277,28 +341,48 @@ class ProgramPublishCoordinator(
             allServiceKeys: Iterable<ServiceKey>,
             existingServiceKeys: Set<ServiceKey>,
             allowedServiceKeys: Set<ServiceKey>?,
-        ): Set<ServiceKey> = when (mode) {
-            ChannelScanController.PublishMode.SETUP_SCAN -> allServiceKeys.filter { allowedServiceKeys == null || it in allowedServiceKeys }.toSet()
-            ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
-            ChannelScanController.PublishMode.BOOT_EPG_SYNC,
-            ChannelScanController.PublishMode.BACKGROUND_CHANNEL_MAINTENANCE -> allServiceKeys.filter { it in existingServiceKeys && (allowedServiceKeys == null || it in allowedServiceKeys) }.toSet()
-            ChannelScanController.PublishMode.DIAGNOSTIC_ONLY -> emptySet()
-        }
+        ): Set<ServiceKey> =
+            when (mode) {
+                ChannelScanController.PublishMode.SETUP_SCAN -> {
+                    allServiceKeys.filter { allowedServiceKeys == null || it in allowedServiceKeys }.toSet()
+                }
 
-        fun programSignatureForTest(programs: List<ProgramRecord>): String = programs
-            .sortedWith(compareBy<ProgramRecord> { it.serviceKey.originalNetworkId }
-                .thenBy { it.serviceKey.transportStreamId }
-                .thenBy { it.serviceKey.serviceId }
-                .thenBy { it.stableIdentity }
-                .thenBy { it.eventId })
-            .joinToString("|") { program ->
-                projectedProgramSignature(program)
+                ChannelScanController.PublishMode.LIVE_TUNE_REFRESH,
+                ChannelScanController.PublishMode.BOOT_EPG_SYNC,
+                ChannelScanController.PublishMode.BACKGROUND_CHANNEL_MAINTENANCE,
+                -> {
+                    allServiceKeys
+                        .filter {
+                            it in existingServiceKeys &&
+                                (allowedServiceKeys == null || it in allowedServiceKeys)
+                        }.toSet()
+                }
+
+                ChannelScanController.PublishMode.DIAGNOSTIC_ONLY -> {
+                    emptySet()
+                }
             }
+
+        fun programSignatureForTest(programs: List<ProgramRecord>): String =
+            programs
+                .sortedWith(
+                    compareBy<ProgramRecord> { it.serviceKey.originalNetworkId }
+                        .thenBy { it.serviceKey.transportStreamId }
+                        .thenBy { it.serviceKey.serviceId }
+                        .thenBy { it.stableIdentity }
+                        .thenBy { it.eventId },
+                ).joinToString("|") { program ->
+                    projectedProgramSignature(program)
+                }
 
         fun programIdentityForTest(program: ProgramRecord): String = programIdentityForCoordinator(program)
 
+        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+        @Suppress("MaxLineLength")
         private fun programIdentityForCoordinator(program: ProgramRecord): String = ProviderDataBridge.buildProgramKey(program)
 
+        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+        @Suppress("MaxLineLength")
         private fun projectedProgramSignature(program: ProgramRecord): String = TvProviderWriter.signatureForProgramForTest(0L, program)
     }
 }

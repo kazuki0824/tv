@@ -8,6 +8,8 @@ import com.maleicacid.tvinput.db.ProgramRecord
 
 /** decoderで観測したvideo metadataをProgramへ反映する純粋なmerge規則。 */
 object ProgramVideoMetadataPolicy {
+    // 独立した既存入力を明示し、引数数だけを理由に別の状態保持型を導入しない。
+    @Suppress("LongParameterList")
     fun currentProgramsWithMetadata(
         events: List<AribEvent>,
         profile: Int,
@@ -16,11 +18,12 @@ object ProgramVideoMetadataPolicy {
         info: PlaybackPipeline.VideoFormatInfo,
         semanticFactsByServiceKey: Map<ServiceKey, ServiceSemanticFacts>,
     ): List<ProgramRecord> {
-        val records = EventModelMapper().toProgramRecords(
-            events.filter { event -> eventContainsTime(event, serviceKey, nowMillis) },
-            profile = profile,
-            semanticFactsByServiceKey = semanticFactsByServiceKey,
-        )
+        val records =
+            EventModelMapper().toProgramRecords(
+                events.filter { event -> eventContainsTime(event, serviceKey, nowMillis) },
+                profile = profile,
+                semanticFactsByServiceKey = semanticFactsByServiceKey,
+            )
         return merge(records, records.associate { key(it) to info })
     }
 
@@ -38,18 +41,25 @@ object ProgramVideoMetadataPolicy {
     fun merge(
         records: List<ProgramRecord>,
         latestByProgramKey: Map<String, PlaybackPipeline.VideoFormatInfo>,
-    ): List<ProgramRecord> = records.map { record ->
-        val info = latestByProgramKey[key(record)]
-        if (info == null || record.videoWidth != null || record.videoHeight != null || record.videoFormat != null) {
-            record
-        } else {
-            record.copy(videoWidth = info.width, videoHeight = info.height, videoFormat = info.mime)
+    ): List<ProgramRecord> =
+        records.map { record ->
+            val info = latestByProgramKey[key(record)]
+            if (info == null) return@map record
+            if (record.videoWidth != null || record.videoHeight != null || record.videoFormat != null) {
+                record
+            } else {
+                record.copy(videoWidth = info.width, videoHeight = info.height, videoFormat = info.mime)
+            }
         }
-    }
 
-    fun eventContainsTime(event: AribEvent, serviceKey: ServiceKey, nowMillis: Long): Boolean {
-        val end = runCatching { Math.addExact(event.startTimeMillis, event.durationMillis) }.getOrNull()
-            ?: return false
+    fun eventContainsTime(
+        event: AribEvent,
+        serviceKey: ServiceKey,
+        nowMillis: Long,
+    ): Boolean {
+        val end =
+            runCatching { Math.addExact(event.startTimeMillis, event.durationMillis) }.getOrNull()
+                ?: return false
         return event.serviceKey == serviceKey && nowMillis >= event.startTimeMillis && nowMillis < end
     }
 }
