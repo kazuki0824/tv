@@ -19,9 +19,9 @@ AOSP android.hardware.cas.IMediaCasService/default
           |
           | FactoryLoader / createCasFactory()
           v
-Maleicacid B25 CasPlugin library
+Maleicacid CAS plugin library
   |- extern "C" createCasFactory()
-  |- MaleicacidB25CasFactory : android::CasFactory
+  |- MaleicacidCasFactory : android::CasFactory
   `- MaleicacidB25CasPlugin  : android::CasPlugin
        |- SessionTable
        |- backend binding
@@ -40,7 +40,7 @@ ClearKeyはAOSP標準compatibility pathのままとし、Maleicacid B25/B1 backe
 
 ## 2. factory と plugin capability
 
-`MaleicacidB25CasFactory` はB25 CA system IDのsupport判定、plugin descriptor query、B25 CasPlugin instance生成を所有する。AOSP `CasAPI.h` のpure virtual ABIに従い、`CasPluginCallback` 版と `CasPluginCallbackExt` 版の両 `createPlugin()` を実装する。両overloadは同じB25 plugin coreを生成し、callback形式だけをadapterで分ける。AIDL default `MediaCasService` はExt callback版を使用するが、legacy callback版も未実装のまま残さない。
+`MaleicacidCasFactory` はB25 CA system IDのsupport判定、plugin descriptor query、B25 CasPlugin instance生成を所有する。AOSP `CasAPI.h` のpure virtual ABIに従い、`CasPluginCallback` 版と `CasPluginCallbackExt` 版の両 `createPlugin()` を実装する。両overloadは同じB25 plugin coreを生成し、callback形式だけをadapterで分ける。AIDL default `MediaCasService` はExt callback版を使用するが、legacy callback版も未実装のまま残さない。
 
 同一CA system IDについてSmartCard版とYakisoba版を別descriptorとして列挙しない。backend差は1個のB25 plugin内部へ閉じる。
 
@@ -81,7 +81,7 @@ prefer_smartcard_then_yakisoba:
 
 ARIB STD-B25の現行版判定と、その版の具体的な受信機能力値を本文で確認済みであることは分けて扱う。旧版英訳の具体値を未確認の現行日本語原本要求値として代用しない。
 
-B1は `B1SmartCardBackend` のECM-only経路が実装・検証され、B1 advertise gateを満たした場合だけ同じAOSP plugin modelへ追加する。B1は `yakisoba_only` の成立条件ではない。
+B1は同じ `MaleicacidCasFactory` が所有する第二のCA systemとして提供する。r52完了時にはfactoryのdescriptor queryがB25とB1の各descriptorを返し、B1 support queryをtrueとし、`createPlugin(B1)` が `MaleicacidB1CasPlugin` を生成できなければならない。`MaleicacidB1CasPlugin` は `B1SmartCardBackend` を使うECM-only plugin coreとし、B1 `processEmm()` はunsupportedを返す。B1の成立はB25 `yakisoba_only` backendの内部実装条件にはしないが、r52全体の完了条件には含める。
 
 ## 3. B25 CasPlugin責務
 
@@ -193,7 +193,7 @@ Yakisoba backendはlibyakisobaの戻り値とkey materialをplugin lifecycle、A
 
 backend operationはcallerを無期限に占有しない。deadline、cancellation、worker等の具体方式は固定しない。request送信後に結果不明となったmutationを成功扱いしない。同一backendでreplay-safeまたはidempotentであることを実装上証明できるoperationは安全な再送を許してよいが、その保証がないmutationを自動再送しない。outcome-unknownを別backendへのfallback条件にしない。
 
-raw key、ECM、EMM、credentialを通常log、TIS、AOSP公開AIDLへ露出しない。
+raw key、Kw、Ks、credentialを通常log、TIS、AOSP公開AIDLへ露出しない。ECM/EMMはTISからAOSP標準 `processEcm()` / `processEmm()` 入力として受け取る正規経路を許可し、その入力を通常log、別AIDL、診断dump等へ不要に再公開しない。
 
 Yakisobaを別vendor daemonへ分離する実装も禁止しない。daemonを採用する場合だけ、IPC schema互換性、request/response対応付け、size bound、access control、bounded I/O、stale request rejectionを満たす。daemon自体、明示version field、特定socket pathをAOSP要件として必須化しない。
 
@@ -424,7 +424,8 @@ B25 `yakisoba_only` の最低完了条件は次とする。
 - 後続ECMで同じstable slotのmaterialをatomic更新できる
 - close/release後のlate resultがkey stateを復活させない
 - MediaCas close前のVOID unlink / revoke契約を満たす
-- raw key / ECM / EMM / credentialを通常logまたは公開AIDLへ露出しない
+- raw key / Kw / Ks / credentialを通常log、TIS、公開AIDLへ露出しない
+- ECM/EMMは標準processEcm/processEmm入力としてのみ公開AIDLを通し、通常log・別AIDL・診断dump等へ不要に再公開しない
 ```
 
 ## 19. 実装順序
