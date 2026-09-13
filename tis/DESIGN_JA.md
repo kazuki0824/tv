@@ -86,6 +86,8 @@ session生成には `openSession(SESSION_USAGE_LIVE, SCRAMBLING_MODE_MULTI2)` �
 
 Framework/TRMへのsession数通知方針とbackend枯渇時の結果は`../cas_plugin/DESIGN_JA.md` §3.1を正とする。TISがpluginごとの空き数を集約してTRMへ通知する経路や、独自の容量調停器を追加しない。
 
+有限上限の初期通知を失わないため、EventListenerはMediaCas構築時に指定する。構築処理をそのlistenerに指定した既存HandlerのLooper上で行い、構築中に同Looperのevent処理へ制御を戻さない。これにより、plugin生成中に届いたstatus eventは、constructor内のTRM登録完了後に処理される。構築後にlistenerを登録する経路や、TRM登録前に初期通知を消費する経路をr52接続に使わない。容量の反映自体はAOSP MediaCasが所有し、TISの`onPluginStatusUpdate()`から`updateCasInfo()`を重複呼出ししない。初期通知のTRM反映と、その後の割当て・優先度回収を結合確認する。通知にCAS鍵素材を含めない。
+
 FrameworkはTRM管理対象sessionを先にcloseしてから `EventListener.onResourceLost(mediaCas)` を通知する。通知を受けたTISは次の手順を行う。
 
 1. 通知元MediaCasのinstanceを所有中のpluginと照合する。退役済みinstanceの遅延通知を、同一CA system IDの新pluginへ適用しない。

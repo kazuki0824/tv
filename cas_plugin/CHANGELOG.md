@@ -1,3 +1,10 @@
+# PR #108 有限session容量のTRM通知
+
+- 一律に通知しない方針を訂正し、有限の同時session上限はAOSPのsession数通知でTRMへ伝える契約にした。通知なしは固定session数上限を持たない構成に限定した。
+- 同一CA system全体の有効上限の正本、初期・変更通知、非同期反映との競合時の受付拒否を整理した。独自の優先度調停器や通知serviceは要求しない。
+- B25各profile/B1のadvertise・結合確認条件とTISの初期通知受信順序を同期した。
+- 設計文書とAOSP StatusEvent / MediaCas / TRMの処理を照合し、文書差分を確認。CAS本体・r52 TIS接続の実装、build、unit test、Soong、atest、VTS、実機確認は未実施。
+
 # PR #108 token・鍵状態・TRM契約の補完
 
 - session IDの初回生成・再割当てでAOSP Tunerの予約値`[0x00]`を除外し、長さ・衝突検査を公開前の条件にした。

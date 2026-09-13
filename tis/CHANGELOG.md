@@ -1,3 +1,8 @@
+# PR #108 CAS容量初期通知の受信順序
+
+- r52のMediaCas構築時にlistenerを指定し、初期status eventをTRM登録完了後に処理する順序を明記した。容量値の正本とTRM更新はCAS設計・AOSPに置き、TISへ容量集約処理を追加しない。
+- 設計文書のみの変更。現行r51 adapterの実装変更、build、unit test、Soong、atest、VTS、実機確認は未実施。
+
 # PR #108 CA system IDとsession数通知の正本参照
 
 - SupportedCasSystemIdsの数値対応は開発規則、Framework/TRMへのsession数通知と資源枯渇はCAS設計を正本として参照する。TISへ別の容量集約・通知責務を置かない。
