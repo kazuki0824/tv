@@ -2,12 +2,10 @@
 
 CAS pluginの設計正本は `DESIGN_JA.md` とする。
 
-## 現行repository状態
+## 現行境界
 
-`cas_plugin/` にはMaleicacid独自 `android.hardware.cas.IMediaCasService/default` service binary、CAS service用init rc、CAS service用VINTF fragmentを置かない。AOSP標準 `MediaCasService` と競合するdefault instanceをこのmoduleから登録しない。
+Maleicacid独自 `IMediaCasService/default` は持たず、AOSP標準MediaCasServiceからロードされるvendor CasPluginを実装する。B25/B1のfactory/plugin ownership、capability、session lifecycle、backend、Tuner key bridgeの規範は `DESIGN_JA.md` を正とする。
 
-現時点ではB25/B1 vendor CasPlugin shared libraryも未実装であり、このmodule自身がB25/B1 capabilityを広告するproduct artifactは存在しない。TIS/Tuner側はCAS pluginが利用可能であることを仮定しない。
+## 目標構成
 
-## 実装構成
-
-実装は `DESIGN_JA.md` に従い、AOSP標準 `MediaCasService` が `/vendor/lib64/mediacas` または `/vendor/lib/mediacas` からロードするC++ vendor CasPlugin shared libraryとして追加する。entry pointは `createCasFactory()` とし、最初にB25 `yakisoba_only` backendを成立させ、その後同じB25 pluginへSmartCard backendを追加する。
+`MaleicacidCasFactory` がB25/B1のCA system IDを判定し、B25では `MaleicacidB25CasPlugin`、B1では `MaleicacidB1CasPlugin` を生成する。B25は最初に `yakisoba_only` backendを成立させ、その後同じB25 pluginへSmartCard backendを追加する。B1はECM-onlyのSmartCard経路として成立させる。
