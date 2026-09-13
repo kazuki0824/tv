@@ -33,37 +33,47 @@ B25DescrambleContext
 
 ## 3. 所有権と供給経路
 
-- **system key / CBC 初期値**: 選択した CAS path が所有する。B25 実カード経路では、検証済みのカード初期化応答から取得し、このためだけの外部 secure store や factory provisioning を必須にしない。カード初期化応答の形式・長さ・status を検証した後だけ同じ session の credential context として採用する。
-- Yakisoba 等、外部 credential が必要な path を採用する場合だけ、その供給元とアクセス制御を product 統合側で固定する。system key / CBC 初期値を Binder、TIS、Tuner HAL、一般 property、公開 API、任意設定ファイルから取得する経路は設けない。
-- **odd/even Ks**: CAS session が ECM / card processing の結果として所有し、ECM 成功時に該当 session の current key epoch として更新する。
+- **system key / CBC 初期値**: plugin generation にbindされた CAS backend が所有する。B25 実カード経路では、検証済みのカード初期化応答から取得し、このためだけの外部 secure store や factory provisioning を必須にしない。カード初期化応答の形式・長さ・status を検証した後だけ同じ backend / session の credential context として採用する。
+- Yakisoba 等、外部 credential が必要な backend を採用する場合だけ、その供給元とアクセス制御を product 統合側で固定する。system key / CBC 初期値を Binder、TIS、Tuner HAL、一般 property、公開 API、任意設定ファイルから取得する経路は設けない。
+- **odd/even Ks**: CAS session が ECM / backend processing の結果として所有し、ECM 成功時に該当 session の current key epoch として更新する。
 - `SmartCardCasPath` は card response から得た odd/even Ks を、同じ session の system key / CBC 初期値を持つ registry entry へ更新する。
-- `YakisobaCasPath` の `DecodeEcmResponse.key_material_for_local_registry` は CAS HAL 内部 registry へ session-relative material を渡すためだけに使用し、Binder/TIS/Tuner へ raw key として transport しない。
-- CAS path が切り替わるのは path 選択の契約で認めた境界だけとし、1 session の途中で異なる provisioning source の system key / CBC 初期値や別 session の Ks を混成しない。
+- `YakisobaCasPath` の ECM response に含まれる key material は CAS/vendor 内部 registry へ session-relative material を渡すためだけに使用し、Binder/TIS/Tuner へ raw key として transport しない。
+- 1つの `ICas` plugin generation で B25 backend をbindした後は plugin release まで切り替えず、異なる credential source の system key / CBC 初期値や別 session の Ks を混成しない。
 
-## 4. commit / resolve / revoke 不変条件
+## 4. token identity と寿命
 
-- MediaCas session ID を公開する前に、同じ service-global token namespace 内で別の live / retired identity と衝突しないことを保証する。具体的な reservation API や table layout は固定しない。
+- MediaCas session ID は 1..16 bytes の opaque value とし、Tuner の VOID key token と同一値を発行しない。
+- 同一 CAS service process lifetime 内で session ID bytes を再利用しない。生成方法は公開契約にしないが、generation/nonce等を用いて no-reuse を保証し、token内容をTIS/Tunerに解釈させない。
+- MediaCas session ID を公開する前に、service-global token namespace で live identity と衝突しないことを保証する。具体的な reservation API、table layout、wire protocolは固定しない。
+- revoke 時はまず新規 resolve を遮断する。既に Tuner packet path が取得済みの内部 resource 参照はその処理終了まで保持してよいが、新規packet処理へ再取得させない。
+- 最後の取得済み参照が解放された時点で raw key material を zeroize し、resource 本体を回収できる。session ID bytes 自体は service process lifetime 中に再利用しないため、resource回収後に巨大な秘密material tombstoneを保持する必要はない。
+
+## 5. commit / resolve / revoke 不変条件
+
 - ECM 前の session ID は registry 上で未解決状態であってよい。不完全 context、必要 parity の Ks 欠落、generation / epoch mismatch を復号成功へ丸めない。
 - ECM により odd/even Ks を更新する場合、new epoch の material を準備し、system key / CBC 初期値を含む完全な context を検証してから registry entry を一括更新する。packet path が旧 epoch と新 epoch の field を混在観測してはならない。
 - `processEcm()` が成功を返す linearization point は、新 epoch の完全な context が registry に commit 済みで、同じ MediaCas session ID bytes から直ちに resolve 可能になった時点とする。commit 前の失敗では旧 epoch を維持する。
-- session close、CAS release、credential revoke、path fatal failure、registry corruption では該当 entry を revoke し、以後の新規 resolve を拒否する。stale token を別 session / generation の resource へ再利用しない。
-- Tuner 側に既存参照が残る場合は、新規 resolve を遮断した後にその参照が解放されるまで旧 resource を隔離し、別 identity へ再利用しない。
+- session close、CAS release、credential revoke、backend fatal failure、registry corruption では該当 entry を revoke し、以後の新規 resolve を拒否する。stale token を別 session / generation の resource へ再利用しない。
 - registry resolve failure、incomplete context、generation / epoch mismatch、revoke 済み token は復号成功に丸めず、Tuner HAL の bad-token / unavailable-key / registry-failure 診断へ接続する。
 
-## 5. TIS / Tuner teardown 契約
+## 6. TIS / Tuner teardown 契約
 
-MediaCas session ID bytes を Tuner descrambler の key token として使用した場合、TIS は MediaCas session を close する前に Tuner descrambler 側の参照を解除する。
+AOSP Tuner API が要求する順序に従い、MediaCas session ID bytes を Tuner descrambler の key token として使用した場合は、MediaCas session を close する前にその token を descrambler から解除する。
 
 ```text
-1. 当該 key context に紐付く PID link を解除する。
-2. IDescrambler.setKeyToken(VOID key token) で current token を解除する。
-3. Tuner 側で当該 token の参照が新規利用されない状態を確定する。
-4. MediaCas session を close する。
+1. 当該 key context の通常配送を停止し、可能な PID link を解除する。
+2. その MediaCas session ID bytes を保持する全 descrambler に対し
+   IDescrambler.setKeyToken(VOID key token) を呼ぶ。
+3. 各 setKeyToken(VOID) の成功を「その descrambler が以後その token を
+   新規packet処理へ使用しない」linearization pointとする。
+4. 必要な全 descrambler で step 3 が成立した後に MediaCas session を close する。
 ```
 
-cleanup 途中の失敗を成功済みに丸めず、CAS 側 close/revoke 後はその session ID に対する新規 resolve を許可しない。
+PID unlink の失敗は診断へ残すが、token解除に成功していれば MediaCas session close を不必要に保持しない。逆に `setKeyToken(VOID)` が失敗した descrambler が残る間は、その token を使用した MediaCas session をclose済み成功として扱わない。
 
-## 6. Tuner HAL 側の使用範囲
+CAS 側 close/revoke 後は新規 resolve を拒否する。close と競合して既に resource を取得済みの packet処理は、参照count等の内部寿命管理で完了または破棄させ、最後の参照解放後にzeroizeする。追加の公開同期APIは設けない。
+
+## 7. Tuner HAL 側の使用範囲
 
 Tuner HAL は解決済み `B25DescrambleContext` を使って、TS packet の payload 部分に対する MULTI2 復号と scrambling-control に基づく odd/even Ks 選択だけを行う。ECM / EMM、カード I/O、権利判定、credential provisioning、system key / CBC 初期値の取得を Tuner HAL 側へ移さない。
 
