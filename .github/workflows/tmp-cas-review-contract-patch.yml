@@ -11,90 +11,90 @@ permissions:
   contents: write
 
 jobs:
-  patch-cas-review-contracts:
+  patch:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: design/aosp-mediacas-b25-plugin
           fetch-depth: 0
-      - name: Patch AOSP plugin ABI and VTS contracts
-        shell: python
+      - name: Patch design SSOT
         run: |
+          python3 <<'PY'
           from pathlib import Path
+          p = Path('cas_plugin/DESIGN_JA.md')
+          s = p.read_text(encoding='utf-8')
 
-          path = Path("cas_plugin/DESIGN_JA.md")
-          text = path.read_text(encoding="utf-8")
-
-          def once(old: str, new: str) -> None:
-              global text
-              n = text.count(old)
+          def once(old, new):
+              global s
+              n = s.count(old)
               if n != 1:
-                  raise SystemExit(f"expected one occurrence, got {n}: {old[:120]!r}")
-              text = text.replace(old, new, 1)
+                  raise SystemExit(f'expected one occurrence, got {n}: {old[:100]!r}')
+              s = s.replace(old, new, 1)
 
           once(
-              "MaleicacidはAOSP Media CAS plugin ABIに従うvendor shared libraryを提供する。",
-              "MaleicacidはAOSP Media CAS plugin ABIに従うvendor shared libraryを提供する。64-bit productでは `/vendor/lib64/mediacas`、32-bit productでは `/vendor/lib/mediacas` にinstallし、通常の `/vendor/lib[64]` 直下へ置かない。Soongではvendor shared libraryに `relative_install_path: \"mediacas\"` を指定するか、それと等価なinstall結果を成立させる。AOSP `FactoryLoader` が実際にこのpluginを列挙できることをproduct integrationの成立条件とする。",
+              'MaleicacidはAOSP Media CAS plugin ABIに従うvendor shared libraryを提供する。',
+              'MaleicacidはAOSP Media CAS plugin ABIに従うvendor shared libraryを提供する。64-bit productでは `/vendor/lib64/mediacas`、32-bit productでは `/vendor/lib/mediacas` にinstallし、通常の `/vendor/lib[64]` 直下へ置かない。Soongではvendor shared libraryに `relative_install_path: "mediacas"` を指定するか、それと等価なinstall結果を成立させる。AOSP `FactoryLoader` が実際にこのpluginを列挙できることをproduct integrationの成立条件とする。'
           )
 
           once(
-              "`MaleicacidB25CasFactory` はB25 CA system IDのsupport判定、plugin descriptor query、B25 CasPlugin instance生成を所有する。",
-              "`MaleicacidB25CasFactory` はB25 CA system IDのsupport判定、plugin descriptor query、B25 CasPlugin instance生成を所有する。AOSP `CasAPI.h` のpure virtual ABIに従い、`CasPluginCallback` 版と `CasPluginCallbackExt` 版の両 `createPlugin()` を実装する。両overloadは同じB25 plugin coreを生成し、callback形式だけをadapterで分ける。AIDL default `MediaCasService` はExt callback版を使用するが、legacy callback版も未実装のまま残さない。",
+              '`MaleicacidB25CasFactory` はB25 CA system IDのsupport判定、plugin descriptor query、B25 CasPlugin instance生成を所有する。',
+              '`MaleicacidB25CasFactory` はB25 CA system IDのsupport判定、plugin descriptor query、B25 CasPlugin instance生成を所有する。AOSP `CasAPI.h` のpure virtual ABIに従い、`CasPluginCallback` 版と `CasPluginCallbackExt` 版の両 `createPlugin()` を実装する。両overloadは同じB25 plugin coreを生成し、callback形式だけをadapterで分ける。AIDL default `MediaCasService` はExt callback版を使用するが、legacy callback版も未実装のまま残さない。'
           )
 
-          old_block = """```text
-- setPrivateData()
-- openSession()
-- closeSession()
-- setSessionPrivateData()
-- processEcm()
-- processEmm()
-- sendEvent() / sendSessionEvent() の対応契約
-- provision() / refreshEntitlements() の対応契約
-- plugin/session lifecycle
-- backend binding
-- Tuner key bridge への publish / rotation / revoke
-```
+          old = '''```text
+          - setPrivateData()
+          - openSession()
+          - closeSession()
+          - setSessionPrivateData()
+          - processEcm()
+          - processEmm()
+          - sendEvent() / sendSessionEvent() の対応契約
+          - provision() / refreshEntitlements() の対応契約
+          - plugin/session lifecycle
+          - backend binding
+          - Tuner key bridge への publish / rotation / revoke
+          ```
 
-採用AOSP plugin ABIに存在しないvendor独自public methodを追加しない。公開面を拡張せず、対応できないoperationはAOSP既存statusへ写像する。
+          採用AOSP plugin ABIに存在しないvendor独自public methodを追加しない。公開面を拡張せず、対応できないoperationはAOSP既存statusへ写像する。
 
-r52で成功対応するsession modeは `LIVE + MULTI2` とする。非対応intent/modeはstateを変更せず既存のcannot-handle相当statusを返す。"""
-          new_block = """```text
-- setStatusCallback(CasPluginStatusCallback)
-- setPrivateData()
-- openSession(CasSessionId*)
-- openSession(intent, mode, CasSessionId*)
-- closeSession()
-- setSessionPrivateData()
-- processEcm()
-- processEmm()
-- sendEvent() / sendSessionEvent() の対応契約
-- provision() / refreshEntitlements() の対応契約
-- plugin/session lifecycle
-- backend binding
-- Tuner key bridge への publish / rotation / revoke
-```
+          r52で成功対応するsession modeは `LIVE + MULTI2` とする。非対応intent/modeはstateを変更せず既存のcannot-handle相当statusを返す。'''
+          new = '''```text
+          - setStatusCallback(CasPluginStatusCallback)
+          - setPrivateData()
+          - openSession(CasSessionId*)
+          - openSession(intent, mode, CasSessionId*)
+          - closeSession()
+          - setSessionPrivateData()
+          - processEcm()
+          - processEmm()
+          - sendEvent() / sendSessionEvent() の対応契約
+          - provision() / refreshEntitlements() の対応契約
+          - plugin/session lifecycle
+          - backend binding
+          - Tuner key bridge への publish / rotation / revoke
+          ```
 
-採用AOSP plugin ABIに存在しないvendor独自public methodを追加しない。公開面を拡張せず、対応できないoperationはAOSP既存statusへ写像する。
+          採用AOSP plugin ABIに存在しないvendor独自public methodを追加しない。公開面を拡張せず、対応できないoperationはAOSP既存statusへ写像する。
 
-`setStatusCallback()` はAOSP `MediaCasService` がplugin生成後に登録するstatus callbackを保持するためのABI面とする。factoryの `createPlugin()` で受け取った `appData` と組み合わせてstatus eventをservice側へ返す。callback登録前はstatus callbackを発行せず、release確定後はcallbackを発行しない。callback invocationはcommit済みstateだけを通知し、callback中にplugin内部state lockを保持することを要求しない。
+          `setStatusCallback()` はAOSP `MediaCasService` がplugin生成後に登録するstatus callbackを保持するためのABI面とする。factoryの `createPlugin()` で受け取った `appData` と組み合わせてstatus eventをservice側へ返す。callback登録前はstatus callbackを発行せず、release確定後はcallbackを発行しない。callback invocationはcommit済みstateだけを通知し、callback中にplugin内部state lockを保持することを要求しない。
 
-引数なしの `openSession(CasSessionId*)` はframeworkのdefault session open用で、B25では `LIVE + scheme-default MULTI2` と同じsession semanticsを成立させる。typed `openSession(intent, mode, ...)` はB25で `LIVE + MULTI2` を通常入力として受理する。さらに、AOSP Tuner AIDL VTSがCAS sessionを `LIVE + RESERVED` で開くため、B25をそのdescrambling profileのCA systemとして使用する構成では `LIVE + RESERVED` をB25 scheme-defaultであるMULTI2への互換入力として受理し、default open / `LIVE + MULTI2` と同じB25 session coreを生成する。`RESERVED` を別のscrambling algorithmとして広告・実装しない。これ以外の非対応intent/modeはstateを変更せず既存のcannot-handle相当statusを返す。"""
-          once(old_block, new_block)
+          引数なしの `openSession(CasSessionId*)` はframeworkのdefault session open用で、B25では `LIVE + scheme-default MULTI2` と同じsession semanticsを成立させる。typed `openSession(intent, mode, ...)` はB25で `LIVE + MULTI2` を通常入力として受理する。さらに、AOSP Tuner AIDL VTSがCAS sessionを `LIVE + RESERVED` で開くため、B25をそのdescrambling profileのCA systemとして使用する構成では `LIVE + RESERVED` をB25 scheme-defaultであるMULTI2への互換入力として受理し、default open / `LIVE + MULTI2` と同じB25 session coreを生成する。`RESERVED` を別のscrambling algorithmとして広告・実装しない。これ以外の非対応intent/modeはstateを変更せず既存のcannot-handle相当statusを返す。'''
+          once(old, new)
 
           once(
-              "目標構成ではMaleicacid独自のCAS AIDL service binary、CAS service用VINTF fragment、CAS service用init rcを製品経路へ追加しない。\n\nAOSP標準MediaCasServiceを製品で有効にし、Maleicacid B25 CasPlugin shared libraryをAOSP MediaCas plugin loaderが探索するvendor plugin配置へ組み込む。\n\nplugin libraryは `createCasFactory()` をexportし、AOSP `media/cas/CasAPI.h` の `android::CasFactory` / `android::CasPlugin` ABIと整合させる。",
-              "製品構成ではMaleicacid独自のCAS AIDL service binary、CAS service用VINTF fragment、CAS service用init rcを追加しない。本repositoryの `cas_plugin/` にも独自 `IMediaCasService/default` service artifactを置かない。\n\nAOSP標準MediaCasServiceを製品で有効にし、Maleicacid B25 CasPlugin shared libraryを64-bitでは `/vendor/lib64/mediacas`、32-bitでは `/vendor/lib/mediacas` へinstallする。AOSP `FactoryLoader` がその配置から `.so` を探索・loadすることを前提とし、Soongの実装は `relative_install_path: \"mediacas\"` または等価なinstall結果を持たせる。\n\nplugin libraryは `createCasFactory()` をexportし、AOSP `media/cas/CasAPI.h` の `android::CasFactory` / `android::CasPlugin` ABIと整合させる。`CasFactory` のlegacy/Ext両 `createPlugin()`、`CasPlugin` の `setStatusCallback()`、default/typed両 `openSession()` を含むpure virtual ABI面を全て実装する。",
+              '目標構成ではMaleicacid独自のCAS AIDL service binary、CAS service用VINTF fragment、CAS service用init rcを製品経路へ追加しない。\n\nAOSP標準MediaCasServiceを製品で有効にし、Maleicacid B25 CasPlugin shared libraryをAOSP MediaCas plugin loaderが探索するvendor plugin配置へ組み込む。\n\nplugin libraryは `createCasFactory()` をexportし、AOSP `media/cas/CasAPI.h` の `android::CasFactory` / `android::CasPlugin` ABIと整合させる。',
+              '製品構成ではMaleicacid独自のCAS AIDL service binary、CAS service用VINTF fragment、CAS service用init rcを追加しない。本repositoryの `cas_plugin/` にも独自 `IMediaCasService/default` service artifactを置かない。\n\nAOSP標準MediaCasServiceを製品で有効にし、Maleicacid B25 CasPlugin shared libraryを64-bitでは `/vendor/lib64/mediacas`、32-bitでは `/vendor/lib/mediacas` へinstallする。AOSP `FactoryLoader` がその配置から `.so` を探索・loadすることを前提とし、Soongの実装は `relative_install_path: "mediacas"` または等価なinstall結果を持たせる。\n\nplugin libraryは `createCasFactory()` をexportし、AOSP `media/cas/CasAPI.h` の `android::CasFactory` / `android::CasPlugin` ABIと整合させる。`CasFactory` のlegacy/Ext両 `createPlugin()`、`CasPlugin` の `setStatusCallback()`、default/typed両 `openSession()` を含むpure virtual ABI面を全て実装する。'
           )
 
           once(
-              "- AOSP plugin loaderがMaleicacid createCasFactory()を発見する\n- B25 descriptorが1個だけ列挙される",
-              "- effective architectureに応じてplugin `.so` が `/vendor/lib64/mediacas` または `/vendor/lib/mediacas` にinstallされる\n- AOSP plugin loaderがその探索directoryからMaleicacid createCasFactory()を発見する\n- CasFactoryのlegacy/Ext両createPlugin()が同じB25 plugin coreを生成できる\n- AOSP MediaCasServiceがExt callback版createPlugin()後にsetStatusCallback()を登録できる\n- release確定後にplugin status/event callbackを発行しない\n- default openSessionがB25 scheme-default MULTI2 sessionを生成できる\n- typed `LIVE + MULTI2` が同じB25 session semanticsを生成できる\n- B25をTuner VTS descrambling profileに使う場合、typed `LIVE + RESERVED` がscheme-default MULTI2互換入力として成功する\n- B25 descriptorが1個だけ列挙される",
+              '- AOSP plugin loaderがMaleicacid createCasFactory()を発見する\n- B25 descriptorが1個だけ列挙される',
+              '- effective architectureに応じてplugin `.so` が `/vendor/lib64/mediacas` または `/vendor/lib/mediacas` にinstallされる\n- AOSP plugin loaderがその探索directoryからMaleicacid createCasFactory()を発見する\n- CasFactoryのlegacy/Ext両createPlugin()が同じB25 plugin coreを生成できる\n- AOSP MediaCasServiceがExt callback版createPlugin()後にsetStatusCallback()を登録できる\n- release確定後にplugin status/event callbackを発行しない\n- default openSessionがB25 scheme-default MULTI2 sessionを生成できる\n- typed `LIVE + MULTI2` が同じB25 session semanticsを生成できる\n- B25をTuner VTS descrambling profileに使う場合、typed `LIVE + RESERVED` がscheme-default MULTI2互換入力として成功する\n- B25 descriptorが1個だけ列挙される'
           )
 
-          path.write_text(text, encoding="utf-8")
-      - name: Commit review contract fixes
+          p.write_text(s, encoding='utf-8')
+          PY
+      - name: Commit
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
