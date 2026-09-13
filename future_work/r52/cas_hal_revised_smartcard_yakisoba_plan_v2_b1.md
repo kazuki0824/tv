@@ -45,6 +45,8 @@ binding前timeoutではfallbackしない。binding後backend failureでも同plu
 ## 4. lifecycle / commit semantics
 pluginは `Live -> Releasing -> Released`。sessionは `Opening -> Active -> Closing -> Closed`、fatal/outcome-unknown時は `Active -> Failed -> Closing -> Closed`。
 
+`openSessionDefault()` は本製品の既定 `LIVE + MULTI2` sessionを開く。`openSession(intent, mode)` は `LIVE + MULTI2` だけを受理し、それ以外は状態不変のまま `ERROR_CAS_CANNOT_HANDLE` とする。
+
 `Opening` ではno-reuse session ID、registry reservation、backend open、private data適用をprepareし、全て成功した時だけActive session IDを公開する。
 
 各sessionはmutating backend I/Oを1件だけin-flightにする。外部I/O開始前にsession generation/lifecycleをsnapshotし、lockを外してI/Oし、応答後に同じgenerationがActiveであることを再検証してからprivate data/key epochをcommitする。
@@ -68,10 +70,12 @@ method成功確定点:
 
 B1 `processEmm()`、B25/B1 `provision()`、`refreshEntitlements()`、未定義vendor eventは `ERROR_CAS_CANNOT_HANDLE`。
 
-listenerはstate commit後かつ内部lock外で呼ぶ。listener failureでcommit済みstateをrollbackしない。
+listenerはstate commit後かつ内部lock外で呼ぶ。listener failureでcommit済みstateをrollbackしない。listener/callbackにはECM/EMM本文、private data、session token、raw/prepared key materialを含めない。
 
 ## 5. error mapping
-`malformed input -> AIDL BAD_VALUE`、`unsupported mode/B1 EMM -> ERROR_CAS_CANNOT_HANDLE`、`unknown/closed session -> ERROR_CAS_SESSION_NOT_OPENED`、`card absent -> ERROR_CAS_NO_CARD`、`card invalid/unsupported -> ERROR_CAS_CARD_INVALID`、`card timeout/mute -> ERROR_CAS_CARD_MUTE`、`resource/concurrency exhaustion -> ERROR_CAS_RESOURCE_BUSY`、`送信後結果不明/state corruption -> ERROR_CAS_INVALID_STATE`、その他未知内部失敗のみ `ERROR_CAS_UNKNOWN`。未実装を成功へ丸めない。
+`malformed input -> AIDL BAD_VALUE`、`unsupported mode/B1 EMM -> ERROR_CAS_CANNOT_HANDLE`、`unknown/closed session -> ERROR_CAS_SESSION_NOT_OPENED`、`entitlement/keyなし -> ERROR_CAS_NO_LICENSE`、`期限切れentitlement/key -> ERROR_CAS_LICENSE_EXPIRED`、`必要credential/provisioning未成立 -> ERROR_CAS_NOT_PROVISIONED`、`card absent -> ERROR_CAS_NO_CARD`、`card invalid/unsupported -> ERROR_CAS_CARD_INVALID`、`card timeout/mute -> ERROR_CAS_CARD_MUTE`、`resource/concurrency exhaustion -> ERROR_CAS_RESOURCE_BUSY`、`送信後結果不明/state corruption -> ERROR_CAS_INVALID_STATE`、その他未知内部失敗のみ `ERROR_CAS_UNKNOWN`。未実装を成功へ丸めない。
+
+backendがAOSPで専用statusを持つ状態を判定できる場合は `ERROR_CAS_DEVICE_REVOKED`、`ERROR_CAS_NEED_ACTIVATION`、`ERROR_CAS_NEED_PAIRING` 等へ対応付け、`ERROR_CAS_UNKNOWN` へ潰さない。
 
 ## 6. SmartCard path
 同一physical cardへのI/Oは単一ownerが直列化し、card I/O lock中にBinder callbackを呼ばない。open/reset/APDUは有限deadlineを持つ。
@@ -92,6 +96,8 @@ IPCはversion/operation/B25 identity検証、request ID照合、session/plugin g
 - EMM outcome unknown: `ERROR_CAS_INVALID_STATE`、自動再送なし、binding維持。
 
 Yakisoba closeは同じsession identityについて未作成/終了済みでもidempotentに扱う。`yakisoba_only` はSmartCard probeを行わず、daemon/credential一時利用不能時もdescriptor集合を変えず操作失敗とする。
+
+Yakisobaから受領したkey materialはregistry commitに必要な最短寿命だけ保持し、一時response/encode bufferはcommitまたは失敗後にzeroizeする。
 
 ## 8. KeySlotRegistry / Tuner boundary
 B25鍵詳細は `future_work/r52/b25_key_slot_registry_contract.md` を正本とする。
@@ -116,7 +122,7 @@ libyakisobaを同梱・改変する場合は採用revisionのGPL-3.0配布条件
 module名、socket path、wire field値等の内部名称はAOSP公開契約にせず、採用実装内で一意に定義する。
 
 ## 10. validation
-ClearKey AOSP/VTS、同一snapshotによるenumerate/support/create整合、unknown ID false/null、smartcard_only B25、yakisoba_only B25、preferのSmartCard valid/known unavailable/timeout、concurrent first-bind、B1 ECM-only、EMM owner==plugin binding、binding後cross-backend fallbackなし、close/releaseとin-flight ECM競合、close/release partial failure retry、listener failure非rollback、Yakisoba outcome-unknown、provider death revoke、token revoke/ref drain/zeroize、VOID token→MediaCas closeを確認する。
+ClearKey AOSP/VTS、同一snapshotによるenumerate/support/create整合、unknown ID false/null、LIVE+MULTI2以外の拒否、smartcard_only B25、yakisoba_only B25、preferのSmartCard valid/known unavailable/timeout、concurrent first-bind、B1 ECM-only、AOSP status mapping、EMM owner==plugin binding、binding後cross-backend fallbackなし、close/releaseとin-flight ECM競合、close/release partial failure retry、listener failure非rollback、Yakisoba outcome-unknown/temporary-key zeroize、provider death revoke、token revoke/ref drain/zeroize、VOID token→MediaCas closeを確認する。
 
 ## 11. 最終固定事項
 1. `IMediaCasService/default` は1個だけ公開し、capability query/createは同一snapshotを使う。
