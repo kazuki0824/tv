@@ -28,7 +28,7 @@ B25/B1のCAS HAL自身はTS packetを復号しないため、B25/B1とも `isDes
 
 B25/B1の各 `createPlugin(caSystemId)` は1個の `MaleicacidCasPlugin` を生成し、CA system ID、listener artifact、plugin generation、session tableを所有する。SmartCard/Yakisobaの差はplugin内部の `CasProcessingPath` に閉じ、AOSP descriptorや別serviceへ露出しない。ClearKey plugin/session lifecycleはMaleicacidのSmartCard/Yakisoba/key-provisioning stateへ混在させず、AOSP reference contractとVTS互換pathとして独立して扱う。
 
-session IDは1 byte以上16 byte以下の再利用しないbyte sequenceである。B25/B1 session ID / Tuner key tokenのnamespaceは`android.hardware.cas.IMediaCasService/default`単位で1個とし、同serviceが生成したB25/B1の全`ICas` plugin instance・全CA systemを横断して、liveまたはTuner側にretired/stale参照が残り得るsession IDを再利用しない。各pluginのsession tableはsession lifecycleだけを所有し、session IDの一意性scopeをplugin-localへ狭めない。公開session IDは引き続きopaque bytesだけとし、CA system ID、plugin identity、generationを符号化しない。`openSessionDefault()` は対象CA systemの既定live/MULTI2 sessionを開く。`openSession(intent, mode)` は本製品が扱うlive/MULTI2組合せだけを受理し、その他は `ERROR_CAS_CANNOT_HANDLE` で状態不変とする。session IDを発行できない場合はsessionを公開しない。
+session IDは1 byte以上16 byte以下の再利用しないbyte sequenceである。B25/B1 session ID / Tuner key tokenのnamespaceは`android.hardware.cas.IMediaCasService/default`単位で1個とし、同serviceが生成したB25/B1の全`ICas` plugin instance・全CA systemを横断して、liveまたはTuner側にretired/stale参照が残り得るsession IDを再利用しない。各pluginのsession tableはsession lifecycleだけを所有し、session IDの一意性scopeをplugin-localへ狭めない。公開session IDはTIS/Tunerにとってopaque bytesとする。生成側の非公開な内部形式は「公開token」の契約に従う。`openSessionDefault()` は対象CA systemの既定live/MULTI2 sessionを開く。`openSession(intent, mode)` は本製品が扱うlive/MULTI2組合せだけを受理し、その他は `ERROR_CAS_CANNOT_HANDLE` で状態不変とする。session IDを発行できない場合はsessionを公開しない。
 
 B25/B1 sessionの状態は次に固定する。
 
@@ -54,7 +54,7 @@ Opening -> Active -> Closing -> Closed
 | `openSessionDefault()` / `openSession()` | 対応 | 対応 | pathとregistry予約を含むActive sessionを公開した時点 |
 | `processEcm()` | 対応 | 対応 | 完全な新key epochをregistryへatomic commitした時点 |
 | `processEmm()` | 対応 | 非対応 | B25下位pathがEMM更新をcommitした時点。B1は常に `ERROR_CAS_CANNOT_HANDLE` |
-| `provision()` | 非対応 | 非対応 | `ERROR_CAS_CANNOT_HANDLE`。credentialはvendor secure provisioningが所有 |
+| `provision()` | 非対応 | 非対応 | `ERROR_CAS_CANNOT_HANDLE`。credentialの取得・管理は選択したCAS pathが所有 |
 | `refreshEntitlements()` | 非対応 | 非対応 | `ERROR_CAS_CANNOT_HANDLE`。B25更新はEMM、B1更新は非対応 |
 | `sendEvent()` / `sendSessionEvent()` | 非対応 | 非対応 | vendor event番号を定義しないため `ERROR_CAS_CANNOT_HANDLE` |
 | `closeSession()` | 対応 | 対応 | token revokeとlogical closeを確定し、下位cleanupを全件試行 |
@@ -92,7 +92,7 @@ daemonから受け取るkey materialはCAS/vendor内部境界に限定し、検�
 
 ### 公開token
 
-標準MediaCas経路のTuner key tokenは `MediaCas.Session.getSessionId()` が返すsession ID bytesと完全に同一である。TIS向けvendor-private tokenを生成せず、CA system ID、session generation、key epoch、integrity tag、鍵素材をtoken bytesへ符号化しない。
+標準MediaCas経路のTuner key tokenは `MediaCas.Session.getSessionId()` が返すsession ID bytesと完全に同一である。TIS向けの別tokenを生成せず、TIS/Tunerはtoken内部を解析・合成しない。生成側が非秘密のidentity、generation、integrity情報を非公開形式で含めることは妨げないが、鍵素材を含めず、長さ・非VOID・再利用禁止・registry予約の契約を満たす。内部形式からprovider identityやcurrent key epochを推定してregistry検証を省略しない。現行の乱数candidate生成を置換する要求ではない。
 
 tokenは1 byte以上16 byte以下であり、TunerのVOID token `[0x00]` と同一のsession IDを発行しない。TISはECM成功後に同じsessionのID bytesをそのまま `Descrambler.setKeyToken()` へ渡す。`processEcm()` 自体がtokenを戻す、またはTISがtokenを合成する契約にはしない。
 
@@ -119,7 +119,7 @@ Multi2KeyResource {
 
 `system_key`、`cbc_initial_value`、`even_ks`、`odd_ks` はraw key materialである。secure-memory object、key-ladder slot、opaque in-process handleへ置換してよいが、Tuner HALがopaque token resolve後に同じprovider identity/key epochの完全なMULTI2 contextを一意に得られなければならない。
 
-system keyとCBC初期値はvendor secure provisioningが所有し、TIS/Tuner HALがproperty、公開API、一般設定ファイルから取得しない。ECM pathは得られたodd/even Ksを同一sessionのcredential contextへ結合する。Tuner HALはECM/EMM、card I/O、権利判定、credential provisioningを行わない。
+system keyとCBC初期値の取得・管理は選択したCAS pathが所有する。B25実カードでは検証済みのカード初期化応答から取得し、このためだけの外部secure storeやfactory provisioningを必須にしない。B1は採用するB1プロトコル・実装の応答を検証して供給元を確定し、B25の応答配置を推測して流用しない。Yakisoba等で外部credentialが必要な場合だけ、供給元とアクセス制御をproductで固定する。TIS/Tuner HALがproperty、公開API、一般設定ファイルから鍵を取得する経路は設けない。ECM pathは得られたodd/even Ksを同一sessionのcredential contextへ結合する。Tuner HALはECM/EMM、card I/O、権利判定、credential provisioningを行わない。
 
 ### commit、resolve、revoke
 

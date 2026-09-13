@@ -63,7 +63,7 @@ card reader device node、USB/CCIDまたはPC/SC daemonへのアクセスは専�
 
 card I/Oにはopen/reset/APDUごとの有限deadlineと取消経路を持たせる。reader/card不在、card無効、非対応card、I/O利用不能、timeoutを同じerrnoへ丸めず、`DESIGN_JA.md` のprobe分類へ写像する。実機gateではB25 card、B1 cardまたは妥当なB1 test vector、card抜去、timeout、再openを確認する。
 
-system keyとCBC初期値のcredentialはvendor secure provisioningから取得する。Android property、TIS、Tuner HAL、通常のworld-readable fileをcredential sourceにしない。採用するsecure store、key rotation、revoke、factory provisioningはdevice product側で固定し、未設定imageではB25/B1 capabilityを広告しない。
+system keyとCBC初期値はCAS path内で取得・管理する。B25実カードは初期化応答の長さ・status・対象cardを検証して取得し、ECMで得るKsと同じcard/session contextへ結合する。この経路に追加のsecure storeやfactory provisioningを必須にしない。B1の供給元・応答配置は採用revisionとB1実機または妥当なvectorで別途検証する。外部credentialを必要とするpathだけ、vendor-privateな供給元、最小権限、更新・失効方法をdevice productで固定する。Android property、TIS、Tuner HAL、world-readable fileをcredential sourceにしない。adapter・credential経路の検証未完了imageでは該当B25/B1 capabilityを広告しない。
 
 ### adapter IPC wire contract
 
@@ -79,7 +79,7 @@ adapterはpeer credentialとSELinux domainを検証し、同一card I/Oを直列
 
 libyakisobaはCAS HALへ静的/動的linkせず、専用vendor daemon processに閉じる。daemonはB25 ECM/EMMだけを受け付け、B1を拒否する。IPC endpointはCAS HAL domainだけが接続でき、peer credential検証、SELinux allowlist、message size上限、request deadline、再起動時generation fenceを持つ。socket/file descriptorをsystem app、TIS、Tuner HAL、shellへ公開しない。
 
-daemonの設定とcredentialはvendor-private locationから最小権限で読み、検索pathやcurrent working directoryへfallbackしない。ECM/EMM、APDU、key material、session ID、tokenをlogcat/tombstone message/dumpへ出さない。daemon crashまたはtimeoutを同一sessionのSmartCard fallbackへ接続しない。
+daemonの設定と必要な外部credentialはvendor-private locationから最小権限で読み、未承認の検索pathやcurrent working directoryから取得しない。libraryに既定検索処理があっても、明示設定とfilesystem/SELinux制約で未承認pathを使用不能にできる場合はsource改変を必須にしない。設定欠落・不正時に未承認credentialへfallbackせず失敗することを検証する。ECM/EMM、APDU、key material、session ID、tokenをlogcat/tombstone message/dumpへ出さない。daemon crashまたはtimeoutを同一sessionのSmartCard fallbackへ接続しない。
 
 ## ライセンスと配布
 
@@ -87,7 +87,7 @@ daemonの設定とcredentialはvendor-private locationから最小権限で読�
 
 `tsunoda14/libyakisoba` はGPL-3.0である。binaryまたは改変版をimage/配布物へ含める場合は、GPL本文、著作権表示、対応する完全なソース、改変済みbuild/install情報など採用revisionに適用されるGPLv3の配布条件を満たす。daemon分離はCAS HALとのprocess/権限境界を明確にする設計であり、libyakisoba/daemon側のGPL義務を消す根拠にしない。配布条件を満たせないbuildではYakisoba moduleをproduct graphから除外する。
 
-参照調査したrevisionはlibaribb25 `3d4a9db608b972cb02aa2df5b09163d374564ded`、libyakisoba `03849e66ecb8e89fcdd0862eebcf43255d63794a`である。前者の既存card APIはPC/SC失敗を集約しており、後者は一般設定fileからのcredential検索を含むため、どちらもこのまま上記deadline・probe分類・secure provisioning契約を満たすadapterとして採用できない。現時点ではこのrepositoryにSmartCard/YakisobaのIPCサーバー本体を同梱していない。product側でadapterとcredential供給元を固定し、これらを修正・検証してから能力profileを追加する。hostのfake router成功をこのgateの代用にしない。
+参照調査したrevisionはlibaribb25 `3d4a9db608b972cb02aa2df5b09163d374564ded`、libyakisoba `03849e66ecb8e89fcdd0862eebcf43255d63794a`である。前者のB25初期化処理はcard応答からsystem keyとCBC初期値を取得する。一方で既存card APIはPC/SC失敗を集約し、後者は一般設定fileからのcredential検索を含むため、library採用だけで上記deadline・probe分類・credentialアクセス制御を満たしたとは扱わない。現時点ではこのrepositoryにSmartCard/YakisobaのIPCサーバー本体を同梱していない。product側でadapterとpathごとのcredential供給元を固定し、設定・wrapper・実行権限による適合を検証する。それだけでは契約を満たせない部分に限りlibraryを修正してから能力profileを追加する。hostのfake router成功をこのgateの代用にしない。
 
 third-party sourceは検証済みcommitへpinし、branch tipやdownload時点の未固定archiveをrelease入力にしない。Soong license metadataとNOTICE generationをbuild gateに含める。
 

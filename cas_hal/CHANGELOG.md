@@ -1,3 +1,11 @@
+# r52_pr57_cas_contract_simplification
+
+- credential供給元をCAS pathごとに定義した。B25実カードは検証済み初期化応答を使用し、外部secure store/factory provisioningを一律必須にしない。B1の供給元・応答配置は別途検証し、外部credentialが必要なpathだけproduct側の供給・更新・失効方法を固定する。
+- 公開tokenのopaque性を受け手の契約へ整理した。生成側の非秘密な内部形式を禁止せず、session IDの透過、長さ・非VOID、一意性予約、provider generation/key epoch検証、鍵素材の非公開は維持する。現行の乱数生成とregistry実装は変更していない。
+- Yakisobaの既定credential検索は、明示設定と実行権限で未承認pathを使用不能にできる場合までlibrary改変を要求しない。設定欠落・不正時の拒否を含めて検証し、設定・wrapperだけで満たせない部分に改変を限定する。
+- SmartCard/Yakisoba adapterサーバー本体の未同梱とcapability広告前のproduct gateは維持する。card I/Oの期限保証を代替せずにプロセス境界を削除せず、EOFだけを根拠に未回収cleanup ownerを破棄しない。
+- 検証: Rust 1.81.0の `cargo test --workspace --locked --manifest-path cas_hal/host_ci/Cargo.toml` でcore 17件・transport 10件が成功。runtime変更なしで現行の予約・失効・再試行契約が維持されることを確認した。Android/Soong build、device atest/CTS/VTS、実カード・Yakisoba・放送波確認は未実施。
+
 # r52_pr57_clearkey_boundary
 
 - AOSP `libcasexampleimpl`と`libclearkeycasplugin`を組み込み、ClearKeyとRust B25/B1を単一default serviceへ合成するNDK薄層を追加した。ClearKey欠落時はservice登録を拒否する。
