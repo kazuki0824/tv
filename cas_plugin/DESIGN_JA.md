@@ -121,7 +121,7 @@ session: Opening -> Active -> Closing -> Closed
 - Closed sessionに対するECM/private-data mutationを成功させない。
 - close/releaseと外部backend処理が競合した場合、遅れて返った結果をClosed/Releasing stateへcommitしない。
 - 古いECM completionが後から新しいcurrent key materialを上書きしない。
-- listener notificationはstate commit後に行い、listener failureでcommit済みstateをrollbackしない。
+- listener notificationはstate commit後に行い、listener failureでcommit済みstateをrollbackしない。AOSP listener契約がsession IDを正規引数として要求する場合はその契約に従い、raw/prepared key、ECM/EMM本文等の秘密materialをcallbackへ露出しない。
 - callbackからhalf-committed stateを観測可能にしない。
 - method successは、そのmethodが公開上成立させるstateがcommit済みとなった時点だけ返す。
 
@@ -135,9 +135,11 @@ B25Backend
   `- SmartCardBackend
 ```
 
-backend種別は各B25 plugin instance内で一度だけ確定し、releaseまでそのpluginの全sessionとEMM処理で共有する。同じplugin instanceの途中でbackendを切り替えない。
+backend種別は各B25 plugin instance内で一度だけ確定し、releaseまでそのpluginの全sessionとEMM処理で共有する。同じplugin instanceの途中でbackendを切り替えない。同じplugin instanceへ複数のbackend-dependent operationが並行して最初に到達しても、異なるbackendへ同時確定せずbinding結果を一意にする。具体的なlock/thread方式は規定しない。
 
 product TISは同一B25 CA system IDについて1個のlive MediaCas/CAS pluginを共有し、そのpluginへB25 ECM sessionとEMMを配送する。AOSPが別clientによる独立plugin生成を許すことを理由に、HAL/service全体を横断するservice-global backend selectorを追加しない。
+
+`setPrivateData()` がbackend binding前に成功した場合、後続bindingはそのcommit済みplugin-local private dataと整合するbackend contextを生成する。binding後の `setPrivateData()` は、plugin-local stateとactive backend contextが異なる成功状態にならないよう一体として更新し、失敗時は直前の成功stateを維持する。version counter等の具体方式は必須化しない。
 
 複数plugin instanceが同じphysical cardまたは同じYakisoba backend resourceを共有する実装では、その共有resource自身が必要なI/O/state orderingを提供する。backend種別の選択までplugin間で共有することを必須にしない。
 
@@ -185,7 +187,7 @@ Yakisoba backendはlibyakisobaの戻り値とkey materialをplugin lifecycle、A
 
 `processEmm()` はplugin-wide backend mutationとして扱い、関連ECM処理がhalf-updated entitlement/work-key stateを観測しないorderingを提供する。
 
-backend operationはcallerを無期限に占有しない。deadline、cancellation、worker等の具体方式は固定しない。request送信後に結果不明となったmutationを成功扱いしない。
+backend operationはcallerを無期限に占有しない。deadline、cancellation、worker等の具体方式は固定しない。request送信後に結果不明となったmutationを成功扱いしない。同一backendでreplay-safeまたはidempotentであることを実装上証明できるoperationは安全な再送を許してよいが、その保証がないmutationを自動再送しない。outcome-unknownを別backendへのfallback条件にしない。
 
 raw key、ECM、EMM、credentialを通常log、TIS、AOSP公開AIDLへ露出しない。
 
@@ -210,7 +212,7 @@ SmartCard backendは次を所有する。
 - card removal / fatal invalidation
 ```
 
-SmartCard I/Oは同一physical cardのstate mutation orderingを一意にし、open/reset/card command等がcallerを無期限に占有しない。結果不明operationをsuccessへ丸めない。
+SmartCard I/Oは同一physical cardのstate mutation orderingを一意にし、open/reset/card command等がcallerを無期限に占有しない。結果不明operationをsuccessへ丸めない。B25実カードでcard初期化応答から取得できるbase materialのためだけに、外部secure storeやfactory provisioningを必須化しない。
 
 `prefer_smartcard_then_yakisoba` でSmartCard状態を規定時間内に確定できない場合は `CARD_UNKNOWN_TIMEOUT` とし、そのpluginをYakisobaへbindしない。
 
@@ -280,7 +282,9 @@ stale owner/updateの排除にgeneration、cookie、connection identity、versio
 - odd/even KsはsessionのECM/backend処理結果として所有し、ECM成功時に同じstable slotのcurrent materialへ反映する。
 - Tuner側registryへraw materialを運ぶ場合、current authorized CAS plugin ownerだけがpublish/rotate/revokeできるvendor内部境界を使用する。
 - TISや一般appがkey mutation endpointへ到達できてはならない。
+- vendor内部key bridgeは必要なpublish/rotate/revoke/stale-rejection semanticsだけを規範化し、API名、TTL、slot上限、wire magic、固定retry回数を本書で必須化しない。
 - owner handover後の旧接続、旧request、revoke済みtokenへのmutationをcurrent updateとして受理しない。
+- backend owner loss/restart時は影響する旧sessionを失効させ、旧ownerから後着したECM/EMM/key mutationを新ownerのstateとして受理しない。owner identityの表現は実装詳細とする。
 - access controlは採用process/IPC構成に応じてSELinux、socket ownership、peer credential、Binder identity等から必要な手段を選ぶ。不要な二重機構を必須化しない。
 - raw keyの一時表現は必要期間を越えて保持・永続化しない。特定のzeroize APIやmemory primitiveを必須化しない。
 
@@ -367,7 +371,7 @@ TISはraw key、card protocol、MULTI2 algorithmを解釈・保持しない。
 
 backend/internal errorは、判定できる場合AOSP CASの既存statusへ意味を保って写像する。専用意味が存在する状態をUNKNOWNへ潰さない。
 
-unknown CA system IDのservice-level behaviorはAOSP標準MediaCasServiceに従う。Maleicacidは独自service semanticsを追加しない。
+unknown CA system IDのservice-level behaviorはAOSP標準MediaCasServiceに従い、support queryはunsupported、plugin/descrambler生成はAOSP標準のnull/unsupported semanticsを維持する。Maleicacidは独自service semanticsを追加しない。
 
 unsupported operationを空successにしない。
 
