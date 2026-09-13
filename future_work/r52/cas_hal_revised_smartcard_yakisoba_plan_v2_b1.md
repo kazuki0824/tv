@@ -1,4 +1,4 @@
-# CAS HAL 実装計画 改訂版 v7
+# CAS HAL 実装計画 改訂版 v8
 ## AOSP Media CAS 境界 + B25 SmartCard / Yakisoba / B1 SmartCard
 
 ## 0. 設計原則
@@ -112,8 +112,6 @@ Opening -> Active -> Closing -> Closed
                  \-> Failed -> Closing -> Closed
 ```
 
-`Closing` / `Releasing` は caller から見て通常利用不能であり、key revoke 確定待ちを表す。backend 物理 cleanup だけが残る場合は `Closed` / `Released` へ進め、service-owned cleanup state として保持できる。cleanup worker/timer の具体方式は規定しない。
-
 `Opening` では collision-safe session ID、registry reservation、backend open、private data 適用を prepare し、全て成功した場合だけ Active session ID を公開する。
 
 各 session は mutating backend I/O を1件だけ in-flight にするか、同等の stale-completion 排除を行う。外部 I/O 開始前の session identity/lifecycle と、応答後の current state が一致し Active のままであることを確認してから private data/key material を commit する。
@@ -124,27 +122,25 @@ close/release が I/O 中に到達した場合は先に Closing/Releasing へ遷
 
 ### 4.1 closeSession
 
-最初の `closeSession()` は session を Closing へ遷移させ、以後の通常 session operation を拒否する。token の新規 resolve revoke を確定できたら caller-visible session を Closed へ進める。
+最初の `closeSession()` は session を Closing へ遷移させ、以後の通常 session operation を拒否する。token の新規 resolve revokeを確定し、backend session cleanupを試行する。
 
-- revoke 未確定: close 成功にしない。Closing を保持し、後続 `closeSession()` または service-owned cleanup が revoke を再試行する。
-- revoke 確定後の backend close 失敗: caller-visible session は Closed のまま。backend cleanup だけを継続し、session を Active へ戻さない。
+- token revoke 未確定: close 成功にしない。stale token が新規 resource を取得できない状態を確定してから成功扱いする。
+- backend cleanup 失敗: backend resource が将来の別 session と混同されないことを、その backend owner の lifetime/reset/taint 契約で保証する。再試行可能な実装は再試行してよいが、service-global `CleanupPending` queue/workerを必須化しない。
 - Closed 到達後の通常 session operation は `ERROR_CAS_SESSION_NOT_OPENED`。
 
-close 成功確定点は logical close + token 新規 resolve revoke であり、backend 物理 close 完了を Binder 成功の必須条件にしない。
+close 成功確定点は caller-visible session の logical close と token 新規 resolve revokeである。backend物理cleanupの扱いは採用backendのresource契約に従い、固定したbackground cleanup機構を上位設計に要求しない。
 
 ### 4.2 release
 
-最初の `release()` は plugin を Releasing へ遷移させ、新規 method/callback delivery を遮断し、その plugin が所有する全 session token の新規 resolve revoke を試行する。
+最初の `release()` は plugin を Releasing へ遷移させ、新規 method/callback delivery を遮断し、その plugin が所有する全 session token の新規 resolve revoke と backend resource 解放を試行する。
 
-- token revoke 未確定 entry が残る: release 成功にせず Releasing を保持し、後続 `release()` / service-owned cleanup で revoke を再試行する。
-- 全 token revoke 確定: Released へ進み、backend close 失敗が残っていても caller-visible object を再 live 化しない。物理 cleanup は service-owned state で継続する。
-- Released 後の `release()` は idempotent に成功してよい。その他通常 method は `ERROR_CAS_INVALID_STATE`。
+全 token の新規 resolve が遮断され、plugin を caller から再利用不能にした時点で Released へ進める。backend物理cleanupに失敗した場合は、採用backendのownerが stale resourceを新しいplugin/sessionへ誤帰属させないことを保証する。backend reset、owner lifetime、再試行などの具体方式は実装詳細とし、CAS serviceがrelease済みpluginごとの永続cleanup stateを必ず保持する設計にはしない。
 
-1つの plugin の release は、独立した別 plugin instance のAOSP状態を変更しない。共有 physical backend resource がある場合のresource lifetimeは、その共有ownerが実利用者と未完了cleanupを基に管理する。
+Released 後の `release()` は idempotent に成功してよい。その他通常 method は `ERROR_CAS_INVALID_STATE`。
 
-AOSP reference の release と同様、backend recovery 完了まで Binder object を live に保つ設計にはしない。一方、外部 key registry を持つ本構成では token の新規 resolve 遮断だけは release 成功前に確定させる。
+1つの plugin の release は、独立した別 plugin instance の AOSP 状態を変更しない。共有 physical backend resource がある場合のresource lifetimeは、その共有ownerが実利用者とstale resourceを区別して管理する。
 
-live plugin/session と未完了 cleanup ownership の総量は有限に bound する。具体的数値は product capacity と確認済み ARIB gate を満たす実装詳細とし、新規受理で安全に管理できる範囲を超える場合は backend mutation 前に `ERROR_CAS_RESOURCE_BUSY` として拒否する。
+AOSP reference の release と同様、backend recovery 完了まで Binder object を live に保つ設計にはしない。resource exhaustionが発生した場合は `ERROR_CAS_RESOURCE_BUSY` 等のAOSP statusへ写像するが、固定件数のcleanup tableやworkerを本設計の必須要件にしない。
 
 ## 5. ICas method / input / error contract
 
@@ -155,8 +151,8 @@ method 成功確定点:
 - `openSession*()`: plugin backend binding、backend open、registry reservationが成立した後に Active session ID 公開。
 - `processEcm()`: backend 応答後の current-session/lifecycle 再確認を通り、complete new material を stable slot へ atomic publish し、既 link descrambler を含め同 session ID から取得可能になった時点。
 - `processEmm()`: 当該 B25 plugin に bind 済みの backend が成功し、plugin release 競合で stale result になっていないことを確認した時点。別 backend へ fallback しない。
-- `closeSession()`: Closing→Closed に必要な token revoke 確定。
-- `release()`: Releasing→Released に必要な、その plugin 所有 token の全 revoke 確定。
+- `closeSession()`: logical close と token の新規 resolve revoke が確定し、backend cleanupを試行済みの時点。
+- `release()`: pluginをcallerから再利用不能にし、そのplugin所有tokenの新規resolve revokeを確定し、backend resource解放を試行済みの時点。
 
 ECM/EMM は complete section byte sequence として CAS へ渡す。TS packet、PID、demux buffer を CAS HAL へ渡さない。empty、section framing/declared length 不整合、対象 CA system として処理不能な外形は backend I/O 前に拒否する。
 
@@ -289,10 +285,10 @@ module 名、socket path、wire field 値、owner cookie/generation の形式等
 - AOSP status mapping / complete section validation
 - plugin binding後cross-backend fallbackなし
 - close/releaseとin-flight ECM/EMM競合、late publishなし
-- revoke失敗時Closing/Releasing維持
-- revoke成功後backend close失敗時はClosed/Released維持 + cleanup retry
+- revoke未確定ではclose/release成功扱いにしない
+- backend cleanup失敗時にstale resourceを新sessionへ誤帰属させない
+- fixed service-global CleanupPending worker/tableを要求しない
 - 1 plugin releaseで独立別pluginのAOSP stateを破壊しない
-- bounded admission / cleanup accumulation
 - release idempotence / post-release invalid-state
 - AOSP listener引数契約 / callback reentrancyでhalf-committed stateを露出しない
 - SmartCard抜去時、影響するplugin session revoke
@@ -324,16 +320,15 @@ module 名、socket path、wire field 値、owner cookie/generation の形式等
 11. packet descramble は Tuner HAL だけが所有する。
 12. stale operation/completion を current state として commit しない。識別方式は実装詳細とする。
 13. close/release と競合した遅延 I/O 結果を publish しない。
-14. key revoke 未確定と backend 物理 cleanup 失敗を区別し、revoke 済み object/session を cleanup 失敗で再 live 化しない。
-15. live/cleanup ownership を bounded にし、安全に管理できる範囲を超える新規受理を RESOURCE_BUSY で拒否する。
-16. listener failure で commit 済み state を rollbackせず、callback実装方式ではなくhalf-committed stateを外部へ露出しないことを契約とする。
-17. backend operation は caller を無期限に占有せず、outcome unknown を成功扱いしない。再送は replay-safe が証明された場合だけ許す。
-18. Tuner token は stale linkage が残る間、別 session へ再割当てしない。
-19. backend owner loss では影響 session の新規 resource 取得を遮断し、旧 owner の後着 mutation を拒否する。
-20. `processEcm()` 成功時に stable link から complete current material を取得可能にする。
-21. MediaCas close 前に MediaCas 由来 token を全 descrambler から VOID で解除する。
-22. raw key material を Binder、TIS、通常 log へ出さず、必要期間を越えて保持・永続化しない。
-23. B25 advertise 前に ARIB STD-B25 Version 7.0 日本語原本の該当能力条項を確認し、product effective capacityが確認済み要求を満たすことを検証する。旧版英訳の数値を7.0要求として代用しない。
-24. CAS HAL は TS demux / AV / DVR を担当しない。
-25. Yakisoba の in-process/daemon 統合は product 選択とし、別 daemon/IPC 自体をAOSP要件として必須化しない。
-26. provider incarnation、key epoch、固定no-wrap counter、明示protocol-version field、peer credential+SELinuxの二重適用、idempotent-close方式、特定zeroize primitive等の具体方式を、必要な意味契約より強い必須条件として固定しない。
+14. close/release成功前にtokenの新規resolveを遮断する。backend物理cleanupの再試行/taint/reset方式はbackend resource契約へ委ね、固定service-global cleanup機構を必須化しない。
+15. listener failure で commit 済み state を rollbackせず、callback実装方式ではなくhalf-committed stateを外部へ露出しないことを契約とする。
+16. backend operation は caller を無期限に占有せず、outcome unknown を成功扱いしない。再送は replay-safe が証明された場合だけ許す。
+17. Tuner token は stale linkage が残る間、別 session へ再割当てしない。
+18. backend owner loss では影響 session の新規 resource 取得を遮断し、旧 owner の後着 mutation を拒否する。
+19. `processEcm()` 成功時に stable link から complete current material を取得可能にする。
+20. MediaCas close 前に MediaCas 由来 token を全 descrambler から VOID で解除する。
+21. raw key material を Binder、TIS、通常 log へ出さず、必要期間を越えて保持・永続化しない。
+22. B25 advertise 前に ARIB STD-B25 Version 7.0 日本語原本の該当能力条項を確認し、product effective capacityが確認済み要求を満たすことを検証する。旧版英訳の数値を7.0要求として代用しない。
+23. CAS HAL は TS demux / AV / DVR を担当しない。
+24. Yakisoba の in-process/daemon 統合は product 選択とし、別 daemon/IPC 自体をAOSP要件として必須化しない。
+25. provider incarnation、key epoch、固定no-wrap counter、明示protocol-version field、peer credential+SELinuxの二重適用、idempotent-close方式、特定zeroize primitive、service-global backend selector、固定cleanup worker/table等の具体方式を、必要な意味契約より強い必須条件として固定しない。
