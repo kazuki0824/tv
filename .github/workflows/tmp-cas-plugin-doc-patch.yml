@@ -11,79 +11,69 @@ permissions:
   contents: write
 
 jobs:
-  patch-development-rules:
+  patch-cross-docs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: design/aosp-mediacas-b25-plugin
           fetch-depth: 0
-      - name: Patch only CAS design ownership and terminology
+      - name: Patch CAS references in large current documents
         shell: python
         run: |
           from pathlib import Path
 
-          path = Path("開発規則.md")
-          text = path.read_text(encoding="utf-8")
+          def patch(path_name: str, transform) -> None:
+              path = Path(path_name)
+              before = path.read_text(encoding="utf-8")
+              after = transform(before)
+              if after == before:
+                  raise SystemExit(f"no change produced for {path_name}")
+              path.write_text(after, encoding="utf-8")
 
-          def replace_once(old: str, new: str) -> None:
-              global text
-              count = text.count(old)
-              if count != 1:
-                  raise SystemExit(f"expected exactly one occurrence, got {count}: {old[:120]!r}")
-              text = text.replace(old, new, 1)
+          def tuner_design(text: str) -> str:
+              old_ref = "../future_work/r52/b25_key_slot_registry_contract.md"
+              if text.count(old_ref) != 2:
+                  raise SystemExit(f"expected two old key-contract refs, got {text.count(old_ref)}")
+              text = text.replace(old_ref, "../cas_plugin/DESIGN_JA.md")
+              text = text.replace("CAS HAL または CAS bridge", "Maleicacid CAS pluginまたはvendor key bridge")
+              text = text.replace("CAS HAL / TIS / Tuner HAL", "CAS plugin / TIS / Tuner HAL")
+              text = text.replace("CAS / TIS / Tuner HAL", "CAS plugin / TIS / Tuner HAL")
+              text = text.replace("CAS HAL", "CAS plugin")
+              return text
 
-          replace_once(
-              "本プロジェクトでは、AOSP標準の責務分担に従い、Tuner HAL、TIS、arib_si_engine_rs、CAS HAL、rec、epgcollection の責務を分離する。",
-              "本プロジェクトでは、AOSP標準の責務分担に従い、Tuner HAL、TIS、arib_si_engine_rs、CAS plugin、rec、epgcollection の責務を分離する。",
-          )
+          def tis_design(text: str) -> str:
+              text = text.replace("CAS HAL", "CAS plugin")
+              heading = "## CAS / descrambler の現行境界\n\n"
+              note = "CAS plugin内部のfactory/backend/key lifecycle契約は `../cas_plugin/DESIGN_JA.md` を正とし、本書ではTISからMediaCas/Tuner SDKへ接続するruntime境界だけを定義する。\n\n"
+              if note not in text:
+                  if heading not in text:
+                      raise SystemExit("TIS CAS boundary heading not found")
+                  text = text.replace(heading, heading + note, 1)
+              text = text.replace("## CAS 仮実装境界", "## CAS plugin 仮実装境界")
+              return text
 
-          marker = "### 設計文書の責務分担"
-          module_block = """- `cas_plugin`:\n  - `cas_plugin/DESIGN_JA.md` をMaleicacid CAS pluginの設計正本とする。\n  - `android.hardware.cas.IMediaCasService/default` はAOSP標準MediaCasServiceを使用し、Maleicacid独自serviceを製品完成形として実装しない。\n  - MaleicacidはAOSP `android::CasFactory` / `android::CasPlugin` C++ ABIに従うloadable vendor pluginを実装し、entry point `createCasFactory()` はC linkageとする。\n  - YakisobaとSmartCardは同一B25 plugin内部のbackendとし、最初に`yakisoba_only`を成立させる。\n  - B25/B1のpacket descrambleはTuner HAL `IDescrambler`が所有し、CAS pluginへ188-byte TS packet復号を移さない。\n\n"""
-          if module_block not in text:
-              if marker not in text:
-                  raise SystemExit("design ownership marker not found")
-              text = text.replace(marker, module_block + marker, 1)
+          def tuner_integration(text: str) -> str:
+              if "CAS HAL" not in text:
+                  raise SystemExit("tuner integration has no CAS HAL reference")
+              return text.replace("CAS HAL", "CAS plugin")
 
-          table_anchor = "| `tuner_hal2/INTEGRATION.md` | product package、VINTF/init/ueventd/sepolicy、静的VTS設定の配置などproduct統合 | filter/section/PES/DVR等のruntime意味論、TIS/SI engineの実行時判断 |"
-          cas_row = "| `cas_plugin/DESIGN_JA.md` | AOSP MediaCasService / vendor CasPlugin境界、B25/B1 capability、plugin/session lifecycle、backend ownership、ECM/EMM、Tuner key bridge、token寿命、revoke/teardown | Tuner HAL packet descramble公開契約、TIS runtime、製品release到達点 |"
-          if cas_row not in text:
-              if table_anchor not in text:
-                  raise SystemExit("ownership table anchor not found")
-              text = text.replace(table_anchor, table_anchor + "\n" + cas_row, 1)
+          def cas_controller(text: str) -> str:
+              old = "カード I/O、CW 生成、鍵発行は MediaCas/CAS HAL 側の責務とする。"
+              new = "カード I/O、CW 生成、鍵発行は MediaCas/Maleicacid CAS plugin 側の責務とする。"
+              if text.count(old) != 1:
+                  raise SystemExit("CasController responsibility comment not found exactly once")
+              return text.replace(old, new, 1)
 
-          old_r52 = """r52 は、CAS HAL 本体を実装し、B25 / B1 の 本番経路のスクランブル解除成功 を 対応宣言 可能にし、現行 product が対象とする transport profile であり得る codec を ARIB 資料ベースで認識・再生判定できるリリースである。"""
-          new_r52 = """r52 は、AOSP標準MediaCasService上でMaleicacid CAS pluginを実装し、B25 / B1 の 本番経路のスクランブル解除成功 を 対応宣言 可能にし、現行 product が対象とする transport profile であり得る codec を ARIB 資料ベースで認識・再生判定できるリリースである。"""
-          replace_once(old_r52, new_r52)
-
-          old_r52_head = """- CAS HAL:\n  - B25 / B1 用 CAS plugin descriptor を広告する。\n  - `IMediaCasService` / `ICas` session lifecycle を実装する。"""
-          new_r52_head = """- CAS plugin:\n  - `android.hardware.cas.IMediaCasService/default` はAOSP標準MediaCasServiceを使用し、Maleicacid独自 `IMediaCasService/default` serviceを実装しない。\n  - MaleicacidはAOSP Media CAS plugin loaderから発見されるB25/B1 vendor CasPlugin descriptorを提供する。\n  - `createCasFactory()` をC linkageでexportし、`android::CasFactory` / `android::CasPlugin` C++ ABIに従う。\n  - plugin/session lifecycleを実装する。"""
-          replace_once(old_r52_head, new_r52_head)
-
-          old_policy = "CAS HALの実装はr52の正式リリース完了までプレースホルダーとする。CAS HALの実装が完了している前提を仮置きしてはならない。"
-          new_policy = "Maleicacid CAS pluginの実装はr52の正式リリース完了までプレースホルダーとする。AOSP標準MediaCasServiceを利用し、Maleicacid独自MediaCas serviceの完成を前提にしてはならない。CAS pluginの実装が完了している前提を仮置きしてはならない。"
-          replace_once(old_policy, new_policy)
-
-          specific = {
-              "CAS HAL / MediaCas plugin / vendor CAS layer": "Maleicacid CAS plugin / vendor CAS layer",
-              "CAS HAL / MediaCas plugin / vendor key bridge": "Maleicacid CAS plugin / vendor key bridge",
-              "MediaCas / CAS HAL / B-CAS": "MediaCas / Maleicacid CAS plugin / B-CAS",
-              "Tuner HAL / CAS HAL / TIS": "Tuner HAL / CAS plugin / TIS",
-              "CAS HAL...libyakisoba": "CAS plugin...libyakisoba-cross",
-              "Tuner HAL、CAS HAL、TIS": "Tuner HAL、CAS plugin、TIS",
-          }
-          for old, new in specific.items():
-              text = text.replace(old, new)
-
-          text = text.replace("CAS HAL", "CAS plugin")
-          text = text.replace("cas_hal/", "cas_plugin/")
-
-          path.write_text(text, encoding="utf-8")
-      - name: Commit patched development rules
+          patch("tuner_hal/DESIGN_JA.md", tuner_design)
+          patch("tis/DESIGN_JA.md", tis_design)
+          patch("tuner_hal/INTEGRATION.md", tuner_integration)
+          patch("tis/src/com/maleicacid/tvinput/tis/CasController.kt", cas_controller)
+      - name: Commit cross-document updates
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add -- 開発規則.md
+          git add -- tuner_hal/DESIGN_JA.md tis/DESIGN_JA.md tuner_hal/INTEGRATION.md tis/src/com/maleicacid/tvinput/tis/CasController.kt
           git diff --cached --check
-          git commit -m "docs(cas): register cas_plugin design SSOT"
+          git commit -m "docs(cas): point current documents at cas_plugin SSOT"
           git push origin HEAD:design/aosp-mediacas-b25-plugin
