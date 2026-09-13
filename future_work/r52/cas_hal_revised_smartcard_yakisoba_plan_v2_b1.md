@@ -9,7 +9,7 @@ B25正式構成は `smartcard_only` / `yakisoba_only` / `prefer_smartcard_then_y
 
 ClearKeyはB25/B1 stateから分離したAOSP reference-compatible pathとして同じ `IMediaCasService/default` に合成する。Maleicacid固有profile/backend/key stateをClearKeyへ混在させない。
 
-B25の規範は採用productで固定する現行ARIB STD-B25日本語原本とする。本設計ではVersion 7.0を対象revisionとし、同時処理可能なスクランブル鍵/PID等の数値規定を本書へ複製せず、同revisionの該当条項をcapability gateのSSOTとして参照する。
+B25の規範は採用productで固定するARIB STD-B25日本語原本とする。本設計ではVersion 7.0を対象revisionとし、同時処理可能なスクランブル鍵/PID等の数値規定を本書へ複製せず、同revisionの該当条項をcapability gateのSSOTとして参照する。
 
 ## 1. AOSP公開契約
 
@@ -123,6 +123,8 @@ AOSP referenceのrelease同様、backend recovery完了までBinder objectをliv
 
 Binder artifact消滅後もReleasing/CleanupPending stateはservice寿命ownerが保持するが、worker/timer構成は実装詳細とする。
 
+live plugin/sessionとReleasing/CleanupPending ownershipの総量は有限にboundする。具体的な数値上限はproduct capacityとARIB gateを満たす実装詳細とするが、新しいplugin/sessionを受理すると上限を超える場合はbackend mutation前に `ERROR_CAS_RESOURCE_BUSY` として拒否し、cleanup失敗による無制限なstate増加を許さない。
+
 ## 5. ICas method / input / error contract
 
 method成功確定点:
@@ -158,13 +160,15 @@ resource/concurrency exhaustion          -> ERROR_CAS_RESOURCE_BUSY
 
 backendがAOSP専用statusを判定できる場合は `ERROR_CAS_DEVICE_REVOKED`、`ERROR_CAS_NEED_ACTIVATION`、`ERROR_CAS_NEED_PAIRING` 等へ対応付けUNKNOWNへ潰さない。未実装を成功へ丸めない。
 
-listenerはstate commit後かつ内部lock外で呼ぶ。listener failureでcommit済みstateをrollbackしない。listener/callbackにはECM/EMM本文、private data、session token、raw/prepared key materialを含めない。
+listenerはstate commit後かつ内部lock外で呼ぶ。listener failureでcommit済みstateをrollbackしない。現設計ではvendor scheme event番号を定義しないため、診断目的だけで `onEvent()` / `onSessionEvent()` を合成しない。将来AOSP listener methodを使用する場合はそのAIDL引数契約をそのまま守り、`onSessionEvent()` では正規のsession IDを渡す。ECM/EMM本文、private data、raw/prepared key materialをlistener dataへ含めない。
 
 ## 6. SmartCard path
 
 同一physical cardへのI/Oは単一ownerが直列化し、card I/O lock中にBinder callbackを呼ばない。open/reset/APDUは有限deadlineを持つ。
 
 binding前probe timeoutは `CARD_UNKNOWN_TIMEOUT` としてfallbackしない。binding後にrequestを送信して結果不明となったsessionはFailedとして新規処理を遮断し、token revoke/closeへ進む。同pluginでYakisobaへ切り替えない。
+
+bind済みSmartCardの抜去または恒久的card invalidationを検出した場合、そのcard/backend generationに依存するActive sessionをFailedへ遷移させ、新規resolveをrevokeする。同plugin内でYakisobaへ切り替えない。後続の新sessionを同じSmartCard bindingで受理する場合は、card probe/reset/credential初期化を再実行して新sessionとして成立させる。
 
 B25 system key/CBC初期値は検証済みcard初期化応答から取得する。B1は採用B1 protocolの検証済み応答から供給元を確定し、B25配置を推測して流用しない。
 
@@ -181,6 +185,8 @@ IPCはversion/operation/B25 identity検証、request ID照合、session/plugin g
 - EMM outcome unknown: `ERROR_CAS_INVALID_STATE`、自動再送なし、binding維持。
 
 Yakisoba closeは同じsession identityについて未作成/終了済みでもidempotentに扱う。`yakisoba_only` はSmartCard probeを行わず、daemon/credential一時利用不能時もdescriptor集合を変えず操作失敗とする。
+
+Yakisoba daemonのdeath/restartを検出した場合、旧daemon incarnationに依存するActive sessionをFailedへ遷移させ、新規resolveをrevokeする。同plugin内でSmartCardへ切り替えない。後続の新sessionを同じYakisoba bindingで受理する場合は新daemon incarnationとのhandshakeとcommitted plugin private dataの再適用を完了してからopenする。旧sessionを新daemon incarnationへ引き継がない。
 
 Yakisobaから受領したkey materialはregistry commitに必要な最短寿命だけ保持し、一時response/encode bufferはcommitまたは失敗後にzeroizeする。
 
@@ -224,7 +230,11 @@ module名、socket path、wire field値等の内部名称はAOSP公開契約に�
 - close/releaseとin-flight ECM/EMM競合、late publishなし
 - revoke失敗時Closing/Releasing維持
 - revoke成功後backend close失敗時はClosed/Released維持 + cleanup retry
+- bounded admission / cleanup accumulation
 - release idempotence / post-release invalid-state
+- AOSP listener sessionId契約 / secret非露出
+- SmartCard抜去時session revoke
+- Yakisoba daemon restart時、旧session revoke + 新session再初期化
 - listener failureでcommit済みstate非rollback
 - Yakisoba outcome-unknown / temporary-key zeroize
 - provider death revoke
@@ -249,12 +259,13 @@ module名、socket path、wire field値等の内部名称はAOSP公開契約に�
 11. generationをwrap/reuseせず、mutating I/O後にgeneration/lifecycleを再検証してからcommitする。
 12. close/releaseと競合した遅延I/O結果をpublishしない。
 13. key revoke未確定とbackend物理cleanup失敗を区別し、revoke済みobject/sessionをcleanup失敗で再live化しない。
-14. listener failureでcommit済みstateをrollbackしない。
-15. backend I/Oはboundedとし送信後結果不明を成功/fallbackへ丸めない。
-16. Tuner tokenはMediaCas session ID bytesでservice process lifetime中再利用しない。
-17. provider deathではそのincarnationの新規resource取得を遮断する。
-18. `processEcm()`成功時にstable linkからcomplete current epochを取得可能にする。
-19. MediaCas close前にMediaCas由来tokenを全descramblerからVOIDで解除する。
-20. raw key materialをBinder、TIS、通常logへ出さない。
-21. B25 advertise時のeffective key/PID capacityはARIB STD-B25 Version 7.0の対象条項を満たす。
-22. CAS HALはTS demux / AV / DVRを担当しない。
+14. live/cleanup ownershipをboundedにし、上限超過前にRESOURCE_BUSYでadmissionを拒否する。
+15. listener failureでcommit済みstateをrollbackせず、AOSP listenerの必須引数契約は狭めない。
+16. backend I/Oはboundedとし送信後結果不明を成功/fallbackへ丸めない。
+17. Tuner tokenはMediaCas session ID bytesでservice process lifetime中再利用しない。
+18. provider/backend deathでは影響sessionの新規resource取得を遮断する。
+19. `processEcm()`成功時にstable linkからcomplete current epochを取得可能にする。
+20. MediaCas close前にMediaCas由来tokenを全descramblerからVOIDで解除する。
+21. raw key materialをBinder、TIS、通常logへ出さない。
+22. B25 advertise時のeffective key/PID capacityはARIB STD-B25 Version 7.0の対象条項を満たす。
+23. CAS HALはTS demux / AV / DVRを担当しない。
