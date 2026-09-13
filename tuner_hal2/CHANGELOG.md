@@ -1,3 +1,9 @@
+# PR #108 Tunerの鍵参照owner
+
+- 製品固定parameterと動的Ks状態の正本を参照し、Tunerをtoken参照・packet復号のconsumerとして明記した。
+- `DescramblerKeyTxn`の既存入口をtoken参照の結合・解除と表記し、CAS側のKs更新ownerとの混同を除いた。`CasTokenProducerUnavailable`の参照経路未成立という意味とtest専用登録の現状を明記した。
+- 設計文書のみの変更。既存Rust owner・typed entry・transaction処理は変更していない。build、unit test、VTS、実機確認は未実施。
+
 # r51_tuner_hal2_audit_regressions
 
 - demuxのfrontend入力とStarted Playback DVR入力を相互排他にし、拒否時に既存relation・DVR状態を維持する。既存のDemuxFrontendSourceTxnとDVR開始処理へ検査を接続し、両方向の回帰試験を追加した。

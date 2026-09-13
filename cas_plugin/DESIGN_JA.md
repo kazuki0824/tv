@@ -1,6 +1,6 @@
 # Maleicacid CAS plugin 設計正本
 
-本書は Maleicacid の CAS plugin に関する規範正本である。AOSP Media CAS service と vendor CasPlugin の境界、B25/B1 capability、plugin/session lifecycle、backend ownership、ECM/EMM処理、Tuner key bridge、token寿命、teardownを所有する。
+本書は Maleicacid の CAS plugin に関する規範正本である。AOSP Media CAS service と vendor CasPlugin の境界、B25/B1 capability、plugin/session lifecycle、backend ownership、ECM/EMM処理、session/tokenと動的鍵状態の対応・更新・失効、token寿命、teardownを所有する。
 
 製品全体のrelease到達点とmodule間責務は `../開発規則.md`、Tuner HAL公開契約は `../tuner_hal/DESIGN_JA.md`、TIS runtimeは `../tis/DESIGN_JA.md` を正とする。本書はそれらを再定義しない。
 
@@ -10,29 +10,18 @@
 
 MaleicacidはAOSP Media CAS plugin ABIに従うvendor shared libraryを提供する。64-bit productでは `/vendor/lib64/mediacas`、32-bit productでは `/vendor/lib/mediacas` にinstallし、通常の `/vendor/lib[64]` 直下へ置かない。Soongではvendor shared libraryに `relative_install_path: "mediacas"` を指定するか、それと等価なinstall結果を成立させる。AOSP `FactoryLoader` が実際にこのpluginを列挙できることをproduct integrationの成立条件とする。
 
-```text
-TIS / android.media.MediaCas
-          |
-          | AIDL ICas
-          v
-AOSP android.hardware.cas.IMediaCasService/default
-          |
-          | FactoryLoader / createCasFactory()
-          v
-Maleicacid CAS plugin library
-  |- extern "C" createCasFactory()
-  |- MaleicacidCasFactory : android::CasFactory
-  |- MaleicacidB25CasPlugin : android::CasPlugin
-  |    |- SessionTable
-  |    |- backend binding
-  |    |- YakisobaBackend
-  |    |- SmartCardBackend
-  |    `- Tuner key bridge
-  `- MaleicacidB1CasPlugin : android::CasPlugin
-       |- SessionTable
-       |- B1SmartCardBackend
-       `- Tuner key bridge
+```mermaid
+flowchart TD
+    TIS["TIS / android.media.MediaCas"] -->|AIDL| Service["AOSP MediaCasService/default"]
+    Service -->|"FactoryLoader / createCasFactory()"| Factory["MaleicacidCasFactory : android::CasFactory"]
+    Factory --> B25["MaleicacidB25CasPlugin : android::CasPlugin"]
+    Factory --> B1["MaleicacidB1CasPlugin : android::CasPlugin"]
+    B25 --> Yakisoba["YakisobaBackend"]
+    B25 --> SmartCard["SmartCardBackend"]
+    B1 --> B1Card["B1SmartCardBackend"]
 ```
+
+両pluginはそれぞれSessionTableを持ち、B25はplugin単位のbackend bindingを持つ。ECMから得たodd/even KsはMediaCas session IDに対応する内部鍵状態へ反映する。CAS pluginの依存先にTuner HALを置かず、製品の共有方針は`../開発規則.md`の「r52のMULTI2固定値と動的鍵状態」に従う。
 
 AOSP `MediaCasService` はplugin libraryのdiscovery/load、service-level plugin列挙・support query、AIDL `ICas` wrapper生成、listener bridgeを所有する。Maleicacid pluginはこれらを重複実装しない。
 
@@ -56,8 +45,8 @@ B25をadvertiseするには、採用profileについて次を満たす。
 共通:
   - AOSP CasPlugin lifecycle / status contract
   - complete ECM / EMM input contract
-  - MediaCas session ID -> Tuner token bridge
-  - 復号に必要な鍵状態の一括公開と同一slot上での更新
+  - MediaCas session IDと同一のtokenからcurrent odd/even Ksへの一意な参照
+  - 同じtokenに対応するcurrent Ksのatomic更新
   - revoke / stale-token rejection
   - TIS -> MediaCas -> Tuner 結合確認
   - 採用するARIB STD-B25日本語原本の受信機能力条項の確認
@@ -103,8 +92,9 @@ B1は同じ `MaleicacidCasFactory` が所有する第二のCA systemとして提
 - sendEvent() / sendSessionEvent()
 - provision() / refreshEntitlements()
 - plugin/session lifecycle
-- Tuner key bridge への publish / rotation / revoke
 ```
+
+内部責務として、MediaCas session/tokenと動的鍵状態の対応・Ks更新・失効を§9〜§13に従って維持する。これは追加のCasPlugin公開methodやTuner HALへの呼出しではない。
 
 採用AOSP plugin ABIに存在しないvendor独自public methodを追加しない。公開面を拡張せず、各CA方式で意味を持たないoperationは空successにせずAOSP既存のcannot-handle相当statusへ写像し、stateを変更しない。invalid/closed session、illegal argument等はAOSP既存statusの意味を保って返す。
 
@@ -112,7 +102,7 @@ B1は同じ `MaleicacidCasFactory` が所有する第二のCA systemとして提
 
 引数なしの `openSession(CasSessionId*)` はframeworkのdefault session openであり、B25/B1とも各CA方式のscheme-default MULTI2 sessionを生成する。typed `openSession(intent, mode, ...)` はB25/B1で `LIVE + MULTI2` を通常入力として受理する。これ以外の非対応intent/modeはstateを変更せずcannot-handle相当statusを返す。
 
-`processEcm()` の成功条件はB25/B1共通で、対象sessionの復号に必要な鍵状態が確定済みで、同じMediaCas session ID bytesから直ちに利用可能であることとする。固定値と更新対象の区別は§10、確定点は§12に従い、確定前にsuccessを返さない。close/releaseとの競合、late completion、revoke、callback orderingは§4および§12〜§13の共通契約に従う。
+`processEcm()` の成功条件はB25/B1共通で、対象sessionのcurrent odd/even Ksのatomic更新が確定済みで、同じMediaCas session ID bytesから直ちに利用可能であることとする。固定値と更新対象の区別は§10、確定点は§12に従い、確定前にsuccessを返さない。close/releaseとの競合、late completion、revoke、callback orderingは§4および§12〜§13の共通契約に従う。
 
 ## 4. plugin / session lifecycle
 
@@ -196,9 +186,9 @@ YakisobaBackend (C++)
 libyakisoba-cross / libyakisoba
 ```
 
-Yakisoba backendはlibyakisobaの戻り値とkey materialをplugin lifecycle、AOSP status、key-publish契約へ正規化する。
+Yakisoba backendはlibyakisobaの戻り値とodd/even Ksをplugin lifecycle、AOSP status、sessionの動的鍵状態の更新契約へ正規化する。
 
-`processEcm()` はECM入力をbackendへ渡し、成功時に得たodd/even Ksを、同じMediaCas session IDから参照する内部鍵資源へ一括反映する。§10の固定値と組み合わせた復号が可能になる前にsuccessを返さない。
+`processEcm()` はECM入力をbackendへ渡し、成功時に得たodd/even Ksを、同じMediaCas session IDから参照する内部鍵状態へatomicに反映する。§12の確定点でsuccessを返し、製品固定parameterをsessionの更新対象に含めない。
 
 `processEmm()` はplugin-wide backend mutationとして扱い、関連ECM処理がhalf-updated entitlement/work-key stateを観測しないorderingを提供する。
 
@@ -254,8 +244,9 @@ SmartCard backendは次を所有する。
 - ARIB準拠card command生成・送受信
 - response status分類
 - card初期化応答の検証
-- ECM
-- EMM
+- entitlement validation / Kw管理
+- ECMからのodd/even Ks取得
+- EMMによる権利・Kw更新
 - card removal / fatal invalidation
 ```
 
@@ -271,9 +262,9 @@ B1の正式対応は `MaleicacidB1CasPlugin` + `B1SmartCardBackend` のECM-only�
 
 B1 pluginは§3の共通AOSP `CasPlugin` ABI契約と§4の共通lifecycle契約に従う。default `openSession(CasSessionId*)` はB1 scheme-default MULTI2 sessionを生成し、typed `openSession(intent, mode, ...)` は `LIVE + MULTI2` を受理する。その他の非対応intent/modeはstateを変更せずcannot-handle相当statusを返す。
 
-B1 `processEcm()` のsuccessは§3および§12の共通契約に従い、復号に必要な鍵状態が確定済みで、同じMediaCas session IDから直ちに利用可能になった時点だけ返す。旧Ksとの新旧混在を許さず、late ECM completionで鍵状態を巻き戻さない。
+B1 `processEcm()` のsuccessは§3および§12の共通契約に従い、current odd/even Ksのatomic更新が確定済みで、同じMediaCas session IDから直ちに利用可能になった時点だけ返す。旧Ksとの新旧混在を許さず、late ECM completionで鍵状態を巻き戻さない。
 
-B1 `processEmm()` はunsupportedとし、stateを変更せずcannot-handle相当statusを返す。B1のplugin-level `setPrivateData()` はCAT/EMM経路を持たないためunsupportedのままとし、空successにしない。一方 `setSessionPrivateData()` はPROGRAM/ESのCA descriptor private dataを受けるAOSP標準session入力として受理する。入力はCAS scheme-privateなopaque bytesとしてsession-localにcommitし、TISは内容を解釈しない。B1 ECM処理がその内容を必要としない実装でも、未使用であることだけを理由にこの標準入力を拒否しない。更新と `processEcm()` が競合する場合はhalf-committed private dataを観測させない。B1で意味を定義しない `sendEvent()`、`sendSessionEvent()`、`provision()`、`refreshEntitlements()` はstateを変更せずcannot-handle相当statusを返す。`setStatusCallback()`、`closeSession()`、plugin release、stale completion rejection、Tuner key revoke、MediaCas close前のVOID unlinkはB25/B1共通契約に従う。
+B1 `processEmm()` はunsupportedとし、stateを変更せずcannot-handle相当statusを返す。B1のplugin-level `setPrivateData()` はCAT/EMM経路を持たないためunsupportedのままとし、空successにしない。一方 `setSessionPrivateData()` はPROGRAM/ESのCA descriptor private dataを受けるAOSP標準session入力として受理する。入力はCAS scheme-privateなopaque bytesとしてsession-localにcommitし、TISは内容を解釈しない。B1 ECM処理がその内容を必要としない実装でも、未使用であることだけを理由にこの標準入力を拒否しない。更新と `processEcm()` が競合する場合はhalf-committed private dataを観測させない。B1で意味を定義しない `sendEvent()`、`sendSessionEvent()`、`provision()`、`refreshEntitlements()` はstateを変更せずcannot-handle相当statusを返す。`setStatusCallback()`、`closeSession()`、plugin release、stale completion rejection、session鍵状態のrevoke、MediaCas close前のVOID unlinkはB25/B1共通契約に従う。
 
 B1 plugin advertise gateは次を満たす。
 
@@ -281,12 +272,12 @@ B1 plugin advertise gateは次を満たす。
 - B1 descriptor / support query / createPlugin(B1)を提供
 - default / typed session openを共通契約どおり実装・検証済み
 - B1 SmartCard ECM処理を実装・検証済み
-- processEcm() success -> stable token / complete current material を検証済み
+- processEcm() success -> 同じtokenからcurrent odd/even Ksの参照を検証済み
 - processEmm()をunsupportedとして明示
 - EMM依存のactivation/control information取得をunsupportedとして明示
 - EMM依存の契約更新・権利更新をunsupportedとして明示
 - B1でYakisoba backendを選択しない
-- generic MULTI2 publish / rotation / revoke / closeを検証済み
+- genericなKs更新 / revoke / closeを検証済み
 ```
 
 TISはB1 sessionでEMM filterを起動せず、`MediaCas.processEmm()`を呼ばない。CATにEMM PIDがあってもB1復号開始条件・成功条件にしない。
@@ -312,23 +303,15 @@ session ID公開前に、live identityおよびstale linkage/retired reference�
 
 process lifetime全体でtokenを永久に再利用しない実装を選んでもよいが必須ではない。必要なのは、stale tokenが別sessionのkey materialへ接続されないことである。
 
-## 10. Tuner key resource
+## 10. tokenから参照する動的鍵状態
 
-Tuner側のMULTI2復号に必要な論理情報は次とする。
+固定値と動的鍵状態の製品方針は`../開発規則.md`の「r52のMULTI2固定値と動的鍵状態」を正とする。
 
-| 情報 | 本製品での扱い |
-|---|---|
-| `system_key` | `tuner_hal2`側で使用する固定値 |
-| `cbc_initial_value`（`init_cbc`） | `tuner_hal2`側で使用する固定値 |
-| `even_ks` / `odd_ks` | CAS側のECM処理で取得・更新するsessionのスクランブル鍵 |
+tokenはsessionに対応するcurrent odd/even Ks、またはそれを使用できる内部鍵資源への参照を解決する。固定値を含む`Multi2KeyMaterial`一式をCASからpublishするruntime resourceにはしない。Tunerが参照したKsと製品固定値から復号用materialを内部構成することは、この責務分離を変えない。
 
-`system_key`と`cbc_initial_value`は実行時にCAS pluginからTuner HALへ渡さない。`Multi2KeyMaterial`は復号器が使用する上記情報の論理名であり、CAS pluginが全fieldを保持・送信する構造体や、固定値をECMごとに再登録する手順を要求しない。
+CA system ID、MediaCas session identity、SmartCard/Yakisoba種別、CAS owner世代、鍵更新番号はCAS側の管理情報であり、Tunerの復号用materialの必須fieldにしない。
 
-更新対象はodd/even Ksである。Tuner descramblerはtokenを介してKs、またはそのKsを使用できる内部鍵資源への参照を取得する。具体的な共有方式にかかわらず、固定値と有効なKsを組み合わせて復号できる状態を、本書の「復号に必要な鍵状態」「complete current material」とする。
-
-CA system ID、MediaCas session identity、SmartCard/Yakisoba種別、CAS owner世代、鍵更新番号はCAS/plugin/key-bridge側の管理情報であり、`Multi2KeyMaterial` の必須fieldにしない。
-
-stale owner/updateの排除にgeneration、cookie、connection identity、version counter等を内部実装として使用してよいが、それらをAOSP tokenまたはTuner key materialの必須形式にしない。
+stale owner/updateの排除にgeneration、cookie、version counter等を内部実装として使用してよいが、それらをAOSP tokenまたはTuner key materialの必須形式にしない。
 
 `IDescrambler.setKeyToken(token)` は、その時点のkey bytes snapshotへ固定する操作ではなくstable slot identityへlinkする操作とする。同じsessionの後続ECMでは、そのtokenを変更せず参照先のodd/even Ksを一括更新する。
 
@@ -350,9 +333,9 @@ stale owner/updateの排除にgeneration、cookie、connection identity、versio
 
 AOSP MediaCasServiceからCasPluginへの呼出しは同一process内のC++ ABI呼出しであり、CasPlugin ABI自体にIPCを追加しない。TISはMediaCas session由来のopaque tokenをAOSP Tuner `setKeyToken()`へ渡し、Tuner descramblerはそのtokenで有効な鍵状態を参照する。
 
-本書のkey bridge、registry、slotは、sessionと鍵状態の対応・更新・失効を表す論理上の役割である。保管先のprocess、server/clientの配置、通信方式、CAS pluginとTuner HALの直接接続を必須構造にしない。共有vendor key service、TEE、共通backend等、製品の復号経路と次の契約を満たす方式をvendor内部実装で選べる。いずれかの共有機構の新設を要求するものではない。
+本書のregistry、slotは、sessionと鍵状態の対応・更新・失効を表す論理上の役割である。製品の共有方針は`../開発規則.md`を正とし、保管先のprocess、server/clientの配置、通信方式を本書で固定しない。製品の復号経路と次の契約を満たす具体的な共有方式をvendor内部実装に委ね、共有機構の新設を要求しない。
 
-- 同じMediaCas session由来tokenから、そのsessionの現在の鍵状態を一意に参照できる。複数箇所に鍵表現を置く方式でも、独立した正本として更新・失効を食い違わせない。
+- 同じMediaCas session由来tokenから、そのsessionのcurrent odd/even Ksを一意に参照できる。複数箇所に鍵表現を置く方式でも、独立した正本として更新・失効を食い違わせない。
 - ECMによるKs更新と失効を一貫して確定し、§12の成功条件と§13の参照寿命を満たす。
 - 鍵状態を管理する主体は、CAS所有者の喪失を検出して影響するsessionを失効させる。通常closeによる失効と同じく、新規の鍵取得と後着更新を拒否し、TISの通知処理を失効の開始条件にしない。喪失の検出手段は採用方式に従う。
 - 未許可主体による状態変更と、別ownerのsessionへの更新を拒否する。tokenを知っていることだけを更新権限にしない。
@@ -362,15 +345,15 @@ AOSP MediaCasServiceからCasPluginへの呼出しは同一process内のC++ ABI�
 
 ## 12. processEcm() commit契約
 
-`processEcm()` successの確定点は、ECM結果のodd/even Ksが内部鍵資源へ一括反映され、同じMediaCas session ID bytesから§10の復号に必要な鍵状態を直ちに利用可能になった時点とする。特定processへの送信完了だけを成功条件にせず、結果不明の場合も成功を返さない。
+`processEcm()` successの確定点は、ECM結果のodd/even Ksが対象sessionの内部鍵状態へatomicに反映され、同じMediaCas session ID bytesからcurrent Ksを直ちに利用可能になった時点とする。結果不明の場合は成功を返さない。
 
 確定前に失敗した場合は旧Ksを維持する。ただし、所有者喪失等で既に失効した鍵状態を復活させない。更新するKsを準備してから一括確定し、1 packetの復号で異なる更新の鍵情報を混在させない。固定値はこのsession更新の対象にしない。
 
-同一sessionのmutating CAS operationを直列化するか、同等のstale-completion排除を行い、古いECM結果が後着してcurrent materialを巻き戻さないようにする。具体同期方式は実装詳細とする。
+同一sessionのmutating CAS operationを直列化するか、同等のstale-completion排除を行い、古いECM結果が後着してcurrent Ksを巻き戻さないようにする。具体同期方式は実装詳細とする。
 
 ## 13. revoke / close / release
 
-次の場合、新規key resolve/resource取得を遮断する。
+失効の所有軸はMediaCas session/tokenの寿命とする。transport接続をsessionの所有者にせず、次の場合に当該tokenの新規key resolve/resource取得を遮断する。
 
 ```text
 - session close
@@ -409,7 +392,7 @@ backend物理cleanupのretry/reset/taint方式はbackend resource ownerの実装
 - CAS event/status
 ```
 
-CAS pluginはTS demux、188-byte TS packet descramble、AV、DVRを担当しない。
+CAS pluginはTS demux、188-byte TS packet descramble、AV、DVRを担当しない。製品固定値の使用は`../開発規則.md`に従い、CAS側のsession更新は動的なKs状態を対象とする。
 
 ### Tuner HAL
 
@@ -490,6 +473,7 @@ plugin libraryは `createCasFactory()` をexportし、AOSP `media/cas/CasAPI.h` 
 - 別CasControllerの同一CA systemが独立pluginとして動作し、一方の回収が他方のslotを失効させない
 - 採用した共有方式でCAS所有者喪失・MediaCasService死亡とKs更新が競合しても、影響するsessionだけが失効し、後着結果が鍵状態を復活させない
 - 未許可主体による状態変更、別ownerのsession更新、所有者喪失・失効後の旧token使用を拒否する
+- live session間およびtoken再割当て時に、別sessionのKsへの誤接続を起こさない
 - 固定値を実行時にCAS pluginからTuner HALへ渡さず、ECM由来のodd/even Ksだけを更新対象にして復号できる
 - ClearKey compatibility pathを破壊しない
 - B25/B1 Media CAS descramblerを追加しない
@@ -507,8 +491,8 @@ B25 `yakisoba_only` の最低完了条件は次とする。
 - typed `LIVE + MULTI2` が同じB25 session semanticsを生成できる
 - yakisoba_onlyではSmartCard probeが発生しない
 - ECM/EMMがYakisoba backendへ到達する
-- processEcm() success後に同じMediaCas session ID tokenからcomplete current materialを解決できる
-- 後続ECMで同じstable slotのmaterialをatomic更新できる
+- processEcm() success後に同じMediaCas session ID tokenからcurrent odd/even Ksを参照できる
+- 後続ECMで同じtokenに対応するcurrent Ksをatomic更新できる
 - ECM/EMMは標準processEcm/processEmm入力としてのみ公開AIDLを通し、通常log・別AIDL・診断dump等へ不要に再公開しない
 ```
 
@@ -521,7 +505,7 @@ B1 ECM-onlyの最低完了条件は次とする。
 - default openSessionがB1 scheme-default MULTI2 sessionを生成できる
 - typed `LIVE + MULTI2` が同じB1 session semanticsを生成できる
 - B1でYakisoba backendを選択しない
-- B1 processEcm() success後に同じMediaCas session ID tokenからcomplete current materialを解決できる
+- B1 processEcm() success後に同じMediaCas session ID tokenからcurrent odd/even Ksを参照できる
 - B1 processEmm() がstateを変更せずunsupported/cannot-handle相当statusを返す
 - PROGRAM/ES CA metadataからB1 sessionへ `setSessionPrivateData()` を成功させ、その後のECM処理まで同じsessionで継続できる
 - B1 plugin-level `setPrivateData()` とB1で意味を定義しないevent/provision/refresh operationが空successせずcannot-handle相当statusを返す
@@ -538,7 +522,7 @@ B1 ECM-onlyの最低完了条件は次とする。
 2. B25 plugin/session lifecycle
 3. YakisobaBackend + libyakisoba-cross integration
 4. yakisoba_only advertise / ECM / EMM
-5. Tuner key bridgeとのend-to-end接続
+5. MediaCas session由来tokenとcurrent Ks状態のend-to-end結合確認
 6. SmartCardBackend
 7. smartcard_only / prefer_smartcard_then_yakisoba
 8. B1 plugin support

@@ -1,3 +1,10 @@
+# PR #108 固定値・動的鍵状態の責務同期
+
+- 複数moduleに跨る固定MULTI2 parameterと動的Ks状態の製品方針を`../開発規則.md`へ集約した。CAS pluginはTuner HALへ直接依存せず、具体的な共有方式を必須化しない。
+- B25/B1の構成、ABI内部責務、SmartCard、advertise gate、ECM成功条件、失効、検証、実装順序、READMEをsession/tokenとcurrent Ksの対応・更新・失効へ統一した。
+- 固定値のruntime配送と全materialのpublishを要求する表現を除き、Tuner設計の参照・復号責務と同期した。
+- 設計文書のみの変更。staticな責務・参照・差分整合を確認。CAS plugin本体・鍵共有機構の実装追加、build、unit test、Android/Soong、atest、VTS、実機確認は未実施。
+
 # PR #108 鍵共有の責務境界
 
 - CAS pluginとTuner HALの直接接続、Unix domain socket、Tuner側server／plugin側client、接続単位の唯一の更新入口という必須構造を除いた。

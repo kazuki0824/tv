@@ -1,3 +1,10 @@
+# PR #108 Tunerの鍵参照責務
+
+- 復号鍵台帳、token解決、MULTI2境界を、製品固定parameterとtoken由来のcurrent Ksを使用するconsumer契約へ揃えた。
+- CAS側からの全material配送・Tuner台帳直接更新という前提を除き、既存診断名の意味を内部鍵状態の参照経路未成立と明記した。
+- CAS側のKs更新と`DescramblerKeyTxn`の参照結合・解除を区別し、失効時の参照寿命をCAS正本へ同期した。
+- 設計文書のみの変更。Rust実装、AIDL戻り値、既存診断分類は変更していない。build、unit test、VTS、実機確認は未実施。
+
 # r51_tuner_hal2_audit_regressions
 
 - frontend/Playback DVR入力排他、px4 TMCC一覧の有限再観測、scan callback前の`LockedReported`確定を公開設計へ反映した。
