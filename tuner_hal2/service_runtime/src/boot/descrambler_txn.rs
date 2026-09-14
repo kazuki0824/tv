@@ -327,9 +327,6 @@ impl DescramblerKeyTxn<'_> {
                             DescramblerKeyPublishError::SlotIdExhausted => {
                                 "descrambler key slot identity exhausted"
                             }
-                            DescramblerKeyPublishError::RefreshGenerationExhausted => {
-                                "descrambler key refresh generation exhausted"
-                            }
                         };
                         let error = HalError::internal(HalInternalKind::InvariantViolation, detail);
                         self.runtime.record_descrambler_diagnostic(
