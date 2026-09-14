@@ -522,6 +522,33 @@ void boundedSocketAndInvalidRequests() {
     CHECK(std::all_of(even.begin(), even.end(), [](uint8_t b) { return b == 0; }));
 }
 
+void keyResolutionStatus() {
+    Environment env;
+    auto plugin = env.plugin();
+    const auto id = open(*plugin);
+    CHECK(plugin->processEcm(id, ecm()) == OK);
+    PacketKeys keys;
+    const auto pending = open(*plugin);
+    CHECK(acquirePacketKeys(pending.data(), pending.size(), &keys) == KeyResult::UnknownToken);
+    CHECK(plugin->closeSession(pending) == OK);
+
+    // 鍵を登録し、実際の照会経路と close 後の失効を確認する。
+    auto& registry = KeyRegistry::instance();
+    std::shared_ptr<KeyRegistry::Slot> slot;
+    CHECK(registry.open(&slot) == Result::Ok);
+    Secret<16> material;
+    material.bytes = kKeys;
+    CHECK(registry.update(slot, material, 2) == Result::Ok);
+    CHECK(acquirePacketKeys(slot->token.data(), slot->token.size(), &keys) == KeyResult::Ok);
+    registry.close(slot);
+    CHECK(acquirePacketKeys(slot->token.data(), slot->token.size(), &keys) == KeyResult::UnknownToken);
+
+    registry.revokeAll();
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        CHECK(acquirePacketKeys(id.data(), id.size(), &keys) == KeyResult::UnknownToken);
+    }
+}
+
 // これらは同一 process の backend/registry 試験であり、CasPlugin ABI や IPC の代替ではない。
 std::shared_ptr<KeyRegistry::Slot> coreSlot() {
     std::shared_ptr<KeyRegistry::Slot> slot;
@@ -811,6 +838,7 @@ std::vector<TestCase> testCases(bool coreOnly) {
         {"concurrent_update_close", concurrentUpdatesAndClose},
         {"service_death_consumer_restart", serviceDeathAndConsumerRestart},
         {"socket_input_bounds", boundedSocketAndInvalidRequests},
+        {"key_resolution_status", keyResolutionStatus},
     };
     std::vector<std::pair<const char*, std::function<void()>>> tests = {
         {"core_factory_dispatch", coreFactoryDispatch},
