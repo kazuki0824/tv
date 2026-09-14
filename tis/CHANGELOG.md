@@ -1,3 +1,7 @@
+# PR #108 HEVCの旧受入試験期待値の追従
+
+73b32a5のhost全277件を実行した結果、HEVC metadataと再生可否の分離を検証する既存試験にr51のselection拒否期待値が1箇所残っていた。r51限定のmetadata判定とProviderへ再生可否を混入しない検証は維持し、r52のgeneric selectionはHEVCを選ぶ期待値へ訂正した。production変更・試験削除・件数変更はない。初回CIの失敗はこの1件のみで、追加したEPG v1→v2→v3の回帰を含む残り276件は成功。変更試験のhost再コンパイルが成功。単独実行はローカルにRust SI JNI libraryがないため起動できず、実JNIをbuildする全277件のCIで再確認する。
+
 # PR #108 TIS全面監査の9指摘への実装追従
 
 - CAS初期化失敗とMediaCas回収でTuner受信そのものを失効する前回実装を訂正した。CasControllerのCAS世代失効は維持し、既存のCAS利用不能cleanupからECM/EMMと再生だけを停止する。PMT/SIとTuner受信は維持し、Tuner資源喪失通知は実際のTuner回収経路だけから発行する。

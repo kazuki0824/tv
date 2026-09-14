@@ -773,7 +773,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(TunerSelectionPolicy.selectVideo(listOf(es(TsPid(0x101), 0x02)))?.streamType == 0x02)
     }
 
-    @Test fun unsupportedVideoCodecMetadataIsSeparatedFromR51PlaybackClaim() {
+    @Test fun hevcMetadataStaysSeparateFromPlaybackClaimsAfterR52Selection() {
         check(!AribComponentProjectionPolicy.isR51PlaybackSupportedVideoCodec(0x24))
         val service =
             AribService(
@@ -806,7 +806,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(providerVideo.getString("codec") == "HEVC")
         check(!providerVideo.has("r51PlaybackSupported"))
         check(!providerVideo.has("liveViewableClaim"))
-        check(TunerSelectionPolicy.selectVideo(service.streams) == null)
+        check(TunerSelectionPolicy.selectVideo(service.streams)?.streamType == 0x24)
         val bsSeed = JapanIsdbScanPlan.isdbsBsBands().first()
         check(bsSeed.streamSelector == com.maleicacid.tvinput.common.StreamSelector.NONE)
         val discoveredBs = JapanIsdbScanPlan.explicitBsCandidatesFromScan(bsSeed, listOf(18803, 18803, 0xffff, -1))
