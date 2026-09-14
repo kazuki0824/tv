@@ -269,14 +269,9 @@ Result YakisobaBackend::bind(const Token& token, int* readerFd) {
     *readerFd = -1;
     std::unique_lock lock(mutex_, std::defer_lock);
     if (!lock.try_lock_for(kLockDeadline)) return Result::Busy;
-    const auto result = checkCredential();
-    return result == Result::Ok ? KeyRegistry::instance().bind(token, readerFd) : result;
-}
-
-void YakisobaBackend::pollCredential() {
-    std::unique_lock lock(mutex_, std::try_to_lock);
-    // ECM/EMM の実行中はその操作自身が credential を再検査する。
-    if (lock.owns_lock() && initialized_) checkCredential();
+    if (revoked_) return Result::Revoked;
+    if (!initialized_) return Result::NotProvisioned;
+    return KeyRegistry::instance().bind(token, readerFd);
 }
 
 #ifdef MALEICACID_CAS_TEST

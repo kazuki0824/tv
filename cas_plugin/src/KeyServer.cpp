@@ -94,7 +94,6 @@ void KeyServer::serve(int fd) {
 void KeyServer::run() {
     try {
         while (!stop_) {
-            YakisobaBackend::instance().pollCredential();
             pollfd item{fd_, POLLIN, 0};
             const auto ready = poll(&item, 1, kSocketDeadlineMs);
             if (stop_) break;
