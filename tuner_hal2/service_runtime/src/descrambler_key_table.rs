@@ -203,8 +203,12 @@ impl DescramblerKeyTable {
     #[cfg(test)]
     pub(crate) fn packet_keys_for_test(&self) -> DescramblerPacketKeys {
         DescramblerPacketKeys {
-            slots: self.slots.values().filter(|state| !state.expired)
-                .filter_map(|state| state.key_slot.clone().map(|key| (state.slot, key))).collect(),
+            slots: self
+                .slots
+                .values()
+                .filter(|state| !state.expired)
+                .filter_map(|state| state.key_slot.clone().map(|key| (state.slot, key)))
+                .collect(),
         }
     }
 

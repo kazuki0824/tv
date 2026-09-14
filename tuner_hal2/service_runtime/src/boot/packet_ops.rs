@@ -1,5 +1,5 @@
-use std::time::Instant;
 use crate::descrambler_key_table::DescramblerPacketKeys;
+use std::time::Instant;
 
 use super::{
     demux_runtime_error_to_hal, DescrambleFailure, DescramblePacketDecision, DescramblePacketFlow,
@@ -118,7 +118,8 @@ impl TunerServiceRuntime {
                         "bound demux runtime is missing",
                     )
                 })?;
-            let decision = self.decide_descrambled_packet(demux_id.0, generation, packet, packet_keys);
+            let decision =
+                self.decide_descrambled_packet(demux_id.0, generation, packet, packet_keys);
             let packet_for_demux = match decision.flow {
                 DescramblePacketFlow::Drop | DescramblePacketFlow::DiagnoseOnly => {
                     let mut report = PipelineReport::default();
@@ -258,7 +259,12 @@ impl TunerServiceRuntime {
 
         let decision = self
             .registry
-            .resolved_descrambler_packet_material_for_demux(demux_id, demux_generation, packet_pid, packet_keys)
+            .resolved_descrambler_packet_material_for_demux(
+                demux_id,
+                demux_generation,
+                packet_pid,
+                packet_keys,
+            )
             .decide_descrambled_packet(demux_id, packet_pid, packet);
         for record in decision.diagnostic_records {
             self.record_descrambler_diagnostic(record);

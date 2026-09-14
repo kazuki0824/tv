@@ -387,8 +387,11 @@ impl FrontendLivePacketSink for FrontendDemuxPacketSink {
                 )
             })?;
             let packet_keys = runtime.registry.resolve_descrambler_packet_keys(refreshes);
-            let reports =
-                runtime.push_frontend_ts_packet_to_bound_demuxes(self.frontend_id, packet, &packet_keys)?;
+            let reports = runtime.push_frontend_ts_packet_to_bound_demuxes(
+                self.frontend_id,
+                packet,
+                &packet_keys,
+            )?;
             runtime.filter_event_delivery_snapshots(&reports)
         };
         let wake_result = self.dispatcher.wake();
