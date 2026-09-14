@@ -429,10 +429,20 @@ mod tests {
             let pid = ValidatedTsPacket::validate(pending.bytes()).unwrap().pid();
             let packet_keys = if concurrent_failure {
                 let requests = registry.descrambler_key_refresh_requests_for_demuxes(
-                    &[(crate::registry::DemuxRuntimeId(1), 1)].into_iter().collect());
+                    &[(crate::registry::DemuxRuntimeId(1), 1)]
+                        .into_iter()
+                        .collect(),
+                );
                 assert_eq!(requests.len(), 1);
-                registry.publish_descrambler_key_resolution(token, slot.clone()).unwrap();
-                registry.resolve_descrambler_packet_keys(requests.into_iter().map(|request| (request, None)).collect())
+                registry
+                    .publish_descrambler_key_resolution(token, slot.clone())
+                    .unwrap();
+                registry.resolve_descrambler_packet_keys(
+                    requests
+                        .into_iter()
+                        .map(|request| (request, None))
+                        .collect(),
+                )
             } else {
                 registry.descrambler_packet_keys_for_test()
             };

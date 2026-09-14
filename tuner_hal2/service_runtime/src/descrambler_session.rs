@@ -239,10 +239,7 @@ impl DescramblerRuntime {
         if !self.is_bound_to_demux(demux_id, generation) || self.session.pid_claims().is_empty() {
             return None;
         }
-        let key_slot = self
-            .session
-            .key_slot()
-            .and_then(key_slot_lookup);
+        let key_slot = self.session.key_slot().and_then(key_slot_lookup);
         Some(DescramblerRuntimeResolvedClaimSet::new(
             self.session.pid_claims().to_vec(),
             key_slot,
