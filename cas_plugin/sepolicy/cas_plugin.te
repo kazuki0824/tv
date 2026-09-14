@@ -1,0 +1,7 @@
+type maleicacid_bcas_credential, file_type, vendor_file_type;
+allow hal_cas_default maleicacid_bcas_credential:file r_file_perms;
+
+# 鍵の照会は標準 Tuner domain に限る。socket からの更新操作は存在しない。
+allow hal_cas_default self:unix_stream_socket create_stream_socket_perms;
+allow hal_tv_tuner_default self:unix_stream_socket create_stream_socket_perms;
+allow hal_tv_tuner_default hal_cas_default:unix_stream_socket connectto;
