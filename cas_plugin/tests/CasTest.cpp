@@ -18,6 +18,7 @@
 #include <memory>
 #include <poll.h>
 #include <stdexcept>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
@@ -389,31 +390,33 @@ void individualMessages() {
     CHECK(plugin->processEmm(section(0x85, individual)) == BAD_VALUE);
 }
 
-void credentialsAndRevocation() {
+void fixedCredentials() {
     Environment env;
     auto plugin = env.plugin();
     const auto id = open(*plugin);
     CHECK(chmod(env.path.c_str(), 0666) == 0);
-    CHECK(plugin->processEcm(id, ecm()) == ERROR_CAS_NOT_PROVISIONED);
-    CHECK(chmod(env.path.c_str(), 0600) == 0);
     CHECK(plugin->processEcm(id, ecm()) == OK);
     CHECK(resolve(id));
     CHECK(unlink(env.path.c_str()) == 0);
+    CHECK(resolve(id));
+    CHECK(plugin->processEmm(section(0x84, emmPayload(1, updateKey(2, kNextWorkKey)))) == OK);
     CHECK(!resolve(id));
-    CHECK(plugin->processEcm(id, ecm()) == ERROR_CAS_DEVICE_REVOKED);
+    CHECK(plugin->processEcm(id, ecm(2, kNextWorkKey)) == OK);
+    CHECK(resolve(id));
     CHECK(plugin->closeSession(id) == OK);
+    CHECK(!resolve(id));
 }
 
-void malformedCredentials() {
+void credentialsWithoutWorkKey() {
     Environment env;
     const int fd = ::open(env.path.c_str(), O_WRONLY | O_TRUNC);
     CHECK(fd >= 0);
-    const char malformed[] = "CardID = 01 02 03 04 05 06 07 08\nCardKey = 10 11\n";
-    CHECK(write(fd, malformed, sizeof(malformed) - 1) == sizeof(malformed) - 1);
+    const char input[] = "# コメントだけでは作業鍵を得られない\n";
+    CHECK(write(fd, input, sizeof(input) - 1) == sizeof(input) - 1);
     CHECK(close(fd) == 0);
     auto plugin = env.plugin();
     const auto id = open(*plugin);
-    CHECK(plugin->processEcm(id, ecm()) == ERROR_CAS_NOT_PROVISIONED);
+    CHECK(plugin->processEcm(id, ecm()) == ERROR_CAS_NO_LICENSE);
     CHECK(!resolve(id));
 }
 
@@ -694,28 +697,66 @@ void coreRightsAndIndividual() {
     CHECK(coreEmm(section(0x85, individual)) == Result::Decrypt);
 }
 
-void coreCredentialRevoke() {
+void coreFixedCredential() {
     Environment env;
     auto slot = coreSlot();
     CHECK(chmod(env.path.c_str(), 0666) == 0);
-    CHECK(coreEcm(slot, ecm()) == Result::NotProvisioned);
-    CHECK(chmod(env.path.c_str(), 0600) == 0);
     CHECK(coreEcm(slot, ecm()) == Result::Ok);
+    const int fd = ::open(env.path.c_str(), O_WRONLY | O_TRUNC);
+    CHECK(fd >= 0 && close(fd) == 0);
+    CHECK(coreEcm(slot, ecm()) == Result::Ok);
+    CHECK(chmod(env.path.c_str(), 0000) == 0);
+    CHECK(coreResolve(slot) == Result::Ok);
     CHECK(unlink(env.path.c_str()) == 0);
-    CHECK(coreResolve(slot) == Result::Revoked);
-    CHECK(coreEcm(slot, ecm()) == Result::Revoked);
-    Secret<16> keys;
-    CHECK(KeyRegistry::instance().resolve(slot->token, &keys) == Result::SessionClosed);
+    CHECK(coreEmm(section(0x84, emmPayload(1, updateKey(2, kNextWorkKey)))) == Result::Ok);
+    CHECK(coreResolve(slot) == Result::NoLicense);
+    CHECK(coreEcm(slot, ecm(2, kNextWorkKey)) == Result::Ok);
+    CHECK(coreResolve(slot) == Result::Ok);
+    KeyRegistry::instance().close(slot);
+    CHECK(coreResolve(slot) == Result::SessionClosed);
 }
 
-void coreMalformedCredential() {
+void coreCredentialInputBounds() {
+    Environment env;
+    auto slot = coreSlot();
+    const std::string saved = env.path + ".saved";
+    CHECK(rename(env.path.c_str(), saved.c_str()) == 0);
+    CHECK(coreEcm(slot, ecm()) == Result::NotProvisioned);
+    CHECK(symlink(saved.c_str(), env.path.c_str()) == 0);
+    CHECK(coreEcm(slot, ecm()) == Result::NotProvisioned);
+    CHECK(unlink(env.path.c_str()) == 0);
+    CHECK(mkdir(env.path.c_str(), 0700) == 0);
+    CHECK(coreEcm(slot, ecm()) == Result::NotProvisioned);
+    CHECK(rmdir(env.path.c_str()) == 0);
+    CHECK(mkfifo(env.path.c_str(), 0600) == 0);
+    CHECK(coreEcm(slot, ecm()) == Result::NotProvisioned);
+    CHECK(unlink(env.path.c_str()) == 0);
+    const int fd = ::open(env.path.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+    CHECK(fd >= 0);
+    CHECK(coreEcm(slot, ecm()) == Result::NotProvisioned);
+    CHECK(ftruncate(fd, 16385) == 0);
+    CHECK(coreEcm(slot, ecm()) == Result::NotProvisioned);
+    CHECK(close(fd) == 0);
+    CHECK(rename(saved.c_str(), env.path.c_str()) == 0);
+    CHECK(coreEcm(slot, ecm()) == Result::Ok);
+}
+
+void coreCredentialGrammar() {
     Environment env;
     const int fd = ::open(env.path.c_str(), O_WRONLY | O_TRUNC);
     CHECK(fd >= 0);
-    const char malformed[] = "CardID = 01 02 03 04 05 06 07 08\nCardKey = 10 11\n";
-    CHECK(write(fd, malformed, sizeof(malformed) - 1) == sizeof(malformed) - 1);
+    const char input[] =
+        "cardid: 01 02 03 04 05 06 07 08\n"
+        "cardkey: 10 11 12 13 14 15 16 17\n"
+        "key [02] [01]: 30 31 32 33 34 35 36 37\n"
+        "key [02] [0b]: 40 41 42 43 44 45 46 47\n";
+    CHECK(write(fd, input, sizeof(input) - 1) == sizeof(input) - 1);
     CHECK(close(fd) == 0);
-    CHECK(coreEcm(coreSlot(), ecm()) == Result::NotProvisioned);
+    auto slot = coreSlot();
+    CHECK(coreEcm(slot, ecm(11, kNextWorkKey)) == Result::Ok);
+    CHECK(coreEcm(slot, ecm()) == Result::NoLicense);
+    CHECK(coreEmm(section(0x84, emmPayload(1, updateKey(2, kWorkKey)))) == Result::Ok);
+    CHECK(coreEcm(slot, ecm(2)) == Result::Ok);
 }
 
 void coreConcurrency() {
@@ -763,8 +804,8 @@ std::vector<TestCase> testCases(bool coreOnly) {
         {"emm_replay", emmUpdatesAndReplay},
         {"emm_atomicity_rights", emmAtomicityAndRights},
         {"individual_messages", individualMessages},
-        {"credential_revocation", credentialsAndRevocation},
-        {"malformed_credentials", malformedCredentials},
+        {"fixed_credentials", fixedCredentials},
+        {"credentials_without_work_key", credentialsWithoutWorkKey},
         {"concurrent_update_close", concurrentUpdatesAndClose},
         {"service_death_consumer_restart", serviceDeathAndConsumerRestart},
         {"socket_input_bounds", boundedSocketAndInvalidRequests},
@@ -777,8 +818,9 @@ std::vector<TestCase> testCases(bool coreOnly) {
         {"core_emm_work_keys", coreEmmWorkKeys},
         {"core_emm_atomicity", coreEmmAtomicity},
         {"core_rights_individual", coreRightsAndIndividual},
-        {"core_credential_revoke", coreCredentialRevoke},
-        {"core_malformed_credential", coreMalformedCredential},
+        {"core_fixed_credential", coreFixedCredential},
+        {"core_credential_input_bounds", coreCredentialInputBounds},
+        {"core_credential_grammar", coreCredentialGrammar},
         {"core_concurrency", coreConcurrency},
         {"core_access_policy", coreAccessPolicy},
     };
