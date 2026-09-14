@@ -213,6 +213,8 @@ libyakisoba-cross / libyakisoba
 
 Yakisoba backendはlibyakisobaの戻り値とodd/even Ksをplugin lifecycle、AOSP status、sessionの動的鍵状態の更新契約へ正規化する。
 
+Yakisobaの認証情報は製品に固定配置する初期入力とする。初期化時に一度だけ読み込み、通常ファイルでない場合、空または上限を超える場合、開く処理や読取りに失敗した場合は未初期化として拒否する。構文の解釈は採用したlibyakisobaに委ねる。初期化成功後は、ディスク上の入力の削除・差替え・所有者や権限の変更を監視・再検証せず、動的鍵状態の失効原因にしない。配置とアクセス権の設定は [INTEGRATION.md](INTEGRATION.md) が扱う。
+
 `processEcm()` はECM入力をbackendへ渡し、成功時に得たodd/even Ksを、同じMediaCas session IDから参照する内部鍵状態へatomicに反映する。§12の確定点でsuccessを返し、製品固定parameterをsessionの更新対象に含めない。
 
 `processEmm()` はplugin-wide backend mutationとして扱い、関連ECM処理がhalf-updated entitlement/work-key stateを観測しないorderingを提供する。
@@ -404,7 +406,6 @@ Tuner再起動が参照結合だけを失う場合と、採用した共有方式
 - session close
 - plugin破棄開始（AIDL release応答だけではなく§4の寿命に従う）
 - current CAS owner loss
-- credential revoke
 - backend fatal failure
 - registry corruption
 ```
