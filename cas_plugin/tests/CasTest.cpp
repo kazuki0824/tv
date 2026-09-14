@@ -890,6 +890,14 @@ void sharedStateConsistencyAndReadOnlyMapping() {
     const int reader = slot->readerFd();
     CHECK(reader >= 0);
     CHECK((fcntl(reader, F_GETFL) & O_ACCMODE) == O_RDONLY);
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/self/fd/%d", reader);
+    const int writable = ::open(path, O_RDWR | O_CLOEXEC);
+    CHECK(writable >= 0);
+    const uint8_t byte = 0;
+    CHECK(write(writable, &byte, 1) == -1);
+    CHECK(mmap(nullptr, sizeof(SharedKeyState), PROT_READ | PROT_WRITE, MAP_SHARED, writable, 0) == MAP_FAILED);
+    close(writable);
     CHECK(mmap(nullptr, sizeof(SharedKeyState), PROT_READ | PROT_WRITE, MAP_SHARED, reader, 0) == MAP_FAILED);
     const auto* state = static_cast<const SharedKeyState*>(
         mmap(nullptr, sizeof(SharedKeyState), PROT_READ, MAP_SHARED, reader, 0));
@@ -914,6 +922,7 @@ void sharedStateConsistencyAndReadOnlyMapping() {
         const auto result = state->snapshot(&current);
         if (result == Result::Ok) {
             ++reads;
+            consistent &= current.bytes[0] == 0x21 || current.bytes[0] == 0x42;
             consistent &= std::all_of(current.bytes.begin(), current.bytes.end(),
                 [&](uint8_t byte) { return byte == current.bytes[0]; });
         } else consistent &= result == Result::Busy;
@@ -924,6 +933,10 @@ void sharedStateConsistencyAndReadOnlyMapping() {
     Secret<16> current;
     CHECK(state->snapshot(&current) == Result::NoLicense);
     CHECK(munmap(const_cast<SharedKeyState*>(state), sizeof(SharedKeyState)) == 0);
+    SharedKeyState exhausted;
+    exhausted.sequence.store(UINT64_MAX - 1);
+    CHECK(!exhausted.store(&first, 0xffff));
+    CHECK(exhausted.snapshot(&current) == Result::SessionClosed);
 }
 
 using TestCase = std::pair<const char*, std::function<void()>>;
