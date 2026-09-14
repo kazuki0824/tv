@@ -134,9 +134,8 @@ impl PlaybackConsumeTxn {
         }
 
         report.dropped_bytes = report.malformed_bytes;
-        let stats = demux.note_playback_consume_result(
-            self.dvr_id, 0, 0, report.malformed_bytes,
-        )?;
+        let stats =
+            demux.note_playback_consume_result(self.dvr_id, 0, 0, report.malformed_bytes)?;
         if report.dropped_bytes > 0 {
             eprintln!(
                 "maleicacid-tuner-hal2-dvr-playback-diagnostic: dvr_id={} malformed_packets={} malformed_bytes={} dropped_bytes={} total_dropped_bytes={}",
@@ -150,38 +149,71 @@ impl PlaybackConsumeTxn {
         Ok(report)
     }
 
-    pub(crate) fn pending_packet(&self, demux: &DemuxRuntime) -> Result<Option<PlaybackPacket>, DemuxRuntimeError> {
+    pub(crate) fn pending_packet(
+        &self,
+        demux: &DemuxRuntime,
+    ) -> Result<Option<PlaybackPacket>, DemuxRuntimeError> {
         if demux.dvr_snapshot(self.dvr_id)?.state != DvrRuntimeState::Started {
             return Ok(None);
         }
-        let Some(packet) = self.parse_inject_cursor.front() else { return Ok(None); };
-        let origin = self.cursor_origin.ok_or(DemuxRuntimeError::queue_runtime_failure(self.dvr_id))?;
-        Ok(Some(PlaybackPacket { packet: *packet, origin }))
+        let Some(packet) = self.parse_inject_cursor.front() else {
+            return Ok(None);
+        };
+        let origin = self
+            .cursor_origin
+            .ok_or(DemuxRuntimeError::queue_runtime_failure(self.dvr_id))?;
+        Ok(Some(PlaybackPacket {
+            packet: *packet,
+            origin,
+        }))
     }
 
-    pub(crate) fn is_current_packet(&self, demux: &DemuxRuntime, packet: &PlaybackPacket) -> Result<bool, DemuxRuntimeError> {
-        Ok(demux.dvr_snapshot(self.dvr_id)?.state == DvrRuntimeState::Started
-            && self.cursor_origin == Some(packet.origin)
-            && self.parse_inject_cursor.front() == Some(&packet.packet))
+    pub(crate) fn is_current_packet(
+        &self,
+        demux: &DemuxRuntime,
+        packet: &PlaybackPacket,
+    ) -> Result<bool, DemuxRuntimeError> {
+        Ok(
+            demux.dvr_snapshot(self.dvr_id)?.state == DvrRuntimeState::Started
+                && self.cursor_origin == Some(packet.origin)
+                && self.parse_inject_cursor.front() == Some(&packet.packet),
+        )
     }
 
     pub(crate) fn consume(
-        &mut self, demux: &mut DemuxRuntime, packet: PlaybackPacket,
+        &mut self,
+        demux: &mut DemuxRuntime,
+        packet: PlaybackPacket,
         output: Option<&ValidatedTsPacket<'_>>,
     ) -> Result<PlaybackConsumeReport, PlaybackConsumeTxnError> {
-        if !self.is_current_packet(demux, &packet)? { return Ok(PlaybackConsumeReport::default()); }
+        if !self.is_current_packet(demux, &packet)? {
+            return Ok(PlaybackConsumeReport::default());
+        }
         self.parse_inject_cursor.pop_front();
-        if self.parse_inject_cursor.is_empty() { self.cursor_origin = None; }
+        if self.parse_inject_cursor.is_empty() {
+            self.cursor_origin = None;
+        }
         let (packet_report, malformed_packets) = match ValidatedTsPacket::validate(&packet.packet) {
-            Ok(_) => (output.map_or_else(PipelineReport::default,
-                |validated| demux.inject_playback_packet(validated, packet.origin)), 0),
+            Ok(_) => (
+                output.map_or_else(PipelineReport::default, |validated| {
+                    demux.inject_playback_packet(validated, packet.origin)
+                }),
+                0,
+            ),
             Err(reason) => (demux.note_malformed_playback_packet(reason), 1),
         };
-        demux.note_playback_consume_result(self.dvr_id, 1 - malformed_packets, malformed_packets, 0)?;
+        demux.note_playback_consume_result(
+            self.dvr_id,
+            1 - malformed_packets,
+            malformed_packets,
+            0,
+        )?;
         Ok(PlaybackConsumeReport {
-            completed_packets: 1, malformed_packets,
+            completed_packets: 1,
+            malformed_packets,
             dropped_bytes: malformed_packets * TS_PACKET_SIZE,
-            packet_reports: vec![packet_report], ..PlaybackConsumeReport::default()
+            packet_reports: vec![packet_report],
+            ..PlaybackConsumeReport::default()
         })
     }
 
@@ -204,18 +236,37 @@ mod tests {
     use super::*;
 
     fn started_demux() -> DemuxRuntime {
-        use maleicacid_tuner_hal2_demux::{DvrKind, DvrRuntimeConfigureRequest, DvrRuntimeOperationRequest, DvrRuntimeRegistrationRequest};
+        use maleicacid_tuner_hal2_demux::{
+            DvrKind, DvrRuntimeConfigureRequest, DvrRuntimeOperationRequest,
+            DvrRuntimeRegistrationRequest,
+        };
         let mut demux = DemuxRuntime::new(1, 1);
-        demux.register_dvr_from_typed_request(DvrRuntimeRegistrationRequest::new(7, DvrKind::Playback, 4096, true)).unwrap();
-        demux.configure_dvr_runtime_with_typed_request(DvrRuntimeConfigureRequest::new(7)).1.unwrap();
-        demux.start_dvr_runtime_from_typed_request(DvrRuntimeOperationRequest::new(7)).unwrap();
+        demux
+            .register_dvr_from_typed_request(DvrRuntimeRegistrationRequest::new(
+                7,
+                DvrKind::Playback,
+                4096,
+                true,
+            ))
+            .unwrap();
+        demux
+            .configure_dvr_runtime_with_typed_request(DvrRuntimeConfigureRequest::new(7))
+            .1
+            .unwrap();
+        demux
+            .start_dvr_runtime_from_typed_request(DvrRuntimeOperationRequest::new(7))
+            .unwrap();
         demux
     }
 
     fn pending_txn(packet: [u8; TS_PACKET_SIZE]) -> PlaybackConsumeTxn {
         let mut txn = PlaybackConsumeTxn::prepare(7, 4096).unwrap();
         txn.parse_inject_cursor.push_back(packet);
-        txn.cursor_origin = Some(TsInputOrigin::PlaybackDvr { dvr_id: 7, queue_identity: 1, queue_epoch: 1 });
+        txn.cursor_origin = Some(TsInputOrigin::PlaybackDvr {
+            dvr_id: 7,
+            queue_identity: 1,
+            queue_epoch: 1,
+        });
         txn
     }
 
@@ -232,14 +283,28 @@ mod tests {
         let original = clear_packet();
         let mut txn = pending_txn(original);
         let pending = txn.pending_packet(&demux).unwrap().unwrap();
-        demux.stop_dvr_runtime_from_typed_request(DvrRuntimeOperationRequest::new(7)).unwrap();
+        demux
+            .stop_dvr_runtime_from_typed_request(DvrRuntimeOperationRequest::new(7))
+            .unwrap();
         assert!(txn.pending_packet(&demux).unwrap().is_none());
-        assert_eq!(txn.consume(&mut demux, pending, None).unwrap().completed_packets, 0);
+        assert_eq!(
+            txn.consume(&mut demux, pending, None)
+                .unwrap()
+                .completed_packets,
+            0
+        );
         assert_eq!(txn.parse_inject_cursor.len(), 1);
-        demux.start_dvr_runtime_from_typed_request(DvrRuntimeOperationRequest::new(7)).unwrap();
+        demux
+            .start_dvr_runtime_from_typed_request(DvrRuntimeOperationRequest::new(7))
+            .unwrap();
         let pending = txn.pending_packet(&demux).unwrap().unwrap();
         let validated = ValidatedTsPacket::validate(&original).unwrap();
-        assert_eq!(txn.consume(&mut demux, pending, Some(&validated)).unwrap().completed_packets, 1);
+        assert_eq!(
+            txn.consume(&mut demux, pending, Some(&validated))
+                .unwrap()
+                .completed_packets,
+            1
+        );
         assert!(txn.pending_packet(&demux).unwrap().is_none());
     }
 
@@ -249,7 +314,12 @@ mod tests {
         let mut txn = pending_txn(clear_packet());
         let pending = txn.pending_packet(&demux).unwrap().unwrap();
         assert_eq!(txn.discard_for_boundary(), TS_PACKET_SIZE);
-        assert_eq!(txn.consume(&mut demux, pending, None).unwrap().completed_packets, 0);
+        assert_eq!(
+            txn.consume(&mut demux, pending, None)
+                .unwrap()
+                .completed_packets,
+            0
+        );
     }
 
     #[test]
@@ -268,15 +338,20 @@ mod tests {
 
     #[test]
     fn playback_uses_resolved_keys_and_preserves_ciphertext_without_a_key() {
-        use crate::registry::{ResolvedDescramblerPacketFlow, RuntimeRegistry};
         use crate::descrambler_key_table::DescramblerKeySlotId;
-        use maleicacid_tuner_hal2_descrambler::{multi2_encrypt_payload, DescramblerKeySlot,
-            DescramblerKeyToken, DescramblerPidClaim, Multi2KeyMaterial, KeyParity};
-        use maleicacid_tuner_hal2_demux::{FilterConfig, FilterConfigKind, FilterOpenType,
-            FilterRuntimeConfigureRequest, FilterRuntimeOperationRequest, FilterRuntimeRegistrationRequest,
-            OpenFilterRequest, PesSettings};
-        let slot = DescramblerKeySlot::empty().try_with_even(
-            Multi2KeyMaterial::new([0x12; 32], [0x34; 8], [0x56; 8])).unwrap();
+        use crate::registry::{ResolvedDescramblerPacketFlow, RuntimeRegistry};
+        use maleicacid_tuner_hal2_demux::{
+            FilterConfig, FilterConfigKind, FilterOpenType, FilterRuntimeConfigureRequest,
+            FilterRuntimeOperationRequest, FilterRuntimeRegistrationRequest, OpenFilterRequest,
+            PesSettings,
+        };
+        use maleicacid_tuner_hal2_descrambler::{
+            multi2_encrypt_payload, DescramblerKeySlot, DescramblerKeyToken, DescramblerPidClaim,
+            KeyParity, Multi2KeyMaterial,
+        };
+        let slot = DescramblerKeySlot::empty()
+            .try_with_even(Multi2KeyMaterial::new([0x12; 32], [0x34; 8], [0x56; 8]))
+            .unwrap();
         let clear = clear_packet();
         let mut encrypted = clear;
         multi2_encrypt_payload(&mut encrypted[4..], slot.key_for(KeyParity::Even).unwrap());
@@ -284,39 +359,96 @@ mod tests {
         for has_key in [true, false] {
             let mut registry = RuntimeRegistry::default();
             let descrambler = registry.allocate_descrambler().unwrap();
-            registry.begin_descrambler_demux_source_call_use_case(descrambler.id).unwrap();
-            registry.bind_descrambler_demux_use_case(descrambler.id, 1, 1).unwrap();
-            registry.add_descrambler_pid_claim_use_case(descrambler.id,
-                DescramblerPidClaim::from_demux_input(100).unwrap()).unwrap();
+            registry
+                .begin_descrambler_demux_source_call_use_case(descrambler.id)
+                .unwrap();
+            registry
+                .bind_descrambler_demux_use_case(descrambler.id, 1, 1)
+                .unwrap();
+            registry
+                .add_descrambler_pid_claim_use_case(
+                    descrambler.id,
+                    DescramblerPidClaim::from_demux_input(100).unwrap(),
+                )
+                .unwrap();
             if has_key {
                 let token = DescramblerKeyToken::try_from_bytes(vec![0x71; 8]).unwrap();
-                registry.descrambler_key_table_mut().insert_test_key_slot(token.clone(), DescramblerKeySlotId(1), slot.clone());
-                registry.replace_descrambler_key_use_case(descrambler.id, token).unwrap();
+                registry.descrambler_key_table_mut().insert_test_key_slot(
+                    token.clone(),
+                    DescramblerKeySlotId(1),
+                    slot.clone(),
+                );
+                registry
+                    .replace_descrambler_key_use_case(descrambler.id, token)
+                    .unwrap();
             }
             let mut demux = started_demux();
             for (filter_id, open_type, kind) in [
                 (8, FilterOpenType::TsRaw, FilterConfigKind::TsRaw),
-                (9, FilterOpenType::TsPes, FilterConfigKind::TsPes(PesSettings { stream_id: 0xffff, raw: false })),
+                (
+                    9,
+                    FilterOpenType::TsPes,
+                    FilterConfigKind::TsPes(PesSettings {
+                        stream_id: 0xffff,
+                        raw: false,
+                    }),
+                ),
             ] {
-                demux.register_filter_from_typed_request(FilterRuntimeRegistrationRequest::new(
-                    filter_id, &OpenFilterRequest { open_type, buffer_size: 4096, callback_present: true }, 8)).unwrap();
-                demux.configure_filter_runtime_with_typed_request(FilterRuntimeConfigureRequest::new(
-                    filter_id, FilterConfig { open_type, tpid: 100, kind })).1.unwrap();
-                demux.start_filter_runtime_from_typed_request(FilterRuntimeOperationRequest::new(filter_id)).unwrap();
+                demux
+                    .register_filter_from_typed_request(FilterRuntimeRegistrationRequest::new(
+                        filter_id,
+                        &OpenFilterRequest {
+                            open_type,
+                            buffer_size: 4096,
+                            callback_present: true,
+                        },
+                        8,
+                    ))
+                    .unwrap();
+                demux
+                    .configure_filter_runtime_with_typed_request(
+                        FilterRuntimeConfigureRequest::new(
+                            filter_id,
+                            FilterConfig {
+                                open_type,
+                                tpid: 100,
+                                kind,
+                            },
+                        ),
+                    )
+                    .1
+                    .unwrap();
+                demux
+                    .start_filter_runtime_from_typed_request(FilterRuntimeOperationRequest::new(
+                        filter_id,
+                    ))
+                    .unwrap();
             }
             let mut txn = pending_txn(encrypted);
             let pending = txn.pending_packet(&demux).unwrap().unwrap();
             let pid = ValidatedTsPacket::validate(pending.bytes()).unwrap().pid();
-            let decision = registry.resolved_descrambler_packet_material_for_demux(1, 1, pid)
+            let decision = registry
+                .resolved_descrambler_packet_material_for_demux(1, 1, pid)
                 .decide_descrambled_packet(1, pid, pending.bytes());
             assert_eq!(decision.packet, if has_key { clear } else { encrypted });
-            assert_eq!(decision.flow, if has_key { ResolvedDescramblerPacketFlow::Descrambled }
-                else { ResolvedDescramblerPacketFlow::RecordPassThroughAndDropAssembly });
+            assert_eq!(
+                decision.flow,
+                if has_key {
+                    ResolvedDescramblerPacketFlow::Descrambled
+                } else {
+                    ResolvedDescramblerPacketFlow::RecordPassThroughAndDropAssembly
+                }
+            );
             let output = ValidatedTsPacket::validate(&decision.packet).unwrap();
             let report = txn.consume(&mut demux, pending, Some(&output)).unwrap();
             assert_eq!(report.completed_packets, 1);
             assert_eq!(report.packet_reports[0].accepted_packets, 1);
-            assert_eq!(report.packet_reports[0].assembly_suppression_reasons.is_empty(), has_key);
+            assert_eq!(
+                report.packet_reports[0]
+                    .assembly_suppression_reasons
+                    .is_empty(),
+                has_key
+            );
             assert!(txn.pending_packet(&demux).unwrap().is_none());
         }
     }
