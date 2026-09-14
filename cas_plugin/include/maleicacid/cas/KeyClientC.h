@@ -15,10 +15,13 @@ enum MaleicacidCasKeyResult {
     MALEICACID_CAS_KEY_UNAVAILABLE = 3,
 };
 
-// pointerは呼出し中だけ参照する。odd/evenは各8 byteの書込み可能領域を要求し、
-// 成功時以外は両方をゼロ化する。
-int maleicacid_cas_acquire_packet_keys(const uint8_t* token, size_t length, uint8_t* odd,
-                                       uint8_t* even);
+// 成功時の参照は呼出し元が所有し、release まで複数 thread から読取り可能。
+// token は bind 呼出し中だけ参照する。失敗時は *reference を NULL にする。
+int maleicacid_cas_bind_key_reference(const uint8_t* token, size_t length, void** reference);
+void maleicacid_cas_release_key_reference(void* reference);
+// odd/even は各8 byteの書込み可能領域。成功時以外は両方をゼロ化する。
+// reference の release とこの呼出しを競合させてはならない。
+int maleicacid_cas_snapshot_key_reference(const void* reference, uint8_t* odd, uint8_t* even);
 
 #ifdef __cplusplus
 }

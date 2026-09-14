@@ -3,7 +3,7 @@ use crate::object_method_use_case::ObjectMethodExecutionToken;
 use crate::registry::{DescramblerRegistryEntry, RegistryCommitError};
 use maleicacid_tuner_hal2_common::HalError;
 use maleicacid_tuner_hal2_descrambler::{
-    CasKeyResolveError, CasKeyResolver, DescramblerKeyToken, DescramblerKeyTokenError,
+    CasKeyReference, CasKeyResolveError, CasKeyResolver, DescramblerKeyToken, DescramblerKeyTokenError,
     ProductCasKeyResolver,
 };
 use std::sync::{Arc, Mutex};
@@ -13,6 +13,7 @@ pub(crate) enum PreparedDescramblerKeyToken {
     Invalid(DescramblerKeyTokenError),
     Resolved {
         token: DescramblerKeyToken,
+        reference: Arc<dyn CasKeyReference>,
     },
     ResolutionFailed(CasKeyResolveError),
     #[cfg(test)]
@@ -28,7 +29,7 @@ fn prepare_product_descrambler_key_token(key_token: &[u8]) -> PreparedDescramble
         Err(error) => return PreparedDescramblerKeyToken::Invalid(error),
     };
     match ProductCasKeyResolver.resolve(&token) {
-        Ok(_) => PreparedDescramblerKeyToken::Resolved { token },
+        Ok(reference) => PreparedDescramblerKeyToken::Resolved { token, reference },
         Err(error) => PreparedDescramblerKeyToken::ResolutionFailed(error),
     }
 }

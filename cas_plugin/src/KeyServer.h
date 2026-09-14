@@ -19,6 +19,7 @@ private:
     void run();
     void serve(int fd);
     int fd_ = -1;
+    int ownerFd_ = -1;
     std::thread thread_;
     std::atomic<bool> stop_{false};
     std::atomic<bool> healthy_{false};

@@ -2006,18 +2006,19 @@ impl RuntimeRegistry {
             .collect()
     }
 
-    pub(crate) fn resolve_descrambler_packet_keys(
-        &mut self,
-        refreshes: Vec<(DescramblerKeyRefreshRequest, Option<DescramblerKeySlot>)>,
+    pub(crate) fn snapshot_descrambler_packet_keys(
+        &self,
+        requests: Vec<DescramblerKeyRefreshRequest>,
     ) -> DescramblerPacketKeys {
-        self.descrambler_key_table.resolve_packet_keys(refreshes)
+        self.descrambler_key_table.snapshot_packet_keys(requests)
     }
 
     pub(crate) fn publish_descrambler_key_resolution(
         &mut self,
         token: DescramblerKeyToken,
+        reference: std::sync::Arc<dyn maleicacid_tuner_hal2_descrambler::CasKeyReference>,
     ) -> Result<DescramblerKeySlotId, DescramblerKeyPublishError> {
-        self.descrambler_key_table.publish(token)
+        self.descrambler_key_table.publish(token, reference)
     }
 
     pub(crate) fn discard_unreferenced_descrambler_key_resolution(
