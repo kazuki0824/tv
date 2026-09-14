@@ -36,27 +36,35 @@ class CasPlaybackReadinessTest {
         )
     }
 
-    @Test fun successfulEcmTransitionsNotifyOnceAndFailureCannotBeErasedByMetadataRefresh() {
+    @Test fun successfulEcmLinksOnceAndLaterFailurePreservesPlaybackReadiness() {
         controller().use { cas ->
             val changes = mutableListOf<Pair<Long, CasController.ConnectionChange>>()
             cas.setOnConnectionChanged { generation, change -> changes += generation to change }
             val descrambler = Descrambler()
             cas.updateFromCaMetadata(listOf(first), 7L) { descrambler }
             check(!cas.isServiceDescramblingReady(key, 7L))
+            MediaCas.Faults.stateFailureAt = MediaCas.Operation.ECM
+            check(cas.onEcmSection(TsPid(0x123), byteArrayOf(1)).isNotEmpty())
+            check(!cas.isServiceDescramblingReady(key, 7L) && descrambler.tokens.isEmpty())
+            MediaCas.Faults.stateFailureAt = null
             check(cas.onEcmSection(TsPid(0x123), byteArrayOf(1)).isEmpty())
             check(cas.isServiceDescramblingReady(key, 7L))
             check(!cas.isServiceDescramblingReady(key, 6L))
             check(!cas.isServiceDescramblingReady(ServiceKey(4, 1, 2), 7L))
-            cas.onEcmSection(TsPid(0x123), byteArrayOf(1))
+            descrambler.rejectToken = true
+            check(cas.onEcmSection(TsPid(0x123), byteArrayOf(1)).isEmpty())
+            check(descrambler.tokens.size == 1)
             check(changes == listOf(7L to CasController.ConnectionChange.KEY_STATE_CHANGED))
             MediaCas.Faults.stateFailureAt = MediaCas.Operation.ECM
             check(cas.onEcmSection(TsPid(0x123), byteArrayOf(1)).isNotEmpty())
-            check(!cas.isServiceDescramblingReady(key, 7L))
+            check(cas.isServiceDescramblingReady(key, 7L))
             cas.updateFromCaMetadata(listOf(first), 7L) { error("existing owner") }
-            check(!cas.isServiceDescramblingReady(key, 7L))
+            check(cas.isServiceDescramblingReady(key, 7L))
             MediaCas.Faults.stateFailureAt = null
             cas.onEcmSection(TsPid(0x123), byteArrayOf(1))
-            check(cas.isServiceDescramblingReady(key, 7L) && changes.size == 3)
+            check(cas.isServiceDescramblingReady(key, 7L) && changes.size == 1)
+            check(descrambler.tokens.size == 1)
+            descrambler.rejectToken = false
             cas.clearForResourceLoss()
             check(!cas.isServiceDescramblingReady(key, 7L))
             check(descrambler.tokens.last().contentEquals(byteArrayOf(0)))
