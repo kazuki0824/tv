@@ -2732,9 +2732,7 @@ mod tests {
             .unwrap();
         let token_bytes = vec![0x10; 16];
         let token = DescramblerKeyToken::try_from_bytes(token_bytes.clone()).unwrap();
-        runtime
-            .register_descrambler_key_token(token)
-            .unwrap();
+        runtime.register_descrambler_key_token(token).unwrap();
         let descrambler = runtime.allocate_descrambler_runtime().unwrap();
         runtime
             .set_descrambler_demux_source(descrambler.id.0, demux.id.0)

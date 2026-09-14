@@ -349,7 +349,10 @@ mod tests {
         let invalidation = table.begin_refresh(&token, slot).unwrap();
         let failed = table.resolve_packet_keys(vec![(invalidation, None)]);
         assert!(failed.key_slot(slot).is_none());
-        assert!(table.resolve_packet_keys(Vec::new()).key_slot(slot).is_none());
+        assert!(table
+            .resolve_packet_keys(Vec::new())
+            .key_slot(slot)
+            .is_none());
         assert_eq!(table.refcount_for_test(&token), Some(1));
         table.release(&token).unwrap();
         assert_eq!(first.key_slot(slot), Some(key_slot(1)));

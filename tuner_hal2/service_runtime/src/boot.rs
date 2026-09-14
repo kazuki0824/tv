@@ -23,12 +23,12 @@ use maleicacid_tuner_hal2_demux::{
     PipelineDiagnostic, PipelineReport, PipelineResetReport, StreamBoundaryReport, TsInputOrigin,
     TsPacketValidationError, ValidatedTsPacket,
 };
+#[cfg(test)]
+use maleicacid_tuner_hal2_descrambler::DescramblerKeyToken;
 use maleicacid_tuner_hal2_descrambler::{
     CasKeyResolver, DescrambleFailure, DescramblerKeyTokenError, DescramblerPid,
     DescramblerPidClaim, DescramblerPidClaimError, ProductCasKeyResolver,
 };
-#[cfg(test)]
-use maleicacid_tuner_hal2_descrambler::DescramblerKeyToken;
 use maleicacid_tuner_hal2_device::{
     FrontendLivePacketSink, FrontendLivePumpOwner, FrontendLivePumpReport,
     FrontendLiveReaderDescriptor, FrontendRuntimeSnapshot, FrontendSignalState,
