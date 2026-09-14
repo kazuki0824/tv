@@ -1,12 +1,7 @@
 # Maleicacid CAS plugin
 
-CAS pluginの設計正本は `DESIGN_JA.md` とする。
-変更履歴は `CHANGELOG.md` を参照する。
+このディレクトリの利用・組込みに必要な文書を案内する。
 
-## 現行境界
-
-Maleicacid独自 `IMediaCasService/default` は持たず、AOSP標準MediaCasServiceからロードされるvendor CasPluginを実装する。B25/B1のfactory/plugin ownership、capability、session lifecycle、backend、tokenと動的鍵状態の対応・更新・失効の規範は `DESIGN_JA.md` を正とする。
-
-## 目標構成
-
-`MaleicacidCasFactory` がB25/B1のCA system IDを判定し、B25では `MaleicacidB25CasPlugin`、B1では `MaleicacidB1CasPlugin` を生成する。B25は最初に `yakisoba_only` backendを成立させ、その後同じB25 pluginへSmartCard backendを追加する。B1はECM-onlyのSmartCard経路として成立させる。
+- 設計方針・対応範囲を確認する: [DESIGN_JA.md](DESIGN_JA.md)
+- 製品イメージへの組込み条件を確認する: [INTEGRATION.md](INTEGRATION.md)
+- 変更内容・未実施の検証を確認する: [CHANGELOG.md](CHANGELOG.md)

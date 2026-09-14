@@ -1,3 +1,10 @@
+# PR #108 文書責務の整理
+
+- `INTEGRATION.md` を追加し、pluginの32-bit／64-bit配置先、通常のvendorライブラリ直下へ置かない条件、Soongの配置設定、静的リンク・内部adapterへの依存設定、シンボル解決とFactoryLoaderによる発見の確認を集約した。
+- `DESIGN_JA.md` §1・§6.2・§17・§18の統合設定・確認を参照へ置き換えた。標準MediaCasService、独自serviceを持たない方針、CasPlugin ABI、静的リンクと内部adapterの設計判断、SmartCard非依存条件を維持した。
+- `README_JA.md` の「現行境界」「目標構成」に重複していた設計説明を除き、設計・統合・変更履歴の文書への案内にした。
+- 文書間の参照経路、移動前後の要件、重複する配置指定と差分を確認した。実装・ビルド設定・テスト期待値の変更はない。build、unit test、Soong、atest、VTS、実機確認は未実施。
+
 # PR #108 初期容量通知とsession生成の順序
 
 - B25/B1は固定上限の有無にかかわらず初期容量を通知し、最初のsession要求まで通知を遅延しない契約にした。固定上限なしはAOSP TRMの既定容量と同じ値を通知し、TIS側の容量分類を不要にした。

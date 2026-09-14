@@ -8,7 +8,7 @@
 
 `android.hardware.cas.IMediaCasService/default` はAOSP標準 `MediaCasService` を使用する。Maleicacidは独自 `IMediaCasService/default` serviceを実装しない。
 
-MaleicacidはAOSP Media CAS plugin ABIに従うvendor shared libraryを提供する。64-bit productでは `/vendor/lib64/mediacas`、32-bit productでは `/vendor/lib/mediacas` にinstallし、通常の `/vendor/lib[64]` 直下へ置かない。Soongではvendor shared libraryに `relative_install_path: "mediacas"` を指定するか、それと等価なinstall結果を成立させる。AOSP `FactoryLoader` が実際にこのpluginを列挙できることをproduct integrationの成立条件とする。
+MaleicacidはAOSP Media CAS plugin ABIに従うvendor shared libraryを提供し、AOSP `FactoryLoader` による探索・読込みを使用する。配置・Soong設定・組込み確認は [INTEGRATION.md](INTEGRATION.md) を参照する。
 
 ```mermaid
 flowchart TD
@@ -236,7 +236,7 @@ AOSP `processEcm()` / `processEmm()` のscheme-private入力は、本製品で�
 
 `bcas_decodeEMM()` の成功は復号・MAC検証の成功であり、entitlementやwork key台帳への更新完了ではない。YakisobaBackendが復号後commandの解釈と適用を所有し、対象外宛先の除外、重複更新の扱い、更新番号・権利条件の検証を経て、ECMが実際に参照するlibyakisobaのwork key台帳へ反映する。更新不能なcommandを復号成功だけで処理成功にしない。
 
-libyakisobaの公開された2個のdecode APIだけではwork key台帳を更新できない。初期統合では無改変のlibyakisobaをplugin内へ静的にリンクし、既存の内部 `Register()` と鍵初期化・参照処理へ接続する限定的な内部adapterを使用する。内部関数の宣言と型は採用sourceに合わせ、AOSP ABIや公開libyakisoba APIへ露出しない。共有libraryから未exportの関数を呼べるという前提を置かず、Soongの静的リンクとsymbol解決を検証する。
+libyakisobaの公開された2個のdecode APIだけではwork key台帳を更新できない。初期統合では無改変のlibyakisobaをplugin内へ静的にリンクし、既存の内部 `Register()` と鍵初期化・参照処理へ接続する限定的な内部adapterを使用する。内部関数の宣言と型は採用sourceに合わせ、AOSP ABIや公開libyakisoba APIへ露出しない。共有libraryから未exportの関数を呼べるという前提を置かない。静的リンクの設定とシンボル解決の確認は [INTEGRATION.md](INTEGRATION.md) を参照する。
 
 libyakisobaのwork key台帳と初期化状態はprocess内で共有されるため、複数pluginにまたがる初期化、ECM参照、EMM更新は同じbackend resource ownerで直列化する。台帳の複製、pluginごとの別Kw cache、service全体のbackend選択器を追加しない。初期化前の登録が後続初期化で失われない順序を守る。内部 `Register()` の拒否を成功へ変換せず、同一内容の既適用更新と、未対応更新・状態不整合を区別する。
 
@@ -491,11 +491,11 @@ libyakisoba改変版を配布する場合は、GPLv3条件に従って対応す�
 
 製品構成ではMaleicacid独自のCAS AIDL service binary、CAS service用VINTF fragment、CAS service用init rcを追加しない。本repositoryの `cas_plugin/` にも独自 `IMediaCasService/default` service artifactを置かない。
 
-AOSP標準MediaCasServiceを製品で有効にし、Maleicacid CAS plugin shared libraryを64-bitでは `/vendor/lib64/mediacas`、32-bitでは `/vendor/lib/mediacas` へinstallする。AOSP `FactoryLoader` がその配置から `.so` を探索・loadすることを前提とし、Soongの実装は `relative_install_path: "mediacas"` または等価なinstall結果を持たせる。
+AOSP標準MediaCasServiceの有効化、pluginの配置、Soong設定と組込み確認は [INTEGRATION.md](INTEGRATION.md) を正とする。
 
 plugin libraryは `createCasFactory()` をexportし、AOSP `media/cas/CasAPI.h` の `android::CasFactory` / `android::CasPlugin` ABIと整合させる。`CasFactory` のlegacy/Ext両 `createPlugin()`、`CasPlugin` の `setStatusCallback()`、default/typed両 `openSession()` を含むpure virtual ABI面を全て実装する。
 
-最初の `yakisoba_only` 構成ではplugin libraryから§6.2のlibyakisoba静的リンクと内部adapterへのdependencyを設定する。SmartCard componentを `yakisoba_only` のbuild/advertise条件にしない。
+最初の `yakisoba_only` 構成における静的リンクと内部adapterの設計判断は§6.2に従う。SmartCard componentを `yakisoba_only` のbuild/advertise条件にしない。
 
 ## 18. validation
 
@@ -510,8 +510,7 @@ plugin libraryは `createCasFactory()` をexportし、AOSP `media/cas/CasAPI.h` 
 - 固定session数上限のない構成でも初期容量を通知し、RESOURCE_BUSYがsession数と独立した一時資源不足を表すことを確認する。容量不明を無制限へ読み替えない
 - B25/B1とも初期容量通知をsession生成前に処理し、未通知・期限切れ・旧instanceの通知ではTISがopenSessionを呼ばないことを確認する
 - Maleicacid独自IMediaCasService serviceが製品経路に存在しない
-- effective architectureに応じてplugin `.so` が `/vendor/lib64/mediacas` または `/vendor/lib/mediacas` にinstallされる
-- AOSP plugin loaderがその探索directoryからMaleicacid createCasFactory()を発見する
+- pluginの配置とFactoryLoaderによる発見はINTEGRATION.mdの組込み確認に従う
 - CasFactoryのlegacy/Ext両createPlugin()がB25/B1とも対応するplugin coreを生成できる
 - AOSP MediaCasServiceがExt callback版createPlugin()後にsetStatusCallback()を登録できる
 - plugin破棄開始後にplugin status/event callbackを発行しない
