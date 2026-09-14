@@ -1,3 +1,9 @@
+# PR #108 MediaCas無効化後の終了設計
+
+- Frameworkのinstance無効化と再試行可能な個別close失敗を区別し、検出・配送停止・所有資源の終了をTISへ帰属させた。CAS固有状態例外をMediaCas全体の無効化へ誤分類しない。
+- 無効化後は個別Session.close成功を待たず、全Descrambler閉鎖、MediaCas.close、所有除去へ進む。未完了cleanupの再試行と診断を保ち、Framework後処理完了をplugin releaseや鍵失効の確認へ読み替えない。
+- 現行診断接続にも適用する設計変更。AOSP Android 15およびLineageOS 22.1のMediaCasを照合し、文書差分を確認した。このコミットでは実装・build・unit test・Soong・atest・VTS・実機確認を変更・実施していない。
+
 # PR #108 初期CAS容量反映後のsession開始
 
 - MediaCas構築完了から直ちにsession生成へ進まず、容量更新後のstatus callbackをcontrollerへ渡して一度だけ再開する順序にした。
