@@ -1853,6 +1853,7 @@ impl RuntimeRegistry {
             .collect()
     }
 
+    #[cfg(test)]
     pub(crate) fn descrambler_token_resolution_available(&self) -> bool {
         self.descrambler_key_table.has_token_resolution_state()
     }
