@@ -598,7 +598,7 @@ void keyResolutionStatus() {
     registry.close(slot);
     CHECK(acquirePacketKeys(slot->token.data(), slot->token.size(), &keys) == KeyResult::UnknownToken);
 
-    CHECK(unlink(env.path.c_str()) == 0);
+    registry.revokeAll();
     for (int attempt = 0; attempt < 2; ++attempt) {
         CHECK(acquirePacketKeys(id.data(), id.size(), &keys) == KeyResult::UnknownToken);
     }
