@@ -372,9 +372,12 @@ mod tests {
                 )
                 .unwrap();
             let token = DescramblerKeyToken::try_from_bytes(vec![0x71; 8]).unwrap();
-            let reference = std::sync::Arc::new(TestKeyReference(std::sync::Mutex::new(Some(slot.clone()))));
+            let reference =
+                std::sync::Arc::new(TestKeyReference(std::sync::Mutex::new(Some(slot.clone()))));
             if has_key || concurrent_failure {
-                registry.publish_descrambler_key_resolution(token.clone(), reference.clone()).unwrap();
+                registry
+                    .publish_descrambler_key_resolution(token.clone(), reference.clone())
+                    .unwrap();
                 registry
                     .replace_descrambler_key_use_case(descrambler.id, token.clone())
                     .unwrap();

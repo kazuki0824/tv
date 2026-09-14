@@ -2,7 +2,7 @@
 
 - `setKeyToken()` で得たCAS共有参照を既存の鍵結合管理へ渡し、放送入力とPlayback DVRはその参照からpacket用の鍵を取得する構成に変更した。CAS側のECM更新・失効をTISの再設定へ依存させない。
 - packetごとの外部照会とそのための注入入口を除き、共有参照の更新・失効・復帰を実際の鍵管理とPlayback処理で確認する試験へ置き換えた。結合・参照数・保留packetの寿命検証は維持した。
-- Rustのビルドと試験はCIで確認する。Android/Soong、atest、VTS、実機確認は未実施。
+- [TunerホストCI](https://github.com/kazuki0824/tv/actions/runs/34873809732)の型検査・単体試験・Clippyが成功。鍵管理とPlayback経路の試験は17件成功。CIのrustfmt出力を反映した。Android/Soong、atest、VTS、実機確認は未実施。
 
 # PR #113 復号鍵の不要な複製保持の除去
 

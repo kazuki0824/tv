@@ -1,8 +1,8 @@
-use std::collections::BTreeMap;
-use std::sync::Arc;
 use maleicacid_tuner_hal2_descrambler::CasKeyReference;
+use std::collections::BTreeMap;
 #[cfg(test)]
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use maleicacid_tuner_hal2_descrambler::DescramblerKeySlot;
 
@@ -223,7 +223,11 @@ pub(crate) mod tests {
 
     impl CasKeyReference for TestKeyReference {
         fn snapshot(&self) -> Result<DescramblerKeySlot, CasKeyResolveError> {
-            self.0.lock().unwrap().clone().ok_or(CasKeyResolveError::UnknownToken)
+            self.0
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or(CasKeyResolveError::UnknownToken)
         }
     }
 
@@ -332,18 +336,30 @@ pub(crate) mod tests {
         let first = table.snapshot_packet_keys(vec![request]);
         for _ in 0..1000 {
             let request = table.begin_refresh(&token, slot).unwrap();
-            assert_eq!(table.snapshot_packet_keys(vec![request]).key_slot(slot), Some(key_slot(1)));
+            assert_eq!(
+                table.snapshot_packet_keys(vec![request]).key_slot(slot),
+                Some(key_slot(1))
+            );
         }
         *reference.0.lock().unwrap() = Some(key_slot(9));
         let request = table.begin_refresh(&token, slot).unwrap();
-        assert_eq!(table.snapshot_packet_keys(vec![request]).key_slot(slot), Some(key_slot(9)));
+        assert_eq!(
+            table.snapshot_packet_keys(vec![request]).key_slot(slot),
+            Some(key_slot(9))
+        );
         *reference.0.lock().unwrap() = None;
         let request = table.begin_refresh(&token, slot).unwrap();
-        assert!(table.snapshot_packet_keys(vec![request]).key_slot(slot).is_none());
+        assert!(table
+            .snapshot_packet_keys(vec![request])
+            .key_slot(slot)
+            .is_none());
         assert_eq!(first.key_slot(slot), Some(key_slot(1)));
         *reference.0.lock().unwrap() = Some(key_slot(7));
         let request = table.begin_refresh(&token, slot).unwrap();
-        assert_eq!(table.snapshot_packet_keys(vec![request]).key_slot(slot), Some(key_slot(7)));
+        assert_eq!(
+            table.snapshot_packet_keys(vec![request]).key_slot(slot),
+            Some(key_slot(7))
+        );
         assert_eq!(table.refcount_for_test(&token), Some(1));
     }
 
@@ -356,8 +372,15 @@ pub(crate) mod tests {
             let slot = table.publish(token.clone(), reference).unwrap();
             table.acquire(&token).unwrap();
             let stale = table.begin_refresh(&token, slot).unwrap();
-            if expire { table.expire_test_key(&token); } else { table.release(&token).unwrap(); }
-            assert!(table.snapshot_packet_keys(vec![stale]).key_slot(slot).is_none());
+            if expire {
+                table.expire_test_key(&token);
+            } else {
+                table.release(&token).unwrap();
+            }
+            assert!(table
+                .snapshot_packet_keys(vec![stale])
+                .key_slot(slot)
+                .is_none());
             if !expire {
                 let new_slot = table.publish(token.clone(), empty_reference()).unwrap();
                 assert_ne!(new_slot, slot);
@@ -378,11 +401,17 @@ pub(crate) mod tests {
         assert_eq!(table.publish(token.clone(), empty_reference()), Ok(slot));
         table.acquire(&token).unwrap();
         *reference.0.lock().unwrap() = Some(key_slot(8));
-        assert_eq!(table.snapshot_packet_keys(vec![first]).key_slot(slot), Some(key_slot(8)));
+        assert_eq!(
+            table.snapshot_packet_keys(vec![first]).key_slot(slot),
+            Some(key_slot(8))
+        );
         assert_eq!(table.refcount_for_test(&token), Some(2));
         table.release(&token).unwrap();
         let request = table.begin_refresh(&token, slot).unwrap();
-        assert_eq!(table.snapshot_packet_keys(vec![request]).key_slot(slot), Some(key_slot(8)));
+        assert_eq!(
+            table.snapshot_packet_keys(vec![request]).key_slot(slot),
+            Some(key_slot(8))
+        );
     }
 
     #[test]
@@ -391,6 +420,9 @@ pub(crate) mod tests {
         let mut table = DescramblerKeyTable::default();
         let slot = table.publish(token.clone(), empty_reference()).unwrap();
         table.discard_if_unreferenced(&token, slot);
-        assert_eq!(table.acquire(&token), Err(DescramblerKeyLookupError::UnknownToken));
+        assert_eq!(
+            table.acquire(&token),
+            Err(DescramblerKeyLookupError::UnknownToken)
+        );
     }
 }
