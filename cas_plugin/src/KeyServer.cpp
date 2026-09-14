@@ -53,10 +53,21 @@ void KeyServer::serve(int fd) {
     Secret<16> keys;
     const auto result = YakisobaBackend::instance().resolve(token, &keys);
     Secret<17> response;
-    const auto status = result == Result::Ok
-                            ? KeyResponseStatus::Ok
-                            : result == Result::SessionClosed ? KeyResponseStatus::UnknownToken
-                                                              : KeyResponseStatus::Unavailable;
+    auto status = KeyResponseStatus::Unavailable;
+    switch (result) {
+        case Result::Ok:
+            status = KeyResponseStatus::Ok;
+            break;
+        case Result::NoLicense:
+        case Result::Expired:
+        case Result::SessionClosed:
+        case Result::Revoked:
+            // 有効な鍵のない参照値と、参照処理そのものの利用不能を区別する。
+            status = KeyResponseStatus::UnknownToken;
+            break;
+        default:
+            break;
+    }
     response.bytes[0] = static_cast<uint8_t>(status);
     if (result == Result::Ok) std::copy(keys.bytes.begin(), keys.bytes.end(), response.bytes.begin() + 1);
     if (waitSocket(fd, POLLOUT)) send(fd, response.bytes.data(), response.bytes.size(), MSG_NOSIGNAL);

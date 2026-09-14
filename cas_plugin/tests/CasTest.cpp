@@ -530,6 +530,42 @@ void boundedSocketAndInvalidRequests() {
     CHECK(std::all_of(even.begin(), even.end(), [](uint8_t b) { return b == 0; }));
 }
 
+void keyResolutionStatus() {
+    Environment env;
+    auto plugin = env.plugin();
+    const auto id = open(*plugin);
+    CHECK(plugin->processEcm(id, ecm()) == OK);
+    PacketKeys keys;
+    const auto pending = open(*plugin);
+    CHECK(acquirePacketKeys(pending.data(), pending.size(), &keys) == KeyResult::UnknownToken);
+    CHECK(plugin->closeSession(pending) == OK);
+
+    // 期限を過ぎた鍵を登録し、実際の照会経路で初回・再照会を確認する。
+    auto& registry = KeyRegistry::instance();
+    std::shared_ptr<KeyRegistry::Slot> slot;
+    CHECK(registry.open(&slot) == Result::Ok);
+    Secret<16> material;
+    material.bytes = kKeys;
+    CHECK(todayMjd() > 0);
+    CHECK(registry.update(slot, material, 2, todayMjd() - 1) == Result::Ok);
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        keys.odd.fill(0xff);
+        keys.even.fill(0xff);
+        CHECK(acquirePacketKeys(slot->token.data(), slot->token.size(), &keys) == KeyResult::UnknownToken);
+        CHECK(std::all_of(keys.odd.begin(), keys.odd.end(), [](uint8_t b) { return b == 0; }));
+        CHECK(std::all_of(keys.even.begin(), keys.even.end(), [](uint8_t b) { return b == 0; }));
+    }
+    CHECK(registry.update(slot, material, 2, todayMjd()) == Result::Ok);
+    CHECK(acquirePacketKeys(slot->token.data(), slot->token.size(), &keys) == KeyResult::Ok);
+    registry.close(slot);
+    CHECK(acquirePacketKeys(slot->token.data(), slot->token.size(), &keys) == KeyResult::UnknownToken);
+
+    CHECK(unlink(env.path.c_str()) == 0);
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        CHECK(acquirePacketKeys(id.data(), id.size(), &keys) == KeyResult::UnknownToken);
+    }
+}
+
 // これらは同一 process の backend/registry 試験であり、CasPlugin ABI や IPC の代替ではない。
 std::shared_ptr<KeyRegistry::Slot> coreSlot() {
     std::shared_ptr<KeyRegistry::Slot> slot;
@@ -824,6 +860,7 @@ std::vector<TestCase> testCases(bool coreOnly) {
         {"concurrent_update_close", concurrentUpdatesAndClose},
         {"service_death_consumer_restart", serviceDeathAndConsumerRestart},
         {"socket_input_bounds", boundedSocketAndInvalidRequests},
+        {"key_resolution_status", keyResolutionStatus},
     };
     std::vector<std::pair<const char*, std::function<void()>>> tests = {
         {"core_factory_dispatch", coreFactoryDispatch},
