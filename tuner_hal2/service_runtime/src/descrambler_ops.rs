@@ -2,6 +2,36 @@ use crate::boot::TunerServiceRuntime;
 use crate::object_method_use_case::ObjectMethodExecutionToken;
 use crate::registry::{DescramblerRegistryEntry, RegistryCommitError};
 use maleicacid_tuner_hal2_common::HalError;
+use maleicacid_tuner_hal2_descrambler::{
+    CasKeyResolveError, CasKeyResolver, DescramblerKeySlot, DescramblerKeyToken,
+    DescramblerKeyTokenError, ProductCasKeyResolver,
+};
+
+pub enum PreparedDescramblerKeyToken {
+    Clear,
+    Invalid(DescramblerKeyTokenError),
+    Resolved {
+        token: DescramblerKeyToken,
+        key_slot: DescramblerKeySlot,
+    },
+    ResolutionFailed(CasKeyResolveError),
+    #[cfg(test)]
+    LookupExisting(DescramblerKeyToken),
+}
+
+pub fn prepare_product_descrambler_key_token(key_token: &[u8]) -> PreparedDescramblerKeyToken {
+    if key_token == [0x00].as_slice() {
+        return PreparedDescramblerKeyToken::Clear;
+    }
+    let token = match DescramblerKeyToken::try_from_bytes(key_token.to_vec()) {
+        Ok(token) => token,
+        Err(error) => return PreparedDescramblerKeyToken::Invalid(error),
+    };
+    match ProductCasKeyResolver.resolve(&token) {
+        Ok(key_slot) => PreparedDescramblerKeyToken::Resolved { token, key_slot },
+        Err(error) => PreparedDescramblerKeyToken::ResolutionFailed(error),
+    }
+}
 
 impl TunerServiceRuntime {
     pub(crate) fn allocate_descrambler_runtime(
@@ -20,13 +50,31 @@ impl TunerServiceRuntime {
             .set_descrambler_demux_source(descrambler_id, demux_id)
     }
 
+    #[cfg(test)]
     pub(crate) fn set_descrambler_key_token(
         &mut self,
         descrambler_id: i32,
         key_token: &[u8],
     ) -> Result<(), HalError> {
+        let prepared = if key_token == [0x00].as_slice() {
+            PreparedDescramblerKeyToken::Clear
+        } else {
+            match DescramblerKeyToken::try_from_bytes(key_token.to_vec()) {
+                Ok(token) => PreparedDescramblerKeyToken::LookupExisting(token),
+                Err(error) => PreparedDescramblerKeyToken::Invalid(error),
+            }
+        };
         self.descrambler_key_txn()
-            .set_key_token(descrambler_id, key_token)
+            .set_key_token(descrambler_id, prepared)
+    }
+
+    pub(crate) fn set_descrambler_prepared_key_token(
+        &mut self,
+        descrambler_id: i32,
+        prepared: PreparedDescramblerKeyToken,
+    ) -> Result<(), HalError> {
+        self.descrambler_key_txn()
+            .set_key_token(descrambler_id, prepared)
     }
 
     pub(crate) fn add_descrambler_pid_non_null_source(
@@ -111,7 +159,7 @@ impl TunerServiceRuntime {
         &mut self,
         object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
         generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
-        key_token: &[u8],
+        prepared: PreparedDescramblerKeyToken,
         dispatch: ObjectMethodExecutionToken,
     ) -> Result<(), HalError> {
         dispatch.consume_for_object(
@@ -126,7 +174,7 @@ impl TunerServiceRuntime {
             generation,
             maleicacid_tuner_hal2_domain_request::AidlObjectKind::Descrambler,
         )?;
-        self.set_descrambler_key_token(descrambler_id, key_token)
+        self.set_descrambler_prepared_key_token(descrambler_id, prepared)
     }
 
     pub fn add_descrambler_pid_demux_input_for_object(

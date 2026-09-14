@@ -2,6 +2,7 @@
 #include <media/cas/CasAPI.h>
 #include <media/stagefright/MediaErrors.h>
 #include <maleicacid/cas/KeyClient.h>
+#include <maleicacid/cas/KeyClientC.h>
 
 #include "KeyRegistry.h"
 #include "KeySocket.h"
@@ -504,7 +505,21 @@ void boundedSocketAndInvalidRequests() {
     CHECK(acquirePacketKeys(id.data(), 1, &keys) == KeyResult::InvalidToken);
     auto wrong = id;
     wrong[0] ^= 1;
-    CHECK(!resolve(wrong));
+    CHECK(acquirePacketKeys(wrong.data(), wrong.size(), &keys) == KeyResult::UnknownToken);
+    std::array<uint8_t, 8> odd{};
+    std::array<uint8_t, 8> even{};
+    even.fill(0xff);
+    CHECK(maleicacid_cas_acquire_packet_keys(id.data(), id.size(), nullptr, even.data()) ==
+          MALEICACID_CAS_KEY_INVALID_TOKEN);
+    CHECK(std::all_of(even.begin(), even.end(), [](uint8_t b) { return b == 0; }));
+    CHECK(maleicacid_cas_acquire_packet_keys(id.data(), id.size(), odd.data(), even.data()) ==
+          MALEICACID_CAS_KEY_OK);
+    CHECK(std::equal(odd.begin(), odd.end(), kKeys.begin()));
+    CHECK(std::equal(even.begin(), even.end(), kKeys.begin() + 8));
+    CHECK(maleicacid_cas_acquire_packet_keys(wrong.data(), wrong.size(), odd.data(), even.data()) ==
+          MALEICACID_CAS_KEY_UNKNOWN_TOKEN);
+    CHECK(std::all_of(odd.begin(), odd.end(), [](uint8_t b) { return b == 0; }));
+    CHECK(std::all_of(even.begin(), even.end(), [](uint8_t b) { return b == 0; }));
 }
 
 // これらは同一 process の backend/registry 試験であり、CasPlugin ABI や IPC の代替ではない。

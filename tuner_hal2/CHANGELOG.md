@@ -1,3 +1,20 @@
+# MULTI2固定parameterの非公開製品入力
+
+- 製品固定parameterをソース内の定数から製品管理のbinary入力へ変更し、CAS由来の動的Ksと組み合わせるconsumerをTuner側に維持した。未指定・不正入力に代替値を使用しない。
+- `product_parameters.rs`に長さ・byte順・通常file・所有者・権限の検証を追加した。Tunerプロセス内で固定設定の読取り結果だけを保持し、動的Ksをこの設定へ保存しない。
+- product makefileの入力指定、vendor配置、root:system/0640のfs-config、Tuner読取り用SELinux設定、Soongのsource一覧を追加した。
+- 製品入力と出力imageの区別、入力形式、配置、更新時の再起動、成果物の管理条件を`INTEGRATION.md`へ記載した。
+- CAS CIに入力指定のmake評価とTuner用・CAS併合fs-configの生成検査を追加した。
+- Rust 1.81のdescrambler単体試験54件、Clippy、Android targetの同crate型検査が成功した。GNU makeで入力なし・単一既存入力を受理し、不存在・複数・wildcard入力を拒否することを確認した。
+- Android/Soong全体、service_runtime/AIDL実体の型検査、device atest、VTS、実機復号は未実施。CAS全体の製品動作と開発規則への完全準拠を、この変更だけで完了とは判定しない。
+
+# CAS current Ksの製品descrambler接続
+
+- `IDescrambler.setKeyToken()`のproduction経路をCAS key clientへ接続し、MediaCas session ID tokenの検証・解決をservice runtime lock外で実行してから、既存`DescramblerKeyTxn`で参照結合を確定する。
+- frontend packet入力ごとに、対象descramblerのtokenとstable slotの世代付きsnapshotをCASへ照会する。current odd/even Ksは次のpacketへ反映し、unknown tokenまたはCAS利用不能時はslotの鍵素材を失効させて旧鍵で復号しない。
+- MULTI2の製品固定parameterはTuner descrambler側だけで動的Ksと組み合わせ、CAS key clientから配送しない。SoongでC++ key clientをRust descrambler libraryへ静的リンクした。
+- Rust 1.81でdescrambler host unit test 49件とAndroid targetのtype-check、CAS core test 11 suiteが成功した。service_runtime / AIDL serviceのAndroid/Soong build、device atest、VTS、実機復号は未実施。
+
 # PR #108 Playback DVRの共通復号経路
 
 - Playback DVRの各パケットをライブ入力と同じ復号判断へ接続した。読出しと保留状態は既存の`PlaybackConsumeTxn`が引き続き所有する。

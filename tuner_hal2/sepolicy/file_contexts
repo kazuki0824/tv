@@ -1,4 +1,5 @@
-# Tuner HAL service executable and tuner device nodes.
+# Tuner HAL実行ファイル、製品入力、tuner device node。
+/vendor/etc/maleicacid/multi2_parameters                   u:object_r:maleicacid_multi2_parameters:s0
 /vendor/bin/hw/android\.hardware\.tv\.tuner-service\.maleicacid2 u:object_r:hal_tv_tuner_default_exec:s0
 /dev/dvb/adapter[0-9]+/frontend[0-9]+                      u:object_r:dvb_frontend_device:s0
 /dev/dvb/adapter[0-9]+/demux[0-9]+                         u:object_r:dvb_demux_device:s0

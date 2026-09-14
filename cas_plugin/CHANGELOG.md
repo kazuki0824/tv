@@ -16,6 +16,19 @@
 - `DESIGN_JA.md` §6.3の完了確認項目を`../タスク完了判定の実施方法.md`へ移し、元の箇所を参照へ置き換えた。不正入力、複数EMM、対象外宛先、MAC不正、重複・拒否更新、後続ECM、同時初期化・処理の確認対象を維持した。
 - 移動前後の確認対象、文書間参照と差分を確認した。実装、公開API、鍵の保持方法、ビルド設定と試験の期待値は変更していない。ビルド、単体試験、Soong、atest、VTS、実機確認は未実施。
 
+# 製品固定parameterの所有と非公開入力
+
+- `KeyClient.h`から固定MULTI2 parameterの定義を除き、CAS読取り口が動的odd/even Ksだけを返す構成にした。固定parameterはTunerの非公開製品入力として扱う。
+- Tunerの入力配置手順へ`INTEGRATION.md`から参照を追加し、token・失効契約の重複説明を設計正本への参照に置き換えた。
+- CAS CIの製品設定検査をTunerの入力と権限表へ拡張し、workflow表示名を日本語へ揃えた。
+- ローカルのCAS本体試験は11 suite成功。socket結合は実行環境の制限によりローカルで未実施。Android/Soong、atest、VTS、実機の検証は未実施。
+
+# Tuner descramblerへの製品鍵参照接続
+
+- `libmaleicacid_cas_key_client` にC ABIの読取り口を追加し、Tuner HALのRust実装から標準MediaCas session IDと同じ16-byte tokenでcurrent odd/even Ksを取得できるようにした。
+- token形式不正、失効・未登録token、CAS内部経路の利用不能を応答で区別し、失敗時の出力鍵をゼロ化する。
+- packet単位の鍵取得とC ABIの成功・unknown-token動作を既存socket結合試験へ追加した。ローカルではsocket syscallが実行環境に拒否されるためcore 11 suiteのみ成功し、socket結合試験はGitHub Actionsで確認する。
+
 # CASの共通製品入口への接続
 
 - 共通product入口から標準CAS service、vendor plugin、fs-config生成物を取り込み、共通BoardConfig入口からCASのSELinux policyとcredential用fs-config入力を取り込む。
