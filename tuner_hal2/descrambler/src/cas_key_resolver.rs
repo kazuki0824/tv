@@ -3,8 +3,9 @@ use crate::product_parameters::ProductMulti2Parameters;
 #[cfg(any(target_os = "android", test))]
 use crate::Multi2KeyMaterial;
 use crate::{DescramblerKeySlot, DescramblerKeyToken};
+use std::sync::Arc;
 #[cfg(target_os = "android")]
-use std::ptr;
+use std::ptr::{self, NonNull};
 #[cfg(target_os = "android")]
 use std::sync::atomic::{compiler_fence, Ordering};
 
@@ -23,11 +24,17 @@ pub enum CasKeyResolveError {
     InvalidKeyMaterial,
 }
 
+/// CAS が更新する同じ参照先から、その packet だけで使用する鍵を局所取得する。
+/// snapshot は外部プロセスへの問い合わせや参照先の変更を行わない。
+pub trait CasKeyReference: std::fmt::Debug + Send + Sync {
+    fn snapshot(&self) -> Result<DescramblerKeySlot, CasKeyResolveError>;
+}
+
 pub trait CasKeyResolver: Send + Sync {
     fn resolve(
         &self,
         token: &DescramblerKeyToken,
-    ) -> Result<DescramblerKeySlot, CasKeyResolveError>;
+    ) -> Result<Arc<dyn CasKeyReference>, CasKeyResolveError>;
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -67,32 +74,51 @@ fn build_key_slot(
 
 #[cfg(target_os = "android")]
 extern "C" {
-    fn maleicacid_cas_acquire_packet_keys(
+    fn maleicacid_cas_bind_key_reference(
         token: *const u8,
         length: usize,
+        reference: *mut *mut std::ffi::c_void,
+    ) -> i32;
+    fn maleicacid_cas_release_key_reference(reference: *mut std::ffi::c_void);
+    fn maleicacid_cas_snapshot_key_reference(
+        reference: *const std::ffi::c_void,
         odd: *mut u8,
         even: *mut u8,
     ) -> i32;
 }
 
 #[cfg(target_os = "android")]
-impl CasKeyResolver for ProductCasKeyResolver {
-    fn resolve(
-        &self,
-        token: &DescramblerKeyToken,
-    ) -> Result<DescramblerKeySlot, CasKeyResolveError> {
+#[derive(Debug)]
+struct ProductKeyReference {
+    reference: NonNull<std::ffi::c_void>,
+}
+
+// C++ 参照は読取り専用 mapping と不変の所有者 fd を所有する。snapshot 同士は
+// 競合せず、最後の Arc が破棄されるまで release は実行されない。
+#[cfg(target_os = "android")]
+unsafe impl Send for ProductKeyReference {}
+#[cfg(target_os = "android")]
+unsafe impl Sync for ProductKeyReference {}
+
+#[cfg(target_os = "android")]
+impl Drop for ProductKeyReference {
+    fn drop(&mut self) {
+        // bind で取得した唯一の所有参照を一度だけ解放する。
+        unsafe { maleicacid_cas_release_key_reference(self.reference.as_ptr()) };
+    }
+}
+
+#[cfg(target_os = "android")]
+impl CasKeyReference for ProductKeyReference {
+    fn snapshot(&self) -> Result<DescramblerKeySlot, CasKeyResolveError> {
         let parameters = crate::product_parameters::product_parameters()
             .map_err(|_| CasKeyResolveError::Unavailable)?;
         let mut odd = [0_u8; 8];
         let mut even = [0_u8; 8];
-        // tokenは呼出し中有効な連続領域で、odd/evenは各8 byteの書込み可能領域である。
-        // C++ wrapperはpointerを保持せず、戻り時には出力を鍵またはゼロで初期化する。
+        // self が所有する C++ 参照は呼出し中有効であり、各出力は8 byteを確保済み。
         let status = unsafe {
-            maleicacid_cas_acquire_packet_keys(
-                token.as_bytes().as_ptr(),
-                token.as_bytes().len(),
-                odd.as_mut_ptr(),
-                even.as_mut_ptr(),
+            maleicacid_cas_snapshot_key_reference(
+                self.reference.as_ptr(), odd.as_mut_ptr(), even.as_mut_ptr(),
             )
         };
         let result = match status {
@@ -107,12 +133,38 @@ impl CasKeyResolver for ProductCasKeyResolver {
     }
 }
 
+#[cfg(target_os = "android")]
+impl CasKeyResolver for ProductCasKeyResolver {
+    fn resolve(
+        &self,
+        token: &DescramblerKeyToken,
+    ) -> Result<Arc<dyn CasKeyReference>, CasKeyResolveError> {
+        crate::product_parameters::product_parameters()
+            .map_err(|_| CasKeyResolveError::Unavailable)?;
+        let mut reference = ptr::null_mut();
+        // token は呼出し中有効。成功時の不透明参照の所有権を受け取る。
+        let status = unsafe {
+            maleicacid_cas_bind_key_reference(
+                token.as_bytes().as_ptr(), token.as_bytes().len(), &mut reference,
+            )
+        };
+        match status {
+            CAS_KEY_OK => NonNull::new(reference)
+                .map(|reference| Arc::new(ProductKeyReference { reference }) as Arc<dyn CasKeyReference>)
+                .ok_or(CasKeyResolveError::Unavailable),
+            CAS_KEY_INVALID_TOKEN => Err(CasKeyResolveError::InvalidToken),
+            CAS_KEY_UNKNOWN_TOKEN => Err(CasKeyResolveError::UnknownToken),
+            _ => Err(CasKeyResolveError::Unavailable),
+        }
+    }
+}
+
 #[cfg(not(target_os = "android"))]
 impl CasKeyResolver for ProductCasKeyResolver {
     fn resolve(
         &self,
         _token: &DescramblerKeyToken,
-    ) -> Result<DescramblerKeySlot, CasKeyResolveError> {
+    ) -> Result<Arc<dyn CasKeyReference>, CasKeyResolveError> {
         Err(CasKeyResolveError::Unavailable)
     }
 }
@@ -137,9 +189,9 @@ mod tests {
     #[test]
     fn host_build_does_not_claim_a_product_cas_connection() {
         let token = DescramblerKeyToken::try_from_bytes(vec![0x33; 16]).unwrap();
-        assert_eq!(
+        assert!(matches!(
             ProductCasKeyResolver.resolve(&token),
             Err(CasKeyResolveError::Unavailable)
-        );
+        ));
     }
 }

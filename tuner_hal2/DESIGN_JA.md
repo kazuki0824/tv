@@ -58,9 +58,9 @@ flowchart TD
 
 | 処理 | 実装箇所 |
 |---|---|
-| 製品の鍵参照 | `descrambler/src/cas_key_resolver.rs::ProductCasKeyResolver` |
+| 製品の共有参照への結合と局所読取り | `descrambler/src/cas_key_resolver.rs::{ProductCasKeyResolver, ProductKeyReference}` |
 | `setKeyToken()`の調停 | `service_runtime/src/descrambler_ops.rs::TunerServiceRuntime::set_descrambler_key_token_for_object`から`DescramblerKeyTxn`への接続 |
-| トークン参照の管理とパケット用の取得結果 | `service_runtime/src/descrambler_key_table.rs::{DescramblerKeyTable, DescramblerPacketKeys}` |
+| 共有参照の結合・参照数管理とパケット用の局所取得結果 | `service_runtime/src/descrambler_key_table.rs::{DescramblerKeyTable, DescramblerPacketKeys}` |
 | ライブ入力の鍵参照と配送 | `service_runtime/src/boot.rs::FrontendDemuxPacketSink` |
 | Playback DVRの鍵参照と配送 | `service_runtime/src/boot/demux_filter_dvr_ops.rs::TunerServiceRuntime::consume_playback_dvr_for_object`から`PlaybackConsumeTxn`への接続 |
 

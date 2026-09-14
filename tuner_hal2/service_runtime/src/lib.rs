@@ -162,7 +162,7 @@ mod tests {
         QueueRuntimeErrorKind,
     };
     use maleicacid_tuner_hal2_descrambler::{
-        multi2_encrypt_payload, CasKeyResolveError, CasKeyResolver, DescramblerKeySlot,
+        multi2_encrypt_payload, CasKeyReference, CasKeyResolveError, DescramblerKeySlot,
         DescramblerKeyToken, DescramblerPid, DescramblerPidClaim, Multi2KeyMaterial,
     };
     use maleicacid_tuner_hal2_domain_request::{
@@ -170,9 +170,8 @@ mod tests {
         DvrDataFormat, DvrOpenKind, FilterDelayHintKind, FilterDelayHintRequest, OpenDvrRequest,
         RuntimeExecutableRequest, RuntimeTransactionName, AIDL_TRANSACTION_TABLE,
     };
-    use std::collections::VecDeque;
     use std::path::PathBuf;
-    use std::sync::{Arc, Mutex, Weak};
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     fn test_descrambler_pid(pid: u16) -> DescramblerPid {
@@ -310,29 +309,12 @@ mod tests {
         }
     }
 
-    struct LockCheckingKeyResolver {
-        runtime: Weak<Mutex<TunerServiceRuntime>>,
-        outcomes: Mutex<VecDeque<Result<DescramblerKeySlot, CasKeyResolveError>>>,
-    }
+    #[derive(Debug)]
+    struct SharedTestKeyReference(Mutex<Option<DescramblerKeySlot>>);
 
-    impl CasKeyResolver for LockCheckingKeyResolver {
-        fn resolve(
-            &self,
-            _token: &DescramblerKeyToken,
-        ) -> Result<DescramblerKeySlot, CasKeyResolveError> {
-            let runtime = self
-                .runtime
-                .upgrade()
-                .expect("test runtime must still exist");
-            assert!(
-                runtime.try_lock().is_ok(),
-                "CAS resolve must run without the service runtime lock"
-            );
-            self.outcomes
-                .lock()
-                .unwrap()
-                .pop_front()
-                .expect("test resolver outcome must exist")
+    impl CasKeyReference for SharedTestKeyReference {
+        fn snapshot(&self) -> Result<DescramblerKeySlot, CasKeyResolveError> {
+            self.0.lock().unwrap().clone().ok_or(CasKeyResolveError::UnknownToken)
         }
     }
 
@@ -2647,9 +2629,9 @@ mod tests {
             .unwrap();
         let token_bytes = vec![0x10; 8];
         let token = DescramblerKeyToken::try_from_bytes(token_bytes.clone()).unwrap();
-        runtime
-            .register_descrambler_key_token(token.clone())
-            .unwrap();
+        runtime.registry.publish_descrambler_key_resolution(
+            token.clone(), Arc::new(SharedTestKeyReference(Mutex::new(Some(key_slot.clone())))),
+        ).unwrap();
         let descrambler = runtime.allocate_descrambler_runtime().unwrap();
         runtime
             .set_descrambler_demux_source(descrambler.id.0, demux.id.0)
@@ -2667,12 +2649,7 @@ mod tests {
         assert_eq!(requests.len(), 1);
         let packet_keys = runtime
             .registry_mut_for_test()
-            .resolve_descrambler_packet_keys(
-                requests
-                    .into_iter()
-                    .map(|request| (request, Some(key_slot.clone())))
-                    .collect(),
-            );
+            .snapshot_descrambler_packet_keys(requests);
         let reports = runtime
             .push_frontend_ts_packet_to_bound_demuxes(
                 1_000_000,
@@ -2701,7 +2678,7 @@ mod tests {
     }
 
     #[test]
-    fn frontend_sink_refreshes_and_invalidates_cas_keys_without_holding_runtime_lock() {
+    fn frontend_sink_observes_shared_slot_invalidation_without_rebinding() {
         let mut runtime = TunerServiceRuntime::new();
         runtime.boot_from_probe_results([available(
             1_000_000,
@@ -2732,7 +2709,8 @@ mod tests {
             .unwrap();
         let token_bytes = vec![0x10; 16];
         let token = DescramblerKeyToken::try_from_bytes(token_bytes.clone()).unwrap();
-        runtime.register_descrambler_key_token(token).unwrap();
+        let reference = Arc::new(SharedTestKeyReference(Mutex::new(Some(current_key_slot.clone()))));
+        runtime.registry.publish_descrambler_key_resolution(token, reference.clone()).unwrap();
         let descrambler = runtime.allocate_descrambler_runtime().unwrap();
         runtime
             .set_descrambler_demux_source(descrambler.id.0, demux.id.0)
@@ -2746,18 +2724,10 @@ mod tests {
 
         let encrypted = encrypted_scrambled_payload_packet(200, &current_key_slot);
         let runtime = Arc::new(Mutex::new(runtime));
-        let resolver = Arc::new(LockCheckingKeyResolver {
-            runtime: Arc::downgrade(&runtime),
-            outcomes: Mutex::new(VecDeque::from([
-                Ok(current_key_slot),
-                Err(CasKeyResolveError::UnknownToken),
-            ])),
-        });
-        let mut sink = FrontendDemuxPacketSink::new_with_key_resolver(
+        let mut sink = FrontendDemuxPacketSink::new(
             Arc::clone(&runtime),
             1_000_000,
             Arc::new(NoopFilterEventDispatcher),
-            resolver,
         );
 
         maleicacid_tuner_hal2_device::FrontendLivePacketSink::deliver_ts_packet(
@@ -2779,6 +2749,7 @@ mod tests {
             })
             .count();
         assert_eq!(descrambled_count, 1);
+        *reference.0.lock().unwrap() = None;
 
         maleicacid_tuner_hal2_device::FrontendLivePacketSink::deliver_ts_packet(
             &mut sink, &encrypted,

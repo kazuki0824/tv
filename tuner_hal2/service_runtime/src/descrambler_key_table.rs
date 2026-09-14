@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use maleicacid_tuner_hal2_descrambler::CasKeyReference;
 #[cfg(test)]
 use std::collections::BTreeSet;
 
@@ -51,8 +53,9 @@ impl DescramblerKeyRefreshRequest {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 struct DescramblerKeySlotState {
+    reference: Arc<dyn CasKeyReference>,
     slot: DescramblerKeySlotId,
     refcount: usize,
     expired: bool,
@@ -86,6 +89,7 @@ impl DescramblerKeyTable {
     pub(crate) fn publish(
         &mut self,
         token: DescramblerKeyToken,
+        reference: Arc<dyn CasKeyReference>,
     ) -> Result<DescramblerKeySlotId, DescramblerKeyPublishError> {
         if let Some(state) = self.slots.get_mut(&token) {
             state.expired = false;
@@ -99,6 +103,7 @@ impl DescramblerKeyTable {
         self.slots.insert(
             token,
             DescramblerKeySlotState {
+                reference,
                 slot,
                 refcount: 0,
                 expired: false,
@@ -127,15 +132,17 @@ impl DescramblerKeyTable {
         state.slot == request.slot() && state.refcount > 0 && !state.expired
     }
 
-    pub(crate) fn resolve_packet_keys(
+    pub(crate) fn snapshot_packet_keys(
         &self,
-        refreshes: Vec<(DescramblerKeyRefreshRequest, Option<DescramblerKeySlot>)>,
+        requests: Vec<DescramblerKeyRefreshRequest>,
     ) -> DescramblerPacketKeys {
         let mut keys = DescramblerPacketKeys::default();
-        for (request, key_slot) in refreshes {
+        for request in requests {
             if self.is_live_request(&request) {
-                if let Some(key_slot) = key_slot {
-                    keys.slots.insert(request.slot(), key_slot);
+                if let Some(state) = self.slots.get(request.token()) {
+                    if let Ok(snapshot) = state.reference.snapshot() {
+                        keys.slots.insert(request.slot(), snapshot);
+                    }
                 }
             }
         }
@@ -207,8 +214,23 @@ impl DescramblerKeyTable {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use maleicacid_tuner_hal2_descrambler::CasKeyResolveError;
+
+    #[derive(Debug, Default)]
+    pub(crate) struct TestKeyReference(pub std::sync::Mutex<Option<DescramblerKeySlot>>);
+
+    impl CasKeyReference for TestKeyReference {
+        fn snapshot(&self) -> Result<DescramblerKeySlot, CasKeyResolveError> {
+            self.0.lock().unwrap().clone().ok_or(CasKeyResolveError::UnknownToken)
+        }
+    }
+
+    pub(crate) fn empty_reference() -> Arc<dyn CasKeyReference> {
+        Arc::new(TestKeyReference::default())
+    }
+
     use maleicacid_tuner_hal2_descrambler::Multi2KeyMaterial;
 
     fn key_slot(byte: u8) -> DescramblerKeySlot {
@@ -231,6 +253,7 @@ mod tests {
             self.slots.insert(
                 token,
                 DescramblerKeySlotState {
+                    reference: empty_reference(),
                     slot,
                     refcount: 0,
                     expired: false,
@@ -299,150 +322,75 @@ mod tests {
     }
 
     #[test]
-    fn packet_keys_survive_later_updates_without_becoming_a_fallback() {
+    fn shared_slot_updates_revoke_and_recover_without_rebinding() {
         let token = DescramblerKeyToken::try_from_bytes(vec![3; 16]).unwrap();
         let mut table = DescramblerKeyTable::default();
-        let slot = table.publish(token.clone()).unwrap();
+        let reference = Arc::new(TestKeyReference(std::sync::Mutex::new(Some(key_slot(1)))));
+        let slot = table.publish(token.clone(), reference.clone()).unwrap();
         assert_eq!(table.acquire(&token), Ok(slot));
         let request = table.begin_refresh(&token, slot).unwrap();
-        let first = table.resolve_packet_keys(vec![(request, Some(key_slot(1)))]);
+        let first = table.snapshot_packet_keys(vec![request]);
+        for _ in 0..1000 {
+            let request = table.begin_refresh(&token, slot).unwrap();
+            assert_eq!(table.snapshot_packet_keys(vec![request]).key_slot(slot), Some(key_slot(1)));
+        }
+        *reference.0.lock().unwrap() = Some(key_slot(9));
         let request = table.begin_refresh(&token, slot).unwrap();
-        let second = table.resolve_packet_keys(vec![(request, Some(key_slot(9)))]);
-        let invalidation = table.begin_refresh(&token, slot).unwrap();
-        let failed = table.resolve_packet_keys(vec![(invalidation, None)]);
-        assert!(failed.key_slot(slot).is_none());
-        assert!(table
-            .resolve_packet_keys(Vec::new())
-            .key_slot(slot)
-            .is_none());
+        assert_eq!(table.snapshot_packet_keys(vec![request]).key_slot(slot), Some(key_slot(9)));
+        *reference.0.lock().unwrap() = None;
+        let request = table.begin_refresh(&token, slot).unwrap();
+        assert!(table.snapshot_packet_keys(vec![request]).key_slot(slot).is_none());
+        assert_eq!(first.key_slot(slot), Some(key_slot(1)));
+        *reference.0.lock().unwrap() = Some(key_slot(7));
+        let request = table.begin_refresh(&token, slot).unwrap();
+        assert_eq!(table.snapshot_packet_keys(vec![request]).key_slot(slot), Some(key_slot(7)));
         assert_eq!(table.refcount_for_test(&token), Some(1));
-        table.release(&token).unwrap();
-        assert_eq!(first.key_slot(slot), Some(key_slot(1)));
-        assert_eq!(second.key_slot(slot), Some(key_slot(9)));
     }
 
     #[test]
-    fn stale_refresh_cannot_modify_a_republished_token() {
-        let token = DescramblerKeyToken::try_from_bytes(vec![4; 16]).unwrap();
-        let mut table = DescramblerKeyTable::default();
-        let old_slot = table.publish(token.clone()).unwrap();
-        assert_eq!(table.acquire(&token), Ok(old_slot));
-        let stale_request = table.begin_refresh(&token, old_slot).unwrap();
-        assert_eq!(table.release(&token), Ok(()));
-
-        let new_slot = table.publish(token.clone()).unwrap();
-        assert_ne!(new_slot, old_slot);
-        assert_eq!(table.acquire(&token), Ok(new_slot));
-        let current_request = table.begin_refresh(&token, new_slot).unwrap();
-        let stale = table.resolve_packet_keys(vec![(stale_request, Some(key_slot(2)))]);
-        assert!(stale.key_slot(old_slot).is_none());
-        assert!(stale.key_slot(new_slot).is_none());
-        let current = table.resolve_packet_keys(vec![(current_request, Some(key_slot(7)))]);
-        assert_eq!(current.key_slot(new_slot), Some(key_slot(7)));
-    }
-
-    #[test]
-    fn another_consumer_of_the_same_slot_preserves_in_flight_keys() {
-        let token = DescramblerKeyToken::try_from_bytes(vec![6; 16]).unwrap();
-        let mut table = DescramblerKeyTable::default();
-        let slot = table.publish(token.clone()).unwrap();
-        assert_eq!(table.acquire(&token), Ok(slot));
-        let first_request = table.begin_refresh(&token, slot).unwrap();
-
-        assert_eq!(table.publish(token.clone()), Ok(slot));
-        assert_eq!(table.acquire(&token), Ok(slot));
-        let first = table.resolve_packet_keys(vec![(first_request, Some(key_slot(1)))]);
-        assert_eq!(first.key_slot(slot), Some(key_slot(1)));
-        let current_request = table.begin_refresh(&token, slot).unwrap();
-        let current = table.resolve_packet_keys(vec![(current_request, Some(key_slot(8)))]);
-        assert_eq!(current.key_slot(slot), Some(key_slot(8)));
-        assert_eq!(table.refcount_for_test(&token), Some(2));
-    }
-
-    #[test]
-    fn overlapping_refresh_failure_has_no_packet_key_while_newer_query_is_pending() {
-        let token = DescramblerKeyToken::try_from_bytes(vec![0x21; 16]).unwrap();
-        let mut table = DescramblerKeyTable::default();
-        let slot = table.publish(token.clone()).unwrap();
-        table.acquire(&token).unwrap();
-        let first = table.begin_refresh(&token, slot).unwrap();
-        let second = table.begin_refresh(&token, slot).unwrap();
-        let failed = table.resolve_packet_keys(vec![(first, None)]);
-        assert!(failed.key_slot(slot).is_none());
-        let current = table.resolve_packet_keys(vec![(second, Some(key_slot(2)))]);
-        assert_eq!(current.key_slot(slot), Some(key_slot(2)));
-        assert!(failed.key_slot(slot).is_none());
-    }
-
-    #[test]
-    fn overlapping_queries_keep_their_own_results_in_either_completion_order() {
-        for (first_response, second_response, reverse) in [
-            (Some(key_slot(1)), Some(key_slot(9)), false),
-            (Some(key_slot(1)), Some(key_slot(9)), true),
-            (None, Some(key_slot(9)), true),
-            (Some(key_slot(1)), None, false),
-        ] {
-            let token = DescramblerKeyToken::try_from_bytes(vec![0x22; 16]).unwrap();
+    fn released_or_expired_binding_rejects_pending_packet_request() {
+        for expire in [false, true] {
+            let token = DescramblerKeyToken::try_from_bytes(vec![4; 16]).unwrap();
             let mut table = DescramblerKeyTable::default();
-            let slot = table.publish(token.clone()).unwrap();
+            let reference = Arc::new(TestKeyReference(std::sync::Mutex::new(Some(key_slot(1)))));
+            let slot = table.publish(token.clone(), reference).unwrap();
             table.acquire(&token).unwrap();
-            table.acquire(&token).unwrap();
-            let first = (
-                table.begin_refresh(&token, slot).unwrap(),
-                first_response.clone(),
-            );
-            let second = (
-                table.begin_refresh(&token, slot).unwrap(),
-                second_response.clone(),
-            );
-            let (first_keys, second_keys) = if reverse {
-                let second_keys = table.resolve_packet_keys(vec![second]);
-                (table.resolve_packet_keys(vec![first]), second_keys)
-            } else {
-                let first_keys = table.resolve_packet_keys(vec![first]);
-                (first_keys, table.resolve_packet_keys(vec![second]))
-            };
-            assert_eq!(first_keys.key_slot(slot), first_response);
-            assert_eq!(second_keys.key_slot(slot), second_response);
-            assert_eq!(table.refcount_for_test(&token), Some(2));
+            let stale = table.begin_refresh(&token, slot).unwrap();
+            if expire { table.expire_test_key(&token); } else { table.release(&token).unwrap(); }
+            assert!(table.snapshot_packet_keys(vec![stale]).key_slot(slot).is_none());
+            if !expire {
+                let new_slot = table.publish(token.clone(), empty_reference()).unwrap();
+                assert_ne!(new_slot, slot);
+                table.acquire(&token).unwrap();
+                assert!(table.begin_refresh(&token, slot).is_none());
+            }
         }
     }
 
     #[test]
-    fn released_slot_rejects_delayed_packet_material() {
-        let token = DescramblerKeyToken::try_from_bytes(vec![0x23; 16]).unwrap();
+    fn another_consumer_keeps_the_existing_shared_reference_and_refcount() {
+        let token = DescramblerKeyToken::try_from_bytes(vec![6; 16]).unwrap();
         let mut table = DescramblerKeyTable::default();
-        let slot = table.publish(token.clone()).unwrap();
+        let reference = Arc::new(TestKeyReference(std::sync::Mutex::new(Some(key_slot(1)))));
+        let slot = table.publish(token.clone(), reference.clone()).unwrap();
         table.acquire(&token).unwrap();
-        let stale = table.begin_refresh(&token, slot).unwrap();
+        let first = table.begin_refresh(&token, slot).unwrap();
+        assert_eq!(table.publish(token.clone(), empty_reference()), Ok(slot));
+        table.acquire(&token).unwrap();
+        *reference.0.lock().unwrap() = Some(key_slot(8));
+        assert_eq!(table.snapshot_packet_keys(vec![first]).key_slot(slot), Some(key_slot(8)));
+        assert_eq!(table.refcount_for_test(&token), Some(2));
         table.release(&token).unwrap();
-        let packet = table.resolve_packet_keys(vec![(stale, Some(key_slot(1)))]);
-        assert!(packet.key_slot(slot).is_none());
-    }
-
-    #[test]
-    fn expired_binding_rejects_pending_material() {
-        let token = DescramblerKeyToken::try_from_bytes(vec![0x25; 16]).unwrap();
-        let mut table = DescramblerKeyTable::default();
-        let slot = table.publish(token.clone()).unwrap();
-        table.acquire(&token).unwrap();
         let request = table.begin_refresh(&token, slot).unwrap();
-        table.expire_test_key(&token);
-        let packet = table.resolve_packet_keys(vec![(request, Some(key_slot(6)))]);
-        assert!(packet.key_slot(slot).is_none());
-        assert!(table.begin_refresh(&token, slot).is_none());
-        assert_eq!(table.refcount_for_test(&token), Some(1));
+        assert_eq!(table.snapshot_packet_keys(vec![request]).key_slot(slot), Some(key_slot(8)));
     }
 
     #[test]
     fn failed_binding_can_discard_an_unreferenced_publication() {
         let token = DescramblerKeyToken::try_from_bytes(vec![5; 16]).unwrap();
         let mut table = DescramblerKeyTable::default();
-        let slot = table.publish(token.clone()).unwrap();
+        let slot = table.publish(token.clone(), empty_reference()).unwrap();
         table.discard_if_unreferenced(&token, slot);
-        assert_eq!(
-            table.acquire(&token),
-            Err(DescramblerKeyLookupError::UnknownToken)
-        );
+        assert_eq!(table.acquire(&token), Err(DescramblerKeyLookupError::UnknownToken));
     }
 }
