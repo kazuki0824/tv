@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 extern "C" {
@@ -64,99 +65,9 @@ Result decodeResult(int result) {
     }
 }
 
-bool sameFile(const struct stat& a, const struct stat& b) {
-    return a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_size == b.st_size &&
-           a.st_mode == b.st_mode && a.st_uid == b.st_uid && a.st_gid == b.st_gid &&
-           a.st_mtim.tv_sec == b.st_mtim.tv_sec && a.st_mtim.tv_nsec == b.st_mtim.tv_nsec &&
-           a.st_ctim.tv_sec == b.st_ctim.tv_sec && a.st_ctim.tv_nsec == b.st_ctim.tv_nsec;
-}
-
-bool trustedFile(const struct stat& info) {
-#ifdef MALEICACID_CAS_TEST
-    const uid_t owner = geteuid();
-#else
-    constexpr uid_t owner = 0;
-#endif
-    return S_ISREG(info.st_mode) && info.st_uid == owner &&
-           (info.st_mode & 0027) == 0 && info.st_size > 0 &&
+bool validInputFile(const struct stat& info) {
+    return S_ISREG(info.st_mode) && info.st_size > 0 &&
            info.st_size <= static_cast<off_t>(kMaxCredentialSize);
-}
-
-int hexDigit(uint8_t c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    return -1;
-}
-
-// upstream が寛容に読み飛ばす入力を、初期化前に全行検証する。
-// 部分的な CardKey や同じ台帳 bucket の競合を許可しない。
-bool validCredentials(View input) {
-    bool cardId = false;
-    bool cardKey = false;
-    std::array<std::array<bool, 10>, 6> buckets{};
-    size_t offset = 0;
-    while (offset < input.size) {
-        size_t end = offset;
-        while (end < input.size && input[end] != '\n') ++end;
-        size_t p = offset;
-        auto spaces = [&] { while (p < end && (input[p] == ' ' || input[p] == '\t' || input[p] == '\r')) ++p; };
-        auto literal = [&](const char* text) {
-            const size_t n = strlen(text);
-            if (end - p < n || memcmp(input.data + p, text, n)) return false;
-            p += n;
-            return true;
-        };
-        auto byte = [&](uint8_t* value) {
-            spaces();
-            if (end - p < 2) return false;
-            const int hi = hexDigit(input[p]);
-            const int lo = hexDigit(input[p + 1]);
-            if (hi < 0 || lo < 0) return false;
-            *value = static_cast<uint8_t>((hi << 4) | lo);
-            p += 2;
-            return true;
-        };
-        spaces();
-        if (p == end || input[p] == '#' || input[p] == ';') { offset = end + 1; continue; }
-        if (literal("CardID")) {
-            if (cardId) return false;
-            cardId = true;
-        } else if (literal("CardKey")) {
-            if (cardKey) return false;
-            cardKey = true;
-        } else if (literal("Key")) {
-            uint8_t group, id;
-            spaces();
-            if (!literal("[") || !byte(&group)) return false;
-            spaces();
-            if (!literal("]")) return false;
-            spaces();
-            if (!literal("[") || !byte(&id)) return false;
-            spaces();
-            if (!literal("]") || id == 0xff) return false;
-            const int index = groupIndex(group);
-            if (index < 0 || buckets[index][id % 10]) return false;
-            buckets[index][id % 10] = true;
-        } else {
-            return false;
-        }
-        spaces();
-        if (!literal("=")) return false;
-        uint8_t ignored;
-        for (int i = 0; i < 8; ++i) {
-            if (!byte(&ignored)) return false;
-            if (p < end && input[p] != ',' && input[p] != ' ' && input[p] != '\t' && input[p] != '\r') {
-                return false;
-            }
-            if (p < end && input[p] == ',') ++p;
-        }
-        eraseSecret(&ignored, sizeof(ignored));
-        spaces();
-        if (p != end) return false;
-        offset = end + 1;
-    }
-    return cardId && cardKey;
 }
 
 }  // namespace
@@ -179,29 +90,18 @@ Result YakisobaBackend::failClosed() {
     return Result::Revoked;
 }
 
-Result YakisobaBackend::checkCredential() {
-    if (revoked_) return Result::Revoked;
-    if (!initialized_) return Result::NotProvisioned;
-    struct stat info {};
-    if (lstat(credentialPath_.c_str(), &info) || !sameFile(info, credentialStat_)) {
-        return failClosed();
-    }
-    return Result::Ok;
-}
-
 Result YakisobaBackend::initialize() {
-    if (initialized_ || revoked_) return checkCredential();
+    if (revoked_) return Result::Revoked;
+    if (initialized_) return Result::Ok;
     const int fd = open(credentialPath_.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
     if (fd < 0) return Result::NotProvisioned;
-    struct stat before {}, after {};
-    if (fstat(fd, &before) || !trustedFile(before)) { close(fd); return Result::NotProvisioned; }
+    struct stat info {};
+    if (fstat(fd, &info) || !validInputFile(info)) { close(fd); return Result::NotProvisioned; }
     Secret<kMaxCredentialSize + 1> content;
-    const auto size = static_cast<size_t>(before.st_size);
+    const auto size = static_cast<size_t>(info.st_size);
     const auto count = pread(fd, content.bytes.data(), size + 1, 0);
-    const bool stable = fstat(fd, &after) == 0 && sameFile(before, after);
     close(fd);
-    if (count != static_cast<ssize_t>(size) || !stable ||
-        !validCredentials({content.bytes.data(), size})) return Result::NotProvisioned;
+    if (count != static_cast<ssize_t>(size)) return Result::NotProvisioned;
     initialInput = reinterpret_cast<char*>(content.bytes.data());
     initialSize = size;
     initialReadFailed = false;
@@ -210,9 +110,8 @@ Result YakisobaBackend::initialize() {
     initialInput = nullptr;
     initialSize = 0;
     if (initialReadFailed) return failClosed();
-    credentialStat_ = before;
     initialized_ = true;
-    return checkCredential();
+    return Result::Ok;
 }
 
 Result YakisobaBackend::validateEcm(View plain, const Entitlement& entitlement) {
@@ -255,8 +154,6 @@ Result YakisobaBackend::processEcm(const std::shared_ptr<KeyRegistry::Slot>& slo
     Transform(payload[0], workKey.bytes.data(), payload.data + 3, payload.size - 3,
               plain.bytes.data() + 3, TRUE);
     result = validateEcm({plain.bytes.data(), payload.size}, entitlements_[group]);
-    if (result != Result::Ok) return result;
-    result = checkCredential();
     if (result != Result::Ok) return result;
     return KeyRegistry::instance().update(slot, keys, payload[1], entitlements_[group].expires);
 }
@@ -332,8 +229,6 @@ Result YakisobaBackend::applyMessage(const EmmMessage& message) {
     if (updates.empty() && !bitmapChanged) return Result::Unsupported;
     // 確定開始後に allocation が失敗しないよう、再配送識別用の暗号文を先に確保する。
     Bytes committedMessage(payload.data, payload.data + payload.size);
-    result = checkCredential();
-    if (result != Result::Ok) return result;
     for (const auto& update : updates) {
         if (!update.duplicate && Register(plain[8], update.id, update.key.bytes.data()) != 0) {
             return failClosed();
@@ -374,8 +269,9 @@ Result YakisobaBackend::resolve(const Token& token, Secret<16>* keys) {
     eraseSecret(keys->bytes.data(), keys->bytes.size());
     std::unique_lock lock(mutex_, std::defer_lock);
     if (!lock.try_lock_for(kLockDeadline)) return Result::Busy;
-    const auto result = checkCredential();
-    return result == Result::Ok ? KeyRegistry::instance().resolve(token, keys) : result;
+    if (revoked_) return Result::Revoked;
+    if (!initialized_) return Result::NotProvisioned;
+    return KeyRegistry::instance().resolve(token, keys);
 }
 
 }  // namespace maleicacid::cas
