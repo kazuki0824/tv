@@ -6,7 +6,6 @@
 
 #include <mutex>
 #include <string>
-#include <sys/stat.h>
 
 namespace maleicacid::cas {
 
@@ -31,7 +30,6 @@ private:
     };
 
     Result initialize();
-    Result checkCredential();
     Result applyMessage(const EmmMessage& message);
     Result validateEcm(View plain, const Entitlement& entitlement);
     Result failClosed();
@@ -40,7 +38,6 @@ private:
     bool initialized_ = false;
     bool revoked_ = false;
     std::string credentialPath_ = "/vendor/etc/maleicacid/bcas_keys";
-    struct stat credentialStat_ {};
     std::array<Entitlement, 6> entitlements_;
 };
 
