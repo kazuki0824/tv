@@ -3,11 +3,11 @@ use crate::product_parameters::ProductMulti2Parameters;
 #[cfg(any(target_os = "android", test))]
 use crate::Multi2KeyMaterial;
 use crate::{DescramblerKeySlot, DescramblerKeyToken};
-use std::sync::Arc;
 #[cfg(target_os = "android")]
 use std::ptr::{self, NonNull};
 #[cfg(target_os = "android")]
 use std::sync::atomic::{compiler_fence, Ordering};
+use std::sync::Arc;
 
 #[cfg(target_os = "android")]
 const CAS_KEY_OK: i32 = 0;
@@ -118,7 +118,9 @@ impl CasKeyReference for ProductKeyReference {
         // self が所有する C++ 参照は呼出し中有効であり、各出力は8 byteを確保済み。
         let status = unsafe {
             maleicacid_cas_snapshot_key_reference(
-                self.reference.as_ptr(), odd.as_mut_ptr(), even.as_mut_ptr(),
+                self.reference.as_ptr(),
+                odd.as_mut_ptr(),
+                even.as_mut_ptr(),
             )
         };
         let result = match status {
@@ -145,12 +147,16 @@ impl CasKeyResolver for ProductCasKeyResolver {
         // token は呼出し中有効。成功時の不透明参照の所有権を受け取る。
         let status = unsafe {
             maleicacid_cas_bind_key_reference(
-                token.as_bytes().as_ptr(), token.as_bytes().len(), &mut reference,
+                token.as_bytes().as_ptr(),
+                token.as_bytes().len(),
+                &mut reference,
             )
         };
         match status {
             CAS_KEY_OK => NonNull::new(reference)
-                .map(|reference| Arc::new(ProductKeyReference { reference }) as Arc<dyn CasKeyReference>)
+                .map(|reference| {
+                    Arc::new(ProductKeyReference { reference }) as Arc<dyn CasKeyReference>
+                })
                 .ok_or(CasKeyResolveError::Unavailable),
             CAS_KEY_INVALID_TOKEN => Err(CasKeyResolveError::InvalidToken),
             CAS_KEY_UNKNOWN_TOKEN => Err(CasKeyResolveError::UnknownToken),
