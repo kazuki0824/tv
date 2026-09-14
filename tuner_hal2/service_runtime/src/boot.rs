@@ -26,8 +26,8 @@ use maleicacid_tuner_hal2_demux::{
 #[cfg(test)]
 use maleicacid_tuner_hal2_descrambler::DescramblerKeyToken;
 use maleicacid_tuner_hal2_descrambler::{
-    DescrambleFailure, DescramblerKeyTokenError, DescramblerPid,
-    DescramblerPidClaim, DescramblerPidClaimError,
+    DescrambleFailure, DescramblerKeyTokenError, DescramblerPid, DescramblerPidClaim,
+    DescramblerPidClaimError,
 };
 use maleicacid_tuner_hal2_device::{
     FrontendLivePacketSink, FrontendLivePumpOwner, FrontendLivePumpReport,
@@ -351,9 +351,9 @@ impl FrontendLivePacketSink for FrontendDemuxPacketSink {
                     "service runtime lock poisoned while delivering frontend TS packet",
                 )
             })?;
-            let requests = runtime.registry.descrambler_key_refresh_requests_for_frontend(
-                FrontendRuntimeId(self.frontend_id),
-            );
+            let requests = runtime
+                .registry
+                .descrambler_key_refresh_requests_for_frontend(FrontendRuntimeId(self.frontend_id));
             let packet_keys = runtime.registry.snapshot_descrambler_packet_keys(requests);
             let reports = runtime.push_frontend_ts_packet_to_bound_demuxes(
                 self.frontend_id,
