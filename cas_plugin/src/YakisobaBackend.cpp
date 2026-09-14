@@ -237,11 +237,11 @@ Result YakisobaBackend::validateEcm(View plain, const Entitlement& entitlement) 
 }
 
 Result YakisobaBackend::processEcm(const std::shared_ptr<KeyRegistry::Slot>& slot, View payload) {
+    if (!slot || payload.data == nullptr || payload.size < 30 || payload.size > 256) return Result::BadValue;
     std::unique_lock lock(mutex_, std::defer_lock);
     if (!lock.try_lock_for(kLockDeadline)) return Result::Busy;
     auto result = initialize();
     if (result != Result::Ok) return result;
-    if (payload.size < 30 || payload.size > 256) return Result::BadValue;
     const int group = groupIndex(payload[1]);
     if (group < 0 || !protocolSupported(payload[0])) return Result::Unsupported;
     Secret<16> keys;
@@ -350,6 +350,14 @@ Result YakisobaBackend::applyMessage(const EmmMessage& message) {
 }
 
 Result YakisobaBackend::processEmm(const std::vector<EmmMessage>& messages) {
+    if (messages.empty()) return Result::BadValue;
+    for (const auto& message : messages) {
+        const auto payload = message.payload;
+        const size_t minimum = message.individual ? 25 : 17;
+        if (payload.data == nullptr || payload.size < minimum || payload.size > 256) return Result::BadValue;
+        const size_t declared = message.individual ? 8 + be16(payload.data + 6) : 7 + payload[6];
+        if (declared != payload.size) return Result::BadValue;
+    }
     std::unique_lock lock(mutex_, std::defer_lock);
     if (!lock.try_lock_for(kLockDeadline)) return Result::Busy;
     auto result = initialize();
