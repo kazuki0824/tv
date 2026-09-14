@@ -19,7 +19,6 @@ public:
     Result resolve(const Token& token, Secret<16>* keys);
 #endif
     Result bind(const Token& token, int* readerFd);
-    void pollCredential();
 #ifdef MALEICACID_CAS_TEST
     void setCredentialPathForTest(std::string path);
 #endif

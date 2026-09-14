@@ -398,22 +398,33 @@ void individualMessages() {
     CHECK(plugin->processEmm(section(0x85, individual)) == BAD_VALUE);
 }
 
-void fixedCredentials() {
+void sharedReferenceFixedInput() {
     Environment env;
     auto plugin = env.plugin();
     const auto id = open(*plugin);
     CHECK(chmod(env.path.c_str(), 0666) == 0);
-    CHECK(plugin->processEcm(id, ecm()) == OK);
     std::unique_ptr<KeyReference> reference;
+    CHECK(KeyReference::bind(id.data(), id.size(), &reference) == KeyResult::Unavailable);
+    CHECK(plugin->processEcm(id, ecm()) == OK);
     CHECK(KeyReference::bind(id.data(), id.size(), &reference) == KeyResult::Ok);
+    CHECK(chmod(env.path.c_str(), 0000) == 0);
     CHECK(unlink(env.path.c_str()) == 0);
     CHECK(resolve(id));
+    PacketKeys current;
+    // 受付処理の待機期限を越えても、初期入力の削除で共有状態を失効させない。
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    CHECK(reference->snapshot(&current) == KeyResult::Ok);
+    std::unique_ptr<KeyReference> next;
+    CHECK(KeyReference::bind(id.data(), id.size(), &next) == KeyResult::Ok);
+    CHECK(next->snapshot(&current) == KeyResult::Ok);
     CHECK(plugin->processEmm(section(0x84, emmPayload(1, updateKey(2, kNextWorkKey)))) == OK);
     CHECK(!resolve(id));
     CHECK(plugin->processEcm(id, ecm(2, kNextWorkKey)) == OK);
     CHECK(resolve(id));
     CHECK(plugin->closeSession(id) == OK);
     CHECK(!resolve(id));
+    CHECK(reference->snapshot(&current) == KeyResult::UnknownToken);
+    CHECK(next->snapshot(&current) == KeyResult::UnknownToken);
 }
 
 void credentialsWithoutWorkKey() {
@@ -950,7 +961,7 @@ std::vector<TestCase> testCases(bool coreOnly) {
         {"emm_replay", emmUpdatesAndReplay},
         {"emm_atomicity", emmAtomicity},
         {"individual_messages", individualMessages},
-        {"fixed_credentials", fixedCredentials},
+        {"shared_reference_fixed_input", sharedReferenceFixedInput},
         {"credentials_without_work_key", credentialsWithoutWorkKey},
         {"concurrent_update_close", concurrentUpdatesAndClose},
         {"service_death_consumer_restart", serviceDeathAndConsumerRestart},
