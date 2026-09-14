@@ -373,10 +373,9 @@ mod tests {
                 .unwrap();
             let token = DescramblerKeyToken::try_from_bytes(vec![0x71; 8]).unwrap();
             if has_key || concurrent_failure {
-                registry.descrambler_key_table_mut().insert_test_key(
-                    token.clone(),
-                    DescramblerKeySlotId(1),
-                );
+                registry
+                    .descrambler_key_table_mut()
+                    .insert_test_key(token.clone(), DescramblerKeySlotId(1));
                 registry
                     .replace_descrambler_key_use_case(descrambler.id, token.clone())
                     .unwrap();
@@ -433,9 +432,7 @@ mod tests {
             );
             if concurrent_failure {
                 assert_eq!(requests.len(), 1);
-                registry
-                    .publish_descrambler_key_resolution(token)
-                    .unwrap();
+                registry.publish_descrambler_key_resolution(token).unwrap();
             }
             let packet_keys = registry.resolve_descrambler_packet_keys(
                 requests
