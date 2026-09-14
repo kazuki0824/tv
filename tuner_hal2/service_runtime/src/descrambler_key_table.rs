@@ -85,18 +85,9 @@ impl Default for DescramblerKeyTable {
 }
 
 impl DescramblerKeyTable {
+    #[cfg(test)]
     pub fn has_token_resolution_state(&self) -> bool {
-        if !self.slots.is_empty() {
-            return true;
-        }
-        #[cfg(test)]
-        {
-            !self.expired.is_empty()
-        }
-        #[cfg(not(test))]
-        {
-            false
-        }
+        !self.slots.is_empty() || !self.expired.is_empty()
     }
 
     pub(crate) fn publish(
