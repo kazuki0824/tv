@@ -1,9 +1,12 @@
 use super::support::{local_filter_handle_from_strong, ts_pid_from_demux_pid};
 use super::{
     close_object_after_close_preflight, execute_object_runtime_use_case,
-    execute_object_runtime_use_case_with_request_builder, status_from_hal_error, AidlMethodCall,
-    BinderResult, DemuxPid, DescramblerAidlObject, IDescrambler, IFilter, Strong,
+    execute_object_runtime_use_case_with_request_builder,
+    execute_shared_object_runtime_use_case_with_request_builder, status_from_hal_error,
+    AidlMethodCall, BinderResult, DemuxPid, DescramblerAidlObject, IDescrambler, IFilter, Strong,
 };
+use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
+use maleicacid_tuner_hal2_service_runtime::prepare_product_descrambler_key_token;
 
 impl DescramblerAidlObject {
     pub(crate) fn add_pid_nullable_for_aidl(
@@ -116,15 +119,27 @@ impl IDescrambler for DescramblerAidlObject {
     }
 
     fn setKeyToken(&self, key_token: &[u8]) -> BinderResult<()> {
-        execute_object_runtime_use_case(
+        execute_shared_object_runtime_use_case_with_request_builder(
             &self.runtime(),
             self.handle(),
-            AidlMethodCall::DescramblerSetKeyToken(key_token.to_vec()),
-            |runtime, handle, dispatch_proof| {
+            || {
+                Ok((
+                    AidlMethodCall::DescramblerSetKeyToken(key_token.to_vec()),
+                    key_token.to_vec(),
+                ))
+            },
+            |runtime, handle, dispatch_proof, key_token| {
+                let prepared = prepare_product_descrambler_key_token(&key_token);
+                let mut runtime = runtime.lock().map_err(|_| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "service runtime lock poisoned after CAS key resolution",
+                    )
+                })?;
                 runtime.set_descrambler_key_token_for_object(
                     handle.object_id(),
                     handle.generation(),
-                    key_token,
+                    prepared,
                     dispatch_proof,
                 )
             },
