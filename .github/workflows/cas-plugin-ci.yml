@@ -4,11 +4,15 @@ on:
   pull_request:
     paths:
       - "cas_plugin/**"
+      - "config/product_integration.mk"
+      - "config/BoardConfigVendorSePolicy.mk"
       - ".github/workflows/cas-plugin-ci.yml"
   push:
     branches: [main, feat/cas-impl]
     paths:
       - "cas_plugin/**"
+      - "config/product_integration.mk"
+      - "config/BoardConfigVendorSePolicy.mk"
       - ".github/workflows/cas-plugin-ci.yml"
 
 permissions:
@@ -59,3 +63,59 @@ jobs:
         run: |
           exported=$(nm -D --defined-only "$CAS_TEST_WORK/build/libmaleicacid_b25_cas.so" | awk '{print $3}')
           test "$exported" = createCasFactory
+
+  product-config:
+    name: CAS product configuration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: credential入力のmake評価を確認
+        run: |
+          cat > "$RUNNER_TEMP/cas-product.mk" <<'MAKE'
+          TARGET_COPY_OUT_VENDOR := vendor
+          include cas_plugin/config/product_integration.mk
+          .PHONY: print
+          print:
+          	@printf '%s\n' '$(sort $(PRODUCT_PACKAGES))' '$(strip $(PRODUCT_COPY_FILES))'
+          MAKE
+          cas_input=$(mktemp "$RUNNER_TEMP/cas-product-input.XXXXXX")
+          cas_make=(make --no-print-directory -s -f "$RUNNER_TEMP/cas-product.mk")
+          cas_packages='com.android.hardware.cas fs_config_files libmaleicacid_b25_cas'
+          test "$("${cas_make[@]}")" = "$cas_packages"
+          test "$("${cas_make[@]}" "MALEICACID_BCAS_KEYS_FILE=$cas_input")" = "$cas_packages"$'\n'"$cas_input:vendor/etc/maleicacid/bcas_keys"
+          for cas_bad in "$cas_input.missing" "$cas_input $cas_input" "$cas_input*"; do
+            if "${cas_make[@]}" "MALEICACID_BCAS_KEYS_FILE=$cas_bad" > /dev/null 2>&1; then
+              printf 'Invalid credential input was accepted\n' >&2
+              exit 1
+            fi
+          done
+          printf 'CAS package and credential copy configuration: PASS\n'
+      - name: AOSP生成器でcredentialのimage権限を確認
+        run: |
+          cas_fs="$RUNNER_TEMP/cas-fs-config"
+          mkdir -p "$cas_fs"
+          curl --fail --silent --show-error --location --max-time 60 \
+            https://raw.githubusercontent.com/aosp-mirror/platform_build/android-15.0.0_r1/tools/fs_config/fs_config_generator.py \
+            -o "$cas_fs/fs_config_generator.py"
+          curl --fail --silent --show-error --location --max-time 60 \
+            https://raw.githubusercontent.com/aosp-mirror/platform_system_core/android-15.0.0_r1/libcutils/include/private/android_filesystem_config.h \
+            -o "$cas_fs/android_filesystem_config.h"
+          curl --fail --silent --show-error --location --max-time 60 \
+            https://raw.githubusercontent.com/aosp-mirror/platform_bionic/android-15.0.0_r1/libc/kernel/uapi/linux/capability.h \
+            -o "$cas_fs/capability.h"
+          python3 "$cas_fs/fs_config_generator.py" fsconfig \
+            --aid-header "$cas_fs/android_filesystem_config.h" \
+            --capability-header "$cas_fs/capability.h" \
+            --partition vendor --files --out_file "$cas_fs/fs_config_files" \
+            cas_plugin/config/config.fs
+          read -r cas_length cas_mode cas_uid cas_gid < <(od -An -tu2 -N8 "$cas_fs/fs_config_files")
+          test "$cas_length" = 48
+          test "$cas_mode" = 416
+          test "$cas_uid" = 0
+          test "$cas_gid" = 1013
+          test "$(od -An -tu8 -j8 -N8 "$cas_fs/fs_config_files" | tr -d ' ')" = 0
+          test "$(tail -c +17 "$cas_fs/fs_config_files" | tr -d '\000')" = vendor/etc/maleicacid/bcas_keys
+          printf 'AOSP fs-config: root:media 0640, no capabilities: PASS\n'

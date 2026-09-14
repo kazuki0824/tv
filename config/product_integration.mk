@@ -4,3 +4,4 @@
 
 $(call inherit-product, vendor/maleicacid/tv/tuner_hal2/config/product_integration.mk)
 $(call inherit-product, vendor/maleicacid/tv/tis/config/product_integration.mk)
+$(call inherit-product, vendor/maleicacid/tv/cas_plugin/config/product_integration.mk)
