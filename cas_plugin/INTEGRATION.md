@@ -17,9 +17,9 @@ MALEICACID_BCAS_KEYS_FILE := vendor/<製品管理ディレクトリ>/bcas_keys
 $(call inherit-product, vendor/maleicacid/tv/config/product_integration.mk)
 ```
 
-入力は空白とwildcardを含まない単一の既存ファイルにする。未指定ではcredentialを生成・配置しないため、Yakisobaの実復号に必要な入力は成立しない。指定したファイルの内容の検証はCAS backendが行う。
+入力は空白とwildcardを含まない単一の既存ファイルにする。未指定ではcredentialを生成・配置しないため、Yakisobaの実復号に必要な入力は成立しない。初期読込みの入力検査はCAS側、構文の解釈は採用libyakisobaが行う。
 
-配置先は `/vendor/etc/maleicacid/bcas_keys` とする。`config/config.fs` によりimage作成時にroot所有・media group・0640を設定し、既存の `sepolicy/file_contexts` により `maleicacid_bcas_credential` を付与する。読み取り専用vendor partitionへ起動後にchmod/chownする方式は使用しない。製品側の別のfs-config入力に同じ配置先の定義を重複させない。
+配置先は `/vendor/etc/maleicacid/bcas_keys` とする。`config/config.fs` によりimage作成時にroot所有・media group・0640を設定し、既存の `sepolicy/file_contexts` により `maleicacid_bcas_credential` を付与する。読取り専用vendor領域へ固定配置する。所有者・権限は製品設定とSELinuxで制御し、CASの初期化後に入力ファイルの変更を監視しない。製品側の別のfs-config入力に同じ配置先の定義を重複させない。
 
 `get_android_qcow2.sh`を使用するときは、取得manifestのtv revisionを検証対象のcommitへ合わせる。既定の `main` のままでは未マージのPRの実装は取得されない。`libyakisoba-cross`のSoong moduleが取得できることと、CAS package・credential・policyが製品へ入ることを個別に確認する。
 
@@ -52,7 +52,7 @@ CAS側では初回読込みのファイル種別・サイズ・読取り成否�
 
 この接続はLinuxの `memfd_create`、`F_SEAL_FUTURE_WRITE` と `pidfd_open` を使用する。製品kernelはこれらを備える構成（Linux 5.3以降）とする。CASが既に持つ書込みmappingを残して以後の書込みmappingを禁止し、Tunerへは読取り専用fdを渡す。所有者の終了確認は `pidfd` の非待機 `poll` で行い、各packetでCASへの要求を送信しない。CASが更新途中で終了した場合も読取りを無期限に待たせない。
 
-CASの共有領域には `maleicacid_cas_slot` を付け、Tunerには読取り・mappingとCASから渡されたfdの使用だけを許可する。共有領域への書込み権限をTunerへ与えない。credentialの変化は既存のCAS受付処理でも検査するため、Tunerからの照会が途絶えてもその失効検出を止めない。新しいサービスや通知専用の実行単位は追加しない。
+CASの共有領域には `maleicacid_cas_slot` を付け、Tunerには読取り・mappingとCASから渡されたfdの使用だけを許可する。共有領域への書込み権限をTunerへ与えない。新しいサービスや通知専用の実行単位は追加しない。
 
 token・参照寿命・失効時の契約は `DESIGN_JA.md`、Tunerの非公開製品入力の配置は `../tuner_hal2/INTEGRATION.md` を参照する。
 
