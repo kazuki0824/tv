@@ -56,7 +56,7 @@ CAS plugin内部のfactory/backend/key lifecycle契約は `../cas_plugin/DESIGN_
 
 CA system IDの数値と方式の対応は`../開発規則.md`の「CA system IDの正本」に従い、`CasController.SupportedCasSystemIds`はその実装表現とする。
 
-現行 product では CAS plugin 本体はプレースホルダーのままにする。TIS は Tuner SDK API の filter 経由で PMT/CAT/SDT/ECM/EMM section payload を取得し、PMT/CAT から得た CA_descriptor と SDT 等から得た free_CA_mode / サービス識別子補助情報を arib_si_engine_rs の意味解析結果として受け取る。TIS はcurrent `ServiceSemanticFacts`とcurrent CAS capabilityに基づいて ECM/EMM セクションフィルターと MediaCas/CAS bridgeを型付きAPIで制御し、実keyトークンが得られた場合だけTuner descramblerへ不透明な参照値を渡す。仮実装や診断専用結果は復号成功を意味しないため、`setKeyToken()`へ渡さない。Tuner HALが未接続診断を返した場合も成功扱いにしない。
+製品で採用するCASの構成と対応範囲は、`../開発規則.md`と`../cas_plugin/DESIGN_JA.md`を正とする。TIS は Tuner SDK API の filter 経由で PMT/CAT/SDT/ECM/EMM section payload を取得し、PMT/CAT から得た CA_descriptor と SDT 等から得た free_CA_mode / サービス識別子補助情報を arib_si_engine_rs の意味解析結果として受け取る。TIS はcurrent `ServiceSemanticFacts`とcurrent CAS capabilityに基づいて ECM/EMM セクションフィルターと MediaCas/CAS bridgeを型付きAPIで制御し、実keyトークンが得られた場合だけTuner descramblerへ不透明な参照値を渡す。仮実装や診断専用結果は復号成功を意味しないため、`setKeyToken()`へ渡さない。Tuner HALが未接続診断を返した場合も成功扱いにしない。
 
 PROGRAM/ESのCA_descriptor `private_data_byte` はB25/B1をTIS側で解釈せず、対応するMediaCas Sessionの `setPrivateData()` へopaque bytesとして渡す。B1でもこのsession-private-data投入を通常のsession setupとして行い、成功後にECM配送へ進む。CAT由来private dataをMediaCas plugin-level `setPrivateData()`へ渡す経路はEMM対応CA systemだけに限定し、現行のB1では起動しない。CA方式固有のprivate data意味解釈はCAS plugin側の責務とし、TISにB1専用parserやprivate-data抑止分岐を追加しない。
 
