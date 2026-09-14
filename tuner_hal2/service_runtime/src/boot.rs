@@ -28,7 +28,7 @@ use maleicacid_tuner_hal2_descrambler::{
     DescramblerPidClaim, DescramblerPidClaimError, ProductCasKeyResolver,
 };
 #[cfg(test)]
-use maleicacid_tuner_hal2_descrambler::{DescramblerKeySlot, DescramblerKeyToken};
+use maleicacid_tuner_hal2_descrambler::DescramblerKeyToken;
 use maleicacid_tuner_hal2_device::{
     FrontendLivePacketSink, FrontendLivePumpOwner, FrontendLivePumpReport,
     FrontendLiveReaderDescriptor, FrontendRuntimeSnapshot, FrontendSignalState,
@@ -1761,14 +1761,13 @@ impl TunerServiceRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn register_descrambler_key_slot(
+    pub(crate) fn register_descrambler_key_token(
         &mut self,
         token: DescramblerKeyToken,
-        key_slot: DescramblerKeySlot,
     ) -> Result<(), HalError> {
         self.registry
             .descrambler_key_table_mut()
-            .insert_test_key_slot(token, DescramblerKeySlotId(1), key_slot);
+            .insert_test_key(token, DescramblerKeySlotId(1));
         Ok(())
     }
 

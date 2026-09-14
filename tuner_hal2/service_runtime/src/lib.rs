@@ -2111,7 +2111,7 @@ mod tests {
         let claim_sets = runtime.registry().resolved_descrambler_claims_for_demux(
             demux.id.0,
             1,
-            &runtime.registry().descrambler_packet_keys_for_test(),
+            &crate::descrambler_key_table::DescramblerPacketKeys::default(),
         );
         assert_eq!(claim_sets.len(), 1);
         let (claims, key_slot) = claim_sets.into_iter().next().unwrap().into_parts();
@@ -2159,7 +2159,7 @@ mod tests {
         let token_bytes = vec![0x40; 8];
         let token = DescramblerKeyToken::try_from_bytes(token_bytes.clone()).unwrap();
         runtime
-            .register_descrambler_key_slot(token.clone(), DescramblerKeySlot::empty())
+            .register_descrambler_key_token(token.clone())
             .unwrap();
 
         let error = runtime
@@ -2189,12 +2189,8 @@ mod tests {
         let descrambler = runtime.allocate_descrambler_runtime().unwrap();
         let token_bytes = vec![0x41; 8];
         let token = DescramblerKeyToken::try_from_bytes(token_bytes.clone()).unwrap();
-        let key_slot = DescramblerKeySlot::empty()
-            .try_with_even(sample_multi2_key(8))
-            .unwrap();
-
         runtime
-            .register_descrambler_key_slot(token.clone(), key_slot)
+            .register_descrambler_key_token(token.clone())
             .unwrap();
         runtime
             .set_descrambler_demux_source(descrambler.id.0, demux.id.0)
@@ -2234,20 +2230,13 @@ mod tests {
         let descrambler = runtime.allocate_descrambler_runtime().unwrap();
         let old_token_bytes = vec![0x42; 8];
         let old_token = DescramblerKeyToken::try_from_bytes(old_token_bytes.clone()).unwrap();
-        let old_key_slot = DescramblerKeySlot::empty()
-            .try_with_even(sample_multi2_key(9))
-            .unwrap();
         let new_token_bytes = vec![0x43; 8];
         let new_token = DescramblerKeyToken::try_from_bytes(new_token_bytes.clone()).unwrap();
-        let new_key_slot = DescramblerKeySlot::empty()
-            .try_with_even(sample_multi2_key(10))
-            .unwrap();
-
         runtime
-            .register_descrambler_key_slot(old_token.clone(), old_key_slot)
+            .register_descrambler_key_token(old_token.clone())
             .unwrap();
         runtime
-            .register_descrambler_key_slot(new_token.clone(), new_key_slot)
+            .register_descrambler_key_token(new_token.clone())
             .unwrap();
         runtime
             .set_descrambler_demux_source(descrambler.id.0, demux.id.0)
@@ -2430,12 +2419,8 @@ mod tests {
         let descrambler = runtime.allocate_descrambler_runtime().unwrap();
         let token_bytes = vec![9, 9, 9, 9, 9, 9, 9, 9];
         let token = DescramblerKeyToken::try_from_bytes(token_bytes.clone()).unwrap();
-        let key_slot = DescramblerKeySlot::empty()
-            .try_with_even(sample_multi2_key(3))
-            .unwrap();
-
         runtime
-            .register_descrambler_key_slot(token.clone(), key_slot)
+            .register_descrambler_key_token(token.clone())
             .unwrap();
         runtime
             .set_descrambler_demux_source(descrambler.id.0, demux.id.0)
@@ -2498,7 +2483,7 @@ mod tests {
             .push_frontend_ts_packet_to_bound_demuxes(
                 1_000_000,
                 &scrambled_payload_packet(200),
-                &runtime.registry().descrambler_packet_keys_for_test(),
+                &crate::descrambler_key_table::DescramblerPacketKeys::default(),
             )
             .unwrap();
 
@@ -2560,7 +2545,7 @@ mod tests {
             .push_frontend_ts_packet_to_bound_demuxes(
                 1_000_000,
                 &scrambled_payload_packet(200),
-                &runtime.registry().descrambler_packet_keys_for_test(),
+                &crate::descrambler_key_table::DescramblerPacketKeys::default(),
             )
             .unwrap();
 
@@ -2615,7 +2600,7 @@ mod tests {
             .push_frontend_ts_packet_to_bound_demuxes(
                 1_000_000,
                 &scrambled_payload_packet(200),
-                &runtime.registry().descrambler_packet_keys_for_test(),
+                &crate::descrambler_key_table::DescramblerPacketKeys::default(),
             )
             .unwrap();
 
@@ -2663,7 +2648,7 @@ mod tests {
         let token_bytes = vec![0x10; 8];
         let token = DescramblerKeyToken::try_from_bytes(token_bytes.clone()).unwrap();
         runtime
-            .register_descrambler_key_slot(token.clone(), key_slot.clone())
+            .register_descrambler_key_token(token.clone())
             .unwrap();
         let descrambler = runtime.allocate_descrambler_runtime().unwrap();
         runtime
@@ -2676,11 +2661,23 @@ mod tests {
             .set_descrambler_key_token(descrambler.id.0, &token_bytes)
             .unwrap();
 
+        let requests = runtime
+            .registry_mut_for_test()
+            .descrambler_key_refresh_requests_for_frontend(FrontendRuntimeId(1_000_000));
+        assert_eq!(requests.len(), 1);
+        let packet_keys = runtime
+            .registry_mut_for_test()
+            .resolve_descrambler_packet_keys(
+                requests
+                    .into_iter()
+                    .map(|request| (request, Some(key_slot.clone())))
+                    .collect(),
+            );
         let reports = runtime
             .push_frontend_ts_packet_to_bound_demuxes(
                 1_000_000,
                 &encrypted_scrambled_payload_packet(200, &key_slot),
-                &runtime.registry().descrambler_packet_keys_for_test(),
+                &packet_keys,
             )
             .unwrap();
         let report = reports.first().expect("bound demux report exists");
@@ -2730,16 +2727,13 @@ mod tests {
             .unwrap();
         runtime.start_filter_runtime(filter.id.0).unwrap();
 
-        let old_key_slot = DescramblerKeySlot::empty()
-            .try_with_even(sample_multi2_key(1))
-            .unwrap();
         let current_key_slot = DescramblerKeySlot::empty()
             .try_with_even(sample_multi2_key(7))
             .unwrap();
         let token_bytes = vec![0x10; 16];
         let token = DescramblerKeyToken::try_from_bytes(token_bytes.clone()).unwrap();
         runtime
-            .register_descrambler_key_slot(token, old_key_slot)
+            .register_descrambler_key_token(token)
             .unwrap();
         let descrambler = runtime.allocate_descrambler_runtime().unwrap();
         runtime

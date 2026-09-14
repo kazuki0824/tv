@@ -305,7 +305,7 @@ impl DescramblerKeyTxn<'_> {
             PreparedDescramblerKeyToken::ResolutionFailed(error) => {
                 return self.reject_resolution(descrambler_id, error)
             }
-            PreparedDescramblerKeyToken::Resolved { token, key_slot } => {
+            PreparedDescramblerKeyToken::Resolved { token } => {
                 if let Err(error) = self.runtime.descrambler_bound_demux(descrambler_id) {
                     self.runtime.record_descrambler_diagnostic(
                         DescramblerDiagnosticRecord::set_key_token(
@@ -319,7 +319,7 @@ impl DescramblerKeyTxn<'_> {
                 let slot = match self
                     .runtime
                     .registry
-                    .publish_descrambler_key_resolution(token.clone(), key_slot)
+                    .publish_descrambler_key_resolution(token.clone())
                 {
                     Ok(slot) => slot,
                     Err(error_kind) => {
