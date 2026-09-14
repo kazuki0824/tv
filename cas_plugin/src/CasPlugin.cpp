@@ -25,7 +25,8 @@ android::status_t status(Result result) {
         case Result::Busy: return ERROR_CAS_RESOURCE_BUSY;
         case Result::Decrypt: return ERROR_CAS_DECRYPT;
         case Result::Revoked: return ERROR_CAS_DEVICE_REVOKED;
-        case Result::InvalidState: return INVALID_OPERATION;
+        // Android 15 の CasImpl/TypeConvert が INVALID_STATE へ写像する native status。
+        case Result::InvalidState: return ERROR_CAS_TAMPER_DETECTED;
         case Result::Unknown: return ERROR_CAS_UNKNOWN;
     }
     return ERROR_CAS_UNKNOWN;

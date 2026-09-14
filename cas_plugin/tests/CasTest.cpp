@@ -22,6 +22,10 @@
 #include <thread>
 #include <unistd.h>
 
+#ifdef __ANDROID__
+#include <gtest/gtest.h>
+#endif
+
 extern "C" {
 #include <Global.h>
 #include <Crypto.h>
@@ -329,15 +333,15 @@ void emmUpdatesAndReplay() {
     CHECK(resolve(id));
     CHECK(b->processEmm(message) == OK);
     CHECK(resolve(id));
-    CHECK(b->processEmm(section(0x84, emmPayload(9, updateKey(3, kWorkKey)))) == INVALID_OPERATION);
-    CHECK(b->processEmm(section(0x84, emmPayload(10, updateKey(2, kWorkKey)))) == INVALID_OPERATION);
-    CHECK(b->processEmm(section(0x84, emmPayload(11, updateKey(2, kWorkKey)))) == INVALID_OPERATION);
+    CHECK(b->processEmm(section(0x84, emmPayload(9, updateKey(3, kWorkKey)))) == ERROR_CAS_TAMPER_DETECTED);
+    CHECK(b->processEmm(section(0x84, emmPayload(10, updateKey(2, kWorkKey)))) == ERROR_CAS_TAMPER_DETECTED);
+    CHECK(b->processEmm(section(0x84, emmPayload(11, updateKey(2, kWorkKey)))) == ERROR_CAS_TAMPER_DETECTED);
     CHECK(a->processEcm(id, ecm(2, kNextWorkKey)) == OK);
     CHECK(b->processEmm(section(0x84, emmPayload(11, updateKey(12, kWorkKey)))) == OK);
     CHECK(!resolve(id));
     CHECK(a->processEcm(id, ecm(2, kNextWorkKey)) == ERROR_CAS_NO_LICENSE);
     CHECK(a->processEcm(id, ecm(12, kWorkKey)) == OK);
-    CHECK(b->processEmm(section(0x84, emmPayload(12, updateKey(2, kNextWorkKey)))) == INVALID_OPERATION);
+    CHECK(b->processEmm(section(0x84, emmPayload(12, updateKey(2, kNextWorkKey)))) == ERROR_CAS_TAMPER_DETECTED);
 }
 
 void emmAtomicityAndRights() {
@@ -748,9 +752,9 @@ void coreAccessPolicy() {
 
 }  // namespace
 
-int main(int argc, char** argv) {
-    const bool coreOnly = argc == 2 && strcmp(argv[1], "--core") == 0;
-    if (argc != 1 && !coreOnly) return 2;
+using TestCase = std::pair<const char*, std::function<void()>>;
+
+std::vector<TestCase> testCases(bool coreOnly) {
     const std::vector<std::pair<const char*, std::function<void()>>> integration = {
         {"factory_abi", factoryAndAbi},
         {"capacity_reentrancy", capacityAndReentrancy},
@@ -779,25 +783,48 @@ int main(int argc, char** argv) {
         {"core_access_policy", coreAccessPolicy},
     };
     if (!coreOnly) tests.insert(tests.end(), integration.begin(), integration.end());
-    int failures = 0;
-    for (const auto& [name, test] : tests) {
-        fflush(nullptr);
-        const auto child = fork();
-        if (child < 0) return 2;
-        if (child == 0) {
-            // 失敗した試験の worker や IPC が runner を永久占有しない。
-            alarm(20);
-            try { test(); _exit(0); }
-            catch (const std::exception& error) { fprintf(stderr, "%s: %s\n", name, error.what()); _exit(1); }
+    return tests;
+}
+
+int isolatedTest(const TestCase& testCase) {
+    fflush(nullptr);
+    const auto child = fork();
+    if (child < 0) return 2;
+    if (child == 0) {
+        // 失敗した試験の worker や IPC が runner を永久占有しない。
+        alarm(20);
+        try { testCase.second(); _exit(0); }
+        catch (const std::exception& error) {
+            fprintf(stderr, "%s: %s\n", testCase.first, error.what());
+            _exit(1);
         }
-        int state;
-        if (waitpid(child, &state, 0) != child || !WIFEXITED(state) || WEXITSTATUS(state) != 0) {
+    }
+    int state;
+    if (waitpid(child, &state, 0) != child || !WIFEXITED(state)) return 2;
+    return WEXITSTATUS(state);
+}
+
+#ifdef __ANDROID__
+// atest/Tradefed が列挙・実行・集計できる GoogleTest の入口を使用する。
+class B25CasTest : public testing::TestWithParam<TestCase> {};
+TEST_P(B25CasTest, Contract) { EXPECT_EQ(isolatedTest(GetParam()), 0); }
+INSTANTIATE_TEST_SUITE_P(B25, B25CasTest, testing::ValuesIn(testCases(false)),
+    [](const testing::TestParamInfo<TestCase>& info) { return std::string(info.param.first); });
+#else
+int main(int argc, char** argv) {
+    const bool coreOnly = argc == 2 && strcmp(argv[1], "--core") == 0;
+    if (argc != 1 && !coreOnly) return 2;
+    const auto tests = testCases(coreOnly);
+    int failures = 0;
+    for (const auto& test : tests) {
+        if (isolatedTest(test) != 0) {
             ++failures;
-            printf("FAIL %s\n", name);
+            printf("FAIL %s\n", test.first);
         } else {
-            printf("PASS %s\n", name);
+            printf("PASS %s\n", test.first);
         }
     }
     printf("%zu suites, %d failures\n", std::size(tests), failures);
     return failures == 0 ? 0 : 1;
 }
+#endif
