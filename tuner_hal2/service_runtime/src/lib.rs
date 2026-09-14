@@ -314,7 +314,11 @@ mod tests {
 
     impl CasKeyReference for SharedTestKeyReference {
         fn snapshot(&self) -> Result<DescramblerKeySlot, CasKeyResolveError> {
-            self.0.lock().unwrap().clone().ok_or(CasKeyResolveError::UnknownToken)
+            self.0
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or(CasKeyResolveError::UnknownToken)
         }
     }
 
@@ -2629,9 +2633,13 @@ mod tests {
             .unwrap();
         let token_bytes = vec![0x10; 8];
         let token = DescramblerKeyToken::try_from_bytes(token_bytes.clone()).unwrap();
-        runtime.registry.publish_descrambler_key_resolution(
-            token.clone(), Arc::new(SharedTestKeyReference(Mutex::new(Some(key_slot.clone())))),
-        ).unwrap();
+        runtime
+            .registry
+            .publish_descrambler_key_resolution(
+                token.clone(),
+                Arc::new(SharedTestKeyReference(Mutex::new(Some(key_slot.clone())))),
+            )
+            .unwrap();
         let descrambler = runtime.allocate_descrambler_runtime().unwrap();
         runtime
             .set_descrambler_demux_source(descrambler.id.0, demux.id.0)
@@ -2709,8 +2717,13 @@ mod tests {
             .unwrap();
         let token_bytes = vec![0x10; 16];
         let token = DescramblerKeyToken::try_from_bytes(token_bytes.clone()).unwrap();
-        let reference = Arc::new(SharedTestKeyReference(Mutex::new(Some(current_key_slot.clone()))));
-        runtime.registry.publish_descrambler_key_resolution(token, reference.clone()).unwrap();
+        let reference = Arc::new(SharedTestKeyReference(Mutex::new(Some(
+            current_key_slot.clone(),
+        ))));
+        runtime
+            .registry
+            .publish_descrambler_key_resolution(token, reference.clone())
+            .unwrap();
         let descrambler = runtime.allocate_descrambler_runtime().unwrap();
         runtime
             .set_descrambler_demux_source(descrambler.id.0, demux.id.0)
