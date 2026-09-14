@@ -2012,17 +2012,11 @@ impl RuntimeRegistry {
         self.descrambler_key_table.resolve_packet_keys(refreshes)
     }
 
-    #[cfg(test)]
-    pub(crate) fn descrambler_packet_keys_for_test(&self) -> DescramblerPacketKeys {
-        self.descrambler_key_table.packet_keys_for_test()
-    }
-
     pub(crate) fn publish_descrambler_key_resolution(
         &mut self,
         token: DescramblerKeyToken,
-        key_slot: DescramblerKeySlot,
     ) -> Result<DescramblerKeySlotId, DescramblerKeyPublishError> {
-        self.descrambler_key_table.publish(token, key_slot)
+        self.descrambler_key_table.publish(token)
     }
 
     pub(crate) fn discard_unreferenced_descrambler_key_resolution(
