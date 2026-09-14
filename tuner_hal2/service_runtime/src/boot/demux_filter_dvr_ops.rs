@@ -14,7 +14,7 @@ use crate::queue_cleanup_use_case::QueueCleanupUseCase;
 use maleicacid_tuner_hal2_demux::OpenFilterRequest;
 use maleicacid_tuner_hal2_demux::{
     DemuxRuntime, DemuxRuntimeError, DemuxStreamBoundaryRequest, DemuxStreamGeneration,
-    DvrFilterLinkRequest, PipelineBoundaryReason, PipelineResetReport, PlaybackConsumeReport,
+    DvrFilterLinkRequest, PipelineBoundaryReason, PipelineResetReport,
     StreamBoundaryReport,
 };
 use maleicacid_tuner_hal2_demux::{FilterConfig, FilterOpenType, FilterRuntimeState};
@@ -772,71 +772,61 @@ impl TunerServiceRuntime {
     }
 
     pub fn consume_playback_dvr_for_object(
-        &mut self,
+        runtime: &std::sync::Arc<std::sync::Mutex<Self>>,
         object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
         generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
-    ) -> Result<PlaybackConsumeReport, HalError> {
-        let mut report =
-            self.with_playback_consume_for_object(object_id, generation, |txn, demux| {
-                txn.begin_consume(demux)
-            })?;
-        while let Some(packet) =
-            self.with_playback_consume_for_object(object_id, generation, |txn, demux| {
-                txn.pending_packet(demux).map_err(Into::into)
-            })?
+    ) -> Result<Vec<super::FilterEventDeliverySnapshot>, HalError> {
+        use maleicacid_tuner_hal2_descrambler::{CasKeyResolver, ProductCasKeyResolver};
+        let lock = || runtime.lock().map_err(|_| HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "service runtime lock poisoned while consuming playback DVR data"));
         {
-            let (demux_id, _) = self.playback_ids_for_object(object_id, generation)?;
-            let demux_generation = self
-                .registry
-                .demux_runtime(DemuxRuntimeId(demux_id))
-                .ok_or_else(|| {
-                    HalError::invalid_state(
-                        HalInvalidStateKind::InvalidLifecycle,
-                        "playback demux is missing",
-                    )
-                })?
-                .generation();
-            let decision =
-                self.decide_descrambled_packet(demux_id, demux_generation, packet.bytes());
-            let output = match decision.flow {
-                _ if maleicacid_tuner_hal2_demux::ValidatedTsPacket::validate(packet.bytes())
-                    .is_err() =>
-                {
-                    None
-                }
-                super::DescramblePacketFlow::Drop | super::DescramblePacketFlow::DiagnoseOnly => {
-                    None
-                }
-                _ => Some(
-                    maleicacid_tuner_hal2_demux::ValidatedTsPacket::validate(&decision.packet)
-                        .map_err(|_| {
-                            HalError::internal(
-                                HalInternalKind::InvariantViolation,
-                                "descrambler produced an invalid playback TS packet",
-                            )
-                        })?,
-                ),
-            };
-            let mut consumed =
-                self.with_playback_consume_for_object(object_id, generation, |txn, demux| {
-                    txn.consume(demux, packet, output.as_ref())
-                })?;
-            for packet_report in &mut consumed.packet_reports {
-                packet_report
-                    .diagnostics
-                    .extend(decision.diagnostics.clone());
-                self.record_descrambler_packet_diagnostics(
-                    demux_id,
-                    demux_generation,
-                    packet_report,
-                );
-            }
-            report.completed_packets += consumed.completed_packets;
-            report.malformed_packets += consumed.malformed_packets;
-            report.dropped_bytes += consumed.dropped_bytes;
-            report.packet_reports.extend(consumed.packet_reports);
+            let mut runtime = lock()?;
+            runtime.with_playback_consume_for_object(object_id, generation,
+                |txn, demux| txn.begin_consume(demux))?;
         }
-        Ok(report)
+        let mut events = Vec::new();
+        loop {
+            let (packet, demux_id, demux_generation, requests) = {
+                let mut runtime = lock()?;
+                let Some(packet) = runtime.with_playback_consume_for_object(object_id, generation,
+                    |txn, demux| txn.pending_packet(demux).map_err(Into::into))? else { break; };
+                let (demux_id, _) = runtime.playback_ids_for_object(object_id, generation)?;
+                let demux_generation = runtime.registry.demux_runtime(DemuxRuntimeId(demux_id))
+                    .ok_or_else(|| HalError::invalid_state(HalInvalidStateKind::InvalidLifecycle,
+                        "playback demux is missing"))?.generation();
+                let requests = runtime.registry.descrambler_key_refresh_requests_for_demuxes(
+                    &[(DemuxRuntimeId(demux_id), demux_generation)].into_iter().collect());
+                (packet, demux_id, demux_generation, requests)
+            };
+            let refreshes = requests.into_iter().map(|request| {
+                let keys = ProductCasKeyResolver.resolve(request.token()).ok();
+                (request, keys)
+            }).collect();
+            let mut runtime = lock()?;
+            if !runtime.with_playback_consume_for_object(object_id, generation,
+                |txn, demux| txn.is_current_packet(demux, &packet).map_err(Into::into))? {
+                break;
+            }
+            let packet_keys = runtime.registry.resolve_descrambler_packet_keys(refreshes);
+            let decision = runtime.decide_descrambled_packet(
+                demux_id, demux_generation, packet.bytes(), &packet_keys);
+            let output = match decision.flow {
+                _ if maleicacid_tuner_hal2_demux::ValidatedTsPacket::validate(packet.bytes()).is_err() => None,
+                super::DescramblePacketFlow::Drop | super::DescramblePacketFlow::DiagnoseOnly => None,
+                _ => Some(maleicacid_tuner_hal2_demux::ValidatedTsPacket::validate(&decision.packet)
+                    .map_err(|_| HalError::internal(HalInternalKind::InvariantViolation,
+                        "descrambler produced an invalid playback TS packet"))?),
+            };
+            let mut consumed = runtime.with_playback_consume_for_object(object_id, generation,
+                |txn, demux| txn.consume(demux, packet, output.as_ref()))?;
+            for report in &mut consumed.packet_reports {
+                report.diagnostics.extend(decision.diagnostics.clone());
+                runtime.record_descrambler_packet_diagnostics(demux_id, demux_generation, report);
+            }
+            events.extend(runtime.filter_event_delivery_snapshots_for_playback_report(&consumed));
+        }
+        Ok(events)
     }
 
     pub fn attach_dvr_filter_for_object(

@@ -386,13 +386,9 @@ impl FrontendLivePacketSink for FrontendDemuxPacketSink {
                     "service runtime lock poisoned while delivering frontend TS packet",
                 )
             })?;
-            for (request, key_slot) in refreshes {
-                runtime
-                    .registry
-                    .apply_descrambler_key_refresh(&request, key_slot);
-            }
+            let packet_keys = runtime.registry.resolve_descrambler_packet_keys(refreshes);
             let reports =
-                runtime.push_frontend_ts_packet_to_bound_demuxes(self.frontend_id, packet)?;
+                runtime.push_frontend_ts_packet_to_bound_demuxes(self.frontend_id, packet, &packet_keys)?;
             runtime.filter_event_delivery_snapshots(&reports)
         };
         let wake_result = self.dispatcher.wake();

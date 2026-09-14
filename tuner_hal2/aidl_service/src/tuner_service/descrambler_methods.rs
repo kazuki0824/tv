@@ -5,8 +5,7 @@ use super::{
     execute_shared_object_runtime_use_case_with_request_builder, status_from_hal_error,
     AidlMethodCall, BinderResult, DemuxPid, DescramblerAidlObject, IDescrambler, IFilter, Strong,
 };
-use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
-use maleicacid_tuner_hal2_service_runtime::prepare_product_descrambler_key_token;
+use maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime;
 
 impl DescramblerAidlObject {
     pub(crate) fn add_pid_nullable_for_aidl(
@@ -129,17 +128,11 @@ impl IDescrambler for DescramblerAidlObject {
                 ))
             },
             |runtime, handle, dispatch_proof, key_token| {
-                let prepared = prepare_product_descrambler_key_token(&key_token);
-                let mut runtime = runtime.lock().map_err(|_| {
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "service runtime lock poisoned after CAS key resolution",
-                    )
-                })?;
-                runtime.set_descrambler_key_token_for_object(
+                TunerServiceRuntime::set_descrambler_key_token_for_object(
+                    &runtime,
                     handle.object_id(),
                     handle.generation(),
-                    prepared,
+                    &key_token,
                     dispatch_proof,
                 )
             },

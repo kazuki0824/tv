@@ -356,7 +356,7 @@ mod tests {
         let mut encrypted = clear;
         multi2_encrypt_payload(&mut encrypted[4..], slot.key_for(KeyParity::Even).unwrap());
         encrypted[3] = 0x90;
-        for has_key in [true, false] {
+        for (has_key, concurrent_failure) in [(true, false), (false, false), (false, true)] {
             let mut registry = RuntimeRegistry::default();
             let descrambler = registry.allocate_descrambler().unwrap();
             registry
@@ -371,15 +371,15 @@ mod tests {
                     DescramblerPidClaim::from_demux_input(100).unwrap(),
                 )
                 .unwrap();
-            if has_key {
-                let token = DescramblerKeyToken::try_from_bytes(vec![0x71; 8]).unwrap();
+            let token = DescramblerKeyToken::try_from_bytes(vec![0x71; 8]).unwrap();
+            if has_key || concurrent_failure {
                 registry.descrambler_key_table_mut().insert_test_key_slot(
                     token.clone(),
                     DescramblerKeySlotId(1),
                     slot.clone(),
                 );
                 registry
-                    .replace_descrambler_key_use_case(descrambler.id, token)
+                    .replace_descrambler_key_use_case(descrambler.id, token.clone())
                     .unwrap();
             }
             let mut demux = started_demux();
@@ -427,8 +427,17 @@ mod tests {
             let mut txn = pending_txn(encrypted);
             let pending = txn.pending_packet(&demux).unwrap().unwrap();
             let pid = ValidatedTsPacket::validate(pending.bytes()).unwrap().pid();
+            let packet_keys = if concurrent_failure {
+                let requests = registry.descrambler_key_refresh_requests_for_demuxes(
+                    &[(crate::registry::DemuxRuntimeId(1), 1)].into_iter().collect());
+                assert_eq!(requests.len(), 1);
+                registry.publish_descrambler_key_resolution(token, slot.clone()).unwrap();
+                registry.resolve_descrambler_packet_keys(requests.into_iter().map(|request| (request, None)).collect())
+            } else {
+                registry.descrambler_packet_keys_for_test()
+            };
             let decision = registry
-                .resolved_descrambler_packet_material_for_demux(1, 1, pid)
+                .resolved_descrambler_packet_material_for_demux(1, 1, pid, &packet_keys)
                 .decide_descrambled_packet(1, pid, pending.bytes());
             assert_eq!(decision.packet, if has_key { clear } else { encrypted });
             assert_eq!(

@@ -54,9 +54,15 @@ flowchart TD
 
 製品固定parameterと共有方式は`../開発規則.md`の「r52のMULTI2固定値と動的鍵状態」、CAS側のsession/token対応・Ks更新・失効は`../cas_plugin/DESIGN_JA.md`を正とする。Tuner側はtokenで内部鍵状態を参照してpacketを復号するconsumerであり、CAS側のECM処理やKs更新を所有しない。
 
-`DescramblerKeyTxn`は`set_key_token()`に伴う参照結合・解除を所有し、`service_runtime/src/descrambler_key_table.rs`はtoken参照のpublish・lookup・acquire・releaseとpacket単位の更新適用を担う。これらをCAS側のKs更新endpointとして扱わない。CAS照会はservice runtime lock外で行い、照会前に取得したtoken・stable slot・refresh generationが再取得後も一致する場合だけ結果を適用する。後発の`setKeyToken()`またはpacket照会に追い越された結果は鍵状態へ反映しない。
+公開状態・診断は`../tuner_hal/DESIGN_JA.md`の「診断可観測性の固定」、鍵状態の更新・参照寿命は`../cas_plugin/DESIGN_JA.md` §10～13、排他制御の実装規約は`CODE_CONVENTION.md`を参照する。対応する実装箇所を次に示す。
 
-製品のtoken解決adapterは`descrambler/src/cas_key_resolver.rs`、`setKeyToken()`の照会準備は`service_runtime/src/descrambler_ops.rs`、packet直前のcurrent Ks再取得は`service_runtime/src/boot.rs::FrontendDemuxPacketSink`を実装anchorとする。照会不能時は当該slotの鍵素材を使用不能にし、旧snapshotを後続packetのfallbackにしない。`CasTokenProducerUnavailable`診断はtoken参照経路の未成立を表す。公開status・参照寿命は`../tuner_hal/DESIGN_JA.md`を正とし、以下の規範実装アンカーのowner・typed entryを維持する。
+| 処理 | 実装箇所 |
+|---|---|
+| 製品の鍵参照 | `descrambler/src/cas_key_resolver.rs::ProductCasKeyResolver` |
+| `setKeyToken()`の調停 | `service_runtime/src/descrambler_ops.rs::TunerServiceRuntime::set_descrambler_key_token_for_object`から`DescramblerKeyTxn`への接続 |
+| トークン参照の管理とパケット用の取得結果 | `service_runtime/src/descrambler_key_table.rs::{DescramblerKeyTable, DescramblerPacketKeys}` |
+| ライブ入力の鍵参照と配送 | `service_runtime/src/boot.rs::FrontendDemuxPacketSink` |
+| Playback DVRの鍵参照と配送 | `service_runtime/src/boot/demux_filter_dvr_ops.rs::TunerServiceRuntime::consume_playback_dvr_for_object`から`PlaybackConsumeTxn`への接続 |
 
 CAS側の更新・参照・失効と、Tuner再起動時の参照結合破棄の責任主体は`../cas_plugin/DESIGN_JA.md` §11.2を参照する。Tunerの参照cacheをCAS鍵状態の正本や復元元にせず、参照結合の喪失と鍵状態自体の喪失を区別する。
 
