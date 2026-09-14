@@ -1,3 +1,10 @@
+# PR #108 後続ECMで既存の鍵結合と再生を維持
+
+- `CasController.onEcmSection()`は通常のECM失敗で既存の成功状態を消さず、初回の未結合時だけ`setKeyToken()`を行うよう変更した。後続の正常ECMで再結合せず、既存のPID接続処理を維持した。
+- `TunerController`は通常のECM診断だけで再生を停止しない。初回の開始条件と、MediaCas無効化・資源喪失・退役時の既存の停止経路は維持した。
+- TIS設計へ初回結合と後続ECMの扱いを正本化した。既存のセッション試験を結合回数1回へ変更し、初回ECM失敗・初回結合失敗・後続失敗・再結合の不実行・資源喪失後の利用不可を追加した。
+- 検証は既存のTISホストCIとRobolectricで行う。Android/Soong全体、atest、VTS、実機確認は未実施。
+
 # PR #108 ECM失敗直後の復旧で同じ再生署名を再開
 
 ECM失敗はpipelineを停止するため、SessionもCAS unavailable受理時にStoppedへ遷移する。失敗と復旧が近接し、後続の再評価が復旧後のcurrent linkageを観測した場合でも、停止済みpipelineをStartedの署名一致で省略しない。旧generationの通知拒否は既存入口のまま維持する。TisReviewBoundaryTestで実Sessionへ旧/現世代のCAS unavailableを投入し、現世代だけがStoppedへ変わり同じ署名を再開可能になることを確認する。新しいretry状態・timer・通知APIは追加せず、既存playback lifecycleの停止事実を補完する。追加1試験でhost期待件数を284件とし、クラス数は38/35のままとする。

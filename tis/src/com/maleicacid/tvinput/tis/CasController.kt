@@ -132,7 +132,7 @@ class CasController(
         val descramblerPids: MutableSet<TsPid> = linkedSetOf()
         var keyLinked: Boolean = false
 
-        // tokenの物理所有は失敗時も解放まで残す。最新ECMの成立とは区別する。
+        // 初回のECMと鍵結合の成立を、参照の物理所有とは別に記録する。
         var ecmSucceeded: Boolean = false
         var retiring: Boolean = false
         var sessionClosed: Boolean = false
@@ -576,7 +576,6 @@ class CasController(
                     diagnostics += Diagnostic(State.ERROR, ErrorCode.SESSION_OPEN_FAILED, systemId, pid, "CAS session がありません")
                     return@forEach
                 }
-                state.ecmSucceeded = false
                 val tokenResult = state.session.processEcm(section)
                 if (tokenResult.isFailure) {
                     diagnostics +=
@@ -585,22 +584,24 @@ class CasController(
                 }
                 when (val ecmResult = tokenResult.getOrNull()) {
                     is EcmProcessResult.RealKeyToken -> {
-                        val token = ecmResult.token
-                        val setTokenResult =
-                            state.descrambler?.setKeyToken(token)
-                                ?: Result.failure(IllegalStateException("CAS session専用Tuner descrambler を利用できません"))
-                        if (setTokenResult.isFailure) {
-                            diagnostics +=
-                                Diagnostic(
-                                    State.ERROR,
-                                    ErrorCode.DESCRAMBLER_FAILED,
-                                    systemId,
-                                    pid,
-                                    setTokenResult.exceptionOrNull()?.message.orEmpty(),
-                                )
-                            return@forEach
+                        if (!state.keyLinked) {
+                            val token = ecmResult.token
+                            val setTokenResult =
+                                state.descrambler?.setKeyToken(token)
+                                    ?: Result.failure(IllegalStateException("CAS session専用Tuner descrambler を利用できません"))
+                            if (setTokenResult.isFailure) {
+                                diagnostics +=
+                                    Diagnostic(
+                                        State.ERROR,
+                                        ErrorCode.DESCRAMBLER_FAILED,
+                                        systemId,
+                                        pid,
+                                        setTokenResult.exceptionOrNull()?.message.orEmpty(),
+                                    )
+                                return@forEach
+                            }
+                            state.keyLinked = true
                         }
-                        state.keyLinked = true
                         state.ecmSucceeded = true
                         state.elementaryPids.filter { it !in state.descramblerPids }.forEach { elementaryPid ->
                             val addResult =

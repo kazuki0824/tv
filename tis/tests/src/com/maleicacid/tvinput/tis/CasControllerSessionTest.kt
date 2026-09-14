@@ -77,8 +77,48 @@ class CasControllerSessionTest {
                 check(bridges[0].closed && !bridges[1].closed && !plugin.closed)
                 check(plugin.sessions[0].closed && !plugin.sessions[1].closed)
                 check(controller.onEcmSection(requireNotNull(binding.ecmPid), byteArrayOf(2)).isEmpty())
-                check(bridges[1].tokens.size == 2)
+                check(bridges[1].tokens.size == 1)
             }
+        }
+    }
+
+    @Test fun laterEcmFailurePreservesReadyStateAndDoesNotRelink() {
+        val factory = Factory()
+        val bridge = Descrambler()
+        val service = requireNotNull(first.serviceKey)
+        val changes = mutableListOf<CasController.ConnectionChange>()
+        CasController(mediaCasFactory = factory).use { controller ->
+            controller.setOnConnectionChanged { _, change -> changes += change }
+            controller.updateFromCaMetadata(listOf(first), 1L) { bridge }
+            val session =
+                factory.plugins
+                    .single()
+                    .sessions
+                    .single()
+            session.ecmFailure = IllegalStateException("ECMの処理失敗")
+            val initialFailure = controller.onEcmSection(TsPid(0x123), byteArrayOf(1))
+            check(initialFailure.single().errorCode == CasController.ErrorCode.ECM_FAILED)
+            check(!controller.isServiceDescramblingReady(service, 1L) && bridge.tokens.isEmpty())
+            session.ecmFailure = null
+            bridge.rejectToken = true
+            val linkFailure = controller.onEcmSection(TsPid(0x123), byteArrayOf(1))
+            check(linkFailure.single().errorCode == CasController.ErrorCode.DESCRAMBLER_FAILED)
+            check(!controller.isServiceDescramblingReady(service, 1L))
+            bridge.rejectToken = false
+            check(controller.onEcmSection(TsPid(0x123), byteArrayOf(1)).isEmpty())
+            check(controller.isServiceDescramblingReady(service, 1L) && bridge.tokens.size == 1)
+            changes.clear()
+            session.ecmFailure = IllegalStateException("後続ECMの処理失敗")
+            val laterFailure = controller.onEcmSection(TsPid(0x123), byteArrayOf(2))
+            check(laterFailure.single().errorCode == CasController.ErrorCode.ECM_FAILED)
+            check(controller.isServiceDescramblingReady(service, 1L) && changes.isEmpty())
+            session.ecmFailure = null
+            bridge.rejectToken = true
+            check(controller.onEcmSection(TsPid(0x123), byteArrayOf(3)).isEmpty())
+            check(controller.isServiceDescramblingReady(service, 1L) && bridge.tokens.size == 1 && changes.isEmpty())
+            bridge.rejectToken = false
+            controller.clearForResourceLoss()
+            check(!controller.isServiceDescramblingReady(service, 1L) && session.closed)
         }
     }
 
@@ -332,11 +372,13 @@ class CasControllerSessionTest {
         private val token: Byte,
     ) : CasController.MediaCasSessionBridge {
         var closed = false
+        var ecmFailure: Throwable? = null
 
         override fun setPrivateData(privateData: ByteArray) = Result.success(Unit)
 
         override fun processEcm(section: ByteArray): Result<EcmProcessResult> {
             check(!closed)
+            ecmFailure?.let { return Result.failure(it) }
             return Result.success(EcmProcessResult.RealKeyToken(TunerKeyToken(byteArrayOf(token))))
         }
 
@@ -346,6 +388,7 @@ class CasControllerSessionTest {
     }
 
     private class Descrambler : CasController.TunerDescramblerBridge {
+        var rejectToken = false
         val tokens = mutableListOf<ByteArray>()
         val pids = linkedSetOf<Int>()
         var closes = 0
@@ -353,6 +396,7 @@ class CasControllerSessionTest {
 
         override fun setKeyToken(keyToken: TunerKeyToken): Result<Unit> {
             check(!closed) { "閉鎖済みDescramblerへkey tokenを送らない" }
+            if (rejectToken) return Result.failure(IllegalStateException("鍵結合を利用できない"))
             tokens += keyToken.toByteArray()
             return Result.success(Unit)
         }

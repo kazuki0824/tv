@@ -1279,11 +1279,6 @@ class TunerController(
         diagnostics.forEach { Log.w(LogTags.TIS, "ECM 処理診断 $it") }
         if (diagnostics.any { it.errorCode == CasController.ErrorCode.MEDIA_CAS_INVALIDATED }) {
             finishUnavailableCasOnController(diagnostics)
-        } else if (diagnostics.any { it.state == CasController.State.ERROR }) {
-            playbackPipeline.stopAndReportUnavailable(
-                PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY,
-                diagnostics.joinToString(),
-            )
         }
     }
 
