@@ -1004,6 +1004,10 @@ class MaleicacidLiveSession(
             )
             return
         }
+        // ECM失敗でpipelineが停止済みなら、直後の復旧通知が最新readyを観測しても同じ署名を再開できる。
+        if (reason.reason == PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY) {
+            playbackState = PlaybackStartState.Stopped
+        }
         val videoStartupFailed =
             reason.reason == PlaybackPipeline.PlaybackUnavailableReason.FIRST_FRAME_TIMEOUT ||
                 reason.reason == PlaybackPipeline.PlaybackUnavailableReason.VIDEO_CODEC_ERROR ||

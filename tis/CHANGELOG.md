@@ -1,3 +1,9 @@
+# PR #108 ECM失敗直後の復旧で同じ再生署名を再開
+
+ECM失敗はpipelineを停止するため、SessionもCAS unavailable受理時にStoppedへ遷移する。失敗と復旧が近接し、後続の再評価が復旧後のcurrent linkageを観測した場合でも、停止済みpipelineをStartedの署名一致で省略しない。旧generationの通知拒否は既存入口のまま維持する。TisReviewBoundaryTestで実Sessionへ旧/現世代のCAS unavailableを投入し、現世代だけがStoppedへ変わり同じ署名を再開可能になることを確認する。新しいretry状態・timer・通知APIは追加せず、既存playback lifecycleの停止事実を補完する。追加1試験でhost期待件数を284件とし、クラス数は38/35のままとする。
+
+確認結果: 90c3b5eの全283件を含む5 workflowは成功。本追補の変更Kotlinコンパイル、関連61試験、ktlint/detektと差分検査も成功。全284件はpush後のCIで再確認する。実画面出力・CAS backendとの実復号・Soong/device atest/実機VTSは未実施。
+
 # PR #108 video source identityとCASライブ開始条件の補完
 
 - video trackの実画素寸法を、現在のplayback generationだけでなく、既存AvPlaybackSignatureのservice/PID/stream_type/decoder構成と照合する。同じgeneration中にPMTが別PIDへ変わり、tracks更新が再起動より先に実行されても旧ESの寸法を広告しない。同service内の別video trackにも流用しない。新しいgeneration台帳や推定geometryは追加していない。

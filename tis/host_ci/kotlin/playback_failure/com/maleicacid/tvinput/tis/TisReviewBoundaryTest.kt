@@ -155,6 +155,35 @@ class TisReviewBoundaryTest {
         check(policy.copy(requiresCas = false).livePlaybackEligible(false))
     }
 
+    @Test fun casUnavailableAllowsSameSignatureToRestartAfterRapidRecovery() {
+        val session = allocate(MaleicacidLiveSession::class.java)
+        val signature = AvPlaybackSignature(ServiceKey(4, 1, 1), null, TsPid(0x101), 0x1b, null, null, false, true)
+        val started = PlaybackStartState.Started(signature, 7L)
+        set(session, "playbackState", started)
+        val base = android.media.tv.TvInputService.Session::class.java
+        base.getDeclaredField("mLock").apply { isAccessible = true }.set(session, Any())
+        base.getDeclaredField("mPendingActions").apply { isAccessible = true }.set(session, arrayListOf<Runnable>())
+        val unavailable =
+            PlaybackPipeline.PlaybackUnavailable(
+                PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY,
+                "ECM failed before immediate recovery",
+                7L,
+            )
+        val method =
+            MaleicacidLiveSession::class.java
+                .getDeclaredMethod(
+                    "handlePlaybackUnavailable",
+                    PlaybackPipeline.PlaybackUnavailable::class.java,
+                ).apply { isAccessible = true }
+        method.invoke(session, unavailable.copy(generation = 6L))
+        val field = MaleicacidLiveSession::class.java.getDeclaredField("playbackState").apply { isAccessible = true }
+        check(field.get(session) == started)
+        method.invoke(session, unavailable)
+        val stopped = field.get(session) as PlaybackStartState
+        check(stopped == PlaybackStartState.Stopped)
+        check(PlaybackStartTransitions.shouldAttempt(stopped, signature))
+    }
+
     @Test fun setupRejectsAmbiguousFrameworkInputRegistration() {
         var inputs = emptyList<TvInputInfo>()
         val manager = allocate(TvInputManager::class.java)
