@@ -86,7 +86,16 @@ session生成には `openSession(SESSION_USAGE_LIVE, SCRAMBLING_MODE_MULTI2)` �
 
 Framework/TRMへのsession数通知方針とbackend枯渇時の結果は`../cas_plugin/DESIGN_JA.md` §3.1を正とする。TISがpluginごとの空き数を集約してTRMへ通知する経路や、独自の容量調停器を追加しない。
 
-有限上限の初期通知を失わないため、EventListenerはMediaCas構築時に指定する。構築処理をそのlistenerに指定した既存HandlerのLooper上で行い、構築中に同Looperのevent処理へ制御を戻さない。これにより、plugin生成中に届いたstatus eventは、constructor内のTRM登録完了後に処理される。構築後にlistenerを登録する経路や、TRM登録前に初期通知を消費する経路をr52接続に使わない。容量の反映自体はAOSP MediaCasが所有し、TISの`onPluginStatusUpdate()`から`updateCasInfo()`を重複呼出ししない。初期通知のTRM反映と、その後の割当て・優先度回収を結合確認する。通知にCAS鍵素材を含めない。
+初期容量の反映前にsessionを要求しないため、B25/B1の接続開始は次の順序にする。CAS側が固定上限のない構成でも初期通知を行うため、TISへ容量値や有限/無制限の判定表を持ち込まない。
+
+1. 既存controllerのplugin所有台帳で、その接続を初期化中として所有し、受信generationと正の有限な初期化予算から`SystemClock.elapsedRealtime()`基準の期限を一度だけ確定する。TRM serviceを取得できない場合は開始に失敗する。MediaCasの構築完了だけではsession生成を許可しない。
+2. EventListenerを指定したMediaCas構築を、そのlistenerに指定する既存HandlerのLooperへpostする。構築中に同Looperのevent処理へ制御を戻さず、構築結果をcontrollerへpostしてから初期化taskを終える。plugin生成中のstatus eventはconstructor内のTRM登録完了後に処理される。構築後のlistener登録を使わず、constructor直後の同じtaskでopenSessionへ進まない。
+3. AOSP MediaCasは`PLUGIN_STATUS_SESSION_NUMBER_CHANGED`を処理すると、`updateCasInfo()`が正常に戻った後に`EventListener.onPluginStatusUpdate()`を呼ぶ。このcallbackは、通知元instance・status・argを既存controller executorへpostして戻る。controllerは、所有中の同じinstance・有効な受信generation・初期化中・期限内・正の容量通知という条件がすべて成立した場合だけ、接続を利用可能にして期限処理を解除し、session生成の続きを一度再開する。再開時には現在のmetadataから必要sessionを再確認する。別status、重複通知、旧instanceの通知で重複openを起こさない。
+4. callbackとcontrollerのどちらも、通知待ちでHandler Looperやcontroller executorを同期waitしない。初期通知の処理完了まで、当該pluginのopenSession、session用Descrambler生成、ECM配送indexの公開へ進まない。期限処理は既存Handlerからcontrollerへpostし、controllerで同じownerが初期化中であることと現在の単調時計を確認する。callback再開時にも期限を検査し、遅延したtimerだけに期限判定を任せない。
+
+期限切れ、非正の容量通知、構築・TRM登録失敗、再選局・取消し・資源喪失・closeでは初期化中の接続を失敗または退役へ確定し、待機の続きと期限処理を無効化する。作成済みMediaCasは既存の退役資源cleanupで閉じ、close失敗時は所有を保持する。失効後に構築結果が届いた場合も、そのinstanceをcleanupへ渡し、所有なしで捨てたりsession生成へ進めたりしない。期限後の通知で接続を復活させず、後続metadataや重複通知で期限を延長しない。無通知を無制限とみなす処理、引数なしMediaCasへのfallback、即時再試行loopを追加しない。初期化予算の未設定・0・無期限はr52接続の成立条件を満たさない。待機状態と再開処理は既存plugin所有へ含め、別の容量台帳・待機queue・専用workerを作らない。
+
+容量の反映自体はAOSP MediaCasが所有し、TISの`onPluginStatusUpdate()`から`updateCasInfo()`を重複呼出ししない。根拠は[AOSP MediaCas](https://android.googlesource.com/platform/frameworks/base/+/android-15.0.0_r1/media/java/android/media/MediaCas.java)のstatus処理順序と、[TunerResourceManager](https://android.googlesource.com/platform/frameworks/base/+/android-15.0.0_r1/media/java/android/media/tv/tunerresourcemanager/TunerResourceManager.java)の初回session要求前に容量を更新する契約とする。通知にCAS鍵素材を含めない。
 
 FrameworkはTRM管理対象sessionを先にcloseしてから `EventListener.onResourceLost(mediaCas)` を通知する。通知を受けたTISは次の手順を行う。
 
@@ -97,7 +106,7 @@ FrameworkはTRM管理対象sessionを先にcloseしてから `EventListener.onRe
 
 通知を既存controller executorへ渡す際は、MediaCas callbackとcontroller間に相互の同期待ちを作らない。再試行には既存の退役資源所有とcleanup経路を使い、専用の回収queueや別の資源管理器は作らない。終了済みgenerationのmetadataでCASを自動再取得せず、旧所有の解放後に新たに受理した受信開始から確立する。鍵のrevoke確定点と通知前の鍵参照拒否は `../cas_plugin/DESIGN_JA.md` §13を正とする。
 
-r52の結合確認には、TRM登録とtyped sessionの管理、MediaCas回収通知前の鍵失効、通知後の配送停止、閉鎖済みsessionを再closeしないこと、Descrambler close失敗の再試行、通常close/Tuner回収との競合、旧pluginの遅延通知、別受信contextの継続を含める。実復号を有効化する前にこの経路を成立させる。
+r52の結合確認には、TRM登録とtyped sessionの管理、初期statusの処理を遅らせた場合のopenSession未呼出し、通知後の再開一回、無通知・期限切れ・非正容量・TRM不在の失敗、待機中の再選局・closeと遅延通知の排除、固定上限のない構成の初期通知、MediaCas回収通知前の鍵失効、通知後の配送停止、閉鎖済みsessionを再closeしないこと、Descrambler close失敗の再試行、通常close/Tuner回収との競合、旧pluginの遅延通知、別受信contextの継続を含める。実復号を有効化する前にこの経路を成立させる。
 
 ## Tuner SDK API 呼び出し
 

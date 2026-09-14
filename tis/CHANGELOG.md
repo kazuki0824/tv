@@ -1,3 +1,9 @@
+# PR #108 初期CAS容量反映後のsession開始
+
+- MediaCas構築完了から直ちにsession生成へ進まず、容量更新後のstatus callbackをcontrollerへ渡して一度だけ再開する順序にした。
+- 通知待ちの期限、非正容量・TRM不在の失敗、再選局・終了との競合、旧instance・重複・期限後の通知を既存plugin所有とcleanupへ閉じた。同期waitや独自容量台帳は追加しない。
+- AOSP MediaCasのstatus処理、TunerResourceManagerの初回要求前更新契約、同期AIDLとTRM更新処理を照合。設計のみの変更で、r52接続の実装、build、unit test、Soong、atest、VTS、実機確認は未実施。
+
 # PR #108 CAS容量初期通知の受信順序
 
 - r52のMediaCas構築時にlistenerを指定し、初期status eventをTRM登録完了後に処理する順序を明記した。容量値の正本とTRM更新はCAS設計・AOSPに置き、TISへ容量集約処理を追加しない。

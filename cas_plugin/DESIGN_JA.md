@@ -53,7 +53,7 @@ B25をadvertiseするには、採用profileについて次を満たす。
   - TIS -> MediaCas -> Tuner 結合確認
   - 採用するARIB STD-B25日本語原本の受信機能力条項の確認
   - product effective capacity が確認済み要求を満たすことの検証
-  - §3.1のsession容量分類と、有限上限がある場合のFramework/TRM通知の結合確認
+  - §3.1のsession容量分類と、初期通知のTRM反映後にsessionを要求する順序の結合確認
 
 yakisoba_only:
   - Yakisoba backend
@@ -111,17 +111,17 @@ session数の通知方針は§3.1に従う。ClearKeyが試験用にintent/mode�
 
 ### 3.1 Framework/TRMへのsession数通知
 
-B25の各profileとB1は、採用構成の同時session容量を次のように分類する。通知方針の正本は本節とし、profile名だけから通知なしを選ばない。
+B25の各profileとB1は、採用構成の同時session容量を次のように分類する。通知方針の正本は本節とし、固定上限の有無にかかわらず初期容量を通知する。
 
 | 採用構成の条件 | Framework/TRMへの通知 |
 |---|---|
 | session表、backend、sessionに必須の鍵状態等に有限の同時session上限がある | 有効上限を`PLUGIN_SESSION_NUMBER_CHANGED`の`arg`として通知する。上限をplugin側の`RESOURCE_BUSY`だけで表現しない |
-| 同時session数そのものに固定上限がなく、session数を理由とする受付拒否を行わない | 通知しないAOSPの既定動作を使用してよい。`RESOURCE_BUSY`はsession数とは独立した一時的なI/O競合・作業資源不足等に限る |
+| 同時session数そのものに固定上限がなく、session数を理由とする受付拒否を行わない | AOSP TRMの既定容量と同じ`Integer.MAX_VALUE`を本製品の初期通知値にする。`RESOURCE_BUSY`はsession数とは独立した一時的なI/O競合・作業資源不足等に限る |
 | 上限の有無または有効値を確定できない | 無制限として扱わず、当該profileのadvertise / r52結合条件を未達とする |
 
 容量の正本は、採用product設定と実資源に基づいて受付を確定するsession/backend resource ownerが持つ。有限値は同じCA systemの全plugin instanceを通じて使用可能な同時session総数であり、個別pluginの空き数・現在使用数ではない。同じ物理資源を二重計上せず、各instanceが異なる上限でTRMを上書きしない。`prefer_smartcard_then_yakisoba`でもbackendごとの局所上限を独立に通知せず、選択可能な構成全体で成立するCA systemの有効上限を確定する。容量値と有限/無制限の判定をTISへ複製しない。
 
-有限上限を持つpluginは、`setStatusCallback()`登録後に確定済みの現在値を初期通知し、その後は実資源の構成変更等で有効上限が変わった確定点の後に通知する。session open/closeで変わる残数を上限として再通知しない。通知は§3〜§4のcallback寿命・orderingに従い、未登録callbackを呼ばず、破棄済みinstanceから送らない。B25/B1とも通知経路は既存の`CasPluginStatusCallback` → AOSP listener → `MediaCas` → `updateCasInfo(caSystemId, maxSessionNum)`とし、初期通知がTRMへ反映されるTIS側の登録順序は`../tis/DESIGN_JA.md`を正とする。
+B25/B1 pluginは、`setStatusCallback()`登録後に確定済みの現在値を初期通知し、その後は実資源の構成変更等で有効上限が変わった確定点の後に通知する。初期通知を最初のopenSessionやECM処理まで遅延しない。session open/closeで変わる残数を上限として再通知しない。通知は§3〜§4のcallback寿命・orderingに従い、未登録callbackを呼ばず、破棄済みinstanceから送らない。B25/B1とも通知経路は既存の`CasPluginStatusCallback` → AOSP listener → `MediaCas` → `updateCasInfo(caSystemId, maxSessionNum)`とする。TISは容量の有限/無制限を別途判定せず、同じ初期通知の処理完了を待ってからsessionを要求する。登録順序・非同期待機・期限・失効は`../tis/DESIGN_JA.md`を正とする。
 
 AOSP `StatusEvent`の既定はsession数を制限しない扱いであり、Android 15のTRMは未登録のCA systemを`Integer.MAX_VALUE`で管理する。`0`の通知はTRMの資源登録削除であって、恒久的な「受付上限0」の登録ではない。card喪失等の受付拒否・鍵失効をこの通知だけに任せず、§4・§7・§13のowner側処理を行う。有限上限の通知後はTRMのsession割当て・優先度回収を利用するが、上限減少の通知だけで既存sessionが直ちに回収されるとは仮定しない。
 
@@ -296,7 +296,7 @@ B1 plugin advertise gateは次を満たす。
 ```text
 - B1 descriptor / support query / createPlugin(B1)を提供
 - default / typed session openを共通契約どおり実装・検証済み
-- §3.1のsession容量分類と、有限上限がある場合のFramework/TRM通知を結合確認済み
+- §3.1のsession容量分類と、初期通知のTRM反映後にsessionを要求する順序を結合確認済み
 - B1 SmartCard ECM処理を実装・検証済み
 - processEcm() success -> 同じtokenからcurrent odd/even Ksの参照を検証済み
 - processEmm()をunsupportedとして明示
@@ -507,7 +507,8 @@ plugin libraryは `createCasFactory()` をexportし、AOSP `media/cas/CasAPI.h` 
 - 初回生成・再割当てでsession IDを1..16 bytesに限定し、`[0x00]`を除外する。空・長さ超過・予約値を公開しない
 - B25各profile/B1の有限上限をTRMへ初期通知・変更通知し、同一CA systemの複数pluginで総数が一致する。使用数を上限として通知しない
 - 有限上限反映後のsession割当て・優先度回収、通知との競合時の過剰割当て拒否、失敗したopenのID未公開を結合確認する
-- 通知しない構成には固定session数上限がなく、RESOURCE_BUSYがsession数と独立した一時資源不足を表すことを確認する。容量不明を無制限へ読み替えない
+- 固定session数上限のない構成でも初期容量を通知し、RESOURCE_BUSYがsession数と独立した一時資源不足を表すことを確認する。容量不明を無制限へ読み替えない
+- B25/B1とも初期容量通知をsession生成前に処理し、未通知・期限切れ・旧instanceの通知ではTISがopenSessionを呼ばないことを確認する
 - Maleicacid独自IMediaCasService serviceが製品経路に存在しない
 - effective architectureに応じてplugin `.so` が `/vendor/lib64/mediacas` または `/vendor/lib/mediacas` にinstallされる
 - AOSP plugin loaderがその探索directoryからMaleicacid createCasFactory()を発見する
