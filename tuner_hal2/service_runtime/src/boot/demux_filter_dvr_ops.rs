@@ -682,11 +682,11 @@ impl TunerServiceRuntime {
         self.transact_start_dvr_runtime(dvr_id)
     }
 
-    pub fn consume_playback_dvr_for_object(
-        &mut self,
+    fn playback_ids_for_object(
+        &self,
         object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
         generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
-    ) -> Result<PlaybackConsumeReport, HalError> {
+    ) -> Result<(i32, i32), HalError> {
         let entry = self.public_entry_for_object_method(
             object_id,
             generation,
@@ -711,6 +711,17 @@ impl TunerServiceRuntime {
             generation,
             maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
         )?;
+        Ok((demux_id, dvr_id))
+    }
+
+    fn with_playback_consume_for_object<T>(
+        &mut self,
+        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+        operation: impl FnOnce(&mut crate::playback_consume_txn::PlaybackConsumeTxn, &mut DemuxRuntime)
+            -> Result<T, crate::playback_consume_txn::PlaybackConsumeTxnError>,
+    ) -> Result<T, HalError> {
+        let (demux_id, dvr_id) = self.playback_ids_for_object(object_id, generation)?;
         let mut consume_txn = self.playback_consume_txns.remove(&dvr_id).ok_or_else(|| {
             HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
@@ -718,7 +729,7 @@ impl TunerServiceRuntime {
             )
         })?;
         let result = match self.registry.demux_runtime_mut(DemuxRuntimeId(demux_id)) {
-            Some(demux) => match consume_txn.consume(demux) {
+            Some(demux) => match operation(&mut consume_txn, demux) {
                 Ok(report) => Ok(report),
                 Err(error) => {
                     let mut primary = super::demux_runtime_error_to_hal(error.primary());
@@ -755,6 +766,39 @@ impl TunerServiceRuntime {
         };
         self.playback_consume_txns.insert(dvr_id, consume_txn);
         result
+    }
+
+    pub fn consume_playback_dvr_for_object(
+        &mut self,
+        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+    ) -> Result<PlaybackConsumeReport, HalError> {
+        let mut report = self.with_playback_consume_for_object(object_id, generation,
+            |txn, demux| txn.begin_consume(demux))?;
+        while let Some(packet) = self.with_playback_consume_for_object(object_id, generation,
+            |txn, demux| txn.pending_packet(demux).map_err(Into::into))? {
+            let (demux_id, _) = self.playback_ids_for_object(object_id, generation)?;
+            let demux_generation = self.registry.demux_runtime(DemuxRuntimeId(demux_id))
+                .ok_or_else(|| HalError::invalid_state(HalInvalidStateKind::InvalidLifecycle, "playback demux is missing"))?.generation();
+            let decision = self.decide_descrambled_packet(demux_id, demux_generation, packet.bytes());
+            let output = match decision.flow {
+                _ if maleicacid_tuner_hal2_demux::ValidatedTsPacket::validate(packet.bytes()).is_err() => None,
+                super::DescramblePacketFlow::Drop | super::DescramblePacketFlow::DiagnoseOnly => None,
+                _ => Some(maleicacid_tuner_hal2_demux::ValidatedTsPacket::validate(&decision.packet)
+                    .map_err(|_| HalError::internal(HalInternalKind::InvariantViolation, "descrambler produced an invalid playback TS packet"))?),
+            };
+            let mut consumed = self.with_playback_consume_for_object(object_id, generation,
+                |txn, demux| txn.consume(demux, packet, output.as_ref()))?;
+            for packet_report in &mut consumed.packet_reports {
+                packet_report.diagnostics.extend(decision.diagnostics.clone());
+                self.record_descrambler_packet_diagnostics(demux_id, demux_generation, packet_report);
+            }
+            report.completed_packets += consumed.completed_packets;
+            report.malformed_packets += consumed.malformed_packets;
+            report.dropped_bytes += consumed.dropped_bytes;
+            report.packet_reports.extend(consumed.packet_reports);
+        }
+        Ok(report)
     }
 
     pub fn attach_dvr_filter_for_object(
