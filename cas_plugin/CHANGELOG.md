@@ -16,6 +16,13 @@
 - `DESIGN_JA.md` §6.3の完了確認項目を`../タスク完了判定の実施方法.md`へ移し、元の箇所を参照へ置き換えた。不正入力、複数EMM、対象外宛先、MAC不正、重複・拒否更新、後続ECM、同時初期化・処理の確認対象を維持した。
 - 移動前後の確認対象、文書間参照と差分を確認した。実装、公開API、鍵の保持方法、ビルド設定と試験の期待値は変更していない。ビルド、単体試験、Soong、atest、VTS、実機確認は未実施。
 
+# CASの共通製品入口への接続
+
+- 共通product入口から標準CAS service、vendor plugin、fs-config生成物を取り込み、共通BoardConfig入口からCASのSELinux policyとcredential用fs-config入力を取り込む。
+- 製品管理のcredential入力を指定した場合のコピー先を接続し、存在しない入力と複数ファイル指定をbuild設定の評価時に拒否する。image上の所有者・group・modeをroot:media、0640へ設定する。
+- 製品管理ファイルの指定、未指定時の制限、検証対象revisionの選択をINTEGRATION.mdに集約した。
+- Tunerのtoken解決・packet単位の鍵更新／失効の接続はこの変更では未実装。Android/Soong build、atest、VTS、実機imageでの権限確認は未実施。
+
 # PR #108 文書責務の整理
 
 - `INTEGRATION.md` を追加し、pluginの32-bit／64-bit配置先、通常のvendorライブラリ直下へ置かない条件、Soongの配置設定、静的リンク・内部adapterへの依存設定、シンボル解決とFactoryLoaderによる発見の確認を集約した。

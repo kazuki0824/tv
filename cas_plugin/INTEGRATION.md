@@ -2,6 +2,27 @@
 
 本書はCAS pluginの配置、Soong設定、依存関係と組込み確認を説明する。採用するservice・ABI・backendの設計判断は [DESIGN_JA.md](DESIGN_JA.md)、製品全体の条件は [開発規則.md](../開発規則.md) を参照する。
 
+## 製品の共通入口
+
+製品のproduct makefileでは `vendor/maleicacid/tv/config/product_integration.mk` を継承し、BoardConfigでは `vendor/maleicacid/tv/config/BoardConfigVendorSePolicy.mk` をincludeする。これらの共通入口からTuner、TIS、CASの設定を取り込む。
+
+CAS側は標準serviceの `com.android.hardware.cas`、vendor pluginの `libmaleicacid_b25_cas`、権限表を生成・配置する `fs_config_files` を製品へ追加する。BoardConfig入口はCASのvendor sepolicyと `TARGET_FS_CONFIG_GEN` の入力を追加する。
+
+## credentialの配置
+
+製品管理の既存ファイルを、共通product入口の継承前に指定する。
+
+```make
+MALEICACID_BCAS_KEYS_FILE := vendor/<製品管理ディレクトリ>/bcas_keys
+$(call inherit-product, vendor/maleicacid/tv/config/product_integration.mk)
+```
+
+入力は空白とwildcardを含まない単一の既存ファイルにする。未指定ではcredentialを生成・配置しないため、Yakisobaの実復号に必要な入力は成立しない。指定したファイルの内容の検証はCAS backendが行う。
+
+配置先は `/vendor/etc/maleicacid/bcas_keys` とする。`config/config.fs` によりimage作成時にroot所有・media group・0640を設定し、既存の `sepolicy/file_contexts` により `maleicacid_bcas_credential` を付与する。読み取り専用vendor partitionへ起動後にchmod/chownする方式は使用しない。製品側の別のfs-config入力に同じ配置先の定義を重複させない。
+
+`get_android_qcow2.sh`を使用するときは、取得manifestのtv revisionを検証対象のcommitへ合わせる。既定の `main` のままでは未マージのPRの実装は取得されない。`libyakisoba-cross`のSoong moduleが取得できることと、CAS package・credential・policyが製品へ入ることを個別に確認する。
+
 ## MediaCasServiceとpluginの配置
 
 AOSP標準MediaCasServiceを製品で有効にする。採用するアーキテクチャに応じて、Maleicacid CAS pluginの共有ライブラリを次の場所へ配置する。
