@@ -27,6 +27,7 @@ cc_defaults {
         "src/Section.cpp",
         "src/YakisobaBackend.cpp",
         "src/KeyRegistry.cpp",
+        "src/SharedSlot.cpp",
         "src/KeyServer.cpp",
         "src/KeySocket.cpp",
     ],
@@ -47,7 +48,7 @@ cc_library_shared {
 cc_library_static {
     name: "libmaleicacid_cas_key_client",
     defaults: ["maleicacid_b25_defaults"],
-    srcs: ["src/KeyClient.cpp", "src/KeySocket.cpp"],
+    srcs: ["src/KeyClient.cpp", "src/KeySocket.cpp", "src/SharedSlot.cpp"],
 }
 
 cc_test {

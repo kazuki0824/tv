@@ -4,9 +4,10 @@
 #include "KeySocket.h"
 #include "YakisobaBackend.h"
 
-#include <algorithm>
 #include <cerrno>
 #include <poll.h>
+#include <cstring>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 namespace maleicacid::cas {
@@ -25,6 +26,8 @@ std::shared_ptr<KeyServer> KeyServer::acquire() {
 }
 
 bool KeyServer::start() {
+    ownerFd_ = syscall(SYS_pidfd_open, getpid(), 0);
+    if (ownerFd_ < 0) return false;
     fd_ = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     if (fd_ < 0) return false;
     sockaddr_un address;
@@ -43,16 +46,17 @@ KeyServer::~KeyServer() {
     if (fd_ >= 0) shutdown(fd_, SHUT_RDWR);
     if (thread_.joinable()) thread_.join();
     if (fd_ >= 0) close(fd_);
+    if (ownerFd_ >= 0) close(ownerFd_);
 }
 
 void KeyServer::serve(int fd) {
-    struct Fd { int value; ~Fd() { close(value); } } cleanup{fd};
+    struct Fd { int value; ~Fd() { if (value >= 0) close(value); } } cleanup{fd};
     if (!authorizedPeer(fd, false) || !waitSocket(fd, POLLIN)) return;
     Token token;
     if (recv(fd, token.data(), token.size(), MSG_TRUNC) != static_cast<ssize_t>(token.size())) return;
-    Secret<16> keys;
-    const auto result = YakisobaBackend::instance().resolve(token, &keys);
-    Secret<17> response;
+    int slotFd = -1;
+    const auto result = YakisobaBackend::instance().bind(token, &slotFd);
+    Fd slotCleanup{slotFd};
     auto status = KeyResponseStatus::Unavailable;
     switch (result) {
         case Result::Ok:
@@ -68,14 +72,29 @@ void KeyServer::serve(int fd) {
         default:
             break;
     }
-    response.bytes[0] = static_cast<uint8_t>(status);
-    if (result == Result::Ok) std::copy(keys.bytes.begin(), keys.bytes.end(), response.bytes.begin() + 1);
-    if (waitSocket(fd, POLLOUT)) send(fd, response.bytes.data(), response.bytes.size(), MSG_NOSIGNAL);
+    auto response = static_cast<uint8_t>(status);
+    iovec data{&response, sizeof(response)};
+    msghdr message{};
+    message.msg_iov = &data;
+    message.msg_iovlen = 1;
+    alignas(cmsghdr) char control[CMSG_SPACE(2 * sizeof(int))]{};
+    if (result == Result::Ok) {
+        message.msg_control = control;
+        message.msg_controllen = sizeof(control);
+        auto* rights = CMSG_FIRSTHDR(&message);
+        rights->cmsg_level = SOL_SOCKET;
+        rights->cmsg_type = SCM_RIGHTS;
+        rights->cmsg_len = CMSG_LEN(2 * sizeof(int));
+        const int descriptors[] = {slotFd, ownerFd_};
+        std::memcpy(CMSG_DATA(rights), descriptors, sizeof(descriptors));
+    }
+    if (waitSocket(fd, POLLOUT)) sendmsg(fd, &message, MSG_NOSIGNAL);
 }
 
 void KeyServer::run() {
     try {
         while (!stop_) {
+            YakisobaBackend::instance().pollCredential();
             pollfd item{fd_, POLLIN, 0};
             const auto ready = poll(&item, 1, kSocketDeadlineMs);
             if (stop_) break;

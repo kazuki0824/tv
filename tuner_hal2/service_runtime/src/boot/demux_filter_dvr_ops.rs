@@ -775,7 +775,6 @@ impl TunerServiceRuntime {
         object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
         generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
     ) -> Result<Vec<super::FilterEventDeliverySnapshot>, HalError> {
-        use maleicacid_tuner_hal2_descrambler::{CasKeyResolver, ProductCasKeyResolver};
         let lock = || {
             runtime.lock().map_err(|_| {
                 HalError::internal(
@@ -822,20 +821,13 @@ impl TunerServiceRuntime {
                     );
                 (packet, demux_id, demux_generation, requests)
             };
-            let refreshes = requests
-                .into_iter()
-                .map(|request| {
-                    let keys = ProductCasKeyResolver.resolve(request.token()).ok();
-                    (request, keys)
-                })
-                .collect();
             let mut runtime = lock()?;
             if !runtime.with_playback_consume_for_object(object_id, generation, |txn, demux| {
                 txn.is_current_packet(demux, &packet).map_err(Into::into)
             })? {
                 break;
             }
-            let packet_keys = runtime.registry.resolve_descrambler_packet_keys(refreshes);
+            let packet_keys = runtime.registry.snapshot_descrambler_packet_keys(requests);
             let decision = runtime.decide_descrambled_packet(
                 demux_id,
                 demux_generation,
