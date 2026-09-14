@@ -177,6 +177,9 @@ impl DescramblerRuntime {
             session: DescramblerSession::new(),
         }
     }
+    pub(crate) fn key_binding(&self) -> Option<(&DescramblerKeyToken, DescramblerKeySlotId)> {
+        Some((self.session.key_token()?, self.session.key_slot()?))
+    }
     #[cfg(test)]
     pub(crate) fn key_token(&self) -> Option<&DescramblerKeyToken> {
         self.session.key_token()

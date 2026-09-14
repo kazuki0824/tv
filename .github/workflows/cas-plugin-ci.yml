@@ -1,9 +1,12 @@
-name: CAS plugin C++ CI
+name: CAS plugin C++検証
 
 on:
   pull_request:
     paths:
       - "cas_plugin/**"
+      - "tuner_hal2/descrambler/**"
+      - "tuner_hal2/config/**"
+      - "tuner_hal2/sepolicy/**"
       - "config/product_integration.mk"
       - "config/BoardConfigVendorSePolicy.mk"
       - ".github/workflows/cas-plugin-ci.yml"
@@ -11,6 +14,9 @@ on:
     branches: [main, feat/cas-impl]
     paths:
       - "cas_plugin/**"
+      - "tuner_hal2/descrambler/**"
+      - "tuner_hal2/config/**"
+      - "tuner_hal2/sepolicy/**"
       - "config/product_integration.mk"
       - "config/BoardConfigVendorSePolicy.mk"
       - ".github/workflows/cas-plugin-ci.yml"
@@ -24,7 +30,7 @@ concurrency:
 
 jobs:
   native-tests:
-    name: C++ native tests (${{ matrix.mode }})
+    name: C++本体・socket試験 (${{ matrix.mode }})
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
@@ -65,7 +71,7 @@ jobs:
           test "$exported" = createCasFactory
 
   product-config:
-    name: CAS product configuration
+    name: CAS・Tuner製品設定
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -93,6 +99,28 @@ jobs:
             fi
           done
           printf 'CAS package and credential copy configuration: PASS\n'
+      - name: 非公開MULTI2入力のmake評価を確認
+        run: |
+          cat > "$RUNNER_TEMP/tuner-product.mk" <<'MAKE'
+          TARGET_COPY_OUT_VENDOR := vendor
+          include tuner_hal2/config/product_integration.mk
+          .RECIPEPREFIX := >
+          .PHONY: print
+          print:
+          >@printf '%s\n' '$(sort $(PRODUCT_PACKAGES))' '$(strip $(PRODUCT_COPY_FILES))'
+          MAKE
+          tuner_input=$(mktemp "$RUNNER_TEMP/tuner-product-input.XXXXXX")
+          tuner_make=(make --no-print-directory -s -f "$RUNNER_TEMP/tuner-product.mk")
+          tuner_packages='android.hardware.tv.tuner-service.maleicacid2 fs_config_files maleicacid_tuner_hal2_ueventd_rc'
+          test "$("${tuner_make[@]}")" = "$tuner_packages"
+          test "$("${tuner_make[@]}" "MALEICACID_MULTI2_PARAMETERS_FILE=$tuner_input")" = "$tuner_packages"$'\n'"$tuner_input:vendor/etc/maleicacid/multi2_parameters"
+          for tuner_bad in "$tuner_input.missing" "$tuner_input $tuner_input" "$tuner_input*"; do
+            if "${tuner_make[@]}" "MALEICACID_MULTI2_PARAMETERS_FILE=$tuner_bad" > /dev/null 2>&1; then
+              printf 'Invalid MULTI2 input was accepted\n' >&2
+              exit 1
+            fi
+          done
+          printf 'Tuner package and private input copy configuration: PASS\n'
       - name: AOSP生成器でcredentialのimage権限を確認
         run: |
           cas_fs="$RUNNER_TEMP/cas-fs-config"
@@ -119,3 +147,22 @@ jobs:
           test "$(od -An -tu8 -j8 -N8 "$cas_fs/fs_config_files" | tr -d ' ')" = 0
           test "$(tail -c +17 "$cas_fs/fs_config_files" | tr -d '\000')" = vendor/etc/maleicacid/bcas_keys
           printf 'AOSP fs-config: root:media 0640, no capabilities: PASS\n'
+          python3 "$cas_fs/fs_config_generator.py" fsconfig \
+            --aid-header "$cas_fs/android_filesystem_config.h" \
+            --capability-header "$cas_fs/capability.h" \
+            --partition vendor --files --out_file "$cas_fs/tuner_fs_config_files" \
+            tuner_hal2/config/config.fs
+          read -r tuner_length tuner_mode tuner_uid tuner_gid < <(od -An -tu2 -N8 "$cas_fs/tuner_fs_config_files")
+          test "$tuner_length" = 56
+          test "$tuner_mode" = 416
+          test "$tuner_uid" = 0
+          test "$tuner_gid" = 1000
+          test "$(od -An -tu8 -j8 -N8 "$cas_fs/tuner_fs_config_files" | tr -d ' ')" = 0
+          test "$(tail -c +17 "$cas_fs/tuner_fs_config_files" | tr -d '\000')" = vendor/etc/maleicacid/multi2_parameters
+          python3 "$cas_fs/fs_config_generator.py" fsconfig \
+            --aid-header "$cas_fs/android_filesystem_config.h" \
+            --capability-header "$cas_fs/capability.h" \
+            --partition vendor --files --out_file "$cas_fs/combined_fs_config_files" \
+            cas_plugin/config/config.fs tuner_hal2/config/config.fs
+          test "$(wc -c < "$cas_fs/combined_fs_config_files")" = 104
+          printf 'AOSP fs-config: root:system 0640, no capabilities; combined configuration: PASS\n'

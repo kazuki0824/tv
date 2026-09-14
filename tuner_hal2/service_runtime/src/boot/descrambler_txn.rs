@@ -4,13 +4,15 @@ use super::{
     descrambler_session_failure_to_hal, DemuxRuntimeId, DemuxRuntimeState,
     DescramblerCleanupTxnError, DescramblerClearKeyOutcome, DescramblerClearKeyTxnError,
     DescramblerDiagnosticKind, DescramblerDiagnosticPhase, DescramblerDiagnosticRecord,
-    DescramblerKeyToken, DescramblerKeyTokenError, DescramblerPid, DescramblerPidClaim,
-    DescramblerReplaceKeyOutcome, DescramblerReplaceKeyTxnError, DescramblerRuntimeId, HalError,
+    DescramblerKeyTokenError, DescramblerPid, DescramblerPidClaim, DescramblerReplaceKeyOutcome,
+    DescramblerReplaceKeyTxnError, DescramblerRuntimeId, HalError, HalInternalKind,
     HalInvalidArgumentKind, HalInvalidStateKind, RegistryCommitError, TunerServiceRuntime,
 };
-use crate::descrambler_key_table::DescramblerKeyLookupError;
+use crate::descrambler_key_table::{DescramblerKeyLookupError, DescramblerKeyPublishError};
+use crate::descrambler_ops::PreparedDescramblerKeyToken;
 use crate::descrambler_session::DescramblerSourceCallFailure;
 use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, FirstErrorCollector};
+use maleicacid_tuner_hal2_descrambler::CasKeyResolveError;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AidlInputPid(u16);
@@ -191,33 +193,120 @@ impl TunerServiceRuntime {
 }
 
 impl DescramblerKeyTxn<'_> {
+    fn clear_key(&mut self, descrambler_id: i32) -> Result<(), HalError> {
+        match self
+            .runtime
+            .registry
+            .clear_descrambler_key_use_case(DescramblerRuntimeId(descrambler_id))
+        {
+            Ok(DescramblerClearKeyOutcome::AlreadyClear | DescramblerClearKeyOutcome::Cleared) => {
+                Ok(())
+            }
+            Ok(DescramblerClearKeyOutcome::ClearedWithOldKeyReleaseFailure { release_old }) => {
+                let hal_error = descrambler_key_release_error_to_hal(release_old);
+                self.runtime.record_descrambler_diagnostic(
+                    DescramblerDiagnosticRecord::set_key_token(
+                        descrambler_id,
+                        DescramblerDiagnosticKind::KeyTokenReleaseFailed,
+                        hal_error.clone(),
+                    ),
+                );
+                Err(hal_error)
+            }
+            Err(DescramblerClearKeyTxnError::Session(failure)) => {
+                let error = descrambler_session_failure_to_hal(failure.kind);
+                self.runtime.record_descrambler_diagnostic(
+                    DescramblerDiagnosticRecord::set_key_token(
+                        descrambler_id,
+                        DescramblerDiagnosticKind::SessionClosed,
+                        error.clone(),
+                    ),
+                );
+                Err(error)
+            }
+        }
+    }
+
+    fn reject_invalid_token(
+        &mut self,
+        descrambler_id: i32,
+        error: DescramblerKeyTokenError,
+    ) -> Result<(), HalError> {
+        let kind = match error {
+            DescramblerKeyTokenError::Empty => DescramblerDiagnosticKind::KeyTokenEmpty,
+            DescramblerKeyTokenError::InvalidLength { .. } => {
+                DescramblerDiagnosticKind::KeyTokenInvalidLength
+            }
+        };
+        let hal_error = descrambler_key_token_error_to_hal(error);
+        self.runtime
+            .record_descrambler_diagnostic(DescramblerDiagnosticRecord::set_key_token(
+                descrambler_id,
+                kind,
+                hal_error.clone(),
+            ));
+        Err(hal_error)
+    }
+
+    fn reject_resolution(
+        &mut self,
+        descrambler_id: i32,
+        error: CasKeyResolveError,
+    ) -> Result<(), HalError> {
+        let (kind, hal_error) = match error {
+            CasKeyResolveError::InvalidToken => (
+                DescramblerDiagnosticKind::KeyTokenInvalidLength,
+                HalError::invalid_argument(
+                    HalInvalidArgumentKind::NumericRange,
+                    "CAS rejected the descrambler key token format",
+                ),
+            ),
+            CasKeyResolveError::UnknownToken => (
+                DescramblerDiagnosticKind::KeyTokenUnknown,
+                HalError::invalid_argument(
+                    HalInvalidArgumentKind::NumericRange,
+                    "descrambler key token is unknown to CAS",
+                ),
+            ),
+            CasKeyResolveError::Unavailable => (
+                DescramblerDiagnosticKind::CasTokenProducerUnavailable,
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "descrambler CAS key resolution is unavailable",
+                ),
+            ),
+            CasKeyResolveError::InvalidKeyMaterial => (
+                DescramblerDiagnosticKind::CasTokenProducerUnavailable,
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "CAS key material could not be prepared for MULTI2",
+                ),
+            ),
+        };
+        self.runtime
+            .record_descrambler_diagnostic(DescramblerDiagnosticRecord::set_key_token(
+                descrambler_id,
+                kind,
+                hal_error.clone(),
+            ));
+        Err(hal_error)
+    }
+
     pub(crate) fn set_key_token(
         &mut self,
         descrambler_id: i32,
-        key_token: &[u8],
+        prepared: PreparedDescramblerKeyToken,
     ) -> Result<(), HalError> {
-        if key_token == [0x00].as_slice() {
-            return match self
-                .runtime
-                .registry
-                .clear_descrambler_key_use_case(DescramblerRuntimeId(descrambler_id))
-            {
-                Ok(
-                    DescramblerClearKeyOutcome::AlreadyClear | DescramblerClearKeyOutcome::Cleared,
-                ) => Ok(()),
-                Ok(DescramblerClearKeyOutcome::ClearedWithOldKeyReleaseFailure { release_old }) => {
-                    let hal_error = descrambler_key_release_error_to_hal(release_old);
-                    self.runtime.record_descrambler_diagnostic(
-                        DescramblerDiagnosticRecord::set_key_token(
-                            descrambler_id,
-                            DescramblerDiagnosticKind::KeyTokenReleaseFailed,
-                            hal_error.clone(),
-                        ),
-                    );
-                    Err(hal_error)
-                }
-                Err(DescramblerClearKeyTxnError::Session(failure)) => {
-                    let error = descrambler_session_failure_to_hal(failure.kind);
+        let (token, published_slot) = match prepared {
+            PreparedDescramblerKeyToken::Clear => return self.clear_key(descrambler_id),
+            PreparedDescramblerKeyToken::Invalid(error) => {
+                return self.reject_invalid_token(descrambler_id, error)
+            }
+            PreparedDescramblerKeyToken::ResolutionFailed(error) => {
+                return self.reject_resolution(descrambler_id, error)
+            }
+            PreparedDescramblerKeyToken::Resolved { token, key_slot } => {
+                if let Err(error) = self.runtime.descrambler_bound_demux(descrambler_id) {
                     self.runtime.record_descrambler_diagnostic(
                         DescramblerDiagnosticRecord::set_key_token(
                             descrambler_id,
@@ -225,61 +314,77 @@ impl DescramblerKeyTxn<'_> {
                             error.clone(),
                         ),
                     );
-                    Err(error)
+                    return Err(error);
                 }
-            };
-        }
-        let token = match DescramblerKeyToken::try_from_bytes(key_token.to_vec()) {
-            Ok(token) => token,
-            Err(error) => {
-                let kind = match error {
-                    DescramblerKeyTokenError::Empty => DescramblerDiagnosticKind::KeyTokenEmpty,
-                    DescramblerKeyTokenError::InvalidLength { .. } => {
-                        DescramblerDiagnosticKind::KeyTokenInvalidLength
+                let slot = match self
+                    .runtime
+                    .registry
+                    .publish_descrambler_key_resolution(token.clone(), key_slot)
+                {
+                    Ok(slot) => slot,
+                    Err(error_kind) => {
+                        let detail = match error_kind {
+                            DescramblerKeyPublishError::SlotIdExhausted => {
+                                "descrambler key slot identity exhausted"
+                            }
+                            DescramblerKeyPublishError::RefreshGenerationExhausted => {
+                                "descrambler key refresh generation exhausted"
+                            }
+                        };
+                        let error = HalError::internal(HalInternalKind::InvariantViolation, detail);
+                        self.runtime.record_descrambler_diagnostic(
+                            DescramblerDiagnosticRecord::set_key_token(
+                                descrambler_id,
+                                DescramblerDiagnosticKind::CasTokenProducerUnavailable,
+                                error.clone(),
+                            ),
+                        );
+                        return Err(error);
                     }
                 };
-                let hal_error = descrambler_key_token_error_to_hal(error);
-                self.runtime.record_descrambler_diagnostic(
-                    DescramblerDiagnosticRecord::set_key_token(
-                        descrambler_id,
-                        kind,
-                        hal_error.clone(),
-                    ),
-                );
-                return Err(hal_error);
+                (token, Some(slot))
+            }
+            #[cfg(test)]
+            PreparedDescramblerKeyToken::LookupExisting(token) => {
+                if let Err(error) = self.runtime.descrambler_bound_demux(descrambler_id) {
+                    self.runtime.record_descrambler_diagnostic(
+                        DescramblerDiagnosticRecord::set_key_token(
+                            descrambler_id,
+                            DescramblerDiagnosticKind::SessionClosed,
+                            error.clone(),
+                        ),
+                    );
+                    return Err(error);
+                }
+                if !self
+                    .runtime
+                    .registry
+                    .descrambler_token_resolution_available()
+                {
+                    return self.reject_resolution(descrambler_id, CasKeyResolveError::Unavailable);
+                }
+                (token, None)
             }
         };
-        if let Err(error) = self.runtime.descrambler_bound_demux(descrambler_id) {
-            self.runtime
-                .record_descrambler_diagnostic(DescramblerDiagnosticRecord::set_key_token(
-                    descrambler_id,
-                    DescramblerDiagnosticKind::SessionClosed,
-                    error.clone(),
-                ));
-            return Err(error);
-        }
-        if !self
+
+        let result = self
             .runtime
             .registry
-            .descrambler_token_resolution_available()
-        {
-            let error = HalError::invalid_state(
-                HalInvalidStateKind::InvalidLifecycle,
-                "descrambler CAS token producer is not connected",
-            );
-            self.runtime
-                .record_descrambler_diagnostic(DescramblerDiagnosticRecord::set_key_token(
-                    descrambler_id,
-                    DescramblerDiagnosticKind::CasTokenProducerUnavailable,
-                    error.clone(),
-                ));
-            return Err(error);
+            .replace_descrambler_key_use_case(DescramblerRuntimeId(descrambler_id), token.clone());
+        let failed = !matches!(
+            &result,
+            Ok(DescramblerReplaceKeyOutcome::AlreadyCurrent)
+                | Ok(DescramblerReplaceKeyOutcome::Replaced)
+                | Ok(DescramblerReplaceKeyOutcome::ReplacedWithOldKeyReleaseFailure { .. })
+        );
+        if failed {
+            if let Some(slot) = published_slot {
+                self.runtime
+                    .registry
+                    .discard_unreferenced_descrambler_key_resolution(&token, slot);
+            }
         }
-        match self
-            .runtime
-            .registry
-            .replace_descrambler_key_use_case(DescramblerRuntimeId(descrambler_id), token)
-        {
+        match result {
             Ok(
                 DescramblerReplaceKeyOutcome::AlreadyCurrent
                 | DescramblerReplaceKeyOutcome::Replaced,
