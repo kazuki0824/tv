@@ -81,6 +81,80 @@ class TisReviewBoundaryTest {
         check(PlaybackPipeline.decodedVideoFormatInfo(PlaybackPipeline.VideoCodecKind.AVC, output) == null)
     }
 
+    @Test fun pmtPidAndConfigurationChangesCannotReuseAnotherVideoTrackGeometry() {
+        val controller = allocate(TunerController::class.java)
+        val session = allocate(MaleicacidLiveSession::class.java)
+        val key = ServiceKey(4, 1, 1)
+        val first = AribElementaryStream(TsPid(0x101), 0x1b, null, null, null)
+        val second = first.copy(elementaryPid = TsPid(0x102))
+        val service =
+            com.maleicacid.tvinput.aribsi
+                .AribService(
+                    serviceKey = key,
+                    name = "test",
+                    pcrPid = TsPid(0x100),
+                    freeCaMode = false,
+                    streams = listOf(first, second),
+                )
+        val source =
+            AvPlaybackSignature(
+                key,
+                service.pcrPid,
+                first.elementaryPid,
+                first.streamType,
+                null,
+                null,
+                true,
+                false,
+                videoConfiguration = DecoderConfigurationIdentity.from(first),
+            )
+        val exact = PlaybackPipeline.VideoFormatInfo(0x1b, "video/avc", 1440, 1080)
+        set(session, "playbackState", PlaybackStartState.Started(source, 7L))
+        set(session, "videoTrackFormat", 7L to exact)
+        val method =
+            MaleicacidLiveSession::class.java
+                .getDeclaredMethod(
+                    "exactVideoFormatForTrack",
+                    service.javaClass,
+                    TunerController.TisTrack::class.java,
+                ).apply { isAccessible = true }
+
+        fun project(
+            current: com.maleicacid.tvinput.aribsi.AribService,
+            stream: AribElementaryStream,
+        ): Any? = method.invoke(session, current, controller.tracksFor(listOf(stream)).single())
+        check(project(service, first) == exact)
+        // PMT更新後も旧playback generationが有効な、再起動直前の順序を再現する。
+        check(project(service.copy(streams = listOf(second)), second) == null)
+        check(project(service, second) == null)
+        check(project(service.copy(serviceKey = ServiceKey(4, 1, 2)), first) == null)
+        val changed =
+            first.copy(
+                codecFacts =
+                    first.codecFacts.copy(
+                        avc =
+                            com.maleicacid.tvinput.aribsi
+                                .AribAvcSignaling(100, 0, 40),
+                    ),
+            )
+        check(project(service.copy(streams = listOf(changed)), changed) == null)
+        set(session, "playbackState", PlaybackStartState.Started(source.copy(videoPid = second.elementaryPid), 8L))
+        check(project(service, second) == null)
+        set(session, "videoTrackFormat", 8L to exact.copy(width = 1920))
+        check((project(service, second) as PlaybackPipeline.VideoFormatInfo).width == 1920)
+    }
+
+    @Test fun livePolicyRequiresCurrentLinkageOnlyForResolvedCasServices() {
+        val policy =
+            com.maleicacid.tvinput.aribsi
+                .ServicePolicyDecision(ServiceKey(4, 1, 1), true, true, true, emptyList())
+        check(!policy.clearLivePlaybackStaticallyEligible)
+        check(!policy.livePlaybackEligible(false) && policy.livePlaybackEligible(true))
+        check(!policy.copy(caDescriptorsResolved = false).livePlaybackEligible(true))
+        check(!policy.copy(registrationReady = false).livePlaybackEligible(true))
+        check(policy.copy(requiresCas = false).livePlaybackEligible(false))
+    }
+
     @Test fun setupRejectsAmbiguousFrameworkInputRegistration() {
         var inputs = emptyList<TvInputInfo>()
         val manager = allocate(TvInputManager::class.java)

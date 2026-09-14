@@ -96,7 +96,7 @@ class CasController(
         fun onResourceLost()
     }
 
-    enum class ConnectionChange { READY, INITIALIZATION_FAILED, RESOURCES_LOST }
+    enum class ConnectionChange { READY, KEY_STATE_CHANGED, INITIALIZATION_FAILED, RESOURCES_LOST }
 
     interface MediaCasSessionBridge : AutoCloseable {
         fun setPrivateData(privateData: ByteArray): Result<Unit>
@@ -131,6 +131,9 @@ class CasController(
         var descrambler: TunerDescramblerBridge? = null
         val descramblerPids: MutableSet<TsPid> = linkedSetOf()
         var keyLinked: Boolean = false
+
+        // tokenの物理所有は失敗時も解放まで残す。最新ECMの成立とは区別する。
+        var ecmSucceeded: Boolean = false
         var retiring: Boolean = false
         var sessionClosed: Boolean = false
     }
@@ -180,6 +183,33 @@ class CasController(
 
     internal fun setOnConnectionChanged(callback: ((Long, ConnectionChange) -> Unit)?) {
         onExecutor { onConnectionChanged = callback }
+    }
+
+    internal fun isServiceDescramblingReady(
+        serviceKey: com.maleicacid.tvinput.common.ServiceKey,
+        generation: Long,
+    ): Boolean =
+        onExecutor {
+            generation == receiveGeneration && serviceKey in descramblingReadyServicesLocked()
+        }
+
+    private fun descramblingReadyServicesLocked(): Set<com.maleicacid.tvinput.common.ServiceKey> {
+        if (closed || terminalReceiveGeneration == receiveGeneration) return emptySet()
+        return pluginsBySystemId.values
+            .filterNot { it.retiring || it.initializing }
+            .flatMap { it.sessions.values }
+            .groupBy { it.key.serviceKey }
+            .filterValues { sessions -> sessions.all(::sessionDescramblingReadyLocked) }
+            .keys
+    }
+
+    private fun sessionDescramblingReadyLocked(state: CasSessionState): Boolean {
+        val live = !state.retiring && !state.sessionClosed
+        val keyReady = state.keyLinked && state.ecmSucceeded && state.descrambler != null
+        if (!live || !keyReady) return false
+        val currentMetadata = state.key in ecmPidToSessions[state.key.ecmPid].orEmpty()
+        return currentMetadata && state.elementaryPids.isNotEmpty() &&
+            state.descramblerPids.containsAll(state.elementaryPids)
     }
 
     private fun postConnectionEvent(block: () -> Unit) {
@@ -535,6 +565,7 @@ class CasController(
             if (closed) return@onExecutor listOf(Diagnostic(State.CLOSED, ErrorCode.CLOSED, pid = pid, message = "CAS 制御は終了済みです"))
             val sessionKeys = ecmPidToSessions[pid].orEmpty()
             if (sessionKeys.isEmpty()) return@onExecutor emptyList()
+            val readyBefore = descramblingReadyServicesLocked()
             val diagnostics = mutableListOf<Diagnostic>()
             sessionKeys.forEach { key ->
                 if (diagnostics.any { it.errorCode == ErrorCode.MEDIA_CAS_INVALIDATED }) return@forEach
@@ -545,6 +576,7 @@ class CasController(
                     diagnostics += Diagnostic(State.ERROR, ErrorCode.SESSION_OPEN_FAILED, systemId, pid, "CAS session がありません")
                     return@forEach
                 }
+                state.ecmSucceeded = false
                 val tokenResult = state.session.processEcm(section)
                 if (tokenResult.isFailure) {
                     diagnostics +=
@@ -569,6 +601,7 @@ class CasController(
                             return@forEach
                         }
                         state.keyLinked = true
+                        state.ecmSucceeded = true
                         state.elementaryPids.filter { it !in state.descramblerPids }.forEach { elementaryPid ->
                             val addResult =
                                 state.descrambler?.addPid(elementaryPid)
@@ -600,6 +633,9 @@ class CasController(
                 }
             }
             if (diagnostics.isNotEmpty()) lastDiagnostic = diagnostics.last()
+            if (readyBefore != descramblingReadyServicesLocked()) {
+                onConnectionChanged?.invoke(receiveGeneration, ConnectionChange.KEY_STATE_CHANGED)
+            }
             diagnostics
         }
 

@@ -265,7 +265,12 @@ class TunerController(
     // 各解放処理の例外を診断へ残し、通知後も既存controllerで解放の再試行を受け付ける。
     @Suppress("TooGenericExceptionCaught")
     private fun handleCasConnectionChangeOnController(change: CasController.ConnectionChange) {
-        if (change == CasController.ConnectionChange.READY) {
+        val refresh =
+            when (change) {
+                CasController.ConnectionChange.READY, CasController.ConnectionChange.KEY_STATE_CHANGED -> true
+                else -> false
+            }
+        if (refresh) {
             onSectionIngestedCallback?.invoke()
             return
         }
@@ -1255,15 +1260,7 @@ class TunerController(
                 onSectionIngestedCallback?.invoke()
                 startPlaybackIfStreamsKnown()
             },
-            onEcm = {
-                val diagnostics = casController?.onEcmSection(pid, section).orEmpty()
-                diagnostics.forEach { Log.w(LogTags.TIS, "ECM 処理診断 $it") }
-                if (diagnostics.any { it.errorCode == CasController.ErrorCode.MEDIA_CAS_INVALIDATED }) {
-                    finishUnavailableCasOnController(diagnostics)
-                } else if (diagnostics.any { it.state == CasController.State.ERROR }) {
-                    playbackPipeline.reportUnavailable(PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY, diagnostics.joinToString())
-                }
-            },
+            onEcm = { handleEcmSectionOnController(pid, section) },
             onEmm = {
                 val diagnostics = casController?.onEmmSection(pid, section).orEmpty()
                 diagnostics.forEach { Log.w(LogTags.TIS, "EMM 処理診断 $it") }
@@ -1272,6 +1269,22 @@ class TunerController(
                 }
             },
         )
+    }
+
+    private fun handleEcmSectionOnController(
+        pid: TsPid,
+        section: ByteArray,
+    ) {
+        val diagnostics = casController?.onEcmSection(pid, section).orEmpty()
+        diagnostics.forEach { Log.w(LogTags.TIS, "ECM 処理診断 $it") }
+        if (diagnostics.any { it.errorCode == CasController.ErrorCode.MEDIA_CAS_INVALIDATED }) {
+            finishUnavailableCasOnController(diagnostics)
+        } else if (diagnostics.any { it.state == CasController.State.ERROR }) {
+            playbackPipeline.stopAndReportUnavailable(
+                PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY,
+                diagnostics.joinToString(),
+            )
+        }
     }
 
     private fun finishUnavailableCasOnController(diagnostics: List<CasController.Diagnostic>) {
@@ -1439,15 +1452,25 @@ class TunerController(
         }
 
     @Suppress("ReturnCount")
-    fun startPlayback(selection: AvStreamSelection): PlaybackPipeline.StartResult? {
-        val channel = currentTune ?: return null
-        val tunerInstance = tuner ?: return null
-        superimposeTimingByPid.clear()
-        selection.superimpose?.let { stream ->
-            stream.captionTiming?.let { timing -> superimposeTimingByPid[stream.elementaryPid] = timing }
+    fun startPlayback(
+        selection: AvStreamSelection,
+        requiresCas: Boolean = false,
+        generation: Long = tuneGeneration,
+    ): PlaybackPipeline.StartResult? =
+        callOnController {
+            if (!tuneAccepted || generation != tuneGeneration) return@callOnController null
+            val channel = currentTune ?: return@callOnController null
+            val tunerInstance = tuner ?: return@callOnController null
+            if (channel.serviceKey != selection.serviceKey) return@callOnController null
+            if (requiresCas && casController?.isServiceDescramblingReady(selection.serviceKey, generation) != true) {
+                return@callOnController null
+            }
+            superimposeTimingByPid.clear()
+            selection.superimpose?.let { stream ->
+                stream.captionTiming?.let { timing -> superimposeTimingByPid[stream.elementaryPid] = timing }
+            }
+            playbackPipeline.start(tunerInstance, channel, selection)
         }
-        return playbackPipeline.start(tunerInstance, channel, selection)
-    }
 
     fun setOnSubtitleContinuityLostCallback(callback: (Long, String) -> Unit) {
         playbackPipeline.setOnSubtitleContinuityLostCallback { generation, trackId ->

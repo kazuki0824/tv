@@ -376,7 +376,6 @@ class MaleicacidLiveSession(
                 serviceScopedCa + catCa,
                 transaction.services,
             )
-        val serviceCaMetadata = expanded.filter { it.serviceKey == serviceKey }
         val caMetadata = expanded.filter { it.serviceKey == null || it.serviceKey == serviceKey }
         val casResult =
             try {
@@ -413,35 +412,23 @@ class MaleicacidLiveSession(
             refreshCurrentProgramRatingState()
         }
         if (!decision.casDecisionReady) return
-        if (caMetadata.isNotEmpty()) {
-            val blockingCasError = casResult.diagnostics.any { it.state == CasController.State.ERROR }
-            if (blockingCasError) {
-                playbackState = PlaybackStartState.Stopped
-                tunerController.stopPlayback()
-                beginCaptionPresentationGeneration(-1L, false)
-                notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN)
-                return
-            }
-            if (serviceCaMetadata.isNotEmpty()) {
-                playbackState = PlaybackStartState.Stopped
-                tunerController.stopPlayback()
-                beginCaptionPresentationGeneration(-1L, false)
-                notifyVideoUnavailable(
-                    mapUnavailableReason(
-                        PlaybackPipeline.PlaybackUnavailable(
-                            PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY,
-                            "r51 CAS placeholder cannot provide real key token",
-                        ),
-                    ),
-                )
-                return
-            }
+        if (casResult.diagnostics.any { it.state == CasController.State.ERROR } ||
+            !decision.livePlaybackEligible(currentCasLinkageReady())
+        ) {
+            playbackState = PlaybackStartState.Stopped
+            tunerController.stopPlayback()
+            beginCaptionPresentationGeneration(-1L, false)
+            notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN)
+            return
         }
         if (service != null) {
             updateTracks(service)
             maybeStartPlayback(service)
         }
     }
+
+    private fun currentCasLinkageReady(): Boolean =
+        currentService?.let { casController.isServiceDescramblingReady(it, currentGeneration) } == true
 
     private fun currentServicePolicy() =
         com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
@@ -452,7 +439,8 @@ class MaleicacidLiveSession(
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     @Suppress("CyclomaticComplexMethod", "LongMethod", "ReturnCount")
     private fun maybeStartPlayback(service: AribService): Boolean {
-        if (!currentServicePolicy().clearLivePlaybackStaticallyEligible) return false
+        val servicePolicy = currentServicePolicy()
+        if (!servicePolicy.livePlaybackEligible(currentCasLinkageReady())) return false
         when (val decision = contentAccessDecision()) {
             is ContentAccessDecision.Block -> {
                 rememberBlockedContent(decision.blocked)
@@ -514,7 +502,7 @@ class MaleicacidLiveSession(
             return stateBeforeAttempt is PlaybackStartState.Started && stateBeforeAttempt.signature == signature
         }
         playbackState = PlaybackStartState.Starting(signature)
-        val result = tunerController.startPlayback(selection)
+        val result = tunerController.startPlayback(selection, servicePolicy.requiresCas, currentGeneration)
         val next =
             if (result == null) {
                 PlaybackStartState.Failed(signature, pipelineGeneration = null)
@@ -558,8 +546,8 @@ class MaleicacidLiveSession(
             subtitleLanguageId = selection.subtitleLanguageId,
             superimposePid = selection.superimpose?.elementaryPid,
             superimposeDataComponentId = selection.superimpose?.dataComponentId,
-            clear = true,
-            keyTokenAvailable = false,
+            clear = !currentServicePolicy().requiresCas,
+            keyTokenAvailable = currentServicePolicy().requiresCas && currentCasLinkageReady(),
         )
     }
 
@@ -780,12 +768,7 @@ class MaleicacidLiveSession(
                 .filter { it.type == TvTrackInfo.TYPE_VIDEO }
                 .associate { track ->
                     val component = currentVideoComponent(service.serviceKey, track.componentTag)
-                    val exact =
-                        videoTrackFormat
-                            ?.takeIf {
-                                PlaybackStartTransitions.acceptsGeneration(playbackState, it.first) &&
-                                    it.second.streamType == track.streamType
-                            }?.second
+                    val exact = exactVideoFormatForTrack(service, track)
                     track.id to VideoTrackMetadataPolicy.project(component, exact)
                 }
         val signature =
@@ -1196,6 +1179,28 @@ class MaleicacidLiveSession(
                 holdPreviousParentalAccessState(decision.reason)
             }
         }
+    }
+
+    private fun exactVideoFormatForTrack(
+        service: AribService,
+        track: TunerController.TisTrack,
+    ): PlaybackPipeline.VideoFormatInfo? {
+        val source = PlaybackStartTransitions.signature(playbackState)
+        val stream = service.streams.firstOrNull { it.elementaryPid == track.pid }
+        if (source == null || stream == null) return null
+        val currentVideo =
+            source.copy(
+                serviceKey = service.serviceKey,
+                videoPid = track.pid,
+                videoStreamType = track.streamType,
+                videoConfiguration = DecoderConfigurationIdentity.from(stream),
+            )
+        return videoTrackFormat
+            ?.takeIf {
+                source == currentVideo &&
+                    PlaybackStartTransitions.acceptsGeneration(playbackState, it.first) &&
+                    it.second.streamType == track.streamType
+            }?.second
     }
 
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。

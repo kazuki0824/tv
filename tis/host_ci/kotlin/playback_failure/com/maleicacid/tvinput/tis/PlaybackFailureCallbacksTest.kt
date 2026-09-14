@@ -8,10 +8,12 @@ import android.media.MediaSync
 import android.media.tv.tuner.Tuner
 import android.media.tv.tuner.filter.Filter
 import com.maleicacid.tvinput.aribsi.AribElementaryStream
+import com.maleicacid.tvinput.aribsi.ServicePolicyDecision
 import com.maleicacid.tvinput.common.FrequencyHz
 import com.maleicacid.tvinput.common.ServiceKey
 import com.maleicacid.tvinput.common.StreamSelector
 import com.maleicacid.tvinput.common.TsPid
+import com.maleicacid.tvinput.common.TunerKeyToken
 import org.junit.Test
 import sun.misc.Unsafe
 import java.util.concurrent.Executors
@@ -366,6 +368,85 @@ class PlaybackFailureCallbacksTest {
             }
             check(fixture.notifications == 1)
             fixture.checkRetainedThenReleased()
+        }
+    }
+
+    @Test fun realCasLinkageReevaluatesLiveAndReachesGenericPlaybackStart() {
+        MediaCas.Faults.reset()
+        val executor = Executors.newSingleThreadExecutor { Thread(it, "maleicacid-tis-controller-test") }
+        val factory =
+            object : CasController.MediaCasBridgeFactory {
+                override fun create(caSystemId: Int) =
+                    Result.success(
+                        FrameworkMediaCasBridge({ MediaCas(caSystemId) }, true),
+                    )
+            }
+        try {
+            CasController(mediaCasFactory = factory).use { cas ->
+                val fixture = executor.submit<Fixture> { Fixture(false, false, false) }.get(5, TimeUnit.SECONDS)
+                val controller = fixture.allocate(TunerController::class.java)
+
+                fun set(
+                    name: String,
+                    value: Any,
+                ) {
+                    TunerController::class.java
+                        .getDeclaredField(name)
+                        .apply { isAccessible = true }
+                        .set(controller, value)
+                }
+                set("inputId", "test")
+                set("sectionExecutor", executor)
+                set("tuneAccepted", true)
+                set("tuneGeneration", 7L)
+                set("currentTune", fixture.channel)
+                set("tuner", fixture.tuner)
+                set("playbackPipeline", fixture.pipeline)
+                set("superimposeTimingByPid", java.util.concurrent.ConcurrentHashMap<TsPid, String>())
+                controller.setCasController(cas)
+                val decisions = mutableListOf<Boolean>()
+                val policy = ServicePolicyDecision(fixture.channel.serviceKey, true, true, true, emptyList())
+                controller.setOnSectionIngestedCallback {
+                    val ready = cas.isServiceDescramblingReady(fixture.channel.serviceKey, 7L)
+                    decisions += policy.livePlaybackEligible(ready)
+                }
+                val metadata =
+                    listOf(
+                        com.maleicacid.tvinput.aribsi.CaMetadata(
+                            fixture.channel.serviceKey,
+                            5,
+                            TsPid(0x123),
+                            null,
+                            TsPid(0x101),
+                        ),
+                    )
+                val descrambler =
+                    object : CasController.TunerDescramblerBridge {
+                        override fun setKeyToken(keyToken: TunerKeyToken) = Result.success(Unit)
+
+                        override fun addPid(elementaryPid: TsPid) = Result.success(Unit)
+
+                        override fun removePid(elementaryPid: TsPid) = Result.success(Unit)
+
+                        override fun close() = Unit
+                    }
+                cas.updateFromCaMetadata(metadata, 7L) { descrambler }
+                check(controller.startPlayback(fixture.selection, requiresCas = true, generation = 7L) == null)
+                check(fixture.pipeline.currentPlaybackGenerationForTest() == 7L)
+                cas.onEcmSection(TsPid(0x123), byteArrayOf(1))
+                executor.submit {}.get(5, TimeUnit.SECONDS)
+                check(decisions == listOf(true))
+                val result = controller.startPlayback(fixture.selection, requiresCas = true, generation = 7L)
+                check(result != null && result.generation > 7L)
+                check(fixture.failures.single().reason == PlaybackPipeline.PlaybackUnavailableReason.SURFACE_NOT_SET)
+                // CAS gate通過後は既存pipelineがSurface不足を判定する。再生成功の捏造はしない。
+                check(!result.startedVideo && !result.firstFramePending)
+                check(controller.startPlayback(fixture.selection, requiresCas = true, generation = 6L) == null)
+                cas.clearForResourceLoss()
+                check(controller.startPlayback(fixture.selection, requiresCas = true, generation = 7L) == null)
+            }
+        } finally {
+            executor.shutdownNow()
         }
     }
 

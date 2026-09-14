@@ -1,3 +1,22 @@
+# PR #108 video source identityとCASライブ開始条件の補完
+
+- video trackの実画素寸法を、現在のplayback generationだけでなく、既存AvPlaybackSignatureのservice/PID/stream_type/decoder構成と照合する。同じgeneration中にPMTが別PIDへ変わり、tracks更新が再起動より先に実行されても旧ESの寸法を広告しない。同service内の別video trackにも流用しない。新しいgeneration台帳や推定geometryは追加していない。
+- 放送事実から得るclearLivePlaybackStaticallyEligibleは従来の静的判定として維持し、既存ServicePolicyDecisionへcurrent CAS linkageを入力するlivePlaybackEligibleを追加した。CA解決済み・登録適格が前提で、CAS必須serviceは実linkage成立時だけ再生を許す。placeholder一律拒否を除き、metadata更新後と再生開始時に同じ判断を使う。保存済みProvider policyは参照しない。
+- CAS利用可否はCasControllerの既存session所有から都度算出する。同世代・current配送bindingの各sessionについて、最新ECM成功、token結合、全必要ES PIDのadd成功を要求する。物理token所有はECM失敗時もVOID/close完了まで残るため、最新ECMの成功状態とは区別する。metadata再投影だけでECM失敗を成功へ戻さない。診断専用token、未結合、複数sessionの一部未成立、退役・資源喪失は利用可能にしない。
+- ECM処理で利用可能service集合が変わったときだけ既存の世代付きCAS通知からSession再評価へ進む。通常ECM反復で再起動せず、SI parserへの投入やSI ingest sequence更新もしない。ECM失敗は既存pipelineを停止してCAS unavailableを通知し、PMT/SIとECM再取得の経路を維持する。Tuner開始直前にも既存controller executorでtune generation・service・CAS結合を照合し、既存clear ES/block-model/first-output経路へ進む。
+
+| 反例 | 試験・確認 |
+|---|---|
+| 同一世代AVC PID A→B、同serviceの複数video、同PID構成変更 | TisReviewBoundaryTest: 実Sessionのtrack投影helperへPMT更新順序を入力し、旧geometryの非広告と新世代実値を確認 |
+| 静的clear条件だけでCAS必須serviceを常時拒否 | TisReviewBoundaryTest: current linkageによる許可、CA未解決/登録不適格/placeholderの拒否 |
+| ECM成立前・一部session/PIDだけ成立、token拒否 | CasPlaybackReadinessTest: 実Framework adapter→CasController→Descrambler、全session/PIDの成立待ち |
+| ECM失敗をmetadata再投影で消去、通常ECMごとの再通知 | CasPlaybackReadinessTest: 失敗保持・復旧時だけ通知・旧世代/別service拒否・VOID清掃 |
+| token成立後もpipelineへ到達しない | PlaybackFailureCallbacksTest: 実CAS通知→Tuner再評価→既存pipeline開始まで実行。token前/旧世代/解放後は開始せず、token後は通常pipelineのSURFACE_NOT_SETまで到達する |
+
+追加6試験に合わせ、host CIは283件・検出38/実行35クラスとした。新しい検査抑止は追加していない。ECM失敗時の停止処理が長くなったため、同じTunerController内のECM配送処理だけをprivate helperへ移した。資源owner・公開CAS API・別player・第二の鍵経路は追加していない。
+
+検証結果: Android 15入力によるproduction/全試験Kotlinのhostコンパイル、関連6クラス60試験、変更Kotlinのktlint/detekt、差分検査が成功。host全283件はpush後の実SI JNI付きCIで確認する。Soong、device atest、実機VTS、実TRM回収、実画面への出力、CAS backendとの実復号結合は未実施。TISの開始条件を接続した結果をCAS plugin本体・本番Ks共有の完成やr52全体100%一致、CDD/ARIB全面適合の証拠とは扱わない。
+
 # PR #108 HEVCの旧受入試験期待値の追従
 
 73b32a5のhost全277件を実行した結果、HEVC metadataと再生可否の分離を検証する既存試験にr51のselection拒否期待値が1箇所残っていた。r51限定のmetadata判定とProviderへ再生可否を混入しない検証は維持し、r52のgeneric selectionはHEVCを選ぶ期待値へ訂正した。production変更・試験削除・件数変更はない。初回CIの失敗はこの1件のみで、追加したEPG v1→v2→v3の回帰を含む残り276件は成功。変更試験のhost再コンパイルが成功。単独実行はローカルにRust SI JNI libraryがないため起動できず、実JNIをbuildする全277件のCIで再確認する。
