@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn playback_uses_resolved_keys_and_preserves_ciphertext_without_a_key() {
-        use crate::descrambler_key_table::DescramblerKeySlotId;
+        use crate::descrambler_key_table::tests::TestKeyReference;
         use crate::registry::{ResolvedDescramblerPacketFlow, RuntimeRegistry};
         use maleicacid_tuner_hal2_demux::{
             FilterConfig, FilterConfigKind, FilterOpenType, FilterRuntimeConfigureRequest,
@@ -372,10 +372,9 @@ mod tests {
                 )
                 .unwrap();
             let token = DescramblerKeyToken::try_from_bytes(vec![0x71; 8]).unwrap();
+            let reference = std::sync::Arc::new(TestKeyReference(std::sync::Mutex::new(Some(slot.clone()))));
             if has_key || concurrent_failure {
-                registry
-                    .descrambler_key_table_mut()
-                    .insert_test_key(token.clone(), DescramblerKeySlotId(1));
+                registry.publish_descrambler_key_resolution(token.clone(), reference.clone()).unwrap();
                 registry
                     .replace_descrambler_key_use_case(descrambler.id, token.clone())
                     .unwrap();
@@ -432,14 +431,9 @@ mod tests {
             );
             if concurrent_failure {
                 assert_eq!(requests.len(), 1);
-                registry.publish_descrambler_key_resolution(token).unwrap();
+                *reference.0.lock().unwrap() = None;
             }
-            let packet_keys = registry.resolve_descrambler_packet_keys(
-                requests
-                    .into_iter()
-                    .map(|request| (request, has_key.then(|| slot.clone())))
-                    .collect(),
-            );
+            let packet_keys = registry.snapshot_descrambler_packet_keys(requests);
             let decision = registry
                 .resolved_descrambler_packet_material_for_demux(1, 1, pid, &packet_keys)
                 .decide_descrambled_packet(1, pid, pending.bytes());

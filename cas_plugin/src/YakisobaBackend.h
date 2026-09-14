@@ -15,7 +15,11 @@ public:
     static YakisobaBackend& instance();
     Result processEcm(const std::shared_ptr<KeyRegistry::Slot>& slot, View payload);
     Result processEmm(const std::vector<EmmMessage>& messages);
+#ifdef MALEICACID_CAS_TEST
     Result resolve(const Token& token, Secret<16>* keys);
+#endif
+    Result bind(const Token& token, int* readerFd);
+    void pollCredential();
 #ifdef MALEICACID_CAS_TEST
     void setCredentialPathForTest(std::string path);
 #endif

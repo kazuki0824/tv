@@ -46,7 +46,13 @@ CAS側では初回読込みのファイル種別・サイズ・読取り成否�
 
 ## Tuner HALの内部鍵参照
 
-`libmaleicacid_cas_key_client` はTuner HAL内部consumerへ静的リンクするC++ライブラリである。Tuner HALのRust descrambler libraryはSoongの`static_libs`でこのmoduleへ依存し、C ABIを介してMediaCas session IDと同じtokenのcurrent odd/even Ksをpacket単位で取得する。plugin共有ライブラリをTuner HALへ直接リンクしない。
+`libmaleicacid_cas_key_client` はTuner HAL内部consumerへ静的リンクするC++ライブラリである。Tuner HALのRust descrambler libraryはSoongの`static_libs`でこのmoduleへ依存し、C ABIの結合操作でMediaCas session IDと同じtokenの共有参照を取得し、packetごとの読取りにはその参照を使う。plugin共有ライブラリをTuner HALへ直接リンクしない。
+
+結合時だけ既存のUnix domain socketで認可済みのCASへ接続し、読取り専用の共有領域とCAS所有者の終了通知用ファイル記述子を受け取る。共有領域にはCASの同じsession状態を置き、Tuner用の独立した更新台帳を作らない。共有領域の作成・更新はCAS側、Tuner側は読取りと参照の解放を行う。C++側の参照は同時読取り可能とし、Rust側は所有参照を最後の使用者まで保持する。
+
+この接続はLinuxの `memfd_create`、`F_SEAL_FUTURE_WRITE` と `pidfd_open` を使用する。製品kernelはこれらを備える構成（Linux 5.3以降）とする。CASが既に持つ書込みmappingを残して以後の書込みmappingを禁止し、Tunerへは読取り専用fdを渡す。所有者の終了確認は `pidfd` の非待機 `poll` で行い、各packetでCASへの要求を送信しない。CASが更新途中で終了した場合も読取りを無期限に待たせない。
+
+CASの共有領域には `maleicacid_cas_slot` を付け、Tunerには読取り・mappingとCASから渡されたfdの使用だけを許可する。共有領域への書込み権限をTunerへ与えない。credentialの変化は既存のCAS受付処理でも検査するため、Tunerからの照会が途絶えてもその失効検出を止めない。新しいサービスや通知専用の実行単位は追加しない。
 
 token・参照寿命・失効時の契約は `DESIGN_JA.md`、Tunerの非公開製品入力の配置は `../tuner_hal2/INTEGRATION.md` を参照する。
 
@@ -56,7 +62,7 @@ token・参照寿命・失効時の契約は `DESIGN_JA.md`、Tunerの非公開�
 - AOSP `FactoryLoader` がその探索ディレクトリからMaleicacid pluginを列挙・読込みでき、`createCasFactory()` を発見できることを確認する。
 - `yakisoba_only` ではpluginと内部adapterの依存関係、`libyakisoba` の静的リンクおよびシンボル解決を確認する。
 - Yakisoba credentialの実値がrepository・CI出力・公開artifactへ混入せず、product imageでは上位の製品統合設定が必要な主体だけに読取りを許可していることを確認する。
-- Tuner HAL serviceへ`libmaleicacid_cas_key_client`が静的リンクされ、CAS plugin processとTuner HAL process間のvendor内部socketがSELinux policyで接続できることを確認する。
+- Tuner HAL serviceへ`libmaleicacid_cas_key_client`が静的リンクされ、CAS plugin processとTuner HAL process間のvendor内部socketによる結合と、読取り専用共有領域・所有者終了通知用fdの受渡しがSELinux policyで許可されることを確認する。
 - CAS sessionのECM更新後に同じtokenでodd/even Ksが更新され、session close・CAS process喪失後のpacketで旧鍵が使用されないことを確認する。
 
 設計上のABI・動作条件は [DESIGN_JA.md](DESIGN_JA.md) を参照する。実施した検証と未実施範囲の記録は [CHANGELOG.md](CHANGELOG.md) を参照する。

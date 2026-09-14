@@ -264,6 +264,22 @@ Result YakisobaBackend::processEmm(const std::vector<EmmMessage>& messages) {
     return Result::Ok;
 }
 
+Result YakisobaBackend::bind(const Token& token, int* readerFd) {
+    if (readerFd == nullptr) return Result::BadValue;
+    *readerFd = -1;
+    std::unique_lock lock(mutex_, std::defer_lock);
+    if (!lock.try_lock_for(kLockDeadline)) return Result::Busy;
+    const auto result = checkCredential();
+    return result == Result::Ok ? KeyRegistry::instance().bind(token, readerFd) : result;
+}
+
+void YakisobaBackend::pollCredential() {
+    std::unique_lock lock(mutex_, std::try_to_lock);
+    // ECM/EMM の実行中はその操作自身が credential を再検査する。
+    if (lock.owns_lock() && initialized_) checkCredential();
+}
+
+#ifdef MALEICACID_CAS_TEST
 Result YakisobaBackend::resolve(const Token& token, Secret<16>* keys) {
     if (keys == nullptr) return Result::BadValue;
     eraseSecret(keys->bytes.data(), keys->bytes.size());
@@ -273,5 +289,6 @@ Result YakisobaBackend::resolve(const Token& token, Secret<16>* keys) {
     if (!initialized_) return Result::NotProvisioned;
     return KeyRegistry::instance().resolve(token, keys);
 }
+#endif
 
 }  // namespace maleicacid::cas

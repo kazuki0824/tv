@@ -3,28 +3,75 @@
 #include <maleicacid/cas/KeyClientC.h>
 
 #include "KeySocket.h"
-#include "Types.h"
+#include "SharedSlot.h"
 
 #include <algorithm>
-#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
+#include <new>
 #include <poll.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace maleicacid::cas {
+namespace {
+#ifdef MALEICACID_CAS_TEST
+std::atomic<uint64_t> bindingQueries{0};
+#endif
+struct Fd {
+    int value = -1;
+    ~Fd() { if (value >= 0) close(value); }
+};
+
+bool ownerAlive(int fd) {
+    pollfd owner{fd, POLLIN, 0};
+    // pidfd は所有 process の終了を kernel が通知する。相手への要求送信はない。
+    // EINTR を含む検査不能時も、新しい packet に鍵を渡さない。
+    return poll(&owner, 1, 0) == 0;
+}
+}
+
+#ifdef MALEICACID_CAS_TEST
+uint64_t KeyReference::bindingQueriesForTest() { return bindingQueries.load(); }
+#endif
 
 PacketKeys::~PacketKeys() {
     eraseSecret(odd.data(), odd.size());
     eraseSecret(even.data(), even.size());
 }
 
-KeyResult acquirePacketKeys(const uint8_t* token, size_t length, PacketKeys* output) {
+KeyReference::~KeyReference() {
+    munmap(const_cast<SharedKeyState*>(state_), sizeof(SharedKeyState));
+    close(owner_);
+}
+
+KeyResult KeyReference::snapshot(PacketKeys* output) const {
     if (output == nullptr) return KeyResult::InvalidToken;
     eraseSecret(output->odd.data(), output->odd.size());
     eraseSecret(output->even.data(), output->even.size());
+    if (!ownerAlive(owner_)) return KeyResult::UnknownToken;
+    Secret<16> keys;
+    const auto result = state_->snapshot(&keys);
+    if (!ownerAlive(owner_)) return KeyResult::UnknownToken;
+    if (result == Result::Busy) return KeyResult::Unavailable;
+    if (result != Result::Ok) return KeyResult::UnknownToken;
+    std::copy_n(keys.bytes.data(), 8, output->odd.data());
+    std::copy_n(keys.bytes.data() + 8, 8, output->even.data());
+    return KeyResult::Ok;
+}
+
+KeyResult KeyReference::bind(const uint8_t* token, size_t length,
+                             std::unique_ptr<KeyReference>* output) {
+    if (output == nullptr) return KeyResult::InvalidToken;
+    output->reset();
     if (token == nullptr || length != 16) return KeyResult::InvalidToken;
-    const int fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+#ifdef MALEICACID_CAS_TEST
+    ++bindingQueries;
+#endif
+    Fd connection{socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK, 0)};
+    const int fd = connection.value;
     if (fd < 0) return KeyResult::Unavailable;
-    struct Fd { int value; ~Fd() { close(value); } } cleanup{fd};
     sockaddr_un address;
     const auto size = keySocketAddress(&address);
     if (connect(fd, reinterpret_cast<sockaddr*>(&address), size) != 0) {
@@ -33,36 +80,101 @@ KeyResult acquirePacketKeys(const uint8_t* token, size_t length, PacketKeys* out
     if (!authorizedPeer(fd, true) || !waitSocket(fd, POLLOUT) ||
         send(fd, token, length, MSG_NOSIGNAL) != static_cast<ssize_t>(length) ||
         !waitSocket(fd, POLLIN)) return KeyResult::Unavailable;
-    Secret<17> response;
-    const auto received = recv(fd, response.bytes.data(), response.bytes.size(), MSG_TRUNC);
-    if (received != 17) return KeyResult::Unavailable;
-    const auto status = static_cast<KeyResponseStatus>(response.bytes[0]);
-    if (status == KeyResponseStatus::UnknownToken) return KeyResult::UnknownToken;
-    if (status != KeyResponseStatus::Ok) return KeyResult::Unavailable;
-    std::copy_n(response.bytes.data() + 1, 8, output->odd.data());
-    std::copy_n(response.bytes.data() + 9, 8, output->even.data());
-    return KeyResult::Ok;
+    uint8_t response = 0;
+    iovec data{&response, sizeof(response)};
+    alignas(cmsghdr) char control[CMSG_SPACE(2 * sizeof(int))]{};
+    msghdr message{};
+    message.msg_iov = &data;
+    message.msg_iovlen = 1;
+    message.msg_control = control;
+    message.msg_controllen = sizeof(control);
+    const auto received = recvmsg(fd, &message, MSG_CMSG_CLOEXEC | MSG_TRUNC);
+    Fd descriptors[2];
+    size_t count = 0;
+    bool malformed = false;
+    for (auto* header = CMSG_FIRSTHDR(&message); header; header = CMSG_NXTHDR(&message, header)) {
+        if (header->cmsg_level != SOL_SOCKET || header->cmsg_type != SCM_RIGHTS ||
+            header->cmsg_len < CMSG_LEN(0)) {
+            malformed = true;
+            continue;
+        }
+        const size_t bytes = header->cmsg_len - CMSG_LEN(0);
+        if (bytes % sizeof(int)) malformed = true;
+        for (size_t offset = 0; offset + sizeof(int) <= bytes; offset += sizeof(int)) {
+            int descriptor;
+            std::memcpy(&descriptor, CMSG_DATA(header) + offset, sizeof(descriptor));
+            if (count < 2) descriptors[count++].value = descriptor;
+            else { close(descriptor); malformed = true; }
+        }
+    }
+    if (received != 1 || malformed || (message.msg_flags & (MSG_TRUNC | MSG_CTRUNC))) {
+        return KeyResult::Unavailable;
+    }
+    const auto status = static_cast<KeyResponseStatus>(response);
+    if (status == KeyResponseStatus::UnknownToken && count == 0) return KeyResult::UnknownToken;
+    if (status != KeyResponseStatus::Ok || count != 2) return KeyResult::Unavailable;
+    struct stat info{};
+    const int memory = descriptors[0].value;
+    const int seals = fcntl(memory, F_GET_SEALS);
+    constexpr int required = F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_FUTURE_WRITE | F_SEAL_SEAL;
+    if (fstat(memory, &info) || info.st_size != sizeof(SharedKeyState) ||
+        (fcntl(memory, F_GETFL) & O_ACCMODE) != O_RDONLY ||
+        seals < 0 || (seals & required) != required) return KeyResult::Unavailable;
+    void* mapping = mmap(nullptr, sizeof(SharedKeyState), PROT_READ, MAP_SHARED, memory, 0);
+    if (mapping == MAP_FAILED) return KeyResult::Unavailable;
+    auto reference = std::unique_ptr<KeyReference>(new (std::nothrow)
+        KeyReference(static_cast<const SharedKeyState*>(mapping), descriptors[1].value));
+    if (!reference) {
+        munmap(mapping, sizeof(SharedKeyState));
+        return KeyResult::Unavailable;
+    }
+    descriptors[1].value = -1;
+    PacketKeys current;
+    const auto result = reference->snapshot(&current);
+    if (result == KeyResult::Ok) *output = std::move(reference);
+    return result;
 }
 
 }  // namespace maleicacid::cas
 
-extern "C" int maleicacid_cas_acquire_packet_keys(const uint8_t* token, size_t length,
-                                                    uint8_t* odd, uint8_t* even) {
-    if (odd != nullptr) std::fill_n(odd, 8, 0);
-    if (even != nullptr) std::fill_n(even, 8, 0);
-    if (odd == nullptr || even == nullptr) return MALEICACID_CAS_KEY_INVALID_TOKEN;
-    maleicacid::cas::PacketKeys keys;
-    switch (maleicacid::cas::acquirePacketKeys(token, length, &keys)) {
-        case maleicacid::cas::KeyResult::Ok:
-            std::copy(keys.odd.begin(), keys.odd.end(), odd);
-            std::copy(keys.even.begin(), keys.even.end(), even);
-            return MALEICACID_CAS_KEY_OK;
-        case maleicacid::cas::KeyResult::InvalidToken:
-            return MALEICACID_CAS_KEY_INVALID_TOKEN;
-        case maleicacid::cas::KeyResult::UnknownToken:
-            return MALEICACID_CAS_KEY_UNKNOWN_TOKEN;
-        case maleicacid::cas::KeyResult::Unavailable:
-            return MALEICACID_CAS_KEY_UNAVAILABLE;
+namespace {
+int keyStatus(maleicacid::cas::KeyResult result) {
+    switch (result) {
+        case maleicacid::cas::KeyResult::Ok: return MALEICACID_CAS_KEY_OK;
+        case maleicacid::cas::KeyResult::InvalidToken: return MALEICACID_CAS_KEY_INVALID_TOKEN;
+        case maleicacid::cas::KeyResult::UnknownToken: return MALEICACID_CAS_KEY_UNKNOWN_TOKEN;
+        case maleicacid::cas::KeyResult::Unavailable: return MALEICACID_CAS_KEY_UNAVAILABLE;
     }
     return MALEICACID_CAS_KEY_UNAVAILABLE;
+}
+}
+
+extern "C" int maleicacid_cas_bind_key_reference(const uint8_t* token, size_t length,
+                                                 void** reference) {
+    if (reference == nullptr) return MALEICACID_CAS_KEY_INVALID_TOKEN;
+    *reference = nullptr;
+    std::unique_ptr<maleicacid::cas::KeyReference> result;
+    const auto status = maleicacid::cas::KeyReference::bind(token, length, &result);
+    *reference = result.release();
+    return keyStatus(status);
+}
+
+extern "C" void maleicacid_cas_release_key_reference(void* reference) {
+    delete static_cast<maleicacid::cas::KeyReference*>(reference);
+}
+
+extern "C" int maleicacid_cas_snapshot_key_reference(const void* reference, uint8_t* odd,
+                                                     uint8_t* even) {
+    if (odd != nullptr) std::fill_n(odd, 8, 0);
+    if (even != nullptr) std::fill_n(even, 8, 0);
+    if (reference == nullptr || odd == nullptr || even == nullptr) {
+        return MALEICACID_CAS_KEY_INVALID_TOKEN;
+    }
+    maleicacid::cas::PacketKeys keys;
+    const auto status = static_cast<const maleicacid::cas::KeyReference*>(reference)->snapshot(&keys);
+    if (status == maleicacid::cas::KeyResult::Ok) {
+        std::copy(keys.odd.begin(), keys.odd.end(), odd);
+        std::copy(keys.even.begin(), keys.even.end(), even);
+    }
+    return keyStatus(status);
 }

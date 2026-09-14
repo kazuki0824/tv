@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 #include <csignal>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
@@ -21,6 +22,7 @@
 #include <stdexcept>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <sys/mman.h>
 #include <thread>
 #include <unistd.h>
 
@@ -165,6 +167,15 @@ CasSessionId open(CasPlugin& plugin) {
     CHECK(plugin.openSession(&id) == OK);
     CHECK(id.size() == 16);
     return id;
+}
+
+// 単発の照会を使う既存 ABI/入力試験用。製品の packet 経路は bind 済み参照を使う。
+KeyResult acquirePacketKeys(const uint8_t* token, size_t size, PacketKeys* keys) {
+    if (keys == nullptr) return KeyResult::InvalidToken;
+    *keys = PacketKeys{};
+    std::unique_ptr<KeyReference> reference;
+    const auto result = KeyReference::bind(token, size, &reference);
+    return result == KeyResult::Ok ? reference->snapshot(keys) : result;
 }
 
 bool resolve(const CasSessionId& id, std::array<uint8_t, 16>* result = nullptr) {
@@ -332,17 +343,21 @@ void emmUpdatesAndReplay() {
     const auto message = section(0x84, emmPayload(10, updateKey(2, kNextWorkKey)));
     CHECK(b->processEmm(message) == OK);
     CHECK(a->processEcm(id, ecm(2, kNextWorkKey)) == OK);
-    CHECK(resolve(id));
+    std::unique_ptr<KeyReference> reference;
+    CHECK(KeyReference::bind(id.data(), id.size(), &reference) == KeyResult::Ok);
+    PacketKeys current;
+    CHECK(reference->snapshot(&current) == KeyResult::Ok);
     CHECK(b->processEmm(message) == OK);
-    CHECK(resolve(id));
+    CHECK(reference->snapshot(&current) == KeyResult::Ok);
     CHECK(b->processEmm(section(0x84, emmPayload(9, updateKey(3, kWorkKey)))) == ERROR_CAS_TAMPER_DETECTED);
     CHECK(b->processEmm(section(0x84, emmPayload(10, updateKey(2, kWorkKey)))) == ERROR_CAS_TAMPER_DETECTED);
     CHECK(b->processEmm(section(0x84, emmPayload(11, updateKey(2, kWorkKey)))) == ERROR_CAS_TAMPER_DETECTED);
     CHECK(a->processEcm(id, ecm(2, kNextWorkKey)) == OK);
     CHECK(b->processEmm(section(0x84, emmPayload(11, updateKey(12, kWorkKey)))) == OK);
-    CHECK(!resolve(id));
+    CHECK(reference->snapshot(&current) == KeyResult::UnknownToken);
     CHECK(a->processEcm(id, ecm(2, kNextWorkKey)) == ERROR_CAS_NO_LICENSE);
     CHECK(a->processEcm(id, ecm(12, kWorkKey)) == OK);
+    CHECK(reference->snapshot(&current) == KeyResult::Ok);
     CHECK(b->processEmm(section(0x84, emmPayload(12, updateKey(2, kNextWorkKey)))) == ERROR_CAS_TAMPER_DETECTED);
 }
 
@@ -397,7 +412,8 @@ void fixedCredentials() {
     const auto id = open(*plugin);
     CHECK(chmod(env.path.c_str(), 0666) == 0);
     CHECK(plugin->processEcm(id, ecm()) == OK);
-    CHECK(resolve(id));
+    std::unique_ptr<KeyReference> reference;
+    CHECK(KeyReference::bind(id.data(), id.size(), &reference) == KeyResult::Ok);
     CHECK(unlink(env.path.c_str()) == 0);
     CHECK(resolve(id));
     CHECK(plugin->processEmm(section(0x84, emmPayload(1, updateKey(2, kNextWorkKey)))) == OK);
@@ -471,7 +487,10 @@ void serviceDeathAndConsumerRestart() {
     close(ready[1]); close(control[0]);
     CasSessionId id(16);
     CHECK(read(ready[0], id.data(), id.size()) == 16);
-    CHECK(resolve(id));
+    std::unique_ptr<KeyReference> reference;
+    CHECK(KeyReference::bind(id.data(), id.size(), &reference) == KeyResult::Ok);
+    PacketKeys current;
+    CHECK(reference->snapshot(&current) == KeyResult::Ok);
     // 独立 consumer の終了は CAS 側 session を失効させない。
     const auto consumer = fork();
     CHECK(consumer >= 0);
@@ -482,11 +501,13 @@ void serviceDeathAndConsumerRestart() {
     CHECK(kill(child, SIGKILL) == 0);
     CHECK(waitpid(child, &state, 0) == child && WIFSIGNALED(state));
     CHECK(!resolve(id));
+    CHECK(reference->snapshot(&current) == KeyResult::UnknownToken);
     auto restarted = env.plugin();
     const auto replacement = open(*restarted);
     CHECK(replacement != id);
     CHECK(restarted->processEcm(replacement, ecm()) == OK);
     CHECK(resolve(replacement) && !resolve(id));
+    CHECK(reference->snapshot(&current) == KeyResult::UnknownToken);
     close(ready[0]); close(control[1]);
 }
 
@@ -517,15 +538,21 @@ void boundedSocketAndInvalidRequests() {
     std::array<uint8_t, 8> odd{};
     std::array<uint8_t, 8> even{};
     even.fill(0xff);
-    CHECK(maleicacid_cas_acquire_packet_keys(id.data(), id.size(), nullptr, even.data()) ==
+    void* reference = nullptr;
+    CHECK(maleicacid_cas_bind_key_reference(id.data(), id.size(), &reference) == MALEICACID_CAS_KEY_OK);
+    CHECK(maleicacid_cas_snapshot_key_reference(reference, nullptr, even.data()) ==
           MALEICACID_CAS_KEY_INVALID_TOKEN);
     CHECK(std::all_of(even.begin(), even.end(), [](uint8_t b) { return b == 0; }));
-    CHECK(maleicacid_cas_acquire_packet_keys(id.data(), id.size(), odd.data(), even.data()) ==
-          MALEICACID_CAS_KEY_OK);
+    CHECK(maleicacid_cas_snapshot_key_reference(reference, odd.data(), even.data()) == MALEICACID_CAS_KEY_OK);
     CHECK(std::equal(odd.begin(), odd.end(), kKeys.begin()));
     CHECK(std::equal(even.begin(), even.end(), kKeys.begin() + 8));
-    CHECK(maleicacid_cas_acquire_packet_keys(wrong.data(), wrong.size(), odd.data(), even.data()) ==
+    maleicacid_cas_release_key_reference(reference);
+    reference = nullptr;
+    CHECK(maleicacid_cas_bind_key_reference(wrong.data(), wrong.size(), &reference) ==
           MALEICACID_CAS_KEY_UNKNOWN_TOKEN);
+    CHECK(reference == nullptr);
+    CHECK(maleicacid_cas_snapshot_key_reference(reference, odd.data(), even.data()) ==
+          MALEICACID_CAS_KEY_INVALID_TOKEN);
     CHECK(std::all_of(odd.begin(), odd.end(), [](uint8_t b) { return b == 0; }));
     CHECK(std::all_of(even.begin(), even.end(), [](uint8_t b) { return b == 0; }));
 }
@@ -844,6 +871,83 @@ void coreAccessPolicy() {
 
 }  // namespace
 
+void sharedReferenceUpdatesAndRevocation() {
+    Environment env;
+    auto plugin = env.plugin();
+    const auto id = open(*plugin);
+    CHECK(plugin->processEcm(id, ecm()) == OK);
+    std::unique_ptr<KeyReference> reference;
+    CHECK(KeyReference::bind(id.data(), id.size(), &reference) == KeyResult::Ok);
+    PacketKeys first;
+    const auto queries = KeyReference::bindingQueriesForTest();
+    for (int packet = 0; packet < 1000; ++packet) {
+        CHECK(reference->snapshot(&first) == KeyResult::Ok);
+        CHECK(std::equal(first.odd.begin(), first.odd.end(), kKeys.begin()));
+    }
+    CHECK(KeyReference::bindingQueriesForTest() == queries);
+    auto next = kKeys;
+    next.fill(0x73);
+    CHECK(plugin->processEcm(id, ecm(1, kWorkKey, next)) == OK);
+    PacketKeys current;
+    CHECK(reference->snapshot(&current) == KeyResult::Ok && current.odd[0] == 0x73);
+    CHECK(plugin->processEcm(id, ecm(1, kNextWorkKey)) == ERROR_CAS_DECRYPT);
+    CHECK(reference->snapshot(&current) == KeyResult::Ok && current.odd[0] == 0x73);
+    CHECK(std::equal(first.odd.begin(), first.odd.end(), kKeys.begin()));
+    // CAS が失効を確定する。TIS の処理や再結合は呼ばない。
+    KeyRegistry::instance().invalidateGroup(2);
+    CHECK(reference->snapshot(&current) == KeyResult::UnknownToken);
+    CHECK(plugin->processEcm(id, ecm(1, kNextWorkKey)) == ERROR_CAS_DECRYPT);
+    CHECK(reference->snapshot(&current) == KeyResult::UnknownToken);
+    CHECK(plugin->processEcm(id, ecm()) == OK);
+    CHECK(reference->snapshot(&current) == KeyResult::Ok);
+    CHECK(plugin->closeSession(id) == OK);
+    CHECK(reference->snapshot(&current) == KeyResult::UnknownToken);
+    CHECK(plugin->processEcm(id, ecm()) == ERROR_CAS_SESSION_NOT_OPENED);
+    CHECK(reference->snapshot(&current) == KeyResult::UnknownToken);
+}
+
+void sharedStateConsistencyAndReadOnlyMapping() {
+    auto slot = SharedSlot::create();
+    CHECK(slot != nullptr);
+    const int reader = slot->readerFd();
+    CHECK(reader >= 0);
+    CHECK((fcntl(reader, F_GETFL) & O_ACCMODE) == O_RDONLY);
+    CHECK(mmap(nullptr, sizeof(SharedKeyState), PROT_READ | PROT_WRITE, MAP_SHARED, reader, 0) == MAP_FAILED);
+    const auto* state = static_cast<const SharedKeyState*>(
+        mmap(nullptr, sizeof(SharedKeyState), PROT_READ, MAP_SHARED, reader, 0));
+    CHECK(state != MAP_FAILED);
+    close(reader);
+    Secret<16> first;
+    first.bytes.fill(0x21);
+    slot->state().store(&first, 0xffff);
+    std::atomic<bool> finished{false};
+    std::thread writer([&] {
+        Secret<16> next;
+        for (int i = 0; i < 10000; ++i) {
+            next.bytes.fill(i % 2 ? 0x21 : 0x42);
+            slot->state().store(&next, 0xffff);
+        }
+        finished = true;
+    });
+    bool consistent = true;
+    size_t reads = 0;
+    do {
+        Secret<16> current;
+        const auto result = state->snapshot(&current);
+        if (result == Result::Ok) {
+            ++reads;
+            consistent &= std::all_of(current.bytes.begin(), current.bytes.end(),
+                [&](uint8_t byte) { return byte == current.bytes[0]; });
+        } else consistent &= result == Result::Busy;
+    } while (!finished || reads < 1000);
+    writer.join();
+    CHECK(consistent);
+    slot.reset();
+    Secret<16> current;
+    CHECK(state->snapshot(&current) == Result::NoLicense);
+    CHECK(munmap(const_cast<SharedKeyState*>(state), sizeof(SharedKeyState)) == 0);
+}
+
 using TestCase = std::pair<const char*, std::function<void()>>;
 
 std::vector<TestCase> testCases(bool coreOnly) {
@@ -861,6 +965,7 @@ std::vector<TestCase> testCases(bool coreOnly) {
         {"service_death_consumer_restart", serviceDeathAndConsumerRestart},
         {"socket_input_bounds", boundedSocketAndInvalidRequests},
         {"key_resolution_status", keyResolutionStatus},
+        {"shared_reference_updates_revoke", sharedReferenceUpdatesAndRevocation},
     };
     std::vector<std::pair<const char*, std::function<void()>>> tests = {
         {"core_factory_dispatch", coreFactoryDispatch},
@@ -875,6 +980,7 @@ std::vector<TestCase> testCases(bool coreOnly) {
         {"core_credential_grammar", coreCredentialGrammar},
         {"core_concurrency", coreConcurrency},
         {"core_access_policy", coreAccessPolicy},
+        {"core_shared_state", sharedStateConsistencyAndReadOnlyMapping},
     };
     if (!coreOnly) tests.insert(tests.end(), integration.begin(), integration.end());
     return tests;

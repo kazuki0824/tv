@@ -9,7 +9,7 @@ mod core;
 mod product_parameters;
 mod runtime;
 
-pub use cas_key_resolver::{CasKeyResolveError, CasKeyResolver, ProductCasKeyResolver};
+pub use cas_key_resolver::{CasKeyReference, CasKeyResolveError, CasKeyResolver, ProductCasKeyResolver};
 
 pub use core::{
     descramble_validated_ts_packet_in_place, multi2_decrypt_payload, multi2_encrypt_payload,
