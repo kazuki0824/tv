@@ -1,4 +1,5 @@
 use crate::boot::TunerServiceRuntime;
+use std::sync::{Arc, Mutex};
 use crate::object_method_use_case::ObjectMethodExecutionToken;
 use crate::registry::{DescramblerRegistryEntry, RegistryCommitError};
 use maleicacid_tuner_hal2_common::HalError;
@@ -7,7 +8,7 @@ use maleicacid_tuner_hal2_descrambler::{
     DescramblerKeyTokenError, ProductCasKeyResolver,
 };
 
-pub enum PreparedDescramblerKeyToken {
+pub(crate) enum PreparedDescramblerKeyToken {
     Clear,
     Invalid(DescramblerKeyTokenError),
     Resolved {
@@ -19,7 +20,7 @@ pub enum PreparedDescramblerKeyToken {
     LookupExisting(DescramblerKeyToken),
 }
 
-pub fn prepare_product_descrambler_key_token(key_token: &[u8]) -> PreparedDescramblerKeyToken {
+fn prepare_product_descrambler_key_token(key_token: &[u8]) -> PreparedDescramblerKeyToken {
     if key_token == [0x00].as_slice() {
         return PreparedDescramblerKeyToken::Clear;
     }
@@ -156,6 +157,21 @@ impl TunerServiceRuntime {
     }
 
     pub fn set_descrambler_key_token_for_object(
+        runtime: &Arc<Mutex<Self>>,
+        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+        key_token: &[u8],
+        dispatch: ObjectMethodExecutionToken,
+    ) -> Result<(), HalError> {
+        let prepared = prepare_product_descrambler_key_token(key_token);
+        let mut runtime = runtime.lock().map_err(|_| {
+            HalError::internal(maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                "service runtime lock poisoned after CAS key resolution")
+        })?;
+        runtime.commit_descrambler_key_token_for_object(object_id, generation, prepared, dispatch)
+    }
+
+    fn commit_descrambler_key_token_for_object(
         &mut self,
         object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
         generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,

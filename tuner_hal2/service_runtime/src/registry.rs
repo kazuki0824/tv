@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use crate::descrambler_key_table::DescramblerPacketKeys;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -1948,6 +1949,7 @@ impl RuntimeRegistry {
         &self,
         demux_id: i32,
         demux_generation: u64,
+        packet_keys: &DescramblerPacketKeys,
     ) -> Vec<ResolvedDescramblerClaimSet> {
         self.descrambler_runtimes
             .values()
@@ -1955,7 +1957,7 @@ impl RuntimeRegistry {
                 let claim_set = runtime.resolved_claim_set_for_demux(
                     demux_id,
                     demux_generation,
-                    &self.descrambler_key_table,
+                    |slot| packet_keys.key_slot(slot),
                 )?;
                 let (claims, key_slot) = claim_set.into_parts();
                 Some(ResolvedDescramblerClaimSet { claims, key_slot })
@@ -1975,6 +1977,13 @@ impl RuntimeRegistry {
                 Some((demux_id, generation))
             })
             .collect();
+        self.descrambler_key_refresh_requests_for_demuxes(&bound_demuxes)
+    }
+
+    pub(crate) fn descrambler_key_refresh_requests_for_demuxes(
+        &mut self,
+        bound_demuxes: &BTreeSet<(DemuxRuntimeId, u64)>,
+    ) -> Vec<DescramblerKeyRefreshRequest> {
         let mut bindings = BTreeMap::new();
         for runtime in self.descrambler_runtimes.values() {
             let Some((demux_id, generation)) = runtime.demux_binding() else {
@@ -1997,12 +2006,16 @@ impl RuntimeRegistry {
             .collect()
     }
 
-    pub(crate) fn apply_descrambler_key_refresh(
+    pub(crate) fn resolve_descrambler_packet_keys(
         &mut self,
-        request: &DescramblerKeyRefreshRequest,
-        key_slot: Option<DescramblerKeySlot>,
-    ) {
-        self.descrambler_key_table.apply_refresh(request, key_slot);
+        refreshes: Vec<(DescramblerKeyRefreshRequest, Option<DescramblerKeySlot>)>,
+    ) -> DescramblerPacketKeys {
+        self.descrambler_key_table.resolve_packet_keys(refreshes)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn descrambler_packet_keys_for_test(&self) -> DescramblerPacketKeys {
+        self.descrambler_key_table.packet_keys_for_test()
     }
 
     pub(crate) fn publish_descrambler_key_resolution(
@@ -2027,8 +2040,9 @@ impl RuntimeRegistry {
         demux_id: i32,
         demux_generation: u64,
         packet_pid: PacketPid,
+        packet_keys: &DescramblerPacketKeys,
     ) -> ResolvedDescramblerPacketMaterial {
-        let claim_sets = self.resolved_descrambler_claims_for_demux(demux_id, demux_generation);
+        let claim_sets = self.resolved_descrambler_claims_for_demux(demux_id, demux_generation, packet_keys);
         let mut snapshots = Vec::with_capacity(claim_sets.len());
         let mut diagnostics = Vec::new();
         let mut diagnostic_records = Vec::new();

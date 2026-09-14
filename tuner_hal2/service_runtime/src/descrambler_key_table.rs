@@ -28,6 +28,17 @@ pub(crate) struct DescramblerKeyRefreshRequest {
     generation: u64,
 }
 
+#[derive(Default)]
+pub(crate) struct DescramblerPacketKeys {
+    slots: BTreeMap<DescramblerKeySlotId, DescramblerKeySlot>,
+}
+
+impl DescramblerPacketKeys {
+    pub(crate) fn key_slot(&self, slot: DescramblerKeySlotId) -> Option<DescramblerKeySlot> {
+        self.slots.get(&slot).cloned()
+    }
+}
+
 impl DescramblerKeyRefreshRequest {
     fn new(token: DescramblerKeyToken, slot: DescramblerKeySlotId, generation: u64) -> Self {
         Self {
@@ -142,6 +153,7 @@ impl DescramblerKeyTable {
             return None;
         };
         state.refresh_generation = generation;
+        state.key_slot = None;
         Some(DescramblerKeyRefreshRequest::new(
             token.clone(),
             slot,
@@ -153,23 +165,47 @@ impl DescramblerKeyTable {
         &mut self,
         request: &DescramblerKeyRefreshRequest,
         key_slot: Option<DescramblerKeySlot>,
-    ) {
+    ) -> bool {
         let Some(state) = self.slots.get_mut(request.token()) else {
-            return;
+            return false;
         };
         if state.slot != request.slot()
             || state.refresh_generation != request.generation
             || state.refcount == 0
             || state.expired
         {
-            return;
+            return false;
         }
         state.key_slot = key_slot;
         let Some(next_generation) = state.refresh_generation.checked_add(1) else {
             state.key_slot = None;
-            return;
+            return false;
         };
         state.refresh_generation = next_generation;
+        true
+    }
+
+    pub(crate) fn resolve_packet_keys(
+        &mut self,
+        refreshes: Vec<(DescramblerKeyRefreshRequest, Option<DescramblerKeySlot>)>,
+    ) -> DescramblerPacketKeys {
+        let mut keys = DescramblerPacketKeys::default();
+        for (request, key_slot) in refreshes {
+            if self.apply_refresh(&request, key_slot.clone()) {
+                if let Some(key_slot) = key_slot {
+                    keys.slots.insert(request.slot(), key_slot);
+                }
+            }
+        }
+        keys
+    }
+
+    #[cfg(test)]
+    pub(crate) fn packet_keys_for_test(&self) -> DescramblerPacketKeys {
+        DescramblerPacketKeys {
+            slots: self.slots.values().filter(|state| !state.expired)
+                .filter_map(|state| state.key_slot.clone().map(|key| (state.slot, key))).collect(),
+        }
     }
 
     pub(crate) fn discard_if_unreferenced(
@@ -384,6 +420,49 @@ mod tests {
         assert_eq!(table.publish(token.clone(), key_slot(8)), Ok(slot));
         table.apply_refresh(&stale_request, None);
         assert!(table.key_slot(slot).is_some());
+    }
+
+    #[test]
+    fn overlapping_refresh_failure_has_no_packet_key_while_newer_query_is_pending() {
+        let token = DescramblerKeyToken::try_from_bytes(vec![0x21; 16]).unwrap();
+        let mut table = DescramblerKeyTable::default();
+        let slot = table.publish(token.clone(), key_slot(1)).unwrap();
+        table.acquire(&token).unwrap();
+        let first = table.begin_refresh(&token, slot).unwrap();
+        let second = table.begin_refresh(&token, slot).unwrap();
+        let failed = table.resolve_packet_keys(vec![(first, None)]);
+        assert!(failed.key_slot(slot).is_none());
+        assert!(table.key_slot(slot).is_none());
+        let current = table.resolve_packet_keys(vec![(second, Some(key_slot(2)))]);
+        assert_eq!(current.key_slot(slot), Some(key_slot(2)));
+        assert!(failed.key_slot(slot).is_none());
+    }
+
+    #[test]
+    fn overtaken_refresh_never_uses_material_published_by_another_call() {
+        for response in [None, Some(key_slot(1))] {
+            let token = DescramblerKeyToken::try_from_bytes(vec![0x22; 16]).unwrap();
+            let mut table = DescramblerKeyTable::default();
+            let slot = table.publish(token.clone(), key_slot(1)).unwrap();
+            table.acquire(&token).unwrap();
+            let stale = table.begin_refresh(&token, slot).unwrap();
+            table.publish(token, key_slot(9)).unwrap();
+            let packet = table.resolve_packet_keys(vec![(stale, response)]);
+            assert!(packet.key_slot(slot).is_none());
+            assert_eq!(table.key_slot(slot), Some(key_slot(9)));
+        }
+    }
+
+    #[test]
+    fn released_slot_rejects_delayed_packet_material() {
+        let token = DescramblerKeyToken::try_from_bytes(vec![0x23; 16]).unwrap();
+        let mut table = DescramblerKeyTable::default();
+        let slot = table.publish(token.clone(), key_slot(1)).unwrap();
+        table.acquire(&token).unwrap();
+        let stale = table.begin_refresh(&token, slot).unwrap();
+        table.release(&token).unwrap();
+        let packet = table.resolve_packet_keys(vec![(stale, Some(key_slot(1)))]);
+        assert!(packet.key_slot(slot).is_none());
     }
 
     #[test]
