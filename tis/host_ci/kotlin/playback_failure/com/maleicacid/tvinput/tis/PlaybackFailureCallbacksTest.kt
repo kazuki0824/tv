@@ -3,6 +3,7 @@
 
 package com.maleicacid.tvinput.tis
 
+import android.media.MediaCas
 import android.media.MediaSync
 import android.media.tv.tuner.Tuner
 import android.media.tv.tuner.filter.Filter
@@ -13,9 +14,114 @@ import com.maleicacid.tvinput.common.StreamSelector
 import com.maleicacid.tvinput.common.TsPid
 import org.junit.Test
 import sun.misc.Unsafe
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 class PlaybackFailureCallbacksTest {
+    @Test fun invalidatedEcmAndEmmStopFiltersAndPlaybackAndNotifyOriginalGeneration() {
+        checkCasInvalidation(failCleanup = false)
+    }
+
+    @Test fun casAndFilterCleanupFailuresStillStopPlaybackAndNotifyOriginalGeneration() {
+        checkCasInvalidation(failCleanup = true)
+    }
+
+    // 同じ配送から所有解放・再生通知までの因果関係を一続きに確認する。
+    @Suppress("LongMethod", "CyclomaticComplexMethod")
+    private fun checkCasInvalidation(failCleanup: Boolean) {
+        val executor = Executors.newSingleThreadExecutor { Thread(it, "maleicacid-tis-controller-test") }
+        try {
+            executor
+                .submit {
+                    for (operation in listOf(MediaCas.Operation.ECM, MediaCas.Operation.EMM)) {
+                        val faults = MediaCas.Faults
+                        faults.reset()
+                        CasController().use { cas ->
+                            val metadata =
+                                CasControllerStateTestVectors.pluginSelectionSuccessMetadata().map {
+                                    if (it.emmPid != null) it.copy(emmPid = TsPid(0x120)) else it
+                                }
+                            cas.updateFromCaMetadata(metadata)
+                            val fixture = Fixture(false, false, failCleanup)
+                            val controller = fixture.allocate(TunerController::class.java)
+                            val pmt = TestSectionHandle(TsPid(0x100))
+                            val ecm = TestSectionHandle(TsPid(0x123), failCleanup)
+                            val emm = TestSectionHandle(TsPid(0x120))
+                            val pmtPids = linkedSetOf(pmt.pid)
+                            val ecmPids = linkedSetOf(ecm.pid)
+                            val emmPids = linkedSetOf(emm.pid)
+
+                            fun set(
+                                name: String,
+                                value: Any,
+                            ) {
+                                TunerController::class.java
+                                    .getDeclaredField(name)
+                                    .apply { isAccessible = true }
+                                    .set(controller, value)
+                            }
+                            set("inputId", "test")
+                            set("sectionExecutor", executor)
+                            set("tuneAccepted", true)
+                            set("tuneGeneration", 7L)
+                            set("casController", cas)
+                            set("playbackPipeline", fixture.pipeline)
+                            set("dynamicPmtPids", pmtPids)
+                            set("dynamicEcmPids", ecmPids)
+                            set("dynamicEmmPids", emmPids)
+                            set("sectionFilterHandles", linkedMapOf(pmt.pid to pmt, ecm.pid to ecm, emm.pid to emm))
+                            set("sectionFilters", linkedMapOf<TsPid, List<Filter>>())
+                            faults.invalidateAt = operation
+                            faults.pluginFailure = failCleanup
+                            val pid = if (operation == MediaCas.Operation.ECM) ecm.pid else emm.pid
+                            val result = runCatching { controller.onSection(pid, byteArrayOf(1)) }
+                            check(result.isFailure == failCleanup)
+                            if (failCleanup) check(requireNotNull(result.exceptionOrNull()).suppressed.size == 2)
+                            check(faults.pluginCloses == 1 && faults.sessionCloses == 0)
+                            check(ecm.closes == 1 && emm.closes == 1 && pmt.closes == 0)
+                            check(pmtPids == setOf(pmt.pid) && emmPids.isEmpty())
+                            check(ecmPids.isEmpty() == !failCleanup)
+                            check(fixture.pipeline.currentPlaybackGenerationForTest() == 8L)
+                            check(fixture.notifications == 1)
+                            check(fixture.state == PlaybackStartState.Failed(fixture.signature, 7L))
+                            val failure = fixture.failures.single()
+                            check(failure.generation == 7L)
+                            check(failure.reason == PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY)
+                            check(cas.lastDiagnostic().errorCode == CasController.ErrorCode.MEDIA_CAS_INVALIDATED)
+                            val calls = faults.calls.toList()
+                            controller.onSection(pid, byteArrayOf(1))
+                            check(faults.calls == calls && fixture.notifications == 1)
+                            faults.pluginFailure = false
+                            cas.clearForResourceLoss()
+                            ecm.rejectClose = false
+                            controller.closeSectionFilters()
+                            fixture.rejectRelease = false
+                            fixture.pipeline.stop()
+                            check(!fixture.cleanup.hasPending)
+                            check(cas.updateFromCaMetadata(metadata).diagnostics.isEmpty() && faults.creates == 2)
+                        }
+                    }
+                }.get(10, TimeUnit.SECONDS)
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    private class TestSectionHandle(
+        override val pid: TsPid,
+        var rejectClose: Boolean = false,
+    ) : TunerController.SectionFilterHandle {
+        override var isOpen = true
+        var closes = 0
+
+        override fun close() {
+            closes++
+            isOpen = false
+            check(!rejectClose) { "CAS filter閉鎖の失敗" }
+        }
+    }
+
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // 候補の処理と入れ子の資源寿命を同じ手順内で確認できる構造を保つ。
     @Suppress("MaxLineLength", "NestedBlockDepth")

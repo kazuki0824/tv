@@ -1,3 +1,11 @@
+# PR #108 MediaCas無効化後の終了実装
+
+- Framework MediaCas adapterと全Sessionで無効状態を共有し、CAS固有状態例外・引数エラーを区別する。CasControllerは無効化を検出するとplugin/sessionと配送indexを退役させ、Descrambler閉鎖からMediaCas.closeへ進む。未完了cleanupの所有を保持し、成功した終了処理を繰り返さない。
+- metadata適用中の無効化はrollback中も含めて失敗として返し、その更新内の再生成を止める。元の操作例外と追加cleanup失敗を診断に保持する。
+- ECM/EMM配送での無効化をTunerControllerの全件cleanupへ接続し、PMTを維持してCAS filterと再生を停止する。停止時の世代更新後も、失敗した元の再生世代へ利用不能通知を返す。
+- 実Framework adapterへ不可逆な無効化を注入するhost試験を8件、TunerControllerの実配送からfilter・再生停止・通知までを検証するhost試験を2件追加した。各API境界、複数session、旧plugin終了、rollback中無効化、複数cleanup失敗、後続再接続、別controllerの独立性を確認し、CI期待件数を247件へ更新した。
+- 本番・全試験KotlinのAndroid 15入力によるhostコンパイル、関連JUnit 41件が成功。追加試験はhost専用であり、Soong/atest対象へFramework stubを混入させない。Android/Soong build、device atest、VTS、実機確認は未実施。r52のTRM・初期容量待ち・実復号接続は本変更の実装対象に含めない。
+
 # PR #108 MediaCas無効化後の終了設計
 
 - Frameworkのinstance無効化と再試行可能な個別close失敗を区別し、検出・配送停止・所有資源の終了をTISへ帰属させた。CAS固有状態例外をMediaCas全体の無効化へ誤分類しない。

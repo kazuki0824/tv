@@ -1230,13 +1230,32 @@ class TunerController(
             onEcm = {
                 val diagnostics = casController?.onEcmSection(pid, section).orEmpty()
                 diagnostics.forEach { Log.w(LogTags.TIS, "ECM 処理診断 $it") }
-                if (diagnostics.any { it.state == CasController.State.ERROR }) {
+                if (diagnostics.any { it.errorCode == CasController.ErrorCode.MEDIA_CAS_INVALIDATED }) {
+                    finishInvalidatedCasOnController(diagnostics)
+                } else if (diagnostics.any { it.state == CasController.State.ERROR }) {
                     playbackPipeline.reportUnavailable(PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY, diagnostics.joinToString())
                 }
             },
             onEmm = {
                 val diagnostics = casController?.onEmmSection(pid, section).orEmpty()
                 diagnostics.forEach { Log.w(LogTags.TIS, "EMM 処理診断 $it") }
+                if (diagnostics.any { it.errorCode == CasController.ErrorCode.MEDIA_CAS_INVALIDATED }) {
+                    finishInvalidatedCasOnController(diagnostics)
+                }
+            },
+        )
+    }
+
+    private fun finishInvalidatedCasOnController(diagnostics: List<CasController.Diagnostic>) {
+        val pmtPids = dynamicPmtPids.toSet()
+        SectionFilterPolicy.completeCleanup(
+            { casController?.clearForResourceLoss() },
+            { updateDynamicSectionFiltersOnController(pmtPids, emptySet(), emptySet()) },
+            {
+                playbackPipeline.stopAndReportUnavailable(
+                    PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY,
+                    diagnostics.joinToString(),
+                )
             },
         )
     }

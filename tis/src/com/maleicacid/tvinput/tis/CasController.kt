@@ -34,6 +34,7 @@ class CasController(
         KEY_TOKEN_MISSING,
         INVALID_KEY_TOKEN,
         DESCRAMBLER_FAILED,
+        MEDIA_CAS_INVALIDATED,
         CLOSED,
     }
 
@@ -45,6 +46,7 @@ class CasController(
         val caSystemId: Int? = null,
         val pid: TsPid? = null,
         val message: String = "",
+        val cause: Throwable? = null,
     )
 
     data class UpdateResult(
@@ -111,6 +113,7 @@ class CasController(
         val sessions: MutableMap<SessionKey, CasSessionState> = linkedMapOf()
         var retiring: Boolean = false
         var casClosed: Boolean = false
+        var invalidated: Boolean = false
     }
 
     private class SessionProvisioningException(
@@ -163,7 +166,7 @@ class CasController(
                         }
                     }.toTypedArray(),
             )
-            lastDiagnostic = Diagnostic(State.IDLE)
+            if (lastDiagnostic.errorCode != ErrorCode.MEDIA_CAS_INVALIDATED) lastDiagnostic = Diagnostic(State.IDLE)
         }
 
     private fun clearForResourceLossLocked() {
@@ -180,19 +183,19 @@ class CasController(
 
     // 動的な引数列を既存の可変長APIへ渡すため、一時配列のコピーを許容する。
     @Suppress("SpreadOperator")
-    private fun clearForClearServiceLocked() {
+    private fun clearForClearServiceLocked(propagateInvalidation: Boolean = false) {
         invalidateMetadataLocked()
         pluginsBySystemId.values.forEach { it.retiring = true }
         // system同士は独立に全件cleanupを試し、各sessionのVOID・close・descrambler cleanup後にpluginを閉じる。
         SectionFilterPolicy.completeCleanup(
             *pluginsBySystemId.keys
                 .map { systemId ->
-                    { closeSystemLocked(systemId) }
+                    { closeSystemLocked(systemId, propagateInvalidation) }
                 }.toTypedArray(),
         )
         ecmPidToSessions.clear()
         emmPidToSystems.clear()
-        lastDiagnostic = Diagnostic(State.IDLE)
+        if (lastDiagnostic.errorCode != ErrorCode.MEDIA_CAS_INVALIDATED) lastDiagnostic = Diagnostic(State.IDLE)
     }
 
     // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
@@ -216,14 +219,14 @@ class CasController(
             // 配送indexはmetadata全体の成功時だけ公開する。物理解放の途中でsurvivorを再公開しない。
             invalidateMetadataLocked()
             if (metadata.isEmpty()) {
-                clearForClearServiceLocked()
+                clearForClearServiceLocked(propagateInvalidation = true)
                 return@onExecutor UpdateResult(emptyList(), emptySet(), emptySet())
             }
             SectionFilterPolicy.completeCleanup(
                 *pluginsBySystemId.values
                     .filter { it.retiring }
                     .map { state ->
-                        { closeSystemLocked(state.caSystemId) }
+                        { closeSystemLocked(state.caSystemId, propagateInvalidation = true) }
                     }.toTypedArray(),
             )
             val diagnostics = mutableListOf<Diagnostic>()
@@ -293,7 +296,7 @@ class CasController(
             // 旧sessionの解放を完了してから、新sessionやPID対応を公開する。
             SectionFilterPolicy.completeCleanup(
                 *(
-                    obsolete.map { system -> { closeSystemLocked(system.caSystemId) } } +
+                    obsolete.map { system -> { closeSystemLocked(system.caSystemId, propagateInvalidation = true) } } +
                         pluginsBySystemId.values.filterNot { it.retiring }.flatMap { system ->
                             system.sessions.values.filter { it.retiring }.map { state ->
                                 { closeSessionLocked(system, state) }
@@ -302,20 +305,21 @@ class CasController(
                 ).toTypedArray(),
             )
             bindings.forEach { (key, entries) ->
+                if (diagnostics.any { it.errorCode == ErrorCode.MEDIA_CAS_INVALIDATED }) return@forEach
                 ensureSessionLocked(key)
                     .onSuccess { state ->
                         state.elementaryPids.clear()
                         state.elementaryPids.addAll(entries.mapNotNull { it.elementaryPid })
                         state.session.setPrivateData(key.privateData.toByteArray()).onFailure { failure ->
                             diagnostics +=
-                                Diagnostic(
-                                    State.ERROR,
+                                casFailureDiagnosticLocked(
                                     ErrorCode.PRIVATE_DATA_FAILED,
                                     key.caSystemId,
                                     key.ecmPid,
-                                    failure.message.orEmpty(),
+                                    failure,
                                 )
                         }
+                        if (state.retiring) return@onSuccess
                         if (state.elementaryPids.isNotEmpty() && state.descrambler == null && createDescrambler != null) {
                             runCatching {
                                 val candidate = createDescrambler()
@@ -343,16 +347,16 @@ class CasController(
                     }
             }
             emmBindings.forEach { binding ->
+                if (diagnostics.any { it.errorCode == ErrorCode.MEDIA_CAS_INVALIDATED }) return@forEach
                 ensureCasOnlyLocked(binding.caSystemId)
                     .onSuccess { cas ->
                         cas.setPrivateData(binding.privateData).onFailure { failure ->
                             diagnostics +=
-                                Diagnostic(
-                                    State.ERROR,
+                                casFailureDiagnosticLocked(
                                     ErrorCode.PRIVATE_DATA_FAILED,
                                     binding.caSystemId,
                                     binding.emmPid,
-                                    failure.message.orEmpty(),
+                                    failure,
                                 )
                         }
                     }.onFailure { failure ->
@@ -384,6 +388,7 @@ class CasController(
             if (sessionKeys.isEmpty()) return@onExecutor emptyList()
             val diagnostics = mutableListOf<Diagnostic>()
             sessionKeys.forEach { key ->
+                if (diagnostics.any { it.errorCode == ErrorCode.MEDIA_CAS_INVALIDATED }) return@forEach
                 val systemId = key.caSystemId
                 val system = pluginsBySystemId[systemId]?.takeUnless { it.retiring }
                 val state = system?.sessions?.get(key)?.takeUnless { it.retiring || it.sessionClosed }
@@ -394,7 +399,7 @@ class CasController(
                 val tokenResult = state.session.processEcm(section)
                 if (tokenResult.isFailure) {
                     diagnostics +=
-                        Diagnostic(State.ERROR, ErrorCode.ECM_FAILED, systemId, pid, tokenResult.exceptionOrNull()?.message.orEmpty())
+                        casFailureDiagnosticLocked(ErrorCode.ECM_FAILED, systemId, pid, requireNotNull(tokenResult.exceptionOrNull()))
                     return@forEach
                 }
                 when (val ecmResult = tokenResult.getOrNull()) {
@@ -461,6 +466,7 @@ class CasController(
             if (systems.isEmpty()) return@onExecutor emptyList()
             val diagnostics = mutableListOf<Diagnostic>()
             systems.forEach { systemId ->
+                if (diagnostics.any { it.errorCode == ErrorCode.MEDIA_CAS_INVALIDATED }) return@forEach
                 val cas =
                     pluginsBySystemId[systemId]?.cas
                         ?: ensureCasOnlyLocked(systemId).getOrElse { failure ->
@@ -469,7 +475,7 @@ class CasController(
                         }
                 cas.processEmm(section).onFailure { e ->
                     diagnostics +=
-                        Diagnostic(State.ERROR, ErrorCode.EMM_FAILED, systemId, pid, e.message.orEmpty())
+                        casFailureDiagnosticLocked(ErrorCode.EMM_FAILED, systemId, pid, e)
                 }
             }
             if (diagnostics.isNotEmpty()) lastDiagnostic = diagnostics.last()
@@ -486,12 +492,14 @@ class CasController(
         system.sessions[key]?.let { return Result.success(it) }
         val session =
             system.cas.openSession().getOrElse { failure ->
+                recordInvalidationLocked(key.caSystemId, failure)
                 try {
-                    closeSystemLocked(key.caSystemId)
+                    closeSystemLocked(key.caSystemId, propagateInvalidation = true)
                 } catch (cleanup: Exception) {
                     if (cleanup !== failure) failure.addSuppressed(cleanup)
                 }
-                return Result.failure(SessionProvisioningException(ErrorCode.SESSION_OPEN_FAILED, failure))
+                val code = if (system.invalidated) ErrorCode.MEDIA_CAS_INVALIDATED else ErrorCode.SESSION_OPEN_FAILED
+                return Result.failure(SessionProvisioningException(code, failure))
             }
         val state = CasSessionState(key, session)
         system.sessions[key] = state
@@ -525,7 +533,33 @@ class CasController(
         val errorCode =
             (failure as? SessionProvisioningException)?.errorCode
                 ?: ErrorCode.SESSION_OPEN_FAILED
-        return Diagnostic(State.ERROR, errorCode, caSystemId, pid, failure.message.orEmpty())
+        return casFailureDiagnosticLocked(errorCode, caSystemId, pid, failure)
+    }
+
+    private fun recordInvalidationLocked(
+        caSystemId: Int,
+        failure: Throwable,
+    ): Boolean {
+        val cause = if (failure is SessionProvisioningException) failure.cause else failure
+        if (cause !is MediaCasInvalidatedException) return false
+        pluginsBySystemId[caSystemId]?.let { system ->
+            system.invalidated = true
+            system.retiring = true
+            system.sessions.values.forEach { it.retiring = true }
+        }
+        invalidateMetadataLocked()
+        return true
+    }
+
+    private fun casFailureDiagnosticLocked(
+        errorCode: ErrorCode,
+        caSystemId: Int,
+        pid: TsPid?,
+        failure: Throwable,
+    ): Diagnostic {
+        val code = if (recordInvalidationLocked(caSystemId, failure)) ErrorCode.MEDIA_CAS_INVALIDATED else errorCode
+        return Diagnostic(State.ERROR, code, caSystemId, pid, failure.message.orEmpty(), failure)
+            .also { lastDiagnostic = it }
     }
 
     private fun unlinkDescramblerKeyIfOwnedByLocked(state: CasSessionState) {
@@ -602,31 +636,62 @@ class CasController(
         state: CasSessionState,
     ) {
         state.retiring = true
+        if (system.invalidated) return
         unlinkDescramblerKeyIfOwnedByLocked(state)
         if (!state.sessionClosed) {
-            state.session.close()
+            try {
+                state.session.close()
+            } catch (failure: MediaCasInvalidatedException) {
+                casFailureDiagnosticLocked(ErrorCode.SESSION_OPEN_FAILED, system.caSystemId, state.key.ecmPid, failure)
+                throw failure
+            }
             state.sessionClosed = true
         }
         closeDescramblerLocked(state)
         system.sessions.remove(state.key)
     }
 
-    // 同一pluginのsessionを全件解放してからpluginを閉じる。
-    @Suppress("SpreadOperator")
-    private fun closeSystemLocked(caSystemId: Int) {
+    // 無効化されたSessionの再closeを待たず、残るTuner参照とFramework側の所有を終了する。
+    // 通常close失敗・終了処理失敗・metadata適用中の無効化を、それぞれの境界で返す。
+    @Suppress("SpreadOperator", "TooGenericExceptionCaught", "ThrowsCount")
+    private fun closeSystemLocked(
+        caSystemId: Int,
+        propagateInvalidation: Boolean = false,
+    ) {
         val system = pluginsBySystemId[caSystemId] ?: return
         system.retiring = true
-        SectionFilterPolicy.completeCleanup(
-            *system.sessions.values
-                .map { state ->
-                    { closeSessionLocked(system, state) }
-                }.toTypedArray(),
-        )
-        if (!system.casClosed) {
-            system.cas.close()
-            system.casClosed = true
+        var invalidationFailure: Exception? = null
+        try {
+            SectionFilterPolicy.completeCleanup(
+                *system.sessions.values
+                    .map { state -> { closeSessionLocked(system, state) } }
+                    .toTypedArray(),
+            )
+        } catch (failure: Exception) {
+            if (!system.invalidated) throw failure
+            invalidationFailure = failure
+            lastDiagnostic = lastDiagnostic.copy(cause = failure)
         }
+        try {
+            if (system.invalidated) {
+                SectionFilterPolicy.completeCleanup(
+                    *system.sessions.values
+                        .map { state -> { closeDescramblerLocked(state) } }
+                        .toTypedArray(),
+                )
+            }
+            if (!system.casClosed) {
+                system.cas.close()
+                system.casClosed = true
+            }
+        } catch (cleanup: Exception) {
+            invalidationFailure?.takeUnless { it === cleanup }?.let { cleanup.addSuppressed(it) }
+            throw cleanup
+        }
+        system.sessions.clear()
         pluginsBySystemId.remove(caSystemId)
+        // 終了が完了しても、その途中で無効化を検出したmetadata適用は成功へ変換しない。
+        if (propagateInvalidation) invalidationFailure?.let { throw it }
     }
 
     override fun close() {
@@ -634,7 +699,12 @@ class CasController(
         onExecutor {
             closed = true
             clearForResourceLossLocked()
-            lastDiagnostic = Diagnostic(State.CLOSED)
+            lastDiagnostic =
+                if (lastDiagnostic.errorCode == ErrorCode.MEDIA_CAS_INVALIDATED) {
+                    lastDiagnostic.copy(state = State.CLOSED)
+                } else {
+                    Diagnostic(State.CLOSED)
+                }
         }
         // cleanup失敗時は所有とexecutorを残し、close()の再試行を許す。
         executor.shutdown()
@@ -661,6 +731,11 @@ sealed class EcmProcessResult {
     ) : EcmProcessResult()
 }
 
+/** Framework内で接続が無効化され、同じMediaCasのSessionを再利用できない失敗。 */
+internal class MediaCasInvalidatedException(
+    cause: IllegalStateException,
+) : IllegalStateException("MediaCas instanceが無効化されました", cause)
+
 class FrameworkMediaCasBridgeFactory : CasController.MediaCasBridgeFactory {
     override fun create(caSystemId: Int): Result<CasController.MediaCasBridge> =
         runCatching {
@@ -672,47 +747,61 @@ private class FrameworkMediaCasBridge(
     caSystemId: Int,
 ) : CasController.MediaCasBridge {
     private val mediaCas = android.media.MediaCas(caSystemId)
+    private var invalidation: MediaCasInvalidatedException? = null
+
+    // 既存の無効状態・CAS固有状態・新規無効化を区別し、元の例外を保持する。
+    @Suppress("ThrowsCount")
+    private fun <T> callMediaCas(block: () -> T): T {
+        invalidation?.let { throw it }
+        return try {
+            block()
+        } catch (failure: android.media.MediaCasStateException) {
+            throw failure
+        } catch (failure: IllegalStateException) {
+            throw MediaCasInvalidatedException(failure).also { invalidation = it }
+        }
+    }
 
     override fun setPrivateData(privateData: ByteArray): Result<Unit> =
         runCatching {
-            mediaCas.setPrivateData(privateData)
+            callMediaCas { mediaCas.setPrivateData(privateData) }
         }
 
     override fun openSession(): Result<CasController.MediaCasSessionBridge> =
         runCatching {
-            FrameworkMediaCasSessionBridge(mediaCas.openSession())
+            FrameworkMediaCasSessionBridge(callMediaCas { mediaCas.openSession() })
         }
 
     override fun processEmm(section: ByteArray): Result<Unit> =
         runCatching {
-            mediaCas.processEmm(section, 0, section.size)
+            callMediaCas { mediaCas.processEmm(section, 0, section.size) }
         }
 
     @Synchronized
     override fun close() {
         mediaCas.close()
     }
-}
 
-private class FrameworkMediaCasSessionBridge(
-    private val session: android.media.MediaCas.Session,
-) : CasController.MediaCasSessionBridge {
-    override fun setPrivateData(privateData: ByteArray): Result<Unit> =
-        runCatching {
-            session.setPrivateData(privateData)
+    private inner class FrameworkMediaCasSessionBridge(
+        private val session: android.media.MediaCas.Session,
+    ) : CasController.MediaCasSessionBridge {
+        override fun setPrivateData(privateData: ByteArray): Result<Unit> =
+            runCatching {
+                callMediaCas { session.setPrivateData(privateData) }
+            }
+
+        // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
+        @Suppress("MaxLineLength")
+        override fun processEcm(section: ByteArray): Result<EcmProcessResult> =
+            runCatching {
+                callMediaCas { session.processEcm(section, 0, section.size) }
+                EcmProcessResult.DiagnosticOnly("MediaCas 標準 API は ECM 投入完了を返すが、r51 の placeholder CAS では Tuner 用の実 key token を返しません")
+            }
+
+        @Synchronized
+        override fun close() {
+            callMediaCas { session.close() }
         }
-
-    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MaxLineLength")
-    override fun processEcm(section: ByteArray): Result<EcmProcessResult> =
-        runCatching {
-            session.processEcm(section, 0, section.size)
-            EcmProcessResult.DiagnosticOnly("MediaCas 標準 API は ECM 投入完了を返すが、r51 の placeholder CAS では Tuner 用の実 key token を返しません")
-        }
-
-    @Synchronized
-    override fun close() {
-        session.close()
     }
 }
 

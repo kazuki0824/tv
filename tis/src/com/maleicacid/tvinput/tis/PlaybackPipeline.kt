@@ -2676,6 +2676,20 @@ class PlaybackPipeline(
         runOnPlaybackExecutorBlocking { stopOnPlaybackExecutor() }
     }
 
+    /** 停止で世代を更新しても、失敗した再生を所有するSessionへ通知する。 */
+    internal fun stopAndReportUnavailable(
+        reason: PlaybackUnavailableReason,
+        detail: String,
+    ) {
+        runOnPlaybackExecutorBlocking {
+            val originGeneration = playbackGeneration
+            SectionFilterPolicy.completeCleanup(
+                { stopOnPlaybackExecutor() },
+                { onVideoUnavailable(PlaybackUnavailable(reason, detail, originGeneration)) },
+            )
+        }
+    }
+
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MaxLineLength")
     private fun stopOnPlaybackExecutor() {
