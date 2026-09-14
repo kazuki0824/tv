@@ -28,6 +28,14 @@ class MediaCas(
         return Session()
     }
 
+    fun openSession(
+        intent: Int,
+        mode: Int,
+    ): Session {
+        Faults.typedRequests += intent to mode
+        return openSession()
+    }
+
     override fun close() {
         Faults.pluginCloses++
         if (Faults.pluginFailure) error("underlying plugin close failed")
@@ -65,6 +73,7 @@ class MediaCas(
     enum class Operation { PLUGIN_PRIVATE_DATA, OPEN, SESSION_PRIVATE_DATA, ECM, EMM, SESSION_CLOSE }
 
     object Faults {
+        val typedRequests = mutableListOf<Pair<Int, Int>>()
         val calls = mutableListOf<Operation>()
         var invalidateAt: Operation? = null
         var stateFailureAt: Operation? = null
@@ -77,6 +86,7 @@ class MediaCas(
         var sessionFailure = false
 
         fun reset() {
+            typedRequests.clear()
             calls.clear()
             invalidateAt = null
             stateFailureAt = null

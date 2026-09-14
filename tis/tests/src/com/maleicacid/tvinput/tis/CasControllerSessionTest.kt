@@ -92,6 +92,218 @@ class CasControllerSessionTest {
         }
     }
 
+    @Test fun initialCapacityGatesSessionsAndUsesLatestMetadataOnce() {
+        val factory = PendingFactory()
+        val changes = mutableListOf<CasController.ConnectionChange>()
+        val descrambler = Descrambler()
+        CasController(mediaCasFactory = factory).use { controller ->
+            controller.setOnConnectionChanged { _, change -> changes += change }
+            val waiting = controller.updateFromCaMetadata(listOf(first, cat), 7L) { error("容量反映前に生成しない") }
+            check(waiting.ecmPids.isEmpty() && waiting.emmPids.isEmpty())
+            val plugin = factory.plugins.single()
+            plugin.listener.onConstructed()
+            controller.updateFromCaMetadata(listOf(first), 7L) { error("構築だけで生成しない") }
+            check(plugin.opens == 0 && changes.isEmpty())
+            plugin.listener.onCapacity(2)
+            plugin.listener.onCapacity(3)
+            val next = first.copy(ecmPid = TsPid(0x124))
+            val ready = controller.updateFromCaMetadata(listOf(next), 7L) { descrambler }
+            check(ready.ecmPids == setOf(TsPid(0x124)) && plugin.opens == 1)
+            check(changes == listOf(CasController.ConnectionChange.READY) && plugin.timerCancelled)
+            plugin.listener.onCapacity(2)
+            controller.updateFromCaMetadata(listOf(next), 7L) { error("重複通知で再生成しない") }
+            check(plugin.opens == 1 && changes.size == 1)
+        }
+    }
+
+    @Test fun lateCapacityAndTimeoutBothTerminateWithoutAutomaticRetry() {
+        for (deliverTimer in listOf(false, true)) {
+            val factory = PendingFactory()
+            val changes = mutableListOf<CasController.ConnectionChange>()
+            CasController(mediaCasFactory = factory).use { controller ->
+                controller.setOnConnectionChanged { _, change -> changes += change }
+                controller.updateFromCaMetadata(listOf(first), 1L)
+                val plugin = factory.plugins.single()
+                plugin.now = 110L
+                if (deliverTimer) requireNotNull(plugin.timeout).invoke() else plugin.listener.onCapacity(1)
+                val result = controller.updateFromCaMetadata(listOf(first), 1L)
+                check(result.diagnostics.any { it.state == CasController.State.ERROR })
+                plugin.listener.onCapacity(Int.MAX_VALUE)
+                controller.updateFromCaMetadata(listOf(first), 1L)
+                check(plugin.opens == 0 && plugin.closes == 1 && factory.plugins.size == 1)
+                check(changes == listOf(CasController.ConnectionChange.INITIALIZATION_FAILED))
+            }
+        }
+    }
+
+    @Test fun invalidCapacityConstructionFailureAndInvalidBudgetRejectInitialization() {
+        for (failureKind in 0..3) {
+            val factory = PendingFactory(if (failureKind == 3) 0L else 10L)
+            CasController(mediaCasFactory = factory).use { controller ->
+                controller.updateFromCaMetadata(listOf(first), 1L)
+                val plugin = factory.plugins.single()
+                when (failureKind) {
+                    0 -> plugin.listener.onCapacity(0)
+                    1 -> plugin.listener.onCapacity(-1)
+                    2 -> plugin.listener.onFailure(IllegalStateException("TRMまたは構築を利用できない"))
+                }
+                val result = controller.updateFromCaMetadata(listOf(first), 1L)
+                check(result.diagnostics.any { it.state == CasController.State.ERROR })
+                check(plugin.opens == 0 && plugin.closes == 1)
+            }
+        }
+    }
+
+    @Test fun cancellationRejectsOldCapacityAndResourceLostForReplacementPlugin() {
+        val factory = PendingFactory()
+        CasController(mediaCasFactory = factory).use { controller ->
+            controller.updateFromCaMetadata(listOf(first), 1L)
+            val old = factory.plugins.single()
+            controller.clearForResourceLoss()
+            controller.updateFromCaMetadata(listOf(first), 2L)
+            val current = factory.plugins.last()
+            old.listener.onCapacity(1)
+            old.listener.onResourceLost()
+            controller.updateFromCaMetadata(listOf(first), 2L)
+            check(current.opens == 0 && old.opens == 0 && old.closes == 1)
+            current.listener.onCapacity(1)
+            check(controller.updateFromCaMetadata(listOf(first), 2L).diagnostics.isEmpty())
+            check(current.opens == 1 && factory.plugins.size == 2)
+        }
+    }
+
+    @Test fun mediaCasReclaimSkipsSessionCloseAndRetriesOwnedDescramblerAndPlugin() {
+        for (failPlugin in listOf(false, true)) {
+            val factory = PendingFactory()
+            val descrambler = Descrambler()
+            CasController(mediaCasFactory = factory).use { controller ->
+                controller.updateFromCaMetadata(listOf(first, cat), 1L)
+                val plugin = factory.plugins.single()
+                plugin.listener.onCapacity(2)
+                controller.updateFromCaMetadata(listOf(first, cat), 1L) { descrambler }
+                controller.onEcmSection(TsPid(0x123), byteArrayOf(1))
+                val tokens = descrambler.tokens.size
+                plugin.listener.onResourceLost()
+                check(controller.onEcmSection(TsPid(0x123), byteArrayOf(1)).isEmpty())
+                check(controller.onEmmSection(TsPid(0x010), byteArrayOf(1)).isEmpty())
+                descrambler.failClose = !failPlugin
+                plugin.failClose = failPlugin
+                check(runCatching { controller.clearForResourceLoss() }.isFailure)
+                check(plugin.sessionCloses == 0 && descrambler.tokens.size == tokens)
+                check(plugin.emms == 0)
+                descrambler.failClose = false
+                plugin.failClose = false
+                controller.clearForResourceLoss()
+                check(descrambler.closed && plugin.closes == if (failPlugin) 2 else 1)
+                check(plugin.sessionCloses == 0)
+                val rejected = controller.updateFromCaMetadata(listOf(first), 1L)
+                check(rejected.diagnostics.any { it.state == CasController.State.ERROR })
+            }
+        }
+    }
+
+    @Test fun lateConstructionAfterCloseRetainsOwnershipUntilCleanup() {
+        val factory = PendingFactory()
+        val controller = CasController(mediaCasFactory = factory)
+        controller.updateFromCaMetadata(listOf(first), 1L)
+        val plugin = factory.plugins.single()
+        plugin.constructing = true
+        check(runCatching { controller.close() }.isFailure)
+        plugin.constructing = false
+        plugin.listener.onConstructed()
+        plugin.listener.onCapacity(1)
+        controller.close()
+        check(plugin.opens == 0 && plugin.closes == 2)
+    }
+
+    @Test fun reclaimIsLocalToItsController() {
+        val firstFactory = PendingFactory()
+        val secondFactory = PendingFactory()
+        CasController(mediaCasFactory = firstFactory).use { a ->
+            CasController(mediaCasFactory = secondFactory).use { b ->
+                a.updateFromCaMetadata(listOf(first), 1L)
+                b.updateFromCaMetadata(listOf(first), 1L)
+                val pa = firstFactory.plugins.single()
+                val pb = secondFactory.plugins.single()
+                pa.listener.onCapacity(2)
+                pb.listener.onCapacity(2)
+                a.updateFromCaMetadata(listOf(first), 1L)
+                b.updateFromCaMetadata(listOf(first), 1L)
+                pa.listener.onResourceLost()
+                a.clearForResourceLoss()
+                check(b.updateFromCaMetadata(listOf(first), 1L).diagnostics.isEmpty())
+                check(pb.closes == 0 && pb.opens == 1)
+            }
+        }
+    }
+
+    private class PendingFactory(
+        private val budget: Long = 10L,
+    ) : CasController.MediaCasBridgeFactory {
+        val plugins = mutableListOf<PendingPlugin>()
+
+        override fun create(caSystemId: Int): Result<CasController.MediaCasBridge> =
+            Result.success(PendingPlugin(budget).also { plugins += it })
+    }
+
+    private class PendingPlugin(
+        override val initializationBudgetMillis: Long,
+    ) : CasController.InitializingMediaCasBridge {
+        lateinit var listener: CasController.ConnectionListener
+        var now = 100L
+        var timeout: (() -> Unit)? = null
+        var timerCancelled = false
+        var opens = 0
+        var closes = 0
+        var sessionCloses = 0
+        var emms = 0
+        var failClose = false
+        var constructing = false
+
+        override fun elapsedRealtime(): Long = now
+
+        override fun initialize(listener: CasController.ConnectionListener) {
+            this.listener = listener
+        }
+
+        override fun scheduleTimeout(
+            delayMillis: Long,
+            action: () -> Unit,
+        ): () -> Unit {
+            check(delayMillis == 10L)
+            timeout = action
+            return { timerCancelled = true }
+        }
+
+        override fun setPrivateData(privateData: ByteArray): Result<Unit> = Result.success(Unit)
+
+        override fun processEmm(section: ByteArray): Result<Unit> {
+            emms++
+            return Result.success(Unit)
+        }
+
+        override fun openSession(): Result<CasController.MediaCasSessionBridge> {
+            opens++
+            return Result.success(
+                object : CasController.MediaCasSessionBridge {
+                    override fun setPrivateData(privateData: ByteArray): Result<Unit> = Result.success(Unit)
+
+                    override fun processEcm(section: ByteArray): Result<EcmProcessResult> =
+                        Result.success(EcmProcessResult.RealKeyToken(TunerKeyToken(byteArrayOf(1))))
+
+                    override fun close() {
+                        sessionCloses++
+                    }
+                },
+            )
+        }
+
+        override fun close() {
+            closes++
+            check(!failClose && !constructing) { "pluginの解放を再試行する" }
+        }
+    }
+
     private class Plugin : CasController.MediaCasBridge {
         val sessions = mutableListOf<Session>()
         var emms = 0
@@ -157,7 +369,10 @@ class CasControllerSessionTest {
 
         override fun close() {
             closes++
+            check(!failClose) { "Descramblerの解放を再試行する" }
             closed = true
         }
+
+        var failClose = false
     }
 }

@@ -46,7 +46,8 @@ class MaleicacidLiveSession(
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MaxLineLength")
     private val tunerController = TunerController(serviceContext, inputId, sessionId = sessionId, sessionContext = sessionContext)
-    private val casController = CasController()
+    private val casController =
+        CasController(mediaCasFactory = FrameworkMediaCasBridgeFactory(serviceContext, sessionId))
     private val caMapper = PmtCatCaMetadataMapper()
     private val eventModelMapper =
         com.maleicacid.tvinput.aribsi

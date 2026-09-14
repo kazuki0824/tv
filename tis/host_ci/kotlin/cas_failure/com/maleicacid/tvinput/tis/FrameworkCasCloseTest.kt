@@ -14,6 +14,15 @@ import org.junit.Test
 // 同じFramework adapterの操作境界と終了・再接続をまとめて検証する。
 @Suppress("TooManyFunctions")
 class FrameworkCasCloseTest {
+    @Test fun managedAdapterUsesLiveMulti2TypedSession() {
+        MediaCas.Faults.reset()
+        val native = MediaCas(5)
+        FrameworkMediaCasBridge({ native }, typedSession = true).use { plugin ->
+            plugin.openSession().getOrThrow().close()
+        }
+        check(MediaCas.Faults.typedRequests == listOf(0 to 8))
+    }
+
     private val metadata =
         listOf(
             CaMetadata(

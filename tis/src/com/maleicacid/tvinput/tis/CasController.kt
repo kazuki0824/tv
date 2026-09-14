@@ -17,8 +17,9 @@ import java.util.concurrent.Executors
  * ECM/EMM は完全な section として扱い、生 TS packet は扱わない。
  * カード I/O、CW 生成、鍵発行は MediaCas/Maleicacid CAS plugin 側の責務とする。
  * Tuner HAL には 不透明 トークン と ES PID 登録だけを渡す。
+ * 初期化・通知失効・通常終了・強制回収を同じplugin/session台帳で処理し、所有を分散させない。
  */
-@Suppress("TooManyFunctions")
+@Suppress("TooManyFunctions", "LargeClass")
 class CasController(
     private val supportedSystemIds: Set<Int> = SupportedCasSystemIds.B25_B1,
     private val mediaCasFactory: MediaCasBridgeFactory = FrameworkMediaCasBridgeFactory(),
@@ -27,6 +28,8 @@ class CasController(
         NONE,
         UNSUPPORTED_SYSTEM_ID,
         PLUGIN_UNAVAILABLE,
+        PLUGIN_INITIALIZING,
+        MEDIA_CAS_RESOURCE_LOST,
         SESSION_OPEN_FAILED,
         PRIVATE_DATA_FAILED,
         ECM_FAILED,
@@ -69,6 +72,32 @@ class CasController(
         override fun close()
     }
 
+    /** Frameworkの容量反映を待つ接続。通知はcontrollerへ非同期に戻す。 */
+    interface InitializingMediaCasBridge : MediaCasBridge {
+        val initializationBudgetMillis: Long
+
+        fun elapsedRealtime(): Long
+
+        fun initialize(listener: ConnectionListener)
+
+        fun scheduleTimeout(
+            delayMillis: Long,
+            action: () -> Unit,
+        ): () -> Unit
+    }
+
+    interface ConnectionListener {
+        fun onConstructed()
+
+        fun onCapacity(capacity: Int)
+
+        fun onFailure(failure: Throwable)
+
+        fun onResourceLost()
+    }
+
+    enum class ConnectionChange { READY, INITIALIZATION_FAILED, RESOURCES_LOST }
+
     interface MediaCasSessionBridge : AutoCloseable {
         fun setPrivateData(privateData: ByteArray): Result<Unit>
 
@@ -109,11 +138,16 @@ class CasController(
     private class CasSystemState(
         val caSystemId: Int,
         val cas: MediaCasBridge,
+        val generation: Long,
     ) {
         val sessions: MutableMap<SessionKey, CasSessionState> = linkedMapOf()
         var retiring: Boolean = false
         var casClosed: Boolean = false
         var invalidated: Boolean = false
+        var reclaimed: Boolean = false
+        var initializing: Boolean = cas is InitializingMediaCasBridge
+        var initializationDeadline: Long = 0L
+        var cancelTimeout: (() -> Unit)? = null
     }
 
     private class SessionProvisioningException(
@@ -140,6 +174,108 @@ class CasController(
     private val ecmPidToSessions = LinkedHashMap<TsPid, MutableSet<SessionKey>>()
     private val emmPidToSystems = LinkedHashMap<TsPid, MutableSet<Int>>()
     private var closed = false
+    private var receiveGeneration = 0L
+    private var terminalReceiveGeneration: Long? = null
+    private var onConnectionChanged: ((Long, ConnectionChange) -> Unit)? = null
+
+    internal fun setOnConnectionChanged(callback: ((Long, ConnectionChange) -> Unit)?) {
+        onExecutor { onConnectionChanged = callback }
+    }
+
+    private fun postConnectionEvent(block: () -> Unit) {
+        try {
+            executor.execute(block)
+        } catch (failure: java.util.concurrent.RejectedExecutionException) {
+            if (!executor.isShutdown) throw failure
+        }
+    }
+
+    private fun stopInitializationLocked(system: CasSystemState) {
+        system.initializing = false
+        system.cancelTimeout?.invoke()
+        system.cancelTimeout = null
+    }
+
+    private fun failInitializationLocked(
+        system: CasSystemState,
+        failure: Throwable,
+    ) {
+        stopInitializationLocked(system)
+        system.retiring = true
+        terminalReceiveGeneration = system.generation
+        invalidateMetadataLocked()
+        lastDiagnostic = Diagnostic(State.ERROR, ErrorCode.PLUGIN_UNAVAILABLE, system.caSystemId, cause = failure)
+        onConnectionChanged?.invoke(system.generation, ConnectionChange.INITIALIZATION_FAILED)
+        runCatching { closeSystemLocked(system.caSystemId) }.onFailure {
+            lastDiagnostic = lastDiagnostic.copy(cause = it)
+        }
+    }
+
+    private fun isOwnedLocked(system: CasSystemState): Boolean = pluginsBySystemId[system.caSystemId] === system
+
+    private fun beginInitializationLocked(
+        system: CasSystemState,
+        bridge: InitializingMediaCasBridge,
+    ) {
+        require(bridge.initializationBudgetMillis > 0L) { "CAS初期化予算は正の有限値が必要です" }
+        system.initializationDeadline = Math.addExact(bridge.elapsedRealtime(), bridge.initializationBudgetMillis)
+        system.cancelTimeout =
+            bridge.scheduleTimeout(bridge.initializationBudgetMillis) {
+                postConnectionEvent {
+                    if (isOwnedLocked(system) && system.initializing &&
+                        bridge.elapsedRealtime() >= system.initializationDeadline
+                    ) {
+                        failInitializationLocked(system, IllegalStateException("CAS初期容量通知が期限内に届きませんでした"))
+                    }
+                }
+            }
+        bridge.initialize(
+            object : ConnectionListener {
+                override fun onConstructed() =
+                    postConnectionEvent {
+                        if (isOwnedLocked(system) && system.retiring) {
+                            runCatching { closeSystemLocked(system.caSystemId) }.onFailure {
+                                lastDiagnostic = lastDiagnostic.copy(cause = it)
+                            }
+                        }
+                    }
+
+                override fun onCapacity(capacity: Int) =
+                    postConnectionEvent {
+                        if (!isOwnedLocked(system) || closed) return@postConnectionEvent
+                        if (system.retiring || !system.initializing) return@postConnectionEvent
+                        if (system.generation != receiveGeneration || capacity <= 0 ||
+                            bridge.elapsedRealtime() >= system.initializationDeadline
+                        ) {
+                            failInitializationLocked(system, IllegalStateException("CAS初期容量通知が無効または期限切れです"))
+                        } else {
+                            stopInitializationLocked(system)
+                            onConnectionChanged?.invoke(system.generation, ConnectionChange.READY)
+                        }
+                    }
+
+                override fun onFailure(failure: Throwable) =
+                    postConnectionEvent {
+                        if (isOwnedLocked(system) && !system.retiring && system.initializing) {
+                            failInitializationLocked(system, failure)
+                        }
+                    }
+
+                override fun onResourceLost() =
+                    postConnectionEvent {
+                        if (!isOwnedLocked(system) || system.reclaimed || closed) return@postConnectionEvent
+                        stopInitializationLocked(system)
+                        system.reclaimed = true
+                        system.retiring = true
+                        terminalReceiveGeneration = system.generation
+                        system.sessions.values.forEach { it.retiring = true }
+                        invalidateMetadataLocked()
+                        lastDiagnostic = Diagnostic(State.ERROR, ErrorCode.MEDIA_CAS_RESOURCE_LOST, system.caSystemId)
+                        onConnectionChanged?.invoke(system.generation, ConnectionChange.RESOURCES_LOST)
+                    }
+            },
+        )
+    }
 
     @Volatile private var lastDiagnostic = Diagnostic(State.IDLE)
 
@@ -166,7 +302,11 @@ class CasController(
                         }
                     }.toTypedArray(),
             )
-            if (lastDiagnostic.errorCode != ErrorCode.MEDIA_CAS_INVALIDATED) lastDiagnostic = Diagnostic(State.IDLE)
+            if (lastDiagnostic.errorCode != ErrorCode.MEDIA_CAS_INVALIDATED &&
+                terminalReceiveGeneration != receiveGeneration
+            ) {
+                lastDiagnostic = Diagnostic(State.IDLE)
+            }
         }
 
     private fun clearForResourceLossLocked() {
@@ -195,7 +335,11 @@ class CasController(
         )
         ecmPidToSessions.clear()
         emmPidToSystems.clear()
-        if (lastDiagnostic.errorCode != ErrorCode.MEDIA_CAS_INVALIDATED) lastDiagnostic = Diagnostic(State.IDLE)
+        if (lastDiagnostic.errorCode != ErrorCode.MEDIA_CAS_INVALIDATED &&
+            terminalReceiveGeneration != receiveGeneration
+        ) {
+            lastDiagnostic = Diagnostic(State.IDLE)
+        }
     }
 
     // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
@@ -206,6 +350,7 @@ class CasController(
     @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength", "SpreadOperator", "TooGenericExceptionCaught")
     internal fun updateFromCaMetadata(
         metadata: List<CaMetadata>,
+        generation: Long = 0L,
         createDescrambler: (() -> TunerDescramblerBridge)? = null,
     ): UpdateResult =
         onExecutor {
@@ -216,6 +361,10 @@ class CasController(
                     emptySet(),
                 )
             }
+            if (terminalReceiveGeneration == generation) {
+                return@onExecutor UpdateResult(listOf(lastDiagnostic), emptySet(), emptySet())
+            }
+            receiveGeneration = generation
             // 配送indexはmetadata全体の成功時だけ公開する。物理解放の途中でsurvivorを再公開しない。
             invalidateMetadataLocked()
             if (metadata.isEmpty()) {
@@ -510,14 +659,40 @@ class CasController(
     @Suppress("ReturnCount")
     private fun ensurePluginLocked(caSystemId: Int): Result<CasSystemState> {
         pluginsBySystemId[caSystemId]?.let {
-            return if (it.retiring) Result.failure(IllegalStateException("CAS資源は解放再試行待ちです")) else Result.success(it)
+            return when {
+                it.retiring -> {
+                    Result.failure(IllegalStateException("CAS資源は解放再試行待ちです"))
+                }
+
+                it.initializing -> {
+                    Result.failure(
+                        SessionProvisioningException(
+                            ErrorCode.PLUGIN_INITIALIZING,
+                            IllegalStateException("CAS初期容量通知待ちです"),
+                        ),
+                    )
+                }
+
+                else -> {
+                    Result.success(it)
+                }
+            }
         }
         val cas =
             mediaCasFactory.create(caSystemId).getOrElse { failure ->
                 return Result.failure(SessionProvisioningException(ErrorCode.PLUGIN_UNAVAILABLE, failure))
             }
-        val state = CasSystemState(caSystemId, cas)
+        val state = CasSystemState(caSystemId, cas, receiveGeneration)
         pluginsBySystemId[caSystemId] = state
+        if (cas is InitializingMediaCasBridge) {
+            runCatching { beginInitializationLocked(state, cas) }.onFailure { failInitializationLocked(state, it) }
+            return Result.failure(
+                SessionProvisioningException(
+                    if (state.retiring) ErrorCode.PLUGIN_UNAVAILABLE else ErrorCode.PLUGIN_INITIALIZING,
+                    IllegalStateException("CAS初期容量通知待ちです"),
+                ),
+            )
+        }
         return Result.success(state)
     }
 
@@ -533,6 +708,9 @@ class CasController(
         val errorCode =
             (failure as? SessionProvisioningException)?.errorCode
                 ?: ErrorCode.SESSION_OPEN_FAILED
+        if (errorCode == ErrorCode.PLUGIN_INITIALIZING) {
+            return Diagnostic(State.IDLE, errorCode, caSystemId, pid, "CAS初期容量通知待ちです")
+        }
         return casFailureDiagnosticLocked(errorCode, caSystemId, pid, failure)
     }
 
@@ -636,7 +814,7 @@ class CasController(
         state: CasSessionState,
     ) {
         state.retiring = true
-        if (system.invalidated) return
+        if (system.invalidated || system.reclaimed) return
         unlinkDescramblerKeyIfOwnedByLocked(state)
         if (!state.sessionClosed) {
             try {
@@ -660,6 +838,7 @@ class CasController(
     ) {
         val system = pluginsBySystemId[caSystemId] ?: return
         system.retiring = true
+        stopInitializationLocked(system)
         var invalidationFailure: Exception? = null
         try {
             SectionFilterPolicy.completeCleanup(
@@ -673,7 +852,7 @@ class CasController(
             lastDiagnostic = lastDiagnostic.copy(cause = failure)
         }
         try {
-            if (system.invalidated) {
+            if (system.invalidated || system.reclaimed) {
                 SectionFilterPolicy.completeCleanup(
                     *system.sessions.values
                         .map { state -> { closeDescramblerLocked(state) } }
@@ -736,17 +915,26 @@ internal class MediaCasInvalidatedException(
     cause: IllegalStateException,
 ) : IllegalStateException("MediaCas instanceが無効化されました", cause)
 
-class FrameworkMediaCasBridgeFactory : CasController.MediaCasBridgeFactory {
+class FrameworkMediaCasBridgeFactory(
+    private val context: android.content.Context? = null,
+    private val sessionId: String? = null,
+    private val priorityHint: Int = android.media.tv.TvInputService.PRIORITY_HINT_USE_CASE_TYPE_LIVE,
+) : CasController.MediaCasBridgeFactory {
     override fun create(caSystemId: Int): Result<CasController.MediaCasBridge> =
         runCatching {
-            FrameworkMediaCasBridge(caSystemId)
+            if (context == null) {
+                val mediaCas = android.media.MediaCas(caSystemId)
+                FrameworkMediaCasBridge({ mediaCas })
+            } else {
+                ManagedFrameworkMediaCasBridge(context, caSystemId, sessionId, priorityHint)
+            }
         }
 }
 
-private class FrameworkMediaCasBridge(
-    caSystemId: Int,
+internal class FrameworkMediaCasBridge(
+    private val mediaCas: () -> android.media.MediaCas,
+    private val typedSession: Boolean = false,
 ) : CasController.MediaCasBridge {
-    private val mediaCas = android.media.MediaCas(caSystemId)
     private var invalidation: MediaCasInvalidatedException? = null
 
     // 既存の無効状態・CAS固有状態・新規無効化を区別し、元の例外を保持する。
@@ -764,22 +952,35 @@ private class FrameworkMediaCasBridge(
 
     override fun setPrivateData(privateData: ByteArray): Result<Unit> =
         runCatching {
-            callMediaCas { mediaCas.setPrivateData(privateData) }
+            callMediaCas { mediaCas().setPrivateData(privateData) }
         }
 
     override fun openSession(): Result<CasController.MediaCasSessionBridge> =
         runCatching {
-            FrameworkMediaCasSessionBridge(callMediaCas { mediaCas.openSession() })
+            FrameworkMediaCasSessionBridge(
+                requireNotNull(
+                    callMediaCas {
+                        if (typedSession) {
+                            mediaCas().openSession(
+                                android.media.MediaCas.SESSION_USAGE_LIVE,
+                                android.media.MediaCas.SCRAMBLING_MODE_MULTI2,
+                            )
+                        } else {
+                            mediaCas().openSession()
+                        }
+                    },
+                ) { "MediaCasがsessionを返しませんでした" },
+            )
         }
 
     override fun processEmm(section: ByteArray): Result<Unit> =
         runCatching {
-            callMediaCas { mediaCas.processEmm(section, 0, section.size) }
+            callMediaCas { mediaCas().processEmm(section, 0, section.size) }
         }
 
     @Synchronized
     override fun close() {
-        mediaCas.close()
+        mediaCas().close()
     }
 
     private inner class FrameworkMediaCasSessionBridge(

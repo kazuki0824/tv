@@ -572,9 +572,16 @@ class CasControllerStateTest {
         val descrambler = FakeTunerDescramblerBridge()
         val controller = CasController(mediaCasFactory = factory)
         val update =
-            controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), {
-                descrambler
-            })
+            controller.updateFromCaMetadata(
+                b25Metadata(
+                    esPid = TsPid(0x101),
+                    ecmPid = TsPid(0x123),
+                    emmPid = TsPid(0x010),
+                ),
+                createDescrambler = {
+                    descrambler
+                },
+            )
         check(update.diagnostics.isEmpty()) { update.diagnostics.toString() }
         check(update.ecmPids == setOf(TsPid(0x123)))
         check(update.emmPids == setOf(TsPid(0x010)))
@@ -625,7 +632,7 @@ class CasControllerStateTest {
             val update =
                 controller.updateFromCaMetadata(
                     b25Metadata(TsPid(0x101), TsPid(0x123), TsPid(0x010)) + b1,
-                    {
+                    createDescrambler = {
                         FakeTunerDescramblerBridge().also { descramblers += it }
                     },
                 )
@@ -656,7 +663,7 @@ class CasControllerStateTest {
                         source = CaMetadataSource.ELEMENTARY_STREAM,
                     ),
                 ),
-                { FakeTunerDescramblerBridge() },
+                createDescrambler = { FakeTunerDescramblerBridge() },
             )
         check(result.diagnostics.any { it.errorCode == CasController.ErrorCode.UNSUPPORTED_SYSTEM_ID })
         check(result.ecmPids.isEmpty())
@@ -687,9 +694,16 @@ class CasControllerStateTest {
         val controller = CasController(mediaCasFactory = DiagnosticOnlyMediaCasBridgeFactory())
         val descrambler = FakeTunerDescramblerBridge()
         val update =
-            controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), {
-                descrambler
-            })
+            controller.updateFromCaMetadata(
+                b25Metadata(
+                    esPid = TsPid(0x101),
+                    ecmPid = TsPid(0x123),
+                    emmPid = TsPid(0x010),
+                ),
+                createDescrambler = {
+                    descrambler
+                },
+            )
         check(update.diagnostics.isEmpty()) { update.diagnostics.toString() }
 
         val ecmDiagnostics = controller.onEcmSection(TsPid(0x123), byteArrayOf(0x80.toByte()))
@@ -705,9 +719,16 @@ class CasControllerStateTest {
         val controller = CasController(mediaCasFactory = UnavailableMediaCasBridgeFactory())
         val descrambler = FakeTunerDescramblerBridge()
         val update =
-            controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), {
-                descrambler
-            })
+            controller.updateFromCaMetadata(
+                b25Metadata(
+                    esPid = TsPid(0x101),
+                    ecmPid = TsPid(0x123),
+                    emmPid = TsPid(0x010),
+                ),
+                createDescrambler = {
+                    descrambler
+                },
+            )
         check(update.diagnostics.any { it.errorCode == CasController.ErrorCode.PLUGIN_UNAVAILABLE }) { update.diagnostics.toString() }
         check(descrambler.keyTokens.isEmpty())
         check(descrambler.addedPids.isEmpty())
@@ -721,9 +742,16 @@ class CasControllerStateTest {
         val controller = CasController(mediaCasFactory = factory)
         val descrambler = FakeTunerDescramblerBridge()
         val update =
-            controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), {
-                descrambler
-            })
+            controller.updateFromCaMetadata(
+                b25Metadata(
+                    esPid = TsPid(0x101),
+                    ecmPid = TsPid(0x123),
+                    emmPid = TsPid(0x010),
+                ),
+                createDescrambler = {
+                    descrambler
+                },
+            )
 
         check(update.diagnostics.any { it.errorCode == CasController.ErrorCode.SESSION_OPEN_FAILED }) { update.diagnostics.toString() }
         check(update.diagnostics.none { it.errorCode == CasController.ErrorCode.PLUGIN_UNAVAILABLE }) { update.diagnostics.toString() }
@@ -738,7 +766,16 @@ class CasControllerStateTest {
     fun closeReleasesDescrambler() {
         val controller = CasController(mediaCasFactory = FakeMediaCasBridgeFactory())
         val descrambler = FakeTunerDescramblerBridge()
-        controller.updateFromCaMetadata(b25Metadata(esPid = TsPid(0x101), ecmPid = TsPid(0x123), emmPid = TsPid(0x010)), { descrambler })
+        controller.updateFromCaMetadata(
+            b25Metadata(
+                esPid = TsPid(0x101),
+                ecmPid = TsPid(0x123),
+                emmPid = TsPid(0x010),
+            ),
+            createDescrambler = {
+                descrambler
+            },
+        )
         controller.close()
         controller.close()
         check(descrambler.closed)

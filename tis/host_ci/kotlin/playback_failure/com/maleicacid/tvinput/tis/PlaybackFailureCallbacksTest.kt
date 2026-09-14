@@ -27,6 +27,101 @@ class PlaybackFailureCallbacksTest {
         checkCasInvalidation(failCleanup = true)
     }
 
+    // 実controllerの通知から失効・独立cleanup・再試行までを同じ受信contextで確認する。
+    @Suppress("LongMethod")
+    @Test
+    fun mediaCasReclaimStopsReceiveGenerationEvenWhenCleanupFails() {
+        val executor = Executors.newSingleThreadExecutor { Thread(it, "maleicacid-tis-controller-test") }
+        val faults = MediaCas.Faults
+        faults.reset()
+        val delegate = FrameworkMediaCasBridgeFactory().create(5).getOrThrow()
+        lateinit var connectionListener: CasController.ConnectionListener
+        val bridge =
+            object : CasController.InitializingMediaCasBridge, CasController.MediaCasBridge by delegate {
+                override val initializationBudgetMillis = 10L
+
+                override fun elapsedRealtime() = 100L
+
+                override fun initialize(listener: CasController.ConnectionListener) {
+                    connectionListener = listener
+                }
+
+                override fun scheduleTimeout(
+                    delayMillis: Long,
+                    action: () -> Unit,
+                ): () -> Unit = {}
+            }
+        val factory =
+            object : CasController.MediaCasBridgeFactory {
+                override fun create(caSystemId: Int) = Result.success(bridge)
+            }
+        try {
+            CasController(mediaCasFactory = factory).use { cas ->
+                val metadata = CasControllerStateTestVectors.pluginSelectionSuccessMetadata()
+                cas.updateFromCaMetadata(metadata, 7L)
+                connectionListener.onCapacity(2)
+                check(cas.updateFromCaMetadata(metadata, 7L).diagnostics.isEmpty())
+                val fixture =
+                    executor
+                        .submit<Fixture> { Fixture(false, false, failCleanup = true) }
+                        .get(5, TimeUnit.SECONDS)
+                val controller = fixture.allocate(TunerController::class.java)
+                val ecm = TestSectionHandle(TsPid(0x123), rejectClose = true)
+                val emm = TestSectionHandle(TsPid(0x120))
+                var lostGeneration: Long? = null
+
+                fun set(
+                    name: String,
+                    value: Any,
+                ) {
+                    TunerController::class.java
+                        .getDeclaredField(name)
+                        .apply { isAccessible = true }
+                        .set(controller, value)
+                }
+                set("inputId", "test")
+                set("sectionExecutor", executor)
+                set("tuneAccepted", true)
+                set("tuneGeneration", 7L)
+                set("playbackPipeline", fixture.pipeline)
+                set("captionLanguagesByPid", java.util.concurrent.ConcurrentHashMap<TsPid, String>())
+                set("superimposeTimingByPid", java.util.concurrent.ConcurrentHashMap<TsPid, String>())
+                set("dynamicPmtPids", linkedSetOf<TsPid>())
+                set("dynamicEcmPids", linkedSetOf(ecm.pid))
+                set("dynamicEmmPids", linkedSetOf(emm.pid))
+                set("sectionFilterHandles", linkedMapOf(ecm.pid to ecm, emm.pid to emm))
+                set("sectionFilters", linkedMapOf<TsPid, List<Filter>>())
+                controller.setCasController(cas)
+                controller.setOnTunerResourceLostCallback { lostGeneration = it }
+                faults.pluginFailure = true
+                connectionListener.onResourceLost()
+                cas.onEcmSection(ecm.pid, byteArrayOf(1))
+                executor.submit {}.get(5, TimeUnit.SECONDS)
+                check(lostGeneration == 7L)
+                check(fixture.notifications == 1 && fixture.failures.single().generation == 7L)
+                check(ecm.closes == 1 && emm.closes == 1)
+                check(faults.sessionCloses == 0 && faults.pluginCloses == 1)
+                check(cas.lastDiagnostic().errorCode == CasController.ErrorCode.MEDIA_CAS_RESOURCE_LOST)
+                check(cas.updateFromCaMetadata(metadata, 7L).ecmPids.isEmpty())
+                connectionListener.onResourceLost()
+                cas.onEcmSection(ecm.pid, byteArrayOf(1))
+                executor.submit {}.get(5, TimeUnit.SECONDS)
+                check(fixture.notifications == 1 && faults.pluginCloses == 1)
+                faults.pluginFailure = false
+                cas.clearForResourceLoss()
+                ecm.rejectClose = false
+                controller.closeSectionFilters()
+                fixture.rejectRelease = false
+                executor.submit { fixture.pipeline.stop() }.get(5, TimeUnit.SECONDS)
+                check(faults.pluginCloses == 2 && faults.sessionCloses == 0)
+                check(ecm.closes == 2)
+            }
+        } finally {
+            executor.shutdownNow()
+            faults.reset()
+        }
+    }
+
     // 同じ配送から所有解放・再生通知までの因果関係を一続きに確認する。
     @Suppress("LongMethod", "CyclomaticComplexMethod")
     private fun checkCasInvalidation(failCleanup: Boolean) {

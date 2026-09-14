@@ -96,7 +96,7 @@ MediaCas.closeの完了はFramework側の後処理完了を表し、無効化し
 
 r52でB25/B1の実復号を有効化するTIS接続では、service Context、同じ受信contextのframework由来TvInputService session ID、用途に対応するpriority hint、EventListenerを指定するMediaCas constructorを使用し、TRM管理へ接続する。liveは対応するsession IDとLIVE priorityを渡す。scan contextにTIS session IDがなければnullとし、priorityは本書のScanPurpose写像を使う。アプリ独自IDをframework session IDとして捏造せず、登録失敗時に `MediaCas(caSystemId)` へ切り替えない。
 
-session生成には `openSession(SESSION_USAGE_LIVE, SCRAMBLING_MODE_MULTI2)` を使う。採用AOSPで生成sessionがMediaCasのTRM管理対象に記録されることを結合確認する。引数なしopenSessionをpluginが提供するABI契約と、TISがTRM管理用に選ぶ呼出しは別の判断とする。現行r51の診断用 `MediaCas(caSystemId)` / 引数なしopenSession経路はこのr52接続の実装完了を意味しない。
+session生成には `openSession(SESSION_USAGE_LIVE, SCRAMBLING_MODE_MULTI2)` を使う。採用AOSPで生成sessionがMediaCasのTRM管理対象に記録されることを結合確認する。引数なしopenSessionをpluginが提供するABI契約と、TISがTRM管理用に選ぶ呼出しは別の判断とする。Contextを渡さない診断用 `MediaCas(caSystemId)` / 引数なしopenSession経路を製品の受信contextから使用しない。診断用経路の検証をこのr52接続の検証へ読み替えない。
 
 Framework/TRMへのsession数通知方針とbackend枯渇時の結果は`../cas_plugin/DESIGN_JA.md` §3.1を正とする。TISがpluginごとの空き数を集約してTRMへ通知する経路や、独自の容量調停器を追加しない。
 

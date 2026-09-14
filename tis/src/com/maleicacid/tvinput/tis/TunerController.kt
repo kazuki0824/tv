@@ -246,8 +246,47 @@ class TunerController(
 
     fun setCasController(controller: CasController?) =
         callOnController {
+            casController?.setOnConnectionChanged(null)
             casController = controller
+            controller?.setOnConnectionChanged { generation, change ->
+                try {
+                    sectionExecutor.execute {
+                        if (released || casController !== controller) return@execute
+                        if (tuneAccepted && generation == tuneGeneration) {
+                            handleCasConnectionChangeOnController(change)
+                        }
+                    }
+                } catch (failure: RejectedExecutionException) {
+                    if (!released) Log.w(LogTags.TIS, "MediaCas通知をcontrollerへ配送できません", failure)
+                }
+            }
         }
+
+    // 各解放処理の例外を診断へ残し、通知後も既存controllerで解放の再試行を受け付ける。
+    @Suppress("TooGenericExceptionCaught")
+    private fun handleCasConnectionChangeOnController(change: CasController.ConnectionChange) {
+        if (change == CasController.ConnectionChange.READY) {
+            onSectionIngestedCallback?.invoke()
+            return
+        }
+        val lostGeneration = tuneGeneration
+        invalidateTuneOnController()
+        try {
+            SectionFilterPolicy.completeCleanup(
+                {
+                    playbackPipeline.stopAndReportUnavailable(
+                        PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY,
+                        "MediaCas接続を喪失しました",
+                    )
+                },
+                { closeSectionFiltersOnController() },
+                { casController?.clearForResourceLoss() },
+                { onTunerResourceLostCallback?.invoke(lostGeneration) },
+            )
+        } catch (failure: Exception) {
+            Log.w(LogTags.TIS, "MediaCas資源喪失の後処理に失敗しました generation=$lostGeneration", failure)
+        }
+    }
 
     @Suppress("MaxLineLength")
     fun setOnSectionIngestedCallback(callback: (() -> Unit)?) = callOnController { onSectionIngestedCallback = callback }
@@ -1121,6 +1160,7 @@ class TunerController(
                             }
                         controller.updateFromCaMetadata(
                             acceptedMetadata,
+                            generation,
                             if (needsDescrambler) ({ DirectTunerDescramblerBridge(tuner) }) else null,
                         )
                     },

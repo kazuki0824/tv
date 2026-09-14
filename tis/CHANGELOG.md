@@ -1,3 +1,25 @@
+# PR #108 TRM対応MediaCas接続と資源回収の実装
+
+- Live/scanの既存受信contextからservice Context・framework session ID（scanはnull）・既存用途priorityを渡す。既存main Looperでlistener付きMediaCasを構築し、TRM不在・登録失敗時に診断用constructorへfallbackしない。製品接続はLIVE/MULTI2のtyped sessionを生成する。
+- CasControllerのplugin所有へ初期化状態と受信世代を加え、Frameworkの初回容量反映後callbackから現在のmetadataで再開する。5秒の単調時計期限、非正容量・無通知・構築失敗を失敗へ確定し、重複・旧instance・期限後の通知による復活を防ぐ。構築中の取消しでも元のownerを保持して遅延結果を閉じる。
+- MediaCas回収時に配送indexと受信世代を失効し、既存TunerControllerから再生・filterを停止して元の世代へ通知する。Frameworkがclose済みのsessionへVOIDやSession.closeを再実行せず、残存Descrambler、MediaCasの順に解放する。独立cleanupを最後まで試し、失敗所有は既存の再試行経路に残す。
+- 初期容量待ち・期限・失効・旧owner・遅延構築・別controller独立性・回収時cleanup再試行を7件、typed API選択を1件、実TunerControllerへの回収通知から受信停止・失敗cleanup再試行を1件追加した。CI期待件数は247から256へ更新し、検出35クラス／実行32クラスの条件を維持する。
+- 所有を別台帳へ分散させないためCasControllerだけにLargeClass抑制を追加し、全cleanup失敗を診断しcontrollerを存続させる通知処理だけにTooGenericExceptionCaught抑制を付した。各理由は宣言にも記載する。新しい容量調停器・専用worker・CAS plugin通知APIは追加しない。
+
+確認結果（本変更のTIS接続・寿命管理に限定）:
+
+| 既知NG / 反例 | 処理経路と証拠 | 結果 / 未分類 |
+|---|---|---|
+| 容量通知前のopen、重複・旧owner・期限後の復活 | `CasControllerSessionTest`の初期容量・期限・取消し・遅延構築試験 | OK / なし |
+| 型なしsessionへの誤接続 | `FrameworkCasCloseTest.managedAdapterUsesLiveMulti2TypedSession`でAPIへ渡す実値0/8を検査 | OK / なし |
+| 回収済みsessionの再close、失敗所有の消失 | `CasControllerSessionTest`の回収試験、`PlaybackFailureCallbacksTest.mediaCasReclaimStopsReceiveGenerationEvenWhenCleanupFails`で通知→配送失効→再生/filter停止→cleanup再試行を実行 | OK / なし |
+| 既存の通常終了・無効化の退行 | 上記3クラスと`CasControllerStateTest`をJUnitCoreで実行 | 48件成功 / なし |
+| 型・スタイル・差分不整合 | 本番/全試験Kotlinを`kotlinc -jvm-target 17`でコンパイル、変更Kotlin 10ファイルへ`ktlint`/`detekt --input`、`git diff --check` | 成功 / なし |
+
+入力はKotlin 1.9.22、Android 15 `android-all:15-robolectric-13954326`、JUnit 4.13.2。コンパイル対象・classpathは`.github/workflows/tis-host-ci.yml`のhost構成に従い、JavaのTuner/Filter試験stubはJREのみの環境のためECJ 3.37.0でコンパイルした。実行は`org.junit.runner.JUnitCore`へ表の4クラスを指定した。初回の追加試験で見つかったfixtureのmap型・実行thread・filter再試行回数の不一致を修正し、最終48件の成功を確認した。
+
+本番constructorの型照合とAOSP `android-15.0.0_r1`の構築・容量反映・session回収順序を確認したが、実TRMへの登録・容量反映・priority reclaimの結合確認は未実施。host全256件、Android/Soong build、device atest、VTS、実機試験は未実施。CAS plugin本体、本番Ks共有、実復号は本変更で実装していない。r52全体の実装100%一致、CDD/ARIB全面適合の判定は **No**。
+
 # PR #108 MediaCas無効化後の終了実装
 
 - Framework MediaCas adapterと全Sessionで無効状態を共有し、CAS固有状態例外・引数エラーを区別する。CasControllerは無効化を検出するとplugin/sessionと配送indexを退役させ、Descrambler閉鎖からMediaCas.closeへ進む。未完了cleanupの所有を保持し、成功した終了処理を繰り返さない。
