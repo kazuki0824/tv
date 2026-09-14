@@ -1,5 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet};
 use crate::descrambler_key_table::DescramblerPacketKeys;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -1954,11 +1954,10 @@ impl RuntimeRegistry {
         self.descrambler_runtimes
             .values()
             .filter_map(|runtime| {
-                let claim_set = runtime.resolved_claim_set_for_demux(
-                    demux_id,
-                    demux_generation,
-                    |slot| packet_keys.key_slot(slot),
-                )?;
+                let claim_set =
+                    runtime.resolved_claim_set_for_demux(demux_id, demux_generation, |slot| {
+                        packet_keys.key_slot(slot)
+                    })?;
                 let (claims, key_slot) = claim_set.into_parts();
                 Some(ResolvedDescramblerClaimSet { claims, key_slot })
             })
@@ -2042,7 +2041,8 @@ impl RuntimeRegistry {
         packet_pid: PacketPid,
         packet_keys: &DescramblerPacketKeys,
     ) -> ResolvedDescramblerPacketMaterial {
-        let claim_sets = self.resolved_descrambler_claims_for_demux(demux_id, demux_generation, packet_keys);
+        let claim_sets =
+            self.resolved_descrambler_claims_for_demux(demux_id, demux_generation, packet_keys);
         let mut snapshots = Vec::with_capacity(claim_sets.len());
         let mut diagnostics = Vec::new();
         let mut diagnostic_records = Vec::new();

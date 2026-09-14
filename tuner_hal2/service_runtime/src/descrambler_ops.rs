@@ -1,5 +1,4 @@
 use crate::boot::TunerServiceRuntime;
-use std::sync::{Arc, Mutex};
 use crate::object_method_use_case::ObjectMethodExecutionToken;
 use crate::registry::{DescramblerRegistryEntry, RegistryCommitError};
 use maleicacid_tuner_hal2_common::HalError;
@@ -7,6 +6,7 @@ use maleicacid_tuner_hal2_descrambler::{
     CasKeyResolveError, CasKeyResolver, DescramblerKeySlot, DescramblerKeyToken,
     DescramblerKeyTokenError, ProductCasKeyResolver,
 };
+use std::sync::{Arc, Mutex};
 
 pub(crate) enum PreparedDescramblerKeyToken {
     Clear,
@@ -165,8 +165,10 @@ impl TunerServiceRuntime {
     ) -> Result<(), HalError> {
         let prepared = prepare_product_descrambler_key_token(key_token);
         let mut runtime = runtime.lock().map_err(|_| {
-            HalError::internal(maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned after CAS key resolution")
+            HalError::internal(
+                maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                "service runtime lock poisoned after CAS key resolution",
+            )
         })?;
         runtime.commit_descrambler_key_token_for_object(object_id, generation, prepared, dispatch)
     }
