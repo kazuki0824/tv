@@ -253,7 +253,7 @@ EMM処理は適用対象messageごとに検証と更新を確定し、関連ECM�
 | 解釈・適用できないcommand | `ERROR_CAS_CANNOT_HANDLE`。復号成功を更新成功へ置き換えない |
 | 適用対象の検証・更新が完了 | 成功。後続ECMが更新済み台帳を参照できる |
 
-初期Yakisoba構成の完了確認には、不正section、1 section内の複数EMM、対象外宛先、MAC不正、重複・拒否更新、EMMで得たwork keyを使う後続ECM、複数pluginからの同時初期化・処理を含める。
+Yakisoba構成の完了確認は、[タスク完了判定の実施方法](../タスク完了判定の実施方法.md#casのyakisoba構成の完了確認)を参照する。
 
 ## 7. SmartCard backend
 
