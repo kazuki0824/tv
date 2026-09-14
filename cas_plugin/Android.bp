@@ -55,6 +55,5 @@ cc_test {
     defaults: ["maleicacid_b25_plugin_defaults"],
     srcs: ["src/KeyClient.cpp", "tests/CasTest.cpp"],
     cflags: ["-DMALEICACID_CAS_TEST"],
-    gtest: false,
     test_suites: ["device-tests"],
 }
