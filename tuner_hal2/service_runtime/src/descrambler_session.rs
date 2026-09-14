@@ -234,7 +234,7 @@ impl DescramblerRuntime {
         &self,
         demux_id: i32,
         generation: u64,
-        key_table: &DescramblerKeyTable,
+        key_slot_lookup: impl FnOnce(DescramblerKeySlotId) -> Option<DescramblerKeySlot>,
     ) -> Option<DescramblerRuntimeResolvedClaimSet> {
         if !self.is_bound_to_demux(demux_id, generation) || self.session.pid_claims().is_empty() {
             return None;
@@ -242,7 +242,7 @@ impl DescramblerRuntime {
         let key_slot = self
             .session
             .key_slot()
-            .and_then(|slot_id| key_table.key_slot(slot_id));
+            .and_then(key_slot_lookup);
         Some(DescramblerRuntimeResolvedClaimSet::new(
             self.session.pid_claims().to_vec(),
             key_slot,

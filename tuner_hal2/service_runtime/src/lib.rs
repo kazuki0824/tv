@@ -59,7 +59,6 @@ pub use cleanup_execution::{
 pub use command_dispatch::{
     RuntimeCommandDispatchError, RuntimeCommandDispatchPlan, RuntimeCommandDispatcher,
 };
-pub use descrambler_ops::{prepare_product_descrambler_key_token, PreparedDescramblerKeyToken};
 pub use diagnostics::{
     BoundedDiagnosticStore, CallbackArtifactRuntimeSplitDiagnosticRecord,
     CallbackArtifactRuntimeSplitDiagnosticSnapshot, CallbackArtifactRuntimeSplitOutcome,
@@ -2111,7 +2110,7 @@ mod tests {
         assert_eq!(session.demux_binding(), Some((demux.id.0, 1)));
         let claim_sets = runtime
             .registry()
-            .resolved_descrambler_claims_for_demux(demux.id.0, 1);
+            .resolved_descrambler_claims_for_demux(demux.id.0, 1, &runtime.registry().descrambler_packet_keys_for_test());
         assert_eq!(claim_sets.len(), 1);
         let (claims, key_slot) = claim_sets.into_iter().next().unwrap().into_parts();
         assert!(key_slot.is_none());
@@ -2494,7 +2493,7 @@ mod tests {
             .unwrap();
 
         runtime
-            .push_frontend_ts_packet_to_bound_demuxes(1_000_000, &scrambled_payload_packet(200))
+            .push_frontend_ts_packet_to_bound_demuxes(1_000_000, &scrambled_payload_packet(200), &runtime.registry().descrambler_packet_keys_for_test())
             .unwrap();
 
         assert!(runtime.descrambler_diagnostics().iter().any(|record| {
@@ -2552,7 +2551,7 @@ mod tests {
             .unwrap();
 
         runtime
-            .push_frontend_ts_packet_to_bound_demuxes(1_000_000, &scrambled_payload_packet(200))
+            .push_frontend_ts_packet_to_bound_demuxes(1_000_000, &scrambled_payload_packet(200), &runtime.registry().descrambler_packet_keys_for_test())
             .unwrap();
 
         assert!(runtime.descrambler_diagnostics().iter().any(|record| {
@@ -2603,7 +2602,7 @@ mod tests {
             .unwrap();
 
         runtime
-            .push_frontend_ts_packet_to_bound_demuxes(1_000_000, &scrambled_payload_packet(200))
+            .push_frontend_ts_packet_to_bound_demuxes(1_000_000, &scrambled_payload_packet(200), &runtime.registry().descrambler_packet_keys_for_test())
             .unwrap();
 
         assert!(runtime.descrambler_diagnostics().iter().any(|record| {
@@ -2667,6 +2666,7 @@ mod tests {
             .push_frontend_ts_packet_to_bound_demuxes(
                 1_000_000,
                 &encrypted_scrambled_payload_packet(200, &key_slot),
+                &runtime.registry().descrambler_packet_keys_for_test(),
             )
             .unwrap();
         let report = reports.first().expect("bound demux report exists");
