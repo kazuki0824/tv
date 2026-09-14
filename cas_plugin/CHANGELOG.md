@@ -3,7 +3,7 @@
 - CASの既存session状態を共有領域へ置き、Tunerは結合時に取得した読取り専用参照を使用するよう変更した。共有領域の更新・失効と所有者終了の局所確認により、TISの通知や再結合を待たず次のpacketへ反映する。
 - Unix domain socketは参照の結合だけに使用し、ライブ入力とPlayback DVRからpacketごとの外部照会を除いた。CAS内部の失効契約とECM/EMM処理は維持し、別の鍵台帳や通知専用workerは追加していない。
 - 共有参照の受渡しに必要なSELinux設定と組込み手順を追加した。旧読取り入口は既存試験専用に隔離した。
-- ローカルでC++本体と共有領域の試験12組が成功。socket結合とRustはCIで確認する。Android/Soong、atest、VTS、実機確認は未実施。
+- ローカルでC++本体と共有領域の試験12組が成功。[CAS CI](https://github.com/kazuki0824/tv/actions/runs/34873809815)は依存取得のHTTP 503を再実行し、通常構成とASan/UBSan構成で各26組成功。共有領域の書込み禁止と世代上限の試験も追加した。Android/Soong、atest、VTS、実機確認は未実施。
 
 # PR #111 固定認証情報の読込みを簡素化
 
