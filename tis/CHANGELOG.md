@@ -1,3 +1,33 @@
+# PR #108 TIS全面監査の9指摘への実装追従
+
+- CAS初期化失敗とMediaCas回収でTuner受信そのものを失効する前回実装を訂正した。CasControllerのCAS世代失効は維持し、既存のCAS利用不能cleanupからECM/EMMと再生だけを停止する。PMT/SIとTuner受信は維持し、Tuner資源喪失通知は実際のTuner回収経路だけから発行する。
+- 地上波JPNのraw 1..15を既存ISDB年齢domainへ写像する。16/17の衛星拡張、例外値、未解決profile、未対応countryを区別し、同じMapperをProgramとlive判断で使う。
+- caption management未受信時の言語track生成を除き、受信したlanguage_tag 0/1だけを広告する。PESによるmanagement収集は言語trackの公開前から維持し、既存のPES callbackからtracksを更新する。superimposeも未受信時のlanguage ID補完を除いた。
+- EPG削除windowの境界を直前完成版と現版だけから作る。同じ版の再投影では同じold/new区間を保持し、過去にunionした区間を次版へ累積させない。
+- SetupActivityが使うisOwnInputIdを既存の一意解決結果との比較へ統合し、複数登録時のcandidate一致を受理しない。
+- parental query失敗でALLOWEDを保持する操作からvideo availability通知を除いた。許可状態のまま再生開始を進められる一方、available通知は既存first-output callback内の判断だけに残した。
+- 現世代のcodec header / decoder outputの画素寸法をvideo track投影へ渡し、既存signature比較で再通知する。decoder cropの全項目・範囲を検査し、不正値、旧世代、別codecの値からgeometryを作らない。
+- HEVCのselection、MIME、Tuner AV subtype、有限header probe・startup/steady予算、VPS/SPS/PPS CSDを既存block-model decoder経路へ接続した。共通のdecoder capability照合・MediaSync first-output・unsupported診断を使用する。実装と13試験・実header fixtureはPR #57の659622cから対象部分を照合して採用し、現ブランチのCAS回収後処理を維持した。AVCとHEVCのbit readerは既存処理を共通化し、通常ES/AUのcopyや再構成は追加しない。
+- managed MediaCasのECM成功後に標準session IDを既存TunerKeyTokenへ渡し、CasController所有のDescramblerへ結合する。ECM失敗、VOID予約値、空/長過ぎるIDを成功tokenにせず、診断専用接続は引き続きDiagnosticOnlyとする。
+
+検証の対応:
+
+| 反例 / 契約 | 実行する証拠 |
+|---|---|
+| CAS失敗でSIまで停止、Tuner喪失へ誤分類 | PlaybackFailureCallbacksTest: 初期化失敗/MediaCas回収の双方でPMT/EIT維持、Tuner通知なし、再生停止、解放再試行 |
+| 地上波ratingの消失 | AribRatingMapperTest: raw 1..15、衛星拡張との分離、未解決profile |
+| 未受信/未対応字幕言語の広告 | TisReviewBoundaryTest: 空、tag 2/7、tag 0/1、management消失、広告前のPES収集 |
+| 全履歴へ広がるEPG削除区間 | TisR51FixedPlanAcceptanceTest: v1→v2→v3、同版の重複投影、既存の未完成版/収集世代reset試験 |
+| 複数inputIdでもsetup開始 | TisReviewBoundaryTest: 実ResolverへFramework登録0/1/2件と別candidateを入力 |
+| parental許可保持だけでavailable | TisReviewBoundaryTest: query失敗後のIdleを保持し通知経路へ進まない |
+| video trackのgeometry欠落/推測 | TisReviewBoundaryTest: 未取得、実寸1440x1080、decoder crop、0/負値/範囲外 |
+| HEVCを一律拒否、欠落/不正headerで起動 | HevcPlaybackTestと既存selection試験: 実VPS/SPS/PPS、CSD、分割受信、crop、切断・予約値・不正escape |
+| ECM未成立/不正IDでtoken結合 | FrameworkCasCloseTest: 実adapter→CasController→Descrambler、ECM失敗、VOID/空/17-byte ID |
+
+追加21試験に合わせ、CI期待件数を277件、検出/実行クラス数を37/34へ更新した。新しいTooManyFunctions抑制は試験クラス2箇所のみ（採用元のHevcPlaybackTestとPlaybackFailureCallbacksTest）。独立したシナリオを同じ対象/fixtureで検証し、関数数だけを理由にfixtureや所有を複製しないためで、各宣言に理由を記載している。production側の抑止追加はない。
+
+確認結果: productionと全試験KotlinのAndroid 15入力によるhostコンパイルが成功。CasControllerSessionTest / CasControllerStateTest / FrameworkCasCloseTest / PlaybackFailureCallbacksTest / TisReviewBoundaryTest / HevcPlaybackTest / AribRatingMapperTestの関連71件が成功し、変更Kotlinのktlint・detektと差分検査も成功した。EPGの追加回帰試験を含むhost全277件はpush時点では未実行であり、Rust JNIを含むCIで確認する。Android/Soong build、device atest、実機VTS、実TRMのpriority回収、実機HEVC再生、CAS backendとの実復号結合は未実施。TISの標準session ID受け渡しを実装したことを、CAS plugin本体・本番鍵共有・r52全体の完成とは扱わない。
+
 # PR #108 TRM対応MediaCas接続と資源回収の実装
 
 - Live/scanの既存受信contextからservice Context・framework session ID（scanはnull）・既存用途priorityを渡す。既存main Looperでlistener付きMediaCasを構築し、TRM不在・登録失敗時に診断用constructorへfallbackしない。製品接続はLIVE/MULTI2のtyped sessionを生成する。

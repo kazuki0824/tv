@@ -996,7 +996,13 @@ internal class FrameworkMediaCasBridge(
         override fun processEcm(section: ByteArray): Result<EcmProcessResult> =
             runCatching {
                 callMediaCas { session.processEcm(section, 0, section.size) }
-                EcmProcessResult.DiagnosticOnly("MediaCas 標準 API は ECM 投入完了を返すが、r51 の placeholder CAS では Tuner 用の実 key token を返しません")
+                if (typedSession) {
+                    val id = callMediaCas { session.sessionId }
+                    require(!id.contentEquals(Tuner.VOID_KEYTOKEN)) { "MediaCas session IDがVOID予約値です" }
+                    EcmProcessResult.RealKeyToken(TunerKeyToken(id))
+                } else {
+                    EcmProcessResult.DiagnosticOnly("診断用MediaCas接続では実key tokenを公開しません")
+                }
             }
 
         @Synchronized

@@ -269,22 +269,10 @@ class TunerController(
             onSectionIngestedCallback?.invoke()
             return
         }
-        val lostGeneration = tuneGeneration
-        invalidateTuneOnController()
         try {
-            SectionFilterPolicy.completeCleanup(
-                {
-                    playbackPipeline.stopAndReportUnavailable(
-                        PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY,
-                        "MediaCas接続を喪失しました",
-                    )
-                },
-                { closeSectionFiltersOnController() },
-                { casController?.clearForResourceLoss() },
-                { onTunerResourceLostCallback?.invoke(lostGeneration) },
-            )
+            finishUnavailableCasOnController(listOfNotNull(casController?.lastDiagnostic()))
         } catch (failure: Exception) {
-            Log.w(LogTags.TIS, "MediaCas資源喪失の後処理に失敗しました generation=$lostGeneration", failure)
+            Log.w(LogTags.TIS, "MediaCas資源喪失の後処理に失敗しました generation=$tuneGeneration", failure)
         }
     }
 
@@ -1271,7 +1259,7 @@ class TunerController(
                 val diagnostics = casController?.onEcmSection(pid, section).orEmpty()
                 diagnostics.forEach { Log.w(LogTags.TIS, "ECM 処理診断 $it") }
                 if (diagnostics.any { it.errorCode == CasController.ErrorCode.MEDIA_CAS_INVALIDATED }) {
-                    finishInvalidatedCasOnController(diagnostics)
+                    finishUnavailableCasOnController(diagnostics)
                 } else if (diagnostics.any { it.state == CasController.State.ERROR }) {
                     playbackPipeline.reportUnavailable(PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY, diagnostics.joinToString())
                 }
@@ -1280,13 +1268,13 @@ class TunerController(
                 val diagnostics = casController?.onEmmSection(pid, section).orEmpty()
                 diagnostics.forEach { Log.w(LogTags.TIS, "EMM 処理診断 $it") }
                 if (diagnostics.any { it.errorCode == CasController.ErrorCode.MEDIA_CAS_INVALIDATED }) {
-                    finishInvalidatedCasOnController(diagnostics)
+                    finishUnavailableCasOnController(diagnostics)
                 }
             },
         )
     }
 
-    private fun finishInvalidatedCasOnController(diagnostics: List<CasController.Diagnostic>) {
+    private fun finishUnavailableCasOnController(diagnostics: List<CasController.Diagnostic>) {
         val pmtPids = dynamicPmtPids.toSet()
         SectionFilterPolicy.completeCleanup(
             { casController?.clearForResourceLoss() },
@@ -1348,7 +1336,8 @@ class TunerController(
                     it.elementaryPid == track.pid &&
                         TunerSelectionPolicy.isCaptionStream(it)
                 }
-            }
+            } ?: TunerSelectionPolicy.selectCaption(streams, defaultComponentGroupTags)
+        // management受信のPES filterは言語track広告と分離し、未受信でも既存parserへ配送する。
         val superimpose = TunerSelectionPolicy.selectSuperimpose(streams, defaultComponentGroupTags)
         return AvStreamSelection(
             serviceKey,
@@ -1404,39 +1393,22 @@ class TunerController(
         buildList {
             TunerSelectionPolicy.orderedCaptionStreams(streams, defaultComponentGroupTags).forEach { stream ->
                 val languages = captionLanguagesByPid[stream.elementaryPid].orEmpty()
-                if (languages.isEmpty()) {
+                languages.filter { it.languageTag in 0..1 }.forEach { language ->
+                    val languageId = language.languageTag + 1
                     add(
                         TisTrack(
-                            TunerSelectionPolicy.trackIdForSubtitle(stream, 1),
+                            TunerSelectionPolicy.trackIdForSubtitle(stream, languageId),
                             android.media.tv.TvTrackInfo.TYPE_SUBTITLE,
                             stream.elementaryPid,
                             stream.streamType,
                             stream.componentTag,
                             stream.componentType,
-                            null,
+                            language.iso639LanguageCode,
                             stream.dataComponentId,
                             TunerSelectionPolicy.captionKind(stream),
-                            1,
+                            languageId,
                         ),
                     )
-                } else {
-                    languages.filter { it.languageTag in 0..1 }.forEach { language ->
-                        val languageId = language.languageTag + 1
-                        add(
-                            TisTrack(
-                                TunerSelectionPolicy.trackIdForSubtitle(stream, languageId),
-                                android.media.tv.TvTrackInfo.TYPE_SUBTITLE,
-                                stream.elementaryPid,
-                                stream.streamType,
-                                stream.componentTag,
-                                stream.componentType,
-                                language.iso639LanguageCode,
-                                stream.dataComponentId,
-                                TunerSelectionPolicy.captionKind(stream),
-                                languageId,
-                            ),
-                        )
-                    }
                 }
             }
         }
@@ -1450,7 +1422,7 @@ class TunerController(
                 captionLanguagesByPid[stream.elementaryPid]
                     .orEmpty()
                     .filter { it.languageTag in 0..1 }
-                    .minByOrNull { it.languageTag }
+                    .minByOrNull { it.languageTag } ?: return@let null
             TisTrack(
                 TunerSelectionPolicy.trackIdForSuperimpose(stream),
                 android.media.tv.TvTrackInfo.TYPE_SUBTITLE,
@@ -1458,11 +1430,11 @@ class TunerController(
                 stream.streamType,
                 stream.componentTag,
                 stream.componentType,
-                language?.iso639LanguageCode,
+                language.iso639LanguageCode,
                 stream.dataComponentId,
                 "superimpose",
-                language?.languageTag?.plus(1) ?: 1,
-                language?.automaticPresentationOnReception ?: stream.automaticPresentationOnReception,
+                language.languageTag + 1,
+                language.automaticPresentationOnReception,
             )
         }
 

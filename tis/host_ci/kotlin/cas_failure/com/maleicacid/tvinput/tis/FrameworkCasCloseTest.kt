@@ -23,6 +23,51 @@ class FrameworkCasCloseTest {
         check(MediaCas.Faults.typedRequests == listOf(0 to 8))
     }
 
+    @Test fun successfulManagedEcmHandsTheSessionIdToTheOwnedDescrambler() {
+        MediaCas.Faults.reset()
+        val native = MediaCas(5)
+        val tokens = mutableListOf<TunerKeyToken>()
+        val descrambler =
+            object : CasController.TunerDescramblerBridge {
+                override fun setKeyToken(keyToken: TunerKeyToken): Result<Unit> {
+                    tokens += keyToken
+                    return Result.success(Unit)
+                }
+
+                override fun addPid(elementaryPid: TsPid) = Result.success(Unit)
+
+                override fun removePid(elementaryPid: TsPid) = Result.success(Unit)
+
+                override fun close() = Unit
+            }
+        val factory =
+            object : CasController.MediaCasBridgeFactory {
+                override fun create(caSystemId: Int): Result<CasController.MediaCasBridge> =
+                    Result.success(FrameworkMediaCasBridge({ native }, typedSession = true))
+            }
+        CasController(mediaCasFactory = factory).use { controller ->
+            controller.updateFromCaMetadata(metadata) { descrambler }
+            check(tokens.isEmpty())
+            check(controller.onEcmSection(TsPid(0x123), byteArrayOf(1)).none { it.state == CasController.State.ERROR })
+            check(tokens.single().toByteArray().contentEquals(byteArrayOf(4, 5, 6)))
+        }
+    }
+
+    @Test fun failedEcmAndInvalidSessionIdsNeverProduceRealTokens() {
+        for (id in listOf(byteArrayOf(), byteArrayOf(0), ByteArray(17), byteArrayOf(4, 5, 6))) {
+            MediaCas.Faults.reset()
+            MediaCas.Faults.sessionId = id
+            if (id.size == 3) MediaCas.Faults.stateFailureAt = MediaCas.Operation.ECM
+            val native = MediaCas(5)
+            FrameworkMediaCasBridge({ native }, typedSession = true).use { bridge ->
+                bridge.openSession().getOrThrow().use { session ->
+                    check(session.processEcm(byteArrayOf(1)).isFailure)
+                }
+            }
+        }
+        MediaCas.Faults.reset()
+    }
+
     private val metadata =
         listOf(
             CaMetadata(

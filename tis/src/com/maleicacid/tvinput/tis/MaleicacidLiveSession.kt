@@ -79,6 +79,7 @@ class MaleicacidLiveSession(
     private val latestService: AribService?
         get() = latestLiveSnapshot?.services?.firstOrNull { it.serviceKey == currentService }
     private val latestVideoMetadataByProgramKey = linkedMapOf<String, PlaybackPipeline.VideoFormatInfo>()
+    private var videoTrackFormat: Pair<Long, PlaybackPipeline.VideoFormatInfo>? = null
     private var preferredAudioTrackId: String? = null
     private var audioFallbackDisabled: Boolean = false
     private var dualMonoPresentation: PlaybackPipeline.DualMonoPresentation = PlaybackPipeline.DualMonoPresentation.MAIN
@@ -301,6 +302,7 @@ class MaleicacidLiveSession(
         currentChannelUri = channelUri
         latestLiveSnapshot = null
         latestVideoMetadataByProgramKey.clear()
+        videoTrackFormat = null
         clearTemporaryUnblocks()
         lastParentalAccessState = ParentalAccessState.UNKNOWN
         lastBlockedContent = null
@@ -465,7 +467,7 @@ class MaleicacidLiveSession(
 
             is ContentAccessDecision.HoldPrevious -> {
                 holdPreviousParentalAccessState(decision.reason)
-                return false
+                if (lastParentalAccessState != ParentalAccessState.ALLOWED) return false
             }
         }
         val initialSelection =
@@ -778,7 +780,13 @@ class MaleicacidLiveSession(
                 .filter { it.type == TvTrackInfo.TYPE_VIDEO }
                 .associate { track ->
                     val component = currentVideoComponent(service.serviceKey, track.componentTag)
-                    track.id to VideoTrackMetadataPolicy.project(component)
+                    val exact =
+                        videoTrackFormat
+                            ?.takeIf {
+                                PlaybackStartTransitions.acceptsGeneration(playbackState, it.first) &&
+                                    it.second.streamType == track.streamType
+                            }?.second
+                    track.id to VideoTrackMetadataPolicy.project(component, exact)
                 }
         val signature =
             tracks
@@ -925,6 +933,7 @@ class MaleicacidLiveSession(
 
             is ContentAccessDecision.HoldPrevious -> {
                 holdPreviousParentalAccessState(decision.reason)
+                if (lastParentalAccessState == ParentalAccessState.ALLOWED) notifyVideoAvailable()
             }
         }
     }
@@ -1097,7 +1106,6 @@ class MaleicacidLiveSession(
                     com.maleicacid.tvinput.common.LogTags.TIS,
                     "TvProvider rating query failure中のため、直前の許可状態を維持します reason=$reason",
                 )
-                notifyVideoAvailable()
             }
 
             ParentalAccessState.BLOCKED -> {
@@ -1197,6 +1205,8 @@ class MaleicacidLiveSession(
         info: PlaybackPipeline.VideoFormatInfo,
     ) {
         if (!PlaybackStartTransitions.acceptsGeneration(playbackState, generation)) return
+        videoTrackFormat = generation to info
+        latestService?.let(::updateTracks)
         captionController.updateVideoGeometry(
             generation,
             info.width,

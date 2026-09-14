@@ -46,17 +46,7 @@ object TisInputIdResolver {
         candidate: String?,
     ): Boolean {
         val id = candidate?.takeIf { it.isNotBlank() } ?: return false
-        val ownComponent = ComponentName(context, MaleicacidTvInputService::class.java)
-        val manager = context.getSystemService(TvInputManager::class.java) ?: return false
-        return manager.tvInputList.any { info ->
-            isOwnInputInfoForTest(
-                infoId = info.id,
-                servicePackageName = info.serviceInfo.packageName,
-                serviceName = info.serviceInfo.name,
-                ownPackageName = ownComponent.packageName,
-                ownClassName = ownComponent.className,
-            ) && info.id == id
-        }
+        return resolveOwnInputId(context) == id
     }
 
     fun isOwnInputInfoForTest(

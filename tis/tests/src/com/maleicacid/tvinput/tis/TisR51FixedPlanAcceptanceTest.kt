@@ -761,9 +761,9 @@ class TisR51FixedPlanAcceptanceTest {
         check(!TunerController.isSignalUnavailableTuneEventForTest(OnTuneEventListener.SIGNAL_LOCKED))
     }
 
-    @Test fun hevcOnlyServiceIsNotR51VideoCandidate() {
-        check(!TunerSelectionPolicy.isSupportedVideoStreamType(0x24))
-        check(TunerSelectionPolicy.selectVideo(listOf(es(TsPid(0x120), 0x24))) == null)
+    @Test fun hevcOnlyServiceIsR52VideoCandidate() {
+        check(TunerSelectionPolicy.isSupportedVideoStreamType(0x24))
+        check(TunerSelectionPolicy.selectVideo(listOf(es(TsPid(0x120), 0x24)))?.streamType == 0x24)
     }
 
     @Test fun h264AndMpeg2RemainR51VideoCandidates() {
@@ -863,9 +863,9 @@ class TisR51FixedPlanAcceptanceTest {
         check(!PlaybackPipeline.isSupportedAudioStreamTypeForTest(0x11))
     }
 
-    @Test fun mixedH264AndHevcSelectsH264CapablePath() {
+    @Test fun mixedH264AndHevcUsesTheSameComponentPriority() {
         val selected = TunerSelectionPolicy.selectVideo(listOf(es(TsPid(0x200), 0x24), es(TsPid(0x201), 0x1b)))
-        check(selected?.streamType == 0x1b)
+        check(selected?.streamType == 0x24)
     }
 
     @Test fun validEitComponentWithoutPmtComponentTagIsPreserved() {
@@ -933,7 +933,7 @@ class TisR51FixedPlanAcceptanceTest {
         check(PlaybackPolicy.shouldRejectSelection(0x01, selection))
     }
 
-    @Test fun hevcOnlyServiceIsRejectedBeforePlaybackStart() {
+    @Test fun hevcOnlyServiceReachesDecoderCapabilitySelection() {
         val streams = listOf(es(TsPid(0x120), 0x24))
         val selection =
             TunerController.AvStreamSelection(
@@ -942,8 +942,8 @@ class TisR51FixedPlanAcceptanceTest {
                 video = TunerSelectionPolicy.selectVideo(streams),
                 audio = null,
             )
-        check(!TunerSelectionPolicy.hasSupportedVideo(streams))
-        check(PlaybackPolicy.shouldRejectSelection(0x01, selection))
+        check(TunerSelectionPolicy.hasSupportedVideo(streams))
+        check(!PlaybackPolicy.shouldRejectSelection(0x01, selection))
     }
 
     @Test fun supportedAribRawRatingConvertsToTvContentRatingString() {
@@ -1711,6 +1711,38 @@ class TisR51FixedPlanAcceptanceTest {
                 .single()
                 .deletionAuthoritative,
         )
+    }
+
+    @Test fun epgDeletionWindowContainsOnlyPreviousAndCurrentCompletedVersions() {
+        val policy =
+            com.maleicacid.tvinput.aribsi
+                .EpgPublicationPolicy()
+        val event = aribEvent()
+        val complete = eitInstance(key)
+
+        fun publish(
+            version: Int,
+            start: Long,
+        ) = policy
+            .project(
+                SiDiscoveryProfile.ISDB_T,
+                1,
+                listOf(
+                    event.copy(
+                        startTimeMillis = start,
+                        durationMillis = 100L,
+                        source = event.source.copy(version = version),
+                    ),
+                ),
+                listOf(complete.copy(version = version)),
+            ).windows
+            .single()
+        check(publish(1, 1000).windowStartMillis == 1000L)
+        check(publish(2, 2000).windowStartMillis == 1000L)
+        check(publish(2, 2000).windowStartMillis == 1000L)
+        val third = publish(3, 3000)
+        check(third.windowStartMillis == 2000L && third.windowEndMillis == 3100L)
+        check(publish(3, 3000) == third)
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。

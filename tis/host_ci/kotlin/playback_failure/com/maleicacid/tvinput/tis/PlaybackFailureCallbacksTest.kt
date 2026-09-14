@@ -18,6 +18,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
+// 実controllerの停止通知と解放再試行を同じfixtureで検証し、試験数だけを理由にfixtureを複製しない。
+@Suppress("TooManyFunctions")
 class PlaybackFailureCallbacksTest {
     @Test fun invalidatedEcmAndEmmStopFiltersAndPlaybackAndNotifyOriginalGeneration() {
         checkCasInvalidation(failCleanup = false)
@@ -28,9 +30,12 @@ class PlaybackFailureCallbacksTest {
     }
 
     // 実controllerの通知から失効・独立cleanup・再試行までを同じ受信contextで確認する。
+    @Test fun casFailureAndReclaimPreserveSiWithoutReportingTunerLoss() {
+        for (initializing in listOf(false, true)) checkCasConnectionFailure(initializing)
+    }
+
     @Suppress("LongMethod")
-    @Test
-    fun mediaCasReclaimStopsReceiveGenerationEvenWhenCleanupFails() {
+    private fun checkCasConnectionFailure(initializing: Boolean) {
         val executor = Executors.newSingleThreadExecutor { Thread(it, "maleicacid-tis-controller-test") }
         val faults = MediaCas.Faults
         faults.reset()
@@ -59,8 +64,10 @@ class PlaybackFailureCallbacksTest {
             CasController(mediaCasFactory = factory).use { cas ->
                 val metadata = CasControllerStateTestVectors.pluginSelectionSuccessMetadata()
                 cas.updateFromCaMetadata(metadata, 7L)
-                connectionListener.onCapacity(2)
-                check(cas.updateFromCaMetadata(metadata, 7L).diagnostics.isEmpty())
+                if (!initializing) {
+                    connectionListener.onCapacity(2)
+                    check(cas.updateFromCaMetadata(metadata, 7L).diagnostics.isEmpty())
+                }
                 val fixture =
                     executor
                         .submit<Fixture> { Fixture(false, false, failCleanup = true) }
@@ -68,6 +75,8 @@ class PlaybackFailureCallbacksTest {
                 val controller = fixture.allocate(TunerController::class.java)
                 val ecm = TestSectionHandle(TsPid(0x123), rejectClose = true)
                 val emm = TestSectionHandle(TsPid(0x120))
+                val pmt = TestSectionHandle(TsPid(0x100))
+                val eit = TestSectionHandle(TsPid(0x12))
                 var lostGeneration: Long? = null
 
                 fun set(
@@ -86,34 +95,52 @@ class PlaybackFailureCallbacksTest {
                 set("playbackPipeline", fixture.pipeline)
                 set("captionLanguagesByPid", java.util.concurrent.ConcurrentHashMap<TsPid, String>())
                 set("superimposeTimingByPid", java.util.concurrent.ConcurrentHashMap<TsPid, String>())
-                set("dynamicPmtPids", linkedSetOf<TsPid>())
+                set("dynamicPmtPids", linkedSetOf(pmt.pid))
                 set("dynamicEcmPids", linkedSetOf(ecm.pid))
                 set("dynamicEmmPids", linkedSetOf(emm.pid))
-                set("sectionFilterHandles", linkedMapOf(ecm.pid to ecm, emm.pid to emm))
+                set("sectionFilterHandles", linkedMapOf(ecm.pid to ecm, emm.pid to emm, pmt.pid to pmt, eit.pid to eit))
                 set("sectionFilters", linkedMapOf<TsPid, List<Filter>>())
                 controller.setCasController(cas)
                 controller.setOnTunerResourceLostCallback { lostGeneration = it }
                 faults.pluginFailure = true
-                connectionListener.onResourceLost()
+                if (initializing) connectionListener.onCapacity(0) else connectionListener.onResourceLost()
                 cas.onEcmSection(ecm.pid, byteArrayOf(1))
                 executor.submit {}.get(5, TimeUnit.SECONDS)
-                check(lostGeneration == 7L)
-                check(fixture.notifications == 1 && fixture.failures.single().generation == 7L)
+                check(lostGeneration == null)
+                check(pmt.isOpen)
+                check(pmt.closes == 0)
+                check(eit.isOpen)
+                check(eit.closes == 0)
+                check(
+                    TunerController::class.java
+                        .getDeclaredField("tuneAccepted")
+                        .apply { isAccessible = true }
+                        .getBoolean(controller),
+                )
+                check(fixture.notifications == 1)
+                check(fixture.failures.single().generation == 7L)
                 check(ecm.closes == 1 && emm.closes == 1)
-                check(faults.sessionCloses == 0 && faults.pluginCloses == 1)
-                check(cas.lastDiagnostic().errorCode == CasController.ErrorCode.MEDIA_CAS_RESOURCE_LOST)
+                val attempts = if (initializing) 2 else 1
+                check(faults.sessionCloses == 0 && faults.pluginCloses == attempts)
+                val expectedError =
+                    if (initializing) {
+                        CasController.ErrorCode.PLUGIN_UNAVAILABLE
+                    } else {
+                        CasController.ErrorCode.MEDIA_CAS_RESOURCE_LOST
+                    }
+                check(cas.lastDiagnostic().errorCode == expectedError)
                 check(cas.updateFromCaMetadata(metadata, 7L).ecmPids.isEmpty())
-                connectionListener.onResourceLost()
+                if (initializing) connectionListener.onCapacity(0) else connectionListener.onResourceLost()
                 cas.onEcmSection(ecm.pid, byteArrayOf(1))
                 executor.submit {}.get(5, TimeUnit.SECONDS)
-                check(fixture.notifications == 1 && faults.pluginCloses == 1)
+                check(fixture.notifications == 1 && faults.pluginCloses == attempts)
                 faults.pluginFailure = false
                 cas.clearForResourceLoss()
                 ecm.rejectClose = false
                 controller.closeSectionFilters()
                 fixture.rejectRelease = false
                 executor.submit { fixture.pipeline.stop() }.get(5, TimeUnit.SECONDS)
-                check(faults.pluginCloses == 2 && faults.sessionCloses == 0)
+                check(faults.pluginCloses == attempts + 1 && faults.sessionCloses == 0)
                 check(ecm.closes == 2)
             }
         } finally {

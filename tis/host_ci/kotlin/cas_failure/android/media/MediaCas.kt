@@ -53,6 +53,8 @@ class MediaCas(
     }
 
     inner class Session : AutoCloseable {
+        val sessionId: ByteArray get() = Faults.sessionId.copyOf()
+
         fun setPrivateData(data: ByteArray) = call(Operation.SESSION_PRIVATE_DATA)
 
         fun processEcm(
@@ -73,6 +75,7 @@ class MediaCas(
     enum class Operation { PLUGIN_PRIVATE_DATA, OPEN, SESSION_PRIVATE_DATA, ECM, EMM, SESSION_CLOSE }
 
     object Faults {
+        var sessionId = byteArrayOf(4, 5, 6)
         val typedRequests = mutableListOf<Pair<Int, Int>>()
         val calls = mutableListOf<Operation>()
         var invalidateAt: Operation? = null
@@ -86,6 +89,7 @@ class MediaCas(
         var sessionFailure = false
 
         fun reset() {
+            sessionId = byteArrayOf(4, 5, 6)
             typedRequests.clear()
             calls.clear()
             invalidateAt = null
