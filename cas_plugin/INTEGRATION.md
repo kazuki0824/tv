@@ -44,11 +44,19 @@ Yakisobaの認証情報は製品の固定credentialとして供給する。こ�
 
 CAS側では初回読込みのファイル種別・サイズ・読取り成否を検査し、構文の解釈には採用libyakisobaを使用する。初期化後のファイル変更による再読込みや失効は行わない。実ファイルのコピー、owner/group/mode、SELinux labelなどproduct image上の配置は上位の製品統合設定へ集約し、このPRのCAS本体に同じ配置policyを重複実装しない。
 
+## Tuner HALの内部鍵参照
+
+`libmaleicacid_cas_key_client` はTuner HAL内部consumerへ静的リンクするC++ライブラリである。Tuner HALのRust descrambler libraryはSoongの`static_libs`でこのmoduleへ依存し、C ABIを介してMediaCas session IDと同じtokenのcurrent odd/even Ksをpacket単位で取得する。plugin共有ライブラリをTuner HALへ直接リンクしない。
+
+token・参照寿命・失効時の契約は `DESIGN_JA.md`、Tunerの非公開製品入力の配置は `../tuner_hal2/INTEGRATION.md` を参照する。
+
 ## 組込み確認
 
 - pluginの `.so` が採用アーキテクチャに対応する上記の配置先に含まれることを確認する。
 - AOSP `FactoryLoader` がその探索ディレクトリからMaleicacid pluginを列挙・読込みでき、`createCasFactory()` を発見できることを確認する。
 - `yakisoba_only` ではpluginと内部adapterの依存関係、`libyakisoba` の静的リンクおよびシンボル解決を確認する。
 - Yakisoba credentialの実値がrepository・CI出力・公開artifactへ混入せず、product imageでは上位の製品統合設定が必要な主体だけに読取りを許可していることを確認する。
+- Tuner HAL serviceへ`libmaleicacid_cas_key_client`が静的リンクされ、CAS plugin processとTuner HAL process間のvendor内部socketがSELinux policyで接続できることを確認する。
+- CAS sessionのECM更新後に同じtokenでodd/even Ksが更新され、session close・CAS process喪失後のpacketで旧鍵が使用されないことを確認する。
 
 設計上のABI・動作条件は [DESIGN_JA.md](DESIGN_JA.md) を参照する。実施した検証と未実施範囲の記録は [CHANGELOG.md](CHANGELOG.md) を参照する。

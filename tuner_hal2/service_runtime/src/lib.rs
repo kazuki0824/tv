@@ -59,6 +59,7 @@ pub use cleanup_execution::{
 pub use command_dispatch::{
     RuntimeCommandDispatchError, RuntimeCommandDispatchPlan, RuntimeCommandDispatcher,
 };
+pub use descrambler_ops::{prepare_product_descrambler_key_token, PreparedDescramblerKeyToken};
 pub use diagnostics::{
     BoundedDiagnosticStore, CallbackArtifactRuntimeSplitDiagnosticRecord,
     CallbackArtifactRuntimeSplitDiagnosticSnapshot, CallbackArtifactRuntimeSplitOutcome,
@@ -162,16 +163,17 @@ mod tests {
         QueueRuntimeErrorKind,
     };
     use maleicacid_tuner_hal2_descrambler::{
-        multi2_encrypt_payload, DescramblerKeySlot, DescramblerKeyToken, DescramblerPid,
-        DescramblerPidClaim, Multi2KeyMaterial,
+        multi2_encrypt_payload, CasKeyResolveError, CasKeyResolver, DescramblerKeySlot,
+        DescramblerKeyToken, DescramblerPid, DescramblerPidClaim, Multi2KeyMaterial,
     };
     use maleicacid_tuner_hal2_domain_request::{
         AidlObjectGeneration, AidlObjectId, AidlObjectKind, DvrConfigureKind, DvrConfigureRequest,
         DvrDataFormat, DvrOpenKind, FilterDelayHintKind, FilterDelayHintRequest, OpenDvrRequest,
         RuntimeExecutableRequest, RuntimeTransactionName, AIDL_TRANSACTION_TABLE,
     };
+    use std::collections::VecDeque;
     use std::path::PathBuf;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, Weak};
     use std::time::Duration;
 
     fn test_descrambler_pid(pid: u16) -> DescramblerPid {
@@ -306,6 +308,32 @@ mod tests {
             _events: Vec<FilterEventDeliverySnapshot>,
         ) -> Result<(), HalError> {
             Ok(())
+        }
+    }
+
+    struct LockCheckingKeyResolver {
+        runtime: Weak<Mutex<TunerServiceRuntime>>,
+        outcomes: Mutex<VecDeque<Result<DescramblerKeySlot, CasKeyResolveError>>>,
+    }
+
+    impl CasKeyResolver for LockCheckingKeyResolver {
+        fn resolve(
+            &self,
+            _token: &DescramblerKeyToken,
+        ) -> Result<DescramblerKeySlot, CasKeyResolveError> {
+            let runtime = self
+                .runtime
+                .upgrade()
+                .expect("test runtime must still exist");
+            assert!(
+                runtime.try_lock().is_ok(),
+                "CAS resolve must run without the service runtime lock"
+            );
+            self.outcomes
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("test resolver outcome must exist")
         }
     }
 
@@ -2659,6 +2687,110 @@ mod tests {
                 DescramblerDiagnosticKind::PacketDescrambled,
             )
         }));
+    }
+
+    #[test]
+    fn frontend_sink_refreshes_and_invalidates_cas_keys_without_holding_runtime_lock() {
+        let mut runtime = TunerServiceRuntime::new();
+        runtime.boot_from_probe_results([available(
+            1_000_000,
+            FrontendBackendKind::Px4CharDevice,
+            FrontendSystem::IsdbT,
+            "/dev/px4video0",
+            None,
+        )]);
+        let demux = runtime.allocate_demux_runtime().unwrap();
+        runtime
+            .set_demux_frontend_data_source(demux.id.0, 1_000_000)
+            .unwrap();
+        let filter = runtime.allocate_filter_runtime(demux.id.0).unwrap();
+        runtime
+            .register_demux_filter_runtime(
+                demux.id.0,
+                filter.id.0,
+                &configured_pes_filter_request(),
+            )
+            .unwrap();
+        runtime
+            .configure_filter_runtime_request(filter.id.0, configured_pes_filter_config(200))
+            .unwrap();
+        runtime.start_filter_runtime(filter.id.0).unwrap();
+
+        let old_key_slot = DescramblerKeySlot::empty()
+            .try_with_even(sample_multi2_key(1))
+            .unwrap();
+        let current_key_slot = DescramblerKeySlot::empty()
+            .try_with_even(sample_multi2_key(7))
+            .unwrap();
+        let token_bytes = vec![0x10; 16];
+        let token = DescramblerKeyToken::try_from_bytes(token_bytes.clone()).unwrap();
+        runtime
+            .register_descrambler_key_slot(token, old_key_slot)
+            .unwrap();
+        let descrambler = runtime.allocate_descrambler_runtime().unwrap();
+        runtime
+            .set_descrambler_demux_source(descrambler.id.0, demux.id.0)
+            .unwrap();
+        runtime
+            .add_descrambler_pid_non_null_source(descrambler.id.0, 200, filter.id.0)
+            .unwrap();
+        runtime
+            .set_descrambler_key_token(descrambler.id.0, &token_bytes)
+            .unwrap();
+
+        let encrypted = encrypted_scrambled_payload_packet(200, &current_key_slot);
+        let runtime = Arc::new(Mutex::new(runtime));
+        let resolver = Arc::new(LockCheckingKeyResolver {
+            runtime: Arc::downgrade(&runtime),
+            outcomes: Mutex::new(VecDeque::from([
+                Ok(current_key_slot),
+                Err(CasKeyResolveError::UnknownToken),
+            ])),
+        });
+        let mut sink = FrontendDemuxPacketSink::new_with_key_resolver(
+            Arc::clone(&runtime),
+            1_000_000,
+            Arc::new(NoopFilterEventDispatcher),
+            resolver,
+        );
+
+        maleicacid_tuner_hal2_device::FrontendLivePacketSink::deliver_ts_packet(
+            &mut sink, &encrypted,
+        )
+        .unwrap();
+        let descrambled_count = runtime
+            .lock()
+            .unwrap()
+            .descrambler_diagnostics()
+            .iter()
+            .filter(|record| {
+                descrambler_packet_policy_matches(
+                    record,
+                    demux.id.0,
+                    200,
+                    DescramblerDiagnosticKind::PacketDescrambled,
+                )
+            })
+            .count();
+        assert_eq!(descrambled_count, 1);
+
+        maleicacid_tuner_hal2_device::FrontendLivePacketSink::deliver_ts_packet(
+            &mut sink, &encrypted,
+        )
+        .unwrap();
+        assert!(runtime
+            .lock()
+            .unwrap()
+            .descrambler_diagnostics()
+            .iter()
+            .any(|record| {
+                descrambler_packet_policy_matches(
+                    record,
+                    demux.id.0,
+                    200,
+                    DescramblerDiagnosticKind::PacketScrambledWithoutKey,
+                )
+            }));
     }
 
     #[test]

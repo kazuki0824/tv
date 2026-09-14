@@ -53,7 +53,11 @@ void KeyServer::serve(int fd) {
     Secret<16> keys;
     const auto result = YakisobaBackend::instance().resolve(token, &keys);
     Secret<17> response;
-    response.bytes[0] = result == Result::Ok ? 0 : 1;
+    const auto status = result == Result::Ok
+                            ? KeyResponseStatus::Ok
+                            : result == Result::SessionClosed ? KeyResponseStatus::UnknownToken
+                                                              : KeyResponseStatus::Unavailable;
+    response.bytes[0] = static_cast<uint8_t>(status);
     if (result == Result::Ok) std::copy(keys.bytes.begin(), keys.bytes.end(), response.bytes.begin() + 1);
     if (waitSocket(fd, POLLOUT)) send(fd, response.bytes.data(), response.bytes.size(), MSG_NOSIGNAL);
 }

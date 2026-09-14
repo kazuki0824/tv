@@ -23,12 +23,12 @@ use maleicacid_tuner_hal2_demux::{
     PipelineDiagnostic, PipelineReport, PipelineResetReport, StreamBoundaryReport, TsInputOrigin,
     TsPacketValidationError, ValidatedTsPacket,
 };
-#[cfg(test)]
-use maleicacid_tuner_hal2_descrambler::DescramblerKeySlot;
 use maleicacid_tuner_hal2_descrambler::{
-    DescrambleFailure, DescramblerKeyToken, DescramblerKeyTokenError, DescramblerPid,
-    DescramblerPidClaim, DescramblerPidClaimError,
+    CasKeyResolver, DescrambleFailure, DescramblerKeyTokenError, DescramblerPid,
+    DescramblerPidClaim, DescramblerPidClaimError, ProductCasKeyResolver,
 };
+#[cfg(test)]
+use maleicacid_tuner_hal2_descrambler::{DescramblerKeySlot, DescramblerKeyToken};
 use maleicacid_tuner_hal2_device::{
     FrontendLivePacketSink, FrontendLivePumpOwner, FrontendLivePumpReport,
     FrontendLiveReaderDescriptor, FrontendRuntimeSnapshot, FrontendSignalState,
@@ -273,6 +273,7 @@ pub struct FrontendDemuxPacketSink {
     runtime: Arc<Mutex<TunerServiceRuntime>>,
     frontend_id: i32,
     dispatcher: Arc<dyn FilterEventDispatcher>,
+    key_resolver: Arc<dyn CasKeyResolver>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -350,6 +351,22 @@ impl FrontendDemuxPacketSink {
             runtime,
             frontend_id,
             dispatcher,
+            key_resolver: Arc::new(ProductCasKeyResolver),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_key_resolver(
+        runtime: Arc<Mutex<TunerServiceRuntime>>,
+        frontend_id: i32,
+        dispatcher: Arc<dyn FilterEventDispatcher>,
+        key_resolver: Arc<dyn CasKeyResolver>,
+    ) -> Self {
+        Self {
+            runtime,
+            frontend_id,
+            dispatcher,
+            key_resolver,
         }
     }
 
@@ -360,6 +377,24 @@ impl FrontendDemuxPacketSink {
 
 impl FrontendLivePacketSink for FrontendDemuxPacketSink {
     fn deliver_ts_packet(&mut self, packet: &[u8; TS_PACKET_SIZE]) -> Result<(), HalError> {
+        let refresh_requests = {
+            let mut runtime = self.runtime.lock().map_err(|_| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "service runtime lock poisoned while preparing CAS key refresh",
+                )
+            })?;
+            runtime
+                .registry
+                .descrambler_key_refresh_requests_for_frontend(FrontendRuntimeId(self.frontend_id))
+        };
+        let refreshes: Vec<_> = refresh_requests
+            .into_iter()
+            .map(|request| {
+                let key_slot = self.key_resolver.resolve(request.token()).ok();
+                (request, key_slot)
+            })
+            .collect();
         let events = {
             let mut runtime = self.runtime.lock().map_err(|_| {
                 HalError::internal(
@@ -367,6 +402,11 @@ impl FrontendLivePacketSink for FrontendDemuxPacketSink {
                     "service runtime lock poisoned while delivering frontend TS packet",
                 )
             })?;
+            for (request, key_slot) in refreshes {
+                runtime
+                    .registry
+                    .apply_descrambler_key_refresh(&request, key_slot);
+            }
             let reports =
                 runtime.push_frontend_ts_packet_to_bound_demuxes(self.frontend_id, packet)?;
             runtime.filter_event_delivery_snapshots(&reports)

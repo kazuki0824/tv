@@ -2,7 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::descrambler_key_table::{DescramblerKeyLookupError, DescramblerKeyTable};
+use crate::descrambler_key_table::{
+    DescramblerKeyLookupError, DescramblerKeyPublishError, DescramblerKeyRefreshRequest,
+    DescramblerKeySlotId, DescramblerKeyTable,
+};
 use crate::descrambler_session::{
     DescramblerCleanupReport, DescramblerCleanupTxnError, DescramblerClearKeyOutcome,
     DescramblerClearKeyTxnError, DescramblerReplaceKeyOutcome, DescramblerReplaceKeyTxnError,
@@ -1958,6 +1961,65 @@ impl RuntimeRegistry {
                 Some(ResolvedDescramblerClaimSet { claims, key_slot })
             })
             .collect()
+    }
+
+    pub(crate) fn descrambler_key_refresh_requests_for_frontend(
+        &mut self,
+        frontend_id: FrontendRuntimeId,
+    ) -> Vec<DescramblerKeyRefreshRequest> {
+        let bound_demuxes: BTreeSet<_> = self
+            .frontend_bound_demux_ids(frontend_id)
+            .into_iter()
+            .filter_map(|demux_id| {
+                let generation = self.demux_runtime(demux_id)?.generation();
+                Some((demux_id, generation))
+            })
+            .collect();
+        let mut bindings = BTreeMap::new();
+        for runtime in self.descrambler_runtimes.values() {
+            let Some((demux_id, generation)) = runtime.demux_binding() else {
+                continue;
+            };
+            if !bound_demuxes.contains(&(DemuxRuntimeId(demux_id), generation)) {
+                continue;
+            }
+            if !runtime.is_bound_to_demux(demux_id, generation) {
+                continue;
+            }
+            let Some((token, slot)) = runtime.key_binding() else {
+                continue;
+            };
+            bindings.entry(slot).or_insert_with(|| token.clone());
+        }
+        bindings
+            .into_iter()
+            .filter_map(|(slot, token)| self.descrambler_key_table.begin_refresh(&token, slot))
+            .collect()
+    }
+
+    pub(crate) fn apply_descrambler_key_refresh(
+        &mut self,
+        request: &DescramblerKeyRefreshRequest,
+        key_slot: Option<DescramblerKeySlot>,
+    ) {
+        self.descrambler_key_table.apply_refresh(request, key_slot);
+    }
+
+    pub(crate) fn publish_descrambler_key_resolution(
+        &mut self,
+        token: DescramblerKeyToken,
+        key_slot: DescramblerKeySlot,
+    ) -> Result<DescramblerKeySlotId, DescramblerKeyPublishError> {
+        self.descrambler_key_table.publish(token, key_slot)
+    }
+
+    pub(crate) fn discard_unreferenced_descrambler_key_resolution(
+        &mut self,
+        token: &DescramblerKeyToken,
+        slot: DescramblerKeySlotId,
+    ) {
+        self.descrambler_key_table
+            .discard_if_unreferenced(token, slot);
     }
 
     pub(crate) fn resolved_descrambler_packet_material_for_demux(
