@@ -173,17 +173,18 @@ uint8_t casScheme(maleicacid::cas::CasScheme scheme) {
 }
 
 extern "C" int maleicacid_cas_bind_key_reference(const uint8_t* token, size_t length,
-                                                 void** reference, uint8_t* scheme) {
-    if (reference == nullptr || scheme == nullptr) return MALEICACID_CAS_KEY_INVALID_TOKEN;
+                                                 void** reference) {
+    if (reference == nullptr) return MALEICACID_CAS_KEY_INVALID_TOKEN;
     *reference = nullptr;
-    *scheme = MALEICACID_CAS_SCHEME_UNKNOWN;
     std::unique_ptr<maleicacid::cas::KeyReference> result;
     const auto status = maleicacid::cas::KeyReference::bind(token, length, &result);
-    if (status == maleicacid::cas::KeyResult::Ok && result) {
-        *scheme = casScheme(result->scheme());
-    }
     *reference = result.release();
     return keyStatus(status);
+}
+
+extern "C" uint8_t maleicacid_cas_key_reference_scheme(const void* reference) {
+    if (reference == nullptr) return MALEICACID_CAS_SCHEME_UNKNOWN;
+    return casScheme(static_cast<const maleicacid::cas::KeyReference*>(reference)->scheme());
 }
 
 extern "C" void maleicacid_cas_release_key_reference(void* reference) {
