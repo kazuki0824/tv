@@ -1,5 +1,7 @@
 #[cfg(any(target_os = "android", test))]
-use crate::product_parameters::{Multi2FixedParameters, Multi2Scheme};
+use crate::product_parameters::Multi2FixedParameters;
+#[cfg(target_os = "android")]
+use crate::product_parameters::Multi2Scheme;
 #[cfg(any(target_os = "android", test))]
 use crate::Multi2KeyMaterial;
 use crate::{DescramblerKeySlot, DescramblerKeyToken};
