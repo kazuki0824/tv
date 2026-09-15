@@ -143,8 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn schemes_are_distinct_and_b1_has_no_b25_fallback() {
+    fn b25_and_b1_are_distinct_schemes() {
         assert_ne!(Multi2Scheme::B25, Multi2Scheme::B1);
-        assert_eq!(ProductParametersError::UnsupportedScheme, ProductParametersError::UnsupportedScheme);
     }
 }
