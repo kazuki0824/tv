@@ -113,7 +113,10 @@ class ChannelScanController(
     private val tvProviderWriter = TvProviderWriter(context, inputId)
     private val programPublishCoordinator = ProgramPublishCoordinator(tvProviderWriter)
     private val caMapper = PmtCatCaMetadataMapper()
-    private val casController = CasController()
+    private val casController =
+        CasController(
+            mediaCasFactory = FrameworkMediaCasBridgeFactory(context, null, tunerPriorityHintUseCase(scanPurpose)),
+        )
     private val cancelled = cancelRequested
     private var terminalCancelObserved: Boolean = false
     private val resourceLossFence = ResourceLossFence()

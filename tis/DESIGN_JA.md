@@ -52,17 +52,77 @@ Video track metadataもPMTとEITの責務を混同しない。filter/decoderへ�
 
 ## CAS / descrambler の現行境界
 
-現行 product では CAS HAL 本体はプレースホルダーのままにする。TIS は Tuner SDK API の filter 経由で PMT/CAT/SDT/ECM/EMM section payload を取得し、PMT/CAT から得た CA_descriptor と SDT 等から得た free_CA_mode / サービス識別子補助情報を arib_si_engine_rs の意味解析結果として受け取る。TIS はcurrent `ServiceSemanticFacts`とcurrent CAS capabilityに基づいて ECM/EMM セクションフィルターと MediaCas/CAS bridgeを型付きAPIで制御し、実keyトークンが得られた場合だけTuner descramblerへ不透明な参照値を渡す。仮実装や診断専用結果は復号成功を意味しないため、`setKeyToken()`へ渡さない。Tuner HALが未接続診断を返した場合も成功扱いにしない。
+CAS plugin内部のfactory/backend/key lifecycle契約は `../cas_plugin/DESIGN_JA.md` を正とし、本書ではTISからMediaCas/Tuner SDKへ接続するruntime境界だけを定義する。
 
-descrambler bridgeの単一所有者はCasControllerとし、TunerControllerに同じbridgeをcacheしない。scan/liveは取得済みbridgeを持ち回らず、受信snapshotに対応するtune generationを必須入力とするTunerController.updateCasMetadataAndFilters()を使う。同controller executor内でtuneAcceptedとgenerationを照合し、CasControllerのfactoryによるbridge生成・attach・metadata更新と、成功結果のECM/EMM PIDを使うfilter更新完了まで待つ。metadata成功前に新filter集合を公開しない。resource-lostは同executorで直列化するため、取得とattachの間に割り込ませない。旧世代・失効済み要求はfactoryを呼ばず拒否する。
+CA system IDの数値と方式の対応は`../開発規則.md`の「CA system IDの正本」に従い、`CasController.SupportedCasSystemIds`はその実装表現とする。
+
+現行 product では CAS plugin 本体はプレースホルダーのままにする。TIS は Tuner SDK API の filter 経由で PMT/CAT/SDT/ECM/EMM section payload を取得し、PMT/CAT から得た CA_descriptor と SDT 等から得た free_CA_mode / サービス識別子補助情報を arib_si_engine_rs の意味解析結果として受け取る。TIS はcurrent `ServiceSemanticFacts`とcurrent CAS capabilityに基づいて ECM/EMM セクションフィルターと MediaCas/CAS bridgeを型付きAPIで制御し、実keyトークンが得られた場合だけTuner descramblerへ不透明な参照値を渡す。仮実装や診断専用結果は復号成功を意味しないため、`setKeyToken()`へ渡さない。Tuner HALが未接続診断を返した場合も成功扱いにしない。
+
+PROGRAM/ESのCA_descriptor `private_data_byte` はB25/B1をTIS側で解釈せず、対応するMediaCas Sessionの `setPrivateData()` へopaque bytesとして渡す。B1でもこのsession-private-data投入を通常のsession setupとして行い、成功後にECM配送へ進む。CAT由来private dataをMediaCas plugin-level `setPrivateData()`へ渡す経路はEMM対応CA systemだけに限定し、現行のB1では起動しない。CA方式固有のprivate data意味解釈はCAS plugin側の責務とし、TISにB1専用parserやprivate-data抑止分岐を追加しない。
+
+各CasController instanceは、その受信context内でCA system IDごとに1個のMediaCas pluginを所有し、EMMをそのpluginへ配送する。別のTvInputService Sessionおよびscan contextは独立したCasControllerを所有し、context間のplugin共有やprocess全体のsingletonを要求しない。ECMのsessionとDescramblerはpluginの内側で複数所有する。sessionの共有条件は、ONID/TSID/service_id、CA system ID、ECM PID、CA descriptor private dataのbyte列が全て一致することとする。同一条件の複数ES PIDは1 session/Descramblerへ接続でき、条件が異なる場合は別sessionとする。private dataを鍵値として解釈せず、入力の同一性だけを比較する。ECM PIDまたはprivate dataの変更時は旧sessionを退役させてから新sessionを開き、旧tokenを引き継がない。
+
+初回の正常なECMで未結合のsessionだけを `setKeyToken()` へ接続し、以後の同一sessionの鍵更新はCAS側の参照先更新を利用する。確定前の通常ECM失敗は診断として記録し、既に成立したECM成功状態・鍵結合・再生を失効させない。初回ECMや初回結合が未成立なら再生開始を許可しない。MediaCas無効化、資源喪失、session退役は、それぞれの既存終了経路で配送と再生を停止する。CAS側の鍵更新・失効の成立条件は `../cas_plugin/DESIGN_JA.md` §10〜§13を正とし、TISに鍵状態の再検証や複製を追加しない。
+
+ESに具体化された同一service/CA system/ECM PIDのCA情報がある場合、PROGRAM情報だけから重複したsessionを生成せず、ESごとのprivate dataでsessionを選ぶ。ES対応をまだ持たないPROGRAM情報は独立したECM sessionとして保持し、PIDを推測して接続しない。異なるsession条件が同一ES PIDを同時に要求する入力は診断付きで拒否し、同じPIDを複数Descramblerへ登録しない。
+
+Descrambler bridgeの単一所有者はCasControllerとし、TunerControllerにcacheしない。AOSP `Descrambler` は1 instanceにつき1 key slotだけをlinkするため、各session専用bridgeにはそのsessionのES PIDだけを登録する。ECM PIDから対応session集合を引き、同じplugin内でも別ECMの鍵を上書きしない。scan/liveはtune generationを必須入力とするTunerController.updateCasMetadataAndFilters()を使う。同controller executor内でtuneAcceptedとgenerationを照合し、必要なsession専用bridgeの生成、metadata更新、ECM/EMM filter更新の成功後だけ配送indexを公開する。資源喪失は同executorで直列化し、旧世代・失効済み要求ではfactoryを呼ばない。
 
 metadata更新では配送indexを先に失効させ、全obsolete systemを物理解放前に退役させる。解放は全件試行し、survivorのprivateData・PID bindingとdescrambler PID更新が全て成功した場合だけ配送indexを公開する。途中失敗から旧bindingを再公開しない。metadata診断error・例外・filter更新失敗は同じcontroller transactionでCAS解放、ECM/EMM filterの空集合への置換、再生停止を全件試行する。PMTは判断更新用に維持し、caption終了と利用不能通知はLive sessionが行う。
 
-resource-lostと再選局時はCasController.clearForResourceLoss()がCAS state清掃とbridge closeを全件試行する。close成功後だけ所有参照を落とし、失敗中はclosingとして保持してECM/EMMを配送しない。資源喪失時はbridge全体を閉じるため個別removePidで遅延生成を起こさない。CAS session/pluginも退役時に配送対象から外し、各closeの成功を記録して未解放資源だけを再試行する。次のbridge生成前またはclose()で退役資源の解放を再試行し、成功するまで新bridgeを生成・attachしない。失敗時に独立したretry queueや新しい世代は作らない。DirectTunerDescramblerBridge.close()は未生成handleを生成せず、実close失敗を伝播し、閉鎖開始後のsetKeyToken/addPid/removePidと再利用を拒否する。CAS全体のclose失敗でもexecutorと所有を残してclose再試行を可能にする。
+通常終了、再選局、metadata/filter失敗時はCasController.clearForResourceLoss()がCAS state清掃とbridge closeを行う。利用可能なMediaCasのsession由来のcurrent key tokenがdescramblerへリンクされている場合、そのsession close前に同じbridgeへ `Tuner.VOID_KEYTOKEN` を渡してunlink成功を確認する。VOID失敗時は当該session/pluginを先にcloseせず、token link、session/plugin、descrambler/PID所有を保持して次のcleanupで再試行する。VOID成功後にsession closeとそのDescrambler/PID解放を行う。通常経路では所有する全sessionの解放が成功した後にpluginを閉じる。FrameworkがMediaCasを無効化した場合は、後述の「MediaCas無効化後の終了」に従う。
 
-MediaCas Session/Plugin adapterは公開close()が返す例外をそのままCasControllerへ伝播する。CAT由来EMMだけのsystemは既存system台帳にpluginのみを所有し、processEmmにSession生成を要求しない。同systemにPROGRAM/ESのECM bindingが現れた時点で同じpluginからSessionを開く。ECMがなくなりCATだけ残る場合はSessionだけを閉じる。openSession失敗時も同じ台帳で退役・解放する。rollback close失敗は元のsession-open失敗へ添え、成功するまでpluginのownerを除去しない。Framework内部で握り潰され公開APIへ返らない失敗までTISが検出できるとは扱わない。
+AOSP Tunerの `onResourceLost()` はFrameworkが `releaseAll()` でDescramblerを閉じた後に届く。TunerControllerはこの通知に限ってCasController.onTunerResourcesReclaimed()へ渡す。同処理は配送を失効させ、所有するbridgeをcloseする。DirectTunerDescramblerBridgeは初期化済みhandleへ冪等な公開 `Descrambler.close()` を呼び、閉鎖完了を確認してからtoken/PID所有を除去し、MediaCas session/pluginを解放する。閉鎖済みhandleへのVOID再投入も、新handleの生成も行わない。失敗した所有は保持し、別systemの解放も試行する。再選局、metadata失敗、信号喪失からこの入口を呼ばない。
 
-ES PIDのlogical ownerは全active CA systemの集合で照合する。別systemが同じPIDを使用している間はremoveしない。addPid成功済みのPIDだけをdescramblerPidsへ記録し、全owner消滅後のremovePid成功でのみ除去する。この集合とactive集合の差が未解放PIDであり、独立したpending集合を複製しない。非SUCCESSはCAS診断failureとして保持し、次のmetadata更新・clearで未解放分だけ再試行する。bridge全体のclose成功時はPID所有も解消する。
+通常経路ではclose成功後だけ所有参照を落とし、失敗中はclosingとして保持してECM/EMMを配送しない。資源喪失時はbridge全体を閉じるため個別removePidで遅延生成を起こさない。CAS session/pluginも退役時に配送対象から外し、各closeの成功を記録して未解放資源だけを再試行する。次のbridge生成前またはclose()で退役資源の解放を再試行し、成功するまで新bridgeを生成・attachしない。MediaCas無効化時の個別sessionは、後述の終了手順が完了したときに無効化による退役として所有を除去し、session close成功とは記録しない。失敗時に独立したretry queueや新しい世代は作らない。DirectTunerDescramblerBridge.close()は未生成handleを生成せず、実close失敗を伝播し、閉鎖開始後のsetKeyToken/addPid/removePidと再利用を拒否する。CAS全体のclose失敗でもexecutorと所有を残してclose再試行を可能にする。
+
+MediaCas Session/Plugin adapterは公開close()が返す例外をそのままCasControllerへ伝播する。CAT由来EMMだけのsystemは既存system台帳にpluginのみを所有し、processEmmにSession生成を要求しない。同systemにPROGRAM/ESのECM bindingが現れた時点で同じpluginから対応条件ごとのSessionを開く。個別ECMがなくなればそのSessionとDescramblerを閉じ、CATだけ残る場合はpluginを保持する。openSession失敗時も同じ台帳で退役・解放する。rollback close失敗は元のsession-open失敗へ添え、成功するまでpluginのownerを除去しない。Framework内部で握り潰され公開APIへ返らない失敗までTISが検出できるとは扱わない。
+
+ES PIDの物理所有はsession専用Descramblerごとに管理する。addPid成功済みのPIDだけを当該sessionのdescramblerPidsへ記録し、binding消滅後のremovePid成功またはDescrambler close成功で除去する。descramblerPidsとactive PID集合の差が未解放PIDであり、別のpending集合を持たない。解放失敗は診断を残して所有を保持し、次のmetadata更新・clearで再試行する。退役sessionの解放が終わるまで、同じPIDを新sessionへ移さない。
+
+### MediaCas無効化後の終了
+
+MediaCas instanceが再利用不能になった場合の終了は、そのinstanceを所有するTISの責務とする。AOSP `MediaCas` は通信失敗時、またAndroid 15のtyped `openSession()`でAIDLの`ServiceSpecificException`を受けた場合に内部接続を消去して`IllegalStateException`を返す。以後の`Session.close()`もFramework内の状態検査で失敗し、CAS pluginへ到達しない。この状態を個別session closeの再試行で回復可能とは扱わない。
+
+MediaCas adapterは、実際のFramework呼出しから返ったinstance無効を示す`IllegalStateException`を、同じMediaCasと全Session adapterで共有する不可逆な無効状態へ記録する。CAS固有statusを表す`MediaCasStateException`は同じ例外階層でも区別し、単独sessionの閉鎖、入力不正、未契約、一時的な資源不足、Descrambler操作失敗からMediaCas全体の無効化を推測しない。例外messageの文字列分類やFramework内部fieldのreflectionは使わない。元の例外は失敗として伝播し、無効化の記録後は当該instanceへの通常操作を呼ばない。`MediaCas.close()`は終了処理として引き続き呼び出せる。
+
+CasControllerはplugin-level private data、session生成、session private data、ECM、EMM、個別session closeの各境界で無効化を検出し、同じpluginと全sessionを退役させて配送indexを失効させる。無効化を検出したmetadata更新で新plugin/sessionへ再試行せず、失敗を返す。ECM/EMM配送で検出した場合もTunerControllerの既存executorでCAS解放、ECM/EMM filter停止、再生停止、利用不能通知を全件試行する。PMTは後続の正規metadata更新用に維持する。別CasControllerの所有へ作用させない。
+
+無効化後の後処理では、当該pluginの全sessionに対応する既存Descramblerをcloseしてtoken/PID参照を解消し、その完了後に`MediaCas.close()`を呼ぶ。既に成功した個別session closeは繰り返さず、無効instanceの未閉鎖Sessionにもcloseを再投入しない。通常解放中に無効化を検出した場合も、残りの個別session close成功を待たずこの経路へ移る。Descrambler閉鎖は全件試行し、失敗した資源の所有は保持する。全Descramblerの閉鎖とMediaCas.closeが完了するまで新しい接続を作らず、後続cleanupでは未完了の処理だけを再試行する。
+
+MediaCas.closeの完了はFramework側の後処理完了を表し、無効化した個別sessionのclose成功、到達していないplugin releaseの成功、または鍵失効の確認へ読み替えない。TRM登録済みのr52接続では同メソッドによる登録解除を含む。鍵の失効と後着更新の排除は`../cas_plugin/DESIGN_JA.md`の所有契約に従い、TISから鍵状態を操作しない。元の操作失敗と無効化の診断を残し、後処理失敗は追加の失敗として保持する。終了完了後の再接続は後続の正規metadata更新または再選局で行い、無効instanceや旧tokenを再利用しない。TRM回収通知は別の終了理由として後述の契約に従う。
+
+この契約は現行の診断用MediaCas接続にも適用する。確認対象は、各MediaCas操作での無効化、複数sessionの一括退役、session close中の無効化、Descrambler/MediaCas close失敗と再試行、CAS固有状態例外の非誤分類、ECM/EMM停止と再生停止、終了完了後の再接続とする。根拠は[AOSP Android 15 MediaCas](https://android.googlesource.com/platform/frameworks/base/+/android-15.0.0_r1/media/java/android/media/MediaCas.java)の状態検査、例外処理、closeによるTRM登録解除である。
+
+### r52のMediaCas資源回収
+
+r52でB25/B1の実復号を有効化するTIS接続では、service Context、同じ受信contextのframework由来TvInputService session ID、用途に対応するpriority hint、EventListenerを指定するMediaCas constructorを使用し、TRM管理へ接続する。liveは対応するsession IDとLIVE priorityを渡す。scan contextにTIS session IDがなければnullとし、priorityは本書のScanPurpose写像を使う。アプリ独自IDをframework session IDとして捏造せず、登録失敗時に `MediaCas(caSystemId)` へ切り替えない。
+
+session生成には `openSession(SESSION_USAGE_LIVE, SCRAMBLING_MODE_MULTI2)` を使う。採用AOSPで生成sessionがMediaCasのTRM管理対象に記録されることを結合確認する。引数なしopenSessionをpluginが提供するABI契約と、TISがTRM管理用に選ぶ呼出しは別の判断とする。Contextを渡さない診断用 `MediaCas(caSystemId)` / 引数なしopenSession経路を製品の受信contextから使用しない。診断用経路の検証をこのr52接続の検証へ読み替えない。
+
+Framework/TRMへのsession数通知方針とbackend枯渇時の結果は`../cas_plugin/DESIGN_JA.md` §3.1を正とする。TISがpluginごとの空き数を集約してTRMへ通知する経路や、独自の容量調停器を追加しない。
+
+初期容量の反映前にsessionを要求しないため、B25/B1の接続開始は次の順序にする。CAS側が固定上限のない構成でも初期通知を行うため、TISへ容量値や有限/無制限の判定表を持ち込まない。
+
+1. 既存controllerのplugin所有台帳で、その接続を初期化中として所有し、受信generationと正の有限な初期化予算から`SystemClock.elapsedRealtime()`基準の期限を一度だけ確定する。TRM serviceを取得できない場合は開始に失敗する。MediaCasの構築完了だけではsession生成を許可しない。
+2. EventListenerを指定したMediaCas構築を、そのlistenerに指定する既存HandlerのLooperへpostする。構築中に同Looperのevent処理へ制御を戻さず、構築結果をcontrollerへpostしてから初期化taskを終える。plugin生成中のstatus eventはconstructor内のTRM登録完了後に処理される。構築後のlistener登録を使わず、constructor直後の同じtaskでopenSessionへ進まない。
+3. AOSP MediaCasは`PLUGIN_STATUS_SESSION_NUMBER_CHANGED`を処理すると、`updateCasInfo()`が正常に戻った後に`EventListener.onPluginStatusUpdate()`を呼ぶ。このcallbackは、通知元instance・status・argを既存controller executorへpostして戻る。controllerは、所有中の同じinstance・有効な受信generation・初期化中・期限内・正の容量通知という条件がすべて成立した場合だけ、接続を利用可能にして期限処理を解除し、session生成の続きを一度再開する。再開時には現在のmetadataから必要sessionを再確認する。別status、重複通知、旧instanceの通知で重複openを起こさない。
+4. callbackとcontrollerのどちらも、通知待ちでHandler Looperやcontroller executorを同期waitしない。初期通知の処理完了まで、当該pluginのopenSession、session用Descrambler生成、ECM配送indexの公開へ進まない。期限処理は既存Handlerからcontrollerへpostし、controllerで同じownerが初期化中であることと現在の単調時計を確認する。callback再開時にも期限を検査し、遅延したtimerだけに期限判定を任せない。
+
+期限切れ、非正の容量通知、構築・TRM登録失敗、再選局・取消し・資源喪失・closeでは初期化中の接続を失敗または退役へ確定し、待機の続きと期限処理を無効化する。作成済みMediaCasは既存の退役資源cleanupで閉じ、close失敗時は所有を保持する。失効後に構築結果が届いた場合も、そのinstanceをcleanupへ渡し、所有なしで捨てたりsession生成へ進めたりしない。期限後の通知で接続を復活させず、後続metadataや重複通知で期限を延長しない。無通知を無制限とみなす処理、引数なしMediaCasへのfallback、即時再試行loopを追加しない。初期化予算の未設定・0・無期限はr52接続の成立条件を満たさない。待機状態と再開処理は既存plugin所有へ含め、別の容量台帳・待機queue・専用workerを作らない。
+
+容量の反映自体はAOSP MediaCasが所有し、TISの`onPluginStatusUpdate()`から`updateCasInfo()`を重複呼出ししない。根拠は[AOSP MediaCas](https://android.googlesource.com/platform/frameworks/base/+/android-15.0.0_r1/media/java/android/media/MediaCas.java)のstatus処理順序と、[TunerResourceManager](https://android.googlesource.com/platform/frameworks/base/+/android-15.0.0_r1/media/java/android/media/tv/tunerresourcemanager/TunerResourceManager.java)の初回session要求前に容量を更新する契約とする。通知にCAS鍵素材を含めない。
+
+FrameworkはTRM管理対象sessionを先にcloseしてから `EventListener.onResourceLost(mediaCas)` を通知する。通知を受けたTISは次の手順を行う。
+
+1. 通知元MediaCasのinstanceを所有中のpluginと照合する。退役済みinstanceの遅延通知を、同一CA system IDの新pluginへ適用しない。
+2. 対象受信generationとECM/EMM配送を失効させ、受信contextの再生・ECM/EMM filterを停止し、利用不能を通知する。CasControllerの既存所有台帳で回収対象pluginと全sessionを退役させ、旧sessionのprivate data更新・ECM・再利用を拒否する。新session生成との競合がある場合も当該plugin全体を退役させる。
+3. MediaCas回収はTuner Descramblerの閉鎖を意味しないため、対象pluginに対応する既存Descramblerをcloseしてtoken/PID参照を解消する。既にcloseされたMediaCas sessionを再closeせず、先行VOID成功をこの後処理の条件にしない。Tuner回収とも競合した場合は冪等なDescrambler closeで閉鎖を確認する。閉鎖失敗時は所有を保持して再試行する。
+4. Descramblerの閉鎖後、MediaCas.close()でpluginを退役させ、TRM登録を解放する。回収と競合して作られたsessionもpluginの寿命終了へ含め、閉鎖済みと推測して再利用しない。同じ受信contextの他pluginは通常の解放手順で閉じる。別CasControllerの所有には作用させない。
+
+通知を既存controller executorへ渡す際は、MediaCas callbackとcontroller間に相互の同期待ちを作らない。再試行には既存の退役資源所有とcleanup経路を使い、専用の回収queueや別の資源管理器は作らない。終了済みgenerationのmetadataでCASを自動再取得せず、旧所有の解放後に新たに受理した受信開始から確立する。鍵のrevoke確定点と通知前の鍵参照拒否は `../cas_plugin/DESIGN_JA.md` §13を正とする。
+
+r52の結合確認には、TRM登録とtyped sessionの管理、初期statusの処理を遅らせた場合のopenSession未呼出し、通知後の再開一回、無通知・期限切れ・非正容量・TRM不在の失敗、待機中の再選局・closeと遅延通知の排除、固定上限のない構成の初期通知、MediaCas回収通知前の鍵失効、通知後の配送停止、閉鎖済みsessionを再closeしないこと、Descrambler close失敗の再試行、通常close/Tuner回収との競合、旧pluginの遅延通知、別受信contextの継続を含める。実復号を有効化する前にこの経路を成立させる。
 
 ## Tuner SDK API 呼び出し
 
@@ -339,7 +399,7 @@ TIS は `TvInputManager.ACTION_BLOCKED_RATINGS_CHANGED` と `TvInputManager.ACTI
 - `onUnblockContent()` の解除範囲は同一 `channelUri + serviceKey + eventId + ratingString` の現在番組 / レーティングに限定する。start/end は stable identity ではなく、解除対象が現在表示中の同一 Program row であることを確認する補助条件としてのみ使ってよい。start/end/duration を provider-data `programKey`、unblock stable identity、または Program identity の SSOT にしてはならない。
 
 一時解除はSession executor内の`TemporaryContentUnblocks`だけが所有する。現在番組のstable identity変更、現在番組消滅、retune、releaseで失効する。解除の受理時点の番組終了UTCと、受理時の単調時計から換算した終了期限を固定し、いずれかに到達した時点で失効する。終了不明・期限算出overflow・既終了は解除を受理しない。番組時刻更新や同じ解除通知の重複では期限を延長しない。新たに観測した終了が早い場合は期限を短縮する。壁時計の後退でも単調期限を維持する。失効タイマーはsession executorへ再評価をenqueueし、旧タイマーは参照一致で除外する。期限通知を予約できない場合も解除を保持しない。これにより同一event_idの再使用に旧解除を引き継がず、開始時刻をstable identityへ追加する必要はない。終了後の延長番組を解除する場合は新たなframeworkの認証済み通知を必要とする。
-- CAS 未完成 / scrambled unsupported で再生成功にしない場合は `TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` を使う。具体的な CAS 状態 reason は CAS HAL 本実装まで使わない。
+- CAS 未完成 / scrambled unsupported で再生成功にしない場合は `TvInputManager.VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` を使う。具体的な CAS 状態 reason は CAS plugin 本実装まで使わない。
 - `requiresCas`はcurrent `ServiceSemanticFacts`のCA descriptor等から得る放送由来意味事実とし、`unsupportedCas` / `clearLivePlaybackSupported`はcurrent product/CAS capabilityからTISがその都度算出する。既存channel/Program `internal_provider_data`の旧policy値をcurrent policyの代替参照に使わない。
 
 ## TIS / EPG 公開境界
@@ -366,9 +426,9 @@ Direct Boot保留の正式状態を`DirectBootEpgPending`とする。`DirectBoot
 
 登録可能サービスは、`ServiceKey`、物理選局情報へ戻せるchannel provider-data、`Channels.COLUMN_INPUT_ID`として保存する自TISのinputId、表示名が揃い、TvProvider channel insert/update に進めるサービスとする。input ownershipのSSOTはprovider-dataではなく`Channels.COLUMN_INPUT_ID`とする。表示名は `ChannelRecord.displayName` が nonblank ならそれを使い、なければ SDT service_name、さらに無ければ `service-<onid>-<tsid>-<sid>` を使う。この代替表示名は登録可能判定上の有効な表示名と扱う。
 
-## CAS 仮実装境界
+## CAS plugin 仮実装境界
 
-CAS HAL 仮実装のまま scrambled サービスを平文ライブ視聴再生成功として扱ってはならない。scrambled unsupported サービスでも、PMT/CAT/CA情報と診断を使って EPG / Programs / レーティング / provider-data は更新する。ただし CAS key トークンを提供できない状態では再生成功にせず、CAS起因の unavailable のみ `VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` へ map する。初回映像到達timeout、filter start failure、非対応stream、codec失敗、audio失敗はCAS unknownにmapしない。
+CAS plugin 仮実装のまま scrambled サービスを平文ライブ視聴再生成功として扱ってはならない。scrambled unsupported サービスでも、PMT/CAT/CA情報と診断を使って EPG / Programs / レーティング / provider-data は更新する。ただし CAS key トークンを提供できない状態では再生成功にせず、CAS起因の unavailable のみ `VIDEO_UNAVAILABLE_REASON_CAS_UNKNOWN` へ map する。初回映像到達timeout、filter start failure、非対応stream、codec失敗、audio失敗はCAS unknownにmapしない。
 
 CAS可否はcurrent `ServiceSemanticFacts`とcurrent CAS implementation/capabilityからTISが算出する。provider-dataに保存するのはCA descriptor/free_CA_mode等の意味事実だけであり、旧`unsupportedCas` / `clearLivePlaybackSupported` / `publishStateSource`をcurrent判定へ再利用しない。
 

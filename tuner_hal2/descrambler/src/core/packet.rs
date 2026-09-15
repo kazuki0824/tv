@@ -824,20 +824,6 @@ mod tests {
     }
 
     #[test]
-    fn decrypt_hot_path_uses_prepared_key_type() {
-        let mut payload = *b"0123456789abcdef";
-        let key: PreparedMulti2Key = sample_key(9).prepare().unwrap();
-        multi2_decrypt_payload(&mut payload, &key);
-    }
-
-    #[test]
-    fn encrypt_helper_uses_prepared_key_type() {
-        let mut payload = *b"0123456789abcdef";
-        let key: PreparedMulti2Key = sample_key(9).prepare().unwrap();
-        multi2_encrypt_payload(&mut payload, &key);
-    }
-
-    #[test]
     fn prepared_key_produces_same_ciphertext_as_raw_material() {
         let mut payload = *b"0123456789abcdef";
         let key = sample_key(9).prepare().unwrap();
@@ -875,34 +861,9 @@ mod tests {
     }
 
     #[test]
-    fn decrypt_hot_path_accepts_only_prepared_key() {
-        let mut payload = *b"0123456789abcdef";
-        let key: PreparedMulti2Key = sample_key(9).prepare().unwrap();
-        multi2_decrypt_payload(&mut payload, &key);
-    }
-
-    #[test]
-    fn encrypt_hot_path_accepts_only_prepared_key() {
-        let mut payload = *b"0123456789abcdef";
-        let key: PreparedMulti2Key = sample_key(9).prepare().unwrap();
-        multi2_encrypt_payload(&mut payload, &key);
-    }
-
-    #[test]
     fn test_registration_rejects_unprepared_invalid_key() {
         let mut key = sample_key(12);
         key.rounds = 0;
-        assert_eq!(
-            DescramblerKeySlot::empty().try_with_even(key),
-            Err(Multi2PrepareError::InvalidRoundsZero)
-        );
-    }
-
-    #[test]
-    fn prepared_key_rejects_zero_rounds_at_registration() {
-        let mut key = sample_key(7);
-        key.rounds = 0;
-        assert_eq!(key.prepare(), Err(Multi2PrepareError::InvalidRoundsZero));
         assert_eq!(
             DescramblerKeySlot::empty().try_with_even(key),
             Err(Multi2PrepareError::InvalidRoundsZero)
@@ -915,13 +876,6 @@ mod tests {
         let slot = DescramblerKeySlot::empty().try_with_even(key).unwrap();
         assert!(slot.key_for(KeyParity::Even).is_some());
         assert!(slot.key_for(KeyParity::Odd).is_none());
-    }
-
-    #[test]
-    fn key_preparation_failure_returns_error() {
-        let mut key = sample_key(10);
-        key.rounds = 0;
-        assert_eq!(key.prepare(), Err(Multi2PrepareError::InvalidRoundsZero));
     }
 
     #[test]
@@ -942,11 +896,6 @@ mod tests {
         let keys = DescramblerKeySlot::empty().try_with_even(even).unwrap();
         descramble_ts_packet_in_place(&mut scrambled, &target_pids(&[0x123]), &keys).unwrap();
         assert_eq!(scrambled, clear);
-    }
-    #[test]
-    fn descramble_existing_even_odd_parity_tests() {
-        even_key_is_selected_and_tsc_is_cleared();
-        odd_key_is_selected_and_tsc_is_cleared();
     }
 
     #[test]
