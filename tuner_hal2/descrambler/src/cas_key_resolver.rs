@@ -1,5 +1,5 @@
 #[cfg(any(target_os = "android", test))]
-use crate::product_parameters::ProductMulti2Parameters;
+use crate::product_parameters::{Multi2FixedParameters, Multi2Scheme};
 #[cfg(any(target_os = "android", test))]
 use crate::Multi2KeyMaterial;
 use crate::{DescramblerKeySlot, DescramblerKeyToken};
@@ -15,6 +15,10 @@ const CAS_KEY_OK: i32 = 0;
 const CAS_KEY_INVALID_TOKEN: i32 = 1;
 #[cfg(target_os = "android")]
 const CAS_KEY_UNKNOWN_TOKEN: i32 = 2;
+#[cfg(target_os = "android")]
+const CAS_SCHEME_B25: u8 = 1;
+#[cfg(target_os = "android")]
+const CAS_SCHEME_B1: u8 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CasKeyResolveError {
@@ -52,7 +56,7 @@ fn erase(bytes: &mut [u8]) {
 
 #[cfg(any(target_os = "android", test))]
 fn build_key_slot(
-    parameters: &ProductMulti2Parameters,
+    parameters: &Multi2FixedParameters,
     odd: [u8; 8],
     even: [u8; 8],
 ) -> Result<DescramblerKeySlot, CasKeyResolveError> {
@@ -73,12 +77,23 @@ fn build_key_slot(
 }
 
 #[cfg(target_os = "android")]
+fn scheme_from_reference(reference: *const std::ffi::c_void) -> Result<Multi2Scheme, CasKeyResolveError> {
+    // token自体を解析せず、CAS側が結合結果へ付けた方式識別だけを使う。
+    match unsafe { maleicacid_cas_key_reference_scheme(reference) } {
+        CAS_SCHEME_B25 => Ok(Multi2Scheme::B25),
+        CAS_SCHEME_B1 => Ok(Multi2Scheme::B1),
+        _ => Err(CasKeyResolveError::Unavailable),
+    }
+}
+
+#[cfg(target_os = "android")]
 extern "C" {
     fn maleicacid_cas_bind_key_reference(
         token: *const u8,
         length: usize,
         reference: *mut *mut std::ffi::c_void,
     ) -> i32;
+    fn maleicacid_cas_key_reference_scheme(reference: *const std::ffi::c_void) -> u8;
     fn maleicacid_cas_release_key_reference(reference: *mut std::ffi::c_void);
     fn maleicacid_cas_snapshot_key_reference(
         reference: *const std::ffi::c_void,
@@ -91,6 +106,7 @@ extern "C" {
 #[derive(Debug)]
 struct ProductKeyReference {
     reference: NonNull<std::ffi::c_void>,
+    scheme: Multi2Scheme,
 }
 
 // C++ 参照は読取り専用 mapping と不変の所有者 fd を所有する。snapshot 同士は
@@ -111,7 +127,7 @@ impl Drop for ProductKeyReference {
 #[cfg(target_os = "android")]
 impl CasKeyReference for ProductKeyReference {
     fn snapshot(&self) -> Result<DescramblerKeySlot, CasKeyResolveError> {
-        let parameters = crate::product_parameters::product_parameters()
+        let parameters = crate::product_parameters::product_parameters(self.scheme)
             .map_err(|_| CasKeyResolveError::Unavailable)?;
         let mut odd = [0_u8; 8];
         let mut even = [0_u8; 8];
@@ -141,8 +157,6 @@ impl CasKeyResolver for ProductCasKeyResolver {
         &self,
         token: &DescramblerKeyToken,
     ) -> Result<Arc<dyn CasKeyReference>, CasKeyResolveError> {
-        crate::product_parameters::product_parameters()
-            .map_err(|_| CasKeyResolveError::Unavailable)?;
         let mut reference = ptr::null_mut();
         // token は呼出し中有効。成功時の不透明参照の所有権を受け取る。
         let status = unsafe {
@@ -153,11 +167,22 @@ impl CasKeyResolver for ProductCasKeyResolver {
             )
         };
         match status {
-            CAS_KEY_OK => NonNull::new(reference)
-                .map(|reference| {
-                    Arc::new(ProductKeyReference { reference }) as Arc<dyn CasKeyReference>
-                })
-                .ok_or(CasKeyResolveError::Unavailable),
+            CAS_KEY_OK => {
+                let reference = NonNull::new(reference).ok_or(CasKeyResolveError::Unavailable)?;
+                let scheme = match scheme_from_reference(reference.as_ptr()) {
+                    Ok(scheme) => scheme,
+                    Err(error) => {
+                        unsafe { maleicacid_cas_release_key_reference(reference.as_ptr()) };
+                        return Err(error);
+                    }
+                };
+                // 対応する固定parameterがない方式は結合成功として扱わない。
+                if crate::product_parameters::product_parameters(scheme).is_err() {
+                    unsafe { maleicacid_cas_release_key_reference(reference.as_ptr()) };
+                    return Err(CasKeyResolveError::Unavailable);
+                }
+                Ok(Arc::new(ProductKeyReference { reference, scheme }) as Arc<dyn CasKeyReference>)
+            }
             CAS_KEY_INVALID_TOKEN => Err(CasKeyResolveError::InvalidToken),
             CAS_KEY_UNKNOWN_TOKEN => Err(CasKeyResolveError::UnknownToken),
             _ => Err(CasKeyResolveError::Unavailable),
@@ -181,8 +206,8 @@ mod tests {
     use crate::KeyParity;
 
     #[test]
-    fn product_parameters_build_both_packet_keys() {
-        let parameters = ProductMulti2Parameters {
+    fn b25_parameters_build_both_packet_keys() {
+        let parameters = Multi2FixedParameters {
             system_key: [0x33; 32],
             init_cbc: [0x44; 8],
         };
