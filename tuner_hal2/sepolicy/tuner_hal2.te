@@ -3,3 +3,7 @@
 allow hal_tv_tuner_default dvb_frontend_device:chr_file rw_file_perms;
 allow hal_tv_tuner_default dvb_dvr_device:chr_file r_file_perms;
 allow hal_tv_tuner_default px4_tuner_device:chr_file rw_file_perms;
+
+# 固定parameter入力のreaderはTuner HALに限定する。
+type maleicacid_multi2_parameters, file_type, vendor_file_type;
+allow hal_tv_tuner_default maleicacid_multi2_parameters:file r_file_perms;

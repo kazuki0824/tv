@@ -5,3 +5,10 @@ allow hal_cas_default maleicacid_bcas_credential:file r_file_perms;
 allow hal_cas_default self:unix_stream_socket create_stream_socket_perms;
 allow hal_tv_tuner_default self:unix_stream_socket create_stream_socket_perms;
 allow hal_tv_tuner_default hal_cas_default:unix_stream_socket connectto;
+
+# CAS が所有する共有領域だけを Tuner へ読取り専用で渡す。
+type maleicacid_cas_slot, file_type;
+type_transition hal_cas_default tmpfs:file maleicacid_cas_slot;
+allow hal_cas_default maleicacid_cas_slot:file { create open read write getattr setattr map };
+allow hal_tv_tuner_default maleicacid_cas_slot:file { read getattr map };
+allow hal_tv_tuner_default hal_cas_default:fd use;

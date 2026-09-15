@@ -3,16 +3,8 @@
 
 #include <algorithm>
 #include <sys/random.h>
-#include <time.h>
 
 namespace maleicacid::cas {
-
-uint32_t todayMjd() {
-    const auto now = time(nullptr);
-    if (now < 0) return UINT32_MAX;
-    const uint64_t days = static_cast<uint64_t>(now) / 86400 + 40587;
-    return days > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(days);
-}
 
 KeyRegistry& KeyRegistry::instance() {
     static KeyRegistry registry;
@@ -36,7 +28,9 @@ Result KeyRegistry::open(std::shared_ptr<Slot>* result) {
             static_cast<ssize_t>(token.size())) return Result::Busy;
         if (issued_.count(token) || std::all_of(token.begin(), token.end(),
                                                [](uint8_t b) { return b == 0; })) continue;
-        auto slot = std::make_shared<Slot>(token);
+        auto shared = SharedSlot::create();
+        if (!shared) return Result::Busy;
+        auto slot = std::make_shared<Slot>(token, std::move(shared));
         issued_.insert(token);
         *empty = slot;
         *result = std::move(slot);
@@ -48,21 +42,22 @@ Result KeyRegistry::open(std::shared_ptr<Slot>* result) {
 void KeyRegistry::close(const std::shared_ptr<Slot>& slot) {
     std::lock_guard lock(mutex_);
     slot->live = false;
-    slot->ready = false;
-    eraseSecret(slot->keys.bytes.data(), slot->keys.bytes.size());
+    slot->shared->state().store(nullptr, 0);
 }
 
 Result KeyRegistry::update(const std::shared_ptr<Slot>& slot, const Secret<16>& keys,
                            uint8_t group, uint32_t expires) {
     std::lock_guard lock(mutex_);
     if (!slot->live) return Result::SessionClosed;
-    slot->keys = keys;
     slot->group = group;
-    slot->expires = expires;
-    slot->ready = true;
+    if (!slot->shared->state().store(&keys, expires)) {
+        slot->live = false;
+        return Result::Revoked;
+    }
     return Result::Ok;
 }
 
+#ifdef MALEICACID_CAS_TEST
 Result KeyRegistry::resolve(const Token& token, Secret<16>* keys) {
     if (keys == nullptr) return Result::BadValue;
     eraseSecret(keys->bytes.data(), keys->bytes.size());
@@ -70,14 +65,26 @@ Result KeyRegistry::resolve(const Token& token, Secret<16>* keys) {
     for (const auto& entry : slots_) {
         const auto slot = entry.lock();
         if (!slot || !slot->live || slot->token != token) continue;
-        if (!slot->ready) return Result::NoLicense;
-        if (todayMjd() > slot->expires) {
-            slot->ready = false;
-            eraseSecret(slot->keys.bytes.data(), slot->keys.bytes.size());
-            return Result::Expired;
-        }
-        *keys = slot->keys;
-        return Result::Ok;
+        const auto result = slot->shared->state().snapshot(keys);
+        if (result == Result::Expired) slot->shared->state().store(nullptr, 0);
+        return result;
+    }
+    return Result::SessionClosed;
+}
+#endif
+
+Result KeyRegistry::bind(const Token& token, int* readerFd) {
+    if (readerFd == nullptr) return Result::BadValue;
+    *readerFd = -1;
+    std::lock_guard lock(mutex_);
+    for (const auto& entry : slots_) {
+        const auto slot = entry.lock();
+        if (!slot || !slot->live || slot->token != token) continue;
+        Secret<16> current;
+        const auto result = slot->shared->state().snapshot(&current);
+        if (result != Result::Ok) return result;
+        *readerFd = slot->shared->readerFd();
+        return *readerFd >= 0 ? Result::Ok : Result::Busy;
     }
     return Result::SessionClosed;
 }
@@ -87,8 +94,7 @@ void KeyRegistry::invalidateGroup(uint8_t group) {
     for (const auto& entry : slots_) {
         auto slot = entry.lock();
         if (slot && slot->group == group) {
-            slot->ready = false;
-            eraseSecret(slot->keys.bytes.data(), slot->keys.bytes.size());
+            slot->shared->state().store(nullptr, 0);
         }
     }
 }
@@ -99,8 +105,7 @@ void KeyRegistry::revokeAll() {
         auto slot = entry.lock();
         if (slot) {
             slot->live = false;
-            slot->ready = false;
-            eraseSecret(slot->keys.bytes.data(), slot->keys.bytes.size());
+            slot->shared->state().store(nullptr, 0);
         }
     }
 }

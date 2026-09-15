@@ -7,7 +7,7 @@ AOSP_HEADERS ?= /tmp/maleicacid-cas-aosp-headers
 BUILD_DIR ?= /tmp/maleicacid-cas-build
 CPPFLAGS := -Iinclude -Isrc -Itests/host_include -I$(AOSP_HEADERS) -I$(YAKISOBA_DIR)/src
 CXXFLAGS := -std=c++17 -Wall -Wextra -Werror -fPIC -pthread -O2 -g -fvisibility=hidden
-CAS_SOURCES := src/CasPlugin.cpp src/Section.cpp src/YakisobaBackend.cpp src/KeyRegistry.cpp src/KeyServer.cpp src/KeySocket.cpp
+CAS_SOURCES := src/CasPlugin.cpp src/Section.cpp src/YakisobaBackend.cpp src/KeyRegistry.cpp src/SharedSlot.cpp src/KeyServer.cpp src/KeySocket.cpp
 YAKISOBA_SOURCES := Crypto Decoder-ECM Decoder-EMM Keyset
 YAKISOBA_OBJECTS := $(addprefix $(BUILD_DIR)/yakisoba/,$(addsuffix .o,$(YAKISOBA_SOURCES)))
 

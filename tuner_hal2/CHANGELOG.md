@@ -1,3 +1,44 @@
+# PR #113 CAS共有参照からの局所読取り
+
+- `setKeyToken()` で得たCAS共有参照を既存の鍵結合管理へ渡し、放送入力とPlayback DVRはその参照からpacket用の鍵を取得する構成に変更した。CAS側のECM更新・失効をTISの再設定へ依存させない。
+- packetごとの外部照会とそのための注入入口を除き、共有参照の更新・失効・復帰を実際の鍵管理とPlayback処理で確認する試験へ置き換えた。結合・参照数・保留packetの寿命検証は維持した。
+- [TunerホストCI](https://github.com/kazuki0824/tv/actions/runs/34873809732)の型検査・単体試験・Clippyが成功。鍵管理とPlayback経路の試験は17件成功。CIのrustfmt出力を反映した。Android/Soong、atest、VTS、実機確認は未実施。
+
+# PR #113 復号鍵の不要な複製保持の除去
+
+- `DescramblerKeyTable`の鍵欄と読出し口を削除した。参照識別子、更新世代、参照数、失効状態の管理を維持し、受理した鍵は複製せずパケットごとの取得結果へ移す。
+- `setKeyToken()`の準備結果と台帳への登録から鍵の受渡しを除いた。製品の鍵取得・検証結果による受付判定を維持し、鍵は取得結果を確認した呼出し内で解放する。
+- 台帳に試験用の鍵を保存する入口を削除し、ライブ入力とPlayback DVRの試験はパケットごとの取得結果を本番の受理処理へ渡す構成にした。鍵を使わない参照寿命の試験から鍵生成を除いた。
+- 既存の遅延応答・競合・参照解除の試験を更新し、取得済みの鍵を保持したままの後続更新・取得失敗、応答の二重使用、失効後の応答、世代番号の上限を検査する。単体試験の対象は既存のホスト試験とAndroid試験に含まれる。
+- 呼出元と読書き箇所、差分、設計上の参照寿命を照合した。ローカルにはRustのコンパイラがなく、ビルド・単体試験・整形検査は未実施。CIの実行結果は別途確認する。Android全体のビルド、atest、VTS、実機復号は未実施。
+- コミット`c49d6d1`に対するCIで、鍵管理と再生経路の23件の試験が成功した。整形検査の指摘はCIが出力した差分に従って修正した。CASのC++試験はAOSPヘッダー取得時のHTTP 503で実行に到達していない。
+
+# PR #113 CAS参照と製品再生経路の修正
+
+- パケットの鍵取得結果を呼出しごとに分離し、照会失敗・遅延結果・参照解除後の処理が保存済みの旧鍵や別呼出しの鍵へ戻らないようにした。既存の参照識別子と更新世代を使用し、別の状態所有者は追加しない。
+- PR #108の共通再生経路へ本番CASの鍵取得を接続した。CAS照会中はサービスの排他制御を解除し、取得後に既存の保留パケットとDVR状態を再確認する。停止中の保留を維持し、破棄済みのパケットを復活させない。
+- AIDLの`setKeyToken()`からCAS照会と確定の調停を取り除き、サービス側の型付き入口へ移した。設計書に重複していた失敗・世代判定の説明は正本参照と実装箇所の対応表へ置き換えた。
+- 鍵取得の競合3件と再生経路の競合条件を実処理の試験へ追加した。
+- コミット`e998644`に対するCIで再生経路・鍵参照の20件、ホスト全体のRust試験・型検査・Clippy、CASのC++試験、製品配置設定の検査が成功した。Rust整形検査の指摘をCIの出力に従って修正した。
+- Android全体のビルド、AIDLサービス実体の試験、実機復号は未実施。
+
+# MULTI2固定parameterの非公開製品入力
+
+- 製品固定parameterをソース内の定数から製品管理のbinary入力へ変更し、CAS由来の動的Ksと組み合わせるconsumerをTuner側に維持した。未指定・不正入力に代替値を使用しない。
+- `product_parameters.rs`に長さ・byte順・通常file・所有者・権限の検証を追加した。Tunerプロセス内で固定設定の読取り結果だけを保持し、動的Ksをこの設定へ保存しない。
+- product makefileの入力指定、vendor配置、root:system/0640のfs-config、Tuner読取り用SELinux設定、Soongのsource一覧を追加した。
+- 製品入力と出力imageの区別、入力形式、配置、更新時の再起動、成果物の管理条件を`INTEGRATION.md`へ記載した。
+- CAS CIに入力指定のmake評価とTuner用・CAS併合fs-configの生成検査を追加した。
+- Rust 1.81のdescrambler単体試験54件、Clippy、Android targetの同crate型検査が成功した。GNU makeで入力なし・単一既存入力を受理し、不存在・複数・wildcard入力を拒否することを確認した。
+- Android/Soong全体、service_runtime/AIDL実体の型検査、device atest、VTS、実機復号は未実施。CAS全体の製品動作と開発規則への完全準拠を、この変更だけで完了とは判定しない。
+
+# CAS current Ksの製品descrambler接続
+
+- `IDescrambler.setKeyToken()`のproduction経路をCAS key clientへ接続し、MediaCas session ID tokenの検証・解決をservice runtime lock外で実行してから、既存`DescramblerKeyTxn`で参照結合を確定する。
+- frontend packet入力ごとに、対象descramblerのtokenとstable slotの世代付きsnapshotをCASへ照会する。current odd/even Ksは次のpacketへ反映し、unknown tokenまたはCAS利用不能時はslotの鍵素材を失効させて旧鍵で復号しない。
+- MULTI2の製品固定parameterはTuner descrambler側だけで動的Ksと組み合わせ、CAS key clientから配送しない。SoongでC++ key clientをRust descrambler libraryへ静的リンクした。
+- Rust 1.81でdescrambler host unit test 49件とAndroid targetのtype-check、CAS core test 11 suiteが成功した。service_runtime / AIDL serviceのAndroid/Soong build、device atest、VTS、実機復号は未実施。
+
 # PR #108 Playback DVRの共通復号経路
 
 - Playback DVRの各パケットをライブ入力と同じ復号判断へ接続した。読出しと保留状態は既存の`PlaybackConsumeTxn`が引き続き所有する。

@@ -1,3 +1,18 @@
+# PR #113 固定認証情報の監視を接続経路から除去
+
+- 共有参照の結合を初期化済み状態と既存の鍵状態の判定へ限定し、認証情報ファイルの再検査を除いた。受付処理の定期監視と`pollCredential()`を削除した。
+- 共有領域の読取り専用参照、CAS所有者終了用の`pidfd`、セッション・EMM由来の失効、通信の有限待機と受付異常時の失効は維持した。
+- 共有参照の試験を初期化後の入力削除に依存しない結合・読取りへ変更し、閉鎖後の参照拒否も確認対象とした。組込み手順から入力監視の記述を除いた。
+- CIで判明した応答分類試験の旧期待値を訂正し、ファイル削除ではなく実際の全失効後に再結合が拒否されることを確認するよう変更した。
+- ホストの本体試験12組が成功。通信試験はGitHub Actionsで検証する。親PRの固定入力本体の変更はPR #111、設計正本の変更はPR #108に分けた。Android/Soong全体、atest、VTS、実機確認は未実施。
+
+# PR #113 CAS所有の共有参照への製品接続
+
+- CASの既存session状態を共有領域へ置き、Tunerは結合時に取得した読取り専用参照を使用するよう変更した。共有領域の更新・失効と所有者終了の局所確認により、TISの通知や再結合を待たず次のpacketへ反映する。
+- Unix domain socketは参照の結合だけに使用し、ライブ入力とPlayback DVRからpacketごとの外部照会を除いた。CAS内部の失効契約とECM/EMM処理は維持し、別の鍵台帳や通知専用workerは追加していない。
+- 共有参照の受渡しに必要なSELinux設定と組込み手順を追加した。旧読取り入口は既存試験専用に隔離した。
+- ローカルでC++本体と共有領域の試験12組が成功。[CAS CI](https://github.com/kazuki0824/tv/actions/runs/34873809815)は依存取得のHTTP 503を再実行し、通常構成とASan/UBSan構成で各26組成功。共有領域の書込み禁止と世代上限の試験も追加した。Android/Soong、atest、VTS、実機確認は未実施。
+
 # PR #111 固定認証情報の読込みを簡素化
 
 - 認証情報ファイルの所有者・権限の再検査、独自の構文解析、初期化後の変更監視を削除した。通常ファイル、空でない有限サイズ、シンボリックリンク拒否、読取り量の上限とI/O失敗の拒否は維持した。
@@ -15,6 +30,26 @@
 
 - `DESIGN_JA.md` §6.3の完了確認項目を`../タスク完了判定の実施方法.md`へ移し、元の箇所を参照へ置き換えた。不正入力、複数EMM、対象外宛先、MAC不正、重複・拒否更新、後続ECM、同時初期化・処理の確認対象を維持した。
 - 移動前後の確認対象、文書間参照と差分を確認した。実装、公開API、鍵の保持方法、ビルド設定と試験の期待値は変更していない。ビルド、単体試験、Soong、atest、VTS、実機確認は未実施。
+
+# 製品固定parameterの所有と非公開入力
+
+- `KeyClient.h`から固定MULTI2 parameterの定義を除き、CAS読取り口が動的odd/even Ksだけを返す構成にした。固定parameterはTunerの非公開製品入力として扱う。
+- Tunerの入力配置手順へ`INTEGRATION.md`から参照を追加し、token・失効契約の重複説明を設計正本への参照に置き換えた。
+- CAS CIの製品設定検査をTunerの入力と権限表へ拡張し、workflow表示名を日本語へ揃えた。
+- ローカルのCAS本体試験は11 suite成功。socket結合は実行環境の制限によりローカルで未実施。Android/Soong、atest、VTS、実機の検証は未実施。
+
+# Tuner descramblerへの製品鍵参照接続
+
+- `libmaleicacid_cas_key_client` にC ABIの読取り口を追加し、Tuner HALのRust実装から標準MediaCas session IDと同じ16-byte tokenでcurrent odd/even Ksを取得できるようにした。
+- token形式不正、失効・未登録token、CAS内部経路の利用不能を応答で区別し、失敗時の出力鍵をゼロ化する。
+- packet単位の鍵取得とC ABIの成功・unknown-token動作を既存socket結合試験へ追加した。ローカルではsocket syscallが実行環境に拒否されるためcore 11 suiteのみ成功し、socket結合試験はGitHub Actionsで確認する。
+
+# CASの共通製品入口への接続
+
+- 共通product入口から標準CAS service、vendor plugin、fs-config生成物を取り込み、共通BoardConfig入口からCASのSELinux policyとcredential用fs-config入力を取り込む。
+- 製品管理のcredential入力を指定した場合のコピー先を接続し、存在しない入力と複数ファイル指定をbuild設定の評価時に拒否する。image上の所有者・group・modeをroot:media、0640へ設定する。
+- 製品管理ファイルの指定、未指定時の制限、検証対象revisionの選択をINTEGRATION.mdに集約した。
+- Tunerのtoken解決・packet単位の鍵更新／失効の接続はこの変更では未実装。Android/Soong build、atest、VTS、実機imageでの権限確認は未実施。
 
 # PR #108 文書責務の整理
 

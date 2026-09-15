@@ -54,9 +54,15 @@ flowchart TD
 
 製品固定parameterと共有方式は`../開発規則.md`の「r52のMULTI2固定値と動的鍵状態」、CAS側のsession/token対応・Ks更新・失効は`../cas_plugin/DESIGN_JA.md`を正とする。Tuner側はtokenで内部鍵状態を参照してpacketを復号するconsumerであり、CAS側のECM処理やKs更新を所有しない。
 
-既存の`DescramblerKeyTxn`は`set_key_token()`に伴う参照結合・解除を所有し、`service_runtime/src/descrambler_key_table.rs`はtoken参照のlookup・acquire・releaseを担う。これらをCAS pluginからの直接登録・更新endpointとして扱わない。既存実装の`CasTokenProducerUnavailable`診断はtoken参照経路の未成立を表し、CAS pluginとの直接通信の有無を判定するものではない。
+公開状態・診断は`../tuner_hal/DESIGN_JA.md`の「診断可観測性の固定」、鍵状態の更新・参照寿命は`../cas_plugin/DESIGN_JA.md` §10～13、排他制御の実装規約は`CODE_CONVENTION.md`を参照する。対応する実装箇所を次に示す。
 
-現行key tableの鍵登録helperはtest専用であり、r52の本番Ks更新経路の実装済み根拠にはしない。公開status・参照寿命は`../tuner_hal/DESIGN_JA.md`を正とし、以下の規範実装アンカーのowner・typed entryを維持する。
+| 処理 | 実装箇所 |
+|---|---|
+| 製品の共有参照への結合と局所読取り | `descrambler/src/cas_key_resolver.rs::{ProductCasKeyResolver, ProductKeyReference}` |
+| `setKeyToken()`の調停 | `service_runtime/src/descrambler_ops.rs::TunerServiceRuntime::set_descrambler_key_token_for_object`から`DescramblerKeyTxn`への接続 |
+| 共有参照の結合・参照数管理とパケット用の局所取得結果 | `service_runtime/src/descrambler_key_table.rs::{DescramblerKeyTable, DescramblerPacketKeys}` |
+| ライブ入力の鍵参照と配送 | `service_runtime/src/boot.rs::FrontendDemuxPacketSink` |
+| Playback DVRの鍵参照と配送 | `service_runtime/src/boot/demux_filter_dvr_ops.rs::TunerServiceRuntime::consume_playback_dvr_for_object`から`PlaybackConsumeTxn`への接続 |
 
 CAS側の更新・参照・失効と、Tuner再起動時の参照結合破棄の責任主体は`../cas_plugin/DESIGN_JA.md` §11.2を参照する。Tunerの参照cacheをCAS鍵状態の正本や復元元にせず、参照結合の喪失と鍵状態自体の喪失を区別する。
 

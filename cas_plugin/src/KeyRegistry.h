@@ -2,6 +2,7 @@
 #pragma once
 
 #include "Types.h"
+#include "SharedSlot.h"
 
 #include <memory>
 #include <mutex>
@@ -14,14 +15,13 @@ public:
     // Slot の所持が更新権限であり、外部から受け取る token は読取り専用である。
     struct Slot {
         const Token token;
-        explicit Slot(Token identity) : token(identity) {}
+        Slot(Token identity, std::unique_ptr<SharedSlot> shared)
+            : token(identity), shared(std::move(shared)) {}
     private:
         friend class KeyRegistry;
-        Secret<16> keys;
+        std::unique_ptr<SharedSlot> shared;
         bool live = true;
-        bool ready = false;
         uint8_t group = 0;
-        uint32_t expires = 0;
     };
 
     static KeyRegistry& instance();
@@ -29,7 +29,10 @@ public:
     void close(const std::shared_ptr<Slot>& slot);
     Result update(const std::shared_ptr<Slot>& slot, const Secret<16>& keys,
                   uint8_t group, uint32_t expires);
+#ifdef MALEICACID_CAS_TEST
     Result resolve(const Token& token, Secret<16>* keys);
+#endif
+    Result bind(const Token& token, int* readerFd);
     void invalidateGroup(uint8_t group);
     void revokeAll();
 
