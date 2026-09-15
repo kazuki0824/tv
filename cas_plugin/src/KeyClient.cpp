@@ -30,6 +30,15 @@ bool ownerAlive(int fd) {
     // EINTR を含む検査不能時も、新しい packet に鍵を渡さない。
     return poll(&owner, 1, 0) == 0;
 }
+
+CasScheme toCasScheme(KeyScheme scheme) {
+    switch (scheme) {
+        case KeyScheme::B25: return CasScheme::B25;
+        case KeyScheme::B1: return CasScheme::B1;
+        case KeyScheme::Unknown: return CasScheme::Unknown;
+    }
+    return CasScheme::Unknown;
+}
 }
 
 #ifdef MALEICACID_CAS_TEST
@@ -80,7 +89,7 @@ KeyResult KeyReference::bind(const uint8_t* token, size_t length,
     if (!authorizedPeer(fd, true) || !waitSocket(fd, POLLOUT) ||
         send(fd, token, length, MSG_NOSIGNAL) != static_cast<ssize_t>(length) ||
         !waitSocket(fd, POLLIN)) return KeyResult::Unavailable;
-    uint8_t response = 0;
+    KeyBindResponse response;
     iovec data{&response, sizeof(response)};
     alignas(cmsghdr) char control[CMSG_SPACE(2 * sizeof(int))]{};
     msghdr message{};
@@ -107,12 +116,17 @@ KeyResult KeyReference::bind(const uint8_t* token, size_t length,
             else { close(descriptor); malformed = true; }
         }
     }
-    if (received != 1 || malformed || (message.msg_flags & (MSG_TRUNC | MSG_CTRUNC))) {
+    if (received != static_cast<ssize_t>(sizeof(response)) || malformed ||
+        (message.msg_flags & (MSG_TRUNC | MSG_CTRUNC))) {
         return KeyResult::Unavailable;
     }
-    const auto status = static_cast<KeyResponseStatus>(response);
-    if (status == KeyResponseStatus::UnknownToken && count == 0) return KeyResult::UnknownToken;
-    if (status != KeyResponseStatus::Ok || count != 2) return KeyResult::Unavailable;
+    if (response.status == KeyResponseStatus::UnknownToken && count == 0) {
+        return KeyResult::UnknownToken;
+    }
+    const auto scheme = toCasScheme(response.scheme);
+    if (response.status != KeyResponseStatus::Ok || count != 2 || scheme == CasScheme::Unknown) {
+        return KeyResult::Unavailable;
+    }
     struct stat info{};
     const int memory = descriptors[0].value;
     const int seals = fcntl(memory, F_GET_SEALS);
@@ -123,7 +137,7 @@ KeyResult KeyReference::bind(const uint8_t* token, size_t length,
     void* mapping = mmap(nullptr, sizeof(SharedKeyState), PROT_READ, MAP_SHARED, memory, 0);
     if (mapping == MAP_FAILED) return KeyResult::Unavailable;
     auto reference = std::unique_ptr<KeyReference>(new (std::nothrow)
-        KeyReference(static_cast<const SharedKeyState*>(mapping), descriptors[1].value));
+        KeyReference(static_cast<const SharedKeyState*>(mapping), descriptors[1].value, scheme));
     if (!reference) {
         munmap(mapping, sizeof(SharedKeyState));
         return KeyResult::Unavailable;
@@ -147,14 +161,27 @@ int keyStatus(maleicacid::cas::KeyResult result) {
     }
     return MALEICACID_CAS_KEY_UNAVAILABLE;
 }
+
+uint8_t casScheme(maleicacid::cas::CasScheme scheme) {
+    switch (scheme) {
+        case maleicacid::cas::CasScheme::B25: return MALEICACID_CAS_SCHEME_B25;
+        case maleicacid::cas::CasScheme::B1: return MALEICACID_CAS_SCHEME_B1;
+        case maleicacid::cas::CasScheme::Unknown: return MALEICACID_CAS_SCHEME_UNKNOWN;
+    }
+    return MALEICACID_CAS_SCHEME_UNKNOWN;
+}
 }
 
 extern "C" int maleicacid_cas_bind_key_reference(const uint8_t* token, size_t length,
-                                                 void** reference) {
-    if (reference == nullptr) return MALEICACID_CAS_KEY_INVALID_TOKEN;
+                                                 void** reference, uint8_t* scheme) {
+    if (reference == nullptr || scheme == nullptr) return MALEICACID_CAS_KEY_INVALID_TOKEN;
     *reference = nullptr;
+    *scheme = MALEICACID_CAS_SCHEME_UNKNOWN;
     std::unique_ptr<maleicacid::cas::KeyReference> result;
     const auto status = maleicacid::cas::KeyReference::bind(token, length, &result);
+    if (status == maleicacid::cas::KeyResult::Ok && result) {
+        *scheme = casScheme(result->scheme());
+    }
     *reference = result.release();
     return keyStatus(status);
 }
