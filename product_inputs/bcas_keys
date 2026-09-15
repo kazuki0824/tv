@@ -1,0 +1,4 @@
+# Dummy credential for build/integration only. Does not decrypt real broadcasts.
+CardID = 00,00,00,00,00,00,00,00,
+CardKey = 00,00,00,00,00,00,00,00,
+Key [02] [00] = 00,00,00,00,00,00,00,00,
