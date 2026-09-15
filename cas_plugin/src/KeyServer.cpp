@@ -57,21 +57,21 @@ void KeyServer::serve(int fd) {
     int slotFd = -1;
     const auto result = YakisobaBackend::instance().bind(token, &slotFd);
     Fd slotCleanup{slotFd};
-    auto status = KeyResponseStatus::Unavailable;
+    KeyBindResponse response;
     switch (result) {
         case Result::Ok:
-            status = KeyResponseStatus::Ok;
+            response.status = KeyResponseStatus::Ok;
+            response.scheme = KeyScheme::B25;
             break;
         case Result::NoLicense:
         case Result::SessionClosed:
         case Result::Revoked:
             // 有効な鍵のない参照値と、参照処理そのものの利用不能を区別する。
-            status = KeyResponseStatus::UnknownToken;
+            response.status = KeyResponseStatus::UnknownToken;
             break;
         default:
             break;
     }
-    auto response = static_cast<uint8_t>(status);
     iovec data{&response, sizeof(response)};
     msghdr message{};
     message.msg_iov = &data;
