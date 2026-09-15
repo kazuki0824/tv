@@ -23,6 +23,7 @@ pub(super) enum ProductParametersError {
     Io,
     InvalidFile,
     InvalidLength,
+    #[cfg(target_os = "android")]
     UnsupportedScheme,
 }
 
