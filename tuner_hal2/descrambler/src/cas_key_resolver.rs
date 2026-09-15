@@ -77,7 +77,9 @@ fn build_key_slot(
 }
 
 #[cfg(target_os = "android")]
-fn scheme_from_reference(reference: *const std::ffi::c_void) -> Result<Multi2Scheme, CasKeyResolveError> {
+fn scheme_from_reference(
+    reference: *const std::ffi::c_void,
+) -> Result<Multi2Scheme, CasKeyResolveError> {
     // token自体を解析せず、CAS側が結合結果へ付けた方式識別だけを使う。
     match unsafe { maleicacid_cas_key_reference_scheme(reference) } {
         CAS_SCHEME_B25 => Ok(Multi2Scheme::B25),
