@@ -22,9 +22,10 @@ enum MaleicacidCasScheme {
 };
 
 // 成功時の参照は呼出し元が所有し、release まで複数 thread から読取り可能。
-// token は bind 呼出し中だけ参照する。失敗時は *reference を NULL、*scheme を UNKNOWN にする。
-int maleicacid_cas_bind_key_reference(
-    const uint8_t* token, size_t length, void** reference, uint8_t* scheme);
+// token は bind 呼出し中だけ参照する。失敗時は *reference を NULL にする。
+int maleicacid_cas_bind_key_reference(const uint8_t* token, size_t length, void** reference);
+// 参照に結び付いたCAS方式を返す。無効な参照ではUNKNOWNを返す。
+uint8_t maleicacid_cas_key_reference_scheme(const void* reference);
 void maleicacid_cas_release_key_reference(void* reference);
 // odd/even は各8 byteの書込み可能領域。成功時以外は両方をゼロ化する。
 // reference の release とこの呼出しを競合させてはならない。
