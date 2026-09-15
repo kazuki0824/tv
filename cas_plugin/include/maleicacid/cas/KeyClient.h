@@ -16,6 +16,7 @@ struct PacketKeys {
 };
 
 enum class KeyResult { Ok, InvalidToken, UnknownToken, Unavailable };
+enum class CasScheme : uint8_t { Unknown = 0, B25 = 1, B1 = 2 };
 
 struct SharedKeyState;
 class KeyReference {
@@ -25,15 +26,18 @@ public:
     KeyReference& operator=(const KeyReference&) = delete;
     // CAS への通信は行わず、結合済み共有領域と所有者の生存状態を確認する。
     KeyResult snapshot(PacketKeys* output) const;
+    CasScheme scheme() const { return scheme_; }
     static KeyResult bind(const uint8_t* token, size_t length,
                           std::unique_ptr<KeyReference>* output);
 #ifdef MALEICACID_CAS_TEST
     static uint64_t bindingQueriesForTest();
 #endif
 private:
-    KeyReference(const SharedKeyState* state, int owner) : state_(state), owner_(owner) {}
+    KeyReference(const SharedKeyState* state, int owner, CasScheme scheme)
+        : state_(state), owner_(owner), scheme_(scheme) {}
     const SharedKeyState* state_;
     int owner_;
+    CasScheme scheme_;
 };
 
 }  // namespace maleicacid::cas
