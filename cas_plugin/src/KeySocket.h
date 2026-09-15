@@ -10,6 +10,13 @@ namespace maleicacid::cas {
 
 constexpr int kSocketDeadlineMs = 100;
 enum class KeyResponseStatus : uint8_t { Ok = 0, UnknownToken = 1, Unavailable = 2 };
+enum class KeyScheme : uint8_t { Unknown = 0, B25 = 1, B1 = 2 };
+struct KeyBindResponse {
+    KeyResponseStatus status = KeyResponseStatus::Unavailable;
+    KeyScheme scheme = KeyScheme::Unknown;
+};
+static_assert(sizeof(KeyBindResponse) == 2);
+
 socklen_t keySocketAddress(sockaddr_un* address);
 bool authorizedPeer(int fd, bool server);
 bool peerMatchesPolicy(uid_t uid, const char* label, bool server);
