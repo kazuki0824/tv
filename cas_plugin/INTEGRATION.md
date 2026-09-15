@@ -54,7 +54,7 @@ CAS側では初回読込みのファイル種別・サイズ・読取り成否�
 
 CASの共有領域には `maleicacid_cas_slot` を付け、Tunerには読取り・mappingとCASから渡されたfdの使用だけを許可する。共有領域への書込み権限をTunerへ与えない。新しいサービスや通知専用の実行単位は追加しない。
 
-token・参照寿命・失効時の契約は `DESIGN_JA.md`、Tunerの非公開製品入力の配置は `../tuner_hal2/INTEGRATION.md` を参照する。
+token・参照寿命・失効時の契約は `DESIGN_JA.md`、TunerがCAS方式ごとに使用する製品固定parameterの配置は `../tuner_hal2/INTEGRATION.md` を参照する。
 
 ## 組込み確認
 

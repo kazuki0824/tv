@@ -85,22 +85,22 @@ init rc は `android.hardware.tv.tuner.ITuner/default` を登録する。VINTF f
 
 token・参照寿命の公開契約は `../tuner_hal/DESIGN_JA.md`、CAS側の内部読取り契約は `../cas_plugin/DESIGN_JA.md` を参照する。
 
-### 非公開の製品入力
+### B25方式の製品固定parameter入力
 
-製品管理の非公開ディレクトリへMULTI2 parameterのbinary入力を置き、共通product入口の継承前に指定する。
+B25のMULTI2固定parameterをbinary入力として用意し、共通product入口の継承前に指定する。
 
 ```make
-MALEICACID_MULTI2_PARAMETERS_FILE := vendor/<非公開の製品管理ディレクトリ>/multi2_parameters
+MALEICACID_B25_MULTI2_PARAMETERS_FILE := vendor/<製品管理ディレクトリ>/b25_multi2_parameters
 $(call inherit-product, vendor/maleicacid/tv/config/product_integration.mk)
 ```
 
-入力形式はsystem keyの32 byteに初期CBCの8 byteを連結した、厳密に40 byteのbinaryとする。hex文字列、空白、改行、header、末尾データを付けない。入力pathは空白・wildcardを含まない単一の既存ファイルとし、公開Gitや公開CI artifactへ含めない。CAS backendのcredential入力 `MALEICACID_BCAS_KEYS_FILE` とは別の入力である。
+入力形式はsystem keyの32 byteに初期CBCの8 byteを連結した、厳密に40 byteのbinaryとする。hex文字列、空白、改行、header、末尾データを付けない。入力pathは空白・wildcardを含まない単一の既存ファイルとする。system keyとCBC初期値に秘密情報としての取扱いは要求しない。CAS backendのcredential入力 `MALEICACID_BCAS_KEYS_FILE` とは別の入力である。
 
-配置先は `/vendor/etc/maleicacid/multi2_parameters` とし、fs-configでroot:system、0640、capabilitiesなしを設定する。SELinux labelは `maleicacid_multi2_parameters` とし、Tuner HALの読取りを許可する。同じpathのfs-config定義を他の製品設定へ重複させない。
+配置先は `/vendor/etc/maleicacid/b25_multi2_parameters` とし、fs-configでroot:system、0640、capabilitiesなしを設定する。SELinux labelは `maleicacid_multi2_parameters` とし、Tuner HALの読取りを許可する。同じpathのfs-config定義を他の製品設定へ重複させない。
 
-未指定では入力を生成せず、製品CAS接続の成立条件を満たさない。Tunerはsymlink・通常file以外・所有者または権限の不一致・長さ不正・I/O失敗を拒否し、代替値を使用しない。製品設定の読取り結果はTunerプロセス内で固定されるため、入力更新後の検証ではサービスを再起動する。
+未指定では入力を生成せず、B25の製品CAS接続の成立条件を満たさない。Tunerはsymlink・通常file以外・長さ不正・I/O失敗を拒否し、代替値を使用しない。B1は別の固定parameter入力として扱い、B1の値と取得契約が成立するまでB25値へfallbackしない。製品設定の読取り結果はTunerプロセス内で固定されるため、入力更新後の検証ではサービスを再起動する。
 
-この配置はソース公開範囲と通常の実行時アクセスを制御するものであり、vendor imageの抽出や特権アクセスから入力を秘匿する仕組みではない。入力を含むimageや中間成果物も非公開の製品ビルド環境で管理する。`get_android_qcow2.sh`の取得revision・共通入口・Yakisoba依存の条件は `../cas_plugin/INTEGRATION.md` を参照する。
+fs-configとSELinuxはvendor image上の配置と通常の実行時アクセスを制御する。`get_android_qcow2.sh`の取得revision・共通入口・Yakisoba依存の条件は `../cas_plugin/INTEGRATION.md` を参照する。
 
 ## 5. 旧tuner_halの扱い
 
