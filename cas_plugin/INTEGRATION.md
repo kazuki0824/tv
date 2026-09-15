@@ -19,12 +19,15 @@ AOSP標準MediaCasServiceを製品で有効にする。採用するアーキテ�
 
 採用ソースの内部関数の宣言・型と対応させ、静的リンクで必要なシンボルが解決することを確認する。共有ライブラリから未公開関数を呼べるという前提にしない。SmartCardを必要としない構成の条件は [DESIGN_JA.md](DESIGN_JA.md) §2・§5.1・§17に従う。
 
-Yakisobaの認証情報は製品の固定入力として供給する。所有者・アクセス権の設定は製品の配置設定とSELinuxに集約し、CAS側では初回読込みのファイル種別・サイズ・読取り成否を検査する。構文の解釈には採用libyakisobaを使用し、初期化後のファイル変更による再読込みや失効は行わない。
+Yakisobaの認証情報は製品の固定credentialとして供給する。これはTunerが使用するMULTI2の`system_key` / CBC初期値とは別の入力であり、CAS backendが初期化とECM/EMM処理のために消費する。実値は通常のGit履歴、PR差分・レビュー本文、CIログ、公開artifact、テストfixtureへ含めない。例示と試験には実値ではなく明確なダミー値を使用する。製品ビルドではリポジトリ外または秘密管理された入力を上位の製品統合設定から供給する。
+
+CAS側では初回読込みのファイル種別・サイズ・読取り成否を検査し、構文の解釈には採用libyakisobaを使用する。初期化後のファイル変更による再読込みや失効は行わない。実ファイルのコピー、owner/group/mode、SELinux labelなどproduct image上の配置は上位の製品統合設定へ集約し、このPRのCAS本体に同じ配置policyを重複実装しない。
 
 ## 組込み確認
 
 - pluginの `.so` が採用アーキテクチャに対応する上記の配置先に含まれることを確認する。
 - AOSP `FactoryLoader` がその探索ディレクトリからMaleicacid pluginを列挙・読込みでき、`createCasFactory()` を発見できることを確認する。
 - `yakisoba_only` ではpluginと内部adapterの依存関係、`libyakisoba` の静的リンクおよびシンボル解決を確認する。
+- Yakisoba credentialの実値がrepository・CI出力・公開artifactへ混入せず、product imageでは上位の製品統合設定が必要な主体だけに読取りを許可していることを確認する。
 
 設計上のABI・動作条件は [DESIGN_JA.md](DESIGN_JA.md) を参照する。実施した検証と未実施範囲の記録は [CHANGELOG.md](CHANGELOG.md) を参照する。
