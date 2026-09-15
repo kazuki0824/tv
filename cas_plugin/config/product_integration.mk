@@ -1,6 +1,6 @@
 # AOSP 標準 MediaCasService と vendor plugin を製品へ取り込む。
-# credential は製品管理下で /vendor/etc/maleicacid/bcas_keys へ配置する。
-# root 所有、0640 以下、media group に読取りを許可し、他者の書込みは許可しない。
+# Yakisoba credential はCAS backendの固定入力であり、実値をこのリポジトリへ置かない。
+# 実ファイルのコピー、owner/group/mode、SELinux labelは上位の製品統合設定が担当する。
 PRODUCT_PACKAGES += \
     com.android.hardware.cas \
     libmaleicacid_b25_cas
