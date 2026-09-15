@@ -166,3 +166,9 @@ jobs:
             cas_plugin/config/config.fs tuner_hal2/config/config.fs
           test "$(wc -c < "$cas_fs/combined_fs_config_files")" = 112
           printf 'AOSP fs-config: B25固定parameter root:system 0640, no capabilities; combined configuration: PASS\n'
+      - name: B25 MULTI2固定parameterのSELinux配置を確認
+        run: |
+          grep -Eq '^/vendor/etc/maleicacid/b25_multi2_parameters[[:space:]]+u:object_r:maleicacid_multi2_parameters:s0$' \
+            tuner_hal2/sepolicy/file_contexts
+          ! grep -Eq '^/vendor/etc/maleicacid/multi2_parameters[[:space:]]' \
+            tuner_hal2/sepolicy/file_contexts
