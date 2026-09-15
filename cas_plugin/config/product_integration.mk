@@ -4,8 +4,9 @@ PRODUCT_PACKAGES += \
     libmaleicacid_b25_cas \
     fs_config_files
 
-# 製品側はこの makefile の継承前に、管理下の credential 入力を指定する。
-# 未指定時はファイルを生成しない。鍵がない状態の扱いは backend に委ねる。
+# Yakisoba credentialの実値はrepositoryへ置かず、このmakefileの継承前に
+# リポジトリ外または秘密管理された入力を指定する。未指定時は生成しない。
+# owner/group/modeとSELinuxはproduct image側で制限し、鍵がない状態はbackendに委ねる。
 ifneq ($(strip $(MALEICACID_BCAS_KEYS_FILE)),)
 ifneq ($(words $(MALEICACID_BCAS_KEYS_FILE)),1)
 $(error MALEICACID_BCAS_KEYS_FILE must name one file without whitespace)
