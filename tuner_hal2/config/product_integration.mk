@@ -5,17 +5,18 @@ PRODUCT_PACKAGES += \
     maleicacid_tuner_hal2_ueventd_rc \
     fs_config_files
 
-# 非公開の製品入力は、このmakefileを継承する前に指定する。
+# B25のMULTI2固定parameterは、このmakefileを継承する前に指定する。
 # 未指定時は配置しない。標準値やテスト用の代替入力を生成しない。
-ifneq ($(strip $(MALEICACID_MULTI2_PARAMETERS_FILE)),)
-ifneq ($(words $(MALEICACID_MULTI2_PARAMETERS_FILE)),1)
-$(error MALEICACID_MULTI2_PARAMETERS_FILE must name one file without whitespace)
+# B1は別入力として扱い、B25値を流用しない。
+ifneq ($(strip $(MALEICACID_B25_MULTI2_PARAMETERS_FILE)),)
+ifneq ($(words $(MALEICACID_B25_MULTI2_PARAMETERS_FILE)),1)
+$(error MALEICACID_B25_MULTI2_PARAMETERS_FILE must name one file without whitespace)
 endif
-ifneq ($(wildcard $(strip $(MALEICACID_MULTI2_PARAMETERS_FILE))),$(strip $(MALEICACID_MULTI2_PARAMETERS_FILE)))
-$(error MALEICACID_MULTI2_PARAMETERS_FILE must name an existing file without wildcard characters)
+ifneq ($(wildcard $(strip $(MALEICACID_B25_MULTI2_PARAMETERS_FILE))),$(strip $(MALEICACID_B25_MULTI2_PARAMETERS_FILE)))
+$(error MALEICACID_B25_MULTI2_PARAMETERS_FILE must name an existing file without wildcard characters)
 endif
 PRODUCT_COPY_FILES += \
-    $(strip $(MALEICACID_MULTI2_PARAMETERS_FILE)):$(TARGET_COPY_OUT_VENDOR)/etc/maleicacid/multi2_parameters
+    $(strip $(MALEICACID_B25_MULTI2_PARAMETERS_FILE)):$(TARGET_COPY_OUT_VENDOR)/etc/maleicacid/b25_multi2_parameters
 endif
 
 # VtsEnvironmentProfile compile が生成したvalidated prebuiltだけを取り込む。
