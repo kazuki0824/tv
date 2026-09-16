@@ -12,10 +12,6 @@ import org.json.JSONObject
 // 同じ状態・境界を扱う操作群を一つの所有者に保つ。
 @Suppress("LargeClass", "TooManyFunctions")
 class NativeAribSiParser : AutoCloseable {
-    private companion object {
-        const val SI_SNAPSHOT_SCHEMA_VERSION = 1
-    }
-
     private data class NativeTransaction(
         val collectionGeneration: Long,
         val ingestSequence: Long,
@@ -1010,6 +1006,8 @@ class NativeAribSiParser : AutoCloseable {
     private external fun nativeDecodeAribStringDiagnosticSummary(bytes: ByteArray): String
 
     companion object {
+        private const val SI_SNAPSHOT_SCHEMA_VERSION = 1
+
         // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
         @Suppress("MagicNumber")
         private fun codecConfigBytes(
