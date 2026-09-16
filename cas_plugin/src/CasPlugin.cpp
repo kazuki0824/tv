@@ -20,7 +20,6 @@ android::status_t status(Result result) {
         case Result::Unsupported: return ERROR_CAS_CANNOT_HANDLE;
         case Result::NotProvisioned: return ERROR_CAS_NOT_PROVISIONED;
         case Result::NoLicense: return ERROR_CAS_NO_LICENSE;
-        case Result::Expired: return ERROR_CAS_LICENSE_EXPIRED;
         case Result::SessionClosed: return ERROR_CAS_SESSION_NOT_OPENED;
         case Result::Busy: return ERROR_CAS_RESOURCE_BUSY;
         case Result::Decrypt: return ERROR_CAS_DECRYPT;
@@ -58,8 +57,6 @@ public:
                 if (releasing_) return Result::InvalidState;
                 callback_ = callback;
             }
-            // AOSP CasImpl が保持する method 参照の寿命内で、状態 lock を解放して通知する。
-            // PLUGIN_SESSION_NUMBER_CHANGED は StatusEvent.aidl の 1。
             if (callback) callback(appData_, 1, kSessionCapacity);
             return Result::Ok;
         });
@@ -89,7 +86,6 @@ public:
             std::shared_ptr<KeyRegistry::Slot> slot;
             auto result = KeyRegistry::instance().open(&slot);
             if (result != Result::Ok) return result;
-            // map / 出力確保に失敗した場合、slot の最後の所有参照も解放される。
             android::CasSessionId identity(slot->token.begin(), slot->token.end());
             sessions_.emplace(identity, Session{slot, {}});
             *id = std::move(identity);
