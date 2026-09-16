@@ -539,7 +539,7 @@ TIS の PSI/SI section path は allocation 前に `SectionEvent.dataLength` を�
 
 ### transaction DTO API
 
-`AribSiEngine` 呼び出し側は複数 snapshot を合成してはならない。本番経路は以下の用途別bulk DTOを使う。engineから受け取るpolicy入力は`ServiceSemanticFacts`・event・EIT instanceの放送/受信事実であり、`ProgramPublishability`等のTIS product policyをRust側DTOに持たせない。
+`AribSiEngine` 呼び出し側は複数 snapshot を合成してはならない。本番経路は以下の用途別bulk DTOを使う。Rust→TISのbulk JSONは`../arib_si_engine_rs/schema/si_snapshot_v1.schema.json`を唯一のwire contractとし、TISは対応する`schemaVersion`だけを受理する。engineから受け取るpolicy入力は`ServiceSemanticFacts`・event・EIT instanceの放送/受信事実であり、`ProgramPublishability`等のTIS product policyをRust側DTOに持たせない。
 
 ```kotlin
 data class ExcludedEventDescriptorFacts(

@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://maleicacid.example/schema/si_snapshot_v1.schema.json",
+  "title": "ARIB SI bulk snapshot v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "collectionGeneration",
+    "ingestSequence",
+    "discoveryStage",
+    "broadcastClock",
+    "tableRequirements",
+    "catCaMetadata",
+    "malformedCaDescriptorDiagnostics",
+    "malformedCaDescriptorCounts",
+    "transportSemanticFacts",
+    "events",
+    "eitInstances",
+    "serviceSemanticFacts",
+    "parserDiagnostics"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "collectionGeneration": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "ingestSequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "discoveryStage": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2
+    },
+    "broadcastClock": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "tableRequirements": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "catCaMetadata": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "malformedCaDescriptorDiagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "malformedCaDescriptorCounts": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "transportSemanticFacts": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "eitInstances": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "serviceSemanticFacts": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "parserDiagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  }
+}

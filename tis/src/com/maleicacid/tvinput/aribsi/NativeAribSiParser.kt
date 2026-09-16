@@ -12,6 +12,9 @@ import org.json.JSONObject
 // 同じ状態・境界を扱う操作群を一つの所有者に保つ。
 @Suppress("LargeClass", "TooManyFunctions")
 class NativeAribSiParser : AutoCloseable {
+    private companion object {
+        const val SI_SNAPSHOT_SCHEMA_VERSION = 1
+    }
     private data class NativeTransaction(
         val collectionGeneration: Long,
         val ingestSequence: Long,
@@ -256,6 +259,9 @@ class NativeAribSiParser : AutoCloseable {
     @Suppress("MagicNumber", "MaxLineLength")
     private fun parseNativeTransactionJson(raw: String): NativeTransaction {
         val root = JSONObject(raw.ifBlank { "{}" })
+        check(root.optInt("schemaVersion", -1) == SI_SNAPSHOT_SCHEMA_VERSION) {
+            "未対応のSI snapshot schemaVersion=${root.optInt("schemaVersion", -1)}"
+        }
         val serviceFacts = parseServiceSemanticFacts(root.optJSONArray("serviceSemanticFacts"))
         return NativeTransaction(
             collectionGeneration = root.getLong("collectionGeneration"),
