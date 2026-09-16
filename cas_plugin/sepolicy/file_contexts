@@ -1,1 +1,2 @@
 /vendor/etc/maleicacid/bcas_keys    u:object_r:maleicacid_bcas_credential:s0
+/data/vendor/maleicacid(/.*)?        u:object_r:maleicacid_cas_data_file:s0
