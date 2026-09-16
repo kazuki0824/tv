@@ -94,12 +94,6 @@ fixture_path.parent.mkdir(parents=True, exist_ok=True)
 fixture_path.write_text(json.dumps(fixture, ensure_ascii=False, indent=2) + "\n")
 
 replace_once(
-    ".github/workflows/arib-si-engine-host-ci.yml",
-    '          Draft202012Validator.check_schema(schema)\n          validator = Draft202012Validator(schema, registry=registry)',
-    '          Draft202012Validator.check_schema(schema)\n          snapshot_schema = json.loads((schema_dir / "si_snapshot_v1.schema.json").read_text())\n          Draft202012Validator.check_schema(snapshot_schema)\n          snapshot_validator = Draft202012Validator(snapshot_schema, registry=registry)\n          snapshot_fixture_dir = Path("arib_si_engine_rs/testdata/si_snapshot_v1")\n          for path in sorted(snapshot_fixture_dir.glob("*.json")):\n              snapshot_validator.validate(json.loads(path.read_text()))\n              print(path)\n          validator = Draft202012Validator(schema, registry=registry)',
-)
-
-replace_once(
     "arib_si_engine_rs/DESIGN_JA.md",
     "JNIは同じ放送事実をbulkで渡す。TISの公開判断の唯一のownerはKotlin `EpgPublicationPolicy` / `EpgSectionPolicy`であり、具体契約は`../tis/DESIGN_JA.md`の「TIS / EPG 公開境界」を正とする。",
     "JNIは同じ放送事実をbulkで渡す。Rust→TISのbulk JSON境界は`schema/si_snapshot_v1.schema.json`を唯一のwire contractとし、`schemaVersion=1`を必須とする。互換性のない変更ではversionを更新し、TISは未対応versionを解釈しない。TISの公開判断の唯一のownerはKotlin `EpgPublicationPolicy` / `EpgSectionPolicy`であり、具体契約は`../tis/DESIGN_JA.md`の「TIS / EPG 公開境界」を正とする。",
@@ -109,6 +103,3 @@ replace_once(
     "`AribSiEngine` 呼び出し側は複数 snapshot を合成してはならない。本番経路は以下の用途別bulk DTOを使う。engineから受け取るpolicy入力は`ServiceSemanticFacts`・event・EIT instanceの放送/受信事実であり、`ProgramPublishability`等のTIS product policyをRust側DTOに持たせない。",
     "`AribSiEngine` 呼び出し側は複数 snapshot を合成してはならない。本番経路は以下の用途別bulk DTOを使う。Rust→TISのbulk JSONは`../arib_si_engine_rs/schema/si_snapshot_v1.schema.json`を唯一のwire contractとし、TISは対応する`schemaVersion`だけを受理する。engineから受け取るpolicy入力は`ServiceSemanticFacts`・event・EIT instanceの放送/受信事実であり、`ProgramPublishability`等のTIS product policyをRust側DTOに持たせない。",
 )
-
-Path(".github/workflows/temporary-si-snapshot-contract.yml").unlink()
-Path(".github/scripts/apply_si_snapshot_contract.py").unlink()
