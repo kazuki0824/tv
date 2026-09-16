@@ -2,6 +2,7 @@
 PRODUCT_PACKAGES += \
     com.android.hardware.cas \
     libmaleicacid_b25_cas \
+    maleicacid_cas_data_init \
     fs_config_files
 
 # Yakisoba credentialの実値はrepositoryへ置かず、このmakefileの継承前に

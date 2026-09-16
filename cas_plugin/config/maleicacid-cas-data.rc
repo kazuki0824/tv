@@ -1,0 +1,4 @@
+on post-fs-data
+    mkdir /data/vendor/maleicacid 0750 media media
+    mkdir /data/vendor/maleicacid/cas 0700 media media
+    restorecon_recursive /data/vendor/maleicacid

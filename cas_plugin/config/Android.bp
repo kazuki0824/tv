@@ -1,0 +1,7 @@
+prebuilt_etc {
+    name: "maleicacid_cas_data_init",
+    vendor: true,
+    src: "maleicacid-cas-data.rc",
+    sub_dir: "init",
+    filename_from_src: true,
+}
