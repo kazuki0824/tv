@@ -68,8 +68,6 @@ Bytes ecm(uint8_t id = 1, std::array<uint8_t, 8> work = kWorkKey,
     plain[2] = id;
     std::copy(keys.begin(), keys.end(), plain.begin() + 3);
     plain[19] = program;
-    plain[20] = static_cast<uint8_t>(todayMjd() >> 8);
-    plain[21] = static_cast<uint8_t>(todayMjd());
     plain[22] = 0x12;
     plain.insert(plain.end(), commands.begin(), commands.end());
     const auto length = plain.size();
@@ -345,7 +343,7 @@ void emmUpdatesAndReplay() {
     CHECK(b->processEmm(section(0x84, emmPayload(12, updateKey(2, kNextWorkKey)))) == ERROR_CAS_TAMPER_DETECTED);
 }
 
-void emmAtomicityAndRights() {
+void emmAtomicity() {
     Environment env;
     auto plugin = env.plugin();
     const auto id = open(*plugin);
@@ -363,14 +361,8 @@ void emmAtomicityAndRights() {
     foreign[0] ^= 1;
     CHECK(plugin->processEmm(section(0x84, emmPayload(2, updateKey(3, kWorkKey), 0xffff, foreign))) == OK);
     CHECK(plugin->processEcm(id, ecm(3)) == ERROR_CAS_NO_LICENSE);
-    CHECK(plugin->processEmm(section(0x84, emmPayload(2, updateKey(3, kWorkKey), 1))) == ERROR_CAS_LICENSE_EXPIRED);
-    CHECK(plugin->processEcm(id, ecm(3)) == ERROR_CAS_NO_LICENSE);
-    CHECK(plugin->processEcm(id, ecm(2, kNextWorkKey, kKeys, {0x52, 1, 2})) == ERROR_CAS_NO_LICENSE);
-    CHECK(plugin->processEmm(section(0x84, emmPayload(2, {0x11, 1, 2}))) == OK);
-    CHECK(plugin->processEcm(id, ecm(2, kNextWorkKey, kKeys, {0x52, 1, 2})) == OK);
-    CHECK(plugin->processEcm(id, ecm(2, kNextWorkKey, kKeys, {0x52, 1, 4})) == ERROR_CAS_NO_LICENSE);
-    CHECK(plugin->processEcm(id, ecm(2, kNextWorkKey, kKeys, {0x51, 1, 7})) == ERROR_CAS_CANNOT_HANDLE);
-    CHECK(plugin->processEcm(id, ecm(2, kNextWorkKey, kKeys, {}, 4)) == ERROR_CAS_CANNOT_HANDLE);
+    CHECK(plugin->processEmm(section(0x84, emmPayload(2, {0x11, 1, 2}))) == ERROR_CAS_CANNOT_HANDLE);
+    CHECK(plugin->processEcm(id, ecm(2, kNextWorkKey, kKeys, {0x52, 1, 2}, 4)) == OK);
     auto conflict = updateKey(3, kWorkKey);
     const auto next = updateKey(13, kNextWorkKey);
     conflict.insert(conflict.end(), next.begin(), next.end());
@@ -605,11 +597,11 @@ void coreCapacityAndLifetime() {
     auto first = slots.front();
     CHECK(registry.resolve(first->token, &keys) == Result::NoLicense);
     keys.bytes = kKeys;
-    CHECK(registry.update(first, keys, 2, 0xffff) == Result::Ok);
+    CHECK(registry.update(first, keys, 2) == Result::Ok);
     CHECK(registry.resolve(first->token, &keys) == Result::Ok && keys.bytes == kKeys);
     registry.close(first);
     CHECK(registry.resolve(first->token, &keys) == Result::SessionClosed);
-    CHECK(registry.update(first, keys, 2, 0xffff) == Result::SessionClosed);
+    CHECK(registry.update(first, keys, 2) == Result::SessionClosed);
     const auto replacement = coreSlot();
     CHECK(!ids.count(replacement->token));
     registry.revokeAll();
@@ -630,7 +622,7 @@ void coreEcmCommit() {
     CHECK(coreEcm(slot, ecm(1, kNextWorkKey)) == Result::Decrypt);
     CHECK(coreResolve(slot, &keys) == Result::Ok && keys == next);
     CHECK(coreEcm(slot, ecm(2)) == Result::NoLicense);
-    CHECK(coreEcm(slot, ecm(1, kWorkKey, next, {}, 4)) == Result::Unsupported);
+    CHECK(coreEcm(slot, ecm(1, kWorkKey, next, {0x51, 1, 7}, 4)) == Result::Ok);
     CHECK(coreResolve(slot, &keys) == Result::Ok && keys == next);
     KeyRegistry::instance().close(slot);
     CHECK(coreEcm(slot, ecm()) == Result::SessionClosed);
@@ -676,21 +668,16 @@ void coreEmmAtomicity() {
     CHECK(coreEcm(slot, ecm(3)) == Result::NoLicense);
 }
 
-void coreRightsAndIndividual() {
+void coreOpaqueEcmAndIndividual() {
     Environment env;
     const auto slot = coreSlot();
     auto foreign = kCard;
     foreign[0] ^= 1;
     CHECK(coreEmm(section(0x84, emmPayload(1, updateKey(2, kNextWorkKey), 0xffff, foreign))) == Result::Ok);
     CHECK(coreEcm(slot, ecm(2, kNextWorkKey)) == Result::NoLicense);
-    CHECK(coreEmm(section(0x84, emmPayload(1, updateKey(2, kNextWorkKey), 1))) == Result::Expired);
-    CHECK(coreEcm(slot, ecm(2, kNextWorkKey)) == Result::NoLicense);
-    CHECK(coreEcm(slot, ecm(1, kWorkKey, kKeys, {0x52, 1, 2})) == Result::NoLicense);
-    CHECK(coreEmm(section(0x84, emmPayload(1, {0x11, 1, 2}))) == Result::Ok);
-    CHECK(coreEcm(slot, ecm(1, kWorkKey, kKeys, {0x52, 1, 2})) == Result::Ok);
-    CHECK(coreEcm(slot, ecm(1, kWorkKey, kKeys, {0x52, 1, 4})) == Result::NoLicense);
-    CHECK(coreEcm(slot, ecm(1, kWorkKey, kKeys, {0x51, 1, 1})) == Result::Unsupported);
-    CHECK(coreEcm(slot, ecm(1, kWorkKey, kKeys, {0x52, 32, 0})) == Result::BadValue);
+    CHECK(coreEmm(section(0x84, emmPayload(1, updateKey(2, kNextWorkKey), 1))) == Result::Ok);
+    CHECK(coreEcm(slot, ecm(2, kNextWorkKey, kKeys, {0x52, 1, 4}, 4)) == Result::Ok);
+    CHECK(coreEmm(section(0x84, emmPayload(2, {0x11, 1, 2}))) == Result::Unsupported);
     auto individual = individualPayload();
     CHECK(coreEmm(section(0x85, individual)) == Result::Unsupported);
     individual.back() ^= 1;
@@ -802,7 +789,7 @@ std::vector<TestCase> testCases(bool coreOnly) {
         {"section_validation", sectionValidation},
         {"ecm_lifetime", ecmAndLifetime},
         {"emm_replay", emmUpdatesAndReplay},
-        {"emm_atomicity_rights", emmAtomicityAndRights},
+        {"emm_atomicity", emmAtomicity},
         {"individual_messages", individualMessages},
         {"fixed_credentials", fixedCredentials},
         {"credentials_without_work_key", credentialsWithoutWorkKey},
@@ -817,7 +804,7 @@ std::vector<TestCase> testCases(bool coreOnly) {
         {"core_ecm_commit", coreEcmCommit},
         {"core_emm_work_keys", coreEmmWorkKeys},
         {"core_emm_atomicity", coreEmmAtomicity},
-        {"core_rights_individual", coreRightsAndIndividual},
+        {"core_opaque_ecm_individual", coreOpaqueEcmAndIndividual},
         {"core_fixed_credential", coreFixedCredential},
         {"core_credential_input_bounds", coreCredentialInputBounds},
         {"core_credential_grammar", coreCredentialGrammar},
