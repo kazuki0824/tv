@@ -215,11 +215,11 @@ Yakisoba backendはlibyakisobaの戻り値とodd/even Ksをplugin lifecycle、AO
 
 Yakisobaの認証情報は製品に固定配置する初期入力とする。初期化時に一度だけ読み込み、通常ファイルでない場合、空または上限を超える場合、開く処理や読取りに失敗した場合は未初期化として拒否する。構文の解釈は採用したlibyakisobaに委ねる。初期化成功後は、ディスク上の入力の削除・差替え・所有者や権限の変更を監視・再検証せず、動的鍵状態の失効原因にしない。配置とアクセス権の設定は [INTEGRATION.md](INTEGRATION.md) が扱う。
 
-EMMで確定したwork keyと権利状態は、固定credentialを書き換えず、CASが所有する可変状態として`/data/vendor/maleicacid/cas/yakisoba_state`へ永続化する。永続状態はcard ID、各BroadcasterGroupのwork key、更新番号、有効期限、権利bitmap、重複配送判定に必要な情報を一体で保持し、再起動後の正本とする。libyakisobaのprocess内Keysetはこの永続状態から復元する実行時状態であり、別の永続正本にしない。永続状態が壊れている、card IDと一致しない、または確定結果を判定できない場合は旧状態を推測して継続せず失効させる。配置、所有者、mode、SELinuxは [INTEGRATION.md](INTEGRATION.md) が扱う。
+EMMで確定したwork keyは、固定credentialを書き換えず、CASが所有する可変状態として`/data/vendor/maleicacid/cas/yakisoba_state`へ永続化する。永続状態はcard ID、各BroadcasterGroupのwork key、更新番号、重複配送判定に必要な情報を一体で保持し、再起動後の正本とする。libyakisobaのprocess内Keysetはこの永続状態から復元する実行時状態であり、別の永続正本にしない。永続状態が壊れている、card IDと一致しない、または確定結果を判定できない場合は旧状態を推測して継続せず失効させる。配置、所有者、mode、SELinuxは [INTEGRATION.md](INTEGRATION.md) が扱う。
 
 `processEcm()` はECM入力をbackendへ渡し、成功時に得たodd/even Ksを、同じMediaCas session IDから参照する内部鍵状態へatomicに反映する。§12の確定点でsuccessを返し、製品固定parameterをsessionの更新対象に含めない。
 
-`processEmm()` はplugin-wide backend mutationとして扱い、関連ECM処理がhalf-updated entitlement/work-key stateを観測しないorderingを提供する。
+`processEmm()` はplugin-wide backend mutationとして扱い、関連ECM処理が更新途中のwork-key stateを観測しないorderingを提供する。
 
 backend operationはcallerを無期限に占有しない。deadline、cancellation、worker等の具体方式は固定しない。request送信後に結果不明となったmutationを成功扱いしない。同一backendでreplay-safeまたはidempotentであることを実装上証明できるoperationは安全な再送を許してよいが、その保証がないmutationを自動再送しない。outcome-unknownを別backendへのfallback条件にしない。
 
@@ -234,11 +234,11 @@ AOSP `processEcm()` / `processEmm()` のscheme-private入力は、本製品で�
 - 対応するECM/EMM table_id、sectionの構文、宣言長と実長、採用方式で必要なCRCを検証する。長さ不足、余剰byte、切れたmessage、不正CRCをbackendへ渡さない。
 - ECMはsection headerとCRC等の外枠を除き、暗号化ECM payloadの先頭からMAC末尾までを `bcas_decodeECM()` へ渡す。libyakisobaの256-byte上限と最小長を呼出し前に検証し、返却鍵は同APIのodd、even順に受け取る。
 - EMM section内のmessage境界と宛先を検証し、message単位で `bcas_decodeEMM()` へ渡す。`Individual` は対応するARIB message種別から決め、全EMMへ固定値を渡さない。各messageの長さと種別固有の最小長を検証し、256-byteを超える入力を渡さない。
-- EMMの出力bufferを確保し、復号後のcommand、宛先、長さ、更新番号、適用条件をbackendで検証する。TISへ復号本文を返さない。ECM/EMMの構文・command解釈はCAS側に閉じ、TS demuxやPSI/SI意味解析を複製しない。
+- EMMの出力bufferを確保し、復号後のcommand、宛先、長さ、更新番号をbackendで検証する。TISへ復号本文を返さない。ECM/EMMの構文・command解釈はCAS側に閉じ、TS demuxやPSI/SI意味解析を複製しない。
 
 ### 6.2 EMMの復号結果とwork key更新
 
-`bcas_decodeEMM()` の成功は復号・MAC検証の成功であり、entitlementやwork key台帳への更新完了ではない。YakisobaBackendが復号後commandの解釈と適用を所有し、対象外宛先の除外、重複更新の扱い、更新番号・権利条件の検証を経て、ECMが実際に参照するlibyakisobaのwork key台帳へ反映する。更新不能なcommandを復号成功だけで処理成功にしない。
+`bcas_decodeEMM()` の成功は復号・MAC検証の成功であり、work key台帳への更新完了ではない。YakisobaBackendが復号後commandの解釈と適用を所有し、対象外宛先の除外、重複更新の扱い、更新番号の検証を経て、ECMが実際に参照するlibyakisobaのwork key台帳へ反映する。更新不能なcommandを復号成功だけで処理成功にしない。
 
 libyakisobaの公開された2個のdecode APIだけではwork key台帳を更新できない。初期統合では無改変のlibyakisobaをplugin内へ静的にリンクし、既存の内部 `Register()` と鍵初期化・参照処理へ接続する限定的な内部adapterを使用する。内部関数の宣言と型は採用sourceに合わせ、AOSP ABIや公開libyakisoba APIへ露出しない。共有libraryから未exportの関数を呼べるという前提を置かない。静的リンクの設定とシンボル解決の確認は [INTEGRATION.md](INTEGRATION.md) を参照する。
 
@@ -246,14 +246,14 @@ libyakisobaのwork key台帳と初期化状態はprocess内で共有されるた
 
 採用するlibyakisobaの`Register()`は呼出しごとにprocess内Keysetをその場で変更し、複数登録をまとめて検証する操作も、途中まで書き換えた登録を元へ戻す操作も提供しない。このため1個のEMM messageに複数work key更新がある場合、先の`Register()`だけ成功した後に後続登録が拒否されると、message全体は失敗なのにKeysetだけ一部更新された状態になる。これを避けるため、adapterは最初の書込み前に、対応group、`WorkKeyID % 10`の登録先、既存WorkKeyIDとの大小・同一内容という`Register()`の受理条件だけを同じ採用sourceに合わせて事前検査する。この内部知識の重複は書込み可否の事前判定に限定し、独立したKeyset実装へ拡張しない。採用libyakisobaの固定revisionに対して、この事前判定と実際の`Register()`の結果が一致することを試験する。
 
-EMM処理は適用対象messageごとに、復号後command、権利条件、全work key登録の事前検査を完了してから次状態を構成する。次状態は一時fileへの全量書込み、fileの同期、同一filesystem内の置換、親directoryの同期まで完了した時点を永続確定点とし、その後に同じ更新をprocess内Keysetへ`Register()`して権利状態を切り替える。永続確定前の失敗ではprocess内状態を変更しない。永続確定後の`Register()`失敗は事前判定とlibyakisoba実装の不一致を意味するため継続せず失効させる。置換後に永続確定の成否を判定できない場合も失効させる。複数messageの途中失敗では、既にmessage単位で永続確定した更新を未適用と偽らず、未適用分を成功扱いしない。後続再配送では永続化した更新番号と配送識別情報を用いて既適用更新を重複適用しない。
+EMM処理は適用対象messageごとに、復号後command、更新番号、全work key登録の事前検査を完了してから次状態を構成する。次状態は一時fileへの全量書込み、fileの同期、同一filesystem内の置換、親directoryの同期まで完了した時点を永続確定点とし、その後に同じ更新をprocess内Keysetへ`Register()`してwork key台帳を切り替える。永続確定前の失敗ではprocess内状態を変更しない。永続確定後の`Register()`失敗は事前判定とlibyakisoba実装の不一致を意味するため継続せず失効させる。置換後に永続確定の成否を判定できない場合も失効させる。複数messageの途中失敗では、既にmessage単位で永続確定した更新を未適用と偽らず、未適用分を成功扱いしない。後続再配送では永続化した更新番号と配送識別情報を用いて既適用更新を重複適用しない。
 
 ### 6.3 入力・backend結果の対応
 
 | 結果 | 公開結果と副作用 |
 |---|---|
 | section/messageの構文・長さ不正 | `BAD_VALUE`。当該messageは適用しない |
-| MAC検証失敗（`-EILSEQ`） | `ERROR_CAS_DECRYPT`。鍵・権利を更新しない |
+| MAC検証失敗（`-EILSEQ`） | `ERROR_CAS_DECRYPT`。鍵を更新しない |
 | ECMに必要なwork keyがない（`-ENOKEY`） | `ERROR_CAS_NO_LICENSE`。新しいKsを公開しない。初期設定自体の未成立が判明している場合は `ERROR_CAS_NOT_PROVISIONED` |
 | EMMの対象外宛先（`-ENOMSG`） | 当該messageを除外し、残りを処理する。鍵更新を実施したとは扱わない |
 | 解釈・適用できないcommand | `ERROR_CAS_CANNOT_HANDLE`。復号成功を更新成功へ置き換えない |
@@ -360,7 +360,7 @@ stale owner/updateの排除にgeneration、cookie、version counter等を内部�
 - 所有者交代後の旧owner、旧request、revoke済みtokenからの更新を受理しない。
 - backend owner loss/restart時は影響する旧sessionを失効させ、旧ownerから後着したECM/EMM/key mutationを新ownerのstateとして受理しない。owner identityの表現は実装詳細とする。
 - access controlは採用process/IPC構成に応じてSELinux、socket ownership、peer credential、Binder identity等から必要な手段を選ぶ。不要な二重機構を必須化しない。
-- sessionごとのKsと復号途中の一時鍵表現は必要期間を越えて保持・永続化しない。EMMで確定したYakisobaのKwと権利状態だけは§6のCAS所有永続状態へ保存し、Tuner側、固定credential、別cacheへ永続化しない。特定のzeroize APIやmemory primitiveを必須化しない。
+- sessionごとのKsと復号途中の一時鍵表現は必要期間を越えて保持・永続化しない。EMMで確定したYakisobaのKwと更新番号・再配送判定情報だけは§6のCAS所有永続状態へ保存し、Tuner側、固定credential、別cacheへ永続化しない。特定のzeroize APIやmemory primitiveを必須化しない。
 
 ### 11.1 vendor内部の鍵共有契約
 
