@@ -1,0 +1,29 @@
+name: temporary SI snapshot contract edit
+
+on:
+  push:
+    branches: [feat/cas]
+
+permissions:
+  contents: write
+
+jobs:
+  edit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/cas
+      - name: SI snapshot境界をversion付き契約へ変更
+        run: python3 .github/scripts/apply_si_snapshot_contract.py
+      - name: 差分を検査して確定
+        run: |
+          git diff --check
+          python3 -m json.tool arib_si_engine_rs/schema/si_snapshot_v1.schema.json >/dev/null
+          python3 -m json.tool arib_si_engine_rs/testdata/si_snapshot_v1/minimal.json >/dev/null
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "fix(arib-si): version TIS bulk snapshot contract"
+          git push origin HEAD:feat/cas
