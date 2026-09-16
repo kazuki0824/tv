@@ -15,20 +15,15 @@ extern "C" {
 #include <Crypto.h>
 #include <Keyset.h>
 #include <yakisoba.h>
-// 採用する libyakisoba-cross の Keyset.c 内部関数。静的リンクの外へ公開しない。
 int32_t Register(uint8_t group, uint8_t id, const uint8_t* key);
 FILE* __real_fopen(const char* path, const char* mode);
 }
 
 namespace {
-
-// 無改変の Keyset.c に、検証済みで長さの限定された初期入力だけを読ませる。
-// --wrap=fopen はこの .so の静的依存に限って働き、他の DSO の I/O は変更しない。
 thread_local char* initialInput = nullptr;
 thread_local size_t initialSize = 0;
 thread_local bool initialReadFailed = false;
-
-}  // namespace
+}
 
 extern "C" FILE* __wrap_fopen(const char* path, const char* mode) {
     if (initialInput != nullptr) {
@@ -41,19 +36,15 @@ extern "C" FILE* __wrap_fopen(const char* path, const char* mode) {
 
 namespace maleicacid::cas {
 namespace {
-
-constexpr std::array<uint8_t, 6> kGroups{0x02, 0x03, 0x17, 0x1d, 0x1e, 0x20};
 constexpr size_t kMaxCredentialSize = 16384;
 constexpr auto kLockDeadline = std::chrono::milliseconds(500);
 
 int groupIndex(uint8_t group) {
-    auto it = std::find(kGroups.begin(), kGroups.end(), group);
-    return it == kGroups.end() ? -1 : static_cast<int>(it - kGroups.begin());
+    auto it = std::find(kYakisobaGroups.begin(), kYakisobaGroups.end(), group);
+    return it == kYakisobaGroups.end() ? -1 : static_cast<int>(it - kYakisobaGroups.begin());
 }
 
-bool protocolSupported(uint8_t protocol) {
-    return (protocol & ~0x4c) == 0;
-}
+bool protocolSupported(uint8_t protocol) { return (protocol & ~0x4c) == 0; }
 
 Result decodeResult(int result) {
     switch (result) {
@@ -69,7 +60,6 @@ bool validInputFile(const struct stat& info) {
     return S_ISREG(info.st_mode) && info.st_size > 0 &&
            info.st_size <= static_cast<off_t>(kMaxCredentialSize);
 }
-
 }  // namespace
 
 YakisobaBackend& YakisobaBackend::instance() {
@@ -80,7 +70,10 @@ YakisobaBackend& YakisobaBackend::instance() {
 #ifdef MALEICACID_CAS_TEST
 void YakisobaBackend::setCredentialPathForTest(std::string path) {
     std::lock_guard lock(mutex_);
-    if (!initialized_) credentialPath_ = std::move(path);
+    if (!initialized_) {
+        credentialPath_ = path;
+        stateStore_.setPathForTest(path + ".state");
+    }
 }
 #endif
 
@@ -88,6 +81,38 @@ Result YakisobaBackend::failClosed() {
     revoked_ = true;
     KeyRegistry::instance().revokeAll();
     return Result::Revoked;
+}
+
+Result YakisobaBackend::restorePersistentState(const std::array<uint8_t, 6>& cardId) {
+    YakisobaPersistentState restored;
+    const auto loaded = stateStore_.load(cardId, &restored);
+    if (loaded == PersistentLoadResult::Missing) {
+        state_.cardId = cardId;
+        return Result::Ok;
+    }
+    if (loaded != PersistentLoadResult::Ok) return failClosed();
+
+    for (size_t group = 0; group < kYakisobaGroups.size(); ++group) {
+        for (size_t bucket = 0; bucket < kYakisobaKeyBuckets; ++bucket) {
+            const auto& saved = restored.groups[group].keys[bucket];
+            if (!saved.present) continue;
+            Secret<8> previous;
+            bool exact = false;
+            for (unsigned id = bucket; id < 255; id += kYakisobaKeyBuckets) {
+                if (GetKey(kYakisobaGroups[group], static_cast<uint8_t>(id), previous.bytes.data()) != 0) continue;
+                if (id > saved.id) return failClosed();
+                if (id == saved.id) {
+                    if (previous.bytes != saved.key) return failClosed();
+                    exact = true;
+                }
+            }
+            if (!exact && Register(kYakisobaGroups[group], saved.id, saved.key.data()) != 0) {
+                return failClosed();
+            }
+        }
+    }
+    state_ = restored;
+    return Result::Ok;
 }
 
 Result YakisobaBackend::initialize() {
@@ -105,18 +130,20 @@ Result YakisobaBackend::initialize() {
     initialInput = reinterpret_cast<char*>(content.bytes.data());
     initialSize = size;
     initialReadFailed = false;
-    // InitKeys → 初期 credential → Register の順序を、全 plugin 共通 lock 内で固定する。
-    GetCardId();
+    const auto* card = GetCardId();
     initialInput = nullptr;
     initialSize = 0;
     if (initialReadFailed) return failClosed();
+    std::array<uint8_t, 6> cardId{};
+    std::copy_n(card, cardId.size(), cardId.data());
+    const auto restored = restorePersistentState(cardId);
+    if (restored != Result::Ok) return restored;
     initialized_ = true;
     return Result::Ok;
 }
 
-Result YakisobaBackend::validateEcm(View plain, const Entitlement& entitlement) {
+Result YakisobaBackend::validateEcm(View plain, const PersistedEntitlement& entitlement) {
     if (todayMjd() > entitlement.expires) return Result::Expired;
-    // 有料・無料の通常番組だけを扱う。未知の権利判定を復号成功へ丸めない。
     if (plain[19] != 0 && plain[19] != 1) return Result::Unsupported;
     const auto broadcastDate = be16(plain.data + 20);
     if (broadcastDate != 0 && broadcastDate > entitlement.expires) return Result::Expired;
@@ -150,48 +177,42 @@ Result YakisobaBackend::processEcm(const std::shared_ptr<KeyRegistry::Slot>& slo
     if (GetKey(payload[1], payload[2], workKey.bytes.data()) != 0) return failClosed();
     Secret<256> plain;
     std::copy_n(payload.data, 3, plain.bytes.data());
-    // decode API の公開出力にない固定権利情報も、MAC 検証後に検査する。
     Transform(payload[0], workKey.bytes.data(), payload.data + 3, payload.size - 3,
               plain.bytes.data() + 3, TRUE);
-    result = validateEcm({plain.bytes.data(), payload.size}, entitlements_[group]);
+    result = validateEcm({plain.bytes.data(), payload.size}, state_.groups[static_cast<size_t>(group)]);
     if (result != Result::Ok) return result;
-    return KeyRegistry::instance().update(slot, keys, payload[1], entitlements_[group].expires);
+    return KeyRegistry::instance().update(slot, keys, payload[1], state_.groups[static_cast<size_t>(group)].expires);
 }
 
 Result YakisobaBackend::applyMessage(const EmmMessage& message) {
     const auto payload = message.payload;
     if (memcmp(payload.data, GetCardId(), 6) != 0) return Result::Ok;
     const auto protocol = payload[message.individual ? 8 : 7];
-    if (!protocolSupported(protocol) && !(message.individual && protocol == 0xff)) {
-        return Result::Unsupported;
-    }
+    if (!protocolSupported(protocol) && !(message.individual && protocol == 0xff)) return Result::Unsupported;
     Secret<256> output;
     const auto decoded = bcas_decodeEMM(payload.data, payload.size, output.bytes.data(), message.individual);
     if (decoded == -ENOMSG) return Result::Ok;
     auto result = decodeResult(decoded);
     if (result != Result::Ok) return result;
-    // 個別表示メッセージには work key 更新の意味がない。未実装の表示を成功にしない。
     if (message.individual) return Result::Unsupported;
     const auto* plain = output.bytes.data();
-    if (memcmp(plain, GetCardId(), 6) || static_cast<size_t>(plain[6]) + 7 != payload.size) {
-        return Result::BadValue;
-    }
+    if (memcmp(plain, GetCardId(), 6) || static_cast<size_t>(plain[6]) + 7 != payload.size) return Result::BadValue;
     const int group = groupIndex(plain[8]);
     if (group < 0) return Result::Unsupported;
-    auto& entitlement = entitlements_[group];
+    const auto groupIndexValue = static_cast<size_t>(group);
+    const auto& entitlement = state_.groups[groupIndexValue];
     const auto number = be16(plain + 9);
     const auto expires = be16(plain + 11);
     if (todayMjd() > expires) return Result::Expired;
     if (entitlement.updated && number <= entitlement.number) {
-        const bool duplicate = number == entitlement.number &&
-            entitlement.lastMessage.size() == payload.size &&
+        const bool duplicate = number == entitlement.number && entitlement.lastMessage.size() == payload.size &&
             std::equal(entitlement.lastMessage.begin(), entitlement.lastMessage.end(), payload.data);
         return duplicate ? Result::Ok : Result::InvalidState;
     }
 
     struct Update { uint8_t id; Secret<8> key; bool duplicate = false; };
     std::vector<Update> updates;
-    std::array<bool, 10> buckets{};
+    std::array<bool, kYakisobaKeyBuckets> buckets{};
     auto bitmap = entitlement.bitmap;
     bool bitmapChanged = false;
     for (size_t p = 13; p < payload.size - 4;) {
@@ -200,15 +221,15 @@ Result YakisobaBackend::applyMessage(const EmmMessage& message) {
         const auto length = plain[p++];
         if (length > payload.size - 4 - p) return Result::BadValue;
         if (tag == 0x10) {
-            if (length != 9 || plain[p] == 0xff || buckets[plain[p] % 10]) return Result::BadValue;
-            buckets[plain[p] % 10] = true;
+            if (length != 9 || plain[p] == 0xff || buckets[plain[p] % kYakisobaKeyBuckets]) return Result::BadValue;
+            buckets[plain[p] % kYakisobaKeyBuckets] = true;
             Update update;
             update.id = plain[p];
             std::copy_n(plain + p + 1, 8, update.key.bytes.data());
-            // 内部 Register の同一 bucket 拒否を、書込み前に台帳自身で検証する。
+            // libyakisobaのRegister()は即時更新かつ巻戻し不能なので、同じ受理条件を更新前に確認する。
             Secret<8> previous;
-            for (unsigned id = update.id % 10; id < 255; id += 10) {
-                if (GetKey(plain[8], id, previous.bytes.data()) != 0) continue;
+            for (unsigned id = update.id % kYakisobaKeyBuckets; id < 255; id += kYakisobaKeyBuckets) {
+                if (GetKey(plain[8], static_cast<uint8_t>(id), previous.bytes.data()) != 0) continue;
                 if (id > update.id) return Result::InvalidState;
                 if (id == update.id) {
                     if (previous.bytes != update.key.bytes) return Result::InvalidState;
@@ -227,19 +248,30 @@ Result YakisobaBackend::applyMessage(const EmmMessage& message) {
         p += length;
     }
     if (updates.empty() && !bitmapChanged) return Result::Unsupported;
-    // 確定開始後に allocation が失敗しないよう、再配送識別用の暗号文を先に確保する。
+
     Bytes committedMessage(payload.data, payload.data + payload.size);
+    YakisobaPersistentState next = state_;
+    auto& nextEntitlement = next.groups[groupIndexValue];
+    nextEntitlement.updated = true;
+    nextEntitlement.number = number;
+    nextEntitlement.expires = expires;
+    nextEntitlement.bitmap = bitmap;
+    nextEntitlement.lastMessage = committedMessage;
     for (const auto& update : updates) {
-        if (!update.duplicate && Register(plain[8], update.id, update.key.bytes.data()) != 0) {
-            return failClosed();
-        }
+        auto& saved = nextEntitlement.keys[update.id % kYakisobaKeyBuckets];
+        saved.present = true;
+        saved.id = update.id;
+        saved.key = update.key.bytes;
     }
-    entitlement.updated = true;
-    entitlement.number = number;
-    entitlement.expires = expires;
-    entitlement.bitmap = bitmap;
-    entitlement.lastMessage = std::move(committedMessage);
-    // 更新前の権利で導出した Ks を次の packet へ再取得させない。
+
+    const auto committed = stateStore_.commit(next);
+    if (committed == PersistentCommitResult::Unchanged) return Result::Unknown;
+    if (committed == PersistentCommitResult::OutcomeUnknown) return failClosed();
+
+    for (const auto& update : updates) {
+        if (!update.duplicate && Register(plain[8], update.id, update.key.bytes.data()) != 0) return failClosed();
+    }
+    state_ = next;
     KeyRegistry::instance().invalidateGroup(plain[8]);
     return Result::Ok;
 }
