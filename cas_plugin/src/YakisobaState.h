@@ -16,18 +16,16 @@ struct PersistedWorkKey {
     std::array<uint8_t, 8> key{};
 };
 
-struct PersistedEntitlement {
+struct PersistedWorkKeyGroup {
     bool updated = false;
     uint16_t number = 0;
-    uint32_t expires = 0xffff;
-    std::array<uint8_t, 32> bitmap{};
     Bytes lastMessage;
     std::array<PersistedWorkKey, kYakisobaKeyBuckets> keys{};
 };
 
 struct YakisobaPersistentState {
     std::array<uint8_t, 6> cardId{};
-    std::array<PersistedEntitlement, kYakisobaGroups.size()> groups{};
+    std::array<PersistedWorkKeyGroup, kYakisobaGroups.size()> groups{};
     ~YakisobaPersistentState();
 };
 

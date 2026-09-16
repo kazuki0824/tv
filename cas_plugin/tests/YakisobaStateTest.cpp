@@ -37,8 +37,6 @@ void roundTripAndRejectCorruption() {
     auto& group = state.groups[0];
     group.updated = true;
     group.number = 7;
-    group.expires = 0x1234;
-    group.bitmap[3] = 0x80;
     group.lastMessage = {1, 2, 3};
     auto& key = group.keys[1];
     key.present = true;
@@ -49,8 +47,6 @@ void roundTripAndRejectCorruption() {
     YakisobaPersistentState restored;
     CHECK(store.load(state.cardId, &restored) == PersistentLoadResult::Ok);
     CHECK(restored.groups[0].number == 7);
-    CHECK(restored.groups[0].expires == 0x1234);
-    CHECK(restored.groups[0].bitmap[3] == 0x80);
     CHECK(restored.groups[0].lastMessage == Bytes({1, 2, 3}));
     CHECK(restored.groups[0].keys[1].present);
     CHECK(restored.groups[0].keys[1].id == 11);

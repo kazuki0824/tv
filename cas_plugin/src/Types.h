@@ -9,7 +9,7 @@
 namespace maleicacid::cas {
 
 enum class Result {
-    Ok, BadValue, Unsupported, NotProvisioned, NoLicense, Expired,
+    Ok, BadValue, Unsupported, NotProvisioned, NoLicense,
     SessionClosed, Busy, Decrypt, Revoked, InvalidState, Unknown,
 };
 
@@ -37,8 +37,5 @@ struct View {
 inline uint16_t be16(const uint8_t* p) {
     return static_cast<uint16_t>((static_cast<uint16_t>(p[0]) << 8) | p[1]);
 }
-
-// MJD は信頼する受信機時計から取得する。未知の時計を期限内と見なさない。
-uint32_t todayMjd();
 
 }  // namespace maleicacid::cas

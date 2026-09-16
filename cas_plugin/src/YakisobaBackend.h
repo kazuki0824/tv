@@ -23,7 +23,6 @@ private:
     Result initialize();
     Result restorePersistentState(const std::array<uint8_t, 6>& cardId);
     Result applyMessage(const EmmMessage& message);
-    Result validateEcm(View plain, const PersistedEntitlement& entitlement);
     Result failClosed();
 
     std::timed_mutex mutex_;

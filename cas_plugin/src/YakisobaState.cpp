@@ -4,25 +4,17 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
-#include <cstring>
 #include <fcntl.h>
-#include <limits>
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
 
 namespace maleicacid::cas {
 namespace {
-constexpr std::array<uint8_t, 8> kMagic{'M','C','A','S','P','S','0','1'};
+constexpr std::array<uint8_t, 8> kMagic{'M','C','A','S','P','S','0','2'};
 constexpr size_t kMaxStateSize = 16384;
 
 void put16(Bytes* out, uint16_t value) {
-    out->push_back(static_cast<uint8_t>(value >> 8));
-    out->push_back(static_cast<uint8_t>(value));
-}
-void put32(Bytes* out, uint32_t value) {
-    out->push_back(static_cast<uint8_t>(value >> 24));
-    out->push_back(static_cast<uint8_t>(value >> 16));
     out->push_back(static_cast<uint8_t>(value >> 8));
     out->push_back(static_cast<uint8_t>(value));
 }
@@ -35,15 +27,6 @@ bool take16(const Bytes& in, size_t* p, uint16_t* value) {
     if (in.size() - *p < 2) return false;
     *value = static_cast<uint16_t>((static_cast<uint16_t>(in[*p]) << 8) | in[*p + 1]);
     *p += 2;
-    return true;
-}
-bool take32(const Bytes& in, size_t* p, uint32_t* value) {
-    if (in.size() - *p < 4) return false;
-    *value = (static_cast<uint32_t>(in[*p]) << 24) |
-             (static_cast<uint32_t>(in[*p + 1]) << 16) |
-             (static_cast<uint32_t>(in[*p + 2]) << 8) |
-             static_cast<uint32_t>(in[*p + 3]);
-    *p += 4;
     return true;
 }
 bool appendBytes(Bytes* out, const uint8_t* data, size_t size) {
@@ -122,8 +105,7 @@ PersistentLoadResult YakisobaStateStore::load(const std::array<uint8_t, 6>& card
         auto& entry = parsed.groups[g];
         if (!take8(input, &p, &group) || group != kYakisobaGroups[g] ||
             !take8(input, &p, &updated) || updated > 1 ||
-            !take16(input, &p, &entry.number) || !take32(input, &p, &entry.expires) ||
-            !takeBytes(input, &p, entry.bitmap.data(), entry.bitmap.size())) {
+            !take16(input, &p, &entry.number)) {
             return PersistentLoadResult::Error;
         }
         entry.updated = updated != 0;
@@ -161,10 +143,7 @@ PersistentCommitResult YakisobaStateStore::commit(const YakisobaPersistentState&
         output.push_back(kYakisobaGroups[g]);
         output.push_back(entry.updated ? 1 : 0);
         put16(&output, entry.number);
-        put32(&output, entry.expires);
-        if (!appendBytes(&output, entry.bitmap.data(), entry.bitmap.size()) || entry.lastMessage.size() > 256) {
-            return PersistentCommitResult::Unchanged;
-        }
+        if (entry.lastMessage.size() > 256) return PersistentCommitResult::Unchanged;
         put16(&output, static_cast<uint16_t>(entry.lastMessage.size()));
         if (!appendBytes(&output, entry.lastMessage.data(), entry.lastMessage.size())) return PersistentCommitResult::Unchanged;
         for (size_t bucket = 0; bucket < kYakisobaKeyBuckets; ++bucket) {

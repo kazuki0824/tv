@@ -21,14 +21,12 @@ public:
         bool live = true;
         bool ready = false;
         uint8_t group = 0;
-        uint32_t expires = 0;
     };
 
     static KeyRegistry& instance();
     Result open(std::shared_ptr<Slot>* slot);
     void close(const std::shared_ptr<Slot>& slot);
-    Result update(const std::shared_ptr<Slot>& slot, const Secret<16>& keys,
-                  uint8_t group, uint32_t expires);
+    Result update(const std::shared_ptr<Slot>& slot, const Secret<16>& keys, uint8_t group);
     Result resolve(const Token& token, Secret<16>* keys);
     void invalidateGroup(uint8_t group);
     void revokeAll();
