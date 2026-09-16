@@ -15,6 +15,7 @@ class NativeAribSiParser : AutoCloseable {
     private companion object {
         const val SI_SNAPSHOT_SCHEMA_VERSION = 1
     }
+
     private data class NativeTransaction(
         val collectionGeneration: Long,
         val ingestSequence: Long,
