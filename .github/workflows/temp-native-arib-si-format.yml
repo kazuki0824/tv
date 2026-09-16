@@ -1,0 +1,56 @@
+name: temporary NativeAribSiParser format cleanup
+
+on:
+  push:
+    branches:
+      - feat/cas
+    paths:
+      - .github/workflows/temp-native-arib-si-format.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feat/cas
+      - name: Add required declaration separator
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tis/src/com/maleicacid/tvinput/aribsi/NativeAribSiParser.kt')
+          text = path.read_text()
+          old = '''    private companion object {
+              const val SI_SNAPSHOT_SCHEMA_VERSION = 1
+          }
+          private data class NativeTransaction(
+          '''
+          new = '''    private companion object {
+              const val SI_SNAPSHOT_SCHEMA_VERSION = 1
+          }
+
+          private data class NativeTransaction(
+          '''
+          if old not in text:
+              raise SystemExit('expected declaration boundary not found')
+          updated = text.replace(old, new, 1)
+          if updated == text:
+              raise SystemExit('no change')
+          path.write_text(updated)
+          PY
+          git rm .github/workflows/temp-native-arib-si-format.yml
+          git diff --check
+          git diff --exit-code --quiet && exit 1 || true
+      - name: Commit cleanup
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tis/src/com/maleicacid/tvinput/aribsi/NativeAribSiParser.kt
+          git commit -m 'style(tis): NativeAribSiParserの整形を修正する'
+          git push origin HEAD:feat/cas
