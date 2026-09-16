@@ -26,6 +26,7 @@ cc_defaults {
         "src/CasPlugin.cpp",
         "src/Section.cpp",
         "src/YakisobaBackend.cpp",
+        "src/YakisobaState.cpp",
         "src/KeyRegistry.cpp",
         "src/KeyServer.cpp",
         "src/KeySocket.cpp",
@@ -54,6 +55,14 @@ cc_test {
     name: "maleicacid_b25_cas_test",
     defaults: ["maleicacid_b25_plugin_defaults"],
     srcs: ["src/KeyClient.cpp", "tests/CasTest.cpp"],
+    cflags: ["-DMALEICACID_CAS_TEST"],
+    test_suites: ["device-tests"],
+}
+
+cc_test {
+    name: "maleicacid_b25_state_test",
+    defaults: ["maleicacid_b25_defaults"],
+    srcs: ["src/YakisobaState.cpp", "tests/YakisobaStateTest.cpp"],
     cflags: ["-DMALEICACID_CAS_TEST"],
     test_suites: ["device-tests"],
 }
