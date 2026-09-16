@@ -156,6 +156,13 @@ jobs:
               for item in (json.loads(path.read_text()) for path in schema_dir.glob("*.schema.json"))
           )
           Draft202012Validator.check_schema(schema)
+          snapshot_schema = json.loads((schema_dir / "si_snapshot_v1.schema.json").read_text())
+          Draft202012Validator.check_schema(snapshot_schema)
+          snapshot_validator = Draft202012Validator(snapshot_schema, registry=registry)
+          snapshot_fixture_dir = Path("arib_si_engine_rs/testdata/si_snapshot_v1")
+          for path in sorted(snapshot_fixture_dir.glob("*.json")):
+              snapshot_validator.validate(json.loads(path.read_text()))
+              print(path)
           validator = Draft202012Validator(schema, registry=registry)
           fixture_dir = Path("arib_si_engine_rs/testdata/program_provider_data_v1")
           for path in sorted(fixture_dir.glob("*.json")):
