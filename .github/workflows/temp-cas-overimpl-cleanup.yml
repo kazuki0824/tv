@@ -1,0 +1,53 @@
+name: temporary CAS overimplementation test cleanup
+
+on:
+  push:
+    branches: [feat/cas-impl]
+
+permissions:
+  contents: write
+
+jobs:
+  edit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/cas-impl
+      - name: Remove entitlement-only ECM and EMM tests
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('cas_plugin/tests/CasTest.cpp')
+          s = p.read_text()
+
+          def once(old, new):
+              global s
+              if s.count(old) != 1:
+                  raise SystemExit(f'expected one match, got {s.count(old)}: {old[:80]!r}')
+              s = s.replace(old, new, 1)
+
+          once('''    plain[19] = program;\n    plain[20] = static_cast<uint8_t>(todayMjd() >> 8);\n    plain[21] = static_cast<uint8_t>(todayMjd());\n    plain[22] = 0x12;\n''', '''    plain[19] = program;\n    plain[22] = 0x12;\n''')
+
+          once('''void emmAtomicityAndRights() {\n    Environment env;\n    auto plugin = env.plugin();\n    const auto id = open(*plugin);\n    auto unknown = updateKey(2, kNextWorkKey);\n    unknown.insert(unknown.end(), {0xee, 0});\n    CHECK(plugin->processEmm(section(0x84, emmPayload(1, unknown))) == ERROR_CAS_CANNOT_HANDLE);\n    CHECK(plugin->processEcm(id, ecm(2, kNextWorkKey)) == ERROR_CAS_NO_LICENSE);\n    auto first = emmPayload(1, updateKey(2, kNextWorkKey));\n    auto second = emmPayload(2, {0xee, 0});\n    first.insert(first.end(), second.begin(), second.end());\n    CHECK(plugin->processEmm(section(0x84, first)) == ERROR_CAS_CANNOT_HANDLE);\n    CHECK(plugin->processEcm(id, ecm(2, kNextWorkKey)) == OK);\n    CHECK(plugin->processEmm(section(0x84, first)) == ERROR_CAS_CANNOT_HANDLE);\n    auto foreign = kCard;\n    foreign[0] ^= 1;\n    CHECK(plugin->processEmm(section(0x84, emmPayload(2, updateKey(3, kWorkKey), 0xffff, foreign))) == OK);\n    CHECK(plugin->processEcm(id, ecm(3)) == ERROR_CAS_NO_LICENSE);\n    CHECK(plugin->processEmm(section(0x84, emmPayload(2, updateKey(3, kWorkKey), 1))) == ERROR_CAS_LICENSE_EXPIRED);\n    CHECK(plugin->processEcm(id, ecm(3)) == ERROR_CAS_NO_LICENSE);\n    CHECK(plugin->processEcm(id, ecm(2, kNextWorkKey, kKeys, {0x52, 1, 2})) == ERROR_CAS_NO_LICENSE);\n    CHECK(plugin->processEmm(section(0x84, emmPayload(2, {0x11, 1, 2}))) == OK);\n    CHECK(plugin->processEcm(id, ecm(2, kNextWorkKey, kKeys, {0x52, 1, 2})) == OK);\n    CHECK(plugin->processEcm(id, ecm(2, kNextWorkKey, kKeys, {0x52, 1, 4})) == ERROR_CAS_NO_LICENSE);\n    CHECK(plugin->processEcm(id, ecm(2, kNextWorkKey, kKeys, {0x51, 1, 7})) == ERROR_CAS_CANNOT_HANDLE);\n    CHECK(plugin->processEcm(id, ecm(2, kNextWorkKey, kKeys, {}, 4)) == ERROR_CAS_CANNOT_HANDLE);\n    auto conflict = updateKey(3, kWorkKey);\n    const auto next = updateKey(13, kNextWorkKey);\n    conflict.insert(conflict.end(), next.begin(), next.end());\n    CHECK(plugin->processEmm(section(0x84, emmPayload(3, conflict))) == BAD_VALUE);\n    CHECK(plugin->processEcm(id, ecm(3)) == ERROR_CAS_NO_LICENSE);\n}\n''', '''void emmAtomicity() {\n    Environment env;\n    auto plugin = env.plugin();\n    const auto id = open(*plugin);\n    auto unknown = updateKey(2, kNextWorkKey);\n    unknown.insert(unknown.end(), {0xee, 0});\n    CHECK(plugin->processEmm(section(0x84, emmPayload(1, unknown))) == ERROR_CAS_CANNOT_HANDLE);\n    CHECK(plugin->processEcm(id, ecm(2, kNextWorkKey)) == ERROR_CAS_NO_LICENSE);\n    auto first = emmPayload(1, updateKey(2, kNextWorkKey));\n    auto second = emmPayload(2, {0xee, 0});\n    first.insert(first.end(), second.begin(), second.end());\n    CHECK(plugin->processEmm(section(0x84, first)) == ERROR_CAS_CANNOT_HANDLE);\n    CHECK(plugin->processEcm(id, ecm(2, kNextWorkKey)) == OK);\n    CHECK(plugin->processEmm(section(0x84, first)) == ERROR_CAS_CANNOT_HANDLE);\n    auto foreign = kCard;\n    foreign[0] ^= 1;\n    CHECK(plugin->processEmm(section(0x84, emmPayload(2, updateKey(3, kWorkKey), 0xffff, foreign))) == OK);\n    CHECK(plugin->processEcm(id, ecm(3)) == ERROR_CAS_NO_LICENSE);\n    CHECK(plugin->processEmm(section(0x84, emmPayload(2, {0x11, 1, 2}))) == ERROR_CAS_CANNOT_HANDLE);\n    CHECK(plugin->processEcm(id, ecm(2, kNextWorkKey, kKeys, {0x52, 1, 2}, 4)) == OK);\n    auto conflict = updateKey(3, kWorkKey);\n    const auto next = updateKey(13, kNextWorkKey);\n    conflict.insert(conflict.end(), next.begin(), next.end());\n    CHECK(plugin->processEmm(section(0x84, emmPayload(3, conflict))) == BAD_VALUE);\n    CHECK(plugin->processEcm(id, ecm(3)) == ERROR_CAS_NO_LICENSE);\n}\n''')
+
+          once('''    CHECK(registry.update(first, keys, 2, 0xffff) == Result::Ok);\n''', '''    CHECK(registry.update(first, keys, 2) == Result::Ok);\n''')
+          once('''    CHECK(registry.update(first, keys, 2, 0xffff) == Result::SessionClosed);\n''', '''    CHECK(registry.update(first, keys, 2) == Result::SessionClosed);\n''')
+
+          once('''    CHECK(coreEcm(slot, ecm(1, kWorkKey, next, {}, 4)) == Result::Unsupported);\n    CHECK(coreResolve(slot, &keys) == Result::Ok && keys == next);\n''', '''    CHECK(coreEcm(slot, ecm(1, kWorkKey, next, {0x51, 1, 7}, 4)) == Result::Ok);\n    CHECK(coreResolve(slot, &keys) == Result::Ok && keys == next);\n''')
+
+          once('''void coreRightsAndIndividual() {\n    Environment env;\n    const auto slot = coreSlot();\n    auto foreign = kCard;\n    foreign[0] ^= 1;\n    CHECK(coreEmm(section(0x84, emmPayload(1, updateKey(2, kNextWorkKey), 0xffff, foreign))) == Result::Ok);\n    CHECK(coreEcm(slot, ecm(2, kNextWorkKey)) == Result::NoLicense);\n    CHECK(coreEmm(section(0x84, emmPayload(1, updateKey(2, kNextWorkKey), 1))) == Result::Expired);\n    CHECK(coreEcm(slot, ecm(2, kNextWorkKey)) == Result::NoLicense);\n    CHECK(coreEcm(slot, ecm(1, kWorkKey, kKeys, {0x52, 1, 2})) == Result::NoLicense);\n    CHECK(coreEmm(section(0x84, emmPayload(1, {0x11, 1, 2}))) == Result::Ok);\n    CHECK(coreEcm(slot, ecm(1, kWorkKey, kKeys, {0x52, 1, 2})) == Result::Ok);\n    CHECK(coreEcm(slot, ecm(1, kWorkKey, kKeys, {0x52, 1, 4})) == Result::NoLicense);\n    CHECK(coreEcm(slot, ecm(1, kWorkKey, kKeys, {0x51, 1, 1})) == Result::Unsupported);\n    CHECK(coreEcm(slot, ecm(1, kWorkKey, kKeys, {0x52, 32, 0})) == Result::BadValue);\n    auto individual = individualPayload();\n    CHECK(coreEmm(section(0x85, individual)) == Result::Unsupported);\n    individual.back() ^= 1;\n    CHECK(coreEmm(section(0x85, individual)) == Result::Decrypt);\n}\n''', '''void coreOpaqueEcmAndIndividual() {\n    Environment env;\n    const auto slot = coreSlot();\n    auto foreign = kCard;\n    foreign[0] ^= 1;\n    CHECK(coreEmm(section(0x84, emmPayload(1, updateKey(2, kNextWorkKey), 0xffff, foreign))) == Result::Ok);\n    CHECK(coreEcm(slot, ecm(2, kNextWorkKey)) == Result::NoLicense);\n    CHECK(coreEmm(section(0x84, emmPayload(1, updateKey(2, kNextWorkKey), 1))) == Result::Ok);\n    CHECK(coreEcm(slot, ecm(2, kNextWorkKey, kKeys, {0x52, 1, 4}, 4)) == Result::Ok);\n    CHECK(coreEmm(section(0x84, emmPayload(2, {0x11, 1, 2}))) == Result::Unsupported);\n    auto individual = individualPayload();\n    CHECK(coreEmm(section(0x85, individual)) == Result::Unsupported);\n    individual.back() ^= 1;\n    CHECK(coreEmm(section(0x85, individual)) == Result::Decrypt);\n}\n''')
+
+          once('{"emm_atomicity_rights", emmAtomicityAndRights},', '{"emm_atomicity", emmAtomicity},')
+          once('{"core_rights_individual", coreRightsAndIndividual},', '{"core_opaque_ecm_individual", coreOpaqueEcmAndIndividual},')
+          p.write_text(s)
+      - name: Commit only the test adjustment and remove this workflow
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/temp-cas-overimpl-cleanup.yml
+          git diff --check
+          git add cas_plugin/tests/CasTest.cpp
+          git commit -m "test(cas): 権利判定の過剰試験を削除する"
+          git push origin HEAD:feat/cas-impl
