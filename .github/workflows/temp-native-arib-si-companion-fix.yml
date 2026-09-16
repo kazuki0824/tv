@@ -1,0 +1,50 @@
+name: temporary NativeAribSiParser companion fix
+
+on:
+  push:
+    branches:
+      - feat/cas
+    paths:
+      - .github/workflows/temp-native-arib-si-companion-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: feat/cas
+      - name: Merge duplicate companion objects
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tis/src/com/maleicacid/tvinput/aribsi/NativeAribSiParser.kt')
+          text = path.read_text()
+          top = "    private companion object {\n        const val SI_SNAPSHOT_SCHEMA_VERSION = 1\n    }\n\n"
+          if text.count(top) != 1:
+              raise SystemExit(f'unexpected top companion count: {text.count(top)}')
+          text = text.replace(top, '', 1)
+          marker = "    companion object {\n        // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。"
+          replacement = "    companion object {\n        private const val SI_SNAPSHOT_SCHEMA_VERSION = 1\n\n        // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。"
+          if text.count(marker) != 1:
+              raise SystemExit(f'unexpected existing companion count: {text.count(marker)}')
+          text = text.replace(marker, replacement, 1)
+          if text.count('companion object {') != 1:
+              raise SystemExit(f'companion object count after fix: {text.count("companion object {")}')
+          path.write_text(text)
+          PY
+          git rm .github/workflows/temp-native-arib-si-companion-fix.yml
+          git diff --check
+      - name: Commit fix
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tis/src/com/maleicacid/tvinput/aribsi/NativeAribSiParser.kt
+          git commit -m 'fix(tis): companion objectを一つに統合する'
+          git push origin HEAD:feat/cas
