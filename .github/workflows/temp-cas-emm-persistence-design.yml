@@ -1,0 +1,31 @@
+name: temporary CAS EMM persistence design edit
+
+on:
+  push:
+    branches: [feat/cas]
+    paths:
+      - ".github/workflows/temp-cas-emm-persistence-design.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  edit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/cas
+      - name: EMM永続化契約を設計正本へ反映
+        run: python3 .github/scripts/apply_cas_emm_persistence_design.py
+      - name: 差分を検査して確定
+        run: |
+          git diff --check
+          rm .github/scripts/apply_cas_emm_persistence_design.py
+          rm .github/workflows/temp-cas-emm-persistence-design.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "docs(cas): EMM更新状態の永続化契約を定義"
+          git push origin HEAD:feat/cas
