@@ -1,3 +1,7 @@
+# 不要な例示設定の削除
+
+- 正式な旧Tuner HAL組込み設定および組込み文書と重複していたmakefile、BoardConfig、ueventdの例示ファイルを削除した。
+
 # PR #108 CAS試験profileの適用範囲
 
 - ClearKeyのMedia CAS互換試験と、B25/B1の実ECMを使う製品結合・Tuner VTSの条件を区別した。

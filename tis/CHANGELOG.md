@@ -1,3 +1,7 @@
+# 不要な例示設定の削除
+
+- 正式な製品組込み設定を継承するだけだった未参照の例示makefileを削除した。
+
 # PR #108 MediaSync private拡張の任意利用を復活
 
 - MediaSyncがcurrent output Surfaceへの`queueBuffer()`に成功した最初のvideo frameを通知する、LineageOS 22.1向けの最小private拡張patchを復活した。late-drop、attach失敗、queue失敗では通知せず、one-shot armと`armSequence`だけを追加する。
