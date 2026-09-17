@@ -916,13 +916,13 @@ void sharedStateConsistencyAndReadOnlyMapping() {
     close(reader);
     Secret<16> first;
     first.bytes.fill(0x21);
-    slot->state().store(&first, 0xffff);
+    slot->state().store(&first);
     std::atomic<bool> finished{false};
     std::thread writer([&] {
         Secret<16> next;
         for (int i = 0; i < 10000; ++i) {
             next.bytes.fill(i % 2 ? 0x21 : 0x42);
-            slot->state().store(&next, 0xffff);
+            slot->state().store(&next);
         }
         finished = true;
     });
@@ -946,7 +946,7 @@ void sharedStateConsistencyAndReadOnlyMapping() {
     CHECK(munmap(const_cast<SharedKeyState*>(state), sizeof(SharedKeyState)) == 0);
     SharedKeyState exhausted;
     exhausted.sequence.store(UINT64_MAX - 1);
-    CHECK(!exhausted.store(&first, 0xffff));
+    CHECK(!exhausted.store(&first));
     CHECK(exhausted.snapshot(&current) == Result::SessionClosed);
 }
 

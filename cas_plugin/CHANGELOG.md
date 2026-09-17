@@ -1,3 +1,9 @@
+# PR #113 現行 #111 への再基底化
+
+- 現行 #111 のEMM更新状態・work key永続化を維持し、#113のCAS共有参照を統合した。共有状態にはECM契約期限を持たせず、権利bitmap判定や権利確認用の再復号も復活させていない。
+- 共有状態試験を期限引数のない現行APIへ追従させた。製品設定CIはCAS永続状態ディレクトリを作る`maleicacid_cas_data_init`を期待パッケージに加え、生成Makefileのrecipe表記を空白とタブが混在しない形へ変更した。
+- C++通常構成とASan/UBSan構成のbuild、永続状態試験、core 13組、公開symbol、製品make設定、fs-config生成、SELinux配置検査が成功した。実行環境がUnix socketとLeakSanitizerを許可しないためsocket結合とleak検査、Rust toolchainがないためRustの型検査・単体試験・Clippyはpush後のGitHub Actionsで確認する。Android/Soong全体、atest、VTS、実機確認は未実施。
+
 # PR #113 固定認証情報の監視を接続経路から除去
 
 - 共有参照の結合を初期化済み状態と既存の鍵状態の判定へ限定し、認証情報ファイルの再検査を除いた。受付処理の定期監視と`pollCredential()`を削除した。
