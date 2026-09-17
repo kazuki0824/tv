@@ -6,7 +6,7 @@
 
 製品のproduct makefileでは `vendor/maleicacid/tv/config/product_integration.mk` を継承し、BoardConfigでは `vendor/maleicacid/tv/config/BoardConfigVendorSePolicy.mk` をincludeする。これらの共通入口からTuner、TIS、CASの設定を取り込む。
 
-CAS側は標準serviceの `com.android.hardware.cas`、vendor pluginの `libmaleicacid_b25_cas`、権限表を生成・配置する `fs_config_files` を製品へ追加する。BoardConfig入口はCASのvendor sepolicyと `TARGET_FS_CONFIG_GEN` の入力を追加する。
+CAS側は標準serviceの `com.android.hardware.cas`、vendor pluginの `libmaleicacid_b25_cas`、Kw永続状態用ディレクトリを作るinit rcの `maleicacid_cas_data_init`、権限表を生成・配置する `fs_config_files` を製品へ追加する。BoardConfig入口はCASのvendor sepolicyと `TARGET_FS_CONFIG_GEN` の入力を追加する。
 
 ## credentialの配置
 
@@ -20,6 +20,8 @@ $(call inherit-product, vendor/maleicacid/tv/config/product_integration.mk)
 入力は空白とwildcardを含まない単一の既存ファイルにする。未指定ではcredentialを生成・配置しないため、Yakisobaの実復号に必要な入力は成立しない。初期読込みの入力検査はCAS側、構文の解釈は採用libyakisobaが行う。
 
 配置先は `/vendor/etc/maleicacid/bcas_keys` とする。`config/config.fs` によりimage作成時にroot所有・media group・0640を設定し、既存の `sepolicy/file_contexts` により `maleicacid_bcas_credential` を付与する。読取り専用vendor領域へ固定配置する。所有者・権限は製品設定とSELinuxで制御し、CASの初期化後に入力ファイルの変更を監視しない。製品側の別のfs-config入力に同じ配置先の定義を重複させない。
+
+固定credentialとは別に、EMMで確定したKw、更新番号、重複配送判定情報はCAS所有の可変状態として `/data/vendor/maleicacid/cas/yakisoba_state` へ保存する。`maleicacid_cas_data_init` がpost-fs-dataで親ディレクトリとCAS用ディレクトリをmedia所有で作成し、`maleicacid_cas_data_file` のSELinux labelを適用する。CAS向けpolicyはこのディレクトリ内での状態ファイルの作成・読取り・更新・置換を許可する。ECM由来のKs、契約期限、rights bitmapはこの永続状態へ保存しない。状態内容と失敗時契約は [DESIGN_JA.md](DESIGN_JA.md) §6を正とする。
 
 `get_android_qcow2.sh`を使用するときは、取得manifestのtv revisionを検証対象のcommitへ合わせる。既定の `main` のままでは未マージのPRの実装は取得されない。`libyakisoba-cross`のSoong moduleが取得できることと、CAS package・credential・policyが製品へ入ることを個別に確認する。
 
@@ -62,6 +64,7 @@ token・参照寿命・失効時の契約は `DESIGN_JA.md`、TunerがCAS方式�
 - AOSP `FactoryLoader` がその探索ディレクトリからMaleicacid pluginを列挙・読込みでき、`createCasFactory()` を発見できることを確認する。
 - `yakisoba_only` ではpluginと内部adapterの依存関係、`libyakisoba` の静的リンクおよびシンボル解決を確認する。
 - Yakisoba credentialの実値がrepository・CI出力・公開artifactへ混入せず、product imageでは上位の製品統合設定が必要な主体だけに読取りを許可していることを確認する。
+- `maleicacid_cas_data_init` が `/data/vendor/maleicacid/cas` を作成し、EMM更新後のKw状態を `yakisoba_state` へ保存・再読込みできるowner/group/modeとSELinux labelが成立することを確認する。
 - Tuner HAL serviceへ`libmaleicacid_cas_key_client`が静的リンクされ、CAS plugin processとTuner HAL process間のvendor内部socketによる結合と、読取り専用共有領域・所有者終了通知用fdの受渡しがSELinux policyで許可されることを確認する。
 - CAS sessionのECM更新後に同じtokenでodd/even Ksが更新され、session close・CAS process喪失後のpacketで旧鍵が使用されないことを確認する。
 
