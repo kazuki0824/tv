@@ -83,13 +83,14 @@ jobs:
           cat > "$RUNNER_TEMP/cas-product.mk" <<'MAKE'
           TARGET_COPY_OUT_VENDOR := vendor
           include cas_plugin/config/product_integration.mk
+          .RECIPEPREFIX := >
           .PHONY: print
           print:
-          	@printf '%s\n' '$(sort $(PRODUCT_PACKAGES))' '$(strip $(PRODUCT_COPY_FILES))'
+          >@printf '%s\n' '$(sort $(PRODUCT_PACKAGES))' '$(strip $(PRODUCT_COPY_FILES))'
           MAKE
           cas_input=$(mktemp "$RUNNER_TEMP/cas-product-input.XXXXXX")
           cas_make=(make --no-print-directory -s -f "$RUNNER_TEMP/cas-product.mk")
-          cas_packages='com.android.hardware.cas fs_config_files libmaleicacid_b25_cas'
+          cas_packages='com.android.hardware.cas fs_config_files libmaleicacid_b25_cas maleicacid_cas_data_init'
           test "$("${cas_make[@]}")" = "$cas_packages"
           test "$("${cas_make[@]}" "MALEICACID_BCAS_KEYS_FILE=$cas_input")" = "$cas_packages"$'\n'"$cas_input:vendor/etc/maleicacid/bcas_keys"
           for cas_bad in "$cas_input.missing" "$cas_input $cas_input" "$cas_input*"; do
