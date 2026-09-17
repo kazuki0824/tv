@@ -252,7 +252,7 @@ VTS用静的XMLは手編集正本にせず、単一`VtsEnvironmentProfile`ファ
 5. 選択したAOSP Tuner VTS schemaで生成XMLを検証する。
 6. `../tuner_hal/DESIGN_JA.md` のfilename解決契約に従い、選択したVTS loaderとvariant入力からinstall先を一意に解決する。
 
-r52のdescrambling profileを導入する際は、手順2で同正本の「r52のCAS試験profile境界」を照合し、必要な試験側修正を含むartifactのsource/tag/commitを固定する。現行のexample profileと生成器がr52のCAS試験経路を実装済みであるとは扱わない。ClearKeyへの置換やXMLの手編集だけで不一致を補完しない。
+r52のdescrambling profileを導入する際は、手順2で同正本の「r52のCAS試験profile境界」を照合し、必要な試験側修正を含むartifactのsource/tag/commitを固定する。現行のprofile生成器がr52のCAS試験経路を実装済みであるとは扱わない。ClearKeyへの置換やXMLの手編集だけで不一致を補完しない。
 
 いずれかが失敗した場合は、推測値、既定PID、既定周波数、sample XML値、別profileへのfallbackで補完せず、VTS config artifactを成立させない。生成済みXMLを直接修正してvalidatorを迂回してはならない。
 

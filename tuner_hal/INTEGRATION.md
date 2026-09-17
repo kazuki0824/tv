@@ -47,8 +47,6 @@ PRODUCT_PACKAGES += \
     maleicacid_tuner_hal_ueventd_rc
 ```
 
-`.example.mk` は補助例として残っていても正式手順では参照しない。
-
 ### 1.2 BoardConfig / SELinux
 
 製品の BoardConfig 系ファイルで次を include する。
@@ -94,12 +92,6 @@ target product の vendor ueventd rc から、必ず次を import する。
 
 ```rc
 import /vendor/etc/ueventd.tuner_hal.rc
-```
-
-copy/paste 例は次に置く。
-
-```text
-config/ueventd.vendor.import.example.rc
 ```
 
 禁止事項:

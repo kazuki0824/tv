@@ -1,3 +1,7 @@
+# 不要な例示設定の削除
+
+- 正式な旧Tuner HAL組込み設定および組込み文書と重複していたmakefile、BoardConfig、ueventdの例示ファイルを削除した。
+
 # PR #108 px4 character device capability設計補正
 
 - px4_drvのcharacter deviceを存在だけでISDB-T/ISDB-S両対応とみなす設計を廃止し、driverの`system_cap`を公開capabilityの正本とした。
