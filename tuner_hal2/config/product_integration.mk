@@ -5,6 +5,11 @@ PRODUCT_PACKAGES += \
     maleicacid_tuner_hal2_ueventd_rc \
     fs_config_files
 
+# PackageManagerへTuner hardware featureを宣言し、TunerResourceManagerServiceと
+# framework Tuner APIの利用条件を成立させる。
+PRODUCT_COPY_FILES += \
+    frameworks/native/data/etc/android.hardware.tv.tuner.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.tv.tuner.xml
+
 # B25のMULTI2固定parameterは、このmakefileを継承する前に指定する。
 # 未指定時は配置しない。標準値やテスト用の代替入力を生成しない。
 # B1は別入力として扱い、B25値を流用しない。
