@@ -248,16 +248,18 @@ class TunerController(
         callOnController {
             casController?.setOnConnectionChanged(null)
             casController = controller
-            controller?.setOnConnectionChanged { generation, change ->
+            controller?.setOwnerDispatcher { action ->
                 try {
                     sectionExecutor.execute {
-                        if (released || casController !== controller) return@execute
-                        if (tuneAccepted && generation == tuneGeneration) {
-                            handleCasConnectionChangeOnController(change)
-                        }
+                        if (!released && casController === controller) action()
                     }
                 } catch (failure: RejectedExecutionException) {
                     if (!released) Log.w(LogTags.TIS, "MediaCas通知をcontrollerへ配送できません", failure)
+                }
+            }
+            controller?.setOnConnectionChanged { generation, change ->
+                if (!released && casController === controller && tuneAccepted && generation == tuneGeneration) {
+                    handleCasConnectionChangeOnController(change)
                 }
             }
         }
@@ -1173,6 +1175,25 @@ class TunerController(
                     },
                 )
             }
+        }
+
+    fun updateScanPmtFilters(
+        pmtPids: Set<TsPid>,
+        generation: Long,
+    ): Unit =
+        callOnController {
+            if (tuneAccepted && generation == tuneGeneration) {
+                updateDynamicSectionFiltersOnController(pmtPids, emptySet(), emptySet(), generation)
+            }
+        }
+
+    fun isServiceDescramblingReady(
+        serviceKey: ServiceKey,
+        generation: Long,
+    ): Boolean =
+        callOnController {
+            tuneAccepted && generation == tuneGeneration &&
+                casController?.isServiceDescramblingReady(serviceKey, generation) == true
         }
 
     private fun replaceDynamicPidSet(

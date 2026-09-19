@@ -428,7 +428,7 @@ class MaleicacidLiveSession(
     }
 
     private fun currentCasLinkageReady(): Boolean =
-        currentService?.let { casController.isServiceDescramblingReady(it, currentGeneration) } == true
+        currentService?.let { tunerController.isServiceDescramblingReady(it, currentGeneration) } == true
 
     private fun currentServicePolicy() =
         com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator

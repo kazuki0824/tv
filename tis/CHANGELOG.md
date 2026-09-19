@@ -1,3 +1,11 @@
+# PR #108 走査時CAS起動の除去と制御直列化の統合
+
+- setup scan、boot EPG sync、background maintenanceからCasController生成とMediaCas/Tuner Descrambler接続を除去し、CA descriptorとfree_CA_mode等の意味情報収集に必要なPMT filterだけを動的更新する経路へ分離した。走査中にECM/EMM filterやTRM CAS資源を確保しない。
+- CasControllerの専用executorと同期呼出しを除去し、live受信contextではCAS状態、tune generation、section filter、resource loss、DescramblerをTunerControllerの既存executorへ閉じ込めた。MediaCas Handlerからの通知だけを同executorへ非同期配送する。
+- 再生準備状態の参照をMaleicacidLiveSessionからTunerController経由へ統一し、CasControllerへ別の直列化境界を作らないようにした。
+- TIS設計のscan ownership、MediaCas/TRM接続条件、CAS close再試行、scan資源喪失処理を実装へ追従させた。新しいworker、CAS資源管理器、待機queue、公開APIは追加していない。
+- 検証は既存のTISホストCI、Robolectric、Kotlin品質検査で行う。Android/Soong全体、device atest、VTS、実機のTRM回収と放送受信は未実施。
+
 # PR #108 後続ECMで既存の鍵結合と再生を維持
 
 - `CasController.onEcmSection()`は通常のECM失敗で既存の成功状態を消さず、初回の未結合時だけ`setKeyToken()`を行うよう変更した。後続の正常ECMで再結合せず、既存のPID接続処理を維持した。
