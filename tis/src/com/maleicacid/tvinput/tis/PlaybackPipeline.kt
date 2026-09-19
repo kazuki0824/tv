@@ -1195,7 +1195,9 @@ class PlaybackPipeline(
                     commitCompatibilityVideoAvailability(generation, arm.armedAtNanoTime)
                 }
 
-                null -> Unit
+                null -> {
+                    Unit
+                }
             }
         }
     }
