@@ -923,6 +923,7 @@ class PlaybackPipeline(
         sync: MediaSync,
         generation: Long,
     ) {
+        if (sync !== mediaSync || generation != playbackGeneration) return
         val arm =
             AvailabilityArm(
                 generation = generation,
@@ -1183,9 +1184,19 @@ class PlaybackPipeline(
 
     fun simulateFirstFrameRenderedForTest(generation: Long) {
         enqueuePlaybackAction {
-            val sync = mediaSync ?: return@enqueuePlaybackAction
-            val armSequence = waitingAvailabilityArm?.armSequence ?: return@enqueuePlaybackAction
-            commitVideoAvailability(sync, generation, armSequence)
+            val arm = waitingAvailabilityArm ?: return@enqueuePlaybackAction
+            when (videoAvailabilityMode) {
+                VideoAvailabilityMode.MEDIA_SYNC_FINAL_OUTPUT_EXACT -> {
+                    val sync = mediaSync ?: return@enqueuePlaybackAction
+                    commitVideoAvailability(sync, generation, arm.armSequence)
+                }
+
+                VideoAvailabilityMode.MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT -> {
+                    commitCompatibilityVideoAvailability(generation, arm.armedAtNanoTime)
+                }
+
+                null -> Unit
+            }
         }
     }
 

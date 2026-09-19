@@ -2,16 +2,8 @@
 
 - MediaSyncがcurrent output Surfaceへの`queueBuffer()`に成功した最初のvideo frameを通知する、LineageOS 22.1向けの最小private拡張patchを復活した。late-drop、attach失敗、queue失敗では通知せず、one-shot armと`armSequence`だけを追加する。
 - TISはprivate listener型を静的参照せず、runtime reflectionで存在を確認して接続する。未パッチOS、解決失敗、登録失敗では公開`MediaCodec.OnFrameRenderedListener`へ戻るため、OS側patchはbuild・起動の必須条件ではない。
-- private経路ではMediaSync final-output成功、公開経路ではMediaSync input Surface到達という観測範囲を診断上区別する。世代、MediaSync instance、arm sequence、Surface、MediaSync errorの照合により遅延通知を拒否し、永続token集合や独自schedulerは追加しない。
+- private経路ではMediaSync final-output成功、公開経路ではMediaSync input Surface到達という観測範囲を診断上区別する。arm登録時と通知受理時に世代とMediaSync instanceを照合し、arm sequence、Surface、MediaSync errorも確認して遅延通知を拒否する。試験用通知も選択中の経路へ追従させ、永続token集合や独自schedulerは追加しない。
 - framework patchは任意の統合資産として保持し、適用する製品だけでtarget buildと実機確認を行う。未適用構成は既存host CIで公開API経路を検証する。
-
-# PR #108 MediaSync private拡張の除去
-
-- video availability通知を公開`MediaCodec.OnFrameRenderedListener`へ一本化し、Framework-private callback、runtime reflection、独自arm sequence、Exact/Compatibility二経路を除去した。
-- LineageOS向けframeworks/base・frameworks/av patchを削除し、製品統合にplatform改変を要求しない構成へ変更した。
-- callbackが証明する範囲をdecoderからMediaSync input surfaceへのrenderに限定し、MediaSync final outputやcompositor presentを表明しない設計へ修正した。
-- current codec、playback generation、arm開始時刻、Surface、MediaSync errorの既存照合は維持し、新しいworker、永続状態、公開APIは追加していない。
-- 検証は既存CIへ委ねる。
 
 # PR #108 走査時CAS起動の除去と制御直列化の統合
 

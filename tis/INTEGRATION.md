@@ -121,6 +121,7 @@ m AribContentRatings LiveTv
 ```
 
 TISは引き続き`TvInputManager.isRatingBlocked()`だけをcurrent policy authorityとして扱う。既存のblocked-rating永続化、PIN認証後のsession-level `onUnblockContent()`、通常年齢rating、第三者custom ratingの扱いは変更しない。
+
 ## 任意のMediaSync Exact-mode platform統合
 
 この節をLineageOS 22.1向けMediaSync platform patchを任意に適用する場合の手順と確認項目の正本とし、patch配下へ別のREADMEや重複手順書を置かない。
