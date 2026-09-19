@@ -202,7 +202,7 @@ install-device  compile済みVTS XMLをadb root/remount可能な試験端末の�
 
 `init` は実機接続を前提にしない。AOSP/VTS契約識別、対象backend/product、受信方式、明示入力または地域入力、要求するVTS flow、queue要求等、入力時点で確定できる値を対話的に取得し、未確定項目を架空値で埋めずにprofileを保存する。必要入力が揃っていないprofileは `../TUNER_HAL_DESIGN_JA.md` の `VTS-STATE-UNBOUND` 判定に従い、保存可能であっても静的VTS XMLをinstall可能とは扱わない。
 
-CLIと生成profileのtargetはproduct defaultである`tuner_hal2`に固定する。profile compiler、生成XML module、variant設定、vendor imageへの配置は`tuner_hal2`のproduct integrationだけへ接続し、旧`tuner_hal`の`profiles/`、`tools/render_vts_config.py`、`config/tuner_vts_config_*`、旧service packageを更新・参照・fallback先にしてはならない。旧`tuner_hal`に存在するprofile rendererは設計参考として読めても、このCLIの実行対象または生成先にはしない。
+CLIと生成profileのtargetはproduct defaultである`tuner_hal2`に固定する。profile compiler、生成XML module、variant設定、vendor imageへの配置は`tuner_hal2`のproduct integrationだけへ接続する。削除済みの旧`tuner_hal`にあった`profiles/`、`tools/render_vts_config.py`、`config/tuner_vts_config_*`、旧service packageを更新・参照・fallback先にしてはならず、現行treeにはそれらを設計参考または生成先として扱う経路を持たない。
 
 ここでいう`tuner_hal2`への反映は、`tuner_hal2`を被試験HALとするVTS構成を生成・配置することだけを意味する。`VtsEnvironmentProfile`をHAL serviceがruntime設定として読み込み、`CapabilitySnapshot`、frontend registry、backend probe結果、資源上限、公開API成功範囲を変更する経路は設けない。
 
