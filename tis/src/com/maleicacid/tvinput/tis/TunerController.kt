@@ -244,6 +244,8 @@ class TunerController(
     @Suppress("MaxLineLength")
     fun setSectionIngestController(controller: SectionIngestController?) = callOnController { sectionIngestController = controller }
 
+    // 所有者・世代・終了状態を同じ配送境界で照合し、無効なcallbackを入口で捨てる。
+    @Suppress("ComplexCondition")
     fun setCasController(controller: CasController?) =
         callOnController {
             casController?.setOnConnectionChanged(null)

@@ -357,7 +357,7 @@ class CasController(
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // 動的な引数列を既存の可変長APIへ渡すため、一時配列のコピーを許容する。
     // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
-    @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength", "SpreadOperator", "TooGenericExceptionCaught")
+    @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength", "ReturnCount", "SpreadOperator", "TooGenericExceptionCaught")
     internal fun updateFromCaMetadata(
         metadata: List<CaMetadata>,
         generation: Long = 0L,
@@ -535,7 +535,7 @@ class CasController(
     // 同じ入力に対する分岐・項目写像を保持し、処理分割による状態の受け渡しを増やさない。
     // 同じ入力と資源寿命を扱う手順を一続きに確認できる形に保つ。
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength")
+    @Suppress("CyclomaticComplexMethod", "LongMethod", "MaxLineLength", "NestedBlockDepth", "ReturnCount")
     fun onEcmSection(
         pid: TsPid,
         section: ByteArray,
@@ -619,7 +619,8 @@ class CasController(
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MaxLineLength")
+    // 無効化済みCASの後続処理を止めるガード節を、処理箇所から離さない。
+    @Suppress("MaxLineLength", "ReturnCount")
     fun onEmmSection(
         pid: TsPid,
         section: ByteArray,
