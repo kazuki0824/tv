@@ -1,3 +1,10 @@
+# PR #108 MediaSync private拡張の任意利用を復活
+
+- MediaSyncがcurrent output Surfaceへの`queueBuffer()`に成功した最初のvideo frameを通知する、LineageOS 22.1向けの最小private拡張patchを復活した。late-drop、attach失敗、queue失敗では通知せず、one-shot armと`armSequence`だけを追加する。
+- TISはprivate listener型を静的参照せず、runtime reflectionで存在を確認して接続する。未パッチOS、解決失敗、登録失敗では公開`MediaCodec.OnFrameRenderedListener`へ戻るため、OS側patchはbuild・起動の必須条件ではない。
+- private経路ではMediaSync final-output成功、公開経路ではMediaSync input Surface到達という観測範囲を診断上区別する。世代、MediaSync instance、arm sequence、Surface、MediaSync errorの照合により遅延通知を拒否し、永続token集合や独自schedulerは追加しない。
+- framework patchは任意の統合資産として保持し、適用する製品だけでtarget buildと実機確認を行う。未適用構成は既存host CIで公開API経路を検証する。
+
 # PR #108 MediaSync private拡張の除去
 
 - video availability通知を公開`MediaCodec.OnFrameRenderedListener`へ一本化し、Framework-private callback、runtime reflection、独自arm sequence、Exact/Compatibility二経路を除去した。
