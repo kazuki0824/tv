@@ -1,0 +1,61 @@
+name: CAS plugin C++ CI
+
+on:
+  pull_request:
+    paths:
+      - "cas_plugin/**"
+      - ".github/workflows/cas-plugin-ci.yml"
+  push:
+    branches: [main, feat/cas-impl]
+    paths:
+      - "cas_plugin/**"
+      - ".github/workflows/cas-plugin-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cas-plugin-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-tests:
+    name: C++ native tests (${{ matrix.mode }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [normal, sanitized]
+    env:
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: 無改変の依存ソースとAOSP headerを取得
+        run: |
+          CAS_TEST_WORK="$RUNNER_TEMP/maleicacid-cas"
+          printf 'CAS_TEST_WORK=%s\n' "$CAS_TEST_WORK" >> "$GITHUB_ENV"
+          bash cas_plugin/host_ci/prepare.sh "$CAS_TEST_WORK"
+      - name: C++本体とsocket結合試験を実行
+        env:
+          CAS_TEST_MODE: ${{ matrix.mode }}
+        run: |
+          options=()
+          if [[ "$CAS_TEST_MODE" == sanitized ]]; then
+            options+=(
+              'CXXFLAGS=-std=c++17 -Wall -Wextra -Werror -fPIC -pthread -O1 -g -fvisibility=hidden -fsanitize=address,undefined -fno-omit-frame-pointer'
+              'CC=gcc -fsanitize=address,undefined -fno-omit-frame-pointer'
+            )
+          fi
+          make -C cas_plugin test -j2 \
+            YAKISOBA_DIR="$CAS_TEST_WORK/libyakisoba" \
+            AOSP_HEADERS="$CAS_TEST_WORK/headers" \
+            BUILD_DIR="$CAS_TEST_WORK/build" \
+            "${options[@]}"
+      - name: pluginの公開symbolを確認
+        run: |
+          exported=$(nm -D --defined-only "$CAS_TEST_WORK/build/libmaleicacid_b25_cas.so" | awk '{print $3}')
+          test "$exported" = createCasFactory

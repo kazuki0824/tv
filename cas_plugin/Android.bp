@@ -1,0 +1,68 @@
+package {
+    default_applicable_licenses: ["maleicacid_b25_license"],
+}
+
+license {
+    name: "maleicacid_b25_license",
+    visibility: [":__subpackages__"],
+    license_kinds: ["SPDX-license-identifier-GPL-3.0-only"],
+    license_text: ["COPYING"],
+}
+
+cc_defaults {
+    name: "maleicacid_b25_defaults",
+    vendor: true,
+    cpp_std: "c++17",
+    cflags: ["-Wall", "-Wextra", "-Werror", "-fvisibility=hidden"],
+    cppflags: ["-fexceptions"],
+    local_include_dirs: ["include", "src"],
+    export_include_dirs: ["include"],
+}
+
+cc_defaults {
+    name: "maleicacid_b25_plugin_defaults",
+    defaults: ["maleicacid_b25_defaults"],
+    srcs: [
+        "src/CasPlugin.cpp",
+        "src/Section.cpp",
+        "src/YakisobaBackend.cpp",
+        "src/YakisobaState.cpp",
+        "src/KeyRegistry.cpp",
+        "src/KeyServer.cpp",
+        "src/KeySocket.cpp",
+    ],
+    static_libs: ["libyakisoba"],
+    shared_libs: ["libutils"],
+    header_libs: ["media_plugin_headers", "libstagefright_headers"],
+    ldflags: ["-Wl,--wrap=fopen"],
+}
+
+cc_library_shared {
+    name: "libmaleicacid_b25_cas",
+    defaults: ["maleicacid_b25_plugin_defaults"],
+    relative_install_path: "mediacas",
+    version_script: "exports.map",
+}
+
+// Tuner 内部へ静的リンクする読取り口。CAS plugin 本体を依存先にしない。
+cc_library_static {
+    name: "libmaleicacid_cas_key_client",
+    defaults: ["maleicacid_b25_defaults"],
+    srcs: ["src/KeyClient.cpp", "src/KeySocket.cpp"],
+}
+
+cc_test {
+    name: "maleicacid_b25_cas_test",
+    defaults: ["maleicacid_b25_plugin_defaults"],
+    srcs: ["src/KeyClient.cpp", "tests/CasTest.cpp"],
+    cflags: ["-DMALEICACID_CAS_TEST"],
+    test_suites: ["device-tests"],
+}
+
+cc_test {
+    name: "maleicacid_b25_state_test",
+    defaults: ["maleicacid_b25_defaults"],
+    srcs: ["src/YakisobaState.cpp", "tests/YakisobaStateTest.cpp"],
+    cflags: ["-DMALEICACID_CAS_TEST"],
+    test_suites: ["device-tests"],
+}
