@@ -1,3 +1,11 @@
+# PR #108 MediaSync private拡張の除去
+
+- video availability通知を公開`MediaCodec.OnFrameRenderedListener`へ一本化し、Framework-private callback、runtime reflection、独自arm sequence、Exact/Compatibility二経路を除去した。
+- LineageOS向けframeworks/base・frameworks/av patchを削除し、製品統合にplatform改変を要求しない構成へ変更した。
+- callbackが証明する範囲をdecoderからMediaSync input surfaceへのrenderに限定し、MediaSync final outputやcompositor presentを表明しない設計へ修正した。
+- current codec、playback generation、arm開始時刻、Surface、MediaSync errorの既存照合は維持し、新しいworker、永続状態、公開APIは追加していない。
+- 検証は既存CIへ委ねる。
+
 # PR #108 走査時CAS起動の除去と制御直列化の統合
 
 - setup scan、boot EPG sync、background maintenanceからCasController生成とMediaCas/Tuner Descrambler接続を除去し、CA descriptorとfree_CA_mode等の意味情報収集に必要なPMT filterだけを動的更新する経路へ分離した。走査中にECM/EMM filterやTRM CAS資源を確保しない。

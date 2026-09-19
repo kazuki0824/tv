@@ -88,8 +88,6 @@ class PlaybackPipeline(
     private var activeTuner: Tuner? = null
     private var activeSelection: TunerController.AvStreamSelection? = null
     private var waitingAvailabilityArm: AvailabilityArm? = null
-    private var nextAvailabilityArmSequence: Long = 1L
-    private var videoAvailabilityMode: VideoAvailabilityMode? = null
     private val ptsEpochCoordinator = PtsEpochCoordinator()
     private val outstandingAudioOutputs = linkedMapOf<Int, AudioOutput>()
     private var nextAudioBufferId = 1
@@ -102,11 +100,6 @@ class PlaybackPipeline(
     private val released = AtomicBoolean(false)
     private val resourceCleanup = ResourceCleanup()
     private var resourceActivityReported = false
-
-    private enum class VideoAvailabilityMode {
-        MEDIA_SYNC_FINAL_OUTPUT_EXACT,
-        MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT,
-    }
 
     enum class PlaybackUnavailableReason {
         SURFACE_DETACHED,
@@ -218,7 +211,6 @@ class PlaybackPipeline(
 
     private data class AvailabilityArm(
         val generation: Long,
-        val armSequence: Long,
         val armedAtNanoTime: Long,
     )
 
@@ -877,7 +869,6 @@ class PlaybackPipeline(
         runCatching {
             val sync = MediaSync()
             mediaSync = sync
-            nextAvailabilityArmSequence = 1L
             sync.setCallback(
                 object : MediaSync.Callback() {
                     override fun onAudioBufferConsumed(
@@ -910,82 +901,34 @@ class PlaybackPipeline(
             emitUnavailable(PlaybackUnavailableReason.VIDEO_CODEC_ERROR, error.message.orEmpty())
         }.getOrNull()
 
-    private fun allocateAvailabilityArmSequence(): Long {
-        val armSequence = nextAvailabilityArmSequence
-        check(armSequence > 0L && armSequence < Long.MAX_VALUE) { "MediaSync availability arm sequence exhausted" }
-        nextAvailabilityArmSequence = armSequence + 1L
-        return armSequence
-    }
-
-    // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
-    @Suppress("MaxLineLength")
     private fun armVideoAvailability(
         sync: MediaSync,
         generation: Long,
     ) {
+        if (sync !== mediaSync || generation != playbackGeneration) return
         val arm =
             AvailabilityArm(
                 generation = generation,
-                armSequence = allocateAvailabilityArmSequence(),
                 armedAtNanoTime = System.nanoTime(),
             )
         waitingAvailabilityArm = arm
         videoAvailableNotified.set(false)
-        val exactArmed =
-            MediaSyncFirstOutputBridge.isAvailable() &&
-                MediaSyncFirstOutputBridge.arm(
-                    sync = sync,
-                    armSequence = arm.armSequence,
-                    handler = codecCallbackHandler,
-                ) { callbackSync, armSequence ->
-                    enqueuePlaybackAction { commitVideoAvailability(callbackSync, generation, armSequence) }
-                }
-        videoAvailabilityMode =
-            if (exactArmed) {
-                VideoAvailabilityMode.MEDIA_SYNC_FINAL_OUTPUT_EXACT
-            } else {
-                VideoAvailabilityMode.MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT
-            }
-        Log.i(
-            LogTags.TIS,
-            "video availability mode=$videoAvailabilityMode inputId=$inputId generation=$generation armSequence=${arm.armSequence}",
-        )
+        Log.i(LogTags.TIS, "video availability armed inputId=$inputId generation=$generation")
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     @Suppress("MaxLineLength", "ReturnCount")
     private fun commitVideoAvailability(
-        sync: MediaSync,
-        generation: Long,
-        armSequence: Long,
-    ) {
-        if (videoAvailabilityMode != VideoAvailabilityMode.MEDIA_SYNC_FINAL_OUTPUT_EXACT) return
-        val arm = waitingAvailabilityArm ?: return
-        val invalidFinalOutputEvent =
-            sync !== mediaSync || generation != playbackGeneration || arm.generation != generation || arm.armSequence != armSequence ||
-                mediaSyncSurfaceFailed ||
-                surface?.isValid != true
-        if (invalidFinalOutputEvent) {
-            return
-        }
-        waitingAvailabilityArm = null
-        if (videoAvailableNotified.compareAndSet(false, true)) onVideoAvailable(generation)
-    }
-
-    // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
-    @Suppress("ReturnCount")
-    private fun commitCompatibilityVideoAvailability(
         generation: Long,
         frameNanoTime: Long,
     ) {
-        if (videoAvailabilityMode != VideoAvailabilityMode.MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT) return
         val arm = waitingAvailabilityArm ?: return
-        val invalidCompatibilityOutputEvent =
+        val invalidOutputEvent =
             generation != playbackGeneration || arm.generation != generation || frameNanoTime < arm.armedAtNanoTime ||
                 mediaSyncSurfaceFailed ||
                 surface?.isValid != true
-        if (invalidCompatibilityOutputEvent) {
+        if (invalidOutputEvent) {
             return
         }
         waitingAvailabilityArm = null
@@ -1183,9 +1126,8 @@ class PlaybackPipeline(
 
     fun simulateFirstFrameRenderedForTest(generation: Long) {
         enqueuePlaybackAction {
-            val sync = mediaSync ?: return@enqueuePlaybackAction
-            val armSequence = waitingAvailabilityArm?.armSequence ?: return@enqueuePlaybackAction
-            commitVideoAvailability(sync, generation, armSequence)
+            val arm = waitingAvailabilityArm ?: return@enqueuePlaybackAction
+            commitVideoAvailability(generation, arm.armedAtNanoTime)
         }
     }
 
@@ -1590,7 +1532,7 @@ class PlaybackPipeline(
                         ) {
                             return@enqueuePlaybackAction
                         }
-                        commitCompatibilityVideoAvailability(generation, nanoTime)
+                        commitVideoAvailability(generation, nanoTime)
                     }
                 },
                 codecCallbackHandler,
@@ -2712,7 +2654,6 @@ class PlaybackPipeline(
         releaseAudioTrack()
         mediaSyncStarted = false
         mediaSyncSurfaceFailed = false
-        videoAvailabilityMode = null
         videoInputQueued = false
         audioInputQueued =
             false
