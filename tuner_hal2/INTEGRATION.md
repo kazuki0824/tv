@@ -79,6 +79,16 @@ vintf_fragments: tuner_hal2/manifest/android.hardware.tv.tuner-service.maleicaci
 
 init rc は `android.hardware.tv.tuner.ITuner/default` を登録する。VINTF fragmentも `ITuner/default` だけを宣言する。
 
+Framework の `android.media.tv.tuner.Tuner` を利用可能にするには、HAL の VINTF 宣言とは別に PackageManager feature `android.hardware.tv.tuner` の宣言が必要である。`config/product_integration.mk` は AOSP の `frameworks/native/data/etc/android.hardware.tv.tuner.xml` を `/vendor/etc/permissions/android.hardware.tv.tuner.xml` へ配置し、起動後に PackageManager が同 feature を公開できる状態にする。この feature が欠落すると `TunerResourceManagerService` が公開されず、HAL service が存在していても framework の `Tuner` 生成は利用不能として失敗する。
+
+製品起動後は、少なくとも次が成立することを確認する。
+
+```text
+pm list features に feature:android.hardware.tv.tuner が存在する
+service list に tv_tuner_resource_mgr が存在する
+android.hardware.tv.tuner.ITuner/default が登録されている
+```
+
 ## 4.1 CAS descrambler依存
 
 `libmaleicacid_tuner_hal2_descrambler` は `libmaleicacid_cas_key_client` を静的リンクする。共通product入口からCAS pluginと標準MediaCasServiceも製品へ組み込み、CAS側のvendor sepolicyを共通BoardConfig入口から取り込む。Tuner HALだけを単独で配置した構成ではproduction tokenの鍵解決は成立しない。
