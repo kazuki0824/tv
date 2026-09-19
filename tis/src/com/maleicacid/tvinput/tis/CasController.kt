@@ -363,13 +363,7 @@ class CasController(
         generation: Long = 0L,
         createDescrambler: (() -> TunerDescramblerBridge)? = null,
     ): UpdateResult {
-        if (closed) {
-            return UpdateResult(
-                listOf(Diagnostic(State.CLOSED, ErrorCode.CLOSED, message = "CAS 制御は終了済みです")),
-                emptySet(),
-                emptySet(),
-            )
-        }
+        check(!closed) { "CasController は終了済みです" }
         if (terminalReceiveGeneration == generation) {
             return UpdateResult(listOf(lastDiagnostic), emptySet(), emptySet())
         }
