@@ -40,7 +40,8 @@ bool authorizedPeer(int fd, bool server) {
     // 同じ media UID を使う別 HAL を、鍵の読取り主体として認可しない。
     char label[256]{};
     size = sizeof(label);
-    if (getsockopt(fd, SOL_SOCKET, SO_PEERSEC, label, &size) || size == 0 || size >= sizeof(label)) {
+    if (getsockopt(fd, SOL_SOCKET, SO_PEERSEC, label, &size) || size == 0 ||
+        size >= static_cast<socklen_t>(sizeof(label))) {
         return false;
     }
     label[size] = '\0';

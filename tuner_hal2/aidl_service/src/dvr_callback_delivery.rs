@@ -428,17 +428,8 @@ fn consume_playback_dvr_once(
     handle: AidlObjectHandle,
 ) -> Result<(), HalError> {
     let runtime = context.runtime();
-    let events = {
-        let mut guard = runtime.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned while consuming playback DVR data",
-            )
-        })?;
-        let report =
-            guard.consume_playback_dvr_for_object(handle.object_id(), handle.generation())?;
-        guard.filter_event_delivery_snapshots_for_playback_report(&report)
-    };
+    let events = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::consume_playback_dvr_for_object(
+        &runtime, handle.object_id(), handle.generation())?;
     maleicacid_tuner_hal2_service_runtime::notify_filter_delivery_change(&runtime)?;
     let _recorded_failure = dispatch_filter_event_snapshots(context, events);
     Ok(())
