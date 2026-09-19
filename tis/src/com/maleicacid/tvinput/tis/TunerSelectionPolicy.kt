@@ -14,7 +14,7 @@ import com.maleicacid.tvinput.common.StreamSelectorType
 object TunerSelectionPolicy {
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
     @Suppress("MagicNumber")
-    private val videoStreamTypes = setOf(0x02, 0x1b)
+    private val videoStreamTypes = setOf(0x02, 0x1b, 0x24)
 
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
     @Suppress("MagicNumber")
@@ -253,14 +253,16 @@ object VideoTrackMetadataPolicy {
         val height: Int?,
     )
 
-    fun project(component: AribComponentEntry?): Projection {
-        val valid =
-            component?.takeIf { it.parseStatus.equals("OK", ignoreCase = true) }
-                ?: return Projection(null, null, null)
+    fun project(
+        component: AribComponentEntry?,
+        exact: PlaybackPipeline.VideoFormatInfo? = null,
+    ): Projection {
+        val valid = component?.takeIf { it.parseStatus.equals("OK", ignoreCase = true) }
+        val geometry = exact?.takeIf { it.width > 0 && it.height > 0 }
         return Projection(
-            description = valid.text?.takeIf { it.isNotBlank() },
-            width = null,
-            height = null,
+            description = valid?.text?.takeIf { it.isNotBlank() },
+            width = geometry?.width,
+            height = geometry?.height,
         )
     }
 }

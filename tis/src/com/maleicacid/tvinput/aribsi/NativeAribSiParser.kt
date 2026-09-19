@@ -256,6 +256,9 @@ class NativeAribSiParser : AutoCloseable {
     @Suppress("MagicNumber", "MaxLineLength")
     private fun parseNativeTransactionJson(raw: String): NativeTransaction {
         val root = JSONObject(raw.ifBlank { "{}" })
+        check(root.optInt("schemaVersion", -1) == SI_SNAPSHOT_SCHEMA_VERSION) {
+            "未対応のSI snapshot schemaVersion=${root.optInt("schemaVersion", -1)}"
+        }
         val serviceFacts = parseServiceSemanticFacts(root.optJSONArray("serviceSemanticFacts"))
         return NativeTransaction(
             collectionGeneration = root.getLong("collectionGeneration"),
@@ -1003,6 +1006,8 @@ class NativeAribSiParser : AutoCloseable {
     private external fun nativeDecodeAribStringDiagnosticSummary(bytes: ByteArray): String
 
     companion object {
+        private const val SI_SNAPSHOT_SCHEMA_VERSION = 1
+
         // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
         @Suppress("MagicNumber")
         private fun codecConfigBytes(

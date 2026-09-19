@@ -32,7 +32,7 @@ CAS HAL 仮実装は TIS 初回ビルド確認ゲートへ含めない。
 
 ## Treble partition / platform API 統合
 
-`MaleicacidTvInput` は、`DESIGN_JA.md` の MediaSync Framework-private final-output observation を正規製品で利用する platform-coupled component である。そのため `/product` へ配置せず、`system_ext_specific: true` かつ `platform_apis: true` の `/system_ext` priv-app として組み込む。MediaSyncの追加private listenerだけはstock LineageOSでも同一TISをbuild/runできるようruntime reflectionで解決して呼び出し、private listener経路が呼び出し可能な場合はExact modeを使う。API不存在、reflection解決失敗、登録setter呼出し失敗などを含めprivate listener経路を呼び出せない場合は、公開`MediaCodec.OnFrameRenderedListener`を型付きで使うCompatibility modeへfallbackする。その他のplatform APIをreflectionやHAL binder直呼びへ一般化してはならない。
+`MaleicacidTvInput` はTuner、TvProvider、privileged permissionを利用するplatform-coupled componentであるため、`/product`へ配置せず、`system_ext_specific: true`かつ`platform_apis: true`の`/system_ext` priv-appとして組み込む。MediaSyncの追加private listenerはstock LineageOSでも同一TISをbuild/runできるようruntime reflectionで解決して呼び出し、private listener経路が呼び出し可能な場合はExact modeを使う。API不存在、reflection解決失敗、登録setter呼出し失敗などを含めprivate listener経路を呼び出せない場合は、公開`MediaCodec.OnFrameRenderedListener`を型付きで使うCompatibility modeへ切り替える。このためMediaSyncのplatform patchは必須ではない。その他のplatform APIをreflectionやHAL binder直呼びへ一般化してはならない。
 
 `privapp-permissions-maleicacid-tvinput` は `MaleicacidTvInput` と同じ `/system_ext` に配置する。TIS専用の `libmaleicacid_arib_si_engine_jni` と `libmaleicacid_arib_caption_jni` も `system_ext_specific: true` とし、TISから `/product` 専用native moduleへ逆向き依存を作らない。TIS専用 `libaribcaption` variantを正式統合する場合も、TISのnative依存closureから利用可能なsystem/system_ext側variantとして閉じ、product-only private dependencyにしない。
 
@@ -121,11 +121,12 @@ m AribContentRatings LiveTv
 ```
 
 TISは引き続き`TvInputManager.isRatingBlocked()`だけをcurrent policy authorityとして扱う。既存のblocked-rating永続化、PIN認証後のsession-level `onUnblockContent()`、通常年齢rating、第三者custom ratingの扱いは変更しない。
-## MediaSync Exact-mode platform統合
 
-この節をLineageOS 22.1向けMediaSync platform patchの適用手順と確認項目の正本とし、patch配下へ別のREADMEや重複手順書を置かない。
+## 任意のMediaSync Exact-mode platform統合
 
-TISは追加private APIを静的参照しない。private listener経路を呼び出せるplatformではExact modeを使用し、API不存在、reflection解決失敗、登録setter呼出し失敗などにより呼び出せない場合は公開`MediaCodec.OnFrameRenderedListener`を使うCompatibility modeで動作する。正規製品で`DESIGN_JA.md`のfinal-output成功意味論を満たす場合は、次の既存2patchをLineageOS 22.1 platform treeへ適用してprivate listener経路を提供する。patch本文はTIS側runtime変更とは独立した再現可能なplatform統合差分として維持する。
+この節をLineageOS 22.1向けMediaSync platform patchを任意に適用する場合の手順と確認項目の正本とし、patch配下へ別のREADMEや重複手順書を置かない。
+
+TISは追加private APIを静的参照しない。private listener経路を呼び出せるplatformではExact modeを使用し、API不存在、reflection解決失敗、登録setter呼出し失敗などにより呼び出せない場合は公開`MediaCodec.OnFrameRenderedListener`を使うCompatibility modeで動作する。`DESIGN_JA.md`のfinal-output成功意味論が必要な製品だけ、次の2patchをLineageOS 22.1 platform treeへ適用してprivate listener経路を提供する。patchを適用しないOSでもTISのbuildと起動を可能にし、Compatibility modeで動作させる。patch本文はTIS側runtime変更とは独立した再現可能なplatform統合差分として維持する。
 
 ```text
 tis/platform_patches/lineage-22.1/frameworks_av_mediasync_first_output.patch
@@ -161,7 +162,7 @@ frameworks/base:
 
 追加callbackのlate-drop、`attachBuffer()` / `queueBuffer()`、one-shot arm、`armSequence`、mutex外配送などのruntime意味論は`DESIGN_JA.md`を正とし、本書では重複定義しない。public SDK、`@SystemApi`、`@TestApi`、Tuner AIDL/VINTFをこの統合のために変更しない。
 
-patch適用後は少なくとも次をtarget buildする。対象treeのmodule分割でmodule名が異なる場合は、`frameworks/base`のmedia JNI / framework Java、`frameworks/av`のMediaSync、TISを実際に再コンパイルする同等Soong targetを使用する。
+patch適用後は次のtargetをbuildする。対象treeのmodule分割でmodule名が異なる場合は、`frameworks/base`のmedia JNI / framework Java、`frameworks/av`のMediaSync、TISを実際に再コンパイルする同等Soong targetを使用する。
 
 ```bash
 m framework-minus-apex
@@ -169,7 +170,7 @@ m libstagefright
 m MaleicacidTvInput
 ```
 
-実機ではExact modeが選択されること、late-dropではavailabilityが成立しないこと、current final outputへのqueue成功で一回だけ通知されること、re-arm後の旧sequence eventが棄却されることを確認する。TIS host CIはstock APIでの静的compileとrepository内契約を確認するものであり、このplatform patchのJava/JNI/native型接続やnative実行時意味論を代替しない。未パッチplatformのCompatibility modeだけをもって正規製品のfinal-output意味論を確認済みとは扱わない。これらは未決設計ではなく製品統合・検証gateなので`future_work/r53`へ重複配置しない。
+patchを適用した構成の実機ではExact modeが選択されること、late-dropではavailabilityが成立しないこと、current final outputへのqueue成功で一回だけ通知されること、re-arm後の旧sequence eventが棄却されることを確認する。TIS host CIはstock APIでの静的compileとrepository内契約を確認するものであり、このplatform patchのJava/JNI/native型接続やnative実行時意味論を代替しない。未パッチplatformのCompatibility modeをfinal-output成功の確認結果として扱わない。これらは未決設計ではなく任意patchを採用する製品の統合・検証gateなので`future_work/r53`へ重複配置しない。
 
 ## flash 後の確認
 

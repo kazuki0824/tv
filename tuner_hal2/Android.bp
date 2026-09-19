@@ -634,6 +634,38 @@ rust_test {
 }
 
 rust_test {
+    name: "maleicacid_tuner_hal2_packet_path_test",
+    vendor: true,
+    crate_name: "maleicacid_tuner_hal2_packet_path_test",
+    crate_root: "service_runtime/src/packet_path_host_tests.rs",
+    srcs: [
+        "service_runtime/src/packet_path_host_tests.rs",
+        "service_runtime/src/descrambler_key_table.rs",
+        "service_runtime/src/descrambler_session.rs",
+        "service_runtime/src/diagnostics.rs",
+        "service_runtime/src/playback_consume_txn.rs",
+        "service_runtime/src/registry.rs",
+    ],
+    edition: "2021",
+    rustlibs: [
+        "libmaleicacid_tuner_hal2_common",
+        "libmaleicacid_tuner_hal2_domain_request",
+        "libmaleicacid_tuner_hal2_device",
+        "libmaleicacid_tuner_hal2_demux",
+        "libmaleicacid_tuner_hal2_descrambler",
+        "libmaleicacid_tuner_hal2_lnb",
+    ],
+    static_libs: ["libmaleicacid_tuner_hal2_fmq_shim_static"],
+    shared_libs: [
+        "libfmq", "libutils", "libcutils", "libbase", "libc++",
+        "libdmabufheap", "libhardware",
+        "android.hardware.common.fmq-V1-ndk", "android.hardware.common-V2-ndk",
+    ],
+    auto_gen_config: true,
+    test_suites: ["general-tests"],
+}
+
+rust_test {
     name: "maleicacid_tuner_hal2_binder_adapter_test",
     vendor: true,
     crate_name: "maleicacid_tuner_hal2_binder_adapter_test",

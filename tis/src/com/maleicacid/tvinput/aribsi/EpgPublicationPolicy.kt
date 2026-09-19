@@ -11,7 +11,14 @@ internal class EpgPublicationPolicy {
     )
 
     private var collection: Pair<Int, Long>? = null
-    private val observedBounds = linkedMapOf<ServiceKey, Pair<Long, Long>>()
+
+    private data class VersionBounds(
+        val version: Int,
+        val current: Pair<Long, Long>?,
+        val previous: Pair<Long, Long>?,
+    )
+
+    private val observedBounds = linkedMapOf<ServiceKey, VersionBounds>()
 
     fun project(
         profile: Int,
@@ -33,10 +40,15 @@ internal class EpgPublicationPolicy {
             val safe = deletionIsSafe(profile, instance, current, complete)
             val keys = current.filter(::preservesIdentity).map { identity(it) }.toSet()
             if (safe) authoritative[instance.serviceKey] = keys
-            val bounds = mergedBounds(profile, current, observedBounds[instance.serviceKey])
-            // 旧版の時刻は区間の端点にだけ使い、キー集合と削除権限は必ず現版から再計算する。
+            val observed = observedBounds[instance.serviceKey]
+            val currentBounds = mergedBounds(profile, current, null)
+            val previousBounds = if (observed?.version == instance.version) observed.previous else observed?.current
+            val bounds = mergedBounds(profile, current, previousBounds)
+            // 直前完成版だけを保持する。同じ版の再投影でもold/new区間を変えない。
+            if (complete) {
+                observedBounds[instance.serviceKey] = VersionBounds(instance.version, currentBounds, previousBounds)
+            }
             if (complete && bounds != null) {
-                observedBounds[instance.serviceKey] = bounds
                 windows +=
                     AribEpgUpdateWindow(
                         serviceKey = instance.serviceKey,

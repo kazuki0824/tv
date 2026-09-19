@@ -2,7 +2,7 @@
 
 ### 解析coreとTIS向け保存policyの境界
 
-本crateの`src/core/eit.rs`はEITのraw識別子・時刻状態・記述子・構文診断を解析し、`src/core/eit_instances.rs`が同一collectionの表ごとの受信事実を保持する。共通`SectionTracker`を用い、TIS固有の公開scope、永続キーの採用可否、旧Program保護、更新・削除区間は算出しない。`ServiceDiscoveryEngine` / `ServiceDiscoveryCollector`へEPG保存stateや公開gateを置かない。JNIは同じ放送事実をbulkで渡す。TISの公開判断の唯一のownerはKotlin `EpgPublicationPolicy` / `EpgSectionPolicy`であり、具体契約は`../tis/DESIGN_JA.md`の「TIS / EPG 公開境界」を正とする。
+本crateの`src/core/eit.rs`はEITのraw識別子・時刻状態・記述子・構文診断を解析し、`src/core/eit_instances.rs`が同一collectionの表ごとの受信事実を保持する。共通`SectionTracker`を用い、TIS固有の公開scope、永続キーの採用可否、旧Program保護、更新・削除区間は算出しない。`ServiceDiscoveryEngine` / `ServiceDiscoveryCollector`へEPG保存stateや公開gateを置かない。JNIは同じ放送事実をbulkで渡す。Rust→TISのbulk JSON境界は`schema/si_snapshot_v1.schema.json`を唯一のwire contractとし、`schemaVersion=1`を必須とする。互換性のない変更ではversionを更新し、TISは未対応versionを解釈しない。TISの公開判断の唯一のownerはKotlin `EpgPublicationPolicy` / `EpgSectionPolicy`であり、具体契約は`../tis/DESIGN_JA.md`の「TIS / EPG 公開境界」を正とする。
 
 両時刻未定義でもraw event_idを捨てない。JNIのidentity表現とprovider-dataのcanonical key生成は放送識別子の符号化に限定し、保存用identityへ採用するかを判断しない。
 

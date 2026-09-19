@@ -48,7 +48,18 @@ class AribRatingMapperTest {
     fun undefinedOrForeignRatingsDoNotInventAndroidRatings() {
         assertNull(AribRatingMapper.toTvContentRating(rating(0x00), AribRatingMapper.BroadcastProfile.BS_CS))
         assertNull(AribRatingMapper.toTvContentRating(rating(0x12, country = "USA"), AribRatingMapper.BroadcastProfile.BS_CS))
-        assertNull(AribRatingMapper.toTvContentRating(rating(0x0f), AribRatingMapper.BroadcastProfile.TERRESTRIAL))
+        assertNull(AribRatingMapper.toTvContentRating(rating(0x10), AribRatingMapper.BroadcastProfile.TERRESTRIAL))
+        assertNull(AribRatingMapper.toTvContentRating(rating(0x0f), AribRatingMapper.BroadcastProfile.UNRESOLVED))
+    }
+
+    @Test fun terrestrialAgesUseTheSameAndroidDomainWithoutSatelliteExtension() {
+        for (raw in 1..15) {
+            assertEquals(
+                TvContentRating.createRating("com.android.tv", "ISDB", "ISDB_${raw + 3}"),
+                AribRatingMapper.toTvContentRating(rating(raw), AribRatingMapper.BroadcastProfile.TERRESTRIAL),
+            )
+        }
+        assertNull(AribRatingMapper.toTvContentRating(rating(0x11), AribRatingMapper.BroadcastProfile.TERRESTRIAL))
     }
 
     private fun rating(

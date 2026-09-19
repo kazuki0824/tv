@@ -244,10 +244,46 @@ class TunerController(
     @Suppress("MaxLineLength")
     fun setSectionIngestController(controller: SectionIngestController?) = callOnController { sectionIngestController = controller }
 
+    // 所有者・世代・終了状態を同じ配送境界で照合し、無効なcallbackを入口で捨てる。
+    @Suppress("ComplexCondition")
     fun setCasController(controller: CasController?) =
         callOnController {
+            casController?.setOnConnectionChanged(null)
             casController = controller
+            controller?.setOwnerDispatcher { action ->
+                try {
+                    sectionExecutor.execute {
+                        if (!released && casController === controller) action()
+                    }
+                } catch (failure: RejectedExecutionException) {
+                    if (!released) Log.w(LogTags.TIS, "MediaCas通知をcontrollerへ配送できません", failure)
+                }
+            }
+            controller?.setOnConnectionChanged { generation, change ->
+                if (!released && casController === controller && tuneAccepted && generation == tuneGeneration) {
+                    handleCasConnectionChangeOnController(change)
+                }
+            }
         }
+
+    // 各解放処理の例外を診断へ残し、通知後も既存controllerで解放の再試行を受け付ける。
+    @Suppress("TooGenericExceptionCaught")
+    private fun handleCasConnectionChangeOnController(change: CasController.ConnectionChange) {
+        val refresh =
+            when (change) {
+                CasController.ConnectionChange.READY, CasController.ConnectionChange.KEY_STATE_CHANGED -> true
+                else -> false
+            }
+        if (refresh) {
+            onSectionIngestedCallback?.invoke()
+            return
+        }
+        try {
+            finishUnavailableCasOnController(listOfNotNull(casController?.lastDiagnostic()))
+        } catch (failure: Exception) {
+            Log.w(LogTags.TIS, "MediaCas資源喪失の後処理に失敗しました generation=$tuneGeneration", failure)
+        }
+    }
 
     @Suppress("MaxLineLength")
     fun setOnSectionIngestedCallback(callback: (() -> Unit)?) = callOnController { onSectionIngestedCallback = callback }
@@ -295,7 +331,7 @@ class TunerController(
                         { playbackPipeline.stop() },
                         { cancelStreamIdDiscoveryOnController() },
                         { closeSectionFiltersOnController() },
-                        { casController?.clearForResourceLoss() },
+                        { casController?.onTunerResourcesReclaimed() },
                         {
                             SectionFilterPolicy.completeCleanup(
                                 *captionFactParsers.entries
@@ -1121,6 +1157,7 @@ class TunerController(
                             }
                         controller.updateFromCaMetadata(
                             acceptedMetadata,
+                            generation,
                             if (needsDescrambler) ({ DirectTunerDescramblerBridge(tuner) }) else null,
                         )
                     },
@@ -1140,6 +1177,25 @@ class TunerController(
                     },
                 )
             }
+        }
+
+    fun updateScanPmtFilters(
+        pmtPids: Set<TsPid>,
+        generation: Long,
+    ): Unit =
+        callOnController {
+            if (tuneAccepted && generation == tuneGeneration) {
+                updateDynamicSectionFiltersOnController(pmtPids, emptySet(), emptySet(), generation)
+            }
+        }
+
+    fun isServiceDescramblingReady(
+        serviceKey: ServiceKey,
+        generation: Long,
+    ): Boolean =
+        callOnController {
+            tuneAccepted && generation == tuneGeneration &&
+                casController?.isServiceDescramblingReady(serviceKey, generation) == true
         }
 
     private fun replaceDynamicPidSet(
@@ -1227,16 +1283,38 @@ class TunerController(
                 onSectionIngestedCallback?.invoke()
                 startPlaybackIfStreamsKnown()
             },
-            onEcm = {
-                val diagnostics = casController?.onEcmSection(pid, section).orEmpty()
-                diagnostics.forEach { Log.w(LogTags.TIS, "ECM 処理診断 $it") }
-                if (diagnostics.any { it.state == CasController.State.ERROR }) {
-                    playbackPipeline.reportUnavailable(PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY, diagnostics.joinToString())
-                }
-            },
+            onEcm = { handleEcmSectionOnController(pid, section) },
             onEmm = {
                 val diagnostics = casController?.onEmmSection(pid, section).orEmpty()
                 diagnostics.forEach { Log.w(LogTags.TIS, "EMM 処理診断 $it") }
+                if (diagnostics.any { it.errorCode == CasController.ErrorCode.MEDIA_CAS_INVALIDATED }) {
+                    finishUnavailableCasOnController(diagnostics)
+                }
+            },
+        )
+    }
+
+    private fun handleEcmSectionOnController(
+        pid: TsPid,
+        section: ByteArray,
+    ) {
+        val diagnostics = casController?.onEcmSection(pid, section).orEmpty()
+        diagnostics.forEach { Log.w(LogTags.TIS, "ECM 処理診断 $it") }
+        if (diagnostics.any { it.errorCode == CasController.ErrorCode.MEDIA_CAS_INVALIDATED }) {
+            finishUnavailableCasOnController(diagnostics)
+        }
+    }
+
+    private fun finishUnavailableCasOnController(diagnostics: List<CasController.Diagnostic>) {
+        val pmtPids = dynamicPmtPids.toSet()
+        SectionFilterPolicy.completeCleanup(
+            { casController?.clearForResourceLoss() },
+            { updateDynamicSectionFiltersOnController(pmtPids, emptySet(), emptySet()) },
+            {
+                playbackPipeline.stopAndReportUnavailable(
+                    PlaybackPipeline.PlaybackUnavailableReason.CAS_NO_KEY,
+                    diagnostics.joinToString(),
+                )
             },
         )
     }
@@ -1289,7 +1367,8 @@ class TunerController(
                     it.elementaryPid == track.pid &&
                         TunerSelectionPolicy.isCaptionStream(it)
                 }
-            }
+            } ?: TunerSelectionPolicy.selectCaption(streams, defaultComponentGroupTags)
+        // management受信のPES filterは言語track広告と分離し、未受信でも既存parserへ配送する。
         val superimpose = TunerSelectionPolicy.selectSuperimpose(streams, defaultComponentGroupTags)
         return AvStreamSelection(
             serviceKey,
@@ -1345,39 +1424,22 @@ class TunerController(
         buildList {
             TunerSelectionPolicy.orderedCaptionStreams(streams, defaultComponentGroupTags).forEach { stream ->
                 val languages = captionLanguagesByPid[stream.elementaryPid].orEmpty()
-                if (languages.isEmpty()) {
+                languages.filter { it.languageTag in 0..1 }.forEach { language ->
+                    val languageId = language.languageTag + 1
                     add(
                         TisTrack(
-                            TunerSelectionPolicy.trackIdForSubtitle(stream, 1),
+                            TunerSelectionPolicy.trackIdForSubtitle(stream, languageId),
                             android.media.tv.TvTrackInfo.TYPE_SUBTITLE,
                             stream.elementaryPid,
                             stream.streamType,
                             stream.componentTag,
                             stream.componentType,
-                            null,
+                            language.iso639LanguageCode,
                             stream.dataComponentId,
                             TunerSelectionPolicy.captionKind(stream),
-                            1,
+                            languageId,
                         ),
                     )
-                } else {
-                    languages.filter { it.languageTag in 0..1 }.forEach { language ->
-                        val languageId = language.languageTag + 1
-                        add(
-                            TisTrack(
-                                TunerSelectionPolicy.trackIdForSubtitle(stream, languageId),
-                                android.media.tv.TvTrackInfo.TYPE_SUBTITLE,
-                                stream.elementaryPid,
-                                stream.streamType,
-                                stream.componentTag,
-                                stream.componentType,
-                                language.iso639LanguageCode,
-                                stream.dataComponentId,
-                                TunerSelectionPolicy.captionKind(stream),
-                                languageId,
-                            ),
-                        )
-                    }
                 }
             }
         }
@@ -1391,7 +1453,7 @@ class TunerController(
                 captionLanguagesByPid[stream.elementaryPid]
                     .orEmpty()
                     .filter { it.languageTag in 0..1 }
-                    .minByOrNull { it.languageTag }
+                    .minByOrNull { it.languageTag } ?: return@let null
             TisTrack(
                 TunerSelectionPolicy.trackIdForSuperimpose(stream),
                 android.media.tv.TvTrackInfo.TYPE_SUBTITLE,
@@ -1399,24 +1461,34 @@ class TunerController(
                 stream.streamType,
                 stream.componentTag,
                 stream.componentType,
-                language?.iso639LanguageCode,
+                language.iso639LanguageCode,
                 stream.dataComponentId,
                 "superimpose",
-                language?.languageTag?.plus(1) ?: 1,
-                language?.automaticPresentationOnReception ?: stream.automaticPresentationOnReception,
+                language.languageTag + 1,
+                language.automaticPresentationOnReception,
             )
         }
 
     @Suppress("ReturnCount")
-    fun startPlayback(selection: AvStreamSelection): PlaybackPipeline.StartResult? {
-        val channel = currentTune ?: return null
-        val tunerInstance = tuner ?: return null
-        superimposeTimingByPid.clear()
-        selection.superimpose?.let { stream ->
-            stream.captionTiming?.let { timing -> superimposeTimingByPid[stream.elementaryPid] = timing }
+    fun startPlayback(
+        selection: AvStreamSelection,
+        requiresCas: Boolean = false,
+        generation: Long = tuneGeneration,
+    ): PlaybackPipeline.StartResult? =
+        callOnController {
+            if (!tuneAccepted || generation != tuneGeneration) return@callOnController null
+            val channel = currentTune ?: return@callOnController null
+            val tunerInstance = tuner ?: return@callOnController null
+            if (channel.serviceKey != selection.serviceKey) return@callOnController null
+            if (requiresCas && casController?.isServiceDescramblingReady(selection.serviceKey, generation) != true) {
+                return@callOnController null
+            }
+            superimposeTimingByPid.clear()
+            selection.superimpose?.let { stream ->
+                stream.captionTiming?.let { timing -> superimposeTimingByPid[stream.elementaryPid] = timing }
+            }
+            playbackPipeline.start(tunerInstance, channel, selection)
         }
-        return playbackPipeline.start(tunerInstance, channel, selection)
-    }
 
     fun setOnSubtitleContinuityLostCallback(callback: (Long, String) -> Unit) {
         playbackPipeline.setOnSubtitleContinuityLostCallback { generation, trackId ->

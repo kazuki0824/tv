@@ -1,3 +1,149 @@
+# PR #108 MediaSync private拡張の任意利用を復活
+
+- MediaSyncがcurrent output Surfaceへの`queueBuffer()`に成功した最初のvideo frameを通知する、LineageOS 22.1向けの最小private拡張patchを復活した。late-drop、attach失敗、queue失敗では通知せず、one-shot armと`armSequence`だけを追加する。
+- TISはprivate listener型を静的参照せず、runtime reflectionで存在を確認して接続する。未パッチOS、解決失敗、登録失敗では公開`MediaCodec.OnFrameRenderedListener`へ戻るため、OS側patchはbuild・起動の必須条件ではない。
+- private経路ではMediaSync final-output成功、公開経路ではMediaSync input Surface到達という観測範囲を診断上区別する。arm登録時と通知受理時に世代とMediaSync instanceを照合し、arm sequence、Surface、MediaSync errorも確認して遅延通知を拒否する。試験用通知も選択中の経路へ追従させ、永続token集合や独自schedulerは追加しない。
+- framework patchは任意の統合資産として保持し、適用する製品だけでtarget buildと実機確認を行う。未適用構成は既存host CIで公開API経路を検証する。
+
+# PR #108 走査時CAS起動の除去と制御直列化の統合
+
+- setup scan、boot EPG sync、background maintenanceからCasController生成とMediaCas/Tuner Descrambler接続を除去し、CA descriptorとfree_CA_mode等の意味情報収集に必要なPMT filterだけを動的更新する経路へ分離した。走査中にECM/EMM filterやTRM CAS資源を確保しない。
+- CasControllerの専用executorと同期呼出しを除去し、live受信contextではCAS状態、tune generation、section filter、resource loss、DescramblerをTunerControllerの既存executorへ閉じ込めた。MediaCas Handlerからの通知だけを同executorへ非同期配送する。
+- 再生準備状態の参照をMaleicacidLiveSessionからTunerController経由へ統一し、CasControllerへ別の直列化境界を作らないようにした。
+- TIS設計のscan ownership、MediaCas/TRM接続条件、CAS close再試行、scan資源喪失処理を実装へ追従させた。新しいworker、CAS資源管理器、待機queue、公開APIは追加していない。
+- 検証は既存のTISホストCI、Robolectric、Kotlin品質検査で行う。Android/Soong全体、device atest、VTS、実機のTRM回収と放送受信は未実施。
+
+# PR #108 後続ECMで既存の鍵結合と再生を維持
+
+- `CasController.onEcmSection()`は通常のECM失敗で既存の成功状態を消さず、初回の未結合時だけ`setKeyToken()`を行うよう変更した。後続の正常ECMで再結合せず、既存のPID接続処理を維持した。
+- `TunerController`は通常のECM診断だけで再生を停止しない。初回の開始条件と、MediaCas無効化・資源喪失・退役時の既存の停止経路は維持した。
+- TIS設計へ初回結合と後続ECMの扱いを正本化した。既存のセッション試験を結合回数1回へ変更した。既存のホスト再生準備試験で初回ECM失敗・後続失敗・再結合の不実行を確認し、初回結合失敗・資源喪失後の利用不可も維持した。試験数は増やしていない。
+- 検証は既存のTISホストCIとRobolectricで行う。Android/Soong全体、atest、VTS、実機確認は未実施。
+
+# PR #108 ECM失敗直後の復旧で同じ再生署名を再開
+
+ECM失敗はpipelineを停止するため、SessionもCAS unavailable受理時にStoppedへ遷移する。失敗と復旧が近接し、後続の再評価が復旧後のcurrent linkageを観測した場合でも、停止済みpipelineをStartedの署名一致で省略しない。旧generationの通知拒否は既存入口のまま維持する。TisReviewBoundaryTestで実Sessionへ旧/現世代のCAS unavailableを投入し、現世代だけがStoppedへ変わり同じ署名を再開可能になることを確認する。新しいretry状態・timer・通知APIは追加せず、既存playback lifecycleの停止事実を補完する。追加1試験でhost期待件数を284件とし、クラス数は38/35のままとする。
+
+確認結果: 90c3b5eの全283件を含む5 workflowは成功。本追補の変更Kotlinコンパイル、関連61試験、ktlint/detektと差分検査も成功。全284件はpush後のCIで再確認する。実画面出力・CAS backendとの実復号・Soong/device atest/実機VTSは未実施。
+
+# PR #108 video source identityとCASライブ開始条件の補完
+
+- video trackの実画素寸法を、現在のplayback generationだけでなく、既存AvPlaybackSignatureのservice/PID/stream_type/decoder構成と照合する。同じgeneration中にPMTが別PIDへ変わり、tracks更新が再起動より先に実行されても旧ESの寸法を広告しない。同service内の別video trackにも流用しない。新しいgeneration台帳や推定geometryは追加していない。
+- 放送事実から得るclearLivePlaybackStaticallyEligibleは従来の静的判定として維持し、既存ServicePolicyDecisionへcurrent CAS linkageを入力するlivePlaybackEligibleを追加した。CA解決済み・登録適格が前提で、CAS必須serviceは実linkage成立時だけ再生を許す。placeholder一律拒否を除き、metadata更新後と再生開始時に同じ判断を使う。保存済みProvider policyは参照しない。
+- CAS利用可否はCasControllerの既存session所有から都度算出する。同世代・current配送bindingの各sessionについて、最新ECM成功、token結合、全必要ES PIDのadd成功を要求する。物理token所有はECM失敗時もVOID/close完了まで残るため、最新ECMの成功状態とは区別する。metadata再投影だけでECM失敗を成功へ戻さない。診断専用token、未結合、複数sessionの一部未成立、退役・資源喪失は利用可能にしない。
+- ECM処理で利用可能service集合が変わったときだけ既存の世代付きCAS通知からSession再評価へ進む。通常ECM反復で再起動せず、SI parserへの投入やSI ingest sequence更新もしない。ECM失敗は既存pipelineを停止してCAS unavailableを通知し、PMT/SIとECM再取得の経路を維持する。Tuner開始直前にも既存controller executorでtune generation・service・CAS結合を照合し、既存clear ES/block-model/first-output経路へ進む。
+
+| 反例 | 試験・確認 |
+|---|---|
+| 同一世代AVC PID A→B、同serviceの複数video、同PID構成変更 | TisReviewBoundaryTest: 実Sessionのtrack投影helperへPMT更新順序を入力し、旧geometryの非広告と新世代実値を確認 |
+| 静的clear条件だけでCAS必須serviceを常時拒否 | TisReviewBoundaryTest: current linkageによる許可、CA未解決/登録不適格/placeholderの拒否 |
+| ECM成立前・一部session/PIDだけ成立、token拒否 | CasPlaybackReadinessTest: 実Framework adapter→CasController→Descrambler、全session/PIDの成立待ち |
+| ECM失敗をmetadata再投影で消去、通常ECMごとの再通知 | CasPlaybackReadinessTest: 失敗保持・復旧時だけ通知・旧世代/別service拒否・VOID清掃 |
+| token成立後もpipelineへ到達しない | PlaybackFailureCallbacksTest: 実CAS通知→Tuner再評価→既存pipeline開始まで実行。token前/旧世代/解放後は開始せず、token後は通常pipelineのSURFACE_NOT_SETまで到達する |
+
+追加6試験に合わせ、host CIは283件・検出38/実行35クラスとした。新しい検査抑止は追加していない。ECM失敗時の停止処理が長くなったため、同じTunerController内のECM配送処理だけをprivate helperへ移した。資源owner・公開CAS API・別player・第二の鍵経路は追加していない。
+
+検証結果: Android 15入力によるproduction/全試験Kotlinのhostコンパイル、関連6クラス60試験、変更Kotlinのktlint/detekt、差分検査が成功。host全283件はpush後の実SI JNI付きCIで確認する。Soong、device atest、実機VTS、実TRM回収、実画面への出力、CAS backendとの実復号結合は未実施。TISの開始条件を接続した結果をCAS plugin本体・本番Ks共有の完成やr52全体100%一致、CDD/ARIB全面適合の証拠とは扱わない。
+
+# PR #108 HEVCの旧受入試験期待値の追従
+
+73b32a5のhost全277件を実行した結果、HEVC metadataと再生可否の分離を検証する既存試験にr51のselection拒否期待値が1箇所残っていた。r51限定のmetadata判定とProviderへ再生可否を混入しない検証は維持し、r52のgeneric selectionはHEVCを選ぶ期待値へ訂正した。production変更・試験削除・件数変更はない。初回CIの失敗はこの1件のみで、追加したEPG v1→v2→v3の回帰を含む残り276件は成功。変更試験のhost再コンパイルが成功。単独実行はローカルにRust SI JNI libraryがないため起動できず、実JNIをbuildする全277件のCIで再確認する。
+
+# PR #108 TIS全面監査の9指摘への実装追従
+
+- CAS初期化失敗とMediaCas回収でTuner受信そのものを失効する前回実装を訂正した。CasControllerのCAS世代失効は維持し、既存のCAS利用不能cleanupからECM/EMMと再生だけを停止する。PMT/SIとTuner受信は維持し、Tuner資源喪失通知は実際のTuner回収経路だけから発行する。
+- 地上波JPNのraw 1..15を既存ISDB年齢domainへ写像する。16/17の衛星拡張、例外値、未解決profile、未対応countryを区別し、同じMapperをProgramとlive判断で使う。
+- caption management未受信時の言語track生成を除き、受信したlanguage_tag 0/1だけを広告する。PESによるmanagement収集は言語trackの公開前から維持し、既存のPES callbackからtracksを更新する。superimposeも未受信時のlanguage ID補完を除いた。
+- EPG削除windowの境界を直前完成版と現版だけから作る。同じ版の再投影では同じold/new区間を保持し、過去にunionした区間を次版へ累積させない。
+- SetupActivityが使うisOwnInputIdを既存の一意解決結果との比較へ統合し、複数登録時のcandidate一致を受理しない。
+- parental query失敗でALLOWEDを保持する操作からvideo availability通知を除いた。許可状態のまま再生開始を進められる一方、available通知は既存first-output callback内の判断だけに残した。
+- 現世代のcodec header / decoder outputの画素寸法をvideo track投影へ渡し、既存signature比較で再通知する。decoder cropの全項目・範囲を検査し、不正値、旧世代、別codecの値からgeometryを作らない。
+- HEVCのselection、MIME、Tuner AV subtype、有限header probe・startup/steady予算、VPS/SPS/PPS CSDを既存block-model decoder経路へ接続した。共通のdecoder capability照合・MediaSync first-output・unsupported診断を使用する。実装と13試験・実header fixtureはPR #57の659622cから対象部分を照合して採用し、現ブランチのCAS回収後処理を維持した。AVCとHEVCのbit readerは既存処理を共通化し、通常ES/AUのcopyや再構成は追加しない。
+- managed MediaCasのECM成功後に標準session IDを既存TunerKeyTokenへ渡し、CasController所有のDescramblerへ結合する。ECM失敗、VOID予約値、空/長過ぎるIDを成功tokenにせず、診断専用接続は引き続きDiagnosticOnlyとする。
+
+検証の対応:
+
+| 反例 / 契約 | 実行する証拠 |
+|---|---|
+| CAS失敗でSIまで停止、Tuner喪失へ誤分類 | PlaybackFailureCallbacksTest: 初期化失敗/MediaCas回収の双方でPMT/EIT維持、Tuner通知なし、再生停止、解放再試行 |
+| 地上波ratingの消失 | AribRatingMapperTest: raw 1..15、衛星拡張との分離、未解決profile |
+| 未受信/未対応字幕言語の広告 | TisReviewBoundaryTest: 空、tag 2/7、tag 0/1、management消失、広告前のPES収集 |
+| 全履歴へ広がるEPG削除区間 | TisR51FixedPlanAcceptanceTest: v1→v2→v3、同版の重複投影、既存の未完成版/収集世代reset試験 |
+| 複数inputIdでもsetup開始 | TisReviewBoundaryTest: 実ResolverへFramework登録0/1/2件と別candidateを入力 |
+| parental許可保持だけでavailable | TisReviewBoundaryTest: query失敗後のIdleを保持し通知経路へ進まない |
+| video trackのgeometry欠落/推測 | TisReviewBoundaryTest: 未取得、実寸1440x1080、decoder crop、0/負値/範囲外 |
+| HEVCを一律拒否、欠落/不正headerで起動 | HevcPlaybackTestと既存selection試験: 実VPS/SPS/PPS、CSD、分割受信、crop、切断・予約値・不正escape |
+| ECM未成立/不正IDでtoken結合 | FrameworkCasCloseTest: 実adapter→CasController→Descrambler、ECM失敗、VOID/空/17-byte ID |
+
+追加21試験に合わせ、CI期待件数を277件、検出/実行クラス数を37/34へ更新した。新しいTooManyFunctions抑制は試験クラス2箇所のみ（採用元のHevcPlaybackTestとPlaybackFailureCallbacksTest）。独立したシナリオを同じ対象/fixtureで検証し、関数数だけを理由にfixtureや所有を複製しないためで、各宣言に理由を記載している。production側の抑止追加はない。
+
+確認結果: productionと全試験KotlinのAndroid 15入力によるhostコンパイルが成功。CasControllerSessionTest / CasControllerStateTest / FrameworkCasCloseTest / PlaybackFailureCallbacksTest / TisReviewBoundaryTest / HevcPlaybackTest / AribRatingMapperTestの関連71件が成功し、変更Kotlinのktlint・detektと差分検査も成功した。EPGの追加回帰試験を含むhost全277件はpush時点では未実行であり、Rust JNIを含むCIで確認する。Android/Soong build、device atest、実機VTS、実TRMのpriority回収、実機HEVC再生、CAS backendとの実復号結合は未実施。TISの標準session ID受け渡しを実装したことを、CAS plugin本体・本番鍵共有・r52全体の完成とは扱わない。
+
+# PR #108 TRM対応MediaCas接続と資源回収の実装
+
+- Live/scanの既存受信contextからservice Context・framework session ID（scanはnull）・既存用途priorityを渡す。既存main Looperでlistener付きMediaCasを構築し、TRM不在・登録失敗時に診断用constructorへfallbackしない。製品接続はLIVE/MULTI2のtyped sessionを生成する。
+- CasControllerのplugin所有へ初期化状態と受信世代を加え、Frameworkの初回容量反映後callbackから現在のmetadataで再開する。5秒の単調時計期限、非正容量・無通知・構築失敗を失敗へ確定し、重複・旧instance・期限後の通知による復活を防ぐ。構築中の取消しでも元のownerを保持して遅延結果を閉じる。
+- MediaCas回収時に配送indexと受信世代を失効し、既存TunerControllerから再生・filterを停止して元の世代へ通知する。Frameworkがclose済みのsessionへVOIDやSession.closeを再実行せず、残存Descrambler、MediaCasの順に解放する。独立cleanupを最後まで試し、失敗所有は既存の再試行経路に残す。
+- 初期容量待ち・期限・失効・旧owner・遅延構築・別controller独立性・回収時cleanup再試行を7件、typed API選択を1件、実TunerControllerへの回収通知から受信停止・失敗cleanup再試行を1件追加した。CI期待件数は247から256へ更新し、検出35クラス／実行32クラスの条件を維持する。
+- 所有を別台帳へ分散させないためCasControllerだけにLargeClass抑制を追加し、全cleanup失敗を診断しcontrollerを存続させる通知処理だけにTooGenericExceptionCaught抑制を付した。各理由は宣言にも記載する。新しい容量調停器・専用worker・CAS plugin通知APIは追加しない。
+
+確認結果（本変更のTIS接続・寿命管理に限定）:
+
+| 既知NG / 反例 | 処理経路と証拠 | 結果 / 未分類 |
+|---|---|---|
+| 容量通知前のopen、重複・旧owner・期限後の復活 | `CasControllerSessionTest`の初期容量・期限・取消し・遅延構築試験 | OK / なし |
+| 型なしsessionへの誤接続 | `FrameworkCasCloseTest.managedAdapterUsesLiveMulti2TypedSession`でAPIへ渡す実値0/8を検査 | OK / なし |
+| 回収済みsessionの再close、失敗所有の消失 | `CasControllerSessionTest`の回収試験、`PlaybackFailureCallbacksTest.mediaCasReclaimStopsReceiveGenerationEvenWhenCleanupFails`で通知→配送失効→再生/filter停止→cleanup再試行を実行 | OK / なし |
+| 既存の通常終了・無効化の退行 | 上記3クラスと`CasControllerStateTest`をJUnitCoreで実行 | 48件成功 / なし |
+| 型・スタイル・差分不整合 | 本番/全試験Kotlinを`kotlinc -jvm-target 17`でコンパイル、変更Kotlin 10ファイルへ`ktlint`/`detekt --input`、`git diff --check` | 成功 / なし |
+
+入力はKotlin 1.9.22、Android 15 `android-all:15-robolectric-13954326`、JUnit 4.13.2。コンパイル対象・classpathは`.github/workflows/tis-host-ci.yml`のhost構成に従い、JavaのTuner/Filter試験stubはJREのみの環境のためECJ 3.37.0でコンパイルした。実行は`org.junit.runner.JUnitCore`へ表の4クラスを指定した。初回の追加試験で見つかったfixtureのmap型・実行thread・filter再試行回数の不一致を修正し、最終48件の成功を確認した。
+
+本番constructorの型照合とAOSP `android-15.0.0_r1`の構築・容量反映・session回収順序を確認したが、実TRMへの登録・容量反映・priority reclaimの結合確認は未実施。host全256件、Android/Soong build、device atest、VTS、実機試験は未実施。CAS plugin本体、本番Ks共有、実復号は本変更で実装していない。r52全体の実装100%一致、CDD/ARIB全面適合の判定は **No**。
+
+# PR #108 MediaCas無効化後の終了実装
+
+- Framework MediaCas adapterと全Sessionで無効状態を共有し、CAS固有状態例外・引数エラーを区別する。CasControllerは無効化を検出するとplugin/sessionと配送indexを退役させ、Descrambler閉鎖からMediaCas.closeへ進む。未完了cleanupの所有を保持し、成功した終了処理を繰り返さない。
+- metadata適用中の無効化はrollback中も含めて失敗として返し、その更新内の再生成を止める。元の操作例外と追加cleanup失敗を診断に保持する。
+- ECM/EMM配送での無効化をTunerControllerの全件cleanupへ接続し、PMTを維持してCAS filterと再生を停止する。停止時の世代更新後も、失敗した元の再生世代へ利用不能通知を返す。
+- 実Framework adapterへ不可逆な無効化を注入するhost試験を8件、TunerControllerの実配送からfilter・再生停止・通知までを検証するhost試験を2件追加した。各API境界、複数session、旧plugin終了、rollback中無効化、複数cleanup失敗、後続再接続、別controllerの独立性を確認し、CI期待件数を247件へ更新した。
+- 本番・全試験KotlinのAndroid 15入力によるhostコンパイル、関連JUnit 41件が成功。追加試験はhost専用であり、Soong/atest対象へFramework stubを混入させない。Android/Soong build、device atest、VTS、実機確認は未実施。r52のTRM・初期容量待ち・実復号接続は本変更の実装対象に含めない。
+
+# PR #108 MediaCas無効化後の終了設計
+
+- Frameworkのinstance無効化と再試行可能な個別close失敗を区別し、検出・配送停止・所有資源の終了をTISへ帰属させた。CAS固有状態例外をMediaCas全体の無効化へ誤分類しない。
+- 無効化後は個別Session.close成功を待たず、全Descrambler閉鎖、MediaCas.close、所有除去へ進む。未完了cleanupの再試行と診断を保ち、Framework後処理完了をplugin releaseや鍵失効の確認へ読み替えない。
+- 現行診断接続にも適用する設計変更。AOSP Android 15およびLineageOS 22.1のMediaCasを照合し、文書差分を確認した。このコミットでは実装・build・unit test・Soong・atest・VTS・実機確認を変更・実施していない。
+
+# PR #108 初期CAS容量反映後のsession開始
+
+- MediaCas構築完了から直ちにsession生成へ進まず、容量更新後のstatus callbackをcontrollerへ渡して一度だけ再開する順序にした。
+- 通知待ちの期限、非正容量・TRM不在の失敗、再選局・終了との競合、旧instance・重複・期限後の通知を既存plugin所有とcleanupへ閉じた。同期waitや独自容量台帳は追加しない。
+- AOSP MediaCasのstatus処理、TunerResourceManagerの初回要求前更新契約、同期AIDLとTRM更新処理を照合。設計のみの変更で、r52接続の実装、build、unit test、Soong、atest、VTS、実機確認は未実施。
+
+# PR #108 CAS容量初期通知の受信順序
+
+- r52のMediaCas構築時にlistenerを指定し、初期status eventをTRM登録完了後に処理する順序を明記した。容量値の正本とTRM更新はCAS設計・AOSPに置き、TISへ容量集約処理を追加しない。
+- 設計文書のみの変更。現行r51 adapterの実装変更、build、unit test、Soong、atest、VTS、実機確認は未実施。
+
+# PR #108 CA system IDとsession数通知の正本参照
+
+- SupportedCasSystemIdsの数値対応は開発規則、Framework/TRMへのsession数通知と資源枯渇はCAS設計を正本として参照する。TISへ別の容量集約・通知責務を置かない。
+- 既存Kotlin定数と正本の対応を確認した。設計文書のみの変更で、production code、build、unit test、Soong、atest、VTS、実機確認は変更・実施していない。
+
+# pr108_cas_review_resource_boundaries
+
+- r52の設計として、TRM対応MediaCasの生成条件と、強制session close後の配送停止・Descrambler閉鎖・plugin退役を定義した。現行r51の診断用接続をr52対応済みとして扱わない。
+- plugin共有の範囲を同一CasController内に限定し、別のライブsession・scan contextを横断する共有要件を除いた。
+- AOSP Android 15のMediaCas/Tuner資源寿命と設計間の経路を照合。今回の変更は設計文書のみ。build、unit test、Android/Soong、atest、VTS、実機確認は未実施。
+
+# pr108_cas_session_ownership_and_reclaim
+
+- AOSP Tunerの資源回収通知を通常cleanupから分け、FrameworkによるDescrambler閉鎖後はVOIDを再投入せず、bridge閉鎖確認からMediaCas session/plugin解放へ進む。
+- CA systemごとに1個のMediaCas pluginを保ち、service・ECM PID・private dataごとにsessionとDescramblerを所有する。旧sessionの解放後に新sessionを生成し、存続sessionとEMM ownerを維持する。
+- 通常cleanupのVOID・session close・Descrambler close・plugin closeの順序と再試行を更新。資源回収、同一CA system内のsession分離のhost回帰試験を追加し、CI期待件数を237件、検出クラス数を35件へ更新した。
+- Kotlin本番・全試験ソースのhostコンパイルとCAS関連JUnit 23件、変更Kotlinのktlint/detektを確認。host試験全237件、Android/Soong build、device atest、VTS、実機確認は未実施。CAS plugin本体の実装完了を示すものではない。
+
 # r51_tuner_hal2_audit_regressions
 
 - BS事前scanは`onLocked()`で同一scanを一度だけ継続し、`onScanStopped()`まで待機する。状態変更は既存の単一controller executorに限定し、追加の同期ロックを置かない。公開scan契約への接続を設計へ反映した。

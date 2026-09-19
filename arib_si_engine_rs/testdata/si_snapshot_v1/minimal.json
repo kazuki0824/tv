@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "collectionGeneration": 0,
+  "ingestSequence": 0,
+  "discoveryStage": 0,
+  "broadcastClock": null,
+  "tableRequirements": [],
+  "catCaMetadata": [],
+  "malformedCaDescriptorDiagnostics": [],
+  "malformedCaDescriptorCounts": [],
+  "transportSemanticFacts": [],
+  "events": [],
+  "eitInstances": [],
+  "serviceSemanticFacts": [],
+  "parserDiagnostics": []
+}

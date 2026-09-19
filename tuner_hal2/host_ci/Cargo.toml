@@ -10,6 +10,7 @@ members = [
     "domain_request",
     "fmq",
     "lnb",
+    "packet_path",
     "resource_ledger",
 ]
 resolver = "2"
