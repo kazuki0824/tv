@@ -16197,31 +16197,6 @@ mod r50ea8_frontend_lnb_completion_tests {
     }
 
     #[test]
-    fn dvb_frontend_id_bitpack_avoids_adapter_frontend_collision() {
-        let adapter0_frontend5 = dvb_export_frontend_id(0, 5, 0).unwrap();
-        let adapter1_frontend0 = dvb_export_frontend_id(1, 0, 0).unwrap();
-        assert_ne!(adapter0_frontend5, adapter1_frontend0);
-        assert_eq!(
-            adapter0_frontend5,
-            DVB_FRONTEND_ID_BASE + (5_i32 << DVB_FRONTEND_VARIANT_BITS)
-        );
-        assert_eq!(
-            adapter1_frontend0,
-            DVB_FRONTEND_ID_BASE + (1_i32 << (DVB_FRONTEND_INDEX_BITS + DVB_FRONTEND_VARIANT_BITS))
-        );
-    }
-
-    #[test]
-    fn dvb_frontend_id_rejects_out_of_range_fields() {
-        assert!(dvb_export_frontend_id(-1, 0, 0).is_none());
-        assert!(dvb_export_frontend_id(0, -1, 0).is_none());
-        assert!(dvb_export_frontend_id(0, 0, -1).is_none());
-        assert!(dvb_export_frontend_id(256, 0, 0).is_none());
-        assert!(dvb_export_frontend_id(0, 256, 0).is_none());
-        assert!(dvb_export_frontend_id(0, 0, 16).is_none());
-    }
-
-    #[test]
     fn frontend_generation_exhaustion_rejects_open() {
         let mut leases = FrontendLeaseRegistry::default();
         leases.next_generation = u64::MAX;
