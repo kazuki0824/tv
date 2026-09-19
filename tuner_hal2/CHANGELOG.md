@@ -1,3 +1,11 @@
+# 旧 tuner_hal 削除準備
+
+- Tuner HAL の公開契約正本をリポジトリ直下の `TUNER_HAL_DESIGN_JA.md` へ移し、`tuner_hal2` を唯一の製品実装として文書参照を整理した。
+- 旧実装にだけ残っていた有効な回帰試験のうち、Linux DVB UAPI の packed layout / stride / unaligned access、px4 probe prefix と ueventd / SELinux の一致、DVB frontend export ID の衝突・値域境界を `tuner_hal2` へ移動した。
+- parser、MULTI2、record-index、transaction / cleanup、live reader の旧試験は、現行 `tuner_hal2` に同等またはより直接的な試験が存在することを確認し、旧実装を試験正本として残さない。
+- 旧 lab profile、静的 VTS XML、`render_vts_config.py` は現行 `VtsEnvironmentProfile` / compiler / validator / device resolver と重複し、旧 profile 自身が実機値へ更新前提の placeholder であるため移植しない。
+- 旧 `tuner_hal` を参照用ソースとして残す規則を除去し、削除後も公開契約・実装規約・統合手順の正本が一意に解決するよう参照を更新した。
+
 # 不要な例示設定の削除
 
 - 正式な製品組込み設定と重複していたmakefile、BoardConfig、ueventdの例示ファイルを削除した。

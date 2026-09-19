@@ -4,9 +4,9 @@
 
 本書は、`tuner_hal2`における論理責務の分割、依存方向、AIDL境界とドメイン処理の接続、実装owner/anchorとの対応を定義する。
 
-公開AIDLの状態、戻り値、能力値、資源寿命、確定点、巻き戻し、後片付け、ワーカー、キュー、section/PES/TS処理は`../tuner_hal/DESIGN_JA.md`を正とする。PSI/SI表固有の意味解釈は`../arib_si_engine_rs/DESIGN_JA.md`を正とする。本書はこれらの契約を再定義せず、`tuner_hal2`の論理責務へ対応付ける。
+公開AIDLの状態、戻り値、能力値、資源寿命、確定点、巻き戻し、後片付け、ワーカー、キュー、section/PES/TS処理は`../TUNER_HAL_DESIGN_JA.md`を正とする。PSI/SI表固有の意味解釈は`../arib_si_engine_rs/DESIGN_JA.md`を正とする。本書はこれらの契約を再定義せず、`tuner_hal2`の論理責務へ対応付ける。
 
-物理ファイル名、module名、type名、関数名はAOSP公開契約またはARIB規範ではない。ただし、`../tuner_hal/DESIGN_JA.md`の論理契約を実装へ一意に接続するため、実装owner/anchorと許可entry pointは、本書の`共通transaction / use-caseの規範実装アンカー`で追跡アンカーとして固定する。責務を変えないrename、split、mergeだけでは公開設計変更にならないが、同一変更でアンカーを更新し、移動前後に複数ownerを残してはならない。論理契約の状態、phase、確定点、rollback / cleanup、failure semanticsは本書へ再掲せず`../tuner_hal/DESIGN_JA.md`を参照する。
+物理ファイル名、module名、type名、関数名はAOSP公開契約またはARIB規範ではない。ただし、`../TUNER_HAL_DESIGN_JA.md`の論理契約を実装へ一意に接続するため、実装owner/anchorと許可entry pointは、本書の`共通transaction / use-caseの規範実装アンカー`で追跡アンカーとして固定する。責務を変えないrename、split、mergeだけでは公開設計変更にならないが、同一変更でアンカーを更新し、移動前後に複数ownerを残してはならない。論理契約の状態、phase、確定点、rollback / cleanup、failure semanticsは本書へ再掲せず`../TUNER_HAL_DESIGN_JA.md`を参照する。
 
 ## VTS device agentの実装責務境界
 
@@ -22,7 +22,7 @@ C++はAIDL FMQ descriptorのimport/read境界だけに限定し、Binder/AIDL制
 
 | 正本 | 所有する内容 | 他文書での扱い |
 |---|---|---|
-| `tuner_hal/DESIGN_JA.md` | AOSP公開契約、VTSと能力公開、TS伝送構文、Table ID別section長、公開状態、寿命、失敗時遷移、共通部品の論理契約 | `tuner_hal2`は実装責務へ接続するだけとし、同じ状態表を持たない |
+| `TUNER_HAL_DESIGN_JA.md` | AOSP公開契約、VTSと能力公開、TS伝送構文、Table ID別section長、公開状態、寿命、失敗時遷移、共通部品の論理契約 | `tuner_hal2`は実装責務へ接続するだけとし、同じ状態表を持たない |
 | `arib_si_engine_rs/DESIGN_JA.md` | PSI/SI表固有の意味解析と意味オブジェクト | Tuner HAL公開状態または伝送長を定義しない |
 | `tuner_hal2/DESIGN_JA.md` | 実装内の論理責務、依存方向、実装owner/anchor、許可entry point、禁止bypass | 公開契約の値・状態・phase・確定点・rollback/cleanup・failure semanticsを独自定義しない |
 | `tuner_hal2/CODE_CONVENTION.md` | 実装規約、禁止構造、静的検査観点 | 状態遷移または戻り値を定義しない |
@@ -43,18 +43,18 @@ flowchart TD
 |---|---|---|---|
 | AIDL境界 | AIDL引数、callback、object handle | AIDL値の外形検証、typed requestへの変換、Binder statusへの変換 | ドメイン状態、backend、rollback方針 |
 | サービス調停 | typed request、root/object識別子 | object所有関係、世代の再検証、操作の振り分け、単一lock snapshot | packet解析、driver固有I/O |
-| ドメイントランザクション | 検証済みrequest、予約済み資源 | `../tuner_hal/DESIGN_JA.md`の同名transaction契約を実装ownerへ接続するtyped request/entry mapping | Binder表現、AIDL callback実体、確定点・補償・rollback・quarantine semanticsの独自定義 |
+| ドメイントランザクション | 検証済みrequest、予約済み資源 | `../TUNER_HAL_DESIGN_JA.md`の同名transaction契約を実装ownerへ接続するtyped request/entry mapping | Binder表現、AIDL callback実体、確定点・補償・rollback・quarantine semanticsの独自定義 |
 | 機器適合 | frontend/LNB要求 | device probe、driver固有設定、実状態の確認 | 公開能力の捏造、上位状態の直接変更 |
 | demux処理 | 入力元とTS packet | demux / packet ingress componentから`PacketPipeline` / `StreamBoundaryTxn` / `FilterProducerDrainGate`のtyped entryへの実装mapping | 入力元generation、continuity、section/PES assembler、Filter delivery generationのmutation ownership、PSI/SI意味解析、公開object寿命 |
 | FMQ・callback配送 | 確定済みpayload/event | FMQ / EventFlag / callback delivery componentからqueue・callbackのcanonical owner / typed entryへの実装mapping | queue/generation state、callback delivery outcomeのmutation ownership、backend状態の巻き戻し、worker制御失敗分類 |
 | 資源台帳 | 予約・確定・解放要求 | object数、FMQ、PES、AV、DVR、descrambler、workerの使用権 | 公開能力値の独自算出 |
-| 後片付け管理 | 閉鎖、所有者消滅、失敗した解放 | `../tuner_hal/DESIGN_JA.md`のcleanup契約を実装ownerへ接続するtyped cleanup entry mapping | 通常操作への復帰判断、未完手順・retry authority・quarantine semanticsの独自定義 |
+| 後片付け管理 | 閉鎖、所有者消滅、失敗した解放 | `../TUNER_HAL_DESIGN_JA.md`のcleanup契約を実装ownerへ接続するtyped cleanup entry mapping | 通常操作への復帰判断、未完手順・retry authority・quarantine semanticsの独自定義 |
 
 ### r52の復号鍵参照の責務
 
 製品固定parameterと共有方式は`../開発規則.md`の「r52のMULTI2固定値と動的鍵状態」、CAS側のsession/token対応・Ks更新・失効は`../cas_plugin/DESIGN_JA.md`を正とする。Tuner側はtokenで内部鍵状態を参照してpacketを復号するconsumerであり、CAS側のECM処理やKs更新を所有しない。
 
-公開状態・診断は`../tuner_hal/DESIGN_JA.md`の「診断可観測性の固定」、鍵状態の更新・参照寿命は`../cas_plugin/DESIGN_JA.md` §10～13、排他制御の実装規約は`CODE_CONVENTION.md`を参照する。対応する実装箇所を次に示す。
+公開状態・診断は`../TUNER_HAL_DESIGN_JA.md`の「診断可観測性の固定」、鍵状態の更新・参照寿命は`../cas_plugin/DESIGN_JA.md` §10～13、排他制御の実装規約は`CODE_CONVENTION.md`を参照する。対応する実装箇所を次に示す。
 
 | 処理 | 実装箇所 |
 |---|---|
@@ -68,29 +68,29 @@ CAS側の更新・参照・失効と、Tuner再起動時の参照結合破棄の
 
 ### px4 TMCC TSID list device-adaptation境界
 
-px4固有のTMCC TSID readbackは「機器適合」責務に閉じる。ABI mirrorの実装anchorは `device/src/px4/abi.rs::PtxTmccTsidList` / `PTX_GET_TMCC_TSID_LIST`、raw resultのshape検証と `EAGAIN` のtyped pending化は `device/src/px4/tmcc_tsid.rs`、exclusive device-open resourceを再利用するread entryは `device/src/runtime/backend_worker.rs::FrontendBackendSession::observe_tmcc_tsid_list()` とする。公開値、readiness、scan callbackの規範意味は `../tuner_hal/DESIGN_JA.md` を正とし、本節で再定義しない。
+px4固有のTMCC TSID readbackは「機器適合」責務に閉じる。ABI mirrorの実装anchorは `device/src/px4/abi.rs::PtxTmccTsidList` / `PTX_GET_TMCC_TSID_LIST`、raw resultのshape検証と `EAGAIN` のtyped pending化は `device/src/px4/tmcc_tsid.rs`、exclusive device-open resourceを再利用するread entryは `device/src/runtime/backend_worker.rs::FrontendBackendSession::observe_tmcc_tsid_list()` とする。公開値、readiness、scan callbackの規範意味は `../TUNER_HAL_DESIGN_JA.md` を正とし、本節で再定義しない。
 
 device-adaptation層は `FrontendRuntime`、AIDL object、callback artifactを直接変更しない。取得結果はtyped observationとしてservice_runtimeへ返すだけとし、persistent frontend generation/stateへ接続する場合は既存frontend ownerのtyped mutation pathを使う。driver readbackのために第二のdevice-open owner、固定BS TSID表、VTS/profile専用ioctl bypassを追加しない。
 
 ### TMCC TSID observation の frontend owner 接続
 
-scan時の有限再観測は`service_runtime/src/frontend_worker_txn.rs::observe_stream_id_list_with_retry()`、状態確定と通知の接続は同moduleの`commit_and_deliver_frontend_scan_lock()`を既存frontend worker内の実装入口とする。公開順序・待機上限・取消し・失敗時の扱いは`../tuner_hal/DESIGN_JA.md`のscan契約を正とする。
+scan時の有限再観測は`service_runtime/src/frontend_worker_txn.rs::observe_stream_id_list_with_retry()`、状態確定と通知の接続は同moduleの`commit_and_deliver_frontend_scan_lock()`を既存frontend worker内の実装入口とする。公開順序・待機上限・取消し・失敗時の扱いは`../TUNER_HAL_DESIGN_JA.md`のscan契約を正とする。
 
 productionのpx4 ISDB-S TMCC observationは `service_runtime/src/frontend_worker_txn.rs` のfrontend workerだけがdevice-adaptation entryを呼び、persistent valueのownerは既存 `device/src/runtime/frontend_runtime.rs::FrontendRuntime` とする。workerは取得結果を直接mutationせず、既存の有限正規入口 `service_runtime/src/frontend_ops.rs::FrontendTuneScanTxn::accept_operation_event()` へtyped eventとして渡す。同entryがcurrent operation generationを再検証した後、`service_runtime/src/boot/frontend_txn.rs::FrontendTxn::record_frontend_stream_id_list()` から `FrontendRuntime::record_stream_id_list()` へ接続する。worker側に第二のlist cache、generation、retry registryを置かない。
 
-AIDL `STREAM_ID_LIST` queryは `ObjectMethodUseCase` のread-only query経路から `FrontendRuntime` snapshotを読むだけとし、query中にdriver I/O、worker起動、state mutationを行わない。scan `INPUT_STREAM_IDS` は同じcommitted valueから `FrontendScanNotification::InputStreamIds` を作り、既存 `FrontendTuneScanTxn::accept_operation_event` / callback delivery pathによるgeneration fenceを迂回しない。device pending (`EAGAIN`) はpersistent failure stateを新設せず未commitのまま扱い、公開semanticsは `../tuner_hal/DESIGN_JA.md` を正とする。
+AIDL `STREAM_ID_LIST` queryは `ObjectMethodUseCase` のread-only query経路から `FrontendRuntime` snapshotを読むだけとし、query中にdriver I/O、worker起動、state mutationを行わない。scan `INPUT_STREAM_IDS` は同じcommitted valueから `FrontendScanNotification::InputStreamIds` を作り、既存 `FrontendTuneScanTxn::accept_operation_event` / callback delivery pathによるgeneration fenceを迂回しない。device pending (`EAGAIN`) はpersistent failure stateを新設せず未commitのまま扱い、公開semanticsは `../TUNER_HAL_DESIGN_JA.md` を正とする。
 
 ## 公開メソッドの接続規則
 
-静的inventory／capability参照メソッドはservice_runtimeのcapability/query ownerからAIDL応答変換へ接続し、動的な`IFrontend.getStatus()`／`getFrontendStatusReadiness()`はfrontend status query ownerからAIDL応答変換へ接続する。`CapabilitySnapshot`と`FrontendStatusSnapshot`の値、更新・無効化条件、同期/非同期read条件、公開statusは`../tuner_hal/DESIGN_JA.md`の該当契約を正とし、本書では再定義しない。
+静的inventory／capability参照メソッドはservice_runtimeのcapability/query ownerからAIDL応答変換へ接続し、動的な`IFrontend.getStatus()`／`getFrontendStatusReadiness()`はfrontend status query ownerからAIDL応答変換へ接続する。`CapabilitySnapshot`と`FrontendStatusSnapshot`の値、更新・無効化条件、同期/非同期read条件、公開statusは`../TUNER_HAL_DESIGN_JA.md`の該当契約を正とし、本書では再定義しない。
 
 更新系メソッドは、AIDL境界からservice_runtimeのobject-method / domain use-case ownerへtyped requestを渡し、そこから資源台帳、domain transaction、backend adapterの各ownerへ接続する。AIDL境界はBinder表現との変換だけを担当し、service_runtime / domain ownerを迂回してbackendまたはregistryを直接変更しない。
 
-lifecycle/owner/generation検証、引数検証との優先順位、再検証、execution authority、資源予約、外部副作用、phase order、commit point、pre-commit rollback、post-commit cleanup、失敗時statusは`../tuner_hal/DESIGN_JA.md`のobject method契約・各API状態表・同名transaction契約を正とし、本書では再定義しない。
+lifecycle/owner/generation検証、引数検証との優先順位、再検証、execution authority、資源予約、外部副作用、phase order、commit point、pre-commit rollback、post-commit cleanup、失敗時statusは`../TUNER_HAL_DESIGN_JA.md`のobject method契約・各API状態表・同名transaction契約を正とし、本書では再定義しない。
 
 ### 契約正本と実装入口の対応
 
-公開transactionの状態、phase、確定点、rollback / cleanup、failure semanticsは`../tuner_hal/DESIGN_JA.md`の同名論理契約を正とする。本節が規範として所有するのは、論理契約名から`tuner_hal2`の実装ownerへの対応と、ownerを迂回して第二の実装ownerを作ることの禁止だけである。
+公開transactionの状態、phase、確定点、rollback / cleanup、failure semanticsは`../TUNER_HAL_DESIGN_JA.md`の同名論理契約を正とする。本節が規範として所有するのは、論理契約名から`tuner_hal2`の実装ownerへの対応と、ownerを迂回して第二の実装ownerを作ることの禁止だけである。
 
 | 契約 | 実装所有者 | 禁止入口 |
 |---|---|---|
@@ -140,25 +140,25 @@ lifecycle/owner/generation検証、引数検証との優先順位、再検証、
 
 Cの正規分類器・変換器は、同じ意味判断を行う正規入口を一つにし、呼出元が再分類する必要のない型付き結果を返す。呼出元が生の`errno`、文字列、下位実装固有の詳細などから同じ分類を再実装してはならない。
 
-A/B/Cの分類と`Txn` / `UseCase` / `Context`の命名判定は別である。Bであることだけを理由に`Txn`と呼ばず、命名は次節および`../tuner_hal/DESIGN_JA.md`の共通部品命名規則に従う。
+A/B/Cの分類と`Txn` / `UseCase` / `Context`の命名判定は別である。Bであることだけを理由に`Txn`と呼ばず、命名は次節および`../TUNER_HAL_DESIGN_JA.md`の共通部品命名規則に従う。
 
 ##### `WatermarkClassifier` の分類境界
 
-`WatermarkClassifier` は Filter / Record DVR / Playback DVR に共通する閾値比較の実装責務だけを一意化する分類Cの純粋分類器とする。公開statusの意味、threshold値の由来、queue snapshotの意味、比較式、判定優先順位、直前statusの保持、callback抑止、`statusMask`、`DATA_READY`、`OVERFLOW`は `../tuner_hal/DESIGN_JA.md` の各Filter/DVR契約だけを正本とし、本書では再定義しない。
+`WatermarkClassifier` は Filter / Record DVR / Playback DVR に共通する閾値比較の実装責務だけを一意化する分類Cの純粋分類器とする。公開statusの意味、threshold値の由来、queue snapshotの意味、比較式、判定優先順位、直前statusの保持、callback抑止、`statusMask`、`DATA_READY`、`OVERFLOW`は `../TUNER_HAL_DESIGN_JA.md` の各Filter/DVR契約だけを正本とし、本書では再定義しない。
 
-`WatermarkPolicy` は公開API種別ではなく比較規則の形だけを表す変更不能な列挙型とし、variant集合を `OccupancyBand { low, high }` と `ReadableWritableBand { low, high }` の2つだけに固定する。`WatermarkDecision` はAIDL非依存の型付き分類結果とし、variant集合を `Empty`、`Low`、`High`、`Full`、`NoTransition` の5つだけに固定する。各variantをどの条件で生成し、どの公開statusへ射影するかは `../tuner_hal/DESIGN_JA.md` の正本契約を参照し、本書へ比較条件を複製しない。
+`WatermarkPolicy` は公開API種別ではなく比較規則の形だけを表す変更不能な列挙型とし、variant集合を `OccupancyBand { low, high }` と `ReadableWritableBand { low, high }` の2つだけに固定する。`WatermarkDecision` はAIDL非依存の型付き分類結果とし、variant集合を `Empty`、`Low`、`High`、`Full`、`NoTransition` の5つだけに固定する。各variantをどの条件で生成し、どの公開statusへ射影するかは `../TUNER_HAL_DESIGN_JA.md` の正本契約を参照し、本書へ比較条件を複製しない。
 
 各status評価の呼出元は、評価開始時にcommit済みsettings / queue契約から当該正本契約が要求する `WatermarkPolicy` を構成し、`WatermarkClassifier::new(policy)` のようなconstructorで変更不能なpolicyをclassifier instanceへ束縛してから、同一評価のqueue snapshotだけを分類入口へ渡す。分類入口はpolicyを追加引数として受け取らず、classifier instanceのpolicyを評価中に更新しない。threshold変更が正規契約上commitされた後の次回評価では、新しいcommit済みsettingsから新しいpolicyを構成して新しいclassifier instanceを生成する。classifier instanceを呼出し越しの正本状態として保持せず、lock、generation、worker、queue、timer、callback状態を追加しない。
 
-`WatermarkPolicy`へ `Filter` / `RecordDvr` / `PlaybackDvr` のような公開API種別tagを持たせず、classifier内部でAIDL statusを生成しない。各domain ownerは `WatermarkDecision` を `../tuner_hal/DESIGN_JA.md` の正本契約に従って公開statusへ射影する。
+`WatermarkPolicy`へ `Filter` / `RecordDvr` / `PlaybackDvr` のような公開API種別tagを持たせず、classifier内部でAIDL statusを生成しない。各domain ownerは `WatermarkDecision` を `../TUNER_HAL_DESIGN_JA.md` の正本契約に従って公開statusへ射影する。
 
 #### `Txn` / `UseCase` / `Context` の物理名称境界
 
-`Txn` の論理上の成立条件は `../tuner_hal/DESIGN_JA.md` の共通部品命名規則を正とする。本書では、その判定結果を物理アンカーへ反映する。取引境界を所有しない共通調停手順は `UseCase`、正規手順所有者ではない呼出し単位の非公開補助型は `Context` とし、実装都合だけで `Txn` を付けない。
+`Txn` の論理上の成立条件は `../TUNER_HAL_DESIGN_JA.md` の共通部品命名規則を正とする。本書では、その判定結果を物理アンカーへ反映する。取引境界を所有しない共通調停手順は `UseCase`、正規手順所有者ではない呼出し単位の非公開補助型は `Context` とし、実装都合だけで `Txn` を付けない。
 
 #### 共通transaction / use-caseの規範実装アンカー
 
-次表は`../tuner_hal/DESIGN_JA.md`の同名論理契約を`tuner_hal2`へ接続する物理module/file/type、許可entry point、禁止bypassを固定する。加えて、本書が実装内の分類C共通部品として定義する分類器については、その物理anchor、許可entry point、禁止bypassだけを同表で固定し、公開status semanticsは`../tuner_hal/DESIGN_JA.md`を正とする。
+次表は`../TUNER_HAL_DESIGN_JA.md`の同名論理契約を`tuner_hal2`へ接続する物理module/file/type、許可entry point、禁止bypassを固定する。加えて、本書が実装内の分類C共通部品として定義する分類器については、その物理anchor、許可entry point、禁止bypassだけを同表で固定し、公開status semanticsは`../TUNER_HAL_DESIGN_JA.md`を正とする。
 
 | 契約 | 実装owner / anchor | 許可entry point | 禁止する迂回 |
 |---|---|---|---|
@@ -193,7 +193,7 @@ A/B/Cの分類と`Txn` / `UseCase` / `Context`の命名判定は別である。B
 
 ##### 共通化対象のRust物理化追加要件
 
-次表は、`../tuner_hal/DESIGN_JA.md`の論理契約と本書の実装所有者・アンカーを変更せず、A/B/C判定後に必要となる論理上の並行性・直列化契約、失効操作・一回性識別、Bの呼出し内進行状態だけを固定する。公開状態、段階、確定点、巻戻し・後片付け、失敗時の意味は`../tuner_hal/DESIGN_JA.md`を正とする。一回性権限の一般実装規則とA/Bの永続状態格納境界は`CODE_CONVENTION.md`を正とする。`Send` / `Sync`はA/B/C分類から導出せず、外部API・実行基盤の型制約と、実際のスレッド間移送・共有参照から判定する。
+次表は、`../TUNER_HAL_DESIGN_JA.md`の論理契約と本書の実装所有者・アンカーを変更せず、A/B/C判定後に必要となる論理上の並行性・直列化契約、失効操作・一回性識別、Bの呼出し内進行状態だけを固定する。公開状態、段階、確定点、巻戻し・後片付け、失敗時の意味は`../TUNER_HAL_DESIGN_JA.md`を正とする。一回性権限の一般実装規則とA/Bの永続状態格納境界は`CODE_CONVENTION.md`を正とする。`Send` / `Sync`はA/B/C分類から導出せず、外部API・実行基盤の型制約と、実際のスレッド間移送・共有参照から判定する。
 
 `B進行状態`の`通常制御`は通常の関数制御、型付きスナップショット、準備済み値、一回性権限、変更不能な計画、結果列挙型で手順を表現し、B自身の可変進行状態を呼出し越しに保持しないことを表す。
 
@@ -206,7 +206,7 @@ AIDL/Binder等の外部API・実行基盤が、境界に現れる型へ`Send` / 
 - 正の自動トレイト要件はフィールド構成から成立させ、要求対象となる具体型についてコンパイル時の型検査で確認する。`unsafe impl Send` / `unsafe impl Sync`は、コンパイラが自動導出できない低水準要素を直接封じ込め、その要素についてスレッド安全性と別名参照の安全性を型自身の不変条件として証明できる最小の型に限る。実行器やキューのトレイト要件を満たすためだけに追加せず、上位の正本所有型や調停型で下位型の非`Send` / 非`Sync`を打ち消すためにも使用しない。
 - 設計上、具体型を非`Send`または非`Sync`に保つ必要がある場合は、安定版Rustで利用できない`negative impl`を前提にせず、フィールド構成でその性質を成立させ、コンパイル失敗検査またはリポジトリで採用する同等の静的検査で確認する。
 
-次表は、`../tuner_hal/DESIGN_JA.md`が定める競合・順序関係を実装接続の観点で追跡するための表であり、公開契約を再定義しない。複数の実行主体から要求が並行到達し得る場合に必要なのは、各契約が定める順序、世代柵、一回性等の不変条件を守ることである。実行主体が複数であることだけを理由に一回性権限を追加しない。正本所有型そのものを共有参照する物理形も要求せず、単一所有の専用実行主体や命令キュー等の物理形も許容する。`Send` / `Sync`の具体型要件は、この表とは別に、外部API・実行基盤の型制約と実際のスレッド間移送・共有参照から確定する。
+次表は、`../TUNER_HAL_DESIGN_JA.md`が定める競合・順序関係を実装接続の観点で追跡するための表であり、公開契約を再定義しない。複数の実行主体から要求が並行到達し得る場合に必要なのは、各契約が定める順序、世代柵、一回性等の不変条件を守ることである。実行主体が複数であることだけを理由に一回性権限を追加しない。正本所有型そのものを共有参照する物理形も要求せず、単一所有の専用実行主体や命令キュー等の物理形も許容する。`Send` / `Sync`の具体型要件は、この表とは別に、外部API・実行基盤の型制約と実際のスレッド間移送・共有参照から確定する。
 
 | 正本・手順所有者 | 並行し得る要求 | 契約上必要な性質 |
 |---|---|---|
@@ -263,7 +263,7 @@ A=13、B=13、C=2であり、`WorkerHandle`を第二のAまたは第二の論理
 
 分類Aまたはそれに準ずる永続状態所有者間では、入れ子取得を通常の接続手段にしない。検証、状態の写し、準備済み値・一回実行権限の取得は原則として一つの所有者の排他区間内で完結させ、排他区間を抜けてから次の所有者へ進む。機器入出力、Binder呼出し、コールバック配送、FMQ待機、ワーカー終了待ちその他の失敗し得る外部処理の間は、所有者間の排他制御を保持しない。
 
-ただし、`../tuner_hal/DESIGN_JA.md`の正規契約が複数所有者にまたがる**複合確定または一括確定**を要求し、片側だけの確定を禁止しており、一つの所有者と準備済み値だけではその不可分性を満たせない場合に限り、**最終確定区間だけ**複数所有者の排他制御を同時取得してよい。この例外は分類Bへ共有永続状態または専用の共有ロックを追加する根拠にはならず、Bは既存の正本所有者が持つ排他制御を呼出し単位で調停するだけとする。
+ただし、`../TUNER_HAL_DESIGN_JA.md`の正規契約が複数所有者にまたがる**複合確定または一括確定**を要求し、片側だけの確定を禁止しており、一つの所有者と準備済み値だけではその不可分性を満たせない場合に限り、**最終確定区間だけ**複数所有者の排他制御を同時取得してよい。この例外は分類Bへ共有永続状態または専用の共有ロックを追加する根拠にはならず、Bは既存の正本所有者が持つ排他制御を呼出し単位で調停するだけとする。
 
 最終確定区間に入る前に、失敗し得る検証、資源確保、準備、機器入出力、Binder処理、コールバック処理、待機を完了させる。最終確定区間では、あらかじめ有限に定めた順序で必要な所有者の排他制御だけを取得し、世代・準備済み値・一回実行権限を再検証した後、**失敗不能なメモリ上の状態変更だけ**を一括して確定する。再検証に失敗した場合は状態を変更せずに全排他制御を解放し、準備済み値の取消しは排他区間外の正規入口で行う。確定後は取得と逆順に排他制御を解放する。
 
@@ -292,7 +292,7 @@ flowchart LR
 
 ##### `FrontendTuneScanTxn` の有限正規入口集合
 
-`FrontendTuneScanTxn`は呼出しを越えて存続する手順実体を保持せず、次の有限入口集合だけを正規の再入場面とする。各入口は呼出しごとの分類B実行として完結し、非同期操作の継続状態、世代、ワーカー寿命、コールバック配送予約は対応する正本所有者へ残す。ここで「フロントエンド操作所有者」は`../tuner_hal/DESIGN_JA.md`の0-S-2でフロントエンド機器状態の正本とされた`FrontendRuntime`を指し、選局・走査の現行操作状態、要求指紋、操作世代、継続状態を同正本所有者の非公開状態として保持する。「コールバック所有者」は、現行操作に従属する配送予約・世代遮断については`FrontendRuntime`、コールバック登録記録については`RuntimeCallbackRegistry`を指し、`FrontendTuneScanTxn`自身または第三の永続状態所有者を追加しない。「後片付け所有者」は、汎用ワーカー寿命について`WorkerRuntime`、公開`close()`の未完後片付け義務が存在する場合について`ObjectCloseTxn`を指す。
+`FrontendTuneScanTxn`は呼出しを越えて存続する手順実体を保持せず、次の有限入口集合だけを正規の再入場面とする。各入口は呼出しごとの分類B実行として完結し、非同期操作の継続状態、世代、ワーカー寿命、コールバック配送予約は対応する正本所有者へ残す。ここで「フロントエンド操作所有者」は`../TUNER_HAL_DESIGN_JA.md`の0-S-2でフロントエンド機器状態の正本とされた`FrontendRuntime`を指し、選局・走査の現行操作状態、要求指紋、操作世代、継続状態を同正本所有者の非公開状態として保持する。「コールバック所有者」は、現行操作に従属する配送予約・世代遮断については`FrontendRuntime`、コールバック登録記録については`RuntimeCallbackRegistry`を指し、`FrontendTuneScanTxn`自身または第三の永続状態所有者を追加しない。「後片付け所有者」は、汎用ワーカー寿命について`WorkerRuntime`、公開`close()`の未完後片付け義務が存在する場合について`ObjectCloseTxn`を指す。
 
 | 入口 | 呼出元 | 入力 | 分類Bが行うこと | 永続化先 |
 |---|---|---|---|---|
@@ -304,22 +304,22 @@ flowchart LR
 | `accept_worker_terminal` | `WorkerRuntime`の完了通知橋渡し | ワーカー所有者世代 + 型付き終了結果 | 操作世代との対応を再検証し、フロントエンド固有の終了結果を`FrontendWorkerTerminationUseCase`と失敗分類へ接続する | `FrontendRuntime`の現行操作状態、`WorkerRuntime`、公開`close()`の未完義務がある場合の`ObjectCloseTxn` |
 
 - `begin_*` / `stop_*`はAIDL境界だけから、`accept_*`はワーカー・下位機器処理の完了通知橋渡しだけから呼ぶ。AIDL境界はAIDL union/tag、reserved enum、負値、型変換その他の外形検証だけを完了し、known-but-unsupportedなproduct-profile、backend availability、ISDB-S selectorのbackend別表現可否、blind scan可否を判定しない。コールバック配送境界自身は`FrontendTuneScanTxn`へ再入場せず、予約済みの型付きコールバックを配送し、配送失敗は`PostCommitCallbackFailureTxn`へ接続する。
-- `begin_*`の公開status precedence、失敗時の状態・副作用、LNB・backend・worker・generationへの反映条件は`../tuner_hal/DESIGN_JA.md`の各frontend設定表、公開APIの名前付き契約、失敗影響範囲だけを正本とする。本節はcanonical preflightの実装ownerと接続先だけを定義する。device mapperの防御的な内部検証を公開status写像のownerにしない。
+- `begin_*`の公開status precedence、失敗時の状態・副作用、LNB・backend・worker・generationへの反映条件は`../TUNER_HAL_DESIGN_JA.md`の各frontend設定表、公開APIの名前付き契約、失敗影響範囲だけを正本とする。本節はcanonical preflightの実装ownerと接続先だけを定義する。device mapperの防御的な内部検証を公開status写像のownerにしない。
 - 各入口は開始時に正本所有者から状態の写し・世代・一回実行権限を取得し、外部処理後に世代を再検証する。旧世代の`accept_operation_event` / `accept_worker_terminal`は状態変更またはコールバック予約を行わず、失効結果として破棄・診断する。
 - `FrontendTuneScanTxn`用の`Arc<Mutex<...>>`、共有可変段階状態、独自再試行キュー、独自走査世代を設けない。複数呼出しにまたがる情報が必要なら上表の永続化先へ置く。
 - 上記6入口を複数のRust関数へ分割してよいが、正規名称標識から同じ入口役割へ追跡可能にし、実装都合だけで第7の入口役割を追加しない。新たな外部非同期入力種別が必要になった場合は、この有限集合と正本所有者境界を設計更新してから入口を追加する。
 
 ##### 実装依存とcomposition接続規則
 
-論理契約の状態、phase、commit / rollback、failure semanticsは`../tuner_hal/DESIGN_JA.md`の同名契約を正とし、本節は`tuner_hal2`内でowner同士をどのtyped入口で接続するかだけを定義する。
+論理契約の状態、phase、commit / rollback、failure semanticsは`../TUNER_HAL_DESIGN_JA.md`の同名契約を正とし、本節は`tuner_hal2`内でowner同士をどのtyped入口で接続するかだけを定義する。
 
 - Filter source use-caseは`SourceBoundaryTxn`、Demux frontend source use-caseは`DemuxFrontendSourceTxn`へ接続し、stream boundaryが必要な場合は`service_runtime/src/boot/packet_ops.rs`の`StreamBoundaryTxn` typed入口へ接続する。
-- callback AIDL façadeは`aidl_service/src/callback_store.rs`とservice_runtime側`CallbackRegistrationUseCase`を接続し、runtime/domain側へ直接書き込まない。FrontendのBinder登録世代は生成物所有者のchecked prepared tokenから型付き識別子へ確定し、別counterを持たない。配送権限・死亡通知はこの識別子を持ち、`CallbackStore`の現在slotと照合する。死亡時のruntime登録簿解除は`begin_frontend_callback_death_use_case`と既存owner cleanup完了入口へ接続する。Strong/recipientの退役batchは同じ生成物所有者に保持し、service contextがlock外の解除結果を返す。`RuntimeCallbackRegistry`とcallback artifactの保管主体は別責務のまま維持する。同時取得するlock順はruntime→callback store→登録ごとのdeath gateに固定し、配送snapshot取得・死亡処理・登録確定で共有する。death recipientは同じgateで死亡を確定してからgateを解放し、runtime/storeへ再入する。登録側は同じgateを複合確定まで保持する。死亡と登録確定の勝敗、preparedの取消し、unlink結果の意味、退役batch解放失敗時の結果は`../tuner_hal/DESIGN_JA.md`の`IFrontend.setCallback()`登録契約と`CallbackRegistrationUseCase`を正とし、本書では再定義しない。
+- callback AIDL façadeは`aidl_service/src/callback_store.rs`とservice_runtime側`CallbackRegistrationUseCase`を接続し、runtime/domain側へ直接書き込まない。FrontendのBinder登録世代は生成物所有者のchecked prepared tokenから型付き識別子へ確定し、別counterを持たない。配送権限・死亡通知はこの識別子を持ち、`CallbackStore`の現在slotと照合する。死亡時のruntime登録簿解除は`begin_frontend_callback_death_use_case`と既存owner cleanup完了入口へ接続する。Strong/recipientの退役batchは同じ生成物所有者に保持し、service contextがlock外の解除結果を返す。`RuntimeCallbackRegistry`とcallback artifactの保管主体は別責務のまま維持する。同時取得するlock順はruntime→callback store→登録ごとのdeath gateに固定し、配送snapshot取得・死亡処理・登録確定で共有する。death recipientは同じgateで死亡を確定してからgateを解放し、runtime/storeへ再入する。登録側は同じgateを複合確定まで保持する。死亡と登録確定の勝敗、preparedの取消し、unlink結果の意味、退役batch解放失敗時の結果は`../TUNER_HAL_DESIGN_JA.md`の`IFrontend.setCallback()`登録契約と`CallbackRegistrationUseCase`を正とし、本書では再定義しない。
 - descramblerのPID変更は`DescramblerPidTxn`、token参照の結合・解除は`DescramblerKeyTxn`へ接続する。descrambler closeは`ObjectCloseTxn`から、demux invalidationはdemux invalidation ownerから`DescramblerSessionCleanupTxn`のtyped入口へ接続し、3手順を一つの別名所有者へ統合しない。
 - Record DVR/Filter lifecycle use-caseは`RecordDvrFilterRelationTxn`のtyped入口へ接続する。
 - Frontend LNB assignment use-caseは`FrontendLnbRelationTxn`へ接続し、LNB resource ownerのlease台帳内部を直接変更しない。
 - Filter/DVR `flush()` use-caseは`QueueCleanupUseCase`へ接続し、同ownerからFilter側`FilterProducerDrainGate`またはDVR側`QueueEpochProtocol`のtyped入口を使用する。
-- Filter / Record DVR / Playback DVRのwatermark評価は単一`WatermarkClassifier`へ接続する。各domain ownerは評価開始時に`../tuner_hal/DESIGN_JA.md`の正本契約とcommit済みsettingsから変更不能`WatermarkPolicy`を構成してclassifier constructorへ渡し、同一評価のqueue snapshotだけを分類入口へ渡す。`WatermarkDecision`の公開statusへの射影も同書の正本契約に従い、classifierに比較条件の第二正本、直前status、statusMask、callback配送、DATA_READY/OVERFLOW、queue stateを持たせない。
+- Filter / Record DVR / Playback DVRのwatermark評価は単一`WatermarkClassifier`へ接続する。各domain ownerは評価開始時に`../TUNER_HAL_DESIGN_JA.md`の正本契約とcommit済みsettingsから変更不能`WatermarkPolicy`を構成してclassifier constructorへ渡し、同一評価のqueue snapshotだけを分類入口へ渡す。`WatermarkDecision`の公開statusへの射影も同書の正本契約に従い、classifierに比較条件の第二正本、直前status、statusMask、callback配送、DATA_READY/OVERFLOW、queue stateを持たせない。
 - filter lifecycle use-caseは`AvSyncRegistry`、stream boundary側は`PcrClockAnchorStore`のtyped invalidation入口へ接続し、各store内部へ直接アクセスしない。
 - post-commit callback failureを受けたdomain completion use-caseは、`WorkerFailureClassifier`で分類済みのtyped callback failureだけを`PostCommitCallbackFailureTxn`へ渡す。callbackを伴わない正常completionまたは別種failureは同Txnへ接続しない。
 - domain worker ownerは`WorkerRuntime`のtyped入口と`WorkerFailureClassifier`を使用し、必要な場合に`WorkerRuntime`が発行・管理する従属`WorkerHandle`を使用する。`WorkerHandle`をgeneric lifecycle ownerとして扱わず、generic runtime/classifierを再実装しない。フロントエンド固有の終了手順は`FrontendWorkerTerminationUseCase`へ接続し、同手順が汎用寿命管理機構を所有しない。
@@ -327,37 +327,37 @@ flowchart LR
 
 ### ルートobject
 
-`openFrontendById()`、`openDemux()`、`openDemuxById()`、`openDescrambler()`、`openLnbById()`、`openLnbByName()`は`RootOpenTxn`の正規入口へ接続する。公開ID検証、object/out IDの公開確定点、失敗時rollback、`openDescrambler()`の未結合生成は`../tuner_hal/DESIGN_JA.md`の各公開APIの名前付き契約、「公開transactionのphase・確定点・失敗処理契約」の`root/child open`、`IDescrambler demux結合契約`を正とし、本書では再定義しない。
+`openFrontendById()`、`openDemux()`、`openDemuxById()`、`openDescrambler()`、`openLnbById()`、`openLnbByName()`は`RootOpenTxn`の正規入口へ接続する。公開ID検証、object/out IDの公開確定点、失敗時rollback、`openDescrambler()`の未結合生成は`../TUNER_HAL_DESIGN_JA.md`の各公開APIの名前付き契約、「公開transactionのphase・確定点・失敗処理契約」の`root/child open`、`IDescrambler demux結合契約`を正とし、本書では再定義しない。
 
-`getFrontendIds()`、`getFrontendInfo()`、`getLnbIds()`、`getDemuxIds()`、`getDemuxInfo()`、`getDemuxCaps()`、`getMaxNumberOfFrontends()`、`isLnaSupported()`はservice_runtimeのcapability/query ownerへ接続する。snapshot、使用上限、probe可否その他の公開query semanticsは`../tuner_hal/DESIGN_JA.md`を正とする。
+`getFrontendIds()`、`getFrontendInfo()`、`getLnbIds()`、`getDemuxIds()`、`getDemuxInfo()`、`getDemuxCaps()`、`getMaxNumberOfFrontends()`、`isLnaSupported()`はservice_runtimeのcapability/query ownerへ接続する。snapshot、使用上限、probe可否その他の公開query semanticsは`../TUNER_HAL_DESIGN_JA.md`を正とする。
 
 ### 子objectと関連付け
 
-Filter、DVR、TimeFilterなどの子object生成は`ChildOpenTxn`の正規入口へ接続する。親demuxの検証順序、登録確定点、rollback、TimeFilter非対応時の公開結果は`../tuner_hal/DESIGN_JA.md`の各公開APIの名前付き契約と「公開transactionのphase・確定点・失敗処理契約」の`root/child open`を正とする。Descramblerのroot未結合生成と`setDemuxSource()`の一回性・原子的結合は同書`IDescrambler demux結合契約`を正とし、本書では再定義しない。
+Filter、DVR、TimeFilterなどの子object生成は`ChildOpenTxn`の正規入口へ接続する。親demuxの検証順序、登録確定点、rollback、TimeFilter非対応時の公開結果は`../TUNER_HAL_DESIGN_JA.md`の各公開APIの名前付き契約と「公開transactionのphase・確定点・失敗処理契約」の`root/child open`を正とする。Descramblerのroot未結合生成と`setDemuxSource()`の一回性・原子的結合は同書`IDescrambler demux結合契約`を正とし、本書では再定義しない。
 
-`IFilter.setDataSource()`は`SourceBoundaryTxn`、`IDemux.setFrontendDataSource()`は`DemuxFrontendSourceTxn`、Record DVR接続は`RecordDvrFilterRelationTxn`、descrambler PID登録は`DescramblerPidTxn`を通す。`IFrontend.setLnb()`は`FrontendLnbRelationTxn`を通し、同ownerからLNB resource ownerのprepared assignment lease入口へ接続する。CI CAM系は`../tuner_hal/DESIGN_JA.md`の非対応契約へ接続し、backend relationを生成しない。relationのvalidation、generation、commit/rollback semanticsは同書を正とする。
+`IFilter.setDataSource()`は`SourceBoundaryTxn`、`IDemux.setFrontendDataSource()`は`DemuxFrontendSourceTxn`、Record DVR接続は`RecordDvrFilterRelationTxn`、descrambler PID登録は`DescramblerPidTxn`を通す。`IFrontend.setLnb()`は`FrontendLnbRelationTxn`を通し、同ownerからLNB resource ownerのprepared assignment lease入口へ接続する。CI CAM系は`../TUNER_HAL_DESIGN_JA.md`の非対応契約へ接続し、backend relationを生成しない。relationのvalidation、generation、commit/rollback semanticsは同書を正とする。
 
 ### 入力処理
 
-TS入力originとgeneration名前空間は`../tuner_hal/DESIGN_JA.md`の`TsInputOrigin`／soft demux入力元契約を正とする。本書では、各パケットを型付き`TsInputOrigin`とともに`PacketPipeline`の正規入口へ入力し、`PacketPipeline`がパケット検証と入力元別の定常時continuityの正本を所有し、各Filter等の正規所有者へ配送接続する責務境界を定義する。section/PES assembler等の状態所有権とPSI/SI意味解析は`PacketPipeline`へ吸収しない。通常パケット処理の第二の正規状態所有者または正規手順所有者を設けない。
+TS入力originとgeneration名前空間は`../TUNER_HAL_DESIGN_JA.md`の`TsInputOrigin`／soft demux入力元契約を正とする。本書では、各パケットを型付き`TsInputOrigin`とともに`PacketPipeline`の正規入口へ入力し、`PacketPipeline`がパケット検証と入力元別の定常時continuityの正本を所有し、各Filter等の正規所有者へ配送接続する責務境界を定義する。section/PES assembler等の状態所有権とPSI/SI意味解析は`PacketPipeline`へ吸収しない。通常パケット処理の第二の正規状態所有者または正規手順所有者を設けない。
 
-Filter/SharedFilterのqueue確定は`FilterProducerDrainGate`、DVR queue I/Oは`QueueEpochProtocol`、配送済みAV領域のallocation/leaseはAV resource ownerへ接続する。write authorityのgeneration、失効条件、配送済みAV資源の寿命は`../tuner_hal/DESIGN_JA.md`の同名契約・資源寿命表を正とし、本書では再定義しない。
+Filter/SharedFilterのqueue確定は`FilterProducerDrainGate`、DVR queue I/Oは`QueueEpochProtocol`、配送済みAV領域のallocation/leaseはAV resource ownerへ接続する。write authorityのgeneration、失効条件、配送済みAV資源の寿命は`../TUNER_HAL_DESIGN_JA.md`の同名契約・資源寿命表を正とし、本書では再定義しない。
 
-Filter FMQ ownership / payload data-planeの公開意味は`../tuner_hal/DESIGN_JA.md`の同名分離契約だけを正本とする。実装上は`demux/src/config.rs::FilterOpenType::has_filter_fmq()`をFilter FMQ resourceのopen時所有・descriptor export・FMQ byte台帳の判定アンカー、`FilterOpenType::uses_filter_fmq_for_payload()`を通常Filter payload commit / EventFlag / Filter status対象の判定アンカーとして対応付ける。TS `RECORD`では前者だけがtrueとなり、payload routeは`RecordDvrFilterRelationTxn`とRecord DVR queue ownerへ接続する。これらのpredicateから公開semanticsを再定義せず、追加・変更時は先に`../tuner_hal/DESIGN_JA.md`の正本契約を更新する。
+Filter FMQ ownership / payload data-planeの公開意味は`../TUNER_HAL_DESIGN_JA.md`の同名分離契約だけを正本とする。実装上は`demux/src/config.rs::FilterOpenType::has_filter_fmq()`をFilter FMQ resourceのopen時所有・descriptor export・FMQ byte台帳の判定アンカー、`FilterOpenType::uses_filter_fmq_for_payload()`を通常Filter payload commit / EventFlag / Filter status対象の判定アンカーとして対応付ける。TS `RECORD`では前者だけがtrueとなり、payload routeは`RecordDvrFilterRelationTxn`とRecord DVR queue ownerへ接続する。これらのpredicateから公開semanticsを再定義せず、追加・変更時は先に`../TUNER_HAL_DESIGN_JA.md`の正本契約を更新する。
 
-TS AUDIOのPTS-sparse event associationは`demux/src/av/audio_timestamp.rs::AudioTimestampAssociation`を`demux/src/runtime/filter.rs::FilterRuntime`の従属状態とし、同型の`extract()` / `reset()` / `reset_if_origin()`を既存AV配送・filter lifecycle・stream boundaryの入口からだけ使用する。結果は`AudioMediaFrame`または`AudioTimestampAssociationFailure`として既存AV allocation ownerへ渡す。独立したstate owner、packet pipeline、clock、queue、workerは追加しない。anchor、数値上限、codec構文、reset、fallback、AIDL `MediaEvent`のpresence/value、成功配送条件は`../tuner_hal/DESIGN_JA.md`の「clear non-passthrough MediaEvent presentation timestamp 契約」だけを正本とし、本書では再定義しない。
+TS AUDIOのPTS-sparse event associationは`demux/src/av/audio_timestamp.rs::AudioTimestampAssociation`を`demux/src/runtime/filter.rs::FilterRuntime`の従属状態とし、同型の`extract()` / `reset()` / `reset_if_origin()`を既存AV配送・filter lifecycle・stream boundaryの入口からだけ使用する。結果は`AudioMediaFrame`または`AudioTimestampAssociationFailure`として既存AV allocation ownerへ渡す。独立したstate owner、packet pipeline、clock、queue、workerは追加しない。anchor、数値上限、codec構文、reset、fallback、AIDL `MediaEvent`のpresence/value、成功配送条件は`../TUNER_HAL_DESIGN_JA.md`の「clear non-passthrough MediaEvent presentation timestamp 契約」だけを正本とし、本書では再定義しない。
 
-Filter lifecycleと`startId`のcaller-visibleな保持・破棄境界、presence/value、配送順は`../tuner_hal/DESIGN_JA.md`のFilter lifecycle契約だけを正本とする。実装上は既存`FilterRuntime`をlifecycle依存状態と未配送`startId` artifactのownerとし、`QueueCleanupUseCase` / `StreamBoundaryTxn`その他の既存typed境界からだけ更新する。別owner、queue、worker、時計を追加せず、本書では公開`stop()` / `start()` / `flush()` / reconfigureの結果を再規定しない。
+Filter lifecycleと`startId`のcaller-visibleな保持・破棄境界、presence/value、配送順は`../TUNER_HAL_DESIGN_JA.md`のFilter lifecycle契約だけを正本とする。実装上は既存`FilterRuntime`をlifecycle依存状態と未配送`startId` artifactのownerとし、`QueueCleanupUseCase` / `StreamBoundaryTxn`その他の既存typed境界からだけ更新する。別owner、queue、worker、時計を追加せず、本書では公開`stop()` / `start()` / `flush()` / reconfigureの結果を再規定しない。
 
-物理frontendの`exclusiveGroupId`に関するcaller-visible capability policyは`../tuner_hal/DESIGN_JA.md`だけを正本とする。`tuner_hal2`ではdevice probeで得た物理identityを`aidl_service/src/service_entry.rs`のcapability構築経路へ渡し、`service_runtime/src/registry.rs::FrontendCapabilitySnapshot`へ格納してAIDL応答へ投影する実装接続だけを所有する。group値、公開条件、共有条件を本書で再定義しない。
+物理frontendの`exclusiveGroupId`に関するcaller-visible capability policyは`../TUNER_HAL_DESIGN_JA.md`だけを正本とする。`tuner_hal2`ではdevice probeで得た物理identityを`aidl_service/src/service_entry.rs`のcapability構築経路へ渡し、`service_runtime/src/registry.rs::FrontendCapabilitySnapshot`へ格納してAIDL応答へ投影する実装接続だけを所有する。group値、公開条件、共有条件を本書で再定義しない。
 
-公開frontend IDのcaller-visible範囲・opaque性・TRM handle往復条件は`../tuner_hal/DESIGN_JA.md`だけを正本とする。`tuner_hal2`では`aidl_service/src/service_entry.rs::FrontendIdAllocator`が起動時probeの決定論的順序に対して単一の`0..=255` ID空間を割り当て、`service_runtime`は割当済みIDをopaqueな`FrontendRuntimeId`として保持する。backend種別、device family、unit、DVB tupleをfrontend IDから復元する実装を置かない。
+公開frontend IDのcaller-visible範囲・opaque性・TRM handle往復条件は`../TUNER_HAL_DESIGN_JA.md`だけを正本とする。`tuner_hal2`では`aidl_service/src/service_entry.rs::FrontendIdAllocator`が起動時probeの決定論的順序に対して単一の`0..=255` ID空間を割り当て、`service_runtime`は割当済みIDをopaqueな`FrontendRuntimeId`として保持する。backend種別、device family、unit、DVB tupleをfrontend IDから復元する実装を置かない。
 
-公開LNB IDの範囲・opaque性・TRM handle往復条件も`../tuner_hal/DESIGN_JA.md`だけを正本とする。`service_runtime/src/boot.rs::LnbIdAllocator`が公開LNB endpointへresource-type固有の`0..=255` IDを割り当て、`LnbRegistryEntry.owner_frontend_id`がfrontendとの対応を保持する。LNB IDをfrontend IDから算術導出する実装を置かない。
+公開LNB IDの範囲・opaque性・TRM handle往復条件も`../TUNER_HAL_DESIGN_JA.md`だけを正本とする。`service_runtime/src/boot.rs::LnbIdAllocator`が公開LNB endpointへresource-type固有の`0..=255` IDを割り当て、`LnbRegistryEntry.owner_frontend_id`がfrontendとの対応を保持する。LNB IDをfrontend IDから算術導出する実装を置かない。
 
-px4_drv character deviceのdelivery-system公開条件も`../tuner_hal/DESIGN_JA.md`だけを正本とする。`aidl_service/src/service_entry.rs::px4_frontend_systems`がdevice familyとminor番号を対象driverの`system_cap`契約へ写像し、probeは返されたsystemだけを`FrontendProbeOutcome::Available`へ変換する。既存nodeごとにISDB-T/ISDB-Sの両variantを無条件生成する実装を置かない。
+px4_drv character deviceのdelivery-system公開条件も`../TUNER_HAL_DESIGN_JA.md`だけを正本とする。`aidl_service/src/service_entry.rs::px4_frontend_systems`がdevice familyとminor番号を対象driverの`system_cap`契約へ写像し、probeは返されたsystemだけを`FrontendProbeOutcome::Available`へ変換する。既存nodeごとにISDB-T/ISDB-Sの両variantを無条件生成する実装を置かない。
 
-ISDB-S symbol-rateの公開capability値と入力受付条件は`../tuner_hal/DESIGN_JA.md`だけを正本とする。`tuner_hal2`では`FrontendCapabilitySnapshot`へのcapability格納と、`device/src/dvb/tune_mapping.rs`で検証済みtyped requestをLinux DVB `DTV_SYMBOL_RATE` propertyへ写像する物理接続だけを所有する。公開値、sentinelの意味、成功・失敗条件を本書で再定義しない。
+ISDB-S symbol-rateの公開capability値と入力受付条件は`../TUNER_HAL_DESIGN_JA.md`だけを正本とする。`tuner_hal2`では`FrontendCapabilitySnapshot`へのcapability格納と、`device/src/dvb/tune_mapping.rs`で検証済みtyped requestをLinux DVB `DTV_SYMBOL_RATE` propertyへ写像する物理接続だけを所有する。公開値、sentinelの意味、成功・失敗条件を本書で再定義しない。
 
 ## 実装構造索引
 
@@ -381,7 +381,7 @@ ISDB-S symbol-rateの公開capability値と入力受付条件は`../tuner_hal/DE
 ## 構造上の禁止事項
 
 - AIDL methodごとにclose、queue、rollback、quarantineの状態機械を複製しない。
-- `../tuner_hal/DESIGN_JA.md`の共通部品適用表が所有者を指定した処理について、API別use-case、worker、helperが同じ状態変更、cleanup、失敗分類を個別再実装しない。
+- `../TUNER_HAL_DESIGN_JA.md`の共通部品適用表が所有者を指定した処理について、API別use-case、worker、helperが同じ状態変更、cleanup、失敗分類を個別再実装しない。
 - `ObjectCloseTxn`と並ぶ別のcleanup authorityを置かない。
 - Demux frontend relationをFilter用`SourceBoundaryTxn`へ吸収しない。
 - relation transactionと`StreamBoundaryTxn`を別々の公開commitにしない。
@@ -395,7 +395,7 @@ ISDB-S symbol-rateの公開capability値と入力受付条件は`../tuner_hal/DE
 - A/V sync relation / reverse indexまたはPCR anchorを複数ownerが直接変更しない。
 - `tuner_hal`で定義した公開戻り値を`service_runtime`またはbackendで別の値へ読み替えない。
 - AIDL objectまたはcallback実体をdemux、device、resource ledgerへ渡さない。
-- 静的inventory／capability queryからcleanup、worker操作、backend I/Oを開始しない。動的frontend status queryのread model、`FrontendStatusSnapshot`の更新・無効化、bounded synchronous readへ変更できる条件は`../tuner_hal/DESIGN_JA.md`を正とし、本書ではowner/entry mapping以外を再定義しない。
+- 静的inventory／capability queryからcleanup、worker操作、backend I/Oを開始しない。動的frontend status queryのread model、`FrontendStatusSnapshot`の更新・無効化、bounded synchronous readへ変更できる条件は`../TUNER_HAL_DESIGN_JA.md`を正とし、本書ではowner/entry mapping以外を再定義しない。
 - file名またはtype名をAOSP公開契約、ARIB根拠、公開状態遷移の値そのものとして扱わない。
 - `共通transaction / use-caseの規範実装アンカー`以外の物理配置表を状態遷移の正本として扱わない。
 - 規範実装アンカーのrename、split、merge時に旧アンカーを残したまま新アンカーを追加し、複数のtransaction正本を作らない。
