@@ -5,7 +5,7 @@
 
 `DESIGN_JA.md` は Tuner HAL の設計正本である。本書は、AOSP 公開契約、ARIB/ISDB 入力処理、本製品の対応範囲、状態所有者、資源寿命、失敗時遷移、quarantine 条件、未対応機能の返却方針を定義する。
 
-本書は、作業履歴、リリース履歴、ビルド手順、atest手順、VTS手順、静的検索手順、成果物命名規則、完了宣言テンプレートを定義しない。それらは `開発規則.md`、`タスク完了判定の実施方法.md`、`CHANGELOG.md`、各作業計画を正とする。
+本書は、作業履歴、リリース履歴、ビルド手順、atest手順、VTS手順、静的検索手順、成果物命名規則、完了宣言テンプレートを定義しない。それらは `開発規則.md`、`タスク完了判定の実施方法.md`、Git 履歴・PR 履歴、各作業計画を正とする。現行実装の変更履歴は `tuner_hal2/CHANGELOG.md` を参照する。
 
 本書と他文書で、状態遷移、資源寿命、戻り値、capability、失敗時波及範囲が矛盾する場合は、本書を正として他文書を修正する。ただし、作業完了判定、成果物名、build / atest / VTS 手順については `タスク完了判定の実施方法.md` を正とする。
 
@@ -36,7 +36,7 @@
 
 ## 外部文書参照: no-panic / 劣化起動 / 閉鎖側失敗境界
 
-この項目のうち、プロジェクト共通の禁止構文、低レベル失敗の型付き検出、mutex汚染、一般的なworker / lock / callback規約は`../GLOBAL_CODE_CONVENTION.md`を正とする。product default `tuner_hal2`の公開status変換の集約方法、ワーカー生成・join、typed entry、現行helper使用規則は`../tuner_hal2/CODE_CONVENTION.md`を正とする。旧`tuner_hal/CODE_CONVENTION.md`は旧参照実装だけの規約であり、現行実装規約の正本として参照しない。公開AIDL戻り値、status precedence、次状態、資源寿命、閉鎖側失敗対象は本書だけを正本とし、実装規約側で再定義しない。
+この項目のうち、プロジェクト共通の禁止構文、低レベル失敗の型付き検出、mutex汚染、一般的なworker / lock / callback規約は`GLOBAL_CODE_CONVENTION.md`を正とする。product default `tuner_hal2`の公開status変換の集約方法、ワーカー生成・join、typed entry、現行helper使用規則は`tuner_hal2/CODE_CONVENTION.md`を正とする。旧 `tuner_hal` 参照実装固有の規約は現行実装規約の正本として参照しない。公開AIDL戻り値、status precedence、次状態、資源寿命、閉鎖側失敗対象は本書だけを正本とし、実装規約側で再定義しない。
 
 
 ## 正本・移動済み情報の読み方
@@ -46,9 +46,9 @@
 1. `DESIGN_JA.md の責務境界`、`製品スコープ / AOSP capability / VTS profile 境界`、`AIDL 契約境界`、`Tuner HAL 状態遷移表SSOT` を最上位正本とする。
 2. `0-S. 状態所有・寿命・失敗時遷移設計`、`0-S-2. 状態所有者表`、0-S-3Bの名前付きcanonical contract、各公開APIの名前付き契約、`TS continuity / adaptation-only packet 固定`、`AV shared handle の NativeHandle 形式`、`AV転送方式とクライアント側の存続期間`、`AOSP / AIDL / VTS 系`、`ARIB TS packet 系`、`ARIB section 系`、`PES / record index 系`、`MULTI2 / B25 descrambler 系`を現在の設計契約の正本とする。移送済みの旧表番号・旧節名は現行正本参照に使用しない。
 3. 旧 `補足契約:` 章は本体正本章へ吸収済みであり、本書内に二重正本として残さない。
-4. 個別リリースの履歴、作業経緯、ビルド/atest/VTS/静的検索/成果物命名/完了宣言は本書では定義しない。履歴は `CHANGELOG.md`、完了判定は `タスク完了判定の実施方法.md` を正とする。
+4. 個別リリースの履歴、作業経緯、ビルド/atest/VTS/静的検索/成果物命名/完了宣言は本書では定義しない。設計変更の履歴は Git 履歴・PR 履歴、現行実装の変更履歴は `tuner_hal2/CHANGELOG.md`、完了判定は `タスク完了判定の実施方法.md` を正とする。
 
-削除・移動した旧記載の追跡表は現行リリース物に置かない。現行仕様は本書、project-wide実装規約は`../GLOBAL_CODE_CONVENTION.md`、product default `tuner_hal2`の実装規約は`../tuner_hal2/CODE_CONVENTION.md`、現行実装owner / anchorは`../tuner_hal2/DESIGN_JA.md`、統合手順は`../tuner_hal2/INTEGRATION.md`、変更履歴は`tuner_hal/CHANGELOG.md`を正とする。`tuner_hal/CODE_CONVENTION.md`は旧参照実装固有の規約だけを保持する。存在しない trace 文書または移送済み旧表番号を正本参照にしてはならない。
+削除・移動した旧記載の追跡表は現行リリース物に置かない。現行仕様は本書、project-wide実装規約は`GLOBAL_CODE_CONVENTION.md`、product default `tuner_hal2`の実装規約は`tuner_hal2/CODE_CONVENTION.md`、現行実装owner / anchorは`tuner_hal2/DESIGN_JA.md`、統合手順は`tuner_hal2/INTEGRATION.md`を正とする。設計変更の履歴は Git 履歴・PR 履歴、現行実装の変更履歴は`tuner_hal2/CHANGELOG.md`を参照する。旧 `tuner_hal` 参照実装固有の規約・変更履歴を現行正本の根拠にしてはならない。存在しない trace 文書または移送済み旧表番号を正本参照にしてはならない。
 
 ## 製品スコープ / AOSP capability / VTS profile 境界
 
@@ -73,7 +73,7 @@ DVB frontend の `exclusiveGroupId` は公開 frontend ID や `(adapter_id, fron
 
 ### VTS profile / capability 対応契約
 
-VTS XML/profileで使用する機能とcapabilityで宣言する機能は一致させる。VTS profileで使用する機能をcapability非宣言にしてはならず、capabilityで宣言する機能をVTS/profileから到達不能にして検査を回避してはならない。実装適用状況そのものは実装を事実源とし、完了・未達判定は `../タスク完了判定の実施方法.md` に従う判定側で管理する。
+VTS XML/profileで使用する機能とcapabilityで宣言する機能は一致させる。VTS profileで使用する機能をcapability非宣言にしてはならず、capabilityで宣言する機能をVTS/profileから到達不能にして検査を回避してはならない。実装適用状況そのものは実装を事実源とし、完了・未達判定は `タスク完了判定の実施方法.md` に従う判定側で管理する。
 
 | 領域 | capability / profile 方針 | 設計契約 |
 |---|---|---|
@@ -127,7 +127,7 @@ LineageOS 22.1 / Android 15 で採用する Tuner AIDL の null 入力は、API 
 - `IFrontend.setCallback(callback)` は、AIDL コメントに null 可との記載がある一方、機械的 AIDL 宣言は非 null、LineageOS 22.1 の `frameworks/base` は非 null Binder callback を生成し、`frameworks/av` と AOSP 参照 HAL は null を `INVALID_ARGUMENT` とし、AIDL VTS も非 null 登録だけを要求する。本製品では `setCallback()` を非 null 登録契約とし、callback の寿命終了は `close()` に従う。V3 で `@nullable` を追加しない。
 - `ILnb.setCallback(callback)` は、AIDL コメントが null を許容し、AOSP 参照 HAL も null を保存して以後の callback 配送を停止する。一方、LineageOS 22.1 のフレームワーク経路と AIDL VTS は HAL への null 登録を使用しない。これはフレームワーク必須経路ではなく、Hardware AIDL の説明と参照 HAL に既に存在する null 値を Rust 実装でも表現するための補正として扱う。unfrozen current V3 では `callback` を `@nullable` とし、Rust 公開境界は `Option` で受ける。
 
-生成言語bindingの表現は公開契約ではない。実装適用状況そのものは実装を事実源とし、判定結果・未達理由は本書に保持せず`../タスク完了判定の実施方法.md`に従う判定側で管理する。実装状態を理由に本節のAOSP契約を弱めたり、frozen AIDLをvendor独自改変したりしてはならない。
+生成言語bindingの表現は公開契約ではない。実装適用状況そのものは実装を事実源とし、判定結果・未達理由は本書に保持せず`タスク完了判定の実施方法.md`に従う判定側で管理する。実装状態を理由に本節のAOSP契約を弱めたり、frozen AIDLをvendor独自改変したりしてはならない。
 
 ### `IFrontend.setCallback()` 登録契約
 
@@ -162,7 +162,7 @@ AOSP Frameworkの`Filter.setDataSource()`は、成功済みのnon-NULL sourceを
 
 ### 公開transactionのphase・確定点・失敗処理契約
 
-この表は`../tuner_hal2/DESIGN_JA.md`から責務移管した公開transactionのphase、確定点、失敗処理を保持する。公開AIDLの意味、状態、戻り値、確定点、rollback / cleanupは本書が唯一の正本である。実装owner、module anchor、呼び出し禁止入口は`../tuner_hal2/DESIGN_JA.md`を正とする。
+この表は`tuner_hal2/DESIGN_JA.md`から責務移管した公開transactionのphase、確定点、失敗処理を保持する。公開AIDLの意味、状態、戻り値、確定点、rollback / cleanupは本書が唯一の正本である。実装owner、module anchor、呼び出し禁止入口は`tuner_hal2/DESIGN_JA.md`を正とする。
 
 object methodでは、呼出対象のlifecycle/generation不整合を引数値の詳細検証より先に`INVALID_STATE`へ確定する。呼出対象の生存検証後のtag、列挙値、nullable入力、値域の不正は`INVALID_ARGUMENT`とし、状態を変更しない。別object引数のlifecycle/generation不整合は`INVALID_STATE`、foreign owner、別demux、wrong kind、非互換関係は`INVALID_ARGUMENT`とし、呼出対象objectのowner検証と引数objectのownership検証を同じ判定へ丸めない。
 
@@ -334,7 +334,7 @@ Record DVRの`attachFilter()` / `detachFilter()`は、Record DVRがLiveであれ
 
 #### `DemuxFilterAvSettings.isSecureMemory` / `isPassthrough`
 
-製品ライブAVアーキテクチャをclear-memoryかつnon-passthroughへ固定するproduct-level invariantは `../開発規則.md` を唯一の正本とし、本節では再定義しない。そのinvariantをAIDL入力契約へ写像し、非開始AV filterの `configure()` では `isSecureMemory=false && isPassthrough=false` だけをAV能力判定へ進める。`isSecureMemory=true` または `isPassthrough=true` はAIDL上有効だが本製品非対応の要求として、副作用なしの `UNAVAILABLE` とし、旧settings、shared backing、stream-type hint、source relation、generation、active `avDataId` を変更しない。開始済みfilterでは前段のlifecycle判定を適用し、有効だが未対応の値を評価して既存 `INVALID_STATE` を覆さない。未知tag / malformed settingsは `INVALID_ARGUMENT` とする。
+製品ライブAVアーキテクチャをclear-memoryかつnon-passthroughへ固定するproduct-level invariantは `開発規則.md` を唯一の正本とし、本節では再定義しない。そのinvariantをAIDL入力契約へ写像し、非開始AV filterの `configure()` では `isSecureMemory=false && isPassthrough=false` だけをAV能力判定へ進める。`isSecureMemory=true` または `isPassthrough=true` はAIDL上有効だが本製品非対応の要求として、副作用なしの `UNAVAILABLE` とし、旧settings、shared backing、stream-type hint、source relation、generation、active `avDataId` を変更しない。開始済みfilterでは前段のlifecycle判定を適用し、有効だが未対応の値を評価して既存 `INVALID_STATE` を覆さない。未知tag / malformed settingsは `INVALID_ARGUMENT` とする。
 
 `MediaEvent`出力側の `isSecureMemory=false` はこの入力validationの代替ではない。secure allocator、secure backing、secure handle種別、secure専用state machineを生成してはならない。
 
@@ -577,7 +577,7 @@ Tuner HAL runtime の公開API状態、内部事象、資源寿命、失敗時�
 
 
 - filter ID は HAL 外部へ返す値を demux-local ID のまま維持する。DVR attach/detach、filter データ入力元、AV sync ID 取得では、渡された filter オブジェクト の内部 owner demux を検証し、owner demux が一致しない filter を `INVALID_ARGUMENT` で拒否する。
-- generic workerのhandle/spawn ownership、typed terminal result、stop / wake / join、generation fence、reaper handoff、lease returnは0-S-3Bの`WorkerRuntime`を唯一の正本とする。failure categoryは`WorkerFailureClassifier`を正とする。mutex / condvarのproject-wide規約は`../GLOBAL_CODE_CONVENTION.md`、product defaultのspawn / join等の実装規約は`../tuner_hal2/CODE_CONVENTION.md`を正とし、本節では再定義しない。
+- generic workerのhandle/spawn ownership、typed terminal result、stop / wake / join、generation fence、reaper handoff、lease returnは0-S-3Bの`WorkerRuntime`を唯一の正本とする。failure categoryは`WorkerFailureClassifier`を正とする。mutex / condvarのproject-wide規約は`GLOBAL_CODE_CONVENTION.md`、product defaultのspawn / join等の実装規約は`tuner_hal2/CODE_CONVENTION.md`を正とし、本節では再定義しない。
 
 ワーカーが利用するbackend pathは、停止通知またはFD closeで有限時間に復帰すること、driver/kernel契約から導出した内部I/O上限内に復帰すること、または副作用をowner境界で遮断できる隔離実行であることのいずれかを能力公開前に証明する。いずれも証明できないbackend pathは能力として公開しない。選局成否を固定時間で覆す専用timing profileは設けない。取消、回収、reaper、lease return、terminal budget、`Quarantined` / `ServiceCritical`分岐のgeneric semanticsは0-S-3Bの`WorkerRuntime`を唯一の正本とし、本節では再定義しない。
 
@@ -759,7 +759,7 @@ tune中はlock後の既存worker監視周期でpendingを再観測してよい�
 
 px4_drv の legacy chardev は同一 device node の二重 open を許さないため、px4 backend は control 用 fd と ライブ TS reader 用 fd を別々に `open()` してはならない。`/dev/px4video*` family は `PTX_SET_SYSTEM_MODE`、`PTX_SET_CHANNEL`、`PTX_START_STREAMING`、TS read を同一 open instance から扱う前提にする。
 
-px4 backendは同一device nodeを二重openせず、1回のbackend openからcontrol経路とlive TS readerを派生させる。二重open回避のproduct default実装規約は`../tuner_hal2/CODE_CONVENTION.md`の「px4 single-open backend 実装規約」を正とし、旧参照実装の具体API選択を現行実装の根拠にしない。single-open制約下でもtune後にlive TS、section、AV、record/DVR経路へpacketを流せることを公開設計上の不変条件とする。
+px4 backendは同一device nodeを二重openせず、1回のbackend openからcontrol経路とlive TS readerを派生させる。二重open回避のproduct default実装規約は`tuner_hal2/CODE_CONVENTION.md`の「px4 single-open backend 実装規約」を正とし、旧参照実装の具体API選択を現行実装の根拠にしない。single-open制約下でもtune後にlive TS、section、AV、record/DVR経路へpacketを流せることを公開設計上の不変条件とする。
 
 
 フロントエンドの存在と対応能力は、機器、versioned backend manifest、functional probe、有限の選局終端を実装できることから導出する。選局は非同期操作とし、バックエンドが選局要求を受理した後は、`LOCKED`、backendの明示失敗、明示的停止、再選局、閉鎖、またはbackend別`ProductProfile.tuneTerminalDeadlineMs`到達時の`NO_SIGNAL`のいずれかで現generationを必ず終端する。現行profileはearth_pt1を`4000 ms`、px4を`7000 ms`とする。px4値はRT710設定、PLL確認、demod lock、absolute TSID一致、およびrelative selectorのTMCC解決からなる正常な有限経路を期限前に打ち切らないための上限である。期限到達はbinder呼出しの成功を後から失敗へ反転させず、非同期終端eventとして扱う。VTS既知信号経路はVTS自身の待機内でLOCKEDへ到達できる入力を別途要求し、製品deadlineをVTS待機値へ短縮しない。正の有限期限と取消可能なbackend I/Oを実装できないfrontendは公開しない。停止した`ioctl`、read、USB control transferから復帰する内部期限は別の`workerIoDeadlineMs`で管理し、px4の`ctrl_timeout=0`を禁止する。個別I/O期限は検証済みcontrol transfer上限より短くせず、正常処理列の合計がbackendのterminal deadline内に収まるよう固定する。
@@ -968,7 +968,7 @@ AOSP側はこの配列の物理layer数上限を定義しない。Frameworkの `
 - `UNDEFINED`と`AUTO`を同義に正規化してはならない。`UNDEFINED`は制約なし、`AUTO`はhardwareによる自動検出・設定を要求する既知の明示値としてtyped requestで区別し、拒否時はバックエンドと直前の要求を変更しない。
 - `inversion`は未指定・自動を表すAIDL値だけを、明示制約なしとして成功させる。本製品の対象backendは明示inversionを設定または固定値検証する能力を採用しないため、規格上有効な明示inversionは`UNAVAILABLE`とする。予約値・未知値は`INVALID_ARGUMENT`とする。
 - `serviceAreaId=0`は未指定として成功させる。本製品の対象backendは正の`serviceAreaId`をbackend requestまたは選局結果検証へ反映する能力を採用しないため、構文上有効な正の値は`UNAVAILABLE`、負値は`INVALID_ARGUMENT`とする。
-- `partialReceptionFlag=UNDEFINED`はcaller constraintなしを表すAOSP sentinelとして成功させる。`AUTO`はhardwareによる自動判定を求める既知の明示要求だが、現行product profileではその要求を設定・検証する契約を持たないため、backend副作用前に`UNAVAILABLE`とする。`TRUE` / `FALSE`は規格上有効な明示要求である。`IFrontend.tune()`同期戻り値は、要求の構文・capability・資源・backend開始可否を検証して選局処理を受理できたことだけを表し、lock後のTMCC照合結果を後から同期戻り値へ反映しない。px4は採用するread-only `PTX_GET_TMCC_PARTIAL_RECEPTION`を用い、対象demodulatorが自動判定した同一tune generationのfreshなTMCC readbackが要求値と一致した場合だけ、その要求で指定されたsignalへlockしたものとして`FrontendEventType::LOCKED`を通知する。不一致は要求されたsignalへlockできなかったものとして`NO_SIGNAL`とし、readback未確定・I/O失敗・古いgenerationでは`LOCKED`を生成せず既存のbackend failure契約に従う。scanでは同じfresh readback一致を当該candidateの成立条件とし、不一致または未確定をlock済みcandidateとして通知しない。earth_pt1 / TC90522は`../future_work/not_planned/earth_pt1_tc90522_tmcc_readback_error_propagation_blocker.md`が未解決の間、readback成立を偽装せず明示`TRUE` / `FALSE`を`UNAVAILABLE`とする。予約値・未知値は`INVALID_ARGUMENT`とする。
+- `partialReceptionFlag=UNDEFINED`はcaller constraintなしを表すAOSP sentinelとして成功させる。`AUTO`はhardwareによる自動判定を求める既知の明示要求だが、現行product profileではその要求を設定・検証する契約を持たないため、backend副作用前に`UNAVAILABLE`とする。`TRUE` / `FALSE`は規格上有効な明示要求である。`IFrontend.tune()`同期戻り値は、要求の構文・capability・資源・backend開始可否を検証して選局処理を受理できたことだけを表し、lock後のTMCC照合結果を後から同期戻り値へ反映しない。px4は採用するread-only `PTX_GET_TMCC_PARTIAL_RECEPTION`を用い、対象demodulatorが自動判定した同一tune generationのfreshなTMCC readbackが要求値と一致した場合だけ、その要求で指定されたsignalへlockしたものとして`FrontendEventType::LOCKED`を通知する。不一致は要求されたsignalへlockできなかったものとして`NO_SIGNAL`とし、readback未確定・I/O失敗・古いgenerationでは`LOCKED`を生成せず既存のbackend failure契約に従う。scanでは同じfresh readback一致を当該candidateの成立条件とし、不一致または未確定をlock済みcandidateとして通知しない。earth_pt1 / TC90522は`future_work/not_planned/earth_pt1_tc90522_tmcc_readback_error_propagation_blocker.md`が未解決の間、readback成立を偽装せず明示`TRUE` / `FALSE`を`UNAVAILABLE`とする。予約値・未知値は`INVALID_ARGUMENT`とする。
 - layer `numOfSegment=0`は未指定として成功させる。`0xFF`はAndroid 14 CTSが`isSegmentAutoSupported()==true`のfrontendへ送る互換AUTO要求として扱い、`isSegmentAuto=true`ならbackend/demodulatorのsegment自動判定を使用して成功させ、`false`なら`UNAVAILABLE`とする。本製品の対象backendはlayerごとの明示segment数を反映または固定値検証する能力を採用しないため、構文上有効な`1..13`は`UNAVAILABLE`とする。`14..254`、負値、255を超える値は`INVALID_ARGUMENT`とする。
 - 上記4項目を含むsettingsは、成功時だけ正規化済みrequest fingerprintへ含める。`UNAVAILABLE`または`INVALID_ARGUMENT`では旧tune/scan、backend、generationを変更せず、入力値を黙って捨てて成功してはならない。
 - blind scanは`UNAVAILABLE`とする。
@@ -980,7 +980,7 @@ ARIB STD-B31 2.2-E1は、モードを2.3、内符号化率を3.8と3.15.6.6、�
 
 ### ISDB-S validation
 
-- public settingsの`symbolRate=0`はAOSPの未指定sentinelとして成功させ、広告する`minSymbolRate..maxSymbolRate`の値域外であっても拒否しない。正値は、同じ不変`CapabilitySnapshot`が広告する範囲内であり、かつbackendへ適用する経路がある場合だけ成功させる。px4と現行Linux DVB / earth_pt1の製品profileは固定値28,860,000だけを広告・受理する。Linux v6.6 `tc90522_ops_sat.info`はsymbol-rate capabilityを設定せず`FE_GET_INFO`では0/0となる一方、同driverのISDB-S readbackと採用`qm1d1b0004` module経路は28,860,000を固定の実効値とするため、earth_pt1の`CapabilitySnapshot`はdriver名・完全topology・周波数範囲のprobe成功を前提に`minSymbolRate=maxSymbolRate=28,860,000`を製品profile証跡として確定する。public入力0はBinder境界で未指定のまま保持し、backend mappingで固定実効値へ正規化して`DTV_SYMBOL_RATE=28,860,000`を必ず投影する。その他の正値または`u32`へ収まらない値はbackend副作用、旧request、generationの変更前に`INVALID_ARGUMENT`とする。AOSPの`IsdbsFrontendSettings.Builder.setSymbolRate()`と`FrontendInfo.minSymbolRate/maxSymbolRate`はこの明示値経路を公開しており、CDD/VTSに`0`限定の契約は置かれていない。将来`FE_GET_INFO`由来へ戻す条件とupstream改善候補は`../future_work/not_planned/linux_tc90522_isdbs_symbol_rate_capability_metadata.md`に記録し、現行runtime契約の根拠にはしない。
+- public settingsの`symbolRate=0`はAOSPの未指定sentinelとして成功させ、広告する`minSymbolRate..maxSymbolRate`の値域外であっても拒否しない。正値は、同じ不変`CapabilitySnapshot`が広告する範囲内であり、かつbackendへ適用する経路がある場合だけ成功させる。px4と現行Linux DVB / earth_pt1の製品profileは固定値28,860,000だけを広告・受理する。Linux v6.6 `tc90522_ops_sat.info`はsymbol-rate capabilityを設定せず`FE_GET_INFO`では0/0となる一方、同driverのISDB-S readbackと採用`qm1d1b0004` module経路は28,860,000を固定の実効値とするため、earth_pt1の`CapabilitySnapshot`はdriver名・完全topology・周波数範囲のprobe成功を前提に`minSymbolRate=maxSymbolRate=28,860,000`を製品profile証跡として確定する。public入力0はBinder境界で未指定のまま保持し、backend mappingで固定実効値へ正規化して`DTV_SYMBOL_RATE=28,860,000`を必ず投影する。その他の正値または`u32`へ収まらない値はbackend副作用、旧request、generationの変更前に`INVALID_ARGUMENT`とする。AOSPの`IsdbsFrontendSettings.Builder.setSymbolRate()`と`FrontendInfo.minSymbolRate/maxSymbolRate`はこの明示値経路を公開しており、CDD/VTSに`0`限定の契約は置かれていない。将来`FE_GET_INFO`由来へ戻す条件とupstream改善候補は`future_work/not_planned/linux_tc90522_isdbs_symbol_rate_capability_metadata.md`に記録し、現行runtime契約の根拠にはしない。
 - AOSP SDK defaultの`STREAM_ID + INVALID_STREAM_ID(0xFFFF)`は、BS/CS110を問わず明示TSIDの値域検証より先に`Unspecified`へ正規化する。通常の日本向けBS scan、channel保存、ライブ再選局ではTISが検出・保存したabsolute TSIDを明示し、`Unspecified` fallbackをサービス選択に使用しない。px4 BSの`Unspecified`は現行ABI上の互換fallbackとしてrelative slot `0`へ写像するが、callerがslot 0を指定したとは扱わない。Linux DVB / earth_pt1の`Unspecified`は`DTV_STREAM_ID=NO_STREAM_ID_FILTER`へ明示写像し、前回のselectorをproperty cacheへ残さない。CS110は従来どおりselectorなしのfrequency-only選局を使用する。
 - modulationとcodeRateの`UNDEFINED`はcallerが当該制約を指定していないAOSP sentinelとして成功させ、capability bitとしてadvertiseしない。`AUTO`はhardwareによる自動検出・設定を求める既知の明示要求としてtyped requestに保持し、対応値としてadvertise・受理する。既知具体値は`UNAVAILABLE`、予約値・未知値は`INVALID_ARGUMENT`とする。
 - `rolloff`は未指定を表すAIDL値を明示制約なしとして成功させる。本製品の対象backend/deviceは明示rolloffを設定または固定値検証する能力を採用しないため、規格上有効な明示rolloffは`UNAVAILABLE`、予約値・未知値は`INVALID_ARGUMENT`とする。入力`rolloff`をbackend requestから捨てたまま成功してはならず、拒否時は旧tune/scan、backend、generationを変更しない。
@@ -1138,7 +1138,7 @@ LNB固有の安全状態復帰は後始末対象として`ObjectCloseTxn`へ型�
 
 ## 復号鍵台帳
 
-`IDescrambler.setKeyToken()` が受け取る値は復号鍵そのものではなく、不透明な参照値である。Tuner HAL はこの参照値で復号鍵台帳を引き、内部の `DescramblerKeySlot` に変換する。Binder 境界を越える バイト列に MULTI2 の system key、CBC 初期値、偶数鍵、奇数鍵を入れてはならない。固定parameterの所有・使用と共有方式は`../開発規則.md`の「r52のMULTI2固定値と動的鍵状態」、session/tokenに対応するKs更新・失効は`../cas_plugin/DESIGN_JA.md`を正とする。本書では公開AIDL境界とTuner側の参照・復号契約だけを定義する。
+`IDescrambler.setKeyToken()` が受け取る値は復号鍵そのものではなく、不透明な参照値である。Tuner HAL はこの参照値で復号鍵台帳を引き、内部の `DescramblerKeySlot` に変換する。Binder 境界を越える バイト列に MULTI2 の system key、CBC 初期値、偶数鍵、奇数鍵を入れてはならない。固定parameterの所有・使用と共有方式は`開発規則.md`の「r52のMULTI2固定値と動的鍵状態」、session/tokenに対応するKs更新・失効は`cas_plugin/DESIGN_JA.md`を正とする。本書では公開AIDL境界とTuner側の参照・復号契約だけを定義する。
 
 復号鍵台帳の key slot 状態は次で固定する。
 
@@ -1149,7 +1149,7 @@ LNB固有の安全状態復帰は後始末対象として`ObjectCloseTxn`へ型�
 | `RegistryUnavailable` | 台帳 lock 失敗、内部状態破損、内部鍵状態の参照先を利用できない場合などで解決不能 | `RegistryUnavailable` または AIDL `UNKNOWN_ERROR` 相当 | 不可 | 内部障害を復号成功にしない |
 
 
-失効時は直ちに無効化し、既存descramblerからの再取得を含む新規の鍵参照取得を遮断する。取得済み参照による実行中packetの完了とdrainは`../cas_plugin/DESIGN_JA.md`のrevoke契約に従う。
+失効時は直ちに無効化し、既存descramblerからの再取得を含む新規の鍵参照取得を遮断する。取得済み参照による実行中packetの完了とdrainは`cas_plugin/DESIGN_JA.md`のrevoke契約に従う。
 
 
 ## デスクランブル gate
@@ -1236,7 +1236,7 @@ DVB backend は frontend index と同じ demux index / dvr index を使う。`ad
 
 ## 診断可観測性の固定
 
-本番経路トークンの用語、リリース段階、TIS から `setKeyToken()` へ渡してよい値のスコープは `開発規則.md` を正とする。本節では、Tuner HAL が受け取ったトークンの検証、AIDL戻り値、診断、副作用だけを固定する。Tuner側の台帳は、標準MediaCas session ID bytesに対応する有効な内部鍵状態を参照する境界とする。具体helper名、内部参照API、debug出力方法は本契約で規範化しない。product defaultの`IDescrambler.setKeyToken()`に伴うtoken参照の結合・解除、refcountのowner / entryは`../tuner_hal2/DESIGN_JA.md`の`DescramblerKeyTxn` / descrambler key table規範実装アンカーを正とし、CAS側のKs更新のownerにはしない。
+本番経路トークンの用語、リリース段階、TIS から `setKeyToken()` へ渡してよい値のスコープは `開発規則.md` を正とする。本節では、Tuner HAL が受け取ったトークンの検証、AIDL戻り値、診断、副作用だけを固定する。Tuner側の台帳は、標準MediaCas session ID bytesに対応する有効な内部鍵状態を参照する境界とする。具体helper名、内部参照API、debug出力方法は本契約で規範化しない。product defaultの`IDescrambler.setKeyToken()`に伴うtoken参照の結合・解除、refcountのowner / entryは`tuner_hal2/DESIGN_JA.md`の`DescramblerKeyTxn` / descrambler key table規範実装アンカーを正とし、CAS側のKs更新のownerにはしない。
 
 `IDescrambler.setKeyToken()` に到達する non-VOID トークンは、標準MediaCas経路では `MediaCas.Session.getSessionId()` と同一byte sequenceをTuner key tokenとして用い、そのbytesに対応する有効な内部鍵状態への参照を解決対象とする。CAS pluginがTuner側の台帳を直接変更する登録経路を要求しない。TIS向けに別形式のvendor-private tokenを設けない。入力形式はTuner SDK `Descrambler.isValidKeyToken()` に合わせ、1 byte以上16 byte以下を有効なtoken形式とする。ただしAndroid 14系の `Tuner.VOID_KEYTOKEN` は1 byteトークン `[0x00]` としてcurrent key removal用に予約する。空トークン `[]` はVOIDトークンではなく、常に `INVALID_ARGUMENT` と内部診断 `BAD_TOKEN` に落とす。16 byteを超えるnon-VOIDトークンはregistry lookup前に `INVALID_ARGUMENT` / `BAD_TOKEN` とする。
 
@@ -1250,7 +1250,7 @@ DVB backend は frontend index と同じ demux index / dvr index を使う。`ad
 
 `IDescrambler.setKeyToken()` の失敗時は、現在の鍵スロット、現在のトークン、demux 紐付け、PID登録を変更しない。空 トークン、長さ超過、未登録、失効済み、台帳異常のどれで失敗しても、成功扱いにせず固定された AIDL 戻り値と診断だけを返す。PID 登録を消す操作は `removePid()` だけであり、`VOID_KEYTOKEN` と 鍵参照の解決失敗は PID 登録削除を伴わない。
 
-デスクランブル診断は公開AIDL意味を変えない内部診断として保持する。product defaultの診断record / storeは`../tuner_hal2/CODE_CONVENTION.md`のfailure / rollback / cleanup規約およびquery / packet / diagnostic境界にあるtyped・bounded診断規約に従う。具体helper名、debug出力先、ファイル書き込み周期はproduct defaultの公開・論理契約として要求しない。
+デスクランブル診断は公開AIDL意味を変えない内部診断として保持する。product defaultの診断record / storeは`tuner_hal2/CODE_CONVENTION.md`のfailure / rollback / cleanup規約およびquery / packet / diagnostic境界にあるtyped・bounded診断規約に従う。具体helper名、debug出力先、ファイル書き込み周期はproduct defaultの公開・論理契約として要求しない。
 
 ### 診断counter飽和契約
 
@@ -1287,7 +1287,7 @@ Tuner HAL の descrambler は、key token で与えられた鍵を用いて、18
 ECM / EMM、CAS権利判定、card I/O、CW取得はCAS plugin / vendor CAS layerの責務とする。Tuner HALは、取得済みtokenに対応するcurrent Ksと製品固定parameterを使うpayload復号中核を担当する。
 
 
-固定parameterの所有・使用と共有方式は`../開発規則.md`の「r52のMULTI2固定値と動的鍵状態」、CAS側のsession/token対応・Ks更新・失効は`../cas_plugin/DESIGN_JA.md`を正とする。Tunerは参照したKsと製品固定値から復号用materialを内部構成できる。CAS plugin / TIS / Tuner HALのリリース段階ごとの統合スコープは`開発規則.md`を正とする。本節が規定するのはTuner HALのpacket単位デスクランブル中核と診断境界であり、libaribb25相当のTS→TS B25処理系全体の完成条件または作業完了判定を定義しない。
+固定parameterの所有・使用と共有方式は`開発規則.md`の「r52のMULTI2固定値と動的鍵状態」、CAS側のsession/token対応・Ks更新・失効は`cas_plugin/DESIGN_JA.md`を正とする。Tunerは参照したKsと製品固定値から復号用materialを内部構成できる。CAS plugin / TIS / Tuner HALのリリース段階ごとの統合スコープは`開発規則.md`を正とする。本節が規定するのはTuner HALのpacket単位デスクランブル中核と診断境界であり、libaribb25相当のTS→TS B25処理系全体の完成条件または作業完了判定を定義しない。
 
 ## LNB profile 判定表
 
@@ -1336,7 +1336,7 @@ AV shared backing は、検証が成功するまで旧 backing を保持する�
 
 ### test と release API の境界
 
-release AIDL経路からテスト専用入口へ到達してはならず、テスト専用入口は製品runtimeのcapability・状態・戻り値を変更しない。この実装方法は`../GLOBAL_CODE_CONVENTION.md`の「テスト専用入口の本番隔離」を正とし、runtime flagだけの隔離を本番経路からの除外根拠にしない。
+release AIDL経路からテスト専用入口へ到達してはならず、テスト専用入口は製品runtimeのcapability・状態・戻り値を変更しない。この実装方法は`GLOBAL_CODE_CONVENTION.md`の「テスト専用入口の本番隔離」を正とし、runtime flagだけの隔離を本番経路からの除外根拠にしない。
 
 ### AOSP / AIDL / VTS 系
 
