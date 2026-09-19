@@ -677,7 +677,7 @@ mod tests {
     use super::*;
     use maleicacid_tuner_hal2_device::dvb::DtvPropertyBuffer;
 
-fn collect_prefixes_from_ueventd(text: &str) -> std::collections::BTreeSet<String> {
+    fn collect_prefixes_from_ueventd(text: &str) -> std::collections::BTreeSet<String> {
         text.lines()
             .filter_map(|line| line.split_whitespace().next())
             .filter_map(|path| path.strip_prefix("/dev/"))
@@ -729,20 +729,13 @@ fn collect_prefixes_from_ueventd(text: &str) -> std::collections::BTreeSet<Strin
         }
     }
 
-
     #[test]
     fn dvb_frontend_id_bitpack_avoids_adapter_frontend_collision() {
         let adapter0_frontend5 = dvb_export_frontend_id(0, 5, FrontendSystem::IsdbT).unwrap();
         let adapter1_frontend0 = dvb_export_frontend_id(1, 0, FrontendSystem::IsdbT).unwrap();
         assert_ne!(adapter0_frontend5, adapter1_frontend0);
-        assert_eq!(
-            adapter0_frontend5,
-            2_000_000 + (5_i32 << 4)
-        );
-        assert_eq!(
-            adapter1_frontend0,
-            2_000_000 + (1_i32 << 12)
-        );
+        assert_eq!(adapter0_frontend5, 2_000_000 + (5_i32 << 4));
+        assert_eq!(adapter1_frontend0, 2_000_000 + (1_i32 << 12));
     }
 
     #[test]
@@ -752,7 +745,6 @@ fn collect_prefixes_from_ueventd(text: &str) -> std::collections::BTreeSet<Strin
         assert!(dvb_export_frontend_id(256, 0, FrontendSystem::IsdbT).is_none());
         assert!(dvb_export_frontend_id(0, 256, FrontendSystem::IsdbT).is_none());
     }
-
 
     #[test]
     fn dvb_export_ids_keep_isdb_t_and_isdb_s_as_distinct_variants() {
