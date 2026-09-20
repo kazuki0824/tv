@@ -485,14 +485,20 @@ impl ITuner for TunerAidlService {
     }
 
     fn openFrontendById(&self, frontend_id: i32) -> BinderResult<Strong<dyn IFrontend>> {
-        let entry = self
+        let open_result = self
             .lock_runtime()?
             .root_open_txn()
             .open_frontend_root_object_for_id(
                 frontend_id,
                 public_api_call(AidlObjectKind::Tuner, AidlApi::TunerOpenFrontendById, None),
-            )
-            .map_err(status_from_hal_error)?;
+            );
+        let entry = match open_result {
+            Ok(entry) => entry,
+            Err(error) => {
+                log::error!("openFrontendById failed: frontend_id={frontend_id} error={error:?}");
+                return Err(status_from_hal_error(error));
+            }
+        };
         self.frontend_object_from_entry(entry)
     }
 
