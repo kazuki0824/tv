@@ -673,7 +673,8 @@ mod tests {
     use maleicacid_tuner_hal2_device::dvb::DtvPropertyBuffer;
 
     #[test]
-    fn px4_probe_candidates_use_known_paths_without_directory_enumeration_or_single_node_fallback() {
+    fn px4_probe_candidates_use_known_paths_without_directory_enumeration_or_single_node_fallback()
+    {
         let present = BTreeSet::from([
             PathBuf::from("/dev/px4video3"),
             PathBuf::from("/dev/pxmlt8video7"),
@@ -683,11 +684,7 @@ mod tests {
         assert_eq!(
             candidates,
             vec![
-                (
-                    3,
-                    PathBuf::from("/dev/px4video3"),
-                    "px4video3".to_string(),
-                ),
+                (3, PathBuf::from("/dev/px4video3"), "px4video3".to_string(),),
                 (
                     7,
                     PathBuf::from("/dev/pxmlt8video7"),
