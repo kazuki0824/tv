@@ -49,7 +49,7 @@ include vendor/maleicacid/tv/tuner_hal2/config/BoardConfigVendorSePolicy.mk
 import /vendor/etc/ueventd.tuner_hal2.rc
 ```
 
-`ueventd.tuner_hal2.rc` はDVB / px4 / dma_heapのdevice node permissionを設定する。
+`ueventd.tuner_hal2.rc` はDVB / px4 / dma_heapのdevice node permissionを設定する。px4系のflat device nodeは末尾`*`だけのprefix pattern（例: `/dev/px4video*`）で記述する。`/dev/px4video[0-9]*`のように文字クラスの後ろへ末尾`*`を置く形は、ueventdのprefix最適化で`[0-9]`を文字通り扱って実device nodeへ一致しないため使用しない。
 
 ## 3.1 px4_drv readback ABI のproduct前提
 
