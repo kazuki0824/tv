@@ -37,8 +37,8 @@ import com.maleicacid.tvinput.common.TsPid
 import com.maleicacid.tvinput.db.ChannelRecord
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.ExecutorService
 import java.util.concurrent.ExecutionException
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
@@ -190,20 +190,29 @@ class TunerController(
         check(!released) { "TunerController は解放済みです inputId=$inputId" }
         return try {
             sectionExecutor.submit<T> { block() }.get()
-        } catch (e: InterruptedException) {
-            Thread.currentThread().interrupt()
-            throw RuntimeException("TunerController executor interrupted inputId=$inputId", e)
-        } catch (e: ExecutionException) {
-            val cause = e.cause ?: e
-            throw when (cause) {
-                is RuntimeException -> cause
-                is Error -> cause
-                else -> RuntimeException(cause)
-            }
-        } catch (e: RejectedExecutionException) {
-            throw IllegalStateException("TunerController executor は停止済みです inputId=$inputId", e)
+        } catch (error: Exception) {
+            throw controllerBlockingFailure(error)
         }
     }
+
+    private fun controllerBlockingFailure(error: Exception): Throwable =
+        when (error) {
+            is InterruptedException -> {
+                Thread.currentThread().interrupt()
+                RuntimeException("TunerController executor interrupted inputId=$inputId", error)
+            }
+            is ExecutionException -> {
+                when (val cause = error.cause ?: error) {
+                    is RuntimeException -> cause
+                    is Error -> cause
+                    else -> RuntimeException(cause)
+                }
+            }
+            is RejectedExecutionException -> {
+                IllegalStateException("TunerController executor は停止済みです inputId=$inputId", error)
+            }
+            else -> error
+        }
 
     private val sectionFilterHandles = LinkedHashMap<TsPid, SectionFilterHandle>()
 
@@ -1761,15 +1770,20 @@ class TunerController(
     override fun close() = release()
 
     private fun normalizeFrameworkTunerFailure(error: Throwable): Throwable {
-        if (error::class != RuntimeException::class) return error
-        val message = error.message ?: return error
         val prefix = "Unknown error"
-        if (!message.startsWith(prefix)) return error
-        val detail = message.removePrefix(prefix)
-        if (detail.isBlank() || detail.startsWith(" ") || detail.startsWith(":")) return error
-        return RuntimeException("$prefix: $detail", error.cause).also { normalized ->
-            normalized.stackTrace = error.stackTrace
-            error.suppressed.forEach(normalized::addSuppressed)
+        val detail =
+            (error as? RuntimeException)
+                ?.takeIf { it::class == RuntimeException::class }
+                ?.message
+                ?.takeIf { it.startsWith(prefix) }
+                ?.removePrefix(prefix)
+        return if (detail.isNullOrBlank() || detail.startsWith(" ") || detail.startsWith(":")) {
+            error
+        } else {
+            RuntimeException("$prefix: $detail", error.cause).also { normalized ->
+                normalized.stackTrace = error.stackTrace
+                error.suppressed.forEach(normalized::addSuppressed)
+            }
         }
     }
 
