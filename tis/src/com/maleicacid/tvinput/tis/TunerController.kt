@@ -184,35 +184,38 @@ class TunerController(
 
     @Volatile private var released = false
 
-    @Suppress("TooGenericExceptionThrown")
     private fun <T> callOnController(block: () -> T): T {
         if (Thread.currentThread().name.startsWith("maleicacid-tis-controller-$inputId")) return block()
         check(!released) { "TunerController は解放済みです inputId=$inputId" }
         return try {
             sectionExecutor.submit<T> { block() }.get()
-        } catch (error: Exception) {
-            throw controllerBlockingFailure(error)
+        } catch (error: InterruptedException) {
+            propagateControllerBlockingFailure(error)
+        } catch (error: ExecutionException) {
+            propagateControllerBlockingFailure(error)
+        } catch (error: RejectedExecutionException) {
+            propagateControllerBlockingFailure(error)
         }
     }
 
-    private fun controllerBlockingFailure(error: Exception): Throwable =
-        when (error) {
-            is InterruptedException -> {
-                Thread.currentThread().interrupt()
-                RuntimeException("TunerController executor interrupted inputId=$inputId", error)
+    private fun propagateControllerBlockingFailure(error: Exception): Nothing {
+        if (error is InterruptedException) Thread.currentThread().interrupt()
+        val failure =
+            when (error) {
+                is InterruptedException ->
+                    RuntimeException("TunerController executor interrupted inputId=$inputId", error)
+                is ExecutionException ->
+                    when (val cause = error.cause ?: error) {
+                        is RuntimeException -> cause
+                        is Error -> cause
+                        else -> RuntimeException(cause)
+                    }
+                is RejectedExecutionException ->
+                    IllegalStateException("TunerController executor は停止済みです inputId=$inputId", error)
+                else -> error
             }
-            is ExecutionException -> {
-                when (val cause = error.cause ?: error) {
-                    is RuntimeException -> cause
-                    is Error -> cause
-                    else -> RuntimeException(cause)
-                }
-            }
-            is RejectedExecutionException -> {
-                IllegalStateException("TunerController executor は停止済みです inputId=$inputId", error)
-            }
-            else -> error
-        }
+        throw failure
+    }
 
     private val sectionFilterHandles = LinkedHashMap<TsPid, SectionFilterHandle>()
 
