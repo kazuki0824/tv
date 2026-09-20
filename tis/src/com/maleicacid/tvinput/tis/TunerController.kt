@@ -1718,11 +1718,12 @@ class TunerController(
             try {
                 action()
             } catch (error: Throwable) {
+                val normalized = normalizeFrameworkTunerFailure(error)
                 val primary = failure
                 if (primary == null) {
-                    failure = error
-                } else if (primary !== error) {
-                    primary.addSuppressed(error)
+                    failure = normalized
+                } else if (primary !== normalized) {
+                    primary.addSuppressed(normalized)
                 }
             }
         }
@@ -1758,6 +1759,19 @@ class TunerController(
     }
 
     override fun close() = release()
+
+    private fun normalizeFrameworkTunerFailure(error: Throwable): Throwable {
+        if (error::class != RuntimeException::class) return error
+        val message = error.message ?: return error
+        val prefix = "Unknown error"
+        if (!message.startsWith(prefix)) return error
+        val detail = message.removePrefix(prefix)
+        if (detail.isBlank() || detail.startsWith(" ") || detail.startsWith(":")) return error
+        return RuntimeException("$prefix: $detail", error.cause).also { normalized ->
+            normalized.stackTrace = error.stackTrace
+            error.suppressed.forEach(normalized::addSuppressed)
+        }
+    }
 
     companion object {
         /** 既存controller executorで失効を先に確定し、解放失敗なら呼出元の新tuneへ進まない。 */
