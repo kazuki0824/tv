@@ -235,9 +235,7 @@ fn default_lnb_entry_for_frontend(entry: &FrontendRegistryEntry) -> Option<LnbRe
                 .file_name()
                 .and_then(|v| v.to_str())
                 .unwrap_or("unknown");
-            let rel = entry.id.0.saturating_sub(1_000_000);
-            let unit = rel.rem_euclid(10_000).div_euclid(10);
-            Some(format!("maleicacid-lnb-px4-{dev}-unit-{unit}"))
+            Some(format!("maleicacid-lnb-px4-{dev}"))
         }
         FrontendBackendKind::LinuxDvb => {
             let path = entry.device_path.display().to_string();
