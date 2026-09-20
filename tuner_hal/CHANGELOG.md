@@ -1,3 +1,9 @@
+# PR #108 Android 15 TRM互換のfrontend ID設計補正
+
+- 実機で、公開frontend ID `1,010,000` がAndroid 15のTunerResourceManager handle往復で `80` に切り詰められ、`openFrontendById(80)` が未公開IDとして失敗することを確認した。
+- 公開frontend IDをbackend情報を埋め込まないopaque IDへ変更し、Android 15でlosslessに往復する `0..=255` に固定した。backend/device/unit/topologyはregistry、device path、capability、`exclusiveGroupId`を正本とし、frontend IDから逆算しない。
+- px4/DVBは同じID空間を共有し、起動時probeの決定論的順序へ単一allocatorで割り当てる。256件を超える候補は公開せず容量不足として診断する。
+
 # PR #108 CAS試験profileの適用範囲
 
 - ClearKeyのMedia CAS互換試験と、B25/B1の実ECMを使う製品結合・Tuner VTSの条件を区別した。
