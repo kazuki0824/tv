@@ -469,32 +469,27 @@ fn dvb_probe_variants(
     Ok(variants)
 }
 
-fn probe_frontends() -> Vec<FrontendProbeOutcome> {
-    let mut outcomes = Vec::new();
-
-    let mut px4_candidates: Vec<(i32, PathBuf, String)> = Vec::new();
-    if let Ok(dir) = std::fs::read_dir("/dev") {
-        for entry in dir.flatten() {
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else {
-                continue;
-            };
-            for prefix in PX4_PROBE_PREFIXES {
-                let Some(idx) = name.strip_prefix(prefix) else {
-                    continue;
-                };
-                let Ok(index) = idx.parse::<i32>() else {
-                    continue;
-                };
-                px4_candidates.push((index, entry.path(), name.to_string()));
+fn collect_px4_probe_candidates(
+    mut path_exists: impl FnMut(&std::path::Path) -> bool,
+) -> Vec<(i32, PathBuf, String)> {
+    let mut candidates = Vec::new();
+    for prefix in PX4_PROBE_PREFIXES {
+        for unit in 0..=0x3fff_i32 {
+            let name = format!("{prefix}{unit}");
+            let path = PathBuf::from(format!("/dev/{name}"));
+            if path_exists(&path) {
+                candidates.push((unit, path, name));
             }
         }
     }
-    if px4_candidates.is_empty() && PathBuf::from("/dev/px4video0").exists() {
-        px4_candidates.push((0, PathBuf::from("/dev/px4video0"), "px4video0".to_string()));
-    }
-    px4_candidates.sort_by(|a, b| (a.0, &a.2).cmp(&(b.0, &b.2)));
-    px4_candidates.dedup_by(|a, b| a.1 == b.1);
+    candidates.sort_by(|a, b| (a.0, &a.2).cmp(&(b.0, &b.2)));
+    candidates
+}
+
+fn probe_frontends() -> Vec<FrontendProbeOutcome> {
+    let mut outcomes = Vec::new();
+
+    let px4_candidates = collect_px4_probe_candidates(std::path::Path::exists);
     for (unit, path, name) in px4_candidates {
         let Some(base_id) = px4_export_frontend_base_id(unit, &name) else {
             continue;
@@ -676,6 +671,32 @@ pub fn run_service() {
 mod tests {
     use super::*;
     use maleicacid_tuner_hal2_device::dvb::DtvPropertyBuffer;
+
+    #[test]
+    fn px4_probe_candidates_use_known_paths_without_directory_enumeration_or_single_node_fallback() {
+        let present = BTreeSet::from([
+            PathBuf::from("/dev/px4video3"),
+            PathBuf::from("/dev/pxmlt8video7"),
+        ]);
+        let candidates = collect_px4_probe_candidates(|path| present.contains(path));
+
+        assert_eq!(
+            candidates,
+            vec![
+                (
+                    3,
+                    PathBuf::from("/dev/px4video3"),
+                    "px4video3".to_string(),
+                ),
+                (
+                    7,
+                    PathBuf::from("/dev/pxmlt8video7"),
+                    "pxmlt8video7".to_string(),
+                ),
+            ]
+        );
+        assert!(collect_px4_probe_candidates(|_| false).is_empty());
+    }
 
     #[test]
     fn dvb_export_ids_keep_isdb_t_and_isdb_s_as_distinct_variants() {
