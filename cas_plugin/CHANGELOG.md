@@ -1,3 +1,9 @@
+# PR #114 Tuner HAL設計正本の移動追従
+
+- `cas_plugin/DESIGN_JA.md`に残っていた旧`../tuner_hal/DESIGN_JA.md`参照3件を、移動後の`../TUNER_HAL_DESIGN_JA.md`へ更新した。
+- Tuner HAL公開契約、CASとTunerの試験範囲、`setKeyToken()`のtoken契約の参照先だけを補正した。CAS pluginの公開API、状態、実装、組込み設定は変更していない。
+- 移動後の正本文書が存在し、CAS設計正本から削除済みの旧文書を参照していないことを静的に確認した。ビルド、単体試験、Soong、atest、VTS、実機確認は文書参照だけの変更のため実施していない。
+
 # PR #113 現行 #111 への再基底化
 
 - 現行 #111 のEMM更新状態・work key永続化を維持し、#113のCAS共有参照を統合した。共有状態にはECM契約期限を持たせず、権利bitmap判定や権利確認用の再復号も復活させていない。
