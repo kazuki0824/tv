@@ -8,7 +8,7 @@ use binder::BinderFeatures;
 use maleicacid_tuner_hal2_common::os_abi::{ioctl, last_errno};
 use maleicacid_tuner_hal2_common::{
     japan_isdbt_frequency_contract_range_hz, FrontendBackendKind, FrontendSystem, HalError,
-    HalErrorDetail, TUNER_SERVICE_NAME,
+    HalErrorDetail, ANDROID15_TRM_RESOURCE_ID_MAX, TUNER_SERVICE_NAME,
 };
 use maleicacid_tuner_hal2_device::dvb::{
     DtvProperties, DtvProperty, DtvPropertyBuffer, DtvPropertyUnion, DvbFrontendInfo,
@@ -130,7 +130,6 @@ const JAPAN_CS110_LAST_IF_HZ: i64 = 2_053_000_000;
 const ISDBS_SYMBOL_RATE: i32 = 28_860_000;
 const PX4_PHYSICAL_GROUP_TAG: i32 = 0x1000_0000;
 const DVB_PHYSICAL_GROUP_TAG: i32 = 0x2000_0000;
-const ANDROID15_FRONTEND_ID_MAX: i32 = 0xff;
 
 #[derive(Debug, Default)]
 struct FrontendIdAllocator {
@@ -139,7 +138,7 @@ struct FrontendIdAllocator {
 
 impl FrontendIdAllocator {
     fn allocate(&mut self) -> Option<FrontendRuntimeId> {
-        if self.next > ANDROID15_FRONTEND_ID_MAX {
+        if self.next > ANDROID15_TRM_RESOURCE_ID_MAX {
             return None;
         }
         let id = FrontendRuntimeId(self.next);
@@ -702,7 +701,7 @@ mod tests {
     #[test]
     fn frontend_id_allocator_stays_within_android15_resource_handle_domain() {
         let mut allocator = FrontendIdAllocator::default();
-        for expected in 0..=ANDROID15_FRONTEND_ID_MAX {
+        for expected in 0..=ANDROID15_TRM_RESOURCE_ID_MAX {
             assert_eq!(allocator.allocate(), Some(FrontendRuntimeId(expected)));
         }
         assert_eq!(allocator.allocate(), None);

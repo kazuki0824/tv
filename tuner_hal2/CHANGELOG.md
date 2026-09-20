@@ -1,3 +1,9 @@
+# PR #108 Android 15 TRM互換のLNB ID実装修正
+
+- `boot.rs`の `frontend_id + 10,000` によるLNB ID生成を廃止し、`LnbIdAllocator`でresource-type固有の `0..=255` opaque IDを割り当てる。
+- Android 15 TRMのresource ID上限を`common`の共有定数へ集約し、frontend/LNB allocatorで同じplatform互換条件を使用する。
+- 起動probe試験のLNB ID期待値をopaque IDへ更新した。Android/Soong全体build、VTS、実機LNB openはこのコミット時点では未実施。
+
 # PR #108 Android 15 TRM互換のfrontend ID実装修正
 
 - `service_entry.rs`のpx4 100万台IDとDVB 200万台ID生成を廃止し、起動時に `0..=255` のopaque frontend IDを割り当てる`FrontendIdAllocator`へ置換した。

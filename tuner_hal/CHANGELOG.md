@@ -1,3 +1,9 @@
+# PR #108 Android 15 TRM互換のLNB ID設計補正
+
+- LineageOS 22.1 / Android 15ではLNB IDもfrontendと同じTRM resource handle encode/decodeを通るため、従来の `frontend_id + 10,000` は8 bitへ切り詰められる。
+- 公開LNB IDをfrontend IDとは独立したopaque `0..=255` 空間へ変更し、owner frontendとの対応はregistry relationを正本とする。resource typeが別であるため、frontend/LNB/demux間の同数値IDは衝突と扱わない。
+- AIDL契約自体のID幅を8 bitと解釈せず、対象platform実装との互換条件として規定する。
+
 # PR #108 Android 15 TRM互換のfrontend ID設計補正
 
 - 実機で、公開frontend ID `1,010,000` がAndroid 15のTunerResourceManager handle往復で `80` に切り詰められ、`openFrontendById(80)` が未公開IDとして失敗することを確認した。
