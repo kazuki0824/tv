@@ -38,6 +38,7 @@ import com.maleicacid.tvinput.db.ChannelRecord
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
@@ -183,11 +184,22 @@ class TunerController(
 
     @Volatile private var released = false
 
+    @Suppress("TooGenericExceptionThrown")
     private fun <T> callOnController(block: () -> T): T {
         if (Thread.currentThread().name.startsWith("maleicacid-tis-controller-$inputId")) return block()
         check(!released) { "TunerController は解放済みです inputId=$inputId" }
         return try {
             sectionExecutor.submit<T> { block() }.get()
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw RuntimeException("TunerController executor interrupted inputId=$inputId", e)
+        } catch (e: ExecutionException) {
+            val cause = e.cause ?: e
+            throw when (cause) {
+                is RuntimeException -> cause
+                is Error -> cause
+                else -> RuntimeException(cause)
+            }
         } catch (e: RejectedExecutionException) {
             throw IllegalStateException("TunerController executor は停止済みです inputId=$inputId", e)
         }
