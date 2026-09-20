@@ -345,6 +345,8 @@ Filter lifecycleと`startId`のcaller-visibleな保持・破棄境界、presence
 
 物理frontendの`exclusiveGroupId`に関するcaller-visible capability policyは`../tuner_hal/DESIGN_JA.md`だけを正本とする。`tuner_hal2`ではdevice probeで得た物理identityを`aidl_service/src/service_entry.rs`のcapability構築経路へ渡し、`service_runtime/src/registry.rs::FrontendCapabilitySnapshot`へ格納してAIDL応答へ投影する実装接続だけを所有する。group値、公開条件、共有条件を本書で再定義しない。
 
+公開frontend IDのcaller-visible範囲・opaque性・TRM handle往復条件は`../tuner_hal/DESIGN_JA.md`だけを正本とする。`tuner_hal2`では`aidl_service/src/service_entry.rs::FrontendIdAllocator`が起動時probeの決定論的順序に対して単一の`0..=255` ID空間を割り当て、`service_runtime`は割当済みIDをopaqueな`FrontendRuntimeId`として保持する。backend種別、device family、unit、DVB tupleをfrontend IDから復元する実装を置かない。
+
 ISDB-S symbol-rateの公開capability値と入力受付条件は`../tuner_hal/DESIGN_JA.md`だけを正本とする。`tuner_hal2`では`FrontendCapabilitySnapshot`へのcapability格納と、`device/src/dvb/tune_mapping.rs`で検証済みtyped requestをLinux DVB `DTV_SYMBOL_RATE` propertyへ写像する物理接続だけを所有する。公開値、sentinelの意味、成功・失敗条件を本書で再定義しない。
 
 ## 実装構造索引
