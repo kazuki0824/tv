@@ -1,3 +1,9 @@
+# PR #108 Android 15 TRM互換のfrontend ID実装修正
+
+- `service_entry.rs`のpx4 100万台IDとDVB 200万台ID生成を廃止し、起動時に `0..=255` のopaque frontend IDを割り当てる`FrontendIdAllocator`へ置換した。
+- `boot.rs`がpx4 frontend IDからunitを逆算する依存を除去し、LNB名はdevice pathのbasenameから構成する。
+- allocatorの境界試験を追加した。実機再確認、Android/Soong全体build、VTSはこのコミット時点では未実施。
+
 # PR #108 Playback DVRの共通復号経路
 
 - Playback DVRの各パケットをライブ入力と同じ復号判断へ接続した。読出しと保留状態は既存の`PlaybackConsumeTxn`が引き続き所有する。
