@@ -61,16 +61,6 @@ fn px4_device_family_code(device_name: &str) -> i32 {
     0
 }
 
-fn px4_export_frontend_base_id(unit: i32, device_name: &str) -> Option<i32> {
-    if unit < 0 {
-        return None;
-    }
-    let family = px4_device_family_code(device_name);
-    1_000_000i32
-        .checked_add(family.checked_mul(10_000)?)
-        .and_then(|base| base.checked_add(unit.checked_mul(10)?))
-}
-
 fn px4_lnb_profile_from_device_name(device_name: &str) -> LnbRegistryProfile {
     if device_name.starts_with("px4video") {
         LnbRegistryProfile::Px4Device15VOnly
@@ -117,7 +107,6 @@ fn probe_satellite_power_topology(
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DvbProbeVariant {
-    id: i32,
     system: FrontendSystem,
     capability: Option<FrontendCapabilitySnapshot>,
 }
@@ -141,6 +130,23 @@ const JAPAN_CS110_LAST_IF_HZ: i64 = 2_053_000_000;
 const ISDBS_SYMBOL_RATE: i32 = 28_860_000;
 const PX4_PHYSICAL_GROUP_TAG: i32 = 0x1000_0000;
 const DVB_PHYSICAL_GROUP_TAG: i32 = 0x2000_0000;
+const ANDROID15_FRONTEND_ID_MAX: i32 = 0xff;
+
+#[derive(Debug, Default)]
+struct FrontendIdAllocator {
+    next: i32,
+}
+
+impl FrontendIdAllocator {
+    fn allocate(&mut self) -> Option<FrontendRuntimeId> {
+        if self.next > ANDROID15_FRONTEND_ID_MAX {
+            return None;
+        }
+        let id = FrontendRuntimeId(self.next);
+        self.next = self.next.checked_add(1)?;
+        Some(id)
+    }
+}
 
 fn px4_capability(
     unit: i32,
@@ -318,25 +324,6 @@ fn dvb_exclusive_group_ids(
         .collect()
 }
 
-fn dvb_export_frontend_id(
-    adapter: i32,
-    frontend_index: i32,
-    system: FrontendSystem,
-) -> Option<i32> {
-    if !(0..=255).contains(&adapter) || !(0..=255).contains(&frontend_index) {
-        return None;
-    }
-    let variant = match system {
-        FrontendSystem::IsdbT => 0,
-        FrontendSystem::IsdbS => 1,
-        _ => return None,
-    };
-    2_000_000_i32
-        .checked_add(adapter.checked_shl(12)?)
-        .and_then(|base| base.checked_add(frontend_index.checked_shl(4)?))
-        .and_then(|base| base.checked_add(variant))
-}
-
 fn dvb_driver_basename(adapter: i32, frontend_index: i32) -> Option<String> {
     let link = PathBuf::from(format!(
         "/sys/class/dvb/dvb{adapter}.frontend{frontend_index}/device/driver"
@@ -450,23 +437,17 @@ fn probe_dvb_delivery_systems(
 }
 
 fn dvb_probe_variants(
-    adapter: i32,
-    frontend_index: i32,
     path: &PathBuf,
     exclusive_group_id: i32,
 ) -> Result<Vec<DvbProbeVariant>, HalError> {
     let (systems, info) = probe_dvb_delivery_systems(path)?;
-    let mut variants = Vec::new();
-    for system in systems {
-        if let Some(id) = dvb_export_frontend_id(adapter, frontend_index, system) {
-            variants.push(DvbProbeVariant {
-                id,
-                system,
-                capability: dvb_capability(&info, system, exclusive_group_id),
-            });
-        }
-    }
-    Ok(variants)
+    Ok(systems
+        .into_iter()
+        .map(|system| DvbProbeVariant {
+            system,
+            capability: dvb_capability(&info, system, exclusive_group_id),
+        })
+        .collect())
 }
 
 fn collect_px4_probe_candidates(
@@ -488,12 +469,10 @@ fn collect_px4_probe_candidates(
 
 fn probe_frontends() -> Vec<FrontendProbeOutcome> {
     let mut outcomes = Vec::new();
+    let mut frontend_ids = FrontendIdAllocator::default();
 
     let px4_candidates = collect_px4_probe_candidates(std::path::Path::exists);
     for (unit, path, name) in px4_candidates {
-        let Some(base_id) = px4_export_frontend_base_id(unit, &name) else {
-            continue;
-        };
         let Some(isdbt_capability) = px4_capability(unit, &name, FrontendSystem::IsdbT) else {
             outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
                 backend: FrontendBackendKind::Px4CharDevice,
@@ -508,8 +487,16 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
             &path,
             Some(&name),
         );
+        let Some(isdbt_id) = frontend_ids.allocate() else {
+            outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
+                backend: FrontendBackendKind::Px4CharDevice,
+                path,
+                reason: CapabilitySuppressionReason::RuntimeCapacityExhausted,
+            });
+            continue;
+        };
         outcomes.push(FrontendProbeOutcome::Available {
-            id: FrontendRuntimeId(base_id),
+            id: isdbt_id,
             backend: FrontendBackendKind::Px4CharDevice,
             system: FrontendSystem::IsdbT,
             path: path.clone(),
@@ -520,34 +507,40 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
             ),
             capability: isdbt_capability,
         });
-        if let Some(isdbs_id) = base_id.checked_add(1) {
-            let Some(isdbs_capability) = px4_capability(unit, &name, FrontendSystem::IsdbS) else {
-                outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
-                    backend: FrontendBackendKind::Px4CharDevice,
-                    path: path.clone(),
-                    reason: CapabilitySuppressionReason::InvalidCapabilityProfile,
-                });
-                continue;
-            };
-            let lnb_profile = probe_lnb_profile_for_frontend(
-                FrontendBackendKind::Px4CharDevice,
-                FrontendSystem::IsdbS,
-                &path,
-                Some(&name),
-            );
-            outcomes.push(FrontendProbeOutcome::Available {
-                id: FrontendRuntimeId(isdbs_id),
+        let Some(isdbs_capability) = px4_capability(unit, &name, FrontendSystem::IsdbS) else {
+            outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
                 backend: FrontendBackendKind::Px4CharDevice,
-                system: FrontendSystem::IsdbS,
                 path: path.clone(),
-                lnb_profile,
-                satellite_power_topology: probe_satellite_power_topology(
-                    FrontendSystem::IsdbS,
-                    lnb_profile,
-                ),
-                capability: isdbs_capability,
+                reason: CapabilitySuppressionReason::InvalidCapabilityProfile,
             });
-        }
+            continue;
+        };
+        let Some(isdbs_id) = frontend_ids.allocate() else {
+            outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
+                backend: FrontendBackendKind::Px4CharDevice,
+                path: path.clone(),
+                reason: CapabilitySuppressionReason::RuntimeCapacityExhausted,
+            });
+            continue;
+        };
+        let lnb_profile = probe_lnb_profile_for_frontend(
+            FrontendBackendKind::Px4CharDevice,
+            FrontendSystem::IsdbS,
+            &path,
+            Some(&name),
+        );
+        outcomes.push(FrontendProbeOutcome::Available {
+            id: isdbs_id,
+            backend: FrontendBackendKind::Px4CharDevice,
+            system: FrontendSystem::IsdbS,
+            path: path.clone(),
+            lnb_profile,
+            satellite_power_topology: probe_satellite_power_topology(
+                FrontendSystem::IsdbS,
+                lnb_profile,
+            ),
+            capability: isdbs_capability,
+        });
     }
 
     let mut dvb_candidates = Vec::new();
@@ -593,7 +586,7 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
             });
             continue;
         };
-        match dvb_probe_variants(adapter, frontend_index, &path, exclusive_group_id) {
+        match dvb_probe_variants(&path, exclusive_group_id) {
             Ok(variants) => {
                 if variants.is_empty() {
                     outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
@@ -617,8 +610,16 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
                             &path,
                             None,
                         );
+                        let Some(frontend_id) = frontend_ids.allocate() else {
+                            outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
+                                backend: FrontendBackendKind::LinuxDvb,
+                                path: path.clone(),
+                                reason: CapabilitySuppressionReason::RuntimeCapacityExhausted,
+                            });
+                            continue;
+                        };
                         outcomes.push(FrontendProbeOutcome::Available {
-                            id: FrontendRuntimeId(variant.id),
+                            id: frontend_id,
                             backend: FrontendBackendKind::LinuxDvb,
                             system: variant.system,
                             path: path.clone(),
@@ -699,19 +700,12 @@ mod tests {
     }
 
     #[test]
-    fn dvb_export_ids_keep_isdb_t_and_isdb_s_as_distinct_variants() {
-        assert_eq!(
-            dvb_export_frontend_id(0, 0, FrontendSystem::IsdbT),
-            Some(2_000_000)
-        );
-        assert_eq!(
-            dvb_export_frontend_id(0, 0, FrontendSystem::IsdbS),
-            Some(2_000_001)
-        );
-        assert_eq!(
-            dvb_export_frontend_id(1, 2, FrontendSystem::IsdbT),
-            Some(2_004_128)
-        );
+    fn frontend_id_allocator_stays_within_android15_resource_handle_domain() {
+        let mut allocator = FrontendIdAllocator::default();
+        for expected in 0..=ANDROID15_FRONTEND_ID_MAX {
+            assert_eq!(allocator.allocate(), Some(FrontendRuntimeId(expected)));
+        }
+        assert_eq!(allocator.allocate(), None);
     }
 
     fn candidate(adapter: i32, device: &str) -> DvbProbeCandidate {
