@@ -912,13 +912,29 @@ mod terminal_tests {
         let error = HalError::cleanup_failed("worker", "failure");
         let cases = [
             (WorkerExit::Normal, Ok(()), WorkerTerminalResult::Normal(())),
-            (WorkerExit::StopRequested(WorkerStopReason::ExplicitClose), Ok(()), WorkerTerminalResult::StopRequested),
-            (WorkerExit::RuntimeFailure(WorkerFailureDomain::Backend.runtime_failure_kind()), Err(error.clone()), WorkerTerminalResult::RuntimeFailure(error.clone())),
-            (WorkerExit::PanicOrJoinFailure, Err(error), WorkerTerminalResult::PanicOrJoinFailure),
+            (
+                WorkerExit::StopRequested(WorkerStopReason::ExplicitClose),
+                Ok(()),
+                WorkerTerminalResult::StopRequested,
+            ),
+            (
+                WorkerExit::RuntimeFailure(WorkerFailureDomain::Backend.runtime_failure_kind()),
+                Err(error.clone()),
+                WorkerTerminalResult::RuntimeFailure(error.clone()),
+            ),
+            (
+                WorkerExit::PanicOrJoinFailure,
+                Err(error),
+                WorkerTerminalResult::PanicOrJoinFailure,
+            ),
         ];
         for (exit, result, terminal) in cases {
             let outcome = FrontendWorkerStopOutcome::Completed {
-                frontend_id: 1, kind: FrontendWorkerKind::Tune, generation: 7, exit, result,
+                frontend_id: 1,
+                kind: FrontendWorkerKind::Tune,
+                generation: 7,
+                exit,
+                result,
             };
             let event = FrontendWorkerTerminalEvent::from_stop_outcome(&outcome).unwrap();
             assert_eq!(event.frontend_id(), 1);
