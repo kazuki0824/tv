@@ -502,7 +502,7 @@ class TvProviderWriter private constructor(
     ): ContentValues =
         ContentValues().apply {
             put(TvContract.Channels.COLUMN_INPUT_ID, inputId)
-            put(TvContract.Channels.COLUMN_TYPE, channelType(channel.deliverySystem))
+            put(TvContract.Channels.COLUMN_TYPE, channelType(channel))
             put(TvContract.Channels.COLUMN_SERVICE_TYPE, channel.serviceType.toString())
             put(TvContract.Channels.COLUMN_DISPLAY_NUMBER, channel.displayNumber.ifBlank { channel.serviceKey.serviceId.toString() })
             put(TvContract.Channels.COLUMN_DISPLAY_NAME, channel.displayName.ifBlank { fallbackName(channel.serviceKey) })
@@ -782,10 +782,12 @@ class TvProviderWriter private constructor(
     @Suppress("MaxLineLength")
     private fun fallbackName(key: ServiceKey): String = "service-${key.originalNetworkId}-${key.transportStreamId}-${key.serviceId}"
 
-    private fun channelType(deliverySystem: String): String =
-        when (deliverySystem) {
-            ChannelRecord.DELIVERY_SYSTEM_ISDB_T -> TvContract.Channels.TYPE_ISDB_T
-            ChannelRecord.DELIVERY_SYSTEM_ISDB_S -> TvContract.Channels.TYPE_ISDB_S
+    private fun channelType(channel: ChannelRecord): String =
+        when {
+            channel.deliverySystem == ChannelRecord.DELIVERY_SYSTEM_ISDB_T && channel.partialReception ->
+                TvContract.Channels.TYPE_1SEG
+            channel.deliverySystem == ChannelRecord.DELIVERY_SYSTEM_ISDB_T -> TvContract.Channels.TYPE_ISDB_T
+            channel.deliverySystem == ChannelRecord.DELIVERY_SYSTEM_ISDB_S -> TvContract.Channels.TYPE_ISDB_S
             else -> TvContract.Channels.TYPE_OTHER
         }
 
