@@ -194,6 +194,44 @@ impl FrontendBackendSubmitDetachedJoin {
 enum FrontendWorkerCleanup {
     Join(FrontendWorkerDetachedJoin),
     BackendSubmitJoin(FrontendBackendSubmitDetachedJoin),
+    Failed(FrontendWorkerStopOutcome),
+}
+
+impl FrontendWorkerCleanup {
+    fn finish(&mut self, outcome: FrontendWorkerStopOutcome) -> WorkerCleanupProgress<FrontendWorkerStopOutcome> {
+        let succeeded = match &outcome {
+            FrontendWorkerStopOutcome::Completed { result, .. } => result.is_ok(),
+            FrontendWorkerStopOutcome::BackendSubmitFailed { failure, .. } => failure.rollback_succeeded,
+            _ => false,
+        };
+        if succeeded {
+            WorkerCleanupProgress::Completed(outcome)
+        } else {
+            *self = Self::Failed(outcome.clone());
+            WorkerCleanupProgress::Quarantined(outcome)
+        }
+    }
+
+    fn complete(&mut self) -> WorkerCleanupProgress<FrontendWorkerStopOutcome> {
+        let outcome = match self {
+            Self::Join(join) => join.complete(),
+            Self::BackendSubmitJoin(join) => join.complete(),
+            Self::Failed(outcome) => outcome.clone(),
+        };
+        self.finish(outcome)
+    }
+
+    fn try_complete(&mut self) -> WorkerCleanupProgress<FrontendWorkerStopOutcome> {
+        let outcome = match self {
+            Self::Join(join) => join.try_complete(),
+            Self::BackendSubmitJoin(join) => join.try_complete(),
+            Self::Failed(outcome) => Some(outcome.clone()),
+        };
+        match outcome {
+            Some(outcome) => self.finish(outcome),
+            None => WorkerCleanupProgress::Pending,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -263,12 +301,7 @@ impl FrontendWorkerStopTicket {
                 generation,
                 authority,
             } => {
-                match authority.execute(|cleanup| {
-                    WorkerCleanupProgress::Completed(match cleanup {
-                        FrontendWorkerCleanup::Join(join) => join.complete(),
-                        FrontendWorkerCleanup::BackendSubmitJoin(join) => join.complete(),
-                    })
-                }) {
+                match authority.execute(FrontendWorkerCleanup::complete) {
                     Ok(WorkerCleanupRun::Completed(outcome)) => outcome,
                     Ok(WorkerCleanupRun::Pending(_)) => cleanup_authority_failure(
                         frontend_id,
@@ -296,16 +329,7 @@ impl FrontendWorkerStopTicket {
                 generation,
                 authority,
             } => {
-                match authority.execute(|cleanup| {
-                    let outcome = match cleanup {
-                        FrontendWorkerCleanup::Join(join) => join.try_complete(),
-                        FrontendWorkerCleanup::BackendSubmitJoin(join) => join.try_complete(),
-                    };
-                    match outcome {
-                        Some(outcome) => WorkerCleanupProgress::Completed(outcome),
-                        None => WorkerCleanupProgress::Pending,
-                    }
-                }) {
+                match authority.execute(FrontendWorkerCleanup::try_complete) {
                     Ok(WorkerCleanupRun::Completed(outcome)) => {
                         FrontendWorkerStopPoll::Completed(outcome)
                     }
@@ -342,6 +366,7 @@ impl FrontendWorkerStopTicket {
                     FrontendWorkerCleanup::BackendSubmitJoin(join) => {
                         join.wait_until_finished(deadline)
                     }
+                    FrontendWorkerCleanup::Failed(_) => Ok(true),
                 })?
             }
         }
@@ -723,17 +748,12 @@ impl FrontendWorkerRegistry {
             return FrontendWorkerStopTicket::immediate(FrontendWorkerStopOutcome::NotRunning);
         };
 
-        if let Some((result, exit)) = slot.completed_result() {
-            return FrontendWorkerStopTicket::immediate(FrontendWorkerStopOutcome::Completed {
-                frontend_id,
-                kind,
-                generation: slot.generation,
-                exit,
-                result,
-            });
+        if let Some(completed) = slot.completed_result() {
+            slot.pending_completed = Some(completed);
         }
 
         let generation = slot.generation;
+        if slot.pending_completed.is_none() {
         let cancel_reason = Arc::clone(&slot.cancel_reason);
         let mut guard = match cancel_reason.lock() {
             Ok(guard) => guard,
@@ -768,6 +788,7 @@ impl FrontendWorkerRegistry {
             );
         }
 
+        }
         let owner = WorkerRuntime::retain_cleanup(FrontendWorkerCleanup::Join(
             FrontendWorkerDetachedJoin {
                 frontend_id,
@@ -1153,6 +1174,38 @@ mod tests {
                 result: Err(error),
             })
         );
+    }
+
+    #[test]
+    fn failed_join_keeps_the_obligation_and_blocks_replacement() {
+        for poll in [false, true] {
+            let mut registry = FrontendWorkerRegistry::default();
+            let key = FrontendWorkerKey { frontend_id: 16, kind: FrontendWorkerKind::Tune };
+            let error = HalError::cleanup_failed("backend stop", "device still active");
+            registry.slots.insert(key, FrontendWorkerSlot {
+                generation: 12,
+                cancel_reason: Arc::new(Mutex::new(None)),
+                thread_result: None,
+                pending_completed: Some((Err(error.clone()), WorkerExit::Normal)),
+            });
+            let ticket = registry.request_stop_for_join(16, FrontendWorkerKind::Tune, FrontendWorkerCancelReason::StopRequested);
+            let outcome = if poll {
+                match ticket.try_complete() {
+                    FrontendWorkerStopPoll::Completed(outcome) => outcome,
+                    _ => panic!("already completed worker remained pending"),
+                }
+            } else {
+                ticket.complete()
+            };
+            assert!(matches!(outcome, FrontendWorkerStopOutcome::Completed { result: Err(ref recorded), .. } if recorded == &error));
+            assert!(registry.has_cleanup_obligations());
+            assert!(matches!(registry.start(16, FrontendWorkerKind::Tune, 13, |_| Ok(())),
+                Err(FrontendWorkerStartError::AlreadyRunning { generation: 12, .. })));
+            assert!(matches!(registry.request_stop_for_join(16, FrontendWorkerKind::Tune, FrontendWorkerCancelReason::StopRequested).complete(),
+                FrontendWorkerStopOutcome::StopRequestFailed {
+                    error: HalError::WorkerCleanupFailed { kind: maleicacid_tuner_hal2_common::WorkerCleanupFailureKind::Quarantined }, ..
+                }));
+        }
     }
 
     #[test]

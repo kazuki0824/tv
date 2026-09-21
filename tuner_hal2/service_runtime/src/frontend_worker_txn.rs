@@ -284,16 +284,9 @@ impl FrontendWorkerReaperJob {
                 }
             }
             if let Some(runtime) = runtime.upgrade() {
-                match runtime.lock() {
-                    Ok(mut guard) => guard.mark_service_critical(),
-                    Err(_) => {
-                        error = compose_primary_cleanup_failure(
-                            "frontend reaper failure and critical transition",
-                            error,
-                            HalError::cleanup_failed("frontend reaper", "runtime lock poisoned"),
-                        );
-                    }
-                };
+                if let Err(record_error) = accept_frontend_worker_terminal_outcomes(&runtime, &job.tickets.completed) {
+                    error = compose_primary_cleanup_failure("frontend reaper completed outcome recording", error, record_error);
+                }
             }
             for (frontend_id, kind) in &job.keys {
                 let target = FrontendWorkerCleanupTarget::frontend(*frontend_id);
@@ -314,18 +307,28 @@ impl FrontendWorkerReaperJob {
                     .iter()
                     .find(|(pending_kind, _)| pending_kind == kind)
                     .and_then(|(_, ticket)| ticket.worker_generation());
+                let mut local_error = error.clone();
+                if let Some(runtime) = runtime.upgrade() {
+                    if let Err(quarantine_error) = quarantine_frontend_reaper_failure(&runtime, *frontend_id, &error) {
+                        local_error = compose_primary_cleanup_failure(
+                            "frontend reaper failure and local quarantine",
+                            local_error,
+                            quarantine_error,
+                        );
+                    }
+                }
                 report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
                     target,
                     *kind,
                     generation,
-                    Err(error.clone()),
+                    Err(local_error.clone()),
                 ));
                 if let Err(record_error) =
                     diagnostics.record(FrontendWorkerCleanupDiagnosticRecord::new(
                         FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion,
                         target,
                         report,
-                        Some(error.clone()),
+                        Some(local_error),
                     ))
                 {
                     // 記録失敗も既存storeのrecord_failure_countに残る。
@@ -401,6 +404,36 @@ impl FrontendWorkerReaperJob {
             }
         }
     }
+}
+
+fn quarantine_frontend_reaper_failure(
+    runtime: &SharedRuntime,
+    frontend_id: i32,
+    error: &HalError,
+) -> Result<(), HalError> {
+    use maleicacid_tuner_hal2_common::WorkerCleanupFailureKind;
+    // 古い実行権限の拒否は、現在の正規試行の状態を変更しない。
+    if matches!(error.primary_error(), HalError::WorkerCleanupFailed {
+        kind: WorkerCleanupFailureKind::Superseded | WorkerCleanupFailureKind::Executing,
+    }) {
+        return Ok(());
+    }
+    let mut guard = lock_runtime(runtime, "service runtime lock poisoned during local reaper quarantine")?;
+    let mut failures = FirstErrorCollector::new();
+    let snapshot = guard.query().frontend_runtime_snapshot(frontend_id)?;
+    failures.push_result(guard.frontend_txn().mark_frontend_worker_stop_pending_failure(
+        frontend_id, snapshot.generation, error.clone(),
+    ));
+    if let Some(entry) = guard.object_table().live_entry_for_runtime(
+        AidlObjectKind::Frontend,
+        maleicacid_tuner_hal2_resource_ledger::LedgerId(i64::from(frontend_id)),
+    ) {
+        failures.push_result(crate::object_close_txn::quarantine_object_cascade(
+            &mut guard, entry.object_id(), entry.generation(),
+        ).map(|_| ()));
+    }
+    // 未完義務はregistryに残るため、失敗した資源を新しいworkerへ再利用しない。
+    failures.into_result()
 }
 
 #[derive(Clone)]

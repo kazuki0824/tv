@@ -1675,13 +1675,38 @@ mod tests {
         release_tx.send(()).unwrap();
         assert!(matches!(
             next.complete(),
-            FrontendWorkerStopOutcome::Completed {
+            FrontendWorkerStopOutcome::BackendSubmitFailed {
                 generation: 101,
-                result: Ok(()),
+                failure: FrontendBackendSubmitFailure { rollback_succeeded: true, .. },
                 ..
             }
         ));
         assert!(!registry.has_cleanup_obligations());
+    }
+
+    #[test]
+    fn failed_backend_rollback_keeps_cleanup_pending_after_join() {
+        use crate::{FrontendWorkerCancelReason, FrontendWorkerKind, FrontendWorkerRegistry, FrontendWorkerStopOutcome};
+        let expected = FrontendBackendSubmitFailure {
+            generation: 102,
+            error: HalError::cleanup_failed("backend", "submit failed"),
+            rollback_succeeded: false,
+            step: Some(BackendTuneStep::ApplyChannel),
+            rollback_failure: Some(super::super::tune_txn::BackendTuneRollbackFailure {
+                step: super::super::tune_txn::BackendTuneRollbackStep::RollbackStopStreaming,
+                error: HalError::cleanup_failed("backend", "stop failed"),
+            }),
+        };
+        let failure = expected.clone();
+        let ticket = FrontendBackendSubmitTicket::start_with(102, move || Err(failure)).unwrap();
+        let mut registry = FrontendWorkerRegistry::default();
+        let ticket = registry.retain_backend_submit_cleanup(1, FrontendWorkerKind::Tune, 102, ticket);
+        assert!(matches!(ticket.complete(), FrontendWorkerStopOutcome::BackendSubmitFailed { failure, .. } if failure == expected));
+        assert!(registry.has_cleanup_obligations());
+        assert!(matches!(registry.request_stop_for_join(1, FrontendWorkerKind::Tune, FrontendWorkerCancelReason::StopRequested).complete(),
+            FrontendWorkerStopOutcome::StopRequestFailed {
+                error: HalError::WorkerCleanupFailed { kind: maleicacid_tuner_hal2_common::WorkerCleanupFailureKind::Quarantined }, ..
+            }));
     }
 
     #[test]

@@ -611,6 +611,8 @@ pub enum WorkerLockKind {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkerCleanupFailureKind {
+    Quarantined,
+    Interrupted,
     Executing,
     StatePoisoned,
     Completed,
