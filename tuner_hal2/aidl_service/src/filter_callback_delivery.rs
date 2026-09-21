@@ -10,7 +10,7 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
 };
 use binder::ParcelFileDescriptor;
 use maleicacid_tuner_hal2_binder_adapter::AidlObjectKind;
-use maleicacid_tuner_hal2_common::{FirstErrorCollector, HalError, HalInternalKind};
+use maleicacid_tuner_hal2_common::{FirstErrorCollector, HalError, HalErrorDetail, HalInternalKind};
 use maleicacid_tuner_hal2_demux::{
     FilterStatusEvent, TsRecordEventData, RECORD_SC_TYPE_SC, RECORD_SC_TYPE_SC_AVC,
     RECORD_SC_TYPE_SC_HEVC, RECORD_SC_TYPE_SC_VVC,
@@ -54,11 +54,12 @@ impl AidlFilterEventDispatcher {
             move |control| run_filter_delay_delivery(worker_context, control),
             || {},
         )
-        .map_err(|error| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                format!("filter delay delivery worker spawn failed: {error}"),
-            )
+        .map_err(|error| HalError::Io {
+            backend: "filter delay delivery",
+            operation: "thread spawn",
+            path: None,
+            errno: error.raw_os_error(),
+            detail: HalErrorDetail::new(error.to_string()),
         })?;
         Ok(Self {
             context: Arc::downgrade(context),
