@@ -1566,7 +1566,10 @@ mod tests {
 
     #[test]
     fn delayed_submit_diagnostic_preserves_old_generation_without_changing_current_state() {
-        for backend in [FrontendBackendKind::LinuxDvb, FrontendBackendKind::Px4CharDevice] {
+        for backend in [
+            FrontendBackendKind::LinuxDvb,
+            FrontendBackendKind::Px4CharDevice,
+        ] {
             let mut runtime = FrontendRuntime::new(7, backend);
             runtime.commit_generation(2).unwrap();
             let before = runtime.snapshot();
@@ -1580,8 +1583,11 @@ mod tests {
                     error: HalError::cleanup_failed("rollback", "secondary"),
                 }),
             };
-            runtime.record_completed_backend_submit_failure(failure.clone()).unwrap();
-            let (records, dropped, record_failures) = runtime.backend_failure_diagnostic_snapshot(backend);
+            runtime
+                .record_completed_backend_submit_failure(failure.clone())
+                .unwrap();
+            let (records, dropped, record_failures) =
+                runtime.backend_failure_diagnostic_snapshot(backend);
             assert_eq!(records.len(), 1);
             assert_eq!(records[0].generation, 1);
             assert_eq!(records[0].step, failure.step);
@@ -1589,11 +1595,14 @@ mod tests {
             assert_eq!(records[0].rollback_failure, failure.rollback_failure);
             assert_eq!((dropped, record_failures), (0, 0));
             assert_eq!(runtime.snapshot(), before);
-            assert!(runtime.record_completed_backend_submit_failure(FrontendBackendSubmitFailure {
-                generation: 3,
-                ..failure
-            }).is_err());
-            let (records, _, record_failures) = runtime.backend_failure_diagnostic_snapshot(backend);
+            assert!(runtime
+                .record_completed_backend_submit_failure(FrontendBackendSubmitFailure {
+                    generation: 3,
+                    ..failure
+                })
+                .is_err());
+            let (records, _, record_failures) =
+                runtime.backend_failure_diagnostic_snapshot(backend);
             assert_eq!(records.len(), 1);
             assert_eq!(record_failures, 1);
             assert_eq!(runtime.snapshot(), before);
