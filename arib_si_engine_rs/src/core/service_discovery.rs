@@ -839,8 +839,11 @@ impl ServiceDiscoveryEngine {
             let metadata =
                 parse_nit_transport_metadata(&section[desc_start..desc_end]).unwrap_or_default();
             for service_id in metadata.partial_reception_services {
-                self.transport_entry_mut(tsid, onid).services.insert(service_id);
-                self.service_entry_mut(tsid, onid, service_id).partial_reception = true;
+                self.transport_entry_mut(tsid, onid)
+                    .services
+                    .insert(service_id);
+                self.service_entry_mut(tsid, onid, service_id)
+                    .partial_reception = true;
                 self.apply_pending_pmt_to_service(tsid, onid, service_id);
             }
             let transport = self.transport_entry_mut(tsid, onid);
@@ -868,9 +871,7 @@ impl ServiceDiscoveryEngine {
             );
             retain_text_decode_diagnostic(
                 &mut transport.text_decode_diagnostics,
-                metadata
-                    .network_name
-                    .and_then(|decoded| decoded.diagnostic),
+                metadata.network_name.and_then(|decoded| decoded.diagnostic),
             );
             retain_text_decode_diagnostic(
                 &mut transport.text_decode_diagnostics,
