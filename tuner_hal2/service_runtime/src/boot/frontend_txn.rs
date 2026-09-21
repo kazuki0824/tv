@@ -11,7 +11,7 @@ use maleicacid_tuner_hal2_demux::{
     DemuxRuntimeRollbackCommitRequest, DemuxRuntimeRollbackRestoreRequest,
 };
 use maleicacid_tuner_hal2_device::{
-    BackendTuneRollbackFailure, BackendTuneStep, FrontendWorkerStopTicket,
+    BackendTuneRollbackFailure, BackendTuneStep, FrontendBackendSubmitFailure, FrontendWorkerStopTicket,
 };
 
 impl TunerServiceRuntime {
@@ -238,6 +238,19 @@ impl TunerServiceRuntime {
 }
 
 impl FrontendTxn<'_> {
+    pub(crate) fn record_completed_frontend_backend_submit_failure(
+        &mut self,
+        frontend_id: i32,
+        failure: FrontendBackendSubmitFailure,
+    ) -> Result<(), HalError> {
+        self.runtime.registry.frontend_runtime_mut(crate::registry::FrontendRuntimeId(frontend_id))
+            .ok_or_else(|| HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "frontend runtime is missing while recording delayed backend failure",
+            ))?
+            .record_completed_backend_submit_failure(failure)
+    }
+
     pub(crate) fn record_frontend_backend_failure_diagnostic(
         &mut self,
         frontend_id: i32,
