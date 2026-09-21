@@ -1,3 +1,9 @@
+# PR #108 px4 character device capability設計補正
+
+- px4_drvのcharacter deviceを存在だけでISDB-T/ISDB-S両対応とみなす設計を廃止し、driverの`system_cap`を公開capabilityの正本とした。
+- `px4video`は4-minor groupの0/1をISDB-S、2/3をISDB-Tとして公開し、複数device時もglobal minorのgroup内ordinalで同じ規則を適用する。pxmlt/isdb6014/isdb2056/pxm1urはT/S両対応、pxs1ur/isdbt2071はT専用とする。
+- `PTX_SET_SYSTEM_MODE`でnode固有capabilityを越えるsystemへ切り替えられるとは扱わず、公開frontendとbackend device pathを同一nodeへ固定する。
+
 # PR #108 Android 15 TRM互換のLNB ID設計補正
 
 - LineageOS 22.1 / Android 15ではLNB IDもfrontendと同じTRM resource handle encode/decodeを通るため、従来の `frontend_id + 10,000` は8 bitへ切り詰められる。

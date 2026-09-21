@@ -61,6 +61,31 @@ fn px4_device_family_code(device_name: &str) -> i32 {
     0
 }
 
+fn px4_frontend_systems(unit: i32, device_name: &str) -> Vec<FrontendSystem> {
+    if unit < 0 {
+        return Vec::new();
+    }
+    if device_name.starts_with("px4video") {
+        return match unit.rem_euclid(4) {
+            0 | 1 => vec![FrontendSystem::IsdbS],
+            2 | 3 => vec![FrontendSystem::IsdbT],
+            _ => unreachable!("rem_euclid(4) must stay within 0..=3"),
+        };
+    }
+    if device_name.starts_with("pxmlt5video")
+        || device_name.starts_with("pxmlt8video")
+        || device_name.starts_with("isdb6014video")
+        || device_name.starts_with("isdb2056video")
+        || device_name.starts_with("pxm1urvideo")
+    {
+        return vec![FrontendSystem::IsdbT, FrontendSystem::IsdbS];
+    }
+    if device_name.starts_with("pxs1urvideo") || device_name.starts_with("isdbt2071video") {
+        return vec![FrontendSystem::IsdbT];
+    }
+    Vec::new()
+}
+
 fn px4_lnb_profile_from_device_name(device_name: &str) -> LnbRegistryProfile {
     if device_name.starts_with("px4video") {
         LnbRegistryProfile::Px4Device15VOnly
@@ -472,74 +497,39 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
 
     let px4_candidates = collect_px4_probe_candidates(std::path::Path::exists);
     for (unit, path, name) in px4_candidates {
-        let Some(isdbt_capability) = px4_capability(unit, &name, FrontendSystem::IsdbT) else {
-            outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
+        for system in px4_frontend_systems(unit, &name) {
+            let Some(capability) = px4_capability(unit, &name, system) else {
+                outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
+                    backend: FrontendBackendKind::Px4CharDevice,
+                    path: path.clone(),
+                    reason: CapabilitySuppressionReason::InvalidCapabilityProfile,
+                });
+                continue;
+            };
+            let Some(frontend_id) = frontend_ids.allocate() else {
+                outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
+                    backend: FrontendBackendKind::Px4CharDevice,
+                    path: path.clone(),
+                    reason: CapabilitySuppressionReason::RuntimeCapacityExhausted,
+                });
+                continue;
+            };
+            let lnb_profile = probe_lnb_profile_for_frontend(
+                FrontendBackendKind::Px4CharDevice,
+                system,
+                &path,
+                Some(&name),
+            );
+            outcomes.push(FrontendProbeOutcome::Available {
+                id: frontend_id,
                 backend: FrontendBackendKind::Px4CharDevice,
-                path,
-                reason: CapabilitySuppressionReason::InvalidCapabilityProfile,
-            });
-            continue;
-        };
-        let lnb_profile = probe_lnb_profile_for_frontend(
-            FrontendBackendKind::Px4CharDevice,
-            FrontendSystem::IsdbT,
-            &path,
-            Some(&name),
-        );
-        let Some(isdbt_id) = frontend_ids.allocate() else {
-            outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
-                backend: FrontendBackendKind::Px4CharDevice,
-                path,
-                reason: CapabilitySuppressionReason::RuntimeCapacityExhausted,
-            });
-            continue;
-        };
-        outcomes.push(FrontendProbeOutcome::Available {
-            id: isdbt_id,
-            backend: FrontendBackendKind::Px4CharDevice,
-            system: FrontendSystem::IsdbT,
-            path: path.clone(),
-            lnb_profile,
-            satellite_power_topology: probe_satellite_power_topology(
-                FrontendSystem::IsdbT,
-                lnb_profile,
-            ),
-            capability: isdbt_capability,
-        });
-        let Some(isdbs_capability) = px4_capability(unit, &name, FrontendSystem::IsdbS) else {
-            outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
-                backend: FrontendBackendKind::Px4CharDevice,
+                system,
                 path: path.clone(),
-                reason: CapabilitySuppressionReason::InvalidCapabilityProfile,
-            });
-            continue;
-        };
-        let Some(isdbs_id) = frontend_ids.allocate() else {
-            outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
-                backend: FrontendBackendKind::Px4CharDevice,
-                path: path.clone(),
-                reason: CapabilitySuppressionReason::RuntimeCapacityExhausted,
-            });
-            continue;
-        };
-        let lnb_profile = probe_lnb_profile_for_frontend(
-            FrontendBackendKind::Px4CharDevice,
-            FrontendSystem::IsdbS,
-            &path,
-            Some(&name),
-        );
-        outcomes.push(FrontendProbeOutcome::Available {
-            id: isdbs_id,
-            backend: FrontendBackendKind::Px4CharDevice,
-            system: FrontendSystem::IsdbS,
-            path: path.clone(),
-            lnb_profile,
-            satellite_power_topology: probe_satellite_power_topology(
-                FrontendSystem::IsdbS,
                 lnb_profile,
-            ),
-            capability: isdbs_capability,
-        });
+                satellite_power_topology: probe_satellite_power_topology(system, lnb_profile),
+                capability,
+            });
+        }
     }
 
     let mut dvb_candidates = Vec::new();
@@ -693,6 +683,49 @@ mod tests {
             ]
         );
         assert!(collect_px4_probe_candidates(|_| false).is_empty());
+    }
+
+    #[test]
+    fn px4_frontend_systems_follow_driver_character_device_contract() {
+        assert_eq!(
+            px4_frontend_systems(0, "px4video0"),
+            vec![FrontendSystem::IsdbS]
+        );
+        assert_eq!(
+            px4_frontend_systems(1, "px4video1"),
+            vec![FrontendSystem::IsdbS]
+        );
+        assert_eq!(
+            px4_frontend_systems(2, "px4video2"),
+            vec![FrontendSystem::IsdbT]
+        );
+        assert_eq!(
+            px4_frontend_systems(3, "px4video3"),
+            vec![FrontendSystem::IsdbT]
+        );
+        assert_eq!(
+            px4_frontend_systems(4, "px4video4"),
+            vec![FrontendSystem::IsdbS]
+        );
+        for name in [
+            "pxmlt5video0",
+            "pxmlt8video7",
+            "isdb6014video0",
+            "isdb2056video0",
+            "pxm1urvideo0",
+        ] {
+            assert_eq!(
+                px4_frontend_systems(0, name),
+                vec![FrontendSystem::IsdbT, FrontendSystem::IsdbS]
+            );
+        }
+        for name in ["pxs1urvideo0", "isdbt2071video0"] {
+            assert_eq!(
+                px4_frontend_systems(0, name),
+                vec![FrontendSystem::IsdbT]
+            );
+        }
+        assert!(px4_frontend_systems(0, "unknown0").is_empty());
     }
 
     #[test]

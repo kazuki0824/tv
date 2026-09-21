@@ -1,3 +1,9 @@
+# PR #108 px4 character device capability実装修正
+
+- `service_entry.rs`へdriver `system_cap`に対応する`px4_frontend_systems`を追加し、各device nodeから対応systemだけをfrontendとして公開するよう変更した。
+- PX4/PX-Q3系の`px4videoN`は`N % 4`が0/1ならISDB-S、2/3ならISDB-Tだけを公開する。hybrid系とT専用系のprefixもdriver実装に合わせて固定した。
+- family別mappingと複数PX4 device時のgroup反復をunit testで固定した。Android/Soong全体build、VTS、実機scanはこのコミット時点では未実施。
+
 # PR #108 Android 15 TRM互換のLNB ID実装修正
 
 - `boot.rs`の `frontend_id + 10,000` によるLNB ID生成を廃止し、`LnbIdAllocator`でresource-type固有の `0..=255` opaque IDを割り当てる。
