@@ -162,6 +162,12 @@ pub struct FrontendRuntime {
     live_pump_reports_dropped_count: u64,
     diagnostic_write_failures: Vec<FrontendDiagnosticWriteFailure>,
     diagnostic_write_failures_dropped_count: u64,
+    px4_backend_failure_diagnostics: Vec<(u64, HalError)>,
+    px4_backend_failure_diagnostics_dropped_count: u64,
+    px4_backend_failure_diagnostic_record_failure_count: u64,
+    linux_dvb_backend_failure_diagnostics: Vec<(u64, HalError)>,
+    linux_dvb_backend_failure_diagnostics_dropped_count: u64,
+    linux_dvb_backend_failure_diagnostic_record_failure_count: u64,
     scan_session: Option<FrontendScanSession>,
     last_error: Option<HalError>,
     active_tune_request: Option<FrontendTuneRequest>,
@@ -186,6 +192,12 @@ impl FrontendRuntime {
             live_pump_reports_dropped_count: 0,
             diagnostic_write_failures: Vec::new(),
             diagnostic_write_failures_dropped_count: 0,
+            px4_backend_failure_diagnostics: Vec::new(),
+            px4_backend_failure_diagnostics_dropped_count: 0,
+            px4_backend_failure_diagnostic_record_failure_count: 0,
+            linux_dvb_backend_failure_diagnostics: Vec::new(),
+            linux_dvb_backend_failure_diagnostics_dropped_count: 0,
+            linux_dvb_backend_failure_diagnostic_record_failure_count: 0,
             scan_session: None,
             last_error: None,
             active_tune_request: None,
@@ -261,6 +273,23 @@ impl FrontendRuntime {
     }
     pub fn diagnostic_write_failures_dropped_count(&self) -> u64 {
         self.diagnostic_write_failures_dropped_count
+    }
+    pub fn backend_failure_diagnostic_snapshot(
+        &self,
+        backend: FrontendBackendKind,
+    ) -> (Vec<(u64, HalError)>, u64, u64) {
+        match backend {
+            FrontendBackendKind::Px4CharDevice => (
+                self.px4_backend_failure_diagnostics.clone(),
+                self.px4_backend_failure_diagnostics_dropped_count,
+                self.px4_backend_failure_diagnostic_record_failure_count,
+            ),
+            FrontendBackendKind::LinuxDvb => (
+                self.linux_dvb_backend_failure_diagnostics.clone(),
+                self.linux_dvb_backend_failure_diagnostics_dropped_count,
+                self.linux_dvb_backend_failure_diagnostic_record_failure_count,
+            ),
+        }
     }
     pub fn stream_id_list(&self) -> Option<&[i32]> {
         self.stream_id_list.as_deref()
@@ -468,6 +497,62 @@ impl FrontendRuntime {
         self.set_signal_state(FrontendSignalState::Unknown);
         self.last_error = None;
         self.mark_scanning(generation);
+        Ok(())
+    }
+
+    pub fn record_backend_failure_diagnostic(
+        &mut self,
+        generation: u64,
+        backend: FrontendBackendKind,
+        error: HalError,
+    ) -> Result<(), HalError> {
+        if generation != self.generation || backend != self.backend_kind {
+            let detail = format!(
+                "backend failure diagnostic target mismatch: frontend={} generation={} runtime_generation={} backend={backend:?} runtime_backend={:?}",
+                self.frontend_id, generation, self.generation, self.backend_kind
+            );
+            match self.backend_kind {
+                FrontendBackendKind::Px4CharDevice => {
+                    self.px4_backend_failure_diagnostic_record_failure_count = self
+                        .px4_backend_failure_diagnostic_record_failure_count
+                        .saturating_add(1);
+                }
+                FrontendBackendKind::LinuxDvb => {
+                    self.linux_dvb_backend_failure_diagnostic_record_failure_count = self
+                        .linux_dvb_backend_failure_diagnostic_record_failure_count
+                        .saturating_add(1);
+                }
+            }
+            push_bounded(
+                &mut self.diagnostic_write_failures,
+                &mut self.diagnostic_write_failures_dropped_count,
+                FrontendDiagnosticWriteFailure {
+                    generation,
+                    detail: detail.clone(),
+                },
+            );
+            return Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                detail,
+            ));
+        }
+
+        match backend {
+            FrontendBackendKind::Px4CharDevice => push_bounded(
+                &mut self.px4_backend_failure_diagnostics,
+                &mut self.px4_backend_failure_diagnostics_dropped_count,
+                (generation, error.clone()),
+            ),
+            FrontendBackendKind::LinuxDvb => push_bounded(
+                &mut self.linux_dvb_backend_failure_diagnostics,
+                &mut self.linux_dvb_backend_failure_diagnostics_dropped_count,
+                (generation, error.clone()),
+            ),
+        }
+        eprintln!(
+            "maleicacid-tuner-hal2-backend-diagnostic: backend={backend:?} frontend_id={} generation={} error={error:?}",
+            self.frontend_id, generation
+        );
         Ok(())
     }
 
@@ -1261,6 +1346,91 @@ mod tests {
             FRONTEND_RUNTIME_DIAGNOSTIC_CAPACITY
         );
         assert_eq!(runtime.live_pump_reports_dropped_count(), 3);
+    }
+
+    #[test]
+    fn backend_failure_diagnostic_is_backend_scoped_and_preserves_error() {
+        let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
+        runtime.commit_generation(1).unwrap();
+        let error = HalError::IoctlFailed {
+            backend: "px4",
+            path: Some(std::path::PathBuf::from("/dev/px4video0")),
+            op: "PTX_SET_CHANNEL",
+            errno: 5,
+        };
+        runtime
+            .record_backend_failure_diagnostic(
+                1,
+                FrontendBackendKind::Px4CharDevice,
+                error.clone(),
+            )
+            .unwrap();
+
+        let (px4_records, px4_dropped, px4_record_failures) =
+            runtime.backend_failure_diagnostic_snapshot(FrontendBackendKind::Px4CharDevice);
+        assert_eq!(px4_records, vec![(1, error)]);
+        assert_eq!(px4_dropped, 0);
+        assert_eq!(px4_record_failures, 0);
+
+        let (dvb_records, dvb_dropped, dvb_record_failures) =
+            runtime.backend_failure_diagnostic_snapshot(FrontendBackendKind::LinuxDvb);
+        assert!(dvb_records.is_empty());
+        assert_eq!(dvb_dropped, 0);
+        assert_eq!(dvb_record_failures, 0);
+    }
+
+    #[test]
+    fn backend_failure_diagnostics_are_bounded() {
+        let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
+        runtime.commit_generation(1).unwrap();
+        for errno in 0..(FRONTEND_RUNTIME_DIAGNOSTIC_CAPACITY + 3) {
+            runtime
+                .record_backend_failure_diagnostic(
+                    1,
+                    FrontendBackendKind::Px4CharDevice,
+                    HalError::IoctlFailed {
+                        backend: "px4",
+                        path: Some(std::path::PathBuf::from("/dev/px4video0")),
+                        op: "PTX_SET_CHANNEL",
+                        errno: errno as i32,
+                    },
+                )
+                .unwrap();
+        }
+
+        let (records, dropped, record_failures) =
+            runtime.backend_failure_diagnostic_snapshot(FrontendBackendKind::Px4CharDevice);
+        assert_eq!(records.len(), FRONTEND_RUNTIME_DIAGNOSTIC_CAPACITY);
+        assert_eq!(dropped, 3);
+        assert_eq!(record_failures, 0);
+    }
+
+    #[test]
+    fn backend_failure_diagnostic_mismatch_does_not_cross_namespaces() {
+        let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
+        runtime.commit_generation(1).unwrap();
+        assert!(runtime
+            .record_backend_failure_diagnostic(
+                1,
+                FrontendBackendKind::LinuxDvb,
+                HalError::IoctlFailed {
+                    backend: "dvb",
+                    path: Some(std::path::PathBuf::from("/dev/dvb/adapter0/frontend0")),
+                    op: "FE_SET_PROPERTY",
+                    errno: 5,
+                },
+            )
+            .is_err());
+
+        let (px4_records, _, px4_record_failures) =
+            runtime.backend_failure_diagnostic_snapshot(FrontendBackendKind::Px4CharDevice);
+        let (dvb_records, _, dvb_record_failures) =
+            runtime.backend_failure_diagnostic_snapshot(FrontendBackendKind::LinuxDvb);
+        assert!(px4_records.is_empty());
+        assert!(dvb_records.is_empty());
+        assert_eq!(px4_record_failures, 1);
+        assert_eq!(dvb_record_failures, 0);
+        assert_eq!(runtime.diagnostic_write_failures().len(), 1);
     }
 
     #[test]
