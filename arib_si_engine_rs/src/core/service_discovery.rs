@@ -95,6 +95,7 @@ pub struct DiscoveredService {
     pub original_network_id: u16,
     pub service_id: u16,
     pub service_type: Option<u8>,
+    pub partial_reception: bool,
     pub service_name: Option<String>,
     pub provider_name: Option<String>,
     pub bouquet_name: Option<String>,
@@ -182,6 +183,7 @@ pub struct ServiceSemanticFacts {
     pub transport_stream_id: u16,
     pub service_id: u16,
     pub service_type: Option<u8>,
+    pub partial_reception: bool,
     pub pmt_pid_resolved: bool,
     pub pmt_parsed: bool,
     pub pcr_pid_resolved: bool,
@@ -469,6 +471,7 @@ impl ServiceDiscoveryEngine {
                 service.network_name = None;
                 service.ts_name = None;
                 service.remote_control_key_id = None;
+                service.partial_reception = false;
                 service.system_management = SystemManagementFacts::default();
             }
         }
@@ -515,6 +518,7 @@ impl ServiceDiscoveryEngine {
                 original_network_id: onid,
                 service_id,
                 service_type: None,
+                partial_reception: false,
                 service_name: None,
                 provider_name: None,
                 bouquet_name: None,
@@ -832,9 +836,14 @@ impl ServiceDiscoveryEngine {
             self.transport_entry_mut(tsid, onid);
             self.transport_entry_mut(tsid, onid).system_management =
                 parse_system_management_descriptor(network_descriptors);
-            let (desc_network_name, ts_name, remote_control_key_id) =
+            let (desc_network_name, ts_name, remote_control_key_id, partial_reception_services) =
                 parse_nit_transport_metadata(&section[desc_start..desc_end])
-                    .unwrap_or((None, None, None));
+                    .unwrap_or((None, None, None, BTreeSet::new()));
+            for service_id in partial_reception_services {
+                self.transport_entry_mut(tsid, onid).services.insert(service_id);
+                self.service_entry_mut(tsid, onid, service_id).partial_reception = true;
+                self.apply_pending_pmt_to_service(tsid, onid, service_id);
+            }
             let transport = self.transport_entry_mut(tsid, onid);
             if transport.network_name.is_none() {
                 transport.network_name = desc_network_name
@@ -1316,6 +1325,7 @@ impl ServiceDiscoveryCollector {
                 transport_stream_id: service.transport_stream_id,
                 service_id: service.service_id,
                 service_type: service.service_type,
+                partial_reception: service.partial_reception,
                 pmt_pid_resolved,
                 pmt_parsed: service.pmt_parsed,
                 pcr_pid_resolved: service.pcr_pid.is_some(),
@@ -1760,10 +1770,11 @@ fn parse_system_management_descriptor(descriptors: &[u8]) -> SystemManagementFac
 
 fn parse_nit_transport_metadata(
     descriptors: &[u8],
-) -> Option<(Option<DecodedSiText>, Option<DecodedSiText>, Option<u8>)> {
+) -> Option<(Option<DecodedSiText>, Option<DecodedSiText>, Option<u8>, BTreeSet<u16>)> {
     let mut network_name = None;
     let mut ts_name = None;
     let mut remote_control_key_id = None;
+    let mut partial_reception_services = BTreeSet::new();
     let mut cursor = 0usize;
     while cursor + 2 <= descriptors.len() {
         let tag = descriptors[cursor];
@@ -1795,14 +1806,28 @@ fn parse_nit_transport_metadata(
                     }
                 }
             }
+            0xfb if len % 2 == 0 => {
+                for service in descriptors[body_start..body_end].chunks_exact(2) {
+                    partial_reception_services.insert(u16::from_be_bytes([service[0], service[1]]));
+                }
+            }
             _ => {}
         }
         cursor = body_end;
     }
-    if network_name.is_none() && ts_name.is_none() && remote_control_key_id.is_none() {
+    if network_name.is_none()
+        && ts_name.is_none()
+        && remote_control_key_id.is_none()
+        && partial_reception_services.is_empty()
+    {
         None
     } else {
-        Some((network_name, ts_name, remote_control_key_id))
+        Some((
+            network_name,
+            ts_name,
+            remote_control_key_id,
+            partial_reception_services,
+        ))
     }
 }
 
