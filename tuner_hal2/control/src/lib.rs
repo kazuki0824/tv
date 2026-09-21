@@ -79,9 +79,15 @@ impl<T> WorkerCleanupState<T> {
     fn ensure_ready(&self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
         match &self.phase {
             WorkerCleanupPhase::Ready(_) => Ok(()),
-            WorkerCleanupPhase::Executing => Err(cleanup_authority_error(WorkerCleanupFailureKind::Executing)),
-            WorkerCleanupPhase::Quarantined(_) => Err(cleanup_authority_error(WorkerCleanupFailureKind::Quarantined)),
-            WorkerCleanupPhase::Completed => Err(cleanup_authority_error(WorkerCleanupFailureKind::Completed)),
+            WorkerCleanupPhase::Executing => {
+                Err(cleanup_authority_error(WorkerCleanupFailureKind::Executing))
+            }
+            WorkerCleanupPhase::Quarantined(_) => Err(cleanup_authority_error(
+                WorkerCleanupFailureKind::Quarantined,
+            )),
+            WorkerCleanupPhase::Completed => {
+                Err(cleanup_authority_error(WorkerCleanupFailureKind::Completed))
+            }
         }
     }
 }
@@ -118,7 +124,9 @@ impl<T> WorkerCleanupAuthority<T> {
         let mut value = {
             let mut state = self.state.try_lock().map_err(cleanup_lock_error)?;
             if state.attempt != self.attempt {
-                return Err(cleanup_authority_error(WorkerCleanupFailureKind::Superseded));
+                return Err(cleanup_authority_error(
+                    WorkerCleanupFailureKind::Superseded,
+                ));
             }
             state.ensure_ready()?;
             match std::mem::replace(&mut state.phase, WorkerCleanupPhase::Executing) {
@@ -130,10 +138,16 @@ impl<T> WorkerCleanupAuthority<T> {
             }
         };
         // 実行中の義務と試行番号は正本に残す。外部処理・待機中はロックを保持しない。
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| execute(&mut value)));
-        let mut state = self.state.lock().map_err(|_| cleanup_authority_error(WorkerCleanupFailureKind::StatePoisoned))?;
+        let outcome =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| execute(&mut value)));
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| cleanup_authority_error(WorkerCleanupFailureKind::StatePoisoned))?;
         if state.attempt != self.attempt || !matches!(state.phase, WorkerCleanupPhase::Executing) {
-            return Err(cleanup_authority_error(WorkerCleanupFailureKind::Superseded));
+            return Err(cleanup_authority_error(
+                WorkerCleanupFailureKind::Superseded,
+            ));
         }
         match outcome {
             Ok((result, disposition)) => {
@@ -149,7 +163,9 @@ impl<T> WorkerCleanupAuthority<T> {
                 state.phase = WorkerCleanupPhase::Quarantined(value);
                 drop(state);
                 drop(payload);
-                Err(cleanup_authority_error(WorkerCleanupFailureKind::Interrupted))
+                Err(cleanup_authority_error(
+                    WorkerCleanupFailureKind::Interrupted,
+                ))
             }
         }
     }
@@ -175,9 +191,8 @@ impl<T> WorkerCleanupAuthority<T> {
             (progress, disposition)
         })?;
         match progress {
-            WorkerCleanupProgress::Completed(result) | WorkerCleanupProgress::Quarantined(result) => {
-                Ok(WorkerCleanupRun::Completed(result))
-            }
+            WorkerCleanupProgress::Completed(result)
+            | WorkerCleanupProgress::Quarantined(result) => Ok(WorkerCleanupRun::Completed(result)),
             WorkerCleanupProgress::Pending => Ok(WorkerCleanupRun::Pending(self)),
         }
     }
@@ -1153,9 +1168,11 @@ mod tests {
                 *value = 1;
                 panic!("interrupted after a side effect");
             }),
-            Err(maleicacid_tuner_hal2_common::HalError::WorkerCleanupFailed {
-                kind: WorkerCleanupFailureKind::Interrupted,
-            })
+            Err(
+                maleicacid_tuner_hal2_common::HalError::WorkerCleanupFailed {
+                    kind: WorkerCleanupFailureKind::Interrupted,
+                }
+            )
         ));
         assert!(owner.is_pending());
         assert!(matches!(
@@ -1172,32 +1189,51 @@ mod tests {
     fn failed_cleanup_retains_its_result_and_rejects_retry() {
         let owner = WorkerRuntime::retain_cleanup(None);
         let authority = owner.issue().unwrap();
-        assert!(matches!(authority.execute(|value| {
-            *value = Some("stop failed");
-            WorkerCleanupProgress::Quarantined("stop failed")
-        }), Ok(WorkerCleanupRun::Completed("stop failed"))));
+        assert!(matches!(
+            authority.execute(|value| {
+                *value = Some("stop failed");
+                WorkerCleanupProgress::Quarantined("stop failed")
+            }),
+            Ok(WorkerCleanupRun::Completed("stop failed"))
+        ));
         assert!(owner.is_pending());
-        assert!(matches!(&owner.state.lock().unwrap().phase,
-            WorkerCleanupPhase::Quarantined(Some("stop failed"))));
-        assert!(matches!(owner.issue(), Err(maleicacid_tuner_hal2_common::HalError::WorkerCleanupFailed {
-            kind: WorkerCleanupFailureKind::Quarantined,
-        })));
+        assert!(matches!(
+            &owner.state.lock().unwrap().phase,
+            WorkerCleanupPhase::Quarantined(Some("stop failed"))
+        ));
+        assert!(matches!(
+            owner.issue(),
+            Err(
+                maleicacid_tuner_hal2_common::HalError::WorkerCleanupFailed {
+                    kind: WorkerCleanupFailureKind::Quarantined,
+                }
+            )
+        ));
     }
 
     #[test]
     fn cleanup_wait_releases_the_state_lock_and_keeps_the_attempt_exclusive() {
         let owner = WorkerRuntime::retain_cleanup(7);
         let authority = owner.issue().unwrap();
-        let observed = authority.inspect(|value| {
-            assert!(owner.state.try_lock().is_ok());
-            assert!(matches!(owner.issue(), Err(maleicacid_tuner_hal2_common::HalError::WorkerCleanupFailed {
-                kind: WorkerCleanupFailureKind::Executing,
-            })));
-            *value
-        }).unwrap();
+        let observed = authority
+            .inspect(|value| {
+                assert!(owner.state.try_lock().is_ok());
+                assert!(matches!(
+                    owner.issue(),
+                    Err(
+                        maleicacid_tuner_hal2_common::HalError::WorkerCleanupFailed {
+                            kind: WorkerCleanupFailureKind::Executing,
+                        }
+                    )
+                ));
+                *value
+            })
+            .unwrap();
         assert_eq!(observed, 7);
-        assert!(matches!(authority.execute(|value| WorkerCleanupProgress::Completed(*value)),
-            Ok(WorkerCleanupRun::Completed(7))));
+        assert!(matches!(
+            authority.execute(|value| WorkerCleanupProgress::Completed(*value)),
+            Ok(WorkerCleanupRun::Completed(7))
+        ));
     }
 
     #[test]

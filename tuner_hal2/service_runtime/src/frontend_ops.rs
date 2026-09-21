@@ -86,7 +86,10 @@ impl FrontendWorkerTerminalEvent {
         match outcome {
             FrontendWorkerStopOutcome::NotRunning => None,
             FrontendWorkerStopOutcome::BackendSubmitFailed {
-                frontend_id, kind, generation, failure,
+                frontend_id,
+                kind,
+                generation,
+                failure,
             } => Some(Self::new(
                 *frontend_id,
                 *generation,
