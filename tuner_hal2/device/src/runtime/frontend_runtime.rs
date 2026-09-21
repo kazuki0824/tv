@@ -2,6 +2,7 @@ use maleicacid_tuner_hal2_common::{
     FrontendBackendKind, FrontendTuneRequest, HalError, HalInternalKind,
 };
 
+use super::backend_worker::FrontendBackendSubmitFailure;
 use super::tune_txn::{BackendTuneRollbackFailure, BackendTuneStep};
 use super::{
     FrontendLivePumpReport, FrontendLiveReaderDescriptor, FrontendScanPhase, FrontendScanSession,
@@ -590,16 +591,48 @@ impl FrontendRuntime {
             ));
         }
 
-        let record = FrontendBackendFailureDiagnostic {
+        self.store_backend_failure_diagnostic(FrontendBackendFailureDiagnostic {
             frontend_id: self.frontend_id,
             generation,
             backend,
             step,
-            primary_error: primary_error.clone(),
+            primary_error,
             rollback_failure,
-        };
+        });
+        Ok(())
+    }
 
-        match backend {
+    pub fn record_completed_backend_submit_failure(
+        &mut self,
+        failure: FrontendBackendSubmitFailure,
+    ) -> Result<(), HalError> {
+        if failure.generation > self.generation {
+            return self.record_backend_failure_diagnostic_context(
+                failure.generation,
+                self.backend_kind,
+                failure.step,
+                failure.error,
+                failure.rollback_failure,
+            );
+        }
+        // 回収が終わった旧試行の診断だけを保存し、現操作の世代・状態は変更しない。
+        self.store_backend_failure_diagnostic(FrontendBackendFailureDiagnostic {
+            frontend_id: self.frontend_id,
+            generation: failure.generation,
+            backend: self.backend_kind,
+            step: failure.step,
+            primary_error: failure.error,
+            rollback_failure: failure.rollback_failure,
+        });
+        Ok(())
+    }
+
+    fn store_backend_failure_diagnostic(&mut self, record: FrontendBackendFailureDiagnostic) {
+        eprintln!(
+            "maleicacid-tuner-hal2-backend-diagnostic: backend={:?} frontend_id={} generation={} error={:?}",
+            record.backend, record.frontend_id, record.generation, record.primary_error
+        );
+        match record.backend {
             FrontendBackendKind::Px4CharDevice => push_bounded(
                 &mut self.px4_backend_failure_diagnostics,
                 &mut self.px4_backend_failure_diagnostics_dropped_count,
@@ -611,11 +644,6 @@ impl FrontendRuntime {
                 record,
             ),
         }
-        eprintln!(
-            "maleicacid-tuner-hal2-backend-diagnostic: backend={backend:?} frontend_id={} generation={} error={primary_error:?}",
-            self.frontend_id, generation
-        );
-        Ok(())
     }
 
     pub fn record_backend_request_failure_after_fence(
@@ -1533,6 +1561,42 @@ mod tests {
             assert_eq!(records[0].step, Some(BackendTuneStep::ApplyChannel));
             assert_eq!(records[0].primary_error, primary_error);
             assert_eq!(records[0].rollback_failure, Some(rollback_failure));
+        }
+    }
+
+    #[test]
+    fn delayed_submit_diagnostic_preserves_old_generation_without_changing_current_state() {
+        for backend in [FrontendBackendKind::LinuxDvb, FrontendBackendKind::Px4CharDevice] {
+            let mut runtime = FrontendRuntime::new(7, backend);
+            runtime.commit_generation(2).unwrap();
+            let before = runtime.snapshot();
+            let failure = FrontendBackendSubmitFailure {
+                generation: 1,
+                error: HalError::cleanup_failed("submit", "primary"),
+                rollback_succeeded: false,
+                step: Some(BackendTuneStep::ApplyChannel),
+                rollback_failure: Some(BackendTuneRollbackFailure {
+                    step: crate::BackendTuneRollbackStep::RollbackRestorePreviousState,
+                    error: HalError::cleanup_failed("rollback", "secondary"),
+                }),
+            };
+            runtime.record_completed_backend_submit_failure(failure.clone()).unwrap();
+            let (records, dropped, record_failures) = runtime.backend_failure_diagnostic_snapshot(backend);
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].generation, 1);
+            assert_eq!(records[0].step, failure.step);
+            assert_eq!(records[0].primary_error, failure.error);
+            assert_eq!(records[0].rollback_failure, failure.rollback_failure);
+            assert_eq!((dropped, record_failures), (0, 0));
+            assert_eq!(runtime.snapshot(), before);
+            assert!(runtime.record_completed_backend_submit_failure(FrontendBackendSubmitFailure {
+                generation: 3,
+                ..failure
+            }).is_err());
+            let (records, _, record_failures) = runtime.backend_failure_diagnostic_snapshot(backend);
+            assert_eq!(records.len(), 1);
+            assert_eq!(record_failures, 1);
+            assert_eq!(runtime.snapshot(), before);
         }
     }
 

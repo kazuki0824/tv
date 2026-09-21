@@ -2898,7 +2898,6 @@ fn accept_frontend_worker_terminal_outcomes(
     for (_, outcome) in outcomes {
         if let FrontendWorkerStopOutcome::BackendSubmitFailed {
             frontend_id,
-            generation,
             failure,
             ..
         } = outcome
@@ -2911,12 +2910,9 @@ fn accept_frontend_worker_terminal_outcomes(
                 .and_then(|mut guard| {
                     guard
                         .frontend_txn()
-                        .record_frontend_backend_failure_diagnostic(
+                        .record_completed_frontend_backend_submit_failure(
                             *frontend_id,
-                            *generation,
-                            failure.step,
-                            failure.error.clone(),
-                            failure.rollback_failure.clone(),
+                            failure.clone(),
                         )
                 }),
             );
