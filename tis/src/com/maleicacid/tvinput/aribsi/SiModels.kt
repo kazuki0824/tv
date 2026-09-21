@@ -550,6 +550,8 @@ data class ServicePolicyDecision(
 ) {
     val casDecisionReady: Boolean get() = registrationReady && caDescriptorsResolved
     val clearLivePlaybackStaticallyEligible: Boolean get() = casDecisionReady && !requiresCas
+
+    fun livePlaybackEligible(casLinkageReady: Boolean): Boolean = casDecisionReady && (!requiresCas || casLinkageReady)
 }
 
 typealias ServicePublishabilityDiagnostic = ServicePolicyDecision

@@ -61,7 +61,11 @@ Tuner HAL の capability / VTS profile では TS 入力だけを宣言する。�
 
 ### export ID と VTS profile の固定
 
-Tuner HAL が framework へ export する frontend ID は backend の単純な numeric index だけに依存しない。`px4video0` と `pxmlt5video0` のように異なる device family が同じ unit index を持つ場合でも、HAL の frontend ID と physical group ID は衝突してはならない。device family code と unit index を組み合わせ、1,000,000 番台の px4 frontend ID として export する。DVB frontend ID はハッシュではなく固定ビット割当で生成し、`2,000,000 + (adapter_id << 12) + (frontend_index << 4) + variant` とする。`adapter_id` と `frontend_index` は 8 bit、`variant` は 4 bit で、variant は ISDB-T=0、ISDB-S=1 に固定する。範囲外の DVB probe は export しない。生成後の duplicate ID 検出は最終保険として残す。px4 frontend の `exclusiveGroupId` は unit index 単独値ではなく、device family code と unit index を含む packed physical group id として返す。
+Tuner HAL が framework へ export する frontend ID は backend 種別、device family、unit、adapter、frontend index、delivery-system variant を数値へ埋め込まない opaque identifier とする。Android 15 の TunerResourceManager が frontend resource handle 内で frontend ID を 8 bit の resource ID として往復するため、本製品が Android 15 へ公開する frontend ID は `0..=255` に収め、TRM handle の encode/decode 後も同じ値でなければならない。起動時probeで公開対象を決定論的な順序に並べ、単一allocatorから重複なく連番を割り当てる。公開数が 256 を超える候補は capability へ commit せず、resource-capacity不足として診断する。frontend IDから backend、device family、unit、adapter、物理排他関係を逆算してはならず、それらは registry entry、device path、capability、検証済み `exclusiveGroupId` を正本とする。px4 と DVB は同じ frontend ID 空間を共有し、生成後の duplicate ID 検出は最終保険として残す。px4 frontend の `exclusiveGroupId` は frontend ID から派生させず、device family code と unit index を含む packed physical group id として返す。
+
+LNB ID も同じ TunerResourceManager handle 往復制約を受けるため、frontend ID とは独立した resource-type 固有の opaque ID 空間 `0..=255` から割り当てる。LNB ID を owner frontend ID への加算、backend種別、device path、物理rail identityから算術導出してはならない。frontendとの所有関係は `LnbRegistryEntry.owner_frontend_id`、物理rail identityはLNB registryの物理keyを正本とする。resource typeはTRM handle内で別に保持されるため、frontend、LNB、demuxの各ID空間で同じ数値を使用しても相互衝突とは扱わない。
+
+px4_drv character device の delivery-system capability は device node の存在だけから T/S 両対応と推定せず、対象driverが各minorへ設定する `system_cap` を正本として公開する。現行px4_drv product profileでは `px4video` context は1物理deviceにつき4連続minorを割り当て、そのgroup内ordinal 0/1をISDB-S、2/3をISDB-Tとするため、global minor `N` は `N mod 4` が0/1ならISDB-S、2/3ならISDB-Tだけを公開する。`pxmlt5video`、`pxmlt8video`、`isdb6014video`、`isdb2056video`、`pxm1urvideo` は各nodeをISDB-T/ISDB-S両対応として公開し、`pxs1urvideo`、`isdbt2071video` はISDB-Tだけを公開する。`PTX_SET_SYSTEM_MODE` はdevice nodeの `system_cap` を越えてdelivery systemを追加する機構として扱わない。backend bindingはこの公開capabilityと同一のdevice pathを保持し、tune時に別system用nodeへ付け替えない。
 
 DVB frontend の `exclusiveGroupId` は公開 frontend ID や `(adapter_id, frontend_index)` の一意性から生成せず、backend topology が検証した「同時に機能できない物理 frontend 群」を正本として決める。同じ物理 frontend から公開する ISDB-T/ISDB-S variant は必ず同じ group に属する。異なる `(adapter_id, frontend_index)` を別 group にできるのは、RF/tuner/demod を含む同時利用不可資源を共有せず同時利用できることを topology で確認できる場合だけとし、共有が確認された別 tuple は同じ group にする。global group ID は符号付き32 bitの非負範囲に収め、上位4 bitの backend class と下位28 bitの backend 固有 group payload は、検証済み排他群へ衝突しない識別子を割り当てるための名前空間にだけ使う。現行 backend class は px4=`0x10000000`、DVB=`0x20000000` に固定する。payload が28 bitへ収まらない候補、異なる排他群の group ID 重複、同一排他群内で group ID が不一致になる候補は `CapabilitySnapshot` へ commit せず、その frontend を公開しない。resource arbitration は frontend ID の数値近接や DVB node tuple ではなく、この検証済み物理排他群と `exclusiveGroupId` の対応だけを正本とする。
 
@@ -517,7 +521,7 @@ commit前失敗では、成功戻りを返してはならない。commit後clean
 | `FrontendLnbRelationTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | `IFrontend.setLnb()` use-case、Frontend close時は`ObjectCloseTxn`からのtyped assignment release | frontend→LNB assignment relation、prepared assignment lease-reference mutation、transaction authority、旧assignment cleanup record | LNB endpoint lease pool内部、共有railの物理状態、`LnbRegistry`の永続制御状態・共有レール物理状態、`ILnb` object lifecycle | frontendとLNB endpointのlive/owner/generation/type/connectability・shared rail互換性を同一snapshotでvalidate → LNB resource ownerからassignment lease-reference mutationをprepare → relation prepare → composite commit（新relation + 新lease参照 + 旧relation logical detach） → 旧assignment lease参照cleanup | commit前失敗はprepared relation/lease mutationをabortして旧relation/旧lease参照を維持。commit結果不明時だけ当該frontend assignmentと関係claimをquarantine。commit後の旧lease cleanup失敗では新relationをrollbackせず旧lease cleanupだけをretry/quarantineへ接続。Frontend closeは同ownerのtyped releaseでassignmentを解放 | frontend object-method use-case、`ObjectCloseTxn` typed cleanup command、LNB resource ownerのprepared lease入口 | AIDL wrapper/frontend use-case/LNB registryによるrelation・leaseの別commit、`LnbControlTxn`への吸収、LNB lease pool内部の直接変更 | 初回assignment、同一assignment再設定、別LNBへの更新、non-satellite/wrong owner/stale generation/incompatible rail/capacity、prepare/commit fault、post-commit旧lease cleanup failureで新assignment維持、Frontend closeでassignment release |
 | `LnbControlTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | `setVoltage()` / `setTone()` / `setSatellitePosition()` | 1回の制御要求の調停、`LnbRegistry`が発行する準備済み制御変更と物理I/O権限を一回だけ消費する呼出し単位の進行状態 | LNB永続制御状態、LNB状態世代、失敗・隔離状態、共有レールのリース・参照数、物理I/O直列化状態、DiSEqC一時送信、コールバック、endpoint lease | 検証 → `LnbRegistry`の状態読取り値から物理I/O競合単位を特定 → registry状態ロックを保持せず当該I/O権限取得 → 寿命・世代・リース再検証 → 次世代と候補値の準備済み変更を`LnbRegistry`で確保 → backendへ適用 → 成功なら準備済み変更を確定、明示拒否なら取消し、結果不明なら失敗・隔離を`LnbRegistry`へ確定 → I/O権限解放 | 世代を発行できない場合はbackend適用前に`LnbRegistry`が対象LNBを`Quarantined`とする。backend適用成功後の準備済み変更の確定は、I/O権限と準備済み変更権限の保持中に追加の資源割当またはbackend I/Oを行わず失敗不能とする。明示拒否または機器状態不変を確認できる失敗は準備済み変更を取り消してregistry状態不変とする。backend反映結果が不明な場合だけ`LnbRegistry`へ失敗・隔離状態を確定する。`LnbControlTxn`自身は呼出しを越える失敗状態または世代を保持しない | LNB object use-case | 3 APIの個別state machine、`LnbRegistry`を迂回するbackend I/O、DiSEqCの手順統合 | 3操作、invalid/unavailable、generation exhaustion、backend rejected/indeterminate、close race、固定給電・safe-state・DiSEqCとの物理I/O直列化 |
 | `DescramblerPidTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | `addPid()` / `removePid()` use-case | PID tuple、pool PID claim、backend packet-path apply、compensation | key refcount、session close/pool session lifetime | validate → claim/prepare → backend apply → PID ledger commit → compensation on failure | pre-commit rollback、backend適用後commit失敗はcompensation、compensation不能/実状態不明だけquarantine | descrambler PID use-case | AIDL/packet helperのclaim/backend/ledger直接変更 | add/remove idempotence、NULL/non-NULL source、wrong owner/generation、capacity、backend/commit/compensation fault |
-| `DescramblerKeyTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | `setKeyToken()` use-case | key token/refcount/session-key mutation | PID relation、session cleanup | validate → new key acquire/prepare → backend apply → session/key-table commit → old ref release | pre-commit rollback、refcount/commit不整合は対象session/key tableをfail/quarantine | descrambler key use-case | PID/cleanup path、AIDL direct key table mutation | valid/invalid/VOID/same/replacement、backend fault、commit/refcount fault |
+| `DescramblerKeyTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | `setKeyToken()` use-case | token参照の結合・解除、refcount/session-key mutation | PID relation、session cleanup | validate → new key acquire/prepare → backend apply → session/key-table commit → old ref release | pre-commit rollback、refcount/commit不整合は対象session/key tableをfail/quarantine | descrambler key use-case | PID/cleanup path、AIDL direct key table mutation | valid/invalid/VOID/same/replacement、backend fault、commit/refcount fault |
 | `DescramblerSessionCleanupTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | descrambler closeは`ObjectCloseTxn`からtyped cleanup command、demux invalidationはdemux invalidation ownerからtyped cleanup request | sessionに属するPID/key/pool帰属のcleanup進捗 | public close authority、normal key/PID mutation、他session | trigger（close authorityまたはdemux invalidation generation）確認 → session cleanup直列化 → backend detach全件 → claims/key refs/pool session release → report | 全対象を試行し、close起因retryableは`ObjectCloseTxn`の`CleanupPending`へ、invalidation起因retryableはdemux invalidation ownerへtyped pending結果を返してcleanup/reaperで再試行。状態不明だけ対象sessionをquarantine | `ObjectCloseTxn` typed cleanup command、demux invalidation owner | public API/workerによる個別release、demux invalidationをpublic close authorityとして扱うこと | close/invalidateの別入口、partial cleanup、retry、idempotence、quarantine |
 | `RecordDvrFilterRelationTxn` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | attach/detach、Filter/DVR close、demux cleanup | Record DVR/Filter relationの単一正本 | Filter/DVR lifecycle本体、queue payload | validate both objects → relation prepare → union-route prepare → single commit / abort | pre-commit旧relation維持、commit不明時だけrelation/routeをfail | DVR/Filter relation use-case、close cleanup command | DVR/Filter両側のshadow relation別commit | duplicate attach、absent detach、wrong owner/demux/kind、close/detach race、commit fault |
 | `WorkerRuntime` | `tuner_hal2/DESIGN_JA.md` の同名論理契約行 | 各domain worker ownerのspawn/stop/wake/join/reaper | owner generation / signal generation、stop signal、JoinHandle、fence、reaper handoff mechanism、有界`ReaperSupervisor` work queue、retry schedule / coalesce state、typed worker terminal result（`Normal` / `StopRequested` / `RuntimeFailure` / `PanicOrJoinFailure`） | domain start/stop state、backend semantic failure、queue payload | owner handle slot prepare → 次generationを`checked_add()`でprepare → fenced worker spawn / handle bind → signal stop → wake/cancel → observe/join または one-shot reaper handoff → handoff済みworkを既存retry scheduleで外部API再呼出しなしに自律再試行 → worker実終了と依存cleanup完了後にlease/slot release | handle slot準備失敗ではspawnしない。owner/signal generationを発行できない場合はwrap / saturating reuseや存在しない次generationでのreplacement spawnを行わず、現generationをfenceして停止・回収し、影響するowner/generation/resourceだけを`Quarantined`とする。取消generationごとのstop/wake通知は各1回までとし、終了済みworkerは直ちに回収する。failureはtyped reportしleaseを早期再利用しない。`ReaperSupervisor`へのenqueueおよび早期再開要求は `(owner, generation, dependency resource)` ごとにcoalesceし、同一未完workを重複実行しない。外部APIの再呼出しがなくても有界work queueがretry scheduleに従って進行する。terminal budgetは`cleanupRetryScheduleMs=[0,10,100,1000]`後1000 ms間隔、`cleanupTerminalDeadlineMs=30000`、`workerIoDeadlineMs=2000`、`workerReaperDeadlineMs=10000`。deadline到達後もowner generation無効化で副作用を遮断できる場合は対象owner/generation/resourceだけを`Quarantined`とする。無効化後もservice-global stateを変更可能、遮断不能なservice-wide exclusive resourceを保持、owner/generation/resource tokenで遮断不能、または同一資源のreplacement/restartと競合可能というtyped evidenceがある場合だけ`ServiceCritical`とする | domain worker owner、cleanup/reaper | 別のgeneric worker lifecycle ownerの追加、AIDLからの直接join | handle-slot failureでno-spawn、generation exhaustionでwrap/reuse/replacementなし、typed terminal result、stop/wake一回性、generation fence、join/one-shot reaper、外部API再呼出しなしの自律retry、早期再開要求のcoalesce、panic、no early reuse、deadline branch、local quarantine対ServiceCritical判定 |
@@ -711,7 +715,7 @@ filter の `stop()`、`flush()`、`configure()`、上流フィルタ登録解除
 
 ## CAS と descrambler の境界
 
-CAS HAL / TIS / Tuner HAL のリリース段階ごとのスクランブル解除スコープは `開発規則.md` を正とする。本節では、CAS 本体未接続時でも Tuner HAL の `IDescrambler` AIDL面、key token検証、PID登録、packet単位デスクランブル中核、診断境界をどう扱うかだけを固定する。
+CAS plugin / TIS / Tuner HAL のリリース段階ごとのスクランブル解除スコープは `開発規則.md` を正とする。本節では、CAS 本体未接続時でも Tuner HAL の `IDescrambler` AIDL面、key token検証、PID登録、packet単位デスクランブル中核、診断境界をどう扱うかだけを固定する。
 
 
 ## descramble 失敗時 packet policy
@@ -1138,18 +1142,18 @@ LNB固有の安全状態復帰は後始末対象として`ObjectCloseTxn`へ型�
 
 ## 復号鍵台帳
 
-`IDescrambler.setKeyToken()` が受け取る値は復号鍵そのものではなく、不透明な参照値である。Tuner HAL はこの参照値で復号鍵台帳を引き、内部の `DescramblerKeySlot` に変換する。Binder 境界を越える バイト列に MULTI2 の system key、CBC 初期値、偶数鍵、奇数鍵を入れてはならない。r52のCAS/Tuner内部鍵資源の完全なmaterial構成、供給・更新・revoke境界は`../future_work/r52/b25_key_slot_registry_contract.md`を正とし、本書では公開AIDL境界とTuner側のtoken解決意味だけを定義する。
+`IDescrambler.setKeyToken()` が受け取る値は復号鍵そのものではなく、不透明な参照値である。Tuner HAL はこの参照値で復号鍵台帳を引き、内部の `DescramblerKeySlot` に変換する。Binder 境界を越える バイト列に MULTI2 の system key、CBC 初期値、偶数鍵、奇数鍵を入れてはならない。固定parameterの所有・使用と共有方式は`../開発規則.md`の「r52のMULTI2固定値と動的鍵状態」、session/tokenに対応するKs更新・失効は`../cas_plugin/DESIGN_JA.md`を正とする。本書では公開AIDL境界とTuner側の参照・復号契約だけを定義する。
 
 復号鍵台帳の key slot 状態は次で固定する。
 
 | 状態 | 意味 | resolve結果 | 復号可否 | 設計上の成立条件 |
 |---|---|---|---|---|
-| `Registered` | CAS bridge または test 専用登録により、内部鍵参照が有効である。refcount は 0 以上 | 成功 | 可 | `setKeyToken()` が acquire ref に成功し、packet経路 が key slot を参照できる |
+| `Registered` | tokenに対応する内部鍵参照が有効である。refcount は 0 以上。test専用登録は本番経路の成立とは区別する | 成功 | 可 | `setKeyToken()` が acquire ref に成功し、packet経路 が key slot を参照できる |
 | `Unknown` | 台帳に存在しない token。未登録、refcount 0 到達による削除、refcount 0 の未使用 slot revoke 済みを含む | `UnknownToken` | 不可 | 削除済み token を復号可能として扱わない |
-| `RegistryUnavailable` | 台帳 lock 失敗、内部状態破損、CAS bridge registry 不在などで解決不能 | `RegistryUnavailable` または AIDL `UNKNOWN_ERROR` 相当 | 不可 | 内部障害を復号成功にしない |
+| `RegistryUnavailable` | 台帳 lock 失敗、内部状態破損、内部鍵状態の参照先を利用できない場合などで解決不能 | `RegistryUnavailable` または AIDL `UNKNOWN_ERROR` 相当 | 不可 | 内部障害を復号成功にしない |
 
 
-失効時は直ちに無効化し、新規および既存の解決処理を停止して鍵素材を使用不能にする。
+失効時は直ちに無効化し、既存descramblerからの再取得を含む新規の鍵参照取得を遮断する。取得済み参照による実行中packetの完了とdrainは`../cas_plugin/DESIGN_JA.md`のrevoke契約に従う。
 
 
 ## デスクランブル gate
@@ -1173,8 +1177,26 @@ STD-B25デコード能力とSTD-B25 Part 1 §4.9への適合宣言を分離す�
 
 製品profileで公開demuxのいずれにもSTD-B25デコード能力を有効にしない構成では`openDescrambler()`を`UNAVAILABLE`とし、VTS製品設定へdescrambling flowを含めない。一部のdemux経路だけで能力を有効にする構成では、未結合objectの生成後、対象外demuxへの`setDemuxSource()`を`UNAVAILABLE`とする。能力を有効にする場合も、実鍵組数または実PID数を、本製品全体として恒久的に適合対象外であるPart 1 §4.9への適合、Part 1 CAS-R適合、またはSTD-B25全面準拠の宣言へ読み替えない。鍵素材はslot数だけを台帳化し、公開AIDLまたは診断へ出さない。
 
-VTS/lab config の descrambling flow は、`VTS profile / capability 対応契約`と`開発規則.md`のrelease到達点を正とする。r51ではCAS HALがplaceholderで本番の実CAS tokenを成立させないため、VTS product profileで本番descrambling成功を表明するflowを宣言しない。r52の正式リリース到達点でCAS HAL / MediaCas / vendor key bridgeが実tokenを成立させ、対象demuxの`StdB25DecodeCapability`を有効化し、使用するVTS artifact / variant / input / CAS system / filter / PID / queue / memory等の`VtsEnvironmentProfile`入力と必要資源を起動前に確定・予約できるprofileでは、AOSP VTSのdescrambling flowを到達可能にする。descrambler能力を宣言したprofileからflowを隠して検査を回避してはならない。Tuner HAL は PMT/CAT/SDT/ECM/EMM 等の section payload delivery、`IDescrambler`、`setKeyToken()`、`addPid()` / `removePid()`、token lookup境界、未接続・bad token・expired token診断を契約対象とする。本番経路スクランブル解除成功のrelease scopeと、CA情報 / service metadataの意味解析、ECM/EMM filter開始方針、MediaCas/CAS bridge呼出し、実token取得、Tuner descramblerへの接続判断、未接続診断の上位制御は`開発規則.md`を正とする。Tuner HALのpacket単位デスクランブル中核は単体テスト内で既知鍵を登録して確認してよい。
+VTS/lab config の descrambling flow は、`VTS profile / capability 対応契約`と`開発規則.md`のrelease到達点を正とする。r51ではCAS pluginがplaceholderで本番の実CAS tokenを成立させないため、VTS product profileで本番descrambling成功を表明するflowを宣言しない。r52の正式リリース到達点でMediaCas session由来のtokenと有効な内部鍵状態の対応が成立し、対象demuxの`StdB25DecodeCapability`を有効化し、使用するVTS artifact / variant / input / CAS system / filter / PID / queue / memory等の`VtsEnvironmentProfile`入力と必要資源を起動前に確定・予約できるprofileでは、AOSP VTSのdescrambling flowを到達可能にする。descrambler能力を宣言したprofileからflowを隠して検査を回避してはならない。Tuner HAL は PMT/CAT/SDT/ECM/EMM 等の section payload delivery、`IDescrambler`、`setKeyToken()`、`addPid()` / `removePid()`、token lookup境界、未接続・bad token・expired token診断を契約対象とする。本番経路スクランブル解除成功のrelease scopeと、CA情報 / service metadataの意味解析、ECM/EMM filter開始方針、MediaCas/CAS bridge呼出し、実token取得、Tuner descramblerへの接続判断、未接続診断の上位制御は`開発規則.md`を正とする。Tuner HALのpacket単位デスクランブル中核は単体テスト内で既知鍵を登録して確認してよい。
 
+
+### r52のCAS試験profile境界
+
+Media CAS互換試験、製品のB25/B1復号確認、Tuner VTSのdescrambling flowは、使用するCA systemと鍵成立条件を区別する。
+
+| 試験経路 | CAS側の所有 | tokenと鍵状態の条件 |
+|---|---|---|
+| AOSP Media CAS VTSのClearKey互換試験 | AOSP標準ClearKey plugin | AOSP ClearKeyの入力・session・descrambler契約を検証する。TunerのB25/B1鍵状態への接続を証明したとは扱わない |
+| r52のB25/B1製品結合試験 | 開発規則のCA system IDに対応するMaleicacid plugin | `LIVE + MULTI2`のsessionで実ECM処理を成功させ、同じsession IDからcurrent Ksを参照して実TSを復号する |
+| r52のB25/B1 Tuner VTS descrambling profile | 上記Maleicacid pluginと、呼出し契約が一致する選択済みVTS artifact | session IDの呼出し元への返却、対応mode、対象sessionへのECM投入、`setKeyToken()`結果の検査、対象PIDの復号確認までを成立させる。CA system名やXMLの変更だけでこの条件を満たしたとは扱わない |
+
+確認したAOSP `android-14.0.0_r1` / `android-15.0.0_r1`のAIDL Tuner VTSでは、`DescramblerTests::openCasSession()`が`LIVE + RESERVED`でsessionを開き、ECMを投入しない。さらにAIDL分岐内の局所`sessionId`が出力引数を隠し、取得したIDを呼出し元へ返さない。`scrambledBroadcastTest()`は`setKeyToken()`の検査結果も判定していない。この未変更artifactは本製品のB25/B1鍵連携の成立を検証するprofileとして採用しない。HIDL分岐のID返却とAIDL分岐を同一視しない。
+
+ClearKeyを選ぶだけでは、上記のID返却・検査結果・Tuner側の有効な鍵状態という問題は解消しない。本製品はClearKey専用のTuner鍵登録経路、無鍵tokenの復号成功、空tokenの受理を追加しない。B25/B1のECM前の鍵未成立、空tokenの`INVALID_ARGUMENT`、予約値`[0x00]`の解除契約を維持する。
+
+r52のdescrambling VTSを成立とするには、上表のB25/B1試験呼出しと一致するartifactを、必要な試験側修正も含めて`VtsEnvironmentProfile`のsource/tag/commitに固定し、実入力・資源とともに検証する。不一致のartifactを指定したprofileは拒否し、未選択なら環境未確定のままとする。必要な試験側修正の適用・実行と正式な適合判定への使用可否が未確認のまま、VTS成功またはr52完了を宣言しない。独自改変版の結果を無改変の公式VTS合格と呼ばず、製品結合試験だけをVTS合格と呼ばない。VTSの問題を理由にHAL capabilityを縮退させたり宣言済みflowを隠したりしない。
+
+根拠はAOSP [DescramblerTests.cpp（Android 15）](https://android.googlesource.com/platform/hardware/interfaces/+/android-15.0.0_r1/tv/tuner/aidl/vts/functional/DescramblerTests.cpp)、[VtsHalTvTunerTargetTest.cpp（Android 15）](https://android.googlesource.com/platform/hardware/interfaces/+/android-15.0.0_r1/tv/tuner/aidl/vts/functional/VtsHalTvTunerTargetTest.cpp)、[DescramblerTests.cpp（Android 14）](https://android.googlesource.com/platform/hardware/interfaces/+/android-14.0.0_r1/tv/tuner/aidl/vts/functional/DescramblerTests.cpp)とする。対象artifactの版を変更した場合は、その実体の呼出し・検査契約を照合する。
 
 ## IDescrambler optionalSourceFilter 境界
 
@@ -1218,15 +1240,17 @@ DVB backend は frontend index と同じ demux index / dvr index を使う。`ad
 
 ## 診断可観測性の固定
 
-本番経路トークンの用語、リリース段階、TIS から `setKeyToken()` へ渡してよい値のスコープは `開発規則.md` を正とする。本節では、Tuner HAL が受け取ったトークンの検証、AIDL戻り値、診断、副作用だけを固定する。CAS bridgeからのtoken登録は標準MediaCas session ID bytesと内部key resourceの対応を成立させる論理契約に従う。具体helper名、内部登録API、debug出力方法は本契約で規範化しない。product defaultの`IDescrambler.setKeyToken()`に伴うkey table mutationのowner / entryは`../tuner_hal2/DESIGN_JA.md`の`DescramblerKeyTxn` / descrambler key table規範実装アンカーを正とする。
+本番経路トークンの用語、リリース段階、TIS から `setKeyToken()` へ渡してよい値のスコープは `開発規則.md` を正とする。本節では、Tuner HAL が受け取ったトークンの検証、AIDL戻り値、診断、副作用だけを固定する。Tuner側の台帳は、標準MediaCas session ID bytesに対応する有効な内部鍵状態を参照する境界とする。具体helper名、内部参照API、debug出力方法は本契約で規範化しない。product defaultの`IDescrambler.setKeyToken()`に伴うtoken参照の結合・解除、refcountのowner / entryは`../tuner_hal2/DESIGN_JA.md`の`DescramblerKeyTxn` / descrambler key table規範実装アンカーを正とし、CAS側のKs更新のownerにはしない。
 
-`IDescrambler.setKeyToken()` に到達する non-VOID トークンは、標準MediaCas経路では `MediaCas.Session.getSessionId()` と同一byte sequenceをTuner key tokenとして用い、CAS / vendor key bridgeがそのbytesと内部`DescramblerKeySlot`の対応をHAL key token tableへ登録したものを解決対象とする。TIS向けに別形式のvendor-private tokenを設けない。入力形式はTuner SDK `Descrambler.isValidKeyToken()` に合わせ、1 byte以上16 byte以下を有効なtoken形式とする。ただしAndroid 14系の `Tuner.VOID_KEYTOKEN` は1 byteトークン `[0x00]` としてcurrent key removal用に予約する。空トークン `[]` はVOIDトークンではなく、常に `INVALID_ARGUMENT` と内部診断 `BAD_TOKEN` に落とす。16 byteを超えるnon-VOIDトークンはregistry lookup前に `INVALID_ARGUMENT` / `BAD_TOKEN` とする。
+`IDescrambler.setKeyToken()` に到達する non-VOID トークンは、標準MediaCas経路では `MediaCas.Session.getSessionId()` と同一byte sequenceをTuner key tokenとして用い、そのbytesに対応する有効な内部鍵状態への参照を解決対象とする。CAS pluginがTuner側の台帳を直接変更する登録経路を要求しない。TIS向けに別形式のvendor-private tokenを設けない。入力形式はTuner SDK `Descrambler.isValidKeyToken()` に合わせ、1 byte以上16 byte以下を有効なtoken形式とする。ただしAndroid 14系の `Tuner.VOID_KEYTOKEN` は1 byteトークン `[0x00]` としてcurrent key removal用に予約する。空トークン `[]` はVOIDトークンではなく、常に `INVALID_ARGUMENT` と内部診断 `BAD_TOKEN` に落とす。16 byteを超えるnon-VOIDトークンはregistry lookup前に `INVALID_ARGUMENT` / `BAD_TOKEN` とする。
+
+既存の診断名`CAS_BRIDGE_UNCONNECTED`は「tokenに対応する内部鍵状態の参照経路が未成立」を表す。CAS plugin→Tuner HALの物理接続を要求する意味ではない。Tunerが観測する参照経路の利用不能と、利用可能な参照先に当該tokenがないことを区別し、AIDL戻り値や診断分類を変更しない。
 
 `maleicacid-cas-desc-token-*`、`maleicacid-placeholder-desc-token*`、既存 TIS 側の `maleicacid-kari-token-*` は、設計文書上の診断名またはログ上のラベルであり、Tuner SDK API 経由で渡す実 トークン ではない。単体テスト、fake CAS、診断注入で同等のケースを表現する場合も、`setKeyToken()` に渡すtest用non-VOID byte arrayは1 byte以上16 byte以下（`[0x00]`を除く）のtest-only tokenをHAL key token tableへ事前登録したものとし、長い診断名はテストケース名、lookup tableの説明、診断dumpの表示名に限定する。
 
 これらの診断 トークン origin を受け取った場合は、復号成功ではなく `CAS_BRIDGE_UNCONNECTED`、`BAD_TOKEN`、`EXPIRED_KEY_SLOT` など該当する診断へ落とす。
 
-`IDescrambler.setKeyToken()` は、最初に `[0x00]` を `Tuner.VOID_KEYTOKEN` として処理し、registry lookup に流さず current key slot のみ解除する。PID 登録は維持する。次に空トークン `[]` と16 byteを超えるnon-VOIDトークンをregistry lookup前に拒否し、`INVALID_ARGUMENT` と内部診断 `BAD_TOKEN` に固定する。1 byte以上16 byte以下（`[0x00]`を除く）だが未登録のトークンとCAS bridge未接続トークンは通常トークンとしてregistry lookup後に区別して診断する。診断を通さない トークン 解決 API は 本番経路へ公開しない。
+`IDescrambler.setKeyToken()` は、最初に `[0x00]` を `Tuner.VOID_KEYTOKEN` として処理し、registry lookup に流さず current key slot のみ解除する。PID 登録は維持する。次に空トークン `[]` と16 byteを超えるnon-VOIDトークンをregistry lookup前に拒否し、`INVALID_ARGUMENT` と内部診断 `BAD_TOKEN` に固定する。1 byte以上16 byte以下（`[0x00]`を除く）だが未登録のトークンと内部鍵状態の参照経路が未成立の場合のトークンは通常トークンとしてregistry lookup後に区別して診断する。診断を通さない トークン 解決 API は 本番経路へ公開しない。
 
 `IDescrambler.setKeyToken()` の失敗時は、現在の鍵スロット、現在のトークン、demux 紐付け、PID登録を変更しない。空 トークン、長さ超過、未登録、失効済み、台帳異常のどれで失敗しても、成功扱いにせず固定された AIDL 戻り値と診断だけを返す。PID 登録を消す操作は `removePid()` だけであり、`VOID_KEYTOKEN` と 鍵参照の解決失敗は PID 登録削除を伴わない。
 
@@ -1244,7 +1268,7 @@ lifetime ID、generation、token、startId等の識別子発行は本契約の�
 
 `maleicacid-expired-desc-token-*` は診断名であり、`setKeyToken()` に渡す実 トークン ではない。本製品仕様は persistent expired state を持たないため、失効または revoke 済み token の `setKeyToken()` は unknown token として扱う。`EXPIRED_KEY_SLOT` は stale release / refcount underflow 検出用の診断名としてだけ使う。
 
-`setKeyToken()` は、空トークン、16 byteを超えるnon-VOIDトークン、未登録トークン、CAS bridge未接続トークンを区別して診断カウンターに記録する。`[0x00]` は `Tuner.VOID_KEYTOKEN` として扱い、`BAD_TOKEN`、unknown トークン、CAS bridge 未接続には混ぜず、key 未設定状態でも 成功扱いの無処理 とする。空 トークン `[]` は registry lookup、current key slot 変更、PID 登録変更を行わない。
+`setKeyToken()` は、空トークン、16 byteを超えるnon-VOIDトークン、未登録トークン、内部鍵状態の参照経路が未成立の場合のトークンを区別して診断カウンターに記録する。`[0x00]` は `Tuner.VOID_KEYTOKEN` として扱い、`BAD_TOKEN`、unknown トークン、内部鍵状態の参照経路未成立には混ぜず、key 未設定状態でも 成功扱いの無処理 とする。空 トークン `[]` は registry lookup、current key slot 変更、PID 登録変更を行わない。
 
 ## B25 packet デスクランブル中核の範囲
 
@@ -1264,10 +1288,10 @@ Tuner HAL の descrambler は、key token で与えられた鍵を用いて、18
 | scrambling_control | 復号成功時に clear 化する |
 | odd/even key | scrambling_control に従い選択する |
 
-ECM / EMM、CAS権利判定、card I/O、CW取得は Tuner HAL の責務ではない。CAS HAL または CAS bridge が責務を持つ。Tuner HAL は、取得済み key token を使う payload 復号中核だけを担当する。
+ECM / EMM、CAS権利判定、card I/O、CW取得はCAS plugin / vendor CAS layerの責務とする。Tuner HALは、取得済みtokenに対応するcurrent Ksと製品固定parameterを使うpayload復号中核を担当する。
 
 
-ECM / EMM 処理、カード I/O、CAS 権利判定、CW 取得、不透明 トークン 発行、B25 system key / CBC 初期値 / data key を CAS 側から安全に供給する経路は CAS HAL または CAS bridge の責務であり、r52内部鍵資源の詳細は`../future_work/r52/b25_key_slot_registry_contract.md`を正とする。CAS / TIS / Tuner HAL のリリース段階ごとの統合スコープは `開発規則.md` を正とする。本節が規定するのはTuner HALのpacket単位デスクランブル中核と診断境界であり、libaribb25相当のTS→TS B25処理系全体の完成条件または作業完了判定を定義しない。
+固定parameterの所有・使用と共有方式は`../開発規則.md`の「r52のMULTI2固定値と動的鍵状態」、CAS側のsession/token対応・Ks更新・失効は`../cas_plugin/DESIGN_JA.md`を正とする。Tunerは参照したKsと製品固定値から復号用materialを内部構成できる。CAS plugin / TIS / Tuner HALのリリース段階ごとの統合スコープは`開発規則.md`を正とする。本節が規定するのはTuner HALのpacket単位デスクランブル中核と診断境界であり、libaribb25相当のTS→TS B25処理系全体の完成条件または作業完了判定を定義しない。
 
 ## LNB profile 判定表
 

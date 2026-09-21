@@ -1167,10 +1167,10 @@ mod tests {
         )]);
 
         assert_eq!(outcome, ServiceBootOutcome::Ready);
-        assert_eq!(runtime.query().lnb_ids(), vec![1_020_001]);
+        assert_eq!(runtime.query().lnb_ids(), vec![0]);
         assert!(runtime
             .query()
-            .lnb_id_by_name("maleicacid-lnb-px4-px4video0-unit-0")
+            .lnb_id_by_name("maleicacid-lnb-px4-px4video0")
             .is_some());
     }
 

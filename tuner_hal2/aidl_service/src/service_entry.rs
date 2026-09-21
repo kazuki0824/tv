@@ -5,10 +5,10 @@ use std::path::PathBuf;
 
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::ITuner::BnTuner;
 use binder::BinderFeatures;
-use maleicacid_tuner_hal2_common::os_abi::{ioctl, last_errno};
+use maleicacid_tuner_hal2_common::os_abi::{last_errno, raw_ioctl_ptr};
 use maleicacid_tuner_hal2_common::{
     japan_isdbt_frequency_contract_range_hz, FrontendBackendKind, FrontendSystem, HalError,
-    HalErrorDetail, TUNER_SERVICE_NAME,
+    HalErrorDetail, ANDROID15_TRM_RESOURCE_ID_MAX, TUNER_SERVICE_NAME,
 };
 use maleicacid_tuner_hal2_device::dvb::{
     DtvProperties, DtvProperty, DtvPropertyBuffer, DtvPropertyUnion, DvbFrontendInfo,
@@ -61,14 +61,29 @@ fn px4_device_family_code(device_name: &str) -> i32 {
     0
 }
 
-fn px4_export_frontend_base_id(unit: i32, device_name: &str) -> Option<i32> {
+fn px4_frontend_systems(unit: i32, device_name: &str) -> Vec<FrontendSystem> {
     if unit < 0 {
-        return None;
+        return Vec::new();
     }
-    let family = px4_device_family_code(device_name);
-    1_000_000i32
-        .checked_add(family.checked_mul(10_000)?)
-        .and_then(|base| base.checked_add(unit.checked_mul(10)?))
+    if device_name.starts_with("px4video") {
+        return match unit.rem_euclid(4) {
+            0 | 1 => vec![FrontendSystem::IsdbS],
+            2 | 3 => vec![FrontendSystem::IsdbT],
+            _ => unreachable!("rem_euclid(4) must stay within 0..=3"),
+        };
+    }
+    if device_name.starts_with("pxmlt5video")
+        || device_name.starts_with("pxmlt8video")
+        || device_name.starts_with("isdb6014video")
+        || device_name.starts_with("isdb2056video")
+        || device_name.starts_with("pxm1urvideo")
+    {
+        return vec![FrontendSystem::IsdbT, FrontendSystem::IsdbS];
+    }
+    if device_name.starts_with("pxs1urvideo") || device_name.starts_with("isdbt2071video") {
+        return vec![FrontendSystem::IsdbT];
+    }
+    Vec::new()
 }
 
 fn px4_lnb_profile_from_device_name(device_name: &str) -> LnbRegistryProfile {
@@ -117,7 +132,6 @@ fn probe_satellite_power_topology(
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DvbProbeVariant {
-    id: i32,
     system: FrontendSystem,
     capability: Option<FrontendCapabilitySnapshot>,
 }
@@ -141,6 +155,22 @@ const JAPAN_CS110_LAST_IF_HZ: i64 = 2_053_000_000;
 const ISDBS_SYMBOL_RATE: i32 = 28_860_000;
 const PX4_PHYSICAL_GROUP_TAG: i32 = 0x1000_0000;
 const DVB_PHYSICAL_GROUP_TAG: i32 = 0x2000_0000;
+
+#[derive(Debug, Default)]
+struct FrontendIdAllocator {
+    next: i32,
+}
+
+impl FrontendIdAllocator {
+    fn allocate(&mut self) -> Option<FrontendRuntimeId> {
+        if self.next > ANDROID15_TRM_RESOURCE_ID_MAX {
+            return None;
+        }
+        let id = FrontendRuntimeId(self.next);
+        self.next = self.next.checked_add(1)?;
+        Some(id)
+    }
+}
 
 fn px4_capability(
     unit: i32,
@@ -318,25 +348,6 @@ fn dvb_exclusive_group_ids(
         .collect()
 }
 
-fn dvb_export_frontend_id(
-    adapter: i32,
-    frontend_index: i32,
-    system: FrontendSystem,
-) -> Option<i32> {
-    if !(0..=255).contains(&adapter) || !(0..=255).contains(&frontend_index) {
-        return None;
-    }
-    let variant = match system {
-        FrontendSystem::IsdbT => 0,
-        FrontendSystem::IsdbS => 1,
-        _ => return None,
-    };
-    2_000_000_i32
-        .checked_add(adapter.checked_shl(12)?)
-        .and_then(|base| base.checked_add(frontend_index.checked_shl(4)?))
-        .and_then(|base| base.checked_add(variant))
-}
-
 fn dvb_driver_basename(adapter: i32, frontend_index: i32) -> Option<String> {
     let link = PathBuf::from(format!(
         "/sys/class/dvb/dvb{adapter}.frontend{frontend_index}/device/driver"
@@ -406,7 +417,7 @@ fn probe_dvb_delivery_systems(
         caps: 0,
     };
     // 安全性: `fd` はopen済みDVB frontend fdであり、`info` は呼び出し中に書込み可能なFE_GET_INFO互換C layout構造体を指す。
-    let info_rc = unsafe { ioctl(fd, FE_GET_INFO, &mut info) };
+    let info_rc = unsafe { raw_ioctl_ptr(fd, FE_GET_INFO, &mut info) };
     if info_rc != 0 {
         return Err(HalError::IoctlFailed {
             backend: "dvb",
@@ -434,7 +445,7 @@ fn probe_dvb_delivery_systems(
         props: &mut prop,
     };
     // 安全性: `props` は初期化済みunion buffer variantを持つ可変DtvPropertyを指す。kernelはdelivery-system bufferをin-placeで書く。
-    let rc = unsafe { ioctl(fd, FE_GET_PROPERTY, &mut props) };
+    let rc = unsafe { raw_ioctl_ptr(fd, FE_GET_PROPERTY, &mut props) };
     if rc != 0 {
         return Err(HalError::IoctlFailed {
             backend: "dvb",
@@ -450,83 +461,44 @@ fn probe_dvb_delivery_systems(
 }
 
 fn dvb_probe_variants(
-    adapter: i32,
-    frontend_index: i32,
     path: &PathBuf,
     exclusive_group_id: i32,
 ) -> Result<Vec<DvbProbeVariant>, HalError> {
     let (systems, info) = probe_dvb_delivery_systems(path)?;
-    let mut variants = Vec::new();
-    for system in systems {
-        if let Some(id) = dvb_export_frontend_id(adapter, frontend_index, system) {
-            variants.push(DvbProbeVariant {
-                id,
-                system,
-                capability: dvb_capability(&info, system, exclusive_group_id),
-            });
+    Ok(systems
+        .into_iter()
+        .map(|system| DvbProbeVariant {
+            system,
+            capability: dvb_capability(&info, system, exclusive_group_id),
+        })
+        .collect())
+}
+
+fn collect_px4_probe_candidates(
+    mut path_exists: impl FnMut(&std::path::Path) -> bool,
+) -> Vec<(i32, PathBuf, String)> {
+    let mut candidates = Vec::new();
+    for prefix in PX4_PROBE_PREFIXES {
+        for unit in 0..=0x3fff_i32 {
+            let name = format!("{prefix}{unit}");
+            let path = PathBuf::from(format!("/dev/{name}"));
+            if path_exists(&path) {
+                candidates.push((unit, path, name));
+            }
         }
     }
-    Ok(variants)
+    candidates.sort_by(|a, b| (a.0, &a.2).cmp(&(b.0, &b.2)));
+    candidates
 }
 
 fn probe_frontends() -> Vec<FrontendProbeOutcome> {
     let mut outcomes = Vec::new();
+    let mut frontend_ids = FrontendIdAllocator::default();
 
-    let mut px4_candidates: Vec<(i32, PathBuf, String)> = Vec::new();
-    if let Ok(dir) = std::fs::read_dir("/dev") {
-        for entry in dir.flatten() {
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else {
-                continue;
-            };
-            for prefix in PX4_PROBE_PREFIXES {
-                let Some(idx) = name.strip_prefix(prefix) else {
-                    continue;
-                };
-                let Ok(index) = idx.parse::<i32>() else {
-                    continue;
-                };
-                px4_candidates.push((index, entry.path(), name.to_string()));
-            }
-        }
-    }
-    if px4_candidates.is_empty() && PathBuf::from("/dev/px4video0").exists() {
-        px4_candidates.push((0, PathBuf::from("/dev/px4video0"), "px4video0".to_string()));
-    }
-    px4_candidates.sort_by(|a, b| (a.0, &a.2).cmp(&(b.0, &b.2)));
-    px4_candidates.dedup_by(|a, b| a.1 == b.1);
+    let px4_candidates = collect_px4_probe_candidates(std::path::Path::exists);
     for (unit, path, name) in px4_candidates {
-        let Some(base_id) = px4_export_frontend_base_id(unit, &name) else {
-            continue;
-        };
-        let Some(isdbt_capability) = px4_capability(unit, &name, FrontendSystem::IsdbT) else {
-            outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
-                backend: FrontendBackendKind::Px4CharDevice,
-                path,
-                reason: CapabilitySuppressionReason::InvalidCapabilityProfile,
-            });
-            continue;
-        };
-        let lnb_profile = probe_lnb_profile_for_frontend(
-            FrontendBackendKind::Px4CharDevice,
-            FrontendSystem::IsdbT,
-            &path,
-            Some(&name),
-        );
-        outcomes.push(FrontendProbeOutcome::Available {
-            id: FrontendRuntimeId(base_id),
-            backend: FrontendBackendKind::Px4CharDevice,
-            system: FrontendSystem::IsdbT,
-            path: path.clone(),
-            lnb_profile,
-            satellite_power_topology: probe_satellite_power_topology(
-                FrontendSystem::IsdbT,
-                lnb_profile,
-            ),
-            capability: isdbt_capability,
-        });
-        if let Some(isdbs_id) = base_id.checked_add(1) {
-            let Some(isdbs_capability) = px4_capability(unit, &name, FrontendSystem::IsdbS) else {
+        for system in px4_frontend_systems(unit, &name) {
+            let Some(capability) = px4_capability(unit, &name, system) else {
                 outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
                     backend: FrontendBackendKind::Px4CharDevice,
                     path: path.clone(),
@@ -534,23 +506,28 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
                 });
                 continue;
             };
+            let Some(frontend_id) = frontend_ids.allocate() else {
+                outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
+                    backend: FrontendBackendKind::Px4CharDevice,
+                    path: path.clone(),
+                    reason: CapabilitySuppressionReason::RuntimeCapacityExhausted,
+                });
+                continue;
+            };
             let lnb_profile = probe_lnb_profile_for_frontend(
                 FrontendBackendKind::Px4CharDevice,
-                FrontendSystem::IsdbS,
+                system,
                 &path,
                 Some(&name),
             );
             outcomes.push(FrontendProbeOutcome::Available {
-                id: FrontendRuntimeId(isdbs_id),
+                id: frontend_id,
                 backend: FrontendBackendKind::Px4CharDevice,
-                system: FrontendSystem::IsdbS,
+                system,
                 path: path.clone(),
                 lnb_profile,
-                satellite_power_topology: probe_satellite_power_topology(
-                    FrontendSystem::IsdbS,
-                    lnb_profile,
-                ),
-                capability: isdbs_capability,
+                satellite_power_topology: probe_satellite_power_topology(system, lnb_profile),
+                capability,
             });
         }
     }
@@ -598,7 +575,7 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
             });
             continue;
         };
-        match dvb_probe_variants(adapter, frontend_index, &path, exclusive_group_id) {
+        match dvb_probe_variants(&path, exclusive_group_id) {
             Ok(variants) => {
                 if variants.is_empty() {
                     outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
@@ -622,8 +599,16 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
                             &path,
                             None,
                         );
+                        let Some(frontend_id) = frontend_ids.allocate() else {
+                            outcomes.push(FrontendProbeOutcome::CapabilitySuppressed {
+                                backend: FrontendBackendKind::LinuxDvb,
+                                path: path.clone(),
+                                reason: CapabilitySuppressionReason::RuntimeCapacityExhausted,
+                            });
+                            continue;
+                        };
                         outcomes.push(FrontendProbeOutcome::Available {
-                            id: FrontendRuntimeId(variant.id),
+                            id: frontend_id,
                             backend: FrontendBackendKind::LinuxDvb,
                             system: variant.system,
                             path: path.clone(),
@@ -678,19 +663,75 @@ mod tests {
     use maleicacid_tuner_hal2_device::dvb::DtvPropertyBuffer;
 
     #[test]
-    fn dvb_export_ids_keep_isdb_t_and_isdb_s_as_distinct_variants() {
+    fn px4_probe_candidates_use_known_paths_without_directory_enumeration_or_single_node_fallback()
+    {
+        let present = BTreeSet::from([
+            PathBuf::from("/dev/px4video3"),
+            PathBuf::from("/dev/pxmlt8video7"),
+        ]);
+        let candidates = collect_px4_probe_candidates(|path| present.contains(path));
+
         assert_eq!(
-            dvb_export_frontend_id(0, 0, FrontendSystem::IsdbT),
-            Some(2_000_000)
+            candidates,
+            vec![
+                (3, PathBuf::from("/dev/px4video3"), "px4video3".to_string(),),
+                (
+                    7,
+                    PathBuf::from("/dev/pxmlt8video7"),
+                    "pxmlt8video7".to_string(),
+                ),
+            ]
+        );
+        assert!(collect_px4_probe_candidates(|_| false).is_empty());
+    }
+
+    #[test]
+    fn px4_frontend_systems_follow_driver_character_device_contract() {
+        assert_eq!(
+            px4_frontend_systems(0, "px4video0"),
+            vec![FrontendSystem::IsdbS]
         );
         assert_eq!(
-            dvb_export_frontend_id(0, 0, FrontendSystem::IsdbS),
-            Some(2_000_001)
+            px4_frontend_systems(1, "px4video1"),
+            vec![FrontendSystem::IsdbS]
         );
         assert_eq!(
-            dvb_export_frontend_id(1, 2, FrontendSystem::IsdbT),
-            Some(2_004_128)
+            px4_frontend_systems(2, "px4video2"),
+            vec![FrontendSystem::IsdbT]
         );
+        assert_eq!(
+            px4_frontend_systems(3, "px4video3"),
+            vec![FrontendSystem::IsdbT]
+        );
+        assert_eq!(
+            px4_frontend_systems(4, "px4video4"),
+            vec![FrontendSystem::IsdbS]
+        );
+        for name in [
+            "pxmlt5video0",
+            "pxmlt8video7",
+            "isdb6014video0",
+            "isdb2056video0",
+            "pxm1urvideo0",
+        ] {
+            assert_eq!(
+                px4_frontend_systems(0, name),
+                vec![FrontendSystem::IsdbT, FrontendSystem::IsdbS]
+            );
+        }
+        for name in ["pxs1urvideo0", "isdbt2071video0"] {
+            assert_eq!(px4_frontend_systems(0, name), vec![FrontendSystem::IsdbT]);
+        }
+        assert!(px4_frontend_systems(0, "unknown0").is_empty());
+    }
+
+    #[test]
+    fn frontend_id_allocator_stays_within_android15_resource_handle_domain() {
+        let mut allocator = FrontendIdAllocator::default();
+        for expected in 0..=ANDROID15_TRM_RESOURCE_ID_MAX {
+            assert_eq!(allocator.allocate(), Some(FrontendRuntimeId(expected)));
+        }
+        assert_eq!(allocator.allocate(), None);
     }
 
     fn candidate(adapter: i32, device: &str) -> DvbProbeCandidate {

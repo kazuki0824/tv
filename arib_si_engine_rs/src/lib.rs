@@ -1062,6 +1062,7 @@ impl From<&TableRequirementStatus> for TableRequirementStatusDto {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BulkSnapshot {
+    schema_version: u32,
     ingest_sequence: u64,
     discovery_stage: jint,
     broadcast_clock: Option<BroadcastClockFactDto>,
@@ -1111,6 +1112,7 @@ fn bulk_snapshot_json(state: &mut ParserState) -> String {
     // 非排出型一括snapshotはEPG更新区間を返さない。これにより本番呼び出し側が
     // 同じ廃止削除区間を誤って再公開することを防ぐ。
     serde_json::to_string(&BulkSnapshot {
+        schema_version: 1,
         ingest_sequence,
         discovery_stage: discovery_stage_to_jint(discovery_stage),
         broadcast_clock: state

@@ -50,6 +50,16 @@ flowchart TD
 | 資源台帳 | 予約・確定・解放要求 | object数、FMQ、PES、AV、DVR、descrambler、workerの使用権 | 公開能力値の独自算出 |
 | 後片付け管理 | 閉鎖、所有者消滅、失敗した解放 | `../tuner_hal/DESIGN_JA.md`のcleanup契約を実装ownerへ接続するtyped cleanup entry mapping | 通常操作への復帰判断、未完手順・retry authority・quarantine semanticsの独自定義 |
 
+### r52の復号鍵参照の責務
+
+製品固定parameterと共有方式は`../開発規則.md`の「r52のMULTI2固定値と動的鍵状態」、CAS側のsession/token対応・Ks更新・失効は`../cas_plugin/DESIGN_JA.md`を正とする。Tuner側はtokenで内部鍵状態を参照してpacketを復号するconsumerであり、CAS側のECM処理やKs更新を所有しない。
+
+既存の`DescramblerKeyTxn`は`set_key_token()`に伴う参照結合・解除を所有し、`service_runtime/src/descrambler_key_table.rs`はtoken参照のlookup・acquire・releaseを担う。これらをCAS pluginからの直接登録・更新endpointとして扱わない。既存実装の`CasTokenProducerUnavailable`診断はtoken参照経路の未成立を表し、CAS pluginとの直接通信の有無を判定するものではない。
+
+現行key tableの鍵登録helperはtest専用であり、r52の本番Ks更新経路の実装済み根拠にはしない。公開status・参照寿命は`../tuner_hal/DESIGN_JA.md`を正とし、以下の規範実装アンカーのowner・typed entryを維持する。
+
+CAS側の更新・参照・失効と、Tuner再起動時の参照結合破棄の責任主体は`../cas_plugin/DESIGN_JA.md` §11.2を参照する。Tunerの参照cacheをCAS鍵状態の正本や復元元にせず、参照結合の喪失と鍵状態自体の喪失を区別する。
+
 ### px4 TMCC TSID list device-adaptation境界
 
 px4固有のTMCC TSID readbackは「機器適合」責務に閉じる。ABI mirrorの実装anchorは `device/src/px4/abi.rs::PtxTmccTsidList` / `PTX_GET_TMCC_TSID_LIST`、raw resultのshape検証と `EAGAIN` のtyped pending化は `device/src/px4/tmcc_tsid.rs`、exclusive device-open resourceを再利用するread entryは `device/src/runtime/backend_worker.rs::FrontendBackendSession::observe_tmcc_tsid_list()` とする。公開値、readiness、scan callbackの規範意味は `../tuner_hal/DESIGN_JA.md` を正とし、本節で再定義しない。
@@ -151,7 +161,7 @@ A/B/Cの分類と`Txn` / `UseCase` / `Context`の命名判定は別である。B
 | `ChildOpenTxn` | `service_runtime/src/boot/demux_filter_dvr_ops.rs::ChildOpenTxn<'a>`を正規入口とし、allocation / registration / commit / rollbackの実手順は`service_runtime/src/boot/child_open_context.rs::impl ChildOpenTxn<'_>`が同じ型へ実装する。第二の`Context` ownerを置かない | `aidl_service/src/child_object_open.rs`の`open_filter_child_for_owner_object_with_request_builder()` / `open_dvr_child_for_owner_object_with_request_builder()`を含む、`Filter` / `DVR` / `TimeFilter`等の子オブジェクト生成用正規入口 | API別の資源割当・後始末所有者、`RuntimeObjectEntry.ledger_id`の再解釈、`Filter` / `DVR`だけの別の正規子オープン所有者 |
 | `ObjectCloseTxn` | `service_runtime/src/object_close_txn.rs::ObjectCloseTxn` | `aidl_service/src/object_runtime/mod.rs`のpublic close / owner-loss / Drop接続とservice_runtimeのshutdown/reaper接続 | 別のclose owner、AIDL/Drop/worker/Reaperの直接cleanup |
 | `DescramblerPidTxn` | `service_runtime/src/boot/descrambler_txn.rs::DescramblerPidTxn<'a>`がsource検証、排他確認、session commit、失敗診断の実手順を所有し、`service_runtime/src/descrambler_session.rs::DescramblerPidTxn<'a>`を単一sessionのatomic commit primitiveとして使用する | `service_runtime/src/descrambler_ops.rs`のPID変更処理入口 | AIDL層またはデスクランブラ実装からPID台帳を直接変更、鍵変更・セッション後片付けと同じ別名所有者だけを入口にする |
-| `DescramblerKeyTxn` | `service_runtime/src/boot/descrambler_txn.rs::DescramblerKeyTxn<'a>`。`service_runtime/src/descrambler_session.rs::DescramblerKeyTxn<'a, KeyTable>`と`service_runtime/src/descrambler_key_table.rs`はatomic primitiveとして従属させる | `TunerServiceRuntime::descrambler_key_txn()`から`DescramblerKeyTxn::set_key_token()`へ接続する鍵変更処理入口 | AIDL層またはデスクランブラ実装から鍵台帳を直接変更、PID変更・セッション後片付けと同じ別名所有者だけを入口にする |
+| `DescramblerKeyTxn` | `service_runtime/src/boot/descrambler_txn.rs::DescramblerKeyTxn<'a>`。`service_runtime/src/descrambler_session.rs::DescramblerKeyTxn<'a, KeyTable>`と`service_runtime/src/descrambler_key_table.rs`はatomic primitiveとして従属させる | `TunerServiceRuntime::descrambler_key_txn()`から`DescramblerKeyTxn::set_key_token()`へ接続するtoken参照の結合・解除入口 | AIDL層またはデスクランブラ実装から鍵台帳を直接変更、CAS側のKs更新を同ownerへ統合、PID変更・セッション後片付けと同じ別名所有者だけを入口にする |
 | `DescramblerSessionCleanupTxn` | `service_runtime/src/boot/descrambler_txn.rs::DescramblerSessionCleanupTxn<'a>`。`service_runtime/src/descrambler_session.rs::DescramblerSessionCleanupTxn<'a, KeyTable>`と`service_runtime/src/descrambler_key_table.rs`はatomic primitiveとして従属させる | `TunerServiceRuntime::descrambler_session_cleanup_txn()`から`DescramblerSessionCleanupTxn::{unregister_runtime, cleanup_for_demux_owner_loss}`へ接続するclose / Demux無効化入口 | AIDL層またはデスクランブラ実装からPID・鍵・プール台帳を直接変更、通常のPID・鍵変更所有者へ後片付け責務を統合する |
 | `SourceBoundaryTxn` | `demux/src/runtime/source_boundary.rs::SourceBoundaryTxn` | `demux/src/runtime/source_boundary.rs::{apply_filter_source_boundary_change, connect_filter_source_boundary_change}`へ接続するFilter source use-case、source Filter close/unlink接続 | filter wrapper/cleanup callerによるgraph直接変更、demux/frontend ownerとの統合 |
 | `DemuxFrontendSourceTxn` | `service_runtime/src/boot/demux_filter_dvr_ops.rs::DemuxFrontendSourceTxn`。frontend bind前のStarted Playback DVR排他検査も同ownerで行う | `IDemux.setFrontendDataSource()` object use-case、Frontend/Demux close接続。逆向きのPlayback DVR start前検査は`service_runtime/src/boot/child_open_context.rs::transact_start_dvr_runtime()` | cleanup callerによるrelation直接編集、`SourceBoundaryTxn`への統合、frontend入力とPlayback入力の同時active化 |
@@ -166,7 +176,7 @@ A/B/Cの分類と`Txn` / `UseCase` / `Context`の命名判定は別である。B
 | `FilterProducerDrainGate` | `demux/src/runtime/queue_runtime.rs::FilterProducerDrainGate` | Filter/SharedFilter data path、`QueueCleanupUseCase`からのtyped入口 | 公開API/worker/`QueueCleanupUseCase`からのgate内部直接変更、DVR ownerとの統合 |
 | `QueueEpochProtocol` | `demux/src/runtime/queue_runtime.rs::QueueEpochProtocol` | DVR data path、`QueueCleanupUseCase`からのtyped入口 | 公開API/worker/`QueueCleanupUseCase`からのprotocol内部直接変更、`PlaybackQueueBacking` ownerとの統合 |
 | `QueueCleanupUseCase` | `service_runtime/src/queue_cleanup_use_case.rs::QueueCleanupUseCase` | Filter/DVR `flush()` object use-case | 下位protocol内部への直接アクセス、API別orchestrator |
-| `PlaybackConsumeTxn` | `service_runtime/src/playback_consume_txn.rs::PlaybackConsumeTxn` | `PlaybackConsumeTxn::{prepare, consume, discard_for_boundary}` | worker/FMQ/packet helperによる別consume owner |
+| `PlaybackConsumeTxn` | `service_runtime/src/playback_consume_txn.rs::PlaybackConsumeTxn` | `PlaybackConsumeTxn::{prepare, begin_consume, consume, discard_for_boundary}`、保留パケットから`boot/packet_ops.rs::decide_descrambled_packet`への接続 | worker/FMQ/packet helperによる別consume owner |
 | `WatermarkClassifier` | `demux/src/runtime/watermark_classifier.rs::{WatermarkClassifier, WatermarkPolicy, WatermarkDecision}` | Filter / Record DVR / Playback DVRのstatus評価が、commit済み契約値からexactly-oneの変更不能`WatermarkPolicy`を構成してconstructorへ渡し、同一評価のqueue snapshotだけを分類入口へ渡す | API / domain別のwatermark classifier、分類入口へのpolicy再注入、classifier内部のAIDL status生成、statusMask・callback状態・queue所有、domain種別tagによる分岐 |
 | `FrontendTuneScanTxn` | `service_runtime/src/frontend_ops.rs::FrontendTuneScanTxn`が、AIDL外形検証済みtyped requestを受けた後のcanonical preflight、固定給電準備、worker start/stop、rollback、operation event / terminal acceptanceを直接所有する。product-profile / backend availabilityの第二ownerをAIDL serviceまたはdevice mapperへ置かない | `FrontendTuneScanTxn`の有限正規入口集合 `begin_tune` / `begin_scan` / `stop_tune` / `stop_scan` / `accept_operation_event` / `accept_worker_terminal`。AIDL境界はAIDL外形検証・typed変換後に`begin_*` / `stop_*`だけを呼び、ワーカー・下位機器処理の完了通知橋渡しは`accept_*`だけを呼ぶ | AIDL serviceによるproduct-profile / backend availability判定、worker・機器層・callback層によるcanonical preflightの迂回、Demux所有者の吸収、第二の正規所有者化、有限正規入口集合外での選局・走査進行の再実装 |
 | `AvSyncRegistry` | `demux/src/runtime/av_sync_registry.rs::AvSyncRegistry` | filter configure/unregister/close、demux closeからのtyped relation入口 | API/filter wrapper/`StreamBoundaryTxn`からのregistry直接変更、PCR ownerとの統合 |
@@ -299,7 +309,7 @@ flowchart LR
 
 - Filter source use-caseは`SourceBoundaryTxn`、Demux frontend source use-caseは`DemuxFrontendSourceTxn`へ接続し、stream boundaryが必要な場合は`service_runtime/src/boot/packet_ops.rs`の`StreamBoundaryTxn` typed入口へ接続する。
 - callback AIDL façadeは`aidl_service/src/callback_store.rs`とservice_runtime側`CallbackRegistrationUseCase`を接続し、runtime/domain側へ直接書き込まない。FrontendのBinder登録世代は生成物所有者のchecked prepared tokenから型付き識別子へ確定し、別counterを持たない。配送権限・死亡通知はこの識別子を持ち、`CallbackStore`の現在slotと照合する。死亡時のruntime登録簿解除は`begin_frontend_callback_death_use_case`と既存owner cleanup完了入口へ接続する。Strong/recipientの退役batchは同じ生成物所有者に保持し、service contextがlock外の解除結果を返す。`RuntimeCallbackRegistry`とcallback artifactの保管主体は別責務のまま維持する。同時取得するlock順はruntime→callback store→登録ごとのdeath gateに固定し、配送snapshot取得・死亡処理・登録確定で共有する。death recipientは同じgateで死亡を確定してからgateを解放し、runtime/storeへ再入する。登録側は同じgateを複合確定まで保持する。死亡と登録確定の勝敗、preparedの取消し、unlink結果の意味、退役batch解放失敗時の結果は`../tuner_hal/DESIGN_JA.md`の`IFrontend.setCallback()`登録契約と`CallbackRegistrationUseCase`を正とし、本書では再定義しない。
-- descramblerのPID変更は`DescramblerPidTxn`、鍵変更は`DescramblerKeyTxn`へ接続する。descrambler closeは`ObjectCloseTxn`から、demux invalidationはdemux invalidation ownerから`DescramblerSessionCleanupTxn`のtyped入口へ接続し、3手順を一つの別名所有者へ統合しない。
+- descramblerのPID変更は`DescramblerPidTxn`、token参照の結合・解除は`DescramblerKeyTxn`へ接続する。descrambler closeは`ObjectCloseTxn`から、demux invalidationはdemux invalidation ownerから`DescramblerSessionCleanupTxn`のtyped入口へ接続し、3手順を一つの別名所有者へ統合しない。
 - Record DVR/Filter lifecycle use-caseは`RecordDvrFilterRelationTxn`のtyped入口へ接続する。
 - Frontend LNB assignment use-caseは`FrontendLnbRelationTxn`へ接続し、LNB resource ownerのlease台帳内部を直接変更しない。
 - Filter/DVR `flush()` use-caseは`QueueCleanupUseCase`へ接続し、同ownerからFilter側`FilterProducerDrainGate`またはDVR側`QueueEpochProtocol`のtyped入口を使用する。
@@ -334,6 +344,12 @@ TS AUDIOのPTS-sparse event associationは`demux/src/av/audio_timestamp.rs::Audi
 Filter lifecycleと`startId`のcaller-visibleな保持・破棄境界、presence/value、配送順は`../tuner_hal/DESIGN_JA.md`のFilter lifecycle契約だけを正本とする。実装上は既存`FilterRuntime`をlifecycle依存状態と未配送`startId` artifactのownerとし、`QueueCleanupUseCase` / `StreamBoundaryTxn`その他の既存typed境界からだけ更新する。別owner、queue、worker、時計を追加せず、本書では公開`stop()` / `start()` / `flush()` / reconfigureの結果を再規定しない。
 
 物理frontendの`exclusiveGroupId`に関するcaller-visible capability policyは`../tuner_hal/DESIGN_JA.md`だけを正本とする。`tuner_hal2`ではdevice probeで得た物理identityを`aidl_service/src/service_entry.rs`のcapability構築経路へ渡し、`service_runtime/src/registry.rs::FrontendCapabilitySnapshot`へ格納してAIDL応答へ投影する実装接続だけを所有する。group値、公開条件、共有条件を本書で再定義しない。
+
+公開frontend IDのcaller-visible範囲・opaque性・TRM handle往復条件は`../tuner_hal/DESIGN_JA.md`だけを正本とする。`tuner_hal2`では`aidl_service/src/service_entry.rs::FrontendIdAllocator`が起動時probeの決定論的順序に対して単一の`0..=255` ID空間を割り当て、`service_runtime`は割当済みIDをopaqueな`FrontendRuntimeId`として保持する。backend種別、device family、unit、DVB tupleをfrontend IDから復元する実装を置かない。
+
+公開LNB IDの範囲・opaque性・TRM handle往復条件も`../tuner_hal/DESIGN_JA.md`だけを正本とする。`service_runtime/src/boot.rs::LnbIdAllocator`が公開LNB endpointへresource-type固有の`0..=255` IDを割り当て、`LnbRegistryEntry.owner_frontend_id`がfrontendとの対応を保持する。LNB IDをfrontend IDから算術導出する実装を置かない。
+
+px4_drv character deviceのdelivery-system公開条件も`../tuner_hal/DESIGN_JA.md`だけを正本とする。`aidl_service/src/service_entry.rs::px4_frontend_systems`がdevice familyとminor番号を対象driverの`system_cap`契約へ写像し、probeは返されたsystemだけを`FrontendProbeOutcome::Available`へ変換する。既存nodeごとにISDB-T/ISDB-Sの両variantを無条件生成する実装を置かない。
 
 ISDB-S symbol-rateの公開capability値と入力受付条件は`../tuner_hal/DESIGN_JA.md`だけを正本とする。`tuner_hal2`では`FrontendCapabilitySnapshot`へのcapability格納と、`device/src/dvb/tune_mapping.rs`で検証済みtyped requestをLinux DVB `DTV_SYMBOL_RATE` propertyへ写像する物理接続だけを所有する。公開値、sentinelの意味、成功・失敗条件を本書で再定義しない。
 

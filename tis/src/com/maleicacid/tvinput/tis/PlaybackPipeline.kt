@@ -177,12 +177,13 @@ class PlaybackPipeline(
 
     // MPEG-TSのstream_typeとAndroid MIMEの対応表を直接照合する。
     @Suppress("MagicNumber")
-    private enum class VideoCodecKind(
+    internal enum class VideoCodecKind(
         val streamType: Int,
         val mime: String,
     ) {
         MPEG2(0x02, MediaFormat.MIMETYPE_VIDEO_MPEG2),
         AVC(0x1b, MediaFormat.MIMETYPE_VIDEO_AVC),
+        HEVC(0x24, MediaFormat.MIMETYPE_VIDEO_HEVC),
         ;
 
         companion object {
@@ -922,6 +923,7 @@ class PlaybackPipeline(
         sync: MediaSync,
         generation: Long,
     ) {
+        if (sync !== mediaSync || generation != playbackGeneration) return
         val arm =
             AvailabilityArm(
                 generation = generation,
@@ -1182,9 +1184,21 @@ class PlaybackPipeline(
 
     fun simulateFirstFrameRenderedForTest(generation: Long) {
         enqueuePlaybackAction {
-            val sync = mediaSync ?: return@enqueuePlaybackAction
-            val armSequence = waitingAvailabilityArm?.armSequence ?: return@enqueuePlaybackAction
-            commitVideoAvailability(sync, generation, armSequence)
+            val arm = waitingAvailabilityArm ?: return@enqueuePlaybackAction
+            when (videoAvailabilityMode) {
+                VideoAvailabilityMode.MEDIA_SYNC_FINAL_OUTPUT_EXACT -> {
+                    val sync = mediaSync ?: return@enqueuePlaybackAction
+                    commitVideoAvailability(sync, generation, arm.armSequence)
+                }
+
+                VideoAvailabilityMode.MEDIA_CODEC_TO_MEDIASYNC_INPUT_COMPAT -> {
+                    commitCompatibilityVideoAvailability(generation, arm.armedAtNanoTime)
+                }
+
+                null -> {
+                    Unit
+                }
+            }
         }
     }
 
@@ -1600,6 +1614,7 @@ class PlaybackPipeline(
             when (kind) {
                 VideoCodecKind.MPEG2 -> EsHeaderParser.mpeg2VideoFormat(bytes)
                 VideoCodecKind.AVC -> EsHeaderParser.avcVideoFormat(bytes, codecFacts)
+                VideoCodecKind.HEVC -> EsHeaderParser.hevcVideoFormat(bytes)
             }?.also { format ->
                 onVideoFormatDiscovered(
                     generation,
@@ -1612,6 +1627,10 @@ class PlaybackPipeline(
                     ),
                 )
             }
+
+        override fun onOutputFormatChanged(format: MediaFormat) {
+            decodedVideoFormatInfo(kind, format)?.let { onVideoFormatDiscovered(generation, it) }
+        }
 
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")
@@ -2115,6 +2134,17 @@ class PlaybackPipeline(
                             2_000L,
                         )
                     }
+
+                    VideoCodecKind.HEVC -> {
+                        PlaybackBudget(
+                            16 * MIB,
+                            768 * KIB,
+                            QueueBudget(64L * MIB, 32, 2_500_000L),
+                            QueueBudget(96L * MIB, 64, 3_500_000L),
+                            5_000L,
+                            2_000L,
+                        )
+                    }
                 }
 
             // 設計で固定したcodec別のメモリ予算・待機時間を、この表で直接照合する。
@@ -2148,7 +2178,7 @@ class PlaybackPipeline(
 
     // 同じ状態・境界を扱う操作群を一つの所有者に保つ。
     @Suppress("TooManyFunctions")
-    private object EsHeaderParser {
+    internal object EsHeaderParser {
         // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
         @Suppress("MagicNumber")
         private val AVC_SAR_TABLE =
@@ -2204,6 +2234,13 @@ class PlaybackPipeline(
             }
         }
 
+        fun hevcVideoFormat(bytes: ByteArray): MediaFormat? {
+            val config = HevcConfigParser.parse(bytes) ?: return null
+            return MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_HEVC, config.width, config.height).apply {
+                setByteBuffer("csd-0", ByteBuffer.wrap(config.csd))
+            }
+        }
+
         // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
         // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
         @Suppress("MagicNumber", "ReturnCount")
@@ -2248,6 +2285,10 @@ class PlaybackPipeline(
                             (dimensions.height.toDouble() * dimensions.sarHeight.toDouble())
                     }
                 }
+
+                VideoCodecKind.HEVC -> {
+                    null
+                }
             }
         }
 
@@ -2270,7 +2311,7 @@ class PlaybackPipeline(
         private fun parseAvcSpsDimensions(spsWithStartCode: ByteArray): VideoDimensions? =
             runCatching {
                 val rbsp = nalRbspPayload(spsWithStartCode)
-                val bits = BitReader(rbsp)
+                val bits = CodecBitReader(rbsp)
                 val profileIdc = bits.readBits(8)
                 bits.readBits(8)
                 bits.readBits(8)
@@ -2404,7 +2445,7 @@ class PlaybackPipeline(
         // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
         @Suppress("MagicNumber")
         private fun skipScalingList(
-            bits: BitReader,
+            bits: CodecBitReader,
             size: Int,
         ) {
             var lastScale = 8
@@ -2416,53 +2457,6 @@ class PlaybackPipeline(
                     nextScale = (lastScale + bits.readSE() + 256) % 256
                 }
                 ; lastScale = if (nextScale == 0) lastScale else nextScale
-            }
-        }
-
-        private class BitReader(
-            private val bytes: ByteArray,
-        ) {
-            private var bitOffset = 0
-
-            fun readBit(): Int = readBits(1)
-
-            // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
-            @Suppress("MagicNumber")
-            fun readBits(count: Int): Int {
-                var value = 0
-                repeat(count) {
-                    val byteIndex =
-                        bitOffset / 8
-                    require(byteIndex < bytes.size) { "SPS bitstream ended" }
-                    val bitIndex =
-                        7 - (bitOffset % 8)
-                    value = (value shl 1) or ((bytes[byteIndex].toInt() ushr bitIndex) and 1)
-                    bitOffset++
-                }
-                return value
-            }
-
-            fun readUE(): Int {
-                var zeros = 0
-                while (readBit() ==
-                    0
-                ) {
-                    zeros++
-                }
-                return if (zeros ==
-                    0
-                ) {
-                    0
-                } else {
-                    ((1 shl zeros) - 1) + readBits(zeros)
-                }
-            }
-
-            fun readSE(): Int {
-                val codeNum = readUE()
-                val value =
-                    (codeNum + 1) / 2
-                return if (codeNum % 2 == 0) -value else value
             }
         }
 
@@ -2659,6 +2653,7 @@ class PlaybackPipeline(
         when (streamType) {
             0x02 -> AvSettings.VIDEO_STREAM_TYPE_MPEG2
             0x1b -> AvSettings.VIDEO_STREAM_TYPE_AVC
+            0x24 -> AvSettings.VIDEO_STREAM_TYPE_HEVC
             else -> AvSettings.VIDEO_STREAM_TYPE_UNDEFINED
         }
 
@@ -2674,6 +2669,20 @@ class PlaybackPipeline(
 
     fun stop() {
         runOnPlaybackExecutorBlocking { stopOnPlaybackExecutor() }
+    }
+
+    /** 停止で世代を更新しても、失敗した再生を所有するSessionへ通知する。 */
+    internal fun stopAndReportUnavailable(
+        reason: PlaybackUnavailableReason,
+        detail: String,
+    ) {
+        runOnPlaybackExecutorBlocking {
+            val originGeneration = playbackGeneration
+            SectionFilterPolicy.completeCleanup(
+                { stopOnPlaybackExecutor() },
+                { onVideoUnavailable(PlaybackUnavailable(reason, detail, originGeneration)) },
+            )
+        }
     }
 
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
@@ -2788,6 +2797,26 @@ class PlaybackPipeline(
     // 同じ状態・境界を扱う操作群を一つの所有者に保つ。
     @Suppress("TooManyFunctions")
     companion object {
+        internal fun decodedVideoFormatInfo(
+            kind: VideoCodecKind,
+            format: MediaFormat,
+        ): VideoFormatInfo? =
+            runCatching {
+                val width = format.getInteger(MediaFormat.KEY_WIDTH)
+                val height = format.getInteger(MediaFormat.KEY_HEIGHT)
+                require(width > 0 && height > 0)
+                val cropKeys = listOf("crop-left", "crop-right", "crop-top", "crop-bottom")
+                val hasCrop = cropKeys.any(format::containsKey)
+                require(!hasCrop || cropKeys.all(format::containsKey))
+                val left = if (hasCrop) format.getInteger("crop-left") else 0
+                val right = if (hasCrop) format.getInteger("crop-right") else width - 1
+                val top = if (hasCrop) format.getInteger("crop-top") else 0
+                val bottom = if (hasCrop) format.getInteger("crop-bottom") else height - 1
+                require(left in 0 until width && right in left until width)
+                require(top in 0 until height && bottom in top until height)
+                VideoFormatInfo(kind.streamType, kind.mime, right - left + 1, bottom - top + 1)
+            }.getOrNull()
+
         // 境界呼出しの失敗を漏らさず扱い、既存の診断・解放・失敗伝播へ渡す。
         @Suppress("TooGenericExceptionCaught")
         internal fun completePlaybackFailureAction(

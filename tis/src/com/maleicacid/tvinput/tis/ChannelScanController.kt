@@ -8,7 +8,6 @@ import com.maleicacid.tvinput.aribsi.AribRatingMapper
 import com.maleicacid.tvinput.aribsi.AribService
 import com.maleicacid.tvinput.aribsi.AribSiEngine
 import com.maleicacid.tvinput.aribsi.EventModelMapper
-import com.maleicacid.tvinput.aribsi.PmtCatCaMetadataMapper
 import com.maleicacid.tvinput.aribsi.SectionIngestController
 import com.maleicacid.tvinput.aribsi.ServiceListBuilder
 import com.maleicacid.tvinput.aribsi.ServicePolicyEvaluator
@@ -112,8 +111,6 @@ class ChannelScanController(
     private val ingestController = SectionIngestController(engine)
     private val tvProviderWriter = TvProviderWriter(context, inputId)
     private val programPublishCoordinator = ProgramPublishCoordinator(tvProviderWriter)
-    private val caMapper = PmtCatCaMetadataMapper()
-    private val casController = CasController()
     private val cancelled = cancelRequested
     private var terminalCancelObserved: Boolean = false
     private val resourceLossFence = ResourceLossFence()
@@ -123,7 +120,6 @@ class ChannelScanController(
 
     init {
         tunerController.setSectionIngestController(ingestController)
-        tunerController.setCasController(casController)
         tunerController.setOnSectionIngestedCallback { refreshDynamicSectionFilters() }
         tunerController.setOnTunerResourceLostCallback { lostGeneration ->
             resourceLossFence.onLost(lostGeneration)
@@ -400,19 +396,8 @@ class ChannelScanController(
         if (terminalResourceLostObserved) return
         val generation = tunerController.currentGeneration()
         val transaction = engine.casDiscoverySnapshot()
-        val servicesForCas = transaction.services
-        val allCaMetadata = if (ENABLE_CAS_ORCHESTRATION) transaction.caMetadata else emptyList()
-        val serviceScopedCa =
-            allCaMetadata.filter {
-                it.source != com.maleicacid.tvinput.aribsi.CaMetadataSource.CAT &&
-                    it.serviceKey != null
-            }
-        val catCa = allCaMetadata.filter { it.source == com.maleicacid.tvinput.aribsi.CaMetadataSource.CAT }
-        val caMetadata = caMapper.expandProgramLevelToElementaryStreams(serviceScopedCa + catCa, servicesForCas)
         val pmtPids = transaction.pmtPids.values.toSet()
-        val unsupported = caMapper.unsupportedForB25B1(caMetadata, CasController.SupportedCasSystemIds.B25_B1)
-        unsupported.forEach { Log.w(LogTags.TIS, "対象外 CA情報 を無視します caSystemId=${it.caSystemId}") }
-        tunerController.updateCasMetadataAndFilters(caMetadata, pmtPids, generation, casDecisionReady = true)
+        tunerController.updateScanPmtFilters(pmtPids, generation)
     }
 
     // 一つの受信snapshotから登録・公開する経路と早期終了を維持する。長い型・診断項目だけ行長を許容する。
@@ -830,7 +815,6 @@ class ChannelScanController(
 
     companion object {
         private val DEFAULT_SI_POLICY = SiCollectionPolicy()
-        private const val ENABLE_CAS_ORCHESTRATION = true
 
         // 公開方針の既存入口への委譲を一つの式に保つ。
         @Suppress("MaxLineLength")

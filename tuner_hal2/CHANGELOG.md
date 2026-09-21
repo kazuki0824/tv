@@ -1,3 +1,49 @@
+# PR #108 nix経由のLinux ABI利用とpx4 scalar ioctl修正
+
+- LineageOS 22.1 manifestに含まれるAOSP `external/rust/crates/nix` / Soong `libnix` をtuner_hal2 common/deviceへ接続し、手書きのPOSIX `extern "C"` 宣言を廃止して `nix::libc` のABI定義を使用する。
+- px4_drvがioctl `arg` 自体をscalarとして読む `PTX_SET_SYSTEM_MODE` と `PTX_ENABLE_LNB_POWER` は、recisdb-rsと同じ `nix::ioctl_write_int!` 形式へ変更した。pointer値をscalarとして渡していた誤りを除去する。
+- Rust標準ライブラリが安全な所有権付きAPIを提供するFile/OpenOptions/Read等はstdを維持し、Linux/POSIX ABI境界だけをnixへ寄せる。host CIはnix 0.28.0で同じsourceをcompileする。
+- Rebaseは実施していない。Android/Soong全体build、host Rust CI、実機scanはpush後に確認する。
+
+# PR #108 px4 character device capability実装修正
+
+- `service_entry.rs`へdriver `system_cap`に対応する`px4_frontend_systems`を追加し、各device nodeから対応systemだけをfrontendとして公開するよう変更した。
+- PX4/PX-Q3系の`px4videoN`は`N % 4`が0/1ならISDB-S、2/3ならISDB-Tだけを公開する。hybrid系とT専用系のprefixもdriver実装に合わせて固定した。
+- family別mappingと複数PX4 device時のgroup反復をunit testで固定した。Android/Soong全体build、VTS、実機scanはこのコミット時点では未実施。
+
+# PR #108 Android 15 TRM互換のLNB ID実装修正
+
+- `boot.rs`の `frontend_id + 10,000` によるLNB ID生成を廃止し、`LnbIdAllocator`でresource-type固有の `0..=255` opaque IDを割り当てる。
+- Android 15 TRMのresource ID上限を`common`の共有定数へ集約し、frontend/LNB allocatorで同じplatform互換条件を使用する。
+- 起動probe試験のLNB ID期待値をopaque IDへ更新した。Android/Soong全体build、VTS、実機LNB openはこのコミット時点では未実施。
+
+# PR #108 Android 15 TRM互換のfrontend ID実装修正
+
+- `service_entry.rs`のpx4 100万台IDとDVB 200万台ID生成を廃止し、起動時に `0..=255` のopaque frontend IDを割り当てる`FrontendIdAllocator`へ置換した。
+- `boot.rs`がpx4 frontend IDからunitを逆算する依存を除去し、LNB名はdevice pathのbasenameから構成する。
+- allocatorの境界試験を追加した。実機再確認、Android/Soong全体build、VTSはこのコミット時点では未実施。
+
+# PR #108 Playback DVRの共通復号経路
+
+- Playback DVRの各パケットをライブ入力と同じ復号判断へ接続した。読出しと保留状態は既存の`PlaybackConsumeTxn`が引き続き所有する。
+- 停止中の保留、再開、境界での破棄、不正パケット後の継続、鍵の有無による復号・暗号文保持を実処理で検査する試験を追加した。
+- 状態所有者を直接組み込むホスト試験とAndroid試験対象を追加した。ホストのDMAヒープ確保は未対応を返し、実機の確保成功を代用しない。独立試験では既存の正本型に対する表記上のClippy指摘3種だけを対象外とした。
+- 前の実行環境では追加対象13件、ホスト全体473件の逐次実行、Clippyが成功したが、未送信の作業データを失ったため変更を復元した。復元後の試験結果は別途確認する。通常の並列実行で既存の録画試験同士が共有一覧へ干渉する問題は残る。
+- 復元後のコミット`8f4bb83`に対するCIで追加対象13件、型検査、追加対象のClippyが成功した。整形検査の指摘はCIが出力した差分に従って修正した。
+- Android全体のビルド、AIDLサービス実体の試験、実機検証は未実施。本番CASの鍵取得との接続はPR #113で扱う。
+
+# PR #108 CAS参照寿命と試験artifactの同期
+
+- CAS正本の責任主体表へ参照し、Tuner再起動による参照結合喪失と鍵状態自体の喪失を区別した。
+- r52 descrambling profile導入時のartifact照合をTuner公開設計へ接続した。現行生成器を本番CAS試験経路の実装済み根拠にしない。
+- 設計・統合文書のみの変更。既存Rust/Python実装、build、unit test、Soong、atest、VTS、実機確認は変更・実施していない。
+
+# PR #108 Tunerの鍵参照owner
+
+- 製品固定parameterと動的Ks状態の正本を参照し、Tunerをtoken参照・packet復号のconsumerとして明記した。
+- `DescramblerKeyTxn`の既存入口をtoken参照の結合・解除と表記し、CAS側のKs更新ownerとの混同を除いた。`CasTokenProducerUnavailable`の参照経路未成立という意味とtest専用登録の現状を明記した。
+- 設計文書のみの変更。既存Rust owner・typed entry・transaction処理は変更していない。build、unit test、VTS、実機確認は未実施。
+
 # r51_tuner_hal2_audit_regressions
 
 - demuxのfrontend入力とStarted Playback DVR入力を相互排他にし、拒否時に既存relation・DVR状態を維持する。既存のDemuxFrontendSourceTxnとDVR開始処理へ検査を接続し、両方向の回帰試験を追加した。

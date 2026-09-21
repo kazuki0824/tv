@@ -10,7 +10,7 @@ import com.maleicacid.tvinput.aribsi.ProviderDataBridge
 import com.maleicacid.tvinput.common.ServiceKey
 
 class CurrentProgramRatingResolver internal constructor(
-    private val queryPrograms: (Uri, Array<String>, String, Array<String>, String) -> android.database.Cursor?,
+    private val queryPrograms: (Uri, Array<String>, String?, Array<String>?, String?) -> android.database.Cursor?,
 ) {
     constructor(context: Context) : this({ uri, projection, selection, args, order ->
         context.contentResolver.query(uri, projection, selection, args, order)
@@ -274,8 +274,6 @@ class CurrentProgramRatingResolver internal constructor(
                 TvContract.Programs.COLUMN_CONTENT_RATING,
                 TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA,
             )
-        val selection = "${TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS} <= ? AND ${TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS} > ?"
-        val selectionArgs = arrayOf(nowMillis.toString(), nowMillis.toString())
         val sortOrder =
             "${TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS} DESC, " +
                 "${TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS} ASC, " +
@@ -283,7 +281,9 @@ class CurrentProgramRatingResolver internal constructor(
 
         val cursor =
             try {
-                queryPrograms(TvContract.buildProgramsUriForChannel(channelUri), projection, selection, selectionArgs, sortOrder)
+                val queryEndMillis = Math.addExact(nowMillis, 1L)
+                val uri = TvContract.buildProgramsUriForChannel(channelUri, nowMillis, queryEndMillis)
+                queryPrograms(uri, projection, null, null, sortOrder)
             } catch (e: RuntimeException) {
                 return TvProviderLookupResult.QueryFailed(e.message ?: e.javaClass.name)
             } ?: return TvProviderLookupResult.QueryFailed("QUERY_RETURNED_NULL_CURSOR")

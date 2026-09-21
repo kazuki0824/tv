@@ -31,11 +31,6 @@
         </service>
 
         <service
-            android:name=".aribsi.AribSiEngineService"
-            android:exported="false"
-            android:directBootAware="true" />
-
-        <service
             android:name=".tis.BootEpgSyncJobService"
             android:exported="false"
             android:permission="android.permission.BIND_JOB_SERVICE" />

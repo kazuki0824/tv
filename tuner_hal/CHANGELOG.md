@@ -1,3 +1,35 @@
+# PR #108 px4 character device capability設計補正
+
+- px4_drvのcharacter deviceを存在だけでISDB-T/ISDB-S両対応とみなす設計を廃止し、driverの`system_cap`を公開capabilityの正本とした。
+- `px4video`は4-minor groupの0/1をISDB-S、2/3をISDB-Tとして公開し、複数device時もglobal minorのgroup内ordinalで同じ規則を適用する。pxmlt/isdb6014/isdb2056/pxm1urはT/S両対応、pxs1ur/isdbt2071はT専用とする。
+- `PTX_SET_SYSTEM_MODE`でnode固有capabilityを越えるsystemへ切り替えられるとは扱わず、公開frontendとbackend device pathを同一nodeへ固定する。
+
+# PR #108 Android 15 TRM互換のLNB ID設計補正
+
+- LineageOS 22.1 / Android 15ではLNB IDもfrontendと同じTRM resource handle encode/decodeを通るため、従来の `frontend_id + 10,000` は8 bitへ切り詰められる。
+- 公開LNB IDをfrontend IDとは独立したopaque `0..=255` 空間へ変更し、owner frontendとの対応はregistry relationを正本とする。resource typeが別であるため、frontend/LNB/demux間の同数値IDは衝突と扱わない。
+- AIDL契約自体のID幅を8 bitと解釈せず、対象platform実装との互換条件として規定する。
+
+# PR #108 Android 15 TRM互換のfrontend ID設計補正
+
+- 実機で、公開frontend ID `1,010,000` がAndroid 15のTunerResourceManager handle往復で `80` に切り詰められ、`openFrontendById(80)` が未公開IDとして失敗することを確認した。
+- 公開frontend IDをbackend情報を埋め込まないopaque IDへ変更し、Android 15でlosslessに往復する `0..=255` に固定した。backend/device/unit/topologyはregistry、device path、capability、`exclusiveGroupId`を正本とし、frontend IDから逆算しない。
+- px4/DVBは同じID空間を共有し、起動時probeの決定論的順序へ単一allocatorで割り当てる。256件を超える候補は公開せず容量不足として診断する。
+
+# PR #108 CAS試験profileの適用範囲
+
+- ClearKeyのMedia CAS互換試験と、B25/B1の実ECMを使う製品結合・Tuner VTSの条件を区別した。
+- AOSP Android 14/15の確認済みTuner VTSにあるAIDL session IDの出力引数遮蔽、setKeyToken結果の未検査、LIVE+RESERVED・ECM未投入を記録した。不一致の試験artifactで本製品の鍵連携成立を宣言しない。
+- 公開APIを緩めず、必要な試験側修正・artifact選定と実入力の確認を要求した。未変更artifactでのVTS整合を達成したとは扱わず、公式適合判定と独自改変版の試験結果を区別する。
+- 設計文書のみの変更。build、unit test、Soong、atest、VTS、実機確認は未実施。
+
+# PR #108 Tunerの鍵参照責務
+
+- 復号鍵台帳、token解決、MULTI2境界を、製品固定parameterとtoken由来のcurrent Ksを使用するconsumer契約へ揃えた。
+- CAS側からの全material配送・Tuner台帳直接更新という前提を除き、既存診断名の意味を内部鍵状態の参照経路未成立と明記した。
+- CAS側のKs更新と`DescramblerKeyTxn`の参照結合・解除を区別し、失効時の参照寿命をCAS正本へ同期した。
+- 設計文書のみの変更。Rust実装、AIDL戻り値、既存診断分類は変更していない。build、unit test、VTS、実機確認は未実施。
+
 # r51_tuner_hal2_audit_regressions
 
 - frontend/Playback DVR入力排他、px4 TMCC一覧の有限再観測、scan callback前の`LockedReported`確定を公開設計へ反映した。

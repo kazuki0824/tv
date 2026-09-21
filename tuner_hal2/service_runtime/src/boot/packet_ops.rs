@@ -209,7 +209,7 @@ impl TunerServiceRuntime {
         self.filter_event_delivery_snapshots(&report.packet_reports)
     }
 
-    fn decide_descrambled_packet(
+    pub(super) fn decide_descrambled_packet(
         &mut self,
         demux_id: i32,
         demux_generation: u64,
@@ -275,7 +275,7 @@ impl TunerServiceRuntime {
         }
     }
 
-    fn record_descrambler_packet_diagnostics(
+    pub(super) fn record_descrambler_packet_diagnostics(
         &mut self,
         demux_id: i32,
         demux_generation: u64,

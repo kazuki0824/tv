@@ -1010,6 +1010,20 @@ fn execute_close_cleanup_plan_with_executor(
     )
 }
 
+fn status_from_close_hal_error(
+    handle: AidlObjectHandle,
+    phase: &'static str,
+    error: HalError,
+) -> binder::Status {
+    log::error!(
+        "object close failed: phase={phase} kind={:?} object_id={:?} generation={:?} error={error:?}",
+        handle.object_kind(),
+        handle.object_id(),
+        handle.generation(),
+    );
+    status_from_hal_error(error)
+}
+
 fn finish_object_close_plan(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
@@ -1045,7 +1059,7 @@ fn finish_object_close_plan(
             cleanup,
         )),
     };
-    result.map_err(status_from_hal_error)
+    result.map_err(|error| status_from_close_hal_error(handle, "finish", error))
 }
 
 mod drop_leak;
@@ -1068,12 +1082,12 @@ pub fn close_object_after_close_preflight(
     if result.is_err() {
         if context
             .cleanup_is_terminal_for_handle(handle)
-            .map_err(status_from_hal_error)?
+            .map_err(|error| status_from_close_hal_error(handle, "terminal-check", error))?
         {
             return result;
         }
         if let Err(error) = context.enqueue_cleanup_retry(handle) {
-            return Err(status_from_hal_error(error));
+            return Err(status_from_close_hal_error(handle, "enqueue-retry", error));
         }
     }
     result
@@ -1093,7 +1107,7 @@ fn object_close_is_idempotent_complete(
         handle.generation(),
         handle.object_kind(),
     )
-    .map_err(status_from_hal_error)
+    .map_err(|error| status_from_close_hal_error(handle, "idempotent-check", error))
 }
 
 fn execute_close_after_preflight_once(
@@ -1113,7 +1127,7 @@ fn execute_close_after_preflight_once(
             handle.object_kind(),
             method,
         )
-        .map_err(status_from_hal_error)?
+        .map_err(|error| status_from_close_hal_error(handle, "begin-close", error))?
     };
     let cleanup_attempt = {
         let runtime = context.runtime();
@@ -1122,7 +1136,7 @@ fn execute_close_after_preflight_once(
             .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
         close_plan
             .begin_cleanup_attempt(&mut guard)
-            .map_err(status_from_hal_error)?
+            .map_err(|error| status_from_close_hal_error(handle, "begin-cleanup", error))?
     };
     let (completion, cleanup_report) =
         execute_close_cleanup_plan_with_executor(context, cleanup_attempt);

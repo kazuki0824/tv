@@ -6,7 +6,9 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 
-use maleicacid_tuner_hal2_common::os_abi::{ioctl, last_errno};
+use maleicacid_tuner_hal2_common::os_abi::{
+    last_errno, raw_ioctl_noarg, raw_ioctl_ptr, raw_ioctl_word,
+};
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FrontendBackendKind, FrontendDevicePath,
     FrontendIsdbtPartialReceptionRequirement, FrontendTuneRequest, HalError, HalErrorDetail,
@@ -23,10 +25,10 @@ use crate::dvb::abi::{
 };
 use crate::px4;
 use crate::px4::abi::{
-    PtxFreq, PtxTmccTsidList, ERRNO_EAGAIN, ERRNO_EINVAL, ERRNO_ENOSYS, ERRNO_ENOTTY,
-    PTXT_SET_LNB_VOLTAGE, PTX_DISABLE_LNB_POWER, PTX_ENABLE_LNB_POWER, PTX_GET_LOCK_STATUS,
-    PTX_GET_TMCC_PARTIAL_RECEPTION, PTX_GET_TMCC_TSID_LIST, PTX_SET_CHANNEL, PTX_SET_SYSTEM_MODE,
-    PTX_START_STREAMING, PTX_STOP_STREAMING,
+    ptx_enable_lnb_power_scalar, ptx_set_system_mode_scalar, PtxFreq, PtxTmccTsidList,
+    ERRNO_EAGAIN, ERRNO_EINVAL, ERRNO_ENOSYS, ERRNO_ENOTTY, PTXT_SET_LNB_VOLTAGE,
+    PTX_DISABLE_LNB_POWER, PTX_GET_LOCK_STATUS, PTX_GET_TMCC_PARTIAL_RECEPTION,
+    PTX_GET_TMCC_TSID_LIST, PTX_SET_CHANNEL, PTX_START_STREAMING, PTX_STOP_STREAMING,
 };
 use crate::px4::{classify_tmcc_tsid_read, decode_tmcc_tsid_list, Px4TmccTsidListObservation};
 use crate::runtime::{FrontendSignalState, FrontendWorkerContext};
@@ -744,15 +746,13 @@ impl<'a> Px4LnbApplyOps for RealPx4LnbApplyOps<'a> {
 
     fn set_legacy_lnb_enabled(&mut self, enabled: bool, voltage: i32) -> Result<(), HalError> {
         if enabled {
-            let mut requested = voltage;
-            ioctl_ptr(
-                "px4",
-                Some(self.path.as_path().to_path_buf()),
-                self.fd,
-                PTX_ENABLE_LNB_POWER,
-                &mut requested,
-                "PTX_ENABLE_LNB_POWER",
-            )
+            let result = unsafe { ptx_enable_lnb_power_scalar(self.fd, voltage as _) };
+            result.map(|_| ()).map_err(|errno| HalError::IoctlFailed {
+                backend: "px4",
+                path: Some(self.path.as_path().to_path_buf()),
+                op: "PTX_ENABLE_LNB_POWER",
+                errno: errno as i32,
+            })
         } else {
             ioctl_noarg(
                 "px4",
@@ -945,15 +945,14 @@ impl FrontendBackendTuneExecutor {
         match &self.kind {
             FrontendBackendSessionKind::Px4 { control_path } => {
                 let mapped = px4::map_tune_request_to_px4(request)?;
-                let mut system = mapped.system_code;
-                ioctl_ptr(
-                    "px4",
-                    Some(control_path.as_path().to_path_buf()),
-                    self.file_fd()?,
-                    PTX_SET_SYSTEM_MODE,
-                    &mut system,
-                    "PTX_SET_SYSTEM_MODE",
-                )
+                let fd = self.file_fd()?;
+                let result = unsafe { ptx_set_system_mode_scalar(fd, mapped.system_code as _) };
+                result.map(|_| ()).map_err(|errno| HalError::IoctlFailed {
+                    backend: "px4",
+                    path: Some(control_path.as_path().to_path_buf()),
+                    op: "PTX_SET_SYSTEM_MODE",
+                    errno: errno as i32,
+                })
             }
             // DVBはdelivery-systemとchannel propertyをFE_SET_PROPERTY(DTV_TUNE)の1回のpacketとして適用する。
             FrontendBackendSessionKind::Dvb { .. } => Ok(()),
@@ -1187,7 +1186,7 @@ fn ioctl_ptr<T>(
     op: &'static str,
 ) -> Result<(), HalError> {
     // 安全性: `fd` はFrontendBackendSession生成が所有し、`arg` は選択backend ABI用のC互換ioctl payloadを指す。
-    let rc = unsafe { ioctl(fd, request, arg) };
+    let rc = unsafe { raw_ioctl_ptr(fd, request, arg) };
     if rc < 0 {
         return Err(HalError::IoctlFailed {
             backend,
@@ -1267,7 +1266,7 @@ fn ioctl_noarg(
     op: &'static str,
 ) -> Result<(), HalError> {
     // 安全性: 選択backend ABIに対する引数なしioctlである。
-    let rc = unsafe { ioctl(fd, request) };
+    let rc = unsafe { raw_ioctl_noarg(fd, request) };
     if rc < 0 {
         return Err(HalError::IoctlFailed {
             backend,
@@ -1287,7 +1286,7 @@ fn ioctl_word(
     arg: u32,
     op: &'static str,
 ) -> Result<(), HalError> {
-    let rc = unsafe { ioctl(fd, request, arg) };
+    let rc = unsafe { raw_ioctl_word(fd, request, arg) };
     if rc < 0 {
         return Err(HalError::IoctlFailed {
             backend,

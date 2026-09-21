@@ -11,7 +11,7 @@ use crate::error_mapping::object_table_error_to_hal;
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FirstErrorCollector, FrontendBackendKind, FrontendDevicePath,
     FrontendSystem, FrontendTuneRequest, HalError, HalInternalKind, HalInvalidArgumentKind,
-    HalInvalidStateKind, TS_PACKET_SIZE,
+    HalInvalidStateKind, ANDROID15_TRM_RESOURCE_ID_MAX, TS_PACKET_SIZE,
 };
 use maleicacid_tuner_hal2_demux::config::{
     AvStreamKind, AvStreamTypeConfig, FilterConfig, FilterDelayHint, FilterOpenType,
@@ -218,7 +218,26 @@ fn live_reader_descriptor_for_frontend_entry(
     }
 }
 
-fn default_lnb_entry_for_frontend(entry: &FrontendRegistryEntry) -> Option<LnbRegistryEntry> {
+#[derive(Debug, Default)]
+struct LnbIdAllocator {
+    next: i32,
+}
+
+impl LnbIdAllocator {
+    fn allocate(&mut self) -> Option<LnbRuntimeId> {
+        if self.next > ANDROID15_TRM_RESOURCE_ID_MAX {
+            return None;
+        }
+        let id = LnbRuntimeId(self.next);
+        self.next = self.next.checked_add(1)?;
+        Some(id)
+    }
+}
+
+fn default_lnb_entry_for_frontend(
+    entry: &FrontendRegistryEntry,
+    id: LnbRuntimeId,
+) -> Option<LnbRegistryEntry> {
     let profile = match entry.lnb_profile? {
         // ExternalOrShared is product wiring evidence for keeping the
         // satellite frontend powered.  It is not evidence for any
@@ -227,7 +246,6 @@ fn default_lnb_entry_for_frontend(entry: &FrontendRegistryEntry) -> Option<LnbRe
         LnbRegistryProfile::NoPower => return None,
         profile => profile,
     };
-    let id = LnbRuntimeId(entry.id.0.checked_add(10_000)?);
     let name = match entry.backend {
         FrontendBackendKind::Px4CharDevice => {
             let dev = entry
@@ -235,9 +253,7 @@ fn default_lnb_entry_for_frontend(entry: &FrontendRegistryEntry) -> Option<LnbRe
                 .file_name()
                 .and_then(|v| v.to_str())
                 .unwrap_or("unknown");
-            let rel = entry.id.0.saturating_sub(1_000_000);
-            let unit = rel.rem_euclid(10_000).div_euclid(10);
-            Some(format!("maleicacid-lnb-px4-{dev}-unit-{unit}"))
+            Some(format!("maleicacid-lnb-px4-{dev}"))
         }
         FrontendBackendKind::LinuxDvb => {
             let path = entry.device_path.display().to_string();
@@ -2977,6 +2993,7 @@ impl TunerServiceRuntime {
         let mut physical_group_by_path: BTreeMap<PathBuf, (FrontendBackendKind, i32)> =
             BTreeMap::new();
         let mut px4_path_by_group: BTreeMap<i32, PathBuf> = BTreeMap::new();
+        let mut lnb_ids = LnbIdAllocator::default();
         for result in results {
             match result {
                 FrontendProbeOutcome::Available {
@@ -3037,16 +3054,32 @@ impl TunerServiceRuntime {
                                 px4_path_by_group
                                     .insert(capability.exclusive_group_id, path.clone());
                             }
-                            if let Some(lnb_entry) = default_lnb_entry_for_frontend(&entry) {
-                                if let Err(RegistryCommitError::DuplicateLnbId { .. }) =
-                                    self.registry.register_lnb(lnb_entry)
-                                {
+                            if entry.lnb_profile != Some(LnbRegistryProfile::NoPower)
+                                && entry.lnb_profile.is_some()
+                            {
+                                let Some(lnb_id) = lnb_ids.allocate() else {
                                     self.diagnostics.push(
-                                        StartupDiagnosticRecord::duplicate_lnb_id(
+                                        StartupDiagnosticRecord::capability_suppressed(
                                             backend,
                                             path.clone(),
+                                            CapabilitySuppressionReason::RuntimeCapacityExhausted,
                                         ),
                                     );
+                                    continue;
+                                };
+                                if let Some(lnb_entry) =
+                                    default_lnb_entry_for_frontend(&entry, lnb_id)
+                                {
+                                    if let Err(RegistryCommitError::DuplicateLnbId { .. }) =
+                                        self.registry.register_lnb(lnb_entry)
+                                    {
+                                        self.diagnostics.push(
+                                            StartupDiagnosticRecord::duplicate_lnb_id(
+                                                backend,
+                                                path.clone(),
+                                            ),
+                                        );
+                                    }
                                 }
                             }
                         }
