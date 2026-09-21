@@ -1650,7 +1650,14 @@ mod tests {
                 .wait_until_cleanup(Some(Instant::now() + Duration::from_secs(1)))
                 .unwrap());
             let result = if poll {
-                ticket.try_complete_cleanup().unwrap()
+                let deadline = Instant::now() + Duration::from_secs(1);
+                loop {
+                    if let Some(result) = ticket.try_complete_cleanup() {
+                        break result;
+                    }
+                    assert!(Instant::now() < deadline, "submit thread did not exit");
+                    thread::yield_now();
+                }
             } else {
                 ticket.complete_cleanup()
             };
