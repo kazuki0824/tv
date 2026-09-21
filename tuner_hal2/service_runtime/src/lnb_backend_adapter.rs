@@ -11,9 +11,7 @@ use maleicacid_tuner_hal2_lnb::{
 use crate::registry::{
     FrontendRuntimeId, LnbPhysicalIoPermit, LnbRegistryProfile, LnbRuntimeId, RuntimeRegistry,
 };
-use crate::{
-    LnbBackendFailureClass, LnbBackendFailureDiagnosticRecord, LnbBackendFailureStep,
-};
+use crate::{LnbBackendFailureClass, LnbBackendFailureDiagnosticRecord, LnbBackendFailureStep};
 
 #[derive(Debug)]
 struct LnbFrontendIoSnapshot {
@@ -120,9 +118,7 @@ impl<'permit, 'gate> ServiceRuntimeLnbProfileAdapter<'permit, 'gate> {
         }
     }
 
-    pub(crate) fn take_failure_diagnostic(
-        &mut self,
-    ) -> Option<LnbBackendFailureDiagnosticRecord> {
+    pub(crate) fn take_failure_diagnostic(&mut self) -> Option<LnbBackendFailureDiagnosticRecord> {
         self.failure_diagnostic.take()
     }
 }

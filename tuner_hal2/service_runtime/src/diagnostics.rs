@@ -618,10 +618,7 @@ impl DvrStatusNotifierCleanupDiagnosticRecord {
         }
     }
 
-    pub fn with_worker_failure_category(
-        mut self,
-        category: Option<WorkerFailureCategory>,
-    ) -> Self {
+    pub fn with_worker_failure_category(mut self, category: Option<WorkerFailureCategory>) -> Self {
         self.worker_failure_category = category;
         self
     }

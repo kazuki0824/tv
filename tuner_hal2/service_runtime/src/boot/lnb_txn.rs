@@ -110,10 +110,8 @@ impl PreparedLnbLifecycleClose {
     pub(crate) fn execute(self, permit: &LnbPhysicalIoPermit<'_>) -> ExecutedLnbLifecycleClose {
         let (backend_result, failure_diagnostic) = if self.runtime_close.requires_backend_io() {
             let mut backend = ServiceRuntimeLnbProfileAdapter::new(self.backend, permit);
-            let result = backend.apply_lnb_state(
-                self.runtime_close.lnb_id(),
-                LnbElectricalState::safe(),
-            );
+            let result =
+                backend.apply_lnb_state(self.runtime_close.lnb_id(), LnbElectricalState::safe());
             (result, backend.take_failure_diagnostic())
         } else {
             (LnbBackendApplyOutcome::Applied, None)

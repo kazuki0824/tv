@@ -6,9 +6,7 @@ use super::{
     FrontendLivePumpReport, FrontendLiveReaderDescriptor, FrontendScanPhase, FrontendScanSession,
     FrontendWorkerCancelReason, FrontendWorkerKind,
 };
-use super::tune_txn::{
-    BackendTuneRollbackFailure, BackendTuneRollbackStep, BackendTuneStep,
-};
+use super::tune_txn::{BackendTuneRollbackFailure, BackendTuneStep};
 
 const FRONTEND_RUNTIME_DIAGNOSTIC_CAPACITY: usize = 64;
 
@@ -1376,10 +1374,12 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             runtime.diagnostic_write_failures(),
-            &[FrontendDiagnosticWriteFailure::LivePumpReportGenerationMismatch {
-                report_generation: 1,
-                runtime_generation: 2,
-            }]
+            &[
+                FrontendDiagnosticWriteFailure::LivePumpReportGenerationMismatch {
+                    report_generation: 1,
+                    runtime_generation: 2,
+                }
+            ]
         );
         assert!(matches!(
             runtime.last_error(),
@@ -1507,7 +1507,7 @@ mod tests {
                 errno: 5,
             };
             let rollback_failure = BackendTuneRollbackFailure {
-                step: BackendTuneRollbackStep::RollbackRestorePreviousState,
+                step: crate::BackendTuneRollbackStep::RollbackRestorePreviousState,
                 error: HalError::IoctlFailed {
                     backend: if backend == FrontendBackendKind::Px4CharDevice {
                         "px4"

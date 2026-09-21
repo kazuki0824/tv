@@ -338,7 +338,11 @@ impl FrontendBackendSubmitFailure {
                 format!("step={:?} error={}", failure.step, failure.error),
             )
         });
-        let rollback_detail = if self.rollback_succeeded { "rollback succeeded" } else { "rollback failed" };
+        let rollback_detail = if self.rollback_succeeded {
+            "rollback succeeded"
+        } else {
+            "rollback failed"
+        };
         let cleanup = rollback_error.unwrap_or_else(|| {
             HalError::cleanup_failed(
                 "frontend backend tune transaction",
@@ -348,11 +352,7 @@ impl FrontendBackendSubmitFailure {
                 ),
             )
         });
-        compose_primary_cleanup_failure(
-            "frontend backend submit failure",
-            self.error,
-            cleanup,
-        )
+        compose_primary_cleanup_failure("frontend backend submit failure", self.error, cleanup)
     }
 }
 
