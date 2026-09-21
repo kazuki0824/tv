@@ -374,6 +374,8 @@ rust_binary {
     init_rc: ["init/android.hardware.tv.tuner-service.maleicacid2.rc"],
     vintf_fragments: ["manifest/android.hardware.tv.tuner-service.maleicacid2.xml"],
     rustlibs: [
+        "liblogger",
+        "liblog_rust",
         "libmaleicacid_tuner_hal2_aidl_service",
         "libbinder_rs",
     ],

@@ -637,21 +637,28 @@ pub fn run_service() {
     binder::ProcessState::start_thread_pool();
     let runtime = match TunerServiceRuntime::try_new() {
         Ok(runtime) => runtime,
-        Err(_) => std::process::exit(1),
+        Err(error) => {
+            log::error!("Tuner service startup failed: phase=runtime-create error={error:?}");
+            std::process::exit(1);
+        }
     };
     let context = crate::service_context::AidlServiceContext::shared(runtime);
-    if context
-        .reset_runtime_from_probe_results(probe_frontends())
-        .is_err()
-    {
+    if let Err(error) = context.reset_runtime_from_probe_results(probe_frontends()) {
+        log::error!("Tuner service startup failed: phase=probe-reset error={error:?}");
         std::process::exit(1);
     }
     let tuner = match TunerAidlService::from_context(context) {
         Ok(tuner) => tuner,
-        Err(_) => std::process::exit(1),
+        Err(error) => {
+            log::error!("Tuner service startup failed: phase=aidl-create error={error:?}");
+            std::process::exit(1);
+        }
     };
     let binder = BnTuner::new_binder(tuner, BinderFeatures::default());
-    if binder::add_service(TUNER_SERVICE_NAME, binder.as_binder()).is_err() {
+    if let Err(error) = binder::add_service(TUNER_SERVICE_NAME, binder.as_binder()) {
+        log::error!(
+            "Tuner service startup failed: phase=binder-register service={TUNER_SERVICE_NAME} error={error:?}"
+        );
         std::process::exit(1);
     }
     binder::ProcessState::join_thread_pool();
