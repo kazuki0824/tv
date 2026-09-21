@@ -603,8 +603,19 @@ impl HalErrorDetail {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkerLockKind {
+    Result,
+    Completion,
+    Wake,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HalError {
+    WorkerLockPoisoned {
+        owner: &'static str,
+        lock: WorkerLockKind,
+    },
     NotInitialized {
         resource: &'static str,
     },
@@ -800,6 +811,9 @@ fn display_path(path: &Option<PathBuf>) -> String {
 impl fmt::Display for HalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            HalError::WorkerLockPoisoned { owner, lock } => {
+                write!(f, "worker lock poisoned: owner={owner} lock={lock:?}")
+            }
             HalError::NotInitialized { resource } => {
                 write!(f, "依存資源が未初期化です: {resource}")
             }

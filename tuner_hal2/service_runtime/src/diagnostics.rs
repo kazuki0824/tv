@@ -161,6 +161,12 @@ pub enum LnbBackendFailureStep {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkerFailureCategory {
+    BackendControl,
+    Fmq,
+    EventFlag,
+    Cleanup,
+    Wake,
+    LockPoison,
     CallbackCommit,
     CallbackArtifact,
     CallbackPolicy,

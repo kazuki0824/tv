@@ -179,7 +179,7 @@ impl DvrStatusNotifierSupervisor {
         let Some(notifier) = state.active_mut().remove(&key) else {
             return Ok(DvrStatusNotifierStopDisposition::Complete);
         };
-        signal_dvr_status_notifier_stop(&notifier)?;
+        let stop_result = signal_dvr_status_notifier_stop(&notifier);
         state.reaping_mut().insert(
             key,
             DvrStatusNotifierReaperJob {
@@ -193,6 +193,7 @@ impl DvrStatusNotifierSupervisor {
             },
         );
         self.runtime.wake().notify_one();
+        stop_result?;
         Ok(DvrStatusNotifierStopDisposition::ReaperPending)
     }
 
@@ -207,8 +208,18 @@ impl DvrStatusNotifierSupervisor {
             job.restart_requested = false;
         }
         let active = core::mem::take(state.active_mut());
+        let mut stop_result = Ok(());
         for (key, notifier) in active {
-            signal_dvr_status_notifier_stop(&notifier)?;
+            if let Err(error) = signal_dvr_status_notifier_stop(&notifier) {
+                stop_result = Err(match stop_result {
+                    Ok(()) => error,
+                    Err(previous) => compose_primary_cleanup_failure(
+                        "DVR notifier reset stop failures",
+                        previous,
+                        error,
+                    ),
+                });
+            }
             state.reaping_mut().insert(
                 key,
                 DvrStatusNotifierReaperJob {
@@ -227,7 +238,7 @@ impl DvrStatusNotifierSupervisor {
             );
         }
         self.runtime.wake().notify_all();
-        Ok(())
+        stop_result
     }
 
     fn take_next_action(&self) -> Result<DvrStatusNotifierSupervisorAction, HalError> {

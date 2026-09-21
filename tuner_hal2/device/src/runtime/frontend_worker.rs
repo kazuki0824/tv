@@ -44,7 +44,8 @@ pub enum FrontendWorkerStartError {
         frontend_id: i32,
         kind: FrontendWorkerKind,
         generation: u64,
-        detail: String,
+        exit: WorkerExit,
+        error: HalError,
     },
     SpawnFailed {
         detail: String,
@@ -354,7 +355,8 @@ impl FrontendWorkerSlot {
             }
             ThreadResultPoll::Completed(Err(error)) => {
                 self.thread_result = None;
-                Some((Err(error), WorkerExit::PanicOrJoinFailure))
+                let exit = owner_failure_exit(&error);
+                Some((Err(error), exit))
             }
         }
     }
@@ -374,8 +376,20 @@ impl FrontendWorkerSlot {
         };
         match owner.join_after_stop() {
             Ok(completed) => completed,
-            Err(error) => (Err(error), WorkerExit::PanicOrJoinFailure),
+            Err(error) => {
+                let exit = owner_failure_exit(&error);
+                (Err(error), exit)
+            }
         }
+    }
+}
+
+fn owner_failure_exit(error: &HalError) -> WorkerExit {
+    match error {
+        HalError::WorkerLockPoisoned { .. } => {
+            WorkerExit::RuntimeFailure(WorkerFailureDomain::Signal.runtime_failure_kind())
+        }
+        _ => WorkerExit::PanicOrJoinFailure,
     }
 }
 
@@ -406,13 +420,13 @@ impl FrontendWorkerRegistry {
                 }
                 Some((Err(error), exit)) => {
                     let generation = slot.generation;
-                    let detail = format!("{error:?}");
-                    slot.pending_completed = Some((Err(error), exit));
+                    slot.pending_completed = Some((Err(error.clone()), exit));
                     return Err(FrontendWorkerStartError::CompletedFailurePending {
                         frontend_id,
                         kind,
                         generation,
-                        detail,
+                        exit,
+                        error,
                     });
                 }
                 None => {
@@ -927,5 +941,47 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         panic!("pending worker failure was not observed");
+    }
+
+    #[test]
+    fn replacement_keeps_pending_failure_and_exit_typed() {
+        let mut registry = FrontendWorkerRegistry::default();
+        let error = HalError::WorkerLockPoisoned {
+            owner: "frontend",
+            lock: maleicacid_tuner_hal2_common::WorkerLockKind::Completion,
+        };
+        let exit = owner_failure_exit(&error);
+        registry.slots.insert(
+            FrontendWorkerKey {
+                frontend_id: 16,
+                kind: FrontendWorkerKind::Tune,
+            },
+            FrontendWorkerSlot {
+                generation: 12,
+                cancel_reason: Arc::new(Mutex::new(None)),
+                thread_result: None,
+                pending_completed: Some((Err(error.clone()), exit)),
+            },
+        );
+        assert_eq!(
+            registry.start(16, FrontendWorkerKind::Tune, 13, |_| Ok(())),
+            Err(FrontendWorkerStartError::CompletedFailurePending {
+                frontend_id: 16,
+                kind: FrontendWorkerKind::Tune,
+                generation: 12,
+                exit,
+                error: error.clone(),
+            })
+        );
+        assert_eq!(
+            registry.take_completed(16, FrontendWorkerKind::Tune),
+            Some(FrontendWorkerStopOutcome::Completed {
+                frontend_id: 16,
+                kind: FrontendWorkerKind::Tune,
+                generation: 12,
+                exit,
+                result: Err(error),
+            })
+        );
     }
 }

@@ -7,7 +7,9 @@ use crate::cleanup_execution::{
     CleanupExecutionDiagnosticSnapshot, CleanupExecutionReport, CleanupExecutionStepOutcome,
     SharedCleanupDiagnostics,
 };
+use crate::diagnostics::WorkerFailureCategory;
 use crate::registry::FrontendRegistryEntry;
+use crate::worker_failure_classifier::WorkerFailureClassifier;
 use crate::worker_runtime::{WorkerRuntime, WorkerRuntimeReaperQueue, WorkerTerminalResult};
 use crate::{
     frontend_ops::{FrontendOperationEvent, FrontendTuneScanTxn, FrontendWorkerTerminalEvent},
@@ -446,6 +448,7 @@ type SharedDemuxRollbackTokenList = Arc<Mutex<Option<DemuxRollbackTokenList>>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrontendWorkerCleanupDiagnosticKind {
+    WorkerTerminal,
     StopTuneObject,
     StopScanObject,
     TuneReplacementStop,
@@ -539,6 +542,7 @@ impl FrontendWorkerCleanupWorkerGeneration {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrontendWorkerCleanupStep {
+    WorkerTerminal(FrontendWorkerKind),
     StopWorker(FrontendWorkerKind),
     RecordScanCancelled,
     ClearLiveReaderDescriptor,
@@ -555,6 +559,13 @@ pub enum FrontendWorkerCleanupStep {
 
 #[derive(Clone, Debug)]
 pub enum FrontendWorkerCleanupStepOutcome {
+    WorkerTerminal {
+        target: FrontendWorkerCleanupTarget,
+        worker_kind: FrontendWorkerKind,
+        worker_generation: FrontendWorkerCleanupWorkerGeneration,
+        category: WorkerFailureCategory,
+        result: Result<(), HalError>,
+    },
     StopWorker {
         target: FrontendWorkerCleanupTarget,
         worker_kind: FrontendWorkerKind,
@@ -744,7 +755,8 @@ impl FrontendWorkerCleanupStepOutcome {
 
     pub fn target(&self) -> FrontendWorkerCleanupTarget {
         match self {
-            Self::StopWorker { target, .. }
+            Self::WorkerTerminal { target, .. }
+            | Self::StopWorker { target, .. }
             | Self::RecordScanCancelled { target, .. }
             | Self::ClearLiveReaderDescriptor { target, .. }
             | Self::StopLiveDataAndUnbind { target, .. }
@@ -773,7 +785,8 @@ impl FrontendWorkerCleanupStepOutcome {
 
     pub fn worker_kind(&self) -> Option<FrontendWorkerKind> {
         match self {
-            Self::StopWorker { worker_kind, .. }
+            Self::WorkerTerminal { worker_kind, .. }
+            | Self::StopWorker { worker_kind, .. }
             | Self::CompleteReplacement { worker_kind, .. }
             | Self::CompleteStopObject { worker_kind, .. } => Some(*worker_kind),
             Self::RecordScanCancelled { .. }
@@ -790,7 +803,8 @@ impl FrontendWorkerCleanupStepOutcome {
 
     pub fn worker_generation(&self) -> Option<u64> {
         match self {
-            Self::StopWorker {
+            Self::WorkerTerminal { worker_generation, .. }
+            | Self::StopWorker {
                 worker_generation, ..
             }
             | Self::RecordScanCancelled {
@@ -816,6 +830,7 @@ impl FrontendWorkerCleanupStepOutcome {
 
     pub fn step(&self) -> FrontendWorkerCleanupStep {
         match self {
+            Self::WorkerTerminal { worker_kind, .. } => FrontendWorkerCleanupStep::WorkerTerminal(*worker_kind),
             Self::StopWorker { worker_kind, .. } => {
                 FrontendWorkerCleanupStep::StopWorker(*worker_kind)
             }
@@ -849,7 +864,8 @@ impl FrontendWorkerCleanupStepOutcome {
 
     pub fn result(&self) -> Result<(), HalError> {
         match self {
-            Self::StopWorker { result, .. }
+            Self::WorkerTerminal { result, .. }
+            | Self::StopWorker { result, .. }
             | Self::RecordScanCancelled { result, .. }
             | Self::ClearLiveReaderDescriptor { result, .. }
             | Self::StopLiveDataAndUnbind { result, .. }
@@ -866,7 +882,8 @@ impl FrontendWorkerCleanupStepOutcome {
 
     pub fn into_result(self) -> Result<(), HalError> {
         match self {
-            Self::StopWorker { result, .. }
+            Self::WorkerTerminal { result, .. }
+            | Self::StopWorker { result, .. }
             | Self::RecordScanCancelled { result, .. }
             | Self::ClearLiveReaderDescriptor { result, .. }
             | Self::StopLiveDataAndUnbind { result, .. }
@@ -953,6 +970,30 @@ pub type FrontendWorkerCleanupDiagnosticSnapshot =
     CleanupExecutionDiagnosticSnapshot<FrontendWorkerCleanupDiagnosticRecord>;
 pub type SharedFrontendWorkerCleanupDiagnostics =
     SharedCleanupDiagnostics<FrontendWorkerCleanupDiagnosticRecord>;
+
+pub(crate) fn record_frontend_worker_terminal_failure(
+    runtime: &TunerServiceRuntime,
+    frontend_id: i32,
+    worker_kind: FrontendWorkerKind,
+    generation: u64,
+    category: WorkerFailureCategory,
+    error: HalError,
+) -> Result<(), HalError> {
+    let target = FrontendWorkerCleanupTarget::frontend(frontend_id);
+    let mut report = FrontendWorkerCleanupExecutionReport::new();
+    report.push(FrontendWorkerCleanupStepOutcome::WorkerTerminal {
+        target,
+        worker_kind,
+        worker_generation: FrontendWorkerCleanupWorkerGeneration::Known(generation),
+        category,
+        result: Err(error.clone()),
+    });
+    runtime.frontend_worker_cleanup_diagnostic_sink().record(
+        FrontendWorkerCleanupDiagnosticRecord::new(
+            FrontendWorkerCleanupDiagnosticKind::WorkerTerminal, target, report, Some(error),
+        ),
+    )
+}
 
 fn record_frontend_cleanup_diagnostic_after_terminal(
     sink: &SharedFrontendWorkerCleanupDiagnostics,
@@ -1383,16 +1424,29 @@ fn lock_runtime<'a>(
         .map_err(|_| HalError::internal(HalInternalKind::InvariantViolation, context))
 }
 
-fn map_frontend_worker_start_error(error: FrontendWorkerStartError) -> HalError {
+fn map_frontend_worker_start_error(runtime: &TunerServiceRuntime, error: FrontendWorkerStartError) -> HalError {
     match error {
         FrontendWorkerStartError::AlreadyRunning { .. } => HalError::invalid_state(
             HalInvalidStateKind::InvalidLifecycle,
             "frontend worker is already running",
         ),
-        FrontendWorkerStartError::CompletedFailurePending { detail, .. } => HalError::internal(
-            HalInternalKind::InvariantViolation,
-            format!("frontend worker previous failure is pending and must be reported before replacement: {detail}"),
-        ),
+        FrontendWorkerStartError::CompletedFailurePending { frontend_id, kind, generation, exit, error } => {
+            let outcome = FrontendWorkerStopOutcome::Completed {
+                frontend_id, kind, generation, exit, result: Err(error.clone()),
+            };
+            if let Some(event) = FrontendWorkerTerminalEvent::from_stop_outcome(&outcome) {
+                if let Some((category, _)) = WorkerFailureClassifier::classify_terminal(
+                    event.into_terminal_result(), "frontend worker previous failure is pending",
+                ).into_failure() {
+                    if let Err(record_error) = record_frontend_worker_terminal_failure(
+                        runtime, frontend_id, kind, generation, category, error.clone(),
+                    ) {
+                        return compose_primary_cleanup_failure("frontend worker pending failure diagnostic", error, record_error);
+                    }
+                }
+            }
+            error
+        }
         FrontendWorkerStartError::SpawnFailed { detail } => HalError::internal(
             HalInternalKind::InvariantViolation,
             format!("frontend worker spawn failed: {detail}"),
@@ -3122,13 +3176,14 @@ fn finish_committed_tune_replacement(
                 finish_frontend_worker_execution(&runtime_for_worker, &ctx, result)
             },
         ) {
+            let error = map_frontend_worker_start_error(&guard, start_error);
             return Err(finish_backend_session_before_frontend_commit_failure(
                 runtime,
                 guard,
                 frontend_id,
                 generation,
                 session,
-                map_frontend_worker_start_error(start_error),
+                error,
                 "frontend backend stop failed after tune worker preparation failure",
             ));
         }
@@ -4024,13 +4079,14 @@ fn finish_committed_scan_replacement(
                 finish_frontend_worker_execution(&runtime_for_worker, &ctx, result)
             },
         ) {
+            let error = map_frontend_worker_start_error(&guard, start_error);
             return Err(finish_backend_session_before_frontend_commit_failure(
                 runtime,
                 guard,
                 frontend_id,
                 generation,
                 session,
-                map_frontend_worker_start_error(start_error),
+                error,
                 "frontend backend stop failed after scan worker preparation failure",
             ));
         }
@@ -5158,6 +5214,48 @@ mod scan_contract_tests {
         SatellitePowerTopology,
     };
     use std::collections::VecDeque;
+
+    #[test]
+    fn pending_terminal_failure_reaches_existing_diagnostic_snapshot() {
+        let service = TunerServiceRuntime::new();
+        let error = HalError::WorkerLockPoisoned {
+            owner: "frontend",
+            lock: maleicacid_tuner_hal2_common::WorkerLockKind::Result,
+        };
+        let exit = maleicacid_tuner_hal2_control_core::WorkerExit::RuntimeFailure(
+            maleicacid_tuner_hal2_control_core::WorkerFailureDomain::Signal.runtime_failure_kind(),
+        );
+        let mapped = map_frontend_worker_start_error(
+            &service,
+            FrontendWorkerStartError::CompletedFailurePending {
+                frontend_id: 16,
+                kind: FrontendWorkerKind::Tune,
+                generation: 12,
+                exit,
+                error: error.clone(),
+            },
+        );
+        assert_eq!(mapped, error);
+        let snapshot = service.frontend_worker_cleanup_diagnostics().unwrap();
+        assert_eq!(snapshot.records().len(), 1);
+        assert_eq!(snapshot.dropped_count(), 0);
+        assert_eq!(snapshot.record_failure_count(), 0);
+        let record = &snapshot.records()[0];
+        assert_eq!(record.kind(), FrontendWorkerCleanupDiagnosticKind::WorkerTerminal);
+        assert_eq!(record.frontend_id(), 16);
+        assert_eq!(record.public_error(), Some(&error));
+        match &record.report().outcomes()[0] {
+            FrontendWorkerCleanupStepOutcome::WorkerTerminal {
+                worker_kind, worker_generation, category, result, ..
+            } => {
+                assert_eq!(*worker_kind, FrontendWorkerKind::Tune);
+                assert_eq!(*worker_generation, FrontendWorkerCleanupWorkerGeneration::Known(12));
+                assert_eq!(*category, WorkerFailureCategory::LockPoison);
+                assert_eq!(*result, Err(error));
+            }
+            other => panic!("unexpected diagnostic: {other:?}"),
+        }
+    }
 
     #[test]
     fn pending_stream_id_list_is_reobserved_within_the_same_scan_worker() {
