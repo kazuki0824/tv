@@ -128,6 +128,7 @@ impl FrontendBackendSession {
                 error,
                 rollback_succeeded: true,
                 step: None,
+                rollback_failure: None,
             })?;
         let mut txn = BackendTuneTxn::new(plan.frontend_id, plan.generation, plan.request.clone());
         match txn.apply(&mut executor) {
@@ -139,6 +140,7 @@ impl FrontendBackendSession {
                         error,
                         rollback_succeeded: true,
                         step: None,
+                        rollback_failure: None,
                     })
             }
             BackendTuneOutcome::Failed {
@@ -150,16 +152,18 @@ impl FrontendBackendSession {
                 error,
                 rollback_succeeded: rollback.succeeded(),
                 step: Some(step),
+                rollback_failure: rollback.failure().cloned(),
             }),
             BackendTuneOutcome::RollbackFailed {
                 step,
                 error,
-                rollback: _,
+                rollback,
             } => Err(FrontendBackendSubmitFailure {
                 generation: plan.generation,
                 error,
                 rollback_succeeded: false,
                 step: Some(step),
+                rollback_failure: rollback.failure().cloned(),
             }),
         }
     }
@@ -316,6 +320,7 @@ pub struct FrontendBackendSubmitFailure {
     pub error: HalError,
     pub rollback_succeeded: bool,
     pub step: Option<BackendTuneStep>,
+    pub rollback_failure: Option<super::tune_txn::BackendTuneRollbackFailure>,
 }
 
 impl FrontendBackendSubmitFailure {
@@ -327,21 +332,26 @@ impl FrontendBackendSubmitFailure {
         let Some(step) = self.step else {
             return self.error;
         };
-        let rollback_detail = if self.rollback_succeeded {
-            "rollback succeeded"
-        } else {
-            "rollback failed"
-        };
-        compose_primary_cleanup_failure(
-            "frontend backend submit failure",
-            self.error,
+        let rollback_error = self.rollback_failure.as_ref().map(|failure| {
+            HalError::cleanup_failed(
+                "frontend backend tune rollback",
+                format!("step={:?} error={}", failure.step, failure.error),
+            )
+        });
+        let rollback_detail = if self.rollback_succeeded { "rollback succeeded" } else { "rollback failed" };
+        let cleanup = rollback_error.unwrap_or_else(|| {
             HalError::cleanup_failed(
                 "frontend backend tune transaction",
                 format!(
                     "generation={} step={step:?} {rollback_detail}",
                     self.generation
                 ),
-            ),
+            )
+        });
+        compose_primary_cleanup_failure(
+            "frontend backend submit failure",
+            self.error,
+            cleanup,
         )
     }
 }
@@ -366,6 +376,7 @@ enum FrontendBackendSubmitThreadOutcome {
 }
 
 #[derive(Debug)]
+#[must_use = "frontend backend submit ticket must be claimed, aborted, or transferred to the reaper"]
 pub struct FrontendBackendSubmitTicket {
     generation: u64,
     ready: Receiver<FrontendBackendSubmitReady>,
@@ -649,6 +660,7 @@ fn frontend_backend_submit_thread_failure(
         error,
         rollback_succeeded: false,
         step: None,
+        rollback_failure: None,
     }
 }
 
@@ -1534,6 +1546,7 @@ mod tests {
             },
             rollback_succeeded: false,
             step: Some(BackendTuneStep::ApplyChannel),
+            rollback_failure: None,
         };
         let error = failure.into_error();
         assert!(matches!(
@@ -1561,6 +1574,7 @@ mod tests {
                 ),
                 rollback_succeeded: true,
                 step: None,
+                rollback_failure: None,
             })
         })
         .unwrap();

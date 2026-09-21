@@ -20,8 +20,9 @@ pub use backend_worker::{
     FrontendTmccPartialReceptionObservation, FrontendTmccTsidListObservation,
 };
 pub use frontend_runtime::{
-    FrontendRuntime, FrontendRuntimeSnapshot, FrontendRuntimeState, FrontendSignalState,
-    FrontendTerminalEvent, FrontendTerminalEventKind, FrontendTerminalEventReason,
+    FrontendBackendFailureDiagnostic, FrontendDiagnosticWriteFailure, FrontendRuntime,
+    FrontendRuntimeSnapshot, FrontendRuntimeState, FrontendSignalState, FrontendTerminalEvent,
+    FrontendTerminalEventKind, FrontendTerminalEventReason,
 };
 pub use frontend_worker::{
     FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerDetachedJoin,
@@ -34,3 +35,4 @@ pub use live_pump::{
 };
 pub use reader::{FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind};
 pub use scan_session::{FrontendScanPhase, FrontendScanSession, FrontendScanTerminalReason};
+pub use tune_txn::{BackendTuneRollbackFailure, BackendTuneRollbackStep, BackendTuneStep};

@@ -3344,12 +3344,16 @@ impl DemuxRuntime {
                 Ok(0)
             }
             FmqDeliveryAction::RuntimeFailed(_) => {
-                let abort_failed = transaction.abort().is_err();
+                let abort_result = transaction.abort();
                 if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
                     dvr.mark_failed();
                 }
-                let _ = abort_failed;
-                Err(DemuxRuntimeError::queue_runtime_failure(dvr_id))
+                match abort_result {
+                    Ok(()) => Err(DemuxRuntimeError::queue_runtime_failure(dvr_id)),
+                    Err(_) => Err(DemuxRuntimeError::queue_runtime_failure_rollback_failed(
+                        dvr_id,
+                    )),
+                }
             }
         }
     }

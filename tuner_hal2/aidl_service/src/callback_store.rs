@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
@@ -56,6 +56,7 @@ pub(crate) struct FrontendCallbackRegistration {
     dead: Arc<AtomicBool>,
     death_recipient: Mutex<DeathLinkState>,
     death_gate: Arc<Mutex<()>>,
+    death_gate_poison_count: Arc<AtomicU64>,
 }
 
 enum DeathLinkState {
@@ -67,9 +68,14 @@ enum DeathLinkState {
 }
 
 // 死亡通知の線形化点。poison時も死亡だけは記録し、登録側はpoisonを失敗として扱う。
-fn mark_callback_dead(dead: &AtomicBool, gate: &Mutex<()>) {
-    let _guard = gate.lock();
-    dead.store(true, Ordering::Release);
+fn mark_callback_dead(dead: &AtomicBool, gate: &Mutex<()>, poison_count: &AtomicU64) {
+    match gate.lock() {
+        Ok(_guard) => dead.store(true, Ordering::Release),
+        Err(_) => {
+            poison_count.fetch_add(1, Ordering::Relaxed);
+            dead.store(true, Ordering::Release);
+        }
+    }
 }
 
 fn death_unlink_result(
@@ -86,6 +92,9 @@ impl FrontendCallbackRegistration {
     pub(crate) fn lock_death_gate(
         &self,
     ) -> Result<std::sync::MutexGuard<'_, ()>, AidlCallbackStoreError> {
+        if self.death_gate_poison_count.load(Ordering::Relaxed) != 0 {
+            return Err(AidlCallbackStoreError::Poisoned);
+        }
         self.death_gate
             .lock()
             .map_err(|_| AidlCallbackStoreError::Poisoned)
@@ -120,10 +129,11 @@ impl FrontendCallbackRegistration {
         let dead = Arc::clone(&self.dead);
         let generation = self.generation;
         let death_gate = Arc::clone(&self.death_gate);
+        let death_gate_poison_count = Arc::clone(&self.death_gate_poison_count);
         let mut recipient = DeathRecipient::new(move || {
             // 複合commitと死亡の確定順を同じlockで直列化する。
             // 死亡処理へ再入する前に解放し、runtime/storeとの逆順を作らない。
-            mark_callback_dead(&dead, &death_gate);
+            mark_callback_dead(&dead, &death_gate, &death_gate_poison_count);
             on_death(generation);
         });
         let result = binder
@@ -273,6 +283,7 @@ impl RetiredCallbacks {
     }
 }
 
+#[must_use = "prepared callback artifact token must be committed or aborted"]
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct PreparedCallbackArtifactToken(u64);
 
@@ -293,6 +304,7 @@ impl CallbackStore {
             dead: Arc::new(AtomicBool::new(false)),
             death_recipient: Mutex::new(DeathLinkState::Pending),
             death_gate: Arc::new(Mutex::new(())),
+            death_gate_poison_count: Arc::new(AtomicU64::new(0)),
         };
         self.prepared_callbacks.insert(
             key,
@@ -694,7 +706,11 @@ mod tests {
         let (started, observed) = std::sync::mpsc::channel();
         let death = std::thread::spawn(move || {
             started.send(()).unwrap();
-            mark_callback_dead(&dying.dead, &dying.death_gate);
+            mark_callback_dead(
+                &dying.dead,
+                &dying.death_gate,
+                &dying.death_gate_poison_count,
+            );
         });
         observed.recv().unwrap();
         assert!(!registration.is_dead());

@@ -330,14 +330,12 @@ impl<T> WorkerRuntime<T> {
             .map(|handle| handle.is_thread_finished())
             .unwrap_or(true)
     }
-    pub fn request_stop_and_wake(&self) {
-        if let Some(handle) = self.handle.as_ref() {
-            if let Err(error) = handle.request_stop_and_wake() {
-                eprintln!(
-                    "worker stop wake failed: owner={} generation={} error={error}",
-                    self.owner_id, self.generation
-                );
-            }
+    pub fn request_stop_and_wake(
+        &self,
+    ) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+        match self.handle.as_ref() {
+            Some(handle) => handle.request_stop_and_wake(),
+            None => Ok(()),
         }
     }
     pub fn join(mut self) -> WorkerTerminalResult<T> {
@@ -354,7 +352,12 @@ impl<T> WorkerRuntime<T> {
 impl<T> Drop for WorkerRuntime<T> {
     fn drop(&mut self) {
         if !self.is_finished() {
-            self.request_stop_and_wake();
+            if let Err(error) = self.request_stop_and_wake() {
+                eprintln!(
+                    "worker runtime drop wake failed: owner={} generation={} error={error}",
+                    self.owner_id, self.generation
+                );
+            }
         }
     }
 }
@@ -527,7 +530,7 @@ where
         let mut pending = match self.pending.lock() {
             Ok(pending) => pending,
             Err(_) => {
-                core::mem::forget(job);
+                drop(job);
                 return Err(maleicacid_tuner_hal2_common::HalError::internal(
                     maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
                     "worker reaper pending registry lock poisoned",
@@ -538,7 +541,7 @@ where
             .iter()
             .any(|(key, _)| pending.contains_key(key))
         {
-            core::mem::forget(job);
+            drop(job);
             return Err(maleicacid_tuner_hal2_common::HalError::internal(
                 maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
                 "worker reaper received a duplicate endpoint lease",
@@ -550,14 +553,14 @@ where
         drop(pending);
         self.sender.try_send(job).map_err(|error| match error {
             std::sync::mpsc::TrySendError::Full(job) => {
-                core::mem::forget(job);
+                drop(job);
                 maleicacid_tuner_hal2_common::HalError::internal(
                     maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
                     "worker reaper capacity exhausted",
                 )
             }
             std::sync::mpsc::TrySendError::Disconnected(job) => {
-                core::mem::forget(job);
+                drop(job);
                 maleicacid_tuner_hal2_common::HalError::internal(
                     maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
                     "worker reaper is unavailable",
@@ -875,7 +878,7 @@ mod tests {
         ready_rx
             .recv_timeout(std::time::Duration::from_secs(1))
             .unwrap();
-        worker.request_stop_and_wake();
+        worker.request_stop_and_wake().unwrap();
         done_rx
             .recv_timeout(std::time::Duration::from_secs(1))
             .unwrap();

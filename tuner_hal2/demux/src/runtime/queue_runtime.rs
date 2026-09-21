@@ -874,6 +874,7 @@ pub(crate) enum FilterDrainBoundary {
 }
 
 #[derive(Debug)]
+#[must_use = "producer permit must be committed so release failures remain observable"]
 pub(crate) struct FilterProducerPermit {
     inner: Arc<GateInner>,
     delivery_generation: u64,
@@ -881,6 +882,7 @@ pub(crate) struct FilterProducerPermit {
 }
 
 #[derive(Debug)]
+#[must_use = "drain transaction must be committed so rollback failures remain observable"]
 pub(crate) struct FilterDrainTxn {
     inner: Arc<GateInner>,
     boundary: FilterDrainBoundary,
