@@ -57,8 +57,8 @@ rust_library {
         "common/src/lib.rs",
         "common/src/os_abi.rs",
     ],
-    edition: "2021",    rustlibs: ["libnix"],
-
+    edition: "2021",
+    rustlibs: ["libnix"],
 }
 
 rust_library {
@@ -116,7 +116,8 @@ rust_library {
     ],
     edition: "2021",
     rustlibs: [
-        "libmaleicacid_tuner_hal2_common", "libmaleicacid_tuner_hal2_control_core",
+        "libmaleicacid_tuner_hal2_common",
+        "libmaleicacid_tuner_hal2_control_core",
         "libnix",
     ],
 }
@@ -386,8 +387,8 @@ rust_test {
     ],
     edition: "2021",
     auto_gen_config: true,
-    test_suites: ["general-tests"],    rustlibs: ["libnix"],
-
+    test_suites: ["general-tests"],
+    rustlibs: ["libnix"],
 }
 
 rust_test {
