@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
@@ -56,7 +56,6 @@ pub(crate) struct FrontendCallbackRegistration {
     dead: Arc<AtomicBool>,
     death_recipient: Mutex<DeathLinkState>,
     death_gate: Arc<Mutex<()>>,
-    death_gate_poison_count: Arc<AtomicU64>,
 }
 
 enum DeathLinkState {
@@ -71,7 +70,6 @@ enum DeathLinkState {
 fn mark_callback_dead(
     dead: &AtomicBool,
     gate: &Mutex<()>,
-    poison_count: &AtomicU64,
 ) -> Result<(), AidlCallbackStoreError> {
     match gate.lock() {
         Ok(_guard) => {
@@ -79,9 +77,6 @@ fn mark_callback_dead(
             Ok(())
         }
         Err(_) => {
-            let _ = poison_count.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
-                Some(count.saturating_add(1))
-            });
             dead.store(true, Ordering::Release);
             Err(AidlCallbackStoreError::Poisoned)
         }
@@ -102,9 +97,6 @@ impl FrontendCallbackRegistration {
     pub(crate) fn lock_death_gate(
         &self,
     ) -> Result<std::sync::MutexGuard<'_, ()>, AidlCallbackStoreError> {
-        if self.death_gate_poison_count.load(Ordering::Relaxed) != 0 {
-            return Err(AidlCallbackStoreError::Poisoned);
-        }
         self.death_gate
             .lock()
             .map_err(|_| AidlCallbackStoreError::Poisoned)
@@ -142,11 +134,10 @@ impl FrontendCallbackRegistration {
         let dead = Arc::clone(&self.dead);
         let generation = self.generation;
         let death_gate = Arc::clone(&self.death_gate);
-        let death_gate_poison_count = Arc::clone(&self.death_gate_poison_count);
         let mut recipient = DeathRecipient::new(move || {
             // 複合commitと死亡の確定順を同じlockで直列化する。
             // 死亡処理へ再入する前に解放し、runtime/storeとの逆順を作らない。
-            let result = mark_callback_dead(&dead, &death_gate, &death_gate_poison_count);
+            let result = mark_callback_dead(&dead, &death_gate);
             on_death(generation, result);
         });
         let result = binder
@@ -317,7 +308,6 @@ impl CallbackStore {
             dead: Arc::new(AtomicBool::new(false)),
             death_recipient: Mutex::new(DeathLinkState::Pending),
             death_gate: Arc::new(Mutex::new(())),
-            death_gate_poison_count: Arc::new(AtomicU64::new(0)),
         };
         self.prepared_callbacks.insert(
             key,
@@ -719,12 +709,7 @@ mod tests {
         let (started, observed) = std::sync::mpsc::channel();
         let death = std::thread::spawn(move || {
             started.send(()).unwrap();
-            mark_callback_dead(
-                &dying.dead,
-                &dying.death_gate,
-                &dying.death_gate_poison_count,
-            )
-            .unwrap();
+            mark_callback_dead(&dying.dead, &dying.death_gate).unwrap();
         });
         observed.recv().unwrap();
         assert!(!registration.is_dead());
@@ -739,21 +724,20 @@ mod tests {
     }
 
     #[test]
-    fn poisoned_death_gate_reports_failure_without_hiding_death_or_wrapping() {
+    fn poisoned_death_gate_reports_failure_without_hiding_death() {
         let dead = AtomicBool::new(false);
         let gate = Mutex::new(());
-        let count = AtomicU64::new(u64::MAX);
         assert!(std::panic::catch_unwind(|| {
             let _guard = gate.lock().unwrap();
             panic!("poison death gate");
         })
         .is_err());
         assert!(matches!(
-            mark_callback_dead(&dead, &gate, &count),
+            mark_callback_dead(&dead, &gate),
             Err(AidlCallbackStoreError::Poisoned)
         ));
         assert!(dead.load(Ordering::Acquire));
-        assert_eq!(count.load(Ordering::Relaxed), u64::MAX);
+        assert!(gate.lock().is_err());
     }
 
     #[test]
