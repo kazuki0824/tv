@@ -6,7 +6,9 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 
-use maleicacid_tuner_hal2_common::os_abi::{ioctl, last_errno};
+use maleicacid_tuner_hal2_common::os_abi::{
+    last_errno, raw_ioctl_noarg, raw_ioctl_ptr, raw_ioctl_word,
+};
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FrontendBackendKind, FrontendDevicePath,
     FrontendIsdbtPartialReceptionRequirement, FrontendTuneRequest, HalError, HalErrorDetail,
@@ -1184,7 +1186,7 @@ fn ioctl_ptr<T>(
     op: &'static str,
 ) -> Result<(), HalError> {
     // 安全性: `fd` はFrontendBackendSession生成が所有し、`arg` は選択backend ABI用のC互換ioctl payloadを指す。
-    let rc = unsafe { ioctl(fd, request, arg) };
+    let rc = unsafe { raw_ioctl_ptr(fd, request, arg) };
     if rc < 0 {
         return Err(HalError::IoctlFailed {
             backend,
@@ -1264,7 +1266,7 @@ fn ioctl_noarg(
     op: &'static str,
 ) -> Result<(), HalError> {
     // 安全性: 選択backend ABIに対する引数なしioctlである。
-    let rc = unsafe { ioctl(fd, request) };
+    let rc = unsafe { raw_ioctl_noarg(fd, request) };
     if rc < 0 {
         return Err(HalError::IoctlFailed {
             backend,
@@ -1284,7 +1286,7 @@ fn ioctl_word(
     arg: u32,
     op: &'static str,
 ) -> Result<(), HalError> {
-    let rc = unsafe { ioctl(fd, request, arg) };
+    let rc = unsafe { raw_ioctl_word(fd, request, arg) };
     if rc < 0 {
         return Err(HalError::IoctlFailed {
             backend,
