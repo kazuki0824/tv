@@ -12,6 +12,7 @@ use maleicacid_tuner_hal2_binder_adapter::FrontendSettingsRequest;
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FrontendScanMode, HalError, HalInternalKind,
 };
+use maleicacid_tuner_hal2_control_core::WorkerExit;
 use maleicacid_tuner_hal2_device::{
     FrontendRuntimeState, FrontendWorkerCancelReason, FrontendWorkerKind, FrontendWorkerStopOutcome,
 };
@@ -112,14 +113,16 @@ impl FrontendWorkerTerminalEvent {
                 kind,
                 generation,
                 result,
-                ..
+                exit,
             } => Some(Self::new(
                 *frontend_id,
                 *generation,
                 *kind,
-                match result {
-                    Ok(()) => WorkerTerminalResult::Normal(()),
-                    Err(error) => WorkerTerminalResult::RuntimeFailure(error.clone()),
+                match (exit, result) {
+                    (WorkerExit::PanicOrJoinFailure, _) => WorkerTerminalResult::PanicOrJoinFailure,
+                    (_, Err(error)) => WorkerTerminalResult::RuntimeFailure(error.clone()),
+                    (WorkerExit::StopRequested(_), Ok(())) => WorkerTerminalResult::StopRequested,
+                    (_, Ok(())) => WorkerTerminalResult::Normal(()),
                 },
             )),
         }
@@ -896,5 +899,31 @@ impl TunerServiceRuntime {
             AidlObjectKind::Frontend,
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod terminal_tests {
+    use super::*;
+    use maleicacid_tuner_hal2_control_core::{WorkerFailureDomain, WorkerStopReason};
+
+    #[test]
+    fn completed_stop_outcome_keeps_terminal_classification() {
+        let error = HalError::cleanup_failed("worker", "failure");
+        let cases = [
+            (WorkerExit::Normal, Ok(()), WorkerTerminalResult::Normal(())),
+            (WorkerExit::StopRequested(WorkerStopReason::ExplicitClose), Ok(()), WorkerTerminalResult::StopRequested),
+            (WorkerExit::RuntimeFailure(WorkerFailureDomain::Backend.runtime_failure_kind()), Err(error.clone()), WorkerTerminalResult::RuntimeFailure(error.clone())),
+            (WorkerExit::PanicOrJoinFailure, Err(error), WorkerTerminalResult::PanicOrJoinFailure),
+        ];
+        for (exit, result, terminal) in cases {
+            let outcome = FrontendWorkerStopOutcome::Completed {
+                frontend_id: 1, kind: FrontendWorkerKind::Tune, generation: 7, exit, result,
+            };
+            let event = FrontendWorkerTerminalEvent::from_stop_outcome(&outcome).unwrap();
+            assert_eq!(event.frontend_id(), 1);
+            assert_eq!(event.owner_generation(), 7);
+            assert_eq!(event.into_terminal_result(), terminal);
+        }
     }
 }

@@ -83,7 +83,7 @@ pub fn failure_domain(error: &HalError) -> RuntimeFailureDomain {
         HalError::Unsupported(_) | HalError::UnsupportedDetail { .. } => {
             RuntimeFailureDomain::UnsupportedByDesign
         }
-        HalError::Internal { .. } => RuntimeFailureDomain::InternalInvariant,
+        HalError::Internal { .. } | HalError::WorkerLockPoisoned { .. } => RuntimeFailureDomain::InternalInvariant,
     }
 }
 

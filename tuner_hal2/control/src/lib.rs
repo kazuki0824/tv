@@ -234,10 +234,10 @@ impl WorkerWake {
     }
 
     fn poison_error() -> maleicacid_tuner_hal2_common::HalError {
-        maleicacid_tuner_hal2_common::HalError::internal(
-            maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-            "worker wake lock poisoned",
-        )
+        maleicacid_tuner_hal2_common::HalError::WorkerLockPoisoned {
+            owner: "WorkerRuntime",
+            lock: maleicacid_tuner_hal2_common::WorkerLockKind::Wake,
+        }
     }
 
     fn wait_until(
@@ -342,6 +342,18 @@ impl<T> WorkerRuntime<T> {
         };
         match handle.join_after_stop() {
             Ok(Ok(result)) => result,
+            Err(WorkerRuntimeOwnerFailure::ResultLockPoison) => WorkerTerminalResult::RuntimeFailure(
+                maleicacid_tuner_hal2_common::HalError::WorkerLockPoisoned {
+                    owner: "WorkerRuntime",
+                    lock: maleicacid_tuner_hal2_common::WorkerLockKind::Result,
+                },
+            ),
+            Err(WorkerRuntimeOwnerFailure::CompletionLockPoison) => WorkerTerminalResult::RuntimeFailure(
+                maleicacid_tuner_hal2_common::HalError::WorkerLockPoisoned {
+                    owner: "WorkerRuntime",
+                    lock: maleicacid_tuner_hal2_common::WorkerLockKind::Completion,
+                },
+            ),
             Ok(Err(())) | Err(_) => WorkerTerminalResult::PanicOrJoinFailure,
         }
     }
@@ -886,6 +898,81 @@ mod tests {
         ));
     }
     use super::*;
+
+    #[test]
+    fn join_preserves_result_and_completion_poison_identity() {
+        use maleicacid_tuner_hal2_common::{HalError, WorkerLockKind};
+
+        for lock in [WorkerLockKind::Result, WorkerLockKind::Completion] {
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let worker = WorkerRuntime::spawn(
+                "poisoned-owner".into(),
+                3,
+                1,
+                move |_| {
+                    release_rx.recv().unwrap();
+                    Ok(())
+                },
+                || {},
+            )
+            .unwrap();
+            let handle = worker.handle.as_ref().unwrap();
+            let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match lock {
+                WorkerLockKind::Result => {
+                    let _guard = handle.result.lock().unwrap();
+                    panic!("poison result");
+                }
+                WorkerLockKind::Completion => {
+                    let _guard = handle.completion.0.lock().unwrap();
+                    panic!("poison completion");
+                }
+                WorkerLockKind::Wake => unreachable!(),
+            }));
+            assert!(poisoned.is_err());
+            release_tx.send(()).unwrap();
+            assert_eq!(
+                worker.join(),
+                WorkerTerminalResult::RuntimeFailure(HalError::WorkerLockPoisoned {
+                    owner: "WorkerRuntime",
+                    lock,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn wake_poison_does_not_erase_the_stop_request() {
+        use maleicacid_tuner_hal2_common::{HalError, WorkerLockKind};
+
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = WorkerRuntime::spawn(
+            "poisoned-wake".into(),
+            4,
+            1,
+            move |context| {
+                release_rx.recv().unwrap();
+                assert!(context.stop_requested());
+                Ok(())
+            },
+            || {},
+        )
+        .unwrap();
+        let handle = worker.handle.as_ref().unwrap();
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = handle.context.wake.pending.0.lock().unwrap();
+            panic!("poison wake");
+        }))
+        .is_err());
+        assert_eq!(
+            worker.request_stop_and_wake(),
+            Err(HalError::WorkerLockPoisoned {
+                owner: "WorkerRuntime",
+                lock: WorkerLockKind::Wake,
+            })
+        );
+        release_tx.send(()).unwrap();
+        assert_eq!(worker.join(), WorkerTerminalResult::StopRequested);
+    }
 
     #[test]
     fn worker_failure_domain_maps_to_runtime_failure_kind() {

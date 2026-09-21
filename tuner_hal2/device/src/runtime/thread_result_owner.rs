@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
+use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, WorkerLockKind};
 use maleicacid_tuner_hal2_control_core::{
     WorkerContext, WorkerHandle, WorkerRuntime, WorkerRuntimeOwnerFailure, WorkerRuntimePoll,
 };
@@ -11,8 +11,18 @@ fn owner_failure_to_hal(error: WorkerRuntimeOwnerFailure, name: &'static str) ->
     let detail = match error {
         WorkerRuntimeOwnerFailure::ThreadPanic => "thread panicked",
         WorkerRuntimeOwnerFailure::JoinFailure => "thread join failed",
-        WorkerRuntimeOwnerFailure::ResultLockPoison => "thread result lock poisoned",
-        WorkerRuntimeOwnerFailure::CompletionLockPoison => "thread completion lock poisoned",
+        WorkerRuntimeOwnerFailure::ResultLockPoison => {
+            return HalError::WorkerLockPoisoned {
+                owner: name,
+                lock: WorkerLockKind::Result,
+            };
+        }
+        WorkerRuntimeOwnerFailure::CompletionLockPoison => {
+            return HalError::WorkerLockPoisoned {
+                owner: name,
+                lock: WorkerLockKind::Completion,
+            };
+        }
         WorkerRuntimeOwnerFailure::MissingReport => "finished without report",
         WorkerRuntimeOwnerFailure::ResultAlreadyCollected => "thread result already collected",
     };
@@ -97,6 +107,28 @@ where
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn owner_poison_preserves_lock_identity() {
+        for (failure, lock) in [
+            (
+                WorkerRuntimeOwnerFailure::ResultLockPoison,
+                WorkerLockKind::Result,
+            ),
+            (
+                WorkerRuntimeOwnerFailure::CompletionLockPoison,
+                WorkerLockKind::Completion,
+            ),
+        ] {
+            assert_eq!(
+                owner_failure_to_hal(failure, "frontend"),
+                HalError::WorkerLockPoisoned {
+                    owner: "frontend",
+                    lock,
+                }
+            );
+        }
+    }
 
     #[test]
     fn adapter_reports_normal_completion() {
