@@ -235,14 +235,7 @@ fn run_cleanup_job(
             return;
         }
         let result = close_method(job.handle.object_kind()).and_then(|method| {
-            crate::object_runtime::retry_cleanup_from_reaper(&context, job.handle, method).map_err(
-                |status| {
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        format!("cleanup reaper Binder retry failed: {status:?}"),
-                    )
-                },
-            )
+            crate::object_runtime::retry_cleanup_from_reaper(&context, job.handle, method)
         });
         if result.is_ok() {
             if clear_pending_cleanup_job(&pending, key).is_err() {
