@@ -467,6 +467,7 @@ class ChannelScanController(
                     satelliteBand = candidate.satelliteBand,
                     remoteControlKeyId = remoteKey,
                     serviceType = serviceType,
+                    partialReception = transaction.semanticFactsByServiceKey[service.serviceKey]?.partialReception == true,
                     requiresCas = transaction.semanticFactsByServiceKey[service.serviceKey]?.requiresCas == true,
                     casFactsCanonicalJson = transaction.semanticFactsByServiceKey[service.serviceKey]?.casFactsCanonicalJson,
                 )
