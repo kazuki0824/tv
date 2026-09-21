@@ -250,7 +250,7 @@ impl<T, E> WorkerHandle<T, E> {
             .unwrap_or(true)
     }
 
-    fn request_stop(&self) {
+    pub fn request_stop(&self) {
         if !self
             .context
             .stop
@@ -260,14 +260,8 @@ impl<T, E> WorkerHandle<T, E> {
         }
     }
 
-    pub fn request_stop_and_wake(&self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
-        self.request_stop();
-        Ok(())
-    }
-
-    pub fn wake(&self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+    pub fn wake(&self) {
         self.context.wake.notify();
-        Ok(())
     }
 
     pub fn wait_until_finished(
@@ -362,10 +356,7 @@ impl WorkerWake {
         }
     }
 
-    fn wait_until(
-        &self,
-        deadline: Option<std::time::Instant>,
-    ) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+    fn wait_until(&self, deadline: Option<std::time::Instant>) {
         while !self
             .pending
             .swap(false, std::sync::atomic::Ordering::AcqRel)
@@ -375,14 +366,13 @@ impl WorkerWake {
                     let Some(remaining) =
                         deadline.checked_duration_since(std::time::Instant::now())
                     else {
-                        return Ok(());
+                        return;
                     };
                     std::thread::park_timeout(remaining);
                 }
                 None => std::thread::park(),
             }
         }
-        Ok(())
     }
 }
 
@@ -408,12 +398,9 @@ impl WorkerContext {
         self.stop.load(std::sync::atomic::Ordering::Acquire)
     }
 
-    pub fn wait_until(
-        &self,
-        deadline: Option<std::time::Instant>,
-    ) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+    pub fn wait_until(&self, deadline: Option<std::time::Instant>) {
         if self.stop_requested() {
-            return Ok(());
+            return;
         }
         self.wake.wait_until(deadline)
     }
@@ -434,7 +421,8 @@ impl<T> WorkerRuntime<T> {
             .ok_or(maleicacid_tuner_hal2_common::HalError::NotInitialized {
                 resource: "worker handle",
             })?
-            .wake()
+            .wake();
+        Ok(())
     }
     pub const fn owner_id(&self) -> i64 {
         self.owner_id
@@ -454,10 +442,6 @@ impl<T> WorkerRuntime<T> {
         }
     }
 
-    pub fn request_stop_and_wake(&self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
-        self.request_stop();
-        Ok(())
-    }
     pub fn join(mut self) -> WorkerTerminalResult<T> {
         let Some(handle) = self.handle.take() else {
             return WorkerTerminalResult::PanicOrJoinFailure;
@@ -941,9 +925,7 @@ mod tests {
                   _pending: Arc<Mutex<std::collections::BTreeMap<u32, u32>>>,
                   context: super::WorkerContext| {
                 started_tx.send(()).unwrap();
-                context
-                    .wait_until(Instant::now().checked_add(Duration::from_secs(3_600)))
-                    .unwrap();
+                context.wait_until(Instant::now().checked_add(Duration::from_secs(3_600)));
                 finished_tx.send(context.stop_requested()).unwrap();
             },
         );
@@ -972,7 +954,7 @@ mod tests {
                 continue_rx.recv().unwrap();
                 context.wait_until(Some(
                     std::time::Instant::now() + std::time::Duration::from_secs(10),
-                ))?;
+                ));
                 done_tx.send(()).unwrap();
                 Ok(())
             },
@@ -1004,7 +986,7 @@ mod tests {
             move |context| {
                 ready_tx.send(()).unwrap();
                 while !context.stop_requested() {
-                    context.wait_until(None)?;
+                    context.wait_until(None);
                 }
                 done_tx.send(()).unwrap();
                 Ok(())
@@ -1015,7 +997,7 @@ mod tests {
         ready_rx
             .recv_timeout(std::time::Duration::from_secs(1))
             .unwrap();
-        worker.request_stop_and_wake().unwrap();
+        worker.request_stop();
         done_rx
             .recv_timeout(std::time::Duration::from_secs(1))
             .unwrap();
@@ -1184,7 +1166,6 @@ mod tests {
                     let _guard = handle.completion.0.lock().unwrap();
                     panic!("poison completion");
                 }
-                WorkerLockKind::Wake => unreachable!(),
             }));
             assert!(poisoned.is_err());
             release_tx.send(()).unwrap();
@@ -1209,7 +1190,7 @@ mod tests {
             move |context| {
                 ready_tx.send(()).unwrap();
                 while !context.stop_requested() {
-                    context.wait_until(None)?;
+                    context.wait_until(None);
                 }
                 done_tx.send(()).unwrap();
                 Ok(())

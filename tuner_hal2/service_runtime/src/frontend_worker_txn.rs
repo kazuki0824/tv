@@ -2567,7 +2567,8 @@ fn observe_and_record_frontend_stream_id_list_for_scan(
                         "stream-ID retry deadline overflowed",
                     )
                 })?;
-            ctx.wait_until(Some(deadline))
+            ctx.wait_until(Some(deadline));
+            Ok(())
         },
         || ctx.cancel_requested(),
     )?
@@ -2618,7 +2619,7 @@ fn wait_for_frontend_qualified_lock(
                         "frontend poll deadline overflow",
                     )
                 })?,
-        ))?;
+        ));
     }
 }
 
@@ -2917,7 +2918,7 @@ fn run_frontend_backend_tune_session_worker(
                             "frontend poll deadline overflow",
                         )
                     })?,
-            ))?;
+            ));
         }
         if let Some(owner) = live_pump.take() {
             let report = owner.join_after_stop()?;

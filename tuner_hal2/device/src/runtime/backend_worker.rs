@@ -1147,7 +1147,7 @@ pub fn run_frontend_backend_tune_worker_with_previous(
                         "frontend poll deadline overflow",
                     )
                 })?,
-        ))?;
+        ));
     }
     let reason = ctx.cancel_reason();
     let completion = if matches!(

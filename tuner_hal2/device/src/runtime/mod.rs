@@ -25,7 +25,7 @@ pub use frontend_runtime::{
     FrontendTerminalEventKind, FrontendTerminalEventReason,
 };
 pub use frontend_worker::{
-    FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerDetachedJoin,
+    FrontendWorkerCancelReason, FrontendWorkerContext,
     FrontendWorkerKind, FrontendWorkerRegistry, FrontendWorkerStartError,
     FrontendWorkerStopOutcome, FrontendWorkerStopPoll, FrontendWorkerStopTicket,
 };

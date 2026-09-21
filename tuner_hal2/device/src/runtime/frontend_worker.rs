@@ -79,7 +79,7 @@ pub enum FrontendWorkerStopOutcome {
 }
 
 #[derive(Debug)]
-pub struct FrontendWorkerDetachedJoin {
+struct FrontendWorkerDetachedJoin {
     frontend_id: i32,
     kind: FrontendWorkerKind,
     generation: u64,
@@ -87,7 +87,7 @@ pub struct FrontendWorkerDetachedJoin {
 }
 
 impl FrontendWorkerDetachedJoin {
-    pub fn complete(&mut self) -> FrontendWorkerStopOutcome {
+    fn complete(&mut self) -> FrontendWorkerStopOutcome {
         let (result, exit) = self.slot.join_after_cancel();
         FrontendWorkerStopOutcome::Completed {
             frontend_id: self.frontend_id,
@@ -350,7 +350,7 @@ impl FrontendWorkerContext {
     pub fn cancel_requested(&self) -> bool {
         self.control.stop_requested()
     }
-    pub fn wait_until(&self, deadline: Option<std::time::Instant>) -> Result<(), HalError> {
+    pub fn wait_until(&self, deadline: Option<std::time::Instant>) {
         self.control.wait_until(deadline)
     }
     pub fn cancel_reason(&self) -> Result<Option<FrontendWorkerCancelReason>, HalError> {
@@ -381,7 +381,8 @@ impl FrontendWorkerSlot {
                     "frontend worker stop owner missing",
                 )
             })?
-            .request_stop_and_wake()
+            .request_stop();
+        Ok(())
     }
 
     fn is_running(&mut self) -> bool {

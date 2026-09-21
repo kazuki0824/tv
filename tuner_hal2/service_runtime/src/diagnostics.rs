@@ -165,7 +165,6 @@ pub enum WorkerFailureCategory {
     Fmq,
     EventFlag,
     Cleanup,
-    Wake,
     LockPoison,
     CallbackCommit,
     CallbackArtifact,

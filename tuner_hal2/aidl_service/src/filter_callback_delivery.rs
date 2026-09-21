@@ -123,7 +123,7 @@ fn run_filter_delay_delivery(
         if control.stop_requested() {
             return Ok(());
         }
-        control.wait_until(deadline)?;
+        control.wait_until(deadline);
     }
 }
 

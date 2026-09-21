@@ -20,7 +20,7 @@ pub use runtime::{
     FrontendSignalState, FrontendTerminalEvent, FrontendTerminalEventKind,
     FrontendTerminalEventReason, FrontendTmccPartialReceptionObservation,
     FrontendTmccTsidListObservation, FrontendWorkerCancelReason, FrontendWorkerContext,
-    FrontendWorkerDetachedJoin, FrontendWorkerKind, FrontendWorkerRegistry,
+    FrontendWorkerKind, FrontendWorkerRegistry,
     FrontendWorkerStartError, FrontendWorkerStopOutcome, FrontendWorkerStopPoll,
     FrontendWorkerStopTicket,
 };

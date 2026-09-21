@@ -105,10 +105,6 @@ impl WorkerFailureClassifier {
             HalError::CleanupFailed { .. } | HalError::WorkerCleanupFailed { .. } => {
                 WorkerFailureCategory::Cleanup
             }
-            HalError::WorkerLockPoisoned {
-                lock: maleicacid_tuner_hal2_common::WorkerLockKind::Wake,
-                ..
-            } => WorkerFailureCategory::Wake,
             HalError::WorkerLockPoisoned { .. } => WorkerFailureCategory::LockPoison,
             _ => WorkerFailureCategory::Unknown,
         }
@@ -145,13 +141,6 @@ mod tests {
             (
                 HalError::cleanup_failed("worker", "failure"),
                 WorkerFailureCategory::Cleanup,
-            ),
-            (
-                HalError::WorkerLockPoisoned {
-                    owner: "WorkerRuntime",
-                    lock: WorkerLockKind::Wake,
-                },
-                WorkerFailureCategory::Wake,
             ),
             (
                 HalError::WorkerLockPoisoned {
