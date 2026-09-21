@@ -431,6 +431,7 @@ data class SmdSemanticFacts(
 data class ServiceSemanticFacts(
     val serviceKey: ServiceKey,
     val serviceType: Int?,
+    val partialReception: Boolean = false,
     val pmtPidResolved: Boolean,
     val pmtParsed: Boolean,
     val pcrPidResolved: Boolean,
