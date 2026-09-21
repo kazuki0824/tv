@@ -9,7 +9,8 @@ use crate::frontend_ops::{
     FrontendWorkerTerminalEvent, FrontendWorkerTerminalEventAcceptance, SharedFrontendRuntime,
 };
 use crate::frontend_worker_txn::{
-    cleanup_frontend_object_after_close_begin, record_frontend_worker_terminal_failure, FrontendCloseCleanupReport,
+    cleanup_frontend_object_after_close_begin, record_frontend_worker_terminal_failure,
+    FrontendCloseCleanupReport,
 };
 use crate::worker_failure_classifier::WorkerFailureClassifier;
 
@@ -39,7 +40,12 @@ impl FrontendWorkerTerminationUseCase {
         .into_failure();
         let record_result = match terminal_failure.as_ref() {
             Some((category, error)) => record_frontend_worker_terminal_failure(
-                runtime, frontend_id, worker_kind, owner_generation, *category, error.clone(),
+                runtime,
+                frontend_id,
+                worker_kind,
+                owner_generation,
+                *category,
+                error.clone(),
             ),
             None => Ok(()),
         };
@@ -64,7 +70,9 @@ impl FrontendWorkerTerminationUseCase {
             (Ok(()), Ok(())) => Ok(FrontendWorkerTerminalEventAcceptance::Accepted),
             (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
             (Err(primary), Err(cleanup)) => Err(compose_primary_cleanup_failure(
-                "frontend worker terminal transition and diagnostic failed", primary, cleanup,
+                "frontend worker terminal transition and diagnostic failed",
+                primary,
+                cleanup,
             )),
         }
     }

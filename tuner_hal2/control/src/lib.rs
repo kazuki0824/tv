@@ -342,18 +342,22 @@ impl<T> WorkerRuntime<T> {
         };
         match handle.join_after_stop() {
             Ok(Ok(result)) => result,
-            Err(WorkerRuntimeOwnerFailure::ResultLockPoison) => WorkerTerminalResult::RuntimeFailure(
-                maleicacid_tuner_hal2_common::HalError::WorkerLockPoisoned {
-                    owner: "WorkerRuntime",
-                    lock: maleicacid_tuner_hal2_common::WorkerLockKind::Result,
-                },
-            ),
-            Err(WorkerRuntimeOwnerFailure::CompletionLockPoison) => WorkerTerminalResult::RuntimeFailure(
-                maleicacid_tuner_hal2_common::HalError::WorkerLockPoisoned {
-                    owner: "WorkerRuntime",
-                    lock: maleicacid_tuner_hal2_common::WorkerLockKind::Completion,
-                },
-            ),
+            Err(WorkerRuntimeOwnerFailure::ResultLockPoison) => {
+                WorkerTerminalResult::RuntimeFailure(
+                    maleicacid_tuner_hal2_common::HalError::WorkerLockPoisoned {
+                        owner: "WorkerRuntime",
+                        lock: maleicacid_tuner_hal2_common::WorkerLockKind::Result,
+                    },
+                )
+            }
+            Err(WorkerRuntimeOwnerFailure::CompletionLockPoison) => {
+                WorkerTerminalResult::RuntimeFailure(
+                    maleicacid_tuner_hal2_common::HalError::WorkerLockPoisoned {
+                        owner: "WorkerRuntime",
+                        lock: maleicacid_tuner_hal2_common::WorkerLockKind::Completion,
+                    },
+                )
+            }
             Ok(Err(())) | Err(_) => WorkerTerminalResult::PanicOrJoinFailure,
         }
     }

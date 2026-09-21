@@ -96,12 +96,17 @@ impl WorkerFailureClassifier {
 
     fn classify_runtime_failure(error: &HalError) -> WorkerFailureCategory {
         match error.primary_error() {
-            HalError::IoctlFailed { .. } | HalError::Io { .. } => WorkerFailureCategory::BackendControl,
+            HalError::IoctlFailed { .. } | HalError::Io { .. } => {
+                WorkerFailureCategory::BackendControl
+            }
             HalError::CallbackFailed { .. } => WorkerFailureCategory::CallbackBinder,
             HalError::FmqFailed { .. } => WorkerFailureCategory::Fmq,
             HalError::EventFlagFailed { .. } => WorkerFailureCategory::EventFlag,
             HalError::CleanupFailed { .. } => WorkerFailureCategory::Cleanup,
-            HalError::WorkerLockPoisoned { lock: maleicacid_tuner_hal2_common::WorkerLockKind::Wake, .. } => WorkerFailureCategory::Wake,
+            HalError::WorkerLockPoisoned {
+                lock: maleicacid_tuner_hal2_common::WorkerLockKind::Wake,
+                ..
+            } => WorkerFailureCategory::Wake,
             HalError::WorkerLockPoisoned { .. } => WorkerFailureCategory::LockPoison,
             _ => WorkerFailureCategory::Unknown,
         }
@@ -123,18 +128,46 @@ mod tests {
         };
         let cases = [
             (backend, WorkerFailureCategory::BackendControl),
-            (HalError::callback_failed("onEvent", "failure"), WorkerFailureCategory::CallbackBinder),
-            (HalError::fmq_failed("write", "failure"), WorkerFailureCategory::Fmq),
-            (HalError::event_flag_failed("wake", "failure"), WorkerFailureCategory::EventFlag),
-            (HalError::cleanup_failed("worker", "failure"), WorkerFailureCategory::Cleanup),
-            (HalError::WorkerLockPoisoned { owner: "WorkerRuntime", lock: WorkerLockKind::Wake }, WorkerFailureCategory::Wake),
-            (HalError::WorkerLockPoisoned { owner: "frontend", lock: WorkerLockKind::Result }, WorkerFailureCategory::LockPoison),
-            (HalError::internal(HalInternalKind::InvariantViolation, "unknown"), WorkerFailureCategory::Unknown),
+            (
+                HalError::callback_failed("onEvent", "failure"),
+                WorkerFailureCategory::CallbackBinder,
+            ),
+            (
+                HalError::fmq_failed("write", "failure"),
+                WorkerFailureCategory::Fmq,
+            ),
+            (
+                HalError::event_flag_failed("wake", "failure"),
+                WorkerFailureCategory::EventFlag,
+            ),
+            (
+                HalError::cleanup_failed("worker", "failure"),
+                WorkerFailureCategory::Cleanup,
+            ),
+            (
+                HalError::WorkerLockPoisoned {
+                    owner: "WorkerRuntime",
+                    lock: WorkerLockKind::Wake,
+                },
+                WorkerFailureCategory::Wake,
+            ),
+            (
+                HalError::WorkerLockPoisoned {
+                    owner: "frontend",
+                    lock: WorkerLockKind::Result,
+                },
+                WorkerFailureCategory::LockPoison,
+            ),
+            (
+                HalError::internal(HalInternalKind::InvariantViolation, "unknown"),
+                WorkerFailureCategory::Unknown,
+            ),
         ];
         for (error, category) in cases {
             assert_eq!(
                 WorkerFailureClassifier::classify_terminal::<()>(
-                    WorkerTerminalResult::RuntimeFailure(error.clone()), "panic",
+                    WorkerTerminalResult::RuntimeFailure(error.clone()),
+                    "panic",
                 ),
                 ClassifiedWorkerTerminalResult::Failure { category, error },
             );
@@ -144,19 +177,35 @@ mod tests {
     #[test]
     fn composed_failure_keeps_primary_domain_and_cleanup_error() {
         let error = HalError::composed_failure(
-            "write and cleanup", HalError::fmq_failed("write", "failure"),
+            "write and cleanup",
+            HalError::fmq_failed("write", "failure"),
             HalError::cleanup_failed("queue", "failure"),
         );
         assert_eq!(
-            WorkerFailureClassifier::classify_terminal::<()>(WorkerTerminalResult::RuntimeFailure(error.clone()), "panic"),
-            ClassifiedWorkerTerminalResult::Failure { category: WorkerFailureCategory::Fmq, error },
+            WorkerFailureClassifier::classify_terminal::<()>(
+                WorkerTerminalResult::RuntimeFailure(error.clone()),
+                "panic"
+            ),
+            ClassifiedWorkerTerminalResult::Failure {
+                category: WorkerFailureCategory::Fmq,
+                error
+            },
         );
         assert!(matches!(
-            WorkerFailureClassifier::classify_terminal::<()>(WorkerTerminalResult::PanicOrJoinFailure, "panic"),
-            ClassifiedWorkerTerminalResult::Failure { category: WorkerFailureCategory::Join, .. },
+            WorkerFailureClassifier::classify_terminal::<()>(
+                WorkerTerminalResult::PanicOrJoinFailure,
+                "panic"
+            ),
+            ClassifiedWorkerTerminalResult::Failure {
+                category: WorkerFailureCategory::Join,
+                ..
+            },
         ));
         assert_eq!(
-            WorkerFailureClassifier::classify_terminal::<()>(WorkerTerminalResult::StopRequested, "panic"),
+            WorkerFailureClassifier::classify_terminal::<()>(
+                WorkerTerminalResult::StopRequested,
+                "panic"
+            ),
             ClassifiedWorkerTerminalResult::StopRequested,
         );
     }
