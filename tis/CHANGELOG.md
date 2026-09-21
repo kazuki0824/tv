@@ -1,3 +1,10 @@
+# PR #108 TvProvider queryを公開URI制約へ修正
+
+- `ACCESS_ALL_EPG_DATA`を持たないTISがraw SQL `selection`を渡し、AOSP TvProviderから `SecurityException: Selection not allowed` を受けていた経路を除去した。追加の特権permissionは付与しない。
+- channel検索・一覧は `TvContract.buildChannelsUriForInput(inputId)` を使い、service identityの追加条件は返却cursor上で照合する。programのchannel/window検索、廃止行確認、現在番組resolverは `buildProgramsUriForChannel(...)` のchannel/time URIを使用する。
+- query failureをempty resultへ丸めない既存契約、program overlapのsort order、provider-data所有確認、更新/削除のrow URIは維持する。Rebaseは実施していない。
+- Android/Soong全体、Robolectric/host test、実機Boot EPG syncはpush後CI/実機で確認する。
+
 # PR #108 MediaSync private拡張の任意利用を復活
 
 - MediaSyncがcurrent output Surfaceへの`queueBuffer()`に成功した最初のvideo frameを通知する、LineageOS 22.1向けの最小private拡張patchを復活した。late-drop、attach失敗、queue失敗では通知せず、one-shot armと`armSequence`だけを追加する。

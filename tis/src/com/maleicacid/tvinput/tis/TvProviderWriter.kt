@@ -799,17 +799,30 @@ class TvProviderWriter private constructor(
         @Suppress("MaxLineLength")
         override fun findExistingChannelId(key: ServiceKey): Result<Long?> =
             runCatching {
-                val projection = arrayOf(TvContract.Channels._ID)
-                val selection =
-                    "${TvContract.Channels.COLUMN_INPUT_ID}=? AND " +
-                        "${TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID}=? AND " +
-                        "${TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID}=? AND " +
-                        "${TvContract.Channels.COLUMN_SERVICE_ID}=?"
-                val args = arrayOf(inputId, key.originalNetworkId.toString(), key.transportStreamId.toString(), key.serviceId.toString())
+                val projection =
+                    arrayOf(
+                        TvContract.Channels._ID,
+                        TvContract.Channels.COLUMN_ORIGINAL_NETWORK_ID,
+                        TvContract.Channels.COLUMN_TRANSPORT_STREAM_ID,
+                        TvContract.Channels.COLUMN_SERVICE_ID,
+                    )
+                val uri = TvContract.buildChannelsUriForInput(inputId)
                 val cursor =
-                    context.contentResolver.query(TvContract.Channels.CONTENT_URI, projection, selection, args, null)
+                    context.contentResolver.query(uri, projection, null, null, null)
                         ?: error("TvProvider channel query returned null cursor")
-                cursor.use { if (it.moveToFirst()) it.getLong(0) else null }
+                cursor.use { rows ->
+                    var found: Long? = null
+                    while (rows.moveToNext()) {
+                        if (rows.getInt(1) == key.originalNetworkId &&
+                            rows.getInt(2) == key.transportStreamId &&
+                            rows.getInt(3) == key.serviceId
+                        ) {
+                            found = rows.getLong(0)
+                            break
+                        }
+                    }
+                    found
+                }
             }.onFailure { Log.w(LogTags.TIS, "既存 channel 検索に失敗しました key=$key", it) }
 
         override fun insertChannel(values: ContentValues): Result<Long?> =
@@ -843,11 +856,10 @@ class TvProviderWriter private constructor(
                         TvContract.Channels.COLUMN_SERVICE_TYPE,
                         TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA,
                     )
-                val selection = "${TvContract.Channels.COLUMN_INPUT_ID}=?"
-                val args = arrayOf(inputId)
                 val out = mutableListOf<ChannelRecord>()
+                val uri = TvContract.buildChannelsUriForInput(inputId)
                 val cursor =
-                    context.contentResolver.query(TvContract.Channels.CONTENT_URI, projection, selection, args, null)
+                    context.contentResolver.query(uri, projection, null, null, null)
                         ?: error("TvProvider channel list query returned null cursor")
                 cursor.use { cursor ->
                     while (cursor.moveToNext()) {
@@ -889,17 +901,13 @@ class TvProviderWriter private constructor(
         ): Result<Map<String, Long>> =
             runCatching {
                 val projection = arrayOf(TvContract.Programs._ID, TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)
-                val selection =
-                    "${TvContract.Programs.COLUMN_CHANNEL_ID}=? AND " +
-                        "${TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS}>? AND " +
-                        "${TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS}<?"
-                val args = arrayOf(channelId.toString(), windowStartMs.toString(), windowEndMs.toString())
+                val uri = TvContract.buildProgramsUriForChannel(channelId, windowStartMs, windowEndMs)
                 val cursor =
                     context.contentResolver.query(
-                        TvContract.Programs.CONTENT_URI,
+                        uri,
                         projection,
-                        selection,
-                        args,
+                        null,
+                        null,
                         "${TvContract.Programs._ID} DESC",
                     ) ?: error("TvProvider program index query returned null cursor")
                 val out = linkedMapOf<String, Long>()
@@ -916,14 +924,13 @@ class TvProviderWriter private constructor(
         override fun indexExistingProgramsForService(channelId: Long): Result<Map<String, Long>> =
             runCatching {
                 val projection = arrayOf(TvContract.Programs._ID, TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA)
-                val selection = "${TvContract.Programs.COLUMN_CHANNEL_ID}=?"
-                val args = arrayOf(channelId.toString())
+                val uri = TvContract.buildProgramsUriForChannel(channelId)
                 val cursor =
                     context.contentResolver.query(
-                        TvContract.Programs.CONTENT_URI,
+                        uri,
                         projection,
-                        selection,
-                        args,
+                        null,
+                        null,
                         "${TvContract.Programs._ID} DESC",
                     ) ?: error("TvProvider service program index query returned null cursor")
                 val out = linkedMapOf<String, Long>()
@@ -987,13 +994,9 @@ class TvProviderWriter private constructor(
                         TvContract.Programs.COLUMN_PACKAGE_NAME,
                         TvContract.Programs.COLUMN_INTERNAL_PROVIDER_DATA,
                     )
-                val selection =
-                    "${TvContract.Programs.COLUMN_CHANNEL_ID}=? AND " +
-                        "${TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS}>? AND " +
-                        "${TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS}<?"
-                val args = arrayOf(channelId.toString(), windowStartMs.toString(), windowEndMs.toString())
+                val uri = TvContract.buildProgramsUriForChannel(channelId, windowStartMs, windowEndMs)
                 val cursor =
-                    context.contentResolver.query(TvContract.Programs.CONTENT_URI, projection, selection, args, null)
+                    context.contentResolver.query(uri, projection, null, null, null)
                         ?: error("TvProvider obsolete program query returned null cursor")
                 cursor.use { cursor ->
                     while (cursor.moveToNext()) {

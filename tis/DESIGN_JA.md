@@ -440,7 +440,7 @@ Descrambler API の `setKeyToken()`、`addPid()`、`removePid()` は戻り値が
 
 TvProvider query failure と channel なしは別状態として扱う。既存 channel query が失敗した場合は `skippedNoChannel` として扱わず、failure診断とし、publish fingerprint更新・`DirectBootEpgPending`解除の根拠に使わない。
 
-TvProvider query は必須問い合わせと任意問い合わせを区別する。チャンネル・番組の追加または更新、廃止行削除、既存チャンネル・番組検索、Direct Boot準備完了判定に使う query は必須問い合わせとする。必須問い合わせで `ContentResolver.query()` が null cursor を返した場合は `TvProviderQueryFailure` とし、empty resultとみなさない。`TvProviderQueryFailure` が発生したサービス/windowでは channel insert、program insert/update、廃止行削除、publish fingerprint cache更新、`DirectBootEpgPending`解除に進まず、再試行区間を保持する。provider-dataはcurrent policyのfallback sourceにしないため、policy判定のためのprovider-data代替参照queryを設けない。
+TvProvider query は必須問い合わせと任意問い合わせを区別する。チャンネル・番組の追加または更新、廃止行削除、既存チャンネル・番組検索、Direct Boot準備完了判定に使う query は必須問い合わせとする。必須問い合わせで `ContentResolver.query()` が null cursor を返した場合は `TvProviderQueryFailure` とし、empty resultとみなさない。 自TISのchannel検索・一覧は `TvContract.buildChannelsUriForInput(inputId)`、channel単位のprogram検索は `TvContract.buildProgramsUriForChannel(...)` のURI制約を使い、`ACCESS_ALL_EPG_DATA`を要求せずSQL `selection`を渡さない。`TvProviderQueryFailure` が発生したサービス/windowでは channel insert、program insert/update、廃止行削除、publish fingerprint cache更新、`DirectBootEpgPending`解除に進まず、再試行区間を保持する。provider-dataはcurrent policyのfallback sourceにしないため、policy判定のためのprovider-data代替参照queryを設けない。
 
 Programs publish/delete が provider failure になった場合は、`ProgramPublishCoordinator`のprocess-local queueに`ServiceKey + windowStartMs + windowEndMs`の再検証要求を保持する。entryはnotBeforeMsと診断用failure classだけを持ち、旧EpgUpdateWindow・旧validProgramKeys・旧deletionAuthoritativeを保存しない。固定cooldownは60秒。次回publish entrypointで期限到達した要求を取り出し、同じ入力snapshotのauthoritativeな更新区間が同一ServiceKeyの旧要求区間全体を含む場合だけ、その更新区間の現在のキー集合から削除権限を再構成する。ServiceKey単位のキー集合だけでは旧区間の範囲を証明できないため再試行しない。実行可能な再試行がある場合、過去のpublish fingerprintとの一致による早期終了を禁止し、現在のauthoritative windowに対するprovider処理の成功後に、その区間と一致する要求を除去する。同一区間の非authoritativeな通常upsert成功では、未実行の廃止行削除要求を除去しない。未完成・不整合・期限切れcollectionなどで現行の根拠がなければ削除せず要求を保持する。entrypointなしにwake-upしない。成功したkeyは削除、失敗したkeyは固定cooldownで末尾へ戻す。attempt段階、jitter、retention timer、failure class別queueは設けない。process restart時は破棄し、boot/background syncの再収集を正とする。失敗をpublish fingerprint更新や`DirectBootEpgPending`解除の根拠にしない。
 
@@ -469,7 +469,7 @@ publish fingerprint は、provider-data bytesを含む TvProvider へ実際に�
 
 ## 現在番組選択
 
-現在番組 resolver は TvProvider query 時点で `START_TIME_UTC_MILLIS <= now AND END_TIME_UTC_MILLIS > now` に絞る。sort order は `START_TIME_UTC_MILLIS DESC, END_TIME_UTC_MILLIS ASC, _ID DESC` に固定する。overlap がある場合も cursor 返却順には依存せず、この selection rule で1件を選ぶ。
+現在番組 resolver は `TvContract.buildProgramsUriForChannel(channelUri, now, now + 1ms)` の時間範囲URIを使用し、TvProvider queryのSQL `selection` / `selectionArgs` は渡さない。このURIが `END_TIME_UTC_MILLIS > now AND START_TIME_UTC_MILLIS < now + 1ms` のoverlapへ絞るため、整数ms時刻では現在番組の `START_TIME_UTC_MILLIS <= now AND END_TIME_UTC_MILLIS > now` と一致する。sort order は `START_TIME_UTC_MILLIS DESC, END_TIME_UTC_MILLIS ASC, _ID DESC` に固定する。overlap がある場合も cursor 返却順には依存せず、この規則で1件を選ぶ。
 
 現在番組選択の診断は process-local `CurrentProgramResolutionDiagnostic` とし、`selectionRule`、`overlapCount`、`selectedProgramId` を保持できる。`selectionRule` は `START_DESC_END_ASC_ID_DESC` とし、対象なしの場合は empty string とする。この診断は `Programs.COLUMN_INTERNAL_PROVIDER_DATA` へ永続化せず、publish fingerprint、Program identity、unblock identity の構成要素にしない。ARIB `event_id` は `COLUMN_EVENT_ID` と JSON v1 `programKey.eventId` で扱う。
 
