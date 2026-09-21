@@ -68,12 +68,22 @@ enum DeathLinkState {
 }
 
 // 死亡通知の線形化点。poison時も死亡だけは記録し、登録側はpoisonを失敗として扱う。
-fn mark_callback_dead(dead: &AtomicBool, gate: &Mutex<()>, poison_count: &AtomicU64) {
+fn mark_callback_dead(
+    dead: &AtomicBool,
+    gate: &Mutex<()>,
+    poison_count: &AtomicU64,
+) -> Result<(), AidlCallbackStoreError> {
     match gate.lock() {
-        Ok(_guard) => dead.store(true, Ordering::Release),
-        Err(_) => {
-            poison_count.fetch_add(1, Ordering::Relaxed);
+        Ok(_guard) => {
             dead.store(true, Ordering::Release);
+            Ok(())
+        }
+        Err(_) => {
+            let _ = poison_count.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                Some(count.saturating_add(1))
+            });
+            dead.store(true, Ordering::Release);
+            Err(AidlCallbackStoreError::Poisoned)
         }
     }
 }
@@ -106,7 +116,10 @@ impl FrontendCallbackRegistration {
 
     pub(crate) fn link_death(
         &self,
-        on_death: impl Fn(FrontendCallbackGeneration) + Send + Sync + 'static,
+        on_death: impl Fn(FrontendCallbackGeneration, Result<(), AidlCallbackStoreError>)
+            + Send
+            + Sync
+            + 'static,
     ) -> Result<(), AidlCallbackStoreError> {
         {
             let mut state = self
@@ -133,8 +146,8 @@ impl FrontendCallbackRegistration {
         let mut recipient = DeathRecipient::new(move || {
             // 複合commitと死亡の確定順を同じlockで直列化する。
             // 死亡処理へ再入する前に解放し、runtime/storeとの逆順を作らない。
-            mark_callback_dead(&dead, &death_gate, &death_gate_poison_count);
-            on_death(generation);
+            let result = mark_callback_dead(&dead, &death_gate, &death_gate_poison_count);
+            on_death(generation, result);
         });
         let result = binder
             .link_to_death(&mut recipient)
@@ -710,7 +723,8 @@ mod tests {
                 &dying.dead,
                 &dying.death_gate,
                 &dying.death_gate_poison_count,
-            );
+            )
+            .unwrap();
         });
         observed.recv().unwrap();
         assert!(!registration.is_dead());
@@ -722,6 +736,24 @@ mod tests {
         let _next_commit = registration.lock_death_gate().unwrap();
         assert!(registration.is_dead());
         assert!(store.retire_frontend_registration(handle, registration.generation()));
+    }
+
+    #[test]
+    fn poisoned_death_gate_reports_failure_without_hiding_death_or_wrapping() {
+        let dead = AtomicBool::new(false);
+        let gate = Mutex::new(());
+        let count = AtomicU64::new(u64::MAX);
+        assert!(std::panic::catch_unwind(|| {
+            let _guard = gate.lock().unwrap();
+            panic!("poison death gate");
+        })
+        .is_err());
+        assert!(matches!(
+            mark_callback_dead(&dead, &gate, &count),
+            Err(AidlCallbackStoreError::Poisoned)
+        ));
+        assert!(dead.load(Ordering::Acquire));
+        assert_eq!(count.load(Ordering::Relaxed), u64::MAX);
     }
 
     #[test]

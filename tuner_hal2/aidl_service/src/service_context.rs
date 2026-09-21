@@ -748,9 +748,23 @@ impl AidlServiceContext {
             (token, registration)
         };
         let weak = Arc::downgrade(self);
-        let linked = registration.link_death(move |generation| {
+        let linked = registration.link_death(move |generation, death_result| {
             if let Some(context) = weak.upgrade() {
-                if let Err(primary) = context.handle_frontend_callback_death(handle, generation) {
+                // 汚染を診断へ渡しても、死亡した登録の退役と解放は省略しない。
+                let cleanup = context.handle_frontend_callback_death(handle, generation);
+                let result = match (
+                    death_result.map_err(|error| error.into_hal_error("callback死亡確定")),
+                    cleanup,
+                ) {
+                    (Ok(()), Ok(())) => Ok(()),
+                    (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+                    (Err(primary), Err(cleanup)) => Err(compose_primary_cleanup_failure(
+                        "callback死亡確定と後始末",
+                        primary,
+                        cleanup,
+                    )),
+                };
+                if let Err(primary) = result {
                     let record = FrontendCallbackDeliveryDiagnosticRecord::callback_artifact_lookup(
                         handle.object_id(),
                         handle.generation(),
