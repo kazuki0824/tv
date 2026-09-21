@@ -9,7 +9,9 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
 };
 use binder::Strong;
 use maleicacid_tuner_hal2_binder_adapter::{AidlObjectGeneration, AidlObjectId};
-use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, HalError, HalInternalKind};
+use maleicacid_tuner_hal2_common::{
+    compose_primary_cleanup_failure, HalError, HalErrorDetail, HalInternalKind,
+};
 use maleicacid_tuner_hal2_demux::DvrStatusEvent;
 use maleicacid_tuner_hal2_service_runtime::{
     join_worker_classified, CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport,
@@ -887,11 +889,12 @@ fn spawn_dvr_status_notifier(
             }
         },
     )
-    .map_err(|error| {
-        HalError::internal(
-            HalInternalKind::InvariantViolation,
-            format!("failed to spawn DVR status notifier: {error}"),
-        )
+    .map_err(|error| HalError::Io {
+        backend: "DVR status notifier",
+        operation: "thread spawn",
+        path: None,
+        errno: error.raw_os_error(),
+        detail: HalErrorDetail::new(error.to_string()),
     })?;
     Ok(DvrStatusNotifier { worker })
 }
@@ -1096,11 +1099,12 @@ pub(crate) fn start_dvr_status_notifier_reaper(
             }
         })
         .map(|_| ())
-        .map_err(|error| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                format!("failed to spawn DVR status notifier reaper: {error}"),
-            )
+        .map_err(|error| HalError::Io {
+            backend: "DVR status notifier reaper",
+            operation: "thread spawn",
+            path: None,
+            errno: error.raw_os_error(),
+            detail: HalErrorDetail::new(error.to_string()),
         })
 }
 

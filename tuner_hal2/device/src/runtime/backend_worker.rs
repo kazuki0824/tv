@@ -248,11 +248,15 @@ impl FrontendBackendSession {
     ) -> Result<Box<dyn Read + Send>, HalError> {
         match (&self.kind, &descriptor.kind) {
             (
-                FrontendBackendSessionKind::Px4 { .. },
+                FrontendBackendSessionKind::Px4 { control_path },
                 FrontendLiveReaderDescriptorKind::Px4DuplicatedControlFd { .. },
             ) => {
-                let file = self.file.try_clone().map_err(|error| {
-                    HalError::cleanup_failed("px4 live reader fd duplication", error.to_string())
+                let file = self.file.try_clone().map_err(|error| HalError::Io {
+                    backend: "px4",
+                    operation: "live reader fd duplication",
+                    path: Some(control_path.as_path().to_path_buf()),
+                    errno: error.raw_os_error(),
+                    detail: HalErrorDetail::new(error.to_string()),
                 })?;
                 Ok(Box::new(file))
             }
@@ -264,11 +268,12 @@ impl FrontendBackendSession {
                     .read(true)
                     .custom_flags(dvb::abi::O_NONBLOCK)
                     .open(dvr_path.as_path())
-                    .map_err(|error| {
-                        HalError::cleanup_failed(
-                            "dvb live dvr reader open",
-                            format!("{}: {error}", dvr_path.display()),
-                        )
+                    .map_err(|error| HalError::Io {
+                        backend: "dvb",
+                        operation: "live dvr reader open",
+                        path: Some(dvr_path.as_path().to_path_buf()),
+                        errno: error.raw_os_error(),
+                        detail: HalErrorDetail::new(error.to_string()),
                     })?;
                 Ok(Box::new(file))
             }
@@ -1321,6 +1326,54 @@ mod tests {
     use super::*;
     use maleicacid_tuner_hal2_common::{FrontendStreamIdKind, FrontendSystem};
     use std::thread;
+
+    #[test]
+    fn dvb_live_reader_open_failure_keeps_io_context() {
+        let path = FrontendDevicePath::new("/dev/null/maleicacid-tuner-dvr");
+        let expected_errno = File::open(path.as_path()).unwrap_err().raw_os_error();
+        let session = FrontendBackendSession {
+            kind: FrontendBackendSessionKind::Dvb {
+                frontend_path: FrontendDevicePath::new("/dev/null"),
+            },
+            file: File::open("/dev/null").unwrap(),
+            initial_signal_state: FrontendSignalState::NoSignal,
+            partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+        };
+        let descriptor = FrontendLiveReaderDescriptor::dvb_dvr_device(1, path.clone());
+        let error = session.open_live_reader(&descriptor).err().unwrap();
+        match error {
+            HalError::Io {
+                backend,
+                operation,
+                path: error_path,
+                errno,
+                ..
+            } => {
+                assert_eq!(backend, "dvb");
+                assert_eq!(operation, "live dvr reader open");
+                assert_eq!(error_path.as_deref(), Some(path.as_path()));
+                assert!(expected_errno.is_some());
+                assert_eq!(errno, expected_errno);
+            }
+            error => panic!("live reader open lost I/O classification: {error:?}"),
+        }
+    }
+
+    #[test]
+    fn px4_live_reader_uses_existing_fd_without_reopening_path() {
+        let path = FrontendDevicePath::new("/dev/null/maleicacid-tuner-px4");
+        let session = FrontendBackendSession {
+            kind: FrontendBackendSessionKind::Px4 {
+                control_path: path.clone(),
+            },
+            file: File::open("/dev/null").unwrap(),
+            initial_signal_state: FrontendSignalState::NoSignal,
+            partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+        };
+        let descriptor = FrontendLiveReaderDescriptor::px4_from_control_fd(1, path);
+        let mut reader = session.open_live_reader(&descriptor).unwrap();
+        assert_eq!(reader.read(&mut [0_u8; 1]).unwrap(), 0);
+    }
 
     #[test]
     fn dvb_close_does_not_require_a_tune_stop_ioctl() {

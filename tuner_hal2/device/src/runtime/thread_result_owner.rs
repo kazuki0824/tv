@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, WorkerLockKind};
+use maleicacid_tuner_hal2_common::{HalError, HalErrorDetail, HalInternalKind, WorkerLockKind};
 use maleicacid_tuner_hal2_control_core::{
     WorkerContext, WorkerHandle, WorkerRuntime, WorkerRuntimeOwnerFailure, WorkerRuntimePoll,
 };
@@ -67,10 +67,13 @@ where
     ) -> Result<Self, HalError> {
         let owner =
             WorkerRuntime::spawn_controlled_handle(name.to_owned(), run).map_err(|error| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    format!("{name}: thread spawn failed: {error}"),
-                )
+                HalError::Io {
+                    backend: name,
+                    operation: "thread spawn",
+                    path: None,
+                    errno: error.raw_os_error(),
+                    detail: HalErrorDetail::new(error.to_string()),
+                }
             })?;
         Ok(Self { owner, name })
     }
