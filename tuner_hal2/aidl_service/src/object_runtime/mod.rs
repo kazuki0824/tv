@@ -1015,13 +1015,21 @@ fn status_from_close_hal_error(
     phase: &'static str,
     error: HalError,
 ) -> binder::Status {
+    status_from_hal_error(log_close_hal_error(handle, phase, error))
+}
+
+fn log_close_hal_error(
+    handle: AidlObjectHandle,
+    phase: &'static str,
+    error: HalError,
+) -> HalError {
     log::error!(
         "object close failed: phase={phase} kind={:?} object_id={:?} generation={:?} error={error:?}",
         handle.object_kind(),
         handle.object_id(),
         handle.generation(),
     );
-    status_from_hal_error(error)
+    error
 }
 
 fn finish_object_close_plan(
@@ -1029,7 +1037,7 @@ fn finish_object_close_plan(
     handle: AidlObjectHandle,
     completion: CloseCleanupAttemptCompletion,
     cleanup_report: ObjectCleanupExecutionReport,
-) -> BinderResult<()> {
+) -> Result<(), HalError> {
     let cleanup_result = cleanup_report.clone().into_result();
     let public_error = cleanup_result
         .clone()
@@ -1050,7 +1058,7 @@ fn finish_object_close_plan(
             "service runtime lock poisoned while finishing object close",
         )),
     };
-    let result = match (finish_result, record_result) {
+    match (finish_result, record_result) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
         (Err(primary), Err(cleanup)) => Err(compose_primary_cleanup_failure(
@@ -1058,8 +1066,8 @@ fn finish_object_close_plan(
             primary,
             cleanup,
         )),
-    };
-    result.map_err(|error| status_from_close_hal_error(handle, "finish", error))
+    }
+    .map_err(|error| log_close_hal_error(handle, "finish", error))
 }
 
 mod drop_leak;
@@ -1075,7 +1083,8 @@ pub fn close_object_after_close_preflight(
     if object_close_is_idempotent_complete(context, handle)? {
         return Ok(());
     }
-    let result = execute_close_after_preflight_once(context, handle, method);
+    let result = execute_close_after_preflight_once(context, handle, method)
+        .map_err(status_from_hal_error);
     if result.is_err() && object_close_is_idempotent_complete(context, handle)? {
         return Ok(());
     }
@@ -1114,12 +1123,10 @@ fn execute_close_after_preflight_once(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
     method: AidlMethodCall,
-) -> BinderResult<()> {
+) -> Result<(), HalError> {
     let close_plan = {
         let runtime = context.runtime();
-        let mut guard = runtime
-            .lock()
-            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
+        let mut guard = lock_runtime(&runtime)?;
         close_object_use_case(
             &mut guard,
             handle.object_id(),
@@ -1127,16 +1134,14 @@ fn execute_close_after_preflight_once(
             handle.object_kind(),
             method,
         )
-        .map_err(|error| status_from_close_hal_error(handle, "begin-close", error))?
+        .map_err(|error| log_close_hal_error(handle, "begin-close", error))?
     };
     let cleanup_attempt = {
         let runtime = context.runtime();
-        let mut guard = runtime
-            .lock()
-            .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
+        let mut guard = lock_runtime(&runtime)?;
         close_plan
             .begin_cleanup_attempt(&mut guard)
-            .map_err(|error| status_from_close_hal_error(handle, "begin-cleanup", error))?
+            .map_err(|error| log_close_hal_error(handle, "begin-cleanup", error))?
     };
     let (completion, cleanup_report) =
         execute_close_cleanup_plan_with_executor(context, cleanup_attempt);
@@ -1147,7 +1152,7 @@ pub(crate) fn retry_cleanup_from_reaper(
     context: &SharedAidlServiceContext,
     handle: AidlObjectHandle,
     method: AidlMethodCall,
-) -> BinderResult<()> {
+) -> Result<(), HalError> {
     execute_close_after_preflight_once(context, handle, method)
 }
 
@@ -1698,6 +1703,42 @@ mod tests {
         );
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn reaper_retry_preserves_domain_error_and_cleanup_diagnostic() {
+        let handle = AidlObjectHandle::new(
+            AidlObjectKind::Lnb,
+            AidlObjectId(91_064),
+            AidlObjectGeneration(1),
+        );
+        let runtime = shared_runtime_with_live_object(
+            handle.object_kind(),
+            handle.object_id(),
+            handle.generation(),
+            91_064,
+        );
+        let context = context_for_runtime(&runtime);
+
+        for _ in 0..2 {
+            let error = retry_cleanup_from_reaper(&context, handle, AidlMethodCall::LnbClose)
+                .unwrap_err();
+            assert!(matches!(
+                &error,
+                HalError::InvalidArgument {
+                    kind: HalInvalidArgumentKind::NumericRange,
+                    ..
+                }
+            ));
+            let snapshot = runtime.lock().unwrap().object_cleanup_diagnostics().unwrap();
+            let record = snapshot.records().last().unwrap();
+            assert_eq!(record.object_id(), handle.object_id());
+            assert_eq!(record.generation(), handle.generation());
+            assert_eq!(record.public_error(), Some(&error));
+            let failure = record.report().clone().into_result().unwrap_err();
+            assert_eq!(failure.step(), CleanupStep::ReleaseBackend);
+            assert_eq!(failure.error(), &error);
+        }
     }
 
     #[test]
