@@ -41,8 +41,7 @@ impl BackendTuneRollbackReport {
     fn attempted_steps(&self) -> &[BackendTuneRollbackStep] {
         &self.attempted_steps
     }
-    #[cfg(test)]
-    fn failure(&self) -> Option<&BackendTuneRollbackFailure> {
+    pub fn failure(&self) -> Option<&BackendTuneRollbackFailure> {
         self.failure.as_ref()
     }
     pub fn succeeded(&self) -> bool {

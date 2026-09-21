@@ -9,7 +9,12 @@ use maleicacid_tuner_hal2_demux::{
     DvrConfigureReport, FilterConfigureReport, PacketPid, QueueRuntimeError, SourceBoundaryReport,
 };
 use maleicacid_tuner_hal2_descrambler::DescramblerPid;
-use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
+use maleicacid_tuner_hal2_domain_request::{
+    AidlObjectGeneration, AidlObjectId, AidlObjectKind, RuntimeTransactionName,
+};
+use maleicacid_tuner_hal2_lnb::LnbFailureStep;
+
+use crate::worker_failure_classifier::WorkerFailureCategory;
 
 pub const DEFAULT_DIAGNOSTIC_STORE_LIMIT: usize = 128;
 
@@ -131,6 +136,7 @@ pub enum StartupDiagnosticKind {
     ObjectCleanupDiagnosticClearFailed,
     FrontendWorkerCleanupDiagnosticClearFailed,
     RuntimeDispatchMissing,
+    LnbBackendFailure,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -141,6 +147,24 @@ pub enum StartupDiagnosticPhase {
     RegistryCommit,
     DiagnosticReset,
     DispatchValidation,
+    RuntimeBackend,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LnbBackendFailureClass {
+    Rejected,
+    Indeterminate,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LnbBackendFailureDiagnosticRecord {
+    pub lnb_id: i32,
+    pub step: LnbFailureStep,
+    pub frontend_id: i32,
+    pub backend: FrontendBackendKind,
+    pub device_path: PathBuf,
+    pub class: LnbBackendFailureClass,
+    pub error: HalError,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -198,7 +222,12 @@ pub enum StartupDiagnosticRecord {
     FrontendWorkerCleanupDiagnosticClearFailed {
         error: HalError,
     },
-    RuntimeDispatchMissing,
+    RuntimeDispatchMissing {
+        transaction: RuntimeTransactionName,
+    },
+    LnbBackendFailure {
+        record: LnbBackendFailureDiagnosticRecord,
+    },
 }
 
 impl StartupDiagnosticRecord {
@@ -277,8 +306,12 @@ impl StartupDiagnosticRecord {
         Self::FrontendWorkerCleanupDiagnosticClearFailed { error }
     }
 
-    pub fn runtime_dispatch_missing() -> Self {
-        Self::RuntimeDispatchMissing
+    pub fn runtime_dispatch_missing(transaction: RuntimeTransactionName) -> Self {
+        Self::RuntimeDispatchMissing { transaction }
+    }
+
+    pub fn lnb_backend_failure(record: LnbBackendFailureDiagnosticRecord) -> Self {
+        Self::LnbBackendFailure { record }
     }
 
     pub const fn kind(&self) -> StartupDiagnosticKind {
@@ -309,7 +342,8 @@ impl StartupDiagnosticRecord {
             Self::FrontendWorkerCleanupDiagnosticClearFailed { .. } => {
                 StartupDiagnosticKind::FrontendWorkerCleanupDiagnosticClearFailed
             }
-            Self::RuntimeDispatchMissing => StartupDiagnosticKind::RuntimeDispatchMissing,
+            Self::RuntimeDispatchMissing { .. } => StartupDiagnosticKind::RuntimeDispatchMissing,
+            Self::LnbBackendFailure { .. } => StartupDiagnosticKind::LnbBackendFailure,
         }
     }
 
@@ -330,7 +364,8 @@ impl StartupDiagnosticRecord {
             | Self::FrontendWorkerCleanupDiagnosticClearFailed { .. } => {
                 StartupDiagnosticPhase::DiagnosticReset
             }
-            Self::RuntimeDispatchMissing => StartupDiagnosticPhase::DispatchValidation,
+            Self::RuntimeDispatchMissing { .. } => StartupDiagnosticPhase::DispatchValidation,
+            Self::LnbBackendFailure { .. } => StartupDiagnosticPhase::RuntimeBackend,
         }
     }
 }
@@ -476,6 +511,7 @@ pub struct DvrStatusNotifierCleanupDiagnosticRecord {
     pub phase: DvrPostCommitNotificationPhase,
     pub object_id: Option<AidlObjectId>,
     pub generation: Option<AidlObjectGeneration>,
+    pub worker_failure_category: Option<WorkerFailureCategory>,
     pub result: Result<(), HalError>,
 }
 
@@ -486,6 +522,7 @@ impl DvrStatusNotifierCleanupDiagnosticRecord {
             phase: DvrPostCommitNotificationPhase::StatusNotifierStop,
             object_id: None,
             generation: None,
+            worker_failure_category: None,
             result: Err(error),
         }
     }
@@ -500,6 +537,7 @@ impl DvrStatusNotifierCleanupDiagnosticRecord {
             phase: DvrPostCommitNotificationPhase::StatusNotifierStop,
             object_id: Some(object_id),
             generation: Some(generation),
+            worker_failure_category: None,
             result,
         }
     }
@@ -514,6 +552,7 @@ impl DvrStatusNotifierCleanupDiagnosticRecord {
             phase: DvrPostCommitNotificationPhase::StatusNotifierRuntimeFailure,
             object_id: Some(object_id),
             generation: Some(generation),
+            worker_failure_category: None,
             result,
         }
     }
@@ -528,6 +567,7 @@ impl DvrStatusNotifierCleanupDiagnosticRecord {
             phase: DvrPostCommitNotificationPhase::StatusNotifierStop,
             object_id: Some(object_id),
             generation: Some(generation),
+            worker_failure_category: None,
             result,
         }
     }
@@ -542,6 +582,7 @@ impl DvrStatusNotifierCleanupDiagnosticRecord {
             phase: DvrPostCommitNotificationPhase::StatusNotifierStop,
             object_id: Some(object_id),
             generation: Some(generation),
+            worker_failure_category: None,
             result,
         }
     }
@@ -556,8 +597,17 @@ impl DvrStatusNotifierCleanupDiagnosticRecord {
             phase: DvrPostCommitNotificationPhase::StatusNotifierStop,
             object_id: Some(object_id),
             generation: Some(generation),
+            worker_failure_category: None,
             result,
         }
+    }
+
+    pub fn with_worker_failure_category(
+        mut self,
+        category: Option<WorkerFailureCategory>,
+    ) -> Self {
+        self.worker_failure_category = category;
+        self
     }
 }
 
@@ -1743,5 +1793,31 @@ mod counter_saturation_tests {
         saturating_increment_atomic_u64(&failures, "test_owner");
         saturating_increment_atomic_u64(&failures, "test_owner");
         assert_eq!(failures.load(Ordering::Relaxed), u64::MAX);
+    }
+
+    #[test]
+    fn runtime_dispatch_diagnostic_preserves_transaction_identity() {
+        let transaction = RuntimeTransactionName::FrontendTuneTxnApply;
+        assert_eq!(
+            StartupDiagnosticRecord::runtime_dispatch_missing(transaction),
+            StartupDiagnosticRecord::RuntimeDispatchMissing { transaction }
+        );
+    }
+
+    #[test]
+    fn notifier_cleanup_diagnostic_preserves_worker_failure_category() {
+        let record = DvrStatusNotifierCleanupDiagnosticRecord::reaper_completion(
+            AidlObjectId(7),
+            AidlObjectGeneration(2),
+            Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "worker join failed",
+            )),
+        )
+        .with_worker_failure_category(Some(WorkerFailureCategory::Join));
+        assert_eq!(
+            record.worker_failure_category,
+            Some(WorkerFailureCategory::Join)
+        );
     }
 }

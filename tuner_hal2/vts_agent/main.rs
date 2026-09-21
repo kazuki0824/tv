@@ -87,6 +87,8 @@ struct FmqReader(*mut ImportedFmq);
 
 impl Drop for FmqReader {
     fn drop(&mut self) {
+        // SAFETY: `self.0` is the non-null handle returned by `vts_agent_fmq_import`.
+        // `FmqReader` owns it uniquely and calls destroy exactly once from Drop.
         unsafe { vts_agent_fmq_destroy(self.0) };
     }
 }
@@ -109,6 +111,9 @@ impl FmqReader {
             .map(AsRawFd::as_raw_fd)
             .collect::<Vec<_>>();
         let ints = &desc.handle.ints;
+        // SAFETY: every pointer refers to a live contiguous slice for the supplied length.
+        // The imported queue receives duplicated native handles and does not retain the
+        // temporary Rust slice storage after this call returns.
         let queue = unsafe {
             vts_agent_fmq_import(
                 desc.quantum,
@@ -129,6 +134,8 @@ impl FmqReader {
     }
 
     fn available(&self) -> usize {
+        // SAFETY: `self.0` remains owned by this reader and cannot be destroyed while
+        // `&self` is borrowed.
         unsafe { vts_agent_fmq_available_to_read(self.0) }
     }
 
@@ -138,9 +145,17 @@ impl FmqReader {
             return Ok(Vec::new());
         }
         let mut bytes = vec![0u8; available];
+        // SAFETY: `bytes` exposes writable initialized storage of exactly `bytes.len()`
+        // bytes, and `self.0` is a live queue exclusively borrowed through `&mut self`.
         let read = unsafe { vts_agent_fmq_read(self.0, bytes.as_mut_ptr(), bytes.len()) };
         if read == 0 {
             return Err("filter FMQ read failed".to_string());
+        }
+        if read > bytes.len() {
+            return Err(format!(
+                "filter FMQ returned an invalid read length: {read} > {}",
+                bytes.len()
+            ));
         }
         bytes.truncate(read);
         Ok(bytes)
@@ -361,6 +376,42 @@ struct DeviceSession {
     args: Args,
     frontend: Strong<dyn IFrontend>,
     demux: Strong<dyn IDemux>,
+    closed: bool,
+}
+
+fn compose_cleanup_result<T>(
+    primary: Result<T, String>,
+    cleanup: Result<(), String>,
+) -> Result<T, String> {
+    match (primary, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(primary), Ok(())) => Err(primary),
+        (Ok(_), Err(cleanup)) => Err(cleanup),
+        (Err(primary), Err(cleanup)) => Err(format!("{primary}; cleanup failed: {cleanup}")),
+    }
+}
+
+fn collect_cleanup_status(
+    failures: &mut Vec<String>,
+    operation: &'static str,
+    result: binder::Result<()>,
+) {
+    if let Err(error) = result {
+        failures.push(format!("{operation} failed: {error:?}"));
+    }
+}
+
+fn cleanup_frontend(frontend: &Strong<dyn IFrontend>, stop_tune: bool) -> Result<(), String> {
+    let mut failures = Vec::new();
+    if stop_tune {
+        collect_cleanup_status(&mut failures, "frontend.stopTune", frontend.stopTune());
+    }
+    collect_cleanup_status(&mut failures, "frontend.close", frontend.close());
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
 }
 
 impl DeviceSession {
@@ -386,54 +437,69 @@ impl DeviceSession {
             .map_err(|e| format!("openFrontendById failed: {e:?}"))?;
         let callback = BnFrontendCallback::new_binder(FrontendCallback, BinderFeatures::default());
         if let Err(error) = frontend.setCallback(&callback) {
-            let _ = frontend.close();
-            return Err(format!("setCallback failed: {error:?}"));
+            return compose_cleanup_result(
+                Err(format!("setCallback failed: {error:?}")),
+                cleanup_frontend(&frontend, false),
+            );
         }
         if let Err(error) = frontend.tune(&frontend_settings(&args)) {
-            let _ = frontend.close();
-            return Err(format!("tune failed: {error:?}"));
+            return compose_cleanup_result(
+                Err(format!("tune failed: {error:?}")),
+                cleanup_frontend(&frontend, false),
+            );
         }
         if let Err(error) = wait_for_lock(&frontend, Duration::from_millis(args.timeout_ms)) {
-            let _ = frontend.stopTune();
-            let _ = frontend.close();
-            return Err(error);
+            return compose_cleanup_result(Err(error), cleanup_frontend(&frontend, true));
         }
 
         let demux_ids = match tuner.getDemuxIds() {
             Ok(ids) => ids,
             Err(error) => {
-                let _ = frontend.stopTune();
-                let _ = frontend.close();
-                return Err(format!("getDemuxIds failed: {error:?}"));
+                return compose_cleanup_result(
+                    Err(format!("getDemuxIds failed: {error:?}")),
+                    cleanup_frontend(&frontend, true),
+                );
             }
         };
         let demux_id = match demux_ids.first() {
             Some(id) => *id,
             None => {
-                let _ = frontend.stopTune();
-                let _ = frontend.close();
-                return Err("no demux available".to_string());
+                return compose_cleanup_result(
+                    Err("no demux available".to_string()),
+                    cleanup_frontend(&frontend, true),
+                );
             }
         };
         let demux = match tuner.openDemuxById(demux_id) {
             Ok(demux) => demux,
             Err(error) => {
-                let _ = frontend.stopTune();
-                let _ = frontend.close();
-                return Err(format!("openDemuxById failed: {error:?}"));
+                return compose_cleanup_result(
+                    Err(format!("openDemuxById failed: {error:?}")),
+                    cleanup_frontend(&frontend, true),
+                );
             }
         };
         if let Err(error) = demux.setFrontendDataSource(frontend_id) {
-            let _ = demux.close();
-            let _ = frontend.stopTune();
-            let _ = frontend.close();
-            return Err(format!("setFrontendDataSource failed: {error:?}"));
+            let mut cleanup_failures = Vec::new();
+            collect_cleanup_status(&mut cleanup_failures, "demux.close", demux.close());
+            if let Err(cleanup) = cleanup_frontend(&frontend, true) {
+                cleanup_failures.push(cleanup);
+            }
+            return compose_cleanup_result(
+                Err(format!("setFrontendDataSource failed: {error:?}")),
+                if cleanup_failures.is_empty() {
+                    Ok(())
+                } else {
+                    Err(cleanup_failures.join("; "))
+                },
+            );
         }
 
         Ok(Self {
             args,
             frontend,
             demux,
+            closed: false,
         })
     }
 
@@ -490,17 +556,42 @@ impl DeviceSession {
             }
         })();
 
-        let _ = filter.stop();
-        let _ = filter.close();
-        result
+        let mut cleanup_failures = Vec::new();
+        collect_cleanup_status(&mut cleanup_failures, "filter.stop", filter.stop());
+        collect_cleanup_status(&mut cleanup_failures, "filter.close", filter.close());
+        compose_cleanup_result(
+            result,
+            if cleanup_failures.is_empty() {
+                Ok(())
+            } else {
+                Err(cleanup_failures.join("; "))
+            },
+        )
+    }
+
+    fn close(&mut self) -> Result<(), String> {
+        if self.closed {
+            return Ok(());
+        }
+        let mut failures = Vec::new();
+        collect_cleanup_status(&mut failures, "demux.close", self.demux.close());
+        if let Err(error) = cleanup_frontend(&self.frontend, true) {
+            failures.push(error);
+        }
+        self.closed = true;
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        }
     }
 }
 
 impl Drop for DeviceSession {
     fn drop(&mut self) {
-        let _ = self.demux.close();
-        let _ = self.frontend.stopTune();
-        let _ = self.frontend.close();
+        if let Err(error) = self.close() {
+            eprintln!("device session cleanup failed during Drop: {error}");
+        }
     }
 }
 
@@ -546,7 +637,8 @@ fn handle_request(session: &DeviceSession, request: &Value) -> Result<bool, Stri
 }
 
 fn run(args: Args) -> Result<(), String> {
-    let session = DeviceSession::open(args)?;
+    let mut session = DeviceSession::open(args)?;
+    let result = (|| {
     write_response(json!({
         "status": "ready",
         "frequency_hz": session.args.frequency_hz,
@@ -577,6 +669,8 @@ fn run(args: Args) -> Result<(), String> {
         }
     }
     Ok(())
+    })();
+    compose_cleanup_result(result, session.close())
 }
 
 fn main() {

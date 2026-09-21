@@ -16,7 +16,7 @@ use maleicacid_tuner_hal2_service_runtime::{
     CapabilitySnapshot, ClassifiedWorkerTerminalResult, DvrPostCommitNotificationDiagnosticRecord,
     DvrPostCommitNotificationFailureKind, DvrPostCommitNotificationPhase,
     DvrStatusNotifierCleanupDiagnosticRecord, DvrStatusPollSnapshot, WorkerRuntime,
-    WorkerRuntimeSupervisor,
+    WorkerFailureCategory, WorkerRuntimeSupervisor,
 };
 
 use crate::filter_callback_delivery::dispatch_filter_event_snapshots;
@@ -42,15 +42,19 @@ pub(crate) struct DvrStatusNotifier {
     worker: WorkerRuntime<()>,
 }
 
-fn signal_dvr_status_notifier_stop(notifier: &DvrStatusNotifier) {
-    notifier.worker.request_stop_and_wake();
+fn signal_dvr_status_notifier_stop(notifier: &DvrStatusNotifier) -> Result<(), HalError> {
+    notifier.worker.request_stop_and_wake()
 }
 
-fn join_finished_dvr_status_notifier(notifier: DvrStatusNotifier) -> Result<(), HalError> {
+fn join_finished_dvr_status_notifier(
+    notifier: DvrStatusNotifier,
+) -> (Result<(), HalError>, Option<WorkerFailureCategory>) {
     match join_worker_classified(notifier.worker) {
         ClassifiedWorkerTerminalResult::Normal(())
-        | ClassifiedWorkerTerminalResult::StopRequested => Ok(()),
-        ClassifiedWorkerTerminalResult::Failure { error, .. } => Err(error),
+        | ClassifiedWorkerTerminalResult::StopRequested => (Ok(()), None),
+        ClassifiedWorkerTerminalResult::Failure { category, error } => {
+            (Err(error), Some(category))
+        }
     }
 }
 
@@ -177,7 +181,7 @@ impl DvrStatusNotifierSupervisor {
         let Some(notifier) = state.active_mut().remove(&key) else {
             return Ok(DvrStatusNotifierStopDisposition::Complete);
         };
-        signal_dvr_status_notifier_stop(&notifier);
+        signal_dvr_status_notifier_stop(&notifier)?;
         state.reaping_mut().insert(
             key,
             DvrStatusNotifierReaperJob {
@@ -206,7 +210,7 @@ impl DvrStatusNotifierSupervisor {
         }
         let active = core::mem::take(state.active_mut());
         for (key, notifier) in active {
-            signal_dvr_status_notifier_stop(&notifier);
+            signal_dvr_status_notifier_stop(&notifier)?;
             state.reaping_mut().insert(
                 key,
                 DvrStatusNotifierReaperJob {
@@ -993,10 +997,12 @@ fn finish_reaped_dvr_status_notifier(
 ) {
     let handle = job.handle;
     let restart_requested = job.restart_requested;
-    let cleanup_result = join_finished_dvr_status_notifier(job.notifier);
+    let (cleanup_result, worker_failure_category) =
+        join_finished_dvr_status_notifier(job.notifier);
     let Some(context) = context else {
         return;
-    };
+    }
+    .with_worker_failure_category(worker_failure_category);
     let record = if restart_requested {
         DvrStatusNotifierCleanupDiagnosticRecord::supersede_cleanup(
             AidlObjectId(job.key.object_id),

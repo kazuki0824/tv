@@ -25,9 +25,10 @@ use maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackToken;
 #[cfg(test)]
 use maleicacid_tuner_hal2_device::FrontendRuntimeSnapshot;
 use maleicacid_tuner_hal2_device::{
-    FrontendBackendSession, FrontendBackendSubmitFailure, FrontendBackendSubmitTicket,
-    FrontendBackendSubmitWait, FrontendBackendTunePlan, FrontendLivePumpJoinOutcome,
-    FrontendLivePumpOwner, FrontendScanPhase, FrontendSignalState,
+    BackendTuneRollbackFailure, BackendTuneStep, FrontendBackendSession,
+    FrontendBackendSubmitFailure, FrontendBackendSubmitTicket, FrontendBackendSubmitWait,
+    FrontendBackendTunePlan, FrontendLivePumpJoinOutcome, FrontendLivePumpOwner,
+    FrontendScanPhase, FrontendSignalState,
     FrontendTmccPartialReceptionObservation, FrontendTmccTsidListObservation,
     FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
     FrontendWorkerStartError, FrontendWorkerStopOutcome, FrontendWorkerStopPoll,
@@ -270,7 +271,7 @@ impl FrontendWorkerReaperJob {
                         guard.mark_service_critical();
                     }
                 }
-                core::mem::forget(self);
+                drop(self);
                 return;
             }
         };
@@ -307,7 +308,7 @@ impl FrontendWorkerReaperJob {
                                 guard.mark_service_critical();
                             }
                         }
-                        core::mem::forget(self);
+                        drop(self);
                         return;
                     }
                 }
@@ -325,7 +326,7 @@ impl FrontendWorkerReaperJob {
                             guard.mark_service_critical();
                         }
                     }
-                    core::mem::forget(self);
+                    drop(self);
                     return;
                 }
             }
@@ -1543,6 +1544,9 @@ fn finish_backend_session_before_frontend_commit_failure(
             generation,
             public_error.clone(),
             backend_stopped,
+            None,
+            public_error.clone(),
+            None,
         ) {
         Ok(()) => public_error,
         Err(record_error) => compose_frontend_cleanup_error(
@@ -1605,6 +1609,9 @@ fn record_backend_submit_failure_after_fence(
     generation: u64,
     backend_stopped: bool,
     public_error: HalError,
+    step: Option<BackendTuneStep>,
+    primary_error: HalError,
+    rollback_failure: Option<BackendTuneRollbackFailure>,
 ) -> HalError {
     match guard
         .frontend_txn()
@@ -1613,6 +1620,9 @@ fn record_backend_submit_failure_after_fence(
             generation,
             public_error.clone(),
             backend_stopped,
+            step,
+            primary_error,
+            rollback_failure,
         ) {
         Ok(()) => public_error,
         Err(record_error) => compose_frontend_cleanup_error(
@@ -1682,12 +1692,16 @@ fn transfer_timed_out_frontend_backend_submit(
     deadline_ms: u64,
 ) -> HalError {
     let timeout_error = frontend_backend_submit_timeout_error(deadline_ms);
+    let diagnostic_error = timeout_error.clone();
     let public_error = record_backend_submit_failure_after_fence(
         guard,
         target.frontend_id(),
         generation,
         false,
         timeout_error,
+        None,
+        diagnostic_error,
+        None,
     );
     enqueue_timed_out_frontend_backend_submit(
         reaper,
@@ -3021,6 +3035,9 @@ fn finish_committed_tune_replacement(
             Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Ok(session))) => session,
             Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Err(failure))) => {
                 let backend_stopped = failure.rollback_succeeded;
+                let step = failure.step;
+                let primary_error = failure.error.clone();
+                let rollback_failure = failure.rollback_failure.clone();
                 let public_error = failure.into_error();
                 return Err(record_backend_submit_failure_after_fence(
                     &mut guard,
@@ -3028,6 +3045,9 @@ fn finish_committed_tune_replacement(
                     generation,
                     backend_stopped,
                     public_error,
+                    step,
+                    primary_error,
+                    rollback_failure,
                 ));
             }
             Ok(FrontendBackendSubmitDeadlineOutcome::TimedOut(ticket)) => {
@@ -3060,12 +3080,16 @@ fn finish_committed_tune_replacement(
                 });
             }
             Err(start_error) => {
+                let diagnostic_error = start_error.clone();
                 return Err(record_backend_submit_failure_after_fence(
                     &mut guard,
                     frontend_id,
                     generation,
                     true,
                     start_error,
+                    None,
+                    diagnostic_error,
+                    None,
                 ));
             }
         };
@@ -3360,7 +3384,7 @@ pub(crate) fn start_frontend_backend_tune_worker(
                     );
                 }
                 guard.mark_service_critical();
-                core::mem::forget(tickets);
+                drop(tickets);
                 return Err(public_error);
             }
             Err(tickets)
@@ -3373,7 +3397,7 @@ pub(crate) fn start_frontend_backend_tune_worker(
         .commit_bound_demux_runtime_rollback_tokens(demux_rollback_tokens);
     if let Err(error) = commit_tokens_result {
         guard.mark_service_critical();
-        core::mem::forget(tickets);
+        drop(tickets);
         return Err(error);
     }
     if let Err(error) = boundary_result {
@@ -3392,7 +3416,7 @@ pub(crate) fn start_frontend_backend_tune_worker(
                 )
             }
         };
-        core::mem::forget(tickets);
+        drop(tickets);
         return Err(public_error);
     }
     let mut pending_stop_error = tickets.is_err().then(|| {
@@ -3419,7 +3443,7 @@ pub(crate) fn start_frontend_backend_tune_worker(
             Ok(snapshot) => snapshot,
             Err(error) => {
                 guard.mark_service_critical();
-                core::mem::forget(tickets);
+                drop(tickets);
                 return Err(error);
             }
         }
@@ -3454,7 +3478,7 @@ pub(crate) fn start_frontend_backend_tune_worker(
                     if let Ok(mut guard) = runtime.lock() {
                         guard.mark_service_critical();
                     }
-                    core::mem::forget(tickets);
+                    drop(tickets);
                     return Err(error);
                 }
             };
@@ -3569,7 +3593,9 @@ fn run_frontend_backend_scan_session_worker(
                 Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Err(failure)))
                     if failure.rollback_succeeded =>
                 {
-                    let primary = failure.error;
+                    let primary = failure.error.clone();
+                    let step = failure.step;
+                    let rollback_failure = failure.rollback_failure.clone();
                     let mut guard = match lock_runtime(
                         &runtime,
                         "service runtime lock poisoned while recording rejected scan submission",
@@ -3588,6 +3614,22 @@ fn run_frontend_backend_scan_session_worker(
                             return Err(error);
                         }
                     };
+                    if let Err(diagnostic_error) = guard
+                        .frontend_txn()
+                        .record_frontend_backend_failure_diagnostic(
+                            ctx.frontend_id(),
+                            ctx.generation(),
+                            step,
+                            primary.clone(),
+                            rollback_failure,
+                        )
+                    {
+                        return Err(compose_frontend_cleanup_error(
+                            "frontend scan submission failure diagnostic record failed",
+                            primary,
+                            diagnostic_error,
+                        ));
+                    }
                     if let Err(mark_error) = guard
                         .frontend_txn()
                         .mark_frontend_scan_submit_rejected_after_boundary(
@@ -3606,7 +3648,10 @@ fn run_frontend_backend_scan_session_worker(
                     return Err(primary);
                 }
                 Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Err(failure))) => {
-                    let primary = failure.error;
+                    let primary_error = failure.error.clone();
+                    let step = failure.step;
+                    let rollback_failure = failure.rollback_failure.clone();
+                    let primary = failure.into_error();
                     let mut guard = match lock_runtime(
                         &runtime,
                         "service runtime lock poisoned while marking scan backend failure",
@@ -3625,6 +3670,22 @@ fn run_frontend_backend_scan_session_worker(
                             return Err(error);
                         }
                     };
+                    if let Err(diagnostic_error) = guard
+                        .frontend_txn()
+                        .record_frontend_backend_failure_diagnostic(
+                            ctx.frontend_id(),
+                            ctx.generation(),
+                            step,
+                            primary_error,
+                            rollback_failure,
+                        )
+                    {
+                        return Err(compose_frontend_cleanup_error(
+                            "frontend scan backend failure diagnostic record failed",
+                            primary,
+                            diagnostic_error,
+                        ));
+                    }
                     if let Err(mark_error) = guard
                         .frontend_txn()
                         .mark_frontend_scan_session_backend_failed(
@@ -3872,6 +3933,9 @@ fn finish_committed_scan_replacement(
             Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Ok(session))) => session,
             Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Err(failure))) => {
                 let backend_stopped = failure.rollback_succeeded;
+                let step = failure.step;
+                let primary_error = failure.error.clone();
+                let rollback_failure = failure.rollback_failure.clone();
                 let public_error = failure.into_error();
                 return Err(record_backend_submit_failure_after_fence(
                     &mut guard,
@@ -3879,6 +3943,9 @@ fn finish_committed_scan_replacement(
                     generation,
                     backend_stopped,
                     public_error,
+                    step,
+                    primary_error,
+                    rollback_failure,
                 ));
             }
             Ok(FrontendBackendSubmitDeadlineOutcome::TimedOut(ticket)) => {
@@ -3911,12 +3978,16 @@ fn finish_committed_scan_replacement(
                 });
             }
             Err(start_error) => {
+                let diagnostic_error = start_error.clone();
                 return Err(record_backend_submit_failure_after_fence(
                     &mut guard,
                     frontend_id,
                     generation,
                     true,
                     start_error,
+                    None,
+                    diagnostic_error,
+                    None,
                 ));
             }
         };
@@ -4194,7 +4265,7 @@ pub(crate) fn start_frontend_backend_scan_session_worker(
                     );
                 }
                 guard.mark_service_critical();
-                core::mem::forget(tickets);
+                drop(tickets);
                 return Err(public_error);
             }
             Err(tickets)
@@ -4213,7 +4284,7 @@ pub(crate) fn start_frontend_backend_scan_session_worker(
         .commit_bound_demux_runtime_rollback_tokens(demux_rollback_tokens);
     if let Err(error) = commit_tokens_result {
         guard.mark_service_critical();
-        core::mem::forget(tickets);
+        drop(tickets);
         return Err(error);
     }
     if let Err(error) = boundary_result {
@@ -4232,7 +4303,7 @@ pub(crate) fn start_frontend_backend_scan_session_worker(
                 )
             }
         };
-        core::mem::forget(tickets);
+        drop(tickets);
         return Err(public_error);
     }
     let mut pending_stop_error = tickets.is_err().then(|| {
@@ -4259,7 +4330,7 @@ pub(crate) fn start_frontend_backend_scan_session_worker(
             Ok(snapshot) => snapshot,
             Err(error) => {
                 guard.mark_service_critical();
-                core::mem::forget(tickets);
+                drop(tickets);
                 return Err(error);
             }
         }
@@ -4295,7 +4366,7 @@ pub(crate) fn start_frontend_backend_scan_session_worker(
                     if let Ok(mut guard) = runtime.lock() {
                         guard.mark_service_critical();
                     }
-                    core::mem::forget(tickets);
+                    drop(tickets);
                     return Err(error);
                 }
             };
@@ -4669,7 +4740,7 @@ fn stop_frontend_object_without_join(
             Ok(snapshot) => snapshot,
             Err(error) => {
                 guard.mark_service_critical();
-                core::mem::forget(tickets);
+                drop(tickets);
                 return Err(error);
             }
         }
@@ -4894,7 +4965,7 @@ fn close_frontend_workers_and_live_data_with_sink(
                 Ok(snapshot) => snapshot,
                 Err(snapshot_error) => {
                     guard.mark_service_critical();
-                    core::mem::forget(tickets);
+                    drop(tickets);
                     return Err(match close_result {
                         Ok(()) => snapshot_error,
                         Err(primary) => compose_frontend_cleanup_error(

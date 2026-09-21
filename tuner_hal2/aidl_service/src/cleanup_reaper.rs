@@ -260,9 +260,9 @@ fn run_cleanup_job(
             .terminal_deadline
             .saturating_sub(job.registered_at.elapsed());
         let deadline = Instant::now().checked_add(delay.min(remaining));
-        drop(context);
         if let Err(error) = worker.wait_until(deadline) {
             eprintln!("cleanup reaper wait failed: {error:?}");
+            mark_cleanup_reaper_critical(&context);
             return;
         }
     }

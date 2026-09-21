@@ -173,6 +173,7 @@ enum FrontendWorkerStopTicketKind {
 }
 
 #[derive(Debug)]
+#[must_use = "frontend worker stop ticket must be completed or transferred to the reaper"]
 pub struct FrontendWorkerStopTicket {
     kind: FrontendWorkerStopTicketKind,
 }

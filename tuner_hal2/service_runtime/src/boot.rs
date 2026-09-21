@@ -67,10 +67,10 @@ use crate::diagnostics::{
     FrontendCallbackDeliveryDiagnosticSnapshot, QueueDescriptorQueryDiagnosticRecord,
     QueueDescriptorQueryDiagnosticSnapshot, SharedCallbackArtifactRuntimeSplitDiagnostics,
     SharedDvrPostCommitNotificationDiagnostics, SharedDvrStatusNotifierCleanupDiagnostics,
-    StartupDiagnosticRecord, StartupDiagnosticSnapshot,
+    LnbBackendFailureDiagnosticRecord, StartupDiagnosticRecord, StartupDiagnosticSnapshot,
 };
 use crate::dispatch::{
-    adapter_transactions_are_covered, dispatch_target_for, ServiceRuntimeDispatchTarget,
+    dispatch_target_for, missing_adapter_transactions, ServiceRuntimeDispatchTarget,
 };
 use crate::frontend_worker_txn::{
     FrontendWorkerCleanupDiagnosticSnapshot, SharedFrontendWorkerCleanupDiagnostics,
@@ -1605,6 +1605,14 @@ impl TunerServiceRuntime {
         )
     }
 
+    pub(crate) fn record_lnb_backend_failure_diagnostic(
+        &mut self,
+        record: LnbBackendFailureDiagnosticRecord,
+    ) {
+        self.diagnostics
+            .push(StartupDiagnosticRecord::lnb_backend_failure(record));
+    }
+
     pub fn descrambler_diagnostic_snapshot(&self) -> DescramblerDiagnosticSnapshot {
         DescramblerDiagnosticSnapshot::new(
             self.descrambler_diagnostics.as_slice().to_vec(),
@@ -2991,9 +2999,9 @@ impl TunerServiceRuntime {
         self.next_aidl_generation = 0;
         self.next_aidl_object_id = 0;
 
-        if !adapter_transactions_are_covered() {
+        for transaction in missing_adapter_transactions() {
             self.diagnostics
-                .push(StartupDiagnosticRecord::runtime_dispatch_missing());
+                .push(StartupDiagnosticRecord::runtime_dispatch_missing(transaction));
         }
 
         let mut physical_group_by_path: BTreeMap<PathBuf, (FrontendBackendKind, i32)> =
@@ -3235,7 +3243,7 @@ impl TunerServiceRuntime {
         let target = dispatch_target_for(transaction);
         if target.is_none() {
             self.diagnostics
-                .push(StartupDiagnosticRecord::runtime_dispatch_missing());
+                .push(StartupDiagnosticRecord::runtime_dispatch_missing(transaction));
         }
         target
     }
@@ -3461,9 +3469,14 @@ impl TunerServiceRuntime {
             return Err(RuntimeCommandDispatchError::ServiceCritical);
         }
         let plan = RuntimeCommandDispatcher::plan(command_plan, executable_request);
-        if plan.is_err() {
-            self.diagnostics
-                .push(StartupDiagnosticRecord::runtime_dispatch_missing());
+        if let Err(
+            RuntimeCommandDispatchError::MissingDispatchTarget { transaction }
+            | RuntimeCommandDispatchError::RuntimeLockPoison { transaction },
+        ) = &plan
+        {
+            self.diagnostics.push(StartupDiagnosticRecord::runtime_dispatch_missing(
+                *transaction,
+            ));
         }
         plan
     }
