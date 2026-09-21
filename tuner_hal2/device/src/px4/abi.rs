@@ -70,6 +70,10 @@ pub const ERRNO_EOPNOTSUPP: i32 = 95;
 pub const PTX_ISDB_T_SYSTEM: u32 = 0x0000_0010;
 pub const PTX_ISDB_S_SYSTEM: u32 = 0x0000_0020;
 
+// px4_drv encodes these as _IOW(int) but consumes ioctl arg itself as the scalar value.
+nix::ioctl_write_int!(ptx_enable_lnb_power_scalar, PTX_IOCTL_TYPE_BASIC, 0x05);
+nix::ioctl_write_int!(ptx_set_system_mode_scalar, PTX_IOCTL_TYPE_BASIC, 0x0b);
+
 #[cfg(test)]
 mod tests {
     use super::*;

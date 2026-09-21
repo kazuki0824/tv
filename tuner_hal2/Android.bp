@@ -57,7 +57,8 @@ rust_library {
         "common/src/lib.rs",
         "common/src/os_abi.rs",
     ],
-    edition: "2021",
+    edition: "2021",    rustlibs: ["libnix"],
+
 }
 
 rust_library {
@@ -114,7 +115,10 @@ rust_library {
         "device/src/runtime/live_pump.rs",
     ],
     edition: "2021",
-    rustlibs: ["libmaleicacid_tuner_hal2_common", "libmaleicacid_tuner_hal2_control_core"],
+    rustlibs: [
+        "libmaleicacid_tuner_hal2_common", "libmaleicacid_tuner_hal2_control_core",
+        "libnix",
+    ],
 }
 
 rust_library {
@@ -382,7 +386,8 @@ rust_test {
     ],
     edition: "2021",
     auto_gen_config: true,
-    test_suites: ["general-tests"],
+    test_suites: ["general-tests"],    rustlibs: ["libnix"],
+
 }
 
 rust_test {
@@ -463,7 +468,10 @@ rust_test {
         "device/src/runtime/live_pump.rs",
     ],
     edition: "2021",
-    rustlibs: ["libmaleicacid_tuner_hal2_common", "libmaleicacid_tuner_hal2_control_core"],
+    rustlibs: [
+        "libmaleicacid_tuner_hal2_common", "libmaleicacid_tuner_hal2_control_core",
+        "libnix",
+    ],
     auto_gen_config: true,
     test_suites: ["general-tests"],
 }

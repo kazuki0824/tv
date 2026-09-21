@@ -1,27 +1,16 @@
 //! frontend adapterが共有するPOSIX/Linux userspace ABI断片。
 //!
-//! ここはABI断片だけを持つ。frontend lifecycle、worker制御、stream状態は所有しない。
+//! syscall ABIはLineageOS/AOSPが提供するnix/libc定義を使用し、手書きのextern宣言を持たない。
 
 use std::io;
 
-extern "C" {
-    pub fn ioctl(fd: i32, request: u64, ...) -> i32;
-    pub fn poll(fds: *mut PollFd, nfds: usize, timeout: i32) -> i32;
-    pub fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
-}
+pub use nix::libc::{ioctl, poll, read};
+pub type PollFd = nix::libc::pollfd;
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct PollFd {
-    pub fd: i32,
-    pub events: i16,
-    pub revents: i16,
-}
-
-pub const POLLIN: i16 = 0x0001;
-pub const POLLERR: i16 = 0x0008;
-pub const POLLHUP: i16 = 0x0010;
-pub const POLLNVAL: i16 = 0x0020;
+pub const POLLIN: i16 = nix::libc::POLLIN;
+pub const POLLERR: i16 = nix::libc::POLLERR;
+pub const POLLHUP: i16 = nix::libc::POLLHUP;
+pub const POLLNVAL: i16 = nix::libc::POLLNVAL;
 
 pub fn poll_error_is_interrupted(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::Interrupted

@@ -1,3 +1,10 @@
+# PR #108 nix経由のLinux ABI利用とpx4 scalar ioctl修正
+
+- LineageOS 22.1 manifestに含まれるAOSP `external/rust/crates/nix` / Soong `libnix` をtuner_hal2 common/deviceへ接続し、手書きのPOSIX `extern "C"` 宣言を廃止して `nix::libc` のABI定義を使用する。
+- px4_drvがioctl `arg` 自体をscalarとして読む `PTX_SET_SYSTEM_MODE` と `PTX_ENABLE_LNB_POWER` は、recisdb-rsと同じ `nix::ioctl_write_int!` 形式へ変更した。pointer値をscalarとして渡していた誤りを除去する。
+- Rust標準ライブラリが安全な所有権付きAPIを提供するFile/OpenOptions/Read等はstdを維持し、Linux/POSIX ABI境界だけをnixへ寄せる。host CIはnix 0.28.0で同じsourceをcompileする。
+- Rebaseは実施していない。Android/Soong全体build、host Rust CI、実機scanはpush後に確認する。
+
 # PR #108 px4 character device capability実装修正
 
 - `service_entry.rs`へdriver `system_cap`に対応する`px4_frontend_systems`を追加し、各device nodeから対応systemだけをfrontendとして公開するよう変更した。
