@@ -258,23 +258,78 @@ struct FrontendWorkerReaperJob {
 
 impl FrontendWorkerReaperJob {
     fn run(
+        self,
+        runtime: &Weak<Mutex<TunerServiceRuntime>>,
+        pending: &Mutex<BTreeMap<(i32, FrontendWorkerKind), Option<FrontendWorkerKind>>>,
+        deadline: Duration,
+        diagnostics: &SharedFrontendWorkerCleanupDiagnostics,
+    ) {
+        if let Err((job, mut error)) = self.run_until_terminal(runtime, pending, deadline) {
+            match pending.lock() {
+                Ok(mut pending) => {
+                    for key in &job.keys {
+                        pending.remove(key);
+                    }
+                }
+                Err(_) => {
+                    error = compose_primary_cleanup_failure(
+                        "frontend reaper failure and reservation release",
+                        error,
+                        HalError::cleanup_failed("frontend reaper", "pending registry lock poisoned"),
+                    );
+                }
+            }
+            if let Some(runtime) = runtime.upgrade() {
+                match runtime.lock() {
+                    Ok(mut guard) => guard.mark_service_critical(),
+                    Err(_) => {
+                        error = compose_primary_cleanup_failure(
+                            "frontend reaper failure and critical transition",
+                            error,
+                            HalError::cleanup_failed("frontend reaper", "runtime lock poisoned"),
+                        );
+                    }
+                }
+            }
+            for (frontend_id, kind) in &job.keys {
+                let target = FrontendWorkerCleanupTarget::frontend(*frontend_id);
+                let mut report = FrontendWorkerCleanupExecutionReport::new();
+                for (completed_kind, outcome) in &job.tickets.completed {
+                    if completed_kind == kind {
+                        report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
+                            target, *kind, frontend_worker_stop_outcome_generation(outcome),
+                            frontend_worker_stop_result_from_outcome(outcome),
+                        ));
+                    }
+                }
+                let generation = job.tickets.pending.iter()
+                    .find(|(pending_kind, _)| pending_kind == kind)
+                    .and_then(|(_, ticket)| ticket.worker_generation());
+                report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
+                    target, *kind, generation, Err(error.clone()),
+                ));
+                if let Err(record_error) = diagnostics.record(FrontendWorkerCleanupDiagnosticRecord::new(
+                    FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion,
+                    target, report, Some(error.clone()),
+                )) {
+                    // 記録失敗も既存storeのrecord_failure_countに残る。
+                    eprintln!("frontend reaper diagnostic record failed: {record_error}");
+                }
+            }
+            // jobは実行権限だけを持つ。失敗時もregistryの未完義務は保持される。
+        }
+    }
+
+    fn run_until_terminal(
         mut self,
         runtime: &Weak<Mutex<TunerServiceRuntime>>,
         pending: &Mutex<BTreeMap<(i32, FrontendWorkerKind), Option<FrontendWorkerKind>>>,
         deadline: Duration,
-    ) {
+    ) -> Result<(), (Self, HalError)> {
         let mut deadline_elapsed = false;
         let terminal_deadline = match self.transferred_at.checked_add(deadline) {
             Some(deadline) => deadline,
-            None => {
-                if let Some(runtime) = runtime.upgrade() {
-                    if let Ok(mut guard) = runtime.lock() {
-                        guard.mark_service_critical();
-                    }
-                }
-                drop(self);
-                return;
-            }
+            None => return Err((self, HalError::cleanup_failed("frontend reaper", "deadline overflow"))),
         };
         loop {
             match self.tickets.try_complete() {
@@ -296,21 +351,15 @@ impl FrontendWorkerReaperJob {
                         }
                         (self.completion_action)(&runtime, outcomes, deadline_elapsed);
                     }
-                    return;
+                    return Ok(());
                 }
                 Err(tickets) => self.tickets = tickets,
             }
             let wait_deadline = (!deadline_elapsed).then_some(terminal_deadline);
             match self.tickets.wait_for_progress(wait_deadline) {
                 Ok(Some(index)) => {
-                    if self.tickets.complete_signalled(index).is_err() {
-                        if let Some(runtime) = runtime.upgrade() {
-                            if let Ok(mut guard) = runtime.lock() {
-                                guard.mark_service_critical();
-                            }
-                        }
-                        drop(self);
-                        return;
+                    if let Err(error) = self.tickets.complete_signalled(index) {
+                        return Err((self, error));
                     }
                 }
                 Ok(None) => {
@@ -321,15 +370,7 @@ impl FrontendWorkerReaperJob {
                         action(&runtime);
                     }
                 }
-                Err(_) => {
-                    if let Some(runtime) = runtime.upgrade() {
-                        if let Ok(mut guard) = runtime.lock() {
-                            guard.mark_service_critical();
-                        }
-                    }
-                    drop(self);
-                    return;
-                }
+                Err(error) => return Err((self, error)),
             }
         }
     }
@@ -362,6 +403,7 @@ impl FrontendWorkerReaperHandle {
         runtime: Weak<Mutex<TunerServiceRuntime>>,
         capacity: usize,
         deadline: Duration,
+        diagnostics: SharedFrontendWorkerCleanupDiagnostics,
     ) -> Result<Self, HalError> {
         let runner = Arc::new(
             move |job: FrontendWorkerReaperJob,
@@ -369,7 +411,7 @@ impl FrontendWorkerReaperHandle {
                 Mutex<BTreeMap<(i32, FrontendWorkerKind), Option<FrontendWorkerKind>>>,
             >,
                   _worker: crate::worker_runtime::WorkerContext| {
-                job.run(&runtime, pending.as_ref(), deadline);
+                job.run(&runtime, pending.as_ref(), deadline, &diagnostics);
             },
         );
         Ok(Self {
@@ -416,7 +458,7 @@ impl FrontendWorkerReaperHandle {
 fn ensure_frontend_worker_reaper(
     runtime: &SharedRuntime,
 ) -> Result<FrontendWorkerReaperHandle, HalError> {
-    let (capacity, deadline) = {
+    let (capacity, deadline, diagnostics) = {
         let guard = lock_runtime(
             runtime,
             "service runtime lock poisoned while finding reaper",
@@ -427,9 +469,10 @@ fn ensure_frontend_worker_reaper(
         (
             guard.frontend_worker_reaper_capacity(),
             Duration::from_millis(guard.capability_snapshot().worker_reaper_deadline_ms),
+            guard.frontend_worker_cleanup_diagnostic_sink(),
         )
     };
-    let candidate = FrontendWorkerReaperHandle::start(Arc::downgrade(runtime), capacity, deadline)?;
+    let candidate = FrontendWorkerReaperHandle::start(Arc::downgrade(runtime), capacity, deadline, diagnostics)?;
     let mut guard = lock_runtime(
         runtime,
         "service runtime lock poisoned while installing reaper",
@@ -1850,7 +1893,7 @@ fn enqueue_timed_out_frontend_backend_submit(
     let deadline_sink = diagnostic_sink.clone();
     let completion_sink = diagnostic_sink;
     let completion_error = public_error.clone();
-    let cleanup_ticket = FrontendWorkerStopTicket::backend_submit_cleanup(
+    let cleanup_ticket = guard.frontend_txn().retain_backend_submit_cleanup(
         target.frontend_id(),
         worker_kind,
         generation,

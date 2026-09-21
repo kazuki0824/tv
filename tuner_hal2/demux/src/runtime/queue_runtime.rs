@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::fs::File;
 use std::os::fd::FromRawFd;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use maleicacid_tuner_hal2_fmq::{FmqQueue, FmqQueueError};
@@ -60,6 +60,7 @@ pub enum QueueRuntimeErrorKind {
     ExportTransient,
     DataPathFailure,
     StructuralDescriptor,
+    GateCleanupFailed { producer_release: bool, drain_rollback: bool },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -417,6 +418,7 @@ impl QueueRuntime {
                         admitted_transaction_count: 0,
                     }),
                     drained: Condvar::new(),
+                cleanup_failures: AtomicU8::new(0),
                     queue_identity,
                 })
             }),
@@ -860,6 +862,29 @@ struct GateData {
 struct GateInner {
     data: Mutex<GateData>,
     drained: Condvar,
+    cleanup_failures: AtomicU8,
+}
+
+impl GateInner {
+    fn check_cleanup(&self) -> Result<(), QueueRuntimeError> {
+        let failures = self.cleanup_failures.load(Ordering::Acquire);
+        if failures == 0 {
+            Ok(())
+        } else {
+            Err(QueueRuntimeError::new(
+                QueueRuntimeErrorKind::GateCleanupFailed {
+                    producer_release: failures & 1 != 0,
+                    drain_rollback: failures & 2 != 0,
+                },
+                "filter gate local cleanup failed",
+            ))
+        }
+    }
+
+    fn record_cleanup_failure(&self, failure: u8) {
+        self.cleanup_failures.fetch_or(failure, Ordering::Release);
+        self.drained.notify_all();
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -925,6 +950,7 @@ impl FilterProducerDrainGate {
     }
 
     pub(crate) fn begin_producer(&self) -> Result<FilterProducerPermit, QueueRuntimeError> {
+        self.inner.check_cleanup()?;
         let mut data = self
             .inner
             .data
@@ -948,6 +974,7 @@ impl FilterProducerDrainGate {
         &self,
         boundary: FilterDrainBoundary,
     ) -> Result<FilterDrainTxn, QueueRuntimeError> {
+        self.inner.check_cleanup()?;
         let mut data = self
             .inner
             .data
@@ -994,6 +1021,7 @@ impl FilterProducerDrainGate {
     pub(crate) fn take_pending_events(
         &self,
     ) -> Result<Vec<PipelineGeneratedEvent>, QueueRuntimeError> {
+        self.inner.check_cleanup()?;
         let mut data =
             self.inner.data.lock().map_err(|_| {
                 gate_error("filter producer gate lock poisoned while taking events")
@@ -1008,6 +1036,7 @@ impl FilterProducerDrainGate {
     }
 
     pub(crate) fn close(&self) -> Result<(), QueueRuntimeError> {
+        self.inner.check_cleanup()?;
         let mut data = self
             .inner
             .data
@@ -1022,6 +1051,7 @@ impl FilterProducerDrainGate {
 
 impl FilterProducerPermit {
     pub(crate) fn record_output_byte_offset(&self) -> Result<u64, QueueRuntimeError> {
+        self.inner.check_cleanup()?;
         if !self.active {
             return Err(gate_error("filter producer permit was already consumed"));
         }
@@ -1041,6 +1071,7 @@ impl FilterProducerPermit {
         committed_bytes: usize,
         event: Option<PipelineGeneratedEvent>,
     ) -> Result<(), QueueRuntimeError> {
+        self.inner.check_cleanup()?;
         if !self.active || committed_bytes == 0 {
             return Err(gate_error("record output commit is invalid"));
         }
@@ -1088,6 +1119,7 @@ impl FilterProducerPermit {
         &mut self,
         event: PipelineGeneratedEvent,
     ) -> Result<(), QueueRuntimeError> {
+        self.inner.check_cleanup()?;
         if !self.active {
             return Err(gate_error("filter producer permit was already consumed"));
         }
@@ -1108,6 +1140,7 @@ impl FilterProducerPermit {
     }
 
     fn release(&mut self) -> Result<GateState, QueueRuntimeError> {
+        self.inner.check_cleanup()?;
         if !self.active {
             return Err(gate_error("filter producer permit was already consumed"));
         }
@@ -1132,6 +1165,7 @@ impl FilterProducerPermit {
     }
 
     pub(crate) fn commit(mut self) -> Result<(), QueueRuntimeError> {
+        self.inner.check_cleanup()?;
         if self.release()? == GateState::Closed {
             Err(gate_error("filter producer gate closed before commit"))
         } else {
@@ -1142,13 +1176,24 @@ impl FilterProducerPermit {
 
 impl Drop for FilterProducerPermit {
     fn drop(&mut self) {
-        if self.active && self.release().is_err() {
-            if let Ok(mut data) = self.inner.data.lock() {
-                data.state = GateState::Closed;
-                data.pending_events.clear();
-                self.inner.drained.notify_all();
-            }
+        if !self.active {
+            return;
         }
+        // 局所的な許可証返却だけを行い、汚染時に再lockして診断を失わない。
+        match self.inner.data.lock() {
+            Ok(mut data) => {
+                if data.filter_delivery_generation == self.delivery_generation && data.admitted_producer_count != 0 {
+                    data.admitted_producer_count -= 1;
+                    self.inner.drained.notify_all();
+                } else {
+                    data.state = GateState::Closed;
+                    data.pending_events.clear();
+                    self.inner.record_cleanup_failure(1);
+                }
+            }
+            Err(_) => self.inner.record_cleanup_failure(1),
+        }
+        self.active = false;
     }
 }
 
@@ -1156,6 +1201,7 @@ impl FilterDrainTxn {
     pub(crate) fn take_pending_events(
         &mut self,
     ) -> Result<Vec<PipelineGeneratedEvent>, QueueRuntimeError> {
+        self.inner.check_cleanup()?;
         if !self.active {
             return Err(gate_error("filter producer drain was already consumed"));
         }
@@ -1176,6 +1222,7 @@ impl FilterDrainTxn {
     }
 
     pub(crate) fn commit(mut self) -> Result<(), QueueRuntimeError> {
+        self.inner.check_cleanup()?;
         let mut data = self
             .inner
             .data
@@ -1206,6 +1253,7 @@ impl FilterDrainTxn {
     pub(crate) fn commit_and_take_pending_events(
         mut self,
     ) -> Result<Vec<PipelineGeneratedEvent>, QueueRuntimeError> {
+        self.inner.check_cleanup()?;
         let mut data = self
             .inner
             .data
@@ -1229,45 +1277,74 @@ impl FilterDrainTxn {
         Ok(pending_events)
     }
 
-    fn rollback(&mut self) -> Result<(), QueueRuntimeError> {
-        if !self.active {
-            return Ok(());
-        }
-        let mut data = self
-            .inner
-            .data
-            .lock()
-            .map_err(|_| gate_error("filter producer gate lock poisoned while rolling back"))?;
-        if data.state != GateState::Draining
-            || data.filter_delivery_generation != self.delivery_generation
-            || data.parser_state_generation != self.parser_generation
-        {
-            return Err(gate_error(
-                "filter producer drain state changed before rollback",
-            ));
-        }
-        data.state = GateState::Open;
-        self.active = false;
-        self.inner.drained.notify_all();
-        Ok(())
-    }
+
 }
 
 impl Drop for FilterDrainTxn {
     fn drop(&mut self) {
-        if self.active && self.rollback().is_err() {
-            if let Ok(mut data) = self.inner.data.lock() {
-                data.state = GateState::Closed;
-                data.pending_events.clear();
-                self.inner.drained.notify_all();
-            }
+        if !self.active {
+            return;
         }
+        // 外部I/Oを行わず、未確定の局所drain予約だけを取り消す。
+        match self.inner.data.lock() {
+            Ok(mut data) => {
+                if data.state == GateState::Draining
+                    && data.filter_delivery_generation == self.delivery_generation
+                    && data.parser_state_generation == self.parser_generation
+                {
+                    data.state = GateState::Open;
+                    self.inner.drained.notify_all();
+                } else {
+                    data.state = GateState::Closed;
+                    data.pending_events.clear();
+                    self.inner.record_cleanup_failure(2);
+                }
+            }
+            Err(_) => self.inner.record_cleanup_failure(2),
+        }
+        self.active = false;
     }
 }
 
 #[cfg(test)]
 mod dvr_queue_cleanup_tests {
     use super::*;
+
+    #[test]
+    fn abandoned_filter_permit_and_drain_cancel_only_local_reservations() {
+        let gate = FilterProducerDrainGate::new(4).unwrap();
+        drop(gate.begin_producer().unwrap());
+        drop(gate.begin_drain(FilterDrainBoundary::Reconfigure).unwrap());
+        let permit = gate.begin_producer().unwrap();
+        assert_eq!(permit.delivery_generation, 0);
+        permit.commit().unwrap();
+        let data = gate.inner.data.lock().unwrap();
+        assert_eq!(data.admitted_producer_count, 0);
+        assert_eq!(data.parser_state_generation, 0);
+        assert_eq!(data.state, GateState::Open);
+    }
+
+    #[test]
+    fn poisoned_filter_cleanup_is_retained_and_blocks_later_operations() {
+        for producer_release in [true, false] {
+            let gate = FilterProducerDrainGate::new(4).unwrap();
+            let permit = producer_release.then(|| gate.begin_producer().unwrap());
+            let drain = (!producer_release).then(|| gate.begin_drain(FilterDrainBoundary::Flush).unwrap());
+            assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _guard = gate.inner.data.lock().unwrap();
+                panic!("poison filter gate");
+            })).is_err());
+            drop(permit);
+            drop(drain);
+            let expected = QueueRuntimeErrorKind::GateCleanupFailed {
+                producer_release,
+                drain_rollback: !producer_release,
+            };
+            assert_eq!(gate.begin_producer().unwrap_err().kind, expected);
+            assert_eq!(gate.begin_drain(FilterDrainBoundary::Flush).unwrap_err().kind, expected);
+            assert!(gate.inner.data.is_poisoned());
+        }
+    }
 
     #[test]
     fn failed_queue_clear_preserves_content_epoch_and_open_state() {

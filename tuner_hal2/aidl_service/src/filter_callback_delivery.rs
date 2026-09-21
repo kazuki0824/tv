@@ -77,9 +77,7 @@ impl AidlFilterEventDispatcher {
 impl Drop for AidlFilterEventDispatcher {
     fn drop(&mut self) {
         if let Some(worker) = self.delay_worker.as_ref() {
-            if let Err(error) = worker.request_stop_and_wake() {
-                eprintln!("filter delay worker stop wake failed during Drop: {error}");
-            }
+            worker.request_stop();
         }
     }
 }

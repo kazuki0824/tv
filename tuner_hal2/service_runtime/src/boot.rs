@@ -2937,6 +2937,12 @@ impl TunerServiceRuntime {
                 )),
             );
         }
+        if self.frontend_workers.has_cleanup_obligations() {
+            return (
+                ServiceBootOutcome::Degraded,
+                Err(HalError::cleanup_failed("frontend workers", "unfinished cleanup prevents boot reset")),
+            );
+        }
         self.state = ServiceState::Booting;
         self.registry.clear_frontends();
         self.registry.clear_lnbs();

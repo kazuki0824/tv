@@ -614,7 +614,7 @@ impl FrontendBackendSubmitTicket {
         Some(frontend_backend_submit_cleanup_result(outcome))
     }
 
-    pub(crate) fn complete_cleanup(mut self) -> Result<(), HalError> {
+    pub(crate) fn complete_cleanup(&mut self) -> Result<(), HalError> {
         let owner = self.owner.take().ok_or_else(|| {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
@@ -1579,7 +1579,7 @@ mod tests {
         })
         .unwrap();
 
-        let ticket = match ticket
+        let mut ticket = match ticket
             .wait_until(Instant::now() + Duration::from_millis(1))
             .unwrap()
         {
@@ -1593,6 +1593,36 @@ mod tests {
             .wait_until_cleanup(Some(Instant::now() + Duration::from_secs(1)))
             .unwrap());
         assert!(ticket.complete_cleanup().is_ok());
+    }
+
+    #[test]
+    fn lost_backend_cleanup_ticket_keeps_the_submit_owner_in_the_registry() {
+        use crate::{FrontendWorkerCancelReason, FrontendWorkerKind, FrontendWorkerRegistry, FrontendWorkerStopOutcome};
+
+        let (release_tx, release_rx) = mpsc::channel();
+        let ticket = FrontendBackendSubmitTicket::start_with(101, move || {
+            release_rx.recv().unwrap();
+            Err(FrontendBackendSubmitFailure {
+                generation: 101,
+                error: HalError::cleanup_failed("submit test", "rejected before side effects"),
+                rollback_succeeded: true,
+                step: None,
+                rollback_failure: None,
+            })
+        }).unwrap();
+        let mut registry = FrontendWorkerRegistry::default();
+        let first = registry.retain_backend_submit_cleanup(1, FrontendWorkerKind::Tune, 101, ticket);
+        std::mem::forget(first);
+        assert!(registry.has_cleanup_obligations());
+        let next = registry.request_stop_for_join(
+            1, FrontendWorkerKind::Tune, FrontendWorkerCancelReason::StopRequested,
+        );
+        release_tx.send(()).unwrap();
+        assert!(matches!(
+            next.complete(),
+            FrontendWorkerStopOutcome::Completed { generation: 101, result: Ok(()), .. }
+        ));
+        assert!(!registry.has_cleanup_obligations());
     }
 
     #[test]

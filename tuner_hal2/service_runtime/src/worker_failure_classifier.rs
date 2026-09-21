@@ -102,7 +102,7 @@ impl WorkerFailureClassifier {
             HalError::CallbackFailed { .. } => WorkerFailureCategory::CallbackBinder,
             HalError::FmqFailed { .. } => WorkerFailureCategory::Fmq,
             HalError::EventFlagFailed { .. } => WorkerFailureCategory::EventFlag,
-            HalError::CleanupFailed { .. } => WorkerFailureCategory::Cleanup,
+            HalError::CleanupFailed { .. } | HalError::WorkerCleanupFailed { .. } => WorkerFailureCategory::Cleanup,
             HalError::WorkerLockPoisoned {
                 lock: maleicacid_tuner_hal2_common::WorkerLockKind::Wake,
                 ..
