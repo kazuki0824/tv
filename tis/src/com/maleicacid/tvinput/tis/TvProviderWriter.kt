@@ -784,11 +784,21 @@ class TvProviderWriter private constructor(
 
     private fun channelType(channel: ChannelRecord): String =
         when {
-            channel.deliverySystem == ChannelRecord.DELIVERY_SYSTEM_ISDB_T && channel.partialReception ->
+            channel.deliverySystem == ChannelRecord.DELIVERY_SYSTEM_ISDB_T && channel.partialReception -> {
                 TvContract.Channels.TYPE_1SEG
-            channel.deliverySystem == ChannelRecord.DELIVERY_SYSTEM_ISDB_T -> TvContract.Channels.TYPE_ISDB_T
-            channel.deliverySystem == ChannelRecord.DELIVERY_SYSTEM_ISDB_S -> TvContract.Channels.TYPE_ISDB_S
-            else -> TvContract.Channels.TYPE_OTHER
+            }
+
+            channel.deliverySystem == ChannelRecord.DELIVERY_SYSTEM_ISDB_T -> {
+                TvContract.Channels.TYPE_ISDB_T
+            }
+
+            channel.deliverySystem == ChannelRecord.DELIVERY_SYSTEM_ISDB_S -> {
+                TvContract.Channels.TYPE_ISDB_S
+            }
+
+            else -> {
+                TvContract.Channels.TYPE_OTHER
+            }
         }
 
     // 同じ状態・境界を扱う操作群を一つの所有者に保つ。
