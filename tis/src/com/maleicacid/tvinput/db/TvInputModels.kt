@@ -17,6 +17,7 @@ import com.maleicacid.tvinput.common.StreamSelector
 data class ChannelRecord(
     val serviceKey: ServiceKey,
     val serviceType: Int,
+    val partialReception: Boolean = false,
     val displayNumber: String,
     val displayName: String,
     val frequencyHz: FrequencyHz,
