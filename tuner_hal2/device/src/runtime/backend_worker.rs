@@ -324,6 +324,14 @@ pub struct FrontendBackendSubmitFailure {
 }
 
 impl FrontendBackendSubmitFailure {
+    pub fn cleanup_result(&self) -> Result<(), HalError> {
+        if self.rollback_succeeded {
+            Ok(())
+        } else {
+            Err(self.clone().into_error())
+        }
+    }
+
     pub fn indeterminate(generation: u64, error: HalError) -> Self {
         frontend_backend_submit_thread_failure(generation, error)
     }
@@ -605,23 +613,18 @@ impl FrontendBackendSubmitTicket {
             .wait_until_finished(deadline)
     }
 
-    pub(crate) fn try_complete_cleanup(&mut self) -> Option<Result<(), HalError>> {
+    pub(crate) fn try_complete_cleanup(&mut self) -> Option<Result<(), FrontendBackendSubmitFailure>> {
         let outcome = match self.owner.as_mut()?.collect_if_finished() {
             ThreadResultPoll::Running => return None,
             ThreadResultPoll::Completed(outcome) => outcome,
         };
         self.owner = None;
-        Some(frontend_backend_submit_cleanup_result(outcome))
+        Some(frontend_backend_submit_cleanup_result(self.generation, outcome))
     }
 
-    pub(crate) fn complete_cleanup(&mut self) -> Result<(), HalError> {
-        let owner = self.owner.take().ok_or_else(|| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "frontend backend submit cleanup owner is missing",
-            )
-        })?;
-        frontend_backend_submit_cleanup_result(owner.join_after_stop())
+    pub(crate) fn complete_cleanup(&mut self) -> Result<(), FrontendBackendSubmitFailure> {
+        let outcome = self.join_outcome();
+        frontend_backend_submit_cleanup_result(self.generation, outcome)
     }
 
     fn join_outcome(&mut self) -> Result<FrontendBackendSubmitThreadOutcome, HalError> {
@@ -665,16 +668,13 @@ fn frontend_backend_submit_thread_failure(
 }
 
 fn frontend_backend_submit_cleanup_result(
+    generation: u64,
     outcome: Result<FrontendBackendSubmitThreadOutcome, HalError>,
-) -> Result<(), HalError> {
-    match outcome {
+) -> Result<(), FrontendBackendSubmitFailure> {
+    let result = match outcome {
         Ok(FrontendBackendSubmitThreadOutcome::Aborted(stop_result)) => stop_result,
         Ok(FrontendBackendSubmitThreadOutcome::Failed(failure)) => {
-            if failure.rollback_succeeded {
-                Ok(())
-            } else {
-                Err(failure.into_error())
-            }
+            return Err(failure);
         }
         Ok(FrontendBackendSubmitThreadOutcome::Claimed(session)) => {
             let stop_result = session.close();
@@ -692,7 +692,8 @@ fn frontend_backend_submit_cleanup_result(
             }
         }
         Err(error) => Err(error),
-    }
+    };
+    result.map_err(|error| frontend_backend_submit_thread_failure(generation, error))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1592,7 +1593,54 @@ mod tests {
         assert!(ticket
             .wait_until_cleanup(Some(Instant::now() + Duration::from_secs(1)))
             .unwrap());
-        assert!(ticket.complete_cleanup().is_ok());
+        let failure = ticket.complete_cleanup().unwrap_err();
+        assert_eq!(failure.generation, generation);
+        assert!(failure.rollback_succeeded);
+        assert!(failure.cleanup_result().is_ok());
+        assert_eq!(failure.error, HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "simulated delayed submit failure",
+        ));
+    }
+
+    #[test]
+    fn delayed_submit_keeps_primary_and_rollback_failure_in_both_cleanup_paths() {
+        for poll in [false, true] {
+            let (release, wait) = mpsc::sync_channel(1);
+            let expected = FrontendBackendSubmitFailure {
+                generation: 101,
+                error: HalError::IoctlFailed {
+                    backend: "px4", path: None, op: "set channel", errno: 5,
+                },
+                rollback_succeeded: false,
+                step: Some(BackendTuneStep::ApplyChannel),
+                rollback_failure: Some(super::super::tune_txn::BackendTuneRollbackFailure {
+                    step: super::super::tune_txn::BackendTuneRollbackStep::RollbackStopStreaming,
+                    error: HalError::IoctlFailed {
+                        backend: "px4", path: None, op: "stop streaming", errno: 16,
+                    },
+                }),
+            };
+            let failure = expected.clone();
+            let ticket = FrontendBackendSubmitTicket::start_with(101, move || {
+                wait.recv().unwrap();
+                Err(failure)
+            }).unwrap();
+            let mut ticket = match ticket.wait_until(Instant::now()).unwrap() {
+                FrontendBackendSubmitWait::TimedOut(ticket) => ticket,
+                _ => panic!("blocked submit must time out"),
+            };
+            release.send(()).unwrap();
+            assert!(ticket.wait_until_cleanup(Some(Instant::now() + Duration::from_secs(1))).unwrap());
+            let result = if poll {
+                ticket.try_complete_cleanup().unwrap()
+            } else {
+                ticket.complete_cleanup()
+            };
+            let failure = result.unwrap_err();
+            assert_eq!(failure, expected);
+            assert!(failure.cleanup_result().is_err());
+        }
     }
 
     #[test]

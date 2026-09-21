@@ -30,7 +30,3 @@ pub fn missing_adapter_transactions() -> Vec<RuntimeTransactionName> {
         })
         .collect()
 }
-
-pub fn adapter_transactions_are_covered() -> bool {
-    missing_adapter_transactions().is_empty()
-}

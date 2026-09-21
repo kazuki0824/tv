@@ -12,7 +12,7 @@ use maleicacid_tuner_hal2_control_core::{
     WorkerFailureDomain, WorkerRuntime, WorkerRuntimeCleanup, WorkerStopReason,
 };
 
-use super::backend_worker::FrontendBackendSubmitTicket;
+use super::backend_worker::{FrontendBackendSubmitFailure, FrontendBackendSubmitTicket};
 use crate::runtime::thread_result_owner::{ThreadResultOwner, ThreadResultPoll};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -55,6 +55,12 @@ pub enum FrontendWorkerStartError {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FrontendWorkerStopOutcome {
+    BackendSubmitFailed {
+        frontend_id: i32,
+        kind: FrontendWorkerKind,
+        generation: u64,
+        failure: FrontendBackendSubmitFailure,
+    },
     NotRunning,
     CancelRequested {
         frontend_id: i32,
@@ -76,6 +82,31 @@ pub enum FrontendWorkerStopOutcome {
         exit: WorkerExit,
         result: Result<(), HalError>,
     },
+}
+
+impl FrontendWorkerStopOutcome {
+    fn backend_submit_completion(
+        frontend_id: i32,
+        kind: FrontendWorkerKind,
+        generation: u64,
+        result: Result<(), FrontendBackendSubmitFailure>,
+    ) -> Self {
+        match result {
+            Ok(()) => Self::Completed {
+                frontend_id,
+                kind,
+                generation,
+                exit: WorkerExit::Normal,
+                result: Ok(()),
+            },
+            Err(failure) => Self::BackendSubmitFailed {
+                frontend_id,
+                kind,
+                generation,
+                failure,
+            },
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -136,24 +167,22 @@ struct FrontendBackendSubmitDetachedJoin {
 
 impl FrontendBackendSubmitDetachedJoin {
     fn complete(&mut self) -> FrontendWorkerStopOutcome {
-        FrontendWorkerStopOutcome::Completed {
-            frontend_id: self.frontend_id,
-            kind: self.kind,
-            generation: self.generation,
-            exit: WorkerExit::Normal,
-            result: self.ticket.complete_cleanup(),
-        }
+        FrontendWorkerStopOutcome::backend_submit_completion(
+            self.frontend_id,
+            self.kind,
+            self.generation,
+            self.ticket.complete_cleanup(),
+        )
     }
 
     fn try_complete(&mut self) -> Option<FrontendWorkerStopOutcome> {
         let result = self.ticket.try_complete_cleanup()?;
-        Some(FrontendWorkerStopOutcome::Completed {
-            frontend_id: self.frontend_id,
-            kind: self.kind,
-            generation: self.generation,
-            exit: WorkerExit::Normal,
+        Some(FrontendWorkerStopOutcome::backend_submit_completion(
+            self.frontend_id,
+            self.kind,
+            self.generation,
             result,
-        })
+        ))
     }
 
     fn wait_until_finished(&self, deadline: Option<std::time::Instant>) -> Result<bool, HalError> {
@@ -218,6 +247,7 @@ impl FrontendWorkerStopTicket {
             FrontendWorkerStopTicketKind::Immediate(
                 FrontendWorkerStopOutcome::CancelRequested { generation, .. }
                 | FrontendWorkerStopOutcome::Completed { generation, .. }
+                | FrontendWorkerStopOutcome::BackendSubmitFailed { generation, .. }
                 | FrontendWorkerStopOutcome::StopRequestFailed { generation, .. },
             )
             | FrontendWorkerStopTicketKind::Retained { generation, .. } => Some(*generation),

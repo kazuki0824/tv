@@ -154,12 +154,6 @@ pub enum LnbBackendFailureClass {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LnbBackendFailureStep {
-    ApplyBackend,
-    SendDiseqc,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkerFailureCategory {
     BackendControl,
     Fmq,
@@ -180,7 +174,6 @@ pub enum WorkerFailureCategory {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LnbBackendFailureDiagnosticRecord {
     pub lnb_id: i32,
-    pub step: LnbBackendFailureStep,
     pub frontend_id: i32,
     pub backend: FrontendBackendKind,
     pub device_path: PathBuf,
