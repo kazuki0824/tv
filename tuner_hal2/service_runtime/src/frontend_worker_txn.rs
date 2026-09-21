@@ -1091,6 +1091,7 @@ fn frontend_worker_stop_outcome_generation(outcome: &FrontendWorkerStopOutcome) 
         FrontendWorkerStopOutcome::NotRunning => None,
         FrontendWorkerStopOutcome::CancelRequested { generation, .. }
         | FrontendWorkerStopOutcome::Completed { generation, .. }
+        | FrontendWorkerStopOutcome::BackendSubmitFailed { generation, .. }
         | FrontendWorkerStopOutcome::StopRequestFailed { generation, .. } => Some(*generation),
     }
 }
@@ -1253,6 +1254,7 @@ fn complete_frontend_worker_replacement_ticket<'a>(
                 }
             }
             FrontendWorkerStopOutcome::NotRunning
+            | FrontendWorkerStopOutcome::BackendSubmitFailed { .. }
             | FrontendWorkerStopOutcome::StopRequestFailed { .. } => {}
         }
     }
@@ -1409,6 +1411,7 @@ fn complete_frontend_worker_stop_object_ticket<'a>(
                 }
             }
             FrontendWorkerStopOutcome::NotRunning
+            | FrontendWorkerStopOutcome::BackendSubmitFailed { .. }
             | FrontendWorkerStopOutcome::StopRequestFailed { .. } => {}
         }
     }
@@ -1945,6 +1948,9 @@ fn stop_live_pump_after_worker_error(
 
 fn frontend_worker_stop_failure(outcome: &FrontendWorkerStopOutcome) -> Option<HalError> {
     match outcome {
+        FrontendWorkerStopOutcome::BackendSubmitFailed { failure, .. } => {
+            failure.cleanup_result().err()
+        }
         FrontendWorkerStopOutcome::StopRequestFailed { error, .. }
         | FrontendWorkerStopOutcome::Completed {
             result: Err(error), ..
@@ -2085,7 +2091,8 @@ fn record_scan_cancelled_from_stop_outcome_locked(
         }
         FrontendWorkerStopOutcome::StopRequestFailed { error, .. } => return Err(error.clone()),
         FrontendWorkerStopOutcome::CancelRequested { generation, .. }
-        | FrontendWorkerStopOutcome::Completed { generation, .. } => *generation,
+        | FrontendWorkerStopOutcome::Completed { generation, .. }
+        | FrontendWorkerStopOutcome::BackendSubmitFailed { generation, .. } => *generation,
     };
     runtime
         .frontend_txn()
@@ -2889,6 +2896,18 @@ fn accept_frontend_worker_terminal_outcomes(
 ) -> Result<(), HalError> {
     let mut failures = FirstErrorCollector::new();
     for (_, outcome) in outcomes {
+        if let FrontendWorkerStopOutcome::BackendSubmitFailed {
+            frontend_id, generation, failure, ..
+        } = outcome {
+            failures.push_result(lock_runtime(runtime, "service runtime lock poisoned while recording delayed backend failure")
+                .and_then(|mut guard| guard.frontend_txn().record_frontend_backend_failure_diagnostic(
+                    *frontend_id,
+                    *generation,
+                    failure.step,
+                    failure.error.clone(),
+                    failure.rollback_failure.clone(),
+                )));
+        }
         if let Some(event) = FrontendWorkerTerminalEvent::from_stop_outcome(outcome) {
             failures.push_result(
                 FrontendTuneScanTxn::accept_worker_terminal(runtime, event).map(|_| ()),
