@@ -75,8 +75,8 @@ where
         Ok(Self { owner, name })
     }
 
-    pub(crate) fn request_stop_and_wake(&self) -> Result<(), HalError> {
-        self.owner.request_stop_and_wake()
+    pub(crate) fn request_stop(&self) {
+        self.owner.request_stop()
     }
 
     pub(crate) fn collect_if_finished(&mut self) -> ThreadResultPoll<T> {

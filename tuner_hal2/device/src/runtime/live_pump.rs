@@ -9,8 +9,7 @@ use std::io::{self, Read};
 use std::time::{Duration, Instant};
 
 use maleicacid_tuner_hal2_common::{
-    compose_primary_cleanup_failure, HalError, HalErrorDetail, HalInternalKind,
-    TsPacketCompletionBuffer, TS_PACKET_SIZE,
+    HalError, HalErrorDetail, HalInternalKind, TsPacketCompletionBuffer, TS_PACKET_SIZE,
 };
 
 use crate::runtime::thread_result_owner::{ThreadResultOwner, ThreadResultPoll};
@@ -83,8 +82,8 @@ impl FrontendLivePumpOwner {
         Ok(Self { thread_result })
     }
 
-    pub fn request_stop(&self) -> Result<(), HalError> {
-        self.thread_result.request_stop_and_wake()
+    pub fn request_stop(&self) {
+        self.thread_result.request_stop()
     }
 
     pub fn collect_if_finished(&mut self) -> FrontendLivePumpJoinOutcome {
@@ -95,17 +94,8 @@ impl FrontendLivePumpOwner {
     }
 
     pub fn join_after_stop(self) -> Result<FrontendLivePumpReport, HalError> {
-        let stop = self.request_stop();
-        let result = self.thread_result.join_after_stop();
-        match (stop, result) {
-            (Ok(()), result) => result,
-            (Err(error), Ok(_)) => Err(error),
-            (Err(primary), Err(cleanup)) => Err(compose_primary_cleanup_failure(
-                "live pump stop and join failed",
-                primary,
-                cleanup,
-            )),
-        }
+        self.request_stop();
+        self.thread_result.join_after_stop()
     }
 }
 
@@ -153,7 +143,7 @@ where
                             "live read retry deadline overflow",
                         )
                     })?;
-                control.wait_until(Some(deadline))?;
+                control.wait_until(Some(deadline));
                 continue;
             }
             Err(error) => return Err(io_error_to_hal(descriptor, "read", error)),
@@ -328,7 +318,7 @@ mod tests {
         )
         .unwrap();
         ready_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        owner.request_stop().unwrap();
+        owner.request_stop();
         assert!(owner
             .thread_result
             .wait_until_finished(Some(Instant::now() + Duration::from_secs(1)))

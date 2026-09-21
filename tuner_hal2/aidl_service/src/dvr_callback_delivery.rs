@@ -42,10 +42,6 @@ pub(crate) struct DvrStatusNotifier {
     worker: WorkerRuntime<()>,
 }
 
-fn signal_dvr_status_notifier_stop(notifier: &DvrStatusNotifier) -> Result<(), HalError> {
-    notifier.worker.request_stop_and_wake()
-}
-
 fn join_finished_dvr_status_notifier(
     notifier: DvrStatusNotifier,
 ) -> (Result<(), HalError>, Option<WorkerFailureCategory>) {
@@ -179,7 +175,7 @@ impl DvrStatusNotifierSupervisor {
         let Some(notifier) = state.active_mut().remove(&key) else {
             return Ok(DvrStatusNotifierStopDisposition::Complete);
         };
-        let stop_result = signal_dvr_status_notifier_stop(&notifier);
+        notifier.worker.request_stop();
         state.reaping_mut().insert(
             key,
             DvrStatusNotifierReaperJob {
@@ -193,7 +189,6 @@ impl DvrStatusNotifierSupervisor {
             },
         );
         self.runtime.wake().notify_one();
-        stop_result?;
         Ok(DvrStatusNotifierStopDisposition::ReaperPending)
     }
 
@@ -208,18 +203,8 @@ impl DvrStatusNotifierSupervisor {
             job.restart_requested = false;
         }
         let active = core::mem::take(state.active_mut());
-        let mut stop_result = Ok(());
         for (key, notifier) in active {
-            if let Err(error) = signal_dvr_status_notifier_stop(&notifier) {
-                stop_result = Err(match stop_result {
-                    Ok(()) => error,
-                    Err(previous) => compose_primary_cleanup_failure(
-                        "DVR notifier reset stop failures",
-                        previous,
-                        error,
-                    ),
-                });
-            }
+            notifier.worker.request_stop();
             state.reaping_mut().insert(
                 key,
                 DvrStatusNotifierReaperJob {
@@ -238,7 +223,7 @@ impl DvrStatusNotifierSupervisor {
             );
         }
         self.runtime.wake().notify_all();
-        stop_result
+        Ok(())
     }
 
     fn take_next_action(&self) -> Result<DvrStatusNotifierSupervisorAction, HalError> {
@@ -779,7 +764,7 @@ fn dvr_status_notifier_loop(
                         "DVR status deadline overflow",
                     )
                 })?,
-        ))?;
+        ));
     }
 }
 

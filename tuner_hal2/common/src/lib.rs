@@ -607,11 +607,24 @@ impl HalErrorDetail {
 pub enum WorkerLockKind {
     Result,
     Completion,
-    Wake,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkerCleanupFailureKind {
+    Quarantined,
+    Interrupted,
+    Executing,
+    StatePoisoned,
+    Completed,
+    Superseded,
+    AttemptExhausted,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HalError {
+    WorkerCleanupFailed {
+        kind: WorkerCleanupFailureKind,
+    },
     WorkerLockPoisoned {
         owner: &'static str,
         lock: WorkerLockKind,
@@ -813,6 +826,9 @@ impl fmt::Display for HalError {
         match self {
             HalError::WorkerLockPoisoned { owner, lock } => {
                 write!(f, "worker lock poisoned: owner={owner} lock={lock:?}")
+            }
+            HalError::WorkerCleanupFailed { kind } => {
+                write!(f, "worker cleanup authority failed: {kind:?}")
             }
             HalError::NotInitialized { resource } => {
                 write!(f, "依存資源が未初期化です: {resource}")

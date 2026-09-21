@@ -1,3 +1,5 @@
+use maleicacid_tuner_hal2_common::WorkerCleanupFailureKind;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkerRuntimeOwnerFailure {
     ThreadPanic,
@@ -12,6 +14,188 @@ pub enum WorkerRuntimePoll<T, E> {
     Running,
     Completed(Result<T, E>),
     OwnerFailure(WorkerRuntimeOwnerFailure),
+}
+
+/// 未完後片付け義務はこの従属保管値に残し、実行権限へ移動しない。
+#[derive(Debug)]
+pub struct WorkerRuntimeCleanup<T> {
+    state: std::sync::Arc<std::sync::Mutex<WorkerCleanupState<T>>>,
+}
+
+#[derive(Debug)]
+struct WorkerCleanupState<T> {
+    attempt: u64,
+    phase: WorkerCleanupPhase<T>,
+}
+
+#[derive(Debug)]
+enum WorkerCleanupPhase<T> {
+    Ready(T),
+    Executing,
+    Quarantined(T),
+    Completed,
+}
+
+enum WorkerCleanupDisposition {
+    Pending,
+    Quarantined,
+    Completed,
+}
+
+#[derive(Debug)]
+#[must_use = "後片付け権限は実行するか、管理主体から再発行する必要があります"]
+pub struct WorkerCleanupAuthority<T> {
+    state: std::sync::Arc<std::sync::Mutex<WorkerCleanupState<T>>>,
+    attempt: u64,
+}
+
+pub enum WorkerCleanupProgress<R> {
+    Pending,
+    Quarantined(R),
+    Completed(R),
+}
+
+pub enum WorkerCleanupRun<T, R> {
+    Pending(WorkerCleanupAuthority<T>),
+    Completed(R),
+}
+
+fn cleanup_authority_error(
+    kind: WorkerCleanupFailureKind,
+) -> maleicacid_tuner_hal2_common::HalError {
+    maleicacid_tuner_hal2_common::HalError::WorkerCleanupFailed { kind }
+}
+
+fn cleanup_lock_error<T>(
+    error: std::sync::TryLockError<T>,
+) -> maleicacid_tuner_hal2_common::HalError {
+    cleanup_authority_error(match error {
+        std::sync::TryLockError::WouldBlock => WorkerCleanupFailureKind::Executing,
+        std::sync::TryLockError::Poisoned(_) => WorkerCleanupFailureKind::StatePoisoned,
+    })
+}
+
+impl<T> WorkerCleanupState<T> {
+    fn ensure_ready(&self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+        match &self.phase {
+            WorkerCleanupPhase::Ready(_) => Ok(()),
+            WorkerCleanupPhase::Executing => {
+                Err(cleanup_authority_error(WorkerCleanupFailureKind::Executing))
+            }
+            WorkerCleanupPhase::Quarantined(_) => Err(cleanup_authority_error(
+                WorkerCleanupFailureKind::Quarantined,
+            )),
+            WorkerCleanupPhase::Completed => {
+                Err(cleanup_authority_error(WorkerCleanupFailureKind::Completed))
+            }
+        }
+    }
+}
+
+impl<T> WorkerRuntimeCleanup<T> {
+    pub fn is_pending(&self) -> bool {
+        match self.state.try_lock() {
+            Ok(state) => !matches!(state.phase, WorkerCleanupPhase::Completed),
+            Err(_) => true,
+        }
+    }
+
+    pub fn issue(
+        &self,
+    ) -> Result<WorkerCleanupAuthority<T>, maleicacid_tuner_hal2_common::HalError> {
+        let mut state = self.state.try_lock().map_err(cleanup_lock_error)?;
+        state.ensure_ready()?;
+        state.attempt = state
+            .attempt
+            .checked_add(1)
+            .ok_or_else(|| cleanup_authority_error(WorkerCleanupFailureKind::AttemptExhausted))?;
+        Ok(WorkerCleanupAuthority {
+            state: std::sync::Arc::clone(&self.state),
+            attempt: state.attempt,
+        })
+    }
+}
+
+impl<T> WorkerCleanupAuthority<T> {
+    fn with_value<R>(
+        &self,
+        execute: impl FnOnce(&mut T) -> (R, WorkerCleanupDisposition),
+    ) -> Result<R, maleicacid_tuner_hal2_common::HalError> {
+        let mut value = {
+            let mut state = self.state.try_lock().map_err(cleanup_lock_error)?;
+            if state.attempt != self.attempt {
+                return Err(cleanup_authority_error(
+                    WorkerCleanupFailureKind::Superseded,
+                ));
+            }
+            state.ensure_ready()?;
+            match std::mem::replace(&mut state.phase, WorkerCleanupPhase::Executing) {
+                WorkerCleanupPhase::Ready(value) => value,
+                phase => {
+                    state.phase = phase;
+                    return Err(cleanup_authority_error(WorkerCleanupFailureKind::Executing));
+                }
+            }
+        };
+        // 実行中の義務と試行番号は正本に残す。外部処理・待機中はロックを保持しない。
+        let outcome =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| execute(&mut value)));
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| cleanup_authority_error(WorkerCleanupFailureKind::StatePoisoned))?;
+        if state.attempt != self.attempt || !matches!(state.phase, WorkerCleanupPhase::Executing) {
+            return Err(cleanup_authority_error(
+                WorkerCleanupFailureKind::Superseded,
+            ));
+        }
+        match outcome {
+            Ok((result, disposition)) => {
+                state.phase = match disposition {
+                    WorkerCleanupDisposition::Pending => WorkerCleanupPhase::Ready(value),
+                    WorkerCleanupDisposition::Quarantined => WorkerCleanupPhase::Quarantined(value),
+                    WorkerCleanupDisposition::Completed => WorkerCleanupPhase::Completed,
+                };
+                drop(state);
+                Ok(result)
+            }
+            Err(payload) => {
+                state.phase = WorkerCleanupPhase::Quarantined(value);
+                drop(state);
+                drop(payload);
+                Err(cleanup_authority_error(
+                    WorkerCleanupFailureKind::Interrupted,
+                ))
+            }
+        }
+    }
+
+    pub fn inspect<R>(
+        &self,
+        inspect: impl FnOnce(&T) -> R,
+    ) -> Result<R, maleicacid_tuner_hal2_common::HalError> {
+        self.with_value(|value| (inspect(value), WorkerCleanupDisposition::Pending))
+    }
+
+    pub fn execute<R>(
+        self,
+        execute: impl FnOnce(&mut T) -> WorkerCleanupProgress<R>,
+    ) -> Result<WorkerCleanupRun<T, R>, maleicacid_tuner_hal2_common::HalError> {
+        let progress = self.with_value(|value| {
+            let progress = execute(value);
+            let disposition = match &progress {
+                WorkerCleanupProgress::Pending => WorkerCleanupDisposition::Pending,
+                WorkerCleanupProgress::Quarantined(_) => WorkerCleanupDisposition::Quarantined,
+                WorkerCleanupProgress::Completed(_) => WorkerCleanupDisposition::Completed,
+            };
+            (progress, disposition)
+        })?;
+        match progress {
+            WorkerCleanupProgress::Completed(result)
+            | WorkerCleanupProgress::Quarantined(result) => Ok(WorkerCleanupRun::Completed(result)),
+            WorkerCleanupProgress::Pending => Ok(WorkerCleanupRun::Pending(self)),
+        }
+    }
 }
 
 /// `WorkerRuntime`だけが発行するopaqueな物理result/join権限。
@@ -44,6 +228,7 @@ impl<T, E> WorkerHandle<T, E> {
         let failure_for_thread = std::sync::Arc::clone(&owner_failure);
         let completion_for_thread = std::sync::Arc::clone(&completion);
         let join = std::thread::Builder::new().name(name).spawn(move || {
+            thread_context.wake.bind_current_thread();
             let outcome =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(thread_context)));
             match outcome {
@@ -131,15 +316,18 @@ impl<T, E> WorkerHandle<T, E> {
             .unwrap_or(true)
     }
 
-    pub fn request_stop_and_wake(&self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
-        self.context
+    pub fn request_stop(&self) {
+        if !self
+            .context
             .stop
-            .store(true, std::sync::atomic::Ordering::Release);
-        self.context.wake.notify()
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            self.context.wake.notify();
+        }
     }
 
-    pub fn wake(&self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
-        self.context.wake.notify()
+    pub fn wake(&self) {
+        self.context.wake.notify();
     }
 
     pub fn wait_until_finished(
@@ -209,60 +397,48 @@ impl<T, E> Drop for WorkerHandle<T, E> {
             .as_ref()
             .is_some_and(|thread| !thread.is_finished())
         {
-            if let Err(error) = self.request_stop_and_wake() {
-                eprintln!(
-                    "worker handle drop wake failed: thread={:?} error={error}",
-                    self.join.as_ref().and_then(|thread| thread.thread().name())
-                );
-            }
+            self.request_stop();
         }
     }
 }
 
-/// 正規worker ownerが発行する待機権限。起床は専用の状態に保持する。
+/// 起床要求はatomic値、待機対象は当該workerのthreadに限定する。
 #[derive(Clone, Debug)]
 struct WorkerWake {
-    pending: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    pending: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: std::sync::Arc<std::sync::OnceLock<std::thread::Thread>>,
 }
 
 impl WorkerWake {
-    fn notify(&self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
-        let (pending, wake) = &*self.pending;
-        let result = pending.lock().map(|mut pending| *pending = true);
-        wake.notify_all();
-        result.map_err(|_| Self::poison_error())
+    fn bind_current_thread(&self) {
+        self.thread.get_or_init(std::thread::current);
     }
 
-    fn poison_error() -> maleicacid_tuner_hal2_common::HalError {
-        maleicacid_tuner_hal2_common::HalError::WorkerLockPoisoned {
-            owner: "WorkerRuntime",
-            lock: maleicacid_tuner_hal2_common::WorkerLockKind::Wake,
+    fn notify(&self) {
+        self.pending
+            .store(true, std::sync::atomic::Ordering::Release);
+        if let Some(thread) = self.thread.get() {
+            thread.unpark();
         }
     }
 
-    fn wait_until(
-        &self,
-        deadline: Option<std::time::Instant>,
-    ) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
-        let (pending, wake) = &*self.pending;
-        let mut pending = pending.lock().map_err(|_| Self::poison_error())?;
-        while !*pending {
-            pending = match deadline {
+    fn wait_until(&self, deadline: Option<std::time::Instant>) {
+        while !self
+            .pending
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            match deadline {
                 Some(deadline) => {
                     let Some(remaining) =
                         deadline.checked_duration_since(std::time::Instant::now())
                     else {
-                        return Ok(());
+                        return;
                     };
-                    wake.wait_timeout(pending, remaining)
-                        .map_err(|_| Self::poison_error())?
-                        .0
+                    std::thread::park_timeout(remaining);
                 }
-                None => wake.wait(pending).map_err(|_| Self::poison_error())?,
-            };
+                None => std::thread::park(),
+            }
         }
-        *pending = false;
-        Ok(())
     }
 }
 
@@ -278,10 +454,8 @@ impl WorkerContext {
         Self {
             stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             wake: WorkerWake {
-                pending: std::sync::Arc::new((
-                    std::sync::Mutex::new(false),
-                    std::sync::Condvar::new(),
-                )),
+                pending: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                thread: std::sync::Arc::new(std::sync::OnceLock::new()),
             },
         }
     }
@@ -290,12 +464,9 @@ impl WorkerContext {
         self.stop.load(std::sync::atomic::Ordering::Acquire)
     }
 
-    pub fn wait_until(
-        &self,
-        deadline: Option<std::time::Instant>,
-    ) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+    pub fn wait_until(&self, deadline: Option<std::time::Instant>) {
         if self.stop_requested() {
-            return Ok(());
+            return;
         }
         self.wake.wait_until(deadline)
     }
@@ -316,7 +487,8 @@ impl<T> WorkerRuntime<T> {
             .ok_or(maleicacid_tuner_hal2_common::HalError::NotInitialized {
                 resource: "worker handle",
             })?
-            .wake()
+            .wake();
+        Ok(())
     }
     pub const fn owner_id(&self) -> i64 {
         self.owner_id
@@ -330,12 +502,12 @@ impl<T> WorkerRuntime<T> {
             .map(|handle| handle.is_thread_finished())
             .unwrap_or(true)
     }
-    pub fn request_stop_and_wake(&self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
-        match self.handle.as_ref() {
-            Some(handle) => handle.request_stop_and_wake(),
-            None => Ok(()),
+    pub fn request_stop(&self) {
+        if let Some(handle) = self.handle.as_ref() {
+            handle.request_stop();
         }
     }
+
     pub fn join(mut self) -> WorkerTerminalResult<T> {
         let Some(handle) = self.handle.take() else {
             return WorkerTerminalResult::PanicOrJoinFailure;
@@ -363,25 +535,21 @@ impl<T> WorkerRuntime<T> {
     }
 }
 
-impl<T> Drop for WorkerRuntime<T> {
-    fn drop(&mut self) {
-        if !self.is_finished() {
-            if let Err(error) = self.request_stop_and_wake() {
-                eprintln!(
-                    "worker runtime drop wake failed: owner={} generation={} error={error}",
-                    self.owner_id, self.generation
-                );
-            }
-        }
-    }
-}
-
 type WorkerReaperRunner<K, V, J> = dyn Fn(J, std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<K, V>>>, WorkerContext)
     + Send
     + Sync
     + 'static;
 
 impl WorkerRuntime<()> {
+    pub fn retain_cleanup<T>(value: T) -> WorkerRuntimeCleanup<T> {
+        WorkerRuntimeCleanup {
+            state: std::sync::Arc::new(std::sync::Mutex::new(WorkerCleanupState {
+                attempt: 0,
+                phase: WorkerCleanupPhase::Ready(value),
+            })),
+        }
+    }
+
     pub fn spawn<T, F, C>(
         thread_name: String,
         owner_id: i64,
@@ -561,24 +729,29 @@ where
                 "worker reaper received a duplicate endpoint lease",
             ));
         }
-        for (key, value) in reservations {
-            pending.insert(key, value);
+        for (key, value) in &reservations {
+            pending.insert(key.clone(), value.clone());
         }
-        drop(pending);
-        self.sender.try_send(job).map_err(|error| match error {
-            std::sync::mpsc::TrySendError::Full(job) => {
-                drop(job);
-                maleicacid_tuner_hal2_common::HalError::internal(
-                    maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                    "worker reaper capacity exhausted",
-                )
+        self.sender.try_send(job).map_err(|error| {
+            // 送信しなかった予約だけを取消す。jobは権限だけを持ち、義務はownerに残る。
+            for (key, _) in &reservations {
+                pending.remove(key);
             }
-            std::sync::mpsc::TrySendError::Disconnected(job) => {
-                drop(job);
-                maleicacid_tuner_hal2_common::HalError::internal(
-                    maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                    "worker reaper is unavailable",
-                )
+            match error {
+                std::sync::mpsc::TrySendError::Full(job) => {
+                    drop(job);
+                    maleicacid_tuner_hal2_common::HalError::internal(
+                        maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                        "worker reaper capacity exhausted",
+                    )
+                }
+                std::sync::mpsc::TrySendError::Disconnected(job) => {
+                    drop(job);
+                    maleicacid_tuner_hal2_common::HalError::internal(
+                        maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                        "worker reaper is unavailable",
+                    )
+                }
             }
         })
     }
@@ -818,9 +991,7 @@ mod tests {
                   _pending: Arc<Mutex<std::collections::BTreeMap<u32, u32>>>,
                   context: super::WorkerContext| {
                 started_tx.send(()).unwrap();
-                context
-                    .wait_until(Instant::now().checked_add(Duration::from_secs(3_600)))
-                    .unwrap();
+                context.wait_until(Instant::now().checked_add(Duration::from_secs(3_600)));
                 finished_tx.send(context.stop_requested()).unwrap();
             },
         );
@@ -849,7 +1020,7 @@ mod tests {
                 continue_rx.recv().unwrap();
                 context.wait_until(Some(
                     std::time::Instant::now() + std::time::Duration::from_secs(10),
-                ))?;
+                ));
                 done_tx.send(()).unwrap();
                 Ok(())
             },
@@ -881,7 +1052,7 @@ mod tests {
             move |context| {
                 ready_tx.send(()).unwrap();
                 while !context.stop_requested() {
-                    context.wait_until(None)?;
+                    context.wait_until(None);
                 }
                 done_tx.send(()).unwrap();
                 Ok(())
@@ -892,7 +1063,7 @@ mod tests {
         ready_rx
             .recv_timeout(std::time::Duration::from_secs(1))
             .unwrap();
-        worker.request_stop_and_wake().unwrap();
+        worker.request_stop();
         done_rx
             .recv_timeout(std::time::Duration::from_secs(1))
             .unwrap();
@@ -902,6 +1073,193 @@ mod tests {
         ));
     }
     use super::*;
+
+    #[test]
+    fn lost_cleanup_authority_keeps_the_obligation_reissuable() {
+        for forget in [false, true] {
+            let owner = WorkerRuntime::retain_cleanup(7);
+            let first = owner.issue().unwrap();
+            if forget {
+                std::mem::forget(first);
+            } else {
+                drop(first);
+            }
+            assert!(owner.is_pending());
+            let replacement = owner.issue().unwrap();
+            assert!(matches!(
+                replacement.execute(|value| WorkerCleanupProgress::Completed(*value)),
+                Ok(WorkerCleanupRun::Completed(7))
+            ));
+            assert!(!owner.is_pending());
+            assert!(owner.issue().is_err());
+        }
+    }
+
+    #[test]
+    fn superseded_cleanup_authority_cannot_execute_a_side_effect() {
+        let owner = WorkerRuntime::retain_cleanup(0);
+        let first = owner.issue().unwrap();
+        let replacement = owner.issue().unwrap();
+        assert!(matches!(
+            first.execute::<()>(|_| panic!("stale authority executed")),
+            Err(
+                maleicacid_tuner_hal2_common::HalError::WorkerCleanupFailed {
+                    kind: WorkerCleanupFailureKind::Superseded
+                }
+            )
+        ));
+        assert!(matches!(
+            replacement.execute(|value| {
+                *value += 1;
+                WorkerCleanupProgress::Completed(*value)
+            }),
+            Ok(WorkerCleanupRun::Completed(1))
+        ));
+    }
+
+    #[test]
+    fn executing_cleanup_rejects_reissue_without_waiting() {
+        let owner = WorkerRuntime::retain_cleanup(());
+        let authority = owner.issue().unwrap();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            authority.execute(|_| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                WorkerCleanupProgress::Completed(())
+            })
+        });
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        assert!(owner.state.try_lock().is_ok());
+        assert!(owner.issue().is_err());
+        assert!(owner.is_pending());
+        release_tx.send(()).unwrap();
+        assert!(matches!(
+            worker.join().unwrap(),
+            Ok(WorkerCleanupRun::Completed(()))
+        ));
+        assert!(!owner.is_pending());
+    }
+
+    #[test]
+    fn exhausted_cleanup_attempt_does_not_reuse_an_identity() {
+        let owner = WorkerRuntime::retain_cleanup(());
+        owner.state.lock().unwrap().attempt = u64::MAX;
+        assert!(matches!(
+            owner.issue(),
+            Err(
+                maleicacid_tuner_hal2_common::HalError::WorkerCleanupFailed {
+                    kind: WorkerCleanupFailureKind::AttemptExhausted
+                }
+            )
+        ));
+        assert!(owner.is_pending());
+    }
+
+    #[test]
+    fn interrupted_cleanup_keeps_the_obligation_and_rejects_blind_retry() {
+        let owner = WorkerRuntime::retain_cleanup(0);
+        let authority = owner.issue().unwrap();
+        assert!(matches!(
+            authority.execute::<()>(|value| {
+                *value = 1;
+                panic!("interrupted after a side effect");
+            }),
+            Err(
+                maleicacid_tuner_hal2_common::HalError::WorkerCleanupFailed {
+                    kind: WorkerCleanupFailureKind::Interrupted,
+                }
+            )
+        ));
+        assert!(owner.is_pending());
+        assert!(matches!(
+            owner.issue(),
+            Err(
+                maleicacid_tuner_hal2_common::HalError::WorkerCleanupFailed {
+                    kind: WorkerCleanupFailureKind::Quarantined
+                }
+            )
+        ));
+    }
+
+    #[test]
+    fn failed_cleanup_retains_its_result_and_rejects_retry() {
+        let owner = WorkerRuntime::retain_cleanup(None);
+        let authority = owner.issue().unwrap();
+        assert!(matches!(
+            authority.execute(|value| {
+                *value = Some("stop failed");
+                WorkerCleanupProgress::Quarantined("stop failed")
+            }),
+            Ok(WorkerCleanupRun::Completed("stop failed"))
+        ));
+        assert!(owner.is_pending());
+        assert!(matches!(
+            &owner.state.lock().unwrap().phase,
+            WorkerCleanupPhase::Quarantined(Some("stop failed"))
+        ));
+        assert!(matches!(
+            owner.issue(),
+            Err(
+                maleicacid_tuner_hal2_common::HalError::WorkerCleanupFailed {
+                    kind: WorkerCleanupFailureKind::Quarantined,
+                }
+            )
+        ));
+    }
+
+    #[test]
+    fn cleanup_wait_releases_the_state_lock_and_keeps_the_attempt_exclusive() {
+        let owner = WorkerRuntime::retain_cleanup(7);
+        let authority = owner.issue().unwrap();
+        let observed = authority
+            .inspect(|value| {
+                assert!(owner.state.try_lock().is_ok());
+                assert!(matches!(
+                    owner.issue(),
+                    Err(
+                        maleicacid_tuner_hal2_common::HalError::WorkerCleanupFailed {
+                            kind: WorkerCleanupFailureKind::Executing,
+                        }
+                    )
+                ));
+                *value
+            })
+            .unwrap();
+        assert_eq!(observed, 7);
+        assert!(matches!(
+            authority.execute(|value| WorkerCleanupProgress::Completed(*value)),
+            Ok(WorkerCleanupRun::Completed(7))
+        ));
+    }
+
+    #[test]
+    fn rejected_reaper_send_releases_only_its_own_reservations() {
+        // 受信側の消滅と満杯を決定的に発生させ、予約の取消しを正規入口で確認する。
+        for disconnected in [false, true] {
+            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            let mut receiver = Some(receiver);
+            if disconnected {
+                drop(receiver.take());
+            } else {
+                sender.try_send(()).unwrap();
+            }
+            let queue = WorkerRuntimeReaperQueue {
+                lanes: std::sync::Arc::new(Vec::new()),
+                sender,
+                pending: std::sync::Arc::new(std::sync::Mutex::new(
+                    std::collections::BTreeMap::from([(1, 9)]),
+                )),
+            };
+            assert!(queue.enqueue_reserved((), [(2, 8)]).is_err());
+            assert_eq!(queue.pending_value(&1).unwrap(), Some(9));
+            assert_eq!(queue.pending_value(&2).unwrap(), None);
+            drop(receiver);
+        }
+    }
 
     #[test]
     fn join_preserves_result_and_completion_poison_identity() {
@@ -930,7 +1288,6 @@ mod tests {
                     let _guard = handle.completion.0.lock().unwrap();
                     panic!("poison completion");
                 }
-                WorkerLockKind::Wake => unreachable!(),
             }));
             assert!(poisoned.is_err());
             release_tx.send(()).unwrap();
@@ -945,37 +1302,31 @@ mod tests {
     }
 
     #[test]
-    fn wake_poison_does_not_erase_the_stop_request() {
-        use maleicacid_tuner_hal2_common::{HalError, WorkerLockKind};
-
-        let (release_tx, release_rx) = std::sync::mpsc::channel();
+    fn dropping_handle_wakes_worker_without_a_fallible_cleanup() {
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
         let worker = WorkerRuntime::spawn(
-            "poisoned-wake".into(),
+            "drop-stop".into(),
             4,
             1,
             move |context| {
-                release_rx.recv().unwrap();
-                assert!(context.stop_requested());
+                ready_tx.send(()).unwrap();
+                while !context.stop_requested() {
+                    context.wait_until(None);
+                }
+                done_tx.send(()).unwrap();
                 Ok(())
             },
             || {},
         )
         .unwrap();
-        let handle = worker.handle.as_ref().unwrap();
-        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = handle.context.wake.pending.0.lock().unwrap();
-            panic!("poison wake");
-        }))
-        .is_err());
-        assert_eq!(
-            worker.request_stop_and_wake(),
-            Err(HalError::WorkerLockPoisoned {
-                owner: "WorkerRuntime",
-                lock: WorkerLockKind::Wake,
-            })
-        );
-        release_tx.send(()).unwrap();
-        assert_eq!(worker.join(), WorkerTerminalResult::StopRequested);
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        drop(worker);
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
     }
 
     #[test]
