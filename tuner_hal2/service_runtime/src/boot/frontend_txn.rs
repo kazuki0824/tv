@@ -997,4 +997,19 @@ impl<'a> FrontendTxn<'a> {
             .frontend_workers
             .request_stop_for_join(frontend_id, kind, reason)
     }
+
+    pub(crate) fn retain_backend_submit_cleanup(
+        &mut self,
+        frontend_id: i32,
+        kind: FrontendWorkerKind,
+        generation: u64,
+        ticket: maleicacid_tuner_hal2_device::FrontendBackendSubmitTicket,
+    ) -> FrontendWorkerStopTicket {
+        self.runtime.frontend_workers.retain_backend_submit_cleanup(
+            frontend_id,
+            kind,
+            generation,
+            ticket,
+        )
+    }
 }

@@ -627,7 +627,7 @@ impl FrontendBackendSubmitTicket {
         ))
     }
 
-    pub(crate) fn complete_cleanup(mut self) -> Result<(), FrontendBackendSubmitFailure> {
+    pub(crate) fn complete_cleanup(&mut self) -> Result<(), FrontendBackendSubmitFailure> {
         let outcome = self.join_outcome();
         frontend_backend_submit_cleanup_result(self.generation, outcome)
     }
@@ -1153,7 +1153,7 @@ pub fn run_frontend_backend_tune_worker_with_previous(
                         "frontend poll deadline overflow",
                     )
                 })?,
-        ))?;
+        ));
     }
     let reason = ctx.cancel_reason();
     let completion = if matches!(
@@ -1585,7 +1585,7 @@ mod tests {
         })
         .unwrap();
 
-        let ticket = match ticket
+        let mut ticket = match ticket
             .wait_until(Instant::now() + Duration::from_millis(1))
             .unwrap()
         {
@@ -1665,6 +1665,92 @@ mod tests {
             assert_eq!(failure, expected);
             assert!(failure.cleanup_result().is_err());
         }
+    }
+
+    #[test]
+    fn lost_backend_cleanup_ticket_keeps_the_submit_owner_in_the_registry() {
+        use crate::{
+            FrontendWorkerCancelReason, FrontendWorkerKind, FrontendWorkerRegistry,
+            FrontendWorkerStopOutcome,
+        };
+
+        let (release_tx, release_rx) = mpsc::channel();
+        let ticket = FrontendBackendSubmitTicket::start_with(101, move || {
+            release_rx.recv().unwrap();
+            Err(FrontendBackendSubmitFailure {
+                generation: 101,
+                error: HalError::cleanup_failed("submit test", "rejected before side effects"),
+                rollback_succeeded: true,
+                step: None,
+                rollback_failure: None,
+            })
+        })
+        .unwrap();
+        let mut registry = FrontendWorkerRegistry::default();
+        let first =
+            registry.retain_backend_submit_cleanup(1, FrontendWorkerKind::Tune, 101, ticket);
+        std::mem::forget(first);
+        assert!(registry.has_cleanup_obligations());
+        let next = registry.request_stop_for_join(
+            1,
+            FrontendWorkerKind::Tune,
+            FrontendWorkerCancelReason::StopRequested,
+        );
+        release_tx.send(()).unwrap();
+        assert!(matches!(
+            next.complete(),
+            FrontendWorkerStopOutcome::BackendSubmitFailed {
+                generation: 101,
+                failure: FrontendBackendSubmitFailure {
+                    rollback_succeeded: true,
+                    ..
+                },
+                ..
+            }
+        ));
+        assert!(!registry.has_cleanup_obligations());
+    }
+
+    #[test]
+    fn failed_backend_rollback_keeps_cleanup_pending_after_join() {
+        use crate::{
+            FrontendWorkerCancelReason, FrontendWorkerKind, FrontendWorkerRegistry,
+            FrontendWorkerStopOutcome,
+        };
+        let expected = FrontendBackendSubmitFailure {
+            generation: 102,
+            error: HalError::cleanup_failed("backend", "submit failed"),
+            rollback_succeeded: false,
+            step: Some(BackendTuneStep::ApplyChannel),
+            rollback_failure: Some(super::super::tune_txn::BackendTuneRollbackFailure {
+                step: super::super::tune_txn::BackendTuneRollbackStep::RollbackStopStreaming,
+                error: HalError::cleanup_failed("backend", "stop failed"),
+            }),
+        };
+        let failure = expected.clone();
+        let ticket = FrontendBackendSubmitTicket::start_with(102, move || Err(failure)).unwrap();
+        let mut registry = FrontendWorkerRegistry::default();
+        let ticket =
+            registry.retain_backend_submit_cleanup(1, FrontendWorkerKind::Tune, 102, ticket);
+        assert!(
+            matches!(ticket.complete(), FrontendWorkerStopOutcome::BackendSubmitFailed { failure, .. } if failure == expected)
+        );
+        assert!(registry.has_cleanup_obligations());
+        assert!(matches!(
+            registry
+                .request_stop_for_join(
+                    1,
+                    FrontendWorkerKind::Tune,
+                    FrontendWorkerCancelReason::StopRequested
+                )
+                .complete(),
+            FrontendWorkerStopOutcome::StopRequestFailed {
+                error: HalError::WorkerCleanupFailed {
+                    kind: maleicacid_tuner_hal2_common::WorkerCleanupFailureKind::Quarantined
+                },
+                ..
+            }
+        ));
     }
 
     #[test]
