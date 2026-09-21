@@ -4,6 +4,8 @@
 
 製品全体のrelease到達点とmodule間責務は `../開発規則.md`、Tuner HAL公開契約は `../tuner_hal/DESIGN_JA.md`、TIS runtimeは `../tis/DESIGN_JA.md` を正とする。本書はそれらを再定義しない。
 
+完了判定の方法は `../タスク完了判定の実施方法.md`、製品組込みは [INTEGRATION.md](INTEGRATION.md) を参照する。CASとTunerの試験profileの適用範囲は `../tuner_hal/DESIGN_JA.md` の「r52のCAS試験profile境界」に従う。
+
 ## 1. AOSP Media CAS service と Maleicacid plugin の境界
 
 `android.hardware.cas.IMediaCasService/default` はAOSP標準 `MediaCasService` を使用する。Maleicacidは独自 `IMediaCasService/default` serviceを実装しない。
@@ -25,7 +27,7 @@ flowchart TD
 
 AOSP `MediaCasService` はplugin libraryのdiscovery/load、service-level plugin列挙・support query、AIDL `ICas` wrapper生成、listener bridgeを所有する。Maleicacid pluginはこれらを重複実装しない。
 
-plugin entry point `createCasFactory()` はC linkageとする。返却する `android::CasFactory` と生成する `android::CasPlugin` はAOSP C++ virtual interfaceであるため、MaleicacidのAOSP plugin ABI境界はC++で実装する。
+plugin entry point `createCasFactory()` はC linkageとする。返却する `android::CasFactory` と生成する `android::CasPlugin` はAOSP C++ virtual interfaceである。Maleicacidが所有するfactory、plugin、backend adapter、session・鍵状態管理、vendor内部の鍵共有、試験はすべてC++で実装し、Rustを使用しない。`libyakisoba-cross` 本体は無改変のC実装をC API経由で静的リンクする。
 
 B25/B1のpacket descrambleはMedia CAS descramblerへ移さず、Tuner HAL `IDescrambler` が所有する。Maleicacid B25 pluginはMedia CAS `DescramblerFactory`を提供しない。
 
@@ -39,45 +41,15 @@ CA system IDの数値と方式の対応は`../開発規則.md`の「CA system ID
 
 同一CA system IDについてSmartCard版とYakisoba版を別descriptorとして列挙しない。backend差は1個のB25 plugin内部へ閉じる。
 
-最初にadvertiseするMaleicacid capabilityはB25 `yakisoba_only` とする。SmartCard未実装を `yakisoba_only` の成立条件にしない。
+B25 `yakisoba_only` はSmartCardとB1の実装を依存条件にしない。factoryはproduct imageで採用したprofileに対応するcapabilityだけを列挙し、未提供の方式をsupport queryやplugin生成で対応済みとして扱わない。
 
-B25をadvertiseするには、採用profileについて次を満たす。
+capabilityとして公開するprofileは、製品の復号経路で§9〜§13の鍵共有契約を成立させる。plugin単体のECM復号だけを製品のスクランブル解除能力として扱わない。
 
-```text
-共通:
-  - AOSP CasPlugin lifecycle / status contract
-  - complete ECM / EMM input contract
-  - MediaCas session IDと同一のtokenからcurrent odd/even Ksへの一意な参照
-  - 同じtokenに対応するcurrent Ksのatomic更新
-  - revoke / stale-token rejection
-  - TIS -> MediaCas -> Tuner 結合確認
-  - 採用するARIB STD-B25日本語原本の受信機能力条項の確認
-  - product effective capacity が確認済み要求を満たすことの検証
-  - §3.1のsession容量分類と、初期通知のTRM反映後にsessionを要求する順序の結合確認
+全profileは§3〜§4のABI・lifecycle、§3.1の容量通知、§9〜§13のsession/token・動的鍵状態・失効契約に従う。backend bindingとprofileの差分は§5、YakisobaのECM/EMM・credential・処理時間・秘密情報の扱いは§6、SmartCardのI/Oとcard喪失は§7、access controlは§11、配布上の扱いは§16を正とする。backend差を共通契約の例外にしない。
 
-yakisoba_only:
-  - Yakisoba backend
-  - B25 ECM / EMM
-  - credential供給
-  - bounded operation
-  - secret lifetime
-  - 採用統合形態に必要なaccess controlと配布条件
+ARIB STD-B25の製品適合範囲と受信機能力の扱いは `../開発規則.md` を正とする。旧版英訳の具体値を未確認の現行日本語原本要求値として代用しない。
 
-smartcard_only:
-  - SmartCard backend
-  - card初期化 / ECM / EMM
-  - bounded I/O
-  - card removal / close
-
-prefer_smartcard_then_yakisoba:
-  - 両backendの成立条件
-  - plugin単位backend binding
-  - SmartCard状態未確定時のnon-fallback
-```
-
-ARIB STD-B25の現行版判定と、その版の具体的な受信機能力値を本文で確認済みであることは分けて扱う。旧版英訳の具体値を未確認の現行日本語原本要求値として代用しない。
-
-B1は同じ `MaleicacidCasFactory` が所有する第二のCA systemとして提供する。r52完了時にはfactoryのdescriptor queryがB25とB1の各descriptorを返し、B1 support queryをtrueとし、`createPlugin(B1)` が `MaleicacidB1CasPlugin` を生成できなければならない。`MaleicacidB1CasPlugin` は `B1SmartCardBackend` を使うECM-only plugin coreとし、B1 `processEmm()` はunsupportedを返す。B1の成立はB25 `yakisoba_only` backendの内部実装条件にはしないが、r52全体の完了条件には含める。
+B1は同じ `MaleicacidCasFactory` が所有する第二のCA systemとする。B1を提供する構成ではfactoryのdescriptor queryがB25とB1の各descriptorを返し、B1 support queryをtrueとし、`createPlugin(B1)` が `MaleicacidB1CasPlugin` を生成する。`MaleicacidB1CasPlugin` は `B1SmartCardBackend` を使うECM-only plugin coreとし、B1 `processEmm()` はunsupportedを返す。B1を含む製品releaseの到達点は `../開発規則.md` を参照する。
 
 ## 3. B25/B1共通 CasPlugin ABI 契約
 
@@ -194,11 +166,9 @@ prefer_smartcard_then_yakisoba:
 
 build typeだけからbackendを暗黙決定しない。profileはproduct imageで固定したcapability設定から決定し、service lifetime中の一時healthやcard挿抜でdescriptor集合を変更しない。
 
-## 6. 最初に成立させる `yakisoba_only`
+## 6. `yakisoba_only` のbackend
 
-最初に使用可能にするB25 profileは `yakisoba_only` とする。
-
-最初の `YakisobaBackend` はB25 plugin library内のin-process backendとし、Soongで供給される `libyakisoba-cross` の `libyakisoba` C APIを使用する。
+`YakisobaBackend` はB25 plugin library内のin-process backendとし、Soongで供給される `libyakisoba-cross` の `libyakisoba` C APIを使用する。
 
 ```text
 MaleicacidB25CasPlugin (C++)
@@ -297,20 +267,7 @@ B1 `processEcm()` のsuccessは§3および§12の共通契約に従い、curren
 
 B1 `processEmm()` はunsupportedとし、stateを変更せずcannot-handle相当statusを返す。B1のplugin-level `setPrivateData()` はCAT/EMM経路を持たないためunsupportedのままとし、空successにしない。一方 `setSessionPrivateData()` はPROGRAM/ESのCA descriptor private dataを受けるAOSP標準session入力として受理する。入力はCAS scheme-privateなopaque bytesとしてsession-localにcommitし、TISは内容を解釈しない。B1 ECM処理がその内容を必要としない実装でも、未使用であることだけを理由にこの標準入力を拒否しない。更新と `processEcm()` が競合する場合はhalf-committed private dataを観測させない。B1で意味を定義しない `sendEvent()`、`sendSessionEvent()`、`provision()`、`refreshEntitlements()` はstateを変更せずcannot-handle相当statusを返す。`setStatusCallback()`、`closeSession()`、plugin release、stale completion rejection、session鍵状態のrevoke、MediaCas close前のVOID unlinkはB25/B1共通契約に従う。
 
-B1 plugin advertise gateは次を満たす。
-
-```text
-- B1 descriptor / support query / createPlugin(B1)を提供
-- default / typed session openを共通契約どおり実装・検証済み
-- §3.1のsession容量分類と、初期通知のTRM反映後にsessionを要求する順序を結合確認済み
-- B1 SmartCard ECM処理を実装・検証済み
-- processEcm() success -> 同じtokenからcurrent odd/even Ksの参照を検証済み
-- processEmm()をunsupportedとして明示
-- EMM依存のactivation/control information取得をunsupportedとして明示
-- EMM依存の契約更新・権利更新をunsupportedとして明示
-- B1でYakisoba backendを選択しない
-- genericなKs更新 / revoke / closeを検証済み
-```
+B1では、EMMに依存するactivation/control informationの取得、契約更新、権利更新もunsupportedとする。factoryでの公開は§2、容量通知は§3.1、鍵状態の更新・失効・closeは§9〜§13の共通契約に従う。
 
 TISはB1 sessionでEMM filterを起動せず、`MediaCas.processEmm()`を呼ばない。CATにEMM PIDがあってもB1復号開始条件・成功条件にしない。
 
@@ -498,96 +455,9 @@ libyakisoba改変版を配布する場合は、GPLv3条件に従って対応す�
 
 AOSP標準MediaCasServiceの有効化、pluginの配置、Soong設定と組込み確認は [INTEGRATION.md](INTEGRATION.md) を正とする。
 
-plugin libraryは `createCasFactory()` をexportし、AOSP `media/cas/CasAPI.h` の `android::CasFactory` / `android::CasPlugin` ABIと整合させる。`CasFactory` のlegacy/Ext両 `createPlugin()`、`CasPlugin` の `setStatusCallback()`、default/typed両 `openSession()` を含むpure virtual ABI面を全て実装する。
+plugin entry pointとC++実装方針は§1、factoryとCasPlugin ABIは§2〜§3、`yakisoba_only` の静的リンクと内部adapterは§6.2に従う。SmartCard componentを `yakisoba_only` の依存条件にしない。
 
-最初の `yakisoba_only` 構成における静的リンクと内部adapterの設計判断は§6.2に従う。SmartCard componentを `yakisoba_only` のbuild/advertise条件にしない。
-
-## 18. validation
-
-共通CasPluginの最低完了条件は次とする。
-
-```text
-- AOSP MediaCasServiceがdefault instanceとして起動する
-- 開発規則のCA system ID対応とfactory descriptor・support query・両createPlugin()・TIS選択が一致する
-- 初回生成・再割当てでsession IDを1..16 bytesに限定し、`[0x00]`を除外する。空・長さ超過・予約値を公開しない
-- B25各profile/B1の有限上限をTRMへ初期通知・変更通知し、同一CA systemの複数pluginで総数が一致する。使用数を上限として通知しない
-- 有限上限反映後のsession割当て・優先度回収、通知との競合時の過剰割当て拒否、失敗したopenのID未公開を結合確認する
-- 固定session数上限のない構成でも初期容量を通知し、RESOURCE_BUSYがsession数と独立した一時資源不足を表すことを確認する。容量不明を無制限へ読み替えない
-- B25/B1とも初期容量通知をsession生成前に処理し、未通知・期限切れ・旧instanceの通知ではTISがopenSessionを呼ばないことを確認する
-- Maleicacid独自IMediaCasService serviceが製品経路に存在しない
-- pluginの配置とFactoryLoaderによる発見はINTEGRATION.mdの組込み確認に従う
-- CasFactoryのlegacy/Ext両createPlugin()がB25/B1とも対応するplugin coreを生成できる
-- AOSP MediaCasServiceがExt callback版createPlugin()後にsetStatusCallback()を登録できる
-- plugin破棄開始後にplugin status/event callbackを発行しない
-- session closeまたはplugin破棄開始後のlate resultがkey stateを復活させない
-- AIDL releaseと実行中methodの競合では、局所参照解放までplugin破棄が遅延し得ることを検証する
-- 通常TIS終了で配送停止、descrambler参照解除、session close、MediaCas closeの順序を検証する
-- 通常終了のVOID unlinkと資源回収時のDescrambler閉鎖確認を区別し、§13の参照解除 / revoke契約を満たす
-- MediaCas TRMのsession close確定後、TIS通知前でも旧tokenの新規resolveが失敗する
-- TISのr52 MediaCas資源回収契約に従い、閉鎖済みsessionの再closeなしで配送停止・Descrambler閉鎖・plugin退役が完了する
-- 別CasControllerの同一CA systemが独立pluginとして動作し、一方の回収が他方のslotを失効させない
-- 採用した共有方式でCAS所有者喪失・MediaCasService死亡とKs更新が競合しても、影響するsessionだけが失効し、後着結果が鍵状態を復活させない
-- Tuner再起動で旧参照結合を継承せず、内部鍵状態自体の喪失時には旧token/cacheから状態を復元しない
-- 未許可主体による状態変更、別ownerのsession更新、所有者喪失・失効後の旧token使用を拒否する
-- live session間およびtoken再割当て時に、別sessionのKsへの誤接続を起こさない
-- 固定値を実行時にCAS pluginからTuner HALへ渡さず、ECM由来のodd/even Ksだけを更新対象にして復号できる
-- ClearKey compatibility pathを破壊しない
-- B25/B1 Media CAS descramblerを追加しない
-- packet descramble ownerがTuner HALのままである
-- Tuner VTSの適用範囲はTuner設計の「r52のCAS試験profile境界」に従い、ClearKeyのMedia CAS試験をB25/B1の実復号証拠へ読み替えない
-- raw key / Kw / Ks / credentialを通常log、TIS、公開AIDLへ露出しない
-```
-
-B25 `yakisoba_only` の最低完了条件は次とする。
-
-```text
-- B25 descriptorが1個だけ列挙される
-- B25 system ID support queryがtrue
-- createPlugin(B25)がMaleicacidB25CasPluginをAIDL ICasとして返す
-- default openSessionがB25 scheme-default MULTI2 sessionを生成できる
-- typed `LIVE + MULTI2` が同じB25 session semanticsを生成できる
-- yakisoba_onlyではSmartCard probeが発生しない
-- ECM/EMMがYakisoba backendへ到達する
-- processEcm() success後に同じMediaCas session ID tokenからcurrent odd/even Ksを参照できる
-- 後続ECMで同じtokenに対応するcurrent Ksをatomic更新できる
-- ECM/EMMは標準processEcm/processEmm入力としてのみ公開AIDLを通し、通常log・別AIDL・診断dump等へ不要に再公開しない
-```
-
-B1 ECM-onlyの最低完了条件は次とする。
-
-```text
-- B1 descriptorが列挙される
-- B1 system ID support queryがtrue
-- createPlugin(B1)がMaleicacidB1CasPluginをAIDL ICasとして返す
-- default openSessionがB1 scheme-default MULTI2 sessionを生成できる
-- typed `LIVE + MULTI2` が同じB1 session semanticsを生成できる
-- B1でYakisoba backendを選択しない
-- B1 processEcm() success後に同じMediaCas session ID tokenからcurrent odd/even Ksを参照できる
-- B1 processEmm() がstateを変更せずunsupported/cannot-handle相当statusを返す
-- PROGRAM/ES CA metadataからB1 sessionへ `setSessionPrivateData()` を成功させ、その後のECM処理まで同じsessionで継続できる
-- B1 plugin-level `setPrivateData()` とB1で意味を定義しないevent/provision/refresh operationが空successせずcannot-handle相当statusを返す
-- B1 session closeまたはplugin破棄開始で新規key resolveを遮断し、revoke後のlate ECM結果がkey stateを復活させない
-- 通常終了のVOID unlinkと資源回収時のDescrambler閉鎖確認を区別し、§13の参照解除 / revoke契約を満たす
-```
-
-## 19. 実装順序
-
-実装は次の順で成立させる。
-
-```text
-1. AOSP CasFactory / CasPlugin shared library skeleton
-2. B25 plugin/session lifecycle
-3. YakisobaBackend + libyakisoba-cross integration
-4. yakisoba_only advertise / ECM / EMM
-5. MediaCas session由来tokenとcurrent Ks状態のend-to-end結合確認
-6. SmartCardBackend
-7. smartcard_only / prefer_smartcard_then_yakisoba
-8. B1 plugin support
-```
-
-この順序により、SmartCard実装を待たずに `yakisoba_only` を最初のB25実動作経路として成立させる。
-
-## 20. 参照
+## 18. 参照
 
 - AOSP [`media/cas/CasAPI.h`](https://android.googlesource.com/platform/frameworks/native/+/android-15.0.0_r1/headers/media_plugin/media/cas/CasAPI.h)
 - AOSP [`StatusEvent.aidl`](https://android.googlesource.com/platform/hardware/interfaces/+/android-15.0.0_r1/cas/aidl/android/hardware/cas/StatusEvent.aidl)と[`TunerResourceManagerService.java`](https://android.googlesource.com/platform/frameworks/base/+/android-15.0.0_r1/services/core/java/com/android/server/tv/tunerresourcemanager/TunerResourceManagerService.java)のsession数既定動作
