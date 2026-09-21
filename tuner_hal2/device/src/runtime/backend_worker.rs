@@ -613,13 +613,18 @@ impl FrontendBackendSubmitTicket {
             .wait_until_finished(deadline)
     }
 
-    pub(crate) fn try_complete_cleanup(&mut self) -> Option<Result<(), FrontendBackendSubmitFailure>> {
+    pub(crate) fn try_complete_cleanup(
+        &mut self,
+    ) -> Option<Result<(), FrontendBackendSubmitFailure>> {
         let outcome = match self.owner.as_mut()?.collect_if_finished() {
             ThreadResultPoll::Running => return None,
             ThreadResultPoll::Completed(outcome) => outcome,
         };
         self.owner = None;
-        Some(frontend_backend_submit_cleanup_result(self.generation, outcome))
+        Some(frontend_backend_submit_cleanup_result(
+            self.generation,
+            outcome,
+        ))
     }
 
     pub(crate) fn complete_cleanup(mut self) -> Result<(), FrontendBackendSubmitFailure> {
@@ -1597,10 +1602,13 @@ mod tests {
         assert_eq!(failure.generation, generation);
         assert!(failure.rollback_succeeded);
         assert!(failure.cleanup_result().is_ok());
-        assert_eq!(failure.error, HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "simulated delayed submit failure",
-        ));
+        assert_eq!(
+            failure.error,
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "simulated delayed submit failure",
+            )
+        );
     }
 
     #[test]
@@ -1610,14 +1618,20 @@ mod tests {
             let expected = FrontendBackendSubmitFailure {
                 generation: 101,
                 error: HalError::IoctlFailed {
-                    backend: "px4", path: None, op: "set channel", errno: 5,
+                    backend: "px4",
+                    path: None,
+                    op: "set channel",
+                    errno: 5,
                 },
                 rollback_succeeded: false,
                 step: Some(BackendTuneStep::ApplyChannel),
                 rollback_failure: Some(super::super::tune_txn::BackendTuneRollbackFailure {
                     step: super::super::tune_txn::BackendTuneRollbackStep::RollbackStopStreaming,
                     error: HalError::IoctlFailed {
-                        backend: "px4", path: None, op: "stop streaming", errno: 16,
+                        backend: "px4",
+                        path: None,
+                        op: "stop streaming",
+                        errno: 16,
                     },
                 }),
             };
@@ -1625,13 +1639,16 @@ mod tests {
             let ticket = FrontendBackendSubmitTicket::start_with(101, move || {
                 wait.recv().unwrap();
                 Err(failure)
-            }).unwrap();
+            })
+            .unwrap();
             let mut ticket = match ticket.wait_until(Instant::now()).unwrap() {
                 FrontendBackendSubmitWait::TimedOut(ticket) => ticket,
                 _ => panic!("blocked submit must time out"),
             };
             release.send(()).unwrap();
-            assert!(ticket.wait_until_cleanup(Some(Instant::now() + Duration::from_secs(1))).unwrap());
+            assert!(ticket
+                .wait_until_cleanup(Some(Instant::now() + Duration::from_secs(1)))
+                .unwrap());
             let result = if poll {
                 ticket.try_complete_cleanup().unwrap()
             } else {
