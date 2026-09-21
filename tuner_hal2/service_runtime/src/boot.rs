@@ -2940,7 +2940,10 @@ impl TunerServiceRuntime {
         if self.frontend_workers.has_cleanup_obligations() {
             return (
                 ServiceBootOutcome::Degraded,
-                Err(HalError::cleanup_failed("frontend workers", "unfinished cleanup prevents boot reset")),
+                Err(HalError::cleanup_failed(
+                    "frontend workers",
+                    "unfinished cleanup prevents boot reset",
+                )),
             );
         }
         self.state = ServiceState::Booting;

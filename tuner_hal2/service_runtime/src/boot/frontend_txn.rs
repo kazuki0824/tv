@@ -988,7 +988,10 @@ impl<'a> FrontendTxn<'a> {
         ticket: maleicacid_tuner_hal2_device::FrontendBackendSubmitTicket,
     ) -> FrontendWorkerStopTicket {
         self.runtime.frontend_workers.retain_backend_submit_cleanup(
-            frontend_id, kind, generation, ticket,
+            frontend_id,
+            kind,
+            generation,
+            ticket,
         )
     }
 }

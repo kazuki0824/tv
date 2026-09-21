@@ -1597,7 +1597,10 @@ mod tests {
 
     #[test]
     fn lost_backend_cleanup_ticket_keeps_the_submit_owner_in_the_registry() {
-        use crate::{FrontendWorkerCancelReason, FrontendWorkerKind, FrontendWorkerRegistry, FrontendWorkerStopOutcome};
+        use crate::{
+            FrontendWorkerCancelReason, FrontendWorkerKind, FrontendWorkerRegistry,
+            FrontendWorkerStopOutcome,
+        };
 
         let (release_tx, release_rx) = mpsc::channel();
         let ticket = FrontendBackendSubmitTicket::start_with(101, move || {
@@ -1609,18 +1612,26 @@ mod tests {
                 step: None,
                 rollback_failure: None,
             })
-        }).unwrap();
+        })
+        .unwrap();
         let mut registry = FrontendWorkerRegistry::default();
-        let first = registry.retain_backend_submit_cleanup(1, FrontendWorkerKind::Tune, 101, ticket);
+        let first =
+            registry.retain_backend_submit_cleanup(1, FrontendWorkerKind::Tune, 101, ticket);
         std::mem::forget(first);
         assert!(registry.has_cleanup_obligations());
         let next = registry.request_stop_for_join(
-            1, FrontendWorkerKind::Tune, FrontendWorkerCancelReason::StopRequested,
+            1,
+            FrontendWorkerKind::Tune,
+            FrontendWorkerCancelReason::StopRequested,
         );
         release_tx.send(()).unwrap();
         assert!(matches!(
             next.complete(),
-            FrontendWorkerStopOutcome::Completed { generation: 101, result: Ok(()), .. }
+            FrontendWorkerStopOutcome::Completed {
+                generation: 101,
+                result: Ok(()),
+                ..
+            }
         ));
         assert!(!registry.has_cleanup_obligations());
     }

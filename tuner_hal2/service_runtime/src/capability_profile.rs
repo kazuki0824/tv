@@ -75,7 +75,9 @@ pub fn failure_domain(error: &HalError) -> RuntimeFailureDomain {
         HalError::CallbackFailed { .. } => RuntimeFailureDomain::Callback,
         HalError::FmqFailed { .. } => RuntimeFailureDomain::Fmq,
         HalError::EventFlagFailed { .. } => RuntimeFailureDomain::EventFlag,
-        HalError::CleanupFailed { .. } | HalError::WorkerCleanupFailed { .. } => RuntimeFailureDomain::Cleanup,
+        HalError::CleanupFailed { .. } | HalError::WorkerCleanupFailed { .. } => {
+            RuntimeFailureDomain::Cleanup
+        }
         HalError::OutOfMemory { .. } => RuntimeFailureDomain::ResourceExhausted,
         HalError::InvalidArgument { .. } => RuntimeFailureDomain::ClientArgument,
         HalError::InvalidState { .. } => RuntimeFailureDomain::ObjectState,

@@ -60,7 +60,10 @@ pub enum QueueRuntimeErrorKind {
     ExportTransient,
     DataPathFailure,
     StructuralDescriptor,
-    GateCleanupFailed { producer_release: bool, drain_rollback: bool },
+    GateCleanupFailed {
+        producer_release: bool,
+        drain_rollback: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -418,7 +421,6 @@ impl QueueRuntime {
                         admitted_transaction_count: 0,
                     }),
                     drained: Condvar::new(),
-                cleanup_failures: AtomicU8::new(0),
                     queue_identity,
                 })
             }),
@@ -945,6 +947,7 @@ impl FilterProducerDrainGate {
                     record_output_byte_offset: 0,
                 }),
                 drained: Condvar::new(),
+                cleanup_failures: AtomicU8::new(0),
             }),
         })
     }
@@ -1182,7 +1185,9 @@ impl Drop for FilterProducerPermit {
         // 局所的な許可証返却だけを行い、汚染時に再lockして診断を失わない。
         match self.inner.data.lock() {
             Ok(mut data) => {
-                if data.filter_delivery_generation == self.delivery_generation && data.admitted_producer_count != 0 {
+                if data.filter_delivery_generation == self.delivery_generation
+                    && data.admitted_producer_count != 0
+                {
                     data.admitted_producer_count -= 1;
                     self.inner.drained.notify_all();
                 } else {
@@ -1276,8 +1281,6 @@ impl FilterDrainTxn {
         self.inner.drained.notify_all();
         Ok(pending_events)
     }
-
-
 }
 
 impl Drop for FilterDrainTxn {
@@ -1329,11 +1332,13 @@ mod dvr_queue_cleanup_tests {
         for producer_release in [true, false] {
             let gate = FilterProducerDrainGate::new(4).unwrap();
             let permit = producer_release.then(|| gate.begin_producer().unwrap());
-            let drain = (!producer_release).then(|| gate.begin_drain(FilterDrainBoundary::Flush).unwrap());
+            let drain =
+                (!producer_release).then(|| gate.begin_drain(FilterDrainBoundary::Flush).unwrap());
             assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let _guard = gate.inner.data.lock().unwrap();
                 panic!("poison filter gate");
-            })).is_err());
+            }))
+            .is_err());
             drop(permit);
             drop(drain);
             let expected = QueueRuntimeErrorKind::GateCleanupFailed {
@@ -1341,7 +1346,12 @@ mod dvr_queue_cleanup_tests {
                 drain_rollback: !producer_release,
             };
             assert_eq!(gate.begin_producer().unwrap_err().kind, expected);
-            assert_eq!(gate.begin_drain(FilterDrainBoundary::Flush).unwrap_err().kind, expected);
+            assert_eq!(
+                gate.begin_drain(FilterDrainBoundary::Flush)
+                    .unwrap_err()
+                    .kind,
+                expected
+            );
             assert!(gate.inner.data.is_poisoned());
         }
     }
