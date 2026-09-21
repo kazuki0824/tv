@@ -118,6 +118,7 @@ class ServiceListBuilder(
 object ServicePolicyEvaluator {
     private const val SERVICE_TYPE_DIGITAL_TV = 0x01
     private const val SERVICE_TYPE_DIGITAL_AUDIO = 0x02
+    private const val SERVICE_TYPE_DATA = 0xc0
     private const val SUPPORTED_SMD = "SUPPORTED_BROADCAST"
 
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
@@ -174,7 +175,10 @@ object ServicePolicyEvaluator {
 
         val registrationReasons = mutableListOf<String>()
         registrationReasons += facts.missingComponents
-        if (facts.serviceType !in setOf(SERVICE_TYPE_DIGITAL_TV, SERVICE_TYPE_DIGITAL_AUDIO)) {
+        if (
+            facts.serviceType !in setOf(SERVICE_TYPE_DIGITAL_TV, SERVICE_TYPE_DIGITAL_AUDIO) &&
+            !(facts.serviceType == SERVICE_TYPE_DATA && facts.partialReception)
+        ) {
             registrationReasons += "UNSUPPORTED_OR_UNRESOLVED_SERVICE_TYPE"
         }
         if (!facts.pmtPidResolved) registrationReasons += "NO_PMT_PID"
@@ -182,7 +186,7 @@ object ServicePolicyEvaluator {
         if (!facts.pcrPidResolved) registrationReasons += "NO_PCR_PID"
         val streamTypes = facts.elementaryStreams.map { it.streamType }.toSet()
         when (facts.serviceType) {
-            SERVICE_TYPE_DIGITAL_TV -> {
+            SERVICE_TYPE_DIGITAL_TV, SERVICE_TYPE_DATA -> {
                 if (facts.elementaryStreams.none(com.maleicacid.tvinput.tis.TunerSelectionPolicy::isSupportedVideoStream)) {
                     registrationReasons +=
                         if (streamTypes.any {
