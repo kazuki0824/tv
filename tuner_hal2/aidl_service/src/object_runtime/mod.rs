@@ -1018,11 +1018,7 @@ fn status_from_close_hal_error(
     status_from_hal_error(log_close_hal_error(handle, phase, error))
 }
 
-fn log_close_hal_error(
-    handle: AidlObjectHandle,
-    phase: &'static str,
-    error: HalError,
-) -> HalError {
+fn log_close_hal_error(handle: AidlObjectHandle, phase: &'static str, error: HalError) -> HalError {
     log::error!(
         "object close failed: phase={phase} kind={:?} object_id={:?} generation={:?} error={error:?}",
         handle.object_kind(),
@@ -1083,8 +1079,8 @@ pub fn close_object_after_close_preflight(
     if object_close_is_idempotent_complete(context, handle)? {
         return Ok(());
     }
-    let result = execute_close_after_preflight_once(context, handle, method)
-        .map_err(status_from_hal_error);
+    let result =
+        execute_close_after_preflight_once(context, handle, method).map_err(status_from_hal_error);
     if result.is_err() && object_close_is_idempotent_complete(context, handle)? {
         return Ok(());
     }
@@ -1721,8 +1717,8 @@ mod tests {
         let context = context_for_runtime(&runtime);
 
         for _ in 0..2 {
-            let error = retry_cleanup_from_reaper(&context, handle, AidlMethodCall::LnbClose)
-                .unwrap_err();
+            let error =
+                retry_cleanup_from_reaper(&context, handle, AidlMethodCall::LnbClose).unwrap_err();
             assert!(matches!(
                 &error,
                 HalError::InvalidArgument {
@@ -1730,7 +1726,11 @@ mod tests {
                     ..
                 }
             ));
-            let snapshot = runtime.lock().unwrap().object_cleanup_diagnostics().unwrap();
+            let snapshot = runtime
+                .lock()
+                .unwrap()
+                .object_cleanup_diagnostics()
+                .unwrap();
             let record = snapshot.records().last().unwrap();
             assert_eq!(record.object_id(), handle.object_id());
             assert_eq!(record.generation(), handle.generation());
