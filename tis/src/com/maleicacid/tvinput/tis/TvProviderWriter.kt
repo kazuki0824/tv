@@ -795,6 +795,13 @@ class TvProviderWriter private constructor(
         private val context: Context,
         private val inputId: String,
     ) : ChannelStore {
+        private companion object {
+            const val CHANNEL_ID_COLUMN_INDEX = 0
+            const val ORIGINAL_NETWORK_ID_COLUMN_INDEX = 1
+            const val TRANSPORT_STREAM_ID_COLUMN_INDEX = 2
+            const val SERVICE_ID_COLUMN_INDEX = 3
+        }
+
         // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
         @Suppress("MaxLineLength")
         override fun findExistingChannelId(key: ServiceKey): Result<Long?> =
@@ -813,11 +820,11 @@ class TvProviderWriter private constructor(
                 cursor.use { rows ->
                     var found: Long? = null
                     while (rows.moveToNext()) {
-                        if (rows.getInt(1) == key.originalNetworkId &&
-                            rows.getInt(2) == key.transportStreamId &&
-                            rows.getInt(3) == key.serviceId
+                        if (rows.getInt(ORIGINAL_NETWORK_ID_COLUMN_INDEX) == key.originalNetworkId &&
+                            rows.getInt(TRANSPORT_STREAM_ID_COLUMN_INDEX) == key.transportStreamId &&
+                            rows.getInt(SERVICE_ID_COLUMN_INDEX) == key.serviceId
                         ) {
-                            found = rows.getLong(0)
+                            found = rows.getLong(CHANNEL_ID_COLUMN_INDEX)
                             break
                         }
                     }

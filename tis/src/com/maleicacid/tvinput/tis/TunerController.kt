@@ -202,17 +202,25 @@ class TunerController(
         if (error is InterruptedException) Thread.currentThread().interrupt()
         val failure =
             when (error) {
-                is InterruptedException ->
+                is InterruptedException -> {
                     RuntimeException("TunerController executor interrupted inputId=$inputId", error)
-                is ExecutionException ->
+                }
+
+                is ExecutionException -> {
                     when (val cause = error.cause ?: error) {
                         is RuntimeException -> cause
                         is Error -> cause
                         else -> RuntimeException(cause)
                     }
-                is RejectedExecutionException ->
+                }
+
+                is RejectedExecutionException -> {
                     IllegalStateException("TunerController executor は停止済みです inputId=$inputId", error)
-                else -> error
+                }
+
+                else -> {
+                    error
+                }
             }
         throw failure
     }

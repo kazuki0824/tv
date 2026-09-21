@@ -720,10 +720,7 @@ mod tests {
             );
         }
         for name in ["pxs1urvideo0", "isdbt2071video0"] {
-            assert_eq!(
-                px4_frontend_systems(0, name),
-                vec![FrontendSystem::IsdbT]
-            );
+            assert_eq!(px4_frontend_systems(0, name), vec![FrontendSystem::IsdbT]);
         }
         assert!(px4_frontend_systems(0, "unknown0").is_empty());
     }
