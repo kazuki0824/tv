@@ -67,10 +67,7 @@ enum DeathLinkState {
 }
 
 // 死亡通知の線形化点。poison時も死亡だけは記録し、登録側はpoisonを失敗として扱う。
-fn mark_callback_dead(
-    dead: &AtomicBool,
-    gate: &Mutex<()>,
-) -> Result<(), AidlCallbackStoreError> {
+fn mark_callback_dead(dead: &AtomicBool, gate: &Mutex<()>) -> Result<(), AidlCallbackStoreError> {
     match gate.lock() {
         Ok(_guard) => {
             dead.store(true, Ordering::Release);
