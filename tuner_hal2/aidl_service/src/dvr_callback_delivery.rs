@@ -15,8 +15,8 @@ use maleicacid_tuner_hal2_service_runtime::{
     join_worker_classified, CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport,
     CapabilitySnapshot, ClassifiedWorkerTerminalResult, DvrPostCommitNotificationDiagnosticRecord,
     DvrPostCommitNotificationFailureKind, DvrPostCommitNotificationPhase,
-    DvrStatusNotifierCleanupDiagnosticRecord, DvrStatusPollSnapshot, WorkerRuntime,
-    WorkerFailureCategory, WorkerRuntimeSupervisor,
+    DvrStatusNotifierCleanupDiagnosticRecord, DvrStatusPollSnapshot, WorkerFailureCategory,
+    WorkerRuntime, WorkerRuntimeSupervisor,
 };
 
 use crate::filter_callback_delivery::dispatch_filter_event_snapshots;
@@ -52,9 +52,7 @@ fn join_finished_dvr_status_notifier(
     match join_worker_classified(notifier.worker) {
         ClassifiedWorkerTerminalResult::Normal(())
         | ClassifiedWorkerTerminalResult::StopRequested => (Ok(()), None),
-        ClassifiedWorkerTerminalResult::Failure { category, error } => {
-            (Err(error), Some(category))
-        }
+        ClassifiedWorkerTerminalResult::Failure { category, error } => (Err(error), Some(category)),
     }
 }
 
@@ -997,8 +995,7 @@ fn finish_reaped_dvr_status_notifier(
 ) {
     let handle = job.handle;
     let restart_requested = job.restart_requested;
-    let (cleanup_result, worker_failure_category) =
-        join_finished_dvr_status_notifier(job.notifier);
+    let (cleanup_result, worker_failure_category) = join_finished_dvr_status_notifier(job.notifier);
     let Some(context) = context else {
         return;
     };

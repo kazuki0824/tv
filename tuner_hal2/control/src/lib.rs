@@ -330,9 +330,7 @@ impl<T> WorkerRuntime<T> {
             .map(|handle| handle.is_thread_finished())
             .unwrap_or(true)
     }
-    pub fn request_stop_and_wake(
-        &self,
-    ) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+    pub fn request_stop_and_wake(&self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
         match self.handle.as_ref() {
             Some(handle) => handle.request_stop_and_wake(),
             None => Ok(()),

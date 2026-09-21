@@ -64,10 +64,10 @@ use crate::diagnostics::{
     DvrStatusNotifierCleanupDiagnosticSnapshot, FilterCallbackDeliveryDiagnosticPhase,
     FilterCallbackDeliveryDiagnosticRecord, FilterCallbackDeliveryDiagnosticSnapshot,
     FrontendCallbackDeliveryDiagnosticPhase, FrontendCallbackDeliveryDiagnosticRecord,
-    FrontendCallbackDeliveryDiagnosticSnapshot, QueueDescriptorQueryDiagnosticRecord,
-    QueueDescriptorQueryDiagnosticSnapshot, SharedCallbackArtifactRuntimeSplitDiagnostics,
-    SharedDvrPostCommitNotificationDiagnostics, SharedDvrStatusNotifierCleanupDiagnostics,
-    LnbBackendFailureDiagnosticRecord, StartupDiagnosticRecord, StartupDiagnosticSnapshot,
+    FrontendCallbackDeliveryDiagnosticSnapshot, LnbBackendFailureDiagnosticRecord,
+    QueueDescriptorQueryDiagnosticRecord, QueueDescriptorQueryDiagnosticSnapshot,
+    SharedCallbackArtifactRuntimeSplitDiagnostics, SharedDvrPostCommitNotificationDiagnostics,
+    SharedDvrStatusNotifierCleanupDiagnostics, StartupDiagnosticRecord, StartupDiagnosticSnapshot,
 };
 use crate::dispatch::{
     dispatch_target_for, missing_adapter_transactions, ServiceRuntimeDispatchTarget,
@@ -3001,7 +3001,9 @@ impl TunerServiceRuntime {
 
         for transaction in missing_adapter_transactions() {
             self.diagnostics
-                .push(StartupDiagnosticRecord::runtime_dispatch_missing(transaction));
+                .push(StartupDiagnosticRecord::runtime_dispatch_missing(
+                    transaction,
+                ));
         }
 
         let mut physical_group_by_path: BTreeMap<PathBuf, (FrontendBackendKind, i32)> =
@@ -3243,7 +3245,9 @@ impl TunerServiceRuntime {
         let target = dispatch_target_for(transaction);
         if target.is_none() {
             self.diagnostics
-                .push(StartupDiagnosticRecord::runtime_dispatch_missing(transaction));
+                .push(StartupDiagnosticRecord::runtime_dispatch_missing(
+                    transaction,
+                ));
         }
         target
     }
@@ -3474,9 +3478,10 @@ impl TunerServiceRuntime {
             | RuntimeCommandDispatchError::RuntimeLockPoison { transaction },
         ) = &plan
         {
-            self.diagnostics.push(StartupDiagnosticRecord::runtime_dispatch_missing(
-                *transaction,
-            ));
+            self.diagnostics
+                .push(StartupDiagnosticRecord::runtime_dispatch_missing(
+                    *transaction,
+                ));
         }
         plan
     }

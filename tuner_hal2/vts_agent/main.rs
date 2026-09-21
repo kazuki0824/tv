@@ -639,36 +639,36 @@ fn handle_request(session: &DeviceSession, request: &Value) -> Result<bool, Stri
 fn run(args: Args) -> Result<(), String> {
     let mut session = DeviceSession::open(args)?;
     let result = (|| {
-    write_response(json!({
-        "status": "ready",
-        "frequency_hz": session.args.frequency_hz,
-    }))?;
+        write_response(json!({
+            "status": "ready",
+            "frequency_hz": session.args.frequency_hz,
+        }))?;
 
-    let stdin = std::io::stdin();
-    for line in stdin.lock().lines() {
-        let line = line.map_err(|e| format!("stdin read failed: {e}"))?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let request: Value = match serde_json::from_str(&line) {
-            Ok(value) => value,
-            Err(error) => {
-                write_response(json!({
-                    "status": "error",
-                    "message": format!("malformed request JSON: {error}"),
-                }))?;
+        let stdin = std::io::stdin();
+        for line in stdin.lock().lines() {
+            let line = line.map_err(|e| format!("stdin read failed: {e}"))?;
+            if line.trim().is_empty() {
                 continue;
             }
-        };
-        match handle_request(&session, &request) {
-            Ok(true) => {}
-            Ok(false) => break,
-            Err(error) => {
-                write_response(json!({"status": "error", "message": error}))?;
+            let request: Value = match serde_json::from_str(&line) {
+                Ok(value) => value,
+                Err(error) => {
+                    write_response(json!({
+                        "status": "error",
+                        "message": format!("malformed request JSON: {error}"),
+                    }))?;
+                    continue;
+                }
+            };
+            match handle_request(&session, &request) {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(error) => {
+                    write_response(json!({"status": "error", "message": error}))?;
+                }
             }
         }
-    }
-    Ok(())
+        Ok(())
     })();
     compose_cleanup_result(result, session.close())
 }
