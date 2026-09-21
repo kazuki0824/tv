@@ -72,19 +72,16 @@ pub(crate) struct ExecutedLnbDiseqc {
     lnb_key: LnbRuntimeId,
     expected_generation: u64,
     outcome: LnbBackendApplyOutcome,
-    failure_diagnostic: Option<LnbBackendFailureDiagnosticRecord>,
 }
 
 impl PreparedLnbDiseqc {
     pub(crate) fn execute(self, permit: &LnbPhysicalIoPermit<'_>) -> ExecutedLnbDiseqc {
         let mut backend = ServiceRuntimeLnbProfileAdapter::new(self.backend, permit);
         let outcome = backend.send_diseqc_message(self.lnb_id, &self.message);
-        let failure_diagnostic = backend.take_failure_diagnostic();
         ExecutedLnbDiseqc {
             lnb_key: self.lnb_key,
             expected_generation: self.expected_generation,
             outcome,
-            failure_diagnostic,
         }
     }
 }
@@ -301,9 +298,6 @@ impl<'a> LnbMutationContext<'a> {
         &mut self,
         executed: ExecutedLnbDiseqc,
     ) -> Result<(), HalError> {
-        if let Some(record) = executed.failure_diagnostic.clone() {
-            self.runtime.record_lnb_backend_failure_diagnostic(record);
-        }
         self.runtime
             .registry_mut()
             .finish_lnb_diseqc(

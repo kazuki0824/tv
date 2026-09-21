@@ -85,6 +85,17 @@ impl FrontendWorkerTerminalEvent {
     pub fn from_stop_outcome(outcome: &FrontendWorkerStopOutcome) -> Option<Self> {
         match outcome {
             FrontendWorkerStopOutcome::NotRunning => None,
+            FrontendWorkerStopOutcome::BackendSubmitFailed {
+                frontend_id, kind, generation, failure,
+            } => Some(Self::new(
+                *frontend_id,
+                *generation,
+                *kind,
+                match failure.cleanup_result() {
+                    Ok(()) => WorkerTerminalResult::Normal(()),
+                    Err(error) => WorkerTerminalResult::RuntimeFailure(error),
+                },
+            )),
             FrontendWorkerStopOutcome::CancelRequested {
                 frontend_id,
                 kind,
