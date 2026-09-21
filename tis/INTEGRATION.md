@@ -85,6 +85,16 @@ libaribcaption rendererの設計正本は本節と`DESIGN_JA.md`に集約済み�
 
 `MaleicacidTvInput` は `/system_ext` priv-app として組み込み、`privapp-permissions-maleicacid-tvinput` を同じ system_ext image に入れる。
 
+Tuner SDK は `TunerResourceManagerService.registerClientProfile()` を経由してTRMへclientを登録するため、TISは `android.permission.TUNER_RESOURCE_ACCESS` をmanifestで要求し、同permissionを `privapp-permissions-maleicacid-tvinput.xml` で許可する。`ACCESS_TV_TUNER` と `ACCESS_TV_DESCRAMBLER` だけではTRM client登録条件を満たさない。Tuner HAL serviceと `android.hardware.tv.tuner` featureが存在していても、このpermissionが付与されていなければ `Tuner` の生成は `registerClientProfile()` の `SecurityException` で失敗する。
+
+実機ではTIS起動前に次を確認する。
+
+```text
+cmd package check-permission android.permission.TUNER_RESOURCE_ACCESS com.maleicacid.tvinput
+```
+
+結果がgrant済みであることを確認し、Tuner生成時に `registerClientProfile()` のpermission拒否が発生しないことを確認する。
+
 確認対象は次のとおりとする。
 
 ```text
@@ -180,6 +190,7 @@ adb shell ls /product/etc/permissions/android.software.live_tv.xml
 adb shell ls /product/app/AribContentRatings/AribContentRatings.apk
 adb shell ls /system_ext/etc/permissions/privapp-permissions-maleicacid-tvinput.xml
 adb shell ls /system_ext/priv-app/MaleicacidTvInput/MaleicacidTvInput.apk
+adb shell cmd package check-permission android.permission.TUNER_RESOURCE_ACCESS com.maleicacid.tvinput
 adb shell dumpsys tv_input | grep -i Maleicacid
 ```
 
@@ -250,6 +261,7 @@ adb shell ls /product/etc/permissions/android.software.live_tv.xml
 adb shell ls /product/app/AribContentRatings/AribContentRatings.apk
 adb shell ls /system_ext/etc/permissions/privapp-permissions-maleicacid-tvinput.xml
 adb shell ls /system_ext/priv-app/MaleicacidTvInput/MaleicacidTvInput.apk
+adb shell cmd package check-permission android.permission.TUNER_RESOURCE_ACCESS com.maleicacid.tvinput
 adb shell dumpsys tv_input | grep -i Maleicacid
 ```
 

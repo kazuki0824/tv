@@ -24,10 +24,10 @@ use maleicacid_tuner_hal2_demux::{
     TsPacketValidationError, ValidatedTsPacket,
 };
 #[cfg(test)]
-use maleicacid_tuner_hal2_descrambler::DescramblerKeySlot;
+use maleicacid_tuner_hal2_descrambler::DescramblerKeyToken;
 use maleicacid_tuner_hal2_descrambler::{
-    DescrambleFailure, DescramblerKeyToken, DescramblerKeyTokenError, DescramblerPid,
-    DescramblerPidClaim, DescramblerPidClaimError,
+    DescrambleFailure, DescramblerKeyTokenError, DescramblerPid, DescramblerPidClaim,
+    DescramblerPidClaimError,
 };
 use maleicacid_tuner_hal2_device::{
     FrontendLivePacketSink, FrontendLivePumpOwner, FrontendLivePumpReport,
@@ -367,8 +367,15 @@ impl FrontendLivePacketSink for FrontendDemuxPacketSink {
                     "service runtime lock poisoned while delivering frontend TS packet",
                 )
             })?;
-            let reports =
-                runtime.push_frontend_ts_packet_to_bound_demuxes(self.frontend_id, packet)?;
+            let requests = runtime
+                .registry
+                .descrambler_key_refresh_requests_for_frontend(FrontendRuntimeId(self.frontend_id));
+            let packet_keys = runtime.registry.snapshot_descrambler_packet_keys(requests);
+            let reports = runtime.push_frontend_ts_packet_to_bound_demuxes(
+                self.frontend_id,
+                packet,
+                &packet_keys,
+            )?;
             runtime.filter_event_delivery_snapshots(&reports)
         };
         let wake_result = self.dispatcher.wake();
@@ -1722,14 +1729,13 @@ impl TunerServiceRuntime {
     }
 
     #[cfg(test)]
-    pub(crate) fn register_descrambler_key_slot(
+    pub(crate) fn register_descrambler_key_token(
         &mut self,
         token: DescramblerKeyToken,
-        key_slot: DescramblerKeySlot,
     ) -> Result<(), HalError> {
         self.registry
             .descrambler_key_table_mut()
-            .insert_test_key_slot(token, DescramblerKeySlotId(1), key_slot);
+            .insert_test_key(token, DescramblerKeySlotId(1));
         Ok(())
     }
 

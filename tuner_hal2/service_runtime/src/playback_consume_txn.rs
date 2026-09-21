@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn playback_uses_resolved_keys_and_preserves_ciphertext_without_a_key() {
-        use crate::descrambler_key_table::DescramblerKeySlotId;
+        use crate::descrambler_key_table::tests::TestKeyReference;
         use crate::registry::{ResolvedDescramblerPacketFlow, RuntimeRegistry};
         use maleicacid_tuner_hal2_demux::{
             FilterConfig, FilterConfigKind, FilterOpenType, FilterRuntimeConfigureRequest,
@@ -356,7 +356,7 @@ mod tests {
         let mut encrypted = clear;
         multi2_encrypt_payload(&mut encrypted[4..], slot.key_for(KeyParity::Even).unwrap());
         encrypted[3] = 0x90;
-        for has_key in [true, false] {
+        for (has_key, concurrent_failure) in [(true, false), (false, false), (false, true)] {
             let mut registry = RuntimeRegistry::default();
             let descrambler = registry.allocate_descrambler().unwrap();
             registry
@@ -371,15 +371,15 @@ mod tests {
                     DescramblerPidClaim::from_demux_input(100).unwrap(),
                 )
                 .unwrap();
-            if has_key {
-                let token = DescramblerKeyToken::try_from_bytes(vec![0x71; 8]).unwrap();
-                registry.descrambler_key_table_mut().insert_test_key_slot(
-                    token.clone(),
-                    DescramblerKeySlotId(1),
-                    slot.clone(),
-                );
+            let token = DescramblerKeyToken::try_from_bytes(vec![0x71; 8]).unwrap();
+            let reference =
+                std::sync::Arc::new(TestKeyReference(std::sync::Mutex::new(Some(slot.clone()))));
+            if has_key || concurrent_failure {
                 registry
-                    .replace_descrambler_key_use_case(descrambler.id, token)
+                    .publish_descrambler_key_resolution(token.clone(), reference.clone())
+                    .unwrap();
+                registry
+                    .replace_descrambler_key_use_case(descrambler.id, token.clone())
                     .unwrap();
             }
             let mut demux = started_demux();
@@ -427,8 +427,18 @@ mod tests {
             let mut txn = pending_txn(encrypted);
             let pending = txn.pending_packet(&demux).unwrap().unwrap();
             let pid = ValidatedTsPacket::validate(pending.bytes()).unwrap().pid();
+            let requests = registry.descrambler_key_refresh_requests_for_demuxes(
+                &[(crate::registry::DemuxRuntimeId(1), 1)]
+                    .into_iter()
+                    .collect(),
+            );
+            if concurrent_failure {
+                assert_eq!(requests.len(), 1);
+                *reference.0.lock().unwrap() = None;
+            }
+            let packet_keys = registry.snapshot_descrambler_packet_keys(requests);
             let decision = registry
-                .resolved_descrambler_packet_material_for_demux(1, 1, pid)
+                .resolved_descrambler_packet_material_for_demux(1, 1, pid, &packet_keys)
                 .decide_descrambled_packet(1, pid, pending.bytes());
             assert_eq!(decision.packet, if has_key { clear } else { encrypted });
             assert_eq!(

@@ -4,30 +4,40 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 
 namespace maleicacid::cas {
 
-// Tuner 内部 consumer 用。packet ごとに取得し、別 packet へキャッシュしない。
+// 取得済みの1 packet だけで使用し、別 packet へ持ち越さない。
 struct PacketKeys {
     std::array<uint8_t, 8> odd{};
     std::array<uint8_t, 8> even{};
     ~PacketKeys();
 };
 
-enum class KeyResult { Ok, InvalidToken, Unavailable };
-KeyResult acquirePacketKeys(const uint8_t* token, size_t length, PacketKeys* output);
+enum class KeyResult { Ok, InvalidToken, UnknownToken, Unavailable };
+enum class CasScheme : uint8_t { Unknown = 0, B25 = 1, B1 = 2 };
 
-// 復号側への静的リンクで参照する parameter。鍵共有の応答には含めない。
-struct Multi2Parameters {
-    static constexpr std::array<uint8_t, 32> systemKey{
-        0x36, 0x31, 0x04, 0x66, 0x4b, 0x17, 0xea, 0x5c,
-        0x32, 0xdf, 0x9c, 0xf5, 0xc4, 0xc3, 0x6c, 0x1b,
-        0xec, 0x99, 0x39, 0x21, 0x68, 0x9d, 0x4b, 0xb7,
-        0xb7, 0x4e, 0x40, 0x84, 0x0d, 0x2e, 0x7d, 0x98,
-    };
-    static constexpr std::array<uint8_t, 8> initialCbc{
-        0xfe, 0x27, 0x19, 0x99, 0x19, 0x69, 0x09, 0x11,
-    };
+struct SharedKeyState;
+class KeyReference {
+public:
+    ~KeyReference();
+    KeyReference(const KeyReference&) = delete;
+    KeyReference& operator=(const KeyReference&) = delete;
+    // CAS への通信は行わず、結合済み共有領域と所有者の生存状態を確認する。
+    KeyResult snapshot(PacketKeys* output) const;
+    CasScheme scheme() const { return scheme_; }
+    static KeyResult bind(const uint8_t* token, size_t length,
+                          std::unique_ptr<KeyReference>* output);
+#ifdef MALEICACID_CAS_TEST
+    static uint64_t bindingQueriesForTest();
+#endif
+private:
+    KeyReference(const SharedKeyState* state, int owner, CasScheme scheme)
+        : state_(state), owner_(owner), scheme_(scheme) {}
+    const SharedKeyState* state_;
+    int owner_;
+    CasScheme scheme_;
 };
 
 }  // namespace maleicacid::cas

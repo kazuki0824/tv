@@ -170,6 +170,8 @@ rust_library {
     crate_root: "descrambler/src/lib.rs",
     srcs: [
         "descrambler/src/lib.rs",
+        "descrambler/src/cas_key_resolver.rs",
+        "descrambler/src/product_parameters.rs",
         "descrambler/src/core/mod.rs",
         "descrambler/src/core/multi2.rs",
         "descrambler/src/core/packet.rs",
@@ -179,6 +181,8 @@ rust_library {
     ],
     edition: "2021",
     rustlibs: ["libmaleicacid_tuner_hal2_common", "libmaleicacid_tuner_hal2_control_core"],
+    static_libs: ["libmaleicacid_cas_key_client"],
+    shared_libs: ["libc++"],
 }
 
 rust_library {
@@ -431,6 +435,8 @@ rust_test {
     crate_root: "descrambler/src/lib.rs",
     srcs: [
         "descrambler/src/lib.rs",
+        "descrambler/src/cas_key_resolver.rs",
+        "descrambler/src/product_parameters.rs",
         "descrambler/src/core/mod.rs",
         "descrambler/src/core/multi2.rs",
         "descrambler/src/core/packet.rs",
@@ -440,6 +446,8 @@ rust_test {
     ],
     edition: "2021",
     rustlibs: ["libmaleicacid_tuner_hal2_common", "libmaleicacid_tuner_hal2_control_core"],
+    static_libs: ["libmaleicacid_cas_key_client"],
+    shared_libs: ["libc++"],
     auto_gen_config: true,
     test_suites: ["general-tests"],
 }

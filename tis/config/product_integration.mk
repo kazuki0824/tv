@@ -1,4 +1,6 @@
+# AOSP標準のTV視聴アプリを製品へ組み込み、TvProviderのchannel URIをOS上で開けるようにする。
 PRODUCT_PACKAGES += \
+    LiveTv \
     MaleicacidTvInput \
     AribContentRatings \
     privapp-permissions-maleicacid-tvinput \
