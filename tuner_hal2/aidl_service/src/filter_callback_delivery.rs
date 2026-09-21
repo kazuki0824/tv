@@ -10,7 +10,9 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
 };
 use binder::ParcelFileDescriptor;
 use maleicacid_tuner_hal2_binder_adapter::AidlObjectKind;
-use maleicacid_tuner_hal2_common::{FirstErrorCollector, HalError, HalErrorDetail, HalInternalKind};
+use maleicacid_tuner_hal2_common::{
+    FirstErrorCollector, HalError, HalErrorDetail, HalInternalKind,
+};
 use maleicacid_tuner_hal2_demux::{
     FilterStatusEvent, TsRecordEventData, RECORD_SC_TYPE_SC, RECORD_SC_TYPE_SC_AVC,
     RECORD_SC_TYPE_SC_HEVC, RECORD_SC_TYPE_SC_VVC,
