@@ -31,7 +31,7 @@ TvProvider 標準列へ投影する ARIB descriptor 由来値は、Rust parser �
 
 ### Channels.COLUMN_TYPE の投影境界
 
-`TvContract.Channels.COLUMN_TYPE` は必須かつ作成後変更不能の放送方式フィールドとして、channel insert時に必ず設定する。値は受信したサービスの正規化済みdelivery systemから決定し、周波数帯、scan候補の由来、backend名、driver名、`service_type`、stream selectorの有無から推測しない。
+`TvContract.Channels.COLUMN_TYPE` は必須かつ作成後変更不能の放送方式フィールドとして、channel insert時に必ず設定する。基礎となる方式は受信したサービスの正規化済みdelivery systemから決定し、ISDB-TのうちNIT Partial Reception Descriptorで部分受信サービスと確定したserviceだけを`TYPE_1SEG`へ細分する。周波数帯、scan候補の由来、backend名、driver名、`service_type`、stream selectorの有無から推測しない。
 
 現行productの写像は次に固定する。
 
