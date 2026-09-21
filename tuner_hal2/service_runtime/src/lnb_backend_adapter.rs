@@ -11,7 +11,9 @@ use maleicacid_tuner_hal2_lnb::{
 use crate::registry::{
     FrontendRuntimeId, LnbPhysicalIoPermit, LnbRegistryProfile, LnbRuntimeId, RuntimeRegistry,
 };
-use crate::{LnbBackendFailureClass, LnbBackendFailureDiagnosticRecord};
+use crate::{
+    LnbBackendFailureClass, LnbBackendFailureDiagnosticRecord, LnbBackendFailureStep,
+};
 
 #[derive(Debug)]
 struct LnbFrontendIoSnapshot {
@@ -153,7 +155,7 @@ impl LnbBackendOps for ServiceRuntimeLnbProfileAdapter<'_, '_> {
                 FrontendBackendLnbApplyOutcome::Rejected(error) => {
                     self.failure_diagnostic = Some(LnbBackendFailureDiagnosticRecord {
                         lnb_id,
-                        step: maleicacid_tuner_hal2_lnb::LnbFailureStep::ApplyBackend,
+                        step: LnbBackendFailureStep::ApplyBackend,
                         frontend_id: frontend.frontend_id.0,
                         backend: frontend.backend,
                         device_path: frontend.device_path.clone(),
@@ -165,7 +167,7 @@ impl LnbBackendOps for ServiceRuntimeLnbProfileAdapter<'_, '_> {
                 FrontendBackendLnbApplyOutcome::Indeterminate(error) => {
                     self.failure_diagnostic = Some(LnbBackendFailureDiagnosticRecord {
                         lnb_id,
-                        step: maleicacid_tuner_hal2_lnb::LnbFailureStep::ApplyBackend,
+                        step: LnbBackendFailureStep::ApplyBackend,
                         frontend_id: frontend.frontend_id.0,
                         backend: frontend.backend,
                         device_path: frontend.device_path.clone(),

@@ -12,9 +12,6 @@ use maleicacid_tuner_hal2_descrambler::DescramblerPid;
 use maleicacid_tuner_hal2_domain_request::{
     AidlObjectGeneration, AidlObjectId, AidlObjectKind, RuntimeTransactionName,
 };
-use maleicacid_tuner_hal2_lnb::LnbFailureStep;
-
-use crate::worker_failure_classifier::WorkerFailureCategory;
 
 pub const DEFAULT_DIAGNOSTIC_STORE_LIMIT: usize = 128;
 
@@ -156,10 +153,29 @@ pub enum LnbBackendFailureClass {
     Indeterminate,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LnbBackendFailureStep {
+    ApplyBackend,
+    SendDiseqc,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkerFailureCategory {
+    CallbackCommit,
+    CallbackArtifact,
+    CallbackPolicy,
+    CallbackConversion,
+    CallbackBinder,
+    CallbackNotifierTerminal,
+    CallbackCleanup,
+    Join,
+    Unknown,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LnbBackendFailureDiagnosticRecord {
     pub lnb_id: i32,
-    pub step: LnbFailureStep,
+    pub step: LnbBackendFailureStep,
     pub frontend_id: i32,
     pub backend: FrontendBackendKind,
     pub device_path: PathBuf,

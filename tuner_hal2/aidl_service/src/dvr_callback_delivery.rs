@@ -1001,9 +1001,8 @@ fn finish_reaped_dvr_status_notifier(
         join_finished_dvr_status_notifier(job.notifier);
     let Some(context) = context else {
         return;
-    }
-    .with_worker_failure_category(worker_failure_category);
-    let record = if restart_requested {
+    };
+    let record = (if restart_requested {
         DvrStatusNotifierCleanupDiagnosticRecord::supersede_cleanup(
             AidlObjectId(job.key.object_id),
             AidlObjectGeneration(job.key.generation),
@@ -1033,7 +1032,8 @@ fn finish_reaped_dvr_status_notifier(
                 )
             }
         }
-    };
+    })
+    .with_worker_failure_category(worker_failure_category);
     record_dvr_status_notifier_lifecycle_outcome(&context, handle, record);
 
     match cleanup_result {

@@ -75,11 +75,11 @@ pub use diagnostics::{
     FilterCallbackDeliveryDiagnosticRecord, FilterCallbackDeliveryDiagnosticSnapshot,
     FrontendCallbackDeliveryDiagnosticPhase, FrontendCallbackDeliveryDiagnosticRecord,
     FrontendCallbackDeliveryDiagnosticSnapshot, LnbBackendFailureClass,
-    LnbBackendFailureDiagnosticRecord, QueueDescriptorQueryDiagnosticRecord,
+    LnbBackendFailureDiagnosticRecord, LnbBackendFailureStep, QueueDescriptorQueryDiagnosticRecord,
     QueueDescriptorQueryDiagnosticSnapshot, SharedCallbackArtifactRuntimeSplitDiagnostics,
     SharedDvrPostCommitNotificationDiagnostics, SharedDvrStatusNotifierCleanupDiagnostics,
     StartupDiagnosticKind, StartupDiagnosticPhase, StartupDiagnosticRecord,
-    StartupDiagnosticSnapshot,
+    StartupDiagnosticSnapshot, WorkerFailureCategory,
 };
 pub use dispatch::{dispatch_target_for, ServiceRuntimeDispatchTarget};
 pub use frontend_ops::{
@@ -133,7 +133,7 @@ pub use root_method_txn::{
     RootFrontendInfoSnapshot, RootQueryRequest, RootQueryResponse,
 };
 pub use root_object_ops::RootOpenTxn;
-pub use worker_failure_classifier::{ClassifiedWorkerTerminalResult, WorkerFailureCategory};
+pub use worker_failure_classifier::ClassifiedWorkerTerminalResult;
 pub use worker_runtime::{
     join_worker_classified, WorkerContext, WorkerHandle, WorkerRuntime, WorkerRuntimeReaperQueue,
     WorkerRuntimeSupervisor, WorkerTerminalResult, CLEANUP_RETRY_SCHEDULE_MS,
