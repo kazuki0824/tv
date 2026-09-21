@@ -863,6 +863,7 @@ class TvProviderWriter private constructor(
                         TvContract.Channels.COLUMN_DISPLAY_NUMBER,
                         TvContract.Channels.COLUMN_DISPLAY_NAME,
                         TvContract.Channels.COLUMN_SERVICE_TYPE,
+                        TvContract.Channels.COLUMN_TYPE,
                         TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA,
                     )
                 val out = mutableListOf<ChannelRecord>()
@@ -872,8 +873,9 @@ class TvProviderWriter private constructor(
                         ?: error("TvProvider channel list query returned null cursor")
                 cursor.use { cursor ->
                     while (cursor.moveToNext()) {
-                        val stored = ProviderDataBridge.decodeChannelProviderData(providerDataBytes(cursor, 7))
+                        val stored = ProviderDataBridge.decodeChannelProviderData(providerDataBytes(cursor, 8))
                         val serviceType = cursor.getString(6)?.toIntOrNull()?.takeIf { it in 0..0xff }
+                        val partialReception = cursor.getString(7) == TvContract.Channels.TYPE_1SEG
                         val rowServiceKey = ServiceKey(cursor.getInt(1), cursor.getInt(2), cursor.getInt(3))
                         if (stored == null || stored.serviceKey != rowServiceKey || serviceType == null) {
                             error("既存 channel の物理選局情報を復元できません id=${cursor.getLong(0)}")
@@ -896,6 +898,7 @@ class TvProviderWriter private constructor(
                                     satelliteBand = stored.tune.satelliteBand,
                                     remoteControlKeyId = stored.tune.remoteControlKeyId,
                                     requiresCas = stored.requiresCas,
+                                    partialReception = partialReception,
                                 )
                         }
                     }
