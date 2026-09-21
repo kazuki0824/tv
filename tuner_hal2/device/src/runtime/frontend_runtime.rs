@@ -1605,7 +1605,17 @@ mod tests {
                 runtime.backend_failure_diagnostic_snapshot(backend);
             assert_eq!(records.len(), 1);
             assert_eq!(record_failures, 1);
-            assert_eq!(runtime.snapshot(), before);
+            let mut expected = before;
+            expected.diagnostic_write_failures.push(
+                FrontendDiagnosticWriteFailure::BackendFailureTargetMismatch {
+                    frontend_id: 7,
+                    requested_generation: 3,
+                    runtime_generation: 2,
+                    requested_backend: backend,
+                    runtime_backend: backend,
+                },
+            );
+            assert_eq!(runtime.snapshot(), expected);
         }
     }
 
