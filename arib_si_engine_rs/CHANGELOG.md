@@ -1,3 +1,9 @@
+# Partial Reception Descriptorをサービス意味事実へ追加
+
+- 地上デジタルNIT TS loopのPartial Reception Descriptor (0xFB)を解析し、列挙SIDだけをServiceSemanticFacts.partialReceptionへ反映する。
+- service_type=0xC0から部分受信を推定せず、通常data serviceとワンセグを放送SIで区別する。
+- bulk JSONへpartialReceptionを追加し、TISの登録・TvProvider投影判断へ渡す。
+
 # r51_pr91_review_truncated_loop_and_identity
 
 - event loopがsection残量を超えても、受信境界内の共通descriptor解析と全bytesの診断保持を行う。未受信部分を補完せず、構造不正状態を維持する。

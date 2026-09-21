@@ -95,6 +95,7 @@ pub struct DiscoveredService {
     pub original_network_id: u16,
     pub service_id: u16,
     pub service_type: Option<u8>,
+    pub partial_reception: bool,
     pub service_name: Option<String>,
     pub provider_name: Option<String>,
     pub bouquet_name: Option<String>,
@@ -182,6 +183,7 @@ pub struct ServiceSemanticFacts {
     pub transport_stream_id: u16,
     pub service_id: u16,
     pub service_type: Option<u8>,
+    pub partial_reception: bool,
     pub pmt_pid_resolved: bool,
     pub pmt_parsed: bool,
     pub pcr_pid_resolved: bool,
@@ -469,6 +471,7 @@ impl ServiceDiscoveryEngine {
                 service.network_name = None;
                 service.ts_name = None;
                 service.remote_control_key_id = None;
+                service.partial_reception = false;
                 service.system_management = SystemManagementFacts::default();
             }
         }
@@ -515,6 +518,7 @@ impl ServiceDiscoveryEngine {
                 original_network_id: onid,
                 service_id,
                 service_type: None,
+                partial_reception: false,
                 service_name: None,
                 provider_name: None,
                 bouquet_name: None,
@@ -832,21 +836,32 @@ impl ServiceDiscoveryEngine {
             self.transport_entry_mut(tsid, onid);
             self.transport_entry_mut(tsid, onid).system_management =
                 parse_system_management_descriptor(network_descriptors);
-            let (desc_network_name, ts_name, remote_control_key_id) =
-                parse_nit_transport_metadata(&section[desc_start..desc_end])
-                    .unwrap_or((None, None, None));
+            let metadata =
+                parse_nit_transport_metadata(&section[desc_start..desc_end]).unwrap_or_default();
+            for service_id in metadata.partial_reception_services {
+                self.transport_entry_mut(tsid, onid)
+                    .services
+                    .insert(service_id);
+                self.service_entry_mut(tsid, onid, service_id)
+                    .partial_reception = true;
+                self.apply_pending_pmt_to_service(tsid, onid, service_id);
+            }
             let transport = self.transport_entry_mut(tsid, onid);
             if transport.network_name.is_none() {
-                transport.network_name = desc_network_name
+                transport.network_name = metadata
+                    .network_name
                     .as_ref()
                     .map(|decoded| decoded.value.clone())
                     .or_else(|| network_name.as_ref().map(|decoded| decoded.value.clone()));
             }
             if transport.ts_name.is_none() {
-                transport.ts_name = ts_name.as_ref().map(|decoded| decoded.value.clone());
+                transport.ts_name = metadata
+                    .ts_name
+                    .as_ref()
+                    .map(|decoded| decoded.value.clone());
             }
             if transport.remote_control_key_id.is_none() {
-                transport.remote_control_key_id = remote_control_key_id;
+                transport.remote_control_key_id = metadata.remote_control_key_id;
             }
             retain_text_decode_diagnostic(
                 &mut transport.text_decode_diagnostics,
@@ -856,11 +871,11 @@ impl ServiceDiscoveryEngine {
             );
             retain_text_decode_diagnostic(
                 &mut transport.text_decode_diagnostics,
-                desc_network_name.and_then(|decoded| decoded.diagnostic),
+                metadata.network_name.and_then(|decoded| decoded.diagnostic),
             );
             retain_text_decode_diagnostic(
                 &mut transport.text_decode_diagnostics,
-                ts_name.and_then(|decoded| decoded.diagnostic),
+                metadata.ts_name.and_then(|decoded| decoded.diagnostic),
             );
             self.parse_service_list_descriptor(tsid, onid, &section[desc_start..desc_end]);
             if let Some(entry) = self.transports.get_mut(&(tsid, onid)) {
@@ -1316,6 +1331,7 @@ impl ServiceDiscoveryCollector {
                 transport_stream_id: service.transport_stream_id,
                 service_id: service.service_id,
                 service_type: service.service_type,
+                partial_reception: service.partial_reception,
                 pmt_pid_resolved,
                 pmt_parsed: service.pmt_parsed,
                 pcr_pid_resolved: service.pcr_pid.is_some(),
@@ -1758,12 +1774,16 @@ fn parse_system_management_descriptor(descriptors: &[u8]) -> SystemManagementFac
     })
 }
 
-fn parse_nit_transport_metadata(
-    descriptors: &[u8],
-) -> Option<(Option<DecodedSiText>, Option<DecodedSiText>, Option<u8>)> {
-    let mut network_name = None;
-    let mut ts_name = None;
-    let mut remote_control_key_id = None;
+#[derive(Default)]
+struct NitTransportMetadata {
+    network_name: Option<DecodedSiText>,
+    ts_name: Option<DecodedSiText>,
+    remote_control_key_id: Option<u8>,
+    partial_reception_services: BTreeSet<u16>,
+}
+
+fn parse_nit_transport_metadata(descriptors: &[u8]) -> Option<NitTransportMetadata> {
+    let mut metadata = NitTransportMetadata::default();
     let mut cursor = 0usize;
     while cursor + 2 <= descriptors.len() {
         let tag = descriptors[cursor];
@@ -1774,7 +1794,7 @@ fn parse_nit_transport_metadata(
         };
         match tag {
             0x40 => {
-                network_name = Some(decode_si_text_lossy(
+                metadata.network_name = Some(decode_si_text_lossy(
                     "networkName",
                     &descriptors[body_start..body_end],
                 ))
@@ -1782,27 +1802,38 @@ fn parse_nit_transport_metadata(
             0xcd => {
                 let body_len = body_end.saturating_sub(body_start);
                 if body_len >= 2 {
-                    remote_control_key_id = Some(descriptors[body_start]);
+                    metadata.remote_control_key_id = Some(descriptors[body_start]);
                     let ts_name_len = ((descriptors[body_start + 1] >> 2) & 0x3f) as usize;
                     let ts_name_start = body_start + 2;
                     let remaining = body_end.saturating_sub(ts_name_start);
                     if ts_name_len <= remaining {
                         let ts_name_end = ts_name_start + ts_name_len;
-                        ts_name = Some(decode_si_text_lossy(
+                        metadata.ts_name = Some(decode_si_text_lossy(
                             "transportStreamName",
                             &descriptors[ts_name_start..ts_name_end],
                         ));
                     }
                 }
             }
+            0xfb if len % 2 == 0 => {
+                for service in descriptors[body_start..body_end].chunks_exact(2) {
+                    metadata
+                        .partial_reception_services
+                        .insert(u16::from_be_bytes([service[0], service[1]]));
+                }
+            }
             _ => {}
         }
         cursor = body_end;
     }
-    if network_name.is_none() && ts_name.is_none() && remote_control_key_id.is_none() {
+    if metadata.network_name.is_none()
+        && metadata.ts_name.is_none()
+        && metadata.remote_control_key_id.is_none()
+        && metadata.partial_reception_services.is_empty()
+    {
         None
     } else {
-        Some((network_name, ts_name, remote_control_key_id))
+        Some(metadata)
     }
 }
 
@@ -3173,7 +3204,23 @@ mod service_scoped_ca_metadata_tests {
 
 #[cfg(test)]
 mod section_tracker_consistency_tests {
-    use super::SectionTracker;
+    use super::{parse_nit_transport_metadata, SectionTracker};
+
+    #[test]
+    fn partial_reception_descriptor_exposes_only_listed_service_ids() {
+        let descriptors = [0xfb, 4, 0x01, 0x01, 0x01, 0x02];
+        let metadata = parse_nit_transport_metadata(&descriptors).expect("descriptor");
+        assert_eq!(
+            metadata
+                .partial_reception_services
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![0x0101, 0x0102],
+        );
+
+        let malformed = [0xfb, 3, 0x01, 0x01, 0xff];
+        assert!(parse_nit_transport_metadata(&malformed).is_none());
+    }
 
     #[test]
     fn conflicting_last_section_number_never_becomes_complete() {

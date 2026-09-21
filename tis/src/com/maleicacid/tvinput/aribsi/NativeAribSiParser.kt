@@ -912,6 +912,7 @@ class NativeAribSiParser : AutoCloseable {
                 serviceScopedCaDescriptors = parseCaDescriptors(obj.optJSONArray("serviceScopedCaDescriptors")),
                 serviceKey = key,
                 serviceType = optIntOrNull(obj, "serviceType"),
+                partialReception = obj.optBoolean("partialReception"),
                 pmtPidResolved = obj.optBoolean("pmtPidResolved"),
                 pmtParsed = obj.optBoolean("pmtParsed"),
                 pcrPidResolved = obj.optBoolean("pcrPidResolved"),

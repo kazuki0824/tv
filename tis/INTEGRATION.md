@@ -118,6 +118,14 @@ TIS は `directBootAware=true` を維持する。`AndroidManifest.xml` には `<
 
 `BootEpgSyncJobService` は `AndroidManifest.xml` に service として宣言し、`android.permission.BIND_JOB_SERVICE` で保護する。`EpgBootSyncReceiver`、`BootEpgSyncJobService`、`DirectBootGuard`、`BootEpgSyncScheduler` の実行時役割、ジョブ登録・再試行、保留解除、開始条件、ライブセッションとの優先順位は `DESIGN_JA.md` を正とし、本書では状態遷移を再定義しない。
 
+## ワンセグchannelの非browsable統合
+
+TISはNIT Partial Reception Descriptorで確定した部分受信サービスを`TvContract.Channels.TYPE_1SEG`として登録するが、`COLUMN_BROWSABLE`は書き込まない。AOSP TvProviderの新規channel既定値0を使用し、TISへ`ACCESS_ALL_EPG_DATA`を追加しない。
+
+LineageOS 22.1が取得するAOSP Android 15 `packages/apps/TV` baselineでは`SetupUtils.MARK_NEW_CHANNELS_BROWSABLE=false`であり、stock構成はsetup完了時に新規channelを自動browsable化しない。将来このflagを有効化する、または別System TV Appへ置換して新規channelを自動browsable化する場合は、`TYPE_1SEG`を自動昇格対象から除外することを製品統合条件とする。ユーザーがSystem TV Appの明示的なchannel管理操作で可視性を変更することはTISが上書きしない。
+
+確認時は、走査後のone-seg rowで`type=TYPE_1SEG`かつ初期`browsable=0`、同一transportの通常ISDB-T rowが`TYPE_ISDB_T`であることを確認する。
+
 ## ARIB exceptional ratingのLive TV App標準extension統合
 
 JPN parental rating raw `0x12..0xFF` はTISで年齢値へ推測変換せず、`com.maleicacid.tv.ratings / ARIB_EXCEPTIONAL / BROADCASTER_DEFINED`へ写像する。rating定義とTV Appへの発見経路は独立`AribContentRatings` APKがTIF標準providerとして所有し、blocked-rating policyのownerはLive TV Appとする。System TV App本体へ直接patchを当てる方式は採用しない。
