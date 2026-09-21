@@ -1,20 +1,8 @@
 use maleicacid_tuner_hal2_common::HalError;
 
 use crate::boot::{CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport};
+use crate::diagnostics::WorkerFailureCategory;
 use crate::worker_runtime::WorkerTerminalResult;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum WorkerFailureCategory {
-    CallbackCommit,
-    CallbackArtifact,
-    CallbackPolicy,
-    CallbackConversion,
-    CallbackBinder,
-    CallbackNotifierTerminal,
-    CallbackCleanup,
-    Join,
-    Unknown,
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ClassifiedCallbackFailure {
