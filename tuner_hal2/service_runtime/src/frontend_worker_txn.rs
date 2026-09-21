@@ -2897,16 +2897,29 @@ fn accept_frontend_worker_terminal_outcomes(
     let mut failures = FirstErrorCollector::new();
     for (_, outcome) in outcomes {
         if let FrontendWorkerStopOutcome::BackendSubmitFailed {
-            frontend_id, generation, failure, ..
-        } = outcome {
-            failures.push_result(lock_runtime(runtime, "service runtime lock poisoned while recording delayed backend failure")
-                .and_then(|mut guard| guard.frontend_txn().record_frontend_backend_failure_diagnostic(
-                    *frontend_id,
-                    *generation,
-                    failure.step,
-                    failure.error.clone(),
-                    failure.rollback_failure.clone(),
-                )));
+            frontend_id,
+            generation,
+            failure,
+            ..
+        } = outcome
+        {
+            failures.push_result(
+                lock_runtime(
+                    runtime,
+                    "service runtime lock poisoned while recording delayed backend failure",
+                )
+                .and_then(|mut guard| {
+                    guard
+                        .frontend_txn()
+                        .record_frontend_backend_failure_diagnostic(
+                            *frontend_id,
+                            *generation,
+                            failure.step,
+                            failure.error.clone(),
+                            failure.rollback_failure.clone(),
+                        )
+                }),
+            );
         }
         if let Some(event) = FrontendWorkerTerminalEvent::from_stop_outcome(outcome) {
             failures.push_result(
