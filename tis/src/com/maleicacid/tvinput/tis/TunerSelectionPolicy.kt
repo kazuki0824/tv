@@ -14,7 +14,7 @@ import com.maleicacid.tvinput.common.StreamSelectorType
 object TunerSelectionPolicy {
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
     @Suppress("MagicNumber")
-    private val videoStreamTypes = setOf(0x02, 0x1b)
+    private val videoStreamTypes = setOf(0x02, 0x1b, 0x24)
 
     // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
     @Suppress("MagicNumber")
