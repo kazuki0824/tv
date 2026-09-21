@@ -431,7 +431,6 @@ data class SmdSemanticFacts(
 data class ServiceSemanticFacts(
     val serviceKey: ServiceKey,
     val serviceType: Int?,
-    val partialReception: Boolean = false,
     val pmtPidResolved: Boolean,
     val pmtParsed: Boolean,
     val pcrPidResolved: Boolean,
@@ -448,6 +447,7 @@ data class ServiceSemanticFacts(
     val pcrPid: TsPid? = null,
     val serviceScopedCaDescriptors: List<CaDescriptor> = emptyList(),
     val casFactsCanonicalJson: String? = null,
+    val partialReception: Boolean = false,
 )
 
 data class MalformedCaDescriptorDiagnostic(
