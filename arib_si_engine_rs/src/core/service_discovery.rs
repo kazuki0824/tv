@@ -3198,7 +3198,17 @@ mod service_scoped_ca_metadata_tests {
 
 #[cfg(test)]
 mod section_tracker_consistency_tests {
-    use super::SectionTracker;
+    use super::{parse_nit_transport_metadata, SectionTracker};
+
+    #[test]
+    fn partial_reception_descriptor_exposes_only_listed_service_ids() {
+        let descriptors = [0xfb, 4, 0x01, 0x01, 0x01, 0x02];
+        let (_, _, _, services) = parse_nit_transport_metadata(&descriptors).expect("descriptor");
+        assert_eq!(services.into_iter().collect::<Vec<_>>(), vec![0x0101, 0x0102]);
+
+        let malformed = [0xfb, 3, 0x01, 0x01, 0xff];
+        assert!(parse_nit_transport_metadata(&malformed).is_none());
+    }
 
     #[test]
     fn conflicting_last_section_number_never_becomes_complete() {
