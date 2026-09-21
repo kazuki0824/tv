@@ -268,9 +268,12 @@ fn cleanup_authority_failure(
     generation: u64,
     error: HalError,
 ) -> FrontendWorkerStopOutcome {
-    let exit = if matches!(error, HalError::WorkerCleanupFailed {
-        kind: maleicacid_tuner_hal2_common::WorkerCleanupFailureKind::Interrupted,
-    }) {
+    let exit = if matches!(
+        error,
+        HalError::WorkerCleanupFailed {
+            kind: maleicacid_tuner_hal2_common::WorkerCleanupFailureKind::Interrupted,
+        }
+    ) {
         WorkerExit::PanicOrJoinFailure
     } else {
         WorkerExit::RuntimeFailure(WorkerFailureDomain::Signal.runtime_failure_kind())
