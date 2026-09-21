@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::ITuner::BnTuner;
 use binder::BinderFeatures;
-use maleicacid_tuner_hal2_common::os_abi::{ioctl, last_errno};
+use maleicacid_tuner_hal2_common::os_abi::{last_errno, raw_ioctl_ptr};
 use maleicacid_tuner_hal2_common::{
     japan_isdbt_frequency_contract_range_hz, FrontendBackendKind, FrontendSystem, HalError,
     HalErrorDetail, ANDROID15_TRM_RESOURCE_ID_MAX, TUNER_SERVICE_NAME,
@@ -417,7 +417,7 @@ fn probe_dvb_delivery_systems(
         caps: 0,
     };
     // 安全性: `fd` はopen済みDVB frontend fdであり、`info` は呼び出し中に書込み可能なFE_GET_INFO互換C layout構造体を指す。
-    let info_rc = unsafe { ioctl(fd, FE_GET_INFO, &mut info) };
+    let info_rc = unsafe { raw_ioctl_ptr(fd, FE_GET_INFO, &mut info) };
     if info_rc != 0 {
         return Err(HalError::IoctlFailed {
             backend: "dvb",
@@ -445,7 +445,7 @@ fn probe_dvb_delivery_systems(
         props: &mut prop,
     };
     // 安全性: `props` は初期化済みunion buffer variantを持つ可変DtvPropertyを指す。kernelはdelivery-system bufferをin-placeで書く。
-    let rc = unsafe { ioctl(fd, FE_GET_PROPERTY, &mut props) };
+    let rc = unsafe { raw_ioctl_ptr(fd, FE_GET_PROPERTY, &mut props) };
     if rc != 0 {
         return Err(HalError::IoctlFailed {
             backend: "dvb",
