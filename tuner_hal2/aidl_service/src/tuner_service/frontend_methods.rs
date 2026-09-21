@@ -72,7 +72,7 @@ impl IFrontend for FrontendAidlObject {
                 ))
             },
             |runtime, handle, dispatch_proof, converted| {
-                let result = FrontendTuneScanTxn::begin_tune(
+                FrontendTuneScanTxn::begin_tune(
                     runtime,
                     handle.object_id(),
                     handle.generation(),
@@ -80,15 +80,7 @@ impl IFrontend for FrontendAidlObject {
                     FrontendWorkerKind::Tune,
                     tune_notifier(self.context(), handle),
                     dispatch_proof,
-                );
-                if let Err(error) = &result {
-                    log::error!(
-                        "IFrontend.tune failed: object_id={} object_generation={} error={error:?}",
-                        handle.object_id().0,
-                        handle.generation().0
-                    );
-                }
-                result
+                )
             },
         )
     }
