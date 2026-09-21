@@ -1,3 +1,10 @@
+# ワンセグを登録対象へ追加し通常一覧への自動露出を分離
+
+- NIT Partial Reception Descriptor (0xFB)由来の放送factだけをワンセグ判定に使い、service_type=0xC0単独では判定しない。
+- 対応PMT/PCR・codec条件を満たすワンセグをchannel登録対象へ追加し、TvProviderではTYPE_1SEGとして通常ISDB-Tと区別する。
+- COLUMN_BROWSABLEはsystem TV app所有のためTISから書かず、TvProvider新規rowの既定0を維持する。ACCESS_ALL_EPG_DATAは追加しない。
+- Android 15 AOSP Live TV baselineの新規channel自動browsable化が無効であることを統合条件に記録し、将来有効化する場合はTYPE_1SEGを自動昇格対象から除外する。
+
 # PR #108 TvProvider queryを公開URI制約へ修正
 
 - `ACCESS_ALL_EPG_DATA`を持たないTISがraw SQL `selection`を渡し、AOSP TvProviderから `SecurityException: Selection not allowed` を受けていた経路を除去した。追加の特権permissionは付与しない。
