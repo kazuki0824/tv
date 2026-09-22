@@ -4726,7 +4726,7 @@ fn record_frontend_stop_reaper_completion(
         if let (Some(object_id), Some(object_generation)) =
             (target.object_id(), target.object_generation())
         {
-            let quarantine_result = match runtime.lock() {
+            let quarantine_result = match lock_runtime(runtime, "frontend reaper quarantine") {
                 Ok(mut guard) => {
                     let owner_generation_is_present = guard
                         .object_table()
@@ -4743,10 +4743,7 @@ fn record_frontend_stop_reaper_completion(
                         Ok(())
                     }
                 }
-                Err(_) => Err(HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned while quarantining a reaped frontend worker",
-                )),
+                Err(error) => Err(error),
             };
             if let Err(quarantine_error) = quarantine_result {
                 result = Err(match result {
