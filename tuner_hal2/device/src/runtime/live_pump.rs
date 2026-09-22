@@ -163,7 +163,10 @@ where
         }
 
         let drain = completion.push(&buf[..read_len]);
-        report.add_malformed(u64::try_from(drain.malformed_bytes).unwrap_or(u64::MAX), descriptor);
+        report.add_malformed(
+            u64::try_from(drain.malformed_bytes).unwrap_or(u64::MAX),
+            descriptor,
+        );
         for packet in &drain.packets {
             sink.deliver_ts_packet(packet)?;
         }
@@ -171,7 +174,10 @@ where
     }
 
     let boundary = completion.drain_for_boundary();
-    report.add_malformed(u64::try_from(boundary.malformed_bytes).unwrap_or(u64::MAX), descriptor);
+    report.add_malformed(
+        u64::try_from(boundary.malformed_bytes).unwrap_or(u64::MAX),
+        descriptor,
+    );
     if !report.stopped_by_cancel {
         for packet in &boundary.packets {
             sink.deliver_ts_packet(packet)?;

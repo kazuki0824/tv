@@ -1333,17 +1333,19 @@ mod tests {
     fn live_pump_diagnostic_retains_saturation_and_retry_counters() {
         let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
         let before = runtime.snapshot();
-        runtime.record_live_pump_report(
-            runtime.generation(),
-            FrontendLivePumpReport {
-                malformed_bytes: u64::MAX,
-                malformed_byte_counter_saturated: true,
-                read_retries: u64::MAX,
-                read_retry_counter_saturated: true,
-                ..FrontendLivePumpReport::default()
-            },
-            None,
-        ).unwrap();
+        runtime
+            .record_live_pump_report(
+                runtime.generation(),
+                FrontendLivePumpReport {
+                    malformed_bytes: u64::MAX,
+                    malformed_byte_counter_saturated: true,
+                    read_retries: u64::MAX,
+                    read_retry_counter_saturated: true,
+                    ..FrontendLivePumpReport::default()
+                },
+                None,
+            )
+            .unwrap();
         let snapshot = runtime.snapshot();
         let diagnostic = &snapshot.live_pump_reports[0];
         assert_eq!(diagnostic.generation, before.generation);

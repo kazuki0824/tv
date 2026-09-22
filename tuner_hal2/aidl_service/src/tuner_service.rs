@@ -794,62 +794,104 @@ mod tests {
             FrontendWorkerCleanupStepOutcome, FrontendWorkerCleanupTarget,
             FrontendWorkerCleanupWorkerGeneration, WorkerFailureCategory,
         };
-        for kind in [FmqFailureKind::WriteFailed, FmqFailureKind::ShortWrite, FmqFailureKind::EventFlagWakeFailed] {
+        for kind in [
+            FmqFailureKind::WriteFailed,
+            FmqFailureKind::ShortWrite,
+            FmqFailureKind::EventFlagWakeFailed,
+        ] {
             let failure = compose_primary_cleanup_failure(
                 "FMQ delivery rollback",
-                HalError::FmqDeliveryFailed { kind, object_id: Some(17) },
+                HalError::FmqDeliveryFailed {
+                    kind,
+                    object_id: Some(17),
+                },
                 HalError::cleanup_failed("rollback", "queue release failed"),
             );
             let runtime = TunerServiceRuntime::new();
-            let target = FrontendWorkerCleanupTarget::object(7, AidlObjectId(17), AidlObjectGeneration(2));
+            let target =
+                FrontendWorkerCleanupTarget::object(7, AidlObjectId(17), AidlObjectGeneration(2));
             let mut report = FrontendWorkerCleanupExecutionReport::new();
             report.push(FrontendWorkerCleanupStepOutcome::WorkerTerminal {
-                target, worker_kind: FrontendWorkerKind::Tune,
+                target,
+                worker_kind: FrontendWorkerKind::Tune,
                 worker_generation: FrontendWorkerCleanupWorkerGeneration::Known(3),
-                category: WorkerFailureCategory::Fmq, result: Err(failure.clone()),
+                category: WorkerFailureCategory::Fmq,
+                result: Err(failure.clone()),
             });
-            runtime.frontend_worker_cleanup_diagnostic_sink().record(
-                FrontendWorkerCleanupDiagnosticRecord::new(
+            runtime
+                .frontend_worker_cleanup_diagnostic_sink()
+                .record(FrontendWorkerCleanupDiagnosticRecord::new(
                     FrontendWorkerCleanupDiagnosticKind::WorkerTerminal,
-                    target, report, Some(failure.clone()),
-                ),
-            ).unwrap();
+                    target,
+                    report,
+                    Some(failure.clone()),
+                ))
+                .unwrap();
             let service = TunerAidlService::new_without_filter_event_dispatcher_for_test(runtime);
             let filter_record = FilterCallbackDeliveryDiagnosticRecord::new(
                 FilterCallbackDeliveryDiagnosticPhase::EventDelivery,
-                AidlObjectId(17), AidlObjectGeneration(2), failure.clone(),
+                AidlObjectId(17),
+                AidlObjectGeneration(2),
+                failure.clone(),
             );
-            service.context.record_filter_callback_delivery_failure_fallback(filter_record.clone()).unwrap();
+            service
+                .context
+                .record_filter_callback_delivery_failure_fallback(filter_record.clone())
+                .unwrap();
             let frontend_record = FrontendCallbackDeliveryDiagnosticRecord::frontend_event_delivery(
-                AidlObjectId(17), AidlObjectGeneration(2), 7, 3,
+                AidlObjectId(17),
+                AidlObjectGeneration(2),
+                7,
+                3,
                 HalError::callback_failed("onEvent", "Binder transaction failed"),
             );
-            service.context.record_frontend_callback_delivery_failure_fallback(frontend_record.clone()).unwrap();
+            service
+                .context
+                .record_frontend_callback_delivery_failure_fallback(frontend_record.clone())
+                .unwrap();
             let snapshot = service.context.diagnostic_snapshot();
             assert!(!snapshot.retrieval_failed());
-            assert_eq!(snapshot.filter_callback.as_ref().unwrap().records(), &[filter_record]);
-            assert_eq!(snapshot.frontend_callback.as_ref().unwrap().records(), &[frontend_record]);
+            assert_eq!(
+                snapshot.filter_callback.as_ref().unwrap().records(),
+                &[filter_record]
+            );
+            assert_eq!(
+                snapshot.frontend_callback.as_ref().unwrap().records(),
+                &[frontend_record]
+            );
             let cleanup = snapshot.frontend_worker_cleanup.as_ref().unwrap();
             assert_eq!(cleanup.records()[0].target(), target);
             assert_eq!(cleanup.records()[0].public_error(), Some(&failure));
-            assert_eq!(cleanup.records()[0].report().outcomes()[0].result(), Err(failure));
+            assert_eq!(
+                cleanup.records()[0].report().outcomes()[0].result(),
+                Err(failure)
+            );
             assert_eq!(cleanup.dropped_count(), 0);
             assert_eq!(cleanup.record_failure_count(), 0);
             let mut bytes = Vec::new();
             Interface::dump(&service, &mut bytes, &[]).unwrap();
-            assert_eq!(String::from_utf8(bytes).unwrap(), format!("{snapshot:#?}\n"));
+            assert_eq!(
+                String::from_utf8(bytes).unwrap(),
+                format!("{snapshot:#?}\n")
+            );
         }
     }
 
     #[test]
     fn binder_dump_preserves_fallback_when_runtime_query_fails() {
         use maleicacid_tuner_hal2_service_runtime::FrontendCallbackDeliveryDiagnosticRecord;
-        let service = TunerAidlService::new_without_filter_event_dispatcher_for_test(TunerServiceRuntime::new());
+        let service = TunerAidlService::new_without_filter_event_dispatcher_for_test(
+            TunerServiceRuntime::new(),
+        );
         let record = FrontendCallbackDeliveryDiagnosticRecord::callback_artifact_lookup(
-            AidlObjectId(17), AidlObjectGeneration(2),
+            AidlObjectId(17),
+            AidlObjectGeneration(2),
             HalError::callback_failed("onEvent", "callback lookup failed"),
         );
-        service.context.record_frontend_callback_delivery_failure_fallback(record.clone()).unwrap();
+        service
+            .context
+            .record_frontend_callback_delivery_failure_fallback(record.clone())
+            .unwrap();
         let runtime = service.context.runtime();
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = runtime.lock().unwrap();
@@ -857,14 +899,23 @@ mod tests {
         }));
         let snapshot = service.context.diagnostic_snapshot();
         assert!(snapshot.retrieval_failed());
-        assert!(matches!(&snapshot.frontend, Err(HalError::ServiceRuntimeLockPoisoned { .. })));
+        assert!(matches!(
+            &snapshot.frontend,
+            Err(HalError::ServiceRuntimeLockPoisoned { .. })
+        ));
         let callbacks = snapshot.frontend_callback.as_ref().unwrap();
         assert!(callbacks.runtime_snapshot_missing());
         assert_eq!(callbacks.records(), &[record]);
         assert_eq!(callbacks.fallback_record_count(), 1);
         let mut bytes = Vec::new();
-        assert_eq!(Interface::dump(&service, &mut bytes, &[]), Err(binder::StatusCode::FAILED_TRANSACTION));
-        assert_eq!(String::from_utf8(bytes).unwrap(), format!("{snapshot:#?}\n"));
+        assert_eq!(
+            Interface::dump(&service, &mut bytes, &[]),
+            Err(binder::StatusCode::FAILED_TRANSACTION)
+        );
+        assert_eq!(
+            String::from_utf8(bytes).unwrap(),
+            format!("{snapshot:#?}\n")
+        );
     }
 
     #[test]
