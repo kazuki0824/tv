@@ -10,7 +10,9 @@ use crate::cleanup_execution::{
 use crate::diagnostics::WorkerFailureCategory;
 use crate::registry::FrontendRegistryEntry;
 use crate::worker_failure_classifier::WorkerFailureClassifier;
-use crate::worker_runtime::{WorkerRuntime, WorkerRuntimeReaperQueue, WorkerTerminalResult};
+use crate::worker_runtime::{
+    WorkerRuntime, WorkerRuntimeReaperQueue, WorkerRuntimeReaperReservation, WorkerTerminalResult,
+};
 use crate::{
     frontend_ops::{FrontendOperationEvent, FrontendTuneScanTxn, FrontendWorkerTerminalEvent},
     object_lifecycle::{aidl_object_live, aidl_public_runtime_id_for_close_cleanup},
@@ -245,6 +247,41 @@ impl FrontendWorkerReaperTicketGroup {
         self.completed.push((kind, ticket.complete()));
         Ok(())
     }
+
+    fn wait_until_deadline(mut self, deadline: Instant) -> FrontendWorkerStopWaitOutcome {
+        loop {
+            self = match self.try_complete() {
+                Ok(outcomes) => return FrontendWorkerStopWaitOutcome::Completed(outcomes),
+                Err(tickets) => tickets,
+            };
+            match self.wait_for_progress(Some(deadline)) {
+                Ok(Some(index)) => {
+                    if let Err(error) = self.complete_signalled(index) {
+                        return FrontendWorkerStopWaitOutcome::Failed {
+                            tickets: self,
+                            error,
+                        };
+                    }
+                }
+                Ok(None) => return FrontendWorkerStopWaitOutcome::TimedOut(self),
+                Err(error) => {
+                    return FrontendWorkerStopWaitOutcome::Failed {
+                        tickets: self,
+                        error,
+                    }
+                }
+            }
+        }
+    }
+}
+
+enum FrontendWorkerStopWaitOutcome {
+    Completed(Vec<(FrontendWorkerKind, FrontendWorkerStopOutcome)>),
+    TimedOut(FrontendWorkerReaperTicketGroup),
+    Failed {
+        tickets: FrontendWorkerReaperTicketGroup,
+        error: HalError,
+    },
 }
 
 struct FrontendWorkerReaperJob {
@@ -461,6 +498,11 @@ fn quarantine_frontend_reaper_failure(
     failures.into_result()
 }
 
+type FrontendWorkerReplacementReservation = WorkerRuntimeReaperReservation<
+    (i32, FrontendWorkerKind),
+    Option<FrontendWorkerKind>,
+>;
+
 #[derive(Clone)]
 pub(crate) struct FrontendWorkerReaperHandle {
     runtime: WorkerRuntimeReaperQueue<
@@ -517,6 +559,38 @@ impl FrontendWorkerReaperHandle {
             .map(|key| (key, continuation))
             .collect::<Vec<_>>();
         self.runtime.enqueue_reserved(job, reservations)
+    }
+
+    fn reserve_replacement(
+        &self,
+        frontend_id: i32,
+        replacement_kind: FrontendWorkerKind,
+    ) -> Result<FrontendWorkerReplacementReservation, HalError> {
+        self.runtime.reserve_pending([
+            (
+                (frontend_id, FrontendWorkerKind::Tune),
+                Some(replacement_kind),
+            ),
+            (
+                (frontend_id, FrontendWorkerKind::Scan),
+                Some(replacement_kind),
+            ),
+        ])
+    }
+
+    fn release_replacement_reservation(
+        &self,
+        reservation: FrontendWorkerReplacementReservation,
+    ) -> Result<(), HalError> {
+        self.runtime.release_reservation(reservation)
+    }
+
+    fn enqueue_with_replacement_reservation(
+        &self,
+        job: FrontendWorkerReaperJob,
+        reservation: FrontendWorkerReplacementReservation,
+    ) -> Result<(), HalError> {
+        self.runtime.enqueue_with_reservation(job, reservation)
     }
 
     fn is_pending(&self, frontend_id: i32, kind: FrontendWorkerKind) -> Result<bool, HalError> {
