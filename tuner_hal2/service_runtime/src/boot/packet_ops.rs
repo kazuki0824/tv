@@ -192,7 +192,7 @@ impl TunerServiceRuntime {
                 reports.push(report);
             }
         }
-        let snapshots = self.filter_event_delivery_snapshots(&reports);
+        let snapshots = self.filter_event_delivery_snapshots(&reports)?;
         let next_deadline = demux_ids
             .into_iter()
             .filter_map(|demux_id| {
@@ -209,7 +209,7 @@ impl TunerServiceRuntime {
     pub fn filter_event_delivery_snapshots_for_playback_report(
         &mut self,
         report: &PlaybackConsumeReport,
-    ) -> Vec<FilterEventDeliverySnapshot> {
+    ) -> Result<Vec<FilterEventDeliverySnapshot>, HalError> {
         self.filter_event_delivery_snapshots(&report.packet_reports)
     }
 
