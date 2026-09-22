@@ -395,8 +395,7 @@ class ChannelScanController(
     fun refreshDynamicSectionFilters() {
         if (terminalResourceLostObserved) return
         val generation = tunerController.currentGeneration()
-        val transaction = engine.casDiscoverySnapshot()
-        val pmtPids = transaction.pmtPids.values.toSet()
+        val pmtPids = engine.pmtPidsForSectionFilters()
         tunerController.updateScanPmtFilters(pmtPids, generation)
     }
 
