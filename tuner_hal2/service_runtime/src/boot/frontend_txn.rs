@@ -998,18 +998,16 @@ impl<'a> FrontendTxn<'a> {
             .request_stop_for_join(frontend_id, kind, reason)
     }
 
-    pub(crate) fn retain_backend_submit_cleanup(
+    pub(crate) fn prepare_backend_submit(
         &mut self,
-        frontend_id: i32,
         kind: FrontendWorkerKind,
-        generation: u64,
-        ticket: maleicacid_tuner_hal2_device::FrontendBackendSubmitTicket,
-    ) -> FrontendWorkerStopTicket {
-        self.runtime.frontend_workers.retain_backend_submit_cleanup(
-            frontend_id,
+        plan: maleicacid_tuner_hal2_device::FrontendBackendTunePlan,
+        previous_request: Option<maleicacid_tuner_hal2_common::FrontendTuneRequest>,
+    ) -> Result<FrontendWorkerStopTicket, HalError> {
+        self.runtime.frontend_workers.prepare_backend_submit(
             kind,
-            generation,
-            ticket,
+            plan,
+            previous_request,
         )
     }
 }

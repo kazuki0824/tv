@@ -12,7 +12,7 @@ pub use runtime::{
     BackendTuneRollbackFailure, BackendTuneRollbackStep, BackendTuneStep,
     FrontendBackendFailureDiagnostic, FrontendBackendLnbApplyOutcome, FrontendBackendLnbApplyPlan,
     FrontendBackendSession, FrontendBackendSessionKind, FrontendBackendSubmitFailure,
-    FrontendBackendSubmitTicket, FrontendBackendSubmitWait, FrontendBackendTunePlan,
+    FrontendBackendTunePlan,
     FrontendDiagnosticWriteFailure, FrontendLivePacketSink, FrontendLivePumpJoinOutcome,
     FrontendLivePumpOwner, FrontendLivePumpReport, FrontendLiveReaderDescriptor,
     FrontendLiveReaderDescriptorKind, FrontendLnbVoltage, FrontendRuntime, FrontendRuntimeSnapshot,
@@ -21,5 +21,5 @@ pub use runtime::{
     FrontendTerminalEventReason, FrontendTmccPartialReceptionObservation,
     FrontendTmccTsidListObservation, FrontendWorkerCancelReason, FrontendWorkerContext,
     FrontendWorkerKind, FrontendWorkerRegistry, FrontendWorkerStartError,
-    FrontendWorkerStopOutcome, FrontendWorkerStopPoll, FrontendWorkerStopTicket,
+    FrontendWorkerStopOutcome, FrontendWorkerStopPoll, FrontendWorkerStopTicket, FrontendWorkerSubmitWait,
 };
