@@ -9,7 +9,7 @@ use maleicacid_tuner_hal2_demux::{
     DvrConfigureReport, FilterConfigureReport, PacketPid, QueueRuntimeError, SourceBoundaryReport,
 };
 use maleicacid_tuner_hal2_descrambler::DescramblerPid;
-use maleicacid_tuner_hal2_device::{FrontendBackendFailureDiagnostic, FrontendRuntime};
+use maleicacid_tuner_hal2_device::{FrontendBackendFailureDiagnostic, FrontendRuntime, FrontendRuntimeSnapshot};
 use maleicacid_tuner_hal2_domain_request::{
     AidlObjectGeneration, AidlObjectId, AidlObjectKind, RuntimeTransactionName,
 };
@@ -34,6 +34,24 @@ impl FrontendBackendDiagnosticSnapshot {
             records,
             dropped_count,
             record_failure_count,
+        }
+    }
+}
+
+/// フロントエンド所有者の既存状態・診断を、対象識別子とともに取得する写し。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrontendDiagnosticSnapshot {
+    pub frontend_id: i32,
+    pub backend: FrontendBackendKind,
+    pub runtime: FrontendRuntimeSnapshot,
+}
+
+impl FrontendDiagnosticSnapshot {
+    pub(crate) fn from_frontend(runtime: &FrontendRuntime) -> Self {
+        Self {
+            frontend_id: runtime.frontend_id(),
+            backend: runtime.backend_kind(),
+            runtime: runtime.snapshot(),
         }
     }
 }
@@ -1833,6 +1851,61 @@ mod backend_observation_tests {
     use maleicacid_tuner_hal2_device::{
         BackendTuneRollbackFailure, BackendTuneRollbackStep, BackendTuneStep,
     };
+
+    #[test]
+    fn observation_retains_frontend_reports_io_failure_and_loss_counters() {
+        use maleicacid_tuner_hal2_common::{FrontendDevicePath, HalErrorDetail};
+        use maleicacid_tuner_hal2_device::{
+            FrontendLivePumpReport, FrontendLiveReaderDescriptor, FrontendWorkerKind,
+        };
+        let mut frontend = FrontendRuntime::new(7, FrontendBackendKind::LinuxDvb);
+        frontend.fence_for_worker_replacement(1).unwrap();
+        frontend.install_live_reader_for_fenced_worker_generation(
+            1,
+            FrontendLiveReaderDescriptor::dvb_dvr_device(
+                7, FrontendDevicePath::new("/dev/dvb/adapter0/dvr0"),
+            ),
+            FrontendWorkerKind::Tune,
+        ).unwrap();
+        let report = FrontendLivePumpReport {
+            packets_delivered: 8,
+            malformed_bytes: u64::MAX,
+            malformed_byte_counter_saturated: true,
+            read_retries: 3,
+            reached_eof: true,
+            ..FrontendLivePumpReport::default()
+        };
+        for _ in 0..70 {
+            frontend.record_live_pump_report(1, report.clone(), None).unwrap();
+        }
+        assert!(frontend.record_live_pump_report(2, report, None).is_err());
+        let failure = HalError::Io {
+            backend: "dvb", operation: "read",
+            path: Some(PathBuf::from("/dev/dvb/adapter0/dvr0")),
+            errno: Some(5), detail: HalErrorDetail::new("read failed"),
+        };
+        frontend.mark_tune_worker_failed(1, failure.clone()).unwrap();
+        let before = frontend.snapshot();
+        let observation = FrontendDiagnosticSnapshot::from_frontend(&frontend);
+        assert_eq!(observation.frontend_id, 7);
+        assert_eq!(observation.backend, FrontendBackendKind::LinuxDvb);
+        assert_eq!(observation.runtime, before);
+        assert_eq!(observation.runtime.last_error, Some(failure));
+        assert_eq!(observation.runtime.generation, 1);
+        assert_eq!(observation.runtime.terminal_events.len(), 1);
+        assert_eq!(observation.runtime.live_pump_reports.len() as u64
+            + observation.runtime.live_pump_reports_dropped_count, 70);
+        assert!(observation.runtime.live_pump_reports_dropped_count > 0);
+        assert_eq!(observation.runtime.diagnostic_write_failures.len(), 1);
+        for diagnostic in &observation.runtime.live_pump_reports {
+            assert_eq!(diagnostic.generation, 1);
+            assert_eq!(diagnostic.packets_delivered, 8);
+            assert_eq!(diagnostic.malformed_bytes, u64::MAX);
+            assert!(diagnostic.malformed_byte_counter_saturated);
+            assert_eq!(diagnostic.read_retries, 3);
+        }
+        assert_eq!(frontend.snapshot(), before);
+    }
 
     #[test]
     fn observation_retains_backend_failures_and_both_counters() {

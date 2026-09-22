@@ -74,7 +74,19 @@ device-adaptation層は `FrontendRuntime`、AIDL object、callback artifactを�
 
 ### 機器診断の取得境界
 
-`aidl_service/src/tuner_service.rs::TunerAidlService`のBinder標準`dump`から、`service_context.rs`の読取り入口を経て`TunerServiceRuntime::frontend_backend_diagnostic_snapshots()`へ接続する。同入口は既存`FrontendRuntime::backend_failure_diagnostic_snapshot()`の結果を`FrontendBackendDiagnosticSnapshot`へ写し、機器別の記録と両カウンターを渡す。保持先・記録処理・状態変更権限は既存所有者に残し、出力I/Oはサービス状態ロックの解放後に行う。診断の論理契約は`../TUNER_HAL_DESIGN_JA.md`の「診断可観測性の固定」、取得手順は`INTEGRATION.md`を参照する。
+`aidl_service/src/tuner_service.rs::TunerAidlService`のBinder標準`dump`から、`service_context.rs::AidlServiceContext::diagnostic_snapshot()`へ接続する。取得対象と実装入口は次のとおり。
+
+| 対象 | 既存保持先からの取得入口 |
+|---|---|
+| 機器別の選局障害 | `TunerServiceRuntime::frontend_backend_diagnostic_snapshots()` → `FrontendRuntime::backend_failure_diagnostic_snapshot()` |
+| フロントエンド状態・受信処理の報告・終了事由・記録失敗 | `TunerServiceRuntime::frontend_diagnostic_snapshots()` → `FrontendRuntime::snapshot()` |
+| フィルターとフロントエンドのコールバック障害 | `AidlServiceContext::{filter_callback_delivery_diagnostic_snapshot, frontend_callback_delivery_diagnostic_snapshot}()`。既存の代替保持先と欠落情報も取得 |
+| フロントエンドワーカーの終了・後始末の障害 | `TunerServiceRuntime::frontend_worker_cleanup_diagnostics()` |
+| demux配下の操作・取消しの障害 | `TunerServiceRuntime::demux_transaction_diagnostics()` |
+
+`FrontendBackendDiagnosticSnapshot`と`FrontendDiagnosticSnapshot`は取得時の写しであり、保持先・記録処理・状態変更権限は既存所有者に残す。`ServiceDiagnosticSnapshot`は各入口の型付き結果を集め、取得に失敗した対象のエラーと取得できた記録を同時に出力へ渡す。コールバックの取得入口を呼ぶ前にサービス状態ロックを解放し、出力I/Oも全ロックの解放後に行う。
+
+受信報告の実装は`device/src/runtime/live_pump.rs::FrontendLivePumpReport`、既存の診断への転記は`frontend_runtime.rs::FrontendLivePumpDiagnostic::from_report()`に置く。飽和の有無と読み取り再試行回数も同じ診断へ転記する。診断の論理契約は`../TUNER_HAL_DESIGN_JA.md`の「診断可観測性の固定」「診断counter飽和契約」、取得手順は`INTEGRATION.md`を参照する。
 
 ### TMCC TSID observation の frontend owner 接続
 
