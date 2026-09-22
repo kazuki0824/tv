@@ -1830,13 +1830,19 @@ mod counter_saturation_tests {
 #[cfg(test)]
 mod backend_observation_tests {
     use super::*;
-    use maleicacid_tuner_hal2_device::{BackendTuneRollbackFailure, BackendTuneRollbackStep, BackendTuneStep};
+    use maleicacid_tuner_hal2_device::{
+        BackendTuneRollbackFailure, BackendTuneRollbackStep, BackendTuneStep,
+    };
 
     #[test]
     fn observation_retains_backend_failures_and_both_counters() {
         for (backend, name, path) in [
             (FrontendBackendKind::Px4CharDevice, "px4", "/dev/px4video0"),
-            (FrontendBackendKind::LinuxDvb, "dvb", "/dev/dvb/adapter0/frontend0"),
+            (
+                FrontendBackendKind::LinuxDvb,
+                "dvb",
+                "/dev/dvb/adapter0/frontend0",
+            ),
         ] {
             let mut frontend = FrontendRuntime::new(7, backend);
             let generation = frontend.generation();
@@ -1856,23 +1862,28 @@ mod backend_observation_tests {
                 },
             };
             for _ in 0..70 {
-                frontend.record_backend_failure_diagnostic_context(
-                    generation,
-                    backend,
-                    Some(BackendTuneStep::ApplyChannel),
-                    primary.clone(),
-                    Some(rollback.clone()),
-                ).unwrap();
+                frontend
+                    .record_backend_failure_diagnostic_context(
+                        generation,
+                        backend,
+                        Some(BackendTuneStep::ApplyChannel),
+                        primary.clone(),
+                        Some(rollback.clone()),
+                    )
+                    .unwrap();
             }
-            assert!(frontend.record_backend_failure_diagnostic(
-                generation + 1, backend, primary.clone(),
-            ).is_err());
+            assert!(frontend
+                .record_backend_failure_diagnostic(generation + 1, backend, primary.clone(),)
+                .is_err());
             let before = frontend.snapshot();
             let observation = FrontendBackendDiagnosticSnapshot::from_frontend(&frontend, backend);
             assert_eq!(observation.frontend_id, 7);
             assert_eq!(observation.backend, backend);
             assert!(observation.dropped_count > 0);
-            assert_eq!(observation.records.len() as u64 + observation.dropped_count, 70);
+            assert_eq!(
+                observation.records.len() as u64 + observation.dropped_count,
+                70
+            );
             assert_eq!(observation.record_failure_count, 1);
             for record in &observation.records {
                 assert_eq!(record.frontend_id, 7);

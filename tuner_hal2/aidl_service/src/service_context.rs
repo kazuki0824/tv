@@ -354,7 +354,10 @@ impl AidlServiceContext {
 
     pub(crate) fn frontend_backend_diagnostic_snapshots(
         &self,
-    ) -> Result<Vec<maleicacid_tuner_hal2_service_runtime::FrontendBackendDiagnosticSnapshot>, HalError> {
+    ) -> Result<
+        Vec<maleicacid_tuner_hal2_service_runtime::FrontendBackendDiagnosticSnapshot>,
+        HalError,
+    > {
         let runtime = TunerServiceRuntime::lock_shared(&self.runtime, "backend diagnostic query")?;
         runtime.frontend_backend_diagnostic_snapshots()
     }

@@ -1717,10 +1717,15 @@ impl TunerServiceRuntime {
                     "frontend runtime is missing while reading backend diagnostics",
                 )
             })?;
-            for backend in [FrontendBackendKind::Px4CharDevice, FrontendBackendKind::LinuxDvb] {
-                snapshots.push(crate::diagnostics::FrontendBackendDiagnosticSnapshot::from_frontend(
-                    frontend, backend,
-                ));
+            for backend in [
+                FrontendBackendKind::Px4CharDevice,
+                FrontendBackendKind::LinuxDvb,
+            ] {
+                snapshots.push(
+                    crate::diagnostics::FrontendBackendDiagnosticSnapshot::from_frontend(
+                        frontend, backend,
+                    ),
+                );
             }
         }
         Ok(snapshots)
