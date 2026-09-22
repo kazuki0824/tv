@@ -1702,14 +1702,27 @@ mod tests {
         ));
     }
 
+    fn reaper_queue_for_test(
+        capacity: usize,
+    ) -> (
+        WorkerRuntimeReaperQueue<u32, u32, ()>,
+        std::sync::mpsc::Receiver<WorkerRuntimeReaperQueuedJob<()>>,
+    ) {
+        let (sender, receiver) =
+            std::sync::mpsc::sync_channel::<WorkerRuntimeReaperQueuedJob<()>>(capacity.max(1));
+        (
+            WorkerRuntimeReaperQueue {
+                lanes: std::sync::Arc::new(Vec::new()),
+                sender,
+                pending: WorkerRuntimeReaperPending::new(capacity.max(1)),
+            },
+            receiver,
+        )
+    }
+
     #[test]
     fn reaper_reservation_blocks_duplicates_until_explicit_release() {
-        let (sender, _receiver) = std::sync::mpsc::sync_channel::<()>(1);
-        let queue = WorkerRuntimeReaperQueue {
-            lanes: std::sync::Arc::new(Vec::new()),
-            sender,
-            pending: std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new())),
-        };
+        let (queue, _receiver) = reaper_queue_for_test(2);
 
         let reservation = queue.reserve_pending([(7, 11)]).unwrap();
         assert_eq!(queue.pending_value(&7).unwrap(), Some(11));
@@ -1721,23 +1734,24 @@ mod tests {
     }
 
     #[test]
+    fn reaper_capacity_counts_reservation_groups_not_keys() {
+        let (queue, _receiver) = reaper_queue_for_test(1);
+
+        let reservation = queue.reserve_pending([(1, 11), (2, 12)]).unwrap();
+        assert_eq!(queue.pending.pending_group_count().unwrap(), 1);
+        assert_eq!(queue.pending_value(&1).unwrap(), Some(11));
+        assert_eq!(queue.pending_value(&2).unwrap(), Some(12));
+        assert!(queue.reserve_pending([(3, 13)]).is_err());
+
+        queue.release_reservation(reservation).unwrap();
+        assert_eq!(queue.pending.pending_group_count().unwrap(), 0);
+        assert!(queue.reserve_pending([(3, 13)]).is_ok());
+    }
+
+    #[test]
     fn cross_queue_release_releases_the_original_reservation_before_returning_error() {
-        let (sender_a, _receiver_a) = std::sync::mpsc::sync_channel::<()>(1);
-        let queue_a = WorkerRuntimeReaperQueue {
-            lanes: std::sync::Arc::new(Vec::new()),
-            sender: sender_a,
-            pending: std::sync::Arc::new(std::sync::Mutex::new(
-                std::collections::BTreeMap::new(),
-            )),
-        };
-        let (sender_b, _receiver_b) = std::sync::mpsc::sync_channel::<()>(1);
-        let queue_b = WorkerRuntimeReaperQueue {
-            lanes: std::sync::Arc::new(Vec::new()),
-            sender: sender_b,
-            pending: std::sync::Arc::new(std::sync::Mutex::new(
-                std::collections::BTreeMap::new(),
-            )),
-        };
+        let (queue_a, _receiver_a) = reaper_queue_for_test(1);
+        let (queue_b, _receiver_b) = reaper_queue_for_test(1);
 
         let reservation = queue_a.reserve_pending([(7, 11)]).unwrap();
         assert_eq!(queue_a.pending_value(&7).unwrap(), Some(11));
@@ -1748,22 +1762,8 @@ mod tests {
 
     #[test]
     fn cross_queue_enqueue_releases_the_original_reservation_before_returning_error() {
-        let (sender_a, _receiver_a) = std::sync::mpsc::sync_channel::<()>(1);
-        let queue_a = WorkerRuntimeReaperQueue {
-            lanes: std::sync::Arc::new(Vec::new()),
-            sender: sender_a,
-            pending: std::sync::Arc::new(std::sync::Mutex::new(
-                std::collections::BTreeMap::new(),
-            )),
-        };
-        let (sender_b, _receiver_b) = std::sync::mpsc::sync_channel::<()>(1);
-        let queue_b = WorkerRuntimeReaperQueue {
-            lanes: std::sync::Arc::new(Vec::new()),
-            sender: sender_b,
-            pending: std::sync::Arc::new(std::sync::Mutex::new(
-                std::collections::BTreeMap::new(),
-            )),
-        };
+        let (queue_a, _receiver_a) = reaper_queue_for_test(1);
+        let (queue_b, _receiver_b) = reaper_queue_for_test(1);
 
         let reservation = queue_a.reserve_pending([(8, 21)]).unwrap();
         assert_eq!(queue_a.pending_value(&8).unwrap(), Some(21));
@@ -1775,28 +1775,18 @@ mod tests {
     }
 
     #[test]
-    fn rejected_reaper_send_releases_only_its_own_reservations() {
-        // 受信側の消滅と満杯を決定的に発生させ、予約の取消しを正規入口で確認する。
-        for disconnected in [false, true] {
-            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-            let mut receiver = Some(receiver);
-            if disconnected {
-                drop(receiver.take());
-            } else {
-                sender.try_send(()).unwrap();
-            }
-            let queue = WorkerRuntimeReaperQueue {
-                lanes: std::sync::Arc::new(Vec::new()),
-                sender,
-                pending: std::sync::Arc::new(std::sync::Mutex::new(
-                    std::collections::BTreeMap::from([(1, 9)]),
-                )),
-            };
-            assert!(queue.enqueue_reserved((), [(2, 8)]).is_err());
-            assert_eq!(queue.pending_value(&1).unwrap(), Some(9));
-            assert_eq!(queue.pending_value(&2).unwrap(), None);
-            drop(receiver);
-        }
+    fn disconnected_reaper_send_releases_only_its_own_reservation_group() {
+        let (queue, receiver) = reaper_queue_for_test(2);
+        let retained = queue.reserve_pending([(1, 9)]).unwrap();
+        drop(receiver);
+
+        assert!(queue.enqueue_reserved((), [(2, 8)]).is_err());
+        assert_eq!(queue.pending_value(&1).unwrap(), Some(9));
+        assert_eq!(queue.pending_value(&2).unwrap(), None);
+        assert_eq!(queue.pending.pending_group_count().unwrap(), 1);
+
+        queue.release_reservation(retained).unwrap();
+        assert_eq!(queue.pending.pending_group_count().unwrap(), 0);
     }
 
     #[test]
