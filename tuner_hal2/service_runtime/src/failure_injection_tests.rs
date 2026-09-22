@@ -41,7 +41,7 @@ fn runtime_poison_latches_critical_state_and_keeps_diagnostics_readable() {
         }
     );
     assert!(matches!(
-        TunerServiceRuntime::lock_shared(runtime.as_ref(), "retry"),
+        TunerServiceRuntime::lock_shared(&runtime, "retry"),
         Err(HalError::ServiceRuntimeLockPoisoned { operation: "retry" })
     ));
     assert!(runtime.is_poisoned());
