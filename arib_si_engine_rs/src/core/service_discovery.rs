@@ -572,6 +572,18 @@ impl ServiceDiscoveryEngine {
         if resolved_onid != onid {
             return;
         }
+
+        // PMT PID は PMT 本文ではなく PAT で確定する。
+        // PAT が SDT より先に到着した場合も、service が一意に解決できた時点で
+        // filter bootstrap 用の PID を公開し、PMT 受信前の循環依存を作らない。
+        {
+            let entry = self.service_entry_mut(tsid, onid, service_id);
+            if entry.pmt_pid != Some(pmt_pid) {
+                Self::clear_pmt_state(entry);
+                entry.pmt_pid = Some(pmt_pid);
+            }
+        }
+
         let full_key = (onid, tsid, service_id, pmt_pid);
         if let std::collections::btree_map::Entry::Vacant(e) = self.pending_pmts.entry(full_key) {
             if let Some(parsed) = self
@@ -2969,6 +2981,42 @@ mod current_version_tests {
         assert_eq!(collector.pmt_pids_for_section_filters(), vec![0x0100]);
         assert!(collector.state().snapshot.pmt_pids_by_service.is_empty());
         assert!(collector.state().semantic_facts_by_service.is_empty());
+    }
+
+    #[test]
+    fn pat_before_sdt_exposes_pmt_pid_before_pmt_is_received() {
+        let pat = section_with_crc(vec![
+            0x00, 0xb0, 0x0d, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x01, 0xe1, 0x00,
+        ]);
+        let sdt = section_with_crc(vec![
+            0x42, 0xf0, 0x18, 0x00, 0x11, 0xc1, 0x00, 0x00, 0x00, 0x22, 0x00, 0x00, 0x01, 0xfc,
+            0xf0, 0x07, 0x48, 0x05, 0x01, 0x00, 0x02, b'T', b'1',
+        ]);
+
+        let mut collector = ServiceDiscoveryCollector::default();
+        collector.push_section(0x0000, &pat);
+        collector.push_section(0x0011, &sdt);
+
+        let state = collector.state();
+        let facts = state
+            .semantic_facts_by_service
+            .iter()
+            .find(|facts| facts.service_id == 1)
+            .expect("service facts");
+
+        assert_eq!(facts.pmt_pid, Some(0x0100));
+        assert!(facts.pmt_pid_resolved);
+        assert!(!facts.pmt_parsed);
+        assert_eq!(collector.pmt_pids_for_section_filters(), vec![0x0100]);
+        assert_eq!(
+            state
+                .snapshot
+                .pmt_pids_by_service
+                .iter()
+                .find(|mapping| mapping.service_id == 1)
+                .map(|mapping| mapping.pmt_pid),
+            Some(0x0100)
+        );
     }
 
     #[test]

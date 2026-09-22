@@ -20,6 +20,8 @@ dependencies = [
 name = "maleicacid-tuner-hal2-compile-contract-host-ci"
 version = "0.0.0"
 dependencies = [
+ "maleicacid-tuner-hal2-common-host-ci",
+ "maleicacid-tuner-hal2-control-host-ci",
  "maleicacid-tuner-hal2-device-host-ci",
  "static_assertions",
 ]
