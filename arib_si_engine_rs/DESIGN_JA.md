@@ -333,6 +333,28 @@ canonical JSON は Rust `serde_json` で生成し、struct フィールド順序
 
 ### JNI boundary
 
+#### 実行失敗と正常な空値の区別
+
+文字列を返すJNI入口では、放送上の事実の欠落・有効な空文字と、JNIや解析器の実行失敗を区別する。provider-dataの構築・正規化の失敗は、`ProviderDataResult`の失敗形式で表す。それ以外のスナップショット取得、キー抽出、チャンネル情報の復号、ARIB文字列の復号、コーデック構成解析の実行失敗は、`NativeSiException`を送出する。正常なスナップショットは本書のスキーマに従う。キー欠落を表す空文字、空の文字入力に対する正常結果、コーデック解析の`Pending / Invalid / Ready`は、JNIの実行失敗とは区別する。
+
+`NativeSiException`は表示用メッセージと独立した`NativeSiFailureReason`を持つ。失敗理由は次表の識別子に対応し、表示用メッセージを分類に使用しない。
+
+| reason | 対象 |
+|---|---|
+| `MODULE_ABNORMAL` | 汚染検出後のSIモジュール利用 |
+| `REGISTRY_POISONED` | 解析器登録表のロック汚染 |
+| `PARSER_POISONED` | 解析器状態のロック汚染 |
+| `INVALID_HANDLE` | 存在しない解析器handle |
+| `JNI_INPUT` | Java文字列・配列の取得や変換の失敗 |
+| `JSON_ENCODING` | snapshotまたはcodec結果のJSON生成失敗 |
+| `JNI_OUTPUT` | Java結果文字列の生成失敗、例外なしの不正なnull戻り値 |
+
+SI内部のロックを保持した状態で、Java VMへの結果生成・例外送出を行わない。ロック汚染はモジュール異常状態と汚染回数へ反映し、正常な空のスナップショットへ置き換えない。具体的なロック取得・解放順序とJNI補助関数の使用規則は、`CODE_CONVENTION.md`を正とする。
+
+Java VMが例外を保持している場合（メモリー不足など）は、その例外を消去・置換しない。例外の構築自体に失敗した場合も正常な空値を返さない。例外を伴わないnull戻り値は`JNI_OUTPUT`の失敗として扱い、正常値として受理しない。例外構築の失敗理由は元の失敗と併記する。Kotlin側の宣言と受取補助関数の使用規則は、`../tis/CODE_CONVENTION.md`を正とする。
+
+入力配列の長さ上限超過とコーデック構文不正は`Invalid`、JNI配列取得失敗は`JNI_INPUT`とする。provider-dataの内容不正・キー不在は、本書の各APIで定義する結果として表す。JNI変換に失敗した入力を空配列として解析しない。
+
 Rust は少なくとも以下の JNI API 相当を提供する。
 
 ```text
