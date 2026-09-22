@@ -136,9 +136,9 @@ mod tests {
                 },
                 detail: "filter gate data lock poisoned",
             };
-            let error = super::demux_runtime_error_to_hal(
-                DemuxRuntimeError::queue_runtime_error(17, context),
-            );
+            let error = super::demux_runtime_error_to_hal(DemuxRuntimeError::queue_runtime_error(
+                17, context,
+            ));
             assert_eq!(
                 error,
                 HalError::FilterGateLockPoisoned {
