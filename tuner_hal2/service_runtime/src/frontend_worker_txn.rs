@@ -5731,8 +5731,7 @@ mod scan_contract_tests {
             FrontendWorkerKind::Tune,
             FrontendWorkerCancelReason::SupersededByNewRequest,
         );
-        let group =
-            FrontendWorkerReaperTicketGroup::new(vec![(FrontendWorkerKind::Tune, ticket)]);
+        let group = FrontendWorkerReaperTicketGroup::new(vec![(FrontendWorkerKind::Tune, ticket)]);
         match group.wait_until_deadline(Instant::now() + Duration::from_secs(1)) {
             FrontendWorkerStopWaitOutcome::Completed(outcomes) => {
                 assert_eq!(outcomes.len(), 1);
@@ -5768,8 +5767,7 @@ mod scan_contract_tests {
             FrontendWorkerKind::Tune,
             FrontendWorkerCancelReason::SupersededByNewRequest,
         );
-        let group =
-            FrontendWorkerReaperTicketGroup::new(vec![(FrontendWorkerKind::Tune, ticket)]);
+        let group = FrontendWorkerReaperTicketGroup::new(vec![(FrontendWorkerKind::Tune, ticket)]);
         let group = match group.wait_until_deadline(Instant::now() + Duration::from_millis(10)) {
             FrontendWorkerStopWaitOutcome::TimedOut(group) => group,
             FrontendWorkerStopWaitOutcome::Completed(_) => {
