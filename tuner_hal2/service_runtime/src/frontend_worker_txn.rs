@@ -4744,7 +4744,16 @@ pub(crate) fn start_frontend_backend_scan_session_worker(
                 drop(tickets);
                 return Err(public_error);
             }
-            Err(tickets)
+            let reservation =
+                match reaper.reserve_replacement(frontend_id, FrontendWorkerKind::Scan) {
+                    Ok(reservation) => reservation,
+                    Err(error) => {
+                        guard.mark_service_critical();
+                        drop(tickets);
+                        return Err(error);
+                    }
+                };
+            Err((tickets, reservation))
         }
     };
 
@@ -4760,8 +4769,15 @@ pub(crate) fn start_frontend_backend_scan_session_worker(
         .commit_bound_demux_runtime_rollback_tokens(demux_rollback_tokens);
     if let Err(error) = commit_tokens_result {
         guard.mark_service_critical();
-        drop(tickets);
-        return Err(error);
+        let release_result = release_pending_replacement_reservation(&reaper, tickets);
+        return match release_result {
+            Ok(()) => Err(error),
+            Err(release_error) => Err(compose_frontend_cleanup_error(
+                "frontend scan commit failed and replacement reservation release failed",
+                error,
+                release_error,
+            )),
+        };
     }
     if let Err(error) = boundary_result {
         let public_error = match crate::object_close_txn::quarantine_object_cascade(
@@ -4779,35 +4795,33 @@ pub(crate) fn start_frontend_backend_scan_session_worker(
                 )
             }
         };
-        drop(tickets);
-        return Err(public_error);
+        let release_result = release_pending_replacement_reservation(&reaper, tickets);
+        return match release_result {
+            Ok(()) => Err(public_error),
+            Err(release_error) => Err(compose_frontend_cleanup_error(
+                "frontend scan boundary failed and replacement reservation release failed",
+                public_error,
+                release_error,
+            )),
+        };
     }
-    let mut pending_stop_error = tickets.is_err().then(|| {
-        HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "frontend backend stop did not complete before scan returned",
-        )
-    });
-    if let Some(error) = pending_stop_error.as_mut() {
-        if let Err(mark_error) = guard
-            .frontend_txn()
-            .mark_frontend_worker_stop_pending_failure(frontend_id, generation, error.clone())
-        {
-            guard.mark_service_critical();
-            *error = compose_frontend_cleanup_error(
-                "frontend pending scan worker-stop failure state commit failed",
-                error.clone(),
-                mark_error,
-            );
-        }
-    }
+    let worker_reaper_deadline =
+        Duration::from_millis(guard.capability_snapshot().worker_reaper_deadline_ms);
     let fenced_demux_generations = if tickets.is_err() {
         match current_bound_demux_generation_snapshot(&guard, frontend_id) {
             Ok(snapshot) => snapshot,
             Err(error) => {
                 guard.mark_service_critical();
-                drop(tickets);
-                return Err(error);
+                let release_result =
+                    release_pending_replacement_reservation(&reaper, tickets);
+                return match release_result {
+                    Ok(()) => Err(error),
+                    Err(release_error) => Err(compose_frontend_cleanup_error(
+                        "frontend scan demux snapshot failed and replacement reservation release failed",
+                        error,
+                        release_error,
+                    )),
+                };
             }
         }
     } else {
@@ -4815,89 +4829,100 @@ pub(crate) fn start_frontend_backend_scan_session_worker(
     };
     drop(guard);
 
-    match tickets {
-        Ok(outcomes) => {
-            let transition = CommittedScanReplacement {
-                object_id,
-                object_generation,
-                frontend_id,
-                generation,
-                entry,
-                fingerprint,
-                candidates,
-                locked_continuation: is_locked_continuation,
-                scan_notifier,
-                cleanup_diagnostic_sink: cleanup_diagnostic_sink.clone(),
-            };
-            finish_committed_scan_replacement(&runtime, transition, outcomes, false)
+    let transition = |cleanup_diagnostic_sink: SharedFrontendWorkerCleanupDiagnostics| {
+        CommittedScanReplacement {
+            object_id,
+            object_generation,
+            frontend_id,
+            generation,
+            entry,
+            fingerprint,
+            candidates,
+            locked_continuation: is_locked_continuation,
+            scan_notifier,
+            cleanup_diagnostic_sink,
         }
-        Err(tickets) => {
-            let pending_stop_error = match pending_stop_error {
-                Some(error) => error,
-                None => {
-                    let error = HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "pending frontend scan tickets lost their public failure",
-                    );
-                    TunerServiceRuntime::mark_shared_service_critical(&runtime);
-                    drop(tickets);
-                    return Err(error);
-                }
+    };
+
+    match tickets {
+        Ok(outcomes) => finish_committed_scan_replacement(
+            &runtime,
+            transition(cleanup_diagnostic_sink),
+            outcomes,
+            false,
+        ),
+        Err((tickets, reservation)) => {
+            let wait_started_at = Instant::now();
+            let wait_outcome = match wait_started_at.checked_add(worker_reaper_deadline) {
+                Some(deadline) => tickets.wait_until_deadline(deadline),
+                None => FrontendWorkerStopWaitOutcome::Failed {
+                    tickets,
+                    error: HalError::cleanup_failed(
+                        "frontend scan replacement worker stop",
+                        "worker stop deadline overflow",
+                    ),
+                },
             };
-            let target =
-                FrontendWorkerCleanupTarget::object(frontend_id, object_id, object_generation);
-            let completion_public_error = pending_stop_error.clone();
-            let deadline_diagnostic_sink = cleanup_diagnostic_sink.clone();
-            let job = FrontendWorkerReaperJob {
-                keys: vec![
-                    (frontend_id, FrontendWorkerKind::Tune),
-                    (frontend_id, FrontendWorkerKind::Scan),
-                ],
-                continuation_kind: None,
-                tickets,
-                transferred_at: Instant::now(),
-                deadline_action: Some(Box::new(move |runtime| {
-                    handle_frontend_worker_reaper_deadline(
-                        runtime,
+            match wait_outcome {
+                FrontendWorkerStopWaitOutcome::Completed(outcomes) => {
+                    let result = finish_committed_scan_replacement(
+                        &runtime,
+                        transition(cleanup_diagnostic_sink),
+                        outcomes,
+                        false,
+                    );
+                    finish_replacement_with_reservation(
+                        &runtime,
+                        &reaper,
+                        reservation,
+                        result,
+                    )
+                }
+                FrontendWorkerStopWaitOutcome::TimedOut(tickets) => {
+                    let target = FrontendWorkerCleanupTarget::object(
+                        frontend_id,
+                        object_id,
+                        object_generation,
+                    );
+                    let error = HalError::cleanup_failed(
+                        "frontend scan replacement worker stop",
+                        "old worker did not exit before the replacement deadline",
+                    );
+                    Err(transfer_frontend_replacement_wait_failure(
+                        &runtime,
+                        &reaper,
+                        reservation,
                         target,
                         FrontendWorkerKind::Scan,
                         generation,
                         fenced_demux_generations,
-                        deadline_diagnostic_sink,
-                    );
-                })),
-                completion_action: Box::new(move |runtime, outcomes, deadline_elapsed| {
-                    let completion_error = if deadline_elapsed {
-                        compose_frontend_cleanup_error(
-                            "frontend scan replacement reaper deadline elapsed",
-                            completion_public_error.clone(),
-                            HalError::cleanup_failed(
-                                "frontend scan replacement reaper",
-                                "old worker did not exit before the reaper deadline",
-                            ),
-                        )
-                    } else {
-                        completion_public_error.clone()
-                    };
-                    if record_aborted_frontend_replacement_after_reap(
+                        tickets,
                         cleanup_diagnostic_sink,
+                        wait_started_at,
+                        error,
+                    ))
+                }
+                FrontendWorkerStopWaitOutcome::Failed { tickets, error } => {
+                    let target = FrontendWorkerCleanupTarget::object(
+                        frontend_id,
+                        object_id,
+                        object_generation,
+                    );
+                    Err(transfer_frontend_replacement_wait_failure(
+                        &runtime,
+                        &reaper,
+                        reservation,
                         target,
                         FrontendWorkerKind::Scan,
                         generation,
-                        &outcomes,
-                        completion_error,
-                    )
-                    .is_err()
-                    {
-                        TunerServiceRuntime::mark_shared_service_critical(&runtime);
-                    }
-                }),
-            };
-            if let Err(error) = reaper.enqueue(job) {
-                TunerServiceRuntime::mark_shared_service_critical(&runtime);
-                return Err(error);
+                        fenced_demux_generations,
+                        tickets,
+                        cleanup_diagnostic_sink,
+                        Instant::now(),
+                        error,
+                    ))
+                }
             }
-            Err(pending_stop_error)
         }
     }
 }
