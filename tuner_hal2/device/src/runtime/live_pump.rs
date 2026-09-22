@@ -31,6 +31,7 @@ where
 pub struct FrontendLivePumpReport {
     pub packets_delivered: u64,
     pub malformed_bytes: u64,
+    pub malformed_byte_counter_saturated: bool,
     pub read_retries: u64,
     pub read_retry_counter_saturated: bool,
     pub stopped_by_cancel: bool,
@@ -46,8 +47,15 @@ impl FrontendLivePumpReport {
         Ok(())
     }
 
-    fn add_malformed(&mut self, amount: u64) {
+    fn add_malformed(&mut self, amount: u64, descriptor: &FrontendLiveReaderDescriptor) {
         self.malformed_bytes = self.malformed_bytes.saturating_add(amount);
+        if self.malformed_bytes == u64::MAX && !self.malformed_byte_counter_saturated {
+            self.malformed_byte_counter_saturated = true;
+            eprintln!(
+                "diagnostic_counter_saturated counter=malformed_bytes owner=frontend_live_pump frontend={} reader={:?}",
+                descriptor.frontend_id, descriptor.kind
+            );
+        }
     }
 }
 
@@ -155,7 +163,7 @@ where
         }
 
         let drain = completion.push(&buf[..read_len]);
-        report.add_malformed(u64::try_from(drain.malformed_bytes).unwrap_or(u64::MAX));
+        report.add_malformed(u64::try_from(drain.malformed_bytes).unwrap_or(u64::MAX), descriptor);
         for packet in &drain.packets {
             sink.deliver_ts_packet(packet)?;
         }
@@ -163,7 +171,7 @@ where
     }
 
     let boundary = completion.drain_for_boundary();
-    report.add_malformed(u64::try_from(boundary.malformed_bytes).unwrap_or(u64::MAX));
+    report.add_malformed(u64::try_from(boundary.malformed_bytes).unwrap_or(u64::MAX), descriptor);
     if !report.stopped_by_cancel {
         for packet in &boundary.packets {
             sink.deliver_ts_packet(packet)?;
@@ -197,6 +205,27 @@ fn io_error_to_hal(
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn malformed_counter_saturation_is_retained_without_failing_the_pump() {
+        for amount in [1, 2, u64::MAX] {
+            let mut report = FrontendLivePumpReport {
+                malformed_bytes: u64::MAX - 1,
+                ..FrontendLivePumpReport::default()
+            };
+            report.add_malformed(0, &descriptor());
+            assert!(!report.malformed_byte_counter_saturated);
+            report.add_malformed(amount, &descriptor());
+            assert_eq!(report.malformed_bytes, u64::MAX);
+            assert!(report.malformed_byte_counter_saturated);
+            report.add_malformed(1, &descriptor());
+            report.add_packets(1).unwrap();
+            assert_eq!(report.malformed_bytes, u64::MAX);
+            assert_eq!(report.packets_delivered, 1);
+            assert!(!report.stopped_by_cancel);
+            assert!(!report.reached_eof);
+        }
+    }
 
     fn descriptor() -> FrontendLiveReaderDescriptor {
         FrontendLiveReaderDescriptor::dvb_dvr_device(

@@ -90,6 +90,9 @@ pub struct FrontendLivePumpDiagnostic {
     pub generation: u64,
     pub packets_delivered: u64,
     pub malformed_bytes: u64,
+    pub malformed_byte_counter_saturated: bool,
+    pub read_retries: u64,
+    pub read_retry_counter_saturated: bool,
     pub stopped_by_cancel: bool,
     pub reached_eof: bool,
     pub cancel_reason: Option<FrontendWorkerCancelReason>,
@@ -161,6 +164,9 @@ impl FrontendLivePumpDiagnostic {
             generation,
             packets_delivered: report.packets_delivered,
             malformed_bytes: report.malformed_bytes,
+            malformed_byte_counter_saturated: report.malformed_byte_counter_saturated,
+            read_retries: report.read_retries,
+            read_retry_counter_saturated: report.read_retry_counter_saturated,
             stopped_by_cancel: report.stopped_by_cancel,
             reached_eof: report.reached_eof,
             cancel_reason,
@@ -1324,6 +1330,32 @@ mod tests {
     }
 
     #[test]
+    fn live_pump_diagnostic_retains_saturation_and_retry_counters() {
+        let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
+        let before = runtime.snapshot();
+        runtime.record_live_pump_report(
+            runtime.generation(),
+            FrontendLivePumpReport {
+                malformed_bytes: u64::MAX,
+                malformed_byte_counter_saturated: true,
+                read_retries: u64::MAX,
+                read_retry_counter_saturated: true,
+                ..FrontendLivePumpReport::default()
+            },
+            None,
+        ).unwrap();
+        let snapshot = runtime.snapshot();
+        let diagnostic = &snapshot.live_pump_reports[0];
+        assert_eq!(diagnostic.generation, before.generation);
+        assert_eq!(diagnostic.malformed_bytes, u64::MAX);
+        assert!(diagnostic.malformed_byte_counter_saturated);
+        assert_eq!(diagnostic.read_retries, u64::MAX);
+        assert!(diagnostic.read_retry_counter_saturated);
+        assert_eq!(snapshot.state, before.state);
+        assert_eq!(snapshot.last_error, before.last_error);
+    }
+
+    #[test]
     fn live_pump_report_is_recorded_as_frontend_diagnostic() {
         let mut runtime = FrontendRuntime::new(7, FrontendBackendKind::Px4CharDevice);
         runtime.commit_generation(1).unwrap();
@@ -1334,6 +1366,7 @@ mod tests {
                 FrontendLivePumpReport {
                     packets_delivered: 3,
                     malformed_bytes: 2,
+                    malformed_byte_counter_saturated: false,
                     read_retries: 0,
                     read_retry_counter_saturated: false,
                     stopped_by_cancel: false,
@@ -1361,6 +1394,7 @@ mod tests {
                 FrontendLivePumpReport {
                     packets_delivered: 5,
                     malformed_bytes: 9,
+                    malformed_byte_counter_saturated: false,
                     read_retries: 0,
                     read_retry_counter_saturated: false,
                     stopped_by_cancel: true,
@@ -1392,6 +1426,7 @@ mod tests {
             FrontendLivePumpReport {
                 packets_delivered: 0,
                 malformed_bytes: 4,
+                malformed_byte_counter_saturated: false,
                 read_retries: 0,
                 read_retry_counter_saturated: false,
                 stopped_by_cancel: true,
@@ -1427,6 +1462,7 @@ mod tests {
                     FrontendLivePumpReport {
                         packets_delivered: 1,
                         malformed_bytes: 0,
+                        malformed_byte_counter_saturated: false,
                         read_retries: 0,
                         read_retry_counter_saturated: false,
                         stopped_by_cancel: false,
