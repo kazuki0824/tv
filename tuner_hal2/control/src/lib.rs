@@ -804,10 +804,20 @@ where
         reservation: WorkerRuntimeReaperReservation<K, V>,
     ) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
         if !std::sync::Arc::ptr_eq(&self.pending, &reservation.pending) {
-            return Err(maleicacid_tuner_hal2_common::HalError::internal(
+            let mismatch = maleicacid_tuner_hal2_common::HalError::internal(
                 maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
                 "worker reaper reservation belongs to a different queue",
-            ));
+            );
+            return match reservation.release() {
+                Ok(()) => Err(mismatch),
+                Err(release_error) => Err(
+                    maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
+                        "worker reaper reservation queue mismatch and original reservation release both failed",
+                        mismatch,
+                        release_error,
+                    ),
+                ),
+            };
         }
         reservation.release()
     }
@@ -819,10 +829,20 @@ where
     ) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
         if !std::sync::Arc::ptr_eq(&self.pending, &reservation.pending) {
             drop(job);
-            return Err(maleicacid_tuner_hal2_common::HalError::internal(
+            let mismatch = maleicacid_tuner_hal2_common::HalError::internal(
                 maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
                 "worker reaper reservation belongs to a different queue",
-            ));
+            );
+            return match reservation.release() {
+                Ok(()) => Err(mismatch),
+                Err(release_error) => Err(
+                    maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
+                        "worker reaper enqueue queue mismatch and original reservation release both failed",
+                        mismatch,
+                        release_error,
+                    ),
+                ),
+            };
         }
         match self.sender.try_send(job) {
             Ok(()) => Ok(()),
@@ -1558,6 +1578,60 @@ mod tests {
         queue.release_reservation(reservation).unwrap();
         assert_eq!(queue.pending_value(&7).unwrap(), None);
         assert!(queue.reserve_pending([(7, 13)]).is_ok());
+    }
+
+    #[test]
+    fn cross_queue_release_releases_the_original_reservation_before_returning_error() {
+        let (sender_a, _receiver_a) = std::sync::mpsc::sync_channel::<()>(1);
+        let queue_a = WorkerRuntimeReaperQueue {
+            lanes: std::sync::Arc::new(Vec::new()),
+            sender: sender_a,
+            pending: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::BTreeMap::new(),
+            )),
+        };
+        let (sender_b, _receiver_b) = std::sync::mpsc::sync_channel::<()>(1);
+        let queue_b = WorkerRuntimeReaperQueue {
+            lanes: std::sync::Arc::new(Vec::new()),
+            sender: sender_b,
+            pending: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::BTreeMap::new(),
+            )),
+        };
+
+        let reservation = queue_a.reserve_pending([(7, 11)]).unwrap();
+        assert_eq!(queue_a.pending_value(&7).unwrap(), Some(11));
+        assert!(queue_b.release_reservation(reservation).is_err());
+        assert_eq!(queue_a.pending_value(&7).unwrap(), None);
+        assert!(queue_a.reserve_pending([(7, 12)]).is_ok());
+    }
+
+    #[test]
+    fn cross_queue_enqueue_releases_the_original_reservation_before_returning_error() {
+        let (sender_a, _receiver_a) = std::sync::mpsc::sync_channel::<()>(1);
+        let queue_a = WorkerRuntimeReaperQueue {
+            lanes: std::sync::Arc::new(Vec::new()),
+            sender: sender_a,
+            pending: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::BTreeMap::new(),
+            )),
+        };
+        let (sender_b, _receiver_b) = std::sync::mpsc::sync_channel::<()>(1);
+        let queue_b = WorkerRuntimeReaperQueue {
+            lanes: std::sync::Arc::new(Vec::new()),
+            sender: sender_b,
+            pending: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::BTreeMap::new(),
+            )),
+        };
+
+        let reservation = queue_a.reserve_pending([(8, 21)]).unwrap();
+        assert_eq!(queue_a.pending_value(&8).unwrap(), Some(21));
+        assert!(queue_b
+            .enqueue_with_reservation((), reservation)
+            .is_err());
+        assert_eq!(queue_a.pending_value(&8).unwrap(), None);
+        assert!(queue_a.reserve_pending([(8, 22)]).is_ok());
     }
 
     #[test]
