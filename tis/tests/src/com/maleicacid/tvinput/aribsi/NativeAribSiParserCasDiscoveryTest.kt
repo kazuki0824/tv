@@ -11,6 +11,15 @@ import org.junit.Test
 @Suppress("LargeClass", "TooManyFunctions")
 class NativeAribSiParserCasDiscoveryTest {
     @Test
+    fun patDerivedPmtPidIsAvailableBeforeServiceRegistrationAndPmtParsing() {
+        NativeAribSiParser().use { parser ->
+            check(parser.ingestSection(TsPid(PID_PAT), section(PAT_BODY)) == SiStatus.OK)
+            check(parser.pmtPidsForSectionFilters() == setOf(TsPid(PID_PMT)))
+            check(parser.casDiscoverySnapshot().pmtPids.isEmpty())
+        }
+    }
+
+    @Test
     fun snapshotFailureKeepsItsReasonAndDoesNotBecomeEmptyFacts() {
         NativeAribSiParser().use { parser ->
             val method =
