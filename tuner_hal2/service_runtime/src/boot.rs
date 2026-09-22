@@ -488,16 +488,19 @@ pub(super) fn demux_runtime_error_to_hal(
                 object_id: error.id,
             }
         }
-        maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::FmqDeliveryRollbackFailed(kind) => {
+        maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::FmqDeliveryRollbackFailed {
+            delivery,
+            rollback,
+        } => {
             compose_primary_cleanup_failure(
                 "FMQ delivery and playback queue rollback failed",
                 HalError::FmqDeliveryFailed {
-                    kind,
+                    kind: delivery,
                     object_id: error.id,
                 },
                 HalError::cleanup_failed(
                     "playback queue read rollback",
-                    "DVR was quarantined after playback queue transaction rollback failure",
+                    format!("{:?}: {}", rollback.kind, rollback.detail),
                 ),
             )
         }
