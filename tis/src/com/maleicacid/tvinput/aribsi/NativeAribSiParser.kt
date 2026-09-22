@@ -8,6 +8,9 @@ import com.maleicacid.tvinput.common.TsPid
 import org.json.JSONArray
 import org.json.JSONObject
 
+class NativeParserCleanupException(val status: Int) :
+    IllegalStateException("ネイティブ解析器の解放に失敗しました status=$status")
+
 // 同じ所有者の状態と解放順を維持し、行数だけを理由に責務を分割しない。
 // 同じ状態・境界を扱う操作群を一つの所有者に保つ。
 @Suppress("LargeClass", "TooManyFunctions")
@@ -255,15 +258,16 @@ class NativeAribSiParser : AutoCloseable {
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MagicNumber", "MaxLineLength")
     private fun parseNativeTransactionJson(raw: String): NativeTransaction {
-        val root = JSONObject(raw.ifBlank { "{}" })
-        check(root.optInt("schemaVersion", -1) == SI_SNAPSHOT_SCHEMA_VERSION) {
-            "未対応のSI snapshot schemaVersion=${root.optInt("schemaVersion", -1)}"
+        val root = JSONObject(raw)
+        validateNativeTransaction(root)
+        check(root.getInt("schemaVersion") == SI_SNAPSHOT_SCHEMA_VERSION) {
+            "未対応のSI snapshot schemaVersion=${root.getInt("schemaVersion")}"
         }
         val serviceFacts = parseServiceSemanticFacts(root.optJSONArray("serviceSemanticFacts"))
         return NativeTransaction(
             collectionGeneration = root.getLong("collectionGeneration"),
-            ingestSequence = root.optLong("ingestSequence", 0L),
-            discoveryStage = root.optInt("discoveryStage", SiDiscoveryStage.INCOMPLETE),
+            ingestSequence = root.getLong("ingestSequence"),
+            discoveryStage = root.getInt("discoveryStage"),
             broadcastClock =
                 root.optJSONObject("broadcastClock")?.let { clock ->
                     val tableId = clock.optInt("tableId", -1)
@@ -285,6 +289,34 @@ class NativeAribSiParser : AutoCloseable {
             serviceSemanticFacts = serviceFacts,
             parserDiagnostics = parseParserDiagnostics(root.optJSONArray("parserDiagnostics")),
         )
+    }
+
+    private fun validateNativeTransaction(root: JSONObject) {
+        val arrays = listOf(
+            "tableRequirements", "catCaMetadata", "malformedCaDescriptorDiagnostics",
+            "malformedCaDescriptorCounts", "transportSemanticFacts", "events", "eitInstances",
+            "serviceSemanticFacts", "parserDiagnostics",
+        )
+        val fields = arrays + listOf("schemaVersion", "collectionGeneration", "ingestSequence", "discoveryStage", "broadcastClock")
+        check(root.keys().asSequence().toSet() == fields.toSet()) { "SI snapshotの必須項目または項目集合が不正です" }
+        requireSnapshotInteger(root, "schemaVersion", SI_SNAPSHOT_SCHEMA_VERSION.toLong())
+        requireSnapshotInteger(root, "collectionGeneration", Long.MAX_VALUE)
+        requireSnapshotInteger(root, "ingestSequence", Long.MAX_VALUE)
+        requireSnapshotInteger(root, "discoveryStage", SiDiscoveryStage.COMPLETE.toLong())
+        val clock = root.get("broadcastClock")
+        check(clock == JSONObject.NULL || clock is JSONObject) { "SI snapshotのbroadcastClock型が不正です" }
+        for (key in arrays) {
+            val array = root.getJSONArray(key)
+            for (index in 0 until array.length()) {
+                check(array.get(index) is JSONObject) { "SI snapshotの$key[$index]型が不正です" }
+            }
+        }
+    }
+
+    private fun requireSnapshotInteger(root: JSONObject, key: String, maximum: Long) {
+        val value = root.get(key)
+        check(value is Int || value is Long) { "SI snapshotの$keyは整数である必要があります" }
+        check((value as Number).toLong() in 0..maximum) { "SI snapshotの$keyが範囲外です" }
     }
 
     private fun parseStringArray(array: JSONArray?): List<String> =
@@ -960,7 +992,8 @@ class NativeAribSiParser : AutoCloseable {
     override fun close() {
         val current = handle
         if (current != 0L) {
-            nativeDestroy(current)
+            val status = nativeDestroy(current)
+            if (status != SiStatus.OK) throw NativeParserCleanupException(status)
             handle = 0L
         }
     }

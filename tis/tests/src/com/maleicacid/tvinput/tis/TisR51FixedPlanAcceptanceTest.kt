@@ -1948,7 +1948,7 @@ class TisR51FixedPlanAcceptanceTest {
 
     @Test fun sectionStatusDiagnosticsAreBucketedByStatus() {
         check(SectionIngestController.statusBucketForTest(SiStatus.OK) == "accepted")
-        check(SectionIngestController.statusBucketForTest(SiStatus.INVALID_SECTION) == "crc")
+        check(SectionIngestController.statusBucketForTest(SiStatus.INVALID_SECTION) == "invalid_section")
         check(SectionIngestController.statusBucketForTest(SiStatus.MALFORMED_DESCRIPTOR) == "malformed")
         check(SectionIngestController.statusBucketForTest(SiStatus.INTERNAL_ERROR) == "malformed")
     }
