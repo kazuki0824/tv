@@ -333,28 +333,6 @@ canonical JSON は Rust `serde_json` で生成し、struct フィールド順序
 
 ### JNI boundary
 
-#### 実行失敗と正常な空値の区別
-
-文字列を返すJNI入口では、放送上の事実の欠落・有効な空文字と、JNIや解析器の実行失敗を区別する。`ProviderDataResult`のbuild/normalizeは既存の失敗envelopeを維持する。それ以外のsnapshot、key抽出、channel decode、ARIB文字decode、codec probeの実行失敗は、Kotlinの`NativeSiException`を送出する。正常時のsnapshot/schema、key欠落の空文字、文字入力が空の正常結果、codecの`Pending / Invalid / Ready`は変更しない。
-
-`NativeSiException`は表示用messageと独立した`NativeSiFailureReason`を持つ。JNI constructorには次のreason名を渡し、Kotlinはenumへ厳密変換する。messageを分類に使用しない。
-
-| reason | 対象 |
-|---|---|
-| `MODULE_ABNORMAL` | 汚染検出後のSIモジュール利用 |
-| `REGISTRY_POISONED` | 解析器登録表のロック汚染 |
-| `PARSER_POISONED` | 解析器状態のロック汚染 |
-| `INVALID_HANDLE` | 存在しない解析器handle |
-| `JNI_INPUT` | Java文字列・配列の取得や変換の失敗 |
-| `JSON_ENCODING` | snapshotまたはcodec結果のJSON生成失敗 |
-| `JNI_OUTPUT` | Java結果文字列の生成失敗、例外なしの不正なnull戻り値 |
-
-snapshotでは登録表から解析器参照を得た後に登録表lockを解放し、解析器lockの内側でJSONを生成する。Javaへの例外・結果生成は両lockの解放後に行う。ロック汚染は既存のモジュール異常状態と汚染回数へ接続し、正常な空snapshotへ置き換えない。
-
-Java VMが既に例外を保持している場合（メモリー不足など）は、その例外を消去・置換しない。例外の構築自体に失敗した場合も正常な空値を返さない。native宣言はnullableとして境界を表し、Kotlinの共通受取入口が例外なしのnullを`JNI_OUTPUT`として拒否する。例外構築の失敗理由は元の失敗と併記する。
-
-入力配列の長さ上限超過とcodec構文不正は既存の`Invalid`、JNI配列取得失敗は`JNI_INPUT`とする。provider-dataの内容不正・key不在は既存のdomain結果を維持し、JNI変換に失敗した入力を空配列として解析しない。
-
 Rust は少なくとも以下の JNI API 相当を提供する。
 
 ```text
