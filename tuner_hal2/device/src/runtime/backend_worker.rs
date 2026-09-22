@@ -999,14 +999,15 @@ impl FrontendBackendTuneExecutor {
                     freq_no: mapped.freq_no,
                     slot: mapped.slot,
                 };
-                ioctl_ptr(
+                let result = ioctl_ptr(
                     "px4",
                     Some(control_path.as_path().to_path_buf()),
                     self.file_fd()?,
                     PTX_SET_CHANNEL,
                     &mut freq,
                     "PTX_SET_CHANNEL",
-                )
+                );
+                classify_px4_channel_apply_result(request.system, result).map(|_| ())
             }
             FrontendBackendSessionKind::Dvb { frontend_path } => {
                 let normalized = dvb::normalized_tune_request_from_common(request)?;
@@ -1278,6 +1279,26 @@ fn classify_tmcc_partial_reception_read(
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Px4ChannelApplyResult {
+    Applied,
+    PendingUnlocked,
+}
+
+fn classify_px4_channel_apply_result(
+    system: Option<FrontendSystem>,
+    result: Result<(), HalError>,
+) -> Result<Px4ChannelApplyResult, HalError> {
+    match result {
+        Ok(()) => Ok(Px4ChannelApplyResult::Applied),
+        Err(HalError::IoctlFailed {
+            errno: ERRNO_EAGAIN,
+            ..
+        }) if system == Some(FrontendSystem::IsdbT) => Ok(Px4ChannelApplyResult::PendingUnlocked),
+        Err(error) => Err(error),
+    }
+}
+
 fn px4_signal_state_from_readback(
     result: Result<bool, HalError>,
 ) -> Result<FrontendSignalState, HalError> {
@@ -1444,6 +1465,28 @@ mod tests {
             })
         ));
         assert_eq!(executor.streaming_state, BackendStreamingState::Started);
+    }
+
+    #[test]
+    fn px4_isdbt_set_channel_eagain_is_pending_but_isdbs_remains_failure() {
+        let pending = HalError::IoctlFailed {
+            backend: "px4",
+            path: Some(PathBuf::from("/dev/px4video0")),
+            op: "PTX_SET_CHANNEL",
+            errno: ERRNO_EAGAIN,
+        };
+        assert_eq!(
+            classify_px4_channel_apply_result(Some(FrontendSystem::IsdbT), Err(pending.clone())),
+            Ok(Px4ChannelApplyResult::PendingUnlocked)
+        );
+        assert_eq!(
+            classify_px4_channel_apply_result(Some(FrontendSystem::IsdbS), Err(pending.clone())),
+            Err(pending.clone())
+        );
+        assert_eq!(
+            classify_px4_channel_apply_result(None, Err(pending.clone())),
+            Err(pending)
+        );
     }
 
     #[test]
