@@ -2584,7 +2584,10 @@ impl DemuxRuntime {
             Ok(events) => events,
             Err(error) => {
                 self.quarantine_filter_runtime(plan.filter_id);
-                return Err(DemuxRuntimeError::queue_runtime_error(plan.filter_id, error));
+                return Err(DemuxRuntimeError::queue_runtime_error(
+                    plan.filter_id,
+                    error,
+                ));
             }
         };
         if let Err(error) = self.discard_undelivered_filter_events(plan.filter_id, pending_events) {
@@ -4030,7 +4033,9 @@ impl DemuxRuntime {
         for (filter_id, gate) in &self.filter_producer_gates {
             match gate.begin_drain(FilterDrainBoundary::Reconfigure) {
                 Ok(drain) => filter_drains.push((*filter_id, drain)),
-                Err(error) => return Err(DemuxRuntimeError::queue_runtime_error(*filter_id, error)),
+                Err(error) => {
+                    return Err(DemuxRuntimeError::queue_runtime_error(*filter_id, error))
+                }
             }
         }
         Ok(super::generation_boundary::PreparedStreamBoundary {
@@ -4846,7 +4851,10 @@ impl DemuxRuntime {
                 let permit = match gate.begin_producer() {
                     Ok(permit) => permit,
                     Err(error) => {
-                        admission_failures.push((filter_id, DemuxRuntimeError::queue_runtime_error(filter_id, error)));
+                        admission_failures.push((
+                            filter_id,
+                            DemuxRuntimeError::queue_runtime_error(filter_id, error),
+                        ));
                         continue;
                     }
                 };
@@ -4855,16 +4863,26 @@ impl DemuxRuntime {
                     Err(error) => {
                         drop(permit);
                         self.quarantine_filter_runtime(filter_id);
-                        admission_failures.push((filter_id, DemuxRuntimeError::queue_runtime_error(filter_id, error)));
+                        admission_failures.push((
+                            filter_id,
+                            DemuxRuntimeError::queue_runtime_error(filter_id, error),
+                        ));
                         continue;
                     }
                 };
-                if u64::try_from(TS_PACKET_SIZE).ok().and_then(|bytes| offset.checked_add(bytes)).is_some() {
+                if u64::try_from(TS_PACKET_SIZE)
+                    .ok()
+                    .and_then(|bytes| offset.checked_add(bytes))
+                    .is_some()
+                {
                     admitted.push((filter_id, permit));
                 } else {
                     drop(permit);
                     self.quarantine_filter_runtime(filter_id);
-                    admission_failures.push((filter_id, DemuxRuntimeError::queue_runtime_failure(filter_id)));
+                    admission_failures.push((
+                        filter_id,
+                        DemuxRuntimeError::queue_runtime_failure(filter_id),
+                    ));
                 }
             }
             if admitted.is_empty() {
@@ -4907,9 +4925,13 @@ impl DemuxRuntime {
                     for (filter_id, permit) in admitted {
                         if let Err(error) = permit.commit() {
                             self.quarantine_filter_runtime(filter_id);
-                            diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(
-                                pid, filter_id, DemuxRuntimeError::queue_runtime_error(filter_id, error),
-                            ));
+                            diagnostics.push(
+                                PipelineDiagnostic::filter_queue_payload_delivery_failure(
+                                    pid,
+                                    filter_id,
+                                    DemuxRuntimeError::queue_runtime_error(filter_id, error),
+                                ),
+                            );
                         }
                         diagnostics.push(PipelineDiagnostic::record_dvr_mirror_overflow(
                             pid, filter_id, dvr_id,
@@ -4920,9 +4942,13 @@ impl DemuxRuntime {
                     for (filter_id, permit) in admitted {
                         if let Err(error) = permit.commit() {
                             self.quarantine_filter_runtime(filter_id);
-                            diagnostics.push(PipelineDiagnostic::filter_queue_payload_delivery_failure(
-                                pid, filter_id, DemuxRuntimeError::queue_runtime_error(filter_id, error),
-                            ));
+                            diagnostics.push(
+                                PipelineDiagnostic::filter_queue_payload_delivery_failure(
+                                    pid,
+                                    filter_id,
+                                    DemuxRuntimeError::queue_runtime_error(filter_id, error),
+                                ),
+                            );
                         }
                         diagnostics.push(PipelineDiagnostic::record_dvr_mirror_failure(
                             pid, filter_id, dvr_id, error,
