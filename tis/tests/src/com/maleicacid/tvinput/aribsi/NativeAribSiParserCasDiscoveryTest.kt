@@ -11,6 +11,25 @@ import org.junit.Test
 @Suppress("LargeClass", "TooManyFunctions")
 class NativeAribSiParserCasDiscoveryTest {
     @Test
+    fun providerJniInputFailureIsNotAnEmptyDomainValue() {
+        NativeAribSiParser().use { parser ->
+            for ((name, parameter) in listOf(
+                "nativeBuildChannelProviderData" to String::class.java,
+                "nativeBuildProgramProviderData" to String::class.java,
+                "nativeNormalizeProgramProviderData" to ByteArray::class.java,
+            )) {
+                val method = NativeAribSiParser::class.java.getDeclaredMethod(name, parameter)
+                method.isAccessible = true
+                val result = JSONObject(method.invoke(parser, *arrayOf<Any?>(null)) as String)
+                check(!result.getBoolean("success"))
+                check(result.getString("bytes").isEmpty())
+                check(result.getString("errorCode") == "JNI_ERROR")
+                check(result.getString("errorMessage").isNotBlank())
+            }
+        }
+    }
+
+    @Test
     fun snapshotRejectsMissingFieldsAndInvalidTypes() {
         NativeAribSiParser().use { parser ->
             val handleField = NativeAribSiParser::class.java.getDeclaredField("handle").apply { isAccessible = true }

@@ -80,7 +80,28 @@ struct ParserState {
     eit_instances: EitInstances,
     sections_seen: u64,
     last_status: jint,
+    invalid_section_reason: Option<InvalidSectionReason>,
     latest_broadcast_clock: Option<BroadcastClockFact>,
+}
+
+#[derive(Clone, Copy)]
+enum InvalidSectionReason {
+    Header,
+    Length,
+    Clock,
+    Crc,
+}
+
+impl InvalidSectionReason {
+    fn diagnostic(self) -> ParserDiagnosticDto {
+        let (code, message) = match self {
+            Self::Header => ("SECTION_HEADER_INVALID", "section header is invalid or truncated"),
+            Self::Length => ("SECTION_LENGTH_MISMATCH", "section length differs from input length"),
+            Self::Clock => ("BROADCAST_CLOCK_INVALID", "broadcast clock section is invalid"),
+            Self::Crc => ("SECTION_CRC_MISMATCH", "section CRC does not match"),
+        };
+        ParserDiagnosticDto { code, message: message.to_string(), severity: "error" }
+    }
 }
 
 impl Default for ParserState {
@@ -95,6 +116,7 @@ impl Default for ParserState {
             collector: ServiceDiscoveryCollector::default(),
             sections_seen: 0,
             last_status: STATUS_OK,
+            invalid_section_reason: None,
             latest_broadcast_clock: None,
         }
     }
@@ -106,6 +128,7 @@ impl ParserState {
         self.eit_instances = EitInstances::default();
         self.collection_generation = self.collection_generation.saturating_add(1);
         self.latest_broadcast_clock = None;
+        self.invalid_section_reason = None;
     }
 
     fn expire_collection_at(&mut self, now: Instant) {
@@ -145,16 +168,19 @@ impl ParserState {
 
     fn ingest_section(&mut self, pid: u16, section: &[u8]) -> jint {
         self.expire_collection_at(Instant::now());
+        self.invalid_section_reason = None;
         if !self.admit_section(section.len()) {
             self.last_status = STATUS_COLLECTION_LIMIT_EXCEEDED;
             return self.last_status;
         }
         let Some(header) = parse_section_header(section) else {
             self.last_status = STATUS_INVALID_SECTION;
+            self.invalid_section_reason = Some(InvalidSectionReason::Header);
             return STATUS_INVALID_SECTION;
         };
         if header.total_length != section.len() {
             self.last_status = STATUS_INVALID_SECTION;
+            self.invalid_section_reason = Some(InvalidSectionReason::Length);
             return STATUS_INVALID_SECTION;
         }
 
@@ -166,6 +192,7 @@ impl ParserState {
         if pid == 0x0014 && matches!(table_id, 0x70 | 0x73) {
             let Some(clock) = parse_broadcast_clock(section, &header) else {
                 self.last_status = STATUS_INVALID_SECTION;
+                self.invalid_section_reason = Some(InvalidSectionReason::Clock);
                 return STATUS_INVALID_SECTION;
             };
             self.latest_broadcast_clock = Some(clock);
@@ -179,6 +206,7 @@ impl ParserState {
             }
             if header.syntax && !section_crc_valid_with_header(section, &header) {
                 self.last_status = STATUS_INVALID_SECTION;
+                self.invalid_section_reason = Some(InvalidSectionReason::Crc);
                 return STATUS_INVALID_SECTION;
             }
             let malformed_descriptor_loop = section_has_malformed_descriptor_loop(
@@ -1105,7 +1133,10 @@ fn bulk_snapshot_json(state: &mut ParserState) -> String {
     let table_requirements = &collection_state.table_requirements;
     let semantic_facts = &collection_state.semantic_facts_by_service;
     let snapshot = &collection_state.snapshot;
-    let parser_diagnostics = parser_diagnostics(ingest_sequence, last_status, snapshot);
+    let mut parser_diagnostics = parser_diagnostics(ingest_sequence, last_status, snapshot);
+    if let Some(reason) = state.invalid_section_reason {
+        parser_diagnostics.push(reason.diagnostic());
+    }
     let actual_transport_keys = state.sdt_actual_transport_keys();
     let cat_ca = &snapshot.cat_ca.descriptors;
     // 更新区間は排出型一括APIだけで公開する。
@@ -1362,10 +1393,6 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     java_string(&mut env, Some(json))
 }
 
-fn jstring_to_string(env: &mut JNIEnv<'_>, value: JString<'_>) -> Option<String> {
-    env.get_string(&value).ok().map(|s| s.into())
-}
-
 fn jbytearray_to_vec(env: &mut JNIEnv<'_>, value: JByteArray<'_>) -> Vec<u8> {
     env.convert_byte_array(value).unwrap_or_default()
 }
@@ -1424,6 +1451,18 @@ fn provider_result_json(result: provider_data_api::ProviderDataResult) -> String
     )
 }
 
+fn provider_jni_failure(error: jni::errors::Error) -> provider_data_api::ProviderDataResult {
+    provider_data_api::ProviderDataResult {
+        success: false,
+        json: String::new(),
+        schema_version: 1,
+        truncated: false,
+        diagnostics_dropped_count: 0,
+        error_code: "JNI_ERROR".to_string(),
+        error_message: error.to_string(),
+    }
+}
+
 fn program_key_result_json(result: provider_data_api::ProgramKeyResult) -> String {
     format!(
         "{{\"originalNetworkId\":{},\"transportStreamId\":{},\"serviceId\":{},\"eventId\":{},\"key\":{}}}",
@@ -1441,8 +1480,10 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     _this: JObject<'_>,
     request_json: JString<'_>,
 ) -> jstring {
-    let request = jstring_to_string(&mut env, request_json).unwrap_or_default();
-    let result = provider_data_api::build_channel_provider_data(&request);
+    let result = match env.get_string(&request_json) {
+        Ok(request) => provider_data_api::build_channel_provider_data(&String::from(request)),
+        Err(error) => provider_jni_failure(error),
+    };
     java_string(&mut env, Some(provider_result_json(result)))
 }
 
@@ -1469,8 +1510,10 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     _this: JObject<'_>,
     request_json: JString<'_>,
 ) -> jstring {
-    let request = jstring_to_string(&mut env, request_json).unwrap_or_default();
-    let result = provider_data_api::build_program_provider_data(&request);
+    let result = match env.get_string(&request_json) {
+        Ok(request) => provider_data_api::build_program_provider_data(&String::from(request)),
+        Err(error) => provider_jni_failure(error),
+    };
     java_string(&mut env, Some(provider_result_json(result)))
 }
 
@@ -1480,8 +1523,10 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     _this: JObject<'_>,
     provider_data: JByteArray<'_>,
 ) -> jstring {
-    let data = jbytearray_to_vec(&mut env, provider_data);
-    let result = provider_data_api::normalize_program_provider_data(&data);
+    let result = match env.convert_byte_array(provider_data) {
+        Ok(data) => provider_data_api::normalize_program_provider_data(&data),
+        Err(error) => provider_jni_failure(error),
+    };
     java_string(&mut env, Some(provider_result_json(result)))
 }
 
@@ -1630,6 +1675,25 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
 mod tests {
     use super::*;
     use crate::sections::crc32_mpeg;
+
+    #[test]
+    fn invalid_section_reason_uses_existing_snapshot_diagnostics() {
+        let cases: &[(u16, &[u8], &str)] = &[
+            (0, &[0], "SECTION_HEADER_INVALID"),
+            (0x14, &[0x70, 0x70, 0, 0], "SECTION_LENGTH_MISMATCH"),
+            (0x14, &[0x70, 0x70, 5, 0xff, 0xff, 0xff, 0xff, 0xff], "BROADCAST_CLOCK_INVALID"),
+            (0, &[0, 0xb0, 9, 0, 1, 0xc1, 0, 0, 0, 0, 0, 0], "SECTION_CRC_MISMATCH"),
+        ];
+        for &(pid, bytes, code) in cases {
+            let mut state = ParserState::default();
+            assert_eq!(state.ingest_section(pid, bytes), STATUS_INVALID_SECTION);
+            let snapshot: serde_json::Value = serde_json::from_str(&bulk_snapshot_json(&mut state)).unwrap();
+            assert!(snapshot["parserDiagnostics"].as_array().unwrap().iter().any(|d| d["code"] == code));
+            assert_eq!(state.ingest_section(0x10, &[0x7f, 0x30, 0]), STATUS_IGNORED_UNSUPPORTED_PID_OR_TABLE);
+            let snapshot: serde_json::Value = serde_json::from_str(&bulk_snapshot_json(&mut state)).unwrap();
+            assert!(!snapshot["parserDiagnostics"].as_array().unwrap().iter().any(|d| d["code"] == code));
+        }
+    }
 
     fn section_with_crc(mut body: Vec<u8>) -> Vec<u8> {
         let crc = crc32_mpeg(&body);
