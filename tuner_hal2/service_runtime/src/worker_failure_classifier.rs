@@ -104,12 +104,16 @@ impl WorkerFailureClassifier {
                 kind: maleicacid_tuner_hal2_common::FmqFailureKind::EventFlagWakeFailed,
                 ..
             } => WorkerFailureCategory::EventFlag,
-            HalError::FmqFailed { .. } | HalError::FmqDeliveryFailed { .. } => WorkerFailureCategory::Fmq,
+            HalError::FmqFailed { .. } | HalError::FmqDeliveryFailed { .. } => {
+                WorkerFailureCategory::Fmq
+            }
             HalError::EventFlagFailed { .. } => WorkerFailureCategory::EventFlag,
             HalError::CleanupFailed { .. } | HalError::WorkerCleanupFailed { .. } => {
                 WorkerFailureCategory::Cleanup
             }
-            HalError::WorkerLockPoisoned { .. } | HalError::ServiceRuntimeLockPoisoned { .. } => WorkerFailureCategory::LockPoison,
+            HalError::WorkerLockPoisoned { .. } | HalError::ServiceRuntimeLockPoisoned { .. } => {
+                WorkerFailureCategory::LockPoison
+            }
             _ => WorkerFailureCategory::Unknown,
         }
     }

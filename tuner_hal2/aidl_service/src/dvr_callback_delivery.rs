@@ -17,7 +17,7 @@ use maleicacid_tuner_hal2_service_runtime::{
     CapabilitySnapshot, ClassifiedWorkerTerminalResult, DvrPostCommitNotificationDiagnosticRecord,
     DvrPostCommitNotificationFailureKind, DvrPostCommitNotificationPhase,
     DvrStatusNotifierCleanupDiagnosticRecord, DvrStatusPollSnapshot, WorkerFailureCategory,
-    WorkerRuntime, WorkerRuntimeSupervisor, WorkerFailureClassifier, WorkerTerminalResult,
+    WorkerFailureClassifier, WorkerRuntime, WorkerRuntimeSupervisor, WorkerTerminalResult,
 };
 
 use crate::filter_callback_delivery::dispatch_filter_event_snapshots;
@@ -106,12 +106,19 @@ impl DvrStatusNotifierSupervisor {
     ) -> Result<(), HalError> {
         if let Some(terminal) = self.runtime.worker_terminal_result()? {
             mark_dvr_notifier_service_critical(context);
-            return Err(match WorkerFailureClassifier::classify_terminal(terminal,
-                "DVR notifier reaper panicked or could not be joined") {
-                ClassifiedWorkerTerminalResult::Failure { error, .. } => error,
-                ClassifiedWorkerTerminalResult::Normal(()) | ClassifiedWorkerTerminalResult::StopRequested =>
-                    HalError::cleanup_failed("DVR notifier reaper", "reaper is no longer running"),
-            });
+            return Err(
+                match WorkerFailureClassifier::classify_terminal(
+                    terminal,
+                    "DVR notifier reaper panicked or could not be joined",
+                ) {
+                    ClassifiedWorkerTerminalResult::Failure { error, .. } => error,
+                    ClassifiedWorkerTerminalResult::Normal(())
+                    | ClassifiedWorkerTerminalResult::StopRequested => HalError::cleanup_failed(
+                        "DVR notifier reaper",
+                        "reaper is no longer running",
+                    ),
+                },
+            );
         }
         let key = DvrStatusNotifierKey::new(handle);
         let mut state = self.runtime.state().lock().map_err(|_| {
@@ -236,7 +243,9 @@ impl DvrStatusNotifierSupervisor {
         Ok(())
     }
 
-    fn take_next_action(&self) -> Result<(Option<DvrStatusNotifierSupervisorAction>, Option<Instant>), HalError> {
+    fn take_next_action(
+        &self,
+    ) -> Result<(Option<DvrStatusNotifierSupervisorAction>, Option<Instant>), HalError> {
         let mut state = self.runtime.state().lock().map_err(|_| {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
@@ -278,7 +287,10 @@ impl DvrStatusNotifierSupervisor {
                 let Some(job) = state.reaping_mut().remove(&key) else {
                     continue;
                 };
-                return Ok((Some(DvrStatusNotifierSupervisorAction::Completed(job)), None));
+                return Ok((
+                    Some(DvrStatusNotifierSupervisorAction::Completed(job)),
+                    None,
+                ));
             }
             if let Some(handle) = state.reaping_mut().values_mut().find_map(|job| {
                 if !job.deadline_reported && job.transferred_at.elapsed() >= self.runtime.deadline()
@@ -289,7 +301,10 @@ impl DvrStatusNotifierSupervisor {
                     None
                 }
             }) {
-                return Ok((Some(DvrStatusNotifierSupervisorAction::Deadline(handle)), None));
+                return Ok((
+                    Some(DvrStatusNotifierSupervisorAction::Deadline(handle)),
+                    None,
+                ));
             }
             let next_wait = state
                 .reaping()
@@ -301,7 +316,10 @@ impl DvrStatusNotifierSupervisor {
                         .saturating_sub(job.transferred_at.elapsed())
                 })
                 .min();
-            return Ok((None, next_wait.and_then(|wait| Instant::now().checked_add(wait))));
+            return Ok((
+                None,
+                next_wait.and_then(|wait| Instant::now().checked_add(wait)),
+            ));
         }
     }
 }
@@ -903,7 +921,9 @@ fn dvr_notifier_owner_generation_is_fenced(
 
 fn mark_dvr_notifier_service_critical(context: &SharedAidlServiceContext) {
     let runtime = context.runtime();
-    maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::mark_shared_service_critical(&runtime);
+    maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::mark_shared_service_critical(
+        &runtime,
+    );
 }
 
 fn record_dvr_notifier_cleanup_control_failure(
@@ -1093,8 +1113,10 @@ pub(crate) fn start_dvr_status_notifier_reaper(
         },
         move |terminal: &WorkerTerminalResult<()>| {
             if let ClassifiedWorkerTerminalResult::Failure { category, error } =
-                WorkerFailureClassifier::classify_terminal(terminal.clone(),
-                    "DVR notifier reaper panicked or could not be joined")
+                WorkerFailureClassifier::classify_terminal(
+                    terminal.clone(),
+                    "DVR notifier reaper panicked or could not be joined",
+                )
             {
                 log::error!("DVR notifier reaper failed: category={category:?} error={error:?}");
                 if let Some(context) = observer_context.upgrade() {

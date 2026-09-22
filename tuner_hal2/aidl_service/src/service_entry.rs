@@ -348,7 +348,12 @@ fn dvb_exclusive_group_ids(
         .collect()
 }
 
-fn probe_io_error(backend: &'static str, operation: &'static str, path: &std::path::Path, error: std::io::Error) -> HalError {
+fn probe_io_error(
+    backend: &'static str,
+    operation: &'static str,
+    path: &std::path::Path,
+    error: std::io::Error,
+) -> HalError {
     HalError::Io {
         backend,
         operation,
@@ -364,11 +369,20 @@ fn dvb_driver_basename(adapter: i32, frontend_index: i32) -> Result<String, HalE
     ));
     let target = std::fs::read_link(&link)
         .map_err(|error| probe_io_error("dvb", "read driver link", &link, error))?;
-    target.file_name().map(|name| name.to_string_lossy().to_string()).ok_or_else(|| {
-        probe_io_error("dvb", "read driver link", &link, std::io::Error::new(
-            std::io::ErrorKind::InvalidData, "driver link has no basename",
-        ))
-    })
+    target
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .ok_or_else(|| {
+            probe_io_error(
+                "dvb",
+                "read driver link",
+                &link,
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "driver link has no basename",
+                ),
+            )
+        })
 }
 
 fn dvb_physical_device_identity(adapter: i32, frontend_index: i32) -> Result<PathBuf, HalError> {
@@ -494,7 +508,7 @@ fn collect_px4_probe_candidates(
             let path = PathBuf::from(format!("/dev/{name}"));
             match path_exists(&path) {
                 Ok(true) => candidates.push((unit, path, name)),
-                Ok(false) => {},
+                Ok(false) => {}
                 Err(error) => outcomes.push(FrontendProbeOutcome::DeviceProbeFailed {
                     backend: FrontendBackendKind::Px4CharDevice,
                     error: probe_io_error("px4", "probe device metadata", &path, error),
@@ -555,7 +569,7 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
                 "/dev/dvb/adapter{adapter}/frontend{frontend_index}"
             ));
             match path.try_exists() {
-                Ok(true) => {},
+                Ok(true) => {}
                 Ok(false) => continue,
                 Err(error) => {
                     outcomes.push(FrontendProbeOutcome::DeviceProbeFailed {
@@ -570,7 +584,9 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
                 Ok(driver) => driver,
                 Err(error) => {
                     outcomes.push(FrontendProbeOutcome::DeviceProbeFailed {
-                        backend: FrontendBackendKind::LinuxDvb, path, error,
+                        backend: FrontendBackendKind::LinuxDvb,
+                        path,
+                        error,
                     });
                     continue;
                 }
@@ -583,15 +599,18 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
                 });
                 continue;
             }
-            let physical_device_identity = match dvb_physical_device_identity(adapter, frontend_index) {
-                Ok(identity) => identity,
-                Err(error) => {
-                    outcomes.push(FrontendProbeOutcome::DeviceProbeFailed {
-                        backend: FrontendBackendKind::LinuxDvb, path, error,
-                    });
-                    continue;
-                }
-            };
+            let physical_device_identity =
+                match dvb_physical_device_identity(adapter, frontend_index) {
+                    Ok(identity) => identity,
+                    Err(error) => {
+                        outcomes.push(FrontendProbeOutcome::DeviceProbeFailed {
+                            backend: FrontendBackendKind::LinuxDvb,
+                            path,
+                            error,
+                        });
+                        continue;
+                    }
+                };
             dvb_candidates.push(DvbProbeCandidate {
                 adapter,
                 frontend_index,
@@ -715,17 +734,24 @@ mod tests {
     #[test]
     fn px4_probe_access_error_is_not_a_missing_candidate() {
         let mut outcomes = Vec::new();
-        let candidates = collect_px4_probe_candidates(|path| {
-            if path == std::path::Path::new("/dev/px4video0") {
-                Err(std::io::Error::from_raw_os_error(13))
-            } else { Ok(false) }
-        }, &mut outcomes);
+        let candidates = collect_px4_probe_candidates(
+            |path| {
+                if path == std::path::Path::new("/dev/px4video0") {
+                    Err(std::io::Error::from_raw_os_error(13))
+                } else {
+                    Ok(false)
+                }
+            },
+            &mut outcomes,
+        );
         assert!(candidates.is_empty());
         assert_eq!(outcomes.len(), 1);
-        assert!(matches!(&outcomes[0], FrontendProbeOutcome::DeviceProbeFailed {
+        assert!(
+            matches!(&outcomes[0], FrontendProbeOutcome::DeviceProbeFailed {
             backend: FrontendBackendKind::Px4CharDevice,
             error: HalError::Io { operation: "probe device metadata", errno: Some(13), path: Some(path), .. }, ..
-        } if path == std::path::Path::new("/dev/px4video0")));
+        } if path == std::path::Path::new("/dev/px4video0"))
+        );
     }
 
     fn collect_prefixes_from_ueventd(text: &str) -> std::collections::BTreeSet<String> {
@@ -804,7 +830,8 @@ mod tests {
             PathBuf::from("/dev/px4video3"),
             PathBuf::from("/dev/pxmlt8video7"),
         ]);
-        let candidates = collect_px4_probe_candidates(|path| Ok(present.contains(path)), &mut Vec::new());
+        let candidates =
+            collect_px4_probe_candidates(|path| Ok(present.contains(path)), &mut Vec::new());
 
         assert_eq!(
             candidates,

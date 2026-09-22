@@ -111,6 +111,7 @@ pub enum DemuxRuntimeErrorKind {
     PipelineFailed,
     GenerationExhausted,
     QueueRuntimeFailure,
+    QueueRuntimeFailureRollbackFailed,
     FmqDeliveryFailed(FmqFailureKind),
     FmqDeliveryRollbackFailed(FmqFailureKind),
     AvBackingFailure,
@@ -530,6 +531,12 @@ impl DemuxRuntimeError {
     pub const fn queue_runtime_failure(id: i32) -> Self {
         Self {
             kind: DemuxRuntimeErrorKind::QueueRuntimeFailure,
+            id: Some(id),
+        }
+    }
+    pub const fn queue_runtime_failure_rollback_failed(id: i32) -> Self {
+        Self {
+            kind: DemuxRuntimeErrorKind::QueueRuntimeFailureRollbackFailed,
             id: Some(id),
         }
     }

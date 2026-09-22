@@ -575,8 +575,14 @@ impl WorkerRuntime<()> {
             + 'static,
         C: FnOnce() + Send + 'static,
     {
-        Self::spawn_with_context(thread_name, owner_id, generation, WorkerContext::new(), worker,
-            move |_| completion_signal())
+        Self::spawn_with_context(
+            thread_name,
+            owner_id,
+            generation,
+            WorkerContext::new(),
+            worker,
+            move |_| completion_signal(),
+        )
     }
 
     fn spawn_with_context<T, F, C>(
@@ -589,21 +595,29 @@ impl WorkerRuntime<()> {
     ) -> std::io::Result<WorkerRuntime<T>>
     where
         T: Send + 'static,
-        F: FnOnce(WorkerContext) -> Result<T, maleicacid_tuner_hal2_common::HalError> + Send + 'static,
+        F: FnOnce(WorkerContext) -> Result<T, maleicacid_tuner_hal2_common::HalError>
+            + Send
+            + 'static,
         C: FnOnce(&WorkerTerminalResult<T>) + Send + 'static,
     {
-        let handle = WorkerHandle::start_with_context(thread_name, move |context| {
-            let terminal = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                worker(context.clone())
-            })) {
-                Ok(Ok(_result)) if context.stop_requested() => WorkerTerminalResult::StopRequested,
-                Ok(Ok(result)) => WorkerTerminalResult::Normal(result),
-                Ok(Err(error)) => WorkerTerminalResult::RuntimeFailure(error),
-                Err(_) => WorkerTerminalResult::PanicOrJoinFailure,
-            };
-            terminal_observer(&terminal);
-            Ok::<_, ()>(terminal)
-        }, context)?;
+        let handle = WorkerHandle::start_with_context(
+            thread_name,
+            move |context| {
+                let terminal = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    worker(context.clone())
+                })) {
+                    Ok(Ok(_result)) if context.stop_requested() => {
+                        WorkerTerminalResult::StopRequested
+                    }
+                    Ok(Ok(result)) => WorkerTerminalResult::Normal(result),
+                    Ok(Err(error)) => WorkerTerminalResult::RuntimeFailure(error),
+                    Err(_) => WorkerTerminalResult::PanicOrJoinFailure,
+                };
+                terminal_observer(&terminal);
+                Ok::<_, ()>(terminal)
+            },
+            context,
+        )?;
         Ok(WorkerRuntime {
             owner_id,
             generation,
@@ -716,14 +730,12 @@ where
                         }
                     },
                 )
-                .map_err(|error| {
-                    maleicacid_tuner_hal2_common::HalError::Io {
-                        backend: thread_prefix,
-                        operation: "thread spawn",
-                        path: None,
-                        errno: error.raw_os_error(),
-                        detail: maleicacid_tuner_hal2_common::HalErrorDetail::new(error.to_string()),
-                    }
+                .map_err(|error| maleicacid_tuner_hal2_common::HalError::Io {
+                    backend: thread_prefix,
+                    operation: "thread spawn",
+                    path: None,
+                    errno: error.raw_os_error(),
+                    detail: maleicacid_tuner_hal2_common::HalErrorDetail::new(error.to_string()),
                 })?;
             lanes.push(lane);
         }
@@ -877,47 +889,79 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
     pub fn start_worker(
         &self,
         name: &'static str,
-        run: impl FnOnce(WorkerContext) -> Result<(), maleicacid_tuner_hal2_common::HalError> + Send + 'static,
+        run: impl FnOnce(WorkerContext) -> Result<(), maleicacid_tuner_hal2_common::HalError>
+            + Send
+            + 'static,
         terminal_observer: impl FnOnce(&WorkerTerminalResult<()>) + Send + 'static,
     ) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
-        use maleicacid_tuner_hal2_common::{HalError, HalErrorDetail, HalInvalidStateKind, WorkerLockKind};
-        let mut slot = self.worker.lock().map_err(|_| HalError::WorkerLockPoisoned {
-            owner: "WorkerRuntimeSupervisor", lock: WorkerLockKind::SupervisorWorker,
-        })?;
-        if !matches!(*slot, SupervisorWorkerState::NotStarted) {
-            return Err(HalError::invalid_state(HalInvalidStateKind::InvalidLifecycle,
-                "supervisor worker is already installed"));
-        }
-        let worker = WorkerRuntime::spawn_with_context(name.to_owned(), 0, 1,
-            self.worker_context.clone(), run, terminal_observer).map_err(|error| HalError::Io {
-                backend: name, operation: "thread spawn", path: None,
-                errno: error.raw_os_error(), detail: HalErrorDetail::new(error.to_string()),
+        use maleicacid_tuner_hal2_common::{
+            HalError, HalErrorDetail, HalInvalidStateKind, WorkerLockKind,
+        };
+        let mut slot = self
+            .worker
+            .lock()
+            .map_err(|_| HalError::WorkerLockPoisoned {
+                owner: "WorkerRuntimeSupervisor",
+                lock: WorkerLockKind::SupervisorWorker,
             })?;
+        if !matches!(*slot, SupervisorWorkerState::NotStarted) {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "supervisor worker is already installed",
+            ));
+        }
+        let worker = WorkerRuntime::spawn_with_context(
+            name.to_owned(),
+            0,
+            1,
+            self.worker_context.clone(),
+            run,
+            terminal_observer,
+        )
+        .map_err(|error| HalError::Io {
+            backend: name,
+            operation: "thread spawn",
+            path: None,
+            errno: error.raw_os_error(),
+            detail: HalErrorDetail::new(error.to_string()),
+        })?;
         *slot = SupervisorWorkerState::Running(worker);
         Ok(())
     }
 
-    pub fn worker_terminal_result(&self) -> Result<Option<WorkerTerminalResult<()>>, maleicacid_tuner_hal2_common::HalError> {
+    pub fn worker_terminal_result(
+        &self,
+    ) -> Result<Option<WorkerTerminalResult<()>>, maleicacid_tuner_hal2_common::HalError> {
         use maleicacid_tuner_hal2_common::{HalError, WorkerLockKind};
-        let mut slot = self.worker.lock().map_err(|_| HalError::WorkerLockPoisoned {
-            owner: "WorkerRuntimeSupervisor", lock: WorkerLockKind::SupervisorWorker,
-        })?;
+        let mut slot = self
+            .worker
+            .lock()
+            .map_err(|_| HalError::WorkerLockPoisoned {
+                owner: "WorkerRuntimeSupervisor",
+                lock: WorkerLockKind::SupervisorWorker,
+            })?;
         if matches!(&*slot, SupervisorWorkerState::Running(worker) if worker.is_finished()) {
-            if let SupervisorWorkerState::Running(worker) = std::mem::replace(&mut *slot, SupervisorWorkerState::NotStarted) {
+            if let SupervisorWorkerState::Running(worker) =
+                std::mem::replace(&mut *slot, SupervisorWorkerState::NotStarted)
+            {
                 *slot = SupervisorWorkerState::Finished(worker.join());
             }
         }
         match &*slot {
             SupervisorWorkerState::Finished(result) => Ok(Some(result.clone())),
             SupervisorWorkerState::Running(_) => Ok(None),
-            SupervisorWorkerState::NotStarted => Err(HalError::NotInitialized { resource: "supervisor worker" }),
+            SupervisorWorkerState::NotStarted => Err(HalError::NotInitialized {
+                resource: "supervisor worker",
+            }),
         }
     }
 }
 
 impl<K, A, R> Drop for WorkerRuntimeSupervisor<K, A, R> {
     fn drop(&mut self) {
-        self.worker_context.stop.store(true, std::sync::atomic::Ordering::Release);
+        self.worker_context
+            .stop
+            .store(true, std::sync::atomic::Ordering::Release);
         self.worker_context.wake.notify();
     }
 }
@@ -1066,21 +1110,38 @@ mod tests {
         use super::{WorkerRuntime, WorkerTerminalResult};
         use std::sync::{mpsc, Arc};
         use std::time::{Duration, Instant};
-        let supervisor = Arc::new(WorkerRuntime::supervisor::<u32, (), ()>(1, Duration::from_secs(1)));
+        let supervisor = Arc::new(WorkerRuntime::supervisor::<u32, (), ()>(
+            1,
+            Duration::from_secs(1),
+        ));
         let (ready_tx, ready_rx) = mpsc::channel();
         let (terminal_tx, terminal_rx) = mpsc::channel();
-        supervisor.start_worker("supervisor-stop-test", move |control| {
-            ready_tx.send(()).unwrap();
-            while !control.stop_requested() {
-                control.wait_until(None);
-            }
-            Ok(())
-        }, move |terminal| terminal_tx.send(terminal.clone()).unwrap()).unwrap();
+        supervisor
+            .start_worker(
+                "supervisor-stop-test",
+                move |control| {
+                    ready_tx.send(()).unwrap();
+                    while !control.stop_requested() {
+                        control.wait_until(None);
+                    }
+                    Ok(())
+                },
+                move |terminal| terminal_tx.send(terminal.clone()).unwrap(),
+            )
+            .unwrap();
         ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        assert!(supervisor.start_worker("duplicate", |_| Ok(()), |_| {}).is_err());
-        supervisor.worker_context.stop.store(true, std::sync::atomic::Ordering::Release);
+        assert!(supervisor
+            .start_worker("duplicate", |_| Ok(()), |_| {})
+            .is_err());
+        supervisor
+            .worker_context
+            .stop
+            .store(true, std::sync::atomic::Ordering::Release);
         supervisor.notify_worker();
-        assert_eq!(terminal_rx.recv_timeout(Duration::from_secs(2)).unwrap(), WorkerTerminalResult::StopRequested);
+        assert_eq!(
+            terminal_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            WorkerTerminalResult::StopRequested
+        );
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             if let Some(terminal) = supervisor.worker_terminal_result().unwrap() {
@@ -1090,7 +1151,10 @@ mod tests {
             assert!(Instant::now() < deadline);
             std::thread::yield_now();
         }
-        assert_eq!(supervisor.worker_terminal_result().unwrap(), Some(WorkerTerminalResult::StopRequested));
+        assert_eq!(
+            supervisor.worker_terminal_result().unwrap(),
+            Some(WorkerTerminalResult::StopRequested)
+        );
     }
 
     #[test]
@@ -1101,12 +1165,20 @@ mod tests {
         let supervisor = WorkerRuntime::supervisor::<u32, (), ()>(1, Duration::from_secs(1));
         let (ready_tx, ready_rx) = mpsc::channel();
         let (stopped_tx, stopped_rx) = mpsc::channel();
-        supervisor.start_worker("supervisor-drop-test", move |control| {
-            ready_tx.send(()).unwrap();
-            while !control.stop_requested() { control.wait_until(None); }
-            stopped_tx.send(()).unwrap();
-            Ok(())
-        }, |_| {}).unwrap();
+        supervisor
+            .start_worker(
+                "supervisor-drop-test",
+                move |control| {
+                    ready_tx.send(()).unwrap();
+                    while !control.stop_requested() {
+                        control.wait_until(None);
+                    }
+                    stopped_tx.send(()).unwrap();
+                    Ok(())
+                },
+                |_| {},
+            )
+            .unwrap();
         ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         drop(supervisor);
         stopped_rx.recv_timeout(Duration::from_secs(2)).unwrap();
@@ -1119,15 +1191,26 @@ mod tests {
         use std::time::{Duration, Instant};
         let supervisor = WorkerRuntime::supervisor::<u32, (), ()>(1, Duration::from_secs(1));
         let (terminal_tx, terminal_rx) = mpsc::channel();
-        supervisor.start_worker("supervisor-panic-test", |_| panic!("injected panic"),
-            move |terminal| terminal_tx.send(terminal.clone()).unwrap()).unwrap();
-        assert_eq!(terminal_rx.recv_timeout(Duration::from_secs(2)).unwrap(), WorkerTerminalResult::PanicOrJoinFailure);
+        supervisor
+            .start_worker(
+                "supervisor-panic-test",
+                |_| panic!("injected panic"),
+                move |terminal| terminal_tx.send(terminal.clone()).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            terminal_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            WorkerTerminalResult::PanicOrJoinFailure
+        );
         let deadline = Instant::now() + Duration::from_secs(2);
         while supervisor.worker_terminal_result().unwrap().is_none() {
             assert!(Instant::now() < deadline);
             std::thread::yield_now();
         }
-        assert_eq!(supervisor.worker_terminal_result().unwrap(), Some(WorkerTerminalResult::PanicOrJoinFailure));
+        assert_eq!(
+            supervisor.worker_terminal_result().unwrap(),
+            Some(WorkerTerminalResult::PanicOrJoinFailure)
+        );
     }
 
     #[test]

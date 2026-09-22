@@ -834,7 +834,10 @@ impl fmt::Display for HalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             HalError::ServiceRuntimeLockPoisoned { operation } => {
-                write!(f, "TunerServiceRuntime lock poisoned: operation={operation}")
+                write!(
+                    f,
+                    "TunerServiceRuntime lock poisoned: operation={operation}"
+                )
             }
             HalError::CapabilitySelectionFailed(error) => write!(
                 f,
@@ -842,7 +845,10 @@ impl fmt::Display for HalError {
                 error.reason, error.returned_in_order
             ),
             HalError::FmqDeliveryFailed { kind, object_id } => {
-                write!(f, "FMQ delivery failed: kind={kind:?} object_id={object_id:?}")
+                write!(
+                    f,
+                    "FMQ delivery failed: kind={kind:?} object_id={object_id:?}"
+                )
             }
             HalError::WorkerLockPoisoned { owner, lock } => {
                 write!(f, "worker lock poisoned: owner={owner} lock={lock:?}")

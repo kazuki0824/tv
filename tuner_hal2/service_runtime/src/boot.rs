@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::descrambler_key_table::DescramblerKeyLookupError;
 #[cfg(test)]
@@ -476,13 +476,25 @@ pub(super) fn demux_runtime_error_to_hal(
                 "demux runtime was quarantined after source boundary rollback failure",
             )
         }
+        maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::QueueRuntimeFailureRollbackFailed => {
+            HalError::cleanup_failed(
+                "playback queue read rollback",
+                "DVR was quarantined after playback queue transaction rollback failure",
+            )
+        }
         maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::FmqDeliveryFailed(kind) => {
-            HalError::FmqDeliveryFailed { kind, object_id: error.id }
+            HalError::FmqDeliveryFailed {
+                kind,
+                object_id: error.id,
+            }
         }
         maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::FmqDeliveryRollbackFailed(kind) => {
             compose_primary_cleanup_failure(
                 "FMQ delivery and playback queue rollback failed",
-                HalError::FmqDeliveryFailed { kind, object_id: error.id },
+                HalError::FmqDeliveryFailed {
+                    kind,
+                    object_id: error.id,
+                },
                 HalError::cleanup_failed(
                     "playback queue read rollback",
                     "DVR was quarantined after playback queue transaction rollback failure",
@@ -624,8 +636,12 @@ impl ServiceFailureState {
         // 診断回数だけを飽和させる。利用停止は不可逆で、再初期化でも解除しない。
         let mut flags = self.flags.load(Ordering::Acquire);
         loop {
-            match self.flags.compare_exchange_weak(flags, flags.saturating_add(2) | 1,
-                Ordering::AcqRel, Ordering::Acquire) {
+            match self.flags.compare_exchange_weak(
+                flags,
+                flags.saturating_add(2) | 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
                 Ok(_) => return,
                 Err(observed) => flags = observed,
             }
@@ -1519,7 +1535,9 @@ impl TunerServiceRuntime {
     fn from_capability_snapshot(capability_snapshot: CapabilitySnapshot) -> Self {
         Self {
             state: ServiceState::Booting,
-            failure_state: ServiceFailureState { flags: Arc::new(AtomicU64::new(0)) },
+            failure_state: ServiceFailureState {
+                flags: Arc::new(AtomicU64::new(0)),
+            },
             capability_snapshot,
             capacity_ledger: CapacityLedger::default(),
             release_only_filter_av_backings: BTreeMap::new(),
@@ -3211,12 +3229,17 @@ impl TunerServiceRuntime {
                         }
                     }
                 }
-                FrontendProbeOutcome::DeviceProbeFailed { backend, path, error } => {
-                    self.diagnostics.push(StartupDiagnosticRecord::DeviceProbeFailed {
-                        backend,
-                        path,
-                        error,
-                    });
+                FrontendProbeOutcome::DeviceProbeFailed {
+                    backend,
+                    path,
+                    error,
+                } => {
+                    self.diagnostics
+                        .push(StartupDiagnosticRecord::DeviceProbeFailed {
+                            backend,
+                            path,
+                            error,
+                        });
                 }
                 FrontendProbeOutcome::DeviceMissing { backend, path } => {
                     self.diagnostics
