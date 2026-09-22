@@ -126,6 +126,7 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 - public `HalError` detail と typed diagnostic record を併用する場合、typed record を正本として保存し、文字列だけを唯一の診断情報にしない。
 - 診断専用 counter は `../TUNER_HAL_DESIGN_JA.md` の診断 counter 飽和契約に従い、business API の成功/失敗判定や lifetime / generation 発行に使わない。
 - `FilterProducerDrainGate`の局所取消し失敗は、`GateInner::cleanup_failures`のアトミック値を`check_cleanup`で読み、`QueueRuntimeError`へ写像する。局所取消しの不整合は`record_cleanup_failure`、ロック汚染は`record_cleanup_poison`へ渡し、後者は`GateLockPoisoned`にロック識別情報・検出回数・飽和状態を保持する。状態の所有者と実装箇所は`DESIGN_JA.md`の同名行、失敗時の意味は`../TUNER_HAL_DESIGN_JA.md`の0-S-3Bの同名契約を参照する。
+- gate呼出し元は`DemuxRuntimeError::queue_runtime_error`で汚染情報を`QueueRuntimeFailureWithContext`へ引き継ぎ、既存の操作報告・配送診断へ渡す。サービス側は`demux_runtime_error_to_hal`で`HalError::FilterGateLockPoisoned`へ変換する。この型は`FilterProducerDrainGate.data`の汚染を表し、Filter識別子・検出回数・飽和状態・局所取消し種別を保持する。通常操作のロック取得は`GateInner::lock_data`、条件変数待ちの汚染変換は`data_lock_poison`へ集約する。
 
 ## 8. public nullable / close / frontend count の実装入口
 

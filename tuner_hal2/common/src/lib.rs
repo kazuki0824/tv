@@ -628,6 +628,13 @@ pub enum HalError {
     ServiceRuntimeLockPoisoned {
         operation: &'static str,
     },
+    FilterGateLockPoisoned {
+        filter_id: Option<i32>,
+        poison_count: u64,
+        counter_saturated: bool,
+        producer_release: bool,
+        drain_rollback: bool,
+    },
     CapabilitySelectionFailed(CapabilitySelectionError),
     FmqDeliveryFailed {
         kind: FmqFailureKind,
@@ -855,6 +862,16 @@ impl fmt::Display for HalError {
             HalError::WorkerLockPoisoned { owner, lock } => {
                 write!(f, "worker lock poisoned: owner={owner} lock={lock:?}")
             }
+            HalError::FilterGateLockPoisoned {
+                filter_id,
+                poison_count,
+                counter_saturated,
+                producer_release,
+                drain_rollback,
+            } => write!(
+                f,
+                "filter gate lock poisoned: lock=FilterProducerDrainGate.data filter_id={filter_id:?} count={poison_count} saturated={counter_saturated} producer_release={producer_release} drain_rollback={drain_rollback}"
+            ),
             HalError::WorkerCleanupFailed { kind } => {
                 write!(f, "worker cleanup authority failed: {kind:?}")
             }

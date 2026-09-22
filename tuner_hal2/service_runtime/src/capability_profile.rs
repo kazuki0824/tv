@@ -93,6 +93,7 @@ pub fn failure_domain(error: &HalError) -> RuntimeFailureDomain {
         }
         HalError::Internal { .. }
         | HalError::WorkerLockPoisoned { .. }
+        | HalError::FilterGateLockPoisoned { .. }
         | HalError::ServiceRuntimeLockPoisoned { .. }
         | HalError::CapabilitySelectionFailed(_) => RuntimeFailureDomain::InternalInvariant,
     }

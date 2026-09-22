@@ -455,7 +455,7 @@ fn execute_filter_cleanup_protocol(
                             failed_step: FilterRuntimeOperationStep::SourceGenerationRefresh,
                         },
                     ),
-                    DemuxRuntimeErrorKind::QueueRuntimeFailure => (
+                    DemuxRuntimeErrorKind::QueueRuntimeFailure | DemuxRuntimeErrorKind::QueueRuntimeFailureWithContext(_) => (
                         FilterRuntimeOperationStep::ProducerDrainCommit,
                         FilterRuntimeOperationOutcome::Isolated {
                             failed_step: FilterRuntimeOperationStep::ProducerDrainCommit,

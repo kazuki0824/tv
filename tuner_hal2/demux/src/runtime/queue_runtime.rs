@@ -884,16 +884,7 @@ impl GateInner {
     fn check_cleanup(&self) -> Result<(), QueueRuntimeError> {
         let failures = self.cleanup_failures.load(Ordering::Acquire);
         if failures & 4 != 0 {
-            Err(QueueRuntimeError::new(
-                QueueRuntimeErrorKind::GateLockPoisoned {
-                    lock: QueueRuntimeLockKind::FilterProducerDrainGateData,
-                    poison_count: failures >> 3,
-                    counter_saturated: failures >> 3 == u64::MAX >> 3,
-                    producer_release: failures & 1 != 0,
-                    drain_rollback: failures & 2 != 0,
-                },
-                "filter gate data lock poisoned during local cleanup",
-            ))
+            Err(Self::poison_error(failures))
         } else if failures == 0 {
             Ok(())
         } else {
@@ -905,6 +896,28 @@ impl GateInner {
                 "filter gate local cleanup failed",
             ))
         }
+    }
+
+    fn poison_error(failures: u64) -> QueueRuntimeError {
+        QueueRuntimeError::new(
+            QueueRuntimeErrorKind::GateLockPoisoned {
+                lock: QueueRuntimeLockKind::FilterProducerDrainGateData,
+                poison_count: failures >> 3,
+                counter_saturated: failures >> 3 == u64::MAX >> 3,
+                producer_release: failures & 1 != 0,
+                drain_rollback: failures & 2 != 0,
+            },
+            "filter gate data lock poisoned",
+        )
+    }
+
+    fn data_lock_poison(&self) -> QueueRuntimeError {
+        self.record_cleanup_poison(0);
+        Self::poison_error(self.cleanup_failures.load(Ordering::Acquire))
+    }
+
+    fn lock_data(&self) -> Result<std::sync::MutexGuard<'_, GateData>, QueueRuntimeError> {
+        self.data.lock().map_err(|_| self.data_lock_poison())
     }
 
     fn record_cleanup_failure(&self, failure: u64) {
@@ -1001,13 +1014,17 @@ impl FilterProducerDrainGate {
         })
     }
 
+    #[cfg(test)]
+    pub(super) fn poison_data_lock_for_test(&self) {
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = self.inner.data.lock().unwrap();
+            panic!("poison filter gate data");
+        })).is_err());
+    }
+
     pub(crate) fn begin_producer(&self) -> Result<FilterProducerPermit, QueueRuntimeError> {
         self.inner.check_cleanup()?;
-        let mut data = self
-            .inner
-            .data
-            .lock()
-            .map_err(|_| gate_error("filter producer gate lock poisoned while admitting"))?;
+        let mut data = self.inner.lock_data()?;
         if data.state != GateState::Open {
             return Err(gate_error("filter producer gate is draining or closed"));
         }
@@ -1027,11 +1044,7 @@ impl FilterProducerDrainGate {
         boundary: FilterDrainBoundary,
     ) -> Result<FilterDrainTxn, QueueRuntimeError> {
         self.inner.check_cleanup()?;
-        let mut data = self
-            .inner
-            .data
-            .lock()
-            .map_err(|_| gate_error("filter producer gate lock poisoned while draining"))?;
+        let mut data = self.inner.lock_data()?;
         if data.state != GateState::Open {
             return Err(gate_error("filter producer gate is not open"));
         }
@@ -1052,7 +1065,7 @@ impl FilterProducerDrainGate {
                 .inner
                 .drained
                 .wait(data)
-                .map_err(|_| gate_error("filter producer gate lock poisoned while waiting"))?;
+                .map_err(|_| self.inner.data_lock_poison())?;
             if data.state != GateState::Draining {
                 return Err(gate_error(
                     "filter producer gate left draining state while waiting",
@@ -1075,9 +1088,7 @@ impl FilterProducerDrainGate {
     ) -> Result<Vec<PipelineGeneratedEvent>, QueueRuntimeError> {
         self.inner.check_cleanup()?;
         let mut data =
-            self.inner.data.lock().map_err(|_| {
-                gate_error("filter producer gate lock poisoned while taking events")
-            })?;
+            self.inner.lock_data()?;
         match data.state {
             GateState::Open => Ok(data.pending_events.drain(..).collect()),
             GateState::Draining => Ok(Vec::new()),
@@ -1089,11 +1100,7 @@ impl FilterProducerDrainGate {
 
     pub(crate) fn close(&self) -> Result<(), QueueRuntimeError> {
         self.inner.check_cleanup()?;
-        let mut data = self
-            .inner
-            .data
-            .lock()
-            .map_err(|_| gate_error("filter producer gate lock poisoned while closing"))?;
+        let mut data = self.inner.lock_data()?;
         data.state = GateState::Closed;
         data.pending_events.clear();
         self.inner.drained.notify_all();
@@ -1107,9 +1114,7 @@ impl FilterProducerPermit {
         if !self.active {
             return Err(gate_error("filter producer permit was already consumed"));
         }
-        let data = self.inner.data.lock().map_err(|_| {
-            gate_error("filter producer gate lock poisoned while reading record offset")
-        })?;
+        let data = self.inner.lock_data()?;
         if data.state == GateState::Closed
             || data.filter_delivery_generation != self.delivery_generation
         {
@@ -1129,9 +1134,7 @@ impl FilterProducerPermit {
         }
         let committed_bytes = u64::try_from(committed_bytes)
             .map_err(|_| gate_error("record output byte count is out of range"))?;
-        let mut data = self.inner.data.lock().map_err(|_| {
-            gate_error("filter producer gate lock poisoned while committing record output")
-        })?;
+        let mut data = self.inner.lock_data()?;
         if data.filter_delivery_generation != self.delivery_generation {
             return Err(gate_error("filter producer permit generation changed"));
         }
@@ -1176,9 +1179,7 @@ impl FilterProducerPermit {
             return Err(gate_error("filter producer permit was already consumed"));
         }
         let mut data =
-            self.inner.data.lock().map_err(|_| {
-                gate_error("filter producer gate lock poisoned while queueing event")
-            })?;
+            self.inner.lock_data()?;
         if data.state == GateState::Closed
             || data.filter_delivery_generation != self.delivery_generation
         {
@@ -1196,11 +1197,7 @@ impl FilterProducerPermit {
         if !self.active {
             return Err(gate_error("filter producer permit was already consumed"));
         }
-        let mut data = self
-            .inner
-            .data
-            .lock()
-            .map_err(|_| gate_error("filter producer gate lock poisoned while releasing"))?;
+        let mut data = self.inner.lock_data()?;
         if data.filter_delivery_generation != self.delivery_generation {
             return Err(gate_error("filter producer permit generation changed"));
         }
@@ -1260,9 +1257,7 @@ impl FilterDrainTxn {
             return Err(gate_error("filter producer drain was already consumed"));
         }
         let mut data =
-            self.inner.data.lock().map_err(|_| {
-                gate_error("filter producer gate lock poisoned while draining events")
-            })?;
+            self.inner.lock_data()?;
         if data.state != GateState::Draining
             || data.filter_delivery_generation != self.delivery_generation
             || data.parser_state_generation != self.parser_generation
@@ -1277,11 +1272,7 @@ impl FilterDrainTxn {
 
     pub(crate) fn commit(mut self) -> Result<(), QueueRuntimeError> {
         self.inner.check_cleanup()?;
-        let mut data = self
-            .inner
-            .data
-            .lock()
-            .map_err(|_| gate_error("filter producer gate lock poisoned while committing"))?;
+        let mut data = self.inner.lock_data()?;
         if data.state != GateState::Draining
             || data.filter_delivery_generation != self.delivery_generation
             || data.parser_state_generation != self.parser_generation
@@ -1308,11 +1299,7 @@ impl FilterDrainTxn {
         mut self,
     ) -> Result<Vec<PipelineGeneratedEvent>, QueueRuntimeError> {
         self.inner.check_cleanup()?;
-        let mut data = self
-            .inner
-            .data
-            .lock()
-            .map_err(|_| gate_error("filter producer gate lock poisoned while committing"))?;
+        let mut data = self.inner.lock_data()?;
         if data.state != GateState::Draining
             || data.filter_delivery_generation != self.delivery_generation
             || data.parser_state_generation != self.parser_generation

@@ -496,6 +496,27 @@ pub(super) fn demux_runtime_error_to_hal(
                 format!("{:?}: {}", rollback.kind, rollback.detail),
             ),
         ),
+        maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::QueueRuntimeFailureWithContext(context) => {
+            match context.kind {
+                maleicacid_tuner_hal2_demux::QueueRuntimeErrorKind::GateLockPoisoned {
+                    lock: maleicacid_tuner_hal2_demux::QueueRuntimeLockKind::FilterProducerDrainGateData,
+                    poison_count,
+                    counter_saturated,
+                    producer_release,
+                    drain_rollback,
+                } => HalError::FilterGateLockPoisoned {
+                    filter_id: error.id,
+                    poison_count,
+                    counter_saturated,
+                    producer_release,
+                    drain_rollback,
+                },
+                _ => HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    context.detail,
+                ),
+            }
+        }
         maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::QueueRuntimeFailure
         | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::AvBackingFailure => {
             HalError::internal(

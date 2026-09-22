@@ -357,7 +357,8 @@ impl TunerServiceRuntime {
                 "filter source boundary rollback",
                 "demux runtime was quarantined after source boundary rollback failure",
             ),
-            DemuxRuntimeErrorKind::FmqDeliveryFailed(_)
+            DemuxRuntimeErrorKind::QueueRuntimeFailureWithContext(_)
+            | DemuxRuntimeErrorKind::FmqDeliveryFailed(_)
             | DemuxRuntimeErrorKind::FmqDeliveryRollbackFailed { .. } => {
                 super::demux_runtime_error_to_hal(error)
             }
@@ -1206,7 +1207,8 @@ impl TunerServiceRuntime {
                 "playback queue read rollback",
                 "DVR was quarantined after playback queue transaction rollback failure",
             ),
-            DemuxRuntimeErrorKind::FmqDeliveryFailed(_)
+            DemuxRuntimeErrorKind::QueueRuntimeFailureWithContext(_)
+            | DemuxRuntimeErrorKind::FmqDeliveryFailed(_)
             | DemuxRuntimeErrorKind::FmqDeliveryRollbackFailed { .. } => {
                 super::demux_runtime_error_to_hal(error)
             }
