@@ -30,9 +30,9 @@ use maleicacid_tuner_hal2_service_runtime::{
 
 use crate::callback_store::PreparedCallbackArtifactToken;
 use crate::dvr_callback_delivery::finish_dvr_status_notifier_cleanup;
-use crate::error_bridge::{status_from_hal_error, status_from_tuner_status};
 #[cfg(test)]
 use crate::error_bridge::status_unknown_error;
+use crate::error_bridge::{status_from_hal_error, status_from_tuner_status};
 use crate::object_handle::AidlObjectHandle;
 use crate::service_context::{SharedAidlServiceContext, SharedTunerRuntime};
 
@@ -821,10 +821,7 @@ impl<'a> ObjectCloseRuntimeExecutor for AidlObjectCloseRuntimeExecutor<'a> {
     ) -> Result<(), ObjectCloseCleanupFailure> {
         let runtime = self.context.runtime();
         let mut guard = lock_runtime(&runtime).map_err(|error| {
-            ObjectCloseCleanupFailure::new(
-                CleanupStep::UnregisterRuntime,
-                error,
-            )
+            ObjectCloseCleanupFailure::new(CleanupStep::UnregisterRuntime, error)
         })?;
         command.execute(&mut guard)
     }

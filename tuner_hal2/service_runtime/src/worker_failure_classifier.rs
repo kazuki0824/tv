@@ -16,24 +16,7 @@ impl ClassifiedCallbackFailure {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ClassifiedWorkerTerminalResult<T> {
-    Normal(T),
-    StopRequested,
-    Failure {
-        category: WorkerFailureCategory,
-        error: HalError,
-    },
-}
-
-impl<T> ClassifiedWorkerTerminalResult<T> {
-    pub fn into_failure(self) -> Option<(WorkerFailureCategory, HalError)> {
-        match self {
-            Self::Failure { category, error } => Some((category, error)),
-            Self::Normal(_) | Self::StopRequested => None,
-        }
-    }
-}
+pub use crate::diagnostics::ClassifiedWorkerTerminalResult;
 
 pub struct WorkerFailureClassifier;
 

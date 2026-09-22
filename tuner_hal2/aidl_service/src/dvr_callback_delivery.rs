@@ -16,8 +16,8 @@ use maleicacid_tuner_hal2_service_runtime::{
     join_worker_classified, CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport,
     CapabilitySnapshot, ClassifiedWorkerTerminalResult, DvrPostCommitNotificationDiagnosticRecord,
     DvrPostCommitNotificationFailureKind, DvrPostCommitNotificationPhase,
-    DvrStatusNotifierCleanupDiagnosticRecord, DvrStatusPollSnapshot,
-    WorkerFailureClassifier, WorkerRuntime, WorkerRuntimeSupervisor, WorkerTerminalResult,
+    DvrStatusNotifierCleanupDiagnosticRecord, DvrStatusPollSnapshot, WorkerFailureClassifier,
+    WorkerRuntime, WorkerRuntimeSupervisor, WorkerTerminalResult,
 };
 
 use crate::filter_callback_delivery::dispatch_filter_event_snapshots;
@@ -1005,10 +1005,10 @@ fn finish_reaped_dvr_status_notifier(
     };
     let record = if restart_requested {
         DvrStatusNotifierCleanupDiagnosticRecord::SupersedeCleanup {
-                    object_id: AidlObjectId(job.key.object_id),
-                    generation: AidlObjectGeneration(job.key.generation),
-                    terminal,
-                }
+            object_id: AidlObjectId(job.key.object_id),
+            generation: AidlObjectGeneration(job.key.generation),
+            terminal,
+        }
     } else {
         match job.transfer_reason {
             DvrStatusNotifierTransferReason::Stop => {

@@ -173,6 +173,25 @@ pub enum WorkerFailureCategory {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ClassifiedWorkerTerminalResult<T> {
+    Normal(T),
+    StopRequested,
+    Failure {
+        category: WorkerFailureCategory,
+        error: HalError,
+    },
+}
+
+impl<T> ClassifiedWorkerTerminalResult<T> {
+    pub fn into_failure(self) -> Option<(WorkerFailureCategory, HalError)> {
+        match self {
+            Self::Failure { category, error } => Some((category, error)),
+            Self::Normal(_) | Self::StopRequested => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LnbBackendFailureDiagnosticRecord {
     pub lnb_id: i32,
     pub frontend_id: i32,
@@ -525,22 +544,22 @@ pub enum DvrStatusNotifierCleanupDiagnosticRecord {
     ResetNotifierCleanup {
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
-        terminal: crate::worker_failure_classifier::ClassifiedWorkerTerminalResult<()>,
+        terminal: ClassifiedWorkerTerminalResult<()>,
     },
     WorkerTerminal {
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
-        terminal: crate::worker_failure_classifier::ClassifiedWorkerTerminalResult<()>,
+        terminal: ClassifiedWorkerTerminalResult<()>,
     },
     SupersedeCleanup {
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
-        terminal: crate::worker_failure_classifier::ClassifiedWorkerTerminalResult<()>,
+        terminal: ClassifiedWorkerTerminalResult<()>,
     },
     ReaperCompletion {
         object_id: AidlObjectId,
         generation: AidlObjectGeneration,
-        terminal: crate::worker_failure_classifier::ClassifiedWorkerTerminalResult<()>,
+        terminal: ClassifiedWorkerTerminalResult<()>,
     },
     ReaperDeadline {
         object_id: AidlObjectId,
@@ -552,7 +571,9 @@ pub enum DvrStatusNotifierCleanupDiagnosticRecord {
 impl DvrStatusNotifierCleanupDiagnosticRecord {
     pub const fn phase(&self) -> DvrPostCommitNotificationPhase {
         match self {
-            Self::WorkerTerminal { .. } => DvrPostCommitNotificationPhase::StatusNotifierRuntimeFailure,
+            Self::WorkerTerminal { .. } => {
+                DvrPostCommitNotificationPhase::StatusNotifierRuntimeFailure
+            }
             Self::ResetStoreRecoveredAfterPoison { .. }
             | Self::ResetNotifierCleanup { .. }
             | Self::SupersedeCleanup { .. }
@@ -1757,24 +1778,26 @@ mod counter_saturation_tests {
 
     #[test]
     fn notifier_cleanup_snapshot_preserves_typed_terminal_and_target() {
-        use crate::worker_failure_classifier::ClassifiedWorkerTerminalResult;
         let store = SharedDvrStatusNotifierCleanupDiagnostics::new(2);
         let terminal = ClassifiedWorkerTerminalResult::Failure {
             category: WorkerFailureCategory::Join,
             error: HalError::cleanup_failed("worker", "join failed"),
         };
-        store.record(DvrStatusNotifierCleanupDiagnosticRecord::ReaperCompletion {
-            object_id: AidlObjectId(7),
-            generation: AidlObjectGeneration(2),
-            terminal: terminal.clone(),
-        }).unwrap();
+        store
+            .record(DvrStatusNotifierCleanupDiagnosticRecord::ReaperCompletion {
+                object_id: AidlObjectId(7),
+                generation: AidlObjectGeneration(2),
+                terminal: terminal.clone(),
+            })
+            .unwrap();
         let snapshot = store.snapshot().unwrap();
-        assert_eq!(snapshot.records(), &[
-            DvrStatusNotifierCleanupDiagnosticRecord::ReaperCompletion {
+        assert_eq!(
+            snapshot.records(),
+            &[DvrStatusNotifierCleanupDiagnosticRecord::ReaperCompletion {
                 object_id: AidlObjectId(7),
                 generation: AidlObjectGeneration(2),
                 terminal,
-            }
-        ]);
+            }]
+        );
     }
 }

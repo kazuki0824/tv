@@ -491,19 +491,17 @@ pub(super) fn demux_runtime_error_to_hal(
         maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::FmqDeliveryRollbackFailed {
             delivery,
             rollback,
-        } => {
-            compose_primary_cleanup_failure(
-                "FMQ delivery and playback queue rollback failed",
-                HalError::FmqDeliveryFailed {
-                    kind: delivery,
-                    object_id: error.id,
-                },
-                HalError::cleanup_failed(
-                    "playback queue read rollback",
-                    format!("{:?}: {}", rollback.kind, rollback.detail),
-                ),
-            )
-        }
+        } => compose_primary_cleanup_failure(
+            "FMQ delivery and playback queue rollback failed",
+            HalError::FmqDeliveryFailed {
+                kind: delivery,
+                object_id: error.id,
+            },
+            HalError::cleanup_failed(
+                "playback queue read rollback",
+                format!("{:?}: {}", rollback.kind, rollback.detail),
+            ),
+        ),
         maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::QueueRuntimeFailure
         | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::AvBackingFailure => {
             HalError::internal(
