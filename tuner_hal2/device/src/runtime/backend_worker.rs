@@ -26,7 +26,7 @@ use crate::dvb::abi::{
 use crate::px4;
 use crate::px4::abi::{
     ptx_enable_lnb_power_scalar, ptx_set_system_mode_scalar, PtxFreq, PtxTmccTsidList,
-    ERRNO_EAGAIN, ERRNO_EINVAL, ERRNO_ENOSYS, ERRNO_ENOTTY, PTXT_SET_LNB_VOLTAGE,
+    ERRNO_EAGAIN, ERRNO_EALREADY, ERRNO_EINVAL, ERRNO_ENOSYS, ERRNO_ENOTTY, PTXT_SET_LNB_VOLTAGE,
     PTX_DISABLE_LNB_POWER, PTX_GET_LOCK_STATUS, PTX_GET_TMCC_PARTIAL_RECEPTION,
     PTX_GET_TMCC_TSID_LIST, PTX_SET_CHANNEL, PTX_START_STREAMING, PTX_STOP_STREAMING,
 };
@@ -293,9 +293,8 @@ impl FrontendBackendSession {
 
     pub fn stop(&self) -> Result<(), HalError> {
         match &self.kind {
-            FrontendBackendSessionKind::Px4 { control_path } => ioctl_noarg(
-                "px4",
-                Some(control_path.as_path().to_path_buf()),
+            FrontendBackendSessionKind::Px4 { control_path } => px4_streaming_ioctl(
+                control_path,
                 self.file.as_raw_fd(),
                 PTX_STOP_STREAMING,
                 "PTX_STOP_STREAMING",
@@ -893,11 +892,18 @@ pub struct FrontendBackendRollbackSnapshot {
     previous_request: Option<FrontendTuneRequest>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BackendStreamingState {
+    NotStarted,
+    Started,
+}
+
 struct FrontendBackendTuneExecutor {
     plan: FrontendBackendTunePlan,
     previous_request: Option<FrontendTuneRequest>,
     kind: FrontendBackendSessionKind,
     file: Option<File>,
+    streaming_state: BackendStreamingState,
     initial_signal_state: FrontendSignalState,
 }
 
@@ -920,6 +926,7 @@ impl FrontendBackendTuneExecutor {
             previous_request,
             kind,
             file: Some(file),
+            streaming_state: BackendStreamingState::NotStarted,
             initial_signal_state: FrontendSignalState::Unknown,
         })
     }
@@ -936,12 +943,14 @@ impl FrontendBackendTuneExecutor {
             })
     }
 
-    fn stop_current(&self) -> Result<(), HalError> {
+    fn stop_current(&mut self) -> Result<(), HalError> {
+        if self.streaming_state == BackendStreamingState::NotStarted {
+            return Ok(());
+        }
         let fd = self.file_fd()?;
         match &self.kind {
-            FrontendBackendSessionKind::Px4 { control_path } => ioctl_noarg(
-                "px4",
-                Some(control_path.as_path().to_path_buf()),
+            FrontendBackendSessionKind::Px4 { control_path } => px4_streaming_ioctl(
+                control_path,
                 fd,
                 PTX_STOP_STREAMING,
                 "PTX_STOP_STREAMING",
@@ -961,7 +970,9 @@ impl FrontendBackendTuneExecutor {
                     "FE_SET_PROPERTY(DTV_CLEAR)",
                 )
             }
-        }
+        }?;
+        self.streaming_state = BackendStreamingState::NotStarted;
+        Ok(())
     }
 
     fn apply_system_mode_for(&self, request: &FrontendTuneRequest) -> Result<(), HalError> {
@@ -1019,21 +1030,22 @@ impl FrontendBackendTuneExecutor {
         }
     }
 
-    fn start_streaming_current(&self) -> Result<(), HalError> {
+    fn start_streaming_current(&mut self) -> Result<(), HalError> {
         match &self.kind {
-            FrontendBackendSessionKind::Px4 { control_path } => ioctl_noarg(
-                "px4",
-                Some(control_path.as_path().to_path_buf()),
+            FrontendBackendSessionKind::Px4 { control_path } => px4_streaming_ioctl(
+                control_path,
                 self.file_fd()?,
                 PTX_START_STREAMING,
                 "PTX_START_STREAMING",
             ),
             // DVBはFE_SET_PROPERTY(DTV_TUNE)後に配送を開始するため、ここに別のuserspace start ioctlは置かない。
             FrontendBackendSessionKind::Dvb { .. } => Ok(()),
-        }
+        }?;
+        self.streaming_state = BackendStreamingState::Started;
+        Ok(())
     }
 
-    fn submit_request_for_rollback(&self, request: &FrontendTuneRequest) -> Result<(), HalError> {
+    fn submit_request_for_rollback(&mut self, request: &FrontendTuneRequest) -> Result<(), HalError> {
         self.apply_system_mode_for(request)?;
         self.apply_channel_for(request)?;
         self.start_streaming_current()
@@ -1093,10 +1105,6 @@ impl BackendTuneOps for FrontendBackendTuneExecutor {
         Ok(FrontendBackendRollbackSnapshot {
             previous_request: self.previous_request.clone(),
         })
-    }
-
-    fn stop_previous_tune(&mut self) -> Result<(), HalError> {
-        self.stop_current()
     }
 
     fn apply_system_mode(&mut self, request: &FrontendTuneRequest) -> Result<(), HalError> {
@@ -1281,6 +1289,30 @@ fn px4_signal_state_from_readback(
     })
 }
 
+fn px4_streaming_ioctl(
+    path: &FrontendDevicePath,
+    fd: i32,
+    request: u64,
+    op: &'static str,
+) -> Result<(), HalError> {
+    px4_streaming_ioctl_result(
+        request,
+        ioctl_noarg("px4", Some(path.as_path().to_path_buf()), fd, request, op),
+    )
+}
+
+fn px4_streaming_ioctl_result(
+    request: u64,
+    result: Result<(), HalError>,
+) -> Result<(), HalError> {
+    match result {
+        // px4_drvの停止済み応答だけを停止完了として扱う。STARTの同じerrnoは失敗のまま返す。
+        Err(HalError::IoctlFailed { errno: ERRNO_EALREADY, .. })
+            if request == PTX_STOP_STREAMING => Ok(()),
+        result => result,
+    }
+}
+
 fn ioctl_noarg(
     backend: &'static str,
     path: Option<PathBuf>,
@@ -1326,6 +1358,97 @@ mod tests {
     use super::*;
     use maleicacid_tuner_hal2_common::{FrontendStreamIdKind, FrontendSystem};
     use std::thread;
+
+    fn fresh_tune_executor(backend: FrontendBackendKind) -> FrontendBackendTuneExecutor {
+        let request = FrontendTuneRequest {
+            system: FrontendSystem::IsdbT,
+            frequency: 473_142_857,
+            end_frequency: None,
+            stream_id: None,
+            stream_id_kind: None,
+            bandwidth_hz: Some(6_000_000),
+            symbol_rate: None,
+            isdbt_layer_settings: Vec::new(),
+            partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+        };
+        let plan = FrontendBackendTunePlan::new(
+            10,
+            1,
+            backend,
+            FrontendDevicePath::new("/dev/null"),
+            request,
+        );
+        FrontendBackendTuneExecutor::open(plan, None).unwrap()
+    }
+
+    #[test]
+    fn fresh_tune_failure_does_not_stop_an_unstarted_stream() {
+        for (backend, expected_step) in [
+            (FrontendBackendKind::Px4CharDevice, BackendTuneStep::ApplySystemMode),
+            (FrontendBackendKind::LinuxDvb, BackendTuneStep::ApplyChannel),
+        ] {
+            let mut executor = fresh_tune_executor(backend);
+            let mut txn = BackendTuneTxn::new(10, 1, executor.plan.request.clone());
+            // /dev/nullは機器要求をENOTTYで拒否する。不要なSTOPがあれば巻戻しも失敗する。
+            match txn.apply(&mut executor) {
+                BackendTuneOutcome::Failed { step, error, rollback } => {
+                    assert_eq!(step, expected_step);
+                    assert!(matches!(error, HalError::IoctlFailed { errno: ERRNO_ENOTTY, .. }));
+                    assert!(rollback.succeeded());
+                }
+                other => panic!("unexpected outcome: {other:?}"),
+            }
+            assert_eq!(executor.streaming_state, BackendStreamingState::NotStarted);
+        }
+    }
+
+    #[test]
+    fn failed_start_does_not_arm_rollback_stop() {
+        let mut executor = fresh_tune_executor(FrontendBackendKind::Px4CharDevice);
+        assert!(matches!(
+            executor.start_streaming(),
+            Err(HalError::IoctlFailed { errno: ERRNO_ENOTTY, .. })
+        ));
+        assert_eq!(executor.streaming_state, BackendStreamingState::NotStarted);
+        assert!(executor.rollback_stop_streaming().is_ok());
+    }
+
+    #[test]
+    fn started_executor_attempts_stop_and_preserves_state_on_failure() {
+        let mut executor = fresh_tune_executor(FrontendBackendKind::LinuxDvb);
+        // DVBのStartStreaming段階には別ioctlがない。実行器の成功後の状態を検査する。
+        executor.start_streaming().unwrap();
+        assert_eq!(executor.streaming_state, BackendStreamingState::Started);
+        assert!(matches!(
+            executor.rollback_stop_streaming(),
+            Err(HalError::IoctlFailed { op: "FE_SET_PROPERTY(DTV_CLEAR)", errno: ERRNO_ENOTTY, .. })
+        ));
+        assert_eq!(executor.streaming_state, BackendStreamingState::Started);
+    }
+
+    #[test]
+    fn only_px4_stop_ealready_is_idempotent_success() {
+        for (request, op, errno, succeeds) in [
+            (PTX_STOP_STREAMING, "PTX_STOP_STREAMING", ERRNO_EALREADY, true),
+            (PTX_STOP_STREAMING, "PTX_STOP_STREAMING", ERRNO_ENOTTY, false),
+            (PTX_STOP_STREAMING, "PTX_STOP_STREAMING", ERRNO_EINVAL, false),
+            (PTX_START_STREAMING, "PTX_START_STREAMING", ERRNO_EALREADY, false),
+        ] {
+            let error = HalError::IoctlFailed {
+                backend: "px4",
+                path: Some(PathBuf::from("/dev/px4video0")),
+                op,
+                errno,
+            };
+            let result = px4_streaming_ioctl_result(request, Err(error.clone()));
+            if succeeds {
+                assert_eq!(result, Ok(()));
+            } else {
+                assert_eq!(result, Err(error));
+            }
+        }
+        assert_eq!(px4_streaming_ioctl_result(PTX_STOP_STREAMING, Ok(())), Ok(()));
+    }
 
     #[test]
     fn dvb_live_reader_open_failure_keeps_io_context() {
