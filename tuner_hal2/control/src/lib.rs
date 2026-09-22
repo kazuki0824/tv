@@ -551,8 +551,9 @@ impl<T> WorkerRuntime<T> {
         match handle.join_after_stop() {
             Ok(Ok(result)) => result,
             Err(failure) => failure.into_terminal_result("WorkerRuntime"),
-            Ok(Err(())) => WorkerRuntimeOwnerFailure::MissingReport
-                .into_terminal_result("WorkerRuntime"),
+            Ok(Err(())) => {
+                WorkerRuntimeOwnerFailure::MissingReport.into_terminal_result("WorkerRuntime")
+            }
         }
     }
 }

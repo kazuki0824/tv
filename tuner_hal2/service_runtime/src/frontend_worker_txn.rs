@@ -29,12 +29,12 @@ use maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackToken;
 use maleicacid_tuner_hal2_device::FrontendRuntimeSnapshot;
 use maleicacid_tuner_hal2_device::{
     BackendTuneRollbackFailure, BackendTuneStep, FrontendBackendSession,
-    FrontendBackendSubmitFailure, FrontendWorkerSubmitWait,
-    FrontendBackendTunePlan, FrontendLivePumpJoinOutcome, FrontendLivePumpOwner, FrontendScanPhase,
-    FrontendSignalState, FrontendTmccPartialReceptionObservation, FrontendTmccTsidListObservation,
+    FrontendBackendSubmitFailure, FrontendBackendTunePlan, FrontendLivePumpJoinOutcome,
+    FrontendLivePumpOwner, FrontendScanPhase, FrontendSignalState,
+    FrontendTmccPartialReceptionObservation, FrontendTmccTsidListObservation,
     FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
     FrontendWorkerStartError, FrontendWorkerStopOutcome, FrontendWorkerStopPoll,
-    FrontendWorkerStopTicket,
+    FrontendWorkerStopTicket, FrontendWorkerSubmitWait,
 };
 use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 
@@ -3435,11 +3435,10 @@ fn finish_committed_tune_replacement(
             transition.request.clone(),
         );
         let worker_io_deadline_ms = guard.capability_snapshot().worker_io_deadline_ms;
-        let ticket = guard.frontend_txn().prepare_backend_submit(
-            FrontendWorkerKind::Tune,
-            plan,
-            None,
-        )?;
+        let ticket =
+            guard
+                .frontend_txn()
+                .prepare_backend_submit(FrontendWorkerKind::Tune, plan, None)?;
         let session = match submit_frontend_backend_with_deadline(
             ticket,
             generation,
@@ -4355,11 +4354,10 @@ fn finish_committed_scan_replacement(
             first_candidate,
         );
         let worker_io_deadline_ms = guard.capability_snapshot().worker_io_deadline_ms;
-        let ticket = guard.frontend_txn().prepare_backend_submit(
-            FrontendWorkerKind::Scan,
-            plan,
-            None,
-        )?;
+        let ticket =
+            guard
+                .frontend_txn()
+                .prepare_backend_submit(FrontendWorkerKind::Scan, plan, None)?;
         let session = match submit_frontend_backend_with_deadline(
             ticket,
             generation,

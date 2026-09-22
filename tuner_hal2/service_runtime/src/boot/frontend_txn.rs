@@ -1004,10 +1004,8 @@ impl<'a> FrontendTxn<'a> {
         plan: maleicacid_tuner_hal2_device::FrontendBackendTunePlan,
         previous_request: Option<maleicacid_tuner_hal2_common::FrontendTuneRequest>,
     ) -> Result<FrontendWorkerStopTicket, HalError> {
-        self.runtime.frontend_workers.prepare_backend_submit(
-            kind,
-            plan,
-            previous_request,
-        )
+        self.runtime
+            .frontend_workers
+            .prepare_backend_submit(kind, plan, previous_request)
     }
 }

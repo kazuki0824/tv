@@ -95,12 +95,25 @@ enum InvalidSectionReason {
 impl InvalidSectionReason {
     fn diagnostic(self) -> ParserDiagnosticDto {
         let (code, message) = match self {
-            Self::Header => ("SECTION_HEADER_INVALID", "section header is invalid or truncated"),
-            Self::Length => ("SECTION_LENGTH_MISMATCH", "section length differs from input length"),
-            Self::Clock => ("BROADCAST_CLOCK_INVALID", "broadcast clock section is invalid"),
+            Self::Header => (
+                "SECTION_HEADER_INVALID",
+                "section header is invalid or truncated",
+            ),
+            Self::Length => (
+                "SECTION_LENGTH_MISMATCH",
+                "section length differs from input length",
+            ),
+            Self::Clock => (
+                "BROADCAST_CLOCK_INVALID",
+                "broadcast clock section is invalid",
+            ),
             Self::Crc => ("SECTION_CRC_MISMATCH", "section CRC does not match"),
         };
-        ParserDiagnosticDto { code, message: message.to_string(), severity: "error" }
+        ParserDiagnosticDto {
+            code,
+            message: message.to_string(),
+            severity: "error",
+        }
     }
 }
 
@@ -1681,17 +1694,38 @@ mod tests {
         let cases: &[(u16, &[u8], &str)] = &[
             (0, &[0], "SECTION_HEADER_INVALID"),
             (0x14, &[0x70, 0x70, 0, 0], "SECTION_LENGTH_MISMATCH"),
-            (0x14, &[0x70, 0x70, 5, 0xff, 0xff, 0xff, 0xff, 0xff], "BROADCAST_CLOCK_INVALID"),
-            (0, &[0, 0xb0, 9, 0, 1, 0xc1, 0, 0, 0, 0, 0, 0], "SECTION_CRC_MISMATCH"),
+            (
+                0x14,
+                &[0x70, 0x70, 5, 0xff, 0xff, 0xff, 0xff, 0xff],
+                "BROADCAST_CLOCK_INVALID",
+            ),
+            (
+                0,
+                &[0, 0xb0, 9, 0, 1, 0xc1, 0, 0, 0, 0, 0, 0],
+                "SECTION_CRC_MISMATCH",
+            ),
         ];
         for &(pid, bytes, code) in cases {
             let mut state = ParserState::default();
             assert_eq!(state.ingest_section(pid, bytes), STATUS_INVALID_SECTION);
-            let snapshot: serde_json::Value = serde_json::from_str(&bulk_snapshot_json(&mut state)).unwrap();
-            assert!(snapshot["parserDiagnostics"].as_array().unwrap().iter().any(|d| d["code"] == code));
-            assert_eq!(state.ingest_section(0x10, &[0x7f, 0x30, 0]), STATUS_IGNORED_UNSUPPORTED_PID_OR_TABLE);
-            let snapshot: serde_json::Value = serde_json::from_str(&bulk_snapshot_json(&mut state)).unwrap();
-            assert!(!snapshot["parserDiagnostics"].as_array().unwrap().iter().any(|d| d["code"] == code));
+            let snapshot: serde_json::Value =
+                serde_json::from_str(&bulk_snapshot_json(&mut state)).unwrap();
+            assert!(snapshot["parserDiagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d["code"] == code));
+            assert_eq!(
+                state.ingest_section(0x10, &[0x7f, 0x30, 0]),
+                STATUS_IGNORED_UNSUPPORTED_PID_OR_TABLE
+            );
+            let snapshot: serde_json::Value =
+                serde_json::from_str(&bulk_snapshot_json(&mut state)).unwrap();
+            assert!(!snapshot["parserDiagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d["code"] == code));
         }
     }
 
