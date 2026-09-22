@@ -1191,14 +1191,20 @@ mod tests {
         assert!(stop
             .wait_until_finished(Some(std::time::Instant::now() + Duration::from_secs(1)))
             .unwrap());
-        assert!(matches!(stop.complete(), FrontendWorkerStopOutcome::Completed { result: Ok(()), .. }));
+        assert!(matches!(
+            stop.complete(),
+            FrontendWorkerStopOutcome::Completed { result: Ok(()), .. }
+        ));
         assert!(registry.has_cleanup_obligations());
         let submit_stop = registry.request_stop_for_join(
             7,
             FrontendWorkerKind::Tune,
             FrontendWorkerCancelReason::StopRequested,
         );
-        assert_eq!(submit_stop.complete(), FrontendWorkerStopOutcome::NotRunning);
+        assert_eq!(
+            submit_stop.complete(),
+            FrontendWorkerStopOutcome::NotRunning
+        );
         assert!(!registry.has_cleanup_obligations());
     }
 
