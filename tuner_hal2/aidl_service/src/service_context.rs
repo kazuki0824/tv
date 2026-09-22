@@ -958,22 +958,23 @@ impl AidlServiceContext {
     pub(crate) fn frontend_callback_for_owner(
         &self,
         handle: AidlObjectHandle,
-    ) -> Result<Option<FrontendCallbackDelivery>, AidlCallbackStoreError> {
+    ) -> Result<Option<FrontendCallbackDelivery>, HalError> {
         let Some(registration) = self
-            .callback_store_lock()?
+            .callback_store_lock()
+            .map_err(|error| error.into_hal_error("frontend callback owner"))?
             .frontend_callback_for_owner(handle)
         else {
             return Ok(None);
         };
         // storeのsnapshot lockを解放してからruntimeへ入り、runtime→store順で世代を再照合する。
         let runtime =
-            TunerServiceRuntime::lock_shared(self.runtime.as_ref(), "frontend callback owner")
-                .map_err(|_| AidlCallbackStoreError::Poisoned)?;
+            TunerServiceRuntime::lock_shared(self.runtime.as_ref(), "frontend callback owner")?;
         if !runtime.frontend_callback_delivery_ready(handle.object_id(), handle.generation()) {
             return Ok(None);
         }
         let current = self
-            .callback_store_lock()?
+            .callback_store_lock()
+            .map_err(|error| error.into_hal_error("frontend callback owner"))?
             .frontend_registration_matches(handle, registration.generation());
         drop(runtime);
         Ok(current.then_some(registration))

@@ -199,8 +199,7 @@ fn deliver_scan_callback(
                 None,
             );
         }
-        Err(_) => {
-            let primary = HalError::callback_failed(method, "callback store lock poisoned");
+        Err(primary) => {
             return finish_frontend_scan_end_delivery_failure(
                 context,
                 handle,
@@ -370,14 +369,14 @@ fn deliver_tune_event_callback(
                 None,
             );
         }
-        Err(_) => {
+        Err(primary) => {
             return finish_frontend_event_delivery_failure(
                 context,
                 handle,
                 frontend_id,
                 generation,
                 true,
-                HalError::callback_failed(method, "callback store lock poisoned"),
+                primary,
                 None,
             );
         }
