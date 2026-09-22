@@ -206,10 +206,9 @@ object ProviderDataBridge {
     // 入力拒否・未準備・失敗を発生点で返し、成功経路を深い入れ子にしない。
     @Suppress("CyclomaticComplexMethod", "MaxLineLength", "ReturnCount")
     fun decodeChannelProviderData(providerData: ByteArray?): ChannelProviderDataResult? {
-        val raw = native.decodeChannelProviderData(providerData ?: ByteArray(0))
         val root =
             runCatching {
-                JSONObject(raw)
+                JSONObject(native.decodeChannelProviderData(providerData ?: ByteArray(0)))
             }.getOrNull() ?: return null
         val canonical = root.optString("canonical").takeIf { it.isNotBlank() } ?: return null
         val schemaVersion = root.optInt("schemaVersion", -1).takeIf { it == 1 } ?: return null
