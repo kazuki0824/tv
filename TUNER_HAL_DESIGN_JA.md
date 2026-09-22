@@ -425,6 +425,8 @@ Tuner HAL は、内部状態の正本を1つに固定する。複数の構造体
 
 rollback不能、cleanup不能、正本不一致、backend実状態とregistry不一致、ワーカー状態不一致は、通常状態として扱ってはならない。通常状態へ戻せない場合は quarantine または failed 状態へ落とす。
 
+サービス全体の利用停止状態はサービス所有者に一元化し、一度確定した`ServiceCritical`を再初期化で解除しない。サービスの状態ロックが汚染された場合も、利用停止と汚染検出回数を同じ観測値として読み出せること。汚染された通常状態を回復して処理を続けてはならない。停止状態の記録には当該ロックの正常取得を要求せず、診断参照から通常状態を変更する権限は与えない。
+
 #### 0-S-2. 状態所有者表
 
 | 資源 / 状態 | 正本所有者 | 補助所有者 | 禁止事項 |
@@ -659,6 +661,8 @@ PESの組み立て状態はPIDごとに分離する。`PES_packet_length > 0` �
 generic worker lifecycleは0-S-3Bの`WorkerRuntime`、worker failure classificationは`WorkerFailureClassifier`を唯一の正本とする。本節ではstop / wake / join、generation fence、Reaper handoff、retry schedule、lease return、`ServiceCritical`判定のmechanismを再定義しない。
 
 ワーカーはデータ処理と通知を担当し、demux、filter、DVR、descrambler等の資源寿命または登録relationのmutation ownerにはならない。worker failureはtyped resultとしてdomain ownerへ返し、domain ownerが各API状態表に従って公開状態へ反映する。worker自身が対象objectを直接unregisterしたり、別ownerのresourceを解放したりしてはならない。
+
+DVR通知を回収するワーカー自身も`WorkerRuntime`の生成・停止・起床・終了結果の管理対象とする。監督用の従属参照は実際に待機するワーカーと同じ起床先を使用し、所有者消滅時には停止要求で待機を解除する。待機中に所有者を強参照で保持せず、終了結果は管理部から繰り返し観測できるものとする。異常終了の分類は`WorkerFailureClassifier`へ渡し、別の分類規則を作らない。
 
 Frontend / Filter / DVR / Playback固有のterminal meaningとworker failure後の公開結果 / data-path効果は各APIの名前付き契約と「失敗影響範囲」を正とする。generic lifecycleは`WorkerRuntime`、failure categoryは`WorkerFailureClassifier`、post-commit callback failureは`PostCommitCallbackFailureTxn`を唯一の正本とし、本節では第二のfailure contractを持たない。
 
@@ -1239,6 +1243,10 @@ AOSP意味論では、`IDescrambler.addPid(pid, optionalSourceFilter)` および
 DVB backend は frontend index と同じ demux index / dvr index を使う。`adapterN/frontendM` は `adapterN/demuxM` と `adapterN/dvrM` に対応する。demux が別 frontend の TS を読む構成は advertise しない。source 選択 ioctl が失敗した場合は tune / scan / record を成功扱いにしない。
 
 ## 診断可観測性の固定
+
+機器探索における不在、対応対象外、ファイル操作の失敗は区別する。存在確認・リンク解決・実体パス解決の失敗は探索段階の診断へ、操作、対象パス、取得できたOSエラー番号とともに渡す。読み取れなかった機器を対応対象外として分類したり、利用可能として公開したりしない。
+
+能力選択の失敗理由と資源を返却した順序、FMQ配送の書込み失敗・短い書込み・起床失敗の種別は、内部の受け渡しで型付き情報として保持する。配送失敗後の取消しも失敗した場合は、元の配送失敗と取消し失敗を既存の複合エラーとして保持する。ワーカー生成失敗もOSエラー情報を保持して呼出し元へ返す。これらの内部情報の追加で公開AIDLの戻り値分類は変更しない。
 
 本番経路トークンの用語、リリース段階、TIS から `setKeyToken()` へ渡してよい値のスコープは `開発規則.md` を正とする。本節では、Tuner HAL が受け取ったトークンの検証、AIDL戻り値、診断、副作用だけを固定する。Tuner側の台帳は、標準MediaCas session ID bytesに対応する有効な内部鍵状態を参照する境界とする。具体helper名、内部参照API、debug出力方法は本契約で規範化しない。product defaultの`IDescrambler.setKeyToken()`に伴うtoken参照の結合・解除、refcountのowner / entryは`tuner_hal2/DESIGN_JA.md`の`DescramblerKeyTxn` / descrambler key table規範実装アンカーを正とし、CAS側のKs更新のownerにはしない。
 

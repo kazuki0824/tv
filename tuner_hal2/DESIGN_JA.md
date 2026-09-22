@@ -191,6 +191,15 @@ A/B/Cの分類と`Txn` / `UseCase` / `Context`の命名判定は別である。B
 | `WorkerFailureClassifier` | `service_runtime/src/worker_failure_classifier.rs::WorkerFailureClassifier` | `WorkerFailureClassifier::{classify_terminal, classify_callback}` | owner側の別classifier、classifierによるdomain ownerの置換 |
 | `FrontendWorkerTerminationUseCase` | `service_runtime/src/frontend_worker_termination_use_case.rs::FrontendWorkerTerminationUseCase`。`device/src/runtime/frontend_worker.rs::FrontendWorkerRegistry`はフロントエンドworker状態、`control/src/lib.rs::WorkerRuntime`は汎用寿命状態を所有する | `FrontendWorkerTerminationUseCase::{accept_worker_terminal, cleanup_after_close_begin}` | ワーカー・AIDL層による所有者登録解除、リース、終了待ち・回収処理、失敗分類器の直接代替、汎用寿命管理の所有責務の吸収、別のフロントエンド終了手順所有者 |
 
+##### 共通の失敗伝達とワーカー管理の実装位置
+
+論理契約は`../TUNER_HAL_DESIGN_JA.md`の「0-S-1. 設計原則」「ワーカー失敗と所有権境界」「診断可観測性の固定」を正とする。
+
+- `common/src/lib.rs`の`CapabilitySelectionError`、`CapabilityClosure`、`FmqFailureKind`を内部の共通エラー型とし、能力選択とFMQ配送の利用側は同型を参照する。`boot.rs::demux_runtime_error_to_hal`は配送種別と対象IDを保持し、取消し失敗は既存の`compose_primary_cleanup_failure`へ渡す。公開変換は`binder_adapter/src/status.rs`へ集約する。
+- `aidl_service/src/service_entry.rs`の探索処理は`FrontendProbeOutcome::DeviceProbeFailed`から`StartupDiagnosticRecord::DeviceProbeFailed`へOSエラーを渡す。能力選択は`HalError::CapabilitySelectionFailed`で選択結果の失敗情報を渡す。
+- `TunerServiceRuntime`が構築時に一度だけ生成する`ServiceFailureState`は、利用停止とロック汚染検出回数を同じatomic値に持つ。外部へ渡す複製は読取り専用で、通常状態の第二所有者にはしない。`lock_shared`と`mark_shared_service_critical`は、汚染時に`PoisonError::get_ref`から構築後不変の診断参照だけを取得し、ガードを解放してから停止を記録する。`into_inner`による通常状態の回復は行わない。`ServiceFailureSnapshot`は当該サービスの検出回数と`diagnostic_counter_saturated`を含む。
+- `WorkerRuntimeSupervisor::start_worker`は`WorkerRuntime`を保持し、その`WorkerContext`を起床通知と待機で共有する。`worker_terminal_result`は終了済みワーカーだけを回収し、結果を保持する。DVR通知側は弱参照で管理部を参照し、待機前に強参照を解放する。従属参照の破棄は停止・起床要求だけを行い、終了待ちは行わない。
+
 ##### 共通化対象のRust物理化追加要件
 
 次表は、`../TUNER_HAL_DESIGN_JA.md`の論理契約と本書の実装所有者・アンカーを変更せず、A/B/C判定後に必要となる論理上の並行性・直列化契約、失効操作・一回性識別、Bの呼出し内進行状態だけを固定する。公開状態、段階、確定点、巻戻し・後片付け、失敗時の意味は`../TUNER_HAL_DESIGN_JA.md`を正とする。一回性権限の一般実装規則とA/Bの永続状態格納境界は`CODE_CONVENTION.md`を正とする。`Send` / `Sync`はA/B/C分類から導出せず、外部API・実行基盤の型制約と、実際のスレッド間移送・共有参照から判定する。

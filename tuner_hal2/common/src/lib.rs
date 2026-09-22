@@ -607,6 +607,7 @@ impl HalErrorDetail {
 pub enum WorkerLockKind {
     Result,
     Completion,
+    SupervisorWorker,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -622,6 +623,14 @@ pub enum WorkerCleanupFailureKind {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HalError {
+    ServiceRuntimeLockPoisoned {
+        operation: &'static str,
+    },
+    CapabilitySelectionFailed(CapabilitySelectionError),
+    FmqDeliveryFailed {
+        kind: FmqFailureKind,
+        object_id: Option<i32>,
+    },
     WorkerCleanupFailed {
         kind: WorkerCleanupFailureKind,
     },
@@ -824,6 +833,17 @@ fn display_path(path: &Option<PathBuf>) -> String {
 impl fmt::Display for HalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            HalError::ServiceRuntimeLockPoisoned { operation } => {
+                write!(f, "TunerServiceRuntime lock poisoned: operation={operation}")
+            }
+            HalError::CapabilitySelectionFailed(error) => write!(
+                f,
+                "capability selection failed: reason={} returned_in_order={:?}",
+                error.reason, error.returned_in_order
+            ),
+            HalError::FmqDeliveryFailed { kind, object_id } => {
+                write!(f, "FMQ delivery failed: kind={kind:?} object_id={object_id:?}")
+            }
             HalError::WorkerLockPoisoned { owner, lock } => {
                 write!(f, "worker lock poisoned: owner={owner} lock={lock:?}")
             }
@@ -941,6 +961,33 @@ impl fmt::Display for HalError {
 }
 
 impl std::error::Error for HalError {}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FmqFailureKind {
+    WriteFailed,
+    ShortWrite,
+    EventFlagWakeFailed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum CapabilityClosure {
+    Frontend(i32),
+    DemuxBase,
+    TsFilter,
+    SectionFilter,
+    PcrFilter,
+    Pes,
+    AudioAv,
+    VideoAv,
+    PlaybackDvr,
+    RecordDvr,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapabilitySelectionError {
+    pub reason: &'static str,
+    pub returned_in_order: Vec<CapabilityClosure>,
+}
 
 #[cfg(test)]
 mod tests {

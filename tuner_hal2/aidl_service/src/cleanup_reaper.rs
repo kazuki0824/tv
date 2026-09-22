@@ -177,9 +177,7 @@ fn clear_pending_cleanup_job(
 
 fn mark_cleanup_reaper_critical(context: &AidlServiceContext) {
     let shared_runtime = context.runtime();
-    if let Ok(mut runtime) = shared_runtime.lock() {
-        runtime.mark_service_critical();
-    };
+    maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::mark_shared_service_critical(&shared_runtime);
 }
 
 fn run_cleanup_job(

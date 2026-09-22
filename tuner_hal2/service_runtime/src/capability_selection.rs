@@ -1,18 +1,6 @@
 use std::collections::BTreeMap;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub enum CapabilityClosure {
-    Frontend(i32),
-    DemuxBase,
-    TsFilter,
-    SectionFilter,
-    PcrFilter,
-    Pes,
-    AudioAv,
-    VideoAv,
-    PlaybackDvr,
-    RecordDvr,
-}
+pub use maleicacid_tuner_hal2_common::{CapabilityClosure, CapabilitySelectionError};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(usize)]
@@ -121,12 +109,6 @@ impl SelectedCapabilities {
     pub fn claims(&self) -> CapabilityClaims {
         self.claims
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CapabilitySelectionError {
-    pub reason: &'static str,
-    pub returned_in_order: Vec<CapabilityClosure>,
 }
 
 // 仮予約の唯一の所有者。選択後の横断検証が成功するまでcommitしない。

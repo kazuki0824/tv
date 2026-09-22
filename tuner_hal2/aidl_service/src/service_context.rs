@@ -129,25 +129,19 @@ impl AidlServiceContext {
 
     pub fn shared(runtime: TunerServiceRuntime) -> SharedAidlServiceContext {
         let context = Arc::new(Self::new(runtime));
-        if start_cleanup_reaper(
+        if let Err(error) = start_cleanup_reaper(
             Arc::downgrade(&context),
             Arc::clone(&context.cleanup_reaper_queue),
-        )
-        .is_err()
-        {
-            if let Ok(mut runtime) = context.runtime.lock() {
-                runtime.mark_service_critical();
-            }
+        ) {
+            log::error!("cleanup reaper startup failed: {error:?}");
+            TunerServiceRuntime::mark_shared_service_critical(&context.runtime);
         }
-        if start_dvr_status_notifier_reaper(
+        if let Err(error) = start_dvr_status_notifier_reaper(
             Arc::downgrade(&context),
             Arc::clone(&context.dvr_status_notifier_supervisor),
-        )
-        .is_err()
-        {
-            if let Ok(mut runtime) = context.runtime.lock() {
-                runtime.mark_service_critical();
-            }
+        ) {
+            log::error!("DVR notifier reaper startup failed: {error:?}");
+            TunerServiceRuntime::mark_shared_service_critical(&context.runtime);
         }
         context
     }
@@ -198,25 +192,19 @@ impl AidlServiceContext {
             frontend_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
             cleanup_reaper_queue: Arc::new(CleanupReaperQueue::from_snapshot(capability_snapshot)),
         });
-        if start_cleanup_reaper(
+        if let Err(error) = start_cleanup_reaper(
             Arc::downgrade(&context),
             Arc::clone(&context.cleanup_reaper_queue),
-        )
-        .is_err()
-        {
-            if let Ok(mut runtime) = context.runtime.lock() {
-                runtime.mark_service_critical();
-            }
+        ) {
+            log::error!("cleanup reaper startup failed: {error:?}");
+            TunerServiceRuntime::mark_shared_service_critical(&context.runtime);
         }
-        if start_dvr_status_notifier_reaper(
+        if let Err(error) = start_dvr_status_notifier_reaper(
             Arc::downgrade(&context),
             Arc::clone(&context.dvr_status_notifier_supervisor),
-        )
-        .is_err()
-        {
-            if let Ok(mut runtime) = context.runtime.lock() {
-                runtime.mark_service_critical();
-            }
+        ) {
+            log::error!("DVR notifier reaper startup failed: {error:?}");
+            TunerServiceRuntime::mark_shared_service_critical(&context.runtime);
         }
         context
     }
@@ -262,9 +250,7 @@ impl AidlServiceContext {
             .cleanup_dependency_for_handle(handle)
             .and_then(|dependency| self.cleanup_reaper_queue.enqueue(handle, dependency));
         if result.is_err() {
-            if let Ok(mut runtime) = self.runtime.lock() {
-                runtime.mark_service_critical();
-            }
+            TunerServiceRuntime::mark_shared_service_critical(&self.runtime);
         }
         result
     }

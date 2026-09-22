@@ -274,12 +274,7 @@ impl CapabilitySnapshot {
             }
             Ok(())
         })
-        .map_err(|error| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                format!("{} 返却順={:?}", error.reason, error.returned_in_order),
-            )
-        })?;
+        .map_err(HalError::CapabilitySelectionFailed)?;
         let snapshot = Self::from_selection(requested, &selected)?;
         let ids = ids
             .into_iter()
