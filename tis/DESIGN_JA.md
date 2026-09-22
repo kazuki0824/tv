@@ -7,6 +7,8 @@ TIS の setup / boot EPG sync / user unlock drain は、固定文字列や packa
 
 ### SI収集の期限と失敗境界
 
+JNIの実行失敗と正常な空値の契約は`../arib_si_engine_rs/DESIGN_JA.md`の「実行失敗と正常な空値の区別」を正とする。TISはJNIの実行失敗を呼出し元へ伝え、SI事実なし・番組キーなし・JSON内容不正へ変換しない。走査・番組更新では当該操作の失敗として扱い、失敗したスナップショットを登録・更新・削除判断へ使用しない。具体的な呼出しと受取補助関数の使用規則は、`CODE_CONVENTION.md`を正とする。
+
 走査の待機時間・安定待ち・最大期限は`SystemClock.elapsedRealtime()`の差で測り、端末の時刻補正に依存させない。SI境界のcollectionは`../arib_si_engine_rs/DESIGN_JA.md`の有限寿命・入力上限に従う。上限時に破棄されたsnapshotから登録完了・EPG完了を導出しない。継続視聴のdecoder資源寿命はSI collectionの再同期とは独立している。
 
 ## BS と CS110 の選局契約

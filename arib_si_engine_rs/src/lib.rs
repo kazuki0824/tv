@@ -16,7 +16,7 @@ use descriptors::{
 };
 use discovery_requirements::DiscoveryProfile;
 use eit::{EitEvent, EitStableEventIdentity};
-use jni::objects::{JByteArray, JClass, JObject, JString};
+use jni::objects::{JByteArray, JClass, JObject, JString, JThrowable, JValue};
 use jni::sys::{jint, jlong, jstring};
 use jni::JNIEnv;
 use maleicacid_arib_si_engine_core::eit_instances::{EitInstanceState, EitInstances};
@@ -1137,7 +1137,7 @@ impl From<BroadcastClockFact> for BroadcastClockFactDto {
     }
 }
 
-fn bulk_snapshot_json(state: &mut ParserState) -> String {
+fn bulk_snapshot_json(state: &mut ParserState) -> Result<String, serde_json::Error> {
     state.expire_collection_at(Instant::now());
     let ingest_sequence = state.sections_seen;
     let last_status = state.last_status;
@@ -1200,7 +1200,6 @@ fn bulk_snapshot_json(state: &mut ParserState) -> String {
             .collect(),
         parser_diagnostics,
     })
-    .unwrap_or_default()
 }
 
 #[derive(Serialize)]
@@ -1362,10 +1361,73 @@ fn with_state_mut(
     result
 }
 
-fn java_string(env: &mut JNIEnv<'_>, value: Option<String>) -> jstring {
-    match env.new_string(value.unwrap_or_default()) {
+#[derive(Clone, Copy, Debug)]
+enum SiJniFailureReason {
+    ModuleAbnormal,
+    RegistryPoisoned,
+    ParserPoisoned,
+    InvalidHandle,
+    JniInput,
+    JsonEncoding,
+    JniOutput,
+}
+
+impl SiJniFailureReason {
+    fn code(self) -> &'static str {
+        match self {
+            Self::ModuleAbnormal => "MODULE_ABNORMAL",
+            Self::RegistryPoisoned => "REGISTRY_POISONED",
+            Self::ParserPoisoned => "PARSER_POISONED",
+            Self::InvalidHandle => "INVALID_HANDLE",
+            Self::JniInput => "JNI_INPUT",
+            Self::JsonEncoding => "JSON_ENCODING",
+            Self::JniOutput => "JNI_OUTPUT",
+        }
+    }
+
+    fn failure(self, detail: impl ToString) -> SiJniFailure {
+        SiJniFailure {
+            reason: self,
+            detail: detail.to_string(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct SiJniFailure {
+    reason: SiJniFailureReason,
+    detail: String,
+}
+
+fn throw_si_failure(env: &mut JNIEnv<'_>, failure: SiJniFailure) -> jstring {
+    let thrown = (|| -> jni::errors::Result<()> {
+        if env.exception_check()? {
+            return Ok(());
+        }
+        let reason = JObject::from(env.new_string(failure.reason.code())?);
+        let detail = JObject::from(env.new_string(&failure.detail)?);
+        let exception = env.new_object(
+            "com/maleicacid/tvinput/aribsi/NativeSiException",
+            "(Ljava/lang/String;Ljava/lang/String;)V",
+            &[JValue::Object(&reason), JValue::Object(&detail)],
+        )?;
+        env.throw(JThrowable::from(exception))
+    })();
+    if let Err(error) = thrown {
+        // VMの保留例外は消去しない。例外なしのnullもKotlinの受取入口が拒否する。
+        eprintln!("SI JNI failure={failure:?}; exception delivery failure={error}");
+    }
+    ptr::null_mut()
+}
+
+fn java_string(env: &mut JNIEnv<'_>, value: Result<String, SiJniFailure>) -> jstring {
+    let value = match value {
+        Ok(value) => value,
+        Err(failure) => return throw_si_failure(env, failure),
+    };
+    match env.new_string(value) {
         Ok(s) => s.into_raw(),
-        Err(_) => ptr::null_mut(),
+        Err(error) => throw_si_failure(env, SiJniFailureReason::JniOutput.failure(error)),
     }
 }
 
@@ -1383,46 +1445,57 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     _this: JObject<'_>,
     handle: jlong,
 ) -> jstring {
+    java_string(&mut env, snapshot_bulk_json(handle))
+}
+
+fn snapshot_bulk_json(handle: jlong) -> Result<String, SiJniFailure> {
     if !si_module_is_healthy() {
-        return java_string(&mut env, Some("{}".to_string()));
+        return Err(SiJniFailureReason::ModuleAbnormal.failure("SI module is abnormal"));
     }
     let parser = match registry().lock() {
         Ok(guard) => guard.get(handle),
         Err(_) => {
             record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
-            return java_string(&mut env, Some("{}".to_string()));
+            return Err(SiJniFailureReason::RegistryPoisoned.failure(SI_REGISTRY_LOCK_NAME));
         }
     };
     let Some(parser) = parser else {
-        return java_string(&mut env, Some("{}".to_string()));
+        return Err(SiJniFailureReason::InvalidHandle.failure(handle));
     };
     let json = match parser.lock() {
-        Ok(mut guard) => bulk_snapshot_json(&mut guard),
+        Ok(mut guard) => bulk_snapshot_json(&mut guard)
+            .map_err(|error| SiJniFailureReason::JsonEncoding.failure(error)),
         Err(_) => {
             record_si_mutex_poison(SI_PARSER_LOCK_NAME);
-            "{}".to_string()
+            Err(SiJniFailureReason::ParserPoisoned.failure(SI_PARSER_LOCK_NAME))
         }
     };
-    java_string(&mut env, Some(json))
+    json
 }
 
-fn jbytearray_to_vec(env: &mut JNIEnv<'_>, value: JByteArray<'_>) -> Vec<u8> {
-    env.convert_byte_array(value).unwrap_or_default()
+fn jbytearray_to_vec(env: &JNIEnv<'_>, value: JByteArray<'_>) -> Result<Vec<u8>, SiJniFailure> {
+    env.convert_byte_array(value)
+        .map_err(|error| SiJniFailureReason::JniInput.failure(error))
+}
+
+enum CodecInputFailure {
+    TooLarge,
+    Jni(jni::errors::Error),
 }
 
 fn bounded_codec_bytes(
     env: &mut JNIEnv<'_>,
     value: &JByteArray<'_>,
     maximum: i32,
-) -> Result<Vec<u8>, &'static str> {
+) -> Result<Vec<u8>, CodecInputFailure> {
     let length = env
         .get_array_length(value)
-        .map_err(|_| "codec配列長を取得できません")?;
+        .map_err(CodecInputFailure::Jni)?;
     if length > maximum {
-        return Err("codec構成probeの入力上限を超過しました");
+        return Err(CodecInputFailure::TooLarge);
     }
     env.convert_byte_array(value)
-        .map_err(|_| "codec構成probeの入力を取得できません")
+        .map_err(CodecInputFailure::Jni)
 }
 
 #[no_mangle]
@@ -1443,12 +1516,20 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     };
     let result = match (input, config) {
         (Ok(input), Ok(config)) => probe_adts_configuration(&input, config.as_deref()),
-        (Err(reason), _) | (_, Err(reason)) => AacConfigurationProbe::Invalid { reason },
+        (Err(CodecInputFailure::Jni(error)), _) | (_, Err(CodecInputFailure::Jni(error))) => {
+            return java_string(&mut env, Err(SiJniFailureReason::JniInput.failure(error)));
+        }
+        (Err(CodecInputFailure::TooLarge), _) | (_, Err(CodecInputFailure::TooLarge)) => {
+            AacConfigurationProbe::Invalid {
+                reason: "codec構成probeの入力上限を超過しました",
+            }
+        }
     };
-    match serde_json::to_string(&result) {
-        Ok(json) => java_string(&mut env, Some(json)),
-        Err(_) => ptr::null_mut(),
-    }
+    java_string(
+        &mut env,
+        serde_json::to_string(&result)
+            .map_err(|error| SiJniFailureReason::JsonEncoding.failure(error)),
+    )
 }
 
 fn provider_result_json(result: provider_data_api::ProviderDataResult) -> String {
@@ -1497,7 +1578,7 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
         Ok(request) => provider_data_api::build_channel_provider_data(&String::from(request)),
         Err(error) => provider_jni_failure(error),
     };
-    java_string(&mut env, Some(provider_result_json(result)))
+    java_string(&mut env, Ok(provider_result_json(result)))
 }
 
 #[no_mangle]
@@ -1511,7 +1592,7 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
 ) -> jstring {
     java_string(
         &mut env,
-        Some(provider_data_api::build_program_key(
+        Ok(provider_data_api::build_program_key(
             onid, tsid, sid, event_id,
         )),
     )
@@ -1527,7 +1608,7 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
         Ok(request) => provider_data_api::build_program_provider_data(&String::from(request)),
         Err(error) => provider_jni_failure(error),
     };
-    java_string(&mut env, Some(provider_result_json(result)))
+    java_string(&mut env, Ok(provider_result_json(result)))
 }
 
 #[no_mangle]
@@ -1540,7 +1621,7 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
         Ok(data) => provider_data_api::normalize_program_provider_data(&data),
         Err(error) => provider_jni_failure(error),
     };
-    java_string(&mut env, Some(provider_result_json(result)))
+    java_string(&mut env, Ok(provider_result_json(result)))
 }
 
 #[no_mangle]
@@ -1549,8 +1630,12 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     _this: JObject<'_>,
     provider_data: JByteArray<'_>,
 ) -> jstring {
-    let data = jbytearray_to_vec(&mut env, provider_data);
-    let json = provider_data_api::extract_program_key_result(&data).map(program_key_result_json);
+    let json = jbytearray_to_vec(&env, provider_data).map(|data| {
+        // キー不在は正常な欠落表現を使い、JNI失敗はResultとして伝達する。
+        provider_data_api::extract_program_key_result(&data)
+            .map(program_key_result_json)
+            .unwrap_or_default()
+    });
     java_string(&mut env, json)
 }
 
@@ -1560,13 +1645,9 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     _this: JObject<'_>,
     provider_data: JByteArray<'_>,
 ) -> jstring {
-    let data = jbytearray_to_vec(&mut env, provider_data);
-    java_string(
-        &mut env,
-        Some(provider_data_api::decode_channel_provider_data(
-            data.as_slice(),
-        )),
-    )
+    let json = jbytearray_to_vec(&env, provider_data)
+        .map(|data| provider_data_api::decode_channel_provider_data(&data));
+    java_string(&mut env, json)
 }
 
 #[no_mangle]
@@ -1664,11 +1745,9 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     _this: JObject<'_>,
     bytes: JByteArray<'_>,
 ) -> jstring {
-    let decoded = match env.convert_byte_array(bytes) {
-        Ok(v) => arib_string::decode_arib_string_lossy(&v).0,
-        Err(_) => String::new(),
-    };
-    java_string(&mut env, Some(decoded))
+    let decoded =
+        jbytearray_to_vec(&env, bytes).map(|bytes| arib_string::decode_arib_string_lossy(&bytes).0);
+    java_string(&mut env, decoded)
 }
 
 #[no_mangle]
@@ -1677,11 +1756,9 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     _this: JObject<'_>,
     bytes: JByteArray<'_>,
 ) -> jstring {
-    let summary = match env.convert_byte_array(bytes) {
-        Ok(v) => arib_string::decode_arib_string_lossy(&v).1.summary(),
-        Err(_) => String::from("scope=mirakc_scope_non_caption_si_epg_only replacement_count=0 unsupported_escape_count=0 truncated_escape_count=0 truncated_graphic_count=0 entries=[]"),
-    };
-    java_string(&mut env, Some(summary))
+    let summary = jbytearray_to_vec(&env, bytes)
+        .map(|bytes| arib_string::decode_arib_string_lossy(&bytes).1.summary());
+    java_string(&mut env, summary)
 }
 
 #[cfg(test)]
@@ -1709,7 +1786,7 @@ mod tests {
             let mut state = ParserState::default();
             assert_eq!(state.ingest_section(pid, bytes), STATUS_INVALID_SECTION);
             let snapshot: serde_json::Value =
-                serde_json::from_str(&bulk_snapshot_json(&mut state)).unwrap();
+                serde_json::from_str(&bulk_snapshot_json(&mut state).unwrap()).unwrap();
             assert!(snapshot["parserDiagnostics"]
                 .as_array()
                 .unwrap()
@@ -1720,7 +1797,7 @@ mod tests {
                 STATUS_IGNORED_UNSUPPORTED_PID_OR_TABLE
             );
             let snapshot: serde_json::Value =
-                serde_json::from_str(&bulk_snapshot_json(&mut state)).unwrap();
+                serde_json::from_str(&bulk_snapshot_json(&mut state).unwrap()).unwrap();
             assert!(!snapshot["parserDiagnostics"]
                 .as_array()
                 .unwrap()
@@ -1917,7 +1994,7 @@ mod tests {
             STATUS_COLLECTION_LIMIT_EXCEEDED
         );
         let snapshot: serde_json::Value =
-            serde_json::from_str(&bulk_snapshot_json(&mut state)).unwrap();
+            serde_json::from_str(&bulk_snapshot_json(&mut state).unwrap()).unwrap();
         assert!(snapshot["broadcastClock"].is_null());
         assert_eq!(snapshot["discoveryStage"], DISCOVERY_STAGE_INCOMPLETE);
         assert!(snapshot["parserDiagnostics"]
@@ -1979,7 +2056,7 @@ mod tests {
             })
         );
         let snapshot: serde_json::Value =
-            serde_json::from_str(&bulk_snapshot_json(&mut state)).unwrap();
+            serde_json::from_str(&bulk_snapshot_json(&mut state).unwrap()).unwrap();
         assert_eq!(snapshot["broadcastClock"]["tableId"].as_u64(), Some(0x73));
         assert_eq!(snapshot["broadcastClock"]["mjd"].as_u64(), Some(0xea60));
     }
@@ -2004,7 +2081,7 @@ mod tests {
         ]);
         assert_eq!(state.ingest_section(0x0011, &sdt), STATUS_OK);
         let snapshot: serde_json::Value =
-            serde_json::from_str(&bulk_snapshot_json(&mut state)).unwrap();
+            serde_json::from_str(&bulk_snapshot_json(&mut state).unwrap()).unwrap();
         let diagnostics = snapshot["parserDiagnostics"].as_array().unwrap();
         let text_diagnostic = diagnostics
             .iter()
