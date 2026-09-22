@@ -1019,7 +1019,8 @@ impl FilterProducerDrainGate {
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = self.inner.data.lock().unwrap();
             panic!("poison filter gate data");
-        })).is_err());
+        }))
+        .is_err());
     }
 
     pub(crate) fn begin_producer(&self) -> Result<FilterProducerPermit, QueueRuntimeError> {
@@ -1087,8 +1088,7 @@ impl FilterProducerDrainGate {
         &self,
     ) -> Result<Vec<PipelineGeneratedEvent>, QueueRuntimeError> {
         self.inner.check_cleanup()?;
-        let mut data =
-            self.inner.lock_data()?;
+        let mut data = self.inner.lock_data()?;
         match data.state {
             GateState::Open => Ok(data.pending_events.drain(..).collect()),
             GateState::Draining => Ok(Vec::new()),
@@ -1178,8 +1178,7 @@ impl FilterProducerPermit {
         if !self.active {
             return Err(gate_error("filter producer permit was already consumed"));
         }
-        let mut data =
-            self.inner.lock_data()?;
+        let mut data = self.inner.lock_data()?;
         if data.state == GateState::Closed
             || data.filter_delivery_generation != self.delivery_generation
         {
@@ -1256,8 +1255,7 @@ impl FilterDrainTxn {
         if !self.active {
             return Err(gate_error("filter producer drain was already consumed"));
         }
-        let mut data =
-            self.inner.lock_data()?;
+        let mut data = self.inner.lock_data()?;
         if data.state != GateState::Draining
             || data.filter_delivery_generation != self.delivery_generation
             || data.parser_state_generation != self.parser_generation

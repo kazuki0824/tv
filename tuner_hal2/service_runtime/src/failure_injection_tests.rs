@@ -103,31 +103,6 @@ fn probe_io_failure_is_retained_without_advertising_a_frontend() {
 }
 
 #[test]
-fn filter_gate_poison_reaches_service_error_without_losing_context() {
-    use maleicacid_tuner_hal2_demux::{DemuxRuntimeError, QueueRuntimeError, QueueRuntimeErrorKind, QueueRuntimeLockKind};
-    for (poison_count, counter_saturated) in [(7, false), (u64::MAX >> 3, true)] {
-        let context = QueueRuntimeError {
-            kind: QueueRuntimeErrorKind::GateLockPoisoned {
-                lock: QueueRuntimeLockKind::FilterProducerDrainGateData,
-                poison_count,
-                counter_saturated,
-                producer_release: true,
-                drain_rollback: true,
-            },
-            detail: "filter gate data lock poisoned",
-        };
-        let error = crate::boot::demux_runtime_error_to_hal(DemuxRuntimeError::queue_runtime_error(17, context));
-        assert_eq!(error, HalError::FilterGateLockPoisoned {
-            filter_id: Some(17),
-            poison_count,
-            counter_saturated,
-            producer_release: true,
-            drain_rollback: true,
-        });
-    }
-}
-
-#[test]
 fn fmq_failure_and_rollback_keep_the_primary_delivery_kind() {
     use maleicacid_tuner_hal2_common::FmqFailureKind;
     use maleicacid_tuner_hal2_demux::DemuxRuntimeError;

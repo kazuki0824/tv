@@ -9,6 +9,8 @@ mod descrambler_key_table;
 mod descrambler_session;
 #[allow(clippy::enum_variant_names)]
 mod diagnostics;
+#[path = "boot/demux_error.rs"]
+mod demux_error;
 mod playback_consume_txn;
 mod registry;
 
