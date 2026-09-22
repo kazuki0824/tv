@@ -1734,15 +1734,19 @@ impl TunerServiceRuntime {
     pub fn frontend_diagnostic_snapshots(
         &self,
     ) -> Result<Vec<crate::diagnostics::FrontendDiagnosticSnapshot>, HalError> {
-        self.registry.frontend_ids().into_iter().map(|frontend_id| {
-            let frontend = self.registry.frontend_runtime(frontend_id).ok_or_else(|| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend runtime is missing while reading frontend diagnostics",
-                )
-            })?;
-            Ok(crate::diagnostics::FrontendDiagnosticSnapshot::from_frontend(frontend))
-        }).collect()
+        self.registry
+            .frontend_ids()
+            .into_iter()
+            .map(|frontend_id| {
+                let frontend = self.registry.frontend_runtime(frontend_id).ok_or_else(|| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "frontend runtime is missing while reading frontend diagnostics",
+                    )
+                })?;
+                Ok(crate::diagnostics::FrontendDiagnosticSnapshot::from_frontend(frontend))
+            })
+            .collect()
     }
 
     pub fn startup_diagnostic_snapshot(&self) -> StartupDiagnosticSnapshot {

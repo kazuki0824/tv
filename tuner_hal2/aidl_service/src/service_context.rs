@@ -75,10 +75,18 @@ pub type SharedAidlServiceContext = Arc<AidlServiceContext>;
 /// 取得時だけ作る観測値。記録先は各所有者の既存保持先に限定する。
 #[derive(Debug)]
 pub(crate) struct ServiceDiagnosticSnapshot {
-    pub(crate) frontend_backend: Result<Vec<maleicacid_tuner_hal2_service_runtime::FrontendBackendDiagnosticSnapshot>, HalError>,
-    pub(crate) frontend: Result<Vec<maleicacid_tuner_hal2_service_runtime::FrontendDiagnosticSnapshot>, HalError>,
-    pub(crate) frontend_worker_cleanup: Result<maleicacid_tuner_hal2_service_runtime::FrontendWorkerCleanupDiagnosticSnapshot, HalError>,
-    pub(crate) demux: Result<maleicacid_tuner_hal2_service_runtime::DemuxTransactionDiagnosticSnapshot, HalError>,
+    pub(crate) frontend_backend: Result<
+        Vec<maleicacid_tuner_hal2_service_runtime::FrontendBackendDiagnosticSnapshot>,
+        HalError,
+    >,
+    pub(crate) frontend:
+        Result<Vec<maleicacid_tuner_hal2_service_runtime::FrontendDiagnosticSnapshot>, HalError>,
+    pub(crate) frontend_worker_cleanup: Result<
+        maleicacid_tuner_hal2_service_runtime::FrontendWorkerCleanupDiagnosticSnapshot,
+        HalError,
+    >,
+    pub(crate) demux:
+        Result<maleicacid_tuner_hal2_service_runtime::DemuxTransactionDiagnosticSnapshot, HalError>,
     pub(crate) filter_callback: Result<FilterCallbackDeliveryDiagnosticSnapshot, HalError>,
     pub(crate) frontend_callback: Result<FrontendCallbackDeliveryDiagnosticSnapshot, HalError>,
 }
@@ -89,8 +97,14 @@ impl ServiceDiagnosticSnapshot {
             || self.frontend.is_err()
             || self.frontend_worker_cleanup.is_err()
             || self.demux.is_err()
-            || self.filter_callback.as_ref().map_or(true, |snapshot| snapshot.runtime_snapshot_missing())
-            || self.frontend_callback.as_ref().map_or(true, |snapshot| snapshot.runtime_snapshot_missing())
+            || self
+                .filter_callback
+                .as_ref()
+                .map_or(true, |snapshot| snapshot.runtime_snapshot_missing())
+            || self
+                .frontend_callback
+                .as_ref()
+                .map_or(true, |snapshot| snapshot.runtime_snapshot_missing())
     }
 }
 
