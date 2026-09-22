@@ -118,6 +118,7 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 - diagnostic record を kind + 多数の optional field から意味復元する field bag にしない。variant-specific typed context を使う。
 - public `HalError` detail と typed diagnostic record を併用する場合、typed record を正本として保存し、文字列だけを唯一の診断情報にしない。
 - 診断専用 counter は `../TUNER_HAL_DESIGN_JA.md` の診断 counter 飽和契約に従い、business API の成功/失敗判定や lifetime / generation 発行に使わない。
+- `FilterProducerDrainGate`の局所取消し失敗は、`GateInner::cleanup_failures`のアトミック値を`check_cleanup`で読み、既存の`QueueRuntimeError`へ写像する。状態の所有者と実装箇所は`DESIGN_JA.md`の同名行、失敗時の意味は`../TUNER_HAL_DESIGN_JA.md`の0-S-3Bの同名契約を参照する。
 
 ## 8. public nullable / close / frontend count の実装入口
 
@@ -171,6 +172,14 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 - worker runtime failureとpanic / join failureは別のtyped diagnostic categoryとして記録し、単一の「worker stopped」診断へ潰さない。counterを持つ場合もerror系とpanic/join系を別集計とし、診断名・counter値から公開状態を逆算しない。
 - workerの待機はstop/wakeで解除可能なprimitiveを使い、client指定intervalをそのまま `thread::sleep()` してclose / Drop / shutdownを妨げない。
 - generic worker生成・停止・wake・joinは `DESIGN_JA.md` の `WorkerRuntime` 規範アンカーへ接続する。`WorkerHandle`は同ownerに従属するopaque handle / authorityとしてのみ使用し、規範owner外から `std::thread::spawn`、独自`JoinHandle` lifecycle、silent joinを追加しない。
+
+### ワーカー回収・起床の実装手順
+
+所有者と許可入口は`DESIGN_JA.md`の`WorkerRuntime`行を正とする。未完義務の保管、実行権限の再発行・拒否、失敗・中断時の隔離、再実行可否は`../TUNER_HAL_DESIGN_JA.md`の0-S-3Bの同名契約を参照する。
+
+- `WorkerCleanupAuthority`は`Clone`を実装せず、呼出し側は`issue`で得た権限を`execute`へ渡す。試行識別子の照合と保管値の貸出しを呼出し側で手組みしない。照合は外部処理の直前と返却時に同補助処理内で行い、実行中の記録は排他区間内に残す。外部処理・終了待ちの間は保管値を一時的に貸し出し、排他制御を解放する。
+- 呼出し側は、失敗結果を保存した回収値を取り出して再実行せず、保管主体の正規入口へ接続する。機器要求の回収にも`WorkerRuntime::retain_cleanup`を使用する。
+- 起床要求はワーカーごとのアトミック値に保持し、起床先は同じワーカーのスレッドへ固定する。待機には`park`、通知には`unpark`を用い、通知側に汚染し得るミューテックスを置かない。
 
 ## 14. transaction / cleanup / 非破壊最適化の実装境界
 
