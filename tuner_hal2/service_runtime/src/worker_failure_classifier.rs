@@ -38,7 +38,7 @@ impl<T> ClassifiedWorkerTerminalResult<T> {
 pub struct WorkerFailureClassifier;
 
 impl WorkerFailureClassifier {
-    pub(crate) fn classify_terminal<T>(
+    pub fn classify_terminal<T>(
         result: WorkerTerminalResult<T>,
         panic_context: &'static str,
     ) -> ClassifiedWorkerTerminalResult<T> {
@@ -100,12 +100,20 @@ impl WorkerFailureClassifier {
                 WorkerFailureCategory::BackendControl
             }
             HalError::CallbackFailed { .. } => WorkerFailureCategory::CallbackBinder,
-            HalError::FmqFailed { .. } => WorkerFailureCategory::Fmq,
+            HalError::FmqDeliveryFailed {
+                kind: maleicacid_tuner_hal2_common::FmqFailureKind::EventFlagWakeFailed,
+                ..
+            } => WorkerFailureCategory::EventFlag,
+            HalError::FmqFailed { .. } | HalError::FmqDeliveryFailed { .. } => {
+                WorkerFailureCategory::Fmq
+            }
             HalError::EventFlagFailed { .. } => WorkerFailureCategory::EventFlag,
             HalError::CleanupFailed { .. } | HalError::WorkerCleanupFailed { .. } => {
                 WorkerFailureCategory::Cleanup
             }
-            HalError::WorkerLockPoisoned { .. } => WorkerFailureCategory::LockPoison,
+            HalError::WorkerLockPoisoned { .. } | HalError::ServiceRuntimeLockPoisoned { .. } => {
+                WorkerFailureCategory::LockPoison
+            }
             _ => WorkerFailureCategory::Unknown,
         }
     }
