@@ -572,14 +572,12 @@ where
 {
     fn new(capacity: usize) -> Self {
         Self {
-            state: std::sync::Arc::new(std::sync::Mutex::new(
-                WorkerRuntimeReaperPendingState {
-                    entries: std::collections::BTreeMap::new(),
-                    groups: std::collections::BTreeMap::new(),
-                    next_group_id: 1,
-                    capacity,
-                },
-            )),
+            state: std::sync::Arc::new(std::sync::Mutex::new(WorkerRuntimeReaperPendingState {
+                entries: std::collections::BTreeMap::new(),
+                groups: std::collections::BTreeMap::new(),
+                next_group_id: 1,
+                capacity,
+            })),
         }
     }
 
@@ -631,10 +629,7 @@ where
         Ok(group_id)
     }
 
-    fn release_group(
-        &self,
-        group_id: u64,
-    ) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+    fn release_group(&self, group_id: u64) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
         let mut state = self.state.lock().map_err(|_| {
             maleicacid_tuner_hal2_common::HalError::internal(
                 maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
@@ -1767,9 +1762,7 @@ mod tests {
 
         let reservation = queue_a.reserve_pending([(8, 21)]).unwrap();
         assert_eq!(queue_a.pending_value(&8).unwrap(), Some(21));
-        assert!(queue_b
-            .enqueue_with_reservation((), reservation)
-            .is_err());
+        assert!(queue_b.enqueue_with_reservation((), reservation).is_err());
         assert_eq!(queue_a.pending_value(&8).unwrap(), None);
         assert!(queue_a.reserve_pending([(8, 22)]).is_ok());
     }
