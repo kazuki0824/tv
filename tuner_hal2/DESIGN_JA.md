@@ -86,6 +86,8 @@ device-adaptation層は `FrontendRuntime`、AIDL object、callback artifactを�
 
 `FrontendBackendDiagnosticSnapshot`と`FrontendDiagnosticSnapshot`は取得時の写しであり、保持先・記録処理・状態変更権限は既存所有者に残す。`ServiceDiagnosticSnapshot`は各入口の型付き結果を集め、取得に失敗した対象のエラーと取得できた記録を同時に出力へ渡す。コールバックの取得入口を呼ぶ前にサービス状態ロックを解放し、出力I/Oも全ロックの解放後に行う。
 
+パケット処理の破棄・配送失敗は`boot/packet_ops.rs::record_packet_pipeline_diagnostics`が入力元共通の記録入口となる。`TunerServiceRuntime`の`BoundedDiagnosticStore<PacketPipelineDiagnosticRecord>`が分離器ID・世代・型付き診断を保持し、既存`DiagnosticSnapshot`を通して`ServiceDiagnosticSnapshot.packet_pipeline`へ渡す。鍵に関する診断の保持先は既存のデスクランブラ診断領域を使用する。
+
 受信報告の実装は`device/src/runtime/live_pump.rs::FrontendLivePumpReport`、既存の診断への転記は`frontend_runtime.rs::FrontendLivePumpDiagnostic::from_report()`に置く。飽和の有無と読み取り再試行回数も同じ診断へ転記する。診断の論理契約は`../TUNER_HAL_DESIGN_JA.md`の「診断可観測性の固定」「診断counter飽和契約」、取得手順は`INTEGRATION.md`を参照する。
 
 ### TMCC TSID observation の frontend owner 接続

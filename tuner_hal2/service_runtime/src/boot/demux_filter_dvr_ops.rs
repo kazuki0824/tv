@@ -776,12 +776,7 @@ impl TunerServiceRuntime {
         generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
     ) -> Result<Vec<super::FilterEventDeliverySnapshot>, HalError> {
         let lock = || {
-            runtime.lock().map_err(|_| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned while consuming playback DVR data",
-                )
-            })
+            TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned while consuming playback DVR data")
         };
         {
             let mut runtime = lock()?;
@@ -859,7 +854,7 @@ impl TunerServiceRuntime {
                 })?;
             for report in &mut consumed.packet_reports {
                 report.diagnostics.extend(decision.diagnostics.clone());
-                runtime.record_descrambler_packet_diagnostics(demux_id, demux_generation, report);
+                runtime.record_packet_pipeline_diagnostics(demux_id, demux_generation, report);
             }
             events.extend(runtime.filter_event_delivery_snapshots_for_playback_report(&consumed));
         }

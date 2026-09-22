@@ -87,6 +87,10 @@ pub(crate) struct ServiceDiagnosticSnapshot {
     >,
     pub(crate) demux:
         Result<maleicacid_tuner_hal2_service_runtime::DemuxTransactionDiagnosticSnapshot, HalError>,
+    pub(crate) packet_pipeline: Result<
+        maleicacid_tuner_hal2_service_runtime::DiagnosticSnapshot<maleicacid_tuner_hal2_service_runtime::PacketPipelineDiagnosticRecord>,
+        HalError,
+    >,
     pub(crate) filter_callback: Result<FilterCallbackDeliveryDiagnosticSnapshot, HalError>,
     pub(crate) frontend_callback: Result<FrontendCallbackDeliveryDiagnosticSnapshot, HalError>,
 }
@@ -97,6 +101,7 @@ impl ServiceDiagnosticSnapshot {
             || self.frontend.is_err()
             || self.frontend_worker_cleanup.is_err()
             || self.demux.is_err()
+            || self.packet_pipeline.is_err()
             || self
                 .filter_callback
                 .as_ref()
@@ -296,7 +301,7 @@ impl AidlServiceContext {
     {
         let dvr_notifier_result = crate::dvr_callback_delivery::stop_all_dvr_status_notifiers(self);
         let artifact_result =
-            match TunerServiceRuntime::lock_shared(&self.runtime, "service context") {
+            match TunerServiceRuntime::lock_shared(self.runtime.as_ref(), "service context") {
                 Ok(runtime) => {
                     let callback_reset_command =
                         runtime.plan_callback_artifact_reset_before_boot_use_case();
@@ -306,7 +311,7 @@ impl AidlServiceContext {
             };
         let drop_leak_result = self.clear_drop_leak_error_records();
         let callback_fallback_clear_result = self.clear_callback_delivery_fallback_diagnostics();
-        let mut runtime = match TunerServiceRuntime::lock_shared(&self.runtime, "service context") {
+        let mut runtime = match TunerServiceRuntime::lock_shared(self.runtime.as_ref(), "service context") {
             Ok(runtime) => runtime,
             Err(runtime_error) => {
                 let record_result = self.record_service_boot_reset_finish_lock_failure(
@@ -389,15 +394,17 @@ impl AidlServiceContext {
     }
 
     pub(crate) fn diagnostic_snapshot(&self) -> ServiceDiagnosticSnapshot {
-        let (frontend_backend, frontend, frontend_worker_cleanup, demux) = {
-            match TunerServiceRuntime::lock_shared(&self.runtime, "diagnostic query") {
+        let (frontend_backend, frontend, frontend_worker_cleanup, demux, packet_pipeline) = {
+            match TunerServiceRuntime::lock_shared(self.runtime.as_ref(), "diagnostic query") {
                 Ok(runtime) => (
                     runtime.frontend_backend_diagnostic_snapshots(),
                     runtime.frontend_diagnostic_snapshots(),
                     runtime.frontend_worker_cleanup_diagnostics(),
                     Ok(runtime.demux_transaction_diagnostics()),
+                    Ok(runtime.packet_pipeline_diagnostics()),
                 ),
                 Err(error) => (
+                    Err(error.clone()),
                     Err(error.clone()),
                     Err(error.clone()),
                     Err(error.clone()),
@@ -412,6 +419,7 @@ impl AidlServiceContext {
             frontend,
             frontend_worker_cleanup,
             demux,
+            packet_pipeline,
             filter_callback: self.filter_callback_delivery_diagnostic_snapshot(),
             frontend_callback: self.frontend_callback_delivery_diagnostic_snapshot(),
         }
@@ -420,7 +428,7 @@ impl AidlServiceContext {
     pub(crate) fn lock_runtime(
         &self,
     ) -> Result<MutexGuard<'_, TunerServiceRuntime>, binder::Status> {
-        TunerServiceRuntime::lock_shared(&self.runtime, "AIDL service context")
+        TunerServiceRuntime::lock_shared(self.runtime.as_ref(), "AIDL service context")
             .map_err(crate::error_bridge::status_from_hal_error)
     }
 
@@ -501,7 +509,7 @@ impl AidlServiceContext {
         let mut records = Vec::new();
         let mut dropped_count = 0u64;
         let runtime_snapshot_missing =
-            match TunerServiceRuntime::lock_shared(&self.runtime, "service context") {
+            match TunerServiceRuntime::lock_shared(self.runtime.as_ref(), "service context") {
                 Ok(runtime) => {
                     let runtime_snapshot = runtime.filter_callback_delivery_diagnostic_snapshot();
                     records.extend_from_slice(runtime_snapshot.records());
@@ -536,7 +544,7 @@ impl AidlServiceContext {
         let mut records = Vec::new();
         let mut dropped_count = 0u64;
         let runtime_snapshot_missing =
-            match TunerServiceRuntime::lock_shared(&self.runtime, "service context") {
+            match TunerServiceRuntime::lock_shared(self.runtime.as_ref(), "service context") {
                 Ok(runtime) => {
                     let runtime_snapshot = runtime.frontend_callback_delivery_diagnostic_snapshot();
                     records.extend_from_slice(runtime_snapshot.records());
@@ -956,9 +964,7 @@ impl AidlServiceContext {
             return Ok(None);
         };
         // storeのsnapshot lockを解放してからruntimeへ入り、runtime→store順で世代を再照合する。
-        let runtime = self
-            .runtime
-            .lock()
+        let runtime = TunerServiceRuntime::lock_shared(self.runtime.as_ref(), "frontend callback owner")
             .map_err(|_| AidlCallbackStoreError::Poisoned)?;
         if !runtime.frontend_callback_delivery_ready(handle.object_id(), handle.generation()) {
             return Ok(None);

@@ -124,6 +124,7 @@ impl TunerServiceRuntime {
                 DescramblePacketFlow::Drop | DescramblePacketFlow::DiagnoseOnly => {
                     let mut report = PipelineReport::default();
                     report.diagnostics.extend(decision.diagnostics);
+                    self.record_packet_pipeline_diagnostics(demux_id.0, generation, &report);
                     reports.push(report);
                     continue;
                 }
@@ -159,7 +160,7 @@ impl TunerServiceRuntime {
                 (demux_generation, report)
             };
             report.diagnostics.extend(pending_descrambler_diagnostics);
-            self.record_descrambler_packet_diagnostics(demux_id.0, demux_generation, &report);
+            self.record_packet_pipeline_diagnostics(demux_id.0, demux_generation, &report);
             reports.push(report);
         }
         Ok(reports)
@@ -284,12 +285,26 @@ impl TunerServiceRuntime {
         }
     }
 
-    pub(super) fn record_descrambler_packet_diagnostics(
+    pub(super) fn record_packet_pipeline_diagnostics(
         &mut self,
         demux_id: i32,
         demux_generation: u64,
         report: &PipelineReport,
     ) {
+        for diagnostic in &report.diagnostics {
+            // 正常な無ペイロードと、既存の鍵診断の保持対象は重複記録しない。
+            if matches!(diagnostic,
+                maleicacid_tuner_hal2_demux::PipelineDiagnostic::NoPayloadAssemblySuppressed { .. }
+                | maleicacid_tuner_hal2_demux::PipelineDiagnostic::KeylessScrambledAssemblySuppressed { .. }
+            ) {
+                continue;
+            }
+            self.packet_pipeline_diagnostics.push(crate::diagnostics::PacketPipelineDiagnosticRecord {
+                demux_id,
+                demux_generation,
+                diagnostic: diagnostic.clone(),
+            });
+        }
         let records = self
             .registry
             .packet_pipeline_diagnostic_records_for_demux_report(

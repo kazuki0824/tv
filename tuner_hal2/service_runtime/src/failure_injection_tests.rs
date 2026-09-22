@@ -41,7 +41,7 @@ fn runtime_poison_latches_critical_state_and_keeps_diagnostics_readable() {
         }
     );
     assert!(matches!(
-        TunerServiceRuntime::lock_shared(&runtime, "retry"),
+        TunerServiceRuntime::lock_shared(runtime.as_ref(), "retry"),
         Err(HalError::ServiceRuntimeLockPoisoned { operation: "retry" })
     ));
     assert!(runtime.is_poisoned());
@@ -61,6 +61,21 @@ fn critical_service_cannot_be_reopened_by_boot_reset() {
         runtime.failure_state().snapshot().runtime_lock_poison_count,
         0
     );
+}
+
+#[test]
+fn filter_delivery_wake_preserves_runtime_poison_state() {
+    let runtime = std::sync::Arc::new(std::sync::Mutex::new(TunerServiceRuntime::new()));
+    let failure_state = runtime.lock().unwrap().failure_state();
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = runtime.lock().unwrap();
+        panic!("poison service runtime");
+    })).is_err());
+    assert!(matches!(crate::boot::notify_filter_delivery_change(&runtime),
+        Err(HalError::ServiceRuntimeLockPoisoned { .. })
+    ));
+    assert!(failure_state.snapshot().service_critical);
+    assert_eq!(failure_state.snapshot().runtime_lock_poison_count, 1);
 }
 
 #[test]
