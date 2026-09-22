@@ -30,7 +30,9 @@ use maleicacid_tuner_hal2_service_runtime::{
 
 use crate::callback_store::PreparedCallbackArtifactToken;
 use crate::dvr_callback_delivery::finish_dvr_status_notifier_cleanup;
-use crate::error_bridge::{status_from_hal_error, status_from_tuner_status, status_unknown_error};
+use crate::error_bridge::{status_from_hal_error, status_from_tuner_status};
+#[cfg(test)]
+use crate::error_bridge::status_unknown_error;
 use crate::object_handle::AidlObjectHandle;
 use crate::service_context::{SharedAidlServiceContext, SharedTunerRuntime};
 
@@ -818,13 +820,10 @@ impl<'a> ObjectCloseRuntimeExecutor for AidlObjectCloseRuntimeExecutor<'a> {
         command: ObjectRuntimeCleanupCommand,
     ) -> Result<(), ObjectCloseCleanupFailure> {
         let runtime = self.context.runtime();
-        let mut guard = runtime.lock().map_err(|_| {
+        let mut guard = lock_runtime(&runtime).map_err(|error| {
             ObjectCloseCleanupFailure::new(
                 CleanupStep::UnregisterRuntime,
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned during object close runtime cleanup command",
-                ),
+                error,
             )
         })?;
         command.execute(&mut guard)
@@ -879,12 +878,7 @@ impl<'a> AidlObjectDomainCleanupExecutor<'a> {
 
     fn record_lnb_drop_leak(&self, command: ObjectDomainCleanupCommand) -> Result<(), HalError> {
         let runtime = self.context.runtime();
-        let mut guard = runtime.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned during LNB drop-leak domain cleanup",
-            )
-        })?;
+        let mut guard = lock_runtime(&runtime)?;
         guard.record_lnb_drop_leak_after_domain_cleanup_command(command)
     }
 }
@@ -1042,12 +1036,9 @@ fn finish_object_close_plan(
             public_error,
         ));
     let runtime = context.runtime();
-    let finish_result = match runtime.lock() {
+    let finish_result = match lock_runtime(&runtime) {
         Ok(mut guard) => finish_object_close_use_case(&mut guard, completion, cleanup_result),
-        Err(_) => Err(HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "service runtime lock poisoned while finishing object close",
-        )),
+        Err(error) => Err(error),
     };
     match (finish_result, record_result) {
         (Ok(()), Ok(())) => Ok(()),
@@ -1098,9 +1089,7 @@ fn object_close_is_idempotent_complete(
     handle: AidlObjectHandle,
 ) -> BinderResult<bool> {
     let runtime = context.runtime();
-    let guard = runtime
-        .lock()
-        .map_err(|_| status_unknown_error("service runtime lock poisoned"))?;
+    let guard = lock_runtime(&runtime).map_err(status_from_hal_error)?;
     ObjectCloseTxn::is_idempotent_complete(
         &guard,
         handle.object_id(),
@@ -1159,6 +1148,27 @@ mod tests {
         RuntimeExecutableRequest,
     };
     use maleicacid_tuner_hal2_service_runtime::RuntimeOwnerRelation;
+
+    #[test]
+    fn poisoned_close_preflight_records_service_failure() {
+        let context = Arc::new(AidlServiceContext::new(TunerServiceRuntime::new()));
+        let runtime = context.runtime();
+        let failure_state = runtime.lock().unwrap().failure_state();
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = runtime.lock().unwrap();
+            panic!("poison close preflight");
+        }))
+        .is_err());
+        let handle = AidlObjectHandle::new(
+            AidlObjectKind::Frontend,
+            AidlObjectId(1),
+            AidlObjectGeneration(1),
+        );
+        assert!(object_close_is_idempotent_complete(&context, handle).is_err());
+        let snapshot = failure_state.snapshot();
+        assert!(snapshot.service_critical);
+        assert_eq!(snapshot.runtime_lock_poison_count, 1);
+    }
 
     #[test]
     fn callback_cleanup_failure_does_not_reverse_committed_success() {

@@ -213,12 +213,7 @@ impl AidlServiceContext {
         &self,
         handle: AidlObjectHandle,
     ) -> Result<maleicacid_tuner_hal2_resource_ledger::CleanupStep, HalError> {
-        let runtime = self.runtime.lock().map_err(|_| {
-            HalError::internal(
-                maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned while resolving cleanup dependency",
-            )
-        })?;
+        let runtime = TunerServiceRuntime::lock_shared(&self.runtime, "service runtime lock poisoned while resolving cleanup dependency")?;
         maleicacid_tuner_hal2_service_runtime::aidl_object_cleanup_dependency(
             &runtime,
             handle.object_id(),
@@ -231,12 +226,7 @@ impl AidlServiceContext {
         &self,
         handle: AidlObjectHandle,
     ) -> Result<bool, HalError> {
-        let runtime = self.runtime.lock().map_err(|_| {
-            HalError::internal(
-                maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned while checking cleanup terminal state",
-            )
-        })?;
+        let runtime = TunerServiceRuntime::lock_shared(&self.runtime, "service runtime lock poisoned while checking cleanup terminal state")?;
         maleicacid_tuner_hal2_service_runtime::aidl_object_cleanup_is_terminal(
             &runtime,
             handle.object_id(),
@@ -263,26 +253,19 @@ impl AidlServiceContext {
         I: IntoIterator<Item = FrontendProbeOutcome>,
     {
         let dvr_notifier_result = crate::dvr_callback_delivery::stop_all_dvr_status_notifiers(self);
-        let artifact_result = match self.runtime.lock() {
+        let artifact_result = match TunerServiceRuntime::lock_shared(&self.runtime, "service context") {
             Ok(runtime) => {
                 let callback_reset_command =
                     runtime.plan_callback_artifact_reset_before_boot_use_case();
                 self.clear_callback_artifact_reset_bridge(&callback_reset_command)
             }
-            Err(_) => Err(HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned while planning callback artifact reset",
-            )),
+            Err(error) => Err(error),
         };
         let drop_leak_result = self.clear_drop_leak_error_records();
         let callback_fallback_clear_result = self.clear_callback_delivery_fallback_diagnostics();
-        let mut runtime = match self.runtime.lock() {
+        let mut runtime = match TunerServiceRuntime::lock_shared(&self.runtime, "service context") {
             Ok(runtime) => runtime,
-            Err(_) => {
-                let runtime_error = HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned while finishing service boot reset",
-                );
+            Err(runtime_error) => {
                 let record_result = self.record_service_boot_reset_finish_lock_failure(
                     dvr_notifier_result.clone(),
                     artifact_result,
@@ -365,9 +348,8 @@ impl AidlServiceContext {
     pub(crate) fn lock_runtime(
         &self,
     ) -> Result<MutexGuard<'_, TunerServiceRuntime>, binder::Status> {
-        self.runtime
-            .lock()
-            .map_err(|_| crate::error_bridge::status_unknown_error("service runtime lock poisoned"))
+        TunerServiceRuntime::lock_shared(&self.runtime, "AIDL service context")
+            .map_err(crate::error_bridge::status_from_hal_error)
     }
 
     pub(crate) fn record_callback_artifact_runtime_split_finish_lock_failure(
@@ -446,7 +428,7 @@ impl AidlServiceContext {
     ) -> Result<FilterCallbackDeliveryDiagnosticSnapshot, HalError> {
         let mut records = Vec::new();
         let mut dropped_count = 0u64;
-        let runtime_snapshot_missing = match self.runtime.lock() {
+        let runtime_snapshot_missing = match TunerServiceRuntime::lock_shared(&self.runtime, "service context") {
             Ok(runtime) => {
                 let runtime_snapshot = runtime.filter_callback_delivery_diagnostic_snapshot();
                 records.extend_from_slice(runtime_snapshot.records());
@@ -480,7 +462,7 @@ impl AidlServiceContext {
     ) -> Result<FrontendCallbackDeliveryDiagnosticSnapshot, HalError> {
         let mut records = Vec::new();
         let mut dropped_count = 0u64;
-        let runtime_snapshot_missing = match self.runtime.lock() {
+        let runtime_snapshot_missing = match TunerServiceRuntime::lock_shared(&self.runtime, "service context") {
             Ok(runtime) => {
                 let runtime_snapshot = runtime.frontend_callback_delivery_diagnostic_snapshot();
                 records.extend_from_slice(runtime_snapshot.records());
@@ -785,12 +767,7 @@ impl AidlServiceContext {
         generation: FrontendCallbackGeneration,
     ) -> Result<(), HalError> {
         let result = (|| {
-            let mut runtime = self.runtime.lock().map_err(|_| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "callback死亡処理のruntime lockが汚染されています",
-                )
-            })?;
+            let mut runtime = TunerServiceRuntime::lock_shared(&self.runtime, "callback死亡処理のruntime lockが汚染されています")?;
             let mut store = self
                 .callback_store_lock()
                 .map_err(|error| error.into_hal_error("callback死亡の照合"))?;
