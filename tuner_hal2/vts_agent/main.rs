@@ -87,7 +87,7 @@ struct FmqReader(*mut ImportedFmq);
 
 impl Drop for FmqReader {
     fn drop(&mut self) {
-        // 安全性: self.0はvts_agent_fmq_importが返した非nullのハンドルである。
+        // SAFETY: self.0はvts_agent_fmq_importが返した非nullのハンドルである。
         // FmqReaderが排他的に所有し、Dropで一度だけ破棄する。
         unsafe { vts_agent_fmq_destroy(self.0) };
     }
@@ -111,7 +111,7 @@ impl FmqReader {
             .map(AsRawFd::as_raw_fd)
             .collect::<Vec<_>>();
         let ints = &desc.handle.ints;
-        // 安全性: 各ポインターは指定した長さの有効な連続領域を指す。
+        // SAFETY: 各ポインターは指定した長さの有効な連続領域を指す。
         // 生成するキューは複製したネイティブハンドルを受け取り、呼出し終了後に
         // 一時的なRustのスライス領域への参照を保持しない。
         let queue = unsafe {
@@ -134,7 +134,7 @@ impl FmqReader {
     }
 
     fn available(&self) -> usize {
-        // 安全性: self.0はこの読取り主体が所有しており、&selfの借用中には破棄されない。
+        // SAFETY: self.0はこの読取り主体が所有しており、&selfの借用中には破棄されない。
         unsafe { vts_agent_fmq_available_to_read(self.0) }
     }
 
@@ -144,7 +144,7 @@ impl FmqReader {
             return Ok(Vec::new());
         }
         let mut bytes = vec![0u8; available];
-        // 安全性: bytesはbytes.len()バイトの初期化済み書込み可能領域を提供する。
+        // SAFETY: bytesはbytes.len()バイトの初期化済み書込み可能領域を提供する。
         // self.0は有効なキューであり、&mut selfを通じて排他的に借用している。
         let read = unsafe { vts_agent_fmq_read(self.0, bytes.as_mut_ptr(), bytes.len()) };
         if read == 0 {
