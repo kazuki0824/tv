@@ -1,8 +1,9 @@
 use super::{
-    execute_close_after_preflight_once, status_from_hal_error, status_unknown_error,
-    AidlObjectArtifactCleanupExecutor, AidlObjectCloseRuntimeExecutor,
-    AidlObjectDomainCleanupExecutor, AidlObjectHandle, BinderResult, ObjectCloseCleanupFailure,
+    execute_close_after_preflight_once, status_from_hal_error, AidlObjectArtifactCleanupExecutor,
+    AidlObjectCloseRuntimeExecutor, AidlObjectDomainCleanupExecutor, AidlObjectHandle, BinderResult,
+    ObjectCloseCleanupFailure,
 };
+use crate::error_bridge::status_unknown_error;
 use crate::service_context::SharedAidlServiceContext;
 use maleicacid_tuner_hal2_binder_adapter::{AidlMethodCall, AidlObjectKind};
 use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, FirstErrorCollector};
@@ -21,7 +22,8 @@ pub(crate) fn drop_leak_object(
         return Ok(());
     }
     let method = close_method_for_drop(handle.object_kind()).map_err(status_from_hal_error)?;
-    let result = execute_close_after_preflight_once(context, handle, method);
+    let result =
+        execute_close_after_preflight_once(context, handle, method).map_err(status_from_hal_error);
     if result.is_err() {
         context
             .enqueue_cleanup_retry(handle)
