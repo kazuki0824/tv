@@ -87,8 +87,8 @@ struct FmqReader(*mut ImportedFmq);
 
 impl Drop for FmqReader {
     fn drop(&mut self) {
-        // SAFETY: `self.0` is the non-null handle returned by `vts_agent_fmq_import`.
-        // `FmqReader` owns it uniquely and calls destroy exactly once from Drop.
+        // 安全性: self.0はvts_agent_fmq_importが返した非nullのハンドルである。
+        // FmqReaderが排他的に所有し、Dropで一度だけ破棄する。
         unsafe { vts_agent_fmq_destroy(self.0) };
     }
 }
@@ -111,9 +111,9 @@ impl FmqReader {
             .map(AsRawFd::as_raw_fd)
             .collect::<Vec<_>>();
         let ints = &desc.handle.ints;
-        // SAFETY: every pointer refers to a live contiguous slice for the supplied length.
-        // The imported queue receives duplicated native handles and does not retain the
-        // temporary Rust slice storage after this call returns.
+        // 安全性: 各ポインターは指定した長さの有効な連続領域を指す。
+        // 生成するキューは複製したネイティブハンドルを受け取り、呼出し終了後に
+        // 一時的なRustのスライス領域への参照を保持しない。
         let queue = unsafe {
             vts_agent_fmq_import(
                 desc.quantum,
@@ -134,8 +134,7 @@ impl FmqReader {
     }
 
     fn available(&self) -> usize {
-        // SAFETY: `self.0` remains owned by this reader and cannot be destroyed while
-        // `&self` is borrowed.
+        // 安全性: self.0はこの読取り主体が所有しており、&selfの借用中には破棄されない。
         unsafe { vts_agent_fmq_available_to_read(self.0) }
     }
 
@@ -145,8 +144,8 @@ impl FmqReader {
             return Ok(Vec::new());
         }
         let mut bytes = vec![0u8; available];
-        // SAFETY: `bytes` exposes writable initialized storage of exactly `bytes.len()`
-        // bytes, and `self.0` is a live queue exclusively borrowed through `&mut self`.
+        // 安全性: bytesはbytes.len()バイトの初期化済み書込み可能領域を提供する。
+        // self.0は有効なキューであり、&mut selfを通じて排他的に借用している。
         let read = unsafe { vts_agent_fmq_read(self.0, bytes.as_mut_ptr(), bytes.len()) };
         if read == 0 {
             return Err("filter FMQ read failed".to_string());
