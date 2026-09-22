@@ -95,13 +95,15 @@ class NativeAribSiParser : AutoCloseable {
     private var discoveryProfile: Int = 0
     private val epgPublication = EpgPublicationPolicy()
 
-    fun buildChannelProviderData(
-        requestJson: String,
-    ): String = requireNativeString(nativeBuildChannelProviderData(requestJson))
+    fun buildChannelProviderData(requestJson: String): String {
+        val result = nativeBuildChannelProviderData(requestJson)
+        return requireNativeString(result)
+    }
 
-    fun buildProgramProviderData(
-        requestJson: String,
-    ): String = requireNativeString(nativeBuildProgramProviderData(requestJson))
+    fun buildProgramProviderData(requestJson: String): String {
+        val result = nativeBuildProgramProviderData(requestJson)
+        return requireNativeString(result)
+    }
 
     fun buildProgramKey(
         onid: Int,
@@ -110,17 +112,20 @@ class NativeAribSiParser : AutoCloseable {
         eventId: Int,
     ): String = requireNativeString(nativeBuildProgramKey(onid, tsid, sid, eventId))
 
-    fun normalizeProgramProviderData(
-        providerData: ByteArray,
-    ): String = requireNativeString(nativeNormalizeProgramProviderData(providerData))
+    fun normalizeProgramProviderData(providerData: ByteArray): String {
+        val result = nativeNormalizeProgramProviderData(providerData)
+        return requireNativeString(result)
+    }
 
-    fun extractProgramKeyResult(
-        providerData: ByteArray,
-    ): String = requireNativeString(nativeExtractProgramKeyResult(providerData))
+    fun extractProgramKeyResult(providerData: ByteArray): String {
+        val result = nativeExtractProgramKeyResult(providerData)
+        return requireNativeString(result)
+    }
 
-    fun decodeChannelProviderData(
-        providerData: ByteArray,
-    ): String = requireNativeString(nativeDecodeChannelProviderData(providerData))
+    fun decodeChannelProviderData(providerData: ByteArray): String {
+        val result = nativeDecodeChannelProviderData(providerData)
+        return requireNativeString(result)
+    }
 
     fun ingestSection(
         pid: TsPid,
@@ -1028,9 +1033,10 @@ class NativeAribSiParser : AutoCloseable {
 
     fun decodeAribString(bytes: ByteArray): String = requireNativeString(nativeDecodeAribString(bytes))
 
-    fun decodeAribStringDiagnosticSummary(
-        bytes: ByteArray,
-    ): String = requireNativeString(nativeDecodeAribStringDiagnosticSummary(bytes))
+    fun decodeAribStringDiagnosticSummary(bytes: ByteArray): String {
+        val result = nativeDecodeAribStringDiagnosticSummary(bytes)
+        return requireNativeString(result)
+    }
 
     override fun close() {
         val current = handle
@@ -1084,9 +1090,12 @@ class NativeAribSiParser : AutoCloseable {
     companion object {
         private const val SI_SNAPSHOT_SCHEMA_VERSION = 1
 
-        private fun requireNativeString(
-            value: String?,
-        ): String = value ?: throw NativeSiException("JNI_OUTPUT", "JNIが例外なしのnullを返しました")
+        private fun requireNativeString(value: String?): String {
+            if (value == null) {
+                throw NativeSiException("JNI_OUTPUT", "JNIが例外なしのnullを返しました")
+            }
+            return value
+        }
 
         // この処理の規格値・ビット幅・単位換算・固定上限をリテラルのまま照合できる形に保つ。
         @Suppress("MagicNumber")
