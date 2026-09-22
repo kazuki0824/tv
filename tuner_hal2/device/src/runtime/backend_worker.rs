@@ -43,6 +43,10 @@ pub struct FrontendBackendTunePlan {
 }
 
 impl FrontendBackendTunePlan {
+    pub(super) fn worker_identity(&self) -> (i32, u64) {
+        (self.frontend_id, self.generation)
+    }
+
     pub fn new(
         frontend_id: i32,
         generation: u64,
@@ -389,7 +393,7 @@ enum FrontendBackendSubmitThreadOutcome {
 
 #[derive(Debug)]
 #[must_use = "frontend backend submit ticket must be claimed, aborted, or transferred to the reaper"]
-pub struct FrontendBackendSubmitTicket {
+pub(super) struct FrontendBackendSubmitTicket {
     generation: u64,
     ready: Receiver<FrontendBackendSubmitReady>,
     disposition: SyncSender<FrontendBackendSubmitDisposition>,
@@ -397,7 +401,7 @@ pub struct FrontendBackendSubmitTicket {
 }
 
 #[derive(Debug)]
-pub enum FrontendBackendSubmitWait {
+pub(super) enum FrontendBackendSubmitWait {
     Completed(Result<FrontendBackendSession, FrontendBackendSubmitFailure>),
     TimedOut(FrontendBackendSubmitTicket),
 }
@@ -655,11 +659,8 @@ impl Drop for FrontendBackendSubmitTicket {
         {
             Ok(()) | Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {}
         }
-        if let Some(owner) = self.owner.take() {
-            // 明示claimまたはReaper移管を通らないDropでJoinHandleをdetachしない。
-            // Abort後のendpoint所有権をthreadへ残し、process lifetime中の再利用を防ぐ。
-            core::mem::forget(owner);
-        }
+        // 終了待ちや機器I/Oはしない。外側のWorkerRuntimeCleanupは結果不明の義務を
+        // 隔離して保持するため、ここで結果回収権限が失われても資源を再利用しない。
     }
 }
 

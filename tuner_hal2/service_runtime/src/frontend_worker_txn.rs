@@ -29,7 +29,7 @@ use maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackToken;
 use maleicacid_tuner_hal2_device::FrontendRuntimeSnapshot;
 use maleicacid_tuner_hal2_device::{
     BackendTuneRollbackFailure, BackendTuneStep, FrontendBackendSession,
-    FrontendBackendSubmitFailure, FrontendBackendSubmitTicket, FrontendBackendSubmitWait,
+    FrontendBackendSubmitFailure, FrontendWorkerSubmitWait,
     FrontendBackendTunePlan, FrontendLivePumpJoinOutcome, FrontendLivePumpOwner, FrontendScanPhase,
     FrontendSignalState, FrontendTmccPartialReceptionObservation, FrontendTmccTsidListObservation,
     FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
@@ -2030,14 +2030,13 @@ fn record_backend_submit_failure_after_fence(
 
 enum FrontendBackendSubmitDeadlineOutcome {
     Completed(Result<FrontendBackendSession, FrontendBackendSubmitFailure>),
-    TimedOut(FrontendBackendSubmitTicket),
+    TimedOut(FrontendWorkerStopTicket),
 }
 
 const FRONTEND_BACKEND_SUBMIT_TIMEOUT_ERRNO: i32 = 110;
 
 fn submit_frontend_backend_with_deadline(
-    plan: FrontendBackendTunePlan,
-    previous_request: Option<FrontendTuneRequest>,
+    ticket: FrontendWorkerStopTicket,
     generation: u64,
     deadline_ms: u64,
 ) -> Result<FrontendBackendSubmitDeadlineOutcome, HalError> {
@@ -2049,12 +2048,11 @@ fn submit_frontend_backend_with_deadline(
                 "frontend backend submit deadline overflow",
             )
         })?;
-    let ticket = FrontendBackendSubmitTicket::start(plan, previous_request)?;
-    match ticket.wait_until(deadline) {
-        Ok(FrontendBackendSubmitWait::Completed(result)) => {
+    match ticket.submit_until(deadline) {
+        Ok(FrontendWorkerSubmitWait::Completed(result)) => {
             Ok(FrontendBackendSubmitDeadlineOutcome::Completed(result))
         }
-        Ok(FrontendBackendSubmitWait::TimedOut(ticket)) => {
+        Ok(FrontendWorkerSubmitWait::TimedOut(ticket)) => {
             Ok(FrontendBackendSubmitDeadlineOutcome::TimedOut(ticket))
         }
         Err(error) => Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Err(
@@ -2082,7 +2080,7 @@ fn transfer_timed_out_frontend_backend_submit(
     worker_kind: FrontendWorkerKind,
     generation: u64,
     expected_demux_generations: BoundDemuxGenerationSnapshot,
-    ticket: FrontendBackendSubmitTicket,
+    ticket: FrontendWorkerStopTicket,
     diagnostic_sink: SharedFrontendWorkerCleanupDiagnostics,
     deadline_ms: u64,
 ) -> HalError {
@@ -2117,7 +2115,7 @@ fn transfer_timed_out_active_scan_submit(
     target: FrontendWorkerCleanupTarget,
     generation: u64,
     expected_demux_generations: BoundDemuxGenerationSnapshot,
-    ticket: FrontendBackendSubmitTicket,
+    ticket: FrontendWorkerStopTicket,
     diagnostic_sink: SharedFrontendWorkerCleanupDiagnostics,
     deadline_ms: u64,
 ) -> HalError {
@@ -2153,23 +2151,17 @@ fn enqueue_timed_out_frontend_backend_submit(
     worker_kind: FrontendWorkerKind,
     generation: u64,
     expected_demux_generations: BoundDemuxGenerationSnapshot,
-    ticket: FrontendBackendSubmitTicket,
+    ticket: FrontendWorkerStopTicket,
     diagnostic_sink: SharedFrontendWorkerCleanupDiagnostics,
     public_error: HalError,
 ) -> HalError {
     let deadline_sink = diagnostic_sink.clone();
     let completion_sink = diagnostic_sink;
     let completion_error = public_error.clone();
-    let cleanup_ticket = guard.frontend_txn().retain_backend_submit_cleanup(
-        target.frontend_id(),
-        worker_kind,
-        generation,
-        ticket,
-    );
     let job = FrontendWorkerReaperJob {
         keys: vec![(target.frontend_id(), worker_kind)],
         continuation_kind: None,
-        tickets: FrontendWorkerReaperTicketGroup::new(vec![(worker_kind, cleanup_ticket)]),
+        tickets: FrontendWorkerReaperTicketGroup::new(vec![(worker_kind, ticket)]),
         transferred_at: Instant::now(),
         deadline_action: Some(Box::new(move |runtime| {
             handle_frontend_worker_reaper_deadline(
@@ -3443,9 +3435,13 @@ fn finish_committed_tune_replacement(
             transition.request.clone(),
         );
         let worker_io_deadline_ms = guard.capability_snapshot().worker_io_deadline_ms;
-        let session = match submit_frontend_backend_with_deadline(
+        let ticket = guard.frontend_txn().prepare_backend_submit(
+            FrontendWorkerKind::Tune,
             plan,
             None,
+        )?;
+        let session = match submit_frontend_backend_with_deadline(
+            ticket,
             generation,
             worker_io_deadline_ms,
         ) {
@@ -4013,8 +4009,14 @@ fn run_frontend_backend_scan_session_worker(
         let session = match initial_session.take() {
             Some(session) => session,
             None => match submit_frontend_backend_with_deadline(
-                plan,
-                previous_request.clone(),
+                {
+                    let mut guard = lock_runtime(&runtime, "prepare frontend scan submit")?;
+                    guard.frontend_txn().prepare_backend_submit(
+                        FrontendWorkerKind::Scan,
+                        plan,
+                        previous_request.clone(),
+                    )?
+                },
                 ctx.generation(),
                 worker_io_deadline_ms,
             ) {
@@ -4353,9 +4355,13 @@ fn finish_committed_scan_replacement(
             first_candidate,
         );
         let worker_io_deadline_ms = guard.capability_snapshot().worker_io_deadline_ms;
-        let session = match submit_frontend_backend_with_deadline(
+        let ticket = guard.frontend_txn().prepare_backend_submit(
+            FrontendWorkerKind::Scan,
             plan,
             None,
+        )?;
+        let session = match submit_frontend_backend_with_deadline(
+            ticket,
             generation,
             worker_io_deadline_ms,
         ) {

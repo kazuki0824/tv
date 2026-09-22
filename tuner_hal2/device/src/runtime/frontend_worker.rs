@@ -6,14 +6,17 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
+use maleicacid_tuner_hal2_common::{FrontendTuneRequest, HalError, HalInternalKind};
 use maleicacid_tuner_hal2_control_core::{
     WorkerCleanupAuthority, WorkerCleanupProgress, WorkerCleanupRun, WorkerContext, WorkerExit,
     WorkerFailureDomain, WorkerRuntime, WorkerRuntimeCleanup, WorkerStopReason,
     WorkerTerminalResult,
 };
 
-use super::backend_worker::{FrontendBackendSubmitFailure, FrontendBackendSubmitTicket};
+use super::backend_worker::{
+    FrontendBackendSession, FrontendBackendSubmitFailure, FrontendBackendSubmitTicket,
+    FrontendBackendSubmitWait, FrontendBackendTunePlan,
+};
 use crate::runtime::thread_result_owner::ThreadResultOwner;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -194,6 +197,10 @@ impl FrontendBackendSubmitDetachedJoin {
 #[derive(Debug)]
 enum FrontendWorkerCleanup {
     Join(FrontendWorkerDetachedJoin),
+    BackendSubmitPrepared {
+        plan: FrontendBackendTunePlan,
+        previous_request: Option<FrontendTuneRequest>,
+    },
     BackendSubmitJoin(FrontendBackendSubmitDetachedJoin),
     Failed(FrontendWorkerStopOutcome),
 }
@@ -220,6 +227,9 @@ impl FrontendWorkerCleanup {
 
     fn complete(&mut self) -> WorkerCleanupProgress<FrontendWorkerStopOutcome> {
         let outcome = match self {
+            Self::BackendSubmitPrepared { .. } => {
+                return WorkerCleanupProgress::Completed(FrontendWorkerStopOutcome::NotRunning);
+            }
             Self::Join(join) => join.complete(),
             Self::BackendSubmitJoin(join) => join.complete(),
             Self::Failed(outcome) => outcome.clone(),
@@ -229,6 +239,9 @@ impl FrontendWorkerCleanup {
 
     fn try_complete(&mut self) -> WorkerCleanupProgress<FrontendWorkerStopOutcome> {
         let outcome = match self {
+            Self::BackendSubmitPrepared { .. } => {
+                return WorkerCleanupProgress::Completed(FrontendWorkerStopOutcome::NotRunning);
+            }
             Self::Join(join) => join.try_complete(),
             Self::BackendSubmitJoin(join) => join.try_complete(),
             Self::Failed(outcome) => Some(outcome.clone()),
@@ -263,6 +276,12 @@ pub enum FrontendWorkerStopPoll {
     Completed(FrontendWorkerStopOutcome),
 }
 
+#[derive(Debug)]
+pub enum FrontendWorkerSubmitWait {
+    Completed(Result<FrontendBackendSession, FrontendBackendSubmitFailure>),
+    TimedOut(FrontendWorkerStopTicket),
+}
+
 fn cleanup_authority_failure(
     frontend_id: i32,
     kind: FrontendWorkerKind,
@@ -289,6 +308,111 @@ fn cleanup_authority_failure(
 }
 
 impl FrontendWorkerStopTicket {
+    pub fn submit_until(
+        self,
+        deadline: std::time::Instant,
+    ) -> Result<FrontendWorkerSubmitWait, HalError> {
+        self.submit_until_with(deadline, FrontendBackendSubmitTicket::start)
+    }
+
+    fn submit_until_with(
+        self,
+        deadline: std::time::Instant,
+        start: impl FnOnce(FrontendBackendTunePlan, Option<FrontendTuneRequest>)
+            -> Result<FrontendBackendSubmitTicket, HalError>,
+    ) -> Result<FrontendWorkerSubmitWait, HalError> {
+        let FrontendWorkerStopTicketKind::Retained {
+            frontend_id,
+            kind,
+            generation,
+            authority,
+        } = self.kind else {
+            return Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "frontend backend submit has no retained authority",
+            ));
+        };
+        let result = authority.execute(|value| {
+            // 外部処理より先に結果不明の義務を置く。巻き戻し完了を観測するまで解除しない。
+            let unknown = FrontendBackendSubmitFailure::indeterminate(
+                generation,
+                HalError::WorkerCleanupFailed {
+                    kind: maleicacid_tuner_hal2_common::WorkerCleanupFailureKind::Interrupted,
+                },
+            );
+            let prepared = std::mem::replace(
+                value,
+                FrontendWorkerCleanup::Failed(FrontendWorkerStopOutcome::BackendSubmitFailed {
+                    frontend_id,
+                    kind,
+                    generation,
+                    failure: unknown.clone(),
+                }),
+            );
+            let FrontendWorkerCleanup::BackendSubmitPrepared { plan, previous_request } = prepared else {
+                *value = prepared;
+                return WorkerCleanupProgress::Quarantined(Err(unknown));
+            };
+            let ticket = match start(plan, previous_request) {
+                Ok(ticket) => ticket,
+                Err(error) => {
+                    // スレッド生成失敗では機器処理は開始されていない。
+                    let mut failure = FrontendBackendSubmitFailure::indeterminate(generation, error);
+                    failure.rollback_succeeded = true;
+                    return WorkerCleanupProgress::Completed(Err(failure));
+                }
+            };
+            match ticket.wait_until(deadline) {
+                Ok(FrontendBackendSubmitWait::Completed(result)) => {
+                    if let Err(failure) = &result {
+                        if !failure.rollback_succeeded {
+                            *value = FrontendWorkerCleanup::Failed(
+                                FrontendWorkerStopOutcome::BackendSubmitFailed {
+                                    frontend_id,
+                                    kind,
+                                    generation,
+                                    failure: failure.clone(),
+                                },
+                            );
+                            return WorkerCleanupProgress::Quarantined(result);
+                        }
+                    }
+                    WorkerCleanupProgress::Completed(result)
+                }
+                Ok(FrontendBackendSubmitWait::TimedOut(ticket)) => {
+                    *value = FrontendWorkerCleanup::BackendSubmitJoin(FrontendBackendSubmitDetachedJoin {
+                        frontend_id,
+                        kind,
+                        generation,
+                        ticket,
+                    });
+                    WorkerCleanupProgress::Pending
+                }
+                Err(error) => {
+                    let failure = FrontendBackendSubmitFailure::indeterminate(generation, error);
+                    *value = FrontendWorkerCleanup::Failed(FrontendWorkerStopOutcome::BackendSubmitFailed {
+                        frontend_id,
+                        kind,
+                        generation,
+                        failure: failure.clone(),
+                    });
+                    WorkerCleanupProgress::Quarantined(Err(failure))
+                }
+            }
+        })?;
+        Ok(match result {
+            WorkerCleanupRun::Completed(result) => FrontendWorkerSubmitWait::Completed(result),
+            WorkerCleanupRun::Pending(authority) => FrontendWorkerSubmitWait::TimedOut(Self {
+                kind: FrontendWorkerStopTicketKind::Retained {
+                    frontend_id,
+                    kind,
+                    generation,
+                    authority,
+                },
+            }),
+        })
+    }
+
     fn immediate(outcome: FrontendWorkerStopOutcome) -> Self {
         Self {
             kind: FrontendWorkerStopTicketKind::Immediate(outcome),
@@ -377,6 +501,7 @@ impl FrontendWorkerStopTicket {
                         join.wait_until_finished(deadline)
                     }
                     FrontendWorkerCleanup::Failed(_) => Ok(true),
+                    FrontendWorkerCleanup::BackendSubmitPrepared { .. } => Ok(true),
                 })?
             }
         }
@@ -567,29 +692,47 @@ impl FrontendWorkerRegistry {
         }
     }
 
-    pub fn retain_backend_submit_cleanup(
+    pub fn prepare_backend_submit(
         &mut self,
-        frontend_id: i32,
         kind: FrontendWorkerKind,
-        generation: u64,
-        ticket: FrontendBackendSubmitTicket,
-    ) -> FrontendWorkerStopTicket {
+        plan: FrontendBackendTunePlan,
+        previous_request: Option<FrontendTuneRequest>,
+    ) -> Result<FrontendWorkerStopTicket, HalError> {
+        let (frontend_id, generation) = plan.worker_identity();
         self.cleanup.retain(|(_, _, owner)| owner.is_pending());
         let key = FrontendWorkerKey { frontend_id, kind };
-        let owner = WorkerRuntime::retain_cleanup(FrontendWorkerCleanup::BackendSubmitJoin(
-            FrontendBackendSubmitDetachedJoin {
-                frontend_id,
-                kind,
-                generation,
-                ticket,
-            },
-        ));
+        if self.cleanup.iter().any(|(pending, _, _)| *pending == key) {
+            return Err(HalError::WorkerCleanupFailed {
+                kind: maleicacid_tuner_hal2_common::WorkerCleanupFailureKind::Executing,
+            });
+        }
+        let owner = WorkerRuntime::retain_cleanup(FrontendWorkerCleanup::BackendSubmitPrepared {
+            plan,
+            previous_request,
+        });
         let ticket = Self::issue_cleanup(
             key,
             generation,
             FrontendWorkerCancelReason::StopRequested,
             &owner,
         );
+        self.cleanup.push((key, generation, owner));
+        Ok(ticket)
+    }
+
+    #[cfg(test)]
+    pub(super) fn retain_backend_submit_cleanup(
+        &mut self,
+        frontend_id: i32,
+        kind: FrontendWorkerKind,
+        generation: u64,
+        ticket: FrontendBackendSubmitTicket,
+    ) -> FrontendWorkerStopTicket {
+        let key = FrontendWorkerKey { frontend_id, kind };
+        let owner = WorkerRuntime::retain_cleanup(FrontendWorkerCleanup::BackendSubmitJoin(
+            FrontendBackendSubmitDetachedJoin { frontend_id, kind, generation, ticket },
+        ));
+        let ticket = Self::issue_cleanup(key, generation, FrontendWorkerCancelReason::StopRequested, &owner);
         self.cleanup.push((key, generation, owner));
         ticket
     }
@@ -873,6 +1016,73 @@ mod tests {
     use super::*;
     use std::sync::{mpsc, Arc, Mutex};
     use std::time::Duration;
+
+    fn submit_plan() -> FrontendBackendTunePlan {
+        use maleicacid_tuner_hal2_common::{
+            FrontendBackendKind, FrontendDevicePath, FrontendIsdbtPartialReceptionRequirement,
+            FrontendSystem,
+        };
+        FrontendBackendTunePlan::new(7, 1, FrontendBackendKind::LinuxDvb,
+            FrontendDevicePath::new("/unused-submit-test"), FrontendTuneRequest {
+                system: FrontendSystem::IsdbT,
+                frequency: 473_142_857,
+                end_frequency: None,
+                stream_id: None,
+                stream_id_kind: None,
+                bandwidth_hz: Some(6_000_000),
+                symbol_rate: None,
+                isdbt_layer_settings: Vec::new(),
+                partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+            })
+    }
+
+    #[test]
+    fn abandoned_prepared_submit_keeps_obligation_and_can_be_cancelled() {
+        let mut registry = FrontendWorkerRegistry::default();
+        let ticket = registry.prepare_backend_submit(FrontendWorkerKind::Tune, submit_plan(), None).unwrap();
+        std::mem::forget(ticket);
+        assert!(registry.has_cleanup_obligations());
+        assert!(registry.prepare_backend_submit(FrontendWorkerKind::Tune, submit_plan(), None).is_err());
+        let cancellation = registry.request_stop_for_join(7, FrontendWorkerKind::Tune,
+            FrontendWorkerCancelReason::StopRequested);
+        assert_eq!(cancellation.complete(), FrontendWorkerStopOutcome::NotRunning);
+        assert!(!registry.has_cleanup_obligations());
+    }
+
+    #[test]
+    fn superseded_submit_authority_does_not_start_external_work() {
+        let mut registry = FrontendWorkerRegistry::default();
+        let ticket = registry.prepare_backend_submit(FrontendWorkerKind::Tune, submit_plan(), None).unwrap();
+        let cancellation = registry.request_stop_for_join(7, FrontendWorkerKind::Tune,
+            FrontendWorkerCancelReason::StopRequested);
+        assert!(ticket.submit_until_with(std::time::Instant::now(), |_, _| panic!("must not start")).is_err());
+        assert_eq!(cancellation.complete(), FrontendWorkerStopOutcome::NotRunning);
+    }
+
+    #[test]
+    fn interrupted_submit_retains_indeterminate_obligation_and_blocks_reuse() {
+        let mut registry = FrontendWorkerRegistry::default();
+        let ticket = registry.prepare_backend_submit(FrontendWorkerKind::Tune, submit_plan(), None).unwrap();
+        assert!(matches!(ticket.submit_until_with(std::time::Instant::now(), |_, _| panic!("injected interruption")),
+            Err(HalError::WorkerCleanupFailed { kind: maleicacid_tuner_hal2_common::WorkerCleanupFailureKind::Interrupted })));
+        assert!(registry.has_cleanup_obligations());
+        assert!(registry.prepare_backend_submit(FrontendWorkerKind::Tune, submit_plan(), None).is_err());
+        assert!(matches!(registry.request_stop_for_join(7, FrontendWorkerKind::Tune,
+            FrontendWorkerCancelReason::StopRequested).complete(),
+            FrontendWorkerStopOutcome::StopRequestFailed { error: HalError::WorkerCleanupFailed {
+                kind: maleicacid_tuner_hal2_common::WorkerCleanupFailureKind::Quarantined }, .. }));
+    }
+
+    #[test]
+    fn submit_spawn_failure_completes_the_unstarted_obligation() {
+        let mut registry = FrontendWorkerRegistry::default();
+        let ticket = registry.prepare_backend_submit(FrontendWorkerKind::Tune, submit_plan(), None).unwrap();
+        let result = ticket.submit_until_with(std::time::Instant::now(), |_, _|
+            Err(HalError::internal(HalInternalKind::InvariantViolation, "spawn failed"))).unwrap();
+        assert!(matches!(result, FrontendWorkerSubmitWait::Completed(Err(FrontendBackendSubmitFailure {
+            rollback_succeeded: true, .. }))));
+        assert!(!registry.has_cleanup_obligations());
+    }
 
     #[test]
     fn duplicate_running_worker_is_rejected() {

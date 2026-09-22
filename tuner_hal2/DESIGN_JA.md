@@ -211,6 +211,10 @@ A/B/Cの分類と`Txn` / `UseCase` / `Context`の命名判定は別である。B
 
 ##### 共通の失敗伝達とワーカー管理の実装位置
 
+機器要求の開始入口は`FrontendTxn::prepare_backend_submit`から`FrontendWorkerRegistry::prepare_backend_submit`へ接続し、既存の`WorkerRuntimeCleanup`に保管する。`FrontendWorkerStopTicket::submit_until`が同じ保管値の実行権限を消費する。時間切れの回収はその権限を既存reaperへ渡す。`backend_worker.rs::FrontendBackendSubmitTicket`はこの実行区間内の非公開実装値とし、crate外へ公開しない。
+
+ワーカー管理部の失敗から終端結果への接続は`control/src/lib.rs::WorkerRuntimeOwnerFailure::into_terminal_result`に置く。device adapterはその終端種別を保持して渡し、診断分類は既存の`WorkerFailureClassifier`へ接続する。
+
 論理契約は`../TUNER_HAL_DESIGN_JA.md`の「0-S-1. 設計原則」、0-S-3Bの`WorkerRuntime`および`WorkerFailureClassifier`、「診断可観測性の固定」を正とする。型付き情報の伝達、ロック操作、回収ワーカーの接続手順は`CODE_CONVENTION.md`の§1・§2・§12・§13を参照する。
 
 | 責務 | 実装所有者・対応箇所 |
