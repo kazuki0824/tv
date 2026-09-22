@@ -2538,6 +2538,15 @@ fn frontend_terminal_deadline(backend: FrontendBackendKind) -> Duration {
     }
 }
 
+fn frontend_backend_submit_deadline_ms(
+    backend: FrontendBackendKind,
+    worker_io_deadline_ms: u64,
+) -> u64 {
+    let terminal_ms = u64::try_from(frontend_terminal_deadline(backend).as_millis())
+        .unwrap_or(u64::MAX);
+    worker_io_deadline_ms.max(terminal_ms)
+}
+
 fn classify_frontend_lock_qualification(
     signal_state: FrontendSignalState,
     requirement: FrontendIsdbtPartialReceptionRequirement,
@@ -2877,6 +2886,22 @@ fn record_frontend_tune_no_signal(
 #[cfg(test)]
 mod frontend_readback_tests {
     use super::*;
+
+    #[test]
+    fn backend_submit_deadline_never_preempts_terminal_deadline() {
+        assert_eq!(
+            frontend_backend_submit_deadline_ms(FrontendBackendKind::LinuxDvb, 2_000),
+            4_000
+        );
+        assert_eq!(
+            frontend_backend_submit_deadline_ms(FrontendBackendKind::Px4CharDevice, 2_000),
+            7_000
+        );
+        assert_eq!(
+            frontend_backend_submit_deadline_ms(FrontendBackendKind::Px4CharDevice, 9_000),
+            9_000
+        );
+    }
 
     #[test]
     fn unspecified_partial_reception_needs_only_demod_lock() {
@@ -3435,6 +3460,8 @@ fn finish_committed_tune_replacement(
             transition.request.clone(),
         );
         let worker_io_deadline_ms = guard.capability_snapshot().worker_io_deadline_ms;
+        let backend_submit_deadline_ms =
+            frontend_backend_submit_deadline_ms(transition.entry.backend, worker_io_deadline_ms);
         let ticket =
             guard
                 .frontend_txn()
@@ -3442,7 +3469,7 @@ fn finish_committed_tune_replacement(
         let session = match submit_frontend_backend_with_deadline(
             ticket,
             generation,
-            worker_io_deadline_ms,
+            backend_submit_deadline_ms,
         ) {
             Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Ok(session))) => session,
             Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Err(failure))) => {
@@ -3480,7 +3507,7 @@ fn finish_committed_tune_replacement(
                     expected_demux_generations,
                     ticket,
                     transition.cleanup_diagnostic_sink.clone(),
-                    worker_io_deadline_ms,
+                    backend_submit_deadline_ms,
                 );
                 return Err(match snapshot_error {
                     Some(snapshot_error) => compose_frontend_cleanup_error(
@@ -3990,6 +4017,8 @@ fn run_frontend_backend_scan_session_worker(
         )?;
         guard.capability_snapshot().worker_io_deadline_ms
     };
+    let backend_submit_deadline_ms =
+        frontend_backend_submit_deadline_ms(backend, worker_io_deadline_ms);
     let mut initial_session = initial_session;
     for candidate in candidates {
         if ctx.cancel_requested() {
@@ -4017,7 +4046,7 @@ fn run_frontend_backend_scan_session_worker(
                     )?
                 },
                 ctx.generation(),
-                worker_io_deadline_ms,
+                backend_submit_deadline_ms,
             ) {
                 Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Ok(session))) => session,
                 Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Err(failure)))
@@ -4153,7 +4182,7 @@ fn run_frontend_backend_scan_session_worker(
                         expected_demux_generations,
                         ticket,
                         cleanup_diagnostic_sink.clone(),
-                        worker_io_deadline_ms,
+                        backend_submit_deadline_ms,
                     );
                     return Err(match snapshot_error {
                         Some(snapshot_error) => compose_frontend_cleanup_error(
@@ -4354,6 +4383,8 @@ fn finish_committed_scan_replacement(
             first_candidate,
         );
         let worker_io_deadline_ms = guard.capability_snapshot().worker_io_deadline_ms;
+        let backend_submit_deadline_ms =
+            frontend_backend_submit_deadline_ms(backend, worker_io_deadline_ms);
         let ticket =
             guard
                 .frontend_txn()
@@ -4361,7 +4392,7 @@ fn finish_committed_scan_replacement(
         let session = match submit_frontend_backend_with_deadline(
             ticket,
             generation,
-            worker_io_deadline_ms,
+            backend_submit_deadline_ms,
         ) {
             Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Ok(session))) => session,
             Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Err(failure))) => {
@@ -4399,7 +4430,7 @@ fn finish_committed_scan_replacement(
                     expected_demux_generations,
                     ticket,
                     transition.cleanup_diagnostic_sink.clone(),
-                    worker_io_deadline_ms,
+                    backend_submit_deadline_ms,
                 );
                 return Err(match snapshot_error {
                     Some(snapshot_error) => compose_frontend_cleanup_error(
