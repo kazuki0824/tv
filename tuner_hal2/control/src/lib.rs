@@ -586,7 +586,10 @@ impl WorkerReaperPoisonState {
     }
 
     fn check_receiver(&self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
-        if self.receiver_poisoned.load(std::sync::atomic::Ordering::Acquire) {
+        if self
+            .receiver_poisoned
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
             return Err(maleicacid_tuner_hal2_common::HalError::WorkerLockPoisoned {
                 owner: "WorkerRuntimeReaperQueue",
                 lock: maleicacid_tuner_hal2_common::WorkerLockKind::ReaperReceiver,
@@ -601,7 +604,10 @@ fn reaper_lock_poison(
     lock: maleicacid_tuner_hal2_common::WorkerLockKind,
 ) -> maleicacid_tuner_hal2_common::HalError {
     let count = maleicacid_tuner_hal2_common::increment_atomic_counter_with_saturation(count, None);
-    eprintln!("worker reaper lock poison: lock={lock:?} count={count} saturated={}", count == u64::MAX);
+    eprintln!(
+        "worker reaper lock poison: lock={lock:?} count={count} saturated={}",
+        count == u64::MAX
+    );
     maleicacid_tuner_hal2_common::HalError::WorkerLockPoisoned {
         owner: "WorkerRuntimeReaperQueue",
         lock,
@@ -620,7 +626,9 @@ fn lock_reaper_receiver<'a, J>(
             &poison.receiver_count,
             maleicacid_tuner_hal2_common::WorkerLockKind::ReaperReceiver,
         );
-        poison.receiver_poisoned.store(true, std::sync::atomic::Ordering::Release);
+        poison
+            .receiver_poisoned
+            .store(true, std::sync::atomic::Ordering::Release);
         error
     })
 }
@@ -726,7 +734,8 @@ where
         &self,
         key: &K,
     ) -> Result<Option<V>, maleicacid_tuner_hal2_common::HalError> {
-        self.lock_state().map(|state| state.entries.get(key).cloned())
+        self.lock_state()
+            .map(|state| state.entries.get(key).cloned())
     }
 
     pub fn update_value(
@@ -1869,9 +1878,15 @@ mod tests {
         assert_eq!(clone.update_value(&1, 7).unwrap_err(), expected);
         assert_eq!(pending.poison.pending_count.load(Ordering::Acquire), 4);
         assert!(pending.state.is_poisoned());
-        pending.poison.pending_count.store(u64::MAX, Ordering::Release);
+        pending
+            .poison
+            .pending_count
+            .store(u64::MAX, Ordering::Release);
         assert_eq!(pending.pending_value(&1).unwrap_err(), expected);
-        assert_eq!(pending.poison.pending_count.load(Ordering::Acquire), u64::MAX);
+        assert_eq!(
+            pending.poison.pending_count.load(Ordering::Acquire),
+            u64::MAX
+        );
     }
 
     #[test]
@@ -1893,7 +1908,10 @@ mod tests {
             owner: "WorkerRuntimeReaperQueue",
             lock: WorkerLockKind::ReaperReceiver,
         };
-        assert_eq!(lock_reaper_receiver(&receiver, &pending.poison).unwrap_err(), expected);
+        assert_eq!(
+            lock_reaper_receiver(&receiver, &pending.poison).unwrap_err(),
+            expected
+        );
         assert_eq!(clone.pending_value(&1).unwrap_err(), expected);
         assert_eq!(clone.reserve_group([(2, 8)]).unwrap_err(), expected);
         assert_eq!(pending.poison.receiver_count.load(Ordering::Acquire), 1);
