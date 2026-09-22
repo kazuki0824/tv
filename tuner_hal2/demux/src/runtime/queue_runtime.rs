@@ -909,7 +909,7 @@ impl GateInner {
 
     fn record_cleanup_poison(&self, failure: u64) {
         let mut current = self.cleanup_failures.load(Ordering::Acquire);
-        loop {
+        let recorded = loop {
             let count = ((current >> 3) + 1).min(u64::MAX >> 3);
             let next = (count << 3) | (current & 7) | 4 | failure;
             match self.cleanup_failures.compare_exchange_weak(
@@ -918,11 +918,18 @@ impl GateInner {
                 Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                Ok(_) => break,
+                Ok(_) => break next,
                 Err(observed) => current = observed,
             }
-        }
+        };
         self.drained.notify_all();
+        eprintln!(
+            "filter gate lock poison: lock=FilterProducerDrainGate.data count={} saturated={} producer_release={} drain_rollback={}",
+            recorded >> 3,
+            recorded >> 3 == u64::MAX >> 3,
+            recorded & 1 != 0,
+            recorded & 2 != 0,
+        );
     }
 }
 
