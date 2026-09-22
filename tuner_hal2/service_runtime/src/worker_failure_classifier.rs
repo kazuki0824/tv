@@ -144,6 +144,20 @@ mod tests {
                 HalError::internal(HalInternalKind::InvariantViolation, "unknown"),
                 WorkerFailureCategory::Unknown,
             ),
+            (
+                HalError::WorkerLockPoisoned {
+                    owner: "WorkerRuntimeReaperQueue",
+                    lock: WorkerLockKind::ReaperPending,
+                },
+                WorkerFailureCategory::LockPoison,
+            ),
+            (
+                HalError::WorkerLockPoisoned {
+                    owner: "WorkerRuntimeReaperQueue",
+                    lock: WorkerLockKind::ReaperReceiver,
+                },
+                WorkerFailureCategory::LockPoison,
+            ),
         ];
         for (error, category) in cases {
             assert_eq!(

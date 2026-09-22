@@ -83,7 +83,7 @@ pub fn is_valid_arib_section_length(table_id: u8, section_length: usize) -> bool
     }
 }
 
-fn increment_atomic_counter_with_saturation(
+pub fn increment_atomic_counter_with_saturation(
     counter: &AtomicU64,
     saturated: Option<&AtomicBool>,
 ) -> u64 {
@@ -608,6 +608,8 @@ pub enum WorkerLockKind {
     Result,
     Completion,
     SupervisorWorker,
+    ReaperPending,
+    ReaperReceiver,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::fs::File;
 use std::os::fd::FromRawFd;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use maleicacid_tuner_hal2_fmq::{FmqQueue, FmqQueueError};
@@ -61,6 +61,13 @@ pub enum QueueRuntimeErrorKind {
     DataPathFailure,
     StructuralDescriptor,
     GateCleanupFailed {
+        producer_release: bool,
+        drain_rollback: bool,
+    },
+    GateLockPoisoned {
+        lock: &'static str,
+        poison_count: u64,
+        counter_saturated: bool,
         producer_release: bool,
         drain_rollback: bool,
     },
@@ -864,13 +871,25 @@ struct GateData {
 struct GateInner {
     data: Mutex<GateData>,
     drained: Condvar,
-    cleanup_failures: AtomicU8,
+    // 下位2ビットは局所取消しの種別、bit 2はdataロック汚染、上位ビットは検出回数。
+    cleanup_failures: AtomicU64,
 }
 
 impl GateInner {
     fn check_cleanup(&self) -> Result<(), QueueRuntimeError> {
         let failures = self.cleanup_failures.load(Ordering::Acquire);
-        if failures == 0 {
+        if failures & 4 != 0 {
+            Err(QueueRuntimeError::new(
+                QueueRuntimeErrorKind::GateLockPoisoned {
+                    lock: "FilterProducerDrainGate.data",
+                    poison_count: failures >> 3,
+                    counter_saturated: failures >> 3 == u64::MAX >> 3,
+                    producer_release: failures & 1 != 0,
+                    drain_rollback: failures & 2 != 0,
+                },
+                "filter gate data lock poisoned during local cleanup",
+            ))
+        } else if failures == 0 {
             Ok(())
         } else {
             Err(QueueRuntimeError::new(
@@ -883,8 +902,26 @@ impl GateInner {
         }
     }
 
-    fn record_cleanup_failure(&self, failure: u8) {
+    fn record_cleanup_failure(&self, failure: u64) {
         self.cleanup_failures.fetch_or(failure, Ordering::Release);
+        self.drained.notify_all();
+    }
+
+    fn record_cleanup_poison(&self, failure: u64) {
+        let mut current = self.cleanup_failures.load(Ordering::Acquire);
+        loop {
+            let count = ((current >> 3) + 1).min(u64::MAX >> 3);
+            let next = (count << 3) | (current & 7) | 4 | failure;
+            match self.cleanup_failures.compare_exchange_weak(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(observed) => current = observed,
+            }
+        }
         self.drained.notify_all();
     }
 }
@@ -947,7 +984,7 @@ impl FilterProducerDrainGate {
                     record_output_byte_offset: 0,
                 }),
                 drained: Condvar::new(),
-                cleanup_failures: AtomicU8::new(0),
+                cleanup_failures: AtomicU64::new(0),
             }),
         })
     }
@@ -1196,7 +1233,7 @@ impl Drop for FilterProducerPermit {
                     self.inner.record_cleanup_failure(1);
                 }
             }
-            Err(_) => self.inner.record_cleanup_failure(1),
+            Err(_) => self.inner.record_cleanup_poison(1),
         }
         self.active = false;
     }
@@ -1303,7 +1340,7 @@ impl Drop for FilterDrainTxn {
                     self.inner.record_cleanup_failure(2);
                 }
             }
-            Err(_) => self.inner.record_cleanup_failure(2),
+            Err(_) => self.inner.record_cleanup_poison(2),
         }
         self.active = false;
     }
@@ -1341,7 +1378,10 @@ mod dvr_queue_cleanup_tests {
             .is_err());
             drop(permit);
             drop(drain);
-            let expected = QueueRuntimeErrorKind::GateCleanupFailed {
+            let expected = QueueRuntimeErrorKind::GateLockPoisoned {
+                lock: "FilterProducerDrainGate.data",
+                poison_count: 1,
+                counter_saturated: false,
                 producer_release,
                 drain_rollback: !producer_release,
             };
@@ -1354,6 +1394,52 @@ mod dvr_queue_cleanup_tests {
             );
             assert!(gate.inner.data.is_poisoned());
         }
+    }
+
+    #[test]
+    fn filter_cleanup_invariant_failure_is_not_lock_poison() {
+        let gate = FilterProducerDrainGate::new(4).unwrap();
+        let permit = gate.begin_producer().unwrap();
+        gate.inner.data.lock().unwrap().admitted_producer_count = 0;
+        drop(permit);
+        assert_eq!(
+            gate.begin_producer().unwrap_err().kind,
+            QueueRuntimeErrorKind::GateCleanupFailed {
+                producer_release: true,
+                drain_rollback: false,
+            }
+        );
+        assert!(!gate.inner.data.is_poisoned());
+    }
+
+    #[test]
+    fn filter_cleanup_poison_count_survives_multiple_drops_and_saturates() {
+        let gate = FilterProducerDrainGate::new(4).unwrap();
+        let first = gate.begin_producer().unwrap();
+        let second = gate.begin_producer().unwrap();
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = gate.inner.data.lock().unwrap();
+            panic!("poison filter gate");
+        }))
+        .is_err());
+        drop(first);
+        drop(second);
+        assert!(matches!(
+            gate.inner.check_cleanup().unwrap_err().kind,
+            QueueRuntimeErrorKind::GateLockPoisoned { poison_count: 2, .. }
+        ));
+        gate.inner.cleanup_failures.store(u64::MAX - 2, Ordering::Release);
+        gate.inner.record_cleanup_poison(2);
+        assert_eq!(
+            gate.inner.check_cleanup().unwrap_err().kind,
+            QueueRuntimeErrorKind::GateLockPoisoned {
+                lock: "FilterProducerDrainGate.data",
+                poison_count: u64::MAX >> 3,
+                counter_saturated: true,
+                producer_release: true,
+                drain_rollback: true,
+            }
+        );
     }
 
     #[test]
