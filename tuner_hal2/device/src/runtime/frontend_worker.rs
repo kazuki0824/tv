@@ -923,12 +923,12 @@ impl FrontendWorkerRegistry {
     ) -> FrontendWorkerStopTicket {
         let key = FrontendWorkerKey { frontend_id, kind };
         self.cleanup.retain(|(_, _, owner)| owner.is_pending());
-        if let Some((_, generation, owner)) =
-            self.cleanup.iter().find(|(pending, _, _)| *pending == key)
-        {
-            return Self::issue_cleanup(key, *generation, reason, owner);
-        }
         let Some(mut slot) = self.slots.remove(&key) else {
+            if let Some((_, generation, owner)) =
+                self.cleanup.iter().find(|(pending, _, _)| *pending == key)
+            {
+                return Self::issue_cleanup(key, *generation, reason, owner);
+            }
             return FrontendWorkerStopTicket::immediate(FrontendWorkerStopOutcome::NotRunning);
         };
 
@@ -1162,6 +1162,43 @@ mod tests {
                 ..
             }))
         ));
+        assert!(!registry.has_cleanup_obligations());
+    }
+
+    #[test]
+    fn submit_obligation_does_not_hide_the_running_worker_from_stop() {
+        let mut registry = FrontendWorkerRegistry::default();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        registry
+            .start(7, FrontendWorkerKind::Tune, 1, move |ctx| {
+                ready_tx.send(()).unwrap();
+                while !ctx.cancel_requested() {
+                    ctx.wait_until(None);
+                }
+                Ok(())
+            })
+            .unwrap();
+        ready_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let submit = registry
+            .prepare_backend_submit(FrontendWorkerKind::Tune, submit_plan(), None)
+            .unwrap();
+        drop(submit);
+        let stop = registry.request_stop_for_join(
+            7,
+            FrontendWorkerKind::Tune,
+            FrontendWorkerCancelReason::StopRequested,
+        );
+        assert!(stop
+            .wait_until_finished(Some(std::time::Instant::now() + Duration::from_secs(1)))
+            .unwrap());
+        assert!(matches!(stop.complete(), FrontendWorkerStopOutcome::Completed { result: Ok(()), .. }));
+        assert!(registry.has_cleanup_obligations());
+        let submit_stop = registry.request_stop_for_join(
+            7,
+            FrontendWorkerKind::Tune,
+            FrontendWorkerCancelReason::StopRequested,
+        );
+        assert_eq!(submit_stop.complete(), FrontendWorkerStopOutcome::NotRunning);
         assert!(!registry.has_cleanup_obligations());
     }
 
