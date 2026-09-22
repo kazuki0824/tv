@@ -1543,6 +1543,26 @@ mod tests {
     }
 
     #[test]
+    fn reaper_reservation_blocks_duplicates_until_explicit_release() {
+        let (sender, _receiver) = std::sync::mpsc::sync_channel::<()>(1);
+        let queue = WorkerRuntimeReaperQueue {
+            lanes: std::sync::Arc::new(Vec::new()),
+            sender,
+            pending: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::BTreeMap::new(),
+            )),
+        };
+
+        let reservation = queue.reserve_pending([(7, 11)]).unwrap();
+        assert_eq!(queue.pending_value(&7).unwrap(), Some(11));
+        assert!(queue.reserve_pending([(7, 12)]).is_err());
+
+        queue.release_reservation(reservation).unwrap();
+        assert_eq!(queue.pending_value(&7).unwrap(), None);
+        assert!(queue.reserve_pending([(7, 13)]).is_ok());
+    }
+
+    #[test]
     fn rejected_reaper_send_releases_only_its_own_reservations() {
         // 受信側の消滅と満杯を決定的に発生させ、予約の取消しを正規入口で確認する。
         for disconnected in [false, true] {
