@@ -648,6 +648,135 @@ fn ensure_frontend_worker_reaper(
     Ok(candidate)
 }
 
+fn finish_replacement_with_reservation<T>(
+    runtime: &SharedRuntime,
+    reaper: &FrontendWorkerReaperHandle,
+    reservation: FrontendWorkerReplacementReservation,
+    result: Result<T, HalError>,
+) -> Result<T, HalError> {
+    let release_result = reaper.release_replacement_reservation(reservation);
+    match (result, release_result) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(release_error)) => {
+            TunerServiceRuntime::mark_shared_service_critical(runtime);
+            Err(release_error)
+        }
+        (Err(error), Err(release_error)) => {
+            TunerServiceRuntime::mark_shared_service_critical(runtime);
+            Err(compose_frontend_cleanup_error(
+                "frontend replacement failed and pending reservation release failed",
+                error,
+                release_error,
+            ))
+        }
+    }
+}
+
+fn transfer_frontend_replacement_wait_failure(
+    runtime: &SharedRuntime,
+    reaper: &FrontendWorkerReaperHandle,
+    reservation: FrontendWorkerReplacementReservation,
+    target: FrontendWorkerCleanupTarget,
+    kind: FrontendWorkerKind,
+    generation: u64,
+    fenced_demux_generations: BoundDemuxGenerationSnapshot,
+    tickets: FrontendWorkerReaperTicketGroup,
+    cleanup_diagnostic_sink: SharedFrontendWorkerCleanupDiagnostics,
+    transferred_at: Instant,
+    mut public_error: HalError,
+) -> HalError {
+    match lock_runtime(
+        runtime,
+        "service runtime lock poisoned while recording frontend replacement wait failure",
+    ) {
+        Ok(mut guard) => {
+            if let Err(mark_error) = guard
+                .frontend_txn()
+                .mark_frontend_worker_stop_pending_failure(
+                    target.frontend_id(),
+                    generation,
+                    public_error.clone(),
+                )
+            {
+                guard.mark_service_critical();
+                public_error = compose_frontend_cleanup_error(
+                    "frontend replacement wait failure state commit failed",
+                    public_error,
+                    mark_error,
+                );
+            }
+        }
+        Err(mark_error) => {
+            TunerServiceRuntime::mark_shared_service_critical(runtime);
+            public_error = compose_frontend_cleanup_error(
+                "frontend replacement wait failure state lock failed",
+                public_error,
+                mark_error,
+            );
+        }
+    }
+
+    let completion_public_error = public_error.clone();
+    let deadline_diagnostic_sink = cleanup_diagnostic_sink.clone();
+    let job = FrontendWorkerReaperJob {
+        keys: vec![
+            (target.frontend_id(), FrontendWorkerKind::Tune),
+            (target.frontend_id(), FrontendWorkerKind::Scan),
+        ],
+        continuation_kind: None,
+        tickets,
+        transferred_at,
+        deadline_action: Some(Box::new(move |runtime| {
+            handle_frontend_worker_reaper_deadline(
+                runtime,
+                target,
+                kind,
+                generation,
+                fenced_demux_generations,
+                deadline_diagnostic_sink,
+            );
+        })),
+        completion_action: Box::new(move |runtime, outcomes, deadline_elapsed| {
+            let completion_error = if deadline_elapsed {
+                compose_frontend_cleanup_error(
+                    "frontend replacement reaper deadline elapsed",
+                    completion_public_error.clone(),
+                    HalError::cleanup_failed(
+                        "frontend replacement reaper",
+                        "old worker did not exit before the reaper deadline",
+                    ),
+                )
+            } else {
+                completion_public_error.clone()
+            };
+            if record_aborted_frontend_replacement_after_reap(
+                cleanup_diagnostic_sink,
+                target,
+                kind,
+                generation,
+                &outcomes,
+                completion_error,
+            )
+            .is_err()
+            {
+                TunerServiceRuntime::mark_shared_service_critical(runtime);
+            }
+        }),
+    };
+    if let Err(transfer_error) =
+        reaper.enqueue_with_replacement_reservation(job, reservation)
+    {
+        TunerServiceRuntime::mark_shared_service_critical(runtime);
+        return compose_frontend_cleanup_error(
+            "frontend replacement wait failure reaper transfer failed",
+            public_error,
+            transfer_error,
+        );
+    }
+    public_error
+}
+
 #[cfg(test)]
 type DemuxRollbackTokenList = Vec<(crate::registry::DemuxRuntimeId, DemuxRuntimeRollbackToken)>;
 #[cfg(test)]
