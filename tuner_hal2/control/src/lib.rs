@@ -679,6 +679,27 @@ pub struct WorkerRuntimeReaperQueue<K, V, J> {
     pending: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<K, V>>>,
 }
 
+#[must_use = "reaper pending reservation must be released or transferred to the reaper queue"]
+pub struct WorkerRuntimeReaperReservation<K: Ord, V> {
+    pending: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<K, V>>>,
+    keys: Vec<K>,
+}
+
+impl<K: Ord, V> WorkerRuntimeReaperReservation<K, V> {
+    fn release(self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+        let mut pending = self.pending.lock().map_err(|_| {
+            maleicacid_tuner_hal2_common::HalError::internal(
+                maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                "worker reaper pending registry lock poisoned while releasing reservation",
+            )
+        })?;
+        for key in self.keys {
+            pending.remove(&key);
+        }
+        Ok(())
+    }
+}
+
 impl<K, V, J> Clone for WorkerRuntimeReaperQueue<K, V, J> {
     fn clone(&self) -> Self {
         Self {
@@ -746,57 +767,109 @@ where
         })
     }
 
-    pub fn enqueue_reserved(
+    pub fn reserve_pending(
         &self,
-        job: J,
         reservations: impl IntoIterator<Item = (K, V)>,
-    ) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+    ) -> Result<WorkerRuntimeReaperReservation<K, V>, maleicacid_tuner_hal2_common::HalError> {
         let reservations: Vec<_> = reservations.into_iter().collect();
-        let mut pending = match self.pending.lock() {
-            Ok(pending) => pending,
-            Err(_) => {
-                drop(job);
-                return Err(maleicacid_tuner_hal2_common::HalError::internal(
-                    maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                    "worker reaper pending registry lock poisoned",
-                ));
-            }
-        };
+        let mut pending = self.pending.lock().map_err(|_| {
+            maleicacid_tuner_hal2_common::HalError::internal(
+                maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                "worker reaper pending registry lock poisoned",
+            )
+        })?;
         if reservations
             .iter()
             .any(|(key, _)| pending.contains_key(key))
         {
-            drop(job);
             return Err(maleicacid_tuner_hal2_common::HalError::internal(
                 maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
                 "worker reaper received a duplicate endpoint lease",
             ));
         }
-        for (key, value) in &reservations {
-            pending.insert(key.clone(), value.clone());
+        let mut keys = Vec::with_capacity(reservations.len());
+        for (key, value) in reservations {
+            pending.insert(key.clone(), value);
+            keys.push(key);
         }
-        self.sender.try_send(job).map_err(|error| {
-            // 送信しなかった予約だけを取消す。jobは権限だけを持ち、義務はownerに残る。
-            for (key, _) in &reservations {
-                pending.remove(key);
-            }
-            match error {
-                std::sync::mpsc::TrySendError::Full(job) => {
-                    drop(job);
-                    maleicacid_tuner_hal2_common::HalError::internal(
-                        maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                        "worker reaper capacity exhausted",
-                    )
-                }
-                std::sync::mpsc::TrySendError::Disconnected(job) => {
-                    drop(job);
-                    maleicacid_tuner_hal2_common::HalError::internal(
-                        maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                        "worker reaper is unavailable",
-                    )
-                }
-            }
+        drop(pending);
+        Ok(WorkerRuntimeReaperReservation {
+            pending: std::sync::Arc::clone(&self.pending),
+            keys,
         })
+    }
+
+    pub fn release_reservation(
+        &self,
+        reservation: WorkerRuntimeReaperReservation<K, V>,
+    ) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+        if !std::sync::Arc::ptr_eq(&self.pending, &reservation.pending) {
+            return Err(maleicacid_tuner_hal2_common::HalError::internal(
+                maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                "worker reaper reservation belongs to a different queue",
+            ));
+        }
+        reservation.release()
+    }
+
+    pub fn enqueue_with_reservation(
+        &self,
+        job: J,
+        reservation: WorkerRuntimeReaperReservation<K, V>,
+    ) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+        if !std::sync::Arc::ptr_eq(&self.pending, &reservation.pending) {
+            drop(job);
+            return Err(maleicacid_tuner_hal2_common::HalError::internal(
+                maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                "worker reaper reservation belongs to a different queue",
+            ));
+        }
+        match self.sender.try_send(job) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let send_error = match error {
+                    std::sync::mpsc::TrySendError::Full(job) => {
+                        drop(job);
+                        maleicacid_tuner_hal2_common::HalError::internal(
+                            maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                            "worker reaper capacity exhausted",
+                        )
+                    }
+                    std::sync::mpsc::TrySendError::Disconnected(job) => {
+                        drop(job);
+                        maleicacid_tuner_hal2_common::HalError::internal(
+                            maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                            "worker reaper is unavailable",
+                        )
+                    }
+                };
+                match reservation.release() {
+                    Ok(()) => Err(send_error),
+                    Err(release_error) => Err(
+                        maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
+                            "worker reaper enqueue and reservation release both failed",
+                            send_error,
+                            release_error,
+                        ),
+                    ),
+                }
+            }
+        }
+    }
+
+    pub fn enqueue_reserved(
+        &self,
+        job: J,
+        reservations: impl IntoIterator<Item = (K, V)>,
+    ) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+        let reservation = match self.reserve_pending(reservations) {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                drop(job);
+                return Err(error);
+            }
+        };
+        self.enqueue_with_reservation(job, reservation)
     }
 
     pub fn pending_value(
