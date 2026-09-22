@@ -140,6 +140,17 @@ class NativeAribSiParser : AutoCloseable {
     @Synchronized
     fun broadcastClockSnapshot(): AribBroadcastClockFact? = readNativeTransaction().broadcastClock
 
+    @Synchronized
+    fun pmtPidsForSectionFilters(): Set<TsPid> {
+        check(handle != 0L) { "ネイティブ解析器は終了済みです" }
+        val array = JSONArray(requireNativeString(nativeSnapshotPmtPidsForSectionFiltersJson(handle)))
+        return (0 until array.length()).mapTo(linkedSetOf()) { index ->
+            requireNotNull(TsPid.fromOrNull(array.getInt(index))) {
+                "native PMT PID が範囲外です index=$index"
+            }
+        }
+    }
+
     fun setDiscoveryProfile(profile: Int) {
         check(nativeSetDiscoveryProfile(handle, profile) == SiStatus.OK) {
             "SI discovery profileを設定できません profile=$profile"
@@ -1082,6 +1093,8 @@ class NativeAribSiParser : AutoCloseable {
     ): Int
 
     private external fun nativeSnapshotBulkJson(handle: Long): String?
+
+    private external fun nativeSnapshotPmtPidsForSectionFiltersJson(handle: Long): String?
 
     private external fun nativeDecodeAribString(bytes: ByteArray): String?
 
