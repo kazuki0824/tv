@@ -54,6 +54,11 @@ impl QueueGrantorDescriptorSnapshot {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueueRuntimeLockKind {
+    FilterProducerDrainGateData,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum QueueRuntimeErrorKind {
     InvalidCapacity,
     NativeCreateFailed,
@@ -65,7 +70,7 @@ pub enum QueueRuntimeErrorKind {
         drain_rollback: bool,
     },
     GateLockPoisoned {
-        lock: &'static str,
+        lock: QueueRuntimeLockKind,
         poison_count: u64,
         counter_saturated: bool,
         producer_release: bool,
@@ -881,7 +886,7 @@ impl GateInner {
         if failures & 4 != 0 {
             Err(QueueRuntimeError::new(
                 QueueRuntimeErrorKind::GateLockPoisoned {
-                    lock: "FilterProducerDrainGate.data",
+                    lock: QueueRuntimeLockKind::FilterProducerDrainGateData,
                     poison_count: failures >> 3,
                     counter_saturated: failures >> 3 == u64::MAX >> 3,
                     producer_release: failures & 1 != 0,
@@ -1386,7 +1391,7 @@ mod dvr_queue_cleanup_tests {
             drop(permit);
             drop(drain);
             let expected = QueueRuntimeErrorKind::GateLockPoisoned {
-                lock: "FilterProducerDrainGate.data",
+                lock: QueueRuntimeLockKind::FilterProducerDrainGateData,
                 poison_count: 1,
                 counter_saturated: false,
                 producer_release,
@@ -1433,14 +1438,19 @@ mod dvr_queue_cleanup_tests {
         drop(second);
         assert!(matches!(
             gate.inner.check_cleanup().unwrap_err().kind,
-            QueueRuntimeErrorKind::GateLockPoisoned { poison_count: 2, .. }
+            QueueRuntimeErrorKind::GateLockPoisoned {
+                poison_count: 2,
+                ..
+            }
         ));
-        gate.inner.cleanup_failures.store(u64::MAX - 2, Ordering::Release);
+        gate.inner
+            .cleanup_failures
+            .store(u64::MAX - 2, Ordering::Release);
         gate.inner.record_cleanup_poison(2);
         assert_eq!(
             gate.inner.check_cleanup().unwrap_err().kind,
             QueueRuntimeErrorKind::GateLockPoisoned {
-                lock: "FilterProducerDrainGate.data",
+                lock: QueueRuntimeLockKind::FilterProducerDrainGateData,
                 poison_count: u64::MAX >> 3,
                 counter_saturated: true,
                 producer_release: true,
