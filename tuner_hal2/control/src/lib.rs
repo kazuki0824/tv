@@ -1548,9 +1548,7 @@ mod tests {
         let queue = WorkerRuntimeReaperQueue {
             lanes: std::sync::Arc::new(Vec::new()),
             sender,
-            pending: std::sync::Arc::new(std::sync::Mutex::new(
-                std::collections::BTreeMap::new(),
-            )),
+            pending: std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new())),
         };
 
         let reservation = queue.reserve_pending([(7, 11)]).unwrap();
