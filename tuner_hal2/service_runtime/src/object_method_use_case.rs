@@ -526,12 +526,7 @@ fn finish_queue_descriptor_export(
     let object_id = plan.object_id();
     let generation = plan.generation();
     let runtime_id = plan.runtime_id();
-    let mut guard = runtime.lock().map_err(|_| {
-        HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "service runtime lock poisoned while exporting queue descriptor",
-        )
-    })?;
+    let mut guard = TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned while exporting queue descriptor")?;
     aidl_object_live(&guard, object_id, generation, object_kind)?;
     match plan.export_descriptor() {
         Ok(snapshot) => Ok(ObjectQueryResponse::QueueDescriptor(snapshot)),
@@ -670,12 +665,7 @@ fn build_aidl_method_plan_after_live_inner<T, E, F>(
 where
     F: FnOnce() -> Result<(AidlMethodCall, T), E>,
 {
-    let mut runtime = runtime.lock().map_err(|_| {
-        ObjectMethodUseCaseBuildError::Runtime(HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "service runtime lock poisoned",
-        ))
-    })?;
+    let mut runtime = TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned").map_err(ObjectMethodUseCaseBuildError::Runtime)?;
     aidl_object_live(
         &runtime,
         target.object_id(),
@@ -706,12 +696,7 @@ impl ObjectMethodUseCase {
     ) -> Result<ObjectQueryResponse, HalError> {
         let target = ObjectMethodUseCaseTarget::new(object_id, generation, object_kind);
         let execution = {
-            let mut runtime = runtime.lock().map_err(|_| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned",
-                )
-            })?;
+            let mut runtime = TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned")?;
             aidl_object_live(
                 &runtime,
                 target.object_id(),
@@ -745,12 +730,7 @@ impl ObjectMethodUseCase {
     {
         let target = ObjectMethodUseCaseTarget::new(object_id, generation, object_kind);
         let execution = {
-            let mut runtime = runtime.lock().map_err(|_| {
-                ObjectMethodUseCaseBuildError::Runtime(HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned",
-                ))
-            })?;
+            let mut runtime = TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned").map_err(ObjectMethodUseCaseBuildError::Runtime)?;
             aidl_object_live(
                 &runtime,
                 target.object_id(),
@@ -790,12 +770,7 @@ impl ObjectMethodUseCase {
             FnOnce(&mut TunerServiceRuntime, ObjectMethodExecutionToken, B) -> Result<T, HalError>,
     {
         let target = ObjectMethodUseCaseTarget::new(object_id, generation, object_kind);
-        let mut runtime = runtime.lock().map_err(|_| {
-            ObjectMethodUseCaseBuildError::Runtime(HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned",
-            ))
-        })?;
+        let mut runtime = TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned").map_err(ObjectMethodUseCaseBuildError::Runtime)?;
         aidl_object_live(
             &runtime,
             target.object_id(),
@@ -834,12 +809,7 @@ impl ObjectMethodUseCase {
     {
         let target = ObjectMethodUseCaseTarget::new(object_id, generation, object_kind);
         let request = {
-            let mut runtime_guard = runtime.lock().map_err(|_| {
-                ObjectMethodUseCaseBuildError::Runtime(HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned",
-                ))
-            })?;
+            let mut runtime_guard = TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned").map_err(ObjectMethodUseCaseBuildError::Runtime)?;
             aidl_object_live(
                 &runtime_guard,
                 target.object_id(),

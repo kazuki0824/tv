@@ -233,12 +233,7 @@ impl FrontendTuneScanTxn {
         dispatch: ObjectMethodExecutionToken,
     ) -> Result<(), HalError> {
         {
-            let mut guard = runtime.lock().map_err(|_| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned while checking stopTune during scan",
-                )
-            })?;
+            let mut guard = TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned while checking stopTune during scan")?;
             let frontend_id = guard
                 .frontend_entry_for_aidl_object(object_id, object_generation)?
                 .id
@@ -289,12 +284,7 @@ impl FrontendTuneScanTxn {
         event: FrontendOperationEvent,
     ) -> Result<FrontendOperationEventAcceptance, HalError> {
         if let FrontendOperationEvent::StreamIdList { stream_ids } = event {
-            let mut guard = runtime.lock().map_err(|_| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned while accepting TMCC stream IDs",
-                )
-            })?;
+            let mut guard = TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned while accepting TMCC stream IDs")?;
             if guard
                 .query()
                 .frontend_runtime_snapshot(frontend_id)?
@@ -311,14 +301,7 @@ impl FrontendTuneScanTxn {
             return Ok(FrontendOperationEventAcceptance::Accepted);
         }
 
-        let is_current = runtime
-            .lock()
-            .map_err(|_| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned while validating a frontend operation event",
-                )
-            })?
+        let is_current = TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned while validating a frontend operation event")?
             .query()
             .frontend_runtime_snapshot(frontend_id)?
             .generation
@@ -372,12 +355,7 @@ impl FrontendTuneScanTxn {
     ) -> Result<FrontendWorkerTerminalEventAcceptance, HalError> {
         let frontend_id = FrontendRuntimeId(event.frontend_id());
         let acceptance = {
-            let mut guard = runtime.lock().map_err(|_| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned while accepting a frontend worker terminal",
-                )
-            })?;
+            let mut guard = TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned while accepting a frontend worker terminal")?;
             FrontendWorkerTerminationUseCase::accept_worker_terminal(&mut guard, event)?
         };
         if acceptance == FrontendWorkerTerminalEventAcceptance::Accepted {
@@ -441,12 +419,7 @@ impl FrontendTuneScanTxn {
         object_generation: AidlObjectGeneration,
     ) -> Result<FrontendFixedPowerPreparation, HalError> {
         let (frontend_id, lnb_id, authority) = {
-            let guard = runtime.lock().map_err(|_| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned during fixed-power preflight",
-                )
-            })?;
+            let guard = TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned during fixed-power preflight")?;
             let frontend = guard.frontend_entry_for_aidl_object(object_id, object_generation)?;
             let frontend_id = frontend.id;
             if frontend.satellite_power_topology != SatellitePowerTopology::InternalFixed15V {
@@ -471,12 +444,7 @@ impl FrontendTuneScanTxn {
 
         authority.execute(|permit| {
             let (prepared, newly_retained) = {
-                let mut guard = runtime.lock().map_err(|_| {
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "service runtime lock poisoned during fixed-power preparation",
-                    )
-                })?;
+                let mut guard = TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned during fixed-power preparation")?;
                 let current = guard.frontend_entry_for_aidl_object(object_id, object_generation)?;
                 if current.id != frontend_id
                     || current.satellite_power_topology != SatellitePowerTopology::InternalFixed15V
@@ -532,14 +500,7 @@ impl FrontendTuneScanTxn {
 
             let completed = prepared.execute(&permit);
             let backend_result = completed.backend_result();
-            let finish_result = runtime
-                .lock()
-                .map_err(|_| {
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "service runtime lock poisoned while finishing fixed power",
-                    )
-                })?
+            let finish_result = TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned while finishing fixed power")?
                 .lnb_control_txn()
                 .finish(completed);
             match finish_result {
@@ -553,12 +514,7 @@ impl FrontendTuneScanTxn {
                         maleicacid_tuner_hal2_lnb::LnbBackendApplyOutcome::Rejected(_)
                     ) =>
                 {
-                    let mut guard = runtime.lock().map_err(|_| {
-                        HalError::internal(
-                            HalInternalKind::InvariantViolation,
-                            "service runtime lock poisoned while rolling back fixed power",
-                        )
-                    })?;
+                    let mut guard = TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned while rolling back fixed power")?;
                     Err(Self::rollback_new_fixed_power_lease(
                         &mut guard,
                         frontend_id,
@@ -576,12 +532,7 @@ impl FrontendTuneScanTxn {
         frontend_id: FrontendRuntimeId,
     ) -> Result<(), HalError> {
         let (lnb_id, authority) = {
-            let guard = runtime.lock().map_err(|_| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned during fixed-power release preflight",
-                )
-            })?;
+            let guard = TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned during fixed-power release preflight")?;
             let Some(lnb_id) = guard.registry().frontend_fixed_power_lnb(frontend_id) else {
                 return Ok(());
             };
@@ -594,12 +545,7 @@ impl FrontendTuneScanTxn {
 
         authority.execute(|permit| {
             let prepared = {
-                let mut guard = runtime.lock().map_err(|_| {
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "service runtime lock poisoned during fixed-power release",
-                    )
-                })?;
+                let mut guard = TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned during fixed-power release")?;
                 if guard.registry().frontend_fixed_power_lnb(frontend_id) != Some(lnb_id) {
                     return Ok(());
                 }
@@ -654,25 +600,13 @@ impl FrontendTuneScanTxn {
             };
 
             let completed = prepared.execute(&permit);
-            match runtime
-                .lock()
-                .map_err(|_| {
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "service runtime lock poisoned while finishing fixed-power release",
-                    )
-                })?
+            match TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned while finishing fixed-power release")?
                 .lnb_control_txn()
                 .finish(completed)
             {
                 Ok(()) => Ok(()),
                 Err(error) => {
-                    let mut guard = runtime.lock().map_err(|_| {
-                        HalError::internal(
-                            HalInternalKind::InvariantViolation,
-                            "service runtime lock poisoned while restoring fixed-power lease",
-                        )
-                    })?;
+                    let mut guard = TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned while restoring fixed-power lease")?;
                     Err(Self::restore_fixed_power_lease_after_failure(
                         &mut guard,
                         frontend_id,
@@ -691,12 +625,7 @@ impl FrontendTuneScanTxn {
         converted: &FrontendSettingsRequest,
         scan_mode: Option<FrontendScanMode>,
     ) -> Result<(), HalError> {
-        let guard = runtime.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned during frontend begin preflight",
-            )
-        })?;
+        let guard = TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned during frontend begin preflight")?;
         let entry = guard.frontend_entry_for_aidl_object(object_id, object_generation)?;
         let normalized = converted
             .request
@@ -740,14 +669,7 @@ impl FrontendTuneScanTxn {
         runtime: &SharedFrontendRuntime,
         frontend_id: FrontendRuntimeId,
     ) -> Result<(), HalError> {
-        let terminal = runtime
-            .lock()
-            .map_err(|_| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned while checking fixed-power release",
-                )
-            })?
+        let terminal = TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned while checking fixed-power release")?
             .query()
             .frontend_runtime_snapshot(frontend_id.0)
             .map(|snapshot| {
@@ -815,12 +737,7 @@ pub fn set_frontend_lnb_object_use_case(
     dispatch: ObjectMethodExecutionToken,
 ) -> Result<(), HalError> {
     let (frontend_id, authority) = {
-        let guard = runtime.lock().map_err(|_| {
-            HalError::internal(
-                maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned while resolving frontend LNB I/O authority",
-            )
-        })?;
+        let guard = TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned while resolving frontend LNB I/O authority")?;
         let frontend_entry = guard.frontend_entry_for_aidl_object(object_id, object_generation)?;
         let frontend_id = frontend_entry.id.0;
         let exported_lnb_id = guard
@@ -842,12 +759,7 @@ pub fn set_frontend_lnb_object_use_case(
     };
     authority.execute(|permit| {
         let prepared = {
-            let mut guard = runtime.lock().map_err(|_| {
-                HalError::internal(
-                    maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned while preparing frontend LNB assignment",
-                )
-            })?;
+            let mut guard = TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned while preparing frontend LNB assignment")?;
             dispatch.consume_for_object(
                 &mut guard,
                 object_id,
@@ -864,12 +776,7 @@ pub fn set_frontend_lnb_object_use_case(
             FrontendLnbRelationTxn::new(frontend_id, lnb_id).prepare(&mut guard)?
         };
         let executed = prepared.execute(&permit);
-        let mut guard = runtime.lock().map_err(|_| {
-            HalError::internal(
-                maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned while finishing frontend LNB assignment",
-            )
-        })?;
+        let mut guard = TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned while finishing frontend LNB assignment")?;
         FrontendLnbRelationTxn::finish(&mut guard, executed)
     })
 }

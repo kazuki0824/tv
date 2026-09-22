@@ -41,14 +41,7 @@ fn finish_filter_child_open_artifact_retain_failure(
     filter_id: i32,
     primary_error: HalError,
 ) -> BinderResult<Strong<dyn IFilter>> {
-    runtime
-        .lock()
-        .map_err(|_| {
-            status_from_hal_error(HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned",
-            ))
-        })?
+    maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned").map_err(status_from_hal_error)?
         .finish_filter_child_open_artifact_retain_failure_use_case(
             handle.object_id(),
             handle.generation(),
@@ -68,14 +61,7 @@ fn finish_dvr_child_open_artifact_retain_failure(
     dvr_id: i32,
     primary_error: HalError,
 ) -> BinderResult<Strong<dyn IDvr>> {
-    runtime
-        .lock()
-        .map_err(|_| {
-            status_from_hal_error(HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned",
-            ))
-        })?
+    maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned").map_err(status_from_hal_error)?
         .finish_dvr_child_open_artifact_retain_failure_use_case(
             handle.object_id(),
             handle.generation(),
@@ -98,14 +84,7 @@ fn finish_filter_child_object_construction_failure(
 ) -> BinderResult<Strong<dyn IFilter>> {
     let cleanup =
         cleanup_filter_child_open_after_object_failure(context, runtime, handle, filter_id);
-    runtime
-        .lock()
-        .map_err(|_| {
-            status_from_hal_error(HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned",
-            ))
-        })?
+    maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned").map_err(status_from_hal_error)?
         .finish_filter_child_open_object_construction_failure_use_case(primary_error, cleanup)
         .map_err(status_from_hal_error)?;
     Err(status_from_hal_error(HalError::internal(
@@ -122,14 +101,7 @@ fn finish_dvr_child_object_construction_failure(
     primary_error: HalError,
 ) -> BinderResult<Strong<dyn IDvr>> {
     let cleanup = cleanup_dvr_child_open_after_object_failure(context, runtime, handle, dvr_id);
-    runtime
-        .lock()
-        .map_err(|_| {
-            status_from_hal_error(HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned",
-            ))
-        })?
+    maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned").map_err(status_from_hal_error)?
         .finish_dvr_child_open_object_construction_failure_use_case(primary_error, cleanup)
         .map_err(status_from_hal_error)?;
     Err(status_from_hal_error(HalError::internal(
@@ -144,14 +116,7 @@ fn cleanup_filter_child_open_after_object_failure(
     handle: AidlObjectHandle,
     filter_id: i32,
 ) -> Result<(), HalError> {
-    let outcome = runtime
-        .lock()
-        .map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned",
-            )
-        })?
+    let outcome = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned")?
         .begin_filter_child_open_object_failure_cleanup_use_case(
             handle.object_id(),
             handle.generation(),
@@ -166,14 +131,7 @@ fn cleanup_dvr_child_open_after_object_failure(
     handle: AidlObjectHandle,
     dvr_id: i32,
 ) -> Result<(), HalError> {
-    let outcome = runtime
-        .lock()
-        .map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned",
-            )
-        })?
+    let outcome = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned")?
         .begin_dvr_child_open_object_failure_cleanup_use_case(
             handle.object_id(),
             handle.generation(),
@@ -312,14 +270,7 @@ fn finish_filter_child_open(
             primary,
         );
     }
-    if let Err(primary) = runtime
-        .lock()
-        .map_err(|_| {
-            status_from_hal_error(HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned",
-            ))
-        })?
+    if let Err(primary) = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned").map_err(status_from_hal_error)?
         .commit_prepared_child_object(child_handle.object_id(), child_handle.generation())
     {
         return finish_filter_child_object_construction_failure(
@@ -390,14 +341,7 @@ fn finish_dvr_child_open(
             primary,
         );
     }
-    if let Err(primary) = runtime
-        .lock()
-        .map_err(|_| {
-            status_from_hal_error(HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned",
-            ))
-        })?
+    if let Err(primary) = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned").map_err(status_from_hal_error)?
         .commit_prepared_child_object(child_handle.object_id(), child_handle.generation())
     {
         return finish_dvr_child_object_construction_failure(

@@ -121,12 +121,7 @@ pub type SharedLnbRuntime = Arc<Mutex<TunerServiceRuntime>>;
 fn lock_shared_lnb_runtime(
     runtime: &SharedLnbRuntime,
 ) -> Result<MutexGuard<'_, TunerServiceRuntime>, HalError> {
-    runtime.lock().map_err(|_| {
-        HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "service runtime lock poisoned during LNB operation",
-        )
-    })
+    TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned during LNB operation")
 }
 
 fn live_lnb_io_authority(

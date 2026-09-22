@@ -109,12 +109,7 @@ fn run_filter_delay_delivery(
         };
         let runtime = context.runtime();
         let (snapshots, deadline) = {
-            let mut guard = runtime.lock().map_err(|_| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "service runtime lock poisoned while polling delayed filter events",
-                )
-            })?;
+            let mut guard = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned while polling delayed filter events")?;
             guard.poll_filter_delay_delivery()?
         };
         if !snapshots.is_empty() {
@@ -311,7 +306,7 @@ fn finish_filter_callback_delivery_failure(
     phase: CallbackDeliveryFailurePhase,
     primary: HalError,
 ) -> Result<(), HalError> {
-    match runtime.lock() {
+    match TunerServiceRuntime::lock_shared(runtime, "filter callback failure") {
         Ok(mut runtime) => runtime.finish_callback_delivery_failure_use_case(
             CallbackDeliveryFailureReport::filter(
                 handle.object_id(),
@@ -320,7 +315,10 @@ fn finish_filter_callback_delivery_failure(
                 primary,
             ),
         ),
-        Err(_) => {
+        Err(lock_error) => {
+            let primary = maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
+                "filter callback failure runtime lock", primary, lock_error,
+            );
             let record = FilterCallbackDeliveryDiagnosticRecord::new(
                 filter_callback_diagnostic_phase(phase),
                 handle.object_id(),
@@ -457,14 +455,7 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
                 continue;
             }
             if let Some(start_id) = pending_start_id {
-                let commit_result = runtime
-                    .lock()
-                    .map_err(|_| {
-                        HalError::internal(
-                            HalInternalKind::InvariantViolation,
-                            "service runtime lock poisoned while committing filter startId delivery",
-                        )
-                    })
+                let commit_result = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned while committing filter startId delivery")
                     .and_then(|mut runtime| {
                         runtime.commit_filter_start_id_delivery(
                             handle.object_id(),

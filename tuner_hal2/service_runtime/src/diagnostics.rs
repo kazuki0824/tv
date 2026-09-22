@@ -60,6 +60,14 @@ impl FrontendDiagnosticSnapshot {
 
 pub const DEFAULT_DIAGNOSTIC_STORE_LIMIT: usize = 128;
 
+/// パケット処理で破棄・配送失敗が起きた分離器と、その時点の世代。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PacketPipelineDiagnosticRecord {
+    pub demux_id: i32,
+    pub demux_generation: u64,
+    pub diagnostic: maleicacid_tuner_hal2_demux::PipelineDiagnostic,
+}
+
 fn saturating_increment_atomic_u64(counter: &AtomicU64, owner: &'static str) {
     let previous = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
         Some(value.saturating_add(1))

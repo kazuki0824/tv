@@ -391,12 +391,7 @@ fn poll_dvr_status_snapshot(
     runtime: &SharedTunerRuntime,
     handle: AidlObjectHandle,
 ) -> Result<DvrStatusPollSnapshot, HalError> {
-    let guard = runtime.lock().map_err(|_| {
-        HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "service runtime lock poisoned while querying DVR status",
-        )
-    })?;
+    let guard = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned while querying DVR status")?;
     guard.dvr_status_poll_snapshot_for_aidl_object(handle.object_id(), handle.generation())
 }
 
@@ -404,12 +399,7 @@ fn dvr_status_metadata_snapshot(
     runtime: &SharedTunerRuntime,
     handle: AidlObjectHandle,
 ) -> Result<DvrStatusPollSnapshot, HalError> {
-    let guard = runtime.lock().map_err(|_| {
-        HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "service runtime lock poisoned while querying DVR status metadata",
-        )
-    })?;
+    let guard = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned while querying DVR status metadata")?;
     guard.dvr_status_metadata_snapshot_for_aidl_object(handle.object_id(), handle.generation())
 }
 
@@ -530,12 +520,7 @@ fn record_dvr_callback_delivery_failure(
 ) {
     let finish_result = (|| -> Result<(), HalError> {
         let runtime = context.runtime();
-        let mut guard = runtime.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "service runtime lock poisoned while finishing DVR callback delivery failure",
-            )
-        })?;
+        let mut guard = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned while finishing DVR callback delivery failure")?;
         if phase == CallbackDeliveryFailurePhase::PostCommitNotification {
             guard.finish_dvr_post_commit_notification_failure_use_case(
                 handle.object_id(),
@@ -904,7 +889,9 @@ fn dvr_notifier_owner_generation_is_fenced(
     handle: AidlObjectHandle,
 ) -> bool {
     let runtime = context.runtime();
-    let Ok(runtime) = runtime.lock() else {
+    let Ok(runtime) = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
+        &runtime, "DVR notifier owner generation",
+    ) else {
         return false;
     };
     runtime
