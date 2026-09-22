@@ -149,7 +149,7 @@ class ChannelScanController(
             val tune = tunerController.tuneForScan(candidate)
             if (!tune.success) {
                 diagnostics += ScanDiagnostic(candidate, "選局に失敗しました result=${tune.resultCode} ${tune.message}")
-                return true
+                return tune.resultCode != Tuner.RESULT_INVALID_STATE
             }
             activateScanGeneration(tune.generation)
             try {
