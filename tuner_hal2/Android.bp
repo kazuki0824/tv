@@ -805,6 +805,8 @@ rust_test {
     srcs: ["compile_contract/src/lib.rs"],
     edition: "2021",
     rustlibs: [
+        "libmaleicacid_tuner_hal2_common",
+        "libmaleicacid_tuner_hal2_control_core",
         "libmaleicacid_tuner_hal2_device",
         "libstatic_assertions",
     ],

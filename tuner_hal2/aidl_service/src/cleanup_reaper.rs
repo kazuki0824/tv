@@ -159,22 +159,6 @@ fn close_method(kind: AidlObjectKind) -> Result<AidlMethodCall, HalError> {
     }
 }
 
-fn clear_pending_cleanup_job(
-    pending: &Arc<Mutex<std::collections::BTreeMap<CleanupJobKey, CleanupStep>>>,
-    key: CleanupJobKey,
-) -> Result<(), HalError> {
-    pending
-        .lock()
-        .map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "cleanup reaper canonical pending registry lock poisoned",
-            )
-        })?
-        .remove(&key);
-    Ok(())
-}
-
 fn mark_cleanup_reaper_critical(context: &AidlServiceContext) {
     let shared_runtime = context.runtime();
     maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::mark_shared_service_critical(
@@ -186,7 +170,10 @@ fn run_cleanup_job(
     context: Weak<AidlServiceContext>,
     policy: CleanupReaperPolicy,
     job: CleanupJob,
-    pending: Arc<Mutex<std::collections::BTreeMap<CleanupJobKey, CleanupStep>>>,
+    pending: maleicacid_tuner_hal2_service_runtime::WorkerRuntimeReaperPending<
+        CleanupJobKey,
+        CleanupStep,
+    >,
     worker: maleicacid_tuner_hal2_service_runtime::WorkerContext,
 ) {
     let key = CleanupJobKey::from_handle(job.handle);
@@ -207,30 +194,19 @@ fn run_cleanup_job(
             if !terminal {
                 mark_cleanup_reaper_critical(&context);
             }
-            if clear_pending_cleanup_job(&pending, key).is_err() {
-                mark_cleanup_reaper_critical(&context);
-            }
             return;
         }
         let dependency = match context.cleanup_dependency_for_handle(job.handle) {
             Ok(dependency) => dependency,
             Err(_) if context.cleanup_is_terminal_for_handle(job.handle) == Ok(true) => {
-                if clear_pending_cleanup_job(&pending, key).is_err() {
-                    mark_cleanup_reaper_critical(&context);
-                }
                 return;
             }
             Err(_) => {
                 mark_cleanup_reaper_critical(&context);
-                if clear_pending_cleanup_job(&pending, key).is_err() {
-                    mark_cleanup_reaper_critical(&context);
-                }
                 return;
             }
         };
-        if let Ok(mut guard) = pending.lock() {
-            guard.insert(key, dependency);
-        } else {
+        if pending.update_value(&key, dependency).is_err() {
             mark_cleanup_reaper_critical(&context);
             return;
         }
@@ -238,9 +214,6 @@ fn run_cleanup_job(
             crate::object_runtime::retry_cleanup_from_reaper(&context, job.handle, method)
         });
         if result.is_ok() {
-            if clear_pending_cleanup_job(&pending, key).is_err() {
-                mark_cleanup_reaper_critical(&context);
-            }
             return;
         }
         attempt = attempt.saturating_add(1);

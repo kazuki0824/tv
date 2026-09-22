@@ -1,5 +1,6 @@
 pub use maleicacid_tuner_hal2_control_core::{
-    WorkerContext, WorkerHandle, WorkerRuntime, WorkerRuntimeReaperQueue, WorkerRuntimeSupervisor,
+    WorkerContext, WorkerHandle, WorkerRuntime, WorkerRuntimeReaperPending,
+    WorkerRuntimeReaperQueue, WorkerRuntimeReaperReservation, WorkerRuntimeSupervisor,
     WorkerTerminalResult,
 };
 
