@@ -193,12 +193,14 @@ A/B/Cの分類と`Txn` / `UseCase` / `Context`の命名判定は別である。B
 
 ##### 共通の失敗伝達とワーカー管理の実装位置
 
-論理契約は`../TUNER_HAL_DESIGN_JA.md`の「0-S-1. 設計原則」「ワーカー失敗と所有権境界」「診断可観測性の固定」を正とする。
+論理契約は`../TUNER_HAL_DESIGN_JA.md`の「0-S-1. 設計原則」、0-S-3Bの`WorkerRuntime`および`WorkerFailureClassifier`、「診断可観測性の固定」を正とする。型付き情報の伝達、ロック操作、回収ワーカーの接続手順は`CODE_CONVENTION.md`の§1・§2・§12・§13を参照する。
 
-- `common/src/lib.rs`の`CapabilitySelectionError`、`CapabilityClosure`、`FmqFailureKind`を内部の共通エラー型とし、能力選択とFMQ配送の利用側は同型を参照する。`boot.rs::demux_runtime_error_to_hal`は配送種別と対象IDを保持し、取消し失敗は既存の`compose_primary_cleanup_failure`へ渡す。公開変換は`binder_adapter/src/status.rs`へ集約する。
-- `aidl_service/src/service_entry.rs`の探索処理は`FrontendProbeOutcome::DeviceProbeFailed`から`StartupDiagnosticRecord::DeviceProbeFailed`へOSエラーを渡す。能力選択は`HalError::CapabilitySelectionFailed`で選択結果の失敗情報を渡す。
-- `TunerServiceRuntime`が構築時に一度だけ生成する`ServiceFailureState`は、利用停止とロック汚染検出回数を同じatomic値に持つ。外部へ渡す複製は読取り専用で、通常状態の第二所有者にはしない。`lock_shared`と`mark_shared_service_critical`は、汚染時に`PoisonError::get_ref`から構築後不変の診断参照だけを取得し、ガードを解放してから停止を記録する。`into_inner`による通常状態の回復は行わない。`ServiceFailureSnapshot`は当該サービスの検出回数と`diagnostic_counter_saturated`を含む。
-- `WorkerRuntimeSupervisor::start_worker`は`WorkerRuntime`を保持し、その`WorkerContext`を起床通知と待機で共有する。`worker_terminal_result`は終了済みワーカーだけを回収し、結果を保持する。DVR通知側は弱参照で管理部を参照し、待機前に強参照を解放する。従属参照の破棄は停止・起床要求だけを行い、終了待ちは行わない。
+| 責務 | 実装所有者・対応箇所 |
+|---|---|
+| 能力選択とFMQ配送の共通エラー表現 | `common/src/lib.rs::{CapabilitySelectionError, CapabilityClosure, FmqFailureKind, HalError}`。能力選択側は`service_runtime/src/capability_selection.rs`と`capability_snapshot.rs`、配送側の変換は`service_runtime/src/boot.rs::demux_runtime_error_to_hal`、公開状態への変換は`binder_adapter/src/status.rs` |
+| 機器探索と探索段階の診断との接続 | `aidl_service/src/service_entry.rs`、`service_runtime/src/boot.rs::FrontendProbeOutcome::DeviceProbeFailed`、`service_runtime/src/diagnostics.rs::StartupDiagnosticRecord::DeviceProbeFailed` |
+| サービス異常時状態と診断参照 | `service_runtime/src/boot.rs::TunerServiceRuntime`が所有する`ServiceFailureState`。構築時に一度生成する参照を保持し、利用停止と汚染検出回数の格納先は単一のアトミック値とする。外部参照の入口は`failure_state`、読取り結果は`ServiceFailureSnapshot`であり、検出回数と`diagnostic_counter_saturated`を含む。状態ロックの入口は`lock_shared`、利用停止の入口は`mark_service_critical`と`mark_shared_service_critical` |
+| DVR通知の回収ワーカーと汎用管理部との接続 | `aidl_service/src/dvr_callback_delivery.rs::start_dvr_status_notifier_reaper`から、上表の`WorkerRuntime`所有者に従属する`WorkerRuntimeSupervisor::{start_worker, notify_worker, worker_terminal_result}`へ接続。停止・待機の参照は同所有者の`WorkerContext`、終了結果の分類は上表の`WorkerFailureClassifier` |
 
 ##### 共通化対象のRust物理化追加要件
 
