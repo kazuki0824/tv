@@ -1,0 +1,360 @@
+{
+  "fixture": "test.ts",
+  "sha256": "1ee82ee2dcf0b39715203587f0999c86a4d9b218905d916cbeacf0c344c30c20",
+  "size_bytes": 17790601,
+  "packet_size": 188,
+  "complete_packets": 94630,
+  "trailing_bytes": 161,
+  "scrambled_complete_packets": 0,
+  "transport_stream_id": 32739,
+  "original_network_id": 32739,
+  "remote_control_key_id": 6,
+  "services": [
+    {
+      "service_id": 1048,
+      "name": "TBS1",
+      "service_type": 1,
+      "pmt_pid": 257,
+      "pcr_pid": 256,
+      "free_ca_mode": false,
+      "elementary_streams": [
+        {
+          "pid": 273,
+          "stream_type": 2
+        },
+        {
+          "pid": 274,
+          "stream_type": 15
+        },
+        {
+          "pid": 276,
+          "stream_type": 6
+        },
+        {
+          "pid": 277,
+          "stream_type": 6
+        },
+        {
+          "pid": 2112,
+          "stream_type": 13
+        },
+        {
+          "pid": 2128,
+          "stream_type": 13
+        },
+        {
+          "pid": 2135,
+          "stream_type": 13
+        },
+        {
+          "pid": 2136,
+          "stream_type": 13
+        },
+        {
+          "pid": 2137,
+          "stream_type": 13
+        },
+        {
+          "pid": 2142,
+          "stream_type": 13
+        },
+        {
+          "pid": 2143,
+          "stream_type": 13
+        },
+        {
+          "pid": 2144,
+          "stream_type": 13
+        },
+        {
+          "pid": 2158,
+          "stream_type": 13
+        }
+      ],
+      "program_ca_descriptors": [
+        {
+          "ca_system_id": 5,
+          "ca_pid": 49
+        }
+      ]
+    },
+    {
+      "service_id": 1049,
+      "name": "TBS2",
+      "service_type": 1,
+      "pmt_pid": 258,
+      "pcr_pid": 256,
+      "free_ca_mode": false,
+      "elementary_streams": [
+        {
+          "pid": 273,
+          "stream_type": 2
+        },
+        {
+          "pid": 274,
+          "stream_type": 15
+        },
+        {
+          "pid": 276,
+          "stream_type": 6
+        },
+        {
+          "pid": 277,
+          "stream_type": 6
+        },
+        {
+          "pid": 2112,
+          "stream_type": 13
+        },
+        {
+          "pid": 2128,
+          "stream_type": 13
+        },
+        {
+          "pid": 2135,
+          "stream_type": 13
+        },
+        {
+          "pid": 2136,
+          "stream_type": 13
+        },
+        {
+          "pid": 2137,
+          "stream_type": 13
+        },
+        {
+          "pid": 2142,
+          "stream_type": 13
+        },
+        {
+          "pid": 2143,
+          "stream_type": 13
+        },
+        {
+          "pid": 2144,
+          "stream_type": 13
+        },
+        {
+          "pid": 2158,
+          "stream_type": 13
+        }
+      ],
+      "program_ca_descriptors": [
+        {
+          "ca_system_id": 5,
+          "ca_pid": 49
+        }
+      ]
+    },
+    {
+      "service_id": 1183,
+      "name": "Gガイド",
+      "service_type": 192,
+      "pmt_pid": 2032,
+      "pcr_pid": null,
+      "free_ca_mode": false,
+      "elementary_streams": [
+        {
+          "pid": 2033,
+          "stream_type": 13
+        },
+        {
+          "pid": 2034,
+          "stream_type": 13
+        },
+        {
+          "pid": 2035,
+          "stream_type": 13
+        },
+        {
+          "pid": 2036,
+          "stream_type": 13
+        }
+      ],
+      "program_ca_descriptors": []
+    },
+    {
+      "service_id": 1432,
+      "name": "TBS",
+      "service_type": 192,
+      "pmt_pid": 8136,
+      "pcr_pid": 512,
+      "free_ca_mode": false,
+      "elementary_streams": [
+        {
+          "pid": 641,
+          "stream_type": 27
+        },
+        {
+          "pid": 643,
+          "stream_type": 15
+        },
+        {
+          "pid": 647,
+          "stream_type": 6
+        },
+        {
+          "pid": 2432,
+          "stream_type": 13
+        },
+        {
+          "pid": 2441,
+          "stream_type": 13
+        },
+        {
+          "pid": 2442,
+          "stream_type": 13
+        },
+        {
+          "pid": 2443,
+          "stream_type": 13
+        }
+      ],
+      "program_ca_descriptors": []
+    }
+  ],
+  "selected_service_id": 1048,
+  "selected_service_pf_events": [
+    {
+      "event_id": 48556,
+      "start_time_jst": "2026-09-22T17:00:00+09:00",
+      "start_time_unix_ms": 1790064000000,
+      "duration_ms": 7200000
+    },
+    {
+      "event_id": 48561,
+      "start_time_jst": "2026-09-22T19:00:00+09:00",
+      "start_time_unix_ms": 1790071200000,
+      "duration_ms": 16200000
+    }
+  ],
+  "section_reference": [
+    {
+      "pid": 0,
+      "table_id": 0,
+      "section_count": 83,
+      "payload_bytes": 2656,
+      "unique_sections": [
+        {
+          "sha256": "b876326e91303347a2ecac047903639d99bf5f416279e98be8dba553ba1502af",
+          "count": 83
+        }
+      ]
+    },
+    {
+      "pid": 16,
+      "table_id": 64,
+      "section_count": 8,
+      "payload_bytes": 1040,
+      "unique_sections": [
+        {
+          "sha256": "b4a5f13a0938ffcfeed019f7e4f2973da3d83963e73801e634cd694cb1705b4f",
+          "count": 8
+        }
+      ]
+    },
+    {
+      "pid": 17,
+      "table_id": 66,
+      "section_count": 4,
+      "payload_bytes": 424,
+      "unique_sections": [
+        {
+          "sha256": "32e94f1df87c3e324534a785c35e0bd876d4a307ad3597651b0720a7727b2736",
+          "count": 4
+        }
+      ]
+    },
+    {
+      "pid": 18,
+      "table_id": 78,
+      "section_count": 32,
+      "payload_bytes": 27160,
+      "unique_sections": [
+        {
+          "sha256": "09997d1b4190a885ed8dd3caa3b8bfead76aebc3816c4219d17ef1df917e69b8",
+          "count": 8
+        },
+        {
+          "sha256": "1293e782bcd563765c9f52d45b15a3b5b86ce740c578e6eb04692eeb0ab10913",
+          "count": 8
+        },
+        {
+          "sha256": "7865780225e0445e9fe3ee1e26eed187e992590a3775ac0f460ec03a1d407766",
+          "count": 8
+        },
+        {
+          "sha256": "e4e154057d71470f12ff80e894d52d718a8efe15fb424475fe40018fcf2fa8e6",
+          "count": 8
+        }
+      ]
+    },
+    {
+      "pid": 20,
+      "table_id": 115,
+      "section_count": 2,
+      "payload_bytes": 28,
+      "unique_sections": [
+        {
+          "sha256": "ebb75791b933e55da64c72e321417bf012f20a27e62cf084acc2d8dd1d6c495c",
+          "count": 1
+        },
+        {
+          "sha256": "f4a3aa898b15ec4dac71ff9e885584b1049409991bba01217cb464c17dd1789a",
+          "count": 1
+        }
+      ]
+    },
+    {
+      "pid": 257,
+      "table_id": 2,
+      "section_count": 83,
+      "payload_bytes": 19173,
+      "unique_sections": [
+        {
+          "sha256": "2ca9b2639922bc5003b3d9cd59b03f50d3d96b25d7d133342c2ed160a8cbab5c",
+          "count": 83
+        }
+      ]
+    },
+    {
+      "pid": 258,
+      "table_id": 2,
+      "section_count": 83,
+      "payload_bytes": 19173,
+      "unique_sections": [
+        {
+          "sha256": "8586cdf518d8791ac9111aa3d02be3ef9eea05a03f8abeed3534729b62bccbb4",
+          "count": 83
+        }
+      ]
+    },
+    {
+      "pid": 2032,
+      "table_id": 2,
+      "section_count": 82,
+      "payload_bytes": 7380,
+      "unique_sections": [
+        {
+          "sha256": "9b954c74630612bb26d92ba822b8d85d65c578c3eb73ed40911920996d0ad83d",
+          "count": 82
+        }
+      ]
+    },
+    {
+      "pid": 8136,
+      "table_id": 2,
+      "section_count": 41,
+      "payload_bytes": 4059,
+      "unique_sections": [
+        {
+          "sha256": "3bf78e63cb5ba34bd8d3367ec652768a54854fe8170e77247194764bb7d27f40",
+          "count": 41
+        }
+      ]
+    }
+  ],
+  "reference_tool": "TSDuck 3.45-4798",
+  "reference_section_command": "tstables --isdb --pid PID --tid TABLE_ID --all-sections --binary-output sections.bin test.ts",
+  "reference_tables_command": "tstables --isdb --default-charset ARIB --pid 0 --pid 16 --pid 17 --pid 18 --pid 20 --pid 257 --pid 258 --pid 2032 --pid 8136 --xml-output tables.xml test.ts"
+}
