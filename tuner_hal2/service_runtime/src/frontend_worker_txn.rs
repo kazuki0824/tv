@@ -297,29 +297,11 @@ impl FrontendWorkerReaperJob {
     fn run(
         self,
         runtime: &Weak<Mutex<TunerServiceRuntime>>,
-        pending: &Mutex<BTreeMap<(i32, FrontendWorkerKind), Option<FrontendWorkerKind>>>,
         deadline: Duration,
         diagnostics: &SharedFrontendWorkerCleanupDiagnostics,
     ) {
-        if let Err(failure) = self.run_until_terminal(runtime, pending, deadline) {
+        if let Err(failure) = self.run_until_terminal(runtime, deadline) {
             let (job, mut error) = *failure;
-            match pending.lock() {
-                Ok(mut pending) => {
-                    for key in &job.keys {
-                        pending.remove(key);
-                    }
-                }
-                Err(_) => {
-                    error = compose_primary_cleanup_failure(
-                        "frontend reaper failure and reservation release",
-                        error,
-                        HalError::cleanup_failed(
-                            "frontend reaper",
-                            "pending registry lock poisoned",
-                        ),
-                    );
-                }
-            }
             if let Some(runtime) = runtime.upgrade() {
                 if let Err(record_error) =
                     accept_frontend_worker_terminal_outcomes(&runtime, &job.tickets.completed)
@@ -387,7 +369,6 @@ impl FrontendWorkerReaperJob {
     fn run_until_terminal(
         mut self,
         runtime: &Weak<Mutex<TunerServiceRuntime>>,
-        pending: &Mutex<BTreeMap<(i32, FrontendWorkerKind), Option<FrontendWorkerKind>>>,
         deadline: Duration,
     ) -> Result<(), Box<(Self, HalError)>> {
         let mut deadline_elapsed = false;
@@ -403,26 +384,6 @@ impl FrontendWorkerReaperJob {
         loop {
             match self.tickets.try_complete() {
                 Ok(outcomes) => {
-                    match pending.lock() {
-                        Ok(mut pending) => {
-                            for key in &self.keys {
-                                pending.remove(key);
-                            }
-                        }
-                        Err(_) => {
-                            self.tickets = FrontendWorkerReaperTicketGroup {
-                                pending: Vec::new(),
-                                completed: outcomes,
-                            };
-                            return Err(Box::new((
-                                self,
-                                HalError::cleanup_failed(
-                                    "frontend reaper",
-                                    "pending registry lock poisoned after completion",
-                                ),
-                            )));
-                        }
-                    }
                     if let Some(runtime) = runtime.upgrade() {
                         (self.completion_action)(&runtime, outcomes, deadline_elapsed);
                     }
@@ -532,11 +493,12 @@ impl FrontendWorkerReaperHandle {
     ) -> Result<Self, HalError> {
         let runner = Arc::new(
             move |job: FrontendWorkerReaperJob,
-                  pending: Arc<
-                Mutex<BTreeMap<(i32, FrontendWorkerKind), Option<FrontendWorkerKind>>>,
+                  _pending: crate::worker_runtime::WorkerRuntimeReaperPending<
+                (i32, FrontendWorkerKind),
+                Option<FrontendWorkerKind>,
             >,
                   _worker: crate::worker_runtime::WorkerContext| {
-                job.run(&runtime, pending.as_ref(), deadline, &diagnostics);
+                job.run(&runtime, deadline, &diagnostics);
             },
         );
         Ok(Self {
