@@ -1443,13 +1443,13 @@ mod tests {
 
     #[test]
     fn reaper_wait_is_cancelled_only_after_the_last_queue_owner_is_dropped() {
-        use std::sync::{mpsc, Arc, Mutex};
+        use std::sync::{mpsc, Arc};
         use std::time::{Duration, Instant};
         let (started_tx, started_rx) = mpsc::channel();
         let (finished_tx, finished_rx) = mpsc::channel();
         let runner = Arc::new(
             move |(),
-                  _pending: Arc<Mutex<std::collections::BTreeMap<u32, u32>>>,
+                  _pending: super::WorkerRuntimeReaperPending<u32, u32>,
                   context: super::WorkerContext| {
                 started_tx.send(()).unwrap();
                 context.wait_until(Instant::now().checked_add(Duration::from_secs(3_600)));
