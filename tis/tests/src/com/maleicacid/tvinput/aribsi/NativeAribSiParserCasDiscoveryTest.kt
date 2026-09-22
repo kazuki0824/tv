@@ -11,6 +11,58 @@ import org.junit.Test
 @Suppress("LargeClass", "TooManyFunctions")
 class NativeAribSiParserCasDiscoveryTest {
     @Test
+    fun snapshotFailureKeepsItsReasonAndDoesNotBecomeEmptyFacts() {
+        NativeAribSiParser().use { parser ->
+            val method =
+                NativeAribSiParser::class.java
+                    .getDeclaredMethod("nativeSnapshotBulkJson", Long::class.javaPrimitiveType)
+                    .apply { isAccessible = true }
+            val thrown = runCatching { method.invoke(parser, -1L) }.exceptionOrNull()
+            check(thrown is java.lang.reflect.InvocationTargetException)
+            val failure = thrown.cause
+            check(failure is NativeSiException && failure.reason == NativeSiFailureReason.INVALID_HANDLE)
+            check(parser.programStateSnapshot().events.isEmpty())
+        }
+    }
+
+    @Test
+    fun nativeByteInputFailuresDoNotBecomeEmptyValues() {
+        NativeAribSiParser().use { parser ->
+            for (name in listOf(
+                "nativeDecodeAribString",
+                "nativeDecodeAribStringDiagnosticSummary",
+                "nativeExtractProgramKeyResult",
+                "nativeDecodeChannelProviderData",
+            )) {
+                val method = NativeAribSiParser::class.java.getDeclaredMethod(name, ByteArray::class.java)
+                method.isAccessible = true
+                val thrown = runCatching { method.invoke(parser, null) }.exceptionOrNull()
+                check(thrown is java.lang.reflect.InvocationTargetException)
+                val failure = thrown.cause
+                check(failure is NativeSiException && failure.reason == NativeSiFailureReason.JNI_INPUT)
+            }
+            check(parser.decodeAribString(ByteArray(0)).isEmpty())
+            check(parser.extractProgramKeyResult(ByteArray(0)).isEmpty())
+            check(parser.decodeChannelProviderData(ByteArray(0)).isEmpty())
+        }
+    }
+
+    @Test
+    fun codecJniFailureDoesNotBecomeInvalidCodecData() {
+        val method =
+            NativeAribSiParser::class.java
+                .getDeclaredMethod(
+                    "nativeProbeAacConfiguration",
+                    ByteArray::class.java,
+                    ByteArray::class.java,
+                ).apply { isAccessible = true }
+        val thrown = runCatching { method.invoke(null, null, null) }.exceptionOrNull()
+        check(thrown is java.lang.reflect.InvocationTargetException)
+        val failure = thrown.cause
+        check(failure is NativeSiException && failure.reason == NativeSiFailureReason.JNI_INPUT)
+    }
+
+    @Test
     fun providerJniInputFailureIsNotAnEmptyDomainValue() {
         NativeAribSiParser().use { parser ->
             for ((name, parameter) in listOf(
