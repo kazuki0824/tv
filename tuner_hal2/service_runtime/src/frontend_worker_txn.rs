@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::sync::MutexGuard;
 use std::sync::{mpsc, Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
