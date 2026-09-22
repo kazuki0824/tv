@@ -37,12 +37,7 @@ use crate::service_context::{SharedAidlServiceContext, SharedTunerRuntime};
 fn lock_runtime<'a>(
     runtime: &'a SharedTunerRuntime,
 ) -> Result<std::sync::MutexGuard<'a, TunerServiceRuntime>, HalError> {
-    runtime.lock().map_err(|_| {
-        HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "service runtime lock poisoned",
-        )
-    })
+    TunerServiceRuntime::lock_shared(runtime, "object runtime")
 }
 
 fn abort_prepared_callback_artifact_bridge(

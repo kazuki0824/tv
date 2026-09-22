@@ -112,6 +112,8 @@ pub enum DemuxRuntimeErrorKind {
     GenerationExhausted,
     QueueRuntimeFailure,
     QueueRuntimeFailureRollbackFailed,
+    FmqDeliveryFailed(FmqFailureKind),
+    FmqDeliveryRollbackFailed(FmqFailureKind),
     AvBackingFailure,
     SourceBoundaryRollbackFailed,
     RelationCommitUnknown,
@@ -535,6 +537,18 @@ impl DemuxRuntimeError {
     pub const fn queue_runtime_failure_rollback_failed(id: i32) -> Self {
         Self {
             kind: DemuxRuntimeErrorKind::QueueRuntimeFailureRollbackFailed,
+            id: Some(id),
+        }
+    }
+    pub const fn fmq_delivery_failure(id: i32, failure: FmqFailureKind) -> Self {
+        Self {
+            kind: DemuxRuntimeErrorKind::FmqDeliveryFailed(failure),
+            id: Some(id),
+        }
+    }
+    pub const fn fmq_delivery_rollback_failed(id: i32, failure: FmqFailureKind) -> Self {
+        Self {
+            kind: DemuxRuntimeErrorKind::FmqDeliveryRollbackFailed(failure),
             id: Some(id),
         }
     }
@@ -1895,12 +1909,12 @@ impl DemuxRuntime {
             FmqDeliveryAction::Overflow => Err(FilterQueuePayloadError::Overflow(
                 DemuxRuntimeError::queue_runtime_failure(filter_id),
             )),
-            FmqDeliveryAction::RuntimeFailed(_) => {
+            FmqDeliveryAction::RuntimeFailed(failure) => {
                 if let Some(filter) = self.filters.get_mut(&filter_id) {
                     filter.mark_failed();
                 }
                 Err(FilterQueuePayloadError::Runtime(
-                    DemuxRuntimeError::queue_runtime_failure(filter_id),
+                    DemuxRuntimeError::fmq_delivery_failure(filter_id, failure),
                 ))
             }
         }
@@ -3343,15 +3357,15 @@ impl DemuxRuntime {
                     .map_err(|_| DemuxRuntimeError::queue_runtime_failure(dvr_id))?;
                 Ok(0)
             }
-            FmqDeliveryAction::RuntimeFailed(_) => {
+            FmqDeliveryAction::RuntimeFailed(failure) => {
                 let abort_result = transaction.abort();
                 if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
                     dvr.mark_failed();
                 }
                 match abort_result {
-                    Ok(()) => Err(DemuxRuntimeError::queue_runtime_failure(dvr_id)),
-                    Err(_) => Err(DemuxRuntimeError::queue_runtime_failure_rollback_failed(
-                        dvr_id,
+                    Ok(()) => Err(DemuxRuntimeError::fmq_delivery_failure(dvr_id, failure)),
+                    Err(_) => Err(DemuxRuntimeError::fmq_delivery_rollback_failed(
+                        dvr_id, failure,
                     )),
                 }
             }
@@ -5074,11 +5088,11 @@ impl DemuxRuntime {
                 }
                 Ok(RecordDvrMirrorWriteOutcome::Overflow)
             }
-            FmqDeliveryAction::RuntimeFailed(_) => {
+            FmqDeliveryAction::RuntimeFailed(failure) => {
                 if let Some(dvr) = self.dvrs.get_mut(&dvr_id) {
                     dvr.mark_failed();
                 }
-                Err(DemuxRuntimeError::queue_runtime_failure(dvr_id))
+                Err(DemuxRuntimeError::fmq_delivery_failure(dvr_id, failure))
             }
         }
     }

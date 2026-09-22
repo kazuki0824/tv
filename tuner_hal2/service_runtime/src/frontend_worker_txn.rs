@@ -1562,9 +1562,7 @@ fn lock_runtime<'a>(
     runtime: &'a SharedRuntime,
     context: &'static str,
 ) -> Result<std::sync::MutexGuard<'a, TunerServiceRuntime>, HalError> {
-    runtime
-        .lock()
-        .map_err(|_| HalError::internal(HalInternalKind::InvariantViolation, context))
+    TunerServiceRuntime::lock_shared(runtime, context)
 }
 
 fn map_frontend_worker_start_error(
@@ -2039,9 +2037,7 @@ fn enqueue_timed_out_frontend_backend_submit(
             )
             .is_err()
             {
-                if let Ok(mut guard) = runtime.lock() {
-                    guard.mark_service_critical();
-                }
+                TunerServiceRuntime::mark_shared_service_critical(&runtime);
             }
         }),
     };
@@ -3207,9 +3203,7 @@ fn handle_frontend_worker_reaper_deadline(
         Some(public_error),
     );
     if diagnostic_sink.record(record).is_err() {
-        if let Ok(mut guard) = runtime.lock() {
-            guard.mark_service_critical();
-        }
+        TunerServiceRuntime::mark_shared_service_critical(&runtime);
     }
 }
 
@@ -3723,9 +3717,7 @@ pub(crate) fn start_frontend_backend_tune_worker(
                         HalInternalKind::InvariantViolation,
                         "pending frontend worker tickets lost their public failure",
                     );
-                    if let Ok(mut guard) = runtime.lock() {
-                        guard.mark_service_critical();
-                    }
+                    TunerServiceRuntime::mark_shared_service_critical(&runtime);
                     drop(tickets);
                     return Err(error);
                 }
@@ -3776,16 +3768,12 @@ pub(crate) fn start_frontend_backend_tune_worker(
                     )
                     .is_err()
                     {
-                        if let Ok(mut guard) = runtime.lock() {
-                            guard.mark_service_critical();
-                        }
+                        TunerServiceRuntime::mark_shared_service_critical(&runtime);
                     }
                 }),
             };
             if let Err(error) = reaper.enqueue(job) {
-                if let Ok(mut guard) = runtime.lock() {
-                    guard.mark_service_critical();
-                }
+                TunerServiceRuntime::mark_shared_service_critical(&runtime);
                 return Err(error);
             }
             Err(pending_stop_error)
@@ -4612,9 +4600,7 @@ pub(crate) fn start_frontend_backend_scan_session_worker(
                         HalInternalKind::InvariantViolation,
                         "pending frontend scan tickets lost their public failure",
                     );
-                    if let Ok(mut guard) = runtime.lock() {
-                        guard.mark_service_critical();
-                    }
+                    TunerServiceRuntime::mark_shared_service_critical(&runtime);
                     drop(tickets);
                     return Err(error);
                 }
@@ -4664,16 +4650,12 @@ pub(crate) fn start_frontend_backend_scan_session_worker(
                     )
                     .is_err()
                     {
-                        if let Ok(mut guard) = runtime.lock() {
-                            guard.mark_service_critical();
-                        }
+                        TunerServiceRuntime::mark_shared_service_critical(&runtime);
                     }
                 }),
             };
             if let Err(error) = reaper.enqueue(job) {
-                if let Ok(mut guard) = runtime.lock() {
-                    guard.mark_service_critical();
-                }
+                TunerServiceRuntime::mark_shared_service_critical(&runtime);
                 return Err(error);
             }
             Err(pending_stop_error)
@@ -5037,9 +5019,7 @@ fn stop_frontend_object_without_join(
                 }),
             };
             if let Err(error) = reaper.enqueue(job) {
-                if let Ok(mut guard) = runtime.lock() {
-                    guard.mark_service_critical();
-                }
+                TunerServiceRuntime::mark_shared_service_critical(&runtime);
                 return Err(error);
             }
         }
@@ -5386,9 +5366,7 @@ fn close_frontend_workers_and_live_data_with_sink(
                 }),
             };
             if let Err(error) = reaper.enqueue(job) {
-                if let Ok(mut guard) = runtime.lock() {
-                    guard.mark_service_critical();
-                }
+                TunerServiceRuntime::mark_shared_service_critical(&runtime);
                 return Err(error);
             }
             Err(HalError::cleanup_failed(

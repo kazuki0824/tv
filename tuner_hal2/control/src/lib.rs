@@ -218,7 +218,18 @@ impl<T, E> WorkerHandle<T, E> {
         T: Send + 'static,
         E: Send + 'static,
     {
-        let context = WorkerContext::new();
+        Self::start_with_context(name, run, WorkerContext::new())
+    }
+
+    fn start_with_context(
+        name: String,
+        run: impl FnOnce(WorkerContext) -> Result<T, E> + Send + 'static,
+        context: WorkerContext,
+    ) -> std::io::Result<Self>
+    where
+        T: Send + 'static,
+        E: Send + 'static,
+    {
         let thread_context = context.clone();
         let result = std::sync::Arc::new(std::sync::Mutex::new(None));
         let owner_failure = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -564,18 +575,49 @@ impl WorkerRuntime<()> {
             + 'static,
         C: FnOnce() + Send + 'static,
     {
-        let handle = Self::spawn_controlled_handle(thread_name, move |context| {
-            let terminal = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                worker(context.clone())
-            })) {
-                Ok(Ok(_result)) if context.stop_requested() => WorkerTerminalResult::StopRequested,
-                Ok(Ok(result)) => WorkerTerminalResult::Normal(result),
-                Ok(Err(error)) => WorkerTerminalResult::RuntimeFailure(error),
-                Err(_) => WorkerTerminalResult::PanicOrJoinFailure,
-            };
-            completion_signal();
-            Ok::<_, ()>(terminal)
-        })?;
+        Self::spawn_with_context(
+            thread_name,
+            owner_id,
+            generation,
+            WorkerContext::new(),
+            worker,
+            move |_| completion_signal(),
+        )
+    }
+
+    fn spawn_with_context<T, F, C>(
+        thread_name: String,
+        owner_id: i64,
+        generation: u64,
+        context: WorkerContext,
+        worker: F,
+        terminal_observer: C,
+    ) -> std::io::Result<WorkerRuntime<T>>
+    where
+        T: Send + 'static,
+        F: FnOnce(WorkerContext) -> Result<T, maleicacid_tuner_hal2_common::HalError>
+            + Send
+            + 'static,
+        C: FnOnce(&WorkerTerminalResult<T>) + Send + 'static,
+    {
+        let handle = WorkerHandle::start_with_context(
+            thread_name,
+            move |context| {
+                let terminal = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    worker(context.clone())
+                })) {
+                    Ok(Ok(_result)) if context.stop_requested() => {
+                        WorkerTerminalResult::StopRequested
+                    }
+                    Ok(Ok(result)) => WorkerTerminalResult::Normal(result),
+                    Ok(Err(error)) => WorkerTerminalResult::RuntimeFailure(error),
+                    Err(_) => WorkerTerminalResult::PanicOrJoinFailure,
+                };
+                terminal_observer(&terminal);
+                Ok::<_, ()>(terminal)
+            },
+            context,
+        )?;
         Ok(WorkerRuntime {
             owner_id,
             generation,
@@ -688,11 +730,12 @@ where
                         }
                     },
                 )
-                .map_err(|error| {
-                    maleicacid_tuner_hal2_common::HalError::internal(
-                        maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                        format!("worker reaper lane spawn failed: {error}"),
-                    )
+                .map_err(|error| maleicacid_tuner_hal2_common::HalError::Io {
+                    backend: thread_prefix,
+                    operation: "thread spawn",
+                    path: None,
+                    errno: error.raw_os_error(),
+                    detail: maleicacid_tuner_hal2_common::HalErrorDetail::new(error.to_string()),
                 })?;
             lanes.push(lane);
         }
@@ -777,7 +820,14 @@ pub struct WorkerRuntimeSupervisor<K, A, R> {
     capacity: usize,
     deadline: std::time::Duration,
     state: std::sync::Mutex<WorkerRuntimeSupervisorMaps<K, A, R>>,
-    wake: std::sync::Condvar,
+    worker: std::sync::Mutex<SupervisorWorkerState>,
+    worker_context: WorkerContext,
+}
+
+enum SupervisorWorkerState {
+    NotStarted,
+    Running(WorkerRuntime<()>),
+    Finished(WorkerTerminalResult<()>),
 }
 
 pub struct WorkerRuntimeSupervisorMaps<K, A, R> {
@@ -818,7 +868,8 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
             capacity: capacity.max(1),
             deadline,
             state: std::sync::Mutex::new(WorkerRuntimeSupervisorMaps::default()),
-            wake: std::sync::Condvar::new(),
+            worker: std::sync::Mutex::new(SupervisorWorkerState::NotStarted),
+            worker_context: WorkerContext::new(),
         }
     }
 
@@ -831,8 +882,87 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
     pub fn state(&self) -> &std::sync::Mutex<WorkerRuntimeSupervisorMaps<K, A, R>> {
         &self.state
     }
-    pub fn wake(&self) -> &std::sync::Condvar {
-        &self.wake
+    pub fn notify_worker(&self) {
+        self.worker_context.wake.notify();
+    }
+
+    pub fn start_worker(
+        &self,
+        name: &'static str,
+        run: impl FnOnce(WorkerContext) -> Result<(), maleicacid_tuner_hal2_common::HalError>
+            + Send
+            + 'static,
+        terminal_observer: impl FnOnce(&WorkerTerminalResult<()>) + Send + 'static,
+    ) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+        use maleicacid_tuner_hal2_common::{
+            HalError, HalErrorDetail, HalInvalidStateKind, WorkerLockKind,
+        };
+        let mut slot = self
+            .worker
+            .lock()
+            .map_err(|_| HalError::WorkerLockPoisoned {
+                owner: "WorkerRuntimeSupervisor",
+                lock: WorkerLockKind::SupervisorWorker,
+            })?;
+        if !matches!(*slot, SupervisorWorkerState::NotStarted) {
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "supervisor worker is already installed",
+            ));
+        }
+        let worker = WorkerRuntime::spawn_with_context(
+            name.to_owned(),
+            0,
+            1,
+            self.worker_context.clone(),
+            run,
+            terminal_observer,
+        )
+        .map_err(|error| HalError::Io {
+            backend: name,
+            operation: "thread spawn",
+            path: None,
+            errno: error.raw_os_error(),
+            detail: HalErrorDetail::new(error.to_string()),
+        })?;
+        *slot = SupervisorWorkerState::Running(worker);
+        Ok(())
+    }
+
+    pub fn worker_terminal_result(
+        &self,
+    ) -> Result<Option<WorkerTerminalResult<()>>, maleicacid_tuner_hal2_common::HalError> {
+        use maleicacid_tuner_hal2_common::{HalError, WorkerLockKind};
+        let mut slot = self
+            .worker
+            .lock()
+            .map_err(|_| HalError::WorkerLockPoisoned {
+                owner: "WorkerRuntimeSupervisor",
+                lock: WorkerLockKind::SupervisorWorker,
+            })?;
+        if matches!(&*slot, SupervisorWorkerState::Running(worker) if worker.is_finished()) {
+            if let SupervisorWorkerState::Running(worker) =
+                std::mem::replace(&mut *slot, SupervisorWorkerState::NotStarted)
+            {
+                *slot = SupervisorWorkerState::Finished(worker.join());
+            }
+        }
+        match &*slot {
+            SupervisorWorkerState::Finished(result) => Ok(Some(result.clone())),
+            SupervisorWorkerState::Running(_) => Ok(None),
+            SupervisorWorkerState::NotStarted => Err(HalError::NotInitialized {
+                resource: "supervisor worker",
+            }),
+        }
+    }
+}
+
+impl<K, A, R> Drop for WorkerRuntimeSupervisor<K, A, R> {
+    fn drop(&mut self) {
+        self.worker_context
+            .stop
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.worker_context.wake.notify();
     }
 }
 
@@ -886,12 +1016,7 @@ pub enum FmqDeliveryPhase {
     Wake,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FmqFailureKind {
-    WriteFailed,
-    ShortWrite,
-    EventFlagWakeFailed,
-}
+pub use maleicacid_tuner_hal2_common::FmqFailureKind;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FmqDeliveryAction {
@@ -980,6 +1105,114 @@ impl FmqDeliveryTxn {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn supervisor_worker_uses_canonical_stop_and_terminal_collection() {
+        use super::{WorkerRuntime, WorkerTerminalResult};
+        use std::sync::{mpsc, Arc};
+        use std::time::{Duration, Instant};
+        let supervisor = Arc::new(WorkerRuntime::supervisor::<u32, (), ()>(
+            1,
+            Duration::from_secs(1),
+        ));
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (terminal_tx, terminal_rx) = mpsc::channel();
+        supervisor
+            .start_worker(
+                "supervisor-stop-test",
+                move |control| {
+                    ready_tx.send(()).unwrap();
+                    while !control.stop_requested() {
+                        control.wait_until(None);
+                    }
+                    Ok(())
+                },
+                move |terminal| terminal_tx.send(terminal.clone()).unwrap(),
+            )
+            .unwrap();
+        ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(supervisor
+            .start_worker("duplicate", |_| Ok(()), |_| {})
+            .is_err());
+        supervisor
+            .worker_context
+            .stop
+            .store(true, std::sync::atomic::Ordering::Release);
+        supervisor.notify_worker();
+        assert_eq!(
+            terminal_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            WorkerTerminalResult::StopRequested
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(terminal) = supervisor.worker_terminal_result().unwrap() {
+                assert_eq!(terminal, WorkerTerminalResult::StopRequested);
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            supervisor.worker_terminal_result().unwrap(),
+            Some(WorkerTerminalResult::StopRequested)
+        );
+    }
+
+    #[test]
+    fn dropping_supervisor_wakes_its_parked_worker_without_a_strong_cycle() {
+        use super::WorkerRuntime;
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let supervisor = WorkerRuntime::supervisor::<u32, (), ()>(1, Duration::from_secs(1));
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (stopped_tx, stopped_rx) = mpsc::channel();
+        supervisor
+            .start_worker(
+                "supervisor-drop-test",
+                move |control| {
+                    ready_tx.send(()).unwrap();
+                    while !control.stop_requested() {
+                        control.wait_until(None);
+                    }
+                    stopped_tx.send(()).unwrap();
+                    Ok(())
+                },
+                |_| {},
+            )
+            .unwrap();
+        ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        drop(supervisor);
+        stopped_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    }
+
+    #[test]
+    fn supervisor_preserves_panic_as_a_terminal_result() {
+        use super::{WorkerRuntime, WorkerTerminalResult};
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+        let supervisor = WorkerRuntime::supervisor::<u32, (), ()>(1, Duration::from_secs(1));
+        let (terminal_tx, terminal_rx) = mpsc::channel();
+        supervisor
+            .start_worker(
+                "supervisor-panic-test",
+                |_| panic!("injected panic"),
+                move |terminal| terminal_tx.send(terminal.clone()).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            terminal_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            WorkerTerminalResult::PanicOrJoinFailure
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while supervisor.worker_terminal_result().unwrap().is_none() {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            supervisor.worker_terminal_result().unwrap(),
+            Some(WorkerTerminalResult::PanicOrJoinFailure)
+        );
+    }
+
     #[test]
     fn reaper_wait_is_cancelled_only_after_the_last_queue_owner_is_dropped() {
         use std::sync::{mpsc, Arc, Mutex};
@@ -1288,6 +1521,7 @@ mod tests {
                     let _guard = handle.completion.0.lock().unwrap();
                     panic!("poison completion");
                 }
+                WorkerLockKind::SupervisorWorker => panic!("not a worker result lock"),
             }));
             assert!(poisoned.is_err());
             release_tx.send(()).unwrap();

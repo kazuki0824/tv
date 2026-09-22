@@ -5,6 +5,9 @@ version = 3
 [[package]]
 name = "maleicacid-tuner-hal2-capability-selection-host-ci"
 version = "0.0.0"
+dependencies = [
+ "maleicacid-tuner-hal2-common-host-ci",
+]
 
 [[package]]
 name = "maleicacid-tuner-hal2-common-host-ci"

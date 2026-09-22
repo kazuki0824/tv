@@ -44,7 +44,7 @@ pub use boot::{
     FilterChildRuntimeOpen, FilterEventDelivery, FilterEventDeliverySnapshot,
     FilterEventDispatcher, FrontendDemuxPacketSink, FrontendProbeOutcome,
     OwnerCallbackCleanupArtifactCommand, OwnerCallbackCleanupUseCaseOutcome, ServiceBootOutcome,
-    TunerServiceRuntime,
+    ServiceFailureSnapshot, ServiceFailureState, TunerServiceRuntime,
 };
 pub use capability_profile::{
     configure_ip_cid_result, configure_monitor_event_result, failure_domain,
@@ -133,7 +133,7 @@ pub use root_method_txn::{
     RootFrontendInfoSnapshot, RootQueryRequest, RootQueryResponse,
 };
 pub use root_object_ops::RootOpenTxn;
-pub use worker_failure_classifier::ClassifiedWorkerTerminalResult;
+pub use worker_failure_classifier::{ClassifiedWorkerTerminalResult, WorkerFailureClassifier};
 pub use worker_runtime::{
     join_worker_classified, WorkerContext, WorkerHandle, WorkerRuntime, WorkerRuntimeReaperQueue,
     WorkerRuntimeSupervisor, WorkerTerminalResult, CLEANUP_RETRY_SCHEDULE_MS,

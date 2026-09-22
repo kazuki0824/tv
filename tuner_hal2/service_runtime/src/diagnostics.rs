@@ -120,6 +120,7 @@ impl<TRecord> DiagnosticSnapshot<TRecord> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StartupDiagnosticKind {
+    DeviceProbeFailed,
     DeviceMissing,
     DeviceOpenFailed,
     CapabilitySuppressed,
@@ -192,6 +193,11 @@ pub enum CapabilitySuppressionReason {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StartupDiagnosticRecord {
+    DeviceProbeFailed {
+        backend: FrontendBackendKind,
+        path: PathBuf,
+        error: HalError,
+    },
     DeviceMissing {
         backend: FrontendBackendKind,
         path: PathBuf,
@@ -330,6 +336,7 @@ impl StartupDiagnosticRecord {
 
     pub const fn kind(&self) -> StartupDiagnosticKind {
         match self {
+            Self::DeviceProbeFailed { .. } => StartupDiagnosticKind::DeviceProbeFailed,
             Self::DeviceMissing { .. } => StartupDiagnosticKind::DeviceMissing,
             Self::DeviceOpenFailed { .. } => StartupDiagnosticKind::DeviceOpenFailed,
             Self::CapabilitySuppressed { .. } => StartupDiagnosticKind::CapabilitySuppressed,
@@ -363,6 +370,7 @@ impl StartupDiagnosticRecord {
 
     pub const fn phase(&self) -> StartupDiagnosticPhase {
         match self {
+            Self::DeviceProbeFailed { .. } => StartupDiagnosticPhase::ProbeDevice,
             Self::DeviceMissing { .. } => StartupDiagnosticPhase::ProbeDevice,
             Self::DeviceOpenFailed { .. } => StartupDiagnosticPhase::OpenDevice,
             Self::CapabilitySuppressed { .. } => StartupDiagnosticPhase::CapabilityFilter,

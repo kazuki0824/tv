@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::Read;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::descrambler_key_table::DescramblerKeyLookupError;
@@ -125,6 +126,11 @@ pub struct DvrChildRuntimeOpen {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FrontendProbeOutcome {
+    DeviceProbeFailed {
+        backend: FrontendBackendKind,
+        path: PathBuf,
+        error: HalError,
+    },
     Available {
         id: FrontendRuntimeId,
         backend: FrontendBackendKind,
@@ -476,6 +482,25 @@ pub(super) fn demux_runtime_error_to_hal(
                 "DVR was quarantined after playback queue transaction rollback failure",
             )
         }
+        maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::FmqDeliveryFailed(kind) => {
+            HalError::FmqDeliveryFailed {
+                kind,
+                object_id: error.id,
+            }
+        }
+        maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::FmqDeliveryRollbackFailed(kind) => {
+            compose_primary_cleanup_failure(
+                "FMQ delivery and playback queue rollback failed",
+                HalError::FmqDeliveryFailed {
+                    kind,
+                    object_id: error.id,
+                },
+                HalError::cleanup_failed(
+                    "playback queue read rollback",
+                    "DVR was quarantined after playback queue transaction rollback failure",
+                ),
+            )
+        }
         maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::QueueRuntimeFailure
         | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::AvBackingFailure => {
             HalError::internal(
@@ -579,9 +604,55 @@ pub fn start_frontend_demux_live_pump_from_reader(
     FrontendLivePumpOwner::start(descriptor, reader, sink)
 }
 
+/// サービス状態所有者に従属する読取り用診断参照。通常状態の変更権限を持たない。
+#[derive(Clone, Debug)]
+pub struct ServiceFailureState {
+    // bit 0は利用停止、上位bitはサービス実行時mutexの汚染検出回数。
+    flags: Arc<AtomicU64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ServiceFailureSnapshot {
+    pub service_critical: bool,
+    pub runtime_lock_poison_count: u64,
+    pub diagnostic_counter_saturated: bool,
+}
+
+impl ServiceFailureState {
+    pub fn snapshot(&self) -> ServiceFailureSnapshot {
+        let flags = self.flags.load(Ordering::Acquire);
+        ServiceFailureSnapshot {
+            service_critical: flags & 1 != 0,
+            runtime_lock_poison_count: flags >> 1,
+            diagnostic_counter_saturated: flags >> 1 == u64::MAX >> 1,
+        }
+    }
+
+    fn mark_critical(&self) {
+        self.flags.fetch_or(1, Ordering::AcqRel);
+    }
+
+    fn record_runtime_lock_poison(&self) {
+        // 診断回数だけを飽和させる。利用停止は不可逆で、再初期化でも解除しない。
+        let mut flags = self.flags.load(Ordering::Acquire);
+        loop {
+            match self.flags.compare_exchange_weak(
+                flags,
+                flags.saturating_add(2) | 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(observed) => flags = observed,
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct TunerServiceRuntime {
     state: ServiceState,
+    failure_state: ServiceFailureState,
     capability_snapshot: CapabilitySnapshot,
     capacity_ledger: CapacityLedger,
     release_only_filter_av_backings: BTreeMap<i32, AvSharedBacking>,
@@ -1464,6 +1535,9 @@ impl TunerServiceRuntime {
     fn from_capability_snapshot(capability_snapshot: CapabilitySnapshot) -> Self {
         Self {
             state: ServiceState::Booting,
+            failure_state: ServiceFailureState {
+                flags: Arc::new(AtomicU64::new(0)),
+            },
             capability_snapshot,
             capacity_ledger: CapacityLedger::default(),
             release_only_filter_av_backings: BTreeMap::new(),
@@ -1512,7 +1586,11 @@ impl TunerServiceRuntime {
     }
 
     pub fn state(&self) -> ServiceState {
-        self.state
+        if self.failure_state.snapshot().service_critical {
+            ServiceState::ServiceCritical
+        } else {
+            self.state
+        }
     }
 
     pub(crate) fn frontend_worker_reaper_handle(
@@ -1533,7 +1611,36 @@ impl TunerServiceRuntime {
     }
 
     pub fn mark_service_critical(&mut self) {
-        self.state = ServiceState::ServiceCritical;
+        self.failure_state.mark_critical();
+    }
+
+    pub fn failure_state(&self) -> ServiceFailureState {
+        self.failure_state.clone()
+    }
+
+    pub fn lock_shared<'a>(
+        runtime: &'a Mutex<Self>,
+        operation: &'static str,
+    ) -> Result<std::sync::MutexGuard<'a, Self>, HalError> {
+        runtime.lock().map_err(|poisoned| {
+            // 汚染済み内容で処理を再開しない。不変の診断参照だけ取り出し、guardを解放する。
+            let failure_state = poisoned.get_ref().failure_state();
+            drop(poisoned);
+            failure_state.record_runtime_lock_poison();
+            HalError::ServiceRuntimeLockPoisoned { operation }
+        })
+    }
+
+    pub fn mark_shared_service_critical(runtime: &Mutex<Self>) {
+        match runtime.lock() {
+            Ok(mut guard) => guard.mark_service_critical(),
+            Err(poisoned) => {
+                // 通常処理へguardを返さず、同じ所有者の異常時状態だけを確定する。
+                let failure_state = poisoned.get_ref().failure_state();
+                drop(poisoned);
+                failure_state.record_runtime_lock_poison();
+            }
+        }
     }
 
     pub const fn capability_snapshot(&self) -> CapabilitySnapshot {
@@ -2928,7 +3035,7 @@ impl TunerServiceRuntime {
     where
         I: IntoIterator<Item = FrontendProbeOutcome>,
     {
-        if self.state != ServiceState::Booting {
+        if self.state() != ServiceState::Booting {
             return (
                 ServiceBootOutcome::Degraded,
                 Err(HalError::invalid_state(
@@ -3121,6 +3228,18 @@ impl TunerServiceRuntime {
                                 ));
                         }
                     }
+                }
+                FrontendProbeOutcome::DeviceProbeFailed {
+                    backend,
+                    path,
+                    error,
+                } => {
+                    self.diagnostics
+                        .push(StartupDiagnosticRecord::DeviceProbeFailed {
+                            backend,
+                            path,
+                            error,
+                        });
                 }
                 FrontendProbeOutcome::DeviceMissing { backend, path } => {
                     self.diagnostics
@@ -3478,7 +3597,7 @@ impl TunerServiceRuntime {
         command_plan: CommandPlan,
         executable_request: Option<RuntimeExecutableRequest>,
     ) -> Result<RuntimeCommandDispatchPlan, RuntimeCommandDispatchError> {
-        if self.state == ServiceState::ServiceCritical {
+        if self.state() == ServiceState::ServiceCritical {
             return Err(RuntimeCommandDispatchError::ServiceCritical);
         }
         let plan = RuntimeCommandDispatcher::plan(command_plan, executable_request);
