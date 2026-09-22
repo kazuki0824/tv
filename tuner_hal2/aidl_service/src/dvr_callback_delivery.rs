@@ -16,7 +16,7 @@ use maleicacid_tuner_hal2_service_runtime::{
     join_worker_classified, CallbackDeliveryFailurePhase, CallbackDeliveryFailureReport,
     CapabilitySnapshot, ClassifiedWorkerTerminalResult, DvrPostCommitNotificationDiagnosticRecord,
     DvrPostCommitNotificationFailureKind, DvrPostCommitNotificationPhase,
-    DvrStatusNotifierCleanupDiagnosticRecord, DvrStatusPollSnapshot, WorkerFailureCategory,
+    DvrStatusNotifierCleanupDiagnosticRecord, DvrStatusPollSnapshot,
     WorkerFailureClassifier, WorkerRuntime, WorkerRuntimeSupervisor, WorkerTerminalResult,
 };
 
@@ -41,16 +41,6 @@ impl DvrStatusNotifierKey {
 
 pub(crate) struct DvrStatusNotifier {
     worker: WorkerRuntime<()>,
-}
-
-fn join_finished_dvr_status_notifier(
-    notifier: DvrStatusNotifier,
-) -> (Result<(), HalError>, Option<WorkerFailureCategory>) {
-    match join_worker_classified(notifier.worker) {
-        ClassifiedWorkerTerminalResult::Normal(())
-        | ClassifiedWorkerTerminalResult::StopRequested => (Ok(()), None),
-        ClassifiedWorkerTerminalResult::Failure { category, error } => (Err(error), Some(category)),
-    }
 }
 
 struct DvrStatusNotifierReaperJob {
@@ -607,7 +597,7 @@ fn record_dvr_status_notifier_lifecycle_outcome(
     handle: AidlObjectHandle,
     record: DvrStatusNotifierCleanupDiagnosticRecord,
 ) {
-    let phase = record.phase;
+    let phase = record.phase();
     if let Err(error) = context.record_dvr_status_notifier_cleanup_diagnostic(record) {
         record_post_commit_accounting_failure_fallback(
             context,
@@ -787,11 +777,11 @@ fn run_dvr_status_notifier_with_terminal_diagnostic(
             record_dvr_status_notifier_lifecycle_outcome(
                 &context,
                 handle,
-                DvrStatusNotifierCleanupDiagnosticRecord::worker_terminal(
-                    handle.object_id(),
-                    handle.generation(),
-                    Ok(()),
-                ),
+                DvrStatusNotifierCleanupDiagnosticRecord::WorkerTerminal {
+                    object_id: handle.object_id(),
+                    generation: handle.generation(),
+                    terminal: ClassifiedWorkerTerminalResult::Normal(()),
+                },
             );
             return Ok(());
         }
@@ -800,11 +790,14 @@ fn run_dvr_status_notifier_with_terminal_diagnostic(
     record_dvr_status_notifier_lifecycle_outcome(
         &context,
         handle,
-        DvrStatusNotifierCleanupDiagnosticRecord::worker_terminal(
-            handle.object_id(),
-            handle.generation(),
-            Err(terminal_error.clone()),
-        ),
+        DvrStatusNotifierCleanupDiagnosticRecord::WorkerTerminal {
+            object_id: handle.object_id(),
+            generation: handle.generation(),
+            terminal: WorkerFailureClassifier::classify_terminal(
+                WorkerTerminalResult::RuntimeFailure(terminal_error.clone()),
+                "DVR status notifier panicked",
+            ),
+        },
     );
     record_dvr_callback_delivery_failure(
         &context,
@@ -1001,42 +994,46 @@ fn finish_reaped_dvr_status_notifier(
 ) {
     let handle = job.handle;
     let restart_requested = job.restart_requested;
-    let (cleanup_result, worker_failure_category) = join_finished_dvr_status_notifier(job.notifier);
+    let terminal = join_worker_classified(job.notifier.worker);
+    let cleanup_result = match &terminal {
+        ClassifiedWorkerTerminalResult::Normal(())
+        | ClassifiedWorkerTerminalResult::StopRequested => Ok(()),
+        ClassifiedWorkerTerminalResult::Failure { error, .. } => Err(error.clone()),
+    };
     let Some(context) = context else {
         return;
     };
-    let record = (if restart_requested {
-        DvrStatusNotifierCleanupDiagnosticRecord::supersede_cleanup(
-            AidlObjectId(job.key.object_id),
-            AidlObjectGeneration(job.key.generation),
-            cleanup_result.clone(),
-        )
+    let record = if restart_requested {
+        DvrStatusNotifierCleanupDiagnosticRecord::SupersedeCleanup {
+                    object_id: AidlObjectId(job.key.object_id),
+                    generation: AidlObjectGeneration(job.key.generation),
+                    terminal,
+                }
     } else {
         match job.transfer_reason {
             DvrStatusNotifierTransferReason::Stop => {
-                DvrStatusNotifierCleanupDiagnosticRecord::reaper_completion(
-                    AidlObjectId(job.key.object_id),
-                    AidlObjectGeneration(job.key.generation),
-                    cleanup_result.clone(),
-                )
+                DvrStatusNotifierCleanupDiagnosticRecord::ReaperCompletion {
+                    object_id: AidlObjectId(job.key.object_id),
+                    generation: AidlObjectGeneration(job.key.generation),
+                    terminal,
+                }
             }
             DvrStatusNotifierTransferReason::Reset => {
-                DvrStatusNotifierCleanupDiagnosticRecord::reset_notifier_cleanup(
-                    AidlObjectId(job.key.object_id),
-                    AidlObjectGeneration(job.key.generation),
-                    cleanup_result.clone(),
-                )
+                DvrStatusNotifierCleanupDiagnosticRecord::ResetNotifierCleanup {
+                    object_id: AidlObjectId(job.key.object_id),
+                    generation: AidlObjectGeneration(job.key.generation),
+                    terminal,
+                }
             }
             DvrStatusNotifierTransferReason::WorkerTerminal => {
-                DvrStatusNotifierCleanupDiagnosticRecord::reaper_completion(
-                    AidlObjectId(job.key.object_id),
-                    AidlObjectGeneration(job.key.generation),
-                    cleanup_result.clone(),
-                )
+                DvrStatusNotifierCleanupDiagnosticRecord::ReaperCompletion {
+                    object_id: AidlObjectId(job.key.object_id),
+                    generation: AidlObjectGeneration(job.key.generation),
+                    terminal,
+                }
             }
         }
-    })
-    .with_worker_failure_category(worker_failure_category);
+    };
     record_dvr_status_notifier_lifecycle_outcome(&context, handle, record);
 
     match cleanup_result {
@@ -1070,11 +1067,11 @@ fn handle_dvr_status_notifier_reaper_deadline(
     record_dvr_status_notifier_lifecycle_outcome(
         &context,
         handle,
-        DvrStatusNotifierCleanupDiagnosticRecord::reaper_deadline(
-            handle.object_id(),
-            handle.generation(),
-            Err(deadline_error),
-        ),
+        DvrStatusNotifierCleanupDiagnosticRecord::ReaperDeadline {
+            object_id: handle.object_id(),
+            generation: handle.generation(),
+            error: deadline_error,
+        },
     );
 
     if dvr_notifier_owner_generation_is_fenced(&context, handle) {
@@ -1193,9 +1190,9 @@ pub fn stop_all_dvr_status_notifiers(
         .signal_all_for_reset();
     if let Err(error) = result {
         return match context.record_dvr_status_notifier_cleanup_diagnostic(
-            DvrStatusNotifierCleanupDiagnosticRecord::reset_store_recovered_after_poison(
-                error.clone(),
-            ),
+            DvrStatusNotifierCleanupDiagnosticRecord::ResetStoreRecoveredAfterPoison {
+                error: error.clone(),
+            },
         ) {
             Ok(()) => Err(error),
             Err(record_error) => Err(compose_primary_cleanup_failure(

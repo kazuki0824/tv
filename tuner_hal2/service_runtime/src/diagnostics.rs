@@ -517,116 +517,48 @@ impl DvrPostCommitNotificationDiagnosticSnapshot {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DvrStatusNotifierCleanupDiagnosticKind {
-    ResetStoreRecoveredAfterPoison,
-    ResetNotifierCleanup,
-    WorkerTerminal,
-    SupersedeCleanup,
-    ReaperDeadline,
-    ReaperCompletion,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DvrStatusNotifierCleanupDiagnosticRecord {
-    pub kind: DvrStatusNotifierCleanupDiagnosticKind,
-    pub phase: DvrPostCommitNotificationPhase,
-    pub object_id: Option<AidlObjectId>,
-    pub generation: Option<AidlObjectGeneration>,
-    pub worker_failure_category: Option<WorkerFailureCategory>,
-    pub result: Result<(), HalError>,
+pub enum DvrStatusNotifierCleanupDiagnosticRecord {
+    ResetStoreRecoveredAfterPoison {
+        error: HalError,
+    },
+    ResetNotifierCleanup {
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        terminal: crate::worker_failure_classifier::ClassifiedWorkerTerminalResult<()>,
+    },
+    WorkerTerminal {
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        terminal: crate::worker_failure_classifier::ClassifiedWorkerTerminalResult<()>,
+    },
+    SupersedeCleanup {
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        terminal: crate::worker_failure_classifier::ClassifiedWorkerTerminalResult<()>,
+    },
+    ReaperCompletion {
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        terminal: crate::worker_failure_classifier::ClassifiedWorkerTerminalResult<()>,
+    },
+    ReaperDeadline {
+        object_id: AidlObjectId,
+        generation: AidlObjectGeneration,
+        error: HalError,
+    },
 }
 
 impl DvrStatusNotifierCleanupDiagnosticRecord {
-    pub fn reset_store_recovered_after_poison(error: HalError) -> Self {
-        Self {
-            kind: DvrStatusNotifierCleanupDiagnosticKind::ResetStoreRecoveredAfterPoison,
-            phase: DvrPostCommitNotificationPhase::StatusNotifierStop,
-            object_id: None,
-            generation: None,
-            worker_failure_category: None,
-            result: Err(error),
+    pub const fn phase(&self) -> DvrPostCommitNotificationPhase {
+        match self {
+            Self::WorkerTerminal { .. } => DvrPostCommitNotificationPhase::StatusNotifierRuntimeFailure,
+            Self::ResetStoreRecoveredAfterPoison { .. }
+            | Self::ResetNotifierCleanup { .. }
+            | Self::SupersedeCleanup { .. }
+            | Self::ReaperCompletion { .. }
+            | Self::ReaperDeadline { .. } => DvrPostCommitNotificationPhase::StatusNotifierStop,
         }
-    }
-
-    pub fn reset_notifier_cleanup(
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-        result: Result<(), HalError>,
-    ) -> Self {
-        Self {
-            kind: DvrStatusNotifierCleanupDiagnosticKind::ResetNotifierCleanup,
-            phase: DvrPostCommitNotificationPhase::StatusNotifierStop,
-            object_id: Some(object_id),
-            generation: Some(generation),
-            worker_failure_category: None,
-            result,
-        }
-    }
-
-    pub fn worker_terminal(
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-        result: Result<(), HalError>,
-    ) -> Self {
-        Self {
-            kind: DvrStatusNotifierCleanupDiagnosticKind::WorkerTerminal,
-            phase: DvrPostCommitNotificationPhase::StatusNotifierRuntimeFailure,
-            object_id: Some(object_id),
-            generation: Some(generation),
-            worker_failure_category: None,
-            result,
-        }
-    }
-
-    pub fn supersede_cleanup(
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-        result: Result<(), HalError>,
-    ) -> Self {
-        Self {
-            kind: DvrStatusNotifierCleanupDiagnosticKind::SupersedeCleanup,
-            phase: DvrPostCommitNotificationPhase::StatusNotifierStop,
-            object_id: Some(object_id),
-            generation: Some(generation),
-            worker_failure_category: None,
-            result,
-        }
-    }
-
-    pub fn reaper_deadline(
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-        result: Result<(), HalError>,
-    ) -> Self {
-        Self {
-            kind: DvrStatusNotifierCleanupDiagnosticKind::ReaperDeadline,
-            phase: DvrPostCommitNotificationPhase::StatusNotifierStop,
-            object_id: Some(object_id),
-            generation: Some(generation),
-            worker_failure_category: None,
-            result,
-        }
-    }
-
-    pub fn reaper_completion(
-        object_id: AidlObjectId,
-        generation: AidlObjectGeneration,
-        result: Result<(), HalError>,
-    ) -> Self {
-        Self {
-            kind: DvrStatusNotifierCleanupDiagnosticKind::ReaperCompletion,
-            phase: DvrPostCommitNotificationPhase::StatusNotifierStop,
-            object_id: Some(object_id),
-            generation: Some(generation),
-            worker_failure_category: None,
-            result,
-        }
-    }
-
-    pub fn with_worker_failure_category(mut self, category: Option<WorkerFailureCategory>) -> Self {
-        self.worker_failure_category = category;
-        self
     }
 }
 
@@ -1824,19 +1756,25 @@ mod counter_saturation_tests {
     }
 
     #[test]
-    fn notifier_cleanup_diagnostic_preserves_worker_failure_category() {
-        let record = DvrStatusNotifierCleanupDiagnosticRecord::reaper_completion(
-            AidlObjectId(7),
-            AidlObjectGeneration(2),
-            Err(HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "worker join failed",
-            )),
-        )
-        .with_worker_failure_category(Some(WorkerFailureCategory::Join));
-        assert_eq!(
-            record.worker_failure_category,
-            Some(WorkerFailureCategory::Join)
-        );
+    fn notifier_cleanup_snapshot_preserves_typed_terminal_and_target() {
+        use crate::worker_failure_classifier::ClassifiedWorkerTerminalResult;
+        let store = SharedDvrStatusNotifierCleanupDiagnostics::new(2);
+        let terminal = ClassifiedWorkerTerminalResult::Failure {
+            category: WorkerFailureCategory::Join,
+            error: HalError::cleanup_failed("worker", "join failed"),
+        };
+        store.record(DvrStatusNotifierCleanupDiagnosticRecord::ReaperCompletion {
+            object_id: AidlObjectId(7),
+            generation: AidlObjectGeneration(2),
+            terminal: terminal.clone(),
+        }).unwrap();
+        let snapshot = store.snapshot().unwrap();
+        assert_eq!(snapshot.records(), &[
+            DvrStatusNotifierCleanupDiagnosticRecord::ReaperCompletion {
+                object_id: AidlObjectId(7),
+                generation: AidlObjectGeneration(2),
+                terminal,
+            }
+        ]);
     }
 }
