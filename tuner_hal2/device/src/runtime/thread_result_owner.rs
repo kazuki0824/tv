@@ -5,6 +5,7 @@ use std::time::Instant;
 use maleicacid_tuner_hal2_common::{HalError, HalErrorDetail, HalInternalKind, WorkerLockKind};
 use maleicacid_tuner_hal2_control_core::{
     WorkerContext, WorkerHandle, WorkerRuntime, WorkerRuntimeOwnerFailure, WorkerRuntimePoll,
+    WorkerTerminalResult,
 };
 
 fn owner_failure_to_hal(error: WorkerRuntimeOwnerFailure, name: &'static str) -> HalError {
@@ -92,6 +93,27 @@ where
         }
     }
 
+    pub(crate) fn collect_terminal_if_finished(&mut self) -> Option<WorkerTerminalResult<T>> {
+        match self.owner.collect_if_finished() {
+            WorkerRuntimePoll::Running => None,
+            WorkerRuntimePoll::Completed(Ok(result)) => Some(WorkerTerminalResult::Normal(result)),
+            WorkerRuntimePoll::Completed(Err(error)) => {
+                Some(WorkerTerminalResult::RuntimeFailure(error))
+            }
+            WorkerRuntimePoll::OwnerFailure(error) => {
+                Some(error.into_terminal_result(self.name))
+            }
+        }
+    }
+
+    pub(crate) fn join_terminal_after_stop(self) -> WorkerTerminalResult<T> {
+        match self.owner.join_after_stop() {
+            Ok(Ok(result)) => WorkerTerminalResult::Normal(result),
+            Ok(Err(error)) => WorkerTerminalResult::RuntimeFailure(error),
+            Err(error) => error.into_terminal_result(self.name),
+        }
+    }
+
     pub(crate) fn join_after_stop(self) -> Result<T, HalError> {
         match self.owner.join_after_stop() {
             Ok(result) => result,
@@ -137,6 +159,29 @@ mod tests {
     fn adapter_reports_normal_completion() {
         let owner = ThreadResultOwner::start("normal", || Ok(7u32)).unwrap();
         assert_eq!(owner.join_after_stop().unwrap(), 7);
+    }
+
+    #[test]
+    fn collected_result_does_not_become_a_panic() {
+        let mut owner = ThreadResultOwner::start("collected", || Ok(7u32)).unwrap();
+        assert!(owner.wait_until_finished(None).unwrap());
+        assert_eq!(
+            owner.collect_terminal_if_finished(),
+            Some(WorkerTerminalResult::Normal(7))
+        );
+        assert!(matches!(
+            owner.join_terminal_after_stop(),
+            WorkerTerminalResult::RuntimeFailure(_)
+        ));
+    }
+
+    #[test]
+    fn panic_keeps_its_terminal_category() {
+        let owner = ThreadResultOwner::<()>::start("panic", || panic!("injected")).unwrap();
+        assert_eq!(
+            owner.join_terminal_after_stop(),
+            WorkerTerminalResult::PanicOrJoinFailure
+        );
     }
 
     #[test]

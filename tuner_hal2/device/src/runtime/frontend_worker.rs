@@ -10,10 +10,11 @@ use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
 use maleicacid_tuner_hal2_control_core::{
     WorkerCleanupAuthority, WorkerCleanupProgress, WorkerCleanupRun, WorkerContext, WorkerExit,
     WorkerFailureDomain, WorkerRuntime, WorkerRuntimeCleanup, WorkerStopReason,
+    WorkerTerminalResult,
 };
 
 use super::backend_worker::{FrontendBackendSubmitFailure, FrontendBackendSubmitTicket};
-use crate::runtime::thread_result_owner::{ThreadResultOwner, ThreadResultPoll};
+use crate::runtime::thread_result_owner::ThreadResultOwner;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum FrontendWorkerKind {
@@ -467,18 +468,9 @@ impl FrontendWorkerSlot {
             return Some(completed);
         }
         let owner = self.thread_result.as_mut()?;
-        match owner.collect_if_finished() {
-            ThreadResultPoll::Running => None,
-            ThreadResultPoll::Completed(Ok(completed)) => {
-                self.thread_result = None;
-                Some(completed)
-            }
-            ThreadResultPoll::Completed(Err(error)) => {
-                self.thread_result = None;
-                let exit = owner_failure_exit(&error);
-                Some((Err(error), exit))
-            }
-        }
+        let terminal = owner.collect_terminal_if_finished()?;
+        self.thread_result = None;
+        Some(frontend_worker_terminal(terminal))
     }
 
     fn join_after_cancel(&mut self) -> (Result<(), HalError>, WorkerExit) {
@@ -491,16 +483,10 @@ impl FrontendWorkerSlot {
                     HalInternalKind::InvariantViolation,
                     "frontend worker slot missing thread result owner",
                 )),
-                WorkerExit::PanicOrJoinFailure,
+                WorkerExit::RuntimeFailure(WorkerFailureDomain::Backend.runtime_failure_kind()),
             );
         };
-        match owner.join_after_stop() {
-            Ok(completed) => completed,
-            Err(error) => {
-                let exit = owner_failure_exit(&error);
-                (Err(error), exit)
-            }
-        }
+        frontend_worker_terminal(owner.join_terminal_after_stop())
     }
 }
 
@@ -509,7 +495,33 @@ fn owner_failure_exit(error: &HalError) -> WorkerExit {
         HalError::WorkerLockPoisoned { .. } => {
             WorkerExit::RuntimeFailure(WorkerFailureDomain::Signal.runtime_failure_kind())
         }
-        _ => WorkerExit::PanicOrJoinFailure,
+        _ => WorkerExit::RuntimeFailure(WorkerFailureDomain::Backend.runtime_failure_kind()),
+    }
+}
+
+fn frontend_worker_terminal(
+    terminal: WorkerTerminalResult<(Result<(), HalError>, WorkerExit)>,
+) -> (Result<(), HalError>, WorkerExit) {
+    match terminal {
+        WorkerTerminalResult::Normal(completed) => completed,
+        WorkerTerminalResult::StopRequested => (
+            Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "frontend worker terminal result is missing the domain stop reason",
+            )),
+            WorkerExit::RuntimeFailure(WorkerFailureDomain::Backend.runtime_failure_kind()),
+        ),
+        WorkerTerminalResult::RuntimeFailure(error) => {
+            let exit = owner_failure_exit(&error);
+            (Err(error), exit)
+        }
+        WorkerTerminalResult::PanicOrJoinFailure => (
+            Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "frontend worker panicked or could not be joined",
+            )),
+            WorkerExit::PanicOrJoinFailure,
+        ),
     }
 }
 

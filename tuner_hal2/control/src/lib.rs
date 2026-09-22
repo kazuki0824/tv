@@ -10,6 +10,30 @@ pub enum WorkerRuntimeOwnerFailure {
     ResultAlreadyCollected,
 }
 
+impl WorkerRuntimeOwnerFailure {
+    pub fn into_terminal_result<T>(self, owner: &'static str) -> WorkerTerminalResult<T> {
+        use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, WorkerLockKind};
+        let error = match self {
+            Self::ThreadPanic | Self::JoinFailure => {
+                return WorkerTerminalResult::PanicOrJoinFailure;
+            }
+            Self::ResultLockPoison => HalError::WorkerLockPoisoned {
+                owner,
+                lock: WorkerLockKind::Result,
+            },
+            Self::CompletionLockPoison => HalError::WorkerLockPoisoned {
+                owner,
+                lock: WorkerLockKind::Completion,
+            },
+            Self::MissingReport | Self::ResultAlreadyCollected => HalError::internal(
+                HalInternalKind::InvariantViolation,
+                format!("{owner}: {self:?}"),
+            ),
+        };
+        WorkerTerminalResult::RuntimeFailure(error)
+    }
+}
+
 pub enum WorkerRuntimePoll<T, E> {
     Running,
     Completed(Result<T, E>),
@@ -521,27 +545,14 @@ impl<T> WorkerRuntime<T> {
 
     pub fn join(mut self) -> WorkerTerminalResult<T> {
         let Some(handle) = self.handle.take() else {
-            return WorkerTerminalResult::PanicOrJoinFailure;
+            return WorkerRuntimeOwnerFailure::ResultAlreadyCollected
+                .into_terminal_result("WorkerRuntime");
         };
         match handle.join_after_stop() {
             Ok(Ok(result)) => result,
-            Err(WorkerRuntimeOwnerFailure::ResultLockPoison) => {
-                WorkerTerminalResult::RuntimeFailure(
-                    maleicacid_tuner_hal2_common::HalError::WorkerLockPoisoned {
-                        owner: "WorkerRuntime",
-                        lock: maleicacid_tuner_hal2_common::WorkerLockKind::Result,
-                    },
-                )
-            }
-            Err(WorkerRuntimeOwnerFailure::CompletionLockPoison) => {
-                WorkerTerminalResult::RuntimeFailure(
-                    maleicacid_tuner_hal2_common::HalError::WorkerLockPoisoned {
-                        owner: "WorkerRuntime",
-                        lock: maleicacid_tuner_hal2_common::WorkerLockKind::Completion,
-                    },
-                )
-            }
-            Ok(Err(())) | Err(_) => WorkerTerminalResult::PanicOrJoinFailure,
+            Err(failure) => failure.into_terminal_result("WorkerRuntime"),
+            Ok(Err(())) => WorkerRuntimeOwnerFailure::MissingReport
+                .into_terminal_result("WorkerRuntime"),
         }
     }
 }
@@ -1333,6 +1344,29 @@ impl FmqDeliveryTxn {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn owner_failure_keeps_missing_results_distinct_from_panic_and_join() {
+        use super::{WorkerRuntimeOwnerFailure, WorkerTerminalResult};
+        for failure in [
+            WorkerRuntimeOwnerFailure::MissingReport,
+            WorkerRuntimeOwnerFailure::ResultAlreadyCollected,
+        ] {
+            assert!(matches!(
+                failure.into_terminal_result::<()>("test"),
+                WorkerTerminalResult::RuntimeFailure(_)
+            ));
+        }
+        for failure in [
+            WorkerRuntimeOwnerFailure::ThreadPanic,
+            WorkerRuntimeOwnerFailure::JoinFailure,
+        ] {
+            assert_eq!(
+                failure.into_terminal_result::<()>("test"),
+                WorkerTerminalResult::PanicOrJoinFailure
+            );
+        }
+    }
+
     #[test]
     fn supervisor_worker_uses_canonical_stop_and_terminal_collection() {
         use super::{WorkerRuntime, WorkerTerminalResult};
