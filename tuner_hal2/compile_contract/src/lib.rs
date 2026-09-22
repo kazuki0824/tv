@@ -19,17 +19,11 @@ fn worker_reaper_reservation_is_opaque_single_use_contract() {
 
     static_assertions::assert_not_impl_any!(Reservation: Clone, Copy);
 
-    fn release_by_value(
-        queue: &Queue,
-        reservation: Reservation,
-    ) -> Result<(), HalError> {
+    fn release_by_value(queue: &Queue, reservation: Reservation) -> Result<(), HalError> {
         queue.release_reservation(reservation)
     }
 
-    fn transfer_by_value(
-        queue: &Queue,
-        reservation: Reservation,
-    ) -> Result<(), HalError> {
+    fn transfer_by_value(queue: &Queue, reservation: Reservation) -> Result<(), HalError> {
         queue.enqueue_with_reservation((), reservation)
     }
 
