@@ -119,7 +119,11 @@ fn fmq_failure_and_rollback_keep_the_primary_delivery_kind() {
             composed.cleanup_error(),
             Some(HalError::CleanupFailed { .. })
         ));
-        assert!(composed.cleanup_error().unwrap().to_string().contains(rollback.detail));
+        assert!(composed
+            .cleanup_error()
+            .unwrap()
+            .to_string()
+            .contains(rollback.detail));
     }
 }
 

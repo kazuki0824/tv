@@ -77,7 +77,9 @@ pub fn failure_domain(error: &HalError) -> RuntimeFailureDomain {
             kind: maleicacid_tuner_hal2_common::FmqFailureKind::EventFlagWakeFailed,
             ..
         } => RuntimeFailureDomain::EventFlag,
-        HalError::FmqFailed { .. } | HalError::FmqDeliveryFailed { .. } => RuntimeFailureDomain::Fmq,
+        HalError::FmqFailed { .. } | HalError::FmqDeliveryFailed { .. } => {
+            RuntimeFailureDomain::Fmq
+        }
         HalError::EventFlagFailed { .. } => RuntimeFailureDomain::EventFlag,
         HalError::CleanupFailed { .. } | HalError::WorkerCleanupFailed { .. } => {
             RuntimeFailureDomain::Cleanup
@@ -92,9 +94,7 @@ pub fn failure_domain(error: &HalError) -> RuntimeFailureDomain {
         HalError::Internal { .. }
         | HalError::WorkerLockPoisoned { .. }
         | HalError::ServiceRuntimeLockPoisoned { .. }
-        | HalError::CapabilitySelectionFailed(_) => {
-            RuntimeFailureDomain::InternalInvariant
-        }
+        | HalError::CapabilitySelectionFailed(_) => RuntimeFailureDomain::InternalInvariant,
     }
 }
 
@@ -205,9 +205,15 @@ mod tests {
         for (kind, expected) in [
             (FmqFailureKind::WriteFailed, RuntimeFailureDomain::Fmq),
             (FmqFailureKind::ShortWrite, RuntimeFailureDomain::Fmq),
-            (FmqFailureKind::EventFlagWakeFailed, RuntimeFailureDomain::EventFlag),
+            (
+                FmqFailureKind::EventFlagWakeFailed,
+                RuntimeFailureDomain::EventFlag,
+            ),
         ] {
-            let primary = HalError::FmqDeliveryFailed { kind, object_id: Some(17) };
+            let primary = HalError::FmqDeliveryFailed {
+                kind,
+                object_id: Some(17),
+            };
             let composed = HalError::composed_failure(
                 "delivery and rollback",
                 primary,

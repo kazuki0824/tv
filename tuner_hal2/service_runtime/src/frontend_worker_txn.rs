@@ -5394,7 +5394,9 @@ mod scan_contract_tests {
         assert_eq!(
             map_frontend_worker_start_error(
                 &service,
-                FrontendWorkerStartError::SpawnFailed { error: error.clone() },
+                FrontendWorkerStartError::SpawnFailed {
+                    error: error.clone()
+                },
             ),
             error,
         );
