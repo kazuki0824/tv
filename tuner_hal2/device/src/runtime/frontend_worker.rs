@@ -49,7 +49,7 @@ pub enum FrontendWorkerStartError {
         error: HalError,
     },
     SpawnFailed {
-        detail: String,
+        error: HalError,
     },
 }
 
@@ -670,9 +670,7 @@ impl FrontendWorkerRegistry {
                 )),
             }
         })
-        .map_err(|error| FrontendWorkerStartError::SpawnFailed {
-            detail: format!("{error:?}"),
-        })?;
+        .map_err(|error| FrontendWorkerStartError::SpawnFailed { error })?;
 
         self.slots.insert(
             key,

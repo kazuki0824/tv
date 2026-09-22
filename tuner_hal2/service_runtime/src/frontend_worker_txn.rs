@@ -1613,10 +1613,7 @@ fn map_frontend_worker_start_error(
             }
             error
         }
-        FrontendWorkerStartError::SpawnFailed { detail } => HalError::internal(
-            HalInternalKind::InvariantViolation,
-            format!("frontend worker spawn failed: {detail}"),
-        ),
+        FrontendWorkerStartError::SpawnFailed { error } => error,
     }
 }
 
@@ -5386,6 +5383,25 @@ mod scan_contract_tests {
         SatellitePowerTopology,
     };
     use std::collections::VecDeque;
+
+    #[test]
+    fn spawn_failure_keeps_io_error_and_errno_at_service_boundary() {
+        let service = TunerServiceRuntime::new();
+        let error = HalError::Io {
+            backend: "maleicacid-frontend-worker",
+            operation: "thread spawn",
+            path: None,
+            errno: Some(11),
+            detail: maleicacid_tuner_hal2_common::HalErrorDetail::new("resource unavailable"),
+        };
+        assert_eq!(
+            map_frontend_worker_start_error(
+                &service,
+                FrontendWorkerStartError::SpawnFailed { error: error.clone() },
+            ),
+            error,
+        );
+    }
 
     #[test]
     fn pending_terminal_failure_reaches_existing_diagnostic_snapshot() {
