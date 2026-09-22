@@ -727,11 +727,16 @@ mod tests {
         }
         impl std::io::Write for UnlockedWriter {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                assert!(self.runtime.try_lock().is_ok(), "dump wrote while holding the runtime lock");
+                assert!(
+                    self.runtime.try_lock().is_ok(),
+                    "dump wrote while holding the runtime lock"
+                );
                 self.bytes.extend_from_slice(bytes);
                 Ok(bytes.len())
             }
-            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
         }
         use maleicacid_tuner_hal2_service_runtime::{
             FrontendCapabilitySnapshot, FrontendProbeOutcome, FrontendRuntimeId,
@@ -739,37 +744,46 @@ mod tests {
             ServiceBootOutcome,
         };
         let mut runtime = TunerServiceRuntime::new();
-        assert_eq!(runtime.boot_from_probe_results([FrontendProbeOutcome::Available {
-            id: FrontendRuntimeId(7),
-            backend: FrontendBackendKind::Px4CharDevice,
-            system: FrontendSystem::IsdbT,
-            path: "/dev/null".into(),
-            lnb_profile: None,
-            satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
-            capability: FrontendCapabilitySnapshot {
-                scalar: FrontendScalarCapability {
-                    min_frequency_hz: 110_642_857,
-                    max_frequency_hz: 767_642_857,
-                    min_symbol_rate: 0,
-                    max_symbol_rate: 0,
-                    acquire_range_hz: 0,
+        assert_eq!(
+            runtime.boot_from_probe_results([FrontendProbeOutcome::Available {
+                id: FrontendRuntimeId(7),
+                backend: FrontendBackendKind::Px4CharDevice,
+                system: FrontendSystem::IsdbT,
+                path: "/dev/null".into(),
+                lnb_profile: None,
+                satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
+                capability: FrontendCapabilitySnapshot {
+                    scalar: FrontendScalarCapability {
+                        min_frequency_hz: 110_642_857,
+                        max_frequency_hz: 767_642_857,
+                        min_symbol_rate: 0,
+                        max_symbol_rate: 0,
+                        acquire_range_hz: 0,
+                    },
+                    exclusive_group_id: 0x1000_0000,
+                    isdbt_segment: Some(IsdbtSegmentCapability {
+                        is_segment_auto: true,
+                        is_full_segment: true,
+                    }),
                 },
-                exclusive_group_id: 0x1000_0000,
-                isdbt_segment: Some(IsdbtSegmentCapability {
-                    is_segment_auto: true,
-                    is_full_segment: true,
-                }),
-            },
-        }]), ServiceBootOutcome::Ready);
+            }]),
+            ServiceBootOutcome::Ready
+        );
         let service = TunerAidlService::new_without_filter_event_dispatcher_for_test(runtime);
-        let expected = service.context.frontend_backend_diagnostic_snapshots().unwrap();
+        let expected = service
+            .context
+            .frontend_backend_diagnostic_snapshots()
+            .unwrap();
         assert!(!expected.is_empty());
         let mut writer = UnlockedWriter {
             runtime: service.context.runtime(),
             bytes: Vec::new(),
         };
         Interface::dump(&service, &mut writer, &[]).unwrap();
-        assert_eq!(String::from_utf8(writer.bytes).unwrap(), format!("{expected:#?}\n"));
+        assert_eq!(
+            String::from_utf8(writer.bytes).unwrap(),
+            format!("{expected:#?}\n")
+        );
     }
 
     #[test]
@@ -779,12 +793,17 @@ mod tests {
             fn write(&mut self, _bytes: &[u8]) -> std::io::Result<usize> {
                 Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
             }
-            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
         }
         let service = TunerAidlService::new_without_filter_event_dispatcher_for_test(
             TunerServiceRuntime::new(),
         );
-        assert_eq!(Interface::dump(&service, &mut BrokenWriter, &[]), Err(binder::StatusCode::FAILED_TRANSACTION));
+        assert_eq!(
+            Interface::dump(&service, &mut BrokenWriter, &[]),
+            Err(binder::StatusCode::FAILED_TRANSACTION)
+        );
     }
 
     #[test]
