@@ -483,7 +483,13 @@ mod tests {
         let outcome = txn.apply(&mut backend);
         assert_eq!(
             backend.calls,
-            ["capture", "apply_system", "apply_channel", "start_streaming", "read_status"]
+            [
+                "capture",
+                "apply_system",
+                "apply_channel",
+                "start_streaming",
+                "read_status"
+            ]
         );
         match outcome {
             BackendTuneOutcome::Committed { commit } => {

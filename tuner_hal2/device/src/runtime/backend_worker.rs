@@ -949,12 +949,9 @@ impl FrontendBackendTuneExecutor {
         }
         let fd = self.file_fd()?;
         match &self.kind {
-            FrontendBackendSessionKind::Px4 { control_path } => px4_streaming_ioctl(
-                control_path,
-                fd,
-                PTX_STOP_STREAMING,
-                "PTX_STOP_STREAMING",
-            ),
+            FrontendBackendSessionKind::Px4 { control_path } => {
+                px4_streaming_ioctl(control_path, fd, PTX_STOP_STREAMING, "PTX_STOP_STREAMING")
+            }
             FrontendBackendSessionKind::Dvb { frontend_path } => {
                 let mut prop = DtvProperty::with_data(DTV_CLEAR, 0);
                 let mut props = DtvProperties {
@@ -1045,7 +1042,10 @@ impl FrontendBackendTuneExecutor {
         Ok(())
     }
 
-    fn submit_request_for_rollback(&mut self, request: &FrontendTuneRequest) -> Result<(), HalError> {
+    fn submit_request_for_rollback(
+        &mut self,
+        request: &FrontendTuneRequest,
+    ) -> Result<(), HalError> {
         self.apply_system_mode_for(request)?;
         self.apply_channel_for(request)?;
         self.start_streaming_current()
@@ -1301,14 +1301,13 @@ fn px4_streaming_ioctl(
     )
 }
 
-fn px4_streaming_ioctl_result(
-    request: u64,
-    result: Result<(), HalError>,
-) -> Result<(), HalError> {
+fn px4_streaming_ioctl_result(request: u64, result: Result<(), HalError>) -> Result<(), HalError> {
     match result {
         // px4_drvの停止済み応答だけを停止完了として扱う。STARTの同じerrnoは失敗のまま返す。
-        Err(HalError::IoctlFailed { errno: ERRNO_EALREADY, .. })
-            if request == PTX_STOP_STREAMING => Ok(()),
+        Err(HalError::IoctlFailed {
+            errno: ERRNO_EALREADY,
+            ..
+        }) if request == PTX_STOP_STREAMING => Ok(()),
         result => result,
     }
 }
@@ -1384,16 +1383,29 @@ mod tests {
     #[test]
     fn fresh_tune_failure_does_not_stop_an_unstarted_stream() {
         for (backend, expected_step) in [
-            (FrontendBackendKind::Px4CharDevice, BackendTuneStep::ApplySystemMode),
+            (
+                FrontendBackendKind::Px4CharDevice,
+                BackendTuneStep::ApplySystemMode,
+            ),
             (FrontendBackendKind::LinuxDvb, BackendTuneStep::ApplyChannel),
         ] {
             let mut executor = fresh_tune_executor(backend);
             let mut txn = BackendTuneTxn::new(10, 1, executor.plan.request.clone());
             // /dev/nullは機器要求をENOTTYで拒否する。不要なSTOPがあれば巻戻しも失敗する。
             match txn.apply(&mut executor) {
-                BackendTuneOutcome::Failed { step, error, rollback } => {
+                BackendTuneOutcome::Failed {
+                    step,
+                    error,
+                    rollback,
+                } => {
                     assert_eq!(step, expected_step);
-                    assert!(matches!(error, HalError::IoctlFailed { errno: ERRNO_ENOTTY, .. }));
+                    assert!(matches!(
+                        error,
+                        HalError::IoctlFailed {
+                            errno: ERRNO_ENOTTY,
+                            ..
+                        }
+                    ));
                     assert!(rollback.succeeded());
                 }
                 other => panic!("unexpected outcome: {other:?}"),
@@ -1407,7 +1419,10 @@ mod tests {
         let mut executor = fresh_tune_executor(FrontendBackendKind::Px4CharDevice);
         assert!(matches!(
             executor.start_streaming(),
-            Err(HalError::IoctlFailed { errno: ERRNO_ENOTTY, .. })
+            Err(HalError::IoctlFailed {
+                errno: ERRNO_ENOTTY,
+                ..
+            })
         ));
         assert_eq!(executor.streaming_state, BackendStreamingState::NotStarted);
         assert!(executor.rollback_stop_streaming().is_ok());
@@ -1421,7 +1436,11 @@ mod tests {
         assert_eq!(executor.streaming_state, BackendStreamingState::Started);
         assert!(matches!(
             executor.rollback_stop_streaming(),
-            Err(HalError::IoctlFailed { op: "FE_SET_PROPERTY(DTV_CLEAR)", errno: ERRNO_ENOTTY, .. })
+            Err(HalError::IoctlFailed {
+                op: "FE_SET_PROPERTY(DTV_CLEAR)",
+                errno: ERRNO_ENOTTY,
+                ..
+            })
         ));
         assert_eq!(executor.streaming_state, BackendStreamingState::Started);
     }
@@ -1429,10 +1448,30 @@ mod tests {
     #[test]
     fn only_px4_stop_ealready_is_idempotent_success() {
         for (request, op, errno, succeeds) in [
-            (PTX_STOP_STREAMING, "PTX_STOP_STREAMING", ERRNO_EALREADY, true),
-            (PTX_STOP_STREAMING, "PTX_STOP_STREAMING", ERRNO_ENOTTY, false),
-            (PTX_STOP_STREAMING, "PTX_STOP_STREAMING", ERRNO_EINVAL, false),
-            (PTX_START_STREAMING, "PTX_START_STREAMING", ERRNO_EALREADY, false),
+            (
+                PTX_STOP_STREAMING,
+                "PTX_STOP_STREAMING",
+                ERRNO_EALREADY,
+                true,
+            ),
+            (
+                PTX_STOP_STREAMING,
+                "PTX_STOP_STREAMING",
+                ERRNO_ENOTTY,
+                false,
+            ),
+            (
+                PTX_STOP_STREAMING,
+                "PTX_STOP_STREAMING",
+                ERRNO_EINVAL,
+                false,
+            ),
+            (
+                PTX_START_STREAMING,
+                "PTX_START_STREAMING",
+                ERRNO_EALREADY,
+                false,
+            ),
         ] {
             let error = HalError::IoctlFailed {
                 backend: "px4",
@@ -1447,7 +1486,10 @@ mod tests {
                 assert_eq!(result, Err(error));
             }
         }
-        assert_eq!(px4_streaming_ioctl_result(PTX_STOP_STREAMING, Ok(())), Ok(()));
+        assert_eq!(
+            px4_streaming_ioctl_result(PTX_STOP_STREAMING, Ok(())),
+            Ok(())
+        );
     }
 
     #[test]
