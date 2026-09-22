@@ -73,7 +73,11 @@ pub fn failure_domain(error: &HalError) -> RuntimeFailureDomain {
         HalError::IoctlFailed { .. } => RuntimeFailureDomain::RuntimeIoctl,
         HalError::Io { .. } => RuntimeFailureDomain::RuntimeReadWrite,
         HalError::CallbackFailed { .. } => RuntimeFailureDomain::Callback,
-        HalError::FmqFailed { .. } => RuntimeFailureDomain::Fmq,
+        HalError::FmqDeliveryFailed {
+            kind: maleicacid_tuner_hal2_common::FmqFailureKind::EventFlagWakeFailed,
+            ..
+        } => RuntimeFailureDomain::EventFlag,
+        HalError::FmqFailed { .. } | HalError::FmqDeliveryFailed { .. } => RuntimeFailureDomain::Fmq,
         HalError::EventFlagFailed { .. } => RuntimeFailureDomain::EventFlag,
         HalError::CleanupFailed { .. } | HalError::WorkerCleanupFailed { .. } => {
             RuntimeFailureDomain::Cleanup
@@ -85,7 +89,10 @@ pub fn failure_domain(error: &HalError) -> RuntimeFailureDomain {
         HalError::Unsupported(_) | HalError::UnsupportedDetail { .. } => {
             RuntimeFailureDomain::UnsupportedByDesign
         }
-        HalError::Internal { .. } | HalError::WorkerLockPoisoned { .. } => {
+        HalError::Internal { .. }
+        | HalError::WorkerLockPoisoned { .. }
+        | HalError::ServiceRuntimeLockPoisoned { .. }
+        | HalError::CapabilitySelectionFailed(_) => {
             RuntimeFailureDomain::InternalInvariant
         }
     }
@@ -190,5 +197,23 @@ mod tests {
             scan_candidate_owner(),
             ScanCandidateOwner::TisExplicitCandidate
         );
+    }
+
+    #[test]
+    fn delivery_failure_keeps_wake_distinct_from_write() {
+        use maleicacid_tuner_hal2_common::FmqFailureKind;
+        for (kind, expected) in [
+            (FmqFailureKind::WriteFailed, RuntimeFailureDomain::Fmq),
+            (FmqFailureKind::ShortWrite, RuntimeFailureDomain::Fmq),
+            (FmqFailureKind::EventFlagWakeFailed, RuntimeFailureDomain::EventFlag),
+        ] {
+            let primary = HalError::FmqDeliveryFailed { kind, object_id: Some(17) };
+            let composed = HalError::composed_failure(
+                "delivery and rollback",
+                primary,
+                HalError::cleanup_failed("queue", "rollback failed"),
+            );
+            assert_eq!(failure_domain(&composed), expected);
+        }
     }
 }
