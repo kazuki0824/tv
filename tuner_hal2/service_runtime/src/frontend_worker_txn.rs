@@ -3863,8 +3863,15 @@ pub(crate) fn start_frontend_backend_tune_worker(
         .commit_bound_demux_runtime_rollback_tokens(demux_rollback_tokens);
     if let Err(error) = commit_tokens_result {
         guard.mark_service_critical();
-        drop(tickets);
-        return Err(error);
+        let release_result = release_pending_replacement_reservation(&reaper, tickets);
+        return match release_result {
+            Ok(()) => Err(error),
+            Err(release_error) => Err(compose_frontend_cleanup_error(
+                "frontend tune commit failed and replacement reservation release failed",
+                error,
+                release_error,
+            )),
+        };
     }
     if let Err(error) = boundary_result {
         let public_error = match crate::object_close_txn::quarantine_object_cascade(
@@ -3882,8 +3889,15 @@ pub(crate) fn start_frontend_backend_tune_worker(
                 )
             }
         };
-        drop(tickets);
-        return Err(public_error);
+        let release_result = release_pending_replacement_reservation(&reaper, tickets);
+        return match release_result {
+            Ok(()) => Err(public_error),
+            Err(release_error) => Err(compose_frontend_cleanup_error(
+                "frontend tune boundary failed and replacement reservation release failed",
+                public_error,
+                release_error,
+            )),
+        };
     }
     let worker_reaper_deadline =
         Duration::from_millis(guard.capability_snapshot().worker_reaper_deadline_ms);
@@ -3892,8 +3906,16 @@ pub(crate) fn start_frontend_backend_tune_worker(
             Ok(snapshot) => snapshot,
             Err(error) => {
                 guard.mark_service_critical();
-                drop(tickets);
-                return Err(error);
+                let release_result =
+                    release_pending_replacement_reservation(&reaper, tickets);
+                return match release_result {
+                    Ok(()) => Err(error),
+                    Err(release_error) => Err(compose_frontend_cleanup_error(
+                        "frontend tune demux snapshot failed and replacement reservation release failed",
+                        error,
+                        release_error,
+                    )),
+                };
             }
         }
     } else {
