@@ -1706,6 +1706,26 @@ impl TunerServiceRuntime {
         self.descrambler_diagnostics.as_slice()
     }
 
+    pub fn frontend_backend_diagnostic_snapshots(
+        &self,
+    ) -> Result<Vec<crate::diagnostics::FrontendBackendDiagnosticSnapshot>, HalError> {
+        let mut snapshots = Vec::new();
+        for frontend_id in self.registry.frontend_ids() {
+            let frontend = self.registry.frontend_runtime(frontend_id).ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "frontend runtime is missing while reading backend diagnostics",
+                )
+            })?;
+            for backend in [FrontendBackendKind::Px4CharDevice, FrontendBackendKind::LinuxDvb] {
+                snapshots.push(crate::diagnostics::FrontendBackendDiagnosticSnapshot::from_frontend(
+                    frontend, backend,
+                ));
+            }
+        }
+        Ok(snapshots)
+    }
+
     pub fn startup_diagnostic_snapshot(&self) -> StartupDiagnosticSnapshot {
         StartupDiagnosticSnapshot::new(
             self.diagnostics.as_slice().to_vec(),

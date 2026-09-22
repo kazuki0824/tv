@@ -73,7 +73,7 @@ pub use diagnostics::{
     DvrPostCommitNotificationPhase, DvrStatusNotifierCleanupDiagnosticRecord,
     DvrStatusNotifierCleanupDiagnosticSnapshot, FilterCallbackDeliveryDiagnosticPhase,
     FilterCallbackDeliveryDiagnosticRecord, FilterCallbackDeliveryDiagnosticSnapshot,
-    FrontendCallbackDeliveryDiagnosticPhase, FrontendCallbackDeliveryDiagnosticRecord,
+    FrontendBackendDiagnosticSnapshot, FrontendCallbackDeliveryDiagnosticPhase, FrontendCallbackDeliveryDiagnosticRecord,
     FrontendCallbackDeliveryDiagnosticSnapshot, LnbBackendFailureClass,
     LnbBackendFailureDiagnosticRecord, QueueDescriptorQueryDiagnosticRecord,
     QueueDescriptorQueryDiagnosticSnapshot, SharedCallbackArtifactRuntimeSplitDiagnostics,
