@@ -859,7 +859,7 @@ impl TunerServiceRuntime {
                 report.diagnostics.extend(decision.diagnostics.clone());
                 runtime.record_packet_pipeline_diagnostics(demux_id, demux_generation, report);
             }
-            events.extend(runtime.filter_event_delivery_snapshots_for_playback_report(&consumed));
+            events.extend(runtime.filter_event_delivery_snapshots_for_playback_report(&consumed)?);
         }
         Ok(events)
     }
