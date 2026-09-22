@@ -100,9 +100,7 @@ where
             WorkerRuntimePoll::Completed(Err(error)) => {
                 Some(WorkerTerminalResult::RuntimeFailure(error))
             }
-            WorkerRuntimePoll::OwnerFailure(error) => {
-                Some(error.into_terminal_result(self.name))
-            }
+            WorkerRuntimePoll::OwnerFailure(error) => Some(error.into_terminal_result(self.name)),
         }
     }
 

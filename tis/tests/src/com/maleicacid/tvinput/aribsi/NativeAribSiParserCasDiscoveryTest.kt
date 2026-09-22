@@ -20,7 +20,7 @@ class NativeAribSiParserCasDiscoveryTest {
             )) {
                 val method = NativeAribSiParser::class.java.getDeclaredMethod(name, parameter)
                 method.isAccessible = true
-                val result = JSONObject(method.invoke(parser, *arrayOf<Any?>(null)) as String)
+                val result = JSONObject(method.invoke(parser, null) as String)
                 check(!result.getBoolean("success"))
                 check(result.getString("bytes").isEmpty())
                 check(result.getString("errorCode") == "JNI_ERROR")
