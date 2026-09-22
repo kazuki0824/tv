@@ -376,7 +376,6 @@ struct DeviceSession {
     args: Args,
     frontend: Strong<dyn IFrontend>,
     demux: Strong<dyn IDemux>,
-    closed: bool,
 }
 
 fn compose_cleanup_result<T>(
@@ -499,7 +498,6 @@ impl DeviceSession {
             args,
             frontend,
             demux,
-            closed: false,
         })
     }
 
@@ -569,28 +567,16 @@ impl DeviceSession {
         )
     }
 
-    fn close(&mut self) -> Result<(), String> {
-        if self.closed {
-            return Ok(());
-        }
+    fn close(self) -> Result<(), String> {
         let mut failures = Vec::new();
         collect_cleanup_status(&mut failures, "demux.close", self.demux.close());
         if let Err(error) = cleanup_frontend(&self.frontend, true) {
             failures.push(error);
         }
-        self.closed = true;
         if failures.is_empty() {
             Ok(())
         } else {
             Err(failures.join("; "))
-        }
-    }
-}
-
-impl Drop for DeviceSession {
-    fn drop(&mut self) {
-        if let Err(error) = self.close() {
-            eprintln!("device session cleanup failed during Drop: {error}");
         }
     }
 }
@@ -637,7 +623,7 @@ fn handle_request(session: &DeviceSession, request: &Value) -> Result<bool, Stri
 }
 
 fn run(args: Args) -> Result<(), String> {
-    let mut session = DeviceSession::open(args)?;
+    let session = DeviceSession::open(args)?;
     let result = (|| {
         write_response(json!({
             "status": "ready",
