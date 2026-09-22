@@ -828,7 +828,7 @@ class TunerController(
         }
         val result =
             runCatching { tunerInstance.tune(settings) }.getOrElse { e ->
-                runCatching { tunerInstance.clearOnTuneEventListener() }
+                runCatching { tunerInstance.clearOnTuneEventListener() }.onFailure(e::addSuppressed)
                 Log.w(LogTags.TIS, "Tuner.tune が例外を返しました inputId=$inputId channel=$channel", e)
                 return TuneOutcome(false, Tuner.RESULT_UNAVAILABLE, channel, tuneGeneration, e.message.orEmpty())
             }
@@ -836,11 +836,18 @@ class TunerController(
             initializeAcceptedTune(channel, nextGeneration)
             TuneOutcome(true, result, channel, tuneGeneration)
         } else {
-            runCatching { tunerInstance.clearOnTuneEventListener() }
+            val cleanupFailure = runCatching { tunerInstance.clearOnTuneEventListener() }.exceptionOrNull()
+            if (cleanupFailure != null) {
+                Log.w(LogTags.TIS, "Tune listener cleanup failed after tune result=$result", cleanupFailure)
+            }
             currentTune = null
             tuneAccepted = false
             playbackPipeline.stop()
-            TuneOutcome(false, result, channel, tuneGeneration, "Tuner.tune に失敗しました result=$result")
+            TuneOutcome(
+                false, result, channel, tuneGeneration,
+                "Tuner.tune に失敗しました result=$result" +
+                    (cleanupFailure?.let { "; listener解除失敗=$it" } ?: ""),
+            )
         }
     }
 

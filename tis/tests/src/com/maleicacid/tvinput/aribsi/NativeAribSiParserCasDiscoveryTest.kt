@@ -10,6 +10,49 @@ import org.junit.Test
 // 一つの契約の試験集合・時系列を保持し、検証シナリオを分断しない。
 @Suppress("LargeClass", "TooManyFunctions")
 class NativeAribSiParserCasDiscoveryTest {
+    @Test
+    fun snapshotRejectsMissingFieldsAndInvalidTypes() {
+        NativeAribSiParser().use { parser ->
+            val handleField = NativeAribSiParser::class.java.getDeclaredField("handle").apply { isAccessible = true }
+            val snapshotMethod = NativeAribSiParser::class.java.getDeclaredMethod("nativeSnapshotBulkJson", Long::class.javaPrimitiveType)
+                .apply { isAccessible = true }
+            val parseMethod = NativeAribSiParser::class.java.getDeclaredMethod("parseNativeTransactionJson", String::class.java)
+                .apply { isAccessible = true }
+            val valid = snapshotMethod.invoke(parser, handleField.getLong(parser)) as String
+            parseMethod.invoke(parser, valid)
+            val keys = JSONObject(valid).keys().asSequence().toList()
+            for (key in keys) {
+                val missing = JSONObject(valid).apply { remove(key) }
+                val failure = runCatching { parseMethod.invoke(parser, missing.toString()) }.exceptionOrNull()
+                check(failure is java.lang.reflect.InvocationTargetException && failure.cause is IllegalStateException)
+            }
+            for ((key, value) in listOf(
+                "ingestSequence" to "0", "collectionGeneration" to -1, "discoveryStage" to 3,
+                "broadcastClock" to false, "events" to JSONObject(),
+                "serviceSemanticFacts" to org.json.JSONArray().put(1),
+            )) {
+                val invalid = JSONObject(valid).put(key, value)
+                check(runCatching { parseMethod.invoke(parser, invalid.toString()) }.isFailure)
+            }
+        }
+    }
+
+    @Test
+    fun failedDestroyKeepsHandleForOwnerRetry() {
+        NativeAribSiParser().use { parser ->
+            val handleField = NativeAribSiParser::class.java.getDeclaredField("handle").apply { isAccessible = true }
+            val original = handleField.getLong(parser)
+            try {
+                handleField.setLong(parser, -1L)
+                val failure = runCatching { parser.close() }.exceptionOrNull()
+                check(failure is NativeParserCleanupException && failure.status == SiStatus.INVALID_HANDLE)
+                check(handleField.getLong(parser) == -1L)
+            } finally {
+                handleField.setLong(parser, original)
+            }
+        }
+    }
+
     // 標準整形後に残る型・式・診断の長さだけを、この宣言で許容する。
     @Suppress("MaxLineLength")
     @Test
