@@ -68,14 +68,16 @@ class RealTsHalSiIntegrationTest {
             listOf(executable.absolutePath, input.absolutePath, output.absolutePath) +
                 references.map { "${it.getInt("pid")}:${it.getInt("table_id")}" }
         val process = ProcessBuilder(command).redirectErrorStream(true).redirectOutput(log).start()
-        try {
+        val cleanup =
+            AutoCloseable {
+                if (process.isAlive) {
+                    process.destroyForcibly()
+                    check(process.waitFor(5, TimeUnit.SECONDS)) { "HAL試験プロセスを回収できません: $log" }
+                }
+            }
+        cleanup.use {
             check(process.waitFor(30, TimeUnit.SECONDS)) { "HAL試験が時間切れです: $log" }
             assertEquals(log.readText(), 0, process.exitValue())
-        } finally {
-            if (process.isAlive) {
-                process.destroyForcibly()
-                check(process.waitFor(5, TimeUnit.SECONDS)) { "HAL試験プロセスを回収できません: $log" }
-            }
         }
         check(output.length() in 20..1048576) { "HAL出力の長さが不正です" }
         return readSections(output, expected, references.sumOf { it.getInt("section_count") }, references.size)
@@ -152,8 +154,10 @@ class RealTsHalSiIntegrationTest {
         expected: JSONObject,
     ) {
         val builder = ServiceListBuilder(engine)
-        val actual = builder.snapshot().associateBy { it.serviceKey.serviceId }
+        val snapshot = builder.snapshot()
+        val actual = snapshot.associateBy { it.serviceKey.serviceId }
         val services = objects(expected.getJSONArray("services"))
+        assertEquals(services.size, snapshot.size)
         assertEquals(services.map { it.getInt("service_id") }.toSet(), actual.keys)
         services.forEach { reference ->
             val service = actual.getValue(reference.getInt("service_id"))
@@ -202,6 +206,8 @@ class RealTsHalSiIntegrationTest {
         assertEquals(references.map { it.getInt("event_id") }.sorted(), events.map { it.eventId }.sorted())
         references.forEach { reference ->
             val event = events.single { it.eventId == reference.getInt("event_id") }
+            assertEquals(expected.getInt("original_network_id"), event.serviceKey.originalNetworkId)
+            assertEquals(expected.getInt("transport_stream_id"), event.serviceKey.transportStreamId)
             assertEquals(reference.getLong("start_time_unix_ms"), event.startTimeMillis)
             assertEquals(reference.getLong("duration_ms"), event.durationMillis)
         }
