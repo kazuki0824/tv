@@ -299,11 +299,13 @@ impl TunerServiceRuntime {
             ) {
                 continue;
             }
-            self.packet_pipeline_diagnostics.push(crate::diagnostics::PacketPipelineDiagnosticRecord {
-                demux_id,
-                demux_generation,
-                diagnostic: diagnostic.clone(),
-            });
+            self.packet_pipeline_diagnostics.push(
+                crate::diagnostics::PacketPipelineDiagnosticRecord {
+                    demux_id,
+                    demux_generation,
+                    diagnostic: diagnostic.clone(),
+                },
+            );
         }
         let records = self
             .registry

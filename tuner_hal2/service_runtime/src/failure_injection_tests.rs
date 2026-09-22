@@ -70,8 +70,10 @@ fn filter_delivery_wake_preserves_runtime_poison_state() {
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _guard = runtime.lock().unwrap();
         panic!("poison service runtime");
-    })).is_err());
-    assert!(matches!(crate::boot::notify_filter_delivery_change(&runtime),
+    }))
+    .is_err());
+    assert!(matches!(
+        crate::boot::notify_filter_delivery_change(&runtime),
         Err(HalError::ServiceRuntimeLockPoisoned { .. })
     ));
     assert!(failure_state.snapshot().service_critical);

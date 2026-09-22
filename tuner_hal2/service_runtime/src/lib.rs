@@ -76,10 +76,11 @@ pub use diagnostics::{
     FrontendBackendDiagnosticSnapshot, FrontendCallbackDeliveryDiagnosticPhase,
     FrontendCallbackDeliveryDiagnosticRecord, FrontendCallbackDeliveryDiagnosticSnapshot,
     FrontendDiagnosticSnapshot, LnbBackendFailureClass, LnbBackendFailureDiagnosticRecord,
-    PacketPipelineDiagnosticRecord, QueueDescriptorQueryDiagnosticRecord, QueueDescriptorQueryDiagnosticSnapshot,
-    SharedCallbackArtifactRuntimeSplitDiagnostics, SharedDvrPostCommitNotificationDiagnostics,
-    SharedDvrStatusNotifierCleanupDiagnostics, StartupDiagnosticKind, StartupDiagnosticPhase,
-    StartupDiagnosticRecord, StartupDiagnosticSnapshot, WorkerFailureCategory,
+    PacketPipelineDiagnosticRecord, QueueDescriptorQueryDiagnosticRecord,
+    QueueDescriptorQueryDiagnosticSnapshot, SharedCallbackArtifactRuntimeSplitDiagnostics,
+    SharedDvrPostCommitNotificationDiagnostics, SharedDvrStatusNotifierCleanupDiagnostics,
+    StartupDiagnosticKind, StartupDiagnosticPhase, StartupDiagnosticRecord,
+    StartupDiagnosticSnapshot, WorkerFailureCategory,
 };
 pub use dispatch::{dispatch_target_for, ServiceRuntimeDispatchTarget};
 pub use frontend_ops::{

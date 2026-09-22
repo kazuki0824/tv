@@ -311,8 +311,11 @@ pub trait FilterEventDispatcher: Send + Sync {
 pub fn notify_filter_delivery_change(
     runtime: &Arc<Mutex<TunerServiceRuntime>>,
 ) -> Result<(), HalError> {
-    let dispatcher = TunerServiceRuntime::lock_shared(runtime.as_ref(), "Filter配送の起床先取得時にruntime lockがpoisonされています")?
-        .filter_event_dispatcher()?;
+    let dispatcher = TunerServiceRuntime::lock_shared(
+        runtime.as_ref(),
+        "Filter配送の起床先取得時にruntime lockがpoisonされています",
+    )?
+    .filter_event_dispatcher()?;
     dispatcher.wake()
 }
 
@@ -360,7 +363,10 @@ impl FrontendDemuxPacketSink {
 impl FrontendLivePacketSink for FrontendDemuxPacketSink {
     fn deliver_ts_packet(&mut self, packet: &[u8; TS_PACKET_SIZE]) -> Result<(), HalError> {
         let events = {
-            let mut runtime = TunerServiceRuntime::lock_shared(self.runtime.as_ref(), "service runtime lock poisoned while delivering frontend TS packet")?;
+            let mut runtime = TunerServiceRuntime::lock_shared(
+                self.runtime.as_ref(),
+                "service runtime lock poisoned while delivering frontend TS packet",
+            )?;
             let requests = runtime
                 .registry
                 .descrambler_key_refresh_requests_for_frontend(FrontendRuntimeId(self.frontend_id));
@@ -574,7 +580,10 @@ pub fn start_frontend_demux_live_pump_from_reader(
     descriptor: maleicacid_tuner_hal2_device::FrontendLiveReaderDescriptor,
 ) -> Result<FrontendLivePumpOwner, HalError> {
     let dispatcher = {
-        let guard = TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned while preparing frontend demux live pump")?;
+        let guard = TunerServiceRuntime::lock_shared(
+            runtime.as_ref(),
+            "service runtime lock poisoned while preparing frontend demux live pump",
+        )?;
         guard
             .query()
             .ensure_frontend_demux_sink_ready(frontend_id)?;
@@ -657,7 +666,8 @@ pub struct TunerServiceRuntime {
     frontend_callback_delivery_diagnostics:
         BoundedDiagnosticStore<FrontendCallbackDeliveryDiagnosticRecord>,
     demux_transaction_diagnostics: BoundedDiagnosticStore<DemuxTransactionDiagnosticRecord>,
-    packet_pipeline_diagnostics: BoundedDiagnosticStore<crate::diagnostics::PacketPipelineDiagnosticRecord>,
+    packet_pipeline_diagnostics:
+        BoundedDiagnosticStore<crate::diagnostics::PacketPipelineDiagnosticRecord>,
     object_cleanup_diagnostics: SharedObjectCleanupDiagnostics,
     frontend_worker_cleanup_diagnostics: SharedFrontendWorkerCleanupDiagnostics,
     next_demux_transaction_diagnostic_id: u64,
@@ -1150,18 +1160,26 @@ impl TunerServiceRuntime {
                 .registry
                 .filter(FilterRuntimeId(filter_id))
                 .map(|filter| filter.owner_demux_id)
-                .ok_or_else(|| HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "live filter registry entry is missing while preparing event delivery",
-                ))?;
-            if start_id_snapshot_emitted.insert(filter_id) {
-                let demux = self.registry.demux_runtime(DemuxRuntimeId(owner_demux_id))
-                    .ok_or_else(|| HalError::internal(
+                .ok_or_else(|| {
+                    HalError::internal(
                         HalInternalKind::InvariantViolation,
-                        "live filter demux is missing while preparing event delivery",
-                    ))?;
-                if let Some(start_id) = demux.pending_filter_start_id(filter_id)
-                    .map_err(demux_runtime_error_to_hal)? {
+                        "live filter registry entry is missing while preparing event delivery",
+                    )
+                })?;
+            if start_id_snapshot_emitted.insert(filter_id) {
+                let demux = self
+                    .registry
+                    .demux_runtime(DemuxRuntimeId(owner_demux_id))
+                    .ok_or_else(|| {
+                        HalError::internal(
+                            HalInternalKind::InvariantViolation,
+                            "live filter demux is missing while preparing event delivery",
+                        )
+                    })?;
+                if let Some(start_id) = demux
+                    .pending_filter_start_id(filter_id)
+                    .map_err(demux_runtime_error_to_hal)?
+                {
                     snapshots.push(FilterEventDeliverySnapshot {
                         object_id,
                         generation,
@@ -1346,7 +1364,8 @@ mod raw_filter_event_projection_tests {
                 &validated,
                 TsInputOrigin::frontend(1),
             ));
-        let snapshots = runtime.filter_event_delivery_snapshots(std::slice::from_ref(&report))
+        let snapshots = runtime
+            .filter_event_delivery_snapshots(std::slice::from_ref(&report))
             .expect("test filter event projection succeeds");
         (report, snapshots)
     }
@@ -1411,28 +1430,44 @@ mod raw_filter_event_projection_tests {
     #[test]
     fn missing_pending_start_id_owner_rejects_event_batch() {
         let (mut runtime, demux_id, filter_id) = configured_raw_filter(
-            FilterOpenType::TsSection, 0x123,
+            FilterOpenType::TsSection,
+            0x123,
             FilterConfigKind::TsSection {
-                check_crc: false, repeat: true, raw: true, length_field_bits: 12,
+                check_crc: false,
+                repeat: true,
+                raw: true,
+                length_field_bits: 12,
                 condition: SectionCondition {
                     kind: SectionConditionKind::SectionBits,
-                    filter: Vec::new(), mask: Vec::new(), mode: Vec::new(),
-                    table_id: None, version: None,
+                    filter: Vec::new(),
+                    mask: Vec::new(),
+                    mode: Vec::new(),
+                    table_id: None,
+                    version: None,
                 },
             },
         );
-        runtime.registry.demux_runtime_mut(DemuxRuntimeId(demux_id)).unwrap()
+        runtime
+            .registry
+            .demux_runtime_mut(DemuxRuntimeId(demux_id))
+            .unwrap()
             .remove_filter_from_typed_request(
                 maleicacid_tuner_hal2_demux::FilterRuntimeOperationRequest::new(filter_id),
-            ).unwrap();
+            )
+            .unwrap();
         let report = PipelineReport {
             generated_events: vec![PipelineGeneratedEvent::FilterStatus {
-                filter_id, status: FilterStatusEvent::DataReady,
+                filter_id,
+                status: FilterStatusEvent::DataReady,
             }],
             ..PipelineReport::default()
         };
-        assert!(matches!(runtime.filter_event_delivery_snapshots(&[report]),
-            Err(HalError::InvalidState { kind: HalInvalidStateKind::InvalidLifecycle, .. })
+        assert!(matches!(
+            runtime.filter_event_delivery_snapshots(&[report]),
+            Err(HalError::InvalidState {
+                kind: HalInvalidStateKind::InvalidLifecycle,
+                ..
+            })
         ));
     }
 
@@ -1452,7 +1487,10 @@ mod raw_filter_event_projection_tests {
         assert_eq!(snapshot.records().len(), 2);
         assert_eq!(snapshot.records()[0].demux_generation, 2);
         assert_eq!(snapshot.records()[1].demux_id, 7);
-        assert_eq!(snapshot.records()[1].diagnostic, PipelineDiagnostic::ResidualBytesDrop);
+        assert_eq!(
+            snapshot.records()[1].diagnostic,
+            PipelineDiagnostic::ResidualBytesDrop
+        );
     }
 
     #[test]
@@ -1900,7 +1938,10 @@ impl TunerServiceRuntime {
         )
     }
 
-    pub fn packet_pipeline_diagnostics(&self) -> crate::diagnostics::DiagnosticSnapshot<crate::diagnostics::PacketPipelineDiagnosticRecord> {
+    pub fn packet_pipeline_diagnostics(
+        &self,
+    ) -> crate::diagnostics::DiagnosticSnapshot<crate::diagnostics::PacketPipelineDiagnosticRecord>
+    {
         crate::diagnostics::DiagnosticSnapshot::new(
             self.packet_pipeline_diagnostics.as_slice().to_vec(),
             self.packet_pipeline_diagnostics.dropped_count(),

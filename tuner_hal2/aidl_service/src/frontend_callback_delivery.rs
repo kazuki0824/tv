@@ -86,7 +86,8 @@ fn finish_frontend_scan_end_delivery_failure(
     // 登録照合と失敗確定をruntime→store順で行い、外部診断への移行前には両方を解放する。
     let runtime = context.runtime();
     let runtime_lock = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
-        &runtime, "frontend scan end callback failure",
+        &runtime,
+        "frontend scan end callback failure",
     );
     let store = context.callback_store_lock().map_err(|error| {
         maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
@@ -134,7 +135,9 @@ fn finish_frontend_scan_end_delivery_failure(
         Err(lock_error) => {
             drop(store);
             let primary = maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
-                "frontend scan end failure runtime lock", primary, lock_error,
+                "frontend scan end failure runtime lock",
+                primary,
+                lock_error,
             );
             let record = frontend_scan_end_fallback_record(
                 handle,
@@ -250,7 +253,8 @@ fn finish_frontend_event_delivery_failure(
     // 登録照合と失敗確定をruntime→store順で行い、外部診断への移行前には両方を解放する。
     let runtime = context.runtime();
     let runtime_lock = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
-        &runtime, "frontend callback failure",
+        &runtime,
+        "frontend callback failure",
     );
     let store = context.callback_store_lock().map_err(|error| {
         maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
@@ -298,7 +302,9 @@ fn finish_frontend_event_delivery_failure(
         Err(lock_error) => {
             drop(store);
             let primary = maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
-                "frontend callback failure runtime lock", primary, lock_error,
+                "frontend callback failure runtime lock",
+                primary,
+                lock_error,
             );
             let record = if artifact_lookup {
                 FrontendCallbackDeliveryDiagnosticRecord::callback_artifact_lookup(
