@@ -844,7 +844,10 @@ class TunerController(
             tuneAccepted = false
             playbackPipeline.stop()
             TuneOutcome(
-                false, result, channel, tuneGeneration,
+                false,
+                result,
+                channel,
+                tuneGeneration,
                 "Tuner.tune に失敗しました result=$result" +
                     (cleanupFailure?.let { "; listener解除失敗=$it" } ?: ""),
             )

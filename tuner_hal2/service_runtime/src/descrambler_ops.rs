@@ -164,7 +164,10 @@ impl TunerServiceRuntime {
         dispatch: ObjectMethodExecutionToken,
     ) -> Result<(), HalError> {
         let prepared = prepare_product_descrambler_key_token(key_token);
-        let mut runtime = TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned after CAS key resolution")?;
+        let mut runtime = TunerServiceRuntime::lock_shared(
+            runtime.as_ref(),
+            "service runtime lock poisoned after CAS key resolution",
+        )?;
         runtime.commit_descrambler_key_token_for_object(object_id, generation, prepared, dispatch)
     }
 

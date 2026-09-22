@@ -211,7 +211,11 @@ impl TunerAidlService {
     pub fn from_context(context: SharedAidlServiceContext) -> Result<Self, HalError> {
         {
             let runtime_handle = context.runtime();
-            let mut runtime = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(runtime_handle.as_ref(), "service runtime lock poisoned while installing filter event dispatcher")?;
+            let mut runtime =
+                maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
+                    runtime_handle.as_ref(),
+                    "service runtime lock poisoned while installing filter event dispatcher",
+                )?;
             runtime.install_filter_event_dispatcher(std::sync::Arc::new(
                 AidlFilterEventDispatcher::new(&context)?,
             ))?;
@@ -241,7 +245,11 @@ impl TunerAidlService {
     ) -> Result<(), HalError> {
         let runtime = self.context.runtime();
         let lnb_cleanup_id = {
-            let mut guard = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned")?;
+            let mut guard =
+                maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
+                    runtime.as_ref(),
+                    "service runtime lock poisoned",
+                )?;
             guard
                 .root_open_txn()
                 .rollback_root_object_entry_after_aidl_failure(entry, unregister_runtime)?

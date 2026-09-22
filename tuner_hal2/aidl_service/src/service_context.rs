@@ -88,7 +88,9 @@ pub(crate) struct ServiceDiagnosticSnapshot {
     pub(crate) demux:
         Result<maleicacid_tuner_hal2_service_runtime::DemuxTransactionDiagnosticSnapshot, HalError>,
     pub(crate) packet_pipeline: Result<
-        maleicacid_tuner_hal2_service_runtime::DiagnosticSnapshot<maleicacid_tuner_hal2_service_runtime::PacketPipelineDiagnosticRecord>,
+        maleicacid_tuner_hal2_service_runtime::DiagnosticSnapshot<
+            maleicacid_tuner_hal2_service_runtime::PacketPipelineDiagnosticRecord,
+        >,
         HalError,
     >,
     pub(crate) filter_callback: Result<FilterCallbackDeliveryDiagnosticSnapshot, HalError>,
@@ -964,8 +966,9 @@ impl AidlServiceContext {
             return Ok(None);
         };
         // storeのsnapshot lockを解放してからruntimeへ入り、runtime→store順で世代を再照合する。
-        let runtime = TunerServiceRuntime::lock_shared(self.runtime.as_ref(), "frontend callback owner")
-            .map_err(|_| AidlCallbackStoreError::Poisoned)?;
+        let runtime =
+            TunerServiceRuntime::lock_shared(self.runtime.as_ref(), "frontend callback owner")
+                .map_err(|_| AidlCallbackStoreError::Poisoned)?;
         if !runtime.frontend_callback_delivery_ready(handle.object_id(), handle.generation()) {
             return Ok(None);
         }

@@ -14,10 +14,14 @@ class NativeAribSiParserCasDiscoveryTest {
     fun snapshotRejectsMissingFieldsAndInvalidTypes() {
         NativeAribSiParser().use { parser ->
             val handleField = NativeAribSiParser::class.java.getDeclaredField("handle").apply { isAccessible = true }
-            val snapshotMethod = NativeAribSiParser::class.java.getDeclaredMethod("nativeSnapshotBulkJson", Long::class.javaPrimitiveType)
-                .apply { isAccessible = true }
-            val parseMethod = NativeAribSiParser::class.java.getDeclaredMethod("parseNativeTransactionJson", String::class.java)
-                .apply { isAccessible = true }
+            val snapshotMethod =
+                NativeAribSiParser::class.java
+                    .getDeclaredMethod("nativeSnapshotBulkJson", Long::class.javaPrimitiveType)
+                    .apply { isAccessible = true }
+            val parseMethod =
+                NativeAribSiParser::class.java
+                    .getDeclaredMethod("parseNativeTransactionJson", String::class.java)
+                    .apply { isAccessible = true }
             val valid = snapshotMethod.invoke(parser, handleField.getLong(parser)) as String
             parseMethod.invoke(parser, valid)
             val keys = JSONObject(valid).keys().asSequence().toList()
@@ -27,8 +31,11 @@ class NativeAribSiParserCasDiscoveryTest {
                 check(failure is java.lang.reflect.InvocationTargetException && failure.cause is IllegalStateException)
             }
             for ((key, value) in listOf(
-                "ingestSequence" to "0", "collectionGeneration" to -1, "discoveryStage" to 3,
-                "broadcastClock" to false, "events" to JSONObject(),
+                "ingestSequence" to "0",
+                "collectionGeneration" to -1,
+                "discoveryStage" to 3,
+                "broadcastClock" to false,
+                "events" to JSONObject(),
                 "serviceSemanticFacts" to org.json.JSONArray().put(1),
             )) {
                 val invalid = JSONObject(valid).put(key, value)

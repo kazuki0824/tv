@@ -8,8 +8,9 @@ import com.maleicacid.tvinput.common.TsPid
 import org.json.JSONArray
 import org.json.JSONObject
 
-class NativeParserCleanupException(val status: Int) :
-    IllegalStateException("ネイティブ解析器の解放に失敗しました status=$status")
+class NativeParserCleanupException(
+    val status: Int,
+) : IllegalStateException("ネイティブ解析器の解放に失敗しました status=$status")
 
 // 同じ所有者の状態と解放順を維持し、行数だけを理由に責務を分割しない。
 // 同じ状態・境界を扱う操作群を一つの所有者に保つ。
@@ -292,12 +293,20 @@ class NativeAribSiParser : AutoCloseable {
     }
 
     private fun validateNativeTransaction(root: JSONObject) {
-        val arrays = listOf(
-            "tableRequirements", "catCaMetadata", "malformedCaDescriptorDiagnostics",
-            "malformedCaDescriptorCounts", "transportSemanticFacts", "events", "eitInstances",
-            "serviceSemanticFacts", "parserDiagnostics",
-        )
-        val fields = arrays + listOf("schemaVersion", "collectionGeneration", "ingestSequence", "discoveryStage", "broadcastClock")
+        val arrays =
+            listOf(
+                "tableRequirements",
+                "catCaMetadata",
+                "malformedCaDescriptorDiagnostics",
+                "malformedCaDescriptorCounts",
+                "transportSemanticFacts",
+                "events",
+                "eitInstances",
+                "serviceSemanticFacts",
+                "parserDiagnostics",
+            )
+        val fields =
+            arrays + listOf("schemaVersion", "collectionGeneration", "ingestSequence", "discoveryStage", "broadcastClock")
         check(root.keys().asSequence().toSet() == fields.toSet()) { "SI snapshotの必須項目または項目集合が不正です" }
         requireSnapshotInteger(root, "schemaVersion", SI_SNAPSHOT_SCHEMA_VERSION.toLong())
         requireSnapshotInteger(root, "collectionGeneration", Long.MAX_VALUE)
@@ -313,10 +322,14 @@ class NativeAribSiParser : AutoCloseable {
         }
     }
 
-    private fun requireSnapshotInteger(root: JSONObject, key: String, maximum: Long) {
+    private fun requireSnapshotInteger(
+        root: JSONObject,
+        key: String,
+        maximum: Long,
+    ) {
         val value = root.get(key)
-        check(value is Int || value is Long) { "SI snapshotの$keyは整数である必要があります" }
-        check((value as Number).toLong() in 0..maximum) { "SI snapshotの$keyが範囲外です" }
+        check(value is Int || value is Long) { "SI snapshotの${key}は整数である必要があります" }
+        check((value as Number).toLong() in 0..maximum) { "SI snapshotの${key}が範囲外です" }
     }
 
     private fun parseStringArray(array: JSONArray?): List<String> =

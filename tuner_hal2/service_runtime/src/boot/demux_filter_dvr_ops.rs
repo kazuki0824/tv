@@ -776,7 +776,10 @@ impl TunerServiceRuntime {
         generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
     ) -> Result<Vec<super::FilterEventDeliverySnapshot>, HalError> {
         let lock = || {
-            TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned while consuming playback DVR data")
+            TunerServiceRuntime::lock_shared(
+                runtime.as_ref(),
+                "service runtime lock poisoned while consuming playback DVR data",
+            )
         };
         {
             let mut runtime = lock()?;
