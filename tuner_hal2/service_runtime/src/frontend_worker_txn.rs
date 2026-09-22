@@ -648,6 +648,22 @@ fn ensure_frontend_worker_reaper(
     Ok(candidate)
 }
 
+fn release_pending_replacement_reservation(
+    reaper: &FrontendWorkerReaperHandle,
+    tickets: Result<
+        Vec<(FrontendWorkerKind, FrontendWorkerStopOutcome)>,
+        (FrontendWorkerReaperTicketGroup, FrontendWorkerReplacementReservation),
+    >,
+) -> Result<(), HalError> {
+    match tickets {
+        Ok(_) => Ok(()),
+        Err((tickets, reservation)) => {
+            drop(tickets);
+            reaper.release_replacement_reservation(reservation)
+        }
+    }
+}
+
 fn finish_replacement_with_reservation<T>(
     runtime: &SharedRuntime,
     reaper: &FrontendWorkerReaperHandle,
