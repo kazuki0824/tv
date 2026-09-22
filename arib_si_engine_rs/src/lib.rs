@@ -1448,6 +1448,39 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     java_string(&mut env, snapshot_bulk_json(handle))
 }
 
+#[no_mangle]
+pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nativeSnapshotPmtPidsForSectionFiltersJson(
+    mut env: JNIEnv<'_>,
+    _this: JObject<'_>,
+    handle: jlong,
+) -> jstring {
+    java_string(&mut env, snapshot_pmt_pids_for_section_filters_json(handle))
+}
+
+fn snapshot_pmt_pids_for_section_filters_json(handle: jlong) -> Result<String, SiJniFailure> {
+    if !si_module_is_healthy() {
+        return Err(SiJniFailureReason::ModuleAbnormal.failure("SI module is abnormal"));
+    }
+    let parser = match registry().lock() {
+        Ok(guard) => guard.get(handle),
+        Err(_) => {
+            record_si_mutex_poison(SI_REGISTRY_LOCK_NAME);
+            return Err(SiJniFailureReason::RegistryPoisoned.failure(SI_REGISTRY_LOCK_NAME));
+        }
+    };
+    let Some(parser) = parser else {
+        return Err(SiJniFailureReason::InvalidHandle.failure(handle));
+    };
+    match parser.lock() {
+        Ok(guard) => serde_json::to_string(&guard.collector.pmt_pids_for_section_filters())
+            .map_err(|error| SiJniFailureReason::JsonEncoding.failure(error)),
+        Err(_) => {
+            record_si_mutex_poison(SI_PARSER_LOCK_NAME);
+            Err(SiJniFailureReason::ParserPoisoned.failure(SI_PARSER_LOCK_NAME))
+        }
+    }
+}
+
 fn snapshot_bulk_json(handle: jlong) -> Result<String, SiJniFailure> {
     if !si_module_is_healthy() {
         return Err(SiJniFailureReason::ModuleAbnormal.failure("SI module is abnormal"));
