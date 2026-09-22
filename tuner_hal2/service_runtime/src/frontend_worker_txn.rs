@@ -5709,6 +5709,93 @@ mod scan_contract_tests {
     }
 
     #[test]
+    fn replacement_wait_accepts_a_delayed_normal_worker_stop() {
+        use maleicacid_tuner_hal2_device::FrontendWorkerRegistry;
+
+        let mut registry = FrontendWorkerRegistry::default();
+        let (started_tx, started_rx) = mpsc::channel();
+        registry
+            .start(41, FrontendWorkerKind::Tune, 3, move |ctx| {
+                started_tx.send(()).unwrap();
+                while !ctx.cancel_requested() {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                std::thread::sleep(Duration::from_millis(20));
+                Ok(())
+            })
+            .unwrap();
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        let ticket = registry.request_stop_for_join(
+            41,
+            FrontendWorkerKind::Tune,
+            FrontendWorkerCancelReason::SupersededByNewRequest,
+        );
+        let group =
+            FrontendWorkerReaperTicketGroup::new(vec![(FrontendWorkerKind::Tune, ticket)]);
+        match group.wait_until_deadline(Instant::now() + Duration::from_secs(1)) {
+            FrontendWorkerStopWaitOutcome::Completed(outcomes) => {
+                assert_eq!(outcomes.len(), 1);
+                assert!(frontend_worker_stop_failure(&outcomes[0].1).is_none());
+            }
+            FrontendWorkerStopWaitOutcome::TimedOut(_) => {
+                panic!("normal delayed worker stop was treated as a timeout")
+            }
+            FrontendWorkerStopWaitOutcome::Failed { error, .. } => {
+                panic!("normal delayed worker stop failed: {error:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn replacement_wait_timeout_preserves_the_stop_ticket_for_later_completion() {
+        use maleicacid_tuner_hal2_device::FrontendWorkerRegistry;
+
+        let mut registry = FrontendWorkerRegistry::default();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        registry
+            .start(42, FrontendWorkerKind::Tune, 4, move |_ctx| {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(())
+            })
+            .unwrap();
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        let ticket = registry.request_stop_for_join(
+            42,
+            FrontendWorkerKind::Tune,
+            FrontendWorkerCancelReason::SupersededByNewRequest,
+        );
+        let group =
+            FrontendWorkerReaperTicketGroup::new(vec![(FrontendWorkerKind::Tune, ticket)]);
+        let group = match group.wait_until_deadline(Instant::now() + Duration::from_millis(10)) {
+            FrontendWorkerStopWaitOutcome::TimedOut(group) => group,
+            FrontendWorkerStopWaitOutcome::Completed(_) => {
+                panic!("blocked worker unexpectedly completed before timeout")
+            }
+            FrontendWorkerStopWaitOutcome::Failed { error, .. } => {
+                panic!("blocked worker wait failed before timeout: {error:?}")
+            }
+        };
+
+        release_tx.send(()).unwrap();
+        match group.wait_until_deadline(Instant::now() + Duration::from_secs(1)) {
+            FrontendWorkerStopWaitOutcome::Completed(outcomes) => {
+                assert_eq!(outcomes.len(), 1);
+                assert!(frontend_worker_stop_failure(&outcomes[0].1).is_none());
+            }
+            FrontendWorkerStopWaitOutcome::TimedOut(_) => {
+                panic!("preserved stop ticket did not complete after release")
+            }
+            FrontendWorkerStopWaitOutcome::Failed { error, .. } => {
+                panic!("preserved stop ticket failed after release: {error:?}")
+            }
+        }
+    }
+
+    #[test]
     fn pending_stream_id_list_is_reobserved_within_the_same_scan_worker() {
         let mut observations = VecDeque::from([
             FrontendTmccTsidListObservation::Pending,
