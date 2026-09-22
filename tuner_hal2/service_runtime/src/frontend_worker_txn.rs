@@ -498,10 +498,8 @@ fn quarantine_frontend_reaper_failure(
     failures.into_result()
 }
 
-type FrontendWorkerReplacementReservation = WorkerRuntimeReaperReservation<
-    (i32, FrontendWorkerKind),
-    Option<FrontendWorkerKind>,
->;
+type FrontendWorkerReplacementReservation =
+    WorkerRuntimeReaperReservation<(i32, FrontendWorkerKind), Option<FrontendWorkerKind>>;
 
 #[derive(Clone)]
 pub(crate) struct FrontendWorkerReaperHandle {
@@ -652,7 +650,10 @@ fn release_pending_replacement_reservation(
     reaper: &FrontendWorkerReaperHandle,
     tickets: Result<
         Vec<(FrontendWorkerKind, FrontendWorkerStopOutcome)>,
-        (FrontendWorkerReaperTicketGroup, FrontendWorkerReplacementReservation),
+        (
+            FrontendWorkerReaperTicketGroup,
+            FrontendWorkerReplacementReservation,
+        ),
     >,
 ) -> Result<(), HalError> {
     match tickets {
@@ -780,9 +781,7 @@ fn transfer_frontend_replacement_wait_failure(
             }
         }),
     };
-    if let Err(transfer_error) =
-        reaper.enqueue_with_replacement_reservation(job, reservation)
-    {
+    if let Err(transfer_error) = reaper.enqueue_with_replacement_reservation(job, reservation) {
         TunerServiceRuntime::mark_shared_service_critical(runtime);
         return compose_frontend_cleanup_error(
             "frontend replacement wait failure reaper transfer failed",
@@ -3906,8 +3905,7 @@ pub(crate) fn start_frontend_backend_tune_worker(
             Ok(snapshot) => snapshot,
             Err(error) => {
                 guard.mark_service_critical();
-                let release_result =
-                    release_pending_replacement_reservation(&reaper, tickets);
+                let release_result = release_pending_replacement_reservation(&reaper, tickets);
                 return match release_result {
                     Ok(()) => Err(error),
                     Err(release_error) => Err(compose_frontend_cleanup_error(
@@ -3964,12 +3962,7 @@ pub(crate) fn start_frontend_backend_tune_worker(
                         outcomes,
                         false,
                     );
-                    finish_replacement_with_reservation(
-                        &runtime,
-                        &reaper,
-                        reservation,
-                        result,
-                    )
+                    finish_replacement_with_reservation(&runtime, &reaper, reservation, result)
                 }
                 FrontendWorkerStopWaitOutcome::TimedOut(tickets) => {
                     let target = FrontendWorkerCleanupTarget::object(
@@ -4812,8 +4805,7 @@ pub(crate) fn start_frontend_backend_scan_session_worker(
             Ok(snapshot) => snapshot,
             Err(error) => {
                 guard.mark_service_critical();
-                let release_result =
-                    release_pending_replacement_reservation(&reaper, tickets);
+                let release_result = release_pending_replacement_reservation(&reaper, tickets);
                 return match release_result {
                     Ok(()) => Err(error),
                     Err(release_error) => Err(compose_frontend_cleanup_error(
@@ -4871,12 +4863,7 @@ pub(crate) fn start_frontend_backend_scan_session_worker(
                         outcomes,
                         false,
                     );
-                    finish_replacement_with_reservation(
-                        &runtime,
-                        &reaper,
-                        reservation,
-                        result,
-                    )
+                    finish_replacement_with_reservation(&runtime, &reaper, reservation, result)
                 }
                 FrontendWorkerStopWaitOutcome::TimedOut(tickets) => {
                     let target = FrontendWorkerCleanupTarget::object(
