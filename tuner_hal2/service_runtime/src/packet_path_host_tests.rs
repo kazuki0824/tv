@@ -3,14 +3,14 @@
 #![allow(dead_code)]
 
 // 既存の正本型をそのまま検査するため、この試験対象では表記だけの指摘を対象外にする。
+#[path = "boot/demux_error.rs"]
+mod demux_error;
 #[allow(clippy::derivable_impls)]
 mod descrambler_key_table;
 #[allow(clippy::type_complexity)]
 mod descrambler_session;
 #[allow(clippy::enum_variant_names)]
 mod diagnostics;
-#[path = "boot/demux_error.rs"]
-mod demux_error;
 mod playback_consume_txn;
 mod registry;
 
