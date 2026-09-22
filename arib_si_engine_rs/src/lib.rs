@@ -1631,7 +1631,7 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
     provider_data: JByteArray<'_>,
 ) -> jstring {
     let json = jbytearray_to_vec(&env, provider_data).map(|data| {
-        // key不在だけは従来の正常な欠落表現を使う。JNI失敗は上のResultに残る。
+        // キー不在は正常な欠落表現を使い、JNI失敗はResultとして伝達する。
         provider_data_api::extract_program_key_result(&data)
             .map(program_key_result_json)
             .unwrap_or_default()
