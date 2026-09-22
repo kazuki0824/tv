@@ -306,7 +306,8 @@ class NativeAribSiParser : AutoCloseable {
                 "parserDiagnostics",
             )
         val fields =
-            arrays + listOf("schemaVersion", "collectionGeneration", "ingestSequence", "discoveryStage", "broadcastClock")
+            arrays +
+                listOf("schemaVersion", "collectionGeneration", "ingestSequence", "discoveryStage", "broadcastClock")
         check(root.keys().asSequence().toSet() == fields.toSet()) { "SI snapshotの必須項目または項目集合が不正です" }
         requireSnapshotInteger(root, "schemaVersion", SI_SNAPSHOT_SCHEMA_VERSION.toLong())
         requireSnapshotInteger(root, "collectionGeneration", Long.MAX_VALUE)
