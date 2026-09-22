@@ -707,14 +707,8 @@ where
     }
 }
 
-type WorkerReaperRunner<K, V, J> = dyn Fn(
-        J,
-        WorkerRuntimeReaperPending<K, V>,
-        WorkerContext,
-    ) -> Result<(), maleicacid_tuner_hal2_common::HalError>
-    + Send
-    + Sync
-    + 'static;
+type WorkerReaperRunner<K, V, J> =
+    dyn Fn(J, WorkerRuntimeReaperPending<K, V>, WorkerContext) + Send + Sync + 'static;
 
 impl WorkerRuntime<()> {
     pub fn retain_cleanup<T>(value: T) -> WorkerRuntimeCleanup<T> {
@@ -863,6 +857,10 @@ where
     fn release(self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
         self.pending.release_group(self.group_id)
     }
+
+    fn transfer(self) {
+        // canonical pending group と queued job が以後の所有者になる。
+    }
 }
 
 impl<K, V, J> Clone for WorkerRuntimeReaperQueue<K, V, J> {
@@ -911,23 +909,8 @@ where
                         Ok(queued) => queued,
                         Err(_) => return Ok(()),
                     };
-                    let run_result =
-                        runner(job, pending_for_lane.clone(), context.clone());
-                    let release_result = pending_for_lane.release_group(group_id);
-                    match (run_result, release_result) {
-                        (Ok(()), Ok(())) => {}
-                        (Err(error), Ok(())) => return Err(error),
-                        (Ok(()), Err(release_error)) => return Err(release_error),
-                        (Err(error), Err(release_error)) => {
-                            return Err(
-                                maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
-                                    "worker reaper job failed and reservation group release failed",
-                                    error,
-                                    release_error,
-                                ),
-                            )
-                        }
-                    }
+                    runner(job, pending_for_lane.clone(), context.clone());
+                    pending_for_lane.release_group(group_id)?;
                 },
             )
             .map_err(|error| maleicacid_tuner_hal2_common::HalError::Io {
@@ -1008,7 +991,7 @@ where
             .try_send(WorkerRuntimeReaperQueuedJob { job, group_id })
         {
             Ok(()) => {
-                std::mem::forget(reservation);
+                reservation.transfer();
                 Ok(())
             }
             Err(error) => {
