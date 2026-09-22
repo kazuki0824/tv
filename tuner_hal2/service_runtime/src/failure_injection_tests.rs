@@ -104,14 +104,22 @@ fn fmq_failure_and_rollback_keep_the_primary_delivery_kind() {
             )),
             expected
         );
-        let composed = crate::boot::demux_runtime_error_to_hal(
-            DemuxRuntimeError::fmq_delivery_rollback_failed(17, kind),
-        );
+        let rollback = maleicacid_tuner_hal2_demux::QueueRuntimeError {
+            kind: maleicacid_tuner_hal2_demux::QueueRuntimeErrorKind::DataPathFailure,
+            detail: "DVR queue epoch lock poisoned while releasing a transaction",
+        };
+        let failure = DemuxRuntimeError::fmq_delivery_rollback_failed(17, kind, rollback);
+        assert!(matches!(failure.kind,
+            maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::FmqDeliveryRollbackFailed {
+                delivery, rollback: recorded,
+            } if delivery == kind && recorded == rollback));
+        let composed = crate::boot::demux_runtime_error_to_hal(failure);
         assert_eq!(composed.primary_error(), &expected);
         assert!(matches!(
             composed.cleanup_error(),
             Some(HalError::CleanupFailed { .. })
         ));
+        assert!(composed.cleanup_error().unwrap().to_string().contains(rollback.detail));
     }
 }
 

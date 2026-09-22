@@ -113,7 +113,10 @@ pub enum DemuxRuntimeErrorKind {
     QueueRuntimeFailure,
     QueueRuntimeFailureRollbackFailed,
     FmqDeliveryFailed(FmqFailureKind),
-    FmqDeliveryRollbackFailed(FmqFailureKind),
+    FmqDeliveryRollbackFailed {
+        delivery: FmqFailureKind,
+        rollback: QueueRuntimeError,
+    },
     AvBackingFailure,
     SourceBoundaryRollbackFailed,
     RelationCommitUnknown,
@@ -546,9 +549,13 @@ impl DemuxRuntimeError {
             id: Some(id),
         }
     }
-    pub const fn fmq_delivery_rollback_failed(id: i32, failure: FmqFailureKind) -> Self {
+    pub const fn fmq_delivery_rollback_failed(
+        id: i32,
+        delivery: FmqFailureKind,
+        rollback: QueueRuntimeError,
+    ) -> Self {
         Self {
-            kind: DemuxRuntimeErrorKind::FmqDeliveryRollbackFailed(failure),
+            kind: DemuxRuntimeErrorKind::FmqDeliveryRollbackFailed { delivery, rollback },
             id: Some(id),
         }
     }
@@ -3364,8 +3371,8 @@ impl DemuxRuntime {
                 }
                 match abort_result {
                     Ok(()) => Err(DemuxRuntimeError::fmq_delivery_failure(dvr_id, failure)),
-                    Err(_) => Err(DemuxRuntimeError::fmq_delivery_rollback_failed(
-                        dvr_id, failure,
+                    Err(rollback) => Err(DemuxRuntimeError::fmq_delivery_rollback_failed(
+                        dvr_id, failure, rollback,
                     )),
                 }
             }
