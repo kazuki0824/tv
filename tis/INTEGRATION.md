@@ -247,11 +247,11 @@ atest \
 
 ### 実TS結合試験のホストCI接続設計
 
-この節は`DESIGN_JA.md`の「実TSによるホスト結合試験」をCIへ接続する際の構成を定める。fixtureと設計だけの段階で、以下の試験本体・実行器・workflow接続を実装済みとは扱わない。
+この節は`DESIGN_JA.md`の「実TSによるホスト結合試験」をCIへ接続する際の構成を定める。試験本体は`host_ci/robolectric/src/test/kotlin`、HAL実行器は`tuner_hal2/host_ci/demux/src/bin/real_ts_sections.rs`に配置する。実装の存在とCIでの成功は別に確認する。
 
 既存`.github/workflows/tis-robolectric-ci.yml`のホステッドランナーを使い、Android emulator、チューナー、特権container、self-hosted runnerを要求しない。既存3クラスの実行指定を維持したうえで、同じGradle実行に`com.maleicacid.tvinput.tis.RealTsHalSiIntegrationTest`を追加する。製品TISのAPKへ試験ファイル・試験専用実行器を含めない。
 
-| 接続箇所 | 実装段階で行う変更 |
+| 接続箇所 | 接続内容 |
 |---|---|
 | `tuner_hal2/host_ci/demux` | 製品demuxをlinkする実TS実行器をhost専用bin targetとして追加する |
 | `arib_si_engine_rs/host_ci` | 既存のJNI `cdylib` targetをそのままbuildする。別のSI parserを追加しない |

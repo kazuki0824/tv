@@ -2,7 +2,7 @@
 
 ## 実TSによるホスト結合試験
 
-`RealTsHalSiIntegrationTest.realTsProducesServiceAndProgramFacts`を、保存した実TSを使う1件のRobolectric結合試験として設計する。入力は`tests/fixtures/real_ts/test.ts`、独立した期待値は同じ場所の`expected.json`とする。試験の実装とCI接続を行う段階で、この節の全判定を同じ1件へ組み込み、一部だけを通して結合試験完了とはしない。
+`RealTsHalSiIntegrationTest.realTsProducesServiceAndProgramFacts`を、保存した実TSを使う1件のRobolectric結合試験として設計する。入力は`tests/fixtures/real_ts/test.ts`、独立した期待値は同じ場所の`expected.json`とする。この節の全判定を同じ1件へ組み込み、一部だけを通して結合試験完了とはしない。
 
 ### 接続する実処理
 

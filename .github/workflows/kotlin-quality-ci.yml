@@ -153,6 +153,7 @@ jobs:
               tis/src/*.kt|tis/tests/src/*.kt|\
               tis/arib_parental_rating/src/*.kt|tis/arib_parental_rating/tests/src/*.kt|\
               tis/host_ci/kotlin/*.kt|\
+              tis/host_ci/robolectric/src/test/kotlin/*.kt|\
               tis/host_ci/robolectric/build.gradle.kts|\
               tis/host_ci/robolectric/settings.gradle.kts|\
               rec/tests/src/*.kt|\
