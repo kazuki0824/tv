@@ -381,3 +381,16 @@ m android.hardware.tv.tuner-update-api
 `tuner_hal2` は current V3 Rust binding を `android.hardware.tv.tuner-V3-rust` として参照し、VINTF fragment も Tuner version 3 を宣言する。採用 build configuration では `RELEASE_AIDL_USE_UNFROZEN=true` を実効値とする。`false` の構成では最新 unfrozen API を製品契約として使用できないため、この V3 統合の完了 build として扱わない。
 
 この統合は LineageOS 22.1 / Android 15 checkout を前提とする。LineageOS 21.0 / Android 14 checkout は本節の V3 current、FCM、Rust 生成物の契約を満たさないため、この統合の入力として使用しない。
+
+
+## 機器診断の取得
+
+サービス起動後、Binder標準の診断取得コマンドを使用する。
+
+```bash
+adb shell dumpsys android.hardware.tv.tuner.ITuner/default
+```
+
+出力は既存の機器別診断保持先の写しであり、`frontend_id`、`backend`、`records`、`dropped_count`、`record_failure_count`を含む。各記録の世代、選局段階、主障害、巻戻し障害、機器要求の操作・パス・OSエラー番号を確認する。再選局によって現在の世代が進んだ場合も、保持されている過去の世代の記録を取得する。標準エラー出力の転送設定はこの取得経路の前提ではない。
+
+機器障害の発生後にこのコマンドで記録が取得できることを実機確認する。サービス状態の読取りまたは出力に失敗した場合は診断取得自体がエラーになるため、空の診断が取得できたと判定しない。Soongの`maleicacid_tuner_hal2_aidl_service_test`にはBinderの取得入口と出力失敗の試験を含む。ホストCIの成功だけでAndroid上のBinder接続・実機取得を確認済みとは扱わない。

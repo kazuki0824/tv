@@ -121,7 +121,24 @@ pub struct TunerAidlService {
     context: SharedAidlServiceContext,
 }
 
-impl Interface for TunerAidlService {}
+impl Interface for TunerAidlService {
+    fn dump(
+        &self,
+        writer: &mut dyn std::io::Write,
+        _args: &[&std::ffi::CStr],
+    ) -> Result<(), binder::StatusCode> {
+        // 取得入口から戻る時点でruntimeのロックは解放済み。出力先へのI/Oは保持中に行わない。
+        match self.context.frontend_backend_diagnostic_snapshots() {
+            Ok(snapshots) => writeln!(writer, "{snapshots:#?}")
+                .map_err(|_| binder::StatusCode::FAILED_TRANSACTION),
+            Err(error) => {
+                writeln!(writer, "backend diagnostic query failed: {error:?}")
+                    .map_err(|_| binder::StatusCode::FAILED_TRANSACTION)?;
+                Err(binder::StatusCode::FAILED_TRANSACTION)
+            }
+        }
+    }
+}
 
 fn tuner_hal2_demux_capabilities_from_snapshot(
     snapshot: RootDemuxCapabilitiesSnapshot,
@@ -701,6 +718,74 @@ mod tests {
     use super::*;
     use maleicacid_tuner_hal2_binder_adapter::{DvrOpenKind, OpenDvrRequest};
     use maleicacid_tuner_hal2_service_runtime::{ObjectMethodUseCase, RuntimeOwnerRelation};
+
+    #[test]
+    fn binder_dump_writes_the_canonical_snapshot_after_unlocking() {
+        struct UnlockedWriter {
+            runtime: crate::service_context::SharedTunerRuntime,
+            bytes: Vec<u8>,
+        }
+        impl std::io::Write for UnlockedWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                assert!(self.runtime.try_lock().is_ok(), "dump wrote while holding the runtime lock");
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        use maleicacid_tuner_hal2_service_runtime::{
+            FrontendCapabilitySnapshot, FrontendProbeOutcome, FrontendRuntimeId,
+            FrontendScalarCapability, IsdbtSegmentCapability, SatellitePowerTopology,
+            ServiceBootOutcome,
+        };
+        let mut runtime = TunerServiceRuntime::new();
+        assert_eq!(runtime.boot_from_probe_results([FrontendProbeOutcome::Available {
+            id: FrontendRuntimeId(7),
+            backend: FrontendBackendKind::Px4CharDevice,
+            system: FrontendSystem::IsdbT,
+            path: "/dev/null".into(),
+            lnb_profile: None,
+            satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
+            capability: FrontendCapabilitySnapshot {
+                scalar: FrontendScalarCapability {
+                    min_frequency_hz: 110_642_857,
+                    max_frequency_hz: 767_642_857,
+                    min_symbol_rate: 0,
+                    max_symbol_rate: 0,
+                    acquire_range_hz: 0,
+                },
+                exclusive_group_id: 0x1000_0000,
+                isdbt_segment: Some(IsdbtSegmentCapability {
+                    is_segment_auto: true,
+                    is_full_segment: true,
+                }),
+            },
+        }]), ServiceBootOutcome::Ready);
+        let service = TunerAidlService::new_without_filter_event_dispatcher_for_test(runtime);
+        let expected = service.context.frontend_backend_diagnostic_snapshots().unwrap();
+        assert!(!expected.is_empty());
+        let mut writer = UnlockedWriter {
+            runtime: service.context.runtime(),
+            bytes: Vec::new(),
+        };
+        Interface::dump(&service, &mut writer, &[]).unwrap();
+        assert_eq!(String::from_utf8(writer.bytes).unwrap(), format!("{expected:#?}\n"));
+    }
+
+    #[test]
+    fn binder_dump_reports_output_failure() {
+        struct BrokenWriter;
+        impl std::io::Write for BrokenWriter {
+            fn write(&mut self, _bytes: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let service = TunerAidlService::new_without_filter_event_dispatcher_for_test(
+            TunerServiceRuntime::new(),
+        );
+        assert_eq!(Interface::dump(&service, &mut BrokenWriter, &[]), Err(binder::StatusCode::FAILED_TRANSACTION));
+    }
 
     #[test]
     fn unsupported_frontend_system_never_falls_back_to_isdbt() {

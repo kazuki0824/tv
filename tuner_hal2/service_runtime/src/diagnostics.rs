@@ -9,9 +9,34 @@ use maleicacid_tuner_hal2_demux::{
     DvrConfigureReport, FilterConfigureReport, PacketPid, QueueRuntimeError, SourceBoundaryReport,
 };
 use maleicacid_tuner_hal2_descrambler::DescramblerPid;
+use maleicacid_tuner_hal2_device::{FrontendBackendFailureDiagnostic, FrontendRuntime};
 use maleicacid_tuner_hal2_domain_request::{
     AidlObjectGeneration, AidlObjectId, AidlObjectKind, RuntimeTransactionName,
 };
+
+/// 機器別の既存診断保持先から取得した、観測用の写し。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrontendBackendDiagnosticSnapshot {
+    pub frontend_id: i32,
+    pub backend: FrontendBackendKind,
+    pub records: Vec<FrontendBackendFailureDiagnostic>,
+    pub dropped_count: u64,
+    pub record_failure_count: u64,
+}
+
+impl FrontendBackendDiagnosticSnapshot {
+    pub(crate) fn from_frontend(runtime: &FrontendRuntime, backend: FrontendBackendKind) -> Self {
+        let (records, dropped_count, record_failure_count) =
+            runtime.backend_failure_diagnostic_snapshot(backend);
+        Self {
+            frontend_id: runtime.frontend_id(),
+            backend,
+            records,
+            dropped_count,
+            record_failure_count,
+        }
+    }
+}
 
 pub const DEFAULT_DIAGNOSTIC_STORE_LIMIT: usize = 128;
 
@@ -1799,5 +1824,72 @@ mod counter_saturation_tests {
                 terminal,
             }]
         );
+    }
+}
+
+#[cfg(test)]
+mod backend_observation_tests {
+    use super::*;
+    use maleicacid_tuner_hal2_device::{BackendTuneRollbackFailure, BackendTuneRollbackStep, BackendTuneStep};
+
+    #[test]
+    fn observation_retains_backend_failures_and_both_counters() {
+        for (backend, name, path) in [
+            (FrontendBackendKind::Px4CharDevice, "px4", "/dev/px4video0"),
+            (FrontendBackendKind::LinuxDvb, "dvb", "/dev/dvb/adapter0/frontend0"),
+        ] {
+            let mut frontend = FrontendRuntime::new(7, backend);
+            let generation = frontend.generation();
+            let primary = HalError::IoctlFailed {
+                backend: name,
+                path: Some(PathBuf::from(path)),
+                op: "apply_channel",
+                errno: 5,
+            };
+            let rollback = BackendTuneRollbackFailure {
+                step: BackendTuneRollbackStep::RollbackStopStreaming,
+                error: HalError::IoctlFailed {
+                    backend: name,
+                    path: Some(PathBuf::from(path)),
+                    op: "stop_streaming",
+                    errno: 16,
+                },
+            };
+            for _ in 0..70 {
+                frontend.record_backend_failure_diagnostic_context(
+                    generation,
+                    backend,
+                    Some(BackendTuneStep::ApplyChannel),
+                    primary.clone(),
+                    Some(rollback.clone()),
+                ).unwrap();
+            }
+            assert!(frontend.record_backend_failure_diagnostic(
+                generation + 1, backend, primary.clone(),
+            ).is_err());
+            let before = frontend.snapshot();
+            let observation = FrontendBackendDiagnosticSnapshot::from_frontend(&frontend, backend);
+            assert_eq!(observation.frontend_id, 7);
+            assert_eq!(observation.backend, backend);
+            assert!(observation.dropped_count > 0);
+            assert_eq!(observation.records.len() as u64 + observation.dropped_count, 70);
+            assert_eq!(observation.record_failure_count, 1);
+            for record in &observation.records {
+                assert_eq!(record.frontend_id, 7);
+                assert_eq!(record.generation, generation);
+                assert_eq!(record.backend, backend);
+                assert_eq!(record.step, Some(BackendTuneStep::ApplyChannel));
+                assert_eq!(record.primary_error, primary);
+                assert_eq!(record.rollback_failure, Some(rollback.clone()));
+            }
+            let other = match backend {
+                FrontendBackendKind::Px4CharDevice => FrontendBackendKind::LinuxDvb,
+                FrontendBackendKind::LinuxDvb => FrontendBackendKind::Px4CharDevice,
+            };
+            let empty = FrontendBackendDiagnosticSnapshot::from_frontend(&frontend, other);
+            assert!(empty.records.is_empty());
+            assert_eq!((empty.dropped_count, empty.record_failure_count), (0, 0));
+            assert_eq!(frontend.snapshot(), before);
+        }
     }
 }

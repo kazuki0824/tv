@@ -72,6 +72,10 @@ px4固有のTMCC TSID readbackは「機器適合」責務に閉じる。ABI mirr
 
 device-adaptation層は `FrontendRuntime`、AIDL object、callback artifactを直接変更しない。取得結果はtyped observationとしてservice_runtimeへ返すだけとし、persistent frontend generation/stateへ接続する場合は既存frontend ownerのtyped mutation pathを使う。driver readbackのために第二のdevice-open owner、固定BS TSID表、VTS/profile専用ioctl bypassを追加しない。
 
+### 機器診断の取得境界
+
+`aidl_service/src/tuner_service.rs::TunerAidlService`のBinder標準`dump`から、`service_context.rs`の読取り入口を経て`TunerServiceRuntime::frontend_backend_diagnostic_snapshots()`へ接続する。同入口は既存`FrontendRuntime::backend_failure_diagnostic_snapshot()`の結果を`FrontendBackendDiagnosticSnapshot`へ写し、機器別の記録と両カウンターを渡す。保持先・記録処理・状態変更権限は既存所有者に残し、出力I/Oはサービス状態ロックの解放後に行う。診断の論理契約は`../TUNER_HAL_DESIGN_JA.md`の「診断可観測性の固定」、取得手順は`INTEGRATION.md`を参照する。
+
 ### TMCC TSID observation の frontend owner 接続
 
 scan時の有限再観測は`service_runtime/src/frontend_worker_txn.rs::observe_stream_id_list_with_retry()`、状態確定と通知の接続は同moduleの`commit_and_deliver_frontend_scan_lock()`を既存frontend worker内の実装入口とする。公開順序・待機上限・取消し・失敗時の扱いは`../TUNER_HAL_DESIGN_JA.md`のscan契約を正とする。
