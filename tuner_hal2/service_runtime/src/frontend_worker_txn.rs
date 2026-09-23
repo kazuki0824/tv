@@ -177,7 +177,7 @@ enum FrontendTuneWorkerActivation {
 }
 
 enum FrontendScanWorkerActivation {
-    Run(FrontendBackendSession),
+    Run(FrontendWorkerStopTicket),
     Abort,
 }
 
@@ -4038,24 +4038,14 @@ fn run_frontend_backend_scan_session_worker(
     backend: FrontendBackendKind,
     device_path: FrontendDevicePath,
     candidates: Vec<FrontendTuneRequest>,
-    initial_session: Option<FrontendBackendSession>,
+    initial_ticket: Option<FrontendWorkerStopTicket>,
     previous_request: Option<FrontendTuneRequest>,
     target_for_worker: FrontendWorkerCleanupTarget,
     scan_notifier: FrontendScanNotifier,
     cleanup_diagnostic_sink: SharedFrontendWorkerCleanupDiagnostics,
     replacement_context: Option<FrontendWorkerReplacementRollbackContext>,
 ) -> Result<(), HalError> {
-    let reaper = ensure_frontend_worker_reaper(&runtime)?;
-    let worker_io_deadline_ms = {
-        let guard = lock_runtime(
-            &runtime,
-            "service runtime lock poisoned while reading worker I/O deadline",
-        )?;
-        guard.capability_snapshot().worker_io_deadline_ms
-    };
-    let backend_submit_deadline_ms =
-        frontend_backend_submit_deadline_ms(backend, worker_io_deadline_ms);
-    let mut initial_session = initial_session;
+    let mut initial_ticket = initial_ticket;
     for candidate in candidates {
         if ctx.cancel_requested() {
             return Ok(());
@@ -4070,187 +4060,148 @@ fn run_frontend_backend_scan_session_worker(
         if let Err(error) = plan.validate_worker_generation(ctx.generation()) {
             return Err(error);
         }
-        let session = match initial_session.take() {
-            Some(session) => session,
-            None => match submit_frontend_backend_with_deadline(
-                {
-                    let mut guard = lock_runtime(&runtime, "prepare frontend scan submit")?;
-                    guard.frontend_txn().prepare_backend_submit(
-                        FrontendWorkerKind::Scan,
-                        plan,
-                        previous_request.clone(),
-                    )?
-                },
-                ctx.generation(),
-                backend_submit_deadline_ms,
-            ) {
-                Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Ok(session))) => session,
-                Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Err(failure)))
-                    if failure.rollback_succeeded =>
-                {
-                    let primary = failure.error.clone();
-                    let step = failure.step;
-                    let rollback_failure = failure.rollback_failure.clone();
-                    let mut guard = match lock_runtime(
-                        &runtime,
-                        "service runtime lock poisoned while recording rejected scan submission",
-                    ) {
-                        Ok(guard) => guard,
-                        Err(lock_error) => {
-                            let error = finish_frontend_state_restore_lock_failure_report(
-                                cleanup_diagnostic_sink.clone(),
-                                primary,
-                                lock_error,
-                                "frontend scan submission failure marking failed",
-                                FrontendWorkerCleanupDiagnosticKind::ScanBackendRollbackStateRestore,
-                                target_for_worker,
-                                replacement_context,
-                            );
-                            return Err(error);
-                        }
-                    };
-                    if let Err(diagnostic_error) = guard
-                        .frontend_txn()
-                        .record_frontend_backend_failure_diagnostic(
-                            ctx.frontend_id(),
-                            ctx.generation(),
-                            step,
-                            primary.clone(),
-                            rollback_failure,
-                        )
-                    {
-                        return Err(compose_frontend_cleanup_error(
-                            "frontend scan submission failure diagnostic record failed",
+        let ticket = match initial_ticket.take() {
+            Some(ticket) => ticket,
+            None => {
+                let mut guard = lock_runtime(&runtime, "prepare frontend scan submit")?;
+                guard.frontend_txn().prepare_backend_submit(
+                    FrontendWorkerKind::Scan,
+                    plan,
+                    previous_request.clone(),
+                )?
+            }
+        };
+        let session = match ticket.submit() {
+            Ok(Ok(session)) => session,
+            Ok(Err(failure)) if failure.rollback_succeeded => {
+                let primary = failure.error.clone();
+                let step = failure.step;
+                let rollback_failure = failure.rollback_failure.clone();
+                let mut guard = match lock_runtime(
+                    &runtime,
+                    "service runtime lock poisoned while recording rejected scan submission",
+                ) {
+                    Ok(guard) => guard,
+                    Err(lock_error) => {
+                        let error = finish_frontend_state_restore_lock_failure_report(
+                            cleanup_diagnostic_sink.clone(),
                             primary,
-                            diagnostic_error,
-                        ));
-                    }
-                    if let Err(mark_error) = guard
-                        .frontend_txn()
-                        .mark_frontend_scan_submit_rejected_after_boundary(
-                            ctx.frontend_id(),
-                            ctx.generation(),
-                            primary.clone(),
-                        )
-                    {
-                        let error = compose_frontend_cleanup_error(
+                            lock_error,
                             "frontend scan submission failure marking failed",
-                            primary,
-                            mark_error,
+                            FrontendWorkerCleanupDiagnosticKind::ScanBackendRollbackStateRestore,
+                            target_for_worker,
+                            replacement_context,
                         );
                         return Err(error);
                     }
-                    return Err(primary);
-                }
-                Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Err(failure))) => {
-                    let primary_error = failure.error.clone();
-                    let step = failure.step;
-                    let rollback_failure = failure.rollback_failure.clone();
-                    let primary = failure.into_error();
-                    let mut guard = match lock_runtime(
-                        &runtime,
-                        "service runtime lock poisoned while marking scan backend failure",
-                    ) {
-                        Ok(guard) => guard,
-                        Err(lock_error) => {
-                            let error = finish_frontend_state_restore_lock_failure_report(
-                                cleanup_diagnostic_sink.clone(),
-                                primary,
-                                lock_error,
-                                "frontend scan backend failure marking failed",
-                                FrontendWorkerCleanupDiagnosticKind::ScanBackendRollbackStateRestore,
-                                target_for_worker,
-                                replacement_context,
-                            );
-                            return Err(error);
-                        }
-                    };
-                    if let Err(diagnostic_error) = guard
-                        .frontend_txn()
-                        .record_frontend_backend_failure_diagnostic(
-                            ctx.frontend_id(),
-                            ctx.generation(),
-                            step,
-                            primary_error,
-                            rollback_failure,
-                        )
-                    {
-                        return Err(compose_frontend_cleanup_error(
-                            "frontend scan backend failure diagnostic record failed",
-                            primary,
-                            diagnostic_error,
-                        ));
-                    }
-                    if let Err(mark_error) = guard
-                        .frontend_txn()
-                        .mark_frontend_scan_session_backend_failed(
-                            ctx.frontend_id(),
-                            ctx.generation(),
-                        )
-                    {
-                        let error = compose_frontend_cleanup_error(
-                            "frontend scan backend failure marking failed",
-                            primary,
-                            mark_error,
-                        );
-                        return Err(error);
-                    }
-                    return Err(primary);
-                }
-                Ok(FrontendBackendSubmitDeadlineOutcome::TimedOut(ticket)) => {
-                    let mut guard = lock_runtime(
-                        &runtime,
-                        "service runtime lock poisoned while recording scan submit timeout",
-                    )?;
-                    let (expected_demux_generations, snapshot_error) =
-                        match current_bound_demux_generation_snapshot(&guard, ctx.frontend_id()) {
-                            Ok(snapshot) => (snapshot, None),
-                            Err(error) => {
-                                guard.mark_service_critical();
-                                (Vec::new(), Some(error))
-                            }
-                        };
-                    let timeout_error = transfer_timed_out_active_scan_submit(
-                        &reaper,
-                        &mut guard,
-                        target_for_worker,
+                };
+                if let Err(diagnostic_error) = guard
+                    .frontend_txn()
+                    .record_frontend_backend_failure_diagnostic(
+                        ctx.frontend_id(),
                         ctx.generation(),
-                        expected_demux_generations,
-                        ticket,
-                        cleanup_diagnostic_sink.clone(),
-                        backend_submit_deadline_ms,
-                    );
-                    return Err(match snapshot_error {
-                        Some(snapshot_error) => compose_frontend_cleanup_error(
-                            "frontend scan submit timeout demux snapshot failed",
-                            timeout_error,
-                            snapshot_error,
-                        ),
-                        None => timeout_error,
-                    });
+                        step,
+                        primary.clone(),
+                        rollback_failure,
+                    )
+                {
+                    return Err(compose_frontend_cleanup_error(
+                        "frontend scan submission failure diagnostic record failed",
+                        primary,
+                        diagnostic_error,
+                    ));
                 }
-                Err(start_error) => {
-                    let mut guard = lock_runtime(
-                        &runtime,
-                        "service runtime lock poisoned while recording scan submit start failure",
-                    )?;
-                    if let Err(mark_error) = guard
-                        .frontend_txn()
-                        .mark_frontend_scan_submit_rejected_after_boundary(
-                            ctx.frontend_id(),
-                            ctx.generation(),
-                            start_error.clone(),
-                        )
-                    {
-                        return Err(compose_frontend_cleanup_error(
-                            "frontend scan submit start failure state commit failed",
-                            start_error,
-                            mark_error,
-                        ));
+                if let Err(mark_error) = guard
+                    .frontend_txn()
+                    .mark_frontend_scan_submit_rejected_after_boundary(
+                        ctx.frontend_id(),
+                        ctx.generation(),
+                        primary.clone(),
+                    )
+                {
+                    return Err(compose_frontend_cleanup_error(
+                        "frontend scan submission failure marking failed",
+                        primary,
+                        mark_error,
+                    ));
+                }
+                return Err(primary);
+            }
+            Ok(Err(failure)) => {
+                let primary_error = failure.error.clone();
+                let step = failure.step;
+                let rollback_failure = failure.rollback_failure.clone();
+                let primary = failure.into_error();
+                let mut guard = match lock_runtime(
+                    &runtime,
+                    "service runtime lock poisoned while marking scan backend failure",
+                ) {
+                    Ok(guard) => guard,
+                    Err(lock_error) => {
+                        let error = finish_frontend_state_restore_lock_failure_report(
+                            cleanup_diagnostic_sink.clone(),
+                            primary,
+                            lock_error,
+                            "frontend scan backend failure marking failed",
+                            FrontendWorkerCleanupDiagnosticKind::ScanBackendRollbackStateRestore,
+                            target_for_worker,
+                            replacement_context,
+                        );
+                        return Err(error);
                     }
-                    return Err(start_error);
+                };
+                if let Err(diagnostic_error) = guard
+                    .frontend_txn()
+                    .record_frontend_backend_failure_diagnostic(
+                        ctx.frontend_id(),
+                        ctx.generation(),
+                        step,
+                        primary_error,
+                        rollback_failure,
+                    )
+                {
+                    return Err(compose_frontend_cleanup_error(
+                        "frontend scan backend failure diagnostic record failed",
+                        primary,
+                        diagnostic_error,
+                    ));
                 }
-            },
+                if let Err(mark_error) = guard
+                    .frontend_txn()
+                    .mark_frontend_scan_session_backend_failed(
+                        ctx.frontend_id(),
+                        ctx.generation(),
+                    )
+                {
+                    return Err(compose_frontend_cleanup_error(
+                        "frontend scan backend failure marking failed",
+                        primary,
+                        mark_error,
+                    ));
+                }
+                return Err(primary);
+            }
+            Err(start_error) => {
+                let mut guard = lock_runtime(
+                    &runtime,
+                    "service runtime lock poisoned while recording scan submit owner failure",
+                )?;
+                if let Err(mark_error) = guard
+                    .frontend_txn()
+                    .mark_frontend_scan_submit_rejected_after_boundary(
+                        ctx.frontend_id(),
+                        ctx.generation(),
+                        start_error.clone(),
+                    )
+                {
+                    return Err(compose_frontend_cleanup_error(
+                        "frontend scan submit owner failure state commit failed",
+                        start_error,
+                        mark_error,
+                    ));
+                }
+                return Err(start_error);
+            }
         };
         let mut signal_state = FrontendSignalState::NoSignal;
         let mut locked_stream_ids = None;
@@ -4418,79 +4369,10 @@ fn finish_committed_scan_replacement(
             device_path.clone(),
             first_candidate,
         );
-        let worker_io_deadline_ms = guard.capability_snapshot().worker_io_deadline_ms;
-        let backend_submit_deadline_ms =
-            frontend_backend_submit_deadline_ms(backend, worker_io_deadline_ms);
         let ticket =
             guard
                 .frontend_txn()
                 .prepare_backend_submit(FrontendWorkerKind::Scan, plan, None)?;
-        let session = match submit_frontend_backend_with_deadline(
-            ticket,
-            generation,
-            backend_submit_deadline_ms,
-        ) {
-            Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Ok(session))) => session,
-            Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Err(failure))) => {
-                let backend_stopped = failure.rollback_succeeded;
-                let step = failure.step;
-                let primary_error = failure.error.clone();
-                let rollback_failure = failure.rollback_failure.clone();
-                let public_error = failure.into_error();
-                return Err(record_backend_submit_failure_after_fence(
-                    &mut guard,
-                    frontend_id,
-                    generation,
-                    backend_stopped,
-                    public_error,
-                    step,
-                    primary_error,
-                    rollback_failure,
-                ));
-            }
-            Ok(FrontendBackendSubmitDeadlineOutcome::TimedOut(ticket)) => {
-                let (expected_demux_generations, snapshot_error) =
-                    match current_bound_demux_generation_snapshot(&guard, frontend_id) {
-                        Ok(snapshot) => (snapshot, None),
-                        Err(error) => {
-                            guard.mark_service_critical();
-                            (Vec::new(), Some(error))
-                        }
-                    };
-                let timeout_error = transfer_timed_out_frontend_backend_submit(
-                    &reaper,
-                    &mut guard,
-                    target,
-                    FrontendWorkerKind::Scan,
-                    generation,
-                    expected_demux_generations,
-                    ticket,
-                    transition.cleanup_diagnostic_sink.clone(),
-                    backend_submit_deadline_ms,
-                );
-                return Err(match snapshot_error {
-                    Some(snapshot_error) => compose_frontend_cleanup_error(
-                        "frontend scan backend submit timeout demux snapshot failed",
-                        timeout_error,
-                        snapshot_error,
-                    ),
-                    None => timeout_error,
-                });
-            }
-            Err(start_error) => {
-                let diagnostic_error = start_error.clone();
-                return Err(record_backend_submit_failure_after_fence(
-                    &mut guard,
-                    frontend_id,
-                    generation,
-                    true,
-                    start_error,
-                    None,
-                    diagnostic_error,
-                    None,
-                ));
-            }
-        };
         let scan_notifier = transition.scan_notifier;
         let cleanup_diagnostic_sink = transition.cleanup_diagnostic_sink.clone();
         let candidates_for_worker = transition.candidates.clone();
@@ -4501,14 +4383,14 @@ fn finish_committed_scan_replacement(
             generation,
             move |ctx| {
                 let result = match activation_receiver.recv() {
-                    Ok(FrontendScanWorkerActivation::Run(session)) => {
+                    Ok(FrontendScanWorkerActivation::Run(ticket)) => {
                         run_frontend_backend_scan_session_worker(
                             Arc::clone(&runtime_for_worker),
                             &ctx,
                             backend,
                             device_path,
                             candidates_for_worker,
-                            Some(session),
+                            Some(ticket),
                             None,
                             target,
                             scan_notifier,
@@ -4526,15 +4408,15 @@ fn finish_committed_scan_replacement(
             },
         ) {
             let error = map_frontend_worker_start_error(&guard, start_error);
-            return Err(finish_backend_session_before_frontend_commit_failure(
-                runtime,
-                guard,
-                frontend_id,
-                generation,
-                session,
-                error,
-                "frontend backend stop failed after scan worker preparation failure",
-            ));
+            let cleanup = ticket.complete();
+            return match frontend_worker_stop_failure(&cleanup) {
+                Some(cleanup_error) => Err(compose_frontend_cleanup_error(
+                    "frontend backend preparation cleanup failed after scan worker start failure",
+                    error,
+                    cleanup_error,
+                )),
+                None => Err(error),
+            };
         }
         if let Err(commit_error) = guard.frontend_txn().commit_frontend_scan_after_fence(
             frontend_id,
@@ -4551,15 +4433,15 @@ fn finish_committed_scan_replacement(
                         "frontend scan worker abort activation failed",
                     )
                 });
-            let mut error = finish_backend_session_before_frontend_commit_failure(
-                runtime,
-                guard,
-                frontend_id,
-                generation,
-                session,
-                commit_error,
-                "frontend backend stop failed after scan commit failure",
-            );
+            let cleanup = ticket.complete();
+            let mut error = commit_error;
+            if let Some(cleanup_error) = frontend_worker_stop_failure(&cleanup) {
+                error = compose_frontend_cleanup_error(
+                    "frontend backend preparation cleanup failed after scan commit failure",
+                    error,
+                    cleanup_error,
+                );
+            }
             if let Some(activation_error) = activation_error {
                 error = compose_frontend_cleanup_error(
                     "frontend scan worker abort failed after commit failure",
@@ -4569,25 +4451,24 @@ fn finish_committed_scan_replacement(
             }
             return Err(error);
         }
-        match activation_sender.send(FrontendScanWorkerActivation::Run(session)) {
+        match activation_sender.send(FrontendScanWorkerActivation::Run(ticket)) {
             Ok(()) => Ok(()),
             Err(error) => match error.0 {
-                FrontendScanWorkerActivation::Run(session) => {
+                FrontendScanWorkerActivation::Run(ticket) => {
                     let primary = HalError::internal(
                         HalInternalKind::InvariantViolation,
                         "frontend scan worker ended before backend activation",
                     );
-                    Err(
-                        finish_backend_session_after_frontend_commit_activation_failure(
-                            runtime,
-                            guard,
-                            frontend_id,
-                            generation,
-                            session,
+                    let cleanup = ticket.complete();
+                    let cleanup_error = frontend_worker_stop_failure(&cleanup);
+                    Err(match cleanup_error {
+                        Some(cleanup_error) => compose_frontend_cleanup_error(
+                            "frontend backend preparation cleanup failed after scan activation failure",
                             primary,
-                            "frontend backend stop failed after scan activation failure",
+                            cleanup_error,
                         ),
-                    )
+                        None => primary,
+                    })
                 }
                 FrontendScanWorkerActivation::Abort => Err(HalError::internal(
                     HalInternalKind::InvariantViolation,
