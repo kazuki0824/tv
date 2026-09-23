@@ -950,8 +950,7 @@ where
             let lane = WorkerRuntime::spawn_controlled_handle(
                 format!("{thread_prefix}-{lane}"),
                 move |context| loop {
-                    let queued =
-                        lock_reaper_receiver(&receiver, &pending_for_lane.failure)?.recv();
+                    let queued = lock_reaper_receiver(&receiver, &pending_for_lane.failure)?.recv();
                     let WorkerRuntimeReaperQueuedJob { job, group_id } = match queued {
                         Ok(queued) => queued,
                         Err(_) => return Ok(()),
@@ -2491,8 +2490,7 @@ mod tests {
         pending.reserve_group([(1, 9)]).unwrap();
         let clone = pending.clone();
         let (_sender, receiver) = std::sync::mpsc::channel::<()>();
-        let receiver =
-            PoisonTrackedMutex::new(receiver, RuntimeLockKind::WorkerReaperReceiver);
+        let receiver = PoisonTrackedMutex::new(receiver, RuntimeLockKind::WorkerReaperReceiver);
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = receiver.lock().unwrap();
             panic!("回収受信側を汚染");
