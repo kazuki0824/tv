@@ -6,8 +6,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use maleicacid_tuner_hal2_common::{PoisonTrackedMutex, RuntimeLockKind};
 use maleicacid_tuner_hal2_common::{FrontendTuneRequest, HalError, HalInternalKind};
+use maleicacid_tuner_hal2_common::{PoisonTrackedMutex, RuntimeLockKind};
 use maleicacid_tuner_hal2_control_core::{
     WorkerCleanupAuthority, WorkerCleanupProgress, WorkerCleanupRun, WorkerContext, WorkerExit,
     WorkerFailureDomain, WorkerRuntime, WorkerRuntimeCleanup, WorkerStopReason,
@@ -637,7 +637,10 @@ impl FrontendWorkerContext {
         self.control.wait_until(deadline)
     }
     pub fn cancel_reason(&self) -> Result<Option<FrontendWorkerCancelReason>, HalError> {
-        self.cancel_reason.lock().map(|guard| *guard).map_err(HalError::LockPoisoned)
+        self.cancel_reason
+            .lock()
+            .map(|guard| *guard)
+            .map_err(HalError::LockPoisoned)
     }
 }
 
@@ -888,7 +891,10 @@ impl FrontendWorkerRegistry {
             self.slots.remove(&key);
         }
 
-        let cancel_reason = Arc::new(PoisonTrackedMutex::new(None, RuntimeLockKind::FrontendCancelReason));
+        let cancel_reason = Arc::new(PoisonTrackedMutex::new(
+            None,
+            RuntimeLockKind::FrontendCancelReason,
+        ));
         let worker_cancel_reason = Arc::clone(&cancel_reason);
         let thread_name: &'static str = "maleicacid-frontend-worker";
         let thread_result = ThreadResultOwner::start_controlled(thread_name, move |control| {
@@ -917,7 +923,7 @@ impl FrontendWorkerRegistry {
                 Err(error) => {
                     let exit = owner_failure_exit(&error);
                     Ok((Err(error), exit))
-                },
+                }
             }
         })
         .map_err(|error| FrontendWorkerStartError::SpawnFailed { error })?;
@@ -960,13 +966,13 @@ impl FrontendWorkerRegistry {
         let mut guard = match cancel_reason.lock() {
             Ok(guard) => guard,
             Err(poison) => {
-            return FrontendWorkerStopOutcome::StopRequestFailed {
-                frontend_id,
-                kind,
-                generation,
-                reason,
-                error: HalError::LockPoisoned(poison),
-            };
+                return FrontendWorkerStopOutcome::StopRequestFailed {
+                    frontend_id,
+                    kind,
+                    generation,
+                    reason,
+                    error: HalError::LockPoisoned(poison),
+                };
             }
         };
         *guard = Some(reason);
@@ -1109,31 +1115,53 @@ mod tests {
     fn cancel_reason_poison_survives_stop_and_worker_completion() {
         let mut registry = FrontendWorkerRegistry::default();
         let (done, wait) = std::sync::mpsc::channel();
-        registry.start(7, FrontendWorkerKind::Tune, 3, move |context| {
-            wait.recv().unwrap();
-            context.cancel_reason()?;
-            Ok(())
-        }).unwrap();
-        let key = FrontendWorkerKey { frontend_id: 7, kind: FrontendWorkerKind::Tune };
+        registry
+            .start(7, FrontendWorkerKind::Tune, 3, move |context| {
+                wait.recv().unwrap();
+                context.cancel_reason()?;
+                Ok(())
+            })
+            .unwrap();
+        let key = FrontendWorkerKey {
+            frontend_id: 7,
+            kind: FrontendWorkerKind::Tune,
+        };
         let reason = Arc::clone(&registry.slots.get(&key).unwrap().cancel_reason);
         let _ = std::panic::catch_unwind(|| {
             let _guard = reason.lock().unwrap();
             panic!("汚染を注入");
         });
         for outcome in [
-            registry.request_stop(7, FrontendWorkerKind::Tune, FrontendWorkerCancelReason::StopRequested),
-            registry.request_stop_for_join(7, FrontendWorkerKind::Tune, FrontendWorkerCancelReason::StopRequested).complete(),
+            registry.request_stop(
+                7,
+                FrontendWorkerKind::Tune,
+                FrontendWorkerCancelReason::StopRequested,
+            ),
+            registry
+                .request_stop_for_join(
+                    7,
+                    FrontendWorkerKind::Tune,
+                    FrontendWorkerCancelReason::StopRequested,
+                )
+                .complete(),
         ] {
-            assert!(matches!(outcome, FrontendWorkerStopOutcome::StopRequestFailed { error: HalError::LockPoisoned(p), .. } if p.lock == RuntimeLockKind::FrontendCancelReason));
+            assert!(
+                matches!(outcome, FrontendWorkerStopOutcome::StopRequestFailed { error: HalError::LockPoisoned(p), .. } if p.lock == RuntimeLockKind::FrontendCancelReason)
+            );
         }
         done.send(()).unwrap();
         let (result, exit) = registry.slots.remove(&key).unwrap().join_after_cancel();
-        assert!(matches!(result, Err(HalError::LockPoisoned(p)) if p.lock == RuntimeLockKind::FrontendCancelReason));
-        assert_eq!(exit, WorkerExit::RuntimeFailure(WorkerFailureDomain::Signal.runtime_failure_kind()));
+        assert!(
+            matches!(result, Err(HalError::LockPoisoned(p)) if p.lock == RuntimeLockKind::FrontendCancelReason)
+        );
+        assert_eq!(
+            exit,
+            WorkerExit::RuntimeFailure(WorkerFailureDomain::Signal.runtime_failure_kind())
+        );
     }
 
     use super::*;
-    use std::sync::{mpsc, Arc, Mutex};
+    use std::sync::{mpsc, Arc};
     use std::time::Duration;
 
     fn submit_plan() -> FrontendBackendTunePlan {
@@ -1536,7 +1564,10 @@ mod tests {
             key,
             FrontendWorkerSlot {
                 generation: 10,
-                cancel_reason: Arc::new(PoisonTrackedMutex::new(None, RuntimeLockKind::FrontendCancelReason)),
+                cancel_reason: Arc::new(PoisonTrackedMutex::new(
+                    None,
+                    RuntimeLockKind::FrontendCancelReason,
+                )),
                 thread_result: Some(
                     ThreadResultOwner::start(
                         "frontend-worker-owner-failure-test",
@@ -1615,7 +1646,10 @@ mod tests {
             },
             FrontendWorkerSlot {
                 generation: 12,
-                cancel_reason: Arc::new(PoisonTrackedMutex::new(None, RuntimeLockKind::FrontendCancelReason)),
+                cancel_reason: Arc::new(PoisonTrackedMutex::new(
+                    None,
+                    RuntimeLockKind::FrontendCancelReason,
+                )),
                 thread_result: None,
                 pending_completed: Some((Err(error.clone()), exit)),
             },
@@ -1655,7 +1689,10 @@ mod tests {
                 key,
                 FrontendWorkerSlot {
                     generation: 12,
-                    cancel_reason: Arc::new(PoisonTrackedMutex::new(None, RuntimeLockKind::FrontendCancelReason)),
+                    cancel_reason: Arc::new(PoisonTrackedMutex::new(
+                        None,
+                        RuntimeLockKind::FrontendCancelReason,
+                    )),
                     thread_result: None,
                     pending_completed: Some((Err(error.clone()), WorkerExit::Normal)),
                 },

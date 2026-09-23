@@ -91,7 +91,7 @@ device-adaptation層は `FrontendRuntime`、AIDL object、callback artifactを�
 | `control/src/lib.rs::WorkerRuntimeSupervisor` | 管理状態の取得入口は`lock_state`。DVR通知側へ生のロックを公開しない |
 | `device/src/runtime/frontend_worker.rs` | 取消し理由の読取り・書込み・終了結果への接続 |
 | `service_runtime/src/diagnostics.rs` | DVR確定後通知・通知回収・コールバック整合性診断の記録・取得・消去 |
-| `demux/src/runtime/queue_runtime.rs::QueueEpochProtocol` | キュー世代の取得と待機、主処理・取消しの失敗保持。`DemuxRuntimeError::queue_runtime_error`と`service_runtime/src/boot/demux_error.rs`を通して伝達する |
+| `demux/src/runtime/queue_runtime.rs::QueueEpochProtocol` | キュー世代の取得と待機、主処理・取消しの失敗保持。`DemuxRuntimeError::queue_runtime_error`と`service_runtime/src/boot/demux_error.rs`を通して伝達する。サービス境界ではDVR IDも保持する`HalError::QueueEpochLockPoisoned`へ写像する |
 
 ### 機器診断の取得境界
 

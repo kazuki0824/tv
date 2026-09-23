@@ -628,6 +628,7 @@ pub enum WorkerCleanupFailureKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HalError {
     LockPoisoned(LockPoisonDiagnostic),
+    QueueEpochLockPoisoned { dvr_id: Option<i32>, poison: LockPoisonDiagnostic },
     ServiceRuntimeLockPoisoned {
         operation: &'static str,
     },
@@ -846,6 +847,7 @@ impl fmt::Display for HalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             HalError::LockPoisoned(poison) => write!(f, "lock poisoned: {poison:?}"),
+            HalError::QueueEpochLockPoisoned { dvr_id, poison } => write!(f, "DVR queue epoch lock poisoned: dvr_id={dvr_id:?} {poison:?}"),
             HalError::ServiceRuntimeLockPoisoned { operation } => {
                 write!(
                     f,
