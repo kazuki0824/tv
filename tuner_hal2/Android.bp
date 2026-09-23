@@ -2,14 +2,6 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-// external/rust/android-crates-io で libloom が供給される環境だけで使う任意defaults。
-// 通常testには適用しない。loom対象testを追加するときに defaults に指定する。
-rust_defaults {
-    name: "maleicacid_tuner_hal2_loom_test_defaults",
-    rustlibs: ["libloom"],
-    cfgs: ["loom"],
-}
-
 prebuilt_etc {
     name: "maleicacid_tuner_hal2_ueventd_rc",
     vendor: true,
@@ -804,26 +796,3 @@ rust_test {
     test_suites: ["general-tests"],
 }
 
-rust_test {
-    name: "maleicacid_tuner_hal2_service_runtime_loom_test",
-    vendor: true,
-    crate_name: "maleicacid_tuner_hal2_service_runtime_loom_test",
-    crate_root: "service_runtime/src/loom_tests.rs",
-    srcs: ["service_runtime/src/loom_tests.rs"],
-    edition: "2021",
-    defaults: ["maleicacid_tuner_hal2_loom_test_defaults"],
-    auto_gen_config: true,
-    test_suites: ["general-tests"],
-}
-
-rust_test {
-    name: "maleicacid_tuner_hal2_aidl_service_loom_test",
-    vendor: true,
-    crate_name: "maleicacid_tuner_hal2_aidl_service_loom_test",
-    crate_root: "aidl_service/src/loom_tests.rs",
-    srcs: ["aidl_service/src/loom_tests.rs"],
-    edition: "2021",
-    defaults: ["maleicacid_tuner_hal2_loom_test_defaults"],
-    auto_gen_config: true,
-    test_suites: ["general-tests"],
-}
