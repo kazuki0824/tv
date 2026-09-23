@@ -97,17 +97,17 @@ impl InvalidSectionReason {
         let (code, message) = match self {
             Self::Header => (
                 "SECTION_HEADER_INVALID",
-                "section header is invalid or truncated",
+                "section headerが不正または途中で切れています",
             ),
             Self::Length => (
                 "SECTION_LENGTH_MISMATCH",
-                "section length differs from input length",
+                "section長が入力長と一致しません",
             ),
             Self::Clock => (
                 "BROADCAST_CLOCK_INVALID",
-                "broadcast clock section is invalid",
+                "放送時刻sectionが不正です",
             ),
-            Self::Crc => ("SECTION_CRC_MISMATCH", "section CRC does not match"),
+            Self::Crc => ("SECTION_CRC_MISMATCH", "section CRCが一致しません"),
         };
         ParserDiagnosticDto {
             code,
@@ -1459,7 +1459,7 @@ pub extern "system" fn Java_com_maleicacid_tvinput_aribsi_NativeAribSiParser_nat
 
 fn snapshot_pmt_pids_for_section_filters_json(handle: jlong) -> Result<String, SiJniFailure> {
     if !si_module_is_healthy() {
-        return Err(SiJniFailureReason::ModuleAbnormal.failure("SI module is abnormal"));
+        return Err(SiJniFailureReason::ModuleAbnormal.failure("SI moduleが異常状態です"));
     }
     let parser = match registry().lock() {
         Ok(guard) => guard.get(handle),
@@ -1484,7 +1484,7 @@ fn snapshot_pmt_pids_for_section_filters_json(handle: jlong) -> Result<String, S
 
 fn snapshot_bulk_json(handle: jlong) -> Result<String, SiJniFailure> {
     if !si_module_is_healthy() {
-        return Err(SiJniFailureReason::ModuleAbnormal.failure("SI module is abnormal"));
+        return Err(SiJniFailureReason::ModuleAbnormal.failure("SI moduleが異常状態です"));
     }
     let parser = match registry().lock() {
         Ok(guard) => guard.get(handle),

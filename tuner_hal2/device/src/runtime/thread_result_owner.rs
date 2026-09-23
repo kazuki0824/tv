@@ -70,7 +70,7 @@ where
             WorkerRuntime::spawn_controlled_handle(name.to_owned(), run).map_err(|error| {
                 HalError::Io {
                     backend: name,
-                    operation: "thread spawn",
+                    operation: "スレッド生成",
                     path: None,
                     errno: error.raw_os_error(),
                     detail: HalErrorDetail::new(error.to_string()),

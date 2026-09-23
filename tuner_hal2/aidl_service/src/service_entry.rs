@@ -369,18 +369,18 @@ fn dvb_driver_basename(adapter: i32, frontend_index: i32) -> Result<String, HalE
         "/sys/class/dvb/dvb{adapter}.frontend{frontend_index}/device/driver"
     ));
     let target = std::fs::read_link(&link)
-        .map_err(|error| probe_io_error("dvb", "read driver link", &link, error))?;
+        .map_err(|error| probe_io_error("dvb", "driver link読取り", &link, error))?;
     target
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .ok_or_else(|| {
             probe_io_error(
                 "dvb",
-                "read driver link",
+                "driver link読取り",
                 &link,
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    "driver link has no basename",
+                    "driver linkにbasenameがありません",
                 ),
             )
         })
@@ -391,7 +391,7 @@ fn dvb_physical_device_identity(adapter: i32, frontend_index: i32) -> Result<Pat
         "/sys/class/dvb/dvb{adapter}.frontend{frontend_index}/device"
     ));
     std::fs::canonicalize(&path)
-        .map_err(|error| probe_io_error("dvb", "resolve physical device", &path, error))
+        .map_err(|error| probe_io_error("dvb", "物理device解決", &path, error))
 }
 
 fn systems_from_dvb_delsys_buffer(buffer: DtvPropertyBuffer) -> Vec<FrontendSystem> {
@@ -424,7 +424,7 @@ fn probe_dvb_delivery_systems(
         .read(true)
         .write(true)
         .open(path)
-        .map_err(|error| probe_io_error("dvb", "open frontend for probe", path, error))?;
+        .map_err(|error| probe_io_error("dvb", "probe用frontend open", path, error))?;
     let fd = file.as_raw_fd();
 
     let mut info = DvbFrontendInfo {
@@ -512,7 +512,7 @@ fn collect_px4_probe_candidates(
                 Ok(false) => {}
                 Err(error) => outcomes.push(FrontendProbeOutcome::DeviceProbeFailed {
                     backend: FrontendBackendKind::Px4CharDevice,
-                    error: probe_io_error("px4", "probe device metadata", &path, error),
+                    error: probe_io_error("px4", "deviceメタデータprobe", &path, error),
                     path,
                 }),
             }
@@ -575,7 +575,7 @@ fn probe_frontends() -> Vec<FrontendProbeOutcome> {
                 Err(error) => {
                     outcomes.push(FrontendProbeOutcome::DeviceProbeFailed {
                         backend: FrontendBackendKind::LinuxDvb,
-                        error: probe_io_error("dvb", "probe device metadata", &path, error),
+                        error: probe_io_error("dvb", "deviceメタデータprobe", &path, error),
                         path,
                     });
                     continue;
@@ -720,7 +720,7 @@ pub fn run_service() {
     let binder = BnTuner::new_binder(tuner, BinderFeatures::default());
     if let Err(error) = binder::add_service(TUNER_SERVICE_NAME, binder.as_binder()) {
         log::error!(
-            "Tuner service startup failed: phase=binder-register service={TUNER_SERVICE_NAME} error={error:?}"
+            "Tuner serviceの起動に失敗しました: 段階=binder-register service={TUNER_SERVICE_NAME} エラー={error:?}"
         );
         std::process::exit(1);
     }
@@ -750,7 +750,7 @@ mod tests {
         assert!(
             matches!(&outcomes[0], FrontendProbeOutcome::DeviceProbeFailed {
             backend: FrontendBackendKind::Px4CharDevice,
-            error: HalError::Io { operation: "probe device metadata", errno: Some(13), path: Some(path), .. }, ..
+            error: HalError::Io { operation: "deviceメタデータprobe", errno: Some(13), path: Some(path), .. }, ..
         } if path == std::path::Path::new("/dev/px4video0"))
         );
     }

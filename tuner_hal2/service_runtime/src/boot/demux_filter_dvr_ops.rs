@@ -778,7 +778,7 @@ impl TunerServiceRuntime {
         let lock = || {
             TunerServiceRuntime::lock_shared(
                 runtime.as_ref(),
-                "service runtime lock poisoned while consuming playback DVR data",
+                "playback DVRデータ消費中にservice runtimeのロックが汚染されました",
             )
         };
         {

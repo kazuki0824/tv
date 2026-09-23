@@ -28,7 +28,7 @@ fn runtime_poison_latches_critical_state_and_keeps_diagnostics_readable() {
     let failure_state = runtime.lock().unwrap().failure_state();
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _guard = runtime.lock().unwrap();
-        panic!("poison service runtime");
+        panic!("service runtimeを汚染");
     }))
     .is_err());
     TunerServiceRuntime::mark_shared_service_critical(&runtime);
@@ -69,7 +69,7 @@ fn filter_delivery_wake_preserves_runtime_poison_state() {
     let failure_state = runtime.lock().unwrap().failure_state();
     assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _guard = runtime.lock().unwrap();
-        panic!("poison service runtime");
+        panic!("service runtimeを汚染");
     }))
     .is_err());
     assert!(matches!(
@@ -85,10 +85,10 @@ fn probe_io_failure_is_retained_without_advertising_a_frontend() {
     let mut runtime = TunerServiceRuntime::new();
     let error = HalError::Io {
         backend: "dvb",
-        operation: "read driver link",
+        operation: "driver link読取り",
         path: Some("/sys/dvb/driver".into()),
         errno: Some(13),
-        detail: maleicacid_tuner_hal2_common::HalErrorDetail::new("permission denied"),
+        detail: maleicacid_tuner_hal2_common::HalErrorDetail::new("権限がありません"),
     };
     let outcome =
         runtime.boot_from_probe_results([crate::FrontendProbeOutcome::DeviceProbeFailed {
@@ -123,7 +123,7 @@ fn fmq_failure_and_rollback_keep_the_primary_delivery_kind() {
         );
         let rollback = maleicacid_tuner_hal2_demux::QueueRuntimeError {
             kind: maleicacid_tuner_hal2_demux::QueueRuntimeErrorKind::DataPathFailure,
-            detail: "DVR queue epoch lock poisoned while releasing a transaction",
+            detail: "transaction解放中にDVR queue epochロックが汚染されました",
         };
         let failure = DemuxRuntimeError::fmq_delivery_rollback_failed(17, kind, rollback);
         assert!(matches!(failure.kind,

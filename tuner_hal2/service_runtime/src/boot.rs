@@ -365,7 +365,7 @@ impl FrontendLivePacketSink for FrontendDemuxPacketSink {
         let events = {
             let mut runtime = TunerServiceRuntime::lock_shared(
                 self.runtime.as_ref(),
-                "service runtime lock poisoned while delivering frontend TS packet",
+                "frontend TS packet配送中にservice runtimeのロックが汚染されました",
             )?;
             let requests = runtime
                 .registry
@@ -490,7 +490,7 @@ pub fn start_frontend_demux_live_pump_from_reader(
     let dispatcher = {
         let guard = TunerServiceRuntime::lock_shared(
             runtime.as_ref(),
-            "service runtime lock poisoned while preparing frontend demux live pump",
+            "frontend demux live pump準備中にservice runtimeのロックが汚染されました",
         )?;
         guard
             .query()
@@ -1071,7 +1071,7 @@ impl TunerServiceRuntime {
                 .ok_or_else(|| {
                     HalError::internal(
                         HalInternalKind::InvariantViolation,
-                        "live filter registry entry is missing while preparing event delivery",
+                        "event配送準備中にlive filter registry entryがありません",
                     )
                 })?;
             if start_id_snapshot_emitted.insert(filter_id) {
@@ -1081,7 +1081,7 @@ impl TunerServiceRuntime {
                     .ok_or_else(|| {
                         HalError::internal(
                             HalInternalKind::InvariantViolation,
-                            "live filter demux is missing while preparing event delivery",
+                            "event配送準備中にlive filter demuxがありません",
                         )
                     })?;
                 if let Some(start_id) = demux
@@ -1274,7 +1274,7 @@ mod raw_filter_event_projection_tests {
             ));
         let snapshots = runtime
             .filter_event_delivery_snapshots(std::slice::from_ref(&report))
-            .expect("test filter event projection succeeds");
+            .expect("試験のfilter event投影は成功する必要があります");
         (report, snapshots)
     }
 
@@ -1699,7 +1699,7 @@ impl TunerServiceRuntime {
             let frontend = self.registry.frontend_runtime(frontend_id).ok_or_else(|| {
                 HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "frontend runtime is missing while reading backend diagnostics",
+                    "backend診断読取り中にfrontend runtimeがありません",
                 )
             })?;
             for backend in [
@@ -1726,7 +1726,7 @@ impl TunerServiceRuntime {
                 let frontend = self.registry.frontend_runtime(frontend_id).ok_or_else(|| {
                     HalError::internal(
                         HalInternalKind::InvariantViolation,
-                        "frontend runtime is missing while reading frontend diagnostics",
+                        "frontend診断読取り中にfrontend runtimeがありません",
                     )
                 })?;
                 Ok(crate::diagnostics::FrontendDiagnosticSnapshot::from_frontend(frontend))
@@ -3087,8 +3087,8 @@ impl TunerServiceRuntime {
             return (
                 ServiceBootOutcome::Degraded,
                 Err(HalError::cleanup_failed(
-                    "frontend workers",
-                    "unfinished cleanup prevents boot reset",
+                    "frontendワーカー群",
+                    "未完後片付けのためboot resetできません",
                 )),
             );
         }

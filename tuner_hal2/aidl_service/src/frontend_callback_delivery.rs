@@ -87,7 +87,7 @@ fn finish_frontend_scan_end_delivery_failure(
     let runtime = context.runtime();
     let runtime_lock = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
         &runtime,
-        "frontend scan end callback failure",
+        "frontend scan終了callback失敗",
     );
     let store = context.callback_store_lock().map_err(|error| {
         maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
@@ -135,7 +135,7 @@ fn finish_frontend_scan_end_delivery_failure(
         Err(lock_error) => {
             drop(store);
             let primary = maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
-                "frontend scan end failure runtime lock",
+                "frontend scan終了失敗時のruntimeロック",
                 primary,
                 lock_error,
             );
@@ -253,7 +253,7 @@ fn finish_frontend_event_delivery_failure(
     let runtime = context.runtime();
     let runtime_lock = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
         &runtime,
-        "frontend callback failure",
+        "frontend callback失敗",
     );
     let store = context.callback_store_lock().map_err(|error| {
         maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
@@ -301,7 +301,7 @@ fn finish_frontend_event_delivery_failure(
         Err(lock_error) => {
             drop(store);
             let primary = maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
-                "frontend callback failure runtime lock",
+                "frontend callback失敗時のruntimeロック",
                 primary,
                 lock_error,
             );

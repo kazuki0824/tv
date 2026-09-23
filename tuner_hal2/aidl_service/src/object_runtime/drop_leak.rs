@@ -54,7 +54,7 @@ pub(crate) fn quarantine_drop_leak_object(
 ) -> BinderResult<()> {
     let runtime_handle = context.runtime();
     let quarantine_result = {
-        let mut runtime = TunerServiceRuntime::lock_shared(&runtime_handle, "drop leak quarantine")
+        let mut runtime = TunerServiceRuntime::lock_shared(&runtime_handle, "Drop漏れ隔離")
             .map_err(status_from_hal_error)?;
         quarantine_object_drop_leak_use_case(&mut runtime, handle.object_id(), handle.generation())
     };
@@ -118,7 +118,7 @@ pub(crate) fn drop_leak_object_from_drop(
     }
     let runtime_handle = context.runtime();
     let final_release_state_cleanup =
-        TunerServiceRuntime::lock_shared(&runtime_handle, "final AV cleanup")
+        TunerServiceRuntime::lock_shared(&runtime_handle, "最終AV後片付け")
             .map_err(status_from_hal_error)
             .and_then(|mut runtime| {
                 runtime

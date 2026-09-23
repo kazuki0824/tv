@@ -545,7 +545,7 @@ mod tests {
                     ]
                 );
             }
-            other => panic!("unexpected outcome: {other:?}"),
+            other => panic!("想定外の結果です: {other:?}"),
         }
         assert!(!backend.tuned);
     }
