@@ -1,4 +1,6 @@
 pub mod os_abi;
+mod poison_lock;
+pub use poison_lock::{LockPoisonDiagnostic, PoisonTrackedMutex, RuntimeLockKind};
 
 #[cfg(test)]
 mod failure_injection_tests;
@@ -625,6 +627,11 @@ pub enum WorkerCleanupFailureKind {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HalError {
+    LockPoisoned(LockPoisonDiagnostic),
+    QueueEpochLockPoisoned {
+        dvr_id: Option<i32>,
+        poison: LockPoisonDiagnostic,
+    },
     ServiceRuntimeLockPoisoned {
         operation: &'static str,
     },
@@ -842,6 +849,8 @@ fn display_path(path: &Option<PathBuf>) -> String {
 impl fmt::Display for HalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            HalError::LockPoisoned(poison) => write!(f, "ロックが汚染されています: {poison:?}"),
+            HalError::QueueEpochLockPoisoned { dvr_id, poison } => write!(f, "DVRキューエポックのロックが汚染されています: DVR ID={dvr_id:?} {poison:?}"),
             HalError::ServiceRuntimeLockPoisoned { operation } => {
                 write!(
                     f,

@@ -116,6 +116,8 @@ Wrapper を置いてよいのは、public API 境界、domain naming 隠蔽、AI
 
 ## 7. query / packet / diagnostic 境界
 
+- `PoisonTrackedMutex`の利用側は`LockPoisonDiagnostic`を汎用エラー文字列へ変換せず、`HalError::LockPoisoned`またはキュー・コールバックの型付き中間エラーに保持する。ロック種別は取得箇所の文字列から推測せず、構築時に指定する。検出回数の更新を各呼出し側へ複製しない。実装箇所は`DESIGN_JA.md`の「ロック汚染の実装境界」、失敗時の意味は`../TUNER_HAL_DESIGN_JA.md`の「ロック汚染の識別と伝達」を参照する。
+
 - query façade は registry entry、runtime state、signal state、mutable handle を AIDL 側へ返さず、snapshot DTO だけを返す。
 - `ObjectMethodDispatchProof` 等の dispatch capability は owner module 内で即時消費し、AIDL closure や top-level façadeへ渡さない。
 - validated typed id の raw 値 accessor を routing / validation / mutation に使わない。raw 変換は AIDL DTO 変換や low-level parser 直前など、必要な境界だけに限定する。

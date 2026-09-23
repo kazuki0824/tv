@@ -94,7 +94,9 @@ impl WorkerFailureClassifier {
             HalError::CleanupFailed { .. } | HalError::WorkerCleanupFailed { .. } => {
                 WorkerFailureCategory::Cleanup
             }
-            HalError::WorkerLockPoisoned { .. }
+            HalError::QueueEpochLockPoisoned { .. }
+            | HalError::LockPoisoned(_)
+            | HalError::WorkerLockPoisoned { .. }
             | HalError::ServiceRuntimeLockPoisoned { .. }
             | HalError::FilterGateLockPoisoned { .. } => WorkerFailureCategory::LockPoison,
             _ => WorkerFailureCategory::Unknown,

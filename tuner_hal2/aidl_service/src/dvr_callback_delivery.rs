@@ -17,7 +17,10 @@ use maleicacid_tuner_hal2_service_runtime::{
     CapabilitySnapshot, ClassifiedWorkerTerminalResult, DvrPostCommitNotificationDiagnosticRecord,
     DvrPostCommitNotificationFailureKind, DvrPostCommitNotificationPhase,
     DvrStatusNotifierCleanupDiagnosticRecord, DvrStatusPollSnapshot, WorkerFailureClassifier,
-    WorkerRuntime, WorkerRuntimeSupervisor, WorkerTerminalResult,
+    WorkerRuntime, WorkerRuntimeSupervisor, WorkerRuntimeSupervisorAction,
+    WorkerRuntimeSupervisorActiveEntry, WorkerRuntimeSupervisorReapingEntry,
+    WorkerRuntimeSupervisorStartDisposition, WorkerRuntimeSupervisorStartOperation,
+    WorkerRuntimeSupervisorStopDisposition, WorkerTerminalResult,
 };
 
 use crate::filter_callback_delivery::dispatch_filter_event_snapshots;
@@ -53,6 +56,92 @@ struct DvrStatusNotifierReaperJob {
     transfer_reason: DvrStatusNotifierTransferReason,
 }
 
+impl WorkerRuntimeSupervisorActiveEntry for DvrStatusNotifier {
+    fn supervisor_is_finished(&self) -> bool {
+        self.worker.is_finished()
+    }
+
+    fn supervisor_request_stop(&self) {
+        self.worker.request_stop();
+    }
+}
+
+struct DvrStatusNotifierStartOperation {
+    context: SharedAidlServiceContext,
+    handle: AidlObjectHandle,
+    supervisor: Weak<DvrStatusNotifierSupervisor>,
+}
+
+impl WorkerRuntimeSupervisorStartOperation<DvrStatusNotifier> for DvrStatusNotifierStartOperation {
+    fn start(self) -> Result<DvrStatusNotifier, HalError> {
+        spawn_dvr_status_notifier(&self.context, self.handle, self.supervisor)
+    }
+}
+
+impl DvrStatusNotifierReaperJob {
+    fn from_supervisor_transfer(
+        key: DvrStatusNotifierKey,
+        notifier: DvrStatusNotifier,
+        transfer_reason: DvrStatusNotifierTransferReason,
+    ) -> Self {
+        Self {
+            key,
+            handle: AidlObjectHandle::new(
+                maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
+                AidlObjectId(key.object_id),
+                AidlObjectGeneration(key.generation),
+            ),
+            notifier,
+            transferred_at: Instant::now(),
+            deadline_reported: false,
+            restart_requested: false,
+            transfer_reason,
+        }
+    }
+}
+
+impl WorkerRuntimeSupervisorReapingEntry<DvrStatusNotifierKey, DvrStatusNotifier>
+    for DvrStatusNotifierReaperJob
+{
+    type DeadlineTarget = AidlObjectHandle;
+
+    fn from_terminal(key: DvrStatusNotifierKey, active: DvrStatusNotifier) -> Self {
+        Self::from_supervisor_transfer(key, active, DvrStatusNotifierTransferReason::WorkerTerminal)
+    }
+
+    fn from_stop(key: DvrStatusNotifierKey, active: DvrStatusNotifier) -> Self {
+        Self::from_supervisor_transfer(key, active, DvrStatusNotifierTransferReason::Stop)
+    }
+
+    fn from_reset(key: DvrStatusNotifierKey, active: DvrStatusNotifier) -> Self {
+        Self::from_supervisor_transfer(key, active, DvrStatusNotifierTransferReason::Reset)
+    }
+
+    fn supervisor_is_finished(&self) -> bool {
+        self.notifier.worker.is_finished()
+    }
+
+    fn supervisor_set_restart_requested(&mut self, requested: bool) {
+        self.restart_requested = requested;
+    }
+
+    fn supervisor_deadline_reported(&self) -> bool {
+        self.deadline_reported
+    }
+
+    fn supervisor_mark_deadline_reported(&mut self) {
+        self.deadline_reported = true;
+    }
+
+    fn supervisor_transferred_at(&self) -> Instant {
+        self.transferred_at
+    }
+
+    fn supervisor_deadline_target(&self) -> Self::DeadlineTarget {
+        self.handle
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DvrStatusNotifierTransferReason {
     Stop,
@@ -68,6 +157,7 @@ enum DvrStatusNotifierSupervisorAction {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DvrStatusNotifierStopDisposition {
     Complete,
+    StartPending,
     ReaperPending,
 }
 
@@ -111,56 +201,22 @@ impl DvrStatusNotifierSupervisor {
             );
         }
         let key = DvrStatusNotifierKey::new(handle);
-        let mut state = self.runtime.state().lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "DVR status notifier supervisor lock poisoned while starting worker",
-            )
-        })?;
-        if state
-            .active()
-            .get(&key)
-            .is_some_and(|notifier| notifier.worker.is_finished())
-        {
-            let notifier = state.active_mut().remove(&key).ok_or_else(|| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "finished DVR status notifier disappeared before reaper transfer",
-                )
-            })?;
-            state.reaping_mut().insert(
-                key,
-                DvrStatusNotifierReaperJob {
-                    key,
-                    handle,
-                    notifier,
-                    transferred_at: Instant::now(),
-                    deadline_reported: false,
-                    restart_requested: true,
-                    transfer_reason: DvrStatusNotifierTransferReason::WorkerTerminal,
-                },
-            );
-            self.runtime.notify_worker();
-            return Ok(());
+        match self.runtime.start_supervised(
+            key,
+            DvrStatusNotifierStartOperation {
+                context: Arc::clone(context),
+                handle,
+                supervisor: Arc::downgrade(self),
+            },
+        )? {
+            WorkerRuntimeSupervisorStartDisposition::Started
+            | WorkerRuntimeSupervisorStartDisposition::Active
+            | WorkerRuntimeSupervisorStartDisposition::ReapingPending => Ok(()),
+            WorkerRuntimeSupervisorStartDisposition::StartPending => Err(HalError::invalid_state(
+                maleicacid_tuner_hal2_common::HalInvalidStateKind::InvalidLifecycle,
+                "DVR状態通知ワーカーの開始処理が完了していません",
+            )),
         }
-        if state.active_mut().contains_key(&key) {
-            return Ok(());
-        }
-        if let Some(job) = state.reaping_mut().get_mut(&key) {
-            job.restart_requested = true;
-            self.runtime.notify_worker();
-            return Ok(());
-        }
-        if state.total_len() >= self.runtime.capacity() {
-            return Err(HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "DVR status notifier supervisor capacity exhausted",
-            ));
-        }
-        let notifier = spawn_dvr_status_notifier(context, handle, Arc::downgrade(self))?;
-        state.active_mut().insert(key, notifier);
-        self.runtime.notify_worker();
-        Ok(())
     }
 
     fn signal_stop(
@@ -168,149 +224,36 @@ impl DvrStatusNotifierSupervisor {
         handle: AidlObjectHandle,
     ) -> Result<DvrStatusNotifierStopDisposition, HalError> {
         let key = DvrStatusNotifierKey::new(handle);
-        let mut state = self.runtime.state().lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "DVR status notifier supervisor lock poisoned while stopping worker",
-            )
-        })?;
-        if let Some(job) = state.reaping_mut().get_mut(&key) {
-            job.restart_requested = false;
-            self.runtime.notify_worker();
-            return Ok(DvrStatusNotifierStopDisposition::ReaperPending);
+        match self.runtime.request_supervised_stop(key)? {
+            WorkerRuntimeSupervisorStopDisposition::Complete => {
+                Ok(DvrStatusNotifierStopDisposition::Complete)
+            }
+            WorkerRuntimeSupervisorStopDisposition::StartPending => {
+                Ok(DvrStatusNotifierStopDisposition::StartPending)
+            }
+            WorkerRuntimeSupervisorStopDisposition::ReapingPending => {
+                Ok(DvrStatusNotifierStopDisposition::ReaperPending)
+            }
         }
-        let Some(notifier) = state.active_mut().remove(&key) else {
-            return Ok(DvrStatusNotifierStopDisposition::Complete);
-        };
-        notifier.worker.request_stop();
-        state.reaping_mut().insert(
-            key,
-            DvrStatusNotifierReaperJob {
-                key,
-                handle,
-                notifier,
-                transferred_at: Instant::now(),
-                deadline_reported: false,
-                restart_requested: false,
-                transfer_reason: DvrStatusNotifierTransferReason::Stop,
-            },
-        );
-        self.runtime.notify_worker();
-        Ok(DvrStatusNotifierStopDisposition::ReaperPending)
     }
 
     fn signal_all_for_reset(&self) -> Result<(), HalError> {
-        let mut state = self.runtime.state().lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "DVR status notifier supervisor lock poisoned while resetting workers",
-            )
-        })?;
-        for job in state.reaping_mut().values_mut() {
-            job.restart_requested = false;
-        }
-        let active = core::mem::take(state.active_mut());
-        for (key, notifier) in active {
-            notifier.worker.request_stop();
-            state.reaping_mut().insert(
-                key,
-                DvrStatusNotifierReaperJob {
-                    key,
-                    handle: AidlObjectHandle::new(
-                        maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
-                        AidlObjectId(key.object_id),
-                        AidlObjectGeneration(key.generation),
-                    ),
-                    notifier,
-                    transferred_at: Instant::now(),
-                    deadline_reported: false,
-                    restart_requested: false,
-                    transfer_reason: DvrStatusNotifierTransferReason::Reset,
-                },
-            );
-        }
-        self.runtime.notify_worker();
-        Ok(())
+        self.runtime.request_supervised_reset()
     }
 
     fn take_next_action(
         &self,
     ) -> Result<(Option<DvrStatusNotifierSupervisorAction>, Option<Instant>), HalError> {
-        let mut state = self.runtime.state().lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "DVR status notifier supervisor lock poisoned in reaper",
-            )
-        })?;
-        loop {
-            if let Some(key) = state
-                .active_mut()
-                .iter()
-                .find_map(|(key, notifier)| notifier.worker.is_finished().then_some(*key))
-            {
-                let Some(notifier) = state.active_mut().remove(&key) else {
-                    continue;
-                };
-                state.reaping_mut().insert(
-                    key,
-                    DvrStatusNotifierReaperJob {
-                        key,
-                        handle: AidlObjectHandle::new(
-                            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
-                            AidlObjectId(key.object_id),
-                            AidlObjectGeneration(key.generation),
-                        ),
-                        notifier,
-                        transferred_at: Instant::now(),
-                        deadline_reported: false,
-                        restart_requested: false,
-                        transfer_reason: DvrStatusNotifierTransferReason::WorkerTerminal,
-                    },
-                );
-                continue;
+        let (action, next_wait) = self.runtime.take_supervisor_action()?;
+        let action = action.map(|action| match action {
+            WorkerRuntimeSupervisorAction::Completed(job) => {
+                DvrStatusNotifierSupervisorAction::Completed(job)
             }
-            if let Some(key) = state
-                .reaping_mut()
-                .iter()
-                .find_map(|(key, job)| job.notifier.worker.is_finished().then_some(*key))
-            {
-                let Some(job) = state.reaping_mut().remove(&key) else {
-                    continue;
-                };
-                return Ok((
-                    Some(DvrStatusNotifierSupervisorAction::Completed(job)),
-                    None,
-                ));
+            WorkerRuntimeSupervisorAction::Deadline(handle) => {
+                DvrStatusNotifierSupervisorAction::Deadline(handle)
             }
-            if let Some(handle) = state.reaping_mut().values_mut().find_map(|job| {
-                if !job.deadline_reported && job.transferred_at.elapsed() >= self.runtime.deadline()
-                {
-                    job.deadline_reported = true;
-                    Some(job.handle)
-                } else {
-                    None
-                }
-            }) {
-                return Ok((
-                    Some(DvrStatusNotifierSupervisorAction::Deadline(handle)),
-                    None,
-                ));
-            }
-            let next_wait = state
-                .reaping()
-                .values()
-                .filter(|job| !job.deadline_reported)
-                .map(|job| {
-                    self.runtime
-                        .deadline()
-                        .saturating_sub(job.transferred_at.elapsed())
-                })
-                .min();
-            return Ok((
-                None,
-                next_wait.and_then(|wait| Instant::now().checked_add(wait)),
-            ));
-        }
+        });
+        Ok((action, next_wait))
     }
 }
 
@@ -380,10 +323,9 @@ fn dvr_callback_artifact_lookup(
     match context.dvr_callback_for_owner(handle) {
         Ok(Some(_)) => DvrCallbackArtifactLookup::Present,
         Ok(None) => DvrCallbackArtifactLookup::Missing,
-        Err(_) => DvrCallbackArtifactLookup::StoreFailure(HalError::internal(
-            HalInternalKind::InvariantViolation,
-            format!("{delivery_context}: callback store lock poisoned"),
-        )),
+        Err(error) => {
+            DvrCallbackArtifactLookup::StoreFailure(error.into_hal_error(delivery_context))
+        }
     }
 }
 
@@ -658,11 +600,8 @@ fn deliver_dvr_status_event(
             );
             return Ok(DvrStatusCallbackDeliveryOutcome::ArtifactMissing);
         }
-        Err(_) => {
-            let primary = HalError::internal(
-                HalInternalKind::InvariantViolation,
-                format!("{delivery_context}: callback store lock poisoned"),
-            );
+        Err(error) => {
+            let primary = error.into_hal_error(delivery_context);
             record_dvr_artifact_lookup_failure(context, handle, dvr_phase, primary);
             return Ok(DvrStatusCallbackDeliveryOutcome::StoreFailure);
         }
@@ -1172,9 +1111,13 @@ pub(crate) fn finish_dvr_status_notifier_cleanup(
         .signal_stop(handle)?
     {
         DvrStatusNotifierStopDisposition::Complete => Ok(()),
+        DvrStatusNotifierStopDisposition::StartPending => Err(HalError::cleanup_failed(
+            "DVR状態通知ワーカーの後片付け",
+            "ワーカー開始処理の完了待ちです",
+        )),
         DvrStatusNotifierStopDisposition::ReaperPending => Err(HalError::cleanup_failed(
-            "DVR status notifier cleanup",
-            "worker ownership transferred to the DVR notifier reaper",
+            "DVR状態通知ワーカーの後片付け",
+            "ワーカー所有権をDVR通知回収処理へ移管しました",
         )),
     }
 }
