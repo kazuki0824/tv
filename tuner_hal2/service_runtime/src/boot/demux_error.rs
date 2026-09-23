@@ -154,7 +154,13 @@ mod tests {
             7,
             wrap(primary),
         ));
-        assert_eq!(simple, HalError::QueueEpochLockPoisoned { dvr_id: Some(7), poison: primary });
+        assert_eq!(
+            simple,
+            HalError::QueueEpochLockPoisoned {
+                dvr_id: Some(7),
+                poison: primary
+            }
+        );
         let error = super::demux_runtime_error_to_hal(DemuxRuntimeError {
             kind: DemuxRuntimeErrorKind::QueueRuntimeFailureWithRollback {
                 primary: wrap(primary),
@@ -162,10 +168,19 @@ mod tests {
             },
             id: Some(7),
         });
-        assert_eq!(error.primary_error(), &HalError::QueueEpochLockPoisoned { dvr_id: Some(7), poison: primary });
+        assert_eq!(
+            error.primary_error(),
+            &HalError::QueueEpochLockPoisoned {
+                dvr_id: Some(7),
+                poison: primary
+            }
+        );
         assert_eq!(
             error.cleanup_error(),
-            Some(&HalError::QueueEpochLockPoisoned { dvr_id: Some(7), poison: cleanup })
+            Some(&HalError::QueueEpochLockPoisoned {
+                dvr_id: Some(7),
+                poison: cleanup
+            })
         );
     }
 

@@ -53,7 +53,10 @@ pub(crate) struct PlaybackConsumeTxnError {
 
 impl PlaybackConsumeTxnError {
     fn new(primary: DemuxRuntimeError, cleanup: Option<DemuxRuntimeError>) -> Self {
-        Self { primary: Box::new(primary), cleanup: cleanup.map(Box::new) }
+        Self {
+            primary: Box::new(primary),
+            cleanup: cleanup.map(Box::new),
+        }
     }
 
     pub(crate) fn primary(&self) -> DemuxRuntimeError {

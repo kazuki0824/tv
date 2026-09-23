@@ -628,7 +628,10 @@ pub enum WorkerCleanupFailureKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HalError {
     LockPoisoned(LockPoisonDiagnostic),
-    QueueEpochLockPoisoned { dvr_id: Option<i32>, poison: LockPoisonDiagnostic },
+    QueueEpochLockPoisoned {
+        dvr_id: Option<i32>,
+        poison: LockPoisonDiagnostic,
+    },
     ServiceRuntimeLockPoisoned {
         operation: &'static str,
     },
