@@ -95,6 +95,7 @@ pub fn failure_domain(error: &HalError) -> RuntimeFailureDomain {
         | HalError::QueueEpochLockPoisoned { .. }
         | HalError::LockPoisoned(_)
         | HalError::WorkerLockPoisoned { .. }
+        | HalError::WorkerReaperUnavailable
         | HalError::FilterGateLockPoisoned { .. }
         | HalError::ServiceRuntimeLockPoisoned { .. }
         | HalError::CapabilitySelectionFailed(_) => RuntimeFailureDomain::InternalInvariant,
@@ -164,6 +165,7 @@ mod tests {
             HalError::invalid_state(HalInvalidStateKind::InvalidLifecycle, "closed");
         let unsupported = HalError::Unsupported("unsupported");
         let internal = HalError::internal(HalInternalKind::InvariantViolation, "broken");
+        let reaper_unavailable = HalError::WorkerReaperUnavailable;
 
         assert_eq!(
             failure_domain(&missing),
@@ -189,6 +191,10 @@ mod tests {
         );
         assert_eq!(
             failure_domain(&internal),
+            RuntimeFailureDomain::InternalInvariant
+        );
+        assert_eq!(
+            failure_domain(&reaper_unavailable),
             RuntimeFailureDomain::InternalInvariant
         );
     }

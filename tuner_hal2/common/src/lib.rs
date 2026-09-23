@@ -1070,7 +1070,6 @@ mod tests {
         assert_eq!(drain.malformed_bytes, 3);
         assert_eq!(buf.tail_len(), 0);
     }
-
 }
 
 #[cfg(test)]
