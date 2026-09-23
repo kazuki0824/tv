@@ -462,6 +462,37 @@ impl FrontendBackendSubmitTicket {
         })
     }
 
+    pub fn wait(mut self) -> Result<Result<FrontendBackendSession, FrontendBackendSubmitFailure>, HalError> {
+        let ready = self.ready.recv().map_err(|_| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "frontend backend submit readiness channel disconnected",
+            )
+        })?;
+        if matches!(ready, FrontendBackendSubmitReady::Submitted) {
+            let _ = self
+                .disposition
+                .send(FrontendBackendSubmitDisposition::Claim);
+        }
+        let outcome = self.join_outcome()?;
+        match outcome {
+            FrontendBackendSubmitThreadOutcome::Claimed(session) => Ok(Ok(session)),
+            FrontendBackendSubmitThreadOutcome::Failed(failure) => Ok(Err(failure)),
+            FrontendBackendSubmitThreadOutcome::Aborted(stop_result) => {
+                let error = stop_result.err().unwrap_or_else(|| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "frontend backend submit ended as abort without an error",
+                    )
+                });
+                Ok(Err(frontend_backend_submit_thread_failure(
+                    self.generation,
+                    error,
+                )))
+            }
+        }
+    }
+
     pub fn wait_until(mut self, deadline: Instant) -> Result<FrontendBackendSubmitWait, HalError> {
         let wait = deadline.saturating_duration_since(Instant::now());
         match self.ready.recv_timeout(wait) {
