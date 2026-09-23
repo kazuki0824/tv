@@ -308,6 +308,87 @@ fn cleanup_authority_failure(
 }
 
 impl FrontendWorkerStopTicket {
+    pub fn submit(
+        self,
+    ) -> Result<Result<FrontendBackendSession, FrontendBackendSubmitFailure>, HalError> {
+        let FrontendWorkerStopTicketKind::Retained {
+            frontend_id,
+            kind,
+            generation,
+            authority,
+        } = self.kind
+        else {
+            return Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "frontend backend submit has no retained authority",
+            ));
+        };
+        let run = authority.execute(|value| {
+            let unknown = FrontendBackendSubmitFailure::indeterminate(
+                generation,
+                HalError::WorkerCleanupFailed {
+                    kind: maleicacid_tuner_hal2_common::WorkerCleanupFailureKind::Interrupted,
+                },
+            );
+            let prepared = std::mem::replace(
+                value,
+                FrontendWorkerCleanup::Failed(FrontendWorkerStopOutcome::BackendSubmitFailed {
+                    frontend_id,
+                    kind,
+                    generation,
+                    failure: unknown.clone(),
+                }),
+            );
+            let FrontendWorkerCleanup::BackendSubmitPrepared {
+                plan,
+                previous_request,
+            } = prepared
+            else {
+                *value = prepared;
+                return WorkerCleanupProgress::Quarantined(Err(unknown));
+            };
+            let result = match FrontendBackendSubmitTicket::start(plan, previous_request) {
+                Ok(ticket) => match ticket.wait() {
+                    Ok(result) => result,
+                    Err(error) => Err(FrontendBackendSubmitFailure::indeterminate(
+                        generation,
+                        error,
+                    )),
+                },
+                Err(error) => {
+                    let mut failure =
+                        FrontendBackendSubmitFailure::indeterminate(generation, error);
+                    failure.rollback_succeeded = true;
+                    Err(failure)
+                }
+            };
+            match &result {
+                Ok(_) => WorkerCleanupProgress::Completed(result),
+                Err(failure) if failure.rollback_succeeded => {
+                    WorkerCleanupProgress::Completed(result)
+                }
+                Err(_) => {
+                    *value = FrontendWorkerCleanup::Failed(
+                        FrontendWorkerStopOutcome::BackendSubmitFailed {
+                            frontend_id,
+                            kind,
+                            generation,
+                            failure: result.as_ref().err().cloned().expect("checked Err"),
+                        },
+                    );
+                    WorkerCleanupProgress::Quarantined(result)
+                }
+            }
+        })?;
+        match run {
+            WorkerCleanupRun::Completed(result) => Ok(result),
+            WorkerCleanupRun::Pending(_) => Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "blocking frontend backend submit remained pending",
+            )),
+        }
+    }
+
     pub fn submit_until(
         self,
         deadline: std::time::Instant,
