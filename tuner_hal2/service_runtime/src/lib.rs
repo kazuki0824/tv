@@ -157,7 +157,7 @@ pub enum ServiceState {
 #[cfg(test)]
 mod tests {
     use super::*;
-        use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem, HalError};
+    use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem, HalError};
     use maleicacid_tuner_hal2_demux::{
         FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest, PacketPid, PesSettings,
         PipelineAssemblySuppressionReason, PipelineDeliveryAction, QueueRuntimeError,
@@ -167,10 +167,11 @@ mod tests {
         multi2_encrypt_payload, CasKeyReference, CasKeyResolveError, DescramblerKeySlot,
         DescramblerKeyToken, DescramblerPid, DescramblerPidClaim, Multi2KeyMaterial,
     };
-    use maleicacid_tuner_hal2_domain_request::{ AidlMethodCall, AidlMethodAdapter,
-        AidlObjectGeneration, AidlObjectId, AidlObjectKind, DvrConfigureKind, DvrConfigureRequest,
-        DvrDataFormat, DvrOpenKind, FilterDelayHintKind, FilterDelayHintRequest, OpenDvrRequest,
-        RuntimeExecutableRequest, RuntimeTransactionName, AIDL_TRANSACTION_TABLE,
+    use maleicacid_tuner_hal2_domain_request::{
+        AidlMethodAdapter, AidlMethodCall, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
+        DvrConfigureKind, DvrConfigureRequest, DvrDataFormat, DvrOpenKind, FilterDelayHintKind,
+        FilterDelayHintRequest, OpenDvrRequest, RuntimeExecutableRequest, RuntimeTransactionName,
+        AIDL_TRANSACTION_TABLE,
     };
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
