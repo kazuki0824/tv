@@ -5,7 +5,7 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     IFilterCallback::IFilterCallback,
 };
 use binder::{BinderFeatures, Result as BinderResult, Strong};
-use maleicacid_tuner_hal2_binder_adapter::{
+use maleicacid_tuner_hal2_domain_request::{
     AidlApi, AidlMethodCall, OpenDvrRequest, RuntimeExecutableRequest,
 };
 use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, HalError, HalInternalKind};
