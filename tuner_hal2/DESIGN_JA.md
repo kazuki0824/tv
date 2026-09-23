@@ -88,7 +88,7 @@ device-adaptation層は `FrontendRuntime`、AIDL object、callback artifactを�
 |---|---|
 | `aidl_service/src/callback_store.rs`・`service_context.rs` | コールバック保管、死亡通知の同期・登録先、代替診断、破棄時診断。`AidlCallbackStoreError::into_hal_error`は汚染記録を保持する |
 | `aidl_service/src/cleanup_reaper.rs` | 回収処理の所有者格納ロック |
-| `control/src/lib.rs::WorkerRuntimeSupervisor` | 管理状態の変更は`prepare_start` / `begin_start` / `commit_start` / `abort_start` / `request_supervised_stop` / `request_supervised_reset` / `take_supervisor_action`の型付き入口だけを使う。`prepare_start`が発行したpermitはattemptを持ち、外部spawn直前の`begin_start`で同一attemptを再検証してから`Starting`へ進める。未開始permitは再発行でsupersedeでき、`Starting`中のstop/resetは取消し要求を正本予約へ記録し、spawn済みworkerを`commit_start`で回収中ownerへ接続する。DVR通知側へ可変registry guardを公開しない |
+| `control/src/lib.rs::WorkerRuntimeSupervisor` | 管理状態の変更は`start_supervised` / `request_supervised_stop` / `request_supervised_reset` / `take_supervisor_action`の型付き入口だけを使う。`start_supervised`は`starting`を正本所有したまま`WorkerRuntimeSupervisorStartOperation::start()`を実行する。開始中のstop/resetは`starting.cancellation`へ記録し、その取消し後に来た後続startは`starting.restart_requested`へ保持する。開始成功時だけactiveまたはreapingへ移し、開始失敗時は`starting`を回収する。開始中stopの返却は`StartPending`としてreaper所有と区別し、DVR通知側へ可変registry guardを公開しない |
 | `device/src/runtime/frontend_worker.rs` | 取消し理由の読取り・書込み・終了結果への接続 |
 | `service_runtime/src/diagnostics.rs` | DVR確定後通知・通知回収・コールバック整合性診断の記録・取得・消去 |
 | `demux/src/runtime/queue_runtime.rs::QueueEpochProtocol` | キュー世代の取得と待機、主処理・取消しの失敗保持。`DemuxRuntimeError::queue_runtime_error`と`service_runtime/src/boot/demux_error.rs`を通して伝達する。サービス境界ではDVR IDも保持する`HalError::QueueEpochLockPoisoned`へ写像する |
