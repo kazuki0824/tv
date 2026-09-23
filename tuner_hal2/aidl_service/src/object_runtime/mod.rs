@@ -2,10 +2,9 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::IFrontendCall
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::ILnbCallback::ILnbCallback;
 use binder::{Result as BinderResult, Strong};
 #[cfg(test)]
-use maleicacid_tuner_hal2_binder_adapter::AidlApi;
-use maleicacid_tuner_hal2_binder_adapter::{
-    AidlFailureSource, AidlMethodCall, AidlStatusMapper, TunerStatusCode,
-};
+use maleicacid_tuner_hal2_domain_request::AidlApi;
+use maleicacid_tuner_hal2_binder_adapter::{AidlFailureSource, AidlStatusMapper, TunerStatusCode};
+use maleicacid_tuner_hal2_domain_request::AidlMethodCall;
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, HalError, HalInternalKind, HalInvalidArgumentKind,
 };
@@ -1140,7 +1139,7 @@ mod tests {
     use super::drop_leak::drop_leak_object;
     use super::*;
     use crate::service_context::AidlServiceContext;
-    use maleicacid_tuner_hal2_binder_adapter::{
+    use maleicacid_tuner_hal2_domain_request::{
         AidlApi, AidlMethodCall, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
         RuntimeExecutableRequest,
     };
@@ -1280,8 +1279,8 @@ mod tests {
                     owner.generation(),
                     AidlObjectKind::Demux,
                     || -> Result<_, maleicacid_tuner_hal2_common::HalError> {
-                        let request = maleicacid_tuner_hal2_binder_adapter::OpenDvrRequest {
-                            kind: maleicacid_tuner_hal2_binder_adapter::DvrOpenKind::Record,
+                        let request = maleicacid_tuner_hal2_domain_request::OpenDvrRequest {
+                            kind: maleicacid_tuner_hal2_domain_request::DvrOpenKind::Record,
                             buffer_size: 4096,
                         };
                         Ok((AidlMethodCall::DemuxOpenDvr(request.clone()), request))
