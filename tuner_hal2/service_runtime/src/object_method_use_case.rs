@@ -1,13 +1,12 @@
 use std::sync::{Arc, Mutex};
 
 use crate::registry::LnbRegistryProfile;
-use maleicacid_tuner_hal2_binder_adapter::{AidlMethodAdapter, AidlMethodCall};
 use maleicacid_tuner_hal2_common::{
     FrontendBackendKind, FrontendSystem, HalError, HalInternalKind, HalInvalidArgumentKind,
     HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_device::{FrontendRuntimeState, FrontendSignalState};
-use maleicacid_tuner_hal2_domain_request::{
+use maleicacid_tuner_hal2_domain_request::{ AidlMethodCall, AidlMethodAdapter,
     AidlApi, AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan,
     RuntimeExecutableRequest,
 };
@@ -656,7 +655,7 @@ fn plan_aidl_method_call(method: AidlMethodCall) -> Result<ObjectMethodUseCasePl
     let method_plan = AidlMethodAdapter::plan(method)?;
     Ok(build_plan(
         method_plan.command_plan,
-        method_plan.command.runtime_executable_request(),
+        method_plan.executable_request.clone(),
     ))
 }
 
