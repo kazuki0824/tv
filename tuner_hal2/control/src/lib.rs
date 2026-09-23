@@ -1287,14 +1287,16 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
             Err(primary) => {
                 let mut state = self.lock_supervisor_state()?;
                 if state.starting.remove(&key).is_none() {
-                    return Err(maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
-                        "監督ワーカー開始失敗後の開始状態回収にも失敗しました",
-                        primary,
-                        HalError::internal(
-                            HalInternalKind::InvariantViolation,
-                            "監督ワーカー開始中状態が見つかりません",
+                    return Err(
+                        maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
+                            "監督ワーカー開始失敗後の開始状態回収にも失敗しました",
+                            primary,
+                            HalError::internal(
+                                HalInternalKind::InvariantViolation,
+                                "監督ワーカー開始中状態が見つかりません",
+                            ),
                         ),
-                    ));
+                    );
                 }
                 drop(state);
                 self.worker_context.wake.notify();
@@ -1791,12 +1793,11 @@ mod tests {
     #[test]
     fn stop_during_start_is_distinct_from_reaper_ownership() {
         use std::sync::{mpsc, Arc};
-        let supervisor = Arc::new(
-            super::WorkerRuntime::supervisor::<u32, (), SupervisorTestReaping>(
-                2,
-                std::time::Duration::from_secs(1),
-            ),
-        );
+        let supervisor = Arc::new(super::WorkerRuntime::supervisor::<
+            u32,
+            (),
+            SupervisorTestReaping,
+        >(2, std::time::Duration::from_secs(1)));
         let (started_tx, started_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
         let worker_supervisor = Arc::clone(&supervisor);
@@ -1809,7 +1810,9 @@ mod tests {
                 },
             )
         });
-        started_rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
         assert_eq!(
             supervisor.request_supervised_stop(9).unwrap(),
             super::WorkerRuntimeSupervisorStopDisposition::StartPending
@@ -1832,12 +1835,11 @@ mod tests {
     #[test]
     fn start_after_stop_during_start_is_retained_for_restart() {
         use std::sync::{mpsc, Arc};
-        let supervisor = Arc::new(
-            super::WorkerRuntime::supervisor::<u32, (), SupervisorTestReaping>(
-                2,
-                std::time::Duration::from_secs(1),
-            ),
-        );
+        let supervisor = Arc::new(super::WorkerRuntime::supervisor::<
+            u32,
+            (),
+            SupervisorTestReaping,
+        >(2, std::time::Duration::from_secs(1)));
         let (started_tx, started_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
         let worker_supervisor = Arc::clone(&supervisor);
@@ -1850,7 +1852,9 @@ mod tests {
                 },
             )
         });
-        started_rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
         assert_eq!(
             supervisor.request_supervised_stop(10).unwrap(),
             super::WorkerRuntimeSupervisorStopDisposition::StartPending
@@ -1879,12 +1883,11 @@ mod tests {
     #[test]
     fn failed_start_after_stop_does_not_claim_reaper_ownership() {
         use std::sync::{mpsc, Arc};
-        let supervisor = Arc::new(
-            super::WorkerRuntime::supervisor::<u32, (), SupervisorTestReaping>(
-                2,
-                std::time::Duration::from_secs(1),
-            ),
-        );
+        let supervisor = Arc::new(super::WorkerRuntime::supervisor::<
+            u32,
+            (),
+            SupervisorTestReaping,
+        >(2, std::time::Duration::from_secs(1)));
         let (started_tx, started_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
         let worker_supervisor = Arc::clone(&supervisor);
@@ -1897,7 +1900,9 @@ mod tests {
                 },
             )
         });
-        started_rx.recv_timeout(std::time::Duration::from_secs(1)).unwrap();
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
         assert_eq!(
             supervisor.request_supervised_stop(11).unwrap(),
             super::WorkerRuntimeSupervisorStopDisposition::StartPending
