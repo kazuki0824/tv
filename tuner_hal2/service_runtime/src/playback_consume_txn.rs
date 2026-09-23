@@ -45,23 +45,26 @@ pub(crate) enum PlaybackConsumeTxnPrepareError {
     OutOfMemory,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PlaybackConsumeTxnError {
-    primary: DemuxRuntimeError,
-    cleanup: Option<DemuxRuntimeError>,
+    primary: Box<DemuxRuntimeError>,
+    cleanup: Option<Box<DemuxRuntimeError>>,
 }
 
 impl PlaybackConsumeTxnError {
-    const fn new(primary: DemuxRuntimeError, cleanup: Option<DemuxRuntimeError>) -> Self {
-        Self { primary, cleanup }
+    fn new(primary: DemuxRuntimeError, cleanup: Option<DemuxRuntimeError>) -> Self {
+        Self {
+            primary: Box::new(primary),
+            cleanup: cleanup.map(Box::new),
+        }
     }
 
-    pub(crate) const fn primary(self) -> DemuxRuntimeError {
-        self.primary
+    pub(crate) fn primary(&self) -> DemuxRuntimeError {
+        *self.primary
     }
 
-    pub(crate) const fn cleanup(self) -> Option<DemuxRuntimeError> {
-        self.cleanup
+    pub(crate) fn cleanup(&self) -> Option<DemuxRuntimeError> {
+        self.cleanup.as_deref().copied()
     }
 }
 

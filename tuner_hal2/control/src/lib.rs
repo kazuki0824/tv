@@ -1,4 +1,5 @@
 use maleicacid_tuner_hal2_common::WorkerCleanupFailureKind;
+use maleicacid_tuner_hal2_common::{PoisonTrackedMutex, RuntimeLockKind};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkerRuntimeOwnerFailure {
@@ -1093,11 +1094,11 @@ where
     }
 }
 
-/// `WorkerRuntime`が発行するopaqueなactive/reaping registry handle。
+/// `WorkerRuntime`が発行する`active` / `reaping`登録簿の正本所有者。
 pub struct WorkerRuntimeSupervisor<K, A, R> {
     capacity: usize,
     deadline: std::time::Duration,
-    state: std::sync::Mutex<WorkerRuntimeSupervisorMaps<K, A, R>>,
+    state: PoisonTrackedMutex<WorkerRuntimeSupervisorMaps<K, A, R>>,
     worker: std::sync::Mutex<SupervisorWorkerState>,
     worker_context: WorkerContext,
 }
@@ -1108,9 +1109,10 @@ enum SupervisorWorkerState {
     Finished(WorkerTerminalResult<()>),
 }
 
-pub struct WorkerRuntimeSupervisorMaps<K, A, R> {
+struct WorkerRuntimeSupervisorMaps<K, A, R> {
     active: std::collections::BTreeMap<K, A>,
     reaping: std::collections::BTreeMap<K, R>,
+    starting: std::collections::BTreeMap<K, WorkerRuntimeSupervisorStarting>,
 }
 
 impl<K, A, R> Default for WorkerRuntimeSupervisorMaps<K, A, R> {
@@ -1118,50 +1120,351 @@ impl<K, A, R> Default for WorkerRuntimeSupervisorMaps<K, A, R> {
         Self {
             active: std::collections::BTreeMap::new(),
             reaping: std::collections::BTreeMap::new(),
+            starting: std::collections::BTreeMap::new(),
         }
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkerRuntimeSupervisorStartCancellation {
+    Stop,
+    Reset,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WorkerRuntimeSupervisorStarting {
+    cancellation: Option<WorkerRuntimeSupervisorStartCancellation>,
+    restart_requested: bool,
+}
+
 impl<K: Ord, A, R> WorkerRuntimeSupervisorMaps<K, A, R> {
-    pub fn active(&self) -> &std::collections::BTreeMap<K, A> {
-        &self.active
-    }
-    pub fn reaping(&self) -> &std::collections::BTreeMap<K, R> {
-        &self.reaping
-    }
-    pub fn active_mut(&mut self) -> &mut std::collections::BTreeMap<K, A> {
-        &mut self.active
-    }
-    pub fn reaping_mut(&mut self) -> &mut std::collections::BTreeMap<K, R> {
-        &mut self.reaping
-    }
-    pub fn total_len(&self) -> usize {
-        self.active.len().saturating_add(self.reaping.len())
+    fn total_len(&self) -> usize {
+        self.active
+            .len()
+            .saturating_add(self.reaping.len())
+            .saturating_add(self.starting.len())
     }
 }
+
+pub trait WorkerRuntimeSupervisorActiveEntry {
+    fn supervisor_is_finished(&self) -> bool;
+    fn supervisor_request_stop(&self);
+}
+
+pub trait WorkerRuntimeSupervisorReapingEntry<K, A>: Sized {
+    type DeadlineTarget: Copy;
+
+    fn from_terminal(key: K, active: A) -> Self;
+    fn from_stop(key: K, active: A) -> Self;
+    fn from_reset(key: K, active: A) -> Self;
+    fn supervisor_is_finished(&self) -> bool;
+    fn supervisor_set_restart_requested(&mut self, requested: bool);
+    fn supervisor_deadline_reported(&self) -> bool;
+    fn supervisor_mark_deadline_reported(&mut self);
+    fn supervisor_transferred_at(&self) -> std::time::Instant;
+    fn supervisor_deadline_target(&self) -> Self::DeadlineTarget;
+}
+
+pub trait WorkerRuntimeSupervisorStartOperation<A> {
+    fn start(self) -> Result<A, maleicacid_tuner_hal2_common::HalError>;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkerRuntimeSupervisorStartDisposition {
+    Started,
+    Active,
+    StartPending,
+    ReapingPending,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorkerRuntimeSupervisorStopDisposition {
+    Complete,
+    StartPending,
+    ReapingPending,
+}
+
+pub enum WorkerRuntimeSupervisorAction<R, T> {
+    Completed(R),
+    Deadline(T),
+}
+
+pub type WorkerRuntimeSupervisorActionPoll<R, T> = (
+    Option<WorkerRuntimeSupervisorAction<R, T>>,
+    Option<std::time::Instant>,
+);
 
 impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
     fn new(capacity: usize, deadline: std::time::Duration) -> Self {
         Self {
             capacity: capacity.max(1),
             deadline,
-            state: std::sync::Mutex::new(WorkerRuntimeSupervisorMaps::default()),
+            state: PoisonTrackedMutex::new(
+                WorkerRuntimeSupervisorMaps::default(),
+                RuntimeLockKind::SupervisorState,
+            ),
             worker: std::sync::Mutex::new(SupervisorWorkerState::NotStarted),
             worker_context: WorkerContext::new(),
         }
     }
 
-    pub fn capacity(&self) -> usize {
-        self.capacity
+    fn lock_supervisor_state(
+        &self,
+    ) -> Result<
+        std::sync::MutexGuard<'_, WorkerRuntimeSupervisorMaps<K, A, R>>,
+        maleicacid_tuner_hal2_common::HalError,
+    > {
+        self.state
+            .lock()
+            .map_err(maleicacid_tuner_hal2_common::HalError::LockPoisoned)
     }
-    pub fn deadline(&self) -> std::time::Duration {
-        self.deadline
-    }
-    pub fn state(&self) -> &std::sync::Mutex<WorkerRuntimeSupervisorMaps<K, A, R>> {
-        &self.state
-    }
-    pub fn notify_worker(&self) {
+
+    pub fn start_supervised<O>(
+        &self,
+        key: K,
+        operation: O,
+    ) -> Result<WorkerRuntimeSupervisorStartDisposition, maleicacid_tuner_hal2_common::HalError>
+    where
+        K: Ord + Copy,
+        A: WorkerRuntimeSupervisorActiveEntry,
+        R: WorkerRuntimeSupervisorReapingEntry<K, A>,
+        O: WorkerRuntimeSupervisorStartOperation<A>,
+    {
+        use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
+        {
+            let mut state = self.lock_supervisor_state()?;
+            if state
+                .active
+                .get(&key)
+                .is_some_and(WorkerRuntimeSupervisorActiveEntry::supervisor_is_finished)
+            {
+                let active = state.active.remove(&key).ok_or_else(|| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "完了済み監督ワーカーが回収移管前に消失しました",
+                    )
+                })?;
+                let mut reaping = R::from_terminal(key, active);
+                reaping.supervisor_set_restart_requested(true);
+                state.reaping.insert(key, reaping);
+                drop(state);
+                self.worker_context.wake.notify();
+                return Ok(WorkerRuntimeSupervisorStartDisposition::ReapingPending);
+            }
+            if state.active.contains_key(&key) {
+                return Ok(WorkerRuntimeSupervisorStartDisposition::Active);
+            }
+            if let Some(reaping) = state.reaping.get_mut(&key) {
+                reaping.supervisor_set_restart_requested(true);
+                drop(state);
+                self.worker_context.wake.notify();
+                return Ok(WorkerRuntimeSupervisorStartDisposition::ReapingPending);
+            }
+            if let Some(starting) = state.starting.get_mut(&key) {
+                if starting.cancellation.is_some() {
+                    starting.restart_requested = true;
+                    return Ok(WorkerRuntimeSupervisorStartDisposition::StartPending);
+                }
+                return Ok(WorkerRuntimeSupervisorStartDisposition::Active);
+            }
+            if state.total_len() >= self.capacity {
+                return Err(HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "監督ワーカーの容量を使い切っています",
+                ));
+            }
+            state.starting.insert(
+                key,
+                WorkerRuntimeSupervisorStarting {
+                    cancellation: None,
+                    restart_requested: false,
+                },
+            );
+        }
+
+        let active = match operation.start() {
+            Ok(active) => active,
+            Err(primary) => {
+                let mut state = self.lock_supervisor_state()?;
+                if state.starting.remove(&key).is_none() {
+                    return Err(
+                        maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
+                            "監督ワーカー開始失敗後の開始状態回収にも失敗しました",
+                            primary,
+                            HalError::internal(
+                                HalInternalKind::InvariantViolation,
+                                "監督ワーカー開始中状態が見つかりません",
+                            ),
+                        ),
+                    );
+                }
+                drop(state);
+                self.worker_context.wake.notify();
+                return Err(primary);
+            }
+        };
+
+        let mut state = self.lock_supervisor_state()?;
+        let Some(starting) = state.starting.remove(&key) else {
+            active.supervisor_request_stop();
+            return Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "監督ワーカー開始完了時に開始中状態が見つかりません",
+            ));
+        };
+        if state.active.contains_key(&key) || state.reaping.contains_key(&key) {
+            active.supervisor_request_stop();
+            return Err(HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "監督ワーカー開始完了時の所有状態が競合しています",
+            ));
+        }
+
+        let disposition = match starting.cancellation {
+            None => {
+                state.active.insert(key, active);
+                WorkerRuntimeSupervisorStartDisposition::Started
+            }
+            Some(WorkerRuntimeSupervisorStartCancellation::Stop) => {
+                active.supervisor_request_stop();
+                let mut reaping = R::from_stop(key, active);
+                reaping.supervisor_set_restart_requested(starting.restart_requested);
+                state.reaping.insert(key, reaping);
+                WorkerRuntimeSupervisorStartDisposition::ReapingPending
+            }
+            Some(WorkerRuntimeSupervisorStartCancellation::Reset) => {
+                active.supervisor_request_stop();
+                let mut reaping = R::from_reset(key, active);
+                reaping.supervisor_set_restart_requested(starting.restart_requested);
+                state.reaping.insert(key, reaping);
+                WorkerRuntimeSupervisorStartDisposition::ReapingPending
+            }
+        };
+        drop(state);
         self.worker_context.wake.notify();
+        Ok(disposition)
+    }
+
+    pub fn request_supervised_stop(
+        &self,
+        key: K,
+    ) -> Result<WorkerRuntimeSupervisorStopDisposition, maleicacid_tuner_hal2_common::HalError>
+    where
+        K: Ord + Copy,
+        A: WorkerRuntimeSupervisorActiveEntry,
+        R: WorkerRuntimeSupervisorReapingEntry<K, A>,
+    {
+        let mut state = self.lock_supervisor_state()?;
+        if let Some(starting) = state.starting.get_mut(&key) {
+            starting.cancellation = Some(WorkerRuntimeSupervisorStartCancellation::Stop);
+            starting.restart_requested = false;
+            drop(state);
+            self.worker_context.wake.notify();
+            return Ok(WorkerRuntimeSupervisorStopDisposition::StartPending);
+        }
+        if let Some(reaping) = state.reaping.get_mut(&key) {
+            reaping.supervisor_set_restart_requested(false);
+            drop(state);
+            self.worker_context.wake.notify();
+            return Ok(WorkerRuntimeSupervisorStopDisposition::ReapingPending);
+        }
+        let Some(active) = state.active.remove(&key) else {
+            return Ok(WorkerRuntimeSupervisorStopDisposition::Complete);
+        };
+        active.supervisor_request_stop();
+        state.reaping.insert(key, R::from_stop(key, active));
+        drop(state);
+        self.worker_context.wake.notify();
+        Ok(WorkerRuntimeSupervisorStopDisposition::ReapingPending)
+    }
+
+    pub fn request_supervised_reset(&self) -> Result<(), maleicacid_tuner_hal2_common::HalError>
+    where
+        K: Ord + Copy,
+        A: WorkerRuntimeSupervisorActiveEntry,
+        R: WorkerRuntimeSupervisorReapingEntry<K, A>,
+    {
+        let mut state = self.lock_supervisor_state()?;
+        for starting in state.starting.values_mut() {
+            starting.cancellation = Some(WorkerRuntimeSupervisorStartCancellation::Reset);
+            starting.restart_requested = false;
+        }
+        for reaping in state.reaping.values_mut() {
+            reaping.supervisor_set_restart_requested(false);
+        }
+        let active = core::mem::take(&mut state.active);
+        for (key, worker) in active {
+            worker.supervisor_request_stop();
+            state.reaping.insert(key, R::from_reset(key, worker));
+        }
+        drop(state);
+        self.worker_context.wake.notify();
+        Ok(())
+    }
+
+    pub fn take_supervisor_action(
+        &self,
+    ) -> Result<
+        WorkerRuntimeSupervisorActionPoll<R, R::DeadlineTarget>,
+        maleicacid_tuner_hal2_common::HalError,
+    >
+    where
+        K: Ord + Copy,
+        A: WorkerRuntimeSupervisorActiveEntry,
+        R: WorkerRuntimeSupervisorReapingEntry<K, A>,
+    {
+        let mut state = self.lock_supervisor_state()?;
+        loop {
+            if let Some(key) = state
+                .active
+                .iter()
+                .find_map(|(key, active)| active.supervisor_is_finished().then_some(*key))
+            {
+                let Some(active) = state.active.remove(&key) else {
+                    continue;
+                };
+                state.reaping.insert(key, R::from_terminal(key, active));
+                continue;
+            }
+            if let Some(key) = state
+                .reaping
+                .iter()
+                .find_map(|(key, reaping)| reaping.supervisor_is_finished().then_some(*key))
+            {
+                let Some(reaping) = state.reaping.remove(&key) else {
+                    continue;
+                };
+                return Ok((
+                    Some(WorkerRuntimeSupervisorAction::Completed(reaping)),
+                    None,
+                ));
+            }
+            if let Some(target) = state.reaping.values_mut().find_map(|reaping| {
+                if !reaping.supervisor_deadline_reported()
+                    && reaping.supervisor_transferred_at().elapsed() >= self.deadline
+                {
+                    reaping.supervisor_mark_deadline_reported();
+                    Some(reaping.supervisor_deadline_target())
+                } else {
+                    None
+                }
+            }) {
+                return Ok((Some(WorkerRuntimeSupervisorAction::Deadline(target)), None));
+            }
+            let next_wait = state
+                .reaping
+                .values()
+                .filter(|reaping| !reaping.supervisor_deadline_reported())
+                .map(|reaping| {
+                    self.deadline
+                        .saturating_sub(reaping.supervisor_transferred_at().elapsed())
+                })
+                .min();
+            return Ok((
+                None,
+                next_wait.and_then(|wait| std::time::Instant::now().checked_add(wait)),
+            ));
+        }
     }
 
     pub fn start_worker(
@@ -1383,6 +1686,252 @@ impl FmqDeliveryTxn {
 
 #[cfg(test)]
 mod tests {
+    impl super::WorkerRuntimeSupervisorActiveEntry for () {
+        fn supervisor_is_finished(&self) -> bool {
+            true
+        }
+
+        fn supervisor_request_stop(&self) {}
+    }
+
+    impl super::WorkerRuntimeSupervisorReapingEntry<u32, ()> for () {
+        type DeadlineTarget = ();
+
+        fn from_terminal(_key: u32, _active: ()) -> Self {}
+
+        fn from_stop(_key: u32, _active: ()) -> Self {}
+
+        fn from_reset(_key: u32, _active: ()) -> Self {}
+
+        fn supervisor_is_finished(&self) -> bool {
+            true
+        }
+
+        fn supervisor_set_restart_requested(&mut self, _requested: bool) {}
+
+        fn supervisor_deadline_reported(&self) -> bool {
+            false
+        }
+
+        fn supervisor_mark_deadline_reported(&mut self) {}
+
+        fn supervisor_transferred_at(&self) -> std::time::Instant {
+            std::time::Instant::now()
+        }
+
+        fn supervisor_deadline_target(&self) -> Self::DeadlineTarget {}
+    }
+
+    struct ImmediateSupervisorStart;
+
+    impl super::WorkerRuntimeSupervisorStartOperation<()> for ImmediateSupervisorStart {
+        fn start(self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+            Ok(())
+        }
+    }
+
+    struct BlockingSupervisorStart {
+        started: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<bool>,
+    }
+
+    impl super::WorkerRuntimeSupervisorStartOperation<()> for BlockingSupervisorStart {
+        fn start(self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
+            self.started.send(()).unwrap();
+            if self.release.recv().unwrap() {
+                Ok(())
+            } else {
+                Err(maleicacid_tuner_hal2_common::HalError::internal(
+                    maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
+                    "監督ワーカー開始失敗を注入しました",
+                ))
+            }
+        }
+    }
+
+    #[derive(Debug, Default, Eq, PartialEq)]
+    struct SupervisorTestReaping {
+        restart_requested: bool,
+    }
+
+    impl super::WorkerRuntimeSupervisorReapingEntry<u32, ()> for SupervisorTestReaping {
+        type DeadlineTarget = ();
+
+        fn from_terminal(_key: u32, _active: ()) -> Self {
+            Self::default()
+        }
+
+        fn from_stop(_key: u32, _active: ()) -> Self {
+            Self::default()
+        }
+
+        fn from_reset(_key: u32, _active: ()) -> Self {
+            Self::default()
+        }
+
+        fn supervisor_is_finished(&self) -> bool {
+            true
+        }
+
+        fn supervisor_set_restart_requested(&mut self, requested: bool) {
+            self.restart_requested = requested;
+        }
+
+        fn supervisor_deadline_reported(&self) -> bool {
+            false
+        }
+
+        fn supervisor_mark_deadline_reported(&mut self) {}
+
+        fn supervisor_transferred_at(&self) -> std::time::Instant {
+            std::time::Instant::now()
+        }
+
+        fn supervisor_deadline_target(&self) -> Self::DeadlineTarget {}
+    }
+
+    #[test]
+    fn stop_during_start_is_distinct_from_reaper_ownership() {
+        use std::sync::{mpsc, Arc};
+        let supervisor = Arc::new(super::WorkerRuntime::supervisor::<
+            u32,
+            (),
+            SupervisorTestReaping,
+        >(2, std::time::Duration::from_secs(1)));
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker_supervisor = Arc::clone(&supervisor);
+        let worker = std::thread::spawn(move || {
+            worker_supervisor.start_supervised(
+                9,
+                BlockingSupervisorStart {
+                    started: started_tx,
+                    release: release_rx,
+                },
+            )
+        });
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(
+            supervisor.request_supervised_stop(9).unwrap(),
+            super::WorkerRuntimeSupervisorStopDisposition::StartPending
+        );
+        release_tx.send(true).unwrap();
+        assert_eq!(
+            worker.join().unwrap().unwrap(),
+            super::WorkerRuntimeSupervisorStartDisposition::ReapingPending
+        );
+        assert!(matches!(
+            supervisor.take_supervisor_action().unwrap().0,
+            Some(super::WorkerRuntimeSupervisorAction::Completed(
+                SupervisorTestReaping {
+                    restart_requested: false
+                }
+            ))
+        ));
+    }
+
+    #[test]
+    fn start_after_stop_during_start_is_retained_for_restart() {
+        use std::sync::{mpsc, Arc};
+        let supervisor = Arc::new(super::WorkerRuntime::supervisor::<
+            u32,
+            (),
+            SupervisorTestReaping,
+        >(2, std::time::Duration::from_secs(1)));
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker_supervisor = Arc::clone(&supervisor);
+        let worker = std::thread::spawn(move || {
+            worker_supervisor.start_supervised(
+                10,
+                BlockingSupervisorStart {
+                    started: started_tx,
+                    release: release_rx,
+                },
+            )
+        });
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(
+            supervisor.request_supervised_stop(10).unwrap(),
+            super::WorkerRuntimeSupervisorStopDisposition::StartPending
+        );
+        assert_eq!(
+            supervisor
+                .start_supervised(10, ImmediateSupervisorStart)
+                .unwrap(),
+            super::WorkerRuntimeSupervisorStartDisposition::StartPending
+        );
+        release_tx.send(true).unwrap();
+        assert_eq!(
+            worker.join().unwrap().unwrap(),
+            super::WorkerRuntimeSupervisorStartDisposition::ReapingPending
+        );
+        assert!(matches!(
+            supervisor.take_supervisor_action().unwrap().0,
+            Some(super::WorkerRuntimeSupervisorAction::Completed(
+                SupervisorTestReaping {
+                    restart_requested: true
+                }
+            ))
+        ));
+    }
+
+    #[test]
+    fn failed_start_after_stop_does_not_claim_reaper_ownership() {
+        use std::sync::{mpsc, Arc};
+        let supervisor = Arc::new(super::WorkerRuntime::supervisor::<
+            u32,
+            (),
+            SupervisorTestReaping,
+        >(2, std::time::Duration::from_secs(1)));
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker_supervisor = Arc::clone(&supervisor);
+        let worker = std::thread::spawn(move || {
+            worker_supervisor.start_supervised(
+                11,
+                BlockingSupervisorStart {
+                    started: started_tx,
+                    release: release_rx,
+                },
+            )
+        });
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(
+            supervisor.request_supervised_stop(11).unwrap(),
+            super::WorkerRuntimeSupervisorStopDisposition::StartPending
+        );
+        release_tx.send(false).unwrap();
+        assert!(worker.join().unwrap().is_err());
+        assert_eq!(
+            supervisor.request_supervised_stop(11).unwrap(),
+            super::WorkerRuntimeSupervisorStopDisposition::Complete
+        );
+        assert!(supervisor.take_supervisor_action().unwrap().0.is_none());
+    }
+
+    #[test]
+    fn supervisor_state_poison_is_not_worker_slot_poison() {
+        let supervisor =
+            super::WorkerRuntime::supervisor::<u8, (), ()>(4, std::time::Duration::from_secs(1));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = supervisor.lock_supervisor_state().unwrap();
+            panic!("汚染を注入");
+        }));
+        for count in [1, 2] {
+            assert!(matches!(supervisor.lock_supervisor_state(),
+                Err(maleicacid_tuner_hal2_common::HalError::LockPoisoned(poison))
+                if poison.lock == maleicacid_tuner_hal2_common::RuntimeLockKind::SupervisorState && poison.poison_count == count
+            ));
+        }
+    }
+
     #[test]
     fn owner_failure_keeps_missing_results_distinct_from_panic_and_join() {
         use super::{WorkerRuntimeOwnerFailure, WorkerTerminalResult};
@@ -1438,7 +1987,7 @@ mod tests {
             .worker_context
             .stop
             .store(true, std::sync::atomic::Ordering::Release);
-        supervisor.notify_worker();
+        supervisor.worker_context.wake.notify();
         assert_eq!(
             terminal_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
             WorkerTerminalResult::StopRequested

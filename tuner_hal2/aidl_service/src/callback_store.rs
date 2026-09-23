@@ -1,6 +1,9 @@
+use maleicacid_tuner_hal2_common::{PoisonTrackedMutex, RuntimeLockKind};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Mutex;
 
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     IDvrCallback::IDvrCallback, IFilterCallback::IFilterCallback,
@@ -54,8 +57,8 @@ pub(crate) struct FrontendCallbackRegistration {
     generation: FrontendCallbackGeneration,
     callback: Strong<dyn IFrontendCallback>,
     dead: Arc<AtomicBool>,
-    death_recipient: Mutex<DeathLinkState>,
-    death_gate: Arc<Mutex<()>>,
+    death_recipient: PoisonTrackedMutex<DeathLinkState>,
+    death_gate: Arc<PoisonTrackedMutex<()>>,
 }
 
 enum DeathLinkState {
@@ -67,15 +70,18 @@ enum DeathLinkState {
 }
 
 // 死亡通知の線形化点。poison時も死亡だけは記録し、登録側はpoisonを失敗として扱う。
-fn mark_callback_dead(dead: &AtomicBool, gate: &Mutex<()>) -> Result<(), AidlCallbackStoreError> {
+fn mark_callback_dead(
+    dead: &AtomicBool,
+    gate: &PoisonTrackedMutex<()>,
+) -> Result<(), AidlCallbackStoreError> {
     match gate.lock() {
         Ok(_guard) => {
             dead.store(true, Ordering::Release);
             Ok(())
         }
-        Err(_) => {
+        Err(poison) => {
             dead.store(true, Ordering::Release);
-            Err(AidlCallbackStoreError::Poisoned)
+            Err(AidlCallbackStoreError::Poisoned(poison))
         }
     }
 }
@@ -96,7 +102,7 @@ impl FrontendCallbackRegistration {
     ) -> Result<std::sync::MutexGuard<'_, ()>, AidlCallbackStoreError> {
         self.death_gate
             .lock()
-            .map_err(|_| AidlCallbackStoreError::Poisoned)
+            .map_err(AidlCallbackStoreError::Poisoned)
     }
 
     pub(crate) fn is_dead(&self) -> bool {
@@ -114,7 +120,7 @@ impl FrontendCallbackRegistration {
             let mut state = self
                 .death_recipient
                 .lock()
-                .map_err(|_| AidlCallbackStoreError::Poisoned)?;
+                .map_err(AidlCallbackStoreError::Poisoned)?;
             if !matches!(*state, DeathLinkState::Pending) {
                 return Err(AidlCallbackStoreError::RetirementPending);
             }
@@ -125,7 +131,7 @@ impl FrontendCallbackRegistration {
             *self
                 .death_recipient
                 .lock()
-                .map_err(|_| AidlCallbackStoreError::Poisoned)? = DeathLinkState::Closed;
+                .map_err(AidlCallbackStoreError::Poisoned)? = DeathLinkState::Closed;
             return Ok(());
         }
         let dead = Arc::clone(&self.dead);
@@ -148,9 +154,9 @@ impl FrontendCallbackRegistration {
                 }
                 *state = DeathLinkState::Closed;
             }
-            Err(_) => {
+            Err(poison) => {
                 self.dead.store(true, Ordering::Release);
-                let primary = AidlCallbackStoreError::Poisoned;
+                let primary = AidlCallbackStoreError::Poisoned(poison);
                 let cleanup = if result.is_ok() {
                     death_unlink_result(generation, binder.unlink_to_death(&mut recipient))
                 } else {
@@ -176,7 +182,7 @@ impl FrontendCallbackRegistration {
             let mut state = self
                 .death_recipient
                 .lock()
-                .map_err(|_| AidlCallbackStoreError::Poisoned)?;
+                .map_err(AidlCallbackStoreError::Poisoned)?;
             match std::mem::replace(&mut *state, DeathLinkState::Unlinking) {
                 DeathLinkState::Linked(recipient) => recipient,
                 DeathLinkState::Pending | DeathLinkState::Closed => {
@@ -202,14 +208,14 @@ impl FrontendCallbackRegistration {
                 }
                 *state = DeathLinkState::Closed;
             }
-            Err(_) => {
+            Err(poison) => {
                 self.dead.store(true, Ordering::Release);
                 drop(recipient);
                 return Err(match result {
-                    Ok(()) => AidlCallbackStoreError::Poisoned,
+                    Ok(()) => AidlCallbackStoreError::Poisoned(poison),
                     Err(primary) => AidlCallbackStoreError::Composed {
                         primary: Box::new(primary),
-                        cleanup: Box::new(AidlCallbackStoreError::Poisoned),
+                        cleanup: Box::new(AidlCallbackStoreError::Poisoned(poison)),
                     },
                 });
             }
@@ -303,8 +309,14 @@ impl CallbackStore {
             generation: FrontendCallbackGeneration(token.0),
             callback: callback.clone(),
             dead: Arc::new(AtomicBool::new(false)),
-            death_recipient: Mutex::new(DeathLinkState::Pending),
-            death_gate: Arc::new(Mutex::new(())),
+            death_recipient: PoisonTrackedMutex::new(
+                DeathLinkState::Pending,
+                RuntimeLockKind::CallbackDeathRecipient,
+            ),
+            death_gate: Arc::new(PoisonTrackedMutex::new(
+                (),
+                RuntimeLockKind::CallbackDeathGate,
+            )),
         };
         self.prepared_callbacks.insert(
             key,
@@ -723,7 +735,7 @@ mod tests {
     #[test]
     fn poisoned_death_gate_reports_failure_without_hiding_death() {
         let dead = AtomicBool::new(false);
-        let gate = Mutex::new(());
+        let gate = PoisonTrackedMutex::new((), RuntimeLockKind::CallbackDeathGate);
         assert!(std::panic::catch_unwind(|| {
             let _guard = gate.lock().unwrap();
             panic!("death gateを汚染");
@@ -731,7 +743,7 @@ mod tests {
         .is_err());
         assert!(matches!(
             mark_callback_dead(&dead, &gate),
-            Err(AidlCallbackStoreError::Poisoned)
+            Err(AidlCallbackStoreError::Poisoned(poison)) if poison.lock == RuntimeLockKind::CallbackDeathGate && poison.poison_count == 1
         ));
         assert!(dead.load(Ordering::Acquire));
         assert!(gate.lock().is_err());
@@ -1010,7 +1022,7 @@ mod tests {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum AidlCallbackStoreError {
-    Poisoned,
+    Poisoned(maleicacid_tuner_hal2_common::LockPoisonDiagnostic),
     PreparedArtifactInFlight,
     PreparedArtifactAuthorityMismatch,
     PreparedTokenExhausted,
@@ -1042,10 +1054,7 @@ impl AidlCallbackStoreError {
                 "unlinkToDeath",
                 format!("{context}: Binder死亡通知の解除に失敗しました generation={generation:?}: {status:?}"),
             ),
-            Self::Poisoned => HalError::internal(
-                HalInternalKind::InvariantViolation,
-                format!("{context}: callback store lock poisoned"),
-            ),
+            Self::Poisoned(poison) => HalError::LockPoisoned(poison),
             Self::PreparedArtifactInFlight => HalError::internal(
                 HalInternalKind::InvariantViolation,
                 format!("{context}: callback registration is already in flight"),

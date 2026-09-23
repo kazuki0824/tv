@@ -80,6 +80,19 @@ px4固有のTMCC TSID readbackは「機器適合」責務に閉じる。ABI mirr
 
 device-adaptation層は `FrontendRuntime`、AIDL object、callback artifactを直接変更しない。取得結果はtyped observationとしてservice_runtimeへ返すだけとし、persistent frontend generation/stateへ接続する場合は既存frontend ownerのtyped mutation pathを使う。driver readbackのために第二のdevice-open owner、固定BS TSID表、VTS/profile専用ioctl bypassを追加しない。
 
+### ロック汚染の実装境界
+
+`common/src/poison_lock.rs::PoisonTrackedMutex`は各既存所有者のロックと検出回数を一体で保持する従属部品とし、所有者の状態や後片付け義務は持たない。取得は`lock`、条件変数待機は`wait`へ集約する。`RuntimeLockKind`と`LockPoisonDiagnostic`を`HalError::LockPoisoned`へ接続し、従来のサービス状態・Filterゲート・汎用ワーカー結果ロック専用の分類は流用しない。失敗時の意味は`../TUNER_HAL_DESIGN_JA.md`の「ロック汚染の識別と伝達」を参照する。
+
+| 所有する場所 | 接続箇所 |
+|---|---|
+| `aidl_service/src/callback_store.rs`・`service_context.rs` | コールバック保管、死亡通知の同期・登録先、代替診断、破棄時診断。`AidlCallbackStoreError::into_hal_error`は汚染記録を保持する |
+| `aidl_service/src/cleanup_reaper.rs` | 回収処理の所有者格納ロック |
+| `control/src/lib.rs::WorkerRuntimeSupervisor` | 管理状態の変更は`start_supervised` / `request_supervised_stop` / `request_supervised_reset` / `take_supervisor_action`の型付き入口だけを使う。`start_supervised`は`starting`を正本所有したまま`WorkerRuntimeSupervisorStartOperation::start()`を実行する。開始中のstop/resetは`starting.cancellation`へ記録し、その取消し後に来た後続startは`starting.restart_requested`へ保持する。開始成功時だけactiveまたはreapingへ移し、開始失敗時は`starting`を回収する。開始中stopの返却は`StartPending`としてreaper所有と区別し、DVR通知側へ可変registry guardを公開しない |
+| `device/src/runtime/frontend_worker.rs` | 取消し理由の読取り・書込み・終了結果への接続 |
+| `service_runtime/src/diagnostics.rs` | DVR確定後通知・通知回収・コールバック整合性診断の記録・取得・消去 |
+| `demux/src/runtime/queue_runtime.rs::QueueEpochProtocol` | キュー世代の取得と待機、主処理・取消しの失敗保持。`DemuxRuntimeError::queue_runtime_error`と`service_runtime/src/boot/demux_error.rs`を通して伝達する。サービス境界ではDVR IDも保持する`HalError::QueueEpochLockPoisoned`へ写像する |
+
 ### 機器診断の取得境界
 
 `aidl_service/src/tuner_service.rs::TunerAidlService`のBinder標準`dump`から、`service_context.rs::AidlServiceContext::diagnostic_snapshot()`へ接続する。取得対象と実装入口は次のとおり。
@@ -90,6 +103,8 @@ device-adaptation層は `FrontendRuntime`、AIDL object、callback artifactを�
 | フロントエンド状態・受信処理の報告・終了事由・記録失敗 | `TunerServiceRuntime::frontend_diagnostic_snapshots()` → `FrontendRuntime::snapshot()` |
 | フィルターとフロントエンドのコールバック障害 | `AidlServiceContext::{filter_callback_delivery_diagnostic_snapshot, frontend_callback_delivery_diagnostic_snapshot}()`。既存の代替保持先と欠落情報も取得 |
 | フロントエンドワーカーの終了・後始末の障害 | `TunerServiceRuntime::frontend_worker_cleanup_diagnostics()` |
+| DVR確定後通知・通知回収・コールバック整合性診断 | `AidlServiceContext`が保持する既存の共有診断参照の`snapshot()` |
+| 破棄時の診断 | `AidlServiceContext::drop_leak_error_diagnostic_snapshot()`と記録失敗回数 |
 | demux配下の操作・取消しの障害 | `TunerServiceRuntime::demux_transaction_diagnostics()` |
 
 `FrontendBackendDiagnosticSnapshot`と`FrontendDiagnosticSnapshot`は取得時の写しであり、保持先・記録処理・状態変更権限は既存所有者に残す。`ServiceDiagnosticSnapshot`は各入口の型付き結果を集め、取得に失敗した対象のエラーと取得できた記録を同時に出力へ渡す。コールバックの取得入口を呼ぶ前にサービス状態ロックを解放し、出力I/Oも全ロックの解放後に行う。

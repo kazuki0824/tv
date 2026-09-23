@@ -1,10 +1,11 @@
+use maleicacid_tuner_hal2_common::{PoisonTrackedMutex, RuntimeLockKind};
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
-    Arc, Mutex,
+    Arc,
 };
 
-use maleicacid_tuner_hal2_common::{FrontendBackendKind, HalError, HalInternalKind};
+use maleicacid_tuner_hal2_common::{FrontendBackendKind, HalError};
 use maleicacid_tuner_hal2_demux::{
     DvrConfigureReport, FilterConfigureReport, PacketPid, QueueRuntimeError, SourceBoundaryReport,
 };
@@ -36,6 +37,49 @@ impl FrontendBackendDiagnosticSnapshot {
             records,
             dropped_count,
             record_failure_count,
+        }
+    }
+}
+
+#[cfg(test)]
+mod poison_tests {
+    use super::*;
+
+    fn poison<T>(lock: &PoisonTrackedMutex<T>) {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = lock.lock().unwrap();
+            panic!("汚染を注入");
+        }));
+    }
+
+    #[test]
+    fn shared_diagnostic_poison_preserves_store_identity_on_snapshot_and_clear() {
+        let post = SharedDvrPostCommitNotificationDiagnostics::new(2);
+        let notifier = SharedDvrStatusNotifierCleanupDiagnostics::new(2);
+        let split = SharedCallbackArtifactRuntimeSplitDiagnostics::new();
+        poison(&post.records);
+        poison(&notifier.records);
+        poison(&split.records);
+        for (result, kind) in [
+            (
+                post.snapshot().map(|_| ()),
+                RuntimeLockKind::DvrPostCommitDiagnostics,
+            ),
+            (
+                notifier.snapshot().map(|_| ()),
+                RuntimeLockKind::DvrNotifierCleanupDiagnostics,
+            ),
+            (
+                split.snapshot().map(|_| ()),
+                RuntimeLockKind::CallbackRuntimeSplitDiagnostics,
+            ),
+        ] {
+            assert!(
+                matches!(result, Err(HalError::LockPoisoned(p)) if p.lock == kind && p.poison_count == 1)
+            );
+        }
+        for result in [post.clear(), notifier.clear(), split.clear()] {
+            assert!(matches!(result, Err(HalError::LockPoisoned(p)) if p.poison_count == 2));
         }
     }
 }
@@ -704,14 +748,18 @@ impl DvrPostCommitNotificationDiagnosticRecord {
 
 #[derive(Clone, Debug)]
 pub struct SharedDvrPostCommitNotificationDiagnostics {
-    records: Arc<Mutex<BoundedDiagnosticStore<DvrPostCommitNotificationDiagnosticRecord>>>,
+    records:
+        Arc<PoisonTrackedMutex<BoundedDiagnosticStore<DvrPostCommitNotificationDiagnosticRecord>>>,
     record_failure_count: Arc<AtomicU64>,
 }
 
 impl SharedDvrPostCommitNotificationDiagnostics {
     pub fn new(limit: usize) -> Self {
         Self {
-            records: Arc::new(Mutex::new(BoundedDiagnosticStore::new(limit))),
+            records: Arc::new(PoisonTrackedMutex::new(
+                BoundedDiagnosticStore::new(limit),
+                RuntimeLockKind::DvrPostCommitDiagnostics,
+            )),
             record_failure_count: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -725,26 +773,18 @@ impl SharedDvrPostCommitNotificationDiagnostics {
                 records.push(record);
                 Ok(())
             }
-            Err(_) => {
+            Err(poison) => {
                 saturating_increment_atomic_u64(
                     &self.record_failure_count,
                     std::any::type_name::<Self>(),
                 );
-                Err(HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "DVR post-commit notification diagnostic store lock poisoned",
-                ))
+                Err(HalError::LockPoisoned(poison))
             }
         }
     }
 
     pub fn snapshot(&self) -> Result<DvrPostCommitNotificationDiagnosticSnapshot, HalError> {
-        let records = self.records.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "DVR post-commit notification diagnostic store lock poisoned while snapshotting",
-            )
-        })?;
+        let records = self.records.lock().map_err(HalError::LockPoisoned)?;
         Ok(DvrPostCommitNotificationDiagnosticSnapshot {
             records: records.as_slice().to_vec(),
             dropped_count: records.dropped_count(),
@@ -753,12 +793,7 @@ impl SharedDvrPostCommitNotificationDiagnostics {
     }
 
     pub fn clear(&self) -> Result<(), HalError> {
-        let mut records = self.records.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "DVR post-commit notification diagnostic store lock poisoned while clearing",
-            )
-        })?;
+        let mut records = self.records.lock().map_err(HalError::LockPoisoned)?;
         records.clear();
         self.record_failure_count.store(0, Ordering::Relaxed);
         Ok(())
@@ -773,14 +808,18 @@ impl Default for SharedDvrPostCommitNotificationDiagnostics {
 
 #[derive(Clone, Debug)]
 pub struct SharedDvrStatusNotifierCleanupDiagnostics {
-    records: Arc<Mutex<BoundedDiagnosticStore<DvrStatusNotifierCleanupDiagnosticRecord>>>,
+    records:
+        Arc<PoisonTrackedMutex<BoundedDiagnosticStore<DvrStatusNotifierCleanupDiagnosticRecord>>>,
     record_failure_count: Arc<AtomicU64>,
 }
 
 impl SharedDvrStatusNotifierCleanupDiagnostics {
     pub fn new(limit: usize) -> Self {
         Self {
-            records: Arc::new(Mutex::new(BoundedDiagnosticStore::new(limit))),
+            records: Arc::new(PoisonTrackedMutex::new(
+                BoundedDiagnosticStore::new(limit),
+                RuntimeLockKind::DvrNotifierCleanupDiagnostics,
+            )),
             record_failure_count: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -791,26 +830,18 @@ impl SharedDvrStatusNotifierCleanupDiagnostics {
                 records.push(record);
                 Ok(())
             }
-            Err(_) => {
+            Err(poison) => {
                 saturating_increment_atomic_u64(
                     &self.record_failure_count,
                     std::any::type_name::<Self>(),
                 );
-                Err(HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "DVR status notifier cleanup diagnostic store lock poisoned",
-                ))
+                Err(HalError::LockPoisoned(poison))
             }
         }
     }
 
     pub fn snapshot(&self) -> Result<DvrStatusNotifierCleanupDiagnosticSnapshot, HalError> {
-        let records = self.records.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "DVR status notifier cleanup diagnostic store lock poisoned while snapshotting",
-            )
-        })?;
+        let records = self.records.lock().map_err(HalError::LockPoisoned)?;
         Ok(DvrStatusNotifierCleanupDiagnosticSnapshot {
             records: records.as_slice().to_vec(),
             dropped_count: records.dropped_count(),
@@ -819,12 +850,7 @@ impl SharedDvrStatusNotifierCleanupDiagnostics {
     }
 
     pub fn clear(&self) -> Result<(), HalError> {
-        let mut records = self.records.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "DVR status notifier cleanup diagnostic store lock poisoned while clearing",
-            )
-        })?;
+        let mut records = self.records.lock().map_err(HalError::LockPoisoned)?;
         records.clear();
         self.record_failure_count.store(0, Ordering::Relaxed);
         Ok(())
@@ -1105,13 +1131,18 @@ impl CallbackArtifactRuntimeSplitDiagnosticSnapshot {
 
 #[derive(Clone, Debug)]
 pub struct SharedCallbackArtifactRuntimeSplitDiagnostics {
-    records: Arc<Mutex<BoundedDiagnosticStore<CallbackArtifactRuntimeSplitDiagnosticRecord>>>,
+    records: Arc<
+        PoisonTrackedMutex<BoundedDiagnosticStore<CallbackArtifactRuntimeSplitDiagnosticRecord>>,
+    >,
 }
 
 impl SharedCallbackArtifactRuntimeSplitDiagnostics {
     pub fn new() -> Self {
         Self {
-            records: Arc::new(Mutex::new(BoundedDiagnosticStore::default())),
+            records: Arc::new(PoisonTrackedMutex::new(
+                BoundedDiagnosticStore::default(),
+                RuntimeLockKind::CallbackRuntimeSplitDiagnostics,
+            )),
         }
     }
 
@@ -1119,23 +1150,13 @@ impl SharedCallbackArtifactRuntimeSplitDiagnostics {
         &self,
         record: CallbackArtifactRuntimeSplitDiagnosticRecord,
     ) -> Result<(), HalError> {
-        let mut records = self.records.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "callback artifact runtime split diagnostic store lock poisoned",
-            )
-        })?;
+        let mut records = self.records.lock().map_err(HalError::LockPoisoned)?;
         records.push(record);
         Ok(())
     }
 
     pub fn snapshot(&self) -> Result<CallbackArtifactRuntimeSplitDiagnosticSnapshot, HalError> {
-        let records = self.records.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "callback artifact runtime split diagnostic store lock poisoned while snapshotting",
-            )
-        })?;
+        let records = self.records.lock().map_err(HalError::LockPoisoned)?;
         Ok(CallbackArtifactRuntimeSplitDiagnosticSnapshot {
             records: records.as_slice().to_vec(),
             dropped_count: records.dropped_count(),
@@ -1143,12 +1164,7 @@ impl SharedCallbackArtifactRuntimeSplitDiagnostics {
     }
 
     pub fn clear(&self) -> Result<(), HalError> {
-        let mut records = self.records.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "callback artifact runtime split diagnostic store lock poisoned while clearing",
-            )
-        })?;
+        let mut records = self.records.lock().map_err(HalError::LockPoisoned)?;
         records.clear();
         Ok(())
     }
