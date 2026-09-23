@@ -3002,7 +3002,7 @@ mod current_version_tests {
             .semantic_facts_by_service
             .iter()
             .find(|facts| facts.service_id == 1)
-            .expect("service facts");
+            .expect("サービス情報");
 
         assert_eq!(facts.pmt_pid, Some(0x0100));
         assert!(facts.pmt_pid_resolved);

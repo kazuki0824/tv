@@ -152,7 +152,7 @@ impl FmqReader {
         }
         if read > bytes.len() {
             return Err(format!(
-                "filter FMQ returned an invalid read length: {read} > {}",
+                "filter FMQが不正な読取り長を返しました: {read} > {}",
                 bytes.len()
             ));
         }
@@ -385,7 +385,7 @@ fn compose_cleanup_result<T>(
         (Ok(value), Ok(())) => Ok(value),
         (Err(primary), Ok(())) => Err(primary),
         (Ok(_), Err(cleanup)) => Err(cleanup),
-        (Err(primary), Err(cleanup)) => Err(format!("{primary}; cleanup failed: {cleanup}")),
+        (Err(primary), Err(cleanup)) => Err(format!("{primary}; 後片付け失敗: {cleanup}")),
     }
 }
 
@@ -436,13 +436,13 @@ impl DeviceSession {
         let callback = BnFrontendCallback::new_binder(FrontendCallback, BinderFeatures::default());
         if let Err(error) = frontend.setCallback(&callback) {
             return compose_cleanup_result(
-                Err(format!("setCallback failed: {error:?}")),
+                Err(format!("setCallbackに失敗しました: {error:?}")),
                 cleanup_frontend(&frontend, false),
             );
         }
         if let Err(error) = frontend.tune(&frontend_settings(&args)) {
             return compose_cleanup_result(
-                Err(format!("tune failed: {error:?}")),
+                Err(format!("tuneに失敗しました: {error:?}")),
                 cleanup_frontend(&frontend, false),
             );
         }
@@ -454,7 +454,7 @@ impl DeviceSession {
             Ok(ids) => ids,
             Err(error) => {
                 return compose_cleanup_result(
-                    Err(format!("getDemuxIds failed: {error:?}")),
+                    Err(format!("getDemuxIdsに失敗しました: {error:?}")),
                     cleanup_frontend(&frontend, true),
                 );
             }
@@ -463,7 +463,7 @@ impl DeviceSession {
             Some(id) => *id,
             None => {
                 return compose_cleanup_result(
-                    Err("no demux available".to_string()),
+                    Err("利用可能なdemuxがありません".to_string()),
                     cleanup_frontend(&frontend, true),
                 );
             }
@@ -472,7 +472,7 @@ impl DeviceSession {
             Ok(demux) => demux,
             Err(error) => {
                 return compose_cleanup_result(
-                    Err(format!("openDemuxById failed: {error:?}")),
+                    Err(format!("openDemuxByIdに失敗しました: {error:?}")),
                     cleanup_frontend(&frontend, true),
                 );
             }
@@ -484,7 +484,7 @@ impl DeviceSession {
                 cleanup_failures.push(cleanup);
             }
             return compose_cleanup_result(
-                Err(format!("setFrontendDataSource failed: {error:?}")),
+                Err(format!("setFrontendDataSourceに失敗しました: {error:?}")),
                 if cleanup_failures.is_empty() {
                     Ok(())
                 } else {
@@ -631,7 +631,7 @@ fn run(args: Args) -> Result<(), String> {
 
         let stdin = std::io::stdin();
         for line in stdin.lock().lines() {
-            let line = line.map_err(|e| format!("stdin read failed: {e}"))?;
+            let line = line.map_err(|e| format!("stdin読取りに失敗しました: {e}"))?;
             if line.trim().is_empty() {
                 continue;
             }
@@ -640,7 +640,7 @@ fn run(args: Args) -> Result<(), String> {
                 Err(error) => {
                     write_response(json!({
                         "status": "error",
-                        "message": format!("malformed request JSON: {error}"),
+                        "message": format!("要求JSONが不正です: {error}"),
                     }))?;
                     continue;
                 }

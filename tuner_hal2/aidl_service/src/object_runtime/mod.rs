@@ -38,7 +38,7 @@ use crate::service_context::{SharedAidlServiceContext, SharedTunerRuntime};
 fn lock_runtime<'a>(
     runtime: &'a SharedTunerRuntime,
 ) -> Result<std::sync::MutexGuard<'a, TunerServiceRuntime>, HalError> {
-    TunerServiceRuntime::lock_shared(runtime, "object runtime")
+    TunerServiceRuntime::lock_shared(runtime, "object runtime処理")
 }
 
 fn abort_prepared_callback_artifact_bridge(
@@ -1152,7 +1152,7 @@ mod tests {
         let failure_state = runtime.lock().unwrap().failure_state();
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = runtime.lock().unwrap();
-            panic!("poison close preflight");
+            panic!("close事前確認を汚染");
         }))
         .is_err());
         let handle = AidlObjectHandle::new(

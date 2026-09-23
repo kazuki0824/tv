@@ -738,7 +738,7 @@ mod tests {
         let gate = PoisonTrackedMutex::new((), RuntimeLockKind::CallbackDeathGate);
         assert!(std::panic::catch_unwind(|| {
             let _guard = gate.lock().unwrap();
-            panic!("poison death gate");
+            panic!("death gateを汚染");
         })
         .is_err());
         assert!(matches!(

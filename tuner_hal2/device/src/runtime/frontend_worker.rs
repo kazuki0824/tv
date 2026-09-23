@@ -155,7 +155,7 @@ impl FrontendWorkerDetachedJoin {
             .ok_or_else(|| {
                 HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "frontend worker slot missing thread result owner while waiting",
+                    "フロントエンドワーカー slot missing thread result owner while waiting",
                 )
             })?
             .wait_until_finished(deadline)
@@ -266,7 +266,7 @@ enum FrontendWorkerStopTicketKind {
 }
 
 #[derive(Debug)]
-#[must_use = "frontend worker stop ticket must be completed or transferred to the reaper"]
+#[must_use = "フロントエンドワーカー stop ticket must be completed or transferred to the reaper"]
 pub struct FrontendWorkerStopTicket {
     kind: FrontendWorkerStopTicketKind,
 }
@@ -321,7 +321,7 @@ impl FrontendWorkerStopTicket {
         else {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "frontend backend submit has no retained authority",
+                "フロントエンドbackend submitの保持権限がありません",
             ));
         };
         let run = authority.execute(|value| {
@@ -384,7 +384,7 @@ impl FrontendWorkerStopTicket {
             WorkerCleanupRun::Completed(result) => Ok(result),
             WorkerCleanupRun::Pending(_) => Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "blocking frontend backend submit remained pending",
+                "同期フロントエンドbackend submitが保留のままです",
             )),
         }
     }
@@ -413,7 +413,7 @@ impl FrontendWorkerStopTicket {
         else {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "frontend backend submit has no retained authority",
+                "フロントエンドbackend submitの保持権限がありません",
             ));
         };
         let result = authority.execute(|value| {
@@ -540,8 +540,8 @@ impl FrontendWorkerStopTicket {
                     kind,
                     generation,
                     HalError::cleanup_failed(
-                        "frontend worker",
-                        "blocking completion returned pending",
+                        "フロントエンドワーカー",
+                        "同期完了処理が保留を返しました",
                     ),
                 ),
                 Err(error) => cleanup_authority_failure(frontend_id, kind, generation, error),
@@ -659,7 +659,7 @@ impl FrontendWorkerSlot {
             .ok_or_else(|| {
                 HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "frontend worker stop owner missing",
+                    "フロントエンドワーカー stop owner missing",
                 )
             })?
             .request_stop();
@@ -697,7 +697,7 @@ impl FrontendWorkerSlot {
             return (
                 Err(HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "frontend worker slot missing thread result owner",
+                    "フロントエンドワーカー slot missing thread result owner",
                 )),
                 WorkerExit::RuntimeFailure(WorkerFailureDomain::Backend.runtime_failure_kind()),
             );
@@ -723,7 +723,7 @@ fn frontend_worker_terminal(
         WorkerTerminalResult::StopRequested => (
             Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "frontend worker terminal result is missing the domain stop reason",
+                "フロントエンドワーカー terminal result is missing the domain stop reason",
             )),
             WorkerExit::RuntimeFailure(WorkerFailureDomain::Backend.runtime_failure_kind()),
         ),
@@ -734,7 +734,7 @@ fn frontend_worker_terminal(
         WorkerTerminalResult::PanicOrJoinFailure => (
             Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "frontend worker panicked or could not be joined",
+                "フロントエンドワーカー panicked or could not be joined",
             )),
             WorkerExit::PanicOrJoinFailure,
         ),
@@ -1240,7 +1240,7 @@ mod tests {
             FrontendWorkerCancelReason::StopRequested,
         );
         assert!(ticket
-            .submit_until_with(std::time::Instant::now(), |_, _| panic!("must not start"))
+            .submit_until_with(std::time::Instant::now(), |_, _| panic!("開始してはいけません"))
             .is_err());
         assert_eq!(
             cancellation.complete(),
@@ -1256,7 +1256,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             ticket.submit_until_with(std::time::Instant::now(), |_, _| panic!(
-                "injected interruption"
+                "中断を注入"
             )),
             Err(HalError::WorkerCleanupFailed {
                 kind: maleicacid_tuner_hal2_common::WorkerCleanupFailureKind::Interrupted
@@ -1293,7 +1293,7 @@ mod tests {
             .submit_until_with(std::time::Instant::now(), |_, _| {
                 Err(HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "spawn failed",
+                    "生成失敗",
                 ))
             })
             .unwrap();
@@ -1465,7 +1465,7 @@ mod tests {
                 4,
                 |_| -> Result<(), HalError> {
                     Err(HalError::cleanup_failed(
-                        "frontend worker test",
+                        "フロントエンドワーカー test",
                         "forced failure",
                     ))
                 },
@@ -1534,7 +1534,7 @@ mod tests {
                 9,
                 |_| -> Result<(), HalError> {
                     Err(HalError::cleanup_failed(
-                        "frontend worker test",
+                        "フロントエンドワーカー test",
                         "forced failure",
                     ))
                 },
@@ -1607,7 +1607,7 @@ mod tests {
                 12,
                 |_| -> Result<(), HalError> {
                     Err(HalError::cleanup_failed(
-                        "frontend worker test",
+                        "フロントエンドワーカー test",
                         "pending failure",
                     ))
                 },
@@ -1684,7 +1684,7 @@ mod tests {
                 frontend_id: 16,
                 kind: FrontendWorkerKind::Tune,
             };
-            let error = HalError::cleanup_failed("backend stop", "device still active");
+            let error = HalError::cleanup_failed("backend停止", "deviceがまだ動作中です");
             registry.slots.insert(
                 key,
                 FrontendWorkerSlot {
@@ -1705,7 +1705,7 @@ mod tests {
             let outcome = if poll {
                 match ticket.try_complete() {
                     FrontendWorkerStopPoll::Completed(outcome) => outcome,
-                    _ => panic!("already completed worker remained pending"),
+                    _ => panic!("完了済みワーカーが保留のままです"),
                 }
             } else {
                 ticket.complete()

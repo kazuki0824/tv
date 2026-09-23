@@ -726,7 +726,7 @@ mod tests {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
                 assert!(
                     self.runtime.try_lock().is_ok(),
-                    "dump wrote while holding the runtime lock"
+                    "runtimeロック保持中にdump出力が行われました"
                 );
                 self.bytes.extend_from_slice(bytes);
                 Ok(bytes.len())
@@ -799,12 +799,12 @@ mod tests {
             FmqFailureKind::EventFlagWakeFailed,
         ] {
             let failure = compose_primary_cleanup_failure(
-                "FMQ delivery rollback",
+                "FMQ配送巻戻し",
                 HalError::FmqDeliveryFailed {
                     kind,
                     object_id: Some(17),
                 },
-                HalError::cleanup_failed("rollback", "queue release failed"),
+                HalError::cleanup_failed("rollback", "queue解放失敗"),
             );
             let runtime = TunerServiceRuntime::new();
             let target =
@@ -842,7 +842,7 @@ mod tests {
                 AidlObjectGeneration(2),
                 7,
                 3,
-                HalError::callback_failed("onEvent", "Binder transaction failed"),
+                HalError::callback_failed("onEvent", "Binder transactionに失敗しました"),
             );
             service
                 .context
@@ -885,7 +885,7 @@ mod tests {
         let record = FrontendCallbackDeliveryDiagnosticRecord::callback_artifact_lookup(
             AidlObjectId(17),
             AidlObjectGeneration(2),
-            HalError::callback_failed("onEvent", "callback lookup failed"),
+            HalError::callback_failed("onEvent", "callback検索に失敗しました"),
         );
         service
             .context
@@ -894,7 +894,7 @@ mod tests {
         let runtime = service.context.runtime();
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = runtime.lock().unwrap();
-            panic!("poison runtime for diagnostic query");
+            panic!("診断取得用runtimeを汚染");
         }));
         let snapshot = service.context.diagnostic_snapshot();
         assert!(snapshot.retrieval_failed());

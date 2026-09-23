@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn composed_failure_keeps_primary_domain_and_cleanup_error() {
         let error = HalError::composed_failure(
-            "write and cleanup",
+            "書込みと後片付け",
             HalError::fmq_failed("write", "failure"),
             HalError::cleanup_failed("queue", "failure"),
         );

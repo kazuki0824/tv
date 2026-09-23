@@ -70,7 +70,7 @@ impl FrontendWorkerTerminationUseCase {
             (Ok(()), Ok(())) => Ok(FrontendWorkerTerminalEventAcceptance::Accepted),
             (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
             (Err(primary), Err(cleanup)) => Err(compose_primary_cleanup_failure(
-                "frontend worker terminal transition and diagnostic failed",
+                "frontendワーカー終端遷移と診断がともに失敗しました",
                 primary,
                 cleanup,
             )),

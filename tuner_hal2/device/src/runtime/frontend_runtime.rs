@@ -135,13 +135,13 @@ impl FrontendDiagnosticWriteFailure {
                 requested_backend,
                 runtime_backend,
             } => format!(
-                "backend failure diagnostic target mismatch: frontend={frontend_id} generation={requested_generation} runtime_generation={runtime_generation} backend={requested_backend:?} runtime_backend={runtime_backend:?}"
+                "backend失敗診断の対象が不一致です: frontend={frontend_id} generation={requested_generation} runtime_generation={runtime_generation} backend={requested_backend:?} runtime_backend={runtime_backend:?}"
             ),
             Self::LivePumpReportGenerationMismatch {
                 report_generation,
                 runtime_generation,
             } => format!(
-                "DiagnosticWriteFailed: live pump report generation mismatch: report={report_generation} runtime={runtime_generation}"
+                "DiagnosticWriteFailed: live pump report世代が不一致です: report={report_generation} runtime={runtime_generation}"
             ),
         }
     }
@@ -649,7 +649,7 @@ impl FrontendRuntime {
         }
         #[cfg(target_os = "android")]
         log::error!(
-            "frontend backend failure: frontend_id={} generation={} backend={:?} step={:?} primary_error={:?} rollback_failure={:?}",
+            "frontend backend失敗: frontend_id={} generation={} backend={:?} step={:?} primary_error={:?} rollback_failure={:?}",
             record.frontend_id,
             record.generation,
             record.backend,

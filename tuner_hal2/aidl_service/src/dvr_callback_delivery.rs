@@ -99,13 +99,13 @@ impl DvrStatusNotifierSupervisor {
             return Err(
                 match WorkerFailureClassifier::classify_terminal(
                     terminal,
-                    "DVR notifier reaper panicked or could not be joined",
+                    "DVR通知回収ワーカーがpanicしたか、終了待ちに失敗しました",
                 ) {
                     ClassifiedWorkerTerminalResult::Failure { error, .. } => error,
                     ClassifiedWorkerTerminalResult::Normal(())
                     | ClassifiedWorkerTerminalResult::StopRequested => HalError::cleanup_failed(
-                        "DVR notifier reaper",
-                        "reaper is no longer running",
+                        "DVR通知回収ワーカー",
+                        "回収ワーカーは既に終了しています",
                     ),
                 },
             );
@@ -372,7 +372,7 @@ fn poll_dvr_status_snapshot(
 ) -> Result<DvrStatusPollSnapshot, HalError> {
     let guard = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
         runtime.as_ref(),
-        "service runtime lock poisoned while querying DVR status",
+        "DVR状態の照会中にservice runtimeのロックが汚染されました",
     )?;
     guard.dvr_status_poll_snapshot_for_aidl_object(handle.object_id(), handle.generation())
 }
@@ -383,7 +383,7 @@ fn dvr_status_metadata_snapshot(
 ) -> Result<DvrStatusPollSnapshot, HalError> {
     let guard = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
         runtime.as_ref(),
-        "service runtime lock poisoned while querying DVR status metadata",
+        "DVR状態メタデータの照会中にservice runtimeのロックが汚染されました",
     )?;
     guard.dvr_status_metadata_snapshot_for_aidl_object(handle.object_id(), handle.generation())
 }
@@ -507,7 +507,7 @@ fn record_dvr_callback_delivery_failure(
         let runtime = context.runtime();
         let mut guard = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
             runtime.as_ref(),
-            "service runtime lock poisoned while finishing DVR callback delivery failure",
+            "DVR callback配送失敗の完了処理中にservice runtimeのロックが汚染されました",
         )?;
         if phase == CallbackDeliveryFailurePhase::PostCommitNotification {
             guard.finish_dvr_post_commit_notification_failure_use_case(
@@ -765,7 +765,7 @@ fn run_dvr_status_notifier_with_terminal_diagnostic(
             generation: handle.generation(),
             terminal: WorkerFailureClassifier::classify_terminal(
                 WorkerTerminalResult::RuntimeFailure(terminal_error.clone()),
-                "DVR status notifier panicked",
+                "DVR状態通知ワーカーがpanicしました",
             ),
         },
     );
@@ -860,8 +860,8 @@ fn spawn_dvr_status_notifier(
         },
     )
     .map_err(|error| HalError::Io {
-        backend: "DVR status notifier",
-        operation: "thread spawn",
+        backend: "DVR状態通知",
+        operation: "スレッド生成",
         path: None,
         errno: error.raw_os_error(),
         detail: HalErrorDetail::new(error.to_string()),
@@ -876,7 +876,7 @@ fn dvr_notifier_owner_generation_is_fenced(
     let runtime = context.runtime();
     let Ok(runtime) = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
         &runtime,
-        "DVR notifier owner generation",
+        "DVR通知所有者世代",
     ) else {
         return false;
     };
@@ -1085,7 +1085,7 @@ pub(crate) fn start_dvr_status_notifier_reaper(
             if let ClassifiedWorkerTerminalResult::Failure { category, error } =
                 WorkerFailureClassifier::classify_terminal(
                     terminal.clone(),
-                    "DVR notifier reaper panicked or could not be joined",
+                    "DVR通知回収ワーカーがpanicしたか、終了待ちに失敗しました",
                 )
             {
                 log::error!("DVR notifier reaper failed: category={category:?} error={error:?}");

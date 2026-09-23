@@ -606,7 +606,7 @@ fn reaper_lock_poison(
 ) -> maleicacid_tuner_hal2_common::HalError {
     let count = maleicacid_tuner_hal2_common::increment_atomic_counter_with_saturation(count, None);
     eprintln!(
-        "worker reaper lock poison: lock={lock:?} count={count} saturated={}",
+        "ワーカー回収ロック汚染: ロック={lock:?} 検出回数={count} 飽和={}",
         count == u64::MAX
     );
     maleicacid_tuner_hal2_common::HalError::WorkerLockPoisoned {
@@ -678,14 +678,14 @@ where
         if reservations.is_empty() {
             return Err(maleicacid_tuner_hal2_common::HalError::internal(
                 maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                "worker reaper reservation group must contain at least one key",
+                "ワーカー回収予約グループには1つ以上のキーが必要です",
             ));
         }
         let mut state = self.lock_state()?;
         if state.groups.len() >= state.capacity {
             return Err(maleicacid_tuner_hal2_common::HalError::internal(
                 maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                "worker reaper reservation capacity exhausted",
+                "ワーカー回収予約の容量が不足しています",
             ));
         }
         if reservations
@@ -694,14 +694,14 @@ where
         {
             return Err(maleicacid_tuner_hal2_common::HalError::internal(
                 maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                "worker reaper received a duplicate endpoint lease",
+                "ワーカー回収で重複したendpoint leaseを受け取りました",
             ));
         }
         let group_id = state.next_group_id;
         state.next_group_id = state.next_group_id.checked_add(1).ok_or_else(|| {
             maleicacid_tuner_hal2_common::HalError::internal(
                 maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                "worker reaper reservation group id exhausted",
+                "ワーカー回収予約グループIDを発行できません",
             )
         })?;
         let mut keys = Vec::with_capacity(reservations.len());
@@ -718,7 +718,7 @@ where
         let keys = state.groups.remove(&group_id).ok_or_else(|| {
             maleicacid_tuner_hal2_common::HalError::internal(
                 maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                "worker reaper reservation group is not pending",
+                "ワーカー回収予約グループは保留中ではありません",
             )
         })?;
         for key in keys {
@@ -748,7 +748,7 @@ where
         let slot = state.entries.get_mut(key).ok_or_else(|| {
             maleicacid_tuner_hal2_common::HalError::internal(
                 maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                "worker reaper pending key is not reserved",
+                "ワーカー回収の保留キーは予約されていません",
             )
         })?;
         *slot = value;
@@ -961,7 +961,7 @@ where
             )
             .map_err(|error| maleicacid_tuner_hal2_common::HalError::Io {
                 backend: thread_prefix,
-                operation: "thread spawn",
+                operation: "スレッド生成",
                 path: None,
                 errno: error.raw_os_error(),
                 detail: maleicacid_tuner_hal2_common::HalErrorDetail::new(error.to_string()),
@@ -993,13 +993,13 @@ where
         if !self.pending.same_owner(&reservation.pending) {
             let mismatch = maleicacid_tuner_hal2_common::HalError::internal(
                 maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                "worker reaper reservation belongs to a different queue",
+                "ワーカー回収予約は別のキューに属しています",
             );
             return match reservation.release() {
                 Ok(()) => Err(mismatch),
                 Err(release_error) => Err(
                     maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
-                        "worker reaper reservation queue mismatch and original reservation release both failed",
+                        "ワーカー回収予約のキュー不一致と元予約の解放がともに失敗しました",
                         mismatch,
                         release_error,
                     ),
@@ -1018,13 +1018,13 @@ where
             drop(job);
             let mismatch = maleicacid_tuner_hal2_common::HalError::internal(
                 maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                "worker reaper reservation belongs to a different queue",
+                "ワーカー回収予約は別のキューに属しています",
             );
             return match reservation.release() {
                 Ok(()) => Err(mismatch),
                 Err(release_error) => Err(
                     maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
-                        "worker reaper enqueue queue mismatch and original reservation release both failed",
+                        "ワーカー回収投入のキュー不一致と元予約の解放がともに失敗しました",
                         mismatch,
                         release_error,
                     ),
@@ -1046,14 +1046,14 @@ where
                         drop(queued.job);
                         maleicacid_tuner_hal2_common::HalError::internal(
                             maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                            "worker reaper capacity exhausted",
+                            "ワーカー回収の容量が不足しています",
                         )
                     }
                     std::sync::mpsc::TrySendError::Disconnected(queued) => {
                         drop(queued.job);
                         maleicacid_tuner_hal2_common::HalError::internal(
                             maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                            "worker reaper is unavailable",
+                            "ワーカー回収機構を利用できません",
                         )
                     }
                 };
@@ -1061,7 +1061,7 @@ where
                     Ok(()) => Err(send_error),
                     Err(release_error) => Err(
                         maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
-                            "worker reaper enqueue and reservation release both failed",
+                            "ワーカー回収への投入と予約解放がともに失敗しました",
                             send_error,
                             release_error,
                         ),
@@ -1196,7 +1196,7 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
         if !matches!(*slot, SupervisorWorkerState::NotStarted) {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "supervisor worker is already installed",
+                "監督ワーカーは既に登録されています",
             ));
         }
         let worker = WorkerRuntime::spawn_with_context(
@@ -1209,7 +1209,7 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
         )
         .map_err(|error| HalError::Io {
             backend: name,
-            operation: "thread spawn",
+            operation: "スレッド生成",
             path: None,
             errno: error.raw_os_error(),
             detail: HalErrorDetail::new(error.to_string()),
@@ -1240,7 +1240,7 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
             SupervisorWorkerState::Finished(result) => Ok(Some(result.clone())),
             SupervisorWorkerState::Running(_) => Ok(None),
             SupervisorWorkerState::NotStarted => Err(HalError::NotInitialized {
-                resource: "supervisor worker",
+                resource: "監督ワーカー",
             }),
         }
     }
@@ -1523,7 +1523,7 @@ mod tests {
         supervisor
             .start_worker(
                 "supervisor-panic-test",
-                |_| panic!("injected panic"),
+                |_| panic!("panicを注入"),
                 move |terminal| terminal_tx.send(terminal.clone()).unwrap(),
             )
             .unwrap();
@@ -1663,7 +1663,7 @@ mod tests {
         let first = owner.issue().unwrap();
         let replacement = owner.issue().unwrap();
         assert!(matches!(
-            first.execute::<()>(|_| panic!("stale authority executed")),
+            first.execute::<()>(|_| panic!("失効した権限が実行されました")),
             Err(
                 maleicacid_tuner_hal2_common::HalError::WorkerCleanupFailed {
                     kind: WorkerCleanupFailureKind::Superseded
@@ -1728,7 +1728,7 @@ mod tests {
         assert!(matches!(
             authority.execute::<()>(|value| {
                 *value = 1;
-                panic!("interrupted after a side effect");
+                panic!("副作用の後で中断しました");
             }),
             Err(
                 maleicacid_tuner_hal2_common::HalError::WorkerCleanupFailed {
@@ -1753,15 +1753,15 @@ mod tests {
         let authority = owner.issue().unwrap();
         assert!(matches!(
             authority.execute(|value| {
-                *value = Some("stop failed");
-                WorkerCleanupProgress::Quarantined("stop failed")
+                *value = Some("停止失敗");
+                WorkerCleanupProgress::Quarantined("停止失敗")
             }),
-            Ok(WorkerCleanupRun::Completed("stop failed"))
+            Ok(WorkerCleanupRun::Completed("停止失敗"))
         ));
         assert!(owner.is_pending());
         assert!(matches!(
             &owner.state.lock().unwrap().phase,
-            WorkerCleanupPhase::Quarantined(Some("stop failed"))
+            WorkerCleanupPhase::Quarantined(Some("停止失敗"))
         ));
         assert!(matches!(
             owner.issue(),
@@ -1893,7 +1893,7 @@ mod tests {
         let clone = pending.clone();
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = pending.state.lock().unwrap();
-            panic!("poison pending registry");
+            panic!("保留レジストリを汚染");
         }))
         .is_err());
         let expected = HalError::WorkerLockPoisoned {
@@ -1929,7 +1929,7 @@ mod tests {
         let receiver = std::sync::Mutex::new(receiver);
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = receiver.lock().unwrap();
-            panic!("poison reaper receiver");
+            panic!("回収受信側を汚染");
         }))
         .is_err());
         let expected = HalError::WorkerLockPoisoned {
@@ -1968,15 +1968,15 @@ mod tests {
             let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match lock {
                 WorkerLockKind::Result => {
                     let _guard = handle.result.lock().unwrap();
-                    panic!("poison result");
+                    panic!("結果ロックを汚染");
                 }
                 WorkerLockKind::Completion => {
                     let _guard = handle.completion.0.lock().unwrap();
-                    panic!("poison completion");
+                    panic!("完了ロックを汚染");
                 }
                 WorkerLockKind::SupervisorWorker
                 | WorkerLockKind::ReaperPending
-                | WorkerLockKind::ReaperReceiver => panic!("not a worker result lock"),
+                | WorkerLockKind::ReaperReceiver => panic!("ワーカー結果ロックではありません"),
             }));
             assert!(poisoned.is_err());
             release_tx.send(()).unwrap();

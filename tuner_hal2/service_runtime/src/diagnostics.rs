@@ -1850,7 +1850,7 @@ mod counter_saturation_tests {
         let store = SharedDvrStatusNotifierCleanupDiagnostics::new(2);
         let terminal = ClassifiedWorkerTerminalResult::Failure {
             category: WorkerFailureCategory::Join,
-            error: HalError::cleanup_failed("worker", "join failed"),
+            error: HalError::cleanup_failed("worker", "終了待ち失敗"),
         };
         store
             .record(DvrStatusNotifierCleanupDiagnosticRecord::ReaperCompletion {
@@ -1915,7 +1915,7 @@ mod backend_observation_tests {
             operation: "read",
             path: Some(PathBuf::from("/dev/dvb/adapter0/dvr0")),
             errno: Some(5),
-            detail: HalErrorDetail::new("read failed"),
+            detail: HalErrorDetail::new("読取り失敗"),
         };
         frontend
             .mark_tune_worker_failed(1, failure.clone())

@@ -917,7 +917,7 @@ impl GateInner {
                     producer_release: failures & 1 != 0,
                     drain_rollback: failures & 2 != 0,
                 },
-                "filter gate local cleanup failed",
+                "filter gateの局所後片付けに失敗しました",
             ))
         }
     }
@@ -931,7 +931,7 @@ impl GateInner {
                 producer_release: failures & 1 != 0,
                 drain_rollback: failures & 2 != 0,
             },
-            "filter gate data lock poisoned",
+            "filter gateデータロックが汚染されています",
         )
     }
 
@@ -966,7 +966,7 @@ impl GateInner {
         };
         self.drained.notify_all();
         eprintln!(
-            "filter gate lock poison: lock=FilterProducerDrainGate.data count={} saturated={} producer_release={} drain_rollback={}",
+            "filter gateロック汚染: ロック=FilterProducerDrainGate.data 検出回数={} 飽和={} producer解放={} drain巻戻し={}",
             recorded >> 3,
             recorded >> 3 == u64::MAX >> 3,
             recorded & 1 != 0,
@@ -1042,7 +1042,7 @@ impl FilterProducerDrainGate {
     pub(super) fn poison_data_lock_for_test(&self) {
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = self.inner.data.lock().unwrap();
-            panic!("poison filter gate data");
+            panic!("filter gateデータを汚染");
         }))
         .is_err());
     }
@@ -1394,7 +1394,7 @@ mod dvr_queue_cleanup_tests {
                 (!producer_release).then(|| gate.begin_drain(FilterDrainBoundary::Flush).unwrap());
             assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let _guard = gate.inner.data.lock().unwrap();
-                panic!("poison filter gate");
+                panic!("filter gateを汚染");
             }))
             .is_err());
             drop(permit);
@@ -1440,7 +1440,7 @@ mod dvr_queue_cleanup_tests {
         let second = gate.begin_producer().unwrap();
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = gate.inner.data.lock().unwrap();
-            panic!("poison filter gate");
+            panic!("filter gateを汚染");
         }))
         .is_err());
         drop(first);
