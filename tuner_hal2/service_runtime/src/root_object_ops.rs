@@ -4,9 +4,8 @@ use crate::method_dispatch::plan_object_method_dispatch;
 use crate::open_rollback::finish_open_rollback;
 use crate::root_method_txn::{is_public_demux_id, published_demux_ids};
 use crate::{RuntimeObjectEntry, RuntimeOwnerRelation};
-use maleicacid_tuner_hal2_binder_adapter::{AidlMethodAdapter, AidlMethodCall};
 use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, HalError};
-use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
+use maleicacid_tuner_hal2_domain_request::{ AidlMethodCall, AidlMethodAdapter,AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 
 fn register_root_object(
     runtime: &mut TunerServiceRuntime,
@@ -71,7 +70,7 @@ fn preflight_root_method_dispatch(
     plan_object_method_dispatch(
         runtime,
         method_plan.command_plan,
-        method_plan.command.runtime_executable_request(),
+        method_plan.executable_request.clone(),
     )
 }
 
