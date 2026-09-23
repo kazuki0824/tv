@@ -19,8 +19,8 @@ use maleicacid_tuner_hal2_service_runtime::{
     DvrStatusNotifierCleanupDiagnosticRecord, DvrStatusPollSnapshot, WorkerFailureClassifier,
     WorkerRuntime, WorkerRuntimeSupervisor, WorkerRuntimeSupervisorAction,
     WorkerRuntimeSupervisorActiveEntry, WorkerRuntimeSupervisorReapingEntry,
-    WorkerRuntimeSupervisorStartPreparation, WorkerRuntimeSupervisorStopDisposition,
-    WorkerTerminalResult,
+    WorkerRuntimeSupervisorStartDisposition, WorkerRuntimeSupervisorStartOperation,
+    WorkerRuntimeSupervisorStopDisposition, WorkerTerminalResult,
 };
 
 use crate::filter_callback_delivery::dispatch_filter_event_snapshots;
@@ -63,6 +63,20 @@ impl WorkerRuntimeSupervisorActiveEntry for DvrStatusNotifier {
 
     fn supervisor_request_stop(&self) {
         self.worker.request_stop();
+    }
+}
+
+struct DvrStatusNotifierStartOperation {
+    context: SharedAidlServiceContext,
+    handle: AidlObjectHandle,
+    supervisor: Weak<DvrStatusNotifierSupervisor>,
+}
+
+impl WorkerRuntimeSupervisorStartOperation<DvrStatusNotifier>
+    for DvrStatusNotifierStartOperation
+{
+    fn start(self) -> Result<DvrStatusNotifier, HalError> {
+        spawn_dvr_status_notifier(&self.context, self.handle, self.supervisor)
     }
 }
 
@@ -145,6 +159,7 @@ enum DvrStatusNotifierSupervisorAction {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DvrStatusNotifierStopDisposition {
     Complete,
+    StartPending,
     ReaperPending,
 }
 
@@ -188,27 +203,23 @@ impl DvrStatusNotifierSupervisor {
             );
         }
         let key = DvrStatusNotifierKey::new(handle);
-        match self.runtime.prepare_start(key)? {
-            WorkerRuntimeSupervisorStartPreparation::Active
-            | WorkerRuntimeSupervisorStartPreparation::ReapingPending => Ok(()),
-            WorkerRuntimeSupervisorStartPreparation::Vacant(permit) => {
-                let execution = self.runtime.begin_start(permit)?;
-                let notifier =
-                    match spawn_dvr_status_notifier(context, handle, Arc::downgrade(self)) {
-                        Ok(notifier) => notifier,
-                        Err(primary) => {
-                            return match self.runtime.abort_start(execution) {
-                                Ok(()) => Err(primary),
-                                Err(cleanup) => Err(compose_primary_cleanup_failure(
-                                    "DVR通知ワーカー開始予約の取消しにも失敗しました",
-                                    primary,
-                                    cleanup,
-                                )),
-                            };
-                        }
-                    };
-                self.runtime.commit_start(execution, notifier)
-            }
+        match self.runtime.start_supervised(
+            key,
+            DvrStatusNotifierStartOperation {
+                context: Arc::clone(context),
+                handle,
+                supervisor: Arc::downgrade(self),
+            },
+        )? {
+            WorkerRuntimeSupervisorStartDisposition::Started
+            | WorkerRuntimeSupervisorStartDisposition::Active
+            | WorkerRuntimeSupervisorStartDisposition::ReapingPending => Ok(()),
+            WorkerRuntimeSupervisorStartDisposition::StartPending => Err(
+                HalError::invalid_state(
+                    maleicacid_tuner_hal2_common::HalInvalidStateKind::InvalidLifecycle,
+                    "DVR状態通知ワーカーの開始処理が完了していません",
+                ),
+            ),
         }
     }
 
@@ -220,6 +231,9 @@ impl DvrStatusNotifierSupervisor {
         match self.runtime.request_supervised_stop(key)? {
             WorkerRuntimeSupervisorStopDisposition::Complete => {
                 Ok(DvrStatusNotifierStopDisposition::Complete)
+            }
+            WorkerRuntimeSupervisorStopDisposition::StartPending => {
+                Ok(DvrStatusNotifierStopDisposition::StartPending)
             }
             WorkerRuntimeSupervisorStopDisposition::ReapingPending => {
                 Ok(DvrStatusNotifierStopDisposition::ReaperPending)
@@ -1101,9 +1115,13 @@ pub(crate) fn finish_dvr_status_notifier_cleanup(
         .signal_stop(handle)?
     {
         DvrStatusNotifierStopDisposition::Complete => Ok(()),
+        DvrStatusNotifierStopDisposition::StartPending => Err(HalError::cleanup_failed(
+            "DVR状態通知ワーカーの後片付け",
+            "ワーカー開始処理の完了待ちです",
+        )),
         DvrStatusNotifierStopDisposition::ReaperPending => Err(HalError::cleanup_failed(
-            "DVR status notifier cleanup",
-            "worker ownership transferred to the DVR notifier reaper",
+            "DVR状態通知ワーカーの後片付け",
+            "ワーカー所有権をDVR通知回収処理へ移管しました",
         )),
     }
 }
