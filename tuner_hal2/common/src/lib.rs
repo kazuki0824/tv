@@ -849,8 +849,8 @@ fn display_path(path: &Option<PathBuf>) -> String {
 impl fmt::Display for HalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            HalError::LockPoisoned(poison) => write!(f, "lock poisoned: {poison:?}"),
-            HalError::QueueEpochLockPoisoned { dvr_id, poison } => write!(f, "DVR queue epoch lock poisoned: dvr_id={dvr_id:?} {poison:?}"),
+            HalError::LockPoisoned(poison) => write!(f, "ロックが汚染されています: {poison:?}"),
+            HalError::QueueEpochLockPoisoned { dvr_id, poison } => write!(f, "DVRキューエポックのロックが汚染されています: DVR ID={dvr_id:?} {poison:?}"),
             HalError::ServiceRuntimeLockPoisoned { operation } => {
                 write!(
                     f,
