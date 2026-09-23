@@ -65,7 +65,8 @@ pub use diagnostics::{
     CallbackArtifactRuntimeSplitPhase, CallbackArtifactRuntimeSplitTarget,
     CapabilitySuppressionReason, ChildOpenRollbackDiagnosticRecord,
     ChildOpenRollbackDiagnosticSnapshot, ChildOpenRollbackKind, ChildOpenRollbackOutcome,
-    ChildOpenRollbackPhase, DemuxTransactionDiagnosticId, DemuxTransactionDiagnosticKind,
+    ChildOpenRollbackPhase, ClassifiedWorkerTerminalResult, DemuxTransactionDiagnosticId,
+    DemuxTransactionDiagnosticKind,
     DemuxTransactionDiagnosticRecord, DemuxTransactionDiagnosticSnapshot,
     DescramblerDiagnosticKind, DescramblerDiagnosticPhase, DescramblerDiagnosticRecord,
     DescramblerDiagnosticSnapshot, DiagnosticSnapshot, DvrPostCommitNotificationDiagnosticRecord,
@@ -134,7 +135,7 @@ pub use root_method_txn::{
     RootFrontendInfoSnapshot, RootQueryRequest, RootQueryResponse,
 };
 pub use root_object_ops::RootOpenTxn;
-pub use worker_failure_classifier::{ClassifiedWorkerTerminalResult, WorkerFailureClassifier};
+pub use worker_failure_classifier::WorkerFailureClassifier;
 pub use worker_runtime::{
     join_worker_classified, WorkerContext, WorkerHandle, WorkerRuntime, WorkerRuntimeReaperPending,
     WorkerRuntimeReaperQueue, WorkerRuntimeSupervisor, WorkerTerminalResult,

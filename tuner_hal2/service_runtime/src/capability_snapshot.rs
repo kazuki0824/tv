@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
 
+use maleicacid_tuner_hal2_common::CapabilityClosure;
+
 use crate::capability_selection::{
-    select_capabilities, CapabilityCandidate, CapabilityClaims, CapabilityClosure,
-    CapabilityClosureProfile, CapabilityResource, ProductCapabilityProfile, SelectedCapabilities,
+    select_capabilities, CapabilityCandidate, CapabilityClaims, CapabilityClosureProfile,
+    CapabilityResource, ProductCapabilityProfile, SelectedCapabilities,
 };
 use crate::playback_consume_txn::required_playback_processing_bytes;
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidArgumentKind};

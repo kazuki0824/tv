@@ -3,10 +3,8 @@ use std::collections::VecDeque;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use maleicacid_tuner_hal2_common::TS_PACKET_SIZE;
-use maleicacid_tuner_hal2_control_core::{
-    FmqDeliveryAction, FmqDeliveryTxn, FmqFailureKind, FmqObjectKind,
-};
+use maleicacid_tuner_hal2_common::{FmqFailureKind, TS_PACKET_SIZE};
+use maleicacid_tuner_hal2_control_core::{FmqDeliveryAction, FmqDeliveryTxn, FmqObjectKind};
 
 use crate::av::{
     AvDataId, AvDataIdAllocator, AvDataIdState, AvFilterReleaseState, AvHandleReleaseDescriptor,
