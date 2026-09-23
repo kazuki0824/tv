@@ -4,7 +4,7 @@ use super::{
     BinderResult, ObjectCloseCleanupFailure,
 };
 use crate::service_context::SharedAidlServiceContext;
-use maleicacid_tuner_hal2_binder_adapter::{AidlMethodCall, AidlObjectKind};
+use maleicacid_tuner_hal2_domain_request::{AidlMethodCall, AidlObjectKind};
 use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, FirstErrorCollector};
 use maleicacid_tuner_hal2_service_runtime::{
     quarantine_object_drop_leak_use_case, ObjectCleanupDiagnosticRecord, TunerServiceRuntime,
