@@ -320,7 +320,7 @@ impl FrontendWorkerStopTicket {
         else {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "frontend backend submit has no retained authority",
+                "フロントエンドbackend submitの保持権限がありません",
             ));
         };
         let run = authority.execute(|value| {
@@ -383,7 +383,7 @@ impl FrontendWorkerStopTicket {
             WorkerCleanupRun::Completed(result) => Ok(result),
             WorkerCleanupRun::Pending(_) => Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "blocking frontend backend submit remained pending",
+                "同期フロントエンドbackend submitが保留のままです",
             )),
         }
     }
@@ -412,7 +412,7 @@ impl FrontendWorkerStopTicket {
         else {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "frontend backend submit has no retained authority",
+                "フロントエンドbackend submitの保持権限がありません",
             ));
         };
         let result = authority.execute(|value| {
@@ -539,8 +539,8 @@ impl FrontendWorkerStopTicket {
                     kind,
                     generation,
                     HalError::cleanup_failed(
-                        "frontend worker",
-                        "blocking completion returned pending",
+                        "フロントエンドワーカー",
+                        "同期完了処理が保留を返しました",
                     ),
                 ),
                 Err(error) => cleanup_authority_failure(frontend_id, kind, generation, error),
@@ -724,7 +724,7 @@ fn frontend_worker_terminal(
         WorkerTerminalResult::StopRequested => (
             Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "frontend worker terminal result is missing the domain stop reason",
+                "フロントエンドワーカー終端結果にドメイン停止理由がありません",
             )),
             WorkerExit::RuntimeFailure(WorkerFailureDomain::Backend.runtime_failure_kind()),
         ),
@@ -735,7 +735,7 @@ fn frontend_worker_terminal(
         WorkerTerminalResult::PanicOrJoinFailure => (
             Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "frontend worker panicked or could not be joined",
+                "フロントエンドワーカーがpanicしたか、終了待ちに失敗しました",
             )),
             WorkerExit::PanicOrJoinFailure,
         ),
@@ -1031,7 +1031,7 @@ impl FrontendWorkerRegistry {
                             reason,
                             error: HalError::internal(
                                 HalInternalKind::InvariantViolation,
-                                "frontend worker cancel reason lock poisoned",
+                                "フロントエンドワーカーの取消し理由ロックが汚染されています",
                             ),
                         },
                     );

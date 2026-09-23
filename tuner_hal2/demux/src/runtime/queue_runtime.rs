@@ -893,7 +893,7 @@ impl GateInner {
                     producer_release: failures & 1 != 0,
                     drain_rollback: failures & 2 != 0,
                 },
-                "filter gate local cleanup failed",
+                "filter gateの局所後片付けに失敗しました",
             ))
         }
     }
@@ -907,7 +907,7 @@ impl GateInner {
                 producer_release: failures & 1 != 0,
                 drain_rollback: failures & 2 != 0,
             },
-            "filter gate data lock poisoned",
+            "filter gateデータロックが汚染されています",
         )
     }
 
@@ -942,7 +942,7 @@ impl GateInner {
         };
         self.drained.notify_all();
         eprintln!(
-            "filter gate lock poison: lock=FilterProducerDrainGate.data count={} saturated={} producer_release={} drain_rollback={}",
+            "filter gateロック汚染: ロック=FilterProducerDrainGate.data 検出回数={} 飽和={} producer解放={} drain巻戻し={}",
             recorded >> 3,
             recorded >> 3 == u64::MAX >> 3,
             recorded & 1 != 0,

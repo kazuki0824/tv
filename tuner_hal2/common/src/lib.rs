@@ -845,22 +845,22 @@ impl fmt::Display for HalError {
             HalError::ServiceRuntimeLockPoisoned { operation } => {
                 write!(
                     f,
-                    "TunerServiceRuntime lock poisoned: operation={operation}"
+                    "TunerServiceRuntimeのロックが汚染されています: 操作={operation}"
                 )
             }
             HalError::CapabilitySelectionFailed(error) => write!(
                 f,
-                "capability selection failed: reason={} returned_in_order={:?}",
+                "能力選択に失敗しました: 理由={} 返却順={:?}",
                 error.reason, error.returned_in_order
             ),
             HalError::FmqDeliveryFailed { kind, object_id } => {
                 write!(
                     f,
-                    "FMQ delivery failed: kind={kind:?} object_id={object_id:?}"
+                    "FMQ配送に失敗しました: 種別={kind:?} オブジェクトID={object_id:?}"
                 )
             }
             HalError::WorkerLockPoisoned { owner, lock } => {
-                write!(f, "worker lock poisoned: owner={owner} lock={lock:?}")
+                write!(f, "ワーカーのロックが汚染されています: 所有者={owner} ロック={lock:?}")
             }
             HalError::FilterGateLockPoisoned {
                 filter_id,
@@ -870,10 +870,10 @@ impl fmt::Display for HalError {
                 drain_rollback,
             } => write!(
                 f,
-                "filter gate lock poisoned: lock=FilterProducerDrainGate.data filter_id={filter_id:?} count={poison_count} saturated={counter_saturated} producer_release={producer_release} drain_rollback={drain_rollback}"
+                "filter gateのロックが汚染されています: ロック=FilterProducerDrainGate.data フィルターID={filter_id:?} 検出回数={poison_count} 飽和={counter_saturated} producer解放={producer_release} drain巻戻し={drain_rollback}"
             ),
             HalError::WorkerCleanupFailed { kind } => {
-                write!(f, "worker cleanup authority failed: {kind:?}")
+                write!(f, "ワーカー後片付け権限で失敗しました: {kind:?}")
             }
             HalError::NotInitialized { resource } => {
                 write!(f, "依存資源が未初期化です: {resource}")
