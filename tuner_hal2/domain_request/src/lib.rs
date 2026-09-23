@@ -1044,3 +1044,52 @@ impl RuntimeExecutableRequest {
         }
     }
 }
+
+#[cfg(test)]
+mod method_contract_tests {
+    use super::*;
+    use maleicacid_tuner_hal2_common::{
+        FrontendIsdbtPartialReceptionRequirement, FrontendSystem, FrontendTuneRequest,
+    };
+
+    fn tune_request() -> FrontendTuneRequest {
+        FrontendTuneRequest {
+            system: FrontendSystem::IsdbT,
+            frequency: 473_142_857,
+            end_frequency: None,
+            stream_id: None,
+            stream_id_kind: None,
+            bandwidth_hz: Some(6_000_000),
+            symbol_rate: None,
+            isdbt_layer_settings: Vec::new(),
+            partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+        }
+    }
+
+    #[test]
+    fn pure_method_planner_preserves_frontend_tune_contract() {
+        let plan = AidlMethodAdapter::frontend_tune(tune_request()).unwrap();
+        assert_eq!(plan.api, AidlApi::FrontendTune);
+        assert_eq!(plan.command_plan.object(), AidlObjectKind::Frontend);
+        assert_eq!(
+            plan.command_plan.transaction(),
+            RuntimeTransactionName::FrontendTuneTxnApply
+        );
+        assert_eq!(plan.executable_request, None);
+    }
+
+    #[test]
+    fn pure_method_planner_preserves_runtime_executable_payload() {
+        let request = FilterSetDataSourceRequest {
+            source_filter_id: 7,
+            source_filter_generation: 11,
+        };
+        let plan = AidlMethodAdapter::plan(AidlMethodCall::FilterSetDataSource(request)).unwrap();
+        assert_eq!(plan.api, AidlApi::FilterSetDataSource);
+        assert_eq!(plan.command_plan.object(), AidlObjectKind::Filter);
+        assert_eq!(
+            plan.executable_request,
+            Some(RuntimeExecutableRequest::FilterSetDataSource(request))
+        );
+    }
+}
