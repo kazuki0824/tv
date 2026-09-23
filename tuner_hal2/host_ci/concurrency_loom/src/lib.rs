@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests {
     use loom::sync::atomic::{AtomicBool, Ordering};
-    use loom::sync::{Arc, Condvar, Mutex};
+    use loom::sync::{Arc, Condvar, Mutex, Notify};
 
     #[test]
     fn completion_publication_precedes_thread_exit_and_collection_must_join() {
@@ -260,43 +260,27 @@ mod tests {
     }
 
     #[test]
-    fn wake_before_or_during_park_is_not_lost() {
+    fn wake_before_or_during_wait_is_not_lost() {
         loom::model(|| {
             let pending = Arc::new(AtomicBool::new(false));
-            let bound_thread = Arc::new((Mutex::new(None), Condvar::new()));
+            let wake = Arc::new(Notify::new());
             let observed = Arc::new(AtomicBool::new(false));
 
             let waiter_pending = Arc::clone(&pending);
-            let waiter_bound_thread = Arc::clone(&bound_thread);
+            let waiter_wake = Arc::clone(&wake);
             let waiter_observed = Arc::clone(&observed);
             let waiter = loom::thread::spawn(move || {
-                {
-                    let (thread, wake) = &*waiter_bound_thread;
-                    *thread.lock().unwrap() = Some(loom::thread::current());
-                    wake.notify_all();
-                }
-
                 while !waiter_pending.swap(false, Ordering::AcqRel) {
-                    loom::thread::park();
+                    waiter_wake.wait();
                 }
                 waiter_observed.store(true, Ordering::Release);
             });
 
             let notifier_pending = Arc::clone(&pending);
-            let notifier_bound_thread = Arc::clone(&bound_thread);
+            let notifier_wake = Arc::clone(&wake);
             let notifier = loom::thread::spawn(move || {
-                let thread = {
-                    let (thread, wake) = &*notifier_bound_thread;
-                    let mut thread = thread.lock().unwrap();
-                    loop {
-                        if let Some(thread) = thread.as_ref() {
-                            break thread.clone();
-                        }
-                        thread = wake.wait(thread).unwrap();
-                    }
-                };
                 notifier_pending.store(true, Ordering::Release);
-                thread.unpark();
+                notifier_wake.notify();
             });
 
             notifier.join().unwrap();
