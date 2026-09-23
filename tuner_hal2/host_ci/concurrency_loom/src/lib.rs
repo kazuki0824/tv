@@ -291,6 +291,10 @@ mod tests {
 #[cfg(test)]
 mod callback_registration_gate;
 #[cfg(test)]
+mod frontend_backend_submit_ticket;
+#[cfg(test)]
+mod frontend_worker_cancel_order;
+#[cfg(test)]
 mod filter_producer_drain_gate;
 #[cfg(test)]
 mod lnb_registry_io_authority;
