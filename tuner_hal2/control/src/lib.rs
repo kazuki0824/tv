@@ -1322,7 +1322,7 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
     where
         K: Ord + Copy,
     {
-        use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidStateKind};
+        use maleicacid_tuner_hal2_common::{HalError, HalInvalidStateKind};
         let mut state = self.lock_supervisor_state()?;
         let Some(reservation) = state.reserved_start.get_mut(&permit.key) else {
             return Err(HalError::invalid_state(
@@ -1355,7 +1355,7 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
         A: WorkerRuntimeSupervisorActiveEntry,
         R: WorkerRuntimeSupervisorReapingEntry<K, A>,
     {
-        use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidStateKind};
+        use maleicacid_tuner_hal2_common::{HalError, HalInvalidStateKind};
         let mut state = self.lock_supervisor_state()?;
         let Some(reservation) = state.reserved_start.get(&execution.key).copied() else {
             active.supervisor_request_stop();
@@ -1396,7 +1396,7 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
     where
         K: Ord + Copy,
     {
-        use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidStateKind};
+        use maleicacid_tuner_hal2_common::{HalError, HalInvalidStateKind};
         let mut state = self.lock_supervisor_state()?;
         let Some(reservation) = state.reserved_start.get(&execution.key).copied() else {
             return Err(HalError::invalid_state(
