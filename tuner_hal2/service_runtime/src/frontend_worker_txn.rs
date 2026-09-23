@@ -3718,6 +3718,12 @@ fn run_frontend_backend_scan_session_worker(
     let mut initial_ticket = initial_ticket;
     for candidate in candidates {
         if ctx.cancel_requested() {
+            if let Some(ticket) = initial_ticket.take() {
+                let cleanup = ticket.complete();
+                if let Some(error) = frontend_worker_stop_failure(&cleanup) {
+                    return Err(error);
+                }
+            }
             return Ok(());
         }
         let plan = FrontendBackendTunePlan::new(
