@@ -1815,7 +1815,7 @@ fn map_frontend_worker_start_error(
         FrontendWorkerStartError::SpawnFailed { error } => error,
         FrontendWorkerStartError::PreparedSubmitUnavailable { .. } => HalError::invalid_state(
             HalInvalidStateKind::InvalidLifecycle,
-            "準備済みfrontend backend submitは既に利用できません",
+            "準備済みフロントエンドバックエンド投入は既に利用できません",
         ),
     }
 }
@@ -3423,12 +3423,12 @@ fn finish_committed_tune_replacement(
                 Err(_) => {
                     let primary = HalError::internal(
                         HalInternalKind::InvariantViolation,
-                        "frontend tune workerのactivation channelが切断されました",
+                        "フロントエンド選局ワーカーの起動チャネルが切断されました",
                     );
                     match complete_prepared_submit_cleanup(ticket) {
                         Ok(()) => Err(primary),
                         Err(cleanup) => Err(compose_frontend_cleanup_error(
-                            "frontend tune worker activation切断後のcleanupにも失敗しました",
+                            "フロントエンド選局ワーカーの起動チャネル切断後の後片付けにも失敗しました",
                             primary,
                             cleanup,
                         )),
@@ -3501,11 +3501,11 @@ fn finish_committed_tune_replacement(
             Err(error) => match error.0 {
                 FrontendTuneWorkerActivation::Run => Err(HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "backend activation前にfrontend tune workerが終了しました",
+                    "バックエンド起動前にフロントエンド選局ワーカーが終了しました",
                 )),
                 FrontendTuneWorkerActivation::Abort => Err(HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "frontend tune workerから想定外のabort activationが返されました",
+                    "フロントエンド選局ワーカーから想定外の中止起動通知が返されました",
                 )),
             },
         }
@@ -4244,12 +4244,12 @@ fn finish_committed_scan_replacement(
                 Err(_) => {
                     let primary = HalError::internal(
                         HalInternalKind::InvariantViolation,
-                        "frontend scan workerのactivation channelが切断されました",
+                        "フロントエンド走査ワーカーの起動チャネルが切断されました",
                     );
                     match complete_prepared_submit_cleanup(ticket) {
                         Ok(()) => Err(primary),
                         Err(cleanup) => Err(compose_frontend_cleanup_error(
-                            "frontend scan worker activation切断後のcleanupにも失敗しました",
+                            "フロントエンド走査ワーカーの起動チャネル切断後の後片付けにも失敗しました",
                             primary,
                             cleanup,
                         )),
@@ -4323,11 +4323,11 @@ fn finish_committed_scan_replacement(
             Err(error) => match error.0 {
                 FrontendScanWorkerActivation::Run => Err(HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "backend activation前にfrontend scan workerが終了しました",
+                    "バックエンド起動前にフロントエンド走査ワーカーが終了しました",
                 )),
                 FrontendScanWorkerActivation::Abort => Err(HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "frontend scan workerから想定外のabort activationが返されました",
+                    "フロントエンド走査ワーカーから想定外の中止起動通知が返されました",
                 )),
             },
         }
