@@ -2490,6 +2490,23 @@ fn observe_and_record_frontend_stream_id_list_for_scan(
     commit_observed_frontend_stream_id_list(runtime, ctx, frontend_id, generation, stream_ids)
 }
 
+fn frontend_lock_terminal_outcome(
+    qualification: FrontendLockQualification,
+    elapsed: Duration,
+    deadline: Duration,
+) -> Option<FrontendLockWaitOutcome> {
+    match qualification {
+        FrontendLockQualification::Locked => Some(FrontendLockWaitOutcome::Locked),
+        FrontendLockQualification::TmccMismatch => Some(FrontendLockWaitOutcome::NoSignal),
+        FrontendLockQualification::Unlocked | FrontendLockQualification::TmccPending
+            if elapsed >= deadline =>
+        {
+            Some(FrontendLockWaitOutcome::NoSignal)
+        }
+        FrontendLockQualification::Unlocked | FrontendLockQualification::TmccPending => None,
+    }
+}
+
 fn wait_for_frontend_qualified_lock(
     runtime: &SharedRuntime,
     ctx: &FrontendWorkerContext,
@@ -2512,15 +2529,10 @@ fn wait_for_frontend_qualified_lock(
         if ctx.cancel_requested() {
             return Ok(FrontendLockWaitOutcome::Cancelled);
         }
-        match qualification {
-            FrontendLockQualification::Locked => return Ok(FrontendLockWaitOutcome::Locked),
-            FrontendLockQualification::TmccMismatch => {
-                return Ok(FrontendLockWaitOutcome::NoSignal)
-            }
-            FrontendLockQualification::Unlocked | FrontendLockQualification::TmccPending => {}
-        }
-        if started.elapsed() >= deadline {
-            return Ok(FrontendLockWaitOutcome::NoSignal);
+        if let Some(outcome) =
+            frontend_lock_terminal_outcome(qualification, started.elapsed(), deadline)
+        {
+            return Ok(outcome);
         }
         ctx.wait_until(Some(
             Instant::now()
@@ -2560,6 +2572,39 @@ fn record_frontend_tune_no_signal(
 #[cfg(test)]
 mod frontend_readback_tests {
     use super::*;
+
+    #[test]
+    fn unlocked_frontend_becomes_no_signal_only_at_terminal_deadline() {
+        let deadline = Duration::from_millis(7_000);
+        assert_eq!(
+            frontend_lock_terminal_outcome(
+                FrontendLockQualification::Unlocked,
+                Duration::from_millis(6_999),
+                deadline,
+            ),
+            None
+        );
+        assert_eq!(
+            frontend_lock_terminal_outcome(
+                FrontendLockQualification::Unlocked,
+                Duration::from_millis(7_000),
+                deadline,
+            ),
+            Some(FrontendLockWaitOutcome::NoSignal)
+        );
+    }
+
+    #[test]
+    fn locked_frontend_terminates_without_waiting_for_deadline() {
+        assert_eq!(
+            frontend_lock_terminal_outcome(
+                FrontendLockQualification::Locked,
+                Duration::ZERO,
+                Duration::from_millis(7_000),
+            ),
+            Some(FrontendLockWaitOutcome::Locked)
+        );
+    }
 
     #[test]
     fn frontend_terminal_deadline_remains_backend_specific() {
