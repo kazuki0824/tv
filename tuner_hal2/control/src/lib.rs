@@ -1322,19 +1322,19 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
     where
         K: Ord + Copy,
     {
-        use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
+        use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidStateKind};
         let mut state = self.lock_supervisor_state()?;
         let Some(reservation) = state.reserved_start.get_mut(&permit.key) else {
-            return Err(HalError::internal(
-                HalInternalKind::InvalidLifecycle,
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
                 "監督ワーカー開始予約は既に失効しています",
             ));
         };
         if reservation.attempt != permit.attempt
             || reservation.phase != WorkerRuntimeSupervisorStartPhase::Ready
         {
-            return Err(HalError::internal(
-                HalInternalKind::InvalidLifecycle,
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
                 "監督ワーカー開始予約の試行番号が一致しません",
             ));
         }
@@ -1355,12 +1355,12 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
         A: WorkerRuntimeSupervisorActiveEntry,
         R: WorkerRuntimeSupervisorReapingEntry<K, A>,
     {
-        use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
+        use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidStateKind};
         let mut state = self.lock_supervisor_state()?;
         let Some(reservation) = state.reserved_start.get(&execution.key).copied() else {
             active.supervisor_request_stop();
-            return Err(HalError::internal(
-                HalInternalKind::InvalidLifecycle,
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
                 "監督ワーカー開始試行は既に失効しています",
             ));
         };
@@ -1370,8 +1370,8 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
             || state.reaping.contains_key(&execution.key)
         {
             active.supervisor_request_stop();
-            return Err(HalError::internal(
-                HalInternalKind::InvalidLifecycle,
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
                 "監督ワーカー開始試行の確定条件が崩れています",
             ));
         }
@@ -1396,19 +1396,19 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
     where
         K: Ord + Copy,
     {
-        use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
+        use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidStateKind};
         let mut state = self.lock_supervisor_state()?;
         let Some(reservation) = state.reserved_start.get(&execution.key).copied() else {
-            return Err(HalError::internal(
-                HalInternalKind::InvalidLifecycle,
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
                 "監督ワーカー開始試行の取消し対象がありません",
             ));
         };
         if reservation.attempt != execution.attempt
             || reservation.phase != WorkerRuntimeSupervisorStartPhase::Starting
         {
-            return Err(HalError::internal(
-                HalInternalKind::InvalidLifecycle,
+            return Err(HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
                 "監督ワーカー開始試行の取消し条件が崩れています",
             ));
         }
