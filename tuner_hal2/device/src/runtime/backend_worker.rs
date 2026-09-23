@@ -465,13 +465,8 @@ impl FrontendBackendSubmitTicket {
     pub fn wait(
         mut self,
     ) -> Result<Result<FrontendBackendSession, FrontendBackendSubmitFailure>, HalError> {
-        let ready = self.ready.recv().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "frontend backend submit readiness channel disconnected",
-            )
-        })?;
-        if matches!(ready, FrontendBackendSubmitReady::Submitted) {
+        let ready = self.ready.recv();
+        if matches!(ready, Ok(FrontendBackendSubmitReady::Submitted)) {
             let _ = self
                 .disposition
                 .send(FrontendBackendSubmitDisposition::Claim);
