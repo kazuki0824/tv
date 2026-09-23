@@ -10,7 +10,7 @@ pub(crate) fn demux_runtime_error_to_hal(
         maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::GenerationExhausted => {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "demux runtime generation exhausted",
+                "demux runtime世代を発行できません",
             )
         }
         maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::FilterMissing
@@ -18,7 +18,7 @@ pub(crate) fn demux_runtime_error_to_hal(
         | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::QueueMissing => {
             HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "demux runtime object is missing",
+                "demux runtimeオブジェクトがありません",
             )
         }
         maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::InvalidState
@@ -27,45 +27,45 @@ pub(crate) fn demux_runtime_error_to_hal(
         | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SinkLifecycle => {
             HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "demux runtime lifecycle is invalid",
+                "demux runtimeのライフサイクルが不正です",
             )
         }
         maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::InvalidSourceSubtype
         | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::InvalidSinkSubtype => {
-            HalError::Unsupported("demux source/sink subtype is unsupported")
+            HalError::Unsupported("demux source/sinkのsubtypeは未対応です")
         }
         maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::UnsupportedDvrOperation => {
-            HalError::Unsupported("DVR operation is unavailable for this DVR kind")
+            HalError::Unsupported("このDVR種別ではDVR操作を利用できません")
         }
         maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::PidMismatch => {
             HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,
-                "demux source/sink PID mismatch",
+                "demux source/sinkのPIDが一致しません",
             )
         }
         maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SelfReference => {
             HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,
-                "a filter cannot use itself as its data source",
+                "filter自身をデータソースに指定できません",
             )
         }
         maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::PipelineFailed
         | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::RelationCommitUnknown => {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "demux runtime pipeline or relation operation failed",
+                "demux runtimeのpipelineまたはrelation操作に失敗しました",
             )
         }
         maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SourceBoundaryRollbackFailed => {
             HalError::cleanup_failed(
-                "demux source boundary rollback",
-                "demux runtime was quarantined after source boundary rollback failure",
+                "demux source boundaryの巻戻し",
+                "source boundary巻戻し失敗後にdemux runtimeを隔離しました",
             )
         }
         maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::QueueRuntimeFailureRollbackFailed => {
             HalError::cleanup_failed(
-                "playback queue read rollback",
-                "DVR was quarantined after playback queue transaction rollback failure",
+                "playback queue読取りの巻戻し",
+                "playback queue transactionの巻戻し失敗後にDVRを隔離しました",
             )
         }
         maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::FmqDeliveryFailed(kind) => {
@@ -78,13 +78,13 @@ pub(crate) fn demux_runtime_error_to_hal(
             delivery,
             rollback,
         } => compose_primary_cleanup_failure(
-            "FMQ delivery and playback queue rollback failed",
+            "FMQ配送とplayback queue巻戻しがともに失敗しました",
             HalError::FmqDeliveryFailed {
                 kind: delivery,
                 object_id: error.id,
             },
             HalError::cleanup_failed(
-                "playback queue read rollback",
+                "playback queue読取りの巻戻し",
                 format!("{:?}: {}", rollback.kind, rollback.detail),
             ),
         ),
@@ -110,7 +110,7 @@ pub(crate) fn demux_runtime_error_to_hal(
         | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::AvBackingFailure => {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "demux runtime queue operation failed",
+                "demux runtime queue操作に失敗しました",
             )
         }
     }
