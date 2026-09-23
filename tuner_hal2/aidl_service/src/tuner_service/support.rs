@@ -4,9 +4,8 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
 };
 use binder::binder_impl::Binder;
 use binder::{Result as BinderResult, Strong};
-use maleicacid_tuner_hal2_binder_adapter::{
-    AidlApi, AidlMethodCall, AidlObjectKind, TunerStatusCode,
-};
+use maleicacid_tuner_hal2_binder_adapter::TunerStatusCode;
+use maleicacid_tuner_hal2_domain_request::{AidlApi, AidlMethodCall, AidlObjectKind};
 use maleicacid_tuner_hal2_common::{HalError, HalInvalidArgumentKind};
 
 use crate::error_bridge::status_from_tuner_status;
