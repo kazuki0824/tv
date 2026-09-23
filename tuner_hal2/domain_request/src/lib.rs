@@ -965,8 +965,6 @@ impl AidlMethodAdapter {
     }
 }
 
-pub type AidlDomainRequest = RuntimeExecutableRequest;
-
 impl RuntimeExecutableRequest {
     pub fn profile_support(&self) -> DomainProfileSupport {
         match self {

@@ -15,7 +15,7 @@ pub use aidl_method::{
     build_lnb_voltage_request,
 };
 pub use maleicacid_tuner_hal2_domain_request::{
-    AidlApi, AidlDomainRequest, AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan,
+    AidlApi, AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan,
     DemuxSetFrontendDataSourceRequest, DomainProfileSupport, DvrConfigureKind, DvrConfigureRequest,
     DvrDataFormat, DvrFilterLinkRequest, DvrOpenKind, FilterAvStreamKind,
     FilterAvStreamTypeRequest, FilterDelayHintKind, FilterDelayHintRequest,
