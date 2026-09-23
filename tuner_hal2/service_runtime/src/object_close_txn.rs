@@ -1,10 +1,9 @@
 use std::collections::BTreeMap;
 
-use maleicacid_tuner_hal2_binder_adapter::{AidlMethodAdapter, AidlMethodCall};
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FirstErrorCollector, HalError, HalInvalidStateKind,
 };
-use maleicacid_tuner_hal2_domain_request::{
+use maleicacid_tuner_hal2_domain_request::{ AidlMethodCall, AidlMethodAdapter,
     AidlApi, AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan,
     RuntimeExecutableRequest,
 };
@@ -1294,7 +1293,7 @@ pub(crate) fn plan_and_begin_object_close_method_call_dispatch(
         generation,
         object_kind,
         method_plan.command_plan,
-        method_plan.command.runtime_executable_request(),
+        method_plan.executable_request.clone(),
         step,
     )
 }
