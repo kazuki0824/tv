@@ -1402,7 +1402,6 @@ mod tests {
             symbol_rate: None,
             isdbt_layer_settings: Vec::new(),
             partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
-            px4_channel_apply_result: None,
         };
         let plan = FrontendBackendTunePlan::new(
             10,
