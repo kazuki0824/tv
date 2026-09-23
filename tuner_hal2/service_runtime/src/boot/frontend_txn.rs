@@ -250,7 +250,7 @@ impl FrontendTxn<'_> {
             .ok_or_else(|| {
                 HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "frontend runtime is missing while recording delayed backend failure",
+                    "遅延backend失敗の記録中にfrontend runtimeがありません",
                 )
             })?
             .record_completed_backend_submit_failure(failure)
@@ -273,7 +273,7 @@ impl FrontendTxn<'_> {
             .ok_or_else(|| {
                 HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "frontend registry entry is missing while recording backend failure diagnostic",
+                    "backend失敗診断の記録中にfrontend registry entryがありません",
                 )
             })?;
         self.runtime
@@ -282,7 +282,7 @@ impl FrontendTxn<'_> {
             .ok_or_else(|| {
                 HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "frontend runtime is missing while recording backend failure diagnostic",
+                    "backend失敗診断の記録中にfrontend runtimeがありません",
                 )
             })?
             .record_backend_failure_diagnostic_context(

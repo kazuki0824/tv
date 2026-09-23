@@ -527,7 +527,7 @@ fn finish_queue_descriptor_export(
     let runtime_id = plan.runtime_id();
     let mut guard = TunerServiceRuntime::lock_shared(
         runtime.as_ref(),
-        "service runtime lock poisoned while exporting queue descriptor",
+        "queue descriptor出力中にservice runtimeのロックが汚染されました",
     )?;
     aidl_object_live(&guard, object_id, generation, object_kind)?;
     match plan.export_descriptor() {
@@ -668,7 +668,7 @@ where
     F: FnOnce() -> Result<(AidlMethodCall, T), E>,
 {
     let mut runtime =
-        TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned")
+        TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtimeのロックが汚染されています")
             .map_err(ObjectMethodUseCaseBuildError::Runtime)?;
     aidl_object_live(
         &runtime,
@@ -702,7 +702,7 @@ impl ObjectMethodUseCase {
         let execution = {
             let mut runtime = TunerServiceRuntime::lock_shared(
                 runtime.as_ref(),
-                "service runtime lock poisoned",
+                "service runtimeのロックが汚染されています",
             )?;
             aidl_object_live(
                 &runtime,
@@ -738,7 +738,7 @@ impl ObjectMethodUseCase {
         let target = ObjectMethodUseCaseTarget::new(object_id, generation, object_kind);
         let execution = {
             let mut runtime =
-                TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned")
+                TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtimeのロックが汚染されています")
                     .map_err(ObjectMethodUseCaseBuildError::Runtime)?;
             aidl_object_live(
                 &runtime,
@@ -780,7 +780,7 @@ impl ObjectMethodUseCase {
     {
         let target = ObjectMethodUseCaseTarget::new(object_id, generation, object_kind);
         let mut runtime =
-            TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned")
+            TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtimeのロックが汚染されています")
                 .map_err(ObjectMethodUseCaseBuildError::Runtime)?;
         aidl_object_live(
             &runtime,
@@ -821,7 +821,7 @@ impl ObjectMethodUseCase {
         let target = ObjectMethodUseCaseTarget::new(object_id, generation, object_kind);
         let request = {
             let mut runtime_guard =
-                TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtime lock poisoned")
+                TunerServiceRuntime::lock_shared(runtime.as_ref(), "service runtimeのロックが汚染されています")
                     .map_err(ObjectMethodUseCaseBuildError::Runtime)?;
             aidl_object_live(
                 &runtime_guard,

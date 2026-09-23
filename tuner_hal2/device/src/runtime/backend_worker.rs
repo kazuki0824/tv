@@ -308,7 +308,7 @@ impl FrontendBackendSession {
             ) => {
                 let file = self.file.try_clone().map_err(|error| HalError::Io {
                     backend: "px4",
-                    operation: "live reader fd duplication",
+                    operation: "live reader fd複製",
                     path: Some(control_path.as_path().to_path_buf()),
                     errno: error.raw_os_error(),
                     detail: HalErrorDetail::new(error.to_string()),
@@ -325,7 +325,7 @@ impl FrontendBackendSession {
                     .open(dvr_path.as_path())
                     .map_err(|error| HalError::Io {
                         backend: "dvb",
-                        operation: "live dvr reader open",
+                        operation: "live DVR reader open",
                         path: Some(dvr_path.as_path().to_path_buf()),
                         errno: error.raw_os_error(),
                         detail: HalErrorDetail::new(error.to_string()),
@@ -410,7 +410,7 @@ impl FrontendBackendSubmitFailure {
         };
         let rollback_error = self.rollback_failure.as_ref().map(|failure| {
             HalError::cleanup_failed(
-                "frontend backend tune rollback",
+                "frontend backend tune巻戻し",
                 format!("step={:?} error={}", failure.step, failure.error),
             )
         });
@@ -428,7 +428,7 @@ impl FrontendBackendSubmitFailure {
                 ),
             )
         });
-        compose_primary_cleanup_failure("frontend backend submit failure", self.error, cleanup)
+        compose_primary_cleanup_failure("frontend backend submit失敗", self.error, cleanup)
     }
 }
 
@@ -539,7 +539,7 @@ impl FrontendBackendSubmitTicket {
                 let error = stop_result.err().unwrap_or_else(|| {
                     HalError::internal(
                         HalInternalKind::InvariantViolation,
-                        "frontend backend submit ended as abort without an error",
+                        "frontend backend submitがエラーなしのabortで終了しました",
                     )
                 });
                 Ok(Err(frontend_backend_submit_thread_failure(
@@ -1530,7 +1530,7 @@ mod tests {
                     ));
                     assert!(rollback.succeeded());
                 }
-                other => panic!("unexpected outcome: {other:?}"),
+                other => panic!("想定外の結果です: {other:?}"),
             }
             assert_eq!(executor.streaming_state, BackendStreamingState::NotStarted);
         }
@@ -1723,12 +1723,12 @@ mod tests {
                 ..
             } => {
                 assert_eq!(backend, "dvb");
-                assert_eq!(operation, "live dvr reader open");
+                assert_eq!(operation, "live DVR reader open");
                 assert_eq!(error_path.as_deref(), Some(path.as_path()));
                 assert!(expected_errno.is_some());
                 assert_eq!(errno, expected_errno);
             }
-            error => panic!("live reader open lost I/O classification: {error:?}"),
+            error => panic!("live reader openでI/O分類が失われました: {error:?}"),
         }
     }
 
@@ -2030,7 +2030,7 @@ mod tests {
             generation,
             error: HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "simulated delayed submit failure",
+                "遅延submit失敗を模擬",
             ),
             rollback_succeeded: true,
             step: Some(BackendTuneStep::ApplyChannel),
@@ -2042,7 +2042,7 @@ mod tests {
             Err(failure)
         })
         .unwrap();
-        let failure = ticket.wait().unwrap().expect_err("submit must fail");
+        let failure = ticket.wait().unwrap().expect_err("submitは失敗する必要があります");
         assert_eq!(failure, expected);
     }
 
@@ -2085,7 +2085,7 @@ mod tests {
             failure.error,
             HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "simulated delayed submit failure",
+                "遅延submit失敗を模擬",
             )
         );
     }
@@ -2099,7 +2099,7 @@ mod tests {
                 error: HalError::IoctlFailed {
                     backend: "px4",
                     path: None,
-                    op: "set channel",
+                    op: "channel設定",
                     errno: 5,
                 },
                 rollback_succeeded: false,
@@ -2109,7 +2109,7 @@ mod tests {
                     error: HalError::IoctlFailed {
                         backend: "px4",
                         path: None,
-                        op: "stop streaming",
+                        op: "streaming停止",
                         errno: 16,
                     },
                 }),
@@ -2122,7 +2122,7 @@ mod tests {
             .unwrap();
             let mut ticket = match ticket.wait_until(Instant::now()).unwrap() {
                 FrontendBackendSubmitWait::TimedOut(ticket) => ticket,
-                _ => panic!("blocked submit must time out"),
+                _ => panic!("blockされたsubmitは時間切れになる必要があります"),
             };
             release.send(()).unwrap();
             assert!(ticket
@@ -2134,7 +2134,7 @@ mod tests {
                     if let Some(result) = ticket.try_complete_cleanup() {
                         break result;
                     }
-                    assert!(Instant::now() < deadline, "submit thread did not exit");
+                    assert!(Instant::now() < deadline, "submitスレッドが終了しませんでした");
                     thread::yield_now();
                 }
             } else {
@@ -2158,7 +2158,7 @@ mod tests {
             release_rx.recv().unwrap();
             Err(FrontendBackendSubmitFailure {
                 generation: 101,
-                error: HalError::cleanup_failed("submit test", "rejected before side effects"),
+                error: HalError::cleanup_failed("submit試験", "副作用前に拒否"),
                 rollback_succeeded: true,
                 step: None,
                 rollback_failure: None,
@@ -2198,12 +2198,12 @@ mod tests {
         };
         let expected = FrontendBackendSubmitFailure {
             generation: 102,
-            error: HalError::cleanup_failed("backend", "submit failed"),
+            error: HalError::cleanup_failed("backend", "submit失敗"),
             rollback_succeeded: false,
             step: Some(BackendTuneStep::ApplyChannel),
             rollback_failure: Some(super::super::tune_txn::BackendTuneRollbackFailure {
                 step: super::super::tune_txn::BackendTuneRollbackStep::RollbackStopStreaming,
-                error: HalError::cleanup_failed("backend", "stop failed"),
+                error: HalError::cleanup_failed("backend", "停止失敗"),
             }),
         };
         let failure = expected.clone();

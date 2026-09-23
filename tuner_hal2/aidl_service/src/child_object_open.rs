@@ -43,7 +43,7 @@ fn finish_filter_child_open_artifact_retain_failure(
 ) -> BinderResult<Strong<dyn IFilter>> {
     maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
         runtime.as_ref(),
-        "service runtime lock poisoned",
+        "service runtimeのロックが汚染されています",
     )
     .map_err(status_from_hal_error)?
     .finish_filter_child_open_artifact_retain_failure_use_case(
@@ -67,7 +67,7 @@ fn finish_dvr_child_open_artifact_retain_failure(
 ) -> BinderResult<Strong<dyn IDvr>> {
     maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
         runtime.as_ref(),
-        "service runtime lock poisoned",
+        "service runtimeのロックが汚染されています",
     )
     .map_err(status_from_hal_error)?
     .finish_dvr_child_open_artifact_retain_failure_use_case(
@@ -94,7 +94,7 @@ fn finish_filter_child_object_construction_failure(
         cleanup_filter_child_open_after_object_failure(context, runtime, handle, filter_id);
     maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
         runtime.as_ref(),
-        "service runtime lock poisoned",
+        "service runtimeのロックが汚染されています",
     )
     .map_err(status_from_hal_error)?
     .finish_filter_child_open_object_construction_failure_use_case(primary_error, cleanup)
@@ -115,7 +115,7 @@ fn finish_dvr_child_object_construction_failure(
     let cleanup = cleanup_dvr_child_open_after_object_failure(context, runtime, handle, dvr_id);
     maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
         runtime.as_ref(),
-        "service runtime lock poisoned",
+        "service runtimeのロックが汚染されています",
     )
     .map_err(status_from_hal_error)?
     .finish_dvr_child_open_object_construction_failure_use_case(primary_error, cleanup)
@@ -134,7 +134,7 @@ fn cleanup_filter_child_open_after_object_failure(
 ) -> Result<(), HalError> {
     let outcome = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
         runtime.as_ref(),
-        "service runtime lock poisoned",
+        "service runtimeのロックが汚染されています",
     )?
     .begin_filter_child_open_object_failure_cleanup_use_case(
         handle.object_id(),
@@ -152,7 +152,7 @@ fn cleanup_dvr_child_open_after_object_failure(
 ) -> Result<(), HalError> {
     let outcome = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
         runtime.as_ref(),
-        "service runtime lock poisoned",
+        "service runtimeのロックが汚染されています",
     )?
     .begin_dvr_child_open_object_failure_cleanup_use_case(
         handle.object_id(),
@@ -294,7 +294,7 @@ fn finish_filter_child_open(
     }
     if let Err(primary) = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
         runtime.as_ref(),
-        "service runtime lock poisoned",
+        "service runtimeのロックが汚染されています",
     )
     .map_err(status_from_hal_error)?
     .commit_prepared_child_object(child_handle.object_id(), child_handle.generation())
@@ -369,7 +369,7 @@ fn finish_dvr_child_open(
     }
     if let Err(primary) = maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
         runtime.as_ref(),
-        "service runtime lock poisoned",
+        "service runtimeのロックが汚染されています",
     )
     .map_err(status_from_hal_error)?
     .commit_prepared_child_object(child_handle.object_id(), child_handle.generation())

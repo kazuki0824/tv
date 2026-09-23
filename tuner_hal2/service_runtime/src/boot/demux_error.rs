@@ -134,7 +134,7 @@ mod tests {
                     producer_release: true,
                     drain_rollback: true,
                 },
-                detail: "filter gate data lock poisoned",
+                detail: "filter gateデータロックが汚染されています",
             };
             let error = super::demux_runtime_error_to_hal(DemuxRuntimeError::queue_runtime_error(
                 17, context,

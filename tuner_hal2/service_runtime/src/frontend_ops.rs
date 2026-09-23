@@ -234,7 +234,7 @@ impl FrontendTuneScanTxn {
         {
             let mut guard = TunerServiceRuntime::lock_shared(
                 runtime.as_ref(),
-                "service runtime lock poisoned while checking stopTune during scan",
+                "scan中のstopTune確認時にservice runtimeのロックが汚染されました",
             )?;
             let frontend_id = guard
                 .frontend_entry_for_aidl_object(object_id, object_generation)?
@@ -288,7 +288,7 @@ impl FrontendTuneScanTxn {
         if let FrontendOperationEvent::StreamIdList { stream_ids } = event {
             let mut guard = TunerServiceRuntime::lock_shared(
                 runtime.as_ref(),
-                "service runtime lock poisoned while accepting TMCC stream IDs",
+                "TMCC stream ID受付中にservice runtimeのロックが汚染されました",
             )?;
             if guard
                 .query()
@@ -308,7 +308,7 @@ impl FrontendTuneScanTxn {
 
         let is_current = TunerServiceRuntime::lock_shared(
             runtime.as_ref(),
-            "service runtime lock poisoned while validating a frontend operation event",
+            "frontend操作event検証中にservice runtimeのロックが汚染されました",
         )?
         .query()
         .frontend_runtime_snapshot(frontend_id)?
@@ -365,7 +365,7 @@ impl FrontendTuneScanTxn {
         let acceptance = {
             let mut guard = TunerServiceRuntime::lock_shared(
                 runtime.as_ref(),
-                "service runtime lock poisoned while accepting a frontend worker terminal",
+                "frontendワーカー終端受付中にservice runtimeのロックが汚染されました",
             )?;
             FrontendWorkerTerminationUseCase::accept_worker_terminal(&mut guard, event)?
         };
@@ -432,7 +432,7 @@ impl FrontendTuneScanTxn {
         let (frontend_id, lnb_id, authority) = {
             let guard = TunerServiceRuntime::lock_shared(
                 runtime.as_ref(),
-                "service runtime lock poisoned during fixed-power preflight",
+                "固定給電の事前確認中にservice runtimeのロックが汚染されました",
             )?;
             let frontend = guard.frontend_entry_for_aidl_object(object_id, object_generation)?;
             let frontend_id = frontend.id;
@@ -460,7 +460,7 @@ impl FrontendTuneScanTxn {
             let (prepared, newly_retained) = {
                 let mut guard = TunerServiceRuntime::lock_shared(
                     runtime.as_ref(),
-                    "service runtime lock poisoned during fixed-power preparation",
+                    "固定給電の準備中にservice runtimeのロックが汚染されました",
                 )?;
                 let current = guard.frontend_entry_for_aidl_object(object_id, object_generation)?;
                 if current.id != frontend_id
@@ -519,7 +519,7 @@ impl FrontendTuneScanTxn {
             let backend_result = completed.backend_result();
             let finish_result = TunerServiceRuntime::lock_shared(
                 runtime.as_ref(),
-                "service runtime lock poisoned while finishing fixed power",
+                "固定給電の完了処理中にservice runtimeのロックが汚染されました",
             )?
             .lnb_control_txn()
             .finish(completed);
@@ -536,7 +536,7 @@ impl FrontendTuneScanTxn {
                 {
                     let mut guard = TunerServiceRuntime::lock_shared(
                         runtime.as_ref(),
-                        "service runtime lock poisoned while rolling back fixed power",
+                        "固定給電の巻戻し中にservice runtimeのロックが汚染されました",
                     )?;
                     Err(Self::rollback_new_fixed_power_lease(
                         &mut guard,
@@ -557,7 +557,7 @@ impl FrontendTuneScanTxn {
         let (lnb_id, authority) = {
             let guard = TunerServiceRuntime::lock_shared(
                 runtime.as_ref(),
-                "service runtime lock poisoned during fixed-power release preflight",
+                "固定給電解放の事前確認中にservice runtimeのロックが汚染されました",
             )?;
             let Some(lnb_id) = guard.registry().frontend_fixed_power_lnb(frontend_id) else {
                 return Ok(());
@@ -573,7 +573,7 @@ impl FrontendTuneScanTxn {
             let prepared = {
                 let mut guard = TunerServiceRuntime::lock_shared(
                     runtime.as_ref(),
-                    "service runtime lock poisoned during fixed-power release",
+                    "固定給電解放中にservice runtimeのロックが汚染されました",
                 )?;
                 if guard.registry().frontend_fixed_power_lnb(frontend_id) != Some(lnb_id) {
                     return Ok(());
@@ -631,7 +631,7 @@ impl FrontendTuneScanTxn {
             let completed = prepared.execute(&permit);
             match TunerServiceRuntime::lock_shared(
                 runtime.as_ref(),
-                "service runtime lock poisoned while finishing fixed-power release",
+                "固定給電解放の完了処理中にservice runtimeのロックが汚染されました",
             )?
             .lnb_control_txn()
             .finish(completed)
@@ -640,7 +640,7 @@ impl FrontendTuneScanTxn {
                 Err(error) => {
                     let mut guard = TunerServiceRuntime::lock_shared(
                         runtime.as_ref(),
-                        "service runtime lock poisoned while restoring fixed-power lease",
+                        "固定給電lease復元中にservice runtimeのロックが汚染されました",
                     )?;
                     Err(Self::restore_fixed_power_lease_after_failure(
                         &mut guard,
@@ -662,7 +662,7 @@ impl FrontendTuneScanTxn {
     ) -> Result<(), HalError> {
         let guard = TunerServiceRuntime::lock_shared(
             runtime.as_ref(),
-            "service runtime lock poisoned during frontend begin preflight",
+            "frontend開始の事前確認中にservice runtimeのロックが汚染されました",
         )?;
         let entry = guard.frontend_entry_for_aidl_object(object_id, object_generation)?;
         let normalized = converted
@@ -709,7 +709,7 @@ impl FrontendTuneScanTxn {
     ) -> Result<(), HalError> {
         let terminal = TunerServiceRuntime::lock_shared(
             runtime.as_ref(),
-            "service runtime lock poisoned while checking fixed-power release",
+            "固定給電解放の確認中にservice runtimeのロックが汚染されました",
         )?
         .query()
         .frontend_runtime_snapshot(frontend_id.0)
@@ -780,7 +780,7 @@ pub fn set_frontend_lnb_object_use_case(
     let (frontend_id, authority) = {
         let guard = TunerServiceRuntime::lock_shared(
             runtime.as_ref(),
-            "service runtime lock poisoned while resolving frontend LNB I/O authority",
+            "frontend LNB I/O権限解決中にservice runtimeのロックが汚染されました",
         )?;
         let frontend_entry = guard.frontend_entry_for_aidl_object(object_id, object_generation)?;
         let frontend_id = frontend_entry.id.0;
@@ -805,7 +805,7 @@ pub fn set_frontend_lnb_object_use_case(
         let prepared = {
             let mut guard = TunerServiceRuntime::lock_shared(
                 runtime.as_ref(),
-                "service runtime lock poisoned while preparing frontend LNB assignment",
+                "frontend LNB割当準備中にservice runtimeのロックが汚染されました",
             )?;
             dispatch.consume_for_object(
                 &mut guard,
@@ -825,7 +825,7 @@ pub fn set_frontend_lnb_object_use_case(
         let executed = prepared.execute(&permit);
         let mut guard = TunerServiceRuntime::lock_shared(
             runtime.as_ref(),
-            "service runtime lock poisoned while finishing frontend LNB assignment",
+            "frontend LNB割当の完了処理中にservice runtimeのロックが汚染されました",
         )?;
         FrontendLnbRelationTxn::finish(&mut guard, executed)
     })

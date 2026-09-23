@@ -1495,7 +1495,7 @@ mod tests {
         supervisor
             .start_worker(
                 "supervisor-panic-test",
-                |_| panic!("injected panic"),
+                |_| panic!("panicを注入"),
                 move |terminal| terminal_tx.send(terminal.clone()).unwrap(),
             )
             .unwrap();
@@ -1635,7 +1635,7 @@ mod tests {
         let first = owner.issue().unwrap();
         let replacement = owner.issue().unwrap();
         assert!(matches!(
-            first.execute::<()>(|_| panic!("stale authority executed")),
+            first.execute::<()>(|_| panic!("失効した権限が実行されました")),
             Err(
                 maleicacid_tuner_hal2_common::HalError::WorkerCleanupFailed {
                     kind: WorkerCleanupFailureKind::Superseded
@@ -1700,7 +1700,7 @@ mod tests {
         assert!(matches!(
             authority.execute::<()>(|value| {
                 *value = 1;
-                panic!("interrupted after a side effect");
+                panic!("副作用の後で中断しました");
             }),
             Err(
                 maleicacid_tuner_hal2_common::HalError::WorkerCleanupFailed {
@@ -1725,15 +1725,15 @@ mod tests {
         let authority = owner.issue().unwrap();
         assert!(matches!(
             authority.execute(|value| {
-                *value = Some("stop failed");
-                WorkerCleanupProgress::Quarantined("stop failed")
+                *value = Some("停止失敗");
+                WorkerCleanupProgress::Quarantined("停止失敗")
             }),
-            Ok(WorkerCleanupRun::Completed("stop failed"))
+            Ok(WorkerCleanupRun::Completed("停止失敗"))
         ));
         assert!(owner.is_pending());
         assert!(matches!(
             &owner.state.lock().unwrap().phase,
-            WorkerCleanupPhase::Quarantined(Some("stop failed"))
+            WorkerCleanupPhase::Quarantined(Some("停止失敗"))
         ));
         assert!(matches!(
             owner.issue(),
@@ -1865,7 +1865,7 @@ mod tests {
         let clone = pending.clone();
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = pending.state.lock().unwrap();
-            panic!("poison pending registry");
+            panic!("保留レジストリを汚染");
         }))
         .is_err());
         let expected = HalError::WorkerLockPoisoned {
@@ -1901,7 +1901,7 @@ mod tests {
         let receiver = std::sync::Mutex::new(receiver);
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = receiver.lock().unwrap();
-            panic!("poison reaper receiver");
+            panic!("回収受信側を汚染");
         }))
         .is_err());
         let expected = HalError::WorkerLockPoisoned {
@@ -1940,15 +1940,15 @@ mod tests {
             let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match lock {
                 WorkerLockKind::Result => {
                     let _guard = handle.result.lock().unwrap();
-                    panic!("poison result");
+                    panic!("結果ロックを汚染");
                 }
                 WorkerLockKind::Completion => {
                     let _guard = handle.completion.0.lock().unwrap();
-                    panic!("poison completion");
+                    panic!("完了ロックを汚染");
                 }
                 WorkerLockKind::SupervisorWorker
                 | WorkerLockKind::ReaperPending
-                | WorkerLockKind::ReaperReceiver => panic!("not a worker result lock"),
+                | WorkerLockKind::ReaperReceiver => panic!("ワーカー結果ロックではありません"),
             }));
             assert!(poisoned.is_err());
             release_tx.send(()).unwrap();

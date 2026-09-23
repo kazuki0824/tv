@@ -216,9 +216,9 @@ mod tests {
                 object_id: Some(17),
             };
             let composed = HalError::composed_failure(
-                "delivery and rollback",
+                "配送と巻戻し",
                 primary,
-                HalError::cleanup_failed("queue", "rollback failed"),
+                HalError::cleanup_failed("queue", "巻戻し失敗"),
             );
             assert_eq!(failure_domain(&composed), expected);
         }

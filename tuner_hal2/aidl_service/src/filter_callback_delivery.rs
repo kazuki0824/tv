@@ -57,8 +57,8 @@ impl AidlFilterEventDispatcher {
             || {},
         )
         .map_err(|error| HalError::Io {
-            backend: "filter delay delivery",
-            operation: "thread spawn",
+            backend: "filter遅延配送",
+            operation: "スレッド生成",
             path: None,
             errno: error.raw_os_error(),
             detail: HalErrorDetail::new(error.to_string()),
@@ -310,7 +310,7 @@ fn finish_filter_callback_delivery_failure(
     phase: CallbackDeliveryFailurePhase,
     primary: HalError,
 ) -> Result<(), HalError> {
-    match TunerServiceRuntime::lock_shared(runtime, "filter callback failure") {
+    match TunerServiceRuntime::lock_shared(runtime, "filter callback失敗") {
         Ok(mut runtime) => runtime.finish_callback_delivery_failure_use_case(
             CallbackDeliveryFailureReport::filter(
                 handle.object_id(),
@@ -321,7 +321,7 @@ fn finish_filter_callback_delivery_failure(
         ),
         Err(lock_error) => {
             let primary = maleicacid_tuner_hal2_common::compose_primary_cleanup_failure(
-                "filter callback failure runtime lock",
+                "filter callback失敗時のruntimeロック",
                 primary,
                 lock_error,
             );
@@ -464,7 +464,7 @@ impl FilterEventDispatcher for AidlFilterEventDispatcher {
                 let commit_result =
                     maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::lock_shared(
                         runtime.as_ref(),
-                        "service runtime lock poisoned while committing filter startId delivery",
+                        "filter startId配送の確定中にservice runtimeのロックが汚染されました",
                     )
                     .and_then(|mut runtime| {
                         runtime.commit_filter_start_id_delivery(

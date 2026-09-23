@@ -1195,7 +1195,7 @@ mod tests {
             FrontendWorkerCancelReason::StopRequested,
         );
         assert!(ticket
-            .submit_until_with(std::time::Instant::now(), |_, _| panic!("must not start"))
+            .submit_until_with(std::time::Instant::now(), |_, _| panic!("開始してはいけません"))
             .is_err());
         assert_eq!(
             cancellation.complete(),
@@ -1211,7 +1211,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             ticket.submit_until_with(std::time::Instant::now(), |_, _| panic!(
-                "injected interruption"
+                "中断を注入"
             )),
             Err(HalError::WorkerCleanupFailed {
                 kind: maleicacid_tuner_hal2_common::WorkerCleanupFailureKind::Interrupted
@@ -1248,7 +1248,7 @@ mod tests {
             .submit_until_with(std::time::Instant::now(), |_, _| {
                 Err(HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "spawn failed",
+                    "生成失敗",
                 ))
             })
             .unwrap();
@@ -1633,7 +1633,7 @@ mod tests {
                 frontend_id: 16,
                 kind: FrontendWorkerKind::Tune,
             };
-            let error = HalError::cleanup_failed("backend stop", "device still active");
+            let error = HalError::cleanup_failed("backend停止", "deviceがまだ動作中です");
             registry.slots.insert(
                 key,
                 FrontendWorkerSlot {
@@ -1651,7 +1651,7 @@ mod tests {
             let outcome = if poll {
                 match ticket.try_complete() {
                     FrontendWorkerStopPoll::Completed(outcome) => outcome,
-                    _ => panic!("already completed worker remained pending"),
+                    _ => panic!("完了済みワーカーが保留のままです"),
                 }
             } else {
                 ticket.complete()

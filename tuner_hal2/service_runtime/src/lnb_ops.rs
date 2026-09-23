@@ -123,7 +123,7 @@ fn lock_shared_lnb_runtime(
 ) -> Result<MutexGuard<'_, TunerServiceRuntime>, HalError> {
     TunerServiceRuntime::lock_shared(
         runtime.as_ref(),
-        "service runtime lock poisoned during LNB operation",
+        "LNB操作中にservice runtimeのロックが汚染されました",
     )
 }
 

@@ -85,7 +85,7 @@ impl IFrontend for FrontendAidlObject {
         );
         if let Err(status) = &result {
             log::error!(
-                "IFrontend.tune failed after canonical runtime handling: status={status:?}"
+                "正規runtime処理後にIFrontend.tuneが失敗しました: status={status:?}"
             );
         }
         result
