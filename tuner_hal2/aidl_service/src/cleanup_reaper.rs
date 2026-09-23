@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
-use maleicacid_tuner_hal2_binder_adapter::AidlMethodCall;
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
+use maleicacid_tuner_hal2_domain_request::AidlMethodCall;
 use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
 use maleicacid_tuner_hal2_service_runtime::CapabilitySnapshot;
 

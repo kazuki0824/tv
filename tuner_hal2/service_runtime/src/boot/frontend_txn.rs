@@ -709,61 +709,6 @@ impl<'a> FrontendTxn<'a> {
         runtime.commit_scan_after_fence(generation, reader, fingerprint, candidates)
     }
 
-    pub(crate) fn record_frontend_backend_request_failure_after_fence(
-        &mut self,
-        frontend_id: i32,
-        generation: u64,
-        error: HalError,
-        backend_stopped: bool,
-        step: Option<BackendTuneStep>,
-        diagnostic_primary_error: HalError,
-        rollback_failure: Option<BackendTuneRollbackFailure>,
-    ) -> Result<(), HalError> {
-        let frontend_key = crate::registry::FrontendRuntimeId(frontend_id);
-        let backend = self
-            .runtime
-            .registry
-            .frontend(frontend_key)
-            .map(|entry| entry.backend)
-            .ok_or_else(|| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend registry entry is missing while recording backend request failure",
-                )
-            })?;
-        let runtime = self
-            .runtime
-            .registry
-            .frontend_runtime_mut(frontend_key)
-            .ok_or_else(|| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend runtime is missing while recording backend request failure",
-                )
-            })?;
-        let diagnostic_result = runtime.record_backend_failure_diagnostic_context(
-            generation,
-            backend,
-            step,
-            diagnostic_primary_error,
-            rollback_failure,
-        );
-        let state_result =
-            runtime.record_backend_request_failure_after_fence(generation, error, backend_stopped);
-        match (state_result, diagnostic_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(state_error), Ok(())) => Err(state_error),
-            (Ok(()), Err(diagnostic_error)) => Err(diagnostic_error),
-            (Err(state_error), Err(diagnostic_error)) => {
-                Err(super::compose_primary_cleanup_failure(
-                    "frontend backend request failure state and diagnostic record both failed",
-                    state_error,
-                    diagnostic_error,
-                ))
-            }
-        }
-    }
-
     pub(crate) fn record_frontend_backend_activation_failure_after_commit(
         &mut self,
         frontend_id: i32,

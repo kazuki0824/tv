@@ -217,7 +217,7 @@ impl DvrStatusNotifierSupervisor {
                 DvrStatusNotifierReaperJob {
                     key,
                     handle: AidlObjectHandle::new(
-                        maleicacid_tuner_hal2_binder_adapter::AidlObjectKind::Dvr,
+                        maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
                         AidlObjectId(key.object_id),
                         AidlObjectGeneration(key.generation),
                     ),
@@ -256,7 +256,7 @@ impl DvrStatusNotifierSupervisor {
                     DvrStatusNotifierReaperJob {
                         key,
                         handle: AidlObjectHandle::new(
-                            maleicacid_tuner_hal2_binder_adapter::AidlObjectKind::Dvr,
+                            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Dvr,
                             AidlObjectId(key.object_id),
                             AidlObjectGeneration(key.generation),
                         ),
@@ -1211,7 +1211,7 @@ mod tests {
         RecordStatus::RecordStatus,
     };
     use binder::{BinderFeatures, Interface, StatusCode};
-    use maleicacid_tuner_hal2_binder_adapter::{
+    use maleicacid_tuner_hal2_domain_request::{
         AidlApi, AidlMethodCall, AidlObjectKind, DvrConfigureKind, DvrConfigureRequest,
         DvrDataFormat, DvrOpenKind, OpenDvrRequest,
     };

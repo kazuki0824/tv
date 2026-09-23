@@ -157,7 +157,6 @@ pub enum ServiceState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maleicacid_tuner_hal2_binder_adapter::{AidlApi, AidlMethodCall};
     use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem, HalError};
     use maleicacid_tuner_hal2_demux::{
         FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest, PacketPid, PesSettings,
@@ -169,9 +168,10 @@ mod tests {
         DescramblerKeyToken, DescramblerPid, DescramblerPidClaim, Multi2KeyMaterial,
     };
     use maleicacid_tuner_hal2_domain_request::{
-        AidlObjectGeneration, AidlObjectId, AidlObjectKind, DvrConfigureKind, DvrConfigureRequest,
-        DvrDataFormat, DvrOpenKind, FilterDelayHintKind, FilterDelayHintRequest, OpenDvrRequest,
-        RuntimeExecutableRequest, RuntimeTransactionName, AIDL_TRANSACTION_TABLE,
+        AidlMethodAdapter, AidlMethodCall, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
+        DvrConfigureKind, DvrConfigureRequest, DvrDataFormat, DvrOpenKind, FilterDelayHintKind,
+        FilterDelayHintRequest, OpenDvrRequest, RuntimeExecutableRequest, RuntimeTransactionName,
+        AIDL_TRANSACTION_TABLE,
     };
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
