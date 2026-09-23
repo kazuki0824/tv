@@ -66,6 +66,14 @@ flowchart TD
 
 CAS側の更新・参照・失効と、Tuner再起動時の参照結合破棄の責任主体は`../cas_plugin/DESIGN_JA.md` §11.2を参照する。Tunerの参照cacheをCAS鍵状態の正本や復元元にせず、参照結合の喪失と鍵状態自体の喪失を区別する。
 
+### px4 ISDB-T pending選局のcapture開始接続
+
+PX4 ISDB-Tの`PTX_SET_CHANNEL EAGAIN`後の公開意味、terminal deadline、`LOCKED` / `NO_SIGNAL`、`PTX_START_STREAMING` / `PTX_STOP_STREAMING`の規範順序は`../TUNER_HAL_DESIGN_JA.md`の「px4_drv ロック 方針」を正とし、本節では再定義しない。
+
+実装では`device/src/runtime/backend_worker.rs::FrontendBackendTuneExecutor`が`Px4ChannelApplyResult::PendingUnlocked`を保持し、`BackendTuneOps::defer_streaming_start_until_lock()`を通じて`device/src/runtime/tune_txn.rs::BackendTuneTxn`内の通常のcapture開始を延期する。延期されたcaptureの開始済み状態は同じdevice-open resourceを所有する`FrontendBackendSession`に従属させ、別のpersistent ownerへ複製しない。
+
+pending sessionのcapture開始入口は`FrontendBackendSession::start_streaming_after_lock()`とし、canonical frontend tune / scan workerがqualified lockを確認した後だけ同入口へ接続する。cleanup側は同sessionの開始済み状態を参照して既存の停止・閉鎖入口へ接続し、pending専用の第二worker、第二transaction、第二deadline、別のcapture状態所有者を追加しない。
+
 ### px4 TMCC TSID list device-adaptation境界
 
 px4固有のTMCC TSID readbackは「機器適合」責務に閉じる。ABI mirrorの実装anchorは `device/src/px4/abi.rs::PtxTmccTsidList` / `PTX_GET_TMCC_TSID_LIST`、raw resultのshape検証と `EAGAIN` のtyped pending化は `device/src/px4/tmcc_tsid.rs`、exclusive device-open resourceを再利用するread entryは `device/src/runtime/backend_worker.rs::FrontendBackendSession::observe_tmcc_tsid_list()` とする。公開値、readiness、scan callbackの規範意味は `../TUNER_HAL_DESIGN_JA.md` を正とし、本節で再定義しない。
