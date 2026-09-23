@@ -229,12 +229,12 @@ pub fn build_lnb_satellite_position_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maleicacid_tuner_hal2_domain_request::{AidlMethodAdapter, AidlMethodCall};
     use crate::AIDL_TRANSACTION_TABLE;
     use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
         PlaybackSettings::PlaybackSettings, RecordSettings::RecordSettings,
     };
     use maleicacid_tuner_hal2_common::{FrontendStreamIdKind, FrontendSystem};
+    use maleicacid_tuner_hal2_domain_request::{AidlMethodAdapter, AidlMethodCall};
 
     pub(crate) const AIDL_METHOD_CALL_VARIANT_COUNT_FOR_PLAN_COVERAGE: usize = 46;
 
