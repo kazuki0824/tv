@@ -1007,7 +1007,7 @@ impl FrontendWorkerRegistry {
                     return Err(FrontendWorkerStartError::SpawnFailed {
                         error: HalError::internal(
                             HalInternalKind::InvariantViolation,
-                            "準備済みbackend submitの実行権限が保持されていません",
+                            "準備済みバックエンド投入の実行権限が保持されていません",
                         ),
                     });
                 }
@@ -1378,7 +1378,7 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(1));
         }
-        panic!("準備済みsubmitを引き継いだworkerが完了しませんでした");
+        panic!("準備済み投入を引き継いだワーカーが完了しませんでした");
     }
 
     #[test]
@@ -1467,13 +1467,23 @@ mod tests {
         assert!(cleanup
             .wait_until_finished(Some(std::time::Instant::now() + Duration::from_secs(1)))
             .unwrap());
-        let _ = cleanup.complete();
+        assert!(matches!(
+            cleanup.complete(),
+            FrontendWorkerStopOutcome::Completed {
+                generation: 1,
+                result: Ok(()),
+                ..
+            }
+        ));
         let prepared_cleanup = registry.request_stop_for_join(
             7,
             FrontendWorkerKind::Tune,
             FrontendWorkerCancelReason::StopRequested,
         );
-        let _ = prepared_cleanup.complete();
+        assert_eq!(
+            prepared_cleanup.complete(),
+            FrontendWorkerStopOutcome::NotRunning
+        );
         assert!(!registry.has_cleanup_obligations());
     }
 
