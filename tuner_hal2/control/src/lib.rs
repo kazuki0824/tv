@@ -1772,6 +1772,93 @@ impl FmqDeliveryTxn {
 
 #[cfg(test)]
 mod tests {
+    impl super::WorkerRuntimeSupervisorActiveEntry for () {
+        fn supervisor_is_finished(&self) -> bool {
+            true
+        }
+
+        fn supervisor_request_stop(&self) {}
+    }
+
+    impl super::WorkerRuntimeSupervisorReapingEntry<u32, ()> for () {
+        type DeadlineTarget = ();
+
+        fn from_terminal(_key: u32, _active: ()) -> Self {}
+
+        fn from_stop(_key: u32, _active: ()) -> Self {}
+
+        fn from_reset(_key: u32, _active: ()) -> Self {}
+
+        fn supervisor_is_finished(&self) -> bool {
+            true
+        }
+
+        fn supervisor_set_restart_requested(&mut self, _requested: bool) {}
+
+        fn supervisor_deadline_reported(&self) -> bool {
+            false
+        }
+
+        fn supervisor_mark_deadline_reported(&mut self) {}
+
+        fn supervisor_transferred_at(&self) -> std::time::Instant {
+            std::time::Instant::now()
+        }
+
+        fn supervisor_deadline_target(&self) -> Self::DeadlineTarget {}
+    }
+
+    fn supervisor_start_permit(
+        supervisor: &super::WorkerRuntimeSupervisor<u32, (), ()>,
+        key: u32,
+    ) -> super::WorkerRuntimeSupervisorStartPermit<u32> {
+        match supervisor.prepare_start(key).unwrap() {
+            super::WorkerRuntimeSupervisorStartPreparation::Vacant(permit) => permit,
+            _ => panic!("開始予約を取得できませんでした"),
+        }
+    }
+
+    #[test]
+    fn stale_supervisor_start_permit_cannot_commit_new_reservation() {
+        let supervisor =
+            super::WorkerRuntime::supervisor::<u32, (), ()>(2, std::time::Duration::from_secs(1));
+        let first = supervisor_start_permit(&supervisor, 7);
+        let replacement = supervisor_start_permit(&supervisor, 7);
+        assert!(supervisor.begin_start(first).is_err());
+        let execution = supervisor.begin_start(replacement).unwrap();
+        supervisor.commit_start(execution, ()).unwrap();
+    }
+
+    #[test]
+    fn lost_ready_supervisor_start_permit_can_be_reissued() {
+        let supervisor =
+            super::WorkerRuntime::supervisor::<u32, (), ()>(2, std::time::Duration::from_secs(1));
+        let first = supervisor_start_permit(&supervisor, 8);
+        drop(first);
+        let second = supervisor_start_permit(&supervisor, 8);
+        std::mem::forget(second);
+        let replacement = supervisor_start_permit(&supervisor, 8);
+        let execution = supervisor.begin_start(replacement).unwrap();
+        supervisor.commit_start(execution, ()).unwrap();
+    }
+
+    #[test]
+    fn stop_during_started_reservation_commits_worker_to_reaping() {
+        let supervisor =
+            super::WorkerRuntime::supervisor::<u32, (), ()>(2, std::time::Duration::from_secs(1));
+        let permit = supervisor_start_permit(&supervisor, 9);
+        let execution = supervisor.begin_start(permit).unwrap();
+        assert_eq!(
+            supervisor.request_supervised_stop(9).unwrap(),
+            super::WorkerRuntimeSupervisorStopDisposition::ReapingPending
+        );
+        supervisor.commit_start(execution, ()).unwrap();
+        assert!(matches!(
+            supervisor.take_supervisor_action().unwrap().0,
+            Some(super::WorkerRuntimeSupervisorAction::Completed(()))
+        ));
+    }
+
 
     #[test]
     fn supervisor_state_poison_is_not_worker_slot_poison() {
