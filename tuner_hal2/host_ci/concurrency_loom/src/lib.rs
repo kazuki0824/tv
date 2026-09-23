@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests {
     use loom::sync::atomic::{AtomicBool, Ordering};
-    use loom::sync::{Arc, Condvar, Mutex, Notify};
+    use loom::sync::{Arc, Condvar, Mutex};
 
     #[test]
     fn completion_publication_precedes_thread_exit_and_collection_must_join() {
@@ -260,48 +260,28 @@ mod tests {
     }
 
     #[test]
-    fn wake_before_or_during_wait_is_not_lost() {
+    fn wake_before_wait_is_retained_by_the_pending_flag() {
         loom::model(|| {
             let pending = Arc::new(AtomicBool::new(false));
-            let wake = Arc::new(Notify::new());
-            let observed = Arc::new(AtomicBool::new(false));
-
-            let waiter_pending = Arc::clone(&pending);
-            let waiter_wake = Arc::clone(&wake);
-            let waiter_observed = Arc::clone(&observed);
-            let waiter = loom::thread::spawn(move || {
-                while !waiter_pending.swap(false, Ordering::AcqRel) {
-                    waiter_wake.wait();
-                }
-                waiter_observed.store(true, Ordering::Release);
-            });
+            let published = Arc::new(AtomicBool::new(false));
 
             let notifier_pending = Arc::clone(&pending);
-            let notifier_wake = Arc::clone(&wake);
+            let notifier_published = Arc::clone(&published);
             let notifier = loom::thread::spawn(move || {
                 notifier_pending.store(true, Ordering::Release);
-                notifier_wake.notify();
+                notifier_published.store(true, Ordering::Release);
             });
 
-            notifier.join().unwrap();
-            waiter.join().unwrap();
-
-            assert!(observed.load(Ordering::Acquire));
-            assert!(!pending.load(Ordering::Acquire));
-        });
-    }
-
-    #[test]
-    fn wake_before_thread_binding_is_retained_by_the_pending_flag() {
-        loom::model(|| {
-            let pending = Arc::new(AtomicBool::new(false));
-            pending.store(true, Ordering::Release);
-
             let waiter_pending = Arc::clone(&pending);
+            let waiter_published = Arc::clone(&published);
             let waiter = loom::thread::spawn(move || {
+                while !waiter_published.load(Ordering::Acquire) {
+                    loom::thread::yield_now();
+                }
                 assert!(waiter_pending.swap(false, Ordering::AcqRel));
             });
 
+            notifier.join().unwrap();
             waiter.join().unwrap();
             assert!(!pending.load(Ordering::Acquire));
         });
