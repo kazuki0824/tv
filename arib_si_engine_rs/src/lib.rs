@@ -1471,14 +1471,15 @@ fn snapshot_pmt_pids_for_section_filters_json(handle: jlong) -> Result<String, S
     let Some(parser) = parser else {
         return Err(SiJniFailureReason::InvalidHandle.failure(handle));
     };
-    match parser.lock() {
+    let result = match parser.lock() {
         Ok(guard) => serde_json::to_string(&guard.collector.pmt_pids_for_section_filters())
             .map_err(|error| SiJniFailureReason::JsonEncoding.failure(error)),
         Err(_) => {
             record_si_mutex_poison(SI_PARSER_LOCK_NAME);
             Err(SiJniFailureReason::ParserPoisoned.failure(SI_PARSER_LOCK_NAME))
         }
-    }
+    };
+    result
 }
 
 fn snapshot_bulk_json(handle: jlong) -> Result<String, SiJniFailure> {
