@@ -120,7 +120,7 @@ fn allocate_playback_queue_identity() -> Result<u64, QueueRuntimeError> {
     loop {
         let next = current
             .checked_add(1)
-            .ok_or_else(|| protocol_error("playback queue identity exhausted"))?;
+            .ok_or_else(|| protocol_error("再生キュー識別子を発行できません"))?;
         match NEXT_PLAYBACK_QUEUE_IDENTITY.compare_exchange_weak(
             current,
             next,
@@ -169,7 +169,7 @@ impl QueueEpochProtocol {
             Err(_) => {
                 // poisonを解除せず、以後の全受付で既存の型付きlock失敗を返す。
                 eprintln!(
-                    "DVR queue epoch未消費権限の破棄: queue={:?}, lock poison",
+                    "DVRキューエポックの未消費権限を破棄しました: queue={:?}, ロック汚染",
                     self.queue_identity
                 );
             }
@@ -192,19 +192,19 @@ pub(crate) struct QueueEpochToken {
 impl QueueEpochToken {
     fn release(&mut self) -> Result<QueueEpochState, QueueRuntimeError> {
         if !self.active {
-            return Err(protocol_error("DVR queue transaction was already consumed"));
+            return Err(protocol_error("DVRキューのトランザクションは既に消費されています"));
         }
         let mut state = self.protocol.state.lock().map_err(epoch_poison)?;
         if self.protocol.queue_identity != self.queue_identity || state.epoch != self.epoch {
             return Err(protocol_error(
-                "DVR queue transaction identity or epoch changed before release",
+                "解放前にDVRキューの識別子またはエポックが変化しました",
             ));
         }
         let protocol_state = state.state;
         state.admitted_transaction_count = state
             .admitted_transaction_count
             .checked_sub(1)
-            .ok_or_else(|| protocol_error("DVR queue transaction count underflow"))?;
+            .ok_or_else(|| protocol_error("DVRキューのトランザクション数が下限を下回りました"))?;
         self.active = false;
         if state.admitted_transaction_count == 0 {
             self.protocol.drained.notify_all();
@@ -215,7 +215,7 @@ impl QueueEpochToken {
     pub(crate) fn commit(mut self) -> Result<(), QueueRuntimeError> {
         if self.reserved_bytes == 0 {
             return Err(protocol_error(
-                "DVR queue transaction has an empty reservation",
+                "DVRキューの予約サイズが0です",
             ));
         }
         let protocol_state = match self.direction {
@@ -223,7 +223,7 @@ impl QueueEpochToken {
         };
         if protocol_state == QueueEpochState::Closed {
             Err(protocol_error(
-                "DVR queue transaction was closed before commit",
+                "確定前にDVRキューが閉じられました",
             ))
         } else {
             Ok(())
@@ -237,12 +237,12 @@ impl QueueEpochToken {
     pub(crate) fn playback_coordinates(&self) -> Result<(u64, u64), QueueRuntimeError> {
         if !self.active || self.direction != QueueTransactionDirection::Read {
             return Err(protocol_error(
-                "playback coordinates require an active DVR read transaction",
+                "再生位置の取得には有効なDVR読み取りトランザクションが必要です",
             ));
         }
         let queue_identity = self
             .queue_identity
-            .ok_or_else(|| protocol_error("DVR queue is not a playback queue"))?;
+            .ok_or_else(|| protocol_error("DVRキューは再生用ではありません"))?;
         Ok((queue_identity, self.epoch))
     }
 }
@@ -273,7 +273,7 @@ impl QueueEpochDrainTxn {
         let mut state = self.protocol.state.lock().map_err(epoch_poison)?;
         if state.state != QueueEpochState::Draining || state.epoch != self.epoch {
             return Err(protocol_error(
-                "DVR queue drain state changed before rollback",
+                "巻き戻し前にDVRキュー排出状態が変化しました",
             ));
         }
         state.state = QueueEpochState::Open;
@@ -413,17 +413,17 @@ impl QueueRuntime {
         let capacity_bytes = usize::try_from(buffer_size).map_err(|_| {
             QueueRuntimeError::new(
                 QueueRuntimeErrorKind::InvalidCapacity,
-                "queue buffer size must be positive",
+                "キューバッファーサイズは正数である必要があります",
             )
         })?;
         if capacity_bytes == 0 {
             return Err(QueueRuntimeError::new(
                 QueueRuntimeErrorKind::InvalidCapacity,
-                "queue buffer size must be positive",
+                "キューバッファーサイズは正数である必要があります",
             ));
         }
         let queue = FmqQueue::create(capacity_bytes, configure_event_flag)
-            .map_err(|err| map_create_error(err, "FMQ create failed"))?;
+            .map_err(|err| map_create_error(err, "FMQの作成に失敗しました"))?;
         let playback_backing = playback
             .then(allocate_playback_queue_identity)
             .transpose()?
@@ -466,7 +466,7 @@ impl QueueRuntime {
         let result = self
             .queue
             .clear()
-            .map_err(|err| map_data_path_error(err, "FMQ clear failed"));
+            .map_err(|err| map_data_path_error(err, "FMQの消去に失敗しました"));
         if result.is_ok() {
             self.wake_pending.store(false, Ordering::Release);
         }
@@ -563,21 +563,21 @@ impl QueueRuntime {
     ) -> Result<QueueEpochToken, QueueRuntimeError> {
         if reserved_bytes == 0 {
             return Err(protocol_error(
-                "DVR queue transaction reservation must be positive",
+                "DVRキューの予約サイズは正数である必要があります",
             ));
         }
         let protocol = self
             .dvr_epoch
             .as_ref()
-            .ok_or_else(|| protocol_error("DVR queue epoch protocol is not installed"))?;
+            .ok_or_else(|| protocol_error("DVRキューのエポック制御が設定されていません"))?;
         let mut state = protocol.state.lock().map_err(epoch_poison)?;
         if state.state != QueueEpochState::Open {
-            return Err(protocol_error("DVR queue epoch is draining or closed"));
+            return Err(protocol_error("DVRキューは排出中または閉鎖済みです"));
         }
         state.admitted_transaction_count = state
             .admitted_transaction_count
             .checked_add(1)
-            .ok_or_else(|| protocol_error("DVR queue transaction count overflow"))?;
+            .ok_or_else(|| protocol_error("DVRキューのトランザクション数が上限を超えました"))?;
         Ok(QueueEpochToken {
             protocol: Arc::clone(protocol),
             queue_identity: protocol.queue_identity,
@@ -606,15 +606,15 @@ impl QueueRuntime {
         let protocol = self
             .dvr_epoch
             .as_ref()
-            .ok_or_else(|| protocol_error("DVR queue epoch protocol is not installed"))?;
+            .ok_or_else(|| protocol_error("DVRキューのエポック制御が設定されていません"))?;
         let mut state = protocol.state.lock().map_err(epoch_poison)?;
         if state.state != QueueEpochState::Open {
-            return Err(protocol_error("DVR queue epoch is not open"));
+            return Err(protocol_error("DVRキューのエポックが開いていません"));
         }
         let next_epoch = state
             .epoch
             .checked_add(1)
-            .ok_or_else(|| protocol_error("DVR queue epoch exhausted"))?;
+            .ok_or_else(|| protocol_error("DVRキューのエポックを更新できません"))?;
         state.state = QueueEpochState::Draining;
         while state.admitted_transaction_count != 0 {
             state = protocol
@@ -623,7 +623,7 @@ impl QueueRuntime {
                 .map_err(epoch_poison)?;
             if state.state != QueueEpochState::Draining {
                 return Err(protocol_error(
-                    "DVR queue epoch left draining state while waiting",
+                    "待機中にDVRキューが排出状態を離れました",
                 ));
             }
         }
@@ -640,11 +640,11 @@ impl QueueRuntime {
             .playback_backing
             .as_ref()
             .map(|backing| backing.queue_identity)
-            .ok_or_else(|| protocol_error("DVR queue is not a playback queue"))?;
+            .ok_or_else(|| protocol_error("DVRキューは再生用ではありません"))?;
         let protocol = self
             .dvr_epoch
             .as_ref()
-            .ok_or_else(|| protocol_error("DVR queue epoch protocol is not installed"))?;
+            .ok_or_else(|| protocol_error("DVRキューのエポック制御が設定されていません"))?;
         let state = protocol.state.lock().map_err(epoch_poison)?;
         Ok((queue_identity, state.epoch))
     }
@@ -653,7 +653,7 @@ impl QueueRuntime {
         let protocol = self
             .dvr_epoch
             .as_ref()
-            .ok_or_else(|| protocol_error("DVR queue epoch protocol is not installed"))?;
+            .ok_or_else(|| protocol_error("DVRキューのエポック制御が設定されていません"))?;
         let mut state = protocol.state.lock().map_err(epoch_poison)?;
         state.state = QueueEpochState::Closed;
         protocol.drained.notify_all();
@@ -663,13 +663,13 @@ impl QueueRuntime {
     pub fn available_to_read(&self) -> Result<usize, QueueRuntimeError> {
         self.queue
             .available_to_read_result()
-            .map_err(|err| map_data_path_error(err, "FMQ available_to_read failed"))
+            .map_err(|err| map_data_path_error(err, "FMQのavailable_to_readに失敗しました"))
     }
 
     pub fn available_to_write(&self) -> Result<usize, QueueRuntimeError> {
         self.queue
             .available_to_write_result()
-            .map_err(|err| map_data_path_error(err, "FMQ available_to_write failed"))
+            .map_err(|err| map_data_path_error(err, "FMQのavailable_to_writeに失敗しました"))
     }
 
     pub(crate) fn availability_snapshot(
@@ -678,12 +678,12 @@ impl QueueRuntime {
         let readable_bytes = self
             .queue
             .current_fill()
-            .map_err(|err| map_data_path_error(err, "FMQ fill snapshot failed"))?;
+            .map_err(|err| map_data_path_error(err, "FMQの充填量取得に失敗しました"))?;
         let writable_bytes = self
             .capacity_bytes
             .checked_sub(readable_bytes)
             .ok_or_else(|| {
-                protocol_error("FMQ fill snapshot exceeds the configured queue capacity")
+                protocol_error("FMQの充填量が設定済みキュー容量を超えています")
             })?;
         Ok(QueueAvailabilitySnapshot {
             readable_bytes,
@@ -694,20 +694,20 @@ impl QueueRuntime {
     pub fn read_into(&self, data: &mut [u8]) -> Result<usize, QueueRuntimeError> {
         self.queue
             .read_into(data)
-            .map_err(|err| map_data_path_error(err, "FMQ read failed"))
+            .map_err(|err| map_data_path_error(err, "FMQの読み取りに失敗しました"))
     }
 
     pub fn write_checked(&self, data: &[u8]) -> Result<usize, QueueRuntimeError> {
         self.queue
             .write_checked(data)
-            .map_err(|err| map_data_path_error(err, "FMQ write failed"))
+            .map_err(|err| map_data_path_error(err, "FMQの書き込みに失敗しました"))
     }
 
     pub fn wake(&self, event_mask: u32) -> Result<(), QueueRuntimeError> {
         let result = self
             .queue
             .wake(event_mask)
-            .map_err(|err| map_data_path_error(err, "FMQ wake failed"));
+            .map_err(|err| map_data_path_error(err, "FMQの起床通知に失敗しました"));
         self.wake_pending.store(result.is_err(), Ordering::Release);
         result
     }
@@ -729,12 +729,12 @@ impl QueueRuntime {
 fn export_queue_descriptor(queue: &FmqQueue) -> Result<QueueDescriptorSnapshot, QueueRuntimeError> {
     let grantor_count = queue
         .grantor_count_result()
-        .map_err(|err| map_export_error(err, "FMQ grantor count export failed"))?;
+        .map_err(|err| map_export_error(err, "FMQ grantor数の出力に失敗しました"))?;
     let mut grantors = Vec::with_capacity(grantor_count);
     for index in 0..grantor_count {
         let (fd_index, offset, extent) = queue
             .grantor_at_result(index)
-            .map_err(|err| map_export_error(err, "FMQ grantor export failed"))?;
+            .map_err(|err| map_export_error(err, "FMQ grantorの出力に失敗しました"))?;
         grantors.push(QueueGrantorDescriptorSnapshot {
             fd_index,
             offset,
@@ -744,27 +744,27 @@ fn export_queue_descriptor(queue: &FmqQueue) -> Result<QueueDescriptorSnapshot, 
 
     let fd_count = queue
         .fd_count_result()
-        .map_err(|err| map_export_error(err, "FMQ fd count export failed"))?;
+        .map_err(|err| map_export_error(err, "FMQ fd数の出力に失敗しました"))?;
     let mut fds = Vec::with_capacity(fd_count);
     let mut fd_sizes = Vec::with_capacity(fd_count);
     for index in 0..fd_count {
         let fd = queue
             .dup_fd_at_result(index)
-            .map_err(|err| map_export_error(err, "FMQ fd export failed"))?;
+            .map_err(|err| map_export_error(err, "FMQ fdの出力に失敗しました"))?;
         let file = unsafe { File::from_raw_fd(fd) };
         let fd_size_u64 = file
             .metadata()
             .map_err(|_| {
                 QueueRuntimeError::new(
                     QueueRuntimeErrorKind::StructuralDescriptor,
-                    "FMQ descriptor fd metadata failed",
+                    "FMQ descriptor fdのメタデータ取得に失敗しました",
                 )
             })?
             .len();
         let fd_size = i64::try_from(fd_size_u64).map_err(|_| {
             QueueRuntimeError::new(
                 QueueRuntimeErrorKind::StructuralDescriptor,
-                "FMQ descriptor fd size overflow",
+                "FMQ descriptor fdのサイズが上限を超えました",
             )
         })?;
         fd_sizes.push(fd_size);
@@ -773,11 +773,11 @@ fn export_queue_descriptor(queue: &FmqQueue) -> Result<QueueDescriptorSnapshot, 
 
     let int_count = queue
         .int_count_result()
-        .map_err(|err| map_export_error(err, "FMQ int count export failed"))?;
+        .map_err(|err| map_export_error(err, "FMQ int数の出力に失敗しました"))?;
     if int_count > 4 {
         return Err(QueueRuntimeError::new(
             QueueRuntimeErrorKind::StructuralDescriptor,
-            "FMQ descriptor int count is invalid",
+            "FMQ descriptorのint数が不正です",
         ));
     }
     let mut ints = Vec::with_capacity(int_count);
@@ -785,7 +785,7 @@ fn export_queue_descriptor(queue: &FmqQueue) -> Result<QueueDescriptorSnapshot, 
         ints.push(
             queue
                 .int_at_result(index)
-                .map_err(|err| map_export_error(err, "FMQ int export failed"))?,
+                .map_err(|err| map_export_error(err, "FMQ intの出力に失敗しました"))?,
         );
     }
 
@@ -793,16 +793,16 @@ fn export_queue_descriptor(queue: &FmqQueue) -> Result<QueueDescriptorSnapshot, 
 
     let quantum = queue
         .quantum_result()
-        .map_err(|err| map_export_error(err, "FMQ quantum export failed"))?;
+        .map_err(|err| map_export_error(err, "FMQ quantumの出力に失敗しました"))?;
     if quantum <= 0 {
         return Err(QueueRuntimeError::new(
             QueueRuntimeErrorKind::StructuralDescriptor,
-            "FMQ descriptor quantum is invalid",
+            "FMQ descriptorのquantumが不正です",
         ));
     }
     let flags = queue
         .flags_result()
-        .map_err(|err| map_export_error(err, "FMQ flags export failed"))?;
+        .map_err(|err| map_export_error(err, "FMQ flagsの出力に失敗しました"))?;
 
     Ok(QueueDescriptorSnapshot {
         grantors,
@@ -821,26 +821,26 @@ fn validate_grantor_ranges_against_fd_sizes(
         if grantor.fd_index < 0 || grantor.fd_index as usize >= fd_sizes.len() {
             return Err(QueueRuntimeError::new(
                 QueueRuntimeErrorKind::StructuralDescriptor,
-                "FMQ descriptor grantor fd index is out of range",
+                "FMQ descriptorのgrantor fd indexが範囲外です",
             ));
         }
         if grantor.offset < 0 || grantor.extent <= 0 {
             return Err(QueueRuntimeError::new(
                 QueueRuntimeErrorKind::StructuralDescriptor,
-                "FMQ descriptor grantor range is invalid",
+                "FMQ descriptorのgrantor範囲が不正です",
             ));
         }
         let Some(end) = i64::from(grantor.offset).checked_add(grantor.extent) else {
             return Err(QueueRuntimeError::new(
                 QueueRuntimeErrorKind::StructuralDescriptor,
-                "FMQ descriptor grantor range overflowed",
+                "FMQ descriptorのgrantor範囲が上限を超えました",
             ));
         };
         let fd_size = fd_sizes[grantor.fd_index as usize];
         if fd_size > 0 && end > fd_size {
             return Err(QueueRuntimeError::new(
                 QueueRuntimeErrorKind::StructuralDescriptor,
-                "FMQ descriptor grantor range exceeds fd size",
+                "FMQ descriptorのgrantor範囲がfdサイズを超えています",
             ));
         }
     }
@@ -987,7 +987,7 @@ pub(crate) enum FilterDrainBoundary {
 }
 
 #[derive(Debug)]
-#[must_use = "producer permit must be committed so release failures remain observable"]
+#[must_use = "解放失敗を観測できるよう、producer permitを明示的に確定してください"]
 pub(crate) struct FilterProducerPermit {
     inner: Arc<GateInner>,
     delivery_generation: u64,
@@ -995,7 +995,7 @@ pub(crate) struct FilterProducerPermit {
 }
 
 #[derive(Debug)]
-#[must_use = "drain transaction must be committed so rollback failures remain observable"]
+#[must_use = "巻き戻し失敗を観測できるよう、排出トランザクションを明示的に確定してください"]
 pub(crate) struct FilterDrainTxn {
     inner: Arc<GateInner>,
     boundary: FilterDrainBoundary,
@@ -1014,13 +1014,13 @@ impl FilterProducerDrainGate {
     pub(crate) fn new(pending_event_capacity: usize) -> Result<Self, QueueRuntimeError> {
         if pending_event_capacity == 0 {
             return Err(gate_error(
-                "filter producer gate pending event capacity must be positive",
+                "filter producer gateの保留イベント容量は正数である必要があります",
             ));
         }
         let mut pending_events = VecDeque::new();
         pending_events
             .try_reserve_exact(pending_event_capacity)
-            .map_err(|_| gate_error("filter producer gate pending event reservation failed"))?;
+            .map_err(|_| gate_error("filter producer gateの保留イベント領域を確保できません"))?;
         Ok(Self {
             inner: Arc::new(GateInner {
                 data: Mutex::new(GateData {
@@ -1051,12 +1051,12 @@ impl FilterProducerDrainGate {
         self.inner.check_cleanup()?;
         let mut data = self.inner.lock_data()?;
         if data.state != GateState::Open {
-            return Err(gate_error("filter producer gate is draining or closed"));
+            return Err(gate_error("filter producer gateは排出中または閉鎖済みです"));
         }
         data.admitted_producer_count = data
             .admitted_producer_count
             .checked_add(1)
-            .ok_or_else(|| gate_error("filter producer permit count overflow"))?;
+            .ok_or_else(|| gate_error("filter producer permit数が上限を超えました"))?;
         Ok(FilterProducerPermit {
             inner: Arc::clone(&self.inner),
             delivery_generation: data.filter_delivery_generation,
@@ -1071,18 +1071,18 @@ impl FilterProducerDrainGate {
         self.inner.check_cleanup()?;
         let mut data = self.inner.lock_data()?;
         if data.state != GateState::Open {
-            return Err(gate_error("filter producer gate is not open"));
+            return Err(gate_error("filter producer gateが開いていません"));
         }
         let next_parser_generation = data
             .parser_state_generation
             .checked_add(1)
-            .ok_or_else(|| gate_error("filter parser generation exhausted"))?;
+            .ok_or_else(|| gate_error("filter parserの世代を発行できません"))?;
         let next_delivery_generation = match boundary {
             FilterDrainBoundary::Flush => data.filter_delivery_generation,
             FilterDrainBoundary::Reconfigure => data
                 .filter_delivery_generation
                 .checked_add(1)
-                .ok_or_else(|| gate_error("filter delivery generation exhausted"))?,
+                .ok_or_else(|| gate_error("filter配送の世代を発行できません"))?,
         };
         data.state = GateState::Draining;
         while data.admitted_producer_count != 0 {
@@ -1093,7 +1093,7 @@ impl FilterProducerDrainGate {
                 .map_err(|_| self.inner.data_lock_poison())?;
             if data.state != GateState::Draining {
                 return Err(gate_error(
-                    "filter producer gate left draining state while waiting",
+                    "待機中にfilter producer gateが排出状態を離れました",
                 ));
             }
         }
@@ -1117,7 +1117,7 @@ impl FilterProducerDrainGate {
             GateState::Open => Ok(data.pending_events.drain(..).collect()),
             GateState::Draining => Ok(Vec::new()),
             GateState::Closed => Err(gate_error(
-                "filter producer gate is closed while taking events",
+                "イベント取得中にfilter producer gateが閉じられました",
             )),
         }
     }
@@ -1136,13 +1136,13 @@ impl FilterProducerPermit {
     pub(crate) fn record_output_byte_offset(&self) -> Result<u64, QueueRuntimeError> {
         self.inner.check_cleanup()?;
         if !self.active {
-            return Err(gate_error("filter producer permit was already consumed"));
+            return Err(gate_error("filter producer permitは既に消費されています"));
         }
         let data = self.inner.lock_data()?;
         if data.state == GateState::Closed
             || data.filter_delivery_generation != self.delivery_generation
         {
-            return Err(gate_error("filter producer permit is stale"));
+            return Err(gate_error("filter producer permitは失効しています"));
         }
         Ok(data.record_output_byte_offset)
     }
@@ -1154,18 +1154,18 @@ impl FilterProducerPermit {
     ) -> Result<(), QueueRuntimeError> {
         self.inner.check_cleanup()?;
         if !self.active || committed_bytes == 0 {
-            return Err(gate_error("record output commit is invalid"));
+            return Err(gate_error("録画出力の確定内容が不正です"));
         }
         let committed_bytes = u64::try_from(committed_bytes)
-            .map_err(|_| gate_error("record output byte count is out of range"))?;
+            .map_err(|_| gate_error("録画出力のバイト数が範囲外です"))?;
         let mut data = self.inner.lock_data()?;
         if data.filter_delivery_generation != self.delivery_generation {
-            return Err(gate_error("filter producer permit generation changed"));
+            return Err(gate_error("filter producer permitの世代が変化しました"));
         }
         let next_offset = data
             .record_output_byte_offset
             .checked_add(committed_bytes)
-            .ok_or_else(|| gate_error("record output byte offset exhausted"))?;
+            .ok_or_else(|| gate_error("録画出力のバイト位置を更新できません"))?;
         let event_queue_full =
             event.is_some() && data.pending_events.len() >= data.pending_event_capacity;
         data.record_output_byte_offset = next_offset;
@@ -1178,16 +1178,16 @@ impl FilterProducerPermit {
         data.admitted_producer_count = data
             .admitted_producer_count
             .checked_sub(1)
-            .ok_or_else(|| gate_error("filter producer permit count underflow"))?;
+            .ok_or_else(|| gate_error("filter producer permit数が下限を下回りました"))?;
         self.active = false;
         if data.admitted_producer_count == 0 {
             self.inner.drained.notify_all();
         }
         if event_queue_full {
-            Err(gate_error("filter producer pending event queue is full"))
+            Err(gate_error("filter producerの保留イベントキューが満杯です"))
         } else if gate_state == GateState::Closed {
             Err(gate_error(
-                "filter producer gate closed before record output commit",
+                "録画出力の確定前にfilter producer gateが閉じられました",
             ))
         } else {
             Ok(())
@@ -1200,16 +1200,16 @@ impl FilterProducerPermit {
     ) -> Result<(), QueueRuntimeError> {
         self.inner.check_cleanup()?;
         if !self.active {
-            return Err(gate_error("filter producer permit was already consumed"));
+            return Err(gate_error("filter producer permitは既に消費されています"));
         }
         let mut data = self.inner.lock_data()?;
         if data.state == GateState::Closed
             || data.filter_delivery_generation != self.delivery_generation
         {
-            return Err(gate_error("filter producer permit is stale"));
+            return Err(gate_error("filter producer permitは失効しています"));
         }
         if data.pending_events.len() >= data.pending_event_capacity {
-            return Err(gate_error("filter producer pending event queue is full"));
+            return Err(gate_error("filter producerの保留イベントキューが満杯です"));
         }
         data.pending_events.push_back(event);
         Ok(())
@@ -1218,17 +1218,17 @@ impl FilterProducerPermit {
     fn release(&mut self) -> Result<GateState, QueueRuntimeError> {
         self.inner.check_cleanup()?;
         if !self.active {
-            return Err(gate_error("filter producer permit was already consumed"));
+            return Err(gate_error("filter producer permitは既に消費されています"));
         }
         let mut data = self.inner.lock_data()?;
         if data.filter_delivery_generation != self.delivery_generation {
-            return Err(gate_error("filter producer permit generation changed"));
+            return Err(gate_error("filter producer permitの世代が変化しました"));
         }
         let gate_state = data.state;
         data.admitted_producer_count = data
             .admitted_producer_count
             .checked_sub(1)
-            .ok_or_else(|| gate_error("filter producer permit count underflow"))?;
+            .ok_or_else(|| gate_error("filter producer permit数が下限を下回りました"))?;
         self.active = false;
         if data.admitted_producer_count == 0 {
             self.inner.drained.notify_all();
@@ -1239,7 +1239,7 @@ impl FilterProducerPermit {
     pub(crate) fn commit(mut self) -> Result<(), QueueRuntimeError> {
         self.inner.check_cleanup()?;
         if self.release()? == GateState::Closed {
-            Err(gate_error("filter producer gate closed before commit"))
+            Err(gate_error("確定前にfilter producer gateが閉じられました"))
         } else {
             Ok(())
         }
@@ -1277,7 +1277,7 @@ impl FilterDrainTxn {
     ) -> Result<Vec<PipelineGeneratedEvent>, QueueRuntimeError> {
         self.inner.check_cleanup()?;
         if !self.active {
-            return Err(gate_error("filter producer drain was already consumed"));
+            return Err(gate_error("filter producerの排出権限は既に消費されています"));
         }
         let mut data = self.inner.lock_data()?;
         if data.state != GateState::Draining
@@ -1286,7 +1286,7 @@ impl FilterDrainTxn {
             || data.admitted_producer_count != 0
         {
             return Err(gate_error(
-                "filter producer drain state changed before draining events",
+                "イベント排出前にfilter producerの状態が変化しました",
             ));
         }
         Ok(data.pending_events.drain(..).collect())
@@ -1301,7 +1301,7 @@ impl FilterDrainTxn {
             || data.admitted_producer_count != 0
         {
             return Err(gate_error(
-                "filter producer drain state changed before commit",
+                "確定前にfilter producerの排出状態が変化しました",
             ));
         }
         match self.boundary {
@@ -1328,7 +1328,7 @@ impl FilterDrainTxn {
             || data.admitted_producer_count != 0
         {
             return Err(gate_error(
-                "filter producer drain state changed before commit",
+                "確定前にfilter producerの排出状態が変化しました",
             ));
         }
         let pending_events = data.pending_events.drain(..).collect();

@@ -1057,15 +1057,15 @@ impl AidlCallbackStoreError {
             Self::Poisoned(poison) => HalError::LockPoisoned(poison),
             Self::PreparedArtifactInFlight => HalError::internal(
                 HalInternalKind::InvariantViolation,
-                format!("{context}: callback registration is already in flight"),
+                format!("{context}: callback登録は既に進行中です"),
             ),
             Self::PreparedArtifactAuthorityMismatch => HalError::internal(
                 HalInternalKind::InvariantViolation,
-                format!("{context}: prepared callback artifact authority is stale or missing"),
+                format!("{context}: 準備済みcallback artifact権限が失効しているか、見つかりません"),
             ),
             Self::PreparedTokenExhausted => HalError::internal(
                 HalInternalKind::InvariantViolation,
-                format!("{context}: prepared callback artifact token exhausted"),
+                format!("{context}: 準備済みcallback artifact tokenを発行できません"),
             ),
         }
     }

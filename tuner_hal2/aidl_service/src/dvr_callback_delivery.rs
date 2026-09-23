@@ -400,7 +400,7 @@ fn dvr_status_notification_preflight(
             context,
             handle,
             dvr_phase,
-            HalError::callback_failed(delivery_context, "DVR callback is not registered"),
+            HalError::callback_failed(delivery_context, "DVR callbackが登録されていません"),
         );
         return Ok(DvrStatusNotificationPreflight::CallbackMissing);
     }
@@ -410,7 +410,7 @@ fn dvr_status_notification_preflight(
             handle,
             CallbackDeliveryFailurePhase::RuntimePolicySkip,
             dvr_phase,
-            HalError::callback_failed(delivery_context, "DVR callback is unhealthy"),
+            HalError::callback_failed(delivery_context, "DVR callbackは利用できない状態です"),
         );
         return Ok(DvrStatusNotificationPreflight::CallbackUnhealthy);
     }
@@ -420,7 +420,7 @@ fn dvr_status_notification_preflight(
             handle,
             CallbackDeliveryFailurePhase::RuntimePolicySkip,
             dvr_phase,
-            HalError::callback_failed(delivery_context, "DVR status reporting is disabled"),
+            HalError::callback_failed(delivery_context, "DVR状態通知は無効です"),
         );
         return Ok(DvrStatusNotificationPreflight::StatusReportingDisabled);
     }
@@ -441,7 +441,7 @@ fn dvr_callback_notifier_availability(
                 DvrPostCommitNotificationPhase::StatusNotifierStart,
                 HalError::callback_failed(
                     "IDvrCallback.notifier_preflight",
-                    "DVR callback artifact missing before notifier start",
+                    "notifier起動前にDVR callback artifactが見つかりません",
                 ),
             );
             Ok(DvrCallbackNotifierAvailability::Unavailable)
@@ -496,7 +496,7 @@ fn record_dvr_callback_delivery_failure(
             dvr_phase,
             DvrPostCommitNotificationFailureKind::CallbackRegistryAccounting,
             primary,
-            "DVR post-commit callback delivery accounting failed",
+            "確定後のDVR callback配送記録に失敗しました",
             accounting_error,
         );
     }
@@ -541,10 +541,10 @@ fn record_dvr_status_notifier_lifecycle_outcome(
             phase,
             DvrPostCommitNotificationFailureKind::NotifierCleanup,
             error,
-            "DVR status notifier lifecycle diagnostic failed",
+            "DVR status notifierのライフサイクル診断に失敗しました",
             HalError::cleanup_failed(
-                "DVR status notifier lifecycle diagnostic",
-                "recording failed",
+                "DVR status notifierのライフサイクル診断",
+                "録画に失敗しました",
             ),
         );
     }
@@ -596,7 +596,7 @@ fn deliver_dvr_status_event(
                 context,
                 handle,
                 dvr_phase,
-                HalError::callback_failed(delivery_context, "DVR callback artifact missing"),
+                HalError::callback_failed(delivery_context, "DVR callback artifactが見つかりません"),
             );
             return Ok(DvrStatusCallbackDeliveryOutcome::ArtifactMissing);
         }
@@ -608,7 +608,7 @@ fn deliver_dvr_status_event(
     };
     if let Err(error) = dvr_status_event_to_hal_callback(&callback, event) {
         let primary =
-            HalError::callback_failed(delivery_context, format!("binder failure: {error:?}"));
+            HalError::callback_failed(delivery_context, format!("Binder呼び出しに失敗しました: {error:?}"));
         record_dvr_callback_delivery_failure(
             context,
             handle,
@@ -693,7 +693,7 @@ fn dvr_status_notifier_loop(
                 .ok_or_else(|| {
                     HalError::internal(
                         HalInternalKind::InvariantViolation,
-                        "DVR status deadline overflow",
+                        "DVR状態通知の期限が上限を超えました",
                     )
                 })?,
         ));
@@ -877,7 +877,7 @@ fn fence_dvr_notifier_owner_after_cleanup_failure(
             handle,
             HalError::cleanup_failed(
                 "DVR notifier owner fencing",
-                format!("drop leak cleanup failed: {status:?}"),
+                format!("Drop漏れ検出後の後片付けに失敗しました: {status:?}"),
             ),
         );
         return;
@@ -888,7 +888,7 @@ fn fence_dvr_notifier_owner_after_cleanup_failure(
             handle,
             HalError::cleanup_failed(
                 "DVR notifier owner fencing",
-                "owner generation remained live after drop cleanup",
+                "Drop後の後片付け後もowner世代が有効です",
             ),
         );
     }
@@ -914,7 +914,7 @@ fn enqueue_cleanup_retry_after_notifier_reap(
                     context,
                     handle,
                     compose_primary_cleanup_failure(
-                        "DVR notifier cleanup dependency resolution failed",
+                        "DVR notifierの後片付け依存関係を解決できません",
                         dependency_error,
                         terminal_error,
                     ),
@@ -998,7 +998,7 @@ fn handle_dvr_status_notifier_reaper_deadline(
     };
     let deadline_error = HalError::cleanup_failed(
         "DVR status notifier reaper deadline",
-        "worker did not exit within the configured worker reaper deadline",
+        "設定されたワーカー回収期限までにワーカーが終了しませんでした",
     );
     record_dvr_status_notifier_lifecycle_outcome(
         &context,
@@ -1051,7 +1051,7 @@ pub(crate) fn start_dvr_status_notifier_reaper(
                     "DVR通知回収ワーカーがpanicしたか、終了待ちに失敗しました",
                 )
             {
-                log::error!("DVR notifier reaper failed: category={category:?} error={error:?}");
+                log::error!("DVR notifier reaperに失敗しました: 分類={category:?} エラー={error:?}");
                 if let Some(context) = observer_context.upgrade() {
                     mark_dvr_notifier_service_critical(&context);
                 }
@@ -1136,7 +1136,7 @@ pub fn stop_all_dvr_status_notifiers(
         ) {
             Ok(()) => Err(error),
             Err(record_error) => Err(compose_primary_cleanup_failure(
-                "DVR status notifier reset store recovery diagnostic failed",
+                "DVR status notifier reset storeの復旧診断に失敗しました",
                 error,
                 record_error,
             )),

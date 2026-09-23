@@ -199,14 +199,14 @@ impl AidlServiceContext {
             Arc::downgrade(&context),
             Arc::clone(&context.cleanup_reaper_queue),
         ) {
-            log::error!("cleanup reaper startup failed: {error:?}");
+            log::error!("cleanup reaperの起動に失敗しました: {error:?}");
             TunerServiceRuntime::mark_shared_service_critical(&context.runtime);
         }
         if let Err(error) = start_dvr_status_notifier_reaper(
             Arc::downgrade(&context),
             Arc::clone(&context.dvr_status_notifier_supervisor),
         ) {
-            log::error!("DVR notifier reaper startup failed: {error:?}");
+            log::error!("DVR notifier reaperの起動に失敗しました: {error:?}");
             TunerServiceRuntime::mark_shared_service_critical(&context.runtime);
         }
         context
@@ -225,7 +225,7 @@ impl AidlServiceContext {
         ) = {
             let runtime_guard = runtime
                 .lock()
-                .expect("service runtime lock poisoned while cloning diagnostic sinks");
+                .expect("診断sinkの複製中にservice runtimeのロックが汚染されました");
             (
                 runtime_guard.callback_artifact_runtime_split_diagnostic_sink(),
                 runtime_guard.dvr_post_commit_notification_diagnostic_sink(),
@@ -268,14 +268,14 @@ impl AidlServiceContext {
             Arc::downgrade(&context),
             Arc::clone(&context.cleanup_reaper_queue),
         ) {
-            log::error!("cleanup reaper startup failed: {error:?}");
+            log::error!("cleanup reaperの起動に失敗しました: {error:?}");
             TunerServiceRuntime::mark_shared_service_critical(&context.runtime);
         }
         if let Err(error) = start_dvr_status_notifier_reaper(
             Arc::downgrade(&context),
             Arc::clone(&context.dvr_status_notifier_supervisor),
         ) {
-            log::error!("DVR notifier reaper startup failed: {error:?}");
+            log::error!("DVR notifier reaperの起動に失敗しました: {error:?}");
             TunerServiceRuntime::mark_shared_service_critical(&context.runtime);
         }
         context
@@ -359,7 +359,7 @@ impl AidlServiceContext {
                 return Err(match record_result {
                     Ok(()) => runtime_error,
                     Err(record_error) => compose_primary_cleanup_failure(
-                        "service boot reset split diagnostic record failed after runtime finish lock failure",
+                        "runtime完了時のロック失敗後、service boot分割診断の記録に失敗しました",
                         runtime_error,
                         record_error,
                     ),
@@ -385,10 +385,10 @@ impl AidlServiceContext {
     ) -> Result<crate::callback_store::PreparedCallbackArtifactToken, HalError> {
         self.callback_store_lock()
             .map_err(|error| {
-                error.into_hal_error("filter callback store lock failed during child prepare")
+                error.into_hal_error("子オブジェクト準備中にfilter callback storeのロック取得に失敗しました")
             })?
             .prepare_filter_callback(handle, callback)
-            .map_err(|error| error.into_hal_error("filter callback prepare failed"))
+            .map_err(|error| error.into_hal_error("filter callbackの準備に失敗しました"))
     }
 
     pub(crate) fn prepare_dvr_callback_artifact(
@@ -398,10 +398,10 @@ impl AidlServiceContext {
     ) -> Result<crate::callback_store::PreparedCallbackArtifactToken, HalError> {
         self.callback_store_lock()
             .map_err(|error| {
-                error.into_hal_error("DVR callback store lock failed during child prepare")
+                error.into_hal_error("子オブジェクト準備中にDVR callback storeのロック取得に失敗しました")
             })?
             .prepare_dvr_callback(handle, callback)
-            .map_err(|error| error.into_hal_error("DVR callback prepare failed"))
+            .map_err(|error| error.into_hal_error("DVR callbackの準備に失敗しました"))
     }
 
     pub(crate) fn commit_child_callback_artifact(
@@ -411,7 +411,7 @@ impl AidlServiceContext {
         token: crate::callback_store::PreparedCallbackArtifactToken,
     ) -> Result<(), HalError> {
         self.commit_prepared_callback(handle, api, token)
-            .map_err(|error| error.into_hal_error("prepared child callback commit failed"))
+            .map_err(|error| error.into_hal_error("準備済み子callbackの確定に失敗しました"))
     }
 
     pub(crate) fn abort_child_callback_artifact(
@@ -421,7 +421,7 @@ impl AidlServiceContext {
         token: crate::callback_store::PreparedCallbackArtifactToken,
     ) -> Result<(), HalError> {
         self.abort_prepared_callback(handle, api, token)
-            .map_err(|error| error.into_hal_error("prepared child callback abort failed"))
+            .map_err(|error| error.into_hal_error("準備済み子callbackの取消しに失敗しました"))
     }
 
     pub(crate) fn runtime(&self) -> SharedTunerRuntime {
@@ -661,7 +661,7 @@ impl AidlServiceContext {
             ) {
                 record_error = Some(match record_error {
                     Some(primary) => compose_primary_cleanup_failure(
-                        "service boot split diagnostic record failed repeatedly after runtime finish lock failure",
+                        "runtime完了時のロック失敗後、service boot分割診断の記録に繰り返し失敗しました",
                         primary,
                         error,
                     ),
@@ -846,7 +846,7 @@ impl AidlServiceContext {
                         context.record_frontend_callback_delivery_failure_fallback(record)
                     {
                         // 記録不能は同storeのrecord-failure counterにも残る。
-                        log::error!("frontend callback death diagnostic failure: {record_error:?}");
+                        log::error!("frontend callback死亡診断の記録に失敗しました: {record_error:?}");
                     }
                 }
             }

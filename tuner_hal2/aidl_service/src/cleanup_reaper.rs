@@ -102,7 +102,7 @@ impl CleanupReaperQueue {
         if slot.is_some() {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "cleanup reaper canonical owner installed twice",
+                "cleanup reaperの正規ownerが重複して設定されました",
             ));
         }
         *slot = Some(runtime);
@@ -119,7 +119,7 @@ impl CleanupReaperQueue {
         let runtime = slot.as_ref().ok_or_else(|| {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "cleanup reaper canonical owner is not installed",
+                "cleanup reaperの正規ownerが設定されていません",
             )
         })?;
         if runtime.pending_value(&key)?.is_some() {
@@ -145,7 +145,7 @@ fn close_method(kind: AidlObjectKind) -> Result<AidlMethodCall, HalError> {
         AidlObjectKind::Lnb => Ok(AidlMethodCall::LnbClose),
         AidlObjectKind::Tuner => Err(HalError::internal(
             HalInternalKind::InvariantViolation,
-            "root tuner object entered cleanup reaper queue",
+            "root tuner objectがcleanup reaper queueに入りました",
         )),
     }
 }

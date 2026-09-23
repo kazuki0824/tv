@@ -541,7 +541,7 @@ impl<T> WorkerRuntime<T> {
         self.handle
             .as_ref()
             .ok_or(maleicacid_tuner_hal2_common::HalError::NotInitialized {
-                resource: "worker handle",
+                resource: "ワーカーハンドル",
             })?
             .wake();
         Ok(())

@@ -29,7 +29,7 @@ fn format_filter_configure_report(
     report: &maleicacid_tuner_hal2_demux::FilterConfigureReport,
 ) -> String {
     format!(
-        "demux runtime filter configure failed; diagnostic_id={}; outcome={:?}; steps={:?}; source_boundary_report={:?}",
+        "demux runtime filter設定に失敗しました; 診断ID={}; 結果={:?}; 手順={:?}; source boundary報告={:?}",
         diagnostic_id.value(),
         report.outcome(),
         report.steps(),
@@ -42,7 +42,7 @@ fn format_dvr_configure_report(
     report: &maleicacid_tuner_hal2_demux::DvrConfigureReport,
 ) -> String {
     format!(
-        "demux runtime DVR configure failed; diagnostic_id={}; outcome={:?}; steps={:?}",
+        "demux runtime DVR設定に失敗しました; 診断ID={}; 結果={:?}; 手順={:?}",
         diagnostic_id.value(),
         report.outcome(),
         report.steps()
@@ -54,7 +54,7 @@ pub(crate) fn format_filter_runtime_operation_report(
     report: &maleicacid_tuner_hal2_demux::FilterRuntimeOperationReport,
 ) -> String {
     format!(
-        "demux runtime filter operation failed; diagnostic_id={}; operation={:?}; filter_id={}; outcome={:?}; steps={:?}",
+        "demux runtime filter操作に失敗しました; 診断ID={}; 操作={:?}; filter ID={}; 結果={:?}; 手順={:?}",
         diagnostic_id.value(),
         report.operation(),
         report.filter_id(),
@@ -68,7 +68,7 @@ pub(crate) fn format_dvr_queue_cleanup_report(
     report: &maleicacid_tuner_hal2_demux::DvrQueueCleanupReport,
 ) -> String {
     format!(
-        "demux runtime DVR queue cleanup failed; diagnostic_id={}; dvr_id={}; outcome={:?}; steps={:?}",
+        "demux runtime DVR queueの後片付けに失敗しました; 診断ID={}; DVR ID={}; 結果={:?}; 手順={:?}",
         diagnostic_id.value(),
         report.dvr_id(),
         report.outcome(),
@@ -81,7 +81,7 @@ fn format_source_boundary_report(
     report: &SourceBoundaryReport,
 ) -> String {
     format!(
-        "source boundary failed; diagnostic_id={}; sink_filter_id={}; source_filter_id={:?}; outcome={:?}; steps={:?}; reset_report={:?}",
+        "source boundaryに失敗しました; 診断ID={}; sink filter ID={}; source filter ID={:?}; 結果={:?}; 手順={:?}; reset報告={:?}",
         diagnostic_id.value(),
         report.sink_filter_id(),
         report.source_filter_id(),
@@ -118,7 +118,7 @@ pub(crate) fn attach_diagnostic_detail_to_public_error(
             detail: existing,
         } => HalError::unsupported_detail(feature, format!("{}; {detail}", existing.detail)),
         other => compose_primary_cleanup_failure(
-            "demux transaction diagnostic detail attached through secondary error",
+            "demux transaction診断の詳細を二次エラーへ追加しました",
             other,
             HalError::internal(HalInternalKind::InvariantViolation, detail),
         ),
@@ -144,49 +144,49 @@ impl TunerServiceRuntime {
         if request.packet_size <= 0 {
             return Err(HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,
-                "DVR packet size must be positive",
+                "DVR packet sizeは正数である必要があります",
             ));
         }
         if request.packet_size != DVR_PACKET_SIZE_TS_188 {
             return Err(HalError::unsupported_detail(
                 "dvr.packetSize",
-                "positive DVR packet size other than 188 is unavailable for TS",
+                "188以外の正数DVR packet sizeはTSで利用できません",
             ));
         }
         if request.low_threshold_bytes < 0 || request.high_threshold_bytes < 0 {
             return Err(HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,
-                "DVR thresholds must be non-negative",
+                "DVR thresholdは0以上である必要があります",
             ));
         }
         if request.low_threshold_bytes > request.high_threshold_bytes {
             return Err(HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,
-                "DVR low threshold must be less than or equal to high threshold",
+                "DVR low thresholdはhigh threshold以下である必要があります",
             ));
         }
         let capacity = usize::try_from(buffer_size).map_err(|_| {
             HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,
-                "DVR buffer size must be positive",
+                "DVR buffer sizeは正数である必要があります",
             )
         })?;
         let low_threshold = usize::try_from(request.low_threshold_bytes).map_err(|_| {
             HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,
-                "DVR low threshold must fit usize",
+                "DVR low thresholdをusizeで表現できません",
             )
         })?;
         let high_threshold = usize::try_from(request.high_threshold_bytes).map_err(|_| {
             HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,
-                "DVR high threshold must fit usize",
+                "DVR high thresholdをusizeで表現できません",
             )
         })?;
         if low_threshold > capacity || high_threshold > capacity {
             return Err(HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,
-                "DVR thresholds must not exceed buffer size",
+                "DVR thresholdはbuffer sizeを超えてはなりません",
             ));
         }
         let supported_mask = match request.kind {
@@ -196,7 +196,7 @@ impl TunerServiceRuntime {
         if (request.status_mask & !supported_mask) != 0 {
             return Err(HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,
-                "DVR status mask contains unsupported bits",
+                "DVR status maskに未対応bitが含まれています",
             ));
         }
         Ok((low_threshold, high_threshold))
@@ -248,8 +248,8 @@ impl TunerServiceRuntime {
             .demux_runtime_mut(DemuxRuntimeId(entry_ref.owner_demux_id))
         else {
             return Err(HalError::cleanup_failed(
-                "filter runtime unregister owner cleanup",
-                format!("owner demux runtime is missing while unregistering filter: filter_id={id} owner_demux_id={}", entry_ref.owner_demux_id),
+                "filter runtime登録解除時のowner後片付け",
+                format!("filter登録解除中にowner demux runtimeが見つかりません: filter ID={id} owner demux ID={}", entry_ref.owner_demux_id),
             ));
         };
         let open_type = demux_runtime
@@ -270,8 +270,8 @@ impl TunerServiceRuntime {
                 maleicacid_tuner_hal2_demux::DemuxRuntimeQuarantineRequest::new(),
             );
             return Err(HalError::cleanup_failed(
-                "filter runtime unregister owner cleanup",
-                format!("demux runtime rejected filter removal during unregister: filter_id={id} owner_demux_id={}", entry_ref.owner_demux_id),
+                "filter runtime登録解除時のowner後片付け",
+                format!("登録解除中にdemux runtimeがfilter削除を拒否しました: filter ID={id} owner demux ID={}", entry_ref.owner_demux_id),
             ));
         }
         let removed = self.registry.unregister_filter(FilterRuntimeId(id));
@@ -302,7 +302,7 @@ impl TunerServiceRuntime {
         else {
             return Err(HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,
-                "owner demux runtime is missing",
+                "owner demux runtimeが見つかりません",
             ));
         };
         demux_runtime
@@ -317,7 +317,7 @@ impl TunerServiceRuntime {
             .map_err(|_| {
                 HalError::invalid_state(
                     HalInvalidStateKind::InvalidLifecycle,
-                    "filter runtime registration failed",
+                    "filter runtimeの登録に失敗しました",
                 )
             })
     }
@@ -326,36 +326,36 @@ impl TunerServiceRuntime {
         match error.kind {
             DemuxRuntimeErrorKind::FilterMissing => HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "filter runtime is missing",
+                "filter runtimeが見つかりません",
             ),
             DemuxRuntimeErrorKind::SourceLifecycle
             | DemuxRuntimeErrorKind::SinkLifecycle
             | DemuxRuntimeErrorKind::InvalidState => HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "filter lifecycle is invalid for requested operation",
+                "filter lifecycleが要求された操作に対して不正です",
             ),
             DemuxRuntimeErrorKind::InvalidSourceSubtype
             | DemuxRuntimeErrorKind::InvalidSinkSubtype => {
-                HalError::Unsupported("filter subtype is unsupported for requested operation")
+                HalError::Unsupported("filter subtypeは要求された操作に未対応です")
             }
             DemuxRuntimeErrorKind::UnsupportedDvrOperation => {
-                HalError::Unsupported("DVR operation is unavailable for this DVR kind")
+                HalError::Unsupported("このDVR種別ではDVR操作を利用できません")
             }
             DemuxRuntimeErrorKind::PidMismatch => HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,
-                "filter PID does not match requested operation",
+                "filter PIDが要求された操作と一致しません",
             ),
             DemuxRuntimeErrorKind::SelfReference => HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,
-                "a filter cannot use itself as its data source",
+                "filterは自身をdata sourceにできません",
             ),
             DemuxRuntimeErrorKind::GenerationExhausted => HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "filter generation exhausted",
+                "filterの世代を発行できません",
             ),
             DemuxRuntimeErrorKind::SourceBoundaryRollbackFailed => HalError::cleanup_failed(
-                "filter source boundary rollback",
-                "demux runtime was quarantined after source boundary rollback failure",
+                "filter source boundaryを巻き戻せません",
+                "source boundaryの巻き戻し失敗後、demux runtimeを隔離しました",
             ),
             DemuxRuntimeErrorKind::QueueRuntimeFailureWithContext(_)
             | DemuxRuntimeErrorKind::QueueRuntimeFailureWithRollback { .. }
@@ -371,7 +371,7 @@ impl TunerServiceRuntime {
             | DemuxRuntimeErrorKind::QueueRuntimeFailure
             | DemuxRuntimeErrorKind::AvBackingFailure => HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "filter runtime pipeline operation failed",
+                "filter runtime pipeline操作に失敗しました",
             ),
         }
     }
@@ -383,7 +383,7 @@ impl TunerServiceRuntime {
             .ok_or_else(|| {
                 HalError::invalid_state(
                     HalInvalidStateKind::InvalidLifecycle,
-                    "filter registry entry is missing",
+                    "filter registry項目が見つかりません",
                 )
             })
     }
@@ -400,7 +400,7 @@ impl TunerServiceRuntime {
         else {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "owner demux runtime is missing",
+                "owner demux runtimeが見つかりません",
             ));
         };
         let (report, result) = demux_runtime.configure_filter_runtime_with_typed_request(
@@ -425,10 +425,10 @@ impl TunerServiceRuntime {
                     Some(maleicacid_tuner_hal2_demux::FilterConfigureOutcome::Quarantined { .. })
                 ) {
                     Err(compose_primary_cleanup_failure(
-                        "filter configure failed and rollback failed",
+                        "filterの設定と巻き戻しの両方に失敗しました",
                         primary,
                         HalError::cleanup_failed(
-                            "filter configure rollback",
+                            "filter設定の巻き戻し",
                             format_filter_configure_report(diagnostic_id, &report),
                         ),
                     ))
@@ -450,7 +450,7 @@ impl TunerServiceRuntime {
         else {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "owner demux runtime is missing",
+                "owner demux runtimeが見つかりません",
             ));
         };
         demux_runtime
@@ -468,7 +468,7 @@ impl TunerServiceRuntime {
         else {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "owner demux runtime is missing",
+                "owner demux runtimeが見つかりません",
             ));
         };
         let (report, result) = demux_runtime.stop_filter_runtime_with_typed_request(
@@ -507,7 +507,7 @@ impl TunerServiceRuntime {
             .ok_or_else(|| {
                 HalError::invalid_state(
                     HalInvalidStateKind::InvalidLifecycle,
-                    "owner demux runtime is missing",
+                    "owner demux runtimeが見つかりません",
                 )
             })?;
         demux
@@ -530,7 +530,7 @@ impl TunerServiceRuntime {
             .ok_or_else(|| {
                 HalError::invalid_state(
                     HalInvalidStateKind::InvalidLifecycle,
-                    "owner demux runtime is missing",
+                    "owner demux runtimeが見つかりません",
                 )
             })?;
         Self::map_av_handle_release_outcome(
@@ -560,11 +560,11 @@ impl TunerServiceRuntime {
             | AvHandleReleaseOutcome::InvalidHandleForSlotRelease
             | AvHandleReleaseOutcome::UnknownDataId => Err(HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,
-                "AV handle release input is invalid",
+                "AV handle解放入力が不正です",
             )),
             AvHandleReleaseOutcome::RegistryFailure => Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "AV allocation registry could not classify a release safely",
+                "AV allocation registryで安全に解放を分類できません",
             )),
         }
     }
@@ -577,7 +577,7 @@ impl TunerServiceRuntime {
         let entry = self.object_table.entry(object_id).ok_or_else(|| {
             HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "filter AIDL object is missing",
+                "filter AIDL objectが見つかりません",
             )
         })?;
         if entry.generation != generation
@@ -585,19 +585,19 @@ impl TunerServiceRuntime {
         {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "filter AIDL object identity does not match release request",
+                "filter AIDL objectの識別情報が解放要求と一致しません",
             ));
         }
         if entry.lifecycle == crate::RuntimeObjectLifecycle::Quarantined {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "quarantined filter accepts AV release only from internal cleanup",
+                "隔離済みfilterのAV解放は内部後片付けからのみ受け付けます",
             ));
         }
         i32::try_from(entry.ledger_id.0).map_err(|_| {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "filter runtime id is outside i32 range",
+                "filter runtime IDがi32の範囲外です",
             )
         })
     }
@@ -621,7 +621,7 @@ impl TunerServiceRuntime {
         if av_data_id < 0 {
             return Err(HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,
-                "AV data id must not be negative",
+                "AV data IDは負数にできません",
             ));
         }
         let filter_id = self.filter_id_for_av_handle_release_lifecycle(object_id, generation)?;
@@ -646,7 +646,7 @@ impl TunerServiceRuntime {
             } else {
                 Err(HalError::invalid_argument(
                     HalInvalidArgumentKind::NumericRange,
-                    "AV handle release does not match a retained allocation",
+                    "AV handle解放要求が保持中の割当てと一致しません",
                 ))
             };
         };
@@ -673,7 +673,7 @@ impl TunerServiceRuntime {
         let entry = self.object_table.entry(object_id).ok_or_else(|| {
             HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "filter AIDL object is missing at final AV release-state cleanup",
+                "最終AV解放状態の後片付けでfilter AIDL objectが見つかりません",
             )
         })?;
         if entry.generation != generation
@@ -681,25 +681,25 @@ impl TunerServiceRuntime {
         {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "filter AIDL object identity changed before final AV release-state cleanup",
+                "最終AV解放状態の後片付け前にfilter AIDL objectの識別情報が変化しました",
             ));
         }
         if !entry.lifecycle.is_terminal() {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "filter must be terminal before final AV release-state cleanup",
+                "最終AV解放状態を後片付けする前にfilterを終了状態にする必要があります",
             ));
         }
         let filter_id = i32::try_from(entry.ledger_id.0).map_err(|_| {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "filter runtime id is outside i32 range during final AV cleanup",
+                "最終AV後片付け中にfilter runtime IDがi32の範囲外です",
             )
         })?;
         if self.registry.filter(FilterRuntimeId(filter_id)).is_some() {
             return Err(HalError::cleanup_failed(
-                "final filter AV release-state cleanup",
-                "filter runtime is still registered after terminalization",
+                "最終filter AV解放状態の後片付け",
+                "終了処理後もfilter runtimeが登録されています",
             ));
         }
 
@@ -711,7 +711,7 @@ impl TunerServiceRuntime {
             drop(backing);
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "release-only AV backing/type lifetime registry is inconsistent",
+                "解放専用AV backing/type lifetime registryに不整合があります",
             ));
         }
         drop(backing);
@@ -729,7 +729,7 @@ impl TunerServiceRuntime {
             .ok_or_else(|| {
                 HalError::invalid_state(
                     HalInvalidStateKind::InvalidLifecycle,
-                    "owner demux runtime is missing",
+                    "owner demux runtimeが見つかりません",
                 )
             })?;
         demux
@@ -751,7 +751,7 @@ impl TunerServiceRuntime {
         else {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "owner demux runtime is missing",
+                "owner demux runtimeが見つかりません",
             ));
         };
         let snapshot = demux_runtime
@@ -764,7 +764,7 @@ impl TunerServiceRuntime {
             FilterRuntimeState::Started => {
                 return Err(HalError::invalid_state(
                     HalInvalidStateKind::InvalidLifecycle,
-                    "AV stream type cannot be changed while filter is started",
+                    "filter起動中はAV stream typeを変更できません",
                 ));
             }
             FilterRuntimeState::Closing
@@ -773,7 +773,7 @@ impl TunerServiceRuntime {
             | FilterRuntimeState::Failed => {
                 return Err(HalError::invalid_state(
                     HalInvalidStateKind::InvalidLifecycle,
-                    "filter is not live",
+                    "filterは稼働中ではありません",
                 ));
             }
         }
@@ -782,7 +782,7 @@ impl TunerServiceRuntime {
             FilterOpenType::TsVideo => AvStreamKind::Video,
             _ => {
                 return Err(HalError::Unsupported(
-                    "configureAvStreamType is available only for AV filters",
+                    "configureAvStreamTypeはAV filterでのみ利用できます",
                 ));
             }
         };
@@ -793,7 +793,7 @@ impl TunerServiceRuntime {
         if requested_kind != expected_kind {
             return Err(HalError::invalid_argument(
                 HalInvalidArgumentKind::UnsupportedStreamSelector,
-                "AV stream type kind must match filter open subtype",
+                "AV stream type種別はfilter open subtypeと一致する必要があります",
             ));
         }
         demux_runtime
@@ -821,7 +821,7 @@ impl TunerServiceRuntime {
         else {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "owner demux runtime is missing",
+                "owner demux runtimeが見つかりません",
             ));
         };
         let snapshot = demux_runtime
@@ -830,7 +830,7 @@ impl TunerServiceRuntime {
         if snapshot.state.is_closed_or_failed() {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "filter is not live",
+                "filterは稼働中ではありません",
             ));
         }
         if matches!(
@@ -838,7 +838,7 @@ impl TunerServiceRuntime {
             FilterOpenType::TsAudio | FilterOpenType::TsVideo
         ) {
             return Err(HalError::Unsupported(
-                "FilterDelayHint is not available for media filters",
+                "FilterDelayHintはmedia filterで利用できません",
             ));
         }
         let hint = match request.kind {
@@ -846,7 +846,7 @@ impl TunerServiceRuntime {
                 FilterDelayHint::TimeDelayMs(u64::try_from(request.value).map_err(|_| {
                     HalError::invalid_argument(
                         HalInvalidArgumentKind::NumericRange,
-                        "filter delay hint value must be non-negative",
+                        "filter delay hint値は0以上である必要があります",
                     )
                 })?)
             }
@@ -854,7 +854,7 @@ impl TunerServiceRuntime {
                 usize::try_from(request.value).map_err(|_| {
                     HalError::invalid_argument(
                         HalInvalidArgumentKind::NumericRange,
-                        "filter delay hint value is too large",
+                        "filter delay hint値が大きすぎます",
                     )
                 })?,
             ),
@@ -878,7 +878,7 @@ impl TunerServiceRuntime {
             .ok_or_else(|| {
                 HalError::invalid_state(
                     HalInvalidStateKind::InvalidLifecycle,
-                    "sink filter registry entry is missing",
+                    "sink filter registry項目が見つかりません",
                 )
             })?;
         let source_entry = self
@@ -887,19 +887,19 @@ impl TunerServiceRuntime {
             .ok_or_else(|| {
                 HalError::invalid_argument(
                     HalInvalidArgumentKind::NumericRange,
-                    "source filter registry entry is missing",
+                    "source filter registry項目が見つかりません",
                 )
             })?;
         if sink_entry.owner_demux_id != demux_id || source_entry.owner_demux_id != demux_id {
             return Err(HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,
-                "source filter owner demux mismatch",
+                "source filterのowner demuxが一致しません",
             ));
         }
         let Some(demux_runtime) = self.registry.demux_runtime_mut(DemuxRuntimeId(demux_id)) else {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "owner demux runtime is missing",
+                "owner demux runtimeが見つかりません",
             ));
         };
         let (report, result) = demux_runtime.set_filter_source_non_null_from_typed_request(
@@ -914,34 +914,34 @@ impl TunerServiceRuntime {
                 let diagnostic_id = self.allocate_demux_transaction_diagnostic_id();
                 let hal_error = match err.kind {
                     maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::FilterMissing => {
-                        HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, format!("source or sink filter runtime is missing; {}", format_source_boundary_report(diagnostic_id, &report)))
+                        HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, format!("sourceまたはsink filter runtimeが見つかりません; {}", format_source_boundary_report(diagnostic_id, &report)))
                     }
                     maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SourceLifecycle
                     | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SinkLifecycle
                     | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::InvalidState => {
-                        HalError::invalid_state(HalInvalidStateKind::InvalidLifecycle, format!("source or sink filter lifecycle is invalid; {}", format_source_boundary_report(diagnostic_id, &report)))
+                        HalError::invalid_state(HalInvalidStateKind::InvalidLifecycle, format!("sourceまたはsink filter lifecycleが不正です; {}", format_source_boundary_report(diagnostic_id, &report)))
                     }
                     maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::InvalidSourceSubtype
                     | maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::InvalidSinkSubtype => {
                         HalError::unsupported_detail(
-                            "source or sink filter subtype is unsupported",
+                            "sourceまたはsink filter subtypeは未対応です",
                             format_source_boundary_report(diagnostic_id, &report),
                         )
                     }
                     maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::PidMismatch => {
-                        HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, format!("source and sink filter PID mismatch; {}", format_source_boundary_report(diagnostic_id, &report)))
+                        HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, format!("sourceとsink filterのPIDが一致しません; {}", format_source_boundary_report(diagnostic_id, &report)))
                     }
                     maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SelfReference => {
                         HalError::invalid_argument(
                             HalInvalidArgumentKind::NumericRange,
                             format!(
-                                "a filter cannot use itself as its data source; {}",
+                                "filterは自身をdata sourceにできません; {}",
                                 format_source_boundary_report(diagnostic_id, &report)
                             ),
                         )
                     }
                     maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SourceBoundaryRollbackFailed => {
-                        HalError::cleanup_failed("filter source boundary rollback", format_source_boundary_report(diagnostic_id, &report))
+                        HalError::cleanup_failed("filter source boundaryを巻き戻せません", format_source_boundary_report(diagnostic_id, &report))
                     }
                     _ => HalError::internal(maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation, format_source_boundary_report(diagnostic_id, &report)),
                 };
@@ -969,19 +969,19 @@ impl TunerServiceRuntime {
             .ok_or_else(|| {
                 HalError::invalid_state(
                     HalInvalidStateKind::InvalidLifecycle,
-                    "sink filter registry entry is missing",
+                    "sink filter registry項目が見つかりません",
                 )
             })?;
         if sink_entry.owner_demux_id != demux_id {
             return Err(HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,
-                "sink filter owner demux mismatch",
+                "sink filterのowner demuxが一致しません",
             ));
         }
         let Some(demux_runtime) = self.registry.demux_runtime_mut(DemuxRuntimeId(demux_id)) else {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "owner demux runtime is missing",
+                "owner demux runtimeが見つかりません",
             ));
         };
         let (report, result) = demux_runtime.disconnect_filter_source_from_typed_request(
@@ -995,7 +995,7 @@ impl TunerServiceRuntime {
                     maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::FilterMissing => {
                         HalError::invalid_argument(
                             HalInvalidArgumentKind::NumericRange,
-                            format!("sink filter runtime is missing; {}", format_source_boundary_report(diagnostic_id, &report)),
+                            format!("sink filter runtimeが見つかりません; {}", format_source_boundary_report(diagnostic_id, &report)),
                         )
                     }
                     maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SinkLifecycle
@@ -1003,13 +1003,13 @@ impl TunerServiceRuntime {
                         HalError::invalid_state(
                             HalInvalidStateKind::InvalidLifecycle,
                             format!(
-                                "sink filter lifecycle is invalid; {}",
+                                "sink filter lifecycleが不正です; {}",
                                 format_source_boundary_report(diagnostic_id, &report)
                             ),
                         )
                     }
                     maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::SourceBoundaryRollbackFailed => {
-                        HalError::cleanup_failed("filter source boundary rollback", format_source_boundary_report(diagnostic_id, &report))
+                        HalError::cleanup_failed("filter source boundaryを巻き戻せません", format_source_boundary_report(diagnostic_id, &report))
                     }
                     _ => HalError::internal(
                         maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
@@ -1049,8 +1049,8 @@ impl TunerServiceRuntime {
             .demux_runtime_mut(DemuxRuntimeId(entry_ref.owner_demux_id))
         else {
             return Err(HalError::cleanup_failed(
-                "DVR runtime unregister owner cleanup",
-                format!("owner demux runtime is missing while unregistering DVR: dvr_id={id} owner_demux_id={}", entry_ref.owner_demux_id),
+                "DVR runtime登録解除時のowner後片付け",
+                format!("DVR登録解除中にowner demux runtimeが見つかりません: DVR ID={id} owner demux ID={}", entry_ref.owner_demux_id),
             ));
         };
         let dropped_bytes = self
@@ -1080,13 +1080,13 @@ impl TunerServiceRuntime {
                 maleicacid_tuner_hal2_demux::DemuxRuntimeQuarantineRequest::new(),
             );
             let primary = HalError::cleanup_failed(
-                "DVR runtime unregister owner cleanup",
-                format!("demux runtime rejected DVR removal during unregister: dvr_id={id} owner_demux_id={}", entry_ref.owner_demux_id),
+                "DVR runtime登録解除時のowner後片付け",
+                format!("登録解除中にdemux runtimeがDVR削除を拒否しました: DVR ID={id} owner demux ID={}", entry_ref.owner_demux_id),
             );
             return match cleanup_failures.into_result() {
                 Ok(()) => Err(primary),
                 Err(cleanup) => Err(compose_primary_cleanup_failure(
-                    "DVR runtime unregister playback accounting failed",
+                    "DVR runtime登録解除時の再生記録に失敗しました",
                     primary,
                     cleanup,
                 )),
@@ -1116,7 +1116,7 @@ impl TunerServiceRuntime {
         else {
             return Err(HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,
-                "owner demux runtime is missing",
+                "owner demux runtimeが見つかりません",
             ));
         };
         let kind = match request.kind {
@@ -1135,7 +1135,7 @@ impl TunerServiceRuntime {
             .map_err(|_| {
                 HalError::invalid_state(
                     HalInvalidStateKind::InvalidLifecycle,
-                    "DVR runtime registration failed",
+                    "DVR runtimeの登録に失敗しました",
                 )
             })
     }
@@ -1147,7 +1147,7 @@ impl TunerServiceRuntime {
             .ok_or_else(|| {
                 HalError::invalid_state(
                     HalInvalidStateKind::InvalidLifecycle,
-                    "DVR registry entry is missing",
+                    "DVR registry項目が見つかりません",
                 )
             })
     }
@@ -1164,13 +1164,13 @@ impl TunerServiceRuntime {
             .ok_or_else(|| {
                 HalError::invalid_argument(
                     HalInvalidArgumentKind::NumericRange,
-                    "filter registry entry is missing",
+                    "filter registry項目が見つかりません",
                 )
             })?;
         if filter_entry.owner_demux_id != owner_demux_id {
             return Err(HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,
-                "filter owner demux does not match DVR owner demux",
+                "filterのowner demuxがDVRのowner demuxと一致しません",
             ));
         }
         Ok(owner_demux_id)
@@ -1180,28 +1180,28 @@ impl TunerServiceRuntime {
         match error.kind {
             DemuxRuntimeErrorKind::DvrMissing => HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "DVR runtime is missing",
+                "DVR runtimeが見つかりません",
             ),
             DemuxRuntimeErrorKind::FilterMissing | DemuxRuntimeErrorKind::InvalidDvrFilter => {
                 HalError::invalid_argument(
                     HalInvalidArgumentKind::NumericRange,
-                    "filter is invalid for requested DVR operation",
+                    "要求されたDVR操作に対してfilterが不正です",
                 )
             }
             DemuxRuntimeErrorKind::InvalidState => HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "DVR lifecycle is invalid for requested operation",
+                "DVR lifecycleが要求された操作に対して不正です",
             ),
             DemuxRuntimeErrorKind::UnsupportedDvrOperation => {
-                HalError::Unsupported("DVR operation is unavailable for this DVR kind")
+                HalError::Unsupported("このDVR種別ではDVR操作を利用できません")
             }
             DemuxRuntimeErrorKind::GenerationExhausted => HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "DVR generation exhausted",
+                "DVRの世代を発行できません",
             ),
             DemuxRuntimeErrorKind::SourceBoundaryRollbackFailed => HalError::cleanup_failed(
-                "DVR source boundary rollback",
-                "demux runtime was quarantined after source boundary rollback failure",
+                "DVR source boundaryを巻き戻せません",
+                "source boundaryの巻き戻し失敗後、demux runtimeを隔離しました",
             ),
             DemuxRuntimeErrorKind::QueueRuntimeFailureWithContext(_)
             | DemuxRuntimeErrorKind::QueueRuntimeFailureWithRollback { .. }
@@ -1221,7 +1221,7 @@ impl TunerServiceRuntime {
             | DemuxRuntimeErrorKind::SelfReference
             | DemuxRuntimeErrorKind::PidMismatch => HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "DVR runtime operation failed",
+                "DVR runtime操作に失敗しました",
             ),
         }
     }
@@ -1238,14 +1238,14 @@ impl TunerServiceRuntime {
             .ok_or_else(|| {
                 HalError::invalid_state(
                     HalInvalidStateKind::InvalidLifecycle,
-                    "owner demux runtime is missing",
+                    "owner demux runtimeが見つかりません",
                 )
             })?
             .dvr_snapshot(dvr_id)
             .map_err(|_| {
                 HalError::invalid_state(
                     HalInvalidStateKind::InvalidLifecycle,
-                    "DVR runtime is missing",
+                    "DVR runtimeが見つかりません",
                 )
             })?;
         let newly_reserved = self.capacity_ledger.reserve_playback_processing(
@@ -1260,7 +1260,7 @@ impl TunerServiceRuntime {
                 Some(_) => {
                     Err(HalError::invalid_state(
                         HalInvalidStateKind::InvalidLifecycle,
-                        "playback processing capacity changed within one DVR lifetime",
+                        "1つのDVR lifetime内で再生処理容量が変化しました",
                     ))
                 }
                 None => crate::playback_consume_txn::PlaybackConsumeTxn::prepare(
@@ -1272,13 +1272,13 @@ impl TunerServiceRuntime {
                     crate::playback_consume_txn::PlaybackConsumeTxnPrepareError::InvalidCapacity => {
                         HalError::invalid_argument(
                             HalInvalidArgumentKind::NumericRange,
-                            "playback processing capacity must be positive",
+                            "再生処理容量は正数である必要があります",
                         )
                     }
                     crate::playback_consume_txn::PlaybackConsumeTxnPrepareError::OutOfMemory => {
                         HalError::out_of_memory(
                             "playback processing buffer",
-                            "playback processing buffer allocation failed",
+                            "再生処理bufferの確保に失敗しました",
                         )
                     }
                 }),
@@ -1294,7 +1294,7 @@ impl TunerServiceRuntime {
                         self.capacity_ledger.rollback_playback_processing(dvr_id)
                     {
                         return Err(compose_primary_cleanup_failure(
-                            "playback processing allocation rollback failed",
+                            "playback processing allocation 巻き戻しに失敗しました",
                             primary,
                             cleanup_error,
                         ));
@@ -1317,7 +1317,7 @@ impl TunerServiceRuntime {
                         self.capacity_ledger.rollback_playback_processing(dvr_id)
                     {
                         return Err(compose_primary_cleanup_failure(
-                            "DVR configure capacity rollback failed",
+                            "DVR configure capacity 巻き戻しに失敗しました",
                             primary,
                             cleanup_error,
                         ));
@@ -1340,13 +1340,13 @@ impl TunerServiceRuntime {
         else {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "owner demux runtime is missing",
+                "owner demux runtimeが見つかりません",
             ));
         };
         let dvr = demux_runtime.dvr_snapshot(dvr_id).map_err(|_| {
             HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "DVR runtime is missing",
+                "DVR runtimeが見つかりません",
             )
         })?;
         let expected_kind = match dvr.kind {
@@ -1356,20 +1356,20 @@ impl TunerServiceRuntime {
         if request.kind != expected_kind {
             return Err(HalError::invalid_argument(
                 HalInvalidArgumentKind::NumericRange,
-                "DVR settings kind does not match opened DVR kind",
+                "DVR settings種別がopen済みDVR種別と一致しません",
             ));
         }
         let state = dvr.state;
         if state.is_closed_or_failed() {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "DVR is not live",
+                "DVRは稼働中ではありません",
             ));
         }
         if state == super::DvrRuntimeState::Started {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "DVR cannot be reconfigured while started",
+                "起動中のDVRは再設定できません",
             ));
         }
         let (low_threshold, high_threshold) =
@@ -1414,7 +1414,7 @@ impl TunerServiceRuntime {
                     );
                     if let Err(rollback_error) = rollback_result {
                         let composed = compose_primary_cleanup_failure(
-                            "DVR configure status reporting rollback failed",
+                            "DVR configure status reporting 巻き戻しに失敗しました",
                             primary,
                             Self::map_dvr_runtime_error(rollback_error),
                         );
@@ -1458,7 +1458,7 @@ impl TunerServiceRuntime {
                         maleicacid_tuner_hal2_demux::DemuxRuntimeQuarantineRequest::new(),
                     );
                     return Err(compose_primary_cleanup_failure(
-                        "DVR configure rollback token cleanup failed",
+                        "DVR設定巻き戻しtokenの後片付けに失敗しました",
                         Self::map_dvr_runtime_error(error),
                         Self::map_dvr_runtime_error(commit_error),
                     ));
@@ -1479,10 +1479,10 @@ impl TunerServiceRuntime {
                     Some(maleicacid_tuner_hal2_demux::DvrConfigureOutcome::Quarantined { .. })
                 ) {
                     Err(compose_primary_cleanup_failure(
-                        "DVR configure failed and rollback failed",
+                        "DVRの設定と巻き戻しの両方に失敗しました",
                         primary,
                         HalError::cleanup_failed(
-                            "DVR configure rollback",
+                            "DVR設定の巻き戻し",
                             format_dvr_configure_report(diagnostic_id, &report),
                         ),
                     ))
@@ -1504,7 +1504,7 @@ impl TunerServiceRuntime {
             .ok_or_else(|| {
                 HalError::invalid_state(
                     HalInvalidStateKind::InvalidLifecycle,
-                    "owner demux runtime is missing",
+                    "owner demux runtimeが見つかりません",
                 )
             })?
             .dvr_snapshot(dvr_id)
@@ -1517,7 +1517,7 @@ impl TunerServiceRuntime {
         {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "Playback DVR cannot start while its demux is bound to a frontend",
+                "demuxがfrontendに結合されている間はPlayback DVRを開始できません",
             ));
         }
         let Some(demux_runtime) = self
@@ -1526,7 +1526,7 @@ impl TunerServiceRuntime {
         else {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "owner demux runtime is missing",
+                "owner demux runtimeが見つかりません",
             ));
         };
         demux_runtime
@@ -1548,7 +1548,7 @@ impl TunerServiceRuntime {
         else {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "owner demux runtime is missing",
+                "owner demux runtimeが見つかりません",
             ));
         };
         super::demux_filter_dvr_ops::RecordDvrFilterRelationTxn::attach(dvr_id, filter_id)
@@ -1568,7 +1568,7 @@ impl TunerServiceRuntime {
         else {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "owner demux runtime is missing",
+                "owner demux runtimeが見つかりません",
             ));
         };
         super::demux_filter_dvr_ops::RecordDvrFilterRelationTxn::detach(dvr_id, filter_id)
@@ -1584,7 +1584,7 @@ impl TunerServiceRuntime {
         else {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "owner demux runtime is missing",
+                "owner demux runtimeが見つかりません",
             ));
         };
         demux_runtime
@@ -1606,7 +1606,7 @@ impl TunerServiceRuntime {
         else {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "owner demux runtime is missing",
+                "owner demux runtimeが見つかりません",
             ));
         };
         demux_runtime
@@ -1630,7 +1630,7 @@ impl TunerServiceRuntime {
         else {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "owner demux runtime is missing",
+                "owner demux runtimeが見つかりません",
             ));
         };
         demux_runtime
@@ -1651,7 +1651,7 @@ impl ChildOpenTxn<'_> {
             Ok(Some(_)) => Ok(()),
             Ok(None) => Err(HalError::cleanup_failed(
                 context,
-                format!("filter runtime is missing during rollback: id={filter_id}"),
+                format!("巻き戻し中にfilter runtimeが見つかりません: ID={filter_id}"),
             )),
             Err(error) => Err(error),
         }
@@ -1666,7 +1666,7 @@ impl ChildOpenTxn<'_> {
             Ok(Some(_)) => Ok(()),
             Ok(None) => Err(HalError::cleanup_failed(
                 context,
-                format!("DVR runtime is missing during rollback: id={dvr_id}"),
+                format!("巻き戻し中にDVR runtimeが見つかりません: ID={dvr_id}"),
             )),
             Err(error) => Err(error),
         }
@@ -1697,7 +1697,7 @@ impl ChildOpenTxn<'_> {
         let capacity = usize::try_from(capacity).map_err(|_| {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "published filter capacity cannot be represented as usize",
+                "公開filter容量をusizeで表現できません",
             )
         })?;
         let live_capacity_use = match request.open_type {
@@ -1720,7 +1720,7 @@ impl ChildOpenTxn<'_> {
                     .ok_or_else(|| {
                         HalError::internal(
                             HalInternalKind::InvariantViolation,
-                            "shared TS filter capacity counter overflow",
+                            "共有TS filter容量counterが上限を超えました",
                         )
                     })?
             }
@@ -1740,7 +1740,7 @@ impl ChildOpenTxn<'_> {
             .ok_or_else(|| {
                 HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "filter capacity counter overflow",
+                    "filter容量counterが上限を超えました",
                 )
             })?;
         if capacity_use >= capacity
@@ -1751,14 +1751,14 @@ impl ChildOpenTxn<'_> {
                     .demux_has_filter_open_type(owner_demux_id, request.open_type)?
         {
             return Err(HalError::Unsupported(
-                "filter capability lease is exhausted for the requested subtype",
+                "要求されたsubtypeのfilter capability leaseを使い切りました",
             ));
         }
         let filter_entry = self
             .runtime
             .transact_allocate_filter_runtime(owner_demux_id)
             .map_err(|error| {
-                registry_commit_error_to_hal(error, "filter runtime allocation failed")
+                registry_commit_error_to_hal(error, "filter runtimeの割当てに失敗しました")
             })?;
         if let Err(error) = self.runtime.capacity_ledger.reserve_filter(
             self.runtime.capability_snapshot,
@@ -1774,11 +1774,11 @@ impl ChildOpenTxn<'_> {
                 Err(error)
             } else {
                 Err(compose_primary_cleanup_failure(
-                    "filter capacity reservation rollback failed",
+                    "filter capacity reservation 巻き戻しに失敗しました",
                     error,
                     HalError::cleanup_failed(
-                        "filter registry rollback",
-                        "filter registry entry disappeared after capacity reservation failure",
+                        "filter registryの巻き戻し",
+                        "容量予約失敗後にfilter registry項目が消失しました",
                     ),
                 ))
             };
@@ -1790,11 +1790,11 @@ impl ChildOpenTxn<'_> {
         ) {
             return match self.unregister_filter_runtime_for_open_rollback(
                 filter_entry.id.0,
-                "filter child runtime rollback after demux registration failure",
+                "demux登録失敗後にfilter child runtimeを巻き戻せません",
             ) {
                 Ok(()) => Err(error),
                 Err(cleanup_error) => Err(compose_primary_cleanup_failure(
-                    "filter child runtime open failure",
+                    "filter child runtimeを開けません",
                     error,
                     cleanup_error,
                 )),
@@ -1819,11 +1819,11 @@ impl ChildOpenTxn<'_> {
                 let primary = object_table_error_to_hal(error);
                 match self.unregister_filter_runtime_for_open_rollback(
                     filter_entry.id.0,
-                    "filter child runtime rollback after AIDL object registration failure",
+                    "AIDL object登録失敗後にfilter child runtimeを巻き戻せません",
                 ) {
                     Ok(()) => Err(primary),
                     Err(cleanup_error) => Err(compose_primary_cleanup_failure(
-                        "filter child AIDL object registration failure",
+                        "filter child AIDL objectの登録に失敗しました",
                         primary,
                         cleanup_error,
                     )),
@@ -1861,7 +1861,7 @@ impl ChildOpenTxn<'_> {
         let dvr_capacity = usize::try_from(dvr_capacity).map_err(|_| {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "published DVR capacity cannot be represented as usize",
+                "公開DVR容量をusizeで表現できません",
             )
         })?;
         if self.runtime.registry.dvr_kind_count(dvr_kind)? >= dvr_capacity
@@ -1871,14 +1871,14 @@ impl ChildOpenTxn<'_> {
                 .demux_has_dvr_kind(owner_demux_id, dvr_kind)?
         {
             return Err(HalError::Unsupported(
-                "DVR capability lease is exhausted for the requested kind",
+                "要求された種別のDVR capability leaseを使い切りました",
             ));
         }
         let dvr_entry = self
             .runtime
             .transact_allocate_dvr_runtime(owner_demux_id)
             .map_err(|error| {
-                registry_commit_error_to_hal(error, "DVR runtime allocation failed")
+                registry_commit_error_to_hal(error, "DVR runtimeの割当てに失敗しました")
             })?;
         if let Err(error) = self.runtime.capacity_ledger.reserve_dvr(
             self.runtime.capability_snapshot,
@@ -1893,11 +1893,11 @@ impl ChildOpenTxn<'_> {
                 Err(error)
             } else {
                 Err(compose_primary_cleanup_failure(
-                    "DVR capacity reservation rollback failed",
+                    "DVR capacity reservation 巻き戻しに失敗しました",
                     error,
                     HalError::cleanup_failed(
-                        "DVR registry rollback",
-                        "DVR registry entry disappeared after capacity reservation failure",
+                        "DVR registryの巻き戻し",
+                        "容量予約失敗後にDVR registry項目が消失しました",
                     ),
                 ))
             };
@@ -1910,11 +1910,11 @@ impl ChildOpenTxn<'_> {
         ) {
             return match self.unregister_dvr_runtime_for_open_rollback(
                 dvr_entry.id.0,
-                "DVR child runtime rollback after demux registration failure",
+                "demux登録失敗後にDVR child runtimeを巻き戻せません",
             ) {
                 Ok(()) => Err(error),
                 Err(cleanup_error) => Err(compose_primary_cleanup_failure(
-                    "DVR child runtime open failure",
+                    "DVR child runtimeを開けません",
                     error,
                     cleanup_error,
                 )),
@@ -1939,11 +1939,11 @@ impl ChildOpenTxn<'_> {
                 let primary = object_table_error_to_hal(error);
                 match self.unregister_dvr_runtime_for_open_rollback(
                     dvr_entry.id.0,
-                    "DVR child runtime rollback after AIDL object registration failure",
+                    "AIDL object登録失敗後にDVR child runtimeを巻き戻せません",
                 ) {
                     Ok(()) => Err(primary),
                     Err(cleanup_error) => Err(compose_primary_cleanup_failure(
-                        "DVR child AIDL object registration failure",
+                        "DVR child AIDL objectの登録に失敗しました",
                         primary,
                         cleanup_error,
                     )),
@@ -1967,7 +1967,7 @@ impl ChildOpenTxn<'_> {
             Ok(Some(_)) => Ok(()),
             Ok(None) => Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "filter runtime rollback target is missing",
+                "filter runtimeの巻き戻し対象が見つかりません",
             )),
             Err(error) => Err(error),
         };
@@ -1987,7 +1987,7 @@ impl ChildOpenTxn<'_> {
         finish_open_rollback(
             object_registration_rollback,
             || runtime_cleanup,
-            "filter child object open rollback",
+            "filter child object openの巻き戻し",
         )
     }
 
@@ -2006,7 +2006,7 @@ impl ChildOpenTxn<'_> {
             Ok(Some(_)) => Ok(()),
             Ok(None) => Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "DVR runtime rollback target is missing",
+                "DVR runtimeの巻き戻し対象が見つかりません",
             )),
             Err(error) => Err(error),
         };
@@ -2026,7 +2026,7 @@ impl ChildOpenTxn<'_> {
         finish_open_rollback(
             object_registration_rollback,
             || runtime_cleanup,
-            "DVR child object open rollback",
+            "DVR child object openの巻き戻し",
         )
     }
 }
@@ -2084,11 +2084,11 @@ mod child_open_rollback_diagnostic_tests {
     fn child_open_rollback_diagnostic_records_both_errors() {
         let object_error = HalError::internal(
             HalInternalKind::InvariantViolation,
-            "object rollback failed",
+            "object 巻き戻しに失敗しました",
         );
         let runtime_error = HalError::invalid_state(
             HalInvalidStateKind::InvalidLifecycle,
-            "runtime cleanup target is missing",
+            "runtime後片付け対象が見つかりません",
         );
 
         let record = child_open_rollback_diagnostic_record(
@@ -2100,7 +2100,7 @@ mod child_open_rollback_diagnostic_tests {
             Some(object_error.clone()),
             Some(runtime_error.clone()),
         )
-        .expect("diagnostic is recorded");
+        .expect("診断を記録しました");
 
         assert_eq!(record.kind(), ChildOpenRollbackKind::BothFailed);
         assert_eq!(

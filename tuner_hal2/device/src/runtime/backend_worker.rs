@@ -71,7 +71,7 @@ impl FrontendBackendTunePlan {
         Err(HalError::internal(
             HalInternalKind::InvariantViolation,
             format!(
-                "frontend backend tune plan generation mismatch: plan={} worker={}",
+                "frontend backend選局planの世代が一致しません: plan={} worker={}",
                 self.generation, worker_generation
             ),
         ))
@@ -267,7 +267,7 @@ impl FrontendBackendSession {
     ) -> Result<FrontendTmccPartialReceptionObservation, HalError> {
         let FrontendBackendSessionKind::Px4 { control_path } = &self.kind else {
             return Err(HalError::Unsupported(
-                "TMCC partial reception readback is available only on px4",
+                "TMCC部分受信情報の読み戻しはpx4でのみ利用できます",
             ));
         };
         classify_tmcc_partial_reception_read(read_px4_boolean(
@@ -281,7 +281,7 @@ impl FrontendBackendSession {
     pub fn observe_tmcc_tsid_list(&self) -> Result<FrontendTmccTsidListObservation, HalError> {
         let FrontendBackendSessionKind::Px4 { control_path } = &self.kind else {
             return Err(HalError::Unsupported(
-                "TMCC TSID list readback is available only on px4",
+                "TMCC TSID一覧の読み戻しはpx4でのみ利用できます",
             ));
         };
         let mut raw = PtxTmccTsidList::default();
@@ -334,7 +334,7 @@ impl FrontendBackendSession {
             }
             _ => Err(HalError::internal(
                 maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                "frontend backend session and live reader descriptor kind mismatch",
+                "frontend backend sessionとlive readerのdescriptor種別が一致しません",
             )),
         }
     }
@@ -410,18 +410,18 @@ impl FrontendBackendSubmitFailure {
         };
         let rollback_error = self.rollback_failure.as_ref().map(|failure| {
             HalError::cleanup_failed(
-                "frontend backend tune巻戻し",
-                format!("step={:?} error={}", failure.step, failure.error),
+                "frontend backend選局の巻き戻し",
+                format!("段階={:?} エラー={}", failure.step, failure.error),
             )
         });
         let rollback_detail = if self.rollback_succeeded {
-            "rollback succeeded"
+            "巻き戻しに成功しました"
         } else {
-            "rollback failed"
+            "巻き戻しに失敗しました"
         };
         let cleanup = rollback_error.unwrap_or_else(|| {
             HalError::cleanup_failed(
-                "frontend backend tune transaction",
+                "frontend backend選局トランザクション",
                 format!(
                     "generation={} step={step:?} {rollback_detail}",
                     self.generation
@@ -452,7 +452,7 @@ enum FrontendBackendSubmitThreadOutcome {
 }
 
 #[derive(Debug)]
-#[must_use = "frontend backend submit ticket must be claimed, aborted, or transferred to the reaper"]
+#[must_use = "frontend backend submit ticketは取得、取消し、または回収器への移管が必要です"]
 pub(super) struct FrontendBackendSubmitTicket {
     generation: u64,
     ready: Receiver<FrontendBackendSubmitReady>,
@@ -587,7 +587,7 @@ impl FrontendBackendSubmitTicket {
                         let error = stop_result.err().unwrap_or_else(|| {
                             HalError::internal(
                                 HalInternalKind::InvariantViolation,
-                                "frontend backend submit was aborted after claim",
+                                "取得後にfrontend backend submitを取り消しました",
                             )
                         });
                         Ok(FrontendBackendSubmitWait::Completed(Err(
@@ -621,7 +621,7 @@ impl FrontendBackendSubmitTicket {
                         let error = stop_result.err().unwrap_or_else(|| {
                             HalError::internal(
                                 HalInternalKind::InvariantViolation,
-                                "frontend backend submit reported failure but returned a session",
+                                "frontend backend submitは失敗を報告しましたがsessionを返しました",
                             )
                         });
                         Ok(FrontendBackendSubmitWait::Completed(Err(
@@ -632,7 +632,7 @@ impl FrontendBackendSubmitTicket {
                         let error = stop_result.err().unwrap_or_else(|| {
                             HalError::internal(
                                 HalInternalKind::InvariantViolation,
-                                "frontend backend submit failure changed to abort",
+                                "frontend backend submitの失敗状態が取消しへ変化しました",
                             )
                         });
                         Ok(FrontendBackendSubmitWait::Completed(Err(
@@ -674,7 +674,7 @@ impl FrontendBackendSubmitTicket {
                         let stop_error = session.close().err().unwrap_or_else(|| {
                             HalError::internal(
                                 HalInternalKind::InvariantViolation,
-                                "frontend backend submit readiness disconnected after success",
+                                "成功後にfrontend backend submitの準備状態が切断されました",
                             )
                         });
                         Ok(FrontendBackendSubmitWait::Completed(Err(
@@ -685,7 +685,7 @@ impl FrontendBackendSubmitTicket {
                         let error = stop_result.err().unwrap_or_else(|| {
                             HalError::internal(
                                 HalInternalKind::InvariantViolation,
-                                "frontend backend submit readiness disconnected",
+                                "frontend backend submitの準備状態が切断されました",
                             )
                         });
                         Ok(FrontendBackendSubmitWait::Completed(Err(
@@ -703,7 +703,7 @@ impl FrontendBackendSubmitTicket {
             .ok_or_else(|| {
                 HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "frontend backend submit cleanup owner is missing",
+                    "frontend backend submitの後片付けownerがありません",
                 )
             })?
             .wait_until_finished(deadline)
@@ -732,7 +732,7 @@ impl FrontendBackendSubmitTicket {
         let owner = self.owner.take().ok_or_else(|| {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "frontend backend submit owner is missing",
+                "frontend backend submit ownerがありません",
             )
         })?;
         owner.join_after_stop()
@@ -778,12 +778,12 @@ fn frontend_backend_submit_cleanup_result(
             let stop_result = session.close();
             let invariant = HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "frontend backend submit cleanup observed a claimed session",
+                "frontend backend submitの後片付けで取得済みsessionを検出しました",
             );
             match stop_result {
                 Ok(()) => Err(invariant),
                 Err(stop_error) => Err(compose_primary_cleanup_failure(
-                    "frontend backend submit cleanup",
+                    "frontend backend submitの後片付け",
                     invariant,
                     stop_error,
                 )),
@@ -945,7 +945,7 @@ fn px4_lnb_voltage_value(voltage: FrontendLnbVoltage) -> Result<i32, HalError> {
         FrontendLnbVoltage::Voltage15V => Ok(15),
         FrontendLnbVoltage::Voltage11V => Err(HalError::invalid_argument(
             HalInvalidArgumentKind::NumericRange,
-            "px4 LNB backend accepts only NONE or 15V",
+            "px4 LNB backendはNONEまたは15Vのみ受け付けます",
         )),
     }
 }
@@ -1029,7 +1029,7 @@ impl FrontendBackendTuneExecutor {
             .ok_or_else(|| {
                 HalError::internal(
                     maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                    "backend tune executor file was already consumed",
+                    "backend選局executorのfileは既に消費されています",
                 )
             })
     }
@@ -1180,7 +1180,7 @@ impl FrontendBackendTuneExecutor {
         let file = self.file.take().ok_or_else(|| {
             HalError::internal(
                 maleicacid_tuner_hal2_common::HalInternalKind::InvariantViolation,
-                "backend tune executor file was already consumed",
+                "backend選局executorのfileは既に消費されています",
             )
         })?;
         Ok(FrontendBackendSession {
@@ -1265,7 +1265,7 @@ pub fn run_frontend_backend_tune_worker_with_previous(
                 .ok_or_else(|| {
                     HalError::internal(
                         HalInternalKind::InvariantViolation,
-                        "frontend poll deadline overflow",
+                        "frontendポーリング期限が上限を超えました",
                     )
                 })?,
         ));
@@ -1285,7 +1285,7 @@ pub fn run_frontend_backend_tune_worker_with_previous(
         (Ok(_), result) => result,
         (Err(error), Ok(())) => Err(error),
         (Err(primary), Err(cleanup)) => Err(compose_primary_cleanup_failure(
-            "frontend cancellation lookup and backend cleanup failed",
+            "frontendの取消し検索とbackend後片付けの両方に失敗しました",
             primary,
             cleanup,
         )),
@@ -1362,7 +1362,7 @@ fn decode_px4_boolean(
             operation: op,
             path: Some(path.as_path().to_path_buf()),
             errno: None,
-            detail: HalErrorDetail::new(format!("driver returned a non-boolean value: {value}")),
+            detail: HalErrorDetail::new(format!("ドライバーが真偽値以外を返しました: {value}")),
         }),
     }
 }
