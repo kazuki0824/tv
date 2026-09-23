@@ -19,8 +19,6 @@ use maleicacid_tuner_hal2_domain_request::{
 
 const DVR_PACKET_SIZE_TS_188: i64 = 188;
 
-pub use maleicacid_tuner_hal2_domain_request::{AidlMethodAdapter, AidlMethodCall, AidlMethodPlan};
-
 fn invalid(detail: &'static str) -> HalError {
     HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, detail)
 }
@@ -231,6 +229,7 @@ pub fn build_lnb_satellite_position_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maleicacid_tuner_hal2_domain_request::{AidlMethodAdapter, AidlMethodCall};
     use crate::AIDL_TRANSACTION_TABLE;
     use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
         PlaybackSettings::PlaybackSettings, RecordSettings::RecordSettings,
