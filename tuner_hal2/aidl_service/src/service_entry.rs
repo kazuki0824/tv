@@ -69,6 +69,7 @@ fn px4_frontend_systems(unit: i32, device_name: &str) -> Vec<FrontendSystem> {
         return match unit.rem_euclid(4) {
             0 | 1 => vec![FrontendSystem::IsdbS],
             2 | 3 => vec![FrontendSystem::IsdbT],
+            // 正の除数4によるユークリッド剰余は必ず0～3となり、上の分岐で全値を処理済み。
             _ => unreachable!("rem_euclid(4) must stay within 0..=3"),
         };
     }
