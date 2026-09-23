@@ -172,12 +172,12 @@ fn finish_frontend_worker_execution(
 type SharedRuntime = Arc<Mutex<TunerServiceRuntime>>;
 
 enum FrontendTuneWorkerActivation {
-    Run(FrontendWorkerStopTicket),
+    Run,
     Abort,
 }
 
 enum FrontendScanWorkerActivation {
-    Run(FrontendWorkerStopTicket),
+    Run,
     Abort,
 }
 
@@ -1813,6 +1813,10 @@ fn map_frontend_worker_start_error(
             error
         }
         FrontendWorkerStartError::SpawnFailed { error } => error,
+        FrontendWorkerStartError::PreparedSubmitUnavailable { .. } => HalError::invalid_state(
+            HalInvalidStateKind::InvalidLifecycle,
+            "準備済みfrontend backend submitは既に利用できません",
+        ),
     }
 }
 
@@ -1822,6 +1826,14 @@ fn compose_frontend_cleanup_error(
     cleanup: HalError,
 ) -> HalError {
     compose_primary_cleanup_failure(context, primary, cleanup)
+}
+
+fn complete_prepared_submit_cleanup(ticket: FrontendWorkerStopTicket) -> Result<(), HalError> {
+    let outcome = ticket.complete();
+    match frontend_worker_stop_failure(&outcome) {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 fn compose_frontend_worker_cleanup_record_failure(
@@ -3396,34 +3408,47 @@ fn finish_committed_tune_replacement(
         let backend = transition.entry.backend;
         let tune_notifier = transition.tune_notifier;
         let (activation_sender, activation_receiver) = mpsc::sync_channel(1);
-        if let Err(start_error) = guard.frontend_txn().start_worker(
-            frontend_id,
-            replacement_kind,
-            generation,
-            move |ctx| {
-                let result = match activation_receiver.recv() {
-                    Ok(FrontendTuneWorkerActivation::Run(ticket)) => {
-                        run_frontend_backend_tune_submit_worker(
-                            Arc::clone(&runtime_for_worker),
-                            &ctx,
-                            ticket,
-                            backend,
-                            frontend_id,
-                            generation,
-                            tune_notifier,
-                        )
-                    }
-                    Ok(FrontendTuneWorkerActivation::Abort) => Ok(()),
-                    Err(_) => Err(HalError::internal(
+        let worker_job = move |ctx, ticket| {
+            let result = match activation_receiver.recv() {
+                Ok(FrontendTuneWorkerActivation::Run) => run_frontend_backend_tune_submit_worker(
+                    Arc::clone(&runtime_for_worker),
+                    &ctx,
+                    ticket,
+                    backend,
+                    frontend_id,
+                    generation,
+                    tune_notifier,
+                ),
+                Ok(FrontendTuneWorkerActivation::Abort) => complete_prepared_submit_cleanup(ticket),
+                Err(_) => {
+                    let primary = HalError::internal(
                         HalInternalKind::InvariantViolation,
-                        "frontend tune worker activation channel disconnected",
-                    )),
-                };
-                finish_frontend_worker_execution(&runtime_for_worker, &ctx, result)
-            },
-        ) {
+                        "frontend tune workerのactivation channelが切断されました",
+                    );
+                    match complete_prepared_submit_cleanup(ticket) {
+                        Ok(()) => Err(primary),
+                        Err(cleanup) => Err(compose_frontend_cleanup_error(
+                            "frontend tune worker activation切断後のcleanupにも失敗しました",
+                            primary,
+                            cleanup,
+                        )),
+                    }
+                }
+            };
+            finish_frontend_worker_execution(&runtime_for_worker, &ctx, result)
+        };
+        if let Err(start_error) = guard
+            .frontend_txn()
+            .start_worker_with_prepared_submit(ticket, worker_job)
+        {
             let error = map_frontend_worker_start_error(&guard, start_error);
-            let cleanup = ticket.complete();
+            let cleanup = guard.frontend_txn().request_worker_stop_for_join(
+                frontend_id,
+                replacement_kind,
+                FrontendWorkerCancelReason::StopRequested,
+            );
+            drop(guard);
+            let cleanup = cleanup.complete();
             return match frontend_worker_stop_failure(&cleanup) {
                 Some(cleanup_error) => Err(compose_frontend_cleanup_error(
                     "frontend backend preparation cleanup failed after tune worker start failure",
@@ -3447,7 +3472,13 @@ fn finish_committed_tune_replacement(
                         "frontend tune worker abort activation failed",
                     )
                 });
-            let cleanup = ticket.complete();
+            let cleanup = guard.frontend_txn().request_worker_stop_for_join(
+                frontend_id,
+                replacement_kind,
+                FrontendWorkerCancelReason::StopRequested,
+            );
+            drop(guard);
+            let cleanup = cleanup.complete();
             let mut error = commit_error;
             if let Some(cleanup_error) = frontend_worker_stop_failure(&cleanup) {
                 error = compose_frontend_cleanup_error(
@@ -3465,28 +3496,16 @@ fn finish_committed_tune_replacement(
             }
             return Err(error);
         }
-        match activation_sender.send(FrontendTuneWorkerActivation::Run(ticket)) {
+        match activation_sender.send(FrontendTuneWorkerActivation::Run) {
             Ok(()) => Ok(()),
             Err(error) => match error.0 {
-                FrontendTuneWorkerActivation::Run(ticket) => {
-                    let primary = HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "frontend tune worker ended before backend activation",
-                    );
-                    let cleanup = ticket.complete();
-                    let cleanup_error = frontend_worker_stop_failure(&cleanup);
-                    Err(match cleanup_error {
-                        Some(cleanup_error) => compose_frontend_cleanup_error(
-                            "frontend backend preparation cleanup failed after tune activation failure",
-                            primary,
-                            cleanup_error,
-                        ),
-                        None => primary,
-                    })
-                }
+                FrontendTuneWorkerActivation::Run => Err(HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "backend activation前にfrontend tune workerが終了しました",
+                )),
                 FrontendTuneWorkerActivation::Abort => Err(HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "frontend tune worker returned an unexpected abort activation",
+                    "frontend tune workerから想定外のabort activationが返されました",
                 )),
             },
         }
@@ -4206,38 +4225,51 @@ fn finish_committed_scan_replacement(
         let cleanup_diagnostic_sink = transition.cleanup_diagnostic_sink.clone();
         let candidates_for_worker = transition.candidates.clone();
         let (activation_sender, activation_receiver) = mpsc::sync_channel(1);
-        if let Err(start_error) = guard.frontend_txn().start_worker(
-            frontend_id,
-            FrontendWorkerKind::Scan,
-            generation,
-            move |ctx| {
-                let result = match activation_receiver.recv() {
-                    Ok(FrontendScanWorkerActivation::Run(ticket)) => {
-                        run_frontend_backend_scan_session_worker(
-                            Arc::clone(&runtime_for_worker),
-                            &ctx,
-                            backend,
-                            device_path,
-                            candidates_for_worker,
-                            Some(ticket),
-                            None,
-                            target,
-                            scan_notifier,
-                            cleanup_diagnostic_sink,
-                            replacement_context,
-                        )
-                    }
-                    Ok(FrontendScanWorkerActivation::Abort) => Ok(()),
-                    Err(_) => Err(HalError::internal(
+        let worker_job = move |ctx, ticket| {
+            let result = match activation_receiver.recv() {
+                Ok(FrontendScanWorkerActivation::Run) => run_frontend_backend_scan_session_worker(
+                    Arc::clone(&runtime_for_worker),
+                    &ctx,
+                    backend,
+                    device_path,
+                    candidates_for_worker,
+                    Some(ticket),
+                    None,
+                    target,
+                    scan_notifier,
+                    cleanup_diagnostic_sink,
+                    replacement_context,
+                ),
+                Ok(FrontendScanWorkerActivation::Abort) => complete_prepared_submit_cleanup(ticket),
+                Err(_) => {
+                    let primary = HalError::internal(
                         HalInternalKind::InvariantViolation,
-                        "frontend scan worker activation channel disconnected",
-                    )),
-                };
-                finish_frontend_worker_execution(&runtime_for_worker, &ctx, result)
-            },
-        ) {
+                        "frontend scan workerのactivation channelが切断されました",
+                    );
+                    match complete_prepared_submit_cleanup(ticket) {
+                        Ok(()) => Err(primary),
+                        Err(cleanup) => Err(compose_frontend_cleanup_error(
+                            "frontend scan worker activation切断後のcleanupにも失敗しました",
+                            primary,
+                            cleanup,
+                        )),
+                    }
+                }
+            };
+            finish_frontend_worker_execution(&runtime_for_worker, &ctx, result)
+        };
+        if let Err(start_error) = guard
+            .frontend_txn()
+            .start_worker_with_prepared_submit(ticket, worker_job)
+        {
             let error = map_frontend_worker_start_error(&guard, start_error);
-            let cleanup = ticket.complete();
+            let cleanup = guard.frontend_txn().request_worker_stop_for_join(
+                frontend_id,
+                FrontendWorkerKind::Scan,
+                FrontendWorkerCancelReason::StopRequested,
+            );
+            drop(guard);
+            let cleanup = cleanup.complete();
             return match frontend_worker_stop_failure(&cleanup) {
                 Some(cleanup_error) => Err(compose_frontend_cleanup_error(
                     "frontend backend preparation cleanup failed after scan worker start failure",
@@ -4262,7 +4294,13 @@ fn finish_committed_scan_replacement(
                         "frontend scan worker abort activation failed",
                     )
                 });
-            let cleanup = ticket.complete();
+            let cleanup = guard.frontend_txn().request_worker_stop_for_join(
+                frontend_id,
+                FrontendWorkerKind::Scan,
+                FrontendWorkerCancelReason::StopRequested,
+            );
+            drop(guard);
+            let cleanup = cleanup.complete();
             let mut error = commit_error;
             if let Some(cleanup_error) = frontend_worker_stop_failure(&cleanup) {
                 error = compose_frontend_cleanup_error(
@@ -4280,28 +4318,16 @@ fn finish_committed_scan_replacement(
             }
             return Err(error);
         }
-        match activation_sender.send(FrontendScanWorkerActivation::Run(ticket)) {
+        match activation_sender.send(FrontendScanWorkerActivation::Run) {
             Ok(()) => Ok(()),
             Err(error) => match error.0 {
-                FrontendScanWorkerActivation::Run(ticket) => {
-                    let primary = HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "frontend scan worker ended before backend activation",
-                    );
-                    let cleanup = ticket.complete();
-                    let cleanup_error = frontend_worker_stop_failure(&cleanup);
-                    Err(match cleanup_error {
-                        Some(cleanup_error) => compose_frontend_cleanup_error(
-                            "frontend backend preparation cleanup failed after scan activation failure",
-                            primary,
-                            cleanup_error,
-                        ),
-                        None => primary,
-                    })
-                }
+                FrontendScanWorkerActivation::Run => Err(HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "backend activation前にfrontend scan workerが終了しました",
+                )),
                 FrontendScanWorkerActivation::Abort => Err(HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "frontend scan worker returned an unexpected abort activation",
+                    "frontend scan workerから想定外のabort activationが返されました",
                 )),
             },
         }
