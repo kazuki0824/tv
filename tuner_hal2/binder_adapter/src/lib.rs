@@ -20,7 +20,7 @@ pub use aidl_frontend_settings::{aidl_frontend_settings_to_request, aidl_scan_ty
 pub use aidl_method::{
     build_dvr_configure_request, build_dvr_open_request, build_filter_av_stream_type_request,
     build_filter_delay_hint_request, build_lnb_satellite_position_request, build_lnb_tone_request,
-    build_lnb_voltage_request, AidlMethodAdapter, AidlMethodCall, AidlMethodPlan,
+    build_lnb_voltage_request,
 };
 pub use maleicacid_tuner_hal2_domain_request::{
     AidlApi, AidlDomainRequest, AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan,
