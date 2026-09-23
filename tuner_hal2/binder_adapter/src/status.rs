@@ -131,7 +131,8 @@ impl AidlStatusMapper {
             | HalError::Busy { .. } => TunerStatusCode::Unavailable,
             HalError::OutOfMemory { .. } => TunerStatusCode::OutOfMemory,
             HalError::Internal { .. }
-            | HalError::LockPoisoned(_) | HalError::WorkerLockPoisoned { .. }
+            | HalError::LockPoisoned(_)
+            | HalError::WorkerLockPoisoned { .. }
             | HalError::FilterGateLockPoisoned { .. }
             | HalError::ServiceRuntimeLockPoisoned { .. }
             | HalError::WorkerCleanupFailed { .. }

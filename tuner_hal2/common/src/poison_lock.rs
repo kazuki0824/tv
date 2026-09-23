@@ -35,7 +35,11 @@ pub struct PoisonTrackedMutex<T> {
 
 impl<T> PoisonTrackedMutex<T> {
     pub fn new(value: T, kind: RuntimeLockKind) -> Self {
-        Self { inner: Mutex::new(value), kind, poison_count: AtomicU64::new(0) }
+        Self {
+            inner: Mutex::new(value),
+            kind,
+            poison_count: AtomicU64::new(0),
+        }
     }
 
     pub fn lock(&self) -> Result<MutexGuard<'_, T>, LockPoisonDiagnostic> {
@@ -45,7 +49,11 @@ impl<T> PoisonTrackedMutex<T> {
         })
     }
 
-    pub fn wait<'a>(&self, condition: &Condvar, guard: MutexGuard<'a, T>) -> Result<MutexGuard<'a, T>, LockPoisonDiagnostic> {
+    pub fn wait<'a>(
+        &self,
+        condition: &Condvar,
+        guard: MutexGuard<'a, T>,
+    ) -> Result<MutexGuard<'a, T>, LockPoisonDiagnostic> {
         condition.wait(guard).map_err(|error| {
             drop(error);
             self.record_poison()
@@ -53,9 +61,18 @@ impl<T> PoisonTrackedMutex<T> {
     }
 
     fn record_poison(&self) -> LockPoisonDiagnostic {
-        let previous = self.poison_count.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| Some(count.saturating_add(1))).unwrap_or_else(|count| count);
+        let previous = self
+            .poison_count
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                Some(count.saturating_add(1))
+            })
+            .unwrap_or_else(|count| count);
         let poison_count = previous.saturating_add(1);
-        LockPoisonDiagnostic { lock: self.kind, poison_count, counter_saturated: poison_count == u64::MAX }
+        LockPoisonDiagnostic {
+            lock: self.kind,
+            poison_count,
+            counter_saturated: poison_count == u64::MAX,
+        }
     }
 }
 
@@ -63,7 +80,12 @@ impl<T> PoisonTrackedMutex<T> {
 mod tests {
     #[test]
     fn poisoned_condition_reacquisition_keeps_identity() {
-        let lock = std::sync::Arc::new(PoisonTrackedMutex::new((), RuntimeLockKind::DvrQueueEpoch { queue_identity: Some(7) }));
+        let lock = std::sync::Arc::new(PoisonTrackedMutex::new(
+            (),
+            RuntimeLockKind::DvrQueueEpoch {
+                queue_identity: Some(7),
+            },
+        ));
         let condition = std::sync::Arc::new(Condvar::new());
         let guard = lock.lock().unwrap();
         let other_lock = std::sync::Arc::clone(&lock);
@@ -83,7 +105,12 @@ mod tests {
                 Err(poison) => break poison,
             }
         };
-        assert_eq!(poison.lock, RuntimeLockKind::DvrQueueEpoch { queue_identity: Some(7) });
+        assert_eq!(
+            poison.lock,
+            RuntimeLockKind::DvrQueueEpoch {
+                queue_identity: Some(7)
+            }
+        );
         worker.join().unwrap();
     }
 

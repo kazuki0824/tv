@@ -37,9 +37,8 @@ use super::filter_producer_drain_gate::{
 };
 use super::pcr_clock_anchor::{PcrClockAnchorStore, PcrObservationOutcome};
 use super::queue_runtime::{
-    DvrQueueDrainStep, FilterDrainTxn, QueueDescriptorExportPlan,
-    QueueDescriptorExportTarget, QueueEpochDrainTxn, QueueRuntime, QueueRuntimeError,
-    QueueRuntimeErrorKind,
+    DvrQueueDrainStep, FilterDrainTxn, QueueDescriptorExportPlan, QueueDescriptorExportTarget,
+    QueueEpochDrainTxn, QueueRuntime, QueueRuntimeError, QueueRuntimeErrorKind,
 };
 use super::source_boundary::{
     apply_filter_source_boundary_change, connect_filter_source_boundary_change,
@@ -113,8 +112,10 @@ pub enum DemuxRuntimeErrorKind {
     GenerationExhausted,
     QueueRuntimeFailure,
     QueueRuntimeFailureWithContext(QueueRuntimeError),
-    QueueRuntimeFailureRollbackFailed,
-    QueueRuntimeFailureWithRollback { primary: QueueRuntimeError, rollback: QueueRuntimeError },
+    QueueRuntimeFailureWithRollback {
+        primary: QueueRuntimeError,
+        rollback: QueueRuntimeError,
+    },
     FmqDeliveryFailed(FmqFailureKind),
     FmqDeliveryRollbackFailed {
         delivery: FmqFailureKind,
@@ -542,17 +543,12 @@ impl DemuxRuntimeError {
     }
     pub const fn queue_runtime_error(id: i32, error: QueueRuntimeError) -> Self {
         match error.kind {
-            QueueRuntimeErrorKind::GateLockPoisoned { .. } | QueueRuntimeErrorKind::EpochLockPoisoned(_) => Self {
+            QueueRuntimeErrorKind::GateLockPoisoned { .. }
+            | QueueRuntimeErrorKind::EpochLockPoisoned(_) => Self {
                 kind: DemuxRuntimeErrorKind::QueueRuntimeFailureWithContext(error),
                 id: Some(id),
             },
             _ => Self::queue_runtime_failure(id),
-        }
-    }
-    pub const fn queue_runtime_failure_rollback_failed(id: i32) -> Self {
-        Self {
-            kind: DemuxRuntimeErrorKind::QueueRuntimeFailureRollbackFailed,
-            id: Some(id),
         }
     }
     pub const fn fmq_delivery_failure(id: i32, failure: FmqFailureKind) -> Self {
@@ -2763,10 +2759,10 @@ impl DemuxRuntime {
             let mut buffer = Vec::new();
             if dvr.kind() == DvrKind::Playback {
                 let buffer_size = usize::try_from(dvr.buffer_size())
-                    .map_err(|error| DemuxRuntimeError::queue_runtime_error(dvr_id, error))?;
+                    .map_err(|_| DemuxRuntimeError::queue_runtime_failure(dvr_id))?;
                 buffer
                     .try_reserve_exact(buffer_size)
-                    .map_err(|error| DemuxRuntimeError::queue_runtime_error(dvr_id, error))?;
+                    .map_err(|_| DemuxRuntimeError::queue_runtime_failure(dvr_id))?;
                 buffer.resize(buffer_size, 0);
             }
             buffer
@@ -3171,7 +3167,10 @@ impl DemuxRuntime {
                     Some(rollback) => DvrQueueCleanupCommitError::with_rollback_failure(
                         step,
                         DemuxRuntimeError {
-                            kind: DemuxRuntimeErrorKind::QueueRuntimeFailureWithRollback { primary: error.primary, rollback },
+                            kind: DemuxRuntimeErrorKind::QueueRuntimeFailureWithRollback {
+                                primary: error.primary,
+                                rollback,
+                            },
                             id: Some(dvr_id),
                         },
                     ),
@@ -3447,7 +3446,10 @@ impl DemuxRuntime {
                 if let Err(rollback) = token.abort() {
                     self.quarantine_dvr_runtime(dvr_id);
                     return Err(DemuxRuntimeError {
-                        kind: DemuxRuntimeErrorKind::QueueRuntimeFailureWithRollback { primary, rollback },
+                        kind: DemuxRuntimeErrorKind::QueueRuntimeFailureWithRollback {
+                            primary,
+                            rollback,
+                        },
                         id: Some(dvr_id),
                     });
                 }

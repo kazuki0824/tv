@@ -243,15 +243,24 @@ mod tests {
 
     #[test]
     fn poisoned_owner_slot_rejects_enqueue_with_identity() {
-        let queue = CleanupReaperQueue::from_snapshot(maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::default().capability_snapshot());
+        let queue = CleanupReaperQueue::from_snapshot(
+            maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::default()
+                .capability_snapshot(),
+        );
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = queue.runtime.lock().unwrap();
             panic!("汚染を注入");
         }));
         // インストール状態に依存せず、汚染した所有者格納領域を読まない。
-        let handle = AidlObjectHandle::new(AidlObjectKind::Filter, AidlObjectId(7), AidlObjectGeneration(3));
+        let handle = AidlObjectHandle::new(
+            AidlObjectKind::Filter,
+            AidlObjectId(7),
+            AidlObjectGeneration(3),
+        );
         let error = queue.enqueue(handle, CleanupStep::StopWorker).unwrap_err();
-        assert!(matches!(error, HalError::LockPoisoned(poison) if poison.lock == RuntimeLockKind::CleanupReaperOwner && poison.poison_count == 1));
+        assert!(
+            matches!(error, HalError::LockPoisoned(poison) if poison.lock == RuntimeLockKind::CleanupReaperOwner && poison.poison_count == 1)
+        );
     }
 
     use super::*;

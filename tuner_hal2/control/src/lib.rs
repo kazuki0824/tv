@@ -1,5 +1,5 @@
-use maleicacid_tuner_hal2_common::{PoisonTrackedMutex, RuntimeLockKind};
 use maleicacid_tuner_hal2_common::WorkerCleanupFailureKind;
+use maleicacid_tuner_hal2_common::{PoisonTrackedMutex, RuntimeLockKind};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkerRuntimeOwnerFailure {
@@ -1146,7 +1146,10 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
         Self {
             capacity: capacity.max(1),
             deadline,
-            state: PoisonTrackedMutex::new(WorkerRuntimeSupervisorMaps::default(), RuntimeLockKind::SupervisorState),
+            state: PoisonTrackedMutex::new(
+                WorkerRuntimeSupervisorMaps::default(),
+                RuntimeLockKind::SupervisorState,
+            ),
             worker: std::sync::Mutex::new(SupervisorWorkerState::NotStarted),
             worker_context: WorkerContext::new(),
         }
@@ -1158,8 +1161,15 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
     pub fn deadline(&self) -> std::time::Duration {
         self.deadline
     }
-    pub fn lock_state(&self) -> Result<std::sync::MutexGuard<'_, WorkerRuntimeSupervisorMaps<K, A, R>>, maleicacid_tuner_hal2_common::HalError> {
-        self.state.lock().map_err(maleicacid_tuner_hal2_common::HalError::LockPoisoned)
+    pub fn lock_state(
+        &self,
+    ) -> Result<
+        std::sync::MutexGuard<'_, WorkerRuntimeSupervisorMaps<K, A, R>>,
+        maleicacid_tuner_hal2_common::HalError,
+    > {
+        self.state
+            .lock()
+            .map_err(maleicacid_tuner_hal2_common::HalError::LockPoisoned)
     }
     pub fn notify_worker(&self) {
         self.worker_context.wake.notify();
@@ -1387,7 +1397,8 @@ mod tests {
 
     #[test]
     fn supervisor_state_poison_is_not_worker_slot_poison() {
-        let supervisor = super::WorkerRuntime::supervisor::<u8, (), ()>(4, std::time::Duration::from_secs(1));
+        let supervisor =
+            super::WorkerRuntime::supervisor::<u8, (), ()>(4, std::time::Duration::from_secs(1));
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = supervisor.lock_state().unwrap();
             panic!("汚染を注入");

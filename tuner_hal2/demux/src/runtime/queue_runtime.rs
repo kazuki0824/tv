@@ -301,8 +301,16 @@ pub(crate) struct DvrQueueDrainCommitError {
 }
 
 impl DvrQueueDrainCommitError {
-    fn after_abort(step: DvrQueueDrainStep, primary: QueueRuntimeError, abort: Result<(), QueueRuntimeError>) -> Self {
-        Self { step, primary, rollback: abort.err() }
+    fn after_abort(
+        step: DvrQueueDrainStep,
+        primary: QueueRuntimeError,
+        abort: Result<(), QueueRuntimeError>,
+    ) -> Self {
+        Self {
+            step,
+            primary,
+            rollback: abort.err(),
+        }
     }
 }
 
@@ -316,7 +324,10 @@ impl Drop for QueueEpochDrainTxn {
 }
 
 fn epoch_poison(poison: LockPoisonDiagnostic) -> QueueRuntimeError {
-    QueueRuntimeError::new(QueueRuntimeErrorKind::EpochLockPoisoned(poison), "DVR queue epoch lock poisoned")
+    QueueRuntimeError::new(
+        QueueRuntimeErrorKind::EpochLockPoisoned(poison),
+        "DVR queue epoch lock poisoned",
+    )
 }
 
 fn protocol_error(detail: &'static str) -> QueueRuntimeError {
@@ -428,11 +439,14 @@ impl QueueRuntime {
             wake_pending: Arc::new(AtomicBool::new(false)),
             dvr_epoch: use_dvr_epoch_protocol.then(|| {
                 Arc::new(QueueEpochProtocol {
-                    state: PoisonTrackedMutex::new(QueueEpochProtocolState {
-                        state: QueueEpochState::Open,
-                        epoch: 0,
-                        admitted_transaction_count: 0,
-                    }, RuntimeLockKind::DvrQueueEpoch { queue_identity }),
+                    state: PoisonTrackedMutex::new(
+                        QueueEpochProtocolState {
+                            state: QueueEpochState::Open,
+                            epoch: 0,
+                            admitted_transaction_count: 0,
+                        },
+                        RuntimeLockKind::DvrQueueEpoch { queue_identity },
+                    ),
                     drained: Condvar::new(),
                     queue_identity,
                 })
@@ -480,18 +494,30 @@ impl QueueRuntime {
     {
         let Some(protocol) = self.dvr_epoch.as_ref() else {
             let abort = drain.abort();
-            return Err(DvrQueueDrainCommitError::after_abort(DvrQueueDrainStep::EpochCommit, protocol_error("DVR queue epoch commit rejected"), abort));
+            return Err(DvrQueueDrainCommitError::after_abort(
+                DvrQueueDrainStep::EpochCommit,
+                protocol_error("DVR queue epoch commit rejected"),
+                abort,
+            ));
         };
         if !Arc::ptr_eq(protocol, &drain.protocol) {
             let abort = drain.abort();
-            return Err(DvrQueueDrainCommitError::after_abort(DvrQueueDrainStep::EpochCommit, protocol_error("DVR queue epoch commit rejected"), abort));
+            return Err(DvrQueueDrainCommitError::after_abort(
+                DvrQueueDrainStep::EpochCommit,
+                protocol_error("DVR queue epoch commit rejected"),
+                abort,
+            ));
         }
         let mut state = match protocol.state.lock() {
             Ok(state) => state,
             Err(poison) => {
                 // 汚染と取消し失敗を両方保持し、未消費権限の破棄時も受付を再開しない。
                 let abort = drain.abort();
-                return Err(DvrQueueDrainCommitError::after_abort(DvrQueueDrainStep::EpochCommit, epoch_poison(poison), abort));
+                return Err(DvrQueueDrainCommitError::after_abort(
+                    DvrQueueDrainStep::EpochCommit,
+                    epoch_poison(poison),
+                    abort,
+                ));
             }
         };
         if state.state != QueueEpochState::Draining
@@ -500,7 +526,11 @@ impl QueueRuntime {
         {
             drop(state);
             let abort = drain.abort();
-            return Err(DvrQueueDrainCommitError::after_abort(DvrQueueDrainStep::EpochCommit, protocol_error("DVR queue epoch commit rejected"), abort));
+            return Err(DvrQueueDrainCommitError::after_abort(
+                DvrQueueDrainStep::EpochCommit,
+                protocol_error("DVR queue epoch commit rejected"),
+                abort,
+            ));
         }
 
         // FmqQueue::clear()はfailure-atomicで、allocationをexact readより先に行い、
@@ -511,7 +541,11 @@ impl QueueRuntime {
             Err(error) => {
                 drop(state);
                 let abort = drain.abort();
-                return Err(DvrQueueDrainCommitError::after_abort(DvrQueueDrainStep::QueueClear, error, abort));
+                return Err(DvrQueueDrainCommitError::after_abort(
+                    DvrQueueDrainStep::QueueClear,
+                    error,
+                    abort,
+                ));
             }
         };
         state.epoch = drain.next_epoch;
@@ -573,10 +607,7 @@ impl QueueRuntime {
             .dvr_epoch
             .as_ref()
             .ok_or_else(|| protocol_error("DVR queue epoch protocol is not installed"))?;
-        let mut state = protocol
-            .state
-            .lock()
-            .map_err(epoch_poison)?;
+        let mut state = protocol.state.lock().map_err(epoch_poison)?;
         if state.state != QueueEpochState::Open {
             return Err(protocol_error("DVR queue epoch is not open"));
         }
@@ -586,7 +617,10 @@ impl QueueRuntime {
             .ok_or_else(|| protocol_error("DVR queue epoch exhausted"))?;
         state.state = QueueEpochState::Draining;
         while state.admitted_transaction_count != 0 {
-            state = protocol.state.wait(&protocol.drained, state).map_err(epoch_poison)?;
+            state = protocol
+                .state
+                .wait(&protocol.drained, state)
+                .map_err(epoch_poison)?;
             if state.state != QueueEpochState::Draining {
                 return Err(protocol_error(
                     "DVR queue epoch left draining state while waiting",
@@ -620,10 +654,7 @@ impl QueueRuntime {
             .dvr_epoch
             .as_ref()
             .ok_or_else(|| protocol_error("DVR queue epoch protocol is not installed"))?;
-        let mut state = protocol
-            .state
-            .lock()
-            .map_err(epoch_poison)?;
+        let mut state = protocol.state.lock().map_err(epoch_poison)?;
         state.state = QueueEpochState::Closed;
         protocol.drained.notify_all();
         Ok(())
@@ -1437,7 +1468,6 @@ mod dvr_queue_cleanup_tests {
         );
     }
 
-
     #[test]
     fn epoch_poison_and_abort_poison_survive_drain_failure() {
         let queue = QueueRuntime::new_dvr(64, false, true).unwrap();
@@ -1447,15 +1477,39 @@ mod dvr_queue_cleanup_tests {
             let _guard = protocol.state.lock().unwrap();
             panic!("汚染を注入");
         }));
-        let error = queue.commit_dvr_drain_with_queue_clear_operation(drain, |_| panic!("汚染後の消去は禁止")).unwrap_err();
+        let error = queue
+            .commit_dvr_drain_with_queue_clear_operation(drain, |_| panic!("汚染後の消去は禁止"))
+            .unwrap_err();
         assert_eq!(error.step, DvrQueueDrainStep::EpochCommit);
-        let QueueRuntimeErrorKind::EpochLockPoisoned(primary) = error.primary.kind else { panic!("主障害の分類が消失"); };
-        let QueueRuntimeErrorKind::EpochLockPoisoned(rollback) = error.rollback.unwrap().kind else { panic!("取消し障害の分類が消失"); };
-        assert_eq!(primary.lock, RuntimeLockKind::DvrQueueEpoch { queue_identity: protocol.queue_identity });
+        let QueueRuntimeErrorKind::EpochLockPoisoned(primary) = error.primary.kind else {
+            panic!("主障害の分類が消失");
+        };
+        let QueueRuntimeErrorKind::EpochLockPoisoned(rollback) = error.rollback.unwrap().kind
+        else {
+            panic!("取消し障害の分類が消失");
+        };
+        assert_eq!(
+            primary.lock,
+            RuntimeLockKind::DvrQueueEpoch {
+                queue_identity: protocol.queue_identity
+            }
+        );
         assert_eq!(primary.poison_count, 1);
         assert_eq!(rollback.poison_count, 2);
-        assert!(matches!(queue.begin_dvr_read(1), Err(QueueRuntimeError { kind: QueueRuntimeErrorKind::EpochLockPoisoned(_), .. })));
-        assert!(matches!(queue.close_dvr_protocol(), Err(QueueRuntimeError { kind: QueueRuntimeErrorKind::EpochLockPoisoned(_), .. })));
+        assert!(matches!(
+            queue.begin_dvr_read(1),
+            Err(QueueRuntimeError {
+                kind: QueueRuntimeErrorKind::EpochLockPoisoned(_),
+                ..
+            })
+        ));
+        assert!(matches!(
+            queue.close_dvr_protocol(),
+            Err(QueueRuntimeError {
+                kind: QueueRuntimeErrorKind::EpochLockPoisoned(_),
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -1547,11 +1601,16 @@ mod queue_epoch_authority_drop_contract_tests {
 
     fn protocol(state: QueueEpochState, epoch: u64, admitted: usize) -> Arc<QueueEpochProtocol> {
         Arc::new(QueueEpochProtocol {
-            state: PoisonTrackedMutex::new(QueueEpochProtocolState {
-                state,
-                epoch,
-                admitted_transaction_count: admitted,
-            }, RuntimeLockKind::DvrQueueEpoch { queue_identity: Some(77) }),
+            state: PoisonTrackedMutex::new(
+                QueueEpochProtocolState {
+                    state,
+                    epoch,
+                    admitted_transaction_count: admitted,
+                },
+                RuntimeLockKind::DvrQueueEpoch {
+                    queue_identity: Some(77),
+                },
+            ),
             drained: Condvar::new(),
             queue_identity: Some(77),
         })

@@ -369,7 +369,6 @@ impl TunerServiceRuntime {
             | DemuxRuntimeErrorKind::InvalidDvrFilter
             | DemuxRuntimeErrorKind::QueueMissing
             | DemuxRuntimeErrorKind::QueueRuntimeFailure
-            | DemuxRuntimeErrorKind::QueueRuntimeFailureRollbackFailed
             | DemuxRuntimeErrorKind::AvBackingFailure => HalError::internal(
                 HalInternalKind::InvariantViolation,
                 "filter runtime pipeline operation failed",
@@ -1203,10 +1202,6 @@ impl TunerServiceRuntime {
             DemuxRuntimeErrorKind::SourceBoundaryRollbackFailed => HalError::cleanup_failed(
                 "DVR source boundary rollback",
                 "demux runtime was quarantined after source boundary rollback failure",
-            ),
-            DemuxRuntimeErrorKind::QueueRuntimeFailureRollbackFailed => HalError::cleanup_failed(
-                "playback queue read rollback",
-                "DVR was quarantined after playback queue transaction rollback failure",
             ),
             DemuxRuntimeErrorKind::QueueRuntimeFailureWithContext(_)
             | DemuxRuntimeErrorKind::QueueRuntimeFailureWithRollback { .. }

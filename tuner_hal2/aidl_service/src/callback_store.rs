@@ -70,7 +70,10 @@ enum DeathLinkState {
 }
 
 // 死亡通知の線形化点。poison時も死亡だけは記録し、登録側はpoisonを失敗として扱う。
-fn mark_callback_dead(dead: &AtomicBool, gate: &PoisonTrackedMutex<()>) -> Result<(), AidlCallbackStoreError> {
+fn mark_callback_dead(
+    dead: &AtomicBool,
+    gate: &PoisonTrackedMutex<()>,
+) -> Result<(), AidlCallbackStoreError> {
     match gate.lock() {
         Ok(_guard) => {
             dead.store(true, Ordering::Release);
@@ -306,8 +309,14 @@ impl CallbackStore {
             generation: FrontendCallbackGeneration(token.0),
             callback: callback.clone(),
             dead: Arc::new(AtomicBool::new(false)),
-            death_recipient: PoisonTrackedMutex::new(DeathLinkState::Pending, RuntimeLockKind::CallbackDeathRecipient),
-            death_gate: Arc::new(PoisonTrackedMutex::new((), RuntimeLockKind::CallbackDeathGate)),
+            death_recipient: PoisonTrackedMutex::new(
+                DeathLinkState::Pending,
+                RuntimeLockKind::CallbackDeathRecipient,
+            ),
+            death_gate: Arc::new(PoisonTrackedMutex::new(
+                (),
+                RuntimeLockKind::CallbackDeathGate,
+            )),
         };
         self.prepared_callbacks.insert(
             key,

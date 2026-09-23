@@ -62,18 +62,14 @@ pub(crate) fn demux_runtime_error_to_hal(
                 "demux runtime was quarantined after source boundary rollback failure",
             )
         }
-        maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::QueueRuntimeFailureRollbackFailed => {
-            HalError::cleanup_failed(
-                "playback queue read rollback",
-                "DVR was quarantined after playback queue transaction rollback failure",
-            )
-        }
-        maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::QueueRuntimeFailureWithRollback { primary, rollback } =>
-            compose_primary_cleanup_failure(
-                "DVR queue operation and rollback failed",
-                queue_error_to_hal(error.id, primary),
-                queue_error_to_hal(error.id, rollback),
-            ),
+        maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::QueueRuntimeFailureWithRollback {
+            primary,
+            rollback,
+        } => compose_primary_cleanup_failure(
+            "DVR queue operation and rollback failed",
+            queue_error_to_hal(error.id, primary),
+            queue_error_to_hal(error.id, rollback),
+        ),
         maleicacid_tuner_hal2_demux::DemuxRuntimeErrorKind::FmqDeliveryFailed(kind) => {
             HalError::FmqDeliveryFailed {
                 kind,
@@ -104,25 +100,29 @@ pub(crate) fn demux_runtime_error_to_hal(
     }
 }
 
-fn queue_error_to_hal(id: Option<i32>, context: maleicacid_tuner_hal2_demux::QueueRuntimeError) -> HalError {
+fn queue_error_to_hal(
+    id: Option<i32>,
+    context: maleicacid_tuner_hal2_demux::QueueRuntimeError,
+) -> HalError {
     match context.kind {
-        maleicacid_tuner_hal2_demux::QueueRuntimeErrorKind::EpochLockPoisoned(poison) => HalError::LockPoisoned(poison),
+        maleicacid_tuner_hal2_demux::QueueRuntimeErrorKind::EpochLockPoisoned(poison) => {
+            HalError::LockPoisoned(poison)
+        }
 
-            maleicacid_tuner_hal2_demux::QueueRuntimeErrorKind::GateLockPoisoned {
-                lock: maleicacid_tuner_hal2_demux::QueueRuntimeLockKind::FilterProducerDrainGateData,
-                poison_count,
-                counter_saturated,
-                producer_release,
-                drain_rollback,
-            } => HalError::FilterGateLockPoisoned {
-                filter_id: id,
-                poison_count,
-                counter_saturated,
-                producer_release,
-                drain_rollback,
-            },
-            _ => HalError::internal(HalInternalKind::InvariantViolation, context.detail),
-
+        maleicacid_tuner_hal2_demux::QueueRuntimeErrorKind::GateLockPoisoned {
+            lock: maleicacid_tuner_hal2_demux::QueueRuntimeLockKind::FilterProducerDrainGateData,
+            poison_count,
+            counter_saturated,
+            producer_release,
+            drain_rollback,
+        } => HalError::FilterGateLockPoisoned {
+            filter_id: id,
+            poison_count,
+            counter_saturated,
+            producer_release,
+            drain_rollback,
+        },
+        _ => HalError::internal(HalInternalKind::InvariantViolation, context.detail),
     }
 }
 
@@ -132,17 +132,41 @@ mod tests {
     #[test]
     fn epoch_poison_survives_primary_and_cleanup_projection() {
         use maleicacid_tuner_hal2_common::{LockPoisonDiagnostic, RuntimeLockKind};
-        use maleicacid_tuner_hal2_demux::{DemuxRuntimeError, DemuxRuntimeErrorKind, QueueRuntimeError, QueueRuntimeErrorKind};
-        let primary = LockPoisonDiagnostic { lock: RuntimeLockKind::DvrQueueEpoch { queue_identity: Some(77) }, poison_count: 1, counter_saturated: false };
-        let cleanup = LockPoisonDiagnostic { poison_count: 2, ..primary };
-        let wrap = |poison| QueueRuntimeError { kind: QueueRuntimeErrorKind::EpochLockPoisoned(poison), detail: "汚染" };
-        let simple = super::demux_runtime_error_to_hal(DemuxRuntimeError::queue_runtime_error(7, wrap(primary)));
+        use maleicacid_tuner_hal2_demux::{
+            DemuxRuntimeError, DemuxRuntimeErrorKind, QueueRuntimeError, QueueRuntimeErrorKind,
+        };
+        let primary = LockPoisonDiagnostic {
+            lock: RuntimeLockKind::DvrQueueEpoch {
+                queue_identity: Some(77),
+            },
+            poison_count: 1,
+            counter_saturated: false,
+        };
+        let cleanup = LockPoisonDiagnostic {
+            poison_count: 2,
+            ..primary
+        };
+        let wrap = |poison| QueueRuntimeError {
+            kind: QueueRuntimeErrorKind::EpochLockPoisoned(poison),
+            detail: "汚染",
+        };
+        let simple = super::demux_runtime_error_to_hal(DemuxRuntimeError::queue_runtime_error(
+            7,
+            wrap(primary),
+        ));
         assert_eq!(simple, HalError::LockPoisoned(primary));
         let error = super::demux_runtime_error_to_hal(DemuxRuntimeError {
-            kind: DemuxRuntimeErrorKind::QueueRuntimeFailureWithRollback { primary: wrap(primary), rollback: wrap(cleanup) }, id: Some(7),
+            kind: DemuxRuntimeErrorKind::QueueRuntimeFailureWithRollback {
+                primary: wrap(primary),
+                rollback: wrap(cleanup),
+            },
+            id: Some(7),
         });
         assert_eq!(error.primary_error(), &HalError::LockPoisoned(primary));
-        assert_eq!(error.cleanup_error(), Some(&HalError::LockPoisoned(cleanup)));
+        assert_eq!(
+            error.cleanup_error(),
+            Some(&HalError::LockPoisoned(cleanup))
+        );
     }
 
     use maleicacid_tuner_hal2_common::HalError;

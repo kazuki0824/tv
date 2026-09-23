@@ -61,11 +61,22 @@ mod poison_tests {
         poison(&notifier.records);
         poison(&split.records);
         for (result, kind) in [
-            (post.snapshot().map(|_| ()), RuntimeLockKind::DvrPostCommitDiagnostics),
-            (notifier.snapshot().map(|_| ()), RuntimeLockKind::DvrNotifierCleanupDiagnostics),
-            (split.snapshot().map(|_| ()), RuntimeLockKind::CallbackRuntimeSplitDiagnostics),
+            (
+                post.snapshot().map(|_| ()),
+                RuntimeLockKind::DvrPostCommitDiagnostics,
+            ),
+            (
+                notifier.snapshot().map(|_| ()),
+                RuntimeLockKind::DvrNotifierCleanupDiagnostics,
+            ),
+            (
+                split.snapshot().map(|_| ()),
+                RuntimeLockKind::CallbackRuntimeSplitDiagnostics,
+            ),
         ] {
-            assert!(matches!(result, Err(HalError::LockPoisoned(p)) if p.lock == kind && p.poison_count == 1));
+            assert!(
+                matches!(result, Err(HalError::LockPoisoned(p)) if p.lock == kind && p.poison_count == 1)
+            );
         }
         for result in [post.clear(), notifier.clear(), split.clear()] {
             assert!(matches!(result, Err(HalError::LockPoisoned(p)) if p.poison_count == 2));
@@ -737,14 +748,18 @@ impl DvrPostCommitNotificationDiagnosticRecord {
 
 #[derive(Clone, Debug)]
 pub struct SharedDvrPostCommitNotificationDiagnostics {
-    records: Arc<PoisonTrackedMutex<BoundedDiagnosticStore<DvrPostCommitNotificationDiagnosticRecord>>>,
+    records:
+        Arc<PoisonTrackedMutex<BoundedDiagnosticStore<DvrPostCommitNotificationDiagnosticRecord>>>,
     record_failure_count: Arc<AtomicU64>,
 }
 
 impl SharedDvrPostCommitNotificationDiagnostics {
     pub fn new(limit: usize) -> Self {
         Self {
-            records: Arc::new(PoisonTrackedMutex::new(BoundedDiagnosticStore::new(limit), RuntimeLockKind::DvrPostCommitDiagnostics)),
+            records: Arc::new(PoisonTrackedMutex::new(
+                BoundedDiagnosticStore::new(limit),
+                RuntimeLockKind::DvrPostCommitDiagnostics,
+            )),
             record_failure_count: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -793,14 +808,18 @@ impl Default for SharedDvrPostCommitNotificationDiagnostics {
 
 #[derive(Clone, Debug)]
 pub struct SharedDvrStatusNotifierCleanupDiagnostics {
-    records: Arc<PoisonTrackedMutex<BoundedDiagnosticStore<DvrStatusNotifierCleanupDiagnosticRecord>>>,
+    records:
+        Arc<PoisonTrackedMutex<BoundedDiagnosticStore<DvrStatusNotifierCleanupDiagnosticRecord>>>,
     record_failure_count: Arc<AtomicU64>,
 }
 
 impl SharedDvrStatusNotifierCleanupDiagnostics {
     pub fn new(limit: usize) -> Self {
         Self {
-            records: Arc::new(PoisonTrackedMutex::new(BoundedDiagnosticStore::new(limit), RuntimeLockKind::DvrNotifierCleanupDiagnostics)),
+            records: Arc::new(PoisonTrackedMutex::new(
+                BoundedDiagnosticStore::new(limit),
+                RuntimeLockKind::DvrNotifierCleanupDiagnostics,
+            )),
             record_failure_count: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -1112,13 +1131,18 @@ impl CallbackArtifactRuntimeSplitDiagnosticSnapshot {
 
 #[derive(Clone, Debug)]
 pub struct SharedCallbackArtifactRuntimeSplitDiagnostics {
-    records: Arc<PoisonTrackedMutex<BoundedDiagnosticStore<CallbackArtifactRuntimeSplitDiagnosticRecord>>>,
+    records: Arc<
+        PoisonTrackedMutex<BoundedDiagnosticStore<CallbackArtifactRuntimeSplitDiagnosticRecord>>,
+    >,
 }
 
 impl SharedCallbackArtifactRuntimeSplitDiagnostics {
     pub fn new() -> Self {
         Self {
-            records: Arc::new(PoisonTrackedMutex::new(BoundedDiagnosticStore::default(), RuntimeLockKind::CallbackRuntimeSplitDiagnostics)),
+            records: Arc::new(PoisonTrackedMutex::new(
+                BoundedDiagnosticStore::default(),
+                RuntimeLockKind::CallbackRuntimeSplitDiagnostics,
+            )),
         }
     }
 

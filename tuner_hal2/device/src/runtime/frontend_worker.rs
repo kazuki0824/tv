@@ -1,4 +1,3 @@
-use maleicacid_tuner_hal2_common::{PoisonTrackedMutex, RuntimeLockKind};
 //! frontend 非同期worker slot所有。
 //!
 //! このmoduleは並行処理境界だけを所有する。tune/scan成功を装わず、呼び出し元がbackend jobを渡し、slotは完了・取消状態だけを記録する。
@@ -7,6 +6,7 @@ use maleicacid_tuner_hal2_common::{PoisonTrackedMutex, RuntimeLockKind};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use maleicacid_tuner_hal2_common::{PoisonTrackedMutex, RuntimeLockKind};
 use maleicacid_tuner_hal2_common::{FrontendTuneRequest, HalError, HalInternalKind};
 use maleicacid_tuner_hal2_control_core::{
     WorkerCleanupAuthority, WorkerCleanupProgress, WorkerCleanupRun, WorkerContext, WorkerExit,

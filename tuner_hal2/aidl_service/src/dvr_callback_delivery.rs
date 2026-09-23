@@ -360,7 +360,9 @@ fn dvr_callback_artifact_lookup(
     match context.dvr_callback_for_owner(handle) {
         Ok(Some(_)) => DvrCallbackArtifactLookup::Present,
         Ok(None) => DvrCallbackArtifactLookup::Missing,
-        Err(error) => DvrCallbackArtifactLookup::StoreFailure(error.into_hal_error(delivery_context)),
+        Err(error) => {
+            DvrCallbackArtifactLookup::StoreFailure(error.into_hal_error(delivery_context))
+        }
     }
 }
 
