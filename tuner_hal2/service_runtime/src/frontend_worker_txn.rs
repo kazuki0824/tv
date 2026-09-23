@@ -1318,6 +1318,7 @@ fn record_frontend_cleanup_diagnostic(
     sink: &SharedFrontendWorkerCleanupDiagnostics,
     record: FrontendWorkerCleanupDiagnosticRecord,
 ) -> Result<(), HalError> {
+    #[cfg(target_os = "android")]
     let projection = record.clone();
     sink.record(record)?;
     #[cfg(target_os = "android")]
