@@ -94,11 +94,7 @@ impl WorkerRuntimeSupervisorReapingEntry<DvrStatusNotifierKey, DvrStatusNotifier
     type DeadlineTarget = AidlObjectHandle;
 
     fn from_terminal(key: DvrStatusNotifierKey, active: DvrStatusNotifier) -> Self {
-        Self::from_supervisor_transfer(
-            key,
-            active,
-            DvrStatusNotifierTransferReason::WorkerTerminal,
-        )
+        Self::from_supervisor_transfer(key, active, DvrStatusNotifierTransferReason::WorkerTerminal)
     }
 
     fn from_stop(key: DvrStatusNotifierKey, active: DvrStatusNotifier) -> Self {
@@ -196,20 +192,20 @@ impl DvrStatusNotifierSupervisor {
             WorkerRuntimeSupervisorStartPreparation::Active
             | WorkerRuntimeSupervisorStartPreparation::ReapingPending => Ok(()),
             WorkerRuntimeSupervisorStartPreparation::Vacant(permit) => {
-                let notifier = match spawn_dvr_status_notifier(context, handle, Arc::downgrade(self))
-                {
-                    Ok(notifier) => notifier,
-                    Err(primary) => {
-                        return match self.runtime.abort_start(permit) {
-                            Ok(()) => Err(primary),
-                            Err(cleanup) => Err(compose_primary_cleanup_failure(
-                                "DVR通知ワーカー開始予約の取消しにも失敗しました",
-                                primary,
-                                cleanup,
-                            )),
-                        };
-                    }
-                };
+                let notifier =
+                    match spawn_dvr_status_notifier(context, handle, Arc::downgrade(self)) {
+                        Ok(notifier) => notifier,
+                        Err(primary) => {
+                            return match self.runtime.abort_start(permit) {
+                                Ok(()) => Err(primary),
+                                Err(cleanup) => Err(compose_primary_cleanup_failure(
+                                    "DVR通知ワーカー開始予約の取消しにも失敗しました",
+                                    primary,
+                                    cleanup,
+                                )),
+                            };
+                        }
+                    };
                 self.runtime.commit_start(permit, notifier)
             }
         }
