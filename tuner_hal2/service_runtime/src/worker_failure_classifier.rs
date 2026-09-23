@@ -97,6 +97,7 @@ impl WorkerFailureClassifier {
             HalError::QueueEpochLockPoisoned { .. }
             | HalError::LockPoisoned(_)
             | HalError::WorkerLockPoisoned { .. }
+            | HalError::WorkerReaperUnavailable
             | HalError::ServiceRuntimeLockPoisoned { .. }
             | HalError::FilterGateLockPoisoned { .. } => WorkerFailureCategory::LockPoison,
             _ => WorkerFailureCategory::Unknown,
@@ -147,17 +148,7 @@ mod tests {
                 WorkerFailureCategory::Unknown,
             ),
             (
-                HalError::WorkerLockPoisoned {
-                    owner: "WorkerRuntimeReaperQueue",
-                    lock: WorkerLockKind::ReaperPending,
-                },
-                WorkerFailureCategory::LockPoison,
-            ),
-            (
-                HalError::WorkerLockPoisoned {
-                    owner: "WorkerRuntimeReaperQueue",
-                    lock: WorkerLockKind::ReaperReceiver,
-                },
+                HalError::WorkerReaperUnavailable,
                 WorkerFailureCategory::LockPoison,
             ),
         ];
