@@ -1240,7 +1240,9 @@ mod tests {
             FrontendWorkerCancelReason::StopRequested,
         );
         assert!(ticket
-            .submit_until_with(std::time::Instant::now(), |_, _| panic!("開始してはいけません"))
+            .submit_until_with(std::time::Instant::now(), |_, _| panic!(
+                "開始してはいけません"
+            ))
             .is_err());
         assert_eq!(
             cancellation.complete(),
@@ -1255,9 +1257,7 @@ mod tests {
             .prepare_backend_submit(FrontendWorkerKind::Tune, submit_plan(), None)
             .unwrap();
         assert!(matches!(
-            ticket.submit_until_with(std::time::Instant::now(), |_, _| panic!(
-                "中断を注入"
-            )),
+            ticket.submit_until_with(std::time::Instant::now(), |_, _| panic!("中断を注入")),
             Err(HalError::WorkerCleanupFailed {
                 kind: maleicacid_tuner_hal2_common::WorkerCleanupFailureKind::Interrupted
             })
