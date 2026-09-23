@@ -1815,6 +1815,28 @@ mod tests {
     }
 
     #[test]
+    fn worker_owned_submit_waits_for_delayed_result_without_caller_deadline() {
+        let generation = 100;
+        let expected = FrontendBackendSubmitFailure {
+            generation,
+            error: HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "simulated delayed submit failure",
+            ),
+            rollback_succeeded: true,
+            step: Some(BackendTuneStep::ApplyChannel),
+            rollback_failure: None,
+        };
+        let failure = expected.clone();
+        let ticket = FrontendBackendSubmitTicket::start_with(generation, move || {
+            thread::sleep(Duration::from_millis(25));
+            Err(failure)
+        })
+        .unwrap();
+        assert_eq!(ticket.wait().unwrap(), Err(expected));
+    }
+
+    #[test]
     fn submit_deadline_retains_cleanup_ownership_until_thread_exit() {
         let generation = 100;
         let ticket = FrontendBackendSubmitTicket::start_with(generation, move || {
