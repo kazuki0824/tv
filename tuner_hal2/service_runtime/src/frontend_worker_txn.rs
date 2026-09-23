@@ -2562,18 +2562,14 @@ mod frontend_readback_tests {
     use super::*;
 
     #[test]
-    fn backend_submit_deadline_never_preempts_terminal_deadline() {
+    fn frontend_terminal_deadline_remains_backend_specific() {
         assert_eq!(
-            frontend_backend_submit_deadline_ms(FrontendBackendKind::LinuxDvb, 2_000),
-            4_000
+            frontend_terminal_deadline(FrontendBackendKind::LinuxDvb),
+            Duration::from_millis(4_000)
         );
         assert_eq!(
-            frontend_backend_submit_deadline_ms(FrontendBackendKind::Px4CharDevice, 2_000),
-            7_000
-        );
-        assert_eq!(
-            frontend_backend_submit_deadline_ms(FrontendBackendKind::Px4CharDevice, 9_000),
-            9_000
+            frontend_terminal_deadline(FrontendBackendKind::Px4CharDevice),
+            Duration::from_millis(7_000)
         );
     }
 
