@@ -605,17 +605,7 @@ impl FrontendRuntime {
             primary_error,
             rollback_failure,
         };
-        self.store_backend_failure_diagnostic(record.clone());
-        #[cfg(target_os = "android")]
-        log::error!(
-            "frontend backend failure: frontend_id={} generation={} backend={:?} step={:?} primary_error={:?} rollback_failure={:?}",
-            record.frontend_id,
-            record.generation,
-            record.backend,
-            record.step,
-            record.primary_error,
-            record.rollback_failure
-        );
+        self.store_backend_failure_diagnostic(record);
         Ok(())
     }
 
@@ -649,14 +639,24 @@ impl FrontendRuntime {
             FrontendBackendKind::Px4CharDevice => push_bounded(
                 &mut self.px4_backend_failure_diagnostics,
                 &mut self.px4_backend_failure_diagnostics_dropped_count,
-                record,
+                record.clone(),
             ),
             FrontendBackendKind::LinuxDvb => push_bounded(
                 &mut self.linux_dvb_backend_failure_diagnostics,
                 &mut self.linux_dvb_backend_failure_diagnostics_dropped_count,
-                record,
+                record.clone(),
             ),
         }
+        #[cfg(target_os = "android")]
+        log::error!(
+            "frontend backend failure: frontend_id={} generation={} backend={:?} step={:?} primary_error={:?} rollback_failure={:?}",
+            record.frontend_id,
+            record.generation,
+            record.backend,
+            record.step,
+            record.primary_error,
+            record.rollback_failure
+        );
     }
 
     pub fn record_backend_request_failure_after_fence(
