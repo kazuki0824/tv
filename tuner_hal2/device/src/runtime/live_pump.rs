@@ -6,6 +6,7 @@
 use super::reader::{FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind};
 use maleicacid_tuner_hal2_control_core::WorkerContext;
 use std::io::{self, Read};
+use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::time::{Duration, Instant};
 
 use maleicacid_tuner_hal2_common::{
@@ -69,12 +70,14 @@ impl core::fmt::Debug for FrontendLivePumpOwner {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("FrontendLivePumpOwner")
             .field("thread_result", &self.thread_result)
+            .field("start_gate_pending", &self.start_gate.is_some())
             .finish()
     }
 }
 
 pub struct FrontendLivePumpOwner {
     thread_result: ThreadResultOwner<FrontendLivePumpReport>,
+    start_gate: Option<SyncSender<()>>,
 }
 
 impl FrontendLivePumpOwner {
@@ -87,7 +90,72 @@ impl FrontendLivePumpOwner {
             ThreadResultOwner::start_controlled("maleicacid-frontend-live-pump", move |control| {
                 run_frontend_live_pump(&mut reader, &mut sink, &control, &descriptor)
             })?;
-        Ok(Self { thread_result })
+        Ok(Self {
+            thread_result,
+            start_gate: None,
+        })
+    }
+
+    pub fn start_prepared(
+        descriptor: FrontendLiveReaderDescriptor,
+        mut reader: Box<dyn Read + Send>,
+        mut sink: Box<dyn FrontendLivePacketSink>,
+    ) -> Result<Self, HalError> {
+        let (ready_tx, ready_rx) = mpsc::sync_channel(0);
+        let (start_tx, start_rx) = mpsc::sync_channel(0);
+        let thread_result =
+            ThreadResultOwner::start_controlled("maleicacid-frontend-live-pump", move |control| {
+                ready_tx.send(()).map_err(|_| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "ライブTSポンプの開始待ち到達通知に失敗しました",
+                    )
+                })?;
+                loop {
+                    if control.stop_requested() {
+                        return Ok(FrontendLivePumpReport {
+                            stopped_by_cancel: true,
+                            ..FrontendLivePumpReport::default()
+                        });
+                    }
+                    match start_rx.recv_timeout(Duration::from_millis(20)) {
+                        Ok(()) => break,
+                        Err(RecvTimeoutError::Timeout) => continue,
+                        Err(RecvTimeoutError::Disconnected) => {
+                            return Err(HalError::internal(
+                                HalInternalKind::InvariantViolation,
+                                "ライブTSポンプの開始待ち解除元が失われました",
+                            ))
+                        }
+                    }
+                }
+                run_frontend_live_pump(&mut reader, &mut sink, &control, &descriptor)
+            })?;
+        ready_rx.recv().map_err(|_| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "ライブTSポンプが開始待ちへ到達する前に終了しました",
+            )
+        })?;
+        Ok(Self {
+            thread_result,
+            start_gate: Some(start_tx),
+        })
+    }
+
+    pub fn activate(&mut self) -> Result<(), HalError> {
+        let start_gate = self.start_gate.take().ok_or_else(|| {
+            HalError::invalid_state(
+                maleicacid_tuner_hal2_common::HalInvalidStateKind::InvalidLifecycle,
+                "ライブTSポンプの開始待ちは既に解除されています",
+            )
+        })?;
+        start_gate.send(()).map_err(|_| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "ライブTSポンプの開始待ち解除に失敗しました",
+            )
+        })
     }
 
     pub fn request_stop(&self) {
@@ -364,6 +432,32 @@ mod tests {
     }
 
     #[test]
+    fn prepared_pump_does_not_read_until_activated() {
+        let (read_tx, read_rx) = mpsc::channel();
+        struct ObservedReader {
+            read_tx: mpsc::Sender<()>,
+        }
+        impl Read for ObservedReader {
+            fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+                self.read_tx.send(()).unwrap();
+                Ok(0)
+            }
+        }
+
+        let mut owner = FrontendLivePumpOwner::start_prepared(
+            descriptor(),
+            Box::new(ObservedReader { read_tx }),
+            Box::new(VecSink::default()),
+        )
+        .unwrap();
+        assert!(read_rx.try_recv().is_err());
+        owner.activate().unwrap();
+        read_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let report = owner.join_after_stop().unwrap();
+        assert!(report.reached_eof || report.stopped_by_cancel);
+    }
+
+    #[test]
     fn permanent_read_failure_retains_each_backend_and_device_path() {
         struct FailedReader;
         impl Read for FailedReader {
@@ -473,6 +567,7 @@ mod tests {
                 },
             )
             .unwrap(),
+            start_gate: None,
         };
         assert!(owner.join_after_stop().is_err());
     }
@@ -487,6 +582,7 @@ mod tests {
                 },
             )
             .unwrap(),
+            start_gate: None,
         };
         assert!(owner.join_after_stop().is_err());
     }

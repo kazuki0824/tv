@@ -74,6 +74,8 @@ PX4 ISDB-Tの`PTX_SET_CHANNEL EAGAIN`後の公開意味、終端期限、`LOCKED
 
 保留セッションの取り込み開始入口は`FrontendBackendSession::start_streaming_after_lock()`とし、正規のフロントエンド選局・走査ワーカーが確定したロックを確認した後だけ同入口へ接続する。後片付け側は同セッションの開始済み状態を参照して既存の停止・閉鎖入口へ接続し、保留専用の第二ワーカー、第二トランザクション、第二期限、別の取り込み状態所有者を追加しない。
 
+PX4のlive選局は`service_runtime/src/frontend_worker_txn.rs`でlive readerを先に派生させ、`device/src/runtime/live_pump.rs::FrontendLivePumpOwner::start_prepared()`によりpump threadを開始待ちへ到達させる。通常成功のPX4選局も`BackendTuneOps::defer_streaming_start_until_lock()`でSTARTをworkerへ延期し、`PTX_START_STREAMING`成功後に`FrontendLivePumpOwner::activate()`でread loopを解放してから`LOCKED`通知へ進む。prepared pumpはTSを保持する第二queueではなく、既存reader/sinkを開始前に生成して待機させるだけとし、停止要求中は開始されず既存worker cleanupで回収される。driver ioctl内部の残差は#135を参照する。
+
 ### px4 TMCC TSID list device-adaptation境界
 
 px4固有のTMCC TSID readbackは「機器適合」責務に閉じる。ABI mirrorの実装anchorは `device/src/px4/abi.rs::PtxTmccTsidList` / `PTX_GET_TMCC_TSID_LIST`、raw resultのshape検証と `EAGAIN` のtyped pending化は `device/src/px4/tmcc_tsid.rs`、exclusive device-open resourceを再利用するread entryは `device/src/runtime/backend_worker.rs::FrontendBackendSession::observe_tmcc_tsid_list()` とする。公開値、readiness、scan callbackの規範意味は `../TUNER_HAL_DESIGN_JA.md` を正とし、本節で再定義しない。

@@ -481,12 +481,10 @@ fn descrambler_pid_claim_error_to_hal(error: DescramblerPidClaimError) -> HalErr
     }
 }
 
-pub fn start_frontend_demux_live_pump_from_reader(
-    runtime: Arc<Mutex<TunerServiceRuntime>>,
+fn frontend_demux_live_packet_sink(
+    runtime: &Arc<Mutex<TunerServiceRuntime>>,
     frontend_id: i32,
-    reader: Box<dyn Read + Send>,
-    descriptor: maleicacid_tuner_hal2_device::FrontendLiveReaderDescriptor,
-) -> Result<FrontendLivePumpOwner, HalError> {
+) -> Result<Box<dyn FrontendLivePacketSink>, HalError> {
     let dispatcher = {
         let guard = TunerServiceRuntime::lock_shared(
             runtime.as_ref(),
@@ -497,12 +495,31 @@ pub fn start_frontend_demux_live_pump_from_reader(
             .ensure_frontend_demux_sink_ready(frontend_id)?;
         guard.filter_event_dispatcher()?
     };
-    let sink: Box<dyn FrontendLivePacketSink> = Box::new(FrontendDemuxPacketSink::new(
-        Arc::clone(&runtime),
+    Ok(Box::new(FrontendDemuxPacketSink::new(
+        Arc::clone(runtime),
         frontend_id,
         dispatcher,
-    ));
+    )))
+}
+
+pub fn start_frontend_demux_live_pump_from_reader(
+    runtime: Arc<Mutex<TunerServiceRuntime>>,
+    frontend_id: i32,
+    reader: Box<dyn Read + Send>,
+    descriptor: maleicacid_tuner_hal2_device::FrontendLiveReaderDescriptor,
+) -> Result<FrontendLivePumpOwner, HalError> {
+    let sink = frontend_demux_live_packet_sink(&runtime, frontend_id)?;
     FrontendLivePumpOwner::start(descriptor, reader, sink)
+}
+
+pub fn prepare_frontend_demux_live_pump_from_reader(
+    runtime: Arc<Mutex<TunerServiceRuntime>>,
+    frontend_id: i32,
+    reader: Box<dyn Read + Send>,
+    descriptor: maleicacid_tuner_hal2_device::FrontendLiveReaderDescriptor,
+) -> Result<FrontendLivePumpOwner, HalError> {
+    let sink = frontend_demux_live_packet_sink(&runtime, frontend_id)?;
+    FrontendLivePumpOwner::start_prepared(descriptor, reader, sink)
 }
 
 /// サービス状態所有者に従属する読取り用診断参照。通常状態の変更権限を持たない。

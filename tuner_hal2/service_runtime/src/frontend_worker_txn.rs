@@ -17,7 +17,8 @@ use crate::{
     frontend_ops::{FrontendOperationEvent, FrontendTuneScanTxn, FrontendWorkerTerminalEvent},
     object_lifecycle::{aidl_object_live, aidl_public_runtime_id_for_close_cleanup},
     object_method_use_case::ObjectMethodExecutionToken,
-    start_frontend_demux_live_pump_from_reader, TunerServiceRuntime,
+    prepare_frontend_demux_live_pump_from_reader, start_frontend_demux_live_pump_from_reader,
+    TunerServiceRuntime,
 };
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FirstErrorCollector, FrontendBackendKind, FrontendDevicePath,
@@ -2562,6 +2563,18 @@ fn start_streaming_for_initial_lock(
     Ok(outcome)
 }
 
+fn start_streaming_and_activate_live_pump_for_initial_lock(
+    outcome: FrontendLockWaitOutcome,
+    start_streaming: impl FnOnce() -> Result<(), HalError>,
+    activate_live_pump: impl FnOnce() -> Result<(), HalError>,
+) -> Result<FrontendLockWaitOutcome, HalError> {
+    if outcome == FrontendLockWaitOutcome::Locked {
+        start_streaming()?;
+        activate_live_pump()?;
+    }
+    Ok(outcome)
+}
+
 fn wait_for_frontend_qualified_lock(
     runtime: &SharedRuntime,
     ctx: &FrontendWorkerContext,
@@ -2652,6 +2665,27 @@ mod frontend_readback_tests {
         .unwrap();
         assert_eq!(outcome, FrontendLockWaitOutcome::Locked);
         assert_eq!(starts, 1);
+    }
+
+    #[test]
+    fn locked_live_path_starts_capture_before_releasing_prepared_pump() {
+        let outcome =
+            frontend_lock_terminal_outcome(FrontendLockQualification::Locked, false).unwrap();
+        let mut order = Vec::new();
+        let outcome = start_streaming_and_activate_live_pump_for_initial_lock(
+            outcome,
+            || {
+                order.push("start");
+                Ok(())
+            },
+            || {
+                order.push("activate");
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(outcome, FrontendLockWaitOutcome::Locked);
+        assert_eq!(order, ["start", "activate"]);
     }
 
     #[test]
@@ -2950,9 +2984,45 @@ fn run_frontend_backend_tune_session_worker(
             frontend_id,
             generation,
         )?;
-        match start_streaming_for_initial_lock(lock_outcome, || {
-            session.start_streaming_after_lock()
-        })? {
+        if lock_outcome == FrontendLockWaitOutcome::Locked {
+            let live_reader_descriptor = {
+                let guard = lock_runtime(
+                    &runtime,
+                    "service runtime lock poisoned while preparing frontend live pump",
+                )?;
+                guard
+                    .query()
+                    .frontend_live_reader_descriptor_for_live_pump(frontend_id)?
+                    .ok_or_else(|| {
+                        HalError::internal(
+                            HalInternalKind::InvariantViolation,
+                            "ロック確定済み選局にライブTS readerがありません",
+                        )
+                    })?
+            };
+            let reader = session.open_live_reader(&live_reader_descriptor)?;
+            live_pump = Some(prepare_frontend_demux_live_pump_from_reader(
+                Arc::clone(&runtime),
+                frontend_id,
+                reader,
+                live_reader_descriptor,
+            )?);
+        }
+        match start_streaming_and_activate_live_pump_for_initial_lock(
+            lock_outcome,
+            || session.start_streaming_after_lock(),
+            || {
+                live_pump
+                    .as_mut()
+                    .ok_or_else(|| {
+                        HalError::internal(
+                            HalInternalKind::InvariantViolation,
+                            "開始待ちのライブTSポンプがありません",
+                        )
+                    })?
+                    .activate()
+            },
+        )? {
             FrontendLockWaitOutcome::Locked => {
                 let _ = observe_and_record_frontend_stream_id_list(
                     &runtime,

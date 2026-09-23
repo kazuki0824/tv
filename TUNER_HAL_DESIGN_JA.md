@@ -771,6 +771,10 @@ px4_drv の legacy chardev は同一 device node の二重 open を許さない�
 
 px4 backendは同一device nodeを二重openせず、1回のbackend openからcontrol経路とlive TS readerを派生させる。二重open回避のproduct default実装規約は`tuner_hal2/CODE_CONVENTION.md`の「px4 single-open backend 実装規約」を正とし、旧参照実装の具体API選択を現行実装の根拠にしない。single-open制約下でもtune後にlive TS、section、AV、record/DVR経路へpacketを流せることを公開設計上の不変条件とする。
 
+PX4の選局では、`PTX_START_STREAMING`をbackend submit中に先行実行しない。lock確定後、同一backend sessionからlive readerを派生させ、live pump workerが開始待ち状態へ到達したことを確認してから`PTX_START_STREAMING`を実行する。START成功後は開始待ちを直ちに解除し、その後に`LOCKED` callback、TSID観測その他の後続処理へ進む。これによりHAL自身が`START -> callback -> reader生成 -> worker生成 -> read`の欠落窓を作らない。STARTまたは開始待ち解除に失敗した場合は、同一sessionとlive pumpの既存cleanup入口で一回だけ回収し、初期TS用の第二queue、第二generation、第二stream boundary ownerを追加しない。
+
+採用px4_drvの`PTX_START_STREAMING` ioctl内部に残る`set_capture(true)`からringbuffer write-readyまでの窓はIssue #135の完了条件として扱う。Issue #129のHAL修正はこのdriver内部窓を解消したものとは扱わず、#135でdriver順序と既存userspace互換性を確認して解消する。
+
 
 フロントエンドの存在と対応能力は、機器、versioned backend manifest、functional probe、有限の選局終端を実装できることから導出する。選局は非同期操作とし、バックエンドが選局要求を受理した後は、`LOCKED`、backendの明示失敗、明示的停止、再選局、閉鎖、またはbackend別`ProductProfile.tuneTerminalDeadlineMs`到達時の`NO_SIGNAL`のいずれかで現generationを必ず終端する。現行profileはearth_pt1を`4000 ms`、px4を`7000 ms`とする。px4値はRT710設定、PLL確認、demod lock、absolute TSID一致、およびrelative selectorのTMCC解決からなる正常な有限経路を期限前に打ち切らないための上限である。期限到達はbinder呼出しの成功を後から失敗へ反転させず、非同期終端eventとして扱う。VTS既知信号経路はVTS自身の待機内でLOCKEDへ到達できる入力を別途要求し、製品deadlineをVTS待機値へ短縮しない。正の有限期限と取消可能なbackend I/Oを実装できないfrontendは公開しない。停止した`ioctl`、read、USB control transferから復帰する内部期限は別の`workerIoDeadlineMs`で管理し、px4の`ctrl_timeout=0`を禁止する。個別I/O期限は検証済みcontrol transfer上限より短くせず、正常処理列の合計がbackendのterminal deadline内に収まるよう固定する。
 
