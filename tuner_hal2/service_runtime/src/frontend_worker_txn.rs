@@ -1,3 +1,4 @@
+#[cfg(test)]
 use std::sync::MutexGuard;
 use std::sync::{mpsc, Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
@@ -28,7 +29,7 @@ use maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackToken;
 #[cfg(test)]
 use maleicacid_tuner_hal2_device::FrontendRuntimeSnapshot;
 use maleicacid_tuner_hal2_device::{
-    BackendTuneRollbackFailure, BackendTuneStep, FrontendBackendSession,
+    FrontendBackendSession,
     FrontendBackendSubmitFailure, FrontendBackendTunePlan, FrontendLivePumpJoinOutcome,
     FrontendLivePumpOwner, FrontendScanPhase, FrontendSignalState,
     FrontendTmccPartialReceptionObservation, FrontendTmccTsidListObservation,
@@ -3278,7 +3279,6 @@ fn finish_committed_tune_replacement(
         transition.object_generation,
     );
     let mut result = (|| {
-        let reaper = ensure_frontend_worker_reaper(runtime)?;
         if deadline_elapsed {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
@@ -4058,7 +4058,6 @@ fn finish_committed_scan_replacement(
         new_worker_generation: generation,
     });
     let mut result = (|| {
-        let reaper = ensure_frontend_worker_reaper(runtime)?;
         if deadline_elapsed {
             return Err(HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
