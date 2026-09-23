@@ -56,7 +56,7 @@ use maleicacid_tuner_hal2_binder_adapter::{
     build_dvr_open_request, build_filter_av_stream_type_request, build_filter_delay_hint_request,
     build_filter_summary_for_open_type, build_lnb_satellite_position_request,
     build_lnb_tone_request, build_lnb_voltage_request, build_open_filter_request, AidlApi,
-    AidlMethodCall, AidlObjectGeneration, AidlObjectId, AidlObjectKind, DvrFilterLinkRequest,
+    AidlObjectGeneration, AidlObjectId, AidlObjectKind, DvrFilterLinkRequest,
     FilterSetDataSourceRequest,
 };
 use maleicacid_tuner_hal2_common::{
@@ -64,6 +64,7 @@ use maleicacid_tuner_hal2_common::{
     HalInvalidArgumentKind,
 };
 use maleicacid_tuner_hal2_demux::QueueDescriptorSnapshot;
+use maleicacid_tuner_hal2_domain_request::AidlMethodCall;
 use maleicacid_tuner_hal2_service_runtime::{
     apply_lnb_satellite_position_object_use_case, apply_lnb_tone_object_use_case,
     apply_lnb_voltage_object_use_case, close_lnb_after_root_open_rollback_use_case,
