@@ -366,13 +366,13 @@ impl FrontendWorkerStopTicket {
                 Err(failure) if failure.rollback_succeeded => {
                     WorkerCleanupProgress::Completed(result)
                 }
-                Err(_) => {
+                Err(failure) => {
                     *value = FrontendWorkerCleanup::Failed(
                         FrontendWorkerStopOutcome::BackendSubmitFailed {
                             frontend_id,
                             kind,
                             generation,
-                            failure: result.as_ref().err().cloned().expect("checked Err"),
+                            failure: failure.clone(),
                         },
                     );
                     WorkerCleanupProgress::Quarantined(result)
