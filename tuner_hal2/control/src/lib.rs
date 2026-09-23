@@ -1148,9 +1148,7 @@ impl<K: Ord, A, R> WorkerRuntimeSupervisorMaps<K, A, R> {
             .saturating_add(self.reserved_start.len())
     }
 
-    fn issue_start_attempt(
-        &mut self,
-    ) -> Result<u64, maleicacid_tuner_hal2_common::HalError> {
+    fn issue_start_attempt(&mut self) -> Result<u64, maleicacid_tuner_hal2_common::HalError> {
         use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
         let next = self.next_start_attempt.checked_add(1).ok_or_else(|| {
             HalError::internal(
@@ -1836,7 +1834,7 @@ mod tests {
         let first = supervisor_start_permit(&supervisor, 8);
         drop(first);
         let second = supervisor_start_permit(&supervisor, 8);
-        std::mem::forget(second);
+        drop(second);
         let replacement = supervisor_start_permit(&supervisor, 8);
         let execution = supervisor.begin_start(replacement).unwrap();
         supervisor.commit_start(execution, ()).unwrap();
@@ -1858,7 +1856,6 @@ mod tests {
             Some(super::WorkerRuntimeSupervisorAction::Completed(()))
         ));
     }
-
 
     #[test]
     fn supervisor_state_poison_is_not_worker_slot_poison() {
