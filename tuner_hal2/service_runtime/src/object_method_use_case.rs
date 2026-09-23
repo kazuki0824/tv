@@ -6,9 +6,9 @@ use maleicacid_tuner_hal2_common::{
     HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_device::{FrontendRuntimeState, FrontendSignalState};
-use maleicacid_tuner_hal2_domain_request::{ AidlMethodCall, AidlMethodAdapter,
-    AidlApi, AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan,
-    RuntimeExecutableRequest,
+use maleicacid_tuner_hal2_domain_request::{
+    AidlApi, AidlMethodAdapter, AidlMethodCall, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
+    CommandPlan, RuntimeExecutableRequest,
 };
 
 use crate::{
