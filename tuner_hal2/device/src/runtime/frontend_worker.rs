@@ -155,7 +155,7 @@ impl FrontendWorkerDetachedJoin {
             .ok_or_else(|| {
                 HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "フロントエンドワーカー slot missing thread result owner while waiting",
+                    "終了待ち中にフロントエンドワーカーの結果所有者がありません",
                 )
             })?
             .wait_until_finished(deadline)
@@ -659,7 +659,7 @@ impl FrontendWorkerSlot {
             .ok_or_else(|| {
                 HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "フロントエンドワーカー stop owner missing",
+                    "フロントエンドワーカーの停止所有者がありません",
                 )
             })?
             .request_stop();
@@ -697,7 +697,7 @@ impl FrontendWorkerSlot {
             return (
                 Err(HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "フロントエンドワーカー slot missing thread result owner",
+                    "フロントエンドワーカーの結果所有者がありません",
                 )),
                 WorkerExit::RuntimeFailure(WorkerFailureDomain::Backend.runtime_failure_kind()),
             );
@@ -723,7 +723,7 @@ fn frontend_worker_terminal(
         WorkerTerminalResult::StopRequested => (
             Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "フロントエンドワーカー terminal result is missing the domain stop reason",
+                "フロントエンドワーカー終端結果にドメイン停止理由がありません",
             )),
             WorkerExit::RuntimeFailure(WorkerFailureDomain::Backend.runtime_failure_kind()),
         ),
@@ -734,7 +734,7 @@ fn frontend_worker_terminal(
         WorkerTerminalResult::PanicOrJoinFailure => (
             Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
-                "フロントエンドワーカー panicked or could not be joined",
+                "フロントエンドワーカーがpanicしたか、終了待ちに失敗しました",
             )),
             WorkerExit::PanicOrJoinFailure,
         ),
@@ -1465,7 +1465,7 @@ mod tests {
                 4,
                 |_| -> Result<(), HalError> {
                     Err(HalError::cleanup_failed(
-                        "フロントエンドワーカー test",
+                        "フロントエンドワーカー試験",
                         "forced failure",
                     ))
                 },
@@ -1534,7 +1534,7 @@ mod tests {
                 9,
                 |_| -> Result<(), HalError> {
                     Err(HalError::cleanup_failed(
-                        "フロントエンドワーカー test",
+                        "フロントエンドワーカー試験",
                         "forced failure",
                     ))
                 },
@@ -1607,7 +1607,7 @@ mod tests {
                 12,
                 |_| -> Result<(), HalError> {
                     Err(HalError::cleanup_failed(
-                        "フロントエンドワーカー test",
+                        "フロントエンドワーカー試験",
                         "pending failure",
                     ))
                 },
