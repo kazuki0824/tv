@@ -1314,11 +1314,30 @@ pub(crate) fn record_frontend_worker_terminal_failure(
     )
 }
 
+fn record_frontend_cleanup_diagnostic(
+    sink: &SharedFrontendWorkerCleanupDiagnostics,
+    record: FrontendWorkerCleanupDiagnosticRecord,
+) -> Result<(), HalError> {
+    let projection = record.clone();
+    sink.record(record)?;
+    #[cfg(target_os = "android")]
+    log::error!(
+        "frontend worker cleanup diagnostic: kind={:?} frontend_id={} object_id={:?} object_generation={:?} public_error={:?} report={:?}",
+        projection.kind(),
+        projection.frontend_id(),
+        projection.object_id(),
+        projection.object_generation(),
+        projection.public_error(),
+        projection.report()
+    );
+    Ok(())
+}
+
 fn record_frontend_cleanup_diagnostic_after_terminal(
     sink: &SharedFrontendWorkerCleanupDiagnostics,
     record: FrontendWorkerCleanupDiagnosticRecord,
 ) {
-    if sink.record(record).is_err() {
+    if record_frontend_cleanup_diagnostic(sink, record).is_err() {
         // sink内のrecord failure counterを残す。呼び出し元を失った終端結果は再実行しない。
     }
 }
@@ -3095,12 +3114,15 @@ fn record_frontend_reaper_completion(
         result.clone(),
     ));
     let primary = result.err();
-    sink.record(FrontendWorkerCleanupDiagnosticRecord::new(
-        FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion,
-        target,
-        report,
-        primary.clone(),
-    ))?;
+    record_frontend_cleanup_diagnostic(
+        &sink,
+        FrontendWorkerCleanupDiagnosticRecord::new(
+            FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion,
+            target,
+            report,
+            primary.clone(),
+        ),
+    )?;
     match primary {
         Some(error) => Err(error),
         None => Ok(()),
@@ -3131,12 +3153,15 @@ fn record_aborted_frontend_replacement_after_reap(
         new_generation,
         Err(public_error.clone()),
     ));
-    sink.record(FrontendWorkerCleanupDiagnosticRecord::new(
-        FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion,
-        target,
-        report,
-        Some(public_error),
-    ))
+    record_frontend_cleanup_diagnostic(
+        &sink,
+        FrontendWorkerCleanupDiagnosticRecord::new(
+            FrontendWorkerCleanupDiagnosticKind::WorkerReaperCompletion,
+            target,
+            report,
+            Some(public_error),
+        ),
+    )
 }
 
 fn handle_frontend_worker_reaper_deadline(
@@ -3216,7 +3241,7 @@ fn handle_frontend_worker_reaper_deadline(
         report,
         Some(public_error),
     );
-    if diagnostic_sink.record(record).is_err() {
+    if record_frontend_cleanup_diagnostic(&diagnostic_sink, record).is_err() {
         TunerServiceRuntime::mark_shared_service_critical(&runtime);
     }
 }
