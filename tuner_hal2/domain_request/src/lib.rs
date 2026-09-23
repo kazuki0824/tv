@@ -1,4 +1,4 @@
-use maleicacid_tuner_hal2_common::{HalError, HalInternalKind, HalInvalidArgumentKind};
+use maleicacid_tuner_hal2_common::{FrontendTuneRequest, HalError, HalInternalKind, HalInvalidArgumentKind};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum AidlObjectKind {
@@ -547,6 +547,37 @@ pub enum DomainProfileSupport {
 }
 
 use maleicacid_tuner_hal2_demux::config::{FilterConfig, OpenFilterRequest};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrontendRequestedSetting {
+    IsdbtBandwidthAuto,
+    IsdbtExplicitBandwidth { bandwidth_hz: u32 },
+    IsdbtModeAuto,
+    IsdbtExplicitMode { value: i32 },
+    IsdbtExplicitInversion { value: i32 },
+    IsdbtGuardIntervalAuto,
+    IsdbtExplicitGuardInterval { value: i32 },
+    IsdbtServiceAreaId { value: i32 },
+    IsdbtPartialReceptionAuto,
+    IsdbtLayerModulationAuto { layer_index: usize },
+    IsdbtLayerModulation { layer_index: usize, value: i32 },
+    IsdbtLayerCoderateAuto { layer_index: usize },
+    IsdbtLayerCoderate { layer_index: usize, value: i32 },
+    IsdbtLayerTimeInterleaveAuto { layer_index: usize },
+    IsdbtLayerTimeInterleave { layer_index: usize, value: i32 },
+    IsdbtExplicitSegmentCount { layer_index: usize, count: i32 },
+    IsdbsModulationAuto,
+    IsdbsExplicitModulation { value: i32 },
+    IsdbsCoderateAuto,
+    IsdbsExplicitCoderate { value: i32 },
+    IsdbsExplicitRolloff { value: i32 },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrontendSettingsRequest {
+    pub request: FrontendTuneRequest,
+    pub requested_settings: Vec<FrontendRequestedSetting>,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DemuxSetFrontendDataSourceRequest {
