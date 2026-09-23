@@ -5,7 +5,9 @@ use crate::open_rollback::finish_open_rollback;
 use crate::root_method_txn::{is_public_demux_id, published_demux_ids};
 use crate::{RuntimeObjectEntry, RuntimeOwnerRelation};
 use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, HalError};
-use maleicacid_tuner_hal2_domain_request::{ AidlMethodCall, AidlMethodAdapter,AidlObjectGeneration, AidlObjectId, AidlObjectKind};
+use maleicacid_tuner_hal2_domain_request::{
+    AidlMethodAdapter, AidlMethodCall, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
+};
 
 fn register_root_object(
     runtime: &mut TunerServiceRuntime,
