@@ -84,9 +84,7 @@ impl IFrontend for FrontendAidlObject {
             },
         );
         if let Err(status) = &result {
-            log::error!(
-                "正規runtime処理後にIFrontend.tuneが失敗しました: status={status:?}"
-            );
+            log::error!("正規runtime処理後にIFrontend.tuneが失敗しました: status={status:?}");
         }
         result
     }

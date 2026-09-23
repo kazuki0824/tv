@@ -303,7 +303,8 @@ impl AidlServiceContext {
     {
         let dvr_notifier_result = crate::dvr_callback_delivery::stop_all_dvr_status_notifiers(self);
         let artifact_result =
-            match TunerServiceRuntime::lock_shared(&self.runtime, "サービスコンテキスト") {
+            match TunerServiceRuntime::lock_shared(&self.runtime, "サービスコンテキスト")
+            {
                 Ok(runtime) => {
                     let callback_reset_command =
                         runtime.plan_callback_artifact_reset_before_boot_use_case();
@@ -313,7 +314,10 @@ impl AidlServiceContext {
             };
         let drop_leak_result = self.clear_drop_leak_error_records();
         let callback_fallback_clear_result = self.clear_callback_delivery_fallback_diagnostics();
-        let mut runtime = match TunerServiceRuntime::lock_shared(&self.runtime, "サービスコンテキスト") {
+        let mut runtime = match TunerServiceRuntime::lock_shared(
+            &self.runtime,
+            "サービスコンテキスト",
+        ) {
             Ok(runtime) => runtime,
             Err(runtime_error) => {
                 let record_result = self.record_service_boot_reset_finish_lock_failure(
@@ -511,7 +515,8 @@ impl AidlServiceContext {
         let mut records = Vec::new();
         let mut dropped_count = 0u64;
         let runtime_snapshot_missing =
-            match TunerServiceRuntime::lock_shared(&self.runtime, "サービスコンテキスト") {
+            match TunerServiceRuntime::lock_shared(&self.runtime, "サービスコンテキスト")
+            {
                 Ok(runtime) => {
                     let runtime_snapshot = runtime.filter_callback_delivery_diagnostic_snapshot();
                     records.extend_from_slice(runtime_snapshot.records());
@@ -546,7 +551,8 @@ impl AidlServiceContext {
         let mut records = Vec::new();
         let mut dropped_count = 0u64;
         let runtime_snapshot_missing =
-            match TunerServiceRuntime::lock_shared(&self.runtime, "サービスコンテキスト") {
+            match TunerServiceRuntime::lock_shared(&self.runtime, "サービスコンテキスト")
+            {
                 Ok(runtime) => {
                     let runtime_snapshot = runtime.frontend_callback_delivery_diagnostic_snapshot();
                     records.extend_from_slice(runtime_snapshot.records());
@@ -967,8 +973,10 @@ impl AidlServiceContext {
             return Ok(None);
         };
         // storeのsnapshot lockを解放してからruntimeへ入り、runtime→store順で世代を再照合する。
-        let runtime =
-            TunerServiceRuntime::lock_shared(self.runtime.as_ref(), "フロントエンドcallback所有者")?;
+        let runtime = TunerServiceRuntime::lock_shared(
+            self.runtime.as_ref(),
+            "フロントエンドcallback所有者",
+        )?;
         if !runtime.frontend_callback_delivery_ready(handle.object_id(), handle.generation()) {
             return Ok(None);
         }
