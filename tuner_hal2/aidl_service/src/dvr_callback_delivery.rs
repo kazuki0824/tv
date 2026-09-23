@@ -72,9 +72,7 @@ struct DvrStatusNotifierStartOperation {
     supervisor: Weak<DvrStatusNotifierSupervisor>,
 }
 
-impl WorkerRuntimeSupervisorStartOperation<DvrStatusNotifier>
-    for DvrStatusNotifierStartOperation
-{
+impl WorkerRuntimeSupervisorStartOperation<DvrStatusNotifier> for DvrStatusNotifierStartOperation {
     fn start(self) -> Result<DvrStatusNotifier, HalError> {
         spawn_dvr_status_notifier(&self.context, self.handle, self.supervisor)
     }
@@ -214,12 +212,10 @@ impl DvrStatusNotifierSupervisor {
             WorkerRuntimeSupervisorStartDisposition::Started
             | WorkerRuntimeSupervisorStartDisposition::Active
             | WorkerRuntimeSupervisorStartDisposition::ReapingPending => Ok(()),
-            WorkerRuntimeSupervisorStartDisposition::StartPending => Err(
-                HalError::invalid_state(
-                    maleicacid_tuner_hal2_common::HalInvalidStateKind::InvalidLifecycle,
-                    "DVR状態通知ワーカーの開始処理が完了していません",
-                ),
-            ),
+            WorkerRuntimeSupervisorStartDisposition::StartPending => Err(HalError::invalid_state(
+                maleicacid_tuner_hal2_common::HalInvalidStateKind::InvalidLifecycle,
+                "DVR状態通知ワーカーの開始処理が完了していません",
+            )),
         }
     }
 
