@@ -1144,6 +1144,23 @@ mod tests {
     }
 
     #[test]
+    fn worker_owned_submit_completes_without_a_caller_deadline() {
+        let mut registry = FrontendWorkerRegistry::default();
+        let ticket = registry
+            .prepare_backend_submit(FrontendWorkerKind::Tune, submit_plan(), None)
+            .unwrap();
+        let result = ticket.submit().unwrap();
+        assert!(matches!(
+            result,
+            Err(FrontendBackendSubmitFailure {
+                rollback_succeeded: true,
+                ..
+            })
+        ));
+        assert!(!registry.has_cleanup_obligations());
+    }
+
+    #[test]
     fn abandoned_prepared_submit_keeps_obligation_and_can_be_cancelled() {
         let mut registry = FrontendWorkerRegistry::default();
         let ticket = registry
