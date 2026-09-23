@@ -351,8 +351,7 @@ impl FrontendWorkerStopTicket {
                 Ok(ticket) => match ticket.wait() {
                     Ok(result) => result,
                     Err(error) => Err(FrontendBackendSubmitFailure::indeterminate(
-                        generation,
-                        error,
+                        generation, error,
                     )),
                 },
                 Err(error) => {
