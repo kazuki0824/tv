@@ -17,7 +17,6 @@ use maleicacid_tuner_hal2_domain_request::{
     OpenDvrRequest, RuntimeExecutableRequest,
 };
 
-
 const DVR_PACKET_SIZE_TS_188: i64 = 188;
 
 pub use maleicacid_tuner_hal2_domain_request::{
@@ -229,33 +228,6 @@ pub fn build_lnb_satellite_position_request(
     Ok(LnbSetSatellitePositionRequest {
         position: position.0,
     })
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AidlMethodPlan {
-    pub api: crate::AidlApi,
-    pub command: DomainCommand,
-    pub command_plan: CommandPlan,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct AidlMethodAdapter;
-
-impl AidlMethodAdapter {
-    pub fn plan(method: AidlMethodCall) -> Result<AidlMethodPlan, HalError> {
-        let api = method.api();
-        let command = method.into_domain_command();
-        let command_plan = command.plan()?;
-        Ok(AidlMethodPlan {
-            api,
-            command,
-            command_plan,
-        })
-    }
-
-    pub fn frontend_tune(request: FrontendTuneRequest) -> Result<AidlMethodPlan, HalError> {
-        Self::plan(AidlMethodCall::FrontendTune(request))
-    }
 }
 
 #[cfg(test)]
