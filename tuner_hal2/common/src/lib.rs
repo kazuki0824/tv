@@ -384,7 +384,6 @@ pub fn fail_after_cleanup<T>(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FrontendBackendKind {#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrontendBackendKind {
     Px4CharDevice,
     LinuxDvb,
