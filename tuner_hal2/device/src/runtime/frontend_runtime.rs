@@ -597,14 +597,25 @@ impl FrontendRuntime {
             ));
         }
 
-        self.store_backend_failure_diagnostic(FrontendBackendFailureDiagnostic {
+        let record = FrontendBackendFailureDiagnostic {
             frontend_id: self.frontend_id,
             generation,
             backend,
             step,
             primary_error,
             rollback_failure,
-        });
+        };
+        self.store_backend_failure_diagnostic(record.clone());
+        #[cfg(target_os = "android")]
+        log::error!(
+            "frontend backend failure: frontend_id={} generation={} backend={:?} step={:?} primary_error={:?} rollback_failure={:?}",
+            record.frontend_id,
+            record.generation,
+            record.backend,
+            record.step,
+            record.primary_error,
+            record.rollback_failure
+        );
         Ok(())
     }
 
@@ -634,10 +645,6 @@ impl FrontendRuntime {
     }
 
     fn store_backend_failure_diagnostic(&mut self, record: FrontendBackendFailureDiagnostic) {
-        eprintln!(
-            "maleicacid-tuner-hal2-backend-diagnostic: backend={:?} frontend_id={} generation={} error={:?}",
-            record.backend, record.frontend_id, record.generation, record.primary_error
-        );
         match record.backend {
             FrontendBackendKind::Px4CharDevice => push_bounded(
                 &mut self.px4_backend_failure_diagnostics,
