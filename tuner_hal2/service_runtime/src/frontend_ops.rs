@@ -16,8 +16,7 @@ use maleicacid_tuner_hal2_device::{
     FrontendRuntimeState, FrontendWorkerCancelReason, FrontendWorkerKind, FrontendWorkerStopOutcome,
 };
 use maleicacid_tuner_hal2_domain_request::{
-    AidlObjectGeneration, AidlObjectId, AidlObjectKind, FrontendSettingsRequest,
-    LnbVoltageRequest,
+    AidlObjectGeneration, AidlObjectId, AidlObjectKind, FrontendSettingsRequest, LnbVoltageRequest,
 };
 
 pub type SharedFrontendRuntime = std::sync::Arc<std::sync::Mutex<TunerServiceRuntime>>;
