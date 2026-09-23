@@ -3,9 +3,9 @@ use std::collections::BTreeMap;
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FirstErrorCollector, HalError, HalInvalidStateKind,
 };
-use maleicacid_tuner_hal2_domain_request::{ AidlMethodCall, AidlMethodAdapter,
-    AidlApi, AidlObjectGeneration, AidlObjectId, AidlObjectKind, CommandPlan,
-    RuntimeExecutableRequest,
+use maleicacid_tuner_hal2_domain_request::{
+    AidlApi, AidlMethodAdapter, AidlMethodCall, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
+    CommandPlan, RuntimeExecutableRequest,
 };
 use maleicacid_tuner_hal2_resource_ledger::CleanupStep;
 
