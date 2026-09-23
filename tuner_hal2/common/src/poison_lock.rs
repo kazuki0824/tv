@@ -10,6 +10,8 @@ pub enum RuntimeLockKind {
     FrontendCallbackFallbackDiagnostics,
     DropLeakDiagnostics,
     CleanupReaperOwner,
+    WorkerReaperPending,
+    WorkerReaperReceiver,
     DvrPostCommitDiagnostics,
     DvrNotifierCleanupDiagnostics,
     CallbackRuntimeSplitDiagnostics,

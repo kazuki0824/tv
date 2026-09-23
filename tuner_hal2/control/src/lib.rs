@@ -587,70 +587,42 @@ struct WorkerRuntimeReaperPendingState<K, V> {
 }
 
 pub struct WorkerRuntimeReaperPending<K, V> {
-    state: std::sync::Arc<std::sync::Mutex<WorkerRuntimeReaperPendingState<K, V>>>,
-    poison: std::sync::Arc<WorkerReaperPoisonState>,
+    state: std::sync::Arc<PoisonTrackedMutex<WorkerRuntimeReaperPendingState<K, V>>>,
+    failure: std::sync::Arc<WorkerReaperFailureState>,
 }
 
 #[derive(Default)]
-struct WorkerReaperPoisonState {
-    pending_count: std::sync::atomic::AtomicU64,
-    receiver_count: std::sync::atomic::AtomicU64,
-    receiver_poisoned: std::sync::atomic::AtomicBool,
+struct WorkerReaperFailureState {
+    receiver_unavailable: std::sync::atomic::AtomicBool,
 }
 
-impl WorkerReaperPoisonState {
-    fn pending_failure(&self) -> maleicacid_tuner_hal2_common::HalError {
-        reaper_lock_poison(
-            &self.pending_count,
-            maleicacid_tuner_hal2_common::WorkerLockKind::ReaperPending,
-        )
-    }
-
+impl WorkerReaperFailureState {
     fn check_receiver(&self) -> Result<(), maleicacid_tuner_hal2_common::HalError> {
         if self
-            .receiver_poisoned
+            .receiver_unavailable
             .load(std::sync::atomic::Ordering::Acquire)
         {
-            return Err(maleicacid_tuner_hal2_common::HalError::WorkerLockPoisoned {
-                owner: "WorkerRuntimeReaperQueue",
-                lock: maleicacid_tuner_hal2_common::WorkerLockKind::ReaperReceiver,
-            });
+            return Err(maleicacid_tuner_hal2_common::HalError::WorkerReaperUnavailable);
         }
         Ok(())
     }
-}
 
-fn reaper_lock_poison(
-    count: &std::sync::atomic::AtomicU64,
-    lock: maleicacid_tuner_hal2_common::WorkerLockKind,
-) -> maleicacid_tuner_hal2_common::HalError {
-    let count = maleicacid_tuner_hal2_common::increment_atomic_counter_with_saturation(count, None);
-    eprintln!(
-        "ワーカー回収ロック汚染: ロック={lock:?} 検出回数={count} 飽和={}",
-        count == u64::MAX
-    );
-    maleicacid_tuner_hal2_common::HalError::WorkerLockPoisoned {
-        owner: "WorkerRuntimeReaperQueue",
-        lock,
+    fn mark_receiver_unavailable(&self) {
+        self.receiver_unavailable
+            .store(true, std::sync::atomic::Ordering::Release);
     }
 }
 
 fn lock_reaper_receiver<'a, J>(
-    receiver: &'a std::sync::Mutex<std::sync::mpsc::Receiver<J>>,
-    poison: &WorkerReaperPoisonState,
+    receiver: &'a PoisonTrackedMutex<std::sync::mpsc::Receiver<J>>,
+    failure: &WorkerReaperFailureState,
 ) -> Result<
     std::sync::MutexGuard<'a, std::sync::mpsc::Receiver<J>>,
     maleicacid_tuner_hal2_common::HalError,
 > {
-    receiver.lock().map_err(|_| {
-        let error = reaper_lock_poison(
-            &poison.receiver_count,
-            maleicacid_tuner_hal2_common::WorkerLockKind::ReaperReceiver,
-        );
-        poison
-            .receiver_poisoned
-            .store(true, std::sync::atomic::Ordering::Release);
-        error
+    receiver.lock().map_err(|poison| {
+        failure.mark_receiver_unavailable();
+        maleicacid_tuner_hal2_common::HalError::LockPoisoned(poison)
     })
 }
 
@@ -658,7 +630,7 @@ impl<K, V> Clone for WorkerRuntimeReaperPending<K, V> {
     fn clone(&self) -> Self {
         Self {
             state: std::sync::Arc::clone(&self.state),
-            poison: std::sync::Arc::clone(&self.poison),
+            failure: std::sync::Arc::clone(&self.failure),
         }
     }
 }
@@ -670,13 +642,16 @@ where
 {
     fn new(capacity: usize) -> Self {
         Self {
-            state: std::sync::Arc::new(std::sync::Mutex::new(WorkerRuntimeReaperPendingState {
-                entries: std::collections::BTreeMap::new(),
-                groups: std::collections::BTreeMap::new(),
-                next_group_id: 1,
-                capacity,
-            })),
-            poison: std::sync::Arc::new(WorkerReaperPoisonState::default()),
+            state: std::sync::Arc::new(PoisonTrackedMutex::new(
+                WorkerRuntimeReaperPendingState {
+                    entries: std::collections::BTreeMap::new(),
+                    groups: std::collections::BTreeMap::new(),
+                    next_group_id: 1,
+                    capacity,
+                },
+                RuntimeLockKind::WorkerReaperPending,
+            )),
+            failure: std::sync::Arc::new(WorkerReaperFailureState::default()),
         }
     }
 
@@ -686,8 +661,10 @@ where
         std::sync::MutexGuard<'_, WorkerRuntimeReaperPendingState<K, V>>,
         maleicacid_tuner_hal2_common::HalError,
     > {
-        self.poison.check_receiver()?;
-        self.state.lock().map_err(|_| self.poison.pending_failure())
+        self.failure.check_receiver()?;
+        self.state
+            .lock()
+            .map_err(maleicacid_tuner_hal2_common::HalError::LockPoisoned)
     }
 
     fn reserve_group(
@@ -961,7 +938,10 @@ where
         let capacity = capacity.max(1);
         let (sender, receiver) = std::sync::mpsc::sync_channel(capacity);
         let pending = WorkerRuntimeReaperPending::new(capacity);
-        let receiver = std::sync::Arc::new(std::sync::Mutex::new(receiver));
+        let receiver = std::sync::Arc::new(PoisonTrackedMutex::new(
+            receiver,
+            RuntimeLockKind::WorkerReaperReceiver,
+        ));
         let mut lanes = Vec::with_capacity(capacity);
         for lane in 0..capacity {
             let receiver = std::sync::Arc::clone(&receiver);
@@ -970,7 +950,8 @@ where
             let lane = WorkerRuntime::spawn_controlled_handle(
                 format!("{thread_prefix}-{lane}"),
                 move |context| loop {
-                    let queued = lock_reaper_receiver(&receiver, &pending_for_lane.poison)?.recv();
+                    let queued =
+                        lock_reaper_receiver(&receiver, &pending_for_lane.failure)?.recv();
                     let WorkerRuntimeReaperQueuedJob { job, group_id } = match queued {
                         Ok(queued) => queued,
                         Err(_) => return Ok(()),
@@ -2475,8 +2456,7 @@ mod tests {
 
     #[test]
     fn reaper_pending_poison_preserves_identity_count_and_failed_state() {
-        use maleicacid_tuner_hal2_common::{HalError, WorkerLockKind};
-        use std::sync::atomic::Ordering;
+        use maleicacid_tuner_hal2_common::{HalError, RuntimeLockKind};
 
         let pending = WorkerRuntimeReaperPending::new(2);
         let group = pending.reserve_group([(1, 9)]).unwrap();
@@ -2486,55 +2466,56 @@ mod tests {
             panic!("保留レジストリを汚染");
         }))
         .is_err());
-        let expected = HalError::WorkerLockPoisoned {
-            owner: "WorkerRuntimeReaperQueue",
-            lock: WorkerLockKind::ReaperPending,
-        };
-        assert_eq!(pending.reserve_group([(2, 8)]).unwrap_err(), expected);
-        assert_eq!(pending.release_group(group).unwrap_err(), expected);
-        assert_eq!(clone.pending_value(&1).unwrap_err(), expected);
-        assert_eq!(clone.update_value(&1, 7).unwrap_err(), expected);
-        assert_eq!(pending.poison.pending_count.load(Ordering::Acquire), 4);
-        assert!(pending.state.is_poisoned());
-        pending
-            .poison
-            .pending_count
-            .store(u64::MAX, Ordering::Release);
-        assert_eq!(pending.pending_value(&1).unwrap_err(), expected);
-        assert_eq!(
-            pending.poison.pending_count.load(Ordering::Acquire),
-            u64::MAX
-        );
+
+        for (error, count) in [
+            (pending.reserve_group([(2, 8)]).unwrap_err(), 1),
+            (pending.release_group(group).unwrap_err(), 2),
+            (clone.pending_value(&1).unwrap_err(), 3),
+            (clone.update_value(&1, 7).unwrap_err(), 4),
+        ] {
+            assert!(matches!(
+                error,
+                HalError::LockPoisoned(poison)
+                    if poison.lock == RuntimeLockKind::WorkerReaperPending
+                        && poison.poison_count == count
+                        && !poison.counter_saturated
+            ));
+        }
     }
 
     #[test]
     fn reaper_receiver_poison_is_visible_to_pending_callers_without_releasing_ownership() {
-        use maleicacid_tuner_hal2_common::{HalError, WorkerLockKind};
-        use std::sync::atomic::Ordering;
+        use maleicacid_tuner_hal2_common::{HalError, RuntimeLockKind};
 
         let pending = WorkerRuntimeReaperPending::new(2);
         pending.reserve_group([(1, 9)]).unwrap();
         let clone = pending.clone();
         let (_sender, receiver) = std::sync::mpsc::channel::<()>();
-        let receiver = std::sync::Mutex::new(receiver);
+        let receiver =
+            PoisonTrackedMutex::new(receiver, RuntimeLockKind::WorkerReaperReceiver);
         assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = receiver.lock().unwrap();
             panic!("回収受信側を汚染");
         }))
         .is_err());
-        let expected = HalError::WorkerLockPoisoned {
-            owner: "WorkerRuntimeReaperQueue",
-            lock: WorkerLockKind::ReaperReceiver,
-        };
+
+        let error = lock_reaper_receiver(&receiver, &pending.failure).unwrap_err();
+        assert!(matches!(
+            error,
+            HalError::LockPoisoned(poison)
+                if poison.lock == RuntimeLockKind::WorkerReaperReceiver
+                    && poison.poison_count == 1
+                    && !poison.counter_saturated
+        ));
         assert_eq!(
-            lock_reaper_receiver(&receiver, &pending.poison).unwrap_err(),
-            expected
+            clone.pending_value(&1).unwrap_err(),
+            HalError::WorkerReaperUnavailable
         );
-        assert_eq!(clone.pending_value(&1).unwrap_err(), expected);
-        assert_eq!(clone.reserve_group([(2, 8)]).unwrap_err(), expected);
-        assert_eq!(pending.poison.receiver_count.load(Ordering::Acquire), 1);
+        assert_eq!(
+            clone.reserve_group([(2, 8)]).unwrap_err(),
+            HalError::WorkerReaperUnavailable
+        );
         assert_eq!(pending.state.lock().unwrap().entries.get(&1), Some(&9));
-        assert!(receiver.is_poisoned());
     }
 
     #[test]
@@ -2564,9 +2545,7 @@ mod tests {
                     let _guard = handle.completion.0.lock().unwrap();
                     panic!("完了ロックを汚染");
                 }
-                WorkerLockKind::SupervisorWorker
-                | WorkerLockKind::ReaperPending
-                | WorkerLockKind::ReaperReceiver => panic!("ワーカー結果ロックではありません"),
+                WorkerLockKind::SupervisorWorker => panic!("ワーカー結果ロックではありません"),
             }));
             assert!(poisoned.is_err());
             release_tx.send(()).unwrap();
