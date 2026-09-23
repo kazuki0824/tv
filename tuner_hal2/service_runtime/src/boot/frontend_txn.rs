@@ -771,6 +771,27 @@ impl<'a> FrontendTxn<'a> {
         error: HalError,
         backend_stopped: bool,
     ) -> Result<(), HalError> {
+        self.record_frontend_backend_activation_failure_after_commit_context(
+            frontend_id,
+            generation,
+            error.clone(),
+            backend_stopped,
+            None,
+            error,
+            None,
+        )
+    }
+
+    pub(crate) fn record_frontend_backend_activation_failure_after_commit_context(
+        &mut self,
+        frontend_id: i32,
+        generation: u64,
+        error: HalError,
+        backend_stopped: bool,
+        step: Option<BackendTuneStep>,
+        diagnostic_primary_error: HalError,
+        rollback_failure: Option<BackendTuneRollbackFailure>,
+    ) -> Result<(), HalError> {
         let frontend_key = crate::registry::FrontendRuntimeId(frontend_id);
         let backend = self
             .runtime
@@ -793,8 +814,13 @@ impl<'a> FrontendTxn<'a> {
                     "frontend runtime is missing while recording backend activation failure",
                 )
             })?;
-        let diagnostic_result =
-            runtime.record_backend_failure_diagnostic(generation, backend, error.clone());
+        let diagnostic_result = runtime.record_backend_failure_diagnostic_context(
+            generation,
+            backend,
+            step,
+            diagnostic_primary_error,
+            rollback_failure,
+        );
         let state_result = runtime.record_backend_activation_failure_after_commit(
             generation,
             error,
