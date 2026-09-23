@@ -2671,21 +2671,21 @@ mod frontend_readback_tests {
     fn locked_live_path_starts_capture_before_releasing_prepared_pump() {
         let outcome =
             frontend_lock_terminal_outcome(FrontendLockQualification::Locked, false).unwrap();
-        let mut order = Vec::new();
+        let order = std::cell::RefCell::new(Vec::new());
         let outcome = start_streaming_and_activate_live_pump_for_initial_lock(
             outcome,
             || {
-                order.push("start");
+                order.borrow_mut().push("start");
                 Ok(())
             },
             || {
-                order.push("activate");
+                order.borrow_mut().push("activate");
                 Ok(())
             },
         )
         .unwrap();
         assert_eq!(outcome, FrontendLockWaitOutcome::Locked);
-        assert_eq!(order, ["start", "activate"]);
+        assert_eq!(*order.borrow(), ["start", "activate"]);
     }
 
     #[test]
