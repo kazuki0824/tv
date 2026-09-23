@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -31,6 +31,7 @@ pub struct PoisonTrackedMutex<T> {
     inner: Mutex<T>,
     kind: RuntimeLockKind,
     poison_count: AtomicU64,
+    saturation_reported: AtomicBool,
 }
 
 impl<T> PoisonTrackedMutex<T> {
@@ -39,6 +40,7 @@ impl<T> PoisonTrackedMutex<T> {
             inner: Mutex::new(value),
             kind,
             poison_count: AtomicU64::new(0),
+            saturation_reported: AtomicBool::new(false),
         }
     }
 
@@ -68,6 +70,12 @@ impl<T> PoisonTrackedMutex<T> {
             })
             .unwrap_or_else(|count| count);
         let poison_count = previous.saturating_add(1);
+        if poison_count == u64::MAX && !self.saturation_reported.swap(true, Ordering::Relaxed) {
+            eprintln!(
+                "diagnostic_counter_saturated counter=poison_count owner={:?}",
+                self.kind
+            );
+        }
         LockPoisonDiagnostic {
             lock: self.kind,
             poison_count,
@@ -135,5 +143,6 @@ mod tests {
             assert_eq!(error.poison_count, u64::MAX);
             assert!(error.counter_saturated);
         }
+        assert!(lock.saturation_reported.load(Ordering::Relaxed));
     }
 }
