@@ -326,7 +326,7 @@ impl Drop for QueueEpochDrainTxn {
 fn epoch_poison(poison: LockPoisonDiagnostic) -> QueueRuntimeError {
     QueueRuntimeError::new(
         QueueRuntimeErrorKind::EpochLockPoisoned(poison),
-        "DVR queue epoch lock poisoned",
+        "DVRキューエポックのロックが汚染されています",
     )
 }
 
@@ -496,7 +496,7 @@ impl QueueRuntime {
             let abort = drain.abort();
             return Err(DvrQueueDrainCommitError::after_abort(
                 DvrQueueDrainStep::EpochCommit,
-                protocol_error("DVR queue epoch commit rejected"),
+                protocol_error("DVRキューエポックの確定が拒否されました"),
                 abort,
             ));
         };
@@ -504,7 +504,7 @@ impl QueueRuntime {
             let abort = drain.abort();
             return Err(DvrQueueDrainCommitError::after_abort(
                 DvrQueueDrainStep::EpochCommit,
-                protocol_error("DVR queue epoch commit rejected"),
+                protocol_error("DVRキューエポックの確定が拒否されました"),
                 abort,
             ));
         }
@@ -528,7 +528,7 @@ impl QueueRuntime {
             let abort = drain.abort();
             return Err(DvrQueueDrainCommitError::after_abort(
                 DvrQueueDrainStep::EpochCommit,
-                protocol_error("DVR queue epoch commit rejected"),
+                protocol_error("DVRキューエポックの確定が拒否されました"),
                 abort,
             ));
         }
