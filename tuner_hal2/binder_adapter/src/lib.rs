@@ -168,15 +168,13 @@ mod tests {
     }
 
     #[test]
-    fn aidl_method_adapter_creates_domain_command_without_intermediate_string_layer() {
+    fn aidl_method_adapter_preserves_tune_command_plan() {
         let plan = aidl_method::AidlMethodAdapter::frontend_tune(request()).unwrap();
-        assert!(matches!(
-            plan.command,
-            DomainCommand::Frontend(frontend::FrontendCommand::Tune(_))
-        ));
+        assert_eq!(plan.api, AidlApi::FrontendTune);
         assert_eq!(
             plan.command_plan.transaction(),
             RuntimeTransactionName::FrontendTuneTxnApply
         );
+        assert!(plan.executable_request.is_none());
     }
 }
