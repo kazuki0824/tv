@@ -2240,6 +2240,20 @@ fn frontend_terminal_deadline(backend: FrontendBackendKind) -> Duration {
     }
 }
 
+fn frontend_terminal_deadline_at(
+    started_at: Instant,
+    backend: FrontendBackendKind,
+) -> Result<Instant, HalError> {
+    started_at
+        .checked_add(frontend_terminal_deadline(backend))
+        .ok_or_else(|| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "frontend terminal deadline overflow",
+            )
+        })
+}
+
 fn classify_frontend_lock_qualification(
     signal_state: FrontendSignalState,
     requirement: FrontendIsdbtPartialReceptionRequirement,
@@ -2511,14 +2525,13 @@ fn observe_and_record_frontend_stream_id_list_for_scan(
 
 fn frontend_lock_terminal_outcome(
     qualification: FrontendLockQualification,
-    elapsed: Duration,
-    deadline: Duration,
+    terminal_deadline_reached: bool,
 ) -> Option<FrontendLockWaitOutcome> {
     match qualification {
         FrontendLockQualification::Locked => Some(FrontendLockWaitOutcome::Locked),
         FrontendLockQualification::TmccMismatch => Some(FrontendLockWaitOutcome::NoSignal),
         FrontendLockQualification::Unlocked | FrontendLockQualification::TmccPending
-            if elapsed >= deadline =>
+            if terminal_deadline_reached =>
         {
             Some(FrontendLockWaitOutcome::NoSignal)
         }
@@ -2530,12 +2543,10 @@ fn wait_for_frontend_qualified_lock(
     runtime: &SharedRuntime,
     ctx: &FrontendWorkerContext,
     session: &FrontendBackendSession,
-    backend: FrontendBackendKind,
+    terminal_deadline: Instant,
     frontend_id: i32,
     generation: u64,
 ) -> Result<FrontendLockWaitOutcome, HalError> {
-    let started = Instant::now();
-    let deadline = frontend_terminal_deadline(backend);
     loop {
         if ctx.cancel_requested() {
             return Ok(FrontendLockWaitOutcome::Cancelled);
@@ -2549,7 +2560,7 @@ fn wait_for_frontend_qualified_lock(
             return Ok(FrontendLockWaitOutcome::Cancelled);
         }
         if let Some(outcome) =
-            frontend_lock_terminal_outcome(qualification, started.elapsed(), deadline)
+            frontend_lock_terminal_outcome(qualification, Instant::now() >= terminal_deadline)
         {
             return Ok(outcome);
         }
@@ -2594,21 +2605,12 @@ mod frontend_readback_tests {
 
     #[test]
     fn unlocked_frontend_becomes_no_signal_only_at_terminal_deadline() {
-        let deadline = Duration::from_millis(7_000);
         assert_eq!(
-            frontend_lock_terminal_outcome(
-                FrontendLockQualification::Unlocked,
-                Duration::from_millis(6_999),
-                deadline,
-            ),
+            frontend_lock_terminal_outcome(FrontendLockQualification::Unlocked, false),
             None
         );
         assert_eq!(
-            frontend_lock_terminal_outcome(
-                FrontendLockQualification::Unlocked,
-                Duration::from_millis(7_000),
-                deadline,
-            ),
+            frontend_lock_terminal_outcome(FrontendLockQualification::Unlocked, true),
             Some(FrontendLockWaitOutcome::NoSignal)
         );
     }
@@ -2616,12 +2618,24 @@ mod frontend_readback_tests {
     #[test]
     fn locked_frontend_terminates_without_waiting_for_deadline() {
         assert_eq!(
-            frontend_lock_terminal_outcome(
-                FrontendLockQualification::Locked,
-                Duration::ZERO,
-                Duration::from_millis(7_000),
-            ),
+            frontend_lock_terminal_outcome(FrontendLockQualification::Locked, false),
             Some(FrontendLockWaitOutcome::Locked)
+        );
+    }
+
+    #[test]
+    fn terminal_deadline_is_anchored_before_backend_submit() {
+        let started = Instant::now();
+        let deadline =
+            frontend_terminal_deadline_at(started, FrontendBackendKind::Px4CharDevice).unwrap();
+        assert_eq!(
+            deadline.duration_since(started),
+            Duration::from_millis(7_000)
+        );
+        let after_driver_wait = started + Duration::from_millis(3_000);
+        assert_eq!(
+            deadline.duration_since(after_driver_wait),
+            Duration::from_millis(4_000)
         );
     }
 
@@ -2783,6 +2797,7 @@ fn run_frontend_backend_tune_submit_worker(
         let _ = ticket.complete();
         return Ok(());
     }
+    let terminal_deadline = frontend_terminal_deadline_at(Instant::now(), backend)?;
     let session = match ticket.submit() {
         Ok(Ok(session)) => session,
         Ok(Err(failure)) => {
@@ -2825,7 +2840,7 @@ fn run_frontend_backend_tune_submit_worker(
         runtime,
         ctx,
         session,
-        backend,
+        terminal_deadline,
         frontend_id,
         generation,
         tune_notifier,
@@ -2836,7 +2851,7 @@ fn run_frontend_backend_tune_session_worker(
     runtime: SharedRuntime,
     ctx: &FrontendWorkerContext,
     session: FrontendBackendSession,
-    backend: FrontendBackendKind,
+    terminal_deadline: Instant,
     frontend_id: i32,
     generation: u64,
     tune_notifier: FrontendTuneNotifier,
@@ -2853,7 +2868,7 @@ fn run_frontend_backend_tune_session_worker(
             &runtime,
             ctx,
             &session,
-            backend,
+            terminal_deadline,
             frontend_id,
             generation,
         )? {
@@ -3817,6 +3832,7 @@ fn run_frontend_backend_scan_session_worker(
                 )?
             }
         };
+        let terminal_deadline = frontend_terminal_deadline_at(Instant::now(), backend)?;
         let session = match ticket.submit() {
             Ok(Ok(session)) => session,
             Ok(Err(failure)) if failure.rollback_succeeded => {
@@ -3953,7 +3969,7 @@ fn run_frontend_backend_scan_session_worker(
                 &runtime,
                 ctx,
                 &session,
-                backend,
+                terminal_deadline,
                 ctx.frontend_id(),
                 ctx.generation(),
             )? {
