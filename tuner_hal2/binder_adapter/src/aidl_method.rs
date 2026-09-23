@@ -8,13 +8,11 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
 use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     PlaybackStatus::PlaybackStatus, RecordStatus::RecordStatus,
 };
-use maleicacid_tuner_hal2_common::{FrontendTuneRequest, HalError, HalInvalidArgumentKind};
+use maleicacid_tuner_hal2_common::{HalError, HalInvalidArgumentKind};
 use maleicacid_tuner_hal2_domain_request::{
-    DemuxSetFrontendDataSourceRequest, DvrConfigureKind, DvrConfigureRequest, DvrDataFormat,
-    DvrFilterLinkRequest, DvrOpenKind, FilterAvStreamKind, FilterAvStreamTypeRequest,
-    FilterDelayHintKind, FilterDelayHintRequest, FilterReleaseAvHandleRequest,
-    FilterSetDataSourceRequest, LnbSetSatellitePositionRequest, LnbToneRequest, LnbVoltageRequest,
-    OpenDvrRequest, RuntimeExecutableRequest,
+    DvrConfigureKind, DvrConfigureRequest, DvrDataFormat, DvrOpenKind, FilterAvStreamKind,
+    FilterAvStreamTypeRequest, FilterDelayHintKind, FilterDelayHintRequest,
+    LnbSetSatellitePositionRequest, LnbToneRequest, LnbVoltageRequest, OpenDvrRequest,
 };
 
 const DVR_PACKET_SIZE_TS_188: i64 = 188;
@@ -233,8 +231,11 @@ mod tests {
     use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
         PlaybackSettings::PlaybackSettings, RecordSettings::RecordSettings,
     };
-    use maleicacid_tuner_hal2_common::{FrontendStreamIdKind, FrontendSystem};
-    use maleicacid_tuner_hal2_domain_request::{AidlMethodAdapter, AidlMethodCall};
+    use maleicacid_tuner_hal2_common::{FrontendStreamIdKind, FrontendSystem, FrontendTuneRequest};
+    use maleicacid_tuner_hal2_domain_request::{
+        AidlMethodAdapter, AidlMethodCall, DvrFilterLinkRequest, FilterReleaseAvHandleRequest,
+        FilterSetDataSourceRequest, RuntimeExecutableRequest,
+    };
 
     pub(crate) const AIDL_METHOD_CALL_VARIANT_COUNT_FOR_PLAN_COVERAGE: usize = 46;
 
