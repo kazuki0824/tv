@@ -11,8 +11,8 @@ use maleicacid_tuner_hal2_common::os_abi::{
 };
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FrontendBackendKind, FrontendDevicePath,
-    FrontendIsdbtPartialReceptionRequirement, FrontendTuneRequest, HalError, HalErrorDetail,
-    HalInternalKind, HalInvalidArgumentKind,
+    FrontendIsdbtPartialReceptionRequirement, FrontendSystem, FrontendTuneRequest, HalError,
+    HalErrorDetail, HalInternalKind, HalInvalidArgumentKind,
 };
 
 use super::reader::{FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind};
@@ -96,6 +96,7 @@ pub struct FrontendBackendSession {
     file: File,
     initial_signal_state: FrontendSignalState,
     partial_reception: FrontendIsdbtPartialReceptionRequirement,
+    px4_channel_apply_result: Option<Px4ChannelApplyResult>,
 }
 
 impl core::fmt::Debug for FrontendBackendSession {
@@ -105,6 +106,7 @@ impl core::fmt::Debug for FrontendBackendSession {
             .field("fd", &self.file.as_raw_fd())
             .field("initial_signal_state", &self.initial_signal_state)
             .field("partial_reception", &self.partial_reception)
+            .field("px4_channel_apply_result", &self.px4_channel_apply_result)
             .finish()
     }
 }
@@ -178,6 +180,10 @@ impl FrontendBackendSession {
 
     pub fn partial_reception_requirement(&self) -> FrontendIsdbtPartialReceptionRequirement {
         self.partial_reception
+    }
+
+    pub fn px4_channel_apply_result(&self) -> Option<Px4ChannelApplyResult> {
+        self.px4_channel_apply_result
     }
 
     pub fn observe_signal_state(&self) -> Result<FrontendSignalState, HalError> {
@@ -934,6 +940,7 @@ struct FrontendBackendTuneExecutor {
     file: Option<File>,
     streaming_state: BackendStreamingState,
     initial_signal_state: FrontendSignalState,
+    px4_channel_apply_result: Option<Px4ChannelApplyResult>,
 }
 
 impl FrontendBackendTuneExecutor {
@@ -957,6 +964,7 @@ impl FrontendBackendTuneExecutor {
             file: Some(file),
             streaming_state: BackendStreamingState::NotStarted,
             initial_signal_state: FrontendSignalState::Unknown,
+            px4_channel_apply_result: None,
         })
     }
 
@@ -1019,7 +1027,7 @@ impl FrontendBackendTuneExecutor {
         }
     }
 
-    fn apply_channel_for(&self, request: &FrontendTuneRequest) -> Result<(), HalError> {
+    fn apply_channel_for(&mut self, request: &FrontendTuneRequest) -> Result<(), HalError> {
         match &self.kind {
             FrontendBackendSessionKind::Px4 { control_path } => {
                 let mapped = px4::map_tune_request_to_px4(request)?;
@@ -1027,14 +1035,17 @@ impl FrontendBackendTuneExecutor {
                     freq_no: mapped.freq_no,
                     slot: mapped.slot,
                 };
-                ioctl_ptr(
+                let result = ioctl_ptr(
                     "px4",
                     Some(control_path.as_path().to_path_buf()),
                     self.file_fd()?,
                     PTX_SET_CHANNEL,
                     &mut freq,
                     "PTX_SET_CHANNEL",
-                )
+                );
+                self.px4_channel_apply_result =
+                    Some(classify_px4_channel_apply_result(request.system, result)?);
+                Ok(())
             }
             FrontendBackendSessionKind::Dvb { frontend_path } => {
                 let normalized = dvb::normalized_tune_request_from_common(request)?;
@@ -1123,6 +1134,7 @@ impl FrontendBackendTuneExecutor {
             file,
             initial_signal_state: self.initial_signal_state,
             partial_reception: self.plan.request.partial_reception,
+            px4_channel_apply_result: self.px4_channel_apply_result,
         })
     }
 }
@@ -1306,6 +1318,26 @@ fn classify_tmcc_partial_reception_read(
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Px4ChannelApplyResult {
+    Applied,
+    PendingUnlocked,
+}
+
+fn classify_px4_channel_apply_result(
+    system: FrontendSystem,
+    result: Result<(), HalError>,
+) -> Result<Px4ChannelApplyResult, HalError> {
+    match result {
+        Ok(()) => Ok(Px4ChannelApplyResult::Applied),
+        Err(HalError::IoctlFailed {
+            errno: ERRNO_EAGAIN,
+            ..
+        }) if system == FrontendSystem::IsdbT => Ok(Px4ChannelApplyResult::PendingUnlocked),
+        Err(error) => Err(error),
+    }
+}
+
 fn px4_signal_state_from_readback(
     result: Result<bool, HalError>,
 ) -> Result<FrontendSignalState, HalError> {
@@ -1475,6 +1507,35 @@ mod tests {
     }
 
     #[test]
+    fn px4_pending_result_survives_executor_commit() {
+        let mut executor = fresh_tune_executor(FrontendBackendKind::Px4CharDevice);
+        executor.px4_channel_apply_result = Some(Px4ChannelApplyResult::PendingUnlocked);
+        let session = executor.into_session().unwrap();
+        assert_eq!(
+            session.px4_channel_apply_result(),
+            Some(Px4ChannelApplyResult::PendingUnlocked)
+        );
+    }
+
+    #[test]
+    fn px4_isdbt_set_channel_eagain_is_pending_but_isdbs_remains_failure() {
+        let pending = HalError::IoctlFailed {
+            backend: "px4",
+            path: Some(PathBuf::from("/dev/px4video0")),
+            op: "PTX_SET_CHANNEL",
+            errno: ERRNO_EAGAIN,
+        };
+        assert_eq!(
+            classify_px4_channel_apply_result(FrontendSystem::IsdbT, Err(pending.clone())),
+            Ok(Px4ChannelApplyResult::PendingUnlocked)
+        );
+        assert_eq!(
+            classify_px4_channel_apply_result(FrontendSystem::IsdbS, Err(pending.clone())),
+            Err(pending.clone())
+        );
+    }
+
+    #[test]
     fn only_px4_stop_ealready_is_idempotent_success() {
         for (request, op, errno, succeeds) in [
             (
@@ -1532,6 +1593,7 @@ mod tests {
             file: File::open("/dev/null").unwrap(),
             initial_signal_state: FrontendSignalState::NoSignal,
             partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+            px4_channel_apply_result: None,
         };
         let descriptor = FrontendLiveReaderDescriptor::dvb_dvr_device(1, path.clone());
         let error = session.open_live_reader(&descriptor).err().unwrap();
@@ -1563,6 +1625,7 @@ mod tests {
             file: File::open("/dev/null").unwrap(),
             initial_signal_state: FrontendSignalState::NoSignal,
             partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+            px4_channel_apply_result: None,
         };
         let descriptor = FrontendLiveReaderDescriptor::px4_from_control_fd(1, path);
         let mut reader = session.open_live_reader(&descriptor).unwrap();
@@ -1578,6 +1641,7 @@ mod tests {
             file: File::open("/dev/null").unwrap(),
             initial_signal_state: FrontendSignalState::NoSignal,
             partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+            px4_channel_apply_result: None,
         };
         assert!(session.stop().is_err());
         assert!(session.close().is_ok());
@@ -1592,6 +1656,7 @@ mod tests {
             file: File::open("/dev/null").unwrap(),
             initial_signal_state: FrontendSignalState::NoSignal,
             partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+            px4_channel_apply_result: None,
         };
         assert!(session.close().is_err());
     }

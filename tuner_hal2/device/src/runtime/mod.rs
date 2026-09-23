@@ -17,6 +17,7 @@ pub use backend_worker::{
     FrontendBackendLnbApplyOutcome, FrontendBackendLnbApplyPlan, FrontendBackendSession,
     FrontendBackendSessionKind, FrontendBackendSubmitFailure, FrontendBackendTunePlan,
     FrontendLnbVoltage, FrontendTmccPartialReceptionObservation, FrontendTmccTsidListObservation,
+    Px4ChannelApplyResult,
 };
 pub use frontend_runtime::{
     FrontendBackendFailureDiagnostic, FrontendDiagnosticWriteFailure, FrontendRuntime,
