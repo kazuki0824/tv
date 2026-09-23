@@ -66,7 +66,7 @@ pub(crate) fn demux_runtime_error_to_hal(
             primary,
             rollback,
         } => compose_primary_cleanup_failure(
-            "DVR queue operation and rollback failed",
+            "DVRキュー操作と巻戻しがともに失敗しました",
             queue_error_to_hal(error.id, primary),
             queue_error_to_hal(error.id, rollback),
         ),
