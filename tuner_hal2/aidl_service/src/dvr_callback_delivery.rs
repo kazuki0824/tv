@@ -596,7 +596,10 @@ fn deliver_dvr_status_event(
                 context,
                 handle,
                 dvr_phase,
-                HalError::callback_failed(delivery_context, "DVR callback artifactが見つかりません"),
+                HalError::callback_failed(
+                    delivery_context,
+                    "DVR callback artifactが見つかりません",
+                ),
             );
             return Ok(DvrStatusCallbackDeliveryOutcome::ArtifactMissing);
         }
@@ -607,8 +610,10 @@ fn deliver_dvr_status_event(
         }
     };
     if let Err(error) = dvr_status_event_to_hal_callback(&callback, event) {
-        let primary =
-            HalError::callback_failed(delivery_context, format!("Binder呼び出しに失敗しました: {error:?}"));
+        let primary = HalError::callback_failed(
+            delivery_context,
+            format!("Binder呼び出しに失敗しました: {error:?}"),
+        );
         record_dvr_callback_delivery_failure(
             context,
             handle,
@@ -1051,7 +1056,9 @@ pub(crate) fn start_dvr_status_notifier_reaper(
                     "DVR通知回収ワーカーがpanicしたか、終了待ちに失敗しました",
                 )
             {
-                log::error!("DVR notifier reaperに失敗しました: 分類={category:?} エラー={error:?}");
+                log::error!(
+                    "DVR notifier reaperに失敗しました: 分類={category:?} エラー={error:?}"
+                );
                 if let Some(context) = observer_context.upgrade() {
                     mark_dvr_notifier_service_critical(&context);
                 }

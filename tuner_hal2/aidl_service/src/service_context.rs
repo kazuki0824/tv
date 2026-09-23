@@ -343,29 +343,28 @@ impl AidlServiceContext {
             };
         let drop_leak_result = self.clear_drop_leak_error_records();
         let callback_fallback_clear_result = self.clear_callback_delivery_fallback_diagnostics();
-        let mut runtime = match TunerServiceRuntime::lock_shared(
-            &self.runtime,
-            "サービスコンテキスト",
-        ) {
-            Ok(runtime) => runtime,
-            Err(runtime_error) => {
-                let record_result = self.record_service_boot_reset_finish_lock_failure(
-                    dvr_notifier_result.clone(),
-                    artifact_result,
-                    drop_leak_result,
-                    callback_fallback_clear_result,
-                    runtime_error.clone(),
-                );
-                return Err(match record_result {
-                    Ok(()) => runtime_error,
-                    Err(record_error) => compose_primary_cleanup_failure(
-                        "runtime完了時のロック失敗後、service boot分割診断の記録に失敗しました",
-                        runtime_error,
-                        record_error,
-                    ),
-                });
-            }
-        };
+        let mut runtime =
+            match TunerServiceRuntime::lock_shared(&self.runtime, "サービスコンテキスト")
+            {
+                Ok(runtime) => runtime,
+                Err(runtime_error) => {
+                    let record_result = self.record_service_boot_reset_finish_lock_failure(
+                        dvr_notifier_result.clone(),
+                        artifact_result,
+                        drop_leak_result,
+                        callback_fallback_clear_result,
+                        runtime_error.clone(),
+                    );
+                    return Err(match record_result {
+                        Ok(()) => runtime_error,
+                        Err(record_error) => compose_primary_cleanup_failure(
+                            "runtime完了時のロック失敗後、service boot分割診断の記録に失敗しました",
+                            runtime_error,
+                            record_error,
+                        ),
+                    });
+                }
+            };
         let (outcome, diagnostic_clear_result) =
             runtime.boot_from_probe_results_with_diagnostic_clear_result(results);
         runtime.finish_service_boot_reset_after_artifact_result_use_case(
@@ -385,7 +384,9 @@ impl AidlServiceContext {
     ) -> Result<crate::callback_store::PreparedCallbackArtifactToken, HalError> {
         self.callback_store_lock()
             .map_err(|error| {
-                error.into_hal_error("子オブジェクト準備中にfilter callback storeのロック取得に失敗しました")
+                error.into_hal_error(
+                    "子オブジェクト準備中にfilter callback storeのロック取得に失敗しました",
+                )
             })?
             .prepare_filter_callback(handle, callback)
             .map_err(|error| error.into_hal_error("filter callbackの準備に失敗しました"))
@@ -398,7 +399,9 @@ impl AidlServiceContext {
     ) -> Result<crate::callback_store::PreparedCallbackArtifactToken, HalError> {
         self.callback_store_lock()
             .map_err(|error| {
-                error.into_hal_error("子オブジェクト準備中にDVR callback storeのロック取得に失敗しました")
+                error.into_hal_error(
+                    "子オブジェクト準備中にDVR callback storeのロック取得に失敗しました",
+                )
             })?
             .prepare_dvr_callback(handle, callback)
             .map_err(|error| error.into_hal_error("DVR callbackの準備に失敗しました"))
@@ -846,7 +849,9 @@ impl AidlServiceContext {
                         context.record_frontend_callback_delivery_failure_fallback(record)
                     {
                         // 記録不能は同storeのrecord-failure counterにも残る。
-                        log::error!("frontend callback死亡診断の記録に失敗しました: {record_error:?}");
+                        log::error!(
+                            "frontend callback死亡診断の記録に失敗しました: {record_error:?}"
+                        );
                     }
                 }
             }
