@@ -172,7 +172,7 @@ fn finish_frontend_worker_execution(
 type SharedRuntime = Arc<Mutex<TunerServiceRuntime>>;
 
 enum FrontendTuneWorkerActivation {
-    Run(FrontendBackendSession),
+    Run(FrontendWorkerStopTicket),
     Abort,
 }
 
@@ -2992,6 +2992,112 @@ mod frontend_readback_tests {
     }
 }
 
+fn record_async_backend_submit_failure(
+    runtime: &SharedRuntime,
+    frontend_id: i32,
+    generation: u64,
+    failure: FrontendBackendSubmitFailure,
+) -> HalError {
+    let backend_stopped = failure.rollback_succeeded;
+    let step = failure.step;
+    let primary_error = failure.error.clone();
+    let rollback_failure = failure.rollback_failure.clone();
+    let public_error = failure.into_error();
+    let mut guard = match lock_runtime(
+        runtime,
+        "service runtime lock poisoned while recording async backend submit failure",
+    ) {
+        Ok(guard) => guard,
+        Err(lock_error) => {
+            return compose_frontend_cleanup_error(
+                "async backend submit failure record lock failed",
+                public_error,
+                lock_error,
+            )
+        }
+    };
+    match guard
+        .frontend_txn()
+        .record_frontend_backend_activation_failure_after_commit_context(
+            frontend_id,
+            generation,
+            public_error.clone(),
+            backend_stopped,
+            step,
+            primary_error,
+            rollback_failure,
+        ) {
+        Ok(()) => public_error,
+        Err(record_error) => compose_frontend_cleanup_error(
+            "async backend submit failure state record failed",
+            public_error,
+            record_error,
+        ),
+    }
+}
+
+fn run_frontend_backend_tune_submit_worker(
+    runtime: SharedRuntime,
+    ctx: &FrontendWorkerContext,
+    ticket: FrontendWorkerStopTicket,
+    backend: FrontendBackendKind,
+    frontend_id: i32,
+    generation: u64,
+    tune_notifier: FrontendTuneNotifier,
+) -> Result<(), HalError> {
+    if ctx.cancel_requested() {
+        let _ = ticket.complete();
+        return Ok(());
+    }
+    let session = match ticket.submit() {
+        Ok(Ok(session)) => session,
+        Ok(Err(failure)) => {
+            return Err(record_async_backend_submit_failure(
+                &runtime,
+                frontend_id,
+                generation,
+                failure,
+            ))
+        }
+        Err(error) => {
+            let public_error = {
+                let mut guard = lock_runtime(
+                    &runtime,
+                    "service runtime lock poisoned while recording backend submit owner failure",
+                )?;
+                match guard
+                    .frontend_txn()
+                    .record_frontend_backend_activation_failure_after_commit(
+                        frontend_id,
+                        generation,
+                        error.clone(),
+                        false,
+                    ) {
+                    Ok(()) => error,
+                    Err(record_error) => compose_frontend_cleanup_error(
+                        "backend submit owner failure state record failed",
+                        error,
+                        record_error,
+                    ),
+                }
+            };
+            return Err(public_error);
+        }
+    };
+    if ctx.cancel_requested() {
+        return finish_backend_session_after_worker_body(session, Ok(()), ctx.cancel_reason());
+    }
+    run_frontend_backend_tune_session_worker(
+        runtime,
+        ctx,
+        session,
+        backend,
+        frontend_id,
+        generation,
+        tune_notifier,
+    )
+}
+
 fn run_frontend_backend_tune_session_worker(
     runtime: SharedRuntime,
     ctx: &FrontendWorkerContext,
@@ -3459,79 +3565,10 @@ fn finish_committed_tune_replacement(
             FrontendDevicePath::new(transition.entry.device_path.clone()),
             transition.request.clone(),
         );
-        let worker_io_deadline_ms = guard.capability_snapshot().worker_io_deadline_ms;
-        let backend_submit_deadline_ms =
-            frontend_backend_submit_deadline_ms(transition.entry.backend, worker_io_deadline_ms);
         let ticket =
             guard
                 .frontend_txn()
                 .prepare_backend_submit(FrontendWorkerKind::Tune, plan, None)?;
-        let session = match submit_frontend_backend_with_deadline(
-            ticket,
-            generation,
-            backend_submit_deadline_ms,
-        ) {
-            Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Ok(session))) => session,
-            Ok(FrontendBackendSubmitDeadlineOutcome::Completed(Err(failure))) => {
-                let backend_stopped = failure.rollback_succeeded;
-                let step = failure.step;
-                let primary_error = failure.error.clone();
-                let rollback_failure = failure.rollback_failure.clone();
-                let public_error = failure.into_error();
-                return Err(record_backend_submit_failure_after_fence(
-                    &mut guard,
-                    frontend_id,
-                    generation,
-                    backend_stopped,
-                    public_error,
-                    step,
-                    primary_error,
-                    rollback_failure,
-                ));
-            }
-            Ok(FrontendBackendSubmitDeadlineOutcome::TimedOut(ticket)) => {
-                let (expected_demux_generations, snapshot_error) =
-                    match current_bound_demux_generation_snapshot(&guard, frontend_id) {
-                        Ok(snapshot) => (snapshot, None),
-                        Err(error) => {
-                            guard.mark_service_critical();
-                            (Vec::new(), Some(error))
-                        }
-                    };
-                let timeout_error = transfer_timed_out_frontend_backend_submit(
-                    &reaper,
-                    &mut guard,
-                    target,
-                    replacement_kind,
-                    generation,
-                    expected_demux_generations,
-                    ticket,
-                    transition.cleanup_diagnostic_sink.clone(),
-                    backend_submit_deadline_ms,
-                );
-                return Err(match snapshot_error {
-                    Some(snapshot_error) => compose_frontend_cleanup_error(
-                        "frontend backend submit timeout demux snapshot failed",
-                        timeout_error,
-                        snapshot_error,
-                    ),
-                    None => timeout_error,
-                });
-            }
-            Err(start_error) => {
-                let diagnostic_error = start_error.clone();
-                return Err(record_backend_submit_failure_after_fence(
-                    &mut guard,
-                    frontend_id,
-                    generation,
-                    true,
-                    start_error,
-                    None,
-                    diagnostic_error,
-                    None,
-                ));
-            }
-        };
         let runtime_for_worker = Arc::clone(runtime);
         let backend = transition.entry.backend;
         let tune_notifier = transition.tune_notifier;
@@ -3542,11 +3579,11 @@ fn finish_committed_tune_replacement(
             generation,
             move |ctx| {
                 let result = match activation_receiver.recv() {
-                    Ok(FrontendTuneWorkerActivation::Run(session)) => {
-                        run_frontend_backend_tune_session_worker(
+                    Ok(FrontendTuneWorkerActivation::Run(ticket)) => {
+                        run_frontend_backend_tune_submit_worker(
                             Arc::clone(&runtime_for_worker),
                             &ctx,
-                            session,
+                            ticket,
                             backend,
                             frontend_id,
                             generation,
@@ -3563,15 +3600,15 @@ fn finish_committed_tune_replacement(
             },
         ) {
             let error = map_frontend_worker_start_error(&guard, start_error);
-            return Err(finish_backend_session_before_frontend_commit_failure(
-                runtime,
-                guard,
-                frontend_id,
-                generation,
-                session,
-                error,
-                "frontend backend stop failed after tune worker preparation failure",
-            ));
+            let cleanup = ticket.complete();
+            return match frontend_worker_stop_failure(&cleanup) {
+                Some(cleanup_error) => Err(compose_frontend_cleanup_error(
+                    "frontend backend preparation cleanup failed after tune worker start failure",
+                    error,
+                    cleanup_error,
+                )),
+                None => Err(error),
+            };
         }
         if let Err(commit_error) = guard.frontend_txn().commit_frontend_tune_after_fence(
             frontend_id,
@@ -3587,15 +3624,15 @@ fn finish_committed_tune_replacement(
                         "frontend tune worker abort activation failed",
                     )
                 });
-            let mut error = finish_backend_session_before_frontend_commit_failure(
-                runtime,
-                guard,
-                frontend_id,
-                generation,
-                session,
-                commit_error,
-                "frontend backend stop failed after tune commit failure",
-            );
+            let cleanup = ticket.complete();
+            let mut error = commit_error;
+            if let Some(cleanup_error) = frontend_worker_stop_failure(&cleanup) {
+                error = compose_frontend_cleanup_error(
+                    "frontend backend preparation cleanup failed after tune commit failure",
+                    error,
+                    cleanup_error,
+                );
+            }
             if let Some(activation_error) = activation_error {
                 error = compose_frontend_cleanup_error(
                     "frontend tune worker abort failed after commit failure",
@@ -3605,25 +3642,24 @@ fn finish_committed_tune_replacement(
             }
             return Err(error);
         }
-        match activation_sender.send(FrontendTuneWorkerActivation::Run(session)) {
+        match activation_sender.send(FrontendTuneWorkerActivation::Run(ticket)) {
             Ok(()) => Ok(()),
             Err(error) => match error.0 {
-                FrontendTuneWorkerActivation::Run(session) => {
+                FrontendTuneWorkerActivation::Run(ticket) => {
                     let primary = HalError::internal(
                         HalInternalKind::InvariantViolation,
                         "frontend tune worker ended before backend activation",
                     );
-                    Err(
-                        finish_backend_session_after_frontend_commit_activation_failure(
-                            runtime,
-                            guard,
-                            frontend_id,
-                            generation,
-                            session,
+                    let cleanup = ticket.complete();
+                    let cleanup_error = frontend_worker_stop_failure(&cleanup);
+                    Err(match cleanup_error {
+                        Some(cleanup_error) => compose_frontend_cleanup_error(
+                            "frontend backend preparation cleanup failed after tune activation failure",
                             primary,
-                            "frontend backend stop failed after tune activation failure",
+                            cleanup_error,
                         ),
-                    )
+                        None => primary,
+                    })
                 }
                 FrontendTuneWorkerActivation::Abort => Err(HalError::internal(
                     HalInternalKind::InvariantViolation,
