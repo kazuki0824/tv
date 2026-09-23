@@ -1,5 +1,5 @@
 [package]
-name = "maleicacid-tuner-hal2-worker-handle-loom-host-ci"
+name = "maleicacid-tuner-hal2-concurrency-loom-host-ci"
 version = "0.0.0"
 edition = "2021"
 publish = false
