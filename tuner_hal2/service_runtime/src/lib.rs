@@ -157,8 +157,7 @@ pub enum ServiceState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maleicacid_tuner_hal2_binder_adapter::{AidlApi, AidlMethodCall};
-    use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem, HalError};
+        use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem, HalError};
     use maleicacid_tuner_hal2_demux::{
         FilterConfig, FilterConfigKind, FilterOpenType, OpenFilterRequest, PacketPid, PesSettings,
         PipelineAssemblySuppressionReason, PipelineDeliveryAction, QueueRuntimeError,
@@ -168,7 +167,7 @@ mod tests {
         multi2_encrypt_payload, CasKeyReference, CasKeyResolveError, DescramblerKeySlot,
         DescramblerKeyToken, DescramblerPid, DescramblerPidClaim, Multi2KeyMaterial,
     };
-    use maleicacid_tuner_hal2_domain_request::{
+    use maleicacid_tuner_hal2_domain_request::{ AidlMethodCall, AidlMethodAdapter,
         AidlObjectGeneration, AidlObjectId, AidlObjectKind, DvrConfigureKind, DvrConfigureRequest,
         DvrDataFormat, DvrOpenKind, FilterDelayHintKind, FilterDelayHintRequest, OpenDvrRequest,
         RuntimeExecutableRequest, RuntimeTransactionName, AIDL_TRANSACTION_TABLE,
