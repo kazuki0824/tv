@@ -86,6 +86,9 @@ pub trait BackendTuneOps {
     fn capture_previous_state(&mut self) -> Result<Self::Snapshot, HalError>;
     fn apply_system_mode(&mut self, request: &FrontendTuneRequest) -> Result<(), HalError>;
     fn apply_channel(&mut self, request: &FrontendTuneRequest) -> Result<(), HalError>;
+    fn defer_streaming_start_until_lock(&self) -> bool {
+        false
+    }
     fn start_streaming(&mut self) -> Result<(), HalError>;
     fn read_initial_status(&mut self) -> Result<(), HalError>;
     fn rollback_stop_streaming(&mut self) -> Result<(), HalError>;
@@ -190,15 +193,17 @@ impl BackendTuneTxn {
         }
         self.record_step(BackendTuneStep::ApplyChannel);
 
-        if let Err(error) = backend.start_streaming() {
-            return self.fail_after_rollback(
-                backend,
-                &snapshot,
-                BackendTuneStep::StartStreaming,
-                error,
-            );
+        if !backend.defer_streaming_start_until_lock() {
+            if let Err(error) = backend.start_streaming() {
+                return self.fail_after_rollback(
+                    backend,
+                    &snapshot,
+                    BackendTuneStep::StartStreaming,
+                    error,
+                );
+            }
+            self.record_step(BackendTuneStep::StartStreaming);
         }
-        self.record_step(BackendTuneStep::StartStreaming);
 
         if let Err(error) = backend.read_initial_status() {
             return self.fail_after_rollback(
@@ -259,7 +264,9 @@ impl BackendTuneTxn {
             BackendTuneStep::ApplyChannel,
             backend.apply_channel(&self.request)
         );
-        step!(BackendTuneStep::StartStreaming, backend.start_streaming());
+        if !backend.defer_streaming_start_until_lock() {
+            step!(BackendTuneStep::StartStreaming, backend.start_streaming());
+        }
         step!(
             BackendTuneStep::ReadInitialStatus,
             backend.read_initial_status()
@@ -368,6 +375,7 @@ mod tests {
         tuned: bool,
         fail_step: Option<BackendTuneStep>,
         fail_rollback: Option<BackendTuneRollbackStep>,
+        defer_streaming_start: bool,
         calls: Vec<&'static str>,
     }
 
@@ -399,6 +407,9 @@ mod tests {
         fn apply_channel(&mut self, _request: &FrontendTuneRequest) -> Result<(), HalError> {
             self.calls.push("apply_channel");
             self.maybe_fail(BackendTuneStep::ApplyChannel)
+        }
+        fn defer_streaming_start_until_lock(&self) -> bool {
+            self.defer_streaming_start
         }
         fn start_streaming(&mut self) -> Result<(), HalError> {
             self.calls.push("start_streaming");
@@ -507,6 +518,36 @@ mod tests {
             }
             other => panic!("unexpected outcome: {other:?}"),
         }
+    }
+
+    #[test]
+    fn pending_backend_commit_defers_streaming_until_lock() {
+        let mut backend = FakeBackend {
+            defer_streaming_start: true,
+            ..Default::default()
+        };
+        let mut txn = BackendTuneTxn::new(10, 1, request());
+        let outcome = txn.apply(&mut backend);
+        assert_eq!(
+            backend.calls,
+            ["capture", "apply_system", "apply_channel", "read_status"]
+        );
+        match outcome {
+            BackendTuneOutcome::Committed { commit } => {
+                assert_eq!(
+                    commit.completed_steps(),
+                    &[
+                        BackendTuneStep::CapturePreviousState,
+                        BackendTuneStep::ApplySystemMode,
+                        BackendTuneStep::ApplyChannel,
+                        BackendTuneStep::ReadInitialStatus,
+                        BackendTuneStep::Commit,
+                    ]
+                );
+            }
+            other => panic!("unexpected outcome: {other:?}"),
+        }
+        assert!(!backend.tuned);
     }
 
     #[test]
