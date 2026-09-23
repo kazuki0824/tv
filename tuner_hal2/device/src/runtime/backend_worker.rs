@@ -325,7 +325,7 @@ impl FrontendBackendSession {
                     .open(dvr_path.as_path())
                     .map_err(|error| HalError::Io {
                         backend: "dvb",
-                        operation: "live DVR reader open",
+                        operation: "live DVR readerのopen",
                         path: Some(dvr_path.as_path().to_path_buf()),
                         errno: error.raw_os_error(),
                         detail: HalErrorDetail::new(error.to_string()),
@@ -1723,7 +1723,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(backend, "dvb");
-                assert_eq!(operation, "live DVR reader open");
+                assert_eq!(operation, "live DVR readerのopen");
                 assert_eq!(error_path.as_deref(), Some(path.as_path()));
                 assert!(expected_errno.is_some());
                 assert_eq!(errno, expected_errno);
