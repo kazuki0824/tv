@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub const TUNER_SERVICE_NAME: &str = "android.hardware.tv.tuner.ITuner/default";
 /// LineageOS 22.1 / Android 15 TRM resource handles preserve 8 bits of resource ID.
@@ -383,57 +383,8 @@ pub fn fail_after_cleanup<T>(
     ))
 }
 
-#[derive(Debug)]
-pub struct IdExhausted {
-    pub last_attempted: i32,
-}
-
-#[derive(Debug)]
-pub struct IdAllocator {
-    next: AtomicI32,
-    max: i32,
-}
-
-impl IdAllocator {
-    pub const fn new(start: i32) -> Self {
-        Self {
-            next: AtomicI32::new(start),
-            max: i32::MAX,
-        }
-    }
-
-    pub const fn new_bounded(start: i32, max: i32) -> Self {
-        Self {
-            next: AtomicI32::new(start),
-            max,
-        }
-    }
-
-    pub fn try_allocate(&self) -> Result<i32, IdExhausted> {
-        loop {
-            let current = self.next.load(Ordering::SeqCst);
-            if current > self.max {
-                return Err(IdExhausted {
-                    last_attempted: current,
-                });
-            }
-            let Some(next) = current.checked_add(1) else {
-                return Err(IdExhausted {
-                    last_attempted: current,
-                });
-            };
-            match self
-                .next
-                .compare_exchange(current, next, Ordering::SeqCst, Ordering::SeqCst)
-            {
-                Ok(_) => return Ok(current),
-                Err(_) => continue,
-            }
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrontendBackendKind {#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrontendBackendKind {
     Px4CharDevice,
     LinuxDvb,
@@ -1121,11 +1072,6 @@ mod tests {
         assert_eq!(buf.tail_len(), 0);
     }
 
-    #[test]
-    fn id_allocator_reports_exhaustion_without_wrapping() {
-        let alloc = IdAllocator::new_bounded(i32::MAX, i32::MAX);
-        assert!(alloc.try_allocate().is_err());
-    }
 }
 
 #[cfg(test)]
