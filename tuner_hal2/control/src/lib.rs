@@ -328,11 +328,15 @@ impl<T, E> WorkerHandle<T, E> {
                 WorkerRuntimeOwnerFailure::ResultAlreadyCollected,
             );
         }
-        if self
-            .join
-            .as_ref()
-            .is_some_and(|handle| !handle.is_finished())
-        {
+        let completed = match self.completion.0.lock() {
+            Ok(completed) => *completed,
+            Err(_) => {
+                return WorkerRuntimePoll::OwnerFailure(
+                    WorkerRuntimeOwnerFailure::CompletionLockPoison,
+                );
+            }
+        };
+        if !completed {
             return WorkerRuntimePoll::Running;
         }
         if let Some(handle) = self.join.take() {
@@ -1946,6 +1950,55 @@ mod tests {
                 if poison.lock == maleicacid_tuner_hal2_common::RuntimeLockKind::SupervisorState && poison.poison_count == count
             ));
         }
+    }
+
+    #[test]
+    fn published_completion_is_joined_before_collection_reports_completed() {
+        use super::{WorkerContext, WorkerHandle, WorkerRuntimePoll};
+        use std::sync::{mpsc, Arc, Condvar, Mutex};
+        use std::time::Duration;
+
+        let result = Arc::new(Mutex::new(Some(Ok::<u32, ()>(7))));
+        let owner_failure = Arc::new(Mutex::new(None));
+        let completion = Arc::new((Mutex::new(true), Condvar::new()));
+        let (release_tx, release_rx) = mpsc::channel();
+        let join = std::thread::spawn(move || {
+            release_rx.recv().unwrap();
+        });
+        let handle = WorkerHandle {
+            result,
+            owner_failure,
+            completion,
+            join: Some(join),
+            collected: false,
+            context: WorkerContext::new(),
+        };
+
+        let (poll_tx, poll_rx) = mpsc::channel();
+        let collector = std::thread::spawn(move || {
+            let mut handle = handle;
+            let observed = match handle.collect_if_finished() {
+                WorkerRuntimePoll::Running => 0,
+                WorkerRuntimePoll::Completed(Ok(7)) => 1,
+                WorkerRuntimePoll::Completed(Ok(_))
+                | WorkerRuntimePoll::Completed(Err(_))
+                | WorkerRuntimePoll::OwnerFailure(_) => 2,
+            };
+            poll_tx.send(observed).unwrap();
+        });
+
+        match poll_rx.recv_timeout(Duration::from_millis(50)) {
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Ok(0) => panic!("完了公開後の回収が物理スレッド終了前にRunningへ戻りました"),
+            Ok(_) => panic!("物理スレッド終了前に回収結果が確定しました"),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("回収スレッドが結果を返さず終了しました")
+            }
+        }
+
+        release_tx.send(()).unwrap();
+        assert_eq!(poll_rx.recv_timeout(Duration::from_secs(1)).unwrap(), 1);
+        collector.join().unwrap();
     }
 
     #[test]
