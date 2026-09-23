@@ -1297,7 +1297,7 @@ pub enum Px4ChannelApplyResult {
 }
 
 fn classify_px4_channel_apply_result(
-    system: Option<FrontendSystem>,
+    system: FrontendSystem,
     result: Result<(), HalError>,
 ) -> Result<Px4ChannelApplyResult, HalError> {
     match result {
@@ -1305,7 +1305,7 @@ fn classify_px4_channel_apply_result(
         Err(HalError::IoctlFailed {
             errno: ERRNO_EAGAIN,
             ..
-        }) if system == Some(FrontendSystem::IsdbT) => Ok(Px4ChannelApplyResult::PendingUnlocked),
+        }) if system == FrontendSystem::IsdbT => Ok(Px4ChannelApplyResult::PendingUnlocked),
         Err(error) => Err(error),
     }
 }
@@ -1402,6 +1402,7 @@ mod tests {
             symbol_rate: None,
             isdbt_layer_settings: Vec::new(),
             partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+            px4_channel_apply_result: None,
         };
         let plan = FrontendBackendTunePlan::new(
             10,
@@ -1498,16 +1499,12 @@ mod tests {
             errno: ERRNO_EAGAIN,
         };
         assert_eq!(
-            classify_px4_channel_apply_result(Some(FrontendSystem::IsdbT), Err(pending.clone())),
+            classify_px4_channel_apply_result(FrontendSystem::IsdbT, Err(pending.clone())),
             Ok(Px4ChannelApplyResult::PendingUnlocked)
         );
         assert_eq!(
-            classify_px4_channel_apply_result(Some(FrontendSystem::IsdbS), Err(pending.clone())),
+            classify_px4_channel_apply_result(FrontendSystem::IsdbS, Err(pending.clone())),
             Err(pending.clone())
-        );
-        assert_eq!(
-            classify_px4_channel_apply_result(None, Err(pending.clone())),
-            Err(pending)
         );
     }
 
@@ -1569,6 +1566,7 @@ mod tests {
             file: File::open("/dev/null").unwrap(),
             initial_signal_state: FrontendSignalState::NoSignal,
             partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+            px4_channel_apply_result: None,
         };
         let descriptor = FrontendLiveReaderDescriptor::dvb_dvr_device(1, path.clone());
         let error = session.open_live_reader(&descriptor).err().unwrap();
@@ -1600,6 +1598,7 @@ mod tests {
             file: File::open("/dev/null").unwrap(),
             initial_signal_state: FrontendSignalState::NoSignal,
             partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+            px4_channel_apply_result: None,
         };
         let descriptor = FrontendLiveReaderDescriptor::px4_from_control_fd(1, path);
         let mut reader = session.open_live_reader(&descriptor).unwrap();
@@ -1615,6 +1614,7 @@ mod tests {
             file: File::open("/dev/null").unwrap(),
             initial_signal_state: FrontendSignalState::NoSignal,
             partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+            px4_channel_apply_result: None,
         };
         assert!(session.stop().is_err());
         assert!(session.close().is_ok());
@@ -1629,6 +1629,7 @@ mod tests {
             file: File::open("/dev/null").unwrap(),
             initial_signal_state: FrontendSignalState::NoSignal,
             partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+            px4_channel_apply_result: None,
         };
         assert!(session.close().is_err());
     }
