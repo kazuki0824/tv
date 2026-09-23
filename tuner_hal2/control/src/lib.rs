@@ -1094,7 +1094,7 @@ where
     }
 }
 
-/// `WorkerRuntime`が発行するactive/reaping registryの正本所有者。
+/// `WorkerRuntime`が発行する`active` / `reaping`登録簿の正本所有者。
 pub struct WorkerRuntimeSupervisor<K, A, R> {
     capacity: usize,
     deadline: std::time::Duration,
@@ -1112,7 +1112,8 @@ enum SupervisorWorkerState {
 struct WorkerRuntimeSupervisorMaps<K, A, R> {
     active: std::collections::BTreeMap<K, A>,
     reaping: std::collections::BTreeMap<K, R>,
-    reserved_start: std::collections::BTreeSet<K>,
+    reserved_start: std::collections::BTreeMap<K, WorkerRuntimeSupervisorStartReservation>,
+    next_start_attempt: u64,
 }
 
 impl<K, A, R> Default for WorkerRuntimeSupervisorMaps<K, A, R> {
@@ -1120,9 +1121,23 @@ impl<K, A, R> Default for WorkerRuntimeSupervisorMaps<K, A, R> {
         Self {
             active: std::collections::BTreeMap::new(),
             reaping: std::collections::BTreeMap::new(),
-            reserved_start: std::collections::BTreeSet::new(),
+            reserved_start: std::collections::BTreeMap::new(),
+            next_start_attempt: 0,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WorkerRuntimeSupervisorStartPhase {
+    Ready,
+    Starting,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WorkerRuntimeSupervisorStartReservation {
+    attempt: u64,
+    phase: WorkerRuntimeSupervisorStartPhase,
+    stop_requested: bool,
 }
 
 impl<K: Ord, A, R> WorkerRuntimeSupervisorMaps<K, A, R> {
@@ -1131,6 +1146,39 @@ impl<K: Ord, A, R> WorkerRuntimeSupervisorMaps<K, A, R> {
             .len()
             .saturating_add(self.reaping.len())
             .saturating_add(self.reserved_start.len())
+    }
+
+    fn issue_start_attempt(
+        &mut self,
+    ) -> Result<u64, maleicacid_tuner_hal2_common::HalError> {
+        use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
+        let next = self.next_start_attempt.checked_add(1).ok_or_else(|| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "監督ワーカー開始試行番号を発行できません",
+            )
+        })?;
+        self.next_start_attempt = next;
+        Ok(next)
+    }
+
+    fn reserve_ready_start(
+        &mut self,
+        key: K,
+    ) -> Result<WorkerRuntimeSupervisorStartPermit<K>, maleicacid_tuner_hal2_common::HalError>
+    where
+        K: Copy,
+    {
+        let attempt = self.issue_start_attempt()?;
+        self.reserved_start.insert(
+            key,
+            WorkerRuntimeSupervisorStartReservation {
+                attempt,
+                phase: WorkerRuntimeSupervisorStartPhase::Ready,
+                stop_requested: false,
+            },
+        );
+        Ok(WorkerRuntimeSupervisorStartPermit { key, attempt })
     }
 }
 
@@ -1156,6 +1204,13 @@ pub trait WorkerRuntimeSupervisorReapingEntry<K, A>: Sized {
 #[must_use]
 pub struct WorkerRuntimeSupervisorStartPermit<K> {
     key: K,
+    attempt: u64,
+}
+
+#[must_use]
+pub struct WorkerRuntimeSupervisorStartExecution<K> {
+    key: K,
+    attempt: u64,
 }
 
 pub enum WorkerRuntimeSupervisorStartPreparation<K> {
@@ -1234,7 +1289,7 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
             self.worker_context.wake.notify();
             return Ok(WorkerRuntimeSupervisorStartPreparation::ReapingPending);
         }
-        if state.active.contains_key(&key) || state.reserved_start.contains(&key) {
+        if state.active.contains_key(&key) {
             return Ok(WorkerRuntimeSupervisorStartPreparation::Active);
         }
         if let Some(reaping) = state.reaping.get_mut(&key) {
@@ -1243,38 +1298,92 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
             self.worker_context.wake.notify();
             return Ok(WorkerRuntimeSupervisorStartPreparation::ReapingPending);
         }
+        if let Some(reservation) = state.reserved_start.get(&key).copied() {
+            if reservation.phase == WorkerRuntimeSupervisorStartPhase::Starting {
+                return Ok(WorkerRuntimeSupervisorStartPreparation::Active);
+            }
+            let permit = state.reserve_ready_start(key)?;
+            return Ok(WorkerRuntimeSupervisorStartPreparation::Vacant(permit));
+        }
         if state.total_len() >= self.capacity {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
                 "監督ワーカーの容量を使い切っています",
             ));
         }
-        state.reserved_start.insert(key);
-        Ok(WorkerRuntimeSupervisorStartPreparation::Vacant(
-            WorkerRuntimeSupervisorStartPermit { key },
-        ))
+        let permit = state.reserve_ready_start(key)?;
+        Ok(WorkerRuntimeSupervisorStartPreparation::Vacant(permit))
     }
 
-    pub fn commit_start(
+    pub fn begin_start(
         &self,
         permit: WorkerRuntimeSupervisorStartPermit<K>,
-        active: A,
-    ) -> Result<(), maleicacid_tuner_hal2_common::HalError>
+    ) -> Result<WorkerRuntimeSupervisorStartExecution<K>, maleicacid_tuner_hal2_common::HalError>
     where
         K: Ord + Copy,
     {
         use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
         let mut state = self.lock_supervisor_state()?;
-        if !state.reserved_start.remove(&permit.key)
-            || state.active.contains_key(&permit.key)
-            || state.reaping.contains_key(&permit.key)
+        let Some(reservation) = state.reserved_start.get_mut(&permit.key) else {
+            return Err(HalError::internal(
+                HalInternalKind::InvalidLifecycle,
+                "監督ワーカー開始予約は既に失効しています",
+            ));
+        };
+        if reservation.attempt != permit.attempt
+            || reservation.phase != WorkerRuntimeSupervisorStartPhase::Ready
         {
             return Err(HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "監督ワーカー開始予約の確定条件が崩れています",
+                HalInternalKind::InvalidLifecycle,
+                "監督ワーカー開始予約の試行番号が一致しません",
             ));
         }
-        state.active.insert(permit.key, active);
+        reservation.phase = WorkerRuntimeSupervisorStartPhase::Starting;
+        Ok(WorkerRuntimeSupervisorStartExecution {
+            key: permit.key,
+            attempt: permit.attempt,
+        })
+    }
+
+    pub fn commit_start(
+        &self,
+        execution: WorkerRuntimeSupervisorStartExecution<K>,
+        active: A,
+    ) -> Result<(), maleicacid_tuner_hal2_common::HalError>
+    where
+        K: Ord + Copy,
+        A: WorkerRuntimeSupervisorActiveEntry,
+        R: WorkerRuntimeSupervisorReapingEntry<K, A>,
+    {
+        use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
+        let mut state = self.lock_supervisor_state()?;
+        let Some(reservation) = state.reserved_start.get(&execution.key).copied() else {
+            active.supervisor_request_stop();
+            return Err(HalError::internal(
+                HalInternalKind::InvalidLifecycle,
+                "監督ワーカー開始試行は既に失効しています",
+            ));
+        };
+        if reservation.attempt != execution.attempt
+            || reservation.phase != WorkerRuntimeSupervisorStartPhase::Starting
+            || state.active.contains_key(&execution.key)
+            || state.reaping.contains_key(&execution.key)
+        {
+            active.supervisor_request_stop();
+            return Err(HalError::internal(
+                HalInternalKind::InvalidLifecycle,
+                "監督ワーカー開始試行の確定条件が崩れています",
+            ));
+        }
+        state.reserved_start.remove(&execution.key);
+        if reservation.stop_requested {
+            active.supervisor_request_stop();
+            state
+                .reaping
+                .insert(execution.key, R::from_stop(execution.key, active));
+        } else {
+            state.active.insert(execution.key, active);
+        }
         drop(state);
         self.worker_context.wake.notify();
         Ok(())
@@ -1282,19 +1391,30 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
 
     pub fn abort_start(
         &self,
-        permit: WorkerRuntimeSupervisorStartPermit<K>,
+        execution: WorkerRuntimeSupervisorStartExecution<K>,
     ) -> Result<(), maleicacid_tuner_hal2_common::HalError>
     where
-        K: Ord,
+        K: Ord + Copy,
     {
         use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
         let mut state = self.lock_supervisor_state()?;
-        if !state.reserved_start.remove(&permit.key) {
+        let Some(reservation) = state.reserved_start.get(&execution.key).copied() else {
             return Err(HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "監督ワーカー開始予約の取消し対象がありません",
+                HalInternalKind::InvalidLifecycle,
+                "監督ワーカー開始試行の取消し対象がありません",
+            ));
+        };
+        if reservation.attempt != execution.attempt
+            || reservation.phase != WorkerRuntimeSupervisorStartPhase::Starting
+        {
+            return Err(HalError::internal(
+                HalInternalKind::InvalidLifecycle,
+                "監督ワーカー開始試行の取消し条件が崩れています",
             ));
         }
+        state.reserved_start.remove(&execution.key);
+        drop(state);
+        self.worker_context.wake.notify();
         Ok(())
     }
 
@@ -1308,7 +1428,22 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
         R: WorkerRuntimeSupervisorReapingEntry<K, A>,
     {
         let mut state = self.lock_supervisor_state()?;
-        state.reserved_start.remove(&key);
+        if let Some(reservation) = state.reserved_start.get_mut(&key) {
+            match reservation.phase {
+                WorkerRuntimeSupervisorStartPhase::Ready => {
+                    state.reserved_start.remove(&key);
+                    drop(state);
+                    self.worker_context.wake.notify();
+                    return Ok(WorkerRuntimeSupervisorStopDisposition::Complete);
+                }
+                WorkerRuntimeSupervisorStartPhase::Starting => {
+                    reservation.stop_requested = true;
+                    drop(state);
+                    self.worker_context.wake.notify();
+                    return Ok(WorkerRuntimeSupervisorStopDisposition::ReapingPending);
+                }
+            }
+        }
         if let Some(reaping) = state.reaping.get_mut(&key) {
             reaping.supervisor_set_restart_requested(false);
             drop(state);
@@ -1332,7 +1467,14 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
         R: WorkerRuntimeSupervisorReapingEntry<K, A>,
     {
         let mut state = self.lock_supervisor_state()?;
-        state.reserved_start.clear();
+        state.reserved_start.retain(|_, reservation| {
+            if reservation.phase == WorkerRuntimeSupervisorStartPhase::Starting {
+                reservation.stop_requested = true;
+                true
+            } else {
+                false
+            }
+        });
         for reaping in state.reaping.values_mut() {
             reaping.supervisor_set_restart_requested(false);
         }
