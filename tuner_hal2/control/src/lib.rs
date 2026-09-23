@@ -1,3 +1,4 @@
+use maleicacid_tuner_hal2_common::{PoisonTrackedMutex, RuntimeLockKind};
 use maleicacid_tuner_hal2_common::WorkerCleanupFailureKind;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1097,7 +1098,7 @@ where
 pub struct WorkerRuntimeSupervisor<K, A, R> {
     capacity: usize,
     deadline: std::time::Duration,
-    state: std::sync::Mutex<WorkerRuntimeSupervisorMaps<K, A, R>>,
+    state: PoisonTrackedMutex<WorkerRuntimeSupervisorMaps<K, A, R>>,
     worker: std::sync::Mutex<SupervisorWorkerState>,
     worker_context: WorkerContext,
 }
@@ -1145,7 +1146,7 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
         Self {
             capacity: capacity.max(1),
             deadline,
-            state: std::sync::Mutex::new(WorkerRuntimeSupervisorMaps::default()),
+            state: PoisonTrackedMutex::new(WorkerRuntimeSupervisorMaps::default(), RuntimeLockKind::SupervisorState),
             worker: std::sync::Mutex::new(SupervisorWorkerState::NotStarted),
             worker_context: WorkerContext::new(),
         }
@@ -1157,8 +1158,8 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
     pub fn deadline(&self) -> std::time::Duration {
         self.deadline
     }
-    pub fn state(&self) -> &std::sync::Mutex<WorkerRuntimeSupervisorMaps<K, A, R>> {
-        &self.state
+    pub fn lock_state(&self) -> Result<std::sync::MutexGuard<'_, WorkerRuntimeSupervisorMaps<K, A, R>>, maleicacid_tuner_hal2_common::HalError> {
+        self.state.lock().map_err(maleicacid_tuner_hal2_common::HalError::LockPoisoned)
     }
     pub fn notify_worker(&self) {
         self.worker_context.wake.notify();
@@ -1383,6 +1384,22 @@ impl FmqDeliveryTxn {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn supervisor_state_poison_is_not_worker_slot_poison() {
+        let supervisor = super::WorkerRuntime::supervisor::<u8, (), ()>(4, std::time::Duration::from_secs(1));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = supervisor.lock_state().unwrap();
+            panic!("汚染を注入");
+        }));
+        for count in [1, 2] {
+            assert!(matches!(supervisor.lock_state(),
+                Err(maleicacid_tuner_hal2_common::HalError::LockPoisoned(poison))
+                if poison.lock == maleicacid_tuner_hal2_common::RuntimeLockKind::SupervisorState && poison.poison_count == count
+            ));
+        }
+    }
+
     #[test]
     fn owner_failure_keeps_missing_results_distinct_from_panic_and_join() {
         use super::{WorkerRuntimeOwnerFailure, WorkerTerminalResult};

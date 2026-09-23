@@ -1,4 +1,5 @@
-use std::sync::{Arc, Mutex, Weak};
+use maleicacid_tuner_hal2_common::{PoisonTrackedMutex, RuntimeLockKind};
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use maleicacid_tuner_hal2_common::{HalError, HalInternalKind};
@@ -62,7 +63,7 @@ struct CleanupJob {
 
 pub(crate) struct CleanupReaperQueue {
     policy: CleanupReaperPolicy,
-    runtime: Mutex<
+    runtime: PoisonTrackedMutex<
         Option<
             maleicacid_tuner_hal2_service_runtime::WorkerRuntimeReaperQueue<
                 CleanupJobKey,
@@ -85,7 +86,7 @@ impl CleanupReaperQueue {
     pub(crate) fn from_snapshot(snapshot: CapabilitySnapshot) -> Self {
         Self {
             policy: CleanupReaperPolicy::from_snapshot(snapshot),
-            runtime: Mutex::new(None),
+            runtime: PoisonTrackedMutex::new(None, RuntimeLockKind::CleanupReaperOwner),
         }
     }
 
@@ -97,12 +98,7 @@ impl CleanupReaperQueue {
             CleanupJob,
         >,
     ) -> Result<(), HalError> {
-        let mut slot = self.runtime.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "cleanup reaper canonical owner slot lock poisoned",
-            )
-        })?;
+        let mut slot = self.runtime.lock().map_err(HalError::LockPoisoned)?;
         if slot.is_some() {
             return Err(HalError::internal(
                 HalInternalKind::InvariantViolation,
@@ -119,12 +115,7 @@ impl CleanupReaperQueue {
         dependency: CleanupStep,
     ) -> Result<(), HalError> {
         let key = CleanupJobKey::from_handle(handle);
-        let slot = self.runtime.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "cleanup reaper canonical owner slot lock poisoned while enqueueing",
-            )
-        })?;
+        let slot = self.runtime.lock().map_err(HalError::LockPoisoned)?;
         let runtime = slot.as_ref().ok_or_else(|| {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
@@ -249,6 +240,20 @@ pub(crate) fn start_cleanup_reaper(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn poisoned_owner_slot_rejects_enqueue_with_identity() {
+        let queue = CleanupReaperQueue::from_snapshot(maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::default().capability_snapshot());
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = queue.runtime.lock().unwrap();
+            panic!("汚染を注入");
+        }));
+        // インストール状態に依存せず、汚染した所有者格納領域を読まない。
+        let handle = AidlObjectHandle::new(AidlObjectKind::Filter, AidlObjectId(7), AidlObjectGeneration(3));
+        let error = queue.enqueue(handle, CleanupStep::StopWorker).unwrap_err();
+        assert!(matches!(error, HalError::LockPoisoned(poison) if poison.lock == RuntimeLockKind::CleanupReaperOwner && poison.poison_count == 1));
+    }
+
     use super::*;
     use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId};
 

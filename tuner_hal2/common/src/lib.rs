@@ -1,4 +1,6 @@
 pub mod os_abi;
+mod poison_lock;
+pub use poison_lock::{LockPoisonDiagnostic, PoisonTrackedMutex, RuntimeLockKind};
 
 #[cfg(test)]
 mod failure_injection_tests;
@@ -625,6 +627,7 @@ pub enum WorkerCleanupFailureKind {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HalError {
+    LockPoisoned(LockPoisonDiagnostic),
     ServiceRuntimeLockPoisoned {
         operation: &'static str,
     },
@@ -842,6 +845,7 @@ fn display_path(path: &Option<PathBuf>) -> String {
 impl fmt::Display for HalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            HalError::LockPoisoned(poison) => write!(f, "lock poisoned: {poison:?}"),
             HalError::ServiceRuntimeLockPoisoned { operation } => {
                 write!(
                     f,

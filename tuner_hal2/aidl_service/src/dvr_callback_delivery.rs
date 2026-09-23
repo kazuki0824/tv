@@ -111,12 +111,7 @@ impl DvrStatusNotifierSupervisor {
             );
         }
         let key = DvrStatusNotifierKey::new(handle);
-        let mut state = self.runtime.state().lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "DVR status notifier supervisor lock poisoned while starting worker",
-            )
-        })?;
+        let mut state = self.runtime.lock_state()?;
         if state
             .active()
             .get(&key)
@@ -168,12 +163,7 @@ impl DvrStatusNotifierSupervisor {
         handle: AidlObjectHandle,
     ) -> Result<DvrStatusNotifierStopDisposition, HalError> {
         let key = DvrStatusNotifierKey::new(handle);
-        let mut state = self.runtime.state().lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "DVR status notifier supervisor lock poisoned while stopping worker",
-            )
-        })?;
+        let mut state = self.runtime.lock_state()?;
         if let Some(job) = state.reaping_mut().get_mut(&key) {
             job.restart_requested = false;
             self.runtime.notify_worker();
@@ -200,12 +190,7 @@ impl DvrStatusNotifierSupervisor {
     }
 
     fn signal_all_for_reset(&self) -> Result<(), HalError> {
-        let mut state = self.runtime.state().lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "DVR status notifier supervisor lock poisoned while resetting workers",
-            )
-        })?;
+        let mut state = self.runtime.lock_state()?;
         for job in state.reaping_mut().values_mut() {
             job.restart_requested = false;
         }
@@ -236,12 +221,7 @@ impl DvrStatusNotifierSupervisor {
     fn take_next_action(
         &self,
     ) -> Result<(Option<DvrStatusNotifierSupervisorAction>, Option<Instant>), HalError> {
-        let mut state = self.runtime.state().lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "DVR status notifier supervisor lock poisoned in reaper",
-            )
-        })?;
+        let mut state = self.runtime.lock_state()?;
         loop {
             if let Some(key) = state
                 .active_mut()
@@ -380,10 +360,7 @@ fn dvr_callback_artifact_lookup(
     match context.dvr_callback_for_owner(handle) {
         Ok(Some(_)) => DvrCallbackArtifactLookup::Present,
         Ok(None) => DvrCallbackArtifactLookup::Missing,
-        Err(_) => DvrCallbackArtifactLookup::StoreFailure(HalError::internal(
-            HalInternalKind::InvariantViolation,
-            format!("{delivery_context}: callback store lock poisoned"),
-        )),
+        Err(error) => DvrCallbackArtifactLookup::StoreFailure(error.into_hal_error(delivery_context)),
     }
 }
 
@@ -658,11 +635,8 @@ fn deliver_dvr_status_event(
             );
             return Ok(DvrStatusCallbackDeliveryOutcome::ArtifactMissing);
         }
-        Err(_) => {
-            let primary = HalError::internal(
-                HalInternalKind::InvariantViolation,
-                format!("{delivery_context}: callback store lock poisoned"),
-            );
+        Err(error) => {
+            let primary = error.into_hal_error(delivery_context);
             record_dvr_artifact_lookup_failure(context, handle, dvr_phase, primary);
             return Ok(DvrStatusCallbackDeliveryOutcome::StoreFailure);
         }

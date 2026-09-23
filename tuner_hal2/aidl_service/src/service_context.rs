@@ -1,3 +1,4 @@
+use maleicacid_tuner_hal2_common::{PoisonTrackedMutex, RuntimeLockKind};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -10,7 +11,6 @@ use maleicacid_tuner_hal2_binder_adapter::{
     AidlApi, AidlObjectGeneration, AidlObjectId, AidlObjectKind,
 };
 use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, HalError, HalInternalKind};
-#[cfg(test)]
 use maleicacid_tuner_hal2_service_runtime::DiagnosticSnapshot;
 use maleicacid_tuner_hal2_service_runtime::{
     BoundedDiagnosticStore, CallbackArtifactCleanupResult, CallbackArtifactResetCommand,
@@ -93,13 +93,21 @@ pub(crate) struct ServiceDiagnosticSnapshot {
         >,
         HalError,
     >,
+    pub(crate) drop_leak: Result<(DiagnosticSnapshot<DropLeakErrorRecord>, usize), HalError>,
+    pub(crate) dvr_post_commit: Result<maleicacid_tuner_hal2_service_runtime::DvrPostCommitNotificationDiagnosticSnapshot, HalError>,
+    pub(crate) dvr_notifier_cleanup: Result<maleicacid_tuner_hal2_service_runtime::DvrStatusNotifierCleanupDiagnosticSnapshot, HalError>,
+    pub(crate) callback_runtime_split: Result<maleicacid_tuner_hal2_service_runtime::CallbackArtifactRuntimeSplitDiagnosticSnapshot, HalError>,
     pub(crate) filter_callback: Result<FilterCallbackDeliveryDiagnosticSnapshot, HalError>,
     pub(crate) frontend_callback: Result<FrontendCallbackDeliveryDiagnosticSnapshot, HalError>,
 }
 
 impl ServiceDiagnosticSnapshot {
     pub(crate) fn retrieval_failed(&self) -> bool {
-        self.frontend_backend.is_err()
+        self.drop_leak.is_err()
+            || self.dvr_post_commit.is_err()
+            || self.dvr_notifier_cleanup.is_err()
+            || self.callback_runtime_split.is_err()
+            || self.frontend_backend.is_err()
             || self.frontend.is_err()
             || self.frontend_worker_cleanup.is_err()
             || self.demux.is_err()
@@ -117,18 +125,18 @@ impl ServiceDiagnosticSnapshot {
 
 pub struct AidlServiceContext {
     runtime: SharedTunerRuntime,
-    callback_store: Mutex<CallbackStore>,
+    callback_store: PoisonTrackedMutex<CallbackStore>,
     dvr_status_notifier_supervisor: Arc<DvrStatusNotifierSupervisor>,
-    drop_leak_error_records: Mutex<BoundedDiagnosticStore<DropLeakErrorRecord>>,
+    drop_leak_error_records: PoisonTrackedMutex<BoundedDiagnosticStore<DropLeakErrorRecord>>,
     drop_leak_error_record_failures: AtomicUsize,
     callback_artifact_runtime_split_diagnostics: SharedCallbackArtifactRuntimeSplitDiagnostics,
     dvr_post_commit_notification_diagnostics: SharedDvrPostCommitNotificationDiagnostics,
     dvr_status_notifier_cleanup_diagnostics: SharedDvrStatusNotifierCleanupDiagnostics,
     object_cleanup_diagnostics: SharedObjectCleanupDiagnostics,
     filter_callback_delivery_fallback_diagnostics:
-        Mutex<BoundedDiagnosticStore<FilterCallbackDeliveryDiagnosticRecord>>,
+        PoisonTrackedMutex<BoundedDiagnosticStore<FilterCallbackDeliveryDiagnosticRecord>>,
     frontend_callback_delivery_fallback_diagnostics:
-        Mutex<BoundedDiagnosticStore<FrontendCallbackDeliveryDiagnosticRecord>>,
+        PoisonTrackedMutex<BoundedDiagnosticStore<FrontendCallbackDeliveryDiagnosticRecord>>,
     filter_callback_delivery_fallback_record_failures: AtomicUsize,
     frontend_callback_delivery_fallback_record_failures: AtomicUsize,
     cleanup_reaper_queue: Arc<CleanupReaperQueue>,
@@ -146,24 +154,22 @@ impl AidlServiceContext {
         let object_cleanup_diagnostics = runtime.object_cleanup_diagnostic_sink();
         Self {
             runtime: Arc::new(Mutex::new(runtime)),
-            callback_store: Mutex::new(CallbackStore::default()),
+            callback_store: PoisonTrackedMutex::new(CallbackStore::default(), RuntimeLockKind::CallbackStore),
             dvr_status_notifier_supervisor: Arc::new(DvrStatusNotifierSupervisor::from_snapshot(
                 capability_snapshot,
             )),
-            drop_leak_error_records: Mutex::new(BoundedDiagnosticStore::new(
+            drop_leak_error_records: PoisonTrackedMutex::new(BoundedDiagnosticStore::new(
                 MAX_DROP_LEAK_ERROR_RECORDS,
-            )),
+            ), RuntimeLockKind::DropLeakDiagnostics),
             drop_leak_error_record_failures: AtomicUsize::new(0),
             callback_artifact_runtime_split_diagnostics,
             dvr_post_commit_notification_diagnostics,
             dvr_status_notifier_cleanup_diagnostics,
             object_cleanup_diagnostics,
-            filter_callback_delivery_fallback_diagnostics: Mutex::new(
-                BoundedDiagnosticStore::default(),
-            ),
-            frontend_callback_delivery_fallback_diagnostics: Mutex::new(
-                BoundedDiagnosticStore::default(),
-            ),
+            filter_callback_delivery_fallback_diagnostics: PoisonTrackedMutex::new(
+                BoundedDiagnosticStore::default(), RuntimeLockKind::FilterCallbackFallbackDiagnostics),
+            frontend_callback_delivery_fallback_diagnostics: PoisonTrackedMutex::new(
+                BoundedDiagnosticStore::default(), RuntimeLockKind::FrontendCallbackFallbackDiagnostics),
             filter_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
             frontend_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
             cleanup_reaper_queue: Arc::new(CleanupReaperQueue::from_snapshot(capability_snapshot)),
@@ -213,24 +219,22 @@ impl AidlServiceContext {
         };
         let context = Arc::new(Self {
             runtime,
-            callback_store: Mutex::new(CallbackStore::default()),
+            callback_store: PoisonTrackedMutex::new(CallbackStore::default(), RuntimeLockKind::CallbackStore),
             dvr_status_notifier_supervisor: Arc::new(DvrStatusNotifierSupervisor::from_snapshot(
                 capability_snapshot,
             )),
-            drop_leak_error_records: Mutex::new(BoundedDiagnosticStore::new(
+            drop_leak_error_records: PoisonTrackedMutex::new(BoundedDiagnosticStore::new(
                 MAX_DROP_LEAK_ERROR_RECORDS,
-            )),
+            ), RuntimeLockKind::DropLeakDiagnostics),
             drop_leak_error_record_failures: AtomicUsize::new(0),
             callback_artifact_runtime_split_diagnostics,
             dvr_post_commit_notification_diagnostics,
             dvr_status_notifier_cleanup_diagnostics,
             object_cleanup_diagnostics,
-            filter_callback_delivery_fallback_diagnostics: Mutex::new(
-                BoundedDiagnosticStore::default(),
-            ),
-            frontend_callback_delivery_fallback_diagnostics: Mutex::new(
-                BoundedDiagnosticStore::default(),
-            ),
+            filter_callback_delivery_fallback_diagnostics: PoisonTrackedMutex::new(
+                BoundedDiagnosticStore::default(), RuntimeLockKind::FilterCallbackFallbackDiagnostics),
+            frontend_callback_delivery_fallback_diagnostics: PoisonTrackedMutex::new(
+                BoundedDiagnosticStore::default(), RuntimeLockKind::FrontendCallbackFallbackDiagnostics),
             filter_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
             frontend_callback_delivery_fallback_record_failures: AtomicUsize::new(0),
             cleanup_reaper_queue: Arc::new(CleanupReaperQueue::from_snapshot(capability_snapshot)),
@@ -417,6 +421,10 @@ impl AidlServiceContext {
         // callback取得入口は独自にruntimeをロックするため、上のガード解放後に呼ぶ。
         // runtimeの取得失敗時も、既存fallbackの記録と欠落情報を取得する。
         ServiceDiagnosticSnapshot {
+            drop_leak: self.drop_leak_error_diagnostic_snapshot().map(|snapshot| (snapshot, self.drop_leak_error_record_failure_count())),
+            dvr_post_commit: self.dvr_post_commit_notification_diagnostics.snapshot(),
+            dvr_notifier_cleanup: self.dvr_status_notifier_cleanup_diagnostics.snapshot(),
+            callback_runtime_split: self.callback_artifact_runtime_split_diagnostics.snapshot(),
             frontend_backend,
             frontend,
             frontend_worker_cleanup,
@@ -472,14 +480,11 @@ impl AidlServiceContext {
                 diagnostics.push(record);
                 Ok(())
             }
-            Err(_) => {
+            Err(poison) => {
                 saturating_increment_atomic_usize(
                     &self.filter_callback_delivery_fallback_record_failures,
                 );
-                Err(HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "filter callback delivery fallback diagnostic store lock poisoned",
-                ))
+                Err(HalError::LockPoisoned(poison))
             }
         }
     }
@@ -493,14 +498,11 @@ impl AidlServiceContext {
                 diagnostics.push(record);
                 Ok(())
             }
-            Err(_) => {
+            Err(poison) => {
                 saturating_increment_atomic_usize(
                     &self.frontend_callback_delivery_fallback_record_failures,
                 );
-                Err(HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "frontend callback delivery fallback diagnostic store lock poisoned",
-                ))
+                Err(HalError::LockPoisoned(poison))
             }
         }
     }
@@ -520,12 +522,7 @@ impl AidlServiceContext {
                 }
                 Err(_) => true,
             };
-        let fallback = self.filter_callback_delivery_fallback_diagnostics.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "filter callback delivery fallback diagnostic store lock poisoned while snapshotting",
-            )
-        })?;
+        let fallback = self.filter_callback_delivery_fallback_diagnostics.lock().map_err(HalError::LockPoisoned)?;
         let fallback_record_count = fallback.as_slice().len();
         let fallback_dropped_count = fallback.dropped_count();
         records.extend_from_slice(fallback.as_slice());
@@ -555,12 +552,7 @@ impl AidlServiceContext {
                 }
                 Err(_) => true,
             };
-        let fallback = self.frontend_callback_delivery_fallback_diagnostics.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "frontend callback delivery fallback diagnostic store lock poisoned while snapshotting",
-            )
-        })?;
+        let fallback = self.frontend_callback_delivery_fallback_diagnostics.lock().map_err(HalError::LockPoisoned)?;
         let fallback_record_count = fallback.as_slice().len();
         let fallback_dropped_count = fallback.dropped_count();
         records.extend_from_slice(fallback.as_slice());
@@ -595,10 +587,7 @@ impl AidlServiceContext {
                 self.filter_callback_delivery_fallback_record_failures
                     .store(0, Ordering::Relaxed);
             }
-            Err(_) => failures.push_error(HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "filter callback delivery fallback diagnostic store lock poisoned while clearing",
-            )),
+            Err(poison) => failures.push_error(HalError::LockPoisoned(poison)),
         }
         match self.frontend_callback_delivery_fallback_diagnostics.lock() {
             Ok(mut diagnostics) => {
@@ -606,10 +595,7 @@ impl AidlServiceContext {
                 self.frontend_callback_delivery_fallback_record_failures
                     .store(0, Ordering::Relaxed);
             }
-            Err(_) => failures.push_error(HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "frontend callback delivery fallback diagnostic store lock poisoned while clearing",
-            )),
+            Err(poison) => failures.push_error(HalError::LockPoisoned(poison)),
         }
         failures.into_result()
     }
@@ -655,7 +641,7 @@ impl AidlServiceContext {
     ) -> Result<MutexGuard<'_, CallbackStore>, AidlCallbackStoreError> {
         self.callback_store
             .lock()
-            .map_err(|_| AidlCallbackStoreError::Poisoned)
+            .map_err(AidlCallbackStoreError::Poisoned)
     }
 
     pub(crate) fn dvr_status_notifier_supervisor(&self) -> Arc<DvrStatusNotifierSupervisor> {
@@ -677,28 +663,17 @@ impl AidlServiceContext {
     }
 
     fn clear_drop_leak_error_records(&self) -> Result<(), HalError> {
-        let mut records = self.drop_leak_error_records.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "drop-leak diagnostic store lock poisoned while clearing records",
-            )
-        })?;
+        let mut records = self.drop_leak_error_records.lock().map_err(HalError::LockPoisoned)?;
         records.clear();
         self.drop_leak_error_record_failures
             .store(0, Ordering::Relaxed);
         Ok(())
     }
 
-    #[cfg(test)]
     fn drop_leak_error_diagnostic_snapshot(
         &self,
     ) -> Result<DiagnosticSnapshot<DropLeakErrorRecord>, HalError> {
-        let records = self.drop_leak_error_records.lock().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "drop-leak diagnostic store lock poisoned while snapshotting records",
-            )
-        })?;
+        let records = self.drop_leak_error_records.lock().map_err(HalError::LockPoisoned)?;
         Ok(DiagnosticSnapshot::new(
             records.as_slice().to_vec(),
             records.dropped_count(),
@@ -1016,5 +991,33 @@ impl AidlServiceContext {
         self.callback_store_lock()?
             .retain_test_callback_marker(handle, api);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod lock_poison_tests {
+    use super::*;
+
+    fn poison<T>(lock: &PoisonTrackedMutex<T>) {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = lock.lock().unwrap();
+            panic!("汚染を注入");
+        }));
+    }
+
+    #[test]
+    fn callback_and_fallback_poison_reach_existing_diagnostics() {
+        let context = AidlServiceContext::new(TunerServiceRuntime::default());
+        poison(&context.callback_store);
+        let error = context.callback_store_lock().err().unwrap().into_hal_error("試験");
+        assert!(matches!(error, HalError::LockPoisoned(p) if p.lock == RuntimeLockKind::CallbackStore));
+        poison(&context.filter_callback_delivery_fallback_diagnostics);
+        poison(&context.frontend_callback_delivery_fallback_diagnostics);
+        poison(&context.drop_leak_error_records);
+        let snapshot = context.diagnostic_snapshot();
+        assert!(snapshot.retrieval_failed());
+        assert!(matches!(snapshot.filter_callback, Err(HalError::LockPoisoned(p)) if p.lock == RuntimeLockKind::FilterCallbackFallbackDiagnostics));
+        assert!(matches!(snapshot.frontend_callback, Err(HalError::LockPoisoned(p)) if p.lock == RuntimeLockKind::FrontendCallbackFallbackDiagnostics));
+        assert!(matches!(snapshot.drop_leak, Err(HalError::LockPoisoned(p)) if p.lock == RuntimeLockKind::DropLeakDiagnostics));
     }
 }

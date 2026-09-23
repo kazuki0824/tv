@@ -92,7 +92,7 @@ pub fn failure_domain(error: &HalError) -> RuntimeFailureDomain {
             RuntimeFailureDomain::UnsupportedByDesign
         }
         HalError::Internal { .. }
-        | HalError::WorkerLockPoisoned { .. }
+        | HalError::LockPoisoned(_) | HalError::WorkerLockPoisoned { .. }
         | HalError::FilterGateLockPoisoned { .. }
         | HalError::ServiceRuntimeLockPoisoned { .. }
         | HalError::CapabilitySelectionFailed(_) => RuntimeFailureDomain::InternalInvariant,
