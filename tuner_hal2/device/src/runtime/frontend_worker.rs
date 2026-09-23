@@ -56,6 +56,11 @@ pub enum FrontendWorkerStartError {
     SpawnFailed {
         error: HalError,
     },
+    PreparedSubmitUnavailable {
+        frontend_id: i32,
+        kind: FrontendWorkerKind,
+        generation: u64,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -838,7 +843,7 @@ impl FrontendWorkerRegistry {
         ticket
     }
 
-    pub fn start<F>(
+    fn start_after_cleanup_gate<F>(
         &mut self,
         frontend_id: i32,
         kind: FrontendWorkerKind,
@@ -849,16 +854,6 @@ impl FrontendWorkerRegistry {
         F: FnOnce(FrontendWorkerContext) -> Result<(), HalError> + Send + 'static,
     {
         let key = FrontendWorkerKey { frontend_id, kind };
-        self.cleanup.retain(|(_, _, owner)| owner.is_pending());
-        if let Some((_, generation, _)) =
-            self.cleanup.iter().find(|(pending, _, _)| *pending == key)
-        {
-            return Err(FrontendWorkerStartError::AlreadyRunning {
-                frontend_id,
-                kind,
-                generation: *generation,
-            });
-        }
         let mut remove_finished_success = false;
         if let Some(slot) = self.slots.get_mut(&key) {
             match slot.completed_result() {
@@ -938,6 +933,131 @@ impl FrontendWorkerRegistry {
             },
         );
         Ok(())
+    }
+
+    pub fn start<F>(
+        &mut self,
+        frontend_id: i32,
+        kind: FrontendWorkerKind,
+        generation: u64,
+        job: F,
+    ) -> Result<(), FrontendWorkerStartError>
+    where
+        F: FnOnce(FrontendWorkerContext) -> Result<(), HalError> + Send + 'static,
+    {
+        let key = FrontendWorkerKey { frontend_id, kind };
+        self.cleanup.retain(|(_, _, owner)| owner.is_pending());
+        if let Some((_, generation, _)) =
+            self.cleanup.iter().find(|(pending, _, _)| *pending == key)
+        {
+            return Err(FrontendWorkerStartError::AlreadyRunning {
+                frontend_id,
+                kind,
+                generation: *generation,
+            });
+        }
+        self.start_after_cleanup_gate(frontend_id, kind, generation, job)
+    }
+
+    pub fn start_with_prepared_submit<F>(
+        &mut self,
+        ticket: FrontendWorkerStopTicket,
+        job: F,
+    ) -> Result<(), FrontendWorkerStartError>
+    where
+        F: FnOnce(FrontendWorkerContext, FrontendWorkerStopTicket) -> Result<(), HalError>
+            + Send
+            + 'static,
+    {
+        let FrontendWorkerStopTicketKind::Retained {
+            frontend_id,
+            kind,
+            generation,
+            authority,
+        } = &ticket.kind
+        else {
+            let (frontend_id, kind, generation) = match &ticket.kind {
+                FrontendWorkerStopTicketKind::Immediate(
+                    FrontendWorkerStopOutcome::StopRequestFailed {
+                        frontend_id,
+                        kind,
+                        generation,
+                        ..
+                    }
+                    | FrontendWorkerStopOutcome::CancelRequested {
+                        frontend_id,
+                        kind,
+                        generation,
+                        ..
+                    }
+                    | FrontendWorkerStopOutcome::Completed {
+                        frontend_id,
+                        kind,
+                        generation,
+                        ..
+                    }
+                    | FrontendWorkerStopOutcome::BackendSubmitFailed {
+                        frontend_id,
+                        kind,
+                        generation,
+                        ..
+                    },
+                ) => (*frontend_id, *kind, *generation),
+                FrontendWorkerStopTicketKind::Immediate(FrontendWorkerStopOutcome::NotRunning) => {
+                    return Err(FrontendWorkerStartError::SpawnFailed {
+                        error: HalError::internal(
+                            HalInternalKind::InvariantViolation,
+                            "準備済みバックエンド投入の実行権限が保持されていません",
+                        ),
+                    });
+                }
+                // 直前の let ... else で Retained は成功側へ分離済みであり、ここには到達しない。
+                FrontendWorkerStopTicketKind::Retained { .. } => unreachable!(),
+            };
+            return Err(FrontendWorkerStartError::PreparedSubmitUnavailable {
+                frontend_id,
+                kind,
+                generation,
+            });
+        };
+        let frontend_id = *frontend_id;
+        let kind = *kind;
+        let generation = *generation;
+        let key = FrontendWorkerKey { frontend_id, kind };
+
+        self.cleanup.retain(|(_, _, owner)| owner.is_pending());
+        let mut owns_prepared_obligation = false;
+        for (pending, pending_generation, owner) in &self.cleanup {
+            if *pending != key {
+                continue;
+            }
+            if *pending_generation == generation {
+                match owner.owns_current_authority(authority) {
+                    Ok(true) => {
+                        owns_prepared_obligation = true;
+                        continue;
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        return Err(FrontendWorkerStartError::SpawnFailed { error });
+                    }
+                }
+            }
+            return Err(FrontendWorkerStartError::AlreadyRunning {
+                frontend_id,
+                kind,
+                generation: *pending_generation,
+            });
+        }
+        if !owns_prepared_obligation {
+            return Err(FrontendWorkerStartError::AlreadyRunning {
+                frontend_id,
+                kind,
+                generation,
+            });
+        }
+
+        self.start_after_cleanup_gate(frontend_id, kind, generation, move |ctx| job(ctx, ticket))
     }
 
     pub fn request_stop(
@@ -1165,13 +1285,17 @@ mod tests {
     use std::time::Duration;
 
     fn submit_plan() -> FrontendBackendTunePlan {
+        submit_plan_generation(1)
+    }
+
+    fn submit_plan_generation(generation: u64) -> FrontendBackendTunePlan {
         use maleicacid_tuner_hal2_common::{
             FrontendBackendKind, FrontendDevicePath, FrontendIsdbtPartialReceptionRequirement,
             FrontendSystem,
         };
         FrontendBackendTunePlan::new(
             7,
-            1,
+            generation,
             FrontendBackendKind::LinuxDvb,
             FrontendDevicePath::new("/unused-submit-test"),
             FrontendTuneRequest {
@@ -1223,6 +1347,141 @@ mod tests {
         );
         assert_eq!(
             cancellation.complete(),
+            FrontendWorkerStopOutcome::NotRunning
+        );
+        assert!(!registry.has_cleanup_obligations());
+    }
+
+    #[test]
+    fn matching_prepared_submit_authorizes_its_worker_start() {
+        let mut registry = FrontendWorkerRegistry::default();
+        let ticket = registry
+            .prepare_backend_submit(FrontendWorkerKind::Tune, submit_plan(), None)
+            .unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        registry
+            .start_with_prepared_submit(ticket, move |ctx, ticket| {
+                started_tx.send(ctx.generation()).unwrap();
+                assert_eq!(ticket.complete(), FrontendWorkerStopOutcome::NotRunning);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(started_rx.recv_timeout(Duration::from_secs(1)).unwrap(), 1);
+        for _ in 0..100 {
+            if let Some(outcome) = registry.take_completed(7, FrontendWorkerKind::Tune) {
+                assert!(matches!(
+                    outcome,
+                    FrontendWorkerStopOutcome::Completed { result: Ok(()), .. }
+                ));
+                assert!(!registry.has_cleanup_obligations());
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("準備済み投入を引き継いだワーカーが完了しませんでした");
+    }
+
+    #[test]
+    fn stale_prepared_submit_authority_does_not_authorize_worker_start() {
+        let mut registry = FrontendWorkerRegistry::default();
+        let ticket = registry
+            .prepare_backend_submit(FrontendWorkerKind::Tune, submit_plan(), None)
+            .unwrap();
+        let key = FrontendWorkerKey {
+            frontend_id: 7,
+            kind: FrontendWorkerKind::Tune,
+        };
+        let (_, generation, owner) = registry
+            .cleanup
+            .iter()
+            .find(|(pending, _, _)| *pending == key)
+            .unwrap();
+        let newer_authority = owner.issue().unwrap();
+        assert_eq!(*generation, 1);
+
+        assert!(matches!(
+            registry.start_with_prepared_submit(ticket, |_, _| Ok(())),
+            Err(FrontendWorkerStartError::AlreadyRunning { generation: 1, .. })
+        ));
+
+        let newer = FrontendWorkerStopTicket {
+            kind: FrontendWorkerStopTicketKind::Retained {
+                frontend_id: 7,
+                kind: FrontendWorkerKind::Tune,
+                generation: 1,
+                authority: newer_authority,
+            },
+        };
+        assert_eq!(newer.complete(), FrontendWorkerStopOutcome::NotRunning);
+        assert!(!registry.has_cleanup_obligations());
+    }
+
+    #[test]
+    fn prepared_submit_still_blocks_unrelated_regular_start() {
+        let mut registry = FrontendWorkerRegistry::default();
+        let ticket = registry
+            .prepare_backend_submit(FrontendWorkerKind::Tune, submit_plan(), None)
+            .unwrap();
+        assert!(matches!(
+            registry.start(7, FrontendWorkerKind::Tune, 1, |_| Ok(())),
+            Err(FrontendWorkerStartError::AlreadyRunning { generation: 1, .. })
+        ));
+        std::mem::forget(ticket);
+        let cleanup = registry.request_stop_for_join(
+            7,
+            FrontendWorkerKind::Tune,
+            FrontendWorkerCancelReason::StopRequested,
+        );
+        assert_eq!(cleanup.complete(), FrontendWorkerStopOutcome::NotRunning);
+        assert!(!registry.has_cleanup_obligations());
+    }
+
+    #[test]
+    fn different_generation_prepared_submit_cannot_authorize_running_worker_replacement() {
+        let mut registry = FrontendWorkerRegistry::default();
+        let (started_tx, started_rx) = mpsc::channel();
+        registry
+            .start(7, FrontendWorkerKind::Tune, 1, move |ctx| {
+                started_tx.send(()).unwrap();
+                while !ctx.cancel_requested() {
+                    ctx.wait_until(Some(std::time::Instant::now() + Duration::from_millis(10)));
+                }
+                Ok(())
+            })
+            .unwrap();
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+
+        let ticket = registry
+            .prepare_backend_submit(FrontendWorkerKind::Tune, submit_plan_generation(2), None)
+            .unwrap();
+        assert!(matches!(
+            registry.start_with_prepared_submit(ticket, |_, _| Ok(())),
+            Err(FrontendWorkerStartError::AlreadyRunning { generation: 1, .. })
+        ));
+
+        let cleanup = registry.request_stop_for_join(
+            7,
+            FrontendWorkerKind::Tune,
+            FrontendWorkerCancelReason::StopRequested,
+        );
+        assert!(cleanup
+            .wait_until_finished(Some(std::time::Instant::now() + Duration::from_secs(1)))
+            .unwrap());
+        assert!(matches!(
+            cleanup.complete(),
+            FrontendWorkerStopOutcome::Completed {
+                generation: 1,
+                result: Ok(()),
+                ..
+            }
+        ));
+        let prepared_cleanup = registry.request_stop_for_join(
+            7,
+            FrontendWorkerKind::Tune,
+            FrontendWorkerCancelReason::StopRequested,
+        );
+        assert_eq!(
+            prepared_cleanup.complete(),
             FrontendWorkerStopOutcome::NotRunning
         );
         assert!(!registry.has_cleanup_obligations());
