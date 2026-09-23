@@ -192,11 +192,12 @@ impl DvrStatusNotifierSupervisor {
             WorkerRuntimeSupervisorStartPreparation::Active
             | WorkerRuntimeSupervisorStartPreparation::ReapingPending => Ok(()),
             WorkerRuntimeSupervisorStartPreparation::Vacant(permit) => {
+                let execution = self.runtime.begin_start(permit)?;
                 let notifier =
                     match spawn_dvr_status_notifier(context, handle, Arc::downgrade(self)) {
                         Ok(notifier) => notifier,
                         Err(primary) => {
-                            return match self.runtime.abort_start(permit) {
+                            return match self.runtime.abort_start(execution) {
                                 Ok(()) => Err(primary),
                                 Err(cleanup) => Err(compose_primary_cleanup_failure(
                                     "DVR通知ワーカー開始予約の取消しにも失敗しました",
@@ -206,7 +207,7 @@ impl DvrStatusNotifierSupervisor {
                             };
                         }
                     };
-                self.runtime.commit_start(permit, notifier)
+                self.runtime.commit_start(execution, notifier)
             }
         }
     }
