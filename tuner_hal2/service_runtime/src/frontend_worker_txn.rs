@@ -3842,10 +3842,7 @@ fn run_frontend_backend_scan_session_worker(
                 }
                 if let Err(mark_error) = guard
                     .frontend_txn()
-                    .mark_frontend_scan_session_backend_failed(
-                        ctx.frontend_id(),
-                        ctx.generation(),
-                    )
+                    .mark_frontend_scan_session_backend_failed(ctx.frontend_id(), ctx.generation())
                 {
                     return Err(compose_frontend_cleanup_error(
                         "frontend scan backend failure marking failed",
