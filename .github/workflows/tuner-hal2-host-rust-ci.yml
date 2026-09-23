@@ -130,17 +130,17 @@ jobs:
       - name: Packageのunit testsを実行
         run: cargo test -p "${{ matrix.package }}" --lib --locked
 
-  worker-handle-loom:
+  concurrency-loom:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
       run:
-        working-directory: tuner_hal2/host_ci/worker_handle_loom
+        working-directory: tuner_hal2/host_ci/concurrency_loom
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Worker完了公開と結果回収のLoom試験
+      - name: 並行性契約のLoom試験
         env:
           RUSTFLAGS: "--cfg loom"
         run: |
