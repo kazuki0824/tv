@@ -1648,7 +1648,7 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(1));
         }
-        panic!("cancelled worker did not complete");
+        panic!("取消し済みワーカーが完了しませんでした");
     }
 
     #[test]
@@ -1691,7 +1691,7 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(1));
         }
-        panic!("cancelled worker did not complete");
+        panic!("取消し済みワーカーが完了しませんでした");
     }
 
     #[test]
@@ -1712,7 +1712,7 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(1));
         }
-        panic!("worker did not complete");
+        panic!("ワーカーが完了しませんでした");
     }
     #[test]
     fn failed_worker_is_reported_as_error_and_slot_removed() {
@@ -1725,7 +1725,7 @@ mod tests {
                 |_| -> Result<(), HalError> {
                     Err(HalError::cleanup_failed(
                         "フロントエンドワーカー試験",
-                        "forced failure",
+                        "強制失敗",
                     ))
                 },
             )
@@ -1742,7 +1742,7 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(1));
         }
-        panic!("panicked worker was not reported");
+        panic!("panicしたワーカーが報告されませんでした");
     }
 
     #[test]
@@ -1794,7 +1794,7 @@ mod tests {
                 |_| -> Result<(), HalError> {
                     Err(HalError::cleanup_failed(
                         "フロントエンドワーカー試験",
-                        "forced failure",
+                        "強制失敗",
                     ))
                 },
             )
@@ -1809,7 +1809,7 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(1));
         }
-        panic!("failed worker was removed or not reported");
+        panic!("失敗したワーカーが除去されたか、失敗が報告されませんでした");
     }
 
     #[test]
@@ -1852,7 +1852,7 @@ mod tests {
                 assert!(result.is_err());
                 assert_eq!(exit, WorkerExit::PanicOrJoinFailure);
             }
-            other => panic!("unexpected stop outcome: {other:?}"),
+            other => panic!("予期しない停止結果です: {other:?}"),
         }
     }
 
@@ -1867,7 +1867,7 @@ mod tests {
                 |_| -> Result<(), HalError> {
                     Err(HalError::cleanup_failed(
                         "フロントエンドワーカー試験",
-                        "pending failure",
+                        "保留中の失敗",
                     ))
                 },
             )
@@ -1882,12 +1882,12 @@ mod tests {
                         assert!(result.is_err());
                         return;
                     }
-                    other => panic!("pending failure was not preserved: {other:?}"),
+                    other => panic!("保留中の失敗 was not preserved: {other:?}"),
                 }
             }
             std::thread::sleep(Duration::from_millis(1));
         }
-        panic!("pending worker failure was not observed");
+        panic!("保留中のワーカー失敗を観測できませんでした");
     }
 
     #[test]

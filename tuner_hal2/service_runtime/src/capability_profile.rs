@@ -49,7 +49,7 @@ pub const fn scan_candidate_owner() -> ScanCandidateOwner {
 
 pub fn configure_ip_cid_result(_ip_cid: i32) -> Result<(), HalError> {
     Err(HalError::Unsupported(
-        "IP CID is outside the product TS-only capability/profile",
+        "IP CIDは製品のTS専用capability/profileの範囲外です",
     ))
 }
 
@@ -58,7 +58,7 @@ pub fn configure_monitor_event_result(monitor_event_types: i32) -> Result<(), Ha
         Ok(())
     } else {
         Err(HalError::Unsupported(
-            "monitor event is not declared by this profile",
+            "monitor eventはこのprofileで宣言されていません",
         ))
     }
 }

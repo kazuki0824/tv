@@ -792,7 +792,7 @@ pub fn errno_name(errno: i32) -> &'static str {
 fn display_path(path: &Option<PathBuf>) -> String {
     path.as_ref()
         .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "<unavailable>".to_string())
+        .unwrap_or_else(|| "<利用不可>".to_string())
 }
 
 impl fmt::Display for HalError {
@@ -839,24 +839,24 @@ impl fmt::Display for HalError {
             HalError::NotInitialized { resource } => {
                 write!(f, "依存資源が未初期化です: {resource}")
             }
-            HalError::DeviceMissing(path) => write!(f, "device not found: {}", path.display()),
+            HalError::DeviceMissing(path) => write!(f, "デバイスが見つかりません: {}", path.display()),
             HalError::OpenFailed { path, detail } => write!(
                 f,
-                "open に失敗しました {}: {}",
+                "{}を開く処理に失敗しました: {}",
                 path.display(),
                 detail.detail
             ),
             HalError::PermissionDenied { path, detail } => write!(
                 f,
-                "permission denied opening {}: {}",
+                "{}を開く権限がありません: {}",
                 path.display(),
                 detail.detail
             ),
             HalError::Busy { path, detail } => {
                 if let Some(path) = path {
-                    write!(f, "device busy {}: {}", path.display(), detail.detail)
+                    write!(f, "デバイス{}は使用中です: {}", path.display(), detail.detail)
                 } else {
-                    write!(f, "device busy: {}", detail.detail)
+                    write!(f, "デバイスは使用中です: {}", detail.detail)
                 }
             }
             HalError::IoctlFailed {
@@ -866,7 +866,7 @@ impl fmt::Display for HalError {
                 errno,
             } => write!(
                 f,
-                "実行時ioctl失敗: backend={} operation={} device_path={} errno={} errno_name={}",
+                "実行時ioctl失敗: backend種別={} 操作={} デバイスパス={} errno={} errno名={}",
                 backend,
                 op,
                 display_path(path),
@@ -875,27 +875,27 @@ impl fmt::Display for HalError {
             ),
             HalError::CallbackFailed { callback, detail } => write!(
                 f,
-                "callback failed: callback={} detail={}",
+                "コールバックに失敗しました: callback={} 詳細={}",
                 callback, detail.detail
             ),
             HalError::FmqFailed { operation, detail } => write!(
                 f,
-                "FMQ failed: operation={} detail={}",
+                "FMQ操作に失敗しました: 操作={} 詳細={}",
                 operation, detail.detail
             ),
             HalError::EventFlagFailed { operation, detail } => write!(
                 f,
-                "EventFlag failed: operation={} detail={}",
+                "EventFlag操作に失敗しました: 操作={} 詳細={}",
                 operation, detail.detail
             ),
             HalError::CleanupFailed { resource, detail } => write!(
                 f,
-                "cleanup failed: resource={} detail={}",
+                "資源の後片付けに失敗しました: 資源={} 詳細={}",
                 resource, detail.detail
             ),
             HalError::OutOfMemory { resource, detail } => write!(
                 f,
-                "out of memory: resource={} detail={}",
+                "メモリを確保できません: 資源={} 詳細={}",
                 resource, detail.detail
             ),
             HalError::ComposedFailure {
@@ -904,16 +904,16 @@ impl fmt::Display for HalError {
                 cleanup,
             } => write!(
                 f,
-                "composed failure: context={} primary=({}) cleanup=({})",
+                "複合失敗: 文脈={} 主失敗=({}) 後片付け=({})",
                 context, primary, cleanup
             ),
             HalError::InvalidArgument { kind, detail } => write!(
                 f,
-                "invalid argument: kind={kind:?} detail={}",
+                "引数が不正です: 種別={kind:?} 詳細={}",
                 detail.detail
             ),
             HalError::InvalidState { kind, detail } => {
-                write!(f, "invalid state: kind={kind:?} detail={}", detail.detail)
+                write!(f, "状態が不正です: 種別={kind:?} 詳細={}", detail.detail)
             }
             HalError::Io {
                 backend,
@@ -923,11 +923,11 @@ impl fmt::Display for HalError {
                 detail,
             } => {
                 if let Some(errno) = errno {
-                    write!(f, "io failed: backend={} operation={} device_path={} errno={} errno_name={} detail={}", backend, operation, display_path(path), errno, errno_name(*errno), detail.detail)
+                    write!(f, "I/Oに失敗しました: backend種別={} 操作={} デバイスパス={} errno={} errno名={} 詳細={}", backend, operation, display_path(path), errno, errno_name(*errno), detail.detail)
                 } else {
                     write!(
                         f,
-                        "io failed: backend={} operation={} device_path={} detail={}",
+                        "I/Oに失敗しました: backend種別={} 操作={} デバイスパス={} 詳細={}",
                         backend,
                         operation,
                         display_path(path),
@@ -936,11 +936,11 @@ impl fmt::Display for HalError {
                 }
             }
             HalError::Internal { kind, detail } => {
-                write!(f, "internal error: kind={kind:?} detail={}", detail.detail)
+                write!(f, "内部エラー: 種別={kind:?} 詳細={}", detail.detail)
             }
-            HalError::Unsupported(feature) => write!(f, "unsupported feature: {feature}"),
+            HalError::Unsupported(feature) => write!(f, "未対応の機能: {feature}"),
             HalError::UnsupportedDetail { feature, detail } => {
-                write!(f, "unsupported feature: {feature}: {}", detail.detail)
+                write!(f, "未対応の機能: {feature}: {}", detail.detail)
             }
         }
     }
