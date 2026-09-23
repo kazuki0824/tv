@@ -290,3 +290,14 @@ mod tests {
         });
     }
 }
+
+#[cfg(test)]
+mod callback_registration_gate;
+#[cfg(test)]
+mod filter_producer_drain_gate;
+#[cfg(test)]
+mod lnb_registry_io_authority;
+#[cfg(test)]
+mod queue_epoch_protocol;
+#[cfg(test)]
+mod worker_runtime;
