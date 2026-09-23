@@ -1,4 +1,6 @@
-use maleicacid_tuner_hal2_common::{FrontendTuneRequest, HalError, HalInternalKind, HalInvalidArgumentKind};
+use maleicacid_tuner_hal2_common::{
+    FrontendTuneRequest, HalError, HalInternalKind, HalInvalidArgumentKind,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum AidlObjectKind {
@@ -699,16 +701,26 @@ pub enum RuntimeExecutableRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AidlMethodCall {
-    PublicApi { object: AidlObjectKind, api: AidlApi },
-    UnsupportedPublicApi { object: AidlObjectKind, api: AidlApi },
+    PublicApi {
+        object: AidlObjectKind,
+        api: AidlApi,
+    },
+    UnsupportedPublicApi {
+        object: AidlObjectKind,
+        api: AidlApi,
+    },
     FrontendTune(FrontendTuneRequest),
-    FrontendSetLnb { lnb_id: i32 },
+    FrontendSetLnb {
+        lnb_id: i32,
+    },
     FrontendStopTune,
     FrontendScan(FrontendTuneRequest),
     FrontendStopScan,
     FrontendClose,
     FrontendSetCallback,
-    DemuxSetFrontendDataSource { frontend_id: i32 },
+    DemuxSetFrontendDataSource {
+        frontend_id: i32,
+    },
     DemuxOpenFilter(RuntimeExecutableRequest),
     DemuxOpenDvr(OpenDvrRequest),
     DemuxClose,
@@ -774,7 +786,9 @@ impl AidlMethodCall {
             Self::FilterStop => AidlApi::FilterStop,
             Self::FilterFlush => AidlApi::FilterFlush,
             Self::FilterClose => AidlApi::FilterClose,
-            Self::FilterSetDataSource(_) | Self::FilterSetDataSourceToDemuxInput => AidlApi::FilterSetDataSource,
+            Self::FilterSetDataSource(_) | Self::FilterSetDataSourceToDemuxInput => {
+                AidlApi::FilterSetDataSource
+            }
             Self::FilterSetDelayHint(_) => AidlApi::FilterSetDelayHint,
             Self::DvrGetQueueDesc => AidlApi::DvrGetQueueDesc,
             Self::DvrConfigure(_) => AidlApi::DvrConfigure,
@@ -852,16 +866,20 @@ impl AidlMethodCall {
 
     pub fn runtime_executable_request(&self) -> Option<RuntimeExecutableRequest> {
         match self {
-            Self::DemuxSetFrontendDataSource { frontend_id } => Some(
-                RuntimeExecutableRequest::DemuxSetFrontendDataSource(
-                    DemuxSetFrontendDataSourceRequest { frontend_id: *frontend_id },
-                ),
-            ),
-            Self::DemuxOpenFilter(request) | Self::FilterConfigure(request) => Some(request.clone()),
-            Self::DemuxOpenDvr(request) => Some(RuntimeExecutableRequest::OpenDvr(*request)),
-            Self::FilterConfigureAvStreamType(request) => {
-                Some(RuntimeExecutableRequest::FilterConfigureAvStreamType(*request))
+            Self::DemuxSetFrontendDataSource { frontend_id } => {
+                Some(RuntimeExecutableRequest::DemuxSetFrontendDataSource(
+                    DemuxSetFrontendDataSourceRequest {
+                        frontend_id: *frontend_id,
+                    },
+                ))
             }
+            Self::DemuxOpenFilter(request) | Self::FilterConfigure(request) => {
+                Some(request.clone())
+            }
+            Self::DemuxOpenDvr(request) => Some(RuntimeExecutableRequest::OpenDvr(*request)),
+            Self::FilterConfigureAvStreamType(request) => Some(
+                RuntimeExecutableRequest::FilterConfigureAvStreamType(*request),
+            ),
             Self::FilterReleaseAvHandle(request) => {
                 Some(RuntimeExecutableRequest::FilterReleaseAvHandle(*request))
             }
