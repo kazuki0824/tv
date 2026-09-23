@@ -29,8 +29,7 @@ pub use maleicacid_tuner_hal2_domain_request::{
     FilterAvStreamTypeRequest, FilterDelayHintKind, FilterDelayHintRequest,
     FilterReleaseAvHandleRequest, FilterSetDataSourceRequest, FrontendRequestedSetting,
     FrontendSettingsRequest, LnbSetSatellitePositionRequest, LnbToneRequest, LnbVoltageRequest,
-    OpenDvrRequest, RuntimeExecutableRequest,
-    RuntimeTransactionName, AIDL_TRANSACTION_TABLE,
+    OpenDvrRequest, RuntimeExecutableRequest, RuntimeTransactionName, AIDL_TRANSACTION_TABLE,
 };
 pub use status::{
     AidlFailureSource, AidlStatusMapper, ApiStatusPrecedence, DomainResult, StatusPrecedenceStep,
