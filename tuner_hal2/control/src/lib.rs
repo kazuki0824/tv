@@ -1320,9 +1320,7 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
         Ok(WorkerRuntimeSupervisorStopDisposition::ReapingPending)
     }
 
-    pub fn request_supervised_reset(
-        &self,
-    ) -> Result<(), maleicacid_tuner_hal2_common::HalError>
+    pub fn request_supervised_reset(&self) -> Result<(), maleicacid_tuner_hal2_common::HalError>
     where
         K: Ord + Copy,
         A: WorkerRuntimeSupervisorActiveEntry,
@@ -1702,7 +1700,7 @@ mod tests {
             .worker_context
             .stop
             .store(true, std::sync::atomic::Ordering::Release);
-        supervisor.notify_worker();
+        supervisor.worker_context.wake.notify();
         assert_eq!(
             terminal_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
             WorkerTerminalResult::StopRequested
