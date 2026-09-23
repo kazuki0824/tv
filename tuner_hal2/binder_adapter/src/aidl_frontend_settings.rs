@@ -15,9 +15,7 @@ use maleicacid_tuner_hal2_common::{
     FrontendIsdbtSegmentRequest, FrontendScanMode, FrontendStreamIdKind, FrontendSystem,
     FrontendTuneRequest, HalError, HalInvalidArgumentKind,
 };
-use maleicacid_tuner_hal2_domain_request::{
-    FrontendRequestedSetting, FrontendSettingsRequest,
-};
+use maleicacid_tuner_hal2_domain_request::{FrontendRequestedSetting, FrontendSettingsRequest};
 
 const AOSP_TUNER_INVALID_STREAM_ID: i32 = 0xFFFF;
 
