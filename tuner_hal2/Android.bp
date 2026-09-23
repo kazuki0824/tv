@@ -264,6 +264,7 @@ rust_library {
     ],
     edition: "2021",
     rustlibs: [
+        "liblog_rust",
         "libmaleicacid_tuner_hal2_common",
         "libmaleicacid_tuner_hal2_control_core",
         "libmaleicacid_tuner_hal2_binder_adapter",
