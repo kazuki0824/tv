@@ -46,19 +46,18 @@ fn one_physical_lnb_gate_serializes_all_backend_effects() {
         let in_backend = Arc::new(AtomicUsize::new(0));
         let max_seen = Arc::new(AtomicUsize::new(0));
 
-        let run = |gate: Arc<Mutex<()>>,
-                   in_backend: Arc<AtomicUsize>,
-                   max_seen: Arc<AtomicUsize>| {
-            loom::thread::spawn(move || {
-                let _guard = gate.lock().unwrap();
-                let now = in_backend.fetch_add(1, Ordering::SeqCst) + 1;
-                let old = max_seen.load(Ordering::SeqCst);
-                if now > old {
-                    max_seen.store(now, Ordering::SeqCst);
-                }
-                in_backend.fetch_sub(1, Ordering::SeqCst);
-            })
-        };
+        let run =
+            |gate: Arc<Mutex<()>>, in_backend: Arc<AtomicUsize>, max_seen: Arc<AtomicUsize>| {
+                loom::thread::spawn(move || {
+                    let _guard = gate.lock().unwrap();
+                    let now = in_backend.fetch_add(1, Ordering::SeqCst) + 1;
+                    let old = max_seen.load(Ordering::SeqCst);
+                    if now > old {
+                        max_seen.store(now, Ordering::SeqCst);
+                    }
+                    in_backend.fetch_sub(1, Ordering::SeqCst);
+                })
+            };
 
         let first = run(
             Arc::clone(&gate),

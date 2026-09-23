@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use loom::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use loom::sync::atomic::{AtomicBool, Ordering};
     use loom::sync::{Arc, Condvar, Mutex};
 
     #[test]
@@ -260,33 +260,66 @@ mod tests {
     }
 
     #[test]
-    fn wake_before_wait_is_retained_as_pending_work() {
+    fn wake_before_or_during_park_is_not_lost() {
         loom::model(|| {
             let pending = Arc::new(AtomicBool::new(false));
-            let observed = Arc::new(AtomicUsize::new(0));
-
-            let notifier_pending = Arc::clone(&pending);
-            let notifier = loom::thread::spawn(move || {
-                notifier_pending.store(true, Ordering::Release);
-            });
+            let bound_thread = Arc::new((Mutex::new(None), Condvar::new()));
+            let observed = Arc::new(AtomicBool::new(false));
 
             let waiter_pending = Arc::clone(&pending);
+            let waiter_bound_thread = Arc::clone(&bound_thread);
             let waiter_observed = Arc::clone(&observed);
             let waiter = loom::thread::spawn(move || {
-                if waiter_pending.swap(false, Ordering::AcqRel) {
-                    waiter_observed.fetch_add(1, Ordering::SeqCst);
+                {
+                    let (thread, wake) = &*waiter_bound_thread;
+                    *thread.lock().unwrap() = Some(loom::thread::current());
+                    wake.notify_all();
                 }
+
+                while !waiter_pending.swap(false, Ordering::AcqRel) {
+                    loom::thread::park();
+                }
+                waiter_observed.store(true, Ordering::Release);
+            });
+
+            let notifier_pending = Arc::clone(&pending);
+            let notifier_bound_thread = Arc::clone(&bound_thread);
+            let notifier = loom::thread::spawn(move || {
+                let thread = {
+                    let (thread, wake) = &*notifier_bound_thread;
+                    let mut thread = thread.lock().unwrap();
+                    loop {
+                        if let Some(thread) = thread.as_ref() {
+                            break thread.clone();
+                        }
+                        thread = wake.wait(thread).unwrap();
+                    }
+                };
+                notifier_pending.store(true, Ordering::Release);
+                thread.unpark();
             });
 
             notifier.join().unwrap();
             waiter.join().unwrap();
 
-            if observed.load(Ordering::SeqCst) == 0 {
-                assert!(pending.load(Ordering::Acquire));
-            } else {
-                assert_eq!(observed.load(Ordering::SeqCst), 1);
-                assert!(!pending.load(Ordering::Acquire));
-            }
+            assert!(observed.load(Ordering::Acquire));
+            assert!(!pending.load(Ordering::Acquire));
+        });
+    }
+
+    #[test]
+    fn wake_before_thread_binding_is_retained_by_the_pending_flag() {
+        loom::model(|| {
+            let pending = Arc::new(AtomicBool::new(false));
+            pending.store(true, Ordering::Release);
+
+            let waiter_pending = Arc::clone(&pending);
+            let waiter = loom::thread::spawn(move || {
+                assert!(waiter_pending.swap(false, Ordering::AcqRel));
+            });
+
+            waiter.join().unwrap();
+            assert!(!pending.load(Ordering::Acquire));
         });
     }
 }

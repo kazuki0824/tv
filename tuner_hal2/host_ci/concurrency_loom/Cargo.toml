@@ -8,3 +8,6 @@ publish = false
 
 [target.'cfg(loom)'.dependencies]
 loom = "=0.7.2"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
