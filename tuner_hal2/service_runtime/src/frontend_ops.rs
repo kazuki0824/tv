@@ -8,7 +8,6 @@ use crate::frontend_worker_txn::{
 use crate::object_method_use_case::ObjectMethodExecutionToken;
 use crate::registry::{FrontendRuntimeId, LnbRuntimeId, SatellitePowerTopology};
 use crate::worker_runtime::WorkerTerminalResult;
-use maleicacid_tuner_hal2_binder_adapter::FrontendSettingsRequest;
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FrontendScanMode, HalError, HalInternalKind,
 };
@@ -17,7 +16,8 @@ use maleicacid_tuner_hal2_device::{
     FrontendRuntimeState, FrontendWorkerCancelReason, FrontendWorkerKind, FrontendWorkerStopOutcome,
 };
 use maleicacid_tuner_hal2_domain_request::{
-    AidlObjectGeneration, AidlObjectId, AidlObjectKind, LnbVoltageRequest,
+    AidlObjectGeneration, AidlObjectId, AidlObjectKind, FrontendSettingsRequest,
+    LnbVoltageRequest,
 };
 
 pub type SharedFrontendRuntime = std::sync::Arc<std::sync::Mutex<TunerServiceRuntime>>;
