@@ -234,7 +234,7 @@ A/B/Cの分類と`Txn` / `UseCase` / `Context`の命名判定は別である。B
 
 ##### 共通の失敗伝達とワーカー管理の実装位置
 
-機器要求の開始入口は`FrontendTxn::prepare_backend_submit`から`FrontendWorkerRegistry::prepare_backend_submit`へ接続し、既存の`WorkerRuntimeCleanup`に保管する。`FrontendWorkerStopTicket::submit_until`が同じ保管値の実行権限を消費する。時間切れの回収はその権限を既存reaperへ渡す。`backend_worker.rs::FrontendBackendSubmitTicket`はこの実行区間内の非公開実装値とし、crate外へ公開しない。
+機器要求の開始入口は`FrontendTxn::prepare_backend_submit`から`FrontendWorkerRegistry::prepare_backend_submit`へ接続し、既存の`WorkerRuntimeCleanup`に保管する。非同期のtune/scan開始では、このprepared submitの一回実行権限を、その権限と同一の`frontend_id / worker kind / generation`を開始するworkerへ型付きで移管する。同一prepared submitは移管先worker自身の開始阻止条件にしないが、別generation、別worker、または過去の未完cleanup obligationは従来どおり開始を阻止する。worker開始前に権限移管へ失敗した場合はprepared obligationを正本保管値へ残し、後続の正規cleanup入口から回収可能にする。worker開始後はworkerだけが同じ一回実行権限を消費してbackend submitを開始し、結果不明時は既存reaperへ移管する。同期補助経路で`FrontendWorkerStopTicket::submit_until`を使う場合も同じ保管値の実行権限を消費する。`backend_worker.rs::FrontendBackendSubmitTicket`はこの実行区間内の非公開実装値とし、crate外へ公開しない。
 
 ワーカー管理部の失敗から終端結果への接続は`control/src/lib.rs::WorkerRuntimeOwnerFailure::into_terminal_result`に置く。device adapterはその終端種別を保持して渡し、診断分類は既存の`WorkerFailureClassifier`へ接続する。
 

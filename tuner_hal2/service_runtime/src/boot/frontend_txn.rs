@@ -943,19 +943,19 @@ impl<'a> FrontendTxn<'a> {
         runtime.mark_scan_session_callback_failed(generation)
     }
 
-    pub(crate) fn start_worker<F>(
+    pub(crate) fn start_worker_with_prepared_submit<F>(
         &mut self,
-        frontend_id: i32,
-        kind: FrontendWorkerKind,
-        generation: u64,
+        ticket: FrontendWorkerStopTicket,
         job: F,
     ) -> Result<(), FrontendWorkerStartError>
     where
-        F: FnOnce(FrontendWorkerContext) -> Result<(), HalError> + Send + 'static,
+        F: FnOnce(FrontendWorkerContext, FrontendWorkerStopTicket) -> Result<(), HalError>
+            + Send
+            + 'static,
     {
         self.runtime
             .frontend_workers
-            .start(frontend_id, kind, generation, job)
+            .start_with_prepared_submit(ticket, job)
     }
 
     pub(crate) fn request_worker_stop_for_join(

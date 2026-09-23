@@ -139,6 +139,22 @@ impl<T> WorkerRuntimeCleanup<T> {
             attempt: state.attempt,
         })
     }
+
+    /// この保管値から現在発行中の同一の一回実行権限かを判定する。
+    ///
+    /// 値の内容や世代番号を外部へ公開せず、準備済み値をその消費主体へ
+    /// 移管するときの型付き同一性確認だけに使用する。
+    pub fn owns_current_authority(
+        &self,
+        authority: &WorkerCleanupAuthority<T>,
+    ) -> Result<bool, maleicacid_tuner_hal2_common::HalError> {
+        if !std::sync::Arc::ptr_eq(&self.state, &authority.state) {
+            return Ok(false);
+        }
+        let state = self.state.try_lock().map_err(cleanup_lock_error)?;
+        Ok(state.attempt == authority.attempt
+            && matches!(state.phase, WorkerCleanupPhase::Ready(_)))
+    }
 }
 
 impl<T> WorkerCleanupAuthority<T> {
