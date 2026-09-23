@@ -2542,8 +2542,8 @@ fn frontend_backend_submit_deadline_ms(
     backend: FrontendBackendKind,
     worker_io_deadline_ms: u64,
 ) -> u64 {
-    let terminal_ms = u64::try_from(frontend_terminal_deadline(backend).as_millis())
-        .unwrap_or(u64::MAX);
+    let terminal_ms =
+        u64::try_from(frontend_terminal_deadline(backend).as_millis()).unwrap_or(u64::MAX);
     worker_io_deadline_ms.max(terminal_ms)
 }
 
