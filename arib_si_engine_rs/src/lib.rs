@@ -99,14 +99,8 @@ impl InvalidSectionReason {
                 "SECTION_HEADER_INVALID",
                 "section headerが不正または途中で切れています",
             ),
-            Self::Length => (
-                "SECTION_LENGTH_MISMATCH",
-                "section長が入力長と一致しません",
-            ),
-            Self::Clock => (
-                "BROADCAST_CLOCK_INVALID",
-                "放送時刻sectionが不正です",
-            ),
+            Self::Length => ("SECTION_LENGTH_MISMATCH", "section長が入力長と一致しません"),
+            Self::Clock => ("BROADCAST_CLOCK_INVALID", "放送時刻sectionが不正です"),
             Self::Crc => ("SECTION_CRC_MISMATCH", "section CRCが一致しません"),
         };
         ParserDiagnosticDto {

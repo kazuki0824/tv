@@ -2028,10 +2028,7 @@ mod tests {
         let generation = 100;
         let expected = FrontendBackendSubmitFailure {
             generation,
-            error: HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "遅延submit失敗を模擬",
-            ),
+            error: HalError::internal(HalInternalKind::InvariantViolation, "遅延submit失敗を模擬"),
             rollback_succeeded: true,
             step: Some(BackendTuneStep::ApplyChannel),
             rollback_failure: None,
@@ -2042,7 +2039,10 @@ mod tests {
             Err(failure)
         })
         .unwrap();
-        let failure = ticket.wait().unwrap().expect_err("submitは失敗する必要があります");
+        let failure = ticket
+            .wait()
+            .unwrap()
+            .expect_err("submitは失敗する必要があります");
         assert_eq!(failure, expected);
     }
 
@@ -2055,7 +2055,7 @@ mod tests {
                 generation,
                 error: HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "simulated delayed submit failure",
+                    "遅延submit失敗を模擬",
                 ),
                 rollback_succeeded: true,
                 step: None,
@@ -2083,10 +2083,7 @@ mod tests {
         assert!(failure.cleanup_result().is_ok());
         assert_eq!(
             failure.error,
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "遅延submit失敗を模擬",
-            )
+            HalError::internal(HalInternalKind::InvariantViolation, "遅延submit失敗を模擬",)
         );
     }
 
@@ -2134,7 +2131,10 @@ mod tests {
                     if let Some(result) = ticket.try_complete_cleanup() {
                         break result;
                     }
-                    assert!(Instant::now() < deadline, "submitスレッドが終了しませんでした");
+                    assert!(
+                        Instant::now() < deadline,
+                        "submitスレッドが終了しませんでした"
+                    );
                     thread::yield_now();
                 }
             } else {
