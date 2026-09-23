@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use loom::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use loom::sync::atomic::{AtomicBool, Ordering};
     use loom::sync::{Arc, Condvar, Mutex};
 
     #[test]
@@ -260,33 +260,45 @@ mod tests {
     }
 
     #[test]
-    fn wake_before_wait_is_retained_as_pending_work() {
+    fn wake_before_wait_is_retained_by_the_pending_flag() {
         loom::model(|| {
             let pending = Arc::new(AtomicBool::new(false));
-            let observed = Arc::new(AtomicUsize::new(0));
+            let published = Arc::new(AtomicBool::new(false));
 
             let notifier_pending = Arc::clone(&pending);
+            let notifier_published = Arc::clone(&published);
             let notifier = loom::thread::spawn(move || {
                 notifier_pending.store(true, Ordering::Release);
+                notifier_published.store(true, Ordering::Release);
             });
 
             let waiter_pending = Arc::clone(&pending);
-            let waiter_observed = Arc::clone(&observed);
+            let waiter_published = Arc::clone(&published);
             let waiter = loom::thread::spawn(move || {
-                if waiter_pending.swap(false, Ordering::AcqRel) {
-                    waiter_observed.fetch_add(1, Ordering::SeqCst);
+                while !waiter_published.load(Ordering::Acquire) {
+                    loom::thread::yield_now();
                 }
+                assert!(waiter_pending.swap(false, Ordering::AcqRel));
             });
 
             notifier.join().unwrap();
             waiter.join().unwrap();
-
-            if observed.load(Ordering::SeqCst) == 0 {
-                assert!(pending.load(Ordering::Acquire));
-            } else {
-                assert_eq!(observed.load(Ordering::SeqCst), 1);
-                assert!(!pending.load(Ordering::Acquire));
-            }
+            assert!(!pending.load(Ordering::Acquire));
         });
     }
 }
+
+#[cfg(test)]
+mod callback_registration_gate;
+#[cfg(test)]
+mod filter_producer_drain_gate;
+#[cfg(test)]
+mod frontend_backend_submit_ticket;
+#[cfg(test)]
+mod frontend_worker_cancel_order;
+#[cfg(test)]
+mod lnb_registry_io_authority;
+#[cfg(test)]
+mod queue_epoch_protocol;
+#[cfg(test)]
+mod worker_runtime;
