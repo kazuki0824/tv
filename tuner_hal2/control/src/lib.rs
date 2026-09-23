@@ -1175,6 +1175,11 @@ pub enum WorkerRuntimeSupervisorAction<R, T> {
     Deadline(T),
 }
 
+pub type WorkerRuntimeSupervisorActionPoll<R, T> = (
+    Option<WorkerRuntimeSupervisorAction<R, T>>,
+    Option<std::time::Instant>,
+);
+
 impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
     fn new(capacity: usize, deadline: std::time::Duration) -> Self {
         Self {
@@ -1344,10 +1349,7 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
     pub fn take_supervisor_action(
         &self,
     ) -> Result<
-        (
-            Option<WorkerRuntimeSupervisorAction<R, R::DeadlineTarget>>,
-            Option<std::time::Instant>,
-        ),
+        WorkerRuntimeSupervisorActionPoll<R, R::DeadlineTarget>,
         maleicacid_tuner_hal2_common::HalError,
     >
     where
