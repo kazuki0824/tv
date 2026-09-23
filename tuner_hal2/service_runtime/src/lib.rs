@@ -140,9 +140,8 @@ pub use worker_runtime::{
     WorkerRuntimeReaperQueue, WorkerRuntimeSupervisor, WorkerRuntimeSupervisorAction,
     WorkerRuntimeSupervisorActiveEntry, WorkerRuntimeSupervisorReapingEntry,
     WorkerRuntimeSupervisorStartPreparation, WorkerRuntimeSupervisorStopDisposition,
-    WorkerTerminalResult,
-    CLEANUP_RETRY_SCHEDULE_MS, CLEANUP_TERMINAL_DEADLINE_MS, WORKER_IO_DEADLINE_MS,
-    WORKER_REAPER_DEADLINE_MS,
+    WorkerTerminalResult, CLEANUP_RETRY_SCHEDULE_MS, CLEANUP_TERMINAL_DEADLINE_MS,
+    WORKER_IO_DEADLINE_MS, WORKER_REAPER_DEADLINE_MS,
 };
 #[cfg(test)]
 mod failure_injection_tests;
