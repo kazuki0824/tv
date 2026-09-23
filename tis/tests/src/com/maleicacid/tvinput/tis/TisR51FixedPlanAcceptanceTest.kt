@@ -45,6 +45,12 @@ import org.junit.Test
 // 一つの契約の試験集合・時系列を保持し、検証シナリオを分断しない。
 @Suppress("LargeClass", "TooManyFunctions")
 class TisR51FixedPlanAcceptanceTest {
+    @Test
+    fun synchronousTuneFailureStopsRemainingInitialScanCandidates() {
+        check(ChannelScanController.shouldContinueInitialScanAfterSynchronousTuneResult(true))
+        check(!ChannelScanController.shouldContinueInitialScanAfterSynchronousTuneResult(false))
+    }
+
     private val key = ServiceKey(4, 0x4010, 101)
     private val otherKey = ServiceKey(4, 0x4010, 102)
 
