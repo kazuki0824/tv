@@ -16,7 +16,7 @@ impl ClassifiedCallbackFailure {
     }
 }
 
-pub use crate::diagnostics::ClassifiedWorkerTerminalResult;
+use crate::diagnostics::ClassifiedWorkerTerminalResult;
 
 pub struct WorkerFailureClassifier;
 

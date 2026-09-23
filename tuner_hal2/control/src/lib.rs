@@ -1294,7 +1294,7 @@ pub enum FmqDeliveryPhase {
     Wake,
 }
 
-pub use maleicacid_tuner_hal2_common::FmqFailureKind;
+use maleicacid_tuner_hal2_common::FmqFailureKind;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FmqDeliveryAction {

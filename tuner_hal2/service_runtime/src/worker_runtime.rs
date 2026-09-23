@@ -11,7 +11,7 @@ pub const WORKER_REAPER_DEADLINE_MS: u64 = 10_000;
 
 pub fn join_worker_classified<T>(
     worker: WorkerRuntime<T>,
-) -> crate::worker_failure_classifier::ClassifiedWorkerTerminalResult<T> {
+) -> crate::diagnostics::ClassifiedWorkerTerminalResult<T> {
     crate::worker_failure_classifier::WorkerFailureClassifier::classify_terminal(
         worker.join(),
         "worker panicked or could not be joined",

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-pub use maleicacid_tuner_hal2_common::{CapabilityClosure, CapabilitySelectionError};
+use maleicacid_tuner_hal2_common::{CapabilityClosure, CapabilitySelectionError};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(usize)]
