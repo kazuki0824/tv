@@ -462,7 +462,9 @@ impl FrontendBackendSubmitTicket {
         })
     }
 
-    pub fn wait(mut self) -> Result<Result<FrontendBackendSession, FrontendBackendSubmitFailure>, HalError> {
+    pub fn wait(
+        mut self,
+    ) -> Result<Result<FrontendBackendSession, FrontendBackendSubmitFailure>, HalError> {
         let ready = self.ready.recv().map_err(|_| {
             HalError::internal(
                 HalInternalKind::InvariantViolation,
