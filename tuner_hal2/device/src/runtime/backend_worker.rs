@@ -3,6 +3,7 @@ use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 
@@ -97,6 +98,7 @@ pub struct FrontendBackendSession {
     initial_signal_state: FrontendSignalState,
     partial_reception: FrontendIsdbtPartialReceptionRequirement,
     px4_channel_apply_result: Option<Px4ChannelApplyResult>,
+    streaming_started: AtomicBool,
 }
 
 impl core::fmt::Debug for FrontendBackendSession {
@@ -107,6 +109,10 @@ impl core::fmt::Debug for FrontendBackendSession {
             .field("initial_signal_state", &self.initial_signal_state)
             .field("partial_reception", &self.partial_reception)
             .field("px4_channel_apply_result", &self.px4_channel_apply_result)
+            .field(
+                "streaming_started",
+                &self.streaming_started.load(Ordering::Acquire),
+            )
             .finish()
     }
 }
@@ -184,6 +190,45 @@ impl FrontendBackendSession {
 
     pub fn px4_channel_apply_result(&self) -> Option<Px4ChannelApplyResult> {
         self.px4_channel_apply_result
+    }
+
+    pub fn streaming_started(&self) -> bool {
+        self.streaming_started.load(Ordering::Acquire)
+    }
+
+    fn start_streaming_after_lock_with(
+        &self,
+        start_streaming: impl FnOnce() -> Result<(), HalError>,
+    ) -> Result<(), HalError> {
+        if self.streaming_started() {
+            return Ok(());
+        }
+        if self
+            .streaming_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Ok(());
+        }
+        if let Err(error) = start_streaming() {
+            self.streaming_started.store(false, Ordering::Release);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub fn start_streaming_after_lock(&self) -> Result<(), HalError> {
+        let FrontendBackendSessionKind::Px4 { control_path } = &self.kind else {
+            return Ok(());
+        };
+        self.start_streaming_after_lock_with(|| {
+            px4_streaming_ioctl(
+                control_path,
+                self.file.as_raw_fd(),
+                PTX_START_STREAMING,
+                "PTX_START_STREAMING",
+            )
+        })
     }
 
     pub fn observe_signal_state(&self) -> Result<FrontendSignalState, HalError> {
@@ -303,12 +348,21 @@ impl FrontendBackendSession {
 
     pub fn stop(&self) -> Result<(), HalError> {
         match &self.kind {
-            FrontendBackendSessionKind::Px4 { control_path } => px4_streaming_ioctl(
-                control_path,
-                self.file.as_raw_fd(),
-                PTX_STOP_STREAMING,
-                "PTX_STOP_STREAMING",
-            ),
+            FrontendBackendSessionKind::Px4 { control_path } => {
+                if !self.streaming_started() {
+                    return Ok(());
+                }
+                let result = px4_streaming_ioctl(
+                    control_path,
+                    self.file.as_raw_fd(),
+                    PTX_STOP_STREAMING,
+                    "PTX_STOP_STREAMING",
+                );
+                if result.is_ok() {
+                    self.streaming_started.store(false, Ordering::Release);
+                }
+                result
+            }
             FrontendBackendSessionKind::Dvb { frontend_path } => {
                 let mut prop = DtvProperty::with_data(DTV_CLEAR, 0);
                 let mut props = DtvProperties {
@@ -1135,6 +1189,9 @@ impl FrontendBackendTuneExecutor {
             initial_signal_state: self.initial_signal_state,
             partial_reception: self.plan.request.partial_reception,
             px4_channel_apply_result: self.px4_channel_apply_result,
+            streaming_started: AtomicBool::new(
+                self.streaming_state == BackendStreamingState::Started,
+            ),
         })
     }
 }
@@ -1154,6 +1211,10 @@ impl BackendTuneOps for FrontendBackendTuneExecutor {
 
     fn apply_channel(&mut self, request: &FrontendTuneRequest) -> Result<(), HalError> {
         self.apply_channel_for(request)
+    }
+
+    fn defer_streaming_start_until_lock(&self) -> bool {
+        self.px4_channel_apply_result == Some(Px4ChannelApplyResult::PendingUnlocked)
     }
 
     fn start_streaming(&mut self) -> Result<(), HalError> {
@@ -1533,6 +1594,61 @@ mod tests {
             classify_px4_channel_apply_result(FrontendSystem::IsdbS, Err(pending.clone())),
             Err(pending.clone())
         );
+        let other = HalError::IoctlFailed {
+            backend: "px4",
+            path: Some(PathBuf::from("/dev/px4video0")),
+            op: "PTX_SET_CHANNEL",
+            errno: ERRNO_ENOTTY,
+        };
+        assert_eq!(
+            classify_px4_channel_apply_result(FrontendSystem::IsdbT, Err(other.clone())),
+            Err(other)
+        );
+    }
+
+    #[test]
+    fn pending_session_starts_streaming_exactly_once_after_lock() {
+        let session = FrontendBackendSession {
+            kind: FrontendBackendSessionKind::Px4 {
+                control_path: FrontendDevicePath::new("/dev/null"),
+            },
+            file: File::open("/dev/null").unwrap(),
+            initial_signal_state: FrontendSignalState::Locked,
+            partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+            px4_channel_apply_result: Some(Px4ChannelApplyResult::PendingUnlocked),
+            streaming_started: AtomicBool::new(false),
+        };
+        let mut starts = 0;
+        session
+            .start_streaming_after_lock_with(|| {
+                starts += 1;
+                Ok(())
+            })
+            .unwrap();
+        session
+            .start_streaming_after_lock_with(|| {
+                starts += 1;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(starts, 1);
+        assert!(session.streaming_started());
+    }
+
+    #[test]
+    fn pending_session_does_not_stop_before_streaming_starts() {
+        let session = FrontendBackendSession {
+            kind: FrontendBackendSessionKind::Px4 {
+                control_path: FrontendDevicePath::new("/dev/null"),
+            },
+            file: File::open("/dev/null").unwrap(),
+            initial_signal_state: FrontendSignalState::NoSignal,
+            partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+            px4_channel_apply_result: Some(Px4ChannelApplyResult::PendingUnlocked),
+            streaming_started: AtomicBool::new(false),
+        };
+        assert!(session.stop().is_ok());
+        assert!(!session.streaming_started());
     }
 
     #[test]
@@ -1594,6 +1710,7 @@ mod tests {
             initial_signal_state: FrontendSignalState::NoSignal,
             partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
             px4_channel_apply_result: None,
+            streaming_started: AtomicBool::new(false),
         };
         let descriptor = FrontendLiveReaderDescriptor::dvb_dvr_device(1, path.clone());
         let error = session.open_live_reader(&descriptor).err().unwrap();
@@ -1626,6 +1743,7 @@ mod tests {
             initial_signal_state: FrontendSignalState::NoSignal,
             partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
             px4_channel_apply_result: None,
+            streaming_started: AtomicBool::new(false),
         };
         let descriptor = FrontendLiveReaderDescriptor::px4_from_control_fd(1, path);
         let mut reader = session.open_live_reader(&descriptor).unwrap();
@@ -1642,13 +1760,38 @@ mod tests {
             initial_signal_state: FrontendSignalState::NoSignal,
             partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
             px4_channel_apply_result: None,
+            streaming_started: AtomicBool::new(false),
         };
         assert!(session.stop().is_err());
         assert!(session.close().is_ok());
     }
 
     #[test]
-    fn px4_close_retains_stream_stop_failure() {
+    fn pending_px4_start_failure_after_lock_keeps_streaming_unstarted() {
+        let session = FrontendBackendSession {
+            kind: FrontendBackendSessionKind::Px4 {
+                control_path: FrontendDevicePath::new("/dev/null"),
+            },
+            file: File::open("/dev/null").unwrap(),
+            initial_signal_state: FrontendSignalState::Locked,
+            partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
+            px4_channel_apply_result: Some(Px4ChannelApplyResult::PendingUnlocked),
+            streaming_started: AtomicBool::new(false),
+        };
+        assert!(matches!(
+            session.start_streaming_after_lock(),
+            Err(HalError::IoctlFailed {
+                op: "PTX_START_STREAMING",
+                errno: ERRNO_ENOTTY,
+                ..
+            })
+        ));
+        assert!(!session.streaming_started());
+        assert!(session.close().is_ok());
+    }
+
+    #[test]
+    fn px4_close_retains_stream_stop_failure_after_start() {
         let session = FrontendBackendSession {
             kind: FrontendBackendSessionKind::Px4 {
                 control_path: FrontendDevicePath::new("/dev/null"),
@@ -1657,6 +1800,7 @@ mod tests {
             initial_signal_state: FrontendSignalState::NoSignal,
             partial_reception: FrontendIsdbtPartialReceptionRequirement::Unspecified,
             px4_channel_apply_result: None,
+            streaming_started: AtomicBool::new(true),
         };
         assert!(session.close().is_err());
     }
