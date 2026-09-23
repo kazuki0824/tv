@@ -3,7 +3,9 @@ use crate::method_dispatch::plan_object_method_dispatch;
 use crate::registry::{FrontendCapabilitySnapshot, FrontendRegistryEntry, LnbRegistryProfile};
 use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem};
 use maleicacid_tuner_hal2_common::{HalError, HalInvalidArgumentKind};
-use maleicacid_tuner_hal2_domain_request::{ AidlMethodCall, AidlMethodAdapter,AidlApi, AidlObjectKind};
+use maleicacid_tuner_hal2_domain_request::{
+    AidlApi, AidlMethodAdapter, AidlMethodCall, AidlObjectKind,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RootFrontendInfoSnapshot {
