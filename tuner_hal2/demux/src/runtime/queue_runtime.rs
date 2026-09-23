@@ -192,7 +192,9 @@ pub(crate) struct QueueEpochToken {
 impl QueueEpochToken {
     fn release(&mut self) -> Result<QueueEpochState, QueueRuntimeError> {
         if !self.active {
-            return Err(protocol_error("DVRキューのトランザクションは既に消費されています"));
+            return Err(protocol_error(
+                "DVRキューのトランザクションは既に消費されています",
+            ));
         }
         let mut state = self.protocol.state.lock().map_err(epoch_poison)?;
         if self.protocol.queue_identity != self.queue_identity || state.epoch != self.epoch {
@@ -214,17 +216,13 @@ impl QueueEpochToken {
 
     pub(crate) fn commit(mut self) -> Result<(), QueueRuntimeError> {
         if self.reserved_bytes == 0 {
-            return Err(protocol_error(
-                "DVRキューの予約サイズが0です",
-            ));
+            return Err(protocol_error("DVRキューの予約サイズが0です"));
         }
         let protocol_state = match self.direction {
             QueueTransactionDirection::Read | QueueTransactionDirection::Write => self.release()?,
         };
         if protocol_state == QueueEpochState::Closed {
-            Err(protocol_error(
-                "確定前にDVRキューが閉じられました",
-            ))
+            Err(protocol_error("確定前にDVRキューが閉じられました"))
         } else {
             Ok(())
         }
@@ -622,9 +620,7 @@ impl QueueRuntime {
                 .wait(&protocol.drained, state)
                 .map_err(epoch_poison)?;
             if state.state != QueueEpochState::Draining {
-                return Err(protocol_error(
-                    "待機中にDVRキューが排出状態を離れました",
-                ));
+                return Err(protocol_error("待機中にDVRキューが排出状態を離れました"));
             }
         }
         Ok(QueueEpochDrainTxn {
@@ -682,9 +678,7 @@ impl QueueRuntime {
         let writable_bytes = self
             .capacity_bytes
             .checked_sub(readable_bytes)
-            .ok_or_else(|| {
-                protocol_error("FMQの充填量が設定済みキュー容量を超えています")
-            })?;
+            .ok_or_else(|| protocol_error("FMQの充填量が設定済みキュー容量を超えています"))?;
         Ok(QueueAvailabilitySnapshot {
             readable_bytes,
             writable_bytes,
@@ -1277,7 +1271,9 @@ impl FilterDrainTxn {
     ) -> Result<Vec<PipelineGeneratedEvent>, QueueRuntimeError> {
         self.inner.check_cleanup()?;
         if !self.active {
-            return Err(gate_error("filter producerの排出権限は既に消費されています"));
+            return Err(gate_error(
+                "filter producerの排出権限は既に消費されています",
+            ));
         }
         let mut data = self.inner.lock_data()?;
         if data.state != GateState::Draining
