@@ -19,9 +19,7 @@ use maleicacid_tuner_hal2_domain_request::{
 
 const DVR_PACKET_SIZE_TS_188: i64 = 188;
 
-pub use maleicacid_tuner_hal2_domain_request::{
-    AidlMethodAdapter, AidlMethodCall, AidlMethodPlan,
-};
+pub use maleicacid_tuner_hal2_domain_request::{AidlMethodAdapter, AidlMethodCall, AidlMethodPlan};
 
 fn invalid(detail: &'static str) -> HalError {
     HalError::invalid_argument(HalInvalidArgumentKind::NumericRange, detail)
