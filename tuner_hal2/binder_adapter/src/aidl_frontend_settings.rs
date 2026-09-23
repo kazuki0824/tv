@@ -15,42 +15,11 @@ use maleicacid_tuner_hal2_common::{
     FrontendIsdbtSegmentRequest, FrontendScanMode, FrontendStreamIdKind, FrontendSystem,
     FrontendTuneRequest, HalError, HalInvalidArgumentKind,
 };
+use maleicacid_tuner_hal2_domain_request::{
+    FrontendRequestedSetting, FrontendSettingsRequest,
+};
 
 const AOSP_TUNER_INVALID_STREAM_ID: i32 = 0xFFFF;
-
-/// AIDL上で構文的に既知だが、`FrontendTuneRequest` には直接表現されない値。
-/// 呼出し元が要求した内容を保持するための観測値であり、製品対応可否の判断ではない。
-/// 対応可否の方針はサービス調停が所有する。
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FrontendRequestedSetting {
-    IsdbtBandwidthAuto,
-    IsdbtExplicitBandwidth { bandwidth_hz: u32 },
-    IsdbtModeAuto,
-    IsdbtExplicitMode { value: i32 },
-    IsdbtExplicitInversion { value: i32 },
-    IsdbtGuardIntervalAuto,
-    IsdbtExplicitGuardInterval { value: i32 },
-    IsdbtServiceAreaId { value: i32 },
-    IsdbtPartialReceptionAuto,
-    IsdbtLayerModulationAuto { layer_index: usize },
-    IsdbtLayerModulation { layer_index: usize, value: i32 },
-    IsdbtLayerCoderateAuto { layer_index: usize },
-    IsdbtLayerCoderate { layer_index: usize, value: i32 },
-    IsdbtLayerTimeInterleaveAuto { layer_index: usize },
-    IsdbtLayerTimeInterleave { layer_index: usize, value: i32 },
-    IsdbtExplicitSegmentCount { layer_index: usize, count: i32 },
-    IsdbsModulationAuto,
-    IsdbsExplicitModulation { value: i32 },
-    IsdbsCoderateAuto,
-    IsdbsExplicitCoderate { value: i32 },
-    IsdbsExplicitRolloff { value: i32 },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FrontendSettingsRequest {
-    pub request: FrontendTuneRequest,
-    pub requested_settings: Vec<FrontendRequestedSetting>,
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum IsdbtKnownValue {
