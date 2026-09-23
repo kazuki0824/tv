@@ -130,6 +130,23 @@ jobs:
       - name: Packageのunit testsを実行
         run: cargo test -p "${{ matrix.package }}" --lib --locked
 
+  worker-handle-loom:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: tuner_hal2/host_ci/worker_handle_loom
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Worker完了公開と結果回収のLoom試験
+        env:
+          RUSTFLAGS: "--cfg loom"
+        run: |
+          cargo generate-lockfile
+          cargo test --locked
+
   demux-record-fmq:
     runs-on: ubuntu-latest
     timeout-minutes: 10
