@@ -12,5 +12,6 @@ members = [
     "lnb",
     "packet_path",
     "resource_ledger",
+    "service_runtime",
 ]
 resolver = "2"

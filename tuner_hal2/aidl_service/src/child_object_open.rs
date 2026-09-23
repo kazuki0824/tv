@@ -5,11 +5,11 @@ use android_hardware_tv_tuner::aidl::android::hardware::tv::tuner::{
     IFilterCallback::IFilterCallback,
 };
 use binder::{BinderFeatures, Result as BinderResult, Strong};
-use maleicacid_tuner_hal2_binder_adapter::{
-    AidlApi, AidlMethodCall, OpenDvrRequest, RuntimeExecutableRequest,
-};
 use maleicacid_tuner_hal2_common::{compose_primary_cleanup_failure, HalError, HalInternalKind};
 use maleicacid_tuner_hal2_demux::config::OpenFilterRequest;
+use maleicacid_tuner_hal2_domain_request::{
+    AidlApi, AidlMethodCall, OpenDvrRequest, RuntimeExecutableRequest,
+};
 use maleicacid_tuner_hal2_service_runtime::{ObjectMethodUseCase, ObjectMethodUseCaseBuildError};
 
 use crate::dvr_object::DvrAidlObject;

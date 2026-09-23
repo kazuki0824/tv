@@ -712,7 +712,7 @@ impl ITuner for TunerAidlService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maleicacid_tuner_hal2_binder_adapter::{DvrOpenKind, OpenDvrRequest};
+    use maleicacid_tuner_hal2_domain_request::{DvrOpenKind, OpenDvrRequest};
     use maleicacid_tuner_hal2_service_runtime::{ObjectMethodUseCase, RuntimeOwnerRelation};
 
     #[test]
