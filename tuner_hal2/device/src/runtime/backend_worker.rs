@@ -1833,7 +1833,7 @@ mod tests {
             Err(failure)
         })
         .unwrap();
-        let failure = ticket.wait().unwrap().err().expect("submit must fail");
+        let failure = ticket.wait().unwrap().expect_err("submit must fail");
         assert_eq!(failure, expected);
     }
 
