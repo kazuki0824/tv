@@ -2573,6 +2573,9 @@ fn prepare_start_streaming_and_activate_live_pump_for_initial_lock<T>(
 ) -> Result<FrontendLockWaitOutcome, HalError> {
     if outcome == FrontendLockWaitOutcome::Locked {
         *live_pump = prepare_live_pump()?;
+        let Some(prepared_live_pump) = live_pump.as_mut() else {
+            return Ok(outcome);
+        };
         if cancel_requested() {
             return Ok(FrontendLockWaitOutcome::Cancelled);
         }
@@ -2580,9 +2583,7 @@ fn prepare_start_streaming_and_activate_live_pump_for_initial_lock<T>(
         if cancel_requested() {
             return Ok(FrontendLockWaitOutcome::Cancelled);
         }
-        if let Some(live_pump) = live_pump.as_mut() {
-            activate_live_pump(live_pump)?;
-        }
+        activate_live_pump(prepared_live_pump)?;
     }
     Ok(outcome)
 }
@@ -2706,6 +2707,75 @@ mod frontend_readback_tests {
         assert_eq!(outcome, FrontendLockWaitOutcome::Locked);
         assert_eq!(*order.borrow(), ["準備", "開始", "有効化"]);
         assert_eq!(live_pump, Some(()));
+    }
+
+    #[test]
+    fn locked_without_consumer_does_not_start_streaming() {
+        let outcome =
+            frontend_lock_terminal_outcome(FrontendLockQualification::Locked, false).unwrap();
+        let started = std::cell::Cell::new(0_u32);
+        let mut live_pump: Option<()> = None;
+        let outcome = prepare_start_streaming_and_activate_live_pump_for_initial_lock(
+            outcome,
+            &mut live_pump,
+            || Ok(None),
+            || false,
+            || {
+                started.set(started.get() + 1);
+                Ok(())
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(outcome, FrontendLockWaitOutcome::Locked);
+        assert_eq!(started.get(), 0);
+        assert_eq!(live_pump, None);
+    }
+
+    #[test]
+    fn late_bound_consumer_uses_prepare_start_activate_order() {
+        let outcome =
+            frontend_lock_terminal_outcome(FrontendLockQualification::Locked, false).unwrap();
+        let order = std::cell::RefCell::new(Vec::new());
+        let mut live_pump = None;
+        let first = prepare_start_streaming_and_activate_live_pump_for_initial_lock(
+            outcome,
+            &mut live_pump,
+            || Ok(None),
+            || false,
+            || {
+                order.borrow_mut().push("開始");
+                Ok(())
+            },
+            |_| {
+                order.borrow_mut().push("有効化");
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(first, FrontendLockWaitOutcome::Locked);
+        assert!(order.borrow().is_empty());
+
+        let second = prepare_start_streaming_and_activate_live_pump_for_initial_lock(
+            outcome,
+            &mut live_pump,
+            || {
+                order.borrow_mut().push("準備");
+                Ok(Some(()))
+            },
+            || false,
+            || {
+                order.borrow_mut().push("開始");
+                Ok(())
+            },
+            |_| {
+                order.borrow_mut().push("有効化");
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(second, FrontendLockWaitOutcome::Locked);
+        assert_eq!(*order.borrow(), ["準備", "開始", "有効化"]);
     }
 
     #[test]
@@ -3222,23 +3292,63 @@ fn run_frontend_backend_tune_session_worker(
                 FrontendLockTransition::None => {}
             }
             if live_pump.is_none() {
-                let live_reader_descriptor = {
-                    let guard = lock_runtime(
-                        &runtime,
-                        "service runtime lock poisoned while checking frontend live pump readiness",
-                    )?;
-                    guard
-                        .query()
-                        .frontend_live_reader_descriptor_for_live_pump(frontend_id)?
-                };
-                if let Some(descriptor) = live_reader_descriptor {
-                    let reader = session.open_live_reader(&descriptor)?;
-                    live_pump = Some(start_frontend_demux_live_pump_from_reader(
-                        Arc::clone(&runtime),
-                        frontend_id,
-                        reader,
-                        descriptor,
-                    )?);
+                if backend == FrontendBackendKind::Px4CharDevice && !session.streaming_started() {
+                    let late_bind_outcome =
+                        prepare_start_streaming_and_activate_live_pump_for_initial_lock(
+                            if signal_state == FrontendSignalState::Locked {
+                                FrontendLockWaitOutcome::Locked
+                            } else {
+                                FrontendLockWaitOutcome::NoSignal
+                            },
+                            &mut live_pump,
+                            || {
+                                let live_reader_descriptor = {
+                                    let guard = lock_runtime(
+                                        &runtime,
+                                        "フロントエンドlive pump遅延結合確認中にservice runtimeのロックが汚染されました",
+                                    )?;
+                                    guard
+                                        .query()
+                                        .frontend_live_reader_descriptor_for_live_pump(frontend_id)?
+                                };
+                                let Some(descriptor) = live_reader_descriptor else {
+                                    return Ok(None);
+                                };
+                                let reader = session.open_live_reader(&descriptor)?;
+                                prepare_frontend_demux_live_pump_from_reader(
+                                    Arc::clone(&runtime),
+                                    frontend_id,
+                                    reader,
+                                    descriptor,
+                                )
+                                .map(Some)
+                            },
+                            || ctx.cancel_requested(),
+                            || session.start_streaming_after_lock(),
+                            |live_pump| live_pump.activate(),
+                        )?;
+                    if late_bind_outcome == FrontendLockWaitOutcome::Cancelled {
+                        break;
+                    }
+                } else {
+                    let live_reader_descriptor = {
+                        let guard = lock_runtime(
+                            &runtime,
+                            "service runtime lock poisoned while checking frontend live pump readiness",
+                        )?;
+                        guard
+                            .query()
+                            .frontend_live_reader_descriptor_for_live_pump(frontend_id)?
+                    };
+                    if let Some(descriptor) = live_reader_descriptor {
+                        let reader = session.open_live_reader(&descriptor)?;
+                        live_pump = Some(start_frontend_demux_live_pump_from_reader(
+                            Arc::clone(&runtime),
+                            frontend_id,
+                            reader,
+                            descriptor,
+                        )?);
+                    }
                 }
             }
             let completed_live_pump =
