@@ -90,9 +90,7 @@ impl FrontendDemuxRelationAuthority {
     const START_ACTIVE_BIT: u64 = 1;
 
     pub(crate) fn snapshot_epoch(&self) -> FrontendDemuxRelationEpoch {
-        FrontendDemuxRelationEpoch(
-            self.state.load(Ordering::Acquire) & !Self::START_ACTIVE_BIT,
-        )
+        FrontendDemuxRelationEpoch(self.state.load(Ordering::Acquire) & !Self::START_ACTIVE_BIT)
     }
 
     pub(crate) fn try_begin_start(
