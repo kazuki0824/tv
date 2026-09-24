@@ -515,11 +515,17 @@ pub fn start_frontend_demux_live_pump_from_reader(
 pub(crate) fn prepare_frontend_demux_live_pump_from_reader(
     runtime: Arc<Mutex<TunerServiceRuntime>>,
     frontend_id: i32,
+    caller: &maleicacid_tuner_hal2_device::FrontendWorkerContext,
     reader: Box<dyn Read + Send>,
     descriptor: maleicacid_tuner_hal2_device::FrontendLiveReaderDescriptor,
-) -> Result<FrontendLivePumpOwner, HalError> {
+) -> Result<Option<maleicacid_tuner_hal2_device::PreparedFrontendLivePump>, HalError> {
     let sink = frontend_demux_live_packet_sink(&runtime, frontend_id)?;
-    FrontendLivePumpOwner::start_prepared(descriptor, reader, sink)
+    maleicacid_tuner_hal2_device::PreparedFrontendLivePump::start(
+        descriptor,
+        reader,
+        sink,
+        caller.worker_context(),
+    )
 }
 
 /// サービス状態所有者に従属する読取り用診断参照。通常状態の変更権限を持たない。
@@ -1687,6 +1693,14 @@ impl TunerServiceRuntime {
 
     pub(crate) fn registry(&self) -> &RuntimeRegistry {
         &self.registry
+    }
+
+    pub(crate) fn try_begin_frontend_demux_start(
+        &mut self,
+        frontend_id: i32,
+    ) -> Result<Option<crate::registry::FrontendDemuxStartGuard>, HalError> {
+        self.registry
+            .try_begin_frontend_demux_start(crate::registry::FrontendRuntimeId(frontend_id))
     }
 
     pub(crate) fn registry_mut(&mut self) -> &mut RuntimeRegistry {
