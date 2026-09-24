@@ -3,6 +3,7 @@ use std::sync::MutexGuard;
 use std::sync::{mpsc, Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
+use crate::boot::prepare_frontend_demux_live_pump_from_reader;
 use crate::cleanup_execution::{
     CleanupExecutionDiagnosticSnapshot, CleanupExecutionReport, CleanupExecutionStepOutcome,
     SharedCleanupDiagnostics,
@@ -16,10 +17,9 @@ use crate::worker_runtime::{
 use crate::{
     frontend_ops::{FrontendOperationEvent, FrontendTuneScanTxn, FrontendWorkerTerminalEvent},
     object_lifecycle::{aidl_object_live, aidl_public_runtime_id_for_close_cleanup},
-    object_method_use_case::ObjectMethodExecutionToken, start_frontend_demux_live_pump_from_reader,
-    TunerServiceRuntime,
+    object_method_use_case::ObjectMethodExecutionToken,
+    start_frontend_demux_live_pump_from_reader, TunerServiceRuntime,
 };
-use crate::boot::prepare_frontend_demux_live_pump_from_reader;
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FirstErrorCollector, FrontendBackendKind, FrontendDevicePath,
     FrontendIsdbtPartialReceptionRequirement, FrontendScanMode, FrontendSystem,
