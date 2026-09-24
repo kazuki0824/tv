@@ -1112,7 +1112,10 @@ impl RuntimeRegistry {
         &mut self,
         prepared: PreparedDemuxFrontendBindingChange,
     ) -> Result<(), HalError> {
-        if self.demux_frontend_bindings.get(&prepared.demux_id).copied()
+        if self
+            .demux_frontend_bindings
+            .get(&prepared.demux_id)
+            .copied()
             != prepared.previous_frontend_id
         {
             return Err(HalError::invalid_state(
