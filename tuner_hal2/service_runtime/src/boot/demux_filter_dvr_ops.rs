@@ -484,9 +484,7 @@ impl TunerServiceRuntime {
                     )?;
                 } else {
                     Self::ensure_demux_object_live_for_relation_retry(
-                        &guard,
-                        object_id,
-                        generation,
+                        &guard, object_id, generation,
                     )?;
                 }
                 let demux_id = guard.public_runtime_id_for_object_method(
@@ -501,7 +499,8 @@ impl TunerServiceRuntime {
                 DemuxFrontendSourceTxnOutcome::Pending(wait_set) => {
                     if !wait_set.wait_until_start_idle(deadline)? {
                         return Err(
-                            crate::registry::RuntimeRegistry::frontend_demux_relation_pending_error(),
+                            crate::registry::RuntimeRegistry::frontend_demux_relation_pending_error(
+                            ),
                         );
                     }
                 }
@@ -1313,12 +1312,14 @@ mod frontend_relation_retry_tests {
                 crate::RuntimeObjectLifecycle::Closed,
             ))
             .unwrap();
-        assert!(TunerServiceRuntime::ensure_demux_object_live_for_relation_retry(
-            &runtime,
-            AidlObjectId(930_001),
-            AidlObjectGeneration(7),
-        )
-        .is_err());
+        assert!(
+            TunerServiceRuntime::ensure_demux_object_live_for_relation_retry(
+                &runtime,
+                AidlObjectId(930_001),
+                AidlObjectGeneration(7),
+            )
+            .is_err()
+        );
     }
 
     #[test]
