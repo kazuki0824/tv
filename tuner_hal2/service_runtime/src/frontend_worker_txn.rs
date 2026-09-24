@@ -1346,6 +1346,12 @@ fn record_frontend_cleanup_diagnostic_after_terminal(
 
 type BoundDemuxGenerationSnapshot = Vec<(crate::registry::DemuxRuntimeId, u64)>;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PreparedFrontendConsumerSnapshot {
+    demux_generations: BoundDemuxGenerationSnapshot,
+    relation_epoch: u64,
+}
+
 #[cfg(test)]
 fn share_demux_rollback_tokens(tokens: DemuxRollbackTokenList) -> SharedDemuxRollbackTokenList {
     Arc::new(Mutex::new(Some(tokens)))
@@ -2600,7 +2606,7 @@ fn live_reader_descriptor_with_bound_demux_snapshot(
     runtime: &SharedRuntime,
     frontend_id: i32,
     context: &'static str,
-) -> Result<Option<(FrontendLiveReaderDescriptor, BoundDemuxGenerationSnapshot)>, HalError> {
+) -> Result<Option<(FrontendLiveReaderDescriptor, PreparedFrontendConsumerSnapshot)>, HalError> {
     let guard = lock_runtime(runtime, context)?;
     let descriptor = guard
         .query()
@@ -2608,44 +2614,59 @@ fn live_reader_descriptor_with_bound_demux_snapshot(
     let Some(descriptor) = descriptor else {
         return Ok(None);
     };
-    let snapshot = current_bound_demux_generation_snapshot(&guard, frontend_id)?;
-    if snapshot.is_empty() {
+    let demux_generations = current_bound_demux_generation_snapshot(&guard, frontend_id)?;
+    if demux_generations.is_empty() {
         return Ok(None);
     }
-    Ok(Some((descriptor, snapshot)))
-}
-
-fn start_streaming_with_bound_demux_relation_fence(
-    runtime: &SharedRuntime,
-    frontend_id: i32,
-    expected: &BoundDemuxGenerationSnapshot,
-    start_streaming: impl FnOnce() -> Result<(), HalError>,
-) -> Result<bool, HalError> {
-    let guard = lock_runtime(
-        runtime,
-        "フロントエンドlive pump開始前relation fence取得中にservice runtimeのロックが汚染されました",
-    )?;
-    let relation_gate = guard
+    let authority = guard
         .registry()
-        .frontend_demux_relation_gate(crate::registry::FrontendRuntimeId(frontend_id))
+        .frontend_demux_relation_authority(crate::registry::FrontendRuntimeId(frontend_id))
         .ok_or_else(|| {
             HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "frontend demux relation gateがありません",
+                "frontend demux relation authorityがありません",
             )
         })?;
-    let relation_guard = relation_gate.lock().map_err(|_| {
-        HalError::internal(
-            HalInternalKind::InvariantViolation,
-            "frontend demux relation gateのロックが汚染されました",
-        )
-    })?;
-    if current_bound_demux_generation_snapshot(&guard, frontend_id)? != *expected {
+    Ok(Some((
+        descriptor,
+        PreparedFrontendConsumerSnapshot {
+            demux_generations,
+            relation_epoch: authority.snapshot_epoch(),
+        },
+    )))
+}
+
+fn start_streaming_with_bound_demux_relation_authority(
+    runtime: &SharedRuntime,
+    frontend_id: i32,
+    expected: &PreparedFrontendConsumerSnapshot,
+    start_streaming: impl FnOnce() -> Result<(), HalError>,
+) -> Result<bool, HalError> {
+    let authority = {
+        let guard = lock_runtime(
+            runtime,
+            "フロントエンドlive pump開始権限確認中にservice runtimeのロックが汚染されました",
+        )?;
+        if current_bound_demux_generation_snapshot(&guard, frontend_id)?
+            != expected.demux_generations
+        {
+            return Ok(false);
+        }
+        guard
+            .registry()
+            .frontend_demux_relation_authority(crate::registry::FrontendRuntimeId(frontend_id))
+            .ok_or_else(|| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "frontend demux relation authorityがありません",
+                )
+            })?
+    };
+    let Some(permit) = authority.try_begin_start(expected.relation_epoch) else {
         return Ok(false);
-    }
-    drop(guard);
+    };
     let result = start_streaming();
-    drop(relation_guard);
+    drop(permit);
     result.map(|_| true)
 }
 
@@ -2696,7 +2717,7 @@ fn start_px4_live_pump_after_late_bind<T>(
                     "prepared live pumpのrelation snapshotがありません",
                 )
             })?;
-            start_streaming_with_bound_demux_relation_fence(
+            start_streaming_with_bound_demux_relation_authority(
                 runtime,
                 frontend_id,
                 snapshot,
@@ -3321,7 +3342,7 @@ fn run_frontend_backend_tune_session_worker(
                         "prepared live pumpのrelation snapshotがありません",
                     )
                 })?;
-                start_streaming_with_bound_demux_relation_fence(
+                start_streaming_with_bound_demux_relation_authority(
                     &runtime,
                     frontend_id,
                     snapshot,
@@ -6011,6 +6032,111 @@ mod scan_contract_tests {
         assert_eq!(activates.get(), 0);
         assert_eq!(discards.get(), 1);
         assert_eq!(live_pump, None);
+    }
+
+    #[test]
+    fn production_start_authority_delays_demux_unregister_until_start_finishes() {
+        let frontend_id = 1_000_000;
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let demux_id = {
+            let mut service = runtime.lock().unwrap();
+            assert_eq!(
+                service.boot_from_probe_results([FrontendProbeOutcome::Available {
+                    id: FrontendRuntimeId(frontend_id),
+                    backend: FrontendBackendKind::Px4CharDevice,
+                    system: FrontendSystem::IsdbT,
+                    path: "/dev/px4video0".into(),
+                    lnb_profile: None,
+                    satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
+                    capability: FrontendCapabilitySnapshot {
+                        scalar: FrontendScalarCapability {
+                            min_frequency_hz: 110_642_857,
+                            max_frequency_hz: 767_642_857,
+                            min_symbol_rate: 0,
+                            max_symbol_rate: 0,
+                            acquire_range_hz: 0,
+                        },
+                        exclusive_group_id: 0x1000_0000,
+                        isdbt_segment: Some(crate::registry::IsdbtSegmentCapability {
+                            is_segment_auto: true,
+                            is_full_segment: true,
+                        }),
+                    },
+                }]),
+                ServiceBootOutcome::Ready,
+            );
+            let generation = service
+                .frontend_txn()
+                .prepare_frontend_worker_generation(frontend_id, FrontendWorkerKind::Tune)
+                .unwrap();
+            service
+                .frontend_txn()
+                .install_frontend_live_reader_descriptor_for_generation(
+                    frontend_id,
+                    FrontendWorkerKind::Tune,
+                    generation,
+                )
+                .unwrap();
+            let demux = service.allocate_demux_runtime().unwrap();
+            service
+                .set_demux_frontend_data_source(demux.id.0, frontend_id)
+                .unwrap();
+            demux.id.0
+        };
+
+        let (start_entered_tx, start_entered_rx) = mpsc::channel();
+        let (release_start_tx, release_start_rx) = mpsc::channel();
+        let start_runtime = Arc::clone(&runtime);
+        let start_thread = std::thread::spawn(move || {
+            let mut live_pump = None;
+            start_px4_live_pump_after_late_bind(
+                &start_runtime,
+                frontend_id,
+                FrontendBackendKind::Px4CharDevice,
+                FrontendSignalState::Locked,
+                false,
+                &mut live_pump,
+                |_descriptor| Ok(()),
+                || false,
+                |_| Ok(()),
+                || {
+                    start_entered_tx.send(()).unwrap();
+                    release_start_rx.recv().unwrap();
+                    Ok(())
+                },
+                |_| Ok(()),
+            )
+            .unwrap()
+        });
+
+        start_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+
+        let close_runtime = Arc::clone(&runtime);
+        let (close_done_tx, close_done_rx) = mpsc::channel();
+        let close_thread = std::thread::spawn(move || {
+            let removed = close_runtime
+                .lock()
+                .unwrap()
+                .unregister_demux_runtime(demux_id)
+                .unwrap()
+                .is_some();
+            close_done_tx.send(removed).unwrap();
+        });
+
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(close_done_rx.try_recv().is_err());
+
+        release_start_tx.send(()).unwrap();
+        assert_eq!(
+            start_thread.join().unwrap(),
+            Some(FrontendLockWaitOutcome::Locked)
+        );
+        assert!(close_done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap());
+        close_thread.join().unwrap();
     }
 
     #[test]
