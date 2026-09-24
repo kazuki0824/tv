@@ -1349,7 +1349,6 @@ type BoundDemuxGenerationSnapshot = Vec<(crate::registry::DemuxRuntimeId, u64)>;
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PreparedFrontendConsumerSnapshot {
     demux_generations: BoundDemuxGenerationSnapshot,
-    relation_epoch: crate::registry::FrontendDemuxRelationEpoch,
 }
 
 #[cfg(test)]
@@ -2569,6 +2568,7 @@ fn start_streaming_for_initial_lock(
     Ok(outcome)
 }
 
+#[cfg(test)]
 fn prepare_start_streaming_and_activate_live_pump_for_initial_lock<T>(
     outcome: FrontendLockWaitOutcome,
     live_pump: &mut Option<T>,
@@ -2624,118 +2624,100 @@ fn live_reader_descriptor_with_bound_demux_snapshot(
     if demux_generations.is_empty() {
         return Ok(None);
     }
-    let authority = guard
-        .registry()
-        .frontend_demux_relation_authority(crate::registry::FrontendRuntimeId(frontend_id))
-        .ok_or_else(|| {
-            HalError::invalid_state(
-                HalInvalidStateKind::InvalidLifecycle,
-                "フロントエンドdemux関係権限がありません",
-            )
-        })?;
     Ok(Some((
         descriptor,
-        PreparedFrontendConsumerSnapshot {
-            demux_generations,
-            relation_epoch: authority.snapshot_epoch(),
-        },
+        PreparedFrontendConsumerSnapshot { demux_generations },
     )))
 }
 
-fn start_streaming_with_bound_demux_relation_authority(
+fn try_begin_frontend_demux_streaming_start(
     runtime: &SharedRuntime,
     frontend_id: i32,
     expected: &PreparedFrontendConsumerSnapshot,
-    start_streaming: impl FnOnce() -> Result<(), HalError>,
-) -> Result<bool, HalError> {
-    let authority = {
-        let guard = lock_runtime(
-            runtime,
-            "フロントエンドlive pump開始権限確認中にservice_runtimeのロックが汚染されました",
-        )?;
-        if current_bound_demux_generation_snapshot(&guard, frontend_id)?
-            != expected.demux_generations
-        {
-            return Ok(false);
-        }
-        guard
-            .registry()
-            .frontend_demux_relation_authority(crate::registry::FrontendRuntimeId(frontend_id))
-            .ok_or_else(|| {
-                HalError::invalid_state(
-                    HalInvalidStateKind::InvalidLifecycle,
-                    "フロントエンドdemux関係権限がありません",
-                )
-            })?
-    };
-    let Some(permit) = authority.try_begin_start(expected.relation_epoch) else {
-        return Ok(false);
-    };
-    let result = start_streaming();
-    drop(permit);
-    result.map(|_| true)
-}
-
-fn start_px4_live_pump_after_late_bind<T>(
-    runtime: &SharedRuntime,
-    frontend_id: i32,
-    backend: FrontendBackendKind,
-    signal_state: FrontendSignalState,
-    streaming_started: bool,
-    live_pump: &mut Option<T>,
-    prepare_live_pump: impl FnOnce(FrontendLiveReaderDescriptor) -> Result<T, HalError>,
-    cancel_requested: impl Fn() -> bool,
-    discard_prepared_live_pump: impl FnOnce(T) -> Result<(), HalError>,
-    start_streaming: impl FnOnce() -> Result<(), HalError>,
-    activate_live_pump: impl FnOnce(&mut T) -> Result<(), HalError>,
-) -> Result<Option<FrontendLockWaitOutcome>, HalError> {
-    if backend != FrontendBackendKind::Px4CharDevice || streaming_started {
+) -> Result<Option<crate::registry::FrontendDemuxStartGuard>, HalError> {
+    let mut guard = lock_runtime(
+        runtime,
+        "フロントエンドlive pump開始権限確認中にservice_runtimeのロックが汚染されました",
+    )?;
+    if current_bound_demux_generation_snapshot(&guard, frontend_id)? != expected.demux_generations {
         return Ok(None);
     }
-    let outcome = if signal_state == FrontendSignalState::Locked {
-        FrontendLockWaitOutcome::Locked
-    } else {
-        FrontendLockWaitOutcome::NoSignal
-    };
-    let prepared_snapshot = std::cell::RefCell::new(None);
-    let outcome = prepare_start_streaming_and_activate_live_pump_for_initial_lock(
-        outcome,
-        live_pump,
-        || {
-            let prepared = live_reader_descriptor_with_bound_demux_snapshot(
-                runtime,
-                frontend_id,
-                "フロントエンドlive pump遅延結合確認中にservice_runtimeのロックが汚染されました",
-            )?;
-            let Some((descriptor, snapshot)) = prepared else {
-                return Ok(None);
-            };
-            *prepared_snapshot.borrow_mut() = Some(snapshot);
-            prepare_live_pump(descriptor).map(Some)
-        },
-        cancel_requested,
-        discard_prepared_live_pump,
-        || {
-            let snapshot = prepared_snapshot.borrow();
-            let snapshot = snapshot.as_ref().ok_or_else(|| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "準備済みlive pumpの関係スナップショットがありません",
-                )
-            })?;
-            start_streaming_with_bound_demux_relation_authority(
-                runtime,
-                frontend_id,
-                snapshot,
-                start_streaming,
-            )
-        },
-        activate_live_pump,
-    )?;
-    Ok(Some(outcome))
+    guard.try_begin_frontend_demux_start(frontend_id)
 }
 
-fn wait_for_frontend_qualified_lock(
+fn start_px4_live_pump_for_current_consumer(
+    runtime: &SharedRuntime,
+    ctx: &FrontendWorkerContext,
+    session: &FrontendBackendSession,
+    backend: FrontendBackendKind,
+    signal_state: FrontendSignalState,
+    frontend_id: i32,
+    live_pump: &mut Option<FrontendLivePumpOwner>,
+) -> Result<Option<FrontendLockWaitOutcome>, HalError> {
+    if backend != FrontendBackendKind::Px4CharDevice
+        || session.streaming_started()
+        || live_pump.is_some()
+    {
+        return Ok(None);
+    }
+    if signal_state != FrontendSignalState::Locked {
+        return Ok(Some(FrontendLockWaitOutcome::NoSignal));
+    }
+
+    let prepared = live_reader_descriptor_with_bound_demux_snapshot(
+        runtime,
+        frontend_id,
+        "フロントエンドlive pump準備中にservice_runtimeのロックが汚染されました",
+    )?;
+    let Some((descriptor, snapshot)) = prepared else {
+        return Ok(Some(FrontendLockWaitOutcome::Locked));
+    };
+    let reader = session.open_live_reader(&descriptor)?;
+    let prepared = prepare_frontend_demux_live_pump_from_reader(
+        Arc::clone(runtime),
+        frontend_id,
+        ctx,
+        reader,
+        descriptor,
+    )?;
+    let Some(prepared) = prepared else {
+        return Ok(Some(FrontendLockWaitOutcome::Cancelled));
+    };
+    if ctx.cancel_requested() {
+        prepared.join_after_stop()?;
+        return Ok(Some(FrontendLockWaitOutcome::Cancelled));
+    }
+
+    let Some(start_guard) =
+        try_begin_frontend_demux_streaming_start(runtime, frontend_id, &snapshot)?
+    else {
+        prepared.join_after_stop()?;
+        return Ok(Some(FrontendLockWaitOutcome::Locked));
+    };
+
+    let start_result = session.start_streaming_after_lock();
+    start_guard.release();
+    if let Err(primary) = start_result {
+        return match prepared.join_after_stop() {
+            Ok(_) => Err(primary),
+            Err(cleanup) => Err(compose_frontend_cleanup_error(
+                "取り込み開始失敗後の準備済みlive pump停止に失敗しました",
+                primary,
+                cleanup,
+            )),
+        };
+    }
+
+    if ctx.cancel_requested() {
+        prepared.join_after_stop()?;
+        return Ok(Some(FrontendLockWaitOutcome::Cancelled));
+    }
+
+    *live_pump = Some(prepared.activate());
+    Ok(Some(FrontendLockWaitOutcome::Locked))
+}
+
+fn wait_for_frontend_qualified_lock(fn wait_for_frontend_qualified_lock(
     runtime: &SharedRuntime,
     ctx: &FrontendWorkerContext,
     session: &FrontendBackendSession,
