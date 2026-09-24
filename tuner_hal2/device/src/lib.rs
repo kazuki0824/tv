@@ -14,7 +14,7 @@ pub use runtime::{
     FrontendBackendSession, FrontendBackendSessionKind, FrontendBackendSubmitFailure,
     FrontendBackendTunePlan, FrontendDiagnosticWriteFailure, FrontendLivePacketSink,
     FrontendLivePumpJoinOutcome, FrontendLivePumpOwner, FrontendLivePumpReport,
-    FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind, FrontendLnbVoltage,
+    FrontendLiveReaderDescriptor, PreparedFrontendLivePump, FrontendLiveReaderDescriptorKind, FrontendLnbVoltage,
     FrontendRuntime, FrontendRuntimeSnapshot, FrontendRuntimeState, FrontendScanPhase,
     FrontendScanSession, FrontendScanTerminalReason, FrontendSignalState, FrontendTerminalEvent,
     FrontendTerminalEventKind, FrontendTerminalEventReason,
