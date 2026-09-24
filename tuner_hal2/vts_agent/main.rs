@@ -525,10 +525,7 @@ impl DeviceSession {
                     .tune(&frontend_settings(&self.args))
                     .map_err(|error| format!("tuneに失敗しました: {error:?}"))?;
                 self.tuned = true;
-                wait_for_lock(
-                    &self.frontend,
-                    Duration::from_millis(self.args.timeout_ms),
-                )?;
+                wait_for_lock(&self.frontend, Duration::from_millis(self.args.timeout_ms))?;
             }
 
             let deadline = Instant::now() + Duration::from_millis(self.args.timeout_ms);
