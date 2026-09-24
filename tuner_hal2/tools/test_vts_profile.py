@@ -416,6 +416,14 @@ class VtsProfileTest(unittest.TestCase):
         product = (tuner_hal2 / "config/product_integration.mk").read_text()
         test_product = (tuner_hal2 / "config/vts_test_agent_integration.mk").read_text()
         self.assertIn("DemuxTsFilterType::SECTION", agent)
+        self.assertLess(
+            agent.index("demux.setFrontendDataSource(frontend_id)"),
+            agent.index("fn read_section"),
+        )
+        self.assertLess(
+            agent.index("filter\n                .start()"),
+            agent.index("self.frontend\n                    .tune("),
+        )
         self.assertIn('.get("op")', agent)
         self.assertNotIn("parse_pat", agent)
         self.assertNotIn("parse_pmt", agent)

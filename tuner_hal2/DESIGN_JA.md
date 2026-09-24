@@ -10,7 +10,7 @@
 
 ## VTS device agentの実装責務境界
 
-`maleicacid_tuner_hal2_vts_agent`はhost側VTS profile CLIからだけ使用するtest-onlyのdevice-side bridgeとする。通常productのTuner HAL runtime責務へ組み込まず、公開`android.hardware.tv.tuner.ITuner/default`へ接続して一時的な`IFrontend` / `IDemux` / `IFilter`を所有し、1回のtuneで`DEMOD_LOCK`を確認した後、hostから要求されたPID / tableのTS `SECTION` filterを開き、FMQから完成済みsection payloadを取得してhostへ返すところまでを責務とする。
+`maleicacid_tuner_hal2_vts_agent`はhost側VTS profile CLIからだけ使用するtest-onlyのdevice-side bridgeとする。通常productのTuner HAL runtime責務へ組み込まず、公開`android.hardware.tv.tuner.ITuner/default`へ接続して一時的な`IFrontend` / `IDemux` / `IFilter`を所有する。起動時はfrontend callback登録後にdemuxを開いて`setFrontendDataSource()`を完了し、最初のsection要求でTS `SECTION` filterをopen/configure/startしてから1回だけtuneし、`DEMOD_LOCK`確認後にFMQから完成済みsection payloadを取得してhostへ返す。以後のsection要求は同じtune generationを維持する。
 
 1つのfrequency候補は1つのagent processかつ1つのtune generationで解決し、そのsessionを保持したままPAT、PATから選択されたPMT、SDT actualの各sectionをhostへ供給する。agentはPAT/PMT/SDTの意味解析、service選択、elementary PID選択、`VtsEnvironmentProfile`の解釈、HAL capabilityの変更を行ってはならない。
 
