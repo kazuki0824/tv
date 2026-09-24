@@ -16,7 +16,7 @@ impl Authority {
     }
 
     fn snapshot_epoch(&self) -> usize {
-        authority.state.load(Ordering::Acquire) & !START_ACTIVE_BIT
+        self.state.load(Ordering::Acquire) & !START_ACTIVE_BIT
     }
 
     fn try_begin_start(authority: &Arc<Self>, expected_epoch: usize) -> Option<StartPermit> {
@@ -39,19 +39,17 @@ impl Authority {
 
     fn try_begin_mutation(&self) -> MutationAdmission {
         loop {
-            let current = authority.state.load(Ordering::Acquire);
+            let current = self.state.load(Ordering::Acquire);
             if current & START_ACTIVE_BIT != 0 {
                 return MutationAdmission::Pending;
             }
             let Some(next) = current.checked_add(2) else {
                 return MutationAdmission::Exhausted;
             };
-            match authority.state.compare_exchange(
-                current,
-                next,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
+            match self
+                .state
+                .compare_exchange(current, next, Ordering::AcqRel, Ordering::Acquire)
+            {
                 Ok(_) => return MutationAdmission::Advanced(next),
                 Err(actual) if actual & START_ACTIVE_BIT != 0 => {
                     return MutationAdmission::Pending;
