@@ -3,31 +3,44 @@ use loom::sync::Arc;
 
 const START_ACTIVE_BIT: usize = 1;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RelationEpoch(usize);
+
+impl RelationEpoch {
+    const fn raw(self) -> usize {
+        self.0
+    }
+}
+
 #[derive(Debug)]
 struct Authority {
     state: AtomicUsize,
 }
 
 impl Authority {
-    fn new(epoch: usize) -> Self {
+    fn new(epoch: RelationEpoch) -> Self {
         Self {
-            state: AtomicUsize::new(epoch),
+            state: AtomicUsize::new(epoch.raw()),
         }
     }
 
-    fn snapshot_epoch(&self) -> usize {
-        self.state.load(Ordering::Acquire) & !START_ACTIVE_BIT
+    fn snapshot_epoch(&self) -> RelationEpoch {
+        RelationEpoch(self.state.load(Ordering::Acquire) & !START_ACTIVE_BIT)
     }
 
-    fn try_begin_start(authority: &Arc<Self>, expected_epoch: usize) -> Option<StartPermit> {
-        if expected_epoch & START_ACTIVE_BIT != 0 {
+    fn try_begin_start(
+        authority: &Arc<Self>,
+        expected_epoch: RelationEpoch,
+    ) -> Option<StartPermit> {
+        let expected_raw = expected_epoch.raw();
+        if expected_raw & START_ACTIVE_BIT != 0 {
             return None;
         }
         authority
             .state
             .compare_exchange(
-                expected_epoch,
-                expected_epoch | START_ACTIVE_BIT,
+                expected_raw,
+                expected_raw | START_ACTIVE_BIT,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             )
@@ -51,7 +64,7 @@ impl Authority {
                 .state
                 .compare_exchange(current, next, Ordering::AcqRel, Ordering::Acquire)
             {
-                Ok(_) => return MutationAdmission::Advanced(next),
+                Ok(_) => return MutationAdmission::Advanced(RelationEpoch(next)),
                 Err(actual) if actual & START_ACTIVE_BIT != 0 => {
                     return MutationAdmission::Pending;
                 }
@@ -63,18 +76,20 @@ impl Authority {
 
 struct StartPermit {
     authority: Arc<Authority>,
-    epoch: usize,
+    epoch: RelationEpoch,
 }
 
 impl Drop for StartPermit {
     fn drop(&mut self) {
-        self.authority.state.store(self.epoch, Ordering::Release);
+        self.authority
+            .state
+            .store(self.epoch.raw(), Ordering::Release);
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MutationAdmission {
-    Advanced(usize),
+    Advanced(RelationEpoch),
     Pending,
     Exhausted,
 }
@@ -82,11 +97,11 @@ enum MutationAdmission {
 #[test]
 fn mutation_first_rejects_stale_start_epoch() {
     loom::model(|| {
-        let authority = Arc::new(Authority::new(0));
+        let authority = Arc::new(Authority::new(RelationEpoch(0)));
         let stale = authority.snapshot_epoch();
         assert_eq!(
             authority.try_begin_mutation(),
-            MutationAdmission::Advanced(2)
+            MutationAdmission::Advanced(RelationEpoch(2))
         );
         assert!(Authority::try_begin_start(&authority, stale).is_none());
     });
@@ -95,25 +110,25 @@ fn mutation_first_rejects_stale_start_epoch() {
 #[test]
 fn start_first_keeps_mutation_epoch_stable_until_permit_drop() {
     loom::model(|| {
-        let authority = Arc::new(Authority::new(0));
-        let permit = Authority::try_begin_start(&authority, 0).unwrap();
+        let authority = Arc::new(Authority::new(RelationEpoch(0)));
+        let permit = Authority::try_begin_start(&authority, RelationEpoch(0)).unwrap();
         assert_eq!(authority.try_begin_mutation(), MutationAdmission::Pending);
-        assert_eq!(authority.snapshot_epoch(), 0);
+        assert_eq!(authority.snapshot_epoch(), RelationEpoch(0));
         drop(permit);
-        assert_eq!(authority.snapshot_epoch(), 0);
+        assert_eq!(authority.snapshot_epoch(), RelationEpoch(0));
     });
 }
 
 #[test]
 fn mutation_progresses_after_start_permit_drop() {
     loom::model(|| {
-        let authority = Arc::new(Authority::new(0));
-        let permit = Authority::try_begin_start(&authority, 0).unwrap();
+        let authority = Arc::new(Authority::new(RelationEpoch(0)));
+        let permit = Authority::try_begin_start(&authority, RelationEpoch(0)).unwrap();
         assert_eq!(authority.try_begin_mutation(), MutationAdmission::Pending);
         drop(permit);
         assert_eq!(
             authority.try_begin_mutation(),
-            MutationAdmission::Advanced(2)
+            MutationAdmission::Advanced(RelationEpoch(2))
         );
     });
 }
@@ -121,7 +136,7 @@ fn mutation_progresses_after_start_permit_drop() {
 #[test]
 fn concurrent_mutations_do_not_lose_epoch_updates() {
     loom::model(|| {
-        let authority = Arc::new(Authority::new(0));
+        let authority = Arc::new(Authority::new(RelationEpoch(0)));
         let first_authority = Arc::clone(&authority);
         let first = loom::thread::spawn(move || {
             assert!(matches!(
@@ -138,14 +153,14 @@ fn concurrent_mutations_do_not_lose_epoch_updates() {
         });
         first.join().unwrap();
         second.join().unwrap();
-        assert_eq!(authority.snapshot_epoch(), 4);
+        assert_eq!(authority.snapshot_epoch(), RelationEpoch(4));
     });
 }
 
 #[test]
 fn epoch_exhaustion_does_not_wrap_or_reuse_old_epoch() {
     loom::model(|| {
-        let max_epoch = usize::MAX & !START_ACTIVE_BIT;
+        let max_epoch = RelationEpoch(usize::MAX & !START_ACTIVE_BIT);
         let authority = Authority::new(max_epoch);
         assert_eq!(authority.try_begin_mutation(), MutationAdmission::Exhausted);
         assert_eq!(authority.snapshot_epoch(), max_epoch);
