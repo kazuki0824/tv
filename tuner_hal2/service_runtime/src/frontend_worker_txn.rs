@@ -3309,7 +3309,9 @@ fn run_frontend_backend_tune_session_worker(
                                     )?;
                                     guard
                                         .query()
-                                        .frontend_live_reader_descriptor_for_live_pump(frontend_id)?
+                                        .frontend_live_reader_descriptor_for_live_pump(
+                                            frontend_id,
+                                        )?
                                 };
                                 let Some(descriptor) = live_reader_descriptor else {
                                     return Ok(None);
