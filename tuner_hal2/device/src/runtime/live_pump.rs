@@ -532,7 +532,7 @@ mod tests {
         let owner = prepare_for_test(Cursor::new(bytes), ChannelSink { packet_tx });
         assert!(packet_rx.try_recv().is_err());
 
-        let owner = owner.activate();
+        let _owner = owner.activate();
         assert_eq!(
             packet_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
             first
@@ -684,7 +684,6 @@ mod tests {
                 },
             )
             .unwrap(),
-            start_gate: None,
         };
         assert!(owner.join_after_stop().is_err());
     }
@@ -699,7 +698,6 @@ mod tests {
                 },
             )
             .unwrap(),
-            start_gate: None,
         };
         assert!(owner.join_after_stop().is_err());
     }
