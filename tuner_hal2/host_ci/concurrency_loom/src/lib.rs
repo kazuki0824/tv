@@ -302,3 +302,6 @@ mod lnb_registry_io_authority;
 mod queue_epoch_protocol;
 #[cfg(test)]
 mod worker_runtime;
+
+#[cfg(test)]
+mod frontend_demux_relation_authority;

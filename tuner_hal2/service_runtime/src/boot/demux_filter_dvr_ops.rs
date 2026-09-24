@@ -1,4 +1,5 @@
 use crate::boot::TunerServiceRuntime;
+use crate::object_lifecycle::aidl_object_live;
 use crate::object_method_use_case::ObjectMethodExecutionToken;
 use crate::registry::{
     DemuxRegistryEntry, DemuxRuntimeId, DvrRegistryEntry, FilterRegistryEntry, FrontendRuntimeId,
@@ -26,6 +27,11 @@ use maleicacid_tuner_hal2_domain_request::{
 pub(crate) struct DemuxFrontendSourceTxn {
     demux_id: DemuxRuntimeId,
     mutation: DemuxFrontendSourceMutation,
+}
+
+enum DemuxFrontendSourceTxnOutcome {
+    Committed(StreamBoundaryReport),
+    Pending,
 }
 
 enum DemuxFrontendSourceMutation {
@@ -62,6 +68,18 @@ impl DemuxFrontendSourceTxn {
         self,
         runtime: &mut TunerServiceRuntime,
     ) -> Result<StreamBoundaryReport, HalError> {
+        match self.try_execute(runtime)? {
+            DemuxFrontendSourceTxnOutcome::Committed(report) => Ok(report),
+            DemuxFrontendSourceTxnOutcome::Pending => {
+                Err(crate::registry::RuntimeRegistry::frontend_demux_relation_pending_error())
+            }
+        }
+    }
+
+    fn try_execute(
+        self,
+        runtime: &mut TunerServiceRuntime,
+    ) -> Result<DemuxFrontendSourceTxnOutcome, HalError> {
         let (next_frontend_id, reason) = match self.mutation {
             DemuxFrontendSourceMutation::Bind(next_frontend_id) => {
                 let Some(frontend_runtime) = runtime.registry.frontend_runtime(next_frontend_id)
@@ -103,11 +121,13 @@ impl DemuxFrontendSourceTxn {
                                 "demux runtime is missing",
                             )
                         })?;
-                    return Ok(StreamBoundaryReport {
-                        reason: PipelineBoundaryReason::TuneStart,
-                        reset: PipelineResetReport::default(),
-                        next_generation: DemuxStreamGeneration(generation),
-                    });
+                    return Ok(DemuxFrontendSourceTxnOutcome::Committed(
+                        StreamBoundaryReport {
+                            reason: PipelineBoundaryReason::TuneStart,
+                            reset: PipelineResetReport::default(),
+                            next_generation: DemuxStreamGeneration(generation),
+                        },
+                    ));
                 }
                 (Some(next_frontend_id), PipelineBoundaryReason::TuneStart)
             }
@@ -126,6 +146,13 @@ impl DemuxFrontendSourceTxn {
                 (None, reason)
             }
         };
+
+        if !runtime
+            .registry
+            .try_begin_demux_frontend_binding_change(self.demux_id, next_frontend_id)?
+        {
+            return Ok(DemuxFrontendSourceTxnOutcome::Pending);
+        }
 
         let prepared = runtime
             .registry
@@ -149,13 +176,10 @@ impl DemuxFrontendSourceTxn {
             })?
             .commit_stream_boundary_from_typed_request(prepared)
             .map_err(super::demux_runtime_error_to_hal)?;
-        match next_frontend_id {
-            Some(frontend_id) => runtime
-                .registry
-                .bind_demux_frontend(self.demux_id, frontend_id)?,
-            None => runtime.registry.unbind_demux_frontend(self.demux_id)?,
-        }
-        Ok(report)
+        runtime
+            .registry
+            .commit_demux_frontend_binding(self.demux_id, next_frontend_id);
+        Ok(DemuxFrontendSourceTxnOutcome::Committed(report))
     }
 }
 
@@ -408,6 +432,51 @@ impl TunerServiceRuntime {
         )?;
         self.set_demux_frontend_data_source(demux_id, frontend_id)
             .map(|_| ())
+    }
+
+    pub fn set_demux_frontend_data_source_for_object_shared(
+        runtime: std::sync::Arc<std::sync::Mutex<TunerServiceRuntime>>,
+        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
+        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
+        frontend_id: i32,
+        dispatch: ObjectMethodExecutionToken,
+    ) -> Result<(), HalError> {
+        let mut dispatch = Some(dispatch);
+        loop {
+            let outcome = {
+                let mut guard = TunerServiceRuntime::lock_shared(
+                    runtime.as_ref(),
+                    "demux frontend relation変更中にservice runtimeのロックが汚染されました",
+                )?;
+                if let Some(dispatch) = dispatch.take() {
+                    dispatch.consume_for_object(
+                        &mut guard,
+                        object_id,
+                        generation,
+                        maleicacid_tuner_hal2_domain_request::AidlObjectKind::Demux,
+                    )?;
+                } else {
+                    aidl_object_live(
+                        &guard,
+                        object_id,
+                        generation,
+                        maleicacid_tuner_hal2_domain_request::AidlObjectKind::Demux,
+                    )?;
+                }
+                let demux_id = guard.public_runtime_id_for_object_method(
+                    object_id,
+                    generation,
+                    maleicacid_tuner_hal2_domain_request::AidlObjectKind::Demux,
+                )?;
+                DemuxFrontendSourceTxn::new(demux_id, frontend_id).try_execute(&mut guard)?
+            };
+            match outcome {
+                DemuxFrontendSourceTxnOutcome::Committed(_) => return Ok(()),
+                DemuxFrontendSourceTxnOutcome::Pending => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+        }
     }
 
     pub fn configure_filter_runtime_for_object_with_current_open_type<F>(

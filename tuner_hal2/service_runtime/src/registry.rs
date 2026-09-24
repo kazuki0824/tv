@@ -103,12 +103,11 @@ impl FrontendDemuxRelationAuthority {
             })
     }
 
-    fn begin_relation_mutation(&self) -> Result<(), HalError> {
+    fn try_begin_relation_mutation(&self) -> Result<bool, HalError> {
         loop {
             let current = self.state.load(Ordering::Acquire);
             if current & Self::START_ACTIVE_BIT != 0 {
-                std::thread::yield_now();
-                continue;
+                return Ok(false);
             }
             let next = current.checked_add(2).ok_or_else(|| {
                 HalError::internal(
@@ -116,12 +115,15 @@ impl FrontendDemuxRelationAuthority {
                     "frontend demux relation世代が上限に達しました",
                 )
             })?;
-            if self
-                .state
-                .compare_exchange(current, next, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                return Ok(());
+            match self.state.compare_exchange(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(true),
+                Err(actual) if actual & Self::START_ACTIVE_BIT != 0 => return Ok(false),
+                Err(_) => continue,
             }
         }
     }
@@ -1065,10 +1067,10 @@ impl RuntimeRegistry {
         &mut self,
         id: DemuxRuntimeId,
     ) -> Result<Option<DemuxRegistryEntry>, HalError> {
-        if let Some(frontend_id) = self.demux_frontend_bindings.get(&id).copied() {
-            self.begin_frontend_demux_relation_mutation([frontend_id])?;
+        if !self.try_begin_demux_frontend_binding_change(id, None)? {
+            return Err(Self::frontend_demux_relation_pending_error());
         }
-        self.demux_frontend_bindings.remove(&id);
+        self.commit_demux_frontend_binding(id, None);
         self.demux_runtimes.remove(&id);
         Ok(self.demuxes.remove(&id))
     }
@@ -1090,10 +1092,10 @@ impl RuntimeRegistry {
             .cloned()
     }
 
-    fn begin_frontend_demux_relation_mutation(
+    pub(crate) fn try_begin_frontend_demux_relation_mutation(
         &self,
         frontend_ids: impl IntoIterator<Item = FrontendRuntimeId>,
-    ) -> Result<(), HalError> {
+    ) -> Result<bool, HalError> {
         let mut frontend_ids = frontend_ids.into_iter().collect::<Vec<_>>();
         frontend_ids.sort();
         frontend_ids.dedup();
@@ -1106,25 +1108,49 @@ impl RuntimeRegistry {
                         "frontend demux relation authorityがありません",
                     )
                 })?;
-            authority.begin_relation_mutation()?;
+            if !authority.try_begin_relation_mutation()? {
+                return Ok(false);
+            }
         }
-        Ok(())
+        Ok(true)
     }
 
-    pub fn bind_demux_frontend(
+    pub(crate) fn try_begin_demux_frontend_binding_change(
+        &self,
+        demux_id: DemuxRuntimeId,
+        next_frontend_id: Option<FrontendRuntimeId>,
+    ) -> Result<bool, HalError> {
+        let previous = self.demux_frontend_bindings.get(&demux_id).copied();
+        if previous == next_frontend_id {
+            return Ok(true);
+        }
+        self.try_begin_frontend_demux_relation_mutation(
+            previous.into_iter().chain(next_frontend_id),
+        )
+    }
+
+    pub(crate) fn commit_demux_frontend_binding(
         &mut self,
         demux_id: DemuxRuntimeId,
-        frontend_id: FrontendRuntimeId,
-    ) -> Result<(), HalError> {
-        let previous = self.demux_frontend_bindings.get(&demux_id).copied();
-        if previous == Some(frontend_id) {
-            return Ok(());
+        next_frontend_id: Option<FrontendRuntimeId>,
+    ) {
+        match next_frontend_id {
+            Some(frontend_id) => {
+                self.demux_frontend_bindings.insert(demux_id, frontend_id);
+            }
+            None => {
+                self.demux_frontend_bindings.remove(&demux_id);
+            }
         }
-        self.begin_frontend_demux_relation_mutation(
-            previous.into_iter().chain(core::iter::once(frontend_id)),
-        )?;
-        self.demux_frontend_bindings.insert(demux_id, frontend_id);
-        Ok(())
+    }
+
+    pub(crate) fn frontend_demux_relation_pending_error() -> HalError {
+        HalError::Busy {
+            path: None,
+            detail: maleicacid_tuner_hal2_common::HalErrorDetail::new(
+                "frontend demux relation変更は取り込み開始完了待ちです",
+            ),
+        }
     }
 
     pub fn frontend_bound_to_demux(&self, demux_id: DemuxRuntimeId) -> Option<FrontendRuntimeId> {
