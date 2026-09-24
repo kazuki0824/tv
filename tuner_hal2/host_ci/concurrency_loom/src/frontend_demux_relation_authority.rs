@@ -2,6 +2,9 @@ use loom::sync::atomic::{AtomicUsize, Ordering};
 use loom::sync::Arc;
 
 const START_ACTIVE_BIT: usize = 1;
+const MUTATION_ACTIVE_BIT: usize = 2;
+const ACTIVE_MASK: usize = START_ACTIVE_BIT | MUTATION_ACTIVE_BIT;
+const EPOCH_STEP: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct RelationEpoch(usize);
@@ -25,7 +28,7 @@ impl Authority {
     }
 
     fn snapshot_epoch(&self) -> RelationEpoch {
-        RelationEpoch(self.state.load(Ordering::Acquire) & !START_ACTIVE_BIT)
+        RelationEpoch(self.state.load(Ordering::Acquire) & !ACTIVE_MASK)
     }
 
     fn try_begin_start(
@@ -33,9 +36,6 @@ impl Authority {
         expected_epoch: RelationEpoch,
     ) -> Option<StartPermit> {
         let expected_raw = expected_epoch.raw();
-        if expected_raw & START_ACTIVE_BIT != 0 {
-            return None;
-        }
         authority
             .state
             .compare_exchange(
@@ -51,23 +51,32 @@ impl Authority {
             })
     }
 
-    fn try_begin_mutation(&self) -> MutationAdmission {
+    fn try_reserve_mutation(
+        authority: &Arc<Self>,
+    ) -> Result<Option<MutationLease>, MutationAdmission> {
         loop {
-            let current = self.state.load(Ordering::Acquire);
-            if current & START_ACTIVE_BIT != 0 {
-                return MutationAdmission::Pending;
+            let current = authority.state.load(Ordering::Acquire);
+            if current & ACTIVE_MASK != 0 {
+                return Ok(None);
             }
-            let Some(next) = current.checked_add(2) else {
-                return MutationAdmission::Exhausted;
+            let Some(next) = current.checked_add(EPOCH_STEP) else {
+                return Err(MutationAdmission::Exhausted);
             };
-            match self
-                .state
-                .compare_exchange(current, next, Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => return MutationAdmission::Advanced(RelationEpoch(next)),
-                Err(actual) if actual & START_ACTIVE_BIT != 0 => {
-                    return MutationAdmission::Pending;
+            match authority.state.compare_exchange(
+                current,
+                current | MUTATION_ACTIVE_BIT,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Ok(Some(MutationLease {
+                        authority: Arc::clone(authority),
+                        epoch: RelationEpoch(current),
+                        next_epoch: RelationEpoch(next),
+                        active: true,
+                    }))
                 }
+                Err(actual) if actual & ACTIVE_MASK != 0 => return Ok(None),
                 Err(_) => loom::thread::yield_now(),
             }
         }
@@ -87,11 +96,50 @@ impl Drop for StartPermit {
     }
 }
 
+struct MutationLease {
+    authority: Arc<Authority>,
+    epoch: RelationEpoch,
+    next_epoch: RelationEpoch,
+    active: bool,
+}
+
+impl MutationLease {
+    fn commit(mut self) {
+        self.authority
+            .state
+            .store(self.next_epoch.raw(), Ordering::Release);
+        self.active = false;
+    }
+}
+
+impl Drop for MutationLease {
+    fn drop(&mut self) {
+        if self.active {
+            self.authority
+                .state
+                .store(self.epoch.raw(), Ordering::Release);
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MutationAdmission {
-    Advanced(RelationEpoch),
     Pending,
     Exhausted,
+}
+
+fn try_reserve_all(authorities: &[Arc<Authority>]) -> Result<Vec<MutationLease>, MutationAdmission> {
+    let mut leases = Vec::with_capacity(authorities.len());
+    for authority in authorities {
+        match Authority::try_reserve_mutation(authority)? {
+            Some(lease) => leases.push(lease),
+            None => {
+                drop(leases);
+                return Err(MutationAdmission::Pending);
+            }
+        }
+    }
+    Ok(leases)
 }
 
 #[test]
@@ -99,10 +147,10 @@ fn mutation_first_rejects_stale_start_epoch() {
     loom::model(|| {
         let authority = Arc::new(Authority::new(RelationEpoch(0)));
         let stale = authority.snapshot_epoch();
-        assert_eq!(
-            authority.try_begin_mutation(),
-            MutationAdmission::Advanced(RelationEpoch(2))
-        );
+        let leases = try_reserve_all(&[Arc::clone(&authority)]).unwrap();
+        for lease in leases {
+            lease.commit();
+        }
         assert!(Authority::try_begin_start(&authority, stale).is_none());
     });
 }
@@ -112,7 +160,10 @@ fn start_first_keeps_mutation_epoch_stable_until_permit_drop() {
     loom::model(|| {
         let authority = Arc::new(Authority::new(RelationEpoch(0)));
         let permit = Authority::try_begin_start(&authority, RelationEpoch(0)).unwrap();
-        assert_eq!(authority.try_begin_mutation(), MutationAdmission::Pending);
+        assert_eq!(
+            try_reserve_all(&[Arc::clone(&authority)]).unwrap_err(),
+            MutationAdmission::Pending
+        );
         assert_eq!(authority.snapshot_epoch(), RelationEpoch(0));
         drop(permit);
         assert_eq!(authority.snapshot_epoch(), RelationEpoch(0));
@@ -124,12 +175,16 @@ fn mutation_progresses_after_start_permit_drop() {
     loom::model(|| {
         let authority = Arc::new(Authority::new(RelationEpoch(0)));
         let permit = Authority::try_begin_start(&authority, RelationEpoch(0)).unwrap();
-        assert_eq!(authority.try_begin_mutation(), MutationAdmission::Pending);
-        drop(permit);
         assert_eq!(
-            authority.try_begin_mutation(),
-            MutationAdmission::Advanced(RelationEpoch(2))
+            try_reserve_all(&[Arc::clone(&authority)]).unwrap_err(),
+            MutationAdmission::Pending
         );
+        drop(permit);
+        let leases = try_reserve_all(&[Arc::clone(&authority)]).unwrap();
+        for lease in leases {
+            lease.commit();
+        }
+        assert_eq!(authority.snapshot_epoch(), RelationEpoch(EPOCH_STEP));
     });
 }
 
@@ -138,31 +193,80 @@ fn concurrent_mutations_do_not_lose_epoch_updates() {
     loom::model(|| {
         let authority = Arc::new(Authority::new(RelationEpoch(0)));
         let first_authority = Arc::clone(&authority);
-        let first = loom::thread::spawn(move || {
-            assert!(matches!(
-                first_authority.try_begin_mutation(),
-                MutationAdmission::Advanced(_)
-            ));
+        let first = loom::thread::spawn(move || loop {
+            match try_reserve_all(&[Arc::clone(&first_authority)]) {
+                Ok(leases) => {
+                    for lease in leases {
+                        lease.commit();
+                    }
+                    return;
+                }
+                Err(MutationAdmission::Pending) => loom::thread::yield_now(),
+                Err(MutationAdmission::Exhausted) => panic!("relation epoch exhausted"),
+            }
         });
         let second_authority = Arc::clone(&authority);
-        let second = loom::thread::spawn(move || {
-            assert!(matches!(
-                second_authority.try_begin_mutation(),
-                MutationAdmission::Advanced(_)
-            ));
+        let second = loom::thread::spawn(move || loop {
+            match try_reserve_all(&[Arc::clone(&second_authority)]) {
+                Ok(leases) => {
+                    for lease in leases {
+                        lease.commit();
+                    }
+                    return;
+                }
+                Err(MutationAdmission::Pending) => loom::thread::yield_now(),
+                Err(MutationAdmission::Exhausted) => panic!("relation epoch exhausted"),
+            }
         });
         first.join().unwrap();
         second.join().unwrap();
-        assert_eq!(authority.snapshot_epoch(), RelationEpoch(4));
+        assert_eq!(authority.snapshot_epoch(), RelationEpoch(EPOCH_STEP * 2));
+    });
+}
+
+#[test]
+fn multi_authority_pending_rolls_back_prior_reservation_without_epoch_drift() {
+    loom::model(|| {
+        let old_frontend = Arc::new(Authority::new(RelationEpoch(0)));
+        let new_frontend = Arc::new(Authority::new(RelationEpoch(0)));
+        let start = Authority::try_begin_start(&new_frontend, RelationEpoch(0)).unwrap();
+
+        for _ in 0..2 {
+            assert_eq!(
+                try_reserve_all(&[
+                    Arc::clone(&old_frontend),
+                    Arc::clone(&new_frontend),
+                ])
+                .unwrap_err(),
+                MutationAdmission::Pending
+            );
+            assert_eq!(old_frontend.snapshot_epoch(), RelationEpoch(0));
+            assert_eq!(new_frontend.snapshot_epoch(), RelationEpoch(0));
+        }
+
+        drop(start);
+        let leases = try_reserve_all(&[
+            Arc::clone(&old_frontend),
+            Arc::clone(&new_frontend),
+        ])
+        .unwrap();
+        for lease in leases {
+            lease.commit();
+        }
+        assert_eq!(old_frontend.snapshot_epoch(), RelationEpoch(EPOCH_STEP));
+        assert_eq!(new_frontend.snapshot_epoch(), RelationEpoch(EPOCH_STEP));
     });
 }
 
 #[test]
 fn epoch_exhaustion_does_not_wrap_or_reuse_old_epoch() {
     loom::model(|| {
-        let max_epoch = RelationEpoch(usize::MAX & !START_ACTIVE_BIT);
-        let authority = Authority::new(max_epoch);
-        assert_eq!(authority.try_begin_mutation(), MutationAdmission::Exhausted);
+        let max_epoch = RelationEpoch((usize::MAX & !ACTIVE_MASK) - (EPOCH_STEP - 1));
+        let authority = Arc::new(Authority::new(max_epoch));
+        assert_eq!(
+            Authority::try_reserve_mutation(&authority).unwrap_err(),
+            MutationAdmission::Exhausted
+        );
         assert_eq!(authority.snapshot_epoch(), max_epoch);
     });
 }

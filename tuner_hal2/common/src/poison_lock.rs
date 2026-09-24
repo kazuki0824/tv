@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Condvar, Mutex, MutexGuard};
+use std::sync::{Condvar, Mutex, MutexGuard, WaitTimeoutResult};
+use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeLockKind {
@@ -17,6 +18,7 @@ pub enum RuntimeLockKind {
     CallbackRuntimeSplitDiagnostics,
     FrontendCancelReason,
     SupervisorState,
+    FrontendDemuxRelationWait { frontend_id: i32 },
     DvrQueueEpoch { queue_identity: Option<u64> },
 }
 
@@ -59,6 +61,18 @@ impl<T> PoisonTrackedMutex<T> {
         guard: MutexGuard<'a, T>,
     ) -> Result<MutexGuard<'a, T>, LockPoisonDiagnostic> {
         condition.wait(guard).map_err(|error| {
+            drop(error);
+            self.record_poison()
+        })
+    }
+
+    pub fn wait_timeout<'a>(
+        &self,
+        condition: &Condvar,
+        guard: MutexGuard<'a, T>,
+        timeout: Duration,
+    ) -> Result<(MutexGuard<'a, T>, WaitTimeoutResult), LockPoisonDiagnostic> {
+        condition.wait_timeout(guard, timeout).map_err(|error| {
             drop(error);
             self.record_poison()
         })
