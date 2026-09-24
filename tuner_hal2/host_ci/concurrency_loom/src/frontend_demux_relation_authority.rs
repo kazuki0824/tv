@@ -205,7 +205,7 @@ fn concurrent_mutations_do_not_lose_epoch_updates() {
                     return;
                 }
                 Err(MutationAdmission::Pending) => loom::thread::yield_now(),
-                Err(MutationAdmission::Exhausted) => panic!("relation epoch exhausted"),
+                Err(MutationAdmission::Exhausted) => panic!("関係世代が上限に達しました"),
             }
         });
         let second_authority = Arc::clone(&authority);
@@ -218,7 +218,7 @@ fn concurrent_mutations_do_not_lose_epoch_updates() {
                     return;
                 }
                 Err(MutationAdmission::Pending) => loom::thread::yield_now(),
-                Err(MutationAdmission::Exhausted) => panic!("relation epoch exhausted"),
+                Err(MutationAdmission::Exhausted) => panic!("関係世代が上限に達しました"),
             }
         });
         first.join().unwrap();

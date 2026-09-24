@@ -6,7 +6,8 @@
 use super::reader::{FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind};
 use maleicacid_tuner_hal2_control_core::WorkerContext;
 use std::io::{self, Read};
-use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use maleicacid_tuner_hal2_common::{
@@ -77,7 +78,7 @@ impl core::fmt::Debug for FrontendLivePumpOwner {
 
 pub struct FrontendLivePumpOwner {
     thread_result: ThreadResultOwner<FrontendLivePumpReport>,
-    start_gate: Option<SyncSender<()>>,
+    start_gate: Option<Arc<AtomicBool>>,
 }
 
 impl FrontendLivePumpOwner {
@@ -102,7 +103,8 @@ impl FrontendLivePumpOwner {
         mut sink: Box<dyn FrontendLivePacketSink>,
     ) -> Result<Self, HalError> {
         let (ready_tx, ready_rx) = mpsc::sync_channel(0);
-        let (start_tx, start_rx) = mpsc::sync_channel(0);
+        let start_gate = Arc::new(AtomicBool::new(false));
+        let worker_start_gate = Arc::clone(&start_gate);
         let thread_result =
             ThreadResultOwner::start_controlled("maleicacid-frontend-live-pump", move |control| {
                 ready_tx.send(()).map_err(|_| {
@@ -118,16 +120,10 @@ impl FrontendLivePumpOwner {
                             ..FrontendLivePumpReport::default()
                         });
                     }
-                    match start_rx.recv_timeout(Duration::from_millis(20)) {
-                        Ok(()) => break,
-                        Err(RecvTimeoutError::Timeout) => continue,
-                        Err(RecvTimeoutError::Disconnected) => {
-                            return Err(HalError::internal(
-                                HalInternalKind::InvariantViolation,
-                                "ライブTSポンプの開始待ち解除元が失われました",
-                            ))
-                        }
+                    if worker_start_gate.load(Ordering::Acquire) {
+                        break;
                     }
+                    control.wait_until(None);
                 }
                 run_frontend_live_pump(&mut reader, &mut sink, &control, &descriptor)
             })?;
@@ -139,7 +135,7 @@ impl FrontendLivePumpOwner {
         })?;
         Ok(Self {
             thread_result,
-            start_gate: Some(start_tx),
+            start_gate: Some(start_gate),
         })
     }
 
@@ -150,12 +146,9 @@ impl FrontendLivePumpOwner {
                 "ライブTSポンプの開始待ちは既に解除されています",
             )
         })?;
-        start_gate.send(()).map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "ライブTSポンプの開始待ち解除に失敗しました",
-            )
-        })
+        start_gate.store(true, Ordering::Release);
+        self.thread_result.wake();
+        Ok(())
     }
 
     pub fn request_stop(&self) {

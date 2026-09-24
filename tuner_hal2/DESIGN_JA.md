@@ -76,6 +76,8 @@ PX4 ISDB-Tの`PTX_SET_CHANNEL EAGAIN`後の公開意味、終端期限、`LOCKED
 
 PX4のlive選局はbound demuxが存在する場合だけ`service_runtime/src/frontend_worker_txn.rs`でlive readerを先に派生させ、`device/src/runtime/live_pump.rs::FrontendLivePumpOwner::start_prepared()`によりpump threadを開始待ちへ到達させる。bound demuxがない場合はprepared pumpを作らず正常なfrontend単独選局と`LOCKED`通知を維持し、`PTX_START_STREAMING`も実行しない。後からdemuxが結合された場合は同じfrontend workerがcurrent lockを確認したうえで同じprepare / START / activate入口を使用する。Linux DVBにはこの準備経路を適用しない。通常成功のPX4選局も`BackendTuneOps::defer_streaming_start_until_lock()`でSTARTをworkerへ延期し、prepared pumpが存在する場合だけ`PTX_START_STREAMING`を実行して`FrontendLivePumpOwner::activate()`でread loopを解放する。prepared pumpはTSを保持する第二queueではなく、既存reader/sinkを開始前に生成して待機させるだけとする。prepared pump準備後かつSTART直前にworker取消しを再確認し、取消し済みならSTARTせず既存worker cleanupへ渡す。prepared時にbound demuxのID・stream generation・relation epochをsnapshotする。START時はRuntimeRegistryのfrontend demux relation authorityへsnapshot epochを一回性権限としてCASし、relation変更が先に確定済みならprepared pumpを停止回収してSTARTしない。権限確定後はruntime lockその他のmutexを解放してからPTX_START_STREAMINGを実行し、ioctl完了直後に権限を解放する。relation mutation側はruntime lock内でSTART完了を待たず、START権限実行中ならtyped pendingを即返す。公開`setFrontendDataSource()`は待機・polling・専用deadlineを持たず、このpendingを既存`HalError::Busy`へ写像して同期呼出しを終了する。Demux close/drop-leakは同じpendingを既存cleanup retryへ接続する。複数frontendを跨ぐrelation変更は各authorityへmutation予約を行い、全件予約できた場合だけprepareへ進み、途中Pendingまたはpre-commit失敗では予約tokenのDropで全epochを元へ戻す。composite commit成功時だけ全epochを進めるため、外部I/O中にowner lockを保持せずSTARTとrelation mutationの前後関係を一意にする。START成功後かつactivate直前にも取消しを再確認し、この判定をactivate可否の線形化点とする。この判定で取消し済みならpumpをactivateせず、開始済みcaptureとprepared pumpを既存session / worker cleanupへ渡す。この判定より後に到着した取消しはactivate後の通常worker取消しとして同じ既存cleanupへ接続する。driver ioctl内部の残差は#135を参照する。
 
+`FrontendDemuxRelationAuthority` は、既存relation assignmentの第二正本ではなく、PX4のSTART外部I/OとDemux-Frontend relation mutationの順序だけを確定する分類Aの従属同期ownerとする。assignmentの正本は`RuntimeRegistry::demux_frontend_bindings`のまま維持し、同authorityへassignment、stream generation、worker lifecycleを複製しない。既存Aの`SourceBoundaryTxn`はFilter source relation、`StreamBoundaryTxn`はstream boundary、`WorkerRuntime`はworker lifecycleを所有するため、このSTART/assignment競合を吸収させると各正本の責務を拡張する。`RuntimeRegistry` lockを`PTX_START_STREAMING`中に保持する方式も、外部I/O中にowner lockを保持しない取得規則に反する。そのため、frontendごとの単一`AtomicU64`と一回性permit/leaseだけを追加する現在の形を最小の同期境界とする。
+
 ### px4 TMCC TSID list device-adaptation境界
 
 px4固有のTMCC TSID readbackは「機器適合」責務に閉じる。ABI mirrorの実装anchorは `device/src/px4/abi.rs::PtxTmccTsidList` / `PTX_GET_TMCC_TSID_LIST`、raw resultのshape検証と `EAGAIN` のtyped pending化は `device/src/px4/tmcc_tsid.rs`、exclusive device-open resourceを再利用するread entryは `device/src/runtime/backend_worker.rs::FrontendBackendSession::observe_tmcc_tsid_list()` とする。公開値、readiness、scan callbackの規範意味は `../TUNER_HAL_DESIGN_JA.md` を正とし、本節で再定義しない。
@@ -145,7 +147,7 @@ lifecycle/owner/generation検証、引数検証との優先順位、再検証、
 | descrambler PID | `DescramblerPidTxn` | `addPid()` / `removePid()` callerが別のPID mutation ownerを持たない |
 | descrambler session cleanup | `DescramblerSessionCleanupTxn` | close/invalidate callerがPID、key、pool台帳を直接変更しない |
 | Filter source relation | `SourceBoundaryTxn` | filter wrapperまたはAPI別use-caseが接続graphを直接変更しない |
-| Demux frontend source relation | `DemuxFrontendSourceTxn` | `IDemux.setFrontendDataSource()` callerがrelation ownerを迂回しない |
+| Demux frontend source relation | `RuntimeRegistry::demux_frontend_bindings` をassignment正本とし、`FrontendDemuxRelationAuthority`をPX4 STARTとrelation mutationの順序付けにだけ従属させる。調停手順は`DemuxFrontendSourceTxn` | `IDemux.setFrontendDataSource()` callerがrelation ownerを迂回しない |
 | stream boundary | `StreamBoundaryTxn` | relation、queue、A/V sync、PCR、callback、descramblerの各ownerを迂回しない |
 | `PacketPipeline` | `PacketPipeline` | 通常のパケット入力・解析・フィルタ振分けを`StreamBoundaryTxn`へ吸収せず、別の正規パケット処理所有者を設けない |
 | `FrontendTuneScanTxn` | フロントエンド選局・走査の手順所有者 | ワーカー、下位実装接続層、コールバック層がフロントエンド所有者を迂回しない |
@@ -214,6 +216,7 @@ A/B/Cの分類と`Txn` / `UseCase` / `Context`の命名判定は別である。B
 | `DescramblerSessionCleanupTxn` | `service_runtime/src/boot/descrambler_txn.rs::DescramblerSessionCleanupTxn<'a>`。`service_runtime/src/descrambler_session.rs::DescramblerSessionCleanupTxn<'a, KeyTable>`と`service_runtime/src/descrambler_key_table.rs`はatomic primitiveとして従属させる | `TunerServiceRuntime::descrambler_session_cleanup_txn()`から`DescramblerSessionCleanupTxn::{unregister_runtime, cleanup_for_demux_owner_loss}`へ接続するclose / Demux無効化入口 | AIDL層またはデスクランブラ実装からPID・鍵・プール台帳を直接変更、通常のPID・鍵変更所有者へ後片付け責務を統合する |
 | `SourceBoundaryTxn` | `demux/src/runtime/source_boundary.rs::SourceBoundaryTxn` | `demux/src/runtime/source_boundary.rs::{apply_filter_source_boundary_change, connect_filter_source_boundary_change}`へ接続するFilter source use-case、source Filter close/unlink接続 | filter wrapper/cleanup callerによるgraph直接変更、demux/frontend ownerとの統合 |
 | `DemuxFrontendSourceTxn` | `service_runtime/src/boot/demux_filter_dvr_ops.rs::DemuxFrontendSourceTxn`。frontend bind前のStarted Playback DVR排他検査も同ownerで行う | `IDemux.setFrontendDataSource()` object use-case、Frontend/Demux close接続。逆向きのPlayback DVR start前検査は`service_runtime/src/boot/child_open_context.rs::transact_start_dvr_runtime()` | cleanup callerによるrelation直接編集、`SourceBoundaryTxn`への統合、frontend入力とPlayback入力の同時active化 |
+| `FrontendDemuxRelationAuthority` | `service_runtime/src/registry.rs::{FrontendDemuxRelationAuthority, FrontendDemuxStartPermit, FrontendDemuxRelationMutationLease}`。`RuntimeRegistry::demux_frontend_bindings` のassignment正本へ従属する同期metadataであり、relation assignment、stream generation、worker lifecycleを所有しない | PX4 START直前の`try_begin_start()`と、`DemuxFrontendSourceTxn`経由のrelation mutation予約。frontend workerはsnapshot epochからSTART permitだけを取得する | relation assignmentの複製、`SourceBoundaryTxn` / `StreamBoundaryTxn` / `WorkerRuntime`の責務吸収、PX4 START以外への汎用lock化 |
 | `StreamBoundaryTxn` | `demux/src/runtime/generation_boundary.rs::StreamBoundaryTxn` | `service_runtime/src/boot/packet_ops.rs`の型付き境界処理入口 | 正規状態所有型の恒久別名または第二の正規所有者を残すこと、関係・キュー・A/V同期・PCR・コールバック・デスクランブラ各所有者の直接変更 |
 | `PacketPipeline` | `demux/src/parser/packet_pipeline.rs::PacketPipeline` | `service_runtime/src/boot/packet_ops.rs`の型付きパケット入力処理入口 | `StreamBoundaryTxn`への通常パケット処理吸収、AIDL・下位実装・Filterコールバックからの`PacketPipeline`直接変更、第二の正規パケット処理所有者または正規手順所有者の追加 |
 | `RecordDvrFilterRelationTxn` | `service_runtime/src/boot/demux_filter_dvr_ops.rs::RecordDvrFilterRelationTxn` | Record DVR `attachFilter()` / `detachFilter()`、Filter/DVR close、demux cleanup接続 | object側shadow relationの直接変更 |
@@ -289,7 +292,7 @@ AIDL/Binder等の外部API・実行基盤が、境界に現れる型へ`Send` / 
 |---:|---|:---:|---|---|---|
 | 1 | `ObjectCloseTxn` | A | public close / owner loss / Drop / shutdown / reaperによる同一object変更をowner内で直列化する | lifecycle generation + 一回性 `CloseCleanupAuthority` | — |
 | 2 | `SourceBoundaryTxn` | A | set / unlink / closeによるrelation変更をowner内で直列化する | relation generation + prepared relation mutation | — |
-| 3 | `DemuxFrontendSourceTxn` | B | B共有lockを持たず、relation ownerと`StreamBoundaryTxn`の正規同期入口を使う | 各Aが発行するprepared mutationを消費し、独自generationを発行しない | 通常制御 |
+| 3 | `DemuxFrontendSourceTxn` | B | B共有lockを持たず、`FrontendDemuxRelationAuthority`と`StreamBoundaryTxn`の正規同期入口を使う | `FrontendDemuxRelationAuthority`と各Aが発行するprepared mutationを消費し、独自generationを発行しない | 通常制御 |
 | 4 | `StreamBoundaryTxn` | A | boundary prepare / commitとsteady-state ownerへのdispatchをowner内で整合させる | `stream_boundary_generation` + 一回性 `PreparedStreamBoundary` | — |
 | 5 | `CallbackRegistrationUseCase` | B | B共有lockを持たず、callback store / runtime registry / domain ownerのprepared入口を使う | prepared artifact / registry mutation / domain mutationを一回だけ消費し、独自generationを発行しない | 通常制御 |
 | 6 | `FrontendLnbRelationTxn` | A | `setLnb()` / closeによるassignment mutationをowner内で直列化する | object generation + prepared assignment lease mutation + transaction authority | — |
@@ -315,8 +318,9 @@ AIDL/Binder等の外部API・実行基盤が、境界に現れる型へ`Send` / 
 | 26 | `PacketPipeline` | A | demuxごとの単一packet mutation ownerを基本とし、boundaryとの競合はtyped generation fence / commandで同期する。packetごとの外側mutexを標準形にしない | typed `TsInputOrigin`のgenerationとstream boundary generationを使用し、第二の同義generation namespaceを持たない | — |
 | 27 | `WatermarkClassifier` | C | なし | なし | — |
 | 28 | `LnbRegistry` | A | 同一物理LNB・共有レールに対する永続状態変更と物理I/O権限をowner内で直列化する | LNB state generation + prepared control mutation + 物理I/O authority | — |
+| 29 | `FrontendDemuxRelationAuthority` | A | PX4 STARTとDemux-Frontend relation mutationの競合だけを、`RuntimeRegistry` lockを外部I/O中に保持せずfrontend単位で直列化する。relation assignment自体は`RuntimeRegistry::demux_frontend_bindings`を正とする | relation epoch + 一回性`FrontendDemuxStartPermit` + `FrontendDemuxRelationMutationLease`。stream generation、worker generation、relation assignmentを持たない | — |
 
-A=13、B=13、C=2であり、`WorkerHandle`を第二のAまたは第二の論理契約として数えない。
+A=14、B=13、C=2であり、`WorkerHandle`を第二のAまたは第二の論理契約として数えない。
 
 ##### 所有者間排他制御の取得規則（有向非巡回図）
 

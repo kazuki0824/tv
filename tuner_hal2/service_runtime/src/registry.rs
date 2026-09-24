@@ -180,7 +180,7 @@ impl FrontendDemuxRelationAuthority {
             let next = current.checked_add(Self::EPOCH_STEP).ok_or_else(|| {
                 HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "frontend demux relation世代が上限に達しました",
+                    "フロントエンドdemux関係世代が上限に達しました",
                 )
             })?;
             match self.state.compare_exchange(
@@ -1186,7 +1186,7 @@ impl RuntimeRegistry {
                     .ok_or_else(|| {
                         HalError::invalid_state(
                             HalInvalidStateKind::InvalidLifecycle,
-                            "frontend demux relation authorityがありません",
+                            "フロントエンドdemux関係権限がありません",
                         )
                     })?,
             );
@@ -1242,7 +1242,7 @@ impl RuntimeRegistry {
         HalError::Busy {
             path: None,
             detail: maleicacid_tuner_hal2_common::HalErrorDetail::new(
-                "frontend demux relation変更は取り込み開始完了待ちです",
+                "フロントエンドdemux関係の変更は取り込み開始完了待ちです",
             ),
         }
     }

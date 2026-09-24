@@ -2630,7 +2630,7 @@ fn live_reader_descriptor_with_bound_demux_snapshot(
         .ok_or_else(|| {
             HalError::invalid_state(
                 HalInvalidStateKind::InvalidLifecycle,
-                "frontend demux relation authorityがありません",
+                "フロントエンドdemux関係権限がありません",
             )
         })?;
     Ok(Some((
@@ -2651,7 +2651,7 @@ fn start_streaming_with_bound_demux_relation_authority(
     let authority = {
         let guard = lock_runtime(
             runtime,
-            "フロントエンドlive pump開始権限確認中にservice runtimeのロックが汚染されました",
+            "フロントエンドライブポンプ開始権限確認中にservice_runtimeのロックが汚染されました",
         )?;
         if current_bound_demux_generation_snapshot(&guard, frontend_id)?
             != expected.demux_generations
@@ -2664,7 +2664,7 @@ fn start_streaming_with_bound_demux_relation_authority(
             .ok_or_else(|| {
                 HalError::invalid_state(
                     HalInvalidStateKind::InvalidLifecycle,
-                    "frontend demux relation authorityがありません",
+                    "フロントエンドdemux関係権限がありません",
                 )
             })?
     };
@@ -2705,7 +2705,7 @@ fn start_px4_live_pump_after_late_bind<T>(
             let prepared = live_reader_descriptor_with_bound_demux_snapshot(
                 runtime,
                 frontend_id,
-                "フロントエンドlive pump遅延結合確認中にservice runtimeのロックが汚染されました",
+                "フロントエンドライブポンプ遅延結合確認中にservice_runtimeのロックが汚染されました",
             )?;
             let Some((descriptor, snapshot)) = prepared else {
                 return Ok(None);
@@ -2720,7 +2720,7 @@ fn start_px4_live_pump_after_late_bind<T>(
             let snapshot = snapshot.as_ref().ok_or_else(|| {
                 HalError::internal(
                     HalInternalKind::InvariantViolation,
-                    "prepared live pumpのrelation snapshotがありません",
+                    "準備済みライブポンプの関係スナップショットがありません",
                 )
             })?;
             start_streaming_with_bound_demux_relation_authority(
@@ -3323,7 +3323,7 @@ fn run_frontend_backend_tune_session_worker(
                 let prepared = live_reader_descriptor_with_bound_demux_snapshot(
                     &runtime,
                     frontend_id,
-                    "フロントエンドlive pump準備中にservice runtimeのロックが汚染されました",
+                    "フロントエンドライブポンプ準備中にservice_runtimeのロックが汚染されました",
                 )?;
                 let Some((live_reader_descriptor, snapshot)) = prepared else {
                     return Ok(None);
@@ -3345,7 +3345,7 @@ fn run_frontend_backend_tune_session_worker(
                 let snapshot = snapshot.as_ref().ok_or_else(|| {
                     HalError::internal(
                         HalInternalKind::InvariantViolation,
-                        "prepared live pumpのrelation snapshotがありません",
+                        "準備済みライブポンプの関係スナップショットがありません",
                     )
                 })?;
                 start_streaming_with_bound_demux_relation_authority(
@@ -3487,7 +3487,7 @@ fn run_frontend_backend_tune_session_worker(
                     let live_reader_descriptor = {
                         let guard = lock_runtime(
                             &runtime,
-                            "フロントエンドlive pump準備確認中にservice runtimeのロックが汚染されました",
+                            "フロントエンドライブポンプ準備確認中にservice_runtimeのロックが汚染されました",
                         )?;
                         guard
                             .query()
