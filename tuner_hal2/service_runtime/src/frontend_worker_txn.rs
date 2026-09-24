@@ -1349,7 +1349,7 @@ type BoundDemuxGenerationSnapshot = Vec<(crate::registry::DemuxRuntimeId, u64)>;
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PreparedFrontendConsumerSnapshot {
     demux_generations: BoundDemuxGenerationSnapshot,
-    relation_epoch: u64,
+    relation_epoch: crate::registry::FrontendDemuxRelationEpoch,
 }
 
 #[cfg(test)]
