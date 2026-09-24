@@ -2567,12 +2567,19 @@ fn prepare_start_streaming_and_activate_live_pump_for_initial_lock<T>(
     outcome: FrontendLockWaitOutcome,
     live_pump: &mut Option<T>,
     prepare_live_pump: impl FnOnce() -> Result<Option<T>, HalError>,
+    cancel_requested: impl Fn() -> bool,
     start_streaming: impl FnOnce() -> Result<(), HalError>,
     activate_live_pump: impl FnOnce(&mut T) -> Result<(), HalError>,
 ) -> Result<FrontendLockWaitOutcome, HalError> {
     if outcome == FrontendLockWaitOutcome::Locked {
         *live_pump = prepare_live_pump()?;
+        if cancel_requested() {
+            return Ok(FrontendLockWaitOutcome::Cancelled);
+        }
         start_streaming()?;
+        if cancel_requested() {
+            return Ok(FrontendLockWaitOutcome::Cancelled);
+        }
         if let Some(live_pump) = live_pump.as_mut() {
             activate_live_pump(live_pump)?;
         }
@@ -2685,6 +2692,7 @@ mod frontend_readback_tests {
                 order.borrow_mut().push("準備");
                 Ok(Some(()))
             },
+            || false,
             || {
                 order.borrow_mut().push("開始");
                 Ok(())
@@ -2710,6 +2718,7 @@ mod frontend_readback_tests {
             outcome,
             &mut live_pump,
             || Ok(Some(())),
+            || false,
             || Err(HalError::Unsupported("取り込み開始失敗")),
             |_| {
                 activated.set(activated.get() + 1);
@@ -2718,6 +2727,65 @@ mod frontend_readback_tests {
         )
         .unwrap_err();
         assert!(matches!(error, HalError::Unsupported("取り込み開始失敗")));
+        assert_eq!(activated.get(), 0);
+        assert_eq!(live_pump, Some(()));
+    }
+
+    #[test]
+    fn cancel_during_prepare_skips_streaming_start_and_returns_pump_to_cleanup() {
+        let outcome =
+            frontend_lock_terminal_outcome(FrontendLockQualification::Locked, false).unwrap();
+        let cancelled = std::cell::Cell::new(false);
+        let started = std::cell::Cell::new(0_u32);
+        let activated = std::cell::Cell::new(0_u32);
+        let mut live_pump = None;
+        let outcome = prepare_start_streaming_and_activate_live_pump_for_initial_lock(
+            outcome,
+            &mut live_pump,
+            || {
+                cancelled.set(true);
+                Ok(Some(()))
+            },
+            || cancelled.get(),
+            || {
+                started.set(started.get() + 1);
+                Ok(())
+            },
+            |_| {
+                activated.set(activated.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(outcome, FrontendLockWaitOutcome::Cancelled);
+        assert_eq!(started.get(), 0);
+        assert_eq!(activated.get(), 0);
+        assert_eq!(live_pump, Some(()));
+    }
+
+    #[test]
+    fn cancel_after_streaming_start_skips_activation_and_returns_pump_to_cleanup() {
+        let outcome =
+            frontend_lock_terminal_outcome(FrontendLockQualification::Locked, false).unwrap();
+        let cancelled = std::cell::Cell::new(false);
+        let activated = std::cell::Cell::new(0_u32);
+        let mut live_pump = None;
+        let outcome = prepare_start_streaming_and_activate_live_pump_for_initial_lock(
+            outcome,
+            &mut live_pump,
+            || Ok(Some(())),
+            || cancelled.get(),
+            || {
+                cancelled.set(true);
+                Ok(())
+            },
+            |_| {
+                activated.set(activated.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(outcome, FrontendLockWaitOutcome::Cancelled);
         assert_eq!(activated.get(), 0);
         assert_eq!(live_pump, Some(()));
     }
@@ -3048,6 +3116,7 @@ fn run_frontend_backend_tune_session_worker(
                 )
                 .map(Some)
             },
+            || ctx.cancel_requested(),
             || session.start_streaming_after_lock(),
             |live_pump| live_pump.activate(),
         )? {
@@ -3075,7 +3144,7 @@ fn run_frontend_backend_tune_session_worker(
                 record_frontend_tune_no_signal(&runtime, frontend_id, generation, &tune_notifier)?;
                 return Ok(());
             }
-            FrontendLockWaitOutcome::Cancelled => return Ok(()),
+            FrontendLockWaitOutcome::Cancelled => {}
         }
         let mut lock_announced = true;
         while !ctx.cancel_requested() {
