@@ -58,6 +58,15 @@ pub struct DvrRuntimeId(pub i32);
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct DescramblerRuntimeId(pub i32);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FrontendDemuxRelationEpoch(u64);
+
+impl FrontendDemuxRelationEpoch {
+    const fn raw(self) -> u64 {
+        self.0
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct FrontendDemuxRelationAuthority {
     state: AtomicU64,
@@ -66,33 +75,38 @@ pub(crate) struct FrontendDemuxRelationAuthority {
 #[derive(Debug)]
 pub(crate) struct FrontendDemuxStartPermit {
     authority: Arc<FrontendDemuxRelationAuthority>,
-    epoch: u64,
+    epoch: FrontendDemuxRelationEpoch,
 }
 
 impl Drop for FrontendDemuxStartPermit {
     fn drop(&mut self) {
-        self.authority.state.store(self.epoch, Ordering::Release);
+        self.authority
+            .state
+            .store(self.epoch.raw(), Ordering::Release);
     }
 }
 
 impl FrontendDemuxRelationAuthority {
     const START_ACTIVE_BIT: u64 = 1;
 
-    pub(crate) fn snapshot_epoch(&self) -> u64 {
-        self.state.load(Ordering::Acquire) & !Self::START_ACTIVE_BIT
+    pub(crate) fn snapshot_epoch(&self) -> FrontendDemuxRelationEpoch {
+        FrontendDemuxRelationEpoch(
+            self.state.load(Ordering::Acquire) & !Self::START_ACTIVE_BIT,
+        )
     }
 
     pub(crate) fn try_begin_start(
         self: &Arc<Self>,
-        expected_epoch: u64,
+        expected_epoch: FrontendDemuxRelationEpoch,
     ) -> Option<FrontendDemuxStartPermit> {
-        if expected_epoch & Self::START_ACTIVE_BIT != 0 {
+        let expected_raw = expected_epoch.raw();
+        if expected_raw & Self::START_ACTIVE_BIT != 0 {
             return None;
         }
         self.state
             .compare_exchange(
-                expected_epoch,
-                expected_epoch | Self::START_ACTIVE_BIT,
+                expected_raw,
+                expected_raw | Self::START_ACTIVE_BIT,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             )
