@@ -62,6 +62,29 @@ impl DemuxFrontendSourceTxn {
         self,
         runtime: &mut TunerServiceRuntime,
     ) -> Result<StreamBoundaryReport, HalError> {
+        let relation_frontend_id = match self.mutation {
+            DemuxFrontendSourceMutation::Bind(frontend_id) => frontend_id,
+            DemuxFrontendSourceMutation::Unbind {
+                expected_frontend_id,
+                ..
+            } => expected_frontend_id,
+        };
+        let relation_gate = runtime
+            .registry
+            .frontend_demux_relation_gate(relation_frontend_id)
+            .ok_or_else(|| {
+                HalError::invalid_state(
+                    HalInvalidStateKind::InvalidLifecycle,
+                    "frontend demux relation gate is missing",
+                )
+            })?;
+        let _relation_guard = relation_gate.lock().map_err(|_| {
+            HalError::internal(
+                HalInternalKind::InvariantViolation,
+                "frontend demux relation gate lock poisoned",
+            )
+        })?;
+
         let (next_frontend_id, reason) = match self.mutation {
             DemuxFrontendSourceMutation::Bind(next_frontend_id) => {
                 let Some(frontend_runtime) = runtime.registry.frontend_runtime(next_frontend_id)

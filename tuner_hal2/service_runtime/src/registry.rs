@@ -830,6 +830,7 @@ pub enum RuntimeRegistryKind {
 pub struct RuntimeRegistry {
     frontends: BTreeMap<FrontendRuntimeId, FrontendRegistryEntry>,
     frontend_runtimes: BTreeMap<FrontendRuntimeId, FrontendRuntime>,
+    frontend_demux_relation_gates: BTreeMap<FrontendRuntimeId, Arc<Mutex<()>>>,
     demuxes: BTreeMap<DemuxRuntimeId, DemuxRegistryEntry>,
     demux_runtimes: BTreeMap<DemuxRuntimeId, DemuxRuntime>,
     demux_frontend_bindings: BTreeMap<DemuxRuntimeId, FrontendRuntimeId>,
@@ -858,6 +859,7 @@ impl Default for RuntimeRegistry {
         Self {
             frontends: BTreeMap::new(),
             frontend_runtimes: BTreeMap::new(),
+            frontend_demux_relation_gates: BTreeMap::new(),
             demuxes: BTreeMap::new(),
             demux_runtimes: BTreeMap::new(),
             demux_frontend_bindings: BTreeMap::new(),
@@ -908,6 +910,8 @@ impl RuntimeRegistry {
         }
         let runtime = FrontendRuntime::new(entry.id.0, entry.backend);
         self.frontend_runtimes.insert(entry.id, runtime);
+        self.frontend_demux_relation_gates
+            .insert(entry.id, Arc::new(Mutex::new(())));
         self.frontends.insert(entry.id, entry);
         Ok(())
     }
@@ -915,6 +919,7 @@ impl RuntimeRegistry {
     pub fn clear_frontends(&mut self) {
         self.frontends.clear();
         self.frontend_runtimes.clear();
+        self.frontend_demux_relation_gates.clear();
         self.frontend_lnb_bindings.clear();
         self.lnb_registry.clear_assignment_state();
     }
@@ -995,6 +1000,13 @@ impl RuntimeRegistry {
 
     pub fn demux_runtime_mut(&mut self, id: DemuxRuntimeId) -> Option<&mut DemuxRuntime> {
         self.demux_runtimes.get_mut(&id)
+    }
+
+    pub(crate) fn frontend_demux_relation_gate(
+        &self,
+        frontend_id: FrontendRuntimeId,
+    ) -> Option<Arc<Mutex<()>>> {
+        self.frontend_demux_relation_gates.get(&frontend_id).cloned()
     }
 
     pub fn bind_demux_frontend(

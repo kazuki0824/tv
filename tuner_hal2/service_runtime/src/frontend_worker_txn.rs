@@ -2568,9 +2568,8 @@ fn prepare_start_streaming_and_activate_live_pump_for_initial_lock<T>(
     live_pump: &mut Option<T>,
     prepare_live_pump: impl FnOnce() -> Result<Option<T>, HalError>,
     cancel_requested: impl Fn() -> bool,
-    prepared_consumer_is_current: impl FnOnce() -> Result<bool, HalError>,
     discard_prepared_live_pump: impl FnOnce(T) -> Result<(), HalError>,
-    start_streaming: impl FnOnce() -> Result<(), HalError>,
+    start_streaming_if_consumer_current: impl FnOnce() -> Result<bool, HalError>,
     activate_live_pump: impl FnOnce(&mut T) -> Result<(), HalError>,
 ) -> Result<FrontendLockWaitOutcome, HalError> {
     if outcome == FrontendLockWaitOutcome::Locked {
@@ -2581,13 +2580,12 @@ fn prepare_start_streaming_and_activate_live_pump_for_initial_lock<T>(
         if cancel_requested() {
             return Ok(FrontendLockWaitOutcome::Cancelled);
         }
-        if !prepared_consumer_is_current()? {
+        if !start_streaming_if_consumer_current()? {
             if let Some(prepared_live_pump) = live_pump.take() {
                 discard_prepared_live_pump(prepared_live_pump)?;
             }
             return Ok(outcome);
         }
-        start_streaming()?;
         if cancel_requested() {
             return Ok(FrontendLockWaitOutcome::Cancelled);
         }
@@ -2617,16 +2615,38 @@ fn live_reader_descriptor_with_bound_demux_snapshot(
     Ok(Some((descriptor, snapshot)))
 }
 
-fn bound_demux_snapshot_is_current(
+fn start_streaming_with_bound_demux_relation_fence(
     runtime: &SharedRuntime,
     frontend_id: i32,
     expected: &BoundDemuxGenerationSnapshot,
+    start_streaming: impl FnOnce() -> Result<(), HalError>,
 ) -> Result<bool, HalError> {
     let guard = lock_runtime(
         runtime,
-        "フロントエンドlive pump開始前relation再検証中にservice runtimeのロックが汚染されました",
+        "フロントエンドlive pump開始前relation fence取得中にservice runtimeのロックが汚染されました",
     )?;
-    Ok(current_bound_demux_generation_snapshot(&guard, frontend_id)? == *expected)
+    let relation_gate = guard
+        .registry()
+        .frontend_demux_relation_gate(crate::registry::FrontendRuntimeId(frontend_id))
+        .ok_or_else(|| {
+            HalError::invalid_state(
+                HalInvalidStateKind::InvalidLifecycle,
+                "frontend demux relation gateがありません",
+            )
+        })?;
+    let relation_guard = relation_gate.lock().map_err(|_| {
+        HalError::internal(
+            HalInternalKind::InvariantViolation,
+            "frontend demux relation gateのロックが汚染されました",
+        )
+    })?;
+    if current_bound_demux_generation_snapshot(&guard, frontend_id)? != *expected {
+        return Ok(false);
+    }
+    drop(guard);
+    let result = start_streaming();
+    drop(relation_guard);
+    result.map(|_| true)
 }
 
 fn start_px4_live_pump_after_late_bind<T>(
@@ -2667,6 +2687,7 @@ fn start_px4_live_pump_after_late_bind<T>(
             prepare_live_pump(descriptor).map(Some)
         },
         cancel_requested,
+        discard_prepared_live_pump,
         || {
             let snapshot = prepared_snapshot.borrow();
             let snapshot = snapshot.as_ref().ok_or_else(|| {
@@ -2675,10 +2696,13 @@ fn start_px4_live_pump_after_late_bind<T>(
                     "prepared live pumpのrelation snapshotがありません",
                 )
             })?;
-            bound_demux_snapshot_is_current(runtime, frontend_id, snapshot)
+            start_streaming_with_bound_demux_relation_fence(
+                runtime,
+                frontend_id,
+                snapshot,
+                start_streaming,
+            )
         },
-        discard_prepared_live_pump,
-        start_streaming,
         activate_live_pump,
     )?;
     Ok(Some(outcome))
@@ -2790,11 +2814,10 @@ mod frontend_readback_tests {
                 Ok(Some(()))
             },
             || false,
-            || Ok(true),
             |_| Ok(()),
             || {
                 order.borrow_mut().push("開始");
-                Ok(())
+                Ok(true)
             },
             |_| {
                 order.borrow_mut().push("有効化");
@@ -2818,7 +2841,6 @@ mod frontend_readback_tests {
             &mut live_pump,
             || Ok(None),
             || false,
-            || Ok(true),
             |_| Ok(()),
             || {
                 started.set(started.get() + 1);
@@ -2843,11 +2865,10 @@ mod frontend_readback_tests {
             &mut live_pump,
             || Ok(None),
             || false,
-            || Ok(true),
             |_| Ok(()),
             || {
                 order.borrow_mut().push("開始");
-                Ok(())
+                Ok(true)
             },
             |_| {
                 order.borrow_mut().push("有効化");
@@ -2866,11 +2887,10 @@ mod frontend_readback_tests {
                 Ok(Some(()))
             },
             || false,
-            || Ok(true),
             |_| Ok(()),
             || {
                 order.borrow_mut().push("開始");
-                Ok(())
+                Ok(true)
             },
             |_| {
                 order.borrow_mut().push("有効化");
@@ -2893,9 +2913,8 @@ mod frontend_readback_tests {
             &mut live_pump,
             || Ok(Some(())),
             || false,
-            || Ok(true),
             |_| Ok(()),
-            || Err(HalError::Unsupported("取り込み開始失敗")),
+            || Err(HalError::Unsupported("取り込み開始失敗")).map(|_| true),
             |_| {
                 activated.set(activated.get() + 1);
                 Ok(())
@@ -2923,11 +2942,10 @@ mod frontend_readback_tests {
                 Ok(Some(()))
             },
             || cancelled.get(),
-            || Ok(true),
             |_| Ok(()),
             || {
                 started.set(started.get() + 1);
-                Ok(())
+                Ok(true)
             },
             |_| {
                 activated.set(activated.get() + 1);
@@ -2953,11 +2971,10 @@ mod frontend_readback_tests {
             &mut live_pump,
             || Ok(Some(())),
             || cancelled.get(),
-            || Ok(true),
             |_| Ok(()),
             || {
                 cancelled.set(true);
-                Ok(())
+                Ok(true)
             },
             |_| {
                 activated.set(activated.get() + 1);
@@ -3295,6 +3312,7 @@ fn run_frontend_backend_tune_session_worker(
                 .map(Some)
             },
             || ctx.cancel_requested(),
+            |live_pump| live_pump.join_after_stop().map(|_| ()),
             || {
                 let snapshot = prepared_bound_demux_snapshot.borrow();
                 let snapshot = snapshot.as_ref().ok_or_else(|| {
@@ -3303,10 +3321,13 @@ fn run_frontend_backend_tune_session_worker(
                         "prepared live pumpのrelation snapshotがありません",
                     )
                 })?;
-                bound_demux_snapshot_is_current(&runtime, frontend_id, snapshot)
+                start_streaming_with_bound_demux_relation_fence(
+                    &runtime,
+                    frontend_id,
+                    snapshot,
+                    || session.start_streaming_after_lock(),
+                )
             },
-            |live_pump| live_pump.join_after_stop().map(|_| ()),
-            || session.start_streaming_after_lock(),
             |live_pump| live_pump.activate(),
         )? {
             FrontendLockWaitOutcome::Locked => {
@@ -5849,7 +5870,7 @@ mod scan_contract_tests {
             |_| Ok(()),
             || {
                 starts.set(starts.get() + 1);
-                Ok(())
+                Ok(true)
             },
             |_| {
                 activates.set(activates.get() + 1);
@@ -5885,7 +5906,7 @@ mod scan_contract_tests {
             |_| Ok(()),
             || {
                 starts.set(starts.get() + 1);
-                Ok(())
+                Ok(true)
             },
             |_| {
                 activates.set(activates.get() + 1);
@@ -5976,7 +5997,7 @@ mod scan_contract_tests {
             },
             || {
                 starts.set(starts.get() + 1);
-                Ok(())
+                Ok(true)
             },
             |_| {
                 activates.set(activates.get() + 1);
