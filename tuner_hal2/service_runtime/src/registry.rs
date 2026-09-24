@@ -115,12 +115,10 @@ impl FrontendDemuxRelationAuthority {
                     "frontend demux relation世代が上限に達しました",
                 )
             })?;
-            match self.state.compare_exchange(
-                current,
-                next,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
+            match self
+                .state
+                .compare_exchange(current, next, Ordering::AcqRel, Ordering::Acquire)
+            {
                 Ok(_) => return Ok(true),
                 Err(actual) if actual & Self::START_ACTIVE_BIT != 0 => return Ok(false),
                 Err(_) => continue,
@@ -1155,14 +1153,6 @@ impl RuntimeRegistry {
 
     pub fn frontend_bound_to_demux(&self, demux_id: DemuxRuntimeId) -> Option<FrontendRuntimeId> {
         self.demux_frontend_bindings.get(&demux_id).copied()
-    }
-
-    pub fn unbind_demux_frontend(&mut self, demux_id: DemuxRuntimeId) -> Result<(), HalError> {
-        if !self.try_begin_demux_frontend_binding_change(demux_id, None)? {
-            return Err(Self::frontend_demux_relation_pending_error());
-        }
-        self.commit_demux_frontend_binding(demux_id, None);
-        Ok(())
     }
 
     pub fn frontend_bound_demux_ids(&self, frontend_id: FrontendRuntimeId) -> Vec<DemuxRuntimeId> {
