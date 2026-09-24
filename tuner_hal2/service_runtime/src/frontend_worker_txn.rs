@@ -2606,7 +2606,13 @@ fn live_reader_descriptor_with_bound_demux_snapshot(
     runtime: &SharedRuntime,
     frontend_id: i32,
     context: &'static str,
-) -> Result<Option<(FrontendLiveReaderDescriptor, PreparedFrontendConsumerSnapshot)>, HalError> {
+) -> Result<
+    Option<(
+        FrontendLiveReaderDescriptor,
+        PreparedFrontendConsumerSnapshot,
+    )>,
+    HalError,
+> {
     let guard = lock_runtime(runtime, context)?;
     let descriptor = guard
         .query()
@@ -6133,9 +6139,7 @@ mod scan_contract_tests {
             start_thread.join().unwrap(),
             Some(FrontendLockWaitOutcome::Locked)
         );
-        assert!(close_done_rx
-            .recv_timeout(Duration::from_secs(1))
-            .unwrap());
+        assert!(close_done_rx.recv_timeout(Duration::from_secs(1)).unwrap());
         close_thread.join().unwrap();
     }
 
