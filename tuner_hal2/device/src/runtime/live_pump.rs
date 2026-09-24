@@ -7,7 +7,7 @@ use super::reader::{FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKi
 use maleicacid_tuner_hal2_control_core::WorkerContext;
 use std::io::{self, Read};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use maleicacid_tuner_hal2_common::{
@@ -71,14 +71,26 @@ impl core::fmt::Debug for FrontendLivePumpOwner {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("FrontendLivePumpOwner")
             .field("thread_result", &self.thread_result)
-            .field("start_gate_pending", &self.start_gate.is_some())
             .finish()
     }
 }
 
 pub struct FrontendLivePumpOwner {
     thread_result: ThreadResultOwner<FrontendLivePumpReport>,
-    start_gate: Option<Arc<AtomicBool>>,
+}
+
+#[must_use = "準備済みライブTSポンプはactivateまたはjoin_after_stopで消費してください"]
+pub struct PreparedFrontendLivePump {
+    thread_result: ThreadResultOwner<FrontendLivePumpReport>,
+    start_gate: Arc<AtomicBool>,
+}
+
+impl core::fmt::Debug for PreparedFrontendLivePump {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PreparedFrontendLivePump")
+            .field("thread_result", &self.thread_result)
+            .finish()
+    }
 }
 
 impl FrontendLivePumpOwner {
@@ -91,64 +103,7 @@ impl FrontendLivePumpOwner {
             ThreadResultOwner::start_controlled("maleicacid-frontend-live-pump", move |control| {
                 run_frontend_live_pump(&mut reader, &mut sink, &control, &descriptor)
             })?;
-        Ok(Self {
-            thread_result,
-            start_gate: None,
-        })
-    }
-
-    pub fn start_prepared(
-        descriptor: FrontendLiveReaderDescriptor,
-        mut reader: Box<dyn Read + Send>,
-        mut sink: Box<dyn FrontendLivePacketSink>,
-    ) -> Result<Self, HalError> {
-        let (ready_tx, ready_rx) = mpsc::sync_channel(0);
-        let start_gate = Arc::new(AtomicBool::new(false));
-        let worker_start_gate = Arc::clone(&start_gate);
-        let thread_result =
-            ThreadResultOwner::start_controlled("maleicacid-frontend-live-pump", move |control| {
-                ready_tx.send(()).map_err(|_| {
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "ライブTSポンプの開始待ち到達通知に失敗しました",
-                    )
-                })?;
-                loop {
-                    if control.stop_requested() {
-                        return Ok(FrontendLivePumpReport {
-                            stopped_by_cancel: true,
-                            ..FrontendLivePumpReport::default()
-                        });
-                    }
-                    if worker_start_gate.load(Ordering::Acquire) {
-                        break;
-                    }
-                    control.wait_until(None);
-                }
-                run_frontend_live_pump(&mut reader, &mut sink, &control, &descriptor)
-            })?;
-        ready_rx.recv().map_err(|_| {
-            HalError::internal(
-                HalInternalKind::InvariantViolation,
-                "ライブTSポンプが開始待ちへ到達する前に終了しました",
-            )
-        })?;
-        Ok(Self {
-            thread_result,
-            start_gate: Some(start_gate),
-        })
-    }
-
-    pub fn activate(&mut self) -> Result<(), HalError> {
-        let start_gate = self.start_gate.take().ok_or_else(|| {
-            HalError::invalid_state(
-                maleicacid_tuner_hal2_common::HalInvalidStateKind::InvalidLifecycle,
-                "ライブTSポンプの開始待ちは既に解除されています",
-            )
-        })?;
-        start_gate.store(true, Ordering::Release);
-        self.thread_result.wake();
-        Ok(())
+        Ok(Self { thread_result })
     }
 
     pub fn request_stop(&self) {
@@ -164,6 +119,66 @@ impl FrontendLivePumpOwner {
 
     pub fn join_after_stop(self) -> Result<FrontendLivePumpReport, HalError> {
         self.request_stop();
+        self.thread_result.join_after_stop()
+    }
+}
+
+impl PreparedFrontendLivePump {
+    pub fn start(
+        descriptor: FrontendLiveReaderDescriptor,
+        mut reader: Box<dyn Read + Send>,
+        mut sink: Box<dyn FrontendLivePacketSink>,
+        caller: &WorkerContext,
+    ) -> Result<Option<Self>, HalError> {
+        let caller_thread = std::thread::current();
+        let ready = Arc::new(AtomicBool::new(false));
+        let worker_ready = Arc::clone(&ready);
+        let start_gate = Arc::new(AtomicBool::new(false));
+        let worker_start_gate = Arc::clone(&start_gate);
+        let thread_result =
+            ThreadResultOwner::start_controlled("maleicacid-frontend-live-pump", move |control| {
+                worker_ready.store(true, Ordering::Release);
+                caller_thread.unpark();
+                loop {
+                    if control.stop_requested() {
+                        return Ok(FrontendLivePumpReport {
+                            stopped_by_cancel: true,
+                            ..FrontendLivePumpReport::default()
+                        });
+                    }
+                    if worker_start_gate.load(Ordering::Acquire) {
+                        break;
+                    }
+                    control.wait_until(None);
+                }
+                run_frontend_live_pump(&mut reader, &mut sink, &control, &descriptor)
+            })?;
+
+        while !ready.load(Ordering::Acquire) {
+            if caller.stop_requested() {
+                let report = thread_result.join_after_stop()?;
+                debug_assert!(report.stopped_by_cancel);
+                return Ok(None);
+            }
+            caller.wait_until(None);
+        }
+
+        Ok(Some(Self {
+            thread_result,
+            start_gate,
+        }))
+    }
+
+    pub fn activate(self) -> FrontendLivePumpOwner {
+        self.start_gate.store(true, Ordering::Release);
+        self.thread_result.wake();
+        FrontendLivePumpOwner {
+            thread_result: self.thread_result,
+        }
+    }
+
+    pub fn join_after_stop(self) -> Result<FrontendLivePumpReport, HalError> {
+        self.thread_result.request_stop();
         self.thread_result.join_after_stop()
     }
 }
@@ -272,6 +287,38 @@ fn io_error_to_hal(
 mod tests {
     use super::*;
     use std::io::Cursor;
+    use std::sync::mpsc;
+
+    fn prepare_for_test<R, S>(reader: R, sink: S) -> PreparedFrontendLivePump
+    where
+        R: Read + Send + 'static,
+        S: FrontendLivePacketSink + Send + 'static,
+    {
+        let mut parent =
+            ThreadResultOwner::start_controlled("prepared-live-pump-parent-test", move |control| {
+                PreparedFrontendLivePump::start(
+                    descriptor(),
+                    Box::new(reader),
+                    Box::new(sink),
+                    &control,
+                )?
+                .ok_or_else(|| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "試験用の準備済みライブTSポンプが取消されました",
+                    )
+                })
+            })
+            .unwrap();
+        assert!(parent
+            .wait_until_finished(Some(Instant::now() + Duration::from_secs(1)))
+            .unwrap());
+        match parent.collect_if_finished() {
+            ThreadResultPoll::Completed(Ok(prepared)) => prepared,
+            ThreadResultPoll::Completed(Err(error)) => panic!("{error:?}"),
+            ThreadResultPoll::Running => panic!("準備親ワーカーが終了していません"),
+        }
+    }
 
     #[test]
     fn malformed_counter_saturation_is_retained_without_failing_the_pump() {
@@ -437,14 +484,9 @@ mod tests {
             }
         }
 
-        let mut owner = FrontendLivePumpOwner::start_prepared(
-            descriptor(),
-            Box::new(ObservedReader { read_tx }),
-            Box::new(VecSink::default()),
-        )
-        .unwrap();
+        let mut owner = prepare_for_test(ObservedReader { read_tx }, VecSink::default());
         assert!(read_rx.try_recv().is_err());
-        owner.activate().unwrap();
+        let owner = owner.activate();
         read_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         let report = owner.join_after_stop().unwrap();
         assert!(report.reached_eof || report.stopped_by_cancel);
@@ -463,12 +505,7 @@ mod tests {
             }
         }
 
-        let owner = FrontendLivePumpOwner::start_prepared(
-            descriptor(),
-            Box::new(ObservedReader { read_tx }),
-            Box::new(VecSink::default()),
-        )
-        .unwrap();
+        let owner = prepare_for_test(ObservedReader { read_tx }, VecSink::default());
         let report = owner.join_after_stop().unwrap();
         assert!(report.stopped_by_cancel);
         assert!(read_rx.try_recv().is_err());
@@ -492,15 +529,10 @@ mod tests {
         bytes.extend_from_slice(&first);
         bytes.extend_from_slice(&second);
         let (packet_tx, packet_rx) = mpsc::channel();
-        let mut owner = FrontendLivePumpOwner::start_prepared(
-            descriptor(),
-            Box::new(Cursor::new(bytes)),
-            Box::new(ChannelSink { packet_tx }),
-        )
-        .unwrap();
+        let mut owner = prepare_for_test(Cursor::new(bytes), ChannelSink { packet_tx });
         assert!(packet_rx.try_recv().is_err());
 
-        owner.activate().unwrap();
+        let owner = owner.activate();
         assert_eq!(
             packet_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
             first
@@ -525,27 +557,20 @@ mod tests {
         }
 
         let (read_tx, read_rx) = mpsc::channel();
-        let mut first = FrontendLivePumpOwner::start_prepared(
-            descriptor(),
-            Box::new(ObservedReader {
+        let mut first = prepare_for_test(
+            ObservedReader {
                 read_tx: read_tx.clone(),
                 id: 1,
-            }),
-            Box::new(VecSink::default()),
-        )
-        .unwrap();
-        let mut second = FrontendLivePumpOwner::start_prepared(
-            descriptor(),
-            Box::new(ObservedReader { read_tx, id: 2 }),
-            Box::new(VecSink::default()),
-        )
-        .unwrap();
+            },
+            VecSink::default(),
+        );
+        let mut second = prepare_for_test(ObservedReader { read_tx, id: 2 }, VecSink::default());
 
-        first.activate().unwrap();
+        let _first = first.activate();
         assert_eq!(read_rx.recv_timeout(Duration::from_secs(1)).unwrap(), 1);
         assert!(read_rx.try_recv().is_err());
 
-        second.activate().unwrap();
+        let _second = second.activate();
         assert_eq!(read_rx.recv_timeout(Duration::from_secs(1)).unwrap(), 2);
     }
 
