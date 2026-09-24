@@ -146,12 +146,12 @@ impl DemuxFrontendSourceTxn {
             }
         };
 
-        let mutation_permit = match runtime
+        let prepared_binding_change = match runtime
             .registry
-            .try_begin_demux_frontend_binding_change(self.demux_id, next_frontend_id)?
+            .prepare_demux_frontend_binding_change(self.demux_id, next_frontend_id)?
         {
-            crate::registry::FrontendDemuxRelationMutationAdmission::Ready(permit) => permit,
-            crate::registry::FrontendDemuxRelationMutationAdmission::Pending => {
+            crate::registry::DemuxFrontendBindingChangeAdmission::Ready(prepared) => prepared,
+            crate::registry::DemuxFrontendBindingChangeAdmission::Pending => {
                 return Ok(DemuxFrontendSourceTxnOutcome::Pending)
             }
         };
@@ -180,8 +180,7 @@ impl DemuxFrontendSourceTxn {
             .map_err(super::demux_runtime_error_to_hal)?;
         runtime
             .registry
-            .commit_demux_frontend_binding(self.demux_id, next_frontend_id);
-        mutation_permit.commit();
+            .commit_prepared_demux_frontend_binding_change(prepared_binding_change)?;
         Ok(DemuxFrontendSourceTxnOutcome::Committed(report))
     }
 }
