@@ -3294,51 +3294,23 @@ fn run_frontend_backend_tune_session_worker(
             frontend_id,
             generation,
         )?;
-        let prepared_bound_demux_snapshot = std::cell::RefCell::new(None);
-        match prepare_start_streaming_and_activate_live_pump_for_initial_lock(
-            lock_outcome,
-            &mut live_pump,
-            || {
-                if backend != FrontendBackendKind::Px4CharDevice {
-                    return Ok(None);
-                }
-                let prepared = live_reader_descriptor_with_bound_demux_snapshot(
-                    &runtime,
-                    frontend_id,
-                    "フロントエンドlive pump準備中にservice_runtimeのロックが汚染されました",
-                )?;
-                let Some((live_reader_descriptor, snapshot)) = prepared else {
-                    return Ok(None);
-                };
-                *prepared_bound_demux_snapshot.borrow_mut() = Some(snapshot);
-                let reader = session.open_live_reader(&live_reader_descriptor)?;
-                prepare_frontend_demux_live_pump_from_reader(
-                    Arc::clone(&runtime),
-                    frontend_id,
-                    reader,
-                    live_reader_descriptor,
-                )
-                .map(Some)
-            },
-            || ctx.cancel_requested(),
-            |live_pump| live_pump.join_after_stop().map(|_| ()),
-            || {
-                let snapshot = prepared_bound_demux_snapshot.borrow();
-                let snapshot = snapshot.as_ref().ok_or_else(|| {
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "準備済みlive pumpの関係スナップショットがありません",
-                    )
-                })?;
-                start_streaming_with_bound_demux_relation_authority(
-                    &runtime,
-                    frontend_id,
-                    snapshot,
-                    || session.start_streaming_after_lock(),
-                )
-            },
-            |live_pump| live_pump.activate(),
-        )? {
+        let initial_outcome = if backend == FrontendBackendKind::Px4CharDevice
+            && lock_outcome == FrontendLockWaitOutcome::Locked
+        {
+            start_px4_live_pump_for_current_consumer(
+                &runtime,
+                ctx,
+                &session,
+                backend,
+                FrontendSignalState::Locked,
+                frontend_id,
+                &mut live_pump,
+            )?
+            .unwrap_or(lock_outcome)
+        } else {
+            lock_outcome
+        };
+        match initial_outcome {
             FrontendLockWaitOutcome::Locked => {
                 let _ = observe_and_record_frontend_stream_id_list(
                     &runtime,
@@ -3441,26 +3413,14 @@ fn run_frontend_backend_tune_session_worker(
                 FrontendLockTransition::None => {}
             }
             if live_pump.is_none() {
-                if let Some(late_bind_outcome) = start_px4_live_pump_after_late_bind(
+                if let Some(late_bind_outcome) = start_px4_live_pump_for_current_consumer(
                     &runtime,
-                    frontend_id,
+                    ctx,
+                    &session,
                     backend,
                     signal_state,
-                    session.streaming_started(),
+                    frontend_id,
                     &mut live_pump,
-                    |descriptor| {
-                        let reader = session.open_live_reader(&descriptor)?;
-                        prepare_frontend_demux_live_pump_from_reader(
-                            Arc::clone(&runtime),
-                            frontend_id,
-                            reader,
-                            descriptor,
-                        )
-                    },
-                    || ctx.cancel_requested(),
-                    |live_pump| live_pump.join_after_stop().map(|_| ()),
-                    || session.start_streaming_after_lock(),
-                    |live_pump| live_pump.activate(),
                 )? {
                     if late_bind_outcome == FrontendLockWaitOutcome::Cancelled {
                         break;
