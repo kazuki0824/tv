@@ -1006,7 +1006,9 @@ impl RuntimeRegistry {
         &self,
         frontend_id: FrontendRuntimeId,
     ) -> Option<Arc<Mutex<()>>> {
-        self.frontend_demux_relation_gates.get(&frontend_id).cloned()
+        self.frontend_demux_relation_gates
+            .get(&frontend_id)
+            .cloned()
     }
 
     pub fn bind_demux_frontend(
