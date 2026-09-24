@@ -2717,7 +2717,7 @@ fn start_px4_live_pump_for_current_consumer(
     Ok(Some(FrontendLockWaitOutcome::Locked))
 }
 
-fn wait_for_frontend_qualified_lock(fn wait_for_frontend_qualified_lock(
+fn wait_for_frontend_qualified_lock(
     runtime: &SharedRuntime,
     ctx: &FrontendWorkerContext,
     session: &FrontendBackendSession,
@@ -5776,122 +5776,7 @@ mod scan_contract_tests {
     use std::collections::VecDeque;
 
     #[test]
-    fn production_late_bind_path_observes_runtime_relation_and_starts_once() {
-        let frontend_id = 1_000_000;
-        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
-        {
-            let mut service = runtime.lock().unwrap();
-            assert_eq!(
-                service.boot_from_probe_results([FrontendProbeOutcome::Available {
-                    id: FrontendRuntimeId(frontend_id),
-                    backend: FrontendBackendKind::Px4CharDevice,
-                    system: FrontendSystem::IsdbT,
-                    path: "/dev/px4video0".into(),
-                    lnb_profile: None,
-                    satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
-                    capability: FrontendCapabilitySnapshot {
-                        scalar: FrontendScalarCapability {
-                            min_frequency_hz: 110_642_857,
-                            max_frequency_hz: 767_642_857,
-                            min_symbol_rate: 0,
-                            max_symbol_rate: 0,
-                            acquire_range_hz: 0,
-                        },
-                        exclusive_group_id: 0x1000_0000,
-                        isdbt_segment: Some(crate::registry::IsdbtSegmentCapability {
-                            is_segment_auto: true,
-                            is_full_segment: true,
-                        }),
-                    },
-                }]),
-                ServiceBootOutcome::Ready,
-            );
-            let generation = service
-                .frontend_txn()
-                .prepare_frontend_worker_generation(frontend_id, FrontendWorkerKind::Tune)
-                .unwrap();
-            service
-                .frontend_txn()
-                .install_frontend_live_reader_descriptor_for_generation(
-                    frontend_id,
-                    FrontendWorkerKind::Tune,
-                    generation,
-                )
-                .unwrap();
-        }
-
-        let starts = std::cell::Cell::new(0_u32);
-        let activates = std::cell::Cell::new(0_u32);
-        let prepares = std::cell::Cell::new(0_u32);
-        let mut live_pump = None;
-        let before_bind = start_px4_live_pump_after_late_bind(
-            &runtime,
-            frontend_id,
-            FrontendBackendKind::Px4CharDevice,
-            FrontendSignalState::Locked,
-            false,
-            &mut live_pump,
-            |_descriptor| {
-                prepares.set(prepares.get() + 1);
-                Ok(())
-            },
-            || false,
-            |_| Ok(()),
-            || {
-                starts.set(starts.get() + 1);
-                Ok(true)
-            },
-            |_| {
-                activates.set(activates.get() + 1);
-                Ok(())
-            },
-        )
-        .unwrap();
-        assert_eq!(before_bind, Some(FrontendLockWaitOutcome::Locked));
-        assert_eq!(prepares.get(), 0);
-        assert_eq!(starts.get(), 0);
-        assert_eq!(activates.get(), 0);
-
-        {
-            let mut service = runtime.lock().unwrap();
-            let demux = service.allocate_demux_runtime().unwrap();
-            service
-                .set_demux_frontend_data_source(demux.id.0, frontend_id)
-                .unwrap();
-        }
-
-        let after_bind = start_px4_live_pump_after_late_bind(
-            &runtime,
-            frontend_id,
-            FrontendBackendKind::Px4CharDevice,
-            FrontendSignalState::Locked,
-            false,
-            &mut live_pump,
-            |_descriptor| {
-                prepares.set(prepares.get() + 1);
-                Ok(())
-            },
-            || false,
-            |_| Ok(()),
-            || {
-                starts.set(starts.get() + 1);
-                Ok(true)
-            },
-            |_| {
-                activates.set(activates.get() + 1);
-                Ok(())
-            },
-        )
-        .unwrap();
-        assert_eq!(after_bind, Some(FrontendLockWaitOutcome::Locked));
-        assert_eq!(prepares.get(), 1);
-        assert_eq!(starts.get(), 1);
-        assert_eq!(activates.get(), 1);
-        assert_eq!(live_pump, Some(()));
-    }
-
-    #[test]
-    fn production_late_bind_relation_churn_skips_start_and_discards_prepared_pump() {
+    fn frontend_demux_start_guard_blocks_relation_change_until_release() {
         let frontend_id = 1_000_000;
         let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
         let demux_id = {
@@ -5921,18 +5806,6 @@ mod scan_contract_tests {
                 }]),
                 ServiceBootOutcome::Ready,
             );
-            let generation = service
-                .frontend_txn()
-                .prepare_frontend_worker_generation(frontend_id, FrontendWorkerKind::Tune)
-                .unwrap();
-            service
-                .frontend_txn()
-                .install_frontend_live_reader_descriptor_for_generation(
-                    frontend_id,
-                    FrontendWorkerKind::Tune,
-                    generation,
-                )
-                .unwrap();
             let demux = service.allocate_demux_runtime().unwrap();
             service
                 .set_demux_frontend_data_source(demux.id.0, frontend_id)
@@ -5940,125 +5813,11 @@ mod scan_contract_tests {
             demux.id.0
         };
 
-        let starts = std::cell::Cell::new(0_u32);
-        let activates = std::cell::Cell::new(0_u32);
-        let discards = std::cell::Cell::new(0_u32);
-        let mut live_pump = None;
-        let outcome = start_px4_live_pump_after_late_bind(
-            &runtime,
-            frontend_id,
-            FrontendBackendKind::Px4CharDevice,
-            FrontendSignalState::Locked,
-            false,
-            &mut live_pump,
-            |_descriptor| {
-                runtime
-                    .lock()
-                    .unwrap()
-                    .unregister_demux_runtime(demux_id)
-                    .unwrap();
-                Ok(())
-            },
-            || false,
-            |_| {
-                discards.set(discards.get() + 1);
-                Ok(())
-            },
-            || {
-                starts.set(starts.get() + 1);
-                Ok(true)
-            },
-            |_| {
-                activates.set(activates.get() + 1);
-                Ok(())
-            },
-        )
-        .unwrap();
-
-        assert_eq!(outcome, Some(FrontendLockWaitOutcome::Locked));
-        assert_eq!(starts.get(), 0);
-        assert_eq!(activates.get(), 0);
-        assert_eq!(discards.get(), 1);
-        assert_eq!(live_pump, None);
-    }
-
-    #[test]
-    fn production_start_authority_returns_pending_then_allows_unregister_after_finish() {
-        let frontend_id = 1_000_000;
-        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
-        let demux_id = {
-            let mut service = runtime.lock().unwrap();
-            assert_eq!(
-                service.boot_from_probe_results([FrontendProbeOutcome::Available {
-                    id: FrontendRuntimeId(frontend_id),
-                    backend: FrontendBackendKind::Px4CharDevice,
-                    system: FrontendSystem::IsdbT,
-                    path: "/dev/px4video0".into(),
-                    lnb_profile: None,
-                    satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
-                    capability: FrontendCapabilitySnapshot {
-                        scalar: FrontendScalarCapability {
-                            min_frequency_hz: 110_642_857,
-                            max_frequency_hz: 767_642_857,
-                            min_symbol_rate: 0,
-                            max_symbol_rate: 0,
-                            acquire_range_hz: 0,
-                        },
-                        exclusive_group_id: 0x1000_0000,
-                        isdbt_segment: Some(crate::registry::IsdbtSegmentCapability {
-                            is_segment_auto: true,
-                            is_full_segment: true,
-                        }),
-                    },
-                }]),
-                ServiceBootOutcome::Ready,
-            );
-            let generation = service
-                .frontend_txn()
-                .prepare_frontend_worker_generation(frontend_id, FrontendWorkerKind::Tune)
-                .unwrap();
-            service
-                .frontend_txn()
-                .install_frontend_live_reader_descriptor_for_generation(
-                    frontend_id,
-                    FrontendWorkerKind::Tune,
-                    generation,
-                )
-                .unwrap();
-            let demux = service.allocate_demux_runtime().unwrap();
-            service
-                .set_demux_frontend_data_source(demux.id.0, frontend_id)
-                .unwrap();
-            demux.id.0
-        };
-
-        let (start_entered_tx, start_entered_rx) = mpsc::channel();
-        let (release_start_tx, release_start_rx) = mpsc::channel();
-        let start_runtime = Arc::clone(&runtime);
-        let start_thread = std::thread::spawn(move || {
-            let mut live_pump = None;
-            start_px4_live_pump_after_late_bind(
-                &start_runtime,
-                frontend_id,
-                FrontendBackendKind::Px4CharDevice,
-                FrontendSignalState::Locked,
-                false,
-                &mut live_pump,
-                |_descriptor| Ok(()),
-                || false,
-                |_| Ok(()),
-                || {
-                    start_entered_tx.send(()).unwrap();
-                    release_start_rx.recv().unwrap();
-                    Ok(())
-                },
-                |_| Ok(()),
-            )
+        let start_guard = runtime
+            .lock()
             .unwrap()
-        });
-
-        start_entered_rx
-            .recv_timeout(Duration::from_secs(1))
+            .try_begin_frontend_demux_start(frontend_id)
+            .unwrap()
             .unwrap();
 
         let close_result = runtime
@@ -6068,11 +5827,7 @@ mod scan_contract_tests {
             .unwrap_err();
         assert!(matches!(close_result, HalError::Busy { .. }));
 
-        release_start_tx.send(()).unwrap();
-        assert_eq!(
-            start_thread.join().unwrap(),
-            Some(FrontendLockWaitOutcome::Locked)
-        );
+        start_guard.release();
         assert!(runtime
             .lock()
             .unwrap()
