@@ -641,6 +641,10 @@ impl FrontendWorkerContext {
     pub fn wait_until(&self, deadline: Option<std::time::Instant>) {
         self.control.wait_until(deadline)
     }
+
+    pub fn worker_context(&self) -> &WorkerContext {
+        &self.control
+    }
     pub fn cancel_reason(&self) -> Result<Option<FrontendWorkerCancelReason>, HalError> {
         self.cancel_reason
             .lock()
