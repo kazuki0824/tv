@@ -6041,7 +6041,7 @@ mod scan_contract_tests {
     }
 
     #[test]
-    fn production_start_authority_delays_demux_unregister_until_start_finishes() {
+    fn production_start_authority_returns_pending_then_allows_unregister_after_finish() {
         let frontend_id = 1_000_000;
         let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
         let demux_id = {
@@ -6119,28 +6119,24 @@ mod scan_contract_tests {
             .recv_timeout(Duration::from_secs(1))
             .unwrap();
 
-        let close_runtime = Arc::clone(&runtime);
-        let (close_done_tx, close_done_rx) = mpsc::channel();
-        let close_thread = std::thread::spawn(move || {
-            let removed = close_runtime
-                .lock()
-                .unwrap()
-                .unregister_demux_runtime(demux_id)
-                .unwrap()
-                .is_some();
-            close_done_tx.send(removed).unwrap();
-        });
-
-        std::thread::sleep(Duration::from_millis(20));
-        assert!(close_done_rx.try_recv().is_err());
+        let close_result = runtime
+            .lock()
+            .unwrap()
+            .unregister_demux_runtime(demux_id)
+            .unwrap_err();
+        assert!(matches!(close_result, HalError::Busy { .. }));
 
         release_start_tx.send(()).unwrap();
         assert_eq!(
             start_thread.join().unwrap(),
             Some(FrontendLockWaitOutcome::Locked)
         );
-        assert!(close_done_rx.recv_timeout(Duration::from_secs(1)).unwrap());
-        close_thread.join().unwrap();
+        assert!(runtime
+            .lock()
+            .unwrap()
+            .unregister_demux_runtime(demux_id)
+            .unwrap()
+            .is_some());
     }
 
     #[test]
