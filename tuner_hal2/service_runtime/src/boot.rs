@@ -512,7 +512,7 @@ pub fn start_frontend_demux_live_pump_from_reader(
     FrontendLivePumpOwner::start(descriptor, reader, sink)
 }
 
-pub fn prepare_frontend_demux_live_pump_from_reader(
+pub(crate) fn prepare_frontend_demux_live_pump_from_reader(
     runtime: Arc<Mutex<TunerServiceRuntime>>,
     frontend_id: i32,
     reader: Box<dyn Read + Send>,

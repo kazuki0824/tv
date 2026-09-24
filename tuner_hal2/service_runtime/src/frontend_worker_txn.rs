@@ -16,10 +16,10 @@ use crate::worker_runtime::{
 use crate::{
     frontend_ops::{FrontendOperationEvent, FrontendTuneScanTxn, FrontendWorkerTerminalEvent},
     object_lifecycle::{aidl_object_live, aidl_public_runtime_id_for_close_cleanup},
-    object_method_use_case::ObjectMethodExecutionToken,
-    prepare_frontend_demux_live_pump_from_reader, start_frontend_demux_live_pump_from_reader,
+    object_method_use_case::ObjectMethodExecutionToken, start_frontend_demux_live_pump_from_reader,
     TunerServiceRuntime,
 };
+use crate::boot::prepare_frontend_demux_live_pump_from_reader;
 use maleicacid_tuner_hal2_common::{
     compose_primary_cleanup_failure, FirstErrorCollector, FrontendBackendKind, FrontendDevicePath,
     FrontendIsdbtPartialReceptionRequirement, FrontendScanMode, FrontendSystem,
@@ -2682,21 +2682,21 @@ mod frontend_readback_tests {
             outcome,
             &mut live_pump,
             || {
-                order.borrow_mut().push("prepare");
+                order.borrow_mut().push("準備");
                 Ok(Some(()))
             },
             || {
-                order.borrow_mut().push("start");
+                order.borrow_mut().push("開始");
                 Ok(())
             },
             |_| {
-                order.borrow_mut().push("activate");
+                order.borrow_mut().push("有効化");
                 Ok(())
             },
         )
         .unwrap();
         assert_eq!(outcome, FrontendLockWaitOutcome::Locked);
-        assert_eq!(*order.borrow(), ["prepare", "start", "activate"]);
+        assert_eq!(*order.borrow(), ["準備", "開始", "有効化"]);
         assert_eq!(live_pump, Some(()));
     }
 

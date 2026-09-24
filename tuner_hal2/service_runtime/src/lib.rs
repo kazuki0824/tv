@@ -38,8 +38,8 @@ mod worker_runtime;
 
 pub use boot::notify_filter_delivery_change;
 pub use boot::{
-    prepare_frontend_demux_live_pump_from_reader, start_frontend_demux_live_pump_from_reader,
-    CallbackArtifactCleanupResult, CallbackArtifactResetCommand, CallbackDeliveryFailurePhase,
+    start_frontend_demux_live_pump_from_reader, CallbackArtifactCleanupResult,
+    CallbackArtifactResetCommand, CallbackDeliveryFailurePhase,
     CallbackDeliveryFailureReport, CallbackRegistrationArtifactOutcome, ChildOpenTxn,
     DvrChildRuntimeOpen, DvrStatusPollSnapshot, FilterChildRuntimeOpen, FilterEventDelivery,
     FilterEventDeliverySnapshot, FilterEventDispatcher, FrontendDemuxPacketSink,
