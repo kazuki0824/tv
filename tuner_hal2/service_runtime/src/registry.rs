@@ -202,7 +202,6 @@ impl FrontendDemuxRelationAuthority {
             }
         }
     }
-
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1059,8 +1058,10 @@ impl RuntimeRegistry {
         }
         let runtime = FrontendRuntime::new(entry.id.0, entry.backend);
         self.frontend_runtimes.insert(entry.id, runtime);
-        self.frontend_demux_relation_authorities
-            .insert(entry.id, Arc::new(FrontendDemuxRelationAuthority::default()));
+        self.frontend_demux_relation_authorities.insert(
+            entry.id,
+            Arc::new(FrontendDemuxRelationAuthority::default()),
+        );
         self.frontends.insert(entry.id, entry);
         Ok(())
     }
