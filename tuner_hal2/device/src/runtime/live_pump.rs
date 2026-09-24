@@ -487,10 +487,7 @@ mod tests {
             packet_tx: mpsc::Sender<[u8; TS_PACKET_SIZE]>,
         }
         impl FrontendLivePacketSink for ChannelSink {
-            fn deliver_ts_packet(
-                &mut self,
-                packet: &[u8; TS_PACKET_SIZE],
-            ) -> Result<(), HalError> {
+            fn deliver_ts_packet(&mut self, packet: &[u8; TS_PACKET_SIZE]) -> Result<(), HalError> {
                 self.packet_tx.send(*packet).unwrap();
                 Ok(())
             }
