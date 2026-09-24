@@ -96,6 +96,7 @@ impl Drop for StartPermit {
     }
 }
 
+#[derive(Debug)]
 struct MutationLease {
     authority: Arc<Authority>,
     epoch: RelationEpoch,
