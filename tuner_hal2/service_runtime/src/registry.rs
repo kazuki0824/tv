@@ -1158,10 +1158,10 @@ impl RuntimeRegistry {
     }
 
     pub fn unbind_demux_frontend(&mut self, demux_id: DemuxRuntimeId) -> Result<(), HalError> {
-        if let Some(frontend_id) = self.demux_frontend_bindings.get(&demux_id).copied() {
-            self.begin_frontend_demux_relation_mutation([frontend_id])?;
+        if !self.try_begin_demux_frontend_binding_change(demux_id, None)? {
+            return Err(Self::frontend_demux_relation_pending_error());
         }
-        self.demux_frontend_bindings.remove(&demux_id);
+        self.commit_demux_frontend_binding(demux_id, None);
         Ok(())
     }
 
