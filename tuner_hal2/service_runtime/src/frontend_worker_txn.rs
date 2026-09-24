@@ -31,7 +31,8 @@ use maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackToken;
 use maleicacid_tuner_hal2_device::FrontendRuntimeSnapshot;
 use maleicacid_tuner_hal2_device::{
     FrontendBackendSession, FrontendBackendSubmitFailure, FrontendBackendTunePlan,
-    FrontendLivePumpJoinOutcome, FrontendLivePumpOwner, FrontendScanPhase, FrontendSignalState,
+    FrontendLivePumpJoinOutcome, FrontendLivePumpOwner, FrontendLiveReaderDescriptor,
+    FrontendScanPhase, FrontendSignalState,
     FrontendTmccPartialReceptionObservation, FrontendTmccTsidListObservation,
     FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind,
     FrontendWorkerStartError, FrontendWorkerStopOutcome, FrontendWorkerStopPoll,
@@ -2588,6 +2589,48 @@ fn prepare_start_streaming_and_activate_live_pump_for_initial_lock<T>(
     Ok(outcome)
 }
 
+fn start_px4_live_pump_after_late_bind<T>(
+    runtime: &SharedRuntime,
+    frontend_id: i32,
+    backend: FrontendBackendKind,
+    signal_state: FrontendSignalState,
+    streaming_started: bool,
+    live_pump: &mut Option<T>,
+    prepare_live_pump: impl FnOnce(FrontendLiveReaderDescriptor) -> Result<T, HalError>,
+    cancel_requested: impl Fn() -> bool,
+    start_streaming: impl FnOnce() -> Result<(), HalError>,
+    activate_live_pump: impl FnOnce(&mut T) -> Result<(), HalError>,
+) -> Result<Option<FrontendLockWaitOutcome>, HalError> {
+    if backend != FrontendBackendKind::Px4CharDevice || streaming_started {
+        return Ok(None);
+    }
+    let outcome = if signal_state == FrontendSignalState::Locked {
+        FrontendLockWaitOutcome::Locked
+    } else {
+        FrontendLockWaitOutcome::NoSignal
+    };
+    let outcome = prepare_start_streaming_and_activate_live_pump_for_initial_lock(
+        outcome,
+        live_pump,
+        || {
+            let descriptor = {
+                let guard = lock_runtime(
+                    runtime,
+                    "フロントエンドlive pump遅延結合確認中にservice runtimeのロックが汚染されました",
+                )?;
+                guard
+                    .query()
+                    .frontend_live_reader_descriptor_for_live_pump(frontend_id)?
+            };
+            descriptor.map(prepare_live_pump).transpose()
+        },
+        cancel_requested,
+        start_streaming,
+        activate_live_pump,
+    )?;
+    Ok(Some(outcome))
+}
+
 fn wait_for_frontend_qualified_lock(
     runtime: &SharedRuntime,
     ctx: &FrontendWorkerContext,
@@ -3292,43 +3335,26 @@ fn run_frontend_backend_tune_session_worker(
                 FrontendLockTransition::None => {}
             }
             if live_pump.is_none() {
-                if backend == FrontendBackendKind::Px4CharDevice && !session.streaming_started() {
-                    let late_bind_outcome =
-                        prepare_start_streaming_and_activate_live_pump_for_initial_lock(
-                            if signal_state == FrontendSignalState::Locked {
-                                FrontendLockWaitOutcome::Locked
-                            } else {
-                                FrontendLockWaitOutcome::NoSignal
-                            },
-                            &mut live_pump,
-                            || {
-                                let live_reader_descriptor = {
-                                    let guard = lock_runtime(
-                                        &runtime,
-                                        "フロントエンドlive pump遅延結合確認中にservice runtimeのロックが汚染されました",
-                                    )?;
-                                    guard
-                                        .query()
-                                        .frontend_live_reader_descriptor_for_live_pump(
-                                            frontend_id,
-                                        )?
-                                };
-                                let Some(descriptor) = live_reader_descriptor else {
-                                    return Ok(None);
-                                };
-                                let reader = session.open_live_reader(&descriptor)?;
-                                prepare_frontend_demux_live_pump_from_reader(
-                                    Arc::clone(&runtime),
-                                    frontend_id,
-                                    reader,
-                                    descriptor,
-                                )
-                                .map(Some)
-                            },
-                            || ctx.cancel_requested(),
-                            || session.start_streaming_after_lock(),
-                            |live_pump| live_pump.activate(),
-                        )?;
+                if let Some(late_bind_outcome) = start_px4_live_pump_after_late_bind(
+                    &runtime,
+                    frontend_id,
+                    backend,
+                    signal_state,
+                    session.streaming_started(),
+                    &mut live_pump,
+                    |descriptor| {
+                        let reader = session.open_live_reader(&descriptor)?;
+                        prepare_frontend_demux_live_pump_from_reader(
+                            Arc::clone(&runtime),
+                            frontend_id,
+                            reader,
+                            descriptor,
+                        )
+                    },
+                    || ctx.cancel_requested(),
+                    || session.start_streaming_after_lock(),
+                    |live_pump| live_pump.activate(),
+                )? {
                     if late_bind_outcome == FrontendLockWaitOutcome::Cancelled {
                         break;
                     }
@@ -3336,7 +3362,7 @@ fn run_frontend_backend_tune_session_worker(
                     let live_reader_descriptor = {
                         let guard = lock_runtime(
                             &runtime,
-                            "service runtime lock poisoned while checking frontend live pump readiness",
+                            "フロントエンドlive pump準備確認中にservice runtimeのロックが汚染されました",
                         )?;
                         guard
                             .query()
@@ -5681,6 +5707,119 @@ mod scan_contract_tests {
         SatellitePowerTopology,
     };
     use std::collections::VecDeque;
+
+    #[test]
+    fn production_late_bind_path_observes_runtime_relation_and_starts_once() {
+        let frontend_id = 1_000_000;
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        {
+            let mut service = runtime.lock().unwrap();
+            assert_eq!(
+                service.boot_from_probe_results([FrontendProbeOutcome::Available {
+                    id: FrontendRuntimeId(frontend_id),
+                    backend: FrontendBackendKind::Px4CharDevice,
+                    system: FrontendSystem::IsdbT,
+                    path: "/dev/px4video0".into(),
+                    lnb_profile: None,
+                    satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
+                    capability: FrontendCapabilitySnapshot {
+                        scalar: FrontendScalarCapability {
+                            min_frequency_hz: 110_642_857,
+                            max_frequency_hz: 767_642_857,
+                            min_symbol_rate: 0,
+                            max_symbol_rate: 0,
+                            acquire_range_hz: 0,
+                        },
+                        exclusive_group_id: 0x1000_0000,
+                        isdbt_segment: Some(crate::registry::IsdbtSegmentCapability {
+                            is_segment_auto: true,
+                            is_full_segment: true,
+                        }),
+                    },
+                }]),
+                ServiceBootOutcome::Ready,
+            );
+            let generation = service
+                .frontend_txn()
+                .prepare_frontend_worker_generation(frontend_id, FrontendWorkerKind::Tune)
+                .unwrap();
+            service
+                .frontend_txn()
+                .install_frontend_live_reader_descriptor_for_generation(
+                    frontend_id,
+                    FrontendWorkerKind::Tune,
+                    generation,
+                )
+                .unwrap();
+        }
+
+        let starts = std::cell::Cell::new(0_u32);
+        let activates = std::cell::Cell::new(0_u32);
+        let prepares = std::cell::Cell::new(0_u32);
+        let mut live_pump = None;
+        let before_bind = start_px4_live_pump_after_late_bind(
+            &runtime,
+            frontend_id,
+            FrontendBackendKind::Px4CharDevice,
+            FrontendSignalState::Locked,
+            false,
+            &mut live_pump,
+            |_descriptor| {
+                prepares.set(prepares.get() + 1);
+                Ok(())
+            },
+            || false,
+            || {
+                starts.set(starts.get() + 1);
+                Ok(())
+            },
+            |_| {
+                activates.set(activates.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(before_bind, Some(FrontendLockWaitOutcome::Locked));
+        assert_eq!(prepares.get(), 0);
+        assert_eq!(starts.get(), 0);
+        assert_eq!(activates.get(), 0);
+
+        {
+            let mut service = runtime.lock().unwrap();
+            let demux = service.allocate_demux_runtime().unwrap();
+            service
+                .set_demux_frontend_data_source(demux.id.0, frontend_id)
+                .unwrap();
+        }
+
+        let after_bind = start_px4_live_pump_after_late_bind(
+            &runtime,
+            frontend_id,
+            FrontendBackendKind::Px4CharDevice,
+            FrontendSignalState::Locked,
+            false,
+            &mut live_pump,
+            |_descriptor| {
+                prepares.set(prepares.get() + 1);
+                Ok(())
+            },
+            || false,
+            || {
+                starts.set(starts.get() + 1);
+                Ok(())
+            },
+            |_| {
+                activates.set(activates.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(after_bind, Some(FrontendLockWaitOutcome::Locked));
+        assert_eq!(prepares.get(), 1);
+        assert_eq!(starts.get(), 1);
+        assert_eq!(activates.get(), 1);
+        assert_eq!(live_pump, Some(()));
+    }
 
     #[test]
     fn spawn_failure_keeps_io_error_and_errno_at_service_boundary() {
