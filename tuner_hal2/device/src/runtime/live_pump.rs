@@ -130,7 +130,7 @@ impl PreparedFrontendLivePump {
         mut sink: Box<dyn FrontendLivePacketSink>,
         caller: &WorkerContext,
     ) -> Result<Option<Self>, HalError> {
-        let caller_thread = std::thread::current();
+        let caller_wake = caller.clone();
         let ready = Arc::new(AtomicBool::new(false));
         let worker_ready = Arc::clone(&ready);
         let start_gate = Arc::new(AtomicBool::new(false));
@@ -138,7 +138,7 @@ impl PreparedFrontendLivePump {
         let thread_result =
             ThreadResultOwner::start_controlled("maleicacid-frontend-live-pump", move |control| {
                 worker_ready.store(true, Ordering::Release);
-                caller_thread.unpark();
+                caller_wake.wake();
                 loop {
                     if control.stop_requested() {
                         return Ok(FrontendLivePumpReport {
@@ -484,7 +484,7 @@ mod tests {
             }
         }
 
-        let mut owner = prepare_for_test(ObservedReader { read_tx }, VecSink::default());
+        let owner = prepare_for_test(ObservedReader { read_tx }, VecSink::default());
         assert!(read_rx.try_recv().is_err());
         let owner = owner.activate();
         read_rx.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -529,7 +529,7 @@ mod tests {
         bytes.extend_from_slice(&first);
         bytes.extend_from_slice(&second);
         let (packet_tx, packet_rx) = mpsc::channel();
-        let mut owner = prepare_for_test(Cursor::new(bytes), ChannelSink { packet_tx });
+        let owner = prepare_for_test(Cursor::new(bytes), ChannelSink { packet_tx });
         assert!(packet_rx.try_recv().is_err());
 
         let owner = owner.activate();
@@ -557,14 +557,14 @@ mod tests {
         }
 
         let (read_tx, read_rx) = mpsc::channel();
-        let mut first = prepare_for_test(
+        let first = prepare_for_test(
             ObservedReader {
                 read_tx: read_tx.clone(),
                 id: 1,
             },
             VecSink::default(),
         );
-        let mut second = prepare_for_test(ObservedReader { read_tx, id: 2 }, VecSink::default());
+        let second = prepare_for_test(ObservedReader { read_tx, id: 2 }, VecSink::default());
 
         let _first = first.activate();
         assert_eq!(read_rx.recv_timeout(Duration::from_secs(1)).unwrap(), 1);
