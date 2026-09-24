@@ -4,7 +4,7 @@ use super::support::{
 use super::{
     build_dvr_open_request, build_open_filter_request, close_object_after_close_preflight,
     execute_object_query_use_case, execute_object_query_use_case_with_aidl_input_conversion,
-    execute_shared_object_runtime_use_case, open_dvr_child_for_owner_object_with_request_builder,
+    execute_object_runtime_use_case, open_dvr_child_for_owner_object_with_request_builder,
     open_filter_child_for_owner_object_with_request_builder,
     plan_unavailable_object_method_use_case, status_from_hal_error, status_unknown_error, AidlApi,
     AidlMethodCall, AidlObjectKind, BinderResult, DemuxAidlObject, DemuxFilterType, DvrType,
@@ -15,19 +15,17 @@ use maleicacid_tuner_hal2_common::{HalError, HalInvalidArgumentKind};
 
 impl IDemux for DemuxAidlObject {
     fn setFrontendDataSource(&self, frontend_id: i32) -> BinderResult<()> {
-        execute_shared_object_runtime_use_case(
+        execute_object_runtime_use_case(
             &self.runtime(),
             self.handle(),
             AidlMethodCall::DemuxSetFrontendDataSource { frontend_id },
             |runtime, handle, dispatch_proof| {
-                maleicacid_tuner_hal2_service_runtime::TunerServiceRuntime::
-                    set_demux_frontend_data_source_for_object_shared(
-                        runtime,
-                        handle.object_id(),
-                        handle.generation(),
-                        frontend_id,
-                        dispatch_proof,
-                    )
+                runtime.set_demux_frontend_data_source_for_object(
+                    handle.object_id(),
+                    handle.generation(),
+                    frontend_id,
+                    dispatch_proof,
+                )
             },
         )
     }

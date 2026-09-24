@@ -2,8 +2,7 @@ use crate::descrambler_key_table::DescramblerPacketKeys;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::Instant;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::descrambler_key_table::{
     DescramblerKeyLookupError, DescramblerKeyPublishError, DescramblerKeyRefreshRequest,
@@ -19,7 +18,7 @@ use crate::diagnostics::{DescramblerDiagnosticKind, DescramblerDiagnosticRecord}
 use maleicacid_tuner_hal2_common::TS_PACKET_SIZE;
 use maleicacid_tuner_hal2_common::{
     FrontendBackendKind, FrontendSystem, HalError, HalInternalKind, HalInvalidArgumentKind,
-    HalInvalidStateKind, PoisonTrackedMutex, RuntimeLockKind,
+    HalInvalidStateKind,
 };
 use maleicacid_tuner_hal2_demux::{
     AvDataIdAllocator, AvRuntimeBudget, DemuxRuntime, DvrKind, FilterOpenType, FilterRuntimeState,
@@ -68,11 +67,9 @@ impl FrontendDemuxRelationEpoch {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct FrontendDemuxRelationAuthority {
     state: AtomicU64,
-    wait_lock: PoisonTrackedMutex<()>,
-    wait_changed: Condvar,
 }
 
 #[derive(Debug)]
@@ -127,35 +124,16 @@ impl FrontendDemuxRelationMutationPermit {
 }
 
 #[derive(Debug)]
-pub(crate) struct FrontendDemuxRelationWaitSet {
-    authorities: Vec<Arc<FrontendDemuxRelationAuthority>>,
-}
-
-impl FrontendDemuxRelationWaitSet {
-    pub(crate) fn wait_until_start_idle(&self, deadline: Instant) -> Result<bool, HalError> {
-        for authority in &self.authorities {
-            if !authority.wait_until_start_idle(deadline)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-}
-
-#[derive(Debug)]
 pub(crate) enum FrontendDemuxRelationMutationAdmission {
     Ready(FrontendDemuxRelationMutationPermit),
-    Pending(FrontendDemuxRelationWaitSet),
+    Pending,
 }
 
 impl Drop for FrontendDemuxStartPermit {
     fn drop(&mut self) {
-        let wait_guard = self.authority.wait_lock.lock();
         self.authority
             .state
             .store(self.epoch.raw(), Ordering::Release);
-        self.authority.wait_changed.notify_all();
-        drop(wait_guard);
     }
 }
 
@@ -164,19 +142,6 @@ impl FrontendDemuxRelationAuthority {
     const MUTATION_ACTIVE_BIT: u64 = 2;
     const ACTIVE_MASK: u64 = Self::START_ACTIVE_BIT | Self::MUTATION_ACTIVE_BIT;
     const EPOCH_STEP: u64 = 4;
-
-    fn new(frontend_id: FrontendRuntimeId) -> Self {
-        Self {
-            state: AtomicU64::new(0),
-            wait_lock: PoisonTrackedMutex::new(
-                (),
-                RuntimeLockKind::FrontendDemuxRelationWait {
-                    frontend_id: frontend_id.0,
-                },
-            ),
-            wait_changed: Condvar::new(),
-        }
-    }
 
     pub(crate) fn snapshot_epoch(&self) -> FrontendDemuxRelationEpoch {
         FrontendDemuxRelationEpoch(self.state.load(Ordering::Acquire) & !Self::ACTIVE_MASK)
@@ -238,31 +203,6 @@ impl FrontendDemuxRelationAuthority {
         }
     }
 
-    fn wait_until_start_idle(&self, deadline: Instant) -> Result<bool, HalError> {
-        if self.state.load(Ordering::Acquire) & Self::START_ACTIVE_BIT == 0 {
-            return Ok(true);
-        }
-        let mut guard = self.wait_lock.lock().map_err(HalError::LockPoisoned)?;
-        loop {
-            if self.state.load(Ordering::Acquire) & Self::START_ACTIVE_BIT == 0 {
-                return Ok(true);
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                return Ok(false);
-            }
-            let (next_guard, wait_result) = self
-                .wait_lock
-                .wait_timeout(&self.wait_changed, guard, deadline - now)
-                .map_err(HalError::LockPoisoned)?;
-            guard = next_guard;
-            if wait_result.timed_out()
-                && self.state.load(Ordering::Acquire) & Self::START_ACTIVE_BIT != 0
-            {
-                return Ok(false);
-            }
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1119,10 +1059,8 @@ impl RuntimeRegistry {
         }
         let runtime = FrontendRuntime::new(entry.id.0, entry.backend);
         self.frontend_runtimes.insert(entry.id, runtime);
-        self.frontend_demux_relation_authorities.insert(
-            entry.id,
-            Arc::new(FrontendDemuxRelationAuthority::new(entry.id)),
-        );
+        self.frontend_demux_relation_authorities
+            .insert(entry.id, Arc::new(FrontendDemuxRelationAuthority::default()));
         self.frontends.insert(entry.id, entry);
         Ok(())
     }
@@ -1205,7 +1143,7 @@ impl RuntimeRegistry {
     ) -> Result<Option<DemuxRegistryEntry>, HalError> {
         let permit = match self.try_begin_demux_frontend_binding_change(id, None)? {
             FrontendDemuxRelationMutationAdmission::Ready(permit) => permit,
-            FrontendDemuxRelationMutationAdmission::Pending(_) => {
+            FrontendDemuxRelationMutationAdmission::Pending => {
                 return Err(Self::frontend_demux_relation_pending_error())
             }
         };
@@ -1259,9 +1197,7 @@ impl RuntimeRegistry {
                 Some(lease) => leases.push(lease),
                 None => {
                     drop(leases);
-                    return Ok(FrontendDemuxRelationMutationAdmission::Pending(
-                        FrontendDemuxRelationWaitSet { authorities },
-                    ));
+                    return Ok(FrontendDemuxRelationMutationAdmission::Pending);
                 }
             }
         }

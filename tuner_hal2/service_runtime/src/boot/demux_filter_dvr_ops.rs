@@ -1,5 +1,4 @@
 use crate::boot::TunerServiceRuntime;
-use crate::object_lifecycle::aidl_object_live;
 use crate::object_method_use_case::ObjectMethodExecutionToken;
 use crate::registry::{
     DemuxRegistryEntry, DemuxRuntimeId, DvrRegistryEntry, FilterRegistryEntry, FrontendRuntimeId,
@@ -31,7 +30,7 @@ pub(crate) struct DemuxFrontendSourceTxn {
 
 enum DemuxFrontendSourceTxnOutcome {
     Committed(StreamBoundaryReport),
-    Pending(crate::registry::FrontendDemuxRelationWaitSet),
+    Pending,
 }
 
 enum DemuxFrontendSourceMutation {
@@ -70,7 +69,7 @@ impl DemuxFrontendSourceTxn {
     ) -> Result<StreamBoundaryReport, HalError> {
         match self.try_execute(runtime)? {
             DemuxFrontendSourceTxnOutcome::Committed(report) => Ok(report),
-            DemuxFrontendSourceTxnOutcome::Pending(_) => {
+            DemuxFrontendSourceTxnOutcome::Pending => {
                 Err(crate::registry::RuntimeRegistry::frontend_demux_relation_pending_error())
             }
         }
@@ -152,8 +151,8 @@ impl DemuxFrontendSourceTxn {
             .try_begin_demux_frontend_binding_change(self.demux_id, next_frontend_id)?
         {
             crate::registry::FrontendDemuxRelationMutationAdmission::Ready(permit) => permit,
-            crate::registry::FrontendDemuxRelationMutationAdmission::Pending(wait_set) => {
-                return Ok(DemuxFrontendSourceTxnOutcome::Pending(wait_set))
+            crate::registry::FrontendDemuxRelationMutationAdmission::Pending => {
+                return Ok(DemuxFrontendSourceTxnOutcome::Pending)
             }
         };
 
@@ -436,76 +435,6 @@ impl TunerServiceRuntime {
         )?;
         self.set_demux_frontend_data_source(demux_id, frontend_id)
             .map(|_| ())
-    }
-
-    fn ensure_demux_object_live_for_relation_retry(
-        runtime: &TunerServiceRuntime,
-        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
-        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
-    ) -> Result<(), HalError> {
-        aidl_object_live(
-            runtime,
-            object_id,
-            generation,
-            maleicacid_tuner_hal2_domain_request::AidlObjectKind::Demux,
-        )
-    }
-
-    pub fn set_demux_frontend_data_source_for_object_shared(
-        runtime: std::sync::Arc<std::sync::Mutex<TunerServiceRuntime>>,
-        object_id: maleicacid_tuner_hal2_domain_request::AidlObjectId,
-        generation: maleicacid_tuner_hal2_domain_request::AidlObjectGeneration,
-        frontend_id: i32,
-        dispatch: ObjectMethodExecutionToken,
-    ) -> Result<(), HalError> {
-        let deadline = std::time::Instant::now()
-            .checked_add(std::time::Duration::from_millis(
-                crate::worker_runtime::WORKER_IO_DEADLINE_MS,
-            ))
-            .ok_or_else(|| {
-                HalError::internal(
-                    HalInternalKind::InvariantViolation,
-                    "demux frontend relation待機期限を構成できません",
-                )
-            })?;
-        let mut dispatch = Some(dispatch);
-        loop {
-            let outcome = {
-                let mut guard = TunerServiceRuntime::lock_shared(
-                    runtime.as_ref(),
-                    "demux frontend relation変更中にservice runtimeのロックが汚染されました",
-                )?;
-                if let Some(dispatch) = dispatch.take() {
-                    dispatch.consume_for_object(
-                        &mut guard,
-                        object_id,
-                        generation,
-                        maleicacid_tuner_hal2_domain_request::AidlObjectKind::Demux,
-                    )?;
-                } else {
-                    Self::ensure_demux_object_live_for_relation_retry(
-                        &guard, object_id, generation,
-                    )?;
-                }
-                let demux_id = guard.public_runtime_id_for_object_method(
-                    object_id,
-                    generation,
-                    maleicacid_tuner_hal2_domain_request::AidlObjectKind::Demux,
-                )?;
-                DemuxFrontendSourceTxn::new(demux_id, frontend_id).try_execute(&mut guard)?
-            };
-            match outcome {
-                DemuxFrontendSourceTxnOutcome::Committed(_) => return Ok(()),
-                DemuxFrontendSourceTxnOutcome::Pending(wait_set) => {
-                    if !wait_set.wait_until_start_idle(deadline)? {
-                        return Err(
-                            crate::registry::RuntimeRegistry::frontend_demux_relation_pending_error(
-                            ),
-                        );
-                    }
-                }
-            }
-        }
     }
 
     pub fn configure_filter_runtime_for_object_with_current_open_type<F>(
@@ -1276,69 +1205,5 @@ impl TunerServiceRuntime {
             sink_entry.public_id(),
             source_entry.public_id(),
         )
-    }
-}
-
-#[cfg(test)]
-mod frontend_relation_retry_tests {
-    use super::*;
-    use maleicacid_tuner_hal2_domain_request::{
-        AidlObjectGeneration, AidlObjectId, AidlObjectKind,
-    };
-    use maleicacid_tuner_hal2_resource_ledger::{LedgerGeneration, LedgerId};
-
-    fn demux_entry(
-        generation: AidlObjectGeneration,
-        lifecycle: crate::RuntimeObjectLifecycle,
-    ) -> crate::RuntimeObjectEntry {
-        crate::RuntimeObjectEntry {
-            object_kind: AidlObjectKind::Demux,
-            object_id: AidlObjectId(930_001),
-            generation,
-            ledger_id: LedgerId(1),
-            ledger_generation: LedgerGeneration(1),
-            owner: crate::RuntimeOwnerRelation::Root,
-            lifecycle,
-        }
-    }
-
-    #[test]
-    fn relation_retry_reentry_rejects_closed_demux() {
-        let mut runtime = TunerServiceRuntime::new();
-        runtime
-            .object_table_mut()
-            .insert(demux_entry(
-                AidlObjectGeneration(7),
-                crate::RuntimeObjectLifecycle::Closed,
-            ))
-            .unwrap();
-        assert!(
-            TunerServiceRuntime::ensure_demux_object_live_for_relation_retry(
-                &runtime,
-                AidlObjectId(930_001),
-                AidlObjectGeneration(7),
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn relation_retry_reentry_rejects_replaced_generation() {
-        let mut runtime = TunerServiceRuntime::new();
-        runtime
-            .object_table_mut()
-            .insert(demux_entry(
-                AidlObjectGeneration(8),
-                crate::RuntimeObjectLifecycle::Live,
-            ))
-            .unwrap();
-        assert!(
-            TunerServiceRuntime::ensure_demux_object_live_for_relation_retry(
-                &runtime,
-                AidlObjectId(930_001),
-                AidlObjectGeneration(7),
-            )
-            .is_err()
-        );
     }
 }
