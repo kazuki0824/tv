@@ -23,7 +23,8 @@ impl Authority {
         if expected_epoch & START_ACTIVE_BIT != 0 {
             return None;
         }
-        authority.state
+        authority
+            .state
             .compare_exchange(
                 expected_epoch,
                 expected_epoch | START_ACTIVE_BIT,
