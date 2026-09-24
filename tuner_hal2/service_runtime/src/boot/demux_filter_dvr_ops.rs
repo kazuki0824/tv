@@ -1332,11 +1332,13 @@ mod frontend_relation_retry_tests {
                 crate::RuntimeObjectLifecycle::Live,
             ))
             .unwrap();
-        assert!(TunerServiceRuntime::ensure_demux_object_live_for_relation_retry(
-            &runtime,
-            AidlObjectId(930_001),
-            AidlObjectGeneration(7),
-        )
-        .is_err());
+        assert!(
+            TunerServiceRuntime::ensure_demux_object_live_for_relation_retry(
+                &runtime,
+                AidlObjectId(930_001),
+                AidlObjectGeneration(7),
+            )
+            .is_err()
+        );
     }
 }
