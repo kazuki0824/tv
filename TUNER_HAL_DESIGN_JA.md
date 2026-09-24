@@ -771,7 +771,7 @@ px4_drv の legacy chardev は同一 device node の二重 open を許さない�
 
 px4 backendは同一device nodeを二重openせず、1回のbackend openからcontrol経路とlive TS readerを派生させる。二重open回避のproduct default実装規約は`tuner_hal2/CODE_CONVENTION.md`の「px4 single-open backend 実装規約」を正とし、旧参照実装の具体API選択を現行実装の根拠にしない。single-open制約下でもtune後にlive TS、section、AV、record/DVR経路へpacketを流せることを公開設計上の不変条件とする。
 
-PX4の選局では、`PTX_START_STREAMING`をbackend submit中に先行実行しない。lock確定後、同一backend sessionからlive readerを派生させ、live pump workerが開始待ち状態へ到達したことを確認してから`PTX_START_STREAMING`を実行する。START成功後は開始待ちを直ちに解除し、その後に`LOCKED` callback、TSID観測その他の後続処理へ進む。これによりHAL自身が`START -> callback -> reader生成 -> worker生成 -> read`の欠落窓を作らない。STARTまたは開始待ち解除に失敗した場合は、同一sessionとlive pumpの既存cleanup入口で一回だけ回収し、初期TS用の第二queue、第二generation、第二stream boundary ownerを追加しない。
+PX4の選局では、`PTX_START_STREAMING`をbackend submit中に先行実行しない。lock確定後、bound demuxが存在する場合だけ同一backend sessionからlive readerを派生させ、live pump workerが開始待ち状態へ到達したことを確認してから`PTX_START_STREAMING`を実行する。bound demuxがない正常なfrontend単独選局ではlive pumpを必須化せず、既存のtune / `LOCKED`経路を維持する。START成功後はprepared pumpが存在する場合だけ開始待ちを直ちに解除し、その後に`LOCKED` callback、TSID観測その他の後続処理へ進む。Linux DVBにはこのprepared-pump順序を適用しない。これによりPX4のHAL自身が`START -> callback -> reader生成 -> worker生成 -> read`の欠落窓を作らない。STARTまたは開始待ち解除に失敗した場合は、同一sessionとlive pumpの既存cleanup入口で一回だけ回収し、初期TS用の第二queue、第二generation、第二stream boundary ownerを追加しない。
 
 採用px4_drvの`PTX_START_STREAMING` ioctl内部に残る`set_capture(true)`からringbuffer write-readyまでの窓はIssue #135の完了条件として扱う。Issue #129のHAL修正はこのdriver内部窓を解消したものとは扱わず、#135でdriver順序と既存userspace互換性を確認して解消する。
 

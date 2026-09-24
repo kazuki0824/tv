@@ -2689,6 +2689,27 @@ mod frontend_readback_tests {
     }
 
     #[test]
+    fn streaming_start_failure_does_not_activate_prepared_pump() {
+        let outcome =
+            frontend_lock_terminal_outcome(FrontendLockQualification::Locked, false).unwrap();
+        let activated = std::cell::Cell::new(0_u32);
+        let error = start_streaming_and_activate_live_pump_for_initial_lock(
+            outcome,
+            || Err(HalError::Unsupported("capture start failure")),
+            || {
+                activated.set(activated.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            HalError::Unsupported("capture start failure")
+        ));
+        assert_eq!(activated.get(), 0);
+    }
+
+    #[test]
     fn streaming_start_failure_is_observed_only_after_lock() {
         let no_signal =
             frontend_lock_terminal_outcome(FrontendLockQualification::Unlocked, true).unwrap();
@@ -2952,6 +2973,7 @@ fn run_frontend_backend_tune_submit_worker(
         runtime,
         ctx,
         session,
+        backend,
         terminal_deadline,
         frontend_id,
         generation,
@@ -2963,6 +2985,7 @@ fn run_frontend_backend_tune_session_worker(
     runtime: SharedRuntime,
     ctx: &FrontendWorkerContext,
     session: FrontendBackendSession,
+    backend: FrontendBackendKind,
     terminal_deadline: Instant,
     frontend_id: i32,
     generation: u64,
@@ -2984,7 +3007,9 @@ fn run_frontend_backend_tune_session_worker(
             frontend_id,
             generation,
         )?;
-        if lock_outcome == FrontendLockWaitOutcome::Locked {
+        if lock_outcome == FrontendLockWaitOutcome::Locked
+            && backend == FrontendBackendKind::Px4CharDevice
+        {
             let live_reader_descriptor = {
                 let guard = lock_runtime(
                     &runtime,
@@ -2993,34 +3018,23 @@ fn run_frontend_backend_tune_session_worker(
                 guard
                     .query()
                     .frontend_live_reader_descriptor_for_live_pump(frontend_id)?
-                    .ok_or_else(|| {
-                        HalError::internal(
-                            HalInternalKind::InvariantViolation,
-                            "ロック確定済み選局にライブTS readerがありません",
-                        )
-                    })?
             };
-            let reader = session.open_live_reader(&live_reader_descriptor)?;
-            live_pump = Some(prepare_frontend_demux_live_pump_from_reader(
-                Arc::clone(&runtime),
-                frontend_id,
-                reader,
-                live_reader_descriptor,
-            )?);
+            if let Some(live_reader_descriptor) = live_reader_descriptor {
+                let reader = session.open_live_reader(&live_reader_descriptor)?;
+                live_pump = Some(prepare_frontend_demux_live_pump_from_reader(
+                    Arc::clone(&runtime),
+                    frontend_id,
+                    reader,
+                    live_reader_descriptor,
+                )?);
+            }
         }
         match start_streaming_and_activate_live_pump_for_initial_lock(
             lock_outcome,
             || session.start_streaming_after_lock(),
-            || {
-                live_pump
-                    .as_mut()
-                    .ok_or_else(|| {
-                        HalError::internal(
-                            HalInternalKind::InvariantViolation,
-                            "開始待ちのライブTSポンプがありません",
-                        )
-                    })?
-                    .activate()
+            || match live_pump.as_mut() {
+                Some(live_pump) => live_pump.activate(),
+                None => Ok(()),
             },
         )? {
             FrontendLockWaitOutcome::Locked => {

@@ -458,6 +458,108 @@ mod tests {
     }
 
     #[test]
+    fn prepared_pump_can_be_stopped_before_activation_without_reading() {
+        let (read_tx, read_rx) = mpsc::channel();
+        struct ObservedReader {
+            read_tx: mpsc::Sender<()>,
+        }
+        impl Read for ObservedReader {
+            fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+                self.read_tx.send(()).unwrap();
+                Ok(0)
+            }
+        }
+
+        let owner = FrontendLivePumpOwner::start_prepared(
+            descriptor(),
+            Box::new(ObservedReader { read_tx }),
+            Box::new(VecSink::default()),
+        )
+        .unwrap();
+        let report = owner.join_after_stop().unwrap();
+        assert!(report.stopped_by_cancel);
+        assert!(read_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn prepared_pump_delivers_first_packets_after_activation() {
+        struct ChannelSink {
+            packet_tx: mpsc::Sender<[u8; TS_PACKET_SIZE]>,
+        }
+        impl FrontendLivePacketSink for ChannelSink {
+            fn deliver_ts_packet(
+                &mut self,
+                packet: &[u8; TS_PACKET_SIZE],
+            ) -> Result<(), HalError> {
+                self.packet_tx.send(*packet).unwrap();
+                Ok(())
+            }
+        }
+
+        let first = packet(0x11);
+        let second = packet(0x22);
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&first);
+        bytes.extend_from_slice(&second);
+        let (packet_tx, packet_rx) = mpsc::channel();
+        let mut owner = FrontendLivePumpOwner::start_prepared(
+            descriptor(),
+            Box::new(Cursor::new(bytes)),
+            Box::new(ChannelSink { packet_tx }),
+        )
+        .unwrap();
+        assert!(packet_rx.try_recv().is_err());
+
+        owner.activate().unwrap();
+        assert_eq!(
+            packet_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            first
+        );
+        assert_eq!(
+            packet_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            second
+        );
+    }
+
+    #[test]
+    fn prepared_pump_start_gates_are_independent() {
+        struct ObservedReader {
+            read_tx: mpsc::Sender<u8>,
+            id: u8,
+        }
+        impl Read for ObservedReader {
+            fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+                self.read_tx.send(self.id).unwrap();
+                Ok(0)
+            }
+        }
+
+        let (read_tx, read_rx) = mpsc::channel();
+        let mut first = FrontendLivePumpOwner::start_prepared(
+            descriptor(),
+            Box::new(ObservedReader {
+                read_tx: read_tx.clone(),
+                id: 1,
+            }),
+            Box::new(VecSink::default()),
+        )
+        .unwrap();
+        let mut second = FrontendLivePumpOwner::start_prepared(
+            descriptor(),
+            Box::new(ObservedReader { read_tx, id: 2 }),
+            Box::new(VecSink::default()),
+        )
+        .unwrap();
+
+        first.activate().unwrap();
+        assert_eq!(read_rx.recv_timeout(Duration::from_secs(1)).unwrap(), 1);
+        assert!(read_rx.try_recv().is_err());
+
+        second.activate().unwrap();
+        assert_eq!(read_rx.recv_timeout(Duration::from_secs(1)).unwrap(), 2);
+    }
+
+    #[test]
     fn permanent_read_failure_retains_each_backend_and_device_path() {
         struct FailedReader;
         impl Read for FailedReader {
