@@ -375,6 +375,7 @@ struct DeviceSession {
     args: Args,
     frontend: Strong<dyn IFrontend>,
     demux: Strong<dyn IDemux>,
+    tuned: bool,
 }
 
 fn compose_cleanup_result<T>(
@@ -440,22 +441,12 @@ impl DeviceSession {
                 cleanup_frontend(&frontend, false),
             );
         }
-        if let Err(error) = frontend.tune(&frontend_settings(&args)) {
-            return compose_cleanup_result(
-                Err(format!("tuneに失敗しました: {error:?}")),
-                cleanup_frontend(&frontend, false),
-            );
-        }
-        if let Err(error) = wait_for_lock(&frontend, Duration::from_millis(args.timeout_ms)) {
-            return compose_cleanup_result(Err(error), cleanup_frontend(&frontend, true));
-        }
-
         let demux_ids = match tuner.getDemuxIds() {
             Ok(ids) => ids,
             Err(error) => {
                 return compose_cleanup_result(
                     Err(format!("getDemuxIdsに失敗しました: {error:?}")),
-                    cleanup_frontend(&frontend, true),
+                    cleanup_frontend(&frontend, false),
                 );
             }
         };
@@ -464,7 +455,7 @@ impl DeviceSession {
             None => {
                 return compose_cleanup_result(
                     Err("利用可能なdemuxがありません".to_string()),
-                    cleanup_frontend(&frontend, true),
+                    cleanup_frontend(&frontend, false),
                 );
             }
         };
@@ -473,14 +464,14 @@ impl DeviceSession {
             Err(error) => {
                 return compose_cleanup_result(
                     Err(format!("openDemuxByIdに失敗しました: {error:?}")),
-                    cleanup_frontend(&frontend, true),
+                    cleanup_frontend(&frontend, false),
                 );
             }
         };
         if let Err(error) = demux.setFrontendDataSource(frontend_id) {
             let mut cleanup_failures = Vec::new();
             collect_cleanup_status(&mut cleanup_failures, "demux.close", demux.close());
-            if let Err(cleanup) = cleanup_frontend(&frontend, true) {
+            if let Err(cleanup) = cleanup_frontend(&frontend, false) {
                 cleanup_failures.push(cleanup);
             }
             return compose_cleanup_result(
@@ -497,10 +488,11 @@ impl DeviceSession {
             args,
             frontend,
             demux,
+            tuned: false,
         })
     }
 
-    fn read_section(&self, pid: i32, table_id: i32) -> Result<Vec<u8>, String> {
+    fn read_section(&mut self, pid: i32, table_id: i32) -> Result<Vec<u8>, String> {
         if !(0..=0x1fff).contains(&pid) {
             return Err("pid must be in 0..8191".to_string());
         }
@@ -527,6 +519,17 @@ impl DeviceSession {
             filter
                 .start()
                 .map_err(|e| format!("start section filter failed: {e:?}"))?;
+
+            if !self.tuned {
+                self.frontend
+                    .tune(&frontend_settings(&self.args))
+                    .map_err(|error| format!("tuneに失敗しました: {error:?}"))?;
+                self.tuned = true;
+                wait_for_lock(
+                    &self.frontend,
+                    Duration::from_millis(self.args.timeout_ms),
+                )?;
+            }
 
             let deadline = Instant::now() + Duration::from_millis(self.args.timeout_ms);
             let mut bytes = Vec::new();
@@ -569,7 +572,7 @@ impl DeviceSession {
     fn close(self) -> Result<(), String> {
         let mut failures = Vec::new();
         collect_cleanup_status(&mut failures, "demux.close", self.demux.close());
-        if let Err(error) = cleanup_frontend(&self.frontend, true) {
+        if let Err(error) = cleanup_frontend(&self.frontend, self.tuned) {
             failures.push(error);
         }
         if failures.is_empty() {
@@ -587,7 +590,7 @@ fn write_response(value: Value) -> Result<(), String> {
     stdout.flush().map_err(|e| e.to_string())
 }
 
-fn handle_request(session: &DeviceSession, request: &Value) -> Result<bool, String> {
+fn handle_request(session: &mut DeviceSession, request: &Value) -> Result<bool, String> {
     let op = request
         .get("op")
         .and_then(Value::as_str)
@@ -622,7 +625,7 @@ fn handle_request(session: &DeviceSession, request: &Value) -> Result<bool, Stri
 }
 
 fn run(args: Args) -> Result<(), String> {
-    let session = DeviceSession::open(args)?;
+    let mut session = DeviceSession::open(args)?;
     let result = (|| {
         write_response(json!({
             "status": "ready",
@@ -645,7 +648,7 @@ fn run(args: Args) -> Result<(), String> {
                     continue;
                 }
             };
-            match handle_request(&session, &request) {
+            match handle_request(&mut session, &request) {
                 Ok(true) => {}
                 Ok(false) => break,
                 Err(error) => {
