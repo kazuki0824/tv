@@ -2696,7 +2696,6 @@ fn start_px4_live_pump_for_current_consumer(
     };
 
     let start_result = session.start_streaming_after_lock();
-    start_guard.release();
     if let Err(primary) = start_result {
         return match prepared.join_after_stop() {
             Ok(_) => Err(primary),
@@ -2713,7 +2712,9 @@ fn start_px4_live_pump_for_current_consumer(
         return Ok(Some(FrontendLockWaitOutcome::Cancelled));
     }
 
-    *live_pump = Some(prepared.activate());
+    let active_pump = prepared.activate();
+    start_guard.release();
+    *live_pump = Some(active_pump);
     Ok(Some(FrontendLockWaitOutcome::Locked))
 }
 
