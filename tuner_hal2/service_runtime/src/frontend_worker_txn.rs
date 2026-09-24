@@ -2568,24 +2568,65 @@ fn prepare_start_streaming_and_activate_live_pump_for_initial_lock<T>(
     live_pump: &mut Option<T>,
     prepare_live_pump: impl FnOnce() -> Result<Option<T>, HalError>,
     cancel_requested: impl Fn() -> bool,
+    prepared_consumer_is_current: impl FnOnce() -> Result<bool, HalError>,
+    discard_prepared_live_pump: impl FnOnce(T) -> Result<(), HalError>,
     start_streaming: impl FnOnce() -> Result<(), HalError>,
     activate_live_pump: impl FnOnce(&mut T) -> Result<(), HalError>,
 ) -> Result<FrontendLockWaitOutcome, HalError> {
     if outcome == FrontendLockWaitOutcome::Locked {
         *live_pump = prepare_live_pump()?;
-        let Some(prepared_live_pump) = live_pump.as_mut() else {
+        if live_pump.is_none() {
             return Ok(outcome);
-        };
+        }
         if cancel_requested() {
             return Ok(FrontendLockWaitOutcome::Cancelled);
+        }
+        if !prepared_consumer_is_current()? {
+            if let Some(prepared_live_pump) = live_pump.take() {
+                discard_prepared_live_pump(prepared_live_pump)?;
+            }
+            return Ok(outcome);
         }
         start_streaming()?;
         if cancel_requested() {
             return Ok(FrontendLockWaitOutcome::Cancelled);
         }
-        activate_live_pump(prepared_live_pump)?;
+        if let Some(prepared_live_pump) = live_pump.as_mut() {
+            activate_live_pump(prepared_live_pump)?;
+        }
     }
     Ok(outcome)
+}
+
+fn live_reader_descriptor_with_bound_demux_snapshot(
+    runtime: &SharedRuntime,
+    frontend_id: i32,
+    context: &'static str,
+) -> Result<Option<(FrontendLiveReaderDescriptor, BoundDemuxGenerationSnapshot)>, HalError> {
+    let guard = lock_runtime(runtime, context)?;
+    let descriptor = guard
+        .query()
+        .frontend_live_reader_descriptor_for_live_pump(frontend_id)?;
+    let Some(descriptor) = descriptor else {
+        return Ok(None);
+    };
+    let snapshot = current_bound_demux_generation_snapshot(&guard, frontend_id)?;
+    if snapshot.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((descriptor, snapshot)))
+}
+
+fn bound_demux_snapshot_is_current(
+    runtime: &SharedRuntime,
+    frontend_id: i32,
+    expected: &BoundDemuxGenerationSnapshot,
+) -> Result<bool, HalError> {
+    let guard = lock_runtime(
+        runtime,
+        "フロントエンドlive pump開始前relation再検証中にservice runtimeのロックが汚染されました",
+    )?;
+    Ok(current_bound_demux_generation_snapshot(&guard, frontend_id)? == *expected)
 }
 
 fn start_px4_live_pump_after_late_bind<T>(
@@ -2597,6 +2638,7 @@ fn start_px4_live_pump_after_late_bind<T>(
     live_pump: &mut Option<T>,
     prepare_live_pump: impl FnOnce(FrontendLiveReaderDescriptor) -> Result<T, HalError>,
     cancel_requested: impl Fn() -> bool,
+    discard_prepared_live_pump: impl FnOnce(T) -> Result<(), HalError>,
     start_streaming: impl FnOnce() -> Result<(), HalError>,
     activate_live_pump: impl FnOnce(&mut T) -> Result<(), HalError>,
 ) -> Result<Option<FrontendLockWaitOutcome>, HalError> {
@@ -2608,22 +2650,34 @@ fn start_px4_live_pump_after_late_bind<T>(
     } else {
         FrontendLockWaitOutcome::NoSignal
     };
+    let prepared_snapshot = std::cell::RefCell::new(None);
     let outcome = prepare_start_streaming_and_activate_live_pump_for_initial_lock(
         outcome,
         live_pump,
         || {
-            let descriptor = {
-                let guard = lock_runtime(
-                    runtime,
-                    "フロントエンドlive pump遅延結合確認中にservice runtimeのロックが汚染されました",
-                )?;
-                guard
-                    .query()
-                    .frontend_live_reader_descriptor_for_live_pump(frontend_id)?
+            let prepared = live_reader_descriptor_with_bound_demux_snapshot(
+                runtime,
+                frontend_id,
+                "フロントエンドlive pump遅延結合確認中にservice runtimeのロックが汚染されました",
+            )?;
+            let Some((descriptor, snapshot)) = prepared else {
+                return Ok(None);
             };
-            descriptor.map(prepare_live_pump).transpose()
+            *prepared_snapshot.borrow_mut() = Some(snapshot);
+            prepare_live_pump(descriptor).map(Some)
         },
         cancel_requested,
+        || {
+            let snapshot = prepared_snapshot.borrow();
+            let snapshot = snapshot.as_ref().ok_or_else(|| {
+                HalError::internal(
+                    HalInternalKind::InvariantViolation,
+                    "prepared live pumpのrelation snapshotがありません",
+                )
+            })?;
+            bound_demux_snapshot_is_current(runtime, frontend_id, snapshot)
+        },
+        discard_prepared_live_pump,
         start_streaming,
         activate_live_pump,
     )?;
@@ -2736,6 +2790,8 @@ mod frontend_readback_tests {
                 Ok(Some(()))
             },
             || false,
+            || Ok(true),
+            |_| Ok(()),
             || {
                 order.borrow_mut().push("開始");
                 Ok(())
@@ -2762,6 +2818,8 @@ mod frontend_readback_tests {
             &mut live_pump,
             || Ok(None),
             || false,
+            || Ok(true),
+            |_| Ok(()),
             || {
                 started.set(started.get() + 1);
                 Ok(())
@@ -2785,6 +2843,8 @@ mod frontend_readback_tests {
             &mut live_pump,
             || Ok(None),
             || false,
+            || Ok(true),
+            |_| Ok(()),
             || {
                 order.borrow_mut().push("開始");
                 Ok(())
@@ -2806,6 +2866,8 @@ mod frontend_readback_tests {
                 Ok(Some(()))
             },
             || false,
+            || Ok(true),
+            |_| Ok(()),
             || {
                 order.borrow_mut().push("開始");
                 Ok(())
@@ -2831,6 +2893,8 @@ mod frontend_readback_tests {
             &mut live_pump,
             || Ok(Some(())),
             || false,
+            || Ok(true),
+            |_| Ok(()),
             || Err(HalError::Unsupported("取り込み開始失敗")),
             |_| {
                 activated.set(activated.get() + 1);
@@ -2859,6 +2923,8 @@ mod frontend_readback_tests {
                 Ok(Some(()))
             },
             || cancelled.get(),
+            || Ok(true),
+            |_| Ok(()),
             || {
                 started.set(started.get() + 1);
                 Ok(())
@@ -2887,6 +2953,8 @@ mod frontend_readback_tests {
             &mut live_pump,
             || Ok(Some(())),
             || cancelled.get(),
+            || Ok(true),
+            |_| Ok(()),
             || {
                 cancelled.set(true);
                 Ok(())
@@ -3200,6 +3268,7 @@ fn run_frontend_backend_tune_session_worker(
             frontend_id,
             generation,
         )?;
+        let prepared_bound_demux_snapshot = std::cell::RefCell::new(None);
         match prepare_start_streaming_and_activate_live_pump_for_initial_lock(
             lock_outcome,
             &mut live_pump,
@@ -3207,18 +3276,15 @@ fn run_frontend_backend_tune_session_worker(
                 if backend != FrontendBackendKind::Px4CharDevice {
                     return Ok(None);
                 }
-                let live_reader_descriptor = {
-                    let guard = lock_runtime(
-                        &runtime,
-                        "フロントエンドlive pump準備中にservice runtimeのロックが汚染されました",
-                    )?;
-                    guard
-                        .query()
-                        .frontend_live_reader_descriptor_for_live_pump(frontend_id)?
-                };
-                let Some(live_reader_descriptor) = live_reader_descriptor else {
+                let prepared = live_reader_descriptor_with_bound_demux_snapshot(
+                    &runtime,
+                    frontend_id,
+                    "フロントエンドlive pump準備中にservice runtimeのロックが汚染されました",
+                )?;
+                let Some((live_reader_descriptor, snapshot)) = prepared else {
                     return Ok(None);
                 };
+                *prepared_bound_demux_snapshot.borrow_mut() = Some(snapshot);
                 let reader = session.open_live_reader(&live_reader_descriptor)?;
                 prepare_frontend_demux_live_pump_from_reader(
                     Arc::clone(&runtime),
@@ -3229,6 +3295,17 @@ fn run_frontend_backend_tune_session_worker(
                 .map(Some)
             },
             || ctx.cancel_requested(),
+            || {
+                let snapshot = prepared_bound_demux_snapshot.borrow();
+                let snapshot = snapshot.as_ref().ok_or_else(|| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "prepared live pumpのrelation snapshotがありません",
+                    )
+                })?;
+                bound_demux_snapshot_is_current(&runtime, frontend_id, snapshot)
+            },
+            |live_pump| live_pump.join_after_stop().map(|_| ()),
             || session.start_streaming_after_lock(),
             |live_pump| live_pump.activate(),
         )? {
@@ -3351,6 +3428,7 @@ fn run_frontend_backend_tune_session_worker(
                         )
                     },
                     || ctx.cancel_requested(),
+                    |live_pump| live_pump.join_after_stop().map(|_| ()),
                     || session.start_streaming_after_lock(),
                     |live_pump| live_pump.activate(),
                 )? {
@@ -5768,6 +5846,7 @@ mod scan_contract_tests {
                 Ok(())
             },
             || false,
+            |_| Ok(()),
             || {
                 starts.set(starts.get() + 1);
                 Ok(())
@@ -5803,6 +5882,7 @@ mod scan_contract_tests {
                 Ok(())
             },
             || false,
+            |_| Ok(()),
             || {
                 starts.set(starts.get() + 1);
                 Ok(())
@@ -5818,6 +5898,98 @@ mod scan_contract_tests {
         assert_eq!(starts.get(), 1);
         assert_eq!(activates.get(), 1);
         assert_eq!(live_pump, Some(()));
+    }
+
+    #[test]
+    fn production_late_bind_relation_churn_skips_start_and_discards_prepared_pump() {
+        let frontend_id = 1_000_000;
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let demux_id = {
+            let mut service = runtime.lock().unwrap();
+            assert_eq!(
+                service.boot_from_probe_results([FrontendProbeOutcome::Available {
+                    id: FrontendRuntimeId(frontend_id),
+                    backend: FrontendBackendKind::Px4CharDevice,
+                    system: FrontendSystem::IsdbT,
+                    path: "/dev/px4video0".into(),
+                    lnb_profile: None,
+                    satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
+                    capability: FrontendCapabilitySnapshot {
+                        scalar: FrontendScalarCapability {
+                            min_frequency_hz: 110_642_857,
+                            max_frequency_hz: 767_642_857,
+                            min_symbol_rate: 0,
+                            max_symbol_rate: 0,
+                            acquire_range_hz: 0,
+                        },
+                        exclusive_group_id: 0x1000_0000,
+                        isdbt_segment: Some(crate::registry::IsdbtSegmentCapability {
+                            is_segment_auto: true,
+                            is_full_segment: true,
+                        }),
+                    },
+                }]),
+                ServiceBootOutcome::Ready,
+            );
+            let generation = service
+                .frontend_txn()
+                .prepare_frontend_worker_generation(frontend_id, FrontendWorkerKind::Tune)
+                .unwrap();
+            service
+                .frontend_txn()
+                .install_frontend_live_reader_descriptor_for_generation(
+                    frontend_id,
+                    FrontendWorkerKind::Tune,
+                    generation,
+                )
+                .unwrap();
+            let demux = service.allocate_demux_runtime().unwrap();
+            service
+                .set_demux_frontend_data_source(demux.id.0, frontend_id)
+                .unwrap();
+            demux.id.0
+        };
+
+        let starts = std::cell::Cell::new(0_u32);
+        let activates = std::cell::Cell::new(0_u32);
+        let discards = std::cell::Cell::new(0_u32);
+        let mut live_pump = None;
+        let outcome = start_px4_live_pump_after_late_bind(
+            &runtime,
+            frontend_id,
+            FrontendBackendKind::Px4CharDevice,
+            FrontendSignalState::Locked,
+            false,
+            &mut live_pump,
+            |_descriptor| {
+                runtime
+                    .lock()
+                    .unwrap()
+                    .unregister_demux_runtime(demux_id)
+                    .unwrap();
+                Ok(())
+            },
+            || false,
+            |_| {
+                discards.set(discards.get() + 1);
+                Ok(())
+            },
+            || {
+                starts.set(starts.get() + 1);
+                Ok(())
+            },
+            |_| {
+                activates.set(activates.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(outcome, Some(FrontendLockWaitOutcome::Locked));
+        assert_eq!(starts.get(), 0);
+        assert_eq!(activates.get(), 0);
+        assert_eq!(discards.get(), 1);
+        assert_eq!(live_pump, None);
     }
 
     #[test]
