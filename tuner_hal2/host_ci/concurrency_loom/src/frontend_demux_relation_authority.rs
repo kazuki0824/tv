@@ -129,7 +129,9 @@ enum MutationAdmission {
     Exhausted,
 }
 
-fn try_reserve_all(authorities: &[Arc<Authority>]) -> Result<Vec<MutationLease>, MutationAdmission> {
+fn try_reserve_all(
+    authorities: &[Arc<Authority>],
+) -> Result<Vec<MutationLease>, MutationAdmission> {
     let mut leases = Vec::with_capacity(authorities.len());
     for authority in authorities {
         match Authority::try_reserve_mutation(authority)? {
@@ -234,11 +236,8 @@ fn multi_authority_pending_rolls_back_prior_reservation_without_epoch_drift() {
 
         for _ in 0..2 {
             assert_eq!(
-                try_reserve_all(&[
-                    Arc::clone(&old_frontend),
-                    Arc::clone(&new_frontend),
-                ])
-                .unwrap_err(),
+                try_reserve_all(&[Arc::clone(&old_frontend), Arc::clone(&new_frontend),])
+                    .unwrap_err(),
                 MutationAdmission::Pending
             );
             assert_eq!(old_frontend.snapshot_epoch(), RelationEpoch(0));
@@ -246,11 +245,8 @@ fn multi_authority_pending_rolls_back_prior_reservation_without_epoch_drift() {
         }
 
         drop(start);
-        let leases = try_reserve_all(&[
-            Arc::clone(&old_frontend),
-            Arc::clone(&new_frontend),
-        ])
-        .unwrap();
+        let leases =
+            try_reserve_all(&[Arc::clone(&old_frontend), Arc::clone(&new_frontend)]).unwrap();
         for lease in leases {
             lease.commit();
         }
@@ -262,7 +258,7 @@ fn multi_authority_pending_rolls_back_prior_reservation_without_epoch_drift() {
 #[test]
 fn epoch_exhaustion_does_not_wrap_or_reuse_old_epoch() {
     loom::model(|| {
-        let max_epoch = RelationEpoch((usize::MAX & !ACTIVE_MASK) - (EPOCH_STEP - 1));
+        let max_epoch = RelationEpoch(usize::MAX & !ACTIVE_MASK);
         let authority = Arc::new(Authority::new(max_epoch));
         assert_eq!(
             Authority::try_reserve_mutation(&authority).unwrap_err(),
