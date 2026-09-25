@@ -18,17 +18,22 @@ use maleicacid_tuner_hal2_common::{
 use crate::runtime::thread_result_owner::{ThreadResultOwner, ThreadResultPoll};
 
 #[cfg(test)]
-static PREPARE_READY_TEST_BARRIER: std::sync::Mutex<
-    Option<(
-        i32,
-        std::sync::mpsc::Sender<()>,
-        std::sync::mpsc::Receiver<()>,
-    )>,
-> = std::sync::Mutex::new(None);
+type PrepareReadyTestBarrier = (
+    i32,
+    std::sync::mpsc::Sender<()>,
+    std::sync::mpsc::Receiver<()>,
+);
+
+#[cfg(test)]
+type PrepareCancelBranchTestSignal = (i32, std::sync::mpsc::Sender<()>);
+
+#[cfg(test)]
+static PREPARE_READY_TEST_BARRIER: std::sync::Mutex<Option<PrepareReadyTestBarrier>> =
+    std::sync::Mutex::new(None);
 
 #[cfg(test)]
 static PREPARE_CANCEL_BRANCH_TEST_SIGNAL: std::sync::Mutex<
-    Option<(i32, std::sync::mpsc::Sender<()>)>,
+    Option<PrepareCancelBranchTestSignal>,
 > = std::sync::Mutex::new(None);
 
 #[cfg(test)]
@@ -205,6 +210,7 @@ impl PreparedFrontendLivePump {
         caller: &FrontendWorkerContext,
     ) -> Result<Option<Self>, HalError> {
         let caller_wake = caller.clone();
+        #[cfg(test)]
         let frontend_id = descriptor.frontend_id;
         let ready = Arc::new(AtomicBool::new(false));
         let worker_ready = Arc::clone(&ready);
