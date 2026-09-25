@@ -132,7 +132,9 @@ impl DemuxFrontendSourceTxn {
         {
             crate::registry::DemuxFrontendBindingChangeAdmission::Ready(prepared) => prepared,
             crate::registry::DemuxFrontendBindingChangeAdmission::Pending => {
-                return Err(crate::registry::RuntimeRegistry::frontend_demux_relation_pending_error())
+                return Err(
+                    crate::registry::RuntimeRegistry::frontend_demux_relation_pending_error(),
+                )
             }
         };
 
