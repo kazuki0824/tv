@@ -1219,6 +1219,10 @@ impl<K, A, R> WorkerRuntimeSupervisor<K, A, R> {
             .map_err(maleicacid_tuner_hal2_common::HalError::LockPoisoned)
     }
 
+    pub fn notify_worker(&self) {
+        self.worker_context.wake.notify();
+    }
+
     pub fn start_supervised<O>(
         &self,
         key: K,
