@@ -4,6 +4,7 @@
 //! 明示的なpacket sinkを必須とし、demux bindingなしで完了に見える無処理成功sinkは提供しない。
 
 use super::reader::{FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind};
+use super::frontend_worker::FrontendWorkerContext;
 use maleicacid_tuner_hal2_control_core::WorkerContext;
 use std::io::{self, Read};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -110,7 +111,7 @@ impl FrontendLivePumpOwner {
         descriptor: FrontendLiveReaderDescriptor,
         reader: Box<dyn Read + Send>,
         sink: Box<dyn FrontendLivePacketSink>,
-        caller: &WorkerContext,
+        caller: &FrontendWorkerContext,
     ) -> Result<Option<PreparedFrontendLivePump>, HalError> {
         PreparedFrontendLivePump::start(descriptor, reader, sink, caller)
     }
@@ -137,7 +138,7 @@ impl PreparedFrontendLivePump {
         descriptor: FrontendLiveReaderDescriptor,
         mut reader: Box<dyn Read + Send>,
         mut sink: Box<dyn FrontendLivePacketSink>,
-        caller: &WorkerContext,
+        caller: &FrontendWorkerContext,
     ) -> Result<Option<Self>, HalError> {
         let caller_wake = caller.clone();
         let ready = Arc::new(AtomicBool::new(false));
@@ -164,7 +165,7 @@ impl PreparedFrontendLivePump {
             })?;
 
         while !ready.load(Ordering::Acquire) {
-            if caller.stop_requested() {
+            if caller.cancel_requested() {
                 let report = thread_result.join_after_stop()?;
                 debug_assert!(report.stopped_by_cancel);
                 return Ok(None);
