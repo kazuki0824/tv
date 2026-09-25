@@ -438,11 +438,7 @@ mod tests {
         let frontend_id = 9;
         let (child_entered_tx, child_entered_rx) = mpsc::channel();
         let (child_resume_tx, child_resume_rx) = mpsc::channel();
-        install_prepare_ready_test_barrier(
-            frontend_id,
-            child_entered_tx,
-            child_resume_rx,
-        );
+        install_prepare_ready_test_barrier(frontend_id, child_entered_tx, child_resume_rx);
         let (cancel_branch_tx, cancel_branch_rx) = mpsc::channel();
         install_prepare_cancel_branch_test_signal(frontend_id, cancel_branch_tx);
 
@@ -490,9 +486,7 @@ mod tests {
         assert!(result_rx.recv_timeout(Duration::from_secs(1)).unwrap());
 
         for _ in 0..100 {
-            if let Some(outcome) =
-                registry.take_completed(frontend_id, FrontendWorkerKind::Tune)
-            {
+            if let Some(outcome) = registry.take_completed(frontend_id, FrontendWorkerKind::Tune) {
                 assert!(matches!(
                     outcome,
                     FrontendWorkerStopOutcome::Completed { result: Ok(()), .. }
