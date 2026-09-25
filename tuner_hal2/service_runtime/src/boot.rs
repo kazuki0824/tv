@@ -520,12 +520,7 @@ pub(crate) fn prepare_frontend_demux_live_pump_from_reader(
     descriptor: maleicacid_tuner_hal2_device::FrontendLiveReaderDescriptor,
 ) -> Result<Option<maleicacid_tuner_hal2_device::PreparedFrontendLivePump>, HalError> {
     let sink = frontend_demux_live_packet_sink(&runtime, frontend_id)?;
-    maleicacid_tuner_hal2_device::FrontendLivePumpOwner::prepare(
-        descriptor,
-        reader,
-        sink,
-        caller,
-    )
+    maleicacid_tuner_hal2_device::FrontendLivePumpOwner::prepare(descriptor, reader, sink, caller)
 }
 
 /// サービス状態所有者に従属する読取り用診断参照。通常状態の変更権限を持たない。
