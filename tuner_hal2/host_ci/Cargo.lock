@@ -91,6 +91,7 @@ dependencies = [
  "maleicacid-tuner-hal2-device-host-ci",
  "maleicacid-tuner-hal2-domain-request-host-ci",
  "maleicacid-tuner-hal2-lnb-host-ci",
+ "static_assertions",
 ]
 
 [[package]]
