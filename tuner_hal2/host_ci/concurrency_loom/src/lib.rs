@@ -299,8 +299,6 @@ mod frontend_worker_cancel_order;
 #[cfg(test)]
 mod lnb_registry_io_authority;
 #[cfg(test)]
-mod px4_start_guard_activation;
-#[cfg(test)]
 mod queue_epoch_protocol;
 #[cfg(test)]
 mod worker_runtime;
