@@ -301,6 +301,8 @@ mod lnb_registry_io_authority;
 #[cfg(test)]
 mod px4_prepared_pump_handshake;
 #[cfg(test)]
+mod px4_relation_start_atomicity;
+#[cfg(test)]
 mod px4_start_guard_lifecycle;
 #[cfg(test)]
 mod queue_epoch_protocol;

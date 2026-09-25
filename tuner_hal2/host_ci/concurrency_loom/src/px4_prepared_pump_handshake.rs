@@ -80,34 +80,22 @@ fn activate_releases_the_prepared_pump_only_after_ready_publication() {
 }
 
 #[test]
-fn stop_wins_over_activation_when_both_are_observed_before_read() {
+fn stop_published_before_activation_prevents_read_start() {
     loom::model(|| {
         let state = Arc::new((Mutex::new(PumpState::default()), Condvar::new()));
-        let child = spawn_prepared_pump(Arc::clone(&state));
 
-        let activate_state = Arc::clone(&state);
-        let activate = loom::thread::spawn(move || {
-            let (state, wake) = &*activate_state;
-            let mut state = state.lock().unwrap();
-            state.activate = true;
-            wake.notify_all();
-        });
-
-        let stop_state = Arc::clone(&state);
-        let stop = loom::thread::spawn(move || {
-            let (state, wake) = &*stop_state;
-            let mut state = state.lock().unwrap();
+        {
+            let mut state = state.0.lock().unwrap();
             state.stop = true;
-            wake.notify_all();
-        });
+            state.activate = true;
+        }
 
-        activate.join().unwrap();
-        stop.join().unwrap();
+        let child = spawn_prepared_pump(Arc::clone(&state));
         child.join().unwrap();
 
         let state = state.0.lock().unwrap();
-        if state.stop {
-            assert!(!state.read_started || state.activate);
-        }
+        assert!(state.stop);
+        assert!(state.activate);
+        assert!(!state.read_started);
     });
 }

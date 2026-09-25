@@ -2443,6 +2443,165 @@ mod single_use_contract_tests {
         let _: fn(FrontendDemuxStartGuard) = release_by_value;
     }
 
+    fn register_frontend_for_relation_test(
+        registry: &mut RuntimeRegistry,
+        id: FrontendRuntimeId,
+    ) {
+        registry
+            .register_frontend(FrontendRegistryEntry {
+                id,
+                backend: FrontendBackendKind::Px4CharDevice,
+                system: FrontendSystem::IsdbT,
+                device_path: PathBuf::from(format!("/dev/px4video{}", id.0)),
+                capability: FrontendCapabilitySnapshot {
+                    scalar: FrontendScalarCapability {
+                        min_frequency_hz: 110_642_857,
+                        max_frequency_hz: 767_642_857,
+                        min_symbol_rate: 0,
+                        max_symbol_rate: 0,
+                        acquire_range_hz: 0,
+                    },
+                    exclusive_group_id: id.0,
+                    isdbt_segment: Some(IsdbtSegmentCapability {
+                        is_segment_auto: true,
+                        is_full_segment: true,
+                    }),
+                },
+                lnb_profile: None,
+                satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn relation_switch_is_pending_when_previous_frontend_start_is_active() {
+        let old = FrontendRuntimeId(10);
+        let new = FrontendRuntimeId(11);
+        let demux = DemuxRuntimeId(20);
+        let mut registry = RuntimeRegistry::default();
+        register_frontend_for_relation_test(&mut registry, old);
+        register_frontend_for_relation_test(&mut registry, new);
+        registry.register_demux(DemuxRegistryEntry { id: demux }).unwrap();
+
+        let initial = match registry
+            .prepare_demux_frontend_binding_change(demux, Some(old))
+            .unwrap()
+        {
+            DemuxFrontendBindingChangeAdmission::Ready(prepared) => prepared,
+            DemuxFrontendBindingChangeAdmission::Pending => panic!("initial bind was pending"),
+        };
+        registry
+            .commit_prepared_demux_frontend_binding_change(initial)
+            .unwrap();
+
+        let guard = registry.try_begin_frontend_demux_start(old).unwrap().unwrap();
+        assert!(matches!(
+            registry
+                .prepare_demux_frontend_binding_change(demux, Some(new))
+                .unwrap(),
+            DemuxFrontendBindingChangeAdmission::Pending
+        ));
+        guard.release();
+    }
+
+    #[test]
+    fn relation_switch_is_pending_when_next_frontend_start_is_active() {
+        let old = FrontendRuntimeId(12);
+        let new = FrontendRuntimeId(13);
+        let demux = DemuxRuntimeId(21);
+        let mut registry = RuntimeRegistry::default();
+        register_frontend_for_relation_test(&mut registry, old);
+        register_frontend_for_relation_test(&mut registry, new);
+        registry.register_demux(DemuxRegistryEntry { id: demux }).unwrap();
+
+        let initial = match registry
+            .prepare_demux_frontend_binding_change(demux, Some(old))
+            .unwrap()
+        {
+            DemuxFrontendBindingChangeAdmission::Ready(prepared) => prepared,
+            DemuxFrontendBindingChangeAdmission::Pending => panic!("initial bind was pending"),
+        };
+        registry
+            .commit_prepared_demux_frontend_binding_change(initial)
+            .unwrap();
+
+        let guard = registry.try_begin_frontend_demux_start(new).unwrap().unwrap();
+        assert!(matches!(
+            registry
+                .prepare_demux_frontend_binding_change(demux, Some(new))
+                .unwrap(),
+            DemuxFrontendBindingChangeAdmission::Pending
+        ));
+        guard.release();
+    }
+
+    #[test]
+    fn no_op_binding_change_remains_ready_while_start_guard_is_active() {
+        let frontend = FrontendRuntimeId(14);
+        let demux = DemuxRuntimeId(22);
+        let mut registry = RuntimeRegistry::default();
+        register_frontend_for_relation_test(&mut registry, frontend);
+        registry.register_demux(DemuxRegistryEntry { id: demux }).unwrap();
+
+        let initial = match registry
+            .prepare_demux_frontend_binding_change(demux, Some(frontend))
+            .unwrap()
+        {
+            DemuxFrontendBindingChangeAdmission::Ready(prepared) => prepared,
+            DemuxFrontendBindingChangeAdmission::Pending => panic!("initial bind was pending"),
+        };
+        registry
+            .commit_prepared_demux_frontend_binding_change(initial)
+            .unwrap();
+
+        let guard = registry
+            .try_begin_frontend_demux_start(frontend)
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            registry
+                .prepare_demux_frontend_binding_change(demux, Some(frontend))
+                .unwrap(),
+            DemuxFrontendBindingChangeAdmission::Ready(_)
+        ));
+        guard.release();
+    }
+
+    #[test]
+    fn prepared_binding_commit_rejects_relation_changed_after_prepare() {
+        let old = FrontendRuntimeId(15);
+        let new = FrontendRuntimeId(16);
+        let demux = DemuxRuntimeId(23);
+        let mut registry = RuntimeRegistry::default();
+        register_frontend_for_relation_test(&mut registry, old);
+        register_frontend_for_relation_test(&mut registry, new);
+        registry.register_demux(DemuxRegistryEntry { id: demux }).unwrap();
+
+        let prepared = match registry
+            .prepare_demux_frontend_binding_change(demux, Some(old))
+            .unwrap()
+        {
+            DemuxFrontendBindingChangeAdmission::Ready(prepared) => prepared,
+            DemuxFrontendBindingChangeAdmission::Pending => panic!("prepare was pending"),
+        };
+
+        let competing = match registry
+            .prepare_demux_frontend_binding_change(demux, Some(new))
+            .unwrap()
+        {
+            DemuxFrontendBindingChangeAdmission::Ready(prepared) => prepared,
+            DemuxFrontendBindingChangeAdmission::Pending => panic!("competing prepare was pending"),
+        };
+        registry
+            .commit_prepared_demux_frontend_binding_change(competing)
+            .unwrap();
+
+        assert!(matches!(
+            registry.commit_prepared_demux_frontend_binding_change(prepared),
+            Err(HalError::InvalidState { .. })
+        ));
+    }
+
     #[test]
     fn prepared_demux_frontend_binding_change_is_single_use() {
         static_assertions::assert_not_impl_any!(PreparedDemuxFrontendBindingChange: Clone, Copy);
