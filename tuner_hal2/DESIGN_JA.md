@@ -279,6 +279,7 @@ AIDL/Binder等の外部API・実行基盤が、境界に現れる型へ`Send` / 
 | `PlaybackConsumeTxn` | Playback消費処理とflush / close等の境界要求 | 消費処理状態の変更主体は一つとし、他経路は`QueueEpochProtocol`等の型付き境界から影響させる。消費処理状態を複数実行主体が直接変更しない |
 | `AvSyncRegistry` | 設定 / 登録解除、Filter close、demux後片付け | A/V同期関係変更を一つの正本で確定する |
 | `PcrClockAnchorStore` | PCR観測、ストリーム境界無効化 | 同一世代の観測と無効化の順序を一つの正本で確定する |
+| `ServiceFailureState` | service-critical確定、service runtimeロック汚染検出、診断snapshot読取り | 同一のfailure stateで不可逆な利用停止ラッチと飽和する汚染検出回数を原子的に確定し、snapshotは読取り専用とする。ロック汚染経路から通常のservice runtime mutex復旧へ戻さない |
 | `PacketPipeline` | パケット処理、ストリーム境界変更 | パケット状態の変更主体は一つとし、型付き世代柵・指示で境界競合を解消する |
 
 この表は `Send` / `Sync` を要求する表ではない。具体型のトレイト要件は、AIDL/Binder等の外部API・実行基盤が要求する型制約と、選択したRust物理形で実際に生じるスレッド間移送・共有参照の双方から別途決める。
@@ -313,8 +314,9 @@ AIDL/Binder等の外部API・実行基盤が、境界に現れる型へ`Send` / 
 | 26 | `PacketPipeline` | A | demuxごとの単一packet mutation ownerを基本とし、boundaryとの競合はtyped generation fence / commandで同期する。packetごとの外側mutexを標準形にしない | typed `TsInputOrigin`のgenerationとstream boundary generationを使用し、第二の同義generation namespaceを持たない | — |
 | 27 | `WatermarkClassifier` | C | なし | なし | — |
 | 28 | `LnbRegistry` | A | 同一物理LNB・共有レールに対する永続状態変更と物理I/O権限をowner内で直列化する | LNB state generation + prepared control mutation + 物理I/O authority | — |
+| 29 | `ServiceFailureState` | A | `mark_service_critical` / `mark_shared_service_critical` / `lock_shared`のロック汚染検出とdiagnostic snapshot読取りを同一failure stateへ接続し、不可逆なservice-criticalラッチと汚染検出回数を原子的に更新する | 不可逆な`ServiceCritical`ラッチ + 飽和するruntime lock poison counter。独自generation・再有効化tokenは持たず、再初期化で失効を解除しない | — |
 
-A=13、B=13、C=2であり、`WorkerHandle`を第二のAまたは第二の論理契約として数えない。
+A=14、B=13、C=2であり、`WorkerHandle`を第二のAまたは第二の論理契約として数えない。
 
 ##### 所有者間排他制御の取得規則（有向非巡回図）
 
