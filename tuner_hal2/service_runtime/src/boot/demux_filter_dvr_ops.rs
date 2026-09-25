@@ -27,12 +27,6 @@ pub(crate) struct DemuxFrontendSourceTxn {
     demux_id: DemuxRuntimeId,
     mutation: DemuxFrontendSourceMutation,
 }
-
-enum DemuxFrontendSourceTxnOutcome {
-    Committed(StreamBoundaryReport),
-    Pending,
-}
-
 enum DemuxFrontendSourceMutation {
     Bind(FrontendRuntimeId),
     Unbind {
@@ -67,18 +61,6 @@ impl DemuxFrontendSourceTxn {
         self,
         runtime: &mut TunerServiceRuntime,
     ) -> Result<StreamBoundaryReport, HalError> {
-        match self.try_execute(runtime)? {
-            DemuxFrontendSourceTxnOutcome::Committed(report) => Ok(report),
-            DemuxFrontendSourceTxnOutcome::Pending => {
-                Err(crate::registry::RuntimeRegistry::frontend_demux_relation_pending_error())
-            }
-        }
-    }
-
-    fn try_execute(
-        self,
-        runtime: &mut TunerServiceRuntime,
-    ) -> Result<DemuxFrontendSourceTxnOutcome, HalError> {
         let (next_frontend_id, reason) = match self.mutation {
             DemuxFrontendSourceMutation::Bind(next_frontend_id) => {
                 let Some(frontend_runtime) = runtime.registry.frontend_runtime(next_frontend_id)
@@ -120,13 +102,11 @@ impl DemuxFrontendSourceTxn {
                                 "demux runtime is missing",
                             )
                         })?;
-                    return Ok(DemuxFrontendSourceTxnOutcome::Committed(
-                        StreamBoundaryReport {
-                            reason: PipelineBoundaryReason::TuneStart,
-                            reset: PipelineResetReport::default(),
-                            next_generation: DemuxStreamGeneration(generation),
-                        },
-                    ));
+                    return Ok(StreamBoundaryReport {
+                        reason: PipelineBoundaryReason::TuneStart,
+                        reset: PipelineResetReport::default(),
+                        next_generation: DemuxStreamGeneration(generation),
+                    });
                 }
                 (Some(next_frontend_id), PipelineBoundaryReason::TuneStart)
             }
@@ -152,7 +132,7 @@ impl DemuxFrontendSourceTxn {
         {
             crate::registry::DemuxFrontendBindingChangeAdmission::Ready(prepared) => prepared,
             crate::registry::DemuxFrontendBindingChangeAdmission::Pending => {
-                return Ok(DemuxFrontendSourceTxnOutcome::Pending)
+                return Err(crate::registry::RuntimeRegistry::frontend_demux_relation_pending_error())
             }
         };
 
@@ -181,7 +161,7 @@ impl DemuxFrontendSourceTxn {
         runtime
             .registry
             .commit_prepared_demux_frontend_binding_change(prepared_binding_change)?;
-        Ok(DemuxFrontendSourceTxnOutcome::Committed(report))
+        Ok(report)
     }
 }
 
