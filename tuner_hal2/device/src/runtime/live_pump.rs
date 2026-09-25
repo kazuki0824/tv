@@ -164,8 +164,16 @@ impl PreparedFrontendLivePump {
                 run_frontend_live_pump(&mut reader, &mut sink, &control, &descriptor)
             })?;
 
+        if caller.cancel_requested() {
+            thread_result.request_stop();
+            let report = thread_result.join_after_stop()?;
+            debug_assert!(report.stopped_by_cancel);
+            return Ok(None);
+        }
+
         while !ready.load(Ordering::Acquire) {
             if caller.cancel_requested() {
+                thread_result.request_stop();
                 let report = thread_result.join_after_stop()?;
                 debug_assert!(report.stopped_by_cancel);
                 return Ok(None);
@@ -347,6 +355,72 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         panic!("準備親ワーカーが終了していません");
+    }
+
+    #[test]
+    fn caller_cancel_during_prepare_stops_child_and_returns_none() {
+        use crate::runtime::frontend_worker::{
+            FrontendWorkerCancelReason, FrontendWorkerKind, FrontendWorkerRegistry,
+            FrontendWorkerStopOutcome,
+        };
+
+        let mut registry = FrontendWorkerRegistry::default();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+
+        registry
+            .start(9, FrontendWorkerKind::Tune, 1, move |ctx| {
+                entered_tx.send(()).map_err(|_| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "試験用の準備開始通知を送信できませんでした",
+                    )
+                })?;
+                resume_rx.recv().map_err(|_| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "試験用の準備再開通知を受信できませんでした",
+                    )
+                })?;
+                let prepared = FrontendLivePumpOwner::prepare(
+                    descriptor(),
+                    Box::new(Cursor::new(Vec::<u8>::new())),
+                    Box::new(VecSink::default()),
+                    &ctx,
+                )?;
+                result_tx.send(prepared.is_none()).map_err(|_| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "試験用の準備結果を送信できませんでした",
+                    )
+                })
+            })
+            .unwrap();
+
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(matches!(
+            registry.request_stop(
+                9,
+                FrontendWorkerKind::Tune,
+                FrontendWorkerCancelReason::StopRequested,
+            ),
+            FrontendWorkerStopOutcome::CancelRequested { .. }
+        ));
+        resume_tx.send(()).unwrap();
+        assert!(result_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+
+        for _ in 0..100 {
+            if let Some(outcome) = registry.take_completed(9, FrontendWorkerKind::Tune) {
+                assert!(matches!(
+                    outcome,
+                    FrontendWorkerStopOutcome::Completed { result: Ok(()), .. }
+                ));
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("取消し済み準備ワーカーが終了していません");
     }
 
     #[test]
