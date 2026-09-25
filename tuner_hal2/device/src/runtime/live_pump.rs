@@ -112,7 +112,7 @@ impl FrontendLivePumpOwner {
         sink: Box<dyn FrontendLivePacketSink>,
         caller: &WorkerContext,
     ) -> Result<Option<PreparedFrontendLivePump>, HalError> {
-        FrontendLivePumpOwner::prepare(descriptor, reader, sink, caller)
+        PreparedFrontendLivePump::start(descriptor, reader, sink, caller)
     }
 
     pub fn request_stop(&self) {
