@@ -304,30 +304,49 @@ mod tests {
         R: Read + Send + 'static,
         S: FrontendLivePacketSink + Send + 'static,
     {
-        let mut parent =
-            ThreadResultOwner::start_controlled("prepared-live-pump-parent-test", move |control| {
-                FrontendLivePumpOwner::prepare(
+        use crate::runtime::frontend_worker::{
+            FrontendWorkerKind, FrontendWorkerRegistry, FrontendWorkerStopOutcome,
+        };
+
+        let mut registry = FrontendWorkerRegistry::default();
+        let (prepared_tx, prepared_rx) = mpsc::channel();
+        registry
+            .start(1, FrontendWorkerKind::Tune, 1, move |ctx| {
+                let prepared = FrontendLivePumpOwner::prepare(
                     descriptor(),
                     Box::new(reader),
                     Box::new(sink),
-                    &control,
+                    &ctx,
                 )?
                 .ok_or_else(|| {
                     HalError::internal(
                         HalInternalKind::InvariantViolation,
                         "試験用の準備済みライブTSポンプが取消されました",
                     )
+                })?;
+                prepared_tx.send(prepared).map_err(|_| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "試験用の準備済みライブTSポンプを返却できませんでした",
+                    )
                 })
             })
             .unwrap();
-        assert!(parent
-            .wait_until_finished(Some(Instant::now() + Duration::from_secs(1)))
-            .unwrap());
-        match parent.collect_if_finished() {
-            ThreadResultPoll::Completed(Ok(prepared)) => prepared,
-            ThreadResultPoll::Completed(Err(error)) => panic!("{error:?}"),
-            ThreadResultPoll::Running => panic!("準備親ワーカーが終了していません"),
+
+        let prepared = prepared_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("準備済みライブTSポンプを受信できませんでした");
+        for _ in 0..100 {
+            if let Some(outcome) = registry.take_completed(1, FrontendWorkerKind::Tune) {
+                assert!(matches!(
+                    outcome,
+                    FrontendWorkerStopOutcome::Completed { result: Ok(()), .. }
+                ));
+                return prepared;
+            }
+            std::thread::sleep(Duration::from_millis(1));
         }
+        panic!("準備親ワーカーが終了していません");
     }
 
     #[test]
