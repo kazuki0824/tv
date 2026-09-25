@@ -3,8 +3,8 @@
 //! descriptorだけのlive readerモデルを置き換える実装である。pumpはread loopとTS packet再同期を所有する。
 //! 明示的なpacket sinkを必須とし、demux bindingなしで完了に見える無処理成功sinkは提供しない。
 
-use super::reader::{FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind};
 use super::frontend_worker::FrontendWorkerContext;
+use super::reader::{FrontendLiveReaderDescriptor, FrontendLiveReaderDescriptorKind};
 use maleicacid_tuner_hal2_control_core::WorkerContext;
 use std::io::{self, Read};
 use std::sync::atomic::{AtomicBool, Ordering};
