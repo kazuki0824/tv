@@ -106,8 +106,7 @@ class PlaybackFailureCallbacksTest {
                 controller.setOnTunerResourceLostCallback { lostGeneration = it }
                 faults.pluginFailure = true
                 if (initializing) connectionListener.onCapacity(0) else connectionListener.onResourceLost()
-                cas.onEcmSection(ecm.pid, byteArrayOf(1))
-                executor.submit {}.get(5, TimeUnit.SECONDS)
+                executor.submit { cas.onEcmSection(ecm.pid, byteArrayOf(1)) }.get(5, TimeUnit.SECONDS)
                 check(lostGeneration == null)
                 check(pmt.isOpen)
                 check(pmt.closes == 0)
@@ -133,8 +132,7 @@ class PlaybackFailureCallbacksTest {
                 check(cas.lastDiagnostic().errorCode == expectedError)
                 check(cas.updateFromCaMetadata(metadata, 7L).ecmPids.isEmpty())
                 if (initializing) connectionListener.onCapacity(0) else connectionListener.onResourceLost()
-                cas.onEcmSection(ecm.pid, byteArrayOf(1))
-                executor.submit {}.get(5, TimeUnit.SECONDS)
+                executor.submit { cas.onEcmSection(ecm.pid, byteArrayOf(1)) }.get(5, TimeUnit.SECONDS)
                 check(fixture.notifications == 1 && faults.pluginCloses == attempts)
                 faults.pluginFailure = false
                 cas.clearForResourceLoss()
