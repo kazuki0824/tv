@@ -80,7 +80,7 @@ fn configured_record_demux() -> DemuxRuntime {
 fn record_filter_exports_standard_filter_fmq_descriptor() {
     let _queue_registry_test_guard = QUEUE_REGISTRY_TEST_LOCK
         .lock()
-        .expect("host FMQ test registry lock must remain healthy");
+        .expect("host FMQ試験registryのロックが汚染されていません");
     assert!(FilterOpenType::TsRecord.has_filter_fmq());
     assert!(!FilterOpenType::TsRecord.uses_filter_fmq_for_payload());
 
@@ -102,7 +102,7 @@ fn record_filter_exports_standard_filter_fmq_descriptor() {
 fn record_payload_stays_on_dvr_fmq_and_byte_number_follows_dvr_commits() {
     let _queue_registry_test_guard = QUEUE_REGISTRY_TEST_LOCK
         .lock()
-        .expect("host FMQ test registry lock must remain healthy");
+        .expect("host FMQ試験registryのロックが汚染されていません");
     let mut demux = configured_record_demux();
     let first = record_packet(0x0100, 0);
     let first_validated = ValidatedTsPacket::validate(&first).expect("first packet must be valid");
