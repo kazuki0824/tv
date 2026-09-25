@@ -1643,12 +1643,9 @@ mod tests {
         assert!(runtime.registry().demux(demux.id).is_some());
         assert!(runtime.registry().filter(filter.id).is_some());
 
-        assert!(finish_object_close_use_case(
-            &mut runtime,
-            first.completion,
-            Err(failure),
-        )
-        .is_err());
+        assert!(
+            finish_object_close_use_case(&mut runtime, first.completion, Err(failure),).is_err()
+        );
         assert!(matches!(
             runtime
                 .object_table()
