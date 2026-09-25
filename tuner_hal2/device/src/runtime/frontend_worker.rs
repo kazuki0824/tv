@@ -642,9 +642,10 @@ impl FrontendWorkerContext {
         self.control.wait_until(deadline)
     }
 
-    pub fn worker_context(&self) -> &WorkerContext {
-        &self.control
+    pub(crate) fn wake(&self) {
+        self.control.wake();
     }
+
     pub fn cancel_reason(&self) -> Result<Option<FrontendWorkerCancelReason>, HalError> {
         self.cancel_reason
             .lock()
