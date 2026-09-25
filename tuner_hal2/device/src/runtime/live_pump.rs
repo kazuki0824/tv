@@ -106,6 +106,15 @@ impl FrontendLivePumpOwner {
         Ok(Self { thread_result })
     }
 
+    pub fn prepare(
+        descriptor: FrontendLiveReaderDescriptor,
+        reader: Box<dyn Read + Send>,
+        sink: Box<dyn FrontendLivePacketSink>,
+        caller: &WorkerContext,
+    ) -> Result<Option<PreparedFrontendLivePump>, HalError> {
+        FrontendLivePumpOwner::prepare(descriptor, reader, sink, caller)
+    }
+
     pub fn request_stop(&self) {
         self.thread_result.request_stop()
     }
@@ -124,7 +133,7 @@ impl FrontendLivePumpOwner {
 }
 
 impl PreparedFrontendLivePump {
-    pub fn start(
+    fn start(
         descriptor: FrontendLiveReaderDescriptor,
         mut reader: Box<dyn Read + Send>,
         mut sink: Box<dyn FrontendLivePacketSink>,
@@ -296,7 +305,7 @@ mod tests {
     {
         let mut parent =
             ThreadResultOwner::start_controlled("prepared-live-pump-parent-test", move |control| {
-                PreparedFrontendLivePump::start(
+                FrontendLivePumpOwner::prepare(
                     descriptor(),
                     Box::new(reader),
                     Box::new(sink),
