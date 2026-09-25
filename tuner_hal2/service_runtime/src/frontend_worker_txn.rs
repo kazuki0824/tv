@@ -2689,11 +2689,26 @@ fn start_px4_live_pump_for_current_consumer(
         return Ok(Some(FrontendLockWaitOutcome::Cancelled));
     }
 
-    let Some(start_guard) =
-        try_begin_frontend_demux_streaming_start(runtime, frontend_id, &snapshot)?
-    else {
-        prepared.join_after_stop()?;
-        return Ok(Some(FrontendLockWaitOutcome::Locked));
+    let start_guard = match try_begin_frontend_demux_streaming_start(
+        runtime,
+        frontend_id,
+        &snapshot,
+    ) {
+        Ok(Some(start_guard)) => start_guard,
+        Ok(None) => {
+            prepared.join_after_stop()?;
+            return Ok(Some(FrontendLockWaitOutcome::Locked));
+        }
+        Err(primary) => {
+            return match prepared.join_after_stop() {
+                Ok(_) => Err(primary),
+                Err(cleanup) => Err(compose_frontend_cleanup_error(
+                    "取り込み開始権限取得失敗後の準備済みlive pump停止に失敗しました",
+                    primary,
+                    cleanup,
+                )),
+            }
+        }
     };
 
     if ctx.cancel_requested() {
