@@ -5880,7 +5880,7 @@ mod scan_contract_tests {
         let parent = WorkerRuntime::spawn_controlled_handle(
             "prepared-pump-phase-test".into(),
             move |control| {
-                PreparedFrontendLivePump::start(
+                FrontendLivePumpOwner::prepare(
                     descriptor,
                     Box::new(std::io::Cursor::new(Vec::<u8>::new())),
                     Box::new(NoopSink),
@@ -5906,15 +5906,24 @@ mod scan_contract_tests {
 
         let (entered_tx, entered_rx) = mpsc::channel();
         let (resume_tx, resume_rx) = mpsc::channel();
-        let phase_thread = std::thread::spawn(move || {
-            install_start_activate_test_barrier(entered_tx, resume_rx);
-            let mut live_pump = None;
-            let outcome =
-                finish_started_px4_live_pump(false, prepared, start_guard, &mut live_pump).unwrap();
-            let owner = live_pump.take().unwrap();
-            owner.join_after_stop().unwrap();
-            outcome
-        });
+        let phase_worker = WorkerRuntime::spawn_controlled_handle(
+            "start-activate-phase-test".into(),
+            move |control| -> Result<Option<FrontendLockWaitOutcome>, HalError> {
+                install_start_activate_test_barrier(entered_tx, resume_rx);
+                let mut live_pump = None;
+                let outcome =
+                    finish_started_px4_live_pump(&control, prepared, start_guard, &mut live_pump)?;
+                let owner = live_pump.take().ok_or_else(|| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "activate完了後のlive pumpがありません",
+                    )
+                })?;
+                owner.join_after_stop()?;
+                Ok(outcome)
+            },
+        )
+        .unwrap();
 
         entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         let close_while_activate_pending = runtime
@@ -5929,7 +5938,7 @@ mod scan_contract_tests {
 
         resume_tx.send(()).unwrap();
         assert_eq!(
-            phase_thread.join().unwrap(),
+            phase_worker.join_after_stop().unwrap().unwrap(),
             Some(FrontendLockWaitOutcome::Locked)
         );
         assert!(runtime
