@@ -17,6 +17,29 @@ use maleicacid_tuner_hal2_common::{
 
 use crate::runtime::thread_result_owner::{ThreadResultOwner, ThreadResultPoll};
 
+#[cfg(test)]
+static PREPARE_READY_TEST_BARRIER: std::sync::Mutex<
+    Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
+> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn install_prepare_ready_test_barrier(
+    entered: std::sync::mpsc::Sender<()>,
+    resume: std::sync::mpsc::Receiver<()>,
+) {
+    *PREPARE_READY_TEST_BARRIER.lock().unwrap() = Some((entered, resume));
+}
+
+#[cfg(test)]
+fn wait_at_prepare_ready_test_barrier() {
+    let pair = PREPARE_READY_TEST_BARRIER.lock().unwrap().take();
+    let Some((entered, resume)) = pair else {
+        return;
+    };
+    entered.send(()).unwrap();
+    resume.recv().unwrap();
+}
+
 pub trait FrontendLivePacketSink: Send {
     fn deliver_ts_packet(&mut self, packet: &[u8; TS_PACKET_SIZE]) -> Result<(), HalError>;
 }
@@ -147,6 +170,9 @@ impl PreparedFrontendLivePump {
         let worker_start_gate = Arc::clone(&start_gate);
         let thread_result =
             ThreadResultOwner::start_controlled("maleicacid-frontend-live-pump", move |control| {
+                #[cfg(test)]
+                wait_at_prepare_ready_test_barrier();
+
                 worker_ready.store(true, Ordering::Release);
                 caller_wake.wake();
                 loop {
@@ -358,31 +384,21 @@ mod tests {
     }
 
     #[test]
-    fn caller_cancel_during_prepare_stops_child_and_returns_none() {
+    fn caller_cancel_while_waiting_for_child_ready_stops_child_and_returns_none() {
         use crate::runtime::frontend_worker::{
             FrontendWorkerCancelReason, FrontendWorkerKind, FrontendWorkerRegistry,
             FrontendWorkerStopOutcome,
         };
 
+        let (child_entered_tx, child_entered_rx) = mpsc::channel();
+        let (child_resume_tx, child_resume_rx) = mpsc::channel();
+        install_prepare_ready_test_barrier(child_entered_tx, child_resume_rx);
+
         let mut registry = FrontendWorkerRegistry::default();
-        let (entered_tx, entered_rx) = mpsc::channel();
-        let (resume_tx, resume_rx) = mpsc::channel();
         let (result_tx, result_rx) = mpsc::channel();
 
         registry
             .start(9, FrontendWorkerKind::Tune, 1, move |ctx| {
-                entered_tx.send(()).map_err(|_| {
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "試験用の準備開始通知を送信できませんでした",
-                    )
-                })?;
-                resume_rx.recv().map_err(|_| {
-                    HalError::internal(
-                        HalInternalKind::InvariantViolation,
-                        "試験用の準備再開通知を受信できませんでした",
-                    )
-                })?;
                 let prepared = FrontendLivePumpOwner::prepare(
                     descriptor(),
                     Box::new(Cursor::new(Vec::<u8>::new())),
@@ -398,7 +414,9 @@ mod tests {
             })
             .unwrap();
 
-        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        child_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
         assert!(matches!(
             registry.request_stop(
                 9,
@@ -407,7 +425,8 @@ mod tests {
             ),
             FrontendWorkerStopOutcome::CancelRequested { .. }
         ));
-        resume_tx.send(()).unwrap();
+        child_resume_tx.send(()).unwrap();
+
         assert!(result_rx.recv_timeout(Duration::from_secs(1)).unwrap());
 
         for _ in 0..100 {
