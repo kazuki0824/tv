@@ -2404,7 +2404,6 @@ impl RuntimeRegistry {
     }
 }
 
-
 #[cfg(test)]
 mod single_use_contract_tests {
     use super::*;
