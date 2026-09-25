@@ -19,25 +19,66 @@ use crate::runtime::thread_result_owner::{ThreadResultOwner, ThreadResultPoll};
 
 #[cfg(test)]
 static PREPARE_READY_TEST_BARRIER: std::sync::Mutex<
-    Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
+    Option<(
+        i32,
+        std::sync::mpsc::Sender<()>,
+        std::sync::mpsc::Receiver<()>,
+    )>,
+> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+static PREPARE_CANCEL_BRANCH_TEST_SIGNAL: std::sync::Mutex<
+    Option<(i32, std::sync::mpsc::Sender<()>)>,
 > = std::sync::Mutex::new(None);
 
 #[cfg(test)]
 fn install_prepare_ready_test_barrier(
+    frontend_id: i32,
     entered: std::sync::mpsc::Sender<()>,
     resume: std::sync::mpsc::Receiver<()>,
 ) {
-    *PREPARE_READY_TEST_BARRIER.lock().unwrap() = Some((entered, resume));
+    *PREPARE_READY_TEST_BARRIER.lock().unwrap() = Some((frontend_id, entered, resume));
 }
 
 #[cfg(test)]
-fn wait_at_prepare_ready_test_barrier() {
-    let pair = PREPARE_READY_TEST_BARRIER.lock().unwrap().take();
-    let Some((entered, resume)) = pair else {
+fn install_prepare_cancel_branch_test_signal(
+    frontend_id: i32,
+    entered: std::sync::mpsc::Sender<()>,
+) {
+    *PREPARE_CANCEL_BRANCH_TEST_SIGNAL.lock().unwrap() = Some((frontend_id, entered));
+}
+
+#[cfg(test)]
+fn wait_at_prepare_ready_test_barrier(frontend_id: i32) {
+    let mut slot = PREPARE_READY_TEST_BARRIER.lock().unwrap();
+    let Some((target_frontend_id, _, _)) = slot.as_ref() else {
         return;
     };
+    if *target_frontend_id != frontend_id {
+        return;
+    }
+    let Some((_, entered, resume)) = slot.take() else {
+        return;
+    };
+    drop(slot);
     entered.send(()).unwrap();
     resume.recv().unwrap();
+}
+
+#[cfg(test)]
+fn notify_prepare_cancel_branch_for_test(frontend_id: i32) {
+    let mut slot = PREPARE_CANCEL_BRANCH_TEST_SIGNAL.lock().unwrap();
+    let Some((target_frontend_id, _)) = slot.as_ref() else {
+        return;
+    };
+    if *target_frontend_id != frontend_id {
+        return;
+    }
+    let Some((_, entered)) = slot.take() else {
+        return;
+    };
+    drop(slot);
+    entered.send(()).unwrap();
 }
 
 pub trait FrontendLivePacketSink: Send {
@@ -164,6 +205,7 @@ impl PreparedFrontendLivePump {
         caller: &FrontendWorkerContext,
     ) -> Result<Option<Self>, HalError> {
         let caller_wake = caller.clone();
+        let frontend_id = descriptor.frontend_id;
         let ready = Arc::new(AtomicBool::new(false));
         let worker_ready = Arc::clone(&ready);
         let start_gate = Arc::new(AtomicBool::new(false));
@@ -171,7 +213,7 @@ impl PreparedFrontendLivePump {
         let thread_result =
             ThreadResultOwner::start_controlled("maleicacid-frontend-live-pump", move |control| {
                 #[cfg(test)]
-                wait_at_prepare_ready_test_barrier();
+                wait_at_prepare_ready_test_barrier(frontend_id);
 
                 worker_ready.store(true, Ordering::Release);
                 caller_wake.wake();
@@ -199,6 +241,9 @@ impl PreparedFrontendLivePump {
 
         while !ready.load(Ordering::Acquire) {
             if caller.cancel_requested() {
+                #[cfg(test)]
+                notify_prepare_cancel_branch_for_test(frontend_id);
+
                 thread_result.request_stop();
                 let report = thread_result.join_after_stop()?;
                 debug_assert!(report.stopped_by_cancel);
@@ -390,17 +435,29 @@ mod tests {
             FrontendWorkerStopOutcome,
         };
 
+        let frontend_id = 9;
         let (child_entered_tx, child_entered_rx) = mpsc::channel();
         let (child_resume_tx, child_resume_rx) = mpsc::channel();
-        install_prepare_ready_test_barrier(child_entered_tx, child_resume_rx);
+        install_prepare_ready_test_barrier(
+            frontend_id,
+            child_entered_tx,
+            child_resume_rx,
+        );
+        let (cancel_branch_tx, cancel_branch_rx) = mpsc::channel();
+        install_prepare_cancel_branch_test_signal(frontend_id, cancel_branch_tx);
 
         let mut registry = FrontendWorkerRegistry::default();
         let (result_tx, result_rx) = mpsc::channel();
 
         registry
-            .start(9, FrontendWorkerKind::Tune, 1, move |ctx| {
+            .start(frontend_id, FrontendWorkerKind::Tune, 1, move |ctx| {
                 let prepared = FrontendLivePumpOwner::prepare(
-                    descriptor(),
+                    FrontendLiveReaderDescriptor::dvb_dvr_device(
+                        frontend_id,
+                        maleicacid_tuner_hal2_common::FrontendDevicePath::new(
+                            "/dev/dvb/adapter0/dvr9",
+                        ),
+                    ),
                     Box::new(Cursor::new(Vec::<u8>::new())),
                     Box::new(VecSink::default()),
                     &ctx,
@@ -419,18 +476,23 @@ mod tests {
             .unwrap();
         assert!(matches!(
             registry.request_stop(
-                9,
+                frontend_id,
                 FrontendWorkerKind::Tune,
                 FrontendWorkerCancelReason::StopRequested,
             ),
             FrontendWorkerStopOutcome::CancelRequested { .. }
         ));
+        cancel_branch_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
         child_resume_tx.send(()).unwrap();
 
         assert!(result_rx.recv_timeout(Duration::from_secs(1)).unwrap());
 
         for _ in 0..100 {
-            if let Some(outcome) = registry.take_completed(9, FrontendWorkerKind::Tune) {
+            if let Some(outcome) =
+                registry.take_completed(frontend_id, FrontendWorkerKind::Tune)
+            {
                 assert!(matches!(
                     outcome,
                     FrontendWorkerStopOutcome::Completed { result: Ok(()), .. }
