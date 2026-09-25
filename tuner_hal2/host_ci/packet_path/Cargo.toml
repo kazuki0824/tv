@@ -14,3 +14,4 @@ maleicacid_tuner_hal2_descrambler = { package = "maleicacid-tuner-hal2-descrambl
 maleicacid_tuner_hal2_device = { package = "maleicacid-tuner-hal2-device-host-ci", path = "../device" }
 maleicacid_tuner_hal2_domain_request = { package = "maleicacid-tuner-hal2-domain-request-host-ci", path = "../domain_request" }
 maleicacid_tuner_hal2_lnb = { package = "maleicacid-tuner-hal2-lnb-host-ci", path = "../lnb" }
+static_assertions = "=1.1.0"

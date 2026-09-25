@@ -83,6 +83,10 @@ where
         self.owner.request_stop()
     }
 
+    pub(crate) fn wake(&self) {
+        self.owner.wake()
+    }
+
     pub(crate) fn collect_if_finished(&mut self) -> ThreadResultPoll<T> {
         match self.owner.collect_if_finished() {
             WorkerRuntimePoll::Running => ThreadResultPoll::Running,

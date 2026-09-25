@@ -481,12 +481,10 @@ fn descrambler_pid_claim_error_to_hal(error: DescramblerPidClaimError) -> HalErr
     }
 }
 
-pub fn start_frontend_demux_live_pump_from_reader(
-    runtime: Arc<Mutex<TunerServiceRuntime>>,
+fn frontend_demux_live_packet_sink(
+    runtime: &Arc<Mutex<TunerServiceRuntime>>,
     frontend_id: i32,
-    reader: Box<dyn Read + Send>,
-    descriptor: maleicacid_tuner_hal2_device::FrontendLiveReaderDescriptor,
-) -> Result<FrontendLivePumpOwner, HalError> {
+) -> Result<Box<dyn FrontendLivePacketSink>, HalError> {
     let dispatcher = {
         let guard = TunerServiceRuntime::lock_shared(
             runtime.as_ref(),
@@ -497,12 +495,32 @@ pub fn start_frontend_demux_live_pump_from_reader(
             .ensure_frontend_demux_sink_ready(frontend_id)?;
         guard.filter_event_dispatcher()?
     };
-    let sink: Box<dyn FrontendLivePacketSink> = Box::new(FrontendDemuxPacketSink::new(
-        Arc::clone(&runtime),
+    Ok(Box::new(FrontendDemuxPacketSink::new(
+        Arc::clone(runtime),
         frontend_id,
         dispatcher,
-    ));
+    )))
+}
+
+pub fn start_frontend_demux_live_pump_from_reader(
+    runtime: Arc<Mutex<TunerServiceRuntime>>,
+    frontend_id: i32,
+    reader: Box<dyn Read + Send>,
+    descriptor: maleicacid_tuner_hal2_device::FrontendLiveReaderDescriptor,
+) -> Result<FrontendLivePumpOwner, HalError> {
+    let sink = frontend_demux_live_packet_sink(&runtime, frontend_id)?;
     FrontendLivePumpOwner::start(descriptor, reader, sink)
+}
+
+pub(crate) fn prepare_frontend_demux_live_pump_from_reader(
+    runtime: Arc<Mutex<TunerServiceRuntime>>,
+    frontend_id: i32,
+    caller: &maleicacid_tuner_hal2_device::FrontendWorkerContext,
+    reader: Box<dyn Read + Send>,
+    descriptor: maleicacid_tuner_hal2_device::FrontendLiveReaderDescriptor,
+) -> Result<Option<maleicacid_tuner_hal2_device::PreparedFrontendLivePump>, HalError> {
+    let sink = frontend_demux_live_packet_sink(&runtime, frontend_id)?;
+    maleicacid_tuner_hal2_device::FrontendLivePumpOwner::prepare(descriptor, reader, sink, caller)
 }
 
 /// サービス状態所有者に従属する読取り用診断参照。通常状態の変更権限を持たない。
@@ -1670,6 +1688,14 @@ impl TunerServiceRuntime {
 
     pub(crate) fn registry(&self) -> &RuntimeRegistry {
         &self.registry
+    }
+
+    pub(crate) fn try_begin_frontend_demux_start(
+        &mut self,
+        frontend_id: i32,
+    ) -> Result<Option<crate::registry::FrontendDemuxStartGuard>, HalError> {
+        self.registry
+            .try_begin_frontend_demux_start(crate::registry::FrontendRuntimeId(frontend_id))
     }
 
     pub(crate) fn registry_mut(&mut self) -> &mut RuntimeRegistry {
@@ -3508,8 +3534,14 @@ impl TunerServiceRuntime {
         let id = Self::public_runtime_unregister_id(entry)?;
         let exists = match entry.object_kind {
             AidlObjectKind::Demux => {
-                self.registry.demux(DemuxRuntimeId(id)).is_some()
-                    && self.registry.demux_runtime(DemuxRuntimeId(id)).is_some()
+                let demux_id = DemuxRuntimeId(id);
+                let exists = self.registry.demux(demux_id).is_some()
+                    && self.registry.demux_runtime(demux_id).is_some();
+                if exists {
+                    self.registry
+                        .validate_demux_frontend_binding_change(demux_id, None)?;
+                }
+                exists
             }
             AidlObjectKind::Filter => self
                 .registry
