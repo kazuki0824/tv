@@ -524,7 +524,7 @@ pub(crate) fn prepare_frontend_demux_live_pump_from_reader(
         descriptor,
         reader,
         sink,
-        caller.worker_context(),
+        caller,
     )
 }
 
