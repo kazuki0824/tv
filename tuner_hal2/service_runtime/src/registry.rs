@@ -2443,10 +2443,7 @@ mod single_use_contract_tests {
         let _: fn(FrontendDemuxStartGuard) = release_by_value;
     }
 
-    fn register_frontend_for_relation_test(
-        registry: &mut RuntimeRegistry,
-        id: FrontendRuntimeId,
-    ) {
+    fn register_frontend_for_relation_test(registry: &mut RuntimeRegistry, id: FrontendRuntimeId) {
         registry
             .register_frontend(FrontendRegistryEntry {
                 id,
@@ -2481,7 +2478,9 @@ mod single_use_contract_tests {
         let mut registry = RuntimeRegistry::default();
         register_frontend_for_relation_test(&mut registry, old);
         register_frontend_for_relation_test(&mut registry, new);
-        registry.register_demux(DemuxRegistryEntry { id: demux }).unwrap();
+        registry
+            .register_demux(DemuxRegistryEntry { id: demux })
+            .unwrap();
 
         let initial = match registry
             .prepare_demux_frontend_binding_change(demux, Some(old))
@@ -2494,7 +2493,10 @@ mod single_use_contract_tests {
             .commit_prepared_demux_frontend_binding_change(initial)
             .unwrap();
 
-        let guard = registry.try_begin_frontend_demux_start(old).unwrap().unwrap();
+        let guard = registry
+            .try_begin_frontend_demux_start(old)
+            .unwrap()
+            .unwrap();
         assert!(matches!(
             registry
                 .prepare_demux_frontend_binding_change(demux, Some(new))
@@ -2512,7 +2514,9 @@ mod single_use_contract_tests {
         let mut registry = RuntimeRegistry::default();
         register_frontend_for_relation_test(&mut registry, old);
         register_frontend_for_relation_test(&mut registry, new);
-        registry.register_demux(DemuxRegistryEntry { id: demux }).unwrap();
+        registry
+            .register_demux(DemuxRegistryEntry { id: demux })
+            .unwrap();
 
         let initial = match registry
             .prepare_demux_frontend_binding_change(demux, Some(old))
@@ -2525,7 +2529,10 @@ mod single_use_contract_tests {
             .commit_prepared_demux_frontend_binding_change(initial)
             .unwrap();
 
-        let guard = registry.try_begin_frontend_demux_start(new).unwrap().unwrap();
+        let guard = registry
+            .try_begin_frontend_demux_start(new)
+            .unwrap()
+            .unwrap();
         assert!(matches!(
             registry
                 .prepare_demux_frontend_binding_change(demux, Some(new))
@@ -2541,7 +2548,9 @@ mod single_use_contract_tests {
         let demux = DemuxRuntimeId(22);
         let mut registry = RuntimeRegistry::default();
         register_frontend_for_relation_test(&mut registry, frontend);
-        registry.register_demux(DemuxRegistryEntry { id: demux }).unwrap();
+        registry
+            .register_demux(DemuxRegistryEntry { id: demux })
+            .unwrap();
 
         let initial = match registry
             .prepare_demux_frontend_binding_change(demux, Some(frontend))
@@ -2575,7 +2584,9 @@ mod single_use_contract_tests {
         let mut registry = RuntimeRegistry::default();
         register_frontend_for_relation_test(&mut registry, old);
         register_frontend_for_relation_test(&mut registry, new);
-        registry.register_demux(DemuxRegistryEntry { id: demux }).unwrap();
+        registry
+            .register_demux(DemuxRegistryEntry { id: demux })
+            .unwrap();
 
         let prepared = match registry
             .prepare_demux_frontend_binding_change(demux, Some(old))
