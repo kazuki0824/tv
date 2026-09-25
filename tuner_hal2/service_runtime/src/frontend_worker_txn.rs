@@ -5405,6 +5405,20 @@ pub(crate) fn close_frontend_workers_and_live_data(
     )
 }
 
+fn close_frontend_live_data_and_unbind_after_worker_completion(
+    runtime: &SharedRuntime,
+    frontend_id: i32,
+) -> Result<(), HalError> {
+    let mut guard = lock_runtime(
+        runtime,
+        "service runtime lock poisoned while closing frontend live data after worker completion",
+    )?;
+    guard
+        .frontend_txn()
+        .close_frontend_live_data_and_unbind(frontend_id)
+        .map(|_| ())
+}
+
 fn close_frontend_workers_and_live_data_with_sink(
     runtime: SharedRuntime,
     frontend_id: i32,
@@ -5422,7 +5436,7 @@ fn close_frontend_workers_and_live_data_with_sink(
         ));
     }
     let sink = cleanup_diagnostic_sink?;
-    let (generation, tickets, fenced_demux_generations, close_result) = {
+    let (generation, tickets, fenced_demux_generations) = {
         let mut guard = lock_runtime(
             &runtime,
             "service runtime lock poisoned while preparing frontend close reaping",
@@ -5450,86 +5464,46 @@ fn close_frontend_workers_and_live_data_with_sink(
             (FrontendWorkerKind::Tune, tune_ticket),
             (FrontendWorkerKind::Scan, scan_ticket),
         ]);
-        let close_result = guard
-            .frontend_txn()
-            .close_frontend_live_data_and_unbind(frontend_id)
-            .map(|_| ());
         let fenced_demux_generations =
             match current_bound_demux_generation_snapshot(&guard, frontend_id) {
                 Ok(snapshot) => snapshot,
                 Err(snapshot_error) => {
                     guard.mark_service_critical();
                     drop(tickets);
-                    return Err(match close_result {
-                        Ok(()) => snapshot_error,
-                        Err(primary) => compose_frontend_cleanup_error(
-                            "frontend demux snapshot failed after close boundary failure",
-                            primary,
-                            snapshot_error,
-                        ),
-                    });
+                    return Err(snapshot_error);
                 }
             };
-        (generation, tickets, fenced_demux_generations, close_result)
+        (generation, tickets, fenced_demux_generations)
     };
 
-    let tickets = match tickets.try_complete() {
-        Ok(outcomes) => Ok(outcomes),
-        Err(tickets) => Err(tickets),
-    };
-    let mut report = FrontendWorkerCleanupExecutionReport::new();
-    if let Ok(outcomes) = &tickets {
-        for (kind, outcome) in outcomes {
-            report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
-                target,
-                *kind,
-                frontend_worker_stop_outcome_generation(outcome),
-                frontend_worker_stop_result_from_outcome(outcome),
-            ));
-        }
-        if let Some((_, scan_outcome)) = outcomes
-            .iter()
-            .find(|(kind, _)| *kind == FrontendWorkerKind::Scan)
-        {
-            let scan_cancel_result = record_scan_cancelled_from_stop_outcome(
-                &runtime,
-                frontend_id,
-                scan_outcome,
-                reason,
-            );
-            report.push(FrontendWorkerCleanupStepOutcome::record_scan_cancelled(
-                target,
-                frontend_worker_stop_outcome_generation(scan_outcome),
-                scan_cancel_result,
-            ));
-        }
-    } else {
-        report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
-            target,
-            FrontendWorkerKind::Tune,
-            None,
-            Ok(()),
-        ));
-        report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
-            target,
-            FrontendWorkerKind::Scan,
-            None,
-            Ok(()),
-        ));
-    }
-    report.push(
-        FrontendWorkerCleanupStepOutcome::close_live_data_and_unbind(target, close_result.clone()),
-    );
-    sink.record(FrontendWorkerCleanupDiagnosticRecord::new(
-        FrontendWorkerCleanupDiagnosticKind::FrontendClose,
-        target,
-        report,
-        close_result.clone().err(),
-    ))?;
-    close_result?;
-
-    match tickets {
+    match tickets.try_complete() {
         Ok(outcomes) => {
+            let mut report = FrontendWorkerCleanupExecutionReport::new();
+            for (kind, outcome) in &outcomes {
+                report.push(FrontendWorkerCleanupStepOutcome::stop_worker(
+                    target,
+                    *kind,
+                    frontend_worker_stop_outcome_generation(outcome),
+                    frontend_worker_stop_result_from_outcome(outcome),
+                ));
+            }
+            if let Some((_, scan_outcome)) = outcomes
+                .iter()
+                .find(|(kind, _)| *kind == FrontendWorkerKind::Scan)
+            {
+                let scan_cancel_result = record_scan_cancelled_from_stop_outcome(
+                    &runtime,
+                    frontend_id,
+                    scan_outcome,
+                    reason,
+                );
+                report.push(FrontendWorkerCleanupStepOutcome::record_scan_cancelled(
+                    target,
+                    frontend_worker_stop_outcome_generation(scan_outcome),
+                    scan_cancel_result,
+                ));
+            }
+
             let terminal_acceptance_result =
                 accept_frontend_worker_terminal_outcomes(&runtime, &outcomes);
             let mut terminal_result = Ok(());
@@ -5548,20 +5522,45 @@ fn close_frontend_workers_and_live_data_with_sink(
                     cleanup,
                 )),
             };
+
+            let close_result =
+                close_frontend_live_data_and_unbind_after_worker_completion(&runtime, frontend_id);
+            report.push(FrontendWorkerCleanupStepOutcome::close_live_data_and_unbind(
+                target,
+                close_result.clone(),
+            ));
             let fixed_power_result =
                 FrontendTuneScanTxn::release_frontend_fixed_power_after_operation(
                     &runtime,
                     crate::registry::FrontendRuntimeId(frontend_id),
                 );
-            match (terminal_result, fixed_power_result) {
+
+            let terminal_and_close_result = match (terminal_result, close_result) {
                 (Ok(()), Ok(())) => Ok(()),
                 (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
                 (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
-                    "frontend worker termination and fixed LNB power cleanup both failed",
+                    "frontend worker termination and live-data cleanup both failed",
                     primary,
                     cleanup,
                 )),
-            }
+            };
+            let cleanup_result = match (terminal_and_close_result, fixed_power_result) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+                (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
+                    "frontend close cleanup and fixed LNB power cleanup both failed",
+                    primary,
+                    cleanup,
+                )),
+            };
+            let public_error = cleanup_result.clone().err();
+            let record_result = sink.record(FrontendWorkerCleanupDiagnosticRecord::new(
+                FrontendWorkerCleanupDiagnosticKind::FrontendClose,
+                target,
+                report,
+                public_error,
+            ));
+            compose_frontend_worker_cleanup_finish_result(cleanup_result, record_result)
         }
         Err(tickets) => {
             let completion_sink = sink.clone();
@@ -5587,6 +5586,11 @@ fn close_frontend_workers_and_live_data_with_sink(
                 completion_action: Box::new(move |runtime, outcomes, _deadline_elapsed| {
                     let terminal_acceptance_result =
                         accept_frontend_worker_terminal_outcomes(runtime, &outcomes);
+                    let close_result =
+                        close_frontend_live_data_and_unbind_after_worker_completion(
+                            runtime,
+                            frontend_id,
+                        );
                     let fixed_power_result =
                         FrontendTuneScanTxn::release_frontend_fixed_power_after_operation(
                             runtime,
@@ -5601,15 +5605,30 @@ fn close_frontend_workers_and_live_data_with_sink(
                             frontend_worker_stop_result_from_outcome(&outcome),
                         ));
                     }
-                    let finalizer_result = match (terminal_acceptance_result, fixed_power_result) {
-                        (Ok(()), Ok(())) => Ok(()),
-                        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-                        (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
-                            "frontend terminal acceptance and fixed LNB power cleanup both failed",
-                            primary,
-                            cleanup,
-                        )),
-                    };
+                    report.push(FrontendWorkerCleanupStepOutcome::close_live_data_and_unbind(
+                        target,
+                        close_result.clone(),
+                    ));
+                    let terminal_and_close_result =
+                        match (terminal_acceptance_result, close_result) {
+                            (Ok(()), Ok(())) => Ok(()),
+                            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+                            (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
+                                "frontend terminal acceptance and live-data cleanup both failed",
+                                primary,
+                                cleanup,
+                            )),
+                        };
+                    let finalizer_result =
+                        match (terminal_and_close_result, fixed_power_result) {
+                            (Ok(()), Ok(())) => Ok(()),
+                            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+                            (Err(primary), Err(cleanup)) => Err(compose_frontend_cleanup_error(
+                                "frontend terminal cleanup and fixed LNB power cleanup both failed",
+                                primary,
+                                cleanup,
+                            )),
+                        };
                     if let Err(error) = finalizer_result {
                         report.push(
                             FrontendWorkerCleanupStepOutcome::close_frontend_workers_and_live_data(
