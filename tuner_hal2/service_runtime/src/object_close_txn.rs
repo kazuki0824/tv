@@ -1536,6 +1536,167 @@ mod tests {
     }
 
     #[test]
+    fn demux_start_guard_makes_close_retry_without_partial_runtime_unregister() {
+        use crate::boot::{FrontendProbeOutcome, ServiceBootOutcome};
+        use crate::registry::{
+            FrontendCapabilitySnapshot, FrontendRuntimeId, FrontendScalarCapability,
+            SatellitePowerTopology,
+        };
+        use maleicacid_tuner_hal2_common::{FrontendBackendKind, FrontendSystem};
+        use maleicacid_tuner_hal2_demux::{FilterOpenType, OpenFilterRequest};
+
+        let frontend_id = 1_000_000;
+        let mut runtime = TunerServiceRuntime::new();
+        assert_eq!(
+            runtime.boot_from_probe_results([FrontendProbeOutcome::Available {
+                id: FrontendRuntimeId(frontend_id),
+                backend: FrontendBackendKind::Px4CharDevice,
+                system: FrontendSystem::IsdbT,
+                path: "/dev/px4video0".into(),
+                lnb_profile: None,
+                satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
+                capability: FrontendCapabilitySnapshot {
+                    scalar: FrontendScalarCapability {
+                        min_frequency_hz: 110_642_857,
+                        max_frequency_hz: 767_642_857,
+                        min_symbol_rate: 0,
+                        max_symbol_rate: 0,
+                        acquire_range_hz: 0,
+                    },
+                    exclusive_group_id: 0x1000_0000,
+                    isdbt_segment: Some(crate::registry::IsdbtSegmentCapability {
+                        is_segment_auto: true,
+                        is_full_segment: true,
+                    }),
+                },
+            }]),
+            ServiceBootOutcome::Ready,
+        );
+
+        let demux = runtime.allocate_demux_runtime().unwrap();
+        let filter = runtime.allocate_filter_runtime(demux.id.0).unwrap();
+        runtime
+            .register_demux_filter_runtime(
+                demux.id.0,
+                filter.id.0,
+                &OpenFilterRequest {
+                    open_type: FilterOpenType::TsRaw,
+                    buffer_size: 4096,
+                    callback_present: false,
+                },
+            )
+            .unwrap();
+        runtime
+            .set_demux_frontend_data_source(demux.id.0, frontend_id)
+            .unwrap();
+
+        let demux_object_id = AidlObjectId(90);
+        let filter_object_id = AidlObjectId(91);
+        runtime
+            .object_table_mut()
+            .insert(RuntimeObjectEntry {
+                object_kind: AidlObjectKind::Demux,
+                object_id: demux_object_id,
+                generation: AidlObjectGeneration(1),
+                ledger_id: LedgerId(i64::from(demux.id.0)),
+                ledger_generation: LedgerGeneration(1),
+                owner: RuntimeOwnerRelation::Root,
+                lifecycle: crate::RuntimeObjectLifecycle::Live,
+            })
+            .unwrap();
+        runtime
+            .object_table_mut()
+            .insert(RuntimeObjectEntry {
+                object_kind: AidlObjectKind::Filter,
+                object_id: filter_object_id,
+                generation: AidlObjectGeneration(1),
+                ledger_id: LedgerId(i64::from(filter.id.0)),
+                ledger_generation: LedgerGeneration(1),
+                owner: RuntimeOwnerRelation::Demux {
+                    demux: demux_object_id,
+                    generation: AidlObjectGeneration(1),
+                },
+                lifecycle: crate::RuntimeObjectLifecycle::Live,
+            })
+            .unwrap();
+
+        let start_guard = runtime
+            .try_begin_frontend_demux_start(frontend_id)
+            .unwrap()
+            .unwrap();
+
+        let first = close_object_use_case(
+            &mut runtime,
+            demux_object_id,
+            AidlObjectGeneration(1),
+            AidlObjectKind::Demux,
+            AidlMethodCall::DemuxClose,
+        )
+        .unwrap()
+        .begin_cleanup_attempt(&mut runtime)
+        .unwrap();
+
+        let first_cleanup =
+            unregister_public_runtime_entries_for_close(&mut runtime, &first.cascade_entries);
+        let failure = first_cleanup.unwrap_err();
+        assert!(matches!(failure.error(), HalError::Busy { .. }));
+        assert!(runtime.registry().demux(demux.id).is_some());
+        assert!(runtime.registry().filter(filter.id).is_some());
+
+        assert!(finish_object_close_use_case(
+            &mut runtime,
+            first.completion,
+            Err(failure),
+        )
+        .is_err());
+        assert!(matches!(
+            runtime
+                .object_table()
+                .entry(demux_object_id)
+                .unwrap()
+                .lifecycle,
+            crate::RuntimeObjectLifecycle::CleanupPending {
+                step: CleanupStep::UnregisterRuntime
+            }
+        ));
+
+        start_guard.release();
+
+        let retry = close_object_use_case(
+            &mut runtime,
+            demux_object_id,
+            AidlObjectGeneration(1),
+            AidlObjectKind::Demux,
+            AidlMethodCall::DemuxClose,
+        )
+        .unwrap()
+        .begin_cleanup_attempt(&mut runtime)
+        .unwrap();
+
+        unregister_public_runtime_entries_for_close(&mut runtime, &retry.cascade_entries).unwrap();
+        finish_object_close_use_case(&mut runtime, retry.completion, Ok(())).unwrap();
+
+        assert!(runtime.registry().demux(demux.id).is_none());
+        assert!(runtime.registry().filter(filter.id).is_none());
+        assert_eq!(
+            runtime
+                .object_table()
+                .entry(demux_object_id)
+                .unwrap()
+                .lifecycle,
+            crate::RuntimeObjectLifecycle::Closed
+        );
+        assert_eq!(
+            runtime
+                .object_table()
+                .entry(filter_object_id)
+                .unwrap()
+                .lifecycle,
+            crate::RuntimeObjectLifecycle::Closed
+        );
+    }
+
+    #[test]
     fn close_cleanup_authority_can_cross_the_reaper_thread_boundary() {
         fn assert_send<T: Send>() {}
 
