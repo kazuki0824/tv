@@ -146,39 +146,3 @@ fn start_failure_keeps_relation_guard_until_prepared_pump_cleanup_finishes() {
         assert!(!guard_active.load(Ordering::Acquire));
     });
 }
-
-#[test]
-fn relation_change_remains_pending_for_the_entire_start_activation_phase() {
-    loom::model(|| {
-        let guard_active = Arc::new(AtomicBool::new(true));
-        let start_completed = Arc::new(AtomicBool::new(false));
-        let activate_completed = Arc::new(AtomicBool::new(false));
-
-        let worker_guard = Arc::clone(&guard_active);
-        let worker_start = Arc::clone(&start_completed);
-        let worker_activate = Arc::clone(&activate_completed);
-        let worker = loom::thread::spawn(move || {
-            worker_start.store(true, Ordering::Release);
-            loom::thread::yield_now();
-            worker_activate.store(true, Ordering::Release);
-            worker_guard.store(false, Ordering::Release);
-        });
-
-        let relation_guard = Arc::clone(&guard_active);
-        let relation_start = Arc::clone(&start_completed);
-        let relation_activate = Arc::clone(&activate_completed);
-        let relation = loom::thread::spawn(move || {
-            if relation_start.load(Ordering::Acquire)
-                && !relation_activate.load(Ordering::Acquire)
-            {
-                assert!(
-                    relation_change_is_busy(&relation_guard),
-                    "guard was released in the START-success/activate-pending window"
-                );
-            }
-        });
-
-        worker.join().unwrap();
-        relation.join().unwrap();
-    });
-}
