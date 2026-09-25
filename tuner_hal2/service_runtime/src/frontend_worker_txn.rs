@@ -12,7 +12,7 @@ use crate::diagnostics::WorkerFailureCategory;
 use crate::registry::FrontendRegistryEntry;
 use crate::worker_failure_classifier::WorkerFailureClassifier;
 use crate::worker_runtime::{
-    WorkerContext, WorkerRuntime, WorkerRuntimeReaperQueue, WorkerRuntimeReaperReservation,
+    WorkerRuntime, WorkerRuntimeReaperQueue, WorkerRuntimeReaperReservation,
     WorkerTerminalResult,
 };
 use crate::{
@@ -2692,7 +2692,7 @@ fn start_px4_live_pump_for_current_consumer(
         };
     }
 
-    finish_started_px4_live_pump(ctx.worker_context(), prepared, start_guard, live_pump)
+    finish_started_px4_live_pump(ctx, prepared, start_guard, live_pump)
 }
 
 #[cfg(test)]
@@ -2721,7 +2721,7 @@ fn wait_at_start_activate_test_barrier() {
 }
 
 fn finish_started_px4_live_pump(
-    control: &WorkerContext,
+    control: &FrontendWorkerContext,
     prepared: PreparedFrontendLivePump,
     start_guard: crate::registry::FrontendDemuxStartGuard,
     live_pump: &mut Option<FrontendLivePumpOwner>,
@@ -2729,7 +2729,7 @@ fn finish_started_px4_live_pump(
     #[cfg(test)]
     wait_at_start_activate_test_barrier();
 
-    if control.stop_requested() {
+    if control.cancel_requested() {
         prepared.join_after_stop()?;
         return Ok(Some(FrontendLockWaitOutcome::Cancelled));
     }
