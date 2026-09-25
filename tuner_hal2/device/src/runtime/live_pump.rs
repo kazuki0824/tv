@@ -25,16 +25,19 @@ type PrepareReadyTestBarrier = (
 );
 
 #[cfg(test)]
-type PrepareCancelBranchTestSignal = (i32, std::sync::mpsc::Sender<()>);
+type PrepareTestSignal = (i32, std::sync::mpsc::Sender<()>);
 
 #[cfg(test)]
 static PREPARE_READY_TEST_BARRIER: std::sync::Mutex<Option<PrepareReadyTestBarrier>> =
     std::sync::Mutex::new(None);
 
 #[cfg(test)]
-static PREPARE_CANCEL_BRANCH_TEST_SIGNAL: std::sync::Mutex<
-    Option<PrepareCancelBranchTestSignal>,
-> = std::sync::Mutex::new(None);
+static PREPARE_WAIT_TEST_SIGNAL: std::sync::Mutex<Option<PrepareTestSignal>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
+static PREPARE_CANCEL_BRANCH_TEST_SIGNAL: std::sync::Mutex<Option<PrepareTestSignal>> =
+    std::sync::Mutex::new(None);
 
 #[cfg(test)]
 fn install_prepare_ready_test_barrier(
@@ -43,6 +46,11 @@ fn install_prepare_ready_test_barrier(
     resume: std::sync::mpsc::Receiver<()>,
 ) {
     *PREPARE_READY_TEST_BARRIER.lock().unwrap() = Some((frontend_id, entered, resume));
+}
+
+#[cfg(test)]
+fn install_prepare_wait_test_signal(frontend_id: i32, entered: std::sync::mpsc::Sender<()>) {
+    *PREPARE_WAIT_TEST_SIGNAL.lock().unwrap() = Some((frontend_id, entered));
 }
 
 #[cfg(test)]
@@ -68,6 +76,22 @@ fn wait_at_prepare_ready_test_barrier(frontend_id: i32) {
     drop(slot);
     entered.send(()).unwrap();
     resume.recv().unwrap();
+}
+
+#[cfg(test)]
+fn notify_prepare_wait_for_test(frontend_id: i32) {
+    let mut slot = PREPARE_WAIT_TEST_SIGNAL.lock().unwrap();
+    let Some((target_frontend_id, _)) = slot.as_ref() else {
+        return;
+    };
+    if *target_frontend_id != frontend_id {
+        return;
+    }
+    let Some((_, entered)) = slot.take() else {
+        return;
+    };
+    drop(slot);
+    entered.send(()).unwrap();
 }
 
 #[cfg(test)]
@@ -244,6 +268,9 @@ impl PreparedFrontendLivePump {
             debug_assert!(report.stopped_by_cancel);
             return Ok(None);
         }
+
+        #[cfg(test)]
+        notify_prepare_wait_for_test(frontend_id);
 
         while !ready.load(Ordering::Acquire) {
             if caller.cancel_requested() {
@@ -445,6 +472,8 @@ mod tests {
         let (child_entered_tx, child_entered_rx) = mpsc::channel();
         let (child_resume_tx, child_resume_rx) = mpsc::channel();
         install_prepare_ready_test_barrier(frontend_id, child_entered_tx, child_resume_rx);
+        let (wait_entered_tx, wait_entered_rx) = mpsc::channel();
+        install_prepare_wait_test_signal(frontend_id, wait_entered_tx);
         let (cancel_branch_tx, cancel_branch_rx) = mpsc::channel();
         install_prepare_cancel_branch_test_signal(frontend_id, cancel_branch_tx);
 
@@ -474,6 +503,9 @@ mod tests {
             .unwrap();
 
         child_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        wait_entered_rx
             .recv_timeout(Duration::from_secs(1))
             .unwrap();
         assert!(matches!(
