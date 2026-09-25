@@ -8,8 +8,6 @@ use maleicacid_tuner_hal2_demux::{
 };
 use maleicacid_tuner_hal2_fmq::{host_ci_queue_snapshots, host_ci_reset_queue_registry};
 
-static QUEUE_REGISTRY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 #[no_mangle]
 pub extern "C" fn tuner_dmabuf_heap_alloc_system(_len: usize) -> i32 {
     -1
@@ -78,9 +76,6 @@ fn configured_record_demux() -> DemuxRuntime {
 
 #[test]
 fn record_filter_exports_standard_filter_fmq_descriptor() {
-    let _queue_registry_test_guard = QUEUE_REGISTRY_TEST_LOCK
-        .lock()
-        .expect("host FMQ試験registryのロックが汚染されていません");
     assert!(FilterOpenType::TsRecord.has_filter_fmq());
     assert!(!FilterOpenType::TsRecord.uses_filter_fmq_for_payload());
 
@@ -100,9 +95,6 @@ fn record_filter_exports_standard_filter_fmq_descriptor() {
 
 #[test]
 fn record_payload_stays_on_dvr_fmq_and_byte_number_follows_dvr_commits() {
-    let _queue_registry_test_guard = QUEUE_REGISTRY_TEST_LOCK
-        .lock()
-        .expect("host FMQ試験registryのロックが汚染されていません");
     let mut demux = configured_record_demux();
     let first = record_packet(0x0100, 0);
     let first_validated = ValidatedTsPacket::validate(&first).expect("first packet must be valid");
