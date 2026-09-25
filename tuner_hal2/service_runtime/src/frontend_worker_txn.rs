@@ -32,11 +32,10 @@ use maleicacid_tuner_hal2_device::FrontendRuntimeSnapshot;
 use maleicacid_tuner_hal2_device::{
     FrontendBackendSession, FrontendBackendSubmitFailure, FrontendBackendTunePlan,
     FrontendLivePumpJoinOutcome, FrontendLivePumpOwner, FrontendLiveReaderDescriptor,
-    PreparedFrontendLivePump,
     FrontendScanPhase, FrontendSignalState, FrontendTmccPartialReceptionObservation,
     FrontendTmccTsidListObservation, FrontendWorkerCancelReason, FrontendWorkerContext,
     FrontendWorkerKind, FrontendWorkerStartError, FrontendWorkerStopOutcome,
-    FrontendWorkerStopPoll, FrontendWorkerStopTicket,
+    FrontendWorkerStopPoll, FrontendWorkerStopTicket, PreparedFrontendLivePump,
 };
 use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 
@@ -2708,12 +2707,7 @@ fn start_px4_live_pump_for_current_consumer(
         };
     }
 
-    finish_started_px4_live_pump(
-        ctx.cancel_requested(),
-        prepared,
-        start_guard,
-        live_pump,
-    )
+    finish_started_px4_live_pump(ctx.cancel_requested(), prepared, start_guard, live_pump)
 }
 
 #[cfg(test)]
@@ -2724,10 +2718,7 @@ thread_local! {
 }
 
 #[cfg(test)]
-fn install_start_activate_test_barrier(
-    entered: mpsc::Sender<()>,
-    resume: mpsc::Receiver<()>,
-) {
+fn install_start_activate_test_barrier(entered: mpsc::Sender<()>, resume: mpsc::Receiver<()>) {
     START_ACTIVATE_TEST_BARRIER.with(|slot| {
         *slot.borrow_mut() = Some((entered, resume));
     });
@@ -5919,7 +5910,10 @@ mod scan_contract_tests {
             .unwrap()
             .unregister_demux_runtime(demux_id)
             .unwrap_err();
-        assert!(matches!(close_while_activate_pending, HalError::Busy { .. }));
+        assert!(matches!(
+            close_while_activate_pending,
+            HalError::Busy { .. }
+        ));
 
         resume_tx.send(()).unwrap();
         assert_eq!(
