@@ -29,7 +29,7 @@ use maleicacid_tuner_hal2_common::{
 #[cfg(test)]
 use maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackToken;
 #[cfg(test)]
-use maleicacid_tuner_hal2_device::FrontendRuntimeSnapshot;
+use maleicacid_tuner_hal2_device::{FrontendRuntimeSnapshot, FrontendWorkerRegistry};
 use maleicacid_tuner_hal2_device::{
     FrontendBackendSession, FrontendBackendSubmitFailure, FrontendBackendTunePlan,
     FrontendLivePumpJoinOutcome, FrontendLivePumpOwner, FrontendLiveReaderDescriptor,
@@ -5663,42 +5663,39 @@ mod scan_contract_tests {
             frontend_id,
             FrontendDevicePath::new("/dev/null"),
         );
-        let parent = WorkerRuntime::spawn_controlled_handle(
-            "prepared-pump-phase-test".into(),
-            move |control| {
-                FrontendLivePumpOwner::prepare(
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let (outcome_tx, outcome_rx) = mpsc::channel();
+        let runtime_for_worker = Arc::clone(&runtime);
+        let mut worker_registry = FrontendWorkerRegistry::default();
+        worker_registry
+            .start(frontend_id, FrontendWorkerKind::Tune, 1, move |ctx| {
+                let prepared = FrontendLivePumpOwner::prepare(
                     descriptor,
                     Box::new(std::io::Cursor::new(Vec::<u8>::new())),
                     Box::new(NoopSink),
-                    &control,
+                    &ctx,
                 )?
                 .ok_or_else(|| {
                     HalError::internal(
                         HalInternalKind::InvariantViolation,
                         "試験用の準備済みlive pumpが取消されました",
                     )
-                })
-            },
-        )
-        .unwrap();
-        let prepared = parent.join_after_stop().unwrap().unwrap();
-
-        let start_guard = runtime
-            .lock()
-            .unwrap()
-            .try_begin_frontend_demux_start(frontend_id)
-            .unwrap()
-            .unwrap();
-
-        let (entered_tx, entered_rx) = mpsc::channel();
-        let (resume_tx, resume_rx) = mpsc::channel();
-        let phase_worker = WorkerRuntime::spawn_controlled_handle(
-            "start-activate-phase-test".into(),
-            move |control| -> Result<Option<FrontendLockWaitOutcome>, HalError> {
+                })?;
+                let start_guard = runtime_for_worker
+                    .lock()
+                    .map_err(|_| HalError::LockPoisoned)?
+                    .try_begin_frontend_demux_start(frontend_id)?
+                    .ok_or_else(|| {
+                        HalError::internal(
+                            HalInternalKind::InvariantViolation,
+                            "試験用のSTART guardを取得できませんでした",
+                        )
+                    })?;
                 install_start_activate_test_barrier(entered_tx, resume_rx);
                 let mut live_pump = None;
                 let outcome =
-                    finish_started_px4_live_pump(&control, prepared, start_guard, &mut live_pump)?;
+                    finish_started_px4_live_pump(&ctx, prepared, start_guard, &mut live_pump)?;
                 let owner = live_pump.take().ok_or_else(|| {
                     HalError::internal(
                         HalInternalKind::InvariantViolation,
@@ -5706,10 +5703,14 @@ mod scan_contract_tests {
                     )
                 })?;
                 owner.join_after_stop()?;
-                Ok(outcome)
-            },
-        )
-        .unwrap();
+                outcome_tx.send(outcome).map_err(|_| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "試験用のSTART結果を返却できませんでした",
+                    )
+                })
+            })
+            .unwrap();
 
         entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         let close_while_activate_pending = runtime
@@ -5724,9 +5725,21 @@ mod scan_contract_tests {
 
         resume_tx.send(()).unwrap();
         assert_eq!(
-            phase_worker.join_after_stop().unwrap().unwrap(),
+            outcome_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
             Some(FrontendLockWaitOutcome::Locked)
         );
+        for _ in 0..100 {
+            if let Some(outcome) =
+                worker_registry.take_completed(frontend_id, FrontendWorkerKind::Tune)
+            {
+                assert!(matches!(
+                    outcome,
+                    FrontendWorkerStopOutcome::Completed { result: Ok(()), .. }
+                ));
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
         assert!(runtime
             .lock()
             .unwrap()
