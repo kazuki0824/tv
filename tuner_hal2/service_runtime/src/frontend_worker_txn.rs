@@ -32,6 +32,7 @@ use maleicacid_tuner_hal2_device::FrontendRuntimeSnapshot;
 use maleicacid_tuner_hal2_device::{
     FrontendBackendSession, FrontendBackendSubmitFailure, FrontendBackendTunePlan,
     FrontendLivePumpJoinOutcome, FrontendLivePumpOwner, FrontendLiveReaderDescriptor,
+    PreparedFrontendLivePump,
     FrontendScanPhase, FrontendSignalState, FrontendTmccPartialReceptionObservation,
     FrontendTmccTsidListObservation, FrontendWorkerCancelReason, FrontendWorkerContext,
     FrontendWorkerKind, FrontendWorkerStartError, FrontendWorkerStopOutcome,
@@ -2707,10 +2708,55 @@ fn start_px4_live_pump_for_current_consumer(
         };
     }
 
-    if ctx.cancel_requested() {
+    finish_started_px4_live_pump(
+        ctx.cancel_requested(),
+        prepared,
+        start_guard,
+        live_pump,
+    )
+}
+
+#[cfg(test)]
+thread_local! {
+    static START_ACTIVATE_TEST_BARRIER: std::cell::RefCell<
+        Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>
+    > = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn install_start_activate_test_barrier(
+    entered: mpsc::Sender<()>,
+    resume: mpsc::Receiver<()>,
+) {
+    START_ACTIVATE_TEST_BARRIER.with(|slot| {
+        *slot.borrow_mut() = Some((entered, resume));
+    });
+}
+
+#[cfg(test)]
+fn wait_at_start_activate_test_barrier() {
+    START_ACTIVATE_TEST_BARRIER.with(|slot| {
+        let Some((entered, resume)) = slot.borrow_mut().take() else {
+            return;
+        };
+        entered.send(()).unwrap();
+        resume.recv().unwrap();
+    });
+}
+
+fn finish_started_px4_live_pump(
+    cancelled_after_start: bool,
+    prepared: PreparedFrontendLivePump,
+    start_guard: crate::registry::FrontendDemuxStartGuard,
+    live_pump: &mut Option<FrontendLivePumpOwner>,
+) -> Result<Option<FrontendLockWaitOutcome>, HalError> {
+    if cancelled_after_start {
         prepared.join_after_stop()?;
         return Ok(Some(FrontendLockWaitOutcome::Cancelled));
     }
+
+    #[cfg(test)]
+    wait_at_start_activate_test_barrier();
 
     let active_pump = prepared.activate();
     start_guard.release();
