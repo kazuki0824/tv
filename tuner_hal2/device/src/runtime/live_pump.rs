@@ -561,7 +561,7 @@ mod tests {
         let owner = prepare_for_test(Cursor::new(bytes), ChannelSink { packet_tx });
         assert!(packet_rx.try_recv().is_err());
 
-        let _owner = owner.activate();
+        let owner = owner.activate();
         assert_eq!(
             packet_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
             first
@@ -570,6 +570,8 @@ mod tests {
             packet_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
             second
         );
+        let report = owner.join_after_stop().unwrap();
+        assert!(report.reached_eof || report.stopped_by_cancel);
     }
 
     #[test]
@@ -595,12 +597,17 @@ mod tests {
         );
         let second = prepare_for_test(ObservedReader { read_tx, id: 2 }, VecSink::default());
 
-        let _first = first.activate();
+        let first = first.activate();
         assert_eq!(read_rx.recv_timeout(Duration::from_secs(1)).unwrap(), 1);
         assert!(read_rx.try_recv().is_err());
 
-        let _second = second.activate();
+        let second = second.activate();
         assert_eq!(read_rx.recv_timeout(Duration::from_secs(1)).unwrap(), 2);
+
+        let first_report = first.join_after_stop().unwrap();
+        let second_report = second.join_after_stop().unwrap();
+        assert!(first_report.reached_eof || first_report.stopped_by_cancel);
+        assert!(second_report.reached_eof || second_report.stopped_by_cancel);
     }
 
     #[test]
