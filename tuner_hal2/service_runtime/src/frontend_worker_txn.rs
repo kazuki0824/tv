@@ -5682,16 +5682,17 @@ mod scan_contract_tests {
                         "試験用の準備済みlive pumpが取消されました",
                     )
                 })?;
-                let start_guard = runtime_for_worker
-                    .lock()
-                    .map_err(|_| HalError::LockPoisoned)?
-                    .try_begin_frontend_demux_start(frontend_id)?
-                    .ok_or_else(|| {
-                        HalError::internal(
-                            HalInternalKind::InvariantViolation,
-                            "試験用のSTART guardを取得できませんでした",
-                        )
-                    })?;
+                let start_guard = lock_runtime(
+                    &runtime_for_worker,
+                    "試験中にservice_runtimeのロックが汚染されました",
+                )?
+                .try_begin_frontend_demux_start(frontend_id)?
+                .ok_or_else(|| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "試験用のSTART guardを取得できませんでした",
+                    )
+                })?;
                 install_start_activate_test_barrier(entered_tx, resume_rx);
                 let mut live_pump = None;
                 let outcome =
@@ -5728,6 +5729,7 @@ mod scan_contract_tests {
             outcome_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
             Some(FrontendLockWaitOutcome::Locked)
         );
+        let mut worker_completed = false;
         for _ in 0..100 {
             if let Some(outcome) =
                 worker_registry.take_completed(frontend_id, FrontendWorkerKind::Tune)
@@ -5736,10 +5738,12 @@ mod scan_contract_tests {
                     outcome,
                     FrontendWorkerStopOutcome::Completed { result: Ok(()), .. }
                 ));
+                worker_completed = true;
                 break;
             }
             std::thread::sleep(Duration::from_millis(1));
         }
+        assert!(worker_completed, "試験用フロントエンドワーカーが終了していません");
         assert!(runtime
             .lock()
             .unwrap()
