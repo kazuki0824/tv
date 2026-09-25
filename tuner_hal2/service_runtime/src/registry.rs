@@ -1082,22 +1082,46 @@ impl RuntimeRegistry {
             })
     }
 
+    fn demux_frontend_binding_change_is_pending(
+        &self,
+        demux_id: DemuxRuntimeId,
+        next_frontend_id: Option<FrontendRuntimeId>,
+    ) -> Result<bool, HalError> {
+        let previous_frontend_id = self.demux_frontend_bindings.get(&demux_id).copied();
+        if previous_frontend_id == next_frontend_id {
+            return Ok(false);
+        }
+        let affected = previous_frontend_id
+            .into_iter()
+            .chain(next_frontend_id)
+            .collect::<BTreeSet<_>>();
+        for frontend_id in affected {
+            if self.frontend_demux_start_active(frontend_id)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    pub(crate) fn validate_demux_frontend_binding_change(
+        &self,
+        demux_id: DemuxRuntimeId,
+        next_frontend_id: Option<FrontendRuntimeId>,
+    ) -> Result<(), HalError> {
+        if self.demux_frontend_binding_change_is_pending(demux_id, next_frontend_id)? {
+            return Err(Self::frontend_demux_relation_pending_error());
+        }
+        Ok(())
+    }
+
     pub(crate) fn prepare_demux_frontend_binding_change(
         &mut self,
         demux_id: DemuxRuntimeId,
         next_frontend_id: Option<FrontendRuntimeId>,
     ) -> Result<DemuxFrontendBindingChangeAdmission, HalError> {
         let previous_frontend_id = self.demux_frontend_bindings.get(&demux_id).copied();
-        if previous_frontend_id != next_frontend_id {
-            let affected = previous_frontend_id
-                .into_iter()
-                .chain(next_frontend_id)
-                .collect::<BTreeSet<_>>();
-            for frontend_id in affected {
-                if self.frontend_demux_start_active(frontend_id)? {
-                    return Ok(DemuxFrontendBindingChangeAdmission::Pending);
-                }
-            }
+        if self.demux_frontend_binding_change_is_pending(demux_id, next_frontend_id)? {
+            return Ok(DemuxFrontendBindingChangeAdmission::Pending);
         }
         Ok(DemuxFrontendBindingChangeAdmission::Ready(
             PreparedDemuxFrontendBindingChange {
