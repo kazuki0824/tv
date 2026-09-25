@@ -45,7 +45,7 @@ fn start_success_keeps_relation_guard_until_activate_completes() {
             let state = relation_state.lock().unwrap();
             assert!(
                 state.activate_completed,
-                "relation mutation observed guard release before activate completion"
+                "関係変更がactivate完了前のguard解放を観測しました"
             );
         });
 
@@ -91,7 +91,7 @@ fn cancel_after_start_keeps_relation_guard_until_nonactivate_cleanup_finishes() 
             assert!(state.cancelled);
             assert!(
                 state.cleanup_completed,
-                "relation mutation observed guard release before prepared pump cleanup"
+                "関係変更が準備済みpump停止回収前のguard解放を観測しました"
             );
             assert!(!state.activate_completed);
         });
@@ -134,7 +134,7 @@ fn start_failure_keeps_relation_guard_until_prepared_pump_cleanup_finishes() {
             assert!(!state.start_succeeded);
             assert!(
                 state.cleanup_completed,
-                "relation mutation observed guard release before failure cleanup"
+                "関係変更が失敗後の停止回収前のguard解放を観測しました"
             );
         });
 
