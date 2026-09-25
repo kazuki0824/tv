@@ -2714,12 +2714,7 @@ fn start_px4_live_pump_for_current_consumer(
         };
     }
 
-    finish_started_px4_live_pump(
-        ctx.worker_context(),
-        prepared,
-        start_guard,
-        live_pump,
-    )
+    finish_started_px4_live_pump(ctx.worker_context(), prepared, start_guard, live_pump)
 }
 
 #[cfg(test)]
