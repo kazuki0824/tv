@@ -12,7 +12,8 @@ use crate::diagnostics::WorkerFailureCategory;
 use crate::registry::FrontendRegistryEntry;
 use crate::worker_failure_classifier::WorkerFailureClassifier;
 use crate::worker_runtime::{
-    WorkerRuntime, WorkerRuntimeReaperQueue, WorkerRuntimeReaperReservation, WorkerTerminalResult,
+    WorkerContext, WorkerRuntime, WorkerRuntimeReaperQueue, WorkerRuntimeReaperReservation,
+    WorkerTerminalResult,
 };
 use crate::{
     frontend_ops::{FrontendOperationEvent, FrontendTuneScanTxn, FrontendWorkerTerminalEvent},
@@ -2695,6 +2696,12 @@ fn start_px4_live_pump_for_current_consumer(
         return Ok(Some(FrontendLockWaitOutcome::Locked));
     };
 
+    if ctx.cancel_requested() {
+        prepared.join_after_stop()?;
+        start_guard.release();
+        return Ok(Some(FrontendLockWaitOutcome::Cancelled));
+    }
+
     let start_result = session.start_streaming_after_lock();
     if let Err(primary) = start_result {
         return match prepared.join_after_stop() {
@@ -2707,7 +2714,12 @@ fn start_px4_live_pump_for_current_consumer(
         };
     }
 
-    finish_started_px4_live_pump(ctx.cancel_requested(), prepared, start_guard, live_pump)
+    finish_started_px4_live_pump(
+        ctx.worker_context(),
+        prepared,
+        start_guard,
+        live_pump,
+    )
 }
 
 #[cfg(test)]
@@ -2736,18 +2748,18 @@ fn wait_at_start_activate_test_barrier() {
 }
 
 fn finish_started_px4_live_pump(
-    cancelled_after_start: bool,
+    control: &WorkerContext,
     prepared: PreparedFrontendLivePump,
     start_guard: crate::registry::FrontendDemuxStartGuard,
     live_pump: &mut Option<FrontendLivePumpOwner>,
 ) -> Result<Option<FrontendLockWaitOutcome>, HalError> {
-    if cancelled_after_start {
+    #[cfg(test)]
+    wait_at_start_activate_test_barrier();
+
+    if control.stop_requested() {
         prepared.join_after_stop()?;
         return Ok(Some(FrontendLockWaitOutcome::Cancelled));
     }
-
-    #[cfg(test)]
-    wait_at_start_activate_test_barrier();
 
     let active_pump = prepared.activate();
     start_guard.release();
