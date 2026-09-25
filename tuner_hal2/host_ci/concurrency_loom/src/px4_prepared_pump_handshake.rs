@@ -8,9 +8,7 @@ struct PumpState {
     read_started: bool,
 }
 
-fn spawn_prepared_pump(
-    state: Arc<(Mutex<PumpState>, Condvar)>,
-) -> loom::thread::JoinHandle<()> {
+fn spawn_prepared_pump(state: Arc<(Mutex<PumpState>, Condvar)>) -> loom::thread::JoinHandle<()> {
     loom::thread::spawn(move || {
         let (state, wake) = &*state;
         let mut state = state.lock().unwrap();
