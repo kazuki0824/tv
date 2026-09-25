@@ -5823,6 +5823,118 @@ mod scan_contract_tests {
     use std::collections::VecDeque;
 
     #[test]
+    fn started_phase_holds_relation_guard_until_activate_finishes() {
+        struct NoopSink;
+        impl maleicacid_tuner_hal2_device::FrontendLivePacketSink for NoopSink {
+            fn deliver_ts_packet(
+                &mut self,
+                _packet: &[u8; maleicacid_tuner_hal2_common::TS_PACKET_SIZE],
+            ) -> Result<(), HalError> {
+                Ok(())
+            }
+        }
+
+        let frontend_id = 1_000_000;
+        let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
+        let demux_id = {
+            let mut service = runtime.lock().unwrap();
+            assert_eq!(
+                service.boot_from_probe_results([FrontendProbeOutcome::Available {
+                    id: FrontendRuntimeId(frontend_id),
+                    backend: FrontendBackendKind::Px4CharDevice,
+                    system: FrontendSystem::IsdbT,
+                    path: "/dev/px4video0".into(),
+                    lnb_profile: None,
+                    satellite_power_topology: SatellitePowerTopology::UnknownOrDisabled,
+                    capability: FrontendCapabilitySnapshot {
+                        scalar: FrontendScalarCapability {
+                            min_frequency_hz: 110_642_857,
+                            max_frequency_hz: 767_642_857,
+                            min_symbol_rate: 0,
+                            max_symbol_rate: 0,
+                            acquire_range_hz: 0,
+                        },
+                        exclusive_group_id: 0x1000_0000,
+                        isdbt_segment: Some(crate::registry::IsdbtSegmentCapability {
+                            is_segment_auto: true,
+                            is_full_segment: true,
+                        }),
+                    },
+                }]),
+                ServiceBootOutcome::Ready,
+            );
+            let demux = service.allocate_demux_runtime().unwrap();
+            service
+                .set_demux_frontend_data_source(demux.id.0, frontend_id)
+                .unwrap();
+            demux.id.0
+        };
+
+        let descriptor = FrontendLiveReaderDescriptor::dvb_dvr_device(
+            frontend_id,
+            FrontendDevicePath::new("/dev/null"),
+        );
+        let parent = WorkerRuntime::spawn_controlled_handle(
+            "prepared-pump-phase-test".into(),
+            move |control| {
+                PreparedFrontendLivePump::start(
+                    descriptor,
+                    Box::new(std::io::Cursor::new(Vec::<u8>::new())),
+                    Box::new(NoopSink),
+                    &control,
+                )?
+                .ok_or_else(|| {
+                    HalError::internal(
+                        HalInternalKind::InvariantViolation,
+                        "試験用の準備済みlive pumpが取消されました",
+                    )
+                })
+            },
+        )
+        .unwrap();
+        let prepared = parent.join_after_stop().unwrap().unwrap();
+
+        let start_guard = runtime
+            .lock()
+            .unwrap()
+            .try_begin_frontend_demux_start(frontend_id)
+            .unwrap()
+            .unwrap();
+
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let phase_thread = std::thread::spawn(move || {
+            install_start_activate_test_barrier(entered_tx, resume_rx);
+            let mut live_pump = None;
+            let outcome =
+                finish_started_px4_live_pump(false, prepared, start_guard, &mut live_pump).unwrap();
+            let owner = live_pump.take().unwrap();
+            owner.join_after_stop().unwrap();
+            outcome
+        });
+
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let close_while_activate_pending = runtime
+            .lock()
+            .unwrap()
+            .unregister_demux_runtime(demux_id)
+            .unwrap_err();
+        assert!(matches!(close_while_activate_pending, HalError::Busy { .. }));
+
+        resume_tx.send(()).unwrap();
+        assert_eq!(
+            phase_thread.join().unwrap(),
+            Some(FrontendLockWaitOutcome::Locked)
+        );
+        assert!(runtime
+            .lock()
+            .unwrap()
+            .unregister_demux_runtime(demux_id)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
     fn frontend_demux_start_guard_blocks_relation_change_until_release() {
         let frontend_id = 1_000_000;
         let runtime = Arc::new(Mutex::new(TunerServiceRuntime::new()));
