@@ -2403,3 +2403,37 @@ impl RuntimeRegistry {
         &mut self.descrambler_key_table
     }
 }
+
+
+#[cfg(test)]
+mod single_use_contract_tests {
+    use super::*;
+
+    #[test]
+    fn frontend_demux_start_guard_is_single_use() {
+        static_assertions::assert_not_impl_any!(FrontendDemuxStartGuard: Clone, Copy);
+
+        fn release_by_value(guard: FrontendDemuxStartGuard) {
+            guard.release();
+        }
+
+        let _: fn(FrontendDemuxStartGuard) = release_by_value;
+    }
+
+    #[test]
+    fn prepared_demux_frontend_binding_change_is_single_use() {
+        static_assertions::assert_not_impl_any!(PreparedDemuxFrontendBindingChange: Clone, Copy);
+
+        fn commit_by_value(
+            registry: &mut RuntimeRegistry,
+            prepared: PreparedDemuxFrontendBindingChange,
+        ) -> Result<(), HalError> {
+            registry.commit_prepared_demux_frontend_binding_change(prepared)
+        }
+
+        let _: fn(
+            &mut RuntimeRegistry,
+            PreparedDemuxFrontendBindingChange,
+        ) -> Result<(), HalError> = commit_by_value;
+    }
+}
