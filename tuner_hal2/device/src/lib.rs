@@ -21,5 +21,6 @@ pub use runtime::{
     FrontendTmccPartialReceptionObservation, FrontendTmccTsidListObservation,
     FrontendWorkerCancelReason, FrontendWorkerContext, FrontendWorkerKind, FrontendWorkerRegistry,
     FrontendWorkerStartError, FrontendWorkerStopOutcome, FrontendWorkerStopPoll,
-    FrontendWorkerStopTicket, FrontendWorkerSubmitWait, Px4ChannelApplyResult,
+    FrontendWorkerStopTicket, FrontendWorkerSubmitWait, PreparedFrontendLivePump,
+    Px4ChannelApplyResult,
 };

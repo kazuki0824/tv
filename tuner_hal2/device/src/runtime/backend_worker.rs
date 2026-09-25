@@ -1214,7 +1214,7 @@ impl BackendTuneOps for FrontendBackendTuneExecutor {
     }
 
     fn defer_streaming_start_until_lock(&self) -> bool {
-        self.px4_channel_apply_result == Some(Px4ChannelApplyResult::PendingUnlocked)
+        matches!(&self.kind, FrontendBackendSessionKind::Px4 { .. })
     }
 
     fn start_streaming(&mut self) -> Result<(), HalError> {
@@ -1565,6 +1565,16 @@ mod tests {
             })
         ));
         assert_eq!(executor.streaming_state, BackendStreamingState::Started);
+    }
+
+    #[test]
+    fn px4_streaming_start_is_always_deferred_to_the_worker() {
+        let mut px4 = fresh_tune_executor(FrontendBackendKind::Px4CharDevice);
+        px4.px4_channel_apply_result = Some(Px4ChannelApplyResult::Applied);
+        assert!(px4.defer_streaming_start_until_lock());
+
+        let dvb = fresh_tune_executor(FrontendBackendKind::LinuxDvb);
+        assert!(!dvb.defer_streaming_start_until_lock());
     }
 
     #[test]

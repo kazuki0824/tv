@@ -27,7 +27,6 @@ pub(crate) struct DemuxFrontendSourceTxn {
     demux_id: DemuxRuntimeId,
     mutation: DemuxFrontendSourceMutation,
 }
-
 enum DemuxFrontendSourceMutation {
     Bind(FrontendRuntimeId),
     Unbind {
@@ -127,6 +126,18 @@ impl DemuxFrontendSourceTxn {
             }
         };
 
+        let prepared_binding_change = match runtime
+            .registry
+            .prepare_demux_frontend_binding_change(self.demux_id, next_frontend_id)?
+        {
+            crate::registry::DemuxFrontendBindingChangeAdmission::Ready(prepared) => prepared,
+            crate::registry::DemuxFrontendBindingChangeAdmission::Pending => {
+                return Err(
+                    crate::registry::RuntimeRegistry::frontend_demux_relation_pending_error(),
+                )
+            }
+        };
+
         let prepared = runtime
             .registry
             .demux_runtime_mut(self.demux_id)
@@ -149,12 +160,9 @@ impl DemuxFrontendSourceTxn {
             })?
             .commit_stream_boundary_from_typed_request(prepared)
             .map_err(super::demux_runtime_error_to_hal)?;
-        match next_frontend_id {
-            Some(frontend_id) => runtime
-                .registry
-                .bind_demux_frontend(self.demux_id, frontend_id),
-            None => runtime.registry.unbind_demux_frontend(self.demux_id),
-        }
+        runtime
+            .registry
+            .commit_prepared_demux_frontend_binding_change(prepared_binding_change)?;
         Ok(report)
     }
 }

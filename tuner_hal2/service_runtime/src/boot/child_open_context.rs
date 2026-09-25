@@ -225,7 +225,7 @@ impl TunerServiceRuntime {
         id: i32,
     ) -> Result<Option<crate::registry::DemuxRegistryEntry>, HalError> {
         self.cleanup_descramblers_for_demux_owner_loss(id)?;
-        Ok(self.registry.unregister_demux(DemuxRuntimeId(id)))
+        self.registry.unregister_demux(DemuxRuntimeId(id))
     }
 
     pub(crate) fn transact_allocate_filter_runtime(

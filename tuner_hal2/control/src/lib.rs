@@ -526,6 +526,10 @@ impl WorkerContext {
         }
         self.wake.wait_until(deadline)
     }
+
+    pub fn wake(&self) {
+        self.wake.notify();
+    }
 }
 
 /// device層とservice層が共有するgeneric worker lifecycleの正規owner。

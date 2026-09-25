@@ -5,7 +5,20 @@ use maleicacid_tuner_hal2_control_core::{
     WorkerRuntimeReaperQueue, WorkerRuntimeReaperReservation,
 };
 #[cfg(test)]
-use maleicacid_tuner_hal2_device::FrontendWorkerStopTicket;
+use maleicacid_tuner_hal2_device::{
+    FrontendLivePumpOwner, FrontendWorkerStopTicket, PreparedFrontendLivePump,
+};
+
+#[test]
+fn prepared_frontend_live_pump_is_opaque_single_use_contract() {
+    static_assertions::assert_not_impl_any!(PreparedFrontendLivePump: Clone, Copy);
+
+    fn activate_by_value(prepared: PreparedFrontendLivePump) -> FrontendLivePumpOwner {
+        prepared.activate()
+    }
+
+    let _: fn(PreparedFrontendLivePump) -> FrontendLivePumpOwner = activate_by_value;
+}
 
 #[test]
 fn frontend_worker_stop_ticket_is_opaque_single_use_contract() {
