@@ -12,8 +12,7 @@ use crate::diagnostics::WorkerFailureCategory;
 use crate::registry::FrontendRegistryEntry;
 use crate::worker_failure_classifier::WorkerFailureClassifier;
 use crate::worker_runtime::{
-    WorkerRuntime, WorkerRuntimeReaperQueue, WorkerRuntimeReaperReservation,
-    WorkerTerminalResult,
+    WorkerRuntime, WorkerRuntimeReaperQueue, WorkerRuntimeReaperReservation, WorkerTerminalResult,
 };
 use crate::{
     frontend_ops::{FrontendOperationEvent, FrontendTuneScanTxn, FrontendWorkerTerminalEvent},
@@ -28,8 +27,6 @@ use maleicacid_tuner_hal2_common::{
 };
 #[cfg(test)]
 use maleicacid_tuner_hal2_demux::DemuxRuntimeRollbackToken;
-#[cfg(test)]
-use maleicacid_tuner_hal2_device::{FrontendRuntimeSnapshot, FrontendWorkerRegistry};
 use maleicacid_tuner_hal2_device::{
     FrontendBackendSession, FrontendBackendSubmitFailure, FrontendBackendTunePlan,
     FrontendLivePumpJoinOutcome, FrontendLivePumpOwner, FrontendLiveReaderDescriptor,
@@ -38,6 +35,8 @@ use maleicacid_tuner_hal2_device::{
     FrontendWorkerKind, FrontendWorkerStartError, FrontendWorkerStopOutcome,
     FrontendWorkerStopPoll, FrontendWorkerStopTicket, PreparedFrontendLivePump,
 };
+#[cfg(test)]
+use maleicacid_tuner_hal2_device::{FrontendRuntimeSnapshot, FrontendWorkerRegistry};
 use maleicacid_tuner_hal2_domain_request::{AidlObjectGeneration, AidlObjectId, AidlObjectKind};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -5743,7 +5742,10 @@ mod scan_contract_tests {
             }
             std::thread::sleep(Duration::from_millis(1));
         }
-        assert!(worker_completed, "試験用フロントエンドワーカーが終了していません");
+        assert!(
+            worker_completed,
+            "試験用フロントエンドワーカーが終了していません"
+        );
         assert!(runtime
             .lock()
             .unwrap()
